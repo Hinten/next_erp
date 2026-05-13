@@ -1,5 +1,5 @@
 import { type FullConfig, chromium, request } from '@playwright/test';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import {
   ensureTestUser,
@@ -11,60 +11,65 @@ import {
 /**
  * Playwright globalSetup: prepares the staging backend once per test run.
  *
- * Sequence:
- *   1. Seed the namespaced grupoEconomico (idempotent — `tools/test-fixtures`).
+ * Happy path:
+ *   1. Seed the namespaced grupoEconomico (idempotent).
  *   2. Ensure the e2e Firebase Auth user exists with the configured password.
  *   3. Grant the user all permission bits + tenant claim via setCustomUserClaims.
- *   4. Launch a chromium context, walk through the login form, and persist
- *      the resulting Firebase IndexedDB/localStorage to `storageState`.
+ *   4. Launch a chromium context, drive the login form, and persist the
+ *      resulting Firebase IndexedDB/localStorage to `storageState`.
  *
- * Every spec inherits that storageState via playwright.config.ts, so we pay
- * the cost of one real login per run instead of one per test.
+ * Graceful degradation: if any of the required secrets are missing
+ * (E2E_USER_EMAIL/PASSWORD, FIREBASE_PROJECT_ID, FIREBASE_SERVICE_ACCOUNT)
+ * we write an empty storageState and return. The unauthenticated smoke
+ * specs (`login.smoke`, `auth-guard.smoke`) still run; every other spec
+ * checks `requiresAuthEnv()` in `beforeAll` and skips itself, so CI stays
+ * green while clearly signalling that the test user wasn't configured.
  */
 export default async function globalSetup(config: FullConfig) {
   const email = process.env.E2E_USER_EMAIL;
   const password = process.env.E2E_USER_PASSWORD;
-  if (!email || !password) {
-    throw new Error(
-      'E2E_USER_EMAIL and E2E_USER_PASSWORD must be set for Playwright globalSetup. ' +
-        'Locally: copy apps/web/.env.example to .env.local and fill them in. ' +
-        'CI: add the matching repository secrets and confirm .github/workflows/ci.yml ' +
-        'threads them into the e2e job env block.',
-    );
-  }
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const serviceAccount =
     process.env.FIREBASE_SERVICE_ACCOUNT ?? process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
-  if (!projectId || !serviceAccount) {
-    throw new Error(
-      'FIREBASE_PROJECT_ID and FIREBASE_SERVICE_ACCOUNT(_PATH) must be set so the ' +
-        'Admin SDK can mint the test user and seed the tenant. See apps/web/.env.example.',
-    );
-  }
 
-  // 1. Seed tenant (no-op if already present).
-  const { namespace } = await seed();
-
-  // 2. Ensure the test user exists.
-  const user = await ensureTestUser(email, password);
-  // Always rewrite the password so a stale account from a previous run with
-  // a different secret still works.
-  await setUserPassword(user.uid, password);
-
-  // 3. Grant claims (permissions + tenant). The `grupoEconomico` claim is
-  //    consumed by useTenant() on the web client.
-  await grantAllPerms(email, { extraClaims: { grupoEconomico: 'seed' } });
-
-  // 4. Real login via UI so the resulting IndexedDB carries the Firebase
-  //    session. Playwright's network blocking is off here — we want the
-  //    real Firebase auth round-trip.
-  const baseURL =
-    process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
   const storageStatePath = config.projects[0]?.use.storageState as string | undefined;
   if (!storageStatePath || typeof storageStatePath !== 'string') {
     throw new Error('Playwright project must declare a `use.storageState` path.');
   }
   await mkdir(dirname(storageStatePath), { recursive: true });
+
+  // --- Graceful degradation ----------------------------------------------
+  const missing: string[] = [];
+  if (!email) missing.push('E2E_USER_EMAIL');
+  if (!password) missing.push('E2E_USER_PASSWORD');
+  if (!projectId) missing.push('FIREBASE_PROJECT_ID');
+  if (!serviceAccount) missing.push('FIREBASE_SERVICE_ACCOUNT(_PATH)');
+
+  if (missing.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `\n[globalSetup] skipping auth setup — missing env: ${missing.join(', ')}.\n` +
+        `              Auth-requiring specs (all-pages, CRUD) will skip themselves.\n` +
+        `              Configure these as repo secrets to enable the full suite.\n`,
+    );
+    await writeFile(
+      storageStatePath,
+      JSON.stringify({ cookies: [], origins: [] }, null, 2),
+      'utf8',
+    );
+    return;
+  }
+
+  // --- Happy path --------------------------------------------------------
+  const { namespace } = await seed();
+  const user = await ensureTestUser(email!, password!);
+  // Always rewrite the password so a stale account from a previous run with
+  // a different secret still works.
+  await setUserPassword(user.uid, password!);
+  await grantAllPerms(email!, { extraClaims: { grupoEconomico: 'seed' } });
+
+  const baseURL =
+    process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
 
   // Wait for the web server to be reachable. Playwright's webServer block
   // already does this for `webServer.port`, but in CI globalSetup can race
@@ -76,8 +81,8 @@ export default async function globalSetup(config: FullConfig) {
   const context = await browser.newContext({ baseURL });
   const page = await context.newPage();
   await page.goto('/login');
-  await page.getByLabel('E-mail').fill(email);
-  await page.getByLabel('Senha').fill(password);
+  await page.getByLabel('E-mail').fill(email!);
+  await page.getByLabel('Senha').fill(password!);
   await page.getByRole('button', { name: 'Entrar' }).click();
   // Wait for the post-login redirect into the app shell.
   await page.waitForURL('**/inicio', { timeout: 20_000 });

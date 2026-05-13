@@ -1,4 +1,13 @@
 import { expect, test } from '@playwright/test';
+import { requiresAuthEnv } from './helpers/env';
+
+// The (app) routes redirect unauthenticated users to /login, so without a
+// persisted session this whole suite is meaningless. Skip when the auth
+// env isn't configured (globalSetup logs the missing vars).
+test.skip(
+  !requiresAuthEnv(),
+  'E2E auth env not configured (E2E_USER_EMAIL/PASSWORD + Firebase Admin secrets)',
+);
 
 /**
  * Smoke coverage for every (app) route. Asserts:

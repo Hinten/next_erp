@@ -94,5 +94,32 @@ jobs:
       - name: Install Playwright browsers
         run: pnpm --filter @delfrance/web exec playwright install --with-deps chromium
 
+      - name: Diagnose e2e env (presence only, no values leaked)
+        run: |
+          missing=0
+          check() {
+            name="$1"
+            value="$2"
+            if [ -z "$value" ]; then
+              echo "  ✗ $name (missing)"
+              missing=$((missing + 1))
+            else
+              echo "  ✓ $name (configured)"
+            fi
+          }
+          echo "Auth-required e2e env:"
+          check E2E_USER_EMAIL "$E2E_USER_EMAIL"
+          check E2E_USER_PASSWORD "$E2E_USER_PASSWORD"
+          check FIREBASE_PROJECT_ID "$FIREBASE_PROJECT_ID"
+          check FIREBASE_SERVICE_ACCOUNT "$FIREBASE_SERVICE_ACCOUNT"
+          echo "Web client env:"
+          check NEXT_PUBLIC_FIREBASE_API_KEY "$NEXT_PUBLIC_FIREBASE_API_KEY"
+          check NEXT_PUBLIC_FIREBASE_PROJECT_ID "$NEXT_PUBLIC_FIREBASE_PROJECT_ID"
+          if [ "$missing" -gt 0 ]; then
+            echo ""
+            echo "$missing required secret(s) missing — auth-required specs will skip."
+            echo "Configure secrets at Settings → Secrets and variables → Actions."
+          fi
+
       - name: e2e (web)
         run: pnpm --filter @delfrance/web test:e2e

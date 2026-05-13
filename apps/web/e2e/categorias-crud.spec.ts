@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { requiresAuthEnv } from './helpers/env';
 import {
   clearNullableField,
   clickSave,
@@ -13,6 +14,11 @@ import {
   searchTable,
   selectRowByText,
 } from './helpers/table-view';
+
+test.skip(
+  !requiresAuthEnv(),
+  'E2E auth env not configured (E2E_USER_EMAIL/PASSWORD + Firebase Admin secrets)',
+);
 
 /**
  * Each test mints fresh ids prefixed with `e2e-` so globalTeardown's
