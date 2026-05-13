@@ -39,6 +39,11 @@ export default defineConfig({
         command: 'pnpm dev',
         port: PORT,
         reuseExistingServer: !process.env.CI,
-        timeout: 60_000,
+        // Next 16 cold-compiles every imported module on first request; in
+        // CI we've seen this exceed the previous 60s budget. 180s gives
+        // headroom while still failing the run if dev never comes up.
+        timeout: 180_000,
+        stdout: 'pipe',
+        stderr: 'pipe',
       },
 });

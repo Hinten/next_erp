@@ -1,6 +1,6 @@
 import { type FullConfig, chromium, request } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import {
   ensureTestUser,
   grantAllPerms,
@@ -26,16 +26,20 @@ import {
  * green while clearly signalling that the test user wasn't configured.
  */
 export default async function globalSetup(config: FullConfig) {
+  // eslint-disable-next-line no-console
+  console.log('[globalSetup] starting…');
   const email = process.env.E2E_USER_EMAIL;
   const password = process.env.E2E_USER_PASSWORD;
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const serviceAccount =
     process.env.FIREBASE_SERVICE_ACCOUNT ?? process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
 
-  const storageStatePath = config.projects[0]?.use.storageState as string | undefined;
-  if (!storageStatePath || typeof storageStatePath !== 'string') {
-    throw new Error('Playwright project must declare a `use.storageState` path.');
-  }
+  // Resolve the storageState path relative to the config's rootDir rather
+  // than relying on `config.projects[0].use.storageState` (which is only
+  // merged from top-level `use` in some Playwright versions and was found
+  // undefined at runtime). The path mirrors `STORAGE_STATE` in
+  // playwright.config.ts; keep them in sync.
+  const storageStatePath = resolve(config.rootDir, 'e2e/.auth/user.json');
   await mkdir(dirname(storageStatePath), { recursive: true });
 
   // --- Graceful degradation ----------------------------------------------
