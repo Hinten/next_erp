@@ -39,7 +39,8 @@ export function getFirebaseAuth(): Auth {
 
 export function getFirebaseFirestore(): Firestore {
   if (db) return db;
-  db = getFirestore(getFirebaseApp());
+  const databaseId = process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID ?? 'default';
+  db = getFirestore(getFirebaseApp(), databaseId);
   return db;
 }
 

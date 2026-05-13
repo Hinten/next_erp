@@ -43,8 +43,10 @@ lib/
 
 ```bash
 cp .env.example .env.local         # fill in Firebase config from your project
-pnpm --filter @delfrance/web dev   # http://localhost:3000
+pnpm dev                           # run ALL apps in parallel from the repo root
 ```
+
+`pnpm dev` at the root starts web (:3000), integrations (:3001), webchat (:3002), and docs (:3003) together — required for admin features (user creation, claims refresh) since they POST to `apps/integrations` on :3001. The single-app form `pnpm --filter @delfrance/web dev` works for non-admin pages but causes a 404 on `POST /api/admin/users` because integrations isn't running.
 
 ## Deploy
 
