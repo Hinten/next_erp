@@ -26,7 +26,19 @@ export default async function globalSetup(config: FullConfig) {
   const password = process.env.E2E_USER_PASSWORD;
   if (!email || !password) {
     throw new Error(
-      'E2E_USER_EMAIL and E2E_USER_PASSWORD must be set for Playwright globalSetup.',
+      'E2E_USER_EMAIL and E2E_USER_PASSWORD must be set for Playwright globalSetup. ' +
+        'Locally: copy apps/web/.env.example to .env.local and fill them in. ' +
+        'CI: add the matching repository secrets and confirm .github/workflows/ci.yml ' +
+        'threads them into the e2e job env block.',
+    );
+  }
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const serviceAccount =
+    process.env.FIREBASE_SERVICE_ACCOUNT ?? process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+  if (!projectId || !serviceAccount) {
+    throw new Error(
+      'FIREBASE_PROJECT_ID and FIREBASE_SERVICE_ACCOUNT(_PATH) must be set so the ' +
+        'Admin SDK can mint the test user and seed the tenant. See apps/web/.env.example.',
     );
   }
 
