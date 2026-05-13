@@ -1,6 +1,7 @@
 import { type FullConfig, chromium, request } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   ensureTestUser,
   grantAllPerms,
@@ -25,7 +26,15 @@ import {
  * checks `requiresAuthEnv()` in `beforeAll` and skips itself, so CI stays
  * green while clearly signalling that the test user wasn't configured.
  */
-export default async function globalSetup(config: FullConfig) {
+// This file lives at `apps/web/e2e/global-setup.ts`; the storageState
+// path is its sibling. Resolving against the file URL is robust to
+// whatever `cwd`/`rootDir` Playwright uses (tested empirically: the
+// previous `config.rootDir`-based path resolved to `e2e/e2e/.auth/...`
+// because rootDir was the testDir, not the project dir).
+const HERE = dirname(fileURLToPath(import.meta.url));
+const STORAGE_STATE_PATH = resolve(HERE, '.auth/user.json');
+
+export default async function globalSetup(_config: FullConfig) {
   // eslint-disable-next-line no-console
   console.log('[globalSetup] starting…');
   const email = process.env.E2E_USER_EMAIL;
@@ -34,12 +43,7 @@ export default async function globalSetup(config: FullConfig) {
   const serviceAccount =
     process.env.FIREBASE_SERVICE_ACCOUNT ?? process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
 
-  // Resolve the storageState path relative to the config's rootDir rather
-  // than relying on `config.projects[0].use.storageState` (which is only
-  // merged from top-level `use` in some Playwright versions and was found
-  // undefined at runtime). The path mirrors `STORAGE_STATE` in
-  // playwright.config.ts; keep them in sync.
-  const storageStatePath = resolve(config.rootDir, 'e2e/.auth/user.json');
+  const storageStatePath = STORAGE_STATE_PATH;
   await mkdir(dirname(storageStatePath), { recursive: true });
 
   // --- Graceful degradation ----------------------------------------------
