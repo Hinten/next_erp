@@ -15,6 +15,7 @@ Multi-app Next.js monorepo, in-progress rewrite of the Flutter ERP. Goal: featur
 5. **No Firebase emulators**. Tests run against the staging Firebase project (set via `FIREBASE_PROJECT_ID` env var). See `apps/web/README.md` for fixture seed/teardown.
 6. **`apps/web` is client-first**. Default to `'use client'`. Server Components, Server Actions, route handlers, and middleware are exceptions that need explicit justification in PRs (cost + simplicity reasons). The ERP is behind auth, no SEO. Server compute concentrates in `apps/integrations`.
 7. **No `apps/web/middleware.ts`**. Auth guard is client-side via `useRequireAuth()` from `apps/web/lib/auth/`. Security lives in Firestore rules, not in middleware.
+8. **No generic `catch`**. Every `catch` must check `err instanceof <SpecificError>` (e.g. `FirebaseError`, `SyntaxError`, `ZodError`, an in-repo class) and `throw err` for anything that does not match. `catch {}` without binding, `catch (e) {}` with empty body, and `catch (e) { return null }` without a rethrow are forbidden. `err instanceof Error` (the base class) does **not** count as narrowing — `Error` is the parent of every exception. ESLint enforces the mechanical part via `no-empty` + two `no-restricted-syntax` selectors in `packages/config-eslint/index.js`; "which class on the RHS of `instanceof`" is a convention, not a lint rule.
 
 ## Layout
 

@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { FirebaseError } from 'firebase/app';
 import { sendPasswordResetEmail } from 'firebase/auth';
 import {
   Alert,
@@ -28,7 +29,11 @@ export default function RecoverPage() {
       await sendPasswordResetEmail(getFirebaseAuth(), email);
       setSent(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Falha ao enviar.');
+      if (err instanceof FirebaseError) {
+        setError(err.message);
+      } else {
+        throw err;
+      }
     } finally {
       setSubmitting(false);
     }

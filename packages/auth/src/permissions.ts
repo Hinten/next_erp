@@ -46,7 +46,10 @@ export function hasPerm(grantedClaim: string | undefined, requiredBit: bigint): 
   if (!grantedClaim) return false;
   try {
     return (BigInt(grantedClaim) & requiredBit) === requiredBit;
-  } catch {
-    return false;
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      return false;
+    }
+    throw err;
   }
 }

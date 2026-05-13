@@ -1,6 +1,10 @@
 'use client';
 
-import { PluginRegistry, type PaymentGateway } from '@delfrance/core/plugins';
+import {
+  PluginNotRegisteredError,
+  PluginRegistry,
+  type PaymentGateway,
+} from '@delfrance/core/plugins';
 
 /**
  * Singleton plugin registry for the web app. Phase 5 wires concrete
@@ -17,8 +21,11 @@ const registry = new PluginRegistry();
 export function getGateway(id: string): PaymentGateway | null {
   try {
     return registry.payment(id);
-  } catch {
-    return null;
+  } catch (err) {
+    if (err instanceof PluginNotRegisteredError) {
+      return null;
+    }
+    throw err;
   }
 }
 
