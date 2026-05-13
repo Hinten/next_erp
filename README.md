@@ -23,7 +23,7 @@ Shared code lives under `packages/`:
 - `packages/schemas/` — Zod schemas + collection metadata (single source of truth).
 - `packages/data/` — `defineCollection<T>` + cascade runtime, no codegen.
 - `packages/auth/` — permission helpers, BigInt-encoded custom claims.
-- `packages/ui/` — Mantine v7 theme + primitives.
+- `packages/ui/` — Mantine v9 theme + primitives.
 - `packages/core/` — money, address, documents, tenant, plugin contracts.
 - `packages/integrations/*/` — domain integrations behind plugin contracts (NFe, Mercado Pago, marketplaces, freight).
 - `packages/plugin-sdk/` — public surface for third-party plugin authors.
@@ -31,8 +31,8 @@ Shared code lives under `packages/`:
 
 ## Stack
 
-- Next.js 15 (App Router), React 19, TypeScript strict
-- Mantine v7
+- Next.js 16 (App Router), React 19.2, TypeScript 6 strict
+- Mantine v9
 - Turborepo + pnpm workspaces
 - react-hook-form + Zod
 - next-intl (default `pt-BR`, `en` from day 1)

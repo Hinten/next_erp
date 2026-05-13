@@ -17,8 +17,8 @@ Delfrance is an **open-source ERP** for business process automation. The Next.js
 
 ## Stack
 
-- Next.js 15 App Router, React 19, TypeScript strict
-- Mantine v7 (in `apps/web` only)
+- Next.js 16 App Router, React 19.2, TypeScript 6 strict
+- Mantine v9 (in `apps/web` only)
 - Turborepo + pnpm workspaces
 - Firebase: Firestore, Auth, App Hosting, Cloud Functions
 - Vitest + Playwright (against your Firebase project, no emulators)

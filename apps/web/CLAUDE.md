@@ -7,7 +7,7 @@ Internal ERP UI. **Client-first.**
 1. **Default to `'use client'`**. The ERP is behind auth, no SEO, no indexing. Server runtime exists (Firebase App Hosting) but only serves the shell + static bundle. Server Components/Actions/route handlers are exceptions that need PR justification.
 2. **No `middleware.ts`**. Auth guard is `useRequireAuth()` from `lib/auth/`. The hook listens to `onAuthStateChanged` and redirects to `/login` if user is null. Loading flicker is mitigated by Firebase's IndexedDB persistence.
 3. **Reads/writes go directly to Firebase JS SDK** from client components. Wrap one-shot reads in TanStack Query (`useQuery`); wrap real-time in custom hooks built on `onSnapshot`.
-4. **Forms**: react-hook-form + Zod resolver. Mantine inputs via `Controller`.
+4. **Forms**: react-hook-form + Zod resolver. Mantine inputs via `Controller`. With `@hookform/resolvers` v5 + Zod v4, schemas whose input/output types differ (e.g. fields with `.default()`) need the 3-generic `useForm<Input, Context, Output>` form so the resolver and `handleSubmit` callback line up. See `app/(app)/produtos/_components/ProdutoForm.tsx` for the pattern.
 5. **Permissions**: `usePermission(0b00001000n)` (BigInt literal — claims are encoded as BigInt strings to dodge the JS 53-bit number limit).
 6. **Multi-tenant context**: `useTenant()` reads `grupoEconomico` from custom claims. All queries filter by it.
 

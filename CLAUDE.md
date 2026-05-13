@@ -73,13 +73,19 @@ pnpm --filter @delfrance/integrations dev
 ## Key fixed decisions
 
 - Firebase backend stays.
-- Mantine v7 for UI.
+- Mantine v9 for UI (bumped from v7).
+- Next.js 16 (baseline for Firebase App Hosting's stable Deployment Adapter API), React 19.2.
+- Firebase JS SDK v12, firebase-admin v13.
+- Zod v4 as schema source of truth.
+- TypeScript 6, ESLint 9 (the next-eslint-plugin chain doesn't support ESLint 10 yet), Vitest 4, Turbo 2.9.
+- pnpm 10 (declared via `packageManager`).
 - Apache-2.0 license.
 - Develop in `next-rewrite/`; split to public repo on Phase 6.1.
 - No CI in this folder.
 - `apps/portal/` does NOT exist — public customer-facing pages decision deferred to Phase 5/6 (likely `apps/integrations` endpoints).
 - `apps/integrations` deploys to Firebase App Hosting; heavy work to Cloud Functions.
 - `apps/web` is client-first; no middleware; Server Components/Actions opt-in only with justification.
+- `next lint` no longer exists in Next 16 — lint scripts call `eslint .` directly and each app's `eslint.config.mjs` spreads `@delfrance/config-eslint` + `eslint-config-next` flat configs.
 
 ## Setup problems
 
