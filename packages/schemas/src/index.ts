@@ -116,3 +116,22 @@ export {
   type Integracao,
   type IntegracaoTipo,
 } from './integracao';
+
+export {
+  cargo,
+  cargoSchema,
+  cargoMeta,
+  decodePermissoes,
+  encodePermissoes,
+  type Cargo,
+} from './cargo';
+
+export {
+  usuario,
+  usuarioSchema,
+  usuarioMeta,
+  aggregatePermissoes,
+  isSuperUserBits,
+  SUPERUSER_MASK,
+  type Usuario,
+} from './usuario';

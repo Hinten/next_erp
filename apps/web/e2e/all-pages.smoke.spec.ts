@@ -60,7 +60,9 @@ const STATIC_ROUTES: string[] = [
   '/configuracoes',
   '/configuracoes/filiais',
   '/configuracoes/cargos',
+  '/configuracoes/cargos/novo',
   '/configuracoes/usuarios',
+  '/configuracoes/usuarios/novo',
 ];
 
 test.describe('All pages load', () => {

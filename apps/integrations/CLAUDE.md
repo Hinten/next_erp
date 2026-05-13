@@ -33,9 +33,11 @@ lib/
 
 ```bash
 cp .env.example .env.local
-pnpm --filter @delfrance/integrations-app dev   # http://localhost:3001
+pnpm dev                                        # run all apps from the repo root
 curl http://localhost:3001/api/health
 ```
+
+This app deploys on :3001 and is required by `apps/web` for admin endpoints (user creation, claims refresh). Prefer `pnpm dev` at the root so web + integrations come up together. `pnpm --filter @delfrance/integrations-app dev` works for isolated webhook/OAuth work where the web app isn't needed.
 
 ## Deploy
 
