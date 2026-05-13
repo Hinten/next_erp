@@ -1,0 +1,21 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.0.4/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "fixed": [],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "master",
+  "updateInternalDependencies": "patch",
+  "ignore": [
+    "@delfrance/web",
+    "@delfrance/integrations-app",
+    "@delfrance/webchat",
+    "@delfrance/docs",
+    "@delfrance/example",
+    "@delfrance/test-fixtures",
+    "@delfrance/config-eslint",
+    "@delfrance/config-tsconfig",
+    "@delfrance/config-prettier"
+  ]
+}

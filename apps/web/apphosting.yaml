@@ -1,0 +1,13 @@
+# Firebase App Hosting backend config for apps/web.
+# Reference: https://firebase.google.com/docs/app-hosting/configure
+runConfig:
+  cpu: 1
+  memoryMiB: 512
+  maxInstances: 10
+  minInstances: 0
+  concurrency: 80
+# All NEXT_PUBLIC_FIREBASE_* values are set per-environment in the Firebase console
+# (App Hosting → Environment variables) or via .env.local for local dev.
+# NEXT_PUBLIC_FIREBASE_PROJECT_ID, NEXT_PUBLIC_FIREBASE_API_KEY,
+# NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN, NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+# NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID, NEXT_PUBLIC_FIREBASE_APP_ID.

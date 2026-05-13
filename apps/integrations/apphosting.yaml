@@ -1,0 +1,11 @@
+# Firebase App Hosting backend config for apps/integrations.
+# Webhook endpoints respond fast and dispatch heavy work to Cloud Functions.
+runConfig:
+  cpu: 1
+  memoryMiB: 512
+  maxInstances: 20
+  minInstances: 0
+  concurrency: 80
+# FIREBASE_PROJECT_ID is set per-environment in the Firebase console
+# (App Hosting → Environment variables) or via .env.local for local dev.
+# Webhook signing secrets and Admin SDK service account live in Cloud Secret Manager.

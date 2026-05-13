@@ -1,0 +1,5 @@
+dist/
+.astro/
+.turbo/
+node_modules/
+*.tsbuildinfo

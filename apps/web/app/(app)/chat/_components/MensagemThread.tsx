@@ -1,0 +1,260 @@
+'use client';
+
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActionIcon,
+  Alert,
+  Badge,
+  Box,
+  Group,
+  ScrollArea,
+  Skeleton,
+  Stack,
+  Text,
+  Textarea,
+  Tooltip,
+} from '@mantine/core';
+import { addDoc } from 'firebase/firestore';
+import { buildQuery, limit, orderByField } from '@delfrance/data';
+import { useSnapshot } from '@delfrance/data/hooks';
+import {
+  ESTADO_ENVIO,
+  ESTADO_ENVIO_LABELS,
+  type EstadoEnvioMensagem,
+  type Mensagem,
+} from '@delfrance/schemas';
+import { mensagemCollection } from '@/lib/data/conversaCollection';
+import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { useAuth } from '@/lib/auth';
+
+const PAGE_SIZE = 200;
+
+interface OptimisticMensagem extends Mensagem {
+  _optimistic: true;
+  _localId: string;
+}
+
+interface ServerMensagem extends Mensagem {
+  _id: string;
+}
+
+type AnyMensagem = OptimisticMensagem | ServerMensagem;
+
+/**
+ * Real-time thread for one conversa. New messages stream in via
+ * onSnapshot; outgoing messages render immediately (optimistic UI),
+ * then are reconciled by `mid` once Firestore acks the write.
+ */
+export function MensagemThread({ conversaId }: { conversaId: string }) {
+  const { user } = useAuth();
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [optimistic, setOptimistic] = useState<OptimisticMensagem[]>([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const q = useMemo(() => {
+    const base = mensagemCollection.ref(getFirebaseFirestore(), { conversaId });
+    return buildQuery(base, [
+      orderByField('timestamp', 'desc'),
+      limit(PAGE_SIZE),
+    ]);
+  }, [conversaId]);
+
+  const { data, loading, error } = useSnapshot<Mensagem>(q);
+
+  const messages: AnyMensagem[] = useMemo(() => {
+    const server: ServerMensagem[] = (data ?? [])
+      .map(({ id, data: m }) => ({ ...m, _id: id }))
+      // we ordered desc to limit server-side; reverse for chronological view.
+      .reverse();
+    // Drop optimistic entries whose mid now appears in server data.
+    const seenMids = new Set(server.map((m) => m.mid).filter(Boolean));
+    const pending = optimistic.filter((m) => !seenMids.has(m.mid));
+    return [...server, ...pending];
+  }, [data, optimistic]);
+
+  // Scroll to the bottom whenever the message list grows.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages.length]);
+
+  async function handleSend() {
+    const text = draft.trim();
+    if (!text || sending) return;
+    setSendError(null);
+    const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const now = new Date().toISOString();
+    const pending: OptimisticMensagem = {
+      _optimistic: true,
+      _localId: localId,
+      mid: localId,
+      conteudo: text,
+      tipo: 'c',
+      canal: 0,
+      estadoEnvio: ESTADO_ENVIO.enviando,
+      user_id: user?.uid ?? null,
+      timestamp: now,
+    };
+    setOptimistic((prev) => [...prev, pending]);
+    setDraft('');
+    setSending(true);
+    try {
+      await addDoc(
+        mensagemCollection.ref(getFirebaseFirestore(), { conversaId }),
+        {
+          mid: localId,
+          conteudo: text,
+          tipo: 'c',
+          canal: 0,
+          estadoEnvio: ESTADO_ENVIO.salva,
+          user_id: user?.uid ?? null,
+          timestamp: now,
+        },
+      );
+      // Server snapshot will include this mid on the next tick; the
+      // memoized merge above drops the optimistic copy automatically.
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'Falha ao enviar.');
+      setOptimistic((prev) =>
+        prev.map((m) =>
+          m._localId === localId
+            ? { ...m, estadoEnvio: ESTADO_ENVIO.erro }
+            : m,
+        ),
+      );
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <Stack h="100%" gap={0}>
+      {error && <Alert color="red">{error.message}</Alert>}
+      <ScrollArea
+        viewportRef={scrollRef}
+        style={{ flex: 1, minHeight: 0 }}
+        offsetScrollbars
+      >
+        <Stack p="md" gap="sm">
+          {loading && (
+            <Stack>
+              <Skeleton height={48} />
+              <Skeleton height={48} />
+              <Skeleton height={48} />
+            </Stack>
+          )}
+          {!loading && messages.length === 0 && (
+            <Text c="dimmed" ta="center" py="xl">
+              Sem mensagens nesta conversa.
+            </Text>
+          )}
+          {messages.map((m) => (
+            <MensagemBubble
+              key={'_id' in m ? (m as ServerMensagem)._id : (m as OptimisticMensagem)._localId}
+              mensagem={m}
+              isLocal={'_optimistic' in m}
+            />
+          ))}
+        </Stack>
+      </ScrollArea>
+
+      {sendError && (
+        <Alert color="red" m="md">
+          {sendError}
+        </Alert>
+      )}
+
+      <Box p="sm" style={{ borderTop: '1px solid var(--mantine-color-gray-2)' }}>
+        <Group align="flex-end" gap="xs">
+          <Textarea
+            value={draft}
+            onChange={(e) => setDraft(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                void handleSend();
+              }
+            }}
+            placeholder="Digite uma mensagem (⌘/Ctrl + Enter envia)…"
+            autosize
+            minRows={1}
+            maxRows={6}
+            style={{ flex: 1 }}
+            disabled={sending}
+          />
+          <Tooltip label="Enviar (⌘/Ctrl + Enter)">
+            <ActionIcon
+              size="lg"
+              variant="filled"
+              color="blue"
+              disabled={sending || draft.trim().length === 0}
+              onClick={handleSend}
+              aria-label="Enviar"
+            >
+              ➤
+            </ActionIcon>
+          </Tooltip>
+        </Group>
+      </Box>
+    </Stack>
+  );
+}
+
+function MensagemBubble({
+  mensagem,
+  isLocal,
+}: {
+  mensagem: AnyMensagem;
+  isLocal: boolean;
+}) {
+  const { user } = useAuth();
+  const isOwn = isLocal || (mensagem.user_id && mensagem.user_id === user?.uid);
+  return (
+    <Group justify={isOwn ? 'flex-end' : 'flex-start'} align="flex-end">
+      <Box
+        p="xs"
+        style={(theme) => ({
+          maxWidth: 480,
+          background: isOwn ? theme.colors.blue[0] : theme.colors.gray[1],
+          border: `1px solid ${
+            isOwn ? theme.colors.blue[2] : theme.colors.gray[3]
+          }`,
+          borderRadius: theme.radius.md,
+        })}
+      >
+        <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
+          {mensagem.conteudo ?? '(sem conteúdo)'}
+        </Text>
+        <Group gap={4} mt={4} justify="flex-end">
+          {mensagem.timestamp && (
+            <Text size="xs" c="dimmed">
+              {new Date(mensagem.timestamp).toLocaleTimeString('pt-BR', {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </Text>
+          )}
+          {isOwn && (
+            <Badge
+              size="xs"
+              variant="light"
+              color={
+                mensagem.estadoEnvio === ESTADO_ENVIO.erro
+                  ? 'red'
+                  : mensagem.estadoEnvio === ESTADO_ENVIO.enviado ||
+                      mensagem.estadoEnvio === ESTADO_ENVIO.recebido
+                    ? 'green'
+                    : 'gray'
+              }
+            >
+              {ESTADO_ENVIO_LABELS[mensagem.estadoEnvio as EstadoEnvioMensagem]}
+            </Badge>
+          )}
+        </Group>
+      </Box>
+    </Group>
+  );
+}

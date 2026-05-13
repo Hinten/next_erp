@@ -1,0 +1,42 @@
+name: Preview deploy
+
+on:
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build web
+        run: pnpm --filter @delfrance/web build
+
+      - name: Build integrations
+        run: pnpm --filter @delfrance/integrations-app build
+
+      - name: Build webchat (static)
+        run: pnpm --filter @delfrance/webchat build
+
+      - name: Deploy webchat preview
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+          projectId: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          target: webchat
+          expires: 7d

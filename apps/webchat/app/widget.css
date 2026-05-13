@@ -1,0 +1,105 @@
+html,
+body,
+#__next {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #fff;
+}
+
+.widget {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  font-family: system-ui, sans-serif;
+  background: #fff;
+}
+
+.widget header {
+  padding: 12px 16px;
+  background: #2563eb;
+  color: #fff;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.widget .error {
+  background: #fee2e2;
+  color: #991b1b;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.widget .thread {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.widget .empty {
+  text-align: center;
+  color: #6b7280;
+  margin-top: 32px;
+}
+
+.widget .bubble {
+  max-width: 80%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.widget .bubble time {
+  display: block;
+  font-size: 10px;
+  opacity: 0.7;
+  margin-top: 4px;
+}
+
+.widget .bubble.own {
+  align-self: flex-end;
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+
+.widget .bubble.them {
+  align-self: flex-start;
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.widget .composer {
+  display: flex;
+  padding: 8px;
+  gap: 8px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.widget .composer input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.widget .composer button {
+  padding: 8px 14px;
+  background: #2563eb;
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.widget .composer button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

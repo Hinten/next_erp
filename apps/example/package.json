@@ -1,0 +1,26 @@
+{
+  "name": "@delfrance/example",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "demo": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@delfrance/auth": "workspace:*",
+    "@delfrance/core": "workspace:*",
+    "@delfrance/data": "workspace:*",
+    "@delfrance/plugin-sdk": "workspace:*",
+    "@delfrance/schemas": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@delfrance/config-tsconfig": "workspace:*",
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
