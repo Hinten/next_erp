@@ -124,7 +124,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // try Pipelines first; fall back to buildQuery when unsupported by the SDK.
   const pipeline: Pipeline | null = useMemo(() => {
     if (queryOverride) return null;
-    if (!isPipelineSupported()) return null;
+    if (!isPipelineSupported(db)) return null;
     try {
       return buildPipeline(db, {
         collection: collection.resolvePath(pathContext),

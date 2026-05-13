@@ -32,7 +32,7 @@ vi.mock('@delfrance/data/pipeline-queries', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/data/pipeline-queries')>();
   return {
     ...actual,
-    isPipelineSupported: () => false,
+    isPipelineSupported: (_db: unknown) => false,
     buildPipeline: () => null,
   };
 });
