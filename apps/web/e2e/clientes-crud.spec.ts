@@ -15,16 +15,19 @@ import {
   selectRowByText,
 } from './helpers/table-view';
 
-test.skip(
-  !requiresAuthEnv(),
-  'E2E auth env not configured (E2E_USER_EMAIL/PASSWORD + Firebase Admin secrets)',
-);
-
 function uniqueName(label: string, workerIndex: number): string {
   return `e2e-${label}-${workerIndex}-${Date.now()}`;
 }
 
 test.describe('Clientes CRUD', () => {
+  // Skip the whole suite when the auth env isn't configured. Playwright's
+  // `test.skip(cond, msg)` is valid inside a describe but not at module
+  // level — moving it here avoids the test-discovery error.
+  test.skip(
+    !requiresAuthEnv(),
+    'E2E auth env not configured (E2E_USER_EMAIL/PASSWORD + Firebase Admin secrets)',
+  );
+
   test('list loads and renders the TableView shell', async ({ page }) => {
     await page.goto('/clientes');
     await expect(

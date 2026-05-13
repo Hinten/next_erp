@@ -15,11 +15,6 @@ import {
   selectRowByText,
 } from './helpers/table-view';
 
-test.skip(
-  !requiresAuthEnv(),
-  'E2E auth env not configured (E2E_USER_EMAIL/PASSWORD + Firebase Admin secrets)',
-);
-
 /**
  * Each test mints fresh ids prefixed with `e2e-` so globalTeardown's
  * `cleanupE2EDocs('categorias', 'e2e-')` can sweep stragglers. Names embed
@@ -30,6 +25,13 @@ function uniqueName(label: string, workerIndex: number): string {
 }
 
 test.describe('Categorias CRUD', () => {
+  // Module-level test.skip is unsafe in Playwright; the same gate goes
+  // here as a describe-scoped skip so test collection completes cleanly.
+  test.skip(
+    !requiresAuthEnv(),
+    'E2E auth env not configured (E2E_USER_EMAIL/PASSWORD + Firebase Admin secrets)',
+  );
+
   test('list loads and renders the TableView shell', async ({ page }) => {
     await page.goto('/categorias');
     await expect(
