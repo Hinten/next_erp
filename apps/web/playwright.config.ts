@@ -10,8 +10,9 @@ const STORAGE_STATE = 'e2e/.auth/user.json';
 export default defineConfig({
   testDir: './e2e',
   // Smoke + globalSetup do real network round-trips against staging.
-  // 30s is enough for individual specs; setup itself has its own waits.
-  timeout: 30_000,
+  // Next 16 dev mode compiles each route on first hit; CI cold compiles
+  // can spike >30s, so we give specs 60s. expect() timeouts stay tight.
+  timeout: 60_000,
   expect: { timeout: 5_000 },
   fullyParallel: true,
   retries: process.env.CI ? 2 : 0,

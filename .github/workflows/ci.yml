@@ -91,8 +91,27 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Install Playwright browsers
+      # Cache the downloaded chromium binary keyed on the lockfile hash —
+      # i.e. invalidate the moment @playwright/test moves. System apt deps
+      # aren't part of this cache (they live outside HOME and need sudo),
+      # but they're already on the GitHub-hosted image, so `install-deps`
+      # runs fast on a cache hit.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      - name: Install Playwright browsers (cache miss)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @delfrance/web exec playwright install --with-deps chromium
+
+      - name: Install Playwright system deps (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm --filter @delfrance/web exec playwright install-deps chromium
 
       - name: e2e (web)
         id: e2e
