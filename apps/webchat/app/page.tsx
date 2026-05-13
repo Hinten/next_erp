@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { FirebaseError } from 'firebase/app';
 import {
   Timestamp,
   addDoc,
@@ -81,10 +82,10 @@ export default function WebchatPage() {
         );
         setConversaId(userId);
       } catch (err) {
-        if (!cancelled) {
-          setError(
-            err instanceof Error ? err.message : 'Falha ao iniciar o chat.',
-          );
+        if (err instanceof FirebaseError) {
+          if (!cancelled) setError(err.message);
+        } else {
+          throw err;
         }
       }
     })();
@@ -168,12 +169,16 @@ export default function WebchatPage() {
           { merge: true },
         );
       } catch (err) {
-        setPending((p) =>
-          p.map((m) =>
-            m._localId === localId ? { ...m, estadoEnvio: ESTADO.erro } : m,
-          ),
-        );
-        setError(err instanceof Error ? err.message : 'Falha ao enviar.');
+        if (err instanceof FirebaseError) {
+          setPending((p) =>
+            p.map((m) =>
+              m._localId === localId ? { ...m, estadoEnvio: ESTADO.erro } : m,
+            ),
+          );
+          setError(err.message);
+        } else {
+          throw err;
+        }
       }
     },
     [draft, conversaId, uid],

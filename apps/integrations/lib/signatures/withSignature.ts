@@ -60,10 +60,14 @@ export function withSignature<T = unknown>(
     let json: T | undefined;
     try {
       json = payload ? (JSON.parse(payload) as T) : undefined;
-    } catch {
-      // Some webhook providers send form-encoded bodies; the inner handler
-      // gets the raw payload either way and can parse as it sees fit.
-      json = undefined;
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        // Some webhook providers send form-encoded bodies; the inner handler
+        // gets the raw payload either way and can parse as it sees fit.
+        json = undefined;
+      } else {
+        throw err;
+      }
     }
     return handler({ req, payload, json });
   };

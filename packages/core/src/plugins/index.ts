@@ -50,6 +50,17 @@ export interface FreightProvider {
   track(trackingCode: string): Promise<{ status: string; events: unknown[] }>;
 }
 
+export class PluginNotRegisteredError extends Error {
+  readonly kind: string;
+  readonly pluginId: string;
+  constructor(kind: string, pluginId: string) {
+    super(`No ${kind} registered for "${pluginId}".`);
+    this.name = 'PluginNotRegisteredError';
+    this.kind = kind;
+    this.pluginId = pluginId;
+  }
+}
+
 export class PluginRegistry {
   private taxes = new Map<string, TaxProvider>();
   private invoices = new Map<string, InvoiceProvider>();
@@ -71,7 +82,7 @@ export class PluginRegistry {
 
   private must<T>(map: Map<string, T>, id: string, kind: string): T {
     const v = map.get(id);
-    if (!v) throw new Error(`No ${kind} registered for "${id}".`);
+    if (!v) throw new PluginNotRegisteredError(kind, id);
     return v;
   }
 }

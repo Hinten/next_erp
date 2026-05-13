@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { FirebaseError } from 'firebase/app';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import {
   Alert,
@@ -31,7 +32,11 @@ export default function LoginPage() {
       await signInWithEmailAndPassword(getFirebaseAuth(), email, password);
       router.replace('/inicio');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Falha ao entrar.');
+      if (err instanceof FirebaseError) {
+        setError(err.message);
+      } else {
+        throw err;
+      }
     } finally {
       setSubmitting(false);
     }
