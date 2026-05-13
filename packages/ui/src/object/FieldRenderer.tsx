@@ -162,17 +162,26 @@ export function FieldRenderer({ control, descriptor, config }: FieldRendererProp
             );
           }
           case 'date': {
-            // Values are stored as ISO strings (the schema dates the wire
-            // format) but Mantine's picker speaks Date. Translate both ways.
-            const date =
-              typeof field.value === 'string' ? new Date(field.value) :
-                field.value instanceof Date ? field.value : null;
+            // Mantine 9's DatePickerInput speaks YYYY-MM-DD strings; our
+            // wire format is full ISO datetimes. Round-trip via Date so we
+            // preserve any time component the caller stored.
+            const value = field.value as string | Date | null | undefined;
+            const dateStr =
+              typeof value === 'string'
+                ? value.slice(0, 10)
+                : value && typeof (value as { getTime?: () => number }).getTime === 'function'
+                  ? (value as Date).toISOString().slice(0, 10)
+                  : null;
             return (
               <DatePickerInput
                 label={label} description={hint} error={error}
                 disabled={!editable}
-                value={date && !Number.isNaN(date.getTime()) ? date : null}
-                onChange={(v) => field.onChange(v instanceof Date ? v.toISOString() : v)}
+                value={dateStr}
+                onChange={(v) => {
+                  // v is `string | null` (YYYY-MM-DD). Promote to full ISO
+                  // to keep wire format stable.
+                  field.onChange(v ? new Date(`${v}T00:00:00.000Z`).toISOString() : v);
+                }}
               />
             );
           }

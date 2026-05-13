@@ -1,20 +1,4 @@
-import {
-  type ZodObject,
-  type ZodRawShape,
-  type ZodTypeAny,
-  ZodArray,
-  ZodBoolean,
-  ZodDate,
-  ZodDefault,
-  ZodEnum,
-  ZodNativeEnum,
-  ZodNullable,
-  ZodNumber,
-  ZodObject as ZodObjectClass,
-  ZodOptional,
-  ZodString,
-  ZodUnknown,
-} from 'zod';
+import type { ZodObject, ZodRawShape, ZodTypeAny } from 'zod';
 import { parseZodDescription } from './describe';
 import type { FieldDescriptor, FieldKind } from './types';
 
@@ -24,6 +8,17 @@ interface Unwrapped {
   nullable: boolean;
 }
 
+interface ZodInternalDef {
+  type?: string;
+  innerType?: ZodTypeAny;
+  checks?: Array<{ _zod?: { def?: { check?: string; format?: string } } }>;
+  entries?: Record<string, string | number>;
+}
+
+function defOf(t: ZodTypeAny): ZodInternalDef {
+  return (t as unknown as { def?: ZodInternalDef }).def ?? {};
+}
+
 /** Strip Optional/Nullable/Default wrappers, recording the modifiers. */
 function unwrap(type: ZodTypeAny): Unwrapped {
   let cur = type;
@@ -31,18 +26,19 @@ function unwrap(type: ZodTypeAny): Unwrapped {
   let nullable = false;
   // Multiple levels of wrappers are possible (e.g. `.nullable().optional()`).
   for (let i = 0; i < 8; i += 1) {
-    if (cur instanceof ZodOptional) {
+    const def = defOf(cur);
+    if (def.type === 'optional' && def.innerType) {
       optional = true;
-      cur = cur._def.innerType as ZodTypeAny;
+      cur = def.innerType;
       continue;
     }
-    if (cur instanceof ZodNullable) {
+    if (def.type === 'nullable' && def.innerType) {
       nullable = true;
-      cur = cur._def.innerType as ZodTypeAny;
+      cur = def.innerType;
       continue;
     }
-    if (cur instanceof ZodDefault) {
-      cur = cur._def.innerType as ZodTypeAny;
+    if (def.type === 'default' && def.innerType) {
+      cur = def.innerType;
       continue;
     }
     break;
@@ -57,14 +53,17 @@ function humanizeKey(key: string): string {
     .replace(/^./, (c) => c.toUpperCase());
 }
 
-function detectStringKind(type: ZodString): FieldKind {
-  // `_def.checks` is an array of refinement descriptors. Inspect to find
-  // the most specific kind we can render.
-  const checks = type._def.checks ?? [];
-  for (const check of checks) {
-    if (check.kind === 'email') return 'email';
-    if (check.kind === 'url') return 'url';
-    if (check.kind === 'datetime') return 'date';
+function detectStringKind(def: ZodInternalDef): FieldKind {
+  // Zod 4 records format-style checks under `check === 'string_format'`
+  // with the specific format on `def.format` (e.g. 'email', 'datetime').
+  for (const check of def.checks ?? []) {
+    const cdef = check?._zod?.def;
+    if (!cdef) continue;
+    if (cdef.check === 'string_format') {
+      if (cdef.format === 'email') return 'email';
+      if (cdef.format === 'url') return 'url';
+      if (cdef.format === 'datetime' || cdef.format === 'date') return 'date';
+    }
   }
   return 'string';
 }
@@ -79,36 +78,44 @@ function detectKind(inner: ZodTypeAny, override?: string): FieldKind {
     ];
     if ((valid as string[]).includes(override)) return override as FieldKind;
   }
-  if (inner instanceof ZodString) return detectStringKind(inner);
-  if (inner instanceof ZodNumber) {
-    return inner._def.checks?.some((c) => c.kind === 'int') ? 'integer' : 'number';
+  const def = defOf(inner);
+  switch (def.type) {
+    case 'string':
+      return detectStringKind(def);
+    case 'number': {
+      // `z.number().int()` lands in checks as { check: 'number_format', format: 'safeint' }.
+      const isInt = (def.checks ?? []).some(
+        (c) => c?._zod?.def?.check === 'number_format' && c?._zod?.def?.format === 'safeint',
+      );
+      return isInt ? 'integer' : 'number';
+    }
+    case 'boolean':
+      return 'boolean';
+    case 'date':
+      return 'date';
+    case 'enum':
+      return 'enum';
+    case 'array':
+      return 'array';
+    case 'object':
+      return 'object';
+    case 'unknown':
+      return 'unknown';
+    default:
+      return 'unknown';
   }
-  if (inner instanceof ZodBoolean) return 'boolean';
-  if (inner instanceof ZodDate) return 'date';
-  if (inner instanceof ZodEnum) return 'enum';
-  if (inner instanceof ZodNativeEnum) return 'enum';
-  if (inner instanceof ZodArray) return 'array';
-  if (inner instanceof ZodObjectClass) return 'object';
-  if (inner instanceof ZodUnknown) return 'unknown';
-  return 'unknown';
 }
 
 function deriveEnumValues(
   inner: ZodTypeAny,
 ): Array<{ value: string; label: string }> | undefined {
-  if (inner instanceof ZodEnum) {
-    const values = inner._def.values as readonly string[];
-    return values.map((v) => ({ value: v, label: v }));
-  }
-  if (inner instanceof ZodNativeEnum) {
-    const obj = inner._def.values as Record<string, string | number>;
-    // Native enums duplicate forward/reverse mappings for numeric values; we
-    // only want the string-keyed forward entries.
-    return Object.entries(obj)
-      .filter(([k]) => Number.isNaN(Number(k)))
-      .map(([, v]) => ({ value: String(v), label: String(v) }));
-  }
-  return undefined;
+  const def = defOf(inner);
+  if (def.type !== 'enum' || !def.entries) return undefined;
+  // `entries` is keyed by label → value (string enums use identical keys/values).
+  return Object.entries(def.entries).map(([k, v]) => ({
+    value: String(v),
+    label: k,
+  }));
 }
 
 /**
@@ -128,10 +135,8 @@ export function extractFieldsFromSchema<T extends ZodRawShape>(
     const { inner, optional, nullable } = unwrap(raw);
     // Description can live on either the wrapper or the inner type; check
     // the wrapper first since `.describe()` is usually chained last.
-    const desc =
-      parseZodDescription(raw).label !== undefined
-        ? parseZodDescription(raw)
-        : parseZodDescription(inner);
+    const wrapDesc = parseZodDescription(raw);
+    const desc = wrapDesc.label !== undefined ? wrapDesc : parseZodDescription(inner);
     const kind = detectKind(inner, desc.kind);
     out.push({
       key,

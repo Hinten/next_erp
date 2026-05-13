@@ -36,3 +36,39 @@ if (typeof window !== 'undefined' && !window.matchMedia) {
     }),
   });
 }
+
+// Mantine 9's Textarea autosize subscribes to `document.fonts.loadingdone`
+// to re-measure after font swaps. JSDOM doesn't expose the FontFaceSet API.
+if (typeof document !== 'undefined' && !(document as { fonts?: unknown }).fonts) {
+  Object.defineProperty(document, 'fonts', {
+    writable: true,
+    value: {
+      ready: Promise.resolve(),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    },
+  });
+}
+
+// Mantine 9's Textarea autosize calls `window.visualViewport.addEventListener`
+// unconditionally on mount; JSDOM doesn't define it. Shim a no-op listener.
+if (typeof window !== 'undefined' && !window.visualViewport) {
+  Object.defineProperty(window, 'visualViewport', {
+    writable: true,
+    value: {
+      width: 1024,
+      height: 768,
+      offsetLeft: 0,
+      offsetTop: 0,
+      pageLeft: 0,
+      pageTop: 0,
+      scale: 1,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+      onresize: null,
+      onscroll: null,
+    },
+  });
+}

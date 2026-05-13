@@ -19,7 +19,8 @@ export interface ParsedDescription {
  * still attach human notes without worrying about quoting).
  */
 export function parseZodDescription(zodType: ZodTypeAny): ParsedDescription {
-  const raw = zodType._def.description;
+  // Zod 4 exposes `description` as a public getter on the schema instance.
+  const raw = (zodType as { description?: string }).description;
   if (typeof raw !== 'string' || raw.length === 0) return {};
   // Convention: anything starting with `{` is JSON, otherwise plain label.
   if (raw.trimStart().startsWith('{')) {

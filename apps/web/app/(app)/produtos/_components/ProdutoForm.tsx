@@ -12,7 +12,10 @@ import {
   Stack,
   TextInput,
 } from '@mantine/core';
+import type { z } from 'zod';
 import { type Produto, produtoSchema } from '@delfrance/schemas';
+
+type ProdutoFormInput = z.input<typeof produtoSchema>;
 
 export interface ProdutoFormProps {
   defaultValues?: Produto;
@@ -20,7 +23,7 @@ export interface ProdutoFormProps {
   onSubmit: (values: Produto) => Promise<void>;
 }
 
-const DEFAULTS: Produto = {
+const DEFAULTS: ProdutoFormInput = {
   nome: '',
   ehKit: false,
   ehKitVirtual: false,
@@ -38,7 +41,7 @@ export function ProdutoForm({
 }: ProdutoFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const form = useForm<Produto>({
+  const form = useForm<ProdutoFormInput, unknown, Produto>({
     resolver: zodResolver(produtoSchema),
     defaultValues: defaultValues ?? DEFAULTS,
     mode: 'onBlur',

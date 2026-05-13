@@ -61,14 +61,16 @@ describe('extractFieldsFromSchema', () => {
     ]);
   });
 
-  it('detects native enums', () => {
-    enum Color { Red = 'red', Blue = 'blue' }
-    const schema = z.object({ c: z.nativeEnum(Color) });
+  it('detects object-based enums (Zod 4 unified z.enum)', () => {
+    // In Zod 4, `z.nativeEnum` is removed — `z.enum` accepts either an
+    // array of strings or an object mapping label → value, the latter
+    // being the native-enum-style flow.
+    const schema = z.object({ c: z.enum({ Red: 'red', Blue: 'blue' }) });
     const f = extractFieldsFromSchema(schema)[0]!;
     expect(f.kind).toBe('enum');
     expect(f.enumValues).toEqual([
-      { value: 'red', label: 'red' },
-      { value: 'blue', label: 'blue' },
+      { value: 'red', label: 'Red' },
+      { value: 'blue', label: 'Blue' },
     ]);
   });
 
