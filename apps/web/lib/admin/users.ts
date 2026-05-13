@@ -4,11 +4,16 @@
  * cascade-permission guard: the caller cannot grant bits they don't hold.
  *
  * Base URL: `NEXT_PUBLIC_INTEGRATIONS_URL` (e.g. `http://localhost:3001` in dev,
- * `https://api-<env>.web.app` in deploy). Falls back to relative paths only
- * if `apps/web` ever exposes the same routes — currently it does not.
+ * `https://api-<env>.web.app` in deploy). In dev, falls back to
+ * `http://localhost:3001` so `pnpm dev` at the repo root "just works" without
+ * extra env config (both apps come up in parallel — web :3000, integrations
+ * :3001). Production builds without the env set will hit same-origin and 404
+ * — that's a misconfiguration, not a runtime fallback.
  */
 
-const BASE = process.env.NEXT_PUBLIC_INTEGRATIONS_URL ?? '';
+const BASE =
+  process.env.NEXT_PUBLIC_INTEGRATIONS_URL ??
+  (process.env.NODE_ENV === 'development' ? 'http://localhost:3001' : '');
 
 export interface CreateUserPayload {
   email: string;
