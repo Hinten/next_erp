@@ -92,10 +92,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # Cache the downloaded chromium binary keyed on the lockfile hash —
-      # i.e. invalidate the moment @playwright/test moves. System apt deps
-      # aren't part of this cache (they live outside HOME and need sudo),
-      # but they're already on the GitHub-hosted image, so `install-deps`
-      # runs fast on a cache hit.
+      # the lockfile pins the exact @playwright/test version, so the key
+      # naturally invalidates when we bump Playwright. System apt deps
+      # aren't part of this cache (they need sudo), but they're already
+      # on the GitHub-hosted image, so `install-deps` is fast on a hit.
       - name: Cache Playwright browsers
         id: playwright-cache
         uses: actions/cache@v4
