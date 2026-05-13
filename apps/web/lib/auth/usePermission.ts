@@ -10,7 +10,10 @@ export function usePermission(requiredBit: bigint): { allowed: boolean; loading:
   try {
     const granted = BigInt(claims.permissions);
     return { allowed: (granted & requiredBit) === requiredBit, loading: false };
-  } catch {
-    return { allowed: false, loading: false };
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      return { allowed: false, loading: false };
+    }
+    throw err;
   }
 }

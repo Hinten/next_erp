@@ -14,6 +14,7 @@ import {
   Textarea,
   Tooltip,
 } from '@mantine/core';
+import { FirebaseError } from 'firebase/app';
 import { addDoc } from 'firebase/firestore';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
@@ -117,14 +118,18 @@ export function MensagemThread({ conversaId }: { conversaId: string }) {
       // Server snapshot will include this mid on the next tick; the
       // memoized merge above drops the optimistic copy automatically.
     } catch (err) {
-      setSendError(err instanceof Error ? err.message : 'Falha ao enviar.');
-      setOptimistic((prev) =>
-        prev.map((m) =>
-          m._localId === localId
-            ? { ...m, estadoEnvio: ESTADO_ENVIO.erro }
-            : m,
-        ),
-      );
+      if (err instanceof FirebaseError) {
+        setSendError(err.message);
+        setOptimistic((prev) =>
+          prev.map((m) =>
+            m._localId === localId
+              ? { ...m, estadoEnvio: ESTADO_ENVIO.erro }
+              : m,
+          ),
+        );
+      } else {
+        throw err;
+      }
     } finally {
       setSending(false);
     }

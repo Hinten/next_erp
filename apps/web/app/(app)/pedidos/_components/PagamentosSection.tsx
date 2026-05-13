@@ -14,6 +14,7 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
+import { FirebaseError } from 'firebase/app';
 import { setDoc } from 'firebase/firestore';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
@@ -145,7 +146,11 @@ function PagamentoRow({
     try {
       await gateway.refund(pagamento.id);
     } catch (err) {
-      setRefundError(err instanceof Error ? err.message : 'Falha no estorno.');
+      if (err instanceof FirebaseError) {
+        setRefundError(err.message);
+      } else {
+        throw err;
+      }
     } finally {
       setRefunding(false);
     }

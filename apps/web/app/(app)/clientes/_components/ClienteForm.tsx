@@ -2,6 +2,7 @@
 
 import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { FirebaseError } from 'firebase/app';
 import {
   Alert,
   Button,
@@ -69,7 +70,11 @@ export function ClienteForm({
     try {
       await onSubmit(values);
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : 'Falha ao salvar.');
+      if (err instanceof FirebaseError) {
+        setSubmitError(err.message);
+      } else {
+        throw err;
+      }
     }
   }
 

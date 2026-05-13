@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { FirebaseError } from 'firebase/app';
 import { setDoc } from 'firebase/firestore';
 import {
   Alert,
@@ -95,7 +96,11 @@ export default function EditarPedidoPage() {
       );
       router.replace(`/pedidos/${params.id}`);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Falha ao salvar.');
+      if (err instanceof FirebaseError) {
+        setSaveError(err.message);
+      } else {
+        throw err;
+      }
     } finally {
       setSaving(false);
     }
