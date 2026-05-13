@@ -1,6 +1,11 @@
 export type { CollectionMetadata, DomainSchema } from './types';
 
 export {
+  auditEntrySchema,
+  type AuditEntry,
+} from './audit';
+
+export {
   cliente,
   clienteSchema,
   clienteMeta,

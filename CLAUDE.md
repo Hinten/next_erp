@@ -26,7 +26,9 @@ apps/
   docs/          Astro Starlight docs site
   example/       OSS demo
 packages/
-  ui/            Mantine theme + primitives
+  ui/            Mantine theme + primitives, plus generic TableView /
+                 ObjectView built on the Zod schemas (depends on firebase,
+                 zod, react-hook-form, @mantine/dates, @tabler/icons-react)
   schemas/       Zod schemas + collection metadata (single source of truth)
   data/          defineCollection<T>, cascade runtime
   auth/          Permission helpers, BigInt-encoded claims
