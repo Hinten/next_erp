@@ -43,7 +43,7 @@ test.describe('Clientes CRUD', () => {
     await page.goto('/clientes/novo');
     await fillField(page, 'Nome', nome);
     await fillField(page, 'E-mail', email);
-    await fillField(page, 'Cpf cnpj', '12345678901'); // 11 digits → live CPF preview kicks in
+    await fillField(page, 'CPF / CNPJ', '12345678901'); // 11 digits → live CPF preview kicks in
     await clickSave(page, 'Criar');
     await page.waitForURL(/\/clientes\/[^/]+$/, { timeout: 10_000 });
     await expect(page.getByRole('heading', { name: nome })).toBeVisible();
@@ -62,12 +62,12 @@ test.describe('Clientes CRUD', () => {
 
     // --- Save and continue: stays on the form, dirty cleared, green toast
     await clickSaveAndContinue(page);
-    await expectToast(page, 'green');
+    await expectToast(page, /Salvo/);
     await expect(page).toHaveURL(/\/clientes\/[^/]+\/editar$/);
 
     // --- Pristine save → yellow "Nenhuma alteração" toast
     await clickSave(page, 'Salvar alterações');
-    await expectToast(page, 'yellow');
+    await expectToast(page, /Nenhuma altera/);
 
     // --- Final save back to detail
     await fillField(page, 'Telefone', '5511999998888');
@@ -110,7 +110,7 @@ test.describe('Clientes CRUD', () => {
     const nome = uniqueName('cliente-cpf', testInfo.workerIndex);
     await page.goto('/clientes/novo');
     await fillField(page, 'Nome', nome);
-    await fillField(page, 'Cpf cnpj', '12345678901');
+    await fillField(page, 'CPF / CNPJ', '12345678901');
     // The renderInput override sets `description={formatCPF(...)}` once the
     // value is exactly 11 chars long. Mantine renders the description right
     // under the input.

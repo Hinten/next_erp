@@ -63,12 +63,12 @@ test.describe('Categorias CRUD', () => {
 
     // --- Save and continue: stays on the form, dirty cleared, green toast
     await clickSaveAndContinue(page);
-    await expectToast(page, 'green');
+    await expectToast(page, /Salvo/);
     await expect(page).toHaveURL(/\/categorias\/[^/]+\/editar$/);
 
     // --- Pristine save: no changes → yellow "Nenhuma alteração" toast
     await clickSave(page, 'Salvar alterações');
-    await expectToast(page, 'yellow');
+    await expectToast(page, /Nenhuma altera/);
 
     // --- Real save on a fresh edit, then back to detail
     await fillField(page, 'Nome completo', `${nome} ainda completo`);

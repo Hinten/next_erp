@@ -26,42 +26,67 @@ export const TIPO_CLIENTE_LABELS: Record<TipoCliente, string> = {
  * Cliente schema. Fields mirror `packages/clientes/lib/src/models.dart`
  * shape so the Flutter app and this app share the same Firestore documents.
  *
+ * `.describe()` strings are the source of truth for UI labels — consumed
+ * by `extractFieldsFromSchema()` in `@delfrance/ui`. Plain strings become
+ * the label; JSON objects encode richer hints (kind overrides, reference
+ * collection ids, etc.).
+ *
  * Vector embeddings (`nome_embedding`, `telefone_embedding`) are written by
  * server-side code (Functions). They aren't part of the form schema; the
  * runtime treats them as opaque pass-through.
  */
 export const clienteSchema = z.object({
-  tipo: tipoClienteSchema.nullable().optional(),
-  nome: z.string().max(255).nullable().optional(),
+  tipo: tipoClienteSchema.nullable().optional().describe('Tipo'),
+  nome: z.string().max(255).nullable().optional().describe('Nome'),
   cpf_cnpj: z
     .string()
     .max(18)
     .regex(/^\d*$/, 'apenas números')
     .nullable()
-    .optional(),
-  idEstrangeiro: z.string().max(20).nullable().optional(),
-  ie: z.string().max(16).nullable().optional(),
+    .optional()
+    .describe('CPF / CNPJ'),
+  idEstrangeiro: z
+    .string()
+    .max(20)
+    .nullable()
+    .optional()
+    .describe('ID estrangeiro'),
+  ie: z.string().max(16).nullable().optional().describe('Inscrição estadual'),
   imun: z
     .string()
     .max(15)
     .regex(/^\d*$/, 'apenas números')
     .nullable()
-    .optional(),
+    .optional()
+    .describe('Inscrição municipal'),
   isUF: z
     .string()
     .min(8)
     .max(9)
     .regex(/^\d+$/, 'apenas números')
     .nullable()
-    .optional(),
-  email: z.string().max(255).email().nullable().optional(),
+    .optional()
+    .describe('IS UF'),
+  email: z
+    .string()
+    .max(255)
+    .email()
+    .nullable()
+    .optional()
+    .describe('E-mail'),
   telefone: z
     .string()
     .max(16)
     .regex(/^\d*$/, 'apenas números')
     .nullable()
-    .optional(),
-  observacoesInternas: z.string().max(255).nullable().optional(),
+    .optional()
+    .describe('Telefone'),
+  observacoesInternas: z
+    .string()
+    .max(255)
+    .nullable()
+    .optional()
+    .describe('Observações internas'),
   // ISO 8601; Firestore stores these as Timestamps, the data layer converts.
   timestamp: z.string().datetime().nullable().optional(),
   // Embeddings are server-managed; treat as opaque on the client.

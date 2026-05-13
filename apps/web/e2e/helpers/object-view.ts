@@ -44,15 +44,22 @@ export async function clearNullableField(
 }
 
 /**
- * Assert that a Mantine notification with the given color was shown.
- * Filters by data-attribute since `<Notification color="green">` renders
- * `data-mantine-color="green"` on the host element.
+ * Assert that a Mantine notification matching `matcher` (string substring
+ * or RegExp) was shown.
+ *
+ * Mantine 9 renders notifications as `role="alert"` with the message in
+ * children — there is no public `data-color` attribute, so we assert by
+ * accessible role + text rather than by color class. Callers pass a string
+ * fragment that uniquely identifies the toast they expect.
  */
 export async function expectToast(
   page: Page,
-  color: 'green' | 'yellow' | 'red',
+  matcher: string | RegExp,
 ): Promise<void> {
-  const toast = page.locator(`.mantine-Notification-root[data-color="${color}"]`).first();
+  const toast = page
+    .getByRole('alert')
+    .filter({ hasText: matcher })
+    .first();
   await expect(toast).toBeVisible({ timeout: 5_000 });
 }
 
