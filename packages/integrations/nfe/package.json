@@ -8,7 +8,6 @@
   "scripts": {
     "lint": "echo 'no lint configured for this package yet'",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
