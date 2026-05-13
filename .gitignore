@@ -35,3 +35,4 @@ devlogs/
 
 *next-env.d.ts
 *env.d.ts
+.ignore/

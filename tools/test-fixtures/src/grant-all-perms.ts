@@ -2,9 +2,10 @@
  * Grants all permissions to a Firebase user by email.
  *
  * Usage:
- *   FIREBASE_PROJECT_ID=<your-project-id> \
  *   FIREBASE_SERVICE_ACCOUNT='<service-account-json>' \
  *   pnpm grant-all-perms <email>
+ *
+ *   pnpm grant-all-perms <email> --service-account ./service-account.json
  *
  * After running, the user must sign out and sign back in for the new claim
  * to take effect (Firebase ID tokens are cached for ~1 hour).
@@ -22,14 +23,34 @@ const ALL_PERMS =
   (3n << 40n) | // configuracoes: read | write (no delete)
   (7n << 48n);  // chat
 
+function parseArgs(argv: string[]): { email?: string; serviceAccountPath?: string } {
+  const [email, ...rest] = argv;
+  let serviceAccountPath: string | undefined;
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg === '--service-account' || arg === '-s') {
+      serviceAccountPath = rest[index + 1];
+      index += 1;
+    }
+  }
+
+  return { email, serviceAccountPath };
+}
+
 async function main(): Promise<void> {
-  const email = process.argv[2];
+  const { email, serviceAccountPath } = parseArgs(process.argv.slice(2));
   if (!email) {
-    console.error('Usage: grant-all-perms <email>');
+    console.error('Usage: grant-all-perms <email> [--service-account <path>]');
     process.exit(1);
   }
 
-  getApp();
+  if ((process.argv.includes('--service-account') || process.argv.includes('-s')) && !serviceAccountPath) {
+    console.error('Missing value for --service-account');
+    process.exit(1);
+  }
+
+  getApp(serviceAccountPath);
   const auth = getAuth();
 
   const user = await auth.getUserByEmail(email);

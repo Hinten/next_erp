@@ -1,20 +1,56 @@
-import { type App, cert, getApps, initializeApp } from 'firebase-admin/app';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { type App, type ServiceAccount, cert, getApps, initializeApp } from 'firebase-admin/app';
 import { type Firestore, getFirestore } from 'firebase-admin/firestore';
 
 let app: App | undefined;
 
-export function getApp(): App {
+type RawServiceAccount = ServiceAccount & {
+  project_id?: string;
+  private_key?: string;
+  client_email?: string;
+};
+
+function getServiceAccount(serviceAccountPath?: string): string {
+  const explicitPath = serviceAccountPath?.trim();
+  if (explicitPath) {
+    return readFileSync(resolve(explicitPath), 'utf8');
+  }
+
+  const envPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH?.trim();
+  if (envPath) {
+    return readFileSync(resolve(envPath), 'utf8');
+  }
+
+  const envJson = process.env.FIREBASE_SERVICE_ACCOUNT?.trim();
+  if (envJson) {
+    return envJson;
+  }
+
+  throw new Error(
+    'Provide FIREBASE_SERVICE_ACCOUNT (JSON), FIREBASE_SERVICE_ACCOUNT_PATH, or a service account path argument.',
+  );
+}
+
+export function getApp(serviceAccountPath?: string): App {
   if (app) return app;
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-  const sa = process.env.FIREBASE_SERVICE_ACCOUNT;
-  if (!projectId) throw new Error('FIREBASE_PROJECT_ID is required.');
-  if (!sa) throw new Error('FIREBASE_SERVICE_ACCOUNT (JSON) is required for fixtures.');
-  app = getApps()[0] ?? initializeApp({ credential: cert(JSON.parse(sa)), projectId });
+  const sa = getServiceAccount(serviceAccountPath);
+  const rawCredentials = JSON.parse(sa) as RawServiceAccount;
+  const credentials: ServiceAccount = {
+    projectId: rawCredentials.projectId ?? rawCredentials.project_id,
+    privateKey: rawCredentials.privateKey ?? rawCredentials.private_key,
+    clientEmail: rawCredentials.clientEmail ?? rawCredentials.client_email,
+  };
+  const projectId = process.env.FIREBASE_PROJECT_ID?.trim() || credentials.projectId;
+  if (!projectId) {
+    throw new Error('Project ID not found. Set FIREBASE_PROJECT_ID or provide a service account with project_id.');
+  }
+  app = getApps()[0] ?? initializeApp({ credential: cert(credentials), projectId });
   return app;
 }
 
-export function db(): Firestore {
-  return getFirestore(getApp());
+export function db(serviceAccountPath?: string): Firestore {
+  return getFirestore(getApp(serviceAccountPath));
 }
 
 /**
