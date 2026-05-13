@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { AppShell, Burger, Center, Group, Loader, Title } from '@mantine/core';
+import { AppShell, Burger, Center, Group, Loader, ScrollArea, Title } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { useRequireAuth } from '@/lib/auth';
 import { SidebarNav } from './_components/SidebarNav';
@@ -37,7 +37,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
         </Group>
       </AppShell.Header>
       <AppShell.Navbar p="xs">
-        <SidebarNav />
+        <AppShell.Section grow component={ScrollArea}>
+          <SidebarNav />
+        </AppShell.Section>
       </AppShell.Navbar>
       <AppShell.Main>{children}</AppShell.Main>
     </AppShell>
