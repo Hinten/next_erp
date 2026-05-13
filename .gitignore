@@ -28,3 +28,5 @@ firestore-debug.log
 ui-debug.log
 
 .old/
+.claude/settings.local.json
+devlogs/
