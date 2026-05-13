@@ -54,7 +54,6 @@ export default async function globalSetup(_config: FullConfig) {
   if (!serviceAccount) missing.push('FIREBASE_SERVICE_ACCOUNT(_PATH)');
 
   if (missing.length > 0) {
-    // eslint-disable-next-line no-console
     console.warn(
       `\n[globalSetup] skipping auth setup — missing env: ${missing.join(', ')}.\n` +
         `              Auth-requiring specs (all-pages, CRUD) will skip themselves.\n` +
@@ -111,8 +110,11 @@ async function waitForServer(baseURL: string, timeoutMs = 60_000) {
     try {
       const res = await ctx.get(baseURL, { timeout: 5_000 });
       if (res.ok() || res.status() < 500) return;
-    } catch {
-      // server not yet listening — keep polling
+    } catch (err) {
+      // Network-layer failures (ECONNREFUSED, timeout) are expected while
+      // the dev server is still booting — keep polling. Anything that is
+      // not an Error subclass shouldn't be ignored: rethrow it.
+      if (!(err instanceof Error)) throw err;
     }
     await new Promise((r) => setTimeout(r, 1_000));
   }
