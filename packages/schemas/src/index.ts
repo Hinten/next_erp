@@ -111,3 +111,20 @@ export {
   type Integracao,
   type IntegracaoTipo,
 } from './integracao';
+
+export {
+  cargo,
+  cargoSchema,
+  cargoMeta,
+  decodePermissoes,
+  encodePermissoes,
+  type Cargo,
+} from './cargo';
+
+export {
+  usuario,
+  usuarioSchema,
+  usuarioMeta,
+  aggregatePermissoes,
+  type Usuario,
+} from './usuario';
