@@ -12,11 +12,11 @@
   },
   "dependencies": {
     "@delfrance/core": "workspace:*",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",
-    "typescript": "^5.6.3",
-    "vitest": "^2.1.4"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
   }
 }

@@ -11,18 +11,18 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "peerDependencies": {
-    "@mantine/core": "^7.13.4",
-    "@mantine/hooks": "^7.13.4",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "@mantine/core": "^9.2.0",
+    "@mantine/hooks": "^9.2.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",
-    "@mantine/core": "^7.13.4",
-    "@mantine/hooks": "^7.13.4",
-    "@types/react": "^19.0.0",
-    "react": "^19.0.0",
-    "typescript": "^5.6.3",
-    "vitest": "^2.1.4"
+    "@mantine/core": "^9.2.0",
+    "@mantine/hooks": "^9.2.0",
+    "@types/react": "^19.2.0",
+    "react": "^19.2.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
   }
 }

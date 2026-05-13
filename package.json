@@ -4,10 +4,10 @@
   "private": true,
   "description": "Open-source ERP — Next.js rewrite of the Delfrance Flutter monorepo.",
   "license": "Apache-2.0",
-  "packageManager": "pnpm@9.12.0",
+  "packageManager": "pnpm@10.33.4",
   "engines": {
     "node": ">=20.10.0",
-    "pnpm": ">=9.0.0"
+    "pnpm": ">=10.0.0"
   },
   "scripts": {
     "build": "turbo run build",
@@ -19,9 +19,9 @@
     "clean": "turbo run clean && rm -rf node_modules .turbo"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.27.9",
-    "turbo": "^2.3.0",
-    "typescript": "^5.6.3",
-    "vitest": "^2.1.4"
+    "@changesets/cli": "^2.31.0",
+    "turbo": "^2.9.12",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
   }
 }

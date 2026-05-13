@@ -11,8 +11,8 @@ const config: NextConfig = {
     '@delfrance/ui',
   ],
   experimental: {
-    // Mantine v7 + Next 15 requires this for proper RSC interop on the
-    // bits we do render server-side (root layout shell only).
+    // Mantine v9 + Next 16: tree-shake @mantine/* on the bits we do render
+    // server-side (root layout shell only).
     optimizePackageImports: ['@mantine/core', '@mantine/hooks', '@mantine/dates'],
   },
 };

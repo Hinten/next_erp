@@ -1,6 +1,6 @@
 ---
 title: 0009 — Firebase App Hosting validation
-description: Confirm Firebase App Hosting supports our Next.js 15 usage before committing to it for apps/web and apps/integrations.
+description: Confirm Firebase App Hosting supports our Next.js 16 usage before committing to it for apps/web and apps/integrations.
 ---
 
 ## Context
@@ -27,7 +27,7 @@ If App Hosting fails any blocker (e.g. doesn't support route handlers in API-onl
 
 ## Outcome
 
-*To be filled by spike: deploy a minimal Next.js 15 app exercising each item above against the staging Firebase project and confirm.*
+*To be filled by spike: deploy a minimal Next.js 16 app exercising each item above against the staging Firebase project and confirm.*
 
 ## Status
 
