@@ -3,4 +3,5 @@ export { useAuth } from './useAuth';
 export { useRequireAuth } from './useRequireAuth';
 export { useTenant, type TenantClaims } from './useTenant';
 export { usePermission } from './usePermission';
+export { useIsSuperUser } from './useIsSuperUser';
 export { RequirePerm, type RequirePermProps } from './RequirePerm';

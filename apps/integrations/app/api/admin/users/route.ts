@@ -4,6 +4,7 @@ import { PERM, hasPerm } from '@delfrance/auth';
 import {
   aggregatePermissoes,
   type Cargo,
+  isSuperUserBits,
   type Usuario,
 } from '@delfrance/schemas';
 import { getAdminAuth, getAdminFirestore } from '@/lib/firebase/admin';
@@ -18,7 +19,6 @@ const createUserSchema = z.object({
   cargos: z.array(z.string()).default([]),
   colaborador: z.boolean().default(false),
   isSuperUser: z.boolean().default(false),
-  grupoEconomico: z.string().min(1),
 });
 
 interface ErrorBody {
@@ -54,12 +54,7 @@ function mapFirebaseError(e: unknown): { status: number; body: ErrorBody } {
   }
 }
 
-/**
- * Verifies the caller's Firebase ID token, then asserts the caller can write
- * to `configuracoes` AND belongs to the target `grupoEconomico`. Returns the
- * decoded token on success; sends an error response on failure.
- */
-async function verifyCaller(req: Request, grupoEconomico: string) {
+async function verifyCaller(req: Request) {
   const authHeader = req.headers.get('authorization');
   if (!authHeader?.startsWith('Bearer ')) {
     return { error: err(401, { error: 'Authorization Bearer token ausente.' }) };
@@ -67,14 +62,6 @@ async function verifyCaller(req: Request, grupoEconomico: string) {
   const idToken = authHeader.slice('Bearer '.length);
   try {
     const decoded = await getAdminAuth().verifyIdToken(idToken);
-    const callerGE = decoded.grupoEconomico as string | undefined;
-    if (callerGE !== grupoEconomico) {
-      return {
-        error: err(403, {
-          error: 'Grupo econômico do chamador não corresponde ao alvo.',
-        }),
-      };
-    }
     const perms = decoded.permissions as string | undefined;
     if (!hasPerm(perms, PERM.configuracoes.write)) {
       return {
@@ -84,6 +71,14 @@ async function verifyCaller(req: Request, grupoEconomico: string) {
     return { decoded };
   } catch {
     return { error: err(401, { error: 'Token inválido ou expirado.' }) };
+  }
+}
+
+function decodeCallerBits(perms: string | undefined): bigint {
+  try {
+    return BigInt(perms ?? '0');
+  } catch {
+    return 0n;
   }
 }
 
@@ -105,22 +100,21 @@ export async function POST(req: Request) {
   }
   const body = parsed.data;
 
-  const auth = await verifyCaller(req, body.grupoEconomico);
+  const auth = await verifyCaller(req);
   if (auth.error) return auth.error;
+  const { decoded } = auth;
+  const callerBits = decodeCallerBits(
+    decoded.permissions as string | undefined,
+  );
 
   const db = getAdminFirestore();
 
-  // Load referenced cargos to aggregate the permissions bitmask. Drop any
-  // cargo IDs that don't belong to this tenant — silent prune is intentional
-  // so a stale UI cache doesn't get a confusing rejection.
   const cargosById = new Map<string, Cargo>();
   await Promise.all(
     body.cargos.map(async (cid) => {
       const snap = await db.collection('cargos').doc(cid).get();
       const data = snap.data();
-      if (data && data.grupoEconomico === body.grupoEconomico) {
-        cargosById.set(cid, data as Cargo);
-      }
+      if (data) cargosById.set(cid, data as Cargo);
     }),
   );
 
@@ -129,8 +123,21 @@ export async function POST(req: Request) {
     cargosById,
   );
 
-  // Create the Firebase Auth user FIRST — if this fails, no Firestore garbage
-  // is left behind. Claims + doc write happen after, in order.
+  // Cascade-permission guard: prevent privilege escalation. A caller can only
+  // grant bits that the caller already holds. Form-side guards are UX; this
+  // is the security boundary (until Firestore rules cover it too).
+  if ((bits & ~callerBits) !== 0n) {
+    return err(403, {
+      error:
+        'Você não pode atribuir cargos com permissões que ultrapassem as suas.',
+    });
+  }
+  if (body.isSuperUser && !isSuperUserBits(callerBits)) {
+    return err(403, {
+      error: 'Apenas superusuários podem criar superusuários.',
+    });
+  }
+
   let uid: string;
   try {
     const created = await getAdminAuth().createUser({
@@ -145,7 +152,6 @@ export async function POST(req: Request) {
   }
 
   await getAdminAuth().setCustomUserClaims(uid, {
-    grupoEconomico: body.grupoEconomico,
     permissions: bits.toString(),
   });
 
@@ -156,7 +162,6 @@ export async function POST(req: Request) {
     colaborador: body.colaborador,
     ativo: true,
     isSuperUser: body.isSuperUser,
-    grupoEconomico: body.grupoEconomico,
     jaFoiColaborador: body.colaborador,
     jaFoiSuperUser: body.isSuperUser,
     ultimoAcesso: null,

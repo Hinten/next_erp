@@ -1,17 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { aggregatePermissoes, usuarioMeta, usuarioSchema } from './usuario';
+import {
+  aggregatePermissoes,
+  isSuperUserBits,
+  SUPERUSER_MASK,
+  usuarioMeta,
+  usuarioSchema,
+} from './usuario';
 
 describe('usuarioSchema', () => {
   it('parses a minimal user and applies defaults', () => {
     const out = usuarioSchema.parse({
       nome: 'Ana',
       email: 'ana@example.com',
-      grupoEconomico: 'ge_1',
     });
     expect(out).toMatchObject({
       nome: 'Ana',
       email: 'ana@example.com',
-      grupoEconomico: 'ge_1',
       cargos: [],
       colaborador: false,
       ativo: true,
@@ -26,7 +30,6 @@ describe('usuarioSchema', () => {
       usuarioSchema.safeParse({
         nome: 'Ana',
         email: 'not-an-email',
-        grupoEconomico: 'ge_1',
       }).success,
     ).toBe(false);
   });
@@ -36,9 +39,24 @@ describe('usuarioSchema', () => {
       usuarioSchema.safeParse({
         nome: '',
         email: 'ana@example.com',
-        grupoEconomico: 'ge_1',
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('isSuperUserBits', () => {
+  it('is true for the SUPERUSER_MASK sentinel', () => {
+    expect(isSuperUserBits(SUPERUSER_MASK)).toBe(true);
+  });
+
+  it('is false for an empty claim', () => {
+    expect(isSuperUserBits(0n)).toBe(false);
+  });
+
+  it('is false for any defined PERM bit alone', () => {
+    // Highest defined domain currently is `chat` at bit 50.
+    expect(isSuperUserBits(1n << 50n)).toBe(false);
+    expect(isSuperUserBits((1n << 51n) - 1n)).toBe(false);
   });
 });
 

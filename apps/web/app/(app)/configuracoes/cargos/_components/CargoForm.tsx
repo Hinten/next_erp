@@ -46,7 +46,7 @@ export function CargoForm({
 
   const form = useForm<CargoFormInput, unknown, Cargo>({
     resolver: zodResolver(cargoSchema),
-    defaultValues: defaultValues ?? { nome: '', grupoEconomico: '', permissoes: '0' },
+    defaultValues: defaultValues ?? { nome: '', permissoes: '0' },
     mode: 'onBlur',
   });
 

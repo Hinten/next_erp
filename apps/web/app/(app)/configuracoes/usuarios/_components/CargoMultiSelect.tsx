@@ -2,11 +2,7 @@
 
 import { useMemo } from 'react';
 import { MultiSelect, Skeleton, Stack, Text } from '@mantine/core';
-import {
-  buildQuery,
-  orderByField,
-  whereEqual,
-} from '@delfrance/data';
+import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { decodePermissoes } from '@delfrance/schemas';
 import { useTenant } from '@/lib/auth';
@@ -44,13 +40,9 @@ export function CargoMultiSelect({
   }, [claims?.permissions]);
 
   const q = useMemo(() => {
-    if (!claims?.grupoEconomico) return null;
     const base = cargoCollection.ref(getFirebaseFirestore(), {});
-    return buildQuery(base, [
-      whereEqual('grupoEconomico', claims.grupoEconomico),
-      orderByField('nome'),
-    ]);
-  }, [claims?.grupoEconomico]);
+    return buildQuery(base, [orderByField('nome')]);
+  }, []);
 
   const { data, loading } = useSnapshot(q);
 

@@ -17,7 +17,6 @@ export const cargoSchema = z.object({
   nome: z.string().min(1).max(255),
   descricao: z.string().max(500).nullable().optional(),
   permissoes: z.string().regex(/^\d+$/, 'apenas dígitos').default('0'),
-  grupoEconomico: z.string().min(1),
   timestamp: z.string().datetime().nullable().optional(),
 });
 

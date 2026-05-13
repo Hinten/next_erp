@@ -15,7 +15,7 @@ import {
 } from '@mantine/core';
 import type { Usuario } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
-import { useAuth, useTenant } from '@/lib/auth';
+import { useAuth, useIsSuperUser } from '@/lib/auth';
 import { UsuarioForm } from '../../_components/UsuarioForm';
 import { usuarioCollection } from '@/lib/data/usuarioCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -25,7 +25,7 @@ export default function EditarUsuarioPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const { user } = useAuth();
-  const { claims } = useTenant();
+  const callerIsSuperUser = useIsSuperUser();
   const [claimsWarning, setClaimsWarning] = useState<string | null>(null);
 
   const docRef = useMemo(
@@ -33,21 +33,6 @@ export default function EditarUsuarioPage() {
     [params.id],
   );
   const { data, loading, error } = useDocSnapshot(docRef);
-
-  const callerIsSuperUser = useMemo(() => {
-    // Heuristic: claims with the full bitmask set are a superuser. We don't
-    // have a dedicated SU bit yet (deliberate — see plan), so any caller with
-    // every defined PERM bit is treated as one.
-    if (!claims?.permissions) return false;
-    try {
-      const bits = BigInt(claims.permissions);
-      // Cheap proxy: anyone whose claim exceeds 2^60 is effectively SU since
-      // the SUPERUSER_MASK in `aggregatePermissoes` sets bits up to 2^64-1.
-      return bits >= 1n << 60n;
-    } catch {
-      return false;
-    }
-  }, [claims?.permissions]);
 
   async function handleSubmit(values: Usuario) {
     await setDoc(docRef, values, { merge: true });

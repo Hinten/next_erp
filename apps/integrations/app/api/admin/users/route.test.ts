@@ -53,12 +53,21 @@ const VALID_BODY = {
   cargos: ['admin'],
   colaborador: true,
   isSuperUser: false,
-  grupoEconomico: 'ge_1',
 };
 
+// Caller holds configuracoes.read|write AND cliente.read|write — enough to
+// grant the cargo used in the happy-path test (which grants cliente.read|write).
 const CALLER_CLAIM = {
-  grupoEconomico: 'ge_1',
-  permissions: ((1n << 41n) | (1n << 40n)).toString(),
+  permissions: (
+    (1n << 41n) |
+    (1n << 40n) |
+    (1n << 1n) |
+    (1n << 0n)
+  ).toString(),
+};
+
+const SU_CLAIM = {
+  permissions: ((1n << 64n) - 1n).toString(),
 };
 
 beforeEach(() => {
@@ -85,22 +94,61 @@ describe('POST /api/admin/users', () => {
     expect(res.status).toBe(400);
   });
 
-  it('rejects callers whose grupoEconomico mismatches', async () => {
+  it('rejects callers without configuracoes.write', async () => {
     mocks.verifyIdToken.mockResolvedValue({
-      ...CALLER_CLAIM,
-      grupoEconomico: 'ge_2',
+      permissions: (1n << 40n).toString(), // only read
     });
     const res = await POST(req(VALID_BODY, { authorization: 'Bearer t' }));
     expect(res.status).toBe(403);
   });
 
-  it('rejects callers without configuracoes.write', async () => {
+  it('rejects callers trying to grant cargo bits beyond their own', async () => {
     mocks.verifyIdToken.mockResolvedValue({
-      grupoEconomico: 'ge_1',
-      permissions: (1n << 40n).toString(), // only read
+      // Caller has configuracoes.read|write only — no cliente bits.
+      permissions: ((1n << 41n) | (1n << 40n)).toString(),
+    });
+    mocks.cargoGet.mockResolvedValue({
+      data: () => ({
+        nome: 'Admin',
+        // Cargo grants cliente.read|write — caller doesn't have these.
+        permissoes: ((1n << 0n) | (1n << 1n)).toString(),
+      }),
     });
     const res = await POST(req(VALID_BODY, { authorization: 'Bearer t' }));
     expect(res.status).toBe(403);
+    expect(mocks.createUser).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-superusers trying to create a superuser', async () => {
+    mocks.verifyIdToken.mockResolvedValue(CALLER_CLAIM);
+    mocks.cargoGet.mockResolvedValue({ data: () => undefined });
+    const res = await POST(
+      req(
+        { ...VALID_BODY, cargos: [], isSuperUser: true },
+        { authorization: 'Bearer t' },
+      ),
+    );
+    expect(res.status).toBe(403);
+    expect(mocks.createUser).not.toHaveBeenCalled();
+  });
+
+  it('allows superusers to create superusers', async () => {
+    mocks.verifyIdToken.mockResolvedValue(SU_CLAIM);
+    mocks.cargoGet.mockResolvedValue({ data: () => undefined });
+    mocks.createUser.mockResolvedValue({ uid: 'uid_su' });
+    mocks.setCustomUserClaims.mockResolvedValue(undefined);
+    mocks.usuarioSet.mockResolvedValue(undefined);
+
+    const res = await POST(
+      req(
+        { ...VALID_BODY, cargos: [], isSuperUser: true },
+        { authorization: 'Bearer t' },
+      ),
+    );
+    expect(res.status).toBe(201);
+    expect(mocks.setCustomUserClaims).toHaveBeenCalledWith('uid_su', {
+      permissions: ((1n << 64n) - 1n).toString(),
+    });
   });
 
   it('creates user, sets claims, writes Firestore doc on happy path', async () => {
@@ -109,7 +157,6 @@ describe('POST /api/admin/users', () => {
       data: () => ({
         nome: 'Admin',
         permissoes: ((1n << 0n) | (1n << 1n)).toString(),
-        grupoEconomico: 'ge_1',
       }),
     });
     mocks.createUser.mockResolvedValue({ uid: 'uid_42' });
@@ -127,33 +174,9 @@ describe('POST /api/admin/users', () => {
       displayName: VALID_BODY.nome,
     });
     expect(mocks.setCustomUserClaims).toHaveBeenCalledWith('uid_42', {
-      grupoEconomico: 'ge_1',
       permissions: ((1n << 0n) | (1n << 1n)).toString(),
     });
     expect(mocks.usuarioSet).toHaveBeenCalled();
-  });
-
-  it('drops cargos that belong to another grupoEconomico', async () => {
-    mocks.verifyIdToken.mockResolvedValue(CALLER_CLAIM);
-    mocks.cargoGet.mockResolvedValue({
-      data: () => ({
-        nome: 'Outro',
-        permissoes: '255',
-        grupoEconomico: 'ge_OUTRO',
-      }),
-    });
-    mocks.createUser.mockResolvedValue({ uid: 'uid_99' });
-
-    const res = await POST(req(VALID_BODY, { authorization: 'Bearer t' }));
-    expect(res.status).toBe(201);
-    expect(mocks.setCustomUserClaims).toHaveBeenCalledWith('uid_99', {
-      grupoEconomico: 'ge_1',
-      permissions: '0',
-    });
-    const setCall = mocks.usuarioSet.mock.calls[0]?.[1] as {
-      cargos: string[];
-    };
-    expect(setCall.cargos).toEqual([]);
   });
 
   it('maps email-already-exists to 409', async () => {

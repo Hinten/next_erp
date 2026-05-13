@@ -1,7 +1,7 @@
 /**
  * HTTP client for the apps/integrations admin endpoints. Calls require a
- * Firebase ID token from the current user — the server verifies it and the
- * caller's grupoEconomico + configuracoes.write permission.
+ * Firebase ID token from the current user — the server verifies it plus a
+ * cascade-permission guard: the caller cannot grant bits they don't hold.
  *
  * Base URL: `NEXT_PUBLIC_INTEGRATIONS_URL` (e.g. `http://localhost:3001` in dev,
  * `https://api-<env>.web.app` in deploy). Falls back to relative paths only
@@ -17,7 +17,6 @@ export interface CreateUserPayload {
   cargos: string[];
   colaborador?: boolean;
   isSuperUser?: boolean;
-  grupoEconomico: string;
 }
 
 export interface CreateUserResult {

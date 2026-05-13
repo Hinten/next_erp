@@ -20,7 +20,6 @@ export const usuarioSchema = z.object({
   colaborador: z.boolean().default(false),
   ativo: z.boolean().default(true),
   isSuperUser: z.boolean().default(false),
-  grupoEconomico: z.string().min(1),
   jaFoiColaborador: z.boolean().default(false),
   jaFoiSuperUser: z.boolean().default(false),
   ultimoAcesso: z.string().datetime().nullable().optional(),
@@ -45,7 +44,17 @@ export const usuario = { schema: usuarioSchema, meta: usuarioMeta };
  * mask is "all bits granted" for any current or near-future domain. Stored
  * as the user's `permissions` custom claim when isSuperUser is true.
  */
-const SUPERUSER_MASK = (1n << 64n) - 1n;
+export const SUPERUSER_MASK = (1n << 64n) - 1n;
+
+/**
+ * Cheap detector for superuser identity from a raw bitmask. Any defined PERM
+ * bit lives below 2^56, so a claim with bits >= 2^60 set can only have come
+ * from `SUPERUSER_MASK`. Used by both UI (toggle visibility) and the backend
+ * cascade-guard (to gate creation/promotion of other superusers).
+ */
+export function isSuperUserBits(bits: bigint): boolean {
+  return bits >= 1n << 60n;
+}
 
 /**
  * Aggregate a user's effective permission bitmask from their cargos.

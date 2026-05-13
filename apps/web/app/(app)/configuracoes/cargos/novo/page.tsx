@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { addDoc } from 'firebase/firestore';
-import { Alert, Anchor, Group, Skeleton, Stack, Title } from '@mantine/core';
+import { Anchor, Group, Skeleton, Stack, Title } from '@mantine/core';
 import type { Cargo } from '@delfrance/schemas';
 import { useTenant } from '@/lib/auth';
 import { CargoForm } from '../_components/CargoForm';
@@ -24,12 +24,8 @@ export default function NovoCargoPage() {
   }, [claims?.permissions]);
 
   async function handleSubmit(values: Cargo) {
-    if (!claims?.grupoEconomico) {
-      throw new Error('Grupo econômico não identificado.');
-    }
     const ref = await addDoc(cargoCollection.ref(getFirebaseFirestore(), {}), {
       ...values,
-      grupoEconomico: claims.grupoEconomico,
       timestamp: new Date().toISOString(),
     });
     router.replace(`/configuracoes/cargos/${ref.id}`);
@@ -44,12 +40,7 @@ export default function NovoCargoPage() {
         </Anchor>
       </Group>
       {loading && <Skeleton height={300} />}
-      {!loading && !claims?.grupoEconomico && (
-        <Alert color="yellow">
-          Grupo econômico não vinculado à sua conta.
-        </Alert>
-      )}
-      {!loading && claims?.grupoEconomico && (
+      {!loading && (
         <CargoForm
           submitLabel="Criar"
           onSubmit={handleSubmit}

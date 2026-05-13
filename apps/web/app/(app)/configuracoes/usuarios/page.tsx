@@ -8,6 +8,7 @@ import {
   Alert,
   Anchor,
   Badge,
+  Button,
   Group,
   Skeleton,
   Stack,
@@ -15,14 +16,10 @@ import {
   Text,
   Title,
 } from '@mantine/core';
-import {
-  buildQuery,
-  limit,
-  orderByField,
-  whereEqual,
-} from '@delfrance/data';
+import { PERM } from '@delfrance/auth';
+import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import { useTenant } from '@/lib/auth';
+import { RequirePerm } from '@/lib/auth';
 import { cargoCollection } from '@/lib/data/cargoCollection';
 import { usuarioCollection } from '@/lib/data/usuarioCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -31,25 +28,16 @@ const PAGE_SIZE = 50;
 
 export default function UsuariosPage() {
   const router = useRouter();
-  const { claims, loading: tenantLoading } = useTenant();
 
   const usuariosQuery = useMemo(() => {
-    if (!claims?.grupoEconomico) return null;
     const base = usuarioCollection.ref(getFirebaseFirestore(), {});
-    return buildQuery(base, [
-      whereEqual('grupoEconomico', claims.grupoEconomico),
-      orderByField('nome'),
-      limit(PAGE_SIZE),
-    ]);
-  }, [claims?.grupoEconomico]);
+    return buildQuery(base, [orderByField('nome'), limit(PAGE_SIZE)]);
+  }, []);
 
   const cargosQuery = useMemo(() => {
-    if (!claims?.grupoEconomico) return null;
     const base = cargoCollection.ref(getFirebaseFirestore(), {});
-    return buildQuery(base, [
-      whereEqual('grupoEconomico', claims.grupoEconomico),
-    ]);
-  }, [claims?.grupoEconomico]);
+    return buildQuery(base, []);
+  }, []);
 
   const { data: usuarios, loading, error } = useSnapshot(usuariosQuery);
   const { data: cargos } = useSnapshot(cargosQuery);
@@ -64,9 +52,11 @@ export default function UsuariosPage() {
     <Stack>
       <Group justify="space-between" align="flex-end">
         <Title order={2}>Usuários</Title>
-        <Text size="sm" c="dimmed">
-          Criação de usuários via endpoint administrativo.
-        </Text>
+        <RequirePerm bit={PERM.configuracoes.write} denied={null}>
+          <Button component={Link} href="/configuracoes/usuarios/novo">
+            Novo usuário
+          </Button>
+        </RequirePerm>
       </Group>
 
       {error && (
@@ -75,7 +65,7 @@ export default function UsuariosPage() {
         </Alert>
       )}
 
-      {(loading || tenantLoading) && (
+      {loading && (
         <Stack>
           <Skeleton height={36} />
           <Skeleton height={36} />
@@ -83,7 +73,7 @@ export default function UsuariosPage() {
         </Stack>
       )}
 
-      {!loading && !tenantLoading && usuarios && (
+      {!loading && usuarios && (
         <Table striped highlightOnHover>
           <Table.Thead>
             <Table.Tr>

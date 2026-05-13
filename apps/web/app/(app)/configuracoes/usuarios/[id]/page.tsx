@@ -18,12 +18,9 @@ import {
 } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
 import { aggregatePermissoes } from '@delfrance/schemas';
-import {
-  buildQuery,
-  whereEqual,
-} from '@delfrance/data';
+import { buildQuery } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
-import { RequirePerm, useTenant } from '@/lib/auth';
+import { RequirePerm } from '@/lib/auth';
 import { cargoCollection } from '@/lib/data/cargoCollection';
 import { usuarioCollection } from '@/lib/data/usuarioCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -33,7 +30,6 @@ import {
 
 export default function UsuarioDetailPage() {
   const params = useParams<{ id: string }>();
-  const { claims } = useTenant();
 
   const docRef = useMemo(
     () => usuarioCollection.docRef(getFirebaseFirestore(), {}, params.id),
@@ -42,12 +38,9 @@ export default function UsuarioDetailPage() {
   const { data, loading, error } = useDocSnapshot(docRef);
 
   const cargosQuery = useMemo(() => {
-    if (!claims?.grupoEconomico) return null;
     const base = cargoCollection.ref(getFirebaseFirestore(), {});
-    return buildQuery(base, [
-      whereEqual('grupoEconomico', claims.grupoEconomico),
-    ]);
-  }, [claims?.grupoEconomico]);
+    return buildQuery(base, []);
+  }, []);
   const { data: cargos } = useSnapshot(cargosQuery);
 
   const cargoById = useMemo(() => {

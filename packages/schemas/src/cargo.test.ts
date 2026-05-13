@@ -8,49 +8,32 @@ import {
 
 describe('cargoSchema', () => {
   it('accepts a minimal cargo and applies the permissoes default', () => {
-    const out = cargoSchema.parse({
-      nome: 'Vendedor',
-      grupoEconomico: 'ge_1',
-    });
+    const out = cargoSchema.parse({ nome: 'Vendedor' });
     expect(out).toEqual({
       nome: 'Vendedor',
-      grupoEconomico: 'ge_1',
       permissoes: '0',
     });
   });
 
   it('rejects empty nome', () => {
-    expect(
-      cargoSchema.safeParse({ nome: '', grupoEconomico: 'ge_1' }).success,
-    ).toBe(false);
+    expect(cargoSchema.safeParse({ nome: '' }).success).toBe(false);
   });
 
   it('rejects nome longer than 255 chars', () => {
     expect(
-      cargoSchema.safeParse({
-        nome: 'x'.repeat(256),
-        grupoEconomico: 'ge_1',
-      }).success,
+      cargoSchema.safeParse({ nome: 'x'.repeat(256) }).success,
     ).toBe(false);
   });
 
   it('rejects non-numeric permissoes', () => {
     expect(
-      cargoSchema.safeParse({
-        nome: 'X',
-        grupoEconomico: 'ge_1',
-        permissoes: '0x1234',
-      }).success,
+      cargoSchema.safeParse({ nome: 'X', permissoes: '0x1234' }).success,
     ).toBe(false);
   });
 
   it('accepts a very large decimal bitmask string', () => {
     const big = ((1n << 100n) - 1n).toString();
-    const out = cargoSchema.parse({
-      nome: 'Big',
-      grupoEconomico: 'ge_1',
-      permissoes: big,
-    });
+    const out = cargoSchema.parse({ nome: 'Big', permissoes: big });
     expect(out.permissoes).toBe(big);
   });
 });

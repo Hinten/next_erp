@@ -126,5 +126,7 @@ export {
   usuarioSchema,
   usuarioMeta,
   aggregatePermissoes,
+  isSuperUserBits,
+  SUPERUSER_MASK,
   type Usuario,
 } from './usuario';
