@@ -108,5 +108,98 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: pnpm --filter @delfrance/web exec playwright install-deps chromium
 
-      - name: e2e (web)
-        run: pnpm --filter @delfrance/web test:e2e
+      - name: e2e smoke (web)
+        run: pnpm --filter @delfrance/web exec playwright test --project=smoke
+
+  configuracoes-e2e:
+    runs-on: ubuntu-latest
+    needs: lint-typecheck-test
+    if: github.event_name == 'pull_request'
+    env:
+      FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+      NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+      NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
+      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ secrets.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
+      NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+      NEXT_PUBLIC_FIREBASE_APP_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_APP_ID }}
+      E2E_SU_EMAIL: ${{ secrets.E2E_SU_EMAIL }}
+      E2E_SU_PASSWORD: ${{ secrets.E2E_SU_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Scope: only run when User+Cargo module files or their deps change.
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            configuracoes:
+              - 'apps/web/app/(app)/configuracoes/cargos/**'
+              - 'apps/web/app/(app)/configuracoes/usuarios/**'
+              - 'apps/web/app/(app)/configuracoes/_components/**'
+              - 'apps/web/lib/admin/users.ts'
+              - 'apps/web/lib/auth/**'
+              - 'apps/web/e2e/configuracoes.spec.ts'
+              - 'apps/web/e2e/_helpers/**'
+              - 'apps/web/e2e/_setup/**'
+              - 'apps/web/playwright.config.ts'
+              - 'apps/integrations/app/api/admin/users/**'
+              - 'apps/integrations/lib/firebase/admin.ts'
+              - 'packages/schemas/src/cargo.ts'
+              - 'packages/schemas/src/usuario.ts'
+              - 'packages/auth/**'
+              - 'packages/data/**'
+              - 'tools/test-fixtures/**'
+              - '.github/workflows/ci.yml'
+              - 'pnpm-lock.yaml'
+
+      - uses: actions/setup-node@v4
+        if: steps.changes.outputs.configuracoes == 'true'
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        if: steps.changes.outputs.configuracoes == 'true'
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.4 --activate
+
+      - name: Get pnpm store path
+        if: steps.changes.outputs.configuracoes == 'true'
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        if: steps.changes.outputs.configuracoes == 'true'
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        if: steps.changes.outputs.configuracoes == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        if: steps.changes.outputs.configuracoes == 'true'
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      - name: Install Playwright browsers (cache miss)
+        if: steps.changes.outputs.configuracoes == 'true' && steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @delfrance/web exec playwright install --with-deps chromium
+
+      - name: Install Playwright system deps (cache hit)
+        if: steps.changes.outputs.configuracoes == 'true' && steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm --filter @delfrance/web exec playwright install-deps chromium
+
+      - name: e2e configuracoes (web)
+        if: steps.changes.outputs.configuracoes == 'true'
+        run: pnpm --filter @delfrance/web exec playwright test --project=configuracoes
