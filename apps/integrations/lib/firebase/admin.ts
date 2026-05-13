@@ -29,5 +29,6 @@ export function getAdminAuth(): Auth {
 }
 
 export function getAdminFirestore(): Firestore {
-  return getFirestore(getAdminApp());
+  const databaseId = process.env.FIREBASE_DATABASE_ID ?? 'default';
+  return getFirestore(getAdminApp(), databaseId);
 }
