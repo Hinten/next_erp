@@ -1,39 +1,44 @@
 'use client';
 
-import { useMemo } from 'react';
-import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { setDoc } from 'firebase/firestore';
-import {
-  Alert,
-  Anchor,
-  Button,
-  Group,
-  Skeleton,
-  Stack,
-  Title,
-} from '@mantine/core';
-import type { Cliente } from '@delfrance/schemas';
-import { useDocSnapshot } from '@delfrance/data/hooks';
-import { ClienteForm } from '../../_components/ClienteForm';
+import { useParams, useRouter } from 'next/navigation';
+import { Anchor, Group, Stack, TextInput, Title } from '@mantine/core';
+import { clienteSchema } from '@delfrance/schemas';
+import { ObjectView, type FieldRenderProps } from '@delfrance/ui';
+import { formatCNPJ, formatCPF } from '@delfrance/core/documents';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { useAuth } from '@/lib/auth';
+
+function CpfCnpjInput({
+  value,
+  onChange,
+  onBlur,
+  error,
+  label,
+  hint,
+}: FieldRenderProps) {
+  const v = (value as string | null | undefined) ?? '';
+  const formatted =
+    v.length === 11 ? formatCPF(v) : v.length === 14 ? formatCNPJ(v) : null;
+  return (
+    <TextInput
+      label={label}
+      description={formatted ?? hint ?? 'Apenas números'}
+      value={v}
+      onChange={(e) => onChange(e.currentTarget.value)}
+      onBlur={onBlur}
+      error={error}
+      maxLength={14}
+      inputMode="numeric"
+    />
+  );
+}
 
 export default function EditarClientePage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
-
-  const docRef = useMemo(
-    () => clienteCollection.docRef(getFirebaseFirestore(), {}, params.id),
-    [params.id],
-  );
-
-  const { data, loading, error } = useDocSnapshot(docRef);
-
-  async function handleSubmit(values: Cliente) {
-    await setDoc(docRef, values, { merge: true });
-    router.replace(`/clientes/${params.id}`);
-  }
+  const { user } = useAuth();
 
   return (
     <Stack>
@@ -44,25 +49,24 @@ export default function EditarClientePage() {
         </Anchor>
       </Group>
 
-      {error && <Alert color="red">{error.message}</Alert>}
-      {loading && <Skeleton height={300} />}
-      {!loading && !data && (
-        <Alert color="yellow">Cliente não encontrado.</Alert>
-      )}
-      {!loading && data && (
-        <ClienteForm
-          defaultValues={data.data}
-          submitLabel="Salvar alterações"
-          onSubmit={handleSubmit}
-        />
-      )}
-      {!loading && (
-        <Group>
-          <Button component={Link} href="/clientes" variant="subtle">
-            Voltar à lista
-          </Button>
-        </Group>
-      )}
+      <ObjectView
+        schema={clienteSchema}
+        collection={clienteCollection}
+        db={getFirebaseFirestore()}
+        currentUserUid={user?.uid ?? ''}
+        recordId={params.id}
+        excludedFields={[
+          'timestamp',
+          'nome_embedding',
+          'telefone_embedding',
+          'userCliente',
+          'isUF',
+          'idEstrangeiro',
+        ]}
+        fields={{ cpf_cnpj: { renderInput: CpfCnpjInput } }}
+        saveLabel="Salvar alterações"
+        onSaved={(id) => router.replace(`/clientes/${id}`)}
+      />
     </Stack>
   );
 }

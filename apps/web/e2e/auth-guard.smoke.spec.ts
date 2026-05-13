@@ -1,5 +1,11 @@
 import { expect, test } from '@playwright/test';
 
+// Force an unauthenticated session — this suite intentionally tests the
+// redirect-to-/login path, which only fires when no Firebase user is signed
+// in. Without the override we'd inherit the storageState seeded by
+// globalSetup and never reach the guard branch.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 test.describe('Auth guard', () => {
   test('redirects unauthenticated user from /inicio to /login', async ({
     page,

@@ -1,0 +1,106 @@
+import { expect, test } from '@playwright/test';
+
+/**
+ * Smoke coverage for every (app) route. Asserts:
+ *   - GET returns < 400 (Next.js shell renders)
+ *   - URL doesn't bounce to /login (auth + claims came through)
+ *   - No uncaught console errors during the initial paint
+ *
+ * Per-domain specs (clientes-crud.spec.ts, categorias-crud.spec.ts) cover
+ * functionality. This file's job is "the page exists and doesn't explode."
+ */
+
+// Routes that render without an :id — covers every static placeholder.
+const STATIC_ROUTES: string[] = [
+  '/inicio',
+  '/chat',
+  '/pedidos',
+  '/pedidos/entradas',
+  '/operacoes',
+  '/motivos-incidente',
+  '/bandeiras-cartao',
+  '/nfe',
+  '/nfe/exportar',
+  '/produtos',
+  '/produtos/novo',
+  '/variacoes',
+  '/categorias',
+  '/categorias/novo',
+  '/medidas',
+  '/listas-de-precos',
+  '/depositos',
+  '/etiquetas',
+  '/balanco',
+  '/clientes',
+  '/clientes/novo',
+  '/canais',
+  '/canais/amazon',
+  '/canais/balcao',
+  '/canais/facebook',
+  '/canais/loja-integrada',
+  '/canais/magalu',
+  '/canais/mercado-livre',
+  '/canais/shopee',
+  '/canais/webchat',
+  '/whatsapp',
+  '/logistica/fob',
+  '/logistica/melhor-envios',
+  '/logistica/motoboy',
+  '/logistica/retirada',
+  '/pagamentos',
+  '/pagamentos/mercado-pago',
+  '/relatorios',
+  '/relatorios/vendas',
+  '/relatorios/produtos',
+  '/relatorios/checkouts',
+  '/relatorios/mais-vendidos',
+  '/relatorios/localizacao-produtos',
+  '/relatorios/vendas-estampas',
+  '/configuracoes',
+  '/configuracoes/filiais',
+  '/configuracoes/cargos',
+  '/configuracoes/usuarios',
+];
+
+test.describe('All pages load', () => {
+  for (const route of STATIC_ROUTES) {
+    test(`renders ${route}`, async ({ page }) => {
+      const consoleErrors: string[] = [];
+      page.on('console', (msg) => {
+        if (msg.type() === 'error') consoleErrors.push(msg.text());
+      });
+      // Network errors (failed fetches) often surface as page errors not
+      // console errors; capture those too so we don't miss them.
+      const pageErrors: string[] = [];
+      page.on('pageerror', (err) => pageErrors.push(err.message));
+
+      const response = await page.goto(route);
+      expect(response?.status() ?? 0).toBeLessThan(400);
+
+      // Wait for the app shell instead of `domcontentloaded` so client
+      // routing + RequirePerm have a chance to settle. The Delfrance title
+      // lives in the AppShell header.
+      await expect(
+        page.getByRole('heading', { name: 'Delfrance' }).first(),
+      ).toBeVisible({ timeout: 10_000 });
+
+      // Auth + claim check: the test user has all PERM bits, so we should
+      // never end up bounced back to /login or stuck on the "Sem permissão"
+      // fallback.
+      await expect(page).not.toHaveURL(/\/login/);
+      await expect(page.getByText('Sem permissão')).toHaveCount(0);
+
+      // Filter expected noise: Mantine logs hydration mismatches in dev for
+      // controlled `<Select>` initial value warnings; not relevant here.
+      const ignored = (msg: string) =>
+        msg.includes('Hydration') ||
+        msg.includes('was not wrapped in act') ||
+        // Firebase often logs the initial auth-state-changed event before
+        // useEffect cleanup — informational.
+        msg.includes('@firebase/firestore');
+      const realConsoleErrors = consoleErrors.filter((m) => !ignored(m));
+      expect(realConsoleErrors, `console.error on ${route}`).toEqual([]);
+      expect(pageErrors, `pageerror on ${route}`).toEqual([]);
+    });
+  }
+});

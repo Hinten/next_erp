@@ -198,6 +198,9 @@ importers:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
+      '@delfrance/test-fixtures':
+        specifier: workspace:*
+        version: link:../../tools/test-fixtures
       '@playwright/test':
         specifier: ^1.60.0
         version: 1.60.0
