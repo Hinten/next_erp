@@ -17,7 +17,17 @@ export default defineConfig({
   fullyParallel: true,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 2 : undefined,
-  reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
+  // `list` keeps the in-job step output readable; `html` is the
+  // browsable report in the artifact; `json` is a machine-readable dump
+  // you can paste into a chat to share the exact failure without needing
+  // to browse the HTML report.
+  reporter: process.env.CI
+    ? [
+        ['list'],
+        ['html', { open: 'never', outputFolder: 'playwright-report' }],
+        ['json', { outputFile: 'playwright-report/results.json' }],
+      ]
+    : 'list',
   globalSetup: './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',
   use: {
