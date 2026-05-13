@@ -20,7 +20,7 @@ import { PERM } from '@delfrance/auth';
 import { aggregatePermissoes } from '@delfrance/schemas';
 import { buildQuery } from '@delfrance/data';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
-import { RequirePerm } from '@/lib/auth';
+import { PermGate } from '../../_components/PermGate';
 import { cargoCollection } from '@/lib/data/cargoCollection';
 import { usuarioCollection } from '@/lib/data/usuarioCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -92,14 +92,18 @@ export default function UsuarioDetailPage() {
             </Badge>
           )}
         </Group>
-        <RequirePerm bit={PERM.configuracoes.write} denied={null}>
+        <PermGate
+          bit={PERM.configuracoes.write}
+          tooltipLabel="Sem permissão para editar (requer configurações.write)."
+          fallback={<Button disabled>Editar</Button>}
+        >
           <Button
             component={Link}
             href={`/configuracoes/usuarios/${data.id}/editar`}
           >
             Editar
           </Button>
-        </RequirePerm>
+        </PermGate>
       </Group>
 
       <Card withBorder>

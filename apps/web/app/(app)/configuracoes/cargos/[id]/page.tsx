@@ -20,10 +20,10 @@ import {
 import { PERM } from '@delfrance/auth';
 import { decodePermissoes } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
-import { RequirePerm } from '@/lib/auth';
 import { cargoCollection } from '@/lib/data/cargoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { permissionLabels } from '../../_components/PermissionEditor';
+import { PermGate } from '../../_components/PermGate';
 
 export default function CargoDetailPage() {
   const params = useParams<{ id: string }>();
@@ -73,19 +73,33 @@ export default function CargoDetailPage() {
     <Stack>
       <Group justify="space-between" align="center">
         <Title order={2}>{c.nome}</Title>
-        <RequirePerm bit={PERM.configuracoes.write} denied={null}>
-          <Group>
+        <Group>
+          <PermGate
+            bit={PERM.configuracoes.write}
+            tooltipLabel="Sem permissão para editar (requer configurações.write)."
+            fallback={<Button disabled>Editar</Button>}
+          >
             <Button
               component={Link}
               href={`/configuracoes/cargos/${data.id}/editar`}
             >
               Editar
             </Button>
+          </PermGate>
+          <PermGate
+            bit={PERM.configuracoes.write}
+            tooltipLabel="Sem permissão para excluir (requer configurações.write)."
+            fallback={
+              <Button color="red" variant="light" disabled>
+                Excluir
+              </Button>
+            }
+          >
             <Button color="red" variant="light" onClick={handleDelete}>
               Excluir
             </Button>
-          </Group>
-        </RequirePerm>
+          </PermGate>
+        </Group>
       </Group>
 
       {c.descricao && (

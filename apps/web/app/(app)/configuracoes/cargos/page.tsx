@@ -19,9 +19,9 @@ import { PERM } from '@delfrance/auth';
 import { decodePermissoes } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import { RequirePerm } from '@/lib/auth';
 import { cargoCollection } from '@/lib/data/cargoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { PermGate } from '../_components/PermGate';
 
 const PAGE_SIZE = 50;
 
@@ -49,11 +49,15 @@ export default function CargosPage() {
     <Stack>
       <Group justify="space-between" align="flex-end">
         <Title order={2}>Cargos</Title>
-        <RequirePerm bit={PERM.configuracoes.write} denied={null}>
+        <PermGate
+          bit={PERM.configuracoes.write}
+          tooltipLabel="Sem permissão para criar cargos (requer configurações.write)."
+          fallback={<Button disabled>Novo cargo</Button>}
+        >
           <Button component={Link} href="/configuracoes/cargos/novo">
             Novo cargo
           </Button>
-        </RequirePerm>
+        </PermGate>
       </Group>
 
       {error && (
@@ -106,15 +110,29 @@ export default function CargosPage() {
                   </Badge>
                 </Table.Td>
                 <Table.Td>
-                  <ActionIcon
-                    component={Link}
-                    href={`/configuracoes/cargos/${id}/editar`}
-                    variant="subtle"
-                    aria-label="Editar"
-                    onClick={(e) => e.stopPropagation()}
+                  <PermGate
+                    bit={PERM.configuracoes.write}
+                    tooltipLabel="Sem permissão para editar."
+                    fallback={
+                      <ActionIcon
+                        variant="subtle"
+                        aria-label="Editar"
+                        disabled
+                      >
+                        ✎
+                      </ActionIcon>
+                    }
                   >
-                    ✎
-                  </ActionIcon>
+                    <ActionIcon
+                      component={Link}
+                      href={`/configuracoes/cargos/${id}/editar`}
+                      variant="subtle"
+                      aria-label="Editar"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      ✎
+                    </ActionIcon>
+                  </PermGate>
                 </Table.Td>
               </Table.Tr>
             ))}
