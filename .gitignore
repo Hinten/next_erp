@@ -16,6 +16,7 @@ test-results/
 .env.local
 .env.*.local
 !.env.example
+.secrets/
 
 .DS_Store
 *.log

@@ -69,7 +69,8 @@ async function verifyCaller(req: Request) {
       };
     }
     return { decoded };
-  } catch {
+  } catch (e) {
+    console.error('[admin/users] verifyIdToken failed:', e);
     return { error: err(401, { error: 'Token inválido ou expirado.' }) };
   }
 }
