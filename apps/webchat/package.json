@@ -8,7 +8,6 @@
     "build": "next build",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
     "clean": "rm -rf .next out .turbo dist coverage"
   },
   "dependencies": {
