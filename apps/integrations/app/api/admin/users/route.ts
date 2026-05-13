@@ -71,15 +71,25 @@ async function verifyCaller(req: Request) {
     return { decoded };
   } catch (e) {
     console.error('[admin/users] verifyIdToken failed:', e);
-    return { error: err(401, { error: 'Token inválido ou expirado.' }) };
+    // firebase-admin throws `FirebaseAuthError` (an Error subclass with a
+    // string `code` like `auth/id-token-expired`). We can't `instanceof` it
+    // because the class isn't part of the package's public runtime API; the
+    // duck-typed Error+code check covers it without depending on internals.
+    if (e instanceof Error && typeof (e as { code?: unknown }).code === 'string') {
+      return { error: err(401, { error: 'Token inválido ou expirado.' }) };
+    }
+    throw e;
   }
 }
 
 function decodeCallerBits(perms: string | undefined): bigint {
   try {
     return BigInt(perms ?? '0');
-  } catch {
-    return 0n;
+  } catch (e) {
+    if (e instanceof SyntaxError) {
+      return 0n;
+    }
+    throw e;
   }
 }
 
@@ -87,8 +97,11 @@ export async function POST(req: Request) {
   let json: unknown;
   try {
     json = await req.json();
-  } catch {
-    return err(400, { error: 'Body JSON inválido.' });
+  } catch (e) {
+    if (e instanceof SyntaxError) {
+      return err(400, { error: 'Body JSON inválido.' });
+    }
+    throw e;
   }
 
   const parsed = createUserSchema.safeParse(json);
@@ -148,8 +161,11 @@ export async function POST(req: Request) {
     });
     uid = created.uid;
   } catch (e) {
-    const { status, body } = mapFirebaseError(e);
-    return err(status, body);
+    if (e instanceof Error && typeof (e as { code?: unknown }).code === 'string') {
+      const { status, body } = mapFirebaseError(e);
+      return err(status, body);
+    }
+    throw e;
   }
 
   await getAdminAuth().setCustomUserClaims(uid, {

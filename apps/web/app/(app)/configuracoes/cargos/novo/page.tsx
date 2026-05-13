@@ -18,8 +18,11 @@ export default function NovoCargoPage() {
   const callerBits = useMemo(() => {
     try {
       return claims?.permissions ? BigInt(claims.permissions) : 0n;
-    } catch {
-      return 0n;
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        return 0n;
+      }
+      throw err;
     }
   }, [claims?.permissions]);
 

@@ -182,7 +182,12 @@ describe('POST /api/admin/users', () => {
   it('maps email-already-exists to 409', async () => {
     mocks.verifyIdToken.mockResolvedValue(CALLER_CLAIM);
     mocks.cargoGet.mockResolvedValue({ data: () => undefined });
-    mocks.createUser.mockRejectedValue({ code: 'auth/email-already-exists' });
+    // firebase-admin throws an Error subclass (FirebaseAuthError) with a
+    // string `code` — mirror that shape so the route's narrowing catches it.
+    const fbErr = Object.assign(new Error('Email exists'), {
+      code: 'auth/email-already-exists',
+    });
+    mocks.createUser.mockRejectedValue(fbErr);
 
     const res = await POST(req(VALID_BODY, { authorization: 'Bearer t' }));
     expect(res.status).toBe(409);

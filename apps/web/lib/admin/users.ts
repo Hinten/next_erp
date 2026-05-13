@@ -46,8 +46,9 @@ async function call<T>(
     try {
       const body = (await res.json()) as { error?: string };
       detail = body.error ?? '';
-    } catch {
-      // ignore — fall back to status text
+    } catch (err) {
+      if (!(err instanceof SyntaxError)) throw err;
+      // SyntaxError: non-JSON response body — fall back to status text.
     }
     throw new Error(detail || `${res.status} ${res.statusText}`);
   }

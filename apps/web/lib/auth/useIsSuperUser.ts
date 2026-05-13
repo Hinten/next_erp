@@ -10,8 +10,11 @@ export function useIsSuperUser(): boolean {
     if (!claims?.permissions) return false;
     try {
       return isSuperUserBits(BigInt(claims.permissions));
-    } catch {
-      return false;
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        return false;
+      }
+      throw err;
     }
   }, [claims?.permissions]);
 }

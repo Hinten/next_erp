@@ -22,8 +22,11 @@ function err(status: number, body: ErrorBody) {
 function decodeCallerBits(perms: string | undefined): bigint {
   try {
     return BigInt(perms ?? '0');
-  } catch {
-    return 0n;
+  } catch (e) {
+    if (e instanceof SyntaxError) {
+      return 0n;
+    }
+    throw e;
   }
 }
 
@@ -51,8 +54,14 @@ export async function POST(
       return err(403, { error: 'Sem permissão configuracoes.write.' });
     }
     callerBits = decodeCallerBits(decoded.permissions as string | undefined);
-  } catch {
-    return err(401, { error: 'Token inválido ou expirado.' });
+  } catch (e) {
+    // firebase-admin throws `FirebaseAuthError` (Error + string `code`).
+    // The class isn't part of the public runtime API, so duck-type on
+    // `Error + code` rather than depend on internal imports.
+    if (e instanceof Error && typeof (e as { code?: unknown }).code === 'string') {
+      return err(401, { error: 'Token inválido ou expirado.' });
+    }
+    throw e;
   }
 
   const db = getAdminFirestore();
