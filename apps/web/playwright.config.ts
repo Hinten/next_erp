@@ -28,7 +28,10 @@ export default defineConfig({
         ['json', { outputFile: 'playwright-report/results.json' }],
       ]
     : 'list',
-  globalSetup: './e2e/global-setup.ts',
+  // Composed setup: runs the legacy tenant/user seed (E2E_USER_*) and the
+  // SU login session (E2E_SU_*). Each step skips itself when its env is
+  // not set, so the two CI jobs can each provide only their own secrets.
+  globalSetup: './e2e/_setup/combined.ts',
   globalTeardown: './e2e/global-teardown.ts',
   use: {
     baseURL: BASE_URL,
@@ -39,8 +42,18 @@ export default defineConfig({
     storageState: STORAGE_STATE,
   },
   projects: [
+    // Cheap smoke tests — run on every PR via the `e2e` CI job.
     {
-      name: 'chromium',
+      name: 'smoke',
+      testMatch: /.*\.smoke\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    // Auth-gated CRUD against Firebase staging — heavier; CI job
+    // `configuracoes-e2e` runs this only when relevant paths change
+    // (see paths filter in .github/workflows/ci.yml).
+    {
+      name: 'configuracoes',
+      testMatch: /configuracoes\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
   ],

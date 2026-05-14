@@ -7,8 +7,8 @@ import {
 } from './cargo';
 
 describe('cargoSchema', () => {
-  it('accepts a minimal cargo and applies the permissoes default', () => {
-    const out = cargoSchema.parse({ nome: 'Vendedor' });
+  it('accepts a minimal cargo with null descricao and applies permissoes default', () => {
+    const out = cargoSchema.parse({ nome: 'Vendedor', descricao: null });
     expect(out).toEqual({
       nome: 'Vendedor',
       descricao: null,
@@ -18,27 +18,49 @@ describe('cargoSchema', () => {
   });
 
   it('rejects empty nome', () => {
-    expect(cargoSchema.safeParse({ nome: '' }).success).toBe(false);
+    expect(
+      cargoSchema.safeParse({ nome: '', descricao: null }).success,
+    ).toBe(false);
   });
 
   it('rejects nome longer than 255 chars', () => {
     expect(
-      cargoSchema.safeParse({ nome: 'x'.repeat(256) }).success,
+      cargoSchema.safeParse({ nome: 'x'.repeat(256), descricao: null }).success,
     ).toBe(false);
   });
 
   it('rejects non-numeric permissoes', () => {
     expect(
-      cargoSchema.safeParse({ nome: 'X', permissoes: '0x1234' }).success,
+      cargoSchema.safeParse({
+        nome: 'X',
+        descricao: null,
+        permissoes: '0x1234',
+      }).success,
     ).toBe(false);
   });
 
   it('accepts a very large decimal bitmask string', () => {
     const big = ((1n << 100n) - 1n).toString();
-    const out = cargoSchema.parse({ nome: 'Big', permissoes: big });
+    const out = cargoSchema.parse({
+      nome: 'Big',
+      descricao: null,
+      permissoes: big,
+    });
     expect(out.permissoes).toBe(big);
     expect(out.descricao).toBeNull();
     expect(out.timestamp).toBeNull();
+  });
+
+  // Regression: Firebase JS SDK v12 rejects `undefined` in addDoc/setDoc.
+  // descricao must be `string | null`, never `undefined` — i.e. the schema
+  // requires the field to be present (with null) rather than missing.
+  it('rejects missing descricao (must be string | null, not undefined)', () => {
+    expect(cargoSchema.safeParse({ nome: 'X' }).success).toBe(false);
+  });
+
+  it('accepts a non-empty descricao string', () => {
+    const out = cargoSchema.parse({ nome: 'X', descricao: 'Gerente regional' });
+    expect(out.descricao).toBe('Gerente regional');
   });
 });
 

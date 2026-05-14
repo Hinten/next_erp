@@ -121,7 +121,7 @@ importers:
         version: 9.39.4
       eslint-config-next:
         specifier: ^16.2.6
-        version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
+        version: 16.2.6(@typescript-eslint/parser@8.59.3(eslint@9.39.4)(typescript@6.0.3))(eslint@9.39.4)(typescript@6.0.3)
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -225,6 +225,9 @@ importers:
       eslint-config-next:
         specifier: ^16.2.6
         version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
+      firebase-admin:
+        specifier: ^13.9.0
+        version: 13.9.0
       jsdom:
         specifier: ^29.1.1
         version: 29.1.1
@@ -267,7 +270,7 @@ importers:
         version: 9.39.4
       eslint-config-next:
         specifier: ^16.2.6
-        version: 16.2.6(@typescript-eslint/parser@8.59.3(eslint@9.39.4)(typescript@6.0.3))(eslint@9.39.4)(typescript@6.0.3)
+        version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
