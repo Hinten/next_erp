@@ -71,6 +71,7 @@ pnpm --filter @delfrance/integrations dev
 - New OAuth callback → same: `apps/integrations/app/api/oauth/<channel>/callback/route.ts`.
 - Heavy work (sync, retry, long-running) from a webhook → dispatch to a Cloud Function; route handler responds 200 fast.
 - Adding a Server Component / Server Action / route handler in `apps/web` → justify in the PR description. Default answer is no.
+- **New E2E CI test filtered by file/dependency changes** (e.g. "rode esse E2E só quando o módulo X mudar") → create a new file at `.github/workflows/<module>-e2e.yml` with `on.pull_request.paths:` listing the module's files + transitive deps (schemas, packages it imports, fixtures, the workflow itself, `pnpm-lock.yaml`). **Do not** add another job to `ci.yml`. Always cache dependency download/install whenever possible — pnpm store keyed on `pnpm-lock.yaml`, plus any browser/binary downloads (Playwright, etc.) on the same key. Add a `concurrency:` block (`group: ${{ github.workflow }}-${{ github.ref }}`, `cancel-in-progress: true`) to avoid duplicate runs on consecutive pushes. Also add the new workflow's `name:` to `post-ci-logs.yml` so failures get commented on the PR. Reference pattern: `.github/workflows/configuracoes-e2e.yml`.
 
 ## Key fixed decisions
 
