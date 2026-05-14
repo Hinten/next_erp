@@ -63,6 +63,7 @@ pnpm --filter @delfrance/integrations dev
 ## When making changes
 
 - New schema → `packages/schemas/<domain>.ts` first; Zod is the source of truth.
+- **Optional Firestore fields**: prefer `z.string().nullable()` over `z.string().nullable().optional()`. Firebase JS SDK v12 rejects `undefined` in `addDoc`/`setDoc` (`Function addDoc() called with invalid data ... Unsupported field value: undefined`). `.nullable()` alone makes the parsed type `T | null` — the field must be present, never `undefined`. Forms default empty inputs to `null`; Firestore stores `null` cleanly. Only use `.optional()` for fields that are truly optional in the wire format (e.g. server-side defaults like `timestamp` that the client never sets).
 - New collection → use `defineCollection(path, schema)` from `packages/data`. Do not write Firestore SDK calls in app code unless `defineCollection` cannot express it.
 - New UI form → react-hook-form + Zod resolver + `Controller` for Mantine inputs. Mark the file `'use client'`.
 - New page in `apps/web` → default to client component (`'use client'` at top). Reads/writes via Firebase JS SDK directly + TanStack Query (`useQuery` for one-shot, `onSnapshot` wrapped in a custom hook for real-time).

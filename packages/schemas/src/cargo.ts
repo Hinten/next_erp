@@ -15,7 +15,10 @@ const PERM_CONFIG_WRITE = 1n << 41n;
  */
 export const cargoSchema = z.object({
   nome: z.string().min(1).max(255),
-  descricao: z.string().max(500).nullable().optional(),
+  // Firebase JS SDK v12 rejects `undefined` in addDoc/setDoc payloads, so
+  // optional Firestore fields must resolve to `T | null` after parse — never
+  // `T | null | undefined`. Forms default empty inputs to `null`.
+  descricao: z.string().max(500).nullable(),
   permissoes: z.string().regex(/^\d+$/, 'apenas dígitos').default('0'),
   timestamp: z.string().datetime().nullable().optional(),
 });
