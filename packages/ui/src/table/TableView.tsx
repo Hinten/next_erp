@@ -30,6 +30,7 @@ import type {
   ActionConfig, FieldConfig, FieldDescriptor,
 } from '../schema/types';
 import { ActionBar } from './ActionBar';
+import { ColumnFilter, type ColumnFilterValue } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
 import { Pagination } from './Pagination';
 import { SearchBar } from './SearchBar';
@@ -118,6 +119,18 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
 
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Per-column filters keyed by field key. AND-combined; cleared by setting
+  // the entry to `undefined` (or deleting the key).
+  const [filters, setFilters] = useState<Record<string, ColumnFilterValue>>({});
+
+  // Stable serialized keys for useMemo deps. visibleKeys + filters change
+  // shape per click; bucket them into deterministic strings so the pipeline
+  // only rebuilds when content actually changes.
+  const visibleKeysSerial = useMemo(
+    () => [...visibleKeys].sort().join('|'),
+    [visibleKeys],
+  );
+  const filtersSerial = useMemo(() => JSON.stringify(filters), [filters]);
 
   // --- Data source selection ----------------------------------------------
   // Always use the classic Query path when an override is supplied. Otherwise,
@@ -131,6 +144,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         search: searchFields?.length
           ? { fields: searchFields, term: search.trim() }
           : undefined,
+        filters: Object.entries(filters).map(([field, v]) => ({ field, ...v })),
+        select: [...visibleKeys],
         orderBy: orderBy ? [{ field: orderBy.field, direction: orderBy.direction ?? 'asc' }] : undefined,
         limit: pageSize,
       });
@@ -140,7 +155,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // `pathContext` is intentionally not stringified; consumers should keep
     // the object stable across renders (matches the rest of the data layer).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, collection, queryOverride, search, pageSize, orderBy?.field, orderBy?.direction, searchFields?.join('|')]);
+  }, [db, collection, queryOverride, search, pageSize, orderBy?.field, orderBy?.direction, searchFields?.join('|'), filtersSerial, visibleKeysSerial]);
 
   const fallbackQuery: Query<z.infer<S>> | null = useMemo(() => {
     if (queryOverride) return queryOverride;
@@ -261,7 +276,21 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
               )}
               {visibleDescriptors.map((d) => (
                 <Table.Th key={d.key}>
-                  {fieldOverrides[d.key]?.label ?? d.label}
+                  <Group gap={4} wrap="nowrap" justify="space-between">
+                    <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
+                    <ColumnFilter
+                      descriptor={d}
+                      value={filters[d.key]}
+                      onChange={(next) =>
+                        setFilters((cur) => {
+                          const copy = { ...cur };
+                          if (next === undefined) delete copy[d.key];
+                          else copy[d.key] = next;
+                          return copy;
+                        })
+                      }
+                    />
+                  </Group>
                 </Table.Th>
               ))}
             </Table.Tr>

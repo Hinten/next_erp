@@ -5,10 +5,16 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 const { mockPipelinesExports } = vi.hoisted(() => ({
   mockPipelinesExports: {
     field: (n: string) => ({ kind: 'field', name: n }),
+    and: (...xs: unknown[]) => ({ kind: 'and', xs }),
     or: (...xs: unknown[]) => ({ kind: 'or', xs }),
     ascending: (f: unknown) => ({ kind: 'asc', f }),
     descending: (f: unknown) => ({ kind: 'desc', f }),
     startsWith: (f: unknown, t: unknown) => ({ kind: 'startsWith', f, t }),
+    equal: (l: unknown, r: unknown) => ({ kind: 'equal', l, r }),
+    lessThan: (l: unknown, r: unknown) => ({ kind: 'lt', l, r }),
+    lessThanOrEqual: (l: unknown, r: unknown) => ({ kind: 'lte', l, r }),
+    greaterThan: (l: unknown, r: unknown) => ({ kind: 'gt', l, r }),
+    greaterThanOrEqual: (l: unknown, r: unknown) => ({ kind: 'gte', l, r }),
   } as Record<string, unknown>,
 }));
 
@@ -25,6 +31,7 @@ interface Stage {
   where: ReturnType<typeof vi.fn>;
   sort: ReturnType<typeof vi.fn>;
   limit: ReturnType<typeof vi.fn>;
+  select: ReturnType<typeof vi.fn>;
   __calls: string[];
 }
 
@@ -41,6 +48,10 @@ function makeStage(): Stage {
     }),
     limit: vi.fn(() => {
       calls.push('limit');
+      return stage;
+    }),
+    select: vi.fn(() => {
+      calls.push('select');
       return stage;
     }),
     __calls: calls,
@@ -134,5 +145,51 @@ describe('buildPipeline', () => {
     expect(stage.sort).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'desc' }),
     );
+  });
+
+  it('applies a single eq filter as where(equal)', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'x',
+      filters: [{ field: 'tipo', op: 'eq', value: '1' }],
+    });
+    expect(stage.where).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'equal' }),
+    );
+  });
+
+  it('AND-combines multiple column filters', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'x',
+      filters: [
+        { field: 'tipo', op: 'eq', value: '1' },
+        { field: 'age', op: 'gte', value: 18 },
+      ],
+    });
+    expect(stage.where).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'and' }),
+    );
+  });
+
+  it('search + filters apply as two separate where stages', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'x',
+      search: { fields: ['nome'], term: 'ab' },
+      filters: [{ field: 'tipo', op: 'eq', value: '1' }],
+    });
+    expect(stage.where).toHaveBeenCalledTimes(2);
+  });
+
+  it('select projects only the requested fields', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'x',
+      select: ['nome', 'email', 'cpf_cnpj'],
+      limit: 50,
+    });
+    expect(stage.__calls).toEqual(['select', 'limit']);
+    expect(stage.select).toHaveBeenCalledWith('nome', 'email', 'cpf_cnpj');
   });
 });

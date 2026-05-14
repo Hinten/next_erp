@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Pedido } from '@delfrance/schemas';
+import type { ItemDoPedido, Pedido } from '@delfrance/schemas';
 import {
   type PedidoLite,
   overview,
@@ -8,16 +8,38 @@ import {
   topProdutos,
 } from './aggregations';
 
+// All nullable fields of ItemDoPedido set to null. Spread to override only
+// what each test cares about. Avoids repeating 10+ null lines per object.
+const baseItem: ItemDoPedido = {
+  produtoUid: null,
+  ordem: 1,
+  ensureUniqueId: null,
+  mktplaceId: null,
+  sku: null,
+  gtin: null,
+  nomeDeVenda: null,
+  precoDeVenda: 1,
+  descontoUnitario: 0,
+  quantidade: 1,
+  custo: null,
+  timestamp: null,
+  imposto: null,
+};
+const i = (patch: Partial<ItemDoPedido>): ItemDoPedido => ({ ...baseItem, ...patch });
+
 function p(estado: Pedido['estado'], itens: Pedido['itens']): PedidoLite {
   return {
     id: Math.random().toString(36).slice(2, 8),
+    // Tests only exercise the fields below; cast through `unknown` to bypass
+    // the full Pedido shape (every nullable would otherwise need an explicit
+    // null) — these objects never round-trip through pedidoSchema.parse.
     data: {
       ehSaida: true,
       estado,
       integracaoPedidoOuterRef: { uid: 'i' },
       itens,
       itensIds: [],
-    } as Pedido,
+    } as unknown as Pedido,
   };
 }
 
@@ -25,11 +47,11 @@ describe('topProdutos', () => {
   it('ranks by total quantity sold across pedidos', () => {
     const dataset: PedidoLite[] = [
       p('pago', {
-        a: [{ ordem: 1, precoDeVenda: 10, descontoUnitario: 0, quantidade: 3, nomeDeVenda: 'Camiseta' }],
-        b: [{ ordem: 2, precoDeVenda: 5, descontoUnitario: 0, quantidade: 1 }],
+        a: [i({ ordem: 1, precoDeVenda: 10, descontoUnitario: 0, quantidade: 3, nomeDeVenda: 'Camiseta' })],
+        b: [i({ ordem: 2, precoDeVenda: 5, descontoUnitario: 0, quantidade: 1 })],
       }),
       p('pago', {
-        a: [{ ordem: 1, precoDeVenda: 10, descontoUnitario: 1, quantidade: 2 }],
+        a: [i({ ordem: 1, precoDeVenda: 10, descontoUnitario: 1, quantidade: 2 })],
       }),
     ];
     const rows = topProdutos(dataset, 5);
@@ -45,8 +67,8 @@ describe('topProdutos', () => {
   it('drops items without produtoUid (NONE bucket and empty key)', () => {
     const rows = topProdutos([
       p('pago', {
-        NONE: [{ ordem: 1, precoDeVenda: 10, descontoUnitario: 0, quantidade: 99 }],
-        '': [{ ordem: 1, precoDeVenda: 5, descontoUnitario: 0, quantidade: 99 }],
+        NONE: [i({ ordem: 1, precoDeVenda: 10, descontoUnitario: 0, quantidade: 99 })],
+        '': [i({ ordem: 1, precoDeVenda: 5, descontoUnitario: 0, quantidade: 99 })],
       }),
     ]);
     expect(rows).toEqual([]);
@@ -54,10 +76,8 @@ describe('topProdutos', () => {
 
   it('respects topN', () => {
     const itens: Pedido['itens'] = {};
-    for (let i = 0; i < 20; i++) {
-      itens[`p${i}`] = [
-        { ordem: 1, precoDeVenda: 1, descontoUnitario: 0, quantidade: i + 1 },
-      ];
+    for (let n = 0; n < 20; n++) {
+      itens[`p${n}`] = [i({ ordem: 1, precoDeVenda: 1, descontoUnitario: 0, quantidade: n + 1 })];
     }
     const rows = topProdutos([p('pago', itens)], 3);
     expect(rows.length).toBe(3);
@@ -68,9 +88,9 @@ describe('topProdutos', () => {
 describe('porEstado', () => {
   it('counts pedidos per estado and sums totals', () => {
     const rows = porEstado([
-      p('pago', { x: [{ ordem: 1, precoDeVenda: 100, descontoUnitario: 0, quantidade: 1 }] }),
-      p('pago', { x: [{ ordem: 1, precoDeVenda: 50, descontoUnitario: 0, quantidade: 1 }] }),
-      p('cancelado', { x: [{ ordem: 1, precoDeVenda: 40, descontoUnitario: 0, quantidade: 1 }] }),
+      p('pago', { x: [i({ ordem: 1, precoDeVenda: 100, descontoUnitario: 0, quantidade: 1 })] }),
+      p('pago', { x: [i({ ordem: 1, precoDeVenda: 50, descontoUnitario: 0, quantidade: 1 })] }),
+      p('cancelado', { x: [i({ ordem: 1, precoDeVenda: 40, descontoUnitario: 0, quantidade: 1 })] }),
     ]);
     const pago = rows.find((r) => r.estado === 'pago');
     expect(pago?.count).toBe(2);
@@ -98,10 +118,10 @@ describe('overview', () => {
   it('sums pedidos, receita, itens; ticket médio = receita / pedidos', () => {
     const out = overview([
       p('pago', {
-        a: [{ ordem: 1, precoDeVenda: 10, descontoUnitario: 0, quantidade: 2 }],
+        a: [i({ ordem: 1, precoDeVenda: 10, descontoUnitario: 0, quantidade: 2 })],
       }),
       p('pago', {
-        a: [{ ordem: 1, precoDeVenda: 5, descontoUnitario: 1, quantidade: 4 }],
+        a: [i({ ordem: 1, precoDeVenda: 5, descontoUnitario: 1, quantidade: 4 })],
       }),
     ]);
     expect(out.pedidos).toBe(2);

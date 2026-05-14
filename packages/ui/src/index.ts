@@ -28,7 +28,6 @@ export { FieldRenderer, type FieldRendererProps } from './object/FieldRenderer';
 export { NullClearButton, type NullClearButtonProps } from './object/NullClearButton';
 export { RecordPager, type RecordPagerProps } from './object/RecordPager';
 export { SectionTabs, type SectionTabsProps } from './object/SectionTabs';
-export { FieldPicker, type FieldPickerProps } from './object/FieldPicker';
 export { isEmpty, pickDirty } from './object/diff';
 export {
   NothingChangedError,

@@ -15,18 +15,7 @@ const PERM_MENSAGEM_DELETE = 1n << 53n;
  * compatible with the Flutter app, which is the source of webhook
  * events for non-`site` channels.
  */
-export const origemConversaSchema = z.enum([
-  'site',
-  'facebook',
-  'comentario',
-  'whatsapp',
-  'mlperg',
-  'mlped',
-  'mlclaims',
-]);
-export type OrigemConversa = z.infer<typeof origemConversaSchema>;
-
-export const ORIGEM_LABELS: Record<OrigemConversa, string> = {
+export const ORIGEM_LABELS = {
   site: 'Site',
   facebook: 'Facebook',
   comentario: 'Comentário Facebook',
@@ -34,7 +23,12 @@ export const ORIGEM_LABELS: Record<OrigemConversa, string> = {
   mlperg: 'Mercado Livre Perguntas',
   mlped: 'Mercado Livre Pedido',
   mlclaims: 'Mercado Livre Reclamações',
-};
+} as const;
+
+export const origemConversaSchema = z
+  .enum(['site', 'facebook', 'comentario', 'whatsapp', 'mlperg', 'mlped', 'mlclaims'])
+  .meta({ labels: ORIGEM_LABELS });
+export type OrigemConversa = z.infer<typeof origemConversaSchema>;
 
 /**
  * EstadoConversa — int-coded enum (0/1/2/3/4/5/6/7/8/99). Flutter
@@ -96,38 +90,38 @@ export function podeReabrirConversa(estado: EstadoConversa): boolean {
  * stay opaque pass-through; UI surfaces the IDs and resolves names lazily.
  */
 export const conversaSchema = z.object({
-  id: z.string().nullable().optional(),
-  sender_id: z.string().nullable().optional(),
+  id: z.string().nullable().default(null),
+  sender_id: z.string().nullable().default(null),
   estadoConversa: estadoConversaSchema.default(ESTADO_CONVERSA.naoRespondido),
   origem: origemConversaSchema.default('site'),
 
   // Outer refs (pass-through; the Flutter app authors them with full paths).
-  usarioOuterRef: z.unknown().nullable().optional(),
-  integracaoOuterRef: z.unknown().nullable().optional(),
-  pedidoOuterRef: z.unknown().nullable().optional(),
-  incidenteOuterRef: z.unknown().nullable().optional(),
-  produtoOuterRef: z.unknown().nullable().optional(),
+  usarioOuterRef: z.unknown().nullable().default(null),
+  integracaoOuterRef: z.unknown().nullable().default(null),
+  pedidoOuterRef: z.unknown().nullable().default(null),
+  incidenteOuterRef: z.unknown().nullable().default(null),
+  produtoOuterRef: z.unknown().nullable().default(null),
 
-  usuarios: z.array(z.string()).nullable().optional(),
+  usuarios: z.array(z.string()).nullable().default(null),
 
-  data_cadastro: z.string().datetime().nullable().optional(),
-  ultima_modificacao: z.string().datetime().nullable().optional(),
-  ultimaModificacaoIntegracao: z.string().datetime().nullable().optional(),
-  prazo_resposta: z.string().datetime().nullable().optional(),
-  recebido_fora_atendimento: z.string().datetime().nullable().optional(),
-  recebido_durante_atendimento: z.string().datetime().nullable().optional(),
+  data_cadastro: z.string().datetime().nullable().default(null),
+  ultima_modificacao: z.string().datetime().nullable().default(null),
+  ultimaModificacaoIntegracao: z.string().datetime().nullable().default(null),
+  prazo_resposta: z.string().datetime().nullable().default(null),
+  recebido_fora_atendimento: z.string().datetime().nullable().default(null),
+  recebido_durante_atendimento: z.string().datetime().nullable().default(null),
 
   nome: z.string().default('Conversa sem título'),
   urlAvatar: z.string().default(''),
-  cor_etiqueta: z.number().int().nullable().optional(),
+  cor_etiqueta: z.number().int().nullable().default(null),
   atendido: z.boolean().default(false),
 
-  externalLink: z.string().nullable().optional(),
-  internalLink: z.string().nullable().optional(),
+  externalLink: z.string().nullable().default(null),
+  internalLink: z.string().nullable().default(null),
 
-  versao: z.number().int().nullable().optional(),
-  mensagensIdMap: z.record(z.string(), z.unknown()).nullable().optional(),
-  mensagensId: z.array(z.string()).nullable().optional(),
+  versao: z.number().int().nullable().default(null),
+  mensagensIdMap: z.record(z.string(), z.unknown()).nullable().default(null),
+  mensagensId: z.array(z.string()).nullable().default(null),
 }).passthrough();
 
 export type Conversa = z.infer<typeof conversaSchema>;
@@ -188,17 +182,19 @@ export const ESTADO_ENVIO_LABELS: Record<EstadoEnvioMensagem, string> = {
 /**
  * TipoMensagem — single-char string-coded enum.
  */
-export const tipoMensagemSchema = z.enum(['c', 'e', 'v', 'a', 'f', '!']);
-export type TipoMensagem = z.infer<typeof tipoMensagemSchema>;
-
-export const TIPO_MENSAGEM_LABELS: Record<TipoMensagem, string> = {
+export const TIPO_MENSAGEM_LABELS = {
   c: 'Comum',
   e: 'Evento',
   v: 'Vídeo',
   a: 'Áudio',
   f: 'Arquivo',
   '!': 'Erro',
-};
+} as const;
+
+export const tipoMensagemSchema = z
+  .enum(['c', 'e', 'v', 'a', 'f', '!'])
+  .meta({ labels: TIPO_MENSAGEM_LABELS });
+export type TipoMensagem = z.infer<typeof tipoMensagemSchema>;
 
 /**
  * Mensagem — subcollection `chat/{conversaId}/mensagem`. Mirrors
@@ -207,23 +203,23 @@ export const TIPO_MENSAGEM_LABELS: Record<TipoMensagem, string> = {
 export const mensagemSchema = z.object({
   estadoEnvio: estadoEnvioMensagemSchema.default(ESTADO_ENVIO.salva),
   tipo: tipoMensagemSchema.default('c'),
-  conteudo: z.string().nullable().optional(),
-  resposta: z.string().nullable().optional(),
+  conteudo: z.string().nullable().default(null),
+  resposta: z.string().nullable().default(null),
   canal: z.number().int().default(0),
-  usarioMensagemOuterRef: z.unknown().nullable().optional(),
-  user_id: z.string().nullable().optional(),
-  urlAvatar: z.string().nullable().optional(),
-  mid: z.string().nullable().optional(),
-  midGroup: z.string().nullable().optional(),
-  error: z.string().nullable().optional(),
-  visualizado: z.string().datetime().nullable().optional(),
-  transcription: z.string().nullable().optional(),
-  anexo: z.string().nullable().optional(),
-  anexoUrl: z.string().nullable().optional(),
+  usarioMensagemOuterRef: z.unknown().nullable().default(null),
+  user_id: z.string().nullable().default(null),
+  urlAvatar: z.string().nullable().default(null),
+  mid: z.string().nullable().default(null),
+  midGroup: z.string().nullable().default(null),
+  error: z.string().nullable().default(null),
+  visualizado: z.string().datetime().nullable().default(null),
+  transcription: z.string().nullable().default(null),
+  anexo: z.string().nullable().default(null),
+  anexoUrl: z.string().nullable().default(null),
   // Mensagem timestamp ordering field. Flutter writes either createTime
   // (Firestore metadata) or an explicit `timestamp` — we expect the
   // latter when authoring from this app.
-  timestamp: z.string().datetime().nullable().optional(),
+  timestamp: z.string().datetime().nullable().default(null),
 }).passthrough();
 
 export type Mensagem = z.infer<typeof mensagemSchema>;

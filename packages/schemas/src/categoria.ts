@@ -18,17 +18,15 @@ export const categoriaSchema = z.object({
   nomeCompleto: z
     .string()
     .max(2000)
-    .nullable()
-    .optional()
+    .nullable().default(null)
     .describe('Nome completo'),
   permiteCadastro: z.boolean().default(true).describe('Permite cadastro'),
   categoriaGoogleId: z
     .string()
-    .nullable()
-    .optional()
+    .nullable().default(null)
     .describe('Google Product Category ID'),
-  categoriaPaiOuterRef: z.unknown().nullable().optional(),
-  timestamp: z.string().datetime().nullable().optional(),
+  categoriaPaiOuterRef: z.unknown().nullable().default(null),
+  timestamp: z.string().datetime().nullable().default(null),
 });
 
 export type Categoria = z.infer<typeof categoriaSchema>;

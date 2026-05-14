@@ -11,7 +11,9 @@ describe('cargoSchema', () => {
     const out = cargoSchema.parse({ nome: 'Vendedor' });
     expect(out).toEqual({
       nome: 'Vendedor',
+      descricao: null,
       permissoes: '0',
+      timestamp: null,
     });
   });
 
@@ -35,6 +37,8 @@ describe('cargoSchema', () => {
     const big = ((1n << 100n) - 1n).toString();
     const out = cargoSchema.parse({ nome: 'Big', permissoes: big });
     expect(out.permissoes).toBe(big);
+    expect(out.descricao).toBeNull();
+    expect(out.timestamp).toBeNull();
   });
 });
 

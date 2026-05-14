@@ -111,10 +111,15 @@ function deriveEnumValues(
 ): Array<{ value: string; label: string }> | undefined {
   const def = defOf(inner);
   if (def.type !== 'enum' || !def.entries) return undefined;
-  // `entries` is keyed by label → value (string enums use identical keys/values).
+  // Optional human-readable labels attached at the schema level via
+  // `.meta({ labels: { ... } })`. Without it we fall back to the enum
+  // key, which is fine for codes like UF but not for `'0' | '1' | '2'`.
+  const labels = (
+    inner as { meta?: () => { labels?: Record<string, string> } | undefined }
+  ).meta?.()?.labels;
   return Object.entries(def.entries).map(([k, v]) => ({
     value: String(v),
-    label: k,
+    label: labels?.[String(v)] ?? k,
   }));
 }
 
@@ -149,6 +154,41 @@ export function extractFieldsFromSchema<T extends ZodRawShape>(
       referenceCollection: kind === 'reference' ? desc.collection : undefined,
       zodType: inner,
     });
+  }
+  return out;
+}
+
+/**
+ * Build a defaults object for `react-hook-form`'s `defaultValues`. After the
+ * schema sweep every nullable field has `.default(null)` baked in, so calling
+ * `schema.parse({})` would also work — but consumers (TableView/ObjectView)
+ * already have descriptors in hand and want to merge over caller-provided
+ * defaults, so deriving from descriptors stays cheap and explicit.
+ *
+ *  - nullable fields → `null` (RHF treats this as "value present, equal to null")
+ *  - boolean → `false`
+ *  - text-ish strings → `''` (Mantine inputs reject `undefined` controlled value)
+ *  - everything else → left out; required-without-default surfaces a real
+ *    validation error at submit, which is the intended behavior.
+ */
+export function buildEmptyDefaults(
+  descriptors: FieldDescriptor[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const d of descriptors) {
+    if (d.nullable) {
+      out[d.key] = null;
+    } else if (
+      d.kind === 'string' ||
+      d.kind === 'longText' ||
+      d.kind === 'email' ||
+      d.kind === 'tel' ||
+      d.kind === 'url'
+    ) {
+      out[d.key] = '';
+    } else if (d.kind === 'boolean') {
+      out[d.key] = false;
+    }
   }
   return out;
 }

@@ -15,9 +15,9 @@ const PERM_CONFIG_WRITE = 1n << 41n;
  */
 export const cargoSchema = z.object({
   nome: z.string().min(1).max(255),
-  descricao: z.string().max(500).nullable().optional(),
+  descricao: z.string().max(500).nullable().default(null),
   permissoes: z.string().regex(/^\d+$/, 'apenas dígitos').default('0'),
-  timestamp: z.string().datetime().nullable().optional(),
+  timestamp: z.string().datetime().nullable().default(null),
 });
 
 export type Cargo = z.infer<typeof cargoSchema>;

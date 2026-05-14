@@ -23,6 +23,8 @@ export {
   type PipelineSpec,
   type PipelineSearchSpec,
   type PipelineOrderSpec,
+  type PipelineFieldFilter,
+  type PipelineFilterOp,
 } from './pipeline-queries';
 
 export {

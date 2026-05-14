@@ -12,9 +12,8 @@ import {
   type PathContext,
 } from '@delfrance/data';
 import { useDocSnapshot } from '@delfrance/data/hooks';
-import { extractFieldsFromSchema } from '../schema/derive';
+import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
 import type { FieldConfig, FieldDescriptor } from '../schema/types';
-import { FieldPicker } from './FieldPicker';
 import { FieldRenderer } from './FieldRenderer';
 import { RecordPager } from './RecordPager';
 import { SectionTabs } from './SectionTabs';
@@ -101,31 +100,26 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   );
   const docSnap = useDocSnapshot<Doc>(docRef);
 
-  // FieldPicker visibility — local state, not persisted. Initialize once
-  // from the descriptor list; consumers that need a re-derive can remount
-  // the ObjectView with a different `key` prop.
-  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(() =>
-    new Set(
-      descriptors
-        .filter((d) => !excludedFields.includes(d.key))
-        .filter((d) => !fieldOverrides[d.key]?.hidden)
-        .map((d) => d.key),
-    ),
-  );
+  // Nullable fields default to `null` (not `undefined`) so Firestore's
+  // converter doesn't reject them on save and Mantine's controlled inputs
+  // get a stable initial value.
+  const emptyDefaults = useMemo(() => buildEmptyDefaults(descriptors), [descriptors]);
 
   const form = useForm<FieldValues>({
     resolver: zodResolver(schema as never),
-    defaultValues: (defaultValues ?? {}) as FieldValues,
+    defaultValues: { ...emptyDefaults, ...(defaultValues ?? {}) } as FieldValues,
     mode: 'onBlur',
   });
 
   // When the doc loads (or the record id changes), reset the form to the
   // loaded values. RHF needs `reset()` to also zero out `dirtyFields`.
+  // Merge with emptyDefaults so docs missing nullable fields still get null
+  // (instead of undefined leaking back through the patch on the next save).
   useEffect(() => {
     if (docSnap.data) {
-      form.reset(docSnap.data.data as FieldValues);
+      form.reset({ ...emptyDefaults, ...(docSnap.data.data as FieldValues) });
     } else if (!internalId) {
-      form.reset((defaultValues ?? {}) as FieldValues);
+      form.reset({ ...emptyDefaults, ...(defaultValues ?? {}) } as FieldValues);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docSnap.data?.id]);
@@ -169,16 +163,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   const submitDefault = form.handleSubmit(() => doSave(false));
   const submitContinue = form.handleSubmit(() => doSave(true));
 
-  function toggleField(key: string) {
-    setVisibleKeys((cur) => {
-      const next = new Set(cur);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
-
-  const visibleDescriptors = descriptors.filter((d) => visibleKeys.has(d.key));
+  // Field visibility is a design-time decision (excludedFields / hidden in
+  // fieldOverrides) — end users don't get a toggle. Build the list once.
+  const visibleDescriptors = descriptors.filter(
+    (d) => !excludedFields.includes(d.key) && !fieldOverrides[d.key]?.hidden,
+  );
 
   // Group visible descriptors by section. When the caller didn't supply a
   // `sections` prop, render them flat (no tabs).
@@ -230,11 +219,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
               confirmNavigation={form.formState.isDirty ? () => false : undefined}
             />
           ) : <span />}
-          <FieldPicker
-            fields={descriptors.filter((d) => !excludedFields.includes(d.key))}
-            visibleKeys={visibleKeys}
-            onToggle={toggleField}
-          />
         </Group>
 
         {loading && <Stack><Skeleton height={42} /><Skeleton height={42} /></Stack>}

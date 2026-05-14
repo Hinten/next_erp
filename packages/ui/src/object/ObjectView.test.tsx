@@ -55,8 +55,6 @@ describe('ObjectView', () => {
         />
       </Wrap>,
     );
-    // FieldPicker also renders a checkbox per descriptor — getAllByLabelText
-    // sees both, so just assert the input exists by role (text/combobox).
     expect(screen.getByRole('textbox', { name: 'Nome' })).toBeTruthy();
     expect(screen.getByRole('textbox', { name: 'Observações' })).toBeTruthy();
   });

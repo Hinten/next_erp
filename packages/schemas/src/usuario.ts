@@ -22,8 +22,8 @@ export const usuarioSchema = z.object({
   isSuperUser: z.boolean().default(false),
   jaFoiColaborador: z.boolean().default(false),
   jaFoiSuperUser: z.boolean().default(false),
-  ultimoAcesso: z.string().datetime().nullable().optional(),
-  timestamp: z.string().datetime().nullable().optional(),
+  ultimoAcesso: z.string().datetime().nullable().default(null),
+  timestamp: z.string().datetime().nullable().default(null),
 });
 
 export type Usuario = z.infer<typeof usuarioSchema>;
