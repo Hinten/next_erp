@@ -4,7 +4,6 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
-  ActionIcon,
   Alert,
   Anchor,
   Badge,
@@ -81,13 +80,12 @@ export default function CargosPage() {
               <Table.Th>Nome</Table.Th>
               <Table.Th>Descrição</Table.Th>
               <Table.Th>Permissões</Table.Th>
-              <Table.Th />
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
             {data.length === 0 && (
               <Table.Tr>
-                <Table.Td colSpan={4} align="center">
+                <Table.Td colSpan={3} align="center">
                   Nenhum cargo cadastrado.
                 </Table.Td>
               </Table.Tr>
@@ -108,31 +106,6 @@ export default function CargosPage() {
                   <Badge variant="light">
                     {countBits(decodePermissoes(c))} permissões
                   </Badge>
-                </Table.Td>
-                <Table.Td>
-                  <PermGate
-                    bit={PERM.configuracoes.write}
-                    tooltipLabel="Sem permissão para editar."
-                    fallback={
-                      <ActionIcon
-                        variant="subtle"
-                        aria-label="Editar"
-                        disabled
-                      >
-                        ✎
-                      </ActionIcon>
-                    }
-                  >
-                    <ActionIcon
-                      component={Link}
-                      href={`/configuracoes/cargos/${id}/editar`}
-                      variant="subtle"
-                      aria-label="Editar"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      ✎
-                    </ActionIcon>
-                  </PermGate>
                 </Table.Td>
               </Table.Tr>
             ))}

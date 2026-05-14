@@ -1,8 +1,9 @@
 'use client';
 
 import { type ReactNode, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
-  Alert, Anchor, Checkbox, Group, Skeleton, Stack, Table, Text, Title,
+  Alert, Checkbox, Group, Skeleton, Stack, Table, Text, Title,
 } from '@mantine/core';
 import type { Firestore, Query } from 'firebase/firestore';
 import type { z, ZodObject, ZodRawShape } from 'zod';
@@ -117,19 +118,15 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     return new Set(descriptors.filter((d) => d.kind !== 'unknown').map((d) => d.key));
   });
 
+  const router = useRouter();
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Per-column filters keyed by field key. AND-combined; cleared by setting
   // the entry to `undefined` (or deleting the key).
   const [filters, setFilters] = useState<Record<string, ColumnFilterValue>>({});
 
-  // Stable serialized keys for useMemo deps. visibleKeys + filters change
-  // shape per click; bucket them into deterministic strings so the pipeline
-  // only rebuilds when content actually changes.
-  const visibleKeysSerial = useMemo(
-    () => [...visibleKeys].sort().join('|'),
-    [visibleKeys],
-  );
+  // filters changes shape per click; bucket it into a deterministic string
+  // so the pipeline only rebuilds when content actually changes.
   const filtersSerial = useMemo(() => JSON.stringify(filters), [filters]);
 
   // --- Data source selection ----------------------------------------------
@@ -145,7 +142,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           ? { fields: searchFields, term: search.trim() }
           : undefined,
         filters: Object.entries(filters).map(([field, v]) => ({ field, ...v })),
-        select: [...visibleKeys],
+        // NOTE: do NOT pass `select` here. The Pipelines `.select()` stage
+        // produces ad-hoc records and strips `PipelineResult.ref` — the row
+        // id we use for `rowHref` navigation becomes undefined and the UI
+        // routes to /collection/0, /collection/1 (404). Data-transfer
+        // optimization via select() is fine for read-only aggregations; not
+        // for listings that need row identity.
         orderBy: orderBy ? [{ field: orderBy.field, direction: orderBy.direction ?? 'asc' }] : undefined,
         limit: pageSize,
       });
@@ -155,7 +157,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // `pathContext` is intentionally not stringified; consumers should keep
     // the object stable across renders (matches the rest of the data layer).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, collection, queryOverride, search, pageSize, orderBy?.field, orderBy?.direction, searchFields?.join('|'), filtersSerial, visibleKeysSerial]);
+  }, [db, collection, queryOverride, search, pageSize, orderBy?.field, orderBy?.direction, searchFields?.join('|'), filtersSerial]);
 
   const fallbackQuery: Query<z.infer<S>> | null = useMemo(() => {
     if (queryOverride) return queryOverride;
@@ -306,7 +308,16 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             {snap.data.map((row) => {
               const href = rowHref ? rowHref(row.id, row.data) : undefined;
               return (
-                <Table.Tr key={row.id}>
+                <Table.Tr
+                  key={row.id}
+                  // Whole row navigates when rowHref is supplied. <Table> at
+                  // line 264 already enables `highlightOnHover`, so the row
+                  // visibly highlights and the cursor becomes pointer.
+                  // Empty `id` (e.g. pipeline used .select() and lost ref)
+                  // would generate /collection/'' — skip onClick in that case.
+                  onClick={href && row.id ? () => router.push(href) : undefined}
+                  style={href && row.id ? { cursor: 'pointer' } : undefined}
+                >
                   {selectable && (
                     <Table.Td onClick={(e) => e.stopPropagation()}>
                       <Checkbox
@@ -316,23 +327,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                       />
                     </Table.Td>
                   )}
-                  {visibleDescriptors.map((d, idx) => {
+                  {visibleDescriptors.map((d) => {
                     const override = fieldOverrides[d.key];
                     const value = (row.data as Record<string, unknown>)[d.key];
                     const content = override?.renderCell
                       ? override.renderCell(value as never, row.data)
                       : renderCell(value, d);
-                    // First cell becomes the row link target — matches the
-                    // existing /clientes page pattern.
-                    if (idx === 0 && href) {
-                      return (
-                        <Table.Td key={d.key}>
-                          {renderRowLink ? renderRowLink(href, content) : (
-                            <Anchor href={href}>{content}</Anchor>
-                          )}
-                        </Table.Td>
-                      );
-                    }
                     return <Table.Td key={d.key}>{content}</Table.Td>;
                   })}
                 </Table.Tr>

@@ -34,6 +34,12 @@ export interface CargoFormProps {
    * boundary; this is a UX guard.
    */
   callerBits: bigint;
+  /**
+   * Disable every input and hide the submit button. Used by `[id]/page.tsx`
+   * when the user lacks `PERM.configuracoes.write`. The PermissionEditor
+   * propagates the same flag internally.
+   */
+  readOnly?: boolean;
 }
 
 export function CargoForm({
@@ -41,6 +47,7 @@ export function CargoForm({
   submitLabel = 'Salvar',
   onSubmit,
   callerBits,
+  readOnly = false,
 }: CargoFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -81,6 +88,7 @@ export function CargoForm({
               error={fieldState.error?.message}
               maxLength={255}
               required
+              disabled={readOnly}
             />
           )}
         />
@@ -97,6 +105,7 @@ export function CargoForm({
               maxLength={500}
               autosize
               minRows={2}
+              disabled={readOnly}
             />
           )}
         />
@@ -110,6 +119,7 @@ export function CargoForm({
               <PermissionEditor
                 value={decodePermissoes({ permissoes: field.value ?? '0' })}
                 onChange={(next) => field.onChange(encodePermissoes(next))}
+                readOnly={readOnly}
               />
             )}
           />
@@ -117,11 +127,13 @@ export function CargoForm({
 
         {submitError && <Alert color="red">{submitError}</Alert>}
 
-        <Group justify="flex-end">
-          <Button type="submit" loading={form.formState.isSubmitting}>
-            {submitLabel}
-          </Button>
-        </Group>
+        {!readOnly && (
+          <Group justify="flex-end">
+            <Button type="submit" loading={form.formState.isSubmitting}>
+              {submitLabel}
+            </Button>
+          </Group>
+        )}
       </Stack>
     </form>
   );

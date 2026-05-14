@@ -16,6 +16,7 @@ import {
   lessThan,
   lessThanOrEqual,
   or,
+  regexContains,
   startsWith,
 } from 'firebase/firestore/pipelines';
 
@@ -55,9 +56,11 @@ export interface PipelineFieldFilter {
 export interface PipelineSpec {
   collection: string;
   /**
-   * Prefix-search across multiple fields, OR-combined. Empty `term` skips
-   * the filter entirely so callers can pass `{ term: search.trim() }` and
-   * not branch on empties.
+   * Substring search across multiple fields, OR-combined. Each field is
+   * matched with `regexContains` using a case-insensitive, accent-folded
+   * pattern so "ana" matches "Aná" / "Aná" / "AnA" and "açaí" matches
+   * "Acai". Empty / whitespace-only `term` skips the filter entirely so
+   * callers can pass the user input as-is without branching.
    */
   search?: PipelineSearchSpec;
   /**
@@ -68,9 +71,11 @@ export interface PipelineSpec {
   filters?: PipelineFieldFilter[];
   orderBy?: PipelineOrderSpec[];
   /**
-   * Project only these fields (Pipeline `select` stage). Saves data transfer
-   * when the TableView only renders a subset of columns. The document id /
-   * ref is always available via `PipelineResult.ref` regardless of select.
+   * Project only these fields (Pipeline `select` stage). WARNING: the
+   * `.select()` stage produces ad-hoc records — `PipelineResult.ref` and
+   * `.id` come back `undefined`, so callers that need the document id
+   * (e.g. row-click navigation) MUST omit this. Use it only for read-only
+   * aggregations / exports where the row identity doesn't matter.
    */
   select?: string[];
   limit?: number;
@@ -86,6 +91,44 @@ export type { Pipeline };
  */
 export function isPipelineSupported(db: Firestore): boolean {
   return typeof (db as Firestore & { pipeline?: unknown }).pipeline === 'function';
+}
+
+// Each ASCII letter expands to a character class covering its accented
+// variants (and cedilla for c). The (?i) flag in the final pattern handles
+// case. Letters not in this map are matched literally.
+const ACCENT_GROUPS: Record<string, string> = {
+  a: '[aàáâãäå]',
+  e: '[eèéêë]',
+  i: '[iìíîï]',
+  o: '[oòóôõö]',
+  u: '[uùúûü]',
+  c: '[cç]',
+  n: '[nñ]',
+  y: '[yýÿ]',
+};
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Build a case- and accent-insensitive regex pattern for substring search.
+ * Input is trimmed, NFD-stripped of diacritics, lowercased, regex-escaped,
+ * then each ASCII letter is expanded to its accent class. Returns `''` for
+ * empty / whitespace-only input so callers can skip the `where` entirely.
+ *
+ * Example: "Açaí" → "(?i)[aàáâãäå][cç][aàáâãäå][iìíîï]"
+ */
+export function buildSimilarityPattern(term: string): string {
+  const trimmed = term.trim();
+  if (!trimmed) return '';
+  const ascii = trimmed
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+  const escaped = escapeRegex(ascii);
+  const expanded = escaped.replace(/[aeiouncy]/g, (ch) => ACCENT_GROUPS[ch] ?? ch);
+  return `(?i)${expanded}`;
 }
 
 function filterExpr(f: PipelineFieldFilter): BooleanExpression {
@@ -120,13 +163,15 @@ export function buildPipeline(db: Firestore, spec: PipelineSpec): Pipeline {
 
   let pipe: Pipeline = db.pipeline().collection(spec.collection);
 
-  if (spec.search && spec.search.term && spec.search.fields.length > 0) {
-    const term = spec.search.term;
-    const perField = spec.search.fields.map((f) => startsWith(f, term));
-    pipe =
-      perField.length === 1
-        ? pipe.where(perField[0]!)
-        : pipe.where(or(perField[0]!, perField[1]!, ...perField.slice(2)));
+  if (spec.search && spec.search.fields.length > 0) {
+    const pattern = buildSimilarityPattern(spec.search.term);
+    if (pattern) {
+      const perField = spec.search.fields.map((f) => regexContains(f, pattern));
+      pipe =
+        perField.length === 1
+          ? pipe.where(perField[0]!)
+          : pipe.where(or(perField[0]!, perField[1]!, ...perField.slice(2)));
+    }
   }
 
   if (spec.filters?.length) {

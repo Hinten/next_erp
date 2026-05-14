@@ -36,11 +36,25 @@ export function usePipelineSnapshot<T>(
       .then((snap) => {
         if (cancelled) return;
         setState({
-          data: snap.results.map((r, idx) => ({
-            id: r.ref?.id ?? r.id ?? String(idx),
-            path: r.ref?.path ?? '',
-            data: r.data() as T,
-          })),
+          data: snap.results.map((r) => {
+            const id = r.ref?.id ?? r.id ?? '';
+            if (!id) {
+              // A pipeline with `.select(...)` returns ad-hoc records whose
+              // `ref` is undefined — row identity is gone. Surface the bug
+              // loudly so callers (e.g. TableView) drop the projection
+              // instead of generating /collection/'' navigation URLs.
+              // eslint-disable-next-line no-console
+              console.warn(
+                '[usePipelineSnapshot] result has no document id — pipeline likely uses ' +
+                  '.select() which strips identity. Drop select() or use addFields() instead.',
+              );
+            }
+            return {
+              id,
+              path: r.ref?.path ?? '',
+              data: r.data() as T,
+            };
+          }),
           loading: false,
           error: undefined,
         });

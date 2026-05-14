@@ -1,7 +1,6 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { deleteDoc } from 'firebase/firestore';
 import { Button } from '@mantine/core';
 import { categoriaSchema } from '@delfrance/schemas';
@@ -10,8 +9,6 @@ import { categoriaCollection } from '@/lib/data/categoriaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 
 export default function CategoriasPage() {
-  const router = useRouter();
-
   return (
     <TableView
       title="Categorias"
@@ -28,20 +25,6 @@ export default function CategoriasPage() {
         <Button component={Link} href="/categorias/novo">
           Nova categoria
         </Button>
-      )}
-      renderRowLink={(href, content) => (
-        <Link
-          href={href}
-          style={{ color: 'inherit', textDecoration: 'none' }}
-          onClick={(e) => {
-            // Let TanStack/Next handle the navigation; we just stop the
-            // row-level click handler from double-firing.
-            e.stopPropagation();
-            router.push(href);
-          }}
-        >
-          {content}
-        </Link>
       )}
       selectable
       actions={[

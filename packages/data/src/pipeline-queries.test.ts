@@ -10,6 +10,7 @@ const { mockPipelinesExports } = vi.hoisted(() => ({
     ascending: (f: unknown) => ({ kind: 'asc', f }),
     descending: (f: unknown) => ({ kind: 'desc', f }),
     startsWith: (f: unknown, t: unknown) => ({ kind: 'startsWith', f, t }),
+    regexContains: (f: unknown, p: unknown) => ({ kind: 'regexContains', f, p }),
     equal: (l: unknown, r: unknown) => ({ kind: 'equal', l, r }),
     lessThan: (l: unknown, r: unknown) => ({ kind: 'lt', l, r }),
     lessThanOrEqual: (l: unknown, r: unknown) => ({ kind: 'lte', l, r }),
@@ -96,7 +97,7 @@ describe('buildPipeline', () => {
     );
   });
 
-  it('builds collection -> where(or(startsWith, startsWith)) -> sort -> limit', () => {
+  it('builds collection -> where(or(regexContains, regexContains)) -> sort -> limit', () => {
     const { db, stage, collection } = makeDb(true);
     buildPipeline(db, {
       collection: 'clientes',
@@ -116,22 +117,38 @@ describe('buildPipeline', () => {
     expect(stage.limit).toHaveBeenCalledWith(50);
   });
 
-  it('uses single startsWith directly (no or) when only one search field', () => {
+  it('uses single regexContains directly (no or) when only one search field', () => {
     const { db, stage } = makeDb(true);
     buildPipeline(db, {
       collection: 'x',
       search: { fields: ['nome'], term: 'a' },
     });
     expect(stage.where).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'startsWith' }),
+      expect.objectContaining({ kind: 'regexContains' }),
     );
   });
 
-  it('skips where when search term is empty', () => {
+  it('similarity search is case- and accent-insensitive and trims whitespace', () => {
     const { db, stage } = makeDb(true);
     buildPipeline(db, {
       collection: 'x',
-      search: { fields: ['nome'], term: '' },
+      search: { fields: ['nome'], term: '  Açaí  ' },
+    });
+    // Pattern: (?i) flag + each ASCII letter expanded to its accent class.
+    expect(stage.where).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'regexContains',
+        f: 'nome',
+        p: '(?i)[aàáâãäå][cç][aàáâãäå][iìíîï]',
+      }),
+    );
+  });
+
+  it('skips where when search term is empty or whitespace', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'x',
+      search: { fields: ['nome'], term: '   ' },
     });
     expect(stage.where).not.toHaveBeenCalled();
   });

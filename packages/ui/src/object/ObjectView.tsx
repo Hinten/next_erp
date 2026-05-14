@@ -54,6 +54,34 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>> {
   saveLabel?: string;
   /** Show a secondary "Salvar e continuar" button. Default true. */
   showSaveAndContinue?: boolean;
+
+  /**
+   * Hide save buttons. Pair with `readOnly` to also disable fields. When
+   * `canEdit === false` and `readOnly` is unset, the form is interactive
+   * but the user can't persist — useful for previewing changes. Default
+   * true.
+   */
+  canEdit?: boolean;
+  /**
+   * Disable every field. Implies `canEdit: false` for the save buttons.
+   * Default false.
+   */
+  readOnly?: boolean;
+  /**
+   * Delete the current record. Receives the doc id. When omitted, no
+   * delete button is rendered. The button is also hidden when
+   * `canDelete === false` or there's no `internalId` (create mode).
+   */
+  onDelete?: (id: string) => Promise<void>;
+  /** Default 'Excluir'. */
+  deleteLabel?: string;
+  /** Hide delete button. Default true. */
+  canDelete?: boolean;
+  /**
+   * Optional confirmation message shown before invoking `onDelete`. When
+   * omitted, falls back to `window.confirm` with a generic message.
+   */
+  deleteConfirmMessage?: string;
 }
 
 /**
@@ -82,7 +110,15 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   onSaved,
   saveLabel = 'Salvar',
   showSaveAndContinue = true,
+  canEdit = true,
+  readOnly = false,
+  onDelete,
+  deleteLabel = 'Excluir',
+  canDelete = true,
+  deleteConfirmMessage,
 }: ObjectViewProps<S>) {
+  const editingAllowed = !readOnly && canEdit;
+  const deleteVisible = !!onDelete && canDelete;
   type Doc = z.infer<S>;
 
   const descriptors = useMemo(() => extractFieldsFromSchema(schema), [schema]);
@@ -184,16 +220,37 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   function fieldsBlock(descs: FieldDescriptor[]) {
     return (
       <Stack>
-        {descs.map((d) => (
-          <FieldRenderer
-            key={d.key}
-            control={form.control as never}
-            descriptor={d}
-            config={fieldOverrides[d.key]}
-          />
-        ))}
+        {descs.map((d) => {
+          // When the view is read-only, force `editable: false` regardless
+          // of per-field config. Per-field `editable: false` still wins
+          // when the caller marks a single column non-editable while the
+          // rest of the form is editable.
+          const override = fieldOverrides[d.key];
+          const config: FieldConfig | undefined = readOnly
+            ? { ...override, editable: false }
+            : override;
+          return (
+            <FieldRenderer
+              key={d.key}
+              control={form.control as never}
+              descriptor={d}
+              config={config}
+            />
+          );
+        })}
       </Stack>
     );
+  }
+
+  async function handleDelete() {
+    if (!onDelete || !internalId) return;
+    const msg = deleteConfirmMessage ?? 'Excluir este registro? Esta ação não pode ser desfeita.';
+    if (!window.confirm(msg)) return;
+    try {
+      await onDelete(internalId);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Falha ao excluir.');
+    }
   }
 
   const loading = internalId && docSnap.loading;
@@ -236,20 +293,29 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
 
         {submitError && <Alert color="red">{submitError}</Alert>}
 
-        <Group justify="flex-end">
-          {showSaveAndContinue && (
-            <Button
-              type="button"
-              variant="default"
-              loading={form.formState.isSubmitting}
-              onClick={() => void submitContinue()}
-            >
-              Salvar e continuar
+        <Group justify="space-between">
+          {deleteVisible && internalId ? (
+            <Button color="red" variant="light" onClick={() => void handleDelete()}>
+              {deleteLabel}
             </Button>
-          )}
-          <Button type="submit" loading={form.formState.isSubmitting}>
-            {saveLabel}
-          </Button>
+          ) : <span />}
+          <Group>
+            {editingAllowed && showSaveAndContinue && (
+              <Button
+                type="button"
+                variant="default"
+                loading={form.formState.isSubmitting}
+                onClick={() => void submitContinue()}
+              >
+                Salvar e continuar
+              </Button>
+            )}
+            {editingAllowed && (
+              <Button type="submit" loading={form.formState.isSubmitting}>
+                {saveLabel}
+              </Button>
+            )}
+          </Group>
         </Group>
       </Stack>
     </form>

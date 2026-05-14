@@ -7,8 +7,9 @@ import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 
 // Stub the snapshot hooks + the query helpers so the table renders a static
 // dataset without hitting Firestore's internals. We control the response on a
-// per-test basis via the hoisted `snapState`.
-const { snapState } = vi.hoisted(() => ({
+// per-test basis via the hoisted `snapState`. `pushSpy` captures router
+// navigation triggered by row clicks.
+const { snapState, pushSpy } = vi.hoisted(() => ({
   snapState: {
     current: {
       data: [
@@ -19,6 +20,17 @@ const { snapState } = vi.hoisted(() => ({
       error: undefined,
     } as SnapshotState<SnapshotRow<{ nome?: string; tipo?: string }>[]>,
   },
+  pushSpy: vi.fn(),
+}));
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: pushSpy,
+    replace: vi.fn(),
+    back: vi.fn(),
+    refresh: vi.fn(),
+    prefetch: vi.fn(),
+  }),
 }));
 
 vi.mock('@delfrance/data/hooks', async () => {
@@ -91,7 +103,8 @@ describe('TableView', () => {
     expect(headers).not.toContain('Tipo');
   });
 
-  it('renders one row per snapshot entry, plus a click-link on the first cell', () => {
+  it('clicking a row calls router.push with the rowHref', () => {
+    pushSpy.mockClear();
     wrap(
       <TableView
         schema={testSchema}
@@ -100,8 +113,10 @@ describe('TableView', () => {
         rowHref={(id) => `/tests/${id}`}
       />,
     );
-    const aliceLink = screen.getByRole('link', { name: 'Alice' });
-    expect(aliceLink.getAttribute('href')).toBe('/tests/1');
+    // Click the cell containing "Alice" — the click handler is on the
+    // surrounding <tr>, which receives the event via bubbling.
+    fireEvent.click(screen.getByText('Alice'));
+    expect(pushSpy).toHaveBeenCalledWith('/tests/1');
   });
 
   it('shows an empty state when no rows', () => {

@@ -1,7 +1,6 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { deleteDoc } from 'firebase/firestore';
 import { Badge, Button } from '@mantine/core';
 import {
@@ -15,8 +14,6 @@ import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 
 export default function ClientesPage() {
-  const router = useRouter();
-
   return (
     <TableView<typeof clienteSchema>
       title="Clientes"
@@ -32,18 +29,6 @@ export default function ClientesPage() {
         <Button component={Link} href="/clientes/novo">
           Novo cliente
         </Button>
-      )}
-      renderRowLink={(href, content) => (
-        <Link
-          href={href}
-          style={{ color: 'inherit', textDecoration: 'none' }}
-          onClick={(e) => {
-            e.stopPropagation();
-            router.push(href);
-          }}
-        >
-          {content}
-        </Link>
       )}
       fields={{
         tipo: {

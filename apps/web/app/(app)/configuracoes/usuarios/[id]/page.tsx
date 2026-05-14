@@ -1,35 +1,33 @@
 'use client';
 
-import { useMemo } from 'react';
-import { useParams } from 'next/navigation';
+import { useMemo, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { setDoc } from 'firebase/firestore';
 import {
   Alert,
   Anchor,
-  Badge,
-  Button,
-  Card,
-  Divider,
   Group,
   Skeleton,
   Stack,
-  Text,
   Title,
 } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
-import { aggregatePermissoes } from '@delfrance/schemas';
-import { buildQuery } from '@delfrance/data';
-import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
-import { PermGate } from '../../_components/PermGate';
-import { cargoCollection } from '@/lib/data/cargoCollection';
+import type { Usuario } from '@delfrance/schemas';
+import { useDocSnapshot } from '@delfrance/data/hooks';
+import { useAuth, useIsSuperUser, usePermission } from '@/lib/auth';
+import { UsuarioForm } from '../_components/UsuarioForm';
 import { usuarioCollection } from '@/lib/data/usuarioCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
-import {
-  PermissionEditor,
-} from '../../_components/PermissionEditor';
+import { refreshClaims } from '@/lib/admin/users';
 
-export default function UsuarioDetailPage() {
+export default function UsuarioPage() {
   const params = useParams<{ id: string }>();
+  const router = useRouter();
+  const { user } = useAuth();
+  const callerIsSuperUser = useIsSuperUser();
+  const { allowed: canWrite } = usePermission(PERM.configuracoes.write);
+  const [claimsWarning, setClaimsWarning] = useState<string | null>(null);
 
   const docRef = useMemo(
     () => usuarioCollection.docRef(getFirebaseFirestore(), {}, params.id),
@@ -37,131 +35,49 @@ export default function UsuarioDetailPage() {
   );
   const { data, loading, error } = useDocSnapshot(docRef);
 
-  const cargosQuery = useMemo(() => {
-    const base = cargoCollection.ref(getFirebaseFirestore(), {});
-    return buildQuery(base, []);
-  }, []);
-  const { data: cargos } = useSnapshot(cargosQuery);
-
-  const cargoById = useMemo(() => {
-    const m = new Map<string, { nome: string; permissoes: string }>();
-    cargos?.forEach(({ id, data: c }) =>
-      m.set(id, { nome: c.nome, permissoes: c.permissoes }),
-    );
-    return m;
-  }, [cargos]);
-
-  if (loading) {
-    return (
-      <Stack>
-        <Skeleton height={32} width={200} />
-        <Skeleton height={200} />
-      </Stack>
-    );
+  async function handleSubmit(values: Usuario) {
+    await setDoc(docRef, values, { merge: true });
+    // Recompute custom claims on the server so the next token refresh
+    // reflects the new cargo set. Failure here is non-fatal — the Firestore
+    // doc is the source of truth, claims will resync on next refresh.
+    if (user) {
+      try {
+        const idToken = await user.getIdToken();
+        await refreshClaims(params.id, idToken);
+        setClaimsWarning(null);
+      } catch (err) {
+        setClaimsWarning(
+          err instanceof Error
+            ? `Claims não recomputados: ${err.message}`
+            : 'Claims não recomputados.',
+        );
+      }
+    }
+    router.replace('/configuracoes/usuarios');
   }
-
-  if (error) return <Alert color="red">{error.message}</Alert>;
-
-  if (!data) {
-    return (
-      <Stack>
-        <Alert color="yellow">Usuário não encontrado.</Alert>
-        <Anchor component={Link} href="/configuracoes/usuarios">
-          Voltar
-        </Anchor>
-      </Stack>
-    );
-  }
-
-  const u = data.data;
-  const effectiveBits = aggregatePermissoes(u, cargoById);
 
   return (
     <Stack>
       <Group justify="space-between" align="center">
-        <Group align="center">
-          <Title order={2}>{u.nome}</Title>
-          {u.isSuperUser && (
-            <Badge color="red" variant="filled">
-              Superusuário
-            </Badge>
-          )}
-          {!u.ativo && (
-            <Badge color="gray" variant="light">
-              Inativo
-            </Badge>
-          )}
-        </Group>
-        <PermGate
-          bit={PERM.configuracoes.write}
-          tooltipLabel="Sem permissão para editar (requer configurações.write)."
-          fallback={<Button disabled>Editar</Button>}
-        >
-          <Button
-            component={Link}
-            href={`/configuracoes/usuarios/${data.id}/editar`}
-          >
-            Editar
-          </Button>
-        </PermGate>
+        <Title order={2}>Usuário</Title>
+        <Anchor component={Link} href="/configuracoes/usuarios" size="sm">
+          ← Voltar à lista
+        </Anchor>
       </Group>
 
-      <Card withBorder>
-        <Stack gap="xs">
-          <Field label="E-mail" value={u.email} />
-          <Field label="Colaborador interno" value={u.colaborador ? 'Sim' : 'Não'} />
-          <Field
-            label="Último acesso"
-            value={u.ultimoAcesso ?? 'Nunca registrado'}
-          />
-          <Divider my="sm" />
-          <Text fw={600}>Cargos</Text>
-          {u.cargos.length === 0 ? (
-            <Text c="dimmed">Nenhum cargo atribuído.</Text>
-          ) : (
-            <Group gap="xs">
-              {u.cargos.map((cid) => {
-                const c = cargoById.get(cid);
-                return (
-                  <Anchor
-                    key={cid}
-                    component={Link}
-                    href={`/configuracoes/cargos/${cid}`}
-                  >
-                    <Badge variant="light">{c?.nome ?? cid.slice(0, 6)}</Badge>
-                  </Anchor>
-                );
-              })}
-            </Group>
-          )}
-        </Stack>
-      </Card>
-
-      <Card withBorder>
-        <Stack gap="xs">
-          <Title order={4}>Permissões efetivas</Title>
-          <Text size="sm" c="dimmed">
-            União das permissões dos cargos atribuídos.
-          </Text>
-          <PermissionEditor value={effectiveBits} readOnly />
-        </Stack>
-      </Card>
-
-      <Anchor component={Link} href="/configuracoes/usuarios" size="sm">
-        ← Voltar à lista
-      </Anchor>
+      {claimsWarning && <Alert color="yellow">{claimsWarning}</Alert>}
+      {error && <Alert color="red">{error.message}</Alert>}
+      {loading && <Skeleton height={300} />}
+      {!loading && !data && <Alert color="yellow">Usuário não encontrado.</Alert>}
+      {!loading && data && (
+        <UsuarioForm
+          defaultValues={data.data}
+          submitLabel="Salvar alterações"
+          onSubmit={handleSubmit}
+          callerIsSuperUser={callerIsSuperUser}
+          readOnly={!canWrite}
+        />
+      )}
     </Stack>
-  );
-}
-
-function Field({ label, value }: { label: string; value?: string | null }) {
-  if (!value) return null;
-  return (
-    <Group justify="space-between">
-      <Text c="dimmed" size="sm">
-        {label}
-      </Text>
-      <Text>{value}</Text>
-    </Group>
   );
 }

@@ -14,6 +14,8 @@ export interface CargoMultiSelectProps {
   onChange: (next: string[]) => void;
   error?: string;
   label?: string;
+  /** When true, the input is disabled (read-only view). */
+  disabled?: boolean;
 }
 
 /**
@@ -29,6 +31,7 @@ export function CargoMultiSelect({
   onChange,
   error,
   label = 'Cargos',
+  disabled = false,
 }: CargoMultiSelectProps) {
   const { claims } = useTenant();
   const callerBits = useMemo(() => {
@@ -84,6 +87,7 @@ export function CargoMultiSelect({
       placeholder="Selecione um ou mais cargos"
       searchable
       clearable
+      disabled={disabled}
     />
   );
 }
