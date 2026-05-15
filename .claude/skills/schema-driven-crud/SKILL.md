@@ -260,6 +260,10 @@ Copy `.github/workflows/clientes-e2e.yml`. Adjust:
 - Keep `branches: [master, main]` and the `concurrency` block.
 - The run step: `playwright test --project=<x>`.
 
+Then **add the new workflow's `name:`** to the `workflows:` list in
+`.github/workflows/post-ci-logs.yml` — otherwise a failure won't get its
+log tail posted as a PR comment and you'll be debugging blind.
+
 The workflow only fires when the `paths` match. It mirrors the `e2e-smoke.yml`
 job. The pattern is also documented in the root `CLAUDE.md`.
 
