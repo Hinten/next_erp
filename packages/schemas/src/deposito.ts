@@ -12,8 +12,8 @@ const PERM_ESTOQUE_DELETE = 1n << 66n;
  * `Deposito` in `packages/produtos/lib/src/models.dart` (.old/Flutter).
  */
 export const depositoSchema = z.object({
-  nome: z.string().min(1).max(255),
-  ativo: z.boolean().default(true),
+  nome: z.string().min(1).max(255).describe('Nome'),
+  ativo: z.boolean().default(true).describe('Ativo'),
   timestamp: z.string().datetime().nullable().optional(),
 });
 

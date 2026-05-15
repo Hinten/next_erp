@@ -1,0 +1,128 @@
+name: Depositos e2e
+
+# Per-schema e2e suite. Runs only when the deposito schema, the generic
+# TableView/ObjectView, the data layer, or the /depositos pages change.
+on:
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'packages/schemas/src/deposito.ts'
+      - 'packages/schemas/src/index.ts'
+      - 'packages/ui/src/table/**'
+      - 'packages/ui/src/object/**'
+      - 'packages/ui/src/schema/**'
+      - 'packages/data/**'
+      - 'apps/web/app/(app)/depositos/**'
+      - 'apps/web/lib/data/depositoCollection.ts'
+      - 'apps/web/e2e/depositos.e2e.spec.ts'
+      - 'apps/web/e2e/helpers/**'
+      - 'apps/web/e2e/_helpers/**'
+      - 'apps/web/e2e/_setup/**'
+      - 'apps/web/e2e/global-setup.ts'
+      - 'apps/web/e2e/global-teardown.ts'
+      - 'apps/web/playwright.config.ts'
+      - 'tools/test-fixtures/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/depositos-e2e.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  depositos-e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+      NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+      NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
+      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ secrets.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
+      NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+      NEXT_PUBLIC_FIREBASE_APP_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_APP_ID }}
+      # E2E test-user credentials. globalSetup ensures the user exists via
+      # Admin SDK, seeds the tenant and signs in to capture a session.
+      E2E_USER_EMAIL: ${{ secrets.E2E_USER_EMAIL }}
+      E2E_USER_PASSWORD: ${{ secrets.E2E_USER_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.4 --activate
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      - name: Install Playwright browsers (cache miss)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @delfrance/web exec playwright install --with-deps chromium
+
+      - name: Install Playwright system deps (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm --filter @delfrance/web exec playwright install-deps chromium
+
+      - name: e2e depositos (web)
+        id: e2e
+        run: |
+          set -o pipefail
+          pnpm --filter @delfrance/web exec playwright test --project=depositos 2>&1 | tee /tmp/e2e.log
+
+      # Post the Playwright output tail straight to the PR on failure. The
+      # workflow_run-based post-ci-logs.yml can't help here — it always runs
+      # the default-branch definition, so it won't see a feature branch's
+      # new workflow. An in-workflow comment takes effect immediately.
+      - name: Comment failure log on PR
+        if: failure() && steps.e2e.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "<details>"
+            echo "<summary>depositos-e2e failed — last 12KB of the Playwright output</summary>"
+            echo
+            echo '```'
+            tail -c 12000 /tmp/e2e.log || echo '(no output captured)'
+            echo '```'
+            echo "</details>"
+          } > /tmp/body.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/body.md
+
+      - name: Upload Playwright report
+        if: always() && steps.e2e.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-depositos
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 7
+          if-no-files-found: ignore

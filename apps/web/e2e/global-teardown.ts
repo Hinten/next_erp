@@ -41,7 +41,13 @@ export default async function globalTeardown() {
     );
   }
 
-  const collections = ['clientes', 'categorias'];
+  const collections = [
+    'clientes',
+    'categorias',
+    'depositos',
+    'motivosincidentes',
+    'bandeirasCartao',
+  ];
   for (const c of collections) {
     try {
       const deleted = await cleanupE2EDocs(c, 'e2e-');

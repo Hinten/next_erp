@@ -11,8 +11,8 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * Mirrors `MotivoIncidente` em `.old/packages/pedido/lib/src/models.dart`.
  */
 export const motivoIncidenteSchema = z.object({
-  nome: z.string().min(1),
-  ativo: z.boolean().default(true),
+  nome: z.string().min(1).describe('Nome'),
+  ativo: z.boolean().default(true).describe('Ativo'),
 });
 
 export type MotivoIncidente = z.infer<typeof motivoIncidenteSchema>;

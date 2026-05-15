@@ -69,6 +69,21 @@ export default defineConfig({
       testMatch: /categorias\.e2e\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
+    {
+      name: 'depositos',
+      testMatch: /depositos\.e2e\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'motivos-incidente',
+      testMatch: /motivos-incidente\.e2e\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'bandeiras-cartao',
+      testMatch: /bandeiras-cartao\.e2e\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
   ],
   webServer: process.env.PLAYWRIGHT_BASE_URL
     ? undefined
