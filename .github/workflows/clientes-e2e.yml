@@ -32,6 +32,9 @@ concurrency:
 jobs:
   clientes-e2e:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     env:
       FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
       FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
@@ -89,7 +92,29 @@ jobs:
 
       - name: e2e clientes (web)
         id: e2e
-        run: pnpm --filter @delfrance/web exec playwright test --project=clientes
+        run: |
+          set -o pipefail
+          pnpm --filter @delfrance/web exec playwright test --project=clientes 2>&1 | tee /tmp/e2e.log
+
+      # Post the Playwright output tail straight to the PR on failure. The
+      # workflow_run-based post-ci-logs.yml can't help here — it always runs
+      # the default-branch definition, so it won't see a feature branch's
+      # new workflow. An in-workflow comment takes effect immediately.
+      - name: Comment failure log on PR
+        if: failure() && steps.e2e.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          {
+            echo "<details>"
+            echo "<summary>clientes-e2e failed — last 12KB of the Playwright output</summary>"
+            echo
+            echo '```'
+            tail -c 12000 /tmp/e2e.log || echo '(no output captured)'
+            echo '```'
+            echo "</details>"
+          } > /tmp/body.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/body.md
 
       - name: Upload Playwright report
         if: always() && steps.e2e.outcome != 'skipped'

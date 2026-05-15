@@ -258,14 +258,16 @@ Copy `.github/workflows/clientes-e2e.yml`. Adjust:
   `playwright.config.ts`), `tools/test-fixtures/**`, `pnpm-lock.yaml`, and
   the workflow file itself.
 - Keep `branches: [master, main]` and the `concurrency` block.
-- The run step: `playwright test --project=<x>`.
-
-Then **add the new workflow's `name:`** to the `workflows:` list in
-`.github/workflows/post-ci-logs.yml` — otherwise a failure won't get its
-log tail posted as a PR comment and you'll be debugging blind.
+- The run step pipes the Playwright output to a file
+  (`... | tee /tmp/e2e.log`, with `set -o pipefail`) and a follow-up
+  `if: failure()` step posts `tail -c 12000 /tmp/e2e.log` to the PR via
+  `gh pr comment`. Add `permissions: pull-requests: write` to the job.
+  Do this in the workflow itself — `post-ci-logs.yml` (a `workflow_run`
+  workflow) always runs the default-branch definition, so it cannot see a
+  feature branch's new workflow; an in-workflow comment works immediately.
 
 The workflow only fires when the `paths` match. It mirrors the `e2e-smoke.yml`
-job. The pattern is also documented in the root `CLAUDE.md`.
+job. The filtered-workflow pattern is also documented in the root `CLAUDE.md`.
 
 ## 9. Verification
 

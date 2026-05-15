@@ -10,7 +10,7 @@ name: Post CI logs on failure
 
 on:
   workflow_run:
-    workflows: ["CI", "E2E Smoke", "Configuracoes E2E", "Clientes e2e", "Categorias e2e"]
+    workflows: ["CI", "E2E Smoke", "Configuracoes E2E"]
     types: [completed]
 
 jobs:
