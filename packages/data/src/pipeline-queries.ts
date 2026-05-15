@@ -9,6 +9,7 @@ import {
   and,
   ascending,
   descending,
+  documentId,
   equal,
   field,
   greaterThan,
@@ -19,6 +20,19 @@ import {
   regexContains,
   startsWith,
 } from 'firebase/firestore/pipelines';
+
+/**
+ * Field alias under which `buildPipeline` projects the document id when a
+ * `select` is requested. `.select()` makes the server return ad-hoc records
+ * with no document key, so `PipelineResult.ref` is `undefined`. The id is
+ * carried as a normal field via `documentId(field('__name__'))` — `__name__`
+ * is the SDK's special-cased synthetic field for the document path.
+ * `usePipelineSnapshot` reads this back and strips it from the row data.
+ *
+ * Plain alias (no leading/trailing `__`): `__`-pattern names are reserved
+ * by Firestore and can't be used as projection output names.
+ */
+export const PIPELINE_ID_FIELD = 'rowId';
 
 /**
  * Thrown when the installed firebase SDK does not expose the Pipelines API
@@ -78,11 +92,11 @@ export interface PipelineSpec {
   filters?: PipelineFieldFilter[];
   orderBy?: PipelineOrderSpec[];
   /**
-   * Project only these fields (Pipeline `select` stage). WARNING: the
-   * `.select()` stage produces ad-hoc records — `PipelineResult.ref` and
-   * `.id` come back `undefined`, so callers that need the document id
-   * (e.g. row-click navigation) MUST omit this. Use it only for read-only
-   * aggregations / exports where the row identity doesn't matter.
+   * Project only these fields (Pipeline `select` stage) to cut data
+   * transfer. `.select()` strips `PipelineResult.ref`, so `buildPipeline`
+   * automatically appends the document id as a field aliased to
+   * `PIPELINE_ID_FIELD` — `usePipelineSnapshot` reads it back. Row identity
+   * is preserved; callers just pass the fields they want.
    */
   select?: string[];
   limit?: number;
@@ -206,7 +220,14 @@ export function buildPipeline(db: Firestore, spec: PipelineSpec): Pipeline {
   }
 
   if (spec.select?.length) {
-    pipe = pipe.select(spec.select[0]!, ...spec.select.slice(1));
+    // Project the requested fields PLUS the document id. `.select()` drops
+    // `PipelineResult.ref` (the server omits the document key for projected
+    // results), so without this the row identity is lost. `field('__name__')`
+    // is the SDK-special-cased reference to the document path; `documentId()`
+    // extracts the short id from it.
+    const idSelection = documentId(field('__name__')).as(PIPELINE_ID_FIELD);
+    const selections = [...spec.select, idSelection];
+    pipe = pipe.select(selections[0]!, ...selections.slice(1));
   }
 
   if (typeof spec.limit === 'number') pipe = pipe.limit(spec.limit);
