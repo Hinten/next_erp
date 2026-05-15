@@ -89,6 +89,14 @@ const FILTER_OPS = new Set<PipelineFilterOp>([
 ]);
 
 /**
+ * Pipelines have no realtime listener (`usePipelineSnapshot` is one-shot), so
+ * a row written after the initial fetch never surfaces on its own. Re-run the
+ * query on this interval so the list stays current — e.g. a record created on
+ * a "novo" page shows up once the user navigates back to the list.
+ */
+const PIPELINE_REFETCH_MS = 5_000;
+
+/**
  * Parse `?<field>=<op>:<value>` query params into the `filters` state. The
  * value is coerced by the field's `kind` (boolean / number / string). Params
  * that don't map to a known descriptor, or carry an unknown op, are skipped.
@@ -289,7 +297,9 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, collection, queryOverride, pipeline, pageSize, sort?.field, sort?.direction]);
 
-  const fromPipeline = usePipelineSnapshot<z.infer<S>>(pipeline);
+  const fromPipeline = usePipelineSnapshot<z.infer<S>>(pipeline, {
+    refetchInterval: PIPELINE_REFETCH_MS,
+  });
   const fromQuery = useSnapshot<z.infer<S>>(fallbackQuery);
   const snap: SnapshotState<SnapshotRow<z.infer<S>>[]> = pipeline ? fromPipeline : fromQuery;
 
