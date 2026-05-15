@@ -175,6 +175,21 @@ describe('buildPipeline', () => {
     );
   });
 
+  it('contains filter uses regexContains with an accent-folded pattern', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'x',
+      filters: [{ field: 'nome', op: 'contains', value: 'Açaí' }],
+    });
+    expect(stage.where).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'regexContains',
+        f: 'nome',
+        p: '(?i)[aàáâãäå][cç][aàáâãäå][iìíîï]',
+      }),
+    );
+  });
+
   it('AND-combines multiple column filters', () => {
     const { db, stage } = makeDb(true);
     buildPipeline(db, {

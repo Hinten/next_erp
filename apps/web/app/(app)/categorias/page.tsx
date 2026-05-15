@@ -16,7 +16,6 @@ export default function CategoriasPage() {
       schema={categoriaSchema}
       collection={categoriaCollection}
       db={getFirebaseFirestore()}
-      searchFields={['nome']}
       defaultColumns={['nome', 'nomeCompleto', 'permiteCadastro']}
       orderBy={{ field: 'nome', direction: 'asc' }}
       pageSize={50}

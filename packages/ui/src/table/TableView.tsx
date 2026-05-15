@@ -13,7 +13,6 @@ import {
   buildQuery,
   limit as fsLimit,
   orderByField,
-  whereOp,
 } from '@delfrance/data';
 import {
   type SnapshotRow,
@@ -31,10 +30,10 @@ import type {
   ActionConfig, FieldConfig, FieldDescriptor,
 } from '../schema/types';
 import { ActionBar } from './ActionBar';
+import { IconArrowDown, IconArrowsSort, IconArrowUp } from '@tabler/icons-react';
 import { ColumnFilter, type ColumnFilterValue } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
 import { Pagination } from './Pagination';
-import { SearchBar } from './SearchBar';
 import { renderCell } from './cell-renderers';
 
 export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
@@ -50,8 +49,6 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
 
   /** Default visible columns. Omit to show every non-`unknown` field. */
   defaultColumns?: string[];
-  /** Fields the search bar prefix-matches. Omit to hide search. */
-  searchFields?: string[];
 
   /** Per-field overrides keyed by field key. */
   fields?: Record<string, FieldConfig>;
@@ -72,6 +69,7 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   renderRowLink?: (href: string, content: ReactNode) => ReactNode;
 
   pageSize?: number;
+  /** Initial sort. The user can change it by clicking column headers. */
   orderBy?: { field: string; direction?: 'asc' | 'desc' };
 
   /**
@@ -84,8 +82,8 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
 
 /**
  * Generic TableView. Drives column derivation from the Zod schema, manages
- * search/ColumnPicker/ActionBar state, and subscribes to a Pipeline (or
- * `queryOverride`) for the row source.
+ * per-column filters / sort / ColumnPicker / ActionBar state, and subscribes
+ * to a Pipeline (or `queryOverride`) for the row source.
  */
 export function TableView<S extends ZodObject<ZodRawShape>>({
   title,
@@ -95,7 +93,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   db,
   pathContext = {},
   defaultColumns,
-  searchFields,
   fields: fieldOverrides = {},
   actions = [],
   selectable = false,
@@ -119,15 +116,29 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   });
 
   const router = useRouter();
-  const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Per-column filters keyed by field key. AND-combined; cleared by setting
   // the entry to `undefined` (or deleting the key).
   const [filters, setFilters] = useState<Record<string, ColumnFilterValue>>({});
+  // Active sort. Seeded from the `orderBy` prop; the user changes it by
+  // clicking column headers.
+  const [sort, setSort] = useState<{ field: string; direction: 'asc' | 'desc' } | undefined>(
+    () => (orderBy ? { field: orderBy.field, direction: orderBy.direction ?? 'asc' } : undefined),
+  );
 
   // filters changes shape per click; bucket it into a deterministic string
   // so the pipeline only rebuilds when content actually changes.
   const filtersSerial = useMemo(() => JSON.stringify(filters), [filters]);
+
+  // Clicking a header cycles that column's sort: a different column starts
+  // ascending; the active column flips asc ⇄ desc.
+  function toggleSort(fieldKey: string) {
+    setSort((cur) =>
+      cur?.field === fieldKey
+        ? { field: fieldKey, direction: cur.direction === 'asc' ? 'desc' : 'asc' }
+        : { field: fieldKey, direction: 'asc' },
+    );
+  }
 
   // --- Data source selection ----------------------------------------------
   // Always use the classic Query path when an override is supplied. Otherwise,
@@ -138,9 +149,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     try {
       return buildPipeline(db, {
         collection: collection.resolvePath(pathContext),
-        search: searchFields?.length
-          ? { fields: searchFields, term: search.trim() }
-          : undefined,
         filters: Object.entries(filters).map(([field, v]) => ({ field, ...v })),
         // NOTE: do NOT pass `select` here. The Pipelines `.select()` stage
         // produces ad-hoc records and strips `PipelineResult.ref` — the row
@@ -148,7 +156,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         // routes to /collection/0, /collection/1 (404). Data-transfer
         // optimization via select() is fine for read-only aggregations; not
         // for listings that need row identity.
-        orderBy: orderBy ? [{ field: orderBy.field, direction: orderBy.direction ?? 'asc' }] : undefined,
+        orderBy: sort ? [{ field: sort.field, direction: sort.direction }] : undefined,
         limit: pageSize,
       });
     } catch {
@@ -157,27 +165,18 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // `pathContext` is intentionally not stringified; consumers should keep
     // the object stable across renders (matches the rest of the data layer).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, collection, queryOverride, search, pageSize, orderBy?.field, orderBy?.direction, searchFields?.join('|'), filtersSerial]);
+  }, [db, collection, queryOverride, pageSize, sort?.field, sort?.direction, filtersSerial]);
 
   const fallbackQuery: Query<z.infer<S>> | null = useMemo(() => {
     if (queryOverride) return queryOverride;
     if (pipeline) return null;
     const base = collection.ref(db, pathContext);
     const constraints = [];
-    const sortField = orderBy?.field ?? searchFields?.[0];
-    if (sortField) constraints.push(orderByField(sortField, orderBy?.direction ?? 'asc'));
-    const trimmed = search.trim();
-    if (trimmed && searchFields?.length) {
-      // Prefix-match on the first search field. Multi-field OR isn't
-      // expressible in a single classic Query — when the user opts into the
-      // fallback path (e.g. older SDK), single-field prefix is the lcd.
-      constraints.push(whereOp(searchFields[0]!, '>=', trimmed));
-      constraints.push(whereOp(searchFields[0]!, '<=', `${trimmed}`));
-    }
+    if (sort) constraints.push(orderByField(sort.field, sort.direction));
     constraints.push(fsLimit(pageSize));
     return buildQuery(base, constraints);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, collection, queryOverride, pipeline, search, pageSize, orderBy?.field, orderBy?.direction, searchFields?.join('|')]);
+  }, [db, collection, queryOverride, pipeline, pageSize, sort?.field, sort?.direction]);
 
   const fromPipeline = usePipelineSnapshot<z.infer<S>>(pipeline);
   const fromQuery = useSnapshot<z.infer<S>>(fallbackQuery);
@@ -227,10 +226,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         </Stack>
       )}
 
-      <Group justify="space-between" wrap="nowrap" align="flex-end">
-        {searchFields?.length ? (
-          <SearchBar onChange={setSearch} placeholder="Buscar…" />
-        ) : <span />}
+      <Group justify="flex-end" wrap="nowrap" align="flex-end">
         <Group gap="xs">
           <ColumnPicker
             fields={descriptors.filter((d) => d.kind !== 'unknown')}
@@ -279,7 +275,19 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
               {visibleDescriptors.map((d) => (
                 <Table.Th key={d.key}>
                   <Group gap={4} wrap="nowrap" justify="space-between">
-                    <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
+                    <Group
+                      gap={2}
+                      wrap="nowrap"
+                      style={{ cursor: 'pointer', userSelect: 'none' }}
+                      onClick={() => toggleSort(d.key)}
+                      title="Ordenar por esta coluna"
+                    >
+                      <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
+                      <SortIndicator
+                        active={sort?.field === d.key}
+                        direction={sort?.direction}
+                      />
+                    </Group>
                     <ColumnFilter
                       descriptor={d}
                       value={filters[d.key]}
@@ -310,12 +318,22 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
               return (
                 <Table.Tr
                   key={row.id}
-                  // Whole row navigates when rowHref is supplied. <Table> at
-                  // line 264 already enables `highlightOnHover`, so the row
-                  // visibly highlights and the cursor becomes pointer.
-                  // Empty `id` (e.g. pipeline used .select() and lost ref)
-                  // would generate /collection/'' — skip onClick in that case.
-                  onClick={href && row.id ? () => router.push(href) : undefined}
+                  // Whole row navigates when rowHref is supplied. <Table> has
+                  // `highlightOnHover`, so the row highlights and the cursor
+                  // becomes a pointer. Empty `id` (e.g. a pipeline that used
+                  // .select() and lost the ref) would generate /collection/''
+                  // — skip onClick in that case.
+                  //
+                  // If the user has an active text selection, treat the click
+                  // as a select-and-copy gesture and don't navigate.
+                  onClick={
+                    href && row.id
+                      ? () => {
+                          if (window.getSelection()?.toString()) return;
+                          router.push(href);
+                        }
+                      : undefined
+                  }
                   style={href && row.id ? { cursor: 'pointer' } : undefined}
                 >
                   {selectable && (
@@ -353,5 +371,27 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         onNext={() => {}}
       />
     </Stack>
+  );
+}
+
+/**
+ * Sort arrow shown next to a column title. Filled up/down arrow on the active
+ * column; a dimmed neutral icon on the rest to advertise that the header is
+ * clickable.
+ */
+function SortIndicator({
+  active,
+  direction,
+}: {
+  active: boolean;
+  direction?: 'asc' | 'desc';
+}) {
+  if (!active) {
+    return <IconArrowsSort size={14} style={{ opacity: 0.35 }} />;
+  }
+  return direction === 'desc' ? (
+    <IconArrowDown size={14} />
+  ) : (
+    <IconArrowUp size={14} />
   );
 }

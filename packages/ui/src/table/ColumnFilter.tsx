@@ -32,10 +32,13 @@ export interface ColumnFilterProps {
  * "Limpar") emits `undefined` so the TableView drops the filter entirely.
  *
  * Supported kinds:
- *  - string / longText / email / tel / url  →  TextInput (startsWith)
+ *  - string / longText / email / tel / url  →  TextInput (contains, regex
+ *    similarity — case- and accent-insensitive substring match)
  *  - enum                                    →  Select (eq)
  *  - boolean                                 →  Select Sim/Não (eq)
  *  - number / integer / currency             →  NumberInput + op picker
+ *
+ * Text/number inputs submit on Enter.
  *
  * Other kinds (date, reference, array, object, unknown) render no affordance.
  */
@@ -150,7 +153,7 @@ function FilterBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
     );
   }
 
-  // string-ish: TextInput → startsWith
+  // string-ish: TextInput → contains (regex similarity)
   return (
     <TextBody descriptor={descriptor} value={value} onApply={onApply} onClear={onClear} />
   );
@@ -158,19 +161,27 @@ function FilterBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
 
 function TextBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
   const [local, setLocal] = useState((value?.value as string) ?? '');
+  const apply = () => onApply({ op: 'contains', value: local.trim() });
+  const disabled = local.trim() === '';
   return (
     <FilterShell
       onClear={() => {
         setLocal('');
         onClear();
       }}
-      onApply={() => onApply({ op: 'startsWith', value: local.trim() })}
-      applyDisabled={local.trim() === ''}
+      onApply={apply}
+      applyDisabled={disabled}
     >
       <TextInput
-        label={`${descriptor.label} começa com`}
+        label={`${descriptor.label} contém`}
         value={local}
         onChange={(e) => setLocal(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !disabled) {
+            e.preventDefault();
+            apply();
+          }
+        }}
         autoFocus
       />
     </FilterShell>
@@ -180,14 +191,18 @@ function TextBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
 function NumericBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
   const [op, setOp] = useState<PipelineFilterOp>(value?.op ?? 'eq');
   const [local, setLocal] = useState<number | ''>((value?.value as number) ?? '');
+  const disabled = typeof local !== 'number';
+  const apply = () => {
+    if (typeof local === 'number') onApply({ op, value: local });
+  };
   return (
     <FilterShell
       onClear={() => {
         setLocal('');
         onClear();
       }}
-      onApply={() => typeof local === 'number' && onApply({ op, value: local })}
-      applyDisabled={typeof local !== 'number'}
+      onApply={apply}
+      applyDisabled={disabled}
     >
       <Stack gap="xs">
         <Select
@@ -206,6 +221,12 @@ function NumericBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
           label={descriptor.label}
           value={local}
           onChange={(v) => setLocal(typeof v === 'number' ? v : '')}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !disabled) {
+              e.preventDefault();
+              apply();
+            }
+          }}
           autoFocus
         />
       </Stack>

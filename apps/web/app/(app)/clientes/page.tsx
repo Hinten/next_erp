@@ -20,7 +20,6 @@ export default function ClientesPage() {
       schema={clienteSchema}
       collection={clienteCollection}
       db={getFirebaseFirestore()}
-      searchFields={['nome']}
       defaultColumns={['nome', 'tipo', 'cpf_cnpj', 'email']}
       orderBy={{ field: 'nome', direction: 'asc' }}
       pageSize={50}

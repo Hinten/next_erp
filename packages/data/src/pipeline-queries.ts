@@ -45,7 +45,14 @@ export interface PipelineOrderSpec {
   direction?: 'asc' | 'desc';
 }
 
-export type PipelineFilterOp = 'startsWith' | 'eq' | 'lt' | 'lte' | 'gt' | 'gte';
+export type PipelineFilterOp =
+  | 'contains'
+  | 'startsWith'
+  | 'eq'
+  | 'lt'
+  | 'lte'
+  | 'gt'
+  | 'gte';
 
 export interface PipelineFieldFilter {
   field: string;
@@ -134,6 +141,13 @@ export function buildSimilarityPattern(term: string): string {
 function filterExpr(f: PipelineFieldFilter): BooleanExpression {
   const fld = field(f.field);
   switch (f.op) {
+    case 'contains': {
+      // Default string-column filter: case- and accent-insensitive
+      // substring match, same semantics as the (now removed) global
+      // search. Empty pattern would match everything — guard with `(?i)`.
+      const pattern = buildSimilarityPattern(String(f.value));
+      return regexContains(f.field, pattern || '(?i)');
+    }
     case 'startsWith':
       return startsWith(f.field, String(f.value));
     case 'eq':
