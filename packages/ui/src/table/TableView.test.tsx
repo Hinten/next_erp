@@ -7,9 +7,9 @@ import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 
 // Stub the snapshot hooks + the query helpers so the table renders a static
 // dataset without hitting Firestore's internals. We control the response on a
-// per-test basis via the hoisted `snapState`. `pushSpy` captures router
-// navigation triggered by row clicks.
-const { snapState, pushSpy } = vi.hoisted(() => ({
+// per-test basis via the hoisted `snapState`. `pushSpy` / `replaceSpy`
+// capture router navigation; `searchParamsRef` lets a test seed the URL.
+const { snapState, pushSpy, replaceSpy, searchParamsRef, buildPipelineSpy } = vi.hoisted(() => ({
   snapState: {
     current: {
       data: [
@@ -21,16 +21,21 @@ const { snapState, pushSpy } = vi.hoisted(() => ({
     } as SnapshotState<SnapshotRow<{ nome?: string; tipo?: string }>[]>,
   },
   pushSpy: vi.fn(),
+  replaceSpy: vi.fn(),
+  searchParamsRef: { current: new URLSearchParams() },
+  buildPipelineSpy: vi.fn(() => ({ __pipeline: true })),
 }));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     push: pushSpy,
-    replace: vi.fn(),
+    replace: replaceSpy,
     back: vi.fn(),
     refresh: vi.fn(),
     prefetch: vi.fn(),
   }),
+  usePathname: () => '/clientes',
+  useSearchParams: () => searchParamsRef.current,
 }));
 
 vi.mock('@delfrance/data/hooks', async () => {
@@ -44,8 +49,8 @@ vi.mock('@delfrance/data/pipeline-queries', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/data/pipeline-queries')>();
   return {
     ...actual,
-    isPipelineSupported: (_db: unknown) => false,
-    buildPipeline: () => null,
+    isPipelineSupported: (_db: unknown) => true,
+    buildPipeline: buildPipelineSpy,
   };
 });
 vi.mock('@delfrance/data', async () => {
@@ -132,6 +137,43 @@ describe('TableView', () => {
       loading: false,
       error: undefined,
     };
+  });
+
+  it('hydrates the pipeline filters from the URL query string', () => {
+    searchParamsRef.current = new URLSearchParams('nome=contains:ana');
+    buildPipelineSpy.mockClear();
+    wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+    expect(buildPipelineSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        filters: [{ field: 'nome', op: 'contains', value: 'ana' }],
+      }),
+    );
+    searchParamsRef.current = new URLSearchParams();
+  });
+
+  it('hydrates the initial sort from ?sort= in the URL', () => {
+    searchParamsRef.current = new URLSearchParams('sort=nome:desc');
+    buildPipelineSpy.mockClear();
+    wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+    expect(buildPipelineSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        orderBy: [{ field: 'nome', direction: 'desc' }],
+      }),
+    );
+    searchParamsRef.current = new URLSearchParams();
+  });
+
+  it('writes the sort to the URL via router.replace when a header is clicked', () => {
+    searchParamsRef.current = new URLSearchParams();
+    replaceSpy.mockClear();
+    wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+    fireEvent.click(screen.getByText('Nome'));
+    expect(replaceSpy).toHaveBeenCalledWith(
+      '/clientes?sort=nome%3Aasc',
+      expect.objectContaining({ scroll: false }),
+    );
   });
 
   it('selectable adds a checkbox column and enables bulk actions on selection', async () => {

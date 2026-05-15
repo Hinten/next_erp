@@ -1,7 +1,7 @@
 'use client';
 
-import { type ReactNode, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   Alert, Checkbox, Group, Skeleton, Stack, Table, Text, Title,
 } from '@mantine/core';
@@ -10,6 +10,7 @@ import type { z, ZodObject, ZodRawShape } from 'zod';
 import {
   type CollectionHandle,
   type PathContext,
+  type PipelineFilterOp,
   buildQuery,
   limit as fsLimit,
   orderByField,
@@ -80,6 +81,63 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   queryOverride?: Query<z.infer<S>>;
 }
 
+type SortState = { field: string; direction: 'asc' | 'desc' };
+
+const FILTER_OPS = new Set<PipelineFilterOp>([
+  'contains', 'startsWith', 'eq', 'lt', 'lte', 'gt', 'gte',
+]);
+
+/**
+ * Parse `?<field>=<op>:<value>` query params into the `filters` state. The
+ * value is coerced by the field's `kind` (boolean / number / string). Params
+ * that don't map to a known descriptor, or carry an unknown op, are skipped.
+ */
+export function parseFiltersFromParams(
+  params: URLSearchParams,
+  descriptors: FieldDescriptor[],
+): Record<string, ColumnFilterValue> {
+  const byKey = new Map(descriptors.map((d) => [d.key, d]));
+  const out: Record<string, ColumnFilterValue> = {};
+  for (const [key, raw] of params.entries()) {
+    if (key === 'sort') continue;
+    const descriptor = byKey.get(key);
+    if (!descriptor) continue;
+    const sep = raw.indexOf(':');
+    if (sep < 0) continue;
+    const op = raw.slice(0, sep) as PipelineFilterOp;
+    if (!FILTER_OPS.has(op)) continue;
+    const rawValue = raw.slice(sep + 1);
+    let value: ColumnFilterValue['value'];
+    if (descriptor.kind === 'boolean') {
+      value = rawValue === 'true';
+    } else if (
+      descriptor.kind === 'number' ||
+      descriptor.kind === 'integer' ||
+      descriptor.kind === 'currency'
+    ) {
+      const n = Number(rawValue);
+      if (Number.isNaN(n)) continue;
+      value = n;
+    } else {
+      value = rawValue;
+    }
+    out[key] = { op, value };
+  }
+  return out;
+}
+
+/** Parse `?sort=<field>:<asc|desc>`. */
+export function parseSortFromParams(params: URLSearchParams): SortState | undefined {
+  const raw = params.get('sort');
+  if (!raw) return undefined;
+  const sep = raw.indexOf(':');
+  if (sep < 0) return undefined;
+  const field = raw.slice(0, sep);
+  const direction = raw.slice(sep + 1);
+  if (!field || (direction !== 'asc' && direction !== 'desc')) return undefined;
+  return { field, direction };
+}
+
 /**
  * Generic TableView. Drives column derivation from the Zod schema, manages
  * per-column filters / sort / ColumnPicker / ActionBar state, and subscribes
@@ -116,19 +174,43 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   });
 
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Per-column filters keyed by field key. AND-combined; cleared by setting
-  // the entry to `undefined` (or deleting the key).
-  const [filters, setFilters] = useState<Record<string, ColumnFilterValue>>({});
-  // Active sort. Seeded from the `orderBy` prop; the user changes it by
-  // clicking column headers.
-  const [sort, setSort] = useState<{ field: string; direction: 'asc' | 'desc' } | undefined>(
-    () => (orderBy ? { field: orderBy.field, direction: orderBy.direction ?? 'asc' } : undefined),
+  // the entry to `undefined` (or deleting the key). Hydrated once from the
+  // URL query string so a shared/bookmarked link reopens filtered.
+  const [filters, setFilters] = useState<Record<string, ColumnFilterValue>>(
+    () => parseFiltersFromParams(searchParams, descriptors),
+  );
+  // Active sort. Seeded from the URL, then the `orderBy` prop; the user
+  // changes it by clicking column headers.
+  const [sort, setSort] = useState<SortState | undefined>(
+    () =>
+      parseSortFromParams(searchParams) ??
+      (orderBy ? { field: orderBy.field, direction: orderBy.direction ?? 'asc' } : undefined),
   );
 
   // filters changes shape per click; bucket it into a deterministic string
   // so the pipeline only rebuilds when content actually changes.
   const filtersSerial = useMemo(() => JSON.stringify(filters), [filters]);
+
+  // Mirror filters + sort into the URL query string (replace — no history
+  // spam; the URL stays shareable). Hydration above is one-shot, so there's
+  // no read-back loop.
+  useEffect(() => {
+    const params = new URLSearchParams();
+    for (const [field, v] of Object.entries(filters)) {
+      params.set(field, `${v.op}:${String(v.value)}`);
+    }
+    if (sort) params.set('sort', `${sort.field}:${sort.direction}`);
+    const qs = params.toString();
+    const next = qs ? `${pathname}?${qs}` : pathname;
+    if (next !== `${pathname}${window.location.search}`) {
+      router.replace(next, { scroll: false });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtersSerial, sort?.field, sort?.direction, pathname]);
 
   // Clicking a header cycles that column's sort: a different column starts
   // ascending; the active column flips asc ⇄ desc.

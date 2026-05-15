@@ -1,7 +1,17 @@
 'use client';
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Alert, Button, Group, Skeleton, Stack, Text, Title } from '@mantine/core';
+import {
+  Alert,
+  Button,
+  Group,
+  Modal,
+  Skeleton,
+  Stack,
+  Text,
+  TextInput,
+  Title,
+} from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type FieldValues } from 'react-hook-form';
@@ -161,6 +171,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   }, [docSnap.data?.id]);
 
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Delete confirmation modal: the user must type "excluir" to enable the
+  // destructive button — guards against accidental clicks.
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteText, setDeleteText] = useState('');
+  const deleteConfirmed = deleteText.trim().toLowerCase() === 'excluir';
   useUnsavedChangesGuard(form.formState.isDirty);
 
   async function doSave(continueEditing: boolean) {
@@ -242,10 +257,9 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
     );
   }
 
-  async function handleDelete() {
-    if (!onDelete || !internalId) return;
-    const msg = deleteConfirmMessage ?? 'Excluir este registro? Esta ação não pode ser desfeita.';
-    if (!window.confirm(msg)) return;
+  async function confirmDelete() {
+    if (!onDelete || !internalId || !deleteConfirmed) return;
+    setDeleteOpen(false);
     try {
       await onDelete(internalId);
     } catch (err) {
@@ -295,7 +309,15 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
 
         <Group justify="space-between">
           {deleteVisible && internalId ? (
-            <Button color="red" variant="light" onClick={() => void handleDelete()}>
+            <Button
+              type="button"
+              color="red"
+              variant="light"
+              onClick={() => {
+                setDeleteText('');
+                setDeleteOpen(true);
+              }}
+            >
               {deleteLabel}
             </Button>
           ) : <span />}
@@ -318,6 +340,44 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
           </Group>
         </Group>
       </Stack>
+
+      <Modal
+        opened={deleteOpen}
+        onClose={() => setDeleteOpen(false)}
+        title="Excluir registro"
+        centered
+      >
+        <Stack>
+          <Text size="sm">
+            {deleteConfirmMessage ?? 'Esta ação não pode ser desfeita.'}
+          </Text>
+          <TextInput
+            label='Digite "excluir" para confirmar'
+            value={deleteText}
+            onChange={(e) => setDeleteText(e.currentTarget.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && deleteConfirmed) {
+                e.preventDefault();
+                void confirmDelete();
+              }
+            }}
+            autoFocus
+          />
+          <Group justify="flex-end">
+            <Button type="button" variant="default" onClick={() => setDeleteOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              color="red"
+              disabled={!deleteConfirmed}
+              onClick={() => void confirmDelete()}
+            >
+              {deleteLabel}
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </form>
   );
 }

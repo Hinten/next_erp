@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { z } from 'zod';
@@ -35,8 +35,10 @@ function fakeCollection(): CollectionHandle<typeof schema> {
 }
 
 function Wrap({ children }: { children: React.ReactNode }) {
+  // `env="test"` disables Mantine transitions/portals so overlays (Modal)
+  // render synchronously and are queryable.
   return (
-    <MantineProvider>
+    <MantineProvider env="test">
       <Notifications />
       {children}
     </MantineProvider>
@@ -103,5 +105,43 @@ describe('ObjectView', () => {
       </Wrap>,
     );
     expect(screen.getByText('2 / 3')).toBeTruthy();
+  });
+
+  it('delete modal requires typing "excluir" before it calls onDelete', () => {
+    docState.current = { data: { id: 'rec-1', data: {} }, loading: false, error: undefined };
+    const onDelete = vi.fn().mockResolvedValue(undefined);
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="rec-1"
+          onDelete={onDelete}
+        />
+      </Wrap>,
+    );
+
+    // Open the modal via the row-action delete button.
+    fireEvent.click(screen.getByRole('button', { name: 'Excluir' }));
+
+    // Scope queries to the modal dialog so the row's own "Excluir" button
+    // doesn't get matched.
+    const dialog = screen.getByRole('dialog');
+    const confirmBtn = within(dialog).getByRole('button', {
+      name: 'Excluir',
+    }) as HTMLButtonElement;
+    expect(confirmBtn.hasAttribute('disabled')).toBe(true);
+
+    fireEvent.change(within(dialog).getByLabelText(/Digite "excluir"/), {
+      target: { value: 'excluir' },
+    });
+    expect(confirmBtn.hasAttribute('disabled')).toBe(false);
+
+    fireEvent.click(confirmBtn);
+    expect(onDelete).toHaveBeenCalledWith('rec-1');
+
+    docState.current = { data: null, loading: false, error: undefined };
   });
 });
