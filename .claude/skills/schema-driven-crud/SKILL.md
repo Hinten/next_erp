@@ -175,7 +175,9 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `defaultColumns` | Initial visible columns. Omitted → every non-`unknown` field. |
 | `orderBy` | Initial sort `{ field, direction }`. User changes it by clicking the header. |
 | `rowHref` | `(id, row) => string` — row-click target. |
-| `renderNewButton` | "New" button (use `<Button component={Link}>`). |
+| `renderRowLink` | `(href, content) => ReactNode` — wrap the row in a custom link (e.g. Next `<Link>`). |
+| `newHref` | "New" button as a plain href — simpler alternative to `renderNewButton`. |
+| `renderNewButton` | "New" button render-prop (use `<Button component={Link}>`). |
 | `fields` | `Record<string, FieldConfig>` — per-field overrides (see §6). |
 | `selectable` + `actions` | Selection checkbox + bulk actions (e.g. delete). |
 | `pageSize` | Rows per page (default 50). |
@@ -187,8 +189,10 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | Prop | Use |
 |---|---|
 | `schema`, `collection`, `db` | Required. |
+| `title`, `description` | Optional header rendered above the form. |
 | `recordId` | Absent → create mode; present → loads and edits the doc. |
 | `currentUserUid` | Required — goes into the audit entry. |
+| `pathContext` | For sub-collections (`{ parentId }`). |
 | `excludedFields` | Fields to hide (embeddings, `timestamp`, server-managed refs). |
 | `fields` | Per-field overrides (see §6). |
 | `sections` | Tab names → tabbed layout (omitted → flat layout). |
@@ -196,7 +200,9 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `canEdit` | `false` → hides the save buttons. |
 | `readOnly` | `true` → disables every field (implies `canEdit:false`). |
 | `canDelete` + `onDelete` | Delete button + `(id) => Promise` callback. |
+| `deleteLabel` | Delete-button text (default `"Excluir"`). |
 | `deleteConfirmMessage` | Delete-modal body text. |
+| `pager` | Cross-record navigation `{ ids, current, onChange }` — wires up `RecordPager`. |
 | `onSaved` | `(id) => void` after a successful save. |
 | `saveLabel` | Primary button text ("Criar" / "Salvar alterações"). |
 | `showSaveAndContinue` | Secondary "Salvar e continuar" button (default true). |
@@ -230,6 +236,8 @@ Create `apps/web/e2e/<x>.e2e.spec.ts` (template: `clientes.e2e.spec.ts`).
    (uses the Admin SDK `db()`). In `beforeAll` seed 5–10 docs with `nome`
    prefixed by `e2ePrefix('foo')`; in `afterAll` call
    `cleanupByNamePrefix('foos', prefix)`. The prefix is run-id scoped.
+   `docExistsByName(collection, nome)` is also exported — use it to assert a
+   created row actually committed (see §11 on the one-shot list).
 4. **Canonical scenarios** (cover all):
    query without a filter · per-column filter (text/enum/boolean) · empty
    state · header sorting · navigate to `/novo` · create · create with a
@@ -240,10 +248,16 @@ Create `apps/web/e2e/<x>.e2e.spec.ts` (template: `clientes.e2e.spec.ts`).
 5. **UI-driver helpers** — `apps/web/e2e/helpers/table-view.ts` and
    `object-view.ts`: `applyTextFilter`, `applySelectFilter`,
    `clearColumnFilter`, `clickColumnSort`, `expectRowVisible`/
-   `expectRowHidden`, `expectEmptyState`, `firstRowText`; `fillField`,
-   `selectField`, `clickSave`, `clickSaveAndContinue`, `confirmDelete`,
+   `expectRowHidden`, `expectEmptyState`, `firstRowText`, `selectRowByText`,
+   `clickAction`; `fillField`, `selectField`, `clickSave`,
+   `clickSaveAndContinue`, `clearNullableField`, `confirmDelete`,
    `expectFieldError`, `expectErrorText`, `expectToast`. Reuse — only add a
-   helper if something is missing.
+   helper if something is missing. **Always go through these helpers** for
+   filters and Select inputs — they exact-match locators and target the
+   combobox input, avoiding the strict-mode violations in §11.
+6. **Other helper modules** — `apps/web/e2e/helpers/env.ts` exports
+   `requiresAuthEnv()`; `warmup.ts` exports `warmRoutes()` (call it in
+   `beforeAll` — see §11 on cold-start timeouts).
 
 ## 8. CI workflow — `.github/workflows/<x>-e2e.yml`
 
@@ -276,7 +290,10 @@ job. The filtered-workflow pattern is also documented in the root `CLAUDE.md`.
 - `pnpm --filter @delfrance/web exec playwright test --list --project=<x>`
   — lists the new spec's tests, without leaking into `smoke`.
 - e2e against staging: needs `E2E_USER_*` + `FIREBASE_*` in the environment.
-  Without them the suite fails loudly (by design — no graceful skip).
+  The CRUD suites fail loudly without them — their `beforeAll` seed throws a
+  clear Admin SDK error (by design — no graceful skip). The `*.smoke` suites
+  instead skip gracefully via `requiresAuthEnv()`, and `globalSetup` writes an
+  empty storage state when the secrets are absent.
 
 ## 10. Pitfalls
 
@@ -286,5 +303,43 @@ job. The filtered-workflow pattern is also documented in the root `CLAUDE.md`.
 - **An enum without `.meta({ labels })`** shows the raw key in the UI.
 - **Do not pass a manual `select`** that could drop the row id — TableView
   already projects the visible columns while preserving identity.
-- The old `CLAUDE.md` rule "do not add `.github/workflows/*.yml`" is
-  **outdated** — the workflows are already active in the repo.
+
+## 11. Common test problems
+
+These all bit PR #6 (the PR that introduced this skill) — ~11 failed e2e runs
+before it went green. Check here first when a CRUD test fails.
+
+- **`Error: 5 NOT_FOUND` from the Admin SDK** (in `globalSetup` / seeding /
+  teardown). Firestore *Enterprise* edition's database is literally named
+  `default`, **not** the free-tier `(default)` the Admin SDK assumes when no
+  id is passed. Always go through `db()` from `tools/test-fixtures` (it reads
+  `FIREBASE_DATABASE_ID`, default `'default'`) — never call `getFirestore()`
+  without the id. Make sure `FIREBASE_DATABASE_ID` is set in the e2e env.
+- **`Error: 7 PERMISSION_DENIED: Missing or insufficient permissions`** in CI.
+  This is a credentials problem, not a test bug: the CI service account lacks
+  Firestore access. Check `FIREBASE_SERVICE_ACCOUNT(_PATH)` / `FIREBASE_PROJECT_ID`
+  secrets, not the spec.
+- **`strict mode violation: ... resolved to 2 elements`** on a filter button
+  (`getByRole('button', { name: 'Filtrar Nome' })`) or a form field
+  (`getByLabel('Tipo')`). Two causes: column labels repeat across the table,
+  and Mantine `Select` renders a hidden input *plus* a visible combobox. Fix:
+  use the `table-view.ts` / `object-view.ts` helpers (§7.5) — they exact-match
+  the filter button and target the combobox input. Do **not** hand-roll
+  `getByLabel` / `getByRole` for filters or selects.
+- **Table never loads — `expect(getByRole('table')).toBeVisible()` times out
+  at 60 s.** The Next dev server compiles each route on first hit, so the
+  first navigation in a spec is slow. Call `warmRoutes()` (`helpers/warmup.ts`)
+  in `beforeAll` and keep a generous table-load timeout.
+- **A row you just created is missing from the list.** `TableView` runs a
+  *one-shot* query (no realtime listener) — it does not re-fetch after a
+  create. The fix belongs in the **test**, not the component: after creating,
+  wait for the doc to commit (e.g. `docExistsByName`) before asserting on the
+  list, or reload the page. Do not try to make `TableView` poll — that was
+  attempted in PR #6 and reverted.
+- **Vitest: Mantine throws under JSDOM** (`ResizeObserver is not defined`,
+  `matchMedia`, `document.fonts`, `visualViewport`). `packages/ui/vitest.setup.ts`
+  shims all four. Any new package that renders Mantine components in unit
+  tests must wire up the same setup file in its `vitest.config`.
+- **`Function setDoc() called with invalid data ... Unsupported field value:
+  undefined`.** A schema field used `.optional()` without `.nullable()` — see
+  §3.1. Firebase rejects `undefined`; forms must produce `null`.
