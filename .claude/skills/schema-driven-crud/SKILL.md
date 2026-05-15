@@ -223,8 +223,9 @@ Create `apps/web/e2e/<x>.e2e.spec.ts` (template: `clientes.e2e.spec.ts`).
    ```ts
    { name: 'foos', testMatch: /foos\.e2e\.spec\.ts$/, use: { ...devices['Desktop Chrome'] } },
    ```
-2. `test.describe.serial(...)` + `test.skip(!requiresAuthEnv(), ...)` at the
-   top (`requiresAuthEnv` from `./helpers/env`).
+2. `test.describe.serial(...)`. Do NOT add a `test.skip(!requiresAuthEnv())`
+   gate — when the e2e env is missing the suite should fail loudly (the
+   `beforeAll` seed throws a clear Admin SDK error), not skip silently.
 3. **Seeding**: add `seedFoos` to `apps/web/e2e/_helpers/seed-data.ts`
    (uses the Admin SDK `db()`). In `beforeAll` seed 5–10 docs with `nome`
    prefixed by `e2ePrefix('foo')`; in `afterAll` call
@@ -268,8 +269,8 @@ job. The pattern is also documented in the root `CLAUDE.md`.
 - `pnpm --filter @delfrance/web build` — no Suspense/SSR error.
 - `pnpm --filter @delfrance/web exec playwright test --list --project=<x>`
   — lists the new spec's tests, without leaking into `smoke`.
-- e2e against staging: needs `E2E_USER_*` + `FIREBASE_*` in the environment
-  (won't run without them — the `test.skip` degrades gracefully).
+- e2e against staging: needs `E2E_USER_*` + `FIREBASE_*` in the environment.
+  Without them the suite fails loudly (by design — no graceful skip).
 
 ## 10. Pitfalls
 

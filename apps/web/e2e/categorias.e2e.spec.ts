@@ -1,5 +1,4 @@
 import { expect, test } from '@playwright/test';
-import { requiresAuthEnv } from './helpers/env';
 import {
   cleanupByNamePrefix,
   e2ePrefix,
@@ -32,21 +31,14 @@ import {
  * unsaved-changes guard and URL query-param persistence. Runs serially.
  */
 test.describe.serial('Categorias e2e — TableView / ObjectView', () => {
-  test.skip(
-    !requiresAuthEnv(),
-    'E2E auth env not configured (E2E_USER_EMAIL/PASSWORD + Firebase Admin secrets)',
-  );
-
   const prefix = e2ePrefix('cat');
   const row = (n: number) => `${prefix}-${String(n).padStart(3, '0')}`;
 
   test.beforeAll(async () => {
-    if (!requiresAuthEnv()) return;
     await seedCategorias(prefix, 7);
   });
 
   test.afterAll(async () => {
-    if (!requiresAuthEnv()) return;
     await cleanupByNamePrefix('categorias', prefix);
   });
 

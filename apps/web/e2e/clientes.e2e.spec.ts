@@ -1,5 +1,4 @@
 import { expect, test } from '@playwright/test';
-import { requiresAuthEnv } from './helpers/env';
 import {
   cleanupByNamePrefix,
   e2ePrefix,
@@ -34,22 +33,15 @@ import {
  * persistence. Runs serially — later steps consume earlier state.
  */
 test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
-  test.skip(
-    !requiresAuthEnv(),
-    'E2E auth env not configured (E2E_USER_EMAIL/PASSWORD + Firebase Admin secrets)',
-  );
-
   // Run-scoped name prefix shared by seeded + UI-created docs.
   const prefix = e2ePrefix('cli');
   const row = (n: number) => `${prefix}-${String(n).padStart(3, '0')}`;
 
   test.beforeAll(async () => {
-    if (!requiresAuthEnv()) return;
     await seedClientes(prefix, 7);
   });
 
   test.afterAll(async () => {
-    if (!requiresAuthEnv()) return;
     await cleanupByNamePrefix('clientes', prefix);
   });
 
