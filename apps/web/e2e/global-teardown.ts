@@ -1,0 +1,61 @@
+import { cleanupE2EDocs, runTeardown } from '@delfrance/test-fixtures';
+import { requiresAuthEnv } from './helpers/env';
+
+/**
+ * Playwright globalTeardown: removes all e2e fixtures from staging.
+ *
+ *  - `runTeardown()` deletes every collection prefixed with this run's
+ *    namespace (e.g. `e2e_local_grupoEconomico`).
+ *  - `cleanupE2EDocs(path, prefix)` sweeps real collections (`clientes`,
+ *    `categorias`) for stray docs whose id starts with `e2e-`, in case a
+ *    spec failed before its own afterEach cleanup.
+ *
+ * Skip rule mirrors `requiresAuthEnv()` — when ANY required env is
+ * missing, the auth-required specs skip themselves and globalSetup
+ * exits early, so there's nothing to tear down. Without this alignment
+ * the teardown would call `db().listCollections()` against a partially
+ * configured project (e.g. Admin creds set but no E2E_USER_*) and crash
+ * the whole run with a stack trace that "wasn't part of any test".
+ *
+ * Even when env IS complete, we swallow errors inside teardown — a
+ * failed cleanup shouldn't mask the spec results. Just log and move on.
+ */
+export default async function globalTeardown() {
+  if (!requiresAuthEnv()) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[globalTeardown] skipping — auth env incomplete; specs skipped, ' +
+        'nothing to clean up.',
+    );
+    return;
+  }
+
+  try {
+    await runTeardown();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[globalTeardown] runTeardown failed (continuing): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
+  const collections = ['clientes', 'categorias'];
+  for (const c of collections) {
+    try {
+      const deleted = await cleanupE2EDocs(c, 'e2e-');
+      if (deleted > 0) {
+        // eslint-disable-next-line no-console
+        console.log(`[globalTeardown] swept ${deleted} stray e2e docs from ${c}/`);
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[globalTeardown] cleanupE2EDocs(${c}) failed (continuing): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+}

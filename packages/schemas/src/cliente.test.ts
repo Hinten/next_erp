@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { TIPO_CLIENTE_LABELS, clienteMeta, clienteSchema } from './cliente';
 
 describe('clienteSchema', () => {
-  it('accepts a minimal cliente (all fields optional)', () => {
-    expect(clienteSchema.parse({})).toEqual({});
+  it('accepts a minimal cliente — missing fields default to null', () => {
+    const out = clienteSchema.parse({});
+    expect(out.tipo).toBeNull();
+    expect(out.nome).toBeNull();
+    expect(out.cpf_cnpj).toBeNull();
+    expect(out.email).toBeNull();
   });
 
   it('accepts a fully-populated PF cliente', () => {
@@ -16,7 +20,17 @@ describe('clienteSchema', () => {
       observacoesInternas: 'preferred client',
       timestamp: '2026-01-01T00:00:00.000Z',
     };
-    expect(clienteSchema.parse(input)).toEqual(input);
+    const out = clienteSchema.parse(input);
+    expect(out.tipo).toBe(input.tipo);
+    expect(out.nome).toBe(input.nome);
+    expect(out.cpf_cnpj).toBe(input.cpf_cnpj);
+    expect(out.email).toBe(input.email);
+    expect(out.telefone).toBe(input.telefone);
+    expect(out.observacoesInternas).toBe(input.observacoesInternas);
+    expect(out.timestamp).toBe(input.timestamp);
+    // Unset fields default to null
+    expect(out.idEstrangeiro).toBeNull();
+    expect(out.ie).toBeNull();
   });
 
   it('rejects cpf_cnpj with non-digit characters', () => {

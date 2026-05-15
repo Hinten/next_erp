@@ -12,7 +12,11 @@ async function deleteCollection(path: string, batchSize = 200) {
   }
 }
 
-async function main() {
+/**
+ * Clear every collection prefixed with the current run's namespace. Used to
+ * scrub e2e fixtures between runs against staging.
+ */
+export async function runTeardown(): Promise<void> {
   const ns = namespace();
   const collections = await db().listCollections();
   const targets = collections.map((c) => c.id).filter((id) => id.startsWith(`${ns}_`));
@@ -23,7 +27,36 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+/**
+ * Delete every doc in `collectionPath` whose id starts with `prefix`. E2e
+ * tests write records straight to live collections (e.g. `clientes/`) with
+ * `e2e-` prefixed ids so cleanup can sweep them without touching real data.
+ */
+export async function cleanupE2EDocs(
+  collectionPath: string,
+  prefix: string,
+): Promise<number> {
+  const ref = db().collection(collectionPath);
+  const snap = await ref.get();
+  const toDelete = snap.docs.filter((d) => d.id.startsWith(prefix));
+  if (toDelete.length === 0) return 0;
+  // Firestore batches max 500 ops.
+  for (let i = 0; i < toDelete.length; i += 400) {
+    const batch = db().batch();
+    toDelete.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+  return toDelete.length;
+}
+
+const isDirectInvocation =
+  import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith('teardown.ts') ||
+  process.argv[1]?.endsWith('teardown.js');
+
+if (isDirectInvocation) {
+  runTeardown().catch((err: unknown) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

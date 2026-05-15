@@ -3,31 +3,29 @@
 import { useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { deleteDoc } from 'firebase/firestore';
+import { deleteDoc, setDoc } from 'firebase/firestore';
 import {
   Alert,
   Anchor,
-  Badge,
   Button,
-  Card,
   Group,
-  List,
   Skeleton,
   Stack,
-  Text,
   Title,
 } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
-import { decodePermissoes } from '@delfrance/schemas';
+import type { Cargo } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
+import { usePermission, useTenant } from '@/lib/auth';
+import { CargoForm } from '../_components/CargoForm';
 import { cargoCollection } from '@/lib/data/cargoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
-import { permissionLabels } from '../../_components/PermissionEditor';
-import { PermGate } from '../../_components/PermGate';
 
-export default function CargoDetailPage() {
+export default function CargoPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const { claims } = useTenant();
+  const { allowed: canWrite } = usePermission(PERM.configuracoes.write);
 
   const docRef = useMemo(
     () => cargoCollection.docRef(getFirebaseFirestore(), {}, params.id),
@@ -36,101 +34,62 @@ export default function CargoDetailPage() {
 
   const { data, loading, error } = useDocSnapshot(docRef);
 
+  const callerBits = useMemo(() => {
+    try {
+      return claims?.permissions ? BigInt(claims.permissions) : 0n;
+    } catch (err) {
+      if (err instanceof SyntaxError) return 0n;
+      throw err;
+    }
+  }, [claims?.permissions]);
+
+  async function handleSubmit(values: Cargo) {
+    await setDoc(docRef, values, { merge: true });
+    router.replace('/configuracoes/cargos');
+  }
+
   async function handleDelete() {
-    if (!confirm('Excluir este cargo? Usuários atualmente atribuídos perderão essas permissões na próxima atualização de claim.')) {
+    if (
+      !confirm(
+        'Excluir este cargo? Usuários atualmente atribuídos perderão essas permissões na próxima atualização de claim.',
+      )
+    ) {
       return;
     }
     await deleteDoc(docRef);
     router.replace('/configuracoes/cargos');
   }
 
-  if (loading) {
-    return (
-      <Stack>
-        <Skeleton height={32} width={200} />
-        <Skeleton height={200} />
-      </Stack>
-    );
-  }
-
-  if (error) return <Alert color="red">{error.message}</Alert>;
-
-  if (!data) {
-    return (
-      <Stack>
-        <Alert color="yellow">Cargo não encontrado.</Alert>
-        <Anchor component={Link} href="/configuracoes/cargos">
-          Voltar
-        </Anchor>
-      </Stack>
-    );
-  }
-
-  const c = data.data;
-  const labels = permissionLabels(decodePermissoes(c));
-
   return (
     <Stack>
       <Group justify="space-between" align="center">
-        <Title order={2}>{c.nome}</Title>
-        <Group>
-          <PermGate
-            bit={PERM.configuracoes.write}
-            tooltipLabel="Sem permissão para editar (requer configurações.write)."
-            fallback={<Button disabled>Editar</Button>}
-          >
-            <Button
-              component={Link}
-              href={`/configuracoes/cargos/${data.id}/editar`}
-            >
-              Editar
-            </Button>
-          </PermGate>
-          <PermGate
-            bit={PERM.configuracoes.write}
-            tooltipLabel="Sem permissão para excluir (requer configurações.write)."
-            fallback={
-              <Button color="red" variant="light" disabled>
-                Excluir
-              </Button>
-            }
-          >
-            <Button color="red" variant="light" onClick={handleDelete}>
-              Excluir
-            </Button>
-          </PermGate>
-        </Group>
+        <Title order={2}>Cargo</Title>
+        <Anchor component={Link} href="/configuracoes/cargos" size="sm">
+          ← Voltar à lista
+        </Anchor>
       </Group>
 
-      {c.descricao && (
-        <Card withBorder>
-          <Text>{c.descricao}</Text>
-        </Card>
-      )}
-
-      <Card withBorder>
-        <Stack gap="xs">
-          <Title order={4}>Permissões</Title>
-          {labels.length === 0 ? (
-            <Text c="dimmed">Nenhuma permissão atribuída.</Text>
-          ) : (
-            <Group gap="xs">
-              {labels.map((label) => (
-                <Badge key={label} variant="light">
-                  {label}
-                </Badge>
-              ))}
+      {error && <Alert color="red">{error.message}</Alert>}
+      {loading && <Skeleton height={300} />}
+      {!loading && !data && <Alert color="yellow">Cargo não encontrado.</Alert>}
+      {!loading && data && (
+        <Stack>
+          <CargoForm
+            defaultValues={data.data}
+            submitLabel="Salvar alterações"
+            onSubmit={handleSubmit}
+            callerBits={callerBits}
+            readOnly={!canWrite}
+          />
+          {canWrite && (
+            <Group justify="flex-start">
+              <Button color="red" variant="light" onClick={handleDelete}>
+                Excluir
+              </Button>
             </Group>
           )}
-          <List size="sm" c="dimmed" mt="md">
-            <List.Item>Total: {labels.length} permissão(ões)</List.Item>
-          </List>
         </Stack>
-      </Card>
-
-      <Anchor component={Link} href="/configuracoes/cargos" size="sm">
-        ← Voltar à lista
-      </Anchor>
+      )}
     </Stack>
   );
 }

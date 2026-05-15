@@ -21,45 +21,41 @@ export type UF = z.infer<typeof ufSchema>;
  * Mirrors `packages/clientes/lib/src/models.dart` Endereco fields.
  */
 export const enderecoSchema = z.object({
-  idExterno: z.string().nullable().optional(),
+  idExterno: z.string().nullable().default(null),
   logradouro: z.string().min(1).max(150),
   numero: z.string().min(1).max(10),
   bairro: z.string().min(1).max(100).default('SEM BAIRRO'),
-  complemento: z.string().max(50).nullable().optional(),
+  complemento: z.string().max(50).nullable().default(null),
   cep: z.string().regex(/^\d{8}$/, 'CEP deve ter 8 dígitos'),
   codigoMunicipio: z
     .string()
     .max(8)
     .regex(/^\d*$/, 'apenas números')
-    .nullable()
-    .optional(),
+    .nullable().default(null),
   cidade: z.string().min(1).max(100),
   estado: ufSchema,
-  cPais: z.string().nullable().optional(),
-  pais: z.string().nullable().optional(),
+  cPais: z.string().nullable().default(null),
+  pais: z.string().nullable().default(null),
   // Recebedor (NFe destinatário, opcional)
-  nome: z.string().max(255).nullable().optional(),
+  nome: z.string().max(255).nullable().default(null),
   cpf_cnpj: z
     .string()
     .max(18)
     .regex(/^\d*$/, 'apenas números')
-    .nullable()
-    .optional(),
-  rg: z.string().nullable().optional(),
-  ie: z.string().max(14).nullable().optional(),
+    .nullable().default(null),
+  rg: z.string().nullable().default(null),
+  ie: z.string().max(14).nullable().default(null),
   imun: z
     .string()
     .max(15)
     .regex(/^\d*$/, 'apenas números')
-    .nullable()
-    .optional(),
-  email: z.string().max(255).email().nullable().optional(),
+    .nullable().default(null),
+  email: z.string().max(255).email().nullable().default(null),
   telefone: z
     .string()
     .max(16)
     .regex(/^\d*$/, 'apenas números')
-    .nullable()
-    .optional(),
+    .nullable().default(null),
 });
 
 export type Endereco = z.infer<typeof enderecoSchema>;

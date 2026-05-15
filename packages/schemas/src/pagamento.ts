@@ -160,25 +160,25 @@ export function statusToEstadoPedido(status: StatusPagamento): EstadoPedido {
  * and writes today.
  */
 export const pagamentoSchema = z.object({
-  id: z.string().nullable().optional(),
-  metodoPagamentoOuterRef: z.unknown().nullable().optional(),
+  id: z.string().nullable().default(null),
+  metodoPagamentoOuterRef: z.unknown().nullable().default(null),
   forma_de_pagamento: formaPagamentoSchema.default(FORMA_PAGAMENTO.dinheiro),
-  status_pagamento: statusPagamentoSchema.nullable().optional(),
-  cartao: z.unknown().nullable().optional(),
-  cheque: z.unknown().nullable().optional(),
-  descricaoPagamento: z.string().nullable().optional(),
+  status_pagamento: statusPagamentoSchema.nullable().default(null),
+  cartao: z.unknown().nullable().default(null),
+  cheque: z.unknown().nullable().default(null),
+  descricaoPagamento: z.string().nullable().default(null),
   valor: z.number().min(0),
   parcelas: z.number().int().min(1).default(1),
-  juros: z.number().min(0).nullable().optional(),
-  tarifas: z.number().min(0).nullable().optional(),
+  juros: z.number().min(0).nullable().default(null),
+  tarifas: z.number().min(0).nullable().default(null),
   aVista: z.boolean().default(true),
   duplicata: z.boolean().default(false),
-  nFat: z.string().max(60).nullable().optional(),
-  vencimento: z.string().datetime().nullable().optional(),
-  ultimaModificacao: z.string().datetime().nullable().optional(),
-  dataCancelamento: z.string().datetime().nullable().optional(),
-  dataAprovacao: z.string().datetime().nullable().optional(),
-  dataCadastro: z.string().datetime().nullable().optional(),
+  nFat: z.string().max(60).nullable().default(null),
+  vencimento: z.string().datetime().nullable().default(null),
+  ultimaModificacao: z.string().datetime().nullable().default(null),
+  dataCancelamento: z.string().datetime().nullable().default(null),
+  dataAprovacao: z.string().datetime().nullable().default(null),
+  dataCadastro: z.string().datetime().nullable().default(null),
 }).passthrough();
 
 export type Pagamento = z.infer<typeof pagamentoSchema>;
@@ -218,7 +218,7 @@ export const metodoPagamentoSchema = z.object({
   tipo: tipoIntegracaoPgtoSchema,
   hasLinkPagamento: z.boolean().default(false),
   nome: z.string().min(1).max(255),
-  dataCadastro: z.string().datetime().nullable().optional(),
+  dataCadastro: z.string().datetime().nullable().default(null),
 });
 export type MetodoPagamento = z.infer<typeof metodoPagamentoSchema>;
 

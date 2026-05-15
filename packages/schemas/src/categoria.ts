@@ -9,14 +9,24 @@ const PERM_CATEGORIA_DELETE = 1n << 13n;
  * Categoria de produto. Mirrors `packages/produtos/lib/src/models.dart`.
  * `categoriaPaiOuterRef` is the Flutter outer-reference object — kept as
  * pass-through `unknown` until we render category trees here.
+ *
+ * `.describe()` labels feed the schema-driven UI primitives (TableView /
+ * ObjectView) in `@delfrance/ui`.
  */
 export const categoriaSchema = z.object({
-  nome: z.string().min(1).max(255),
-  nomeCompleto: z.string().max(2000).nullable().optional(),
-  permiteCadastro: z.boolean().default(true),
-  categoriaGoogleId: z.string().nullable().optional(),
-  categoriaPaiOuterRef: z.unknown().nullable().optional(),
-  timestamp: z.string().datetime().nullable().optional(),
+  nome: z.string().min(1).max(255).describe('Nome'),
+  nomeCompleto: z
+    .string()
+    .max(2000)
+    .nullable().default(null)
+    .describe('Nome completo'),
+  permiteCadastro: z.boolean().default(true).describe('Permite cadastro'),
+  categoriaGoogleId: z
+    .string()
+    .nullable().default(null)
+    .describe('Google Product Category ID'),
+  categoriaPaiOuterRef: z.unknown().nullable().default(null),
+  timestamp: z.string().datetime().nullable().default(null),
 });
 
 export type Categoria = z.infer<typeof categoriaSchema>;

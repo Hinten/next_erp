@@ -4,7 +4,6 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
-  ActionIcon,
   Alert,
   Anchor,
   Badge,
@@ -85,13 +84,12 @@ export default function UsuariosPage() {
               <Table.Th>E-mail</Table.Th>
               <Table.Th>Cargos</Table.Th>
               <Table.Th>Status</Table.Th>
-              <Table.Th />
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
             {usuarios.length === 0 && (
               <Table.Tr>
-                <Table.Td colSpan={5} align="center">
+                <Table.Td colSpan={4} align="center">
                   Nenhum usuário cadastrado.
                 </Table.Td>
               </Table.Tr>
@@ -136,31 +134,6 @@ export default function UsuariosPage() {
                       Inativo
                     </Badge>
                   )}
-                </Table.Td>
-                <Table.Td>
-                  <PermGate
-                    bit={PERM.configuracoes.write}
-                    tooltipLabel="Sem permissão para editar."
-                    fallback={
-                      <ActionIcon
-                        variant="subtle"
-                        aria-label="Editar"
-                        disabled
-                      >
-                        ✎
-                      </ActionIcon>
-                    }
-                  >
-                    <ActionIcon
-                      component={Link}
-                      href={`/configuracoes/usuarios/${id}/editar`}
-                      variant="subtle"
-                      aria-label="Editar"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      ✎
-                    </ActionIcon>
-                  </PermGate>
                 </Table.Td>
               </Table.Tr>
             ))}

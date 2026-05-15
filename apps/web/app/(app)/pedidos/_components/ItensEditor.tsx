@@ -44,10 +44,19 @@ export function ItensEditor({
     const next: ItemDoPedido[] = [
       ...items,
       {
+        produtoUid: null,
         ordem,
+        ensureUniqueId: null,
+        mktplaceId: null,
+        sku: null,
+        gtin: null,
+        nomeDeVenda: null,
         precoDeVenda: 0.01,
         descontoUnitario: 0,
         quantidade: 1,
+        custo: null,
+        timestamp: null,
+        imposto: null,
       },
     ];
     setItems(next);

@@ -13,6 +13,7 @@ describe('cargoSchema', () => {
       nome: 'Vendedor',
       descricao: null,
       permissoes: '0',
+      timestamp: null,
     });
   });
 
@@ -46,6 +47,8 @@ describe('cargoSchema', () => {
       permissoes: big,
     });
     expect(out.permissoes).toBe(big);
+    expect(out.descricao).toBeNull();
+    expect(out.timestamp).toBeNull();
   });
 
   // Regression: Firebase JS SDK v12 rejects `undefined` in addDoc/setDoc.

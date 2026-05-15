@@ -37,6 +37,7 @@ const isGroup = (e: NavEntry): e is NavGroup => 'children' in e;
 const NAV: NavEntry[] = [
   { href: '/inicio', label: 'Início' },
   { href: '/chat', label: 'Atendimento', perm: PERM.chat.read },
+  { href: '/clientes', label: 'Clientes', perm: PERM.cliente.read },
   {
     label: 'Movimento',
     perm: PERM.pedido.read,

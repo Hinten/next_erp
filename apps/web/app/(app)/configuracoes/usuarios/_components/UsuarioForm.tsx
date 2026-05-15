@@ -23,6 +23,11 @@ export interface UsuarioFormProps {
   onSubmit: (values: Usuario) => Promise<void>;
   /** Whether the current viewer is a superuser (controls `isSuperUser` toggle visibility). */
   callerIsSuperUser: boolean;
+  /**
+   * Disable every input and hide the submit button. Used by `[id]/page.tsx`
+   * when the caller lacks `PERM.configuracoes.write`.
+   */
+  readOnly?: boolean;
 }
 
 export function UsuarioForm({
@@ -30,6 +35,7 @@ export function UsuarioForm({
   submitLabel = 'Salvar',
   onSubmit,
   callerIsSuperUser,
+  readOnly = false,
 }: UsuarioFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -62,6 +68,7 @@ export function UsuarioForm({
               error={fieldState.error?.message}
               maxLength={255}
               required
+              disabled={readOnly}
             />
           )}
         />
@@ -89,6 +96,7 @@ export function UsuarioForm({
               value={field.value ?? []}
               onChange={field.onChange}
               error={fieldState.error?.message}
+              disabled={readOnly}
             />
           )}
         />
@@ -101,6 +109,7 @@ export function UsuarioForm({
               label="Colaborador interno"
               checked={field.value ?? false}
               onChange={(e) => field.onChange(e.currentTarget.checked)}
+              disabled={readOnly}
             />
           )}
         />
@@ -113,6 +122,7 @@ export function UsuarioForm({
               label="Ativo"
               checked={field.value ?? false}
               onChange={(e) => field.onChange(e.currentTarget.checked)}
+              disabled={readOnly}
             />
           )}
         />
@@ -126,6 +136,7 @@ export function UsuarioForm({
                 label="Superusuário (acesso total)"
                 checked={field.value ?? false}
                 onChange={(e) => field.onChange(e.currentTarget.checked)}
+                disabled={readOnly}
               />
             )}
           />
@@ -133,11 +144,13 @@ export function UsuarioForm({
 
         {submitError && <Alert color="red">{submitError}</Alert>}
 
-        <Group justify="flex-end">
-          <Button type="submit" loading={form.formState.isSubmitting}>
-            {submitLabel}
-          </Button>
-        </Group>
+        {!readOnly && (
+          <Group justify="flex-end">
+            <Button type="submit" loading={form.formState.isSubmitting}>
+              {submitLabel}
+            </Button>
+          </Group>
+        )}
       </Stack>
     </form>
   );

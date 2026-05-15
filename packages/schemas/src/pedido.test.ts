@@ -6,10 +6,29 @@ import {
   pedidoSchema,
   pedidoTotal,
 } from './pedido';
+import type { ItemDoPedido } from './pedido';
 
 const baseInput = {
   estado: 'pago' as const,
   integracaoPedidoOuterRef: { uid: 'integracao/x' },
+};
+
+// All nullable fields of itemDoPedidoSchema set to null — combine with the
+// fields the test cares about via spread.
+const baseItem: ItemDoPedido = {
+  produtoUid: null,
+  ordem: 1,
+  ensureUniqueId: null,
+  mktplaceId: null,
+  sku: null,
+  gtin: null,
+  nomeDeVenda: null,
+  precoDeVenda: 1,
+  descontoUnitario: 0,
+  quantidade: 1,
+  custo: null,
+  timestamp: null,
+  imposto: null,
 };
 
 describe('pedidoSchema', () => {
@@ -59,13 +78,13 @@ describe('pedidoSchema', () => {
 describe('itemSubtotal', () => {
   it('applies (preco - desconto) * quantidade', () => {
     expect(
-      itemSubtotal({ precoDeVenda: 10, descontoUnitario: 2, quantidade: 3, ordem: 1 }),
+      itemSubtotal({ ...baseItem, precoDeVenda: 10, descontoUnitario: 2, quantidade: 3 }),
     ).toBe(24);
   });
 
-  it('treats missing desconto as zero', () => {
+  it('treats zero desconto as no discount', () => {
     expect(
-      itemSubtotal({ precoDeVenda: 7, quantidade: 2, ordem: 1, descontoUnitario: 0 }),
+      itemSubtotal({ ...baseItem, precoDeVenda: 7, quantidade: 2, descontoUnitario: 0 }),
     ).toBe(14);
   });
 });
@@ -75,10 +94,10 @@ describe('pedidoTotal', () => {
     const total = pedidoTotal({
       ...pedidoSchema.parse(baseInput),
       itens: {
-        a: [{ precoDeVenda: 10, quantidade: 2, ordem: 1, descontoUnitario: 0 }],
+        a: [{ ...baseItem, precoDeVenda: 10, quantidade: 2 }],
         b: [
-          { precoDeVenda: 5, quantidade: 1, ordem: 1, descontoUnitario: 0 },
-          { precoDeVenda: 8, quantidade: 1, ordem: 2, descontoUnitario: 1 },
+          { ...baseItem, precoDeVenda: 5, quantidade: 1 },
+          { ...baseItem, precoDeVenda: 8, quantidade: 1, ordem: 2, descontoUnitario: 1 },
         ],
       },
     });

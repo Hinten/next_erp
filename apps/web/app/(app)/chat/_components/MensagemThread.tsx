@@ -98,6 +98,15 @@ export function MensagemThread({ conversaId }: { conversaId: string }) {
       estadoEnvio: ESTADO_ENVIO.enviando,
       user_id: user?.uid ?? null,
       timestamp: now,
+      resposta: null,
+      usarioMensagemOuterRef: null,
+      urlAvatar: null,
+      midGroup: null,
+      error: null,
+      visualizado: null,
+      transcription: null,
+      anexo: null,
+      anexoUrl: null,
     };
     setOptimistic((prev) => [...prev, pending]);
     setDraft('');
@@ -113,6 +122,15 @@ export function MensagemThread({ conversaId }: { conversaId: string }) {
           estadoEnvio: ESTADO_ENVIO.salva,
           user_id: user?.uid ?? null,
           timestamp: now,
+          resposta: null,
+          usarioMensagemOuterRef: null,
+          urlAvatar: null,
+          midGroup: null,
+          error: null,
+          visualizado: null,
+          transcription: null,
+          anexo: null,
+          anexoUrl: null,
         },
       );
       // Server snapshot will include this mid on the next tick; the

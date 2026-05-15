@@ -80,22 +80,21 @@ export const integracaoSchema = z.object({
     .string()
     .max(18)
     .regex(/^\d*$/, 'apenas números')
-    .nullable()
-    .optional(),
-  idCadIntTran: z.string().max(60).nullable().optional(),
+    .nullable().default(null),
+  idCadIntTran: z.string().max(60).nullable().default(null),
   ativo: z.boolean().default(true),
-  cor: z.number().int().nullable().optional(),
-  modalidadeFreteImportacao: z.number().int().nullable().optional(),
+  cor: z.number().int().nullable().default(null),
+  modalidadeFreteImportacao: z.number().int().nullable().default(null),
 
   // Outer references — opaque pass-through.
   filialIntegracaoPedidoOuterRef: z.unknown(),
   tabelaNormalOuterRef: z.unknown(),
-  tabelaPromocionalOuterRef: z.unknown().nullable().optional(),
-  operacaoOuterRef: z.unknown().nullable().optional(),
-  operacaoDevolucaoOuterRef: z.unknown().nullable().optional(),
+  tabelaPromocionalOuterRef: z.unknown().nullable().default(null),
+  operacaoOuterRef: z.unknown().nullable().default(null),
+  operacaoDevolucaoOuterRef: z.unknown().nullable().default(null),
   depositoOuterRef: z.unknown(),
 
-  dataCadastro: z.string().datetime().nullable().optional(),
+  dataCadastro: z.string().datetime().nullable().default(null),
 }).passthrough();
 
 export type Integracao = z.infer<typeof integracaoSchema>;

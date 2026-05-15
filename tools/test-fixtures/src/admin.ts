@@ -49,8 +49,17 @@ export function getApp(serviceAccountPath?: string): App {
   return app;
 }
 
+/**
+ * Firestore handle for the e2e / admin scripts. Targets the database named
+ * by `FIREBASE_DATABASE_ID` (default `'default'`). Firestore Enterprise
+ * edition uses a database literally named `default` — NOT the free-tier
+ * `(default)` that the Admin SDK assumes when no id is passed; omitting the
+ * id there yields `5 NOT_FOUND` on every read/write. Mirrors
+ * `apps/web`'s `getFirebaseFirestore()` and `apps/integrations`.
+ */
 export function db(serviceAccountPath?: string): Firestore {
-  return getFirestore(getApp(serviceAccountPath));
+  const databaseId = process.env.FIREBASE_DATABASE_ID?.trim() || 'default';
+  return getFirestore(getApp(serviceAccountPath), databaseId);
 }
 
 /**

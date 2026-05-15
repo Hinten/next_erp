@@ -9,27 +9,7 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * ESTADOS_PEDIDO enum, mirroring `packages/pedido/lib/src/models.dart`.
  * Stored on disk as the enum's `name` (e.g. `'pago'`, `'emAnalise'`).
  */
-export const estadoPedidoSchema = z.enum([
-  'iniciado',
-  'carrinho',
-  'carrinhoAbandonado',
-  'escolhendoFormaDePagamento',
-  'aguardandoConfirmacaoDePagamento',
-  'pagamentoNaoRealizado',
-  'emAnalise',
-  'emProcessamento',
-  'pago',
-  'estornadoParcialmente',
-  'estornadoIntegralmente',
-  'processandoCancelamento',
-  'cancelado',
-  'fraude',
-  'finalizado',
-  'error',
-]);
-export type EstadoPedido = z.infer<typeof estadoPedidoSchema>;
-
-export const ESTADO_PEDIDO_LABELS: Record<EstadoPedido, string> = {
+export const ESTADO_PEDIDO_LABELS = {
   iniciado: 'Iniciado',
   carrinho: 'Carrinho',
   carrinhoAbandonado: 'Carrinho abandonado',
@@ -46,7 +26,29 @@ export const ESTADO_PEDIDO_LABELS: Record<EstadoPedido, string> = {
   fraude: 'Fraude',
   finalizado: 'Finalizado',
   error: 'Erro',
-};
+} as const;
+
+export const estadoPedidoSchema = z
+  .enum([
+    'iniciado',
+    'carrinho',
+    'carrinhoAbandonado',
+    'escolhendoFormaDePagamento',
+    'aguardandoConfirmacaoDePagamento',
+    'pagamentoNaoRealizado',
+    'emAnalise',
+    'emProcessamento',
+    'pago',
+    'estornadoParcialmente',
+    'estornadoIntegralmente',
+    'processandoCancelamento',
+    'cancelado',
+    'fraude',
+    'finalizado',
+    'error',
+  ])
+  .meta({ labels: ESTADO_PEDIDO_LABELS });
+export type EstadoPedido = z.infer<typeof estadoPedidoSchema>;
 
 /**
  * ItemDoPedido — embedded item structure inside `Pedido.itens`. Mirrors
@@ -54,19 +56,19 @@ export const ESTADO_PEDIDO_LABELS: Record<EstadoPedido, string> = {
  * fields (`imposto`) are pass-through.
  */
 export const itemDoPedidoSchema = z.object({
-  produtoUid: z.string().nullable().optional(),
+  produtoUid: z.string().nullable().default(null),
   ordem: z.number().int().default(1),
-  ensureUniqueId: z.string().nullable().optional(),
-  mktplaceId: z.string().nullable().optional(),
-  sku: z.string().nullable().optional(),
-  gtin: z.string().nullable().optional(),
-  nomeDeVenda: z.string().nullable().optional(),
+  ensureUniqueId: z.string().nullable().default(null),
+  mktplaceId: z.string().nullable().default(null),
+  sku: z.string().nullable().default(null),
+  gtin: z.string().nullable().default(null),
+  nomeDeVenda: z.string().nullable().default(null),
   precoDeVenda: z.number().min(0.01),
   descontoUnitario: z.number().min(0).default(0),
   quantidade: z.number().min(0),
-  custo: z.number().nullable().optional(),
-  timestamp: z.string().datetime().nullable().optional(),
-  imposto: z.unknown().nullable().optional(),
+  custo: z.number().nullable().default(null),
+  timestamp: z.string().datetime().nullable().default(null),
+  imposto: z.unknown().nullable().default(null),
 }).passthrough();
 
 export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
@@ -79,23 +81,23 @@ export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
  */
 export const pedidoSchema = z.object({
   ehSaida: z.boolean().default(true),
-  hasUserInteraction: z.boolean().nullable().optional(),
+  hasUserInteraction: z.boolean().nullable().default(null),
 
   estado: estadoPedidoSchema,
-  numero: z.string().nullable().optional(),
+  numero: z.string().nullable().default(null),
 
   // Outer references — kept opaque (resolved by Flutter today; UI here
   // surfaces the IDs through fetched lookups when needed).
-  vendedorPedidoOuterRef: z.unknown().nullable().optional(),
+  vendedorPedidoOuterRef: z.unknown().nullable().default(null),
   integracaoPedidoOuterRef: z.unknown(),
-  operacaoPedidoOuterRef: z.unknown().nullable().optional(),
-  clientePedidoOuterRef: z.unknown().nullable().optional(),
-  enderecoFiscalOuterRef: z.unknown().nullable().optional(),
-  listaDePrecosOuterRef: z.unknown().nullable().optional(),
+  operacaoPedidoOuterRef: z.unknown().nullable().default(null),
+  clientePedidoOuterRef: z.unknown().nullable().default(null),
+  enderecoFiscalOuterRef: z.unknown().nullable().default(null),
+  listaDePrecosOuterRef: z.unknown().nullable().default(null),
 
-  entradasRelacionadas: z.array(z.string()).nullable().optional(),
-  saidasRelacionadas: z.array(z.string()).nullable().optional(),
-  chNFeReferenciadas: z.array(z.string()).nullable().optional(),
+  entradasRelacionadas: z.array(z.string()).nullable().default(null),
+  saidasRelacionadas: z.array(z.string()).nullable().default(null),
+  chNFeReferenciadas: z.array(z.string()).nullable().default(null),
 
   // itens is keyed by produtoUid (or 'NONE' / '' when no produto bound).
   itens: z.record(z.string(), z.array(itemDoPedidoSchema)).default({}),

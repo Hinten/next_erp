@@ -14,7 +14,7 @@ import { getAuth } from 'firebase-admin/auth';
 import { getApp } from './admin.js';
 
 // All permission bits OR'd together — mirrors PERM in packages/auth/src/permissions.ts
-const ALL_PERMS =
+export const ALL_PERMS =
   7n |          // cliente: read | write | delete
   (7n << 8n) |  // produto
   (7n << 16n) | // pedido
@@ -22,6 +22,29 @@ const ALL_PERMS =
   (7n << 32n) | // nfe
   (3n << 40n) | // configuracoes: read | write (no delete)
   (7n << 48n);  // chat
+
+export interface GrantAllPermsResult {
+  uid: string;
+  permissionsClaim: string;
+}
+
+/**
+ * Programmatic version of the CLI script — used by Playwright globalSetup
+ * to mint a test user with full permissions.
+ */
+export async function grantAllPerms(
+  email: string,
+  options: { extraClaims?: Record<string, unknown>; serviceAccountPath?: string } = {},
+): Promise<GrantAllPermsResult> {
+  getApp(options.serviceAccountPath);
+  const auth = getAuth();
+  const user = await auth.getUserByEmail(email);
+  await auth.setCustomUserClaims(user.uid, {
+    permissions: ALL_PERMS.toString(),
+    ...options.extraClaims,
+  });
+  return { uid: user.uid, permissionsClaim: ALL_PERMS.toString() };
+}
 
 function parseArgs(argv: string[]): { email?: string; serviceAccountPath?: string } {
   const [email, ...rest] = argv;
@@ -38,7 +61,12 @@ function parseArgs(argv: string[]): { email?: string; serviceAccountPath?: strin
   return { email, serviceAccountPath };
 }
 
-async function main(): Promise<void> {
+const isDirectInvocation =
+  import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith('grant-all-perms.ts') ||
+  process.argv[1]?.endsWith('grant-all-perms.js');
+
+if (isDirectInvocation) {
   const { email, serviceAccountPath } = parseArgs(process.argv.slice(2));
   if (!email) {
     console.error('Usage: grant-all-perms <email> [--service-account <path>]');
@@ -50,18 +78,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  getApp(serviceAccountPath);
-  const auth = getAuth();
-
-  const user = await auth.getUserByEmail(email);
-  await auth.setCustomUserClaims(user.uid, { permissions: ALL_PERMS.toString() });
-
-  console.log(`✓ Granted all permissions to ${email} (uid: ${user.uid})`);
-  console.log(`  permissions claim: "${ALL_PERMS.toString()}"`);
-  console.log('  Sign out and sign back in to apply the new claim.');
+  grantAllPerms(email, { serviceAccountPath })
+    .then(({ uid, permissionsClaim }) => {
+      console.log(`✓ Granted all permissions to ${email} (uid: ${uid})`);
+      console.log(`  permissions claim: "${permissionsClaim}"`);
+      console.log('  Sign out and sign back in to apply the new claim.');
+    })
+    .catch((err: unknown) => {
+      console.error(err);
+      process.exit(1);
+    });
 }
-
-main().catch((err: unknown) => {
-  console.error(err);
-  process.exit(1);
-});

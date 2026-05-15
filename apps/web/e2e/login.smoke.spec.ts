@@ -1,5 +1,9 @@
 import { expect, test } from '@playwright/test';
 
+// Login page renders without a signed-in user — opt out of the persistent
+// session that globalSetup writes for the rest of the suite.
+test.use({ storageState: { cookies: [], origins: [] } });
+
 test.describe('Login page', () => {
   test('renders without FOUC and shows the form', async ({ page }) => {
     const response = await page.goto('/login');
