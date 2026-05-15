@@ -46,6 +46,8 @@ jobs:
       E2E_SU_PASSWORD: ${{ secrets.E2E_SU_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - uses: actions/setup-node@v4
         with:
