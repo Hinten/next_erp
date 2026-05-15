@@ -9,6 +9,7 @@ import {
   and,
   ascending,
   descending,
+  documentId,
   equal,
   field,
   greaterThan,
@@ -19,6 +20,15 @@ import {
   regexContains,
   startsWith,
 } from 'firebase/firestore/pipelines';
+
+/**
+ * Field alias under which `buildPipeline` projects the document id when a
+ * `select` is requested. The `.select()` stage turns results into ad-hoc
+ * records and drops `PipelineResult.ref`, so the id is carried as a normal
+ * field via `documentId(field('__path__'))`. `usePipelineSnapshot` reads it
+ * back and strips it from the row data.
+ */
+export const PIPELINE_ID_FIELD = '__id';
 
 /**
  * Thrown when the installed firebase SDK does not expose the Pipelines API
@@ -206,7 +216,14 @@ export function buildPipeline(db: Firestore, spec: PipelineSpec): Pipeline {
   }
 
   if (spec.select?.length) {
-    pipe = pipe.select(spec.select[0]!, ...spec.select.slice(1));
+    // Project the requested fields PLUS the document id. `.select()` strips
+    // `PipelineResult.ref`, so without this projection the row identity is
+    // lost. `documentId(field('__path__'))` extracts the id from the
+    // synthetic path field; alias it to PIPELINE_ID_FIELD so the snapshot
+    // hook can read it back.
+    const idSelection = documentId(field('__path__')).as(PIPELINE_ID_FIELD);
+    const selections = [...spec.select, idSelection];
+    pipe = pipe.select(selections[0]!, ...selections.slice(1));
   }
 
   if (typeof spec.limit === 'number') pipe = pipe.limit(spec.limit);

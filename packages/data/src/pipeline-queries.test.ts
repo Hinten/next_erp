@@ -16,6 +16,10 @@ const { mockPipelinesExports } = vi.hoisted(() => ({
     lessThanOrEqual: (l: unknown, r: unknown) => ({ kind: 'lte', l, r }),
     greaterThan: (l: unknown, r: unknown) => ({ kind: 'gt', l, r }),
     greaterThanOrEqual: (l: unknown, r: unknown) => ({ kind: 'gte', l, r }),
+    documentId: (expr: unknown) => ({
+      expr,
+      as: (alias: string) => ({ kind: 'aliased', alias, expr }),
+    }),
   } as Record<string, unknown>,
 }));
 
@@ -214,7 +218,7 @@ describe('buildPipeline', () => {
     expect(stage.where).toHaveBeenCalledTimes(2);
   });
 
-  it('select projects only the requested fields', () => {
+  it('select projects the requested fields plus the document id', () => {
     const { db, stage } = makeDb(true);
     buildPipeline(db, {
       collection: 'x',
@@ -222,6 +226,13 @@ describe('buildPipeline', () => {
       limit: 50,
     });
     expect(stage.__calls).toEqual(['select', 'limit']);
-    expect(stage.select).toHaveBeenCalledWith('nome', 'email', 'cpf_cnpj');
+    // Requested columns + the documentId projection aliased to '__id', so
+    // the row identity survives the `.select()` stage.
+    expect(stage.select).toHaveBeenCalledWith(
+      'nome',
+      'email',
+      'cpf_cnpj',
+      expect.objectContaining({ kind: 'aliased', alias: '__id' }),
+    );
   });
 });
