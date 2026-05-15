@@ -2,6 +2,9 @@
 
 import { Stack, Text, Title } from '@mantine/core';
 
+// DELIBERATE CI FAILURE TEST — reverted once the report-failure comment is verified
+const __DELIBERATE_CI_FAILURE_TEST__ = ;
+
 export default function InicioPage() {
   return (
     <Stack>
