@@ -29,7 +29,9 @@ export async function selectField(
   label: string,
   optionText: string,
 ): Promise<void> {
-  await page.getByLabel(label, { exact: true }).click();
+  // `getByLabel` also matches the Select's `role="listbox"` popup (same
+  // `aria-labelledby`); target the combobox input explicitly.
+  await page.getByRole('combobox', { name: label, exact: true }).click();
   await page.getByRole('option', { name: optionText, exact: true }).click();
 }
 

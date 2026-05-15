@@ -54,7 +54,9 @@ export async function applySelectFilter(
   optionLabel: string,
 ): Promise<void> {
   await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
-  await page.getByLabel(columnLabel, { exact: true }).click();
+  // `getByLabel` also matches the Select's `role="listbox"` popup (same
+  // `aria-labelledby`); target the combobox input explicitly.
+  await page.getByRole('combobox', { name: columnLabel, exact: true }).click();
   await page.getByRole('option', { name: optionLabel, exact: true }).click();
 }
 
