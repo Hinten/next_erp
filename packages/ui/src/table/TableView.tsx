@@ -2,6 +2,7 @@
 
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useLocalStorage } from '@mantine/hooks';
 import {
   Alert, Checkbox, Group, Skeleton, Stack, Table, Text, Title,
 } from '@mantine/core';
@@ -167,11 +168,32 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
 
   // Columns visible by default: caller-supplied keys, or every non-unknown
   // field (drops embeddings and other opaque blobs automatically).
-  // Initialize once — consumers swap the schema by remounting (key prop).
-  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(() => {
-    if (defaultColumns) return new Set(defaultColumns);
-    return new Set(descriptors.filter((d) => d.kind !== 'unknown').map((d) => d.key));
+  const defaultVisibleKeys = useMemo<string[]>(
+    () =>
+      defaultColumns ??
+      descriptors.filter((d) => d.kind !== 'unknown').map((d) => d.key),
+    [defaultColumns, descriptors],
+  );
+
+  // Storage key is per-collection so /clientes and /categorias never
+  // collide. resolvePath('clientes') → 'clientes'; for subcollections it
+  // includes the parent ids, giving per-parent column prefs.
+  const columnsStorageKey = useMemo(
+    () => `delfrance:tableview:columns:${collection.resolvePath(pathContext)}`,
+    // pathContext is identity-tracked like the rest of the data layer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [collection],
+  );
+
+  // Persisted visible columns. `useLocalStorage` returns defaultValue on
+  // the server + first client render, then reads localStorage in an effect
+  // (getInitialValueInEffect default) — no hydration mismatch.
+  const [visibleKeysArr, setVisibleKeysArr] = useLocalStorage<string[]>({
+    key: columnsStorageKey,
+    defaultValue: defaultVisibleKeys,
   });
+
+  const visibleKeys = useMemo(() => new Set(visibleKeysArr), [visibleKeysArr]);
 
   const router = useRouter();
   const pathname = usePathname();
@@ -277,11 +299,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   );
 
   function toggleColumn(key: string) {
-    setVisibleKeys((cur) => {
-      const next = new Set(cur);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
+    setVisibleKeysArr((cur) => {
+      const set = new Set(cur);
+      if (set.has(key)) set.delete(key);
+      else set.add(key);
+      return [...set];
     });
   }
 

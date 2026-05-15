@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { z } from 'zod';
@@ -84,10 +84,17 @@ function fakeCollection(): CollectionHandle<typeof testSchema> {
 }
 
 function wrap(node: React.ReactNode) {
-  return render(<MantineProvider>{node}</MantineProvider>);
+  // `env="test"` disables Mantine transitions/portals so the ColumnPicker
+  // popover renders synchronously and is queryable in jsdom.
+  return render(<MantineProvider env="test">{node}</MantineProvider>);
 }
 
 describe('TableView', () => {
+  afterEach(() => {
+    // useLocalStorage persists visible columns; clear so cases don't leak.
+    localStorage.clear();
+  });
+
   it('renders one header per non-unknown field by default', () => {
     wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
     const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
@@ -106,6 +113,30 @@ describe('TableView', () => {
     const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
     expect(headers).toContain('Nome');
     expect(headers).not.toContain('Tipo');
+  });
+
+  it('hydrates visible columns from localStorage', () => {
+    // fakeCollection().resolvePath() → 'tests'.
+    localStorage.setItem(
+      'delfrance:tableview:columns:tests',
+      JSON.stringify(['nome']),
+    );
+    wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+    const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
+    expect(headers).toContain('Nome');
+    expect(headers).not.toContain('Tipo');
+  });
+
+  it('persists a column toggle to localStorage', () => {
+    wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+    // Open the ColumnPicker popover and uncheck "Tipo".
+    fireEvent.click(screen.getByRole('button', { name: 'Configurar colunas' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Tipo' }));
+    const stored = JSON.parse(
+      localStorage.getItem('delfrance:tableview:columns:tests') ?? '[]',
+    ) as string[];
+    expect(stored).not.toContain('tipo');
+    expect(stored).toContain('nome');
   });
 
   it('clicking a row calls router.push with the rowHref', () => {
