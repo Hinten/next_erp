@@ -39,7 +39,7 @@ export async function applyTextFilter(
   columnLabel: string,
   value: string,
 ): Promise<void> {
-  await page.getByRole('button', { name: `Filtrar ${columnLabel}` }).click();
+  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
   await page.getByLabel(`${columnLabel} contém`, { exact: true }).fill(value);
   await page.getByRole('button', { name: 'Aplicar', exact: true }).click();
 }
@@ -53,7 +53,7 @@ export async function applySelectFilter(
   columnLabel: string,
   optionLabel: string,
 ): Promise<void> {
-  await page.getByRole('button', { name: `Filtrar ${columnLabel}` }).click();
+  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
   await page.getByLabel(columnLabel, { exact: true }).click();
   await page.getByRole('option', { name: optionLabel, exact: true }).click();
 }
@@ -63,7 +63,7 @@ export async function clearColumnFilter(
   page: Page,
   columnLabel: string,
 ): Promise<void> {
-  await page.getByRole('button', { name: `Filtrar ${columnLabel}` }).click();
+  await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
   await page.getByRole('button', { name: 'Limpar', exact: true }).click();
 }
 
