@@ -1,4 +1,10 @@
-import { type FullConfig, chromium, request } from '@playwright/test';
+import {
+  type Browser,
+  type FullConfig,
+  type Page,
+  chromium,
+  request,
+} from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,15 +22,18 @@ import {
  *   1. Seed the namespaced grupoEconomico (idempotent).
  *   2. Ensure the e2e Firebase Auth user exists with the configured password.
  *   3. Grant the user all permission bits + tenant claim via setCustomUserClaims.
- *   4. Launch a chromium context, drive the login form, and persist the
- *      resulting Firebase IndexedDB/localStorage to `storageState`.
+ *   4. Drive the login form, wait for Firebase to persist the session into
+ *      IndexedDB, capture `storageState`, then verify it actually restores an
+ *      authenticated session in a fresh context. Retried up to 3×; if no
+ *      attempt produces a working storageState we throw — far better than
+ *      letting the whole suite run with broken auth and die on test #1.
  *
  * Graceful degradation: if any of the required secrets are missing
  * (E2E_USER_EMAIL/PASSWORD, FIREBASE_PROJECT_ID, FIREBASE_SERVICE_ACCOUNT)
  * we write an empty storageState and return. The unauthenticated smoke
- * specs (`login.smoke`, `auth-guard.smoke`) still run; every other spec
- * checks `requiresAuthEnv()` in `beforeAll` and skips itself, so CI stays
- * green while clearly signalling that the test user wasn't configured.
+ * specs (`login.smoke`, `auth-guard.smoke`) still run and pass; the
+ * auth-requiring specs (all-pages, CRUD) then fail fast at `/login` — the
+ * intended loud signal that the test user wasn't configured.
  */
 // This file lives at `apps/web/e2e/global-setup.ts`; the storageState
 // path is its sibling. Resolving against the file URL is robust to
@@ -33,6 +42,11 @@ import {
 // because rootDir was the testDir, not the project dir).
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STORAGE_STATE_PATH = resolve(HERE, '.auth/user.json');
+
+// How many times to (re)drive the login + capture + verify cycle before
+// giving up. The capture can race Firebase's async IndexedDB write; a fresh
+// attempt almost always wins it.
+const AUTH_SETUP_ATTEMPTS = 3;
 
 export default async function globalSetup(_config: FullConfig) {
   // eslint-disable-next-line no-console
@@ -56,7 +70,7 @@ export default async function globalSetup(_config: FullConfig) {
   if (missing.length > 0) {
     console.warn(
       `\n[globalSetup] skipping auth setup — missing env: ${missing.join(', ')}.\n` +
-        `              Auth-requiring specs (all-pages, CRUD) will skip themselves.\n` +
+        `              Auth-requiring specs (all-pages, CRUD) will fail fast at /login.\n` +
         `              Configure these as repo secrets to enable the full suite.\n`,
     );
     await writeFile(
@@ -85,22 +99,188 @@ export default async function globalSetup(_config: FullConfig) {
   await waitForServer(baseURL);
 
   const browser = await chromium.launch();
-  const context = await browser.newContext({ baseURL });
-  const page = await context.newPage();
-  await page.goto('/login');
-  await page.getByLabel('E-mail').fill(email!);
-  await page.getByLabel('Senha').fill(password!);
-  await page.getByRole('button', { name: 'Entrar' }).click();
-  // Wait for the post-login redirect into the app shell.
-  await page.waitForURL('**/inicio', { timeout: 20_000 });
-  await context.storageState({ path: storageStatePath, indexedDB: true });
-  await browser.close();
+  try {
+    for (let attempt = 1; attempt <= AUTH_SETUP_ATTEMPTS; attempt++) {
+      const verified = await captureAndVerifyAuth(
+        browser,
+        baseURL,
+        email!,
+        password!,
+        storageStatePath,
+      ).then(
+        (ok) => ok,
+        (err) => {
+          // A thrown attempt (login timeout, navigation error, …) is just a
+          // failed attempt: log it and let the loop retry. Anything that is
+          // not an Error subclass shouldn't be swallowed — rethrow it.
+          if (!(err instanceof Error)) throw err;
+          console.warn(
+            `[globalSetup] auth setup attempt ${attempt}/${AUTH_SETUP_ATTEMPTS} ` +
+              `threw: ${err.message}`,
+          );
+          return false;
+        },
+      );
 
-  // eslint-disable-next-line no-console
-  console.log(
-    `[globalSetup] seeded tenant ${namespace}_grupoEconomico/seed, ` +
-      `granted perms to ${email}, storageState -> ${storageStatePath}`,
+      if (verified) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[globalSetup] seeded tenant ${namespace}_grupoEconomico/seed, ` +
+            `granted perms to ${email}, storageState -> ${storageStatePath} ` +
+            `(verified on attempt ${attempt}/${AUTH_SETUP_ATTEMPTS})`,
+        );
+        return;
+      }
+
+      console.warn(
+        `[globalSetup] storageState from attempt ${attempt}/${AUTH_SETUP_ATTEMPTS} ` +
+          `did not restore an authenticated session — ` +
+          (attempt < AUTH_SETUP_ATTEMPTS ? 'retrying…' : 'giving up.'),
+      );
+    }
+
+    throw new Error(
+      `[globalSetup] could not produce an authenticated storageState after ` +
+        `${AUTH_SETUP_ATTEMPTS} attempts: the e2e user logs in but the saved ` +
+        `session does not restore. Check the E2E_USER_* secrets and the ` +
+        `staging Firebase project before re-running the suite.`,
+    );
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
+ * One full attempt: drive the login form in a fresh context, wait for the
+ * Firebase session to land in IndexedDB, persist `storageState`, then verify
+ * the saved file actually authenticates. Returns whether verification passed.
+ */
+async function captureAndVerifyAuth(
+  browser: Browser,
+  baseURL: string,
+  email: string,
+  password: string,
+  storageStatePath: string,
+): Promise<boolean> {
+  await captureAuthenticatedState(browser, baseURL, email, password, storageStatePath);
+  return verifyStorageState(browser, baseURL, storageStatePath);
+}
+
+/**
+ * Logs in through the UI and writes `storageState` (cookies + IndexedDB).
+ * Crucially waits for Firebase to flush the auth user to IndexedDB *before*
+ * capturing — capturing earlier yields a user.json without the
+ * `firebase:authUser:*` key, i.e. a session that silently fails to restore.
+ */
+async function captureAuthenticatedState(
+  browser: Browser,
+  baseURL: string,
+  email: string,
+  password: string,
+  storageStatePath: string,
+): Promise<void> {
+  const context = await browser.newContext({ baseURL });
+  try {
+    const page = await context.newPage();
+    await page.goto('/login');
+    await page.getByLabel('E-mail').fill(email);
+    await page.getByLabel('Senha').fill(password);
+    await page.getByRole('button', { name: 'Entrar' }).click();
+    // Wait for the post-login redirect into the app shell.
+    await page.waitForURL('**/inicio', { timeout: 20_000 });
+    // The redirect fires as soon as onAuthStateChanged sees the user, but the
+    // Firebase SDK persists that session into IndexedDB asynchronously. Wait
+    // for the write to land so the storageState capture below can't race it.
+    await waitForFirebaseAuthPersisted(page);
+    await context.storageState({ path: storageStatePath, indexedDB: true });
+  } finally {
+    await context.close();
+  }
+}
+
+/**
+ * Resolves once the Firebase `firebaseLocalStorageDb` IndexedDB database holds
+ * a `firebase:authUser:*` key — the persisted Auth session. Throws on timeout.
+ */
+async function waitForFirebaseAuthPersisted(
+  page: Page,
+  timeoutMs = 10_000,
+): Promise<void> {
+  await page.waitForFunction(
+    () =>
+      new Promise<boolean>((resolveAuth) => {
+        const open = indexedDB.open('firebaseLocalStorageDb');
+        open.onerror = () => resolveAuth(false);
+        open.onsuccess = () => {
+          const db = open.result;
+          if (!db.objectStoreNames.contains('firebaseLocalStorage')) {
+            db.close();
+            resolveAuth(false);
+            return;
+          }
+          const keysReq = db
+            .transaction('firebaseLocalStorage', 'readonly')
+            .objectStore('firebaseLocalStorage')
+            .getAllKeys();
+          keysReq.onerror = () => {
+            db.close();
+            resolveAuth(false);
+          };
+          keysReq.onsuccess = () => {
+            db.close();
+            resolveAuth(
+              keysReq.result.some(
+                (key) =>
+                  typeof key === 'string' && key.startsWith('firebase:authUser:'),
+              ),
+            );
+          };
+        };
+      }),
+    undefined,
+    { timeout: timeoutMs },
   );
+}
+
+/**
+ * Opens a fresh context restored from `storageStatePath`, navigates to a
+ * protected route and confirms the session restored: the authenticated
+ * dashboard renders and the URL did not bounce to `/login`. Mechanism-
+ * agnostic — it catches any reason a saved state fails to authenticate.
+ */
+async function verifyStorageState(
+  browser: Browser,
+  baseURL: string,
+  storageStatePath: string,
+): Promise<boolean> {
+  const context = await browser.newContext({
+    baseURL,
+    storageState: storageStatePath,
+  });
+  try {
+    const page = await context.newPage();
+    await page.goto('/inicio');
+    // The app layout renders this heading only once useRequireAuth has a
+    // non-null user; an unrestored session redirects to /login instead.
+    const dashboardHeading = page.getByRole('heading', { name: 'Início' });
+    const outcome = await Promise.race([
+      dashboardHeading
+        .waitFor({ state: 'visible', timeout: 20_000 })
+        .then(
+          () => 'authenticated' as const,
+          () => 'inconclusive' as const,
+        ),
+      page
+        .waitForURL('**/login', { timeout: 20_000 })
+        .then(
+          () => 'login' as const,
+          () => 'inconclusive' as const,
+        ),
+    ]);
+    return outcome === 'authenticated';
+  } finally {
+    await context.close();
+  }
 }
 
 async function waitForServer(baseURL: string, timeoutMs = 60_000) {
