@@ -90,3 +90,21 @@ export async function cleanupByNamePrefix(
   snap.docs.forEach((d) => batch.delete(d.ref));
   await batch.commit();
 }
+
+/**
+ * True once a document with the given `nome` exists in `collection`. The
+ * create-flow specs poll this to confirm a UI-created doc actually committed
+ * — Admin SDK reads are strongly consistent — before navigating on, so the
+ * list query can't race ahead of the write.
+ */
+export async function docExistsByName(
+  collection: string,
+  nome: string,
+): Promise<boolean> {
+  const snap = await db()
+    .collection(collection)
+    .where('nome', '==', nome)
+    .limit(1)
+    .get();
+  return !snap.empty;
+}

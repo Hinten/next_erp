@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import {
   cleanupByNamePrefix,
+  docExistsByName,
   e2ePrefix,
   seedClientes,
 } from './_helpers/seed-data';
@@ -117,7 +118,21 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
     await fillField(page, 'CPF / CNPJ', '12345678901');
     await fillField(page, 'E-mail', `${prefix}-novo@example.com`);
     await clickSave(page, 'Criar');
-    await page.waitForURL(/\/clientes\/[^/]+$/, { timeout: 15_000 });
+    // onSaved does router.replace('/clientes/<id>'). Match the detail route
+    // explicitly: a plain /clientes/[^/]+$ also matches the /clientes/novo
+    // we're already on, so it would resolve before the create even commits.
+    await page.waitForURL(
+      (url) =>
+        /^\/clientes\/[^/]+$/.test(url.pathname) &&
+        url.pathname !== '/clientes/novo',
+      { timeout: 15_000 },
+    );
+    // Confirm the doc is actually committed (Admin SDK reads are strongly
+    // consistent) before loading the list, so the list query can't race the
+    // write. A failure here localises the bug to the create itself.
+    await expect
+      .poll(() => docExistsByName('clientes', nome), { timeout: 15_000 })
+      .toBe(true);
 
     await page.goto('/clientes');
     await applyTextFilter(page, 'Nome', nome);
