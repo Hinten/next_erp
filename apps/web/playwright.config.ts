@@ -45,3 +45,6 @@ export default defineConfig({
         timeout: 60_000,
       },
 });
+
+// DELIBERATE CI FAILURE TEST — to be reverted once failure-log posting is verified
+const __DELIBERATE_CI_FAILURE_TEST__ = ;
