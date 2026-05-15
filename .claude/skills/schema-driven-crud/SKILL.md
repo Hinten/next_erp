@@ -1,62 +1,63 @@
 ---
 name: schema-driven-crud
 description: >-
-  Use ao adicionar ou editar uma tela CRUD orientada a schema no apps/web —
-  lista, detalhe/edição e criação de uma coleção Firestore com TableView e
-  ObjectView de @delfrance/ui — e ao escrever os testes e2e e o workflow de
-  CI que os validam. Dispara em pedidos como "criar a página de X",
-  "adicionar TableView/ObjectView para X", "tela de cadastro de X",
-  "testes e2e do schema X".
+  Use when adding or editing a schema-driven CRUD screen in apps/web — the
+  list, detail/edit and create pages for a Firestore collection built with
+  TableView and ObjectView from @delfrance/ui — and when writing the e2e
+  tests and the CI workflow that validate them. Triggers on requests like
+  "create the X page", "add a TableView/ObjectView for X", "X registration
+  screen", "e2e tests for the X schema".
 ---
 
 # Schema-driven CRUD (TableView / ObjectView)
 
-Guia para montar uma feature CRUD no `apps/web` a partir de um schema Zod,
-sem codegen. O schema é a fonte da verdade: `TableView` (lista) e
-`ObjectView` (criação/edição) derivam colunas, inputs, labels e validação
-direto dele.
+Guide for building a CRUD feature in `apps/web` from a Zod schema, with no
+codegen. The schema is the source of truth: `TableView` (list) and
+`ObjectView` (create/edit) derive columns, inputs, labels and validation
+straight from it.
 
-## 1. Quando usar / quando NÃO usar
+## 1. When to use / when NOT to use
 
-**Usar** para a tela list/detail/create padrão de uma coleção Firestore.
+**Use** for the standard list/detail/create screen of a Firestore collection.
 
-**Não usar** quando o form foge do genérico — lógica cruzada entre campos,
-sub-coleções editadas na mesma tela, wizard. Aí faça um form custom com
-react-hook-form (ver `apps/web/app/(app)/produtos/_components/ProdutoForm.tsx`).
+**Do not use** when the form escapes the generic case — cross-field logic,
+sub-collections edited on the same screen, wizards. For those, write a
+custom react-hook-form form (see
+`apps/web/app/(app)/produtos/_components/ProdutoForm.tsx`).
 
-## 2. Arquitetura
+## 2. Architecture
 
 ```
-packages/schemas/src/<x>.ts        schema Zod + <x>Meta (CollectionMetadata)
+packages/schemas/src/<x>.ts         Zod schema + <x>Meta (CollectionMetadata)
         │
 apps/web/lib/data/<x>Collection.ts  defineCollection({ path, schema })
         │
-apps/web/app/(app)/<rota>/
-  page.tsx        lista   → <TableView>
-  novo/page.tsx   criação → <ObjectView> (sem recordId)
-  [id]/page.tsx   edição  → <ObjectView> (com recordId)
+apps/web/app/(app)/<route>/
+  page.tsx        list    → <TableView>
+  novo/page.tsx   create  → <ObjectView> (no recordId)
+  [id]/page.tsx   edit    → <ObjectView> (with recordId)
         │
-apps/web/app/(app)/_components/SidebarNav.tsx   entrada no menu
+apps/web/app/(app)/_components/SidebarNav.tsx   menu entry
 ```
 
-Exemplo canônico completo: **`clientes`** (e `categorias`). Ao adicionar uma
-entidade nova, abra esses arquivos e copie o padrão.
+Canonical end-to-end example: **`clientes`** (and `categorias`). When adding
+a new entity, open those files and copy the pattern.
 
-## 3. Receita passo a passo
+## 3. Step-by-step recipe
 
 ### 3.1 Schema — `packages/schemas/src/<x>.ts`
 
-- `z.object({...})`; cada campo com `.describe('Label')` — o texto vira o
-  label na UI (`extractFieldsFromSchema` lê isso).
-- Campo opcional: **`.nullable().default(null)`**. Nunca `.optional()`
-  sozinho — o Firebase JS SDK rejeita `undefined` em `setDoc`/`addDoc`.
-- Campo obrigatório: `z.string().min(1)` (sem `.nullable()`).
-- Enum: `z.enum([...]).meta({ labels: { chave: 'Label legível' } })` — sem
-  o `.meta({labels})` a UI mostra a chave crua.
-- Exporte: `<x>Schema`, `export type X = z.infer<typeof <x>Schema>`, e
+- `z.object({...})`; every field with `.describe('Label')` — the text
+  becomes the UI label (`extractFieldsFromSchema` reads it).
+- Optional field: **`.nullable().default(null)`**. Never `.optional()`
+  alone — the Firebase JS SDK rejects `undefined` in `setDoc`/`addDoc`.
+- Required field: `z.string().min(1)` (no `.nullable()`).
+- Enum: `z.enum([...]).meta({ labels: { key: 'Readable label' } })` —
+  without `.meta({labels})` the UI shows the raw key.
+- Export: `<x>Schema`, `export type X = z.infer<typeof <x>Schema>`, and
   `<x>Meta: CollectionMetadata` (`collectionPath`, `permissions`
-  `{ read, write, delete }` em bits BigInt, `cascade?`).
-- Re-exporte tudo de `packages/schemas/src/index.ts`.
+  `{ read, write, delete }` as BigInt bits, `cascade?`).
+- Re-export everything from `packages/schemas/src/index.ts`.
 
 ```ts
 export const fooSchema = z.object({
@@ -81,11 +82,11 @@ import { defineCollection } from '@delfrance/data';
 export const fooCollection = defineCollection({ path: 'foos', schema: fooSchema });
 ```
 
-### 3.3 Lista — `app/(app)/foos/page.tsx`
+### 3.3 List — `app/(app)/foos/page.tsx`
 
-`'use client'` + `<TableView>`. Filtros por coluna, ordenação por header,
-projeção de colunas, persistência de colunas (localStorage) e sincronização
-de filtros/sort na query string são **automáticos** — não precisa wirar nada.
+`'use client'` + `<TableView>`. Per-column filters, header sorting, column
+projection, column-visibility persistence (localStorage) and syncing
+filters/sort to the query string are **automatic** — nothing to wire.
 
 ```tsx
 'use client';
@@ -114,10 +115,10 @@ export default function FoosPage() {
 }
 ```
 
-### 3.4 Criação — `app/(app)/foos/novo/page.tsx`
+### 3.4 Create — `app/(app)/foos/novo/page.tsx`
 
-`<ObjectView>` **sem `recordId`** (modo create), `saveLabel="Criar"`,
-`showSaveAndContinue={false}`, `onSaved` → vai pra edição do novo doc.
+`<ObjectView>` **without `recordId`** (create mode), `saveLabel="Criar"`,
+`showSaveAndContinue={false}`, `onSaved` → go to the new doc's edit page.
 
 ```tsx
 <ObjectView
@@ -132,12 +133,11 @@ export default function FoosPage() {
 />
 ```
 
-### 3.5 Edição — `app/(app)/foos/[id]/page.tsx`
+### 3.5 Edit — `app/(app)/foos/[id]/page.tsx`
 
-`<ObjectView>` com `recordId={params.id}`. Gating por permissão: `canEdit` /
-`readOnly` / `canDelete` derivados de `usePermission(PERM.foo.write)`. A
-guarda de alterações não-salvas e o modal de exclusão (digitar "excluir")
-já vêm embutidos.
+`<ObjectView>` with `recordId={params.id}`. Permission gating: `canEdit` /
+`readOnly` / `canDelete` derived from `usePermission(PERM.foo.write)`. The
+unsaved-changes guard and the delete modal (type "excluir") are built in.
 
 ```tsx
 const { allowed: canWrite } = usePermission(PERM.foo.write);
@@ -160,122 +160,124 @@ const { allowed: canWrite } = usePermission(PERM.foo.write);
 
 ### 3.6 Sidebar — `app/(app)/_components/SidebarNav.tsx`
 
-Adicione um leaf (ou child de um group) ao array `NAV`, com `perm`:
+Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 
 ```ts
 { href: '/foos', label: 'Foos', perm: PERM.foo.read },
 ```
 
-## 4. Referência — `TableView` (`packages/ui/src/table/TableView.tsx`)
+## 4. Reference — `TableView` (`packages/ui/src/table/TableView.tsx`)
 
-| Prop | Uso |
+| Prop | Use |
 |---|---|
-| `schema`, `collection`, `db` | Obrigatórios. `db = getFirebaseFirestore()`. |
-| `title`, `description` | Cabeçalho. |
-| `defaultColumns` | Colunas visíveis iniciais. Omitido → todos os campos não-`unknown`. |
-| `orderBy` | Sort inicial `{ field, direction }`. Usuário troca clicando no header. |
-| `rowHref` | `(id, row) => string` — destino do clique na linha. |
-| `renderNewButton` | Botão "Novo" (use `<Button component={Link}>`). |
-| `fields` | `Record<string, FieldConfig>` — overrides por campo (ver §6). |
-| `selectable` + `actions` | Checkbox de seleção + ações em lote (ex.: excluir). |
-| `pageSize` | Linhas por página (default 50). |
-| `pathContext` | Para sub-coleções (`{ parentId }`). |
-| `queryOverride` | Escape hatch: passa uma `Query` Firestore pronta. |
+| `schema`, `collection`, `db` | Required. `db = getFirebaseFirestore()`. |
+| `title`, `description` | Header. |
+| `defaultColumns` | Initial visible columns. Omitted → every non-`unknown` field. |
+| `orderBy` | Initial sort `{ field, direction }`. User changes it by clicking the header. |
+| `rowHref` | `(id, row) => string` — row-click target. |
+| `renderNewButton` | "New" button (use `<Button component={Link}>`). |
+| `fields` | `Record<string, FieldConfig>` — per-field overrides (see §6). |
+| `selectable` + `actions` | Selection checkbox + bulk actions (e.g. delete). |
+| `pageSize` | Rows per page (default 50). |
+| `pathContext` | For sub-collections (`{ parentId }`). |
+| `queryOverride` | Escape hatch: pass a ready-made Firestore `Query`. |
 
-## 5. Referência — `ObjectView` (`packages/ui/src/object/ObjectView.tsx`)
+## 5. Reference — `ObjectView` (`packages/ui/src/object/ObjectView.tsx`)
 
-| Prop | Uso |
+| Prop | Use |
 |---|---|
-| `schema`, `collection`, `db` | Obrigatórios. |
-| `recordId` | Ausente → modo criação; presente → carrega e edita o doc. |
-| `currentUserUid` | Obrigatório — entra na entrada de auditoria. |
-| `excludedFields` | Campos a esconder (embeddings, `timestamp`, refs server-managed). |
-| `fields` | Overrides por campo (ver §6). |
-| `sections` | Nomes de abas → layout em tabs (omitido → layout plano). |
-| `defaultValues` | Valores iniciais no modo criação. |
-| `canEdit` | `false` → esconde botões de salvar. |
-| `readOnly` | `true` → desabilita todos os campos (implica `canEdit:false`). |
-| `canDelete` + `onDelete` | Botão excluir + callback `(id) => Promise`. |
-| `deleteConfirmMessage` | Texto do modal de exclusão. |
-| `onSaved` | `(id) => void` após salvar com sucesso. |
-| `saveLabel` | Texto do botão primário ("Criar" / "Salvar alterações"). |
-| `showSaveAndContinue` | Botão secundário "Salvar e continuar" (default true). |
+| `schema`, `collection`, `db` | Required. |
+| `recordId` | Absent → create mode; present → loads and edits the doc. |
+| `currentUserUid` | Required — goes into the audit entry. |
+| `excludedFields` | Fields to hide (embeddings, `timestamp`, server-managed refs). |
+| `fields` | Per-field overrides (see §6). |
+| `sections` | Tab names → tabbed layout (omitted → flat layout). |
+| `defaultValues` | Initial values in create mode. |
+| `canEdit` | `false` → hides the save buttons. |
+| `readOnly` | `true` → disables every field (implies `canEdit:false`). |
+| `canDelete` + `onDelete` | Delete button + `(id) => Promise` callback. |
+| `deleteConfirmMessage` | Delete-modal body text. |
+| `onSaved` | `(id) => void` after a successful save. |
+| `saveLabel` | Primary button text ("Criar" / "Salvar alterações"). |
+| `showSaveAndContinue` | Secondary "Salvar e continuar" button (default true). |
 
-## 6. Referência — `FieldConfig` (`packages/ui/src/schema/types.ts`)
+## 6. Reference — `FieldConfig` (`packages/ui/src/schema/types.ts`)
 
-Overrides por campo, passados via `fields={{ campo: { ... } }}`:
+Per-field overrides, passed via `fields={{ field: { ... } }}`:
 
-- `label`, `hint` — sobrescrevem o `.describe()`.
-- `kind` — força o `FieldKind` (`string|longText|email|tel|url|number|integer|currency|boolean|enum|date|reference|array|object|unknown`).
-- `options` — `Array<{value,label}>` para enum (sobrescreve `.meta({labels})`).
-- `hidden` — esconde na TableView e na ObjectView.
-- `editable: false` — desabilita o input só na ObjectView.
-- `section` — agrupa o campo numa aba (quando `sections` é passado).
-- `renderCell: (value, row) => ReactNode` — célula custom na TableView.
-- `renderInput: (props: FieldRenderProps) => ReactNode` — input custom na
-  ObjectView (ex.: `CpfCnpjInput` em `clientes/[id]/page.tsx`).
+- `label`, `hint` — override the `.describe()` value.
+- `kind` — force the `FieldKind` (`string|longText|email|tel|url|number|integer|currency|boolean|enum|date|reference|array|object|unknown`).
+- `options` — `Array<{value,label}>` for enums (overrides `.meta({labels})`).
+- `hidden` — hide in both TableView and ObjectView.
+- `editable: false` — disable the input in ObjectView only.
+- `section` — assign the field to a tab (when `sections` is passed).
+- `renderCell: (value, row) => ReactNode` — custom cell in TableView.
+- `renderInput: (props: FieldRenderProps) => ReactNode` — custom input in
+  ObjectView (e.g. `CpfCnpjInput` in `clientes/[id]/page.tsx`).
 
-## 7. Testes e2e
+## 7. E2e tests
 
-Crie `apps/web/e2e/<x>.e2e.spec.ts` (template: `clientes.e2e.spec.ts`).
+Create `apps/web/e2e/<x>.e2e.spec.ts` (template: `clientes.e2e.spec.ts`).
 
-1. **Registre um Playwright project** em `apps/web/playwright.config.ts`:
+1. **Register a Playwright project** in `apps/web/playwright.config.ts`:
    ```ts
    { name: 'foos', testMatch: /foos\.e2e\.spec\.ts$/, use: { ...devices['Desktop Chrome'] } },
    ```
-2. `test.describe.serial(...)` + `test.skip(!requiresAuthEnv(), ...)` no topo
-   (`requiresAuthEnv` de `./helpers/env`).
-3. **Seeding**: adicione `seedFoos` em `apps/web/e2e/_helpers/seed-data.ts`
-   (usa `db()` do Admin SDK). Em `beforeAll` semeie 5–10 docs com `nome`
-   prefixado por `e2ePrefix('foo')`; em `afterAll` chame
-   `cleanupByNamePrefix('foos', prefix)`. O prefixo é escopado por run id.
-4. **Cenários canônicos** (cobrir todos):
-   query sem filtro · filtro por coluna (texto/enum/boolean) · empty state ·
-   ordenação por header · ir para `/novo` · criar · criar com erro de schema ·
-   abrir um doc existente · alterar e tentar sair (guarda de não-salvo,
-   `window.confirm` → `page.on('dialog')`) · salvar · salvar e continuar ·
-   editar com erro de schema · excluir (modal "digite excluir") · filtros e
-   sort na query string.
-5. **Helpers de UI** — `apps/web/e2e/helpers/table-view.ts` e `object-view.ts`:
-   `applyTextFilter`, `applySelectFilter`, `clearColumnFilter`,
-   `clickColumnSort`, `expectRowVisible`/`expectRowHidden`,
-   `expectEmptyState`, `firstRowText`; `fillField`, `selectField`,
-   `clickSave`, `clickSaveAndContinue`, `confirmDelete`, `expectFieldError`,
-   `expectErrorText`, `expectToast`. Reuse — só adicione se faltar algo.
+2. `test.describe.serial(...)` + `test.skip(!requiresAuthEnv(), ...)` at the
+   top (`requiresAuthEnv` from `./helpers/env`).
+3. **Seeding**: add `seedFoos` to `apps/web/e2e/_helpers/seed-data.ts`
+   (uses the Admin SDK `db()`). In `beforeAll` seed 5–10 docs with `nome`
+   prefixed by `e2ePrefix('foo')`; in `afterAll` call
+   `cleanupByNamePrefix('foos', prefix)`. The prefix is run-id scoped.
+4. **Canonical scenarios** (cover all):
+   query without a filter · per-column filter (text/enum/boolean) · empty
+   state · header sorting · navigate to `/novo` · create · create with a
+   schema error · open an existing doc · edit then try to leave
+   (unsaved-changes guard, `window.confirm` → `page.on('dialog')`) · save ·
+   save and continue · edit with a schema error · delete (type-"excluir"
+   modal) · filters and sort in the query string.
+5. **UI-driver helpers** — `apps/web/e2e/helpers/table-view.ts` and
+   `object-view.ts`: `applyTextFilter`, `applySelectFilter`,
+   `clearColumnFilter`, `clickColumnSort`, `expectRowVisible`/
+   `expectRowHidden`, `expectEmptyState`, `firstRowText`; `fillField`,
+   `selectField`, `clickSave`, `clickSaveAndContinue`, `confirmDelete`,
+   `expectFieldError`, `expectErrorText`, `expectToast`. Reuse — only add a
+   helper if something is missing.
 
-## 8. Workflow de CI — `.github/workflows/<x>-e2e.yml`
+## 8. CI workflow — `.github/workflows/<x>-e2e.yml`
 
-Copie `.github/workflows/clientes-e2e.yml`. Ajuste:
+Copy `.github/workflows/clientes-e2e.yml`. Adjust:
 
-- `name:` e o comentário.
-- `on.pull_request.paths:` — o schema (`packages/schemas/src/<x>.ts` +
-  `index.ts`), `packages/ui/src/{table,object,schema}/**`, `packages/data/**`,
-  `apps/web/app/(app)/<rota>/**`, o collection handle, o spec, a infra e2e
-  (`e2e/helpers/**`, `e2e/_helpers/**`, `e2e/_setup/**`, `global-setup.ts`,
-  `global-teardown.ts`, `playwright.config.ts`), `tools/test-fixtures/**`,
-  `pnpm-lock.yaml`, e o próprio arquivo.
-- Mantenha `branches: [master, main]` e o bloco `concurrency`.
-- O step de run: `playwright test --project=<x>`.
+- `name:` and the comment.
+- `on.pull_request.paths:` — the schema (`packages/schemas/src/<x>.ts` +
+  `index.ts`), `packages/ui/src/{table,object,schema}/**`,
+  `packages/data/**`, `apps/web/app/(app)/<route>/**`, the collection
+  handle, the spec, the e2e infra (`e2e/helpers/**`, `e2e/_helpers/**`,
+  `e2e/_setup/**`, `global-setup.ts`, `global-teardown.ts`,
+  `playwright.config.ts`), `tools/test-fixtures/**`, `pnpm-lock.yaml`, and
+  the workflow file itself.
+- Keep `branches: [master, main]` and the `concurrency` block.
+- The run step: `playwright test --project=<x>`.
 
-O workflow só dispara quando os `paths` casam. Espelha o job de
-`e2e-smoke.yml`. Padrão também documentado no `CLAUDE.md` raiz.
+The workflow only fires when the `paths` match. It mirrors the `e2e-smoke.yml`
+job. The pattern is also documented in the root `CLAUDE.md`.
 
-## 9. Verificação
+## 9. Verification
 
-- `pnpm turbo run lint typecheck test` — verde.
-- `pnpm --filter @delfrance/web build` — sem erro de Suspense/SSR.
+- `pnpm turbo run lint typecheck test` — green.
+- `pnpm --filter @delfrance/web build` — no Suspense/SSR error.
 - `pnpm --filter @delfrance/web exec playwright test --list --project=<x>`
-  — lista os testes do spec novo, sem vazar pro `smoke`.
-- e2e contra staging: precisa de `E2E_USER_*` + `FIREBASE_*` no ambiente
-  (não roda sem isso — o `test.skip` degrada gracioso).
+  — lists the new spec's tests, without leaking into `smoke`.
+- e2e against staging: needs `E2E_USER_*` + `FIREBASE_*` in the environment
+  (won't run without them — the `test.skip` degrades gracefully).
 
-## 10. Armadilhas
+## 10. Pitfalls
 
-- **Nunca `.optional()` sem `.nullable()`** — Firebase rejeita `undefined`.
-- **`excludedFields`** para campos server-managed (embeddings, `timestamp`,
-  outer-refs) — senão aparecem como inputs editáveis.
-- **Enum sem `.meta({ labels })`** mostra a chave crua na UI.
-- **Não passe `select` manual** que possa perder o id da linha — a
-  TableView já projeta as colunas visíveis preservando a identidade.
-- A regra antiga do `CLAUDE.md` "não adicionar `.github/workflows/*.yml`"
-  está **desatualizada** — os workflows já estão ativos no repo.
+- **Never `.optional()` without `.nullable()`** — Firebase rejects `undefined`.
+- **`excludedFields`** for server-managed fields (embeddings, `timestamp`,
+  outer-refs) — otherwise they show up as editable inputs.
+- **An enum without `.meta({ labels })`** shows the raw key in the UI.
+- **Do not pass a manual `select`** that could drop the row id — TableView
+  already projects the visible columns while preserving identity.
+- The old `CLAUDE.md` rule "do not add `.github/workflows/*.yml`" is
+  **outdated** — the workflows are already active in the repo.
