@@ -33,6 +33,9 @@ concurrency:
 jobs:
   configuracoes-e2e:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     env:
       FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
       FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
@@ -81,11 +84,39 @@ jobs:
 
       - name: Install Playwright browsers (cache miss)
         if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: pnpm --filter @delfrance/web exec playwright install --with-deps chromium
+        run: pnpm --filter @delfrance/web exec playwright install --with-deps chromium 2>&1 | tee -a /tmp/ci.log
 
       - name: Install Playwright system deps (cache hit)
         if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: pnpm --filter @delfrance/web exec playwright install-deps chromium
+        run: pnpm --filter @delfrance/web exec playwright install-deps chromium 2>&1 | tee -a /tmp/ci.log
 
       - name: e2e configuracoes (web)
-        run: pnpm --filter @delfrance/web exec playwright test --project=configuracoes
+        run: pnpm --filter @delfrance/web exec playwright test --project=configuracoes 2>&1 | tee -a /tmp/ci.log
+
+      # Em caso de falha, posta o tail do output como comentário no PR —
+      # mesmo objetivo do antigo post-ci-logs.yml, mas dentro do próprio run.
+      - name: Post failure logs to PR
+        if: ${{ failure() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          WF: ${{ github.workflow }}
+        run: |
+          tail -c 12000 /tmp/ci.log > /tmp/logs.txt 2>/dev/null || true
+          if [ ! -s /tmp/logs.txt ]; then
+            echo "(sem output capturado — verifique o run no GitHub)" > /tmp/logs.txt
+          fi
+          {
+            echo "<details>"
+            echo "<summary>CI failed — \`$WF\` em <code>${HEAD_SHA:0:7}</code> (<a href=\"$RUN_URL\">ver run</a>) — últimos 12KB do output</summary>"
+            echo
+            echo '```'
+            cat /tmp/logs.txt
+            echo '```'
+            echo
+            echo "</details>"
+          } > /tmp/body.md
+          gh pr comment "$PR" --repo "$REPO" --body-file /tmp/body.md
