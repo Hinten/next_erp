@@ -40,6 +40,26 @@ export const PERM = {
     write: 1n << 49n,
     delete: 1n << 50n,
   },
+  // Integracao — canais de venda / integrações (Flutter `integracao`).
+  // Already in use by `packages/schemas/src/integracao.ts` since launch;
+  // registered here so the next free byte is unambiguous.
+  integracao: {
+    read: 1n << 56n,
+    write: 1n << 57n,
+    delete: 1n << 58n,
+  },
+  // Estoque — depósitos e operações de inventário.
+  estoque: {
+    read: 1n << 64n,
+    write: 1n << 65n,
+    delete: 1n << 66n,
+  },
+  // Fiscal — operações fiscais (CFOPs, configurações tributárias).
+  fiscal: {
+    read: 1n << 72n,
+    write: 1n << 73n,
+    delete: 1n << 74n,
+  },
 } as const;
 
 export function hasPerm(grantedClaim: string | undefined, requiredBit: bigint): boolean {
