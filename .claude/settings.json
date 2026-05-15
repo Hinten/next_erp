@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm turbo run typecheck)",
+      "Bash(pnpm turbo run typecheck *)",
+      "Bash(hash -r)",
+      "Bash(git commit *)",
+      "Bash(gh pr create *)",
+      "Bash(gh issue create *)",
+      "Bash(gh issue list *)"
+    ],
+
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)",
+      "Read(./.ignore/**)"
+    ]
+  }
+}
