@@ -1,0 +1,98 @@
+name: Categorias e2e
+
+# Per-schema e2e suite. Runs only when the categoria schema, the generic
+# TableView/ObjectView, the data layer, or the /categorias pages change.
+on:
+  pull_request:
+    paths:
+      - 'packages/schemas/src/categoria.ts'
+      - 'packages/schemas/src/index.ts'
+      - 'packages/ui/src/table/**'
+      - 'packages/ui/src/object/**'
+      - 'packages/ui/src/schema/**'
+      - 'packages/data/**'
+      - 'apps/web/app/(app)/categorias/**'
+      - 'apps/web/lib/data/categoriaCollection.ts'
+      - 'apps/web/e2e/categorias.e2e.spec.ts'
+      - 'apps/web/e2e/helpers/**'
+      - 'apps/web/e2e/_helpers/**'
+      - 'apps/web/e2e/_setup/**'
+      - 'apps/web/e2e/global-setup.ts'
+      - 'apps/web/e2e/global-teardown.ts'
+      - 'apps/web/playwright.config.ts'
+      - 'tools/test-fixtures/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/categorias-e2e.yml'
+
+jobs:
+  categorias-e2e:
+    runs-on: ubuntu-latest
+    env:
+      FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+      NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+      NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
+      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ secrets.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
+      NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+      NEXT_PUBLIC_FIREBASE_APP_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_APP_ID }}
+      # E2E test-user credentials. globalSetup ensures the user exists via
+      # Admin SDK, seeds the tenant and signs in to capture a session.
+      E2E_USER_EMAIL: ${{ secrets.E2E_USER_EMAIL }}
+      E2E_USER_PASSWORD: ${{ secrets.E2E_USER_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.4 --activate
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      - name: Install Playwright browsers (cache miss)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @delfrance/web exec playwright install --with-deps chromium
+
+      - name: Install Playwright system deps (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm --filter @delfrance/web exec playwright install-deps chromium
+
+      - name: e2e categorias (web)
+        id: e2e
+        run: pnpm --filter @delfrance/web exec playwright test --project=categorias
+
+      - name: Upload Playwright report
+        if: always() && steps.e2e.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-categorias
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 7
+          if-no-files-found: ignore

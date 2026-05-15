@@ -56,6 +56,19 @@ export default defineConfig({
       testMatch: /configuracoes\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
+    // Per-schema TableView/ObjectView CRUD suites. Each runs in its own CI
+    // workflow (.github/workflows/<schema>-e2e.yml), gated on the schema +
+    // TableView/ObjectView + data-layer paths.
+    {
+      name: 'clientes',
+      testMatch: /clientes\.e2e\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'categorias',
+      testMatch: /categorias\.e2e\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
   ],
   webServer: process.env.PLAYWRIGHT_BASE_URL
     ? undefined
