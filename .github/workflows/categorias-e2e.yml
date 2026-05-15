@@ -4,6 +4,7 @@ name: Categorias e2e
 # TableView/ObjectView, the data layer, or the /categorias pages change.
 on:
   pull_request:
+    branches: [master, main]
     paths:
       - 'packages/schemas/src/categoria.ts'
       - 'packages/schemas/src/index.ts'
@@ -23,6 +24,10 @@ on:
       - 'tools/test-fixtures/**'
       - 'pnpm-lock.yaml'
       - '.github/workflows/categorias-e2e.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   categorias-e2e:

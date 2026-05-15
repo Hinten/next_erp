@@ -4,6 +4,7 @@ name: Clientes e2e
 # TableView/ObjectView, the data layer, or the /clientes pages change.
 on:
   pull_request:
+    branches: [master, main]
     paths:
       - 'packages/schemas/src/cliente.ts'
       - 'packages/schemas/src/index.ts'
@@ -23,6 +24,10 @@ on:
       - 'tools/test-fixtures/**'
       - 'pnpm-lock.yaml'
       - '.github/workflows/clientes-e2e.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   clientes-e2e:
