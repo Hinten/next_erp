@@ -24,6 +24,7 @@ import {
   fillField,
   selectField,
 } from './helpers/object-view';
+import { warmRoutes } from './helpers/warmup';
 
 /**
  * End-to-end coverage for the `/clientes` TableView + ObjectView flow,
@@ -37,8 +38,19 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
   const prefix = e2ePrefix('cli');
   const row = (n: number) => `${prefix}-${String(n).padStart(3, '0')}`;
 
-  test.beforeAll(async () => {
-    await seedClientes(prefix, 7);
+  test.beforeAll(async ({ browser }) => {
+    // Compiling 3 cold routes can outlast the default 60s hook budget.
+    test.setTimeout(240_000);
+    await Promise.all([
+      seedClientes(prefix, 7),
+      // Pre-compile the routes this suite drives so the Next dev cold-compile
+      // cost isn't charged to the first assertion (was flaking on 5s expects).
+      warmRoutes(browser, [
+        '/clientes',
+        '/clientes/novo',
+        '/clientes/__aquecimento__',
+      ]),
+    ]);
   });
 
   test.afterAll(async () => {
@@ -48,7 +60,9 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
   test('TableView query works without a filter', async ({ page }) => {
     await page.goto('/clientes');
     await expect(page.getByRole('heading', { name: 'Clientes' })).toBeVisible();
-    await expect(page.getByRole('table')).toBeVisible();
+    // The table only mounts once the (one-shot) Pipelines query resolves —
+    // a preview API that can lag well past the 5s default expect timeout.
+    await expect(page.getByRole('table')).toBeVisible({ timeout: 15_000 });
     // A failed pipeline query renders an "Erro ao carregar" alert.
     await expect(page.getByText('Erro ao carregar')).toHaveCount(0);
   });
