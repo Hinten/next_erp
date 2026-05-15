@@ -194,13 +194,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // filters changes shape per click; bucket it into a deterministic string
   // so the pipeline only rebuilds when content actually changes.
   const filtersSerial = useMemo(() => JSON.stringify(filters), [filters]);
-  // Deterministic key for the visible-column set. When the user toggles a
-  // column in the ColumnPicker this changes, which re-runs the `pipeline`
-  // useMemo → new Pipeline with the new `select` → query re-executes.
-  const visibleKeysSerial = useMemo(
-    () => [...visibleKeys].sort().join('|'),
-    [visibleKeys],
-  );
 
   // Mirror filters + sort into the URL query string (replace — no history
   // spam; the URL stays shareable). Hydration above is one-shot, so there's
@@ -239,12 +232,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       return buildPipeline(db, {
         collection: collection.resolvePath(pathContext),
         filters: Object.entries(filters).map(([field, v]) => ({ field, ...v })),
-        // Project only the visible columns to cut data transfer (skips the
-        // heavy embedding fields). `buildPipeline` appends the document-id
-        // projection so row identity survives `.select()` — see
-        // PIPELINE_ID_FIELD. `visibleKeysSerial` is in the deps below so
-        // toggling a column re-executes the query with the new field set.
-        select: [...visibleKeys],
+        // NOTE: do NOT pass `select` here. The Pipelines `.select()` stage
+        // produces ad-hoc records and strips `PipelineResult.ref` — the row
+        // id we use for `rowHref` navigation becomes undefined and the UI
+        // routes to /collection/0, /collection/1 (404). Data-transfer
+        // optimization via select() is fine for read-only aggregations; not
+        // for listings that need row identity.
         orderBy: sort ? [{ field: sort.field, direction: sort.direction }] : undefined,
         limit: pageSize,
       });
@@ -254,7 +247,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // `pathContext` is intentionally not stringified; consumers should keep
     // the object stable across renders (matches the rest of the data layer).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, collection, queryOverride, pageSize, sort?.field, sort?.direction, filtersSerial, visibleKeysSerial]);
+  }, [db, collection, queryOverride, pageSize, sort?.field, sort?.direction, filtersSerial]);
 
   const fallbackQuery: Query<z.infer<S>> | null = useMemo(() => {
     if (queryOverride) return queryOverride;

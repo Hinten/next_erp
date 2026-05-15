@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { execute } from 'firebase/firestore/pipelines';
-import { type Pipeline, PIPELINE_ID_FIELD } from '../pipeline-queries';
+import type { Pipeline } from '../pipeline-queries';
 import type { SnapshotRow, SnapshotState } from './useSnapshot';
 
 /**
@@ -37,30 +37,22 @@ export function usePipelineSnapshot<T>(
         if (cancelled) return;
         setState({
           data: snap.results.map((r) => {
-            const data = r.data() as Record<string, unknown>;
-            // A pipeline with `.select(...)` returns ad-hoc records whose
-            // `ref` is undefined — `buildPipeline` then projects the id as
-            // PIPELINE_ID_FIELD. Read it back and strip it so it doesn't
-            // leak into `row.data`.
-            const projectedId =
-              typeof data[PIPELINE_ID_FIELD] === 'string'
-                ? (data[PIPELINE_ID_FIELD] as string)
-                : undefined;
-            if (PIPELINE_ID_FIELD in data) delete data[PIPELINE_ID_FIELD];
-            const id = r.ref?.id ?? r.id ?? projectedId ?? '';
+            const id = r.ref?.id ?? r.id ?? '';
             if (!id) {
+              // A pipeline with `.select(...)` returns ad-hoc records whose
+              // `ref` is undefined — row identity is gone. Surface the bug
+              // loudly so callers (e.g. TableView) drop the projection
+              // instead of generating /collection/'' navigation URLs.
               // eslint-disable-next-line no-console
               console.warn(
-                '[usePipelineSnapshot] result has no document id — pipeline used ' +
-                  '.select() without the id projection (see PIPELINE_ID_FIELD).',
+                '[usePipelineSnapshot] result has no document id — pipeline likely uses ' +
+                  '.select() which strips identity. Drop select() or use addFields() instead.',
               );
             }
             return {
-              // `path` is empty under a projected pipeline (ref is gone);
-              // no row consumer reads it, so that is acceptable.
               id,
               path: r.ref?.path ?? '',
-              data: data as T,
+              data: r.data() as T,
             };
           }),
           loading: false,
