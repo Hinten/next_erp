@@ -28,16 +28,3 @@ export async function ensureTestUser(
     });
   }
 }
-
-/**
- * Reset the password on an existing user. Helpful when the test password
- * env var changes between runs and the previous user was created with a
- * stale one.
- */
-export async function setUserPassword(
-  uid: string,
-  password: string,
-): Promise<void> {
-  getApp();
-  await getAuth().updateUser(uid, { password });
-}

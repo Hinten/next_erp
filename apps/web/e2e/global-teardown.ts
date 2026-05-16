@@ -1,5 +1,7 @@
 import { cleanupE2EDocs, runTeardown } from '@delfrance/test-fixtures';
 import { requiresAuthEnv } from './helpers/env';
+import { deleteAuthUserByEmail } from './_helpers/admin-cleanup';
+import { e2eUserEmail } from './_helpers/run-id';
 
 /**
  * Playwright globalTeardown: removes all e2e fixtures from staging.
@@ -9,13 +11,15 @@ import { requiresAuthEnv } from './helpers/env';
  *  - `cleanupE2EDocs(path, prefix)` sweeps real collections (`clientes`,
  *    `categorias`) for stray docs whose id starts with `e2e-`, in case a
  *    spec failed before its own afterEach cleanup.
+ *  - `deleteAuthUserByEmail` removes this run's ephemeral Firebase Auth user
+ *    (`globalSetup` created it). A leak here is also caught next run by
+ *    `sweepStaleE2EUsers`.
  *
- * Skip rule mirrors `requiresAuthEnv()` — when ANY required env is
- * missing, the auth-required specs skip themselves and globalSetup
- * exits early, so there's nothing to tear down. Without this alignment
- * the teardown would call `db().listCollections()` against a partially
- * configured project (e.g. Admin creds set but no E2E_USER_*) and crash
- * the whole run with a stack trace that "wasn't part of any test".
+ * Skip rule mirrors `requiresAuthEnv()` — when the Admin SDK env is
+ * missing, globalSetup exits early, so there's nothing to tear down.
+ * Without this alignment the teardown would call `db().listCollections()`
+ * against an unconfigured project and crash the whole run with a stack
+ * trace that "wasn't part of any test".
  *
  * Even when env IS complete, we swallow errors inside teardown — a
  * failed cleanup shouldn't mask the spec results. Just log and move on.
@@ -63,5 +67,16 @@ export default async function globalTeardown() {
         }`,
       );
     }
+  }
+
+  try {
+    await deleteAuthUserByEmail(e2eUserEmail());
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[globalTeardown] deleting the ephemeral e2e user failed (continuing): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
 }

@@ -16,7 +16,7 @@ export default defineConfig({
   expect: { timeout: 5_000 },
   fullyParallel: true,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 2 : undefined,
+  workers: process.env.CI ? 4 : undefined,
   // `list` keeps the in-job step output readable; `html` is the
   // browsable report in the artifact; `json` is a machine-readable dump
   // you can paste into a chat to share the exact failure without needing
@@ -28,9 +28,8 @@ export default defineConfig({
         ['json', { outputFile: 'playwright-report/results.json' }],
       ]
     : 'list',
-  // Composed setup: runs the legacy tenant/user seed (E2E_USER_*) and the
-  // SU login session (E2E_SU_*). Each step skips itself when its env is
-  // not set, so the two CI jobs can each provide only their own secrets.
+  // Composed setup: seeds the tenant + mints the ephemeral test user, and
+  // logs the SU in (E2E_SU_*). Each step skips itself when its env is not set.
   globalSetup: './e2e/_setup/combined.ts',
   globalTeardown: './e2e/global-teardown.ts',
   use: {
@@ -42,46 +41,28 @@ export default defineConfig({
     storageState: STORAGE_STATE,
   },
   projects: [
-    // Cheap smoke tests — run on every PR via the `e2e` CI job.
+    // Every e2e suite runs in the single `.github/workflows/e2e.yml` job —
+    // one globalSetup, one ephemeral user, Playwright `workers` parallelize.
+    //
+    // Smoke specs (cheap; login.smoke / auth-guard.smoke opt out of the
+    // authenticated session per-spec via `test.use`).
     {
       name: 'smoke',
       testMatch: /.*\.smoke\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
-    // Auth-gated CRUD against Firebase staging — heavier; CI job
-    // `configuracoes-e2e` runs this only when relevant paths change
-    // (see paths filter in .github/workflows/ci.yml).
+    // Auth-gated User+Cargo CRUD (uses the SU storageState, set in the spec).
     {
       name: 'configuracoes',
       testMatch: /configuracoes\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
-    // Per-schema TableView/ObjectView CRUD suites. Each runs in its own CI
-    // workflow (.github/workflows/<schema>-e2e.yml), gated on the schema +
-    // TableView/ObjectView + data-layer paths.
+    // Schema-driven TableView/ObjectView CRUD suites. One project matches
+    // every `*.e2e.spec.ts` — adding a new CRUD page needs only the spec
+    // file, no config change.
     {
-      name: 'clientes',
-      testMatch: /clientes\.e2e\.spec\.ts$/,
-      use: { ...devices['Desktop Chrome'] },
-    },
-    {
-      name: 'categorias',
-      testMatch: /categorias\.e2e\.spec\.ts$/,
-      use: { ...devices['Desktop Chrome'] },
-    },
-    {
-      name: 'depositos',
-      testMatch: /depositos\.e2e\.spec\.ts$/,
-      use: { ...devices['Desktop Chrome'] },
-    },
-    {
-      name: 'motivos-incidente',
-      testMatch: /motivos-incidente\.e2e\.spec\.ts$/,
-      use: { ...devices['Desktop Chrome'] },
-    },
-    {
-      name: 'bandeiras-cartao',
-      testMatch: /bandeiras-cartao\.e2e\.spec\.ts$/,
+      name: 'crud',
+      testMatch: /\.e2e\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
   ],

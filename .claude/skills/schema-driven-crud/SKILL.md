@@ -225,10 +225,9 @@ Per-field overrides, passed via `fields={{ field: { ... } }}`:
 
 Create `apps/web/e2e/<x>.e2e.spec.ts` (template: `clientes.e2e.spec.ts`).
 
-1. **Register a Playwright project** in `apps/web/playwright.config.ts`:
-   ```ts
-   { name: 'foos', testMatch: /foos\.e2e\.spec\.ts$/, use: { ...devices['Desktop Chrome'] } },
-   ```
+1. **No Playwright project to register.** The `crud` project in
+   `apps/web/playwright.config.ts` already matches every `*.e2e.spec.ts`;
+   the new spec is picked up automatically.
 2. `test.describe.serial(...)`. Do NOT add a `test.skip(!requiresAuthEnv())`
    gate — when the e2e env is missing the suite should fail loudly (the
    `beforeAll` seed throws a clear Admin SDK error), not skip silently.
@@ -259,41 +258,28 @@ Create `apps/web/e2e/<x>.e2e.spec.ts` (template: `clientes.e2e.spec.ts`).
    `requiresAuthEnv()`; `warmup.ts` exports `warmRoutes()` (call it in
    `beforeAll` — see §11 on cold-start timeouts).
 
-## 8. CI workflow — `.github/workflows/<x>-e2e.yml`
+## 8. CI workflow — nothing to create
 
-Copy `.github/workflows/clientes-e2e.yml`. Adjust:
-
-- `name:` and the comment.
-- `on.pull_request.paths:` — the schema (`packages/schemas/src/<x>.ts` +
-  `index.ts`), `packages/ui/src/{table,object,schema}/**`,
-  `packages/data/**`, `apps/web/app/(app)/<route>/**`, the collection
-  handle, the spec, the e2e infra (`e2e/helpers/**`, `e2e/_helpers/**`,
-  `e2e/_setup/**`, `global-setup.ts`, `global-teardown.ts`,
-  `playwright.config.ts`), `tools/test-fixtures/**`, `pnpm-lock.yaml`, and
-  the workflow file itself.
-- Keep `branches: [master, main]` and the `concurrency` block.
-- The run step pipes the Playwright output to a file
-  (`... | tee /tmp/e2e.log`, with `set -o pipefail`) and a follow-up
-  `if: failure()` step posts `tail -c 12000 /tmp/e2e.log` to the PR via
-  `gh pr comment`. Add `permissions: pull-requests: write` to the job.
-  Do this in the workflow itself — `post-ci-logs.yml` (a `workflow_run`
-  workflow) always runs the default-branch definition, so it cannot see a
-  feature branch's new workflow; an in-workflow comment works immediately.
-
-The workflow only fires when the `paths` match. It mirrors the `e2e-smoke.yml`
-job. The filtered-workflow pattern is also documented in the root `CLAUDE.md`.
+There is **one** e2e workflow, `.github/workflows/e2e.yml`, and it already
+runs every project (`smoke`, `configuracoes`, `crud`). A new
+`*.e2e.spec.ts` is collected by the `crud` project automatically — **do not
+create a per-module `*-e2e.yml`**. `e2e.yml` runs all suites in a single job:
+one `globalSetup` mints one ephemeral test user
+(`e2e-user-<runId>@example.com`, created via the Admin SDK, deleted by
+`globalTeardown`), and Playwright `workers` parallelize the suites. Its own
+`report-failure` job posts the log tail to the PR on failure.
 
 ## 9. Verification
 
 - `pnpm turbo run lint typecheck test` — green.
 - `pnpm --filter @delfrance/web build` — no Suspense/SSR error.
-- `pnpm --filter @delfrance/web exec playwright test --list --project=<x>`
-  — lists the new spec's tests, without leaking into `smoke`.
-- e2e against staging: needs `E2E_USER_*` + `FIREBASE_*` in the environment.
-  The CRUD suites fail loudly without them — their `beforeAll` seed throws a
-  clear Admin SDK error (by design — no graceful skip). The `*.smoke` suites
-  instead skip gracefully via `requiresAuthEnv()`, and `globalSetup` writes an
-  empty storage state when the secrets are absent.
+- `pnpm --filter @delfrance/web exec playwright test --list --project=crud`
+  — lists the new spec's tests alongside the other CRUD suites.
+- e2e against staging: needs `FIREBASE_PROJECT_ID` + `FIREBASE_SERVICE_ACCOUNT`
+  (and `E2E_SU_*` for the configuracoes suite). The test user is ephemeral —
+  `globalSetup` mints it via the Admin SDK; there are no `E2E_USER_*` secrets.
+  Without the Firebase Admin secrets `globalSetup` writes an empty storage
+  state and the auth-requiring specs fail fast at `/login`.
 
 ## 10. Pitfalls
 
