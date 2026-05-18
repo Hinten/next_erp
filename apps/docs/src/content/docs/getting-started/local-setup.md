@@ -17,9 +17,11 @@ pnpm install
 
 ## Configure
 
+There is a **single** env file, at the repo root — `apps/web`'s
+`dev`/`build`/`start` scripts load it via `dotenv-cli`.
+
 ```bash
-cp apps/web/.env.example apps/web/.env.local
-cp apps/integrations/.env.example apps/integrations/.env.local
+cp .env.example .env.local
 # Fill in NEXT_PUBLIC_FIREBASE_* and FIREBASE_PROJECT_ID values from your project.
 ```
 
@@ -39,3 +41,7 @@ pnpm dev
 curl http://localhost:3001/api/health
 # {"status":"ok","service":"integrations","timestamp":"..."}
 ```
+
+## Next steps
+
+To run the unit and e2e suites locally, see [Running tests](/getting-started/running-tests/).

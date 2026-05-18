@@ -17,6 +17,7 @@ export default defineConfig({
           items: [
             { label: 'Overview', link: '/getting-started/overview/' },
             { label: 'Local setup', link: '/getting-started/local-setup/' },
+            { label: 'Running tests', link: '/getting-started/running-tests/' },
           ],
         },
         {

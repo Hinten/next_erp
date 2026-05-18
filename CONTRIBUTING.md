@@ -12,10 +12,12 @@ Prerequisites:
 
 ```bash
 pnpm install
-cp apps/web/.env.example apps/web/.env.local       # fill in your Firebase config
-cp apps/integrations/.env.example apps/integrations/.env.local
+cp .env.example .env.local       # single env file at the repo root — fill in your Firebase config
 pnpm dev
 ```
+
+`apps/web`'s `dev`/`build`/`start` scripts load this root `.env.local` via
+`dotenv-cli`; there is no per-app `.env` file.
 
 ## Workflow
 
@@ -39,6 +41,21 @@ pnpm dev
 - Unit/component: Vitest + React Testing Library.
 - Integration / e2e: Playwright against your Firebase project (or the maintainers' staging project for CI).
 - No Firebase emulators — they are unstable for our use case. Use a real project.
+
+Commands:
+
+```bash
+pnpm turbo run test                     # unit/component (Vitest) — no env needed
+pnpm turbo run lint typecheck build     # no env needed
+pnpm --filter @delfrance/web test:e2e   # Playwright e2e
+```
+
+Unit tests, lint, typecheck and build run with nothing but `pnpm install`.
+The e2e suite additionally needs the Firebase env vars in the root
+`.env.local`, a service-account key, and the Playwright browser installed
+(`pnpm --filter @delfrance/web exec playwright install chromium`). See the
+[Running tests](apps/docs/src/content/docs/getting-started/running-tests.md)
+guide for the full walkthrough.
 
 ## Adding a plugin
 
