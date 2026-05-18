@@ -7,9 +7,11 @@ import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 
 // Stub the snapshot hooks + the query helpers so the table renders a static
 // dataset without hitting Firestore's internals. We control the response on a
-// per-test basis via the hoisted `snapState`. `pushSpy` / `replaceSpy`
-// capture router navigation; `searchParamsRef` lets a test seed the URL.
-const { snapState, pushSpy, replaceSpy, searchParamsRef, buildPipelineSpy } = vi.hoisted(() => ({
+// per-test basis via the hoisted `snapState`. `pushSpy` captures router
+// navigation; `searchParamsRef` lets a test seed the URL. The URL-sync effect
+// writes via `window.history.replaceState`, so cases that assert on it spy on
+// that directly rather than on the router.
+const { snapState, pushSpy, searchParamsRef, buildPipelineSpy } = vi.hoisted(() => ({
   snapState: {
     current: {
       data: [
@@ -21,7 +23,6 @@ const { snapState, pushSpy, replaceSpy, searchParamsRef, buildPipelineSpy } = vi
     } as SnapshotState<SnapshotRow<{ nome?: string; tipo?: string }>[]>,
   },
   pushSpy: vi.fn(),
-  replaceSpy: vi.fn(),
   searchParamsRef: { current: new URLSearchParams() },
   buildPipelineSpy: vi.fn(() => ({ __pipeline: true })),
 }));
@@ -29,7 +30,7 @@ const { snapState, pushSpy, replaceSpy, searchParamsRef, buildPipelineSpy } = vi
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     push: pushSpy,
-    replace: replaceSpy,
+    replace: vi.fn(),
     back: vi.fn(),
     refresh: vi.fn(),
     prefetch: vi.fn(),
@@ -93,6 +94,9 @@ describe('TableView', () => {
   afterEach(() => {
     // useLocalStorage persists visible columns; clear so cases don't leak.
     localStorage.clear();
+    // The URL-sync effect mutates the URL via history.replaceState; reset it
+    // so one case's query string doesn't bleed into the next.
+    window.history.replaceState(null, '', '/clientes');
   });
 
   it('renders one header per non-unknown field by default', () => {
@@ -196,15 +200,15 @@ describe('TableView', () => {
     searchParamsRef.current = new URLSearchParams();
   });
 
-  it('writes the sort to the URL via router.replace when a header is clicked', () => {
+  it('writes the sort to the URL via history.replaceState when a header is clicked', () => {
     searchParamsRef.current = new URLSearchParams();
-    replaceSpy.mockClear();
+    // The view mirrors filters/sort into the URL with window.history.replaceState
+    // (not router.replace) — see the URL-sync effect in TableView for why.
+    const replaceState = vi.spyOn(window.history, 'replaceState');
     wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
     fireEvent.click(screen.getByText('Nome'));
-    expect(replaceSpy).toHaveBeenCalledWith(
-      '/clientes?sort=nome%3Aasc',
-      expect.objectContaining({ scroll: false }),
-    );
+    expect(replaceState).toHaveBeenCalledWith(null, '', '/clientes?sort=nome%3Aasc');
+    replaceState.mockRestore();
   });
 
   it('selectable adds a checkbox column and enables bulk actions on selection', async () => {

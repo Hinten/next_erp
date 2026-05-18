@@ -15,8 +15,15 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 5_000 },
   fullyParallel: true,
-  retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 4 : undefined,
+  // CI gets 2 retries; local gets 1 — local networks (and the real Firebase
+  // round-trips every spec makes) are less stable than CI's, so a single
+  // retry absorbs a transient blip without masking a deterministic failure.
+  retries: process.env.CI ? 2 : 1,
+  // One worker locally. Each worker cold-compiles routes against the single
+  // Next dev server; more than ~2 suites compiling at once overwhelms it
+  // (connection resets, 40s compiles). CI's runners cope with 4. A fast local
+  // machine can override with `--workers=N`.
+  workers: process.env.CI ? 4 : 1,
   // `list` keeps the in-job step output readable; `html` is the
   // browsable report in the artifact; `json` is a machine-readable dump
   // you can paste into a chat to share the exact failure without needing

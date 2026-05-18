@@ -224,9 +224,16 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     [visibleKeys],
   );
 
-  // Mirror filters + sort into the URL query string (replace — no history
-  // spam; the URL stays shareable). Hydration above is one-shot, so there's
-  // no read-back loop.
+  // Mirror filters + sort into the URL query string so the view is shareable
+  // and survives a reload. Uses `window.history.replaceState`, NOT
+  // `router.replace`: these pages are client-rendered (no Server Component
+  // reads the query), so a router navigation needlessly refetches the RSC —
+  // and worse, on a statically-prerendered route loaded *with* query params,
+  // a search-param-only `router.replace` is silently dropped by the App
+  // Router (the RSC is identical, so it dedupes the navigation and the URL
+  // never changes). `history.replaceState` always updates the URL, doesn't
+  // scroll, and Next keeps `useSearchParams()` in sync with it. Hydration
+  // above is one-shot, so there's no read-back loop.
   useEffect(() => {
     const params = new URLSearchParams();
     for (const [field, v] of Object.entries(filters)) {
@@ -236,7 +243,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     const qs = params.toString();
     const next = qs ? `${pathname}?${qs}` : pathname;
     if (next !== `${pathname}${window.location.search}`) {
-      router.replace(next, { scroll: false });
+      window.history.replaceState(null, '', next);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtersSerial, sort?.field, sort?.direction, pathname]);
