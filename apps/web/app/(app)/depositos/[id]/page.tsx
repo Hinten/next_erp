@@ -38,7 +38,7 @@ export default function DepositoPage() {
         db={db}
         currentUserUid={user?.uid ?? ''}
         recordId={params.id}
-        excludedFields={['timestamp']}
+        excludedFields={['timestamp', 'ultimaModificacao']}
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}

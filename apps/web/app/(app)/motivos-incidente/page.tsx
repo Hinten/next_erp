@@ -25,6 +25,7 @@ export default function MotivosIncidentePage() {
           Novo motivo
         </Button>
       )}
+      copyHref="/motivos-incidente/novo"
       selectable
       actions={[
         {

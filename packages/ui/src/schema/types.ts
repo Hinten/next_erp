@@ -74,13 +74,14 @@ export interface FieldConfig<TValue = unknown> {
 
 /**
  * Action declared by the TableView consumer. `requiresSelection: true`
- * disables the action until rows are checked.
+ * disables the action until rows are checked; `'single'` requires exactly
+ * one selected row.
  */
 export interface ActionConfig<T> {
   id: string;
   label: string;
   color?: MantineColor;
-  requiresSelection?: boolean;
+  requiresSelection?: boolean | 'single';
   run: (rows: SnapshotRow<T>[]) => Promise<void> | void;
   confirm?: { title: string; message: string };
 }

@@ -25,6 +25,7 @@ export default function DepositosPage() {
           Novo depósito
         </Button>
       )}
+      copyHref="/depositos/novo"
       selectable
       actions={[
         {

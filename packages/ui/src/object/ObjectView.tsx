@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useSearchParams } from 'next/navigation';
 import {
   Alert,
   Button,
@@ -29,6 +30,12 @@ import { RecordPager } from './RecordPager';
 import { SectionTabs } from './SectionTabs';
 import { NothingChangedError, saveRecord } from './saveRecord';
 import { useUnsavedChangesGuard } from './useUnsavedChangesGuard';
+
+/**
+ * Fields dropped from a copied source document — the new record must get its
+ * own creation/modification stamps, not inherit the source's.
+ */
+const COPY_STRIP_KEYS = ['timestamp', 'ultimaModificacao'];
 
 export interface ObjectViewProps<S extends ZodObject<ZodRawShape>> {
   title?: ReactNode;
@@ -146,6 +153,20 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   );
   const docSnap = useDocSnapshot<Doc>(docRef);
 
+  // Copy mode: in create mode, `?copyFrom=<id>` pre-fills the form from an
+  // existing document. The id is the only thing carried across the redirect
+  // (TableView projects only visible columns, so the row data is partial) —
+  // re-fetch the full source document here.
+  const searchParams = useSearchParams();
+  const copyFromId = recordId ? null : searchParams.get('copyFrom');
+  const copyDocRef = useMemo(
+    () => (copyFromId ? collection.docRef(db, pathContext, copyFromId) : null),
+    // pathContext intentionally identity-tracked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, collection, copyFromId],
+  );
+  const copySnap = useDocSnapshot<Doc>(copyDocRef);
+
   // Nullable fields default to `null` (not `undefined`) so Firestore's
   // converter doesn't reject them on save and Mantine's controlled inputs
   // get a stable initial value.
@@ -169,6 +190,22 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docSnap.data?.id]);
+
+  // Copy mode: once the source doc loads, seed the form with its values. The
+  // document id never lives in the schema data, so it's already excluded;
+  // creation/modification stamps are stripped so the new record gets fresh
+  // ones. The page's `defaultValues` lose to the source (it's a clone).
+  useEffect(() => {
+    if (!copySnap.data || internalId) return;
+    const source = { ...(copySnap.data.data as Record<string, unknown>) };
+    for (const key of COPY_STRIP_KEYS) delete source[key];
+    form.reset({
+      ...emptyDefaults,
+      ...(defaultValues ?? {}),
+      ...source,
+    } as FieldValues);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [copySnap.data?.id]);
 
   const [submitError, setSubmitError] = useState<string | null>(null);
   // Delete confirmation modal: the user must type "excluir" to enable the
@@ -291,6 +328,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
             />
           ) : <span />}
         </Group>
+
+        {copyFromId && copySnap.data && (
+          <Alert color="blue">
+            Registro pré-preenchido a partir de uma cópia. Revise os campos e
+            clique em {saveLabel} para criar um novo registro.
+          </Alert>
+        )}
 
         {loading && <Stack><Skeleton height={42} /><Skeleton height={42} /></Stack>}
 

@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useLocalStorage } from '@mantine/hooks';
 import {
-  Alert, Checkbox, Group, Skeleton, Stack, Table, Text, Title,
+  Alert, Button, Checkbox, Group, Skeleton, Stack, Table, Text, Title,
 } from '@mantine/core';
 import type { Firestore, Query } from 'firebase/firestore';
 import type { z, ZodObject, ZodRawShape } from 'zod';
@@ -32,6 +32,7 @@ import type {
   ActionConfig, FieldConfig, FieldDescriptor,
 } from '../schema/types';
 import { ActionBar } from './ActionBar';
+import { useCollectionMonitor } from './useCollectionMonitor';
 import { IconArrowDown, IconArrowsSort, IconArrowUp } from '@tabler/icons-react';
 import { ColumnFilter, type ColumnFilterValue } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
@@ -57,6 +58,21 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
 
   actions?: Array<ActionConfig<z.infer<S>>>;
   selectable?: boolean;
+
+  /**
+   * Enables the built-in "Copiar" action. When set, selecting exactly one
+   * row and clicking "Copiar" navigates to `${copyHref}?copyFrom=<id>` — the
+   * create page (ObjectView) pre-fills the form from that document. Setting
+   * this prop is the on/off toggle; it also implies row selection.
+   */
+  copyHref?: string;
+
+  /**
+   * Field the update-monitor orders by (`limit(1)`, descending). `false`
+   * disables the monitor; omitted auto-resolves to `ultimaModificacao`, then
+   * `timestamp`, then disabled when the schema has neither.
+   */
+  monitorField?: string | false;
 
   /** Click-through target for each row. */
   rowHref?: (id: string, row: z.infer<S>) => string;
@@ -155,6 +171,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   fields: fieldOverrides = {},
   actions = [],
   selectable = false,
+  copyHref,
+  monitorField,
   rowHref,
   newHref,
   renderNewButton,
@@ -199,6 +217,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Bumped by the update-monitor's "Atualizar" button to force the row query
+  // to re-execute (the Pipelines path is one-shot — see `pipeline` below).
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // The copy action needs row selection; enabling copy implies `selectable`.
+  const selectionEnabled = selectable || !!copyHref;
   // Per-column filters keyed by field key. AND-combined; cleared by setting
   // the entry to `undefined` (or deleting the key). Hydrated once from the
   // URL query string so a shared/bookmarked link reopens filtered.
@@ -276,7 +300,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // `pathContext` is intentionally not stringified; consumers should keep
     // the object stable across renders (matches the rest of the data layer).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, collection, queryOverride, pageSize, sort?.field, sort?.direction, filtersSerial, visibleKeysSerial]);
+  }, [db, collection, queryOverride, pageSize, sort?.field, sort?.direction, filtersSerial, visibleKeysSerial, refreshKey]);
 
   const fallbackQuery: Query<z.infer<S>> | null = useMemo(() => {
     if (queryOverride) return queryOverride;
@@ -287,7 +311,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     constraints.push(fsLimit(pageSize));
     return buildQuery(base, constraints);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, collection, queryOverride, pipeline, pageSize, sort?.field, sort?.direction]);
+  }, [db, collection, queryOverride, pipeline, pageSize, sort?.field, sort?.direction, refreshKey]);
 
   const fromPipeline = usePipelineSnapshot<z.infer<S>>(pipeline);
   const fromQuery = useSnapshot<z.infer<S>>(fallbackQuery);
@@ -328,6 +352,41 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     [snap.data, selected],
   );
 
+  // Built-in "Copiar" action: navigate to the create page with the source
+  // doc id. The id is enough — the create page re-fetches the full document
+  // (the pipeline projects only visible columns, so `row.data` is partial).
+  const allActions = useMemo<Array<ActionConfig<z.infer<S>>>>(() => {
+    if (!copyHref) return actions;
+    const copyAction: ActionConfig<z.infer<S>> = {
+      id: '__copy',
+      label: 'Copiar',
+      requiresSelection: 'single',
+      run: (rows) => {
+        const id = rows[0]?.id;
+        if (id) router.push(`${copyHref}?copyFrom=${encodeURIComponent(id)}`);
+      },
+    };
+    return [...actions, copyAction];
+  }, [actions, copyHref, router]);
+
+  // Update-monitor field: explicit prop wins; otherwise prefer a
+  // last-modified field, then the creation timestamp.
+  const resolvedMonitorField = useMemo<string | null>(() => {
+    if (monitorField === false) return null;
+    if (typeof monitorField === 'string') return monitorField;
+    const keys = new Set(descriptors.map((d) => d.key));
+    if (keys.has('ultimaModificacao')) return 'ultimaModificacao';
+    if (keys.has('timestamp')) return 'timestamp';
+    return null;
+  }, [monitorField, descriptors]);
+
+  const monitor = useCollectionMonitor({
+    db,
+    collection,
+    pathContext,
+    field: resolvedMonitorField,
+  });
+
   return (
     <Stack>
       {(title || description) && (
@@ -344,9 +403,9 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             visibleKeys={visibleKeys}
             onToggle={toggleColumn}
           />
-          {(actions.length > 0 || newHref || renderNewButton) && (
+          {(allActions.length > 0 || newHref || renderNewButton) && (
             <ActionBar
-              actions={actions}
+              actions={allActions}
               selectedRows={selectedRows}
               newHref={newHref}
               renderNewButton={renderNewButton}
@@ -354,6 +413,28 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           )}
         </Group>
       </Group>
+
+      {monitor.stale && (
+        <Alert color="yellow" title="Página desatualizada">
+          <Group justify="space-between" wrap="nowrap">
+            <Text size="sm">
+              Os dados desta coleção foram alterados desde que a página
+              carregou.
+            </Text>
+            <Button
+              size="xs"
+              variant="white"
+              color="yellow"
+              onClick={() => {
+                monitor.acknowledge();
+                setRefreshKey((k) => k + 1);
+              }}
+            >
+              Atualizar
+            </Button>
+          </Group>
+        </Alert>
+      )}
 
       {snap.error && (
         <Alert color="red" title="Erro ao carregar">
@@ -373,7 +454,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         <Table striped highlightOnHover>
           <Table.Thead>
             <Table.Tr>
-              {selectable && (
+              {selectionEnabled && (
                 <Table.Th style={{ width: 36 }}>
                   <Checkbox
                     aria-label="Selecionar todas as linhas"
@@ -419,7 +500,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           <Table.Tbody>
             {snap.data.length === 0 && (
               <Table.Tr>
-                <Table.Td colSpan={visibleDescriptors.length + (selectable ? 1 : 0)} align="center">
+                <Table.Td colSpan={visibleDescriptors.length + (selectionEnabled ? 1 : 0)} align="center">
                   <Text c="dimmed">Nenhum resultado.</Text>
                 </Table.Td>
               </Table.Tr>
@@ -447,7 +528,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                   }
                   style={href && row.id ? { cursor: 'pointer' } : undefined}
                 >
-                  {selectable && (
+                  {selectionEnabled && (
                     <Table.Td onClick={(e) => e.stopPropagation()}>
                       <Checkbox
                         aria-label={`Selecionar ${row.id}`}

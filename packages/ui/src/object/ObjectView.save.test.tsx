@@ -26,6 +26,10 @@ vi.mock('@delfrance/data/hooks', async () => {
   return { ...actual, useDocSnapshot: () => docState.current };
 });
 
+vi.mock('next/navigation', () => ({
+  useSearchParams: () => new URLSearchParams(),
+}));
+
 vi.mock('./saveRecord', () => ({
   saveRecord: (input: unknown) => saveRecordMock(input),
   NothingChangedError: NothingChanged,

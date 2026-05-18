@@ -31,7 +31,7 @@ export default function NovaCategoriaPage() {
           permiteCadastro: true,
           timestamp: new Date().toISOString(),
         }}
-        excludedFields={['timestamp', 'categoriaPaiOuterRef']}
+        excludedFields={['timestamp', 'categoriaPaiOuterRef', 'ultimaModificacao']}
         saveLabel="Criar"
         showSaveAndContinue={false}
         onSaved={(id) => router.replace(`/categorias/${id}`)}

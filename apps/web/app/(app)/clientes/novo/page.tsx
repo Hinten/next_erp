@@ -56,6 +56,7 @@ export default function NovoClientePage() {
         defaultValues={{ timestamp: new Date().toISOString() }}
         excludedFields={[
           'timestamp',
+          'ultimaModificacao',
           'nome_embedding',
           'telefone_embedding',
           'userCliente',

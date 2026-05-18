@@ -17,6 +17,10 @@ vi.mock('@delfrance/data/hooks', async () => {
   };
 });
 
+vi.mock('next/navigation', () => ({
+  useSearchParams: () => new URLSearchParams(),
+}));
+
 import { ObjectView } from './ObjectView';
 
 const schema = z.object({

@@ -54,6 +54,10 @@ a new entity, open those files and copy the pattern.
 - Required field: `z.string().min(1)` (no `.nullable()`).
 - Enum: `z.enum([...]).meta({ labels: { key: 'Readable label' } })` —
   without `.meta({labels})` the UI shows the raw key.
+- Update-monitor field (optional): add
+  `ultimaModificacao: z.string().datetime().nullable().optional()`. `saveRecord`
+  stamps it on every write; `TableView`'s update-monitor (§4) orders by it to
+  detect edits. `timestamp` stays the creation date — keep both.
 - Export: `<x>Schema`, `export type X = z.infer<typeof <x>Schema>`, and
   `<x>Meta: CollectionMetadata` (`collectionPath`, `permissions`
   `{ read, write, delete }` as BigInt bits, `cascade?`).
@@ -86,7 +90,9 @@ export const fooCollection = defineCollection({ path: 'foos', schema: fooSchema 
 
 `'use client'` + `<TableView>`. Per-column filters, header sorting, column
 projection, column-visibility persistence (localStorage) and syncing
-filters/sort to the query string are **automatic** — nothing to wire.
+filters/sort to the query string are **automatic** — nothing to wire. The
+"Copiar" button (`copyHref`) and the update-monitor banner (auto-detected
+`monitorField`) are opt-in — see §4.
 
 ```tsx
 'use client';
@@ -110,6 +116,7 @@ export default function FoosPage() {
       renderNewButton={() => (
         <Button component={Link} href="/foos/novo">Novo foo</Button>
       )}
+      copyHref="/foos/novo"
     />
   );
 }
@@ -126,7 +133,7 @@ export default function FoosPage() {
   collection={fooCollection}
   db={getFirebaseFirestore()}
   currentUserUid={user?.uid ?? ''}
-  excludedFields={['timestamp']}
+  excludedFields={['timestamp', 'ultimaModificacao']}
   saveLabel="Criar"
   showSaveAndContinue={false}
   onSaved={(id) => router.replace(`/foos/${id}`)}
@@ -148,7 +155,7 @@ const { allowed: canWrite } = usePermission(PERM.foo.write);
   db={db}
   currentUserUid={user?.uid ?? ''}
   recordId={params.id}
-  excludedFields={['timestamp']}
+  excludedFields={['timestamp', 'ultimaModificacao']}
   saveLabel="Salvar alterações"
   canEdit={canWrite}
   readOnly={!canWrite}
@@ -180,6 +187,8 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `renderNewButton` | "New" button render-prop (use `<Button component={Link}>`). |
 | `fields` | `Record<string, FieldConfig>` — per-field overrides (see §6). |
 | `selectable` + `actions` | Selection checkbox + bulk actions (e.g. delete). |
+| `copyHref` | Enables the built-in "Copiar" action. Setting it is the on/off toggle; it also implies row selection. Selecting exactly one row + "Copiar" navigates to `${copyHref}?copyFrom=<id>` (the create page pre-fills from that doc). |
+| `monitorField` | Field the update-monitor orders by (`limit(1)`, desc) to flag a stale page. `false` disables; omitted auto-resolves `ultimaModificacao` → `timestamp` → disabled. |
 | `pageSize` | Rows per page (default 50). |
 | `pathContext` | For sub-collections (`{ parentId }`). |
 | `queryOverride` | Escape hatch: pass a ready-made Firestore `Query`. |
@@ -191,6 +200,7 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `schema`, `collection`, `db` | Required. |
 | `title`, `description` | Optional header rendered above the form. |
 | `recordId` | Absent → create mode; present → loads and edits the doc. |
+| _`?copyFrom=<id>`_ | Not a prop — a query param. In create mode ObjectView auto-fills the form from that document (minus id and the creation/modification stamps). TableView's "Copiar" button produces this URL. |
 | `currentUserUid` | Required — goes into the audit entry. |
 | `pathContext` | For sub-collections (`{ parentId }`). |
 | `excludedFields` | Fields to hide (embeddings, `timestamp`, server-managed refs). |
@@ -285,7 +295,7 @@ one `globalSetup` mints one ephemeral test user
 
 - **Never `.optional()` without `.nullable()`** — Firebase rejects `undefined`.
 - **`excludedFields`** for server-managed fields (embeddings, `timestamp`,
-  outer-refs) — otherwise they show up as editable inputs.
+  `ultimaModificacao`, outer-refs) — otherwise they show up as editable inputs.
 - **An enum without `.meta({ labels })`** shows the raw key in the UI.
 - **Do not pass a manual `select`** that could drop the row id — TableView
   already projects the visible columns while preserving identity.
@@ -316,11 +326,14 @@ before it went green. Check here first when a CRUD test fails.
   at 60 s.** The Next dev server compiles each route on first hit, so the
   first navigation in a spec is slow. Call `warmRoutes()` (`helpers/warmup.ts`)
   in `beforeAll` and keep a generous table-load timeout.
-- **A row you just created is missing from the list.** `TableView` runs a
-  *one-shot* query (no realtime listener) — it does not re-fetch after a
-  create. The fix belongs in the **test**, not the component: after creating,
-  wait for the doc to commit (e.g. `docExistsByName`) before asserting on the
-  list, or reload the page. Do not try to make `TableView` poll — that was
+- **A row you just created is missing from the list.** Under the Pipelines
+  path `TableView` runs a *one-shot* query — it does not re-fetch after a
+  create. The update-monitor now shows a yellow "Atualizar" banner when the
+  collection changes, but the main table still won't refresh until that
+  button (or `monitorField`-driven reload) fires. The fix belongs in the
+  **test**, not the component: after creating, wait for the doc to commit
+  (e.g. `docExistsByName`) before asserting on the list, reload the page, or
+  click the "Atualizar" banner. Do not make `TableView` poll — that was
   attempted in PR #6 and reverted.
 - **Vitest: Mantine throws under JSDOM** (`ResizeObserver is not defined`,
   `matchMedia`, `document.fonts`, `visualViewport`). `packages/ui/vitest.setup.ts`

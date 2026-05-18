@@ -42,13 +42,17 @@ export function ActionBar<T>({
           <Button component="a" href={newHref}>Novo</Button>
         ) : null}
         {actions.map((a) => {
-          const disabled = !!a.requiresSelection && selectedRows.length === 0;
+          const single = a.requiresSelection === 'single';
+          const disabled = single
+            ? selectedRows.length !== 1
+            : !!a.requiresSelection && selectedRows.length === 0;
           return (
             <Button
               key={a.id}
               variant="default"
               color={a.color}
               disabled={disabled}
+              title={single && disabled ? 'Selecione exatamente 1 registro' : undefined}
               onClick={() => runAction(a)}
             >
               {a.label}

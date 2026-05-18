@@ -28,7 +28,7 @@ export default function NovoDepositoPage() {
         db={getFirebaseFirestore()}
         currentUserUid={user?.uid ?? ''}
         defaultValues={{ ativo: true, timestamp: new Date().toISOString() }}
-        excludedFields={['timestamp']}
+        excludedFields={['timestamp', 'ultimaModificacao']}
         saveLabel="Criar"
         showSaveAndContinue={false}
         onSaved={(id) => router.replace(`/depositos/${id}`)}

@@ -25,6 +25,7 @@ export default function CategoriasPage() {
           Nova categoria
         </Button>
       )}
+      copyHref="/categorias/novo"
       selectable
       actions={[
         {

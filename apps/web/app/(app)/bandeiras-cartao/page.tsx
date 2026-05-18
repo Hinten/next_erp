@@ -25,6 +25,7 @@ export default function BandeirasCartaoPage() {
           Nova bandeira
         </Button>
       )}
+      copyHref="/bandeiras-cartao/novo"
       selectable
       actions={[
         {

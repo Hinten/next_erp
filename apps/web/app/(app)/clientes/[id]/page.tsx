@@ -66,6 +66,7 @@ export default function ClientePage() {
         recordId={params.id}
         excludedFields={[
           'timestamp',
+          'ultimaModificacao',
           'nome_embedding',
           'telefone_embedding',
           'userCliente',

@@ -29,6 +29,7 @@ export default function ClientesPage() {
           Novo cliente
         </Button>
       )}
+      copyHref="/clientes/novo"
       fields={{
         tipo: {
           renderCell: (value) =>
