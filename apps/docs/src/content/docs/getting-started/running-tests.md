@@ -115,8 +115,24 @@ afterwards — there is no shared persistent test account.
   the Admin SDK env (`FIREBASE_PROJECT_ID` + `FIREBASE_SERVICE_ACCOUNT_PATH`).
   It logs `skipping auth setup — missing env` and degrades gracefully: only the
   `smoke` specs pass. Check `.env.local` and the key path.
+- **`globalSetup` fails with `unable to verify the first certificate`** (or
+  `UNABLE_TO_VERIFY_LEAF_SIGNATURE`). A corporate proxy / antivirus is doing
+  TLS interception with a root CA that Node's bundled CA list doesn't trust.
+  Node 22.15+ can read the OS certificate store instead — add
+  `NODE_OPTIONS=--use-system-ca` to your root `.env.local` (it propagates to
+  `globalSetup`, the workers and the dev server). The browser already trusts
+  the OS store, so only the Node-side Admin SDK calls need this.
 - **`configuracoes` specs skipped.** `E2E_SU_EMAIL` / `E2E_SU_PASSWORD` are not
   set — expected if you only configured the ephemeral-user flow.
+- **Every spec times out on the first `page.goto` (~30s+ per navigation).**
+  `next dev` is being throttled — almost always antivirus / endpoint-security
+  software scanning the many files Turbopack touches per compile. Add the repo
+  folder and the pnpm store to the AV exclusion list; route compiles drop from
+  ~30s to ~200ms.
+- **`ERR_CONNECTION_RESET` / 40s compiles partway through the run.** Too many
+  Playwright workers cold-compiling routes against the single Next dev server
+  at once. `playwright.config.ts` already pins local runs to one worker for
+  this reason; don't raise `--workers` unless your machine is fast.
 - **First-run timeouts.** Next 16 cold-compiles each route on first hit; the
   spec timeout is already 60s and the dev server gets 180s to boot. A second
   run is fast.
