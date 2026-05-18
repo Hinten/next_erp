@@ -119,6 +119,7 @@ export const pedidoMeta: CollectionMetadata = {
     { path: 'pedidos/{pedidoId}/historicoEstadoPedido', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/incidentes', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/frete', onDelete: 'cascade' },
+    { path: 'pedidos/{pedidoId}/nfev4', onDelete: 'cascade' },
   ],
 };
 

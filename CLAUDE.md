@@ -14,9 +14,9 @@ with `git filter-repo` — that split is **done**; ignore any lingering
 references to a `next-rewrite/` subfolder.) The Flutter ERP is a separate repo
 and out of scope here.
 
-CI is **active** — see `.github/workflows/` (`ci.yml`, `e2e-smoke.yml`, plus
-per-module filtered e2e workflows). Adding workflows is expected; see
-"When making changes".
+CI is **active** — see `.github/workflows/`: `ci.yml` (lint/typecheck/test/
+build) and `e2e.yml` (a single Playwright workflow that runs every e2e
+suite). See "When making changes".
 
 ## Critical rules
 
@@ -74,7 +74,7 @@ packages/
 tools/
   test-fixtures/  Admin SDK seed/teardown for staging
   migrations/     (empty until Phase 6)
-.github/workflows/  Active CI: ci.yml, e2e-smoke.yml, per-module *-e2e.yml
+.github/workflows/  Active CI: ci.yml, e2e.yml (single Playwright workflow)
 ```
 
 Root config: `pnpm-workspace.yaml` (globs `apps/*`, `packages/*`,
@@ -112,7 +112,7 @@ pnpm --filter @delfrance/integrations-app dev
 - New OAuth callback → same: `apps/integrations/app/api/oauth/<channel>/callback/route.ts`.
 - Heavy work (sync, retry, long-running) from a webhook → dispatch to a Cloud Function; route handler responds 200 fast.
 - Adding a Server Component / Server Action / route handler in `apps/web` → justify in the PR description. Default answer is no.
-- **New E2E CI test filtered by file/dependency changes** (e.g. "rode esse E2E só quando o módulo X mudar") → create a new file at `.github/workflows/<module>-e2e.yml` with `on.pull_request.paths:` listing the module's files + transitive deps (schemas, packages it imports, fixtures, the workflow itself, `pnpm-lock.yaml`). **Do not** add another job to `ci.yml`. Always cache dependency download/install whenever possible — pnpm store keyed on `pnpm-lock.yaml`, plus any browser/binary downloads (Playwright, etc.) on the same key. Add a `concurrency:` block (`group: ${{ github.workflow }}-${{ github.ref }}`, `cancel-in-progress: true`) to avoid duplicate runs on consecutive pushes. For failure reporting, do it **in the workflow itself**: pipe the Playwright output to a file (`... | tee /tmp/e2e.log`, with `set -o pipefail`), then add an `if: failure()` step that posts `tail -c 12000 /tmp/e2e.log` to the PR via `gh pr comment`, and give the job `permissions: pull-requests: write`. An in-workflow comment works immediately on a feature branch; a separate `workflow_run` poster always runs the default-branch definition and can't see a new workflow. Reference pattern: `.github/workflows/clientes-e2e.yml`.
+- **New e2e test** → there is **one** e2e workflow, `.github/workflows/e2e.yml`. Adding a schema-driven CRUD page needs only a new `apps/web/e2e/<x>.e2e.spec.ts` — the `crud` Playwright project (`testMatch: /\.e2e\.spec\.ts$/`) picks it up automatically. **Do not** create a per-module `*-e2e.yml` and **do not** add an e2e job to `ci.yml`. `e2e.yml` runs every project (smoke, configuracoes, crud) in a single job: one `globalSetup` mints one ephemeral test user (`e2e-user-<runId>@example.com`, created via the Admin SDK and deleted by `globalTeardown` — there are no `E2E_USER_*` secrets), and Playwright `workers` parallelize the suites. Failures are reported by the workflow's own `report-failure` job.
 
 ## Key fixed decisions
 

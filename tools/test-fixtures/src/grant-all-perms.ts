@@ -21,7 +21,10 @@ export const ALL_PERMS =
   (7n << 24n) | // pagamento
   (7n << 32n) | // nfe
   (3n << 40n) | // configuracoes: read | write (no delete)
-  (7n << 48n);  // chat
+  (7n << 48n) | // chat
+  (7n << 56n) | // integracao
+  (7n << 64n) | // estoque
+  (7n << 72n);  // fiscal
 
 export interface GrantAllPermsResult {
   uid: string;

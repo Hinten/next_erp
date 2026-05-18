@@ -8,32 +8,34 @@ import {
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  ensureTestUser,
-  grantAllPerms,
-  seed,
-  setUserPassword,
-} from '@delfrance/test-fixtures';
+import { randomUUID } from 'node:crypto';
+import { ensureTestUser, grantAllPerms, seed } from '@delfrance/test-fixtures';
+import { e2eUserEmail } from './_helpers/run-id';
+import { sweepStaleE2EUsers } from './_helpers/admin-cleanup';
 
 /**
  * Playwright globalSetup: prepares the staging backend once per test run.
  *
  * Happy path:
- *   1. Seed the namespaced grupoEconomico (idempotent).
- *   2. Ensure the e2e Firebase Auth user exists with the configured password.
- *   3. Grant the user all permission bits + tenant claim via setCustomUserClaims.
+ *   1. Sweep ephemeral e2e users leaked by crashed prior runs.
+ *   2. Seed the namespaced grupoEconomico (idempotent).
+ *   3. Create an ephemeral Firebase Auth user for this run — unique email
+ *      derived from the run id, random password — and grant it all permission
+ *      bits + the tenant claim via setCustomUserClaims. globalTeardown
+ *      deletes it. No shared persistent account: parallel-safe, no
+ *      `E2E_USER_*` secrets, no password drift.
  *   4. Drive the login form, wait for Firebase to persist the session into
  *      IndexedDB, capture `storageState`, then verify it actually restores an
  *      authenticated session in a fresh context. Retried up to 3×; if no
  *      attempt produces a working storageState we throw — far better than
  *      letting the whole suite run with broken auth and die on test #1.
  *
- * Graceful degradation: if any of the required secrets are missing
- * (E2E_USER_EMAIL/PASSWORD, FIREBASE_PROJECT_ID, FIREBASE_SERVICE_ACCOUNT)
- * we write an empty storageState and return. The unauthenticated smoke
- * specs (`login.smoke`, `auth-guard.smoke`) still run and pass; the
- * auth-requiring specs (all-pages, CRUD) then fail fast at `/login` — the
- * intended loud signal that the test user wasn't configured.
+ * Graceful degradation: if the Admin SDK secrets are missing
+ * (FIREBASE_PROJECT_ID, FIREBASE_SERVICE_ACCOUNT) we write an empty
+ * storageState and return. The unauthenticated smoke specs (`login.smoke`,
+ * `auth-guard.smoke`) still run and pass; the auth-requiring specs
+ * (all-pages, CRUD) then fail fast at `/login` — the intended loud signal
+ * that the backend wasn't configured.
  */
 // This file lives at `apps/web/e2e/global-setup.ts`; the storageState
 // path is its sibling. Resolving against the file URL is robust to
@@ -51,8 +53,6 @@ const AUTH_SETUP_ATTEMPTS = 3;
 export default async function globalSetup(_config: FullConfig) {
   // eslint-disable-next-line no-console
   console.log('[globalSetup] starting…');
-  const email = process.env.E2E_USER_EMAIL;
-  const password = process.env.E2E_USER_PASSWORD;
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const serviceAccount =
     process.env.FIREBASE_SERVICE_ACCOUNT ?? process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
@@ -62,8 +62,6 @@ export default async function globalSetup(_config: FullConfig) {
 
   // --- Graceful degradation ----------------------------------------------
   const missing: string[] = [];
-  if (!email) missing.push('E2E_USER_EMAIL');
-  if (!password) missing.push('E2E_USER_PASSWORD');
   if (!projectId) missing.push('FIREBASE_PROJECT_ID');
   if (!serviceAccount) missing.push('FIREBASE_SERVICE_ACCOUNT(_PATH)');
 
@@ -82,12 +80,21 @@ export default async function globalSetup(_config: FullConfig) {
   }
 
   // --- Happy path --------------------------------------------------------
+  // Ephemeral test user: a fresh account per run, deleted by globalTeardown.
+  const staleSwept = await sweepStaleE2EUsers();
+  if (staleSwept > 0) {
+    // eslint-disable-next-line no-console
+    console.log(`[globalSetup] swept ${staleSwept} leaked ephemeral e2e user(s)`);
+  }
+  const email = e2eUserEmail();
+  const password = randomUUID();
+
   const { namespace } = await seed();
-  const user = await ensureTestUser(email!, password!);
-  // Always rewrite the password so a stale account from a previous run with
-  // a different secret still works.
-  await setUserPassword(user.uid, password!);
-  await grantAllPerms(email!, { extraClaims: { grupoEconomico: 'seed' } });
+  await ensureTestUser(email, password);
+  // Grant the permission + tenant claims BEFORE the UI login below: the login
+  // mints the ID token that the captured storageState carries, so the claims
+  // must already be set or the app would restore a token without them.
+  await grantAllPerms(email, { extraClaims: { grupoEconomico: 'seed' } });
 
   const baseURL =
     process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
@@ -104,8 +111,8 @@ export default async function globalSetup(_config: FullConfig) {
       const verified = await captureAndVerifyAuth(
         browser,
         baseURL,
-        email!,
-        password!,
+        email,
+        password,
         storageStatePath,
       ).then(
         (ok) => ok,

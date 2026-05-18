@@ -11,6 +11,9 @@ const DOMAIN_LABELS: Record<keyof typeof PERM, string> = {
   nfe: 'NF-e',
   configuracoes: 'Configurações',
   chat: 'Atendimento',
+  integracao: 'Integrações',
+  estoque: 'Estoque',
+  fiscal: 'Fiscal',
 };
 
 const ACTION_LABELS: Record<string, string> = {

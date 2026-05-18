@@ -135,3 +135,103 @@ export {
   SUPERUSER_MASK,
   type Usuario,
 } from './usuario';
+
+export {
+  deposito,
+  depositoSchema,
+  depositoMeta,
+  type Deposito,
+} from './deposito';
+
+export {
+  grupoDeVariacoes,
+  grupoDeVariacoesSchema,
+  grupoDeVariacoesMeta,
+  varianteSchema,
+  externalVariacaoLinkSchema,
+  tipoVariacaoSchema,
+  TIPO_VARIACAO,
+  TIPO_VARIACAO_LABELS,
+  type GrupoDeVariacoes,
+  type Variante,
+  type ExternalVariacaoLink,
+  type TipoVariacao,
+} from './grupoDeVariacoes';
+
+export {
+  tabelaDeMedidas,
+  tabelaDeMedidasSchema,
+  tabelaDeMedidasMeta,
+  type TabelaDeMedidas,
+} from './tabelaDeMedidas';
+
+export {
+  listaDePrecos,
+  listaDePrecosSchema,
+  listaDePrecosMeta,
+  formulaCalculoPrecoSchema,
+  formulasPorCategoriaSchema,
+  faixaTaxaFixaPesoSchema,
+  type ListaDePrecos,
+  type FormulaCalculoPreco,
+  type FormulasPorCategoria,
+  type FaixaTaxaFixaPeso,
+} from './listaDePrecos';
+
+export {
+  operacao,
+  operacaoSchema,
+  operacaoMeta,
+  tipoNFeSchema,
+  finNFeOperacaoSchema,
+  indPresOperacaoSchema,
+  indIntermedOperacaoSchema,
+  origemProdutoImpostoSchema,
+  TIPO_NFE,
+  TIPO_NFE_LABELS,
+  FIN_NFE_OPERACAO_LABELS,
+  IND_PRES_OPERACAO_LABELS,
+  IND_INTERMED_OPERACAO_LABELS,
+  type Operacao,
+  type TipoNFe,
+  type FinNFeOperacao,
+  type IndPresOperacao,
+  type IndIntermedOperacao,
+  type OrigemProdutoImposto,
+} from './operacao';
+
+export {
+  motivoIncidente,
+  motivoIncidenteSchema,
+  motivoIncidenteMeta,
+  type MotivoIncidente,
+} from './motivoIncidente';
+
+export {
+  filial,
+  filialSchema,
+  filialMeta,
+  type Filial,
+} from './filial';
+
+export {
+  bandeiraCartao,
+  bandeiraCartaoSchema,
+  bandeiraCartaoMeta,
+  bandeiraSchema,
+  BANDEIRA,
+  BANDEIRA_LABELS,
+  type BandeiraCartao,
+  type Bandeira,
+} from './bandeiraCartao';
+
+export {
+  nfe,
+  nfeSchema,
+  nfeMeta,
+  estadoNFeSchema,
+  ESTADO_NFE,
+  ESTADO_NFE_LABELS,
+  type NotaFiscalEletronica,
+  type EstadoNFe,
+} from './nfe';

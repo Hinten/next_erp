@@ -73,6 +73,70 @@ export async function seedCategorias(prefix: string, n: number): Promise<void> {
 }
 
 /**
+ * Seed `n` deposito docs. `ativo` alternates so the boolean column filter
+ * has both states to bite on.
+ */
+export async function seedDepositos(prefix: string, n: number): Promise<void> {
+  const col = db().collection('depositos');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      nome: `${prefix}-${pad(i)}`,
+      ativo: i % 2 === 0,
+      timestamp: new Date().toISOString(),
+    });
+  }
+  await batch.commit();
+}
+
+/**
+ * Seed `n` motivoIncidente docs. `ativo` alternates for the boolean filter.
+ */
+export async function seedMotivosIncidente(
+  prefix: string,
+  n: number,
+): Promise<void> {
+  const col = db().collection('motivosincidentes');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      nome: `${prefix}-${pad(i)}`,
+      ativo: i % 2 === 0,
+    });
+  }
+  await batch.commit();
+}
+
+/**
+ * Seed `n` bandeiraCartao docs. `bandeira` cycles through Visa/Mastercard/Elo
+ * and `ehCredito` alternates, so the enum + boolean column filters have
+ * something to bite on.
+ */
+export async function seedBandeirasCartao(
+  prefix: string,
+  n: number,
+): Promise<void> {
+  const bandeiras = ['01', '02', '06'] as const; // Visa, Mastercard, Elo
+  const col = db().collection('bandeirasCartao');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      ehCredito: i % 2 === 0,
+      nome: `${prefix}-${pad(i)}`,
+      cnpj_instituicao: null,
+      bandeira: bandeiras[i % bandeiras.length],
+      tarifa: 0,
+      tarifaFixa: 0,
+      maxParcelas: 1 + (i % 12),
+      prazoRecebimento: 0,
+      dataCadastro: new Date().toISOString(),
+      ultimaModificacao: new Date().toISOString(),
+    });
+  }
+  await batch.commit();
+}
+
+/**
  * Delete every doc in `collection` whose `nome` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
  */
