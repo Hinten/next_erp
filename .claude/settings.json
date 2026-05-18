@@ -1,4 +1,6 @@
 {
+  "_comment": "English-practice setup. The repo owner is a native Portuguese speaker working to perfect their English writing while they code. 'language' makes Claude reply in English; the UserPromptSubmit hook asks Claude to write commits and PRs in English and to give light corrections of the owner's English when there is a clear mistake. This is a personal learning aid and is safe to remove.",
+  "language": "english",
   "permissions": {
     "allow": [
       "Bash(pnpm turbo run typecheck)",
@@ -16,6 +18,19 @@
       "Read(./.env.*)",
       "Read(./secrets/**)",
       "Read(./.ignore/**)"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"English practice mode (the user is a native Portuguese speaker learning English). (1) Always reply in English. (2) Write every commit message and pull request title/description in English. (3) Light coaching: only when the user message has a clear English mistake or awkward phrasing, add a short section at the end titled English tip with the fix and a natural rewrite, a few lines max; if the English is fine, add no tip. (4) If the user writes in Portuguese, still do the task, but briefly note it and show the English version of their message so they learn it. Keep coaching concise and encouraging; never let it crowd out the actual work.\"}}'"
+          }
+        ]
+      }
     ]
   }
 }
