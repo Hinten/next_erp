@@ -1,21 +1,31 @@
 'use client';
 
 import {
+  Fieldset,
   NumberInput,
   Select,
+  Stack,
   Switch,
   TextInput,
   Textarea,
 } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import { Controller, type Control, type FieldValues } from 'react-hook-form';
+import type { ZodObject, ZodRawShape } from 'zod';
 import type { FieldConfig, FieldDescriptor, FieldRenderProps } from '../schema/types';
+import { extractFieldsFromSchema } from '../schema/derive';
 import { NullClearButton } from './NullClearButton';
 
 export interface FieldRendererProps {
   control: Control<FieldValues>;
   descriptor: FieldDescriptor;
   config?: FieldConfig;
+  /**
+   * Dotted RHF path prefix for nested object fields. Top-level fields omit
+   * it; a field inside `sede` gets `namePrefix="sede"` so its Controller
+   * binds to `sede.<key>`.
+   */
+  namePrefix?: string;
 }
 
 /**
@@ -24,22 +34,60 @@ export interface FieldRendererProps {
  *
  * Nullable string-shaped fields get a `✕` rightSection that clears the
  * value to literal `null` (not `undefined`) so the patch preserves intent.
+ *
+ * A field of `kind === 'object'` renders as a `Fieldset` of nested
+ * `FieldRenderer`s — each leaf still owns its own Controller, bound to the
+ * dotted path `<key>.<childKey>` (RHF resolves dotted names natively, and
+ * `pickDirty` copies the whole object when any descendant is dirty).
  */
-export function FieldRenderer({ control, descriptor, config }: FieldRendererProps) {
+export function FieldRenderer({ control, descriptor, config, namePrefix }: FieldRendererProps) {
   const label = config?.label ?? descriptor.label;
   const hint = config?.hint ?? descriptor.hint;
   const editable = config?.editable !== false;
+  const kind = config?.kind ?? descriptor.kind;
+  const fieldName = namePrefix ? `${namePrefix}.${descriptor.key}` : descriptor.key;
+
+  // Nested object: render a fieldset of sub-fields. The container has no
+  // Controller of its own — only the leaves bind to RHF. Per-sub-field
+  // overrides come through `config.fields`; when the parent is not editable,
+  // propagate `editable: false` to every descendant.
+  if (kind === 'object' && !config?.renderInput) {
+    const nested = extractFieldsFromSchema(
+      descriptor.zodType as ZodObject<ZodRawShape>,
+    );
+    const nestedOverrides = config?.fields ?? {};
+    return (
+      <Fieldset legend={label}>
+        <Stack>
+          {nested
+            .filter((d) => !nestedOverrides[d.key]?.hidden)
+            .map((d) => {
+              const childConfig = nestedOverrides[d.key];
+              return (
+                <FieldRenderer
+                  key={d.key}
+                  control={control}
+                  descriptor={d}
+                  namePrefix={fieldName}
+                  config={editable ? childConfig : { ...childConfig, editable: false }}
+                />
+              );
+            })}
+        </Stack>
+      </Fieldset>
+    );
+  }
 
   return (
     <Controller
       control={control}
-      name={descriptor.key}
+      name={fieldName}
       render={({ field, fieldState }) => {
         // If the consumer supplied a renderInput override, forward the
         // descriptor + field props and let them render anything they want.
         if (config?.renderInput) {
           const props: FieldRenderProps = {
-            name: descriptor.key,
+            name: fieldName,
             label, hint,
             value: field.value,
             onChange: field.onChange,
@@ -52,7 +100,6 @@ export function FieldRenderer({ control, descriptor, config }: FieldRendererProp
         }
 
         const error = fieldState.error?.message;
-        const kind = config?.kind ?? descriptor.kind;
         const valueString = (field.value as string | null | undefined) ?? '';
 
         const clearButton =

@@ -137,6 +137,69 @@ export async function seedBandeirasCartao(
 }
 
 /**
+ * Seed `n` filial docs. `razaoSocial` = `<prefix>-NNN`; `fantasia` alternates
+ * null/string and the embedded `sede` carries a valid São Paulo address so
+ * the nested-object ObjectView fieldset round-trips.
+ */
+export async function seedFiliais(prefix: string, n: number): Promise<void> {
+  const col = db().collection('filiais');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      razaoSocial: `${prefix}-${pad(i)}`,
+      fantasia: i % 2 === 0 ? `${prefix}-${pad(i)} fantasia` : null,
+      cnae: null,
+      cnpj: String(10000000000000 + i),
+      ie: String(100000000 + i),
+      iest: null,
+      imun: null,
+      sede: {
+        idExterno: null,
+        logradouro: 'Av. Teste',
+        numero: String(i),
+        bairro: 'Centro',
+        complemento: null,
+        cep: '01310100',
+        codigoMunicipio: null,
+        cidade: 'São Paulo',
+        estado: 'SP',
+        cPais: null,
+        pais: null,
+        nome: null,
+        cpf_cnpj: null,
+        rg: null,
+        ie: null,
+        imun: null,
+        email: null,
+        telefone: null,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+  await batch.commit();
+}
+
+/**
+ * Delete every doc in `collection` whose `field` starts with `prefix`. Picks
+ * up both seeded docs and UI-created ones (which get Firestore auto-ids).
+ */
+export async function cleanupByFieldPrefix(
+  collection: string,
+  field: string,
+  prefix: string,
+): Promise<void> {
+  const snap = await db()
+    .collection(collection)
+    .where(field, '>=', prefix)
+    .where(field, '<', `${prefix}${PREFIX_MAX}`)
+    .get();
+  if (snap.empty) return;
+  const batch = db().batch();
+  snap.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+}
+
+/**
  * Delete every doc in `collection` whose `nome` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
  */
@@ -144,15 +207,7 @@ export async function cleanupByNamePrefix(
   collection: string,
   prefix: string,
 ): Promise<void> {
-  const snap = await db()
-    .collection(collection)
-    .where('nome', '>=', prefix)
-    .where('nome', '<', `${prefix}${PREFIX_MAX}`)
-    .get();
-  if (snap.empty) return;
-  const batch = db().batch();
-  snap.docs.forEach((d) => batch.delete(d.ref));
-  await batch.commit();
+  await cleanupByFieldPrefix(collection, 'nome', prefix);
 }
 
 /**
@@ -165,9 +220,22 @@ export async function docExistsByName(
   collection: string,
   nome: string,
 ): Promise<boolean> {
+  return docExistsByField(collection, 'nome', nome);
+}
+
+/**
+ * True once a document whose `field` equals `value` exists in `collection`.
+ * Generalises `docExistsByName` for collections keyed on a different field
+ * (e.g. `filiais.razaoSocial`).
+ */
+export async function docExistsByField(
+  collection: string,
+  field: string,
+  value: string,
+): Promise<boolean> {
   const snap = await db()
     .collection(collection)
-    .where('nome', '==', nome)
+    .where(field, '==', value)
     .limit(1)
     .get();
   return !snap.empty;

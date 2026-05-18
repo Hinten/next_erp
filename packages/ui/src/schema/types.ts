@@ -70,6 +70,12 @@ export interface FieldConfig<TValue = unknown> {
   editable?: boolean;
   renderCell?: (value: TValue, row: unknown) => ReactNode;
   renderInput?: (props: FieldRenderProps) => ReactNode;
+  /**
+   * Per-field overrides for the sub-fields of a `kind: 'object'` field.
+   * Keyed by the nested key (e.g. `sede.cpf_cnpj` → `{ cpf_cnpj: {...} }`).
+   * Lets callers hide/relabel address fields without flattening the schema.
+   */
+  fields?: Record<string, FieldConfig>;
 }
 
 /**

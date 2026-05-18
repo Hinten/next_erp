@@ -76,6 +76,33 @@ describe('ObjectView', () => {
     expect(screen.queryByRole('textbox', { name: 'Observações' })).toBeNull();
   });
 
+  it('renders nested object fields inside a fieldset', () => {
+    const nestedSchema = z.object({
+      nome: z.string().describe('Nome'),
+      endereco: z
+        .object({
+          rua: z.string().describe('Rua'),
+          cidade: z.string().describe('Cidade'),
+        })
+        .describe('Endereço'),
+    });
+    render(
+      <Wrap>
+        <ObjectView
+          schema={nestedSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+        />
+      </Wrap>,
+    );
+    // Leaf inputs of the nested object are bound and labelled.
+    expect(screen.getByRole('textbox', { name: 'Rua' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Cidade' })).toBeTruthy();
+    // The fieldset legend carries the object field's label.
+    expect(screen.getByText('Endereço')).toBeTruthy();
+  });
+
   it('renders Mantine tabs when `sections` is set', () => {
     render(
       <Wrap>
