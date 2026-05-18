@@ -137,6 +137,50 @@ export async function seedBandeirasCartao(
 }
 
 /**
+ * Seed `n` lixeira docs — snapshots of deleted categorias, as the `onDelete`
+ * Cloud Function trigger would write them. `docId` is the id the categoria
+ * would be restored to and `data.nome` carries the prefix, so both the
+ * lixeira sweep (by `label`) and the categorias sweep (by `nome`) catch the
+ * leftovers — including the restored docs the recovery test produces.
+ */
+export async function seedLixeira(prefix: string, n: number): Promise<void> {
+  const col = db().collection('lixeira');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    const name = `${prefix}-${pad(i)}`;
+    batch.set(col.doc(), {
+      collectionPath: 'categorias',
+      docId: name,
+      label: name,
+      data: {
+        nome: name,
+        nomeCompleto: null,
+        permiteCadastro: true,
+        categoriaGoogleId: null,
+        categoriaPaiOuterRef: null,
+        timestamp: new Date().toISOString(),
+      },
+      deletedAt: new Date(Date.now() - i * 1000).toISOString(),
+      deletedBy: 'e2e-seed',
+    });
+  }
+  await batch.commit();
+}
+
+/** Delete every `lixeira` doc whose `label` starts with `prefix`. */
+export async function cleanupLixeira(prefix: string): Promise<void> {
+  const snap = await db()
+    .collection('lixeira')
+    .where('label', '>=', prefix)
+    .where('label', '<', `${prefix}${PREFIX_MAX}`)
+    .get();
+  if (snap.empty) return;
+  const batch = db().batch();
+  snap.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+}
+
+/**
  * Delete every doc in `collection` whose `nome` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
  */

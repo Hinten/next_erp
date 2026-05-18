@@ -3,6 +3,7 @@ packages:
   - "packages/*"
   - "packages/integrations/*"
   - "tools/*"
+  - "functions"
 allowBuilds:
   '@firebase/util': true
   '@parcel/watcher': true

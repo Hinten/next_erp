@@ -31,3 +31,13 @@ export {
   writeAuditEntry,
   type AuditEntryInput,
 } from './audit';
+
+export {
+  LIXEIRA_PATH,
+  TrashEntryNotFoundError,
+  RestoreConflictError,
+  restoreFromTrash,
+  purgeTrashEntry,
+  type RestoreFromTrashInput,
+  type PurgeTrashEntryInput,
+} from './trash';

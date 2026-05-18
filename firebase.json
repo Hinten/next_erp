@@ -22,5 +22,21 @@
   "firestore": {
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"
-  }
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "predeploy": ["pnpm --filter @delfrance/functions build"],
+      "ignore": [
+        "node_modules",
+        ".turbo",
+        "src",
+        "esbuild.config.mjs",
+        "tsconfig.json",
+        "vitest.config.ts",
+        "*.tsbuildinfo"
+      ]
+    }
+  ]
 }

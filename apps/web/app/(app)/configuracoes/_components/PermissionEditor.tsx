@@ -14,6 +14,7 @@ const DOMAIN_LABELS: Record<keyof typeof PERM, string> = {
   integracao: 'Integrações',
   estoque: 'Estoque',
   fiscal: 'Fiscal',
+  lixeira: 'Itens excluídos',
 };
 
 const ACTION_LABELS: Record<string, string> = {

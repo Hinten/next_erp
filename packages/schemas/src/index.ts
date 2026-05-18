@@ -6,6 +6,13 @@ export {
 } from './audit';
 
 export {
+  lixeira,
+  lixeiraSchema,
+  lixeiraMeta,
+  type LixeiraEntry,
+} from './lixeira';
+
+export {
   cliente,
   clienteSchema,
   clienteMeta,

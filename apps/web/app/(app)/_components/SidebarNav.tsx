@@ -122,6 +122,7 @@ const NAV: NavEntry[] = [
       { href: '/configuracoes/filiais', label: 'Filiais' },
       { href: '/configuracoes/cargos', label: 'Cargos' },
       { href: '/configuracoes/usuarios', label: 'Usuários' },
+      { href: '/lixeira', label: 'Itens excluídos', perm: PERM.lixeira.read },
     ],
   },
 ];

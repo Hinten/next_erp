@@ -60,6 +60,12 @@ export const PERM = {
     write: 1n << 73n,
     delete: 1n << 74n,
   },
+  // Lixeira — visualizar e restaurar itens excluídos (coleção `lixeira`).
+  lixeira: {
+    read: 1n << 80n,
+    write: 1n << 81n,
+    delete: 1n << 82n,
+  },
 } as const;
 
 export function hasPerm(grantedClaim: string | undefined, requiredBit: bigint): boolean {

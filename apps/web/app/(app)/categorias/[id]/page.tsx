@@ -44,6 +44,7 @@ export default function CategoriaPage() {
         readOnly={!canWrite}
         canDelete={canWrite}
         onDelete={handleDelete}
+        deleteConfirmMessage='A categoria será removida. Você pode recuperá-la depois em "Itens excluídos".'
         onSaved={() => router.replace('/categorias')}
       />
     </Stack>

@@ -35,7 +35,7 @@ export default function CategoriasPage() {
           confirm: {
             title: 'Excluir categorias',
             message:
-              'Categorias excluídas não podem ser restauradas. Confirmar exclusão?',
+              'As categorias selecionadas serão removidas. Você pode recuperá-las depois em "Itens excluídos". Confirmar exclusão?',
           },
           run: async (rows) => {
             const db = getFirebaseFirestore();

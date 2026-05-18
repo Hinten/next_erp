@@ -1,0 +1,29 @@
+{
+  "name": "@delfrance/functions",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "lint": "echo 'no lint configured for this package yet'",
+    "typecheck": "tsc --noEmit",
+    "build": "node esbuild.config.mjs",
+    "test": "vitest run",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.9.0",
+    "firebase-functions": "^6.6.0"
+  },
+  "devDependencies": {
+    "@delfrance/config-tsconfig": "workspace:*",
+    "@delfrance/schemas": "workspace:*",
+    "@types/node": "^24.10.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
+  }
+}
