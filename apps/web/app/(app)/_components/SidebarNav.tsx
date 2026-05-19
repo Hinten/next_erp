@@ -11,12 +11,13 @@ import {
   Tooltip,
 } from '@mantine/core';
 import Link from 'next/link';
+import type { Route } from 'next';
 import { usePathname } from 'next/navigation';
 import { PERM, hasPerm } from '@delfrance/auth';
 import { useTenant } from '@/lib/auth';
 
 interface NavLeaf {
-  href: string;
+  href: Route;
   label: string;
   perm?: bigint;
 }

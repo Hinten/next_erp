@@ -15,6 +15,9 @@ export const depositoSchema = z.object({
   nome: z.string().min(1).max(255).describe('Nome'),
   ativo: z.boolean().default(true).describe('Ativo'),
   timestamp: z.string().datetime().nullable().optional(),
+  // System field — stamped by `saveRecord` on every write so the TableView
+  // update-monitor sees edits.
+  ultimaModificacao: z.string().datetime().nullable().optional(),
 });
 
 export type Deposito = z.infer<typeof depositoSchema>;

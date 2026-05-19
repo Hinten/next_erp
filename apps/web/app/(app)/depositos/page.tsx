@@ -25,6 +25,7 @@ export default function DepositosPage() {
           Novo depósito
         </Button>
       )}
+      copyHref="/depositos/novo"
       selectable
       actions={[
         {
@@ -32,6 +33,7 @@ export default function DepositosPage() {
           label: 'Excluir',
           color: 'red',
           requiresSelection: true,
+          refreshOnComplete: true,
           confirm: {
             title: 'Excluir depósitos',
             message:

@@ -28,6 +28,7 @@ export default function NovoMotivoIncidentePage() {
         db={getFirebaseFirestore()}
         currentUserUid={user?.uid ?? ''}
         defaultValues={{ ativo: true }}
+        excludedFields={['ultimaModificacao']}
         saveLabel="Criar"
         showSaveAndContinue={false}
         onSaved={(id) => router.replace(`/motivos-incidente/${id}`)}

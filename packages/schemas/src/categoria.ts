@@ -27,6 +27,9 @@ export const categoriaSchema = z.object({
     .describe('Google Product Category ID'),
   categoriaPaiOuterRef: z.unknown().nullable().default(null),
   timestamp: z.string().datetime().nullable().default(null),
+  // System field — creation stays in `timestamp`; this is stamped by
+  // `saveRecord` on every write so the TableView update-monitor sees edits.
+  ultimaModificacao: z.string().datetime().nullable().optional(),
 });
 
 export type Categoria = z.infer<typeof categoriaSchema>;

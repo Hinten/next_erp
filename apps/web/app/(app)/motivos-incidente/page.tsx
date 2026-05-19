@@ -25,6 +25,7 @@ export default function MotivosIncidentePage() {
           Novo motivo
         </Button>
       )}
+      copyHref="/motivos-incidente/novo"
       selectable
       actions={[
         {
@@ -32,6 +33,7 @@ export default function MotivosIncidentePage() {
           label: 'Excluir',
           color: 'red',
           requiresSelection: true,
+          refreshOnComplete: true,
           confirm: {
             title: 'Excluir motivos de incidente',
             message:

@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import { Button, Group, Modal, Stack, Text } from '@mantine/core';
+import Link from 'next/link';
+import type { Route } from 'next';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { ActionConfig } from '../schema/types';
 
@@ -13,6 +15,14 @@ export interface ActionBarProps<T> {
   newHref?: string;
   /** Custom render for "Novo" (e.g. a Next Link). */
   renderNewButton?: () => React.ReactNode;
+  /**
+   * Create-page route for the "Copiar" button. When set, the bar renders a
+   * `<Link>`-based copy button enabled only with exactly one selected row;
+   * clicking it opens `${copyHref}?copyFrom=<id>`.
+   */
+  copyHref?: Route;
+  /** Called after a `refreshOnComplete` action finishes (e.g. delete). */
+  onActionComplete?: () => void;
 }
 
 /**
@@ -24,16 +34,25 @@ export function ActionBar<T>({
   selectedRows,
   newHref,
   renderNewButton,
+  copyHref,
+  onActionComplete,
 }: ActionBarProps<T>) {
   const [pending, setPending] = useState<ActionConfig<T> | null>(null);
+
+  async function execute(action: ActionConfig<T>) {
+    await action.run(selectedRows);
+    if (action.refreshOnComplete) onActionComplete?.();
+  }
 
   async function runAction(action: ActionConfig<T>) {
     if (action.confirm) {
       setPending(action);
       return;
     }
-    await action.run(selectedRows);
+    await execute(action);
   }
+
+  const copyRow = selectedRows.length === 1 ? selectedRows[0] : null;
 
   return (
     <>
@@ -41,6 +60,20 @@ export function ActionBar<T>({
         {renderNewButton ? renderNewButton() : newHref ? (
           <Button component="a" href={newHref}>Novo</Button>
         ) : null}
+        {copyHref &&
+          (copyRow ? (
+            <Button
+              variant="default"
+              component={Link}
+              href={{ pathname: copyHref, query: { copyFrom: copyRow.id } }}
+            >
+              Copiar
+            </Button>
+          ) : (
+            <Button variant="default" disabled title="Selecione exatamente 1 registro">
+              Copiar
+            </Button>
+          ))}
         {actions.map((a) => {
           const disabled = !!a.requiresSelection && selectedRows.length === 0;
           return (
@@ -72,7 +105,7 @@ export function ActionBar<T>({
               onClick={async () => {
                 const action = pending!;
                 setPending(null);
-                await action.run(selectedRows);
+                await execute(action);
               }}
             >
               Confirmar

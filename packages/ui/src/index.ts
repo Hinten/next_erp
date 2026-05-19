@@ -18,6 +18,10 @@ export type {
 export { TableView, type TableViewProps } from './table/TableView';
 export { ColumnPicker, type ColumnPickerProps } from './table/ColumnPicker';
 export { ActionBar, type ActionBarProps } from './table/ActionBar';
+export {
+  useCollectionMonitor,
+  type CollectionMonitorResult,
+} from './table/useCollectionMonitor';
 export { SearchBar, type SearchBarProps } from './table/SearchBar';
 export { Pagination, type PaginationProps } from './table/Pagination';
 export { renderCell } from './table/cell-renderers';

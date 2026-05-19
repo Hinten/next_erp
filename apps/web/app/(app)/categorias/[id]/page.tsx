@@ -38,7 +38,7 @@ export default function CategoriaPage() {
         db={db}
         currentUserUid={user?.uid ?? ''}
         recordId={params.id}
-        excludedFields={['timestamp', 'categoriaPaiOuterRef']}
+        excludedFields={['timestamp', 'categoriaPaiOuterRef', 'ultimaModificacao']}
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}

@@ -29,6 +29,7 @@ export default function ClientesPage() {
           Novo cliente
         </Button>
       )}
+      copyHref="/clientes/novo"
       fields={{
         tipo: {
           renderCell: (value) =>
@@ -48,6 +49,7 @@ export default function ClientesPage() {
           label: 'Excluir',
           color: 'red',
           requiresSelection: true,
+          refreshOnComplete: true,
           confirm: {
             title: 'Excluir clientes',
             message:

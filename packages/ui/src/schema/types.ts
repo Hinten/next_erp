@@ -80,13 +80,16 @@ export interface FieldConfig<TValue = unknown> {
 
 /**
  * Action declared by the TableView consumer. `requiresSelection: true`
- * disables the action until rows are checked.
+ * disables the action until rows are checked. `refreshOnComplete: true`
+ * marks a data-mutating action (e.g. delete) — the TableView re-runs its
+ * query once after the action finishes.
  */
 export interface ActionConfig<T> {
   id: string;
   label: string;
   color?: MantineColor;
   requiresSelection?: boolean;
+  refreshOnComplete?: boolean;
   run: (rows: SnapshotRow<T>[]) => Promise<void> | void;
   confirm?: { title: string; message: string };
 }

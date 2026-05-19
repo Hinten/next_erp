@@ -62,6 +62,19 @@ export async function saveRecord<
 
   if (isUpdate && isEmpty(patch)) throw new NothingChangedError();
 
+  // Stamp the last-modified field (when the schema has one) on every write,
+  // after the no-op check so an unchanged update still throws. This lets the
+  // TableView update-monitor detect edits, not just creations. On create
+  // `patch` aliases `input.values`, so stamping `input.values` covers both.
+  if ('ultimaModificacao' in input.values) {
+    const now = new Date().toISOString();
+    if (isUpdate) {
+      (patch as Record<string, unknown>).ultimaModificacao = now;
+    } else {
+      (input.values as Record<string, unknown>).ultimaModificacao = now;
+    }
+  }
+
   // Resolve the ref outside the transaction — refs don't need to be
   // re-derived inside it (only reads/writes do).
   const ref = isUpdate
