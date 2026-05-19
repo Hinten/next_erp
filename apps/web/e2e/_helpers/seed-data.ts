@@ -181,6 +181,20 @@ export async function cleanupLixeira(prefix: string): Promise<void> {
 }
 
 /**
+ * True once a `lixeira` entry with the given `label` exists. The recovery
+ * specs poll the negative of this — Admin SDK reads are strongly consistent —
+ * to confirm a restore/purge committed before navigating on.
+ */
+export async function lixeiraEntryExists(label: string): Promise<boolean> {
+  const snap = await db()
+    .collection('lixeira')
+    .where('label', '==', label)
+    .limit(1)
+    .get();
+  return !snap.empty;
+}
+
+/**
  * Delete every doc in `collection` whose `nome` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
  */

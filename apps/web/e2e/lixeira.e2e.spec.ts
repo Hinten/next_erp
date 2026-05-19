@@ -4,6 +4,7 @@ import {
   cleanupLixeira,
   docExistsByName,
   e2ePrefix,
+  lixeiraEntryExists,
   seedLixeira,
 } from './_helpers/seed-data';
 import {
@@ -95,6 +96,12 @@ test.describe.serial('Lixeira e2e — recuperação de itens excluídos', () => 
 
     await selectRowByText(page, row(4));
     await clickAction(page, 'Excluir definitivamente');
+
+    // The purge is fire-and-forget from the ActionBar — poll the (strongly
+    // consistent) Admin SDK so the re-listing below can't race the delete.
+    await expect
+      .poll(() => lixeiraEntryExists(row(4)), { timeout: 15_000 })
+      .toBe(false);
 
     await page.goto('/lixeira');
     await applyTextFilter(page, 'Item', row(4));
