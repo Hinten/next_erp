@@ -6,6 +6,7 @@ import { useLocalStorage } from '@mantine/hooks';
 import {
   Alert, Button, Checkbox, Group, Skeleton, Stack, Table, Text, Title,
 } from '@mantine/core';
+import type { Route } from 'next';
 import type { Firestore, Query } from 'firebase/firestore';
 import type { z, ZodObject, ZodRawShape } from 'zod';
 import {
@@ -60,12 +61,13 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   selectable?: boolean;
 
   /**
-   * Enables the built-in "Copiar" action. When set, selecting exactly one
-   * row and clicking "Copiar" navigates to `${copyHref}?copyFrom=<id>` — the
-   * create page (ObjectView) pre-fills the form from that document. Setting
-   * this prop is the on/off toggle; it also implies row selection.
+   * Create-page route. When set, the ActionBar renders a `<Link>`-based
+   * "Copiar" button (enabled only with exactly one selected row) that opens
+   * `${copyHref}?copyFrom=<id>` — the create page (ObjectView) pre-fills the
+   * form from that document. Setting this prop is the on/off toggle; it also
+   * implies row selection.
    */
-  copyHref?: string;
+  copyHref?: Route;
 
   /**
    * Field the update-monitor orders by (`limit(1)`, descending). `false`
@@ -352,23 +354,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     [snap.data, selected],
   );
 
-  // Built-in "Copiar" action: navigate to the create page with the source
-  // doc id. The id is enough — the create page re-fetches the full document
-  // (the pipeline projects only visible columns, so `row.data` is partial).
-  const allActions = useMemo<Array<ActionConfig<z.infer<S>>>>(() => {
-    if (!copyHref) return actions;
-    const copyAction: ActionConfig<z.infer<S>> = {
-      id: '__copy',
-      label: 'Copiar',
-      requiresSelection: 'single',
-      run: (rows) => {
-        const id = rows[0]?.id;
-        if (id) router.push(`${copyHref}?copyFrom=${encodeURIComponent(id)}`);
-      },
-    };
-    return [...actions, copyAction];
-  }, [actions, copyHref, router]);
-
   // Update-monitor field: explicit prop wins; otherwise prefer a
   // last-modified field, then the creation timestamp.
   const resolvedMonitorField = useMemo<string | null>(() => {
@@ -403,12 +388,13 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             visibleKeys={visibleKeys}
             onToggle={toggleColumn}
           />
-          {(allActions.length > 0 || newHref || renderNewButton) && (
+          {(actions.length > 0 || newHref || renderNewButton || copyHref) && (
             <ActionBar
-              actions={allActions}
+              actions={actions}
               selectedRows={selectedRows}
               newHref={newHref}
               renderNewButton={renderNewButton}
+              copyHref={copyHref}
             />
           )}
         </Group>

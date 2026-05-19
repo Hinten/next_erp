@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import { Button, Group, Modal, Stack, Text } from '@mantine/core';
+import Link from 'next/link';
+import type { Route } from 'next';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { ActionConfig } from '../schema/types';
 
@@ -13,6 +15,12 @@ export interface ActionBarProps<T> {
   newHref?: string;
   /** Custom render for "Novo" (e.g. a Next Link). */
   renderNewButton?: () => React.ReactNode;
+  /**
+   * Create-page route for the "Copiar" button. When set, the bar renders a
+   * `<Link>`-based copy button enabled only with exactly one selected row;
+   * clicking it opens `${copyHref}?copyFrom=<id>`.
+   */
+  copyHref?: Route;
 }
 
 /**
@@ -24,6 +32,7 @@ export function ActionBar<T>({
   selectedRows,
   newHref,
   renderNewButton,
+  copyHref,
 }: ActionBarProps<T>) {
   const [pending, setPending] = useState<ActionConfig<T> | null>(null);
 
@@ -35,24 +44,36 @@ export function ActionBar<T>({
     await action.run(selectedRows);
   }
 
+  const copyRow = selectedRows.length === 1 ? selectedRows[0] : null;
+
   return (
     <>
       <Group justify="flex-end" gap="xs">
         {renderNewButton ? renderNewButton() : newHref ? (
           <Button component="a" href={newHref}>Novo</Button>
         ) : null}
+        {copyHref &&
+          (copyRow ? (
+            <Button
+              variant="default"
+              component={Link}
+              href={{ pathname: copyHref, query: { copyFrom: copyRow.id } }}
+            >
+              Copiar
+            </Button>
+          ) : (
+            <Button variant="default" disabled title="Selecione exatamente 1 registro">
+              Copiar
+            </Button>
+          ))}
         {actions.map((a) => {
-          const single = a.requiresSelection === 'single';
-          const disabled = single
-            ? selectedRows.length !== 1
-            : !!a.requiresSelection && selectedRows.length === 0;
+          const disabled = !!a.requiresSelection && selectedRows.length === 0;
           return (
             <Button
               key={a.id}
               variant="default"
               color={a.color}
               disabled={disabled}
-              title={single && disabled ? 'Selecione exatamente 1 registro' : undefined}
               onClick={() => runAction(a)}
             >
               {a.label}

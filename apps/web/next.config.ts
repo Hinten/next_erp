@@ -2,6 +2,8 @@ import type { NextConfig } from 'next';
 
 const config: NextConfig = {
   reactStrictMode: true,
+  // Type-check `<Link href>` / `router.push` against the real route tree.
+  typedRoutes: true,
   // apps/web is client-first; transpile workspace packages.
   transpilePackages: [
     '@delfrance/auth',
