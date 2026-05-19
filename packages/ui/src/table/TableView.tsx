@@ -395,6 +395,10 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
               newHref={newHref}
               renderNewButton={renderNewButton}
               copyHref={copyHref}
+              onActionComplete={() => {
+                setSelected(new Set());
+                setRefreshKey((k) => k + 1);
+              }}
             />
           )}
         </Group>

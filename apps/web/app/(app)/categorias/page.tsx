@@ -33,6 +33,7 @@ export default function CategoriasPage() {
           label: 'Excluir',
           color: 'red',
           requiresSelection: true,
+          refreshOnComplete: true,
           confirm: {
             title: 'Excluir categorias',
             message:

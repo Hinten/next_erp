@@ -21,6 +21,8 @@ export interface ActionBarProps<T> {
    * clicking it opens `${copyHref}?copyFrom=<id>`.
    */
   copyHref?: Route;
+  /** Called after a `refreshOnComplete` action finishes (e.g. delete). */
+  onActionComplete?: () => void;
 }
 
 /**
@@ -33,15 +35,21 @@ export function ActionBar<T>({
   newHref,
   renderNewButton,
   copyHref,
+  onActionComplete,
 }: ActionBarProps<T>) {
   const [pending, setPending] = useState<ActionConfig<T> | null>(null);
+
+  async function execute(action: ActionConfig<T>) {
+    await action.run(selectedRows);
+    if (action.refreshOnComplete) onActionComplete?.();
+  }
 
   async function runAction(action: ActionConfig<T>) {
     if (action.confirm) {
       setPending(action);
       return;
     }
-    await action.run(selectedRows);
+    await execute(action);
   }
 
   const copyRow = selectedRows.length === 1 ? selectedRows[0] : null;
@@ -97,7 +105,7 @@ export function ActionBar<T>({
               onClick={async () => {
                 const action = pending!;
                 setPending(null);
-                await action.run(selectedRows);
+                await execute(action);
               }}
             >
               Confirmar

@@ -328,13 +328,21 @@ before it went green. Check here first when a CRUD test fails.
   in `beforeAll` and keep a generous table-load timeout.
 - **A row you just created is missing from the list.** Under the Pipelines
   path `TableView` runs a *one-shot* query — it does not re-fetch after a
-  create. The update-monitor now shows a yellow "Atualizar" banner when the
-  collection changes, but the main table still won't refresh until that
-  button (or `monitorField`-driven reload) fires. The fix belongs in the
-  **test**, not the component: after creating, wait for the doc to commit
-  (e.g. `docExistsByName`) before asserting on the list, reload the page, or
-  click the "Atualizar" banner. Do not make `TableView` poll — that was
-  attempted in PR #6 and reverted.
+  create. The update-monitor shows a yellow "Atualizar" banner when the
+  collection changes, but the main table won't refresh until that button
+  (or `monitorField`-driven reload) fires. The fix belongs in the **test**,
+  not the component: after creating, wait for the doc to commit (e.g.
+  `docExistsByName`) before asserting on the list, reload the page, or click
+  the "Atualizar" banner. Do not make `TableView` poll — that was attempted
+  in PR #6 and reverted.
+- **A deleted row stays visible / the monitor banner doesn't fire on delete.**
+  An `ActionConfig` that mutates data must set `refreshOnComplete: true` —
+  the TableView then re-runs its query once the action finishes (this is how
+  the delete action keeps the list fresh in the same tab). The update-monitor
+  itself only watches the most-recent doc (`limit(1)`), so it does **not**
+  detect deletions made in *other* sessions — a hard delete leaves no
+  queryable trace. That cross-session gap is a known limitation tracked in
+  issue #40.
 - **Vitest: Mantine throws under JSDOM** (`ResizeObserver is not defined`,
   `matchMedia`, `document.fonts`, `visualViewport`). `packages/ui/vitest.setup.ts`
   shims all four. Any new package that renders Mantine components in unit

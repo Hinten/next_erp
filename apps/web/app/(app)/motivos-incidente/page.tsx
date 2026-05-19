@@ -33,6 +33,7 @@ export default function MotivosIncidentePage() {
           label: 'Excluir',
           color: 'red',
           requiresSelection: true,
+          refreshOnComplete: true,
           confirm: {
             title: 'Excluir motivos de incidente',
             message:

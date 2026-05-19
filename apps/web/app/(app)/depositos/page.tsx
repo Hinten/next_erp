@@ -33,6 +33,7 @@ export default function DepositosPage() {
           label: 'Excluir',
           color: 'red',
           requiresSelection: true,
+          refreshOnComplete: true,
           confirm: {
             title: 'Excluir depósitos',
             message:

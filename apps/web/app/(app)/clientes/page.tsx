@@ -49,6 +49,7 @@ export default function ClientesPage() {
           label: 'Excluir',
           color: 'red',
           requiresSelection: true,
+          refreshOnComplete: true,
           confirm: {
             title: 'Excluir clientes',
             message:

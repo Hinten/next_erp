@@ -26,6 +26,13 @@ export interface CollectionMonitorResult {
  * baseline — a new doc changes the id, an edit that bumps `field` changes
  * the value, deleting the top doc changes the id. `field === null` disables
  * the monitor.
+ *
+ * Known limitation: deleting a document that is NOT the current top one is
+ * invisible here — a hard delete leaves no queryable trace and a `limit(1)`
+ * query only ever sees the most-recent doc. Deletes performed in the same
+ * tab are handled separately (the TableView re-runs its query after a
+ * `refreshOnComplete` action); cross-session deletes are not detected.
+ * Tracked in issue #40.
  */
 export function useCollectionMonitor<S extends ZodObject<ZodRawShape>>(opts: {
   db: Firestore;

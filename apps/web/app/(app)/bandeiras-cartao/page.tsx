@@ -33,6 +33,7 @@ export default function BandeirasCartaoPage() {
           label: 'Excluir',
           color: 'red',
           requiresSelection: true,
+          refreshOnComplete: true,
           confirm: {
             title: 'Excluir bandeiras de cartão',
             message:
