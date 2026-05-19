@@ -8,6 +8,7 @@
   "scripts": {
     "lint": "echo 'no lint configured for this package yet'",
     "typecheck": "tsc --noEmit",
+    "gen:nfe-types": "node src/codegen/generate.mjs",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
