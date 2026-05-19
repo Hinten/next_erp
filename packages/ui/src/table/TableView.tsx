@@ -78,6 +78,12 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
 
   /** Click-through target for each row. */
   rowHref?: (id: string, row: z.infer<S>) => string;
+  /**
+   * Row-click handler. When set, clicking a row calls this instead of
+   * navigating via `rowHref` — use it to open a modal-based editor for an
+   * embedded subcollection table. `rowHref` is ignored while this is set.
+   */
+  onRowClick?: (id: string, row: z.infer<S>) => void;
   /** Optional "Novo" link rendered in the ActionBar. */
   newHref?: string;
   /**
@@ -176,6 +182,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   copyHref,
   monitorField,
   rowHref,
+  onRowClick,
   newHref,
   renderNewButton,
   renderRowLink,
@@ -504,26 +511,30 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             )}
             {snap.data.map((row) => {
               const href = rowHref ? rowHref(row.id, row.data) : undefined;
+              // `onRowClick` takes precedence over `rowHref` navigation.
+              const clickable = !!row.id && (!!onRowClick || !!href);
               return (
                 <Table.Tr
                   key={row.id}
-                  // Whole row navigates when rowHref is supplied. <Table> has
+                  // Whole row navigates when rowHref is supplied, or invokes
+                  // `onRowClick` when that's set instead. <Table> has
                   // `highlightOnHover`, so the row highlights and the cursor
                   // becomes a pointer. Empty `id` (e.g. a pipeline that used
                   // .select() and lost the ref) would generate /collection/''
                   // — skip onClick in that case.
                   //
                   // If the user has an active text selection, treat the click
-                  // as a select-and-copy gesture and don't navigate.
+                  // as a select-and-copy gesture and don't act on it.
                   onClick={
-                    href && row.id
+                    clickable
                       ? () => {
                           if (window.getSelection()?.toString()) return;
-                          router.push(href);
+                          if (onRowClick) onRowClick(row.id, row.data);
+                          else if (href) router.push(href);
                         }
                       : undefined
                   }
-                  style={href && row.id ? { cursor: 'pointer' } : undefined}
+                  style={clickable ? { cursor: 'pointer' } : undefined}
                 >
                   {selectionEnabled && (
                     <Table.Td onClick={(e) => e.stopPropagation()}>

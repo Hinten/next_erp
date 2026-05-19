@@ -5,6 +5,7 @@ import { PERM } from '@delfrance/auth';
 
 const DOMAIN_LABELS: Record<keyof typeof PERM, string> = {
   cliente: 'Clientes',
+  endereco: 'Endereços',
   produto: 'Produtos',
   pedido: 'Pedidos',
   pagamento: 'Pagamentos',
