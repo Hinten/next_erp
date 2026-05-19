@@ -15,7 +15,7 @@ import { getApp } from './admin.js';
 
 // All permission bits OR'd together — mirrors PERM in packages/auth/src/permissions.ts
 export const ALL_PERMS =
-  7n |          // cliente: read | write | delete
+  0b111111n |   // cliente (bits 0-2) + endereco (bits 3-5): read | write | delete
   (7n << 8n) |  // produto
   (7n << 16n) | // pedido
   (7n << 24n) | // pagamento
