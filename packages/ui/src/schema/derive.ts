@@ -166,6 +166,8 @@ export function extractFieldsFromSchema<T extends ZodRawShape>(
  * defaults, so deriving from descriptors stays cheap and explicit.
  *
  *  - nullable fields → `null` (RHF treats this as "value present, equal to null")
+ *  - object fields → a nested defaults object (recursion) so Mantine inputs
+ *    inside the fieldset start controlled
  *  - boolean → `false`
  *  - text-ish strings → `''` (Mantine inputs reject `undefined` controlled value)
  *  - everything else → left out; required-without-default surfaces a real
@@ -178,6 +180,10 @@ export function buildEmptyDefaults(
   for (const d of descriptors) {
     if (d.nullable) {
       out[d.key] = null;
+    } else if (d.kind === 'object') {
+      out[d.key] = buildEmptyDefaults(
+        extractFieldsFromSchema(d.zodType as ZodObject<ZodRawShape>),
+      );
     } else if (
       d.kind === 'string' ||
       d.kind === 'longText' ||

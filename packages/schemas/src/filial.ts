@@ -12,23 +12,39 @@ const PERM_CONFIG_WRITE = 1n << 41n;
  * Reuses the shared `enderecoSchema` for `sede`.
  */
 export const filialSchema = z.object({
-  razaoSocial: z.string().min(1).max(1000),
-  fantasia: z.string().max(1000).nullable(),
-  cnae: z.string().max(255).nullable(),
+  razaoSocial: z.string().min(1).max(1000).describe('Razão Social'),
+  // `.nullable()` (no `.default`) keeps the field required-present — the
+  // Firebase JS SDK rejects `undefined`, and forms supply `null` themselves.
+  fantasia: z.string().max(1000).nullable().describe('Nome Fantasia'),
+  cnae: z
+    .string()
+    .max(255)
+    .nullable()
+    .describe(
+      '{"label":"CNAE","hint":"Classificação Nacional de Atividades Econômicas, informado pelo contador"}',
+    ),
   cnpj: z
     .string()
     .max(18)
-    .regex(/^\d*$/, 'apenas números'),
-  ie: z.string().regex(/^\d*$/, 'apenas números'),
+    .regex(/^\d*$/, 'apenas números')
+    .describe('CNPJ'),
+  ie: z
+    .string()
+    .regex(/^\d*$/, 'apenas números')
+    .describe('Inscrição Estadual'),
   iest: z
     .string()
     .regex(/^\d*$/, 'apenas números')
-    .nullable(),
+    .nullable()
+    .describe(
+      '{"label":"IEST","hint":"Inscrição Estadual do substituto tributário, quando houver"}',
+    ),
   imun: z
     .string()
     .regex(/^\d*$/, 'apenas números')
-    .nullable(),
-  sede: enderecoSchema,
+    .nullable()
+    .describe('Inscrição Municipal'),
+  sede: enderecoSchema.describe('Endereço sede'),
   timestamp: z.string().datetime().nullable().optional(),
 });
 
