@@ -63,6 +63,7 @@ Source manuals (MOC 7.0, Nov/2020) live on the SEFAZ portal:
 | `references/eventos.md` | cancelamento, carta de correção, inutilização |
 | `references/homologacao.md` | homologação (tpAmb=2) testing rules |
 | `references/leiaute.md` | infNFe field groups + XML formatting rules |
+| `references/codegen.md` | re-running the XSD → TypeScript generator |
 
 When implementing, read the specific reference for the layer you are building.
 Keep these files current with the SEFAZ update-watch routine (a new NT can
