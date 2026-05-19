@@ -9,6 +9,7 @@ import { filialCollection } from '@/lib/data/filialCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
 import { filialObjectFields } from '../_components/filialFields';
+import { FilialTabs } from '../_components/FilialTabs';
 
 export default function NovaFilialPage() {
   const router = useRouter();
@@ -23,18 +24,20 @@ export default function NovaFilialPage() {
         </Anchor>
       </Group>
 
-      <ObjectView
-        schema={filialSchema}
-        collection={filialCollection}
-        db={getFirebaseFirestore()}
-        currentUserUid={user?.uid ?? ''}
-        defaultValues={{ timestamp: new Date().toISOString() }}
-        excludedFields={['timestamp']}
-        fields={filialObjectFields}
-        saveLabel="Criar"
-        showSaveAndContinue={false}
-        onSaved={(id) => router.replace(`/configuracoes/filiais/${id}`)}
-      />
+      <FilialTabs>
+        <ObjectView
+          schema={filialSchema}
+          collection={filialCollection}
+          db={getFirebaseFirestore()}
+          currentUserUid={user?.uid ?? ''}
+          defaultValues={{ timestamp: new Date().toISOString() }}
+          excludedFields={['timestamp']}
+          fields={filialObjectFields}
+          saveLabel="Criar"
+          showSaveAndContinue={false}
+          onSaved={(id) => router.replace(`/configuracoes/filiais/${id}`)}
+        />
+      </FilialTabs>
     </Stack>
   );
 }

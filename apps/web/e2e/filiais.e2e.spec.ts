@@ -103,6 +103,14 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await expect(page.getByRole('heading', { name: 'Nova filial' })).toBeVisible();
   });
 
+  test('shows placeholder tabs on the new-filial page', async ({ page }) => {
+    await page.goto('/configuracoes/filiais/novo');
+    await page.getByRole('tab', { name: 'Configurações NFe' }).click();
+    await expect(page.getByText(/configuração de numeração/i)).toBeVisible();
+    await page.getByRole('tab', { name: 'Certificado Digital' }).click();
+    await expect(page.getByText(/certificado digital A1/i)).toBeVisible();
+  });
+
   test('creates a new filial with a sede address', async ({ page }) => {
     const nome = `${prefix}-novo`;
     await page.goto('/configuracoes/filiais/novo');

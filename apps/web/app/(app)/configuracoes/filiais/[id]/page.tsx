@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { Alert, Anchor, Group, Stack, Tabs, Title } from '@mantine/core';
+import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { deleteDoc } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
 import { filialSchema } from '@delfrance/schemas';
@@ -11,6 +11,7 @@ import { filialCollection } from '@/lib/data/filialCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { filialObjectFields } from '../_components/filialFields';
+import { FilialTabs } from '../_components/FilialTabs';
 
 export default function FilialPage() {
   const params = useParams<{ id: string }>();
@@ -33,45 +34,23 @@ export default function FilialPage() {
         </Anchor>
       </Group>
 
-      <Tabs defaultValue="dados" keepMounted={false}>
-        <Tabs.List>
-          <Tabs.Tab value="dados">Dados</Tabs.Tab>
-          <Tabs.Tab value="nfe">Configurações NFe</Tabs.Tab>
-          <Tabs.Tab value="certificado">Certificado Digital</Tabs.Tab>
-        </Tabs.List>
-
-        <Tabs.Panel value="dados" pt="md">
-          <ObjectView
-            schema={filialSchema}
-            collection={filialCollection}
-            db={db}
-            currentUserUid={user?.uid ?? ''}
-            recordId={params.id}
-            excludedFields={['timestamp']}
-            fields={filialObjectFields}
-            saveLabel="Salvar alterações"
-            canEdit={canWrite}
-            readOnly={!canWrite}
-            canDelete={canWrite}
-            onDelete={handleDelete}
-            onSaved={() => router.replace('/configuracoes/filiais')}
-          />
-        </Tabs.Panel>
-
-        <Tabs.Panel value="nfe" pt="md">
-          <Alert color="blue" title="Em breve">
-            A configuração de numeração e ambiente da NF-e desta filial será
-            disponibilizada na fase de NF-e.
-          </Alert>
-        </Tabs.Panel>
-
-        <Tabs.Panel value="certificado" pt="md">
-          <Alert color="blue" title="Em breve">
-            O envio do certificado digital A1 (.pfx/.pem) desta filial será
-            disponibilizado na fase de NF-e.
-          </Alert>
-        </Tabs.Panel>
-      </Tabs>
+      <FilialTabs>
+        <ObjectView
+          schema={filialSchema}
+          collection={filialCollection}
+          db={db}
+          currentUserUid={user?.uid ?? ''}
+          recordId={params.id}
+          excludedFields={['timestamp']}
+          fields={filialObjectFields}
+          saveLabel="Salvar alterações"
+          canEdit={canWrite}
+          readOnly={!canWrite}
+          canDelete={canWrite}
+          onDelete={handleDelete}
+          onSaved={() => router.replace('/configuracoes/filiais')}
+        />
+      </FilialTabs>
     </Stack>
   );
 }
