@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { Button, Modal, Stack, Title } from '@mantine/core';
 import { deleteDoc } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
-import { type Endereco, enderecoSchema } from '@delfrance/schemas';
+import { enderecoSchema } from '@delfrance/schemas';
 import { ObjectView, TableView } from '@delfrance/ui';
 import { enderecoCollection } from '@/lib/data/enderecoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -84,34 +84,6 @@ export function EnderecosSection({ clienteId }: { clienteId: string }) {
           canWrite
             ? () => <Button onClick={openCreate}>Novo endereço</Button>
             : undefined
-        }
-        selectable={canDelete}
-        actions={
-          canDelete
-            ? [
-                {
-                  id: 'delete',
-                  label: 'Excluir',
-                  color: 'red',
-                  requiresSelection: true,
-                  refreshOnComplete: true,
-                  confirm: {
-                    title: 'Excluir endereços',
-                    message:
-                      'Endereços excluídos não podem ser restaurados. Confirmar exclusão?',
-                  },
-                  run: async (rows) => {
-                    await Promise.all(
-                      rows.map((r: { id: string; data: Endereco }) =>
-                        deleteDoc(
-                          enderecoCollection.docRef(db, pathContext, r.id),
-                        ),
-                      ),
-                    );
-                  },
-                },
-              ]
-            : []
         }
       />
 
