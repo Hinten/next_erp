@@ -6,9 +6,17 @@
  * `server.ts` entry re-exports it; client code goes through the HTTP
  * `InvoiceProvider` instead.
  *
- * Phase A reads the cert from `NFE_CERT_BASE64` + `NFE_CERT_PASSWORD`
- * (single-tenant homologação). Per-filial encrypted upload is a Phase D
- * follow-up.
+ * Phase A reads the cert via one of two env vars (whichever is set —
+ * `NFE_CERT_PATH` wins if both are):
+ *
+ *   - `NFE_CERT_PATH`   — filesystem path to a `.pfx` / `.p12` file.
+ *                         Convenient for local dev.
+ *   - `NFE_CERT_BASE64` — base-64-encoded PFX bytes. Convenient for CI
+ *                         secrets (GH Actions, Cloud Secret Manager).
+ *   - `NFE_CERT_PASSWORD` — passphrase. Required for both modes.
+ *
+ * `.pfx` and `.p12` are interchangeable file extensions for the same
+ * PKCS#12 format — the loader parses them identically.
  *
  * Output:
  *   - `privateKeyPem` — feeds `xml-crypto` for `infNFe` signing.
@@ -18,6 +26,8 @@
  * Ported from `.old/functions_node/nota.js` (loadCertificate) +
  * `.old/functions_python/.../upload_certificado.py`.
  */
+import { readFileSync } from 'node:fs';
+
 import forge from 'node-forge';
 
 export class NFeCertError extends Error {
@@ -45,32 +55,8 @@ export interface NFeCertificate {
   readonly password: string;
 }
 
-/**
- * Decode and parse an A1 PFX.
- *
- * @param pfxBase64  Base-64 of the .pfx/.p12 file.
- * @param password   Passphrase the certificate was exported with.
- */
-export function loadCertificateFromBase64(pfxBase64: string, password: string): NFeCertificate {
-  if (!pfxBase64 || pfxBase64.trim().length === 0) {
-    throw new NFeCertError('Certificate base-64 is empty');
-  }
-  if (password == null) {
-    // Empty-string passwords are *technically* legal PKCS#12, so allow `""`
-    // and reject only the genuinely missing case.
-    throw new NFeCertError('Certificate password is required');
-  }
-
-  let pfxBuffer: Buffer;
-  try {
-    pfxBuffer = Buffer.from(pfxBase64, 'base64');
-  } catch (err) {
-    if (err instanceof Error) {
-      throw new NFeCertError(`Failed to base-64-decode certificate: ${err.message}`);
-    }
-    throw err;
-  }
-
+/** Parse a raw PKCS#12 buffer into the typed `NFeCertificate` shape. */
+function parsePfxBuffer(pfxBuffer: Buffer, password: string): NFeCertificate {
   let p12: forge.pkcs12.Pkcs12Pfx;
   try {
     const der = forge.util.createBuffer(pfxBuffer.toString('binary'));
@@ -122,15 +108,86 @@ export function loadCertificateFromBase64(pfxBase64: string, password: string): 
 }
 
 /**
- * Convenience: read `NFE_CERT_BASE64` + `NFE_CERT_PASSWORD` from `process.env`.
- * Throws `NFeCertError` if either is missing.
+ * Decode and parse an A1 PFX from a base-64 string.
+ *
+ * @param pfxBase64  Base-64 of the .pfx/.p12 file.
+ * @param password   Passphrase the certificate was exported with.
+ */
+export function loadCertificateFromBase64(pfxBase64: string, password: string): NFeCertificate {
+  if (!pfxBase64 || pfxBase64.trim().length === 0) {
+    throw new NFeCertError('Certificate base-64 is empty');
+  }
+  if (password == null) {
+    // Empty-string passwords are *technically* legal PKCS#12, so allow `""`
+    // and reject only the genuinely missing case.
+    throw new NFeCertError('Certificate password is required');
+  }
+
+  let pfxBuffer: Buffer;
+  try {
+    pfxBuffer = Buffer.from(pfxBase64, 'base64');
+  } catch (err) {
+    if (err instanceof Error) {
+      throw new NFeCertError(`Failed to base-64-decode certificate: ${err.message}`);
+    }
+    throw err;
+  }
+  return parsePfxBuffer(pfxBuffer, password);
+}
+
+/**
+ * Read and parse an A1 PFX from a filesystem path.
+ *
+ * The file extension does not matter — `.pfx`, `.p12`, or anything else
+ * is accepted as long as the contents are PKCS#12 DER bytes.
+ *
+ * @param path     Filesystem path to the .pfx / .p12 file.
+ * @param password Passphrase the certificate was exported with.
+ */
+export function loadCertificateFromPath(path: string, password: string): NFeCertificate {
+  if (!path || path.trim().length === 0) {
+    throw new NFeCertError('Certificate path is empty');
+  }
+  if (password == null) {
+    throw new NFeCertError('Certificate password is required');
+  }
+  let pfxBuffer: Buffer;
+  try {
+    pfxBuffer = readFileSync(path);
+  } catch (err) {
+    if (err instanceof Error) {
+      throw new NFeCertError(`Failed to read certificate file at '${path}': ${err.message}`);
+    }
+    throw err;
+  }
+  return parsePfxBuffer(pfxBuffer, password);
+}
+
+/**
+ * Convenience: load the cert from `process.env`, picking the right source
+ * automatically.
+ *
+ * Lookup order:
+ *   1. `NFE_CERT_PATH`   — if set, load from disk (local dev path).
+ *   2. `NFE_CERT_BASE64` — otherwise, decode the base-64 string (CI secret).
+ *   3. neither set       — throw.
+ *
+ * `NFE_CERT_PASSWORD` is required in both modes. If both `NFE_CERT_PATH`
+ * and `NFE_CERT_BASE64` are set, **path wins** — the more explicit signal
+ * (developer overriding a checked-in CI value, typically).
  */
 export function loadCertificateFromEnv(env: NodeJS.ProcessEnv = process.env): NFeCertificate {
-  const base64 = env.NFE_CERT_BASE64;
   const password = env.NFE_CERT_PASSWORD;
-  if (!base64) throw new NFeCertError('NFE_CERT_BASE64 is not set');
   if (password == null) throw new NFeCertError('NFE_CERT_PASSWORD is not set');
-  return loadCertificateFromBase64(base64, password);
+
+  const path = env.NFE_CERT_PATH;
+  const base64 = env.NFE_CERT_BASE64;
+
+  if (path) return loadCertificateFromPath(path, password);
+  if (base64) return loadCertificateFromBase64(base64, password);
+  throw new NFeCertError(
+    'Certificate source not set: define NFE_CERT_PATH (filesystem path) or NFE_CERT_BASE64 (base-64 PFX).',
+  );
 }
 
 /**

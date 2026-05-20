@@ -1,4 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import forge from 'node-forge';
 import {
   assertCertNotExpired,
@@ -6,6 +10,7 @@ import {
   NFeCertError,
   loadCertificateFromBase64,
   loadCertificateFromEnv,
+  loadCertificateFromPath,
   type NFeCertificate,
 } from './index';
 
@@ -63,20 +68,103 @@ describe('loadCertificateFromBase64', () => {
   });
 });
 
-describe('loadCertificateFromEnv', () => {
-  it('reads NFE_CERT_BASE64 / NFE_CERT_PASSWORD', () => {
-    const pfx = buildPfxFixture({ password: 'env-pwd' });
-    const env = { NFE_CERT_BASE64: pfx, NFE_CERT_PASSWORD: 'env-pwd' };
-    const result = loadCertificateFromEnv(env);
+describe('loadCertificateFromPath', () => {
+  let tempDir: string;
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'nfe-cert-'));
+  });
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('reads a .pfx file from disk and parses it', () => {
+    const pfxBase64 = buildPfxFixture({ password: 'pwd', commonName: 'PATH:12345678000199' });
+    const pfxPath = join(tempDir, 'cert.pfx');
+    writeFileSync(pfxPath, Buffer.from(pfxBase64, 'base64'));
+    const result = loadCertificateFromPath(pfxPath, 'pwd');
+    expect(result.subjectCommonName).toBe('PATH:12345678000199');
     expect(result.privateKeyPem).toMatch(/PRIVATE KEY/);
   });
 
-  it('throws when NFE_CERT_BASE64 missing', () => {
+  it('treats .p12 the same as .pfx (just a file extension)', () => {
+    const pfxBase64 = buildPfxFixture({ password: 'pwd' });
+    const pfxPath = join(tempDir, 'cert.p12');
+    writeFileSync(pfxPath, Buffer.from(pfxBase64, 'base64'));
+    const result = loadCertificateFromPath(pfxPath, 'pwd');
+    expect(result.privateKeyPem).toMatch(/PRIVATE KEY/);
+  });
+
+  it('throws NFeCertError on missing file', () => {
+    expect(() =>
+      loadCertificateFromPath(join(tempDir, 'does-not-exist.pfx'), 'pwd'),
+    ).toThrow(NFeCertError);
+  });
+
+  it('throws NFeCertError on wrong password', () => {
+    const pfxBase64 = buildPfxFixture({ password: 'right' });
+    const pfxPath = join(tempDir, 'cert.pfx');
+    writeFileSync(pfxPath, Buffer.from(pfxBase64, 'base64'));
+    expect(() => loadCertificateFromPath(pfxPath, 'wrong')).toThrow(NFeCertError);
+  });
+
+  it('throws NFeCertError on empty path', () => {
+    expect(() => loadCertificateFromPath('', 'pwd')).toThrow(NFeCertError);
+  });
+});
+
+describe('loadCertificateFromEnv', () => {
+  let tempDir: string;
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'nfe-cert-env-'));
+  });
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('reads NFE_CERT_BASE64 + NFE_CERT_PASSWORD (CI / secret path)', () => {
+    const pfx = buildPfxFixture({ password: 'env-pwd' });
+    const result = loadCertificateFromEnv({
+      NFE_CERT_BASE64: pfx,
+      NFE_CERT_PASSWORD: 'env-pwd',
+    });
+    expect(result.privateKeyPem).toMatch(/PRIVATE KEY/);
+  });
+
+  it('reads NFE_CERT_PATH + NFE_CERT_PASSWORD (local dev path)', () => {
+    const pfxBase64 = buildPfxFixture({ password: 'env-pwd' });
+    const pfxPath = join(tempDir, 'cert.pfx');
+    writeFileSync(pfxPath, Buffer.from(pfxBase64, 'base64'));
+    const result = loadCertificateFromEnv({
+      NFE_CERT_PATH: pfxPath,
+      NFE_CERT_PASSWORD: 'env-pwd',
+    });
+    expect(result.privateKeyPem).toMatch(/PRIVATE KEY/);
+  });
+
+  it('NFE_CERT_PATH wins when both PATH and BASE64 are set', () => {
+    // PATH points at a cert with CN "FROM_PATH". BASE64 carries a cert with
+    // CN "FROM_BASE64". If precedence is right, the result CN says FROM_PATH.
+    const pathPfx = buildPfxFixture({ password: 'pwd', commonName: 'FROM_PATH' });
+    const pathFile = join(tempDir, 'path.pfx');
+    writeFileSync(pathFile, Buffer.from(pathPfx, 'base64'));
+
+    const base64Pfx = buildPfxFixture({ password: 'pwd', commonName: 'FROM_BASE64' });
+
+    const result = loadCertificateFromEnv({
+      NFE_CERT_PATH: pathFile,
+      NFE_CERT_BASE64: base64Pfx,
+      NFE_CERT_PASSWORD: 'pwd',
+    });
+    expect(result.subjectCommonName).toBe('FROM_PATH');
+  });
+
+  it('throws when neither NFE_CERT_PATH nor NFE_CERT_BASE64 is set', () => {
     expect(() => loadCertificateFromEnv({ NFE_CERT_PASSWORD: 'x' })).toThrow(NFeCertError);
   });
 
-  it('throws when NFE_CERT_PASSWORD missing', () => {
+  it('throws when NFE_CERT_PASSWORD is missing', () => {
     expect(() => loadCertificateFromEnv({ NFE_CERT_BASE64: 'x' })).toThrow(NFeCertError);
+    expect(() => loadCertificateFromEnv({ NFE_CERT_PATH: '/x' })).toThrow(NFeCertError);
   });
 });
 

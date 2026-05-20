@@ -2,6 +2,37 @@
 
 NF-e (Nota Fiscal Eletrônica, model 55, layout 4.00) for SEFAZ.
 
+## Certificate (A1 PFX) — env vars
+
+Pick one of two ways to provide the A1 PFX (`.pfx` and `.p12` are the
+same PKCS#12 format — both are accepted):
+
+| Env var | When to use | Value |
+|---|---|---|
+| `NFE_CERT_PATH` | Local dev — most convenient | Filesystem path to the PFX file |
+| `NFE_CERT_BASE64` | CI / secret managers | Base-64 of the PFX bytes |
+| `NFE_CERT_PASSWORD` | **Always required** | Passphrase the PFX was exported with |
+
+If both `NFE_CERT_PATH` and `NFE_CERT_BASE64` are set, **path wins** —
+typically a developer overriding a checked-in CI value.
+
+```powershell
+# Local dev
+$env:NFE_CERT_PATH = "C:\path\to\cert.pfx"
+$env:NFE_CERT_PASSWORD = "your-pfx-password"
+
+# CI / secrets
+$env:NFE_CERT_BASE64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\path\to\cert.pfx"))
+$env:NFE_CERT_PASSWORD = "your-pfx-password"
+```
+
+Vitest auto-loads `.env.local` from the repo root, so either set sticks
+between test runs without re-exporting in the shell.
+
+`loadCertificateFromEnv()` picks the right source. To be explicit (e.g.
+in a route handler) reach for `loadCertificateFromPath(path, pwd)` or
+`loadCertificateFromBase64(b64, pwd)` directly.
+
 ## How to use — the typed operations layer
 
 **Default to the typed helpers in `src/operations/`.** They are the
