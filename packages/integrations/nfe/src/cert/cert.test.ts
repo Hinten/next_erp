@@ -1,21 +1,29 @@
 import { describe, it, expect } from 'vitest';
 import forge from 'node-forge';
 import {
+  assertCertNotExpired,
+  isCertExpired,
   NFeCertError,
   loadCertificateFromBase64,
   loadCertificateFromEnv,
+  type NFeCertificate,
 } from './index';
 
 /** Build a self-signed PFX in-memory so tests don't ship a real certificate. */
-function buildPfxFixture(opts: { commonName?: string; password: string }): string {
+function buildPfxFixture(opts: {
+  commonName?: string;
+  password: string;
+  /** Override `notAfter` for expiry tests. Default: +365 days. */
+  notAfter?: Date;
+}): string {
   // 1024-bit keeps the fixture build fast — fine for unit tests, **never** in
   // production NF-e signing where ICP-Brasil mandates 2048-bit minimum.
   const keys = forge.pki.rsa.generateKeyPair(1024);
   const cert = forge.pki.createCertificate();
   cert.publicKey = keys.publicKey;
   cert.serialNumber = '01';
-  cert.validity.notBefore = new Date();
-  cert.validity.notAfter = new Date(Date.now() + 365 * 24 * 3600 * 1000);
+  cert.validity.notBefore = new Date(Date.now() - 86_400_000);
+  cert.validity.notAfter = opts.notAfter ?? new Date(Date.now() + 365 * 24 * 3600 * 1000);
   const attrs = [{ name: 'commonName', value: opts.commonName ?? 'TEST CERT:12345678000199' }];
   cert.setSubject(attrs);
   cert.setIssuer(attrs);
@@ -69,5 +77,63 @@ describe('loadCertificateFromEnv', () => {
 
   it('throws when NFE_CERT_PASSWORD missing', () => {
     expect(() => loadCertificateFromEnv({ NFE_CERT_BASE64: 'x' })).toThrow(NFeCertError);
+  });
+});
+
+describe('isCertExpired / assertCertNotExpired', () => {
+  function fakeCert(notAfter: Date): NFeCertificate {
+    return {
+      privateKeyPem: '',
+      certificatePem: '',
+      certificateDerBase64: '',
+      subjectCommonName: 'TEST:12345678000199',
+      notAfter,
+      pfxBuffer: Buffer.from(''),
+      password: '',
+    };
+  }
+
+  const NOW = new Date('2026-05-20T12:00:00Z');
+
+  it('reports a future notAfter as not expired', () => {
+    const cert = fakeCert(new Date('2027-05-20T12:00:00Z'));
+    expect(isCertExpired(cert, NOW)).toBe(false);
+    expect(() => assertCertNotExpired(cert, NOW)).not.toThrow();
+  });
+
+  it('reports a past notAfter as expired', () => {
+    const cert = fakeCert(new Date('2026-05-19T12:00:00Z'));
+    expect(isCertExpired(cert, NOW)).toBe(true);
+    expect(() => assertCertNotExpired(cert, NOW)).toThrow(NFeCertError);
+  });
+
+  it('treats exactly-at-expiry as expired (defense-in-depth)', () => {
+    const cert = fakeCert(NOW);
+    expect(isCertExpired(cert, NOW)).toBe(true);
+    expect(() => assertCertNotExpired(cert, NOW)).toThrow(NFeCertError);
+  });
+
+  it('NFeCertError on expiry carries the notAfter and the subject CN', () => {
+    const cert = fakeCert(new Date('2025-01-01T00:00:00Z'));
+    try {
+      assertCertNotExpired(cert, NOW);
+      throw new Error('expected assertCertNotExpired to throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(NFeCertError);
+      const msg = (err as Error).message;
+      expect(msg).toContain('2025-01-01');
+      expect(msg).toContain('TEST:12345678000199');
+      expect(msg).toContain('NFE_CERT_BASE64');
+    }
+  });
+
+  it('end-to-end: loadCertificateFromBase64 → assertCertNotExpired rejects an expired PFX', () => {
+    const expired = buildPfxFixture({
+      password: 'x',
+      notAfter: new Date(Date.now() - 86_400_000),
+    });
+    const cert = loadCertificateFromBase64(expired, 'x');
+    expect(isCertExpired(cert)).toBe(true);
+    expect(() => assertCertNotExpired(cert)).toThrow(NFeCertError);
   });
 });

@@ -132,3 +132,29 @@ export function loadCertificateFromEnv(env: NodeJS.ProcessEnv = process.env): NF
   if (password == null) throw new NFeCertError('NFE_CERT_PASSWORD is not set');
   return loadCertificateFromBase64(base64, password);
 }
+
+/**
+ * `true` when the cert's `notAfter` has already passed.
+ *
+ * Loading an expired cert is **not** automatically a failure — a caller may
+ * be diagnosing an out-of-band rotation. But every code path that touches
+ * SEFAZ must check first, because SEFAZ will reject the mTLS handshake on
+ * an expired cert (and counts that as suspicious traffic).
+ */
+export function isCertExpired(cert: NFeCertificate, now: Date = new Date()): boolean {
+  return cert.notAfter.getTime() <= now.getTime();
+}
+
+/**
+ * Throw if the cert has expired. Use this at every boundary that would
+ * otherwise reach SEFAZ — the homologação smoke, every SOAP call site in
+ * the `apps/nfe` orchestrator, and any one-off scripts.
+ */
+export function assertCertNotExpired(cert: NFeCertificate, now: Date = new Date()): void {
+  if (!isCertExpired(cert, now)) return;
+  const expiredOn = cert.notAfter.toISOString();
+  throw new NFeCertError(
+    `Certificate expired on ${expiredOn} (subject CN: ${cert.subjectCommonName || '(none)'}). ` +
+      'Renew the A1 PFX and update NFE_CERT_BASE64 / NFE_CERT_PASSWORD.',
+  );
+}

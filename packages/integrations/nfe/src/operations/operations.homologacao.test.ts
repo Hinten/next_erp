@@ -24,7 +24,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { loadCertificateFromEnv } from '../cert';
+import { assertCertNotExpired, loadCertificateFromEnv } from '../cert';
 import { getEndpoints } from '../endpoints';
 import { createSefazAgent, type SefazCall } from '../soap';
 import { consultarStatusServico } from './index';
@@ -35,8 +35,18 @@ const hasCert =
 const describeOrSkip = hasCert ? describe : describe.skip;
 
 describeOrSkip('SEFAZ-SP homologação smoke (typed)', () => {
+  it('loaded certificate is not expired', () => {
+    const cert = loadCertificateFromEnv();
+    // eslint-disable-next-line no-console
+    console.log(
+      `[cert] subject="${cert.subjectCommonName}" notAfter=${cert.notAfter.toISOString()}`,
+    );
+    expect(() => assertCertNotExpired(cert)).not.toThrow();
+  });
+
   it('consultarStatusServico returns a typed TRetConsStatServ with cStat=107', async () => {
     const cert = loadCertificateFromEnv();
+    assertCertNotExpired(cert); // fail fast before any SEFAZ traffic
     const agent = createSefazAgent(cert);
     const url = getEndpoints('SP', 'homologacao').NfeStatusServico;
     const call: SefazCall = { url, cert, agent, tpAmb: '2', timeoutMs: 30_000 };
