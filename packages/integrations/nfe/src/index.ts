@@ -132,6 +132,13 @@ export {
   type CUFCode,
 } from './operations';
 
+// Generated Zod schemas (one per SEFAZ complexType, plus ROOTS_SCHEMAS).
+// Re-exported as a namespace so callers can pull individual schemas by name
+// without polluting the top-level surface with 160+ symbols. Use as:
+//   import { NFeSchemas } from '@delfrance/integrations-nfe';
+//   const validated = NFeSchemas.TNFe_infNFe_det_impostoSchema.parse(input);
+export * as NFeSchemas from './types/nfe-schema-zod';
+
 // Legacy InvoiceProvider stub — kept until apps/nfe is deployed and the
 // real HTTP-backed provider replaces it (A9 second half).
 export interface NFeConfig {
