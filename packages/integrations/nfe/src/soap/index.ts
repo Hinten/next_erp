@@ -52,17 +52,51 @@ export class NFeTransportError extends Error {
   }
 }
 
+/** Options for `createSefazAgent`. */
+export interface SefazAgentOptions {
+  /**
+   * Extra root / intermediate CAs to trust on top of Node's default
+   * Mozilla bundle. SEFAZ endpoints chain through Brazilian CAs (the
+   * ICP-Brasil hierarchy: AC Raiz → SERPRO / SAFEWEB / VALID → leaf)
+   * which aren't all in Node's defaults; without them the TLS handshake
+   * fails with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`.
+   *
+   * For Windows local dev, `NODE_OPTIONS=--use-system-ca` (Node 22+)
+   * uses the OS trust store and avoids needing this option. For Linux
+   * CI containers, vendor the chain and pass it here.
+   */
+  readonly ca?: string | Buffer | ReadonlyArray<string | Buffer>;
+}
+
 /**
- * Build the mTLS `https.Agent` for SEFAZ. ICP-Brasil endpoints mandate
- * TLS 1.2; some refuse TLS 1.3. Reuse one agent per certificate to enable
- * keep-alive between requests.
+ * Build the mTLS `https.Agent` for SEFAZ.
+ *
+ * Uses the PEM-encoded key + cert (already extracted from the PFX by
+ * `node-forge` during `loadCertificate*`) rather than feeding the raw
+ * `pfxBuffer` to OpenSSL. **Why**: Node 17+ ships with OpenSSL 3.0, which
+ * deprecated the legacy PKCS#12 algorithms (`RC2-40-CBC` for cert bags,
+ * `3DES-CBC` for the MAC). ICP-Brasil A1 certs exported from the Receita
+ * Federal portal still use those legacy ciphers, so passing the PFX
+ * directly trips `ERR_CRYPTO_UNSUPPORTED_OPERATION: Unsupported PKCS12
+ * PFX data`. The PEM path bypasses OpenSSL's PFX parser entirely —
+ * node-forge already did the parsing in pure JS.
+ *
+ * ICP-Brasil endpoints mandate TLS 1.2; some refuse TLS 1.3. Reuse one
+ * agent per certificate to enable keep-alive between requests.
  */
-export function createSefazAgent(cert: NFeCertificate): https.Agent {
+export function createSefazAgent(
+  cert: NFeCertificate,
+  options: SefazAgentOptions = {},
+): https.Agent {
+  // Spread the optional `ca` so we never pass `{ ca: undefined }` — which
+  // some Node versions treat as "no CA trusted" rather than "default store".
+  const caOpt = options.ca === undefined ? {} : { ca: options.ca as string | Buffer | string[] };
   return new https.Agent({
-    pfx: cert.pfxBuffer,
-    passphrase: cert.password,
+    key: cert.privateKeyPem,
+    cert: cert.certificatePem,
     keepAlive: true,
     minVersion: 'TLSv1.2',
+    ...caOpt,
   });
 }
 

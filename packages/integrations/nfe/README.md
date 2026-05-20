@@ -33,6 +33,29 @@ between test runs without re-exporting in the shell.
 in a route handler) reach for `loadCertificateFromPath(path, pwd)` or
 `loadCertificateFromBase64(b64, pwd)` directly.
 
+### Two well-known gotchas with Brazilian A1 PFX files
+
+1. **`ERR_CRYPTO_UNSUPPORTED_OPERATION: Unsupported PKCS12 PFX data`** —
+   Node 17+ (OpenSSL 3.0) refuses to parse PFX files using legacy
+   PKCS#12 ciphers (RC2-40-CBC for cert bags, 3DES-CBC for the MAC),
+   which is exactly what the Receita Federal exports. **Already
+   handled**: `createSefazAgent` feeds Node the PEM key + cert (decoded
+   by node-forge in pure JS) instead of the raw PFX, sidestepping
+   OpenSSL's PFX parser. No action needed.
+
+2. **`UNABLE_TO_VERIFY_LEAF_SIGNATURE` on the SOAP call** — SEFAZ
+   endpoints chain through Brazilian CAs (ICP-Brasil → SERPRO /
+   SAFEWEB / VALID → leaf), not all of which are in Node's bundled
+   Mozilla root store. Two ways to fix:
+
+   - **Windows / macOS dev**: run with the Node 22+ flag
+     `$env:NODE_OPTIONS = "--use-system-ca"` — Node will trust the
+     OS root store, which already has the ICP-Brasil chain.
+   - **Linux CI containers**: vendor the chain (PEM bundle) and point
+     at it via `NFE_TLS_CA_PATH`. The homologação smoke test reads
+     this env var; `createSefazAgent(cert, { ca })` also accepts CAs
+     programmatically for `apps/nfe` route handlers.
+
 ## How to use — the typed operations layer
 
 **Default to the typed helpers in `src/operations/`.** They are the

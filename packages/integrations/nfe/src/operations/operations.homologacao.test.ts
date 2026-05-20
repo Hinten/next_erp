@@ -22,6 +22,8 @@
  * Replaces the older `soap.homologacao.test.ts` — one smoke test, one
  * pipeline, asserted on the typed return.
  */
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import { assertCertNotExpired, loadCertificateFromEnv } from '../cert';
@@ -48,7 +50,14 @@ describeOrSkip('SEFAZ-SP homologação smoke (typed)', () => {
   it('consultarStatusServico returns a typed TRetConsStatServ with cStat=107', async () => {
     const cert = loadCertificateFromEnv();
     assertCertNotExpired(cert); // fail fast before any SEFAZ traffic
-    const agent = createSefazAgent(cert);
+    // SEFAZ chains through Brazilian CAs that aren't all in Node's bundled
+    // Mozilla list. Two ways to make the handshake work:
+    //   - export NFE_TLS_CA_PATH=/path/to/icp-brasil-chain.pem (CI / Linux)
+    //   - run with NODE_OPTIONS=--use-system-ca (Node 22+, Windows / macOS)
+    const ca = process.env.NFE_TLS_CA_PATH
+      ? readFileSync(process.env.NFE_TLS_CA_PATH, 'utf8')
+      : undefined;
+    const agent = createSefazAgent(cert, { ca });
     const url = getEndpoints('SP', 'homologacao').NfeStatusServico;
     const call: SefazCall = { url, cert, agent, tpAmb: '2', timeoutMs: 30_000 };
 
