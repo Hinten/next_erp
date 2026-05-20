@@ -22,7 +22,9 @@
  * Replaces the older `soap.homologacao.test.ts` — one smoke test, one
  * pipeline, asserted on the typed return.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
@@ -30,6 +32,9 @@ import { assertCertNotExpired, loadCertificateFromEnv } from '../cert';
 import { getEndpoints } from '../endpoints';
 import { createSefazAgent, type SefazCall } from '../soap';
 import { consultarStatusServico } from './index';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const VENDORED_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-sp-homologacao.pem');
 
 const hasCert =
   (Boolean(process.env.NFE_CERT_PATH) || Boolean(process.env.NFE_CERT_BASE64)) &&
@@ -51,12 +56,18 @@ describeOrSkip('SEFAZ-SP homologação smoke (typed)', () => {
     const cert = loadCertificateFromEnv();
     assertCertNotExpired(cert); // fail fast before any SEFAZ traffic
     // SEFAZ chains through Brazilian CAs that aren't all in Node's bundled
-    // Mozilla list. Two ways to make the handshake work:
-    //   - export NFE_TLS_CA_PATH=/path/to/icp-brasil-chain.pem (CI / Linux)
-    //   - run with NODE_OPTIONS=--use-system-ca (Node 22+, Windows / macOS)
-    const ca = process.env.NFE_TLS_CA_PATH
-      ? readFileSync(process.env.NFE_TLS_CA_PATH, 'utf8')
-      : undefined;
+    // Mozilla list. Resolution order:
+    //   1. NFE_TLS_CA_PATH env var (explicit override)
+    //   2. Vendored chain at packages/integrations/nfe/ca/sefaz-sp-homologacao.pem
+    //      (run `pnpm fetch:sefaz-ca` once to populate it)
+    //   3. None — relies on Node's default + NODE_OPTIONS=--use-system-ca
+    const caPath = process.env.NFE_TLS_CA_PATH
+      ?? (existsSync(VENDORED_CHAIN) ? VENDORED_CHAIN : undefined);
+    const ca = caPath ? readFileSync(caPath, 'utf8') : undefined;
+    if (caPath) {
+      // eslint-disable-next-line no-console
+      console.log(`[tls] using CA bundle: ${caPath}`);
+    }
     const agent = createSefazAgent(cert, { ca });
     const url = getEndpoints('SP', 'homologacao').NfeStatusServico;
     const call: SefazCall = { url, cert, agent, tpAmb: '2', timeoutMs: 30_000 };

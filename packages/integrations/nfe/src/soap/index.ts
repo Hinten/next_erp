@@ -132,6 +132,29 @@ const RE_RESULT_MSG = /<nfeResultMsg\b[^>]*>([\s\S]*?)<\/nfeResultMsg>/i;
 const RE_SOAP_FAULT = /<(?:soap12?:)?Fault\b[\s\S]*?<\/(?:soap12?:)?Fault>/i;
 
 /**
+ * Project an axios / Node error onto a safe shape for use as
+ * `NFeTransportError.cause`. The raw error embeds the full `httpsAgent`
+ * options — which includes our PEM-encoded **private key** and the
+ * cert. Without this sanitisation, a single failed POST dumps both into
+ * stack traces, logs, and Vitest output.
+ */
+function sanitizeTransportError(err: unknown): {
+  message?: string;
+  code?: string;
+  status?: number;
+} {
+  if (typeof err !== 'object' || err === null) {
+    return { message: err instanceof Error ? err.message : String(err) };
+  }
+  const e = err as { message?: string; code?: string; response?: { status?: number } };
+  return {
+    message: e.message,
+    code: e.code,
+    status: e.response?.status,
+  };
+}
+
+/**
  * POST a SOAP envelope and return the unwrapped `<nfeResultMsg>` payload.
  *
  * Why a regex instead of an XML parse? The result body is itself NF-e XML
@@ -161,12 +184,14 @@ async function postSoap(input: PostInput): Promise<PostResult> {
                 : err instanceof Error
                   ? err.message
                   : String(err);
+            // Pass a sanitized cause so the agent's PEM key + cert never
+            // leak into stack traces / Vitest output.
             reject(
               new NFeTransportError(
                 `SOAP request to ${input.url} failed`,
                 statusFromError,
                 bodyFromError,
-                err,
+                sanitizeTransportError(err),
               ),
             );
             return;

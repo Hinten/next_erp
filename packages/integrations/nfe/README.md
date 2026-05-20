@@ -46,15 +46,32 @@ in a route handler) reach for `loadCertificateFromPath(path, pwd)` or
 2. **`UNABLE_TO_VERIFY_LEAF_SIGNATURE` on the SOAP call** — SEFAZ
    endpoints chain through Brazilian CAs (ICP-Brasil → SERPRO /
    SAFEWEB / VALID → leaf), not all of which are in Node's bundled
-   Mozilla root store. Two ways to fix:
+   Mozilla root store. Three resolution paths, in priority order:
 
-   - **Windows / macOS dev**: run with the Node 22+ flag
-     `$env:NODE_OPTIONS = "--use-system-ca"` — Node will trust the
-     OS root store, which already has the ICP-Brasil chain.
-   - **Linux CI containers**: vendor the chain (PEM bundle) and point
-     at it via `NFE_TLS_CA_PATH`. The homologação smoke test reads
-     this env var; `createSefazAgent(cert, { ca })` also accepts CAs
-     programmatically for `apps/nfe` route handlers.
+   1. **Vendor the chain (recommended)** — run the helper script once:
+
+      ```powershell
+      pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca
+      ```
+
+      The script connects to SEFAZ-SP homologação (TOFU — trust on first
+      use), captures the chain it serves, and writes a PEM bundle to
+      `packages/integrations/nfe/ca/sefaz-sp-homologacao.pem`. The
+      homologação smoke test auto-loads that file. The `ca/` folder is
+      gitignored — each contributor / CI environment captures its own,
+      since hand-verification against ICP-Brasil's published roots is
+      the right step before trusting in **produção**.
+
+   2. **Explicit env-var override** — set `NFE_TLS_CA_PATH=/abs/path/to/chain.pem`
+      to point at any PEM bundle you already trust.
+
+   3. **OS trust store (Node 22+)** — set `NODE_OPTIONS=--use-system-ca`.
+      On Windows the OS root store usually has the ICP-Brasil chain; on
+      Linux containers it typically doesn't.
+
+   For `apps/nfe` route handlers in production, `createSefazAgent(cert,
+   { ca })` accepts the PEM bundle programmatically — load the chain
+   once at server start and reuse the agent.
 
 ## How to use — the typed operations layer
 

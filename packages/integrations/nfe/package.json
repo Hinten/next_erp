@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "gen:nfe-types": "node src/codegen/generate.mjs",
+    "fetch:sefaz-ca": "node scripts/fetch-sefaz-chain.mjs",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
