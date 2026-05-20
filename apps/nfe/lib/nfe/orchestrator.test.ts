@@ -1,11 +1,13 @@
 /**
- * Orchestrator tests — vi.mock the Firestore Admin SDK + the library's
- * SOAP/generator/signer surface so the flow runs end-to-end without
- * network or filesystem.
+ * Orchestrator tests — vi.mock the library's SOAP/generator/signer
+ * surface and back the Admin SDK with an in-memory Firestore so the
+ * flow runs end-to-end without network or filesystem.
  *
- * The critical assertion is **persist-before-send**: the doc-write spy
- * MUST be called before the `autorizarLote` spy. We assert that by
- * recording invocation order onto a shared list.
+ * Two critical assertions for this PR:
+ *   - **persist-before-send**: the doc-write spy MUST be called before
+ *     the autorizarLote spy.
+ *   - **no magic-string fallbacks**: every missing fiscal field surfaces
+ *     as a typed error naming the exact item.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,7 +15,9 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/integrations-nfe')>();
   return {
     ...actual,
-    // The four library calls the orchestrator makes against external IO.
+    // The IO-bound library calls the orchestrator makes. nextNumeracao,
+    // nextIdLote, and buildImpostoXml stay real — those are the
+    // numeração + tribute paths we want exercised end-to-end here.
     generateNFe: vi.fn(),
     signNFe: vi.fn(),
     autorizarLote: vi.fn(),
@@ -22,17 +26,18 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
 });
 
 import {
-  applyOutcome,
   autorizarLote,
   consultarSituacaoNFe,
   generateNFe,
   signNFe,
 } from '@delfrance/integrations-nfe';
-import { ESTADO_NFE } from '@delfrance/schemas';
+import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
 import {
   emitirPedido,
   NFeBlockedError,
+  NFeMissingImpostoError,
+  NFeOrchestratorError,
   NFePedidoNotFoundError,
 } from './orchestrator';
 import type { NFeRuntime } from './runtime';
@@ -71,27 +76,65 @@ function fakeRuntime(): NFeRuntime {
   };
 }
 
-/** Mock Firestore. Tracks call order on `events` so we can assert
- *  the persist-before-send invariant. */
-function fakeFirestore(opts: {
+/** Build a valid Imposto blob (Simples Nacional CSOSN 102) for an item. */
+function impostoCsosn102(): Record<string, unknown> {
+  return {
+    origem: '0',
+    cfop: '5102',
+    cfopInterestadual: '6102',
+    NCM: '87120000',
+    unidade: 'UN',
+    configuracaoICMS: {
+      crt: '1',
+      csosn: '102',
+    },
+  };
+}
+
+const SEED_NFE_CONFIG: NFeConfig = {
+  numeracao_atual: 0,
+  serie: 1,
+  idLote: 0,
+  ambiente: '2',
+};
+
+interface FakeFirestoreOptions {
   events: string[];
   pedido?: Record<string, unknown> | null;
-  filial?: Record<string, unknown>;
-  cliente?: Record<string, unknown>;
-  endereco?: Record<string, unknown>;
-  operacao?: Record<string, unknown>;
-}) {
-  const docs: Record<string, Record<string, unknown> | null> = {
-    'pedidos/PED-1': opts.pedido !== undefined ? opts.pedido : {
-      ehSaida: true,
-      estado: 'pago',
-      itens: { 'P-1': [{ sku: 'SKU-1', nomeDeVenda: 'Bicicleta', precoDeVenda: 1500, quantidade: 1, descontoUnitario: 0 }] },
-      filialPedidoOuterRef: 'filiais/F-1',
-      clientePedidoOuterRef: 'clientes/C-1',
-      operacaoPedidoOuterRef: 'operacao/O-1',
-      enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
+  nfeConfig?: NFeConfig | null;
+}
+
+/**
+ * Mock Firestore — in-memory map keyed by slash-delimited path. Both the
+ * collection().doc() API (used by the orchestrator) and the doc(path)
+ * API (used by the firestore-adapter) work. Writes record onto
+ * `opts.events` so persist-before-send can be asserted.
+ */
+function fakeFirestore(opts: FakeFirestoreOptions) {
+  const defaultPedido: Record<string, unknown> = {
+    ehSaida: true,
+    estado: 'pago',
+    itens: {
+      'P-1': [
+        {
+          sku: 'SKU-1',
+          nomeDeVenda: 'Bicicleta',
+          precoDeVenda: 1500,
+          quantidade: 1,
+          descontoUnitario: 0,
+          imposto: impostoCsosn102(),
+        },
+      ],
     },
-    'filiais/F-1': opts.filial ?? {
+    filialPedidoOuterRef: 'filiais/F-1',
+    clientePedidoOuterRef: 'clientes/C-1',
+    operacaoPedidoOuterRef: 'operacao/O-1',
+    enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
+  };
+
+  const docs: Record<string, Record<string, unknown> | null> = {
+    'pedidos/PED-1': opts.pedido !== undefined ? opts.pedido : defaultPedido,
+    'filiais/F-1': {
       razaoSocial: 'ACME LTDA',
       cnpj: '14200166000187',
       ie: '111111111111',
@@ -110,7 +153,11 @@ function fakeFirestore(opts: {
         complemento: null,
       },
     },
-    'clientes/C-1': opts.cliente ?? {
+    'filiais/F-1/nfeconfig/default':
+      opts.nfeConfig !== undefined
+        ? (opts.nfeConfig as Record<string, unknown> | null)
+        : (SEED_NFE_CONFIG as unknown as Record<string, unknown>),
+    'clientes/C-1': {
       tipo: '1',
       nome: 'Distribuidora X LTDA',
       cpf_cnpj: '99999999000191',
@@ -120,7 +167,7 @@ function fakeFirestore(opts: {
       isUF: null,
       email: null,
     },
-    'clientes/C-1/enderecos/E-1': opts.endereco ?? {
+    'clientes/C-1/enderecos/E-1': {
       logradouro: 'Av B',
       numero: '1',
       bairro: 'Centro',
@@ -130,7 +177,7 @@ function fakeFirestore(opts: {
       estado: 'SP',
       complemento: null,
     },
-    'operacao/O-1': opts.operacao ?? {
+    'operacao/O-1': {
       nome: 'Venda',
       naturezaDaOperacao: 'Venda de mercadoria',
       tipo: 1,
@@ -153,7 +200,6 @@ function fakeFirestore(opts: {
       infCpl: null,
     },
   };
-  const counters: Record<string, { next: number }> = {};
   const writes: { path: string; data: Record<string, unknown>; merge?: boolean }[] = [];
 
   function makeRef(path: string) {
@@ -186,28 +232,26 @@ function fakeFirestore(opts: {
       },
     };
   }
+
   return {
     fs: {
       collection: (name: string) => makeCollection(name),
       doc: (path: string) => makeRef(path),
-      runTransaction: async <T>(fn: (tx: { get: typeof getTx; set: typeof setTx }) => Promise<T>) => {
-        async function getTx(ref: ReturnType<typeof makeRef>) {
-          return ref.get();
-        }
-        function setTx(
-          ref: ReturnType<typeof makeRef>,
-          data: { next: number },
-          opt?: { merge?: boolean },
-        ) {
-          void opt;
-          counters[ref.path] = data;
-          docs[ref.path] = data as unknown as Record<string, unknown>;
-        }
-        return fn({ get: getTx, set: setTx });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      runTransaction: async <T>(fn: (tx: any) => Promise<T>) => {
+        const tx = {
+          get: (ref: ReturnType<typeof makeRef>) => ref.get(),
+          set: (ref: ReturnType<typeof makeRef>, data: Record<string, unknown>) => {
+            writes.push({ path: ref.path, data });
+            docs[ref.path] = data;
+            opts.events.push(`set:${ref.path}`);
+          },
+        };
+        return fn(tx);
       },
     } as never,
     writes,
-    counters,
+    docs,
   };
 }
 
@@ -262,7 +306,9 @@ beforeEach(() => {
     cDV: 8,
     nfeXml: `<NFe xmlns="${NFE_NS}"><infNFe Id="NFe${CHAVE}">…</infNFe></NFe>`,
   });
-  vi.mocked(signNFe).mockReturnValue(`<NFe xmlns="${NFE_NS}"><infNFe>…signed…</infNFe><Signature>…</Signature></NFe>`);
+  vi.mocked(signNFe).mockReturnValue(
+    `<NFe xmlns="${NFE_NS}"><infNFe>…signed…</infNFe><Signature>…</Signature></NFe>`,
+  );
 });
 
 afterEach(() => {
@@ -270,7 +316,7 @@ afterEach(() => {
 });
 
 describe('emitirPedido — happy paths', () => {
-  it('persists estado=enviando BEFORE the SOAP send', async () => {
+  it('persists estado=enviando BEFORE the SOAP send (anti-loss anchor)', async () => {
     const events: string[] = [];
     const { fs, writes } = fakeFirestore({ events });
     vi.mocked(autorizarLote).mockImplementation(async () => {
@@ -280,22 +326,32 @@ describe('emitirPedido — happy paths', () => {
 
     await emitirPedido(fs, fakeRuntime(), 'PED-1');
 
-    // The first set on the nfev4 doc must precede the SOAP call.
-    const firstSetIndex = events.findIndex((e) =>
-      e.startsWith('set:pedidos/PED-1/nfev4/'),
-    );
+    const firstNfeSetIndex = events.findIndex((e) => e.startsWith('set:pedidos/PED-1/nfev4/'));
     const soapIndex = events.indexOf('soap:autorizarLote');
-    expect(firstSetIndex).toBeGreaterThanOrEqual(0);
+    expect(firstNfeSetIndex).toBeGreaterThanOrEqual(0);
     expect(soapIndex).toBeGreaterThanOrEqual(0);
-    expect(firstSetIndex).toBeLessThan(soapIndex);
+    expect(firstNfeSetIndex).toBeLessThan(soapIndex);
 
-    // And that first write carries estado='enviando' + the chave.
-    const firstWrite = writes.find((w) =>
-      w.path.startsWith('pedidos/PED-1/nfev4/'),
-    );
+    const firstWrite = writes.find((w) => w.path.startsWith('pedidos/PED-1/nfev4/'));
     expect(firstWrite?.data.estado).toBe(ESTADO_NFE.enviando);
     expect(firstWrite?.data.chave).toBe(CHAVE);
     expect(firstWrite?.data.xml_assinado).toBeTruthy();
+  });
+
+  it('reads serie + nNF + idLote from the per-filial NFeConfig doc', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 41, serie: 3, idLote: 6, ambiente: '2' },
+    });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    const firstWrite = writes.find((w) => w.path.startsWith('pedidos/PED-1/nfev4/'));
+    expect(firstWrite?.data.numeracao).toBe(42); // 41 + 1
+    expect(firstWrite?.data.serie).toBe(3);
+    expect(firstWrite?.data.idLote).toBe('7'); // 6 + 1, serialised as string
   });
 
   it('returns estado=aguardandoResposta on cStat=103', async () => {
@@ -341,7 +397,18 @@ describe('emitirPedido — guards', () => {
       ehSaida: true,
       estado: 'pago',
       bloquearEmissaoNFe: true,
-      itens: { 'P-1': [{ sku: 'SKU-1', nomeDeVenda: 'Bicicleta', precoDeVenda: 1500, quantidade: 1, descontoUnitario: 0 }] },
+      itens: {
+        'P-1': [
+          {
+            sku: 'SKU-1',
+            nomeDeVenda: 'Bicicleta',
+            precoDeVenda: 1500,
+            quantidade: 1,
+            descontoUnitario: 0,
+            imposto: impostoCsosn102(),
+          },
+        ],
+      },
       filialPedidoOuterRef: 'filiais/F-1',
       clientePedidoOuterRef: 'clientes/C-1',
       operacaoPedidoOuterRef: 'operacao/O-1',
@@ -354,17 +421,58 @@ describe('emitirPedido — guards', () => {
   });
 });
 
-describe('applyOutcome integration sanity', () => {
-  // Confirms the orchestrator's expectations about applyOutcome's
-  // contract — not a real test of applyOutcome (covered in
-  // packages/integrations/nfe/src/state). Failing here means an
-  // applyOutcome refactor broke the orchestrator's assumptions.
-  it("treats cStat=103 as 'poll-lote' → estado=aguardandoResposta", () => {
-    const patch = applyOutcome(
-      { estado: ESTADO_NFE.enviando, retries: 0 },
-      { cStat: '103', xMotivo: 'Lote recebido', nRec: '351000000000123' },
+describe('emitirPedido — magic-string fallbacks removed', () => {
+  function pedidoWithItemMissing(field: string): Record<string, unknown> {
+    const baseImposto = impostoCsosn102();
+    if (field !== '_keep') delete baseImposto[field];
+    return {
+      ehSaida: true,
+      estado: 'pago',
+      itens: {
+        'P-1': [
+          {
+            sku: 'SKU-1',
+            nomeDeVenda: field === 'nomeDeVenda' ? null : 'Bicicleta',
+            precoDeVenda: 1500,
+            quantidade: 1,
+            descontoUnitario: 0,
+            ...(field === 'imposto' ? {} : { imposto: baseImposto }),
+            ...(field === 'sku-and-gtin' ? { sku: null, gtin: null } : {}),
+          },
+        ],
+      },
+      filialPedidoOuterRef: 'filiais/F-1',
+      clientePedidoOuterRef: 'clientes/C-1',
+      operacaoPedidoOuterRef: 'operacao/O-1',
+      enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
+    };
+  }
+
+  it('throws NFeMissingImpostoError when item has no `imposto`', async () => {
+    const { fs } = fakeFirestore({ events: [], pedido: pedidoWithItemMissing('imposto') });
+    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(
+      NFeMissingImpostoError,
     );
-    expect(patch.estado).toBe(ESTADO_NFE.aguardandoResposta);
-    expect(patch.action).toBe('poll-lote');
+  });
+
+  it.each(['cfop', 'NCM', 'unidade'])('throws when imposto.%s is missing', async (field) => {
+    const { fs } = fakeFirestore({ events: [], pedido: pedidoWithItemMissing(field) });
+    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(
+      NFeOrchestratorError,
+    );
+  });
+
+  it('throws when item has neither sku nor gtin', async () => {
+    const { fs } = fakeFirestore({ events: [], pedido: pedidoWithItemMissing('sku-and-gtin') });
+    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(
+      NFeOrchestratorError,
+    );
+  });
+
+  it('throws when nomeDeVenda is missing (no fallback to "Item N")', async () => {
+    const { fs } = fakeFirestore({ events: [], pedido: pedidoWithItemMissing('nomeDeVenda') });
+    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(
+      NFeOrchestratorError,
+    );
   });
 });

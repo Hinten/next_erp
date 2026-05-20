@@ -8,23 +8,45 @@
  * by either the inline `consultarSituacaoNFe` (called on
  * `recover-via-consulta` outcomes) or the `processar-pendentes` cron.
  *
- * Touches Firestore (Admin SDK) and the library's typed operations
- * layer. Everything else (cert, agent, endpoints, ambiente) comes
- * pre-baked from `getNFeRuntime`.
+ * All fiscal data comes from typed, Zod-validated inputs — no
+ * magic-string fallbacks (`?? '5102'`, `?? '00000000'`, …). Missing
+ * required fields throw `NFeOrchestratorError` with a message naming
+ * the exact pedido / item / field so the operator can fix the seed
+ * data before retrying.
+ *
+ *   - `serie` + `nNF` come from `nextNumeracao(store, filialId)` —
+ *     transactional, mirrors Flutter's NFeConfig.proxima_numeracao.
+ *   - `idLote` comes from `nextIdLote(store, filialId)` — independent
+ *     counter, same NFeConfig doc.
+ *   - Per-item `<imposto>` comes from the library's tribute engine
+ *     applied to `pedido.itens[i].imposto` (Zod-validated). Missing
+ *     `imposto` is `NFeMissingImpostoError` (no Flutter-side fallback
+ *     chain — Phase D port).
  */
 import type { Firestore } from 'firebase-admin/firestore';
 
 import {
+  aggregateTotals,
   applyOutcome,
   autorizarLote,
+  buildImpostoXml,
+  buildPagXml,
+  buildTotalXml,
+  buildTranspXml,
   consultarSituacaoNFe,
   generateNFe,
+  impostoSchema,
+  nextIdLote,
+  nextNumeracao,
+  nfeConfigStoreFromFirestore,
   outcomeFromRetConsSit,
   outcomeFromRetEnviNFe,
   signNFe,
   type GeneratorInput,
   type GeneratorItem,
+  type Imposto,
   type NFeStatePatch,
+  type Payment,
   type SefazCall,
 } from '@delfrance/integrations-nfe';
 import {
@@ -36,14 +58,9 @@ import {
   type Operacao,
   type Pedido,
 } from '@delfrance/schemas';
+import { z } from 'zod';
 
 import type { NFeRuntime } from './runtime';
-import {
-  buildEmptyTotalXml,
-  buildSimplePag,
-  buildSimpleTransp,
-  buildSimplesNacionalCsosn102ImpostoXml,
-} from './tribute';
 
 export class NFePedidoNotFoundError extends Error {
   constructor(pedidoId: string) {
@@ -61,6 +78,17 @@ export class NFeOrchestratorError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'NFeOrchestratorError';
+  }
+}
+export class NFeMissingImpostoError extends Error {
+  constructor(pedidoId: string, produtoUid: string, itemIndex: number) {
+    super(
+      `Pedido '${pedidoId}': item ${itemIndex} of produto '${produtoUid}' has no \`imposto\` ` +
+        'stamped. Flutter resolves item → product → category → operação rules at ' +
+        'pedido-authoring time; that resolver is a Phase D port. For now, every ' +
+        'pedido item that will become an NF-e must arrive with `imposto` populated.',
+    );
+    this.name = 'NFeMissingImpostoError';
   }
 }
 
@@ -87,6 +115,20 @@ interface PedidoBundle {
   readonly operacao: Operacao;
 }
 
+/** Per-item fiscal data after merging Pedido item + stamped Imposto. */
+interface FiscalItem {
+  readonly produtoUid: string;
+  readonly itemIndex: number;
+  readonly sku: string | null;
+  readonly gtin: string | null;
+  readonly nomeDeVenda: string | null;
+  readonly precoDeVenda: number;
+  readonly descontoUnitario: number | null;
+  readonly quantidade: number;
+  readonly imposto: Imposto;
+  readonly vProd: number;
+}
+
 /**
  * Resolve the full Pedido bundle from Firestore. Pedido's outer refs
  * (`filialPedidoOuterRef`, `clientePedidoOuterRef`, …) are `z.unknown()`
@@ -101,9 +143,6 @@ export async function loadPedidoBundle(
   if (!pedidoSnap.exists) throw new NFePedidoNotFoundError(pedidoId);
   const pedido = pedidoSnap.data() as PedidoBundle['pedido'];
 
-  // Pedido's outer refs are pass-through (`z.unknown()`) in the schema —
-  // cast at this boundary. Tolerate either a doc-path string or a
-  // DocumentReference instance.
   const filialPath = refToPath(getField(pedido, 'filialPedidoOuterRef'));
   const clientePath = refToPath(getField(pedido, 'clientePedidoOuterRef'));
   const operacaoPath = refToPath(getField(pedido, 'operacaoPedidoOuterRef'));
@@ -156,119 +195,171 @@ function refToPath(ref: unknown): string | null {
 }
 
 /**
- * Allocate the next `nNF` for a (filial, serie) pair via a Firestore
- * transaction. Counter doc lives at `filiais/{filialId}/nfe-counters/{serie}`.
- * Initialised to 1 on first read.
+ * Flatten + validate `pedido.itens` into per-item fiscal data.
+ *
+ * **Magic-string-free**: every field that isn't already a SEFAZ literal
+ * (`'SEM GTIN'`) must come from real data. Missing fields throw
+ * `NFeMissingImpostoError` (for the imposto blob) or
+ * `NFeOrchestratorError` (for everything else), each naming the
+ * exact pedido / produto / item so the operator can fix the seed.
  */
-export async function nextNumeracao(
-  fs: Firestore,
-  filialId: string,
-  serie: number,
-): Promise<number> {
-  const ref = fs
-    .collection('filiais')
-    .doc(filialId)
-    .collection('nfe-counters')
-    .doc(String(serie));
-  return fs.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    const curr = snap.exists ? Number((snap.data() as { next?: number }).next ?? 0) : 0;
-    const nNF = curr + 1;
-    tx.set(ref, { next: nNF }, { merge: true });
-    return nNF;
-  });
+function flattenAndValidate(bundle: PedidoBundle): FiscalItem[] {
+  const itens = (bundle.pedido as { itens?: Record<string, unknown[]> }).itens ?? {};
+  const out: FiscalItem[] = [];
+  for (const [produtoUid, list] of Object.entries(itens)) {
+    if (!Array.isArray(list)) continue;
+    list.forEach((rawEntry, itemIndex) => {
+      const e = (rawEntry ?? {}) as Record<string, unknown>;
+      const sku = typeof e.sku === 'string' ? e.sku : null;
+      const gtin = typeof e.gtin === 'string' ? e.gtin : null;
+      const nomeDeVenda = typeof e.nomeDeVenda === 'string' ? e.nomeDeVenda : null;
+      const precoDeVenda = Number(e.precoDeVenda ?? 0);
+      const descontoUnitario = e.descontoUnitario == null ? null : Number(e.descontoUnitario);
+      const quantidade = Number(e.quantidade ?? 0);
+
+      const where = `pedido '${bundle.pedidoId}' item ${itemIndex} (produto '${produtoUid}')`;
+      if (e.imposto == null) {
+        throw new NFeMissingImpostoError(bundle.pedidoId, produtoUid, itemIndex);
+      }
+      const impostoParse = impostoSchema.safeParse(e.imposto);
+      if (!impostoParse.success) {
+        const first = impostoParse.error.issues[0];
+        throw new NFeOrchestratorError(
+          `${where}: invalid \`imposto\` — ${first?.path.join('.') ?? '(root)'} ${first?.message ?? 'parse failed'}`,
+        );
+      }
+      const imposto = impostoParse.data;
+
+      if (!sku && !gtin) {
+        throw new NFeOrchestratorError(`${where}: needs either \`sku\` or \`gtin\` for cProd`);
+      }
+      if (!nomeDeVenda) {
+        throw new NFeOrchestratorError(`${where}: \`nomeDeVenda\` is required for xProd`);
+      }
+      if (!Number.isFinite(precoDeVenda) || precoDeVenda < 0) {
+        throw new NFeOrchestratorError(`${where}: \`precoDeVenda\` must be a non-negative number`);
+      }
+      if (!Number.isFinite(quantidade) || quantidade <= 0) {
+        throw new NFeOrchestratorError(`${where}: \`quantidade\` must be a positive number`);
+      }
+      out.push({
+        produtoUid,
+        itemIndex,
+        sku,
+        gtin,
+        nomeDeVenda,
+        precoDeVenda,
+        descontoUnitario,
+        quantidade,
+        imposto,
+        vProd: round2((precoDeVenda - (descontoUnitario ?? 0)) * quantidade),
+      });
+    });
+  }
+  if (out.length === 0) {
+    throw new NFeOrchestratorError(`pedido '${bundle.pedidoId}' has no items`);
+  }
+  return out;
 }
 
 /**
- * Project a `PedidoBundle` into the typed `GeneratorInput` shape. Items
- * come from `pedido.itens` (a record keyed by produtoUid → array). For
- * each item, the homologação tributary stub fills in `impostoXml`.
+ * Project the validated fiscal items + filial + cliente + operação +
+ * counters into the typed `GeneratorInput`.
+ *
+ * Throws on missing per-item NCM / CFOP / unidade — those live on the
+ * item's `imposto` (Flutter stamps them from product + operação). No
+ * `?? '5102'` fallbacks; missing data surfaces as a clear error.
  */
 export function buildGeneratorInput(
   bundle: PedidoBundle,
+  items: ReadonlyArray<FiscalItem>,
   numeracao: number,
+  serie: number,
   ambiente: NFeRuntime['ambiente'],
+  tpEmis: GeneratorInput['tpEmis'] = 1,
 ): GeneratorInput {
-  const flatItems: { produtoUid: string; index: number; entry: ReturnType<typeof itemAccessor> }[] = [];
-  const itens = (bundle.pedido as { itens?: Record<string, unknown[]> }).itens ?? {};
-  for (const [produtoUid, list] of Object.entries(itens)) {
-    if (!Array.isArray(list)) continue;
-    list.forEach((entry, index) => {
-      flatItems.push({ produtoUid, index, entry: itemAccessor(entry) });
-    });
-  }
-  if (flatItems.length === 0) {
-    throw new NFeOrchestratorError(`pedido '${bundle.pedidoId}' has no items`);
-  }
+  const isInterstate = bundle.enderecoDest.estado !== bundle.filial.sede.estado;
 
-  const cfop = ambiente === 'producao' && bundle.enderecoDest.estado !== bundle.filial.sede.estado
-    ? (bundle.operacao.cfopInterestadual ?? bundle.operacao.cfop ?? '6102')
-    : (bundle.operacao.cfop ?? '5102');
-
-  const genItems: GeneratorItem[] = flatItems.map(({ produtoUid, index, entry }, i) => {
-    const item: GeneratorItem = {
+  const genItems: GeneratorItem[] = items.map((it, i) => {
+    const where = `pedido '${bundle.pedidoId}' item ${it.itemIndex} (produto '${it.produtoUid}')`;
+    const cfop = isInterstate ? it.imposto.cfopInterestadual : it.imposto.cfop;
+    if (!cfop) {
+      throw new NFeOrchestratorError(
+        `${where}: imposto.${isInterstate ? 'cfopInterestadual' : 'cfop'} is required`,
+      );
+    }
+    if (!it.imposto.NCM) {
+      throw new NFeOrchestratorError(`${where}: imposto.NCM is required`);
+    }
+    if (!it.imposto.unidade) {
+      throw new NFeOrchestratorError(`${where}: imposto.unidade is required`);
+    }
+    const cProd = it.sku ?? it.gtin!; // guarded in flattenAndValidate
+    const cEAN = it.gtin && /^\d{8,14}$/.test(it.gtin) ? it.gtin : 'SEM GTIN';
+    return {
       nItem: i + 1,
-      cProd: entry.sku ?? entry.gtin ?? (produtoUid.slice(0, 60) || `ITEM-${i + 1}`),
-      cEAN: entry.gtin && /^\d{8,14}$/.test(entry.gtin) ? entry.gtin : 'SEM GTIN',
-      xProd: entry.nomeDeVenda ?? `Item ${i + 1}`,
-      NCM: bundle.operacao.NCM ?? '00000000',
+      cProd,
+      cEAN,
+      xProd: it.nomeDeVenda!, // guarded in flattenAndValidate
+      NCM: it.imposto.NCM,
+      ...(it.imposto.CEST ? { CEST: it.imposto.CEST } : {}),
       CFOP: cfop,
-      uCom: bundle.operacao.unidade ?? 'UN',
-      qCom: entry.quantidade,
-      vUnCom: entry.precoDeVenda,
-      vProd: round2((entry.precoDeVenda - (entry.descontoUnitario ?? 0)) * entry.quantidade),
-      cEANTrib: entry.gtin && /^\d{8,14}$/.test(entry.gtin) ? entry.gtin : 'SEM GTIN',
-      uTrib: bundle.operacao.unidade ?? 'UN',
-      qTrib: entry.quantidade,
-      vUnTrib: entry.precoDeVenda,
+      uCom: it.imposto.unidade,
+      qCom: it.quantidade,
+      vUnCom: it.precoDeVenda,
+      vProd: it.vProd,
+      cEANTrib: cEAN,
+      uTrib: it.imposto.unidade,
+      qTrib: it.quantidade,
+      vUnTrib: it.precoDeVenda,
       indTot: '1',
-      impostoXml: '',
+      impostoXml: buildImpostoXml(it.imposto, { vProd: it.vProd }),
     };
-    return { ...item, impostoXml: buildSimplesNacionalCsosn102ImpostoXml(item) };
   });
-  void produtoUidUnused; // silence "produtoUid" unused warning at lint time
 
-  const vNF = round2(genItems.reduce((acc, it) => acc + it.vProd, 0));
+  const totals = aggregateTotals(items.map((it) => ({ item: { vProd: it.vProd }, imposto: it.imposto })));
+  const payments = buildPaymentsFromPedido(bundle, totals.vNF);
 
   return {
     ambiente,
     numeracao,
-    serie: 1,
-    tpEmis: 1,
+    serie,
+    tpEmis,
     dhEmi: new Date(),
     filial: bundle.filial,
     operacao: bundle.operacao,
     cliente: bundle.cliente,
     enderecoDest: bundle.enderecoDest,
     itens: genItems,
-    totalXml: buildEmptyTotalXml(genItems),
-    transpXml: buildSimpleTransp(),
-    pagXml: buildSimplePag(vNF),
+    totalXml: buildTotalXml(totals),
+    transpXml: buildTranspXml(), // Phase A default; Phase D reads Pedido.frete
+    pagXml: buildPagXml(payments),
   };
 }
 
-// Local alias to keep TS happy with the closure-style helpers above.
-function produtoUidUnused() { /* no-op */ }
-
-interface FlatItem {
-  readonly sku: string | null;
-  readonly gtin: string | null;
-  readonly nomeDeVenda: string | null;
-  readonly precoDeVenda: number;
-  readonly descontoUnitario: number | null;
-  readonly quantidade: number;
-}
-
-function itemAccessor(entry: unknown): FlatItem {
-  const o = (entry ?? {}) as Record<string, unknown>;
-  return {
-    sku: typeof o.sku === 'string' ? o.sku : null,
-    gtin: typeof o.gtin === 'string' ? o.gtin : null,
-    nomeDeVenda: typeof o.nomeDeVenda === 'string' ? o.nomeDeVenda : null,
-    precoDeVenda: Number(o.precoDeVenda ?? 0),
-    descontoUnitario: o.descontoUnitario == null ? null : Number(o.descontoUnitario),
-    quantidade: Number(o.quantidade ?? 0),
-  };
+/**
+ * Project Pedido.pagamentos into typed Payment entries. Phase A
+ * fallback: when no payments are stamped, emit one `tPag='99'` (outros)
+ * for vNF so the NF-e is XSD-valid. Real wiring of the Pedido.pagamentos
+ * subcollection is a Phase D follow-up.
+ */
+function buildPaymentsFromPedido(bundle: PedidoBundle, vNF: number): Payment[] {
+  // The Pedido schema today is z.passthrough() — pagamentos may or may
+  // not be present. When absent, fall back to the documented Phase A
+  // default.
+  const rawPag = (bundle.pedido as { pagamentos?: unknown }).pagamentos;
+  if (!Array.isArray(rawPag) || rawPag.length === 0) {
+    return [{ tPag: '99', vPag: vNF }];
+  }
+  return rawPag
+    .map((p) => {
+      const o = (p ?? {}) as Record<string, unknown>;
+      return {
+        tPag: typeof o.tPag === 'string' ? (o.tPag as Payment['tPag']) : '99',
+        vPag: Number(o.vPag ?? 0),
+      };
+    })
+    .filter((p) => Number.isFinite(p.vPag) && p.vPag > 0);
 }
 
 function round2(n: number): number {
@@ -289,9 +380,15 @@ export async function emitirPedido(
   if (bundle.pedido.bloquearEmissaoNFe) {
     throw new NFeBlockedError(pedidoId);
   }
+  const items = flattenAndValidate(bundle);
 
-  const numeracao = await nextNumeracao(fs, bundle.filialId, 1);
-  const input = buildGeneratorInput(bundle, numeracao, rt.ambiente);
+  // Allocate transactionally from the per-filial NFeConfig — atomic, no
+  // duplicates, no gaps (proved by numeracao.staging.test.ts).
+  const store = nfeConfigStoreFromFirestore(fs);
+  const { nNF, serie } = await nextNumeracao(store, bundle.filialId);
+  const idLote = await nextIdLote(store, bundle.filialId);
+
+  const input = buildGeneratorInput(bundle, items, nNF, serie, rt.ambiente);
   const generated = generateNFe(input);
   const signedXml = signNFe(generated.nfeXml, rt.cert);
 
@@ -301,17 +398,16 @@ export async function emitirPedido(
     .collection('nfev4')
     .doc(generated.chave);
   const now = new Date().toISOString();
-  const idLote = generated.chave.slice(-15);
 
   // === Anti-loss anchor: persist BEFORE the SOAP send. =====================
   await nfeRef.set(
     {
-      numeracao,
-      serie: 1,
+      numeracao: nNF,
+      serie,
       tpEmis: 1,
       estado: ESTADO_NFE.enviando,
       chave: generated.chave,
-      idLote,
+      idLote: String(idLote),
       infNFe: null,
       xml_nfe_proc: null,
       xml_epec_proc: null,
@@ -338,7 +434,10 @@ export async function emitirPedido(
     tpAmb: rt.tpAmb,
   };
 
-  const retEnvi = await autorizarLote(call, { idLote, NFe: [signedXml] });
+  const retEnvi = await autorizarLote(call, {
+    idLote: String(idLote),
+    NFe: [signedXml],
+  });
   let outcome = outcomeFromRetEnviNFe(retEnvi);
   let patch = applyOutcome(
     { estado: ESTADO_NFE.enviando, retries: 0 },
@@ -385,3 +484,8 @@ async function persistPatch(
     { merge: true },
   );
 }
+
+// Internals exposed for tests only.
+export const __internal = { flattenAndValidate, buildPaymentsFromPedido };
+// Re-export Zod so test fixtures can use the same z instance.
+export { z };

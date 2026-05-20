@@ -172,13 +172,23 @@ export type ConfCOFINS = z.infer<typeof confCOFINSSchema>;
  * `pedido.itens[i].imposto`. Mirrors the Dart `Imposto` class
  * (`.old/packages/produtos/lib/src/models.dart:2848`).
  *
- * Only the fields the tribute engine *uses* are typed here — the Flutter
- * `Imposto` also carries `cfop`, `NCM`, `unidade`, etc., but those are
- * consumed by the orchestrator (not by tribute) and live on the
- * generator input directly.
+ * The tribute engine itself only uses `origem` + `configuracao*`. The
+ * other fields (`cfop`, `cfopInterestadual`, `NCM`, `CEST`, `unidade`)
+ * are stamped here so the orchestrator can read everything-fiscal from
+ * a single per-item blob — matches the Flutter source of truth.
  */
 export const impostoSchema = z.object({
   origem: origemSchema,
+  /** CFOP for intra-state operations (4 digits, e.g. '5102'). */
+  cfop: z.string().regex(/^\d{4}$/).optional().nullable(),
+  /** CFOP for interstate operations (4 digits, e.g. '6102'). */
+  cfopInterestadual: z.string().regex(/^\d{4}$/).optional().nullable(),
+  /** NCM classification (8 digits). */
+  NCM: z.string().regex(/^\d{8}$/).optional().nullable(),
+  /** CEST classification (7 digits) — when the product is in the CEST list. */
+  CEST: z.string().regex(/^\d{7}$/).optional().nullable(),
+  /** Unidade comercial (e.g. 'UN'). */
+  unidade: z.string().min(1).max(6).optional().nullable(),
   configuracaoICMS: configuracaoICMSSchema,
   configuracaoPIS: confPISSchema.optional().nullable(),
   configuracaoCOFINS: confCOFINSSchema.optional().nullable(),
