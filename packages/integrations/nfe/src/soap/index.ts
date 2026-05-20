@@ -19,6 +19,7 @@
  * `https.Agent`, and the operation list match one-for-one.
  */
 import https from 'node:https';
+import { rootCertificates } from 'node:tls';
 
 import { HttpClient } from 'soap';
 
@@ -88,15 +89,22 @@ export function createSefazAgent(
   cert: NFeCertificate,
   options: SefazAgentOptions = {},
 ): https.Agent {
-  // Spread the optional `ca` so we never pass `{ ca: undefined }` — which
-  // some Node versions treat as "no CA trusted" rather than "default store".
-  const caOpt = options.ca === undefined ? {} : { ca: options.ca as string | Buffer | string[] };
+  // Setting `ca` on https.Agent **replaces** Node's bundled Mozilla roots.
+  // SEFAZ chains through Brazilian intermediates we vendor → the intermediate
+  // would be trusted, but it must itself chain UP to a trusted root — and
+  // dropping Mozilla's roots means losing the ICP-Brasil root that lives
+  // there. Always merge: defaults + caller's extras.
+  const extras: ReadonlyArray<string | Buffer> = options.ca === undefined
+    ? []
+    : Array.isArray(options.ca)
+      ? options.ca
+      : [options.ca];
   return new https.Agent({
     key: cert.privateKeyPem,
     cert: cert.certificatePem,
     keepAlive: true,
     minVersion: 'TLSv1.2',
-    ...caOpt,
+    ca: [...rootCertificates, ...extras],
   });
 }
 
