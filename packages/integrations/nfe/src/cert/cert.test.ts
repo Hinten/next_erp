@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import forge from 'node-forge';
 import {
   assertCertNotExpired,
@@ -11,6 +11,7 @@ import {
   loadCertificateFromBase64,
   loadCertificateFromEnv,
   loadCertificateFromPath,
+  warnIfCertNearExpiry,
   type NFeCertificate,
 } from './index';
 
@@ -223,5 +224,56 @@ describe('isCertExpired / assertCertNotExpired', () => {
     const cert = loadCertificateFromBase64(expired, 'x');
     expect(isCertExpired(cert)).toBe(true);
     expect(() => assertCertNotExpired(cert)).toThrow(NFeCertError);
+  });
+});
+
+describe('warnIfCertNearExpiry', () => {
+  function fakeCert(notAfter: Date): NFeCertificate {
+    return {
+      privateKeyPem: '',
+      certificatePem: '',
+      certificateDerBase64: '',
+      subjectCommonName: 'TEST:12345678000199',
+      notAfter,
+      pfxBuffer: Buffer.from(''),
+      password: '',
+    };
+  }
+
+  const NOW = new Date('2026-05-20T12:00:00Z');
+
+  it('does not warn when expiry is comfortably in the future', () => {
+    const log = vi.fn();
+    const cert = fakeCert(new Date('2027-05-20T12:00:00Z')); // ~365 days out
+    warnIfCertNearExpiry(cert, 30, log, NOW);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('warns when expiry is within the window', () => {
+    const log = vi.fn();
+    const cert = fakeCert(new Date('2026-06-04T12:00:00Z')); // 15 days out
+    warnIfCertNearExpiry(cert, 30, log, NOW);
+    expect(log).toHaveBeenCalledOnce();
+    const msg = log.mock.calls[0]![0];
+    expect(msg).toContain('15 day');
+    expect(msg).toContain('2026-06-04');
+    expect(msg).toContain('TEST:12345678000199');
+    expect(msg).toContain('Receita Federal');
+  });
+
+  it('honors a custom daysBeforeExpiry threshold', () => {
+    const log = vi.fn();
+    const cert = fakeCert(new Date('2026-07-20T12:00:00Z')); // ~61 days out
+    warnIfCertNearExpiry(cert, 30, log, NOW); // 30-day window — silent
+    expect(log).not.toHaveBeenCalled();
+    warnIfCertNearExpiry(cert, 90, log, NOW); // 90-day window — warns
+    expect(log).toHaveBeenCalledOnce();
+  });
+
+  it('stays silent for already-expired certs (assertCertNotExpired owns that case)', () => {
+    const log = vi.fn();
+    const cert = fakeCert(new Date('2025-01-01T00:00:00Z'));
+    warnIfCertNearExpiry(cert, 30, log, NOW);
+    expect(log).not.toHaveBeenCalled();
   });
 });

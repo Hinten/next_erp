@@ -42,6 +42,14 @@ and the production-safety guard — they're not unsafe, just unergonomic.
 - Namespace ordering in the envelope matters — small `xmlns` differences cause
   rejections 215 / 225.
 
+> **Cert ops** — Brazilian A1 PFX format, SEFAZ CA chain refresh, A1 client
+> cert annual renewal, and the apps/nfe deploy strategy live in the master
+> plan's *"Cert format gotchas (lessons learned)"* and *"Cert lifecycle
+> (operations)"* sections at
+> `C:\Users\Lucas\.claude\plans\velvet-purring-bear.md`. Run
+> `pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca` to vendor /
+> refresh the SEFAZ TLS chain locally.
+
 ## Services (layout 4.00)
 
 | Service | Method | Process | Purpose |

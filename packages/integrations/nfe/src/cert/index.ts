@@ -183,11 +183,18 @@ export function loadCertificateFromEnv(env: NodeJS.ProcessEnv = process.env): NF
   const path = env.NFE_CERT_PATH;
   const base64 = env.NFE_CERT_BASE64;
 
-  if (path) return loadCertificateFromPath(path, password);
-  if (base64) return loadCertificateFromBase64(base64, password);
-  throw new NFeCertError(
-    'Certificate source not set: define NFE_CERT_PATH (filesystem path) or NFE_CERT_BASE64 (base-64 PFX).',
-  );
+  let cert: NFeCertificate;
+  if (path) cert = loadCertificateFromPath(path, password);
+  else if (base64) cert = loadCertificateFromBase64(base64, password);
+  else {
+    throw new NFeCertError(
+      'Certificate source not set: define NFE_CERT_PATH (filesystem path) or NFE_CERT_BASE64 (base-64 PFX).',
+    );
+  }
+  // Surface a heads-up well before expiry so the human-driven Receita
+  // Federal renewal can be scheduled. Default window is 30 days.
+  warnIfCertNearExpiry(cert);
+  return cert;
 }
 
 /**
@@ -213,5 +220,37 @@ export function assertCertNotExpired(cert: NFeCertificate, now: Date = new Date(
   throw new NFeCertError(
     `Certificate expired on ${expiredOn} (subject CN: ${cert.subjectCommonName || '(none)'}). ` +
       'Renew the A1 PFX and update NFE_CERT_BASE64 / NFE_CERT_PASSWORD.',
+  );
+}
+
+/**
+ * Emit a soft warning when the A1 cert is within `daysBeforeExpiry` of
+ * expiry. **Already-expired** certs do *not* trip this — that case is
+ * the assertion's job (`assertCertNotExpired` throws hard).
+ *
+ * The annual ICP-Brasil renewal is a manual process (Receita Federal),
+ * so the right surface is observability, not automation: log loudly,
+ * page on-call via the configured pipeline, give humans the days-left
+ * countdown they need to plan.
+ *
+ * Default logger is `console.warn`; swap a structured logger in for
+ * production observability (Stackdriver / Cloud Logging / Sentry).
+ *
+ * See the master plan's "Cert lifecycle (operations)" section.
+ */
+export function warnIfCertNearExpiry(
+  cert: NFeCertificate,
+  daysBeforeExpiry = 30,
+  log: (msg: string) => void = (msg) => console.warn(msg),
+  now: Date = new Date(),
+): void {
+  const msLeft = cert.notAfter.getTime() - now.getTime();
+  if (msLeft <= 0) return; // delegated to assertCertNotExpired
+  const daysLeft = Math.floor(msLeft / 86_400_000);
+  if (daysLeft > daysBeforeExpiry) return;
+  log(
+    `[nfe-cert] A1 certificate expires in ${daysLeft} day(s) ` +
+      `(notAfter=${cert.notAfter.toISOString()}, subject="${cert.subjectCommonName || '(none)'}"). ` +
+      'Plan a renewal via Receita Federal.',
   );
 }

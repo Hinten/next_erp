@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { assertCertNotExpired, loadCertificateFromEnv } from '../cert';
+import { assertCertNotExpired, loadCertificateFromEnv, warnIfCertNearExpiry } from '../cert';
 import { getEndpoints } from '../endpoints';
 import { createSefazAgent, type SefazCall } from '../soap';
 import { consultarStatusServico } from './index';
@@ -50,6 +50,9 @@ describeOrSkip('SEFAZ-SP homologação smoke (typed)', () => {
       `[cert] subject="${cert.subjectCommonName}" notAfter=${cert.notAfter.toISOString()}`,
     );
     expect(() => assertCertNotExpired(cert)).not.toThrow();
+    // Heads-up if renewal is approaching — same observability the
+    // apps/nfe boot path will get via loadCertificateFromEnv.
+    warnIfCertNearExpiry(cert);
   });
 
   it('consultarStatusServico returns a typed TRetConsStatServ with cStat=107', async () => {
