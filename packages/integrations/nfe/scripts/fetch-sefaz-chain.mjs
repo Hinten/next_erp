@@ -66,6 +66,8 @@ const socket = connect({
   rejectUnauthorized: false,
 });
 
+let captured = false;
+
 socket.once('secureConnect', () => {
   const pems = [];
   const seen = new Set();
@@ -103,10 +105,17 @@ socket.once('secureConnect', () => {
   console.log(
     '\nVerify the captured chain against ICP-Brasil before trusting in produção.',
   );
-  socket.end();
+
+  // Chain captured; the file is already on disk. SEFAZ tends to reset the
+  // socket as we tear down (read ECONNRESET) — that's teardown noise, not a
+  // failure. Mark `captured` so the error handler ignores it.
+  captured = true;
+  socket.destroy();
+  process.exit(0);
 });
 
 socket.once('error', (err) => {
+  if (captured) return; // post-capture teardown — ignore.
   console.error('TLS connect failed:', err.message);
   process.exit(1);
 });
