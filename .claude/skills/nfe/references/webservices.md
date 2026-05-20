@@ -1,5 +1,35 @@
 # SEFAZ Web Services
 
+## Preferred API: `src/operations/` (the typed layer)
+
+**Default to the typed helpers in
+`packages/integrations/nfe/src/operations/`.** They are the canonical
+entry points for every SEFAZ call:
+
+| Helper | What it does |
+|---|---|
+| `consultarStatusServico(call, { cUF })` | NFeStatusServico4 — service availability |
+| `consultarSituacaoNFe(call, { chave })` | NfeConsultaProtocolo4 — query one NF-e by chave (the **recovery** call) |
+| `consultarLote(call, { nRec })` | NFeRetAutorizacao4 — poll a lote by nRec |
+| `autorizarLote(call, { idLote, NFe, indSinc? })` | NFeAutorizacao4 — submit a lote of signed NF-e |
+
+Each helper accepts a typed object, builds the request XML via
+`serialize(...)` (Zod-validated at the object boundary), runs it through
+the low-level SOAP transport (XSD-validated against the canonical SEFAZ
+XSD), and parses the response back into a typed `Tret*` shape. Typed
+object in → typed object out, with all the validation gates between.
+
+**Reach for the low-level SOAP transport in `src/soap/` only when:**
+- Replaying an archived `xml_assinado` for recovery (raw signed bytes).
+- Recovery flows that intentionally bypass the typed shape.
+- Implementing a new SEFAZ NT that hasn't been wired into a helper yet
+  — in which case, the right move is to **add the helper first** and
+  then use it, not to call the SOAP layer directly from app code.
+
+The low-level functions (`nfeStatusServico`, `nfeConsultaProtocolo`,
+`nfeRetAutorizacao`, `nfeAutorizacaoLote`) still enforce the XSD gate
+and the production-safety guard — they're not unsafe, just unergonomic.
+
 ## Transport
 
 - **SOAP 1.2**, `Document/Literal`, WS-I Basic Profile 1.1.

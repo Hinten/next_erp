@@ -1,0 +1,141 @@
+/**
+ * Typed entry points for the SEFAZ operations.
+ *
+ * This is the **high-level API** most callers should use. Each helper:
+ *   1. Accepts a minimal typed object (just the unique inputs).
+ *   2. Builds the request XML via `serialize(...)` — Zod-validated at the
+ *      object boundary (active once `src/types/nfe-schema-zod.ts` is wired
+ *      into `serialize`; Task #16 in the validation plan).
+ *   3. Hands the string to the low-level SOAP transport — XSD-validated
+ *      against the canonical SEFAZ XSD before the POST.
+ *   4. Parses the response XML back into a typed object so the caller
+ *      never deals with raw XML on the read side either.
+ *
+ * The low-level string-based SOAP transport (`nfeStatusServico` and friends
+ * in `../soap`) stays exported — recovery flows, replay of archived signed
+ * NF-e, and any future SEFAZ NT that doesn't fit a typed shape go through
+ * that. **`autorizarLote` is the exception**: each `<NFe>` it carries is a
+ * signed byte stream (re-parsing invalidates the digest), so its NFe slice
+ * stays string-based.
+ */
+import {
+  nfeAutorizacaoLote,
+  nfeConsultaProtocolo,
+  nfeRetAutorizacao,
+  nfeStatusServico,
+  type PostResult,
+  type SefazCall,
+} from '../soap';
+import {
+  type TConsStatServ,
+  type TRetConsStatServ,
+  type TRetConsSitNFe,
+  type TRetConsReciNFe,
+  type TRetEnviNFe,
+} from '../types/nfe-schema';
+import { parse, serialize } from '../xml';
+
+const NFE_VERSAO = '4.00';
+
+/** SEFAZ `cUF` literal (IBGE 2-digit). Mirrors the codegen union. */
+export type CUFCode = TConsStatServ['cUF'];
+
+/**
+ * `NFeStatusServico4` — query whether SEFAZ is up for a given UF.
+ *
+ * `args.cUF` is the only caller input — `tpAmb`, `xServ`, `versao` are
+ * filled in from the call context.
+ */
+export async function consultarStatusServico(
+  call: SefazCall,
+  args: { readonly cUF: CUFCode },
+): Promise<TRetConsStatServ> {
+  const xml = serialize('consStatServ', {
+    tpAmb: call.tpAmb,
+    cUF: args.cUF,
+    xServ: 'STATUS',
+    versao: NFE_VERSAO,
+  });
+  const { resultXml } = await nfeStatusServico(call, xml);
+  return parse<TRetConsStatServ>('retConsStatServ', resultXml);
+}
+
+/**
+ * `NfeConsultaProtocolo4` — query the situation of one NF-e by chave.
+ *
+ * This is the **recovery query** — call it whenever a send/poll outcome is
+ * uncertain (cStat 204/205/218/539). See
+ * `.claude/skills/nfe/references/cstat-rejeicoes.md`.
+ */
+export async function consultarSituacaoNFe(
+  call: SefazCall,
+  args: { readonly chave: string },
+): Promise<TRetConsSitNFe> {
+  const xml = serialize('consSitNFe', {
+    tpAmb: call.tpAmb,
+    xServ: 'CONSULTAR',
+    chNFe: args.chave,
+    versao: NFE_VERSAO,
+  });
+  const { resultXml } = await nfeConsultaProtocolo(call, xml);
+  return parse<TRetConsSitNFe>('retConsSitNFe', resultXml);
+}
+
+/**
+ * `NFeRetAutorizacao4` — poll a lote by `nRec` (received from a 103 reply).
+ */
+export async function consultarLote(
+  call: SefazCall,
+  args: { readonly nRec: string },
+): Promise<TRetConsReciNFe> {
+  const xml = serialize('consReciNFe', {
+    tpAmb: call.tpAmb,
+    nRec: args.nRec,
+    versao: NFE_VERSAO,
+  });
+  const { resultXml } = await nfeRetAutorizacao(call, xml);
+  return parse<TRetConsReciNFe>('retConsReciNFe', resultXml);
+}
+
+/**
+ * `NFeAutorizacao4` — send a lote of signed NF-e.
+ *
+ * Each `args.NFe` entry **must be the signed `<NFe>...</NFe>` byte stream**
+ * straight from `signNFe()`. The helper builds the `<enviNFe>` wrapper by
+ * concatenation (hand-rolled, not via `serialize`) because the NFe slot is
+ * a signed payload — re-parsing it invalidates the digest.
+ *
+ * Phase A typically calls this with `args.NFe.length === 1` (one NF-e per
+ * lote); batching up to 50 is a Phase B optimization.
+ */
+export async function autorizarLote(
+  call: SefazCall,
+  args: {
+    readonly idLote: string;
+    readonly NFe: ReadonlyArray<string>;
+    readonly indSinc?: '0' | '1';
+  },
+): Promise<TRetEnviNFe> {
+  if (args.NFe.length === 0) {
+    throw new Error('autorizarLote: args.NFe must contain at least one signed NFe');
+  }
+  // Hand-built wrapper — see jsdoc.
+  const xml =
+    `<enviNFe xmlns="http://www.portalfiscal.inf.br/nfe" versao="${NFE_VERSAO}">` +
+    `<idLote>${args.idLote}</idLote>` +
+    `<indSinc>${args.indSinc ?? '0'}</indSinc>` +
+    args.NFe.join('') +
+    `</enviNFe>`;
+  const { resultXml } = await nfeAutorizacaoLote(call, xml);
+  return parse<TRetEnviNFe>('retEnviNFe', resultXml);
+}
+
+// Re-export the underlying transport — power users (recovery flows, replay
+// of archived signed NF-e) still reach for the string-based API.
+export type { PostResult, SefazCall };
+export {
+  nfeAutorizacaoLote,
+  nfeConsultaProtocolo,
+  nfeRetAutorizacao,
+  nfeStatusServico,
+};

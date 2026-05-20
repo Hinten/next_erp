@@ -75,7 +75,7 @@ interface PostInput {
   readonly timeoutMs?: number;
 }
 
-interface PostResult {
+export interface PostResult {
   /** Inner XML — the content of `<nfeResultMsg>`, ready to be `parse()`d. */
   readonly resultXml: string;
   /** Raw SOAP body for diagnostics. */
