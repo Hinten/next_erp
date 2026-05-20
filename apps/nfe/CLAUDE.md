@@ -25,11 +25,28 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    `packages/integrations/nfe/ca/sefaz-<uf>-<ambiente>.pem`. Run
    `pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca` to capture
    the chain locally.
-5. **Tributary stub is homologação-only.** `lib/nfe/tribute.ts`
-   produces minimal XSD-valid `<imposto>` / `<total>` / `<transp>` /
-   `<pag>` blocks (Simples Nacional CSOSN 102, zero values). Phase D
-   replaces them with the real tributary engine.
-6. **`NFE_ALLOW_PRODUCAO=true` is required for produção.** The library's
+5. **Per-item `imposto` must be stamped on every Pedido item.** The
+   orchestrator reads `pedido.itens[i].imposto` and validates it via
+   the library's `impostoSchema` (`@delfrance/integrations-nfe`
+   exports it). Missing or invalid `imposto` is `NFeMissingImpostoError`
+   (or `NFeOrchestratorError` for sub-field issues) — no fallback.
+   The Flutter resolver chain (item → product → category → operação)
+   that auto-stamps this at pedido-authoring time is a Phase D port.
+   For now, every pedido item that will become an NF-e arrives with
+   `imposto` already populated.
+6. **Per-Filial `NFeConfig` doc must be seeded before emitting.** The
+   `serie`, `numeracao_atual`, and `idLote` counters live at
+   `filiais/{filialId}/nfeconfig/default`. The orchestrator allocates
+   the next `nNF` + `idLote` transactionally via the library's
+   `nextNumeracao` + `nextIdLote` helpers; missing config is
+   `NFeConfigNotFoundError`. Seed shape: `{ numeracao_atual: 0, serie:
+   1, idLote: 0, ambiente: '2' }` for a fresh homologação setup.
+7. **No magic-string fallbacks.** Every CFOP / NCM / unidade / cProd
+   / xProd field MUST come from real data. The orchestrator throws on
+   missing fields with a message naming the exact pedido / produto /
+   item. The only SEFAZ-mandated literal kept is `'SEM GTIN'` for
+   products without a barcode.
+8. **`NFE_ALLOW_PRODUCAO=true` is required for produção.** The library's
    safety guard (`assertSafeTpAmb`) rejects `tpAmb='1'` without it. Set
    only in the produção App Hosting backend.
 

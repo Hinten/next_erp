@@ -237,8 +237,7 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
     fs: {
       collection: (name: string) => makeCollection(name),
       doc: (path: string) => makeRef(path),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      runTransaction: async <T>(fn: (tx: any) => Promise<T>) => {
+      runTransaction: async <T>(fn: (tx: unknown) => Promise<T>) => {
         const tx = {
           get: (ref: ReturnType<typeof makeRef>) => ref.get(),
           set: (ref: ReturnType<typeof makeRef>, data: Record<string, unknown>) => {
