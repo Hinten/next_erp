@@ -1,5 +1,35 @@
 # SEFAZ Web Services
 
+## Preferred API: `src/operations/` (the typed layer)
+
+**Default to the typed helpers in
+`packages/integrations/nfe/src/operations/`.** They are the canonical
+entry points for every SEFAZ call:
+
+| Helper | What it does |
+|---|---|
+| `consultarStatusServico(call, { cUF })` | NFeStatusServico4 — service availability |
+| `consultarSituacaoNFe(call, { chave })` | NfeConsultaProtocolo4 — query one NF-e by chave (the **recovery** call) |
+| `consultarLote(call, { nRec })` | NFeRetAutorizacao4 — poll a lote by nRec |
+| `autorizarLote(call, { idLote, NFe, indSinc? })` | NFeAutorizacao4 — submit a lote of signed NF-e |
+
+Each helper accepts a typed object, builds the request XML via
+`serialize(...)` (Zod-validated at the object boundary), runs it through
+the low-level SOAP transport (XSD-validated against the canonical SEFAZ
+XSD), and parses the response back into a typed `Tret*` shape. Typed
+object in → typed object out, with all the validation gates between.
+
+**Reach for the low-level SOAP transport in `src/soap/` only when:**
+- Replaying an archived `xml_assinado` for recovery (raw signed bytes).
+- Recovery flows that intentionally bypass the typed shape.
+- Implementing a new SEFAZ NT that hasn't been wired into a helper yet
+  — in which case, the right move is to **add the helper first** and
+  then use it, not to call the SOAP layer directly from app code.
+
+The low-level functions (`nfeStatusServico`, `nfeConsultaProtocolo`,
+`nfeRetAutorizacao`, `nfeAutorizacaoLote`) still enforce the XSD gate
+and the production-safety guard — they're not unsafe, just unergonomic.
+
 ## Transport
 
 - **SOAP 1.2**, `Document/Literal`, WS-I Basic Profile 1.1.
@@ -11,6 +41,14 @@
   carries **`nfeCabecMsg`** with `versaoDados` (e.g. `4.00`) and `cUF`.
 - Namespace ordering in the envelope matters — small `xmlns` differences cause
   rejections 215 / 225.
+
+> **Cert ops** — Brazilian A1 PFX format, SEFAZ CA chain refresh, A1 client
+> cert annual renewal, and the apps/nfe deploy strategy live in the master
+> plan's *"Cert format gotchas (lessons learned)"* and *"Cert lifecycle
+> (operations)"* sections at
+> `C:\Users\Lucas\.claude\plans\velvet-purring-bear.md`. Run
+> `pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca` to vendor /
+> refresh the SEFAZ TLS chain locally.
 
 ## Services (layout 4.00)
 
@@ -81,3 +119,21 @@ to decide whether to switch to contingency.
 - A lote result stays available for ≥ 24 h after processing.
 - Looping the same request → `656 — Rejeição: Consumo Indevido`. Always
   back off and respect `tMed`.
+
+### Mandatory pre-send XSD validation (the ban-prevention rule)
+
+**Never send anything to SEFAZ without first validating against the
+vendored XSD pack.** Schema-invalid requests trigger `cStat=215`/`225`,
+and **repeating those rejections trips `cStat=656`** — which escalates to
+throttling and ultimately a CNPJ / certificate ban.
+
+In this repo the gate is `packages/integrations/nfe/src/xsd/`:
+`validateXsd(rootKey, xml)` runs `xmllint-wasm` (libxml2 in WebAssembly)
+against the schemas under `packages/integrations/nfe/schemas/`. Every
+public SOAP operation in `src/soap/` runs it pre-POST **and** on the
+inbound response (catches captive-portal HTML, proxy junk, parser drift).
+There is no escape hatch from public callers.
+
+If you ever add a new SEFAZ operation, wire it through `postSoapValidated`
+in `src/soap/` with the matching request + response roots. The XSD map
+lives at `XSD_BY_ROOT` in `src/xsd/index.ts`.

@@ -16,6 +16,9 @@ const MINIMAL = {
   infNFe: null,
   xml_nfe_proc: null,
   xml_epec_proc: null,
+  xml_assinado: null,
+  nRec: null,
+  retries: null,
   cStat: null,
   xMotivo: null,
   justificativaContingencia: null,
@@ -81,6 +84,31 @@ describe('nfeSchema', () => {
     const { chave, ...without } = MINIMAL;
     void chave;
     expect(nfeSchema.safeParse(without).success).toBe(false);
+  });
+
+  it('accepts nRec, xml_assinado and retries (the recovery fields)', () => {
+    const out = nfeSchema.parse({
+      ...MINIMAL,
+      nRec: '351000000000000',
+      xml_assinado: '<NFe>...</NFe>',
+      retries: 2,
+    });
+    expect(out.nRec).toBe('351000000000000');
+    expect(out.xml_assinado).toBe('<NFe>...</NFe>');
+    expect(out.retries).toBe(2);
+  });
+
+  it('rejects negative retries', () => {
+    expect(nfeSchema.safeParse({ ...MINIMAL, retries: -1 }).success).toBe(false);
+  });
+
+  it('rejects non-integer retries', () => {
+    expect(nfeSchema.safeParse({ ...MINIMAL, retries: 1.5 }).success).toBe(false);
+  });
+
+  it('rejects empty xml_assinado / nRec (must be null or non-empty)', () => {
+    expect(nfeSchema.safeParse({ ...MINIMAL, xml_assinado: '' }).success).toBe(false);
+    expect(nfeSchema.safeParse({ ...MINIMAL, nRec: '' }).success).toBe(false);
   });
 });
 

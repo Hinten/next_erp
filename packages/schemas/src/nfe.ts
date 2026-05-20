@@ -70,6 +70,22 @@ export const nfeSchema = z.object({
   infNFe: z.string().min(1).nullable(),
   xml_nfe_proc: z.string().min(1).nullable(),
   xml_epec_proc: z.string().min(1).nullable(),
+  /**
+   * Signed NF-e XML archived **before** the SOAP send (the anti-loss anchor).
+   * The poller / recovery flow re-queries SEFAZ with this, never regenerates.
+   */
+  xml_assinado: z.string().min(1).nullable(),
+  /**
+   * SEFAZ receipt number returned with `cStat=103` (lote async) and the
+   * duplicidade codes (204/205/218/539). Used to poll `consReciNFe` and as
+   * a hint when the chave is uncertain.
+   */
+  nRec: z.string().min(1).nullable(),
+  /**
+   * Bounded retry counter for the lote-pendente (cStat=105) poll loop.
+   * The state machine resets this on every non-105 outcome.
+   */
+  retries: z.number().int().min(0).nullable(),
 
   cStat: z.string().nullable(),
   xMotivo: z.string().nullable(),

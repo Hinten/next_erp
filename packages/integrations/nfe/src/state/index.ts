@@ -1,0 +1,224 @@
+/**
+ * NF-e state machine.
+ *
+ * Two concerns live here:
+ *
+ *   1. **Classification** — turn a SEFAZ `cStat` into a typed category
+ *      (`autorizada`, `duplicidade`, `lote-pendente`, …) so callers don't
+ *      hard-code magic numbers.
+ *   2. **Transition** — given a current `EstadoNFe` and a SEFAZ response,
+ *      decide the next state and what the orchestrator should do next
+ *      (`poll`, `recover-via-consulta`, `done`, `error`).
+ *
+ * Authoritative reference: `.claude/skills/nfe/references/cstat-rejeicoes.md`.
+ * The transition table is the one Phase A leans on; cancelamento /
+ * inutilização lifecycles are owned by Phase B and only enter this file
+ * once those events are wired.
+ */
+import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
+
+/**
+ * Bounded poll cap for `cStat=105` (lote still processing) and `cStat=635`
+ * (lote queued). Matches the old Flutter code's 4-attempt ceiling.
+ */
+export const MAX_LOTE_POLL_RETRIES = 4;
+
+/**
+ * Coarse semantic category of a `cStat`. Drives the next action without
+ * exposing every numeric code to callers.
+ */
+export type CStatCategory =
+  /** 100, 150 — NF-e authorized. Adopt the `protNFe`. */
+  | 'autorizada'
+  /** 101 — cancelada via evento. */
+  | 'cancelada'
+  /** 102 — número inutilizado. */
+  | 'inutilizada'
+  /** 110, 301, 302 — denegada (stored at SEFAZ but unusable). */
+  | 'denegada'
+  /** 103 — lote received async; we got an `nRec`, must poll. */
+  | 'lote-recebido'
+  /** 104 — lote processed; read the `protNFe` array. */
+  | 'lote-processado'
+  /** 105 — lote still being processed; poll again after a wait. */
+  | 'lote-pendente'
+  /** 106 — lote not found at SEFAZ; recover each NF-e via `consSitNFe`. */
+  | 'lote-nao-localizado'
+  /** 107 — service up. */
+  | 'servico-em-operacao'
+  /** 108, 109 — service down (momentary / no forecast). */
+  | 'servico-paralisado'
+  /** 204, 205, 218, 539, 635 — duplicidade: recover via `consSitNFe`. */
+  | 'duplicidade'
+  /** 215, 225 — schema/structure rejection (fix the XML, resend). */
+  | 'rejeitada-schema'
+  /** 280, 281, 286, 290–298 — certificate / signature problem. */
+  | 'rejeitada-certificado'
+  /** 252 — ambiente diverge (tpAmb mismatch). */
+  | 'rejeitada-ambiente'
+  /** 656 — Consumo Indevido: caller is hammering, back off. */
+  | 'consumo-indevido'
+  /** Anything else — generic business-rule rejection; fix and resend. */
+  | 'rejeitada';
+
+const DUPLICIDADE = new Set(['204', '205', '218', '539', '635']);
+const CERT_REJECTION = new Set(['280', '281', '286']);
+
+/** Classify a SEFAZ `cStat` into a coarse category. */
+export function classifyCStat(cStat: string): CStatCategory {
+  if (cStat === '100' || cStat === '150') return 'autorizada';
+  if (cStat === '101') return 'cancelada';
+  if (cStat === '102') return 'inutilizada';
+  if (cStat === '110' || cStat === '301' || cStat === '302') return 'denegada';
+  if (cStat === '103') return 'lote-recebido';
+  if (cStat === '104') return 'lote-processado';
+  if (cStat === '105') return 'lote-pendente';
+  if (cStat === '106') return 'lote-nao-localizado';
+  if (cStat === '107') return 'servico-em-operacao';
+  if (cStat === '108' || cStat === '109') return 'servico-paralisado';
+  if (DUPLICIDADE.has(cStat)) return 'duplicidade';
+  if (cStat === '215' || cStat === '225') return 'rejeitada-schema';
+  if (cStat === '252') return 'rejeitada-ambiente';
+  if (cStat === '656') return 'consumo-indevido';
+  if (CERT_REJECTION.has(cStat)) return 'rejeitada-certificado';
+  const n = Number(cStat);
+  if (Number.isInteger(n) && n >= 290 && n <= 298) return 'rejeitada-certificado';
+  return 'rejeitada';
+}
+
+/**
+ * Map a SEFAZ `cStat` to the persisted `EstadoNFe` on the NF-e document.
+ * Returns `null` when the cStat does not by itself imply a terminal estado
+ * (e.g. `103` keeps the NF-e in `aguardandoResposta` because we now have an
+ * `nRec` and must poll).
+ */
+export function cStatToEstado(cStat: string): EstadoNFe | null {
+  switch (classifyCStat(cStat)) {
+    case 'autorizada':
+      return ESTADO_NFE.aprovada;
+    case 'cancelada':
+      return ESTADO_NFE.cancelada;
+    case 'inutilizada':
+      return ESTADO_NFE.numeracaoInutilizada;
+    case 'denegada':
+    case 'rejeitada-schema':
+    case 'rejeitada-certificado':
+    case 'rejeitada-ambiente':
+    case 'rejeitada':
+      return ESTADO_NFE.rejeitada;
+    case 'consumo-indevido':
+      return ESTADO_NFE.error;
+    case 'lote-recebido':
+    case 'lote-pendente':
+    case 'lote-nao-localizado':
+      return ESTADO_NFE.aguardandoResposta;
+    case 'lote-processado':
+    case 'duplicidade':
+    case 'servico-em-operacao':
+    case 'servico-paralisado':
+      return null;
+  }
+}
+
+/** Next action the orchestrator should take after receiving a `cStat`. */
+export type NextAction =
+  /** Adopt the protocol; persist `xml_nfe_proc` and stop. */
+  | 'done-authorized'
+  /** Persist as cancelada/inutilizada; stop. */
+  | 'done-terminal'
+  /** Persist as rejeitada / error; stop. */
+  | 'done-rejected'
+  /** Poll `consReciNFe` again after a wait (bounded by retries). */
+  | 'poll-lote'
+  /** Query SEFAZ for the real protocol via `consSitNFe(chave)`. */
+  | 'recover-via-consulta'
+  /** Backoff and stop for this run; the poller will pick it up later. */
+  | 'backoff';
+
+/** Decide the next action for an NF-e given its latest `cStat` and retries. */
+export function nextAction(cStat: string, retries: number): NextAction {
+  const category = classifyCStat(cStat);
+  switch (category) {
+    case 'autorizada':
+      return 'done-authorized';
+    case 'cancelada':
+    case 'inutilizada':
+      return 'done-terminal';
+    case 'denegada':
+    case 'rejeitada-schema':
+    case 'rejeitada-certificado':
+    case 'rejeitada-ambiente':
+    case 'rejeitada':
+      return 'done-rejected';
+    case 'duplicidade':
+    case 'lote-nao-localizado':
+      return 'recover-via-consulta';
+    case 'lote-pendente':
+      return retries < MAX_LOTE_POLL_RETRIES ? 'poll-lote' : 'backoff';
+    case 'lote-recebido':
+      return 'poll-lote';
+    case 'lote-processado':
+      // 104 wraps a protNFe array; the orchestrator inspects each protNFe's
+      // cStat. Reaching this branch with a bare 104 means "look inside".
+      return 'poll-lote';
+    case 'consumo-indevido':
+    case 'servico-paralisado':
+      return 'backoff';
+    case 'servico-em-operacao':
+      return 'backoff';
+  }
+}
+
+/**
+ * Sefaz response carrier — the minimum every transport return value has to
+ * expose for the state machine to make a decision.
+ */
+export interface SefazOutcome {
+  /** SEFAZ `cStat`. */
+  readonly cStat: string;
+  /** Human-readable `xMotivo` (kept on the doc for the UI). */
+  readonly xMotivo: string;
+  /** Lote receipt number, when SEFAZ returned one (cStat 103 / duplicidade). */
+  readonly nRec?: string | null;
+  /** The 44-char chave SEFAZ asserts in 539 responses, if present. */
+  readonly chNFeFromXMotivo?: string | null;
+}
+
+/** Patch to apply to the NF-e document for a given outcome + retry count. */
+export interface NFeStatePatch {
+  readonly estado: EstadoNFe;
+  readonly cStat: string;
+  readonly xMotivo: string;
+  readonly retries: number;
+  readonly nRec: string | null;
+  readonly action: NextAction;
+}
+
+/**
+ * Compute the document patch for a SEFAZ outcome. The orchestrator persists
+ * this patch on `pedidos/{pedidoId}/nfev4/{nfeId}` before performing
+ * `action` — so a crash between SEFAZ-roundtrip and follow-up is recoverable
+ * by the `processar-pendentes` poller.
+ */
+export function applyOutcome(
+  current: { estado: EstadoNFe; retries: number | null },
+  outcome: SefazOutcome,
+): NFeStatePatch {
+  const action = nextAction(outcome.cStat, current.retries ?? 0);
+  const mappedEstado = cStatToEstado(outcome.cStat);
+  const estado = mappedEstado ?? current.estado;
+  // `lote-pendente` keeps the NF-e in aguardandoResposta and increments
+  // retries. Any other action either stays put or transitions to a terminal /
+  // recovery state — retries reset there to keep the counter scoped to the
+  // 105-poll loop.
+  const isPollIncrement = classifyCStat(outcome.cStat) === 'lote-pendente';
+  const retries = isPollIncrement ? (current.retries ?? 0) + 1 : 0;
+  return {
+    estado,
+    cStat: outcome.cStat,
+    xMotivo: outcome.xMotivo,
+    retries,
+    nRec: outcome.nRec ?? null,
+    action,
+  };
+}
