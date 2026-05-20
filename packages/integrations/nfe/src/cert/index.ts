@@ -84,10 +84,12 @@ export function loadCertificateFromBase64(pfxBase64: string, password: string): 
     throw err;
   }
 
-  const keyBag = p12.getBags({ bagType: forge.pki.oids.pkcs8ShroudedKeyBag })[
-    forge.pki.oids.pkcs8ShroudedKeyBag
-  ]?.[0];
-  const certBag = p12.getBags({ bagType: forge.pki.oids.certBag })[forge.pki.oids.certBag]?.[0];
+  // node-forge typings declare these OIDs as `string | undefined`, but they are
+  // baked-in constants — assert them so the index access type-checks.
+  const KEY_OID = forge.pki.oids.pkcs8ShroudedKeyBag as string;
+  const CERT_OID = forge.pki.oids.certBag as string;
+  const keyBag = p12.getBags({ bagType: KEY_OID })[KEY_OID]?.[0];
+  const certBag = p12.getBags({ bagType: CERT_OID })[CERT_OID]?.[0];
 
   if (!keyBag?.key) {
     throw new NFeCertError('PFX has no private key bag');

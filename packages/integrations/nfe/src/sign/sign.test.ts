@@ -85,7 +85,8 @@ describe('signNFe', () => {
     const sigNode = doc.getElementsByTagNameNS('http://www.w3.org/2000/09/xmldsig#', 'Signature')[0];
     expect(sigNode).toBeTruthy();
     const verifier = new SignedXml({ publicCert: cert.certificatePem });
-    verifier.loadSignature(sigNode!);
+    // loadSignature accepts a string; serialize to side-step @xmldom Element vs DOM Node mismatch.
+    verifier.loadSignature(sigNode!.toString());
     expect(verifier.checkSignature(signed)).toBe(true);
   });
 
