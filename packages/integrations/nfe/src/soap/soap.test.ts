@@ -29,6 +29,21 @@ describe('buildEnvelope', () => {
     // predictable for namespace-ordering-sensitive SEFAZ rejections (215/225).
     expect(env).not.toMatch(/>\s+</);
   });
+
+  it('strips a leading <?xml ?> declaration from the inner dadosMsg', () => {
+    // serialize() emits a full document with a declaration; the SOAP body
+    // can only carry one declaration (at the top). A duplicate declaration
+    // mid-document is what SEFAZ rejects with HTTP 400.
+    const env = buildEnvelope(
+      'NFeStatusServico',
+      '<?xml version="1.0" encoding="UTF-8"?><consStatServ xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00"><tpAmb>2</tpAmb><cUF>35</cUF><xServ>STATUS</xServ></consStatServ>',
+    );
+    // The outer envelope carries exactly one declaration — at the very top.
+    expect(env.indexOf('<?xml')).toBe(0);
+    expect(env.indexOf('<?xml', 1)).toBe(-1);
+    expect(env).toContain('<nfeDadosMsg xmlns=');
+    expect(env).toContain('<consStatServ');
+  });
 });
 
 describe('result unwrap regex', () => {

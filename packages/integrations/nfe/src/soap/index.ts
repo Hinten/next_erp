@@ -124,13 +124,24 @@ export interface PostResult {
   readonly rawBody: string;
 }
 
+/**
+ * Strip a leading `<?xml ... ?>` declaration. SEFAZ rejects (HTTP 400) any
+ * payload that contains an XML declaration in the middle of the document —
+ * a declaration is only valid at the very top. Our `serialize(...)` emits
+ * a full document (with declaration); inside the SOAP envelope we need the
+ * element only.
+ */
+function stripXmlDeclaration(xml: string): string {
+  return xml.replace(/^\s*<\?xml[^?]*\?>\s*/, '');
+}
+
 /** SOAP 1.2 envelope template. Whitespace inside is irrelevant — only namespaces matter. */
 function buildEnvelope(operation: SoapOperation, dadosMsg: string): string {
   return (
     `<?xml version="1.0" encoding="UTF-8"?>` +
     `<soap12:Envelope xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">` +
     `<soap12:Body>` +
-    `<nfeDadosMsg xmlns="${SOAP_NS[operation]}">${dadosMsg}</nfeDadosMsg>` +
+    `<nfeDadosMsg xmlns="${SOAP_NS[operation]}">${stripXmlDeclaration(dadosMsg)}</nfeDadosMsg>` +
     `</soap12:Body>` +
     `</soap12:Envelope>`
   );
