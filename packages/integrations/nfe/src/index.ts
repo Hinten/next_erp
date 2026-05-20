@@ -139,6 +139,29 @@ export {
 //   const validated = NFeSchemas.TNFe_infNFe_det_impostoSchema.parse(input);
 export * as NFeSchemas from './types/nfe-schema-zod';
 
+// Per-Filial numeração + lote counters. Library functions over an
+// injectable NFeConfigStore; the firebase-admin-backed adapter ships
+// from `./numeracao/firestore-adapter` so apps/nfe can wire its
+// Firestore instance through without the library taking a hard
+// dep on firebase-admin.
+export {
+  NFeBulkSizeError,
+  NFeConfigNotFoundError,
+  nextIdLote,
+  nextNumeracao,
+  nextNumeracaoBulk,
+  readNFeConfig,
+  type NFeConfigStore,
+  type NFeConfigTx,
+} from './numeracao';
+export {
+  DEFAULT_NFE_CONFIG_DOC_ID,
+  nfeConfigStoreFromFirestore,
+  type AdminDocRefLike,
+  type AdminFirestoreLike,
+  type AdminTxLike,
+} from './numeracao/firestore-adapter';
+
 // Simples Nacional tributary engine — per-item <imposto> dispatch,
 // <total> aggregation, <transp> / <pag> builders. The orchestrator in
 // apps/nfe consumes these to build the SEFAZ wire shape from Flutter-
