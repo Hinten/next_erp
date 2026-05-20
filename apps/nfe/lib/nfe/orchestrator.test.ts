@@ -102,6 +102,10 @@ interface FakeFirestoreOptions {
   events: string[];
   pedido?: Record<string, unknown> | null;
   nfeConfig?: NFeConfig | null;
+  /** Partial override for `operacao/O-1` — merged onto the default. */
+  operacao?: Record<string, unknown>;
+  /** Partial override for `clientes/C-1/enderecos/E-1` — merged onto the default. */
+  endereco?: Record<string, unknown>;
 }
 
 /**
@@ -198,8 +202,16 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
       CEST: null,
       unidade: 'UN',
       infCpl: null,
+      ...(opts.operacao ?? {}),
     },
   };
+
+  if (opts.endereco) {
+    docs['clientes/C-1/enderecos/E-1'] = {
+      ...(docs['clientes/C-1/enderecos/E-1'] ?? {}),
+      ...opts.endereco,
+    };
+  }
   const writes: { path: string; data: Record<string, unknown>; merge?: boolean }[] = [];
 
   function makeRef(path: string) {
@@ -454,12 +466,27 @@ describe('emitirPedido — magic-string fallbacks removed', () => {
     );
   });
 
-  it.each(['cfop', 'NCM', 'unidade'])('throws when imposto.%s is missing', async (field) => {
-    const { fs } = fakeFirestore({ events: [], pedido: pedidoWithItemMissing(field) });
-    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(
-      NFeOrchestratorError,
-    );
-  });
+  it.each(['cfop', 'NCM', 'unidade'] as const)(
+    'throws when BOTH imposto.%s AND operacao.%s are missing (no fallback chain left)',
+    async (field) => {
+      // The orchestrator resolves field <- item.imposto[field] ?? operacao[field].
+      // To prove the terminal error path we have to null out BOTH sources.
+      const operacaoOverride: Record<string, unknown> =
+        field === 'cfop'
+          ? { cfop: null }
+          : field === 'NCM'
+            ? { NCM: null }
+            : { unidade: null };
+      const { fs } = fakeFirestore({
+        events: [],
+        pedido: pedidoWithItemMissing(field),
+        operacao: operacaoOverride,
+      });
+      await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(
+        NFeOrchestratorError,
+      );
+    },
+  );
 
   it('throws when item has neither sku nor gtin', async () => {
     const { fs } = fakeFirestore({ events: [], pedido: pedidoWithItemMissing('sku-and-gtin') });
@@ -473,5 +500,231 @@ describe('emitirPedido — magic-string fallbacks removed', () => {
     await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(
       NFeOrchestratorError,
     );
+  });
+});
+
+describe('emitirPedido — operação fallback for fiscal codes', () => {
+  /**
+   * Build a pedido whose single item carries an Imposto missing one
+   * fiscal field (CFOP / NCM / unidade), so the operação fallback
+   * fires. `field='_keep'` preserves the full imposto for the
+   * "item wins" precedence test.
+   */
+  function pedidoMissingItemField(field: 'cfop' | 'NCM' | 'unidade' | '_keep'): Record<string, unknown> {
+    const baseImposto = impostoCsosn102();
+    if (field !== '_keep') delete baseImposto[field];
+    return {
+      ehSaida: true,
+      estado: 'pago',
+      itens: {
+        'P-1': [
+          {
+            sku: 'SKU-1',
+            nomeDeVenda: 'Bicicleta',
+            precoDeVenda: 1500,
+            quantidade: 1,
+            descontoUnitario: 0,
+            imposto: baseImposto,
+          },
+        ],
+      },
+      filialPedidoOuterRef: 'filiais/F-1',
+      clientePedidoOuterRef: 'clientes/C-1',
+      operacaoPedidoOuterRef: 'operacao/O-1',
+      enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
+    };
+  }
+
+  /** Pull `input.itens[0]` from the spy on generateNFe. */
+  function lastGenItem(): Record<string, unknown> {
+    const calls = vi.mocked(generateNFe).mock.calls;
+    const input = calls[calls.length - 1]?.[0];
+    if (!input) throw new Error('generateNFe was not called');
+    const item = input.itens[0] as unknown as Record<string, unknown>;
+    if (!item) throw new Error('generateNFe input had no itens');
+    return item;
+  }
+
+  beforeEach(() => {
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+  });
+
+  it('CFOP: item missing + operação set → uses operacao.cfop', async () => {
+    const { fs } = fakeFirestore({
+      events: [],
+      pedido: pedidoMissingItemField('cfop'),
+      // operação default already has cfop='5102'
+    });
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(lastGenItem().CFOP).toBe('5102');
+  });
+
+  it('CFOP: both set → item-imposto.cfop wins over operacao.cfop', async () => {
+    const baseImposto = impostoCsosn102();
+    baseImposto.cfop = '5405'; // item override
+    const pedido = pedidoMissingItemField('_keep');
+    (pedido.itens as Record<string, unknown[]>)['P-1']![0] = {
+      ...((pedido.itens as Record<string, unknown[]>)['P-1']![0] as Record<string, unknown>),
+      imposto: baseImposto,
+    };
+    const { fs } = fakeFirestore({
+      events: [],
+      pedido,
+      operacao: { cfop: '5102' },
+    });
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(lastGenItem().CFOP).toBe('5405');
+  });
+
+  it('NCM: item missing + operação set → uses operacao.NCM', async () => {
+    const { fs } = fakeFirestore({
+      events: [],
+      pedido: pedidoMissingItemField('NCM'),
+    });
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(lastGenItem().NCM).toBe('87120000');
+  });
+
+  it('NCM: both set → item wins', async () => {
+    const baseImposto = impostoCsosn102();
+    baseImposto.NCM = '61091000';
+    const pedido = pedidoMissingItemField('_keep');
+    (pedido.itens as Record<string, unknown[]>)['P-1']![0] = {
+      ...((pedido.itens as Record<string, unknown[]>)['P-1']![0] as Record<string, unknown>),
+      imposto: baseImposto,
+    };
+    const { fs } = fakeFirestore({ events: [], pedido });
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(lastGenItem().NCM).toBe('61091000');
+  });
+
+  it('unidade: item missing + operação set → uses operacao.unidade', async () => {
+    const { fs } = fakeFirestore({
+      events: [],
+      pedido: pedidoMissingItemField('unidade'),
+    });
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(lastGenItem().uCom).toBe('UN');
+    expect(lastGenItem().uTrib).toBe('UN');
+  });
+
+  it('CEST: optional, item wins, falls back to operação, omitted when neither set', async () => {
+    // (a) Both null → CEST omitted from the GeneratorItem entirely.
+    const fs1 = fakeFirestore({ events: [], pedido: pedidoMissingItemField('_keep') }).fs;
+    await emitirPedido(fs1, fakeRuntime(), 'PED-1');
+    expect('CEST' in lastGenItem()).toBe(false);
+    vi.clearAllMocks();
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+    vi.mocked(generateNFe).mockReturnValue({
+      chave: CHAVE,
+      cNF: '00000001',
+      cDV: 8,
+      nfeXml: `<NFe xmlns="${NFE_NS}"><infNFe Id="NFe${CHAVE}">…</infNFe></NFe>`,
+    });
+    vi.mocked(signNFe).mockReturnValue(
+      `<NFe xmlns="${NFE_NS}"><infNFe>…signed…</infNFe><Signature>…</Signature></NFe>`,
+    );
+
+    // (b) Only operação has CEST → CEST is used.
+    const fs2 = fakeFirestore({
+      events: [],
+      pedido: pedidoMissingItemField('_keep'),
+      operacao: { CEST: '1003700' },
+    }).fs;
+    await emitirPedido(fs2, fakeRuntime(), 'PED-1');
+    expect(lastGenItem().CEST).toBe('1003700');
+  });
+});
+
+describe('emitirPedido — CFOP selection by emitente/destinatário UF', () => {
+  beforeEach(() => {
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+  });
+
+  /** Pull `input.itens[0].CFOP` off the generateNFe spy. */
+  function lastCFOP(): string {
+    const calls = vi.mocked(generateNFe).mock.calls;
+    const input = calls[calls.length - 1]?.[0];
+    if (!input) throw new Error('generateNFe was not called');
+    const item = input.itens[0] as unknown as { CFOP?: string };
+    return item.CFOP ?? '';
+  }
+
+  it('same UF (intra-state) → uses imposto.cfop (5xxx)', async () => {
+    // Default fixture: filial SP, endereço destinatário SP. Item carries
+    // cfop='5102' + cfopInterestadual='6102'. Expect 5102 in the genItem.
+    const { fs } = fakeFirestore({ events: [] });
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(lastCFOP()).toBe('5102');
+  });
+
+  it('different UF (interstate) → uses imposto.cfopInterestadual (6xxx)', async () => {
+    // Flip the destinatário UF to MG; expect 6102.
+    const { fs } = fakeFirestore({
+      events: [],
+      endereco: { estado: 'MG' },
+    });
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(lastCFOP()).toBe('6102');
+  });
+
+  it('intra-state, item missing cfop → falls back to operacao.cfop', async () => {
+    const baseImposto = impostoCsosn102();
+    delete baseImposto.cfop;
+    const pedido = {
+      ehSaida: true,
+      estado: 'pago',
+      itens: {
+        'P-1': [
+          {
+            sku: 'SKU-1',
+            nomeDeVenda: 'Bicicleta',
+            precoDeVenda: 1500,
+            quantidade: 1,
+            descontoUnitario: 0,
+            imposto: baseImposto,
+          },
+        ],
+      },
+      filialPedidoOuterRef: 'filiais/F-1',
+      clientePedidoOuterRef: 'clientes/C-1',
+      operacaoPedidoOuterRef: 'operacao/O-1',
+      enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
+    };
+    const { fs } = fakeFirestore({ events: [], pedido });
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(lastCFOP()).toBe('5102'); // from operação default
+  });
+
+  it('interstate, item missing cfopInterestadual → falls back to operacao.cfopInterestadual', async () => {
+    const baseImposto = impostoCsosn102();
+    delete baseImposto.cfopInterestadual;
+    const pedido = {
+      ehSaida: true,
+      estado: 'pago',
+      itens: {
+        'P-1': [
+          {
+            sku: 'SKU-1',
+            nomeDeVenda: 'Bicicleta',
+            precoDeVenda: 1500,
+            quantidade: 1,
+            descontoUnitario: 0,
+            imposto: baseImposto,
+          },
+        ],
+      },
+      filialPedidoOuterRef: 'filiais/F-1',
+      clientePedidoOuterRef: 'clientes/C-1',
+      operacaoPedidoOuterRef: 'operacao/O-1',
+      enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
+    };
+    const { fs } = fakeFirestore({
+      events: [],
+      pedido,
+      endereco: { estado: 'MG' },
+    });
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(lastCFOP()).toBe('6102'); // from operação default
   });
 });

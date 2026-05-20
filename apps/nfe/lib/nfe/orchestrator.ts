@@ -266,9 +266,13 @@ function flattenAndValidate(bundle: PedidoBundle): FiscalItem[] {
  * Project the validated fiscal items + filial + cliente + operação +
  * counters into the typed `GeneratorInput`.
  *
- * Throws on missing per-item NCM / CFOP / unidade — those live on the
- * item's `imposto` (Flutter stamps them from product + operação). No
- * `?? '5102'` fallbacks; missing data surfaces as a clear error.
+ * **Fiscal-code resolution (CFOP / NCM / unidade / CEST).** Per the
+ * Flutter resolver chain: the **item's** stamped imposto wins; when
+ * a field is missing on the item we fall back to the operação's
+ * matching field. Only when BOTH are missing do we throw. This
+ * matches marketplace reality — many orders carry an operação-default
+ * CFOP/NCM and only stamp item-level overrides for the products that
+ * need them.
  */
 export function buildGeneratorInput(
   bundle: PedidoBundle,
@@ -279,21 +283,34 @@ export function buildGeneratorInput(
   tpEmis: GeneratorInput['tpEmis'] = 1,
 ): GeneratorInput {
   const isInterstate = bundle.enderecoDest.estado !== bundle.filial.sede.estado;
+  const cfopField = isInterstate ? 'cfopInterestadual' : 'cfop';
 
   const genItems: GeneratorItem[] = items.map((it, i) => {
     const where = `pedido '${bundle.pedidoId}' item ${it.itemIndex} (produto '${it.produtoUid}')`;
-    const cfop = isInterstate ? it.imposto.cfopInterestadual : it.imposto.cfop;
+    // Resolution: item-imposto wins; operação as fallback; throw when both
+    // are missing. Same rule for NCM / unidade / CEST below.
+    const cfop = it.imposto[cfopField] ?? bundle.operacao[cfopField];
     if (!cfop) {
       throw new NFeOrchestratorError(
-        `${where}: imposto.${isInterstate ? 'cfopInterestadual' : 'cfop'} is required`,
+        `${where}: no ${cfopField} — neither imposto.${cfopField} nor operacao.${cfopField} is set`,
       );
     }
-    if (!it.imposto.NCM) {
-      throw new NFeOrchestratorError(`${where}: imposto.NCM is required`);
+    const NCM = it.imposto.NCM ?? bundle.operacao.NCM;
+    if (!NCM) {
+      throw new NFeOrchestratorError(
+        `${where}: no NCM — neither imposto.NCM nor operacao.NCM is set`,
+      );
     }
-    if (!it.imposto.unidade) {
-      throw new NFeOrchestratorError(`${where}: imposto.unidade is required`);
+    const unidade = it.imposto.unidade ?? bundle.operacao.unidade;
+    if (!unidade) {
+      throw new NFeOrchestratorError(
+        `${where}: no unidade — neither imposto.unidade nor operacao.unidade is set`,
+      );
     }
+    // CEST is optional (only required when the product is in the CEST
+    // list). Item wins, operação as fallback, omit when neither set.
+    const CEST = it.imposto.CEST ?? bundle.operacao.CEST;
+
     const cProd = it.sku ?? it.gtin!; // guarded in flattenAndValidate
     const cEAN = it.gtin && /^\d{8,14}$/.test(it.gtin) ? it.gtin : 'SEM GTIN';
     return {
@@ -301,15 +318,15 @@ export function buildGeneratorInput(
       cProd,
       cEAN,
       xProd: it.nomeDeVenda!, // guarded in flattenAndValidate
-      NCM: it.imposto.NCM,
-      ...(it.imposto.CEST ? { CEST: it.imposto.CEST } : {}),
+      NCM,
+      ...(CEST ? { CEST } : {}),
       CFOP: cfop,
-      uCom: it.imposto.unidade,
+      uCom: unidade,
       qCom: it.quantidade,
       vUnCom: it.precoDeVenda,
       vProd: it.vProd,
       cEANTrib: cEAN,
-      uTrib: it.imposto.unidade,
+      uTrib: unidade,
       qTrib: it.quantidade,
       vUnTrib: it.precoDeVenda,
       indTot: '1',
