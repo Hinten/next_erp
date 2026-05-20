@@ -12,7 +12,7 @@ import { buildDetXml } from './det';
 import { buildIde, cUFFromUF, NFeIdeError } from './ide';
 import { buildDest, buildEmit } from './parties';
 import { serializeFragment, type XmlValue } from '../xml';
-import { sanitizeNFeText } from '../sanitize';
+import { sanitizeNFeEmail, sanitizeNFeText } from '../sanitize';
 import type { UF } from '@delfrance/schemas';
 
 import type { GeneratorInput, GeneratorOutput, TpEmis } from './types';
@@ -132,7 +132,8 @@ function buildInfRespTecXml(input: GeneratorInput): string {
     `<infRespTec>` +
     `<CNPJ>${r.CNPJ}</CNPJ>` +
     `<xContato>${escape(sanitizeNFeText(r.xContato) ?? '')}</xContato>` +
-    `<email>${escape(sanitizeNFeText(r.email) ?? '')}</email>` +
+    // `@` must survive — sanitizeNFeText would strip it.
+    `<email>${escape(sanitizeNFeEmail(r.email) ?? '')}</email>` +
     (r.fone ? `<fone>${r.fone}</fone>` : '') +
     `</infRespTec>`
   );

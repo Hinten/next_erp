@@ -7,7 +7,7 @@
  */
 import type { Cliente, Endereco, Filial } from '@delfrance/schemas';
 
-import { sanitizeNFeText } from '../sanitize';
+import { sanitizeNFeEmail, sanitizeNFeText } from '../sanitize';
 import type {
   TEnderEmi,
   TEndereco,
@@ -77,7 +77,9 @@ export function buildDest(
     enderDest: buildEnderDest(endereco),
     IE: cliente.ie ?? undefined,
     IM: cliente.imun ?? undefined,
-    email: sanitizeNFeText(cliente.email) ?? undefined,
+    // Emails MUST keep `@` — sanitizeNFeText would strip it (the `@` is
+    // in the restricted-char set for free-text descriptive fields).
+    email: sanitizeNFeEmail(cliente.email) ?? undefined,
   };
 
   // tipoCliente '0' = PF (CPF), '1' = PJ (CNPJ), '2' = Estrangeiro (idEstrangeiro)

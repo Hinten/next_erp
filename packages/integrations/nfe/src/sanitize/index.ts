@@ -47,3 +47,26 @@ export function sanitizeNFeText(input: string | null | undefined): string | null
   const cleaned = removerCharRestrito(removerAcentos(input)).trim();
   return cleaned.length === 0 ? null : cleaned;
 }
+
+/**
+ * Email-aware sanitiser. Same boundary as {@link sanitizeNFeText} — `null` /
+ * blank → `null` — but never applies the restricted-char filter, because
+ * `@` is on that list and emails MUST keep it. Trims, drops control
+ * characters, and lower-cases for stable comparisons. Does NOT escape XML
+ * (`&` etc.) — the serializer owns that.
+ *
+ * Use this for `<email>` slots (cliente, infRespTec, …); use
+ * `sanitizeNFeText` for free-text descriptive fields (razão social,
+ * complemento, infCpl).
+ */
+export function sanitizeNFeEmail(input: string | null | undefined): string | null {
+  if (input == null) return null;
+  let out = '';
+  for (const ch of input.trim()) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code <= 0x1f) continue; // drop control chars
+    if (ch === ' ') continue; // emails contain no whitespace
+    out += ch;
+  }
+  return out.length === 0 ? null : out;
+}

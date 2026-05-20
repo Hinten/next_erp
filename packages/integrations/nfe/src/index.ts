@@ -41,7 +41,12 @@ export {
 } from './xml';
 
 // Sanitization
-export { removerAcentos, removerCharRestrito, sanitizeNFeText } from './sanitize';
+export {
+  removerAcentos,
+  removerCharRestrito,
+  sanitizeNFeEmail,
+  sanitizeNFeText,
+} from './sanitize';
 
 // State machine
 export {

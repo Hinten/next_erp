@@ -131,9 +131,9 @@ jobs:
         # SEFAZ rotates intermediates between runs.
         run: pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca
 
-      - name: Live homologação SOAP smoke + staging Firestore concurrency
+      - name: Live homologação SOAP smoke + emission round-trip + staging Firestore concurrency
         env:
-          # Homologação A1 cert (SEFAZ smoke):
+          # Homologação A1 cert (SEFAZ smoke + emission):
           NFE_CERT_BASE64: ${{ secrets.NF_CERT_BASE64 }}
           NFE_CERT_PASSWORD: ${{ secrets.NF_CERT_PASSWORD }}
           # Staging Firestore (numeração concurrency contract):
@@ -143,8 +143,12 @@ jobs:
           # Run only the env-gated suites. Each describe.skip's itself
           # cleanly when its secrets aren't set, so the job stays green
           # in environments where one or the other is missing.
+          # - operations.homologacao: consultarStatusServico smoke
+          # - emission.homologacao:  full generate→sign→autorizarLote
+          #                          round-trip + duplicidade recovery
+          # - numeracao.staging:     transactional concurrency on staging
           pnpm --filter @delfrance/integrations-nfe test \
-            operations.homologacao numeracao.staging
+            operations.homologacao emission.homologacao numeracao.staging
 
   report-failure:
     name: Post failure logs on PR
