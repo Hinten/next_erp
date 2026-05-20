@@ -23,6 +23,8 @@ import https from 'node:https';
 import { HttpClient } from 'soap';
 
 import type { NFeCertificate } from '../cert';
+import { assertSafeTpAmb, type TpAmb } from '../safety';
+import { validateXsd, type XsdRootKey } from '../xsd';
 
 const NFE_WSDL_BASE = 'http://www.portalfiscal.inf.br/nfe/wsdl';
 
@@ -178,7 +180,77 @@ export interface SefazCall {
   readonly url: string;
   readonly cert: NFeCertificate;
   readonly agent: https.Agent;
+  /**
+   * SEFAZ ambiente literal — `'2'` homologação, `'1'` produção. Checked by
+   * `assertSafeTpAmb` before every POST: `'1'` is rejected unless the
+   * `NFE_ALLOW_PRODUCAO=true` env var is set. The call site must pass this
+   * explicitly; relying on a regex over the body is a worse safety boundary.
+   */
+  readonly tpAmb: TpAmb;
   readonly timeoutMs?: number;
+}
+
+/**
+ * Configuration for one SOAP roundtrip: request root + response root.
+ *
+ * Used by `postSoapValidated` to pick the right XSD on each side. Hard-coded
+ * per operation wrapper because the operation already knows its contract;
+ * exposing the root choice to callers would just be a footgun.
+ */
+interface OperationContract {
+  readonly soapOp: SoapOperation;
+  readonly requestRoot: XsdRootKey;
+  readonly responseRoot: XsdRootKey;
+}
+
+const CONTRACTS: Record<string, OperationContract> = {
+  nfeAutorizacaoLote: {
+    soapOp: 'NFeAutorizacao',
+    requestRoot: 'enviNFe',
+    responseRoot: 'retEnviNFe',
+  },
+  nfeRetAutorizacao: {
+    soapOp: 'NFeRetAutorizacao',
+    requestRoot: 'consReciNFe',
+    responseRoot: 'retConsReciNFe',
+  },
+  nfeConsultaProtocolo: {
+    soapOp: 'NFeConsultaProtocolo',
+    requestRoot: 'consSitNFe',
+    responseRoot: 'retConsSitNFe',
+  },
+  nfeStatusServico: {
+    soapOp: 'NFeStatusServico',
+    requestRoot: 'consStatServ',
+    responseRoot: 'retConsStatServ',
+  },
+};
+
+/**
+ * The full gated send: production-guard → XSD-validate request →
+ * `postSoap` → XSD-validate response → return.
+ *
+ * Every public operation wrapper goes through here. There is no escape
+ * hatch from public callers, on purpose — the XSD gate is what prevents
+ * `cStat=656 Consumo Indevido` bans, and the safety guard is what stops
+ * accidental produção traffic.
+ */
+async function postSoapValidated(
+  contract: OperationContract,
+  call: SefazCall,
+  dadosMsg: string,
+): Promise<PostResult> {
+  assertSafeTpAmb(call.tpAmb);
+  await validateXsd(contract.requestRoot, dadosMsg);
+  const result = await postSoap({
+    url: call.url,
+    operation: contract.soapOp,
+    dadosMsg,
+    agent: call.agent,
+    timeoutMs: call.timeoutMs,
+  });
+  await validateXsd(contract.responseRoot, result.resultXml);
+  return result;
 }
 
 /** `NFeAutorizacao4 / nfeAutorizacaoLote` — send an `<enviNFe>` lote. */
@@ -186,13 +258,7 @@ export async function nfeAutorizacaoLote(
   call: SefazCall,
   enviNFeXml: string,
 ): Promise<PostResult> {
-  return postSoap({
-    url: call.url,
-    operation: 'NFeAutorizacao',
-    dadosMsg: enviNFeXml,
-    agent: call.agent,
-    timeoutMs: call.timeoutMs,
-  });
+  return postSoapValidated(CONTRACTS.nfeAutorizacaoLote!, call, enviNFeXml);
 }
 
 /** `NFeRetAutorizacao4 / nfeRetAutorizacao` — poll a lote by `nRec`. */
@@ -200,13 +266,7 @@ export async function nfeRetAutorizacao(
   call: SefazCall,
   consReciNFeXml: string,
 ): Promise<PostResult> {
-  return postSoap({
-    url: call.url,
-    operation: 'NFeRetAutorizacao',
-    dadosMsg: consReciNFeXml,
-    agent: call.agent,
-    timeoutMs: call.timeoutMs,
-  });
+  return postSoapValidated(CONTRACTS.nfeRetAutorizacao!, call, consReciNFeXml);
 }
 
 /** `NfeConsultaProtocolo4 / nfeConsultaNF` — query one NF-e by chave. */
@@ -214,13 +274,7 @@ export async function nfeConsultaProtocolo(
   call: SefazCall,
   consSitNFeXml: string,
 ): Promise<PostResult> {
-  return postSoap({
-    url: call.url,
-    operation: 'NFeConsultaProtocolo',
-    dadosMsg: consSitNFeXml,
-    agent: call.agent,
-    timeoutMs: call.timeoutMs,
-  });
+  return postSoapValidated(CONTRACTS.nfeConsultaProtocolo!, call, consSitNFeXml);
 }
 
 /** `NFeStatusServico4 / nfeStatusServicoNF` — service availability. */
@@ -228,13 +282,7 @@ export async function nfeStatusServico(
   call: SefazCall,
   consStatServXml: string,
 ): Promise<PostResult> {
-  return postSoap({
-    url: call.url,
-    operation: 'NFeStatusServico',
-    dadosMsg: consStatServXml,
-    agent: call.agent,
-    timeoutMs: call.timeoutMs,
-  });
+  return postSoapValidated(CONTRACTS.nfeStatusServico!, call, consStatServXml);
 }
 
 // Exposed for offline tests that exercise envelope shape / response unwrap.

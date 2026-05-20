@@ -46,7 +46,7 @@ describeOrSkip('SEFAZ-SP homologação smoke', () => {
       versao: '4.00',
     });
 
-    const call: SefazCall = { url, cert, agent, timeoutMs: 30_000 };
+    const call: SefazCall = { url, cert, agent, tpAmb: '2', timeoutMs: 30_000 };
     const result = await nfeStatusServico(call, consStatXml);
 
     // SEFAZ returns <retConsStatServ versao="4.00"><tpAmb>2</tpAmb>
