@@ -139,6 +139,46 @@ export {
 //   const validated = NFeSchemas.TNFe_infNFe_det_impostoSchema.parse(input);
 export * as NFeSchemas from './types/nfe-schema-zod';
 
+// Simples Nacional tributary engine — per-item <imposto> dispatch,
+// <total> aggregation, <transp> / <pag> builders. The orchestrator in
+// apps/nfe consumes these to build the SEFAZ wire shape from Flutter-
+// stamped Imposto rules.
+export {
+  NFeTributeError,
+  TributeFormatError,
+  aggregateTotals,
+  buildImpostoXml,
+  buildPagXml,
+  buildTotalXml,
+  buildTranspXml,
+  configuracaoICMSSchema,
+  confCOFINSSchema,
+  confPISSchema,
+  crtSchema,
+  csosnSchema,
+  impostoSchema,
+  modBCSchema,
+  modBCSTSchema,
+  origemSchema,
+  paymentSchema,
+  tPagSchema,
+  tributeItemSchema,
+  type ConfCOFINS,
+  type ConfPIS,
+  type ConfiguracaoICMS,
+  type Crt,
+  type Csosn,
+  type Imposto,
+  type ModBC,
+  type ModBCST,
+  type ModFrete,
+  type Origem,
+  type Payment,
+  type TPag,
+  type TotalAggregation,
+  type TributeItem,
+} from './tribute';
+
 // Legacy InvoiceProvider stub — kept until apps/nfe is deployed and the
 // real HTTP-backed provider replaces it (A9 second half).
 export interface NFeConfig {
