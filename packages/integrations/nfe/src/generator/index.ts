@@ -142,5 +142,5 @@ function escape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-export type { GeneratorInput, GeneratorItem, GeneratorOutput } from './types';
+export type { GeneratorInput, GeneratorItem, GeneratorOutput, TpEmis } from './types';
 export { NFeChaveError, NFeIdeError };
