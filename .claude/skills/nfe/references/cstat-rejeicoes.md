@@ -78,7 +78,31 @@ something to query.
 | 280 / 281 / 286 | Certificado de transmissão inválido / vencido / sem cadeia |
 | 290–298 | Certificado/assinatura de assinatura inválidos |
 | 416 | Falha na descompactação da área de dados (Zip) |
-| 656 | Consumo Indevido — caller is looping; back off |
+| 656 | Consumo Indevido — **ban path, see below** |
+
+### 656 — Consumo Indevido (treat as the ban precursor)
+
+`656` does **not** just mean "back off." It is SEFAZ's signal that the
+caller is misbehaving — looping the same request, or repeatedly sending
+schema-invalid payloads, or otherwise generating noise. Continued 656s
+escalate to **throttling**, then to a **CNPJ / certificate ban**. A banned
+cert means the issuer cannot send NF-e at all until the ban is lifted (a
+slow administrative process).
+
+**Therefore: never let a schema-invalid request reach SEFAZ.** Validate
+locally against the canonical XSD pack first. In this repo, that gate is
+`packages/integrations/nfe/src/xsd/` — `validateXsd(rootKey, xml)` runs
+`xmllint-wasm` (the same `libxml2` engine SEFAZ uses) against the
+vendored XSDs. Every SOAP operation in `src/soap/` calls it pre-POST and
+on the inbound response; the gate is non-bypassable from public callers.
+
+When you see 656 in a real response:
+1. Stop immediately. Do not retry on the same condition.
+2. Inspect logs for what was being looped or what schema mistake slipped
+   past the local XSD gate (it shouldn't — if a 656 ever fires, that's a
+   bug in our pre-send validation).
+3. Wait before the next call — minutes at minimum, ideally back off
+   exponentially. Document the incident.
 
 `297`/`298` and similar are signature/cert problems — fix the certificate or
 the signing, then resend with a fresh number is **not** needed (the NF-e was

@@ -81,3 +81,21 @@ to decide whether to switch to contingency.
 - A lote result stays available for ≥ 24 h after processing.
 - Looping the same request → `656 — Rejeição: Consumo Indevido`. Always
   back off and respect `tMed`.
+
+### Mandatory pre-send XSD validation (the ban-prevention rule)
+
+**Never send anything to SEFAZ without first validating against the
+vendored XSD pack.** Schema-invalid requests trigger `cStat=215`/`225`,
+and **repeating those rejections trips `cStat=656`** — which escalates to
+throttling and ultimately a CNPJ / certificate ban.
+
+In this repo the gate is `packages/integrations/nfe/src/xsd/`:
+`validateXsd(rootKey, xml)` runs `xmllint-wasm` (libxml2 in WebAssembly)
+against the schemas under `packages/integrations/nfe/schemas/`. Every
+public SOAP operation in `src/soap/` runs it pre-POST **and** on the
+inbound response (catches captive-portal HTML, proxy junk, parser drift).
+There is no escape hatch from public callers.
+
+If you ever add a new SEFAZ operation, wire it through `postSoapValidated`
+in `src/soap/` with the matching request + response roots. The XSD map
+lives at `XSD_BY_ROOT` in `src/xsd/index.ts`.
