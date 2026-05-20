@@ -185,13 +185,24 @@ async function postSoap(input: PostInput): Promise<PostResult> {
                   ? err.message
                   : String(err);
             // Pass a sanitized cause so the agent's PEM key + cert never
-            // leak into stack traces / Vitest output.
+            // leak into stack traces / Vitest output. Also fold the
+            // underlying error code + message into the wrapper's own
+            // message — without it, the failure says only "SOAP request
+            // to … failed", which is uselessly opaque for diagnosis.
+            const sanitized = sanitizeTransportError(err);
+            const detail = [
+              sanitized.code,
+              sanitized.status ? `HTTP ${sanitized.status}` : undefined,
+              sanitized.message,
+            ]
+              .filter((s) => s != null && s !== '')
+              .join(' — ');
             reject(
               new NFeTransportError(
-                `SOAP request to ${input.url} failed`,
+                `SOAP request to ${input.url} failed${detail ? ': ' + detail : ''}`,
                 statusFromError,
                 bodyFromError,
-                sanitizeTransportError(err),
+                sanitized,
               ),
             );
             return;
