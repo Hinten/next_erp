@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
@@ -35,10 +35,18 @@ function parseDotenv(file: string): Record<string, string> {
 
 // `.env.local` overrides `.env`; the shell environment overrides both
 // (so a one-off `$env:NFE_CERT_BASE64 = '…'` still wins).
-const envFromFiles = {
+const envFromFiles: Record<string, string> = {
   ...parseDotenv(resolve(REPO_ROOT, '.env')),
   ...parseDotenv(resolve(REPO_ROOT, '.env.local')),
 };
+
+// Resolve a relative NFE_CERT_PATH against the repo root (the dir where
+// `.env.local` lives), not against vitest's CWD (the package dir). Users
+// write paths like `.ignore/cert.pfx` thinking from the project root —
+// match that mental model.
+if (envFromFiles.NFE_CERT_PATH && !isAbsolute(envFromFiles.NFE_CERT_PATH)) {
+  envFromFiles.NFE_CERT_PATH = resolve(REPO_ROOT, envFromFiles.NFE_CERT_PATH);
+}
 
 export default defineConfig({
   test: {

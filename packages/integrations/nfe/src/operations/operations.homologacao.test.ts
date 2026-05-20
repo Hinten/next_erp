@@ -30,7 +30,8 @@ import { createSefazAgent, type SefazCall } from '../soap';
 import { consultarStatusServico } from './index';
 
 const hasCert =
-  Boolean(process.env.NFE_CERT_BASE64) && process.env.NFE_CERT_PASSWORD != null;
+  (Boolean(process.env.NFE_CERT_PATH) || Boolean(process.env.NFE_CERT_BASE64)) &&
+  process.env.NFE_CERT_PASSWORD != null;
 
 const describeOrSkip = hasCert ? describe : describe.skip;
 
