@@ -10,7 +10,7 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
   collection: CollectionHandle<S>;
   /** Field on the referenced doc used as the visible label (e.g. `nome`). */
-  labelField: keyof z.infer<S> & string;
+  labelField: string;
   /** Current form value — DocumentReference, `{path}`-shaped object, id string, or null. */
   value: unknown;
   /** Emits a fresh DocumentReference for the picked id, or null when cleared. */
