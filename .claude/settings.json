@@ -15,7 +15,7 @@
     "deny": [
       "Bash(rm -rf:*)",
       "Read(./.env)",
-      "Read(./.env.*)",
+      "Read(./.env.local)",
       "Read(./secrets/**)",
       "Read(./.ignore/**)"
     ]
