@@ -213,7 +213,10 @@ function buildFixture(numeracao: number): GeneratorInput {
       ehFiscal: true,
       finNFe: 1,
       indPres: '2',
-      indIntermed: '0',
+      // indIntermed='1' means the sale was brokered by a marketplace.
+      // Pairs with the `infIntermed` block below (CNPJ + seller's
+      // store ID on the marketplace). SEFAZ NT 2020.006.
+      indIntermed: '1',
       cfop: '5102',
       cfopInterestadual: '6102',
       NCM: '61099000',
@@ -262,7 +265,20 @@ function buildFixture(numeracao: number): GeneratorInput {
     },
     itens: [item],
     totalXml: buildTotalXml(totals),
-    transpXml: buildTranspXml(),
+    // Exercise the optional <transporta> block (carrier disclosure).
+    // modFrete='3' (transporte por conta de terceiros). Real callers
+    // would pass the actual freight company's CNPJ + address.
+    transpXml: buildTranspXml({
+      modFrete: '3',
+      transporta: {
+        CNPJ: '99999999000191',
+        xNome: 'TRANSPORTADORA HOMOLOGACAO LTDA',
+        IE: 'ISENTO',
+        xEnder: 'Avenida das Cargas 100',
+        xMun: 'Sao Paulo',
+        UF: 'SP',
+      },
+    }),
     pagXml: buildPagXml([
       {
         tPag: '17',
@@ -275,6 +291,22 @@ function buildFixture(numeracao: number): GeneratorInput {
         card: { tpIntegra: '2', CNPJ: '99999999000191' },
       },
     ]),
+    // <infIntermed> — required when indIntermed='1'. CNPJ is the
+    // marketplace's, idCadIntTran is the seller's store id on that
+    // marketplace. Both fake here for HOM smoke; production reads
+    // these from Pedido.intermediador (Phase D wiring).
+    infIntermed: {
+      CNPJ: '99999999000191',
+      idCadIntTran: 'SELLER-HOMOLOGACAO-001',
+    },
+    // <infAdic.infCpl> — fiscal complementary text shown on the
+    // DANFE. Marketplaces typically inject order ID + buyer name
+    // here. Free-text, sanitized by the generator (≤5000 chars).
+    infAdic: {
+      infCpl:
+        'Pedido marketplace #ML-HOMOLOG-001 — comprador: CLIENTE HOMOLOGACAO. ' +
+        'Mercadoria sem valor fiscal — emitida em ambiente de homologacao.',
+    },
   };
 }
 

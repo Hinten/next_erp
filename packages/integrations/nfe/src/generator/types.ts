@@ -65,6 +65,18 @@ export interface InfAdic {
   readonly infAdFisco?: string;
 }
 
+/**
+ * Marketplace / intermediator identification, per SEFAZ NT 2020.006.
+ * Required when `operacao.indIntermed === '1'` (sale brokered by a
+ * marketplace). `CNPJ` is the intermediator's CNPJ; `idCadIntTran`
+ * is the seller's identifier on the intermediator's platform (e.g.
+ * the seller's store ID on Mercado Livre / Shopee / iFood).
+ */
+export interface InfIntermed {
+  readonly CNPJ: string;
+  readonly idCadIntTran: string;
+}
+
 export interface GeneratorInput {
   readonly ambiente: Ambiente;
   /** `nNF` — the NF-e number assigned by the issuer. */
@@ -87,6 +99,11 @@ export interface GeneratorInput {
   /** Pre-built `<pag>...</pag>` XML. */
   readonly pagXml: string;
   readonly infAdic?: InfAdic;
+  /**
+   * Marketplace / intermediator block. SEFAZ requires this when
+   * `operacao.indIntermed === '1'`; leave undefined otherwise.
+   */
+  readonly infIntermed?: InfIntermed;
   readonly infRespTec?: InfRespTec;
   /**
    * Override `cNF` to make the chave deterministic — test fixtures only.
