@@ -66,6 +66,13 @@ const hasCert =
 
 const describeOrSkip = hasCert ? describe : describe.skip;
 
+// Load the cert once when env vars are set so the fixture can read its
+// CNPJ. SEFAZ rejection 213 (CNPJ-Base do Emitente difere do CNPJ-Base
+// do Certificado Digital) fires whenever the emit CNPJ's first 8 digits
+// don't match the cert's — wiring the fixture to the cert eliminates
+// that failure mode regardless of which valid A1 PFX is loaded.
+const TEST_CERT = hasCert ? loadCertificateFromEnv() : null;
+
 // ---------------------------------------------------------------------------
 // Fixture helpers
 // ---------------------------------------------------------------------------
@@ -132,9 +139,12 @@ function buildFixture(numeracao: number): GeneratorInput {
     serie: 1,
     dhEmi: new Date(),
     filial: {
-      // Per the SEFAZ test packs, the standard issuer CNPJ
-      // for homologação smoke is the same one we use across the suite.
-      cnpj: '14200166000187',
+      // CNPJ comes from the loaded A1 cert — SEFAZ enforces "first 8
+      // digits of emit CNPJ must match cert CNPJ-base" (rejection 213).
+      // The non-null assertion is sound: this fixture is only reachable
+      // inside `describeOrSkip`, which short-circuits when `hasCert`
+      // (and therefore TEST_CERT) is false.
+      cnpj: TEST_CERT!.cnpj,
       // razão social often arrives from cadastro with stray symbols + accents.
       razaoSocial: 'EMPRESA HOMOLOGAÇÃO & CIA. LTDA — ME [@#$%]',
       fantasia: null,

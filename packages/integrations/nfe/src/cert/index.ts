@@ -37,6 +37,18 @@ export class NFeCertError extends Error {
   }
 }
 
+/**
+ * Canonical CNPJ format — 12 alphanumeric chars + 2 numeric DV (14
+ * total). Forward-compatible with Receita Federal IN RFB 2229/2024,
+ * which introduces the alphanumeric CNPJ effective July 2026; today's
+ * 14-digit CNPJs are a strict subset because `\d` ⊆ `[A-Z0-9]`.
+ * Lowercase is not accepted — Receita Federal mandates uppercase.
+ * Letters I, O, Q, F are technically valid but Receita recommends
+ * avoiding them (visual collision with digits); we do NOT exclude them
+ * here because that's a cert-issuer guideline, not a consumer rule.
+ */
+export const CNPJ_FORMAT = /^[A-Z0-9]{12}[0-9]{2}$/;
+
 /** Parsed A1 certificate ready for signing + mTLS. */
 export interface NFeCertificate {
   /** PKCS#1 PEM-encoded RSA private key. */
@@ -47,6 +59,15 @@ export interface NFeCertificate {
   readonly certificateDerBase64: string;
   /** Subject CN as written on the cert (e.g. `EMPRESA LTDA:12345678000199`). */
   readonly subjectCommonName: string;
+  /**
+   * CNPJ extracted from the Subject CN suffix. ICP-Brasil PA-3 puts the
+   * emitter CNPJ in the CN as `<COMPANY NAME>:<CNPJ>`; we pull it once
+   * at load time so every consumer (orchestrator, tests) reads the
+   * same value the cert was issued for, eliminating SEFAZ rejection
+   * 213 (CNPJ-Base do Emitente difere do CNPJ-Base do Certificado
+   * Digital) by construction.
+   */
+  readonly cnpj: string;
   /** `notAfter` — caller can warn when expiry is near. */
   readonly notAfter: Date;
   /** Original PFX bytes — fed verbatim to `https.Agent({ pfx, passphrase })`. */
@@ -96,11 +117,30 @@ function parsePfxBuffer(pfxBuffer: Buffer, password: string): NFeCertificate {
       ? String(subjectCn.value)
       : '';
 
+  // ICP-Brasil A1 certs encode the CNPJ as the CN suffix after the last
+  // colon: `<COMPANY NAME>:<CNPJ>`. Pull the suffix and validate it
+  // against CNPJ_FORMAT — that's both today's 14-digit and the upcoming
+  // alphanumeric format (IN RFB 2229/2024, effective July 2026).
+  const colonIdx = subjectCommonName.lastIndexOf(':');
+  const cnpjCandidate =
+    colonIdx >= 0 ? subjectCommonName.slice(colonIdx + 1).trim() : '';
+  if (!CNPJ_FORMAT.test(cnpjCandidate)) {
+    throw new NFeCertError(
+      `Certificate Subject CN does not contain a valid CNPJ suffix ` +
+        `(got "${subjectCommonName}"). Expected ICP-Brasil A1 format ` +
+        `"<COMPANY NAME>:<CNPJ>" where the CNPJ matches ${CNPJ_FORMAT}. ` +
+        `Verify NFE_CERT_PATH / NFE_CERT_BASE64 points to an ICP-Brasil ` +
+        `e-CNPJ certificate.`,
+    );
+  }
+  const cnpj = cnpjCandidate;
+
   return {
     privateKeyPem,
     certificatePem,
     certificateDerBase64,
     subjectCommonName,
+    cnpj,
     notAfter: certBag.cert.validity.notAfter,
     pfxBuffer,
     password,

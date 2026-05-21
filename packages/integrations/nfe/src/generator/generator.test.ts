@@ -251,7 +251,8 @@ function fixtureCertificate(): NFeCertificate {
     certificateDerBase64: forge.util.encode64(
       forge.asn1.toDer(forge.pki.certificateToAsn1(cert)).getBytes(),
     ),
-    subjectCommonName: 'GEN TEST',
+    subjectCommonName: 'GEN TEST:99999999000191',
+    cnpj: '99999999000191',
     notAfter: cert.validity.notAfter,
     pfxBuffer: Buffer.from(''),
     password: '',
