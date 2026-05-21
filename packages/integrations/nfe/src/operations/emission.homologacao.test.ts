@@ -99,7 +99,7 @@ function impostoCsosn102(): Imposto {
     origem: '0',
     cfop: '5102',
     cfopInterestadual: '6102',
-    NCM: '87120000',
+    NCM: '61099000',
     unidade: 'UN',
     configuracaoICMS: {
       crt: '1',
@@ -130,7 +130,7 @@ function buildFixture(numeracao: number): GeneratorInput {
     cProd: 'SKU-A',
     cEAN: 'SEM GTIN',
     xProd: 'Mercadoria com acentuação — ÁÉÍÓÚ@#$%',
-    NCM: '87120000',
+    NCM: '61099000',
     CFOP: '5102',
     uCom: 'UN',
     qCom: 1,
@@ -216,8 +216,8 @@ function buildFixture(numeracao: number): GeneratorInput {
       indIntermed: '0',
       cfop: '5102',
       cfopInterestadual: '6102',
-      NCM: '87120000',
-      CEST: null,
+      NCM: '61099000',
+      CEST: '2803800',
       unidade: 'UN',
       infCpl: null,
     },
@@ -263,7 +263,18 @@ function buildFixture(numeracao: number): GeneratorInput {
     itens: [item],
     totalXml: buildTotalXml(totals),
     transpXml: buildTranspXml(),
-    pagXml: buildPagXml([{ tPag: '17', vPag: 1500 }]),
+    pagXml: buildPagXml([
+      {
+        tPag: '17',
+        vPag: 1500,
+        // SEFAZ rejects PIX with cStat=391 when the <card> block is
+        // absent; tpIntegra='2' (standalone — the marketplace / PSP
+        // is the acquirer, not an integrated POS) plus the PSP CNPJ
+        // satisfies the rule. Real production callers would pass
+        // the actual acquirer CNPJ; the placeholder works in HOM.
+        card: { tpIntegra: '2', CNPJ: '99999999000191' },
+      },
+    ]),
   };
 }
 

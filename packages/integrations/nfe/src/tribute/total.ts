@@ -11,6 +11,11 @@
  * `.old/packages/pedido_nfe/lib/src/pedido_nfe_base.dart:276-296`
  * (the bag of vBC_ICMSTot, vICMS_ICMSTot, … doubles).
  */
+import { serializeFragment, type XmlValue } from '../xml';
+import type {
+  TNFe_infNFe_total,
+  TNFe_infNFe_total_ICMSTot,
+} from '../types/nfe-schema';
 import { fmtMoney, round2 } from './format';
 import type { Imposto, TributeItem } from './schemas';
 
@@ -104,32 +109,47 @@ export function aggregateTotals(items: ReadonlyArray<PerItem>): TotalAggregation
   };
 }
 
-/** Emit the `<total>` XML block from a `TotalAggregation`. */
+/**
+ * Build the typed `<total>` value. Every ICMSTot field is required
+ * by the XSD; the META walker emits them in XSD order. Use
+ * `buildTotalXml` to emit the wire XML; this overload is the typed
+ * entry point for consumers that want to plug the result into a
+ * larger value (DANFE renderer, fiscal audit, …).
+ */
+export function buildTotalObject(totals: TotalAggregation): TNFe_infNFe_total {
+  const ICMSTot: TNFe_infNFe_total_ICMSTot = {
+    vBC: fmtMoney('vBC', totals.vBC),
+    vICMS: fmtMoney('vICMS', totals.vICMS),
+    vICMSDeson: fmtMoney('vICMSDeson', totals.vICMSDeson),
+    vFCP: fmtMoney('vFCP', totals.vFCP),
+    vBCST: fmtMoney('vBCST', totals.vBCST),
+    vST: fmtMoney('vST', totals.vST),
+    vFCPST: fmtMoney('vFCPST', totals.vFCPST),
+    vFCPSTRet: fmtMoney('vFCPSTRet', totals.vFCPSTRet),
+    vProd: fmtMoney('vProd', totals.vProd),
+    vFrete: fmtMoney('vFrete', totals.vFrete),
+    vSeg: fmtMoney('vSeg', totals.vSeg),
+    vDesc: fmtMoney('vDesc', totals.vDesc),
+    vII: fmtMoney('vII', totals.vII),
+    vIPI: fmtMoney('vIPI', totals.vIPI),
+    vIPIDevol: fmtMoney('vIPIDevol', totals.vIPIDevol),
+    vPIS: fmtMoney('vPIS', totals.vPIS),
+    vCOFINS: fmtMoney('vCOFINS', totals.vCOFINS),
+    vOutro: fmtMoney('vOutro', totals.vOutro),
+    vNF: fmtMoney('vNF', totals.vNF),
+  };
+  return { ICMSTot };
+}
+
+/**
+ * Emit the `<total>` XML block from a `TotalAggregation`. Element
+ * ordering and text escaping are owned by `serializeFragment`'s
+ * META-driven walker (same path used by `ide` / `emit` / `dest`).
+ */
 export function buildTotalXml(totals: TotalAggregation): string {
-  // Hand-emit — every field is required by the XSD in a fixed order
-  // and they're all simple `xs:string` numerics, so a template is
-  // cheaper than going through serializeFragment for 19 fields.
-  return (
-    '<total><ICMSTot>' +
-    `<vBC>${fmtMoney('vBC', totals.vBC)}</vBC>` +
-    `<vICMS>${fmtMoney('vICMS', totals.vICMS)}</vICMS>` +
-    `<vICMSDeson>${fmtMoney('vICMSDeson', totals.vICMSDeson)}</vICMSDeson>` +
-    `<vFCP>${fmtMoney('vFCP', totals.vFCP)}</vFCP>` +
-    `<vBCST>${fmtMoney('vBCST', totals.vBCST)}</vBCST>` +
-    `<vST>${fmtMoney('vST', totals.vST)}</vST>` +
-    `<vFCPST>${fmtMoney('vFCPST', totals.vFCPST)}</vFCPST>` +
-    `<vFCPSTRet>${fmtMoney('vFCPSTRet', totals.vFCPSTRet)}</vFCPSTRet>` +
-    `<vProd>${fmtMoney('vProd', totals.vProd)}</vProd>` +
-    `<vFrete>${fmtMoney('vFrete', totals.vFrete)}</vFrete>` +
-    `<vSeg>${fmtMoney('vSeg', totals.vSeg)}</vSeg>` +
-    `<vDesc>${fmtMoney('vDesc', totals.vDesc)}</vDesc>` +
-    `<vII>${fmtMoney('vII', totals.vII)}</vII>` +
-    `<vIPI>${fmtMoney('vIPI', totals.vIPI)}</vIPI>` +
-    `<vIPIDevol>${fmtMoney('vIPIDevol', totals.vIPIDevol)}</vIPIDevol>` +
-    `<vPIS>${fmtMoney('vPIS', totals.vPIS)}</vPIS>` +
-    `<vCOFINS>${fmtMoney('vCOFINS', totals.vCOFINS)}</vCOFINS>` +
-    `<vOutro>${fmtMoney('vOutro', totals.vOutro)}</vOutro>` +
-    `<vNF>${fmtMoney('vNF', totals.vNF)}</vNF>` +
-    '</ICMSTot></total>'
+  return serializeFragment(
+    'TNFe_infNFe_total',
+    'total',
+    buildTotalObject(totals) as unknown as XmlValue,
   );
 }
