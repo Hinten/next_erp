@@ -198,7 +198,14 @@ function buildFixture(numeracao: number): GeneratorInput {
       tipo: 1,
       ehServico: false,
       ehExterior: false,
-      ehConsumidorFinal: false,
+      // The fixture's cliente has no IE (cliente.ie is null), so
+      // `buildDest` stamps indIEDest='9' (não contribuinte). SEFAZ rule
+      // 696 then demands indFinal='1' — i.e. the operation must be
+      // marked as final-consumer. Flipping this to `true` satisfies
+      // the cross-field consistency check and matches the semantics
+      // of the fixture (a marketplace-style sale to an end consumer
+      // without state inscription).
+      ehConsumidorFinal: true,
       padrao: false,
       ativo: true,
       movimentaEstoque: true,
