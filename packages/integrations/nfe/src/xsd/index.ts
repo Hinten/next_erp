@@ -22,8 +22,16 @@ import { fileURLToPath } from 'node:url';
 
 import { validateXML, type XMLFileInfo } from 'xmllint-wasm';
 
+// MOC version of the XSDs we validate against. Must stay in sync with
+// the `src/types/nfe-schema.ts` shim and the `ACTIVE_MOC` constant in
+// `src/codegen/generate.mjs`. The XSDs themselves live under
+// `generated/moc${ACTIVE_MOC}/schemas/` — keeping them next to the
+// types they generated lets old MOC versions coexist when SEFAZ
+// ships a new one. See `CLAUDE.md` for the upgrade playbook.
+const ACTIVE_MOC = '7.0';
+
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCHEMA_DIR = join(HERE, '..', '..', 'schemas');
+const SCHEMA_DIR = join(HERE, '..', '..', 'generated', `moc${ACTIVE_MOC}`, 'schemas');
 
 /** Root XML name → XSD file that defines that root. */
 const XSD_BY_ROOT = {

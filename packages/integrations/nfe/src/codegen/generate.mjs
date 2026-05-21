@@ -15,10 +15,18 @@ import { readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// MOC version this generator targets. NFe MOC + XSD layout pairs live
+// side-by-side under `generated/mocX.Y/` so we can support older
+// versions without breaking what was working when SEFAZ ships a new
+// MOC. To target a different MOC, bump this constant and re-run
+// codegen — see `CLAUDE.md` for the upgrade playbook.
+const ACTIVE_MOC = '7.0';
+
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCHEMA_DIR = join(HERE, '..', '..', 'schemas');
-const OUT_FILE = join(HERE, '..', 'types', 'nfe-schema.ts');
-const OUT_ZOD_FILE = join(HERE, '..', 'types', 'nfe-schema-zod.ts');
+const MOC_DIR = join(HERE, '..', '..', 'generated', `moc${ACTIVE_MOC}`);
+const SCHEMA_DIR = join(MOC_DIR, 'schemas');
+const OUT_FILE = join(MOC_DIR, 'types', 'nfe-schema.ts');
+const OUT_ZOD_FILE = join(MOC_DIR, 'types', 'nfe-schema-zod.ts');
 
 // ---------------------------------------------------------------------------
 // Minimal XML parser — enough for XSD (no CDATA in structural nodes, no DTD).
