@@ -6,7 +6,7 @@ import {
   cStatToEstado,
   MAX_LOTE_POLL_RETRIES,
   nextAction,
-} from './index';
+} from '../../src/state/index';
 
 describe('classifyCStat', () => {
   it.each([

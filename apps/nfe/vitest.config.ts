@@ -5,7 +5,7 @@ export default defineConfig({
   test: {
     name: '@delfrance/nfe-app',
     environment: 'node',
-    include: ['{app,lib}/**/*.test.ts', 'lib/**/*.test.ts'],
+    include: ['test/**/*.test.ts'],
   },
   resolve: {
     alias: {

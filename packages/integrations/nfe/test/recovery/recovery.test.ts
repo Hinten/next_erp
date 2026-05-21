@@ -11,7 +11,7 @@ import {
   outcomeFromRetEnviNFe,
   RE_CHNFE,
   RE_NREC,
-} from './index';
+} from '../../src/recovery/index';
 
 const CHAVE = '35200714200166000187550010000000071000000017';
 

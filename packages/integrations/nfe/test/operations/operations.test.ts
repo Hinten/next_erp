@@ -2,18 +2,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import https from 'node:https';
 import forge from 'node-forge';
 
-import type { NFeCertificate } from '../cert';
-import { NFeXsdValidationError } from '../xsd';
-import type { SefazCall } from '../soap';
+import type { NFeCertificate } from '../../src/cert';
+import { NFeXsdValidationError } from '../../src/xsd';
+import type { SefazCall } from '../../src/soap';
 import {
   autorizarLote,
   consultarLote,
   consultarSituacaoNFe,
   consultarStatusServico,
-} from './index';
+} from '../../src/operations/index';
 
-vi.mock('../soap', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../soap')>();
+vi.mock('../../src/soap', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/soap')>();
   return {
     ...actual,
     nfeStatusServico: vi.fn(),
@@ -28,7 +28,7 @@ import {
   nfeConsultaProtocolo as mockedNfeConsultaProtocolo,
   nfeRetAutorizacao as mockedNfeRetAutorizacao,
   nfeStatusServico as mockedNfeStatusServico,
-} from '../soap';
+} from '../../src/soap';
 
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
 const CHAVE = '35200714200166000187550010000000071000000018';

@@ -8,14 +8,14 @@
 import { describe, expect, it } from 'vitest';
 import type { NFeConfig } from '@delfrance/schemas';
 
-import { nextIdLote, nextNumeracao } from './index';
+import { nextIdLote, nextNumeracao } from '../../src/numeracao/index';
 import {
   DEFAULT_NFE_CONFIG_DOC_ID,
   nfeConfigStoreFromFirestore,
   type AdminDocRefLike,
   type AdminFirestoreLike,
   type AdminTxLike,
-} from './firestore-adapter';
+} from '../../src/numeracao/firestore-adapter';
 
 /** Fake Firestore — same shape as firebase-admin, in-memory storage. */
 function fakeFirestore(seed: Record<string, NFeConfig>): {

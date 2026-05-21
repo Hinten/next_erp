@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { serialize, parse, NFeXmlError, type XmlValue } from './index';
+import { serialize, parse, NFeXmlError, type XmlValue } from '../../src/xml/index';
 
 describe('serialize', () => {
   it('builds an element in xs:sequence order with the NF-e namespace', () => {

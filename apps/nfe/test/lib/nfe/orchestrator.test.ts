@@ -39,8 +39,8 @@ import {
   NFeMissingImpostoError,
   NFeOrchestratorError,
   NFePedidoNotFoundError,
-} from './orchestrator';
-import type { NFeRuntime } from './runtime';
+} from '../../../lib/nfe/orchestrator';
+import type { NFeRuntime } from '../../../lib/nfe/runtime';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';

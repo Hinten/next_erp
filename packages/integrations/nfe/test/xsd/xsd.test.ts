@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NFeXsdValidationError, supportedRoots, validateXsd } from './index';
+import { NFeXsdValidationError, supportedRoots, validateXsd } from '../../src/xsd/index';
 
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
 

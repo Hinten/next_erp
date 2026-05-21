@@ -34,7 +34,7 @@ import {
 } from '@/lib/nfe/orchestrator';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
 
-import { POST } from './route';
+import { POST } from '../../../../../app/api/nfe/emitir/route';
 
 function req(body: unknown, headers: Record<string, string> = {}): Request {
   return new Request('http://localhost/api/nfe/emitir', {

@@ -42,11 +42,11 @@ import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 
 import { nfeConfigSchema, type NFeConfig } from '@delfrance/schemas';
 
-import { nextIdLote, nextNumeracao, nextNumeracaoBulk } from './index';
+import { nextIdLote, nextNumeracao, nextNumeracaoBulk } from '../../src/numeracao/index';
 import {
   nfeConfigStoreFromFirestore,
   type AdminFirestoreLike,
-} from './firestore-adapter';
+} from '../../src/numeracao/firestore-adapter';
 
 const hasCreds =
   Boolean(process.env.FIREBASE_PROJECT_ID) &&

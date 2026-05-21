@@ -29,11 +29,11 @@ import type {
   Operacao,
 } from '@delfrance/schemas';
 
-import { generateNFe } from './index';
-import { HOMOLOGACAO_XNOME } from './parties';
-import { parse } from '../xml';
-import { NFeXsdValidationError, validateXsd } from '../xsd';
-import type { GeneratorInput, GeneratorItem } from './types';
+import { generateNFe } from '../../src/generator/index';
+import { HOMOLOGACAO_XNOME } from '../../src/generator/parties';
+import { parse } from '../../src/xml';
+import { NFeXsdValidationError, validateXsd } from '../../src/xsd';
+import type { GeneratorInput, GeneratorItem } from '../../src/generator/types';
 
 // ---------------------------------------------------------------------------
 // Sentinel fixture — every distinct, recognisable value
