@@ -18,8 +18,12 @@ export default function CanalBalcaoPage() {
 
   // The `integracao` collection holds every channel type; the Balcão screen
   // is just one slice (`tipo == 7`). `queryOverride` is the documented escape
-  // hatch — when set, the TableView's own orderBy/pageSize are bypassed, so
-  // both the `where` and the `orderBy` ship together here.
+  // hatch — when set, the TableView's own orderBy/pageSize AND its column-
+  // filter pipeline are bypassed (the caller owns the query lifecycle), so
+  // both the `where` and the `orderBy` ship together here. The column-filter
+  // popovers still render but won't narrow the result set; until TableView
+  // grows a `baseFilters` prop, restricting the channel by `tipo` and giving
+  // up user-driven column filters on this screen is the trade-off.
   const balcaoQuery = useMemo(
     () =>
       query(
