@@ -107,6 +107,11 @@ export default function PedidoDetailPage() {
       const result = await nfeClient.emitir(pedidoId);
       notifications.show({ ...notificationForNFeResult(result), autoClose: 8000 });
     } catch (err) {
+      // Non-Error throws are programming bugs (e.g. `throw 'string'`) —
+      // re-throw so they surface as uncaught rejections.
+      // notificationForNFeError narrows by instanceof per typed
+      // subclass (NFeRejectedError, NFeBlockedError, …).
+      if (!(err instanceof Error)) throw err;
       notifications.show({ ...notificationForNFeError(err), autoClose: 8000 });
     } finally {
       setEmittingNFe(false);
