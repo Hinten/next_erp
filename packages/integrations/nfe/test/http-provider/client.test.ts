@@ -1,0 +1,239 @@
+/**
+ * NFeHttpClient tests — mock the fetch transport, assert request
+ * shape + response parsing + error-mapping by HTTP status.
+ */
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+  createNFeHttpClient,
+  NFeAuthError,
+  NFeBadRequestError,
+  NFeBlockedError,
+  NFeNetworkError,
+  NFePedidoNotFoundError,
+  NFeRejectedError,
+  NFeRuntimeNotReadyError,
+  NFeServerError,
+  type NFeEmitResult,
+} from '../../src/http-provider';
+
+const TOKEN = 'fake-firebase-id-token';
+
+/**
+ * Build a mocked fetch that returns a FRESH Response on every call.
+ * Response bodies can only be read once; reusing the same instance
+ * across calls trips "Body has already been read".
+ */
+function mockFetch(res: { status: number; body?: unknown; text?: string }) {
+  const text = res.text ?? (res.body !== undefined ? JSON.stringify(res.body) : '');
+  return vi.fn().mockImplementation(() =>
+    Promise.resolve(
+      new Response(text, {
+        status: res.status,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ),
+  );
+}
+
+function makeClient(fetch: typeof globalThis.fetch) {
+  return createNFeHttpClient({
+    baseUrl: 'http://localhost:3004',
+    getAuthToken: async () => TOKEN,
+    fetch,
+  });
+}
+
+describe('createNFeHttpClient — emitir', () => {
+  it('POSTs to /api/nfe/emitir with Bearer token + pedidoId body', async () => {
+    const result: NFeEmitResult = {
+      nfeId: 'nfev4-001',
+      pedidoId: 'PED-001',
+      estado: 'aprovada',
+      chave: '35260514200166000187550010000000071000000018',
+      nRec: '12345',
+      cStat: '100',
+      xMotivo: 'Autorizado o uso da NF-e',
+    };
+    const fetch = mockFetch({ status: 200, body: result });
+    const client = makeClient(fetch);
+
+    const got = await client.emitir('PED-001');
+
+    expect(got).toEqual(result);
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:3004/api/nfe/emitir');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ pedidoId: 'PED-001' });
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(headers['Content-Type']).toBe('application/json');
+  });
+
+  it('maps 401 → NFeAuthError', async () => {
+    const fetch = mockFetch({ status: 401, body: { error: 'no token' } });
+    await expect(makeClient(fetch).emitir('PED-001')).rejects.toBeInstanceOf(NFeAuthError);
+  });
+
+  it('maps 403 → NFeAuthError', async () => {
+    const fetch = mockFetch({ status: 403, body: { error: 'insufficient perm' } });
+    await expect(makeClient(fetch).emitir('PED-001')).rejects.toBeInstanceOf(NFeAuthError);
+  });
+
+  it('maps 404 → NFePedidoNotFoundError carrying the pedidoId', async () => {
+    const fetch = mockFetch({ status: 404, body: { error: 'Pedido not found' } });
+    try {
+      await makeClient(fetch).emitir('PED-MISSING');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(NFePedidoNotFoundError);
+      expect((err as NFePedidoNotFoundError).pedidoId).toBe('PED-MISSING');
+    }
+  });
+
+  it('maps 409 → NFeBlockedError carrying the pedidoId', async () => {
+    const fetch = mockFetch({ status: 409, body: { error: 'bloqueada' } });
+    try {
+      await makeClient(fetch).emitir('PED-001');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(NFeBlockedError);
+      expect((err as NFeBlockedError).pedidoId).toBe('PED-001');
+    }
+  });
+
+  it('maps 422 → NFeRejectedError carrying cStat + xMotivo', async () => {
+    const fetch = mockFetch({
+      status: 422,
+      body: {
+        nfeId: 'nfev4-002',
+        pedidoId: 'PED-002',
+        estado: 'rejeitada',
+        chave: '35260514200166000187550010000000081000000019',
+        nRec: null,
+        cStat: '226',
+        xMotivo: 'Rejeicao: Codigo da UF do Emitente diverge da UF',
+      },
+    });
+    try {
+      await makeClient(fetch).emitir('PED-002');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(NFeRejectedError);
+      expect((err as NFeRejectedError).cStat).toBe('226');
+      expect((err as NFeRejectedError).xMotivo).toContain('UF');
+    }
+  });
+
+  it('maps 503 → NFeRuntimeNotReadyError', async () => {
+    const fetch = mockFetch({
+      status: 503,
+      body: { error: 'cert expired' },
+    });
+    await expect(makeClient(fetch).emitir('PED-001')).rejects.toBeInstanceOf(
+      NFeRuntimeNotReadyError,
+    );
+  });
+
+  it('maps 500 → NFeServerError', async () => {
+    const fetch = mockFetch({ status: 500, body: { error: 'transport failed' } });
+    await expect(makeClient(fetch).emitir('PED-001')).rejects.toBeInstanceOf(NFeServerError);
+  });
+
+  it('maps 400 → NFeBadRequestError', async () => {
+    const fetch = mockFetch({ status: 400, body: { error: 'bad body' } });
+    await expect(makeClient(fetch).emitir('')).rejects.toBeInstanceOf(NFeBadRequestError);
+  });
+
+  it('maps fetch failure → NFeNetworkError (with cause)', async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    try {
+      await makeClient(fetch).emitir('PED-001');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(NFeNetworkError);
+      expect((err as NFeNetworkError).cause).toBeInstanceOf(TypeError);
+    }
+  });
+
+  it('tolerates non-JSON error body (e.g. plain-text 503 from a proxy)', async () => {
+    const fetch = mockFetch({ status: 503, text: 'Service Unavailable' });
+    try {
+      await makeClient(fetch).emitir('PED-001');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(NFeRuntimeNotReadyError);
+    }
+  });
+});
+
+describe('createNFeHttpClient — consultar', () => {
+  it('GETs /api/nfe/consultar?chave=<…> with Bearer token', async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: {
+        chave: '35260514200166000187550010000000071000000018',
+        cStat: '100',
+        xMotivo: 'Autorizado',
+        nProt: '12345',
+        raw: { dummy: true },
+      },
+    });
+    const got = await makeClient(fetch).consultar(
+      '35260514200166000187550010000000071000000018',
+    );
+
+    expect(got.cStat).toBe('100');
+    expect(got.nProt).toBe('12345');
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(
+      'http://localhost:3004/api/nfe/consultar?chave=35260514200166000187550010000000071000000018',
+    );
+    expect(init.method).toBe('GET');
+    expect(init.body).toBeUndefined();
+  });
+});
+
+describe('createNFeHttpClient — processarPendentes', () => {
+  it('POSTs to /api/nfe/processar-pendentes with empty body', async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { scanned: 5, recovered: 3, stillPending: 1, errors: 1 },
+    });
+    const got = await makeClient(fetch).processarPendentes();
+
+    expect(got.recovered).toBe(3);
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:3004/api/nfe/processar-pendentes');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({});
+  });
+});
+
+describe('createNFeHttpClient — baseUrl normalisation', () => {
+  it('strips a single trailing slash off baseUrl', async () => {
+    const fetch = mockFetch({ status: 200, body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 } });
+    const client = createNFeHttpClient({
+      baseUrl: 'http://localhost:3004/',
+      getAuthToken: async () => TOKEN,
+      fetch,
+    });
+    await client.processarPendentes();
+    const [url] = fetch.mock.calls[0] as [string];
+    expect(url).toBe('http://localhost:3004/api/nfe/processar-pendentes');
+  });
+
+  it('calls getAuthToken on every request (token refresh)', async () => {
+    const fetch = mockFetch({ status: 200, body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 } });
+    const getAuthToken = vi.fn().mockResolvedValue(TOKEN);
+    const client = createNFeHttpClient({
+      baseUrl: 'http://localhost:3004',
+      getAuthToken,
+      fetch,
+    });
+    await client.processarPendentes();
+    await client.processarPendentes();
+    expect(getAuthToken).toHaveBeenCalledTimes(2);
+  });
+});
