@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { __internal } from './index';
+import { __internal } from '../../src/soap/index';
 
 describe('buildEnvelope', () => {
   const { buildEnvelope } = __internal;

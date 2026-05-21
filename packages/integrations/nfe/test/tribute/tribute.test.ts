@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import forge from 'node-forge';
 
-import { signNFe, validateXsd, type NFeCertificate } from '../index';
+import { signNFe, validateXsd, type NFeCertificate } from '../../src/index';
 
 import {
   aggregateTotals,
@@ -22,7 +22,7 @@ import {
   NFeTributeError,
   TributeFormatError,
   type Imposto,
-} from './index';
+} from '../../src/tribute/index';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';

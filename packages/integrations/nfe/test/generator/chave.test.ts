@@ -6,7 +6,7 @@ import {
   computeCDV,
   NFeChaveError,
   randomCNF,
-} from './chave';
+} from '../../src/generator/chave';
 
 describe('computeCDV', () => {
   // Hand-computed against the right-to-left weighted-sum algorithm on a

@@ -3,8 +3,8 @@ import forge from 'node-forge';
 import { SignedXml } from 'xml-crypto';
 import { DOMParser } from '@xmldom/xmldom';
 
-import type { NFeCertificate } from '../cert';
-import { NFeSignatureError, signEvento, signInutilizacao, signNFe } from './index';
+import type { NFeCertificate } from '../../src/cert';
+import { NFeSignatureError, signEvento, signInutilizacao, signNFe } from '../../src/sign/index';
 
 /** Build a self-signed RSA key + cert so signature verification has a key. */
 function fixtureCertificate(): NFeCertificate {

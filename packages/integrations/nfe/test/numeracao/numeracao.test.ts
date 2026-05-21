@@ -18,7 +18,7 @@ import {
   readNFeConfig,
   type NFeConfigStore,
   type NFeConfigTx,
-} from './index';
+} from '../../src/numeracao/index';
 
 /**
  * In-memory store backed by a Map. `runTransaction` serialises calls

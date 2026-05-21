@@ -36,11 +36,11 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { assertCertNotExpired, loadCertificateFromEnv } from '../cert';
-import { getEndpoints } from '../endpoints';
-import { generateNFe, type GeneratorInput } from '../generator';
-import { signNFe } from '../sign';
-import { createSefazAgent, type SefazCall } from '../soap';
+import { assertCertNotExpired, loadCertificateFromEnv } from '../../src/cert';
+import { getEndpoints } from '../../src/endpoints';
+import { generateNFe, type GeneratorInput } from '../../src/generator';
+import { signNFe } from '../../src/sign';
+import { createSefazAgent, type SefazCall } from '../../src/soap';
 import {
   buildImpostoXml,
   buildPagXml,
@@ -48,14 +48,14 @@ import {
   buildTranspXml,
   aggregateTotals,
   type Imposto,
-} from '../tribute';
-import type { TProtNFe } from '../types/nfe-schema';
+} from '../../src/tribute';
+import type { TProtNFe } from '../../src/types/nfe-schema';
 import {
   autorizarLote,
   consultarLote,
   consultarSituacaoNFe,
   consultarStatusServico,
-} from './index';
+} from '../../src/operations/index';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VENDORED_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-sp-homologacao.pem');

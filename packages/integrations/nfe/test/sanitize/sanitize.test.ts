@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { removerAcentos, removerCharRestrito, sanitizeNFeText } from './index';
+import { removerAcentos, removerCharRestrito, sanitizeNFeText } from '../../src/sanitize/index';
 
 describe('removerAcentos', () => {
   it('strips diacritics', () => {

@@ -56,7 +56,7 @@ for (const key of ['NFE_CERT_PATH', 'FIREBASE_SERVICE_ACCOUNT_PATH'] as const) {
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['test/**/*.test.ts'],
     env: { ...envFromFiles, ...process.env },
   },
 });

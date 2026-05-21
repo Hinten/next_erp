@@ -28,10 +28,10 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { assertCertNotExpired, loadCertificateFromEnv, warnIfCertNearExpiry } from '../cert';
-import { getEndpoints } from '../endpoints';
-import { createSefazAgent, type SefazCall } from '../soap';
-import { consultarStatusServico } from './index';
+import { assertCertNotExpired, loadCertificateFromEnv, warnIfCertNearExpiry } from '../../src/cert';
+import { getEndpoints } from '../../src/endpoints';
+import { createSefazAgent, type SefazCall } from '../../src/soap';
+import { consultarStatusServico } from '../../src/operations/index';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VENDORED_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-sp-homologacao.pem');

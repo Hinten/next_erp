@@ -14,7 +14,7 @@ import {
   loadCertificateFromPath,
   warnIfCertNearExpiry,
   type NFeCertificate,
-} from './index';
+} from '../../src/cert/index';
 
 /** Build a self-signed PFX in-memory so tests don't ship a real certificate. */
 function buildPfxFixture(opts: {

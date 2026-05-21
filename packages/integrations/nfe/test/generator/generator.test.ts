@@ -7,11 +7,11 @@ import type {
   Operacao,
 } from '@delfrance/schemas';
 
-import { signNFe } from '../sign';
-import type { NFeCertificate } from '../cert';
-import { generateNFe, NFeGeneratorError } from './index';
-import { HOMOLOGACAO_XNOME } from './parties';
-import type { GeneratorInput, GeneratorItem } from './types';
+import { signNFe } from '../../src/sign';
+import type { NFeCertificate } from '../../src/cert';
+import { generateNFe, NFeGeneratorError } from '../../src/generator/index';
+import { HOMOLOGACAO_XNOME } from '../../src/generator/parties';
+import type { GeneratorInput, GeneratorItem } from '../../src/generator/types';
 
 const FILIAL: Filial = {
   razaoSocial: 'Loja de Bicicletas Acmé S.A.',
