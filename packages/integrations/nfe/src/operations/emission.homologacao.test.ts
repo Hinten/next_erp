@@ -266,10 +266,13 @@ function buildFixture(numeracao: number): GeneratorInput {
     itens: [item],
     totalXml: buildTotalXml(totals),
     // Exercise the optional <transporta> block (carrier disclosure).
-    // modFrete='3' (transporte por conta de terceiros). Real callers
-    // would pass the actual freight company's CNPJ + address.
+    // modFrete='0' = CIF (frete contratado pelo Remetente) — the
+    // sender contracts a third-party carrier. modes 3/4 ("transporte
+    // próprio") would force the transporta CNPJ-base to match the
+    // emit/dest CNPJ-base (rejection 846), which doesn't make sense
+    // when a marketplace order uses a third-party carrier.
     transpXml: buildTranspXml({
-      modFrete: '3',
+      modFrete: '0',
       transporta: {
         CNPJ: '99999999000191',
         xNome: 'TRANSPORTADORA HOMOLOGACAO LTDA',
