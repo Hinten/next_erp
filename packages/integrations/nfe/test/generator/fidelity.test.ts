@@ -587,3 +587,92 @@ describe('fidelity — fiscal fields fail loudly on overflow', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// (h) Optional structural blocks — cobr (billing) + exporta (export ops)
+//     Both are NFe optional siblings of <pag> / <infAdic>. We assert the
+//     blocks appear in the emitted XML in the right XSD position and
+//     pass validateXsd('NFe', xml) end-to-end.
+// ---------------------------------------------------------------------------
+
+describe('fidelity — cobr (billing) block', () => {
+  it('emits <cobr><fat><dup>… in XSD position between <transp> and <pag>', () => {
+    const out = generateNFe(
+      buildInput({
+        cobr: {
+          fat: {
+            nFat: 'FAT-001',
+            vOrig: '1500.00',
+            vDesc: '0.00',
+            vLiq: '1500.00',
+          },
+          dup: [
+            { nDup: '001', dVenc: '2026-06-20', vDup: '750.00' },
+            { nDup: '002', dVenc: '2026-07-20', vDup: '750.00' },
+          ],
+        },
+      }),
+    );
+    // Structural position: <cobr> follows </transp> and precedes <pag>.
+    // (We don't run validateXsd here — the generator emits an UNSIGNED
+    // <NFe> and the XSD requires <Signature> as a sibling of <infNFe>.
+    // The signed-XSD round-trip is exercised by the live emission test.)
+    const transpEnd = out.nfeXml.indexOf('</transp>');
+    const cobrStart = out.nfeXml.indexOf('<cobr>');
+    const pagStart = out.nfeXml.indexOf('<pag>');
+    expect(transpEnd).toBeGreaterThan(-1);
+    expect(cobrStart).toBeGreaterThan(transpEnd);
+    expect(pagStart).toBeGreaterThan(cobrStart);
+    // Field-level checks.
+    expectField(out.nfeXml, 'fat', 'nFat', 'FAT-001');
+    expectField(out.nfeXml, 'fat', 'vOrig', '1500.00');
+    expect(out.nfeXml).toContain('<dup><nDup>001</nDup><dVenc>2026-06-20</dVenc><vDup>750.00</vDup></dup>');
+    expect(out.nfeXml).toContain('<dup><nDup>002</nDup><dVenc>2026-07-20</dVenc><vDup>750.00</vDup></dup>');
+  });
+
+  it('omits <cobr> entirely when input.cobr is undefined', () => {
+    const out = generateNFe(buildInput());
+    expect(out.nfeXml).not.toContain('<cobr>');
+  });
+});
+
+describe('fidelity — exporta (export operation) block', () => {
+  it('emits <exporta> in XSD position between <infAdic> and <infRespTec>', async () => {
+    const out = generateNFe(
+      buildInput({
+        infAdic: { infCpl: 'Export to MERCOSUL — order #X-001', infAdFisco: undefined },
+        exporta: {
+          UFSaidaPais: 'PR',
+          xLocExporta: 'FOZ DO IGUACU',
+          xLocDespacho: 'CURITIBA',
+        },
+      }),
+    );
+    // Structural position: <exporta> follows </infAdic>.
+    const infAdicEnd = out.nfeXml.indexOf('</infAdic>');
+    const exportaStart = out.nfeXml.indexOf('<exporta>');
+    expect(infAdicEnd).toBeGreaterThan(-1);
+    expect(exportaStart).toBeGreaterThan(infAdicEnd);
+    // Field-level checks.
+    expectField(out.nfeXml, 'exporta', 'UFSaidaPais', 'PR');
+    expectField(out.nfeXml, 'exporta', 'xLocExporta', 'FOZ DO IGUACU');
+    expectField(out.nfeXml, 'exporta', 'xLocDespacho', 'CURITIBA');
+  });
+
+  it('omits <xLocDespacho> when not supplied', () => {
+    const out = generateNFe(
+      buildInput({
+        exporta: { UFSaidaPais: 'RS', xLocExporta: 'URUGUAIANA' },
+      }),
+    );
+    expect(out.nfeXml).toContain('<exporta>');
+    expect(out.nfeXml).toContain('<UFSaidaPais>RS</UFSaidaPais>');
+    expect(out.nfeXml).toContain('<xLocExporta>URUGUAIANA</xLocExporta>');
+    expect(out.nfeXml).not.toContain('<xLocDespacho>');
+  });
+
+  it('omits <exporta> entirely when input.exporta is undefined', () => {
+    const out = generateNFe(buildInput());
+    expect(out.nfeXml).not.toContain('<exporta>');
+  });
+});

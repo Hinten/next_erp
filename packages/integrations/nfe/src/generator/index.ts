@@ -65,6 +65,13 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
   const emitXml = serializeFragment('TNFe_infNFe_emit', 'emit', emit as unknown as XmlValue);
   const destXml = serializeFragment('TNFe_infNFe_dest', 'dest', dest as unknown as XmlValue);
   const detXml = input.itens.map(buildDetXml).join('');
+  const cobrXml = input.cobr
+    ? serializeFragment(
+        'TNFe_infNFe_cobr',
+        'cobr',
+        input.cobr as unknown as XmlValue,
+      )
+    : '';
   const infIntermedXml = input.infIntermed
     ? serializeFragment(
         'TNFe_infNFe_infIntermed',
@@ -73,10 +80,17 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
       )
     : '';
   const infAdicXml = buildInfAdicXml(input.infAdic);
+  const exportaXml = input.exporta
+    ? serializeFragment(
+        'TNFe_infNFe_exporta',
+        'exporta',
+        input.exporta as unknown as XmlValue,
+      )
+    : '';
   const infRespTecXml = buildInfRespTecXml(input);
 
   // XSD order under <infNFe>: ide, emit, dest, det+, total, transp,
-  // pag, infIntermed?, infAdic?, infRespTec?.
+  // cobr?, pag, infIntermed?, infAdic?, exporta?, infRespTec?.
   const infNFeBody =
     ideXml +
     emitXml +
@@ -84,9 +98,11 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
     detXml +
     input.totalXml +
     input.transpXml +
+    cobrXml +
     input.pagXml +
     infIntermedXml +
     infAdicXml +
+    exportaXml +
     infRespTecXml;
 
   // Hand-assembled wrapper: META's `TNFe_infNFe` declares `total`/`transp`/

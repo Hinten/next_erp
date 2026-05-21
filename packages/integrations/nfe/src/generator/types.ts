@@ -77,6 +77,56 @@ export interface InfIntermed {
   readonly idCadIntTran: string;
 }
 
+/**
+ * `<cobr>` fatura block — invoice header for duplicata payments.
+ * All fields optional; `vLiq = vOrig - vDesc` is the convention but
+ * SEFAZ doesn't recompute it server-side.
+ */
+export interface CobrFat {
+  readonly nFat?: string;
+  readonly vOrig?: string;
+  readonly vDesc?: string;
+  readonly vLiq?: string;
+}
+
+/**
+ * One installment of a `<cobr>` duplicatas list. `vDup` is the only
+ * required field; `nDup` (installment number) and `dVenc` (due date,
+ * `YYYY-MM-DD`) are optional but customarily set.
+ */
+export interface CobrDup {
+  readonly nDup?: string;
+  readonly dVenc?: string;
+  readonly vDup: string;
+}
+
+/**
+ * `<cobr>` billing block — fatura header + duplicatas (installments).
+ * Used for boleto / duplicata payments. Both `fat` and `dup` are
+ * optional individually but at least one should be present for the
+ * block to carry useful information.
+ */
+export interface Cobr {
+  readonly fat?: CobrFat;
+  readonly dup?: ReadonlyArray<CobrDup>;
+}
+
+/**
+ * `<exporta>` block — export-operation metadata. SEFAZ REQUIRES this
+ * block when `ide.idDest === '3'` (operação com exterior) and rejects
+ * it otherwise. `UFSaidaPais` is the UF the goods leave Brazil
+ * through; `xLocExporta` is the customs city; `xLocDespacho` is the
+ * dispatch location (optional).
+ */
+export interface Exporta {
+  readonly UFSaidaPais:
+    | 'AC' | 'AL' | 'AM' | 'AP' | 'BA' | 'CE' | 'DF' | 'ES' | 'GO'
+    | 'MA' | 'MG' | 'MS' | 'MT' | 'PA' | 'PB' | 'PE' | 'PI' | 'PR'
+    | 'RJ' | 'RN' | 'RO' | 'RR' | 'RS' | 'SC' | 'SE' | 'SP' | 'TO';
+  readonly xLocExporta: string;
+  readonly xLocDespacho?: string;
+}
+
 export interface GeneratorInput {
   readonly ambiente: Ambiente;
   /** `nNF` — the NF-e number assigned by the issuer. */
@@ -104,6 +154,17 @@ export interface GeneratorInput {
    * `operacao.indIntermed === '1'`; leave undefined otherwise.
    */
   readonly infIntermed?: InfIntermed;
+  /**
+   * Billing block — fatura + duplicatas for boleto / duplicata
+   * payments. Optional; omit for cash / card / PIX flows.
+   */
+  readonly cobr?: Cobr;
+  /**
+   * Export-operation block. SEFAZ requires this when
+   * `ide.idDest === '3'` (operação com exterior); rejects it
+   * otherwise. Leave undefined for domestic NF-es.
+   */
+  readonly exporta?: Exporta;
   readonly infRespTec?: InfRespTec;
   /**
    * Override `cNF` to make the chave deterministic — test fixtures only.
