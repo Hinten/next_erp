@@ -1,6 +1,7 @@
 'use client';
 
-import { Badge } from '@mantine/core';
+import Link from 'next/link';
+import { Badge, Button } from '@mantine/core';
 import {
   ESTADO_PEDIDO_LABELS,
   type EstadoPedido,
@@ -69,6 +70,11 @@ export default function PedidosPage() {
       rowHref={(id) => `/pedidos/${id}`}
       selectable
       actions={[emitNFeAction]}
+      renderNewButton={() => (
+        <Button component={Link} href="/pedidos/novo">
+          Novo pedido
+        </Button>
+      )}
     />
   );
 }

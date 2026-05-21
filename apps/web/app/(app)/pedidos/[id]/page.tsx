@@ -30,6 +30,7 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { StatusBadge } from '../_components/StatusBadge';
 import { ItensTable } from '../_components/ItensTable';
 import { PagamentosSection } from '../_components/PagamentosSection';
+import { SeedTestItemButton } from '../_components/SeedTestItemButton';
 
 const estadoOptions = estadoPedidoSchema.options.map((value) => ({
   value,
@@ -101,9 +102,12 @@ export default function PedidoDetailPage() {
         }
         description={p.ehSaida ? 'Saída' : 'Entrada'}
         actions={
-          <Button component={Link} href={`/pedidos/${data.id}/editar`}>
-            Editar
-          </Button>
+          <Group gap="xs">
+            <SeedTestItemButton pedidoId={data.id} />
+            <Button component={Link} href={`/pedidos/${data.id}/editar`}>
+              Editar
+            </Button>
+          </Group>
         }
       />
 

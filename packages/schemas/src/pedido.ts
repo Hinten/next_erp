@@ -97,12 +97,15 @@ export const pedidoSchema = z.object({
   numero: z.string().nullable().default(null),
 
   // Outer references — opaque (resolved by Flutter today; UI dereferences
-  // them through Firestore .get() when needed).
+  // them through Firestore .get() when needed). `filialPedidoOuterRef` is
+  // read by the NFe orchestrator (`apps/nfe/lib/nfe/orchestrator.ts:146`)
+  // to load the issuing Filial — must be present on the doc when emitting.
   vendedorPedidoOuterRef: z.unknown().nullable().default(null),
   integracaoPedidoOuterRef: z.unknown(),
   operacaoPedidoOuterRef: z.unknown().nullable().default(null),
   clientePedidoOuterRef: z.unknown().nullable().default(null),
   enderecoFiscalOuterRef: z.unknown().nullable().default(null),
+  filialPedidoOuterRef: z.unknown().nullable().default(null),
   listaDePrecosOuterRef: z.unknown().nullable().default(null),
 
   // Related orders --------------------------------------------------------
