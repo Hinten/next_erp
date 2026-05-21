@@ -10,12 +10,15 @@ import {
   Button,
   Card,
   Group,
+  Modal,
   Select,
   Skeleton,
   Stack,
   Text,
   Title,
+  Tooltip,
 } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import { PageHeader } from '@delfrance/ui';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import {
@@ -27,6 +30,11 @@ import {
 import { format, money } from '@delfrance/core/money';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { useNFeClient } from '@/lib/nfe/client';
+import {
+  notificationForNFeError,
+  notificationForNFeResult,
+} from '@/lib/nfe/errors';
 import { StatusBadge } from '../_components/StatusBadge';
 import { ItensTable } from '../_components/ItensTable';
 import { PagamentosSection } from '../_components/PagamentosSection';
@@ -46,6 +54,9 @@ export default function PedidoDetailPage() {
 
   const { data, loading, error } = useDocSnapshot(docRef);
   const [savingStatus, setSavingStatus] = useState(false);
+  const [emitConfirmOpen, setEmitConfirmOpen] = useState(false);
+  const [emitting, setEmitting] = useState(false);
+  const nfeClient = useNFeClient();
 
   if (loading) {
     return (
@@ -78,6 +89,35 @@ export default function PedidoDetailPage() {
   itensFlat.sort((a, b) => a.ordem - b.ordem);
   const total = pedidoTotal(p);
 
+  async function handleEmitir() {
+    if (!nfeClient) {
+      notifications.show({
+        title: 'Sessão inválida',
+        message: 'Faça login novamente para emitir NF-e.',
+        color: 'red',
+        autoClose: 8000,
+      });
+      return;
+    }
+    setEmitting(true);
+    try {
+      const result = await nfeClient.emitir(data!.id);
+      notifications.show({
+        ...notificationForNFeResult(result),
+        autoClose: 8000,
+      });
+    } catch (err) {
+      if (!(err instanceof Error)) throw err;
+      notifications.show({
+        ...notificationForNFeError(err),
+        autoClose: 8000,
+      });
+    } finally {
+      setEmitting(false);
+      setEmitConfirmOpen(false);
+    }
+  }
+
   async function handleStatusChange(next: string | null) {
     if (!next) return;
     const nextState = next as EstadoPedido;
@@ -101,11 +141,50 @@ export default function PedidoDetailPage() {
         }
         description={p.ehSaida ? 'Saída' : 'Entrada'}
         actions={
-          <Button component={Link} href={`/pedidos/${data.id}/editar`}>
-            Editar
-          </Button>
+          <Group gap="xs">
+            <Tooltip
+              label="Emissão de NF-e bloqueada para este pedido"
+              disabled={!p.bloquearEmissaoNFe}
+              withArrow
+            >
+              <Button
+                color="teal"
+                onClick={() => setEmitConfirmOpen(true)}
+                disabled={!!p.bloquearEmissaoNFe || !nfeClient}
+                loading={emitting}
+              >
+                Emitir NF-e
+              </Button>
+            </Tooltip>
+            <Button component={Link} href={`/pedidos/${data.id}/editar`}>
+              Editar
+            </Button>
+          </Group>
         }
       />
+
+      <Modal
+        opened={emitConfirmOpen}
+        onClose={() => setEmitConfirmOpen(false)}
+        title="Emitir NF-e"
+        centered
+      >
+        <Stack>
+          <Text>Emitir NF-e para este pedido?</Text>
+          <Group justify="flex-end">
+            <Button
+              variant="subtle"
+              onClick={() => setEmitConfirmOpen(false)}
+              disabled={emitting}
+            >
+              Cancelar
+            </Button>
+            <Button color="teal" onClick={handleEmitir} loading={emitting}>
+              Confirmar
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
 
       <Card withBorder>
         <Stack gap="xs">
