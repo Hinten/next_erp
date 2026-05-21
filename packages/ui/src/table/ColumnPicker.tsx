@@ -1,16 +1,25 @@
 'use client';
 
 import { ActionIcon, Checkbox, Popover, Stack, Text } from '@mantine/core';
-import type { FieldDescriptor } from '../schema/types';
+
+/**
+ * Minimum shape the picker needs — just an identifier + display label.
+ * `FieldDescriptor` and `VirtualColumn` both structurally satisfy this,
+ * so TableView passes either or both.
+ */
+export interface ColumnPickerItem {
+  readonly key: string;
+  readonly label: string;
+}
 
 export interface ColumnPickerProps {
-  fields: FieldDescriptor[];
+  fields: ReadonlyArray<ColumnPickerItem>;
   visibleKeys: Set<string>;
   onToggle: (key: string) => void;
 }
 
 /**
- * Popover that lists every descriptor (excluding `unknown` kind) with a
+ * Popover that lists every column (schema-derived + virtual) with a
  * checkbox to toggle visibility. State is owned by the TableView; this
  * component is presentational.
  */

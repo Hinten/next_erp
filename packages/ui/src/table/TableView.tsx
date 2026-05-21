@@ -30,7 +30,7 @@ import {
 } from '@delfrance/data/pipeline-queries';
 import { extractFieldsFromSchema } from '../schema/derive';
 import type {
-  ActionConfig, FieldConfig, FieldDescriptor,
+  ActionConfig, FieldConfig, FieldDescriptor, VirtualColumn,
 } from '../schema/types';
 import { ActionBar } from './ActionBar';
 import { useCollectionMonitor } from './useCollectionMonitor';
@@ -51,11 +51,25 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   db: Firestore;
   pathContext?: PathContext;
 
-  /** Default visible columns. Omit to show every non-`unknown` field. */
+  /**
+   * Default visible columns AND their order. Keys are resolved against
+   * the schema first, then against `virtualColumns`. Omit to show every
+   * non-`unknown` schema field (in schema order) followed by every
+   * virtual column.
+   */
   defaultColumns?: string[];
 
   /** Per-field overrides keyed by field key. */
   fields?: Record<string, FieldConfig>;
+
+  /**
+   * Columns that don't correspond to a Zod schema field — for cells
+   * whose value is derived, dereferenced, or asynchronously loaded.
+   * Each virtual column declares its own `renderCell(row)` receiving
+   * the full `SnapshotRow<T>`. Virtual columns render no sort handle
+   * and no filter UI; they DO appear in the ColumnPicker.
+   */
+  virtualColumns?: ReadonlyArray<VirtualColumn<z.infer<S>>>;
 
   actions?: Array<ActionConfig<z.infer<S>>>;
   selectable?: boolean;
@@ -171,6 +185,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   pathContext = {},
   defaultColumns,
   fields: fieldOverrides = {},
+  virtualColumns = [],
   actions = [],
   selectable = false,
   copyHref,
@@ -187,12 +202,15 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const descriptors = useMemo(() => extractFieldsFromSchema(schema), [schema]);
 
   // Columns visible by default: caller-supplied keys, or every non-unknown
-  // field (drops embeddings and other opaque blobs automatically).
+  // schema field (drops embeddings and other opaque blobs automatically)
+  // followed by every virtual column.
   const defaultVisibleKeys = useMemo<string[]>(
     () =>
-      defaultColumns ??
-      descriptors.filter((d) => d.kind !== 'unknown').map((d) => d.key),
-    [defaultColumns, descriptors],
+      defaultColumns ?? [
+        ...descriptors.filter((d) => d.kind !== 'unknown').map((d) => d.key),
+        ...virtualColumns.map((v) => v.key),
+      ],
+    [defaultColumns, descriptors, virtualColumns],
   );
 
   // Storage key is per-collection so /clientes and /categorias never
@@ -294,12 +312,24 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       return buildPipeline(db, {
         collection: collection.resolvePath(pathContext),
         filters: Object.entries(filters).map(([field, v]) => ({ field, ...v })),
-        // Project only the visible columns to cut data transfer (skips the
-        // heavy embedding fields). `buildPipeline` appends the document-id
-        // projection so row identity survives `.select()` — see
-        // PIPELINE_ID_FIELD. `visibleKeysSerial` is in the deps below so
-        // toggling a column re-executes the query with the new field set.
-        select: [...visibleKeys],
+        // Project only the visible schema columns to cut data transfer
+        // (skips the heavy embedding fields). `buildPipeline` appends the
+        // document-id projection so row identity survives `.select()` —
+        // see PIPELINE_ID_FIELD. `visibleKeysSerial` is in the deps below
+        // so toggling a column re-executes the query with the new field
+        // set.
+        //
+        // **When virtual columns are present, projection is disabled**:
+        // virtual cells can read any field from `row.data` (passthrough
+        // values, outer refs, etc.) and we can't predict which keys
+        // they'll touch. Reading the full doc keeps virtual renderers
+        // simple at the cost of slightly larger payloads.
+        select:
+          virtualColumns.length > 0
+            ? undefined
+            : [...visibleKeys].filter((k) =>
+                descriptors.some((d) => d.key === k),
+              ),
         orderBy: sort ? [{ field: sort.field, direction: sort.direction }] : undefined,
         limit: pageSize,
       });
@@ -326,9 +356,46 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const fromQuery = useSnapshot<z.infer<S>>(fallbackQuery);
   const snap: SnapshotState<SnapshotRow<z.infer<S>>[]> = pipeline ? fromPipeline : fromQuery;
 
+  /**
+   * Ordered list of columns to render — schema descriptors AND virtual
+   * columns interleaved per `defaultVisibleKeys`. Each entry is tagged
+   * with its kind so the header / cell render switches cleanly without
+   * re-doing the lookup. Unknown keys are silently skipped (warnings
+   * stay out of production logs; dev callers spot them in the empty
+   * column).
+   */
+  const visibleColumns = useMemo(() => {
+    const schemaByKey = new Map(descriptors.map((d) => [d.key, d]));
+    const virtualByKey = new Map(virtualColumns.map((v) => [v.key, v]));
+    const out: Array<
+      | { kind: 'schema'; descriptor: FieldDescriptor }
+      | { kind: 'virtual'; column: VirtualColumn<z.infer<S>> }
+    > = [];
+    for (const key of defaultVisibleKeys) {
+      if (!visibleKeys.has(key)) continue;
+      const descriptor = schemaByKey.get(key);
+      if (descriptor) {
+        if (fieldOverrides[key]?.hidden) continue;
+        out.push({ kind: 'schema', descriptor });
+        continue;
+      }
+      const virtual = virtualByKey.get(key);
+      if (virtual) {
+        out.push({ kind: 'virtual', column: virtual });
+      }
+    }
+    return out;
+  }, [defaultVisibleKeys, descriptors, virtualColumns, visibleKeys, fieldOverrides]);
+
+  /**
+   * Subset of schema descriptors that are currently visible — for legacy
+   * call sites (filter parsing, monitor-field auto-detect) that don't
+   * need to know about virtual columns.
+   */
   const visibleDescriptors = useMemo(
-    () => descriptors.filter((d) => visibleKeys.has(d.key) && !fieldOverrides[d.key]?.hidden),
-    [descriptors, visibleKeys, fieldOverrides],
+    () =>
+      visibleColumns.flatMap((c) => (c.kind === 'schema' ? [c.descriptor] : [])),
+    [visibleColumns],
   );
 
   function toggleColumn(key: string) {
@@ -391,7 +458,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       <Group justify="flex-end" wrap="nowrap" align="flex-end">
         <Group gap="xs">
           <ColumnPicker
-            fields={descriptors.filter((d) => d.kind !== 'unknown')}
+            fields={[
+              ...descriptors
+                .filter((d) => d.kind !== 'unknown')
+                .map((d) => ({ key: d.key, label: d.label })),
+              ...virtualColumns.map((v) => ({ key: v.key, label: v.label })),
+            ]}
             visibleKeys={visibleKeys}
             onToggle={toggleColumn}
           />
@@ -461,43 +533,61 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                   />
                 </Table.Th>
               )}
-              {visibleDescriptors.map((d) => (
-                <Table.Th key={d.key}>
-                  <Group gap={4} wrap="nowrap" justify="space-between">
-                    <Group
-                      gap={2}
-                      wrap="nowrap"
-                      style={{ cursor: 'pointer', userSelect: 'none' }}
-                      onClick={() => toggleSort(d.key)}
-                      title="Ordenar por esta coluna"
+              {visibleColumns.map((col) => {
+                if (col.kind === 'virtual') {
+                  return (
+                    <Table.Th
+                      key={col.column.key}
+                      style={
+                        col.column.width !== undefined
+                          ? { width: col.column.width }
+                          : undefined
+                      }
+                      title={col.column.tooltip}
                     >
-                      <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
-                      <SortIndicator
-                        active={sort?.field === d.key}
-                        direction={sort?.direction}
+                      {col.column.label}
+                    </Table.Th>
+                  );
+                }
+                const d = col.descriptor;
+                return (
+                  <Table.Th key={d.key}>
+                    <Group gap={4} wrap="nowrap" justify="space-between">
+                      <Group
+                        gap={2}
+                        wrap="nowrap"
+                        style={{ cursor: 'pointer', userSelect: 'none' }}
+                        onClick={() => toggleSort(d.key)}
+                        title="Ordenar por esta coluna"
+                      >
+                        <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
+                        <SortIndicator
+                          active={sort?.field === d.key}
+                          direction={sort?.direction}
+                        />
+                      </Group>
+                      <ColumnFilter
+                        descriptor={d}
+                        value={filters[d.key]}
+                        onChange={(next) =>
+                          setFilters((cur) => {
+                            const copy = { ...cur };
+                            if (next === undefined) delete copy[d.key];
+                            else copy[d.key] = next;
+                            return copy;
+                          })
+                        }
                       />
                     </Group>
-                    <ColumnFilter
-                      descriptor={d}
-                      value={filters[d.key]}
-                      onChange={(next) =>
-                        setFilters((cur) => {
-                          const copy = { ...cur };
-                          if (next === undefined) delete copy[d.key];
-                          else copy[d.key] = next;
-                          return copy;
-                        })
-                      }
-                    />
-                  </Group>
-                </Table.Th>
-              ))}
+                  </Table.Th>
+                );
+              })}
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
             {snap.data.length === 0 && (
               <Table.Tr>
-                <Table.Td colSpan={visibleDescriptors.length + (selectionEnabled ? 1 : 0)} align="center">
+                <Table.Td colSpan={visibleColumns.length + (selectionEnabled ? 1 : 0)} align="center">
                   <Text c="dimmed">Nenhum resultado.</Text>
                 </Table.Td>
               </Table.Tr>
@@ -534,7 +624,15 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                       />
                     </Table.Td>
                   )}
-                  {visibleDescriptors.map((d) => {
+                  {visibleColumns.map((col) => {
+                    if (col.kind === 'virtual') {
+                      return (
+                        <Table.Td key={col.column.key}>
+                          {col.column.renderCell(row)}
+                        </Table.Td>
+                      );
+                    }
+                    const d = col.descriptor;
                     const override = fieldOverrides[d.key];
                     const value = (row.data as Record<string, unknown>)[d.key];
                     const content = override?.renderCell

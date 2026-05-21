@@ -99,3 +99,25 @@ export interface ActionConfig<T> {
  * schema; mirrors `z.infer` semantics on the descriptor's payload.
  */
 export type InferRow<T extends ZodTypeAny> = z.infer<T>;
+
+/**
+ * A column declared OUTSIDE the Zod schema — for cells whose value
+ * is derived (computed from the row), async (subscribes to a sibling
+ * subcollection), or dereferenced (follows an outer reference).
+ *
+ * Virtual columns interleave with schema-derived columns via the
+ * TableView's `defaultColumns` prop: each key is resolved against
+ * the schema first, then against `virtualColumns`. They render no
+ * ColumnFilter (no descriptor → nothing to filter on) but DO appear
+ * in the ColumnPicker so users can toggle visibility.
+ */
+export interface VirtualColumn<T> {
+  /** Stable identifier, used in `defaultColumns` ordering + ColumnPicker. */
+  readonly key: string;
+  readonly label: string;
+  readonly tooltip?: string;
+  /** Receives the full row (id + data) so renderers can subscribe / dereference. */
+  readonly renderCell: (row: SnapshotRow<T>) => ReactNode;
+  /** Optional width hint (CSS units or px number). */
+  readonly width?: number | string;
+}
