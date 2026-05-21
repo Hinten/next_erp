@@ -39,6 +39,28 @@ export {
 } from './categoria';
 
 export {
+  ESTADO_FRETE_LABELS,
+  INTEGRACAO_FRETE_LABELS,
+  MODALIDADE_FRETE_LABELS,
+  estadoFreteSchema,
+  freteDoPedidoSchema,
+  integracoesFreteSchema,
+  modalidadeFreteSchema,
+  reboqueSchema,
+  transportadoraSchema,
+  veiculoSchema,
+  volumeSchema,
+  type EstadoFrete,
+  type FreteDoPedido,
+  type IntegracaoFrete,
+  type ModalidadeFrete,
+  type Reboque,
+  type Transportadora,
+  type Veiculo,
+  type Volume,
+} from './frete';
+
+export {
   pedido,
   pedidoSchema,
   pedidoMeta,

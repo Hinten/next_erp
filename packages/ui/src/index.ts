@@ -12,11 +12,16 @@ export type {
   FieldKind,
   FieldRenderProps,
   InferRow,
+  VirtualColumn,
 } from './schema/types';
 
 // Table primitives
 export { TableView, type TableViewProps } from './table/TableView';
-export { ColumnPicker, type ColumnPickerProps } from './table/ColumnPicker';
+export {
+  ColumnPicker,
+  type ColumnPickerItem,
+  type ColumnPickerProps,
+} from './table/ColumnPicker';
 export { ActionBar, type ActionBarProps } from './table/ActionBar';
 export {
   useCollectionMonitor,

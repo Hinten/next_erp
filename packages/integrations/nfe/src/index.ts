@@ -1,12 +1,21 @@
 /**
  * `@delfrance/integrations-nfe` — public surface.
  *
- * Re-exports the typed entry points + the building blocks the
- * orchestrator (`apps/nfe`) needs. Server-only modules
- * (cert, sign, soap, xsd, safety, xml) ship from this same entry today;
- * a `./server` subpath will split them out once a browser-bundle consumer
- * appears (which it won't in `apps/web` — that app only talks to
- * `apps/nfe` over HTTP, never imports the library directly).
+ * **Server kitchen sink.** Re-exports cert / sign / soap / xsd /
+ * safety / xml / generator / operations / tribute / numeracao /
+ * recovery / state / http-provider — everything the orchestrator
+ * (`apps/nfe`) needs to issue NF-es from Node. **Do not import
+ * this entry from a browser bundle** — the soap + cert modules
+ * pull `node:fs` and `node-forge` which Turbopack cannot ship to
+ * the browser.
+ *
+ * Browser consumers (currently only `apps/web`) import the
+ * `./http-provider` subpath instead — declared in `package.json`'s
+ * `exports` field and re-exported by `src/http-provider/index.ts`.
+ * That subpath carries only the typed HTTP client + error classes
+ * and has zero server-only deps in its transitive graph. See
+ * `CLAUDE.md` ("Subpath exports") for the upgrade playbook when
+ * adding new browser-safe surfaces.
  */
 import type { InvoiceProvider } from '@delfrance/core/plugins';
 

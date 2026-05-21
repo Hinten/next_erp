@@ -179,7 +179,7 @@ importers:
         version: 9.39.4
       eslint-config-next:
         specifier: ^16.2.6
-        version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
+        version: 16.2.6(@typescript-eslint/parser@8.59.3(eslint@9.39.4)(typescript@6.0.3))(eslint@9.39.4)(typescript@6.0.3)
       node-forge:
         specifier: ^1.4.0
         version: 1.4.0
@@ -201,6 +201,9 @@ importers:
       '@delfrance/data':
         specifier: workspace:*
         version: link:../../packages/data
+      '@delfrance/integrations-nfe':
+        specifier: workspace:*
+        version: link:../../packages/integrations/nfe
       '@delfrance/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
@@ -331,7 +334,7 @@ importers:
         version: 9.39.4
       eslint-config-next:
         specifier: ^16.2.6
-        version: 16.2.6(@typescript-eslint/parser@8.59.3(eslint@9.39.4)(typescript@6.0.3))(eslint@9.39.4)(typescript@6.0.3)
+        version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
