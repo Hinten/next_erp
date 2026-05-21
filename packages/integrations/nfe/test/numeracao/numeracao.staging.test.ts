@@ -124,6 +124,12 @@ describeOrSkip('numeração — live Firestore concurrency contract', () => {
     }
   }
 
+  // 180s timeout: 50 contenders × 1 doc means the last winner must lose
+  // 49 times via optimistic-retry. SDK round-trips (~100-300ms each) +
+  // our jittered outer backoff (0-1s × up to 5 attempts) can push wall
+  // time past 60s under network jitter. Vitest only waits as long as
+  // the test actually takes; the bulk + idLote tests below inherit the
+  // same budget for symmetry but typically finish in 10-20s.
   it(
     'nextNumeracao × 50 parallel → exactly {1..50}, no dups, no gaps',
     async () => {
@@ -146,7 +152,7 @@ describeOrSkip('numeração — live Firestore concurrency contract', () => {
         await teardown(path);
       }
     },
-    60_000,
+    180_000,
   );
 
   it(
@@ -179,7 +185,7 @@ describeOrSkip('numeração — live Firestore concurrency contract', () => {
         await teardown(path);
       }
     },
-    60_000,
+    180_000,
   );
 
   it(
@@ -205,6 +211,11 @@ describeOrSkip('numeração — live Firestore concurrency contract', () => {
         await teardown(path);
       }
     },
-    60_000,
+    // 50 contenders × 1 doc means the last winner must lose 49 times via
+    // optimistic-retry. SDK round-trips (~100–300ms each) + our jittered
+    // outer backoff (0–1s × up to 5 attempts) can push wall time past
+    // 60s under network jitter. 180s gives generous headroom without
+    // slowing fast runs — Vitest only waits as long as the test takes.
+    180_000,
   );
 });
