@@ -22,6 +22,15 @@ const RESTRICTED = new Set([...'@#%*$£§ªº©®™[]{}=+_|\\~^`']);
  * Drop characters SEFAZ rejects. Control characters are removed; line breaks
  * and tabs become spaces; runs of spaces are collapsed. Apply `removerAcentos`
  * first. Does NOT escape XML — the serializer owns that.
+ *
+ * Also drops any codepoint outside the XSD `TString` permitted range —
+ * `[!-ÿ]` = U+0021..U+00FF. "Smart typography" (em dash U+2014, en dash
+ * U+2013, curly quotes U+2018..U+201D, ellipsis U+2026, …) all live
+ * above U+00FF; marketplace exports routinely ship them and they fail
+ * the XSD `pattern` facet at the pre-send gate, so we strip them here.
+ * Diacritic-bearing Latin-1 chars (`ç`, `ã`, `É`, …) are still handled
+ * by `removerAcentos` first, so they never reach this code path with
+ * their accents intact.
  */
 export function removerCharRestrito(input: string): string {
   let out = '';
@@ -30,7 +39,9 @@ export function removerCharRestrito(input: string): string {
       out += ' ';
       continue;
     }
-    if ((ch.codePointAt(0) ?? 0) <= 0x1f) continue;
+    const code = ch.codePointAt(0) ?? 0;
+    if (code <= 0x1f) continue;
+    if (code > 0xff) continue;
     if (RESTRICTED.has(ch)) continue;
     out += ch;
   }

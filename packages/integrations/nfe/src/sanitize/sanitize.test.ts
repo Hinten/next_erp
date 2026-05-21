@@ -27,6 +27,17 @@ describe('removerCharRestrito', () => {
       'Apto. 45-B, sala 2/3 (fundos)',
     );
   });
+  it('drops smart typography (em/en dash, curly quotes, ellipsis) above U+00FF', () => {
+    // XSD TString pattern is `[!-ÿ]` — anything above U+00FF fails the
+    // facet at the pre-send gate. Drop them here so the XML never carries
+    // them across the boundary. Adjacent spaces are then collapsed.
+    expect(removerCharRestrito('EMPRESA & CIA. LTDA — ME')).toBe(
+      'EMPRESA & CIA. LTDA ME',
+    );
+    expect(removerCharRestrito('Rua A – Bloco B')).toBe('Rua A Bloco B');
+    expect(removerCharRestrito('“aspas” e ‘curvas’')).toBe('aspas e curvas');
+    expect(removerCharRestrito('Tres pontos…')).toBe('Tres pontos');
+  });
 });
 
 describe('sanitizeNFeText', () => {
