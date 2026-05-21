@@ -136,9 +136,12 @@ jobs:
           # Homologação A1 cert (SEFAZ smoke + emission):
           NFE_CERT_BASE64: ${{ secrets.NF_CERT_BASE64 }}
           NFE_CERT_PASSWORD: ${{ secrets.NF_CERT_PASSWORD }}
-          # Staging Firestore (numeração concurrency contract):
-          FIREBASE_PROJECT_ID_STAGING: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
-          FIREBASE_SERVICE_ACCOUNT_STAGING: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+          # Staging Firestore (numeração concurrency contract). The
+          # GitHub secret is suffixed `_STAGING` to distinguish it from a
+          # future produção project; the test reads the app-standard
+          # `FIREBASE_PROJECT_ID` / `FIREBASE_SERVICE_ACCOUNT` names.
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
         run: |
           # Run only the env-gated suites. Each describe.skip's itself
           # cleanly when its secrets aren't set, so the job stays green

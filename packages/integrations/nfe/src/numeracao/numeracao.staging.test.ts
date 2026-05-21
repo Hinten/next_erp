@@ -8,13 +8,18 @@
  * optimistic-locking semantics honor it under real parallel load.
  *
  * Skipped automatically unless **all** of these are set:
- *   - `FIREBASE_PROJECT_ID_STAGING`
- *   - `FIREBASE_SERVICE_ACCOUNT_STAGING` (inline JSON) OR
- *     `FIREBASE_SERVICE_ACCOUNT_STAGING_PATH` (filesystem path)
+ *   - `FIREBASE_PROJECT_ID`
+ *   - `FIREBASE_SERVICE_ACCOUNT` (inline JSON) OR
+ *     `FIREBASE_SERVICE_ACCOUNT_PATH` (filesystem path)
+ *
+ * These are the same names used by the rest of the repo (`.env.example`,
+ * `apps/integrations`, `apps/nfe`); CI maps the staging GitHub secret
+ * `FIREBASE_PROJECT_ID_STAGING` onto `FIREBASE_PROJECT_ID` at the workflow
+ * level — see `e2e.yml` and `ci-nfe.yml`.
  *
  * Run locally with:
- *   $env:FIREBASE_PROJECT_ID_STAGING = "your-staging-project-id"
- *   $env:FIREBASE_SERVICE_ACCOUNT_STAGING_PATH = "C:\path\to\sa.json"
+ *   $env:FIREBASE_PROJECT_ID = "your-staging-project-id"
+ *   $env:FIREBASE_SERVICE_ACCOUNT_PATH = "C:\path\to\sa.json"
  *   pnpm --filter @delfrance/integrations-nfe test numeracao.staging
  *
  * Each test seeds a fresh `NFeConfig` doc at a unique
@@ -44,16 +49,16 @@ import {
 } from './firestore-adapter';
 
 const hasCreds =
-  Boolean(process.env.FIREBASE_PROJECT_ID_STAGING) &&
-  (process.env.FIREBASE_SERVICE_ACCOUNT_STAGING != null ||
-    process.env.FIREBASE_SERVICE_ACCOUNT_STAGING_PATH != null);
+  Boolean(process.env.FIREBASE_PROJECT_ID) &&
+  (process.env.FIREBASE_SERVICE_ACCOUNT != null ||
+    process.env.FIREBASE_SERVICE_ACCOUNT_PATH != null);
 
 const describeOrSkip = hasCreds ? describe : describe.skip;
 
 function loadServiceAccount(): Record<string, unknown> {
-  const inline = process.env.FIREBASE_SERVICE_ACCOUNT_STAGING;
+  const inline = process.env.FIREBASE_SERVICE_ACCOUNT;
   if (inline) return JSON.parse(inline);
-  const path = process.env.FIREBASE_SERVICE_ACCOUNT_STAGING_PATH!;
+  const path = process.env.FIREBASE_SERVICE_ACCOUNT_PATH!;
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
@@ -70,7 +75,11 @@ describeOrSkip('numeração — live Firestore concurrency contract', () => {
   let fs: Firestore;
 
   beforeAll(async () => {
-    const projectId = process.env.FIREBASE_PROJECT_ID_STAGING!;
+    const projectId = process.env.FIREBASE_PROJECT_ID!;
+    // Match `apps/nfe/lib/firebase/admin.ts`: Firebase Enterprise names
+    // the default DB `default` (no parens); free-tier projects use
+    // `(default)`. Default to `default` if unset.
+    const databaseId = process.env.FIREBASE_DATABASE_ID ?? 'default';
     const existing = getApps().find((a) => a.name === 'numeracao-staging');
     app =
       existing ??
@@ -78,7 +87,7 @@ describeOrSkip('numeração — live Firestore concurrency contract', () => {
         { credential: cert(loadServiceAccount() as never), projectId },
         'numeracao-staging',
       );
-    fs = getFirestore(app);
+    fs = getFirestore(app, databaseId);
   });
 
   afterAll(async () => {
