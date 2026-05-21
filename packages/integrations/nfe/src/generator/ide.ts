@@ -56,7 +56,9 @@ export function formatDhEmi(dhEmi: Date): string {
 
 /** `procEmi` value identifying our tooling. */
 const PROC_EMI = '0';
-const VER_PROC = '@delfrance/integrations-nfe 0.0.0';
+// SEFAZ caps verProc at maxLength=20. Keep it short so future minor/patch
+// bumps stay within budget.
+const VER_PROC = 'erp-next 0.0.0';
 
 interface IdeParts {
   readonly cNF: string;

@@ -235,3 +235,12 @@ export {
   type NotaFiscalEletronica,
   type EstadoNFe,
 } from './nfe';
+
+export {
+  nfeConfig,
+  nfeConfigSchema,
+  nfeConfigMeta,
+  ambienteNFEschema,
+  type NFeConfig,
+  type AmbienteNFE,
+} from './nfeConfig';

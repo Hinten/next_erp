@@ -40,12 +40,17 @@ const envFromFiles: Record<string, string> = {
   ...parseDotenv(resolve(REPO_ROOT, '.env.local')),
 };
 
-// Resolve a relative NFE_CERT_PATH against the repo root (the dir where
+// Resolve relative filesystem paths against the repo root (the dir where
 // `.env.local` lives), not against vitest's CWD (the package dir). Users
 // write paths like `.ignore/cert.pfx` thinking from the project root —
-// match that mental model.
-if (envFromFiles.NFE_CERT_PATH && !isAbsolute(envFromFiles.NFE_CERT_PATH)) {
-  envFromFiles.NFE_CERT_PATH = resolve(REPO_ROOT, envFromFiles.NFE_CERT_PATH);
+// match that mental model. Applies to:
+//   - NFE_CERT_PATH                (homologação SOAP + emission tests)
+//   - FIREBASE_SERVICE_ACCOUNT_PATH (numeração staging Firestore test)
+for (const key of ['NFE_CERT_PATH', 'FIREBASE_SERVICE_ACCOUNT_PATH'] as const) {
+  const value = envFromFiles[key];
+  if (value && !isAbsolute(value)) {
+    envFromFiles[key] = resolve(REPO_ROOT, value);
+  }
 }
 
 export default defineConfig({

@@ -1,0 +1,178 @@
+name: CI — NFe
+
+# Dedicated NFe pipeline. Runs **only** when the NFe app or its workspace
+# dependencies change, so non-NFe PRs aren't gated by Brazilian-fiscal
+# concerns. The headline `ci.yml` excludes the NFe packages from its
+# turbo filter to avoid double-running.
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'apps/nfe/**'
+      - 'packages/integrations/nfe/**'
+      - 'packages/schemas/**'
+      - 'packages/core/**'
+      - 'packages/data/**'
+      - 'packages/auth/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/ci-nfe.yml'
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'apps/nfe/**'
+      - 'packages/integrations/nfe/**'
+      - 'packages/schemas/**'
+      - 'packages/core/**'
+      - 'packages/data/**'
+      - 'packages/auth/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/ci-nfe.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nfe-build-test:
+    name: Lint / typecheck / unit / build (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.4 --activate
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Codegen sanity — gen:nfe-types is idempotent
+        # Re-running the codegen against the committed XSD pack must
+        # produce a clean working tree. Drift here means someone edited
+        # nfe-schema*.ts by hand instead of via the generator.
+        run: |
+          pnpm --filter @delfrance/integrations-nfe gen:nfe-types
+          git diff --exit-code packages/integrations/nfe/src/types/
+
+      - name: Lint
+        run: |
+          pnpm turbo run lint \
+            --filter @delfrance/nfe-app \
+            --filter @delfrance/integrations-nfe \
+            --filter @delfrance/schemas
+
+      - name: Typecheck
+        run: |
+          pnpm turbo run typecheck \
+            --filter @delfrance/nfe-app \
+            --filter @delfrance/integrations-nfe \
+            --filter @delfrance/schemas
+
+      - name: Unit tests (offline)
+        # Excludes the env-gated live tests
+        # (operations.homologacao + numeracao.staging) — those run in
+        # nfe-live below, gated by secrets.
+        run: |
+          pnpm turbo run test \
+            --filter @delfrance/nfe-app \
+            --filter @delfrance/integrations-nfe \
+            --filter @delfrance/schemas
+
+      - name: Build
+        run: pnpm --filter @delfrance/nfe-app build
+
+  nfe-live:
+    name: Live SEFAZ + staging Firestore tests
+    runs-on: ubuntu-latest
+    needs: nfe-build-test
+    # Live tests are env-gated — they skip cleanly when secrets aren't
+    # available (e.g. on forked-PR builds that can't see repo secrets).
+    if: ${{ vars.NFE_CI_LIVE_ENABLED == 'true' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.4 --activate
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Refresh SEFAZ TLS chain
+        # See velvet-purring-bear.md "Cert lifecycle (operations)".
+        # A fresh fetch per CI run avoids stale-bundle failures when
+        # SEFAZ rotates intermediates between runs.
+        run: pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca
+
+      - name: Live homologação SOAP smoke + emission round-trip + staging Firestore concurrency
+        env:
+          # Homologação A1 cert (SEFAZ smoke + emission):
+          NFE_CERT_BASE64: ${{ secrets.NF_CERT_BASE64 }}
+          NFE_CERT_PASSWORD: ${{ secrets.NF_CERT_PASSWORD }}
+          # Staging Firestore (numeração concurrency contract). The
+          # GitHub secret is suffixed `_STAGING` to distinguish it from a
+          # future produção project; the test reads the app-standard
+          # `FIREBASE_PROJECT_ID` / `FIREBASE_SERVICE_ACCOUNT` names.
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+        run: |
+          # Run only the env-gated suites. Each describe.skip's itself
+          # cleanly when its secrets aren't set, so the job stays green
+          # in environments where one or the other is missing.
+          # - operations.homologacao: consultarStatusServico smoke
+          # - emission.homologacao:  full generate→sign→autorizarLote
+          #                          round-trip + duplicidade recovery
+          # - numeracao.staging:     transactional concurrency on staging
+          pnpm --filter @delfrance/integrations-nfe test \
+            operations.homologacao emission.homologacao numeracao.staging
+
+  report-failure:
+    name: Post failure logs on PR
+    needs: [nfe-build-test, nfe-live]
+    if: failure() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Comment failure summary
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const body =
+              `❌ \`ci-nfe.yml\` failed on this PR.\n\n` +
+              `See the Actions tab for full logs: ` +
+              `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: prNumber, body,
+            });

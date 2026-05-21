@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import forge from 'node-forge';
 import {
   assertCertNotExpired,
+  CNPJ_FORMAT,
   isCertExpired,
   NFeCertError,
   loadCertificateFromBase64,
@@ -143,20 +144,29 @@ describe('loadCertificateFromEnv', () => {
   });
 
   it('NFE_CERT_PATH wins when both PATH and BASE64 are set', () => {
-    // PATH points at a cert with CN "FROM_PATH". BASE64 carries a cert with
-    // CN "FROM_BASE64". If precedence is right, the result CN says FROM_PATH.
-    const pathPfx = buildPfxFixture({ password: 'pwd', commonName: 'FROM_PATH' });
+    // PATH points at a cert with CN ending FROM_PATH suffix. BASE64 carries
+    // a cert with CN ending FROM_BASE64 suffix. If precedence is right, the
+    // result CN reads FROM_PATH. Both CNs include a valid CNPJ suffix so
+    // the new extractor accepts them; the precedence assertion targets the
+    // company-name prefix.
+    const pathPfx = buildPfxFixture({
+      password: 'pwd',
+      commonName: 'FROM_PATH:99999999000191',
+    });
     const pathFile = join(tempDir, 'path.pfx');
     writeFileSync(pathFile, Buffer.from(pathPfx, 'base64'));
 
-    const base64Pfx = buildPfxFixture({ password: 'pwd', commonName: 'FROM_BASE64' });
+    const base64Pfx = buildPfxFixture({
+      password: 'pwd',
+      commonName: 'FROM_BASE64:99999999000191',
+    });
 
     const result = loadCertificateFromEnv({
       NFE_CERT_PATH: pathFile,
       NFE_CERT_BASE64: base64Pfx,
       NFE_CERT_PASSWORD: 'pwd',
     });
-    expect(result.subjectCommonName).toBe('FROM_PATH');
+    expect(result.subjectCommonName).toBe('FROM_PATH:99999999000191');
   });
 
   it('throws when neither NFE_CERT_PATH nor NFE_CERT_BASE64 is set', () => {
@@ -176,6 +186,7 @@ describe('isCertExpired / assertCertNotExpired', () => {
       certificatePem: '',
       certificateDerBase64: '',
       subjectCommonName: 'TEST:12345678000199',
+      cnpj: '12345678000199',
       notAfter,
       pfxBuffer: Buffer.from(''),
       password: '',
@@ -234,6 +245,7 @@ describe('warnIfCertNearExpiry', () => {
       certificatePem: '',
       certificateDerBase64: '',
       subjectCommonName: 'TEST:12345678000199',
+      cnpj: '12345678000199',
       notAfter,
       pfxBuffer: Buffer.from(''),
       password: '',
@@ -275,5 +287,80 @@ describe('warnIfCertNearExpiry', () => {
     const cert = fakeCert(new Date('2025-01-01T00:00:00Z'));
     warnIfCertNearExpiry(cert, 30, log, NOW);
     expect(log).not.toHaveBeenCalled();
+  });
+});
+
+describe('CNPJ extraction from Subject CN', () => {
+  it('extracts a 14-digit CNPJ (today\'s pre-July-2026 format)', () => {
+    // CN suffix is the universally-recognized "fake CNPJ" placeholder
+    // used across SEFAZ test packs. We assert format, not the specific
+    // 14 digits — the test owns both sides of the fixture, so a format
+    // check is what's load-bearing.
+    const pfx = buildPfxFixture({
+      password: 'x',
+      commonName: 'EMPRESA EXEMPLO LTDA:99999999000191',
+    });
+    const cert = loadCertificateFromBase64(pfx, 'x');
+    expect(cert.cnpj).toMatch(CNPJ_FORMAT);
+    expect(cert.cnpj).toHaveLength(14);
+  });
+
+  it('extracts an alphanumeric CNPJ (post-July-2026 IN RFB 2229/2024 format)', () => {
+    // 12 alphanumeric + 2 numeric DV — same shape Receita Federal will
+    // start issuing in July 2026. The new extractor must accept this so
+    // we're forward-compatible with the rollout.
+    const pfx = buildPfxFixture({
+      password: 'x',
+      commonName: 'EMPRESA ALFA LTDA:ABCDEFGH123456',
+    });
+    const cert = loadCertificateFromBase64(pfx, 'x');
+    expect(cert.cnpj).toMatch(CNPJ_FORMAT);
+    expect(cert.cnpj).toHaveLength(14);
+  });
+
+  it('throws NFeCertError when CN has no CNPJ suffix', () => {
+    const pfx = buildPfxFixture({
+      password: 'x',
+      commonName: 'PLAIN COMPANY NAME',
+    });
+    expect(() => loadCertificateFromBase64(pfx, 'x')).toThrow(NFeCertError);
+    // Error message names the offending CN so operators can diagnose
+    // which cert was loaded.
+    expect(() => loadCertificateFromBase64(pfx, 'x')).toThrow(/PLAIN COMPANY NAME/);
+  });
+
+  it('throws NFeCertError when CNPJ suffix is the wrong length', () => {
+    const pfx = buildPfxFixture({
+      password: 'x',
+      commonName: 'EXEMPLO:1234',
+    });
+    expect(() => loadCertificateFromBase64(pfx, 'x')).toThrow(NFeCertError);
+  });
+
+  it('throws NFeCertError when CNPJ suffix is lowercase (Receita mandates uppercase)', () => {
+    const pfx = buildPfxFixture({
+      password: 'x',
+      commonName: 'EXEMPLO:abcdefgh123456',
+    });
+    expect(() => loadCertificateFromBase64(pfx, 'x')).toThrow(NFeCertError);
+  });
+
+  it('throws NFeCertError when CNPJ suffix has 15 chars (one too many)', () => {
+    const pfx = buildPfxFixture({
+      password: 'x',
+      commonName: 'EXEMPLO:99999999000191X',
+    });
+    expect(() => loadCertificateFromBase64(pfx, 'x')).toThrow(NFeCertError);
+  });
+
+  it('tolerates a colon in the company name — only the last colon matters', () => {
+    // Edge case: company names can legally contain colons. The extractor
+    // splits on the LAST colon, so this still parses cleanly.
+    const pfx = buildPfxFixture({
+      password: 'x',
+      commonName: 'GROUP X: SUBSIDIARY LTDA:99999999000191',
+    });
+    const cert = loadCertificateFromBase64(pfx, 'x');
+    expect(cert.cnpj).toMatch(CNPJ_FORMAT);
   });
 });
