@@ -302,6 +302,22 @@ function buildFixture(numeracao: number): GeneratorInput {
       CNPJ: '99999999000191',
       idCadIntTran: 'SELLER-HOMOLOGACAO-001',
     },
+    // <cobr> — billing structure (fatura + duplicatas). Even though
+    // this fixture pays via PIX (single tPag='17' of R$1500), shipping
+    // a <cobr> alongside is structurally legal and exercises the new
+    // typed cobr builder end-to-end against live SEFAZ. vLiq + sum of
+    // dup.vDup must match the pag.vPag total or SEFAZ rejects with a
+    // cross-field cStat — here we use a single duplicata of 1500.00
+    // to keep the math trivial.
+    cobr: {
+      fat: {
+        nFat: 'FAT-HOMOLOG-001',
+        vOrig: '1500.00',
+        vDesc: '0.00',
+        vLiq: '1500.00',
+      },
+      dup: [{ nDup: '001', dVenc: '2026-06-20', vDup: '1500.00' }],
+    },
     // <infAdic.infCpl> — fiscal complementary text shown on the
     // DANFE. Marketplaces typically inject order ID + buyer name
     // here. Free-text, sanitized by the generator (≤5000 chars).
