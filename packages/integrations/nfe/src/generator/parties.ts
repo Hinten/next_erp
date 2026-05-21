@@ -34,12 +34,15 @@ export function buildEmit(filial: Filial): TNFe_infNFe_emit {
   if (!filial.razaoSocial) throw new NFePartiesError('filial.razaoSocial is required');
 
   const enderEmit: TEnderEmi = {
-    xLgr: requireSanitized('filial.sede.logradouro', filial.sede.logradouro),
-    nro: filial.sede.numero,
-    xCpl: sanitizeNFeText(filial.sede.complemento) ?? undefined,
-    xBairro: requireSanitized('filial.sede.bairro', filial.sede.bairro),
+    xLgr: requireSanitized('filial.sede.logradouro', filial.sede.logradouro, 60),
+    // nro flows through the same sanitiser as the rest of endereço:
+    // marketplace imports occasionally land decorative chars (`Nº`,
+    // `[unid]`) in numero, and SEFAZ rejects them on emission.
+    nro: requireSanitized('filial.sede.numero', filial.sede.numero, 60),
+    xCpl: sanitizeNFeText(filial.sede.complemento, 60) ?? undefined,
+    xBairro: requireSanitized('filial.sede.bairro', filial.sede.bairro, 60),
     cMun: requireField('filial.sede.codigoMunicipio', filial.sede.codigoMunicipio),
-    xMun: requireSanitized('filial.sede.cidade', filial.sede.cidade),
+    xMun: requireSanitized('filial.sede.cidade', filial.sede.cidade, 60),
     UF: filial.sede.estado as TEnderEmi['UF'],
     CEP: filial.sede.cep,
     cPais: '1058',
@@ -48,8 +51,8 @@ export function buildEmit(filial: Filial): TNFe_infNFe_emit {
 
   return {
     CNPJ: filial.cnpj,
-    xNome: requireSanitized('filial.razaoSocial', filial.razaoSocial),
-    xFant: sanitizeNFeText(filial.fantasia) ?? undefined,
+    xNome: requireSanitized('filial.razaoSocial', filial.razaoSocial, 60),
+    xFant: sanitizeNFeText(filial.fantasia, 60) ?? undefined,
     enderEmit,
     IE: filial.ie,
     IEST: filial.iest ?? undefined,
@@ -64,7 +67,7 @@ export function buildDest(
   endereco: Endereco,
   ambiente: Ambiente,
 ): TNFe_infNFe_dest {
-  const xNomeReal = sanitizeNFeText(cliente.nome) ?? '';
+  const xNomeReal = sanitizeNFeText(cliente.nome, 60) ?? '';
   const xNome = ambiente === 'homologacao' ? HOMOLOGACAO_XNOME : xNomeReal;
 
   // `indIEDest` — `'9'` Não Contribuinte when cliente.ie is null,
@@ -104,16 +107,16 @@ export function buildDest(
 
 function buildEnderDest(endereco: Endereco): TEndereco {
   return {
-    xLgr: requireSanitized('endereco.logradouro', endereco.logradouro),
-    nro: endereco.numero,
-    xCpl: sanitizeNFeText(endereco.complemento) ?? undefined,
-    xBairro: requireSanitized('endereco.bairro', endereco.bairro),
+    xLgr: requireSanitized('endereco.logradouro', endereco.logradouro, 60),
+    nro: requireSanitized('endereco.numero', endereco.numero, 60),
+    xCpl: sanitizeNFeText(endereco.complemento, 60) ?? undefined,
+    xBairro: requireSanitized('endereco.bairro', endereco.bairro, 60),
     cMun: requireField('endereco.codigoMunicipio', endereco.codigoMunicipio),
-    xMun: requireSanitized('endereco.cidade', endereco.cidade),
+    xMun: requireSanitized('endereco.cidade', endereco.cidade, 60),
     UF: endereco.estado as TEndereco['UF'],
     CEP: endereco.cep,
     cPais: endereco.cPais ?? '1058',
-    xPais: sanitizeNFeText(endereco.pais) ?? 'BRASIL',
+    xPais: sanitizeNFeText(endereco.pais, 60) ?? 'BRASIL',
   };
 }
 
@@ -122,8 +125,12 @@ function requireField<T>(name: string, value: T | null | undefined): NonNullable
   return value as NonNullable<T>;
 }
 
-function requireSanitized(name: string, value: string | null | undefined): string {
-  const cleaned = sanitizeNFeText(value);
+function requireSanitized(
+  name: string,
+  value: string | null | undefined,
+  maxLen?: number,
+): string {
+  const cleaned = sanitizeNFeText(value, maxLen);
   if (!cleaned) throw new NFePartiesError(`${name} is required (got blank after sanitize)`);
   return cleaned;
 }

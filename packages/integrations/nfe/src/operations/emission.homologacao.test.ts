@@ -234,29 +234,6 @@ function buildFixture(numeracao: number): GeneratorInput {
   };
 }
 
-/**
- * Build a fixture whose `complemento` deliberately exceeds the SEFAZ
- * xCpl maxLength (60 chars). The sanitizer doesn't truncate — so this
- * either:
- *   - throws `NFeXsdValidationError` from the pre-send XSD gate
- *     (today's expected outcome — see the dedicated test below), or
- *   - if a truncation step is later added, the XML is reshaped to fit
- *     and SEFAZ accepts.
- *
- * The probe is here because marketplace exports routinely ship
- * 100+ char `complemento` blobs that we have no way to detect at the
- * Pedido boundary.
- */
-function buildOversizeFixture(numeracao: number): GeneratorInput {
-  const base = buildFixture(numeracao);
-  const oversize =
-    'Apto 101 Bloco B - referencia: ao lado do mercado, atrás da igreja, antes da padaria, perto do parque, num predio antigo';
-  return {
-    ...base,
-    enderecoDest: { ...base.enderecoDest, complemento: oversize },
-  };
-}
-
 /** Read the vendored SEFAZ TLS chain (created by `pnpm fetch:sefaz-ca`). */
 function readVendoredCA(): string | undefined {
   const caPath =
@@ -399,72 +376,6 @@ describeOrSkip('SEFAZ-SP homologação — live emission round-trip', () => {
     180_000,
   );
 
-  it(
-    'oversize complemento (> XSD xCpl maxLength) — probes truncation behavior',
-    async () => {
-      // This test deliberately ships a complemento longer than the
-      // SEFAZ xCpl facet (60 chars). The sanitizer does NOT truncate
-      // today, so we expect either:
-      //   (a) the pre-send XSD gate (`validateXsd`) inside
-      //       `autorizarLote` to throw NFeXsdValidationError, OR
-      //   (b) SEFAZ to reject the lote with a cStat (e.g. 226/240).
-      // We accept either outcome — the goal is to *see what happens*
-      // and surface that behavior as a regression sentinel. If a
-      // truncation step is later added, this test starts asserting
-      // cStat=100 instead.
-      const statusCall = buildCall(getEndpoints('SP', 'homologacao').NfeStatusServico);
-      const status = await consultarStatusServico(statusCall, { cUF: '35' });
-      expect(status.cStat).toBe('107');
-
-      await new Promise((r) => setTimeout(r, 1000));
-
-      const numeracao = 1_000_000 + ((Date.now() + 2) & 0xffff);
-      const fixture = buildOversizeFixture(numeracao);
-      const out = generateNFe(fixture);
-      const signedXml = signNFe(out.nfeXml, statusCall.cert);
-      const autorizacaoCall = buildCall(
-        getEndpoints('SP', 'homologacao').NfeAutorizacao,
-      );
-
-      let xsdRejected = false;
-      let sefazCStat: string | undefined;
-      let sefazXMotivo: string | undefined;
-      try {
-        const ret = await autorizarLote(autorizacaoCall, {
-          idLote: out.chave.slice(-15),
-          NFe: [signedXml],
-          indSinc: '1',
-        });
-        sefazCStat = ret.protNFe?.infProt.cStat ?? ret.cStat;
-        sefazXMotivo = ret.protNFe?.infProt.xMotivo ?? ret.xMotivo;
-        // eslint-disable-next-line no-console
-        console.log(
-          `[oversize complemento → SEFAZ] cStat=${sefazCStat} xMotivo="${sefazXMotivo}"`,
-        );
-      } catch (err) {
-        if (err instanceof Error && err.name === 'NFeXsdValidationError') {
-          xsdRejected = true;
-          // eslint-disable-next-line no-console
-          console.log(
-            `[oversize complemento → XSD gate] rejected: ${err.message.split('\n')[0]}`,
-          );
-        } else {
-          throw err;
-        }
-      }
-
-      // One of two terminal behaviors must hold; both are informative.
-      if (xsdRejected) {
-        expect(xsdRejected).toBe(true);
-      } else {
-        // SEFAZ should NOT have accepted an over-limit document — that
-        // would mean the XSD facet doesn't bind, which is itself a
-        // story worth flagging.
-        expect(sefazCStat).not.toBe('100');
-      }
-    },
-    120_000,
-  );
 });
 
 /**

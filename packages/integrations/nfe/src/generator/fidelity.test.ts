@@ -32,6 +32,7 @@ import type {
 import { generateNFe } from './index';
 import { HOMOLOGACAO_XNOME } from './parties';
 import { parse } from '../xml';
+import { NFeXsdValidationError, validateXsd } from '../xsd';
 import type { GeneratorInput, GeneratorItem } from './types';
 
 // ---------------------------------------------------------------------------
@@ -475,5 +476,114 @@ describe('fidelity — deterministic chave + structural round-trip', () => {
     expect(parsed.infNFe.ide.serie).toBe(String(SENT_SERIE));
     expect(parsed.infNFe.ide.cNF).toBe(SENT_FIXED_CNF);
     expect(parsed.infNFe.ide.cDV).toBe(out.chave.slice(-1));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (f) Endereço + party-name maxLength truncation
+//     Marketplace data routinely overflows the XSD facets for these fields;
+//     the sanitiser truncates them at 60 so SEFAZ never sees an over-limit
+//     value. This block replaces the live oversize-complemento probe that
+//     used to live in emission.homologacao.test.ts — same intent, offline.
+// ---------------------------------------------------------------------------
+
+const SENT_OVERSIZE_TEXT_120 =
+  'Apto 101 Bloco B - referencia: ao lado do mercado, atras da igreja, antes da padaria, perto do parque, num predio antigo';
+const SENT_OVERSIZE_NOME_100 =
+  'Distribuidora de Materiais de Construcao e Ferragens do Vale do Paraiba Industria e Comercio Ltda ME';
+const SENT_OVERSIZE_NRO_100 =
+  '12345 67890 ABCDEF GHIJKL MNOPQR STUVWX YZ - referencia secundaria do imovel para entrega rapida';
+
+/** Pull the inner text of a leaf element. Fails the test loudly if missing. */
+function extractLeaf(xml: string, tag: string): string {
+  const re = new RegExp(`<${tag}>([^<]*)</${tag}>`);
+  const m = xml.match(re);
+  if (!m || m[1] == null) {
+    throw new Error(`extractLeaf: <${tag}>…</${tag}> not found`);
+  }
+  return m[1];
+}
+
+describe('fidelity — endereço + name maxLength truncation', () => {
+  it('xCpl (complemento) is truncated to 60 chars', () => {
+    const out = generateNFe(
+      buildInput({
+        enderecoDest: { ...SENT_ENDERECO_DEST, complemento: SENT_OVERSIZE_TEXT_120 },
+      }),
+    );
+    const xCpl = extractLeaf(scope(out.nfeXml, 'enderDest'), 'xCpl');
+    expect(xCpl.length).toBeLessThanOrEqual(60);
+    expect(SENT_OVERSIZE_TEXT_120).toContain(xCpl);
+  });
+
+  it('xLgr (logradouro) is truncated to 60 chars', () => {
+    const out = generateNFe(
+      buildInput({
+        enderecoDest: { ...SENT_ENDERECO_DEST, logradouro: SENT_OVERSIZE_TEXT_120 },
+      }),
+    );
+    const xLgr = extractLeaf(scope(out.nfeXml, 'enderDest'), 'xLgr');
+    expect(xLgr.length).toBeLessThanOrEqual(60);
+    expect(SENT_OVERSIZE_TEXT_120).toContain(xLgr);
+  });
+
+  it('nro (numero) is truncated to 60 chars', () => {
+    const out = generateNFe(
+      buildInput({
+        enderecoDest: { ...SENT_ENDERECO_DEST, numero: SENT_OVERSIZE_NRO_100 },
+      }),
+    );
+    const nro = extractLeaf(scope(out.nfeXml, 'enderDest'), 'nro');
+    expect(nro.length).toBeLessThanOrEqual(60);
+    expect(SENT_OVERSIZE_NRO_100).toContain(nro);
+  });
+
+  it('cliente.nome → <dest><xNome> is truncated to 60 chars in produção', () => {
+    // Homologação overrides xNome with the SEFAZ-mandated literal
+    // HOMOLOGACAO_XNOME (covered by an earlier fidelity block), so the
+    // truncation path only runs in produção.
+    const out = generateNFe(
+      buildInput({
+        ambiente: 'producao',
+        cliente: { ...SENT_CLIENTE, nome: SENT_OVERSIZE_NOME_100 },
+      }),
+    );
+    const xNome = extractLeaf(scope(out.nfeXml, 'dest'), 'xNome');
+    expect(xNome.length).toBeLessThanOrEqual(60);
+    expect(SENT_OVERSIZE_NOME_100).toContain(xNome);
+    // Sanity: this is NOT the homologação placeholder.
+    expect(xNome).not.toBe(HOMOLOGACAO_XNOME);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (g) Fiscal fields fail loudly on overflow
+//     `infCpl` / `infAdFisco` carry fiscally-significant text and MUST NOT
+//     be silently truncated — a chopped-off legal notice is a fiscal hazard.
+//     Contract: when over-filled, the pre-send XSD gate rejects with
+//     NFeXsdValidationError instead of accepting a chopped document.
+// ---------------------------------------------------------------------------
+
+describe('fidelity — fiscal fields fail loudly on overflow', () => {
+  it('infAdFisco > 2000 chars → validateXsd rejects with NFeXsdValidationError', async () => {
+    const out = generateNFe(
+      buildInput({
+        infAdic: { infAdFisco: 'A'.repeat(2001), infCpl: undefined },
+      }),
+    );
+    await expect(validateXsd('NFe', out.nfeXml)).rejects.toBeInstanceOf(
+      NFeXsdValidationError,
+    );
+  });
+
+  it('infCpl > 5000 chars → validateXsd rejects with NFeXsdValidationError', async () => {
+    const out = generateNFe(
+      buildInput({
+        infAdic: { infAdFisco: undefined, infCpl: 'B'.repeat(5001) },
+      }),
+    );
+    await expect(validateXsd('NFe', out.nfeXml)).rejects.toBeInstanceOf(
+      NFeXsdValidationError,
+    );
   });
 });

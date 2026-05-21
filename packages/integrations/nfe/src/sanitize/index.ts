@@ -41,10 +41,25 @@ export function removerCharRestrito(input: string): string {
  * Full field sanitiser: strip accents, drop restricted characters, trim.
  * Returns `null` for empty/blank input — NF-e omits empty optional tags
  * rather than emitting them (MOC §4.2.1.3).
+ *
+ * When `maxLen` is provided, the result is capped at that length (XSD
+ * `maxLength` facets like `xCpl=60`, `xLgr=60`, `xNome=60`). Truncation
+ * happens *after* restricted-char + diacritic stripping, then `trimEnd`
+ * runs so a trailing partial space is never returned. Only use this for
+ * non-fiscal free-text fields (endereço, party name) — truncating a
+ * fiscal field (`xProd`, `infCpl`, `infAdFisco`) silently could
+ * misrepresent the document, so leave those raw and let the XSD gate
+ * reject them.
  */
-export function sanitizeNFeText(input: string | null | undefined): string | null {
+export function sanitizeNFeText(
+  input: string | null | undefined,
+  maxLen?: number,
+): string | null {
   if (input == null) return null;
-  const cleaned = removerCharRestrito(removerAcentos(input)).trim();
+  let cleaned = removerCharRestrito(removerAcentos(input)).trim();
+  if (maxLen != null && cleaned.length > maxLen) {
+    cleaned = cleaned.slice(0, maxLen).trimEnd();
+  }
   return cleaned.length === 0 ? null : cleaned;
 }
 
