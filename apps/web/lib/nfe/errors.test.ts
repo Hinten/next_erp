@@ -15,7 +15,7 @@ import {
   NFeRuntimeNotReadyError,
   NFeServerError,
   type NFeEmitResult,
-} from '@delfrance/integrations-nfe';
+} from '@delfrance/integrations-nfe/http-provider';
 import { ESTADO_NFE } from '@delfrance/schemas';
 
 import {

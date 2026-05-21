@@ -12,7 +12,7 @@ import { useMemo } from 'react';
 import {
   createNFeHttpClient,
   type NFeHttpClient,
-} from '@delfrance/integrations-nfe';
+} from '@delfrance/integrations-nfe/http-provider';
 
 import { useAuth } from '@/lib/auth/useAuth';
 

@@ -1,9 +1,38 @@
 # packages/integrations/nfe — CLAUDE.md
 
-NF-e (Nota Fiscal Eletrônica) library — server-only, ships PEM keys
-and a 3 MB WASM blob. The orchestrator + HTTP host live in
-`apps/nfe`; this package is the typed, version-pinned library they
-consume.
+NF-e (Nota Fiscal Eletrônica) library. The orchestrator + HTTP host
+live in `apps/nfe`; this package is the typed, version-pinned
+library they consume. **Server-mostly**: the kitchen-sink barrel
+(`.`) ships PEM keys + a 3 MB WASM blob and is Node-only. A
+browser-safe subpath (`./http-provider`) carries only the HTTP
+client + typed errors.
+
+## Subpath exports
+
+Declared in `package.json`'s `exports` field:
+
+| Subpath | Contents | Consumers |
+|---|---|---|
+| `.` | Kitchen sink: cert, sign, soap, xsd, safety, xml, generator, operations, tribute, numeracao, recovery, state, http-provider. **Pulls `node:fs`, `node-forge`, `soap`, `xmllint-wasm`.** | `apps/nfe` (Node) |
+| `./http-provider` | Typed `NFeHttpClient` + the eight typed error classes (NFeRejectedError, NFePedidoNotFoundError, …). Imports only `@delfrance/schemas` + `globalThis.fetch`. **Zero server deps.** | `apps/web` (browser bundle via Turbopack) |
+
+`apps/web/eslint.config.mjs` carries a `no-restricted-imports` rule
+forbidding the root specifier from anywhere under `apps/web/**` —
+violators get a friendly redirect to the subpath.
+
+### Adding a new browser-safe module
+
+1. Drop the module under `src/http-provider/` (or anywhere it can
+   be imported from there without pulling a server dep).
+2. Re-export from `src/http-provider/index.ts`.
+3. **Verify the transitive graph is clean**: run
+   `pnpm --filter @delfrance/web build` (Turbopack will surface
+   any `node:fs` / `soap` / `node-forge` it walks into).
+
+### Adding a new server-only module
+
+Re-export from `src/index.ts` as usual. No `exports` change needed
+— the root specifier is the kitchen sink by definition.
 
 ## MOC version pinning
 

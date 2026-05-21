@@ -19,7 +19,7 @@
  *     (`EmitirNFeDialog` — live Sucesso/Falhas/Não emitidas dialog).
  */
 import { notifications } from '@mantine/notifications';
-import type { NFeHttpClient } from '@delfrance/integrations-nfe';
+import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { Pedido } from '@delfrance/schemas';
 import type { ActionConfig } from '@delfrance/ui';
 

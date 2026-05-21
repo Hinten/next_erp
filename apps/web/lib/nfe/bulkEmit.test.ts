@@ -9,7 +9,7 @@ import {
   NFeRejectedError,
   type NFeEmitResult,
   type NFeHttpClient,
-} from '@delfrance/integrations-nfe';
+} from '@delfrance/integrations-nfe/http-provider';
 import type { Pedido } from '@delfrance/schemas';
 
 import { dispatchEmitirNFe, NFeLoteNotImplementedError } from './bulkEmit';
