@@ -64,14 +64,26 @@ const hasCert =
   (Boolean(process.env.NFE_CERT_PATH) || Boolean(process.env.NFE_CERT_BASE64)) &&
   process.env.NFE_CERT_PASSWORD != null;
 
-const describeOrSkip = hasCert ? describe : describe.skip;
+// IE (Inscrição Estadual) is a state-level registration; ICP-Brasil
+// A1 certs are federal and do not carry it. SEFAZ rejects with
+// cStat=209 ("IE do emitente inválida") when the IE in the XML
+// doesn't match the IE registered for the cert's CNPJ at the state
+// SEFAZ — there's no algorithmic way to derive one from the other,
+// so the maintainer must set `NFE_TEST_IE` in `.env.local` to the
+// real IE issued for the company that owns the loaded A1 cert.
+// See `apps/nfe/.env.example`.
+const TEST_IE = process.env.NFE_TEST_IE;
+
+const hasFullCreds = hasCert && Boolean(TEST_IE);
+
+const describeOrSkip = hasFullCreds ? describe : describe.skip;
 
 // Load the cert once when env vars are set so the fixture can read its
 // CNPJ. SEFAZ rejection 213 (CNPJ-Base do Emitente difere do CNPJ-Base
 // do Certificado Digital) fires whenever the emit CNPJ's first 8 digits
 // don't match the cert's — wiring the fixture to the cert eliminates
 // that failure mode regardless of which valid A1 PFX is loaded.
-const TEST_CERT = hasCert ? loadCertificateFromEnv() : null;
+const TEST_CERT = hasFullCreds ? loadCertificateFromEnv() : null;
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -149,7 +161,11 @@ function buildFixture(numeracao: number): GeneratorInput {
       razaoSocial: 'EMPRESA HOMOLOGAÇÃO & CIA. LTDA — ME [@#$%]',
       fantasia: null,
       cnae: null,
-      ie: '111111111111',
+      // IE comes from NFE_TEST_IE — must be the IE registered at the
+      // state SEFAZ for the same CNPJ that signs the cert (rejection
+      // 209 fires otherwise). describeOrSkip already short-circuits
+      // when TEST_IE is absent.
+      ie: TEST_IE!,
       iest: null,
       imun: null,
       sede: {
