@@ -358,11 +358,20 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
 
   /**
    * Ordered list of columns to render — schema descriptors AND virtual
-   * columns interleaved per `defaultVisibleKeys`. Each entry is tagged
-   * with its kind so the header / cell render switches cleanly without
-   * re-doing the lookup. Unknown keys are silently skipped (warnings
-   * stay out of production logs; dev callers spot them in the empty
-   * column).
+   * columns interleaved. Each entry is tagged with its kind so the
+   * header / cell render switches cleanly without re-doing the lookup.
+   *
+   * Ordering policy:
+   *   1. Keys present in `defaultVisibleKeys` render first in that order
+   *      (lets callers pin the layout via `defaultColumns`).
+   *   2. Any key the user toggled on via the ColumnPicker that wasn't in
+   *      `defaultVisibleKeys` appends at the end. This is what lets the
+   *      gear popover surface fields beyond the caller's default
+   *      selection — without this step, toggling a non-default column
+   *      silently no-ops.
+   *
+   * Unknown keys are skipped. Hidden-via-`fieldOverrides[k].hidden`
+   * descriptors are also skipped.
    */
   const visibleColumns = useMemo(() => {
     const schemaByKey = new Map(descriptors.map((d) => [d.key, d]));
@@ -371,19 +380,23 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       | { kind: 'schema'; descriptor: FieldDescriptor }
       | { kind: 'virtual'; column: VirtualColumn<z.infer<S>> }
     > = [];
-    for (const key of defaultVisibleKeys) {
-      if (!visibleKeys.has(key)) continue;
+    const seen = new Set<string>();
+    const push = (key: string) => {
+      if (seen.has(key) || !visibleKeys.has(key)) return;
+      seen.add(key);
       const descriptor = schemaByKey.get(key);
       if (descriptor) {
-        if (fieldOverrides[key]?.hidden) continue;
+        if (fieldOverrides[key]?.hidden) return;
         out.push({ kind: 'schema', descriptor });
-        continue;
+        return;
       }
       const virtual = virtualByKey.get(key);
       if (virtual) {
         out.push({ kind: 'virtual', column: virtual });
       }
-    }
+    };
+    for (const key of defaultVisibleKeys) push(key);
+    for (const key of visibleKeys) push(key);
     return out;
   }, [defaultVisibleKeys, descriptors, virtualColumns, visibleKeys, fieldOverrides]);
 
