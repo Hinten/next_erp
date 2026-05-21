@@ -67,10 +67,9 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
       .first()
       .click();
 
-    // Operação picker — Mantine searchable Select. Opens via the
-    // combobox with label "Operação fiscal".
+    // Operação picker — Mantine searchable Select exposes role="combobox".
     await page
-      .getByRole('textbox', { name: 'Operação fiscal' })
+      .getByRole('combobox', { name: 'Operação fiscal', exact: true })
       .click();
     await page
       .getByRole('option', { name: fixtures.operacaoNome })
@@ -78,7 +77,7 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
 
     // Integração picker — same shape.
     await page
-      .getByRole('textbox', { name: 'Integração' })
+      .getByRole('combobox', { name: 'Integração', exact: true })
       .click();
     await page
       .getByRole('option', { name: fixtures.integracaoNome })
