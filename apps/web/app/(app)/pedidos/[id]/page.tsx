@@ -15,7 +15,9 @@ import {
   Stack,
   Text,
   Title,
+  Tooltip,
 } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import { PageHeader } from '@delfrance/ui';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import {
@@ -27,6 +29,11 @@ import {
 import { format, money } from '@delfrance/core/money';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { useNFeClient } from '@/lib/nfe/client';
+import {
+  notificationForNFeError,
+  notificationForNFeResult,
+} from '@/lib/nfe/errors';
 import { StatusBadge } from '../_components/StatusBadge';
 import { ItensTable } from '../_components/ItensTable';
 import { PagamentosSection } from '../_components/PagamentosSection';
@@ -46,6 +53,8 @@ export default function PedidoDetailPage() {
 
   const { data, loading, error } = useDocSnapshot(docRef);
   const [savingStatus, setSavingStatus] = useState(false);
+  const [emittingNFe, setEmittingNFe] = useState(false);
+  const nfeClient = useNFeClient();
 
   if (loading) {
     return (
@@ -69,6 +78,7 @@ export default function PedidoDetailPage() {
   }
 
   const p = data.data;
+  const pedidoId = data.id;
   const itensFlat = Object.entries(p.itens).flatMap(([, list]) =>
     list.map((item, i) => ({
       ...item,
@@ -90,6 +100,32 @@ export default function PedidoDetailPage() {
     }
   }
 
+  async function handleEmitirNFe() {
+    if (!nfeClient) return;
+    setEmittingNFe(true);
+    try {
+      const result = await nfeClient.emitir(pedidoId);
+      notifications.show({ ...notificationForNFeResult(result), autoClose: 8000 });
+    } catch (err) {
+      notifications.show({ ...notificationForNFeError(err), autoClose: 8000 });
+    } finally {
+      setEmittingNFe(false);
+    }
+  }
+
+  const blocked = p.bloquearEmissaoNFe === true;
+  const emitirButton = (
+    <Button
+      onClick={handleEmitirNFe}
+      loading={emittingNFe}
+      disabled={blocked || !nfeClient}
+      variant="filled"
+      color="teal"
+    >
+      Emitir NF-e
+    </Button>
+  );
+
   return (
     <Stack>
       <PageHeader
@@ -101,9 +137,18 @@ export default function PedidoDetailPage() {
         }
         description={p.ehSaida ? 'Saída' : 'Entrada'}
         actions={
-          <Button component={Link} href={`/pedidos/${data.id}/editar`}>
-            Editar
-          </Button>
+          <Group gap="xs">
+            {blocked ? (
+              <Tooltip label="Emissão de NF-e bloqueada para este pedido (bloquearEmissaoNFe)">
+                <span>{emitirButton}</span>
+              </Tooltip>
+            ) : (
+              emitirButton
+            )}
+            <Button component={Link} href={`/pedidos/${data.id}/editar`}>
+              Editar
+            </Button>
+          </Group>
         }
       />
 

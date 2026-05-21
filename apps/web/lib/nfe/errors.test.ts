@@ -1,0 +1,158 @@
+/**
+ * Unit tests for the NF-e notification mappers. Pure functions, no
+ * DOM — testing the PT-BR mapping + color choice for every typed
+ * error class + every estado.
+ */
+import { describe, expect, it } from 'vitest';
+
+import {
+  NFeAuthError,
+  NFeBadRequestError,
+  NFeBlockedError,
+  NFeNetworkError,
+  NFePedidoNotFoundError,
+  NFeRejectedError,
+  NFeRuntimeNotReadyError,
+  NFeServerError,
+  type NFeEmitResult,
+} from '@delfrance/integrations-nfe';
+import { ESTADO_NFE } from '@delfrance/schemas';
+
+import {
+  notificationForNFeError,
+  notificationForNFeResult,
+} from './errors';
+
+function emitResult(over: Partial<NFeEmitResult> = {}): NFeEmitResult {
+  return {
+    nfeId: 'nfev4-001',
+    pedidoId: 'PED-001',
+    estado: ESTADO_NFE.aprovada,
+    chave: '35260514200166000187550010000000071000000018',
+    nRec: '12345',
+    cStat: '100',
+    xMotivo: 'Autorizado o uso da NF-e',
+    ...over,
+  };
+}
+
+describe('notificationForNFeResult', () => {
+  it('maps estado=aprovada → green with protocol', () => {
+    const n = notificationForNFeResult(emitResult());
+    expect(n.color).toBe('green');
+    expect(n.title).toBe('NF-e autorizada');
+    expect(n.message).toContain('12345');
+    expect(n.message).toContain('100');
+  });
+
+  it('falls back to last-15 of chave when nRec is null on aprovada', () => {
+    const n = notificationForNFeResult(emitResult({ nRec: null }));
+    expect(n.message).toContain('071000000018');
+  });
+
+  it('maps estado=enviando → blue', () => {
+    const n = notificationForNFeResult(
+      emitResult({ estado: ESTADO_NFE.enviando, cStat: '103', xMotivo: 'Lote recebido' }),
+    );
+    expect(n.color).toBe('blue');
+    expect(n.title).toBe('NF-e em processamento');
+  });
+
+  it('maps estado=aguardandoResposta → blue', () => {
+    const n = notificationForNFeResult(
+      emitResult({ estado: ESTADO_NFE.aguardandoResposta, cStat: '105' }),
+    );
+    expect(n.color).toBe('blue');
+  });
+
+  it('maps estado=rejeitada → red (defensive — 422 normally throws NFeRejectedError)', () => {
+    const n = notificationForNFeResult(
+      emitResult({ estado: ESTADO_NFE.rejeitada, cStat: '226', xMotivo: 'UF inválida' }),
+    );
+    expect(n.color).toBe('red');
+    expect(n.message).toContain('226');
+    expect(n.message).toContain('UF inválida');
+  });
+
+  it('maps unknown estado → gray fallback', () => {
+    const n = notificationForNFeResult(emitResult({ estado: '9' as never }));
+    expect(n.color).toBe('gray');
+    expect(n.title).toBe('NF-e enviada');
+  });
+});
+
+describe('notificationForNFeError', () => {
+  it('NFeRejectedError → red with cStat + xMotivo', () => {
+    const err = new NFeRejectedError('226', 'UF inválida', { foo: 'bar' });
+    const n = notificationForNFeError(err);
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('SEFAZ rejeitou a NF-e');
+    expect(n.message).toContain('226');
+    expect(n.message).toContain('UF inválida');
+  });
+
+  it('NFeBlockedError → yellow', () => {
+    const err = new NFeBlockedError('PED-001', { error: 'bloqueada' });
+    const n = notificationForNFeError(err);
+    expect(n.color).toBe('yellow');
+    expect(n.title).toBe('Pedido bloqueado');
+  });
+
+  it('NFePedidoNotFoundError → red carrying the pedidoId', () => {
+    const err = new NFePedidoNotFoundError('PED-MISSING', { error: 'nope' });
+    const n = notificationForNFeError(err);
+    expect(n.color).toBe('red');
+    expect(n.message).toContain('PED-MISSING');
+  });
+
+  it('NFeAuthError → red', () => {
+    const err = new NFeAuthError('no token', 401, {});
+    const n = notificationForNFeError(err);
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('Sessão inválida');
+  });
+
+  it('NFeRuntimeNotReadyError → red', () => {
+    const err = new NFeRuntimeNotReadyError('cert expired', {});
+    const n = notificationForNFeError(err);
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('Servidor NF-e indisponível');
+  });
+
+  it('NFeBadRequestError → red with the underlying message', () => {
+    const err = new NFeBadRequestError('pedidoId deve ser uma string', {});
+    const n = notificationForNFeError(err);
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('Requisição inválida');
+    expect(n.message).toBe('pedidoId deve ser uma string');
+  });
+
+  it('NFeNetworkError → red', () => {
+    const err = new NFeNetworkError('Failed to fetch');
+    const n = notificationForNFeError(err);
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('Erro de rede');
+  });
+
+  it('NFeServerError → red with the underlying message', () => {
+    const err = new NFeServerError('transport failed', 500, {});
+    const n = notificationForNFeError(err);
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('Erro no servidor de NF-e');
+    expect(n.message).toBe('transport failed');
+  });
+
+  it('generic Error → red fallback', () => {
+    const n = notificationForNFeError(new Error('algo deu errado'));
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('Erro inesperado');
+    expect(n.message).toBe('algo deu errado');
+  });
+
+  it('non-Error thrown value → red with generic message', () => {
+    const n = notificationForNFeError('weird');
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('Erro inesperado');
+    expect(n.message).toContain('desconhecida');
+  });
+});
