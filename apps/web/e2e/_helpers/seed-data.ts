@@ -180,6 +180,119 @@ export async function seedFiliais(prefix: string, n: number): Promise<void> {
 }
 
 /**
+ * Seed a small fixture set for the Balcão (canais/balcao) suite: one filial,
+ * one listaDePrecos, one deposito (each named `<prefix>-ref`), then `n`
+ * Integracao docs with `tipo = 7` (balcao) referencing them via real
+ * `DocumentReference`s. The returned ids let tests pick the same docs in the
+ * `<CollectionSelect>` dropdowns during the create flow.
+ */
+export async function seedBalcaoFixtures(
+  prefix: string,
+  n: number,
+): Promise<{ filialId: string; listaId: string; depositoId: string }> {
+  const filialId = `${prefix}-ref-filial`;
+  const listaId = `${prefix}-ref-lista`;
+  const depositoId = `${prefix}-ref-deposito`;
+  const now = new Date().toISOString();
+
+  await db()
+    .collection('filiais')
+    .doc(filialId)
+    .set({
+      razaoSocial: `${prefix}-ref-filial`,
+      fantasia: null,
+      cnae: null,
+      cnpj: '99999999999999',
+      ie: '999999999',
+      iest: null,
+      imun: null,
+      sede: {
+        idExterno: null,
+        logradouro: 'Av. Teste',
+        numero: '1',
+        bairro: 'Centro',
+        complemento: null,
+        cep: '01310100',
+        codigoMunicipio: null,
+        cidade: 'São Paulo',
+        estado: 'SP',
+        cPais: null,
+        pais: null,
+        nome: null,
+        cpf_cnpj: null,
+        rg: null,
+        ie: null,
+        imun: null,
+        email: null,
+        telefone: null,
+      },
+      timestamp: now,
+    });
+
+  await db()
+    .collection('listaDePrecos')
+    .doc(listaId)
+    .set({
+      nome: `${prefix}-ref-lista`,
+      padrao: false,
+      ativo: true,
+      formulasCalculoPreco: null,
+      formulasPorCategoria: null,
+      timestamp: now,
+      ultimaModificacao: now,
+    });
+
+  await db().collection('depositos').doc(depositoId).set({
+    nome: `${prefix}-ref-deposito`,
+    ativo: true,
+    timestamp: now,
+  });
+
+  const filialRef = db().collection('filiais').doc(filialId);
+  const listaRef = db().collection('listaDePrecos').doc(listaId);
+  const depositoRef = db().collection('depositos').doc(depositoId);
+
+  const batch = db().batch();
+  const col = db().collection('integracao');
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      tipo: 7,
+      padrao: i === 1,
+      nome: `${prefix}-${pad(i)}`,
+      cpf_cnpj: null,
+      idCadIntTran: null,
+      ativo: i % 2 === 1,
+      cor: null,
+      modalidadeFreteImportacao: null,
+      filialIntegracaoPedidoOuterRef: filialRef,
+      tabelaNormalOuterRef: listaRef,
+      tabelaPromocionalOuterRef: null,
+      operacaoOuterRef: null,
+      operacaoDevolucaoOuterRef: null,
+      depositoOuterRef: depositoRef,
+      dataCadastro: now,
+    });
+  }
+  await batch.commit();
+
+  return { filialId, listaId, depositoId };
+}
+
+/**
+ * Teardown for `seedBalcaoFixtures`: sweeps the seeded Integracao + fixture
+ * filial/listaDePrecos/deposito docs, including any UI-created Integracao
+ * row sharing the run-scoped prefix.
+ */
+export async function cleanupBalcaoFixtures(prefix: string): Promise<void> {
+  await Promise.all([
+    cleanupByNamePrefix('integracao', prefix),
+    cleanupByFieldPrefix('filiais', 'razaoSocial', prefix),
+    cleanupByNamePrefix('listaDePrecos', prefix),
+    cleanupByNamePrefix('depositos', prefix),
+  ]);
+}
+
+/**
  * Delete every doc in `collection` whose `field` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
  */
