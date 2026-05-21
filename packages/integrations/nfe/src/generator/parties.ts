@@ -19,8 +19,17 @@ import type { Ambiente } from './types';
 export const HOMOLOGACAO_XNOME =
   'NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL';
 
-/** CRT default — Phase A assumes Regime Normal until a per-Filial field lands. */
-const DEFAULT_CRT: TNFe_infNFe_emit['CRT'] = '3';
+/**
+ * CRT default — Simples Nacional. Phase A's tribute engine is SN-only
+ * (it builds CSOSN variants and throws on CRT=3/4 — see
+ * `src/tribute/imposto.ts:75`), so the `<emit><CRT>` value MUST match
+ * to keep the XML internally consistent. SEFAZ rejects with cStat=591
+ * ("Informado CSOSN para emissor que não é do Simples Nacional") when
+ * a CRT=3 emit contains a CSOSN item. Production target (DEL FRANCE)
+ * is SN, so this is also the correct value for live emissions until
+ * a per-Filial `crt` field lands (Phase D).
+ */
+const DEFAULT_CRT: TNFe_infNFe_emit['CRT'] = '1';
 
 export class NFePartiesError extends Error {
   constructor(message: string) {
