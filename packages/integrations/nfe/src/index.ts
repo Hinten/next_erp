@@ -207,27 +207,66 @@ export {
   type TributeItem,
 } from './tribute';
 
-// Legacy InvoiceProvider stub — kept until apps/nfe is deployed and the
-// real HTTP-backed provider replaces it (A9 second half).
-export interface NFeConfig {
-  ambiente: 'producao' | 'homologacao';
-  uf: string;
-  certPath?: string;
-  certPasswordEnvVar?: string;
-}
+// HTTP client + typed errors for callers (`apps/web`) that talk to
+// `apps/nfe` over HTTP. See `src/http-provider/` for the full surface.
+export {
+  NFeAuthError,
+  NFeBadRequestError,
+  NFeBlockedError,
+  NFeHttpError,
+  NFeNetworkError,
+  NFePedidoNotFoundError,
+  NFeRejectedError,
+  NFeRuntimeNotReadyError,
+  NFeServerError,
+  createNFeHttpClient,
+  type NFeConsultaResult,
+  type NFeEmitResult,
+  type NFeHttpClient,
+  type NFeHttpClientConfig,
+  type NFeProcessarPendentesResult,
+} from './http-provider';
 
-export class NFeNotConfiguredError extends Error {
-  constructor() {
-    super('NFe plugin not configured. Spike outcomes pending — see ADR 0004–0008.');
-    this.name = 'NFeNotConfiguredError';
-  }
-}
+import { ESTADO_NFE } from '@delfrance/schemas';
 
-export function createNFeProvider(_config: NFeConfig): InvoiceProvider {
+import { NFeRejectedError, createNFeHttpClient } from './http-provider';
+import type { NFeHttpClientConfig } from './http-provider';
+
+/**
+ * Adapter that bridges the HTTP client to the legacy
+ * `InvoiceProvider` contract (`packages/core/src/plugins/index.ts`).
+ * `apps/web` registers this in the PluginRegistry; the rest of the
+ * web app stays plugin-agnostic.
+ *
+ * Estado → InvoiceProvider status mapping:
+ *   - `aprovada` → `'authorized'` (cStat=100, document is valid)
+ *   - `enviando` / `aguardandoResposta` → `'pending'` (lote in flight)
+ *   - `rejeitada` → `'rejected'` (cStat that maps to fiscal rejection)
+ *   - anything else → `'pending'` (defensive — caller should re-query)
+ */
+export function createNFeProvider(config: NFeHttpClientConfig): InvoiceProvider {
+  const client = createNFeHttpClient(config);
   return {
     id: 'nfe',
-    issue: async (_orderId: string) => {
-      throw new NFeNotConfiguredError();
+    issue: async (orderId: string) => {
+      try {
+        const result = await client.emitir(orderId);
+        if (result.estado === ESTADO_NFE.aprovada) {
+          return { status: 'authorized', protocol: result.nRec ?? undefined };
+        }
+        if (result.estado === ESTADO_NFE.rejeitada) {
+          return { status: 'rejected' };
+        }
+        return { status: 'pending', protocol: result.nRec ?? undefined };
+      } catch (err) {
+        // 422 (NFeRejectedError) is a fiscal outcome, not an error from
+        // the InvoiceProvider's perspective — surface it as 'rejected'.
+        if (err instanceof NFeRejectedError) {
+          return { status: 'rejected' };
+        }
+        // Auth / runtime / network errors propagate; callers handle.
+        throw err;
+      }
     },
   };
 }
