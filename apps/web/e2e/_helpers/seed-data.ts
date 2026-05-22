@@ -567,6 +567,37 @@ export async function cleanupByNamePrefix(
 }
 
 /**
+ * Delete every endereco subdoc of `clienteId`. The cliente itself is swept by
+ * `cleanupByNamePrefix('clientes', ...)`, but Firestore does not cascade — the
+ * `enderecos` subcollection must be cleared explicitly.
+ */
+export async function cleanupEnderecos(clienteId: string): Promise<void> {
+  const snap = await db()
+    .collection('clientes')
+    .doc(clienteId)
+    .collection('enderecos')
+    .get();
+  if (snap.empty) return;
+  const batch = db().batch();
+  snap.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+}
+
+/**
+ * Count the endereco subdocs of `clienteId`. The endereco specs poll this to
+ * confirm a UI-created/-deleted subdoc actually committed before asserting on
+ * the table or running the address search.
+ */
+export async function enderecoCount(clienteId: string): Promise<number> {
+  const snap = await db()
+    .collection('clientes')
+    .doc(clienteId)
+    .collection('enderecos')
+    .get();
+  return snap.size;
+}
+
+/**
  * True once a document with the given `nome` exists in `collection`. The
  * create-flow specs poll this to confirm a UI-created doc actually committed
  * — Admin SDK reads are strongly consistent — before navigating on, so the

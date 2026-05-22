@@ -11,21 +11,20 @@ type RawServiceAccount = ServiceAccount & {
   client_email?: string;
 };
 
+/**
+ * Resolves a service-account path that may be root-relative (e.g.
+ * `.ignore/service_account.json` from `.env.local`) while the script cwd is
+ * `tools/test-fixtures`. Tries cwd first, then two levels up (repo root).
+ */
 function resolveCredentialPath(inputPath: string): string {
-  const pathFromCwd = resolve(inputPath);
-  if (existsSync(pathFromCwd)) {
-    return pathFromCwd;
-  }
+  const fromCwd = resolve(inputPath);
+  if (existsSync(fromCwd)) return fromCwd;
 
-  // `seed:*` scripts run from `tools/test-fixtures`, while `.env.local` is at
-  // the repo root and often uses root-relative paths like `.ignore/...`.
-  const pathFromRepoRoot = resolve(process.cwd(), '..', '..', inputPath);
-  if (existsSync(pathFromRepoRoot)) {
-    return pathFromRepoRoot;
-  }
+  const fromRoot = resolve(process.cwd(), '..', '..', inputPath);
+  if (existsSync(fromRoot)) return fromRoot;
 
   throw new Error(
-    `Service account file not found at "${inputPath}". Tried: "${pathFromCwd}" and "${pathFromRepoRoot}".`,
+    `Service account file not found at "${inputPath}". Tried: "${fromCwd}" and "${fromRoot}".`,
   );
 }
 

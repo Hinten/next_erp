@@ -10,6 +10,13 @@ export const PERM = {
     write: 1n << 1n,
     delete: 1n << 2n,
   },
+  // Endereço — subcollection of cliente. Bits 3-5 share the cliente byte and
+  // are already used by `enderecoMeta` in packages/schemas/src/endereco.ts.
+  endereco: {
+    read: 1n << 3n,
+    write: 1n << 4n,
+    delete: 1n << 5n,
+  },
   produto: {
     read: 1n << 8n,
     write: 1n << 9n,
