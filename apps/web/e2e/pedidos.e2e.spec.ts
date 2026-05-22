@@ -43,6 +43,15 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await cleanupPedidoFixtures(prefix);
   });
 
+  test('navigates from the pedidos list to /pedidos/novo', async ({ page }) => {
+    await page.goto('/pedidos');
+    await page.getByRole('link', { name: 'Novo pedido' }).click();
+    await expect(page).toHaveURL(/\/pedidos\/novo$/);
+    await expect(
+      page.getByRole('heading', { name: 'Novo pedido' }),
+    ).toBeVisible({ timeout: 15_000 });
+  });
+
   test('renders /pedidos/novo with empty defaults', async ({ page }) => {
     await page.goto('/pedidos/novo');
     await expect(
