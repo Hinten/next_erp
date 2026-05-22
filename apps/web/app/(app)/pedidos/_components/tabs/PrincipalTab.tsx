@@ -3,8 +3,6 @@
 import { useMemo } from 'react';
 import {
   ActionIcon,
-  Button,
-  Card,
   Group,
   NumberInput,
   Stack,
@@ -105,15 +103,6 @@ export function PrincipalTab({
 
   return (
     <Stack>
-      <Card withBorder>
-        <Stack>
-          <Text size="sm" c="dimmed">
-            Vendedor
-          </Text>
-          <Text>{vendedorLabel ?? '—'}</Text>
-        </Stack>
-      </Card>
-
       <Controller
         control={form.control}
         name="clientePedidoOuterRef"
@@ -128,7 +117,13 @@ export function PrincipalTab({
         )}
       />
 
-      <Group grow>
+      <Group grow align="flex-start">
+        <TextInput
+          label="Vendedor"
+          value={vendedorLabel ?? '—'}
+          readOnly
+          disabled
+        />
         <Controller
           control={form.control}
           name="operacaoPedidoOuterRef"
@@ -157,21 +152,20 @@ export function PrincipalTab({
             />
           )}
         />
+        <Controller
+          control={form.control}
+          name="listaDePrecosOuterRef"
+          render={({ field, fieldState }) => (
+            <ListaDePrecosPicker
+              db={db}
+              value={field.value}
+              onChange={(ref) => field.onChange(ref)}
+              disabled={disabled}
+              error={fieldState.error?.message}
+            />
+          )}
+        />
       </Group>
-
-      <Controller
-        control={form.control}
-        name="listaDePrecosOuterRef"
-        render={({ field, fieldState }) => (
-          <ListaDePrecosPicker
-            db={db}
-            value={field.value}
-            onChange={(ref) => field.onChange(ref)}
-            disabled={disabled}
-            error={fieldState.error?.message}
-          />
-        )}
-      />
 
       <Stack gap="xs">
         <Group justify="space-between" align="center">

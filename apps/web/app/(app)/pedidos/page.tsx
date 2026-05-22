@@ -66,7 +66,7 @@ export default function PedidosPage() {
       }}
       orderBy={{ field: 'numero', direction: 'desc' }}
       pageSize={50}
-      rowHref={(id) => `/pedidos/${id}`}
+      rowHref={(id) => `/pedidos/${id}/editar`}
       selectable
       actions={[emitNFeAction]}
     />

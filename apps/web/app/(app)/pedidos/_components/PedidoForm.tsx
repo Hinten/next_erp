@@ -18,12 +18,19 @@ import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { FiscalTab, PlaceholderTab, PrincipalTab } from './tabs';
+import { PagamentosSection } from './PagamentosSection';
 import { regroupItens } from './regroupItens';
 import { flattenItens } from './flattenItens';
 import type { FlatItem, PedidoFormState } from './types';
 
 export interface PedidoFormProps {
   defaultValues?: Pedido;
+  /**
+   * Firestore id of the pedido being edited. Absent in create mode.
+   * When present, the Pagamento tab renders the real (read-only)
+   * `PagamentosSection` instead of the placeholder.
+   */
+  pedidoId?: string;
   submitLabel?: string;
   onSubmit: (values: Pedido) => Promise<void>;
 }
@@ -108,6 +115,7 @@ function buildDefaults(existing?: Pedido): PedidoFormState {
 
 export function PedidoForm({
   defaultValues,
+  pedidoId,
   submitLabel = 'Salvar',
   onSubmit,
 }: PedidoFormProps) {
@@ -176,7 +184,11 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="pagamento" pt="md">
-            <PlaceholderTab name="Pagamento" />
+            {pedidoId ? (
+              <PagamentosSection pedidoId={pedidoId} />
+            ) : (
+              <PlaceholderTab name="Pagamento" />
+            )}
           </Tabs.Panel>
 
           <Tabs.Panel value="link-pgto" pt="md">

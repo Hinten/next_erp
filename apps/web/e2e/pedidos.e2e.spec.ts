@@ -143,9 +143,11 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     const pedidoId = state.pedidoId!;
 
     await page.goto(`/pedidos/${pedidoId}/editar`);
-    await expect(
-      page.getByRole('heading', { name: 'Editar pedido' }),
-    ).toBeVisible({ timeout: 15_000 });
+    // The header now shows the pedido number (or a #id fallback for a
+    // numberless pedido); assert the form mounted via its Principal tab.
+    await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({
+      timeout: 15_000,
+    });
 
     // Observations textarea — fill, save, reload, assert.
     const obs = `${prefix}-observacao-${Date.now()}`;
@@ -154,7 +156,10 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
       .getByRole('button', { name: 'Salvar alterações' })
       .click();
 
-    await page.waitForURL(`**/pedidos/${pedidoId}`, { timeout: 30_000 });
+    // Saving an existing pedido redirects back to the list.
+    await page.waitForURL((url) => /\/pedidos$/.test(url.pathname), {
+      timeout: 30_000,
+    });
 
     await page.goto(`/pedidos/${pedidoId}/editar`);
     await expect(
