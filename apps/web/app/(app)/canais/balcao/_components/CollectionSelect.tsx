@@ -1,18 +1,24 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import { Select, type ComboboxData } from '@mantine/core';
+import { Pill, PillsInput, Select, type ComboboxData } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
 import type { ZodObject, ZodRawShape, z } from 'zod';
 import {
   type CollectionHandle,
+  PipelineUnsupportedError,
+  buildPipeline,
   buildQuery,
+  isPipelineSupported,
   limit as limitConstraint,
   orderByField,
   whereOp,
 } from '@delfrance/data';
-import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
-import { NullClearButton } from '@delfrance/ui';
+import {
+  useDocSnapshot,
+  usePipelineSnapshot,
+  useSnapshot,
+} from '@delfrance/data/hooks';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useRecentSelections } from './useRecentSelections';
@@ -20,12 +26,14 @@ import { useRecentSelections } from './useRecentSelections';
 const DEFAULT_LIMIT = 15;
 const SEARCH_DEBOUNCE_MS = 250;
 /** Firestore prefix-range upper sentinel — sorts above any string with the prefix. */
-const PREFIX_MAX = '';
+const PREFIX_MAX = String.fromCharCode(0xffff);
 
 export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
   collection: CollectionHandle<S>;
   /** Field on the referenced doc used as the visible label (e.g. `nome`). */
   labelField: string;
+  /** Doc fields a typed term is matched against. Defaults to `[labelField]`. */
+  searchFields?: string[];
   /** RHF field path — makes the per-instance recents cache key unique. */
   fieldName: string;
   /** Current form value — DocumentReference, `{path}`-shaped object, id string, or null. */
@@ -71,10 +79,11 @@ function readLabelField(data: unknown, labelField: string): string | undefined {
  * Mantine `<Select>` bound to a Firestore collection.
  *
  *  - Loads at most `limit` (default 15) docs, ordered by `labelField`.
- *  - Server-side prefix search: typing re-queries Firestore so any doc is
- *    findable regardless of collection size.
- *  - Lock-after-select: once a value is set the field is read-only; the user
- *    must clear it (✕) to pick again.
+ *  - Pipeline-backed search: a typed term is matched (case/accent-insensitive
+ *    substring) against `searchFields` via the Firestore Pipeline API; falls
+ *    back to a single-field prefix query when pipelines are unavailable.
+ *  - Lock-after-select: once a value is set the field renders as a removable
+ *    chip; clearing the chip returns it to the searchable state.
  *  - Remembers the last 5 picks per instance in localStorage (24h TTL) and
  *    surfaces them in a "Recentes" group.
  *
@@ -84,6 +93,7 @@ function readLabelField(data: unknown, labelField: string): string | undefined {
 export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   collection,
   labelField,
+  searchFields,
   fieldName,
   value,
   onChange,
@@ -110,13 +120,38 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   const [searchValue, setSearchValue] = useState('');
   const [debounced] = useDebouncedValue(searchValue, SEARCH_DEBOUNCE_MS);
   // While locked the dropdown is closed — ignore the search term so a stale
-  // value (Mantine sets `searchValue` to the picked label) can't fire a
-  // phantom prefix query.
+  // value can't fire a phantom query.
   const term = locked ? '' : debounced.trim();
 
-  // Server-side prefix search: add the range filters only when a term is
-  // present. Range filter + orderBy on the same field needs no composite index.
-  const listQuery = useMemo(() => {
+  // Value-stable key for the `searchFields` array so the query memos below
+  // don't rebuild (and re-query) on every render.
+  const searchFieldsKey = (searchFields ?? [labelField]).join('|');
+
+  // Primary source: the Firestore Pipeline API — a typed term is matched
+  // (case/accent-insensitive substring) against every `searchFields` entry,
+  // OR-combined. Runs fully client-side.
+  const pipeline = useMemo(() => {
+    if (locked) return null;
+    if (!isPipelineSupported(db)) return null;
+    try {
+      return buildPipeline(db, {
+        collection: collection.resolvePath({}),
+        ...(term !== ''
+          ? { search: { fields: searchFieldsKey.split('|'), term } }
+          : {}),
+        orderBy: [{ field: labelField, direction: 'asc' }],
+        limit,
+      });
+    } catch (err) {
+      if (err instanceof PipelineUnsupportedError) return null;
+      throw err;
+    }
+  }, [db, collection, locked, term, searchFieldsKey, labelField, limit]);
+
+  // Fallback when the SDK lacks the Pipeline API: a single-field Firestore
+  // prefix-range query — substring / multi-field search is pipeline-only.
+  const fallbackQuery = useMemo(() => {
+    if (pipeline || locked) return null;
     const constraints = [orderByField(labelField, 'asc')];
     if (term !== '') {
       constraints.push(whereOp(labelField, '>=', term));
@@ -124,9 +159,14 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
     }
     constraints.push(limitConstraint(limit));
     return buildQuery(collection.ref(db, {}), constraints);
-  }, [db, collection, labelField, term, limit]);
+  }, [db, collection, pipeline, locked, labelField, term, limit]);
 
-  const { data: listData } = useSnapshot<z.infer<S>>(listQuery);
+  // Pipelines are one-shot — each debounced term re-executes; the fallback
+  // path stays real-time. Both hooks run every render (Rules of Hooks); only
+  // the active one receives a non-null argument.
+  const fromPipeline = usePipelineSnapshot<z.infer<S>>(pipeline);
+  const fromQuery = useSnapshot<z.infer<S>>(fallbackQuery);
+  const listData = (pipeline ? fromPipeline : fromQuery).data;
 
   // The saved value may point to a doc outside the limited list — fetch it
   // directly so its label still renders.
@@ -152,9 +192,6 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   );
 
   const data: ComboboxData = useMemo(() => {
-    if (locked && selectedId) {
-      return [{ value: selectedId, label: selectedLabel }];
-    }
     if (term !== '') {
       return resultItems;
     }
@@ -171,7 +208,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
         : []),
       ...(todos.length > 0 ? [{ group: 'Todos', items: todos }] : []),
     ];
-  }, [locked, selectedId, selectedLabel, term, resultItems, recents]);
+  }, [term, resultItems, recents]);
 
   const handleChange = useCallback(
     (id: string | null) => {
@@ -189,6 +226,31 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
     [onChange, resultItems, recents, record, collection, db],
   );
 
+  // Locked: the value renders as a removable chip inside a field-shaped
+  // container — visibly "set & locked" until the user clears it.
+  if (locked && selectedId) {
+    return (
+      <PillsInput
+        label={label}
+        description={hint}
+        required={required}
+        error={error}
+        disabled={disabled}
+      >
+        <Pill.Group>
+          <Pill
+            withRemoveButton={!disabled}
+            disabled={disabled}
+            removeButtonProps={{ 'aria-label': 'Limpar' }}
+            onRemove={() => handleChange(null)}
+          >
+            {selectedLabel}
+          </Pill>
+        </Pill.Group>
+      </PillsInput>
+    );
+  }
+
   return (
     <Select
       label={label}
@@ -200,20 +262,11 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
       required={required}
       disabled={disabled}
       error={error}
-      readOnly={locked}
-      searchable={!locked}
+      searchable
       searchValue={searchValue}
       onSearchChange={setSearchValue}
       filter={({ options }) => options}
-      rightSection={
-        locked ? (
-          <NullClearButton onClear={() => handleChange(null)} />
-        ) : undefined
-      }
-      rightSectionPointerEvents={locked ? 'all' : undefined}
-      placeholder={
-        !locked && listData === undefined ? 'Carregando…' : undefined
-      }
+      placeholder={listData === undefined ? 'Carregando…' : undefined}
       nothingFoundMessage="Nenhum registro"
     />
   );

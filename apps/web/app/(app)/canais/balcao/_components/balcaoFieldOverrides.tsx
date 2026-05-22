@@ -20,12 +20,14 @@ function refRenderInput<S extends ZodObject<ZodRawShape>>(
   collection: CollectionHandle<S>,
   required: boolean,
   labelField: string = 'nome',
+  searchFields?: string[],
 ): FieldConfig['renderInput'] {
   function RefInput(props: FieldRenderProps) {
     return (
       <CollectionSelect
         collection={collection}
         labelField={labelField}
+        searchFields={searchFields}
         fieldName={props.name}
         label={props.label}
         hint={props.hint}
@@ -96,9 +98,13 @@ function CorInput({
 export const balcaoFields: Record<string, FieldConfig> = {
   filialIntegracaoPedidoOuterRef: {
     label: 'Filial',
-    // `filial` has no `nome` field — Firestore's orderBy would drop every
-    // doc if we asked for `nome` here, leaving an empty dropdown.
-    renderInput: refRenderInput(filialCollection, true, 'razaoSocial'),
+    // `filial` has no `nome` field — display + ordering use `razaoSocial`;
+    // the search also matches the trade name and CNPJ.
+    renderInput: refRenderInput(filialCollection, true, 'razaoSocial', [
+      'razaoSocial',
+      'fantasia',
+      'cnpj',
+    ]),
   },
   tabelaNormalOuterRef: {
     label: 'Tabela de preços',
