@@ -361,17 +361,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
    * columns interleaved. Each entry is tagged with its kind so the
    * header / cell render switches cleanly without re-doing the lookup.
    *
-   * Ordering policy:
-   *   1. Keys present in `defaultVisibleKeys` render first in that order
-   *      (lets callers pin the layout via `defaultColumns`).
-   *   2. Any key the user toggled on via the ColumnPicker that wasn't in
-   *      `defaultVisibleKeys` appends at the end. This is what lets the
-   *      gear popover surface fields beyond the caller's default
-   *      selection — without this step, toggling a non-default column
-   *      silently no-ops.
-   *
-   * Unknown keys are skipped. Hidden-via-`fieldOverrides[k].hidden`
-   * descriptors are also skipped.
+   * Order is exactly `visibleKeysArr`: the persisted, user-reorderable
+   * list of visible keys (seeded from `defaultVisibleKeys`, then edited
+   * via the ColumnPicker's visibility checkboxes and reorder mode).
+   * Unknown-kind descriptors, `fieldOverrides[k].hidden` descriptors and
+   * keys that match neither a descriptor nor a virtual column are skipped.
    */
   const visibleColumns = useMemo(() => {
     const schemaByKey = new Map(descriptors.map((d) => [d.key, d]));
@@ -381,24 +375,21 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       | { kind: 'virtual'; column: VirtualColumn<z.infer<S>> }
     > = [];
     const seen = new Set<string>();
-    const push = (key: string) => {
-      if (seen.has(key) || !visibleKeys.has(key)) return;
+    for (const key of visibleKeysArr) {
+      if (seen.has(key)) continue;
       seen.add(key);
       const descriptor = schemaByKey.get(key);
       if (descriptor) {
-        if (fieldOverrides[key]?.hidden) return;
+        if (descriptor.kind === 'unknown') continue;
+        if (fieldOverrides[key]?.hidden) continue;
         out.push({ kind: 'schema', descriptor });
-        return;
+        continue;
       }
       const virtual = virtualByKey.get(key);
-      if (virtual) {
-        out.push({ kind: 'virtual', column: virtual });
-      }
-    };
-    for (const key of defaultVisibleKeys) push(key);
-    for (const key of visibleKeys) push(key);
+      if (virtual) out.push({ kind: 'virtual', column: virtual });
+    }
     return out;
-  }, [defaultVisibleKeys, descriptors, virtualColumns, visibleKeys, fieldOverrides]);
+  }, [visibleKeysArr, descriptors, virtualColumns, fieldOverrides]);
 
   /**
    * Subset of schema descriptors that are currently visible — for legacy
@@ -411,13 +402,16 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     [visibleColumns],
   );
 
+  // Hiding drops the key; showing appends it to the end of the order. The
+  // array doubles as the display order — see `visibleColumns` above.
   function toggleColumn(key: string) {
-    setVisibleKeysArr((cur) => {
-      const set = new Set(cur);
-      if (set.has(key)) set.delete(key);
-      else set.add(key);
-      return [...set];
-    });
+    setVisibleKeysArr((cur) =>
+      cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key],
+    );
+  }
+
+  function reorderColumns(next: string[]) {
+    setVisibleKeysArr(next);
   }
 
   function toggleRow(id: string) {
@@ -479,6 +473,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             ]}
             visibleKeys={visibleKeys}
             onToggle={toggleColumn}
+            order={visibleKeysArr}
+            onReorder={reorderColumns}
           />
           {(actions.length > 0 || newHref || renderNewButton || copyHref) && (
             <ActionBar
