@@ -1,15 +1,21 @@
 import { db } from './admin';
 
 /**
- * Dev-seed for the `/pedidos` TableView — writes a handful of pedidos with
- * varying `estado`, NFe state, frete state, print metadata and cliente
- * references, so you can run the app locally and eyeball every cell
- * variant (NFCell badges, ClienteCell link + tooltip, FreteCell label,
- * ImpCell icon).
+ * Dev-seed for the `/pedidos` TableView — writes a handful of pedidos
+ * (plus one cliente) with varying `estado`, frete state, print metadata
+ * and cliente references, so you can run the app locally and eyeball the
+ * static cells (ClienteCell link + tooltip, FreteCell label, ImpCell).
+ *
+ * NF-e docs are seeded SEPARATELY by `seed-nfe-dev.ts` — run this first to
+ * get pedidos with an empty NF column (DASH), then run the NF-e generator
+ * and watch the NFCell badges appear / change live, without reloading the
+ * page. That split is the whole point: it proves the per-row snapshot
+ * listener updates on its own.
  *
  * Idempotent: every seeded doc uses a stable `dev-pedidos-...` id, so
  * re-running this script just overwrites the previous run. Pass `--clean`
- * to delete everything the seed wrote without re-creating it.
+ * to delete everything the seed wrote (pedidos, their `nfev4`
+ * subcollections, and the cliente) without re-creating it.
  *
  * Usage (from the repo root):
  *   pnpm --filter @delfrance/test-fixtures seed:pedidos          # create + overwrite
@@ -20,30 +26,20 @@ import { db } from './admin';
  * the database named by `FIREBASE_DATABASE_ID` (default `'default'`).
  */
 
-const PREFIX = 'dev-pedidos';
-const CLIENTE_ID = `${PREFIX}-cliente`;
+export const DEV_PEDIDOS_PREFIX = 'dev-pedidos';
+const CLIENTE_ID = `${DEV_PEDIDOS_PREFIX}-cliente`;
 
 /**
- * Build a pedido id for the seeded entry at index `i`. Stable across
- * runs so re-seeding overwrites instead of accreting docs.
+ * Build a pedido id for the seeded entry at index `i` (1-based). Stable
+ * across runs so re-seeding overwrites instead of accreting docs.
  */
-function pedidoId(i: number): string {
-  return `${PREFIX}-${String(i).padStart(2, '0')}`;
-}
-
-interface NFeSeed {
-  readonly estado: string;
-  readonly chave?: string | null;
-  readonly xMotivo?: string | null;
-  readonly error?: string | null;
-  readonly tpEmis?: number;
+export function devPedidoId(i: number): string {
+  return `${DEV_PEDIDOS_PREFIX}-${String(i).padStart(2, '0')}`;
 }
 
 interface PedidoSeed {
   readonly numero: string;
   readonly estadoPedido: string;
-  /** Set when the pedido should have a row in `nfev4` (latest doc). */
-  readonly nfe?: NFeSeed;
   /** When true, link to the seeded cliente so ClienteCell exercises its fetch. */
   readonly withCliente?: boolean;
   /** When set, stamp `dtImpressao` so ImpCell shows the printer icon. */
@@ -54,16 +50,10 @@ interface PedidoSeed {
   readonly valorCobrado?: number;
 }
 
-// A representative slice of the NFe state machine so the operator can
-// confirm every NFCell branch renders correctly: aprovada (green), rejeitada
-// (red + tooltip), error (red), aguardando (yellow), gerado (gray),
-// contingência via `tpEmis=9` (outline variant), and one row with no NFe at
-// all (DASH).
 const PEDIDOS: PedidoSeed[] = [
   {
     numero: '0001',
     estadoPedido: 'pago',
-    nfe: { estado: 'a', chave: '3'.repeat(44) },
     withCliente: true,
     dtImpressao: Date.now() - 86_400_000,
     frete: {
@@ -76,10 +66,6 @@ const PEDIDOS: PedidoSeed[] = [
   {
     numero: '0002',
     estadoPedido: 'emProcessamento',
-    nfe: {
-      estado: 'n',
-      xMotivo: '561 - Inscrição estadual do destinatário inválida',
-    },
     withCliente: true,
     frete: { estado: 'aCaminho', codRastreio: 'BR987654321' },
     valorCobrado: 250.0,
@@ -87,7 +73,6 @@ const PEDIDOS: PedidoSeed[] = [
   {
     numero: '0003',
     estadoPedido: 'aguardandoConfirmacaoDePagamento',
-    nfe: { estado: '2' },
     withCliente: true,
     frete: { estado: 'aguardandoNFe' },
     valorCobrado: 75.5,
@@ -95,22 +80,18 @@ const PEDIDOS: PedidoSeed[] = [
   {
     numero: '0004',
     estadoPedido: 'emAnalise',
-    nfe: { estado: 'e', error: 'TLS handshake failed contacting SEFAZ-RS' },
     frete: { estado: 'iniciado' },
     valorCobrado: 320.0,
   },
   {
     numero: '0005',
     estadoPedido: 'pago',
-    // EPEC aprovado + tpEmis=9 (SVC) → outline variant in the NFCell badge.
-    nfe: { estado: 'p', chave: '4'.repeat(44), tpEmis: 9 },
     withCliente: true,
     valorCobrado: 980.0,
   },
   {
     numero: '0006',
     estadoPedido: 'finalizado',
-    // No NFe doc — NFCell falls back to DASH.
     withCliente: true,
     dtImpressao: Date.now() - 3_600_000,
     frete: { estado: 'postado', codRastreio: 'BR555555555' },
@@ -119,10 +100,14 @@ const PEDIDOS: PedidoSeed[] = [
   {
     numero: '0007',
     estadoPedido: 'cancelado',
-    nfe: { estado: 'c' },
     valorCobrado: 199.0,
   },
 ];
+
+/** The stable ids of every pedido this script seeds (1-based order). */
+export function devPedidoIds(): string[] {
+  return PEDIDOS.map((_, i) => devPedidoId(i + 1));
+}
 
 async function writeCliente(): Promise<void> {
   await db()
@@ -147,7 +132,7 @@ async function writeCliente(): Promise<void> {
 }
 
 async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
-  const id = pedidoId(i);
+  const id = devPedidoId(i);
   const now = Date.now();
   const clienteRef = spec.withCliente
     ? db().collection('clientes').doc(CLIENTE_ID)
@@ -192,32 +177,6 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
           }
         : null,
     });
-
-  if (!spec.nfe) return;
-  await db()
-    .collection('pedidos')
-    .doc(id)
-    .collection('nfev4')
-    .doc(`${id}-nfe`)
-    .set({
-      numeracao: 1000 + i,
-      serie: 1,
-      tpEmis: spec.nfe.tpEmis ?? 1,
-      estado: spec.nfe.estado,
-      chave: spec.nfe.chave ?? null,
-      idLote: null,
-      infNFe: null,
-      xml_nfe_proc: null,
-      xml_epec_proc: null,
-      xml_assinado: null,
-      nRec: null,
-      retries: null,
-      cStat: null,
-      xMotivo: spec.nfe.xMotivo ?? null,
-      error: spec.nfe.error ?? null,
-      timestamp: now - i * 3_600_000,
-      ultima_modificacao: new Date(now - i * 3_600_000).toISOString(),
-    });
 }
 
 export async function seedDevPedidos(): Promise<{ created: number }> {
@@ -232,10 +191,10 @@ export async function seedDevPedidos(): Promise<{ created: number }> {
 
 export async function cleanupDevPedidos(): Promise<{ deleted: number }> {
   let deleted = 0;
-  for (let i = 0; i < PEDIDOS.length; i += 1) {
-    const id = pedidoId(i + 1);
+  for (const id of devPedidoIds()) {
     // Subcollections must be deleted explicitly — the Admin SDK doesn't
-    // cascade them with the parent doc.
+    // cascade them with the parent doc. Sweeps any `nfev4` docs the NF-e
+    // generator may have written.
     const nfeSnap = await db()
       .collection('pedidos')
       .doc(id)
@@ -268,7 +227,9 @@ if (isDirectInvocation) {
     : seedDevPedidos().then(({ created }) => {
         // eslint-disable-next-line no-console
         console.log(
-          `[seed-pedidos-dev] wrote ${created} pedido(s) + 1 cliente; ids: ${pedidoId(1)}..${pedidoId(created)}`,
+          `[seed-pedidos-dev] wrote ${created} pedido(s) + 1 cliente; ` +
+            `ids: ${devPedidoId(1)}..${devPedidoId(created)}\n` +
+            `[seed-pedidos-dev] next: run \`seed:nfe\` to populate the NF column live`,
         );
       });
   runner.catch((err: unknown) => {
