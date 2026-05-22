@@ -143,6 +143,27 @@ describe('TableView', () => {
     expect(stored).toContain('nome');
   });
 
+  it('reorders columns via the picker and persists the new order', () => {
+    wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+    // Default order follows the schema: Nome, Tipo, Observacoes.
+    expect(
+      screen.getAllByRole('columnheader').map((th) => th.textContent),
+    ).toEqual(['Nome', 'Tipo', 'Observacoes']);
+
+    // Open the ColumnPicker, switch to reorder mode and move "Nome" down.
+    fireEvent.click(screen.getByRole('button', { name: 'Configurar colunas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reordenar colunas' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mover Nome para baixo' }));
+
+    expect(
+      screen.getAllByRole('columnheader').map((th) => th.textContent),
+    ).toEqual(['Tipo', 'Nome', 'Observacoes']);
+    const stored = JSON.parse(
+      localStorage.getItem('delfrance:tableview:columns:tests') ?? '[]',
+    ) as string[];
+    expect(stored).toEqual(['tipo', 'nome', 'observacoes']);
+  });
+
   it('clicking a row calls router.push with the rowHref', () => {
     pushSpy.mockClear();
     wrap(

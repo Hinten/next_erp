@@ -53,6 +53,13 @@ Boots `apps/web` on :3000 and `apps/integrations` on :3001.
 
 Brazilian features (NFe, Mercado Pago, marketplaces) are **opt-in plugins** behind contracts in `packages/core/plugins/`. The core is locale-agnostic.
 
+# Useful Commands:
+
+pnpm --filter @delfrance/test-fixtures seed:pedidos
+pnpm --filter @delfrance/test-fixtures seed:nfe              # varied estados (all NFCell branches)
+pnpm --filter @delfrance/test-fixtures seed:nfe --estado=a   # all → Aprovada (run again with n, e, etc.)
+pnpm --filter @delfrance/test-fixtures seed:nfe --clean      # remove NFe docs, keep pedidos
+
 ## Contributing
 
 See `CONTRIBUTING.md`. Code of conduct: `CODE_OF_CONDUCT.md`. Security disclosures: `SECURITY.md`.

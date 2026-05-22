@@ -1,6 +1,7 @@
 'use client';
 
-import { Badge } from '@mantine/core';
+import Link from 'next/link';
+import { Badge, Button } from '@mantine/core';
 import {
   ESTADO_PEDIDO_LABELS,
   type EstadoPedido,
@@ -66,7 +67,12 @@ export default function PedidosPage() {
       }}
       orderBy={{ field: 'numero', direction: 'desc' }}
       pageSize={50}
-      rowHref={(id) => `/pedidos/${id}`}
+      rowHref={(id) => `/pedidos/${id}/editar`}
+      renderNewButton={() => (
+        <Button component={Link} href="/pedidos/novo">
+          Novo pedido
+        </Button>
+      )}
       selectable
       actions={[emitNFeAction]}
     />
