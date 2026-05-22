@@ -24,8 +24,10 @@ const PAGE_SIZE = 100;
  * NFe surface in apps/web is a read-only view today: lists pedidos that
  * already carry chNFeReferenciadas (the 44-char SEFAZ chave), with
  * deep-link to the parent pedido. Emission, signing, and SEFAZ
- * round-trip live in apps/integrations + Cloud Functions per ADR-0005
- * onwards. The banner makes the integration boundary explicit.
+ * round-trip live in apps/nfe (the deployable NF-e API host) via the
+ * `consultarStatusServico` / `consultarSituacaoNFe` / `autorizarLote`
+ * helpers in `@delfrance/integrations-nfe/operations`. The "Emitir NFe"
+ * action that POSTs to apps/nfe lands in Phase A11.
  */
 export default function NfeListPage() {
   const q = useMemo(() => {
@@ -86,7 +88,7 @@ export default function NfeListPage() {
             {data.map(({ id, data: p }) => (
               <Table.Tr key={id}>
                 <Table.Td>
-                  <Anchor component={Link} href={`/pedidos/${id}`}>
+                  <Anchor component={Link} href={`/pedidos/${id}/editar`}>
                     {p.numero || `#${id.slice(0, 8)}`}
                   </Anchor>
                 </Table.Td>

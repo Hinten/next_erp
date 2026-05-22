@@ -180,6 +180,249 @@ export async function seedFiliais(prefix: string, n: number): Promise<void> {
 }
 
 /**
+ * Seed minimal fixtures the `/pedidos/novo` e2e flow needs:
+ *  - 1 cliente,
+ *  - 1 operação (saída, tipo=1),
+ *  - 1 integração,
+ *  - 1 produto with a SKU.
+ *
+ * Returns the seeded paths so the spec can build outer refs without
+ * hitting the UI search.
+ */
+export async function seedPedidoFixtures(prefix: string): Promise<{
+  clientePath: string;
+  operacaoPath: string;
+  integracaoPath: string;
+  produtoPath: string;
+  clienteNome: string;
+  operacaoNome: string;
+  integracaoNome: string;
+  produtoNome: string;
+  produtoSku: string;
+}> {
+  const clienteId = `${prefix}-cli-001`;
+  const operacaoId = `${prefix}-op-001`;
+  const integracaoId = `${prefix}-int-001`;
+  const produtoId = `${prefix}-pro-001`;
+  const clienteNome = `${prefix}-cli-001`;
+  const operacaoNome = `${prefix}-op-001`;
+  const integracaoNome = `${prefix}-int-001`;
+  const produtoNome = `${prefix}-pro-001`;
+  const produtoSku = `${prefix.toUpperCase().replace(/-/g, '_')}_SKU_001`;
+
+  const batch = db().batch();
+  batch.set(db().collection('clientes').doc(clienteId), {
+    tipo: '1',
+    nome: clienteNome,
+    cpf_cnpj: '12345678901',
+    idEstrangeiro: null,
+    ie: null,
+    imun: null,
+    isUF: null,
+    email: null,
+    telefone: null,
+    observacoesInternas: null,
+    timestamp: new Date().toISOString(),
+    nome_embedding: null,
+    telefone_embedding: null,
+    userCliente: null,
+  });
+  batch.set(db().collection('operacao').doc(operacaoId), {
+    nome: operacaoNome,
+    naturezaDaOperacao: 'Venda',
+    tipo: 1,
+    ehServico: false,
+    ehExterior: false,
+    ehConsumidorFinal: true,
+    padrao: false,
+    ativo: true,
+    movimentaEstoque: true,
+    movimentaIndisponivelEstoque: true,
+    ehFiscal: true,
+    finNFe: 1,
+    indPres: '2',
+    indIntermed: '1',
+    cfop: '5102',
+    cfopInterestadual: '6102',
+    origem: '0',
+    NCM: null,
+    CEST: null,
+    unidade: 'UN',
+    estadosDestino: null,
+    estados: null,
+    configuracaoICMS: null,
+    configuracaoIPI: null,
+    configuracaoPIS: null,
+    configuracaoPISST: null,
+    infCpl: null,
+    timestamp: new Date().toISOString(),
+  });
+  batch.set(db().collection('integracao').doc(integracaoId), {
+    tipo: 7, // balcao
+    padrao: false,
+    nome: integracaoNome,
+    cpf_cnpj: null,
+    idCadIntTran: null,
+    ativo: true,
+    cor: null,
+    modalidadeFreteImportacao: null,
+    filialIntegracaoPedidoOuterRef: null,
+    tabelaNormalOuterRef: null,
+    tabelaPromocionalOuterRef: null,
+    operacaoOuterRef: null,
+    operacaoDevolucaoOuterRef: null,
+    depositoOuterRef: null,
+    dataCadastro: new Date().toISOString(),
+  });
+  batch.set(db().collection('produtos').doc(produtoId), {
+    nome: produtoNome,
+    sku: produtoSku,
+    codPai: null,
+    paiId: null,
+    ordem: null,
+    gtin: null,
+    codFornecedor: null,
+    categoriaProdutoOuterRef: null,
+    pesoLiquidoKg: null,
+    pesoBrutoKg: null,
+    alturaCm: null,
+    larguraCm: null,
+    profundidadeCm: null,
+    ehKit: false,
+    ehKitVirtual: false,
+    publicado: true,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    crossdocking: null,
+    grupoDeVariacoesUid: null,
+    variacoesUid: null,
+    componentesKitKeys: null,
+    componentesKit: null,
+    integracoesComProduto: [],
+    marketplaceIds: null,
+    marketplace: [],
+    statusProdutosMarketplace: null,
+    fotos: null,
+    videos: null,
+    anexos: null,
+    fotosArquivosIds: null,
+    nome_embedding: null,
+  });
+  await batch.commit();
+
+  return {
+    clientePath: `clientes/${clienteId}`,
+    operacaoPath: `operacao/${operacaoId}`,
+    integracaoPath: `integracao/${integracaoId}`,
+    produtoPath: `produtos/${produtoId}`,
+    clienteNome,
+    operacaoNome,
+    integracaoNome,
+    produtoNome,
+    produtoSku,
+  };
+}
+
+/**
+ * Clean up every test pedido whose `numero` starts with `prefix` and
+ * every fixture document whose `nome` starts with `prefix`.
+ */
+export async function cleanupPedidoFixtures(prefix: string): Promise<void> {
+  await Promise.all([
+    cleanupByFieldPrefix('pedidos', 'numero', prefix),
+    cleanupByNamePrefix('clientes', prefix),
+    cleanupByNamePrefix('operacao', prefix),
+    cleanupByNamePrefix('integracao', prefix),
+    cleanupByNamePrefix('produtos', prefix),
+  ]);
+}
+
+/**
+ * Seed a pedido (with `numero = <prefix>-NNN`) plus one NFe doc in its
+ * `nfev4` subcollection at the requested estado. Returns the pair of ids so
+ * the test can mutate the NFe mid-run via `db().collection(...)...update(...)`.
+ *
+ * The NFe `timestamp` (ms since epoch) is what `NFCell`'s query orders by;
+ * the helper stamps `Date.now()` so the seeded doc is the most-recent NFe.
+ */
+export async function seedPedidoWithNFe(
+  prefix: string,
+  index: number,
+  estado: string,
+): Promise<{ pedidoId: string; nfeId: string }> {
+  const pedidoId = `${prefix}-${pad(index)}`;
+  const nfeId = `${prefix}-${pad(index)}-nfe`;
+  const now = Date.now();
+  await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .set({
+      ehSaida: true,
+      estado: 'pago',
+      numero: pedidoId,
+      itens: {},
+      itensIds: [],
+      descontoTotal: 0,
+      timestamp: now,
+      ultimaModificacao: now,
+      foiImpresso: false,
+      // The TableView's NF column reads `pedido.id`, not these inner refs;
+      // outer refs stay null so the cell exercises the snapshot path
+      // without dragging a cliente lookup into the assertion.
+      vendedorPedidoOuterRef: null,
+      integracaoPedidoOuterRef: null,
+      operacaoPedidoOuterRef: null,
+      clientePedidoOuterRef: null,
+      enderecoFiscalOuterRef: null,
+      listaDePrecosOuterRef: null,
+    });
+  await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .collection('nfev4')
+    .doc(nfeId)
+    .set({
+      numeracao: 1,
+      serie: 1,
+      tpEmis: 1,
+      estado,
+      chave: null,
+      idLote: null,
+      infNFe: null,
+      xml_nfe_proc: null,
+      xml_epec_proc: null,
+      xml_assinado: null,
+      nRec: null,
+      retries: null,
+      cStat: null,
+      xMotivo: null,
+      error: null,
+      timestamp: now,
+      ultima_modificacao: new Date(now).toISOString(),
+    });
+  return { pedidoId, nfeId };
+}
+
+/**
+ * Clean up a pedido seeded by `seedPedidoWithNFe` together with the NFe
+ * docs in its `nfev4` subcollection. Subcollections are not cascaded by
+ * the Firestore SDK; we delete them explicitly.
+ */
+export async function cleanupPedidoWithNFe(pedidoId: string): Promise<void> {
+  const nfeSnap = await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .collection('nfev4')
+    .get();
+  if (!nfeSnap.empty) {
+    const batch = db().batch();
+    nfeSnap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+  await db().collection('pedidos').doc(pedidoId).delete();
+}
+
+/**
  * Delete every doc in `collection` whose `field` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
  */

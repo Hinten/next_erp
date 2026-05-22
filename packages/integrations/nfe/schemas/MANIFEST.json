@@ -1,0 +1,47 @@
+{
+  "description": "SEFAZ NF-e XSD packs vendored in this directory. The SEFAZ update-watch routine diffs this manifest against the portal to detect new Notas Técnicas / schema packs.",
+  "layout": "4.00",
+  "portalListUrl": "https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?tipoConteudo=BMPFMBoln3w=",
+  "packs": [
+    {
+      "name": "PL_009i_NT2021_004_v100d",
+      "nt": "NT 2021.004 v1.00d",
+      "publishedAt": "2022-05-17",
+      "role": "base",
+      "description": "Full layout 4.00 pack — web-service envelope schemas + NF-e leiaute.",
+      "url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=jkJ62OcEpnY=",
+      "provides": [
+        "enviNFe_v4.00.xsd",
+        "retEnviNFe_v4.00.xsd",
+        "consReciNFe_v4.00.xsd",
+        "retConsReciNFe_v4.00.xsd",
+        "consSitNFe_v4.00.xsd",
+        "retConsSitNFe_v4.00.xsd",
+        "leiauteConsSitNFe_v4.00.xsd",
+        "consStatServ_v4.00.xsd",
+        "retConsStatServ_v4.00.xsd",
+        "leiauteConsStatServ_v4.00.xsd",
+        "inutNFe_v4.00.xsd",
+        "retInutNFe_v4.00.xsd",
+        "leiauteInutNFe_v4.00.xsd",
+        "procNFe_v4.00.xsd",
+        "procInutNFe_v4.00.xsd",
+        "xmldsig-core-schema_v1.01.xsd"
+      ]
+    },
+    {
+      "name": "PL_010c_NT2022_002v1.30",
+      "nt": "NT 2022.002 v1.30",
+      "publishedAt": "2026-03-26",
+      "role": "leiaute-overlay",
+      "description": "NF-e leiaute delta — overlays the NF-e structure files over the base pack and adds DFeTiposBasicos.",
+      "url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=%2BZqiLFb5FGE=",
+      "overlays": [
+        "leiauteNFe_v4.00.xsd",
+        "nfe_v4.00.xsd",
+        "tiposBasico_v4.00.xsd",
+        "DFeTiposBasicos_v1.00.xsd"
+      ]
+    }
+  ]
+}

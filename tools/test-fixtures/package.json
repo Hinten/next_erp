@@ -8,6 +8,8 @@
   "scripts": {
     "seed": "tsx src/seed.ts",
     "seed-clientes": "tsx src/seed-clientes.ts",
+    "seed:pedidos": "dotenv -e ../../.env.local -- tsx src/seed-pedidos-dev.ts",
+    "seed:nfe": "dotenv -e ../../.env.local -- tsx src/seed-nfe-dev.ts",
     "teardown": "tsx src/teardown.ts",
     "grant-all-perms": "tsx src/grant-all-perms.ts",
     "typecheck": "tsc --noEmit",

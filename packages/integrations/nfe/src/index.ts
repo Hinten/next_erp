@@ -1,46 +1,281 @@
+/**
+ * `@delfrance/integrations-nfe` — public surface.
+ *
+ * **Server kitchen sink.** Re-exports cert / sign / soap / xsd /
+ * safety / xml / generator / operations / tribute / numeracao /
+ * recovery / state / http-provider — everything the orchestrator
+ * (`apps/nfe`) needs to issue NF-es from Node. **Do not import
+ * this entry from a browser bundle** — the soap + cert modules
+ * pull `node:fs` and `node-forge` which Turbopack cannot ship to
+ * the browser.
+ *
+ * Browser consumers (currently only `apps/web`) import the
+ * `./http-provider` subpath instead — declared in `package.json`'s
+ * `exports` field and re-exported by `src/http-provider/index.ts`.
+ * That subpath carries only the typed HTTP client + error classes
+ * and has zero server-only deps in its transitive graph. See
+ * `CLAUDE.md` ("Subpath exports") for the upgrade playbook when
+ * adding new browser-safe surfaces.
+ */
 import type { InvoiceProvider } from '@delfrance/core/plugins';
 
-/**
- * NFe (Nota Fiscal Eletrônica) plugin scaffold.
- *
- * Status: contracts only. Concrete implementation depends on the
- * outcomes of Phase 0 spikes 0004 (XSD→TS), 0005 (XML signing),
- * 0006 (SOAP transport), 0007 (BR-pronto package survey). Once those
- * land, this package wraps either a single npm BR package (if survey
- * picks one) or composes the layers from the validated libs.
- *
- * Cert handling lives in a sub-module (server-only) so the client
- * bundle never pulls in PFX/P12 parsing code. To be added with the
- * concrete implementation.
- */
-export interface NFeConfig {
-  /** SEFAZ environment. 'producao' or 'homologacao'. */
-  ambiente: 'producao' | 'homologacao';
-  /** UF of the issuer (e.g. 'SP'). Drives which webservice URL is used. */
-  uf: string;
-  /** Path or env-var name for the A1 certificate (PFX). Server-only. */
-  certPath?: string;
-  /** Cert password. Read from Cloud Secret Manager in production. */
-  certPasswordEnvVar?: string;
-}
+// Cert
+export {
+  NFeCertError,
+  assertCertNotExpired,
+  isCertExpired,
+  loadCertificateFromBase64,
+  loadCertificateFromEnv,
+  loadCertificateFromPath,
+  warnIfCertNearExpiry,
+  type NFeCertificate,
+} from './cert';
 
-export class NFeNotConfiguredError extends Error {
-  constructor() {
-    super('NFe plugin not configured. Spike outcomes pending — see ADR 0004–0008.');
-    this.name = 'NFeNotConfiguredError';
-  }
-}
+// Endpoints
+export {
+  NFeEndpointError,
+  getEndpoints,
+  supportedUFs,
+  type Ambiente,
+  type NfeServiceUrls,
+} from './endpoints';
+
+// XML (de)serializer
+export {
+  NFeXmlError,
+  parse,
+  serialize,
+  serializeFragment,
+  type XmlValue,
+} from './xml';
+
+// Sanitization
+export {
+  removerAcentos,
+  removerCharRestrito,
+  sanitizeNFeEmail,
+  sanitizeNFeText,
+} from './sanitize';
+
+// State machine
+export {
+  MAX_LOTE_POLL_RETRIES,
+  applyOutcome,
+  classifyCStat,
+  cStatToEstado,
+  nextAction,
+  type CStatCategory,
+  type NextAction,
+  type NFeStatePatch,
+  type SefazOutcome,
+} from './state';
+
+// Sign
+export {
+  NFeSignatureError,
+  signEvento,
+  signInutilizacao,
+  signNFe,
+} from './sign';
+
+// SOAP transport (low-level — most callers reach for src/operations)
+export {
+  NFeTransportError,
+  createSefazAgent,
+  nfeAutorizacaoLote,
+  nfeConsultaProtocolo,
+  nfeRetAutorizacao,
+  nfeStatusServico,
+  type PostResult,
+  type SefazAgentOptions,
+  type SefazCall,
+  type SoapOperation,
+} from './soap';
+
+// XSD validation
+export {
+  NFeXsdValidationError,
+  supportedRoots,
+  validateXsd,
+  type XsdError,
+  type XsdRootKey,
+} from './xsd';
+
+// Safety guard
+export {
+  NFeProductionGuardError,
+  assertSafeTpAmb,
+  tpAmbFromAmbiente,
+  type TpAmb,
+} from './safety';
+
+// Generator
+export {
+  NFeChaveError,
+  NFeGeneratorError,
+  NFeIdeError,
+  generateNFe,
+  type GeneratorInput,
+  type GeneratorItem,
+  type GeneratorOutput,
+  type TpEmis,
+} from './generator';
+
+// Recovery / anti-loss
+export {
+  DEFAULT_STUCK_TIMEOUT_MS,
+  RE_CHNFE,
+  RE_NREC,
+  classifyRecovery,
+  extractMarkers,
+  isStuckEnviando,
+  outcomeFromInfProt,
+  outcomeFromRetConsRec,
+  outcomeFromRetConsSit,
+  outcomeFromRetEnviNFe,
+  type MaybeStuckNFe,
+  type RecoveryKind,
+} from './recovery';
+
+// Typed operations (the default API for app code)
+export {
+  autorizarLote,
+  consultarLote,
+  consultarSituacaoNFe,
+  consultarStatusServico,
+  type CUFCode,
+} from './operations';
+
+// Generated Zod schemas (one per SEFAZ complexType, plus ROOTS_SCHEMAS).
+// Re-exported as a namespace so callers can pull individual schemas by name
+// without polluting the top-level surface with 160+ symbols. Use as:
+//   import { NFeSchemas } from '@delfrance/integrations-nfe';
+//   const validated = NFeSchemas.TNFe_infNFe_det_impostoSchema.parse(input);
+export * as NFeSchemas from './types/nfe-schema-zod';
+
+// Per-Filial numeração + lote counters. Library functions over an
+// injectable NFeConfigStore; the firebase-admin-backed adapter ships
+// from `./numeracao/firestore-adapter` so apps/nfe can wire its
+// Firestore instance through without the library taking a hard
+// dep on firebase-admin.
+export {
+  NFeBulkSizeError,
+  NFeConfigNotFoundError,
+  nextIdLote,
+  nextNumeracao,
+  nextNumeracaoBulk,
+  readNFeConfig,
+  type NFeConfigStore,
+  type NFeConfigTx,
+} from './numeracao';
+export {
+  DEFAULT_NFE_CONFIG_DOC_ID,
+  nfeConfigStoreFromFirestore,
+  type AdminDocRefLike,
+  type AdminFirestoreLike,
+  type AdminTxLike,
+} from './numeracao/firestore-adapter';
+
+// Simples Nacional tributary engine — per-item <imposto> dispatch,
+// <total> aggregation, <transp> / <pag> builders. The orchestrator in
+// apps/nfe consumes these to build the SEFAZ wire shape from Flutter-
+// stamped Imposto rules.
+export {
+  NFeTributeError,
+  TributeFormatError,
+  aggregateTotals,
+  buildImpostoXml,
+  buildPagXml,
+  buildTotalXml,
+  buildTranspXml,
+  configuracaoICMSSchema,
+  confCOFINSSchema,
+  confPISSchema,
+  crtSchema,
+  csosnSchema,
+  impostoSchema,
+  modBCSchema,
+  modBCSTSchema,
+  origemSchema,
+  paymentSchema,
+  tPagSchema,
+  tributeItemSchema,
+  type ConfCOFINS,
+  type ConfPIS,
+  type ConfiguracaoICMS,
+  type Crt,
+  type Csosn,
+  type Imposto,
+  type ModBC,
+  type ModBCST,
+  type ModFrete,
+  type Origem,
+  type Payment,
+  type TPag,
+  type TotalAggregation,
+  type TributeItem,
+} from './tribute';
+
+// HTTP client + typed errors for callers (`apps/web`) that talk to
+// `apps/nfe` over HTTP. See `src/http-provider/` for the full surface.
+export {
+  NFeAuthError,
+  NFeBadRequestError,
+  NFeBlockedError,
+  NFeHttpError,
+  NFeNetworkError,
+  NFePedidoNotFoundError,
+  NFeRejectedError,
+  NFeRuntimeNotReadyError,
+  NFeServerError,
+  createNFeHttpClient,
+  type NFeConsultaResult,
+  type NFeEmitResult,
+  type NFeHttpClient,
+  type NFeHttpClientConfig,
+  type NFeProcessarPendentesResult,
+} from './http-provider';
+
+import { ESTADO_NFE } from '@delfrance/schemas';
+
+import { NFeRejectedError, createNFeHttpClient } from './http-provider';
+import type { NFeHttpClientConfig } from './http-provider';
 
 /**
- * Returns an InvoiceProvider implementation. Today this throws on every
- * call; once the concrete impl lands it issues NFe payloads against the
- * configured SEFAZ environment.
+ * Adapter that bridges the HTTP client to the legacy
+ * `InvoiceProvider` contract (`packages/core/src/plugins/index.ts`).
+ * `apps/web` registers this in the PluginRegistry; the rest of the
+ * web app stays plugin-agnostic.
+ *
+ * Estado → InvoiceProvider status mapping:
+ *   - `aprovada` → `'authorized'` (cStat=100, document is valid)
+ *   - `enviando` / `aguardandoResposta` → `'pending'` (lote in flight)
+ *   - `rejeitada` → `'rejected'` (cStat that maps to fiscal rejection)
+ *   - anything else → `'pending'` (defensive — caller should re-query)
  */
-export function createNFeProvider(_config: NFeConfig): InvoiceProvider {
+export function createNFeProvider(config: NFeHttpClientConfig): InvoiceProvider {
+  const client = createNFeHttpClient(config);
   return {
     id: 'nfe',
-    issue: async (_orderId: string) => {
-      throw new NFeNotConfiguredError();
+    issue: async (orderId: string) => {
+      try {
+        const result = await client.emitir(orderId);
+        if (result.estado === ESTADO_NFE.aprovada) {
+          return { status: 'authorized', protocol: result.nRec ?? undefined };
+        }
+        if (result.estado === ESTADO_NFE.rejeitada) {
+          return { status: 'rejected' };
+        }
+        return { status: 'pending', protocol: result.nRec ?? undefined };
+      } catch (err) {
+        // 422 (NFeRejectedError) is a fiscal outcome, not an error from
+        // the InvoiceProvider's perspective — surface it as 'rejected'.
+        if (err instanceof NFeRejectedError) {
+          return { status: 'rejected' };
+        }
+        // Auth / runtime / network errors propagate; callers handle.
+        throw err;
+      }
     },
   };
 }

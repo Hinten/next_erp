@@ -1,0 +1,4 @@
+# Captured SEFAZ TLS chains. Run `pnpm --filter @delfrance/integrations-nfe
+# fetch:sefaz-ca` to populate. Not checked in — each environment / contributor
+# captures its own (TOFU model; see scripts/fetch-sefaz-chain.mjs).
+sefaz-*.pem
