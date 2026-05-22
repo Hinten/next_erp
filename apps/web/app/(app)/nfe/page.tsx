@@ -88,7 +88,7 @@ export default function NfeListPage() {
             {data.map(({ id, data: p }) => (
               <Table.Tr key={id}>
                 <Table.Td>
-                  <Anchor component={Link} href={`/pedidos/${id}`}>
+                  <Anchor component={Link} href={`/pedidos/${id}/editar`}>
                     {p.numero || `#${id.slice(0, 8)}`}
                   </Anchor>
                 </Table.Td>

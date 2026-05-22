@@ -1,53 +1,34 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { FirebaseError } from 'firebase/app';
 import { setDoc } from 'firebase/firestore';
 import {
   Alert,
   Anchor,
   Button,
   Group,
-  Select,
+  Modal,
   Skeleton,
   Stack,
-  TextInput,
+  Text,
   Title,
+  Tooltip,
 } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import { PageHeader } from '@delfrance/ui';
 import { useDocSnapshot } from '@delfrance/data/hooks';
-import {
-  ESTADO_PEDIDO_LABELS,
-  type EstadoPedido,
-  type ItemDoPedido,
-  type Pedido,
-  estadoPedidoSchema,
-} from '@delfrance/schemas';
+import type { Pedido } from '@delfrance/schemas';
+import { PedidoForm } from '../../_components/PedidoForm';
+import { StatusBadge } from '../../_components/StatusBadge';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
-import { ItensEditor } from '../../_components/ItensEditor';
-
-const estadoOptions = estadoPedidoSchema.options.map((value) => ({
-  value,
-  label: ESTADO_PEDIDO_LABELS[value],
-}));
-
-/**
- * Re-group a flat list of items back into the
- * `Map<produtoUid, ItemDoPedido[]>` shape Pedido stores. Items without
- * a produtoUid bind to the literal key 'NONE' (matching the Flutter
- * convention).
- */
-function regroupItens(items: ItemDoPedido[]): Pedido['itens'] {
-  const out: Pedido['itens'] = {};
-  for (const item of items) {
-    const key = item.produtoUid && item.produtoUid !== '' ? item.produtoUid : 'NONE';
-    (out[key] ??= []).push(item);
-  }
-  return out;
-}
+import { useNFeClient } from '@/lib/nfe/client';
+import {
+  notificationForNFeError,
+  notificationForNFeResult,
+} from '@/lib/nfe/errors';
 
 export default function EditarPedidoPage() {
   const params = useParams<{ id: string }>();
@@ -60,49 +41,41 @@ export default function EditarPedidoPage() {
 
   const { data, loading, error } = useDocSnapshot(docRef);
 
-  const [numero, setNumero] = useState<string>('');
-  const [estado, setEstado] = useState<EstadoPedido | null>(null);
-  const [itens, setItens] = useState<ItemDoPedido[] | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [emitConfirmOpen, setEmitConfirmOpen] = useState(false);
+  const [emitting, setEmitting] = useState(false);
+  const nfeClient = useNFeClient();
 
-  // Initialise local state once when the doc first resolves. Subsequent
-  // remote changes don't clobber local edits — the user must reload to
-  // pick them up. (Concurrent-edit conflict resolution is out of scope
-  // for this slice.)
-  const seeded = itens !== null;
-  useEffect(() => {
-    if (seeded || !data) return;
-    setNumero(data.data.numero ?? '');
-    setEstado(data.data.estado);
-    const flat = Object.entries(data.data.itens).flatMap(([, list]) => list);
-    flat.sort((a, b) => a.ordem - b.ordem);
-    setItens(flat);
-  }, [data, seeded]);
+  async function handleSubmit(values: Pedido) {
+    await setDoc(docRef, values, { merge: true });
+    router.replace('/pedidos');
+  }
 
-  async function handleSave() {
-    if (!estado || !itens) return;
-    setSaving(true);
-    setSaveError(null);
+  async function handleEmitir() {
+    if (!nfeClient) {
+      notifications.show({
+        title: 'Sessão inválida',
+        message: 'Faça login novamente para emitir NF-e.',
+        color: 'red',
+        autoClose: 8000,
+      });
+      return;
+    }
+    setEmitting(true);
     try {
-      await setDoc(
-        docRef,
-        {
-          numero: numero || null,
-          estado,
-          itens: regroupItens(itens),
-        },
-        { merge: true },
-      );
-      router.replace(`/pedidos/${params.id}`);
+      const result = await nfeClient.emitir(params.id);
+      notifications.show({
+        ...notificationForNFeResult(result),
+        autoClose: 8000,
+      });
     } catch (err) {
-      if (err instanceof FirebaseError) {
-        setSaveError(err.message);
-      } else {
-        throw err;
-      }
+      if (!(err instanceof Error)) throw err;
+      notifications.show({
+        ...notificationForNFeError(err),
+        autoClose: 8000,
+      });
     } finally {
-      setSaving(false);
+      setEmitting(false);
+      setEmitConfirmOpen(false);
     }
   }
 
@@ -117,47 +90,70 @@ export default function EditarPedidoPage() {
   if (error) return <Alert color="red">{error.message}</Alert>;
   if (!data) return <Alert color="yellow">Pedido não encontrado.</Alert>;
 
+  const p = data.data;
+
   return (
     <Stack>
       <PageHeader
-        title="Editar pedido"
+        title={
+          <Group align="center">
+            <Title order={2}>{p.numero || `#${data.id.slice(0, 6)}`}</Title>
+            <StatusBadge estado={p.estado} />
+          </Group>
+        }
+        description={p.ehSaida ? 'Saída' : 'Entrada'}
         actions={
-          <Anchor component={Link} href={`/pedidos/${params.id}`} size="sm">
-            Cancelar
-          </Anchor>
+          <Group gap="xs">
+            <Tooltip
+              label="Emissão de NF-e bloqueada para este pedido"
+              disabled={!p.bloquearEmissaoNFe}
+              withArrow
+            >
+              <Button
+                color="teal"
+                onClick={() => setEmitConfirmOpen(true)}
+                disabled={!!p.bloquearEmissaoNFe || !nfeClient}
+                loading={emitting}
+              >
+                Emitir NF-e
+              </Button>
+            </Tooltip>
+            <Anchor component={Link} href="/pedidos" size="sm">
+              Cancelar
+            </Anchor>
+          </Group>
         }
       />
 
-      <Group grow>
-        <TextInput
-          label="Número"
-          value={numero}
-          onChange={(e) => setNumero(e.currentTarget.value)}
-        />
-        <Select
-          label="Status"
-          data={estadoOptions}
-          value={estado}
-          onChange={(v) => setEstado(v as EstadoPedido | null)}
-          searchable
-        />
-      </Group>
+      <Modal
+        opened={emitConfirmOpen}
+        onClose={() => setEmitConfirmOpen(false)}
+        title="Emitir NF-e"
+        centered
+      >
+        <Stack>
+          <Text>Emitir NF-e para este pedido?</Text>
+          <Group justify="flex-end">
+            <Button
+              variant="subtle"
+              onClick={() => setEmitConfirmOpen(false)}
+              disabled={emitting}
+            >
+              Cancelar
+            </Button>
+            <Button color="teal" onClick={handleEmitir} loading={emitting}>
+              Confirmar
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
 
-      <Title order={4}>Itens</Title>
-      {itens && (
-        <ItensEditor initial={itens} onChange={(next) => setItens(next)} />
-      )}
-
-      {saveError && <Alert color="red">{saveError}</Alert>}
-
-      <Group justify="flex-end">
-        <Button component={Link} href={`/pedidos/${params.id}`} variant="subtle">
-          Cancelar
-        </Button>
-        <Button onClick={handleSave} loading={saving}>
-          Salvar alterações
-        </Button>
-      </Group>
+      <PedidoForm
+        defaultValues={p}
+        pedidoId={data.id}
+        submitLabel="Salvar alterações"
+        onSubmit={handleSubmit}
+      />
     </Stack>
   );
 }
