@@ -40,7 +40,7 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { IconPrinter } from '@tabler/icons-react';
+import { IconCheck } from '@tabler/icons-react';
 
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { nfeCollection } from '@/lib/data/nfeCollection';
@@ -264,7 +264,7 @@ export function CriacaoCell({ pedido }: { pedido: Pedido }) {
 /* -------------------------------------------------------------------------- */
 /*                                  ImpCell                                   */
 /*                                                                            */
-/*  "Printed yes/no" indicator. Shows a printer icon with the print           */
+/*  "Printed yes/no" indicator. Shows a check icon with the print             */
 /*  timestamp in a Tooltip when `pedido.dtImpressao` is set; empty otherwise. */
 /* -------------------------------------------------------------------------- */
 
@@ -272,7 +272,7 @@ export function ImpCell({ pedido }: { pedido: Pedido }) {
   if (pedido.dtImpressao == null) return null;
   return (
     <Tooltip label={formatMillis(pedido.dtImpressao)} withinPortal>
-      <IconPrinter
+      <IconCheck
         size={18}
         color="var(--mantine-color-teal-6)"
         aria-label="Impresso"

@@ -283,7 +283,7 @@ describe('ImpCell — printed indicator', () => {
     expect(container.querySelector('svg')).toBeNull();
   });
 
-  it('renders the printer icon when dtImpressao is set', () => {
+  it('renders the check icon when dtImpressao is set', () => {
     const { container } = wrap(
       <ImpCell
         pedido={{ dtImpressao: Date.parse('2026-05-21T10:00:00Z') } as unknown as Pedido}
