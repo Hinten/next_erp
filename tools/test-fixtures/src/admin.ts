@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { type App, type ServiceAccount, cert, getApps, initializeApp } from 'firebase-admin/app';
 import { type Firestore, getFirestore } from 'firebase-admin/firestore';
@@ -11,15 +11,32 @@ type RawServiceAccount = ServiceAccount & {
   client_email?: string;
 };
 
+/**
+ * Resolves a service-account path that may be root-relative (e.g.
+ * `.ignore/service_account.json` from `.env.local`) while the script cwd is
+ * `tools/test-fixtures`. Tries cwd first, then two levels up (repo root).
+ */
+function resolveCredentialPath(inputPath: string): string {
+  const fromCwd = resolve(inputPath);
+  if (existsSync(fromCwd)) return fromCwd;
+
+  const fromRoot = resolve(process.cwd(), '..', '..', inputPath);
+  if (existsSync(fromRoot)) return fromRoot;
+
+  throw new Error(
+    `Service account file not found at "${inputPath}". Tried: "${fromCwd}" and "${fromRoot}".`,
+  );
+}
+
 function getServiceAccount(serviceAccountPath?: string): string {
   const explicitPath = serviceAccountPath?.trim();
   if (explicitPath) {
-    return readFileSync(resolve(explicitPath), 'utf8');
+    return readFileSync(resolveCredentialPath(explicitPath), 'utf8');
   }
 
   const envPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH?.trim();
   if (envPath) {
-    return readFileSync(resolve(envPath), 'utf8');
+    return readFileSync(resolveCredentialPath(envPath), 'utf8');
   }
 
   const envJson = process.env.FIREBASE_SERVICE_ACCOUNT?.trim();
