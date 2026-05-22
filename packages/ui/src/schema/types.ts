@@ -88,6 +88,12 @@ export interface ActionConfig<T> {
   id: string;
   label: string;
   color?: MantineColor;
+  /**
+   * Optional icon — rendered as the Menu.Item's leftSection when the
+   * ActionBar collapses into the overflow menu. Ignored in inline layout
+   * (inline buttons render label-only to keep the toolbar compact).
+   */
+  icon?: ReactNode;
   requiresSelection?: boolean;
   refreshOnComplete?: boolean;
   run: (rows: SnapshotRow<T>[]) => Promise<void> | void;

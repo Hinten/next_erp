@@ -338,6 +338,91 @@ export async function cleanupPedidoFixtures(prefix: string): Promise<void> {
 }
 
 /**
+ * Seed a pedido (with `numero = <prefix>-NNN`) plus one NFe doc in its
+ * `nfev4` subcollection at the requested estado. Returns the pair of ids so
+ * the test can mutate the NFe mid-run via `db().collection(...)...update(...)`.
+ *
+ * The NFe `timestamp` (ms since epoch) is what `NFCell`'s query orders by;
+ * the helper stamps `Date.now()` so the seeded doc is the most-recent NFe.
+ */
+export async function seedPedidoWithNFe(
+  prefix: string,
+  index: number,
+  estado: string,
+): Promise<{ pedidoId: string; nfeId: string }> {
+  const pedidoId = `${prefix}-${pad(index)}`;
+  const nfeId = `${prefix}-${pad(index)}-nfe`;
+  const now = Date.now();
+  await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .set({
+      ehSaida: true,
+      estado: 'pago',
+      numero: pedidoId,
+      itens: {},
+      itensIds: [],
+      descontoTotal: 0,
+      timestamp: now,
+      ultimaModificacao: now,
+      foiImpresso: false,
+      // The TableView's NF column reads `pedido.id`, not these inner refs;
+      // outer refs stay null so the cell exercises the snapshot path
+      // without dragging a cliente lookup into the assertion.
+      vendedorPedidoOuterRef: null,
+      integracaoPedidoOuterRef: null,
+      operacaoPedidoOuterRef: null,
+      clientePedidoOuterRef: null,
+      enderecoFiscalOuterRef: null,
+      listaDePrecosOuterRef: null,
+    });
+  await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .collection('nfev4')
+    .doc(nfeId)
+    .set({
+      numeracao: 1,
+      serie: 1,
+      tpEmis: 1,
+      estado,
+      chave: null,
+      idLote: null,
+      infNFe: null,
+      xml_nfe_proc: null,
+      xml_epec_proc: null,
+      xml_assinado: null,
+      nRec: null,
+      retries: null,
+      cStat: null,
+      xMotivo: null,
+      error: null,
+      timestamp: now,
+      ultima_modificacao: new Date(now).toISOString(),
+    });
+  return { pedidoId, nfeId };
+}
+
+/**
+ * Clean up a pedido seeded by `seedPedidoWithNFe` together with the NFe
+ * docs in its `nfev4` subcollection. Subcollections are not cascaded by
+ * the Firestore SDK; we delete them explicitly.
+ */
+export async function cleanupPedidoWithNFe(pedidoId: string): Promise<void> {
+  const nfeSnap = await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .collection('nfev4')
+    .get();
+  if (!nfeSnap.empty) {
+    const batch = db().batch();
+    nfeSnap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+  await db().collection('pedidos').doc(pedidoId).delete();
+}
+
+/**
  * Delete every doc in `collection` whose `field` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
  */
