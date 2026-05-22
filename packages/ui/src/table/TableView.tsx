@@ -4,7 +4,8 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useLocalStorage } from '@mantine/hooks';
 import {
-  Alert, Button, Checkbox, Group, Skeleton, Stack, Table, Text, Title,
+  ActionIcon, Alert, Checkbox, Group, Skeleton, Stack, Table, Text,
+  Title, Tooltip,
 } from '@mantine/core';
 import type { Route } from 'next';
 import type { Firestore, Query } from 'firebase/firestore';
@@ -34,7 +35,9 @@ import type {
 } from '../schema/types';
 import { ActionBar } from './ActionBar';
 import { useCollectionMonitor } from './useCollectionMonitor';
-import { IconArrowDown, IconArrowsSort, IconArrowUp } from '@tabler/icons-react';
+import {
+  IconArrowDown, IconArrowsSort, IconArrowUp, IconRefreshAlert,
+} from '@tabler/icons-react';
 import { ColumnFilter, type ColumnFilterValue } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
 import { Pagination } from './Pagination';
@@ -464,6 +467,26 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
 
       <Group justify="flex-end" wrap="nowrap" align="flex-end">
         <Group gap="xs">
+          {monitor.stale && (
+            <Tooltip
+              label="Os dados desta coleção foram alterados desde que a página carregou. Clique para atualizar."
+              withinPortal
+              multiline
+              maw={260}
+            >
+              <ActionIcon
+                variant="subtle"
+                color="yellow"
+                aria-label="Página desatualizada — atualizar"
+                onClick={() => {
+                  monitor.acknowledge();
+                  setRefreshKey((k) => k + 1);
+                }}
+              >
+                <IconRefreshAlert size={18} />
+              </ActionIcon>
+            </Tooltip>
+          )}
           <ColumnPicker
             fields={[
               ...descriptors
@@ -491,28 +514,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           )}
         </Group>
       </Group>
-
-      {monitor.stale && (
-        <Alert color="yellow" title="Página desatualizada">
-          <Group justify="space-between" wrap="nowrap">
-            <Text size="sm">
-              Os dados desta coleção foram alterados desde que a página
-              carregou.
-            </Text>
-            <Button
-              size="xs"
-              variant="white"
-              color="yellow"
-              onClick={() => {
-                monitor.acknowledge();
-                setRefreshKey((k) => k + 1);
-              }}
-            >
-              Atualizar
-            </Button>
-          </Group>
-        </Alert>
-      )}
 
       {snap.error && (
         <Alert color="red" title="Erro ao carregar">
