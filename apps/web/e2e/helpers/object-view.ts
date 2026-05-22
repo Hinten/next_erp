@@ -36,6 +36,24 @@ export async function selectField(
 }
 
 /**
+ * Pick an option in a searchable Mantine `Select` whose option list is
+ * server-filtered (e.g. `CollectionSelect`). Opens the combobox, types
+ * `searchText` to trigger the server query, then clicks the matching option.
+ * `optionText` defaults to `searchText` for the common type-the-exact-name case.
+ */
+export async function selectFieldWithSearch(
+  page: Page,
+  label: string,
+  searchText: string,
+  optionText: string = searchText,
+): Promise<void> {
+  const combobox = page.getByRole('combobox', { name: label, exact: true });
+  await combobox.click();
+  await combobox.fill(searchText);
+  await page.getByRole('option', { name: optionText, exact: true }).click();
+}
+
+/**
  * Click the primary "Salvar" / `saveLabel` button. Pass a custom label when
  * the page uses one (e.g. "Criar", "Salvar alterações").
  */
