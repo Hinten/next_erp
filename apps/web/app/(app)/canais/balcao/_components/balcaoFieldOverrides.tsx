@@ -26,6 +26,7 @@ function refRenderInput<S extends ZodObject<ZodRawShape>>(
       <CollectionSelect
         collection={collection}
         labelField={labelField}
+        fieldName={props.name}
         label={props.label}
         hint={props.hint}
         value={props.value}

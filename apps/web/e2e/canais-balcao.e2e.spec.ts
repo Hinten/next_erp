@@ -10,7 +10,7 @@ import {
   clickSave,
   confirmDelete,
   fillField,
-  selectField,
+  selectFieldWithSearch,
 } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
@@ -69,9 +69,11 @@ test.describe.serial('Canais Balcão e2e — TableView / ObjectView', () => {
     const nome = `${prefix}-novo`;
     await page.goto('/canais/balcao/novo');
     await fillField(page, 'Nome', nome);
-    await selectField(page, 'Filial', `${refLabel}-filial`);
-    await selectField(page, 'Tabela de preços', `${refLabel}-lista`);
-    await selectField(page, 'Depósito', `${refLabel}-deposito`);
+    // The dropdowns cap at 15 docs — type to trigger the server-side search
+    // so the run-scoped fixture refs are found regardless of their position.
+    await selectFieldWithSearch(page, 'Filial', `${refLabel}-filial`);
+    await selectFieldWithSearch(page, 'Tabela de preços', `${refLabel}-lista`);
+    await selectFieldWithSearch(page, 'Depósito', `${refLabel}-deposito`);
     await clickSave(page, 'Criar');
 
     // onSaved does router.replace('/canais/balcao/<id>').
