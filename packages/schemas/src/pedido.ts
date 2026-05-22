@@ -89,79 +89,192 @@ export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
  */
 export const pedidoSchema = z.object({
   // Direction flag --------------------------------------------------------
-  ehSaida: z.boolean().default(true),
-  hasUserInteraction: z.boolean().nullable().default(null),
+  ehSaida: z.boolean().default(true).describe('Saída'),
+  hasUserInteraction: z
+    .boolean()
+    .nullable()
+    .default(null)
+    .describe('Interação do usuário'),
 
   // Core state + numbering ------------------------------------------------
-  estado: estadoPedidoSchema,
-  numero: z.string().nullable().default(null),
+  estado: estadoPedidoSchema.describe('Pagamento'),
+  numero: z.string().nullable().default(null).describe('Número'),
 
   // Outer references — opaque (resolved by Flutter today; UI dereferences
   // them through Firestore .get() when needed). `filialPedidoOuterRef` is
   // read by the NFe orchestrator (`apps/nfe/lib/nfe/orchestrator.ts:146`)
   // to load the issuing Filial — must be present on the doc when emitting.
-  vendedorPedidoOuterRef: z.unknown().nullable().default(null),
-  integracaoPedidoOuterRef: z.unknown(),
-  operacaoPedidoOuterRef: z.unknown().nullable().default(null),
-  clientePedidoOuterRef: z.unknown().nullable().default(null),
-  enderecoFiscalOuterRef: z.unknown().nullable().default(null),
-  filialPedidoOuterRef: z.unknown().nullable().default(null),
-  listaDePrecosOuterRef: z.unknown().nullable().default(null),
+  vendedorPedidoOuterRef: z
+    .unknown()
+    .nullable()
+    .default(null)
+    .describe('Vendedor'),
+  integracaoPedidoOuterRef: z.unknown().describe('Integração'),
+  operacaoPedidoOuterRef: z
+    .unknown()
+    .nullable()
+    .default(null)
+    .describe('Operação'),
+  clientePedidoOuterRef: z
+    .unknown()
+    .nullable()
+    .default(null)
+    .describe('Cliente'),
+  enderecoFiscalOuterRef: z
+    .unknown()
+    .nullable()
+    .default(null)
+    .describe('Endereço fiscal'),
+  filialPedidoOuterRef: z
+    .unknown()
+    .nullable()
+    .default(null)
+    .describe('Filial'),
+  listaDePrecosOuterRef: z
+    .unknown()
+    .nullable()
+    .default(null)
+    .describe('Lista de preços'),
 
   // Related orders --------------------------------------------------------
-  entradasRelacionadas: z.array(z.string()).nullable().default(null),
-  saidasRelacionadas: z.array(z.string()).nullable().default(null),
-  chNFeReferenciadas: z.array(z.string()).nullable().default(null),
+  entradasRelacionadas: z
+    .array(z.string())
+    .nullable()
+    .default(null)
+    .describe('Entradas relacionadas'),
+  saidasRelacionadas: z
+    .array(z.string())
+    .nullable()
+    .default(null)
+    .describe('Saídas relacionadas'),
+  chNFeReferenciadas: z
+    .array(z.string())
+    .nullable()
+    .default(null)
+    .describe('Chaves de NF-e referenciadas'),
 
   // Items (record keyed by produtoUid; 'NONE' / '' when no produto bound).
-  itens: z.record(z.string(), z.array(itemDoPedidoSchema)).default({}),
-  itensIds: z.array(z.string()).default([]),
+  itens: z
+    .record(z.string(), z.array(itemDoPedidoSchema))
+    .default({})
+    .describe('Itens'),
+  itensIds: z.array(z.string()).default([]).describe('IDs dos itens'),
   /** Returned items, nested by produto / volta. Heavy passthrough payload. */
   itensDevolvidos: z
     .record(z.string(), z.record(z.string(), z.array(itemDoPedidoSchema)))
     .nullable()
-    .default(null),
+    .default(null)
+    .describe('Itens devolvidos'),
 
   // Shipping --------------------------------------------------------------
-  freteInicial: freteDoPedidoSchema.nullable().default(null),
+  freteInicial: freteDoPedidoSchema
+    .nullable()
+    .default(null)
+    .describe('Frete inicial'),
 
   // Totals (Flutter caches derived totals on the doc; the orchestrator
   // recomputes via itens but the table UI prefers the cached field).
-  valorCobrado: z.number().nullable().default(null),
-  descontoTotal: z.number().default(0),
-  valorCusto: z.number().nullable().default(null),
-  valorFreteInicial: z.number().nullable().default(null),
-  custoFreteInicial: z.number().nullable().default(null),
-  valorDevolucao: z.number().nullable().default(null),
-  valorCustoDevolvidos: z.number().nullable().default(null),
-  valorDespesasIncidentes: z.number().nullable().default(null),
-  valorFretesIncidentes: z.number().nullable().default(null),
-  valorComissoes: z.number().nullable().default(null),
-  impostos: z.number().nullable().default(null),
+  valorCobrado: z.number().nullable().default(null).describe('Valor cobrado'),
+  descontoTotal: z.number().default(0).describe('Desconto total'),
+  valorCusto: z.number().nullable().default(null).describe('Valor de custo'),
+  valorFreteInicial: z
+    .number()
+    .nullable()
+    .default(null)
+    .describe('Valor do frete inicial'),
+  custoFreteInicial: z
+    .number()
+    .nullable()
+    .default(null)
+    .describe('Custo do frete inicial'),
+  valorDevolucao: z
+    .number()
+    .nullable()
+    .default(null)
+    .describe('Valor de devolução'),
+  valorCustoDevolvidos: z
+    .number()
+    .nullable()
+    .default(null)
+    .describe('Valor de custo devolvido'),
+  valorDespesasIncidentes: z
+    .number()
+    .nullable()
+    .default(null)
+    .describe('Despesas incidentes'),
+  valorFretesIncidentes: z
+    .number()
+    .nullable()
+    .default(null)
+    .describe('Fretes incidentes'),
+  valorComissoes: z.number().nullable().default(null).describe('Comissões'),
+  impostos: z.number().nullable().default(null).describe('Impostos'),
 
   // Timestamps — all stored as ms since epoch ----------------------------
   /** Creation timestamp (ms since epoch). */
-  timestamp: z.number().int().nullable().default(null),
-  ultimaModificacao: z.number().int().nullable().default(null),
+  timestamp: z.number().int().nullable().default(null).describe('Criação'),
+  ultimaModificacao: z
+    .number()
+    .int()
+    .nullable()
+    .default(null)
+    .describe('Última modificação'),
   /** Deprecated in Flutter (kept for parse compatibility). */
-  dataFinalExpedicao: z.number().int().nullable().default(null),
-  dataIndisponivelEstoque: z.number().int().nullable().default(null),
-  dataRemocaoEstoque: z.number().int().nullable().default(null),
-  lastMarketplaceUpdate: z.number().int().nullable().default(null),
+  dataFinalExpedicao: z
+    .number()
+    .int()
+    .nullable()
+    .default(null)
+    .describe('Data final de expedição'),
+  dataIndisponivelEstoque: z
+    .number()
+    .int()
+    .nullable()
+    .default(null)
+    .describe('Indisponibilidade de estoque'),
+  dataRemocaoEstoque: z
+    .number()
+    .int()
+    .nullable()
+    .default(null)
+    .describe('Remoção de estoque'),
+  lastMarketplaceUpdate: z
+    .number()
+    .int()
+    .nullable()
+    .default(null)
+    .describe('Última atualização do marketplace'),
 
   // Print metadata --------------------------------------------------------
-  foiImpresso: z.boolean().default(false),
+  foiImpresso: z.boolean().default(false).describe('Impresso'),
   /** Print date (ms since epoch). The table view renders an icon if set. */
-  dtImpressao: z.number().int().nullable().default(null),
+  dtImpressao: z
+    .number()
+    .int()
+    .nullable()
+    .default(null)
+    .describe('Data de impressão'),
 
   // NF-e + observability --------------------------------------------------
   /** When true the orchestrator refuses to emit NF-e for this pedido. */
-  bloquearEmissaoNFe: z.boolean().nullable().default(null),
-  observacoesInternas: z.string().nullable().default(null),
+  bloquearEmissaoNFe: z
+    .boolean()
+    .nullable()
+    .default(null)
+    .describe('Bloquear emissão de NF-e'),
+  observacoesInternas: z
+    .string()
+    .nullable()
+    .default(null)
+    .describe('Observações internas'),
   /** infCpl: NF-e complementary text (DANFE-only field). */
-  infCpl: z.string().nullable().default(null),
+  infCpl: z
+    .string()
+    .nullable()
+    .default(null)
+    .describe('Informações complementares'),
   /** Persisted error message from the last failed write / emission. */
-  error: z.string().nullable().default(null),
+  error: z.string().nullable().default(null).describe('Erro'),
 }).passthrough();
 
 export type Pedido = z.infer<typeof pedidoSchema>;

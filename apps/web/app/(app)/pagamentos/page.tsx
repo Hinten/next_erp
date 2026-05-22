@@ -126,7 +126,7 @@ export default function PagamentosListPage() {
                     {pedidoId ? (
                       <Anchor
                         component={Link}
-                        href={`/pedidos/${pedidoId}#pagamento-${id}`}
+                        href={`/pedidos/${pedidoId}/editar`}
                       >
                         #{pedidoId.slice(0, 8)}
                       </Anchor>

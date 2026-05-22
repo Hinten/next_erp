@@ -4,7 +4,8 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useLocalStorage } from '@mantine/hooks';
 import {
-  Alert, Button, Checkbox, Group, Skeleton, Stack, Table, Text, Title,
+  ActionIcon, Alert, Checkbox, Group, Skeleton, Stack, Table, Text,
+  Title, Tooltip,
 } from '@mantine/core';
 import type { Route } from 'next';
 import type { Firestore, Query } from 'firebase/firestore';
@@ -34,7 +35,9 @@ import type {
 } from '../schema/types';
 import { ActionBar } from './ActionBar';
 import { useCollectionMonitor } from './useCollectionMonitor';
-import { IconArrowDown, IconArrowsSort, IconArrowUp } from '@tabler/icons-react';
+import {
+  IconArrowDown, IconArrowsSort, IconArrowUp, IconRefreshAlert,
+} from '@tabler/icons-react';
 import { ColumnFilter, type ColumnFilterValue } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
 import { Pagination } from './Pagination';
@@ -92,6 +95,12 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
 
   /** Click-through target for each row. */
   rowHref?: (id: string, row: z.infer<S>) => string;
+  /**
+   * Row-click handler. When set, clicking a row calls this instead of
+   * navigating via `rowHref` — use it to open a modal-based editor for an
+   * embedded subcollection table. `rowHref` is ignored while this is set.
+   */
+  onRowClick?: (id: string, row: z.infer<S>) => void;
   /** Optional "Novo" link rendered in the ActionBar. */
   newHref?: string;
   /**
@@ -191,6 +200,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   copyHref,
   monitorField,
   rowHref,
+  onRowClick,
   newHref,
   renderNewButton,
   renderRowLink,
@@ -361,17 +371,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
    * columns interleaved. Each entry is tagged with its kind so the
    * header / cell render switches cleanly without re-doing the lookup.
    *
-   * Ordering policy:
-   *   1. Keys present in `defaultVisibleKeys` render first in that order
-   *      (lets callers pin the layout via `defaultColumns`).
-   *   2. Any key the user toggled on via the ColumnPicker that wasn't in
-   *      `defaultVisibleKeys` appends at the end. This is what lets the
-   *      gear popover surface fields beyond the caller's default
-   *      selection — without this step, toggling a non-default column
-   *      silently no-ops.
-   *
-   * Unknown keys are skipped. Hidden-via-`fieldOverrides[k].hidden`
-   * descriptors are also skipped.
+   * Order is exactly `visibleKeysArr`: the persisted, user-reorderable
+   * list of visible keys (seeded from `defaultVisibleKeys`, then edited
+   * via the ColumnPicker's visibility checkboxes and reorder mode).
+   * Unknown-kind descriptors, `fieldOverrides[k].hidden` descriptors and
+   * keys that match neither a descriptor nor a virtual column are skipped.
    */
   const visibleColumns = useMemo(() => {
     const schemaByKey = new Map(descriptors.map((d) => [d.key, d]));
@@ -381,24 +385,21 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       | { kind: 'virtual'; column: VirtualColumn<z.infer<S>> }
     > = [];
     const seen = new Set<string>();
-    const push = (key: string) => {
-      if (seen.has(key) || !visibleKeys.has(key)) return;
+    for (const key of visibleKeysArr) {
+      if (seen.has(key)) continue;
       seen.add(key);
       const descriptor = schemaByKey.get(key);
       if (descriptor) {
-        if (fieldOverrides[key]?.hidden) return;
+        if (descriptor.kind === 'unknown') continue;
+        if (fieldOverrides[key]?.hidden) continue;
         out.push({ kind: 'schema', descriptor });
-        return;
+        continue;
       }
       const virtual = virtualByKey.get(key);
-      if (virtual) {
-        out.push({ kind: 'virtual', column: virtual });
-      }
-    };
-    for (const key of defaultVisibleKeys) push(key);
-    for (const key of visibleKeys) push(key);
+      if (virtual) out.push({ kind: 'virtual', column: virtual });
+    }
     return out;
-  }, [defaultVisibleKeys, descriptors, virtualColumns, visibleKeys, fieldOverrides]);
+  }, [visibleKeysArr, descriptors, virtualColumns, fieldOverrides]);
 
   /**
    * Subset of schema descriptors that are currently visible — for legacy
@@ -411,13 +412,16 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     [visibleColumns],
   );
 
+  // Hiding drops the key; showing appends it to the end of the order. The
+  // array doubles as the display order — see `visibleColumns` above.
   function toggleColumn(key: string) {
-    setVisibleKeysArr((cur) => {
-      const set = new Set(cur);
-      if (set.has(key)) set.delete(key);
-      else set.add(key);
-      return [...set];
-    });
+    setVisibleKeysArr((cur) =>
+      cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key],
+    );
+  }
+
+  function reorderColumns(next: string[]) {
+    setVisibleKeysArr(next);
   }
 
   function toggleRow(id: string) {
@@ -470,6 +474,26 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
 
       <Group justify="flex-end" wrap="nowrap" align="flex-end">
         <Group gap="xs">
+          {monitor.stale && (
+            <Tooltip
+              label="Os dados desta coleção foram alterados desde que a página carregou. Clique para atualizar."
+              withinPortal
+              multiline
+              maw={260}
+            >
+              <ActionIcon
+                variant="subtle"
+                color="yellow"
+                aria-label="Página desatualizada — atualizar"
+                onClick={() => {
+                  monitor.acknowledge();
+                  setRefreshKey((k) => k + 1);
+                }}
+              >
+                <IconRefreshAlert size={18} />
+              </ActionIcon>
+            </Tooltip>
+          )}
           <ColumnPicker
             fields={[
               ...descriptors
@@ -479,6 +503,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             ]}
             visibleKeys={visibleKeys}
             onToggle={toggleColumn}
+            order={visibleKeysArr}
+            onReorder={reorderColumns}
           />
           {(actions.length > 0 || newHref || renderNewButton || copyHref) && (
             <ActionBar
@@ -495,28 +521,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           )}
         </Group>
       </Group>
-
-      {monitor.stale && (
-        <Alert color="yellow" title="Página desatualizada">
-          <Group justify="space-between" wrap="nowrap">
-            <Text size="sm">
-              Os dados desta coleção foram alterados desde que a página
-              carregou.
-            </Text>
-            <Button
-              size="xs"
-              variant="white"
-              color="yellow"
-              onClick={() => {
-                monitor.acknowledge();
-                setRefreshKey((k) => k + 1);
-              }}
-            >
-              Atualizar
-            </Button>
-          </Group>
-        </Alert>
-      )}
 
       {snap.error && (
         <Alert color="red" title="Erro ao carregar">
@@ -607,26 +611,30 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             )}
             {snap.data.map((row) => {
               const href = rowHref ? rowHref(row.id, row.data) : undefined;
+              // `onRowClick` takes precedence over `rowHref` navigation.
+              const clickable = !!row.id && (!!onRowClick || !!href);
               return (
                 <Table.Tr
                   key={row.id}
-                  // Whole row navigates when rowHref is supplied. <Table> has
+                  // Whole row navigates when rowHref is supplied, or invokes
+                  // `onRowClick` when that's set instead. <Table> has
                   // `highlightOnHover`, so the row highlights and the cursor
                   // becomes a pointer. Empty `id` (e.g. a pipeline that used
                   // .select() and lost the ref) would generate /collection/''
                   // — skip onClick in that case.
                   //
                   // If the user has an active text selection, treat the click
-                  // as a select-and-copy gesture and don't navigate.
+                  // as a select-and-copy gesture and don't act on it.
                   onClick={
-                    href && row.id
+                    clickable
                       ? () => {
                           if (window.getSelection()?.toString()) return;
-                          router.push(href);
+                          if (onRowClick) onRowClick(row.id, row.data);
+                          else if (href) router.push(href);
                         }
                       : undefined
                   }
-                  style={href && row.id ? { cursor: 'pointer' } : undefined}
+                  style={clickable ? { cursor: 'pointer' } : undefined}
                 >
                   {selectionEnabled && (
                     <Table.Td onClick={(e) => e.stopPropagation()}>

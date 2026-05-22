@@ -232,4 +232,34 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
     await page.reload();
     await expect(page.getByRole('columnheader', { name: /E-mail/ })).toHaveCount(0);
   });
+
+  test('reorders columns and the new order persists across reload', async ({ page }) => {
+    await page.goto('/clientes');
+    await expect(page.getByRole('table')).toBeVisible({ timeout: 15_000 });
+    const headersBefore = (await page.getByRole('columnheader').allInnerTexts())
+      .map((t) => t.trim())
+      .filter(Boolean);
+
+    // Open the ColumnPicker, switch to reorder mode and nudge the first
+    // column one slot down via its ▼ button.
+    await page.getByRole('button', { name: 'Configurar colunas' }).click();
+    await page
+      .getByRole('button', { name: 'Reordenar colunas', exact: true })
+      .click();
+    await page
+      .getByRole('button', { name: /^Mover .+ para baixo$/ })
+      .first()
+      .click();
+    await page.keyboard.press('Escape');
+
+    await page.reload();
+    await expect(page.getByRole('table')).toBeVisible({ timeout: 15_000 });
+    const headersAfter = (await page.getByRole('columnheader').allInnerTexts())
+      .map((t) => t.trim())
+      .filter(Boolean);
+    // The first two columns swapped, and the order survived the reload
+    // (persisted in localStorage).
+    expect(headersAfter[0]).toBe(headersBefore[1]);
+    expect(headersAfter[1]).toBe(headersBefore[0]);
+  });
 });

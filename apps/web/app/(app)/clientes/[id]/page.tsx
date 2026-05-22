@@ -11,6 +11,7 @@ import { formatCNPJ, formatCPF } from '@delfrance/core/documents';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
+import { EnderecosSection } from './_components/EnderecosSection';
 
 function CpfCnpjInput({
   value,
@@ -81,6 +82,8 @@ export default function ClientePage() {
         onDelete={handleDelete}
         onSaved={() => router.replace('/clientes')}
       />
+
+      <EnderecosSection clienteId={params.id} />
     </Stack>
   );
 }

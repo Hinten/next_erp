@@ -180,6 +180,362 @@ export async function seedFiliais(prefix: string, n: number): Promise<void> {
 }
 
 /**
+ * Seed a small fixture set for the Balcão (canais/balcao) suite: one filial,
+ * one listaDePrecos, one deposito (each named `<prefix>-ref`), then `n`
+ * Integracao docs with `tipo = 7` (balcao) referencing them via real
+ * `DocumentReference`s. The returned ids let tests pick the same docs in the
+ * `<CollectionSelect>` dropdowns during the create flow.
+ */
+export async function seedBalcaoFixtures(
+  prefix: string,
+  n: number,
+): Promise<{ filialId: string; listaId: string; depositoId: string }> {
+  const filialId = `${prefix}-ref-filial`;
+  const listaId = `${prefix}-ref-lista`;
+  const depositoId = `${prefix}-ref-deposito`;
+  const now = new Date().toISOString();
+
+  await db()
+    .collection('filiais')
+    .doc(filialId)
+    .set({
+      razaoSocial: `${prefix}-ref-filial`,
+      fantasia: null,
+      cnae: null,
+      cnpj: '99999999999999',
+      ie: '999999999',
+      iest: null,
+      imun: null,
+      sede: {
+        idExterno: null,
+        logradouro: 'Av. Teste',
+        numero: '1',
+        bairro: 'Centro',
+        complemento: null,
+        cep: '01310100',
+        codigoMunicipio: null,
+        cidade: 'São Paulo',
+        estado: 'SP',
+        cPais: null,
+        pais: null,
+        nome: null,
+        cpf_cnpj: null,
+        rg: null,
+        ie: null,
+        imun: null,
+        email: null,
+        telefone: null,
+      },
+      timestamp: now,
+    });
+
+  await db()
+    .collection('listaDePrecos')
+    .doc(listaId)
+    .set({
+      nome: `${prefix}-ref-lista`,
+      padrao: false,
+      ativo: true,
+      formulasCalculoPreco: null,
+      formulasPorCategoria: null,
+      timestamp: now,
+      ultimaModificacao: now,
+    });
+
+  await db().collection('depositos').doc(depositoId).set({
+    nome: `${prefix}-ref-deposito`,
+    ativo: true,
+    timestamp: now,
+  });
+
+  const filialRef = db().collection('filiais').doc(filialId);
+  const listaRef = db().collection('listaDePrecos').doc(listaId);
+  const depositoRef = db().collection('depositos').doc(depositoId);
+
+  const batch = db().batch();
+  const col = db().collection('integracao');
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      tipo: 7,
+      padrao: i === 1,
+      nome: `${prefix}-${pad(i)}`,
+      cpf_cnpj: null,
+      idCadIntTran: null,
+      ativo: i % 2 === 1,
+      cor: null,
+      modalidadeFreteImportacao: null,
+      filialIntegracaoPedidoOuterRef: filialRef,
+      tabelaNormalOuterRef: listaRef,
+      tabelaPromocionalOuterRef: null,
+      operacaoOuterRef: null,
+      operacaoDevolucaoOuterRef: null,
+      depositoOuterRef: depositoRef,
+      dataCadastro: now,
+    });
+  }
+  await batch.commit();
+
+  return { filialId, listaId, depositoId };
+}
+
+/**
+ * Teardown for `seedBalcaoFixtures`: sweeps the seeded Integracao + fixture
+ * filial/listaDePrecos/deposito docs, including any UI-created Integracao
+ * row sharing the run-scoped prefix.
+ */
+export async function cleanupBalcaoFixtures(prefix: string): Promise<void> {
+  await Promise.all([
+    cleanupByNamePrefix('integracao', prefix),
+    cleanupByFieldPrefix('filiais', 'razaoSocial', prefix),
+    cleanupByNamePrefix('listaDePrecos', prefix),
+    cleanupByNamePrefix('depositos', prefix),
+  ]);
+}
+
+/**
+ * Seed minimal fixtures the `/pedidos/novo` e2e flow needs:
+ *  - 1 cliente,
+ *  - 1 operação (saída, tipo=1),
+ *  - 1 integração,
+ *  - 1 produto with a SKU.
+ *
+ * Returns the seeded paths so the spec can build outer refs without
+ * hitting the UI search.
+ */
+export async function seedPedidoFixtures(prefix: string): Promise<{
+  clientePath: string;
+  operacaoPath: string;
+  integracaoPath: string;
+  produtoPath: string;
+  clienteNome: string;
+  operacaoNome: string;
+  integracaoNome: string;
+  produtoNome: string;
+  produtoSku: string;
+}> {
+  const clienteId = `${prefix}-cli-001`;
+  const operacaoId = `${prefix}-op-001`;
+  const integracaoId = `${prefix}-int-001`;
+  const produtoId = `${prefix}-pro-001`;
+  const clienteNome = `${prefix}-cli-001`;
+  const operacaoNome = `${prefix}-op-001`;
+  const integracaoNome = `${prefix}-int-001`;
+  const produtoNome = `${prefix}-pro-001`;
+  const produtoSku = `${prefix.toUpperCase().replace(/-/g, '_')}_SKU_001`;
+
+  const batch = db().batch();
+  batch.set(db().collection('clientes').doc(clienteId), {
+    tipo: '1',
+    nome: clienteNome,
+    cpf_cnpj: '12345678901',
+    idEstrangeiro: null,
+    ie: null,
+    imun: null,
+    isUF: null,
+    email: null,
+    telefone: null,
+    observacoesInternas: null,
+    timestamp: new Date().toISOString(),
+    nome_embedding: null,
+    telefone_embedding: null,
+    userCliente: null,
+  });
+  batch.set(db().collection('operacao').doc(operacaoId), {
+    nome: operacaoNome,
+    naturezaDaOperacao: 'Venda',
+    tipo: 1,
+    ehServico: false,
+    ehExterior: false,
+    ehConsumidorFinal: true,
+    padrao: false,
+    ativo: true,
+    movimentaEstoque: true,
+    movimentaIndisponivelEstoque: true,
+    ehFiscal: true,
+    finNFe: 1,
+    indPres: '2',
+    indIntermed: '1',
+    cfop: '5102',
+    cfopInterestadual: '6102',
+    origem: '0',
+    NCM: null,
+    CEST: null,
+    unidade: 'UN',
+    estadosDestino: null,
+    estados: null,
+    configuracaoICMS: null,
+    configuracaoIPI: null,
+    configuracaoPIS: null,
+    configuracaoPISST: null,
+    infCpl: null,
+    timestamp: new Date().toISOString(),
+  });
+  batch.set(db().collection('integracao').doc(integracaoId), {
+    tipo: 7, // balcao
+    padrao: false,
+    nome: integracaoNome,
+    cpf_cnpj: null,
+    idCadIntTran: null,
+    ativo: true,
+    cor: null,
+    modalidadeFreteImportacao: null,
+    filialIntegracaoPedidoOuterRef: null,
+    tabelaNormalOuterRef: null,
+    tabelaPromocionalOuterRef: null,
+    operacaoOuterRef: null,
+    operacaoDevolucaoOuterRef: null,
+    depositoOuterRef: null,
+    dataCadastro: new Date().toISOString(),
+  });
+  batch.set(db().collection('produtos').doc(produtoId), {
+    nome: produtoNome,
+    sku: produtoSku,
+    codPai: null,
+    paiId: null,
+    ordem: null,
+    gtin: null,
+    codFornecedor: null,
+    categoriaProdutoOuterRef: null,
+    pesoLiquidoKg: null,
+    pesoBrutoKg: null,
+    alturaCm: null,
+    larguraCm: null,
+    profundidadeCm: null,
+    ehKit: false,
+    ehKitVirtual: false,
+    publicado: true,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    crossdocking: null,
+    grupoDeVariacoesUid: null,
+    variacoesUid: null,
+    componentesKitKeys: null,
+    componentesKit: null,
+    integracoesComProduto: [],
+    marketplaceIds: null,
+    marketplace: [],
+    statusProdutosMarketplace: null,
+    fotos: null,
+    videos: null,
+    anexos: null,
+    fotosArquivosIds: null,
+    nome_embedding: null,
+  });
+  await batch.commit();
+
+  return {
+    clientePath: `clientes/${clienteId}`,
+    operacaoPath: `operacao/${operacaoId}`,
+    integracaoPath: `integracao/${integracaoId}`,
+    produtoPath: `produtos/${produtoId}`,
+    clienteNome,
+    operacaoNome,
+    integracaoNome,
+    produtoNome,
+    produtoSku,
+  };
+}
+
+/**
+ * Clean up every test pedido whose `numero` starts with `prefix` and
+ * every fixture document whose `nome` starts with `prefix`.
+ */
+export async function cleanupPedidoFixtures(prefix: string): Promise<void> {
+  await Promise.all([
+    cleanupByFieldPrefix('pedidos', 'numero', prefix),
+    cleanupByNamePrefix('clientes', prefix),
+    cleanupByNamePrefix('operacao', prefix),
+    cleanupByNamePrefix('integracao', prefix),
+    cleanupByNamePrefix('produtos', prefix),
+  ]);
+}
+
+/**
+ * Seed a pedido (with `numero = <prefix>-NNN`) plus one NFe doc in its
+ * `nfev4` subcollection at the requested estado. Returns the pair of ids so
+ * the test can mutate the NFe mid-run via `db().collection(...)...update(...)`.
+ *
+ * The NFe `timestamp` (ms since epoch) is what `NFCell`'s query orders by;
+ * the helper stamps `Date.now()` so the seeded doc is the most-recent NFe.
+ */
+export async function seedPedidoWithNFe(
+  prefix: string,
+  index: number,
+  estado: string,
+): Promise<{ pedidoId: string; nfeId: string }> {
+  const pedidoId = `${prefix}-${pad(index)}`;
+  const nfeId = `${prefix}-${pad(index)}-nfe`;
+  const now = Date.now();
+  await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .set({
+      ehSaida: true,
+      estado: 'pago',
+      numero: pedidoId,
+      itens: {},
+      itensIds: [],
+      descontoTotal: 0,
+      timestamp: now,
+      ultimaModificacao: now,
+      foiImpresso: false,
+      // The TableView's NF column reads `pedido.id`, not these inner refs;
+      // outer refs stay null so the cell exercises the snapshot path
+      // without dragging a cliente lookup into the assertion.
+      vendedorPedidoOuterRef: null,
+      integracaoPedidoOuterRef: null,
+      operacaoPedidoOuterRef: null,
+      clientePedidoOuterRef: null,
+      enderecoFiscalOuterRef: null,
+      listaDePrecosOuterRef: null,
+    });
+  await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .collection('nfev4')
+    .doc(nfeId)
+    .set({
+      numeracao: 1,
+      serie: 1,
+      tpEmis: 1,
+      estado,
+      chave: null,
+      idLote: null,
+      infNFe: null,
+      xml_nfe_proc: null,
+      xml_epec_proc: null,
+      xml_assinado: null,
+      nRec: null,
+      retries: null,
+      cStat: null,
+      xMotivo: null,
+      error: null,
+      timestamp: now,
+      ultima_modificacao: new Date(now).toISOString(),
+    });
+  return { pedidoId, nfeId };
+}
+
+/**
+ * Clean up a pedido seeded by `seedPedidoWithNFe` together with the NFe
+ * docs in its `nfev4` subcollection. Subcollections are not cascaded by
+ * the Firestore SDK; we delete them explicitly.
+ */
+export async function cleanupPedidoWithNFe(pedidoId: string): Promise<void> {
+  const nfeSnap = await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .collection('nfev4')
+    .get();
+  if (!nfeSnap.empty) {
+    const batch = db().batch();
+    nfeSnap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+  await db().collection('pedidos').doc(pedidoId).delete();
+}
+
+/**
  * Delete every doc in `collection` whose `field` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
  */
@@ -208,6 +564,37 @@ export async function cleanupByNamePrefix(
   prefix: string,
 ): Promise<void> {
   await cleanupByFieldPrefix(collection, 'nome', prefix);
+}
+
+/**
+ * Delete every endereco subdoc of `clienteId`. The cliente itself is swept by
+ * `cleanupByNamePrefix('clientes', ...)`, but Firestore does not cascade — the
+ * `enderecos` subcollection must be cleared explicitly.
+ */
+export async function cleanupEnderecos(clienteId: string): Promise<void> {
+  const snap = await db()
+    .collection('clientes')
+    .doc(clienteId)
+    .collection('enderecos')
+    .get();
+  if (snap.empty) return;
+  const batch = db().batch();
+  snap.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+}
+
+/**
+ * Count the endereco subdocs of `clienteId`. The endereco specs poll this to
+ * confirm a UI-created/-deleted subdoc actually committed before asserting on
+ * the table or running the address search.
+ */
+export async function enderecoCount(clienteId: string): Promise<number> {
+  const snap = await db()
+    .collection('clientes')
+    .doc(clienteId)
+    .collection('enderecos')
+    .get();
+  return snap.size;
 }
 
 /**

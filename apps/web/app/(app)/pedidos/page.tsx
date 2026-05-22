@@ -67,14 +67,14 @@ export default function PedidosPage() {
       }}
       orderBy={{ field: 'numero', direction: 'desc' }}
       pageSize={50}
-      rowHref={(id) => `/pedidos/${id}`}
-      selectable
-      actions={[emitNFeAction]}
+      rowHref={(id) => `/pedidos/${id}/editar`}
       renderNewButton={() => (
         <Button component={Link} href="/pedidos/novo">
           Novo pedido
         </Button>
       )}
+      selectable
+      actions={[emitNFeAction]}
     />
   );
 }

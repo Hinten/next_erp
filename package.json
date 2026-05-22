@@ -4,7 +4,7 @@
   "private": true,
   "description": "Open-source ERP — Next.js rewrite of the Delfrance Flutter monorepo.",
   "license": "Apache-2.0",
-  "packageManager": "pnpm@10.33.4",
+  "packageManager": "pnpm@11.2.2",
   "engines": {
     "node": ">=20.10.0",
     "pnpm": ">=10.0.0"
