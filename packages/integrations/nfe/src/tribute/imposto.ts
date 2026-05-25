@@ -297,10 +297,21 @@ function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto
     case '75':
     case '98':
     case '99': {
-      // PISOutr — outras operações. SEFAZ XSD requires vPIS even when
-      // the semantics are "outras"; we emit 0.00 for SN flows that fall
-      // here (typically `imposto.configuracaoPIS` carries no rate).
-      return { PISOutr: { CST: cfg.CST, vPIS: '0.00' } };
+      // PISOutr — outras operações. SEFAZ XSD models PISOutr as
+      // CST, then xs:choice ( vBC + pPIS | qBCProd + vAliqProd ), then vPIS.
+      // Codegen-emitted type has all four as optional, but xmllint-wasm
+      // (and SEFAZ) reject omitting the choice — the validator says
+      // "vPIS not expected, expected vBC or qBCProd". For SN flows
+      // that arrive here without a configured rate, emit the
+      // value-based variant with zeros.
+      return {
+        PISOutr: {
+          CST: cfg.CST,
+          vBC: '0.00',
+          pPIS: '0.0000',
+          vPIS: '0.00',
+        },
+      };
     }
   }
 }
@@ -347,8 +358,17 @@ function buildCOFINSByCST(
     case '09':
       return { COFINSNT: { CST: cfg.CST } };
     default:
-      // COFINSOutr — same posture as PISOutr above; vCOFINS=0.00.
-      return { COFINSOutr: { CST: cfg.CST, vCOFINS: '0.00' } };
+      // COFINSOutr — same XSD shape + same posture as PISOutr above:
+      // emit vBC + pCOFINS + vCOFINS with zeros so xmllint-wasm /
+      // SEFAZ accept the xs:choice.
+      return {
+        COFINSOutr: {
+          CST: cfg.CST,
+          vBC: '0.00',
+          pCOFINS: '0.0000',
+          vCOFINS: '0.00',
+        },
+      };
   }
 }
 

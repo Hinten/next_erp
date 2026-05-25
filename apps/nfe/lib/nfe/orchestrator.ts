@@ -139,14 +139,19 @@ export async function loadPedidoBundle(
   fs: Firestore,
   pedidoId: string,
 ): Promise<PedidoBundle> {
+  console.debug(`[nfe/orchestrator] Loading Pedido bundle for pedidoId '${pedidoId}'`);
   const pedidoSnap = await fs.collection('pedidos').doc(pedidoId).get();
   if (!pedidoSnap.exists) throw new NFePedidoNotFoundError(pedidoId);
   const pedido = pedidoSnap.data() as PedidoBundle['pedido'];
 
   const filialPath = refToPath(getField(pedido, 'filialPedidoOuterRef'));
+  console.debug(`[nfe/orchestrator] Resolved filialPath '${filialPath}' for pedidoId '${pedidoId}'`);
   const clientePath = refToPath(getField(pedido, 'clientePedidoOuterRef'));
+  console.debug(`[nfe/orchestrator] Resolved clientePath '${clientePath}' for pedidoId '${pedidoId}'`);
   const operacaoPath = refToPath(getField(pedido, 'operacaoPedidoOuterRef'));
+  console.debug(`[nfe/orchestrator] Resolved operacaoPath '${operacaoPath}' for pedidoId '${pedidoId}'`);
   const enderecoPath = refToPath(getField(pedido, 'enderecoFiscalOuterRef'));
+  console.debug(`[nfe/orchestrator] Resolved enderecoPath '${enderecoPath}' for pedidoId '${pedidoId}'`);
 
   if (!filialPath) throw new NFeOrchestratorError(`pedido '${pedidoId}': filialPedidoOuterRef missing`);
   if (!clientePath) throw new NFeOrchestratorError(`pedido '${pedidoId}': clientePedidoOuterRef missing`);
@@ -393,6 +398,9 @@ export async function emitirPedido(
   rt: NFeRuntime,
   pedidoId: string,
 ): Promise<EmitResult> {
+
+  console.debug(`[nfe/orchestrator] Starting emit cycle for pedidoId '${pedidoId}', runtime ambiente '${rt.ambiente}'`);
+
   const bundle = await loadPedidoBundle(fs, pedidoId);
   if (bundle.pedido.bloquearEmissaoNFe) {
     throw new NFeBlockedError(pedidoId);

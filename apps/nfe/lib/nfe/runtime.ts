@@ -16,8 +16,8 @@
  * Hosting logger captures it.
  */
 import { createRequire } from 'node:module';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import type https from 'node:https';
 
 import {
@@ -49,16 +49,42 @@ export interface NFeRuntime {
 
 let cached: NFeRuntime | undefined;
 
-/** Resolve the vendored chain path inside the workspace package. */
+/**
+ * Resolve the vendored chain path inside the workspace package.
+ *
+ * Three strategies, tried in order — first hit wins:
+ *   1. `NFE_CA_DIR` env override — for production / non-standard layouts.
+ *   2. `createRequire(import.meta.url).resolve(...)` — the original
+ *      "find the library's own ca/" approach. Works in plain Node and
+ *      production builds, but Turbopack dev rewrites `import.meta.url`
+ *      to a virtual `[project]/...` path; `require.resolve` returns
+ *      that virtual path verbatim, and Node treats it as relative —
+ *      `readFileSync` then prepends `process.cwd()` and ENOENTs. We
+ *      validate with `existsSync` and fall through on a miss.
+ *   3. Cwd-relative — `apps/nfe` runs from `<repo>/apps/nfe/` in dev,
+ *      and the chain lives at `<repo>/packages/integrations/nfe/ca/`.
+ *      Walk two levels up. Brittle to repo layout but reliable in dev.
+ */
 function resolveChainPath(uf: string, ambiente: Ambiente): string {
-  // `createRequire` lets us resolve a workspace package's own files
-  // without depending on `import.meta.resolve` (which Next's build may
-  // not preserve). We look up the library's package.json, then read
-  // sibling ca/*.pem files.
-  const require_ = createRequire(import.meta.url);
-  const pkgJsonPath = require_.resolve('@delfrance/integrations-nfe/package.json');
-  const pkgDir = dirname(pkgJsonPath);
-  return join(pkgDir, 'ca', `sefaz-${uf.toLowerCase()}-${ambiente}.pem`);
+  const filename = `sefaz-${uf.toLowerCase()}-${ambiente}.pem`;
+
+  const overrideDir = process.env.NFE_CA_DIR;
+  if (overrideDir) return join(overrideDir, filename);
+
+  try {
+    const require_ = createRequire(import.meta.url);
+    const pkgJsonPath = require_.resolve('@delfrance/integrations-nfe/package.json');
+    const candidate = join(dirname(pkgJsonPath), 'ca', filename);
+    if (existsSync(candidate)) return candidate;
+  } catch (err) {
+    if (!(err instanceof Error)) throw err;
+    // require.resolve failures fall through to the cwd-relative walk.
+  }
+
+  return resolve(
+    process.cwd(),
+    '..', '..', 'packages', 'integrations', 'nfe', 'ca', filename,
+  );
 }
 
 function loadChain(uf: string, ambiente: Ambiente): { ca: string; source: string } {

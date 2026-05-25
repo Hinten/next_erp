@@ -26,9 +26,28 @@
  * Ported from `.old/functions_node/nota.js` (loadCertificate) +
  * `.old/functions_python/.../upload_certificado.py`.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import forge from 'node-forge';
+
+// Same pattern as `apps/{nfe,integrations}/lib/firebase/admin.ts` and
+// `tools/test-fixtures/src/admin.ts`: the path from `.env.local`
+// (e.g. `NFE_CERT_PATH=.ignore/cert.pfx`) is conventionally repo-root-relative
+// but each Next app's cwd is its own dir. Try cwd first (handles absolute
+// paths and same-dir relatives), then walk two levels up to the repo /
+// worktree root.
+function resolveCredentialPath(inputPath: string): string {
+  const fromCwd = resolve(inputPath);
+  if (existsSync(fromCwd)) return fromCwd;
+
+  const fromRoot = resolve(process.cwd(), '..', '..', inputPath);
+  if (existsSync(fromRoot)) return fromRoot;
+
+  throw new NFeCertError(
+    `Certificate file not found at '${inputPath}'. Tried: '${fromCwd}' and '${fromRoot}'.`,
+  );
+}
 
 export class NFeCertError extends Error {
   constructor(message: string) {
@@ -191,12 +210,13 @@ export function loadCertificateFromPath(path: string, password: string): NFeCert
   if (password == null) {
     throw new NFeCertError('Certificate password is required');
   }
+  const resolvedPath = resolveCredentialPath(path);
   let pfxBuffer: Buffer;
   try {
-    pfxBuffer = readFileSync(path);
+    pfxBuffer = readFileSync(resolvedPath);
   } catch (err) {
     if (err instanceof Error) {
-      throw new NFeCertError(`Failed to read certificate file at '${path}': ${err.message}`);
+      throw new NFeCertError(`Failed to read certificate file at '${resolvedPath}': ${err.message}`);
     }
     throw err;
   }

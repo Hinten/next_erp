@@ -1,4 +1,7 @@
 import { db } from './admin';
+import { DEV_FILIAL_ID } from './seed-filiais-dev';
+import { DEV_OPERACAO_ID } from './seed-operacoes-dev';
+import { DEV_ENDERECO_ID } from './seed-enderecos-dev';
 
 /**
  * Dev-seed for the `/pedidos` TableView — writes a handful of pedidos
@@ -27,7 +30,7 @@ import { db } from './admin';
  */
 
 export const DEV_PEDIDOS_PREFIX = 'dev-pedidos';
-const CLIENTE_ID = `${DEV_PEDIDOS_PREFIX}-cliente`;
+export const CLIENTE_ID = `${DEV_PEDIDOS_PREFIX}-cliente`;
 
 /**
  * Build a pedido id for the seeded entry at index `i` (1-based). Stable
@@ -116,7 +119,10 @@ async function writeCliente(): Promise<void> {
     .set({
       tipo: '1', // Pessoa Jurídica
       nome: 'Dev Pedidos Cliente Ltda',
-      cpf_cnpj: '12345678000190',
+      // Known-valid test CNPJ (passes check digits). The previous value
+      // 12345678000190 fails the SEFAZ CNPJ check-digit validation on
+      // the destinatário, regardless of homologação leniency elsewhere.
+      cpf_cnpj: '11222333000181',
       idEstrangeiro: null,
       ie: '110042490114',
       imun: null,
@@ -131,11 +137,65 @@ async function writeCliente(): Promise<void> {
     });
 }
 
+/**
+ * Build a one-item `itens` map ready for NF-e emission. CSOSN 102
+ * (Simples Nacional sem permissão de crédito) is the most common
+ * Phase-A path; PIS / COFINS CST '49' (outras operações de saída)
+ * is the SN-friendly default. NCM / CFOP / unidade come from the
+ * seeded `operacao` (operacaoSchema falls back via the orchestrator).
+ *
+ * The `valor` param is the line total — used as `precoDeVenda` with
+ * `quantidade: 1` so the pedido's cached `valorCobrado` lines up with
+ * `aggregateTotals(items)` inside the orchestrator.
+ */
+function devItensMap(valor: number): {
+  itens: Record<string, unknown[]>;
+  itensIds: string[];
+} {
+  const produtoUid = 'dev-prod-01';
+  return {
+    itensIds: [produtoUid],
+    itens: {
+      [produtoUid]: [
+        {
+          sku: 'DEV-PROD-01',
+          gtin: null,
+          nomeDeVenda: 'Produto Dev',
+          precoDeVenda: valor,
+          descontoUnitario: null,
+          quantidade: 1,
+          imposto: {
+            origem: '0',
+            configuracaoICMS: {
+              crt: '1', // Simples Nacional
+              csosn: '102', // sem permissão de crédito
+            },
+            configuracaoPIS: { CST: '49' }, // outras operações de saída
+            configuracaoCOFINS: { CST: '49' },
+          },
+        },
+      ],
+    },
+  };
+}
+
 async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
   const id = devPedidoId(i);
   const now = Date.now();
   const clienteRef = spec.withCliente
     ? db().collection('clientes').doc(CLIENTE_ID)
+    : null;
+  // Filial, operação, and endereço fiscal refs stamped on every seeded
+  // pedido so the NFe orchestrator can resolve `<emit>` + `<ide>` +
+  // `<dest><enderDest>`. The docs themselves are provisioned by
+  // `seed:filiais` / `seed:operacoes` / `seed:enderecos` — run those
+  // first (or alongside) for emission to work. The endereço is a
+  // subcollection of the seeded cliente, only meaningful when
+  // `clienteRef` is non-null.
+  const filialRef = db().collection('filiais').doc(DEV_FILIAL_ID);
+  const operacaoRef = db().collection('operacao').doc(DEV_OPERACAO_ID);
+  const enderecoFiscalRef = clienteRef
+    ? clienteRef.collection('enderecos').doc(DEV_ENDERECO_ID)
     : null;
 
   await db()
@@ -145,22 +205,24 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
       ehSaida: true,
       estado: spec.estadoPedido,
       numero: spec.numero,
-      itens: {},
-      itensIds: [],
+      ...devItensMap(spec.valorCobrado ?? 100),
       descontoTotal: 0,
       valorCobrado: spec.valorCobrado ?? null,
       timestamp: now - i * 3_600_000,
       ultimaModificacao: now - i * 3_600_000,
       foiImpresso: spec.dtImpressao != null,
       dtImpressao: spec.dtImpressao ?? null,
-      // Outer refs the cells dereference. Only `clientePedidoOuterRef`
-      // matters for the seeded UI walk; the rest stay null.
+      // Outer refs the cells dereference. `clientePedidoOuterRef`
+      // matters for the UI walk; the other three (filial, operação,
+      // endereço fiscal) are required by the NFe orchestrator
+      // (`apps/nfe/lib/nfe/orchestrator.ts:146-154`).
       vendedorPedidoOuterRef: null,
       integracaoPedidoOuterRef: null,
-      operacaoPedidoOuterRef: null,
+      operacaoPedidoOuterRef: operacaoRef,
       clientePedidoOuterRef: clienteRef,
-      enderecoFiscalOuterRef: null,
+      enderecoFiscalOuterRef: enderecoFiscalRef,
       listaDePrecosOuterRef: null,
+      filialPedidoOuterRef: filialRef,
       // Optional embedded frete block. The schema is wide; the cell only
       // reads `estado`, `codRastreio` and `prazoDespacho`, so the rest stay
       // at their default null/zero. `passthrough()` on the schema means

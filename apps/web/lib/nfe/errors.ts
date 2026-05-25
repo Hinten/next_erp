@@ -97,18 +97,36 @@ export function notificationForNFeError(err: unknown): NotificationShape {
     };
   }
   if (err instanceof NFeAuthError) {
+    if (err.status === 403) {
+      return {
+        title: 'Sem permissão',
+        message:
+          err.message ||
+          'Você não tem permissão para emitir NF-e (fiscal.write).',
+        color: 'red',
+      };
+    }
     return {
       title: 'Sessão inválida',
-      message: 'Faça login novamente para emitir NF-e.',
+      message: err.message || 'Faça login novamente para emitir NF-e.',
       color: 'red',
     };
   }
   if (err instanceof NFeRuntimeNotReadyError) {
+    // `apps/nfe`'s 503 response puts the underlying error message in
+    // `body.code` (route `apps/nfe/app/api/nfe/emitir/route.ts:62-66`).
+    // Surface it so cert / chain / env issues are diagnosable from the
+    // toast alone.
+    const detail =
+      err.body !== null && typeof err.body === 'object' && 'code' in err.body
+        ? String((err.body as { code: unknown }).code)
+        : null;
     return {
       title: 'Servidor NF-e indisponível',
       message:
+        detail ||
         'O serviço de emissão não está pronto (certificado, chain TLS ou runtime). ' +
-        'Tente novamente em alguns instantes.',
+          'Tente novamente em alguns instantes.',
       color: 'red',
     };
   }
