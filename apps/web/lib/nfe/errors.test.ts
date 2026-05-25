@@ -79,6 +79,14 @@ describe('notificationForNFeResult', () => {
     expect(n.color).toBe('gray');
     expect(n.title).toBe('NF-e enviada');
   });
+
+  it('reused=true → yellow "já emitida" toast (dedup skip), overrides estado branch', () => {
+    const n = notificationForNFeResult(emitResult({ reused: true }));
+    expect(n.color).toBe('yellow');
+    expect(n.title).toBe('NFe já emitida');
+    expect(n.message).toContain('pulada');
+    expect(n.message).toContain('100');
+  });
 });
 
 describe('notificationForNFeError', () => {

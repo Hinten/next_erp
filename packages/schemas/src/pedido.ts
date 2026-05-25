@@ -65,7 +65,7 @@ export const itemDoPedidoSchema = z.object({
   gtin: z.string().nullable().default(null),
   nomeDeVenda: z.string().nullable().default(null),
   precoDeVenda: z.number().min(0.01),
-  descontoUnitario: z.number().min(0).default(0),
+  descontoUnitario: z.number().min(0).nullable().default(0),
   quantidade: z.number().min(0),
   custo: z.number().nullable().default(null),
   timestamp: z.string().datetime().nullable().default(null),

@@ -107,7 +107,12 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
   const db = getFirebaseFirestore();
   const q = useMemo(() => {
     const base = nfeCollection.ref(db, { pedidoId });
-    return buildQuery(base, [orderByField('timestamp', 'desc'), limit(1)]);
+    // `ultima_modificacao` is set on every nfev4 write by the orchestrator
+    // (both the initial `tx.set` and `persistPatch`). Ordering by it
+    // ensures the doc actually appears in the snapshot — Firestore
+    // excludes docs whose ordered field is absent, and the schema's
+    // generic `timestamp` field is never set in Phase A.
+    return buildQuery(base, [orderByField('ultima_modificacao', 'desc'), limit(1)]);
   }, [db, pedidoId]);
   const { data, loading } = useSnapshot(q);
 

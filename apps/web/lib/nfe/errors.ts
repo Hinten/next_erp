@@ -36,6 +36,19 @@ export interface NotificationShape {
 export function notificationForNFeResult(
   result: NFeEmitResult,
 ): NotificationShape {
+  // `reused: true` means the dedup branch short-circuited: the pedido
+  // already had an nfev4 doc in a bloqueada cStat (100/101/102/...).
+  // Show a distinct yellow toast so the user knows their click was
+  // a no-op rather than a fresh authorization.
+  if (result.reused) {
+    return {
+      title: 'NFe já emitida',
+      message:
+        `Já existe uma NFe ${result.cStat ? `(cStat=${result.cStat}) ` : ''}` +
+        'para este pedido — nova emissão foi pulada.',
+      color: 'yellow',
+    };
+  }
   if (result.estado === ESTADO_NFE.aprovada) {
     const protocol = result.nRec ?? result.chave.slice(-15);
     return {

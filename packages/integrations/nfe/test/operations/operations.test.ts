@@ -179,11 +179,33 @@ describe('autorizarLote', () => {
     // would invalidate the digest. This is the regression test for that.
     expect(sentXml).toContain(SIGNED_NFE);
     expect(sentXml).toContain('<idLote>1</idLote>');
-    expect(sentXml).toContain('<indSinc>0</indSinc>');
+    // Single-NFe lote auto-derives indSinc='1' (sync) — SEFAZ rejects
+    // single-NFe async with "Solicitada resposta assíncrona para Lote
+    // com somente 1 (uma) NF-e".
+    expect(sentXml).toContain('<indSinc>1</indSinc>');
     expect(sentXml).toMatch(/^<enviNFe /);
   });
 
-  it("honors indSinc='1' (synchronous)", async () => {
+  it("auto-derives indSinc='0' (async) for multi-NFe lotes", async () => {
+    vi.mocked(mockedNfeAutorizacaoLote).mockResolvedValueOnce({
+      resultXml:
+        `<retEnviNFe xmlns="${NFE_NS}" versao="4.00">` +
+        `<tpAmb>2</tpAmb><verAplic>SP</verAplic><cStat>103</cStat>` +
+        `<xMotivo>Lote recebido com sucesso</xMotivo><cUF>35</cUF>` +
+        `<dhRecbto>2026-05-20T10:30:00-03:00</dhRecbto>` +
+        `<infRec><nRec>351000000000124</nRec><tMed>1</tMed></infRec>` +
+        `</retEnviNFe>`,
+      rawBody: '',
+    });
+    await autorizarLote(dummyCall(), {
+      idLote: '2',
+      NFe: [SIGNED_NFE, SIGNED_NFE],
+    });
+    const sentXml = vi.mocked(mockedNfeAutorizacaoLote).mock.calls[0]![1];
+    expect(sentXml).toContain('<indSinc>0</indSinc>');
+  });
+
+  it("honors explicit indSinc='1' (synchronous)", async () => {
     vi.mocked(mockedNfeAutorizacaoLote).mockResolvedValueOnce({
       resultXml:
         `<retEnviNFe xmlns="${NFE_NS}" versao="4.00">` +

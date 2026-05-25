@@ -60,10 +60,14 @@ export {
 // State machine
 export {
   MAX_LOTE_POLL_RETRIES,
+  STATUS_BLOQUEADORES,
   applyOutcome,
   classifyCStat,
   cStatToEstado,
+  isBloqueada,
   nextAction,
+  resolveTpEmis,
+  type ContingenciaMode,
   type CStatCategory,
   type NextAction,
   type NFeStatePatch,

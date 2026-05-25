@@ -21,12 +21,14 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
     generateNFe: vi.fn(),
     signNFe: vi.fn(),
     autorizarLote: vi.fn(),
+    consultarLote: vi.fn(),
     consultarSituacaoNFe: vi.fn(),
   };
 });
 
 import {
   autorizarLote,
+  consultarLote,
   consultarSituacaoNFe,
   generateNFe,
   signNFe,
@@ -34,6 +36,7 @@ import {
 import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
 import {
+  consultarPedido,
   emitirPedido,
   NFeBlockedError,
   NFeMissingImpostoError,
@@ -238,10 +241,81 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
       },
     };
   }
+  let autoIdCounter = 0;
+  type QueryOp =
+    | { kind: 'where'; field: string; op: 'array-contains'; value: unknown }
+    | { kind: 'orderBy'; field: string; dir: 'asc' | 'desc' }
+    | { kind: 'limit'; n: number };
+
+  function makeQuery(path: string, ops: QueryOp[]) {
+    return {
+      where(field: string, op: 'array-contains', value: unknown) {
+        return makeQuery(path, [...ops, { kind: 'where', field, op, value }]);
+      },
+      orderBy(field: string, dir: 'asc' | 'desc' = 'asc') {
+        return makeQuery(path, [...ops, { kind: 'orderBy', field, dir }]);
+      },
+      limit(n: number) {
+        return makeQuery(path, [...ops, { kind: 'limit', n }]);
+      },
+      async get() {
+        const prefix = `${path}/`;
+        let items = Object.entries(docs)
+          .filter(([key, val]) => key.startsWith(prefix) && val != null && !key.slice(prefix.length).includes('/'))
+          .map(([key, val]) => ({ id: key.slice(prefix.length), data: val as Record<string, unknown> }));
+        for (const op of ops) {
+          if (op.kind === 'where' && op.op === 'array-contains') {
+            items = items.filter((it) => {
+              const v = it.data[op.field];
+              return Array.isArray(v) && v.includes(op.value);
+            });
+          } else if (op.kind === 'orderBy') {
+            items.sort((a, b) => {
+              const av = a.data[op.field] as string | number | null | undefined;
+              const bv = b.data[op.field] as string | number | null | undefined;
+              if (av === bv) return 0;
+              if (av == null) return 1;
+              if (bv == null) return -1;
+              const cmp = av < bv ? -1 : 1;
+              return op.dir === 'desc' ? -cmp : cmp;
+            });
+          } else if (op.kind === 'limit') {
+            items = items.slice(0, op.n);
+          }
+        }
+        return {
+          docs: items.map((it) => ({
+            id: it.id,
+            ref: makeRef(`${path}/${it.id}`),
+            data: () => it.data,
+            exists: true,
+          })),
+          empty: items.length === 0,
+        };
+      },
+    };
+  }
+
   function makeCollection(path: string) {
     return {
       doc(id: string) {
         return makeRef(`${path}/${id}`);
+      },
+      async add(data: Record<string, unknown>) {
+        autoIdCounter += 1;
+        const id = `auto-${autoIdCounter}`;
+        const ref = makeRef(`${path}/${id}`);
+        await ref.set(data);
+        return ref;
+      },
+      where(field: string, op: 'array-contains', value: unknown) {
+        return makeQuery(path, [{ kind: 'where', field, op, value }]);
+      },
+      orderBy(field: string, dir: 'asc' | 'desc' = 'asc') {
+        return makeQuery(path, [{ kind: 'orderBy', field, dir }]);
+      },
+      limit(n: number) {
+        return makeQuery(path, [{ kind: 'limit', n }]);
       },
     };
   }
@@ -380,15 +454,43 @@ describe('emitirPedido — happy paths', () => {
 });
 
 describe('emitirPedido — duplicidade recovery', () => {
-  it('on cStat=204, calls consultarSituacaoNFe inline and re-applies', async () => {
+  it('on cStat=204 with nRec in xMotivo, calls consultarLote(nRec) inline and re-applies', async () => {
+    // 204 carries `[nRec:...]` in xMotivo → recovery branch routes
+    // through consReci (preferred when an nRec is known) instead of
+    // consSit(chave). consReci returns the lote-processado wrapper
+    // (cStat=104) with the per-NFe protocol nested in protNFe[i].
     const events: string[] = [];
     const { fs } = fakeFirestore({ events });
     vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_204);
-    vi.mocked(consultarSituacaoNFe).mockResolvedValue(RET_SIT_100);
+    vi.mocked(consultarLote).mockResolvedValue({
+      tpAmb: '2' as const,
+      verAplic: 'SP',
+      nRec: '351000000000999',
+      cStat: '104',
+      xMotivo: 'Lote processado',
+      cUF: '35' as const,
+      dhRecbto: '2026-05-20T10:30:00-03:00',
+      versao: '4.00' as const,
+      protNFe: [
+        {
+          versao: '4.00' as const,
+          infProt: {
+            tpAmb: '2' as const,
+            verAplic: 'SP',
+            chNFe: CHAVE,
+            dhRecbto: '2026-05-20T10:30:00-03:00',
+            nProt: '135200000000123',
+            cStat: '100',
+            xMotivo: 'Autorizado o uso da NF-e',
+          },
+        },
+      ],
+    });
 
     const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
 
-    expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledOnce();
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledOnce();
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
     expect(result.estado).toBe(ESTADO_NFE.aprovada);
     expect(result.cStat).toBe('100');
   });
@@ -727,5 +829,371 @@ describe('emitirPedido — CFOP selection by emitente/destinatário UF', () => {
     });
     await emitirPedido(fs, fakeRuntime(), 'PED-1');
     expect(lastCFOP()).toBe('6102'); // from operação default
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dedup — port of Flutter `gerarNFePedidos` pre-check semantics
+// (.old/packages/pedido_nfe/lib/src/tasks.dart). The Flutter code keys
+// each nfev4 doc by `nFeSaidaIdFromTpEmis(tpEmis) => 's${tpEmis}'` so
+// every retry for the same pedido targets the same doc; bloqueada cStats
+// (STATUS_BLOQUEADORES) short-circuit; rejeitada / error / never-sent
+// reuse the existing numeração and overwrite in place. Before this dedup
+// the orchestrator was keying docs by `chave` and allocating a fresh
+// numeração on every call — three duplicate nfev4 docs surfaced in a
+// real session.
+// ---------------------------------------------------------------------------
+
+describe('emitirPedido — dedup (stable s${tpEmis} doc id)', () => {
+  it('writes the nfev4 doc at "pedidos/{id}/nfev4/s1" (stable id)', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    const nfeWrite = writes.find((w) => w.path.startsWith('pedidos/PED-1/nfev4/'));
+    expect(nfeWrite?.path).toBe('pedidos/PED-1/nfev4/s1');
+  });
+
+  it('returns existing result without re-emitting when cStat is bloqueada (100)', async () => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({ events });
+    docs['pedidos/PED-1/nfev4/s1'] = {
+      numeracao: 7,
+      serie: 1,
+      tpEmis: 1,
+      estado: ESTADO_NFE.aprovada,
+      chave: CHAVE,
+      cStat: '100',
+      xMotivo: 'Autorizado o uso da NF-e',
+      nRec: '351000000000123',
+    };
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.cStat).toBe('100');
+    expect(result.estado).toBe(ESTADO_NFE.aprovada);
+    expect(result.chave).toBe(CHAVE);
+    expect(result.nRec).toBe('351000000000123');
+    expect(result.nfeId).toBe('s1');
+    expect(result.reused).toBe(true);
+    expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(signNFe)).not.toHaveBeenCalled();
+    expect(writes.some((w) => w.path.startsWith('pedidos/PED-1/nfev4/'))).toBe(false);
+  });
+
+  it('fresh emit returns reused=false (so the UI shows the regular green toast)', async () => {
+    const events: string[] = [];
+    const { fs } = fakeFirestore({ events });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.reused).toBe(false);
+  });
+
+  it.each(['101', '102', '103', '104', '105', '128', '150', '151', '468'] as const)(
+    'skips re-emission for every STATUS_BLOQUEADORES code (cStat=%s)',
+    async (cStat) => {
+      const events: string[] = [];
+      const { fs, docs } = fakeFirestore({ events });
+      docs['pedidos/PED-1/nfev4/s1'] = {
+        numeracao: 7,
+        serie: 1,
+        tpEmis: 1,
+        estado: ESTADO_NFE.aprovada,
+        chave: CHAVE,
+        cStat,
+        xMotivo: 'bloqueada',
+      };
+      vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+      await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+      expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
+    },
+  );
+
+  it('reuses existing numeração + serie when nfev4 is rejeitada (cStat=215)', async () => {
+    const events: string[] = [];
+    // nfeConfig advanced to 100 — but we expect the orchestrator to reuse
+    // the rejeitada doc's numeração (7) instead of calling nextNumeracao.
+    const { fs, writes, docs } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 100, serie: 1, idLote: 0, ambiente: '2' },
+    });
+    docs['pedidos/PED-1/nfev4/s1'] = {
+      numeracao: 7,
+      serie: 3,
+      tpEmis: 1,
+      estado: ESTADO_NFE.rejeitada,
+      chave: CHAVE,
+      cStat: '215',
+      xMotivo: 'Falha no Schema XML',
+    };
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    const nfeWrite = writes.find((w) => w.path === 'pedidos/PED-1/nfev4/s1');
+    expect(nfeWrite?.data.numeracao).toBe(7);
+    expect(nfeWrite?.data.serie).toBe(3);
+    expect(nfeWrite?.data.estado).toBe(ESTADO_NFE.enviando);
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledOnce();
+  });
+
+  it('reuses numeração when existing nfev4 was enviando but crashed (cStat=null)', async () => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 50, serie: 1, idLote: 0, ambiente: '2' },
+    });
+    docs['pedidos/PED-1/nfev4/s1'] = {
+      numeracao: 12,
+      serie: 1,
+      tpEmis: 1,
+      estado: ESTADO_NFE.enviando,
+      chave: CHAVE,
+      cStat: null,
+      xMotivo: null,
+    };
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    const nfeWrite = writes.find((w) => w.path === 'pedidos/PED-1/nfev4/s1');
+    expect(nfeWrite?.data.numeracao).toBe(12);
+  });
+
+  it('advances numeracao_atual + idLote on the per-filial NFeConfig doc in the same transaction', async () => {
+    // The user-visible bug this prevents: a crash between counter-bump
+    // and NFe doc write would strand a consumed numeração. The whole
+    // operation now runs in one Firestore tx — both writes commit or
+    // neither does.
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 40, serie: 1, idLote: 5, ambiente: '2' },
+    });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    const cfgWrite = writes.find((w) => w.path === 'filiais/F-1/nfeconfig/default');
+    const nfeWrite = writes.find((w) => w.path === 'pedidos/PED-1/nfev4/s1');
+    expect(cfgWrite?.data.numeracao_atual).toBe(41); // 40 + 1
+    expect(cfgWrite?.data.idLote).toBe(6); // 5 + 1
+    expect(nfeWrite?.data.numeracao).toBe(41);
+    expect(nfeWrite?.data.idLote).toBe('6');
+    // Ordering: the counter doc and the NFe doc are written in the same
+    // transaction (same Firestore commit), so persistence-wise they
+    // either both land or neither does.
+  });
+
+  it('still advances idLote when reusing existing numeração (idLote is per-submission)', async () => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 100, serie: 1, idLote: 20, ambiente: '2' },
+    });
+    docs['pedidos/PED-1/nfev4/s1'] = {
+      numeracao: 7, // reuse
+      serie: 1,
+      tpEmis: 1,
+      estado: ESTADO_NFE.rejeitada,
+      chave: CHAVE,
+      cStat: '215',
+      xMotivo: 'Falha no Schema XML',
+    };
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    const cfgWrite = writes.find((w) => w.path === 'filiais/F-1/nfeconfig/default');
+    expect(cfgWrite?.data.numeracao_atual).toBe(100); // unchanged — reused
+    expect(cfgWrite?.data.idLote).toBe(21); // 20 + 1 — still bumped
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EnviNFeMsg audit log — port of Flutter's per-Filial enviNfe subcollection
+// (.old/packages/nfe_client/lib/src/models.dart:215). Every SEFAZ round-trip
+// (lote send, consReci, consSit) appends a new doc; nothing is mutated. This
+// is the recoverable source-of-truth for nRec.
+// ---------------------------------------------------------------------------
+
+describe('emitirPedido — EnviNFeMsg audit log', () => {
+  it('persists an EnviNFeMsg under filiais/{filialId}/enviNfe after autorizarLote', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    const msgWrite = writes.find((w) => w.path.startsWith('filiais/F-1/enviNfe/'));
+    expect(msgWrite).toBeDefined();
+    expect(msgWrite?.data.targetsChnfe).toEqual([CHAVE]);
+    expect(msgWrite?.data.idLote).toBe(1); // first lote
+    expect(msgWrite?.data.indSinc).toBe('1');
+    expect(msgWrite?.data.nRec).toBe('351000000000123');
+    expect(msgWrite?.data.cStat).toBe('103');
+    expect(msgWrite?.data.estado).toBe('2'); // respondido
+    expect(typeof msgWrite?.data.xml_enviado).toBe('string');
+    expect(typeof msgWrite?.data.xml_retorno).toBe('string');
+  });
+
+  it('persists nRec on the nfev4 doc via persistPatch (NFCell can render it)', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    // The patch from cStat=103 carries nRec; persistPatch merges it onto s1.
+    const patchWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s1');
+    const nRecWrite = patchWrites.find((w) => w.data.nRec != null);
+    expect(nRecWrite?.data.nRec).toBe('351000000000123');
+  });
+});
+
+describe('consultarPedido — consReci(nRec) preferred over consSit(chave)', () => {
+  const RET_CONS_REC_104 = {
+    tpAmb: '2' as const,
+    verAplic: 'SP',
+    nRec: '351000000000123',
+    cStat: '104',
+    xMotivo: 'Lote processado',
+    cUF: '35' as const,
+    dhRecbto: '2026-05-20T10:30:00-03:00',
+    versao: '4.00' as const,
+    protNFe: [
+      {
+        versao: '4.00' as const,
+        infProt: {
+          tpAmb: '2' as const,
+          verAplic: 'SP',
+          chNFe: CHAVE,
+          dhRecbto: '2026-05-20T10:30:00-03:00',
+          nProt: '135200000000123',
+          cStat: '100',
+          xMotivo: 'Autorizado o uso da NF-e',
+        },
+      },
+    ],
+  };
+
+  it('uses consultarLote when an EnviNFeMsg with nRec exists for the chave', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({ events });
+    // Seed an already-emitted nfev4 doc + the matching EnviNFeMsg.
+    docs['pedidos/PED-1/nfev4/s1'] = {
+      numeracao: 7, serie: 1, tpEmis: 1,
+      estado: ESTADO_NFE.aguardandoResposta,
+      chave: CHAVE, cStat: '103', xMotivo: 'Lote recebido',
+      nRec: '351000000000123', retries: 0,
+    };
+    docs['filiais/F-1/enviNfe/seed-1'] = {
+      targetsChnfe: [CHAVE], idLote: 1, indSinc: '1',
+      xml_enviado: '<NFe>…</NFe>',
+      xml_retorno: JSON.stringify(RET_ENVI_103),
+      nRec: '351000000000123', cStat: '103',
+      xMotivo: 'Lote recebido', error: null, tpEmis: 1,
+      estado: '2', timestamp: '2026-05-20T10:30:00.000Z',
+      ultima_modificacao: '2026-05-20T10:30:00.000Z',
+    };
+    vi.mocked(consultarLote).mockResolvedValue(RET_CONS_REC_104);
+
+    const result = await consultarPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledOnce();
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/sefaz/ret' }),
+      { nRec: '351000000000123' },
+    );
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+    expect(result.cStat).toBe('100'); // outcomeFromRetConsRec adopts the protocol's cStat
+  });
+
+  it('falls back to consultarSituacaoNFe when no EnviNFeMsg with nRec exists', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({ events });
+    docs['pedidos/PED-1/nfev4/s1'] = {
+      numeracao: 7, serie: 1, tpEmis: 1,
+      estado: ESTADO_NFE.aguardandoResposta,
+      chave: CHAVE, cStat: null, xMotivo: null,
+      nRec: null, retries: 0,
+    };
+    // No enviNfe seed → no nRec to recover → falls back to consSit.
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(RET_SIT_100);
+
+    await consultarPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledOnce();
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+  });
+
+  it('appends a new EnviNFeMsg with the consult response (append-only audit log)', async () => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({ events });
+    docs['pedidos/PED-1/nfev4/s1'] = {
+      numeracao: 7, serie: 1, tpEmis: 1,
+      estado: ESTADO_NFE.aguardandoResposta,
+      chave: CHAVE, cStat: '103', xMotivo: 'Lote recebido',
+      nRec: '351000000000123', retries: 0,
+    };
+    docs['filiais/F-1/enviNfe/seed-1'] = {
+      targetsChnfe: [CHAVE], idLote: 1, indSinc: '1',
+      xml_enviado: '<NFe>…</NFe>',
+      xml_retorno: JSON.stringify(RET_ENVI_103),
+      nRec: '351000000000123', cStat: '103',
+      xMotivo: 'Lote recebido', error: null, tpEmis: 1,
+      estado: '2', timestamp: '2026-05-20T10:30:00.000Z',
+      ultima_modificacao: '2026-05-20T10:30:00.000Z',
+    };
+    vi.mocked(consultarLote).mockResolvedValue(RET_CONS_REC_104);
+
+    await consultarPedido(fs, fakeRuntime(), 'PED-1');
+
+    const enviNfeWrites = writes.filter((w) => w.path.startsWith('filiais/F-1/enviNfe/'));
+    expect(enviNfeWrites.length).toBe(1); // ONE new doc for the consult
+    const consultMsg = enviNfeWrites[0]!;
+    expect(consultMsg.data.targetsChnfe).toEqual([CHAVE]);
+    expect(consultMsg.data.idLote).toBeNull();
+    expect(consultMsg.data.indSinc).toBeNull();
+    expect(consultMsg.data.nRec).toBe('351000000000123'); // forwarded from originator
+    expect(consultMsg.data.cStat).toBe('104');
+    expect(consultMsg.data.estado).toBe('3'); // concluido
+  });
+
+  it('persistPatch with patch.nRec=null preserves the existing nRec on the nfev4 doc', async () => {
+    // consSit responses don't carry nRec. Before the fix, persistPatch
+    // wrote nRec:null and wiped the original receipt. Now it must omit
+    // the field so { merge: true } keeps the existing value.
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({ events });
+    docs['pedidos/PED-1/nfev4/s1'] = {
+      numeracao: 7, serie: 1, tpEmis: 1,
+      estado: ESTADO_NFE.aguardandoResposta,
+      chave: CHAVE, cStat: '103', xMotivo: 'Lote recebido',
+      nRec: '351000000000123', retries: 0,
+    };
+    // No enviNfe with nRec → falls back to consSit, whose response
+    // doesn't include an nRec → patch.nRec becomes null.
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(RET_SIT_100);
+
+    await consultarPedido(fs, fakeRuntime(), 'PED-1');
+
+    const patchWrites = writes.filter(
+      (w) => w.path === 'pedidos/PED-1/nfev4/s1' && w.merge === true,
+    );
+    // The persistPatch write should NOT carry nRec (preserved by merge).
+    for (const w of patchWrites) {
+      expect(w.data).not.toHaveProperty('nRec');
+    }
+    // The in-memory doc still has the original nRec after merge.
+    expect((docs['pedidos/PED-1/nfev4/s1'] as { nRec?: unknown }).nRec).toBe('351000000000123');
   });
 });

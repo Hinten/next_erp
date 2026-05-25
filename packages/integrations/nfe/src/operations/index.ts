@@ -119,11 +119,17 @@ export async function autorizarLote(
   if (args.NFe.length === 0) {
     throw new Error('autorizarLote: args.NFe must contain at least one signed NFe');
   }
+  // SEFAZ requires `indSinc='1'` (sync) for single-NFe lotes and
+  // `'0'` (async) for batches — submitting `'0'` for a 1-NFe lote
+  // is rejected with "Solicitada resposta assíncrona para Lote com
+  // somente 1 (uma) NF-e". Auto-derive from `NFe.length` when the
+  // caller doesn't override, so the rule lives in one place.
+  const indSinc: '0' | '1' = args.indSinc ?? (args.NFe.length === 1 ? '1' : '0');
   // Hand-built wrapper — see jsdoc.
   const xml =
     `<enviNFe xmlns="http://www.portalfiscal.inf.br/nfe" versao="${NFE_VERSAO}">` +
     `<idLote>${args.idLote}</idLote>` +
-    `<indSinc>${args.indSinc ?? '0'}</indSinc>` +
+    `<indSinc>${indSinc}</indSinc>` +
     args.NFe.join('') +
     `</enviNFe>`;
   const { resultXml } = await nfeAutorizacaoLote(call, xml);
