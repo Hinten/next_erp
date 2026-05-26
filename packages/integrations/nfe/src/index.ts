@@ -125,6 +125,9 @@ export {
   type TpEmis,
 } from './generator';
 
+// `<nfeProc>` envelope — post-emission stitching of signed NFe + protNFe.
+export { buildNFeProc } from './nfeproc';
+
 // Recovery / anti-loss
 export {
   DEFAULT_STUCK_TIMEOUT_MS,

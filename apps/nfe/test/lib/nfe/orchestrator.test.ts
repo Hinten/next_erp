@@ -1506,3 +1506,212 @@ describe('buildPaymentsFromPagamentos', () => {
     expect(card?.tpIntegra).toBe('2');
   });
 });
+
+// ---------------------------------------------------------------------------
+// `<nfeProc>` envelope — the canonical SEFAZ-authorized NF-e form (signed
+// NFe + protNFe). Built on cStat=100 (autorizada) when we still have the
+// matching local signedXml. Stays null on rejeitada / 539-recovery /
+// async-not-yet-processed paths.
+// ---------------------------------------------------------------------------
+
+/** Sync-mode retEnviNFe with inline protNFe yielding cStat=100. */
+const RET_ENVI_100_SYNC = {
+  tpAmb: '2' as const,
+  verAplic: 'SP_NFE_PL009_V4',
+  cStat: '104',
+  xMotivo: 'Lote processado',
+  cUF: '35' as const,
+  dhRecbto: '2026-05-20T11:00:00-03:00',
+  versao: '4.00' as const,
+  protNFe: {
+    versao: '4.00' as const,
+    infProt: {
+      tpAmb: '2' as const,
+      verAplic: 'SP_NFE_PL_008i2',
+      chNFe: CHAVE,
+      dhRecbto: '2026-05-20T11:00:00-03:00',
+      nProt: '135200000000789',
+      digVal: 'AbCdEf1234567890==',
+      cStat: '100',
+      xMotivo: 'Autorizado o uso da NF-e',
+    },
+  },
+} as const;
+
+describe('emitirPedido — <nfeProc> envelope', () => {
+  it('builds xml_nfe_proc on cStat=100 sync mode with inline protNFe', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_100_SYNC);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(result.cStat).toBe('100');
+
+    // Final write to the nfev4 doc carries a non-null xml_nfe_proc
+    // that combines the signed NFe + the SEFAZ protocol.
+    const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s1');
+    const finalWrite = docWrites[docWrites.length - 1];
+    expect(finalWrite).toBeDefined();
+    expect(finalWrite?.data.xml_nfe_proc).toEqual(expect.any(String));
+    const xml = finalWrite?.data.xml_nfe_proc as string;
+    expect(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>')).toBe(true);
+    expect(xml).toContain('<nfeProc ');
+    expect(xml).toContain(`<chNFe>${CHAVE}</chNFe>`);
+    expect(xml).toContain('<nProt>135200000000789</nProt>');
+    expect(xml).toContain('<Signature');
+  });
+
+  it('builds xml_nfe_proc when cStat=100 is reached via consReci recovery (204 → 100)', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_204);
+    vi.mocked(consultarLote).mockResolvedValue({
+      tpAmb: '2' as const,
+      verAplic: 'SP',
+      nRec: '351000000000999',
+      cStat: '104',
+      xMotivo: 'Lote processado',
+      cUF: '35' as const,
+      dhRecbto: '2026-05-20T11:00:00-03:00',
+      versao: '4.00' as const,
+      protNFe: [
+        {
+          versao: '4.00' as const,
+          infProt: {
+            tpAmb: '2' as const,
+            verAplic: 'SP',
+            chNFe: CHAVE,
+            dhRecbto: '2026-05-20T11:00:00-03:00',
+            nProt: '135200000000456',
+            digVal: 'ConsReciDigVal==',
+            cStat: '100',
+            xMotivo: 'Autorizado o uso da NF-e',
+          },
+        },
+      ],
+    });
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(result.cStat).toBe('100');
+
+    const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s1');
+    const finalWrite = docWrites[docWrites.length - 1];
+    const xml = finalWrite?.data.xml_nfe_proc as string;
+    expect(xml).toContain('<nfeProc ');
+    expect(xml).toContain('<nProt>135200000000456</nProt>'); // from consReci
+  });
+
+  it('does NOT build xml_nfe_proc on cStat=539 success (chave swap — signedXml does not match)', async () => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({ events });
+    // Seed the previous chave in the audit log for a successful 539 recovery.
+    docs['filiais/F-1/enviNfe/prev-msg'] = {
+      targetsChnfe: [OTHER_CHAVE],
+      idLote: 5,
+      indSinc: '1',
+      xml_enviado: '<NFe>…previous…</NFe>',
+      xml_retorno: '{}',
+      nRec: OTHER_NREC,
+      cStat: '103',
+      xMotivo: 'Lote recebido com sucesso',
+      error: null,
+      tpEmis: 1,
+      estado: '2',
+      timestamp: '2026-05-01T10:00:00.000Z',
+      ultima_modificacao: '2026-05-01T10:00:00.000Z',
+    };
+    vi.mocked(autorizarLote).mockResolvedValue(retEnvi539());
+    vi.mocked(consultarLote).mockResolvedValue({
+      tpAmb: '2' as const,
+      verAplic: 'SP',
+      nRec: OTHER_NREC,
+      cStat: '104',
+      xMotivo: 'Lote processado',
+      cUF: '35' as const,
+      dhRecbto: '2026-05-01T10:01:00-03:00',
+      versao: '4.00' as const,
+      protNFe: [
+        {
+          versao: '4.00' as const,
+          infProt: {
+            tpAmb: '2' as const,
+            verAplic: 'SP',
+            chNFe: OTHER_CHAVE,
+            dhRecbto: '2026-05-01T10:01:00-03:00',
+            nProt: '135200000000456',
+            cStat: '100',
+            xMotivo: 'Autorizado o uso da NF-e',
+          },
+        },
+      ],
+    });
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(result.cStat).toBe('100');
+    expect(result.chave).toBe(OTHER_CHAVE); // chave swap
+
+    // No xml_nfe_proc write — our local signedXml is for OUR chave,
+    // not the recovered one. Pairing would produce an invalid envelope.
+    // The persist-before-send writes `xml_nfe_proc: null` on the fresh
+    // doc; later persistPatch merges must NOT stamp a string envelope.
+    const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s1');
+    const procWrites = docWrites.filter(
+      (w) => typeof w.data.xml_nfe_proc === 'string',
+    );
+    expect(procWrites).toHaveLength(0);
+  });
+
+  it('does NOT build xml_nfe_proc on a rejection (cStat=215 schema error)', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events });
+    vi.mocked(autorizarLote).mockResolvedValue({
+      tpAmb: '2' as const,
+      verAplic: 'SP_NFE_PL009_V4',
+      cStat: '104',
+      xMotivo: 'Lote processado',
+      cUF: '35' as const,
+      dhRecbto: '2026-05-20T11:00:00-03:00',
+      versao: '4.00' as const,
+      protNFe: {
+        versao: '4.00' as const,
+        infProt: {
+          tpAmb: '2' as const,
+          verAplic: 'SP_NFE_PL_008i2',
+          chNFe: CHAVE,
+          dhRecbto: '2026-05-20T11:00:00-03:00',
+          cStat: '215',
+          xMotivo: 'Rejeição: Falha no Schema XML',
+        },
+      },
+    });
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(result.cStat).toBe('215');
+
+    // The persist-before-send writes `xml_nfe_proc: null` on the fresh
+    // doc; later persistPatch merges must NOT stamp a string envelope.
+    const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s1');
+    const procWrites = docWrites.filter(
+      (w) => typeof w.data.xml_nfe_proc === 'string',
+    );
+    expect(procWrites).toHaveLength(0);
+  });
+
+  it('does NOT build xml_nfe_proc on the async-103 path (lote received, no protocol yet)', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+    expect(result.cStat).toBe('103');
+    expect(result.estado).toBe(ESTADO_NFE.aguardandoResposta);
+
+    // The persist-before-send writes `xml_nfe_proc: null` on the fresh
+    // doc; later persistPatch merges must NOT stamp a string envelope.
+    const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s1');
+    const procWrites = docWrites.filter(
+      (w) => typeof w.data.xml_nfe_proc === 'string',
+    );
+    expect(procWrites).toHaveLength(0);
+  });
+});
