@@ -30,9 +30,11 @@ import {
   applyOutcome,
   autorizarLote,
   buildImpostoXml,
+  buildNFeProc,
   buildPagXml,
   buildTotalXml,
   buildTranspXml,
+  classifyCStat,
   consultarLote,
   consultarSituacaoNFe,
   generateNFe,
@@ -835,6 +837,12 @@ export async function emitirPedido(
   // under a different chave (the one in xMotivo's [chNFe:...] marker).
   // Track the override here so the orchestrator only has one return path.
   let finalChave = chave;
+  // Capture the authoritative SEFAZ protocol object for our chave —
+  // populated for the happy sync path and re-assigned for each recovery
+  // branch that surfaces one. Used at the end to build `<nfeProc>`.
+  // Left as `null` for 539 (chave swap) since our local signedXml
+  // doesn't match the recovered protocol's chNFe.
+  let protNFeRaw: typeof retEnvi.protNFe | null = retEnvi.protNFe ?? null;
 
   // Duplicidade / lote-not-found → query SEFAZ for the real status.
   if (patch.action === 'recover-via-consulta') {
@@ -856,6 +864,11 @@ export async function emitirPedido(
       });
       patch = recovered.patch;
       if (recovered.chaveOverride) finalChave = recovered.chaveOverride;
+      // Drop the local protocol — even on a successful recovery, the
+      // returned protNFe is for the OTHER chave, and our `signedXml`
+      // was signed against ours. Pairing them would produce an invalid
+      // <nfeProc>. xml_nfe_proc stays null; manual / DistDFe fix.
+      protNFeRaw = null;
     } else if (patch.nRec) {
       // 204 / 205 / 218 / 635 — same-chave duplicidade. consReci(nRec)
       // is the right query: it fetches the lote that authorized our chave.
@@ -864,6 +877,8 @@ export async function emitirPedido(
       await enviNfeCollection(fs, bundle.filialId).add(
         buildEnviNFeMsgFromConsulta({ chave, nRec: patch.nRec, ret: retRec, tpEmis }),
       );
+      protNFeRaw =
+        retRec.protNFe?.find((p) => p.infProt.chNFe === chave) ?? null;
       outcome = outcomeFromConsReci(retRec, chave);
       patch = applyOutcome({ estado: patch.estado, retries: patch.retries }, outcome);
     } else {
@@ -875,12 +890,28 @@ export async function emitirPedido(
       await enviNfeCollection(fs, bundle.filialId).add(
         buildEnviNFeMsgFromConsulta({ chave, nRec: null, ret: retSit, tpEmis }),
       );
+      protNFeRaw = retSit.protNFe ?? null;
       outcome = outcomeFromRetConsSit(retSit);
       patch = applyOutcome({ estado: patch.estado, retries: patch.retries }, outcome);
     }
   }
 
-  await persistPatch(nfeRef, patch);
+  // Build the `<nfeProc>` envelope when SEFAZ authorized the NF-e and
+  // we still have the matching local signedXml (no chave swap). This
+  // is the canonical form for DANFE rendering and fiscal archives —
+  // see `packages/integrations/nfe/src/nfeproc/index.ts`.
+  const nfeProcXml =
+    classifyCStat(patch.cStat) === 'autorizada' &&
+    protNFeRaw != null &&
+    finalChave === chave
+      ? buildNFeProc(signedXml, protNFeRaw)
+      : null;
+
+  await persistPatch(
+    nfeRef,
+    patch,
+    nfeProcXml != null ? { xml_nfe_proc: nfeProcXml } : undefined,
+  );
 
   return {
     nfeId: nfeRef.id,
@@ -1094,12 +1125,18 @@ export async function consultarPedido(
 async function persistPatch(
   nfeRef: FirebaseFirestore.DocumentReference,
   patch: NFeStatePatch,
+  extras?: Record<string, unknown>,
 ): Promise<void> {
   // Preserve `nRec`: omit it from the merge when the new patch lacks
   // one (e.g. consSit responses don't carry an nRec), so we don't
   // overwrite the value the lote-receipt response (cStat=103) saved.
   // The authoritative receipt always lives in the enviNfe audit log
   // anyway; this copy is just for the NFCell.
+  //
+  // `extras` lets the caller stamp other fields in the same write —
+  // currently used for `xml_nfe_proc` on cStat=100 (autorizada). Kept
+  // generic so future fields (e.g. `data_autorizacao`, `nProt`) can
+  // ride along without another method.
   await nfeRef.set(
     {
       estado: patch.estado,
@@ -1107,6 +1144,7 @@ async function persistPatch(
       xMotivo: patch.xMotivo,
       retries: patch.retries,
       ...(patch.nRec != null ? { nRec: patch.nRec } : {}),
+      ...(extras ?? {}),
       ultima_modificacao: new Date().toISOString(),
     },
     { merge: true },
