@@ -73,3 +73,27 @@ each one:
 The vertical-slice implementation only does `tpEmis=1`; contingency modes are a
 later phase, but the **pendente-de-retorno recovery loop** (poll + `consSitNFe`)
 is built from day one because lost NF-e happen even in normal emission.
+
+## NT 2025.001 — atraso na emissão (rule change)
+
+Desde 03/11/2025 (em produção), o limite de "autorização fora de prazo" caiu
+de **30 dias** para **7 dias**:
+
+- 0–7 dias `(dhEmi → dhAutorização)` → `cStat=100`
+- 7–30 dias → `cStat=150` ("Autorizado fora de prazo") — ainda autoriza, mas
+  registra atraso
+- **>30 dias** → rejeição **salvo** se emitido em contingência (`tpEmis=2, 4, 5`),
+  caso em que ainda aceita com cStat=150.
+
+Implicação para contingência: se SEFAZ origem ficou indisponível por mais
+de 7 dias e o cliente não emitiu em contingência, ao retomar o normal
+qualquer NF-e fora de prazo vem com cStat=150. Se ficou indisponível por
+mais de 30 dias e o cliente emitiu em modo normal (`tpEmis=1`), as NF-e
+serão rejeitadas — a contingência **tinha** que ter sido acionada antes
+do limite de 30 dias.
+
+## Fonte para esta documentação
+
+MOC 7.0 — Anexo III — Manual de Contingência NF-e (Nov/2020), committed
+em `references/sources/moc7/anexo-iii-contingencia.pdf`. NT 2025.001
+v1.03 para o atraso de 7 dias.
