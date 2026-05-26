@@ -36,6 +36,19 @@ export interface NotificationShape {
 export function notificationForNFeResult(
   result: NFeEmitResult,
 ): NotificationShape {
+  // `reused: true` means the dedup branch short-circuited: the pedido
+  // already had an nfev4 doc in a bloqueada cStat (100/101/102/...).
+  // Show a distinct yellow toast so the user knows their click was
+  // a no-op rather than a fresh authorization.
+  if (result.reused) {
+    return {
+      title: 'NFe já emitida',
+      message:
+        `Já existe uma NFe ${result.cStat ? `(cStat=${result.cStat}) ` : ''}` +
+        'para este pedido — nova emissão foi pulada.',
+      color: 'yellow',
+    };
+  }
   if (result.estado === ESTADO_NFE.aprovada) {
     const protocol = result.nRec ?? result.chave.slice(-15);
     return {
@@ -97,18 +110,36 @@ export function notificationForNFeError(err: unknown): NotificationShape {
     };
   }
   if (err instanceof NFeAuthError) {
+    if (err.status === 403) {
+      return {
+        title: 'Sem permissão',
+        message:
+          err.message ||
+          'Você não tem permissão para emitir NF-e (fiscal.write).',
+        color: 'red',
+      };
+    }
     return {
       title: 'Sessão inválida',
-      message: 'Faça login novamente para emitir NF-e.',
+      message: err.message || 'Faça login novamente para emitir NF-e.',
       color: 'red',
     };
   }
   if (err instanceof NFeRuntimeNotReadyError) {
+    // `apps/nfe`'s 503 response puts the underlying error message in
+    // `body.code` (route `apps/nfe/app/api/nfe/emitir/route.ts:62-66`).
+    // Surface it so cert / chain / env issues are diagnosable from the
+    // toast alone.
+    const detail =
+      err.body !== null && typeof err.body === 'object' && 'code' in err.body
+        ? String((err.body as { code: unknown }).code)
+        : null;
     return {
       title: 'Servidor NF-e indisponível',
       message:
+        detail ||
         'O serviço de emissão não está pronto (certificado, chain TLS ou runtime). ' +
-        'Tente novamente em alguns instantes.',
+          'Tente novamente em alguns instantes.',
       color: 'red',
     };
   }

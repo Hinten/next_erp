@@ -72,11 +72,15 @@ export function extractMarkers(xMotivo: string | null | undefined): {
  * duplicidade codes embed it in `xMotivo`. We collect both into the same
  * `nRec` slot so `applyOutcome` has a single source of truth.
  *
- * Sync emission (`indSinc='1'`) returns `cStat=104` with `protNFe`
- * inline; the orchestrator inspects `ret.protNFe.infProt.cStat` to find
- * the per-NF-e outcome and should call `outcomeFromInfProt` for that.
+ * Sync emission (`indSinc='1'`) returns the per-NF-e protocol inline on
+ * `retEnviNFe.protNFe` (no `infRec` / `nRec`), with the lote-level cStat
+ * staying at 104. When that's the case, the inner `infProt` is the
+ * authoritative answer — same pattern as `outcomeFromRetConsSit`.
  */
 export function outcomeFromRetEnviNFe(ret: TRetEnviNFe): SefazOutcome {
+  if (ret.protNFe) {
+    return outcomeFromInfProt(ret.protNFe.infProt);
+  }
   const markers = extractMarkers(ret.xMotivo);
   return {
     cStat: ret.cStat,
@@ -130,21 +134,27 @@ export function outcomeFromRetConsSit(ret: TRetConsSitNFe): SefazOutcome {
 /**
  * Build a `SefazOutcome` from a single `infProt` block (inside a
  * `protNFe`). This is the **authoritative per-NF-e status** SEFAZ
- * returns inside `retConsReciNFe.protNFe[]` or `retConsSitNFe.protNFe`.
+ * returns inside `retConsReciNFe.protNFe[]` or `retConsSitNFe.protNFe`,
+ * and also the inline protocol on `retEnviNFe` for sync-mode emission.
+ *
+ * `nProt` is the authorization protocol number, not the same as
+ * `nRec` — the orchestrator surfaces `nProt` separately on the doc.
+ * Duplicidade rejections (cStat=204/205/218/539/635) embed `[nRec:...]`
+ * (and on 539 also `[chNFe:...]`) in the human-readable `xMotivo`, and
+ * the orchestrator's recovery path needs both: the nRec to call
+ * `consReci`, and the chNFe (on 539) to look up the *previously-emitted*
+ * chave in the EnviNFeMsg audit log.
  */
 export function outcomeFromInfProt(infProt: {
   readonly cStat: string;
   readonly xMotivo: string;
   readonly nProt?: string;
 }): SefazOutcome {
-  // `nProt` is the authorization protocol number — not the same as
-  // `nRec`. `nRec` doesn't apply to per-NF-e protocols, so we leave it
-  // null; the orchestrator surfaces `nProt` separately on the doc.
   const markers = extractMarkers(infProt.xMotivo);
   return {
     cStat: infProt.cStat,
     xMotivo: infProt.xMotivo,
-    nRec: null,
+    nRec: markers.nRec,
     chNFeFromXMotivo: markers.chNFe,
   };
 }

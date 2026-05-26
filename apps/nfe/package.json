@@ -7,6 +7,8 @@
     "dev": "dotenv -e ../../.env.local -- next dev --port 3004",
     "build": "dotenv -e ../../.env.local -- next build",
     "start": "dotenv -e ../../.env.local -- next start --port 3004",
+    "emit:dev-pedido": "dotenv -e ../../.env.local -- tsx scripts/emit-dev-pedido.ts",
+    "consult:dev-pedido": "dotenv -e ../../.env.local -- tsx scripts/consult-dev-pedido.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

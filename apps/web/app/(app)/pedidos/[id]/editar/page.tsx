@@ -29,6 +29,7 @@ import {
   notificationForNFeError,
   notificationForNFeResult,
 } from '@/lib/nfe/errors';
+import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
 
 export default function EditarPedidoPage() {
   const params = useParams<{ id: string }>();
@@ -52,11 +53,9 @@ export default function EditarPedidoPage() {
 
   async function handleEmitir() {
     if (!nfeClient) {
-      notifications.show({
-        title: 'Sessão inválida',
-        message: 'Faça login novamente para emitir NF-e.',
-        color: 'red',
-        autoClose: 8000,
+      showErrorNotification({
+        title: 'Você não está logado',
+        message: 'Faça login para emitir NF-e.',
       });
       return;
     }
@@ -69,10 +68,7 @@ export default function EditarPedidoPage() {
       });
     } catch (err) {
       if (!(err instanceof Error)) throw err;
-      notifications.show({
-        ...notificationForNFeError(err),
-        autoClose: 8000,
-      });
+      showErrorNotification(notificationForNFeError(err));
     } finally {
       setEmitting(false);
       setEmitConfirmOpen(false);

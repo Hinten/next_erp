@@ -104,6 +104,7 @@ describe('POST /api/nfe/emitir', () => {
       nRec: '351000000000123',
       cStat: '103',
       xMotivo: 'Lote recebido com sucesso',
+      reused: false,
     });
     const res = await POST(req({ pedidoId: 'PED-1' }));
     expect(res.status).toBe(200);
@@ -119,6 +120,7 @@ describe('POST /api/nfe/emitir', () => {
       nRec: null,
       cStat: '215',
       xMotivo: 'Falha no schema XML',
+      reused: false,
     });
     const res = await POST(req({ pedidoId: 'PED-1' }));
     expect(res.status).toBe(422);

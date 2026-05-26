@@ -30,6 +30,13 @@ export interface NFeEmitResult {
   readonly nRec: string | null;
   readonly cStat: string;
   readonly xMotivo: string;
+  /**
+   * `true` when the server short-circuited because an existing nfev4 doc
+   * was already in a `STATUS_BLOQUEADORES` cStat (the dedup branch in
+   * `emitirPedido`). `false` (or absent, for backward compat with older
+   * route responses) when a fresh emission round-trip ran.
+   */
+  readonly reused?: boolean;
 }
 
 /** Mirrors `apps/nfe/app/api/nfe/consultar/route.ts` response. */

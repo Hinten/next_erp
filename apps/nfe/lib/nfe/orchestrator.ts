@@ -33,14 +33,18 @@ import {
   buildPagXml,
   buildTotalXml,
   buildTranspXml,
+  consultarLote,
   consultarSituacaoNFe,
   generateNFe,
   impostoSchema,
-  nextIdLote,
-  nextNumeracao,
-  nfeConfigStoreFromFirestore,
+  isBloqueada,
+  NFeConfigNotFoundError,
+  outcomeFromInfProt,
+  outcomeFromRetConsRec,
   outcomeFromRetConsSit,
   outcomeFromRetEnviNFe,
+  resolveTpEmis,
+  sanitizeNFeText,
   signNFe,
   type GeneratorInput,
   type GeneratorItem,
@@ -48,14 +52,25 @@ import {
   type NFeStatePatch,
   type Payment,
   type SefazCall,
+  type SefazOutcome,
+  type TpEmis,
 } from '@delfrance/integrations-nfe';
 import {
+  ESTADO_ENVI_NFE_MSG,
   ESTADO_NFE,
+  FORMA_PAGAMENTO,
+  STATUS_PAGAMENTO,
+  nfeConfigSchema,
+  pagamentoSchema,
   type Cliente,
   type Endereco,
+  type EnviNFeMsg,
   type EstadoNFe,
   type Filial,
+  type NFeConfig,
+  type NotaFiscalEletronica,
   type Operacao,
+  type Pagamento,
   type Pedido,
 } from '@delfrance/schemas';
 import { z } from 'zod';
@@ -91,6 +106,150 @@ export class NFeMissingImpostoError extends Error {
     this.name = 'NFeMissingImpostoError';
   }
 }
+/** Mirror of Flutter's `nFeSaidaIdFromTpEmis` — one nfev4 slot per (pedido, tpEmis). */
+function nfeDocId(tpEmis: TpEmis): string {
+  return `s${tpEmis}`;
+}
+
+/** Default doc id under `filiais/{filialId}/nfeconfig`. Mirrors the library adapter. */
+const DEFAULT_NFE_CONFIG_DOC_ID = 'default';
+
+/** Path to a filial's `enviNfe` audit-log subcollection. */
+function enviNfeCollection(fs: Firestore, filialId: string) {
+  return fs.collection(`filiais/${filialId}/enviNfe`);
+}
+
+/**
+ * Build a typed write payload for a SEFAZ `autorizarLote` round-trip
+ * — to be persisted as a new doc under the filial's `enviNfe`
+ * subcollection. Mirrors Flutter's
+ * `EnviNFeMsg.fromRetEnviNFeSchema` at
+ * `.old/packages/nfe_client/lib/src/models.dart:333`.
+ *
+ * The response is JSON-stringified into `xml_retorno` for Phase A —
+ * preserves every field we use (nRec, cStat, protocols, errors). If
+ * raw SEFAZ XML is ever needed for external audit, that's a library
+ * change (return `{ parsed, raw }` from `autorizarLote`).
+ */
+function buildEnviNFeMsgFromLote(params: {
+  chave: string;
+  idLote: number;
+  tpEmis: TpEmis;
+  signedXml: string;
+  retEnvi: Awaited<ReturnType<typeof autorizarLote>>;
+}): Record<string, unknown> {
+  const now = new Date().toISOString();
+  return {
+    targetsChnfe: [params.chave],
+    idLote: params.idLote,
+    indSinc: '1', // Phase A: 1 NFe per lote → SEFAZ runs it sync.
+    xml_enviado: params.signedXml,
+    xml_retorno: JSON.stringify(params.retEnvi),
+    nRec: params.retEnvi.infRec?.nRec ?? null,
+    cStat: params.retEnvi.cStat,
+    xMotivo: params.retEnvi.xMotivo,
+    error: null,
+    tpEmis: params.tpEmis,
+    estado: ESTADO_ENVI_NFE_MSG.respondido,
+    timestamp: now,
+    ultima_modificacao: now,
+  };
+}
+
+/**
+ * Build a typed write payload for a `consReciNFe` (preferred — has
+ * the lote receipt) or `consSitNFe` (fallback — by chave) round-trip.
+ * The `nRec` is carried forward from the originating lote message so
+ * a single chave's audit chain stays linkable.
+ */
+function buildEnviNFeMsgFromConsulta(params: {
+  chave: string;
+  nRec: string | null;
+  ret:
+    | Awaited<ReturnType<typeof consultarLote>>
+    | Awaited<ReturnType<typeof consultarSituacaoNFe>>;
+  tpEmis: TpEmis;
+}): Record<string, unknown> {
+  const now = new Date().toISOString();
+  return {
+    targetsChnfe: [params.chave],
+    idLote: null,
+    indSinc: null,
+    xml_enviado: null,
+    xml_retorno: JSON.stringify(params.ret),
+    nRec: params.nRec,
+    cStat: params.ret.cStat,
+    xMotivo: params.ret.xMotivo,
+    error: null,
+    tpEmis: params.tpEmis,
+    estado: ESTADO_ENVI_NFE_MSG.concluido,
+    timestamp: now,
+    ultima_modificacao: now,
+  };
+}
+
+/**
+ * Project a `consultarLote` response onto a `SefazOutcome` for our
+ * specific chave. The lote-level cStat is `104` (processado) — the
+ * authoritative per-NFe status lives in `protNFe[i].infProt.cStat`.
+ * When no matching protocol is in the response (lote still in
+ * processing — cStat=105) fall back to the lote-level outcome so
+ * `applyOutcome` polls again.
+ */
+function outcomeFromConsReci(
+  ret: Awaited<ReturnType<typeof consultarLote>>,
+  chave: string,
+): SefazOutcome {
+  const ourProt = ret.protNFe?.find((p) => p.infProt.chNFe === chave);
+  if (ourProt) return outcomeFromInfProt(ourProt.infProt);
+  return outcomeFromRetConsRec(ret);
+}
+
+/**
+ * Look up the latest `EnviNFeMsg` whose `targetsChnfe` includes `chave`
+ * AND that carries a non-null `nRec` — the receipt we need to call
+ * `consultarLote`. Returns null when no recoverable msg exists (e.g.
+ * the pedido was never sent, or only `consSit` messages were persisted
+ * for an externally-recovered chave).
+ */
+async function findLatestEnviNFeMsgWithNRec(
+  fs: Firestore,
+  filialId: string,
+  chave: string,
+): Promise<EnviNFeMsg | null> {
+  const snap = await enviNfeCollection(fs, filialId)
+    .where('targetsChnfe', 'array-contains', chave)
+    .orderBy('timestamp', 'desc')
+    .limit(10)
+    .get();
+  for (const doc of snap.docs) {
+    const data = doc.data() as EnviNFeMsg;
+    if (data.nRec) return data;
+  }
+  return null;
+}
+
+/**
+ * Project a persisted `NotaFiscalEletronica` onto the route's `EmitResult`
+ * shape — used by the dedup branch when an existing bloqueada nfe makes
+ * a re-emission unnecessary.
+ */
+function existingToEmitResult(
+  pedidoId: string,
+  nfeId: string,
+  nota: NotaFiscalEletronica,
+): EmitResult {
+  return {
+    nfeId,
+    pedidoId,
+    estado: nota.estado,
+    chave: nota.chave ?? '',
+    nRec: nota.nRec ?? null,
+    cStat: nota.cStat ?? '',
+    xMotivo: nota.xMotivo ?? '',
+    reused: true,
+  };
+}
 
 /** Output of a single emit cycle — the route returns this shape verbatim. */
 export interface EmitResult {
@@ -101,6 +260,13 @@ export interface EmitResult {
   readonly nRec: string | null;
   readonly cStat: string;
   readonly xMotivo: string;
+  /**
+   * `true` when the dedup branch short-circuited because an existing
+   * nfev4 doc was already in a `STATUS_BLOQUEADORES` cStat — no fresh
+   * SEFAZ call was made. `false` for every other path (fresh emission
+   * or rejeitada-retry that did re-call SEFAZ).
+   */
+  readonly reused: boolean;
 }
 
 interface PedidoBundle {
@@ -113,6 +279,14 @@ interface PedidoBundle {
   readonly enderecoDest: Endereco;
   readonly operacaoId: string;
   readonly operacao: Operacao;
+  /**
+   * Pagamentos under `pedidos/{pedidoId}/pagamento` (subcollection,
+   * singular path — mirrors the Flutter ERP). Already filtered to
+   * `status_pagamento ∈ { null, aprovado }` — matches Flutter's
+   * `pedido_nfe_base.dart:449` predicate. May be empty (the NF-e
+   * stamps `tPag='90'` sem-pagamento in that case).
+   */
+  readonly pagamentos: readonly Pagamento[];
 }
 
 /** Per-item fiscal data after merging Pedido item + stamped Imposto. */
@@ -139,31 +313,43 @@ export async function loadPedidoBundle(
   fs: Firestore,
   pedidoId: string,
 ): Promise<PedidoBundle> {
+  console.debug(`[nfe/orchestrator] Loading Pedido bundle for pedidoId '${pedidoId}'`);
   const pedidoSnap = await fs.collection('pedidos').doc(pedidoId).get();
   if (!pedidoSnap.exists) throw new NFePedidoNotFoundError(pedidoId);
   const pedido = pedidoSnap.data() as PedidoBundle['pedido'];
 
   const filialPath = refToPath(getField(pedido, 'filialPedidoOuterRef'));
+  console.debug(`[nfe/orchestrator] Resolved filialPath '${filialPath}' for pedidoId '${pedidoId}'`);
   const clientePath = refToPath(getField(pedido, 'clientePedidoOuterRef'));
+  console.debug(`[nfe/orchestrator] Resolved clientePath '${clientePath}' for pedidoId '${pedidoId}'`);
   const operacaoPath = refToPath(getField(pedido, 'operacaoPedidoOuterRef'));
+  console.debug(`[nfe/orchestrator] Resolved operacaoPath '${operacaoPath}' for pedidoId '${pedidoId}'`);
   const enderecoPath = refToPath(getField(pedido, 'enderecoFiscalOuterRef'));
+  console.debug(`[nfe/orchestrator] Resolved enderecoPath '${enderecoPath}' for pedidoId '${pedidoId}'`);
 
   if (!filialPath) throw new NFeOrchestratorError(`pedido '${pedidoId}': filialPedidoOuterRef missing`);
   if (!clientePath) throw new NFeOrchestratorError(`pedido '${pedidoId}': clientePedidoOuterRef missing`);
   if (!operacaoPath) throw new NFeOrchestratorError(`pedido '${pedidoId}': operacaoPedidoOuterRef missing`);
   if (!enderecoPath) throw new NFeOrchestratorError(`pedido '${pedidoId}': enderecoFiscalOuterRef missing`);
 
-  const [filialSnap, clienteSnap, operacaoSnap, enderecoSnap] = await Promise.all([
+  const [filialSnap, clienteSnap, operacaoSnap, enderecoSnap, pagamentoSnap] = await Promise.all([
     fs.doc(filialPath).get(),
     fs.doc(clientePath).get(),
     fs.doc(operacaoPath).get(),
     fs.doc(enderecoPath).get(),
+    fs.collection('pedidos').doc(pedidoId).collection('pagamento').get(),
   ]);
 
   if (!filialSnap.exists) throw new NFeOrchestratorError(`filial '${filialPath}' not found`);
   if (!clienteSnap.exists) throw new NFeOrchestratorError(`cliente '${clientePath}' not found`);
   if (!operacaoSnap.exists) throw new NFeOrchestratorError(`operacao '${operacaoPath}' not found`);
   if (!enderecoSnap.exists) throw new NFeOrchestratorError(`endereco '${enderecoPath}' not found`);
+
+  const pagamentos = loadPagamentosFromSnapshot(pedidoId, pagamentoSnap);
+  console.debug(
+    `[nfe/orchestrator] pedido '${pedidoId}': loaded ${pagamentos.length} pagamento(s) ` +
+      `(of ${pagamentoSnap.size} in subcollection)`,
+  );
 
   return {
     pedidoId,
@@ -175,7 +361,40 @@ export async function loadPedidoBundle(
     enderecoDest: enderecoSnap.data() as Endereco,
     operacaoId: operacaoSnap.id,
     operacao: operacaoSnap.data() as Operacao,
+    pagamentos,
   };
+}
+
+/**
+ * Parse + filter raw pagamento docs from the `pedidos/{id}/pagamento`
+ * subcollection. Mirrors Flutter's `pedido_nfe_base.dart:449`:
+ * keep pagamentos with `status_pagamento` null OR `aprovado`. Docs
+ * that fail schema parse are skipped with a warn — a single malformed
+ * doc must not block emission.
+ */
+function loadPagamentosFromSnapshot(
+  pedidoId: string,
+  snap: FirebaseFirestore.QuerySnapshot,
+): Pagamento[] {
+  const out: Pagamento[] = [];
+  for (const doc of snap.docs) {
+    const parsed = pagamentoSchema.safeParse(doc.data());
+    if (!parsed.success) {
+      console.warn(
+        `[nfe/orchestrator] pedido '${pedidoId}': pagamento '${doc.id}' failed ` +
+          `pagamentoSchema parse — skipping. issues: ${JSON.stringify(parsed.error.issues)}`,
+      );
+      continue;
+    }
+    const p = parsed.data;
+    if (
+      p.status_pagamento === null ||
+      p.status_pagamento === STATUS_PAGAMENTO.aprovado
+    ) {
+      out.push(p);
+    }
+  }
+  return out;
 }
 
 function getField(obj: unknown, key: string): unknown {
@@ -283,12 +502,48 @@ export function buildGeneratorInput(
   tpEmis: GeneratorInput['tpEmis'] = 1,
 ): GeneratorInput {
   const isInterstate = bundle.enderecoDest.estado !== bundle.filial.sede.estado;
-  const cfopField = isInterstate ? 'cfopInterestadual' : 'cfop';
+  const genItems = buildGenItems(items, bundle, isInterstate);
 
-  const genItems: GeneratorItem[] = items.map((it, i) => {
+  const totals = aggregateTotals(items.map((it) => ({ item: { vProd: it.vProd }, imposto: it.imposto })));
+  const payments = buildPaymentsFromPagamentos(bundle.pagamentos);
+
+  return {
+    ambiente,
+    numeracao,
+    serie,
+    tpEmis,
+    dhEmi: new Date(),
+    filial: bundle.filial,
+    operacao: bundle.operacao,
+    cliente: bundle.cliente,
+    enderecoDest: bundle.enderecoDest,
+    itens: genItems,
+    totalXml: buildTotalXml(totals),
+    transpXml: buildTranspXml(), // Phase A default; Phase D reads Pedido.frete
+    pagXml: buildPagXml(payments),
+  };
+}
+
+/**
+ * Project validated `FiscalItem`s into the typed `GeneratorItem[]` the
+ * NF-e generator consumes. Resolves CFOP / NCM / unidade / CEST with the
+ * item-imposto winning over the operação fallback; throws when both are
+ * missing.
+ *
+ * Stops short of the Flutter resolver chain
+ * (item → product → categoria → operação) at
+ * `.old/packages/pedido_nfe/lib/src/pedido_nfe_base.dart:746` — that's a
+ * Phase D port. Today every pedido item must arrive with `imposto`
+ * already stamped (see `flattenAndValidate`).
+ */
+function buildGenItems(
+  items: ReadonlyArray<FiscalItem>,
+  bundle: PedidoBundle,
+  isInterstate: boolean,
+): GeneratorItem[] {
+  const cfopField = isInterstate ? 'cfopInterestadual' : 'cfop';
+  return items.map((it, i) => {
     const where = `pedido '${bundle.pedidoId}' item ${it.itemIndex} (produto '${it.produtoUid}')`;
-    // Resolution: item-imposto wins; operação as fallback; throw when both
-    // are missing. Same rule for NCM / unidade / CEST below.
     const cfop = it.imposto[cfopField] ?? bundle.operacao[cfopField];
     if (!cfop) {
       throw new NFeOrchestratorError(
@@ -307,8 +562,8 @@ export function buildGeneratorInput(
         `${where}: no unidade — neither imposto.unidade nor operacao.unidade is set`,
       );
     }
-    // CEST is optional (only required when the product is in the CEST
-    // list). Item wins, operação as fallback, omit when neither set.
+    // CEST is optional — required only when the product is in the CEST
+    // list. Item wins, operação as fallback, omit when neither set.
     const CEST = it.imposto.CEST ?? bundle.operacao.CEST;
 
     const cProd = it.sku ?? it.gtin!; // guarded in flattenAndValidate
@@ -333,50 +588,90 @@ export function buildGeneratorInput(
       impostoXml: buildImpostoXml(it.imposto, { vProd: it.vProd }),
     };
   });
-
-  const totals = aggregateTotals(items.map((it) => ({ item: { vProd: it.vProd }, imposto: it.imposto })));
-  const payments = buildPaymentsFromPedido(bundle, totals.vNF);
-
-  return {
-    ambiente,
-    numeracao,
-    serie,
-    tpEmis,
-    dhEmi: new Date(),
-    filial: bundle.filial,
-    operacao: bundle.operacao,
-    cliente: bundle.cliente,
-    enderecoDest: bundle.enderecoDest,
-    itens: genItems,
-    totalXml: buildTotalXml(totals),
-    transpXml: buildTranspXml(), // Phase A default; Phase D reads Pedido.frete
-    pagXml: buildPagXml(payments),
-  };
 }
 
 /**
- * Project Pedido.pagamentos into typed Payment entries. Phase A
- * fallback: when no payments are stamped, emit one `tPag='99'` (outros)
- * for vNF so the NF-e is XSD-valid. Real wiring of the Pedido.pagamentos
- * subcollection is a Phase D follow-up.
+ * Project filtered Pagamentos into typed `Payment` entries — mirrors
+ * Flutter's `pedido_nfe_base.dart:1766` (`get pag`) field-for-field:
+ *
+ *   - empty list → single `tPag='90'` (sem pagamento), `vPag=0` (Flutter's
+ *     `1768–1776` default — SEFAZ-safe, no `<xPag>` needed).
+ *   - per Pagamento: `tPag` = `forma_de_pagamento` padded to 2 digits;
+ *     `vPag` = `valor + juros` (or 0 when `forma=90`); `indPag` from
+ *     `aVista` (0=à vista, 1=a prazo).
+ *   - `xPag` is stamped ONLY when `forma=99` (outros) — the absence of it
+ *     on `tPag='99'` is exactly what triggers SEFAZ cStat=441. Falls back
+ *     to `'Outro'` when `descricaoPagamento` is blank (Flutter line 1801).
+ *   - `card` is stamped ONLY when `cartao != null` AND `forma != 99` —
+ *     mirror of `pedido_nfe_base.dart:1812`. NB: SEFAZ NT 2022.001
+ *     REQUIRES the `<card>` block on every card-like tPag (03 crédito,
+ *     04 débito, **17 PIX**), so card-like Pagamentos must arrive with
+ *     `cartao` already populated by the payment-gateway integration —
+ *     otherwise SEFAZ rejects with cStat=391. We do not auto-stamp a
+ *     placeholder here on purpose: silent defaults make fiscal bugs
+ *     invisible.
+ *
+ * The single-payment-with-frete-contratacao-emitente branch
+ * (`pedido_nfe_base.dart:1790`) is deliberately NOT ported — it pertains
+ * to the freight-as-payment edge case which Phase A doesn't handle.
  */
-function buildPaymentsFromPedido(bundle: PedidoBundle, vNF: number): Payment[] {
-  // The Pedido schema today is z.passthrough() — pagamentos may or may
-  // not be present. When absent, fall back to the documented Phase A
-  // default.
-  const rawPag = (bundle.pedido as { pagamentos?: unknown }).pagamentos;
-  if (!Array.isArray(rawPag) || rawPag.length === 0) {
-    return [{ tPag: '99', vPag: vNF }];
+function buildPaymentsFromPagamentos(
+  pagamentos: ReadonlyArray<Pagamento>,
+): Payment[] {
+  if (pagamentos.length === 0) {
+    return [{ tPag: '90', vPag: 0 }];
   }
-  return rawPag
-    .map((p) => {
-      const o = (p ?? {}) as Record<string, unknown>;
-      return {
-        tPag: typeof o.tPag === 'string' ? (o.tPag as Payment['tPag']) : '99',
-        vPag: Number(o.vPag ?? 0),
-      };
-    })
-    .filter((p) => Number.isFinite(p.vPag) && p.vPag > 0);
+  return pagamentos.map((p): Payment => {
+    const isOutros = p.forma_de_pagamento === FORMA_PAGAMENTO.outros;
+    const isSemPag = p.forma_de_pagamento === FORMA_PAGAMENTO.sem_pagamento;
+    const tPag = String(p.forma_de_pagamento).padStart(2, '0') as Payment['tPag'];
+    const vPag = isSemPag ? 0 : p.valor + (p.juros ?? 0);
+    const indPag: NonNullable<Payment['indPag']> = p.aVista ? '0' : '1';
+
+    let xPag: string | undefined;
+    if (isOutros) {
+      const desc = (p.descricaoPagamento ?? '').trim();
+      const cleaned = sanitizeNFeText(desc.length > 0 ? desc : 'Outro', 60);
+      xPag = cleaned ?? 'Outro';
+    }
+
+    const card =
+      p.cartao != null && !isOutros ? buildCardFromCartao(p.cartao) : undefined;
+
+    return {
+      tPag,
+      vPag,
+      indPag,
+      ...(xPag ? { xPag } : {}),
+      ...(card ? { card } : {}),
+    };
+  });
+}
+
+/**
+ * Project the pass-through `Pagamento.cartao` blob into the typed
+ * `Payment.card`. The schema declares `cartao` as `z.unknown()` (Flutter's
+ * Cartao model is wider than SEFAZ needs), so we narrow defensively and
+ * skip the whole block when `tpIntegra` is missing — emitting a `<card>`
+ * without `tpIntegra` would be invalid against the XSD and trigger
+ * cStat=391.
+ *
+ * Flutter source: `.old/packages/pedido/lib/src/models.dart` Cartao
+ * (used at `pedido_nfe_base.dart:1812–1820`).
+ */
+function buildCardFromCartao(cartao: unknown): NonNullable<Payment['card']> | undefined {
+  if (cartao == null || typeof cartao !== 'object') return undefined;
+  const c = cartao as Record<string, unknown>;
+  const tpIntegraRaw = c.tpIntegra;
+  const tpIntegraStr =
+    typeof tpIntegraRaw === 'number' ? String(tpIntegraRaw) : tpIntegraRaw;
+  if (tpIntegraStr !== '1' && tpIntegraStr !== '2') return undefined;
+  const card: NonNullable<Payment['card']> = { tpIntegra: tpIntegraStr };
+  if (typeof c.cnpj_instituicao === 'string') card.CNPJ = c.cnpj_instituicao;
+  if (typeof c.bandeira === 'string') card.tBand = c.bandeira;
+  else if (typeof c.bandeira === 'number') card.tBand = String(c.bandeira);
+  if (typeof c.cAut === 'string') card.cAut = c.cAut;
+  return card;
 }
 
 function round2(n: number): number {
@@ -393,35 +688,92 @@ export async function emitirPedido(
   rt: NFeRuntime,
   pedidoId: string,
 ): Promise<EmitResult> {
+
+  console.debug(`[nfe/orchestrator] Starting emit cycle for pedidoId '${pedidoId}', runtime ambiente '${rt.ambiente}'`);
+
   const bundle = await loadPedidoBundle(fs, pedidoId);
   if (bundle.pedido.bloquearEmissaoNFe) {
     throw new NFeBlockedError(pedidoId);
   }
   const items = flattenAndValidate(bundle);
 
-  // Allocate transactionally from the per-filial NFeConfig — atomic, no
-  // duplicates, no gaps (proved by numeracao.staging.test.ts).
-  const store = nfeConfigStoreFromFirestore(fs);
-  const { nNF, serie } = await nextNumeracao(store, bundle.filialId);
-  const idLote = await nextIdLote(store, bundle.filialId);
-
-  const input = buildGeneratorInput(bundle, items, nNF, serie, rt.ambiente);
-  const generated = generateNFe(input);
-  const signedXml = signNFe(generated.nfeXml, rt.cert);
-
+  // Stable doc id per (pedido, tpEmis) — mirrors Flutter's
+  // `NotaFiscalEletronica.nFeSaidaIdFromTpEmis(tpEmis)` so every retry
+  // for the same pedido targets the same nfev4 doc instead of accreting
+  // chave-keyed duplicates.
+  const tpEmis = resolveTpEmis(bundle.filial.sede.estado);
   const nfeRef = fs
     .collection('pedidos')
     .doc(pedidoId)
     .collection('nfev4')
-    .doc(generated.chave);
-  const now = new Date().toISOString();
+    .doc(nfeDocId(tpEmis));
+  const nfeConfigRef = fs.doc(
+    `filiais/${bundle.filialId}/nfeconfig/${DEFAULT_NFE_CONFIG_DOC_ID}`,
+  );
 
-  // === Anti-loss anchor: persist BEFORE the SOAP send. =====================
-  await nfeRef.set(
-    {
+  // === Atomic: dedup pre-check + allocate + generate + sign + persist. ====
+  // All counter advances and XML persistence happen in ONE Firestore
+  // transaction so a crash mid-flight can never strand a consumed
+  // numeração without a matching nfev4 doc. The SEFAZ SOAP call happens
+  // AFTER the tx commits — we don't want to hold tx locks during a slow
+  // network round-trip.
+  type TxOutcome =
+    | { skip: true; existing: NotaFiscalEletronica }
+    | { skip: false; chave: string; signedXml: string; idLote: number };
+
+  const captured = await fs.runTransaction<TxOutcome>(async (tx) => {
+    // Reads MUST precede writes in a Firestore transaction.
+    const nfeSnap = await tx.get(nfeRef);
+    const existing = nfeSnap.exists
+      ? (nfeSnap.data() as NotaFiscalEletronica)
+      : null;
+
+    // Bloqueada NFes (cStat in STATUS_BLOQUEADORES) short-circuit —
+    // covers both the normal pre-check AND the race where another emit
+    // wrote the doc between attempts of this transaction.
+    if (existing && isBloqueada(existing.cStat)) {
+      console.debug(
+        `[nfe/orchestrator] pedido '${pedidoId}' has existing bloqueada NFe ` +
+          `(cStat=${existing.cStat}) — skipping emit and returning persisted state`,
+      );
+      return { skip: true, existing };
+    }
+
+    console.debug(`[nfe/orchestrator] No bloqueada NFe found for pedidoId '${pedidoId}' — proceeding with emit. ` +
+      `Existing NFe doc ${existing ? 'is not bloqueada (cStat=' + existing.cStat + ')' : 'does not exist'}.`);
+
+    const cfgSnap = await tx.get(nfeConfigRef);
+    if (!cfgSnap.exists) throw new NFeConfigNotFoundError(bundle.filialId);
+    const cfg = nfeConfigSchema.parse(cfgSnap.data()) as NFeConfig;
+
+    // Reuse numeração + serie when an existing rejeitada / error /
+    // never-sent doc is present; allocate fresh otherwise. idLote
+    // always advances — every retry is a fresh SEFAZ lote.
+    const reuse = existing != null;
+    const nNF = reuse ? existing.numeracao : cfg.numeracao_atual + 1;
+    const serie = reuse ? existing.serie : cfg.serie;
+    const idLote = cfg.idLote + 1;
+
+    // Generate + sign (CPU only — safe to run inside the tx). The chave
+    // is deterministic from nNF + serie + dhEmi + filial CNPJ + tpEmis,
+    // so a tx retry with a fresh nNF regenerates a consistent set.
+    const input = buildGeneratorInput(bundle, items, nNF, serie, rt.ambiente, tpEmis);
+    const generated = generateNFe(input);
+    const signedXml = signNFe(generated.nfeXml, rt.cert);
+
+    const now = new Date().toISOString();
+
+    // Writes — counter doc first, then NFe doc. Both commit or neither.
+    tx.set(nfeConfigRef, {
+      ...cfg,
+      ...(reuse ? {} : { numeracao_atual: nNF }),
+      idLote,
+      timestamp: now,
+    });
+    tx.set(nfeRef, {
       numeracao: nNF,
       serie,
-      tpEmis: 1,
+      tpEmis,
       estado: ESTADO_NFE.enviando,
       chave: generated.chave,
       idLote: String(idLote),
@@ -439,10 +791,21 @@ export async function emitirPedido(
       justificativaContingencia: null,
       error: null,
       ultima_modificacao: now,
-    },
-    { merge: false },
-  );
+    });
+
+    return { skip: false, chave: generated.chave, signedXml, idLote };
+  });
   // ========================================================================
+
+  if (captured.skip) {
+    console.debug(
+      `[nfe/orchestrator] pedido '${pedidoId}' has existing bloqueada NFe ` +
+        `(cStat=${captured.existing.cStat}) — returning persisted state without re-emission`,
+    );
+    return existingToEmitResult(pedidoId, nfeRef.id, captured.existing);
+  }
+
+  const { chave, signedXml, idLote } = captured;
 
   const call: SefazCall = {
     url: rt.endpoints.NfeAutorizacao,
@@ -455,33 +818,276 @@ export async function emitirPedido(
     idLote: String(idLote),
     NFe: [signedXml],
   });
-  let outcome = outcomeFromRetEnviNFe(retEnvi);
+
+  console.debug(JSON.stringify({ retEnvi }));
+  // Audit-log the SOAP round-trip BEFORE running the state machine — so
+  // nRec is durable even if anything below this line crashes.
+  await enviNfeCollection(fs, bundle.filialId).add(
+    buildEnviNFeMsgFromLote({ chave, idLote, tpEmis, signedXml, retEnvi }),
+  );
+  let outcome: SefazOutcome = outcomeFromRetEnviNFe(retEnvi);
   let patch = applyOutcome(
     { estado: ESTADO_NFE.enviando, retries: 0 },
     outcome,
   );
+  // The chave that ends up on the result (and on the nfev4 doc) may
+  // change during a cStat=539 recovery: the "real" NF-e at SEFAZ lives
+  // under a different chave (the one in xMotivo's [chNFe:...] marker).
+  // Track the override here so the orchestrator only has one return path.
+  let finalChave = chave;
 
   // Duplicidade / lote-not-found → query SEFAZ for the real status.
   if (patch.action === 'recover-via-consulta') {
-    const consSitCall: SefazCall = {
-      ...call,
-      url: rt.endpoints.NfeConsultaProtocolo,
-    };
-    const retSit = await consultarSituacaoNFe(consSitCall, { chave: generated.chave });
-    outcome = outcomeFromRetConsSit(retSit);
-    patch = applyOutcome({ estado: patch.estado, retries: patch.retries }, outcome);
+    if (outcome.cStat === '539') {
+      // 539: duplicidade with DIFFERENT chave. The authoritative
+      // emission lives at outcome.chNFeFromXMotivo — querying our local
+      // chave (consSit) would only return 217. Look the other chave up
+      // in the EnviNFeMsg audit log instead; if found, consultarLote
+      // its previously-stored nRec and swap chave on the nfev4 doc.
+      const recovered = await recoverFrom539({
+        fs,
+        bundle,
+        nfeRef,
+        rt,
+        call,
+        tpEmis,
+        outcome,
+        patch,
+      });
+      patch = recovered.patch;
+      if (recovered.chaveOverride) finalChave = recovered.chaveOverride;
+    } else if (patch.nRec) {
+      // 204 / 205 / 218 / 635 — same-chave duplicidade. consReci(nRec)
+      // is the right query: it fetches the lote that authorized our chave.
+      const consReciCall: SefazCall = { ...call, url: rt.endpoints.NfeRetAutorizacao };
+      const retRec = await consultarLote(consReciCall, { nRec: patch.nRec });
+      await enviNfeCollection(fs, bundle.filialId).add(
+        buildEnviNFeMsgFromConsulta({ chave, nRec: patch.nRec, ret: retRec, tpEmis }),
+      );
+      outcome = outcomeFromConsReci(retRec, chave);
+      patch = applyOutcome({ estado: patch.estado, retries: patch.retries }, outcome);
+    } else {
+      // 106 lote-nao-localizado — no nRec available; consSit(chave) is
+      // the last-resort query (it works because SEFAZ knows the chave
+      // even when the lote receipt is gone).
+      const consSitCall: SefazCall = { ...call, url: rt.endpoints.NfeConsultaProtocolo };
+      const retSit = await consultarSituacaoNFe(consSitCall, { chave });
+      await enviNfeCollection(fs, bundle.filialId).add(
+        buildEnviNFeMsgFromConsulta({ chave, nRec: null, ret: retSit, tpEmis }),
+      );
+      outcome = outcomeFromRetConsSit(retSit);
+      patch = applyOutcome({ estado: patch.estado, retries: patch.retries }, outcome);
+    }
   }
 
   await persistPatch(nfeRef, patch);
 
   return {
-    nfeId: generated.chave,
+    nfeId: nfeRef.id,
     pedidoId,
     estado: patch.estado,
-    chave: generated.chave,
+    chave: finalChave,
     nRec: patch.nRec,
     cStat: patch.cStat,
     xMotivo: patch.xMotivo,
+    reused: false,
+  };
+}
+
+/**
+ * Handle a cStat=539 outcome: SEFAZ already has an NF-e with our
+ * `nNF + serie + tpEmis + emit-CNPJ` but under a DIFFERENT chave (the
+ * `[chNFe:...]` marker in xMotivo). Recovery strategy:
+ *   1. Pull the previously-emitted chave from xMotivo markers.
+ *   2. Look it up in our `EnviNFeMsg` audit log (the SEFAZ-roundtrip
+ *      log written on every lote send / consult).
+ *   3. If found, the previous lote's `nRec` is also in the audit log
+ *      msg — call `consultarLote(prevNRec)` to fetch SEFAZ's
+ *      authoritative protocol for that chave, swap the nfev4 doc's
+ *      `chave` to the recovered one, and return the consult outcome.
+ *   4. If not found (or no chNFe marker), the note is "lost" from our
+ *      side — return a patch marking estado=error with the original
+ *      cStat=539 + xMotivo preserved so the operator can fix manually
+ *      (download from SEFAZ portal + upload).
+ *
+ * NB: this does NOT touch `xml_assinado` — it still holds the locally
+ * signed XML for OUR chave. After a successful 539 recovery the doc
+ * has a mismatch (recovered chave + local signed XML for the old
+ * chave); the next step in production is to fetch the authorized XML
+ * from SEFAZ DistDFe (a Phase D port).
+ */
+async function recoverFrom539(params: {
+  fs: Firestore;
+  bundle: PedidoBundle;
+  nfeRef: FirebaseFirestore.DocumentReference;
+  rt: NFeRuntime;
+  call: SefazCall;
+  tpEmis: TpEmis;
+  outcome: SefazOutcome;
+  patch: NFeStatePatch;
+}): Promise<{ patch: NFeStatePatch; chaveOverride?: string }> {
+  const { fs, bundle, nfeRef, rt, call, tpEmis, outcome, patch } = params;
+
+  const recoveredChave = outcome.chNFeFromXMotivo;
+  if (!recoveredChave) {
+    console.warn(
+      `[nfe/orchestrator] pedido '${bundle.pedidoId}': cStat=539 sem ` +
+        `marcador [chNFe:...] em xMotivo — marcando como error.`,
+    );
+    return { patch: markAsLost(patch, 'cStat=539 sem marcador [chNFe:...] em xMotivo') };
+  }
+
+  const prevMsg = await findLatestEnviNFeMsgWithNRec(fs, bundle.filialId, recoveredChave);
+  if (!prevMsg?.nRec) {
+    console.warn(
+      `[nfe/orchestrator] pedido '${bundle.pedidoId}': cStat=539 — chave ` +
+        `${recoveredChave} não encontrada no audit log com nRec; marcando como error.`,
+    );
+    return {
+      patch: markAsLost(
+        patch,
+        `cStat=539 — chave ${recoveredChave} não está no audit log local`,
+      ),
+    };
+  }
+
+  const consReciCall: SefazCall = { ...call, url: rt.endpoints.NfeRetAutorizacao };
+  const retRec = await consultarLote(consReciCall, { nRec: prevMsg.nRec });
+  await enviNfeCollection(fs, bundle.filialId).add(
+    buildEnviNFeMsgFromConsulta({
+      chave: recoveredChave,
+      nRec: prevMsg.nRec,
+      ret: retRec,
+      tpEmis,
+    }),
+  );
+  const recoveredOutcome = outcomeFromConsReci(retRec, recoveredChave);
+  const recoveredPatch = applyOutcome(
+    { estado: patch.estado, retries: 0 },
+    recoveredOutcome,
+  );
+
+  // Swap chave on the nfev4 doc — done outside persistPatch (which is
+  // generic) since this only happens on 539 recovery.
+  await nfeRef.set(
+    { chave: recoveredChave, ultima_modificacao: new Date().toISOString() },
+    { merge: true },
+  );
+
+  return { patch: recoveredPatch, chaveOverride: recoveredChave };
+}
+
+/**
+ * Final-state patch when a duplicidade-class outcome can't be recovered:
+ * keeps cStat + the SEFAZ-supplied xMotivo (with its [chNFe:...] /
+ * [nRec:...] markers) visible to the operator, appends a short reason
+ * tail, and flips estado to `error`. No SEFAZ calls happen after this.
+ */
+function markAsLost(patch: NFeStatePatch, reason: string): NFeStatePatch {
+  return {
+    ...patch,
+    estado: ESTADO_NFE.error,
+    xMotivo: `${patch.xMotivo} | ${reason}`,
+  };
+}
+
+/**
+ * Standalone SEFAZ consulta for an already-persisted nfev4 doc. Reads
+ * the stable `s${tpEmis}` doc, queries SEFAZ via `consultarSituacaoNFe`,
+ * applies the outcome, persists the patch, and returns the same shape
+ * `emitirPedido` does (with `reused: false` — always a fresh SEFAZ call).
+ *
+ * Mirrors the `recover-via-consulta` branch inside `emitirPedido` but
+ * starts from a persisted doc instead of a just-completed lote response.
+ * Used by the `consult:dev-pedido` CLI for manual polling and (later)
+ * by the `processar-pendentes` cron.
+ */
+export async function consultarPedido(
+  fs: Firestore,
+  rt: NFeRuntime,
+  pedidoId: string,
+): Promise<EmitResult> {
+  console.debug(`[nfe/orchestrator] consultarPedido pedidoId='${pedidoId}'`);
+
+  const bundle = await loadPedidoBundle(fs, pedidoId);
+  const tpEmis = resolveTpEmis(bundle.filial.sede.estado);
+  const nfeRef = fs
+    .collection('pedidos')
+    .doc(pedidoId)
+    .collection('nfev4')
+    .doc(nfeDocId(tpEmis));
+
+  const snap = await nfeRef.get();
+  if (!snap.exists) {
+    throw new NFeOrchestratorError(
+      `pedido '${pedidoId}': no nfev4 doc at ${nfeRef.path} — nothing to consult. ` +
+        'Run `emit:dev-pedido` first.',
+    );
+  }
+  const nota = snap.data() as NotaFiscalEletronica;
+  if (!nota.chave) {
+    throw new NFeOrchestratorError(
+      `pedido '${pedidoId}': persisted nfev4 doc has no chave — cannot consult.`,
+    );
+  }
+
+  // Prefer consReci(nRec) when an audit-log msg holds a receipt — it
+  // works while the lote is still queued at SEFAZ (cStat=105) and
+  // gives us the protocol once processed. Fall back to consSit(chave)
+  // only when no msg with nRec exists (e.g. externally-recovered NFe).
+  const baseCall = {
+    cert: rt.cert,
+    agent: rt.agent,
+    tpAmb: rt.tpAmb,
+  } as const;
+  const msgWithNRec = await findLatestEnviNFeMsgWithNRec(
+    fs,
+    bundle.filialId,
+    nota.chave,
+  );
+
+  let outcome: SefazOutcome;
+  if (msgWithNRec?.nRec) {
+    const consReciCall: SefazCall = { ...baseCall, url: rt.endpoints.NfeRetAutorizacao };
+    const retRec = await consultarLote(consReciCall, { nRec: msgWithNRec.nRec });
+    await enviNfeCollection(fs, bundle.filialId).add(
+      buildEnviNFeMsgFromConsulta({
+        chave: nota.chave,
+        nRec: msgWithNRec.nRec,
+        ret: retRec,
+        tpEmis,
+      }),
+    );
+    outcome = outcomeFromConsReci(retRec, nota.chave);
+  } else {
+    const consSitCall: SefazCall = { ...baseCall, url: rt.endpoints.NfeConsultaProtocolo };
+    const retSit = await consultarSituacaoNFe(consSitCall, { chave: nota.chave });
+    await enviNfeCollection(fs, bundle.filialId).add(
+      buildEnviNFeMsgFromConsulta({
+        chave: nota.chave,
+        nRec: null,
+        ret: retSit,
+        tpEmis,
+      }),
+    );
+    outcome = outcomeFromRetConsSit(retSit);
+  }
+
+  const patch = applyOutcome(
+    { estado: nota.estado, retries: nota.retries ?? 0 },
+    outcome,
+  );
+  await persistPatch(nfeRef, patch);
+
+  return {
+    nfeId: nfeRef.id,
+    pedidoId,
+    estado: patch.estado,
+    chave: nota.chave,
+    nRec: patch.nRec ?? msgWithNRec?.nRec ?? nota.nRec,
+    cStat: patch.cStat,
+    xMotivo: patch.xMotivo,
+    reused: false,
   };
 }
 
@@ -489,13 +1095,18 @@ async function persistPatch(
   nfeRef: FirebaseFirestore.DocumentReference,
   patch: NFeStatePatch,
 ): Promise<void> {
+  // Preserve `nRec`: omit it from the merge when the new patch lacks
+  // one (e.g. consSit responses don't carry an nRec), so we don't
+  // overwrite the value the lote-receipt response (cStat=103) saved.
+  // The authoritative receipt always lives in the enviNfe audit log
+  // anyway; this copy is just for the NFCell.
   await nfeRef.set(
     {
       estado: patch.estado,
       cStat: patch.cStat,
       xMotivo: patch.xMotivo,
       retries: patch.retries,
-      nRec: patch.nRec,
+      ...(patch.nRec != null ? { nRec: patch.nRec } : {}),
       ultima_modificacao: new Date().toISOString(),
     },
     { merge: true },
@@ -503,6 +1114,12 @@ async function persistPatch(
 }
 
 // Internals exposed for tests only.
-export const __internal = { flattenAndValidate, buildPaymentsFromPedido };
+export const __internal = {
+  flattenAndValidate,
+  buildPaymentsFromPagamentos,
+  buildCardFromCartao,
+  buildGenItems,
+  loadPagamentosFromSnapshot,
+};
 // Re-export Zod so test fixtures can use the same z instance.
 export { z };

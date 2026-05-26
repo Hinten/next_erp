@@ -266,3 +266,13 @@ export {
   type NFeConfig,
   type AmbienteNFE,
 } from './nfeConfig';
+
+export {
+  enviNfeMsg,
+  enviNfeMsgSchema,
+  enviNfeMsgMeta,
+  estadoEnviNFeMsgSchema,
+  ESTADO_ENVI_NFE_MSG,
+  type EnviNFeMsg,
+  type EstadoEnviNFeMsg,
+} from './enviNfeMsg';

@@ -227,6 +227,31 @@ describe('buildImpostoXml — CSOSN dispatch', () => {
     expect(xml).toContain('<vICMS>270.00</vICMS>');
     await assertXsdValid(xml);
   });
+
+  // PIS / COFINS Outr regression — SEFAZ XSD requires vBC + pPIS (or
+  // qBCProd + vAliqProd) before vPIS even when the SN flow emits zeros.
+  // Previously the dispatcher emitted only `{ CST, vPIS: '0.00' }` and
+  // xmllint-wasm rejected with "vPIS not expected, expected vBC or qBCProd".
+  it.each(['49', '99'])(
+    'PIS CST %s → PISOutr with vBC + pPIS + vPIS (SEFAZ xs:choice)',
+    async (cst) => {
+      const imposto: Imposto = {
+        ...impostoFor102(),
+        configuracaoPIS: { CST: cst as never },
+        configuracaoCOFINS: { CST: cst as never },
+      };
+      const xml = buildImpostoXml(imposto, item1500);
+      expect(xml).toContain('<PISOutr>');
+      expect(xml).toContain(`<CST>${cst}</CST>`);
+      expect(xml).toContain('<vBC>0.00</vBC>');
+      expect(xml).toContain('<pPIS>0.0000</pPIS>');
+      expect(xml).toContain('<vPIS>0.00</vPIS>');
+      expect(xml).toContain('<COFINSOutr>');
+      expect(xml).toContain('<pCOFINS>0.0000</pCOFINS>');
+      expect(xml).toContain('<vCOFINS>0.00</vCOFINS>');
+      await assertXsdValid(xml);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

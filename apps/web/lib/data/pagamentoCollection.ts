@@ -5,11 +5,12 @@ import {
 } from '@delfrance/schemas';
 
 /**
- * Subcollection: `pedidos/{pedidoId}/pagamentos`. Use the {pedidoId}
- * placeholder in the path context.
+ * Subcollection: `pedidos/{pedidoId}/pagamento` (singular — matches the
+ * Flutter ERP's wire format). Use the {pedidoId} placeholder in the
+ * path context.
  */
 export const pagamentoCollection = defineCollection({
-  path: 'pedidos/{pedidoId}/pagamentos',
+  path: 'pedidos/{pedidoId}/pagamento',
   schema: pagamentoSchema,
 });
 

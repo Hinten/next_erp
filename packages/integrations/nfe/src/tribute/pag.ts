@@ -60,6 +60,12 @@ export const paymentSchema = z.object({
   vPag: z.number().nonnegative(),
   /** indPag — 0=à vista, 1=a prazo. Optional per the XSD. */
   indPag: z.enum(['0', '1']).optional(),
+  /**
+   * Free-text description of the payment. Required by SEFAZ (cStat=441)
+   * when `tPag='99'` (outros); otherwise optional. Already-sanitized;
+   * the caller passes the trimmed/cleaned value, capped at 60 chars.
+   */
+  xPag: z.string().max(60).optional(),
   /** Card detail. Emit only when present — empty card triggers SEFAZ 391. */
   card: cardSchema.optional(),
 });
@@ -76,6 +82,9 @@ function toDetPag(p: Payment): TNFe_infNFe_pag_detPag {
   };
   if (p.indPag != null) {
     detPag.indPag = p.indPag;
+  }
+  if (p.xPag != null) {
+    detPag.xPag = p.xPag;
   }
   if (p.card != null) {
     const card: TNFe_infNFe_pag_detPag_card = { tpIntegra: p.card.tpIntegra };

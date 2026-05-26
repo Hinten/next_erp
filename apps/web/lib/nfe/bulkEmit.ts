@@ -28,6 +28,7 @@ import {
   notificationForNFeError,
   notificationForNFeResult,
 } from './errors';
+import { showErrorNotification } from '../notifications/showErrorNotification';
 
 /**
  * Thrown when the user selects more than one pedido. The follow-up
@@ -84,10 +85,7 @@ export async function dispatchEmitirNFe(
     });
   } catch (err) {
     if (!(err instanceof Error)) throw err;
-    notifications.show({
-      ...notificationForNFeError(err),
-      autoClose: 8000,
-    });
+    showErrorNotification(notificationForNFeError(err));
   }
 }
 
@@ -116,11 +114,9 @@ export function useEmitirNFeAction(): ActionConfig<Pedido> {
     },
     run: async (rows) => {
       if (!client) {
-        notifications.show({
-          title: 'Sessão inválida',
-          message: 'Faça login novamente para emitir NF-e.',
-          color: 'red',
-          autoClose: 8000,
+        showErrorNotification({
+          title: 'Você não está logado',
+          message: 'Faça login para emitir NF-e.',
         });
         return;
       }

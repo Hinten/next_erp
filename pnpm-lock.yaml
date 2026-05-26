@@ -14,6 +14,9 @@ importers:
       dotenv-cli:
         specifier: ^11.0.0
         version: 11.0.0
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
       turbo:
         specifier: ^2.9.12
         version: 2.9.12
@@ -121,7 +124,7 @@ importers:
         version: 9.39.4
       eslint-config-next:
         specifier: ^16.2.6
-        version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
+        version: 16.2.6(@typescript-eslint/parser@8.59.3(eslint@9.39.4)(typescript@6.0.3))(eslint@9.39.4)(typescript@6.0.3)
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -337,7 +340,7 @@ importers:
         version: 9.39.4
       eslint-config-next:
         specifier: ^16.2.6
-        version: 16.2.6(@typescript-eslint/parser@8.59.3(eslint@9.39.4)(typescript@6.0.3))(eslint@9.39.4)(typescript@6.0.3)
+        version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
