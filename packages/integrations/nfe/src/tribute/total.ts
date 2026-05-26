@@ -15,8 +15,10 @@ import { serializeFragment, type XmlValue } from '../xml';
 import type {
   TNFe_infNFe_total,
   TNFe_infNFe_total_ICMSTot,
+  TNFe_infNFe_total_ISSQNtot,
+  TNFe_infNFe_total_retTrib,
 } from '../types/nfe-schema';
-import { fmtMoney, round2 } from './format';
+import { fmtMoney, fmtMoneyOpt, round2 } from './format';
 import type { Imposto, TributeItem } from './schemas';
 
 interface PerItem {
@@ -44,13 +46,41 @@ export interface TotalAggregation {
   readonly vCOFINS: number;
   readonly vOutro: number;
   readonly vNF: number;
+  // Optional ICMSTot fields — present only when relevant data is on
+  // the NF-e. The XSD makes each `<vXxx>` element optional; the META
+  // serializer omits anything left null/undefined.
+  readonly vTotTrib?: number;
+  readonly vFCPUFDest?: number;
+  readonly vICMSUFDest?: number;
+  readonly vICMSUFRemet?: number;
+}
+
+/**
+ * Whole-NF-e values that are NOT derivable from per-item imposto.
+ * Today: vFrete (only when frete.modalidade='0'), vSeg (insurance),
+ * vDesc (pedido-level discount), vOutro (catch-all).
+ */
+export interface TotalExtras {
+  readonly vFrete?: number;
+  readonly vSeg?: number;
+  readonly vDesc?: number;
+  readonly vOutro?: number;
 }
 
 /**
  * Aggregate per-item values into the ICMSTot bag. The bag is then
- * serialised by `buildTotalXml`.
+ * serialised by `buildTotalXml`. `extras` carries the whole-NF-e
+ * values (frete, insurance, …) the orchestrator computes from
+ * non-item sources (`pedido.freteInicial`, etc.).
+ *
+ * vNF is computed as `vProd + vST + vFCPST + vFrete + vSeg + vOutro
+ * − vDesc`, mirroring Flutter `pedido_nfe_base.dart:1729` and the
+ * SEFAZ formula for `<vNF>` (NT 2018.005).
  */
-export function aggregateTotals(items: ReadonlyArray<PerItem>): TotalAggregation {
+export function aggregateTotals(
+  items: ReadonlyArray<PerItem>,
+  extras: TotalExtras = {},
+): TotalAggregation {
   let vProd = 0;
   let vBC = 0;
   let vICMS = 0;
@@ -85,7 +115,11 @@ export function aggregateTotals(items: ReadonlyArray<PerItem>): TotalAggregation
     // CSOSN 102/103/300/400 add nothing to the ICMS bucket.
   }
 
-  const vNF = round2(vProd + vST + vFCPST);
+  const vFrete = extras.vFrete ?? 0;
+  const vSeg = extras.vSeg ?? 0;
+  const vDesc = extras.vDesc ?? 0;
+  const vOutro = extras.vOutro ?? 0;
+  const vNF = round2(vProd + vST + vFCPST + vFrete + vSeg + vOutro - vDesc);
   return {
     vBC: round2(vBC),
     vICMS: round2(vICMS),
@@ -96,27 +130,57 @@ export function aggregateTotals(items: ReadonlyArray<PerItem>): TotalAggregation
     vFCPST: round2(vFCPST),
     vFCPSTRet: round2(vFCPSTRet),
     vProd: round2(vProd),
-    vFrete: 0,
-    vSeg: 0,
-    vDesc: 0,
+    vFrete: round2(vFrete),
+    vSeg: round2(vSeg),
+    vDesc: round2(vDesc),
     vII: 0,
     vIPI: 0,
     vIPIDevol: 0,
     vPIS: 0,
     vCOFINS: 0,
-    vOutro: 0,
+    vOutro: round2(vOutro),
     vNF,
   };
 }
 
 /**
- * Build the typed `<total>` value. Every ICMSTot field is required
- * by the XSD; the META walker emits them in XSD order. Use
- * `buildTotalXml` to emit the wire XML; this overload is the typed
- * entry point for consumers that want to plug the result into a
- * larger value (DANFE renderer, fiscal audit, …).
+ * Aggregate per-item ISSQN values into the optional `<ISSQNtot>` block.
+ *
+ * **Group B placeholder**: returns `undefined` until `impostoSchema`
+ * gains `configuracaoISSQN` (per the parity plan). Phase A retail
+ * (CSOSN 102 + mercadoria) never carries ISSQN, so this is harmless
+ * until the schema lands.
  */
-export function buildTotalObject(totals: TotalAggregation): TNFe_infNFe_total {
+export function aggregateISSQN(
+  _items: ReadonlyArray<PerItem>,
+): TNFe_infNFe_total_ISSQNtot | undefined {
+  return undefined;
+}
+
+/**
+ * Aggregate per-item retentions into the optional `<retTrib>` block.
+ *
+ * **Group B placeholder**: returns `undefined` until `impostoSchema`
+ * gains the retention fields. Same rationale as `aggregateISSQN`.
+ */
+export function aggregateRetTrib(
+  _items: ReadonlyArray<PerItem>,
+): TNFe_infNFe_total_retTrib | undefined {
+  return undefined;
+}
+
+/**
+ * Build the typed `<total>` value. Every ICMSTot field is required
+ * by the XSD; the META walker emits them in XSD order. Optional
+ * `ISSQNtot` and `retTrib` blocks ride alongside when relevant.
+ */
+export function buildTotalObject(
+  totals: TotalAggregation,
+  optional: {
+    issqnTot?: TNFe_infNFe_total_ISSQNtot;
+    retTrib?: TNFe_infNFe_total_retTrib;
+  } = {},
+): TNFe_infNFe_total {
   const ICMSTot: TNFe_infNFe_total_ICMSTot = {
     vBC: fmtMoney('vBC', totals.vBC),
     vICMS: fmtMoney('vICMS', totals.vICMS),
@@ -138,7 +202,19 @@ export function buildTotalObject(totals: TotalAggregation): TNFe_infNFe_total {
     vOutro: fmtMoney('vOutro', totals.vOutro),
     vNF: fmtMoney('vNF', totals.vNF),
   };
-  return { ICMSTot };
+  const vTotTrib = fmtMoneyOpt('vTotTrib', totals.vTotTrib);
+  if (vTotTrib != null) ICMSTot.vTotTrib = vTotTrib;
+  const vFCPUFDest = fmtMoneyOpt('vFCPUFDest', totals.vFCPUFDest);
+  if (vFCPUFDest != null) ICMSTot.vFCPUFDest = vFCPUFDest;
+  const vICMSUFDest = fmtMoneyOpt('vICMSUFDest', totals.vICMSUFDest);
+  if (vICMSUFDest != null) ICMSTot.vICMSUFDest = vICMSUFDest;
+  const vICMSUFRemet = fmtMoneyOpt('vICMSUFRemet', totals.vICMSUFRemet);
+  if (vICMSUFRemet != null) ICMSTot.vICMSUFRemet = vICMSUFRemet;
+
+  const out: TNFe_infNFe_total = { ICMSTot };
+  if (optional.issqnTot != null) out.ISSQNtot = optional.issqnTot;
+  if (optional.retTrib != null) out.retTrib = optional.retTrib;
+  return out;
 }
 
 /**
@@ -146,10 +222,16 @@ export function buildTotalObject(totals: TotalAggregation): TNFe_infNFe_total {
  * ordering and text escaping are owned by `serializeFragment`'s
  * META-driven walker (same path used by `ide` / `emit` / `dest`).
  */
-export function buildTotalXml(totals: TotalAggregation): string {
+export function buildTotalXml(
+  totals: TotalAggregation,
+  optional: {
+    issqnTot?: TNFe_infNFe_total_ISSQNtot;
+    retTrib?: TNFe_infNFe_total_retTrib;
+  } = {},
+): string {
   return serializeFragment(
     'TNFe_infNFe_total',
     'total',
-    buildTotalObject(totals) as unknown as XmlValue,
+    buildTotalObject(totals, optional) as unknown as XmlValue,
   );
 }

@@ -1715,3 +1715,240 @@ describe('emitirPedido — <nfeProc> envelope', () => {
     expect(procWrites).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group A XML field-parity helpers — <transp>, <cobr>, <infAdic>,
+// <exporta>, <infIntermed>, and the <pag> frete-emitente override.
+// These tests exercise the projectors directly via __internal.
+// ---------------------------------------------------------------------------
+
+describe('buildTranspFromFrete', () => {
+  it('null frete → modFrete=9 only', () => {
+    const out = __internal.buildTranspFromFrete(null);
+    expect(out).toEqual({ modFrete: '9' });
+  });
+
+  it('modalidade=9 → modFrete=9 only (sem ocorrência de transporte)', () => {
+    const out = __internal.buildTranspFromFrete({ modalidade: '9' } as never);
+    expect(out).toEqual({ modFrete: '9' });
+  });
+
+  it('modalidade=0 with full carrier + vehicle + volumes → projects every block', () => {
+    const out = __internal.buildTranspFromFrete({
+      modalidade: '0',
+      transportadora: {
+        CNPJ: '99999999000191',
+        xNome: 'Trans Dev',
+        IE: '110042490114',
+        xEnder: 'Av Carrier 100',
+        xMun: 'Sao Paulo',
+        UF: 'SP',
+      },
+      veiculo: { placa: 'ABC1D23', UF: 'SP', RNTC: '12345' },
+      volumes: [{ qVol: 1, esp: 'CAIXA', pesoL: 1.25, pesoB: 1.5 }],
+    } as never);
+    expect(out.modFrete).toBe('0');
+    expect(out.transporta).toEqual({
+      CNPJ: '99999999000191',
+      xNome: 'Trans Dev',
+      IE: '110042490114',
+      xEnder: 'Av Carrier 100',
+      xMun: 'Sao Paulo',
+      UF: 'SP',
+    });
+    expect(out.veicTransp).toEqual({ placa: 'ABC1D23', UF: 'SP', RNTC: '12345' });
+    expect(out.vol).toEqual([{ qVol: 1, esp: 'CAIXA', pesoL: 1.25, pesoB: 1.5 }]);
+  });
+
+  it('CPF carrier (no CNPJ) → emits transporta.CPF', () => {
+    const out = __internal.buildTranspFromFrete({
+      modalidade: '1',
+      transportadora: { CPF: '12345678909', xNome: 'Pedro Carrier' },
+    } as never);
+    expect(out.transporta).toEqual({ CPF: '12345678909', xNome: 'Pedro Carrier' });
+  });
+
+  it('reboques without placa are filtered out', () => {
+    const out = __internal.buildTranspFromFrete({
+      modalidade: '0',
+      reboques: [{ placa: 'XYZ9876' }, { placa: null }],
+    } as never);
+    expect(out.reboque).toEqual([{ placa: 'XYZ9876' }]);
+  });
+});
+
+describe('buildCobrFromPagamentos', () => {
+  function pagamento(input: Partial<Pagamento>): Pagamento {
+    return pagamentoSchema.parse({ valor: 0, ...input });
+  }
+
+  it('no duplicata pagamentos → undefined (no <cobr> block)', () => {
+    const out = __internal.buildCobrFromPagamentos([
+      pagamento({ valor: 100, forma_de_pagamento: FORMA_PAGAMENTO.pix }),
+    ]);
+    expect(out).toBeUndefined();
+  });
+
+  it('one duplicata → fat + single dup', () => {
+    const venc = new Date('2026-06-30T03:00:00Z').toISOString();
+    const out = __internal.buildCobrFromPagamentos([
+      pagamento({
+        valor: 250,
+        forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+        duplicata: true,
+        nFat: 'F-0002',
+        vencimento: venc,
+      }),
+    ]);
+    expect(out?.fat?.vOrig).toBe('250.00');
+    expect(out?.fat?.vLiq).toBe('250.00');
+    expect(out?.fat?.nFat).toBe('F-0002');
+    expect(out?.dup).toHaveLength(1);
+    expect(out?.dup?.[0]?.vDup).toBe('250.00');
+    expect(out?.dup?.[0]?.nDup).toBe('F-0002');
+    expect(out?.dup?.[0]?.dVenc).toBe('2026-06-30');
+  });
+
+  it('multiple duplicatas → fat sums all vDup', () => {
+    const out = __internal.buildCobrFromPagamentos([
+      pagamento({
+        valor: 100,
+        forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+        duplicata: true,
+      }),
+      pagamento({
+        valor: 50,
+        juros: 5,
+        forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+        duplicata: true,
+      }),
+    ]);
+    expect(out?.fat?.vOrig).toBe('155.00');
+    expect(out?.dup).toHaveLength(2);
+    expect(out?.dup?.[1]?.vDup).toBe('55.00'); // valor + juros
+  });
+});
+
+describe('buildInfAdic', () => {
+  it('returns undefined when neither pedido.infCpl nor operacao.infCpl is set', () => {
+    const out = __internal.buildInfAdic({} as never, { infCpl: null } as never);
+    expect(out).toBeUndefined();
+  });
+
+  it('uses pedido.infCpl when present', () => {
+    const out = __internal.buildInfAdic(
+      { infCpl: 'Pedido note' } as never,
+      { infCpl: null } as never,
+    );
+    expect(out).toEqual({ infCpl: 'Pedido note' });
+  });
+
+  it('concatenates pedido + operacao infCpl with a space', () => {
+    const out = __internal.buildInfAdic(
+      { infCpl: 'Pedido note' } as never,
+      { infCpl: 'Operação tagline' } as never,
+    );
+    expect(out).toEqual({ infCpl: 'Pedido note Operação tagline' });
+  });
+});
+
+describe('buildExporta', () => {
+  it('returns undefined for domestic operations', () => {
+    const out = __internal.buildExporta(
+      { ehExterior: false } as never,
+      { sede: { estado: 'SP', cidade: 'Sao Paulo' } } as never,
+    );
+    expect(out).toBeUndefined();
+  });
+
+  it('returns UFSaidaPais + xLocExporta when operacao.ehExterior=true', () => {
+    const out = __internal.buildExporta(
+      { ehExterior: true } as never,
+      { sede: { estado: 'SP', cidade: 'Sao Paulo' } } as never,
+    );
+    expect(out).toEqual({ UFSaidaPais: 'SP', xLocExporta: 'Sao Paulo' });
+  });
+});
+
+describe('buildInfIntermed', () => {
+  it('returns undefined when operacao.indIntermed !== "1"', () => {
+    const out = __internal.buildInfIntermed(null, { indIntermed: '0' } as never);
+    expect(out).toBeUndefined();
+  });
+
+  it('throws when indIntermed=1 but no Integracao doc is loaded', () => {
+    expect(() =>
+      __internal.buildInfIntermed(null, { indIntermed: '1' } as never),
+    ).toThrow(/no Integracao doc resolved/);
+  });
+
+  it('returns CNPJ + idCadIntTran when Integracao is loaded', () => {
+    const out = __internal.buildInfIntermed(
+      { cpf_cnpj: '99999999000191', idCadIntTran: 'SELLER-123' } as never,
+      { indIntermed: '1' } as never,
+    );
+    expect(out).toEqual({
+      CNPJ: '99999999000191',
+      idCadIntTran: 'SELLER-123',
+    });
+  });
+
+  it('throws when Integracao is missing idCadIntTran', () => {
+    expect(() =>
+      __internal.buildInfIntermed(
+        { cpf_cnpj: '99999999000191', idCadIntTran: null } as never,
+        { indIntermed: '1' } as never,
+      ),
+    ).toThrow(/idCadIntTran/);
+  });
+});
+
+describe('buildPaymentsFromPagamentos — frete-emitente single-payment override', () => {
+  function pagamento(input: Partial<Pagamento>): Pagamento {
+    return pagamentoSchema.parse({ valor: 0, ...input });
+  }
+
+  it('single PIX + frete modalidade=0 + valorCobrado>0 → vPag overridden to vNF', () => {
+    // Flutter `pedido_nfe_base.dart:1790`: when the issuer pays the
+    // carrier and there's a single payment, the payment's vPag carries
+    // the entire NF total (which already includes frete).
+    const out = __internal.buildPaymentsFromPagamentos(
+      [pagamento({ valor: 100, forma_de_pagamento: FORMA_PAGAMENTO.pix })],
+      { vNF: 149.9, frete: { modalidade: '0', valorCobrado: 49.9 } as never },
+    );
+    expect(out[0]?.vPag).toBe(149.9);
+  });
+
+  it('multiple payments + frete modalidade=0 → NO override (only single-payment case)', () => {
+    const out = __internal.buildPaymentsFromPagamentos(
+      [
+        pagamento({ valor: 80, forma_de_pagamento: FORMA_PAGAMENTO.pix }),
+        pagamento({ valor: 20, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }),
+      ],
+      { vNF: 149.9, frete: { modalidade: '0', valorCobrado: 49.9 } as never },
+    );
+    expect(out[0]?.vPag).toBe(80);
+    expect(out[1]?.vPag).toBe(20);
+  });
+
+  it('single sem-pagamento + frete modalidade=0 → vPag stays 0 (NOT overridden)', () => {
+    const out = __internal.buildPaymentsFromPagamentos(
+      [
+        pagamento({
+          valor: 100,
+          forma_de_pagamento: FORMA_PAGAMENTO.sem_pagamento,
+        }),
+      ],
+      { vNF: 149.9, frete: { modalidade: '0', valorCobrado: 49.9 } as never },
+    );
+    expect(out[0]?.vPag).toBe(0);
+  });
+
+  it('frete modalidade=1 (contratacao destinatário) → NO override', () => {
+    const out = __internal.buildPaymentsFromPagamentos(
+      [pagamento({ valor: 100, forma_de_pagamento: FORMA_PAGAMENTO.pix })],
+      { vNF: 149.9, frete: { modalidade: '1', valorCobrado: 49.9 } as never },
+    );
+    expect(out[0]?.vPag).toBe(100);
+  });
+});

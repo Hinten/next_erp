@@ -62,6 +62,8 @@ import {
   ESTADO_NFE,
   FORMA_PAGAMENTO,
   STATUS_PAGAMENTO,
+  freteDoPedidoSchema,
+  integracaoSchema,
   nfeConfigSchema,
   pagamentoSchema,
   type Cliente,
@@ -69,6 +71,8 @@ import {
   type EnviNFeMsg,
   type EstadoNFe,
   type Filial,
+  type FreteDoPedido,
+  type Integracao,
   type NFeConfig,
   type NotaFiscalEletronica,
   type Operacao,
@@ -289,6 +293,22 @@ interface PedidoBundle {
    * stamps `tPag='90'` sem-pagamento in that case).
    */
   readonly pagamentos: readonly Pagamento[];
+  /**
+   * Parsed `pedido.freteInicial` when present + valid; null otherwise.
+   * The orchestrator projects this into `<transp>`, `<total>.vFrete`,
+   * `<det[0].prod.vFrete>`, and the `<pag>` frete-emitente single-payment
+   * override. Treat null as "no shipping declared on this pedido"
+   * (modFrete='9' on the wire).
+   */
+  readonly frete: FreteDoPedido | null;
+  /**
+   * Marketplace intermediator doc, loaded only when
+   * `operacao.indIntermed === '1'` AND `pedido.integracaoPedidoOuterRef`
+   * is present. Used to populate `<infIntermed>` per SEFAZ NT 2020.006.
+   * Null when the operação is non-marketplace or the integração doc
+   * couldn't be resolved.
+   */
+  readonly integracao: Integracao | null;
 }
 
 /** Per-item fiscal data after merging Pedido item + stamped Imposto. */
@@ -353,6 +373,10 @@ export async function loadPedidoBundle(
       `(of ${pagamentoSnap.size} in subcollection)`,
   );
 
+  const operacao = operacaoSnap.data() as Operacao;
+  const frete = parseFreteFromPedido(pedidoId, pedido);
+  const integracao = await maybeLoadIntegracao(fs, pedidoId, pedido, operacao);
+
   return {
     pedidoId,
     pedido,
@@ -362,9 +386,77 @@ export async function loadPedidoBundle(
     cliente: clienteSnap.data() as Cliente,
     enderecoDest: enderecoSnap.data() as Endereco,
     operacaoId: operacaoSnap.id,
-    operacao: operacaoSnap.data() as Operacao,
+    operacao,
     pagamentos,
+    frete,
+    integracao,
   };
+}
+
+/**
+ * Parse `pedido.freteInicial` via `freteDoPedidoSchema`. The Pedido
+ * schema declares it as a pass-through so we have to narrow + parse
+ * here; on parse failure we warn and treat as null (emission falls
+ * back to modFrete='9'). Mirrors Flutter's defensive read at
+ * `pedido_nfe_base.dart:450`.
+ */
+function parseFreteFromPedido(
+  pedidoId: string,
+  pedido: PedidoBundle['pedido'],
+): FreteDoPedido | null {
+  const rawFrete = (pedido as { freteInicial?: unknown }).freteInicial;
+  if (rawFrete == null) return null;
+  const parsed = freteDoPedidoSchema.safeParse(rawFrete);
+  if (!parsed.success) {
+    console.warn(
+      `[nfe/orchestrator] pedido '${pedidoId}': pedido.freteInicial failed ` +
+        `freteDoPedidoSchema parse — treating as absent. issues: ` +
+        `${JSON.stringify(parsed.error.issues)}`,
+    );
+    return null;
+  }
+  return parsed.data;
+}
+
+/**
+ * Load the Integracao doc the pedido points at, BUT only when the
+ * operação flags `indIntermed='1'`. Skipping the read for the common
+ * non-marketplace case keeps `loadPedidoBundle` cheap.
+ */
+async function maybeLoadIntegracao(
+  fs: Firestore,
+  pedidoId: string,
+  pedido: PedidoBundle['pedido'],
+  operacao: Operacao,
+): Promise<Integracao | null> {
+  if (operacao.indIntermed !== '1') return null;
+  const integracaoPath = refToPath(
+    getField(pedido, 'integracaoPedidoOuterRef'),
+  );
+  if (!integracaoPath) {
+    console.warn(
+      `[nfe/orchestrator] pedido '${pedidoId}': operacao.indIntermed='1' ` +
+        `but pedido.integracaoPedidoOuterRef is missing — SEFAZ will reject ` +
+        `with cStat related to missing <infIntermed>`,
+    );
+    return null;
+  }
+  const snap = await fs.doc(integracaoPath).get();
+  if (!snap.exists) {
+    console.warn(
+      `[nfe/orchestrator] pedido '${pedidoId}': integracao '${integracaoPath}' not found`,
+    );
+    return null;
+  }
+  const parsed = integracaoSchema.safeParse(snap.data());
+  if (!parsed.success) {
+    console.warn(
+      `[nfe/orchestrator] pedido '${pedidoId}': integracao '${integracaoPath}' failed parse — ` +
+        `${JSON.stringify(parsed.error.issues)}`,
+    );
+    return null;
+  }
+  return parsed.data;
 }
 
 /**
@@ -506,8 +598,34 @@ export function buildGeneratorInput(
   const isInterstate = bundle.enderecoDest.estado !== bundle.filial.sede.estado;
   const genItems = buildGenItems(items, bundle, isInterstate);
 
-  const totals = aggregateTotals(items.map((it) => ({ item: { vProd: it.vProd }, imposto: it.imposto })));
-  const payments = buildPaymentsFromPagamentos(bundle.pagamentos);
+  // Compute frete value upfront so it can ride into both the totals
+  // aggregator (NF-e level) and onto det[0].prod.vFrete (item level)
+  // when the issuer contracts the carrier (modalidade='0').
+  const freteEmitente =
+    bundle.frete?.modalidade === '0' && (bundle.frete.valorCobrado ?? 0) > 0;
+  const vFrete = freteEmitente ? (bundle.frete!.valorCobrado as number) : 0;
+  if (vFrete > 0 && genItems.length > 0) {
+    // Mirror of Flutter `pedido_nfe_base.dart:932`: stamp the full frete
+    // value onto the first <det>'s <prod>. Phase D could split this
+    // proportionally across items; Flutter doesn't.
+    const first = genItems[0]!;
+    genItems[0] = { ...first, vFrete };
+  }
+
+  const totals = aggregateTotals(
+    items.map((it) => ({ item: { vProd: it.vProd }, imposto: it.imposto })),
+    { vFrete },
+  );
+  const payments = buildPaymentsFromPagamentos(bundle.pagamentos, {
+    vNF: totals.vNF,
+    frete: bundle.frete,
+  });
+
+  const transpOpts = buildTranspFromFrete(bundle.frete);
+  const cobr = buildCobrFromPagamentos(bundle.pagamentos);
+  const infAdic = buildInfAdic(bundle.pedido, bundle.operacao);
+  const exporta = buildExporta(bundle.operacao, bundle.filial);
+  const infIntermed = buildInfIntermed(bundle.integracao, bundle.operacao);
 
   return {
     ambiente,
@@ -521,8 +639,12 @@ export function buildGeneratorInput(
     enderecoDest: bundle.enderecoDest,
     itens: genItems,
     totalXml: buildTotalXml(totals),
-    transpXml: buildTranspXml(), // Phase A default; Phase D reads Pedido.frete
+    transpXml: buildTranspXml(transpOpts),
     pagXml: buildPagXml(payments),
+    ...(cobr ? { cobr } : {}),
+    ...(infAdic ? { infAdic } : {}),
+    ...(exporta ? { exporta } : {}),
+    ...(infIntermed ? { infIntermed } : {}),
   };
 }
 
@@ -612,22 +734,38 @@ function buildGenItems(
  *     otherwise SEFAZ rejects with cStat=391. We do not auto-stamp a
  *     placeholder here on purpose: silent defaults make fiscal bugs
  *     invisible.
- *
- * The single-payment-with-frete-contratacao-emitente branch
- * (`pedido_nfe_base.dart:1790`) is deliberately NOT ported — it pertains
- * to the freight-as-payment edge case which Phase A doesn't handle.
+ *   - **frete-emitente single-payment override**: when the issuer
+ *     contracts the carrier (`frete.modalidade='0'`), frete has a
+ *     non-zero `valorCobrado`, AND there's exactly one pagamento
+ *     (whose forma isn't 90 — sem pagamento), Flutter overrides the
+ *     payment's `vPag` to `vNF` so the wire reflects "the customer
+ *     pays this amount, which includes the freight cost". Mirror of
+ *     `pedido_nfe_base.dart:1790-1821`.
  */
 function buildPaymentsFromPagamentos(
   pagamentos: ReadonlyArray<Pagamento>,
+  ctx: { vNF: number; frete: FreteDoPedido | null } = { vNF: 0, frete: null },
 ): Payment[] {
   if (pagamentos.length === 0) {
     return [{ tPag: '90', vPag: 0 }];
   }
+  const freteEmitenteOverride =
+    pagamentos.length === 1 &&
+    ctx.frete?.modalidade === '0' &&
+    (ctx.frete.valorCobrado ?? 0) > 0;
+
   return pagamentos.map((p): Payment => {
     const isOutros = p.forma_de_pagamento === FORMA_PAGAMENTO.outros;
     const isSemPag = p.forma_de_pagamento === FORMA_PAGAMENTO.sem_pagamento;
     const tPag = String(p.forma_de_pagamento).padStart(2, '0') as Payment['tPag'];
-    const vPag = isSemPag ? 0 : p.valor + (p.juros ?? 0);
+    let vPag: number;
+    if (isSemPag) {
+      vPag = 0;
+    } else if (freteEmitenteOverride) {
+      vPag = ctx.vNF;
+    } else {
+      vPag = p.valor + (p.juros ?? 0);
+    }
     const indPag: NonNullable<Payment['indPag']> = p.aVista ? '0' : '1';
 
     let xPag: string | undefined;
@@ -674,6 +812,236 @@ function buildCardFromCartao(cartao: unknown): NonNullable<Payment['card']> | un
   else if (typeof c.bandeira === 'number') card.tBand = String(c.bandeira);
   if (typeof c.cAut === 'string') card.cAut = c.cAut;
   return card;
+}
+
+/**
+ * Project `pedido.freteInicial` into the typed `<transp>` input.
+ * Mirrors Flutter `pedido_nfe_base.dart:1504-1702`:
+ *   - null frete OR modalidade='9' → just modFrete='9'.
+ *   - Otherwise route on modalidade and forward transporta / veicTransp /
+ *     reboque / vol / vagao / balsa as available.
+ *
+ * Free-text fields go through `sanitizeNFeText` (maxLen per XSD): xNome /
+ * xEnder / xMun ≤60, vol[i].esp / marca / nVol ≤60. We don't gate on a
+ * specific modalidade beyond '9' — every other code carries the same
+ * optional sub-blocks at the XSD level; emit what we have.
+ */
+function buildTranspFromFrete(frete: FreteDoPedido | null): {
+  modFrete: '0' | '1' | '2' | '3' | '4' | '9';
+  transporta?: NonNullable<Parameters<typeof buildTranspXml>[0]>['transporta'];
+  veicTransp?: NonNullable<Parameters<typeof buildTranspXml>[0]>['veicTransp'];
+  reboque?: NonNullable<Parameters<typeof buildTranspXml>[0]>['reboque'];
+  vol?: NonNullable<Parameters<typeof buildTranspXml>[0]>['vol'];
+  vagao?: string;
+  balsa?: string;
+} {
+  if (frete == null || frete.modalidade === '9') {
+    return { modFrete: '9' };
+  }
+  const out: ReturnType<typeof buildTranspFromFrete> = { modFrete: frete.modalidade };
+
+  if (frete.transportadora) {
+    const t = frete.transportadora;
+    const transporta: NonNullable<typeof out.transporta> = {};
+    if (typeof t.CNPJ === 'string' && t.CNPJ) transporta.CNPJ = t.CNPJ;
+    else if (typeof t.CPF === 'string' && t.CPF) transporta.CPF = t.CPF;
+    const xNome = sanitizeNFeText(t.xNome, 60);
+    if (xNome) transporta.xNome = xNome;
+    if (typeof t.IE === 'string' && t.IE) transporta.IE = t.IE;
+    const xEnder = sanitizeNFeText(t.xEnder, 60);
+    if (xEnder) transporta.xEnder = xEnder;
+    const xMun = sanitizeNFeText(t.xMun, 60);
+    if (xMun) transporta.xMun = xMun;
+    if (typeof t.UF === 'string' && t.UF) {
+      transporta.UF = t.UF as NonNullable<typeof transporta.UF>;
+    }
+    if (Object.keys(transporta).length > 0) out.transporta = transporta;
+  }
+
+  if (frete.veiculo?.placa) {
+    out.veicTransp = {
+      placa: frete.veiculo.placa,
+      ...(frete.veiculo.UF
+        ? { UF: frete.veiculo.UF as NonNullable<typeof out.veicTransp>['UF'] }
+        : {}),
+      ...(frete.veiculo.RNTC ? { RNTC: frete.veiculo.RNTC } : {}),
+    };
+  }
+
+  if (frete.reboques && frete.reboques.length > 0) {
+    const reboques = frete.reboques
+      .filter((r) => typeof r.placa === 'string' && r.placa)
+      .map((r) => ({
+        placa: r.placa as string,
+        ...(r.UF
+          ? { UF: r.UF as NonNullable<typeof out.veicTransp>['UF'] }
+          : {}),
+        ...(r.RNTC ? { RNTC: r.RNTC } : {}),
+      }));
+    if (reboques.length > 0) out.reboque = reboques;
+  }
+
+  if (frete.vagao) out.vagao = frete.vagao;
+  if (frete.balsa) out.balsa = frete.balsa;
+
+  if (frete.volumes && frete.volumes.length > 0) {
+    const vols = frete.volumes.map((v) => {
+      const vol: NonNullable<typeof out.vol>[number] = {};
+      if (typeof v.qVol === 'number' && Number.isInteger(v.qVol) && v.qVol >= 0) {
+        vol.qVol = v.qVol;
+      }
+      const esp = sanitizeNFeText(v.esp, 60);
+      if (esp) vol.esp = esp;
+      const marca = sanitizeNFeText(v.marca, 60);
+      if (marca) vol.marca = marca;
+      const nVol = sanitizeNFeText(v.nVol, 60);
+      if (nVol) vol.nVol = nVol;
+      if (typeof v.pesoL === 'number' && v.pesoL >= 0) vol.pesoL = v.pesoL;
+      if (typeof v.pesoB === 'number' && v.pesoB >= 0) vol.pesoB = v.pesoB;
+      return vol;
+    });
+    out.vol = vols;
+  }
+
+  return out;
+}
+
+/**
+ * Project the duplicata-style pagamentos into a `<cobr>` block.
+ * Mirror of Flutter `pedido_nfe_base.dart:487-521`:
+ *   - Filter pagamentos where `duplicata === true`.
+ *   - Empty → return undefined (orchestrator omits `<cobr>`).
+ *   - Otherwise: fat = { vOrig, vLiq } summing all duplicata vPag;
+ *     dup[] one per duplicata with vDup + optional nDup + dVenc.
+ *
+ * SEFAZ cross-validates `fat.vLiq + Σ dup.vDup === Σ pag.vPag` on the
+ * NF-e (catalog rule). We don't try to be clever — if math drifts we
+ * surface a clear NFeOrchestratorError so the operator sees it before
+ * SEFAZ does. Phase A doesn't apply `vDesc` at the fatura level.
+ */
+function buildCobrFromPagamentos(
+  pagamentos: ReadonlyArray<Pagamento>,
+): { fat?: { nFat?: string; vOrig?: string; vDesc?: string; vLiq?: string }; dup?: ReadonlyArray<{ nDup?: string; dVenc?: string; vDup: string }> } | undefined {
+  const dups = pagamentos.filter((p) => p.duplicata === true);
+  if (dups.length === 0) return undefined;
+
+  const dup = dups.map((p, i) => {
+    const valor = p.valor + (p.juros ?? 0);
+    const out: { nDup?: string; dVenc?: string; vDup: string } = {
+      vDup: valor.toFixed(2),
+    };
+    const nDup = (p.nFat ?? '').trim() || String(i + 1).padStart(3, '0');
+    out.nDup = nDup.slice(0, 60);
+    if (p.vencimento) {
+      // pagamento.vencimento is `z.string().datetime()` (ISO timestamp).
+      const parsed = new Date(p.vencimento);
+      if (!Number.isNaN(parsed.getTime())) {
+        out.dVenc = parsed.toISOString().slice(0, 10); // YYYY-MM-DD
+      }
+    }
+    return out;
+  });
+
+  const vOrig = dups.reduce((acc, p) => acc + p.valor + (p.juros ?? 0), 0);
+  const nFat =
+    (dups[0]?.nFat ?? '').trim() || dup[0]?.nDup || undefined;
+  const fat: { nFat?: string; vOrig?: string; vDesc?: string; vLiq?: string } = {
+    vOrig: vOrig.toFixed(2),
+    vDesc: (0).toFixed(2),
+    vLiq: vOrig.toFixed(2),
+  };
+  if (nFat) fat.nFat = nFat;
+  return { fat, dup };
+}
+
+/**
+ * Build the `<infAdic>` block by concatenating `pedido.infCpl` with
+ * `operacao.infCpl` (in that order, separated by a space). Returns
+ * undefined when both are empty so the orchestrator omits the block.
+ * Mirror of Flutter `pedido_nfe_base.dart:538-546`.
+ */
+function buildInfAdic(
+  pedido: PedidoBundle['pedido'],
+  operacao: Operacao,
+): { infCpl?: string } | undefined {
+  const pedidoCpl =
+    typeof (pedido as { infCpl?: unknown }).infCpl === 'string'
+      ? ((pedido as { infCpl: string }).infCpl).trim()
+      : '';
+  const operacaoCpl = (operacao.infCpl ?? '').trim();
+  const parts = [pedidoCpl, operacaoCpl].filter((s) => s.length > 0);
+  if (parts.length === 0) return undefined;
+  return { infCpl: parts.join(' ') };
+}
+
+/**
+ * Build the `<exporta>` block when the operação is an export (idDest=3
+ * on the wire — driven here by `operacao.ehExterior === true`).
+ * `UFSaidaPais` is the UF the goods leave Brazil through (defaults to
+ * the filial's UF); `xLocExporta` is the customs city (default: filial
+ * city). Returns undefined for domestic operations.
+ */
+function buildExporta(
+  operacao: Operacao,
+  filial: Filial,
+): {
+  UFSaidaPais:
+    | 'AC' | 'AL' | 'AM' | 'AP' | 'BA' | 'CE' | 'DF' | 'ES' | 'GO'
+    | 'MA' | 'MG' | 'MS' | 'MT' | 'PA' | 'PB' | 'PE' | 'PI' | 'PR'
+    | 'RJ' | 'RN' | 'RO' | 'RR' | 'RS' | 'SC' | 'SE' | 'SP' | 'TO';
+  xLocExporta: string;
+  xLocDespacho?: string;
+} | undefined {
+  if (!operacao.ehExterior) return undefined;
+  const ufRaw = filial.sede.estado;
+  if (ufRaw === 'EX') {
+    // 'EX' is the foreign-carrier placeholder used inside <transporta>,
+    // not a valid emitter UF — SEFAZ rejects `<emit><enderEmit><UF>EX`.
+    throw new NFeOrchestratorError(
+      `filial.sede.estado='EX' is not a valid emitter UF for an export operation`,
+    );
+  }
+  const cityRaw = sanitizeNFeText(filial.sede.cidade, 60);
+  if (!cityRaw) {
+    throw new NFeOrchestratorError(
+      `pedido marked ehExterior=true but filial.sede.cidade is empty`,
+    );
+  }
+  return {
+    UFSaidaPais: ufRaw,
+    xLocExporta: cityRaw,
+  };
+}
+
+/**
+ * Build the `<infIntermed>` block from the loaded Integracao doc.
+ * Mirror of Flutter `pedido_nfe_base.dart:523-536`. SEFAZ requires
+ * both `CNPJ` and `idCadIntTran` when the operação flags
+ * `indIntermed='1'`; missing either is a hard error here so the
+ * operator fixes the Integracao record before SEFAZ rejects.
+ */
+function buildInfIntermed(
+  integracao: Integracao | null,
+  operacao: Operacao,
+): { CNPJ: string; idCadIntTran: string } | undefined {
+  if (operacao.indIntermed !== '1') return undefined;
+  if (!integracao) {
+    throw new NFeOrchestratorError(
+      `operacao.indIntermed='1' but no Integracao doc resolved — set ` +
+        `pedido.integracaoPedidoOuterRef to a valid Integracao path.`,
+    );
+  }
+  if (!integracao.cpf_cnpj || !integracao.idCadIntTran) {
+    throw new NFeOrchestratorError(
+      `<infIntermed> requires both Integracao.cpf_cnpj and Integracao.idCadIntTran ` +
+        `(SEFAZ NT 2020.006); got cpf_cnpj='${integracao.cpf_cnpj ?? ''}', ` +
+        `idCadIntTran='${integracao.idCadIntTran ?? ''}'`,
+    );
+  }
+  return {
+    CNPJ: integracao.cpf_cnpj,
+    idCadIntTran: integracao.idCadIntTran,
+  };
 }
 
 function round2(n: number): number {
@@ -1158,6 +1526,12 @@ export const __internal = {
   buildCardFromCartao,
   buildGenItems,
   loadPagamentosFromSnapshot,
+  buildTranspFromFrete,
+  buildCobrFromPagamentos,
+  buildInfAdic,
+  buildExporta,
+  buildInfIntermed,
+  parseFreteFromPedido,
 };
 // Re-export Zod so test fixtures can use the same z instance.
 export { z };

@@ -328,6 +328,24 @@ describe('aggregateTotals', () => {
     expect(totals.vFCPSTRet).toBe(0); // our fixture has no FCP
     expect(totals.vNF).toBe(1500);
   });
+
+  it('extras.vFrete is added to vNF and surfaces on the aggregation', () => {
+    const totals = aggregateTotals(
+      [{ item: { vProd: 100 }, imposto: impostoFor102() }],
+      { vFrete: 25 },
+    );
+    expect(totals.vFrete).toBe(25);
+    expect(totals.vNF).toBe(125);
+  });
+
+  it('extras.vDesc is subtracted from vNF', () => {
+    const totals = aggregateTotals(
+      [{ item: { vProd: 100 }, imposto: impostoFor102() }],
+      { vDesc: 10 },
+    );
+    expect(totals.vDesc).toBe(10);
+    expect(totals.vNF).toBe(90);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -343,6 +361,70 @@ describe('buildTranspXml', () => {
   });
   it('rejects an invalid modFrete', () => {
     expect(() => buildTranspXml({ modFrete: '8' as never })).toThrow();
+  });
+
+  it('emits <transporta> with carrier fields in canonical XSD order', () => {
+    const xml = buildTranspXml({
+      modFrete: '0',
+      transporta: {
+        CNPJ: '99999999000191',
+        xNome: 'Trans Dev',
+        IE: '110042490114',
+        xMun: 'Sao Paulo',
+        UF: 'SP',
+      },
+    });
+    expect(xml).toContain(
+      '<transporta>' +
+        '<CNPJ>99999999000191</CNPJ>' +
+        '<xNome>Trans Dev</xNome>' +
+        '<IE>110042490114</IE>' +
+        '<xMun>Sao Paulo</xMun>' +
+        '<UF>SP</UF>' +
+        '</transporta>',
+    );
+  });
+
+  it('emits <veicTransp> with placa + UF + RNTC', () => {
+    const xml = buildTranspXml({
+      modFrete: '0',
+      veicTransp: { placa: 'ABC1D23', UF: 'SP', RNTC: '12345' },
+    });
+    expect(xml).toContain(
+      '<veicTransp><placa>ABC1D23</placa><UF>SP</UF><RNTC>12345</RNTC></veicTransp>',
+    );
+  });
+
+  it('emits one <reboque> per trailer entry', () => {
+    const xml = buildTranspXml({
+      modFrete: '0',
+      reboque: [
+        { placa: 'XYZ9876', UF: 'SP' },
+        { placa: 'XYZ5432' },
+      ],
+    });
+    expect((xml.match(/<reboque>/g) ?? []).length).toBe(2);
+    expect(xml).toContain('<reboque><placa>XYZ9876</placa><UF>SP</UF></reboque>');
+  });
+
+  it('emits <vol> with formatted pesoL/pesoB (3 decimals)', () => {
+    const xml = buildTranspXml({
+      modFrete: '0',
+      vol: [{ qVol: 2, esp: 'CAIXA', pesoL: 1.25, pesoB: 1.5 }],
+    });
+    expect(xml).toContain(
+      '<vol><qVol>2</qVol><esp>CAIXA</esp><pesoL>1.250</pesoL><pesoB>1.500</pesoB></vol>',
+    );
+  });
+
+  it('emits <vagao> and <balsa> when supplied', () => {
+    const xml = buildTranspXml({
+      modFrete: '0',
+      vagao: 'V01',
+      balsa: 'B01',
+    });
+    expect(xml).toContain('<vagao>V01</vagao>');
+    expect(xml).toContain('<balsa>B01</balsa>');
   });
 });
 
