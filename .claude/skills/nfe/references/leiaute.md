@@ -49,6 +49,11 @@ NFe
 | YB | `infIntermed` — transaction intermediary |
 | Z | `infAdic` — `infCpl`, `infAdFisco`, `obsCont`, `procRef` |
 | ZA–ZD | comércio exterior / compras / cana / responsável técnico |
+| ZX | `infNFeSupl` — qrCode + urlChave (NFC-e; ZX01 ampliado pela NT 2015.002) |
+| **UB** | **`IBSCBS` — tributos IBS/CBS e Imposto Seletivo (NT 2025.002 — RTC)**. Vide `rtc-ibs-cbs-is.md`. Mandatório em produção desde 03/08/2026 para CRT=3. |
+| **BB** | **`gCompraGov` — Compras Governamentais (NT 2025.002)**. Renomeado: era "antecipação de pagamento", que migrou para Grupo BC. |
+| **BC** | **`gPagAntecipado` — Notas de antecipação de pagamento (NT 2025.002)** |
+| **W03** | **Totais IBS/CBS/IS — Grupo W03 (NT 2025.002)**. Substitui parcialmente o cálculo do `vNF`. Vide `rtc-ibs-cbs-is.md`. |
 
 ## XML formatting rules (Anexo I §4.2 / MOC §4.2.1)
 
@@ -100,3 +105,9 @@ Apply `removerAcentos` **first**, then `removerCharRestrito`.
 - The chave's `cUF`, `mod`, `serie`, `nNF`, `tpEmis`, `cNF`, `cDV`, and the
   `AAMM` from `dhEmi` must all match the corresponding `ide` fields — the chave
   is recomputed and cross-checked by SEFAZ.
+- **`dhEmi` agora ≤ 7 dias da data de autorização** (NT 2025.001 §02.4) para
+  cStat=100. Entre 7-30 dias retorna cStat=150 (autorizado fora de prazo).
+  Vide `gargalos-e-problemas.md §5`.
+- **Para RTC (NT 2025.002)**: o Grupo UB (item) e W03 (total) seguem o
+  XSD novo `DFeTiposBasicos_v1.00.xsd` (ainda não vendorado). Detalhes
+  estruturais em `rtc-ibs-cbs-is.md`.

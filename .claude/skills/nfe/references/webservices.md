@@ -10,8 +10,8 @@ entry points for every SEFAZ call:
 |---|---|
 | `consultarStatusServico(call, { cUF })` | NFeStatusServico4 — service availability |
 | `consultarSituacaoNFe(call, { chave })` | NfeConsultaProtocolo4 — query one NF-e by chave (the **recovery** call) |
-| `consultarLote(call, { nRec })` | NFeRetAutorizacao4 — poll a lote by nRec |
-| `autorizarLote(call, { idLote, NFe, indSinc? })` | NFeAutorizacao4 — submit a lote of signed NF-e |
+| `consultarLote(call, { nRec })` | NFeRetAutorizacao4 — poll a lote by nRec (async path only) |
+| `autorizarLote(call, { idLote, NFe })` | NFeAutorizacao4 — submit a lote. **The helper computes `indSinc` from `NFe.length`** (lote=1 → 1; lote 2–50 → 0). Do not pass `indSinc` manually. |
 
 Each helper accepts a typed object, builds the request XML via
 `serialize(...)` (Zod-validated at the object boundary), runs it through
@@ -54,14 +54,15 @@ and the production-safety guard — they're not unsafe, just unergonomic.
 
 | Service | Method | Process | Purpose |
 |---|---|---|---|
-| `NfeAutorizacao4` | `nfeAutorizacaoLote` | async / sync | Send an NF-e lote |
-| `NfeRetAutorizacao4` | `nfeRetAutorizacao` | async | Poll a lote by `nRec` |
+| `NfeAutorizacao4` | `nfeAutorizacaoLote` | **sync (lote=1)** or async (lote 2–50) | Send an NF-e lote |
+| `NfeRetAutorizacao4` | `nfeRetAutorizacao` | async only | Poll a lote by `nRec` (sync path skips this) |
 | `NfeConsultaProtocolo4` | `nfeConsultaNF` | sync | Query one NF-e by chave |
 | `NfeStatusServico4` | `nfeStatusServicoNF` | sync | Service availability |
 | `NfeInutilizacao4` | `nfeInutilizacaoNF` | sync | Void a number range |
-| `RecepcaoEvento4` | `nfeRecepcaoEvento` | sync | Cancelamento / CCe / EPEC |
+| `RecepcaoEvento4` | `nfeRecepcaoEvento` | sync | Cancelamento / CCe / EPEC. **Para eventos novos da RTC, enviar individualmente (lote=1)** — NT 2025.002 §8.2 |
 | `NfeConsultaCadastro` | `consultaCadastro` | sync | Taxpayer registration |
-| `NFeDistribuicaoDFe` | `nfeDistDFeInteresse` | sync | Download issued DF-e |
+| `NFeDistribuicaoDFe` | `nfeDistDFeInteresse` | sync | Download issued DF-e (NT 2014.002) |
+| `NfeConsultaGTIN` | `consGTIN` | sync | Consulta cadastro GTIN (NT 2022.001) |
 
 ## Autorização flow (the core path)
 
@@ -71,18 +72,47 @@ and the production-safety guard — they're not unsafe, just unergonomic.
   sequential) and `<indSinc>` (0 = async, 1 = synchronous).
 - 1 to **50** `<NFe>` elements; total message ≤ ~500 KB. A gzip variant exists
   (`NfeAutorizacaoLoteZip`, base64 of GZip; failure → rejection 416).
-- **Synchronous** (`indSinc=1`) is only honored when the lote has **exactly one
-  NF-e** and the UF implements it — the response carries `<protNFe>` inline,
-  with no `nRec`.
+- **`indSinc=1` é obrigatório quando lote tem exatamente 1 NF-e** (NT 2025.001
+  RV GAP03a-3, em produção desde 03/11/2025). Enviar `indSinc=0` com
+  `len(NFe)=1` retorna **cStat=452**. Vide `sincrono-vs-assincrono.md`.
+- `indSinc=0` é o caminho normal para lote ≥ 2.
 
-### Receive — `retEnviNFe` (schema `retEnviNFe_v4.00.xsd`)
+### Receive — `retEnviNFe` (schema `retEnviNFe_v2.00.xsd` desde NT 2025.002)
 
-- `cStat=103` "Lote recebido com sucesso" → async; `<infRec>` carries `nRec`
-  (15-digit receipt) and `tMed` (avg response seconds).
-- `cStat=104` "Lote processado" with inline `<protNFe>` → synchronous.
-- Any other `cStat` → the lote itself was rejected (schema, signature, etc.).
+O envelope de resposta **muda conforme `indSinc`**:
 
-### Poll — `consReciNFe` → `retConsReciNFe`
+**Síncrono (lote=1)** — `<protNFe>` vem inline, sem `<infRec>`:
+
+```xml
+<retEnviNFe versao="4.00">
+  <cStat>104</cStat>  <xMotivo>Lote processado</xMotivo>
+  <protNFe versao="4.00">
+    <infProt>
+      <cStat>100</cStat>  <!-- cStat agora 3-4 dígitos -->
+      <nProt>123...</nProt>  <!-- 15 ou 17 dígitos -->
+      ...
+    </infProt>
+  </protNFe>
+</retEnviNFe>
+```
+
+**Assíncrono (lote ≥ 2)** — `<infRec>/nRec` + `tMed`:
+
+```xml
+<retEnviNFe versao="4.00">
+  <cStat>103</cStat>  <xMotivo>Lote recebido com sucesso</xMotivo>
+  <infRec>
+    <nRec>123456789012345</nRec>
+    <tMed>2</tMed>
+  </infRec>
+</retEnviNFe>
+```
+
+Qualquer outro `cStat` → o lote foi rejeitado (schema, assinatura, etc.).
+Em particular, **cStat=452 indica que o cliente mandou `indSinc=0` com 1 NF-e**
+— exige fix no caller.
+
+### Poll — `consReciNFe` → `retConsReciNFe` (somente para fluxo async)
 
 - Input: `tpAmb` + `nRec`. **Wait ≥ 15 s** before the first poll (avoids the
   noise of `105 Lote em Processamento`).
@@ -93,8 +123,13 @@ and the production-safety guard — they're not unsafe, just unergonomic.
 
 ### `protNFe` leiaute (`infProt`)
 
-`tpAmb`, `verAplic`, `chNFe` (44), `dhRecbto`, `nProt` (15-digit protocol),
-`digVal` (the NF-e's DigestValue), `cStat`, `xMotivo`. `cStat=100` → authorized.
+`tpAmb`, `verAplic`, `chNFe` (44), `dhRecbto`, `nProt` (**15 ou 17 dígitos**),
+`digVal` (the NF-e's DigestValue), `cStat` (**3 ou 4 dígitos**), `xMotivo`.
+`cStat=100` → authorized.
+
+> NT 2025.002 §5.1 ampliou ambos: `nProt` passou para 15 ou 17 dígitos
+> (a 17 ainda só em SP, para NFC-e), e `cStat` para 3 ou 4 dígitos. Parsers
+> precisam aceitar ambos os tamanhos. Vide `rtc-ibs-cbs-is.md`.
 
 ### procNFe
 
@@ -115,7 +150,8 @@ to decide whether to switch to contingency.
 
 ## Performance / abuse
 
-- SEFAZ commits to processing 95% of lotes within 3 minutes.
+- SEFAZ commits to processing 95% of lotes within 3 minutes (async path).
+  Sync path (lote=1) is usually < 2 s.
 - A lote result stays available for ≥ 24 h after processing.
 - Looping the same request → `656 — Rejeição: Consumo Indevido`. Always
   back off and respect `tMed`.
@@ -137,3 +173,10 @@ There is no escape hatch from public callers.
 If you ever add a new SEFAZ operation, wire it through `postSoapValidated`
 in `src/soap/` with the matching request + response roots. The XSD map
 lives at `XSD_BY_ROOT` in `src/xsd/index.ts`.
+
+> **XSDs novos da RTC ainda não vendorados.** NT 2025.002 publicou
+> `DFeTiposBasicos_v1.00.xsd`, novo `retEnviNFe_v2.00.xsd`, e schemas
+> específicos por evento (`e112110_v1.00.xsd` … `e412130_v1.00.xsd`).
+> Quando regenerar (vide `codegen.md`), incluir esse conjunto e atualizar
+> o `XSD_BY_ROOT` — é uma tarefa de implementação separada deste skill
+> update.
