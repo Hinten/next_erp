@@ -33,7 +33,13 @@ import {
   generateNFe,
   signNFe,
 } from '@delfrance/integrations-nfe';
-import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
+import {
+  ESTADO_NFE,
+  FORMA_PAGAMENTO,
+  pagamentoSchema,
+  type NFeConfig,
+  type Pagamento,
+} from '@delfrance/schemas';
 
 import {
   consultarPedido,
@@ -42,6 +48,7 @@ import {
   NFeMissingImpostoError,
   NFeOrchestratorError,
   NFePedidoNotFoundError,
+  __internal,
 } from '../../../lib/nfe/orchestrator';
 import type { NFeRuntime } from '../../../lib/nfe/runtime';
 
@@ -291,6 +298,7 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
             exists: true,
           })),
           empty: items.length === 0,
+          size: items.length,
         };
       },
     };
@@ -316,6 +324,12 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
       },
       limit(n: number) {
         return makeQuery(path, [{ kind: 'limit', n }]);
+      },
+      get() {
+        // Firestore Admin SDK: CollectionReference.get() returns a
+        // QuerySnapshot of every doc in the collection. Delegate to
+        // makeQuery with no ops so the shape lines up.
+        return makeQuery(path, []).get();
       },
     };
   }
@@ -493,6 +507,168 @@ describe('emitirPedido — duplicidade recovery', () => {
     expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
     expect(result.estado).toBe(ESTADO_NFE.aprovada);
     expect(result.cStat).toBe('100');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cStat=539 — duplicidade with DIFFERENT chave. The authoritative emission
+// lives at the chave in xMotivo's [chNFe:...] marker, not ours. The
+// recovery path looks the other chave up in the EnviNFeMsg audit log;
+// if found, consultarLote on the previous nRec and swap chave on the
+// nfev4 doc. If not, mark as error (the note is "lost" from our side).
+// ---------------------------------------------------------------------------
+
+const OTHER_CHAVE = '35190604520878000109550010000000051523623460';
+const OTHER_NREC = '351000131407057';
+
+/** retEnviNFe for sync mode (indSinc=1) returning a 539 inline protocol. */
+function retEnvi539(): {
+  tpAmb: '2'; verAplic: string; cStat: string; xMotivo: string;
+  cUF: '35'; dhRecbto: string; versao: '4.00';
+  protNFe: {
+    versao: '4.00';
+    infProt: {
+      tpAmb: '2'; verAplic: string; chNFe: string;
+      dhRecbto: string; cStat: string; xMotivo: string;
+    };
+  };
+} {
+  return {
+    tpAmb: '2',
+    verAplic: 'SP_NFE_PL009_V4',
+    cStat: '104',
+    xMotivo: 'Lote processado',
+    cUF: '35',
+    dhRecbto: '2026-05-26T14:14:24-03:00',
+    versao: '4.00',
+    protNFe: {
+      versao: '4.00',
+      infProt: {
+        tpAmb: '2',
+        verAplic: 'SP_NFE_PL_008i2',
+        chNFe: CHAVE, // our (local) chave on the wire
+        dhRecbto: '2026-05-26T14:14:24-03:00',
+        cStat: '539',
+        xMotivo:
+          'Rejeição: Duplicidade de NF-e com diferença na Chave de Acesso ' +
+          `[chNFe:${OTHER_CHAVE}][nRec:${OTHER_NREC}]`,
+      },
+    },
+  };
+}
+
+describe('emitirPedido — cStat=539 (duplicidade with different chave)', () => {
+  it('looks up the other chave in the audit log, calls consultarLote(prevNRec), and swaps chave on the nfev4 doc', async () => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({ events });
+    // Seed an EnviNFeMsg for the recovered chave — the "previous emission"
+    // we're recovering from.
+    docs['filiais/F-1/enviNfe/prev-msg'] = {
+      targetsChnfe: [OTHER_CHAVE],
+      idLote: 5,
+      indSinc: '1',
+      xml_enviado: '<NFe>…previous…</NFe>',
+      xml_retorno: '{}',
+      nRec: OTHER_NREC,
+      cStat: '103',
+      xMotivo: 'Lote recebido com sucesso',
+      error: null,
+      tpEmis: 1,
+      estado: '2',
+      timestamp: '2026-05-01T10:00:00.000Z',
+      ultima_modificacao: '2026-05-01T10:00:00.000Z',
+    };
+    vi.mocked(autorizarLote).mockResolvedValue(retEnvi539());
+    // consultarLote returns the authoritative protocol for the other chave.
+    vi.mocked(consultarLote).mockResolvedValue({
+      tpAmb: '2' as const,
+      verAplic: 'SP',
+      nRec: OTHER_NREC,
+      cStat: '104',
+      xMotivo: 'Lote processado',
+      cUF: '35' as const,
+      dhRecbto: '2026-05-01T10:01:00-03:00',
+      versao: '4.00' as const,
+      protNFe: [
+        {
+          versao: '4.00' as const,
+          infProt: {
+            tpAmb: '2' as const,
+            verAplic: 'SP',
+            chNFe: OTHER_CHAVE,
+            dhRecbto: '2026-05-01T10:01:00-03:00',
+            nProt: '135200000000456',
+            cStat: '100',
+            xMotivo: 'Autorizado o uso da NF-e',
+          },
+        },
+      ],
+    });
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledOnce();
+    expect(vi.mocked(consultarLote)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/sefaz/ret' }),
+      { nRec: OTHER_NREC },
+    );
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+
+    // Final outcome: cStat=100 (from the recovered protocol).
+    expect(result.cStat).toBe('100');
+    expect(result.estado).toBe(ESTADO_NFE.aprovada);
+    expect(result.chave).toBe(OTHER_CHAVE); // ← chave swap
+
+    // The chave swap is also persisted on the nfev4 doc.
+    const chaveSwapWrite = writes.find(
+      (w) => w.path === 'pedidos/PED-1/nfev4/s1' && w.data.chave === OTHER_CHAVE,
+    );
+    expect(chaveSwapWrite).toBeDefined();
+  });
+
+  it('marks estado=error when the chave from xMotivo is NOT in the audit log', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events });
+    // No EnviNFeMsg seeded for OTHER_CHAVE.
+    vi.mocked(autorizarLote).mockResolvedValue(retEnvi539());
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    // No recovery SEFAZ calls happened.
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+
+    // The doc keeps the real 539 + xMotivo (with markers), estado=error.
+    expect(result.cStat).toBe('539');
+    expect(result.estado).toBe(ESTADO_NFE.error);
+    expect(result.xMotivo).toContain('Duplicidade');
+    expect(result.xMotivo).toContain(`[chNFe:${OTHER_CHAVE}]`);
+    expect(result.xMotivo).toContain('não está no audit log');
+    // Local chave is preserved on the result.
+    expect(result.chave).toBe(CHAVE);
+    // No chave-swap write on the doc.
+    expect(
+      writes.some(
+        (w) => w.path === 'pedidos/PED-1/nfev4/s1' && w.data.chave === OTHER_CHAVE,
+      ),
+    ).toBe(false);
+  });
+
+  it('marks estado=error when the xMotivo has no [chNFe:...] marker', async () => {
+    const events: string[] = [];
+    const { fs } = fakeFirestore({ events });
+    const ret = retEnvi539();
+    // Strip the chNFe marker — leave only [nRec:...] (older NT variant).
+    ret.protNFe.infProt.xMotivo = `Rejeição: Duplicidade [nRec:${OTHER_NREC}]`;
+    vi.mocked(autorizarLote).mockResolvedValue(ret);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+    expect(vi.mocked(consultarSituacaoNFe)).not.toHaveBeenCalled();
+    expect(result.cStat).toBe('539');
+    expect(result.estado).toBe(ESTADO_NFE.error);
+    expect(result.xMotivo).toContain('sem marcador');
   });
 });
 
@@ -1195,5 +1371,138 @@ describe('consultarPedido — consReci(nRec) preferred over consSit(chave)', () 
     }
     // The in-memory doc still has the original nRec after merge.
     expect((docs['pedidos/PED-1/nfev4/s1'] as { nRec?: unknown }).nRec).toBe('351000000000123');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildPaymentsFromPagamentos — port of Flutter `pedido_nfe_base.dart:1766`
+// (`get pag`). The unit tests below verify every branch of the projection
+// without standing up Firestore — the orchestrator-level happy-path tests
+// above exercise the read + filter end-to-end.
+// ---------------------------------------------------------------------------
+
+describe('buildPaymentsFromPagamentos', () => {
+  /** Build a valid Pagamento via the schema so defaults are applied. */
+  function pagamento(input: Partial<Pagamento>): Pagamento {
+    return pagamentoSchema.parse({ valor: 0, ...input });
+  }
+
+  it('empty list → single tPag=90 (sem pagamento) vPag=0 — Flutter parity', () => {
+    const out = __internal.buildPaymentsFromPagamentos([]);
+    expect(out).toEqual([{ tPag: '90', vPag: 0 }]);
+  });
+
+  it('single PIX (forma=17) → tPag=17, vPag=valor, indPag=0', () => {
+    const out = __internal.buildPaymentsFromPagamentos([
+      pagamento({ valor: 1499.9, forma_de_pagamento: FORMA_PAGAMENTO.pix, aVista: true }),
+    ]);
+    expect(out).toEqual([
+      { tPag: '17', vPag: 1499.9, indPag: '0' },
+    ]);
+  });
+
+  it('boleto a prazo (forma=15, aVista=false) → indPag=1', () => {
+    const out = __internal.buildPaymentsFromPagamentos([
+      pagamento({
+        valor: 250,
+        forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+        aVista: false,
+      }),
+    ]);
+    expect(out[0]?.indPag).toBe('1');
+    expect(out[0]?.tPag).toBe('15');
+  });
+
+  it('sem-pagamento (forma=90, valor=100) → vPag=0 (NOT valor)', () => {
+    // Flutter line 1808: `vPag: forma == 90 ? '0.00' : vPag.toFixed(2)`.
+    const out = __internal.buildPaymentsFromPagamentos([
+      pagamento({
+        valor: 100,
+        forma_de_pagamento: FORMA_PAGAMENTO.sem_pagamento,
+      }),
+    ]);
+    expect(out[0]?.tPag).toBe('90');
+    expect(out[0]?.vPag).toBe(0);
+  });
+
+  it('outros (forma=99) with descricaoPagamento → xPag=descricao', () => {
+    const out = __internal.buildPaymentsFromPagamentos([
+      pagamento({
+        valor: 980,
+        forma_de_pagamento: FORMA_PAGAMENTO.outros,
+        descricaoPagamento: 'Permuta de mercadoria',
+      }),
+    ]);
+    expect(out[0]?.tPag).toBe('99');
+    expect(out[0]?.xPag).toBe('Permuta de mercadoria');
+  });
+
+  it('outros (forma=99) with empty descricaoPagamento → xPag=\'Outro\' (Flutter default)', () => {
+    const out = __internal.buildPaymentsFromPagamentos([
+      pagamento({
+        valor: 50,
+        forma_de_pagamento: FORMA_PAGAMENTO.outros,
+        descricaoPagamento: null,
+      }),
+    ]);
+    expect(out[0]?.xPag).toBe('Outro');
+  });
+
+  it('cartao credito (forma=3) with cartao block → emits card', () => {
+    const out = __internal.buildPaymentsFromPagamentos([
+      pagamento({
+        valor: 75.5,
+        forma_de_pagamento: FORMA_PAGAMENTO.cartao_credito,
+        cartao: {
+          tpIntegra: '2',
+          cnpj_instituicao: '99999999000191',
+          bandeira: '03',
+        },
+      }),
+    ]);
+    expect(out[0]?.card).toEqual({
+      tpIntegra: '2',
+      CNPJ: '99999999000191',
+      tBand: '03',
+    });
+  });
+
+  it('outros (forma=99) with cartao block → card OMITTED (per Flutter line 1812)', () => {
+    // Flutter: `card: e.cartao != null && forma != 99 ? cardComplexType : null`.
+    // The card block on tPag=99 was historically a SEFAZ rejection cause.
+    const out = __internal.buildPaymentsFromPagamentos([
+      pagamento({
+        valor: 75.5,
+        forma_de_pagamento: FORMA_PAGAMENTO.outros,
+        descricaoPagamento: 'Bonificacao',
+        cartao: { tpIntegra: '2', cnpj_instituicao: '99999999000191' },
+      }),
+    ]);
+    expect(out[0]?.card).toBeUndefined();
+  });
+
+  it('juros: valor=100 + juros=5 → vPag=105 (Flutter Pagamento.vPag getter)', () => {
+    const out = __internal.buildPaymentsFromPagamentos([
+      pagamento({
+        valor: 100,
+        juros: 5,
+        forma_de_pagamento: FORMA_PAGAMENTO.dinheiro,
+      }),
+    ]);
+    expect(out[0]?.vPag).toBe(105);
+  });
+
+  it('cartao with missing tpIntegra → card block omitted (avoids cStat=391)', () => {
+    // Defensive: a Cartao without tpIntegra would produce a `<card>` that
+    // fails the XSD. buildCardFromCartao must return undefined.
+    const card = __internal.buildCardFromCartao({ cnpj_instituicao: '99999999000191' });
+    expect(card).toBeUndefined();
+  });
+
+  it('cartao with int-coded tpIntegra=2 → normalises to string', () => {
+    // Flutter persists tpIntegra as an int via the @JsonValue enum; the
+    // SEFAZ wire format is the string '1' or '2'. The helper normalises.
+    const card = __internal.buildCardFromCartao({ tpIntegra: 2, cnpj_instituicao: 'X' });
+    expect(card?.tpIntegra).toBe('2');
   });
 });

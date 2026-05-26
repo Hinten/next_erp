@@ -40,6 +40,28 @@ export function devPedidoId(i: number): string {
   return `${DEV_PEDIDOS_PREFIX}-${String(i).padStart(2, '0')}`;
 }
 
+/**
+ * Shape of a Pagamento doc seeded under `pedidos/{id}/pagamento`.
+ * Mirrors `pagamentoSchema` — kept inline here so the fixture doesn't
+ * pull `@delfrance/schemas` (this script runs under tsx without the
+ * monorepo build), but the fields line up 1-1 with the schema.
+ */
+interface DevPagamentoSeed {
+  readonly forma_de_pagamento: number;
+  readonly valor: number;
+  /** PIX / boleto / etc. — see FORMA_PAGAMENTO. */
+  readonly aVista?: boolean;
+  /** Required when forma=99 (outros) to satisfy SEFAZ cStat 441. */
+  readonly descricaoPagamento?: string;
+  /** Card detail — only meaningful for forma=3/4 (credito/debito). */
+  readonly cartao?: {
+    tpIntegra: '1' | '2';
+    cnpj_instituicao?: string;
+    bandeira?: string;
+    cAut?: string;
+  };
+}
+
 interface PedidoSeed {
   readonly numero: string;
   readonly estadoPedido: string;
@@ -51,6 +73,13 @@ interface PedidoSeed {
   readonly frete?: { estado: string; codRastreio?: string; prazoDespacho?: number };
   /** Cached total — the cell prefers this over recomputing from `itens`. */
   readonly valorCobrado?: number;
+  /**
+   * Approved pagamentos to write under `pedidos/{id}/pagamento/`. Empty
+   * (or omitted) exercises the orchestrator's `tPag='90'` (sem
+   * pagamento) fallback. Status is always `aprovado` so the NF-e
+   * orchestrator's status filter picks them up.
+   */
+  readonly pagamentos?: ReadonlyArray<DevPagamentoSeed>;
 }
 
 const PEDIDOS: PedidoSeed[] = [
@@ -65,6 +94,23 @@ const PEDIDOS: PedidoSeed[] = [
       prazoDespacho: Date.now() - 172_800_000,
     },
     valorCobrado: 1499.9,
+    // Single PIX payment — the orchestrator's happy path for SEFAZ.
+    // SEFAZ NT 2022.001 requires a <card> block on tPag=17 (same as
+    // 03/04), so a minimal cartao with `tpIntegra='2'` (standalone PSP,
+    // no integrated TEF) is mandatory even for PIX. Without it SEFAZ
+    // rejects cStat=391. Production data gets this from the payment
+    // gateway integration; in fixtures we stamp it by hand.
+    pagamentos: [
+      {
+        forma_de_pagamento: 17,
+        valor: 1499.9,
+        aVista: true,
+        cartao: {
+          tpIntegra: '2',
+          cnpj_instituicao: '99999999000191',
+        },
+      },
+    ],
   },
   {
     numero: '0002',
@@ -72,6 +118,8 @@ const PEDIDOS: PedidoSeed[] = [
     withCliente: true,
     frete: { estado: 'aCaminho', codRastreio: 'BR987654321' },
     valorCobrado: 250.0,
+    // Boleto a prazo — exercises indPag='1'.
+    pagamentos: [{ forma_de_pagamento: 15, valor: 250.0, aVista: false }],
   },
   {
     numero: '0003',
@@ -79,18 +127,42 @@ const PEDIDOS: PedidoSeed[] = [
     withCliente: true,
     frete: { estado: 'aguardandoNFe' },
     valorCobrado: 75.5,
+    // Credit-card payment — exercises the <card> block.
+    pagamentos: [
+      {
+        forma_de_pagamento: 3,
+        valor: 75.5,
+        aVista: true,
+        cartao: {
+          tpIntegra: '2',
+          cnpj_instituicao: '99999999000191',
+          bandeira: '03',
+        },
+      },
+    ],
   },
   {
     numero: '0004',
     estadoPedido: 'emAnalise',
     frete: { estado: 'iniciado' },
     valorCobrado: 320.0,
+    // No pagamentos — exercises the `tPag='90'` (sem pagamento) fallback.
   },
   {
     numero: '0005',
     estadoPedido: 'pago',
     withCliente: true,
     valorCobrado: 980.0,
+    // forma=99 (outros) — exercises the <xPag> branch (and would trigger
+    // SEFAZ cStat=441 without it).
+    pagamentos: [
+      {
+        forma_de_pagamento: 99,
+        valor: 980.0,
+        aVista: true,
+        descricaoPagamento: 'Permuta de mercadoria',
+      },
+    ],
   },
   {
     numero: '0006',
@@ -99,11 +171,14 @@ const PEDIDOS: PedidoSeed[] = [
     dtImpressao: Date.now() - 3_600_000,
     frete: { estado: 'postado', codRastreio: 'BR555555555' },
     valorCobrado: 49.9,
+    // Cash — the simplest XSD-valid path.
+    pagamentos: [{ forma_de_pagamento: 1, valor: 49.9, aVista: true }],
   },
   {
     numero: '0007',
     estadoPedido: 'cancelado',
     valorCobrado: 199.0,
+    // No pagamentos either — second sample of the sem-pagamento fallback.
   },
 ];
 
@@ -179,6 +254,53 @@ function devItensMap(valor: number): {
   };
 }
 
+/**
+ * Stable doc id for the n-th pagamento (1-based) of a seeded pedido —
+ * idempotent re-seeding overwrites the same docs instead of accreting.
+ */
+function devPagamentoId(n: number): string {
+  return `dev-pag-${String(n).padStart(2, '0')}`;
+}
+
+/**
+ * Write the pagamentos for a seeded pedido under
+ * `pedidos/{pedidoId}/pagamento/`. Status is hard-coded to
+ * `STATUS_PAGAMENTO.aprovado` (= 4) so the NF-e orchestrator's status
+ * filter accepts them.
+ */
+async function writePagamentos(
+  pedidoId: string,
+  pagamentos: ReadonlyArray<DevPagamentoSeed>,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const pagRef = db().collection('pedidos').doc(pedidoId).collection('pagamento');
+  for (let i = 0; i < pagamentos.length; i += 1) {
+    const p = pagamentos[i]!;
+    const id = devPagamentoId(i + 1);
+    await pagRef.doc(id).set({
+      id,
+      metodoPagamentoOuterRef: null,
+      forma_de_pagamento: p.forma_de_pagamento,
+      status_pagamento: 4, // STATUS_PAGAMENTO.aprovado
+      cartao: p.cartao ?? null,
+      cheque: null,
+      descricaoPagamento: p.descricaoPagamento ?? null,
+      valor: p.valor,
+      parcelas: 1,
+      juros: null,
+      tarifas: null,
+      aVista: p.aVista ?? true,
+      duplicata: false,
+      nFat: null,
+      vencimento: null,
+      ultimaModificacao: now,
+      dataCancelamento: null,
+      dataAprovacao: now,
+      dataCadastro: now,
+    });
+  }
+}
+
 async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
   const id = devPedidoId(i);
   const now = Date.now();
@@ -239,6 +361,10 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
           }
         : null,
     });
+
+  if (spec.pagamentos && spec.pagamentos.length > 0) {
+    await writePagamentos(id, spec.pagamentos);
+  }
 }
 
 export async function seedDevPedidos(): Promise<{ created: number }> {
@@ -255,17 +381,20 @@ export async function cleanupDevPedidos(): Promise<{ deleted: number }> {
   let deleted = 0;
   for (const id of devPedidoIds()) {
     // Subcollections must be deleted explicitly — the Admin SDK doesn't
-    // cascade them with the parent doc. Sweeps any `nfev4` docs the NF-e
-    // generator may have written.
-    const nfeSnap = await db()
-      .collection('pedidos')
-      .doc(id)
-      .collection('nfev4')
-      .get();
-    if (!nfeSnap.empty) {
-      const batch = db().batch();
-      nfeSnap.docs.forEach((d) => batch.delete(d.ref));
-      await batch.commit();
+    // cascade them with the parent doc. Sweeps the two subcollections
+    // we own: `nfev4` (the NF-e generator's output) and `pagamento`
+    // (this seed's own writes).
+    for (const sub of ['nfev4', 'pagamento']) {
+      const subSnap = await db()
+        .collection('pedidos')
+        .doc(id)
+        .collection(sub)
+        .get();
+      if (!subSnap.empty) {
+        const batch = db().batch();
+        subSnap.docs.forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+      }
     }
     await db().collection('pedidos').doc(id).delete();
     deleted += 1;

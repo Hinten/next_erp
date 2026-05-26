@@ -154,7 +154,8 @@ export function statusToEstadoPedido(status: StatusPagamento): EstadoPedido {
 }
 
 /**
- * Pagamento — subcoleção `pedidos/{pedidoId}/pagamentos`. Matches
+ * Pagamento — subcoleção `pedidos/{pedidoId}/pagamento` (singular,
+ * matching the Flutter ERP's wire format). Mirrors
  * `packages/pedido/lib/src/models.dart` Pagamento. Cartão / cheque
  * details remain pass-through; the typed surface is what this app reads
  * and writes today.
@@ -184,7 +185,7 @@ export const pagamentoSchema = z.object({
 export type Pagamento = z.infer<typeof pagamentoSchema>;
 
 export const pagamentoMeta: CollectionMetadata = {
-  collectionPath: 'pedidos/{pedidoId}/pagamentos',
+  collectionPath: 'pedidos/{pedidoId}/pagamento',
   permissions: {
     read: PERM_PAGAMENTO_READ,
     write: PERM_PAGAMENTO_WRITE,

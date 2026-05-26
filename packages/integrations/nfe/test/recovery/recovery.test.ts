@@ -101,6 +101,58 @@ describe('outcomeFromRetEnviNFe', () => {
     expect(out.chNFeFromXMotivo).toBe(CHAVE);
     expect(out.nRec).toBe('351000000000888');
   });
+
+  it('projects the inline protNFe on sync emission (indSinc=1, cStat=104 + protNFe + no infRec)', () => {
+    const out = outcomeFromRetEnviNFe({
+      tpAmb: '2',
+      verAplic: 'SP',
+      cStat: '104', // lote-level: processado
+      xMotivo: 'Lote processado',
+      cUF: '35',
+      dhRecbto: '2026-05-20T10:30:00-03:00',
+      versao: '4.00',
+      protNFe: {
+        versao: '4.00',
+        infProt: {
+          tpAmb: '2',
+          verAplic: 'SP',
+          chNFe: CHAVE,
+          dhRecbto: '2026-05-20T10:30:00-03:00',
+          nProt: '135200000000456',
+          cStat: '100', // per-NFe: autorizada
+          xMotivo: 'Autorizado o uso da NF-e',
+        },
+      },
+    });
+    expect(out.cStat).toBe('100');
+    expect(out.xMotivo).toContain('Autorizado');
+    expect(out.nRec).toBeNull(); // sync emission has no nRec
+  });
+
+  it('projects an inline rejection protNFe (cStat=441 — tPag=99 needs xPag)', () => {
+    const out = outcomeFromRetEnviNFe({
+      tpAmb: '2',
+      verAplic: 'SP',
+      cStat: '104',
+      xMotivo: 'Lote processado',
+      cUF: '35',
+      dhRecbto: '2026-05-20T10:30:00-03:00',
+      versao: '4.00',
+      protNFe: {
+        versao: '4.00',
+        infProt: {
+          tpAmb: '2',
+          verAplic: 'SP',
+          chNFe: CHAVE,
+          dhRecbto: '2026-05-20T10:30:00-03:00',
+          cStat: '441',
+          xMotivo: 'Rejeição: Descrição do pagamento (xPag) deve ser informada para tPag=99',
+        },
+      },
+    });
+    expect(out.cStat).toBe('441');
+    expect(out.nRec).toBeNull();
+  });
 });
 
 describe('outcomeFromRetConsRec', () => {
@@ -165,7 +217,7 @@ describe('outcomeFromRetConsSit', () => {
 });
 
 describe('outcomeFromInfProt', () => {
-  it('passes cStat + xMotivo through and leaves nRec null', () => {
+  it('passes cStat + xMotivo through and leaves nRec null when xMotivo has no markers', () => {
     const out = outcomeFromInfProt({
       cStat: '100',
       xMotivo: 'Autorizado o uso da NF-e',
@@ -174,6 +226,30 @@ describe('outcomeFromInfProt', () => {
     expect(out.cStat).toBe('100');
     expect(out.xMotivo).toContain('Autorizado');
     expect(out.nRec).toBeNull();
+    expect(out.chNFeFromXMotivo).toBeNull();
+  });
+
+  it('extracts nRec from xMotivo on duplicidade rejections (e.g. cStat=204)', () => {
+    // Without this, the orchestrator's recovery branch has no nRec and
+    // falls into consSit(chave) — wrong for cStat=539, useless for 204.
+    const out = outcomeFromInfProt({
+      cStat: '204',
+      xMotivo: 'Rejeição: Duplicidade de NF-e [nRec:351000000000123]',
+    });
+    expect(out.nRec).toBe('351000000000123');
+    expect(out.chNFeFromXMotivo).toBeNull();
+  });
+
+  it('extracts both chNFe and nRec from a cStat=539 xMotivo (live SEFAZ shape)', () => {
+    const out = outcomeFromInfProt({
+      cStat: '539',
+      xMotivo:
+        'Rejeição: Duplicidade de NF-e com diferença na Chave de Acesso ' +
+        `[chNFe:${CHAVE}][nRec:351000131407057]`,
+    });
+    expect(out.cStat).toBe('539');
+    expect(out.chNFeFromXMotivo).toBe(CHAVE);
+    expect(out.nRec).toBe('351000131407057');
   });
 });
 
