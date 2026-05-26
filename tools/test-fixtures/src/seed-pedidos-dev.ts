@@ -192,14 +192,18 @@ async function writeCliente(): Promise<void> {
     .collection('clientes')
     .doc(CLIENTE_ID)
     .set({
-      tipo: '1', // Pessoa Jurídica
-      nome: 'Dev Pedidos Cliente Ltda',
-      // Known-valid test CNPJ (passes check digits). The previous value
-      // 12345678000190 fails the SEFAZ CNPJ check-digit validation on
-      // the destinatário, regardless of homologação leniency elsewhere.
-      cpf_cnpj: '11222333000181',
+      tipo: '0', // Pessoa Física
+      nome: 'Cliente Dev Pessoa Fisica',
+      // Known-valid test CPF (passes check digits). PF avoids
+      // cStat=234 ("IE do destinatário não vinculada ao CNPJ") — the
+      // previous PJ pair (CNPJ 11222333000181 + IE 110042490114) was
+      // not recognised by SEFAZ-SP HOM. PF has no IE; the orchestrator
+      // stamps `indIEDest='9'` (Não Contribuinte) and the paired
+      // `operacao.ehConsumidorFinal=true` keeps `indFinal='1'` so
+      // SEFAZ doesn't reject with cStat=696.
+      cpf_cnpj: '12345678909',
       idEstrangeiro: null,
-      ie: '110042490114',
+      ie: null,
       imun: null,
       isUF: null,
       email: 'dev-pedidos@example.com',
