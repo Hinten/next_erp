@@ -3,21 +3,26 @@
 /**
  * Bulk-emit dispatch shim for the `/pedidos` TableView toolbar.
  *
- * Today this only handles the SINGLE-pedido happy path — it
- * delegates to the existing `client.emitir(pedidoId)`. When more
- * than one row is selected, it throws `NFeLoteNotImplementedError`
- * which the action's catch maps to a Mantine notification.
+ * Two paths:
+ *  - 1 selected pedido → `client.emitir(pedidoId)` + Mantine
+ *    notification (legacy single-pedido fast path).
+ *  - N > 1 selected pedidos → open the `EmitirLoteDialog` which
+ *    fires `client.emitirLote(pedidoIds)` and renders a three-counter
+ *    summary mirroring Flutter's `EmitirNFeDialog`.
  *
- * The full lote port (per-pedido fan-out with skip-aprovada /
- * re-emit-rejeitada / live tallies modal) lands in a follow-up PR.
- * See:
+ * The dispatcher (`dispatchEmitirNFe`) stays a pure async function
+ * so the existing unit tests at `bulkEmit.test.ts` keep their
+ * coverage of the single-pedido happy path + the N>1 contract.
+ *
+ * Source-of-truth Flutter references:
  *   - `.old/lib/pedido/pages/pedidoTableView.dart:796-854`
  *     (`EmitirNfeAction` — toolbar action shape).
  *   - `.old/packages/pedido_nfe/lib/src/tasks.dart:59-662`
- *     (`gerarNFePedidos` — skip/re-emit/dedup logic).
+ *     (`gerarNFePedidos` — backend fan-out).
  *   - `.old/lib/nfe/widgets.dart:91-141`
- *     (`EmitirNFeDialog` — live Sucesso/Falhas/Não emitidas dialog).
+ *     (`EmitirNFeDialog` — three-counter dialog).
  */
+import { useState } from 'react';
 import { notifications } from '@mantine/notifications';
 import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
 import type { Pedido } from '@delfrance/schemas';
@@ -31,14 +36,17 @@ import {
 import { showErrorNotification } from '../notifications/showErrorNotification';
 
 /**
- * Thrown when the user selects more than one pedido. The follow-up
- * PR will replace this with the real fan-out + Mantine modal.
+ * Thrown when N>1 pedidos are dispatched through the legacy
+ * single-pedido path. Kept so the unit tests at `bulkEmit.test.ts`
+ * still assert the dispatcher's "1 row only" contract. In the live
+ * code path the React hook routes N>1 to the modal BEFORE this
+ * throws.
  */
 export class NFeLoteNotImplementedError extends Error {
   public readonly selected: number;
   constructor(selected: number) {
     super(
-      `Emissão em lote (${selected} pedidos) ainda não implementada — Phase B.`,
+      `Emissão em lote (${selected} pedidos) deve usar o EmitirLoteDialog, não dispatchEmitirNFe.`,
     );
     this.name = 'NFeLoteNotImplementedError';
     this.selected = selected;
@@ -58,21 +66,14 @@ interface PedidoRow {
 
 /**
  * Pure dispatcher — extracted from the React hook for unit testing.
- * Takes a client + rows, applies the "1 row fast path / N row throw"
- * decision, and returns void (notifications fire as side effects).
- *
- * Throws `NFeLoteNotImplementedError` for N > 1. Re-throws non-Error
- * values per CLAUDE.md rule #6 (programming bugs must propagate).
+ * Single-pedido path only; N>1 throws `NFeLoteNotImplementedError`
+ * so the caller (React hook) knows to open the dialog instead.
  */
 export async function dispatchEmitirNFe(
   client: NFeHttpClient,
   rows: ReadonlyArray<PedidoRow>,
 ): Promise<void> {
-  if (rows.length === 0) {
-    // `requiresSelection: true` gates the button, but defensive
-    // check for any caller that bypasses the action config.
-    return;
-  }
+  if (rows.length === 0) return;
   if (rows.length > 1) {
     throw new NFeLoteNotImplementedError(rows.length);
   }
@@ -90,19 +91,32 @@ export async function dispatchEmitirNFe(
 }
 
 /**
- * React hook returning the `ActionConfig<Pedido>` the TableView's
- * `actions` array consumes. The action is disabled while the user
- * is logged out (`client` is null) via `requiresSelection`'s
- * complement — actually `requiresSelection` only gates on row
- * count, so we also no-op inside `run` when `client` is null.
- *
- * The `NFeLoteNotImplementedError` throw is caught here and
- * converted to a Mantine notification so the user always sees a
- * message (not an uncaught error overlay).
+ * Lote-modal state exposed by `useEmitirNFeAction`. The page renders
+ * `<EmitirLoteDialog>` and binds these props.
  */
-export function useEmitirNFeAction(): ActionConfig<Pedido> {
+export interface EmitirLoteModalState {
+  readonly opened: boolean;
+  readonly pedidoIds: ReadonlyArray<string>;
+  readonly close: () => void;
+}
+
+/**
+ * React hook returning the `ActionConfig<Pedido>` the TableView's
+ * `actions` array consumes, plus the modal state the page binds to
+ * `<EmitirLoteDialog>`. For N>1 selections the action's `run`
+ * callback opens the modal instead of throwing.
+ */
+export function useEmitirNFeAction(): {
+  readonly action: ActionConfig<Pedido>;
+  readonly loteModal: EmitirLoteModalState;
+} {
   const client = useNFeClient();
-  return {
+  const [loteState, setLoteState] = useState<{
+    opened: boolean;
+    pedidoIds: ReadonlyArray<string>;
+  }>({ opened: false, pedidoIds: [] });
+
+  const action: ActionConfig<Pedido> = {
     id: 'emit-nfe',
     label: 'Emitir NF-e',
     color: 'teal',
@@ -120,24 +134,38 @@ export function useEmitirNFeAction(): ActionConfig<Pedido> {
         });
         return;
       }
+      if (rows.length > 1) {
+        setLoteState({
+          opened: true,
+          pedidoIds: rows.map((r) => r.id),
+        });
+        return;
+      }
       try {
         await dispatchEmitirNFe(client, rows);
       } catch (err) {
         if (err instanceof NFeLoteNotImplementedError) {
+          // Defensive — the rows.length>1 check above should have
+          // caught this. If we got here, the action ran with mixed
+          // semantics; surface so the user sees something.
           notifications.show({
             title: 'Emissão em lote',
-            message: 'Emissão em lote ainda não implementada (Phase B).',
+            message: err.message,
             color: 'yellow',
             autoClose: 8000,
           });
           return;
         }
-        // Non-Error or anything else: re-throw so the ActionBar
-        // surfaces it (or the runtime catches it as a programming
-        // bug). The single-pedido path already shows notifications
-        // for typed NF-e errors inside dispatchEmitirNFe.
         throw err;
       }
     },
   };
+
+  const loteModal: EmitirLoteModalState = {
+    opened: loteState.opened,
+    pedidoIds: loteState.pedidoIds,
+    close: () => setLoteState((s) => ({ ...s, opened: false })),
+  };
+
+  return { action, loteModal };
 }
