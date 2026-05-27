@@ -83,6 +83,7 @@ import {
 } from '@delfrance/schemas';
 import { z } from 'zod';
 
+import { createFirestoreImpostoResolver } from './imposto-resolver';
 import type { NFeRuntime } from './runtime';
 
 export class NFePedidoNotFoundError extends Error {
@@ -548,6 +549,47 @@ function refToPath(ref: unknown): string | null {
     return typeof p === 'string' ? p : null;
   }
   return null;
+}
+
+/**
+ * For every pedido item whose `imposto` is missing, run the resolver
+ * cascade (item → impostoProduto → impostoCategoria → regraImposto)
+ * and stamp the resolved Imposto back onto the item. Items whose
+ * imposto can't be resolved are left untouched — flattenAndValidate
+ * will throw `NFeMissingImpostoError` with the precise location.
+ *
+ * Items already carrying a valid imposto skip the resolver entirely
+ * (no Firestore reads for those) — preserves Phase A retail fixtures
+ * that pre-stamp imposto at order time.
+ */
+async function preResolveImpostos(
+  bundle: PedidoBundle,
+  fs: Firestore,
+): Promise<void> {
+  const itens = (bundle.pedido as { itens?: Record<string, unknown[]> }).itens ?? {};
+  const missing: Array<{ produtoUid: string; entry: Record<string, unknown> }> = [];
+  for (const [produtoUid, list] of Object.entries(itens)) {
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (entry == null || typeof entry !== 'object') continue;
+      const e = entry as Record<string, unknown>;
+      if (e.imposto == null) missing.push({ produtoUid, entry: e });
+    }
+  }
+  if (missing.length === 0) return;
+
+  console.debug(
+    `[nfe/orchestrator] pedido '${bundle.pedidoId}': ${missing.length} item(s) ` +
+      'missing imposto — running resolver cascade',
+  );
+  const resolver = createFirestoreImpostoResolver(fs, {
+    operacaoId: bundle.operacaoId,
+    regrasImposto: bundle.regrasImposto,
+  });
+  for (const { produtoUid, entry } of missing) {
+    const resolved = await resolver.resolve(produtoUid, null);
+    if (resolved != null) entry.imposto = resolved;
+  }
 }
 
 /**
@@ -1107,6 +1149,7 @@ export async function emitirPedido(
   if (bundle.pedido.bloquearEmissaoNFe) {
     throw new NFeBlockedError(pedidoId);
   }
+  await preResolveImpostos(bundle, fs);
   const items = flattenAndValidate(bundle);
 
   // Stable doc id per (pedido, tpEmis) — mirrors Flutter's
