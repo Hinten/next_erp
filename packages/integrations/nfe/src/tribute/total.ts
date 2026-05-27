@@ -19,6 +19,16 @@ import type {
   TNFe_infNFe_total_retTrib,
 } from '../types/nfe-schema';
 import { fmtMoney, fmtMoneyOpt, round2 } from './format';
+
+/**
+ * Whole-NF-e values needed by aggregateISSQN that aren't derivable
+ * from per-item imposto — today: `dCompet` (competence date, XSD-required
+ * on `<ISSQNtot>`, YYYY-MM-DD).
+ */
+export interface ISSQNExtras {
+  readonly dCompet: string;
+  readonly cRegTrib?: '1' | '2' | '3' | '4' | '5' | '6';
+}
 import type { Imposto, TributeItem } from './schemas';
 
 interface PerItem {
@@ -96,6 +106,7 @@ export function aggregateTotals(
       vIPI += imposto.configuracaoIPI.vIPI;
     }
     const icms = imposto.configuracaoICMS;
+    if (icms == null) continue; // ISSQN-only item — no ICMS contribution
     if (icms.csosn === '101' && icms.csosn101) {
       vICMS += icms.csosn101.vCredICMSSN;
     } else if (icms.csosn === '201' && icms.csosn201) {
@@ -150,15 +161,59 @@ export function aggregateTotals(
 /**
  * Aggregate per-item ISSQN values into the optional `<ISSQNtot>` block.
  *
- * **Group B placeholder**: returns `undefined` until `impostoSchema`
- * gains `configuracaoISSQN` (per the parity plan). Phase A retail
- * (CSOSN 102 + mercadoria) never carries ISSQN, so this is harmless
- * until the schema lands.
+ * Returns `undefined` when no item carries `configuracaoISSQN` (the
+ * common case for retail). When at least one item is ISSQN, `extras.dCompet`
+ * is required by the XSD — the orchestrator threads it in from the
+ * emission date.
+ *
+ * vServ is the sum of `item.vProd` for ISSQN items (per Lei Complementar
+ * 116/2003 — service revenue, not merchandise). The rest are summed
+ * directly off `configuracaoISSQN` fields.
  */
 export function aggregateISSQN(
-  _items: ReadonlyArray<PerItem>,
+  items: ReadonlyArray<PerItem>,
+  extras?: ISSQNExtras,
 ): TNFe_infNFe_total_ISSQNtot | undefined {
-  return undefined;
+  const issqnItems = items.filter((p) => p.imposto.configuracaoISSQN != null);
+  if (issqnItems.length === 0) return undefined;
+  if (extras == null) {
+    throw new Error('aggregateISSQN: extras.dCompet is required when items carry ISSQN');
+  }
+
+  let vServ = 0;
+  let vBC = 0;
+  let vISS = 0;
+  let vDeducao = 0;
+  let vDescIncond = 0;
+  let vDescCond = 0;
+  let vISSRet = 0;
+  let vOutro = 0;
+
+  for (const { item, imposto } of issqnItems) {
+    const issqn = imposto.configuracaoISSQN!;
+    vServ += item.vProd;
+    vBC += issqn.vBC;
+    vISS += issqn.vISSQN;
+    vDeducao += issqn.vDeducao ?? 0;
+    vDescIncond += issqn.vDescIncond ?? 0;
+    vDescCond += issqn.vDescCond ?? 0;
+    vISSRet += issqn.vISSRet ?? 0;
+    vOutro += issqn.vOutro ?? 0;
+  }
+
+  const out: TNFe_infNFe_total_ISSQNtot = {
+    vServ: fmtMoney('vServ', round2(vServ)),
+    vBC: fmtMoney('vBC', round2(vBC)),
+    vISS: fmtMoney('vISS', round2(vISS)),
+    dCompet: extras.dCompet,
+  };
+  if (vDeducao > 0) out.vDeducao = fmtMoney('vDeducao', round2(vDeducao));
+  if (vDescIncond > 0) out.vDescIncond = fmtMoney('vDescIncond', round2(vDescIncond));
+  if (vDescCond > 0) out.vDescCond = fmtMoney('vDescCond', round2(vDescCond));
+  if (vISSRet > 0) out.vISSRet = fmtMoney('vISSRet', round2(vISSRet));
+  if (vOutro > 0) out.vOutro = fmtMoney('vOutro', round2(vOutro));
+  if (extras.cRegTrib != null) out.cRegTrib = extras.cRegTrib;
+  return out;
 }
 
 /**

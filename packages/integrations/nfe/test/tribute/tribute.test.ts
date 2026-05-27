@@ -12,6 +12,7 @@ import forge from 'node-forge';
 import { signNFe, validateXsd, type NFeCertificate } from '../../src/index';
 
 import {
+  aggregateISSQN,
   aggregateTotals,
   buildImpostoXml,
   buildPagXml,
@@ -21,6 +22,7 @@ import {
   fmtRate,
   NFeTributeError,
   TributeFormatError,
+  type ConfiguracaoISSQN,
   type Imposto,
 } from '../../src/tribute/index';
 
@@ -325,6 +327,125 @@ describe('buildImpostoXml — IPI', () => {
       configuracaoIPI: { cEnq: '999', CST: '00', vBC: 100, pIPI: 5 },
     };
     expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISSQN dispatcher (Group B — xs:choice with ICMS)
+// ---------------------------------------------------------------------------
+
+function issqnFor(extra: Partial<ConfiguracaoISSQN> = {}): ConfiguracaoISSQN {
+  return {
+    vBC: 500,
+    vAliq: 5,
+    vISSQN: 25,
+    cMunFG: '3550308', // São Paulo (IBGE)
+    cListServ: '01.05',
+    indISS: '1',
+    indIncentivo: '2',
+    ...extra,
+  };
+}
+
+describe('buildImpostoXml — ISSQN (xs:choice with ICMS)', () => {
+  it('emits <ISSQN> with required fields and no <ICMS> when configuracaoISSQN is set', async () => {
+    const imposto: Imposto = {
+      origem: '0',
+      configuracaoISSQN: issqnFor(),
+    };
+    const xml = buildImpostoXml(imposto, { vProd: 500 });
+    expect(xml).toContain('<ISSQN>');
+    expect(xml).toContain('<vBC>500.00</vBC>');
+    expect(xml).toContain('<vAliq>5.0000</vAliq>');
+    expect(xml).toContain('<vISSQN>25.00</vISSQN>');
+    expect(xml).toContain('<cMunFG>3550308</cMunFG>');
+    expect(xml).toContain('<cListServ>01.05</cListServ>');
+    expect(xml).toContain('<indISS>1</indISS>');
+    expect(xml).toContain('<indIncentivo>2</indIncentivo>');
+    expect(xml).not.toContain('<ICMS>');
+    await assertXsdValid(xml);
+  });
+
+  it('emits optional ISSQN fields when set (vDeducao, vDescIncond, vDescCond, vISSRet, vOutro)', async () => {
+    const imposto: Imposto = {
+      origem: '0',
+      configuracaoISSQN: issqnFor({
+        vDeducao: 10,
+        vDescIncond: 5,
+        vDescCond: 2,
+        vISSRet: 1,
+        vOutro: 3,
+        cServico: 'SVC-001',
+      }),
+    };
+    const xml = buildImpostoXml(imposto, { vProd: 500 });
+    expect(xml).toContain('<vDeducao>10.00</vDeducao>');
+    expect(xml).toContain('<vDescIncond>5.00</vDescIncond>');
+    expect(xml).toContain('<vDescCond>2.00</vDescCond>');
+    expect(xml).toContain('<vISSRet>1.00</vISSRet>');
+    expect(xml).toContain('<vOutro>3.00</vOutro>');
+    expect(xml).toContain('<cServico>SVC-001</cServico>');
+    await assertXsdValid(xml);
+  });
+
+  it('throws when neither configuracaoICMS nor configuracaoISSQN is provided', () => {
+    const imposto: Imposto = { origem: '0' };
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+  });
+
+  it('allows IPI to ride alongside ISSQN (both choice + IPI block)', async () => {
+    const imposto: Imposto = {
+      origem: '0',
+      configuracaoISSQN: issqnFor(),
+      configuracaoIPI: { cEnq: '999', CST: '01' },
+    };
+    const xml = buildImpostoXml(imposto, { vProd: 500 });
+    expect(xml).toContain('<ISSQN>');
+    expect(xml).toContain('<IPI>');
+    expect(xml).toContain('<IPINT>');
+    expect(xml).not.toContain('<ICMS>');
+    await assertXsdValid(xml);
+  });
+});
+
+describe('aggregateISSQN', () => {
+  it('returns undefined when no item carries ISSQN', () => {
+    const out = aggregateISSQN([
+      { item: { vProd: 100 }, imposto: impostoFor102() },
+    ]);
+    expect(out).toBeUndefined();
+  });
+
+  it('sums vServ / vBC / vISS across ISSQN items and stamps dCompet', () => {
+    const issqnImposto: Imposto = { origem: '0', configuracaoISSQN: issqnFor() };
+    const out = aggregateISSQN(
+      [
+        { item: { vProd: 500 }, imposto: issqnImposto },
+        { item: { vProd: 300 }, imposto: { origem: '0', configuracaoISSQN: issqnFor({ vBC: 300, vISSQN: 15 }) } },
+        { item: { vProd: 100 }, imposto: impostoFor102() }, // mixed — ignored by ISSQN aggregator
+      ],
+      { dCompet: '2026-05-27' },
+    );
+    expect(out?.vServ).toBe('800.00'); // 500 + 300 (ISSQN items only)
+    expect(out?.vBC).toBe('800.00');
+    expect(out?.vISS).toBe('40.00');
+    expect(out?.dCompet).toBe('2026-05-27');
+  });
+
+  it('throws when ISSQN items are present but extras.dCompet is missing', () => {
+    const issqnImposto: Imposto = { origem: '0', configuracaoISSQN: issqnFor() };
+    expect(() =>
+      aggregateISSQN([{ item: { vProd: 500 }, imposto: issqnImposto }]),
+    ).toThrow(/dCompet/);
+  });
+
+  it('emits cRegTrib when supplied via extras', () => {
+    const issqnImposto: Imposto = { origem: '0', configuracaoISSQN: issqnFor() };
+    const out = aggregateISSQN(
+      [{ item: { vProd: 500 }, imposto: issqnImposto }],
+      { dCompet: '2026-05-27', cRegTrib: '3' },
+    );
+    expect(out?.cRegTrib).toBe('3');
   });
 });
 

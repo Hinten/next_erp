@@ -17,8 +17,10 @@
 import { z } from 'zod';
 
 import {
+  fmtMoney,
   fmtMoneyOpt,
   fmtQuantity,
+  fmtRate,
   fmtRateOpt,
 } from './format';
 import {
@@ -26,6 +28,7 @@ import {
   type ConfPIS,
   type ConfiguracaoICMS,
   type ConfiguracaoIPI,
+  type ConfiguracaoISSQN,
   type Imposto,
   type Origem,
   type TributeItem,
@@ -37,6 +40,7 @@ import type {
   TIpi,
   TNFe_infNFe_det_imposto,
   TNFe_infNFe_det_imposto_ICMS,
+  TNFe_infNFe_det_imposto_ISSQN,
   TNFe_infNFe_det_imposto_COFINS,
   TNFe_infNFe_det_imposto_PIS,
 } from '../types/nfe-schema';
@@ -54,11 +58,18 @@ export function buildImpostoXml(rawImposto: unknown, rawItem: unknown): string {
   const imposto = parseInput(impostoSchema, rawImposto, 'imposto');
   const item = parseInput(tributeItemSchema, rawItem, 'item');
 
-  const icms = buildICMS(imposto.configuracaoICMS, imposto.origem);
+  // XSD xs:choice — every item carries either <ICMS> or <ISSQN>, not
+  // both. Mirror the Flutter dispatcher: ISSQN wins when set, otherwise
+  // require an ICMS config.
   const pis = buildPIS(imposto.configuracaoPIS, item);
   const cofins = buildCOFINS(imposto.configuracaoCOFINS, item);
-
-  const impostoValue: TNFe_infNFe_det_imposto = { ICMS: icms, PIS: pis, COFINS: cofins };
+  const impostoValue: TNFe_infNFe_det_imposto = imposto.configuracaoISSQN != null
+    ? { ISSQN: buildISSQN(imposto.configuracaoISSQN), PIS: pis, COFINS: cofins }
+    : {
+        ICMS: buildICMS(requireICMSConfig(imposto.configuracaoICMS), imposto.origem),
+        PIS: pis,
+        COFINS: cofins,
+      };
   if (imposto.configuracaoIPI != null) {
     impostoValue.IPI = buildIPI(imposto.configuracaoIPI);
   }
@@ -72,6 +83,17 @@ export function buildImpostoXml(rawImposto: unknown, rawItem: unknown): string {
 // ---------------------------------------------------------------------------
 // ICMS dispatcher
 // ---------------------------------------------------------------------------
+
+function requireICMSConfig(
+  cfg: ConfiguracaoICMS | null | undefined,
+): ConfiguracaoICMS {
+  if (cfg == null) {
+    throw new NFeTributeError(
+      'imposto requires either `configuracaoICMS` or `configuracaoISSQN`',
+    );
+  }
+  return cfg;
+}
 
 function buildICMS(
   config: ConfiguracaoICMS,
@@ -250,6 +272,44 @@ function buildIPI(cfg: ConfiguracaoIPI): TIpi {
       CST: cfg.CST as '01' | '02' | '03' | '04' | '05' | '51' | '52' | '53' | '54' | '55',
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// ISSQN dispatcher
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the per-item `<ISSQN>` block. The XSD requires vBC, vAliq,
+ * vISSQN, cMunFG (7-digit IBGE code of the service location),
+ * cListServ (Lei Complementar 116/2003 code, e.g. `'01.05'`), indISS
+ * (1-7) and indIncentivo (1=sim, 2=não). The optional fields ride
+ * along only when set on the per-item config.
+ */
+function buildISSQN(cfg: ConfiguracaoISSQN): TNFe_infNFe_det_imposto_ISSQN {
+  const out: TNFe_infNFe_det_imposto_ISSQN = {
+    vBC: fmtMoney('vBC', cfg.vBC),
+    vAliq: fmtRate('vAliq', cfg.vAliq),
+    vISSQN: fmtMoney('vISSQN', cfg.vISSQN),
+    cMunFG: cfg.cMunFG,
+    cListServ: cfg.cListServ,
+    indISS: cfg.indISS,
+    indIncentivo: cfg.indIncentivo,
+  };
+  const vDeducao = fmtMoneyOpt('vDeducao', cfg.vDeducao);
+  if (vDeducao != null) out.vDeducao = vDeducao;
+  const vOutro = fmtMoneyOpt('vOutro', cfg.vOutro);
+  if (vOutro != null) out.vOutro = vOutro;
+  const vDescIncond = fmtMoneyOpt('vDescIncond', cfg.vDescIncond);
+  if (vDescIncond != null) out.vDescIncond = vDescIncond;
+  const vDescCond = fmtMoneyOpt('vDescCond', cfg.vDescCond);
+  if (vDescCond != null) out.vDescCond = vDescCond;
+  const vISSRet = fmtMoneyOpt('vISSRet', cfg.vISSRet);
+  if (vISSRet != null) out.vISSRet = vISSRet;
+  if (cfg.cServico != null) out.cServico = cfg.cServico;
+  if (cfg.cMun != null) out.cMun = cfg.cMun;
+  if (cfg.cPais != null) out.cPais = cfg.cPais;
+  if (cfg.nProcesso != null) out.nProcesso = cfg.nProcesso;
+  return out;
 }
 
 // ---------------------------------------------------------------------------

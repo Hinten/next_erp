@@ -19,8 +19,10 @@
  */
 export { buildImpostoXml, NFeTributeError } from './imposto';
 export {
+  aggregateISSQN,
   aggregateTotals,
   buildTotalXml,
+  type ISSQNExtras,
   type TotalAggregation,
 } from './total';
 export { buildTranspXml, modFreteSchema, type ModFrete } from './transp';
@@ -37,13 +39,19 @@ export {
   round2,
 } from './format';
 export {
+  cstIpiSchema,
   cstPisCofinsSchema,
   configuracaoICMSSchema,
+  configuracaoIPISchema,
+  configuracaoISSQNSchema,
   confPISSchema,
   confCOFINSSchema,
   crtSchema,
   csosnSchema,
   impostoSchema,
+  indISSSchema,
+  indIncentivoSchema,
+  IPI_TRIB_CSTS,
   modBCSchema,
   modBCSTSchema,
   origemSchema,
@@ -51,9 +59,14 @@ export {
   type ConfCOFINS,
   type ConfPIS,
   type ConfiguracaoICMS,
+  type ConfiguracaoIPI,
+  type ConfiguracaoISSQN,
   type Crt,
   type Csosn,
+  type CstIpi,
   type Imposto,
+  type IndISS,
+  type IndIncentivo,
   type ModBC,
   type ModBCST,
   type Origem,

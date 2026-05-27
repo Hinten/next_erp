@@ -104,6 +104,14 @@ export const confICMSSN500Schema = z.object({
   vICMSEfet: z.number().nonnegative().optional().nullable(),
 });
 
+/** indISS — Indicador da exigibilidade do ISS (XSD enumeration). */
+export const indISSSchema = z.enum(['1', '2', '3', '4', '5', '6', '7']);
+export type IndISS = z.infer<typeof indISSSchema>;
+
+/** indIncentivo — Indicador de incentivo fiscal (1=sim, 2=não). */
+export const indIncentivoSchema = z.enum(['1', '2']);
+export type IndIncentivo = z.infer<typeof indIncentivoSchema>;
+
 /** confICMSSN900 — CSOSN 900 (kitchen sink). */
 export const confICMSSN900Schema = z.object({
   modBC: modBCSchema.optional().nullable(),
@@ -197,6 +205,38 @@ export const configuracaoIPISchema = z.object({
 export type ConfiguracaoIPI = z.infer<typeof configuracaoIPISchema>;
 
 // ---------------------------------------------------------------------------
+// configuracaoISSQN — mirror of the Flutter class (per-item ISSQN)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirror of the Flutter `ConfiguracaoISSQN` slot on Imposto. Driven
+ * directly by the XSD `<ISSQN>` shape — required: vBC, vAliq, vISSQN,
+ * cMunFG (7-digit IBGE), cListServ (Lei Complementar 116/2003), indISS,
+ * indIncentivo. The XSD makes `<imposto>` carry **either** `<ICMS>` **or**
+ * `<ISSQN>` (xs:choice). When `configuracaoISSQN` is set on an item,
+ * the dispatcher emits `<ISSQN>` and skips `<ICMS>`.
+ */
+export const configuracaoISSQNSchema = z.object({
+  vBC: z.number().nonnegative(),
+  vAliq: z.number().nonnegative(),
+  vISSQN: z.number().nonnegative(),
+  cMunFG: z.string().regex(/^\d{7}$/),
+  cListServ: z.string().regex(/^\d{2}\.\d{2}$|^\d{4,5}$/),
+  vDeducao: z.number().nonnegative().optional().nullable(),
+  vOutro: z.number().nonnegative().optional().nullable(),
+  vDescIncond: z.number().nonnegative().optional().nullable(),
+  vDescCond: z.number().nonnegative().optional().nullable(),
+  vISSRet: z.number().nonnegative().optional().nullable(),
+  indISS: indISSSchema,
+  cServico: z.string().min(1).max(20).optional().nullable(),
+  cMun: z.string().regex(/^\d{7}$/).optional().nullable(),
+  cPais: z.string().regex(/^\d{1,4}$/).optional().nullable(),
+  nProcesso: z.string().min(1).max(30).optional().nullable(),
+  indIncentivo: indIncentivoSchema,
+});
+export type ConfiguracaoISSQN = z.infer<typeof configuracaoISSQNSchema>;
+
+// ---------------------------------------------------------------------------
 // Top-level Imposto — what `pedido.itens[i].imposto` should be
 // ---------------------------------------------------------------------------
 
@@ -222,7 +262,8 @@ export const impostoSchema = z.object({
   CEST: z.string().regex(/^\d{7}$/).optional().nullable(),
   /** Unidade comercial (e.g. 'UN'). */
   unidade: z.string().min(1).max(6).optional().nullable(),
-  configuracaoICMS: configuracaoICMSSchema,
+  configuracaoICMS: configuracaoICMSSchema.optional().nullable(),
+  configuracaoISSQN: configuracaoISSQNSchema.optional().nullable(),
   configuracaoPIS: confPISSchema.optional().nullable(),
   configuracaoCOFINS: confCOFINSSchema.optional().nullable(),
   configuracaoIPI: configuracaoIPISchema.optional().nullable(),
