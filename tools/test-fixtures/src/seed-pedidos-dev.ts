@@ -60,6 +60,57 @@ interface DevPagamentoSeed {
     bandeira?: string;
     cAut?: string;
   };
+  /**
+   * When `true`, this pagamento contributes to the NF-e's `<cobr>`
+   * block (fatura + duplicata installments). Typically paired with a
+   * `nFat` + `vencimento` for boleto-style billing.
+   */
+  readonly duplicata?: boolean;
+  /** Invoice number — propagates to `<cobr>.<fat>.<nFat>`. */
+  readonly nFat?: string;
+  /** ISO datetime — propagates to `<cobr>.<dup>.<dVenc>` (YYYY-MM-DD). */
+  readonly vencimento?: string;
+}
+
+/**
+ * Frete block seeded under `pedido.freteInicial`. The orchestrator's
+ * `<transp>` projection reads `modalidade` + optional carrier/vehicle/
+ * volume details; UI cells read `estado` + `codRastreio` +
+ * `prazoDespacho`. Both consumers live in one struct.
+ */
+interface DevFreteSeed {
+  readonly estado: string;
+  readonly codRastreio?: string;
+  readonly prazoDespacho?: number;
+  /**
+   * NFe `modFrete`: '0'=contratação emitente (CIF), '1'=destinatário (FOB),
+   * '2'=terceiros, '3'/'4'=próprio, '9'=sem transporte. Default '0'.
+   */
+  readonly modalidade?: '0' | '1' | '2' | '3' | '4' | '9';
+  /** Issuer-paid freight value — only meaningful with modalidade='0'. */
+  readonly valorCobrado?: number;
+  readonly transportadora?: {
+    CNPJ?: string;
+    CPF?: string;
+    xNome?: string;
+    IE?: string;
+    xEnder?: string;
+    xMun?: string;
+    UF?: string;
+  };
+  readonly veiculo?: {
+    placa: string;
+    UF?: string;
+    RNTC?: string;
+  };
+  readonly volumes?: ReadonlyArray<{
+    qVol?: number;
+    esp?: string;
+    marca?: string;
+    nVol?: string;
+    pesoL?: number;
+    pesoB?: number;
+  }>;
 }
 
 interface PedidoSeed {
@@ -69,8 +120,8 @@ interface PedidoSeed {
   readonly withCliente?: boolean;
   /** When set, stamp `dtImpressao` so ImpCell shows the printer icon. */
   readonly dtImpressao?: number;
-  /** When set, stamp `freteInicial` so FreteCell shows a label + tracking. */
-  readonly frete?: { estado: string; codRastreio?: string; prazoDespacho?: number };
+  /** When set, stamp `freteInicial`. */
+  readonly frete?: DevFreteSeed;
   /** Cached total — the cell prefers this over recomputing from `itens`. */
   readonly valorCobrado?: number;
   /**
@@ -80,6 +131,8 @@ interface PedidoSeed {
    * orchestrator's status filter picks them up.
    */
   readonly pagamentos?: ReadonlyArray<DevPagamentoSeed>;
+  /** Free-text informational note — propagates to `<infAdic>.<infCpl>`. */
+  readonly infCpl?: string;
 }
 
 const PEDIDOS: PedidoSeed[] = [
@@ -88,10 +141,34 @@ const PEDIDOS: PedidoSeed[] = [
     estadoPedido: 'pago',
     withCliente: true,
     dtImpressao: Date.now() - 86_400_000,
+    // Full frete projection — exercises <transp> with transporta +
+    // veicTransp + vol AND <total>.vFrete > 0 (modalidade='0') AND
+    // the <pag> frete-emitente single-payment override.
     frete: {
       estado: 'entregue',
       codRastreio: 'BR123456789',
       prazoDespacho: Date.now() - 172_800_000,
+      modalidade: '0',
+      valorCobrado: 49.9,
+      transportadora: {
+        CNPJ: '99999999000191',
+        xNome: 'Transportadora Dev SA',
+        IE: '110042490114',
+        xEnder: 'Av Carrier 100',
+        xMun: 'Sao Paulo',
+        UF: 'SP',
+      },
+      veiculo: { placa: 'ABC1D23', UF: 'SP', RNTC: '12345' },
+      volumes: [
+        {
+          qVol: 1,
+          esp: 'CAIXA',
+          marca: 'Dev',
+          nVol: '001',
+          pesoL: 1.25,
+          pesoB: 1.5,
+        },
+      ],
     },
     valorCobrado: 1499.9,
     // Single PIX payment — the orchestrator's happy path for SEFAZ.
@@ -116,16 +193,26 @@ const PEDIDOS: PedidoSeed[] = [
     numero: '0002',
     estadoPedido: 'emProcessamento',
     withCliente: true,
-    frete: { estado: 'aCaminho', codRastreio: 'BR987654321' },
+    frete: { estado: 'aCaminho', codRastreio: 'BR987654321', modalidade: '1' },
     valorCobrado: 250.0,
-    // Boleto a prazo — exercises indPag='1'.
-    pagamentos: [{ forma_de_pagamento: 15, valor: 250.0, aVista: false }],
+    // Boleto a prazo with duplicata=true — exercises both indPag='1'
+    // and the <cobr> block (fat + dup).
+    pagamentos: [
+      {
+        forma_de_pagamento: 15,
+        valor: 250.0,
+        aVista: false,
+        duplicata: true,
+        nFat: 'F-0002',
+        vencimento: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+      },
+    ],
   },
   {
     numero: '0003',
     estadoPedido: 'aguardandoConfirmacaoDePagamento',
     withCliente: true,
-    frete: { estado: 'aguardandoNFe' },
+    frete: { estado: 'aguardandoNFe', modalidade: '9' },
     valorCobrado: 75.5,
     // Credit-card payment — exercises the <card> block.
     pagamentos: [
@@ -140,6 +227,8 @@ const PEDIDOS: PedidoSeed[] = [
         },
       },
     ],
+    // Free-text note — exercises <infAdic>.<infCpl>.
+    infCpl: 'Pedido dev de teste — exercita o bloco <infAdic>.',
   },
   {
     numero: '0004',
@@ -294,9 +383,9 @@ async function writePagamentos(
       juros: null,
       tarifas: null,
       aVista: p.aVista ?? true,
-      duplicata: false,
-      nFat: null,
-      vencimento: null,
+      duplicata: p.duplicata ?? false,
+      nFat: p.nFat ?? null,
+      vencimento: p.vencimento ?? null,
       ultimaModificacao: now,
       dataCancelamento: null,
       dataAprovacao: now,
@@ -349,21 +438,29 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
       enderecoFiscalOuterRef: enderecoFiscalRef,
       listaDePrecosOuterRef: null,
       filialPedidoOuterRef: filialRef,
-      // Optional embedded frete block. The schema is wide; the cell only
-      // reads `estado`, `codRastreio` and `prazoDespacho`, so the rest stay
-      // at their default null/zero. `passthrough()` on the schema means
-      // omitting fields is safe.
+      // Optional embedded frete block. UI cells read `estado` +
+      // `codRastreio` + `prazoDespacho`; the NF-e orchestrator reads
+      // `modalidade` + `valorCobrado` + `transportadora` + `veiculo` +
+      // `volumes`. Both sets coexist on the same struct.
       freteInicial: spec.frete
         ? {
             estado: spec.frete.estado,
             codRastreio: spec.frete.codRastreio ?? null,
             prazoDespacho: spec.frete.prazoDespacho ?? null,
-            modalidade: '0',
+            modalidade: spec.frete.modalidade ?? '0',
+            valorCobrado: spec.frete.valorCobrado ?? null,
+            transportadora: spec.frete.transportadora ?? null,
+            veiculo: spec.frete.veiculo ?? null,
+            reboques: null,
+            vagao: null,
+            balsa: null,
+            volumes: spec.frete.volumes ?? null,
             ehReverso: false,
             prazoExtra: 0,
             timestamp: now - i * 3_600_000,
           }
         : null,
+      infCpl: spec.infCpl ?? null,
     });
 
   if (spec.pagamentos && spec.pagamentos.length > 0) {
