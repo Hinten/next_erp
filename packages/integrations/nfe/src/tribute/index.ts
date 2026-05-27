@@ -20,6 +20,7 @@
 export { buildImpostoXml, NFeTributeError } from './imposto';
 export {
   aggregateISSQN,
+  aggregateRetTrib,
   aggregateTotals,
   buildTotalXml,
   type ISSQNExtras,
@@ -55,6 +56,7 @@ export {
   modBCSchema,
   modBCSTSchema,
   origemSchema,
+  retencaoSchema,
   tributeItemSchema,
   type ConfCOFINS,
   type ConfPIS,
@@ -70,5 +72,6 @@ export {
   type ModBC,
   type ModBCST,
   type Origem,
+  type Retencao,
   type TributeItem,
 } from './schemas';

@@ -237,6 +237,32 @@ export const configuracaoISSQNSchema = z.object({
 export type ConfiguracaoISSQN = z.infer<typeof configuracaoISSQNSchema>;
 
 // ---------------------------------------------------------------------------
+// retencao — per-item retention values (rolled up into <total><retTrib>)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-item retention block. Retentions surface on the NF-e at the
+ * `<total><retTrib>` level (aggregator sums per-item values). The XSD
+ * carries 7 wire fields: vRetPIS, vRetCOFINS, vRetCSLL, vBCIRRF, vIRRF,
+ * vBCRetPrev, vRetPrev. The Flutter-parity schema keeps the matching
+ * BCs (vBCPIS / vBCCOFINS / vBCCSLL) so downstream tooling has access
+ * to them, but those three are not emitted to SEFAZ.
+ */
+export const retencaoSchema = z.object({
+  vBCPIS: z.number().nonnegative().optional().nullable(),
+  vRetPIS: z.number().nonnegative().optional().nullable(),
+  vBCCOFINS: z.number().nonnegative().optional().nullable(),
+  vRetCOFINS: z.number().nonnegative().optional().nullable(),
+  vBCCSLL: z.number().nonnegative().optional().nullable(),
+  vRetCSLL: z.number().nonnegative().optional().nullable(),
+  vBCIRRF: z.number().nonnegative().optional().nullable(),
+  vIRRF: z.number().nonnegative().optional().nullable(),
+  vBCRetPrev: z.number().nonnegative().optional().nullable(),
+  vRetPrev: z.number().nonnegative().optional().nullable(),
+});
+export type Retencao = z.infer<typeof retencaoSchema>;
+
+// ---------------------------------------------------------------------------
 // Top-level Imposto — what `pedido.itens[i].imposto` should be
 // ---------------------------------------------------------------------------
 
@@ -267,6 +293,7 @@ export const impostoSchema = z.object({
   configuracaoPIS: confPISSchema.optional().nullable(),
   configuracaoCOFINS: confCOFINSSchema.optional().nullable(),
   configuracaoIPI: configuracaoIPISchema.optional().nullable(),
+  retencao: retencaoSchema.optional().nullable(),
 });
 export type Imposto = z.infer<typeof impostoSchema>;
 

@@ -13,6 +13,7 @@ import { signNFe, validateXsd, type NFeCertificate } from '../../src/index';
 
 import {
   aggregateISSQN,
+  aggregateRetTrib,
   aggregateTotals,
   buildImpostoXml,
   buildPagXml,
@@ -24,6 +25,7 @@ import {
   TributeFormatError,
   type ConfiguracaoISSQN,
   type Imposto,
+  type Retencao,
 } from '../../src/tribute/index';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
@@ -446,6 +448,62 @@ describe('aggregateISSQN', () => {
       { dCompet: '2026-05-27', cRegTrib: '3' },
     );
     expect(out?.cRegTrib).toBe('3');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// aggregateRetTrib (Group B — retentions)
+// ---------------------------------------------------------------------------
+
+describe('aggregateRetTrib', () => {
+  it('returns undefined when no item carries retencao', () => {
+    const out = aggregateRetTrib([
+      { item: { vProd: 100 }, imposto: impostoFor102() },
+    ]);
+    expect(out).toBeUndefined();
+  });
+
+  it('sums vRetPIS / vRetCOFINS / vRetCSLL across items', () => {
+    const ret: Retencao = { vRetPIS: 1.65, vRetCOFINS: 7.6, vRetCSLL: 1 };
+    const out = aggregateRetTrib([
+      { item: { vProd: 100 }, imposto: { ...impostoFor102(), retencao: ret } },
+      { item: { vProd: 100 }, imposto: { ...impostoFor102(), retencao: ret } },
+    ]);
+    expect(out?.vRetPIS).toBe('3.30');
+    expect(out?.vRetCOFINS).toBe('15.20');
+    expect(out?.vRetCSLL).toBe('2.00');
+  });
+
+  it('emits IRRF and Prev BC + value pairs', () => {
+    const ret: Retencao = { vBCIRRF: 1000, vIRRF: 15, vBCRetPrev: 500, vRetPrev: 55 };
+    const out = aggregateRetTrib([
+      { item: { vProd: 1000 }, imposto: { ...impostoFor102(), retencao: ret } },
+    ]);
+    expect(out?.vBCIRRF).toBe('1000.00');
+    expect(out?.vIRRF).toBe('15.00');
+    expect(out?.vBCRetPrev).toBe('500.00');
+    expect(out?.vRetPrev).toBe('55.00');
+  });
+
+  it('omits fields whose cumulative sum is 0 (Flutter parity)', () => {
+    const ret: Retencao = { vRetPIS: 1.65 };
+    const out = aggregateRetTrib([
+      { item: { vProd: 100 }, imposto: { ...impostoFor102(), retencao: ret } },
+    ]);
+    expect(out?.vRetPIS).toBe('1.65');
+    expect(out?.vRetCOFINS).toBeUndefined();
+    expect(out?.vRetCSLL).toBeUndefined();
+    expect(out?.vIRRF).toBeUndefined();
+    expect(out?.vRetPrev).toBeUndefined();
+  });
+
+  it('ignores items with retencao=null when other items carry retentions', () => {
+    const ret: Retencao = { vRetPIS: 2 };
+    const out = aggregateRetTrib([
+      { item: { vProd: 100 }, imposto: impostoFor102() }, // no retencao
+      { item: { vProd: 100 }, imposto: { ...impostoFor102(), retencao: ret } },
+    ]);
+    expect(out?.vRetPIS).toBe('2.00');
   });
 });
 

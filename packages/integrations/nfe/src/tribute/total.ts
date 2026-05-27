@@ -219,13 +219,48 @@ export function aggregateISSQN(
 /**
  * Aggregate per-item retentions into the optional `<retTrib>` block.
  *
- * **Group B placeholder**: returns `undefined` until `impostoSchema`
- * gains the retention fields. Same rationale as `aggregateISSQN`.
+ * Sums the 7 SEFAZ-wire fields across every item's `retencao`:
+ * vRetPIS, vRetCOFINS, vRetCSLL, vBCIRRF, vIRRF, vBCRetPrev, vRetPrev.
+ * Returns `undefined` when no item carries retentions (typical for
+ * retail Simples Nacional). Each output field is omitted unless the
+ * cumulative sum is > 0 — matches Flutter parity and avoids emitting
+ * zeroed-out retentions that confuse SEFAZ downstream.
  */
 export function aggregateRetTrib(
-  _items: ReadonlyArray<PerItem>,
+  items: ReadonlyArray<PerItem>,
 ): TNFe_infNFe_total_retTrib | undefined {
-  return undefined;
+  let vRetPIS = 0;
+  let vRetCOFINS = 0;
+  let vRetCSLL = 0;
+  let vBCIRRF = 0;
+  let vIRRF = 0;
+  let vBCRetPrev = 0;
+  let vRetPrev = 0;
+  let any = false;
+
+  for (const { imposto } of items) {
+    const r = imposto.retencao;
+    if (r == null) continue;
+    any = true;
+    vRetPIS += r.vRetPIS ?? 0;
+    vRetCOFINS += r.vRetCOFINS ?? 0;
+    vRetCSLL += r.vRetCSLL ?? 0;
+    vBCIRRF += r.vBCIRRF ?? 0;
+    vIRRF += r.vIRRF ?? 0;
+    vBCRetPrev += r.vBCRetPrev ?? 0;
+    vRetPrev += r.vRetPrev ?? 0;
+  }
+  if (!any) return undefined;
+
+  const out: TNFe_infNFe_total_retTrib = {};
+  if (vRetPIS > 0) out.vRetPIS = fmtMoney('vRetPIS', round2(vRetPIS));
+  if (vRetCOFINS > 0) out.vRetCOFINS = fmtMoney('vRetCOFINS', round2(vRetCOFINS));
+  if (vRetCSLL > 0) out.vRetCSLL = fmtMoney('vRetCSLL', round2(vRetCSLL));
+  if (vBCIRRF > 0) out.vBCIRRF = fmtMoney('vBCIRRF', round2(vBCIRRF));
+  if (vIRRF > 0) out.vIRRF = fmtMoney('vIRRF', round2(vIRRF));
+  if (vBCRetPrev > 0) out.vBCRetPrev = fmtMoney('vBCRetPrev', round2(vBCRetPrev));
+  if (vRetPrev > 0) out.vRetPrev = fmtMoney('vRetPrev', round2(vRetPrev));
+  return out;
 }
 
 /**
