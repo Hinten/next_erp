@@ -38,6 +38,7 @@ function fakeRow(id: string): { id: string; data: Pedido } {
 function fakeClient(impl: NFeHttpClient['emitir']): NFeHttpClient {
   return {
     emitir: impl,
+    emitirLote: vi.fn(),
     consultar: vi.fn(),
     processarPendentes: vi.fn(),
   };

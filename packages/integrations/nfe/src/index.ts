@@ -153,6 +153,18 @@ export {
   type CUFCode,
 } from './operations';
 
+// Re-export the SOAP response types that orchestrator-level code uses
+// in function signatures. Other typed responses (TRetConsSitNFe etc.)
+// are reachable through `NFeSchemas` (codegen'd Zod) and the function
+// return types, but `TRetEnviNFe['protNFe']` shows up enough that
+// pulling it from the package root keeps call sites tidy.
+export type {
+  TRetConsReciNFe,
+  TRetConsSitNFe,
+  TRetConsStatServ,
+  TRetEnviNFe,
+} from './types/nfe-schema';
+
 // Generated Zod schemas (one per SEFAZ complexType, plus ROOTS_SCHEMAS).
 // Re-exported as a namespace so callers can pull individual schemas by name
 // without polluting the top-level surface with 160+ symbols. Use as:

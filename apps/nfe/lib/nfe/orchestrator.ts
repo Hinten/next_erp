@@ -56,6 +56,7 @@ import {
   type SefazCall,
   type SefazOutcome,
   type TpEmis,
+  type TRetEnviNFe,
 } from '@delfrance/integrations-nfe';
 import {
   ESTADO_ENVI_NFE_MSG,
@@ -146,12 +147,14 @@ function buildEnviNFeMsgFromLote(params: {
   tpEmis: TpEmis;
   signedXml: string;
   retEnvi: Awaited<ReturnType<typeof autorizarLote>>;
+  /** `'1'` (sync) for 1-NFe lotes; `'0'` (async) for N>1 batches. */
+  indSinc: '0' | '1';
 }): Record<string, unknown> {
   const now = new Date().toISOString();
   return {
     targetsChnfe: [params.chave],
     idLote: params.idLote,
-    indSinc: '1', // Phase A: 1 NFe per lote → SEFAZ runs it sync.
+    indSinc: params.indSinc,
     xml_enviado: params.signedXml,
     xml_retorno: JSON.stringify(params.retEnvi),
     nRec: params.retEnvi.infRec?.nRec ?? null,
@@ -1133,18 +1136,33 @@ function round2(n: number): number {
 }
 
 /**
- * The full emit cycle. Persists `estado='enviando'` BEFORE the SOAP send;
- * applies `applyOutcome` after; runs an inline `consultarSituacaoNFe`
- * if the state machine asks for `recover-via-consulta`.
+ * Result of `prepareEmission` — the inputs `runAllocateGenerateSignTx`
+ * needs, with no side effects yet. Single source of truth for the
+ * single-pedido orchestrator AND the batch orchestrator.
  */
-export async function emitirPedido(
+export interface EmissionPrep {
+  readonly bundle: PedidoBundle;
+  readonly items: ReadonlyArray<FiscalItem>;
+  readonly tpEmis: TpEmis;
+  readonly nfeRef: FirebaseFirestore.DocumentReference;
+  readonly nfeConfigRef: FirebaseFirestore.DocumentReference;
+}
+
+type TxOutcome =
+  | { skip: true; existing: NotaFiscalEletronica }
+  | { skip: false; chave: string; signedXml: string; idLote: number };
+
+/**
+ * Phase 1 of the emit cycle: load + resolve + validate + compute the
+ * stable nfev4 doc id. Pure (no SOAP, no Firestore writes). Throws
+ * `NFeBlockedError` when `bloquearEmissaoNFe` is set so the batch path
+ * can classify the pedido into the "Não emitidas" bucket cleanly.
+ */
+async function prepareEmission(
   fs: Firestore,
   rt: NFeRuntime,
   pedidoId: string,
-): Promise<EmitResult> {
-
-  console.debug(`[nfe/orchestrator] Starting emit cycle for pedidoId '${pedidoId}', runtime ambiente '${rt.ambiente}'`);
-
+): Promise<EmissionPrep> {
   const bundle = await loadPedidoBundle(fs, pedidoId);
   if (bundle.pedido.bloquearEmissaoNFe) {
     throw new NFeBlockedError(pedidoId);
@@ -1165,18 +1183,30 @@ export async function emitirPedido(
   const nfeConfigRef = fs.doc(
     `filiais/${bundle.filialId}/nfeconfig/${DEFAULT_NFE_CONFIG_DOC_ID}`,
   );
+  return { bundle, items, tpEmis, nfeRef, nfeConfigRef };
+}
 
-  // === Atomic: dedup pre-check + allocate + generate + sign + persist. ====
-  // All counter advances and XML persistence happen in ONE Firestore
-  // transaction so a crash mid-flight can never strand a consumed
-  // numeração without a matching nfev4 doc. The SEFAZ SOAP call happens
-  // AFTER the tx commits — we don't want to hold tx locks during a slow
-  // network round-trip.
-  type TxOutcome =
-    | { skip: true; existing: NotaFiscalEletronica }
-    | { skip: false; chave: string; signedXml: string; idLote: number };
-
-  const captured = await fs.runTransaction<TxOutcome>(async (tx) => {
+/**
+ * Phase 2 of the emit cycle: atomic dedup pre-check + allocate (nNF +
+ * idLote) + generate + sign + persist `estado='enviando'`. All counter
+ * advances and XML persistence happen in ONE Firestore transaction so a
+ * crash mid-flight can never strand a consumed numeração without a
+ * matching nfev4 doc. The SEFAZ SOAP call happens AFTER the tx commits.
+ *
+ * `sharedIdLote` is the batch hook: when present, the tx stamps that id
+ * on the nfev4 doc and does NOT advance `NFeConfig.idLote` (the batch's
+ * outer allocate tx already did that). When undefined (single-pedido
+ * path), the tx allocates `cfg.idLote + 1` and writes it back.
+ */
+async function runAllocateGenerateSignTx(
+  fs: Firestore,
+  rt: NFeRuntime,
+  prep: EmissionPrep,
+  sharedIdLote?: number,
+): Promise<TxOutcome> {
+  const { bundle, items, tpEmis, nfeRef, nfeConfigRef } = prep;
+  const pedidoId = bundle.pedidoId;
+  return fs.runTransaction<TxOutcome>(async (tx) => {
     // Reads MUST precede writes in a Firestore transaction.
     const nfeSnap = await tx.get(nfeRef);
     const existing = nfeSnap.exists
@@ -1203,11 +1233,12 @@ export async function emitirPedido(
 
     // Reuse numeração + serie when an existing rejeitada / error /
     // never-sent doc is present; allocate fresh otherwise. idLote
-    // always advances — every retry is a fresh SEFAZ lote.
+    // always advances — every retry is a fresh SEFAZ lote. The batch
+    // path pre-allocates one shared idLote outside this tx.
     const reuse = existing != null;
     const nNF = reuse ? existing.numeracao : cfg.numeracao_atual + 1;
     const serie = reuse ? existing.serie : cfg.serie;
-    const idLote = cfg.idLote + 1;
+    const idLote = sharedIdLote ?? cfg.idLote + 1;
 
     // Generate + sign (CPU only — safe to run inside the tx). The chave
     // is deterministic from nNF + serie + dhEmi + filial CNPJ + tpEmis,
@@ -1219,10 +1250,13 @@ export async function emitirPedido(
     const now = new Date().toISOString();
 
     // Writes — counter doc first, then NFe doc. Both commit or neither.
+    // When `sharedIdLote` was provided, the outer allocate tx already
+    // advanced `cfg.idLote`; we leave it alone to avoid clobbering with
+    // a stale read value.
     tx.set(nfeConfigRef, {
       ...cfg,
       ...(reuse ? {} : { numeracao_atual: nNF }),
-      idLote,
+      ...(sharedIdLote == null ? { idLote } : {}),
       timestamp: now,
     });
     tx.set(nfeRef, {
@@ -1250,17 +1284,40 @@ export async function emitirPedido(
 
     return { skip: false, chave: generated.chave, signedXml, idLote };
   });
-  // ========================================================================
+}
 
-  if (captured.skip) {
-    console.debug(
-      `[nfe/orchestrator] pedido '${pedidoId}' has existing bloqueada NFe ` +
-        `(cStat=${captured.existing.cStat}) — returning persisted state without re-emission`,
-    );
-    return existingToEmitResult(pedidoId, nfeRef.id, captured.existing);
-  }
+/**
+ * Phase 3 of the emit cycle: audit-log + outcome + recovery branches +
+ * `<nfeProc>` build + persist. Per-chave; the batch path calls this
+ * once per pedido after polling `consultarLote` for the lote's
+ * `protNFe[]`.
+ *
+ * `protNFeForChave` is the chave-specific protocol when the caller
+ * already has it (batch path — extracted from `consultarLote.protNFe[]`).
+ * Single-pedido path passes `null` and the helper derives the outcome
+ * from `retEnvi.protNFe` (the sync response).
+ */
+async function applyAutorizadoOutcome(args: {
+  fs: Firestore;
+  rt: NFeRuntime;
+  bundle: PedidoBundle;
+  nfeRef: FirebaseFirestore.DocumentReference;
+  chave: string;
+  signedXml: string;
+  idLote: number;
+  tpEmis: TpEmis;
+  retEnvi: Awaited<ReturnType<typeof autorizarLote>>;
+  protNFeForChave: NonNullable<Awaited<ReturnType<typeof autorizarLote>>['protNFe']> | null;
+  /** `'1'` (sync, single NFe) or `'0'` (async, batch). */
+  indSinc: '0' | '1';
+}): Promise<EmitResult> {
+  const { fs, rt, bundle, nfeRef, chave, signedXml, idLote, tpEmis, retEnvi, indSinc } = args;
 
-  const { chave, signedXml, idLote } = captured;
+  // Audit-log the SOAP round-trip BEFORE running the state machine — so
+  // nRec is durable even if anything below this line crashes.
+  await enviNfeCollection(fs, bundle.filialId).add(
+    buildEnviNFeMsgFromLote({ chave, idLote, tpEmis, signedXml, retEnvi, indSinc }),
+  );
 
   const call: SefazCall = {
     url: rt.endpoints.NfeAutorizacao,
@@ -1269,18 +1326,12 @@ export async function emitirPedido(
     tpAmb: rt.tpAmb,
   };
 
-  const retEnvi = await autorizarLote(call, {
-    idLote: String(idLote),
-    NFe: [signedXml],
-  });
-
-  console.debug(JSON.stringify({ retEnvi }));
-  // Audit-log the SOAP round-trip BEFORE running the state machine — so
-  // nRec is durable even if anything below this line crashes.
-  await enviNfeCollection(fs, bundle.filialId).add(
-    buildEnviNFeMsgFromLote({ chave, idLote, tpEmis, signedXml, retEnvi }),
-  );
-  let outcome: SefazOutcome = outcomeFromRetEnviNFe(retEnvi);
+  // Derive the initial outcome — from the chave-specific protocol when
+  // the batch caller supplied one, otherwise from the lote-level
+  // retEnvi (the sync single-NFe path).
+  let outcome: SefazOutcome = args.protNFeForChave
+    ? outcomeFromInfProt(args.protNFeForChave.infProt)
+    : outcomeFromRetEnviNFe(retEnvi);
   let patch = applyOutcome(
     { estado: ESTADO_NFE.enviando, retries: 0 },
     outcome,
@@ -1288,23 +1339,18 @@ export async function emitirPedido(
   // The chave that ends up on the result (and on the nfev4 doc) may
   // change during a cStat=539 recovery: the "real" NF-e at SEFAZ lives
   // under a different chave (the one in xMotivo's [chNFe:...] marker).
-  // Track the override here so the orchestrator only has one return path.
   let finalChave = chave;
   // Capture the authoritative SEFAZ protocol object for our chave —
-  // populated for the happy sync path and re-assigned for each recovery
+  // populated for the happy path and re-assigned for each recovery
   // branch that surfaces one. Used at the end to build `<nfeProc>`.
   // Left as `null` for 539 (chave swap) since our local signedXml
   // doesn't match the recovered protocol's chNFe.
-  let protNFeRaw: typeof retEnvi.protNFe | null = retEnvi.protNFe ?? null;
+  let protNFeRaw: typeof retEnvi.protNFe | null =
+    args.protNFeForChave ?? retEnvi.protNFe ?? null;
 
   // Duplicidade / lote-not-found → query SEFAZ for the real status.
   if (patch.action === 'recover-via-consulta') {
     if (outcome.cStat === '539') {
-      // 539: duplicidade with DIFFERENT chave. The authoritative
-      // emission lives at outcome.chNFeFromXMotivo — querying our local
-      // chave (consSit) would only return 217. Look the other chave up
-      // in the EnviNFeMsg audit log instead; if found, consultarLote
-      // its previously-stored nRec and swap chave on the nfev4 doc.
       const recovered = await recoverFrom539({
         fs,
         bundle,
@@ -1317,14 +1363,8 @@ export async function emitirPedido(
       });
       patch = recovered.patch;
       if (recovered.chaveOverride) finalChave = recovered.chaveOverride;
-      // Drop the local protocol — even on a successful recovery, the
-      // returned protNFe is for the OTHER chave, and our `signedXml`
-      // was signed against ours. Pairing them would produce an invalid
-      // <nfeProc>. xml_nfe_proc stays null; manual / DistDFe fix.
       protNFeRaw = null;
     } else if (patch.nRec) {
-      // 204 / 205 / 218 / 635 — same-chave duplicidade. consReci(nRec)
-      // is the right query: it fetches the lote that authorized our chave.
       const consReciCall: SefazCall = { ...call, url: rt.endpoints.NfeRetAutorizacao };
       const retRec = await consultarLote(consReciCall, { nRec: patch.nRec });
       await enviNfeCollection(fs, bundle.filialId).add(
@@ -1335,9 +1375,6 @@ export async function emitirPedido(
       outcome = outcomeFromConsReci(retRec, chave);
       patch = applyOutcome({ estado: patch.estado, retries: patch.retries }, outcome);
     } else {
-      // 106 lote-nao-localizado — no nRec available; consSit(chave) is
-      // the last-resort query (it works because SEFAZ knows the chave
-      // even when the lote receipt is gone).
       const consSitCall: SefazCall = { ...call, url: rt.endpoints.NfeConsultaProtocolo };
       const retSit = await consultarSituacaoNFe(consSitCall, { chave });
       await enviNfeCollection(fs, bundle.filialId).add(
@@ -1351,8 +1388,7 @@ export async function emitirPedido(
 
   // Build the `<nfeProc>` envelope when SEFAZ authorized the NF-e and
   // we still have the matching local signedXml (no chave swap). This
-  // is the canonical form for DANFE rendering and fiscal archives —
-  // see `packages/integrations/nfe/src/nfeproc/index.ts`.
+  // is the canonical form for DANFE rendering and fiscal archives.
   const nfeProcXml =
     classifyCStat(patch.cStat) === 'autorizada' &&
     protNFeRaw != null &&
@@ -1368,7 +1404,7 @@ export async function emitirPedido(
 
   return {
     nfeId: nfeRef.id,
-    pedidoId,
+    pedidoId: bundle.pedidoId,
     estado: patch.estado,
     chave: finalChave,
     nRec: patch.nRec,
@@ -1376,6 +1412,413 @@ export async function emitirPedido(
     xMotivo: patch.xMotivo,
     reused: false,
   };
+}
+
+/**
+ * The full emit cycle for a single pedido. Persists `estado='enviando'`
+ * BEFORE the SOAP send; applies `applyOutcome` after; runs an inline
+ * `consultarSituacaoNFe` if the state machine asks for
+ * `recover-via-consulta`.
+ *
+ * Composition of the three phase helpers (`prepareEmission`,
+ * `runAllocateGenerateSignTx`, `applyAutorizadoOutcome`) — `emitirPedidosLote`
+ * uses the same three helpers with one shared `idLote` per chunk.
+ */
+export async function emitirPedido(
+  fs: Firestore,
+  rt: NFeRuntime,
+  pedidoId: string,
+): Promise<EmitResult> {
+  console.debug(`[nfe/orchestrator] Starting emit cycle for pedidoId '${pedidoId}', runtime ambiente '${rt.ambiente}'`);
+
+  const prep = await prepareEmission(fs, rt, pedidoId);
+  const captured = await runAllocateGenerateSignTx(fs, rt, prep);
+
+  if (captured.skip) {
+    console.debug(
+      `[nfe/orchestrator] pedido '${pedidoId}' has existing bloqueada NFe ` +
+        `(cStat=${captured.existing.cStat}) — returning persisted state without re-emission`,
+    );
+    return existingToEmitResult(pedidoId, prep.nfeRef.id, captured.existing);
+  }
+
+  const { chave, signedXml, idLote } = captured;
+  const call: SefazCall = {
+    url: rt.endpoints.NfeAutorizacao,
+    cert: rt.cert,
+    agent: rt.agent,
+    tpAmb: rt.tpAmb,
+  };
+
+  const retEnvi = await autorizarLote(call, {
+    idLote: String(idLote),
+    NFe: [signedXml],
+  });
+  console.debug(JSON.stringify({ retEnvi }));
+
+  return applyAutorizadoOutcome({
+    fs,
+    rt,
+    bundle: prep.bundle,
+    nfeRef: prep.nfeRef,
+    chave,
+    signedXml,
+    idLote,
+    tpEmis: prep.tpEmis,
+    retEnvi,
+    protNFeForChave: null,
+    indSinc: '1',
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Batch emission — emitirPedidosLote
+// ---------------------------------------------------------------------------
+
+/** SEFAZ MOC 7.0 caps a single batch at 50 NF-es. We enforce this at request entry. */
+const MAX_PEDIDOS_PER_BATCH = 50;
+/**
+ * SEFAZ accepts up to 50 per lote, but Flutter's `gerarNFePedidos`
+ * (`.old/packages/pedido_nfe/lib/src/tasks.dart:633`) chunks at 20 per
+ * lote for connection reliability + message-size headroom. We mirror
+ * that battle-tested limit.
+ */
+const MAX_PEDIDOS_PER_CHUNK = 20;
+const POLL_MAX_ATTEMPTS = 12;
+const POLL_INITIAL_DELAY_MS = 1000;
+const POLL_MAX_DELAY_MS = 8000;
+
+/** Per-pedido failure inside a batch. Distinct shape from EmitResult so callers can branch. */
+export interface EmitError {
+  readonly pedidoId: string;
+  /** Class name of the error (JSON-safe — `NFeBlockedError`, `NFePedidoNotFoundError`, ...). */
+  readonly errorCode: string;
+  readonly errorMessage: string;
+}
+
+export interface BatchEmitResult {
+  readonly results: ReadonlyArray<EmitResult | EmitError>;
+}
+
+/**
+ * Batch emit cycle. Mirrors `emitirPedido` but fans out across one
+ * shared idLote per (filial, ≤20-pedido) chunk. Per-pedido failures
+ * surface as `EmitError` entries in the result array — the request
+ * never throws unless an upstream invariant fails (empty input, >50
+ * total pedidos, runtime boot).
+ *
+ * Mirror of Flutter's `gerarNFePedidos` at
+ * `.old/packages/pedido_nfe/lib/src/tasks.dart:59`: group by filial,
+ * sub-chunk at 20, allocate one idLote per chunk, call autorizarLote
+ * once per chunk, poll consultarLote for async chunks, apply per-chave
+ * outcome.
+ */
+export async function emitirPedidosLote(
+  fs: Firestore,
+  rt: NFeRuntime,
+  pedidoIds: ReadonlyArray<string>,
+): Promise<BatchEmitResult> {
+  if (pedidoIds.length === 0) {
+    throw new NFeOrchestratorError('emitirPedidosLote: pedidoIds is empty');
+  }
+  if (pedidoIds.length > MAX_PEDIDOS_PER_BATCH) {
+    throw new NFeOrchestratorError(
+      `emitirPedidosLote: ${pedidoIds.length} pedidos exceeds MAX_PEDIDOS_PER_BATCH (${MAX_PEDIDOS_PER_BATCH})`,
+    );
+  }
+  console.debug(`[nfe/orchestrator] Batch emit starting — ${pedidoIds.length} pedido(s), ambiente '${rt.ambiente}'`);
+
+  // 1. Prepare every pedido in parallel. prepareEmission failures
+  //    (NFeBlockedError, NFePedidoNotFoundError, NFeMissingImpostoError,
+  //    NFeOrchestratorError) become per-pedido EmitError entries — the
+  //    pedido never reaches a lote.
+  const preps = await Promise.allSettled(
+    pedidoIds.map((id) => prepareEmission(fs, rt, id)),
+  );
+  const results: Array<EmitResult | EmitError> = [];
+  const successPreps: Array<{ prep: EmissionPrep; pedidoId: string }> = [];
+  preps.forEach((p, i) => {
+    const pedidoId = pedidoIds[i]!;
+    if (p.status === 'rejected') {
+      results.push(toEmitError(pedidoId, p.reason));
+    } else {
+      successPreps.push({ prep: p.value, pedidoId });
+    }
+  });
+  if (successPreps.length === 0) return { results };
+
+  // 2. Group by filialId — each filial has its own NFeConfig + idLote
+  //    counter. Mirrors the Flutter outer loop at tasks.dart:134.
+  const groups = new Map<string, Array<{ prep: EmissionPrep; pedidoId: string }>>();
+  for (const sp of successPreps) {
+    const filialId = sp.prep.bundle.filialId;
+    const arr = groups.get(filialId) ?? [];
+    arr.push(sp);
+    groups.set(filialId, arr);
+  }
+
+  // 3. Sub-chunk each filial group into runs of ≤20 (Flutter parity).
+  const chunks: Array<{ filialId: string; group: Array<{ prep: EmissionPrep; pedidoId: string }> }> = [];
+  for (const [filialId, group] of groups) {
+    for (let i = 0; i < group.length; i += MAX_PEDIDOS_PER_CHUNK) {
+      chunks.push({
+        filialId,
+        group: group.slice(i, i + MAX_PEDIDOS_PER_CHUNK),
+      });
+    }
+  }
+  console.debug(
+    `[nfe/orchestrator] Batch fan-out: ${groups.size} filial(is) × ${chunks.length} chunk(s)`,
+  );
+
+  // 4. Process each chunk in parallel. Chunk-level failures (e.g.
+  //    NFeConfig missing) cascade to every pedido in that chunk.
+  const chunkResults = await Promise.allSettled(
+    chunks.map((c) => processChunk(fs, rt, c.filialId, c.group)),
+  );
+  chunkResults.forEach((cr, i) => {
+    const chunk = chunks[i]!;
+    if (cr.status === 'rejected') {
+      for (const sp of chunk.group) {
+        results.push(toEmitError(sp.pedidoId, cr.reason));
+      }
+    } else {
+      for (const r of cr.value) results.push(r);
+    }
+  });
+  return { results };
+}
+
+/**
+ * Process one (filial, ≤20-pedido) chunk: allocate one shared idLote,
+ * run per-pedido alloc-generate-sign txs in parallel, call
+ * autorizarLote once for the chunk, poll for async lotes, apply
+ * per-chave outcome.
+ */
+async function processChunk(
+  fs: Firestore,
+  rt: NFeRuntime,
+  filialId: string,
+  group: ReadonlyArray<{ prep: EmissionPrep; pedidoId: string }>,
+): Promise<Array<EmitResult | EmitError>> {
+  // 4a. Allocate one shared idLote for the whole chunk (one tx).
+  const nfeConfigRef = fs.doc(
+    `filiais/${filialId}/nfeconfig/${DEFAULT_NFE_CONFIG_DOC_ID}`,
+  );
+  const sharedIdLote = await fs.runTransaction(async (tx) => {
+    const cfgSnap = await tx.get(nfeConfigRef);
+    if (!cfgSnap.exists) throw new NFeConfigNotFoundError(filialId);
+    const cfg = nfeConfigSchema.parse(cfgSnap.data()) as NFeConfig;
+    const idLote = cfg.idLote + 1;
+    tx.set(nfeConfigRef, { ...cfg, idLote, timestamp: new Date().toISOString() });
+    return idLote;
+  });
+
+  // 4b. Per-pedido tx in parallel — each allocates its own nNF but
+  //     stamps the shared idLote on its nfev4 doc.
+  const txOutcomes = await Promise.allSettled(
+    group.map((sp) => runAllocateGenerateSignTx(fs, rt, sp.prep, sharedIdLote)),
+  );
+  const txResults: Array<EmitResult | EmitError> = [];
+  const toSend: Array<{
+    prep: EmissionPrep;
+    pedidoId: string;
+    chave: string;
+    signedXml: string;
+  }> = [];
+  txOutcomes.forEach((o, i) => {
+    const sp = group[i]!;
+    if (o.status === 'rejected') {
+      txResults.push(toEmitError(sp.pedidoId, o.reason));
+    } else if (o.value.skip) {
+      // Mirrors Flutter's `jaAprovadas` short-circuit at tasks.dart:159 —
+      // existing bloqueada/aprovada/cancelada nfev4 short-circuits out
+      // of the lote and lands in the "Não emitidas" bucket on the UI.
+      txResults.push(
+        existingToEmitResult(sp.pedidoId, sp.prep.nfeRef.id, o.value.existing),
+      );
+    } else {
+      toSend.push({
+        prep: sp.prep,
+        pedidoId: sp.pedidoId,
+        chave: o.value.chave,
+        signedXml: o.value.signedXml,
+      });
+    }
+  });
+  if (toSend.length === 0) return txResults;
+
+  // 4c. autorizarLote — one SOAP call for the whole chunk. indSinc='1'
+  //     when only one NFe survived prep+tx; '0' otherwise.
+  const call: SefazCall = {
+    url: rt.endpoints.NfeAutorizacao,
+    cert: rt.cert,
+    agent: rt.agent,
+    tpAmb: rt.tpAmb,
+  };
+  const indSinc: '0' | '1' = toSend.length === 1 ? '1' : '0';
+  const retEnvi = await autorizarLote(call, {
+    idLote: String(sharedIdLote),
+    NFe: toSend.map((s) => s.signedXml),
+    indSinc,
+  });
+  console.debug(
+    `[nfe/orchestrator] Batch chunk autorizarLote — filial=${filialId} ` +
+      `idLote=${sharedIdLote} count=${toSend.length} indSinc=${indSinc} ` +
+      `retCStat=${retEnvi.cStat}`,
+  );
+
+  // 4d. For async chunks, poll consultarLote until cStat=104 (lote
+  //     processado) or the budget runs out.
+  let protNFeArr: NonNullable<TRetEnviNFe['protNFe']>[] = [];
+  if (indSinc === '0') {
+    const nRec = retEnvi.infRec?.nRec ?? null;
+    if (!nRec) {
+      // SEFAZ accepted but didn't give us nRec — exceptional but
+      // defended. Each pedido stays in aguardandoResposta; the
+      // processar-pendentes cron has nothing to look up, so the
+      // operator handles via consSit(chave).
+      for (const s of toSend) {
+        txResults.push({
+          nfeId: s.prep.nfeRef.id,
+          pedidoId: s.pedidoId,
+          estado: ESTADO_NFE.aguardandoResposta,
+          chave: s.chave,
+          nRec: null,
+          cStat: retEnvi.cStat,
+          xMotivo: retEnvi.xMotivo,
+          reused: false,
+        });
+      }
+      return txResults;
+    }
+    protNFeArr = await pollConsultarLote(rt, call, nRec);
+    if (protNFeArr.length === 0) {
+      // Timed out without resolution. Persist nRec on each nfev4 so
+      // the cron at apps/nfe/app/api/nfe/processar-pendentes can
+      // drain it later, then return aguardandoResposta entries.
+      await Promise.all(
+        toSend.map((s) =>
+          persistPatch(s.prep.nfeRef, {
+            estado: ESTADO_NFE.aguardandoResposta,
+            retries: 0,
+            nRec,
+            cStat: '105',
+            xMotivo: 'Lote em processamento — handed off to processar-pendentes',
+            action: 'backoff',
+          }),
+        ),
+      );
+      for (const s of toSend) {
+        txResults.push({
+          nfeId: s.prep.nfeRef.id,
+          pedidoId: s.pedidoId,
+          estado: ESTADO_NFE.aguardandoResposta,
+          chave: s.chave,
+          nRec,
+          cStat: '105',
+          xMotivo: 'Lote em processamento — handed off to processar-pendentes',
+          reused: false,
+        });
+      }
+      return txResults;
+    }
+  } else {
+    // Sync (single-NFe) chunk — retEnvi.protNFe is the singular protocol.
+    if (retEnvi.protNFe) protNFeArr = [retEnvi.protNFe];
+  }
+
+  // 4e. Apply outcome per chave. Each call audits the retEnvi-level
+  //     response (parameterized indSinc) AND handles per-chave
+  //     recovery branches (539 / nRec / 106).
+  const outcomes = await Promise.allSettled(
+    toSend.map(async (s) => {
+      const proto = protNFeArr.find((p) => p.infProt.chNFe === s.chave) ?? null;
+      return applyAutorizadoOutcome({
+        fs,
+        rt,
+        bundle: s.prep.bundle,
+        nfeRef: s.prep.nfeRef,
+        chave: s.chave,
+        signedXml: s.signedXml,
+        idLote: sharedIdLote,
+        tpEmis: s.prep.tpEmis,
+        retEnvi,
+        protNFeForChave: proto,
+        indSinc,
+      });
+    }),
+  );
+  outcomes.forEach((o, i) => {
+    const s = toSend[i]!;
+    if (o.status === 'rejected') {
+      txResults.push(toEmitError(s.pedidoId, o.reason));
+    } else {
+      txResults.push(o.value);
+    }
+  });
+  return txResults;
+}
+
+/**
+ * Poll `consultarLote(nRec)` until cStat=104 (lote processado) or the
+ * budget runs out. Returns the `protNFe[]` on success; empty array on
+ * timeout (caller persists nRec and hands off to the cron).
+ */
+async function pollConsultarLote(
+  rt: NFeRuntime,
+  call: SefazCall,
+  nRec: string,
+): Promise<NonNullable<TRetEnviNFe['protNFe']>[]> {
+  const consReciCall: SefazCall = { ...call, url: rt.endpoints.NfeRetAutorizacao };
+  let delay = POLL_INITIAL_DELAY_MS;
+  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      await new Promise<void>((r) => setTimeout(r, delay));
+      delay = Math.min(delay * 2, POLL_MAX_DELAY_MS);
+    }
+    const retRec = await consultarLote(consReciCall, { nRec });
+    console.debug(
+      `[nfe/orchestrator] pollConsultarLote nRec=${nRec} attempt=${attempt} ` +
+        `cStat=${retRec.cStat} protNFe=${retRec.protNFe?.length ?? 0}`,
+    );
+    if (retRec.cStat === '104' && retRec.protNFe && retRec.protNFe.length > 0) {
+      return retRec.protNFe;
+    }
+    if (retRec.cStat !== '105') {
+      // 4xx / 5xx / unexpected — bail out. The caller's per-chave
+      // recovery branch handles non-104/105 outcomes via consSit.
+      return [];
+    }
+  }
+  return []; // budget exhausted
+}
+
+/**
+ * Narrow an unknown exception into a JSON-safe EmitError. Non-Error
+ * throwables are re-raised (CLAUDE.md rule 6 — don't swallow what we
+ * can't classify).
+ */
+function toEmitError(pedidoId: string, reason: unknown): EmitError {
+  if (reason instanceof NFeBlockedError) {
+    return { pedidoId, errorCode: 'NFeBlockedError', errorMessage: reason.message };
+  }
+  if (reason instanceof NFePedidoNotFoundError) {
+    return { pedidoId, errorCode: 'NFePedidoNotFoundError', errorMessage: reason.message };
+  }
+  if (reason instanceof NFeMissingImpostoError) {
+    return { pedidoId, errorCode: 'NFeMissingImpostoError', errorMessage: reason.message };
+  }
+  if (reason instanceof NFeOrchestratorError) {
+    return { pedidoId, errorCode: 'NFeOrchestratorError', errorMessage: reason.message };
+  }
+  if (reason instanceof NFeConfigNotFoundError) {
+    return { pedidoId, errorCode: 'NFeConfigNotFoundError', errorMessage: reason.message };
+  }
+  if (reason instanceof Error) {
+    return { pedidoId, errorCode: reason.name, errorMessage: reason.message };
+  }
+  throw reason;
 }
 
 /**
