@@ -348,56 +348,15 @@ function buildCall(url: string): SefazCall {
 // Tests
 // ---------------------------------------------------------------------------
 
-describeOrSkip('SEFAZ-SP homologação — live emission round-trip', () => {
-  it(
-    'generate → sign → autorizarLote (indSinc=1) → assert protNFe.cStat=100',
-    async () => {
-      // Pre-flight reachability — fail LOUDLY if SEFAZ is paralisado.
-      // We intentionally don't self-skip on 108/109: silently green
-      // builds in a SEFAZ outage are the worst possible signal for a
-      // fiscal pipeline. The test fails, we wait, we rerun when SEFAZ
-      // is back. (Pulled the prior self-skip — too risky.)
-      const statusCall = buildCall(getEndpoints('SP', 'homologacao').NfeStatusServico);
-      const status = await consultarStatusServico(statusCall, { cUF: '35' });
-      expect(status.cStat).toBe('107');
-
-      // Build a one-shot NF-e with a fresh nNF so we don't trip duplicidade.
-      const numeracao = 1_000_000 + (Date.now() & 0xffff);
-      const fixture = buildFixture(numeracao);
-      const out = generateNFe(fixture);
-
-      const signedXml = signNFe(out.nfeXml, statusCall.cert);
-      expect(signedXml).toContain(`Id="NFe${out.chave}"`);
-
-      const autorizacaoCall = buildCall(
-        getEndpoints('SP', 'homologacao').NfeAutorizacao,
-      );
-      // indSinc='1' so SEFAZ processes synchronously and returns the
-      // protNFe inline — keeps the test fast (no poll needed in the
-      // happy path) and matches Phase A's one-NF-e-per-lote shape.
-      const ret = await autorizarLote(autorizacaoCall, {
-        idLote: out.chave.slice(-15),
-        NFe: [signedXml],
-        indSinc: '1',
-      });
-
-      // eslint-disable-next-line no-console
-      console.log(
-        `[autorizarLote] cStat=${ret.cStat} xMotivo="${ret.xMotivo}" chave=${out.chave}`,
-      );
-
-      const prot = await resolveProtocol(ret, autorizacaoCall);
-      expect(prot, `no protNFe surfaced (lote cStat=${ret.cStat} ${ret.xMotivo})`).toBeDefined();
-      // eslint-disable-next-line no-console
-      console.log(
-        `[protNFe] cStat=${prot!.infProt.cStat} xMotivo="${prot!.infProt.xMotivo}" nProt=${prot!.infProt.nProt}`,
-      );
-      expect(prot!.infProt.chNFe).toBe(out.chave);
-      expect(prot!.infProt.cStat).toBe('100');
-    },
-    120_000,
-  );
-
+describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract', () => {
+  // NOTE: the previous "generate → sign → autorizarLote (indSinc=1) →
+  // cStat=100" happy-path test was removed when the orchestrator-level
+  // homologação test (`apps/nfe/test/lib/nfe/orchestrator.homologacao.test.ts`)
+  // landed in PR-γ — that test covers the same library call chain
+  // through `emitirPedido` plus the Firestore persistence layer. The
+  // duplicidade test below stays because it pins the consSitNFe
+  // recovery contract the orchestrator's anti-loss path depends on
+  // (see `recoverFrom539` in `apps/nfe/lib/nfe/orchestrator.ts`).
   it(
     'duplicidade recovery — second emission returns 204, consSitNFe resolves to original 100',
     async () => {
