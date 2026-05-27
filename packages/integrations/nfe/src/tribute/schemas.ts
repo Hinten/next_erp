@@ -104,6 +104,14 @@ export const confICMSSN500Schema = z.object({
   vICMSEfet: z.number().nonnegative().optional().nullable(),
 });
 
+/** indISS — Indicador da exigibilidade do ISS (XSD enumeration). */
+export const indISSSchema = z.enum(['1', '2', '3', '4', '5', '6', '7']);
+export type IndISS = z.infer<typeof indISSSchema>;
+
+/** indIncentivo — Indicador de incentivo fiscal (1=sim, 2=não). */
+export const indIncentivoSchema = z.enum(['1', '2']);
+export type IndIncentivo = z.infer<typeof indIncentivoSchema>;
+
 /** confICMSSN900 — CSOSN 900 (kitchen sink). */
 export const confICMSSN900Schema = z.object({
   modBC: modBCSchema.optional().nullable(),
@@ -164,6 +172,97 @@ export const confCOFINSSchema = z.object({
 export type ConfCOFINS = z.infer<typeof confCOFINSSchema>;
 
 // ---------------------------------------------------------------------------
+// configuracaoIPI — mirror of the Flutter class (per-item IPI)
+// ---------------------------------------------------------------------------
+
+/** IPI CST codes — XSD `IPITrib` (tributado) + `IPINT` (não tributado). */
+export const cstIpiSchema = z.enum([
+  '00', '01', '02', '03', '04', '05',
+  '49', '50', '51', '52', '53', '54', '55',
+  '99',
+]);
+export type CstIpi = z.infer<typeof cstIpiSchema>;
+
+/** The set of CSTs that emit `<IPITrib>`; the rest emit `<IPINT>`. */
+export const IPI_TRIB_CSTS = new Set<CstIpi>(['00', '49', '50', '99']);
+
+/**
+ * Mirror of the Flutter `ConfiguracaoIPI` slot on Imposto. Carries the
+ * `cEnq` (XSD-required, 1-3 chars — Código de Enquadramento Legal,
+ * typically `'999'` for "outros") and a single CST that picks the
+ * `<IPITrib>` vs `<IPINT>` wire variant. Tributado fields are kept
+ * optional here (the builder enforces `vIPI` when the CST is IPITrib).
+ */
+export const configuracaoIPISchema = z.object({
+  cEnq: z.string().min(1).max(3),
+  CST: cstIpiSchema,
+  vBC: z.number().nonnegative().optional().nullable(),
+  pIPI: z.number().nonnegative().optional().nullable(),
+  qUnid: z.number().nonnegative().optional().nullable(),
+  vUnid: z.number().nonnegative().optional().nullable(),
+  vIPI: z.number().nonnegative().optional().nullable(),
+});
+export type ConfiguracaoIPI = z.infer<typeof configuracaoIPISchema>;
+
+// ---------------------------------------------------------------------------
+// configuracaoISSQN — mirror of the Flutter class (per-item ISSQN)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirror of the Flutter `ConfiguracaoISSQN` slot on Imposto. Driven
+ * directly by the XSD `<ISSQN>` shape — required: vBC, vAliq, vISSQN,
+ * cMunFG (7-digit IBGE), cListServ (Lei Complementar 116/2003), indISS,
+ * indIncentivo. The XSD makes `<imposto>` carry **either** `<ICMS>` **or**
+ * `<ISSQN>` (xs:choice). When `configuracaoISSQN` is set on an item,
+ * the dispatcher emits `<ISSQN>` and skips `<ICMS>`.
+ */
+export const configuracaoISSQNSchema = z.object({
+  vBC: z.number().nonnegative(),
+  vAliq: z.number().nonnegative(),
+  vISSQN: z.number().nonnegative(),
+  cMunFG: z.string().regex(/^\d{7}$/),
+  cListServ: z.string().regex(/^\d{2}\.\d{2}$|^\d{4,5}$/),
+  vDeducao: z.number().nonnegative().optional().nullable(),
+  vOutro: z.number().nonnegative().optional().nullable(),
+  vDescIncond: z.number().nonnegative().optional().nullable(),
+  vDescCond: z.number().nonnegative().optional().nullable(),
+  vISSRet: z.number().nonnegative().optional().nullable(),
+  indISS: indISSSchema,
+  cServico: z.string().min(1).max(20).optional().nullable(),
+  cMun: z.string().regex(/^\d{7}$/).optional().nullable(),
+  cPais: z.string().regex(/^\d{1,4}$/).optional().nullable(),
+  nProcesso: z.string().min(1).max(30).optional().nullable(),
+  indIncentivo: indIncentivoSchema,
+});
+export type ConfiguracaoISSQN = z.infer<typeof configuracaoISSQNSchema>;
+
+// ---------------------------------------------------------------------------
+// retencao — per-item retention values (rolled up into <total><retTrib>)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-item retention block. Retentions surface on the NF-e at the
+ * `<total><retTrib>` level (aggregator sums per-item values). The XSD
+ * carries 7 wire fields: vRetPIS, vRetCOFINS, vRetCSLL, vBCIRRF, vIRRF,
+ * vBCRetPrev, vRetPrev. The Flutter-parity schema keeps the matching
+ * BCs (vBCPIS / vBCCOFINS / vBCCSLL) so downstream tooling has access
+ * to them, but those three are not emitted to SEFAZ.
+ */
+export const retencaoSchema = z.object({
+  vBCPIS: z.number().nonnegative().optional().nullable(),
+  vRetPIS: z.number().nonnegative().optional().nullable(),
+  vBCCOFINS: z.number().nonnegative().optional().nullable(),
+  vRetCOFINS: z.number().nonnegative().optional().nullable(),
+  vBCCSLL: z.number().nonnegative().optional().nullable(),
+  vRetCSLL: z.number().nonnegative().optional().nullable(),
+  vBCIRRF: z.number().nonnegative().optional().nullable(),
+  vIRRF: z.number().nonnegative().optional().nullable(),
+  vBCRetPrev: z.number().nonnegative().optional().nullable(),
+  vRetPrev: z.number().nonnegative().optional().nullable(),
+});
+export type Retencao = z.infer<typeof retencaoSchema>;
+
+// ---------------------------------------------------------------------------
 // Top-level Imposto — what `pedido.itens[i].imposto` should be
 // ---------------------------------------------------------------------------
 
@@ -189,10 +288,12 @@ export const impostoSchema = z.object({
   CEST: z.string().regex(/^\d{7}$/).optional().nullable(),
   /** Unidade comercial (e.g. 'UN'). */
   unidade: z.string().min(1).max(6).optional().nullable(),
-  configuracaoICMS: configuracaoICMSSchema,
+  configuracaoICMS: configuracaoICMSSchema.optional().nullable(),
+  configuracaoISSQN: configuracaoISSQNSchema.optional().nullable(),
   configuracaoPIS: confPISSchema.optional().nullable(),
   configuracaoCOFINS: confCOFINSSchema.optional().nullable(),
-  // IPI: out of scope for Phase A retail (clothing typically NT).
+  configuracaoIPI: configuracaoIPISchema.optional().nullable(),
+  retencao: retencaoSchema.optional().nullable(),
 });
 export type Imposto = z.infer<typeof impostoSchema>;
 

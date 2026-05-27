@@ -66,6 +66,7 @@ import {
   integracaoSchema,
   nfeConfigSchema,
   pagamentoSchema,
+  regraImpostoSchema,
   type Cliente,
   type Endereco,
   type EnviNFeMsg,
@@ -78,9 +79,11 @@ import {
   type Operacao,
   type Pagamento,
   type Pedido,
+  type RegraImposto,
 } from '@delfrance/schemas';
 import { z } from 'zod';
 
+import { createFirestoreImpostoResolver } from './imposto-resolver';
 import type { NFeRuntime } from './runtime';
 
 export class NFePedidoNotFoundError extends Error {
@@ -309,6 +312,14 @@ interface PedidoBundle {
    * couldn't be resolved.
    */
   readonly integracao: Integracao | null;
+  /**
+   * Imposto rules under `operacao/{operacaoId}/regraimposto`. Pre-loaded
+   * in the bundle fan-out so the per-item resolver (`resolveItemImposto`)
+   * can OR-match against produtoUid / categoriaUid / NCM without any
+   * additional Firestore reads. May be empty (common in setups where
+   * every produto carries its own `impostoProduto` doc).
+   */
+  readonly regrasImposto: readonly RegraImposto[];
 }
 
 /** Per-item fiscal data after merging Pedido item + stamped Imposto. */
@@ -354,13 +365,15 @@ export async function loadPedidoBundle(
   if (!operacaoPath) throw new NFeOrchestratorError(`pedido '${pedidoId}': operacaoPedidoOuterRef missing`);
   if (!enderecoPath) throw new NFeOrchestratorError(`pedido '${pedidoId}': enderecoFiscalOuterRef missing`);
 
-  const [filialSnap, clienteSnap, operacaoSnap, enderecoSnap, pagamentoSnap] = await Promise.all([
-    fs.doc(filialPath).get(),
-    fs.doc(clientePath).get(),
-    fs.doc(operacaoPath).get(),
-    fs.doc(enderecoPath).get(),
-    fs.collection('pedidos').doc(pedidoId).collection('pagamento').get(),
-  ]);
+  const [filialSnap, clienteSnap, operacaoSnap, enderecoSnap, pagamentoSnap, regraImpostoSnap] =
+    await Promise.all([
+      fs.doc(filialPath).get(),
+      fs.doc(clientePath).get(),
+      fs.doc(operacaoPath).get(),
+      fs.doc(enderecoPath).get(),
+      fs.collection('pedidos').doc(pedidoId).collection('pagamento').get(),
+      fs.doc(operacaoPath).collection('regraimposto').get(),
+    ]);
 
   if (!filialSnap.exists) throw new NFeOrchestratorError(`filial '${filialPath}' not found`);
   if (!clienteSnap.exists) throw new NFeOrchestratorError(`cliente '${clientePath}' not found`);
@@ -376,6 +389,7 @@ export async function loadPedidoBundle(
   const operacao = operacaoSnap.data() as Operacao;
   const frete = parseFreteFromPedido(pedidoId, pedido);
   const integracao = await maybeLoadIntegracao(fs, pedidoId, pedido, operacao);
+  const regrasImposto = parseRegraImpostoSnapshot(pedidoId, regraImpostoSnap);
 
   return {
     pedidoId,
@@ -390,7 +404,37 @@ export async function loadPedidoBundle(
     pagamentos,
     frete,
     integracao,
+    regrasImposto,
   };
+}
+
+/**
+ * Parse the `regraimposto` subcollection snapshot, dropping (with a
+ * warning) any doc that fails `regraImpostoSchema` validation. The
+ * resolver tolerates an empty array — the cascade will fall through to
+ * the per-item `pedido.itens[i].imposto` (or fail loudly when nothing
+ * stamps the item).
+ */
+function parseRegraImpostoSnapshot(
+  pedidoId: string,
+  snap: FirebaseFirestore.QuerySnapshot,
+): readonly RegraImposto[] {
+  const out: RegraImposto[] = [];
+  for (const doc of snap.docs) {
+    const parsed = regraImpostoSchema.safeParse({ id: doc.id, ...doc.data() });
+    if (parsed.success) {
+      out.push(parsed.data);
+    } else {
+      console.warn(
+        `[nfe/orchestrator] pedido '${pedidoId}': skipping invalid regraImposto '${doc.id}' — ${parsed.error.issues[0]?.message ?? 'parse failed'}`,
+      );
+    }
+  }
+  console.debug(
+    `[nfe/orchestrator] pedido '${pedidoId}': loaded ${out.length} regraImposto(s) ` +
+      `(of ${snap.size} in subcollection)`,
+  );
+  return out;
 }
 
 /**
@@ -505,6 +549,47 @@ function refToPath(ref: unknown): string | null {
     return typeof p === 'string' ? p : null;
   }
   return null;
+}
+
+/**
+ * For every pedido item whose `imposto` is missing, run the resolver
+ * cascade (item → impostoProduto → impostoCategoria → regraImposto)
+ * and stamp the resolved Imposto back onto the item. Items whose
+ * imposto can't be resolved are left untouched — flattenAndValidate
+ * will throw `NFeMissingImpostoError` with the precise location.
+ *
+ * Items already carrying a valid imposto skip the resolver entirely
+ * (no Firestore reads for those) — preserves Phase A retail fixtures
+ * that pre-stamp imposto at order time.
+ */
+async function preResolveImpostos(
+  bundle: PedidoBundle,
+  fs: Firestore,
+): Promise<void> {
+  const itens = (bundle.pedido as { itens?: Record<string, unknown[]> }).itens ?? {};
+  const missing: Array<{ produtoUid: string; entry: Record<string, unknown> }> = [];
+  for (const [produtoUid, list] of Object.entries(itens)) {
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      if (entry == null || typeof entry !== 'object') continue;
+      const e = entry as Record<string, unknown>;
+      if (e.imposto == null) missing.push({ produtoUid, entry: e });
+    }
+  }
+  if (missing.length === 0) return;
+
+  console.debug(
+    `[nfe/orchestrator] pedido '${bundle.pedidoId}': ${missing.length} item(s) ` +
+      'missing imposto — running resolver cascade',
+  );
+  const resolver = createFirestoreImpostoResolver(fs, {
+    operacaoId: bundle.operacaoId,
+    regrasImposto: bundle.regrasImposto,
+  });
+  for (const { produtoUid, entry } of missing) {
+    const resolved = await resolver.resolve(produtoUid, null);
+    if (resolved != null) entry.imposto = resolved;
+  }
 }
 
 /**
@@ -1064,6 +1149,7 @@ export async function emitirPedido(
   if (bundle.pedido.bloquearEmissaoNFe) {
     throw new NFeBlockedError(pedidoId);
   }
+  await preResolveImpostos(bundle, fs);
   const items = flattenAndValidate(bundle);
 
   // Stable doc id per (pedido, tpEmis) — mirrors Flutter's
