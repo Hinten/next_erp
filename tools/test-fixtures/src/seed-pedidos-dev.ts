@@ -133,6 +133,14 @@ interface PedidoSeed {
   readonly pagamentos?: ReadonlyArray<DevPagamentoSeed>;
   /** Free-text informational note — propagates to `<infAdic>.<infCpl>`. */
   readonly infCpl?: string;
+  /**
+   * When true, omit `imposto` from each item so the orchestrator's
+   * `resolveItemImposto` cascade fires. Pair with a seeded
+   * `regraImposto` (under the dev operação) so the resolver has
+   * something to resolve to. Used by PED-8 to exercise Group C
+   * end-to-end against live SEFAZ-SP HOM.
+   */
+  readonly omitImposto?: boolean;
 }
 
 const PEDIDOS: PedidoSeed[] = [
@@ -269,6 +277,19 @@ const PEDIDOS: PedidoSeed[] = [
     valorCobrado: 199.0,
     // No pagamentos either — second sample of the sem-pagamento fallback.
   },
+  {
+    numero: '0008',
+    estadoPedido: 'pago',
+    withCliente: true,
+    valorCobrado: 100.0,
+    // Resolver cascade exercise — items have NO `imposto` stamped, so
+    // the orchestrator must resolve via the `regraImposto` doc seeded
+    // under `operacao/{DEV_OPERACAO_ID}/regraimposto/{DEV_REGRA_IMPOSTO_ID}`
+    // (matches produtos:['dev-prod-01'] → CSOSN 102 + PIS/COFINS 49).
+    // Without that rule the emit would throw NFeMissingImpostoError.
+    pagamentos: [{ forma_de_pagamento: 1, valor: 100.0, aVista: true }],
+    omitImposto: true,
+  },
 ];
 
 /** The stable ids of every pedido this script seeds (1-based order). */
@@ -316,34 +337,36 @@ async function writeCliente(): Promise<void> {
  * `quantidade: 1` so the pedido's cached `valorCobrado` lines up with
  * `aggregateTotals(items)` inside the orchestrator.
  */
-function devItensMap(valor: number): {
+function devItensMap(
+  valor: number,
+  options: { omitImposto?: boolean } = {},
+): {
   itens: Record<string, unknown[]>;
   itensIds: string[];
 } {
   const produtoUid = 'dev-prod-01';
+  const baseItem: Record<string, unknown> = {
+    sku: 'DEV-PROD-01',
+    gtin: null,
+    nomeDeVenda: 'Produto Dev',
+    precoDeVenda: valor,
+    descontoUnitario: null,
+    quantidade: 1,
+  };
+  if (!options.omitImposto) {
+    baseItem.imposto = {
+      origem: '0',
+      configuracaoICMS: {
+        crt: '1', // Simples Nacional
+        csosn: '102', // sem permissão de crédito
+      },
+      configuracaoPIS: { CST: '49' }, // outras operações de saída
+      configuracaoCOFINS: { CST: '49' },
+    };
+  }
   return {
     itensIds: [produtoUid],
-    itens: {
-      [produtoUid]: [
-        {
-          sku: 'DEV-PROD-01',
-          gtin: null,
-          nomeDeVenda: 'Produto Dev',
-          precoDeVenda: valor,
-          descontoUnitario: null,
-          quantidade: 1,
-          imposto: {
-            origem: '0',
-            configuracaoICMS: {
-              crt: '1', // Simples Nacional
-              csosn: '102', // sem permissão de crédito
-            },
-            configuracaoPIS: { CST: '49' }, // outras operações de saída
-            configuracaoCOFINS: { CST: '49' },
-          },
-        },
-      ],
-    },
+    itens: { [produtoUid]: [baseItem] },
   };
 }
 
@@ -420,7 +443,7 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
       ehSaida: true,
       estado: spec.estadoPedido,
       numero: spec.numero,
-      ...devItensMap(spec.valorCobrado ?? 100),
+      ...devItensMap(spec.valorCobrado ?? 100, { omitImposto: spec.omitImposto }),
       descontoTotal: 0,
       valorCobrado: spec.valorCobrado ?? null,
       timestamp: now - i * 3_600_000,

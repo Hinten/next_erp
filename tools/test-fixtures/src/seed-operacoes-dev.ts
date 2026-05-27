@@ -22,6 +22,16 @@ import { db } from './admin';
  */
 
 export const DEV_OPERACAO_ID = 'dev-operacao-01';
+/**
+ * Stable id for the regraImposto rule seeded under
+ * `operacao/{DEV_OPERACAO_ID}/regraimposto/`. Matches the dev produto
+ * (`dev-prod-01`) so the resolver cascade resolves to CSOSN 102 +
+ * PIS/COFINS CST 49 for pedidos that omit item-stamped imposto.
+ *
+ * Used by PED-8 in `seed-pedidos-dev.ts` to exercise the full
+ * resolveItemImposto cascade against live SEFAZ-SP HOM.
+ */
+export const DEV_REGRA_IMPOSTO_ID = 'dev-regra-01';
 
 export async function seedDevOperacoes(): Promise<{ created: number }> {
   const now = new Date().toISOString();
@@ -71,10 +81,44 @@ export async function seedDevOperacoes(): Promise<{ created: number }> {
 
       timestamp: now,
     });
+
+  // Seed the regraImposto rule under this operação. The resolver
+  // cascade walks item.imposto → impostoProduto → impostoCategoria →
+  // regraImposto; seeding only the deepest fallback exercises all four
+  // levels in a single live emit (PED-8 in seed-pedidos-dev.ts).
+  await db()
+    .collection('operacao')
+    .doc(DEV_OPERACAO_ID)
+    .collection('regraimposto')
+    .doc(DEV_REGRA_IMPOSTO_ID)
+    .set({
+      nome: 'Resolver cascade test (dev)',
+      produtos: ['dev-prod-01'],
+      categorias: [],
+      ncms: [],
+      dataCadastro: now,
+      // Imposto blob — same shape as devItensMap stamps inline today.
+      origem: '0',
+      configuracaoICMS: {
+        crt: '1',
+        csosn: '102',
+      },
+      configuracaoPIS: { CST: '49' },
+      configuracaoCOFINS: { CST: '49' },
+    });
   return { created: 1 };
 }
 
 export async function cleanupDevOperacoes(): Promise<{ deleted: number }> {
+  // Remove the regraImposto subcoll before the parent doc.
+  const regraRef = db()
+    .collection('operacao')
+    .doc(DEV_OPERACAO_ID)
+    .collection('regraimposto');
+  const regraSnap = await regraRef.get();
+  for (const doc of regraSnap.docs) {
+    await doc.ref.delete();
+  }
   await db().collection('operacao').doc(DEV_OPERACAO_ID).delete();
   return { deleted: 1 };
 }
