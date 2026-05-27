@@ -6,7 +6,10 @@
  */
 export {
   createNFeHttpClient,
+  isNFeEmitError,
+  type NFeBatchEmitResult,
   type NFeConsultaResult,
+  type NFeEmitError,
   type NFeEmitResult,
   type NFeHttpClient,
   type NFeHttpClientConfig,
