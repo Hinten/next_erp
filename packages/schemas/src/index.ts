@@ -276,3 +276,24 @@ export {
   type EnviNFeMsg,
   type EstadoEnviNFeMsg,
 } from './enviNfeMsg';
+
+export {
+  impostoProduto,
+  impostoProdutoSchema,
+  impostoProdutoMeta,
+  type ImpostoProduto,
+} from './impostoProduto';
+
+export {
+  impostoCategoria,
+  impostoCategoriaSchema,
+  impostoCategoriaMeta,
+  type ImpostoCategoria,
+} from './impostoCategoria';
+
+export {
+  regraImposto,
+  regraImpostoSchema,
+  regraImpostoMeta,
+  type RegraImposto,
+} from './regraImposto';
