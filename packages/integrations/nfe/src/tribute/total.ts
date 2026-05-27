@@ -74,8 +74,8 @@ export interface TotalExtras {
  * non-item sources (`pedido.freteInicial`, etc.).
  *
  * vNF is computed as `vProd + vST + vFCPST + vFrete + vSeg + vOutro
- * − vDesc`, mirroring Flutter `pedido_nfe_base.dart:1729` and the
- * SEFAZ formula for `<vNF>` (NT 2018.005).
+ * + vIPI − vDesc`, mirroring Flutter `pedido_nfe_base.dart:1729` and
+ * the SEFAZ formula for `<vNF>` (NT 2018.005).
  */
 export function aggregateTotals(
   items: ReadonlyArray<PerItem>,
@@ -88,9 +88,13 @@ export function aggregateTotals(
   let vST = 0;
   let vFCPST = 0;
   let vFCPSTRet = 0;
+  let vIPI = 0;
 
   for (const { item, imposto } of items) {
     vProd += item.vProd;
+    if (imposto.configuracaoIPI?.vIPI != null) {
+      vIPI += imposto.configuracaoIPI.vIPI;
+    }
     const icms = imposto.configuracaoICMS;
     if (icms.csosn === '101' && icms.csosn101) {
       vICMS += icms.csosn101.vCredICMSSN;
@@ -119,7 +123,7 @@ export function aggregateTotals(
   const vSeg = extras.vSeg ?? 0;
   const vDesc = extras.vDesc ?? 0;
   const vOutro = extras.vOutro ?? 0;
-  const vNF = round2(vProd + vST + vFCPST + vFrete + vSeg + vOutro - vDesc);
+  const vNF = round2(vProd + vST + vFCPST + vFrete + vSeg + vOutro + vIPI - vDesc);
   return {
     vBC: round2(vBC),
     vICMS: round2(vICMS),
@@ -134,7 +138,7 @@ export function aggregateTotals(
     vSeg: round2(vSeg),
     vDesc: round2(vDesc),
     vII: 0,
-    vIPI: 0,
+    vIPI: round2(vIPI),
     vIPIDevol: 0,
     vPIS: 0,
     vCOFINS: 0,

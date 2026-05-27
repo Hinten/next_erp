@@ -255,6 +255,80 @@ describe('buildImpostoXml — CSOSN dispatch', () => {
 });
 
 // ---------------------------------------------------------------------------
+// IPI dispatcher (Group B)
+// ---------------------------------------------------------------------------
+
+describe('buildImpostoXml — IPI', () => {
+  it.each(['00', '49', '50', '99'])(
+    'CST %s → <IPITrib> with cEnq + vIPI (and optional vBC/pIPI when provided)',
+    async (cst) => {
+      const imposto: Imposto = {
+        ...impostoFor102(),
+        configuracaoIPI: {
+          cEnq: '999',
+          CST: cst as never,
+          vBC: 1500,
+          pIPI: 5,
+          vIPI: 75,
+        },
+      };
+      const xml = buildImpostoXml(imposto, item1500);
+      expect(xml).toContain('<IPI>');
+      expect(xml).toContain('<cEnq>999</cEnq>');
+      expect(xml).toContain('<IPITrib>');
+      expect(xml).toContain(`<CST>${cst}</CST>`);
+      expect(xml).toContain('<vBC>1500.00</vBC>');
+      expect(xml).toContain('<pIPI>5.0000</pIPI>');
+      expect(xml).toContain('<vIPI>75.00</vIPI>');
+      await assertXsdValid(xml);
+    },
+  );
+
+  it('IPITrib by quantity → emits qUnid + vUnid (4 decimals)', async () => {
+    const imposto: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: {
+        cEnq: '999',
+        CST: '00',
+        qUnid: 10,
+        vUnid: 2.5,
+        vIPI: 25,
+      },
+    };
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(xml).toContain('<qUnid>10.0000</qUnid>');
+    expect(xml).toContain('<vUnid>2.5000</vUnid>');
+    expect(xml).toContain('<vIPI>25.00</vIPI>');
+    await assertXsdValid(xml);
+  });
+
+  it.each(['01', '02', '03', '04', '05', '51', '52', '53', '54', '55'])(
+    'CST %s → <IPINT> with cEnq + CST only',
+    async (cst) => {
+      const imposto: Imposto = {
+        ...impostoFor102(),
+        configuracaoIPI: { cEnq: '999', CST: cst as never },
+      };
+      const xml = buildImpostoXml(imposto, item1500);
+      expect(xml).toContain('<IPI>');
+      expect(xml).toContain('<cEnq>999</cEnq>');
+      expect(xml).toContain('<IPINT>');
+      expect(xml).toContain(`<CST>${cst}</CST>`);
+      expect(xml).not.toContain('<IPITrib>');
+      await assertXsdValid(xml);
+    },
+  );
+
+  it('IPITrib without vIPI throws NFeTributeError', () => {
+    const imposto: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: { cEnq: '999', CST: '00', vBC: 100, pIPI: 5 },
+    };
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Hard-fail branches
 // ---------------------------------------------------------------------------
 
@@ -345,6 +419,29 @@ describe('aggregateTotals', () => {
     );
     expect(totals.vDesc).toBe(10);
     expect(totals.vNF).toBe(90);
+  });
+
+  it('sums vIPI from configuracaoIPI (IPITrib) and adds it to vNF', () => {
+    const ipiTrib: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: { cEnq: '999', CST: '50', vIPI: 50 },
+    };
+    const totals = aggregateTotals([
+      { item: { vProd: 1000 }, imposto: ipiTrib },
+      { item: { vProd: 500 }, imposto: ipiTrib },
+    ]);
+    expect(totals.vIPI).toBe(100);
+    expect(totals.vNF).toBe(1600); // 1500 vProd + 100 vIPI
+  });
+
+  it('IPINT items contribute 0 to vIPI (no vIPI on the config)', () => {
+    const ipiNT: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: { cEnq: '999', CST: '01' },
+    };
+    const totals = aggregateTotals([{ item: { vProd: 1000 }, imposto: ipiNT }]);
+    expect(totals.vIPI).toBe(0);
+    expect(totals.vNF).toBe(1000);
   });
 });
 

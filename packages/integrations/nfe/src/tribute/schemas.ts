@@ -164,6 +164,39 @@ export const confCOFINSSchema = z.object({
 export type ConfCOFINS = z.infer<typeof confCOFINSSchema>;
 
 // ---------------------------------------------------------------------------
+// configuracaoIPI — mirror of the Flutter class (per-item IPI)
+// ---------------------------------------------------------------------------
+
+/** IPI CST codes — XSD `IPITrib` (tributado) + `IPINT` (não tributado). */
+export const cstIpiSchema = z.enum([
+  '00', '01', '02', '03', '04', '05',
+  '49', '50', '51', '52', '53', '54', '55',
+  '99',
+]);
+export type CstIpi = z.infer<typeof cstIpiSchema>;
+
+/** The set of CSTs that emit `<IPITrib>`; the rest emit `<IPINT>`. */
+export const IPI_TRIB_CSTS = new Set<CstIpi>(['00', '49', '50', '99']);
+
+/**
+ * Mirror of the Flutter `ConfiguracaoIPI` slot on Imposto. Carries the
+ * `cEnq` (XSD-required, 1-3 chars — Código de Enquadramento Legal,
+ * typically `'999'` for "outros") and a single CST that picks the
+ * `<IPITrib>` vs `<IPINT>` wire variant. Tributado fields are kept
+ * optional here (the builder enforces `vIPI` when the CST is IPITrib).
+ */
+export const configuracaoIPISchema = z.object({
+  cEnq: z.string().min(1).max(3),
+  CST: cstIpiSchema,
+  vBC: z.number().nonnegative().optional().nullable(),
+  pIPI: z.number().nonnegative().optional().nullable(),
+  qUnid: z.number().nonnegative().optional().nullable(),
+  vUnid: z.number().nonnegative().optional().nullable(),
+  vIPI: z.number().nonnegative().optional().nullable(),
+});
+export type ConfiguracaoIPI = z.infer<typeof configuracaoIPISchema>;
+
+// ---------------------------------------------------------------------------
 // Top-level Imposto — what `pedido.itens[i].imposto` should be
 // ---------------------------------------------------------------------------
 
@@ -192,7 +225,7 @@ export const impostoSchema = z.object({
   configuracaoICMS: configuracaoICMSSchema,
   configuracaoPIS: confPISSchema.optional().nullable(),
   configuracaoCOFINS: confCOFINSSchema.optional().nullable(),
-  // IPI: out of scope for Phase A retail (clothing typically NT).
+  configuracaoIPI: configuracaoIPISchema.optional().nullable(),
 });
 export type Imposto = z.infer<typeof impostoSchema>;
 

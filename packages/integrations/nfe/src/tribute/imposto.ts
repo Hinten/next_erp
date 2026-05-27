@@ -18,19 +18,23 @@ import { z } from 'zod';
 
 import {
   fmtMoneyOpt,
+  fmtQuantity,
   fmtRateOpt,
 } from './format';
 import {
   type ConfCOFINS,
   type ConfPIS,
   type ConfiguracaoICMS,
+  type ConfiguracaoIPI,
   type Imposto,
   type Origem,
   type TributeItem,
+  IPI_TRIB_CSTS,
   impostoSchema,
   tributeItemSchema,
 } from './schemas';
 import type {
+  TIpi,
   TNFe_infNFe_det_imposto,
   TNFe_infNFe_det_imposto_ICMS,
   TNFe_infNFe_det_imposto_COFINS,
@@ -55,6 +59,9 @@ export function buildImpostoXml(rawImposto: unknown, rawItem: unknown): string {
   const cofins = buildCOFINS(imposto.configuracaoCOFINS, item);
 
   const impostoValue: TNFe_infNFe_det_imposto = { ICMS: icms, PIS: pis, COFINS: cofins };
+  if (imposto.configuracaoIPI != null) {
+    impostoValue.IPI = buildIPI(imposto.configuracaoIPI);
+  }
   return serializeFragment(
     'TNFe_infNFe_det_imposto',
     'imposto',
@@ -206,6 +213,43 @@ function buildICMS(
       };
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// IPI dispatcher
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the per-item `<IPI>` block from a `ConfiguracaoIPI`. The XSD
+ * has `<IPI>` carrying `<cEnq>` then exactly one of `<IPITrib>` (CSTs
+ * 00/49/50/99 — tributado, requires `vIPI`) or `<IPINT>` (every other
+ * CST — não tributado, only CST). `vIPI` is required for the tributado
+ * variant; the other numeric fields are optional and emitted only when
+ * provided.
+ */
+function buildIPI(cfg: ConfiguracaoIPI): TIpi {
+  if (IPI_TRIB_CSTS.has(cfg.CST)) {
+    if (cfg.vIPI == null) {
+      throw new NFeTributeError(`IPI CST=${cfg.CST} (IPITrib) requires \`vIPI\``);
+    }
+    const ipiTrib: TIpi['IPITrib'] = {
+      CST: cfg.CST as '00' | '49' | '50' | '99',
+      vIPI: fmtMoneyOpt('vIPI', cfg.vIPI)!,
+    };
+    const vBC = fmtMoneyOpt('vBC', cfg.vBC);
+    if (vBC != null) ipiTrib.vBC = vBC;
+    const pIPI = fmtRateOpt('pIPI', cfg.pIPI);
+    if (pIPI != null) ipiTrib.pIPI = pIPI;
+    if (cfg.qUnid != null) ipiTrib.qUnid = fmtQuantity('qUnid', cfg.qUnid);
+    if (cfg.vUnid != null) ipiTrib.vUnid = fmtQuantity('vUnid', cfg.vUnid);
+    return { cEnq: cfg.cEnq, IPITrib: ipiTrib };
+  }
+  return {
+    cEnq: cfg.cEnq,
+    IPINT: {
+      CST: cfg.CST as '01' | '02' | '03' | '04' | '05' | '51' | '52' | '53' | '54' | '55',
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
