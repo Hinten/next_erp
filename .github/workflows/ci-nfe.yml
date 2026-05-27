@@ -136,22 +136,30 @@ jobs:
           # Homologação A1 cert (SEFAZ smoke + emission):
           NFE_CERT_BASE64: ${{ secrets.NF_CERT_BASE64 }}
           NFE_CERT_PASSWORD: ${{ secrets.NF_CERT_PASSWORD }}
-          # Staging Firestore (numeração concurrency contract). The
-          # GitHub secret is suffixed `_STAGING` to distinguish it from a
-          # future produção project; the test reads the app-standard
-          # `FIREBASE_PROJECT_ID` / `FIREBASE_SERVICE_ACCOUNT` names.
+          # IE registered for the cert's CNPJ at SEFAZ-SP HOM. The
+          # orchestrator's filial fixture stamps this on `<emit><IE>`;
+          # SEFAZ rejects with cStat=209 if it doesn't match.
+          NFE_TEST_IE: ${{ secrets.NFE_TEST_IE }}
+          # Staging Firestore (numeração concurrency contract +
+          # orchestrator fixtures). The GitHub secret is suffixed
+          # `_STAGING` to distinguish it from a future produção project;
+          # the tests read the app-standard `FIREBASE_PROJECT_ID` /
+          # `FIREBASE_SERVICE_ACCOUNT` names.
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
         run: |
-          # Run only the env-gated suites. Each describe.skip's itself
-          # cleanly when its secrets aren't set, so the job stays green
-          # in environments where one or the other is missing.
+          # Library-level live tests (run only the env-gated suites):
           # - operations.homologacao: consultarStatusServico smoke
-          # - emission.homologacao:  full generate→sign→autorizarLote
-          #                          round-trip + duplicidade recovery
+          # - emission.homologacao:  duplicidade-recovery library
+          #                          contract (the orchestrator's happy
+          #                          path moved to orchestrator.homologacao)
           # - numeracao.staging:     transactional concurrency on staging
           pnpm --filter @delfrance/integrations-nfe test \
             operations.homologacao emission.homologacao numeracao.staging
+
+          # Orchestrator-level live test — emitirPedido + emitirPedidosLote
+          # against real SEFAZ-SP HOM + staging Firestore fixtures.
+          pnpm --filter @delfrance/nfe-app test orchestrator.homologacao
 
   report-failure:
     name: Post failure logs on PR
