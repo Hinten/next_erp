@@ -930,8 +930,7 @@ function buildCobrFromPagamentos(
     const out: { nDup?: string; dVenc?: string; vDup: string } = {
       vDup: valor.toFixed(2),
     };
-    const nDup = (p.nFat ?? '').trim() || String(i + 1).padStart(3, '0');
-    out.nDup = nDup.slice(0, 60);
+    out.nDup = String(i + 1).padStart(3, '0');
     if (p.vencimento) {
       // pagamento.vencimento is `z.string().datetime()` (ISO timestamp).
       const parsed = new Date(p.vencimento);

@@ -1805,7 +1805,7 @@ describe('buildCobrFromPagamentos', () => {
     expect(out?.fat?.nFat).toBe('F-0002');
     expect(out?.dup).toHaveLength(1);
     expect(out?.dup?.[0]?.vDup).toBe('250.00');
-    expect(out?.dup?.[0]?.nDup).toBe('F-0002');
+    expect(out?.dup?.[0]?.nDup).toBe('001');
     expect(out?.dup?.[0]?.dVenc).toBe('2026-06-30');
   });
 
