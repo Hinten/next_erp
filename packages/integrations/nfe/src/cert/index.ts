@@ -95,6 +95,66 @@ export interface NFeCertificate {
   readonly password: string;
 }
 
+/**
+ * Concrete class returned by every loader. Identical structural shape to
+ * `NFeCertificate` (so consumer call sites are unchanged) plus two
+ * redaction hooks:
+ *
+ *   - `[nodejs.util.inspect.custom]()` catches `console.log(cert)`,
+ *     `util.inspect(cert)`, and template-string interpolation.
+ *   - `toJSON()` catches `JSON.stringify(cert)` and structured-logger
+ *     serialization — a different code path from inspect, hence the
+ *     belt-and-suspenders.
+ *
+ * Both hooks render only the non-secret identity fields (cnpj + subject +
+ * notAfter), never the private key, certificate PEMs, PFX bytes, or
+ * password. This means a future stray `console.log(cert)` or
+ * `console.log(runtime)` cannot leak the A1 private material into
+ * App Hosting logs.
+ */
+class NFeCertificateImpl implements NFeCertificate {
+  readonly privateKeyPem: string;
+  readonly certificatePem: string;
+  readonly certificateDerBase64: string;
+  readonly subjectCommonName: string;
+  readonly cnpj: string;
+  readonly notAfter: Date;
+  readonly pfxBuffer: Buffer;
+  readonly password: string;
+
+  constructor(fields: NFeCertificate) {
+    this.privateKeyPem = fields.privateKeyPem;
+    this.certificatePem = fields.certificatePem;
+    this.certificateDerBase64 = fields.certificateDerBase64;
+    this.subjectCommonName = fields.subjectCommonName;
+    this.cnpj = fields.cnpj;
+    this.notAfter = fields.notAfter;
+    this.pfxBuffer = fields.pfxBuffer;
+    this.password = fields.password;
+  }
+
+  [Symbol.for('nodejs.util.inspect.custom')](): string {
+    return (
+      `[NFeCertificate cnpj=${this.cnpj} subject="${this.subjectCommonName}" ` +
+      `notAfter=${this.notAfter.toISOString()} (private material redacted)]`
+    );
+  }
+
+  toJSON(): {
+    cnpj: string;
+    subjectCommonName: string;
+    notAfter: string;
+    redacted: true;
+  } {
+    return {
+      cnpj: this.cnpj,
+      subjectCommonName: this.subjectCommonName,
+      notAfter: this.notAfter.toISOString(),
+      redacted: true,
+    };
+  }
+}
+
 /** Parse a raw PKCS#12 buffer into the typed `NFeCertificate` shape. */
 function parsePfxBuffer(pfxBuffer: Buffer, password: string): NFeCertificate {
   let p12: forge.pkcs12.Pkcs12Pfx;
@@ -154,7 +214,7 @@ function parsePfxBuffer(pfxBuffer: Buffer, password: string): NFeCertificate {
   }
   const cnpj = cnpjCandidate;
 
-  return {
+  return new NFeCertificateImpl({
     privateKeyPem,
     certificatePem,
     certificateDerBase64,
@@ -163,7 +223,7 @@ function parsePfxBuffer(pfxBuffer: Buffer, password: string): NFeCertificate {
     notAfter: certBag.cert.validity.notAfter,
     pfxBuffer,
     password,
-  };
+  });
 }
 
 /**
@@ -171,6 +231,11 @@ function parsePfxBuffer(pfxBuffer: Buffer, password: string): NFeCertificate {
  *
  * @param pfxBase64  Base-64 of the .pfx/.p12 file.
  * @param password   Passphrase the certificate was exported with.
+ */
+/**
+ * Internal helper — not re-exported from the package's public `src/index.ts`.
+ * Production code path is `loadCertificateFromEnv`; this is the
+ * lower-level entry used by the env loader and by the cert unit tests.
  */
 export function loadCertificateFromBase64(pfxBase64: string, password: string): NFeCertificate {
   if (!pfxBase64 || pfxBase64.trim().length === 0) {
@@ -202,6 +267,11 @@ export function loadCertificateFromBase64(pfxBase64: string, password: string): 
  *
  * @param path     Filesystem path to the .pfx / .p12 file.
  * @param password Passphrase the certificate was exported with.
+ */
+/**
+ * Internal helper — not re-exported from the package's public `src/index.ts`.
+ * Production code path is `loadCertificateFromEnv`; this is the
+ * lower-level entry used by the env loader and by the cert unit tests.
  */
 export function loadCertificateFromPath(path: string, password: string): NFeCertificate {
   if (!path || path.trim().length === 0) {
@@ -244,9 +314,14 @@ export function loadCertificateFromEnv(env: NodeJS.ProcessEnv = process.env): NF
   const base64 = env.NFE_CERT_BASE64;
 
   let cert: NFeCertificate;
-  if (path) cert = loadCertificateFromPath(path, password);
-  else if (base64) cert = loadCertificateFromBase64(base64, password);
-  else {
+  let source: 'path' | 'base64';
+  if (path) {
+    cert = loadCertificateFromPath(path, password);
+    source = 'path';
+  } else if (base64) {
+    cert = loadCertificateFromBase64(base64, password);
+    source = 'base64';
+  } else {
     throw new NFeCertError(
       'Certificate source not set: define NFE_CERT_PATH (filesystem path) or NFE_CERT_BASE64 (base-64 PFX).',
     );
@@ -254,7 +329,31 @@ export function loadCertificateFromEnv(env: NodeJS.ProcessEnv = process.env): NF
   // Surface a heads-up well before expiry so the human-driven Receita
   // Federal renewal can be scheduled. Default window is 30 days.
   warnIfCertNearExpiry(cert);
+  // Audit trail — one greppable line per cert load. Lets ops verify
+  // "the cert was loaded N times this boot" (expected N=1 in prod).
+  // Uses console.warn so it survives the base config's `no-console`
+  // allowlist (matches warnIfCertNearExpiry's channel).
+  console.warn(
+    `[nfe-cert] loaded source=${source} cnpj=${cert.cnpj} ` +
+      `subject="${cert.subjectCommonName}" notAfter=${cert.notAfter.toISOString()}`,
+  );
   return cert;
+}
+
+/**
+ * `true` when the env exposes a complete NF-e cert configuration —
+ * password plus at least one of path / base64. Use this anywhere a
+ * caller would otherwise probe `process.env.NFE_CERT_*` directly:
+ * test gate-checks, dev-script preflights, /api/health diagnostics.
+ *
+ * Centralising the env-var names here is what lets the package-level
+ * ESLint rule forbid `NFE_CERT_*` reads anywhere outside this file.
+ */
+export function hasNFeCertEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (
+    (Boolean(env.NFE_CERT_PATH) || Boolean(env.NFE_CERT_BASE64)) &&
+    env.NFE_CERT_PASSWORD != null
+  );
 }
 
 /**

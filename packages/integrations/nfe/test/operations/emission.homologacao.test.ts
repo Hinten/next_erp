@@ -36,7 +36,12 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import { assertCertNotExpired, loadCertificateFromEnv } from '../../src/cert';
+import {
+  assertCertNotExpired,
+  hasNFeCertEnv,
+  loadCertificateFromEnv,
+  type NFeCertificate,
+} from '../../src/cert';
 import { getEndpoints } from '../../src/endpoints';
 import { generateNFe, type GeneratorInput } from '../../src/generator';
 import { signNFe } from '../../src/sign';
@@ -60,10 +65,6 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VENDORED_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-sp-homologacao.pem');
 
-const hasCert =
-  (Boolean(process.env.NFE_CERT_PATH) || Boolean(process.env.NFE_CERT_BASE64)) &&
-  process.env.NFE_CERT_PASSWORD != null;
-
 // IE (Inscrição Estadual) is a state-level registration; ICP-Brasil
 // A1 certs are federal and do not carry it. SEFAZ rejects with
 // cStat=209 ("IE do emitente inválida") when the IE in the XML
@@ -74,7 +75,7 @@ const hasCert =
 // See `apps/nfe/.env.example`.
 const TEST_IE = process.env.NFE_TEST_IE;
 
-const hasFullCreds = hasCert && Boolean(TEST_IE);
+const hasFullCreds = hasNFeCertEnv() && Boolean(TEST_IE);
 
 const describeOrSkip = hasFullCreds ? describe : describe.skip;
 
@@ -336,9 +337,15 @@ function readVendoredCA(): string | undefined {
   return caPath ? readFileSync(caPath, 'utf8') : undefined;
 }
 
-/** Build the typed SefazCall context for one operation URL. */
-function buildCall(url: string): SefazCall {
-  const cert = loadCertificateFromEnv();
+/**
+ * Build the typed SefazCall context for one operation URL.
+ *
+ * Takes the cert as a parameter so the test file parses the PFX exactly
+ * once (via the top-level `TEST_CERT`) instead of re-parsing on every
+ * SOAP call. Each parse fires `loadCertificateFromEnv`'s audit log line —
+ * one per file is the right shape.
+ */
+function buildCall(url: string, cert: NFeCertificate): SefazCall {
   assertCertNotExpired(cert);
   const agent = createSefazAgent(cert, { ca: readVendoredCA() });
   return { url, cert, agent, tpAmb: '2', timeoutMs: 60_000 };
@@ -357,7 +364,7 @@ describeOrSkip('SEFAZ-SP homologação — live emission round-trip', () => {
       // builds in a SEFAZ outage are the worst possible signal for a
       // fiscal pipeline. The test fails, we wait, we rerun when SEFAZ
       // is back. (Pulled the prior self-skip — too risky.)
-      const statusCall = buildCall(getEndpoints('SP', 'homologacao').NfeStatusServico);
+      const statusCall = buildCall(getEndpoints('SP', 'homologacao').NfeStatusServico, TEST_CERT!);
       const status = await consultarStatusServico(statusCall, { cUF: '35' });
       expect(status.cStat).toBe('107');
 
@@ -371,6 +378,7 @@ describeOrSkip('SEFAZ-SP homologação — live emission round-trip', () => {
 
       const autorizacaoCall = buildCall(
         getEndpoints('SP', 'homologacao').NfeAutorizacao,
+        TEST_CERT!,
       );
       // indSinc='1' so SEFAZ processes synchronously and returns the
       // protNFe inline — keeps the test fast (no poll needed in the
@@ -403,7 +411,7 @@ describeOrSkip('SEFAZ-SP homologação — live emission round-trip', () => {
     async () => {
       // Same posture as the happy-path test: paralisado is a hard fail,
       // not a silent skip.
-      const statusCall = buildCall(getEndpoints('SP', 'homologacao').NfeStatusServico);
+      const statusCall = buildCall(getEndpoints('SP', 'homologacao').NfeStatusServico, TEST_CERT!);
       const status = await consultarStatusServico(statusCall, { cUF: '35' });
       expect(status.cStat).toBe('107');
 
@@ -418,6 +426,7 @@ describeOrSkip('SEFAZ-SP homologação — live emission round-trip', () => {
 
       const autorizacaoCall = buildCall(
         getEndpoints('SP', 'homologacao').NfeAutorizacao,
+        TEST_CERT!,
       );
 
       // 1st submission — must succeed.
@@ -456,6 +465,7 @@ describeOrSkip('SEFAZ-SP homologação — live emission round-trip', () => {
       await new Promise((r) => setTimeout(r, 1000));
       const consultaCall = buildCall(
         getEndpoints('SP', 'homologacao').NfeConsultaProtocolo,
+        TEST_CERT!,
       );
       const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
       // eslint-disable-next-line no-console

@@ -23,6 +23,7 @@ import { ESTADO_NFE } from '@delfrance/schemas';
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
+import { safeLog } from '@/lib/nfe/log';
 import {
   emitirPedido,
   NFeBlockedError,
@@ -80,9 +81,13 @@ export async function POST(req: Request): Promise<NextResponse> {
       return authError(400, { error: e.message });
     }
     // Library errors (NFeXsdValidationError, NFeSignatureError, NFeTransportError, …)
-    // surface as 500 with their structured message — the agent's PEM key
-    // is already redacted at the transport layer.
-    console.error('[nfe/emitir]', e);
+    // surface as 500 with their structured message. `safeLog` runs every
+    // arg through `redactSensitive` first, so the `responseBody` field
+    // that `NFeTransportError` carries (raw SEFAZ SOAP reply — can echo
+    // signed XML on cStat=215/225) never reaches stdout. Belt-and-
+    // suspenders on top of the transport layer's `sanitizeTransportError`,
+    // which already strips the httpsAgent.
+    safeLog('error', '[nfe/emitir]', e);
     return authError(500, {
       error: e instanceof Error ? e.message : 'Erro interno',
       code: e instanceof Error ? e.name : undefined,

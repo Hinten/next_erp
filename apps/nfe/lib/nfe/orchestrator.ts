@@ -1454,7 +1454,9 @@ export async function emitirPedido(
     idLote: String(idLote),
     NFe: [signedXml],
   });
-  console.debug(JSON.stringify({ retEnvi }));
+  console.debug(
+    `[nfe/orchestrator] autorizarLote cStat=${retEnvi.cStat} nRec=${retEnvi.infRec?.nRec ?? '-'}`,
+  );
 
   return applyAutorizadoOutcome({
     fs,

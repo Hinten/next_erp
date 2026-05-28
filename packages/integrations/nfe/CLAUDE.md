@@ -105,6 +105,44 @@ runs the codegen + asserts no diff to catch out-of-sync states.
   refreshed by `pnpm fetch:sefaz-ca`. Different concern from MOC
   versions — TLS chains don't need MOC pinning.
 
+### Cert leak prevention (audit surface)
+
+The package has exactly **one public cert loader**:
+`loadCertificateFromEnv` (re-exported from `src/index.ts`). The
+sibling helpers `loadCertificateFromBase64` / `loadCertificateFromPath`
+exist as module-private callees inside `src/cert/index.ts` — they are
+not re-exported, so every cert-bearing byte that enters the system
+flows through one function in one file. Audit surface = one file.
+
+The `NFE_CERT_BASE64` / `NFE_CERT_PATH` / `NFE_CERT_PASSWORD` env vars
+may only be **read** inside `src/cert/index.ts`. Anywhere else, call
+`loadCertificateFromEnv()` or `hasNFeCertEnv()` (the helper exported
+for gate-checks). **Enforced by ESLint** — `eslint.config.mjs` Rule B
+is `no-restricted-syntax` on
+`MemberExpression[property.name=/^NFE_CERT_(BASE64|PATH|PASSWORD)$/]`,
+scoped to `src/**` with `src/cert/index.ts` exempt.
+
+The loaders return an `NFeCertificateImpl` class instance (an
+`NFeCertificate` structurally) whose `[nodejs.util.inspect.custom]()`
+and `toJSON()` hooks redact `privateKeyPem` / `certificatePem` /
+`pfxBuffer` / `password` before printing. A future stray
+`console.log(cert)` or `JSON.stringify(cert)` anywhere in the system
+cannot leak the A1 private material. Contract pinned by
+`test/cert/redact.test.ts`.
+
+ESLint Rule A (`eslint.config.mjs`) forbids raw `console.*` in
+`src/{cert,soap,sign,generator,operations}/**`. Use the helpers in
+`apps/nfe/lib/nfe/log.ts` (safeErrorShape / safeLog / redactSensitive)
+at error/log boundaries — they strip `responseBody` (the raw SEFAZ
+reply on `NFeTransportError`, which can echo signed XML on cStat
+rejections) and other sensitive properties.
+
+For one-off CI-credential rotation, see
+`scripts/rotate-pfx-password.ts` (`pnpm rotate:pfx-password`). It
+re-wraps the PKCS#12 with a fresh 256-bit random password —
+non-destructive (the X.509 cert + RSA key are byte-identical; only
+the PKCS#12 wrapper changes).
+
 ## SN-only tribute engine
 
 Phase A is Simples Nacional only (`src/tribute/imposto.ts:75` throws
