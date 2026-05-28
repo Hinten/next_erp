@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { consultarSituacaoNFe } from '@delfrance/integrations-nfe';
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
+import { safeLog } from '@/lib/nfe/log';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
 
 export const dynamic = 'force-dynamic';
@@ -61,7 +62,7 @@ export async function GET(req: Request): Promise<NextResponse> {
       raw: ret,
     });
   } catch (e) {
-    console.error('[nfe/consultar]', e);
+    safeLog('error', '[nfe/consultar]', e);
     return authError(500, {
       error: e instanceof Error ? e.message : 'Erro interno',
       code: e instanceof Error ? e.name : undefined,

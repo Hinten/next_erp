@@ -19,6 +19,7 @@ import { z } from 'zod';
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
+import { safeLog } from '@/lib/nfe/log';
 import { emitirPedidosLote, NFeOrchestratorError } from '@/lib/nfe/orchestrator';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
 
@@ -67,7 +68,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     if (e instanceof NFeOrchestratorError) {
       return authError(400, { error: e.message });
     }
-    console.error('[nfe/emitir-lote]', e);
+    safeLog('error', '[nfe/emitir-lote]', e);
     return authError(500, {
       error: e instanceof Error ? e.message : 'Erro interno',
       code: e instanceof Error ? e.name : undefined,

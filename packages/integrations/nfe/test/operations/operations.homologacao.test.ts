@@ -26,9 +26,15 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
-import { assertCertNotExpired, loadCertificateFromEnv, warnIfCertNearExpiry } from '../../src/cert';
+import {
+  assertCertNotExpired,
+  hasNFeCertEnv,
+  loadCertificateFromEnv,
+  warnIfCertNearExpiry,
+  type NFeCertificate,
+} from '../../src/cert';
 import { getEndpoints } from '../../src/endpoints';
 import { createSefazAgent, type SefazCall } from '../../src/soap';
 import { consultarStatusServico } from '../../src/operations/index';
@@ -36,15 +42,17 @@ import { consultarStatusServico } from '../../src/operations/index';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VENDORED_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-sp-homologacao.pem');
 
-const hasCert =
-  (Boolean(process.env.NFE_CERT_PATH) || Boolean(process.env.NFE_CERT_BASE64)) &&
-  process.env.NFE_CERT_PASSWORD != null;
-
-const describeOrSkip = hasCert ? describe : describe.skip;
+const describeOrSkip = hasNFeCertEnv() ? describe : describe.skip;
 
 describeOrSkip('SEFAZ-SP homologação smoke (typed)', () => {
+  // One cert load per test file — re-loading per `it()` is wasted PFX
+  // parsing and bloats the audit log line count.
+  let cert: NFeCertificate;
+  beforeAll(() => {
+    cert = loadCertificateFromEnv();
+  });
+
   it('loaded certificate is not expired', () => {
-    const cert = loadCertificateFromEnv();
     // eslint-disable-next-line no-console
     console.log(
       `[cert] subject="${cert.subjectCommonName}" notAfter=${cert.notAfter.toISOString()}`,
@@ -56,7 +64,6 @@ describeOrSkip('SEFAZ-SP homologação smoke (typed)', () => {
   });
 
   it('consultarStatusServico returns a typed TRetConsStatServ with cStat=107', async () => {
-    const cert = loadCertificateFromEnv();
     assertCertNotExpired(cert); // fail fast before any SEFAZ traffic
     // SEFAZ chains through Brazilian CAs that aren't all in Node's bundled
     // Mozilla list. Resolution order:

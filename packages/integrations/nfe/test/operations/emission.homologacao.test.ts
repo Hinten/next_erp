@@ -48,7 +48,12 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { seedNNF } from '../helpers/homologacao-seed';
-import { assertCertNotExpired, loadCertificateFromEnv } from '../../src/cert';
+import {
+  assertCertNotExpired,
+  hasNFeCertEnv,
+  loadCertificateFromEnv,
+  type NFeCertificate,
+} from '../../src/cert';
 import { assertNotConsumoIndevido } from '../../src/state';
 import { getEndpoints } from '../../src/endpoints';
 import { generateNFe, type GeneratorInput } from '../../src/generator';
@@ -72,10 +77,6 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VENDORED_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-sp-homologacao.pem');
 
-const hasCert =
-  (Boolean(process.env.NFE_CERT_PATH) || Boolean(process.env.NFE_CERT_BASE64)) &&
-  process.env.NFE_CERT_PASSWORD != null;
-
 // IE (Inscrição Estadual) is a state-level registration; ICP-Brasil
 // A1 certs are federal and do not carry it. SEFAZ rejects with
 // cStat=209 ("IE do emitente inválida") when the IE in the XML
@@ -92,7 +93,7 @@ const hasCert =
 // (cStat=209) or not.
 const TEST_IE = process.env.NFE_TEST_IE ?? '111111111111';
 
-const hasFullCreds = hasCert;
+const hasFullCreds = hasNFeCertEnv() && Boolean(TEST_IE);
 
 const describeOrSkip = hasFullCreds ? describe : describe.skip;
 
@@ -359,9 +360,15 @@ function readVendoredCA(): string | undefined {
   return caPath ? readFileSync(caPath, 'utf8') : undefined;
 }
 
-/** Build the typed SefazCall context for one operation URL. */
-function buildCall(url: string): SefazCall {
-  const cert = loadCertificateFromEnv();
+/**
+ * Build the typed SefazCall context for one operation URL.
+ *
+ * Takes the cert as a parameter so the test file parses the PFX exactly
+ * once (via the top-level `TEST_CERT`) instead of re-parsing on every
+ * SOAP call. Each parse fires `loadCertificateFromEnv`'s audit log line —
+ * one per file is the right shape.
+ */
+function buildCall(url: string, cert: NFeCertificate): SefazCall {
   assertCertNotExpired(cert);
   const agent = createSefazAgent(cert, { ca: readVendoredCA() });
   return { url, cert, agent, tpAmb: '2', timeoutMs: 60_000 };
@@ -394,6 +401,7 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
 
       const autorizacaoCall = buildCall(
         getEndpoints('SP', 'homologacao').NfeAutorizacao,
+        TEST_CERT!,
       );
       const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
 
@@ -437,6 +445,7 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
       await new Promise((r) => setTimeout(r, 1000));
       const consultaCall = buildCall(
         getEndpoints('SP', 'homologacao').NfeConsultaProtocolo,
+        TEST_CERT!,
       );
       const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
       assertNotConsumoIndevido(sit, 'duplicidade/consSitNFe');
