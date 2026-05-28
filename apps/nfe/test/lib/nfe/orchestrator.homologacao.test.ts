@@ -63,8 +63,12 @@ const hasFirebase =
   Boolean(process.env.FIREBASE_PROJECT_ID) &&
   (Boolean(process.env.FIREBASE_SERVICE_ACCOUNT) ||
     Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_PATH));
-const TEST_IE = process.env.NFE_TEST_IE;
-const hasFullCreds = hasCert && hasFirebase && Boolean(TEST_IE);
+// Falls back to a 12-digit placeholder when NFE_TEST_IE is unset —
+// supports the self-signed cert experiment (Phase 2 of the
+// `rosy-nibbling-wand` plan) where we probe SEFAZ-SP HOM without an
+// IE secret to see whether the response demands one (cStat=209).
+const TEST_IE = process.env.NFE_TEST_IE ?? '111111111111';
+const hasFullCreds = hasCert && hasFirebase;
 const describeOrSkip = hasFullCreds ? describe : describe.skip;
 
 // ---------------------------------------------------------------------------
@@ -416,7 +420,7 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
     // share that CNPJ-base or SEFAZ rejects with cStat=213.
     const cert = loadCertificateFromEnv();
     fs = getAdminFirestore();
-    await seedFixtures(fs, cert.cnpj, TEST_IE!);
+    await seedFixtures(fs, cert.cnpj, TEST_IE);
     __resetNFeRuntimeForTests();
     rt = getNFeRuntime();
     // SEFAZ status pre-flight intentionally removed — the ci-nfe.yml

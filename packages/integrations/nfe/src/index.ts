@@ -23,11 +23,14 @@ import type { InvoiceProvider } from '@delfrance/core/plugins';
 export {
   NFeCertError,
   assertCertNotExpired,
+  generateTestCertificate,
   isCertExpired,
   loadCertificateFromBase64,
   loadCertificateFromEnv,
   loadCertificateFromPath,
   warnIfCertNearExpiry,
+  type GeneratedTestCertificate,
+  type GenerateTestCertificateOptions,
   type NFeCertificate,
 } from './cert';
 

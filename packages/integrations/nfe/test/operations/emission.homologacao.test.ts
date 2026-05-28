@@ -81,12 +81,18 @@ const hasCert =
 // cStat=209 ("IE do emitente inválida") when the IE in the XML
 // doesn't match the IE registered for the cert's CNPJ at the state
 // SEFAZ — there's no algorithmic way to derive one from the other,
-// so the maintainer must set `NFE_TEST_IE` in `.env.local` to the
+// so the maintainer should set `NFE_TEST_IE` in `.env.local` to the
 // real IE issued for the company that owns the loaded A1 cert.
 // See `apps/nfe/.env.example`.
-const TEST_IE = process.env.NFE_TEST_IE;
+//
+// When `NFE_TEST_IE` is unset, fall back to a 12-digit placeholder.
+// This supports the self-signed cert experiment (Phase 2 of the
+// `rosy-nibbling-wand` plan): probe SEFAZ-SP HOM with no IE secret
+// configured and see whether the response tells us we need one
+// (cStat=209) or not.
+const TEST_IE = process.env.NFE_TEST_IE ?? '111111111111';
 
-const hasFullCreds = hasCert && Boolean(TEST_IE);
+const hasFullCreds = hasCert;
 
 const describeOrSkip = hasFullCreds ? describe : describe.skip;
 
@@ -178,11 +184,11 @@ function buildFixture(numeracao: number): GeneratorInput {
       razaoSocial: 'EMPRESA HOMOLOGAÇÃO & CIA. LTDA — ME [@#$%]',
       fantasia: null,
       cnae: null,
-      // IE comes from NFE_TEST_IE — must be the IE registered at the
+      // IE comes from NFE_TEST_IE — should be the IE registered at the
       // state SEFAZ for the same CNPJ that signs the cert (rejection
-      // 209 fires otherwise). describeOrSkip already short-circuits
-      // when TEST_IE is absent.
-      ie: TEST_IE!,
+      // 209 fires otherwise). Falls back to a 12-digit placeholder
+      // when the env var is unset (self-signed Phase 2 probe).
+      ie: TEST_IE,
       iest: null,
       imun: null,
       sede: {
