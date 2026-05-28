@@ -59,9 +59,12 @@ export {
 
 // State machine
 export {
+  CONSUMO_INDEVIDO_MARKER,
   MAX_LOTE_POLL_RETRIES,
+  NFeConsumoIndevidoError,
   STATUS_BLOQUEADORES,
   applyOutcome,
+  assertNotConsumoIndevido,
   classifyCStat,
   cStatToEstado,
   isBloqueada,

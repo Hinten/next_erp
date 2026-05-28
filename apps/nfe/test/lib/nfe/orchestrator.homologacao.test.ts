@@ -31,8 +31,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { ESTADO_NFE } from '@delfrance/schemas';
 import {
-  consultarStatusServico,
+  assertNotConsumoIndevido,
   loadCertificateFromEnv,
+  NFeConsumoIndevidoError,
 } from '@delfrance/integrations-nfe';
 
 import {
@@ -359,6 +360,50 @@ async function cleanupFixtures(fs: FirebaseFirestore.Firestore): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Consumo Indevido Shield — batch helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Walk a `BatchEmitResult.results` array and fire the shield for any
+ * entry that surfaces cStat=656 — either directly on a successful
+ * `EmitResult` or indirectly inside an `EmitError.errorMessage`.
+ * The orchestrator wraps SEFAZ rejections in typed error classes; the
+ * raw cStat may not be on the top-level union member, so we scan the
+ * message as a fallback.
+ */
+function shieldBatch(
+  results: ReadonlyArray<{
+    pedidoId: string;
+    cStat?: string;
+    xMotivo?: string;
+    errorCode?: string;
+    errorMessage?: string;
+  }>,
+  source: string,
+): void {
+  for (const r of results) {
+    if (r.cStat != null && r.xMotivo != null) {
+      assertNotConsumoIndevido(
+        { cStat: r.cStat, xMotivo: r.xMotivo },
+        `${source}/pedido=${r.pedidoId}`,
+      );
+      continue;
+    }
+    const msg = r.errorMessage;
+    if (
+      msg != null &&
+      (msg.includes('656') || msg.toLowerCase().includes('consumo indevido'))
+    ) {
+      throw new NFeConsumoIndevidoError({
+        cStat: '656',
+        xMotivo: msg,
+        source: `${source}/pedido=${r.pedidoId}/${r.errorCode ?? 'unknown'}`,
+      });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -374,20 +419,11 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
     await seedFixtures(fs, cert.cnpj, TEST_IE!);
     __resetNFeRuntimeForTests();
     rt = getNFeRuntime();
-
-    // SEFAZ pre-flight: warn loudly if the service is paralisado
-    // (cStat 108/109) so a SEFAZ outage doesn't masquerade as an
-    // orchestrator regression in the test report.
-    const status = await consultarStatusServico(
-      { url: rt.endpoints.NfeStatusServico, cert: rt.cert, agent: rt.agent, tpAmb: rt.tpAmb },
-      { cUF: '35' },
-    );
-    if (status.cStat !== '107') {
-      console.warn(
-        `[orchestrator.homologacao] SEFAZ-SP HOM cStat=${status.cStat} ` +
-          `(${status.xMotivo}) — proceeding anyway, but emit may reject.`,
-      );
-    }
+    // SEFAZ status pre-flight intentionally removed — the ci-nfe.yml
+    // "SEFAZ-SP HOM status gate" step runs operations.homologacao
+    // immediately before this suite and short-circuits the whole job
+    // on cStat ≠ 107/108/109, so re-pinging the status endpoint here
+    // would just feed the 656 throttle for no extra signal.
   }, 60_000);
 
   afterAll(async () => {
@@ -396,6 +432,7 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
 
   it('emitirPedido single happy path — PED-1 with imposto stamped → cStat=100', async () => {
     const result = await emitirPedido(fs, rt, PED1);
+    assertNotConsumoIndevido(result, 'single-happy/PED-1');
     expect(result.cStat).toBe('100');
     expect(result.estado).toBe(ESTADO_NFE.aprovada);
     expect(result.chave).toMatch(/^\d{44}$/);
@@ -404,6 +441,7 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
 
   it('emitirPedido resolver-via-regra — PED-8 lacks item.imposto, regraImposto fills it → cStat=100', async () => {
     const result = await emitirPedido(fs, rt, PED8);
+    assertNotConsumoIndevido(result, 'resolver-via-regra/PED-8');
     expect(result.cStat).toBe('100');
     expect(result.estado).toBe(ESTADO_NFE.aprovada);
     expect(result.chave).toMatch(/^\d{44}$/);
@@ -419,6 +457,7 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
       // fresh, all `estado='a'`, and only ONE entry hits the SEFAZ
       // autorizarLote NFe[] array.
       const batch = await emitirPedidosLote(fs, rt, [PED1, PED3, PED8]);
+      shieldBatch(batch.results, 'batch-of-3-jaAprovadas');
       expect(batch.results).toHaveLength(3);
       for (const r of batch.results) {
         expect('estado' in r).toBe(true);
@@ -451,6 +490,7 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
       ).data() as { numeracao_atual: number; idLote: number };
 
       const batch = await emitirPedidosLote(fs, rt, PARALLEL_PEDIDO_IDS);
+      shieldBatch(batch.results, 'batch-parallel-10');
 
       // Outcome shape — every pedido aprovada, all fresh.
       expect(batch.results).toHaveLength(10);

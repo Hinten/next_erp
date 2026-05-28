@@ -21,9 +21,14 @@
  * original `protNFe.infProt.cStat=100`. This is the contract the
  * orchestrator's anti-loss path relies on.
  *
- * Pre-flight: `consultarStatusServico` — if SEFAZ-SP is paralisado
- * (cStat 108/109) the test self-skips with a console warning rather
- * than failing (an upstream outage isn't our regression).
+ * SEFAZ-status pre-flight lives in `ci-nfe.yml`'s "SEFAZ-SP HOM
+ * status gate" step (runs `operations.homologacao.test.ts` once,
+ * before any emission). This file no longer pings the status endpoint
+ * itself — each CI run makes a single status call total instead of
+ * one per emission test, keeping us well below the cStat=656
+ * ("Consumo Indevido") throttle. Locally, mirror the gate posture by
+ * running `pnpm --filter @delfrance/integrations-nfe test
+ * operations.homologacao` before this suite.
  *
  * The test hand-builds a complete `GeneratorInput` so it has **no
  * Firestore dependency** and stays library-level. `numeracao` comes
@@ -44,6 +49,7 @@ import { describe, expect, it } from 'vitest';
 
 import { seedNNF } from '../helpers/homologacao-seed';
 import { assertCertNotExpired, loadCertificateFromEnv } from '../../src/cert';
+import { assertNotConsumoIndevido } from '../../src/state';
 import { getEndpoints } from '../../src/endpoints';
 import { generateNFe, type GeneratorInput } from '../../src/generator';
 import { signNFe } from '../../src/sign';
@@ -61,7 +67,6 @@ import {
   autorizarLote,
   consultarLote,
   consultarSituacaoNFe,
-  consultarStatusServico,
 } from '../../src/operations/index';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -372,24 +377,19 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
   it(
     'duplicidade recovery — second emission returns 204, consSitNFe resolves to original 100',
     async () => {
-      // Same posture as the happy-path test: paralisado is a hard fail,
-      // not a silent skip.
-      const statusCall = buildCall(getEndpoints('SP', 'homologacao').NfeStatusServico);
-      const status = await consultarStatusServico(statusCall, { cUF: '35' });
-      expect(status.cStat).toBe('107');
-
-      // Throttle before exercising another emission to stay well below
-      // SEFAZ's cStat=656 ("Consumo Indevido") threshold.
-      await new Promise((r) => setTimeout(r, 1000));
-
+      // SEFAZ status pre-flight intentionally removed — the ci-nfe.yml
+      // "SEFAZ-SP HOM status gate" step runs operations.homologacao
+      // immediately before this test and short-circuits the whole job
+      // on cStat ≠ 107/108/109, so re-pinging the status endpoint here
+      // would just feed the 656 throttle for no extra signal.
       const numeracao = seedNNF();
       const fixture = buildFixture(numeracao);
       const out = generateNFe(fixture);
-      const signedXml = signNFe(out.nfeXml, statusCall.cert);
 
       const autorizacaoCall = buildCall(
         getEndpoints('SP', 'homologacao').NfeAutorizacao,
       );
+      const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
 
       // 1st submission — must succeed.
       const first = await autorizarLote(autorizacaoCall, {
@@ -397,7 +397,9 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
         NFe: [signedXml],
         indSinc: '1',
       });
+      assertNotConsumoIndevido(first, 'duplicidade/autorizarLote#1');
       const firstProt = await resolveProtocol(first, autorizacaoCall);
+      if (firstProt) assertNotConsumoIndevido(firstProt.infProt, 'duplicidade/protNFe#1');
       expect(firstProt?.infProt.cStat).toBe('100');
       const firstNProt = firstProt!.infProt.nProt;
 
@@ -413,11 +415,13 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
         NFe: [signedXml],
         indSinc: '1',
       });
+      assertNotConsumoIndevido(second, 'duplicidade/autorizarLote#2');
       // eslint-disable-next-line no-console
       console.log(
         `[duplicidade lote2] cStat=${second.cStat} xMotivo="${second.xMotivo}"`,
       );
       const secondProt = await resolveProtocol(second, autorizacaoCall);
+      if (secondProt) assertNotConsumoIndevido(secondProt.infProt, 'duplicidade/protNFe#2');
       const dupCStat = secondProt?.infProt.cStat ?? second.cStat;
       expect(['204', '539']).toContain(dupCStat);
 
@@ -429,6 +433,7 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
         getEndpoints('SP', 'homologacao').NfeConsultaProtocolo,
       );
       const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
+      assertNotConsumoIndevido(sit, 'duplicidade/consSitNFe');
       // eslint-disable-next-line no-console
       console.log(
         `[consSitNFe] cStat=${sit.cStat} xMotivo="${sit.xMotivo}" prot.cStat=${sit.protNFe?.infProt.cStat}`,
@@ -465,6 +470,7 @@ async function resolveProtocol(
   for (let attempt = 0; attempt < 8; attempt++) {
     await new Promise((r) => setTimeout(r, 5_000));
     const poll = await consultarLote(call, { nRec: ret.infRec.nRec });
+    assertNotConsumoIndevido(poll, `consultarLote/attempt=${attempt + 1}`);
     // eslint-disable-next-line no-console
     console.log(
       `[consultarLote attempt=${attempt + 1}] cStat=${poll.cStat} xMotivo="${poll.xMotivo}"`,
