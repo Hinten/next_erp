@@ -32,6 +32,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ESTADO_NFE } from '@delfrance/schemas';
 import {
   assertNotConsumoIndevido,
+  hasNFeCertEnv,
   loadCertificateFromEnv,
   NFeConsumoIndevidoError,
 } from '@delfrance/integrations-nfe';
@@ -56,20 +57,17 @@ import {
 // Env gating
 // ---------------------------------------------------------------------------
 
-const hasCert =
-  (Boolean(process.env.NFE_CERT_PATH) || Boolean(process.env.NFE_CERT_BASE64)) &&
-  process.env.NFE_CERT_PASSWORD != null;
+const hasCert = hasNFeCertEnv();
 const hasFirebase =
   Boolean(process.env.FIREBASE_PROJECT_ID) &&
   (Boolean(process.env.FIREBASE_SERVICE_ACCOUNT) ||
     Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_PATH));
-// Falls back to a 12-digit placeholder when NFE_TEST_IE is unset —
-// supports the self-signed cert experiment (Phase 2 of the
-// `rosy-nibbling-wand` plan) where we probe SEFAZ-SP HOM without an
-// IE secret to see whether the response demands one (cStat=209).
-const TEST_IE = process.env.NFE_TEST_IE ?? '111111111111';
-const hasFullCreds = hasCert && hasFirebase;
-const describeOrSkip = hasFullCreds ? describe : describe.skip;
+// NFE_TEST_IE is REQUIRED — no placeholder fallback. A bogus IE only
+// earns a guaranteed cStat=209, so when it (or the cert / Firebase) is
+// unset the suite throws (see beforeAll) rather than emitting garbage
+// or silently skipping a fiscal live lane.
+const TEST_IE = process.env.NFE_TEST_IE;
+const hasFullCreds = hasCert && hasFirebase && Boolean(TEST_IE);
 
 // ---------------------------------------------------------------------------
 // Per-run fixture ids — keep CI runs from colliding on the staging project
@@ -411,16 +409,26 @@ function shieldBatch(
 // Tests
 // ---------------------------------------------------------------------------
 
-describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
+describe('orchestrator — SEFAZ-SP homologação', () => {
   let fs: FirebaseFirestore.Firestore;
   let rt: NFeRuntime;
 
   beforeAll(async () => {
+    // Fail loud, never skip: a live fiscal lane that silently skips on
+    // missing credentials can report green with zero coverage.
+    if (!hasFullCreds) {
+      throw new Error(
+        'Live orchestrator homologação test requires real credentials. ' +
+          'Missing one of: NFE_CERT_PATH|NFE_CERT_BASE64 + NFE_CERT_PASSWORD, ' +
+          'NFE_TEST_IE, FIREBASE_PROJECT_ID + FIREBASE_SERVICE_ACCOUNT(_PATH). ' +
+          'Refusing to skip a fiscal live lane silently.',
+      );
+    }
     // Load the cert once to extract its CNPJ — the filial fixture must
     // share that CNPJ-base or SEFAZ rejects with cStat=213.
     const cert = loadCertificateFromEnv();
     fs = getAdminFirestore();
-    await seedFixtures(fs, cert.cnpj, TEST_IE);
+    await seedFixtures(fs, cert.cnpj, TEST_IE!);
     __resetNFeRuntimeForTests();
     rt = getNFeRuntime();
     // SEFAZ status pre-flight intentionally removed — the ci-nfe.yml

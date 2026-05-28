@@ -18,7 +18,6 @@
     "gen:nfe-types": "node src/codegen/generate.mjs",
     "fetch:sefaz-ca": "node scripts/fetch-sefaz-chain.mjs",
     "rotate:pfx-password": "tsx scripts/rotate-pfx-password.ts",
-    "gen:test-cert": "tsx scripts/gen-test-cert.ts",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {

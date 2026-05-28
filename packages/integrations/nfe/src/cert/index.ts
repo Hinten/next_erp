@@ -331,11 +331,10 @@ export function loadCertificateFromEnv(env: NodeJS.ProcessEnv = process.env): NF
   warnIfCertNearExpiry(cert);
   // Audit trail — one greppable line per cert load. Lets ops verify
   // "the cert was loaded N times this boot" (expected N=1 in prod).
-  // Uses console.warn so it survives the base config's `no-console`
+  // Uses console.debug so it survives the base config's `no-console`
   // allowlist (matches warnIfCertNearExpiry's channel).
-  console.warn(
-    `[nfe-cert] loaded source=${source} cnpj=${cert.cnpj} ` +
-      `subject="${cert.subjectCommonName}" notAfter=${cert.notAfter.toISOString()}`,
+  console.debug(
+    `[nfe-cert] loaded source=${source}`,
   );
   return cert;
 }
@@ -413,10 +412,3 @@ export function warnIfCertNearExpiry(
       'Plan a renewal via Receita Federal.',
   );
 }
-
-// Self-signed cert generator for homologação testing — see ./generate.ts.
-export {
-  generateTestCertificate,
-  type GeneratedTestCertificate,
-  type GenerateTestCertificateOptions,
-} from './generate';

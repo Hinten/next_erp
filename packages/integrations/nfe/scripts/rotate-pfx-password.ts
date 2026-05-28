@@ -24,6 +24,7 @@
  *     NF_CERT_PASSWORD.
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 
 import forge from 'node-forge';
@@ -102,13 +103,23 @@ function reencryptPfx(pfxBytes: Buffer, oldPassword: string, newPassword: string
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
-  if (!existsSync(args.in)) {
-    process.stderr.write(`Input PFX not found: ${args.in}\n`);
+  // pnpm runs the script from the filtered package's directory, so a
+  // relative `--in .ignore/cert.pfx` would resolve under
+  // packages/integrations/nfe/. Resolve both paths against `INIT_CWD`
+  // (the directory the user invoked pnpm from) so relative paths land
+  // at the worktree root, matching the convention `.env.local`'s
+  // NFE_CERT_PATH already uses.
+  const baseDir = process.env.INIT_CWD ?? process.cwd();
+  const inPath = resolve(baseDir, args.in);
+  const outPath = resolve(baseDir, args.out);
+
+  if (!existsSync(inPath)) {
+    process.stderr.write(`Input PFX not found: ${inPath}\n`);
     process.exit(2);
   }
-  if (existsSync(args.out)) {
+  if (existsSync(outPath)) {
     process.stderr.write(
-      `Output path already exists: ${args.out}\n` +
+      `Output path already exists: ${outPath}\n` +
         'Refusing to overwrite — delete it first if you really want to clobber.\n',
     );
     process.exit(2);
@@ -118,7 +129,7 @@ async function main(): Promise<void> {
     `Old PFX password (input will be visible — pipe via < password.txt to hide): `,
   );
 
-  const pfxBytes = readFileSync(args.in);
+  const pfxBytes = readFileSync(inPath);
   const newPassword = generateStrongPassword();
   const reencrypted = reencryptPfx(pfxBytes, oldPassword, newPassword);
 
@@ -136,7 +147,7 @@ async function main(): Promise<void> {
     throw e;
   }
 
-  writeFileSync(args.out, reencrypted, { mode: 0o600 });
+  writeFileSync(outPath, reencrypted, { mode: 0o600 });
 
   // All sensitive output goes to STDERR — stdout stays empty so callers
   // capturing stdout (e.g. into $GITHUB_ENV via `echo`) cannot
@@ -145,7 +156,7 @@ async function main(): Promise<void> {
   process.stderr.write(
     [
       '',
-      'OK — rotated PFX written to ' + args.out,
+      'OK — rotated PFX written to ' + outPath,
       '',
       '═════════════════════════════════════════════════════════════════',
       '  NEW PASSWORD (save in password manager NOW — printed once):',

@@ -45,7 +45,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { seedNNF } from '../helpers/homologacao-seed';
 import {
@@ -82,20 +82,17 @@ const VENDORED_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-sp-homologacao.pem
 // cStat=209 ("IE do emitente inválida") when the IE in the XML
 // doesn't match the IE registered for the cert's CNPJ at the state
 // SEFAZ — there's no algorithmic way to derive one from the other,
-// so the maintainer should set `NFE_TEST_IE` in `.env.local` to the
+// so the maintainer must set `NFE_TEST_IE` in `.env.local` to the
 // real IE issued for the company that owns the loaded A1 cert.
 // See `apps/nfe/.env.example`.
 //
-// When `NFE_TEST_IE` is unset, fall back to a 12-digit placeholder.
-// This supports the self-signed cert experiment (Phase 2 of the
-// `rosy-nibbling-wand` plan): probe SEFAZ-SP HOM with no IE secret
-// configured and see whether the response tells us we need one
-// (cStat=209) or not.
-const TEST_IE = process.env.NFE_TEST_IE ?? '111111111111';
+// `NFE_TEST_IE` is REQUIRED — there is no placeholder fallback. A bogus
+// IE only ever earns a guaranteed cStat=209, so when it (or the cert)
+// is unset the suite throws (see `beforeAll`) rather than emitting
+// garbage or silently skipping a fiscal live lane.
+const TEST_IE = process.env.NFE_TEST_IE;
 
 const hasFullCreds = hasNFeCertEnv() && Boolean(TEST_IE);
-
-const describeOrSkip = hasFullCreds ? describe : describe.skip;
 
 // Load the cert once when env vars are set so the fixture can read its
 // CNPJ. SEFAZ rejection 213 (CNPJ-Base do Emitente difere do CNPJ-Base
@@ -185,11 +182,11 @@ function buildFixture(numeracao: number): GeneratorInput {
       razaoSocial: 'EMPRESA HOMOLOGAÇÃO & CIA. LTDA — ME [@#$%]',
       fantasia: null,
       cnae: null,
-      // IE comes from NFE_TEST_IE — should be the IE registered at the
+      // IE comes from NFE_TEST_IE — must be the IE registered at the
       // state SEFAZ for the same CNPJ that signs the cert (rejection
-      // 209 fires otherwise). Falls back to a 12-digit placeholder
-      // when the env var is unset (self-signed Phase 2 probe).
-      ie: TEST_IE,
+      // 209 fires otherwise). Guaranteed present here: the suite's
+      // `beforeAll` throws when NFE_TEST_IE is unset.
+      ie: TEST_IE!,
       iest: null,
       imun: null,
       sede: {
@@ -378,7 +375,19 @@ function buildCall(url: string, cert: NFeCertificate): SefazCall {
 // Tests
 // ---------------------------------------------------------------------------
 
-describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract', () => {
+describe('SEFAZ-SP homologação — library duplicidade-recovery contract', () => {
+  // Fail loud, never skip: a live fiscal lane that silently skips on
+  // missing credentials can report green with zero coverage.
+  beforeAll(() => {
+    if (!hasFullCreds) {
+      throw new Error(
+        'Live homologação test requires real credentials. Missing one of: ' +
+          'NFE_CERT_PATH|NFE_CERT_BASE64 + NFE_CERT_PASSWORD, NFE_TEST_IE. ' +
+          'Refusing to skip a fiscal live lane silently.',
+      );
+    }
+  });
+
   // NOTE: the previous "generate → sign → autorizarLote (indSinc=1) →
   // cStat=100" happy-path test was removed when the orchestrator-level
   // homologação test (`apps/nfe/test/lib/nfe/orchestrator.homologacao.test.ts`)

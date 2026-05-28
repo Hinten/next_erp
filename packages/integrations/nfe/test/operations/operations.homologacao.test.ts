@@ -42,13 +42,20 @@ import { consultarStatusServico } from '../../src/operations/index';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VENDORED_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-sp-homologacao.pem');
 
-const describeOrSkip = hasNFeCertEnv() ? describe : describe.skip;
-
-describeOrSkip('SEFAZ-SP homologação smoke (typed)', () => {
+describe('SEFAZ-SP homologação smoke (typed)', () => {
   // One cert load per test file — re-loading per `it()` is wasted PFX
   // parsing and bloats the audit log line count.
   let cert: NFeCertificate;
   beforeAll(() => {
+    // Fail loud, never skip: a live fiscal lane that silently skips on
+    // missing credentials can report green with zero coverage.
+    if (!hasNFeCertEnv()) {
+      throw new Error(
+        'Live homologação status gate requires real credentials. Missing ' +
+          'NFE_CERT_PATH|NFE_CERT_BASE64 + NFE_CERT_PASSWORD. ' +
+          'Refusing to skip a fiscal live lane silently.',
+      );
+    }
     cert = loadCertificateFromEnv();
   });
 
