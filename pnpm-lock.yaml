@@ -124,7 +124,7 @@ importers:
         version: 9.39.4
       eslint-config-next:
         specifier: ^16.2.6
-        version: 16.2.6(@typescript-eslint/parser@8.59.3(eslint@9.39.4)(typescript@6.0.3))(eslint@9.39.4)(typescript@6.0.3)
+        version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -168,6 +168,9 @@ importers:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
+      '@delfrance/config-vitest':
+        specifier: workspace:*
+        version: link:../../packages/config-vitest
       '@types/node':
         specifier: ^24.10.0
         version: 24.12.4
@@ -182,7 +185,7 @@ importers:
         version: 9.39.4
       eslint-config-next:
         specifier: ^16.2.6
-        version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
+        version: 16.2.6(@typescript-eslint/parser@8.59.3(eslint@9.39.4)(typescript@6.0.3))(eslint@9.39.4)(typescript@6.0.3)
       node-forge:
         specifier: ^1.4.0
         version: 1.4.0
@@ -369,6 +372,8 @@ importers:
   packages/config-prettier: {}
 
   packages/config-tsconfig: {}
+
+  packages/config-vitest: {}
 
   packages/core:
     dependencies:
@@ -565,6 +570,9 @@ importers:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
+      '@delfrance/config-vitest':
+        specifier: workspace:*
+        version: link:../../config-vitest
       '@types/node-forge':
         specifier: ^1.3.11
         version: 1.3.14

@@ -26,9 +26,15 @@
  * than failing (an upstream outage isn't our regression).
  *
  * The test hand-builds a complete `GeneratorInput` so it has **no
- * Firestore dependency** and stays library-level. `numeracao` is derived
- * from `Date.now() & 0xFFFF` so reruns don't collide on the natural key
- * (~65k unique nNF values per minute, well above CI cadence).
+ * Firestore dependency** and stays library-level. `numeracao` comes
+ * from `seedNNF()` in `../helpers/homologacao-seed.ts` — see that file
+ * for the cross-CI-run collision-avoidance rationale (high-zone +
+ * Date.now()-based offset over ~500M slots).
+ *
+ * **serie lane**: this test runs on **serie=2**; the orchestrator test
+ * at `apps/nfe/test/lib/nfe/orchestrator.homologacao.test.ts` owns
+ * serie=1. SEFAZ keys persistence on serie, so the two test paths can
+ * never collide at the (CNPJ, serie, tpAmb, tpEmis, nNF) key.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -36,6 +42,7 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { seedNNF } from '../helpers/homologacao-seed';
 import { assertCertNotExpired, loadCertificateFromEnv } from '../../src/cert';
 import { getEndpoints } from '../../src/endpoints';
 import { generateNFe, type GeneratorInput } from '../../src/generator';
@@ -148,7 +155,12 @@ function buildFixture(numeracao: number): GeneratorInput {
   return {
     ambiente: 'homologacao',
     numeracao,
-    serie: 1,
+    // serie=2 is the library test's lane; serie=1 belongs to the
+    // orchestrator test at apps/nfe/test/lib/nfe/orchestrator.homologacao.test.ts.
+    // Keeping the lanes split eliminates the cross-test (CNPJ, serie,
+    // tpAmb, tpEmis, nNF) collision that would otherwise surface as
+    // cStat=539 ("duplicidade") on whichever runs second at SEFAZ.
+    serie: 2,
     dhEmi: new Date(),
     filial: {
       // CNPJ comes from the loaded A1 cert — SEFAZ enforces "first 8
@@ -370,7 +382,7 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
       // SEFAZ's cStat=656 ("Consumo Indevido") threshold.
       await new Promise((r) => setTimeout(r, 1000));
 
-      const numeracao = 1_000_000 + ((Date.now() + 1) & 0xffff);
+      const numeracao = seedNNF();
       const fixture = buildFixture(numeracao);
       const out = generateNFe(fixture);
       const signedXml = signNFe(out.nfeXml, statusCall.cert);

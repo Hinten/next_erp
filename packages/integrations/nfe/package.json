@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./http-provider": "./src/http-provider/index.ts",
+    "./test-helpers/homologacao-seed": "./test/helpers/homologacao-seed.ts",
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -30,6 +31,7 @@
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",
+    "@delfrance/config-vitest": "workspace:*",
     "@types/node-forge": "^1.3.11",
     "firebase-admin": "^13.9.0",
     "typescript": "^6.0.3",

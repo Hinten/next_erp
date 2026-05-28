@@ -13,9 +13,19 @@
  *   - `NFE_TEST_IE` — the Inscrição Estadual registered for the cert's CNPJ
  *   - `FIREBASE_PROJECT_ID` + `FIREBASE_SERVICE_ACCOUNT`
  *
- * SEFAZ-SP HOM persists numeração across runs; a per-run starting `nNF`
- * derived from `Date.now() & 0xFFFFF` avoids the cStat=539 (duplicidade
- * with different chave) trap.
+ * SEFAZ-SP HOM persists numeração across runs; per-run starting `nNF` +
+ * `idLote` come from the shared `seedNNF()` / `seedIdLote()` helpers in
+ * `@delfrance/integrations-nfe`'s test surface — see
+ * `packages/integrations/nfe/test/helpers/homologacao-seed.ts` for the
+ * collision-avoidance rationale (high-zone + Date.now() offset, ~500M
+ * slots) and the explanation of why SEFAZ exposes no "query last nNF
+ * used" endpoint.
+ *
+ * **serie lane**: this test runs on **serie=1**; the library-level
+ * duplicidade test at
+ * `packages/integrations/nfe/test/operations/emission.homologacao.test.ts`
+ * owns serie=2. SEFAZ keys persistence on serie, so the two test paths
+ * can never collide at the (CNPJ, serie, tpAmb, tpEmis, nNF) key.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -24,6 +34,11 @@ import {
   consultarStatusServico,
   loadCertificateFromEnv,
 } from '@delfrance/integrations-nfe';
+
+import {
+  seedIdLote,
+  seedNNF,
+} from '@delfrance/integrations-nfe/test-helpers/homologacao-seed';
 
 import { getAdminFirestore } from '../../../lib/firebase/admin';
 import {
@@ -67,12 +82,22 @@ const PED1 = `${FIXTURE_PREFIX}-PED-1`;
 const PED3 = `${FIXTURE_PREFIX}-PED-3`;
 const PED8 = `${FIXTURE_PREFIX}-PED-8`;
 
-// Starting nNF — high enough to dodge prior CI runs' nNFs at SEFAZ.
-// `Date.now() & 0xFFFFF` gives a 20-bit space (~1M unique values per
-// second of wall-clock); collisions across CI runs separated by ≥1ms
-// are astronomically unlikely.
-const SEED_NNF_START = Date.now() & 0xfffff;
-const SEED_IDLOTE_START = Date.now() & 0xffff;
+// 10 fresh pedidos consumed by the parallel-batch test. Named with a
+// distinct `PP` infix so the cleanup loop can pick them apart from the
+// `PED-{1,3,8}` ids the single-pedido + reused-batch tests use.
+const PARALLEL_PEDIDO_IDS: readonly string[] = Array.from(
+  { length: 10 },
+  (_, i) => `${FIXTURE_PREFIX}-PED-PP${i + 1}`,
+);
+
+// Starting nNF + idLote come from the shared homologação seed helpers.
+// SEFAZ exposes no endpoint to query last-used nNF for a (CNPJ, serie,
+// tpAmb, tpEmis) tuple, so collision-avoidance across CI runs is fully
+// client-side. The helpers seed into a high "test zone" (~500M slots)
+// to keep the birthday-paradox probability negligible at any plausible
+// CI cadence. See the helper module for full rationale.
+const SEED_NNF_START = seedNNF();
+const SEED_IDLOTE_START = seedIdLote();
 
 // ---------------------------------------------------------------------------
 // Fixture builders — minimal docs the orchestrator needs
@@ -294,6 +319,22 @@ async function seedFixtures(
       .doc(`pedidos/${pedidoId}/pagamento/pag-01`)
       .set(pagamentoDoc(valor));
   }
+
+  // 10 fresh pedidos for the parallel-batch test. Each carries `imposto`
+  // pre-stamped so the orchestrator's parallel `nextNumeracao` path is
+  // not gated by the resolver cascade (which the prior test already
+  // covers in isolation).
+  for (let i = 0; i < PARALLEL_PEDIDO_IDS.length; i++) {
+    const pedidoId = PARALLEL_PEDIDO_IDS[i]!;
+    const valor = 200 + i;
+    await fs
+      .collection('pedidos')
+      .doc(pedidoId)
+      .set(pedidoDoc(pedidoId, valor));
+    await fs
+      .doc(`pedidos/${pedidoId}/pagamento/pag-01`)
+      .set(pagamentoDoc(valor));
+  }
 }
 
 async function cleanupFixtures(fs: FirebaseFirestore.Firestore): Promise<void> {
@@ -308,7 +349,7 @@ async function cleanupFixtures(fs: FirebaseFirestore.Firestore): Promise<void> {
     await fs.doc(path).delete();
   }
 
-  for (const pedidoId of [PED1, PED3, PED8]) {
+  for (const pedidoId of [PED1, PED3, PED8, ...PARALLEL_PEDIDO_IDS]) {
     await deleteDocWithSubcoll(`pedidos/${pedidoId}`, ['nfev4', 'pagamento']);
   }
   await deleteDocWithSubcoll(`operacao/${OPERACAO_ID}`, ['regraimposto']);
@@ -392,5 +433,60 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
       expect(fresh[0]!.pedidoId).toBe(PED3);
     },
     120_000,
+  );
+
+  it(
+    'emitirPedidosLote × 10 parallel — unique consecutive nNFs, all aprovadas',
+    async () => {
+      // Throttle before a 10-emission batch so the prior 3 tests'
+      // round-trips don't push us into SEFAZ's cStat=656 ("Consumo
+      // Indevido") window.
+      await new Promise((r) => setTimeout(r, 1000));
+
+      // Snapshot numeracao_atual + idLote BEFORE the batch so we can
+      // assert the orchestrator's parallel `nextNumeracao` path produced
+      // exactly 10 consecutive allocations and exactly 1 idLote bump.
+      const cfgBefore = (
+        await fs.doc(`filiais/${FILIAL_ID}/nfeconfig/default`).get()
+      ).data() as { numeracao_atual: number; idLote: number };
+
+      const batch = await emitirPedidosLote(fs, rt, PARALLEL_PEDIDO_IDS);
+
+      // Outcome shape — every pedido aprovada, all fresh.
+      expect(batch.results).toHaveLength(10);
+      for (const r of batch.results) {
+        expect('estado' in r).toBe(true);
+        if ('estado' in r) {
+          expect(r.estado).toBe(ESTADO_NFE.aprovada);
+          expect(r.reused).toBe(false);
+          expect(r.chave).toMatch(/^\d{44}$/);
+        }
+      }
+
+      // nNF extraction — positions 25..34 (9-digit nNF field inside the
+      // 44-digit chave). All 10 must be distinct AND form a consecutive
+      // run starting at `cfgBefore.numeracao_atual + 1`.
+      const nNFs: number[] = [];
+      for (const r of batch.results) {
+        if ('chave' in r) nNFs.push(Number(r.chave.substring(25, 34)));
+      }
+      nNFs.sort((a, b) => a - b);
+      expect(new Set(nNFs).size).toBe(10);
+      expect(nNFs[0]).toBe(cfgBefore.numeracao_atual + 1);
+      expect(nNFs[9]).toBe(cfgBefore.numeracao_atual + 10);
+      expect(nNFs).toEqual(
+        Array.from({ length: 10 }, (_, i) => cfgBefore.numeracao_atual + 1 + i),
+      );
+
+      // Persisted counter state — numeracao_atual advanced by exactly 10
+      // (one per pedido); idLote advanced by exactly 1 (one chunk = one
+      // shared lote, regardless of pedido count).
+      const cfgAfter = (
+        await fs.doc(`filiais/${FILIAL_ID}/nfeconfig/default`).get()
+      ).data() as { numeracao_atual: number; idLote: number };
+      expect(cfgAfter.numeracao_atual).toBe(cfgBefore.numeracao_atual + 10);
+      expect(cfgAfter.idLote).toBe(cfgBefore.idLote + 1);
+    },
+    180_000,
   );
 });
