@@ -141,20 +141,15 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Verify live-test secrets are configured
-        # Fail loud + early when a required secret is missing instead of
-        # letting vitest's `describe.skip` silently drop every live test
-        # (which would surface as a green CI that actually ran nothing).
+        # Cert + IE are NO LONGER required — see the "Generate
+        # self-signed test certificate" step below. We only gate on
+        # Firebase staging secrets (real infrastructure). Cert/IE
+        # leakage surface area is now zero at the secret store.
         env:
-          NFE_CERT_BASE64:          ${{ secrets.NF_CERT_BASE64 }}
-          NFE_CERT_PASSWORD:        ${{ secrets.NF_CERT_PASSWORD }}
-          NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
           FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
         run: |
           missing=()
-          [[ -z "${NFE_CERT_BASE64:-}" ]]          && missing+=("NF_CERT_BASE64")
-          [[ -z "${NFE_CERT_PASSWORD:-}" ]]        && missing+=("NF_CERT_PASSWORD")
-          [[ -z "${NFE_TEST_IE:-}" ]]              && missing+=("NFE_TEST_IE")
           [[ -z "${FIREBASE_PROJECT_ID:-}" ]]      && missing+=("FIREBASE_PROJECT_ID_STAGING")
           [[ -z "${FIREBASE_SERVICE_ACCOUNT:-}" ]] && missing+=("FIREBASE_SERVICE_ACCOUNT_STAGING")
           if [[ ${#missing[@]} -gt 0 ]]; then
@@ -162,7 +157,20 @@ jobs:
             echo "Configure them at https://github.com/${{ github.repository }}/settings/secrets/actions"
             exit 1
           fi
-          echo "All 5 live-test secrets are configured."
+          echo "All 2 live-test secrets are configured."
+
+      - name: Generate self-signed test certificate
+        # Replaces the NF_CERT_BASE64 + NF_CERT_PASSWORD secrets with a
+        # freshly-generated self-signed cert for each CI run. The cert
+        # has the fictitious CNPJ 99999999000191 and is valid only at
+        # SEFAZ-SP HOM. Writes NFE_CERT_BASE64 + NFE_CERT_PASSWORD into
+        # $GITHUB_ENV so subsequent steps pick them up automatically.
+        #
+        # NFE_TEST_IE stays unset on purpose — the test fixtures fall
+        # back to '111111111111'. Phase 2 of the rosy-nibbling-wand
+        # plan: see what SEFAZ tells us with the empty-IE probe and
+        # iterate from there.
+        run: pnpm --filter @delfrance/integrations-nfe gen:test-cert >> "$GITHUB_ENV"
 
       - name: Refresh SEFAZ TLS chain
         # See velvet-purring-bear.md "Cert lifecycle (operations)".
@@ -177,10 +185,9 @@ jobs:
         # (cStat 108/109) or the SOAP round-trip fails, this step fails
         # and the heavy emission step skips automatically via
         # step-level `if: success()` (the GitHub Actions default).
+        # NFE_CERT_BASE64 + NFE_CERT_PASSWORD come from $GITHUB_ENV
+        # (the "Generate self-signed test certificate" step above).
         env:
-          NFE_CERT_BASE64:          ${{ secrets.NF_CERT_BASE64 }}
-          NFE_CERT_PASSWORD:        ${{ secrets.NF_CERT_PASSWORD }}
-          NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
           FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
         run: |
@@ -191,10 +198,10 @@ jobs:
         # above succeeded (implicit `if: success()`). Each test inside
         # these suites assumes SEFAZ is up; the shield guard in the
         # test code catches cStat=656 if SEFAZ throttles us mid-run.
+        # NFE_CERT_* come from $GITHUB_ENV; NFE_TEST_IE stays unset
+        # so the fixture's placeholder fallback ('111111111111') is
+        # used — that's the Phase 2 probe.
         env:
-          NFE_CERT_BASE64:          ${{ secrets.NF_CERT_BASE64 }}
-          NFE_CERT_PASSWORD:        ${{ secrets.NF_CERT_PASSWORD }}
-          NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
           FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
         run: |
