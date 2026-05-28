@@ -1,0 +1,10 @@
+{
+  "name": "@delfrance/config-vitest",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./env": "./env.js"
+  },
+  "files": ["env.js"]
+}

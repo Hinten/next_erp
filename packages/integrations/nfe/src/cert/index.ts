@@ -413,3 +413,10 @@ export function warnIfCertNearExpiry(
       'Plan a renewal via Receita Federal.',
   );
 }
+
+// Self-signed cert generator for homologação testing — see ./generate.ts.
+export {
+  generateTestCertificate,
+  type GeneratedTestCertificate,
+  type GenerateTestCertificateOptions,
+} from './generate';
