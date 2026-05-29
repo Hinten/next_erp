@@ -34,6 +34,7 @@ import {
   buildPagXml,
   buildTotalXml,
   buildTranspXml,
+  cancelarNFe,
   classifyCStat,
   consultarLote,
   consultarSituacaoNFe,
@@ -2275,6 +2276,126 @@ export async function consultarPedido(
     xMotivo: patch.xMotivo,
     reused: false,
   };
+}
+
+/** Cancelamento rejected by SEFAZ, or the NF-e is not in a cancellable state. */
+export class NFeCancelamentoError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NFeCancelamentoError';
+  }
+}
+
+/**
+ * Cancel an authorized NF-e (RecepcaoEvento, `tpEvento=110111`).
+ *
+ * Loads the pedido's nfev4 doc, then **consults SEFAZ for the authoritative
+ * `nProt`** — the nfev4 schema carries no `nProt`, and the consult also
+ * confirms the NF-e is still authorized (protocolo `cStat=100`) and not
+ * already cancelled (Flutter parity, `.old/.../client.dart:312`). Sends the
+ * cancelamento evento; on `cStat` 135 (registrado e vinculado) or 155
+ * (homologado fora de prazo) persists `estado='c'` and audit-logs the
+ * round-trip (signed `<evento>` + raw response — `procEventoNFe` is
+ * reconstructable from those and also returned by `cancelarNFe`). Any other
+ * cStat throws `NFeCancelamentoError`; SEFAZ enforces the 24 h window, so a
+ * past-deadline cancel surfaces here as a rejection.
+ */
+export async function cancelarPedido(
+  fs: Firestore,
+  rt: NFeRuntime,
+  pedidoId: string,
+  xJust: string,
+): Promise<EmitResult> {
+  console.debug(`[nfe/orchestrator] cancelarPedido pedidoId='${pedidoId}'`);
+  const bundle = await loadPedidoBundle(fs, pedidoId);
+  const tpEmis = resolveTpEmis(bundle.filial.sede.estado);
+  const nfeRef = fs
+    .collection('pedidos')
+    .doc(pedidoId)
+    .collection('nfev4')
+    .doc(nfeDocId(tpEmis));
+  const snap = await nfeRef.get();
+  if (!snap.exists) {
+    throw new NFeOrchestratorError(`pedido '${pedidoId}': no nfev4 doc — nothing to cancel.`);
+  }
+  const nota = snap.data() as NotaFiscalEletronica;
+  if (!nota.chave) {
+    throw new NFeOrchestratorError(
+      `pedido '${pedidoId}': persisted nfev4 doc has no chave — cannot cancel.`,
+    );
+  }
+
+  const baseCall = { cert: rt.cert, agent: rt.agent, tpAmb: rt.tpAmb } as const;
+  const now = (): string => new Date().toISOString();
+
+  // 1. Consult SEFAZ for the authoritative protocol + confirm authorized.
+  const consSitCall: SefazCall = { ...baseCall, url: rt.endpoints.NfeConsultaProtocolo };
+  const retSit = await consultarSituacaoNFe(consSitCall, { chave: nota.chave });
+  await enviNfeCollection(fs, bundle.filialId).add(
+    buildEnviNFeMsgFromConsulta({ chave: nota.chave, nRec: null, ret: retSit, tpEmis }),
+  );
+  const infProt = retSit.protNFe?.infProt;
+  if (infProt?.cStat !== '100' || !infProt.nProt) {
+    throw new NFeCancelamentoError(
+      `pedido '${pedidoId}': NF-e não está autorizada/cancelável ` +
+        `(consulta cStat=${retSit.cStat}, protocolo cStat=${infProt?.cStat ?? '-'}). ` +
+        'Apenas NF-e autorizada (cStat=100) pode ser cancelada.',
+    );
+  }
+
+  // 2. Send the cancelamento evento (cOrgao = chave's UF prefix).
+  const cancelCall: SefazCall = { ...baseCall, url: rt.endpoints.RecepcaoEvento };
+  const res = await cancelarNFe(cancelCall, {
+    chNFe: nota.chave,
+    cOrgao: nota.chave.slice(0, 2),
+    cnpj: bundle.filial.cnpj,
+    nProt: infProt.nProt,
+    xJust,
+  });
+  const ev = res.ret.retEvento?.[0]?.infEvento;
+  const cStat = ev?.cStat ?? res.ret.cStat;
+  const xMotivo = ev?.xMotivo ?? res.ret.xMotivo;
+
+  // Audit-log the cancelamento round-trip (both halves of procEventoNFe).
+  await enviNfeCollection(fs, bundle.filialId).add({
+    targetsChnfe: [nota.chave],
+    idLote: null,
+    indSinc: null,
+    xml_enviado: res.signedEventoXml,
+    xml_retorno: res.rawResponse,
+    nRec: null,
+    cStat,
+    xMotivo,
+    error: null,
+    tpEmis,
+    estado: ESTADO_ENVI_NFE_MSG.concluido,
+    timestamp: now(),
+    ultima_modificacao: now(),
+  });
+
+  if (cStat === '135' || cStat === '155') {
+    await persistPatch(nfeRef, {
+      estado: ESTADO_NFE.cancelada,
+      cStat,
+      xMotivo,
+      retries: 0,
+      nRec: null,
+      action: 'done-terminal',
+    });
+    return {
+      nfeId: nfeRef.id,
+      pedidoId,
+      estado: ESTADO_NFE.cancelada,
+      chave: nota.chave,
+      nRec: null,
+      cStat,
+      xMotivo,
+      reused: false,
+    };
+  }
+  throw new NFeCancelamentoError(
+    `pedido '${pedidoId}': cancelamento rejeitado por SEFAZ — cStat=${cStat} ${xMotivo}`,
+  );
 }
 
 async function persistPatch(

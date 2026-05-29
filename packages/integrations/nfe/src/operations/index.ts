@@ -19,8 +19,16 @@
  * stays string-based.
  */
 import {
+  buildCancelamentoEvento,
+  buildEnvEvento,
+  buildProcEventoNFe,
+  type CancelamentoEventoInput,
+} from '../eventos';
+import { signEvento } from '../sign';
+import {
   nfeAutorizacaoLote,
   nfeConsultaProtocolo,
+  nfeRecepcaoEvento,
   nfeRetAutorizacao,
   nfeStatusServico,
   type PostResult,
@@ -31,6 +39,7 @@ import {
   type TRetConsStatServ,
   type TRetConsSitNFe,
   type TRetConsReciNFe,
+  type TRetEnvEvento,
   type TRetEnviNFe,
 } from '../types/nfe-schema';
 import { parse, serialize } from '../xml';
@@ -136,12 +145,48 @@ export async function autorizarLote(
   return parse<TRetEnviNFe>('retEnviNFe', resultXml);
 }
 
+/** Result of a cancelamento round-trip. */
+export interface CancelarNFeResult {
+  /** Parsed `retEnvEvento` (lote-level cStat in `.cStat`, per-evento in `.retEvento[]`). */
+  readonly ret: TRetEnvEvento;
+  /** The signed `<evento>` we sent (opaque bytes — archive as-is). */
+  readonly signedEventoXml: string;
+  /** Archival `<procEventoNFe>` (signed evento + SEFAZ retEvento); null on lote rejection. */
+  readonly procEventoNFe: string | null;
+  /** Raw `retEnvEvento` XML, for the audit log. */
+  readonly rawResponse: string;
+}
+
+/**
+ * `RecepcaoEvento4` — cancelamento (`tpEvento=110111`).
+ *
+ * Builds + signs the `<evento>`, wraps the single-evento `<envEvento>`
+ * lote, sends, and parses `retEnvEvento`. The caller inspects
+ * `ret.retEvento[0].infEvento.cStat`: **135** (registrado e vinculado) or
+ * **155** (homologado fora de prazo) = success; anything else = rejected.
+ * `tpAmb` is taken from the call context; the certificate that signs the
+ * evento is `call.cert`.
+ */
+export async function cancelarNFe(
+  call: SefazCall,
+  args: Omit<CancelamentoEventoInput, 'tpAmb'>,
+): Promise<CancelarNFeResult> {
+  const eventoXml = buildCancelamentoEvento({ ...args, tpAmb: call.tpAmb });
+  const signedEventoXml = signEvento(eventoXml, call.cert);
+  const envEventoXml = buildEnvEvento(signedEventoXml);
+  const { resultXml } = await nfeRecepcaoEvento(call, envEventoXml);
+  const ret = parse<TRetEnvEvento>('retEnvEvento', resultXml);
+  const procEventoNFe = buildProcEventoNFe(signedEventoXml, resultXml);
+  return { ret, signedEventoXml, procEventoNFe, rawResponse: resultXml };
+}
+
 // Re-export the underlying transport — power users (recovery flows, replay
 // of archived signed NF-e) still reach for the string-based API.
 export type { PostResult, SefazCall };
 export {
   nfeAutorizacaoLote,
   nfeConsultaProtocolo,
+  nfeRecepcaoEvento,
   nfeRetAutorizacao,
   nfeStatusServico,
 };

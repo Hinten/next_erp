@@ -130,6 +130,16 @@ export {
 // `<nfeProc>` envelope — post-emission stitching of signed NFe + protNFe.
 export { buildNFeProc } from './nfeproc';
 
+// Eventos (cancelamento; CC-e later) — builders for the RecepcaoEvento lote.
+export {
+  buildCancelamentoEvento,
+  buildEnvEvento,
+  buildProcEventoNFe,
+  NFeEventoError,
+  TP_EVENTO_CANCELAMENTO,
+  type CancelamentoEventoInput,
+} from './eventos';
+
 // Recovery / anti-loss
 export {
   DEFAULT_STUCK_TIMEOUT_MS,
@@ -149,9 +159,11 @@ export {
 // Typed operations (the default API for app code)
 export {
   autorizarLote,
+  cancelarNFe,
   consultarLote,
   consultarSituacaoNFe,
   consultarStatusServico,
+  type CancelarNFeResult,
   type CUFCode,
 } from './operations';
 

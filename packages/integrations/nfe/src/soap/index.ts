@@ -313,6 +313,16 @@ const CONTRACTS: Record<string, OperationContract> = {
     requestRoot: 'consStatServ',
     responseRoot: 'retConsStatServ',
   },
+  nfeRecepcaoEvento: {
+    soapOp: 'RecepcaoEvento',
+    requestRoot: 'envEvento',
+    responseRoot: 'retEnvEvento',
+  },
+  nfeInutilizacao: {
+    soapOp: 'NFeInutilizacao',
+    requestRoot: 'inutNFe',
+    responseRoot: 'retInutNFe',
+  },
 };
 
 /**
@@ -372,6 +382,22 @@ export async function nfeStatusServico(
   consStatServXml: string,
 ): Promise<PostResult> {
   return postSoapValidated(CONTRACTS.nfeStatusServico!, call, consStatServXml);
+}
+
+/** `RecepcaoEvento4 / nfeRecepcaoEvento` — send an `<envEvento>` lote (cancelamento, CC-e). */
+export async function nfeRecepcaoEvento(
+  call: SefazCall,
+  envEventoXml: string,
+): Promise<PostResult> {
+  return postSoapValidated(CONTRACTS.nfeRecepcaoEvento!, call, envEventoXml);
+}
+
+/** `NFeInutilizacao4 / nfeInutilizacaoNF` — burn an unused número range. */
+export async function nfeInutilizacao(
+  call: SefazCall,
+  inutNFeXml: string,
+): Promise<PostResult> {
+  return postSoapValidated(CONTRACTS.nfeInutilizacao!, call, inutNFeXml);
 }
 
 // Exposed for offline tests that exercise envelope shape / response unwrap.
