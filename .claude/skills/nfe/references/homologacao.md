@@ -22,7 +22,8 @@ available for every UF, including the SVC environments.
   the issuer may generate them freely.
 - The certificate is real (a valid ICP-Brasil A1/A3); only the *environment*
   is test. The CI uses a dedicated homologação test certificate stored as the
-  `NF_CERT_BASE64` / `NF_CERT_PASSWORD` secrets.
+  `NFE_CERT_BASE64` / `NFE_CERT_PASSWORD` secrets (with the `E` — runtime env
+  vars, `.env.local`, and GitHub Actions secrets all use the same names).
 
 ## Endpoints
 

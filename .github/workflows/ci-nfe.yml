@@ -7,13 +7,24 @@ name: CI — NFe
 on:
   push:
     branches: [master, main]
+    # NF-e-relevant paths only — this workflow runs the expensive live
+    # SEFAZ pipeline (~10 min). Broad globs on `packages/schemas/**` or
+    # `packages/core/**` would re-trigger live emissions on edits that
+    # have nothing to do with NF-e. Cross-package typecheck protection
+    # is covered by `ci.yml`'s `pnpm turbo run typecheck` over the full
+    # graph; if a `core`/`data` change breaks NF-e, ci.yml catches it
+    # without re-emitting at SEFAZ.
     paths:
       - 'apps/nfe/**'
       - 'packages/integrations/nfe/**'
-      - 'packages/schemas/**'
-      - 'packages/core/**'
-      - 'packages/data/**'
-      - 'packages/auth/**'
+      - 'packages/config-vitest/**'
+      - 'packages/schemas/src/nfe.ts'
+      - 'packages/schemas/src/nfeConfig.ts'
+      - 'packages/schemas/src/enviNfeMsg.ts'
+      - 'packages/schemas/src/pedido.ts'
+      - 'packages/schemas/src/pagamento.ts'
+      - 'packages/schemas/src/frete.ts'
+      - 'packages/schemas/src/integracao.ts'
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-nfe.yml'
   pull_request:
@@ -21,10 +32,14 @@ on:
     paths:
       - 'apps/nfe/**'
       - 'packages/integrations/nfe/**'
-      - 'packages/schemas/**'
-      - 'packages/core/**'
-      - 'packages/data/**'
-      - 'packages/auth/**'
+      - 'packages/config-vitest/**'
+      - 'packages/schemas/src/nfe.ts'
+      - 'packages/schemas/src/nfeConfig.ts'
+      - 'packages/schemas/src/enviNfeMsg.ts'
+      - 'packages/schemas/src/pedido.ts'
+      - 'packages/schemas/src/pagamento.ts'
+      - 'packages/schemas/src/frete.ts'
+      - 'packages/schemas/src/integracao.ts'
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-nfe.yml'
   workflow_dispatch:
@@ -89,14 +104,17 @@ jobs:
             --filter @delfrance/schemas
 
       - name: Unit tests (offline)
-        # Excludes the env-gated live tests
-        # (operations.homologacao + numeracao.staging) — those run in
-        # nfe-live below, gated by secrets.
+        # The live suites (*.homologacao + numeracao.staging) THROW on
+        # missing creds (f7f3089) — they must NOT be collected here. Turbo
+        # forwards the args after `--` to each `vitest run`, so we drop
+        # them file-by-file. They still run in nfe-live below, invoked by
+        # name (no --exclude), gated by secrets.
         run: |
           pnpm turbo run test \
             --filter @delfrance/nfe-app \
             --filter @delfrance/integrations-nfe \
-            --filter @delfrance/schemas
+            --filter @delfrance/schemas \
+            -- --exclude '**/*.homologacao.test.ts' --exclude '**/*.staging.test.ts'
 
       - name: Build
         run: pnpm --filter @delfrance/nfe-app build
@@ -125,33 +143,119 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      - name: Verify live-test secrets are configured
+        # Fail loud + early when a required secret is missing instead of
+        # letting vitest's `describe.skip` silently drop every live test
+        # (which would surface as a green CI that actually ran nothing).
+        env:
+          NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
+          NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
+          FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+        run: |
+          missing=()
+          [[ -z "${NFE_CERT_BASE64:-}" ]]          && missing+=("NFE_CERT_BASE64")
+          [[ -z "${NFE_CERT_PASSWORD:-}" ]]        && missing+=("NFE_CERT_PASSWORD")
+          [[ -z "${NFE_TEST_IE:-}" ]]              && missing+=("NFE_TEST_IE")
+          [[ -z "${FIREBASE_PROJECT_ID:-}" ]]      && missing+=("FIREBASE_PROJECT_ID_STAGING")
+          [[ -z "${FIREBASE_SERVICE_ACCOUNT:-}" ]] && missing+=("FIREBASE_SERVICE_ACCOUNT_STAGING")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Missing required GitHub Action secrets for nfe-live: ${missing[*]}"
+            echo "Configure them at https://github.com/${{ github.repository }}/settings/secrets/actions"
+            exit 1
+          fi
+          echo "All 5 live-test secrets are configured."
+
       - name: Refresh SEFAZ TLS chain
         # See velvet-purring-bear.md "Cert lifecycle (operations)".
         # A fresh fetch per CI run avoids stale-bundle failures when
         # SEFAZ rotates intermediates between runs.
         run: pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca
 
-      - name: Live homologação SOAP smoke + emission round-trip + staging Firestore concurrency
+      - name: SEFAZ-SP HOM status gate (single status call per CI run)
+        # Dedicated step so the emission + orchestrator steps below
+        # don't each need their own pre-flight (one status call total
+        # per CI run instead of three). If SEFAZ is paralisado
+        # (cStat 108/109) or the SOAP round-trip fails, this step fails
+        # and the heavy emission step skips automatically via
+        # step-level `if: success()` (the GitHub Actions default).
         env:
-          # Homologação A1 cert (SEFAZ smoke + emission):
-          NFE_CERT_BASE64: ${{ secrets.NF_CERT_BASE64 }}
-          NFE_CERT_PASSWORD: ${{ secrets.NF_CERT_PASSWORD }}
-          # Staging Firestore (numeração concurrency contract). The
-          # GitHub secret is suffixed `_STAGING` to distinguish it from a
-          # future produção project; the test reads the app-standard
-          # `FIREBASE_PROJECT_ID` / `FIREBASE_SERVICE_ACCOUNT` names.
-          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
+          NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
+          FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
         run: |
-          # Run only the env-gated suites. Each describe.skip's itself
-          # cleanly when its secrets aren't set, so the job stays green
-          # in environments where one or the other is missing.
-          # - operations.homologacao: consultarStatusServico smoke
-          # - emission.homologacao:  full generate→sign→autorizarLote
-          #                          round-trip + duplicidade recovery
-          # - numeracao.staging:     transactional concurrency on staging
+          pnpm --filter @delfrance/integrations-nfe test operations.homologacao
+
+      - name: Live homologação emission + orchestrator round-trips
+        # Inherits the gate's verdict — runs only if the status check
+        # above succeeded (implicit `if: success()`). Each test inside
+        # these suites assumes SEFAZ is up; the shield guard in the
+        # test code catches cStat=656 if SEFAZ throttles us mid-run.
+        env:
+          NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
+          NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
+          FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+        run: |
+          # Library-level live tests (env-gated suites):
+          # - emission.homologacao: duplicidade-recovery library
+          #                         contract (the orchestrator's happy
+          #                         path moved to orchestrator.homologacao)
+          # - numeracao.staging:    transactional concurrency on staging
           pnpm --filter @delfrance/integrations-nfe test \
-            operations.homologacao emission.homologacao numeracao.staging
+            emission.homologacao numeracao.staging
+
+          # Orchestrator-level live test — emitirPedido + emitirPedidosLote
+          # against real SEFAZ-SP HOM + staging Firestore fixtures.
+          pnpm --filter @delfrance/nfe-app test orchestrator.homologacao
+
+  report-consumo-indevido:
+    name: Detect Consumo Indevido Shield (cStat=656)
+    needs: [nfe-live]
+    if: failure() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Grep nfe-live job logs for the shield marker
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          # Find the nfe-live job's id, fetch its log, and grep for the
+          # shield marker (literal `[CONSUMO_INDEVIDO_SHIELD]` defined
+          # in packages/integrations/nfe/src/state/consumo-indevido.ts).
+          job_id=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate \
+            --jq '.jobs[] | select(.name | test("Live SEFAZ")) | .id' | head -n1)
+          if [[ -z "$job_id" ]]; then
+            echo "Could not locate nfe-live job — skipping shield report."
+            exit 0
+          fi
+          if ! gh api "repos/$REPO/actions/jobs/$job_id/logs" > /tmp/nfe-live.log 2>/dev/null; then
+            echo "Log fetch failed — skipping shield report."
+            exit 0
+          fi
+          if grep -q '\[CONSUMO_INDEVIDO_SHIELD\]' /tmp/nfe-live.log; then
+            cat > /tmp/body.md <<'EOF'
+          🛡️ **Consumo Indevido Shield triggered.** SEFAZ returned cStat=656 during this run.
+
+          **Wait ~1h before re-running CI** to let SEFAZ's throttle window clear. Re-running immediately will hit 656 again and compound the back-off.
+
+          See the `nfe-live` job logs for the offending call site (search for `[CONSUMO_INDEVIDO_SHIELD]`).
+          EOF
+            gh pr comment "$PR" --repo "$REPO" --body-file /tmp/body.md
+          else
+            echo "Shield marker not present — generic failure reporter will handle this."
+          fi
 
   report-failure:
     name: Post failure logs on PR
@@ -163,7 +267,32 @@ jobs:
       pull-requests: write
       actions: read
     steps:
+      - name: Skip if the Consumo Indevido shield already commented
+        # report-consumo-indevido owns the comment when cStat=656 trips.
+        # Both jobs fire on the same nfe-live failure, so without this
+        # check the PR gets BOTH the 🛡️ shield comment and the generic
+        # one below. Mirror that job's grep and hand off when the marker
+        # is present (its else-branch already promises this handoff).
+        id: shield
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          handled=false
+          job_id=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate \
+            --jq '.jobs[] | select(.name | test("Live SEFAZ")) | .id' | head -n1)
+          if [[ -n "$job_id" ]] \
+             && gh api "repos/$REPO/actions/jobs/$job_id/logs" > /tmp/nfe-live.log 2>/dev/null \
+             && grep -q '\[CONSUMO_INDEVIDO_SHIELD\]' /tmp/nfe-live.log; then
+            handled=true
+            echo "Shield marker present — report-consumo-indevido owns the comment; skipping generic failure comment."
+          fi
+          echo "handled=$handled" >> "$GITHUB_OUTPUT"
+
       - name: Comment failure summary
+        if: steps.shield.outputs.handled != 'true'
         uses: actions/github-script@v7
         with:
           script: |

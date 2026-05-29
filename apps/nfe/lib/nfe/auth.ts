@@ -53,7 +53,7 @@ export async function verifyCaller(
     if (e instanceof Error && typeof (e as { code?: unknown }).code === 'string') {
       const code = (e as Error & { code: string }).code;
       if (code.startsWith('auth/')) {
-        console.warn('[nfe/auth] verifyIdToken rejected:', code, '-', e.message);
+        console.warn(`[nfe/auth] verifyIdToken rejected: ${code} - ${e.message}`);
         return {
           error: authError(401, {
             error: `Token inválido ou expirado (${code}).`,
@@ -61,7 +61,7 @@ export async function verifyCaller(
           }),
         };
       }
-      console.error('[nfe/auth] admin init failed:', code, '-', e.message);
+      console.error(`[nfe/auth] admin init failed: ${code} - ${e.message}`);
       return {
         error: authError(500, {
           error: `Falha ao inicializar Firebase Admin (${code}): ${e.message}`,

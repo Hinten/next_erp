@@ -19,6 +19,12 @@ import { ESTADO_NFE, type EstadoNFe, type UF } from '@delfrance/schemas';
 
 import type { TpEmis } from '../generator/types';
 
+export {
+  CONSUMO_INDEVIDO_MARKER,
+  NFeConsumoIndevidoError,
+  assertNotConsumoIndevido,
+} from './consumo-indevido';
+
 /**
  * Bounded poll cap for `cStat=105` (lote still processing) and `cStat=635`
  * (lote queued). Matches the old Flutter code's 4-attempt ceiling.

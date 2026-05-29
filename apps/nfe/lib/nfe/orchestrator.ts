@@ -1454,7 +1454,9 @@ export async function emitirPedido(
     idLote: String(idLote),
     NFe: [signedXml],
   });
-  console.debug(JSON.stringify({ retEnvi }));
+  console.debug(
+    `[nfe/orchestrator] autorizarLote cStat=${retEnvi.cStat} nRec=${retEnvi.infRec?.nRec ?? '-'}`,
+  );
 
   return applyAutorizadoOutcome({
     fs,
@@ -1616,6 +1618,11 @@ async function processChunk(
 
   // 4b. Per-pedido tx in parallel — each allocates its own nNF but
   //     stamps the shared idLote on its nfev4 doc.
+  // PR-δ candidate: replace N parallel `nextNumeracao` calls (each its
+  // own Firestore tx racing the same doc with optimistic retries) with
+  // one `nextNumeracaoBulk(group.length)` up-front. Cuts N round-trips
+  // to 1; the library helper + its staging contention test already
+  // exist and the bulk allocation is contiguous by construction.
   const txOutcomes = await Promise.allSettled(
     group.map((sp) => runAllocateGenerateSignTx(fs, rt, sp.prep, sharedIdLote)),
   );

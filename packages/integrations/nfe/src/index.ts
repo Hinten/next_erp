@@ -23,10 +23,9 @@ import type { InvoiceProvider } from '@delfrance/core/plugins';
 export {
   NFeCertError,
   assertCertNotExpired,
+  hasNFeCertEnv,
   isCertExpired,
-  loadCertificateFromBase64,
   loadCertificateFromEnv,
-  loadCertificateFromPath,
   warnIfCertNearExpiry,
   type NFeCertificate,
 } from './cert';
@@ -59,9 +58,12 @@ export {
 
 // State machine
 export {
+  CONSUMO_INDEVIDO_MARKER,
   MAX_LOTE_POLL_RETRIES,
+  NFeConsumoIndevidoError,
   STATUS_BLOQUEADORES,
   applyOutcome,
+  assertNotConsumoIndevido,
   classifyCStat,
   cStatToEstado,
   isBloqueada,

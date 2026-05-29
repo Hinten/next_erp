@@ -49,7 +49,13 @@ jobs:
         run: pnpm turbo run typecheck
 
       - name: Test
-        run: pnpm turbo run test
+        # NF-e packages are excluded here because ci-nfe.yml owns their
+        # offline + live test pipeline. Lint / typecheck / build above
+        # still cover the full graph so cross-package breaks surface.
+        run: |
+          pnpm turbo run test \
+            --filter '!@delfrance/nfe-app' \
+            --filter '!@delfrance/integrations-nfe'
 
       - name: Build
         run: pnpm turbo run build
