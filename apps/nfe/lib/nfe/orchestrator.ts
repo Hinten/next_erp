@@ -85,6 +85,7 @@ import {
 import { z } from 'zod';
 
 import { createFirestoreImpostoResolver } from './imposto-resolver';
+import type { ImpostoResolver } from './imposto-resolver';
 import type { NFeRuntime } from './runtime';
 
 export class NFePedidoNotFoundError extends Error {
@@ -147,6 +148,12 @@ function buildEnviNFeMsgFromLote(params: {
   tpEmis: TpEmis;
   signedXml: string;
   retEnvi: Awaited<ReturnType<typeof autorizarLote>>;
+  /**
+   * Pre-stringified `retEnvi`. Batch callers pass this once per chunk so
+   * the same lote response isn't re-serialized once per chave (PR-δ);
+   * defaults to stringifying `retEnvi` for the single-pedido path.
+   */
+  retEnviJson?: string;
   /** `'1'` (sync) for 1-NFe lotes; `'0'` (async) for N>1 batches. */
   indSinc: '0' | '1';
 }): Record<string, unknown> {
@@ -156,7 +163,7 @@ function buildEnviNFeMsgFromLote(params: {
     idLote: params.idLote,
     indSinc: params.indSinc,
     xml_enviado: params.signedXml,
-    xml_retorno: JSON.stringify(params.retEnvi),
+    xml_retorno: params.retEnviJson ?? JSON.stringify(params.retEnvi),
     nRec: params.retEnvi.infRec?.nRec ?? null,
     cStat: params.retEnvi.cStat,
     xMotivo: params.retEnvi.xMotivo,
@@ -345,11 +352,59 @@ interface FiscalItem {
  * in the schema today — we interpret them as Firestore document paths
  * stamped by the Flutter app.
  */
+/**
+ * Request-scoped read cache for a single `emitirPedidosLote` invocation.
+ * Pedidos in one batch routinely share a filial, an operação (+ its
+ * `regraimposto` subcollection) and an imposto resolver — without this,
+ * `loadPedidoBundle` + `preResolveImpostos` re-read identical docs once
+ * per pedido. Keyed by stable identifiers (doc path, operacaoId) and
+ * discarded when the batch returns, so there is no staleness window. The
+ * single-pedido path passes no context and reads Firestore directly.
+ */
+export interface BatchReadContext {
+  /** Memoized `fs.doc(path).get()` keyed by doc path. */
+  readonly docByPath: Map<string, Promise<FirebaseFirestore.DocumentSnapshot>>;
+  /** Memoized `operacao/{id}/regraimposto` query keyed by operação path. */
+  readonly regraByOperacaoPath: Map<string, Promise<FirebaseFirestore.QuerySnapshot>>;
+  /** Imposto resolver shared across pedidos with the same operacaoId. */
+  readonly resolverByOperacaoId: Map<string, ImpostoResolver>;
+}
+
+export function createBatchReadContext(): BatchReadContext {
+  return {
+    docByPath: new Map(),
+    regraByOperacaoPath: new Map(),
+    resolverByOperacaoId: new Map(),
+  };
+}
+
 export async function loadPedidoBundle(
   fs: Firestore,
   pedidoId: string,
+  ctx?: BatchReadContext,
 ): Promise<PedidoBundle> {
   console.debug(`[nfe/orchestrator] Loading Pedido bundle for pedidoId '${pedidoId}'`);
+  // Memoize the shared outer-ref reads against the batch context (if any)
+  // so pedidos sharing a filial / operação don't re-fetch identical docs.
+  const getDoc = (path: string): Promise<FirebaseFirestore.DocumentSnapshot> => {
+    if (!ctx) return fs.doc(path).get();
+    let p = ctx.docByPath.get(path);
+    if (!p) {
+      p = fs.doc(path).get();
+      ctx.docByPath.set(path, p);
+    }
+    return p;
+  };
+  const getRegra = (opPath: string): Promise<FirebaseFirestore.QuerySnapshot> => {
+    if (!ctx) return fs.doc(opPath).collection('regraimposto').get();
+    let p = ctx.regraByOperacaoPath.get(opPath);
+    if (!p) {
+      p = fs.doc(opPath).collection('regraimposto').get();
+      ctx.regraByOperacaoPath.set(opPath, p);
+    }
+    return p;
+  };
+
   const pedidoSnap = await fs.collection('pedidos').doc(pedidoId).get();
   if (!pedidoSnap.exists) throw new NFePedidoNotFoundError(pedidoId);
   const pedido = pedidoSnap.data() as PedidoBundle['pedido'];
@@ -370,12 +425,12 @@ export async function loadPedidoBundle(
 
   const [filialSnap, clienteSnap, operacaoSnap, enderecoSnap, pagamentoSnap, regraImpostoSnap] =
     await Promise.all([
-      fs.doc(filialPath).get(),
-      fs.doc(clientePath).get(),
-      fs.doc(operacaoPath).get(),
-      fs.doc(enderecoPath).get(),
+      getDoc(filialPath),
+      getDoc(clientePath),
+      getDoc(operacaoPath),
+      getDoc(enderecoPath),
       fs.collection('pedidos').doc(pedidoId).collection('pagamento').get(),
-      fs.doc(operacaoPath).collection('regraimposto').get(),
+      getRegra(operacaoPath),
     ]);
 
   if (!filialSnap.exists) throw new NFeOrchestratorError(`filial '${filialPath}' not found`);
@@ -568,6 +623,7 @@ function refToPath(ref: unknown): string | null {
 async function preResolveImpostos(
   bundle: PedidoBundle,
   fs: Firestore,
+  ctx?: BatchReadContext,
 ): Promise<void> {
   const itens = (bundle.pedido as { itens?: Record<string, unknown[]> }).itens ?? {};
   const missing: Array<{ produtoUid: string; entry: Record<string, unknown> }> = [];
@@ -585,10 +641,19 @@ async function preResolveImpostos(
     `[nfe/orchestrator] pedido '${bundle.pedidoId}': ${missing.length} item(s) ` +
       'missing imposto — running resolver cascade',
   );
-  const resolver = createFirestoreImpostoResolver(fs, {
-    operacaoId: bundle.operacaoId,
-    regrasImposto: bundle.regrasImposto,
-  });
+  // Share one resolver per operacaoId across the batch: its
+  // produtoUid→Imposto memo (and the produto/imposto-subcoll reads behind
+  // it) then span every pedido on the same operação instead of resetting
+  // per pedido. The cascade inputs (operacaoId + regrasImposto) are
+  // identical for a given operacaoId, so the shared instance is correct.
+  let resolver = ctx?.resolverByOperacaoId.get(bundle.operacaoId);
+  if (!resolver) {
+    resolver = createFirestoreImpostoResolver(fs, {
+      operacaoId: bundle.operacaoId,
+      regrasImposto: bundle.regrasImposto,
+    });
+    ctx?.resolverByOperacaoId.set(bundle.operacaoId, resolver);
+  }
   for (const { produtoUid, entry } of missing) {
     const resolved = await resolver.resolve(produtoUid, null);
     if (resolved != null) entry.imposto = resolved;
@@ -1162,12 +1227,13 @@ async function prepareEmission(
   fs: Firestore,
   rt: NFeRuntime,
   pedidoId: string,
+  ctx?: BatchReadContext,
 ): Promise<EmissionPrep> {
-  const bundle = await loadPedidoBundle(fs, pedidoId);
+  const bundle = await loadPedidoBundle(fs, pedidoId, ctx);
   if (bundle.pedido.bloquearEmissaoNFe) {
     throw new NFeBlockedError(pedidoId);
   }
-  await preResolveImpostos(bundle, fs);
+  await preResolveImpostos(bundle, fs, ctx);
   const items = flattenAndValidate(bundle);
 
   // Stable doc id per (pedido, tpEmis) — mirrors Flutter's
@@ -1187,22 +1253,66 @@ async function prepareEmission(
 }
 
 /**
- * Phase 2 of the emit cycle: atomic dedup pre-check + allocate (nNF +
- * idLote) + generate + sign + persist `estado='enviando'`. All counter
- * advances and XML persistence happen in ONE Firestore transaction so a
- * crash mid-flight can never strand a consumed numeração without a
- * matching nfev4 doc. The SEFAZ SOAP call happens AFTER the tx commits.
- *
- * `sharedIdLote` is the batch hook: when present, the tx stamps that id
- * on the nfev4 doc and does NOT advance `NFeConfig.idLote` (the batch's
- * outer allocate tx already did that). When undefined (single-pedido
- * path), the tx allocates `cfg.idLote + 1` and writes it back.
+ * Generate + sign one NF-e and assemble its `estado='enviando'` nfev4
+ * doc payload. Pure CPU (no Firestore I/O) so it is safe to call inside a
+ * transaction. Shared by the single-pedido tx and the batch chunk tx so
+ * the persisted doc shape can never diverge between the two paths. The
+ * chave is deterministic from nNF + serie + dhEmi + filial CNPJ + tpEmis,
+ * so a tx retry with the same inputs regenerates a consistent set.
+ */
+function buildNfeDocWrite(
+  bundle: PedidoBundle,
+  items: ReadonlyArray<FiscalItem>,
+  nNF: number,
+  serie: number,
+  idLote: number,
+  rt: NFeRuntime,
+  tpEmis: TpEmis,
+): { chave: string; signedXml: string; docData: Record<string, unknown> } {
+  const input = buildGeneratorInput(bundle, items, nNF, serie, rt.ambiente, tpEmis);
+  const generated = generateNFe(input);
+  const signedXml = signNFe(generated.nfeXml, rt.cert);
+  const now = new Date().toISOString();
+  return {
+    chave: generated.chave,
+    signedXml,
+    docData: {
+      numeracao: nNF,
+      serie,
+      tpEmis,
+      estado: ESTADO_NFE.enviando,
+      chave: generated.chave,
+      idLote: String(idLote),
+      infNFe: null,
+      xml_nfe_proc: null,
+      xml_epec_proc: null,
+      xml_assinado: signedXml,
+      nRec: null,
+      retries: 0,
+      cStat: null,
+      xMotivo: null,
+      data_emissao: now,
+      data_autorizacao: null,
+      dataContingencia: null,
+      justificativaContingencia: null,
+      error: null,
+      ultima_modificacao: now,
+    },
+  };
+}
+
+/**
+ * Phase 2 of the SINGLE-pedido emit cycle: atomic dedup pre-check +
+ * allocate (nNF + idLote) + generate + sign + persist `estado='enviando'`.
+ * All counter advances and XML persistence happen in ONE Firestore
+ * transaction so a crash mid-flight can never strand a consumed numeração
+ * without a matching nfev4 doc. The SEFAZ SOAP call happens AFTER the tx
+ * commits. The batch path uses `runChunkAllocateGenerateSignTx` instead.
  */
 async function runAllocateGenerateSignTx(
   fs: Firestore,
   rt: NFeRuntime,
   prep: EmissionPrep,
-  sharedIdLote?: number,
 ): Promise<TxOutcome> {
   const { bundle, items, tpEmis, nfeRef, nfeConfigRef } = prep;
   const pedidoId = bundle.pedidoId;
@@ -1233,56 +1343,129 @@ async function runAllocateGenerateSignTx(
 
     // Reuse numeração + serie when an existing rejeitada / error /
     // never-sent doc is present; allocate fresh otherwise. idLote
-    // always advances — every retry is a fresh SEFAZ lote. The batch
-    // path pre-allocates one shared idLote outside this tx.
+    // always advances — every retry is a fresh SEFAZ lote.
     const reuse = existing != null;
     const nNF = reuse ? existing.numeracao : cfg.numeracao_atual + 1;
     const serie = reuse ? existing.serie : cfg.serie;
-    const idLote = sharedIdLote ?? cfg.idLote + 1;
+    const idLote = cfg.idLote + 1;
 
-    // Generate + sign (CPU only — safe to run inside the tx). The chave
-    // is deterministic from nNF + serie + dhEmi + filial CNPJ + tpEmis,
-    // so a tx retry with a fresh nNF regenerates a consistent set.
-    const input = buildGeneratorInput(bundle, items, nNF, serie, rt.ambiente, tpEmis);
-    const generated = generateNFe(input);
-    const signedXml = signNFe(generated.nfeXml, rt.cert);
-
-    const now = new Date().toISOString();
+    const { chave, signedXml, docData } = buildNfeDocWrite(
+      bundle,
+      items,
+      nNF,
+      serie,
+      idLote,
+      rt,
+      tpEmis,
+    );
 
     // Writes — counter doc first, then NFe doc. Both commit or neither.
-    // When `sharedIdLote` was provided, the outer allocate tx already
-    // advanced `cfg.idLote`; we leave it alone to avoid clobbering with
-    // a stale read value.
     tx.set(nfeConfigRef, {
       ...cfg,
       ...(reuse ? {} : { numeracao_atual: nNF }),
-      ...(sharedIdLote == null ? { idLote } : {}),
-      timestamp: now,
+      idLote,
+      timestamp: new Date().toISOString(),
     });
-    tx.set(nfeRef, {
-      numeracao: nNF,
-      serie,
-      tpEmis,
-      estado: ESTADO_NFE.enviando,
-      chave: generated.chave,
-      idLote: String(idLote),
-      infNFe: null,
-      xml_nfe_proc: null,
-      xml_epec_proc: null,
-      xml_assinado: signedXml,
-      nRec: null,
-      retries: 0,
-      cStat: null,
-      xMotivo: null,
-      data_emissao: now,
-      data_autorizacao: null,
-      dataContingencia: null,
-      justificativaContingencia: null,
-      error: null,
-      ultima_modificacao: now,
-    });
+    tx.set(nfeRef, docData);
 
-    return { skip: false, chave: generated.chave, signedXml, idLote };
+    return { skip: false, chave, signedXml, idLote };
+  });
+}
+
+/** One classified pedido inside a chunk transaction. */
+type ChunkMember =
+  | { skip: true; pedidoId: string; prep: EmissionPrep; existing: NotaFiscalEletronica }
+  | { skip: false; pedidoId: string; prep: EmissionPrep; chave: string; signedXml: string };
+
+/**
+ * Batch counterpart to `runAllocateGenerateSignTx`: allocate + generate +
+ * sign + persist an entire (filial, ≤20-pedido) chunk in ONE Firestore
+ * transaction. Mirrors the proven Flutter batch flow
+ * (`.old/packages/pedido_nfe/lib/src/tasks.dart:181-285`):
+ *
+ *   1. read `NFeConfig` once + every pedido's nfev4 doc;
+ *   2. classify each pedido — bloqueada → skip (jaAprovadas bucket);
+ *      existing non-bloqueada doc → reuse its numeração; absent → fresh;
+ *   3. bulk-allocate contiguous `nNF` for **exactly the fresh count** (the
+ *      `proxima_numeracao_batch_transaction` technique) — a skip or reuse
+ *      never burns a slot, so no `inutNFe` gap;
+ *   4. advance the counter once (`numeracao_atual += fresh`, one `idLote`
+ *      bump) and persist every nfev4 doc, all atomically.
+ *
+ * Replaces the old per-pedido tx fan-out (N transactions racing the shared
+ * nfeconfig doc) with a single writer. A chunk-level throw (e.g. missing
+ * NFeConfig) propagates to the caller, which cascades it to every pedido.
+ */
+async function runChunkAllocateGenerateSignTx(
+  fs: Firestore,
+  rt: NFeRuntime,
+  filialId: string,
+  group: ReadonlyArray<{ prep: EmissionPrep; pedidoId: string }>,
+): Promise<{ members: ChunkMember[]; idLote: number }> {
+  const nfeConfigRef = fs.doc(
+    `filiais/${filialId}/nfeconfig/${DEFAULT_NFE_CONFIG_DOC_ID}`,
+  );
+  return fs.runTransaction(async (tx) => {
+    // Reads first (Firestore rule): config once + every nfev4 doc.
+    const cfgSnap = await tx.get(nfeConfigRef);
+    if (!cfgSnap.exists) throw new NFeConfigNotFoundError(filialId);
+    const cfg = nfeConfigSchema.parse(cfgSnap.data()) as NFeConfig;
+    const existingSnaps = await Promise.all(
+      group.map((sp) => tx.get(sp.prep.nfeRef)),
+    );
+
+    const idLote = cfg.idLote + 1;
+    const members: ChunkMember[] = [];
+    const docWrites: Array<{
+      ref: FirebaseFirestore.DocumentReference;
+      data: Record<string, unknown>;
+    }> = [];
+    // Fresh pedidos take contiguous nNFs off `numeracao_atual`; skip/reuse
+    // pedidos consume none (Flutter `pedidosSemNota` parity).
+    let freshCount = 0;
+
+    for (let i = 0; i < group.length; i++) {
+      const sp = group[i]!;
+      const snap = existingSnaps[i]!;
+      const existing = snap.exists
+        ? (snap.data() as NotaFiscalEletronica)
+        : null;
+
+      if (existing && isBloqueada(existing.cStat)) {
+        members.push({ skip: true, pedidoId: sp.pedidoId, prep: sp.prep, existing });
+        continue;
+      }
+
+      const reuse = existing != null;
+      const nNF = reuse ? existing.numeracao : cfg.numeracao_atual + 1 + freshCount;
+      const serie = reuse ? existing.serie : cfg.serie;
+      if (!reuse) freshCount += 1;
+
+      const { chave, signedXml, docData } = buildNfeDocWrite(
+        sp.prep.bundle,
+        sp.prep.items,
+        nNF,
+        serie,
+        idLote,
+        rt,
+        sp.prep.tpEmis,
+      );
+      docWrites.push({ ref: sp.prep.nfeRef, data: docData });
+      members.push({ skip: false, pedidoId: sp.pedidoId, prep: sp.prep, chave, signedXml });
+    }
+
+    // Writes: advance the counter once for the whole chunk, then persist
+    // every nfev4 doc. Reuse pedidos keep their numeração, so only the
+    // fresh count advances `numeracao_atual`.
+    tx.set(nfeConfigRef, {
+      ...cfg,
+      numeracao_atual: cfg.numeracao_atual + freshCount,
+      idLote,
+      timestamp: new Date().toISOString(),
+    });
+    for (const w of docWrites) tx.set(w.ref, w.data);
+
+    return { members, idLote };
   });
 }
 
@@ -1307,6 +1490,8 @@ async function applyAutorizadoOutcome(args: {
   idLote: number;
   tpEmis: TpEmis;
   retEnvi: Awaited<ReturnType<typeof autorizarLote>>;
+  /** Pre-stringified `retEnvi`, cached once per chunk by the batch path. */
+  retEnviJson?: string;
   protNFeForChave: NonNullable<Awaited<ReturnType<typeof autorizarLote>>['protNFe']> | null;
   /** `'1'` (sync, single NFe) or `'0'` (async, batch). */
   indSinc: '0' | '1';
@@ -1316,7 +1501,15 @@ async function applyAutorizadoOutcome(args: {
   // Audit-log the SOAP round-trip BEFORE running the state machine — so
   // nRec is durable even if anything below this line crashes.
   await enviNfeCollection(fs, bundle.filialId).add(
-    buildEnviNFeMsgFromLote({ chave, idLote, tpEmis, signedXml, retEnvi, indSinc }),
+    buildEnviNFeMsgFromLote({
+      chave,
+      idLote,
+      tpEmis,
+      signedXml,
+      retEnvi,
+      retEnviJson: args.retEnviJson,
+      indSinc,
+    }),
   );
 
   const call: SefazCall = {
@@ -1534,8 +1727,12 @@ export async function emitirPedidosLote(
   //    (NFeBlockedError, NFePedidoNotFoundError, NFeMissingImpostoError,
   //    NFeOrchestratorError) become per-pedido EmitError entries — the
   //    pedido never reaches a lote.
+  // One read context for the whole batch — dedups the shared filial /
+  // operação / regraimposto reads and shares one imposto resolver per
+  // operacaoId across all pedidos (PR-δ).
+  const ctx = createBatchReadContext();
   const preps = await Promise.allSettled(
-    pedidoIds.map((id) => prepareEmission(fs, rt, id)),
+    pedidoIds.map((id) => prepareEmission(fs, rt, id, ctx)),
   );
   const results: Array<EmitResult | EmitError> = [];
   const successPreps: Array<{ prep: EmissionPrep; pedidoId: string }> = [];
@@ -1603,28 +1800,17 @@ async function processChunk(
   filialId: string,
   group: ReadonlyArray<{ prep: EmissionPrep; pedidoId: string }>,
 ): Promise<Array<EmitResult | EmitError>> {
-  // 4a. Allocate one shared idLote for the whole chunk (one tx).
-  const nfeConfigRef = fs.doc(
-    `filiais/${filialId}/nfeconfig/${DEFAULT_NFE_CONFIG_DOC_ID}`,
-  );
-  const sharedIdLote = await fs.runTransaction(async (tx) => {
-    const cfgSnap = await tx.get(nfeConfigRef);
-    if (!cfgSnap.exists) throw new NFeConfigNotFoundError(filialId);
-    const cfg = nfeConfigSchema.parse(cfgSnap.data()) as NFeConfig;
-    const idLote = cfg.idLote + 1;
-    tx.set(nfeConfigRef, { ...cfg, idLote, timestamp: new Date().toISOString() });
-    return idLote;
-  });
-
-  // 4b. Per-pedido tx in parallel — each allocates its own nNF but
-  //     stamps the shared idLote on its nfev4 doc.
-  // PR-δ candidate: replace N parallel `nextNumeracao` calls (each its
-  // own Firestore tx racing the same doc with optimistic retries) with
-  // one `nextNumeracaoBulk(group.length)` up-front. Cuts N round-trips
-  // to 1; the library helper + its staging contention test already
-  // exist and the bulk allocation is contiguous by construction.
-  const txOutcomes = await Promise.allSettled(
-    group.map((sp) => runAllocateGenerateSignTx(fs, rt, sp.prep, sharedIdLote)),
+  // 4a+4b. Allocate idLote + bulk-allocate nNF (fresh count only) +
+  //     generate + sign + persist the whole chunk in ONE transaction
+  //     (Flutter parity: .old/packages/pedido_nfe/lib/src/tasks.dart:181-285).
+  //     Replaces the per-pedido tx fan-out that raced the shared nfeconfig
+  //     doc; a chunk-level throw cascades to every pedido via the caller's
+  //     allSettled handling in emitirPedidosLote.
+  const { members, idLote: sharedIdLote } = await runChunkAllocateGenerateSignTx(
+    fs,
+    rt,
+    filialId,
+    group,
   );
   const txResults: Array<EmitResult | EmitError> = [];
   const toSend: Array<{
@@ -1633,26 +1819,21 @@ async function processChunk(
     chave: string;
     signedXml: string;
   }> = [];
-  txOutcomes.forEach((o, i) => {
-    const sp = group[i]!;
-    if (o.status === 'rejected') {
-      txResults.push(toEmitError(sp.pedidoId, o.reason));
-    } else if (o.value.skip) {
-      // Mirrors Flutter's `jaAprovadas` short-circuit at tasks.dart:159 —
-      // existing bloqueada/aprovada/cancelada nfev4 short-circuits out
-      // of the lote and lands in the "Não emitidas" bucket on the UI.
-      txResults.push(
-        existingToEmitResult(sp.pedidoId, sp.prep.nfeRef.id, o.value.existing),
-      );
+  for (const m of members) {
+    if (m.skip) {
+      // Mirrors Flutter's `jaAprovadas` short-circuit (tasks.dart:159) —
+      // a bloqueada/aprovada/cancelada nfev4 lands in the "Não emitidas"
+      // bucket instead of riding the lote.
+      txResults.push(existingToEmitResult(m.pedidoId, m.prep.nfeRef.id, m.existing));
     } else {
       toSend.push({
-        prep: sp.prep,
-        pedidoId: sp.pedidoId,
-        chave: o.value.chave,
-        signedXml: o.value.signedXml,
+        prep: m.prep,
+        pedidoId: m.pedidoId,
+        chave: m.chave,
+        signedXml: m.signedXml,
       });
     }
-  });
+  }
   if (toSend.length === 0) return txResults;
 
   // 4c. autorizarLote — one SOAP call for the whole chunk. indSinc='1'
@@ -1735,12 +1916,16 @@ async function processChunk(
     if (retEnvi.protNFe) protNFeArr = [retEnvi.protNFe];
   }
 
-  // 4e. Apply outcome per chave. Each call audits the retEnvi-level
-  //     response (parameterized indSinc) AND handles per-chave
-  //     recovery branches (539 / nRec / 106).
+  // 4e. Apply outcome per chave. Index protNFe by chave once (was an
+  //     O(N) array scan per pedido → O(N²) across the chunk) and cache
+  //     the retEnvi JSON once (buildEnviNFeMsgFromLote would otherwise
+  //     re-stringify the same lote response once per chave) — PR-δ.
+  const protByChave = new Map<string, (typeof protNFeArr)[number]>();
+  for (const p of protNFeArr) protByChave.set(p.infProt.chNFe, p);
+  const retEnviJson = JSON.stringify(retEnvi);
   const outcomes = await Promise.allSettled(
     toSend.map(async (s) => {
-      const proto = protNFeArr.find((p) => p.infProt.chNFe === s.chave) ?? null;
+      const proto = protByChave.get(s.chave) ?? null;
       return applyAutorizadoOutcome({
         fs,
         rt,
@@ -1751,6 +1936,7 @@ async function processChunk(
         idLote: sharedIdLote,
         tpEmis: s.prep.tpEmis,
         retEnvi,
+        retEnviJson,
         protNFeForChave: proto,
         indSinc,
       });
