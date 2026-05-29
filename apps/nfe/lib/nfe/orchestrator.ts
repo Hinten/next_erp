@@ -1372,33 +1372,73 @@ async function runAllocateGenerateSignTx(
   });
 }
 
-/** One classified pedido inside a chunk transaction. */
+/** One classified pedido from the chunk allocation transaction. */
 type ChunkMember =
   | { skip: true; pedidoId: string; prep: EmissionPrep; existing: NotaFiscalEletronica }
-  | { skip: false; pedidoId: string; prep: EmissionPrep; chave: string; signedXml: string };
+  | { skip: false; pedidoId: string; prep: EmissionPrep; nNF: number; serie: number };
 
 /**
- * Batch counterpart to `runAllocateGenerateSignTx`: allocate + generate +
- * sign + persist an entire (filial, ≤20-pedido) chunk in ONE Firestore
- * transaction. Mirrors the proven Flutter batch flow
- * (`.old/packages/pedido_nfe/lib/src/tasks.dart:181-285`):
+ * Minimal `estado='enviando'` nfev4 doc written for a FRESH pedido inside
+ * the allocation transaction — it anchors the consumed numeração so a
+ * crash can never strand an `nNF` without a matching doc (anti-loss). The
+ * chave + signed XML land in a second write once the NF-e is generated +
+ * signed outside the tx; both are `.nullable()` in the schema, so this
+ * placeholder is valid on its own.
+ */
+function buildPlaceholderNfeDoc(
+  nNF: number,
+  serie: number,
+  idLote: number,
+  tpEmis: TpEmis,
+): Record<string, unknown> {
+  const now = new Date().toISOString();
+  return {
+    numeracao: nNF,
+    serie,
+    tpEmis,
+    estado: ESTADO_NFE.enviando,
+    chave: null,
+    idLote: String(idLote),
+    infNFe: null,
+    xml_nfe_proc: null,
+    xml_epec_proc: null,
+    xml_assinado: null,
+    nRec: null,
+    retries: 0,
+    cStat: null,
+    xMotivo: null,
+    data_emissao: now,
+    data_autorizacao: null,
+    dataContingencia: null,
+    justificativaContingencia: null,
+    error: null,
+    ultima_modificacao: now,
+  };
+}
+
+/**
+ * Batch allocation for an entire (filial, ≤20-pedido) chunk in ONE
+ * Firestore transaction — **allocation only** (no generate/sign; those run
+ * per-pedido OUTSIDE the tx so one pedido's failure can't sink the chunk,
+ * and no RSA work lengthens the tx). Mirrors the Flutter batch flow
+ * (`.old/packages/pedido_nfe/lib/src/tasks.dart:255-285`):
  *
  *   1. read `NFeConfig` once + every pedido's nfev4 doc;
- *   2. classify each pedido — bloqueada → skip (jaAprovadas bucket);
- *      existing non-bloqueada doc → reuse its numeração; absent → fresh;
+ *   2. classify — bloqueada → skip (jaAprovadas bucket); existing
+ *      non-bloqueada doc → reuse its numeração; absent → fresh;
  *   3. bulk-allocate contiguous `nNF` for **exactly the fresh count** (the
- *      `proxima_numeracao_batch_transaction` technique) — a skip or reuse
- *      never burns a slot, so no `inutNFe` gap;
- *   4. advance the counter once (`numeracao_atual += fresh`, one `idLote`
- *      bump) and persist every nfev4 doc, all atomically.
+ *      `proxima_numeracao_batch_transaction` technique) — skip/reuse burn
+ *      no slot, so no `inutNFe` gap;
+ *   4. advance the counter once and write a placeholder doc per FRESH
+ *      pedido (anti-loss anchor). Reuse pedidos keep their existing doc
+ *      until the out-of-tx step overwrites it with the regenerated NF-e.
  *
- * Replaces the old per-pedido tx fan-out (N transactions racing the shared
- * nfeconfig doc) with a single writer. A chunk-level throw (e.g. missing
- * NFeConfig) propagates to the caller, which cascades it to every pedido.
+ * A chunk-level throw (missing/invalid NFeConfig) propagates to the
+ * caller, which cascades it to every pedido. Per-pedido generate/sign
+ * failures are handled by the caller, not here.
  */
-async function runChunkAllocateGenerateSignTx(
+async function runChunkAllocateTx(
   fs: Firestore,
-  rt: NFeRuntime,
   filialId: string,
   group: ReadonlyArray<{ prep: EmissionPrep; pedidoId: string }>,
 ): Promise<{ members: ChunkMember[]; idLote: number }> {
@@ -1416,7 +1456,7 @@ async function runChunkAllocateGenerateSignTx(
 
     const idLote = cfg.idLote + 1;
     const members: ChunkMember[] = [];
-    const docWrites: Array<{
+    const placeholders: Array<{
       ref: FirebaseFirestore.DocumentReference;
       data: Record<string, unknown>;
     }> = [];
@@ -1439,23 +1479,20 @@ async function runChunkAllocateGenerateSignTx(
       const reuse = existing != null;
       const nNF = reuse ? existing.numeracao : cfg.numeracao_atual + 1 + freshCount;
       const serie = reuse ? existing.serie : cfg.serie;
-      if (!reuse) freshCount += 1;
-
-      const { chave, signedXml, docData } = buildNfeDocWrite(
-        sp.prep.bundle,
-        sp.prep.items,
-        nNF,
-        serie,
-        idLote,
-        rt,
-        sp.prep.tpEmis,
-      );
-      docWrites.push({ ref: sp.prep.nfeRef, data: docData });
-      members.push({ skip: false, pedidoId: sp.pedidoId, prep: sp.prep, chave, signedXml });
+      if (!reuse) {
+        freshCount += 1;
+        // Anchor the consumed numeração now; the generated + signed NF-e
+        // overwrites this placeholder outside the tx.
+        placeholders.push({
+          ref: sp.prep.nfeRef,
+          data: buildPlaceholderNfeDoc(nNF, serie, idLote, sp.prep.tpEmis),
+        });
+      }
+      members.push({ skip: false, pedidoId: sp.pedidoId, prep: sp.prep, nNF, serie });
     }
 
-    // Writes: advance the counter once for the whole chunk, then persist
-    // every nfev4 doc. Reuse pedidos keep their numeração, so only the
+    // Writes: advance the counter once for the whole chunk, then anchor
+    // each fresh pedido. Reuse pedidos keep their numeração, so only the
     // fresh count advances `numeracao_atual`.
     tx.set(nfeConfigRef, {
       ...cfg,
@@ -1463,7 +1500,7 @@ async function runChunkAllocateGenerateSignTx(
       idLote,
       timestamp: new Date().toISOString(),
     });
-    for (const w of docWrites) tx.set(w.ref, w.data);
+    for (const p of placeholders) tx.set(p.ref, p.data);
 
     return { members, idLote };
   });
@@ -1789,10 +1826,10 @@ export async function emitirPedidosLote(
 }
 
 /**
- * Process one (filial, ≤20-pedido) chunk: allocate one shared idLote,
- * run per-pedido alloc-generate-sign txs in parallel, call
- * autorizarLote once for the chunk, poll for async lotes, apply
- * per-chave outcome.
+ * Process one (filial, ≤20-pedido) chunk: bulk-allocate numeração for the
+ * chunk in one transaction, then generate + sign + persist each NF-e
+ * per-pedido OUTSIDE the tx (isolated failures), call autorizarLote once
+ * for the chunk, poll for async lotes, apply per-chave outcome.
  */
 async function processChunk(
   fs: Firestore,
@@ -1800,24 +1837,21 @@ async function processChunk(
   filialId: string,
   group: ReadonlyArray<{ prep: EmissionPrep; pedidoId: string }>,
 ): Promise<Array<EmitResult | EmitError>> {
-  // 4a+4b. Allocate idLote + bulk-allocate nNF (fresh count only) +
-  //     generate + sign + persist the whole chunk in ONE transaction
-  //     (Flutter parity: .old/packages/pedido_nfe/lib/src/tasks.dart:181-285).
-  //     Replaces the per-pedido tx fan-out that raced the shared nfeconfig
-  //     doc; a chunk-level throw cascades to every pedido via the caller's
-  //     allSettled handling in emitirPedidosLote.
-  const { members, idLote: sharedIdLote } = await runChunkAllocateGenerateSignTx(
+  // 4a. Allocate idLote + bulk-allocate nNF (fresh count only) and anchor
+  //     each fresh pedido's numeração in ONE transaction (Flutter parity:
+  //     .old/packages/pedido_nfe/lib/src/tasks.dart:255-285). A chunk-level
+  //     throw cascades to every pedido via emitirPedidosLote's allSettled.
+  const { members, idLote: sharedIdLote } = await runChunkAllocateTx(
     fs,
-    rt,
     filialId,
     group,
   );
   const txResults: Array<EmitResult | EmitError> = [];
-  const toSend: Array<{
+  const fresh: Array<{
     prep: EmissionPrep;
     pedidoId: string;
-    chave: string;
-    signedXml: string;
+    nNF: number;
+    serie: number;
   }> = [];
   for (const m of members) {
     if (m.skip) {
@@ -1826,14 +1860,46 @@ async function processChunk(
       // bucket instead of riding the lote.
       txResults.push(existingToEmitResult(m.pedidoId, m.prep.nfeRef.id, m.existing));
     } else {
-      toSend.push({
-        prep: m.prep,
-        pedidoId: m.pedidoId,
-        chave: m.chave,
-        signedXml: m.signedXml,
-      });
+      fresh.push({ prep: m.prep, pedidoId: m.pedidoId, nNF: m.nNF, serie: m.serie });
     }
   }
+
+  // 4b. Generate + sign + persist each NF-e OUTSIDE the allocation tx, per
+  //     pedido. A generate/sign failure (e.g. a raw fiscal-field overflow)
+  //     fails ONLY that pedido — its placeholder doc keeps the numeração
+  //     for recovery (inutilização or fix + re-emit) — while the rest
+  //     proceed. The chave + signed XML are persisted (full doc overwrite)
+  //     BEFORE autorizarLote, so the anti-loss anchor is complete before
+  //     any SOAP send. Signing here (not in the tx) keeps RSA work out of
+  //     the transaction.
+  const toSend: Array<{
+    prep: EmissionPrep;
+    pedidoId: string;
+    chave: string;
+    signedXml: string;
+  }> = [];
+  const signed = await Promise.allSettled(
+    fresh.map(async (f) => {
+      const { chave, signedXml, docData } = buildNfeDocWrite(
+        f.prep.bundle,
+        f.prep.items,
+        f.nNF,
+        f.serie,
+        sharedIdLote,
+        rt,
+        f.prep.tpEmis,
+      );
+      await f.prep.nfeRef.set(docData);
+      return { prep: f.prep, pedidoId: f.pedidoId, chave, signedXml };
+    }),
+  );
+  signed.forEach((s, i) => {
+    if (s.status === 'rejected') {
+      txResults.push(toEmitError(fresh[i]!.pedidoId, s.reason));
+    } else {
+      toSend.push(s.value);
+    }
+  });
   if (toSend.length === 0) return txResults;
 
   // 4c. autorizarLote — one SOAP call for the whole chunk. indSinc='1'

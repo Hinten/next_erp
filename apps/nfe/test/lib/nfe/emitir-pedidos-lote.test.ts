@@ -157,6 +157,10 @@ function operacaoDoc(): Record<string, unknown> {
   };
 }
 
+/** Sentinel xProd that makes the generateNFe mock throw (simulates a raw
+ * fiscal-field error that slips past flattenAndValidate). */
+const FAIL_GEN_XPROD = '__FAIL_GEN__';
+
 interface PedidoSpec {
   readonly pedidoId: string;
   readonly filialId: string;
@@ -164,6 +168,8 @@ interface PedidoSpec {
   readonly noImposto?: boolean;
   /** Pre-existing nfev4 doc (used to test bloqueada short-circuit). */
   readonly existingNFe?: Record<string, unknown>;
+  /** If `true`, the item's xProd is the sentinel so generateNFe throws for this pedido. */
+  readonly failGenerate?: boolean;
 }
 
 function pedidoDoc(spec: PedidoSpec): Record<string, unknown> {
@@ -174,7 +180,7 @@ function pedidoDoc(spec: PedidoSpec): Record<string, unknown> {
       'P-1': [
         {
           sku: `SKU-${spec.pedidoId}`,
-          nomeDeVenda: 'Bicicleta',
+          nomeDeVenda: spec.failGenerate ? FAIL_GEN_XPROD : 'Bicicleta',
           precoDeVenda: 1500,
           quantidade: 1,
           descontoUnitario: 0,
@@ -393,6 +399,11 @@ function mockGenerateAndSign() {
   generatedChaves.length = 0;
   let cNF = 0;
   vi.mocked(generateNFe).mockImplementation((input) => {
+    // Simulate a raw fiscal-field error for the sentinel pedido — this is
+    // exactly the per-pedido failure that must NOT sink the whole chunk.
+    if (input.itens.some((it) => it.xProd === FAIL_GEN_XPROD)) {
+      throw new Error('generateNFe failed: fiscal field overflow (test)');
+    }
     cNF += 1;
     const chave = fakeChave(input.numeracao, cNF);
     generatedChaves.push(chave);
@@ -783,6 +794,52 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
     expect(events.filter((e) => e === 'set:filiais/F-1/nfeconfig/default')).toHaveLength(1);
     const nnfs = out.results.map((r) => nnfOf(r)).sort();
     expect(nnfs).toEqual(['000000001', '000000002', '000000003']);
+  });
+
+  it('isolates a per-pedido generate/sign failure — the rest of the chunk still emits', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-GOOD', filialId: 'F-1' },
+        { pedidoId: 'PED-BADGEN', filialId: 'F-1', failGenerate: true },
+        { pedidoId: 'PED-GOOD2', filialId: 'F-1' },
+      ],
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteResolvesGenerated();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
+      'PED-GOOD',
+      'PED-BADGEN',
+      'PED-GOOD2',
+    ]);
+
+    expect(out.results).toHaveLength(3);
+    const bad = out.results.find((r) => r.pedidoId === 'PED-BADGEN')!;
+    const good = out.results.find((r) => r.pedidoId === 'PED-GOOD')!;
+    const good2 = out.results.find((r) => r.pedidoId === 'PED-GOOD2')!;
+
+    // The bad pedido is an isolated EmitError (generateNFe threw)...
+    expect('errorCode' in bad).toBe(true);
+    expect('estado' in bad).toBe(false);
+    // ...while the other two still emit (the chunk is NOT sunk by one bad pedido).
+    expect('estado' in good ? good.estado : null).toBe(ESTADO_NFE.aprovada);
+    expect('estado' in good2 ? good2.estado : null).toBe(ESTADO_NFE.aprovada);
+    // Only the two good NF-es rode the lote.
+    expect(vi.mocked(autorizarLote).mock.calls[0]?.[1].NFe).toHaveLength(2);
+    // All three were fresh → the counter advanced by 3; the bad pedido's
+    // nNF stays anchored in its placeholder doc for recovery.
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(3);
+    // The bad pedido's placeholder persists with its numeração but no chave
+    // (the generate/sign step that would have stamped them threw).
+    const badDoc = docs['pedidos/PED-BADGEN/nfev4/s1'] as
+      | { chave: unknown; numeracao: number }
+      | null;
+    expect(badDoc?.chave).toBeNull();
+    expect(badDoc?.numeracao).toBe(2);
   });
 });
 
