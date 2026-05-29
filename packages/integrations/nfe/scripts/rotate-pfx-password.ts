@@ -9,8 +9,8 @@
  * Use case (one-off): before uploading a real ICP-Brasil A1 cert to
  * GitHub Secrets, run this against a copy of the local PFX to produce
  * a CI-only PFX whose password isn't memorable (~256 bits of entropy)
- * — so even a leak of `NF_CERT_BASE64` alone is computationally
- * useless without `NF_CERT_PASSWORD`.
+ * — so even a leak of `NFE_CERT_BASE64` alone is computationally
+ * useless without `NFE_CERT_PASSWORD`.
  *
  * Usage (from repo root):
  *   pnpm --filter @delfrance/integrations-nfe rotate:pfx-password \
@@ -20,8 +20,8 @@
  * Output to **stderr** (never stdout — keeps the password out of any
  * accidental `$GITHUB_ENV` capture):
  *   - The freshly generated password (save in your password manager NOW).
- *   - Ready-to-paste `gh secret set` lines for NF_CERT_BASE64 +
- *     NF_CERT_PASSWORD.
+ *   - Ready-to-paste `gh secret set` lines for NFE_CERT_BASE64 +
+ *     NFE_CERT_PASSWORD.
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -167,8 +167,8 @@ async function main(): Promise<void> {
       '',
       'Paste these to upload as GitHub Secrets:',
       '',
-      `  gh secret set NF_CERT_BASE64 -R Hinten/next_erp -b '${base64}'`,
-      `  gh secret set NF_CERT_PASSWORD -R Hinten/next_erp -b '${newPassword}'`,
+      `  gh secret set NFE_CERT_BASE64 -R Hinten/next_erp -b '${base64}'`,
+      `  gh secret set NFE_CERT_PASSWORD -R Hinten/next_erp -b '${newPassword}'`,
       '',
     ].join('\n'),
   );

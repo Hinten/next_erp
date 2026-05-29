@@ -145,15 +145,15 @@ jobs:
         # letting vitest's `describe.skip` silently drop every live test
         # (which would surface as a green CI that actually ran nothing).
         env:
-          NFE_CERT_BASE64:          ${{ secrets.NF_CERT_BASE64 }}
-          NFE_CERT_PASSWORD:        ${{ secrets.NF_CERT_PASSWORD }}
+          NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
+          NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
           NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
           FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
         run: |
           missing=()
-          [[ -z "${NFE_CERT_BASE64:-}" ]]          && missing+=("NF_CERT_BASE64")
-          [[ -z "${NFE_CERT_PASSWORD:-}" ]]        && missing+=("NF_CERT_PASSWORD")
+          [[ -z "${NFE_CERT_BASE64:-}" ]]          && missing+=("NFE_CERT_BASE64")
+          [[ -z "${NFE_CERT_PASSWORD:-}" ]]        && missing+=("NFE_CERT_PASSWORD")
           [[ -z "${NFE_TEST_IE:-}" ]]              && missing+=("NFE_TEST_IE")
           [[ -z "${FIREBASE_PROJECT_ID:-}" ]]      && missing+=("FIREBASE_PROJECT_ID_STAGING")
           [[ -z "${FIREBASE_SERVICE_ACCOUNT:-}" ]] && missing+=("FIREBASE_SERVICE_ACCOUNT_STAGING")
@@ -178,8 +178,8 @@ jobs:
         # and the heavy emission step skips automatically via
         # step-level `if: success()` (the GitHub Actions default).
         env:
-          NFE_CERT_BASE64:          ${{ secrets.NF_CERT_BASE64 }}
-          NFE_CERT_PASSWORD:        ${{ secrets.NF_CERT_PASSWORD }}
+          NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
+          NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
           NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
           FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
@@ -192,8 +192,8 @@ jobs:
         # these suites assumes SEFAZ is up; the shield guard in the
         # test code catches cStat=656 if SEFAZ throttles us mid-run.
         env:
-          NFE_CERT_BASE64:          ${{ secrets.NF_CERT_BASE64 }}
-          NFE_CERT_PASSWORD:        ${{ secrets.NF_CERT_PASSWORD }}
+          NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
+          NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
           NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
           FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
