@@ -45,10 +45,6 @@ const describeOrSkip = hasCert ? describe : describe.skip;
 describeOrSkip('SEFAZ-SP homologação smoke (typed)', () => {
   it('loaded certificate is not expired', () => {
     const cert = loadCertificateFromEnv();
-    // eslint-disable-next-line no-console
-    console.log(
-      `[cert] subject="${cert.subjectCommonName}" notAfter=${cert.notAfter.toISOString()}`,
-    );
     expect(() => assertCertNotExpired(cert)).not.toThrow();
     // Heads-up if renewal is approaching — same observability the
     // apps/nfe boot path will get via loadCertificateFromEnv.
