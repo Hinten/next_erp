@@ -120,6 +120,7 @@ export {
   NFeChaveError,
   NFeGeneratorError,
   NFeIdeError,
+  cUFFromUF,
   generateNFe,
   type GeneratorInput,
   type GeneratorItem,
@@ -139,6 +140,13 @@ export {
   TP_EVENTO_CANCELAMENTO,
   type CancelamentoEventoInput,
 } from './eventos';
+
+// Inutilização de numeração — builder for the NfeInutilizacao lote.
+export {
+  buildInutNFe,
+  NFeInutilizacaoError,
+  type InutilizacaoInput,
+} from './inutilizacao';
 
 // Recovery / anti-loss
 export {
@@ -163,8 +171,10 @@ export {
   consultarLote,
   consultarSituacaoNFe,
   consultarStatusServico,
+  inutilizarNumeracao,
   type CancelarNFeResult,
   type CUFCode,
+  type InutilizarResult,
 } from './operations';
 
 // Re-export the SOAP response types that orchestrator-level code uses

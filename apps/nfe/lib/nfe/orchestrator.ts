@@ -38,10 +38,13 @@ import {
   classifyCStat,
   consultarLote,
   consultarSituacaoNFe,
+  cUFFromUF,
   generateNFe,
   impostoSchema,
+  inutilizarNumeracao as inutilizarNumeracaoSefaz,
   isBloqueada,
   NFeConfigNotFoundError,
+  NFeInutilizacaoError,
   outcomeFromInfProt,
   outcomeFromRetConsRec,
   outcomeFromRetConsSit,
@@ -2395,6 +2398,103 @@ export async function cancelarPedido(
   }
   throw new NFeCancelamentoError(
     `pedido '${pedidoId}': cancelamento rejeitado por SEFAZ — cStat=${cStat} ${xMotivo}`,
+  );
+}
+
+/** Result of an inutilização de numeração. */
+export interface InutilizarNumeracaoResult {
+  readonly filialId: string;
+  readonly serie: number;
+  readonly nNFIni: number;
+  readonly nNFFin: number;
+  readonly cStat: string;
+  readonly xMotivo: string;
+  readonly nProt: string | null;
+}
+
+/**
+ * Inutilizar a contiguous range of NF-e números for a filial
+ * (`NfeInutilizacao4`). For números that will never be authorized (gaps).
+ * Loads the filial for its CNPJ + UF, sends the synchronous `inutNFe`,
+ * audit-logs the round-trip, and on `cStat=102` (homologado) returns the
+ * protocol. Other cStats throw `NFeInutilizacaoError`. Does NOT touch the
+ * `NFeConfig` counter — these números were already skipped.
+ */
+export async function inutilizarNumeracao(
+  fs: Firestore,
+  rt: NFeRuntime,
+  args: {
+    readonly filialId: string;
+    readonly serie: number;
+    readonly nNFIni: number;
+    readonly nNFFin: number;
+    readonly xJust: string;
+  },
+): Promise<InutilizarNumeracaoResult> {
+  console.debug(
+    `[nfe/orchestrator] inutilizarNumeracao filial=${args.filialId} serie=${args.serie} ` +
+      `range=${args.nNFIni}-${args.nNFFin}`,
+  );
+  if (args.nNFIni > args.nNFFin) {
+    throw new NFeOrchestratorError(
+      `inutilização: nNFIni (${args.nNFIni}) must be ≤ nNFFin (${args.nNFFin})`,
+    );
+  }
+  const filialSnap = await fs.doc(`filiais/${args.filialId}`).get();
+  if (!filialSnap.exists) {
+    throw new NFeOrchestratorError(`filial '${args.filialId}' not found`);
+  }
+  const filial = filialSnap.data() as Filial;
+  const cUF = cUFFromUF(filial.sede.estado);
+  const ano = String(new Date().getFullYear() % 100).padStart(2, '0');
+
+  const call: SefazCall = {
+    cert: rt.cert,
+    agent: rt.agent,
+    tpAmb: rt.tpAmb,
+    url: rt.endpoints.NfeInutilizacao,
+  };
+  const res = await inutilizarNumeracaoSefaz(call, {
+    cUF,
+    ano,
+    cnpj: filial.cnpj,
+    serie: args.serie,
+    nNFIni: args.nNFIni,
+    nNFFin: args.nNFFin,
+    xJust: args.xJust,
+  });
+  const inf = res.ret.infInut;
+
+  const now = new Date().toISOString();
+  await enviNfeCollection(fs, args.filialId).add({
+    targetsChnfe: [],
+    idLote: null,
+    indSinc: null,
+    xml_enviado: res.signedXml,
+    xml_retorno: res.rawResponse,
+    nRec: null,
+    cStat: inf.cStat,
+    xMotivo: inf.xMotivo,
+    error: null,
+    tpEmis: null,
+    estado: ESTADO_ENVI_NFE_MSG.concluido,
+    timestamp: now,
+    ultima_modificacao: now,
+  });
+
+  if (inf.cStat === '102') {
+    return {
+      filialId: args.filialId,
+      serie: args.serie,
+      nNFIni: args.nNFIni,
+      nNFFin: args.nNFFin,
+      cStat: inf.cStat,
+      xMotivo: inf.xMotivo,
+      nProt: inf.nProt ?? null,
+    };
+  }
+  throw new NFeInutilizacaoError(
+    `inutilização rejeitada por SEFAZ — cStat=${inf.cStat} ${inf.xMotivo}`,
   );
 }
 

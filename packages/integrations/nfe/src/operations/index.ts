@@ -24,10 +24,12 @@ import {
   buildProcEventoNFe,
   type CancelamentoEventoInput,
 } from '../eventos';
-import { signEvento } from '../sign';
+import { buildInutNFe, type InutilizacaoInput } from '../inutilizacao';
+import { signEvento, signInutilizacao } from '../sign';
 import {
   nfeAutorizacaoLote,
   nfeConsultaProtocolo,
+  nfeInutilizacao,
   nfeRecepcaoEvento,
   nfeRetAutorizacao,
   nfeStatusServico,
@@ -41,6 +43,7 @@ import {
   type TRetConsReciNFe,
   type TRetEnvEvento,
   type TRetEnviNFe,
+  type TRetInutNFe,
 } from '../types/nfe-schema';
 import { parse, serialize } from '../xml';
 
@@ -180,12 +183,40 @@ export async function cancelarNFe(
   return { ret, signedEventoXml, procEventoNFe, rawResponse: resultXml };
 }
 
+/** Result of an inutilização round-trip. */
+export interface InutilizarResult {
+  /** Parsed `retInutNFe` — success when `infInut.cStat === '102'`. */
+  readonly ret: TRetInutNFe;
+  /** The signed `<inutNFe>` we sent. */
+  readonly signedXml: string;
+  /** Raw `retInutNFe` XML, for the audit log. */
+  readonly rawResponse: string;
+}
+
+/**
+ * `NfeInutilizacao4` — burn an unused número range. Synchronous: inspect
+ * `ret.infInut.cStat` — **102** (Inutilização homologada) = success, with
+ * `ret.infInut.nProt`. `tpAmb` comes from the call context; the certificate
+ * that signs `<infInut>` is `call.cert`.
+ */
+export async function inutilizarNumeracao(
+  call: SefazCall,
+  args: Omit<InutilizacaoInput, 'tpAmb'>,
+): Promise<InutilizarResult> {
+  const inutXml = buildInutNFe({ ...args, tpAmb: call.tpAmb });
+  const signedXml = signInutilizacao(inutXml, call.cert);
+  const { resultXml } = await nfeInutilizacao(call, signedXml);
+  const ret = parse<TRetInutNFe>('retInutNFe', resultXml);
+  return { ret, signedXml, rawResponse: resultXml };
+}
+
 // Re-export the underlying transport — power users (recovery flows, replay
 // of archived signed NF-e) still reach for the string-based API.
 export type { PostResult, SefazCall };
 export {
   nfeAutorizacaoLote,
   nfeConsultaProtocolo,
+  nfeInutilizacao,
   nfeRecepcaoEvento,
   nfeRetAutorizacao,
   nfeStatusServico,
