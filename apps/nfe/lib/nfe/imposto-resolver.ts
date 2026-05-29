@@ -18,7 +18,10 @@
  *
  * Per-produtoUid memoization: a pedido with the same produto appearing
  * twice only hits Firestore once. The cache lives in the resolver
- * closure — discard the resolver between pedidos.
+ * closure. The cascade inputs are fixed by `bundle` (operacaoId +
+ * regrasImposto), so one resolver may be shared across every pedido on
+ * the same operação (the batch path does this); discard it once those
+ * inputs change.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 

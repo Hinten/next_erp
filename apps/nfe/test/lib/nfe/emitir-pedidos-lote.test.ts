@@ -157,6 +157,10 @@ function operacaoDoc(): Record<string, unknown> {
   };
 }
 
+/** Sentinel xProd that makes the generateNFe mock throw (simulates a raw
+ * fiscal-field error that slips past flattenAndValidate). */
+const FAIL_GEN_XPROD = '__FAIL_GEN__';
+
 interface PedidoSpec {
   readonly pedidoId: string;
   readonly filialId: string;
@@ -164,6 +168,8 @@ interface PedidoSpec {
   readonly noImposto?: boolean;
   /** Pre-existing nfev4 doc (used to test bloqueada short-circuit). */
   readonly existingNFe?: Record<string, unknown>;
+  /** If `true`, the item's xProd is the sentinel so generateNFe throws for this pedido. */
+  readonly failGenerate?: boolean;
 }
 
 function pedidoDoc(spec: PedidoSpec): Record<string, unknown> {
@@ -174,7 +180,7 @@ function pedidoDoc(spec: PedidoSpec): Record<string, unknown> {
       'P-1': [
         {
           sku: `SKU-${spec.pedidoId}`,
-          nomeDeVenda: 'Bicicleta',
+          nomeDeVenda: spec.failGenerate ? FAIL_GEN_XPROD : 'Bicicleta',
           precoDeVenda: 1500,
           quantidade: 1,
           descontoUnitario: 0,
@@ -245,6 +251,7 @@ function fakeFirestore(opts: BatchHarnessOpts) {
       path,
       id: path.split('/').pop()!,
       async get() {
+        opts.events.push(`get:${path}`);
         const data = docs[path];
         return {
           exists: data != null,
@@ -276,6 +283,7 @@ function fakeFirestore(opts: BatchHarnessOpts) {
         return makeQuery(path, [...ops, { kind: 'limit', n }]);
       },
       async get() {
+        opts.events.push(`get:${path}`);
         const prefix = `${path}/`;
         let items = Object.entries(docs)
           .filter(
@@ -391,6 +399,11 @@ function mockGenerateAndSign() {
   generatedChaves.length = 0;
   let cNF = 0;
   vi.mocked(generateNFe).mockImplementation((input) => {
+    // Simulate a raw fiscal-field error for the sentinel pedido — this is
+    // exactly the per-pedido failure that must NOT sink the whole chunk.
+    if (input.itens.some((it) => it.xProd === FAIL_GEN_XPROD)) {
+      throw new Error('generateNFe failed: fiscal field overflow (test)');
+    }
     cNF += 1;
     const chave = fakeChave(input.numeracao, cNF);
     generatedChaves.push(chave);
@@ -562,6 +575,59 @@ describe('emitirPedidosLote — single filial happy path', () => {
   });
 });
 
+describe('emitirPedidosLote — batch read dedup (PR-δ)', () => {
+  it('reads a shared filial + operação (+ regraimposto) once across the batch', async () => {
+    const events: string[] = [];
+    const { fs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-1', filialId: 'F-1' },
+        { pedidoId: 'PED-2', filialId: 'F-1' },
+        { pedidoId: 'PED-3', filialId: 'F-1' },
+      ],
+    });
+    autorizarLoteAsync('RECIBO-1');
+    vi.mocked(consultarLote).mockImplementation(async () => ({
+      versao: '4.00',
+      tpAmb: '2',
+      verAplic: 'TEST',
+      cStat: '104',
+      xMotivo: 'Lote processado',
+      cUF: '35',
+      protNFe: generatedChaves.map((ch, i) => ({
+        versao: '4.00',
+        infProt: {
+          tpAmb: '2',
+          verAplic: 'TEST',
+          chNFe: ch,
+          dhRecbto: new Date().toISOString(),
+          cStat: '100',
+          xMotivo: 'Autorizado o uso da NF-e',
+          nProt: `135${i.toString().padStart(15, '0')}`,
+          digVal: `dig-${i}`,
+        },
+      })),
+    } as never));
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
+      'PED-1',
+      'PED-2',
+      'PED-3',
+    ]);
+    expect(out.results).toHaveLength(3);
+
+    // The three pedidos share filial F-1 and operação O-1. Without the
+    // batch read context each loadPedidoBundle would re-fetch them — the
+    // context collapses those to a single read apiece. The per-pedido
+    // pedido doc is still read three times (one per id).
+    expect(events.filter((e) => e === 'get:filiais/F-1')).toHaveLength(1);
+    expect(events.filter((e) => e === 'get:operacao/O-1')).toHaveLength(1);
+    expect(events.filter((e) => e === 'get:operacao/O-1/regraimposto')).toHaveLength(1);
+    expect(events.filter((e) => e === 'get:pedidos/PED-1')).toHaveLength(1);
+    expect(events.filter((e) => e === 'get:pedidos/PED-2')).toHaveLength(1);
+  });
+});
+
 describe('emitirPedidosLote — multi-filial fan-out', () => {
   it('groups by filial and fires one autorizarLote per filial-group', async () => {
     const events: string[] = [];
@@ -607,6 +673,173 @@ describe('emitirPedidosLote — multi-filial fan-out', () => {
     ]);
     expect(out.results).toHaveLength(2);
     expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
+  function consultarLoteResolvesGenerated(): void {
+    vi.mocked(consultarLote).mockImplementation(async () => ({
+      versao: '4.00',
+      tpAmb: '2',
+      verAplic: 'TEST',
+      cStat: '104',
+      xMotivo: 'Lote processado',
+      cUF: '35',
+      protNFe: generatedChaves.map((ch, i) => ({
+        versao: '4.00',
+        infProt: {
+          tpAmb: '2',
+          verAplic: 'TEST',
+          chNFe: ch,
+          dhRecbto: new Date().toISOString(),
+          cStat: '100',
+          xMotivo: 'Autorizado o uso da NF-e',
+          nProt: `135${i.toString().padStart(15, '0')}`,
+          digVal: `dig-${i}`,
+        },
+      })),
+    } as never));
+  }
+
+  /** nNF lives at chave[25..34) for the test's fakeChave layout. */
+  const nnfOf = (r: { pedidoId: string; chave?: string }): string | null =>
+    r.chave ? r.chave.slice(25, 34) : null;
+
+  it('advances numeracao_atual by the fresh count only — skip/reuse burn no nNF — and writes nfeconfig once', async () => {
+    const events: string[] = [];
+    const blockedExisting = {
+      numeracao: 5,
+      serie: 1,
+      tpEmis: '1',
+      estado: ESTADO_NFE.aprovada,
+      chave: '35260514200166000187550010000000005100000001',
+      idLote: '1',
+      cStat: '100', // bloqueada → skip
+      xMotivo: 'Autorizado o uso da NF-e',
+      nRec: 'OLD',
+      retries: 0,
+      data_emissao: new Date().toISOString(),
+      xml_assinado: '<signed/>',
+    };
+    const reuseExisting = {
+      numeracao: 7,
+      serie: 1,
+      tpEmis: '1',
+      estado: ESTADO_NFE.rejeitada,
+      chave: '35260514200166000187550010000000007100000009',
+      idLote: '3',
+      cStat: '225', // not bloqueada → reuse numeração 7
+      xMotivo: 'Rejeicao: Falha no Schema XML',
+      nRec: null,
+      retries: 0,
+      data_emissao: new Date().toISOString(),
+      xml_assinado: '<signed/>',
+    };
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-FRESH', filialId: 'F-1' },
+        { pedidoId: 'PED-BLOCKED', filialId: 'F-1', existingNFe: blockedExisting },
+        { pedidoId: 'PED-REUSE', filialId: 'F-1', existingNFe: reuseExisting },
+      ],
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteResolvesGenerated();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
+      'PED-FRESH',
+      'PED-BLOCKED',
+      'PED-REUSE',
+    ]);
+
+    // Only PED-FRESH is fresh → counter 0 → 1; PED-BLOCKED (skip) and
+    // PED-REUSE (keeps nNF 7) consume nothing.
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(1);
+    // The whole chunk advances the counter in exactly one write (was one
+    // idLote tx + one tx per pedido before PR-δ).
+    expect(events.filter((e) => e === 'set:filiais/F-1/nfeconfig/default')).toHaveLength(1);
+
+    const fresh = out.results.find((r) => r.pedidoId === 'PED-FRESH')!;
+    const reuse = out.results.find((r) => r.pedidoId === 'PED-REUSE')!;
+    const blocked = out.results.find((r) => r.pedidoId === 'PED-BLOCKED')!;
+    expect(nnfOf(fresh)).toBe('000000001');
+    expect(nnfOf(reuse)).toBe('000000007');
+    expect('reused' in blocked ? blocked.reused : null).toBe(true);
+  });
+
+  it('allocates contiguous fresh nNFs for an all-fresh chunk', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-1', filialId: 'F-1' },
+        { pedidoId: 'PED-2', filialId: 'F-1' },
+        { pedidoId: 'PED-3', filialId: 'F-1' },
+      ],
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteResolvesGenerated();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
+      'PED-1',
+      'PED-2',
+      'PED-3',
+    ]);
+    expect(out.results).toHaveLength(3);
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(3);
+    expect(events.filter((e) => e === 'set:filiais/F-1/nfeconfig/default')).toHaveLength(1);
+    const nnfs = out.results.map((r) => nnfOf(r)).sort();
+    expect(nnfs).toEqual(['000000001', '000000002', '000000003']);
+  });
+
+  it('isolates a per-pedido generate/sign failure — the rest of the chunk still emits', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-GOOD', filialId: 'F-1' },
+        { pedidoId: 'PED-BADGEN', filialId: 'F-1', failGenerate: true },
+        { pedidoId: 'PED-GOOD2', filialId: 'F-1' },
+      ],
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteResolvesGenerated();
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
+      'PED-GOOD',
+      'PED-BADGEN',
+      'PED-GOOD2',
+    ]);
+
+    expect(out.results).toHaveLength(3);
+    const bad = out.results.find((r) => r.pedidoId === 'PED-BADGEN')!;
+    const good = out.results.find((r) => r.pedidoId === 'PED-GOOD')!;
+    const good2 = out.results.find((r) => r.pedidoId === 'PED-GOOD2')!;
+
+    // The bad pedido is an isolated EmitError (generateNFe threw)...
+    expect('errorCode' in bad).toBe(true);
+    expect('estado' in bad).toBe(false);
+    // ...while the other two still emit (the chunk is NOT sunk by one bad pedido).
+    expect('estado' in good ? good.estado : null).toBe(ESTADO_NFE.aprovada);
+    expect('estado' in good2 ? good2.estado : null).toBe(ESTADO_NFE.aprovada);
+    // Only the two good NF-es rode the lote.
+    expect(vi.mocked(autorizarLote).mock.calls[0]?.[1].NFe).toHaveLength(2);
+    // All three were fresh → the counter advanced by 3; the bad pedido's
+    // nNF stays anchored in its placeholder doc for recovery.
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(3);
+    // The bad pedido's placeholder persists with its numeração but no chave
+    // (the generate/sign step that would have stamped them threw).
+    const badDoc = docs['pedidos/PED-BADGEN/nfev4/s1'] as
+      | { chave: unknown; numeracao: number }
+      | null;
+    expect(badDoc?.chave).toBeNull();
+    expect(badDoc?.numeracao).toBe(2);
   });
 });
 
