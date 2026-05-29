@@ -104,14 +104,17 @@ jobs:
             --filter @delfrance/schemas
 
       - name: Unit tests (offline)
-        # Excludes the env-gated live tests
-        # (operations.homologacao + numeracao.staging) — those run in
-        # nfe-live below, gated by secrets.
+        # The live suites (*.homologacao + numeracao.staging) THROW on
+        # missing creds (f7f3089) — they must NOT be collected here. Turbo
+        # forwards the args after `--` to each `vitest run`, so we drop
+        # them file-by-file. They still run in nfe-live below, invoked by
+        # name (no --exclude), gated by secrets.
         run: |
           pnpm turbo run test \
             --filter @delfrance/nfe-app \
             --filter @delfrance/integrations-nfe \
-            --filter @delfrance/schemas
+            --filter @delfrance/schemas \
+            -- --exclude '**/*.homologacao.test.ts' --exclude '**/*.staging.test.ts'
 
       - name: Build
         run: pnpm --filter @delfrance/nfe-app build
