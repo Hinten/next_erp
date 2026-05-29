@@ -38,10 +38,15 @@ export const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   'certificateDerBase64',
   'pfxBuffer',
   'password',
-  // Signed XML / wire bodies
+  // Signed XML / wire bodies — in-flight generator-output names…
   'signedXml',
   'nfeXml',
   'responseBody',
+  // …and the snake_case field names the orchestrator persists on the
+  // NotaFiscalEletronica doc (carry the same signed XML / X509 blob).
+  'xml_assinado',
+  'xml_nfe_proc',
+  'xml_epec_proc',
   // Raw env-var-style secret names (caller may stash them in a config object)
   'NFE_CERT_BASE64',
   'NFE_CERT_PASSWORD',
@@ -81,6 +86,22 @@ export function redactSensitive<T>(value: T): T {
   if (value instanceof Buffer) return value;
   if (Array.isArray(value)) {
     return value.map((v) => redactSensitive(v)) as unknown as T;
+  }
+  // Errors need special handling: `message` and `stack` are
+  // non-enumerable, so the generic `Object.entries` walk below would
+  // drop them and emit an empty `{}` — losing the only useful debug
+  // signal at a catch boundary. Copy them explicitly, then redact the
+  // enumerable own props (e.g. NFeTransportError.responseBody).
+  if (value instanceof Error) {
+    const out: Record<string, unknown> = {
+      name: value.name,
+      message: value.message,
+      stack: value.stack,
+    };
+    for (const [k, v] of Object.entries(value as unknown as Record<string, unknown>)) {
+      out[k] = SENSITIVE_KEYS.has(k) ? '[REDACTED]' : redactSensitive(v);
+    }
+    return out as unknown as T;
   }
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {

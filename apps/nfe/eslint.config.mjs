@@ -1,19 +1,20 @@
 import base from '@delfrance/config-eslint';
 import next from 'eslint-config-next';
 
-// Rule A — no multi-arg `console.log` / `console.error` in NF-e code
-// paths. The single-arg text-only forms (`console.debug(\`msg ${var}\`)`,
-// `console.warn(\`msg\`)`) stay legal — they're how the orchestrator
-// emits diagnostic markers today. The multi-arg shapes are exactly the
-// P1 leak pattern (`console.error('[nfe/x]', e)`,
-// `console.log('label', obj)`) that dump unsanitized values via Node's
-// `util.inspect`. Use `safeLog('error', label, err)` instead — it runs
-// every arg through `redactSensitive` first.
+// Rule A — no multi-arg `console.*` in NF-e code paths. The single-arg
+// text-only forms (`console.debug(\`msg ${var}\`)`, `console.warn(\`msg\`)`)
+// stay legal — they're how the orchestrator emits diagnostic markers
+// today. The multi-arg shapes are exactly the P1 leak pattern
+// (`console.error('[nfe/x]', e)`, `console.log('label', obj)`) that dump
+// unsanitized values via Node's `util.inspect` — and that enumeration
+// fires identically for log/info/warn/error/debug, so all five are
+// guarded. Use `safeLog('error', label, err)` instead — it runs every
+// arg through `redactSensitive` first.
 const ruleAConsole = {
   selector:
-    'CallExpression[callee.object.name="console"][callee.property.name=/^(log|error)$/][arguments.length>=2]',
+    'CallExpression[callee.object.name="console"][callee.property.name=/^(log|info|warn|error|debug)$/][arguments.length>=2]',
   message:
-    'Multi-arg console.log / console.error is forbidden in NF-e code paths — ' +
+    'Multi-arg console.* is forbidden in NF-e code paths — ' +
     'that is the original P1 leak shape (label + raw object). Use ' +
     'safeLog(level, ...) from @/lib/nfe/log or compose a single template ' +
     'string. safeLog routes every arg through redactSensitive first.',

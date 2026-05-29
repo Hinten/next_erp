@@ -267,7 +267,32 @@ jobs:
       pull-requests: write
       actions: read
     steps:
+      - name: Skip if the Consumo Indevido shield already commented
+        # report-consumo-indevido owns the comment when cStat=656 trips.
+        # Both jobs fire on the same nfe-live failure, so without this
+        # check the PR gets BOTH the 🛡️ shield comment and the generic
+        # one below. Mirror that job's grep and hand off when the marker
+        # is present (its else-branch already promises this handoff).
+        id: shield
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          handled=false
+          job_id=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs" --paginate \
+            --jq '.jobs[] | select(.name | test("Live SEFAZ")) | .id' | head -n1)
+          if [[ -n "$job_id" ]] \
+             && gh api "repos/$REPO/actions/jobs/$job_id/logs" > /tmp/nfe-live.log 2>/dev/null \
+             && grep -q '\[CONSUMO_INDEVIDO_SHIELD\]' /tmp/nfe-live.log; then
+            handled=true
+            echo "Shield marker present — report-consumo-indevido owns the comment; skipping generic failure comment."
+          fi
+          echo "handled=$handled" >> "$GITHUB_OUTPUT"
+
       - name: Comment failure summary
+        if: steps.shield.outputs.handled != 'true'
         uses: actions/github-script@v7
         with:
           script: |

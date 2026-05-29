@@ -123,12 +123,50 @@ describe('redactSensitive', () => {
       'signedXml',
       'nfeXml',
       'responseBody',
+      'xml_assinado',
+      'xml_nfe_proc',
+      'xml_epec_proc',
       'NFE_CERT_BASE64',
       'NFE_CERT_PASSWORD',
       'FIREBASE_SERVICE_ACCOUNT',
     ]) {
       expect(SENSITIVE_KEYS.has(key)).toBe(true);
     }
+  });
+
+  it('preserves name + message + stack from a plain Error (non-enumerable props)', () => {
+    const out = redactSensitive(new Error('boom')) as {
+      name: string;
+      message: string;
+      stack?: string;
+    };
+    expect(out.name).toBe('Error');
+    expect(out.message).toBe('boom');
+    expect(typeof out.stack).toBe('string');
+  });
+
+  it('keeps an NFeTransportError message while redacting its responseBody', () => {
+    const out = redactSensitive(
+      new NFeTransportError('SOAP request failed', 500, '<x>SECRET_PROT_SIGNATURE</x>'),
+    ) as unknown as Record<string, unknown>;
+    expect(out.name).toBe('NFeTransportError');
+    expect(out.message).toBe('SOAP request failed');
+    expect(out.responseBody).toBe('[REDACTED]');
+    expect(JSON.stringify(out)).not.toContain('SECRET_PROT_SIGNATURE');
+  });
+
+  it('redacts the persisted xml_* Firestore field names', () => {
+    expect(
+      redactSensitive({
+        xml_assinado: '<NFe>...</NFe>',
+        xml_nfe_proc: '<nfeProc>...</nfeProc>',
+        xml_epec_proc: '<envEvento>...</envEvento>',
+      }),
+    ).toEqual({
+      xml_assinado: '[REDACTED]',
+      xml_nfe_proc: '[REDACTED]',
+      xml_epec_proc: '[REDACTED]',
+    });
   });
 });
 
@@ -138,6 +176,18 @@ describe('safeLog', () => {
     try {
       safeLog('log', '[label]', { password: 'p', cnpj: 'c' });
       expect(spy).toHaveBeenCalledWith('[label]', { password: '[REDACTED]', cnpj: 'c' });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('logs a real Error with its message instead of an empty object', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      safeLog('error', '[nfe/emitir]', new Error('SEFAZ rejected'));
+      const [label, shape] = spy.mock.calls[0] as [string, { message: string }];
+      expect(label).toBe('[nfe/emitir]');
+      expect(shape.message).toBe('SEFAZ rejected');
     } finally {
       spy.mockRestore();
     }

@@ -8,15 +8,15 @@
 // here; the catch rule remains enforced at the apps/* boundary.
 import tseslint from 'typescript-eslint';
 
-// Rule A — no multi-arg `console.log` / `console.error` in NF-e code
-// paths. See the apps-side config for the rationale; the leak shape is
-// the same. Single-arg text-only forms (`console.warn(\`text\`)`) stay
-// legal.
+// Rule A — no multi-arg `console.*` in NF-e code paths. See the
+// apps-side config for the rationale; the leak shape is the same and
+// fires identically for log/info/warn/error/debug. Single-arg text-only
+// forms (`console.warn(\`text\`)`) stay legal.
 const ruleAConsole = {
   selector:
-    'CallExpression[callee.object.name="console"][callee.property.name=/^(log|error)$/][arguments.length>=2]',
+    'CallExpression[callee.object.name="console"][callee.property.name=/^(log|info|warn|error|debug)$/][arguments.length>=2]',
   message:
-    'Multi-arg console.log / console.error is forbidden in NF-e code paths — ' +
+    'Multi-arg console.* is forbidden in NF-e code paths — ' +
     'use safeLog(level, ...) from apps/nfe/lib/nfe/log.ts or compose a single ' +
     'template string. safeLog routes every arg through redactSensitive first.',
 };
