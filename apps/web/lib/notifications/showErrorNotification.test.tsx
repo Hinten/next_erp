@@ -35,6 +35,26 @@ describe('showErrorNotification', () => {
     expect(arg.message).toBeTruthy(); // JSX node, not a string
   });
 
+  it('passes styles that let the title wrap instead of truncating', () => {
+    showErrorNotification({ title: 'Erro', message: 'm' });
+    const arg = showSpy.mock.calls[0]![0]!;
+    expect(arg.styles).toMatchObject({ title: { whiteSpace: 'normal' } });
+  });
+
+  it('renders a long cert-path message in full without dropping the copy button', () => {
+    const longMessage =
+      "Could not read the SEFAZ TLS chain at C:\\Users\\Lucas\\dev\\next_erp\\packages\\integrations\\nfe\\ca\\sefaz-sp-homologacao.pem: ENOENT: no such file or directory. " +
+      "Run 'pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca' to vendor it for this (UF, ambiente).";
+    showErrorNotification({ title: 'Erro de certificado', message: longMessage });
+    const arg = showSpy.mock.calls[0]![0]!;
+
+    render(<MantineProvider>{arg.message as React.ReactNode}</MantineProvider>);
+    // The full string is present in the DOM (nothing clipped out), and the copy
+    // button is still rendered alongside it.
+    expect(screen.getByText(longMessage).textContent).toBe(longMessage);
+    expect(screen.getByLabelText('Copiar mensagem de erro')).toBeTruthy();
+  });
+
   it('renders the message text and a copy button inside the JSX message', () => {
     showErrorNotification({ title: 'Erro', message: 'Cert file not found' });
     const arg = showSpy.mock.calls[0]![0]!;
@@ -57,7 +77,13 @@ describe('showErrorNotification', () => {
     const text = screen.getByText('msg');
     fireEvent.mouseEnter(text);
     expect(updateSpy).toHaveBeenLastCalledWith(
-      expect.objectContaining({ id, autoClose: false }),
+      expect.objectContaining({
+        id,
+        autoClose: false,
+        styles: expect.objectContaining({
+          title: expect.objectContaining({ whiteSpace: 'normal' }),
+        }),
+      }),
     );
     fireEvent.mouseLeave(text);
     expect(updateSpy).toHaveBeenLastCalledWith(
