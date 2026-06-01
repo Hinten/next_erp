@@ -111,6 +111,17 @@ for (const file of files) {
     else if (c.tag === 'xs:element' && c.attrs.name && c.attrs.type) {
       if (!rootElements.some((r) => r.name === c.attrs.name))
         rootElements.push({ name: c.attrs.name, type: c.attrs.type });
+    } else if (c.tag === 'xs:element' && c.attrs.name && !c.attrs.type) {
+      // Top-level element with an INLINE complexType (no `type=` ref) — e.g.
+      // the event-payload schemas (e110111 detEvento). Register the inline
+      // type under the element's name so it becomes a serializable root.
+      const inlineComplex = kid(c, 'xs:complexType');
+      if (inlineComplex && !complexTypes.has(c.attrs.name)) {
+        inlineComplex.attrs.name = c.attrs.name;
+        complexTypes.set(c.attrs.name, inlineComplex);
+        if (!rootElements.some((r) => r.name === c.attrs.name))
+          rootElements.push({ name: c.attrs.name, type: c.attrs.name });
+      }
     }
   }
 }
@@ -314,6 +325,33 @@ function emitComplexType(name) {
 }
 
 for (const r of rootElements) if (complexTypes.has(r.type)) emitComplexType(r.type);
+
+// ---------------------------------------------------------------------------
+// Opaque-type → #raw pass.
+// A complexType with an empty field list comes from an `xs:any` wildcard
+// (e.g. `<detEvento>` in the generic event leiaute — its content is an
+// event-specific substitution the generic schema can't type). Such a type
+// can't be serialized as a typed object, so any field referencing it is
+// remapped to a `#raw` slot: the caller supplies the inner XML verbatim, in
+// sequence order. The empty type itself is then dropped (nothing references
+// it). This is the same mechanism the `<Signature>` block already uses.
+// ---------------------------------------------------------------------------
+const opaqueTypes = new Set(meta.filter((m) => m.defs.length === 0).map((m) => m.name));
+if (opaqueTypes.size > 0) {
+  for (const m of meta) for (const d of m.defs) if (opaqueTypes.has(d.type)) d.type = '#raw';
+  for (const iface of interfaces)
+    for (const f of iface.fields) {
+      const bare = f.tsType.replace(/^Array<(.+)>$/, '$1');
+      if (opaqueTypes.has(bare)) f.tsType = f.tsType.startsWith('Array<') ? 'Array<string>' : 'string';
+    }
+  for (const z of zodTypes) for (const f of z.fields) if (opaqueTypes.has(f.metaType)) f.metaType = '#raw';
+  const dropOpaque = (arr) => {
+    for (let i = arr.length - 1; i >= 0; i--) if (opaqueTypes.has(arr[i].name)) arr.splice(i, 1);
+  };
+  dropOpaque(interfaces);
+  dropOpaque(meta);
+  dropOpaque(zodTypes);
+}
 
 // ---------------------------------------------------------------------------
 // Emit src/types/nfe-schema.ts

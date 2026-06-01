@@ -42,6 +42,10 @@ const XSD_BY_ROOT = {
   consStatServ: 'consStatServ_v4.00.xsd',
   inutNFe: 'inutNFe_v4.00.xsd',
   envEvento: 'envEvento_v1.00.xsd',
+  // The generic envEvento has `<detEvento>` as xs:any (skip) — so detEvento's
+  // inner structure is validated separately against the tpEvento-specific
+  // schema (e110111 = cancelamento) before it's embedded + sent.
+  detEvento: 'e110111_v1.00.xsd',
   NFe: 'nfe_v4.00.xsd',
   // inbound — validate what SEFAZ sends us too (catches captive-portal HTML,
   // proxy junk, parser drift)
