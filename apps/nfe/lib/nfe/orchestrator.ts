@@ -2294,70 +2294,105 @@ export class NFeCancelamentoError extends Error {
   }
 }
 
+/** Extract the authorization protocol (`nProt`) from a stored procNFe envelope. */
+const RE_NPROT = /<nProt>([^<]+)<\/nProt>/;
 /**
- * Cancel an authorized NF-e (RecepcaoEvento, `tpEvento=110111`).
- *
- * Loads the pedido's nfev4 doc, then **consults SEFAZ for the authoritative
- * `nProt`** — the nfev4 schema carries no `nProt`, and the consult also
- * confirms the NF-e is still authorized (protocolo `cStat=100`) and not
- * already cancelled (Flutter parity, `.old/.../client.dart:312`). Sends the
- * cancelamento evento; on `cStat` 135 (registrado e vinculado) or 155
- * (homologado fora de prazo) persists `estado='c'` and audit-logs the
- * round-trip (signed `<evento>` + raw response — `procEventoNFe` is
- * reconstructable from those and also returned by `cancelarNFe`). Any other
- * cStat throws `NFeCancelamentoError`; SEFAZ enforces the 24 h window, so a
- * past-deadline cancel surfaces here as a rejection.
+ * SEFAZ event cStat for a duplicate cancelamento. A 573 means a cancelamento
+ * event (same chNFe + tpEvento=110111 + nSeqEvento=1) is already registered —
+ * i.e. the NF-e is already cancelled — so we reconcile the local estado.
  */
-export async function cancelarPedido(
+const CSTAT_DUPLICIDADE_EVENTO = '573';
+
+/**
+ * Cancel a specific authorized NF-e (RecepcaoEvento, `tpEvento=110111`).
+ *
+ * Targets the `nfev4` doc by **id** (a pedido may hold more than one — e.g. a
+ * normal + a contingency NF-e). Reads the NF-e estado from the **DB** — it never
+ * consults SEFAZ (avoids Consumo Indevido), so it's idempotent: an
+ * already-cancelada NF-e returns immediately without sending an event, and a
+ * non-aprovada one is rejected upfront. The authorization protocol (`nProt`)
+ * comes from the stored procNFe envelope (`xml_nfe_proc`). On cStat 135/155 —
+ * or 573 (duplicidade de evento: the cancelamento is already registered at
+ * SEFAZ) — `estado='c'` is persisted **in a transaction**. Any other cStat
+ * throws `NFeCancelamentoError` (carrying cStat/xMotivo for a clean UI message).
+ */
+export async function cancelarNFeService(
   fs: Firestore,
   rt: NFeRuntime,
   pedidoId: string,
+  nfeId: string,
   xJust: string,
 ): Promise<EmitResult> {
-  console.debug(`[nfe/orchestrator] cancelarPedido pedidoId='${pedidoId}'`);
-  const bundle = await loadPedidoBundle(fs, pedidoId);
-  const tpEmis = resolveTpEmis(bundle.filial.sede.estado);
-  const nfeRef = fs
-    .collection('pedidos')
-    .doc(pedidoId)
-    .collection('nfev4')
-    .doc(nfeDocId(tpEmis));
+  console.debug(`[nfe/orchestrator] cancelarNFeService pedidoId='${pedidoId}' nfeId='${nfeId}'`);
+
+  // filialId for the audit log — from the pedido's filial outer-ref. No full
+  // bundle: cancellation must not depend on cliente/operação/endereço loading.
+  const pedidoSnap = await fs.collection('pedidos').doc(pedidoId).get();
+  if (!pedidoSnap.exists) {
+    throw new NFeOrchestratorError(`pedido '${pedidoId}' not found.`);
+  }
+  const filialPath = refToPath(getField(pedidoSnap.data(), 'filialPedidoOuterRef'));
+  if (!filialPath) {
+    throw new NFeOrchestratorError(`pedido '${pedidoId}': filialPedidoOuterRef missing.`);
+  }
+  const filialId = filialPath.split('/').pop()!;
+
+  const nfeRef = fs.collection('pedidos').doc(pedidoId).collection('nfev4').doc(nfeId);
   const snap = await nfeRef.get();
   if (!snap.exists) {
-    throw new NFeOrchestratorError(`pedido '${pedidoId}': no nfev4 doc — nothing to cancel.`);
+    throw new NFeOrchestratorError(`pedido '${pedidoId}': nfev4 doc '${nfeId}' not found.`);
   }
   const nota = snap.data() as NotaFiscalEletronica;
   if (!nota.chave) {
     throw new NFeOrchestratorError(
-      `pedido '${pedidoId}': persisted nfev4 doc has no chave — cannot cancel.`,
+      `pedido '${pedidoId}' nfe '${nfeId}': persisted nfev4 doc has no chave — cannot cancel.`,
     );
   }
 
-  const baseCall = { cert: rt.cert, agent: rt.agent, tpAmb: rt.tpAmb } as const;
+  // Idempotency + precondition straight from the DB (no SEFAZ).
+  if (nota.estado === ESTADO_NFE.cancelada) {
+    return {
+      nfeId,
+      pedidoId,
+      estado: ESTADO_NFE.cancelada,
+      chave: nota.chave,
+      nRec: null,
+      cStat: nota.cStat ?? '135',
+      xMotivo: nota.xMotivo ?? 'NF-e já cancelada.',
+      reused: true,
+    };
+  }
+  if (nota.estado !== ESTADO_NFE.aprovada) {
+    throw new NFeCancelamentoError(
+      `pedido '${pedidoId}' nfe '${nfeId}': estado='${nota.estado}' — ` +
+        'apenas NF-e autorizada (aprovada) pode ser cancelada.',
+    );
+  }
+
+  // nProt from the stored proc envelope — never from a SEFAZ consult.
+  const nProt = nota.xml_nfe_proc ? RE_NPROT.exec(nota.xml_nfe_proc)?.[1] : undefined;
+  if (!nProt) {
+    throw new NFeCancelamentoError(
+      `pedido '${pedidoId}' nfe '${nfeId}': protocolo (nProt) ausente em xml_nfe_proc — ` +
+        'não é possível cancelar sem consultar a SEFAZ (DistDFe é Fase D).',
+    );
+  }
+
+  const tpEmis = (nota.tpEmis ?? 1) as TpEmis;
   const now = (): string => new Date().toISOString();
 
-  // 1. Consult SEFAZ for the authoritative protocol + confirm authorized.
-  const consSitCall: SefazCall = { ...baseCall, url: rt.endpoints.NfeConsultaProtocolo };
-  const retSit = await consultarSituacaoNFe(consSitCall, { chave: nota.chave });
-  await enviNfeCollection(fs, bundle.filialId).add(
-    buildEnviNFeMsgFromConsulta({ chave: nota.chave, nRec: null, ret: retSit, tpEmis }),
-  );
-  const infProt = retSit.protNFe?.infProt;
-  if (infProt?.cStat !== '100' || !infProt.nProt) {
-    throw new NFeCancelamentoError(
-      `pedido '${pedidoId}': NF-e não está autorizada/cancelável ` +
-        `(consulta cStat=${retSit.cStat}, protocolo cStat=${infProt?.cStat ?? '-'}). ` +
-        'Apenas NF-e autorizada (cStat=100) pode ser cancelada.',
-    );
-  }
-
-  // 2. Send the cancelamento evento (cOrgao = chave's UF prefix).
-  const cancelCall: SefazCall = { ...baseCall, url: rt.endpoints.RecepcaoEvento };
+  // Send the cancelamento evento (cOrgao + cnpj come from the chave).
+  const cancelCall: SefazCall = {
+    cert: rt.cert,
+    agent: rt.agent,
+    tpAmb: rt.tpAmb,
+    url: rt.endpoints.RecepcaoEvento,
+  };
   const res = await cancelarNFe(cancelCall, {
     chNFe: nota.chave,
     cOrgao: nota.chave.slice(0, 2),
-    cnpj: bundle.filial.cnpj,
-    nProt: infProt.nProt,
+    cnpj: nota.chave.slice(6, 20),
+    nProt,
     xJust,
   });
   const ev = res.ret.retEvento?.[0]?.infEvento;
@@ -2365,7 +2400,7 @@ export async function cancelarPedido(
   const xMotivo = ev?.xMotivo ?? res.ret.xMotivo;
 
   // Audit-log the cancelamento round-trip (both halves of procEventoNFe).
-  await enviNfeCollection(fs, bundle.filialId).add({
+  await enviNfeCollection(fs, filialId).add({
     targetsChnfe: [nota.chave],
     idLote: null,
     indSinc: null,
@@ -2381,31 +2416,46 @@ export async function cancelarPedido(
     ultima_modificacao: now(),
   });
 
-  if (cStat === '135' || cStat === '155') {
-    await persistPatch(nfeRef, {
-      estado: ESTADO_NFE.cancelada,
+  // 135 (registrado + vinculado) / 155 (homologado fora de prazo) = cancelled.
+  // 573 (duplicidade de evento) = the cancelamento is already registered at
+  // SEFAZ → reconcile the local estado. Anything else is a real rejection.
+  const cancelled =
+    cStat === '135' || cStat === '155' || cStat === CSTAT_DUPLICIDADE_EVENTO;
+  if (!cancelled) {
+    throw new NFeCancelamentoError(
+      `pedido '${pedidoId}' nfe '${nfeId}': cancelamento rejeitado por SEFAZ — cStat=${cStat} ${xMotivo}`,
       cStat,
       xMotivo,
-      retries: 0,
-      nRec: null,
-      action: 'done-terminal',
-    });
-    return {
-      nfeId: nfeRef.id,
-      pedidoId,
-      estado: ESTADO_NFE.cancelada,
-      chave: nota.chave,
-      nRec: null,
-      cStat,
-      xMotivo,
-      reused: false,
-    };
+    );
   }
-  throw new NFeCancelamentoError(
-    `pedido '${pedidoId}': cancelamento rejeitado por SEFAZ — cStat=${cStat} ${xMotivo}`,
+
+  // Persist estado='cancelada' transactionally (guard a concurrent cancel).
+  await fs.runTransaction(async (tx) => {
+    const cur = (await tx.get(nfeRef)).data() as NotaFiscalEletronica | undefined;
+    if (cur?.estado === ESTADO_NFE.cancelada) return;
+    tx.set(
+      nfeRef,
+      {
+        estado: ESTADO_NFE.cancelada,
+        cStat,
+        xMotivo,
+        retries: 0,
+        ultima_modificacao: now(),
+      },
+      { merge: true },
+    );
+  });
+
+  return {
+    nfeId,
+    pedidoId,
+    estado: ESTADO_NFE.cancelada,
+    chave: nota.chave,
+    nRec: null,
     cStat,
     xMotivo,
-  );
+    reused: false,
+  };
 }
 
 /** Result of an inutilização de numeração. */

@@ -11,24 +11,22 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/integrations-nfe')>();
   return {
     ...actual,
-    // The orchestrator's SEFAZ round-trips. cUFFromUF / resolveTpEmis /
-    // loadPedidoBundle stay real.
+    // The orchestrator's SEFAZ round-trips. cUFFromUF / resolveTpEmis stay real.
+    // cancelarNFeService no longer consults SEFAZ — it reads estado from the DB.
     cancelarNFe: vi.fn(),
     inutilizarNumeracao: vi.fn(),
-    consultarSituacaoNFe: vi.fn(),
   };
 });
 
 import {
   cancelarNFe,
-  consultarSituacaoNFe,
   inutilizarNumeracao as inutilizarNumeracaoSefaz,
   NFeInutilizacaoError,
 } from '@delfrance/integrations-nfe';
 import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
 import {
-  cancelarPedido,
+  cancelarNFeService,
   inutilizarNumeracao,
   NFeCancelamentoError,
   NFeOrchestratorError,
@@ -92,6 +90,8 @@ interface FakeOpts {
   events: string[];
   /** Pre-existing nfev4 doc at pedidos/PED-1/nfev4/s1. `null` = absent. */
   nfev4?: Record<string, unknown> | null;
+  /** Extra nfev4 docs by id (e.g. a second NF-e at s2). */
+  nfev4ById?: Record<string, Record<string, unknown>>;
 }
 
 /** In-memory Firestore — same shape as orchestrator.test.ts. */
@@ -185,6 +185,9 @@ function fakeFirestore(opts: FakeOpts) {
   // tpEmis = resolveTpEmis('SP') = 1 → doc id 's1'.
   if (opts.nfev4 !== undefined) {
     docs['pedidos/PED-1/nfev4/s1'] = opts.nfev4;
+  }
+  for (const [id, doc] of Object.entries(opts.nfev4ById ?? {})) {
+    docs[`pedidos/PED-1/nfev4/${id}`] = doc;
   }
 
   const writes: { path: string; data: Record<string, unknown>; merge?: boolean }[] = [];
@@ -297,9 +300,13 @@ function fakeFirestore(opts: FakeOpts) {
       runTransaction: async <T>(fn: (tx: unknown) => Promise<T>) => {
         const tx = {
           get: (ref: ReturnType<typeof makeRef>) => ref.get(),
-          set: (ref: ReturnType<typeof makeRef>, data: Record<string, unknown>) => {
-            writes.push({ path: ref.path, data });
-            docs[ref.path] = data;
+          set: (
+            ref: ReturnType<typeof makeRef>,
+            data: Record<string, unknown>,
+            opt?: { merge?: boolean },
+          ) => {
+            writes.push({ path: ref.path, data, merge: opt?.merge });
+            docs[ref.path] = opt?.merge ? { ...(docs[ref.path] ?? {}), ...data } : data;
             opts.events.push(`set:${ref.path}`);
           },
         };
@@ -321,43 +328,14 @@ function aprovadaNfev4(): Record<string, unknown> {
     cStat: '100',
     xMotivo: 'Autorizado o uso da NF-e',
     tpEmis: 1,
+    // The proc envelope carries the authorization protocol the service reads.
+    xml_nfe_proc:
+      `<nfeProc xmlns="${NFE_NS}" versao="4.00"><NFe>…</NFe>` +
+      `<protNFe versao="4.00"><infProt><chNFe>${CHAVE}</chNFe>` +
+      `<nProt>135200000000123</nProt><cStat>100</cStat></infProt></protNFe></nfeProc>`,
     ultima_modificacao: '2026-05-29T10:00:00.000Z',
   };
 }
-
-const RET_SIT_100 = {
-  tpAmb: '2',
-  verAplic: 'SP',
-  cStat: '100',
-  xMotivo: 'Autorizado o uso da NF-e',
-  cUF: '35',
-  dhRecbto: '2026-05-29T10:30:00-03:00',
-  chNFe: CHAVE,
-  versao: '4.00',
-  protNFe: {
-    versao: '4.00',
-    infProt: {
-      tpAmb: '2',
-      verAplic: 'SP',
-      chNFe: CHAVE,
-      dhRecbto: '2026-05-29T10:30:00-03:00',
-      nProt: '135200000000123',
-      cStat: '100',
-      xMotivo: 'Autorizado o uso da NF-e',
-    },
-  },
-} as const;
-
-/** A consSit response for an NF-e that is NOT cancellable (already cancelled). */
-const RET_SIT_101 = {
-  ...RET_SIT_100,
-  cStat: '101',
-  xMotivo: 'Cancelamento de NF-e homologado',
-  protNFe: {
-    versao: '4.00',
-    infProt: { ...RET_SIT_100.protNFe.infProt, cStat: '101', xMotivo: 'Cancelamento homologado' },
-  },
-} as const;
 
 /** Build a CancelarNFeResult for a given per-evento cStat. */
 function cancelResult(cStat: string) {
@@ -383,7 +361,9 @@ function cancelResult(cStat: string) {
                 ? 'Evento registrado e vinculado a NF-e'
                 : cStat === '155'
                   ? 'Evento registrado e vinculado a NF-e fora de prazo'
-                  : 'Rejeicao: NF-e fora do prazo de cancelamento',
+                  : cStat === '573'
+                    ? 'Rejeicao: Duplicidade de Evento'
+                    : 'Rejeicao: NF-e fora do prazo de cancelamento',
             chNFe: CHAVE,
             tpEvento: '110111',
             nSeqEvento: '1',
@@ -429,87 +409,124 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('cancelarPedido', () => {
-  beforeEach(() => {
-    vi.mocked(consultarSituacaoNFe).mockResolvedValue(RET_SIT_100 as never);
-  });
+describe('cancelarNFeService', () => {
+  const XJUST = 'Cancelamento por erro de digitacao no pedido';
 
-  it('cStat 135 → persists estado=cancelada + audit-logs both round-trips', async () => {
+  it('cStat 135 → persists estado=cancelada (transaction) + 1 audit record, no SEFAZ consult', async () => {
     const events: string[] = [];
-    const { fs, writes } = fakeFirestore({ events, nfev4: aprovadaNfev4() });
+    const { fs, writes, docs } = fakeFirestore({ events, nfev4: aprovadaNfev4() });
     vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('135') as never);
 
-    const result = await cancelarPedido(fs, fakeRuntime(), 'PED-1', 'Cancelamento por erro de digitacao');
+    const result = await cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST);
 
     expect(result.estado).toBe(ESTADO_NFE.cancelada);
     expect(result.cStat).toBe('135');
     expect(result.chave).toBe(CHAVE);
 
-    // Persisted estado='c' on the nfev4 doc.
+    // Persisted estado='c' on the targeted nfev4 doc (transactional write).
+    expect((docs['pedidos/PED-1/nfev4/s1'] as { estado: string }).estado).toBe(
+      ESTADO_NFE.cancelada,
+    );
     const nfeWrite = writes.find((w) => w.path === 'pedidos/PED-1/nfev4/s1');
     expect(nfeWrite?.data.estado).toBe(ESTADO_NFE.cancelada);
     expect(nfeWrite?.data.cStat).toBe('135');
 
-    // Two enviNfe audit records: the consulta + the cancelamento round-trip.
+    // Exactly ONE enviNfe record (the cancelamento) — no consulta round-trip.
     const audits = writes.filter((w) => w.path.startsWith('filiais/F-1/enviNfe/'));
-    expect(audits).toHaveLength(2);
-
-    expect(consultarSituacaoNFe).toHaveBeenCalledOnce();
+    expect(audits).toHaveLength(1);
     expect(cancelarNFe).toHaveBeenCalledOnce();
   });
 
   it('cStat 155 (fora de prazo) → also cancelada', async () => {
     const events: string[] = [];
-    const { fs, writes } = fakeFirestore({ events, nfev4: aprovadaNfev4() });
+    const { fs, docs } = fakeFirestore({ events, nfev4: aprovadaNfev4() });
     vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('155') as never);
 
-    const result = await cancelarPedido(fs, fakeRuntime(), 'PED-1', 'Cancelamento fora de prazo ok');
+    const result = await cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST);
 
     expect(result.estado).toBe(ESTADO_NFE.cancelada);
-    const nfeWrite = writes.find((w) => w.path === 'pedidos/PED-1/nfev4/s1');
-    expect(nfeWrite?.data.estado).toBe(ESTADO_NFE.cancelada);
+    expect((docs['pedidos/PED-1/nfev4/s1'] as { estado: string }).estado).toBe(
+      ESTADO_NFE.cancelada,
+    );
   });
 
-  it('throws NFeCancelamentoError when the NF-e is not authorized (consulta cStat != 100)', async () => {
+  it('cStat 573 (duplicidade de evento) → reconciles to cancelada', async () => {
     const events: string[] = [];
-    const { fs, writes } = fakeFirestore({ events, nfev4: aprovadaNfev4() });
-    vi.mocked(consultarSituacaoNFe).mockResolvedValue(RET_SIT_101 as never);
-
-    await expect(
-      cancelarPedido(fs, fakeRuntime(), 'PED-1', 'Tentando cancelar nf ja cancelada'),
-    ).rejects.toBeInstanceOf(NFeCancelamentoError);
-
-    // No cancelamento sent, and the nfev4 doc is untouched.
-    expect(cancelarNFe).not.toHaveBeenCalled();
-    expect(writes.some((w) => w.path === 'pedidos/PED-1/nfev4/s1')).toBe(false);
-  });
-
-  it('throws NFeCancelamentoError carrying cStat/xMotivo on a SEFAZ rejection (estado unchanged)', async () => {
-    const events: string[] = [];
-    const { fs, writes } = fakeFirestore({ events, nfev4: aprovadaNfev4() });
+    const { fs, docs } = fakeFirestore({ events, nfev4: aprovadaNfev4() });
     vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('573') as never);
 
-    const err = await cancelarPedido(
-      fs,
-      fakeRuntime(),
-      'PED-1',
-      'Cancelamento apos prazo legal',
-    ).catch((e: unknown) => e);
+    const result = await cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST);
 
-    expect(err).toBeInstanceOf(NFeCancelamentoError);
-    // The cStat + xMotivo ride along so the route/UI can show a clean message.
-    expect((err as NFeCancelamentoError).cStat).toBe('573');
-    expect((err as NFeCancelamentoError).xMotivo).toBe(
-      'Rejeicao: NF-e fora do prazo de cancelamento',
+    expect(result.estado).toBe(ESTADO_NFE.cancelada);
+    expect(result.cStat).toBe('573');
+    expect((docs['pedidos/PED-1/nfev4/s1'] as { estado: string }).estado).toBe(
+      ESTADO_NFE.cancelada,
     );
-    expect(writes.some((w) => w.path === 'pedidos/PED-1/nfev4/s1')).toBe(false);
   });
 
-  it('throws NFeOrchestratorError when there is no nfev4 doc', async () => {
+  it('already cancelada in the DB → idempotent: NO event sent, returns cancelada', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({
+      events,
+      nfev4: { ...aprovadaNfev4(), estado: ESTADO_NFE.cancelada, cStat: '135' },
+    });
+
+    const result = await cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST);
+
+    expect(result.estado).toBe(ESTADO_NFE.cancelada);
+    expect(result.reused).toBe(true);
+    // No SEFAZ event, no audit, no write.
+    expect(cancelarNFe).not.toHaveBeenCalled();
+    expect(writes).toHaveLength(0);
+  });
+
+  it('estado not aprovada (rejeitada) → throws, no event', async () => {
+    const events: string[] = [];
+    const { fs } = fakeFirestore({
+      events,
+      nfev4: { ...aprovadaNfev4(), estado: ESTADO_NFE.rejeitada },
+    });
+
+    await expect(
+      cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST),
+    ).rejects.toBeInstanceOf(NFeCancelamentoError);
+    expect(cancelarNFe).not.toHaveBeenCalled();
+  });
+
+  it('no nProt in xml_nfe_proc → throws, no event (never consults SEFAZ)', async () => {
+    const events: string[] = [];
+    const { fs } = fakeFirestore({
+      events,
+      nfev4: { ...aprovadaNfev4(), xml_nfe_proc: null },
+    });
+
+    await expect(
+      cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST),
+    ).rejects.toBeInstanceOf(NFeCancelamentoError);
+    expect(cancelarNFe).not.toHaveBeenCalled();
+  });
+
+  it('a real rejection cStat (e.g. 236) → throws with cStat/xMotivo, estado unchanged', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({ events, nfev4: aprovadaNfev4() });
+    vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('236') as never);
+
+    const err = await cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(NFeCancelamentoError);
+    expect((err as NFeCancelamentoError).cStat).toBe('236');
+    expect((err as NFeCancelamentoError).xMotivo).toBeTruthy();
+    expect((docs['pedidos/PED-1/nfev4/s1'] as { estado: string }).estado).toBe(
+      ESTADO_NFE.aprovada,
+    );
+  });
+
+  it('throws NFeOrchestratorError when the nfev4 doc id does not exist', async () => {
     const events: string[] = [];
     const { fs } = fakeFirestore({ events, nfev4: null });
     await expect(
-      cancelarPedido(fs, fakeRuntime(), 'PED-1', 'Cancelamento sem nota emitida'),
+      cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST),
     ).rejects.toBeInstanceOf(NFeOrchestratorError);
   });
 
@@ -520,8 +537,26 @@ describe('cancelarPedido', () => {
       nfev4: { ...aprovadaNfev4(), chave: null },
     });
     await expect(
-      cancelarPedido(fs, fakeRuntime(), 'PED-1', 'Cancelamento sem chave persistida'),
+      cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST),
     ).rejects.toBeInstanceOf(NFeOrchestratorError);
+  });
+
+  it('targets the doc by nfeId: with two NF-es, cancelling s1 leaves s2 untouched', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      nfev4ById: { s1: aprovadaNfev4(), s2: aprovadaNfev4() },
+    });
+    vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('135') as never);
+
+    await cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST);
+
+    expect((docs['pedidos/PED-1/nfev4/s1'] as { estado: string }).estado).toBe(
+      ESTADO_NFE.cancelada,
+    );
+    expect((docs['pedidos/PED-1/nfev4/s2'] as { estado: string }).estado).toBe(
+      ESTADO_NFE.aprovada,
+    );
   });
 });
 

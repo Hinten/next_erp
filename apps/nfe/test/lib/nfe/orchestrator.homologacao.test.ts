@@ -45,7 +45,7 @@ import {
 
 import { getAdminFirestore } from '../../../lib/firebase/admin';
 import {
-  cancelarPedido,
+  cancelarNFeService,
   emitirPedido,
   emitirPedidosLote,
   inutilizarNumeracao,
@@ -555,7 +555,7 @@ describe('orchestrator — SEFAZ-SP homologação', () => {
   );
 
   it(
-    'cancelarPedido — emit a fresh NF-e then cancel it → cStat 135, estado=cancelada',
+    'cancelarNFeService — emit a fresh NF-e then cancel it (135) → estado=cancelada; re-cancel is idempotent',
     async () => {
       // Throttle so the prior emissions don't push us into the 656 window.
       await new Promise((r) => setTimeout(r, 1000));
@@ -567,13 +567,14 @@ describe('orchestrator — SEFAZ-SP homologação', () => {
       expect(emit.cStat).toBe('100');
       expect(emit.estado).toBe(ESTADO_NFE.aprovada);
 
-      // 2. Cancel it — well within the 24 h SEFAZ window. cancelarPedido
-      //    consults SEFAZ for the authoritative nProt, sends the evento, and
-      //    on 135 (registrado e vinculado) persists estado='c'.
-      const cancel = await cancelarPedido(
+      // 2. Cancel the specific nfev4 doc (s1) — well within the 24 h window.
+      //    cancelarNFeService reads estado + nProt from the DB (no SEFAZ
+      //    consult), sends the evento, and on 135 persists estado='c'.
+      const cancel = await cancelarNFeService(
         fs,
         rt,
         PEDCANCEL,
+        's1',
         'Cancelamento de teste de homologacao - erro de emissao',
       );
       assertNotConsumoIndevido(cancel, 'cancelamento/cancel-PEDCANCEL');
@@ -584,6 +585,18 @@ describe('orchestrator — SEFAZ-SP homologação', () => {
       // The persisted nfev4 doc reflects the cancelamento.
       const nfeSnap = await fs.doc(`pedidos/${PEDCANCEL}/nfev4/s1`).get();
       expect((nfeSnap.data() as { estado: string }).estado).toBe(ESTADO_NFE.cancelada);
+
+      // 3. Re-cancel → idempotent: estado is already cancelada in the DB, so
+      //    NO new SEFAZ event is sent (no Consumo Indevido), returns cancelada.
+      const again = await cancelarNFeService(
+        fs,
+        rt,
+        PEDCANCEL,
+        's1',
+        'Cancelamento de teste de homologacao - erro de emissao',
+      );
+      expect(again.estado).toBe(ESTADO_NFE.cancelada);
+      expect(again.reused).toBe(true);
     },
     120_000,
   );

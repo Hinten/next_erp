@@ -222,9 +222,9 @@ describe('createNFeHttpClient — cancelar', () => {
     xMotivo: 'Evento registrado e vinculado a NF-e',
   };
 
-  it('POSTs to /api/nfe/cancelar with { pedidoId, xJust } + Bearer token', async () => {
+  it('POSTs to /api/nfe/cancelar with { pedidoId, nfeId, xJust } + Bearer token', async () => {
     const fetch = mockFetch({ status: 200, body: cancelled });
-    const got = await makeClient(fetch).cancelar('PED-001', 'Cancelamento por erro de digitacao');
+    const got = await makeClient(fetch).cancelar('PED-001', 'nfev4-001', 'Cancelamento por erro de digitacao');
 
     expect(got).toEqual(cancelled);
     const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
@@ -232,6 +232,7 @@ describe('createNFeHttpClient — cancelar', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({
       pedidoId: 'PED-001',
+      nfeId: 'nfev4-001',
       xJust: 'Cancelamento por erro de digitacao',
     });
     expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${TOKEN}`);
@@ -240,7 +241,7 @@ describe('createNFeHttpClient — cancelar', () => {
   it('maps 404 → NFePedidoNotFoundError carrying the pedidoId', async () => {
     const fetch = mockFetch({ status: 404, body: { error: 'no nfev4 doc' } });
     try {
-      await makeClient(fetch).cancelar('PED-MISSING', 'Cancelamento de teste invalido');
+      await makeClient(fetch).cancelar('PED-MISSING', 'nfev4-001', 'Cancelamento de teste invalido');
       throw new Error('expected throw');
     } catch (err) {
       expect(err).toBeInstanceOf(NFePedidoNotFoundError);
@@ -254,13 +255,13 @@ describe('createNFeHttpClient — cancelar', () => {
       body: { error: 'cancelamento rejeitado por SEFAZ — cStat=573 fora do prazo' },
     });
     await expect(
-      makeClient(fetch).cancelar('PED-001', 'Cancelamento apos prazo legal'),
+      makeClient(fetch).cancelar('PED-001', 'nfev4-001', 'Cancelamento apos prazo legal'),
     ).rejects.toBeInstanceOf(NFeRejectedError);
   });
 
   it('maps 400 → NFeBadRequestError (xJust too short)', async () => {
     const fetch = mockFetch({ status: 400, body: { error: 'Bad body' } });
-    await expect(makeClient(fetch).cancelar('PED-001', 'curto')).rejects.toBeInstanceOf(
+    await expect(makeClient(fetch).cancelar('PED-001', 'nfev4-001', 'curto')).rejects.toBeInstanceOf(
       NFeBadRequestError,
     );
   });

@@ -114,8 +114,8 @@ export interface NFeHttpClient {
   emitirLote(pedidoIds: ReadonlyArray<string>): Promise<NFeBatchEmitResult>;
   consultar(chave: string): Promise<NFeConsultaResult>;
   processarPendentes(): Promise<NFeProcessarPendentesResult>;
-  /** Cancel an authorized NF-e (RecepcaoEvento, tpEvento=110111). */
-  cancelar(pedidoId: string, xJust: string): Promise<NFeEmitResult>;
+  /** Cancel a specific authorized NF-e (RecepcaoEvento, tpEvento=110111). */
+  cancelar(pedidoId: string, nfeId: string, xJust: string): Promise<NFeEmitResult>;
   /** Inutilizar an unused número range (NfeInutilizacao4). */
   inutilizar(args: NFeInutilizarArgs): Promise<NFeInutilizarResult>;
 }
@@ -237,9 +237,9 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       call<NFeProcessarPendentesResult>('POST', '/api/nfe/processar-pendentes', {
         body: {},
       }),
-    cancelar: (pedidoId, xJust) =>
+    cancelar: (pedidoId, nfeId, xJust) =>
       call<NFeEmitResult>('POST', '/api/nfe/cancelar', {
-        body: { pedidoId, xJust },
+        body: { pedidoId, nfeId, xJust },
         context: { pedidoId },
       }),
     inutilizar: (args) =>

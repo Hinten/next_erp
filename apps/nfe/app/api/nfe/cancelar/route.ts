@@ -21,7 +21,7 @@ import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { safeLog } from '@/lib/nfe/log';
 import {
-  cancelarPedido,
+  cancelarNFeService,
   NFeCancelamentoError,
   NFeOrchestratorError,
   NFePedidoNotFoundError,
@@ -33,6 +33,8 @@ export const runtime = 'nodejs';
 
 const bodySchema = z.object({
   pedidoId: z.string().min(1).max(200),
+  // The specific nfev4 doc id — a pedido may hold more than one NF-e.
+  nfeId: z.string().min(1).max(200),
   // SEFAZ requires the justification to be 15–255 chars.
   xJust: z.string().trim().min(15, 'xJust deve ter ao menos 15 caracteres').max(255),
 });
@@ -65,10 +67,11 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   try {
-    const result = await cancelarPedido(
+    const result = await cancelarNFeService(
       getAdminFirestore(),
       runtimeInstance,
       body.pedidoId,
+      body.nfeId,
       body.xJust,
     );
     return NextResponse.json(result, { status: 200 });
