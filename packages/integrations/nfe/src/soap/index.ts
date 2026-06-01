@@ -36,7 +36,11 @@ const SOAP_NS = {
   NFeConsultaProtocolo: `${NFE_WSDL_BASE}/NFeConsultaProtocolo4`,
   NFeStatusServico: `${NFE_WSDL_BASE}/NFeStatusServico4`,
   NFeInutilizacao: `${NFE_WSDL_BASE}/NFeInutilizacao4`,
-  RecepcaoEvento: `${NFE_WSDL_BASE}/RecepcaoEvento4`,
+  // SEFAZ's WSDL service name (and thus the nfeDadosMsg xmlns + SOAPAction)
+  // for the event service is `NFeRecepcaoEvento4` — same `NFe<Service>4`
+  // pattern as the others. Without the `NFe` prefix SEFAZ rejects the POST
+  // with a SOAP Fault: "The action '…/RecepcaoEvento4' was not recognized."
+  RecepcaoEvento: `${NFE_WSDL_BASE}/NFeRecepcaoEvento4`,
 } as const;
 
 export type SoapOperation = keyof typeof SOAP_NS;

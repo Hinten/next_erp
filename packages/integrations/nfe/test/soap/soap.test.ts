@@ -21,6 +21,12 @@ describe('buildEnvelope', () => {
     expect(buildEnvelope('NFeStatusServico', '<x/>')).toContain('/NFeStatusServico4"');
     expect(buildEnvelope('NFeConsultaProtocolo', '<x/>')).toContain('/NFeConsultaProtocolo4"');
     expect(buildEnvelope('NFeRetAutorizacao', '<x/>')).toContain('/NFeRetAutorizacao4"');
+    expect(buildEnvelope('NFeInutilizacao', '<x/>')).toContain('/NFeInutilizacao4"');
+    // RecepcaoEvento's WSDL service name carries the `NFe` prefix like the
+    // rest — SEFAZ rejects `…/RecepcaoEvento4` with a SOAP Fault ("action not
+    // recognized"). This pins the correct namespace so it can't regress.
+    expect(buildEnvelope('RecepcaoEvento', '<x/>')).toContain('/NFeRecepcaoEvento4"');
+    expect(buildEnvelope('RecepcaoEvento', '<x/>')).not.toContain('/RecepcaoEvento4"');
   });
 
   it('contains no formatting whitespace between elements', () => {
