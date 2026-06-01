@@ -20,6 +20,8 @@ import { serializeFragment } from '../xml';
 
 const INUT_NS = 'http://www.portalfiscal.inf.br/nfe';
 const INUT_VERSAO = '4.00';
+/** NF-e fiscal model. Inutilização only applies to model 55 (NF-e). */
+const MOD_NFE = '55';
 
 export class NFeInutilizacaoError extends Error {
   constructor(message: string) {
@@ -61,7 +63,7 @@ export function buildInutNFe(input: InutilizacaoInput): string {
   const seriePad = String(input.serie).padStart(3, '0');
   const iniPad = String(input.nNFIni).padStart(9, '0');
   const finPad = String(input.nNFFin).padStart(9, '0');
-  const id = `ID${input.cUF}${input.ano}${input.cnpj}55${seriePad}${iniPad}${finPad}`;
+  const id = `ID${input.cUF}${input.ano}${input.cnpj}${MOD_NFE}${seriePad}${iniPad}${finPad}`;
 
   const infInut = serializeFragment('TInutNFe_infInut', 'infInut', {
     Id: id,
@@ -70,7 +72,7 @@ export function buildInutNFe(input: InutilizacaoInput): string {
     cUF: input.cUF,
     ano: input.ano,
     CNPJ: input.cnpj,
-    mod: '55',
+    mod: MOD_NFE,
     serie: String(input.serie),
     nNFIni: String(input.nNFIni),
     nNFFin: String(input.nNFFin),
