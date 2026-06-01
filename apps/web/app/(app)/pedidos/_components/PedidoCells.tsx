@@ -14,7 +14,7 @@
  * The other cells are static — `ClienteCell` does a one-shot cached read
  * via TanStack Query + `getDoc`, `FreteCell` and `ImpCell` are passthroughs.
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { getDoc, type DocumentReference } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
@@ -36,6 +36,7 @@ import {
   ActionIcon,
   Anchor,
   Badge,
+  Button,
   CopyButton,
   Group,
   HoverCard,
@@ -45,11 +46,13 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { IconCheck, IconCopy } from '@tabler/icons-react';
+import { IconBan, IconCheck, IconCopy } from '@tabler/icons-react';
 
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+
+import { CancelarNFeDialog } from './CancelarNFeDialog';
 
 const DASH = '—';
 
@@ -123,10 +126,13 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
     return buildQuery(base, [orderByField('ultima_modificacao', 'desc'), limit(1)]);
   }, [db, pedidoId]);
   const { data, loading } = useSnapshot(q);
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   if (loading) return <Skeleton height={20} width={70} />;
   const latest = data?.[0]?.data;
   if (!latest) return <Text c="dimmed">{DASH}</Text>;
+  // Only an authorized NF-e can be cancelled (RecepcaoEvento tpEvento=110111).
+  const isAprovada = latest.estado === ESTADO_NFE.aprovada;
   const color = NFE_STATE_COLOR[latest.estado] ?? 'gray';
   const label = ESTADO_NFE_LABELS[latest.estado] ?? latest.estado;
   // tpEmis === 1 is the normal (SEFAZ síncrono) path. Anything else
@@ -136,6 +142,7 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
   const hasCStatMsg = latest.cStat != null && latest.xMotivo != null;
   const messageCopyValue = latest.error ?? (hasCStatMsg ? `${latest.cStat} - ${latest.xMotivo}` : null);
   return (
+    <>
     <HoverCard
       withinPortal
       shadow="md"
@@ -233,9 +240,35 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
               <CopyIconButton value={messageCopyValue} label="Copiar mensagem" />
             </Group>
           )}
+
+          {isAprovada && (
+            <Button
+              color="red"
+              variant="light"
+              size="xs"
+              leftSection={<IconBan size={14} />}
+              mt="xs"
+              onClick={(e) => {
+                // Stop the row's navigate-onClick from firing.
+                e.stopPropagation();
+                setCancelOpen(true);
+              }}
+            >
+              Cancelar NF-e
+            </Button>
+          )}
         </Stack>
       </HoverCard.Dropdown>
     </HoverCard>
+    {isAprovada && (
+      <CancelarNFeDialog
+        opened={cancelOpen}
+        pedidoId={pedidoId}
+        numero={latest.numeracao}
+        onClose={() => setCancelOpen(false)}
+      />
+    )}
+    </>
   );
 }
 
