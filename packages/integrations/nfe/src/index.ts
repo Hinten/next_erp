@@ -276,6 +276,8 @@ export {
   type NFeEmitResult,
   type NFeHttpClient,
   type NFeHttpClientConfig,
+  type NFeInutilizarArgs,
+  type NFeInutilizarResult,
   type NFeProcessarPendentesResult,
 } from './http-provider';
 

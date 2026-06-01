@@ -211,6 +211,125 @@ describe('createNFeHttpClient — processarPendentes', () => {
   });
 });
 
+describe('createNFeHttpClient — cancelar', () => {
+  const cancelled: NFeEmitResult = {
+    nfeId: 'nfev4-001',
+    pedidoId: 'PED-001',
+    estado: 'c',
+    chave: '35260514200166000187550010000000071000000018',
+    nRec: null,
+    cStat: '135',
+    xMotivo: 'Evento registrado e vinculado a NF-e',
+  };
+
+  it('POSTs to /api/nfe/cancelar with { pedidoId, xJust } + Bearer token', async () => {
+    const fetch = mockFetch({ status: 200, body: cancelled });
+    const got = await makeClient(fetch).cancelar('PED-001', 'Cancelamento por erro de digitacao');
+
+    expect(got).toEqual(cancelled);
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:3004/api/nfe/cancelar');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      pedidoId: 'PED-001',
+      xJust: 'Cancelamento por erro de digitacao',
+    });
+    expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it('maps 404 → NFePedidoNotFoundError carrying the pedidoId', async () => {
+    const fetch = mockFetch({ status: 404, body: { error: 'no nfev4 doc' } });
+    try {
+      await makeClient(fetch).cancelar('PED-MISSING', 'Cancelamento de teste invalido');
+      throw new Error('expected throw');
+    } catch (err) {
+      expect(err).toBeInstanceOf(NFePedidoNotFoundError);
+      expect((err as NFePedidoNotFoundError).pedidoId).toBe('PED-MISSING');
+    }
+  });
+
+  it('maps 422 → NFeRejectedError (SEFAZ rejected the cancelamento)', async () => {
+    const fetch = mockFetch({
+      status: 422,
+      body: { error: 'cancelamento rejeitado por SEFAZ — cStat=573 fora do prazo' },
+    });
+    await expect(
+      makeClient(fetch).cancelar('PED-001', 'Cancelamento apos prazo legal'),
+    ).rejects.toBeInstanceOf(NFeRejectedError);
+  });
+
+  it('maps 400 → NFeBadRequestError (xJust too short)', async () => {
+    const fetch = mockFetch({ status: 400, body: { error: 'Bad body' } });
+    await expect(makeClient(fetch).cancelar('PED-001', 'curto')).rejects.toBeInstanceOf(
+      NFeBadRequestError,
+    );
+  });
+});
+
+describe('createNFeHttpClient — inutilizar', () => {
+  const result = {
+    filialId: 'F-1',
+    serie: 9,
+    nNFIni: 5,
+    nNFFin: 12,
+    cStat: '102',
+    xMotivo: 'Inutilizacao de numero homologada',
+    nProt: '135200000088888',
+  };
+
+  it('POSTs to /api/nfe/inutilizar with the range body + Bearer token', async () => {
+    const fetch = mockFetch({ status: 200, body: result });
+    const got = await makeClient(fetch).inutilizar({
+      filialId: 'F-1',
+      serie: 9,
+      nNFIni: 5,
+      nNFFin: 12,
+      xJust: 'Inutilizacao de faixa nao utilizada teste',
+    });
+
+    expect(got).toEqual(result);
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:3004/api/nfe/inutilizar');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      filialId: 'F-1',
+      serie: 9,
+      nNFIni: 5,
+      nNFFin: 12,
+      xJust: 'Inutilizacao de faixa nao utilizada teste',
+    });
+  });
+
+  it('maps 422 → NFeRejectedError (SEFAZ rejected the inutilização)', async () => {
+    const fetch = mockFetch({
+      status: 422,
+      body: { error: 'inutilização rejeitada por SEFAZ — cStat=563 numero ja utilizado' },
+    });
+    await expect(
+      makeClient(fetch).inutilizar({
+        filialId: 'F-1',
+        serie: 9,
+        nNFIni: 5,
+        nNFFin: 12,
+        xJust: 'Inutilizacao de faixa nao utilizada teste',
+      }),
+    ).rejects.toBeInstanceOf(NFeRejectedError);
+  });
+
+  it('maps 400 → NFeBadRequestError (inverted range)', async () => {
+    const fetch = mockFetch({ status: 400, body: { error: 'nNFIni deve ser ≤ nNFFin' } });
+    await expect(
+      makeClient(fetch).inutilizar({
+        filialId: 'F-1',
+        serie: 9,
+        nNFIni: 20,
+        nNFFin: 10,
+        xJust: 'Inutilizacao de faixa nao utilizada teste',
+      }),
+    ).rejects.toBeInstanceOf(NFeBadRequestError);
+  });
+});
+
 describe('createNFeHttpClient — baseUrl normalisation', () => {
   it('strips a single trailing slash off baseUrl', async () => {
     const fetch = mockFetch({ status: 200, body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 } });

@@ -76,6 +76,27 @@ export interface NFeProcessarPendentesResult {
   readonly errors: number;
 }
 
+/** Args for an inutilização — a contiguous número range on a filial's série. */
+export interface NFeInutilizarArgs {
+  readonly filialId: string;
+  readonly serie: number;
+  readonly nNFIni: number;
+  readonly nNFFin: number;
+  /** Justification — SEFAZ requires 15–255 chars. */
+  readonly xJust: string;
+}
+
+/** Mirrors `apps/nfe/lib/nfe/orchestrator.ts:InutilizarNumeracaoResult`. */
+export interface NFeInutilizarResult {
+  readonly filialId: string;
+  readonly serie: number;
+  readonly nNFIni: number;
+  readonly nNFFin: number;
+  readonly cStat: string;
+  readonly xMotivo: string;
+  readonly nProt: string | null;
+}
+
 /**
  * Caller-provided config. `baseUrl` is the origin of `apps/nfe`
  * (in dev: `http://localhost:3004`; in prod: `https://nfe-<env>.web.app`).
@@ -93,6 +114,10 @@ export interface NFeHttpClient {
   emitirLote(pedidoIds: ReadonlyArray<string>): Promise<NFeBatchEmitResult>;
   consultar(chave: string): Promise<NFeConsultaResult>;
   processarPendentes(): Promise<NFeProcessarPendentesResult>;
+  /** Cancel an authorized NF-e (RecepcaoEvento, tpEvento=110111). */
+  cancelar(pedidoId: string, xJust: string): Promise<NFeEmitResult>;
+  /** Inutilizar an unused número range (NfeInutilizacao4). */
+  inutilizar(args: NFeInutilizarArgs): Promise<NFeInutilizarResult>;
 }
 
 /** Strip a trailing slash off `baseUrl` so route concatenation is clean. */
@@ -212,5 +237,12 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       call<NFeProcessarPendentesResult>('POST', '/api/nfe/processar-pendentes', {
         body: {},
       }),
+    cancelar: (pedidoId, xJust) =>
+      call<NFeEmitResult>('POST', '/api/nfe/cancelar', {
+        body: { pedidoId, xJust },
+        context: { pedidoId },
+      }),
+    inutilizar: (args) =>
+      call<NFeInutilizarResult>('POST', '/api/nfe/inutilizar', { body: { ...args } }),
   };
 }
