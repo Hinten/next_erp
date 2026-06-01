@@ -78,11 +78,10 @@ vi.mock('firebase/firestore', async () => {
   return { ...actual, getDoc: vi.fn() };
 });
 
-// NFCell renders CancelarNFeDialog for aprovada NF-es; the dialog calls
-// useNFeClient (→ useAuth). Stub it so the cell renders without an
-// AuthProvider. `null` = logged-out (the cancel button renders disabled).
-vi.mock('@/lib/nfe/client', () => ({
-  useNFeClient: () => null,
+// NFCell's "Cancelar NF-e" button redirects via useRouter — stub next/navigation
+// so the cell renders outside a Next router context.
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: vi.fn() }),
 }));
 
 import {

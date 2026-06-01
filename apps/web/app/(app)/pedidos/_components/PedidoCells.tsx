@@ -14,8 +14,9 @@
  * The other cells are static — `ClienteCell` does a one-shot cached read
  * via TanStack Query + `getDoc`, `FreteCell` and `ImpCell` are passthroughs.
  */
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { getDoc, type DocumentReference } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
 import { useSnapshot } from '@delfrance/data/hooks';
@@ -51,8 +52,6 @@ import { IconBan, IconCheck, IconCopy } from '@tabler/icons-react';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
-
-import { CancelarNFeDialog } from './CancelarNFeDialog';
 
 const DASH = '—';
 
@@ -126,7 +125,7 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
     return buildQuery(base, [orderByField('ultima_modificacao', 'desc'), limit(1)]);
   }, [db, pedidoId]);
   const { data, loading } = useSnapshot(q);
-  const [cancelOpen, setCancelOpen] = useState(false);
+  const router = useRouter();
 
   if (loading) return <Skeleton height={20} width={70} />;
   const latest = data?.[0]?.data;
@@ -142,7 +141,6 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
   const hasCStatMsg = latest.cStat != null && latest.xMotivo != null;
   const messageCopyValue = latest.error ?? (hasCStatMsg ? `${latest.cStat} - ${latest.xMotivo}` : null);
   return (
-    <>
     <HoverCard
       withinPortal
       shadow="md"
@@ -251,9 +249,10 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
               leftSection={<IconBan size={14} />}
               mt="xs"
               onClick={(e) => {
-                // Stop the row's navigate-onClick from firing.
+                // Stop the row's navigate-onClick; go to the per-NF-e screen
+                // (communication history + cancelamento form).
                 e.stopPropagation();
-                setCancelOpen(true);
+                router.push(`/pedidos/${pedidoId}/nfe`);
               }}
             >
               Cancelar NF-e
@@ -262,15 +261,6 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
         </Stack>
       </HoverCard.Dropdown>
     </HoverCard>
-    {isAprovada && (
-      <CancelarNFeDialog
-        opened={cancelOpen}
-        pedidoId={pedidoId}
-        numero={latest.numeracao}
-        onClose={() => setCancelOpen(false)}
-      />
-    )}
-    </>
   );
 }
 
