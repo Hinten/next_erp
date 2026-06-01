@@ -14,10 +14,7 @@ import { useState } from 'react';
 import { Alert, Button, Group, Modal, Stack, Text, Textarea } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertTriangle } from '@tabler/icons-react';
-import {
-  NFeRejectedError,
-  type NFeHttpError,
-} from '@delfrance/integrations-nfe/http-provider';
+import { NFeRejectedError } from '@delfrance/integrations-nfe/http-provider';
 
 import { useNFeClient } from '@/lib/nfe/client';
 import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
@@ -76,9 +73,11 @@ export function CancelarNFeDialog({
       // carry their own message. Keep the dialog open for a retry.
       const message =
         err instanceof NFeRejectedError
-          ? `${err.cStat} — ${err.xMotivo}`
+          ? err.cStat && err.cStat !== '(unknown)'
+            ? `SEFAZ rejeitou o cancelamento (cStat ${err.cStat}): ${err.xMotivo}`
+            : err.xMotivo
           : err instanceof Error
-            ? (err as NFeHttpError).message
+            ? err.message
             : 'Erro desconhecido ao cancelar a NF-e.';
       showErrorNotification({ title: 'Falha ao cancelar a NF-e', message });
       setSubmitting(false);
@@ -86,6 +85,11 @@ export function CancelarNFeDialog({
   }
 
   return (
+    // The Modal portals in the DOM, but React events still bubble through the
+    // React tree — without this guard, clicks inside the modal reach the
+    // pedidos row's onClick and navigate away. stopPropagation here only
+    // blocks bubbling ABOVE this wrapper; the modal's own close handlers fire.
+    <div onClick={(e) => e.stopPropagation()}>
     <Modal
       opened={opened}
       onClose={() => {
@@ -150,5 +154,6 @@ export function CancelarNFeDialog({
         </Group>
       </Stack>
     </Modal>
+    </div>
   );
 }

@@ -2283,7 +2283,12 @@ export async function consultarPedido(
 
 /** Cancelamento rejected by SEFAZ, or the NF-e is not in a cancellable state. */
 export class NFeCancelamentoError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    /** SEFAZ event cStat — present only on an actual rejection (not preconditions). */
+    public readonly cStat?: string,
+    public readonly xMotivo?: string,
+  ) {
     super(message);
     this.name = 'NFeCancelamentoError';
   }
@@ -2398,6 +2403,8 @@ export async function cancelarPedido(
   }
   throw new NFeCancelamentoError(
     `pedido '${pedidoId}': cancelamento rejeitado por SEFAZ — cStat=${cStat} ${xMotivo}`,
+    cStat,
+    xMotivo,
   );
 }
 

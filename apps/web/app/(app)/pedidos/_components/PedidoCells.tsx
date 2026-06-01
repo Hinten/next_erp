@@ -162,7 +162,9 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
         </Badge>
       </HoverCard.Target>
       <HoverCard.Dropdown>
-        <Stack gap="xs">
+        {/* Dropdown content is portaled but React-bubbles to the row's
+            onClick — stop it so the copy/cancelar controls don't navigate. */}
+        <Stack gap="xs" onClick={(e) => e.stopPropagation()}>
           <Group gap="xs" wrap="nowrap">
             <Text size="sm" fw={500}>Estado:</Text>
             <Text size="sm">{label}</Text>

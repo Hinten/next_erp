@@ -77,7 +77,9 @@ export async function POST(req: Request): Promise<NextResponse> {
       return authError(404, { error: e.message });
     }
     if (e instanceof NFeCancelamentoError) {
-      return authError(422, { error: e.message });
+      // Surface the SEFAZ cStat + xMotivo (when present) so the client can show
+      // a clean rejection message instead of the raw error string.
+      return authError(422, { error: e.message, cStat: e.cStat, xMotivo: e.xMotivo });
     }
     if (e instanceof NFeOrchestratorError) {
       return authError(400, { error: e.message });

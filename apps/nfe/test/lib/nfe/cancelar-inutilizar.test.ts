@@ -484,15 +484,24 @@ describe('cancelarPedido', () => {
     expect(writes.some((w) => w.path === 'pedidos/PED-1/nfev4/s1')).toBe(false);
   });
 
-  it('throws NFeCancelamentoError on a SEFAZ rejection (and leaves estado unchanged)', async () => {
+  it('throws NFeCancelamentoError carrying cStat/xMotivo on a SEFAZ rejection (estado unchanged)', async () => {
     const events: string[] = [];
     const { fs, writes } = fakeFirestore({ events, nfev4: aprovadaNfev4() });
     vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('573') as never);
 
-    await expect(
-      cancelarPedido(fs, fakeRuntime(), 'PED-1', 'Cancelamento apos prazo legal'),
-    ).rejects.toBeInstanceOf(NFeCancelamentoError);
+    const err = await cancelarPedido(
+      fs,
+      fakeRuntime(),
+      'PED-1',
+      'Cancelamento apos prazo legal',
+    ).catch((e: unknown) => e);
 
+    expect(err).toBeInstanceOf(NFeCancelamentoError);
+    // The cStat + xMotivo ride along so the route/UI can show a clean message.
+    expect((err as NFeCancelamentoError).cStat).toBe('573');
+    expect((err as NFeCancelamentoError).xMotivo).toBe(
+      'Rejeicao: NF-e fora do prazo de cancelamento',
+    );
     expect(writes.some((w) => w.path === 'pedidos/PED-1/nfev4/s1')).toBe(false);
   });
 
