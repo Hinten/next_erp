@@ -44,7 +44,12 @@ schemas. The schema list page:
 
 - **`xmldsig-core-schema` is excluded** — the `<Signature>` element is
   injected by the signing library, so it is a `#raw` opaque-XML field, not a
-  generated type.
+  generated type. **Any `xs:any`-content complexType is likewise opaque**: the
+  generator emits an empty field list, then a post-pass remaps every field
+  that references it to `#raw` (a pre-built XML string the caller supplies, in
+  sequence order) and drops the empty type. That is how the generic event
+  leiaute's `<detEvento>` works — its real shape is the tpEvento-specific
+  schema (`e110111`), serialized on its own and fed into the `#raw` slot.
 - **All leaf values are typed `string`** — NF-e needs exact decimal control
   on the wire; never `number`. Enumerations become string-literal unions.
 - **`xs:choice` members are flattened**, marked optional, and tagged with a
@@ -54,7 +59,10 @@ schemas. The schema list page:
   keeps the **first occurrence's position** — which yields the correct NF-e
   element order — and unions differing types.
 - **Inline anonymous `complexType`s** are synthesised into named interfaces
-  (`<ownerType>_<elementName>`).
+  (`<ownerType>_<elementName>`). A **top-level** element with an inline
+  `complexType` (no `type=` ref — e.g. the event-payload schemas like
+  `e110111`'s `<detEvento>`) is synthesised under the element's own name and
+  registered as a serializable root.
 - **Constructs handled**: `complexType`, `simpleType`, `element`, `sequence`,
   `choice`, `attribute`. **Not handled** (the NF-e XSDs do not use them):
   `extension`, `group`, `union`, `list`, `complexContent`, `simpleContent`.
