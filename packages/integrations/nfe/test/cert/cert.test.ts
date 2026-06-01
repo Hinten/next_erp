@@ -269,7 +269,9 @@ describe('warnIfCertNearExpiry', () => {
     const msg = log.mock.calls[0]![0];
     expect(msg).toContain('15 day');
     expect(msg).toContain('2026-06-04');
-    expect(msg).toContain('TEST:12345678000199');
+    // The expiry warning goes to App Hosting logs, so it must NOT leak the
+    // cert subject (company name + CNPJ) — only the actionable notAfter date.
+    expect(msg).not.toContain('TEST:12345678000199');
     expect(msg).toContain('Receita Federal');
   });
 
