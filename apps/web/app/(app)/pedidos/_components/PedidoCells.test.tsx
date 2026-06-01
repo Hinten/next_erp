@@ -78,6 +78,13 @@ vi.mock('firebase/firestore', async () => {
   return { ...actual, getDoc: vi.fn() };
 });
 
+// NFCell renders CancelarNFeDialog for aprovada NF-es; the dialog calls
+// useNFeClient (→ useAuth). Stub it so the cell renders without an
+// AuthProvider. `null` = logged-out (the cancel button renders disabled).
+vi.mock('@/lib/nfe/client', () => ({
+  useNFeClient: () => null,
+}));
+
 import {
   ClienteCell,
   FreteCell,
@@ -266,6 +273,31 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       fireEvent.click(copyButton);
       expect(writeText).toHaveBeenCalledWith(chave);
     });
+  });
+
+  describe('Cancelar NF-e action gating', () => {
+    it('offers "Cancelar NF-e" in the dropdown when the NF-e is aprovada', async () => {
+      setSnap({ data: [rowFromNFe(makeNFe('a', { chave: '3'.repeat(44) }))] });
+      const { container } = wrap(<NFCell pedidoId="p1" />);
+      fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+      expect(
+        await screen.findByRole('button', { name: /cancelar nf-e/i }),
+      ).toBeTruthy();
+    });
+
+    it.each<NotaFiscalEletronica['estado']>(['0', '1', '2', 'n', 'c', 'e'])(
+      'does NOT offer "Cancelar NF-e" for estado %s',
+      async (estado) => {
+        setSnap({ data: [rowFromNFe(makeNFe(estado))] });
+        const { container } = wrap(<NFCell pedidoId="p1" />);
+        fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+        // The dropdown is open once "Estado:" is in the document.
+        await screen.findByText('Estado:');
+        expect(
+          screen.queryByRole('button', { name: /cancelar nf-e/i }),
+        ).toBeNull();
+      },
+    );
   });
 });
 
