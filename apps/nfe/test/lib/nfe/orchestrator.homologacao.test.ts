@@ -40,12 +40,15 @@ import {
 import {
   seedIdLote,
   seedNNF,
+  SEFAZ_HOM_INUT_SERIE,
 } from '@delfrance/integrations-nfe/test-helpers/homologacao-seed';
 
 import { getAdminFirestore } from '../../../lib/firebase/admin';
 import {
+  cancelarPedido,
   emitirPedido,
   emitirPedidosLote,
+  inutilizarNumeracao,
 } from '../../../lib/nfe/orchestrator';
 import {
   __resetNFeRuntimeForTests,
@@ -84,6 +87,10 @@ const PRODUTO_UID = 'P-1';
 const PED1 = `${FIXTURE_PREFIX}-PED-1`;
 const PED3 = `${FIXTURE_PREFIX}-PED-3`;
 const PED8 = `${FIXTURE_PREFIX}-PED-8`;
+// Dedicated pedido for the cancelamento test — emitted then cancelled
+// self-contained, so it can't perturb the reused/fresh classification or
+// the parallel-batch counter snapshot.
+const PEDCANCEL = `${FIXTURE_PREFIX}-PED-CANCEL`;
 
 // 10 fresh pedidos consumed by the parallel-batch test. Named with a
 // distinct `PP` infix so the cleanup loop can pick them apart from the
@@ -323,6 +330,11 @@ async function seedFixtures(
       .set(pagamentoDoc(valor));
   }
 
+  // Dedicated cancelamento pedido (id doesn't end in a digit, so seed it
+  // explicitly rather than via the slice(-1) valor trick above).
+  await fs.collection('pedidos').doc(PEDCANCEL).set(pedidoDoc(PEDCANCEL, 115));
+  await fs.doc(`pedidos/${PEDCANCEL}/pagamento/pag-01`).set(pagamentoDoc(115));
+
   // 10 fresh pedidos for the parallel-batch test. Each carries `imposto`
   // pre-stamped so the orchestrator's parallel `nextNumeracao` path is
   // not gated by the resolver cascade (which the prior test already
@@ -352,7 +364,7 @@ async function cleanupFixtures(fs: FirebaseFirestore.Firestore): Promise<void> {
     await fs.doc(path).delete();
   }
 
-  for (const pedidoId of [PED1, PED3, PED8, ...PARALLEL_PEDIDO_IDS]) {
+  for (const pedidoId of [PED1, PED3, PED8, PEDCANCEL, ...PARALLEL_PEDIDO_IDS]) {
     await deleteDocWithSubcoll(`pedidos/${pedidoId}`, ['nfev4', 'pagamento']);
   }
   await deleteDocWithSubcoll(`operacao/${OPERACAO_ID}`, ['regraimposto']);
@@ -540,5 +552,67 @@ describe('orchestrator — SEFAZ-SP homologação', () => {
       expect(cfgAfter.idLote).toBe(cfgBefore.idLote + 1);
     },
     180_000,
+  );
+
+  it(
+    'cancelarPedido — emit a fresh NF-e then cancel it → cStat 135, estado=cancelada',
+    async () => {
+      // Throttle so the prior emissions don't push us into the 656 window.
+      await new Promise((r) => setTimeout(r, 1000));
+
+      // 1. Emit PEDCANCEL fresh (serie 1 lane) so we have a real authorized
+      //    NF-e with a chave + protocolo to cancel.
+      const emit = await emitirPedido(fs, rt, PEDCANCEL);
+      assertNotConsumoIndevido(emit, 'cancelamento/emit-PEDCANCEL');
+      expect(emit.cStat).toBe('100');
+      expect(emit.estado).toBe(ESTADO_NFE.aprovada);
+
+      // 2. Cancel it — well within the 24 h SEFAZ window. cancelarPedido
+      //    consults SEFAZ for the authoritative nProt, sends the evento, and
+      //    on 135 (registrado e vinculado) persists estado='c'.
+      const cancel = await cancelarPedido(
+        fs,
+        rt,
+        PEDCANCEL,
+        'Cancelamento de teste de homologacao - erro de emissao',
+      );
+      assertNotConsumoIndevido(cancel, 'cancelamento/cancel-PEDCANCEL');
+      expect(['135', '155']).toContain(cancel.cStat);
+      expect(cancel.estado).toBe(ESTADO_NFE.cancelada);
+      expect(cancel.chave).toBe(emit.chave);
+
+      // The persisted nfev4 doc reflects the cancelamento.
+      const nfeSnap = await fs.doc(`pedidos/${PEDCANCEL}/nfev4/s1`).get();
+      expect((nfeSnap.data() as { estado: string }).estado).toBe(ESTADO_NFE.cancelada);
+    },
+    120_000,
+  );
+
+  it(
+    'inutilizarNumeracao — burn a fresh range on the reserved série 9 → cStat 102',
+    async () => {
+      await new Promise((r) => setTimeout(r, 1000));
+
+      // Série 9 is reserved for inutilização (no emission test emits there),
+      // and the nNF is a fresh high-zone value per run (SEED_NNF_START is
+      // Date.now()-seeded) — so this can never collide with the serie-1/2
+      // emission lanes nor hit "número já inutilizado" on a re-run.
+      const inutNNF = SEED_NNF_START;
+      const result = await inutilizarNumeracao(fs, rt, {
+        filialId: FILIAL_ID,
+        serie: SEFAZ_HOM_INUT_SERIE,
+        nNFIni: inutNNF,
+        nNFFin: inutNNF,
+        xJust: 'Inutilizacao de teste de homologacao - faixa nao utilizada',
+      });
+      assertNotConsumoIndevido(
+        { cStat: result.cStat, xMotivo: result.xMotivo },
+        'inutilizacao/serie-9',
+      );
+      expect(result.cStat).toBe('102');
+      expect(result.serie).toBe(SEFAZ_HOM_INUT_SERIE);
+      expect(result.nProt).toBeTruthy();
+    },
+    90_000,
   );
 });
