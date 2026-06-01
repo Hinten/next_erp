@@ -6,13 +6,17 @@
  * Synchronous: SEFAZ replies `retInutNFe` with `infInut.cStat=102`
  * (homologado) + an `nProt`.
  *
- * The `<infInut>` is hand-built (then signed) so the element order matches
- * the XSD `xs:sequence` byte-for-byte and the signed payload is never
- * re-serialized — same rule as the generator / eventos.
+ * The `<infInut>` body is built by the metadata-driven serializer
+ * (`serializeFragment` over the generated `TInutNFe_infInut` META) — field
+ * order, escaping and element shapes all come from the SEFAZ XSD, never
+ * hand-written strings. Only the thin `<inutNFe>` wrapper is hand-assembled
+ * (like the generator's `<NFe>` wrapper), since it's signed next and a signed
+ * payload must never be re-serialized.
  * Mirrors Flutter `.old/lib/nfe/pages/inutNFe.dart` + `nfe_client`.
  */
 import { sanitizeNFeText } from '../sanitize';
 import type { TpAmb } from '../safety';
+import { serializeFragment } from '../xml';
 
 const INUT_NS = 'http://www.portalfiscal.inf.br/nfe';
 const INUT_VERSAO = '4.00';
@@ -39,17 +43,14 @@ export interface InutilizacaoInput {
   readonly tpAmb: TpAmb;
 }
 
-function xmlEscape(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
 /**
  * Build the UNSIGNED `<inutNFe>`. Pass to `signInutilizacao` (signs
  * `<infInut>`), then straight to `nfeInutilizacao`.
  *
  * `infInut.Id` = `'ID' + cUF(2) + ano(2) + CNPJ(14) + mod(2) + serie(3) +
  * nNFIni(9) + nNFFin(9)` (53 chars). The Id pads serie/nNF; the element
- * values are the plain integers.
+ * values are the plain integers. The serializer emits the elements in the
+ * exact XSD `xs:sequence` order (from the generated META) and handles escaping.
  */
 export function buildInutNFe(input: InutilizacaoInput): string {
   if (input.nNFIni > input.nNFFin) {
@@ -61,21 +62,21 @@ export function buildInutNFe(input: InutilizacaoInput): string {
   const iniPad = String(input.nNFIni).padStart(9, '0');
   const finPad = String(input.nNFFin).padStart(9, '0');
   const id = `ID${input.cUF}${input.ano}${input.cnpj}55${seriePad}${iniPad}${finPad}`;
-  const xJust = xmlEscape(sanitizeNFeText(input.xJust) ?? '');
 
-  const infInut =
-    `<infInut Id="${id}">` +
-    `<tpAmb>${input.tpAmb}</tpAmb>` +
-    `<xServ>INUTILIZAR</xServ>` +
-    `<cUF>${input.cUF}</cUF>` +
-    `<ano>${input.ano}</ano>` +
-    `<CNPJ>${input.cnpj}</CNPJ>` +
-    `<mod>55</mod>` +
-    `<serie>${input.serie}</serie>` +
-    `<nNFIni>${input.nNFIni}</nNFIni>` +
-    `<nNFFin>${input.nNFFin}</nNFFin>` +
-    `<xJust>${xJust}</xJust>` +
-    `</infInut>`;
+  const infInut = serializeFragment('TInutNFe_infInut', 'infInut', {
+    Id: id,
+    tpAmb: input.tpAmb,
+    xServ: 'INUTILIZAR',
+    cUF: input.cUF,
+    ano: input.ano,
+    CNPJ: input.cnpj,
+    mod: '55',
+    serie: String(input.serie),
+    nNFIni: String(input.nNFIni),
+    nNFFin: String(input.nNFFin),
+    // Pass sanitized-but-unescaped text — the serializer escapes & < >.
+    xJust: sanitizeNFeText(input.xJust) ?? '',
+  });
 
   return `<inutNFe xmlns="${INUT_NS}" versao="${INUT_VERSAO}">${infInut}</inutNFe>`;
 }

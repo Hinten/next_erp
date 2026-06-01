@@ -19,6 +19,7 @@
  * stays string-based.
  */
 import {
+  buildCancelamentoDetEvento,
   buildCancelamentoEvento,
   buildEnvEvento,
   buildProcEventoNFe,
@@ -26,6 +27,7 @@ import {
 } from '../eventos';
 import { buildInutNFe, type InutilizacaoInput } from '../inutilizacao';
 import { signEvento, signInutilizacao } from '../sign';
+import { validateXsd } from '../xsd';
 import {
   nfeAutorizacaoLote,
   nfeConsultaProtocolo,
@@ -48,6 +50,7 @@ import {
 import { parse, serialize } from '../xml';
 
 const NFE_VERSAO = '4.00';
+const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
 
 /** SEFAZ `cUF` literal (IBGE 2-digit). Mirrors the codegen union. */
 export type CUFCode = TConsStatServ['cUF'];
@@ -174,6 +177,13 @@ export async function cancelarNFe(
   call: SefazCall,
   args: Omit<CancelamentoEventoInput, 'tpAmb'>,
 ): Promise<CancelarNFeResult> {
+  // Validate detEvento's inner structure against e110111 before send — the
+  // generic envEvento envelope declares detEvento as xs:any (skip) and never
+  // checks it, so this is the only gate on descEvento/nProt/xJust. detEvento
+  // inherits the NFe namespace from <evento> on the wire; add it explicitly so
+  // the standalone fragment validates (e110111 is elementFormDefault=qualified).
+  const detEvento = buildCancelamentoDetEvento(args);
+  await validateXsd('detEvento', detEvento.replace('<detEvento', `<detEvento xmlns="${NFE_NS}"`));
   const eventoXml = buildCancelamentoEvento({ ...args, tpAmb: call.tpAmb });
   const signedEventoXml = signEvento(eventoXml, call.cert);
   const envEventoXml = buildEnvEvento(signedEventoXml);

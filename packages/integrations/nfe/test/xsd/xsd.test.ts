@@ -50,6 +50,7 @@ describe('supportedRoots', () => {
         'consStatServ',
         'inutNFe',
         'envEvento',
+        'detEvento',
         'NFe',
         'retEnviNFe',
         'retConsReciNFe',
@@ -194,6 +195,33 @@ describe('validateXsd — inutNFe (signed)', () => {
       cert,
     );
     await expect(validateXsd('inutNFe', signed)).resolves.toBeUndefined();
+  });
+});
+
+describe('validateXsd — detEvento (e110111 cancelamento payload)', () => {
+  // detEvento carries the NFe namespace on the wire (inherited from <evento>);
+  // e110111 is elementFormDefault=qualified, so the fragment needs it to
+  // validate standalone.
+  function detEvento(opts?: { omitXJust?: boolean }): string {
+    return (
+      `<detEvento xmlns="${NFE_NS}" versao="1.00">` +
+      `<descEvento>Cancelamento</descEvento>` +
+      `<nProt>135200000012345</nProt>` +
+      (opts?.omitXJust
+        ? ''
+        : `<xJust>Cancelamento por erro de digitacao no pedido</xJust>`) +
+      `</detEvento>`
+    );
+  }
+
+  it('accepts a well-formed cancelamento detEvento', async () => {
+    await expect(validateXsd('detEvento', detEvento())).resolves.toBeUndefined();
+  });
+
+  it('rejects a detEvento missing the required xJust', async () => {
+    await expect(validateXsd('detEvento', detEvento({ omitXJust: true }))).rejects.toBeInstanceOf(
+      NFeXsdValidationError,
+    );
   });
 });
 

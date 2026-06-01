@@ -5,18 +5,23 @@
  * is the home for CC-e (110110) and other events later, since they differ
  * only in the `<detEvento>` payload + `nSeqEvento`.
  *
- * The `<infEvento>` is hand-built (not via `serialize`) for two reasons:
- *   1. the codegen models `detEvento` as opaque (`[k: string]: never`) —
- *      its content is a per-event substitution the XSD can't type;
- *   2. once signed, the `<evento>` is a byte stream that must NOT be
- *      re-serialized (any whitespace change breaks the digest), same rule
- *      as `autorizarLote` / `buildNFeProc`.
+ * `<infEvento>` and its `<detEvento>` are built by the metadata-driven
+ * serializer (`serializeFragment` over the generated `TEvento_infEvento` +
+ * `detEvento` META) — field order + escaping come from the SEFAZ XSDs, not
+ * hand-written strings. `detEvento` rides through `infEvento` as a `#raw`
+ * slot (the generic event leiaute declares it `xs:any`; its real shape is the
+ * tpEvento-specific `e110111` schema, which the codegen now types). Only the
+ * thin `<evento>` wrapper + the post-signing `<envEvento>` / `<procEventoNFe>`
+ * are hand-assembled — the latter wrap an already-signed byte stream that
+ * must NOT be re-serialized (any change breaks the digest), the same rule
+ * `autorizarLote` / `buildNFeProc` follow.
  *
  * Mirrors Flutter `nfe_client/lib/src/schemas/envEventoCancNFe.dart`.
  */
 import { formatDhEmi } from '../generator/ide';
 import { sanitizeNFeText } from '../sanitize';
 import type { TpAmb } from '../safety';
+import { serializeFragment } from '../xml';
 
 const EVENTO_NS = 'http://www.portalfiscal.inf.br/nfe';
 const EVENTO_VERSAO = '1.00';
@@ -47,12 +52,27 @@ export interface CancelamentoEventoInput {
   readonly dhEvento?: Date;
 }
 
-function xmlEscape(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
 function stripXmlDeclaration(xml: string): string {
   return xml.replace(/^\s*<\?xml[^?]*\?>\s*/, '');
+}
+
+/**
+ * Build the `<detEvento>` for a cancelamento, serialized from the generated
+ * `detEvento` META (the tpEvento-specific `e110111` schema). Exposed so the
+ * operation layer can `validateXsd('detEvento', …)` it before send — the
+ * generic envelope's `xs:any` never checks detEvento's inner structure.
+ */
+export function buildCancelamentoDetEvento(input: {
+  readonly nProt: string;
+  readonly xJust: string;
+}): string {
+  return serializeFragment('detEvento', 'detEvento', {
+    versao: EVENTO_VERSAO,
+    descEvento: 'Cancelamento',
+    nProt: input.nProt,
+    // Sanitized-but-unescaped — the serializer escapes & < >.
+    xJust: sanitizeNFeText(input.xJust) ?? '',
+  });
 }
 
 /**
@@ -68,28 +88,20 @@ export function buildCancelamentoEvento(input: CancelamentoEventoInput): string 
   }
   const nSeq = input.nSeqEvento ?? 1;
   const id = `ID${TP_EVENTO_CANCELAMENTO}${input.chNFe}${String(nSeq).padStart(2, '0')}`;
-  const dh = formatDhEmi(input.dhEvento ?? new Date());
-  const xJust = xmlEscape(sanitizeNFeText(input.xJust) ?? '');
 
-  const detEvento =
-    `<detEvento versao="${EVENTO_VERSAO}">` +
-    `<descEvento>Cancelamento</descEvento>` +
-    `<nProt>${input.nProt}</nProt>` +
-    `<xJust>${xJust}</xJust>` +
-    `</detEvento>`;
-
-  const infEvento =
-    `<infEvento Id="${id}">` +
-    `<cOrgao>${input.cOrgao}</cOrgao>` +
-    `<tpAmb>${input.tpAmb}</tpAmb>` +
-    `<CNPJ>${input.cnpj}</CNPJ>` +
-    `<chNFe>${input.chNFe}</chNFe>` +
-    `<dhEvento>${dh}</dhEvento>` +
-    `<tpEvento>${TP_EVENTO_CANCELAMENTO}</tpEvento>` +
-    `<nSeqEvento>${nSeq}</nSeqEvento>` +
-    `<verEvento>${EVENTO_VERSAO}</verEvento>` +
-    detEvento +
-    `</infEvento>`;
+  const infEvento = serializeFragment('TEvento_infEvento', 'infEvento', {
+    Id: id,
+    cOrgao: input.cOrgao,
+    tpAmb: input.tpAmb,
+    CNPJ: input.cnpj,
+    chNFe: input.chNFe,
+    dhEvento: formatDhEmi(input.dhEvento ?? new Date()),
+    tpEvento: TP_EVENTO_CANCELAMENTO,
+    nSeqEvento: String(nSeq),
+    verEvento: EVENTO_VERSAO,
+    // `detEvento` is a #raw slot — injected verbatim in sequence order.
+    detEvento: buildCancelamentoDetEvento(input),
+  });
 
   return `<evento xmlns="${EVENTO_NS}" versao="${EVENTO_VERSAO}">${infEvento}</evento>`;
 }
