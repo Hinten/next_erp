@@ -110,6 +110,18 @@ export class NFeOrchestratorError extends Error {
     this.name = 'NFeOrchestratorError';
   }
 }
+/**
+ * Pre-check abort: a número in the requested inutilização range belongs to an
+ * already-authorized NF-e (aprovada / EPEC aprovado / cancelada). Inutilizing
+ * it would be consumo indevido, so the event is never sent. The route maps
+ * this to **409 Conflict** (distinct from a SEFAZ rejection, which is 422).
+ */
+export class NFeInutilizacaoAbortedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NFeInutilizacaoAbortedError';
+  }
+}
 export class NFeMissingImpostoError extends Error {
   constructor(pedidoId: string, produtoUid: string, itemIndex: number) {
     super(
@@ -1285,6 +1297,7 @@ function buildNfeDocWrite(
       serie,
       tpEmis,
       estado: ESTADO_NFE.enviando,
+      filialId: bundle.filialId,
       chave: generated.chave,
       idLote: String(idLote),
       infNFe: null,
@@ -1394,6 +1407,7 @@ function buildPlaceholderNfeDoc(
   serie: number,
   idLote: number,
   tpEmis: TpEmis,
+  filialId: string,
 ): Record<string, unknown> {
   const now = new Date().toISOString();
   return {
@@ -1401,6 +1415,7 @@ function buildPlaceholderNfeDoc(
     serie,
     tpEmis,
     estado: ESTADO_NFE.enviando,
+    filialId,
     chave: null,
     idLote: String(idLote),
     infNFe: null,
@@ -1489,7 +1504,7 @@ async function runChunkAllocateTx(
         // overwrites this placeholder outside the tx.
         placeholders.push({
           ref: sp.prep.nfeRef,
-          data: buildPlaceholderNfeDoc(nNF, serie, idLote, sp.prep.tpEmis),
+          data: buildPlaceholderNfeDoc(nNF, serie, idLote, sp.prep.tpEmis, sp.prep.bundle.filialId),
         });
       }
       members.push({ skip: false, pedidoId: sp.pedidoId, prep: sp.prep, nNF, serie });
@@ -2468,15 +2483,45 @@ export interface InutilizarNumeracaoResult {
   readonly cStat: string;
   readonly xMotivo: string;
   readonly nProt: string | null;
+  /** `true` when SEFAZ homologou (cStat 102). */
+  readonly aprovada: boolean;
+  /** Count of nfev4 docs flipped to `numeracaoInutilizada` after a 102. */
+  readonly reconciled: number;
 }
+
+/** Path to a filial's `inutilizacao` record subcollection (durable per-range log). */
+function inutilizacaoCollection(fs: Firestore, filialId: string) {
+  return fs.collection(`filiais/${filialId}/inutilizacao`);
+}
+
+/**
+ * NF-e estados that mean the número was authorized at SEFAZ and is therefore
+ * consumed — it can NEVER be inutilized (consumo indevido). `cancelada` counts:
+ * a cancelled NF-e was authorized first, so its número is spent.
+ */
+const ESTADOS_NFE_AUTORIZADAS: ReadonlySet<EstadoNFe> = new Set<EstadoNFe>([
+  ESTADO_NFE.aprovada,
+  ESTADO_NFE.epecAprovado,
+  ESTADO_NFE.cancelada,
+]);
 
 /**
  * Inutilizar a contiguous range of NF-e números for a filial
  * (`NfeInutilizacao4`). For números that will never be authorized (gaps).
- * Loads the filial for its CNPJ + UF, sends the synchronous `inutNFe`,
- * audit-logs the round-trip, and on `cStat=102` (homologado) returns the
- * protocol. Other cStats throw `NFeInutilizacaoError`. Does NOT touch the
- * `NFeConfig` counter — these números were already skipped.
+ *
+ * Flow:
+ *   1. **Pre-check (consumo indevido guard):** collection-group scan of `nfev4`
+ *      in the (série, range) attributable to this filial; if any is already
+ *      authorized (aprovada / EPEC / cancelada) → abort with
+ *      `NFeInutilizacaoAbortedError`, send nothing.
+ *   2. Send the synchronous `inutNFe`.
+ *   3. Persist the comunicação to `enviNfe` AND a durable record to
+ *      `filiais/{filialId}/inutilizacao` — **whether homologada or rejeitada**.
+ *   4. On `cStat=102`: reconcile — flip every other attributable in-range nfev4
+ *      doc to `numeracaoInutilizada` ('i'), and return the protocol + count.
+ *      Any other cStat throws `NFeInutilizacaoError` (record already saved).
+ *
+ * Does NOT touch the `NFeConfig` counter — these números were already skipped.
  */
 export async function inutilizarNumeracao(
   fs: Firestore,
@@ -2506,6 +2551,39 @@ export async function inutilizarNumeracao(
   const cUF = cUFFromUF(filial.sede.estado);
   const ano = String(new Date().getFullYear() % 100).padStart(2, '0');
 
+  // 1. Pre-check: every nfev4 doc whose número is in the range, then narrow to
+  // this filial + série in memory. The collection-group query constrains a
+  // SINGLE field (`numeracao`) so it rides Firestore's automatic single-field
+  // index (same pattern as the `processar-pendentes` poller) — no manually
+  // deployed composite index, and the range is tiny so the scan is cheap.
+  // Attribution: the denormalized `filialId`, or (legacy docs) the emitter
+  // CNPJ embedded in the chave (positions 6-20). An authorized doc always
+  // carries a chave, so the CNPJ path keeps the guard correct for docs written
+  // before `filialId` existed.
+  const rangeSnap = await fs
+    .collectionGroup('nfev4')
+    .where('numeracao', '>=', args.nNFIni)
+    .where('numeracao', '<=', args.nNFFin)
+    .get();
+  const owned = rangeSnap.docs.filter((d) => {
+    const data = d.data() as NotaFiscalEletronica;
+    if (data.serie !== args.serie) return false;
+    if (data.filialId === args.filialId) return true;
+    return typeof data.chave === 'string' && data.chave.slice(6, 20) === filial.cnpj;
+  });
+
+  const autorizadas = owned
+    .map((d) => d.data() as NotaFiscalEletronica)
+    .filter((data) => ESTADOS_NFE_AUTORIZADAS.has(data.estado));
+  if (autorizadas.length > 0) {
+    const nums = autorizadas.map((d) => d.numeracao).sort((a, b) => a - b);
+    throw new NFeInutilizacaoAbortedError(
+      `inutilização abortada: número(s) ${nums.join(', ')} da série ${args.serie} ` +
+        `pertence(m) a NF-e já autorizada(s) — não é possível inutilizar (consumo indevido)`,
+    );
+  }
+
+  // 2. Send to SEFAZ.
   const call: SefazCall = {
     cert: rt.cert,
     agent: rt.agent,
@@ -2522,8 +2600,10 @@ export async function inutilizarNumeracao(
     xJust: args.xJust,
   });
   const inf = res.ret.infInut;
-
+  const aprovada = inf.cStat === '102';
   const now = new Date().toISOString();
+
+  // 3a. Persist the comunicação (enviNfe — generic SOAP audit log).
   await enviNfeCollection(fs, args.filialId).add({
     targetsChnfe: [],
     idLote: null,
@@ -2540,20 +2620,65 @@ export async function inutilizarNumeracao(
     ultima_modificacao: now,
   });
 
-  if (inf.cStat === '102') {
-    return {
-      filialId: args.filialId,
-      serie: args.serie,
-      nNFIni: args.nNFIni,
-      nNFFin: args.nNFFin,
-      cStat: inf.cStat,
-      xMotivo: inf.xMotivo,
-      nProt: inf.nProt ?? null,
-    };
+  // 3b. Persist the durable inutilização record — homologada OR rejeitada.
+  await inutilizacaoCollection(fs, args.filialId).add({
+    serie: args.serie,
+    nNFIni: args.nNFIni,
+    nNFFin: args.nNFFin,
+    xJust: args.xJust,
+    xml_enviado: res.signedXml,
+    xml_retorno: res.rawResponse,
+    cStat: inf.cStat,
+    xMotivo: inf.xMotivo,
+    nProt: inf.nProt ?? null,
+    error: aprovada ? null : `cStat ${inf.cStat} — ${inf.xMotivo}`,
+    estado: aprovada ? ESTADO_ENVI_NFE_MSG.concluido : ESTADO_ENVI_NFE_MSG.error,
+    timestamp: now,
+    ultima_modificacao: now,
+  });
+
+  if (!aprovada) {
+    throw new NFeInutilizacaoError(
+      `inutilização rejeitada por SEFAZ — cStat=${inf.cStat} ${inf.xMotivo}`,
+    );
   }
-  throw new NFeInutilizacaoError(
-    `inutilização rejeitada por SEFAZ — cStat=${inf.cStat} ${inf.xMotivo}`,
-  );
+
+  // 4. Reconcile: flip every attributable in-range NF-e that was NOT authorized
+  // (and isn't already inutilizada) to `numeracaoInutilizada`. These docs
+  // consumed a número that is now officially burned.
+  const toBurn = owned.filter((d) => {
+    const estado = (d.data() as NotaFiscalEletronica).estado;
+    return !ESTADOS_NFE_AUTORIZADAS.has(estado) && estado !== ESTADO_NFE.numeracaoInutilizada;
+  });
+  if (toBurn.length > 0) {
+    const batch = fs.batch();
+    const burnedAt = new Date().toISOString();
+    for (const d of toBurn) {
+      batch.set(
+        d.ref,
+        {
+          estado: ESTADO_NFE.numeracaoInutilizada,
+          cStat: inf.cStat,
+          xMotivo: inf.xMotivo,
+          ultima_modificacao: burnedAt,
+        },
+        { merge: true },
+      );
+    }
+    await batch.commit();
+  }
+
+  return {
+    filialId: args.filialId,
+    serie: args.serie,
+    nNFIni: args.nNFIni,
+    nNFFin: args.nNFFin,
+    cStat: inf.cStat,
+    xMotivo: inf.xMotivo,
+    nProt: inf.nProt ?? null,
+    aprovada: true,
+    reconciled: toBurn.length,
+  };
 }
 
 async function persistPatch(

@@ -3,10 +3,11 @@
  * (NfeInutilizacao4). Synchronous; on cStat=102 the range is homologada.
  *
  * Returns:
- *   200 { filialId, serie, nNFIni, nNFFin, cStat:'102', xMotivo, nProt }  — homologado
+ *   200 { filialId, serie, nNFIni, nNFFin, cStat:'102', xMotivo, nProt, aprovada, reconciled } — homologado
  *   400  bad body / range (nNFIni > nNFFin) / filial not found
  *   401  no/invalid token
  *   403  insufficient perm
+ *   409  aborted: a número in the range belongs to an authorized NF-e (consumo indevido)
  *   422  SEFAZ rejected the inutilização
  *   500  signer / transport error
  */
@@ -20,6 +21,7 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { safeLog } from '@/lib/nfe/log';
 import {
   inutilizarNumeracao,
+  NFeInutilizacaoAbortedError,
   NFeOrchestratorError,
 } from '@/lib/nfe/orchestrator';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
@@ -71,6 +73,9 @@ export async function POST(req: Request): Promise<NextResponse> {
     const result = await inutilizarNumeracao(getAdminFirestore(), runtimeInstance, body);
     return NextResponse.json(result, { status: 200 });
   } catch (e) {
+    if (e instanceof NFeInutilizacaoAbortedError) {
+      return authError(409, { error: e.message, code: 'INUTILIZACAO_ABORTED' });
+    }
     if (e instanceof NFeInutilizacaoError) {
       return authError(422, { error: e.message });
     }

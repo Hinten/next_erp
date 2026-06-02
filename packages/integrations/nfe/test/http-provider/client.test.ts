@@ -9,6 +9,7 @@ import {
   NFeAuthError,
   NFeBadRequestError,
   NFeBlockedError,
+  NFeInutilizacaoAbortedError,
   NFeNetworkError,
   NFePedidoNotFoundError,
   NFeRejectedError,
@@ -276,6 +277,8 @@ describe('createNFeHttpClient — inutilizar', () => {
     cStat: '102',
     xMotivo: 'Inutilizacao de numero homologada',
     nProt: '135200000088888',
+    aprovada: true,
+    reconciled: 2,
   };
 
   it('POSTs to /api/nfe/inutilizar with the range body + Bearer token', async () => {
@@ -289,6 +292,8 @@ describe('createNFeHttpClient — inutilizar', () => {
     });
 
     expect(got).toEqual(result);
+    expect(got.aprovada).toBe(true);
+    expect(got.reconciled).toBe(2);
     const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://localhost:3004/api/nfe/inutilizar');
     expect(init.method).toBe('POST');
@@ -299,6 +304,25 @@ describe('createNFeHttpClient — inutilizar', () => {
       nNFFin: 12,
       xJust: 'Inutilizacao de faixa nao utilizada teste',
     });
+  });
+
+  it('maps 409 + code=INUTILIZACAO_ABORTED → NFeInutilizacaoAbortedError', async () => {
+    const fetch = mockFetch({
+      status: 409,
+      body: {
+        error: 'inutilização abortada: número(s) 7 da série 9 pertence(m) a NF-e já autorizada(s)',
+        code: 'INUTILIZACAO_ABORTED',
+      },
+    });
+    await expect(
+      makeClient(fetch).inutilizar({
+        filialId: 'F-1',
+        serie: 9,
+        nNFIni: 5,
+        nNFFin: 12,
+        xJust: 'Inutilizacao de faixa nao utilizada teste',
+      }),
+    ).rejects.toBeInstanceOf(NFeInutilizacaoAbortedError);
   });
 
   it('maps 422 → NFeRejectedError (SEFAZ rejected the inutilização)', async () => {

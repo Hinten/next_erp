@@ -27,6 +27,7 @@ import { IconCircleCheck } from '@tabler/icons-react';
 import { z } from 'zod';
 import { useSnapshot } from '@delfrance/data/hooks';
 import {
+  NFeInutilizacaoAbortedError,
   NFeRejectedError,
   type NFeInutilizarResult,
 } from '@delfrance/integrations-nfe/http-provider';
@@ -35,6 +36,7 @@ import { useNFeClient } from '@/lib/nfe/client';
 import { filialCollection } from '@/lib/data/filialCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
+import { InutilizacaoHistory } from './InutilizacaoHistory';
 
 const XJUST_MIN = 15;
 const XJUST_MAX = 255;
@@ -99,6 +101,9 @@ export function InutilizarForm() {
     mode: 'onBlur',
   });
 
+  // The history list mirrors whichever filial is currently selected.
+  const selectedFilialId = form.watch('filialId');
+
   async function handleSubmit(values: InutFormValues) {
     // superRefine guarantees these are non-null here.
     if (values.serie === null || values.nNFIni === null || values.nNFFin === null) return;
@@ -118,6 +123,11 @@ export function InutilizarForm() {
       });
       setResult(res);
     } catch (err) {
+      if (err instanceof NFeInutilizacaoAbortedError) {
+        // Pre-check abort: a número in the range belongs to an authorized NF-e.
+        showErrorNotification({ title: 'Inutilização não permitida', message: err.message });
+        return;
+      }
       const message =
         err instanceof NFeRejectedError
           ? `${err.cStat} — ${err.xMotivo}`
@@ -131,6 +141,7 @@ export function InutilizarForm() {
   }
 
   return (
+    <Stack gap="xl">
     <form onSubmit={form.handleSubmit(handleSubmit)}>
       <Stack maw={560}>
         <Controller
@@ -258,6 +269,11 @@ export function InutilizarForm() {
                   Protocolo: <Text span ff="monospace">{result.nProt}</Text>
                 </Text>
               )}
+              <Text size="sm">
+                {result.reconciled > 0
+                  ? `${result.reconciled} NF-e marcada(s) como numeração inutilizada.`
+                  : 'Nenhuma NF-e na faixa precisou ser reconciliada.'}
+              </Text>
               <Text size="sm" c="dimmed">
                 {result.xMotivo}
               </Text>
@@ -266,5 +282,8 @@ export function InutilizarForm() {
         )}
       </Stack>
     </form>
+
+      {selectedFilialId && <InutilizacaoHistory filialId={selectedFilialId} />}
+    </Stack>
   );
 }

@@ -14,6 +14,7 @@ import {
   NFeBadRequestError,
   NFeBlockedError,
   NFeHttpError,
+  NFeInutilizacaoAbortedError,
   NFeNetworkError,
   NFePedidoNotFoundError,
   NFeRejectedError,
@@ -95,6 +96,10 @@ export interface NFeInutilizarResult {
   readonly cStat: string;
   readonly xMotivo: string;
   readonly nProt: string | null;
+  /** `true` when SEFAZ homologou (cStat 102). */
+  readonly aprovada: boolean;
+  /** Count of NF-e docs flipped to `numeracaoInutilizada` after a 102. */
+  readonly reconciled: number;
 }
 
 /**
@@ -140,12 +145,22 @@ function errorFromResponse(
       ? String((body as { error: unknown }).error)
       : `HTTP ${status}`;
 
+  const bodyCode =
+    body !== null && typeof body === 'object' && 'code' in body
+      ? (body as { code: unknown }).code
+      : undefined;
+
   if (status === 400) return new NFeBadRequestError(message, body);
   if (status === 401 || status === 403) return new NFeAuthError(message, status, body);
   if (status === 404) {
     return new NFePedidoNotFoundError(context.pedidoId ?? '(unknown)', body);
   }
   if (status === 409) {
+    // 409 is shared: the inutilização pre-check abort carries an explicit
+    // marker; everything else at 409 is the bloquearEmissaoNFe emit block.
+    if (bodyCode === 'INUTILIZACAO_ABORTED') {
+      return new NFeInutilizacaoAbortedError(message, body);
+    }
     return new NFeBlockedError(context.pedidoId ?? '(unknown)', body);
   }
   if (status === 422) {

@@ -65,6 +65,16 @@ export const nfeSchema = z.object({
   tpEmis: z.number().int().default(1),
   estado: estadoNFeSchema.default('0'),
 
+  /**
+   * Denormalized owning-filial id (the parent pedido's filial). Lets a
+   * `collectionGroup('nfev4')` range query be scoped to one filial — used by
+   * the inutilização pre-check + reconciliation. `.optional()` only for
+   * read-tolerance of legacy docs written before this field existed; the
+   * orchestrator's writers always set a concrete string (never `undefined`),
+   * so no Firebase `undefined`-write issue arises.
+   */
+  filialId: z.string().min(1).nullable().optional(),
+
   chave: z.string().min(1).nullable(),
   idLote: z.string().min(1).nullable(),
   infNFe: z.string().min(1).nullable(),

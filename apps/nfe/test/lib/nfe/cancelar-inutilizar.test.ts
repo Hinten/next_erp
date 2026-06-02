@@ -23,12 +23,13 @@ import {
   inutilizarNumeracao as inutilizarNumeracaoSefaz,
   NFeInutilizacaoError,
 } from '@delfrance/integrations-nfe';
-import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
+import { ESTADO_ENVI_NFE_MSG, ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
 import {
   cancelarNFeService,
   inutilizarNumeracao,
   NFeCancelamentoError,
+  NFeInutilizacaoAbortedError,
   NFeOrchestratorError,
 } from '../../../lib/nfe/orchestrator';
 import type { NFeRuntime } from '../../../lib/nfe/runtime';
@@ -213,13 +214,28 @@ function fakeFirestore(opts: FakeOpts) {
   }
 
   type QueryOp =
-    | { kind: 'where'; field: string; op: 'array-contains'; value: unknown }
+    | { kind: 'where'; field: string; op: string; value: unknown }
     | { kind: 'orderBy'; field: string; dir: 'asc' | 'desc' }
     | { kind: 'limit'; n: number };
 
+  function matchWhere(v: unknown, op: string, value: unknown): boolean {
+    switch (op) {
+      case '==':
+        return v === value;
+      case '>=':
+        return typeof v === 'number' && typeof value === 'number' && v >= value;
+      case '<=':
+        return typeof v === 'number' && typeof value === 'number' && v <= value;
+      case 'array-contains':
+        return Array.isArray(v) && v.includes(value);
+      default:
+        return false;
+    }
+  }
+
   function makeQuery(path: string, ops: QueryOp[]) {
     return {
-      where(field: string, op: 'array-contains', value: unknown) {
+      where(field: string, op: string, value: unknown) {
         return makeQuery(path, [...ops, { kind: 'where', field, op, value }]);
       },
       orderBy(field: string, dir: 'asc' | 'desc' = 'asc') {
@@ -234,11 +250,8 @@ function fakeFirestore(opts: FakeOpts) {
           .filter(([key, val]) => key.startsWith(prefix) && val != null && !key.slice(prefix.length).includes('/'))
           .map(([key, val]) => ({ id: key.slice(prefix.length), data: val as Record<string, unknown> }));
         for (const op of ops) {
-          if (op.kind === 'where' && op.op === 'array-contains') {
-            items = items.filter((it) => {
-              const v = it.data[op.field];
-              return Array.isArray(v) && v.includes(op.value);
-            });
+          if (op.kind === 'where') {
+            items = items.filter((it) => matchWhere(it.data[op.field], op.op, op.value));
           } else if (op.kind === 'orderBy') {
             items.sort((a, b) => {
               const av = a.data[op.field] as string | number | null | undefined;
@@ -278,7 +291,7 @@ function fakeFirestore(opts: FakeOpts) {
         await ref.set(data);
         return ref;
       },
-      where(field: string, op: 'array-contains', value: unknown) {
+      where(field: string, op: string, value: unknown) {
         return makeQuery(path, [{ kind: 'where', field, op, value }]);
       },
       orderBy(field: string, dir: 'asc' | 'desc' = 'asc') {
@@ -293,10 +306,74 @@ function fakeFirestore(opts: FakeOpts) {
     };
   }
 
+  // Collection-group query — spans every collection named `groupId` regardless
+  // of parent (a doc at `.../{groupId}/{docId}`). Supports `where` (==, >=, <=).
+  function makeGroupQuery(groupId: string, ops: QueryOp[]) {
+    return {
+      where(field: string, op: string, value: unknown) {
+        return makeGroupQuery(groupId, [...ops, { kind: 'where', field, op, value }]);
+      },
+      async get() {
+        let items = Object.entries(docs)
+          .filter(([key, val]) => {
+            if (val == null) return false;
+            const parts = key.split('/');
+            return parts.length >= 2 && parts[parts.length - 2] === groupId;
+          })
+          .map(([key, val]) => ({
+            path: key,
+            id: key.split('/').pop()!,
+            data: val as Record<string, unknown>,
+          }));
+        for (const op of ops) {
+          if (op.kind === 'where') {
+            items = items.filter((it) => matchWhere(it.data[op.field], op.op, op.value));
+          }
+        }
+        return {
+          docs: items.map((it) => ({
+            id: it.id,
+            ref: makeRef(it.path),
+            data: () => it.data,
+            exists: true,
+          })),
+          empty: items.length === 0,
+          size: items.length,
+        };
+      },
+    };
+  }
+
   return {
     fs: {
       collection: (name: string) => makeCollection(name),
+      collectionGroup: (name: string) => makeGroupQuery(name, []),
       doc: (path: string) => makeRef(path),
+      batch: () => {
+        const queued: {
+          ref: ReturnType<typeof makeRef>;
+          data: Record<string, unknown>;
+          opt?: { merge?: boolean };
+        }[] = [];
+        return {
+          set(
+            ref: ReturnType<typeof makeRef>,
+            data: Record<string, unknown>,
+            opt?: { merge?: boolean },
+          ) {
+            queued.push({ ref, data, opt });
+          },
+          async commit() {
+            for (const q of queued) {
+              writes.push({ path: q.ref.path, data: q.data, merge: q.opt?.merge });
+              docs[q.ref.path] = q.opt?.merge
+                ? { ...(docs[q.ref.path] ?? {}), ...q.data }
+                : q.data;
+              opts.events.push(`set:${q.ref.path}`);
+            }
+          },
+        };
+      },
       runTransaction: async <T>(fn: (tx: unknown) => Promise<T>) => {
         const tx = {
           get: (ref: ReturnType<typeof makeRef>) => ref.get(),
@@ -402,6 +479,29 @@ function inutResult(cStat: string) {
     },
     signedXml: `<inutNFe xmlns="${NFE_NS}" versao="4.00"><infInut>…</infInut><Signature>…</Signature></inutNFe>`,
     rawResponse: '<retInutNFe>…</retInutNFe>',
+  };
+}
+
+/**
+ * A nfev4 doc occupying a número in série 9 (the inutilização range tests).
+ * Attributed to F-1 by default via `filialId`; override via `extra`.
+ */
+function rangeNfev4(
+  estado: string,
+  numeracao: number,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    estado,
+    serie: 9,
+    numeracao,
+    filialId: 'F-1',
+    chave: null,
+    cStat: null,
+    xMotivo: null,
+    tpEmis: 1,
+    ultima_modificacao: '2026-05-29T10:00:00.000Z',
+    ...extra,
   };
 }
 
@@ -601,6 +701,151 @@ describe('inutilizarNumeracao (orchestrator)', () => {
 
     const audits = writes.filter((w) => w.path.startsWith('filiais/F-1/enviNfe/'));
     expect(audits).toHaveLength(1);
+  });
+
+  it('aborts (no SEFAZ send) when an in-range número is already aprovada', async () => {
+    const events: string[] = [];
+    const { fs } = fakeFirestore({
+      events,
+      nfev4ById: { ap: rangeNfev4(ESTADO_NFE.aprovada, 7, { chave: CHAVE }) },
+    });
+
+    await expect(
+      inutilizarNumeracao(fs, fakeRuntime(), {
+        filialId: 'F-1',
+        serie: 9,
+        nNFIni: 5,
+        nNFFin: 12,
+        xJust: 'Inutilizacao de faixa nao utilizada teste',
+      }),
+    ).rejects.toBeInstanceOf(NFeInutilizacaoAbortedError);
+    expect(inutilizarNumeracaoSefaz).not.toHaveBeenCalled();
+  });
+
+  it('aborts when an in-range número belongs to a cancelada NF-e (número já consumido)', async () => {
+    const events: string[] = [];
+    const { fs } = fakeFirestore({
+      events,
+      nfev4ById: { ca: rangeNfev4(ESTADO_NFE.cancelada, 8) },
+    });
+
+    await expect(
+      inutilizarNumeracao(fs, fakeRuntime(), {
+        filialId: 'F-1',
+        serie: 9,
+        nNFIni: 5,
+        nNFFin: 12,
+        xJust: 'Inutilizacao de faixa nao utilizada teste',
+      }),
+    ).rejects.toBeInstanceOf(NFeInutilizacaoAbortedError);
+    expect(inutilizarNumeracaoSefaz).not.toHaveBeenCalled();
+  });
+
+  it('attributes a legacy doc (no filialId) by the chave CNPJ and still aborts', async () => {
+    const events: string[] = [];
+    // No `filialId`; the chave's CNPJ (positions 6-20) is F-1's cnpj.
+    const legacy = rangeNfev4(ESTADO_NFE.aprovada, 7, { chave: CHAVE });
+    delete legacy.filialId;
+    const { fs } = fakeFirestore({ events, nfev4ById: { legacy } });
+
+    await expect(
+      inutilizarNumeracao(fs, fakeRuntime(), {
+        filialId: 'F-1',
+        serie: 9,
+        nNFIni: 5,
+        nNFFin: 12,
+        xJust: 'Inutilizacao de faixa nao utilizada teste',
+      }),
+    ).rejects.toBeInstanceOf(NFeInutilizacaoAbortedError);
+    expect(inutilizarNumeracaoSefaz).not.toHaveBeenCalled();
+  });
+
+  it('cStat 102 → persists an inutilizacao record AND flips non-authorized in-range docs to inutilizada', async () => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({
+      events,
+      nfev4ById: {
+        rej: rangeNfev4(ESTADO_NFE.rejeitada, 7),
+        ger: rangeNfev4(ESTADO_NFE.gerado, 8),
+      },
+    });
+    vi.mocked(inutilizarNumeracaoSefaz).mockResolvedValue(inutResult('102') as never);
+
+    const result = await inutilizarNumeracao(fs, fakeRuntime(), {
+      filialId: 'F-1',
+      serie: 9,
+      nNFIni: 5,
+      nNFFin: 12,
+      xJust: 'Inutilizacao de faixa nao utilizada teste',
+    });
+
+    expect(result.aprovada).toBe(true);
+    expect(result.reconciled).toBe(2);
+    expect((docs['pedidos/PED-1/nfev4/rej'] as { estado: string }).estado).toBe(
+      ESTADO_NFE.numeracaoInutilizada,
+    );
+    expect((docs['pedidos/PED-1/nfev4/ger'] as { estado: string }).estado).toBe(
+      ESTADO_NFE.numeracaoInutilizada,
+    );
+    const recs = writes.filter((w) => w.path.startsWith('filiais/F-1/inutilizacao/'));
+    expect(recs).toHaveLength(1);
+    expect(recs[0]?.data.estado).toBe(ESTADO_ENVI_NFE_MSG.concluido);
+    expect(recs[0]?.data.nProt).toBe('135200000088888');
+  });
+
+  it('cStat != 102 → persists an error inutilizacao record and flips nothing', async () => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({
+      events,
+      nfev4ById: { rej: rangeNfev4(ESTADO_NFE.rejeitada, 7) },
+    });
+    vi.mocked(inutilizarNumeracaoSefaz).mockResolvedValue(inutResult('563') as never);
+
+    await expect(
+      inutilizarNumeracao(fs, fakeRuntime(), {
+        filialId: 'F-1',
+        serie: 9,
+        nNFIni: 5,
+        nNFFin: 12,
+        xJust: 'Inutilizacao de faixa nao utilizada teste',
+      }),
+    ).rejects.toBeInstanceOf(NFeInutilizacaoError);
+
+    const recs = writes.filter((w) => w.path.startsWith('filiais/F-1/inutilizacao/'));
+    expect(recs).toHaveLength(1);
+    expect(recs[0]?.data.estado).toBe(ESTADO_ENVI_NFE_MSG.error);
+    // No homologação → the in-range doc keeps its estado.
+    expect((docs['pedidos/PED-1/nfev4/rej'] as { estado: string }).estado).toBe(
+      ESTADO_NFE.rejeitada,
+    );
+  });
+
+  it('reconciliation is filial-scoped: another filial sharing serie+número is untouched', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      nfev4ById: {
+        mine: rangeNfev4(ESTADO_NFE.rejeitada, 7),
+        foreign: rangeNfev4(ESTADO_NFE.rejeitada, 7, { filialId: 'F-2', chave: null }),
+      },
+    });
+    vi.mocked(inutilizarNumeracaoSefaz).mockResolvedValue(inutResult('102') as never);
+
+    const result = await inutilizarNumeracao(fs, fakeRuntime(), {
+      filialId: 'F-1',
+      serie: 9,
+      nNFIni: 5,
+      nNFFin: 12,
+      xJust: 'Inutilizacao de faixa nao utilizada teste',
+    });
+
+    expect(result.reconciled).toBe(1);
+    expect((docs['pedidos/PED-1/nfev4/mine'] as { estado: string }).estado).toBe(
+      ESTADO_NFE.numeracaoInutilizada,
+    );
+    expect((docs['pedidos/PED-1/nfev4/foreign'] as { estado: string }).estado).toBe(
+      ESTADO_NFE.rejeitada,
+    );
   });
 
   it('throws NFeOrchestratorError on an inverted range (before any SEFAZ call)', async () => {

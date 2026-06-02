@@ -23,6 +23,7 @@ export {
   NFeBadRequestError,
   NFeBlockedError,
   NFeHttpError,
+  NFeInutilizacaoAbortedError,
   NFeNetworkError,
   NFePedidoNotFoundError,
   NFeRejectedError,
