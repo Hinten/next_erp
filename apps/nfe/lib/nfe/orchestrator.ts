@@ -2325,18 +2325,6 @@ export async function cancelarNFeService(
 ): Promise<EmitResult> {
   console.debug(`[nfe/orchestrator] cancelarNFeService pedidoId='${pedidoId}' nfeId='${nfeId}'`);
 
-  // filialId for the audit log — from the pedido's filial outer-ref. No full
-  // bundle: cancellation must not depend on cliente/operação/endereço loading.
-  const pedidoSnap = await fs.collection('pedidos').doc(pedidoId).get();
-  if (!pedidoSnap.exists) {
-    throw new NFeOrchestratorError(`pedido '${pedidoId}' not found.`);
-  }
-  const filialPath = refToPath(getField(pedidoSnap.data(), 'filialPedidoOuterRef'));
-  if (!filialPath) {
-    throw new NFeOrchestratorError(`pedido '${pedidoId}': filialPedidoOuterRef missing.`);
-  }
-  const filialId = filialPath.split('/').pop()!;
-
   const nfeRef = fs.collection('pedidos').doc(pedidoId).collection('nfev4').doc(nfeId);
   const snap = await nfeRef.get();
   if (!snap.exists) {
@@ -2368,6 +2356,19 @@ export async function cancelarNFeService(
         'apenas NF-e autorizada (aprovada) pode ser cancelada.',
     );
   }
+
+  // filialId for the audit log — from the pedido's filial outer-ref. No full
+  // bundle: cancellation must not depend on cliente/operação/endereço loading.
+  const pedidoSnap = await fs.collection('pedidos').doc(pedidoId).get();
+  if (!pedidoSnap.exists) {
+    throw new NFeOrchestratorError(`pedido '${pedidoId}' not found.`);
+  }
+  const filialPath = refToPath(getField(pedidoSnap.data(), 'filialPedidoOuterRef'));
+  if (!filialPath) {
+    throw new NFeOrchestratorError(`pedido '${pedidoId}': filialPedidoOuterRef missing.`);
+  }
+  const filialId = filialPath.split('/').pop()!;
+
 
   // nProt from the stored proc envelope — never from a SEFAZ consult.
   const nProt = nota.xml_nfe_proc ? RE_NPROT.exec(nota.xml_nfe_proc)?.[1] : undefined;
