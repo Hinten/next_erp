@@ -9,13 +9,14 @@ import {
   doc,
 } from 'firebase/firestore';
 import type { z } from 'zod';
+import {
+  type PathContext,
+  parseForWrite,
+  parseSoftRead,
+  resolvePath,
+} from './zodParse';
 
-/**
- * Path-context object used to fill `{name}` placeholders in collection paths
- * (e.g. `clientes/{clienteId}/enderecos`). Apps pass whatever IDs they need
- * for the path being resolved.
- */
-export type PathContext = Record<string, string | undefined>;
+export type { PathContext };
 
 export interface DefineCollectionOptions<T extends z.ZodTypeAny> {
   /**
@@ -39,16 +40,6 @@ export interface CollectionHandle<T extends z.ZodTypeAny> {
   converter: FirestoreDataConverter<z.infer<T>>;
 }
 
-function resolvePath(template: string, ctx: PathContext): string {
-  return template.replaceAll(/\{(\w+)\}/g, (_match, key: string) => {
-    const v = ctx[key];
-    if (!v) {
-      throw new Error(`Path "${template}" requires "${key}" in context.`);
-    }
-    return v;
-  });
-}
-
 /**
  * Define a typed Firestore collection from a Zod schema.
  * Wraps `withConverter` so reads/writes round-trip through `schema.parse`.
@@ -63,17 +54,12 @@ export function defineCollection<T extends z.ZodTypeAny>(
   const converter: FirestoreDataConverter<Doc> = {
     toFirestore(value: Doc) {
       // Validate on write so bad data never lands in Firestore.
-      return options.schema.parse(value) as DocumentData;
+      return parseForWrite(options.schema, value) as DocumentData;
     },
     fromFirestore(snap: QueryDocumentSnapshot) {
-      const raw = snap.data();
       // Soft-parse on read: log instead of throw, so we can migrate fields
       // without bricking the UI when old documents don't yet match.
-      const result = options.schema.safeParse(raw);
-      if (result.success) return result.data as Doc;
-      // eslint-disable-next-line no-console
-      console.warn(`[data] schema mismatch on ${snap.ref.path}`, result.error.issues);
-      return raw as Doc;
+      return parseSoftRead(options.schema, snap.data(), snap.ref.path) as Doc;
     },
   };
 

@@ -4,9 +4,10 @@ import {
   aggregatePermissoes,
   type Cargo,
   isSuperUserBits,
-  type Usuario,
 } from '@delfrance/schemas';
 import { getAdminAuth, getAdminFirestore } from '@/lib/firebase/admin';
+import { cargoCollection } from '@/lib/data/cargoCollection';
+import { usuarioCollection } from '@/lib/data/usuarioCollection';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -65,16 +66,19 @@ export async function POST(
   }
 
   const db = getAdminFirestore();
-  const userSnap = await db.collection('usuarios').doc(uid).get();
-  const user = userSnap.data() as Usuario | undefined;
+  const userSnap = await usuarioCollection.docRef(db, {}, uid).get();
+  const userData = userSnap.data();
+  const user = userData
+    ? usuarioCollection.parseRead(userData, userSnap.ref.path)
+    : undefined;
   if (!user) return err(404, { error: 'Usuário não encontrado.' });
 
   const cargosById = new Map<string, Cargo>();
   await Promise.all(
     user.cargos.map(async (cid) => {
-      const snap = await db.collection('cargos').doc(cid).get();
+      const snap = await cargoCollection.docRef(db, {}, cid).get();
       const data = snap.data();
-      if (data) cargosById.set(cid, data as Cargo);
+      if (data) cargosById.set(cid, cargoCollection.parseRead(data, snap.ref.path));
     }),
   );
 
