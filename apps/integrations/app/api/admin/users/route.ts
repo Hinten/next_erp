@@ -130,7 +130,7 @@ export async function POST(req: Request) {
     body.cargos.map(async (cid) => {
       const snap = await cargoCollection.docRef(db, {}, cid).get();
       const data = snap.data();
-      if (data) cargosById.set(cid, cargoCollection.parseRead(data, snap.ref.path));
+      if (data) cargosById.set(cid, cargoCollection.parseRead(data));
     }),
   );
 
