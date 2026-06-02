@@ -32,6 +32,31 @@ const ruleBCertEnv = {
     '@delfrance/integrations-nfe instead.',
 };
 
+// Rule C — no raw Firestore ref construction. Admin refs are built via
+// METHODS (`db.collection()`, `db.doc()`, `db.collectionGroup()`), which
+// `no-restricted-imports` can't catch, so ban the method calls. Every NF-e
+// document write must go through a schema-validated `defineAdminCollection`
+// handle in `lib/data` (`nfev4Collection`, `nfeConfigCollection`,
+// `enviNfeMsgCollection`). Legitimate raw READS (dynamic outer-ref derefs and
+// legacy-named subcollections) carry a scoped inline eslint-disable.
+const ruleCNoRawFirestoreRefs = [
+  {
+    selector: "CallExpression[callee.property.name='collection']",
+    message:
+      'Do not build raw Firestore refs with `.collection()`. Use a defineAdminCollection() handle from `@/lib/data/*` — it validates writes against the Zod schema.',
+  },
+  {
+    selector: "CallExpression[callee.property.name='doc']",
+    message:
+      'Do not build raw Firestore refs with `.doc()`. Use a defineAdminCollection() handle (`xCollection.docRef(fs, ctx, id)` / `.set` / `.merge` / `.add`).',
+  },
+  {
+    selector: "CallExpression[callee.property.name='collectionGroup']",
+    message:
+      'Do not build raw Firestore refs with `.collectionGroup()`. Use a defineAdminCollection() handle (`xCollection.groupQuery(fs)`).',
+  },
+];
+
 const config = [
   ...base,
   ...next,
@@ -54,7 +79,12 @@ const config = [
     files: ['lib/nfe/**/*.ts', 'app/api/nfe/**/*.ts'],
     ignores: ['**/*.test.ts'],
     rules: {
-      'no-restricted-syntax': ['error', ruleAConsole, ruleBCertEnv],
+      'no-restricted-syntax': [
+        'error',
+        ruleAConsole,
+        ruleBCertEnv,
+        ...ruleCNoRawFirestoreRefs,
+      ],
     },
   },
   // Non-NF-e app paths — Rule B only. Console-* is unrestricted outside
@@ -64,7 +94,7 @@ const config = [
     files: ['lib/**/*.ts', 'app/**/*.ts', 'scripts/**/*.ts'],
     ignores: ['lib/nfe/**/*.ts', 'app/api/nfe/**/*.ts', '**/*.test.ts'],
     rules: {
-      'no-restricted-syntax': ['error', ruleBCertEnv],
+      'no-restricted-syntax': ['error', ruleBCertEnv, ...ruleCNoRawFirestoreRefs],
     },
   },
 ];

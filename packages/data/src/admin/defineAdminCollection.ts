@@ -40,7 +40,7 @@ export interface AdminCollectionHandle<T extends z.ZodTypeAny> {
   /** Raw admin `DocumentReference` (no converter). */
   docRef(db: Firestore, ctx: PathContext, id: string): DocumentReference;
   /** Raw admin collection-group `Query` over the path's last segment. */
-  collectionGroup(db: Firestore): Query;
+  groupQuery(db: Firestore): Query;
 
   /** Validate a full document (throws on invalid/missing). For full writes / `.add`. */
   parse(data: unknown): z.infer<T>;
@@ -103,7 +103,7 @@ export function defineAdminCollection<T extends z.ZodTypeAny>(
     docPath: (ctx, id) => `${resolvePath(options.path, ctx)}/${id}`,
     ref,
     docRef,
-    collectionGroup: (db) => db.collectionGroup(groupId),
+    groupQuery: (db) => db.collectionGroup(groupId),
     parse,
     parseMerge,
     parseRead: (raw, path) =>
