@@ -10,14 +10,15 @@ vi.mock('@/lib/nfe/client', () => ({
 vi.mock('@/lib/firebase/client', () => ({
   getFirebaseFirestore: () => ({}),
 }));
-vi.mock('@/lib/data/filialCollection', () => ({
-  filialCollection: { ref: () => ({ __filiaisRef: true }) },
-}));
 vi.mock('@/lib/notifications/showErrorNotification', () => ({
   showErrorNotification: vi.fn(),
 }));
+// The history list (always rendered for the fixed filial) reads these.
 vi.mock('@delfrance/data/hooks', () => ({
   useSnapshot: () => ({ data: [], loading: false, error: undefined }),
+}));
+vi.mock('@/lib/data/inutilizacaoCollection', () => ({
+  inutilizacaoCollection: { ref: () => ({ __inutRef: true }) },
 }));
 
 import { InutilizarForm } from './InutilizarForm';
@@ -38,21 +39,21 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('InutilizarForm — validation', () => {
+describe('InutilizarForm — validation (fixed filial)', () => {
   it('blocks an empty submit and shows the required-field errors (no SEFAZ call)', async () => {
-    const { container } = wrap(<InutilizarForm />);
+    const { container } = wrap(<InutilizarForm filialId="F-1" />);
     submitForm(container);
 
-    expect(await screen.findByText('Selecione uma filial')).toBeTruthy();
     expect(
-      screen.getByText(/justificativa deve ter ao menos 15 caracteres/i),
+      await screen.findByText(/justificativa deve ter ao menos 15 caracteres/i),
     ).toBeTruthy();
     expect(screen.getByText('Informe a série')).toBeTruthy();
+    expect(screen.getByText('Informe o número inicial')).toBeTruthy();
     expect(inutilizarMock).not.toHaveBeenCalled();
   });
 
   it('rejects an inverted range (nNFIni > nNFFin)', async () => {
-    const { container } = wrap(<InutilizarForm />);
+    const { container } = wrap(<InutilizarForm filialId="F-1" />);
     fireEvent.change(screen.getByPlaceholderText('nNFIni'), {
       target: { value: '20' },
     });
