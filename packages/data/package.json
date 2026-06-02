@@ -11,7 +11,8 @@
     "./hooks/usePipelineSnapshot": "./src/hooks/usePipelineSnapshot.ts",
     "./pipeline-queries": "./src/pipeline-queries.ts",
     "./audit": "./src/audit.ts",
-    "./server": "./src/server/index.ts"
+    "./server": "./src/server/index.ts",
+    "./admin": "./src/admin/index.ts"
   },
   "scripts": {
     "lint": "echo 'no lint configured for this package yet'",
@@ -38,6 +39,7 @@
     "@delfrance/config-tsconfig": "workspace:*",
     "@tanstack/react-query": "^5.100.10",
     "@types/react": "^19.2.0",
+    "firebase-admin": "^13.9.0",
     "react": "^19.2.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
