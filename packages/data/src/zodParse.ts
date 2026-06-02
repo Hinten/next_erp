@@ -59,7 +59,12 @@ export function parseMergePatch<T extends z.ZodTypeAny>(
   const validated = partialSchema.parse(patch) as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(patch)) {
-    if (key in validated) out[key] = validated[key];
+    // Drop keys that validated to `undefined`: Firestore rejects `undefined`
+    // in write payloads (unless `ignoreUndefinedProperties` is set), and a
+    // merge patch never means to write one. `null` is kept — it stores fine.
+    if (key in validated && validated[key] !== undefined) {
+      out[key] = validated[key];
+    }
   }
   return out;
 }

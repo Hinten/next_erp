@@ -45,6 +45,14 @@ describe('defineAdminCollection', () => {
     it('validates the provided keys', () => {
       expect(() => handle.parseMerge({ tpEmis: 'not-a-number' })).toThrow();
     });
+
+    it('keeps null values (Firestore stores null fine)', () => {
+      expect(handle.parseMerge({ cStat: null })).toEqual({ cStat: null });
+    });
+
+    it('drops keys that validate to undefined (Firestore rejects undefined)', () => {
+      expect(handle.parseMerge({ cStat: undefined })).toEqual({});
+    });
   });
 
   describe('parseRead', () => {
@@ -70,6 +78,12 @@ describe('defineAdminCollection', () => {
 
     it('throws when a placeholder is missing', () => {
       expect(() => handle.resolvePath({})).toThrow();
+    });
+
+    it('docPath returns the concrete collection/id path', () => {
+      expect(handle.docPath({ thingId: 'abc' }, 'doc1')).toBe(
+        'things/abc/sub/doc1',
+      );
     });
   });
 });

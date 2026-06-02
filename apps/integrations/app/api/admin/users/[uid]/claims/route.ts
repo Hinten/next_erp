@@ -68,7 +68,9 @@ export async function POST(
   const db = getAdminFirestore();
   const userSnap = await usuarioCollection.docRef(db, {}, uid).get();
   const userData = userSnap.data();
-  const user = userData ? usuarioCollection.parseRead(userData) : undefined;
+  const user = userData
+    ? usuarioCollection.parseRead(userData, usuarioCollection.docPath({}, uid))
+    : undefined;
   if (!user) return err(404, { error: 'Usuário não encontrado.' });
 
   const cargosById = new Map<string, Cargo>();
@@ -76,7 +78,11 @@ export async function POST(
     user.cargos.map(async (cid) => {
       const snap = await cargoCollection.docRef(db, {}, cid).get();
       const data = snap.data();
-      if (data) cargosById.set(cid, cargoCollection.parseRead(data));
+      if (data)
+        cargosById.set(
+          cid,
+          cargoCollection.parseRead(data, cargoCollection.docPath({}, cid)),
+        );
     }),
   );
 

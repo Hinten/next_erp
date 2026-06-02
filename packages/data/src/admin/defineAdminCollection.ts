@@ -29,6 +29,12 @@ export interface DefineAdminCollectionOptions<T extends z.ZodTypeAny> {
 export interface AdminCollectionHandle<T extends z.ZodTypeAny> {
   /** Resolved collection path string for a given context. */
   resolvePath(ctx: PathContext): string;
+  /**
+   * Resolved `collection/id` path for a single document. Handy as the `path`
+   * argument to `parseRead` so soft-read warnings name the concrete document
+   * (works without a snapshot ref, so it's safe in tests too).
+   */
+  docPath(ctx: PathContext, id: string): string;
   /** Raw admin `CollectionReference` (no converter). */
   ref(db: Firestore, ctx: PathContext): CollectionReference;
   /** Raw admin `DocumentReference` (no converter). */
@@ -94,6 +100,7 @@ export function defineAdminCollection<T extends z.ZodTypeAny>(
 
   return {
     resolvePath: (ctx) => resolvePath(options.path, ctx),
+    docPath: (ctx, id) => `${resolvePath(options.path, ctx)}/${id}`,
     ref,
     docRef,
     collectionGroup: (db) => db.collectionGroup(groupId),
