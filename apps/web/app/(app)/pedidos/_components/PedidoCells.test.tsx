@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 import type { NotaFiscalEletronica, Pedido } from '@delfrance/schemas';
@@ -213,6 +213,59 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
     // Mantine encodes the variant on a data attribute on the Badge root.
     const badge = container.querySelector('[data-variant="outline"]');
     expect(badge).toBeTruthy();
+  });
+
+  describe('HoverCard dropdown — cStat / xMotivo / copy buttons', () => {
+    // jsdom does not implement navigator.clipboard. Mantine's CopyButton
+    // calls `navigator.clipboard.writeText(value)`, so each test installs
+    // a fresh mock and the assertions verify the call arguments.
+    let writeText: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText },
+        configurable: true,
+        writable: true,
+      });
+    });
+
+    it('shows cStat and xMotivo on hover regardless of estado (load-bearing)', async () => {
+      // The load-bearing assertion for the user's first requirement: cStat
+      // and xMotivo must render in the dropdown for *any* estado where they
+      // are set — not just `'n'` (rejeitada). Use `'a'` (aprovada) to make
+      // sure the old "only show xMotivo on rejeitada" gate is gone.
+      setSnap({
+        data: [
+          rowFromNFe(
+            makeNFe('a', {
+              cStat: '100',
+              xMotivo: 'Autorizado o uso da NF-e',
+              chave: '3'.repeat(44),
+            }),
+          ),
+        ],
+      });
+      const { container } = wrap(<NFCell pedidoId="p1" />);
+      const badge = container.querySelector('[data-variant]');
+      expect(badge).toBeTruthy();
+      fireEvent.mouseEnter(badge!);
+      // The dropdown is portalled; findByText queries the whole document.
+      expect(await screen.findByText('cStat:')).toBeTruthy();
+      expect(screen.getByText('100')).toBeTruthy();
+      expect(screen.getByText('xMotivo:')).toBeTruthy();
+      expect(screen.getByText('Autorizado o uso da NF-e')).toBeTruthy();
+    });
+
+    it('copies the chave when the chave copy button is clicked', async () => {
+      const chave = '3'.repeat(44);
+      setSnap({ data: [rowFromNFe(makeNFe('a', { chave }))] });
+      const { container } = wrap(<NFCell pedidoId="p1" />);
+      const badge = container.querySelector('[data-variant]');
+      fireEvent.mouseEnter(badge!);
+      const copyButton = await screen.findByLabelText('Copiar chave');
+      fireEvent.click(copyButton);
+      expect(writeText).toHaveBeenCalledWith(chave);
+    });
   });
 });
 

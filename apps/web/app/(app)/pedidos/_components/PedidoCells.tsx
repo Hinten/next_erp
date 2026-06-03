@@ -33,14 +33,19 @@ import {
 } from '@delfrance/schemas';
 import { format, money } from '@delfrance/core/money';
 import {
+  ActionIcon,
   Anchor,
   Badge,
+  CopyButton,
+  Group,
+  HoverCard,
   type MantineColor,
   Skeleton,
+  Stack,
   Text,
   Tooltip,
 } from '@mantine/core';
-import { IconCheck } from '@tabler/icons-react';
+import { IconCheck, IconCopy } from '@tabler/icons-react';
 
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { nfeCollection } from '@/lib/data/nfeCollection';
@@ -67,9 +72,9 @@ function formatMillis(ms: number | null | undefined): string {
 /*                                  NFCell                                    */
 /*                                                                            */
 /*  Subscribes to the latest doc in `pedidos/{pedidoId}/nfev4` (ordered by    */
-/*  timestamp desc, limit 1) and renders a colored badge per estado, with a   */
-/*  tooltip exposing the chave (when aprovada / EPEC aprovado), the SEFAZ     */
-/*  rejection reason (xMotivo on rejeitada) or the persisted error message.   */
+/*  timestamp desc, limit 1) and renders a colored badge per estado. Hovering */
+/*  the badge opens a HoverCard with the Estado, cStat, xMotivo, Número,      */
+/*  Chave, and Erro fields — each copyable via an icon button when present.   */
 /* -------------------------------------------------------------------------- */
 
 const NFE_STATE_COLOR: Record<EstadoNFe, MantineColor> = {
@@ -86,28 +91,36 @@ const NFE_STATE_COLOR: Record<EstadoNFe, MantineColor> = {
   [ESTADO_NFE.error]: 'red',
 };
 
-/**
- * Pick the tooltip body for an NFe state. `rejeitada` shows the SEFAZ
- * motivo, `error` shows the persisted error message, the approved states
- * show the chave de acesso. Falls back to the estado label.
- */
-function nfeTooltip(nfe: NotaFiscalEletronica): string {
-  if (nfe.estado === ESTADO_NFE.rejeitada && nfe.xMotivo) return nfe.xMotivo;
-  if (nfe.estado === ESTADO_NFE.error && nfe.error) return nfe.error;
-  if (
-    (nfe.estado === ESTADO_NFE.aprovada || nfe.estado === ESTADO_NFE.epecAprovado) &&
-    nfe.chave
-  ) {
-    return `Chave: ${nfe.chave}`;
-  }
-  return ESTADO_NFE_LABELS[nfe.estado];
+function CopyIconButton({ value, label }: { value: string; label: string }) {
+  return (
+    <CopyButton value={value} timeout={1500}>
+      {({ copied, copy }) => (
+        <Tooltip label={copied ? 'Copiado!' : label} withArrow withinPortal position="top">
+          <ActionIcon
+            variant="subtle"
+            color="gray"
+            size="sm"
+            onClick={copy}
+            aria-label={label}
+          >
+            {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
+          </ActionIcon>
+        </Tooltip>
+      )}
+    </CopyButton>
+  );
 }
 
 export function NFCell({ pedidoId }: { pedidoId: string }) {
   const db = getFirebaseFirestore();
   const q = useMemo(() => {
     const base = nfeCollection.ref(db, { pedidoId });
-    return buildQuery(base, [orderByField('timestamp', 'desc'), limit(1)]);
+    // `ultima_modificacao` is set on every nfev4 write by the orchestrator
+    // (both the initial `tx.set` and `persistPatch`). Ordering by it
+    // ensures the doc actually appears in the snapshot — Firestore
+    // excludes docs whose ordered field is absent, and the schema's
+    // generic `timestamp` field is never set in Phase A.
+    return buildQuery(base, [orderByField('ultima_modificacao', 'desc'), limit(1)]);
   }, [db, pedidoId]);
   const { data, loading } = useSnapshot(q);
 
@@ -120,12 +133,109 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
   // (2 EPEC, 9 SVC-RS, 7 SVC-AN, etc.) is a contingência variant — use
   // the outline variant so the operator can tell at a glance.
   const variant = latest.tpEmis !== 1 ? 'outline' : 'light';
+  const hasCStatMsg = latest.cStat != null && latest.xMotivo != null;
+  const messageCopyValue = latest.error ?? (hasCStatMsg ? `${latest.cStat} - ${latest.xMotivo}` : null);
   return (
-    <Tooltip label={nfeTooltip(latest)} multiline maw={320} withinPortal>
-      <Badge variant={variant} color={color} style={{ cursor: 'help' }}>
-        {label}
-      </Badge>
-    </Tooltip>
+    <HoverCard
+      withinPortal
+      shadow="md"
+      openDelay={150}
+      closeDelay={100}
+      position="bottom-start"
+      width={360}
+    >
+      <HoverCard.Target>
+        <Badge
+          variant={variant}
+          color={color}
+          style={{ cursor: 'help' }}
+          tabIndex={0}
+        >
+          {label}
+        </Badge>
+      </HoverCard.Target>
+      <HoverCard.Dropdown>
+        <Stack gap="xs">
+          <Group gap="xs" wrap="nowrap">
+            <Text size="sm" fw={500}>Estado:</Text>
+            <Text size="sm">{label}</Text>
+          </Group>
+
+          {latest.cStat != null && (
+            <Group gap="xs" wrap="nowrap">
+              <Text size="sm" fw={500}>cStat:</Text>
+              <Text size="sm">{latest.cStat}</Text>
+            </Group>
+          )}
+
+          {latest.xMotivo != null && (
+            <Group gap="xs" wrap="nowrap" align="flex-start">
+              <Text size="sm" fw={500} style={{ flexShrink: 0 }}>xMotivo:</Text>
+              <Text size="sm" style={{ wordBreak: 'break-word' }}>
+                {latest.xMotivo}
+              </Text>
+            </Group>
+          )}
+
+          <Group gap="xs" wrap="nowrap" justify="space-between">
+            <Group gap="xs" wrap="nowrap">
+              <Text size="sm" fw={500}>Número:</Text>
+              <Text size="sm">{latest.numeracao}</Text>
+            </Group>
+            <CopyIconButton
+              value={String(latest.numeracao)}
+              label="Copiar número"
+            />
+          </Group>
+
+          {latest.chave != null && (
+            <Group
+              gap="xs"
+              wrap="nowrap"
+              justify="space-between"
+              align="center"
+            >
+              <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
+                <Text size="sm" fw={500} style={{ flexShrink: 0 }}>Chave:</Text>
+                <Text
+                  ff="monospace"
+                  size="xs"
+                  truncate
+                  style={{ minWidth: 0 }}
+                >
+                  {latest.chave}
+                </Text>
+              </Group>
+              <CopyIconButton value={latest.chave} label="Copiar chave" />
+            </Group>
+          )}
+
+          {messageCopyValue != null && (
+            <Group
+              gap="xs"
+              wrap="nowrap"
+              justify="space-between"
+              align="flex-start"
+            >
+              <Group
+                gap="xs"
+                wrap="nowrap"
+                align="flex-start"
+                style={{ minWidth: 0 }}
+              >
+                <Text size="sm" fw={500} style={{ flexShrink: 0 }}>
+                  {latest.error != null ? 'Erro:' : 'Mensagem:'}
+                </Text>
+                <Text size="sm" style={{ wordBreak: 'break-word' }}>
+                  {messageCopyValue}
+                </Text>
+              </Group>
+              <CopyIconButton value={messageCopyValue} label="Copiar mensagem" />
+            </Group>
+          )}
+        </Stack>
+      </HoverCard.Dropdown>
+    </HoverCard>
   );
 }
 

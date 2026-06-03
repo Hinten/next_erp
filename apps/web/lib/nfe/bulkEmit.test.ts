@@ -15,15 +15,21 @@ import type { Pedido } from '@delfrance/schemas';
 import { dispatchEmitirNFe, NFeLoteNotImplementedError } from './bulkEmit';
 
 // Mock the @mantine/notifications side-effect surface. The dispatcher
-// calls `notifications.show(...)` after each pedido settles; we just
-// need a spy to assert it was invoked with the right color.
+// uses it for the success path; the error path goes through
+// showErrorNotification, mocked below.
 vi.mock('@mantine/notifications', () => ({
-  notifications: { show: vi.fn() },
+  notifications: { show: vi.fn(), update: vi.fn(), hide: vi.fn() },
+}));
+
+vi.mock('../notifications/showErrorNotification', () => ({
+  showErrorNotification: vi.fn(),
 }));
 
 import { notifications } from '@mantine/notifications';
+import { showErrorNotification } from '../notifications/showErrorNotification';
 
 const showSpy = vi.mocked(notifications.show);
+const showErrorSpy = vi.mocked(showErrorNotification);
 
 function fakeRow(id: string): { id: string; data: Pedido } {
   return { id, data: {} as unknown as Pedido };
@@ -32,6 +38,7 @@ function fakeRow(id: string): { id: string; data: Pedido } {
 function fakeClient(impl: NFeHttpClient['emitir']): NFeHttpClient {
   return {
     emitir: impl,
+    emitirLote: vi.fn(),
     consultar: vi.fn(),
     processarPendentes: vi.fn(),
   };
@@ -52,6 +59,7 @@ function emitResult(over: Partial<NFeEmitResult> = {}): NFeEmitResult {
 
 beforeEach(() => {
   showSpy.mockClear();
+  showErrorSpy.mockClear();
 });
 
 afterEach(() => {
@@ -64,6 +72,7 @@ describe('dispatchEmitirNFe', () => {
     await dispatchEmitirNFe(fakeClient(emitir), []);
     expect(emitir).not.toHaveBeenCalled();
     expect(showSpy).not.toHaveBeenCalled();
+    expect(showErrorSpy).not.toHaveBeenCalled();
   });
 
   it('single row → calls client.emitir(id) + shows success notification', async () => {
@@ -78,15 +87,17 @@ describe('dispatchEmitirNFe', () => {
     expect(arg.title).toBe('NF-e autorizada');
   });
 
-  it('single row, client throws NFeRejectedError → shows red notification', async () => {
+  it('single row, client throws NFeRejectedError → shows error notification with copy support', async () => {
     const emitir = vi.fn().mockRejectedValue(
       new NFeRejectedError('226', 'UF inválida', {}),
     );
     await dispatchEmitirNFe(fakeClient(emitir), [fakeRow('PED-002')]);
 
     expect(emitir).toHaveBeenCalledWith('PED-002');
-    expect(showSpy).toHaveBeenCalledOnce();
-    const arg = showSpy.mock.calls[0]![0]!;
+    // Errors go through showErrorNotification, not notifications.show directly.
+    expect(showSpy).not.toHaveBeenCalled();
+    expect(showErrorSpy).toHaveBeenCalledOnce();
+    const arg = showErrorSpy.mock.calls[0]![0]!;
     expect(arg.color).toBe('red');
     expect(arg.title).toBe('SEFAZ rejeitou a NF-e');
     expect(arg.message).toContain('226');
@@ -100,6 +111,7 @@ describe('dispatchEmitirNFe', () => {
     await expect(call).rejects.toMatchObject({ selected: 3 });
     expect(emitir).not.toHaveBeenCalled();
     expect(showSpy).not.toHaveBeenCalled();
+    expect(showErrorSpy).not.toHaveBeenCalled();
   });
 
   it('re-throws non-Error values from client (programming bugs surface)', async () => {
@@ -108,5 +120,6 @@ describe('dispatchEmitirNFe', () => {
       dispatchEmitirNFe(fakeClient(emitir), [fakeRow('PED-001')]),
     ).rejects.toBe('not an Error');
     expect(showSpy).not.toHaveBeenCalled();
+    expect(showErrorSpy).not.toHaveBeenCalled();
   });
 });

@@ -21,22 +21,40 @@
  * original `protNFe.infProt.cStat=100`. This is the contract the
  * orchestrator's anti-loss path relies on.
  *
- * Pre-flight: `consultarStatusServico` — if SEFAZ-SP is paralisado
- * (cStat 108/109) the test self-skips with a console warning rather
- * than failing (an upstream outage isn't our regression).
+ * SEFAZ-status pre-flight lives in `ci-nfe.yml`'s "SEFAZ-SP HOM
+ * status gate" step (runs `operations.homologacao.test.ts` once,
+ * before any emission). This file no longer pings the status endpoint
+ * itself — each CI run makes a single status call total instead of
+ * one per emission test, keeping us well below the cStat=656
+ * ("Consumo Indevido") throttle. Locally, mirror the gate posture by
+ * running `pnpm --filter @delfrance/integrations-nfe test
+ * operations.homologacao` before this suite.
  *
  * The test hand-builds a complete `GeneratorInput` so it has **no
- * Firestore dependency** and stays library-level. `numeracao` is derived
- * from `Date.now() & 0xFFFF` so reruns don't collide on the natural key
- * (~65k unique nNF values per minute, well above CI cadence).
+ * Firestore dependency** and stays library-level. `numeracao` comes
+ * from `seedNNF()` in `../helpers/homologacao-seed.ts` — see that file
+ * for the cross-CI-run collision-avoidance rationale (high-zone +
+ * Date.now()-based offset over ~500M slots).
+ *
+ * **serie lane**: this test runs on **serie=2**; the orchestrator test
+ * at `apps/nfe/test/lib/nfe/orchestrator.homologacao.test.ts` owns
+ * serie=1. SEFAZ keys persistence on serie, so the two test paths can
+ * never collide at the (CNPJ, serie, tpAmb, tpEmis, nNF) key.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
-import { assertCertNotExpired, loadCertificateFromEnv } from '../../src/cert';
+import { seedNNF } from '../helpers/homologacao-seed';
+import {
+  assertCertNotExpired,
+  hasNFeCertEnv,
+  loadCertificateFromEnv,
+  type NFeCertificate,
+} from '../../src/cert';
+import { assertNotConsumoIndevido } from '../../src/state';
 import { getEndpoints } from '../../src/endpoints';
 import { generateNFe, type GeneratorInput } from '../../src/generator';
 import { signNFe } from '../../src/sign';
@@ -54,15 +72,10 @@ import {
   autorizarLote,
   consultarLote,
   consultarSituacaoNFe,
-  consultarStatusServico,
 } from '../../src/operations/index';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VENDORED_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-sp-homologacao.pem');
-
-const hasCert =
-  (Boolean(process.env.NFE_CERT_PATH) || Boolean(process.env.NFE_CERT_BASE64)) &&
-  process.env.NFE_CERT_PASSWORD != null;
 
 // IE (Inscrição Estadual) is a state-level registration; ICP-Brasil
 // A1 certs are federal and do not carry it. SEFAZ rejects with
@@ -72,11 +85,14 @@ const hasCert =
 // so the maintainer must set `NFE_TEST_IE` in `.env.local` to the
 // real IE issued for the company that owns the loaded A1 cert.
 // See `apps/nfe/.env.example`.
+//
+// `NFE_TEST_IE` is REQUIRED — there is no placeholder fallback. A bogus
+// IE only ever earns a guaranteed cStat=209, so when it (or the cert)
+// is unset the suite throws (see `beforeAll`) rather than emitting
+// garbage or silently skipping a fiscal live lane.
 const TEST_IE = process.env.NFE_TEST_IE;
 
-const hasFullCreds = hasCert && Boolean(TEST_IE);
-
-const describeOrSkip = hasFullCreds ? describe : describe.skip;
+const hasFullCreds = hasNFeCertEnv() && Boolean(TEST_IE);
 
 // Load the cert once when env vars are set so the fixture can read its
 // CNPJ. SEFAZ rejection 213 (CNPJ-Base do Emitente difere do CNPJ-Base
@@ -148,7 +164,12 @@ function buildFixture(numeracao: number): GeneratorInput {
   return {
     ambiente: 'homologacao',
     numeracao,
-    serie: 1,
+    // serie=2 is the library test's lane; serie=1 belongs to the
+    // orchestrator test at apps/nfe/test/lib/nfe/orchestrator.homologacao.test.ts.
+    // Keeping the lanes split eliminates the cross-test (CNPJ, serie,
+    // tpAmb, tpEmis, nNF) collision that would otherwise surface as
+    // cStat=539 ("duplicidade") on whichever runs second at SEFAZ.
+    serie: 2,
     dhEmi: new Date(),
     filial: {
       // CNPJ comes from the loaded A1 cert — SEFAZ enforces "first 8
@@ -163,8 +184,8 @@ function buildFixture(numeracao: number): GeneratorInput {
       cnae: null,
       // IE comes from NFE_TEST_IE — must be the IE registered at the
       // state SEFAZ for the same CNPJ that signs the cert (rejection
-      // 209 fires otherwise). describeOrSkip already short-circuits
-      // when TEST_IE is absent.
+      // 209 fires otherwise). Guaranteed present here: the suite's
+      // `beforeAll` throws when NFE_TEST_IE is unset.
       ie: TEST_IE!,
       iest: null,
       imun: null,
@@ -336,9 +357,15 @@ function readVendoredCA(): string | undefined {
   return caPath ? readFileSync(caPath, 'utf8') : undefined;
 }
 
-/** Build the typed SefazCall context for one operation URL. */
-function buildCall(url: string): SefazCall {
-  const cert = loadCertificateFromEnv();
+/**
+ * Build the typed SefazCall context for one operation URL.
+ *
+ * Takes the cert as a parameter so the test file parses the PFX exactly
+ * once (via the top-level `TEST_CERT`) instead of re-parsing on every
+ * SOAP call. Each parse fires `loadCertificateFromEnv`'s audit log line —
+ * one per file is the right shape.
+ */
+function buildCall(url: string, cert: NFeCertificate): SefazCall {
   assertCertNotExpired(cert);
   const agent = createSefazAgent(cert, { ca: readVendoredCA() });
   return { url, cert, agent, tpAmb: '2', timeoutMs: 60_000 };
@@ -348,77 +375,44 @@ function buildCall(url: string): SefazCall {
 // Tests
 // ---------------------------------------------------------------------------
 
-describeOrSkip('SEFAZ-SP homologação — live emission round-trip', () => {
-  it(
-    'generate → sign → autorizarLote (indSinc=1) → assert protNFe.cStat=100',
-    async () => {
-      // Pre-flight reachability — fail LOUDLY if SEFAZ is paralisado.
-      // We intentionally don't self-skip on 108/109: silently green
-      // builds in a SEFAZ outage are the worst possible signal for a
-      // fiscal pipeline. The test fails, we wait, we rerun when SEFAZ
-      // is back. (Pulled the prior self-skip — too risky.)
-      const statusCall = buildCall(getEndpoints('SP', 'homologacao').NfeStatusServico);
-      const status = await consultarStatusServico(statusCall, { cUF: '35' });
-      expect(status.cStat).toBe('107');
-
-      // Build a one-shot NF-e with a fresh nNF so we don't trip duplicidade.
-      const numeracao = 1_000_000 + (Date.now() & 0xffff);
-      const fixture = buildFixture(numeracao);
-      const out = generateNFe(fixture);
-
-      const signedXml = signNFe(out.nfeXml, statusCall.cert);
-      expect(signedXml).toContain(`Id="NFe${out.chave}"`);
-
-      const autorizacaoCall = buildCall(
-        getEndpoints('SP', 'homologacao').NfeAutorizacao,
+describe('SEFAZ-SP homologação — library duplicidade-recovery contract', () => {
+  // Fail loud, never skip: a live fiscal lane that silently skips on
+  // missing credentials can report green with zero coverage.
+  beforeAll(() => {
+    if (!hasFullCreds) {
+      throw new Error(
+        'Live homologação test requires real credentials. Missing one of: ' +
+          'NFE_CERT_PATH|NFE_CERT_BASE64 + NFE_CERT_PASSWORD, NFE_TEST_IE. ' +
+          'Refusing to skip a fiscal live lane silently.',
       );
-      // indSinc='1' so SEFAZ processes synchronously and returns the
-      // protNFe inline — keeps the test fast (no poll needed in the
-      // happy path) and matches Phase A's one-NF-e-per-lote shape.
-      const ret = await autorizarLote(autorizacaoCall, {
-        idLote: out.chave.slice(-15),
-        NFe: [signedXml],
-        indSinc: '1',
-      });
+    }
+  });
 
-      // eslint-disable-next-line no-console
-      console.log(
-        `[autorizarLote] cStat=${ret.cStat} xMotivo="${ret.xMotivo}" chave=${out.chave}`,
-      );
-
-      const prot = await resolveProtocol(ret, autorizacaoCall);
-      expect(prot, `no protNFe surfaced (lote cStat=${ret.cStat} ${ret.xMotivo})`).toBeDefined();
-      // eslint-disable-next-line no-console
-      console.log(
-        `[protNFe] cStat=${prot!.infProt.cStat} xMotivo="${prot!.infProt.xMotivo}" nProt=${prot!.infProt.nProt}`,
-      );
-      expect(prot!.infProt.chNFe).toBe(out.chave);
-      expect(prot!.infProt.cStat).toBe('100');
-    },
-    120_000,
-  );
-
+  // NOTE: the previous "generate → sign → autorizarLote (indSinc=1) →
+  // cStat=100" happy-path test was removed when the orchestrator-level
+  // homologação test (`apps/nfe/test/lib/nfe/orchestrator.homologacao.test.ts`)
+  // landed in PR-γ — that test covers the same library call chain
+  // through `emitirPedido` plus the Firestore persistence layer. The
+  // duplicidade test below stays because it pins the consSitNFe
+  // recovery contract the orchestrator's anti-loss path depends on
+  // (see `recoverFrom539` in `apps/nfe/lib/nfe/orchestrator.ts`).
   it(
     'duplicidade recovery — second emission returns 204, consSitNFe resolves to original 100',
     async () => {
-      // Same posture as the happy-path test: paralisado is a hard fail,
-      // not a silent skip.
-      const statusCall = buildCall(getEndpoints('SP', 'homologacao').NfeStatusServico);
-      const status = await consultarStatusServico(statusCall, { cUF: '35' });
-      expect(status.cStat).toBe('107');
-
-      // Throttle before exercising another emission to stay well below
-      // SEFAZ's cStat=656 ("Consumo Indevido") threshold.
-      await new Promise((r) => setTimeout(r, 1000));
-
-      const numeracao = 1_000_000 + ((Date.now() + 1) & 0xffff);
+      // SEFAZ status pre-flight intentionally removed — the ci-nfe.yml
+      // "SEFAZ-SP HOM status gate" step runs operations.homologacao
+      // immediately before this test and short-circuits the whole job
+      // on cStat ≠ 107/108/109, so re-pinging the status endpoint here
+      // would just feed the 656 throttle for no extra signal.
+      const numeracao = seedNNF();
       const fixture = buildFixture(numeracao);
       const out = generateNFe(fixture);
-      const signedXml = signNFe(out.nfeXml, statusCall.cert);
 
       const autorizacaoCall = buildCall(
         getEndpoints('SP', 'homologacao').NfeAutorizacao,
+        TEST_CERT!,
       );
+      const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
 
       // 1st submission — must succeed.
       const first = await autorizarLote(autorizacaoCall, {
@@ -426,7 +420,9 @@ describeOrSkip('SEFAZ-SP homologação — live emission round-trip', () => {
         NFe: [signedXml],
         indSinc: '1',
       });
+      assertNotConsumoIndevido(first, 'duplicidade/autorizarLote#1');
       const firstProt = await resolveProtocol(first, autorizacaoCall);
+      if (firstProt) assertNotConsumoIndevido(firstProt.infProt, 'duplicidade/protNFe#1');
       expect(firstProt?.infProt.cStat).toBe('100');
       const firstNProt = firstProt!.infProt.nProt;
 
@@ -442,11 +438,13 @@ describeOrSkip('SEFAZ-SP homologação — live emission round-trip', () => {
         NFe: [signedXml],
         indSinc: '1',
       });
+      assertNotConsumoIndevido(second, 'duplicidade/autorizarLote#2');
       // eslint-disable-next-line no-console
       console.log(
         `[duplicidade lote2] cStat=${second.cStat} xMotivo="${second.xMotivo}"`,
       );
       const secondProt = await resolveProtocol(second, autorizacaoCall);
+      if (secondProt) assertNotConsumoIndevido(secondProt.infProt, 'duplicidade/protNFe#2');
       const dupCStat = secondProt?.infProt.cStat ?? second.cStat;
       expect(['204', '539']).toContain(dupCStat);
 
@@ -456,8 +454,10 @@ describeOrSkip('SEFAZ-SP homologação — live emission round-trip', () => {
       await new Promise((r) => setTimeout(r, 1000));
       const consultaCall = buildCall(
         getEndpoints('SP', 'homologacao').NfeConsultaProtocolo,
+        TEST_CERT!,
       );
       const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
+      assertNotConsumoIndevido(sit, 'duplicidade/consSitNFe');
       // eslint-disable-next-line no-console
       console.log(
         `[consSitNFe] cStat=${sit.cStat} xMotivo="${sit.xMotivo}" prot.cStat=${sit.protNFe?.infProt.cStat}`,
@@ -494,6 +494,7 @@ async function resolveProtocol(
   for (let attempt = 0; attempt < 8; attempt++) {
     await new Promise((r) => setTimeout(r, 5_000));
     const poll = await consultarLote(call, { nRec: ret.infRec.nRec });
+    assertNotConsumoIndevido(poll, `consultarLote/attempt=${attempt + 1}`);
     // eslint-disable-next-line no-console
     console.log(
       `[consultarLote attempt=${attempt + 1}] cStat=${poll.cStat} xMotivo="${poll.xMotivo}"`,

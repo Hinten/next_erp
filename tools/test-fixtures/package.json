@@ -8,6 +8,9 @@
   "scripts": {
     "seed": "dotenv -e ../../.env.local -- tsx src/seed.ts",
     "seed-clientes": "dotenv -e ../../.env.local -- tsx src/seed-clientes.ts",
+    "seed:filiais": "dotenv -e ../../.env.local -- tsx src/seed-filiais-dev.ts",
+    "seed:operacoes": "dotenv -e ../../.env.local -- tsx src/seed-operacoes-dev.ts",
+    "seed:enderecos": "dotenv -e ../../.env.local -- tsx src/seed-enderecos-dev.ts",
     "seed:pedidos": "dotenv -e ../../.env.local -- tsx src/seed-pedidos-dev.ts",
     "seed:nfe": "dotenv -e ../../.env.local -- tsx src/seed-nfe-dev.ts",
     "teardown": "dotenv -e ../../.env.local -- tsx src/teardown.ts",

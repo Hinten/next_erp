@@ -65,7 +65,7 @@ export const itemDoPedidoSchema = z.object({
   gtin: z.string().nullable().default(null),
   nomeDeVenda: z.string().nullable().default(null),
   precoDeVenda: z.number().min(0.01),
-  descontoUnitario: z.number().min(0).default(0),
+  descontoUnitario: z.number().min(0).nullable().default(0),
   quantidade: z.number().min(0),
   custo: z.number().nullable().default(null),
   timestamp: z.string().datetime().nullable().default(null),
@@ -101,7 +101,9 @@ export const pedidoSchema = z.object({
   numero: z.string().nullable().default(null).describe('Número'),
 
   // Outer references — opaque (resolved by Flutter today; UI dereferences
-  // them through Firestore .get() when needed).
+  // them through Firestore .get() when needed). `filialPedidoOuterRef` is
+  // read by the NFe orchestrator (`apps/nfe/lib/nfe/orchestrator.ts:146`)
+  // to load the issuing Filial — must be present on the doc when emitting.
   vendedorPedidoOuterRef: z
     .unknown()
     .nullable()
@@ -123,6 +125,11 @@ export const pedidoSchema = z.object({
     .nullable()
     .default(null)
     .describe('Endereço fiscal'),
+  filialPedidoOuterRef: z
+    .unknown()
+    .nullable()
+    .default(null)
+    .describe('Filial'),
   listaDePrecosOuterRef: z
     .unknown()
     .nullable()

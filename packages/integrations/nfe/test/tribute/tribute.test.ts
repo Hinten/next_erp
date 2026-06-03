@@ -12,6 +12,8 @@ import forge from 'node-forge';
 import { signNFe, validateXsd, type NFeCertificate } from '../../src/index';
 
 import {
+  aggregateISSQN,
+  aggregateRetTrib,
   aggregateTotals,
   buildImpostoXml,
   buildPagXml,
@@ -21,7 +23,9 @@ import {
   fmtRate,
   NFeTributeError,
   TributeFormatError,
+  type ConfiguracaoISSQN,
   type Imposto,
+  type Retencao,
 } from '../../src/tribute/index';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
@@ -227,6 +231,280 @@ describe('buildImpostoXml — CSOSN dispatch', () => {
     expect(xml).toContain('<vICMS>270.00</vICMS>');
     await assertXsdValid(xml);
   });
+
+  // PIS / COFINS Outr regression — SEFAZ XSD requires vBC + pPIS (or
+  // qBCProd + vAliqProd) before vPIS even when the SN flow emits zeros.
+  // Previously the dispatcher emitted only `{ CST, vPIS: '0.00' }` and
+  // xmllint-wasm rejected with "vPIS not expected, expected vBC or qBCProd".
+  it.each(['49', '99'])(
+    'PIS CST %s → PISOutr with vBC + pPIS + vPIS (SEFAZ xs:choice)',
+    async (cst) => {
+      const imposto: Imposto = {
+        ...impostoFor102(),
+        configuracaoPIS: { CST: cst as never },
+        configuracaoCOFINS: { CST: cst as never },
+      };
+      const xml = buildImpostoXml(imposto, item1500);
+      expect(xml).toContain('<PISOutr>');
+      expect(xml).toContain(`<CST>${cst}</CST>`);
+      expect(xml).toContain('<vBC>0.00</vBC>');
+      expect(xml).toContain('<pPIS>0.0000</pPIS>');
+      expect(xml).toContain('<vPIS>0.00</vPIS>');
+      expect(xml).toContain('<COFINSOutr>');
+      expect(xml).toContain('<pCOFINS>0.0000</pCOFINS>');
+      expect(xml).toContain('<vCOFINS>0.00</vCOFINS>');
+      await assertXsdValid(xml);
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// IPI dispatcher (Group B)
+// ---------------------------------------------------------------------------
+
+describe('buildImpostoXml — IPI', () => {
+  it.each(['00', '49', '50', '99'])(
+    'CST %s → <IPITrib> with cEnq + vIPI (and optional vBC/pIPI when provided)',
+    async (cst) => {
+      const imposto: Imposto = {
+        ...impostoFor102(),
+        configuracaoIPI: {
+          cEnq: '999',
+          CST: cst as never,
+          vBC: 1500,
+          pIPI: 5,
+          vIPI: 75,
+        },
+      };
+      const xml = buildImpostoXml(imposto, item1500);
+      expect(xml).toContain('<IPI>');
+      expect(xml).toContain('<cEnq>999</cEnq>');
+      expect(xml).toContain('<IPITrib>');
+      expect(xml).toContain(`<CST>${cst}</CST>`);
+      expect(xml).toContain('<vBC>1500.00</vBC>');
+      expect(xml).toContain('<pIPI>5.0000</pIPI>');
+      expect(xml).toContain('<vIPI>75.00</vIPI>');
+      await assertXsdValid(xml);
+    },
+  );
+
+  it('IPITrib by quantity → emits qUnid + vUnid (4 decimals)', async () => {
+    const imposto: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: {
+        cEnq: '999',
+        CST: '00',
+        qUnid: 10,
+        vUnid: 2.5,
+        vIPI: 25,
+      },
+    };
+    const xml = buildImpostoXml(imposto, item1500);
+    expect(xml).toContain('<qUnid>10.0000</qUnid>');
+    expect(xml).toContain('<vUnid>2.5000</vUnid>');
+    expect(xml).toContain('<vIPI>25.00</vIPI>');
+    await assertXsdValid(xml);
+  });
+
+  it.each(['01', '02', '03', '04', '05', '51', '52', '53', '54', '55'])(
+    'CST %s → <IPINT> with cEnq + CST only',
+    async (cst) => {
+      const imposto: Imposto = {
+        ...impostoFor102(),
+        configuracaoIPI: { cEnq: '999', CST: cst as never },
+      };
+      const xml = buildImpostoXml(imposto, item1500);
+      expect(xml).toContain('<IPI>');
+      expect(xml).toContain('<cEnq>999</cEnq>');
+      expect(xml).toContain('<IPINT>');
+      expect(xml).toContain(`<CST>${cst}</CST>`);
+      expect(xml).not.toContain('<IPITrib>');
+      await assertXsdValid(xml);
+    },
+  );
+
+  it('IPITrib without vIPI throws NFeTributeError', () => {
+    const imposto: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: { cEnq: '999', CST: '00', vBC: 100, pIPI: 5 },
+    };
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISSQN dispatcher (Group B — xs:choice with ICMS)
+// ---------------------------------------------------------------------------
+
+function issqnFor(extra: Partial<ConfiguracaoISSQN> = {}): ConfiguracaoISSQN {
+  return {
+    vBC: 500,
+    vAliq: 5,
+    vISSQN: 25,
+    cMunFG: '3550308', // São Paulo (IBGE)
+    cListServ: '01.05',
+    indISS: '1',
+    indIncentivo: '2',
+    ...extra,
+  };
+}
+
+describe('buildImpostoXml — ISSQN (xs:choice with ICMS)', () => {
+  it('emits <ISSQN> with required fields and no <ICMS> when configuracaoISSQN is set', async () => {
+    const imposto: Imposto = {
+      origem: '0',
+      configuracaoISSQN: issqnFor(),
+    };
+    const xml = buildImpostoXml(imposto, { vProd: 500 });
+    expect(xml).toContain('<ISSQN>');
+    expect(xml).toContain('<vBC>500.00</vBC>');
+    expect(xml).toContain('<vAliq>5.0000</vAliq>');
+    expect(xml).toContain('<vISSQN>25.00</vISSQN>');
+    expect(xml).toContain('<cMunFG>3550308</cMunFG>');
+    expect(xml).toContain('<cListServ>01.05</cListServ>');
+    expect(xml).toContain('<indISS>1</indISS>');
+    expect(xml).toContain('<indIncentivo>2</indIncentivo>');
+    expect(xml).not.toContain('<ICMS>');
+    await assertXsdValid(xml);
+  });
+
+  it('emits optional ISSQN fields when set (vDeducao, vDescIncond, vDescCond, vISSRet, vOutro)', async () => {
+    const imposto: Imposto = {
+      origem: '0',
+      configuracaoISSQN: issqnFor({
+        vDeducao: 10,
+        vDescIncond: 5,
+        vDescCond: 2,
+        vISSRet: 1,
+        vOutro: 3,
+        cServico: 'SVC-001',
+      }),
+    };
+    const xml = buildImpostoXml(imposto, { vProd: 500 });
+    expect(xml).toContain('<vDeducao>10.00</vDeducao>');
+    expect(xml).toContain('<vDescIncond>5.00</vDescIncond>');
+    expect(xml).toContain('<vDescCond>2.00</vDescCond>');
+    expect(xml).toContain('<vISSRet>1.00</vISSRet>');
+    expect(xml).toContain('<vOutro>3.00</vOutro>');
+    expect(xml).toContain('<cServico>SVC-001</cServico>');
+    await assertXsdValid(xml);
+  });
+
+  it('throws when neither configuracaoICMS nor configuracaoISSQN is provided', () => {
+    const imposto: Imposto = { origem: '0' };
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+  });
+
+  it('allows IPI to ride alongside ISSQN (both choice + IPI block)', async () => {
+    const imposto: Imposto = {
+      origem: '0',
+      configuracaoISSQN: issqnFor(),
+      configuracaoIPI: { cEnq: '999', CST: '01' },
+    };
+    const xml = buildImpostoXml(imposto, { vProd: 500 });
+    expect(xml).toContain('<ISSQN>');
+    expect(xml).toContain('<IPI>');
+    expect(xml).toContain('<IPINT>');
+    expect(xml).not.toContain('<ICMS>');
+    await assertXsdValid(xml);
+  });
+});
+
+describe('aggregateISSQN', () => {
+  it('returns undefined when no item carries ISSQN', () => {
+    const out = aggregateISSQN([
+      { item: { vProd: 100 }, imposto: impostoFor102() },
+    ]);
+    expect(out).toBeUndefined();
+  });
+
+  it('sums vServ / vBC / vISS across ISSQN items and stamps dCompet', () => {
+    const issqnImposto: Imposto = { origem: '0', configuracaoISSQN: issqnFor() };
+    const out = aggregateISSQN(
+      [
+        { item: { vProd: 500 }, imposto: issqnImposto },
+        { item: { vProd: 300 }, imposto: { origem: '0', configuracaoISSQN: issqnFor({ vBC: 300, vISSQN: 15 }) } },
+        { item: { vProd: 100 }, imposto: impostoFor102() }, // mixed — ignored by ISSQN aggregator
+      ],
+      { dCompet: '2026-05-27' },
+    );
+    expect(out?.vServ).toBe('800.00'); // 500 + 300 (ISSQN items only)
+    expect(out?.vBC).toBe('800.00');
+    expect(out?.vISS).toBe('40.00');
+    expect(out?.dCompet).toBe('2026-05-27');
+  });
+
+  it('throws when ISSQN items are present but extras.dCompet is missing', () => {
+    const issqnImposto: Imposto = { origem: '0', configuracaoISSQN: issqnFor() };
+    expect(() =>
+      aggregateISSQN([{ item: { vProd: 500 }, imposto: issqnImposto }]),
+    ).toThrow(/dCompet/);
+  });
+
+  it('emits cRegTrib when supplied via extras', () => {
+    const issqnImposto: Imposto = { origem: '0', configuracaoISSQN: issqnFor() };
+    const out = aggregateISSQN(
+      [{ item: { vProd: 500 }, imposto: issqnImposto }],
+      { dCompet: '2026-05-27', cRegTrib: '3' },
+    );
+    expect(out?.cRegTrib).toBe('3');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// aggregateRetTrib (Group B — retentions)
+// ---------------------------------------------------------------------------
+
+describe('aggregateRetTrib', () => {
+  it('returns undefined when no item carries retencao', () => {
+    const out = aggregateRetTrib([
+      { item: { vProd: 100 }, imposto: impostoFor102() },
+    ]);
+    expect(out).toBeUndefined();
+  });
+
+  it('sums vRetPIS / vRetCOFINS / vRetCSLL across items', () => {
+    const ret: Retencao = { vRetPIS: 1.65, vRetCOFINS: 7.6, vRetCSLL: 1 };
+    const out = aggregateRetTrib([
+      { item: { vProd: 100 }, imposto: { ...impostoFor102(), retencao: ret } },
+      { item: { vProd: 100 }, imposto: { ...impostoFor102(), retencao: ret } },
+    ]);
+    expect(out?.vRetPIS).toBe('3.30');
+    expect(out?.vRetCOFINS).toBe('15.20');
+    expect(out?.vRetCSLL).toBe('2.00');
+  });
+
+  it('emits IRRF and Prev BC + value pairs', () => {
+    const ret: Retencao = { vBCIRRF: 1000, vIRRF: 15, vBCRetPrev: 500, vRetPrev: 55 };
+    const out = aggregateRetTrib([
+      { item: { vProd: 1000 }, imposto: { ...impostoFor102(), retencao: ret } },
+    ]);
+    expect(out?.vBCIRRF).toBe('1000.00');
+    expect(out?.vIRRF).toBe('15.00');
+    expect(out?.vBCRetPrev).toBe('500.00');
+    expect(out?.vRetPrev).toBe('55.00');
+  });
+
+  it('omits fields whose cumulative sum is 0 (Flutter parity)', () => {
+    const ret: Retencao = { vRetPIS: 1.65 };
+    const out = aggregateRetTrib([
+      { item: { vProd: 100 }, imposto: { ...impostoFor102(), retencao: ret } },
+    ]);
+    expect(out?.vRetPIS).toBe('1.65');
+    expect(out?.vRetCOFINS).toBeUndefined();
+    expect(out?.vRetCSLL).toBeUndefined();
+    expect(out?.vIRRF).toBeUndefined();
+    expect(out?.vRetPrev).toBeUndefined();
+  });
+
+  it('ignores items with retencao=null when other items carry retentions', () => {
+    const ret: Retencao = { vRetPIS: 2 };
+    const out = aggregateRetTrib([
+      { item: { vProd: 100 }, imposto: impostoFor102() }, // no retencao
+      { item: { vProd: 100 }, imposto: { ...impostoFor102(), retencao: ret } },
+    ]);
+    expect(out?.vRetPIS).toBe('2.00');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -303,6 +581,47 @@ describe('aggregateTotals', () => {
     expect(totals.vFCPSTRet).toBe(0); // our fixture has no FCP
     expect(totals.vNF).toBe(1500);
   });
+
+  it('extras.vFrete is added to vNF and surfaces on the aggregation', () => {
+    const totals = aggregateTotals(
+      [{ item: { vProd: 100 }, imposto: impostoFor102() }],
+      { vFrete: 25 },
+    );
+    expect(totals.vFrete).toBe(25);
+    expect(totals.vNF).toBe(125);
+  });
+
+  it('extras.vDesc is subtracted from vNF', () => {
+    const totals = aggregateTotals(
+      [{ item: { vProd: 100 }, imposto: impostoFor102() }],
+      { vDesc: 10 },
+    );
+    expect(totals.vDesc).toBe(10);
+    expect(totals.vNF).toBe(90);
+  });
+
+  it('sums vIPI from configuracaoIPI (IPITrib) and adds it to vNF', () => {
+    const ipiTrib: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: { cEnq: '999', CST: '50', vIPI: 50 },
+    };
+    const totals = aggregateTotals([
+      { item: { vProd: 1000 }, imposto: ipiTrib },
+      { item: { vProd: 500 }, imposto: ipiTrib },
+    ]);
+    expect(totals.vIPI).toBe(100);
+    expect(totals.vNF).toBe(1600); // 1500 vProd + 100 vIPI
+  });
+
+  it('IPINT items contribute 0 to vIPI (no vIPI on the config)', () => {
+    const ipiNT: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: { cEnq: '999', CST: '01' },
+    };
+    const totals = aggregateTotals([{ item: { vProd: 1000 }, imposto: ipiNT }]);
+    expect(totals.vIPI).toBe(0);
+    expect(totals.vNF).toBe(1000);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -318,6 +637,70 @@ describe('buildTranspXml', () => {
   });
   it('rejects an invalid modFrete', () => {
     expect(() => buildTranspXml({ modFrete: '8' as never })).toThrow();
+  });
+
+  it('emits <transporta> with carrier fields in canonical XSD order', () => {
+    const xml = buildTranspXml({
+      modFrete: '0',
+      transporta: {
+        CNPJ: '99999999000191',
+        xNome: 'Trans Dev',
+        IE: '110042490114',
+        xMun: 'Sao Paulo',
+        UF: 'SP',
+      },
+    });
+    expect(xml).toContain(
+      '<transporta>' +
+        '<CNPJ>99999999000191</CNPJ>' +
+        '<xNome>Trans Dev</xNome>' +
+        '<IE>110042490114</IE>' +
+        '<xMun>Sao Paulo</xMun>' +
+        '<UF>SP</UF>' +
+        '</transporta>',
+    );
+  });
+
+  it('emits <veicTransp> with placa + UF + RNTC', () => {
+    const xml = buildTranspXml({
+      modFrete: '0',
+      veicTransp: { placa: 'ABC1D23', UF: 'SP', RNTC: '12345' },
+    });
+    expect(xml).toContain(
+      '<veicTransp><placa>ABC1D23</placa><UF>SP</UF><RNTC>12345</RNTC></veicTransp>',
+    );
+  });
+
+  it('emits one <reboque> per trailer entry', () => {
+    const xml = buildTranspXml({
+      modFrete: '0',
+      reboque: [
+        { placa: 'XYZ9876', UF: 'SP' },
+        { placa: 'XYZ5432' },
+      ],
+    });
+    expect((xml.match(/<reboque>/g) ?? []).length).toBe(2);
+    expect(xml).toContain('<reboque><placa>XYZ9876</placa><UF>SP</UF></reboque>');
+  });
+
+  it('emits <vol> with formatted pesoL/pesoB (3 decimals)', () => {
+    const xml = buildTranspXml({
+      modFrete: '0',
+      vol: [{ qVol: 2, esp: 'CAIXA', pesoL: 1.25, pesoB: 1.5 }],
+    });
+    expect(xml).toContain(
+      '<vol><qVol>2</qVol><esp>CAIXA</esp><pesoL>1.250</pesoL><pesoB>1.500</pesoB></vol>',
+    );
+  });
+
+  it('emits <vagao> and <balsa> when supplied', () => {
+    const xml = buildTranspXml({
+      modFrete: '0',
+      vagao: 'V01',
+      balsa: 'B01',
+    });
+    expect(xml).toContain('<vagao>V01</vagao>');
+    expect(xml).toContain('<balsa>B01</balsa>');
   });
 });
 

@@ -17,22 +17,30 @@
 import { z } from 'zod';
 
 import {
+  fmtMoney,
   fmtMoneyOpt,
+  fmtQuantity,
+  fmtRate,
   fmtRateOpt,
 } from './format';
 import {
   type ConfCOFINS,
   type ConfPIS,
   type ConfiguracaoICMS,
+  type ConfiguracaoIPI,
+  type ConfiguracaoISSQN,
   type Imposto,
   type Origem,
   type TributeItem,
+  IPI_TRIB_CSTS,
   impostoSchema,
   tributeItemSchema,
 } from './schemas';
 import type {
+  TIpi,
   TNFe_infNFe_det_imposto,
   TNFe_infNFe_det_imposto_ICMS,
+  TNFe_infNFe_det_imposto_ISSQN,
   TNFe_infNFe_det_imposto_COFINS,
   TNFe_infNFe_det_imposto_PIS,
 } from '../types/nfe-schema';
@@ -50,11 +58,21 @@ export function buildImpostoXml(rawImposto: unknown, rawItem: unknown): string {
   const imposto = parseInput(impostoSchema, rawImposto, 'imposto');
   const item = parseInput(tributeItemSchema, rawItem, 'item');
 
-  const icms = buildICMS(imposto.configuracaoICMS, imposto.origem);
+  // XSD xs:choice — every item carries either <ICMS> or <ISSQN>, not
+  // both. Mirror the Flutter dispatcher: ISSQN wins when set, otherwise
+  // require an ICMS config.
   const pis = buildPIS(imposto.configuracaoPIS, item);
   const cofins = buildCOFINS(imposto.configuracaoCOFINS, item);
-
-  const impostoValue: TNFe_infNFe_det_imposto = { ICMS: icms, PIS: pis, COFINS: cofins };
+  const impostoValue: TNFe_infNFe_det_imposto = imposto.configuracaoISSQN != null
+    ? { ISSQN: buildISSQN(imposto.configuracaoISSQN), PIS: pis, COFINS: cofins }
+    : {
+        ICMS: buildICMS(requireICMSConfig(imposto.configuracaoICMS), imposto.origem),
+        PIS: pis,
+        COFINS: cofins,
+      };
+  if (imposto.configuracaoIPI != null) {
+    impostoValue.IPI = buildIPI(imposto.configuracaoIPI);
+  }
   return serializeFragment(
     'TNFe_infNFe_det_imposto',
     'imposto',
@@ -65,6 +83,17 @@ export function buildImpostoXml(rawImposto: unknown, rawItem: unknown): string {
 // ---------------------------------------------------------------------------
 // ICMS dispatcher
 // ---------------------------------------------------------------------------
+
+function requireICMSConfig(
+  cfg: ConfiguracaoICMS | null | undefined,
+): ConfiguracaoICMS {
+  if (cfg == null) {
+    throw new NFeTributeError(
+      'imposto requires either `configuracaoICMS` or `configuracaoISSQN`',
+    );
+  }
+  return cfg;
+}
 
 function buildICMS(
   config: ConfiguracaoICMS,
@@ -209,6 +238,81 @@ function buildICMS(
 }
 
 // ---------------------------------------------------------------------------
+// IPI dispatcher
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the per-item `<IPI>` block from a `ConfiguracaoIPI`. The XSD
+ * has `<IPI>` carrying `<cEnq>` then exactly one of `<IPITrib>` (CSTs
+ * 00/49/50/99 — tributado, requires `vIPI`) or `<IPINT>` (every other
+ * CST — não tributado, only CST). `vIPI` is required for the tributado
+ * variant; the other numeric fields are optional and emitted only when
+ * provided.
+ */
+function buildIPI(cfg: ConfiguracaoIPI): TIpi {
+  if (IPI_TRIB_CSTS.has(cfg.CST)) {
+    if (cfg.vIPI == null) {
+      throw new NFeTributeError(`IPI CST=${cfg.CST} (IPITrib) requires \`vIPI\``);
+    }
+    const ipiTrib: TIpi['IPITrib'] = {
+      CST: cfg.CST as '00' | '49' | '50' | '99',
+      vIPI: fmtMoneyOpt('vIPI', cfg.vIPI)!,
+    };
+    const vBC = fmtMoneyOpt('vBC', cfg.vBC);
+    if (vBC != null) ipiTrib.vBC = vBC;
+    const pIPI = fmtRateOpt('pIPI', cfg.pIPI);
+    if (pIPI != null) ipiTrib.pIPI = pIPI;
+    if (cfg.qUnid != null) ipiTrib.qUnid = fmtQuantity('qUnid', cfg.qUnid);
+    if (cfg.vUnid != null) ipiTrib.vUnid = fmtQuantity('vUnid', cfg.vUnid);
+    return { cEnq: cfg.cEnq, IPITrib: ipiTrib };
+  }
+  return {
+    cEnq: cfg.cEnq,
+    IPINT: {
+      CST: cfg.CST as '01' | '02' | '03' | '04' | '05' | '51' | '52' | '53' | '54' | '55',
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// ISSQN dispatcher
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the per-item `<ISSQN>` block. The XSD requires vBC, vAliq,
+ * vISSQN, cMunFG (7-digit IBGE code of the service location),
+ * cListServ (Lei Complementar 116/2003 code, e.g. `'01.05'`), indISS
+ * (1-7) and indIncentivo (1=sim, 2=não). The optional fields ride
+ * along only when set on the per-item config.
+ */
+function buildISSQN(cfg: ConfiguracaoISSQN): TNFe_infNFe_det_imposto_ISSQN {
+  const out: TNFe_infNFe_det_imposto_ISSQN = {
+    vBC: fmtMoney('vBC', cfg.vBC),
+    vAliq: fmtRate('vAliq', cfg.vAliq),
+    vISSQN: fmtMoney('vISSQN', cfg.vISSQN),
+    cMunFG: cfg.cMunFG,
+    cListServ: cfg.cListServ,
+    indISS: cfg.indISS,
+    indIncentivo: cfg.indIncentivo,
+  };
+  const vDeducao = fmtMoneyOpt('vDeducao', cfg.vDeducao);
+  if (vDeducao != null) out.vDeducao = vDeducao;
+  const vOutro = fmtMoneyOpt('vOutro', cfg.vOutro);
+  if (vOutro != null) out.vOutro = vOutro;
+  const vDescIncond = fmtMoneyOpt('vDescIncond', cfg.vDescIncond);
+  if (vDescIncond != null) out.vDescIncond = vDescIncond;
+  const vDescCond = fmtMoneyOpt('vDescCond', cfg.vDescCond);
+  if (vDescCond != null) out.vDescCond = vDescCond;
+  const vISSRet = fmtMoneyOpt('vISSRet', cfg.vISSRet);
+  if (vISSRet != null) out.vISSRet = vISSRet;
+  if (cfg.cServico != null) out.cServico = cfg.cServico;
+  if (cfg.cMun != null) out.cMun = cfg.cMun;
+  if (cfg.cPais != null) out.cPais = cfg.cPais;
+  if (cfg.nProcesso != null) out.nProcesso = cfg.nProcesso;
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // PIS / COFINS dispatchers
 // ---------------------------------------------------------------------------
 
@@ -297,10 +401,21 @@ function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto
     case '75':
     case '98':
     case '99': {
-      // PISOutr — outras operações. SEFAZ XSD requires vPIS even when
-      // the semantics are "outras"; we emit 0.00 for SN flows that fall
-      // here (typically `imposto.configuracaoPIS` carries no rate).
-      return { PISOutr: { CST: cfg.CST, vPIS: '0.00' } };
+      // PISOutr — outras operações. SEFAZ XSD models PISOutr as
+      // CST, then xs:choice ( vBC + pPIS | qBCProd + vAliqProd ), then vPIS.
+      // Codegen-emitted type has all four as optional, but xmllint-wasm
+      // (and SEFAZ) reject omitting the choice — the validator says
+      // "vPIS not expected, expected vBC or qBCProd". For SN flows
+      // that arrive here without a configured rate, emit the
+      // value-based variant with zeros.
+      return {
+        PISOutr: {
+          CST: cfg.CST,
+          vBC: '0.00',
+          pPIS: '0.0000',
+          vPIS: '0.00',
+        },
+      };
     }
   }
 }
@@ -347,8 +462,17 @@ function buildCOFINSByCST(
     case '09':
       return { COFINSNT: { CST: cfg.CST } };
     default:
-      // COFINSOutr — same posture as PISOutr above; vCOFINS=0.00.
-      return { COFINSOutr: { CST: cfg.CST, vCOFINS: '0.00' } };
+      // COFINSOutr — same XSD shape + same posture as PISOutr above:
+      // emit vBC + pCOFINS + vCOFINS with zeros so xmllint-wasm /
+      // SEFAZ accept the xs:choice.
+      return {
+        COFINSOutr: {
+          CST: cfg.CST,
+          vBC: '0.00',
+          pCOFINS: '0.0000',
+          vCOFINS: '0.00',
+        },
+      };
   }
 }
 

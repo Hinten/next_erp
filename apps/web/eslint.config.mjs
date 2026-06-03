@@ -27,6 +27,16 @@ const config = [
               message:
                 'Use `@delfrance/integrations-nfe/http-provider` — the root specifier pulls server-only modules (soap, node-forge, fs) that break the browser bundle.',
             },
+            {
+              // Raw collection()/doc()/collectionGroup() build references
+              // WITHOUT the Zod converter, so writes skip schema.parse() and
+              // lose type-checking. Get refs from a defineCollection() handle
+              // instead, which pairs the path with its schema and validates.
+              name: 'firebase/firestore',
+              importNames: ['collection', 'doc', 'collectionGroup'],
+              message:
+                'Do not build raw Firestore refs. Use a defineCollection() handle: `xCollection.ref(db, ctx)` / `xCollection.docRef(db, ctx, id)` (apps/web/lib/data/*), or `groupQuery(db, id, xCollection.converter)` from @delfrance/data for collection groups.',
+            },
           ],
         },
       ],

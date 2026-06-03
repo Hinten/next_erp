@@ -15,7 +15,15 @@
  * inutilização lifecycles are owned by Phase B and only enter this file
  * once those events are wired.
  */
-import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
+import { ESTADO_NFE, type EstadoNFe, type UF } from '@delfrance/schemas';
+
+import type { TpEmis } from '../generator/types';
+
+export {
+  CONSUMO_INDEVIDO_MARKER,
+  NFeConsumoIndevidoError,
+  assertNotConsumoIndevido,
+} from './consumo-indevido';
 
 /**
  * Bounded poll cap for `cStat=105` (lote still processing) and `cStat=635`
@@ -221,4 +229,57 @@ export function applyOutcome(
     nRec: outcome.nRec ?? null,
     action,
   };
+}
+
+/**
+ * SEFAZ `cStat` values that mark an NFe as terminal or in-flight at SEFAZ
+ * and must NOT be re-emitted. Mirror of Flutter's
+ * `NotaFiscalEletronica.statusBloqueadores` in
+ * `.old/packages/pedido_nfe/lib/src/models.dart:280-291`. Sealing this
+ * list keeps `podeGerar` consistent between the two ports during the
+ * migration.
+ */
+export const STATUS_BLOQUEADORES = new Set<string>([
+  '100', // Autorizado o uso da NF-e
+  '101', // Cancelamento homologado
+  '102', // Inutilização homologada
+  '103', // Lote recebido com sucesso
+  '104', // Lote processado
+  '105', // Lote em processamento
+  '128', // Lote de Evento processado
+  '150', // Autorizado fora de prazo
+  '151', // Cancelamento fora de prazo
+  '468',
+]);
+
+/** Mirror of Flutter's `NotaFiscalEletronica.bloqueada` predicate. */
+export function isBloqueada(cStat: string | null | undefined): boolean {
+  return cStat != null && STATUS_BLOQUEADORES.has(cStat);
+}
+
+/** Contingência mode for SEFAZ `tpEmis` resolution. */
+export type ContingenciaMode = 'none' | 'svc' | 'epec';
+
+/**
+ * Resolve SEFAZ `tpEmis` from (UF, contingência mode). Mirrors Flutter's
+ * `filial.sede.estado.{tpEmis,tpEmisSVC,tpEmisEPEC}` selector
+ * (`.old/packages/pedido_nfe/lib/src/tasks.dart:136-140`).
+ *
+ * Phase A scope: only `mode='none'` is supported (normal emission,
+ * tpEmis=1 Brazil-wide). SVC / EPEC contingência is per-UF and Phase B
+ * — this function throws on those modes so call sites have to ramp them
+ * in explicitly.
+ *
+ * Production-traffic safety (`NFE_ALLOW_PRODUCAO` opt-in) is enforced
+ * by `assertSafeTpAmb` at the SOAP layer — not duplicated here.
+ */
+export function resolveTpEmis(_uf: UF, mode: ContingenciaMode = 'none'): TpEmis {
+  switch (mode) {
+    case 'none':
+      return 1;
+    case 'svc':
+      throw new Error(`Contingência '${mode}' ainda não implementada (Phase B).`);
+    case 'epec':
+      throw new Error(`Contingência '${mode}' ainda não implementada (Phase B).`);
+  }
 }

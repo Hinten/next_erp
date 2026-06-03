@@ -49,6 +49,23 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
 8. **`NFE_ALLOW_PRODUCAO=true` is required for produção.** The library's
    safety guard (`assertSafeTpAmb`) rejects `tpAmb='1'` without it. Set
    only in the produção App Hosting backend.
+9. **Never log raw error objects or cert/XML-bearing values in NF-e code
+   paths; never read `NFE_CERT_*` env vars outside the unified loader.**
+   Use `safeErrorShape(err)` for catch blocks and
+   `safeLog` / `redactSensitive` (from `apps/nfe/lib/nfe/log.ts`) for
+   composite-object logging. Use `loadCertificateFromEnv()` /
+   `hasNFeCertEnv()` (from `@delfrance/integrations-nfe`) for any
+   cert-env interaction. **Enforced by ESLint** in
+   `apps/nfe/eslint.config.mjs` + `packages/integrations/nfe/eslint.config.mjs`
+   — raw `console.*` in NF-e code paths (`lib/nfe/**`, `app/api/nfe/**`,
+   `src/{cert,soap,sign,generator,operations}/**`) and any
+   `process.env.NFE_CERT_*` read outside
+   `packages/integrations/nfe/src/cert/index.ts` are lint errors. Why:
+   `NFeTransportError` carries `responseBody` (raw SEFAZ SOAP reply,
+   can echo signed XML on cStat=215/225); `NFeCertificate` carries
+   `privateKeyPem` + `pfxBuffer` + `password`; the cert env vars are
+   sensitive secrets. Partial / mutated leaks bypass the GitHub Actions
+   value-masker.
 
 ## Required env
 

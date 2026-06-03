@@ -79,6 +79,14 @@ describe('notificationForNFeResult', () => {
     expect(n.color).toBe('gray');
     expect(n.title).toBe('NF-e enviada');
   });
+
+  it('reused=true → yellow "já emitida" toast (dedup skip), overrides estado branch', () => {
+    const n = notificationForNFeResult(emitResult({ reused: true }));
+    expect(n.color).toBe('yellow');
+    expect(n.title).toBe('NFe já emitida');
+    expect(n.message).toContain('pulada');
+    expect(n.message).toContain('100');
+  });
 });
 
 describe('notificationForNFeError', () => {
@@ -105,18 +113,39 @@ describe('notificationForNFeError', () => {
     expect(n.message).toContain('PED-MISSING');
   });
 
-  it('NFeAuthError → red', () => {
-    const err = new NFeAuthError('no token', 401, {});
+  it('NFeAuthError 401 → Sessão inválida, surfaces server message', () => {
+    const err = new NFeAuthError('Token inválido ou expirado.', 401, {});
     const n = notificationForNFeError(err);
     expect(n.color).toBe('red');
     expect(n.title).toBe('Sessão inválida');
+    expect(n.message).toBe('Token inválido ou expirado.');
   });
 
-  it('NFeRuntimeNotReadyError → red', () => {
-    const err = new NFeRuntimeNotReadyError('cert expired', {});
+  it('NFeAuthError 403 → Sem permissão, surfaces server message', () => {
+    const err = new NFeAuthError('Sem permissão para esta operação.', 403, {});
+    const n = notificationForNFeError(err);
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('Sem permissão');
+    expect(n.message).toBe('Sem permissão para esta operação.');
+  });
+
+  it('NFeRuntimeNotReadyError → surfaces body.code as the message', () => {
+    const err = new NFeRuntimeNotReadyError('NF-e runtime not ready', {
+      error: 'NF-e runtime not ready',
+      code: "Failed to read certificate file at '/some/path/cert.pfx'",
+    });
     const n = notificationForNFeError(err);
     expect(n.color).toBe('red');
     expect(n.title).toBe('Servidor NF-e indisponível');
+    expect(n.message).toBe("Failed to read certificate file at '/some/path/cert.pfx'");
+  });
+
+  it('NFeRuntimeNotReadyError → falls back to generic message when body has no code', () => {
+    const err = new NFeRuntimeNotReadyError('NF-e runtime not ready', {});
+    const n = notificationForNFeError(err);
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('Servidor NF-e indisponível');
+    expect(n.message).toContain('certificado, chain TLS ou runtime');
   });
 
   it('NFeBadRequestError → red with the underlying message', () => {

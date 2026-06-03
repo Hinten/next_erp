@@ -30,6 +30,32 @@ export interface NFeEmitResult {
   readonly nRec: string | null;
   readonly cStat: string;
   readonly xMotivo: string;
+  /**
+   * `true` when the server short-circuited because an existing nfev4 doc
+   * was already in a `STATUS_BLOQUEADORES` cStat (the dedup branch in
+   * `emitirPedido`). `false` (or absent, for backward compat with older
+   * route responses) when a fresh emission round-trip ran.
+   */
+  readonly reused?: boolean;
+}
+
+/** Mirrors `apps/nfe/lib/nfe/orchestrator.ts:EmitError` — per-pedido failure inside a batch. */
+export interface NFeEmitError {
+  readonly pedidoId: string;
+  readonly errorCode: string;
+  readonly errorMessage: string;
+}
+
+/** Discriminate `NFeEmitResult` from `NFeEmitError` in a batch result. */
+export function isNFeEmitError(
+  r: NFeEmitResult | NFeEmitError,
+): r is NFeEmitError {
+  return (r as NFeEmitError).errorCode !== undefined;
+}
+
+/** Mirrors `apps/nfe/lib/nfe/orchestrator.ts:BatchEmitResult`. */
+export interface NFeBatchEmitResult {
+  readonly results: ReadonlyArray<NFeEmitResult | NFeEmitError>;
 }
 
 /** Mirrors `apps/nfe/app/api/nfe/consultar/route.ts` response. */
@@ -64,6 +90,7 @@ export interface NFeHttpClientConfig {
 
 export interface NFeHttpClient {
   emitir(pedidoId: string): Promise<NFeEmitResult>;
+  emitirLote(pedidoIds: ReadonlyArray<string>): Promise<NFeBatchEmitResult>;
   consultar(chave: string): Promise<NFeConsultaResult>;
   processarPendentes(): Promise<NFeProcessarPendentesResult>;
 }
@@ -174,6 +201,10 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       call<NFeEmitResult>('POST', '/api/nfe/emitir', {
         body: { pedidoId },
         context: { pedidoId },
+      }),
+    emitirLote: (pedidoIds) =>
+      call<NFeBatchEmitResult>('POST', '/api/nfe/emitir-lote', {
+        body: { pedidoIds: [...pedidoIds] },
       }),
     consultar: (chave) =>
       call<NFeConsultaResult>('GET', `/api/nfe/consultar?chave=${encodeURIComponent(chave)}`),

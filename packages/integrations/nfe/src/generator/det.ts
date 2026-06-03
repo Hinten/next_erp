@@ -46,7 +46,7 @@ function fmtMoney(n: number): string {
 export function buildProd(item: GeneratorItem): TNFe_infNFe_det_prod {
   const xProd = sanitizeNFeText(item.xProd);
   if (!xProd) throw new NFeDetError(`item ${item.nItem}: xProd is required`);
-  return {
+  const prod: TNFe_infNFe_det_prod = {
     cProd: item.cProd,
     cEAN: item.cEAN,
     xProd,
@@ -63,6 +63,11 @@ export function buildProd(item: GeneratorItem): TNFe_infNFe_det_prod {
     vUnTrib: fmtUnitValue(item.vUnTrib),
     indTot: item.indTot ?? '1',
   };
+  // Optional per-item frete value — set by the orchestrator on det[0]
+  // when frete.modalidade='0' (contratação por conta do emitente).
+  // Mirrors Flutter `pedido_nfe_base.dart:932`.
+  if (item.vFrete != null) prod.vFrete = fmtMoney(item.vFrete);
+  return prod;
 }
 
 /**

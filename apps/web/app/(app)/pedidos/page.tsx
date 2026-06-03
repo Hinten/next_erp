@@ -23,6 +23,7 @@ import {
   NFCell,
   VlrCell,
 } from './_components/PedidoCells';
+import { EmitirLoteDialog } from './_components/EmitirLoteDialog';
 
 const virtualColumns: ReadonlyArray<VirtualColumn<Pedido>> = [
   { key: 'nf',        label: 'NF',        tooltip: 'Nota Fiscal',       renderCell: (r) => <NFCell pedidoId={r.id} /> },
@@ -35,46 +36,53 @@ const virtualColumns: ReadonlyArray<VirtualColumn<Pedido>> = [
 ];
 
 export default function PedidosPage() {
-  const emitNFeAction = useEmitirNFeAction();
+  const { action: emitNFeAction, loteModal } = useEmitirNFeAction();
   return (
-    <TableView
-      title="Pedidos"
-      description="Selecione pedidos e use o botão acima da tabela para emitir NF-e."
-      schema={pedidoSchema}
-      collection={pedidoCollection}
-      db={getFirebaseFirestore()}
-      defaultColumns={[
-        'numero',
-        'estado',
-        'nf',
-        'cliente',
-        'vlr',
-        'expedicao',
-        'frete',
-        'criacao',
-        'imp',
-      ]}
-      virtualColumns={virtualColumns}
-      fields={{
-        estado: {
-          label: 'Pagamento',
-          renderCell: (value) => (
-            <Badge variant="light">
-              {ESTADO_PEDIDO_LABELS[value as EstadoPedido] ?? '—'}
-            </Badge>
-          ),
-        },
-      }}
-      orderBy={{ field: 'numero', direction: 'desc' }}
-      pageSize={50}
-      rowHref={(id) => `/pedidos/${id}/editar`}
-      renderNewButton={() => (
-        <Button component={Link} href="/pedidos/novo">
-          Novo pedido
-        </Button>
-      )}
-      selectable
-      actions={[emitNFeAction]}
-    />
+    <>
+      <TableView
+        title="Pedidos"
+        description="Selecione pedidos e use o botão acima da tabela para emitir NF-e."
+        schema={pedidoSchema}
+        collection={pedidoCollection}
+        db={getFirebaseFirestore()}
+        defaultColumns={[
+          'numero',
+          'estado',
+          'nf',
+          'cliente',
+          'vlr',
+          'expedicao',
+          'frete',
+          'criacao',
+          'imp',
+        ]}
+        virtualColumns={virtualColumns}
+        fields={{
+          estado: {
+            label: 'Pagamento',
+            renderCell: (value) => (
+              <Badge variant="light">
+                {ESTADO_PEDIDO_LABELS[value as EstadoPedido] ?? '—'}
+              </Badge>
+            ),
+          },
+        }}
+        orderBy={{ field: 'numero', direction: 'desc' }}
+        pageSize={50}
+        rowHref={(id) => `/pedidos/${id}/editar`}
+        renderNewButton={() => (
+          <Button component={Link} href="/pedidos/novo">
+            Novo pedido
+          </Button>
+        )}
+        selectable
+        actions={[emitNFeAction]}
+      />
+      <EmitirLoteDialog
+        opened={loteModal.opened}
+        pedidoIds={loteModal.pedidoIds}
+        onClose={loteModal.close}
+      />
+    </>
   );
 }

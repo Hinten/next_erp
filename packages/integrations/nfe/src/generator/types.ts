@@ -47,6 +47,13 @@ export interface GeneratorItem {
   /** `indTot` — `'1'` when the item composes the NF-e total (default), `'0'` otherwise. */
   readonly indTot?: '0' | '1';
   /**
+   * Optional per-item frete value (2 decimals). When the issuer
+   * contracts the carrier (`frete.modalidade='0'`), Flutter stamps
+   * the freight cost onto `det[0].prod.vFrete` so the value carries
+   * onto the NF-e (`pedido_nfe_base.dart:932`).
+   */
+  readonly vFrete?: number;
+  /**
    * Pre-built `<imposto>...</imposto>` XML for this det. The generator splices
    * it in as-is; tributary computation lives in the caller (Phase D follow-up).
    */

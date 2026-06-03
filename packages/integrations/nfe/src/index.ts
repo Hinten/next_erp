@@ -23,10 +23,9 @@ import type { InvoiceProvider } from '@delfrance/core/plugins';
 export {
   NFeCertError,
   assertCertNotExpired,
+  hasNFeCertEnv,
   isCertExpired,
-  loadCertificateFromBase64,
   loadCertificateFromEnv,
-  loadCertificateFromPath,
   warnIfCertNearExpiry,
   type NFeCertificate,
 } from './cert';
@@ -59,11 +58,18 @@ export {
 
 // State machine
 export {
+  CONSUMO_INDEVIDO_MARKER,
   MAX_LOTE_POLL_RETRIES,
+  NFeConsumoIndevidoError,
+  STATUS_BLOQUEADORES,
   applyOutcome,
+  assertNotConsumoIndevido,
   classifyCStat,
   cStatToEstado,
+  isBloqueada,
   nextAction,
+  resolveTpEmis,
+  type ContingenciaMode,
   type CStatCategory,
   type NextAction,
   type NFeStatePatch,
@@ -121,6 +127,9 @@ export {
   type TpEmis,
 } from './generator';
 
+// `<nfeProc>` envelope — post-emission stitching of signed NFe + protNFe.
+export { buildNFeProc } from './nfeproc';
+
 // Recovery / anti-loss
 export {
   DEFAULT_STUCK_TIMEOUT_MS,
@@ -145,6 +154,18 @@ export {
   consultarStatusServico,
   type CUFCode,
 } from './operations';
+
+// Re-export the SOAP response types that orchestrator-level code uses
+// in function signatures. Other typed responses (TRetConsSitNFe etc.)
+// are reachable through `NFeSchemas` (codegen'd Zod) and the function
+// return types, but `TRetEnviNFe['protNFe']` shows up enough that
+// pulling it from the package root keeps call sites tidy.
+export type {
+  TRetConsReciNFe,
+  TRetConsSitNFe,
+  TRetConsStatServ,
+  TRetEnviNFe,
+} from './types/nfe-schema';
 
 // Generated Zod schemas (one per SEFAZ complexType, plus ROOTS_SCHEMAS).
 // Re-exported as a namespace so callers can pull individual schemas by name
