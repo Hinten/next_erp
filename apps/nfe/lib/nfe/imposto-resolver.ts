@@ -192,6 +192,9 @@ export function createFirestoreImpostoResolver(
 ): ImpostoResolver {
   return createImpostoResolver({
     bundle,
+    /* eslint-disable no-restricted-syntax -- read-only: produtos / categorias
+       docs and their legacy `imposto` / `impostocategoria` subcollections.
+       Writes to these collections go through validated handles elsewhere. */
     async readProduto(produtoUid) {
       const snap = await fs.collection('produtos').doc(produtoUid).get();
       return snap.exists ? (snap.data() ?? null) : null;
@@ -222,5 +225,6 @@ export function createFirestoreImpostoResolver(
       }
       return out;
     },
+    /* eslint-enable no-restricted-syntax */
   });
 }
