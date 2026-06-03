@@ -100,6 +100,15 @@ const rootElements = []; // { name, type }
 
 const files = readdirSync(SCHEMA_DIR)
   .filter((f) => f.endsWith('.xsd') && f !== 'xmldsig-core-schema_v1.01.xsd')
+  // Skip the CC-e detEvento schema (`e110110`). Both it and the cancelamento
+  // schema (`e110111`) declare a top-level inline `<xs:element name="detEvento">`,
+  // and the inline-element registration above is first-file-wins
+  // (`!complexTypes.has`). Letting `e110110` (which sorts first) in would clobber
+  // the `detEvento` complexType/META that the cancelamento serializer relies on.
+  // CC-e's detEvento is tiny + fixed-order, so it is hand-serialized in
+  // `src/eventos/index.ts` and validated against this XSD via the `detEventoCCe`
+  // root key in `src/xsd/index.ts` — it never needs a generated META.
+  .filter((f) => f !== 'e110110_v1.00.xsd')
   .sort();
 
 for (const file of files) {

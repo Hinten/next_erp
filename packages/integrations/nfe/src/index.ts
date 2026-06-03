@@ -131,14 +131,19 @@ export {
 // `<nfeProc>` envelope — post-emission stitching of signed NFe + protNFe.
 export { buildNFeProc } from './nfeproc';
 
-// Eventos (cancelamento; CC-e later) — builders for the RecepcaoEvento lote.
+// Eventos (cancelamento + CC-e) — builders for the RecepcaoEvento lote.
 export {
   buildCancelamentoEvento,
+  buildCCeDetEvento,
+  buildCCeEvento,
   buildEnvEvento,
   buildProcEventoNFe,
   NFeEventoError,
   TP_EVENTO_CANCELAMENTO,
+  TP_EVENTO_CCE,
+  XCONDUSO_CCE,
   type CancelamentoEventoInput,
+  type CCeEventoInput,
 } from './eventos';
 
 // Inutilização de numeração — builder for the NfeInutilizacao lote.
@@ -168,11 +173,13 @@ export {
 export {
   autorizarLote,
   cancelarNFe,
+  cartaCorrecaoNFe,
   consultarLote,
   consultarSituacaoNFe,
   consultarStatusServico,
   inutilizarNumeracao,
   type CancelarNFeResult,
+  type CartaCorrecaoResult,
   type CUFCode,
   type InutilizarResult,
 } from './operations';
@@ -272,6 +279,7 @@ export {
   NFeRuntimeNotReadyError,
   NFeServerError,
   createNFeHttpClient,
+  type NFeCartaCorrecaoResult,
   type NFeConsultaResult,
   type NFeEmitResult,
   type NFeHttpClient,

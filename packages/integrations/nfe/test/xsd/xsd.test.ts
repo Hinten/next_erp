@@ -5,6 +5,7 @@ import { NFeXsdValidationError, supportedRoots, validateXsd } from '../../src/xs
 import type { NFeCertificate } from '../../src/cert';
 import {
   buildCancelamentoEvento,
+  buildCCeDetEvento,
   buildEnvEvento,
 } from '../../src/eventos/index';
 import { buildInutNFe } from '../../src/inutilizacao/index';
@@ -51,6 +52,7 @@ describe('supportedRoots', () => {
         'inutNFe',
         'envEvento',
         'detEvento',
+        'detEventoCCe',
         'NFe',
         'retEnviNFe',
         'retConsReciNFe',
@@ -222,6 +224,26 @@ describe('validateXsd — detEvento (e110111 cancelamento payload)', () => {
     await expect(validateXsd('detEvento', detEvento({ omitXJust: true }))).rejects.toBeInstanceOf(
       NFeXsdValidationError,
     );
+  });
+});
+
+describe('validateXsd — detEventoCCe (e110110 carta de correção payload)', () => {
+  // buildCCeDetEvento emits the bare fragment; add the NFe namespace it inherits
+  // from <evento> on the wire so the standalone fragment validates (e110110 is
+  // elementFormDefault=qualified) — same shape the operation layer sends.
+  const withNs = (det: string): string =>
+    det.replace('<detEvento', `<detEvento xmlns="${NFE_NS}"`);
+
+  it('accepts a well-formed CC-e detEvento (fixed xCondUso + valid xCorrecao)', async () => {
+    const det = withNs(
+      buildCCeDetEvento({ xCorrecao: 'Correcao do peso bruto informado no transporte' }),
+    );
+    await expect(validateXsd('detEventoCCe', det)).resolves.toBeUndefined();
+  });
+
+  it('rejects a CC-e detEvento whose xCorrecao is below 15 chars', async () => {
+    const det = withNs(buildCCeDetEvento({ xCorrecao: 'curto' }));
+    await expect(validateXsd('detEventoCCe', det)).rejects.toBeInstanceOf(NFeXsdValidationError);
   });
 });
 

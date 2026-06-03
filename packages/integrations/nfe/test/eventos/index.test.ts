@@ -2,10 +2,13 @@ import { describe, it, expect } from 'vitest';
 
 import {
   buildCancelamentoEvento,
+  buildCCeEvento,
   buildEnvEvento,
   buildProcEventoNFe,
   NFeEventoError,
   TP_EVENTO_CANCELAMENTO,
+  TP_EVENTO_CCE,
+  XCONDUSO_CCE,
 } from '../../src/eventos/index';
 
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
@@ -100,6 +103,61 @@ describe('buildCancelamentoEvento', () => {
     const xml = buildCancelamentoEvento(baseInput());
     expect(xml).toMatch(new RegExp(`^<evento xmlns="${NFE_NS}" versao="1.00">`));
     expect(xml.endsWith('</evento>')).toBe(true);
+  });
+});
+
+describe('buildCCeEvento', () => {
+  function cceInput() {
+    return {
+      chNFe: CHAVE,
+      cOrgao: '35',
+      cnpj: CNPJ,
+      xCorrecao: 'Correcao do peso bruto informado no campo de transporte',
+      tpAmb: '2' as const,
+    };
+  }
+
+  it('builds the Id as ID + tpEvento(110110)(6) + chNFe(44) + nSeqEvento(2)', () => {
+    const xml = buildCCeEvento(cceInput());
+    expect(xml).toContain(`<infEvento Id="ID${TP_EVENTO_CCE}${CHAVE}01">`);
+    const id = /Id="(ID[^"]+)"/.exec(xml)![1]!;
+    expect(id).toHaveLength(2 + 6 + 44 + 2);
+  });
+
+  it('throws NFeEventoError when chNFe is not 44 digits', () => {
+    expect(() => buildCCeEvento({ ...cceInput(), chNFe: '123' })).toThrow(NFeEventoError);
+  });
+
+  it('builds the detEvento (descEvento + xCorrecao + fixed xCondUso) in XSD order', () => {
+    const xml = buildCCeEvento(cceInput());
+    expect(xml).toContain('<detEvento versao="1.00">');
+    expect(xml).toContain('<descEvento>Carta de Correção</descEvento>');
+    expect(xml).toContain(
+      '<xCorrecao>Correcao do peso bruto informado no campo de transporte</xCorrecao>',
+    );
+    expect(xml).toContain(`<xCondUso>${XCONDUSO_CCE}</xCondUso>`);
+    const desc = xml.indexOf('<descEvento>');
+    const corr = xml.indexOf('<xCorrecao>');
+    const cond = xml.indexOf('<xCondUso>');
+    expect(desc).toBeLessThan(corr);
+    expect(corr).toBeLessThan(cond);
+  });
+
+  it('XML-escapes the xCorrecao', () => {
+    const xml = buildCCeEvento({ ...cceInput(), xCorrecao: 'Troca de A & B por <C> teste real' });
+    expect(xml).toContain('Troca de A &amp; B por &lt;C&gt; teste real');
+    expect(xml).not.toContain('<C>');
+  });
+
+  it('honors an explicit nSeqEvento (padded in the Id)', () => {
+    const xml = buildCCeEvento({ ...cceInput(), nSeqEvento: 3 });
+    expect(xml).toContain('<nSeqEvento>3</nSeqEvento>');
+    expect(xml).toMatch(/Id="ID110110\d{44}03"/);
+  });
+
+  it('carries no nProt in the CC-e detEvento', () => {
+    const xml = buildCCeEvento(cceInput());
+    expect(xml).not.toContain('<nProt>');
   });
 });
 

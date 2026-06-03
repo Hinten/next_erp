@@ -102,6 +102,20 @@ export interface NFeInutilizarResult {
   readonly reconciled: number;
 }
 
+/** Mirrors `apps/nfe/app/api/nfe/carta-correcao/route.ts` response. */
+export interface NFeCartaCorrecaoResult {
+  readonly pedidoId: string;
+  readonly nfeId: string;
+  /** Event sequence number used for this CC-e (1, 2, 3, …). */
+  readonly nSeqEvento: number;
+  readonly cStat: string;
+  readonly xMotivo: string;
+  /** Event protocolo returned on cStat=135. */
+  readonly nProt: string | null;
+  /** `true` when SEFAZ registrou e vinculou (cStat 135). */
+  readonly accepted: boolean;
+}
+
 /**
  * Caller-provided config. `baseUrl` is the origin of `apps/nfe`
  * (in dev: `http://localhost:3004`; in prod: `https://nfe-<env>.web.app`).
@@ -123,6 +137,12 @@ export interface NFeHttpClient {
   cancelar(pedidoId: string, nfeId: string, xJust: string): Promise<NFeEmitResult>;
   /** Inutilizar an unused número range (NfeInutilizacao4). */
   inutilizar(args: NFeInutilizarArgs): Promise<NFeInutilizarResult>;
+  /** Register a carta de correção (CC-e) for an authorized NF-e (RecepcaoEvento, tpEvento=110110). */
+  cartaCorrecao(
+    pedidoId: string,
+    nfeId: string,
+    xCorrecao: string,
+  ): Promise<NFeCartaCorrecaoResult>;
 }
 
 /** Strip a trailing slash off `baseUrl` so route concatenation is clean. */
@@ -259,5 +279,10 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       }),
     inutilizar: (args) =>
       call<NFeInutilizarResult>('POST', '/api/nfe/inutilizar', { body: { ...args } }),
+    cartaCorrecao: (pedidoId, nfeId, xCorrecao) =>
+      call<NFeCartaCorrecaoResult>('POST', '/api/nfe/carta-correcao', {
+        body: { pedidoId, nfeId, xCorrecao },
+        context: { pedidoId },
+      }),
   };
 }
