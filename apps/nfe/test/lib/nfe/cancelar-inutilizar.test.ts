@@ -31,6 +31,7 @@ import {
   NFeCancelamentoError,
   NFeInutilizacaoAbortedError,
   NFeOrchestratorError,
+  NFePedidoNotFoundError,
 } from '../../../lib/nfe/orchestrator';
 import type { NFeRuntime } from '../../../lib/nfe/runtime';
 
@@ -622,12 +623,40 @@ describe('cancelarNFeService', () => {
     );
   });
 
-  it('throws NFeOrchestratorError when the nfev4 doc id does not exist', async () => {
+  it('throws NFePedidoNotFoundError (→ 404) when the nfev4 doc id does not exist', async () => {
     const events: string[] = [];
     const { fs } = fakeFirestore({ events, nfev4: null });
     await expect(
       cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST),
-    ).rejects.toBeInstanceOf(NFeOrchestratorError);
+    ).rejects.toBeInstanceOf(NFePedidoNotFoundError);
+  });
+
+  it('uses the denormalized filialId on the nfev4 doc (skips the pedido read)', async () => {
+    const events: string[] = [];
+    // `filialId` on the doc differs from the pedido's outer-ref filial (F-1);
+    // the audit must land under the doc's filial, proving no pedido read happened.
+    const { fs, writes } = fakeFirestore({
+      events,
+      nfev4: { ...aprovadaNfev4(), filialId: 'F-9' },
+    });
+    vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('135') as never);
+
+    await cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST);
+
+    expect(writes.some((w) => w.path.startsWith('filiais/F-9/enviNfe/'))).toBe(true);
+    expect(writes.some((w) => w.path.startsWith('filiais/F-1/enviNfe/'))).toBe(false);
+  });
+
+  it('legacy doc without filialId + pedido gone → NFePedidoNotFoundError (→ 404)', async () => {
+    const events: string[] = [];
+    // No `filialId` on the doc AND the pedido doc is absent → the legacy fallback
+    // read finds nothing → NFePedidoNotFoundError (→ 404).
+    const { fs, docs } = fakeFirestore({ events, nfev4: aprovadaNfev4() });
+    docs['pedidos/PED-1'] = null;
+    vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('135') as never);
+    await expect(
+      cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST),
+    ).rejects.toBeInstanceOf(NFePedidoNotFoundError);
   });
 
   it('throws NFeOrchestratorError when the nfev4 doc has no chave', async () => {
@@ -686,6 +715,28 @@ describe('inutilizarNumeracao (orchestrator)', () => {
     expect(recs).toHaveLength(1);
     // The NFeConfig counter must be left alone (these números were skipped).
     expect(writes.some((w) => w.path === 'filiais/F-1/nfeconfig/default')).toBe(false);
+  });
+
+  it('cStat 102 with an empty <nProt/> → stores nProt as null (record write does not throw)', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events });
+    const res = inutResult('102');
+    res.ret.infInut.nProt = ''; // SEFAZ returned a present-but-empty protocol element
+    vi.mocked(inutilizarNumeracaoSefaz).mockResolvedValue(res as never);
+
+    const result = await inutilizarNumeracao(fs, fakeRuntime(), {
+      filialId: 'F-1',
+      serie: 9,
+      nNFIni: 5,
+      nNFFin: 12,
+      xJust: 'Inutilizacao de faixa nao utilizada teste',
+    });
+
+    // Empty element is normalized to null — the record schema rejects '' (min 1).
+    expect(result.nProt).toBeNull();
+    const recs = writes.filter((w) => w.path.startsWith('filiais/F-1/inutilizacao/'));
+    expect(recs).toHaveLength(1);
+    expect(recs[0]?.data.nProt).toBeNull();
   });
 
   it('cStat != 102 → throws NFeInutilizacaoError (still records the inutilização)', async () => {

@@ -14,12 +14,20 @@ import {
 import { enviNfeMsgCollection } from '@/lib/data/enviNfeMsgCollection';
 import { nfev4Collection } from '@/lib/data/nfev4Collection';
 import type { NFeRuntime } from '../runtime';
-import { NFeCancelamentoError, NFeOrchestratorError } from './errors';
+import {
+  NFeCancelamentoError,
+  NFeOrchestratorError,
+  NFePedidoNotFoundError,
+} from './errors';
 import { getField, refToPath, type EmitResult } from './bundle';
 import { enviNfeCollection } from './audit';
 
-/** Extract the authorization protocol (`nProt`) from a stored procNFe envelope. */
-export const RE_NPROT = /<nProt>([^<]+)<\/nProt>/;
+/**
+ * Extract the authorization protocol (`nProt`) from a stored procNFe envelope.
+ * Tolerates an optional namespace prefix (`<ns:nProt>`) and surrounding
+ * whitespace — the capture is trimmed at the use site.
+ */
+export const RE_NPROT = /<(?:\w+:)?nProt>([^<]+)<\/(?:\w+:)?nProt>/;
 /**
  * SEFAZ event cStat for a duplicate cancelamento. A 573 means a cancelamento
  * event (same chNFe + tpEvento=110111 + nSeqEvento=1) is already registered —
@@ -52,7 +60,8 @@ export async function cancelarNFeService(
   const nfeRef = nfev4Collection.docRef(fs, { pedidoId }, nfeId);
   const snap = await nfeRef.get();
   if (!snap.exists) {
-    throw new NFeOrchestratorError(`pedido '${pedidoId}': nfev4 doc '${nfeId}' not found.`);
+    // The NF-e to cancel doesn't exist (no emission for this pedido/slot) — 404.
+    throw new NFePedidoNotFoundError(pedidoId);
   }
   const nota = snap.data() as NotaFiscalEletronica;
   if (!nota.chave) {
@@ -81,22 +90,27 @@ export async function cancelarNFeService(
     );
   }
 
-  // filialId for the audit log — from the pedido's filial outer-ref. No full
+  // filialId for the audit log. Current NF-e docs carry a denormalized `filialId`
+  // (set by buildPlaceholderNfeDoc), so no extra read is needed. Only legacy docs
+  // (pre-denormalization) fall back to the pedido's filial outer-ref — no full
   // bundle: cancellation must not depend on cliente/operação/endereço loading.
-  // eslint-disable-next-line no-restricted-syntax -- read-only; pedido docs are written by apps/web / apps/integrations handles, not here
-  const pedidoSnap = await fs.collection('pedidos').doc(pedidoId).get();
-  if (!pedidoSnap.exists) {
-    throw new NFeOrchestratorError(`pedido '${pedidoId}' not found.`);
+  let filialId = nota.filialId ?? null;
+  if (!filialId) {
+    // eslint-disable-next-line no-restricted-syntax -- read-only legacy fallback; pedido docs are written by apps/web / apps/integrations handles, not here
+    const pedidoSnap = await fs.collection('pedidos').doc(pedidoId).get();
+    if (!pedidoSnap.exists) {
+      throw new NFePedidoNotFoundError(pedidoId);
+    }
+    const filialPath = refToPath(getField(pedidoSnap.data(), 'filialPedidoOuterRef'));
+    if (!filialPath) {
+      throw new NFeOrchestratorError(`pedido '${pedidoId}': filialPedidoOuterRef missing.`);
+    }
+    filialId = filialPath.split('/').pop()!;
   }
-  const filialPath = refToPath(getField(pedidoSnap.data(), 'filialPedidoOuterRef'));
-  if (!filialPath) {
-    throw new NFeOrchestratorError(`pedido '${pedidoId}': filialPedidoOuterRef missing.`);
-  }
-  const filialId = filialPath.split('/').pop()!;
 
 
   // nProt from the stored proc envelope — never from a SEFAZ consult.
-  const nProt = nota.xml_nfe_proc ? RE_NPROT.exec(nota.xml_nfe_proc)?.[1] : undefined;
+  const nProt = nota.xml_nfe_proc ? RE_NPROT.exec(nota.xml_nfe_proc)?.[1]?.trim() : undefined;
   if (!nProt) {
     throw new NFeCancelamentoError(
       `pedido '${pedidoId}' nfe '${nfeId}': protocolo (nProt) ausente em xml_nfe_proc — ` +

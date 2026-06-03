@@ -144,6 +144,9 @@ export async function inutilizarNumeracao(
   const inf = res.ret.infInut;
   const aprovada = inf.cStat === '102';
   const now = new Date().toISOString();
+  // Normalize the protocol: an absent OR empty `<nProt/>` element becomes null
+  // (the record schema is `nProt: z.string().min(1).nullable()`, which rejects '').
+  const nProt = inf.nProt || null;
 
   // 3. Persist the durable inutilização record — homologada OR rejeitada. This
   // is the single source of truth for the round-trip: it already stores the
@@ -162,7 +165,7 @@ export async function inutilizarNumeracao(
       xml_retorno: res.rawResponse,
       cStat: inf.cStat,
       xMotivo: inf.xMotivo,
-      nProt: inf.nProt ?? null,
+      nProt,
       error: aprovada ? null : `cStat ${inf.cStat} — ${inf.xMotivo}`,
       estado: aprovada ? ESTADO_ENVI_NFE_MSG.concluido : ESTADO_ENVI_NFE_MSG.error,
       timestamp: now,
@@ -208,7 +211,7 @@ export async function inutilizarNumeracao(
     nNFFin: args.nNFFin,
     cStat: inf.cStat,
     xMotivo: inf.xMotivo,
-    nProt: inf.nProt ?? null,
+    nProt,
     aprovada: true,
     reconciled: toBurn.length,
   };
