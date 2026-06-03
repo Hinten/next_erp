@@ -22,27 +22,53 @@ export function resolvePath(template: string, ctx: PathContext): string {
   });
 }
 
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
 /**
- * Validate a document on write. Throws on a missing/invalid field; unknown
- * extra fields are stripped (Zod's default object behavior), so bad data never
- * lands in Firestore. This is the single enforcement point both the client
- * converter and the admin handle delegate to.
+ * Validate a document on write. Throws on a missing/invalid field AND on any
+ * unknown top-level field (a typo or wrong field name), so bad data never lands
+ * in Firestore. This is the single enforcement point both the client converter
+ * and the admin handle delegate to.
+ *
+ * Schemas that deliberately opt into `.passthrough()` (legacy Flutter /
+ * marketplace coexistence) are respected automatically: they never strip a key,
+ * so the strict re-check below never fires and their unknown fields pass through
+ * as before. Plain `z.object` (strip-policy) schemas reject unknown keys.
  */
 export function parseForWrite<T extends z.ZodTypeAny>(
   schema: T,
   data: unknown,
 ): z.infer<T> {
-  return schema.parse(data) as z.infer<T>;
+  const parsed = schema.parse(data);
+  if (
+    schema instanceof z.ZodObject &&
+    isPlainRecord(data) &&
+    isPlainRecord(parsed)
+  ) {
+    // If the (strip-policy) schema dropped a key the caller supplied, re-parse
+    // strictly so they get a proper ZodError (`unrecognized_keys`) naming it.
+    const dropped = Object.keys(data).filter((k) => !(k in parsed));
+    if (dropped.length > 0) {
+      return (
+        schema as unknown as { strict(): { parse(d: unknown): unknown } }
+      ).strict().parse(data) as z.infer<T>;
+    }
+  }
+  return parsed as z.infer<T>;
 }
 
 /**
  * Validate a partial patch for a merge write (`set(..., { merge: true })`).
  *
  * `.partial()` makes every field optional, so only the fields actually present
- * are validated. We then keep ONLY the keys the caller supplied: the optional
- * wrapper already short-circuits absent keys before any `.default()` fires, and
- * this guarantees a schema default can never leak into a merge patch (which
- * would silently overwrite a stored field — e.g. NFe's `tpEmis`/`estado`).
+ * are validated. Unknown keys (typos) throw a ZodError on strip-policy schemas;
+ * `.passthrough()` schemas keep them, so the strict re-check never fires. We
+ * then keep ONLY the keys the caller supplied and drop any that validated to
+ * `undefined` (Firestore rejects `undefined`); a schema default can never leak
+ * into a merge patch (which would silently overwrite a stored field — e.g.
+ * NFe's `tpEmis`/`estado`).
  */
 export function parseMergePatch<T extends z.ZodTypeAny>(
   schema: T,
@@ -54,9 +80,21 @@ export function parseMergePatch<T extends z.ZodTypeAny>(
   // Cast through a minimal structural type to avoid fighting Zod's generic
   // signatures; the runtime `instanceof` guard above proves it's a ZodObject.
   const partialSchema = (
-    schema as unknown as { partial(): { parse(data: unknown): unknown } }
+    schema as unknown as {
+      partial(): {
+        parse(data: unknown): unknown;
+        strict(): { parse(d: unknown): unknown };
+      };
+    }
   ).partial();
   const validated = partialSchema.parse(patch) as Record<string, unknown>;
+  // If the (strip-policy) schema dropped a supplied key, re-parse strictly so
+  // the caller gets a ZodError naming the unknown key(s). Passthrough schemas
+  // keep unknown keys, so nothing is dropped and this never fires.
+  const dropped = Object.keys(patch).filter((k) => !(k in validated));
+  if (dropped.length > 0) {
+    partialSchema.strict().parse(patch);
+  }
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(patch)) {
     // Drop keys that validated to `undefined`: Firestore rejects `undefined`

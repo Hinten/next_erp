@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { defineAdminCollection } from './defineAdminCollection';
 
-// A small schema that mirrors the shapes that matter: `.default()` fields
-// (which must NOT leak into merge patches), a nullable field, and a required
-// field (whose absence/typo must throw on a full write).
+// A small strip-policy schema mirroring the shapes that matter: `.default()`
+// fields (which must NOT leak into merge patches), a nullable field, and a
+// required field (whose absence/typo must throw on a full write).
 const schema = z.object({
   estado: z.string().default('0'),
   tpEmis: z.number().int().default(1),
@@ -17,6 +17,11 @@ const handle = defineAdminCollection({
   schema,
 });
 
+// A `.passthrough()` schema (legacy-coexistence) — unknown keys are preserved,
+// not rejected, on write.
+const looseSchema = z.object({ nome: z.string().min(1) }).passthrough();
+const looseHandle = defineAdminCollection({ path: 'loose', schema: looseSchema });
+
 describe('defineAdminCollection', () => {
   describe('parse (full write)', () => {
     it('throws on a missing required field', () => {
@@ -27,10 +32,20 @@ describe('defineAdminCollection', () => {
       expect(() => handle.parse({ nome: 123, cStat: null })).toThrow();
     });
 
-    it('applies defaults and strips unknown fields', () => {
-      const out = handle.parse({ nome: 'x', cStat: null, bogus: 'nope' });
+    it('applies defaults on a clean write', () => {
+      const out = handle.parse({ nome: 'x', cStat: null });
       expect(out).toEqual({ nome: 'x', cStat: null, estado: '0', tpEmis: 1 });
-      expect('bogus' in (out as Record<string, unknown>)).toBe(false);
+    });
+
+    it('throws on an unknown field (strip-policy schema)', () => {
+      expect(() =>
+        handle.parse({ nome: 'x', cStat: null, bogus: 'nope' }),
+      ).toThrow(z.ZodError);
+    });
+
+    it('preserves unknown fields on a .passthrough() schema', () => {
+      const out = looseHandle.parse({ nome: 'x', legacyField: 42 });
+      expect(out).toEqual({ nome: 'x', legacyField: 42 });
     });
   });
 
@@ -53,11 +68,20 @@ describe('defineAdminCollection', () => {
     it('drops keys that validate to undefined (Firestore rejects undefined)', () => {
       expect(handle.parseMerge({ cStat: undefined })).toEqual({});
     });
+
+    it('throws on an unknown patch key (strip-policy schema)', () => {
+      expect(() => handle.parseMerge({ bogus: 'nope' })).toThrow(z.ZodError);
+    });
   });
 
   describe('parseRead', () => {
     it('returns parsed data when valid', () => {
       const out = handle.parseRead({ nome: 'y', cStat: null });
+      expect(out.nome).toBe('y');
+    });
+
+    it('tolerates unknown keys (reads stay lenient — no throw)', () => {
+      const out = handle.parseRead({ nome: 'y', cStat: null, legacy: 1 });
       expect(out.nome).toBe('y');
     });
 
