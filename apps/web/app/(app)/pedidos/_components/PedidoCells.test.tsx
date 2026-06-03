@@ -298,6 +298,30 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       },
     );
   });
+
+  describe('Carta de correção action gating', () => {
+    it('offers "Carta de correção" next to "Cancelar NF-e" when the NF-e is aprovada', async () => {
+      setSnap({ data: [rowFromNFe(makeNFe('a', { chave: '3'.repeat(44) }))] });
+      const { container } = wrap(<NFCell pedidoId="p1" />);
+      fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+      expect(
+        await screen.findByRole('button', { name: /carta de corre/i }),
+      ).toBeTruthy();
+    });
+
+    it.each<NotaFiscalEletronica['estado']>(['0', '1', '2', 'n', 'c', 'e'])(
+      'does NOT offer "Carta de correção" for estado %s',
+      async (estado) => {
+        setSnap({ data: [rowFromNFe(makeNFe(estado))] });
+        const { container } = wrap(<NFCell pedidoId="p1" />);
+        fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+        await screen.findByText('Estado:');
+        expect(
+          screen.queryByRole('button', { name: /carta de corre/i }),
+        ).toBeNull();
+      },
+    );
+  });
 });
 
 describe('ClienteCell — static cached read', () => {

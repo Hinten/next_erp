@@ -47,7 +47,7 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { IconBan, IconCheck, IconCopy } from '@tabler/icons-react';
+import { IconBan, IconCheck, IconCopy, IconFileText } from '@tabler/icons-react';
 
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { nfeCollection } from '@/lib/data/nfeCollection';
@@ -129,8 +129,10 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
 
   if (loading) return <Skeleton height={20} width={70} />;
   const latest = data?.[0]?.data;
+  // The nfev4 doc id of the latest NF-e — the `[nfeId]` for the CC-e route.
+  const latestId = data?.[0]?.id;
   if (!latest) return <Text c="dimmed">{DASH}</Text>;
-  // Only an authorized NF-e can be cancelled (RecepcaoEvento tpEvento=110111).
+  // Only an authorized NF-e can be cancelled (110111) or corrected (CC-e, 110110).
   const isAprovada = latest.estado === ESTADO_NFE.aprovada;
   const color = NFE_STATE_COLOR[latest.estado] ?? 'gray';
   const label = ESTADO_NFE_LABELS[latest.estado] ?? latest.estado;
@@ -241,22 +243,37 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
             </Group>
           )}
 
-          {isAprovada && (
-            <Button
-              color="red"
-              variant="light"
-              size="xs"
-              leftSection={<IconBan size={14} />}
-              mt="xs"
-              onClick={(e) => {
-                // Stop the row's navigate-onClick; go to the per-NF-e screen
-                // (communication history + cancelamento form).
-                e.stopPropagation();
-                router.push(`/pedidos/${pedidoId}/nfe`);
-              }}
-            >
-              Cancelar NF-e
-            </Button>
+          {isAprovada && latestId && (
+            <Group gap="xs" mt="xs">
+              <Button
+                color="blue"
+                variant="light"
+                size="xs"
+                leftSection={<IconFileText size={14} />}
+                onClick={(e) => {
+                  // Stop the row's navigate-onClick; go straight to this NF-e's
+                  // carta de correção screen (form + history of CC-e).
+                  e.stopPropagation();
+                  router.push(`/pedidos/${pedidoId}/nfe/${latestId}/carta-correcao`);
+                }}
+              >
+                Carta de correção
+              </Button>
+              <Button
+                color="red"
+                variant="light"
+                size="xs"
+                leftSection={<IconBan size={14} />}
+                onClick={(e) => {
+                  // Stop the row's navigate-onClick; go to the per-NF-e screen
+                  // (communication history + cancelamento form).
+                  e.stopPropagation();
+                  router.push(`/pedidos/${pedidoId}/nfe`);
+                }}
+              >
+                Cancelar NF-e
+              </Button>
+            </Group>
           )}
         </Stack>
       </HoverCard.Dropdown>
