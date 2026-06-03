@@ -17,6 +17,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
+import { sanitizeNFeText } from '@delfrance/integrations-nfe';
+
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { safeLog } from '@/lib/nfe/log';
@@ -31,13 +33,22 @@ import { getNFeRuntime } from '@/lib/nfe/runtime';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-const bodySchema = z.object({
-  pedidoId: z.string().min(1).max(200),
-  // The specific nfev4 doc id — a pedido may hold more than one NF-e.
-  nfeId: z.string().min(1).max(200),
-  // SEFAZ requires the justification to be 15–255 chars.
-  xJust: z.string().trim().min(15, 'xJust deve ter ao menos 15 caracteres').max(255),
-});
+const bodySchema = z
+  .object({
+    pedidoId: z.string().min(1).max(200),
+    // The specific nfev4 doc id — a pedido may hold more than one NF-e.
+    nfeId: z.string().min(1).max(200),
+    // SEFAZ requires the justification to be 15–255 chars.
+    xJust: z.string().trim().min(15, 'xJust deve ter ao menos 15 caracteres').max(255),
+  })
+  // The builder sanitizes xJust (drops SEFAZ-restricted chars, collapses spaces)
+  // before emitting <xJust>; validate the SANITIZED length so a justification
+  // that passes .min(15) raw can't reach SEFAZ below the 15-char minimum.
+  .refine((b) => (sanitizeNFeText(b.xJust) ?? '').length >= 15, {
+    message:
+      'A justificativa fica com menos de 15 caracteres após remover caracteres não aceitos pela SEFAZ.',
+    path: ['xJust'],
+  });
 
 export async function POST(req: Request): Promise<NextResponse> {
   const auth = await verifyCaller(req, PERM.fiscal.write);

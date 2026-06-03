@@ -44,7 +44,11 @@ export interface CancelamentoEventoInput {
   readonly cnpj: string;
   /** Authorization protocol from the original emission (`protNFe.infProt.nProt`). */
   readonly nProt: string;
-  /** Justification — SEFAZ requires 15–255 chars (validated upstream). */
+  /**
+   * Justification — SEFAZ requires 15–255 chars. The API route validates the
+   * length AFTER `sanitizeNFeText` (which can shorten it), so the sanitized
+   * `<xJust>` emitted below is guaranteed ≥ 15.
+   */
   readonly xJust: string;
   /** Sequence — always 1 for cancelamento (an NF-e is cancelled once). */
   readonly nSeqEvento?: number;

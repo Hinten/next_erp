@@ -40,7 +40,11 @@ export interface InutilizacaoInput {
   readonly serie: number;
   readonly nNFIni: number;
   readonly nNFFin: number;
-  /** Justification — SEFAZ requires 15–255 chars (validated upstream). */
+  /**
+   * Justification — SEFAZ requires 15–255 chars. The API route validates the
+   * length AFTER `sanitizeNFeText` (which can shorten it), so the sanitized
+   * `<xJust>` emitted below is guaranteed ≥ 15.
+   */
   readonly xJust: string;
   readonly tpAmb: TpAmb;
 }

@@ -14,7 +14,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
-import { NFeInutilizacaoError } from '@delfrance/integrations-nfe';
+import { NFeInutilizacaoError, sanitizeNFeText } from '@delfrance/integrations-nfe';
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -40,6 +40,15 @@ const bodySchema = z
   .refine((b) => b.nNFIni <= b.nNFFin, {
     message: 'nNFIni deve ser ≤ nNFFin',
     path: ['nNFIni'],
+  })
+  // The builder sanitizes xJust (drops SEFAZ-restricted chars, collapses spaces)
+  // before emitting <xJust>; validate the SANITIZED length so a justification
+  // that passes .min(15) raw can't reach SEFAZ below the 15-char minimum (which
+  // SEFAZ rejects — and rejected inutilizações count toward consumo indevido).
+  .refine((b) => (sanitizeNFeText(b.xJust) ?? '').length >= 15, {
+    message:
+      'A justificativa fica com menos de 15 caracteres após remover caracteres não aceitos pela SEFAZ.',
+    path: ['xJust'],
   });
 
 export async function POST(req: Request): Promise<NextResponse> {
