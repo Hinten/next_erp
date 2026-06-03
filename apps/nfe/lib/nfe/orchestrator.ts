@@ -92,6 +92,7 @@ import { createFirestoreImpostoResolver } from './imposto-resolver';
 import type { ImpostoResolver } from './imposto-resolver';
 import type { NFeRuntime } from './runtime';
 import { enviNfeMsgCollection } from '@/lib/data/enviNfeMsgCollection';
+import { inutNumeracaoCollection } from '@/lib/data/inutNumeracaoCollection';
 import { nfeConfigCollection } from '@/lib/data/nfeConfigCollection';
 import { nfev4Collection } from '@/lib/data/nfev4Collection';
 
@@ -2358,7 +2359,7 @@ export async function cancelarNFeService(
 ): Promise<EmitResult> {
   console.debug(`[nfe/orchestrator] cancelarNFeService pedidoId='${pedidoId}' nfeId='${nfeId}'`);
 
-  const nfeRef = fs.collection('pedidos').doc(pedidoId).collection('nfev4').doc(nfeId);
+  const nfeRef = nfev4Collection.docRef(fs, { pedidoId }, nfeId);
   const snap = await nfeRef.get();
   if (!snap.exists) {
     throw new NFeOrchestratorError(`pedido '${pedidoId}': nfev4 doc '${nfeId}' not found.`);
@@ -2392,6 +2393,7 @@ export async function cancelarNFeService(
 
   // filialId for the audit log — from the pedido's filial outer-ref. No full
   // bundle: cancellation must not depend on cliente/operação/endereço loading.
+  // eslint-disable-next-line no-restricted-syntax -- read-only; pedido docs are written by apps/web / apps/integrations handles, not here
   const pedidoSnap = await fs.collection('pedidos').doc(pedidoId).get();
   if (!pedidoSnap.exists) {
     throw new NFeOrchestratorError(`pedido '${pedidoId}' not found.`);
@@ -2434,21 +2436,23 @@ export async function cancelarNFeService(
   const xMotivo = ev?.xMotivo ?? res.ret.xMotivo;
 
   // Audit-log the cancelamento round-trip (both halves of procEventoNFe).
-  await enviNfeCollection(fs, filialId).add({
-    targetsChnfe: [nota.chave],
-    idLote: null,
-    indSinc: null,
-    xml_enviado: res.signedEventoXml,
-    xml_retorno: res.rawResponse,
-    nRec: null,
-    cStat,
-    xMotivo,
-    error: null,
-    tpEmis,
-    estado: ESTADO_ENVI_NFE_MSG.concluido,
-    timestamp: now(),
-    ultima_modificacao: now(),
-  });
+  await enviNfeCollection(fs, filialId).add(
+    enviNfeMsgCollection.parse({
+      targetsChnfe: [nota.chave],
+      idLote: null,
+      indSinc: null,
+      xml_enviado: res.signedEventoXml,
+      xml_retorno: res.rawResponse,
+      nRec: null,
+      cStat,
+      xMotivo,
+      error: null,
+      tpEmis,
+      estado: ESTADO_ENVI_NFE_MSG.concluido,
+      timestamp: now(),
+      ultima_modificacao: now(),
+    }),
+  );
 
   // 135 (registrado + vinculado) / 155 (homologado fora de prazo) = cancelled.
   // 573 (duplicidade de evento) = the cancelamento is already registered at
@@ -2469,13 +2473,13 @@ export async function cancelarNFeService(
     if (cur?.estado === ESTADO_NFE.cancelada) return;
     tx.set(
       nfeRef,
-      {
+      nfev4Collection.parseMerge({
         estado: ESTADO_NFE.cancelada,
         cStat,
         xMotivo,
         retries: 0,
         ultima_modificacao: now(),
-      },
+      }),
       { merge: true },
     );
   });
@@ -2505,11 +2509,6 @@ export interface InutilizarNumeracaoResult {
   readonly aprovada: boolean;
   /** Count of nfev4 docs flipped to `numeracaoInutilizada` after a 102. */
   readonly reconciled: number;
-}
-
-/** Path to a filial's `inutilizacao` record subcollection (durable per-range log). */
-function inutilizacaoCollection(fs: Firestore, filialId: string) {
-  return fs.collection(`filiais/${filialId}/inutilizacao`);
 }
 
 /**
@@ -2561,6 +2560,7 @@ export async function inutilizarNumeracao(
       `inutilização: nNFIni (${args.nNFIni}) must be ≤ nNFFin (${args.nNFFin})`,
     );
   }
+  // eslint-disable-next-line no-restricted-syntax -- read-only filial lookup (no apps/nfe write handle for filiais)
   const filialSnap = await fs.doc(`filiais/${args.filialId}`).get();
   if (!filialSnap.exists) {
     throw new NFeOrchestratorError(`filial '${args.filialId}' not found`);
@@ -2578,8 +2578,8 @@ export async function inutilizarNumeracao(
   // CNPJ embedded in the chave (positions 6-20). An authorized doc always
   // carries a chave, so the CNPJ path keeps the guard correct for docs written
   // before `filialId` existed.
-  const rangeSnap = await fs
-    .collectionGroup('nfev4')
+  const rangeSnap = await nfev4Collection
+    .groupQuery(fs)
     .where('numeracao', '>=', args.nNFIni)
     .where('numeracao', '<=', args.nNFFin)
     .get();
@@ -2622,38 +2622,44 @@ export async function inutilizarNumeracao(
   const now = new Date().toISOString();
 
   // 3a. Persist the comunicação (enviNfe — generic SOAP audit log).
-  await enviNfeCollection(fs, args.filialId).add({
-    targetsChnfe: [],
-    idLote: null,
-    indSinc: null,
-    xml_enviado: res.signedXml,
-    xml_retorno: res.rawResponse,
-    nRec: null,
-    cStat: inf.cStat,
-    xMotivo: inf.xMotivo,
-    error: null,
-    tpEmis: null,
-    estado: ESTADO_ENVI_NFE_MSG.concluido,
-    timestamp: now,
-    ultima_modificacao: now,
-  });
+  await enviNfeCollection(fs, args.filialId).add(
+    enviNfeMsgCollection.parse({
+      targetsChnfe: [],
+      idLote: null,
+      indSinc: null,
+      xml_enviado: res.signedXml,
+      xml_retorno: res.rawResponse,
+      nRec: null,
+      cStat: inf.cStat,
+      xMotivo: inf.xMotivo,
+      error: null,
+      tpEmis: null,
+      estado: ESTADO_ENVI_NFE_MSG.concluido,
+      timestamp: now,
+      ultima_modificacao: now,
+    }),
+  );
 
   // 3b. Persist the durable inutilização record — homologada OR rejeitada.
-  await inutilizacaoCollection(fs, args.filialId).add({
-    serie: args.serie,
-    nNFIni: args.nNFIni,
-    nNFFin: args.nNFFin,
-    xJust: args.xJust,
-    xml_enviado: res.signedXml,
-    xml_retorno: res.rawResponse,
-    cStat: inf.cStat,
-    xMotivo: inf.xMotivo,
-    nProt: inf.nProt ?? null,
-    error: aprovada ? null : `cStat ${inf.cStat} — ${inf.xMotivo}`,
-    estado: aprovada ? ESTADO_ENVI_NFE_MSG.concluido : ESTADO_ENVI_NFE_MSG.error,
-    timestamp: now,
-    ultima_modificacao: now,
-  });
+  await inutNumeracaoCollection.add(
+    fs,
+    { filialId: args.filialId },
+    {
+      serie: args.serie,
+      nNFIni: args.nNFIni,
+      nNFFin: args.nNFFin,
+      xJust: args.xJust,
+      xml_enviado: res.signedXml,
+      xml_retorno: res.rawResponse,
+      cStat: inf.cStat,
+      xMotivo: inf.xMotivo,
+      nProt: inf.nProt ?? null,
+      error: aprovada ? null : `cStat ${inf.cStat} — ${inf.xMotivo}`,
+      estado: aprovada ? ESTADO_ENVI_NFE_MSG.concluido : ESTADO_ENVI_NFE_MSG.error,
+      timestamp: now,
+      ultima_modificacao: now,
+    },
+  );
 
   if (!aprovada) {
     throw new NFeInutilizacaoError(
@@ -2674,12 +2680,12 @@ export async function inutilizarNumeracao(
     for (const d of toBurn) {
       batch.set(
         d.ref,
-        {
+        nfev4Collection.parseMerge({
           estado: ESTADO_NFE.numeracaoInutilizada,
           cStat: inf.cStat,
           xMotivo: inf.xMotivo,
           ultima_modificacao: burnedAt,
-        },
+        }),
         { merge: true },
       );
     }
