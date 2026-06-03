@@ -49,7 +49,9 @@ export function parseForWrite<T extends z.ZodTypeAny>(
   ) {
     // If the (strip-policy) schema dropped a key the caller supplied, re-parse
     // strictly so they get a proper ZodError (`unrecognized_keys`) naming it.
-    const dropped = Object.keys(data).filter((k) => !(k in parsed));
+    // `Object.hasOwn` (not `in`) so prototype keys like `toString`/`__proto__`
+    // can't masquerade as known and slip past the strict re-check.
+    const dropped = Object.keys(data).filter((k) => !Object.hasOwn(parsed, k));
     if (dropped.length > 0) {
       return (
         schema as unknown as { strict(): { parse(d: unknown): unknown } }
@@ -90,8 +92,9 @@ export function parseMergePatch<T extends z.ZodTypeAny>(
   const validated = partialSchema.parse(patch) as Record<string, unknown>;
   // If the (strip-policy) schema dropped a supplied key, re-parse strictly so
   // the caller gets a ZodError naming the unknown key(s). Passthrough schemas
-  // keep unknown keys, so nothing is dropped and this never fires.
-  const dropped = Object.keys(patch).filter((k) => !(k in validated));
+  // keep unknown keys, so nothing is dropped and this never fires. Use
+  // `Object.hasOwn` (not `in`) so prototype keys can't bypass the check.
+  const dropped = Object.keys(patch).filter((k) => !Object.hasOwn(validated, k));
   if (dropped.length > 0) {
     partialSchema.strict().parse(patch);
   }
@@ -100,7 +103,9 @@ export function parseMergePatch<T extends z.ZodTypeAny>(
     // Drop keys that validated to `undefined`: Firestore rejects `undefined`
     // in write payloads (unless `ignoreUndefinedProperties` is set), and a
     // merge patch never means to write one. `null` is kept — it stores fine.
-    if (key in validated && validated[key] !== undefined) {
+    // `Object.hasOwn` (not `in`) so an inherited prototype value (e.g. a
+    // function) can never be copied into the Firestore payload.
+    if (Object.hasOwn(validated, key) && validated[key] !== undefined) {
       out[key] = validated[key];
     }
   }

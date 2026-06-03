@@ -47,6 +47,12 @@ describe('defineAdminCollection', () => {
       const out = looseHandle.parse({ nome: 'x', legacyField: 42 });
       expect(out).toEqual({ nome: 'x', legacyField: 42 });
     });
+
+    it('rejects a prototype-named unknown key (Object.hasOwn, not `in`)', () => {
+      expect(() =>
+        handle.parse({ nome: 'x', cStat: null, toString: 'evil' }),
+      ).toThrow(z.ZodError);
+    });
   });
 
   describe('parseMerge (merge patch)', () => {
@@ -71,6 +77,10 @@ describe('defineAdminCollection', () => {
 
     it('throws on an unknown patch key (strip-policy schema)', () => {
       expect(() => handle.parseMerge({ bogus: 'nope' })).toThrow(z.ZodError);
+    });
+
+    it('throws on a prototype-named unknown patch key', () => {
+      expect(() => handle.parseMerge({ toString: 'evil' })).toThrow(z.ZodError);
     });
   });
 
