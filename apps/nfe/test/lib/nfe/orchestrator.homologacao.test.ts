@@ -46,6 +46,7 @@ import {
 import { getAdminFirestore } from '../../../lib/firebase/admin';
 import {
   cancelarNFeService,
+  cartaCorrecaoService,
   emitirPedido,
   emitirPedidosLote,
   inutilizarNumeracao,
@@ -91,6 +92,9 @@ const PED8 = `${FIXTURE_PREFIX}-PED-8`;
 // self-contained, so it can't perturb the reused/fresh classification or
 // the parallel-batch counter snapshot.
 const PEDCANCEL = `${FIXTURE_PREFIX}-PED-CANCEL`;
+// Dedicated pedido for the carta de correção (CC-e) test — emitted then
+// corrected self-contained, mirroring PEDCANCEL.
+const PEDCCE = `${FIXTURE_PREFIX}-PED-CCE`;
 
 // 10 fresh pedidos consumed by the parallel-batch test. Named with a
 // distinct `PP` infix so the cleanup loop can pick them apart from the
@@ -335,6 +339,10 @@ async function seedFixtures(
   await fs.collection('pedidos').doc(PEDCANCEL).set(pedidoDoc(PEDCANCEL, 115));
   await fs.doc(`pedidos/${PEDCANCEL}/pagamento/pag-01`).set(pagamentoDoc(115));
 
+  // Dedicated carta de correção (CC-e) pedido — emitted then corrected.
+  await fs.collection('pedidos').doc(PEDCCE).set(pedidoDoc(PEDCCE, 117));
+  await fs.doc(`pedidos/${PEDCCE}/pagamento/pag-01`).set(pagamentoDoc(117));
+
   // 10 fresh pedidos for the parallel-batch test. Each carries `imposto`
   // pre-stamped so the orchestrator's parallel `nextNumeracao` path is
   // not gated by the resolver cascade (which the prior test already
@@ -364,7 +372,16 @@ async function cleanupFixtures(fs: FirebaseFirestore.Firestore): Promise<void> {
     await fs.doc(path).delete();
   }
 
-  for (const pedidoId of [PED1, PED3, PED8, PEDCANCEL, ...PARALLEL_PEDIDO_IDS]) {
+  // CC-e records live one level deeper, under `nfev4/{id}/cartacorrecao` —
+  // Firestore doesn't cascade subcollection deletes, so clear them before the
+  // nfev4 docs themselves are removed below.
+  const cceNfes = await fs.collection(`pedidos/${PEDCCE}/nfev4`).get();
+  for (const nfeDoc of cceNfes.docs) {
+    const recs = await nfeDoc.ref.collection('cartacorrecao').get();
+    for (const r of recs.docs) await r.ref.delete();
+  }
+
+  for (const pedidoId of [PED1, PED3, PED8, PEDCANCEL, PEDCCE, ...PARALLEL_PEDIDO_IDS]) {
     await deleteDocWithSubcoll(`pedidos/${pedidoId}`, ['nfev4', 'pagamento']);
   }
   await deleteDocWithSubcoll(`operacao/${OPERACAO_ID}`, ['regraimposto']);
@@ -627,5 +644,55 @@ describe('orchestrator — SEFAZ-SP homologação', () => {
       expect(result.nProt).toBeTruthy();
     },
     90_000,
+  );
+
+  it(
+    'cartaCorrecaoService — emit a fresh NF-e then register CC-e (135); nSeqEvento increments 1 → 2',
+    async () => {
+      // Throttle so the prior round-trips don't push us into the 656 window.
+      await new Promise((r) => setTimeout(r, 1000));
+
+      // 1. Emit PEDCCE fresh (serie 1 lane) → a real authorized NF-e with a
+      //    chave to correct.
+      const emit = await emitirPedido(fs, rt, PEDCCE);
+      assertNotConsumoIndevido(emit, 'cce/emit-PEDCCE');
+      expect(emit.cStat).toBe('100');
+      expect(emit.estado).toBe(ESTADO_NFE.aprovada);
+
+      // 2. First CC-e → cStat 135 (registrado e vinculado), nSeqEvento 1.
+      //    cartaCorrecaoService validates aprovada, computes the sequence,
+      //    sends the evento, and persists a concluido cartacorrecao record.
+      const cce1 = await cartaCorrecaoService(
+        fs,
+        rt,
+        PEDCCE,
+        's1',
+        'Correcao de dados complementares - teste de homologacao da carta de correcao',
+      );
+      assertNotConsumoIndevido({ cStat: cce1.cStat, xMotivo: cce1.xMotivo }, 'cce/1');
+      expect(cce1.accepted).toBe(true);
+      expect(cce1.cStat).toBe('135');
+      expect(cce1.nSeqEvento).toBe(1);
+      expect(cce1.nProt).toBeTruthy();
+
+      // 3. Second CC-e → nSeqEvento advances to 2 (the fix over Flutter's
+      //    always-1 behavior: the sequence only advances past accepted CC-e).
+      await new Promise((r) => setTimeout(r, 1000));
+      const cce2 = await cartaCorrecaoService(
+        fs,
+        rt,
+        PEDCCE,
+        's1',
+        'Segunda correcao - complemento de informacao no campo de observacoes da nota',
+      );
+      assertNotConsumoIndevido({ cStat: cce2.cStat, xMotivo: cce2.xMotivo }, 'cce/2');
+      expect(cce2.accepted).toBe(true);
+      expect(cce2.nSeqEvento).toBe(2);
+
+      // 4. Two concluido records persisted under the NF-e.
+      const recs = await fs.collection(`pedidos/${PEDCCE}/nfev4/s1/cartacorrecao`).get();
+      expect(recs.size).toBe(2);
+    },
+    120_000,
   );
 });
