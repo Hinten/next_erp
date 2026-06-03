@@ -27,7 +27,9 @@ import {
 import { IconCircleCheck } from '@tabler/icons-react';
 import { z } from 'zod';
 import {
+  NFeHttpError,
   NFeInutilizacaoAbortedError,
+  NFeNetworkError,
   NFeRejectedError,
   type NFeInutilizarResult,
 } from '@delfrance/integrations-nfe/http-provider';
@@ -109,12 +111,11 @@ export function InutilizarForm({ filialId }: { filialId: string }) {
         showErrorNotification({ title: 'Inutilização não permitida', message: err.message });
         return;
       }
+      // The client throws NFeHttpError subclasses (incl. NFeRejectedError) or
+      // NFeNetworkError; anything else is an unexpected bug — let it surface.
+      if (!(err instanceof NFeHttpError) && !(err instanceof NFeNetworkError)) throw err;
       const message =
-        err instanceof NFeRejectedError
-          ? `${err.cStat} — ${err.xMotivo}`
-          : err instanceof Error
-            ? err.message
-            : 'Erro desconhecido ao inutilizar a numeração.';
+        err instanceof NFeRejectedError ? `${err.cStat} — ${err.xMotivo}` : err.message;
       showErrorNotification({ title: 'Falha na inutilização', message });
     } finally {
       setSubmitting(false);

@@ -11,7 +11,11 @@ import { useState } from 'react';
 import { Alert, Button, Group, Stack, Textarea } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertTriangle } from '@tabler/icons-react';
-import { NFeRejectedError } from '@delfrance/integrations-nfe/http-provider';
+import {
+  NFeHttpError,
+  NFeNetworkError,
+  NFeRejectedError,
+} from '@delfrance/integrations-nfe/http-provider';
 
 import { useNFeClient } from '@/lib/nfe/client';
 import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
@@ -51,14 +55,15 @@ export function CancelarNFeForm({ pedidoId, nfeId, numero }: CancelarNFeFormProp
       });
       setXJust('');
     } catch (err) {
+      // The client throws NFeHttpError subclasses (incl. NFeRejectedError) or
+      // NFeNetworkError; anything else is an unexpected bug — let it surface.
+      if (!(err instanceof NFeHttpError) && !(err instanceof NFeNetworkError)) throw err;
       const message =
         err instanceof NFeRejectedError
           ? err.cStat && err.cStat !== '(unknown)'
             ? `SEFAZ rejeitou o cancelamento (cStat ${err.cStat}): ${err.xMotivo}`
             : err.xMotivo
-          : err instanceof Error
-            ? err.message
-            : 'Erro desconhecido ao cancelar a NF-e.';
+          : err.message;
       showErrorNotification({ title: 'Falha ao cancelar a NF-e', message });
     } finally {
       setSubmitting(false);
