@@ -43,6 +43,7 @@ function fakeClient(impl: NFeHttpClient['emitir']): NFeHttpClient {
     processarPendentes: vi.fn(),
     cancelar: vi.fn(),
     inutilizar: vi.fn(),
+    cartaCorrecao: vi.fn(),
   };
 }
 

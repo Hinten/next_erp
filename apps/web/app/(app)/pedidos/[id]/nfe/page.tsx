@@ -107,7 +107,18 @@ function PedidoNfeContent() {
               )}
 
               {estado === ESTADO_NFE.aprovada && (
-                <CancelarNFeForm pedidoId={pedidoId} nfeId={row.id} numero={nfe.numeracao} />
+                <>
+                  <Group justify="flex-end">
+                    <Anchor
+                      component={Link}
+                      href={`/pedidos/${pedidoId}/nfe/${row.id}/carta-correcao`}
+                      size="sm"
+                    >
+                      Cartas de correção →
+                    </Anchor>
+                  </Group>
+                  <CancelarNFeForm pedidoId={pedidoId} nfeId={row.id} numero={nfe.numeracao} />
+                </>
               )}
             </Stack>
           </Card>
