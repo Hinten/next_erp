@@ -22,7 +22,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       </head>
       <body>
         <MantineProvider defaultColorScheme="light">
-          <Notifications position="top-right" />
+          <Notifications position="top-right" containerWidth={480} />
           <QueryProvider>
             <AuthProvider>{children}</AuthProvider>
           </QueryProvider>

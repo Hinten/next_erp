@@ -8,6 +8,8 @@ import {
   type Usuario,
 } from '@delfrance/schemas';
 import { getAdminAuth, getAdminFirestore } from '@/lib/firebase/admin';
+import { cargoCollection } from '@/lib/data/cargoCollection';
+import { usuarioCollection } from '@/lib/data/usuarioCollection';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -126,9 +128,13 @@ export async function POST(req: Request) {
   const cargosById = new Map<string, Cargo>();
   await Promise.all(
     body.cargos.map(async (cid) => {
-      const snap = await db.collection('cargos').doc(cid).get();
+      const snap = await cargoCollection.docRef(db, {}, cid).get();
       const data = snap.data();
-      if (data) cargosById.set(cid, data as Cargo);
+      if (data)
+        cargosById.set(
+          cid,
+          cargoCollection.parseRead(data, cargoCollection.docPath({}, cid)),
+        );
     }),
   );
 
@@ -184,7 +190,7 @@ export async function POST(req: Request) {
     ultimoAcesso: null,
     timestamp: new Date().toISOString(),
   };
-  await db.collection('usuarios').doc(uid).set(usuarioDoc);
+  await usuarioCollection.set(db, {}, uid, usuarioDoc);
 
   return NextResponse.json({ uid }, { status: 201 });
 }

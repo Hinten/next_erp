@@ -32,20 +32,34 @@ function makeId(): string {
   return `err-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+// Let the title wrap onto multiple lines instead of Mantine's default
+// single-line ellipsis (`white-space: nowrap`), so cert-path-class titles stay
+// fully readable. Re-passed on every show/update so it survives hover-pause.
+const ERROR_NOTIFICATION_STYLES = {
+  title: { whiteSpace: 'normal' as const, wordBreak: 'break-word' as const },
+};
+
+// ~12 lines before the message body starts to scroll; keeps very long
+// diagnostics inside the toast bounds instead of overflowing it.
+const MESSAGE_MAX_HEIGHT = 240;
+
 export function showErrorNotification(config: ErrorNotificationConfig): void {
   const id = makeId();
   const autoClose = config.autoClose ?? DEFAULT_AUTO_CLOSE;
   const color = config.color ?? 'red';
   const { title, message } = config;
 
+  // Shared props re-passed on every show/update so the title-wrap style and
+  // close button persist while the user hovers to read a long message —
+  // regardless of whether Mantine's `update` merges or replaces.
+  const base = { id, title, color, withCloseButton: true, styles: ERROR_NOTIFICATION_STYLES };
+
   // `let` so the inner hover handlers can reference the node after it's
   // built — Mantine's `notifications.update` requires `message` on every
   // call, so we re-pass the same JSX on each pause/resume toggle.
   let messageNode: ReactNode;
-  const pause = () =>
-    notifications.update({ id, title, color, autoClose: false, message: messageNode });
-  const resume = () =>
-    notifications.update({ id, title, color, autoClose, message: messageNode });
+  const pause = () => notifications.update({ ...base, autoClose: false, message: messageNode });
+  const resume = () => notifications.update({ ...base, autoClose, message: messageNode });
 
   messageNode = (
     <Group
@@ -56,9 +70,14 @@ export function showErrorNotification(config: ErrorNotificationConfig): void {
       onMouseEnter={pause}
       onMouseLeave={resume}
     >
-      <Text size="sm" style={{ flex: 1, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-        {message}
-      </Text>
+      {/* `minWidth: 0` lets this flex item shrink so the text wraps instead of
+          overflowing; the body scrolls past MESSAGE_MAX_HEIGHT while the copy
+          button (a sibling) stays pinned top-right and never scrolls away. */}
+      <div style={{ flex: 1, minWidth: 0, maxHeight: MESSAGE_MAX_HEIGHT, overflowY: 'auto' }}>
+        <Text size="sm" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          {message}
+        </Text>
+      </div>
       <CopyButton value={message} timeout={1500}>
         {({ copied, copy }) => (
           <Tooltip label={copied ? 'Copiado!' : 'Copiar'} withArrow position="left">
@@ -77,12 +96,5 @@ export function showErrorNotification(config: ErrorNotificationConfig): void {
     </Group>
   );
 
-  notifications.show({
-    id,
-    title,
-    color,
-    autoClose,
-    withCloseButton: true,
-    message: messageNode,
-  });
+  notifications.show({ ...base, autoClose, message: messageNode });
 }

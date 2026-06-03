@@ -28,6 +28,7 @@ import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
+import { nfev4Collection } from '@/lib/data/nfev4Collection';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -78,8 +79,8 @@ export async function POST(req: Request): Promise<NextResponse> {
   const timeoutMs = params.timeoutMs ?? DEFAULT_STUCK_TIMEOUT_MS;
   const now = new Date();
 
-  const snap = await fs
-    .collectionGroup('nfev4')
+  const snap = await nfev4Collection
+    .groupQuery(fs)
     .where('estado', 'in', [ESTADO_NFE.enviando, ESTADO_NFE.aguardandoResposta])
     .limit(batchSize)
     .get();
@@ -118,14 +119,14 @@ export async function POST(req: Request): Promise<NextResponse> {
       const outcome = outcomeFromRetConsSit(retSit);
       const patch = applyOutcome({ estado: data.estado, retries: data.retries }, outcome);
       await doc.ref.set(
-        {
+        nfev4Collection.parseMerge({
           estado: patch.estado,
           cStat: patch.cStat,
           xMotivo: patch.xMotivo,
           retries: patch.retries,
           nRec: patch.nRec,
           ultima_modificacao: new Date().toISOString(),
-        },
+        }),
         { merge: true },
       );
       recovered++;

@@ -91,6 +91,9 @@ import { z } from 'zod';
 import { createFirestoreImpostoResolver } from './imposto-resolver';
 import type { ImpostoResolver } from './imposto-resolver';
 import type { NFeRuntime } from './runtime';
+import { enviNfeMsgCollection } from '@/lib/data/enviNfeMsgCollection';
+import { nfeConfigCollection } from '@/lib/data/nfeConfigCollection';
+import { nfev4Collection } from '@/lib/data/nfev4Collection';
 
 export class NFePedidoNotFoundError extends Error {
   constructor(pedidoId: string) {
@@ -141,9 +144,9 @@ function nfeDocId(tpEmis: TpEmis): string {
 /** Default doc id under `filiais/{filialId}/nfeconfig`. Mirrors the library adapter. */
 const DEFAULT_NFE_CONFIG_DOC_ID = 'default';
 
-/** Path to a filial's `enviNfe` audit-log subcollection. */
+/** A filial's `enviNfe` audit-log subcollection, via the validated handle. */
 function enviNfeCollection(fs: Firestore, filialId: string) {
-  return fs.collection(`filiais/${filialId}/enviNfe`);
+  return enviNfeMsgCollection.ref(fs, { filialId });
 }
 
 /**
@@ -174,7 +177,7 @@ function buildEnviNFeMsgFromLote(params: {
   indSinc: '0' | '1';
 }): Record<string, unknown> {
   const now = new Date().toISOString();
-  return {
+  return enviNfeMsgCollection.parse({
     targetsChnfe: [params.chave],
     idLote: params.idLote,
     indSinc: params.indSinc,
@@ -188,7 +191,7 @@ function buildEnviNFeMsgFromLote(params: {
     estado: ESTADO_ENVI_NFE_MSG.respondido,
     timestamp: now,
     ultima_modificacao: now,
-  };
+  });
 }
 
 /**
@@ -206,7 +209,7 @@ function buildEnviNFeMsgFromConsulta(params: {
   tpEmis: TpEmis;
 }): Record<string, unknown> {
   const now = new Date().toISOString();
-  return {
+  return enviNfeMsgCollection.parse({
     targetsChnfe: [params.chave],
     idLote: null,
     indSinc: null,
@@ -220,7 +223,7 @@ function buildEnviNFeMsgFromConsulta(params: {
     estado: ESTADO_ENVI_NFE_MSG.concluido,
     timestamp: now,
     ultima_modificacao: now,
-  };
+  });
 }
 
 /**
@@ -402,6 +405,12 @@ export async function loadPedidoBundle(
   console.debug(`[nfe/orchestrator] Loading Pedido bundle for pedidoId '${pedidoId}'`);
   // Memoize the shared outer-ref reads against the batch context (if any)
   // so pedidos sharing a filial / operação don't re-fetch identical docs.
+  // `getDoc` / `getRegra` dereference dynamic "outer ref" paths (the target
+  // collection is only known at runtime, e.g. filial / cliente / operação /
+  // endereço and the operação's legacy `regraimposto` subcollection), so they
+  // legitimately use raw refs. All WRITES go through the validated handles in
+  // `lib/data`; these are read-only.
+  /* eslint-disable no-restricted-syntax -- read-only dynamic outer-ref derefs */
   const getDoc = (path: string): Promise<FirebaseFirestore.DocumentSnapshot> => {
     if (!ctx) return fs.doc(path).get();
     let p = ctx.docByPath.get(path);
@@ -420,7 +429,9 @@ export async function loadPedidoBundle(
     }
     return p;
   };
+  /* eslint-enable no-restricted-syntax */
 
+  // eslint-disable-next-line no-restricted-syntax -- read-only; pedido docs are written by apps/web / apps/integrations handles, not here
   const pedidoSnap = await fs.collection('pedidos').doc(pedidoId).get();
   if (!pedidoSnap.exists) throw new NFePedidoNotFoundError(pedidoId);
   const pedido = pedidoSnap.data() as PedidoBundle['pedido'];
@@ -445,6 +456,7 @@ export async function loadPedidoBundle(
       getDoc(clientePath),
       getDoc(operacaoPath),
       getDoc(enderecoPath),
+      // eslint-disable-next-line no-restricted-syntax -- read-only legacy `pagamento` subcollection
       fs.collection('pedidos').doc(pedidoId).collection('pagamento').get(),
       getRegra(operacaoPath),
     ]);
@@ -559,6 +571,7 @@ async function maybeLoadIntegracao(
     );
     return null;
   }
+  // eslint-disable-next-line no-restricted-syntax -- read-only dynamic integracao outer-ref deref
   const snap = await fs.doc(integracaoPath).get();
   if (!snap.exists) {
     console.warn(
@@ -1257,13 +1270,11 @@ async function prepareEmission(
   // for the same pedido targets the same nfev4 doc instead of accreting
   // chave-keyed duplicates.
   const tpEmis = resolveTpEmis(bundle.filial.sede.estado);
-  const nfeRef = fs
-    .collection('pedidos')
-    .doc(pedidoId)
-    .collection('nfev4')
-    .doc(nfeDocId(tpEmis));
-  const nfeConfigRef = fs.doc(
-    `filiais/${bundle.filialId}/nfeconfig/${DEFAULT_NFE_CONFIG_DOC_ID}`,
+  const nfeRef = nfev4Collection.docRef(fs, { pedidoId }, nfeDocId(tpEmis));
+  const nfeConfigRef = nfeConfigCollection.docRef(
+    fs,
+    { filialId: bundle.filialId },
+    DEFAULT_NFE_CONFIG_DOC_ID,
   );
   return { bundle, items, tpEmis, nfeRef, nfeConfigRef };
 }
@@ -1292,7 +1303,7 @@ function buildNfeDocWrite(
   return {
     chave: generated.chave,
     signedXml,
-    docData: {
+    docData: nfev4Collection.parse({
       numeracao: nNF,
       serie,
       tpEmis,
@@ -1314,7 +1325,7 @@ function buildNfeDocWrite(
       justificativaContingencia: null,
       error: null,
       ultima_modificacao: now,
-    },
+    }),
   };
 }
 
@@ -1377,12 +1388,15 @@ async function runAllocateGenerateSignTx(
     );
 
     // Writes — counter doc first, then NFe doc. Both commit or neither.
-    tx.set(nfeConfigRef, {
-      ...cfg,
-      ...(reuse ? {} : { numeracao_atual: nNF }),
-      idLote,
-      timestamp: new Date().toISOString(),
-    });
+    tx.set(
+      nfeConfigRef,
+      nfeConfigCollection.parse({
+        ...cfg,
+        ...(reuse ? {} : { numeracao_atual: nNF }),
+        idLote,
+        timestamp: new Date().toISOString(),
+      }),
+    );
     tx.set(nfeRef, docData);
 
     return { skip: false, chave, signedXml, idLote };
@@ -1410,7 +1424,7 @@ function buildPlaceholderNfeDoc(
   filialId: string,
 ): Record<string, unknown> {
   const now = new Date().toISOString();
-  return {
+  return nfev4Collection.parse({
     numeracao: nNF,
     serie,
     tpEmis,
@@ -1432,7 +1446,7 @@ function buildPlaceholderNfeDoc(
     justificativaContingencia: null,
     error: null,
     ultima_modificacao: now,
-  };
+  });
 }
 
 /**
@@ -1461,8 +1475,10 @@ async function runChunkAllocateTx(
   filialId: string,
   group: ReadonlyArray<{ prep: EmissionPrep; pedidoId: string }>,
 ): Promise<{ members: ChunkMember[]; idLote: number }> {
-  const nfeConfigRef = fs.doc(
-    `filiais/${filialId}/nfeconfig/${DEFAULT_NFE_CONFIG_DOC_ID}`,
+  const nfeConfigRef = nfeConfigCollection.docRef(
+    fs,
+    { filialId },
+    DEFAULT_NFE_CONFIG_DOC_ID,
   );
   return fs.runTransaction(async (tx) => {
     // Reads first (Firestore rule): config once + every nfev4 doc.
@@ -1513,12 +1529,15 @@ async function runChunkAllocateTx(
     // Writes: advance the counter once for the whole chunk, then anchor
     // each fresh pedido. Reuse pedidos keep their numeração, so only the
     // fresh count advances `numeracao_atual`.
-    tx.set(nfeConfigRef, {
-      ...cfg,
-      numeracao_atual: cfg.numeracao_atual + freshCount,
-      idLote,
-      timestamp: new Date().toISOString(),
-    });
+    tx.set(
+      nfeConfigRef,
+      nfeConfigCollection.parse({
+        ...cfg,
+        numeracao_atual: cfg.numeracao_atual + freshCount,
+        idLote,
+        timestamp: new Date().toISOString(),
+      }),
+    );
     for (const p of placeholders) tx.set(p.ref, p.data);
 
     return { members, idLote };
@@ -2175,7 +2194,10 @@ async function recoverFrom539(params: {
   // Swap chave on the nfev4 doc — done outside persistPatch (which is
   // generic) since this only happens on 539 recovery.
   await nfeRef.set(
-    { chave: recoveredChave, ultima_modificacao: new Date().toISOString() },
+    nfev4Collection.parseMerge({
+      chave: recoveredChave,
+      ultima_modificacao: new Date().toISOString(),
+    }),
     { merge: true },
   );
 
@@ -2216,11 +2238,7 @@ export async function consultarPedido(
 
   const bundle = await loadPedidoBundle(fs, pedidoId);
   const tpEmis = resolveTpEmis(bundle.filial.sede.estado);
-  const nfeRef = fs
-    .collection('pedidos')
-    .doc(pedidoId)
-    .collection('nfev4')
-    .doc(nfeDocId(tpEmis));
+  const nfeRef = nfev4Collection.docRef(fs, { pedidoId }, nfeDocId(tpEmis));
 
   const snap = await nfeRef.get();
   if (!snap.exists) {
@@ -2697,7 +2715,7 @@ async function persistPatch(
   // generic so future fields (e.g. `data_autorizacao`, `nProt`) can
   // ride along without another method.
   await nfeRef.set(
-    {
+    nfev4Collection.parseMerge({
       estado: patch.estado,
       cStat: patch.cStat,
       xMotivo: patch.xMotivo,
@@ -2705,7 +2723,7 @@ async function persistPatch(
       ...(patch.nRec != null ? { nRec: patch.nRec } : {}),
       ...(extras ?? {}),
       ultima_modificacao: new Date().toISOString(),
-    },
+    }),
     { merge: true },
   );
 }

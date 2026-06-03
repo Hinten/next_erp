@@ -12,6 +12,10 @@
  * `DocumentReference` safe to pass into `useDocSnapshot` or `getDoc`.
  * Returns `null` when the ref is absent or unrecognized.
  */
+// `doc(db, arbitraryPath)` is the one legitimate raw-ref site: it dereferences
+// a legacy "outer ref" whose collection (and schema) is unknown, so it can't
+// route through a defineCollection handle.
+// eslint-disable-next-line no-restricted-imports -- intentional generic deref (see above)
 import { doc, type DocumentReference, type Firestore } from 'firebase/firestore';
 
 interface OpaqueRef {
