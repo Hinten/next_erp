@@ -11,15 +11,15 @@ const baseRestrictedSyntax =
   ]?.slice(1) ?? [];
 
 // Funnel all Firestore access through schema-validated `defineAdminCollection`
-// handles. Admin refs are built via METHODS (`db.collection()`, `db.doc()`,
+// handles from the shared registry (`@delfrance/data/admin/collections`). Admin
+// refs are built via METHODS (`db.collection()`, `db.doc()`,
 // `db.collectionGroup()`), which `no-restricted-imports` can't catch — so ban
-// the method calls. The singleton + the `lib/data/*` handle layer are exempt
-// below.
+// the method calls. Only the admin singleton is exempt below.
 const noRawAdminFirestoreRefs = [
   {
     selector: "CallExpression[callee.property.name='collection']",
     message:
-      'Do not build raw Firestore refs with `.collection()`. Use a defineAdminCollection() handle from `@/lib/data/*` — it validates writes against the Zod schema. See packages/data/src/admin.',
+      'Do not build raw Firestore refs with `.collection()`. Import a ready-made handle from `@delfrance/data/admin/collections` — it validates writes against the Zod schema.',
   },
   {
     selector: "CallExpression[callee.property.name='doc']",

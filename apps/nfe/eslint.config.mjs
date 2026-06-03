@@ -36,14 +36,15 @@ const ruleBCertEnv = {
 // METHODS (`db.collection()`, `db.doc()`, `db.collectionGroup()`), which
 // `no-restricted-imports` can't catch, so ban the method calls. Every NF-e
 // document write must go through a schema-validated `defineAdminCollection`
-// handle in `lib/data` (`nfev4Collection`, `nfeConfigCollection`,
-// `enviNfeMsgCollection`). Legitimate raw READS (dynamic outer-ref derefs and
-// legacy-named subcollections) carry a scoped inline eslint-disable.
+// handle from the shared registry `@delfrance/data/admin/collections`
+// (`nfev4Collection`, `nfeConfigCollection`, `enviNfeMsgCollection`).
+// Legitimate raw READS (dynamic outer-ref derefs and legacy-named
+// subcollections) carry a scoped inline eslint-disable.
 const ruleCNoRawFirestoreRefs = [
   {
     selector: "CallExpression[callee.property.name='collection']",
     message:
-      'Do not build raw Firestore refs with `.collection()`. Use a defineAdminCollection() handle from `@/lib/data/*` — it validates writes against the Zod schema.',
+      'Do not build raw Firestore refs with `.collection()`. Import a ready-made handle from `@delfrance/data/admin/collections` — it validates writes against the Zod schema.',
   },
   {
     selector: "CallExpression[callee.property.name='doc']",
