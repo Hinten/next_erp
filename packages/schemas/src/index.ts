@@ -278,6 +278,13 @@ export {
 } from './enviNfeMsg';
 
 export {
+  inutNumeracao,
+  inutNumeracaoSchema,
+  inutNumeracaoMeta,
+  type InutNumeracao,
+} from './inutilizacaoNumeracao';
+
+export {
   impostoProduto,
   impostoProdutoSchema,
   impostoProdutoMeta,

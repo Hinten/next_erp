@@ -408,7 +408,7 @@ export function warnIfCertNearExpiry(
   if (daysLeft > daysBeforeExpiry) return;
   log(
     `[nfe-cert] A1 certificate expires in ${daysLeft} day(s) ` +
-      `(notAfter=${cert.notAfter.toISOString()}, subject="${cert.subjectCommonName || '(none)'}"). ` +
+      `(notAfter=${cert.notAfter.toISOString()}). ` +
       'Plan a renewal via Receita Federal.',
   );
 }

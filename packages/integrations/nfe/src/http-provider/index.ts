@@ -13,6 +13,8 @@ export {
   type NFeEmitResult,
   type NFeHttpClient,
   type NFeHttpClientConfig,
+  type NFeInutilizarArgs,
+  type NFeInutilizarResult,
   type NFeProcessarPendentesResult,
 } from './client';
 
@@ -21,6 +23,7 @@ export {
   NFeBadRequestError,
   NFeBlockedError,
   NFeHttpError,
+  NFeInutilizacaoAbortedError,
   NFeNetworkError,
   NFePedidoNotFoundError,
   NFeRejectedError,

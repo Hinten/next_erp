@@ -14,6 +14,7 @@ import {
   NFeBadRequestError,
   NFeBlockedError,
   NFeHttpError,
+  NFeInutilizacaoAbortedError,
   NFeNetworkError,
   NFePedidoNotFoundError,
   NFeRejectedError,
@@ -76,6 +77,31 @@ export interface NFeProcessarPendentesResult {
   readonly errors: number;
 }
 
+/** Args for an inutilização — a contiguous número range on a filial's série. */
+export interface NFeInutilizarArgs {
+  readonly filialId: string;
+  readonly serie: number;
+  readonly nNFIni: number;
+  readonly nNFFin: number;
+  /** Justification — SEFAZ requires 15–255 chars. */
+  readonly xJust: string;
+}
+
+/** Mirrors `apps/nfe/lib/nfe/orchestrator.ts:InutilizarNumeracaoResult`. */
+export interface NFeInutilizarResult {
+  readonly filialId: string;
+  readonly serie: number;
+  readonly nNFIni: number;
+  readonly nNFFin: number;
+  readonly cStat: string;
+  readonly xMotivo: string;
+  readonly nProt: string | null;
+  /** `true` when SEFAZ homologou (cStat 102). */
+  readonly aprovada: boolean;
+  /** Count of NF-e docs flipped to `numeracaoInutilizada` after a 102. */
+  readonly reconciled: number;
+}
+
 /**
  * Caller-provided config. `baseUrl` is the origin of `apps/nfe`
  * (in dev: `http://localhost:3004`; in prod: `https://nfe-<env>.web.app`).
@@ -93,6 +119,10 @@ export interface NFeHttpClient {
   emitirLote(pedidoIds: ReadonlyArray<string>): Promise<NFeBatchEmitResult>;
   consultar(chave: string): Promise<NFeConsultaResult>;
   processarPendentes(): Promise<NFeProcessarPendentesResult>;
+  /** Cancel a specific authorized NF-e (RecepcaoEvento, tpEvento=110111). */
+  cancelar(pedidoId: string, nfeId: string, xJust: string): Promise<NFeEmitResult>;
+  /** Inutilizar an unused número range (NfeInutilizacao4). */
+  inutilizar(args: NFeInutilizarArgs): Promise<NFeInutilizarResult>;
 }
 
 /** Strip a trailing slash off `baseUrl` so route concatenation is clean. */
@@ -115,12 +145,22 @@ function errorFromResponse(
       ? String((body as { error: unknown }).error)
       : `HTTP ${status}`;
 
+  const bodyCode =
+    body !== null && typeof body === 'object' && 'code' in body
+      ? (body as { code: unknown }).code
+      : undefined;
+
   if (status === 400) return new NFeBadRequestError(message, body);
   if (status === 401 || status === 403) return new NFeAuthError(message, status, body);
   if (status === 404) {
     return new NFePedidoNotFoundError(context.pedidoId ?? '(unknown)', body);
   }
   if (status === 409) {
+    // 409 is shared: the inutilização pre-check abort carries an explicit
+    // marker; everything else at 409 is the bloquearEmissaoNFe emit block.
+    if (bodyCode === 'INUTILIZACAO_ABORTED') {
+      return new NFeInutilizacaoAbortedError(message, body);
+    }
     return new NFeBlockedError(context.pedidoId ?? '(unknown)', body);
   }
   if (status === 422) {
@@ -212,5 +252,12 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       call<NFeProcessarPendentesResult>('POST', '/api/nfe/processar-pendentes', {
         body: {},
       }),
+    cancelar: (pedidoId, nfeId, xJust) =>
+      call<NFeEmitResult>('POST', '/api/nfe/cancelar', {
+        body: { pedidoId, nfeId, xJust },
+        context: { pedidoId },
+      }),
+    inutilizar: (args) =>
+      call<NFeInutilizarResult>('POST', '/api/nfe/inutilizar', { body: { ...args } }),
   };
 }

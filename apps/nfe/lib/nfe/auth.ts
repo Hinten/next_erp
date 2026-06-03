@@ -16,6 +16,9 @@ import { getAdminAuth } from '@/lib/firebase/admin';
 interface ErrorBody {
   readonly error: string;
   readonly code?: string;
+  /** SEFAZ status code + reason, when the failure is a fiscal rejection. */
+  readonly cStat?: string;
+  readonly xMotivo?: string;
 }
 
 export function authError(status: number, body: ErrorBody): NextResponse {

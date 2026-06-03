@@ -41,6 +41,11 @@ const XSD_BY_ROOT = {
   consSitNFe: 'consSitNFe_v4.00.xsd',
   consStatServ: 'consStatServ_v4.00.xsd',
   inutNFe: 'inutNFe_v4.00.xsd',
+  envEvento: 'envEvento_v1.00.xsd',
+  // The generic envEvento has `<detEvento>` as xs:any (skip) — so detEvento's
+  // inner structure is validated separately against the tpEvento-specific
+  // schema (e110111 = cancelamento) before it's embedded + sent.
+  detEvento: 'e110111_v1.00.xsd',
   NFe: 'nfe_v4.00.xsd',
   // inbound — validate what SEFAZ sends us too (catches captive-portal HTML,
   // proxy junk, parser drift)
@@ -49,9 +54,11 @@ const XSD_BY_ROOT = {
   retConsSitNFe: 'retConsSitNFe_v4.00.xsd',
   retConsStatServ: 'retConsStatServ_v4.00.xsd',
   retInutNFe: 'retInutNFe_v4.00.xsd',
+  retEnvEvento: 'retEnvEvento_v1.00.xsd',
   // archived bundles
   nfeProc: 'procNFe_v4.00.xsd',
   ProcInutNFe: 'procInutNFe_v4.00.xsd',
+  procEventoNFe: 'procEventoNFe_v1.00.xsd',
 } as const;
 
 export type XsdRootKey = keyof typeof XSD_BY_ROOT;

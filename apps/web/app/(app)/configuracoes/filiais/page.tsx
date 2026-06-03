@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { deleteDoc } from 'firebase/firestore';
 import { Button } from '@mantine/core';
 import { filialSchema } from '@delfrance/schemas';
@@ -8,8 +9,10 @@ import { TableView } from '@delfrance/ui';
 import { formatCNPJ } from '@delfrance/core/documents';
 import { filialCollection } from '@/lib/data/filialCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
 
 export default function FiliaisPage() {
+  const router = useRouter();
   return (
     <TableView<typeof filialSchema>
       title="Filiais"
@@ -36,6 +39,25 @@ export default function FiliaisPage() {
       }}
       selectable
       actions={[
+        {
+          id: 'inutilizar',
+          label: 'Inutilizar numeração',
+          requiresSelection: true,
+          run: (rows) => {
+            // Inutilização is per-filial — navigate to the selected filial's
+            // screen (mirrors the old Flutter filiaisTableView action).
+            const target = rows[0];
+            if (rows.length !== 1 || !target) {
+              showErrorNotification({
+                title: 'Selecione uma única filial',
+                message:
+                  'A inutilização de numeração é feita por filial. Selecione apenas uma.',
+              });
+              return;
+            }
+            router.push(`/configuracoes/filiais/${target.id}/inutilizar`);
+          },
+        },
         {
           id: 'delete',
           label: 'Excluir',

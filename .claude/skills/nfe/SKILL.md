@@ -45,6 +45,18 @@ re-readable source).
 
 - **Layout `4.00`**; namespace `http://www.portalfiscal.inf.br/nfe`, declared
   once on the root, **no prefixes**, UTF-8, single `<?xml?>`.
+- **Build request XML with the generated serializer — never hand-concatenate
+  element strings.** `serialize` / `serializeFragment`
+  (`packages/integrations/nfe/src/xml/index.ts`) walk the codegen `META`
+  (derived from the XSDs) to emit every element in exact `xs:sequence` order
+  with correct escaping; the generator, eventos and inutilização all build
+  this way. The **only** sanctioned hand-assembly is (a) the thin
+  namespace/`versao` wrapper, and (b) wrapping/extracting an **already-signed**
+  payload (`buildEnvEvento`, `buildProcEventoNFe`, `autorizarLote`) — there
+  re-serialization would break the XMLDSig digest. Opaque `xs:any` content
+  (e.g. `detEvento`) is a `#raw` slot fed a pre-built, itself-serialized
+  fragment (built from the tpEvento-specific schema, e.g. `e110111`), not a
+  raw template string. See `references/codegen.md`.
 - **Sign `<infNFe>`**, not `<NFe>`: enveloped XMLDSig, C14N + RSA-SHA1 + SHA-1.
   The `<Signature>` is a sibling placed **after** `<infNFe>` inside `<NFe>`.
 - **The chave de acesso is computable before sending** — it is the anti-loss

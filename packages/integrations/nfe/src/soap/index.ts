@@ -36,7 +36,11 @@ const SOAP_NS = {
   NFeConsultaProtocolo: `${NFE_WSDL_BASE}/NFeConsultaProtocolo4`,
   NFeStatusServico: `${NFE_WSDL_BASE}/NFeStatusServico4`,
   NFeInutilizacao: `${NFE_WSDL_BASE}/NFeInutilizacao4`,
-  RecepcaoEvento: `${NFE_WSDL_BASE}/RecepcaoEvento4`,
+  // SEFAZ's WSDL service name (and thus the nfeDadosMsg xmlns + SOAPAction)
+  // for the event service is `NFeRecepcaoEvento4` — same `NFe<Service>4`
+  // pattern as the others. Without the `NFe` prefix SEFAZ rejects the POST
+  // with a SOAP Fault: "The action '…/RecepcaoEvento4' was not recognized."
+  RecepcaoEvento: `${NFE_WSDL_BASE}/NFeRecepcaoEvento4`,
 } as const;
 
 export type SoapOperation = keyof typeof SOAP_NS;
@@ -313,6 +317,16 @@ const CONTRACTS: Record<string, OperationContract> = {
     requestRoot: 'consStatServ',
     responseRoot: 'retConsStatServ',
   },
+  nfeRecepcaoEvento: {
+    soapOp: 'RecepcaoEvento',
+    requestRoot: 'envEvento',
+    responseRoot: 'retEnvEvento',
+  },
+  nfeInutilizacao: {
+    soapOp: 'NFeInutilizacao',
+    requestRoot: 'inutNFe',
+    responseRoot: 'retInutNFe',
+  },
 };
 
 /**
@@ -372,6 +386,22 @@ export async function nfeStatusServico(
   consStatServXml: string,
 ): Promise<PostResult> {
   return postSoapValidated(CONTRACTS.nfeStatusServico!, call, consStatServXml);
+}
+
+/** `RecepcaoEvento4 / nfeRecepcaoEvento` — send an `<envEvento>` lote (cancelamento, CC-e). */
+export async function nfeRecepcaoEvento(
+  call: SefazCall,
+  envEventoXml: string,
+): Promise<PostResult> {
+  return postSoapValidated(CONTRACTS.nfeRecepcaoEvento!, call, envEventoXml);
+}
+
+/** `NFeInutilizacao4 / nfeInutilizacaoNF` — burn an unused número range. */
+export async function nfeInutilizacao(
+  call: SefazCall,
+  inutNFeXml: string,
+): Promise<PostResult> {
+  return postSoapValidated(CONTRACTS.nfeInutilizacao!, call, inutNFeXml);
 }
 
 // Exposed for offline tests that exercise envelope shape / response unwrap.

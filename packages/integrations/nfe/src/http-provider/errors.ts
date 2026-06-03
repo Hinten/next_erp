@@ -58,6 +58,19 @@ export class NFeBlockedError extends NFeHttpError {
 }
 
 /**
+ * 409 — inutilização aborted by the pre-check: a número in the requested range
+ * belongs to an already-authorized NF-e, so sending the `inutNFe` would be
+ * consumo indevido. Shares the 409 status with `NFeBlockedError` but is
+ * disambiguated by the body marker `code === 'INUTILIZACAO_ABORTED'`.
+ */
+export class NFeInutilizacaoAbortedError extends NFeHttpError {
+  constructor(message: string, body: unknown) {
+    super(message, 409, body);
+    this.name = 'NFeInutilizacaoAbortedError';
+  }
+}
+
+/**
  * 422 — SEFAZ accepted the request but REJECTED the document
  * (`estado='rejeitada'`). The full emit result is attached for
  * caller inspection (the `cStat` + `xMotivo` are the actionable

@@ -19,8 +19,20 @@
  * stays string-based.
  */
 import {
+  buildCancelamentoDetEvento,
+  buildCancelamentoEvento,
+  buildEnvEvento,
+  buildProcEventoNFe,
+  type CancelamentoEventoInput,
+} from '../eventos';
+import { buildInutNFe, type InutilizacaoInput } from '../inutilizacao';
+import { signEvento, signInutilizacao } from '../sign';
+import { validateXsd } from '../xsd';
+import {
   nfeAutorizacaoLote,
   nfeConsultaProtocolo,
+  nfeInutilizacao,
+  nfeRecepcaoEvento,
   nfeRetAutorizacao,
   nfeStatusServico,
   type PostResult,
@@ -31,11 +43,14 @@ import {
   type TRetConsStatServ,
   type TRetConsSitNFe,
   type TRetConsReciNFe,
+  type TRetEnvEvento,
   type TRetEnviNFe,
+  type TRetInutNFe,
 } from '../types/nfe-schema';
 import { parse, serialize } from '../xml';
 
 const NFE_VERSAO = '4.00';
+const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
 
 /** SEFAZ `cUF` literal (IBGE 2-digit). Mirrors the codegen union. */
 export type CUFCode = TConsStatServ['cUF'];
@@ -136,12 +151,83 @@ export async function autorizarLote(
   return parse<TRetEnviNFe>('retEnviNFe', resultXml);
 }
 
+/** Result of a cancelamento round-trip. */
+export interface CancelarNFeResult {
+  /** Parsed `retEnvEvento` (lote-level cStat in `.cStat`, per-evento in `.retEvento[]`). */
+  readonly ret: TRetEnvEvento;
+  /** The signed `<evento>` we sent (opaque bytes — archive as-is). */
+  readonly signedEventoXml: string;
+  /** Archival `<procEventoNFe>` (signed evento + SEFAZ retEvento); null on lote rejection. */
+  readonly procEventoNFe: string | null;
+  /** Raw `retEnvEvento` XML, for the audit log. */
+  readonly rawResponse: string;
+}
+
+/**
+ * `RecepcaoEvento4` — cancelamento (`tpEvento=110111`).
+ *
+ * Builds + signs the `<evento>`, wraps the single-evento `<envEvento>`
+ * lote, sends, and parses `retEnvEvento`. The caller inspects
+ * `ret.retEvento[0].infEvento.cStat`: **135** (registrado e vinculado) or
+ * **155** (homologado fora de prazo) = success; anything else = rejected.
+ * `tpAmb` is taken from the call context; the certificate that signs the
+ * evento is `call.cert`.
+ */
+export async function cancelarNFe(
+  call: SefazCall,
+  args: Omit<CancelamentoEventoInput, 'tpAmb'>,
+): Promise<CancelarNFeResult> {
+  // Validate detEvento's inner structure against e110111 before send — the
+  // generic envEvento envelope declares detEvento as xs:any (skip) and never
+  // checks it, so this is the only gate on descEvento/nProt/xJust. detEvento
+  // inherits the NFe namespace from <evento> on the wire; add it explicitly so
+  // the standalone fragment validates (e110111 is elementFormDefault=qualified).
+  const detEvento = buildCancelamentoDetEvento(args);
+  await validateXsd('detEvento', detEvento.replace('<detEvento', `<detEvento xmlns="${NFE_NS}"`));
+  const eventoXml = buildCancelamentoEvento({ ...args, tpAmb: call.tpAmb });
+  const signedEventoXml = signEvento(eventoXml, call.cert);
+  const envEventoXml = buildEnvEvento(signedEventoXml);
+  const { resultXml } = await nfeRecepcaoEvento(call, envEventoXml);
+  const ret = parse<TRetEnvEvento>('retEnvEvento', resultXml);
+  const procEventoNFe = buildProcEventoNFe(signedEventoXml, resultXml);
+  return { ret, signedEventoXml, procEventoNFe, rawResponse: resultXml };
+}
+
+/** Result of an inutilização round-trip. */
+export interface InutilizarResult {
+  /** Parsed `retInutNFe` — success when `infInut.cStat === '102'`. */
+  readonly ret: TRetInutNFe;
+  /** The signed `<inutNFe>` we sent. */
+  readonly signedXml: string;
+  /** Raw `retInutNFe` XML, for the audit log. */
+  readonly rawResponse: string;
+}
+
+/**
+ * `NfeInutilizacao4` — burn an unused número range. Synchronous: inspect
+ * `ret.infInut.cStat` — **102** (Inutilização homologada) = success, with
+ * `ret.infInut.nProt`. `tpAmb` comes from the call context; the certificate
+ * that signs `<infInut>` is `call.cert`.
+ */
+export async function inutilizarNumeracao(
+  call: SefazCall,
+  args: Omit<InutilizacaoInput, 'tpAmb'>,
+): Promise<InutilizarResult> {
+  const inutXml = buildInutNFe({ ...args, tpAmb: call.tpAmb });
+  const signedXml = signInutilizacao(inutXml, call.cert);
+  const { resultXml } = await nfeInutilizacao(call, signedXml);
+  const ret = parse<TRetInutNFe>('retInutNFe', resultXml);
+  return { ret, signedXml, rawResponse: resultXml };
+}
+
 // Re-export the underlying transport — power users (recovery flows, replay
 // of archived signed NF-e) still reach for the string-based API.
 export type { PostResult, SefazCall };
 export {
   nfeAutorizacaoLote,
   nfeConsultaProtocolo,
+  nfeInutilizacao,
+  nfeRecepcaoEvento,
   nfeRetAutorizacao,
   nfeStatusServico,
 };

@@ -10,7 +10,7 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    `pedidos/{pedidoId}/nfev4/{chave}` with `estado='enviando'`, the
    computed `chave`, and the signed `xml_assinado` **before** the SOAP
    request. This is the anti-loss anchor — see
-   `lib/nfe/orchestrator.ts:emitirPedido` and the master plan's A8
+   `lib/nfe/orchestrator/emitir.ts:emitirPedido` and the master plan's A8
    recovery section.
 2. **No UI code.** Same shape as `apps/integrations`. The placeholder
    `page.tsx` exists only because Next requires a root route.
@@ -104,7 +104,8 @@ lib/
   firebase/admin.ts                Admin SDK singletons (same as apps/integrations)
   nfe/
     runtime.ts                     Process-level cert + agent + endpoints cache
-    orchestrator.ts                Pedido → emit, with persist-before-send
+    orchestrator/                  Pedido → emit/consultar/cancelar/inutilizar,
+                                   split per-service behind an index.ts barrel
     tribute.ts                     Homologação tributary stub (Phase A scaffolding)
     auth.ts                        Bearer-token + permission guard
 middleware.ts                      CORS for /api/nfe/* (browser callers)

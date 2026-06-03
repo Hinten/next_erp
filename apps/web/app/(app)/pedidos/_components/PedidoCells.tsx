@@ -16,6 +16,7 @@
  */
 import { useMemo } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { getDoc, type DocumentReference } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
 import { useSnapshot } from '@delfrance/data/hooks';
@@ -36,6 +37,7 @@ import {
   ActionIcon,
   Anchor,
   Badge,
+  Button,
   CopyButton,
   Group,
   HoverCard,
@@ -45,7 +47,7 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { IconCheck, IconCopy } from '@tabler/icons-react';
+import { IconBan, IconCheck, IconCopy } from '@tabler/icons-react';
 
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { nfeCollection } from '@/lib/data/nfeCollection';
@@ -123,10 +125,13 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
     return buildQuery(base, [orderByField('ultima_modificacao', 'desc'), limit(1)]);
   }, [db, pedidoId]);
   const { data, loading } = useSnapshot(q);
+  const router = useRouter();
 
   if (loading) return <Skeleton height={20} width={70} />;
   const latest = data?.[0]?.data;
   if (!latest) return <Text c="dimmed">{DASH}</Text>;
+  // Only an authorized NF-e can be cancelled (RecepcaoEvento tpEvento=110111).
+  const isAprovada = latest.estado === ESTADO_NFE.aprovada;
   const color = NFE_STATE_COLOR[latest.estado] ?? 'gray';
   const label = ESTADO_NFE_LABELS[latest.estado] ?? latest.estado;
   // tpEmis === 1 is the normal (SEFAZ síncrono) path. Anything else
@@ -155,7 +160,9 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
         </Badge>
       </HoverCard.Target>
       <HoverCard.Dropdown>
-        <Stack gap="xs">
+        {/* Dropdown content is portaled but React-bubbles to the row's
+            onClick — stop it so the copy/cancelar controls don't navigate. */}
+        <Stack gap="xs" onClick={(e) => e.stopPropagation()}>
           <Group gap="xs" wrap="nowrap">
             <Text size="sm" fw={500}>Estado:</Text>
             <Text size="sm">{label}</Text>
@@ -232,6 +239,24 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
               </Group>
               <CopyIconButton value={messageCopyValue} label="Copiar mensagem" />
             </Group>
+          )}
+
+          {isAprovada && (
+            <Button
+              color="red"
+              variant="light"
+              size="xs"
+              leftSection={<IconBan size={14} />}
+              mt="xs"
+              onClick={(e) => {
+                // Stop the row's navigate-onClick; go to the per-NF-e screen
+                // (communication history + cancelamento form).
+                e.stopPropagation();
+                router.push(`/pedidos/${pedidoId}/nfe`);
+              }}
+            >
+              Cancelar NF-e
+            </Button>
           )}
         </Stack>
       </HoverCard.Dropdown>

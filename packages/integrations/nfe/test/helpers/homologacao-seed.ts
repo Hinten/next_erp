@@ -59,6 +59,20 @@
  * mechanism; the per-run filial isolation is just cleanliness.
  */
 
+/**
+ * Série reserved exclusively for the inutilização live test.
+ *
+ * SEFAZ persists inutilized ranges per (CNPJ, serie, tpAmb, mod) **forever**,
+ * exactly like numeração. The emission tests own séries 1 (orchestrator) and
+ * 2 (library duplicidade) and emit real NF-es there; if the inutilização test
+ * burned a número on one of those séries it could clash with a número an
+ * emission test wants. Reserving série **9** — which no emission test ever
+ * emits on — keeps the two lanes disjoint. The inutilização test still picks a
+ * fresh `seedNNF()` range per run so a re-run never hits "número já
+ * inutilizado" on this série.
+ */
+export const SEFAZ_HOM_INUT_SERIE = 9;
+
 /** High base for the homologação test nNF zone. See file header. */
 export const SEFAZ_HOM_TEST_NNF_BASE = 500_000_000;
 

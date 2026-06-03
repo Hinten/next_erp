@@ -120,6 +120,7 @@ export {
   NFeChaveError,
   NFeGeneratorError,
   NFeIdeError,
+  cUFFromUF,
   generateNFe,
   type GeneratorInput,
   type GeneratorItem,
@@ -129,6 +130,23 @@ export {
 
 // `<nfeProc>` envelope — post-emission stitching of signed NFe + protNFe.
 export { buildNFeProc } from './nfeproc';
+
+// Eventos (cancelamento; CC-e later) — builders for the RecepcaoEvento lote.
+export {
+  buildCancelamentoEvento,
+  buildEnvEvento,
+  buildProcEventoNFe,
+  NFeEventoError,
+  TP_EVENTO_CANCELAMENTO,
+  type CancelamentoEventoInput,
+} from './eventos';
+
+// Inutilização de numeração — builder for the NfeInutilizacao lote.
+export {
+  buildInutNFe,
+  NFeInutilizacaoError,
+  type InutilizacaoInput,
+} from './inutilizacao';
 
 // Recovery / anti-loss
 export {
@@ -149,10 +167,14 @@ export {
 // Typed operations (the default API for app code)
 export {
   autorizarLote,
+  cancelarNFe,
   consultarLote,
   consultarSituacaoNFe,
   consultarStatusServico,
+  inutilizarNumeracao,
+  type CancelarNFeResult,
   type CUFCode,
+  type InutilizarResult,
 } from './operations';
 
 // Re-export the SOAP response types that orchestrator-level code uses
@@ -254,6 +276,8 @@ export {
   type NFeEmitResult,
   type NFeHttpClient,
   type NFeHttpClientConfig,
+  type NFeInutilizarArgs,
+  type NFeInutilizarResult,
   type NFeProcessarPendentesResult,
 } from './http-provider';
 
