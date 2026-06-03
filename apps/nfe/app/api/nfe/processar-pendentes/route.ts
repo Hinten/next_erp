@@ -16,6 +16,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
+import { nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
   consultarSituacaoNFe,
@@ -28,7 +29,6 @@ import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
-import { nfev4Collection } from '@/lib/data/nfev4Collection';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

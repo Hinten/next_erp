@@ -1,5 +1,6 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
+import { nfeConfigCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
   autorizarLote,
@@ -28,8 +29,6 @@ import {
   type NotaFiscalEletronica,
 } from '@delfrance/schemas';
 
-import { nfeConfigCollection } from '@/lib/data/nfeConfigCollection';
-import { nfev4Collection } from '@/lib/data/nfev4Collection';
 import type { NFeRuntime } from '../runtime';
 import {
   NFeBlockedError,

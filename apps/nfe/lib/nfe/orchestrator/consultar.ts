@@ -1,5 +1,6 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
+import { nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
   consultarLote,
@@ -11,7 +12,6 @@ import {
 } from '@delfrance/integrations-nfe';
 import type { NotaFiscalEletronica } from '@delfrance/schemas';
 
-import { nfev4Collection } from '@/lib/data/nfev4Collection';
 import type { NFeRuntime } from '../runtime';
 import { NFeOrchestratorError } from './errors';
 import { loadPedidoBundle, nfeDocId, type EmitResult } from './bundle';

@@ -64,10 +64,11 @@ const config = [
     },
   },
   {
-    // The admin singleton legitimately calls getFirestore; the data-access
-    // layer is the one place collection handles are defined. Keep the base
+    // The admin singleton legitimately calls getFirestore. (Collection handles
+    // used to live under lib/data/ and were exempt here too; they now live in
+    // the shared registry @delfrance/data/admin/collections.) Keep the base
     // `catch` convention enforced here, just drop the Firestore-ref bans.
-    files: ['lib/firebase/admin.ts', 'lib/data/**/*.ts'],
+    files: ['lib/firebase/admin.ts'],
     rules: {
       'no-restricted-imports': 'off',
       'no-restricted-syntax': ['error', ...baseRestrictedSyntax],

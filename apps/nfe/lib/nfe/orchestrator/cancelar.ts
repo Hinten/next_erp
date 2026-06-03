@@ -1,5 +1,6 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
+import { enviNfeMsgCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   cancelarNFe,
   type SefazCall,
@@ -11,8 +12,6 @@ import {
   type NotaFiscalEletronica,
 } from '@delfrance/schemas';
 
-import { enviNfeMsgCollection } from '@/lib/data/enviNfeMsgCollection';
-import { nfev4Collection } from '@/lib/data/nfev4Collection';
 import type { NFeRuntime } from '../runtime';
 import {
   NFeCancelamentoError,
