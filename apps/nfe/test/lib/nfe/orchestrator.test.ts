@@ -1093,7 +1093,7 @@ describe('emitirPedido — dedup (stable s${tpEmis} doc id)', () => {
     },
   );
 
-  it('reuses existing numeração + serie when nfev4 is rejeitada (cStat=215)', async () => {
+  it('reuses existing numeração + serie + chave when nfev4 is rejeitada (cStat=215)', async () => {
     const events: string[] = [];
     // nfeConfig advanced to 100 — but we expect the orchestrator to reuse
     // the rejeitada doc's numeração (7) instead of calling nextNumeracao.
@@ -1119,6 +1119,37 @@ describe('emitirPedido — dedup (stable s${tpEmis} doc id)', () => {
     expect(nfeWrite?.data.serie).toBe(3);
     expect(nfeWrite?.data.estado).toBe(ESTADO_NFE.enviando);
     expect(vi.mocked(autorizarLote)).toHaveBeenCalledOnce();
+    // The cNF baked into CHAVE (offsets [35,43)) is '00000001'. The
+    // orchestrator must forward it to generateNFe so the regenerated
+    // chave matches what was persisted — SEFAZ retry contract.
+    const genCall = vi.mocked(generateNFe).mock.calls[0]?.[0];
+    expect(genCall?.cNF).toBe('00000001');
+  });
+
+  it('draws a fresh cNF when the existing nfev4 is a placeholder with chave=null', async () => {
+    // A crashed `enviando` placeholder has no chave yet, so there's
+    // nothing to preserve — the orchestrator should fall back to the
+    // standard random cNF generation.
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 50, serie: 1, idLote: 0, ambiente: '2' },
+    });
+    docs['pedidos/PED-1/nfev4/s1'] = {
+      numeracao: 12,
+      serie: 1,
+      tpEmis: 1,
+      estado: ESTADO_NFE.enviando,
+      chave: null,
+      cStat: null,
+      xMotivo: null,
+    };
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    const genCall = vi.mocked(generateNFe).mock.calls[0]?.[0];
+    expect(genCall?.cNF).toBeUndefined();
   });
 
   it('reuses numeração when existing nfev4 was enviando but crashed (cStat=null)', async () => {
@@ -1142,6 +1173,9 @@ describe('emitirPedido — dedup (stable s${tpEmis} doc id)', () => {
 
     const nfeWrite = writes.find((w) => w.path === 'pedidos/PED-1/nfev4/s1');
     expect(nfeWrite?.data.numeracao).toBe(12);
+    // Existing chave is non-null → cNF is preserved on retry.
+    const genCall = vi.mocked(generateNFe).mock.calls[0]?.[0];
+    expect(genCall?.cNF).toBe('00000001');
   });
 
   it('advances numeracao_atual + idLote on the per-filial NFeConfig doc in the same transaction', async () => {

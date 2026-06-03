@@ -103,6 +103,16 @@ export function aammFromDate(dhEmi: Date): string {
 }
 
 /**
+ * Extract the 8-digit `cNF` from a 44-digit chave. Used on retry to
+ * keep the chave stable when re-emitting a rejeitada NF-e — see
+ * `apps/nfe/lib/nfe/orchestrator/emitir.ts` reuse branches.
+ */
+export function extractCNFFromChave(chave: string): string {
+  assertDigits('chave', chave, 44);
+  return chave.slice(35, 43);
+}
+
+/**
  * Generate 8 random digits for `cNF`. Retries on the (vanishingly rare)
  * collision with `nNF` — SEFAZ rejects `cNF === nNF`.
  */
