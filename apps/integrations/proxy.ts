@@ -29,7 +29,7 @@ function applyCors(headers: Headers, allowed: string) {
   headers.set('Vary', 'Origin');
 }
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const allowed = pickOrigin(req.headers.get('origin'));
 
   if (req.method === 'OPTIONS') {
