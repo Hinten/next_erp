@@ -18,6 +18,10 @@ import { NFeCartaCorrecaoError, NFeOrchestratorError, NFePedidoNotFoundError } f
  * the correction wasn't attached to the document, so we surface it as a failure
  * (not a silent success). Mirrors the cancelamento accept-set in `cancelar.ts`,
  * but cancelamento also accepts 155/573 — CC-e accepts only 135.
+ *
+ * TODO(#81): 136 is non-terminal — the event WAS registered, just not yet linked;
+ * it should trigger an async linkage re-check (DistDFe / consulta) instead of a
+ * hard rejection. Deferred to the async signals + GCloud/Firebase infra phase.
  */
 export const CSTAT_CCE_ACEITA = '135';
 
