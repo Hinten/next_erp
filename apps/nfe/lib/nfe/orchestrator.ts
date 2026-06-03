@@ -2621,26 +2621,11 @@ export async function inutilizarNumeracao(
   const aprovada = inf.cStat === '102';
   const now = new Date().toISOString();
 
-  // 3a. Persist the comunicação (enviNfe — generic SOAP audit log).
-  await enviNfeCollection(fs, args.filialId).add(
-    enviNfeMsgCollection.parse({
-      targetsChnfe: [],
-      idLote: null,
-      indSinc: null,
-      xml_enviado: res.signedXml,
-      xml_retorno: res.rawResponse,
-      nRec: null,
-      cStat: inf.cStat,
-      xMotivo: inf.xMotivo,
-      error: null,
-      tpEmis: null,
-      estado: ESTADO_ENVI_NFE_MSG.concluido,
-      timestamp: now,
-      ultima_modificacao: now,
-    }),
-  );
-
-  // 3b. Persist the durable inutilização record — homologada OR rejeitada.
+  // 3. Persist the durable inutilização record — homologada OR rejeitada. This
+  // is the single source of truth for the round-trip: it already stores the
+  // signed request, the SEFAZ reply, cStat/xMotivo/nProt and estado, so there
+  // is no separate `enviNfe` audit entry (that generic log is for emit/cancel
+  // of a specific NF-e; the inutilização screen reads this record directly).
   await inutNumeracaoCollection.add(
     fs,
     { filialId: args.filialId },

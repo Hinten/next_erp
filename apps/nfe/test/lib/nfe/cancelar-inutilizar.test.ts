@@ -661,7 +661,7 @@ describe('cancelarNFeService', () => {
 });
 
 describe('inutilizarNumeracao (orchestrator)', () => {
-  it('cStat 102 → returns the protocol + audit-logs + does NOT touch the counter', async () => {
+  it('cStat 102 → returns the protocol + records the inutilização + does NOT touch the counter', async () => {
     const events: string[] = [];
     const { fs, writes } = fakeFirestore({ events });
     vi.mocked(inutilizarNumeracaoSefaz).mockResolvedValue(inutResult('102') as never);
@@ -678,13 +678,17 @@ describe('inutilizarNumeracao (orchestrator)', () => {
     expect(result.nProt).toBe('135200000088888');
     expect(result.serie).toBe(9);
 
+    // The inutilização record is the single source of truth — exactly one is
+    // written, and there is NO redundant generic `enviNfe` audit entry.
     const audits = writes.filter((w) => w.path.startsWith('filiais/F-1/enviNfe/'));
-    expect(audits).toHaveLength(1);
+    expect(audits).toHaveLength(0);
+    const recs = writes.filter((w) => w.path.startsWith('filiais/F-1/inutilizacao/'));
+    expect(recs).toHaveLength(1);
     // The NFeConfig counter must be left alone (these números were skipped).
     expect(writes.some((w) => w.path === 'filiais/F-1/nfeconfig/default')).toBe(false);
   });
 
-  it('cStat != 102 → throws NFeInutilizacaoError (still audit-logged)', async () => {
+  it('cStat != 102 → throws NFeInutilizacaoError (still records the inutilização)', async () => {
     const events: string[] = [];
     const { fs, writes } = fakeFirestore({ events });
     vi.mocked(inutilizarNumeracaoSefaz).mockResolvedValue(inutResult('563') as never);
@@ -699,8 +703,11 @@ describe('inutilizarNumeracao (orchestrator)', () => {
       }),
     ).rejects.toBeInstanceOf(NFeInutilizacaoError);
 
+    // No generic enviNfe audit entry — only the durable inutilização record.
     const audits = writes.filter((w) => w.path.startsWith('filiais/F-1/enviNfe/'));
-    expect(audits).toHaveLength(1);
+    expect(audits).toHaveLength(0);
+    const recs = writes.filter((w) => w.path.startsWith('filiais/F-1/inutilizacao/'));
+    expect(recs).toHaveLength(1);
   });
 
   it('aborts (no SEFAZ send) when an in-range número is already aprovada', async () => {
