@@ -285,6 +285,13 @@ export {
 } from './inutilizacaoNumeracao';
 
 export {
+  cartaCorrecao,
+  cartaCorrecaoSchema,
+  cartaCorrecaoMeta,
+  type CartaCorrecao,
+} from './cartaCorrecao';
+
+export {
   impostoProduto,
   impostoProdutoSchema,
   impostoProdutoMeta,

@@ -1,0 +1,73 @@
+import { z } from 'zod';
+import type { CollectionMetadata } from './types';
+import { estadoEnviNFeMsgSchema } from './enviNfeMsg';
+
+// Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth — same audit
+// surface as `EnviNFeMsg` / `InutNumeracao`. The old Flutter `CartaDeCorrecao`
+// was declared `permCode: 'cco'`, read by the fiscal role.
+const PERM_FISCAL_READ = 1n << 72n;
+const PERM_FISCAL_WRITE = 1n << 73n;
+const PERM_FISCAL_DELETE = 1n << 74n;
+
+// SEFAZ limits for the CC-e correction text (`xCorrecao`), from the e110110
+// detEvento XSD (`minLength 15` / `maxLength 1000`).
+const XCORRECAO_MIN = 15;
+const XCORRECAO_MAX = 1000;
+
+/**
+ * `CartaDeCorrecao` — one persisted Carta de Correção Eletrônica round-trip
+ * (CC-e, `RecepcaoEvento` `tpEvento=110110`). Subcollection of the NF-e
+ * (`pedidos/{pedidoId}/nfev4/{nfeId}/cartacorrecao`) so a single NF-e can carry
+ * **many** corrections, each with its own `nSeqEvento`. **Append-only**: every
+ * CC-e attempt writes a new doc (registrada or rejeitada), never mutated
+ * afterwards — the operator can always retrieve old corrections (audit,
+ * reprint), mirroring the old Flutter `CartaDeCorrecao` model
+ * (`.old/packages/pedido_nfe/lib/src/models.dart:406`) and its
+ * `CartaCorrecaoTableView` list.
+ *
+ * `estado` reuses `EstadoEnviNFeMsg` (Flutter parity): `concluido` ('3') when
+ * SEFAZ registrou e vinculou (cStat 135), `error` ('e') otherwise. `cStat` /
+ * `xMotivo` / `nProt` are extracted up-front for cheap list rendering.
+ *
+ * Field-name note: we keep the SEFAZ wire name `xCorrecao` (not the old Flutter
+ * `justificativa`) — this is a fresh TS-only collection, no Flutter reader to
+ * satisfy during the migration window.
+ */
+export const cartaCorrecaoSchema = z.object({
+  /** Correction text sent as `<xCorrecao>` — SEFAZ requires 15–1000 chars. */
+  xCorrecao: z.string().min(XCORRECAO_MIN).max(XCORRECAO_MAX),
+  /** Event sequence number (1, 2, 3, …). Increments per accepted CC-e. */
+  nSeqEvento: z.number().int().min(1),
+
+  /** Signed `<evento>` sent to SEFAZ. */
+  xml_enviado: z.string().min(1).nullable(),
+  /** Raw `retEnvEvento` reply from SEFAZ. */
+  xml_retorno: z.string().min(1).nullable(),
+  /** SEFAZ `retEvento.infEvento.cStat` — '135' = registrado e vinculado. */
+  cStat: z.string().nullable(),
+  /** Human-readable motivo. */
+  xMotivo: z.string().nullable(),
+  /** Event protocolo returned on cStat=135. */
+  nProt: z.string().min(1).nullable(),
+  /** Transport/error message when the round-trip failed before a SEFAZ reply. */
+  error: z.string().nullable(),
+  /** SEFAZ `tpEmis` for the event. */
+  tpEmis: z.number().int().nullable(),
+
+  estado: estadoEnviNFeMsgSchema.default('0'),
+  timestamp: z.string().datetime().nullable().optional(),
+  ultima_modificacao: z.string().datetime().nullable().optional(),
+});
+
+export type CartaCorrecao = z.infer<typeof cartaCorrecaoSchema>;
+
+export const cartaCorrecaoMeta: CollectionMetadata = {
+  collectionPath: 'pedidos/{pedidoId}/nfev4/{nfeId}/cartacorrecao',
+  permissions: {
+    read: PERM_FISCAL_READ,
+    write: PERM_FISCAL_WRITE,
+    delete: PERM_FISCAL_DELETE,
+  },
+};
+
+export const cartaCorrecao = { schema: cartaCorrecaoSchema, meta: cartaCorrecaoMeta };

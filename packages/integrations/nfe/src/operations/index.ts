@@ -21,9 +21,12 @@
 import {
   buildCancelamentoDetEvento,
   buildCancelamentoEvento,
+  buildCCeDetEvento,
+  buildCCeEvento,
   buildEnvEvento,
   buildProcEventoNFe,
   type CancelamentoEventoInput,
+  type CCeEventoInput,
 } from '../eventos';
 import { buildInutNFe, type InutilizacaoInput } from '../inutilizacao';
 import { signEvento, signInutilizacao } from '../sign';
@@ -151,8 +154,12 @@ export async function autorizarLote(
   return parse<TRetEnviNFe>('retEnviNFe', resultXml);
 }
 
-/** Result of a cancelamento round-trip. */
-export interface CancelarNFeResult {
+/**
+ * Result of any `RecepcaoEvento` round-trip (cancelamento, CC-e, …) — they all
+ * build + sign an `<evento>`, send the single-evento lote, and parse
+ * `retEnvEvento`, so they share one shape.
+ */
+export interface RecepcaoEventoResult {
   /** Parsed `retEnvEvento` (lote-level cStat in `.cStat`, per-evento in `.retEvento[]`). */
   readonly ret: TRetEnvEvento;
   /** The signed `<evento>` we sent (opaque bytes — archive as-is). */
@@ -162,6 +169,9 @@ export interface CancelarNFeResult {
   /** Raw `retEnvEvento` XML, for the audit log. */
   readonly rawResponse: string;
 }
+
+/** Result of a cancelamento round-trip. */
+export type CancelarNFeResult = RecepcaoEventoResult;
 
 /**
  * `RecepcaoEvento4` — cancelamento (`tpEvento=110111`).
@@ -185,6 +195,39 @@ export async function cancelarNFe(
   const detEvento = buildCancelamentoDetEvento(args);
   await validateXsd('detEvento', detEvento.replace('<detEvento', `<detEvento xmlns="${NFE_NS}"`));
   const eventoXml = buildCancelamentoEvento({ ...args, tpAmb: call.tpAmb });
+  const signedEventoXml = signEvento(eventoXml, call.cert);
+  const envEventoXml = buildEnvEvento(signedEventoXml);
+  const { resultXml } = await nfeRecepcaoEvento(call, envEventoXml);
+  const ret = parse<TRetEnvEvento>('retEnvEvento', resultXml);
+  const procEventoNFe = buildProcEventoNFe(signedEventoXml, resultXml);
+  return { ret, signedEventoXml, procEventoNFe, rawResponse: resultXml };
+}
+
+/** Result of a carta de correção (CC-e) round-trip. Same shape as cancelamento. */
+export type CartaCorrecaoResult = RecepcaoEventoResult;
+
+/**
+ * `RecepcaoEvento4` — carta de correção eletrônica (CC-e, `tpEvento=110110`).
+ *
+ * Builds + signs the `<evento>`, wraps the single-evento `<envEvento>` lote,
+ * sends, and parses `retEnvEvento`. The caller inspects
+ * `ret.retEvento[0].infEvento.cStat`: **135** (registrado e vinculado) =
+ * accepted; anything else (incl. 136, registrado mas não vinculado) = rejected.
+ * `tpAmb` is taken from the call context; the certificate that signs the evento
+ * is `call.cert`. Unlike cancelamento, a CC-e carries no `nProt` in the request.
+ */
+export async function cartaCorrecaoNFe(
+  call: SefazCall,
+  args: Omit<CCeEventoInput, 'tpAmb'>,
+): Promise<CartaCorrecaoResult> {
+  // Validate detEvento against the real e110110 XSD before send — the generic
+  // envEvento envelope declares detEvento as xs:any (skip), so this is the only
+  // gate on descEvento/xCorrecao/xCondUso. detEvento inherits the NFe namespace
+  // from <evento> on the wire; add it explicitly so the standalone fragment
+  // validates (e110110 is elementFormDefault=qualified).
+  const detEvento = buildCCeDetEvento(args);
+  await validateXsd('detEventoCCe', detEvento.replace('<detEvento', `<detEvento xmlns="${NFE_NS}"`));
+  const eventoXml = buildCCeEvento({ ...args, tpAmb: call.tpAmb });
   const signedEventoXml = signEvento(eventoXml, call.cert);
   const envEventoXml = buildEnvEvento(signedEventoXml);
   const { resultXml } = await nfeRecepcaoEvento(call, envEventoXml);

@@ -12,5 +12,6 @@ export { nfev4Collection } from './nfev4Collection';
 export { enviNfeMsgCollection } from './enviNfeMsgCollection';
 export { nfeConfigCollection } from './nfeConfigCollection';
 export { inutNumeracaoCollection } from './inutNumeracaoCollection';
+export { cartaCorrecaoCollection } from './cartaCorrecaoCollection';
 export { cargoCollection } from './cargoCollection';
 export { usuarioCollection } from './usuarioCollection';

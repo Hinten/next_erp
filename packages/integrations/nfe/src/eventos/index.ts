@@ -21,7 +21,7 @@
 import { formatDhEmi } from '../generator/ide';
 import { sanitizeNFeText } from '../sanitize';
 import type { TpAmb } from '../safety';
-import { serializeFragment } from '../xml';
+import { escapeText, serializeFragment } from '../xml';
 
 const EVENTO_NS = 'http://www.portalfiscal.inf.br/nfe';
 const EVENTO_VERSAO = '1.00';
@@ -105,6 +105,96 @@ export function buildCancelamentoEvento(input: CancelamentoEventoInput): string 
     verEvento: EVENTO_VERSAO,
     // `detEvento` is a #raw slot — injected verbatim in sequence order.
     detEvento: buildCancelamentoDetEvento(input),
+  });
+
+  return `<evento xmlns="${EVENTO_NS}" versao="${EVENTO_VERSAO}">${infEvento}</evento>`;
+}
+
+// ---------------------------------------------------------------------------
+// Carta de Correção Eletrônica (CC-e) — tpEvento 110110
+// ---------------------------------------------------------------------------
+export const TP_EVENTO_CCE = '110110';
+
+/**
+ * Fixed `<xCondUso>` legal text for a CC-e. Must match the e110110 detEvento
+ * XSD enumeration **exactly** (the accented variant) — SEFAZ rejects any
+ * deviation. Contains no `& < >`, so it is emitted verbatim (no escaping).
+ */
+export const XCONDUSO_CCE =
+  'A Carta de Correção é disciplinada pelo § 1º-A do art. 7º do Convênio S/N, de 15 de ' +
+  'dezembro de 1970 e pode ser utilizada para regularização de erro ocorrido na emissão de ' +
+  'documento fiscal, desde que o erro não esteja relacionado com: I - as variáveis que ' +
+  'determinam o valor do imposto tais como: base de cálculo, alíquota, diferença de preço, ' +
+  'quantidade, valor da operação ou da prestação; II - a correção de dados cadastrais que ' +
+  'implique mudança do remetente ou do destinatário; III - a data de emissão ou de saída.';
+
+export interface CCeEventoInput {
+  /** 44-digit chave de acesso of the authorized NF-e. */
+  readonly chNFe: string;
+  /** Órgão (IBGE cUF 2-digit) — the autorizadora UF. */
+  readonly cOrgao: string;
+  readonly tpAmb: TpAmb;
+  /** Emitter CNPJ (14 digits). */
+  readonly cnpj: string;
+  /**
+   * Correction text. SEFAZ requires 15–1000 chars. The API route validates the
+   * length AFTER `sanitizeNFeText` (which can shorten it), so the sanitized
+   * `<xCorrecao>` emitted below is guaranteed ≥ 15.
+   */
+  readonly xCorrecao: string;
+  /** Sequence — 1 for the first CC-e, incremented per subsequent correction. */
+  readonly nSeqEvento?: number;
+  /** Event timestamp — defaults to now (issuer-local with offset). */
+  readonly dhEvento?: Date;
+}
+
+/**
+ * Build the `<detEvento>` for a CC-e, in the e110110 sequence order
+ * (descEvento, xCorrecao, xCondUso) with attribute `versao`. Hand-serialized
+ * (not codegen-driven) because the generated `detEvento` META is owned by the
+ * cancelamento payload (e110111); see `src/codegen/generate.mjs`. The result is
+ * validated against the real e110110 XSD by the operation layer
+ * (`validateXsd('detEventoCCe', …)`) before it is signed + sent — so a hand
+ * mistake (order, escaping) is caught locally, never at SEFAZ.
+ */
+export function buildCCeDetEvento(input: { readonly xCorrecao: string }): string {
+  // Sanitized-but-then-escaped: sanitizeNFeText drops SEFAZ-restricted chars;
+  // escapeText then escapes & < > for XML text content.
+  const xCorrecao = escapeText(sanitizeNFeText(input.xCorrecao) ?? '');
+  return (
+    `<detEvento versao="${EVENTO_VERSAO}">` +
+    '<descEvento>Carta de Correção</descEvento>' +
+    `<xCorrecao>${xCorrecao}</xCorrecao>` +
+    `<xCondUso>${XCONDUSO_CCE}</xCondUso>` +
+    '</detEvento>'
+  );
+}
+
+/**
+ * Build the UNSIGNED `<evento>` for a CC-e. Pass the result to `signEvento`
+ * then `buildEnvEvento`, exactly like cancelamento — only `tpEvento` (110110),
+ * `nSeqEvento` and the detEvento payload differ. `infEvento.Id` =
+ * `'ID' + tpEvento(6) + chNFe(44) + nSeqEvento(2)`. CC-e carries no `nProt`.
+ */
+export function buildCCeEvento(input: CCeEventoInput): string {
+  if (input.chNFe.length !== 44) {
+    throw new NFeEventoError(`chNFe must be 44 digits, got ${input.chNFe.length}`);
+  }
+  const nSeq = input.nSeqEvento ?? 1;
+  const id = `ID${TP_EVENTO_CCE}${input.chNFe}${String(nSeq).padStart(2, '0')}`;
+
+  const infEvento = serializeFragment('TEvento_infEvento', 'infEvento', {
+    Id: id,
+    cOrgao: input.cOrgao,
+    tpAmb: input.tpAmb,
+    CNPJ: input.cnpj,
+    chNFe: input.chNFe,
+    dhEvento: formatDhEmi(input.dhEvento ?? new Date()),
+    tpEvento: TP_EVENTO_CCE,
+    nSeqEvento: String(nSeq),
+    verEvento: EVENTO_VERSAO,
+    // `detEvento` is a #raw slot — injected verbatim in sequence order.
+    detEvento: buildCCeDetEvento(input),
   });
 
   return `<evento xmlns="${EVENTO_NS}" versao="${EVENTO_VERSAO}">${infEvento}</evento>`;

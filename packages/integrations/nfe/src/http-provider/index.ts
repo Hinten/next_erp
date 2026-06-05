@@ -8,6 +8,7 @@ export {
   createNFeHttpClient,
   isNFeEmitError,
   type NFeBatchEmitResult,
+  type NFeCartaCorrecaoResult,
   type NFeConsultaResult,
   type NFeEmitError,
   type NFeEmitResult,

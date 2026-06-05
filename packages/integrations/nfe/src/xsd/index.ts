@@ -44,8 +44,12 @@ const XSD_BY_ROOT = {
   envEvento: 'envEvento_v1.00.xsd',
   // The generic envEvento has `<detEvento>` as xs:any (skip) — so detEvento's
   // inner structure is validated separately against the tpEvento-specific
-  // schema (e110111 = cancelamento) before it's embedded + sent.
+  // schema before it's embedded + sent. Cancelamento (e110111) and CC-e
+  // (e110110) both declare a root `<detEvento>`; they're registered under
+  // distinct keys here because the codegen can only own one `detEvento` META
+  // (cancelamento's) — see `src/codegen/generate.mjs`.
   detEvento: 'e110111_v1.00.xsd',
+  detEventoCCe: 'e110110_v1.00.xsd',
   NFe: 'nfe_v4.00.xsd',
   // inbound — validate what SEFAZ sends us too (catches captive-portal HTML,
   // proxy junk, parser drift)

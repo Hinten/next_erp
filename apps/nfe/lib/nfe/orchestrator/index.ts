@@ -18,6 +18,7 @@
  *   - `emitir.ts`          — emit (single + lote)
  *   - `consultar.ts`       — standalone SEFAZ consulta
  *   - `cancelar.ts`        — cancelamento (RecepcaoEvento 110111)
+ *   - `carta-correcao.ts`  — carta de correção / CC-e (RecepcaoEvento 110110)
  *   - `inutilizar.ts`      — inutilização de numeração (NfeInutilizacao4)
  */
 export * from './errors';
@@ -27,6 +28,7 @@ export * from './generator-input';
 export * from './emitir';
 export * from './consultar';
 export * from './cancelar';
+export * from './carta-correcao';
 export * from './inutilizar';
 
 import {

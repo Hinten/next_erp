@@ -35,7 +35,7 @@ vi.mock('../../src/sign', async (importOriginal) => {
   };
 });
 
-import { cancelarNFe, inutilizarNumeracao } from '../../src/operations/index';
+import { cancelarNFe, cartaCorrecaoNFe, inutilizarNumeracao } from '../../src/operations/index';
 import {
   nfeInutilizacao as mockedNfeInutilizacao,
   nfeRecepcaoEvento as mockedNfeRecepcaoEvento,
@@ -150,6 +150,62 @@ describe('cancelarNFe', () => {
     const res = await cancelarNFe(dummyCall(), cancelArgs());
     expect(res.ret.retEvento).toBeUndefined();
     expect(res.procEventoNFe).toBeNull();
+  });
+});
+
+describe('cartaCorrecaoNFe', () => {
+  function cceArgs(nSeqEvento = 1) {
+    return {
+      chNFe: CHAVE,
+      cOrgao: '35',
+      cnpj: CNPJ,
+      xCorrecao: 'Correcao do peso bruto informado no campo de transporte da nota',
+      nSeqEvento,
+      dhEvento: new Date('2026-05-29T10:00:00'),
+    };
+  }
+
+  function retEventoCCe(cStat: string, nSeq = 1): string {
+    return (
+      `<retEvento versao="1.00">` +
+      `<infEvento Id="ID110110${CHAVE}${String(nSeq).padStart(2, '0')}">` +
+      `<tpAmb>2</tpAmb><verAplic>SP_EVENTOS</verAplic><cOrgao>35</cOrgao>` +
+      `<cStat>${cStat}</cStat>` +
+      `<xMotivo>Evento registrado e vinculado a NF-e</xMotivo>` +
+      `<chNFe>${CHAVE}</chNFe><tpEvento>110110</tpEvento>` +
+      `<xEvento>Carta de Correcao</xEvento><nSeqEvento>${nSeq}</nSeqEvento>` +
+      `<dhRegEvento>2026-05-29T10:00:00-03:00</dhRegEvento>` +
+      `<nProt>135200000077777</nProt>` +
+      `</infEvento></retEvento>`
+    );
+  }
+
+  it('builds → signs → sends the CC-e evento (tpEvento 110110) and parses retEnvEvento', async () => {
+    vi.mocked(mockedNfeRecepcaoEvento).mockResolvedValueOnce({
+      resultXml: retEnvEvento({ cStatLote: '128', evento: retEventoCCe('135', 2) }),
+      rawBody: '',
+    });
+
+    const res = await cartaCorrecaoNFe(dummyCall(), cceArgs(2));
+
+    expect(res.ret.retEvento?.[0]?.infEvento.cStat).toBe('135');
+    expect(res.ret.retEvento?.[0]?.infEvento.nProt).toBe('135200000077777');
+    expect(res.procEventoNFe).not.toBeNull();
+
+    const sent = vi.mocked(mockedNfeRecepcaoEvento).mock.calls[0]![1];
+    expect(sent).toMatch(/^<envEvento /);
+    expect(sent).toContain('<Signature>MOCK</Signature>');
+    // Id encodes tpEvento 110110 + chave + zero-padded nSeqEvento (02 here).
+    expect(sent).toContain(`Id="ID110110${CHAVE}02"`);
+    // The fixed xCondUso legal text rides in the detEvento.
+    expect(sent).toContain('A Carta de Correção é disciplinada');
+  });
+
+  it('rejects an xCorrecao below 15 chars at the XSD gate (before send)', async () => {
+    await expect(
+      cartaCorrecaoNFe(dummyCall(), { ...cceArgs(), xCorrecao: 'curto' }),
+    ).rejects.toThrow();
+    expect(vi.mocked(mockedNfeRecepcaoEvento)).not.toHaveBeenCalled();
   });
 });
 

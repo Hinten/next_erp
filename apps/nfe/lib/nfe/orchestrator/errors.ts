@@ -52,3 +52,21 @@ export class NFeCancelamentoError extends Error {
     this.name = 'NFeCancelamentoError';
   }
 }
+
+/**
+ * Carta de correção (CC-e) rejected by SEFAZ, or the NF-e is not in a
+ * correctable state (only an authorized NF-e can be corrected). A CC-e is
+ * accepted **only** on cStat 135; every other status (incl. 136, registrado mas
+ * não vinculado) lands here.
+ */
+export class NFeCartaCorrecaoError extends Error {
+  constructor(
+    message: string,
+    /** SEFAZ event cStat — present only on an actual rejection (not preconditions). */
+    public readonly cStat?: string,
+    public readonly xMotivo?: string,
+  ) {
+    super(message);
+    this.name = 'NFeCartaCorrecaoError';
+  }
+}
