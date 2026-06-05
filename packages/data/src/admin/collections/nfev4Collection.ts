@@ -1,5 +1,6 @@
-import { defineAdminCollection } from '@delfrance/data/admin';
 import { nfeMeta, nfeSchema } from '@delfrance/schemas';
+
+import { defineAdminCollection } from '../defineAdminCollection';
 
 /**
  * Admin-SDK handle for the per-pedido `nfev4` subcollection

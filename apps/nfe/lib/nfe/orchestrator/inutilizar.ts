@@ -1,5 +1,6 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
+import { inutNumeracaoCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   cUFFromUF,
   inutilizarNumeracao as inutilizarNumeracaoSefaz,
@@ -14,8 +15,6 @@ import {
   type NotaFiscalEletronica,
 } from '@delfrance/schemas';
 
-import { inutNumeracaoCollection } from '@/lib/data/inutNumeracaoCollection';
-import { nfev4Collection } from '@/lib/data/nfev4Collection';
 import type { NFeRuntime } from '../runtime';
 import { NFeInutilizacaoAbortedError, NFeOrchestratorError } from './errors';
 

@@ -108,7 +108,7 @@ lib/
                                    split per-service behind an index.ts barrel
     tribute.ts                     Homologação tributary stub (Phase A scaffolding)
     auth.ts                        Bearer-token + permission guard
-middleware.ts                      CORS for /api/nfe/* (browser callers)
+proxy.ts                           CORS for /api/nfe/* (browser callers)
 ```
 
 ## Dev

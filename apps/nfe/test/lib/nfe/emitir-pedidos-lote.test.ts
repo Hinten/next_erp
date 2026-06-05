@@ -397,14 +397,16 @@ const generatedChaves: string[] = [];
 
 function mockGenerateAndSign() {
   generatedChaves.length = 0;
-  let cNF = 0;
+  let cNFCounter = 0;
   vi.mocked(generateNFe).mockImplementation((input) => {
     // Simulate a raw fiscal-field error for the sentinel pedido — this is
     // exactly the per-pedido failure that must NOT sink the whole chunk.
     if (input.itens.some((it) => it.xProd === FAIL_GEN_XPROD)) {
       throw new Error('generateNFe failed: fiscal field overflow (test)');
     }
-    cNF += 1;
+    // Honor an explicit `input.cNF` (rejeitada-retry path) so the
+    // regenerated chave matches the one already on the existing doc.
+    const cNF = input.cNF != null ? Number(input.cNF) : ++cNFCounter;
     const chave = fakeChave(input.numeracao, cNF);
     generatedChaves.push(chave);
     return {
@@ -767,6 +769,20 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
     expect(nnfOf(fresh)).toBe('000000001');
     expect(nnfOf(reuse)).toBe('000000007');
     expect('reused' in blocked ? blocked.reused : null).toBe(true);
+
+    // PED-REUSE: the cNF baked into reuseExisting.chave (offsets [35,43))
+    // must be forwarded to generateNFe so the regenerated chave is stable.
+    const reuseCNF = reuseExisting.chave.slice(35, 43);
+    const reuseGenCall = vi
+      .mocked(generateNFe)
+      .mock.calls.find((c) => c[0]?.numeracao === 7);
+    expect(reuseGenCall?.[0].cNF).toBe(reuseCNF);
+    // PED-FRESH: no chave to preserve → cNF stays undefined and the
+    // generator draws a fresh random one.
+    const freshGenCall = vi
+      .mocked(generateNFe)
+      .mock.calls.find((c) => c[0]?.numeracao === 1);
+    expect(freshGenCall?.[0].cNF).toBeUndefined();
   });
 
   it('allocates contiguous fresh nNFs for an all-fresh chunk', async () => {

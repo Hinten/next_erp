@@ -121,6 +121,7 @@ export {
   NFeGeneratorError,
   NFeIdeError,
   cUFFromUF,
+  extractCNFFromChave,
   generateNFe,
   type GeneratorInput,
   type GeneratorItem,

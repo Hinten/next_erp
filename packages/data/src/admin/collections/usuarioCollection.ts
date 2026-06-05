@@ -1,5 +1,6 @@
-import { defineAdminCollection } from '@delfrance/data/admin';
 import { usuarioMeta, usuarioSchema } from '@delfrance/schemas';
+
+import { defineAdminCollection } from '../defineAdminCollection';
 
 /**
  * Admin-SDK handle for the `usuarios` collection. Writes are validated against

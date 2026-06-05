@@ -1,10 +1,17 @@
 // Flat config base. Apps and packages extend this and add framework-specific
 // rules (e.g., apps/web extends with eslint-config-next).
+import noInlineAdminCollection from './rules/no-inline-admin-collection.js';
+
 const config = [
   {
     ignores: ['**/.next/**', '**/dist/**', '**/out/**', '**/node_modules/**', '**/coverage/**'],
   },
   {
+    plugins: {
+      delfrance: {
+        rules: { 'no-inline-admin-collection': noInlineAdminCollection },
+      },
+    },
     rules: {
       'no-console': ['warn', { allow: ['warn', 'error'] }],
       'no-unused-vars': 'off',
@@ -29,6 +36,12 @@ const config = [
       // warnings instead of errors so existing patterns don't block CI.
       'react-hooks/set-state-in-effect': 'warn',
       'react-hooks/preserve-manual-memoization': 'warn',
+
+      // Keep Admin-SDK collection handles in the canonical registry at
+      // packages/data/src/admin/collections (imported via
+      // @delfrance/data/admin/collections). Warn — a guard against
+      // re-scattering, not a hard gate. See rules/no-inline-admin-collection.js.
+      'delfrance/no-inline-admin-collection': 'warn',
     },
   },
 ];

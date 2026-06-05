@@ -1,5 +1,6 @@
-import { defineAdminCollection } from '@delfrance/data/admin';
 import { enviNfeMsgMeta, enviNfeMsgSchema } from '@delfrance/schemas';
+
+import { defineAdminCollection } from '../defineAdminCollection';
 
 /**
  * Admin-SDK handle for the per-filial `enviNfe` SEFAZ audit log

@@ -7,8 +7,8 @@ import {
   type NotaFiscalEletronica,
 } from '@delfrance/schemas';
 
-import { cartaCorrecaoCollection } from '@/lib/data/cartaCorrecaoCollection';
-import { nfev4Collection } from '@/lib/data/nfev4Collection';
+import { cartaCorrecaoCollection, nfev4Collection } from '@delfrance/data/admin/collections';
+
 import type { NFeRuntime } from '../runtime';
 import { NFeCartaCorrecaoError, NFeOrchestratorError, NFePedidoNotFoundError } from './errors';
 

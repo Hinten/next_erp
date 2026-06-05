@@ -172,3 +172,4 @@ function escape(s: string): string {
 export type { GeneratorInput, GeneratorItem, GeneratorOutput, TpEmis } from './types';
 export { NFeChaveError, NFeIdeError };
 export { cUFFromUF } from './ide';
+export { extractCNFFromChave } from './chave';
