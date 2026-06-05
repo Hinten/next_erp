@@ -84,6 +84,12 @@ describe('computeBackoffDelay', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0);
     expect(computeBackoffDelay(1)).toBeGreaterThan(0);
   });
+
+  it('throws RangeError on a non-positive or non-integer attempt', () => {
+    expect(() => computeBackoffDelay(0)).toThrow(RangeError);
+    expect(() => computeBackoffDelay(-1)).toThrow(RangeError);
+    expect(() => computeBackoffDelay(1.5)).toThrow(RangeError);
+  });
 });
 
 describe('retryAsync', () => {
@@ -130,6 +136,14 @@ describe('retryAsync', () => {
       retryAsync(fn, { isRetryable: isRetryableFirestoreError }),
     ).rejects.toBe(err);
     expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects with RangeError when maxAttempts is invalid', async () => {
+    const fn = vi.fn().mockResolvedValue('ok');
+    await expect(
+      retryAsync(fn, { isRetryable: isRetryableFirestoreError, maxAttempts: 0 }),
+    ).rejects.toBeInstanceOf(RangeError);
+    expect(fn).not.toHaveBeenCalled();
   });
 
   it('stops retrying when cancelled', async () => {

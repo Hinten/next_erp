@@ -59,13 +59,19 @@ export function isRetryableFirestoreError(err: unknown): boolean {
 /**
  * Backoff for the wait *after* a failed attempt. `attempt` is 1-based: the
  * wait after attempt 1 uses `base`, after attempt 2 uses `base*2`, capped at
- * `max`. Full jitter in `[ceiling/2, ceiling]` keeps concurrent tables from
- * retrying in lockstep while staying predictable enough to feel responsive.
+ * `max`. Uses *equal jitter* — the result lands in `[ceiling/2, ceiling]` (half
+ * fixed, half random) — so concurrent tables don't retry in lockstep while the
+ * wait stays predictable enough to feel responsive.
  */
 export function computeBackoffDelay(
   attempt: number,
   options: { baseMs?: number; maxMs?: number } = {},
 ): number {
+  if (!Number.isInteger(attempt) || attempt < 1) {
+    throw new RangeError(
+      `computeBackoffDelay: attempt must be an integer >= 1, got ${attempt}`,
+    );
+  }
   const baseMs = options.baseMs ?? READ_RETRY_BACKOFF_BASE_MS;
   const maxMs = options.maxMs ?? READ_RETRY_BACKOFF_MAX_MS;
   const ceiling = Math.min(baseMs * 2 ** (attempt - 1), maxMs);
@@ -100,6 +106,11 @@ export async function retryAsync<T>(
   options: RetryOptions,
 ): Promise<T> {
   const maxAttempts = options.maxAttempts ?? READ_RETRY_MAX_ATTEMPTS;
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+    throw new RangeError(
+      `retryAsync: maxAttempts must be an integer >= 1, got ${maxAttempts}`,
+    );
+  }
   const isCancelled = options.isCancelled ?? (() => false);
   let lastErr: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
