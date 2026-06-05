@@ -41,6 +41,7 @@ export function buildGeneratorInput(
   serie: number,
   ambiente: NFeRuntime['ambiente'],
   tpEmis: GeneratorInput['tpEmis'] = 1,
+  cNF?: string,
 ): GeneratorInput {
   const isInterstate = bundle.enderecoDest.estado !== bundle.filial.sede.estado;
   const genItems = buildGenItems(items, bundle, isInterstate);
@@ -92,6 +93,7 @@ export function buildGeneratorInput(
     ...(infAdic ? { infAdic } : {}),
     ...(exporta ? { exporta } : {}),
     ...(infIntermed ? { infIntermed } : {}),
+    ...(cNF ? { cNF } : {}),
   };
 }
 

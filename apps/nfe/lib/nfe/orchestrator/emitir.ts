@@ -7,6 +7,7 @@ import {
   classifyCStat,
   consultarLote,
   consultarSituacaoNFe,
+  extractCNFFromChave,
   generateNFe,
   isBloqueada,
   NFeConfigNotFoundError,
@@ -118,6 +119,11 @@ export async function prepareEmission(
  * the persisted doc shape can never diverge between the two paths. The
  * chave is deterministic from nNF + serie + dhEmi + filial CNPJ + tpEmis,
  * so a tx retry with the same inputs regenerates a consistent set.
+ *
+ * When `cNF` is supplied (rejeitada-retry path), the generator reuses it
+ * so the regenerated chave matches the one already persisted on the
+ * existing nfev4 doc — required by the SEFAZ retry contract and the
+ * anti-loss anchor (`apps/nfe/CLAUDE.md` rule 1).
  */
 export function buildNfeDocWrite(
   bundle: PedidoBundle,
@@ -127,8 +133,9 @@ export function buildNfeDocWrite(
   idLote: number,
   rt: NFeRuntime,
   tpEmis: TpEmis,
+  cNF?: string,
 ): { chave: string; signedXml: string; docData: Record<string, unknown> } {
-  const input = buildGeneratorInput(bundle, items, nNF, serie, rt.ambiente, tpEmis);
+  const input = buildGeneratorInput(bundle, items, nNF, serie, rt.ambiente, tpEmis, cNF);
   const generated = generateNFe(input);
   const signedXml = signNFe(generated.nfeXml, rt.cert);
   const now = new Date().toISOString();
@@ -204,9 +211,16 @@ export async function runAllocateGenerateSignTx(
     // Reuse numeração + serie when an existing rejeitada / error /
     // never-sent doc is present; allocate fresh otherwise. idLote
     // always advances — every retry is a fresh SEFAZ lote.
+    //
+    // Also reuse the existing `cNF` when the prior doc has a chave
+    // (anything past the placeholder stage), so the regenerated chave
+    // matches what was already persisted. A placeholder doc has
+    // `chave: null` and falls back to a fresh random cNF.
     const reuse = existing != null;
     const nNF = reuse ? existing.numeracao : cfg.numeracao_atual + 1;
     const serie = reuse ? existing.serie : cfg.serie;
+    const reuseCNF =
+      reuse && existing.chave ? extractCNFFromChave(existing.chave) : undefined;
     const idLote = cfg.idLote + 1;
 
     const { chave, signedXml, docData } = buildNfeDocWrite(
@@ -217,6 +231,7 @@ export async function runAllocateGenerateSignTx(
       idLote,
       rt,
       tpEmis,
+      reuseCNF,
     );
 
     // Writes — counter doc first, then NFe doc. Both commit or neither.
@@ -238,7 +253,21 @@ export async function runAllocateGenerateSignTx(
 /** One classified pedido from the chunk allocation transaction. */
 export type ChunkMember =
   | { skip: true; pedidoId: string; prep: EmissionPrep; existing: NotaFiscalEletronica }
-  | { skip: false; pedidoId: string; prep: EmissionPrep; nNF: number; serie: number };
+  | {
+      skip: false;
+      pedidoId: string;
+      prep: EmissionPrep;
+      nNF: number;
+      serie: number;
+      /**
+       * The chave already persisted on a reuse pedido's existing nfev4
+       * doc, when present. The downstream sign step extracts the `cNF`
+       * from it so the regenerated chave matches. `null` for freshly
+       * allocated pedidos and for reuse pedidos whose existing doc is a
+       * crashed `enviando` placeholder (`chave: null`).
+       */
+      existingChave: string | null;
+    };
 
 /**
  * Minimal `estado='enviando'` nfev4 doc written for a FRESH pedido inside
@@ -346,6 +375,7 @@ export async function runChunkAllocateTx(
       const reuse = existing != null;
       const nNF = reuse ? existing.numeracao : cfg.numeracao_atual + 1 + freshCount;
       const serie = reuse ? existing.serie : cfg.serie;
+      const existingChave = reuse ? existing.chave : null;
       if (!reuse) {
         freshCount += 1;
         // Anchor the consumed numeração now; the generated + signed NF-e
@@ -355,7 +385,14 @@ export async function runChunkAllocateTx(
           data: buildPlaceholderNfeDoc(nNF, serie, idLote, sp.prep.tpEmis, sp.prep.bundle.filialId),
         });
       }
-      members.push({ skip: false, pedidoId: sp.pedidoId, prep: sp.prep, nNF, serie });
+      members.push({
+        skip: false,
+        pedidoId: sp.pedidoId,
+        prep: sp.prep,
+        nNF,
+        serie,
+        existingChave,
+      });
     }
 
     // Writes: advance the counter once for the whole chunk, then anchor
@@ -722,6 +759,7 @@ export async function processChunk(
     pedidoId: string;
     nNF: number;
     serie: number;
+    existingChave: string | null;
   }> = [];
   for (const m of members) {
     if (m.skip) {
@@ -730,7 +768,13 @@ export async function processChunk(
       // bucket instead of riding the lote.
       txResults.push(existingToEmitResult(m.pedidoId, m.prep.nfeRef.id, m.existing));
     } else {
-      fresh.push({ prep: m.prep, pedidoId: m.pedidoId, nNF: m.nNF, serie: m.serie });
+      fresh.push({
+        prep: m.prep,
+        pedidoId: m.pedidoId,
+        nNF: m.nNF,
+        serie: m.serie,
+        existingChave: m.existingChave,
+      });
     }
   }
 
@@ -750,6 +794,9 @@ export async function processChunk(
   }> = [];
   const signed = await Promise.allSettled(
     fresh.map(async (f) => {
+      const reuseCNF = f.existingChave
+        ? extractCNFFromChave(f.existingChave)
+        : undefined;
       const { chave, signedXml, docData } = buildNfeDocWrite(
         f.prep.bundle,
         f.prep.items,
@@ -758,6 +805,7 @@ export async function processChunk(
         sharedIdLote,
         rt,
         f.prep.tpEmis,
+        reuseCNF,
       );
       await f.prep.nfeRef.set(docData);
       return { prep: f.prep, pedidoId: f.pedidoId, chave, signedXml };

@@ -4,6 +4,7 @@ import {
   composeChave,
   composeChave43,
   computeCDV,
+  extractCNFFromChave,
   NFeChaveError,
   randomCNF,
 } from '../../src/generator/chave';
@@ -121,5 +122,38 @@ describe('randomCNF', () => {
 
   it('rejects malformed nNF', () => {
     expect(() => randomCNF('123')).toThrow(NFeChaveError);
+  });
+});
+
+describe('extractCNFFromChave', () => {
+  it('recovers the cNF baked into a composeChave output', () => {
+    const { chave } = composeChave({
+      cUF: '35',
+      aamm: '2007',
+      cnpjOrCpf: '14200166000187',
+      mod: '55',
+      serie: '001',
+      nNF: '000000007',
+      tpEmis: '1',
+      cNF: '00000001',
+    });
+    expect(extractCNFFromChave(chave)).toBe('00000001');
+  });
+
+  it('reads cNF from a fixed 44-digit chave at offsets [35, 43)', () => {
+    // Same fixture as composeChave43's golden test, plus DV=8 → 44 digits.
+    expect(
+      extractCNFFromChave('35200714200166000187550010000000071000000018'),
+    ).toBe('00000001');
+  });
+
+  it('rejects wrong-length input', () => {
+    expect(() => extractCNFFromChave('123')).toThrow(NFeChaveError);
+    expect(() => extractCNFFromChave('1'.repeat(43))).toThrow(NFeChaveError);
+    expect(() => extractCNFFromChave('1'.repeat(45))).toThrow(NFeChaveError);
+  });
+
+  it('rejects non-digit input', () => {
+    expect(() => extractCNFFromChave('a'.repeat(44))).toThrow(NFeChaveError);
   });
 });
