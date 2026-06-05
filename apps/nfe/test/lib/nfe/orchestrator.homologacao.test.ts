@@ -29,7 +29,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { ESTADO_NFE } from '@delfrance/schemas';
+import { ESTADO_ENVI_NFE_MSG, ESTADO_NFE } from '@delfrance/schemas';
 import {
   assertNotConsumoIndevido,
   hasNFeCertEnv,
@@ -689,9 +689,15 @@ describe('orchestrator — SEFAZ-SP homologação', () => {
       expect(cce2.accepted).toBe(true);
       expect(cce2.nSeqEvento).toBe(2);
 
-      // 4. Two concluido records persisted under the NF-e.
+      // 4. Two concluido records persisted under the NF-e, carrying the
+      //    sequential nSeqEvento (1, 2) — not just a count.
       const recs = await fs.collection(`pedidos/${PEDCCE}/nfev4/s1/cartacorrecao`).get();
       expect(recs.size).toBe(2);
+      const persisted = recs.docs
+        .map((d) => d.data() as { nSeqEvento: number; estado: string })
+        .sort((a, b) => a.nSeqEvento - b.nSeqEvento);
+      expect(persisted.map((r) => r.nSeqEvento)).toEqual([1, 2]);
+      expect(persisted.every((r) => r.estado === ESTADO_ENVI_NFE_MSG.concluido)).toBe(true);
     },
     120_000,
   );

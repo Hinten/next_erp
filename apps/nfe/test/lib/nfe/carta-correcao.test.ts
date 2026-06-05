@@ -16,7 +16,7 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
 });
 
 import { cartaCorrecaoNFe } from '@delfrance/integrations-nfe';
-import { ESTADO_ENVI_NFE_MSG, ESTADO_NFE } from '@delfrance/schemas';
+import { cartaCorrecaoSchema, ESTADO_ENVI_NFE_MSG, ESTADO_NFE } from '@delfrance/schemas';
 
 import {
   cartaCorrecaoService,
@@ -112,6 +112,10 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
         return query(path, []).get();
       },
       async add(data: Record<string, unknown>) {
+        // Mirror the real defineAdminCollection.add → parseForWrite: reject a
+        // schema-invalid payload here so the offline tests exercise the same
+        // validation the production write does.
+        cartaCorrecaoSchema.parse(data);
         auto += 1;
         const r = ref(`${path}/auto-${auto}`);
         await r.set(data);

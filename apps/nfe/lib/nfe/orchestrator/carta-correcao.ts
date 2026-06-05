@@ -1,6 +1,6 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
-import { cartaCorrecaoNFe, type SefazCall } from '@delfrance/integrations-nfe';
+import { cartaCorrecaoNFe, sanitizeNFeText, type SefazCall } from '@delfrance/integrations-nfe';
 import {
   ESTADO_ENVI_NFE_MSG,
   ESTADO_NFE,
@@ -93,6 +93,11 @@ export async function cartaCorrecaoService(
     .get();
   const nSeqEvento = acceptedSnap.size + 1;
 
+  // The wire <xCorrecao> is sanitized (the builder drops SEFAZ-restricted
+  // chars); store that same value so the persisted record matches what SEFAZ
+  // actually received (and the <xCorrecao> inside xml_enviado).
+  const xCorrecaoWire = sanitizeNFeText(xCorrecao) ?? xCorrecao;
+
   // Send the CC-e evento (cOrgao + cnpj come from the chave).
   const cceCall: SefazCall = {
     cert: rt.cert,
@@ -104,7 +109,7 @@ export async function cartaCorrecaoService(
     chNFe: nota.chave,
     cOrgao: nota.chave.slice(0, 2),
     cnpj: nota.chave.slice(6, 20),
-    xCorrecao,
+    xCorrecao: xCorrecaoWire,
     nSeqEvento,
   });
   const ev = res.ret.retEvento?.[0]?.infEvento;
@@ -121,7 +126,7 @@ export async function cartaCorrecaoService(
     fs,
     { pedidoId, nfeId },
     {
-      xCorrecao,
+      xCorrecao: xCorrecaoWire,
       nSeqEvento,
       xml_enviado: res.signedEventoXml,
       xml_retorno: res.rawResponse,
