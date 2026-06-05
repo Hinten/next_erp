@@ -116,8 +116,8 @@ for (const file of files) {
       // the event-payload schemas (e110110/e110111 `detEvento`). Every event
       // payload declares the same `<detEvento>` element, so key each by its
       // tpEvento code (`detEvento_e110111`, `detEvento_e110110`) to avoid a
-      // first-file-wins clobber. The serializer is always called with the
-      // explicit `'detEvento'` tag, so the emitted element name is unchanged.
+      // first-file-wins clobber. `xmlName` keeps the REAL element name so ROOTS
+      // (and serialize/parse) still target `<detEvento>`, not the synthetic key.
       const inlineComplex = kid(c, 'xs:complexType');
       const eventCode = file.match(/^(e\d{6})_/)?.[1];
       const regName = eventCode ? `${c.attrs.name}_${eventCode}` : c.attrs.name;
@@ -125,7 +125,7 @@ for (const file of files) {
         inlineComplex.attrs.name = regName;
         complexTypes.set(regName, inlineComplex);
         if (!rootElements.some((r) => r.name === regName))
-          rootElements.push({ name: regName, type: regName });
+          rootElements.push({ name: regName, type: regName, xmlName: c.attrs.name });
       }
     }
   }
@@ -411,7 +411,10 @@ out.push('');
 out.push('/** Root elements: the XML tag and its complexType. */');
 out.push('export const ROOTS = {');
 for (const r of rootElements) {
-  if (complexTypes.has(r.type)) out.push(`  ${propName(r.name)}: { xmlName: '${r.name}', type: '${r.type}' },`);
+  // `xmlName` is the real wire element name (defaults to the registry name; for
+  // tpEvento-keyed event payloads it stays `<detEvento>`, not the synthetic key).
+  if (complexTypes.has(r.type))
+    out.push(`  ${propName(r.name)}: { xmlName: '${r.xmlName ?? r.name}', type: '${r.type}' },`);
 }
 out.push('} as const;');
 out.push('');
