@@ -77,7 +77,7 @@ export function EventRoundtripHistory<T extends EventRoundtripRecord>({
   renderPanelDetail,
   maw = 720,
 }: EventRoundtripHistoryProps<T>) {
-  const { data, loading } = useSnapshot(query);
+  const { data, loading, error } = useSnapshot(query);
 
   // Sort newest-first client-side (these per-entity lists are small → no index).
   const rows = useMemo(
@@ -88,61 +88,71 @@ export function EventRoundtripHistory<T extends EventRoundtripRecord>({
     [data],
   );
 
-  const body = (
-    <>
-      {loading && (
-        <Text size="sm" c="dimmed">
-          {loadingLabel}
-        </Text>
-      )}
-      {!loading && rows.length === 0 && (
-        <Text size="sm" c="dimmed">
-          {emptyLabel}
-        </Text>
-      )}
-      {rows.length > 0 && (
-        <Accordion variant="separated" chevronPosition="left">
-          {rows.map((row) => {
-            const m = row.data;
-            return (
-              <Accordion.Item key={row.id} value={row.id}>
-                <Accordion.Control>
-                  <Group justify="space-between" wrap="nowrap" gap="xs">
-                    <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
-                      {renderBadge(m)}
-                      {renderSummary(m)}
-                    </Group>
-                    <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
-                      {formatTs(m.timestamp)}
-                    </Text>
+  // Surface a subscription failure explicitly — otherwise `error` (with
+  // `data` undefined) would fall through to the empty state and misreport the
+  // failure as "no history".
+  let body: ReactNode;
+  if (error) {
+    body = (
+      <Text size="sm" c="red">
+        Falha ao carregar o histórico: {error.message}
+      </Text>
+    );
+  } else if (loading) {
+    body = (
+      <Text size="sm" c="dimmed">
+        {loadingLabel}
+      </Text>
+    );
+  } else if (rows.length === 0) {
+    body = (
+      <Text size="sm" c="dimmed">
+        {emptyLabel}
+      </Text>
+    );
+  } else {
+    body = (
+      <Accordion variant="separated" chevronPosition="left">
+        {rows.map((row) => {
+          const m = row.data;
+          return (
+            <Accordion.Item key={row.id} value={row.id}>
+              <Accordion.Control>
+                <Group justify="space-between" wrap="nowrap" gap="xs">
+                  <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
+                    {renderBadge(m)}
+                    {renderSummary(m)}
                   </Group>
-                </Accordion.Control>
-                <Accordion.Panel>
-                  <Stack gap="xs">
-                    {renderPanelDetail ? (
-                      renderPanelDetail(m)
-                    ) : (
-                      <Text size="sm">{m.xMotivo ?? m.error ?? '—'}</Text>
-                    )}
-                    {m.nProt && (
-                      <Text size="sm">
-                        Protocolo:{' '}
-                        <Text span ff="monospace">
-                          {m.nProt}
-                        </Text>
+                  <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
+                    {formatTs(m.timestamp)}
+                  </Text>
+                </Group>
+              </Accordion.Control>
+              <Accordion.Panel>
+                <Stack gap="xs">
+                  {renderPanelDetail ? (
+                    renderPanelDetail(m)
+                  ) : (
+                    <Text size="sm">{m.xMotivo ?? m.error ?? '—'}</Text>
+                  )}
+                  {m.nProt && (
+                    <Text size="sm">
+                      Protocolo:{' '}
+                      <Text span ff="monospace">
+                        {m.nProt}
                       </Text>
-                    )}
-                    {m.xml_enviado && <XmlBlock label="Enviado" xml={m.xml_enviado} />}
-                    {m.xml_retorno && <XmlBlock label="Retorno" xml={m.xml_retorno} />}
-                  </Stack>
-                </Accordion.Panel>
-              </Accordion.Item>
-            );
-          })}
-        </Accordion>
-      )}
-    </>
-  );
+                    </Text>
+                  )}
+                  {m.xml_enviado && <XmlBlock label="Enviado" xml={m.xml_enviado} />}
+                  {m.xml_retorno && <XmlBlock label="Retorno" xml={m.xml_retorno} />}
+                </Stack>
+              </Accordion.Panel>
+            </Accordion.Item>
+          );
+        })}
+      </Accordion>
+    );
+  }
 
   // No title → bare body (e.g. embedded inside an NF-e card).
   if (title === undefined) return body;

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { Badge, MantineProvider, Text } from '@mantine/core';
+import type { FirestoreError } from 'firebase/firestore';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 
 import type { EventRoundtripRecord } from './EventRoundtripHistory';
@@ -66,6 +67,19 @@ describe('EventRoundtripHistory', () => {
     setSnap({ data: [] });
     wrap(<EventRoundtripHistory {...baseProps} />);
     expect(screen.getByText('Nada registrado.')).toBeTruthy();
+  });
+
+  it('surfaces a subscription error instead of the empty label', () => {
+    setSnap({
+      error: {
+        name: 'FirebaseError',
+        code: 'permission-denied',
+        message: 'Permissão negada',
+      } as FirestoreError,
+    });
+    wrap(<EventRoundtripHistory {...baseProps} />);
+    expect(screen.getByText(/Permissão negada/)).toBeTruthy();
+    expect(screen.queryByText('Nada registrado.')).toBeNull();
   });
 
   it('renders rows newest-first by timestamp', () => {
