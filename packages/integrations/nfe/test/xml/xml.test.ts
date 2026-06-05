@@ -68,3 +68,34 @@ describe('parse', () => {
     expect(() => parse('retConsStatServ', '<other/>')).toThrow(NFeXmlError);
   });
 });
+
+describe('ROOTS xmlName for tpEvento-keyed event payloads', () => {
+  // The event detEvento METAs are keyed by tpEvento code
+  // (`detEvento_e110110`/`_e110111`) to avoid a codegen collision, but the real
+  // wire element is `<detEvento>`. The generated ROOTS must carry the real
+  // xmlName so serialize/parse target the correct tag, not the synthetic key.
+  it('serializes the synthetic key under the real <detEvento> tag', () => {
+    const xml = serialize('detEvento_e110110', {
+      versao: '1.00',
+      descEvento: 'Carta de Correção',
+      xCorrecao: 'Correcao de teste com ao menos quinze caracteres',
+      xCondUso: 'texto fixo de condicoes de uso',
+    });
+    expect(xml).toContain(
+      '<detEvento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00">',
+    );
+    expect(xml).not.toContain('detEvento_e110110');
+  });
+
+  it('round-trips via parse on the same key', () => {
+    const xml = serialize('detEvento_e110111', {
+      versao: '1.00',
+      descEvento: 'Cancelamento',
+      nProt: '135200000012345',
+      xJust: 'Cancelamento por erro de digitacao no pedido',
+    });
+    const parsed = parse<XmlValue>('detEvento_e110111', xml);
+    expect(parsed.descEvento).toBe('Cancelamento');
+    expect(parsed.nProt).toBe('135200000012345');
+  });
+});

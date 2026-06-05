@@ -100,15 +100,6 @@ const rootElements = []; // { name, type }
 
 const files = readdirSync(SCHEMA_DIR)
   .filter((f) => f.endsWith('.xsd') && f !== 'xmldsig-core-schema_v1.01.xsd')
-  // Skip the CC-e detEvento schema (`e110110`). Both it and the cancelamento
-  // schema (`e110111`) declare a top-level inline `<xs:element name="detEvento">`,
-  // and the inline-element registration above is first-file-wins
-  // (`!complexTypes.has`). Letting `e110110` (which sorts first) in would clobber
-  // the `detEvento` complexType/META that the cancelamento serializer relies on.
-  // CC-e's detEvento is tiny + fixed-order, so it is hand-serialized in
-  // `src/eventos/index.ts` and validated against this XSD via the `detEventoCCe`
-  // root key in `src/xsd/index.ts` — it never needs a generated META.
-  .filter((f) => f !== 'e110110_v1.00.xsd')
   .sort();
 
 for (const file of files) {
@@ -122,14 +113,19 @@ for (const file of files) {
         rootElements.push({ name: c.attrs.name, type: c.attrs.type });
     } else if (c.tag === 'xs:element' && c.attrs.name && !c.attrs.type) {
       // Top-level element with an INLINE complexType (no `type=` ref) — e.g.
-      // the event-payload schemas (e110111 detEvento). Register the inline
-      // type under the element's name so it becomes a serializable root.
+      // the event-payload schemas (e110110/e110111 `detEvento`). Every event
+      // payload declares the same `<detEvento>` element, so key each by its
+      // tpEvento code (`detEvento_e110111`, `detEvento_e110110`) to avoid a
+      // first-file-wins clobber. `xmlName` keeps the REAL element name so ROOTS
+      // (and serialize/parse) still target `<detEvento>`, not the synthetic key.
       const inlineComplex = kid(c, 'xs:complexType');
-      if (inlineComplex && !complexTypes.has(c.attrs.name)) {
-        inlineComplex.attrs.name = c.attrs.name;
-        complexTypes.set(c.attrs.name, inlineComplex);
-        if (!rootElements.some((r) => r.name === c.attrs.name))
-          rootElements.push({ name: c.attrs.name, type: c.attrs.name });
+      const eventCode = file.match(/^(e\d{6})_/)?.[1];
+      const regName = eventCode ? `${c.attrs.name}_${eventCode}` : c.attrs.name;
+      if (inlineComplex && !complexTypes.has(regName)) {
+        inlineComplex.attrs.name = regName;
+        complexTypes.set(regName, inlineComplex);
+        if (!rootElements.some((r) => r.name === regName))
+          rootElements.push({ name: regName, type: regName, xmlName: c.attrs.name });
       }
     }
   }
@@ -415,7 +411,10 @@ out.push('');
 out.push('/** Root elements: the XML tag and its complexType. */');
 out.push('export const ROOTS = {');
 for (const r of rootElements) {
-  if (complexTypes.has(r.type)) out.push(`  ${propName(r.name)}: { xmlName: '${r.name}', type: '${r.type}' },`);
+  // `xmlName` is the real wire element name (defaults to the registry name; for
+  // tpEvento-keyed event payloads it stays `<detEvento>`, not the synthetic key).
+  if (complexTypes.has(r.type))
+    out.push(`  ${propName(r.name)}: { xmlName: '${r.xmlName ?? r.name}', type: '${r.type}' },`);
 }
 out.push('} as const;');
 out.push('');
