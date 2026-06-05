@@ -25,7 +25,7 @@ type RootKey = keyof typeof ROOTS;
 // ---------------------------------------------------------------------------
 // Serialize
 // ---------------------------------------------------------------------------
-function escapeText(s: string): string {
+export function escapeText(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 function escapeAttr(s: string): string {

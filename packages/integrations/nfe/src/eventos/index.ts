@@ -21,7 +21,7 @@
 import { formatDhEmi } from '../generator/ide';
 import { sanitizeNFeText } from '../sanitize';
 import type { TpAmb } from '../safety';
-import { serializeFragment } from '../xml';
+import { escapeText, serializeFragment } from '../xml';
 
 const EVENTO_NS = 'http://www.portalfiscal.inf.br/nfe';
 const EVENTO_VERSAO = '1.00';
@@ -148,11 +148,6 @@ export interface CCeEventoInput {
   readonly dhEvento?: Date;
 }
 
-/** Escape `& < >` for XML text content (the serializer's own escaping is private). */
-function escapeXmlText(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
 /**
  * Build the `<detEvento>` for a CC-e, in the e110110 sequence order
  * (descEvento, xCorrecao, xCondUso) with attribute `versao`. Hand-serialized
@@ -164,8 +159,8 @@ function escapeXmlText(s: string): string {
  */
 export function buildCCeDetEvento(input: { readonly xCorrecao: string }): string {
   // Sanitized-but-then-escaped: sanitizeNFeText drops SEFAZ-restricted chars;
-  // escapeXmlText then escapes & < > for XML text content.
-  const xCorrecao = escapeXmlText(sanitizeNFeText(input.xCorrecao) ?? '');
+  // escapeText then escapes & < > for XML text content.
+  const xCorrecao = escapeText(sanitizeNFeText(input.xCorrecao) ?? '');
   return (
     `<detEvento versao="${EVENTO_VERSAO}">` +
     '<descEvento>Carta de Correção</descEvento>' +

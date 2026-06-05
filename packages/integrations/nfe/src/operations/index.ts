@@ -154,8 +154,12 @@ export async function autorizarLote(
   return parse<TRetEnviNFe>('retEnviNFe', resultXml);
 }
 
-/** Result of a cancelamento round-trip. */
-export interface CancelarNFeResult {
+/**
+ * Result of any `RecepcaoEvento` round-trip (cancelamento, CC-e, …) — they all
+ * build + sign an `<evento>`, send the single-evento lote, and parse
+ * `retEnvEvento`, so they share one shape.
+ */
+export interface RecepcaoEventoResult {
   /** Parsed `retEnvEvento` (lote-level cStat in `.cStat`, per-evento in `.retEvento[]`). */
   readonly ret: TRetEnvEvento;
   /** The signed `<evento>` we sent (opaque bytes — archive as-is). */
@@ -165,6 +169,9 @@ export interface CancelarNFeResult {
   /** Raw `retEnvEvento` XML, for the audit log. */
   readonly rawResponse: string;
 }
+
+/** Result of a cancelamento round-trip. */
+export type CancelarNFeResult = RecepcaoEventoResult;
 
 /**
  * `RecepcaoEvento4` — cancelamento (`tpEvento=110111`).
@@ -197,16 +204,7 @@ export async function cancelarNFe(
 }
 
 /** Result of a carta de correção (CC-e) round-trip. Same shape as cancelamento. */
-export interface CartaCorrecaoResult {
-  /** Parsed `retEnvEvento` (lote-level cStat in `.cStat`, per-evento in `.retEvento[]`). */
-  readonly ret: TRetEnvEvento;
-  /** The signed `<evento>` we sent (opaque bytes — archive as-is). */
-  readonly signedEventoXml: string;
-  /** Archival `<procEventoNFe>` (signed evento + SEFAZ retEvento); null on lote rejection. */
-  readonly procEventoNFe: string | null;
-  /** Raw `retEnvEvento` XML, for the audit log. */
-  readonly rawResponse: string;
-}
+export type CartaCorrecaoResult = RecepcaoEventoResult;
 
 /**
  * `RecepcaoEvento4` — carta de correção eletrônica (CC-e, `tpEvento=110110`).
