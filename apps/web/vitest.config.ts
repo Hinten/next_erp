@@ -11,7 +11,7 @@ export default defineConfig({
     name: '@delfrance/web',
     environment: 'jsdom',
     setupFiles: ['./vitest.setup.ts'],
-    include: ['{app,lib}/**/*.test.{ts,tsx}'],
+    include: ['{app,lib,components}/**/*.test.{ts,tsx}'],
     // Playwright e2e specs live under e2e/ and are run by `pnpm test:e2e`,
     // not by Vitest.
     exclude: ['node_modules', 'e2e/**', '.next/**'],
