@@ -85,7 +85,7 @@ export function CartaCorrecaoForm({ pedidoId, nfeId }: { pedidoId: string; nfeId
               {...field}
               value={field.value ?? ''}
               label="Correção"
-              description={`${field.value.trim().length}/${XCORRECAO_MAX} caracteres (mínimo ${XCORRECAO_MIN})`}
+              description={`${(field.value ?? '').trim().length}/${XCORRECAO_MAX} caracteres (mínimo ${XCORRECAO_MIN})`}
               placeholder="Descreva a correção a ser considerada"
               autosize
               minRows={4}

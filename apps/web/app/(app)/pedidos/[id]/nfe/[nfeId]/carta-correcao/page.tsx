@@ -64,7 +64,7 @@ function CartaCorrecaoContent() {
 
 export default function CartaCorrecaoPage() {
   return (
-    <RequirePerm bit={PERM.nfe.read} redirectTo="/inicio">
+    <RequirePerm bit={PERM.fiscal.read} redirectTo="/inicio">
       <CartaCorrecaoContent />
     </RequirePerm>
   );
