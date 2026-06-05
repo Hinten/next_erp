@@ -1,5 +1,6 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
+import { enviNfeMsgCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   autorizarLote,
   consultarLote,
@@ -17,8 +18,6 @@ import {
   type NotaFiscalEletronica,
 } from '@delfrance/schemas';
 
-import { enviNfeMsgCollection } from '@/lib/data/enviNfeMsgCollection';
-import { nfev4Collection } from '@/lib/data/nfev4Collection';
 import type { EmitResult } from './bundle';
 
 /** A filial's `enviNfe` audit-log subcollection, via the validated handle. */

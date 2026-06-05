@@ -1,13 +1,12 @@
 import { NextResponse } from 'next/server';
 import { PERM, hasPerm } from '@delfrance/auth';
+import { cargoCollection, usuarioCollection } from '@delfrance/data/admin/collections';
 import {
   aggregatePermissoes,
   type Cargo,
   isSuperUserBits,
 } from '@delfrance/schemas';
 import { getAdminAuth, getAdminFirestore } from '@/lib/firebase/admin';
-import { cargoCollection } from '@/lib/data/cargoCollection';
-import { usuarioCollection } from '@/lib/data/usuarioCollection';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

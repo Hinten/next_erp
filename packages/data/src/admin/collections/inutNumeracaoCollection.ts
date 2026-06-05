@@ -1,5 +1,6 @@
-import { defineAdminCollection } from '@delfrance/data/admin';
 import { inutNumeracaoMeta, inutNumeracaoSchema } from '@delfrance/schemas';
+
+import { defineAdminCollection } from '../defineAdminCollection';
 
 /**
  * Admin-SDK handle for the per-filial `inutilizacao` record subcollection

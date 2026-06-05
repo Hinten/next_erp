@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { PERM, hasPerm } from '@delfrance/auth';
+import { cargoCollection, usuarioCollection } from '@delfrance/data/admin/collections';
 import {
   aggregatePermissoes,
   type Cargo,
@@ -8,8 +9,6 @@ import {
   type Usuario,
 } from '@delfrance/schemas';
 import { getAdminAuth, getAdminFirestore } from '@/lib/firebase/admin';
-import { cargoCollection } from '@/lib/data/cargoCollection';
-import { usuarioCollection } from '@/lib/data/usuarioCollection';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
