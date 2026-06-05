@@ -21,7 +21,7 @@
 import { formatDhEmi } from '../generator/ide';
 import { sanitizeNFeText } from '../sanitize';
 import type { TpAmb } from '../safety';
-import { escapeText, serializeFragment } from '../xml';
+import { serializeFragment } from '../xml';
 
 const EVENTO_NS = 'http://www.portalfiscal.inf.br/nfe';
 const EVENTO_VERSAO = '1.00';
@@ -62,15 +62,15 @@ function stripXmlDeclaration(xml: string): string {
 
 /**
  * Build the `<detEvento>` for a cancelamento, serialized from the generated
- * `detEvento` META (the tpEvento-specific `e110111` schema). Exposed so the
- * operation layer can `validateXsd('detEvento', …)` it before send — the
+ * `detEvento_e110111` META (the tpEvento-specific `e110111` schema). Exposed so
+ * the operation layer can `validateXsd('detEvento', …)` it before send — the
  * generic envelope's `xs:any` never checks detEvento's inner structure.
  */
 export function buildCancelamentoDetEvento(input: {
   readonly nProt: string;
   readonly xJust: string;
 }): string {
-  return serializeFragment('detEvento', 'detEvento', {
+  return serializeFragment('detEvento_e110111', 'detEvento', {
     versao: EVENTO_VERSAO,
     descEvento: 'Cancelamento',
     nProt: input.nProt,
@@ -149,25 +149,21 @@ export interface CCeEventoInput {
 }
 
 /**
- * Build the `<detEvento>` for a CC-e, in the e110110 sequence order
- * (descEvento, xCorrecao, xCondUso) with attribute `versao`. Hand-serialized
- * (not codegen-driven) because the generated `detEvento` META is owned by the
- * cancelamento payload (e110111); see `src/codegen/generate.mjs`. The result is
- * validated against the real e110110 XSD by the operation layer
- * (`validateXsd('detEventoCCe', …)`) before it is signed + sent — so a hand
- * mistake (order, escaping) is caught locally, never at SEFAZ.
+ * Build the `<detEvento>` for a CC-e, serialized from the generated
+ * `detEvento_e110110` META (the e110110 schema) in the XSD sequence order
+ * (descEvento, xCorrecao, xCondUso) with attribute `versao`. The operation
+ * layer validates it against the real e110110 XSD (`validateXsd('detEventoCCe',
+ * …)`) before it is signed + sent — the generic envelope's `xs:any` never
+ * checks detEvento's inner structure.
  */
 export function buildCCeDetEvento(input: { readonly xCorrecao: string }): string {
-  // Sanitized-but-then-escaped: sanitizeNFeText drops SEFAZ-restricted chars;
-  // escapeText then escapes & < > for XML text content.
-  const xCorrecao = escapeText(sanitizeNFeText(input.xCorrecao) ?? '');
-  return (
-    `<detEvento versao="${EVENTO_VERSAO}">` +
-    '<descEvento>Carta de Correção</descEvento>' +
-    `<xCorrecao>${xCorrecao}</xCorrecao>` +
-    `<xCondUso>${XCONDUSO_CCE}</xCondUso>` +
-    '</detEvento>'
-  );
+  return serializeFragment('detEvento_e110110', 'detEvento', {
+    versao: EVENTO_VERSAO,
+    descEvento: 'Carta de Correção',
+    // Sanitized-but-unescaped — the serializer escapes & < >.
+    xCorrecao: sanitizeNFeText(input.xCorrecao) ?? '',
+    xCondUso: XCONDUSO_CCE,
+  });
 }
 
 /**
