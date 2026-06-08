@@ -311,3 +311,36 @@ export {
   regraImpostoMeta,
   type RegraImposto,
 } from './regraImposto';
+
+export {
+  arquivo,
+  arquivoSchema,
+  arquivoMeta,
+  filetypeSchema,
+  filetypeFromMime,
+  externalIdSchema,
+  FILETYPE,
+  ARQUIVOS_COLLECTION,
+  type Arquivo,
+  type Filetype,
+  type ExternalId,
+} from './arquivo';
+
+export {
+  STORAGE_ROOT,
+  PRODUTO_SUBDIR,
+  PRODUCT_IMAGE_VARIANTS,
+  DERIVATIVE_EXT,
+  productOriginalPath,
+  productDerivativePath,
+  productVideoPath,
+  mediaPath,
+  productArquivoId,
+  derivativeArquivoId,
+  parseProductOriginalPath,
+  isWatchedProductOriginal,
+  isDerivativeName,
+  normalizeName,
+  type VariantSpec,
+  type ParsedOriginalPath,
+} from './storagePaths';

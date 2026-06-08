@@ -1,0 +1,45 @@
+rules_version = '2';
+
+// ⚠️ NOT DEPLOYED. The Flutter repo still owns and deploys the live
+// `storage.rules` (legacy `su`/`q1` claims) for the shared bucket — see
+// docs `guides/coexistence.md` and CLAUDE.md critical rule #1. This file is
+// the proposed Next-side ruleset: it enforces the product-scoped path layout
+// + content-type + size limits and is loaded by the Storage emulator in CI.
+// Fine-grained per-domain permission checks land with the rules phase; it is
+// intentionally NOT wired into the deploy `firebase.json`.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Product photo originals — clients upload here; the resize Cloud Function
+    // (admin SDK, bypasses rules) generates the derivatives.
+    match /produtos/{produtoId}/originals/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && request.resource.size < 15 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    // Server-generated derivatives — written by the function only.
+    match /produtos/{produtoId}/derivatives/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // Product videos — not resized; larger size budget.
+    match /produtos/{produtoId}/videos/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && request.resource.size < 200 * 1024 * 1024
+        && request.resource.contentType.matches('video/.*');
+    }
+
+    // Generic, non-product media.
+    match /media/{fileName} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+        && request.resource.size < 50 * 1024 * 1024;
+    }
+
+    // Anything else is denied by default (no allow rule).
+  }
+}

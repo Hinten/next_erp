@@ -50,12 +50,16 @@ jobs:
 
       - name: Test
         # NF-e packages are excluded here because ci-nfe.yml owns their
-        # offline + live test pipeline. Lint / typecheck / build above
-        # still cover the full graph so cross-package breaks surface.
+        # offline + live test pipeline. The storage/functions packages are
+        # likewise owned by ci-storage.yml (unit + emulator suites). Lint /
+        # typecheck / build above still cover the full graph so cross-package
+        # breaks surface.
         run: |
           pnpm turbo run test \
             --filter '!@delfrance/nfe-app' \
-            --filter '!@delfrance/integrations-nfe'
+            --filter '!@delfrance/integrations-nfe' \
+            --filter '!@delfrance/storage' \
+            --filter '!@delfrance/functions'
 
       - name: Build
         run: pnpm turbo run build

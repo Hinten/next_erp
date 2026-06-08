@@ -17,6 +17,32 @@ const config = [
       'no-unused-vars': 'off',
       'no-undef': 'off',
       'no-empty': ['error', { allowEmptyCatch: false }],
+      // Funnel all Cloud Storage access through the @delfrance/storage helpers
+      // (content-addressing, dedup, the Arquivo doc, and the product-scoped
+      // path conventions). Ban the raw operation functions — `getStorage` for
+      // the app's Storage singleton stays allowed. Flat config REPLACES this
+      // rule when an app re-declares `no-restricted-imports` (see apps/web),
+      // so any such app must re-include this entry.
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'firebase/storage',
+              importNames: [
+                'ref',
+                'uploadBytes',
+                'uploadBytesResumable',
+                'uploadString',
+                'getDownloadURL',
+                'deleteObject',
+              ],
+              message:
+                'Do not call the raw Storage SDK. Use the helpers from @delfrance/storage (uploadFile / uploadProductImage / uploadFromUrl) — `getStorage()` for the singleton is fine.',
+            },
+          ],
+        },
+      ],
       'no-restricted-syntax': [
         'error',
         {

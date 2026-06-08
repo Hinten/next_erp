@@ -67,6 +67,17 @@ export const PERM = {
     write: 1n << 73n,
     delete: 1n << 74n,
   },
+  // Arquivo — file/storage metadata (`arquivos` collection): product images +
+  // derivatives, videos, attachments, chat media. Cross-domain, so it gets its
+  // own byte. Mirrored by `arquivoMeta` in packages/schemas/src/arquivo.ts.
+  // NOTE: coexistence coordination point — the Flutter-deployed storage.rules
+  // still gates Storage by the legacy `q1` claim; this bit is consumed by the
+  // Next side (data layer + the future rules phase), not by the live rules yet.
+  arquivo: {
+    read: 1n << 80n,
+    write: 1n << 81n,
+    delete: 1n << 82n,
+  },
 } as const;
 
 export function hasPerm(grantedClaim: string | undefined, requiredBit: bigint): boolean {
