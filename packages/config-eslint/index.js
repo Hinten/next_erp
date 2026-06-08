@@ -1,6 +1,7 @@
 // Flat config base. Apps and packages extend this and add framework-specific
 // rules (e.g., apps/web extends with eslint-config-next).
 import noInlineAdminCollection from './rules/no-inline-admin-collection.js';
+import noConsolePayload from './rules/no-console-payload.js';
 import eslintConfigPrettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
@@ -68,7 +69,10 @@ const config = [
   {
     plugins: {
       delfrance: {
-        rules: { 'no-inline-admin-collection': noInlineAdminCollection },
+        rules: {
+          'no-inline-admin-collection': noInlineAdminCollection,
+          'no-console-payload': noConsolePayload,
+        },
       },
     },
     rules: {
@@ -101,6 +105,20 @@ const config = [
       // @delfrance/data/admin/collections). Warn — a guard against
       // re-scattering, not a hard gate. See rules/no-inline-admin-collection.js.
       'delfrance/no-inline-admin-collection': 'warn',
+
+      // Push payload-bearing console.error/warn to the structured logger
+      // (@delfrance/logger). Error-level — but the count is tiny and tests /
+      // scripts are exempted below. See rules/no-console-payload.js.
+      'delfrance/no-console-payload': 'error',
+    },
+  },
+  // Exemptions for delfrance/no-console-payload: test suites and dev CLI
+  // scripts legitimately print payloads to the console for human consumption.
+  // (NF-e code paths keep their own stricter multi-arg console ban.)
+  {
+    files: ['**/*.test.{ts,tsx}', '**/*.spec.{ts,tsx}', '**/e2e/**', '**/scripts/**'],
+    rules: {
+      'delfrance/no-console-payload': 'off',
     },
   },
 ];
