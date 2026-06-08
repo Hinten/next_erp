@@ -44,6 +44,7 @@ function fakeClient(impl: NFeHttpClient['emitir']): NFeHttpClient {
     cancelar: vi.fn(),
     inutilizar: vi.fn(),
     cartaCorrecao: vi.fn(),
+    danfe: vi.fn(),
   };
 }
 

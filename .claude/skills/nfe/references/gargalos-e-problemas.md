@@ -30,12 +30,12 @@ recebe uma destas:
 
 ### O que causa duplicidade na vida real
 
-| Causa                                                           | Sintoma                      | Prevenção                                                                                                              |
-| --------------------------------------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Cliente reenvia após timeout TCP sem confirmar se SEFAZ recebeu | 204 / 539                    | Persistir `{chave, estado:'enviando'}` **antes** do POST. Se timeout, próxima ação é `consSitNFe(chave)`, não reenvio. |
-| Cliente reusa `cNF` (Código Numérico) sem regerar               | 539 (chave divergente)       | `cNF` deve ser **aleatório a cada NF-e**, nunca igual a `nNF`. SEFAZ armazena pela chave (com cDV), não por número.    |
-| Dois nós/threads emitem a mesma numeração simultaneamente       | 204                          | Serializar a alocação de `nNF` por (emitente, série). Lock distribuído ou contador único atomicamente incrementado.    |
-| Banco local foi perdido mas SEFAZ ainda tem                     | 204 ao tentar reusar números | Pull de DF-e via `NFeDistribuicaoDFe` para reconciliar.                                                                |
+| Causa | Sintoma | Prevenção |
+|---|---|---|
+| Cliente reenvia após timeout TCP sem confirmar se SEFAZ recebeu | 204 / 539 | Persistir `{chave, estado:'enviando'}` **antes** do POST. Se timeout, próxima ação é `consSitNFe(chave)`, não reenvio. |
+| Cliente reusa `cNF` (Código Numérico) sem regerar | 539 (chave divergente) | `cNF` deve ser **aleatório a cada NF-e**, nunca igual a `nNF`. SEFAZ armazena pela chave (com cDV), não por número. |
+| Dois nós/threads emitem a mesma numeração simultaneamente | 204 | Serializar a alocação de `nNF` por (emitente, série). Lock distribuído ou contador único atomicamente incrementado. |
+| Banco local foi perdido mas SEFAZ ainda tem | 204 ao tentar reusar números | Pull de DF-e via `NFeDistribuicaoDFe` para reconciliar. |
 
 ### A âncora anti-perda: persistir chave **antes** do envio
 
@@ -151,11 +151,11 @@ prazo" automaticamente (cStat=150). Sincronizar com NTP é
 
 ## 5. Atraso na emissão (NT 2025.001 mudou o limite)
 
-| Atraso (dhEmi → dhAutorização) | cStat                                             |
-| ------------------------------ | ------------------------------------------------- |
-| 0–7 dias                       | 100 — Autorizado                                  |
-| 7–30 dias                      | **150** — Autorizado **fora de prazo**            |
-| > 30 dias                      | Rejeitado **salvo** `tpEmis=2,4,5` (contingência) |
+| Atraso (dhEmi → dhAutorização) | cStat |
+|---|---|
+| 0–7 dias | 100 — Autorizado |
+| 7–30 dias | **150** — Autorizado **fora de prazo** |
+| > 30 dias | Rejeitado **salvo** `tpEmis=2,4,5` (contingência) |
 
 Anteriormente: 30 dias era o limite. **Mudou para 7** com NT 2025.001 em
 produção desde 03/11/2025. Sistemas que faziam carga batch de NF-e
@@ -176,11 +176,11 @@ Disparadores típicos para `tpEmis ≠ 1`:
 
 Modos (vide `contingencia.md` para detalhes):
 
-| Modo                            | `tpEmis` | Quando faz sentido                                                 |
-| ------------------------------- | -------: | ------------------------------------------------------------------ |
-| FS-DA (formulário de segurança) |        5 | Legacy. Só se houver estoque de FS-DA pré-impresso.                |
-| EPEC                            |        4 | Operação alta-frequência B2B. Requer ambiente nacional disponível. |
-| SVC-AN / SVC-RS                 |    6 / 7 | Default moderno. UF da emitente determina qual (COTEPE 39/2012).   |
+| Modo | `tpEmis` | Quando faz sentido |
+|---|---:|---|
+| FS-DA (formulário de segurança) | 5 | Legacy. Só se houver estoque de FS-DA pré-impresso. |
+| EPEC | 4 | Operação alta-frequência B2B. Requer ambiente nacional disponível. |
+| SVC-AN / SVC-RS | 6 / 7 | Default moderno. UF da emitente determina qual (COTEPE 39/2012). |
 
 **Saída**: quando SEFAZ origem volta, NF-e emitidas em contingência
 **precisam ser transmitidas para SEFAZ origem** (exceto SVC: já estão
@@ -189,14 +189,14 @@ auditoria fiscal apontando "NF-e em contingência sem regularização".
 
 ## 7. Numeração — gaps, inutilização vs cancelamento
 
-| Cenário                                                | Ação correta                                                                                      |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| Erro antes do envio (validação local falhou)           | **Reusar o número** — a NF-e não existe em SEFAZ.                                                 |
-| Rejeição em SEFAZ (não-duplicidade)                    | **Reusar o número** — SEFAZ rejeitou, não armazenou.                                              |
-| NF-e autorizada e a operação caiu/cancelou no business | **Cancelamento por Evento** (110111). Limite: até 24h após autorização.                           |
-| NF-e autorizada >24h e operação caiu                   | **Não cancela. Estorno fiscal.** Emitir NF-e de devolução/ajuste.                                 |
-| Número pulado por bug (gap)                            | **Inutilização do range** (NfeInutilizacao4). Documenta para o fisco que o número não será usado. |
-| NF-e em contingência rejeitada após retorno do normal  | Para `tpEmis=1` (normal): **novo número**. Para contingência: mesmo número/série.                 |
+| Cenário | Ação correta |
+|---|---|
+| Erro antes do envio (validação local falhou) | **Reusar o número** — a NF-e não existe em SEFAZ. |
+| Rejeição em SEFAZ (não-duplicidade) | **Reusar o número** — SEFAZ rejeitou, não armazenou. |
+| NF-e autorizada e a operação caiu/cancelou no business | **Cancelamento por Evento** (110111). Limite: até 24h após autorização. |
+| NF-e autorizada >24h e operação caiu | **Não cancela. Estorno fiscal.** Emitir NF-e de devolução/ajuste. |
+| Número pulado por bug (gap) | **Inutilização do range** (NfeInutilizacao4). Documenta para o fisco que o número não será usado. |
+| NF-e em contingência rejeitada após retorno do normal | Para `tpEmis=1` (normal): **novo número**. Para contingência: mesmo número/série. |
 
 A regra **mais errada na prática**: cancelar NF-e fora do prazo (24h).
 SEFAZ rejeita com erro de prazo; muitos sistemas tratam como "falha
@@ -207,15 +207,15 @@ transitória" e fazem retry, gerando 656.
 A partir de 03/08/2026 (CRT=3) a NF-e sem Grupo UB no item ou sem
 Grupo W03 nos totais → `cStat=1115`. Específicas:
 
-| Erro                                     | Sintoma                                         | Correção                                                                                              |
-| ---------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Esquecer `cClassTrib`                    | cStat 1023 (inexistente) ou 1024 (incompatível) | Consultar tabela cClassTrib (Anexo III da NT) por cada CST.                                           |
-| Enviar Grupo UB para CST que não permite | cStat 1021                                      | Cada CST tem indicadores `ind_gIBSCBS`, `ind_gDif`, `ind_gRed`, etc. Consultar Tabela de Indicadores. |
-| Soma errada do BC (UB16)                 | cStat 1104                                      | Fórmula em `rtc-ibs-cbs-is.md §"Notas para implementação"`.                                           |
-| Alíquota pIBSUF/pCBS fora do ano         | cStat 1026 / 1037                               | 0,1% IBS e 0,9% CBS para 2025-2026; 0,05% e referencial para 2027-2028.                               |
-| Não somar IBS/CBS/IS no `vNFTot`         | cStat 1094                                      | Sim em 2026+; **não** em 2025-2026 (Exceção 1 das RVs VB01-10/20).                                    |
-| Não considerar `gALCZFMCBS` para ZFM     | cStat 1191                                      | Operação em ALC/ZFM exige `ISUFEmit` (C22) + grupo gALCZFMCBS.                                        |
-| Enviar evento RTC em lote                | Risco de rejeição parcial difícil de tratar     | NT 2025.002 §8.2 orienta **envio individual** dos novos eventos.                                      |
+| Erro | Sintoma | Correção |
+|---|---|---|
+| Esquecer `cClassTrib` | cStat 1023 (inexistente) ou 1024 (incompatível) | Consultar tabela cClassTrib (Anexo III da NT) por cada CST. |
+| Enviar Grupo UB para CST que não permite | cStat 1021 | Cada CST tem indicadores `ind_gIBSCBS`, `ind_gDif`, `ind_gRed`, etc. Consultar Tabela de Indicadores. |
+| Soma errada do BC (UB16) | cStat 1104 | Fórmula em `rtc-ibs-cbs-is.md §"Notas para implementação"`. |
+| Alíquota pIBSUF/pCBS fora do ano | cStat 1026 / 1037 | 0,1% IBS e 0,9% CBS para 2025-2026; 0,05% e referencial para 2027-2028. |
+| Não somar IBS/CBS/IS no `vNFTot` | cStat 1094 | Sim em 2026+; **não** em 2025-2026 (Exceção 1 das RVs VB01-10/20). |
+| Não considerar `gALCZFMCBS` para ZFM | cStat 1191 | Operação em ALC/ZFM exige `ISUFEmit` (C22) + grupo gALCZFMCBS. |
+| Enviar evento RTC em lote | Risco de rejeição parcial difícil de tratar | NT 2025.002 §8.2 orienta **envio individual** dos novos eventos. |
 
 ## 9. `cStat=452` — Síncrono mandatório para lote=1 (NT 2025.001)
 
@@ -223,7 +223,6 @@ A partir de 03/11/2025, **qualquer** `enviNFe` com lote de 1 NF-e e
 `indSinc=0` é rejeitado.
 
 Sintoma em código pré-NT 2025.001:
-
 - Aplicação que sempre manda `indSinc=0` "para depois consultar via nRec"
   pega cStat=452 em 100% das emissões de 1 NF-e a partir de Out/2025.
 - Aplicação que sempre envia lote=1 e nunca implementou parser do
@@ -291,9 +290,10 @@ efeito em algum modelo (NF-e, NFC-e, MDF-e, NF3e, etc.). Várias NTs
 deste skill** (NF-e modelo 55 backend).
 
 Antes de incorporar uma NT, ler o título e a Resumo:
-
 - "NFC-e" ou "Modelo 65" → fora de escopo deste skill.
-- "DANFE" ou "Documento Auxiliar" → fora de escopo (DANFE é apresentação).
+- "DANFE" ou "Documento Auxiliar" → **em escopo** (render do modelo 55):
+  vide `references/danfe.md`. NTs específicas de NFC-e/Modelo 65 (ex. DANFE
+  Simplificado Tipo 2, NT 2026.003) permanecem fora de escopo.
 - "Tabela NCM / CFOP / Países / Unidades" → dados operacionais, não
   protocolo; raramente justifica mudança no skill.
 
@@ -308,7 +308,7 @@ Quando regenerar (vide `codegen.md`):
 - NT introduz novos grupos XML obrigatórios (NT 2025.002 — Grupo UB/W03).
 - NT muda tipos básicos (NT 2025.002 — `DFeTiposBasicos_v1.00.xsd`).
 - NT muda envelopes de resposta (`retEnviNFe_v2.00.xsd`).
-- NT adiciona novos eventos (`envEventoNFe_v9.99.xsd`, e2\*.xsd).
+- NT adiciona novos eventos (`envEventoNFe_v9.99.xsd`, e2*.xsd).
 
 Após regenerar:
 

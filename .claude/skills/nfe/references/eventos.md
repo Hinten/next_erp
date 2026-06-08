@@ -8,19 +8,18 @@ that is **signed individually** (see `assinatura.md`).
 
 `infEvento.Id` = `ID` + `tpEvento` (6) + `chNFe` (44) + `nSeqEvento` (2).
 
-| tpEvento | Event                                               |
-| -------- | --------------------------------------------------- |
-| 110110   | Carta de Correção (CC-e)                            |
-| 110111   | Cancelamento                                        |
-| 110112   | Cancelamento por substituição (NFC-e)               |
-| 110140   | EPEC                                                |
-| 210200   | Confirmação da Operação (manifestação destinatário) |
-| 210210   | Ciência da Operação                                 |
-| 210220   | Desconhecimento da Operação                         |
-| 210240   | Operação não Realizada                              |
+| tpEvento | Event |
+|---|---|
+| 110110 | Carta de Correção (CC-e) |
+| 110111 | Cancelamento |
+| 110112 | Cancelamento por substituição (NFC-e) |
+| 110140 | EPEC |
+| 210200 | Confirmação da Operação (manifestação destinatário) |
+| 210210 | Ciência da Operação |
+| 210220 | Desconhecimento da Operação |
+| 210240 | Operação não Realizada |
 
 Response: `retEnvEvento` → `retEvento` → `infEvento` with `cStat`:
-
 - `135` — evento registrado e vinculado à NF-e (success).
 - `136` — evento registrado mas **não** vinculado à NF-e.
 - `155` — cancelamento homologado fora de prazo.
@@ -65,5 +64,5 @@ by NF-e pendentes de retorno that were never authorized).
 
 The vertical slice (Phase A) implements **autorização only**. Cancelamento and
 inutilização are Phase B; CC-e is Phase C. This file is the reference for those
-later phases — and for the recovery loop, which must _inutilizar_ truly-unused
+later phases — and for the recovery loop, which must *inutilizar* truly-unused
 numbers it finds while reconciling pendentes de retorno.

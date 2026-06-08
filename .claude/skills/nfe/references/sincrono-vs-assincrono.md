@@ -64,9 +64,8 @@ dois envelopes:
 
 Cliente deve esperar `tMed` segundos (mínimo 15s pela MOC) e então chamar
 `NFeRetAutorizacao4` com o `nRec`. Voltará `<retConsReciNFe>` com `cStat=104`
-
-- array de `<protNFe>`, ou `cStat=105` (em processamento, repetir) ou
-  `cStat=106` (lote não localizado, partir para recovery via `consSitNFe`).
++ array de `<protNFe>`, ou `cStat=105` (em processamento, repetir) ou
+`cStat=106` (lote não localizado, partir para recovery via `consSitNFe`).
 
 ### Síncrono (`indSinc=1`, lote = 1)
 
@@ -107,7 +106,7 @@ deve:
    - `0` ou `>50` → erro de input (não chega ao SOAP)
 2. **Parsear ambos os envelopes** na resposta:
    - Se `cStat=103` + `infRec` → fluxo async, retornar `{ status: 'async',
-nRec, tMed }`.
+     nRec, tMed }`.
    - Se `cStat=104` + `protNFe` inline → fluxo sync, retornar
      `{ status: 'sync', protNFe }` (consumível diretamente, sem poll).
 3. **Persistir o estado da NF-e** antes do POST. A `chave de acesso` é
@@ -116,10 +115,10 @@ nRec, tMed }`.
 
 ## cStats novos (NT 2025.001)
 
-| cStat   | Mensagem                                                              | Quando                                                                             |
-| ------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| cStat | Mensagem | Quando |
+|---|---|---|
 | **452** | Rejeição: Solicitada resposta assíncrona para Lote com somente 1 NF-e | Cliente mandou `indSinc=0` com `NFe.length=1`. **Crítico** — exige fix no cliente. |
-| ~~776~~ | (anteriormente "UF não disponibiliza síncrono")                       | RV GAP03a-2 removida — não deveria mais aparecer em produção.                      |
+| ~~776~~ | (anteriormente "UF não disponibiliza síncrono") | RV GAP03a-2 removida — não deveria mais aparecer em produção. |
 
 Para a lista completa de cStats novos das duas NTs, vide `cstat-rejeicoes.md`.
 
@@ -151,11 +150,11 @@ Anteriormente NF-e podia ser emitida com até **30 dias** de atraso e SEFAZ
 autorizava com `cStat=150` (Autorizado fora de prazo). NT 2025.001 §02.4
 reduziu o limite:
 
-| Atraso (dhEmi vs. dhAutorização) | cStat                                                                                             |
-| -------------------------------- | ------------------------------------------------------------------------------------------------- |
-| 0–7 dias                         | **100** (Autorizado o uso da NF-e)                                                                |
-| 7–30 dias                        | **150** (Autorizado fora de prazo)                                                                |
-| >30 dias                         | **Rejeitado** salvo se emitido em contingência (`tpEmis=2, 4, 5`); aí ainda aceita com cStat=150. |
+| Atraso (dhEmi vs. dhAutorização) | cStat |
+|---|---|
+| 0–7 dias | **100** (Autorizado o uso da NF-e) |
+| 7–30 dias | **150** (Autorizado fora de prazo) |
+| >30 dias | **Rejeitado** salvo se emitido em contingência (`tpEmis=2, 4, 5`); aí ainda aceita com cStat=150. |
 
 RV `B09-20` (cStat 228 — "Data de Emissão muito atrasada") reescrita
 em NT 2025.001 v1.00 para refletir essa janela.

@@ -19,6 +19,7 @@ pnpm-lock.yaml
 # Prose docs & agent instructions — excluded to avoid markdown reflow churn.
 # (Code, config, JSON/YAML and the root README are still formatted.)
 **/CLAUDE.md
+.claude/
 .github/
 apps/docs/
 .changeset/

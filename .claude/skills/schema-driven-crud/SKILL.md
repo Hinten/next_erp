@@ -66,12 +66,8 @@ a new entity, open those files and copy the pattern.
 ```ts
 export const fooSchema = z.object({
   nome: z.string().min(1).max(255).describe('Nome'),
-  status: z
-    .enum(['a', 'b'])
-    .meta({ labels: { a: 'Ativo', b: 'Inativo' } })
-    .nullable()
-    .default(null)
-    .describe('Status'),
+  status: z.enum(['a', 'b']).meta({ labels: { a: 'Ativo', b: 'Inativo' } })
+    .nullable().default(null).describe('Status'),
   observacao: z.string().max(500).nullable().default(null).describe('Observação'),
 });
 export type Foo = z.infer<typeof fooSchema>;
@@ -118,9 +114,7 @@ export default function FoosPage() {
       orderBy={{ field: 'nome', direction: 'asc' }}
       rowHref={(id) => `/foos/${id}`}
       renderNewButton={() => (
-        <Button component={Link} href="/foos/novo">
-          Novo foo
-        </Button>
+        <Button component={Link} href="/foos/novo">Novo foo</Button>
       )}
       copyHref="/foos/novo"
     />
@@ -166,12 +160,9 @@ const { allowed: canWrite } = usePermission(PERM.foo.write);
   canEdit={canWrite}
   readOnly={!canWrite}
   canDelete={canWrite}
-  onDelete={async (id) => {
-    await deleteDoc(fooCollection.docRef(db, {}, id));
-    router.replace('/foos');
-  }}
+  onDelete={async (id) => { await deleteDoc(fooCollection.docRef(db, {}, id)); router.replace('/foos'); }}
   onSaved={() => router.replace('/foos')}
-/>;
+/>
 ```
 
 ### 3.6 Sidebar — `app/(app)/_components/SidebarNav.tsx`
@@ -184,47 +175,47 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 
 ## 4. Reference — `TableView` (`packages/ui/src/table/TableView.tsx`)
 
-| Prop                         | Use                                                                                                                                                                                                                            |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `schema`, `collection`, `db` | Required. `db = getFirebaseFirestore()`.                                                                                                                                                                                       |
-| `title`, `description`       | Header.                                                                                                                                                                                                                        |
-| `defaultColumns`             | Initial visible columns. Omitted → every non-`unknown` field.                                                                                                                                                                  |
-| `orderBy`                    | Initial sort `{ field, direction }`. User changes it by clicking the header.                                                                                                                                                   |
-| `rowHref`                    | `(id, row) => string` — row-click target.                                                                                                                                                                                      |
-| `renderRowLink`              | `(href, content) => ReactNode` — wrap the row in a custom link (e.g. Next `<Link>`).                                                                                                                                           |
-| `newHref`                    | "New" button as a plain href — simpler alternative to `renderNewButton`.                                                                                                                                                       |
-| `renderNewButton`            | "New" button render-prop (use `<Button component={Link}>`).                                                                                                                                                                    |
-| `fields`                     | `Record<string, FieldConfig>` — per-field overrides (see §6).                                                                                                                                                                  |
-| `selectable` + `actions`     | Selection checkbox + bulk actions (e.g. delete).                                                                                                                                                                               |
-| `copyHref`                   | Enables the built-in "Copiar" action. Setting it is the on/off toggle; it also implies row selection. Selecting exactly one row + "Copiar" navigates to `${copyHref}?copyFrom=<id>` (the create page pre-fills from that doc). |
-| `monitorField`               | Field the update-monitor orders by (`limit(1)`, desc) to flag a stale page. `false` disables; omitted auto-resolves `ultimaModificacao` → `timestamp` → disabled.                                                              |
-| `pageSize`                   | Rows per page (default 50).                                                                                                                                                                                                    |
-| `pathContext`                | For sub-collections (`{ parentId }`).                                                                                                                                                                                          |
-| `queryOverride`              | Escape hatch: pass a ready-made Firestore `Query`.                                                                                                                                                                             |
+| Prop | Use |
+|---|---|
+| `schema`, `collection`, `db` | Required. `db = getFirebaseFirestore()`. |
+| `title`, `description` | Header. |
+| `defaultColumns` | Initial visible columns. Omitted → every non-`unknown` field. |
+| `orderBy` | Initial sort `{ field, direction }`. User changes it by clicking the header. |
+| `rowHref` | `(id, row) => string` — row-click target. |
+| `renderRowLink` | `(href, content) => ReactNode` — wrap the row in a custom link (e.g. Next `<Link>`). |
+| `newHref` | "New" button as a plain href — simpler alternative to `renderNewButton`. |
+| `renderNewButton` | "New" button render-prop (use `<Button component={Link}>`). |
+| `fields` | `Record<string, FieldConfig>` — per-field overrides (see §6). |
+| `selectable` + `actions` | Selection checkbox + bulk actions (e.g. delete). |
+| `copyHref` | Enables the built-in "Copiar" action. Setting it is the on/off toggle; it also implies row selection. Selecting exactly one row + "Copiar" navigates to `${copyHref}?copyFrom=<id>` (the create page pre-fills from that doc). |
+| `monitorField` | Field the update-monitor orders by (`limit(1)`, desc) to flag a stale page. `false` disables; omitted auto-resolves `ultimaModificacao` → `timestamp` → disabled. |
+| `pageSize` | Rows per page (default 50). |
+| `pathContext` | For sub-collections (`{ parentId }`). |
+| `queryOverride` | Escape hatch: pass a ready-made Firestore `Query`. |
 
 ## 5. Reference — `ObjectView` (`packages/ui/src/object/ObjectView.tsx`)
 
-| Prop                         | Use                                                                                                                                                                                          |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `schema`, `collection`, `db` | Required.                                                                                                                                                                                    |
-| `title`, `description`       | Optional header rendered above the form.                                                                                                                                                     |
-| `recordId`                   | Absent → create mode; present → loads and edits the doc.                                                                                                                                     |
-| _`?copyFrom=<id>`_           | Not a prop — a query param. In create mode ObjectView auto-fills the form from that document (minus id and the creation/modification stamps). TableView's "Copiar" button produces this URL. |
-| `currentUserUid`             | Required — goes into the audit entry.                                                                                                                                                        |
-| `pathContext`                | For sub-collections (`{ parentId }`).                                                                                                                                                        |
-| `excludedFields`             | Fields to hide (embeddings, `timestamp`, server-managed refs).                                                                                                                               |
-| `fields`                     | Per-field overrides (see §6).                                                                                                                                                                |
-| `sections`                   | Tab names → tabbed layout (omitted → flat layout).                                                                                                                                           |
-| `defaultValues`              | Initial values in create mode.                                                                                                                                                               |
-| `canEdit`                    | `false` → hides the save buttons.                                                                                                                                                            |
-| `readOnly`                   | `true` → disables every field (implies `canEdit:false`).                                                                                                                                     |
-| `canDelete` + `onDelete`     | Delete button + `(id) => Promise` callback.                                                                                                                                                  |
-| `deleteLabel`                | Delete-button text (default `"Excluir"`).                                                                                                                                                    |
-| `deleteConfirmMessage`       | Delete-modal body text.                                                                                                                                                                      |
-| `pager`                      | Cross-record navigation `{ ids, current, onChange }` — wires up `RecordPager`.                                                                                                               |
-| `onSaved`                    | `(id) => void` after a successful save.                                                                                                                                                      |
-| `saveLabel`                  | Primary button text ("Criar" / "Salvar alterações").                                                                                                                                         |
-| `showSaveAndContinue`        | Secondary "Salvar e continuar" button (default true).                                                                                                                                        |
+| Prop | Use |
+|---|---|
+| `schema`, `collection`, `db` | Required. |
+| `title`, `description` | Optional header rendered above the form. |
+| `recordId` | Absent → create mode; present → loads and edits the doc. |
+| _`?copyFrom=<id>`_ | Not a prop — a query param. In create mode ObjectView auto-fills the form from that document (minus id and the creation/modification stamps). TableView's "Copiar" button produces this URL. |
+| `currentUserUid` | Required — goes into the audit entry. |
+| `pathContext` | For sub-collections (`{ parentId }`). |
+| `excludedFields` | Fields to hide (embeddings, `timestamp`, server-managed refs). |
+| `fields` | Per-field overrides (see §6). |
+| `sections` | Tab names → tabbed layout (omitted → flat layout). |
+| `defaultValues` | Initial values in create mode. |
+| `canEdit` | `false` → hides the save buttons. |
+| `readOnly` | `true` → disables every field (implies `canEdit:false`). |
+| `canDelete` + `onDelete` | Delete button + `(id) => Promise` callback. |
+| `deleteLabel` | Delete-button text (default `"Excluir"`). |
+| `deleteConfirmMessage` | Delete-modal body text. |
+| `pager` | Cross-record navigation `{ ids, current, onChange }` — wires up `RecordPager`. |
+| `onSaved` | `(id) => void` after a successful save. |
+| `saveLabel` | Primary button text ("Criar" / "Salvar alterações"). |
+| `showSaveAndContinue` | Secondary "Salvar e continuar" button (default true). |
 
 ## 6. Reference — `FieldConfig` (`packages/ui/src/schema/types.ts`)
 
@@ -315,7 +306,7 @@ These all bit PR #6 (the PR that introduced this skill) — ~11 failed e2e runs
 before it went green. Check here first when a CRUD test fails.
 
 - **`Error: 5 NOT_FOUND` from the Admin SDK** (in `globalSetup` / seeding /
-  teardown). Firestore _Enterprise_ edition's database is literally named
+  teardown). Firestore *Enterprise* edition's database is literally named
   `default`, **not** the free-tier `(default)` the Admin SDK assumes when no
   id is passed. Always go through `db()` from `tools/test-fixtures` (it reads
   `FIREBASE_DATABASE_ID`, default `'default'`) — never call `getFirestore()`
@@ -327,7 +318,7 @@ before it went green. Check here first when a CRUD test fails.
 - **`strict mode violation: ... resolved to 2 elements`** on a filter button
   (`getByRole('button', { name: 'Filtrar Nome' })`) or a form field
   (`getByLabel('Tipo')`). Two causes: column labels repeat across the table,
-  and Mantine `Select` renders a hidden input _plus_ a visible combobox. Fix:
+  and Mantine `Select` renders a hidden input *plus* a visible combobox. Fix:
   use the `table-view.ts` / `object-view.ts` helpers (§7.5) — they exact-match
   the filter button and target the combobox input. Do **not** hand-roll
   `getByLabel` / `getByRole` for filters or selects.
@@ -336,7 +327,7 @@ before it went green. Check here first when a CRUD test fails.
   first navigation in a spec is slow. Call `warmRoutes()` (`helpers/warmup.ts`)
   in `beforeAll` and keep a generous table-load timeout.
 - **A row you just created is missing from the list.** Under the Pipelines
-  path `TableView` runs a _one-shot_ query — it does not re-fetch after a
+  path `TableView` runs a *one-shot* query — it does not re-fetch after a
   create. The update-monitor shows a yellow "Atualizar" banner when the
   collection changes, but the main table won't refresh until that button
   (or `monitorField`-driven reload) fires. The fix belongs in the **test**,
@@ -349,7 +340,7 @@ before it went green. Check here first when a CRUD test fails.
   the TableView then re-runs its query once the action finishes (this is how
   the delete action keeps the list fresh in the same tab). The update-monitor
   itself only watches the most-recent doc (`limit(1)`), so it does **not**
-  detect deletions made in _other_ sessions — a hard delete leaves no
+  detect deletions made in *other* sessions — a hard delete leaves no
   queryable trace. That cross-session gap is a known limitation tracked in
   issue #40.
 - **Vitest: Mantine throws under JSDOM** (`ResizeObserver is not defined`,
@@ -357,5 +348,5 @@ before it went green. Check here first when a CRUD test fails.
   shims all four. Any new package that renders Mantine components in unit
   tests must wire up the same setup file in its `vitest.config`.
 - **`Function setDoc() called with invalid data ... Unsupported field value:
-undefined`.** A schema field used `.optional()` without `.nullable()` — see
+  undefined`.** A schema field used `.optional()` without `.nullable()` — see
   §3.1. Firebase rejects `undefined`; forms must produce `null`.

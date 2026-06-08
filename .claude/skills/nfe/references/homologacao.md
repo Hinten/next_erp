@@ -18,10 +18,9 @@ available for every UF, including the SVC environments.
 
   (The DANFE also carries a "sem valor fiscal" watermark.) Issuing a homologação
   NF-e with a real recipient name is rejected.
-
 - NF-e issued here have **no fiscal value** — they are throwaway test data and
   the issuer may generate them freely.
-- The certificate is real (a valid ICP-Brasil A1/A3); only the _environment_
+- The certificate is real (a valid ICP-Brasil A1/A3); only the *environment*
   is test. The CI uses a dedicated homologação test certificate stored as the
   `NFE_CERT_BASE64` / `NFE_CERT_PASSWORD` secrets (with the `E` — runtime env
   vars, `.env.local`, and GitHub Actions secrets all use the same names).
@@ -45,19 +44,19 @@ available for every UF, including the SVC environments.
 - Respect rate limits even in homologação — looping a request still triggers
   `656 Consumo Indevido`.
 - A good homologação smoke sequence: `consStatServ` (assert 107) → emit one
-  fixture NF-e → poll → assert `cStat=100` → emit the _same_ NF-e again →
+  fixture NF-e → poll → assert `cStat=100` → emit the *same* NF-e again →
   assert the duplicidade recovery resolves to the original protocol.
 
 ## RTC (NT 2025.002) — cronograma de homologação
 
 A obrigatoriedade dos campos IBS/CBS é faseada por ambiente:
 
-| Data              | Homologação                                                                      | Produção                                                                            |
-| ----------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Out/2025–Jun/2026 | IBS/CBS facultativos. Se preenchidos, RVs aplicadas.                             | IBS/CBS facultativos; sem valor jurídico até 01/01/2026; com valor jurídico depois. |
-| **01/07/2026**    | **IBS/CBS obrigatórios** em todos os emitentes CRT=3. RV UB12-10 entra em vigor. | Ainda facultativos.                                                                 |
-| **03/08/2026**    | Obrigatórios desde 01/07.                                                        | **IBS/CBS obrigatórios** (CRT=3). RV UB12-10 em produção.                           |
-| **04/01/2027**    | Obrigatoriedade estende-se a CRT=1/2/4 e Tributação Monofásica de Combustíveis.  | Mesma data.                                                                         |
+| Data | Homologação | Produção |
+|---|---|---|
+| Out/2025–Jun/2026 | IBS/CBS facultativos. Se preenchidos, RVs aplicadas. | IBS/CBS facultativos; sem valor jurídico até 01/01/2026; com valor jurídico depois. |
+| **01/07/2026** | **IBS/CBS obrigatórios** em todos os emitentes CRT=3. RV UB12-10 entra em vigor. | Ainda facultativos. |
+| **03/08/2026** | Obrigatórios desde 01/07. | **IBS/CBS obrigatórios** (CRT=3). RV UB12-10 em produção. |
+| **04/01/2027** | Obrigatoriedade estende-se a CRT=1/2/4 e Tributação Monofásica de Combustíveis. | Mesma data. |
 
 Implicação para os testes em homologação:
 

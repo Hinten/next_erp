@@ -58,17 +58,17 @@ sources/
 
 ## Priority tiers
 
-| Tier   | Documents                        | Why                                                                                                                                              |
-| ------ | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **T1** | NT 2025.002 (RTC)                | The skill currently knows nothing about IBS/CBS/IS. RTC has legal validity since 2026-01-01 — any NF-e written today must comply. **Must-have.** |
-| **T2** | MOC 7.0 — Anexo I (Leiaute + RV) | Baseline of every field definition. Current skill was built from it, but a re-diff catches drift. ~500 pages — big.                              |
-| **T2** | MOC 7.0 — Visão Geral            | Lifecycle / state machine. High-level; existing skill content is solid.                                                                          |
-| **T3** | NT 2020.006 → NT 2024.xxx        | Inter-MOC changes — small cStat additions, field tweaks. Each NT is ~10–50 pages. Powers `notas-tecnicas-historico.md`.                          |
+| Tier | Documents | Why |
+|---|---|---|
+| **T1** | NT 2025.002 (RTC) | The skill currently knows nothing about IBS/CBS/IS. RTC has legal validity since 2026-01-01 — any NF-e written today must comply. **Must-have.** |
+| **T2** | MOC 7.0 — Anexo I (Leiaute + RV) | Baseline of every field definition. Current skill was built from it, but a re-diff catches drift. ~500 pages — big. |
+| **T2** | MOC 7.0 — Visão Geral | Lifecycle / state machine. High-level; existing skill content is solid. |
+| **T3** | NT 2020.006 → NT 2024.xxx | Inter-MOC changes — small cStat additions, field tweaks. Each NT is ~10–50 pages. Powers `notas-tecnicas-historico.md`. |
 
 ## Source index — SEFAZ portal
 
 - **MOC pages**: https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?tipoConteudo=ndIjl+iEFdE=
-- **NT index**: https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?tipoConteudo=04BIflQt1aY=
+- **NT index**:  https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?tipoConteudo=04BIflQt1aY=
 - **CONFAZ mirror (MOC PDFs)**: https://www.confaz.fazenda.gov.br/legislacao/arquivo-manuais/
 
 Direct PDF links are inside each `_MISSING_*.md` placeholder.

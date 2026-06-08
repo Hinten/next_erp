@@ -6,14 +6,14 @@ emission mode is the `tpEmis` field (B22), and `tpEmis` is part of the chave.
 
 ## `tpEmis` values
 
-| tpEmis | Mode                               | Authorizer                      | Notes                   |
-| -----: | ---------------------------------- | ------------------------------- | ----------------------- |
-|      1 | Normal                             | SEFAZ origem                    | Standard path           |
-|      2 | FS-IA (Formulário de Segurança)    | SEFAZ origem (later)            | Legacy stock only       |
-|      4 | EPEC                               | Ambiente Nacional (RFB)         | Prior contingency event |
-|      5 | FS-DA (Formulário de Segurança DA) | SEFAZ origem (later)            | DANFE on secure form    |
-|      6 | SVC-AN                             | SEFAZ Virtual Ambiente Nacional |                         |
-|      7 | SVC-RS                             | SEFAZ Virtual RS                |                         |
+| tpEmis | Mode | Authorizer | Notes |
+|---:|---|---|---|
+| 1 | Normal | SEFAZ origem | Standard path |
+| 2 | FS-IA (Formulário de Segurança) | SEFAZ origem (later) | Legacy stock only |
+| 4 | EPEC | Ambiente Nacional (RFB) | Prior contingency event |
+| 5 | FS-DA (Formulário de Segurança DA) | SEFAZ origem (later) | DANFE on secure form |
+| 6 | SVC-AN | SEFAZ Virtual Ambiente Nacional | |
+| 7 | SVC-RS | SEFAZ Virtual RS | |
 
 Contingency NF-e must carry `dhCont` (start datetime) and `xJust`
 (justification) — both also printed on the DANFE.
@@ -24,11 +24,11 @@ SVC is activated by the issuer's home SEFAZ when its normal environment is
 down. Each state is bound to one SVC (SVC-AN or SVC-RS, per Ato COTEPE 39/2012).
 Validation matrix — a `tpEmis` is only accepted by its matching environment:
 
-|     tpEmis | Normal | SVC-AN | SVC-RS |
-| ---------: | :----: | :----: | :----: |
-| 1, 2, 4, 5 |   OK   |   —    |   —    |
-| 6 (SVC-AN) |   —    |   OK   |   —    |
-| 7 (SVC-RS) |   —    |   —    |   OK   |
+| tpEmis | Normal | SVC-AN | SVC-RS |
+|---:|:--:|:--:|:--:|
+| 1, 2, 4, 5 | OK | — | — |
+| 6 (SVC-AN) | — | OK | — |
+| 7 (SVC-RS) | — | — | OK |
 
 SVC offers Autorização, RetAutorização, Cancelamento, ConsultaProtocolo,
 StatusServico. It does **not** offer Inutilização or CCe. SVC status codes:

@@ -5,24 +5,24 @@ per `http://www.w3.org/TR/xmldsig-core/`. SEFAZ validates a strict subset.
 
 ## What gets signed
 
-| Message                     | Signed element | `Id` attribute                              | `Reference URI` |
-| --------------------------- | -------------- | ------------------------------------------- | --------------- |
-| NF-e                        | `<infNFe>`     | `NFe` + chave (44)                          | `#NFe<chave>`   |
-| Cancelamento / CCe / events | `<infEvento>`  | `ID` + tpEvento + chNFe + nSeqEvento        | `#ID...`        |
-| Inutilização                | `<infInut>`    | `ID` + cUF+ano+CNPJ+mod+serie+nNFIni+nNFFin | `#ID...`        |
+| Message | Signed element | `Id` attribute | `Reference URI` |
+|---|---|---|---|
+| NF-e | `<infNFe>` | `NFe` + chave (44) | `#NFe<chave>` |
+| Cancelamento / CCe / events | `<infEvento>` | `ID` + tpEvento + chNFe + nSeqEvento | `#ID...` |
+| Inutilização | `<infInut>` | `ID` + cUF+ano+CNPJ+mod+serie+nNFIni+nNFFin | `#ID...` |
 
 Each NF-e in a lote is signed **individually**. The `<Signature>` is a sibling
 of `<infNFe>`, placed **immediately after it**, inside the `<NFe>` element.
 
 ## Algorithms (fixed — do not vary)
 
-| Step                   | Algorithm URI                                           |
-| ---------------------- | ------------------------------------------------------- |
-| CanonicalizationMethod | `http://www.w3.org/TR/2001/REC-xml-c14n-20010315`       |
-| SignatureMethod        | `http://www.w3.org/2000/09/xmldsig#rsa-sha1`            |
-| Transform 1            | `http://www.w3.org/2000/09/xmldsig#enveloped-signature` |
-| Transform 2            | `http://www.w3.org/TR/2001/REC-xml-c14n-20010315`       |
-| DigestMethod           | `http://www.w3.org/2000/09/xmldsig#sha1`                |
+| Step | Algorithm URI |
+|---|---|
+| CanonicalizationMethod | `http://www.w3.org/TR/2001/REC-xml-c14n-20010315` |
+| SignatureMethod | `http://www.w3.org/2000/09/xmldsig#rsa-sha1` |
+| Transform 1 | `http://www.w3.org/2000/09/xmldsig#enveloped-signature` |
+| Transform 2 | `http://www.w3.org/TR/2001/REC-xml-c14n-20010315` |
+| DigestMethod | `http://www.w3.org/2000/09/xmldsig#sha1` |
 
 The two `<Transform>` elements appear in that order (enveloped, then C14N).
 
@@ -73,7 +73,7 @@ The two `<Transform>` elements appear in that order (enveloped, then C14N).
   the NF-e issuer; for e-CPF it must equal the issuer's CPF.
 - The cert must have key usage permitting **digital signature**.
 - A separate cert (or the same one) is used for the **TLS transport** layer; it
-  needs the _Client Authentication_ extended key usage and carries the CNPJ of
+  needs the *Client Authentication* extended key usage and carries the CNPJ of
   whoever transmits (not necessarily the issuer).
 
 ## Common failures
