@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { execute } from 'firebase/firestore/pipelines';
 import { type Pipeline, PIPELINE_ID_FIELD } from '../pipeline-queries';
+import { isRetryableFirestoreError, retryAsync } from './retry';
 import type { SnapshotRow, SnapshotState } from './useSnapshot';
 
 /**
@@ -32,7 +33,14 @@ export function usePipelineSnapshot<T>(
     setState((s) => ({ ...s, loading: true }));
 
     let cancelled = false;
-    execute(pipeline)
+    // `execute()` is a one-shot RPC with no internal retry — wrap it so a
+    // transient blip (unavailable, deadline-exceeded, …) gets a couple of
+    // backed-off attempts before the error reaches the UI. `isCancelled`
+    // abandons the retry loop the moment this effect is torn down.
+    retryAsync(() => execute(pipeline), {
+      isRetryable: isRetryableFirestoreError,
+      isCancelled: () => cancelled,
+    })
       .then((snap) => {
         if (cancelled) return;
         setState({
