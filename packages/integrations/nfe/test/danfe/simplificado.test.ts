@@ -24,8 +24,8 @@ describe('danfe/pdf simplificado', () => {
     expect(isPdf(pdf)).toBe(true);
   });
 
-  it('throws for not-yet-implemented A4 formats', () => {
-    expect(() => renderDanfe(PROCNFE_FIXTURE, { format: 'retrato' })).toThrow(/not implemented/i);
+  it('throws for the not-yet-implemented paisagem format', () => {
+    expect(() => renderDanfe(PROCNFE_FIXTURE, { format: 'paisagem' })).toThrow(/not implemented/i);
   });
 
   it('renderDanfeZpl returns a ZPL string', () => {

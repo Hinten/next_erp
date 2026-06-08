@@ -32,8 +32,8 @@ export const runtime = 'nodejs';
 const querySchema = z.object({
   pedidoId: z.string().min(1).max(200),
   nfeId: z.string().min(1).max(200),
-  // PR1 formats only; retrato/paisagem are added in PR2.
-  format: z.enum(['simplificado', 'zpl2']).default('simplificado'),
+  // simplificado + retrato (A4 portrait) + zpl2. paisagem lands next.
+  format: z.enum(['simplificado', 'retrato', 'zpl2']).default('simplificado'),
   // ZPL printhead density; ignored by the PDF formats.
   dpi: z.coerce.number().int().min(150).max(600).optional(),
 });

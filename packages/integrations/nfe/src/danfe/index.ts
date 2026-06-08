@@ -12,6 +12,7 @@
  * extend this same entry.
  */
 import { parseProcNFe } from './model';
+import { renderRetrato } from './pdf/retrato';
 import { renderSimplificado } from './pdf/simplificado';
 import { renderSimplificadoZpl, type ZplOptions } from './zpl2';
 
@@ -25,6 +26,7 @@ export type {
   DanfeProtocolo,
 } from './model';
 export { renderSimplificado, type RenderSimplificadoOptions } from './pdf/simplificado';
+export { renderRetrato, type RenderA4Options } from './pdf/retrato';
 export { renderSimplificadoZpl, type ZplOptions } from './zpl2';
 export { code128Png } from './barcode';
 export * from './format';
@@ -49,6 +51,7 @@ export function renderDanfe(xml: string, opts: RenderDanfeOptions): Promise<Buff
     case 'simplificado':
       return renderSimplificado(model, { cancelada: opts.cancelada });
     case 'retrato':
+      return renderRetrato(model, { cancelada: opts.cancelada });
     case 'paisagem':
       throw new Error(`DANFE format '${opts.format}' is not implemented yet (PR2).`);
   }
