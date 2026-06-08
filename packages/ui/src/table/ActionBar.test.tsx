@@ -37,12 +37,7 @@ describe('ActionBar', () => {
   it('collapses actions into a menu when the count exceeds the threshold', () => {
     wrap(
       <ActionBar
-        actions={[
-          makeAction('1'),
-          makeAction('2'),
-          makeAction('3'),
-          makeAction('4'),
-        ]}
+        actions={[makeAction('1'), makeAction('2'), makeAction('3'), makeAction('4')]}
         selectedRows={[ROW]}
       />,
     );
@@ -56,12 +51,7 @@ describe('ActionBar', () => {
     const run = vi.fn();
     wrap(
       <ActionBar
-        actions={[
-          makeAction('1'),
-          makeAction('2'),
-          makeAction('3'),
-          { ...makeAction('4', run) },
-        ]}
+        actions={[makeAction('1'), makeAction('2'), makeAction('3'), { ...makeAction('4', run) }]}
         selectedRows={[ROW]}
       />,
     );

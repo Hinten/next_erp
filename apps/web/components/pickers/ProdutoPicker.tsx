@@ -1,23 +1,11 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import {
-  CloseButton,
-  Combobox,
-  InputBase,
-  Loader,
-  Stack,
-  Text,
-  useCombobox,
-} from '@mantine/core';
+import { CloseButton, Combobox, InputBase, Loader, Stack, Text, useCombobox } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import {
-  type DocumentReference,
-  type Firestore,
-  getDocs,
-} from 'firebase/firestore';
+import { type DocumentReference, type Firestore, getDocs } from 'firebase/firestore';
 import { buildQuery, limit, orderByField, whereOp } from '@delfrance/data';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import type { Produto } from '@delfrance/schemas';
@@ -70,8 +58,7 @@ export function ProdutoPicker({
     const r = dereferenceOuterRef(db, value);
     return r ? produtoCollection.docRef(db, {}, r.id) : null;
   }, [db, value]);
-  const { data: currentDoc, loading: loadingCurrent } =
-    useDocSnapshot(currentRef);
+  const { data: currentDoc, loading: loadingCurrent } = useDocSnapshot(currentRef);
   const currentLabel = currentDoc?.data.nome ?? '';
 
   const query = useQuery({
@@ -82,10 +69,7 @@ export function ProdutoPicker({
       try {
         // SKU exact match fallback when the search looks like a SKU.
         if (trimmed && isSku(trimmed)) {
-          const skuQ = buildQuery(base, [
-            whereOp('sku', '==', trimmed),
-            limit(PAGE_SIZE),
-          ]);
+          const skuQ = buildQuery(base, [whereOp('sku', '==', trimmed), limit(PAGE_SIZE)]);
           const skuSnap = await getDocs(skuQ);
           if (!skuSnap.empty) {
             return skuSnap.docs.map((d) => ({
@@ -183,9 +167,7 @@ export function ProdutoPicker({
 
       <Combobox.Dropdown>
         <Combobox.Options>
-          {query.isLoading && (
-            <Combobox.Empty>Carregando…</Combobox.Empty>
-          )}
+          {query.isLoading && <Combobox.Empty>Carregando…</Combobox.Empty>}
           {!query.isLoading && rows.length === 0 && (
             <Combobox.Empty>Nenhum produto encontrado.</Combobox.Empty>
           )}

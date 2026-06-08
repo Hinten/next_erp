@@ -79,9 +79,7 @@ export function buildEnviNFeMsgFromLote(params: {
 export function buildEnviNFeMsgFromConsulta(params: {
   chave: string;
   nRec: string | null;
-  ret:
-    | Awaited<ReturnType<typeof consultarLote>>
-    | Awaited<ReturnType<typeof consultarSituacaoNFe>>;
+  ret: Awaited<ReturnType<typeof consultarLote>> | Awaited<ReturnType<typeof consultarSituacaoNFe>>;
   tpEmis: TpEmis;
 }): Record<string, unknown> {
   const now = new Date().toISOString();

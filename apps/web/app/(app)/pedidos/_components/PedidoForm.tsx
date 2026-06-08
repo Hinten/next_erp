@@ -4,14 +4,7 @@ import { useMemo, useState } from 'react';
 import { useForm, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
-import {
-  Alert,
-  Button,
-  Group,
-  Stack,
-  Tabs,
-  Tooltip,
-} from '@mantine/core';
+import { Alert, Button, Group, Stack, Tabs, Tooltip } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
 import { type Pedido, pedidoSchema } from '@delfrance/schemas';
 import { usePermission } from '@/lib/auth';
@@ -177,10 +170,7 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="frete" pt="md">
-            <PlaceholderTab
-              name="Frete"
-              preview={form.getValues('freteInicial')}
-            />
+            <PlaceholderTab name="Frete" preview={form.getValues('freteInicial')} />
           </Tabs.Panel>
 
           <Tabs.Panel value="pagamento" pt="md">
@@ -200,10 +190,7 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="devolucao" pt="md">
-            <PlaceholderTab
-              name="Devolução"
-              preview={form.getValues('itensDevolvidos')}
-            />
+            <PlaceholderTab name="Devolução" preview={form.getValues('itensDevolvidos')} />
           </Tabs.Panel>
 
           <Tabs.Panel value="estado" pt="md">
@@ -217,16 +204,8 @@ export function PedidoForm({
         {submitError && <Alert color="red">{submitError}</Alert>}
 
         <Group justify="flex-end">
-          <Tooltip
-            label="Sem permissão de escrita"
-            disabled={canWrite}
-            withArrow
-          >
-            <Button
-              type="submit"
-              loading={form.formState.isSubmitting}
-              disabled={disabled}
-            >
+          <Tooltip label="Sem permissão de escrita" disabled={canWrite} withArrow>
+            <Button type="submit" loading={form.formState.isSubmitting} disabled={disabled}>
               {submitLabel}
             </Button>
           </Tooltip>

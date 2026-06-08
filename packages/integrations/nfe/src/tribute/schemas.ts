@@ -26,7 +26,16 @@ export type Crt = z.infer<typeof crtSchema>;
 
 /** CSOSN codes for Simples Nacional. */
 export const csosnSchema = z.enum([
-  '101', '102', '103', '201', '202', '203', '300', '400', '500', '900',
+  '101',
+  '102',
+  '103',
+  '201',
+  '202',
+  '203',
+  '300',
+  '400',
+  '500',
+  '900',
 ]);
 export type Csosn = z.infer<typeof csosnSchema>;
 
@@ -44,10 +53,39 @@ export type Origem = z.infer<typeof origemSchema>;
 
 /** CST PIS / COFINS (the most common codes; full surface = ~25 codes). */
 export const cstPisCofinsSchema = z.enum([
-  '01', '02', '03', '04', '05', '06', '07', '08', '09', '49',
-  '50', '51', '52', '53', '54', '55', '56', '60', '61', '62',
-  '63', '64', '65', '66', '67', '70', '71', '72', '73', '74',
-  '75', '98', '99',
+  '01',
+  '02',
+  '03',
+  '04',
+  '05',
+  '06',
+  '07',
+  '08',
+  '09',
+  '49',
+  '50',
+  '51',
+  '52',
+  '53',
+  '54',
+  '55',
+  '56',
+  '60',
+  '61',
+  '62',
+  '63',
+  '64',
+  '65',
+  '66',
+  '67',
+  '70',
+  '71',
+  '72',
+  '73',
+  '74',
+  '75',
+  '98',
+  '99',
 ]);
 export type CstPisCofins = z.infer<typeof cstPisCofinsSchema>;
 
@@ -177,8 +215,19 @@ export type ConfCOFINS = z.infer<typeof confCOFINSSchema>;
 
 /** IPI CST codes — XSD `IPITrib` (tributado) + `IPINT` (não tributado). */
 export const cstIpiSchema = z.enum([
-  '00', '01', '02', '03', '04', '05',
-  '49', '50', '51', '52', '53', '54', '55',
+  '00',
+  '01',
+  '02',
+  '03',
+  '04',
+  '05',
+  '49',
+  '50',
+  '51',
+  '52',
+  '53',
+  '54',
+  '55',
   '99',
 ]);
 export type CstIpi = z.infer<typeof cstIpiSchema>;
@@ -229,8 +278,16 @@ export const configuracaoISSQNSchema = z.object({
   vISSRet: z.number().nonnegative().optional().nullable(),
   indISS: indISSSchema,
   cServico: z.string().min(1).max(20).optional().nullable(),
-  cMun: z.string().regex(/^\d{7}$/).optional().nullable(),
-  cPais: z.string().regex(/^\d{1,4}$/).optional().nullable(),
+  cMun: z
+    .string()
+    .regex(/^\d{7}$/)
+    .optional()
+    .nullable(),
+  cPais: z
+    .string()
+    .regex(/^\d{1,4}$/)
+    .optional()
+    .nullable(),
   nProcesso: z.string().min(1).max(30).optional().nullable(),
   indIncentivo: indIncentivoSchema,
 });
@@ -279,13 +336,29 @@ export type Retencao = z.infer<typeof retencaoSchema>;
 export const impostoSchema = z.object({
   origem: origemSchema,
   /** CFOP for intra-state operations (4 digits, e.g. '5102'). */
-  cfop: z.string().regex(/^\d{4}$/).optional().nullable(),
+  cfop: z
+    .string()
+    .regex(/^\d{4}$/)
+    .optional()
+    .nullable(),
   /** CFOP for interstate operations (4 digits, e.g. '6102'). */
-  cfopInterestadual: z.string().regex(/^\d{4}$/).optional().nullable(),
+  cfopInterestadual: z
+    .string()
+    .regex(/^\d{4}$/)
+    .optional()
+    .nullable(),
   /** NCM classification (8 digits). */
-  NCM: z.string().regex(/^\d{8}$/).optional().nullable(),
+  NCM: z
+    .string()
+    .regex(/^\d{8}$/)
+    .optional()
+    .nullable(),
   /** CEST classification (7 digits) — when the product is in the CEST list. */
-  CEST: z.string().regex(/^\d{7}$/).optional().nullable(),
+  CEST: z
+    .string()
+    .regex(/^\d{7}$/)
+    .optional()
+    .nullable(),
   /** Unidade comercial (e.g. 'UN'). */
   unidade: z.string().min(1).max(6).optional().nullable(),
   configuracaoICMS: configuracaoICMSSchema.optional().nullable(),

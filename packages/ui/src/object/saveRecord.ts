@@ -6,10 +6,7 @@ import {
   runTransaction,
 } from 'firebase/firestore';
 import type { z, ZodTypeAny } from 'zod';
-import {
-  type CollectionHandle,
-  type PathContext,
-} from '@delfrance/data';
+import { type CollectionHandle, type PathContext } from '@delfrance/data';
 import { writeAuditEntry } from '@delfrance/data/audit';
 import { isEmpty, pickDirty } from './diff';
 
@@ -79,9 +76,11 @@ export async function saveRecord<
   // re-derived inside it (only reads/writes do).
   const ref = isUpdate
     ? input.collection.docRef(input.db, input.pathContext, input.recordId!)
-    : fsDoc(fsCollection(input.db, input.collection.resolvePath(input.pathContext)).withConverter(
-        input.collection.converter,
-      ));
+    : fsDoc(
+        fsCollection(input.db, input.collection.resolvePath(input.pathContext)).withConverter(
+          input.collection.converter,
+        ),
+      );
 
   await runTransaction(input.db, async (tx: Transaction) => {
     if (isUpdate) {

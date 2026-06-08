@@ -40,7 +40,8 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('@delfrance/data/hooks', async () => {
-  const actual = await vi.importActual<typeof import('@delfrance/data/hooks')>('@delfrance/data/hooks');
+  const actual =
+    await vi.importActual<typeof import('@delfrance/data/hooks')>('@delfrance/data/hooks');
   return { ...actual, useSnapshot: () => snapState.current };
 });
 vi.mock('@delfrance/data/hooks/usePipelineSnapshot', () => ({
@@ -121,10 +122,7 @@ describe('TableView', () => {
 
   it('hydrates visible columns from localStorage', () => {
     // fakeCollection().resolvePath() → 'tests'.
-    localStorage.setItem(
-      'delfrance:tableview:columns:tests',
-      JSON.stringify(['nome']),
-    );
+    localStorage.setItem('delfrance:tableview:columns:tests', JSON.stringify(['nome']));
     wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
     const headers = screen.getAllByRole('columnheader').map((th) => th.textContent);
     expect(headers).toContain('Nome');
@@ -146,18 +144,22 @@ describe('TableView', () => {
   it('reorders columns via the picker and persists the new order', () => {
     wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
     // Default order follows the schema: Nome, Tipo, Observacoes.
-    expect(
-      screen.getAllByRole('columnheader').map((th) => th.textContent),
-    ).toEqual(['Nome', 'Tipo', 'Observacoes']);
+    expect(screen.getAllByRole('columnheader').map((th) => th.textContent)).toEqual([
+      'Nome',
+      'Tipo',
+      'Observacoes',
+    ]);
 
     // Open the ColumnPicker, switch to reorder mode and move "Nome" down.
     fireEvent.click(screen.getByRole('button', { name: 'Configurar colunas' }));
     fireEvent.click(screen.getByRole('button', { name: 'Reordenar colunas' }));
     fireEvent.click(screen.getByRole('button', { name: 'Mover Nome para baixo' }));
 
-    expect(
-      screen.getAllByRole('columnheader').map((th) => th.textContent),
-    ).toEqual(['Tipo', 'Nome', 'Observacoes']);
+    expect(screen.getAllByRole('columnheader').map((th) => th.textContent)).toEqual([
+      'Tipo',
+      'Nome',
+      'Observacoes',
+    ]);
     const stored = JSON.parse(
       localStorage.getItem('delfrance:tableview:columns:tests') ?? '[]',
     ) as string[];

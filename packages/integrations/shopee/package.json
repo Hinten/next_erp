@@ -9,7 +9,9 @@
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
-  "dependencies": { "@delfrance/core": "workspace:*" },
+  "dependencies": {
+    "@delfrance/core": "workspace:*"
+  },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",
     "typescript": "^6.0.3",

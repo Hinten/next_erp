@@ -56,10 +56,7 @@ export function MensagemThread({ conversaId }: { conversaId: string }) {
 
   const q = useMemo(() => {
     const base = mensagemCollection.ref(getFirebaseFirestore(), { conversaId });
-    return buildQuery(base, [
-      orderByField('timestamp', 'desc'),
-      limit(PAGE_SIZE),
-    ]);
+    return buildQuery(base, [orderByField('timestamp', 'desc'), limit(PAGE_SIZE)]);
   }, [conversaId]);
 
   const { data, loading, error } = useSnapshot<Mensagem>(q);
@@ -112,38 +109,31 @@ export function MensagemThread({ conversaId }: { conversaId: string }) {
     setDraft('');
     setSending(true);
     try {
-      await addDoc(
-        mensagemCollection.ref(getFirebaseFirestore(), { conversaId }),
-        {
-          mid: localId,
-          conteudo: text,
-          tipo: 'c',
-          canal: 0,
-          estadoEnvio: ESTADO_ENVIO.salva,
-          user_id: user?.uid ?? null,
-          timestamp: now,
-          resposta: null,
-          usarioMensagemOuterRef: null,
-          urlAvatar: null,
-          midGroup: null,
-          error: null,
-          visualizado: null,
-          transcription: null,
-          anexo: null,
-          anexoUrl: null,
-        },
-      );
+      await addDoc(mensagemCollection.ref(getFirebaseFirestore(), { conversaId }), {
+        mid: localId,
+        conteudo: text,
+        tipo: 'c',
+        canal: 0,
+        estadoEnvio: ESTADO_ENVIO.salva,
+        user_id: user?.uid ?? null,
+        timestamp: now,
+        resposta: null,
+        usarioMensagemOuterRef: null,
+        urlAvatar: null,
+        midGroup: null,
+        error: null,
+        visualizado: null,
+        transcription: null,
+        anexo: null,
+        anexoUrl: null,
+      });
       // Server snapshot will include this mid on the next tick; the
       // memoized merge above drops the optimistic copy automatically.
     } catch (err) {
       if (err instanceof FirebaseError) {
         setSendError(err.message);
         setOptimistic((prev) =>
-          prev.map((m) =>
-            m._localId === localId
-              ? { ...m, estadoEnvio: ESTADO_ENVIO.erro }
-              : m,
-          ),
+          prev.map((m) => (m._localId === localId ? { ...m, estadoEnvio: ESTADO_ENVIO.erro } : m)),
         );
       } else {
         throw err;
@@ -156,11 +146,7 @@ export function MensagemThread({ conversaId }: { conversaId: string }) {
   return (
     <Stack h="100%" gap={0}>
       {error && <Alert color="red">{error.message}</Alert>}
-      <ScrollArea
-        viewportRef={scrollRef}
-        style={{ flex: 1, minHeight: 0 }}
-        offsetScrollbars
-      >
+      <ScrollArea viewportRef={scrollRef} style={{ flex: 1, minHeight: 0 }} offsetScrollbars>
         <Stack p="md" gap="sm">
           {loading && (
             <Stack>
@@ -226,13 +212,7 @@ export function MensagemThread({ conversaId }: { conversaId: string }) {
   );
 }
 
-function MensagemBubble({
-  mensagem,
-  isLocal,
-}: {
-  mensagem: AnyMensagem;
-  isLocal: boolean;
-}) {
+function MensagemBubble({ mensagem, isLocal }: { mensagem: AnyMensagem; isLocal: boolean }) {
   const { user } = useAuth();
   const isOwn = isLocal || (mensagem.user_id && mensagem.user_id === user?.uid);
   return (
@@ -242,9 +222,7 @@ function MensagemBubble({
         style={(theme) => ({
           maxWidth: 480,
           background: isOwn ? theme.colors.blue[0] : theme.colors.gray[1],
-          border: `1px solid ${
-            isOwn ? theme.colors.blue[2] : theme.colors.gray[3]
-          }`,
+          border: `1px solid ${isOwn ? theme.colors.blue[2] : theme.colors.gray[3]}`,
           borderRadius: theme.radius.md,
         })}
       >

@@ -1,6 +1,65 @@
 // Flat config base. Apps and packages extend this and add framework-specific
 // rules (e.g., apps/web extends with eslint-config-next).
 import noInlineAdminCollection from './rules/no-inline-admin-collection.js';
+import eslintConfigPrettier from 'eslint-config-prettier';
+import tseslint from 'typescript-eslint';
+
+// Re-export eslint-config-prettier so every consumer can append it as the LAST
+// element of its flat config, switching off any stylistic rules that would
+// conflict with Prettier. Centralized here so the dependency lives in one place.
+export const prettier = eslintConfigPrettier;
+
+/**
+ * High-signal, type-aware async-correctness rules. Spread the result into a
+ * workspace's flat config: `...typeAware(import.meta.dirname)`.
+ *
+ * `projectService: true` lets typescript-eslint discover the nearest tsconfig
+ * for each linted file; `tsconfigRootDir` must be the consuming workspace dir,
+ * so always pass `import.meta.dirname`. Scope `files` to what that workspace's
+ * tsconfig `include`s — apps include everything (default
+ * `**​/*.{ts,tsx,mts,cts}`), while library packages keep sources under `src/`
+ * and should pass `{ files: ['src/**​/*.{ts,mts}'] }` so root-level config `.ts`
+ * files (outside the typed program) don't trip "file not in project".
+ *
+ * We deliberately do NOT enable `recommendedTypeChecked`: its `no-unsafe-*`
+ * family floods on the untyped Firebase / SOAP SDK surfaces. These three rules
+ * are the high-value async-correctness subset worth gating CI on.
+ *
+ * `registerPlugin` (default `true`) makes the block self-contained — it
+ * registers the `@typescript-eslint` plugin the rules below need, so a config
+ * that does NOT extend `eslint-config-next` works out of the box. Consumers
+ * that DO spread `eslint-config-next` (every app in this repo) must pass
+ * `registerPlugin: false`: next already registers that plugin and flat config
+ * forbids defining a plugin name twice ("Cannot redefine plugin").
+ *
+ * @param {string} tsconfigRootDir usually `import.meta.dirname`
+ * @param {{ files?: string[], registerPlugin?: boolean }} [opts]
+ */
+export function typeAware(
+  tsconfigRootDir,
+  { files = ['**/*.{ts,tsx,mts,cts}'], registerPlugin = true } = {},
+) {
+  return [
+    {
+      files,
+      languageOptions: {
+        parser: tseslint.parser,
+        parserOptions: { projectService: true, tsconfigRootDir },
+      },
+      ...(registerPlugin ? { plugins: { '@typescript-eslint': tseslint.plugin } } : {}),
+      rules: {
+        '@typescript-eslint/no-floating-promises': 'error',
+        // checksVoidReturn.attributes:false silences only the benign JSX
+        // handler case (onClick={async () => …}); the dangerous misuses still fire.
+        '@typescript-eslint/no-misused-promises': [
+          'error',
+          { checksVoidReturn: { attributes: false } },
+        ],
+        '@typescript-eslint/await-thenable': 'error',
+      },
+    },
+  ];
+}
 
 const config = [
   {

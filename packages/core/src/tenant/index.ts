@@ -5,10 +5,12 @@ import { z } from 'zod';
  * to fan out queries across regional Firestore databases; the Next.js app
  * reads it but does not act on it (single-database mode for now).
  */
-export const databaseMapSchema = z.object({
-  database: z.string(),
-  region: z.string().optional(),
-}).passthrough();
+export const databaseMapSchema = z
+  .object({
+    database: z.string(),
+    region: z.string().optional(),
+  })
+  .passthrough();
 
 /**
  * GrupoEconomico — top-level tenant entity. Mirrors the Flutter package

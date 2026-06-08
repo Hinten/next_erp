@@ -4,11 +4,7 @@ import Link from 'next/link';
 import { useMemo } from 'react';
 import { deleteDoc, orderBy, query, where } from 'firebase/firestore';
 import { Badge, Button } from '@mantine/core';
-import {
-  INTEGRACAO_TIPO,
-  type Integracao,
-  integracaoSchema,
-} from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, type Integracao, integracaoSchema } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -83,8 +79,7 @@ export default function CanalBalcaoPage() {
           refreshOnComplete: true,
           confirm: {
             title: 'Excluir canais de balcão',
-            message:
-              'Canais excluídos não podem ser restaurados. Confirmar exclusão?',
+            message: 'Canais excluídos não podem ser restaurados. Confirmar exclusão?',
           },
           run: async (rows) => {
             await Promise.all(

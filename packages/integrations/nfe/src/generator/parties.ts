@@ -8,16 +8,10 @@
 import type { Cliente, Endereco, Filial } from '@delfrance/schemas';
 
 import { sanitizeNFeEmail, sanitizeNFeText } from '../sanitize';
-import type {
-  TEnderEmi,
-  TEndereco,
-  TNFe_infNFe_dest,
-  TNFe_infNFe_emit,
-} from '../types/nfe-schema';
+import type { TEnderEmi, TEndereco, TNFe_infNFe_dest, TNFe_infNFe_emit } from '../types/nfe-schema';
 import type { Ambiente } from './types';
 
-export const HOMOLOGACAO_XNOME =
-  'NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL';
+export const HOMOLOGACAO_XNOME = 'NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL';
 
 /**
  * CRT default — Simples Nacional. Phase A's tribute engine is SN-only
@@ -103,15 +97,11 @@ export function buildDest(
   }
   if (cliente.tipo === '2') {
     if (!cliente.idEstrangeiro) {
-      throw new NFePartiesError(
-        'cliente.tipo=2 (Estrangeiro) requires idEstrangeiro',
-      );
+      throw new NFePartiesError('cliente.tipo=2 (Estrangeiro) requires idEstrangeiro');
     }
     return { ...dest, idEstrangeiro: cliente.idEstrangeiro };
   }
-  throw new NFePartiesError(
-    `cliente.tipo='${cliente.tipo}' missing cpf_cnpj / idEstrangeiro`,
-  );
+  throw new NFePartiesError(`cliente.tipo='${cliente.tipo}' missing cpf_cnpj / idEstrangeiro`);
 }
 
 function buildEnderDest(endereco: Endereco): TEndereco {
@@ -134,11 +124,7 @@ function requireField<T>(name: string, value: T | null | undefined): NonNullable
   return value as NonNullable<T>;
 }
 
-function requireSanitized(
-  name: string,
-  value: string | null | undefined,
-  maxLen?: number,
-): string {
+function requireSanitized(name: string, value: string | null | undefined, maxLen?: number): string {
   const cleaned = sanitizeNFeText(value, maxLen);
   if (!cleaned) throw new NFePartiesError(`${name} is required (got blank after sanitize)`);
   return cleaned;

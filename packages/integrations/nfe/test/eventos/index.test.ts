@@ -37,9 +37,7 @@ describe('buildCancelamentoEvento', () => {
   });
 
   it('throws NFeEventoError when chNFe is not 44 digits', () => {
-    expect(() => buildCancelamentoEvento({ ...baseInput(), chNFe: '123' })).toThrow(
-      NFeEventoError,
-    );
+    expect(() => buildCancelamentoEvento({ ...baseInput(), chNFe: '123' })).toThrow(NFeEventoError);
   });
 
   it('emits the infEvento children in XSD order', () => {

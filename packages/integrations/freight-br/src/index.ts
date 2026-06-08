@@ -21,13 +21,17 @@ export class FreightBrNotConfiguredError extends Error {
   }
 }
 
-export function createFreightBrProvider(
-  config: FreightBrConfig,
-): FreightProvider {
+export function createFreightBrProvider(config: FreightBrConfig): FreightProvider {
   return {
     id: `freight-br-${config.provider}`,
-    quote: async () => { throw new FreightBrNotConfiguredError(); },
-    purchase: async () => { throw new FreightBrNotConfiguredError(); },
-    track: async () => { throw new FreightBrNotConfiguredError(); },
+    quote: async () => {
+      throw new FreightBrNotConfiguredError();
+    },
+    purchase: async () => {
+      throw new FreightBrNotConfiguredError();
+    },
+    track: async () => {
+      throw new FreightBrNotConfiguredError();
+    },
   };
 }

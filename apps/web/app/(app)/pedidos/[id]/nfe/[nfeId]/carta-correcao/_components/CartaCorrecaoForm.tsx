@@ -98,9 +98,9 @@ export function CartaCorrecaoForm({ pedidoId, nfeId }: { pedidoId: string; nfeId
         />
 
         <Alert color="yellow" variant="light">
-          A carta de correção não pode alterar valores/impostos (base de cálculo,
-          alíquota, quantidade, valor), dados que mudem remetente/destinatário, nem a
-          data de emissão ou de saída. Para esses casos, cancele e reemita a NF-e.
+          A carta de correção não pode alterar valores/impostos (base de cálculo, alíquota,
+          quantidade, valor), dados que mudem remetente/destinatário, nem a data de emissão ou de
+          saída. Para esses casos, cancele e reemita a NF-e.
         </Alert>
 
         <Group justify="flex-end">

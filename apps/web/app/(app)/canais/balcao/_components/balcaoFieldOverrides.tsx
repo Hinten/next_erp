@@ -54,21 +54,17 @@ function hexToInt(hex: string): number | null {
   const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
   const body = m?.[1];
   if (!body) return null;
-  const full = body.length === 3
-    ? body.split('').map((c) => c + c).join('')
-    : body;
+  const full =
+    body.length === 3
+      ? body
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : body;
   return Number.parseInt(full, 16);
 }
 
-function CorInput({
-  value,
-  onChange,
-  onBlur,
-  label,
-  hint,
-  disabled,
-  error,
-}: FieldRenderProps) {
+function CorInput({ value, onChange, onBlur, label, hint, disabled, error }: FieldRenderProps) {
   const hex = typeof value === 'number' ? intToHex(value) : '';
   return (
     <ColorInput

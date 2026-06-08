@@ -62,10 +62,7 @@ export function removerCharRestrito(input: string): string {
  * misrepresent the document, so leave those raw and let the XSD gate
  * reject them.
  */
-export function sanitizeNFeText(
-  input: string | null | undefined,
-  maxLen?: number,
-): string | null {
+export function sanitizeNFeText(input: string | null | undefined, maxLen?: number): string | null {
   if (input == null) return null;
   let cleaned = removerCharRestrito(removerAcentos(input)).trim();
   if (maxLen != null && cleaned.length > maxLen) {

@@ -32,10 +32,7 @@ export async function runTeardown(): Promise<void> {
  * tests write records straight to live collections (e.g. `clientes/`) with
  * `e2e-` prefixed ids so cleanup can sweep them without touching real data.
  */
-export async function cleanupE2EDocs(
-  collectionPath: string,
-  prefix: string,
-): Promise<number> {
+export async function cleanupE2EDocs(collectionPath: string, prefix: string): Promise<number> {
   const ref = db().collection(collectionPath);
   const snap = await ref.get();
   const toDelete = snap.docs.filter((d) => d.id.startsWith(prefix));

@@ -25,9 +25,7 @@ describe('produtoSchema', () => {
   });
 
   it('rejects negative crossdocking', () => {
-    expect(
-      produtoSchema.safeParse({ nome: 'X', crossdocking: -1 }).success,
-    ).toBe(false);
+    expect(produtoSchema.safeParse({ nome: 'X', crossdocking: -1 }).success).toBe(false);
   });
 
   it('passes complex nested fields through unchanged (passthrough)', () => {

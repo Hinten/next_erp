@@ -71,10 +71,21 @@ function detectStringKind(def: ZodInternalDef): FieldKind {
 function detectKind(inner: ZodTypeAny, override?: string): FieldKind {
   if (override) {
     const valid: FieldKind[] = [
-      'string', 'longText', 'email', 'tel', 'url',
-      'number', 'integer', 'currency',
-      'boolean', 'enum', 'date', 'reference',
-      'array', 'object', 'unknown',
+      'string',
+      'longText',
+      'email',
+      'tel',
+      'url',
+      'number',
+      'integer',
+      'currency',
+      'boolean',
+      'enum',
+      'date',
+      'reference',
+      'array',
+      'object',
+      'unknown',
     ];
     if ((valid as string[]).includes(override)) return override as FieldKind;
   }
@@ -106,9 +117,7 @@ function detectKind(inner: ZodTypeAny, override?: string): FieldKind {
   }
 }
 
-function deriveEnumValues(
-  inner: ZodTypeAny,
-): Array<{ value: string; label: string }> | undefined {
+function deriveEnumValues(inner: ZodTypeAny): Array<{ value: string; label: string }> | undefined {
   const def = defOf(inner);
   if (def.type !== 'enum' || !def.entries) return undefined;
   // Optional human-readable labels attached at the schema level via
@@ -173,17 +182,13 @@ export function extractFieldsFromSchema<T extends ZodRawShape>(
  *  - everything else → left out; required-without-default surfaces a real
  *    validation error at submit, which is the intended behavior.
  */
-export function buildEmptyDefaults(
-  descriptors: FieldDescriptor[],
-): Record<string, unknown> {
+export function buildEmptyDefaults(descriptors: FieldDescriptor[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const d of descriptors) {
     if (d.nullable) {
       out[d.key] = null;
     } else if (d.kind === 'object') {
-      out[d.key] = buildEmptyDefaults(
-        extractFieldsFromSchema(d.zodType as ZodObject<ZodRawShape>),
-      );
+      out[d.key] = buildEmptyDefaults(extractFieldsFromSchema(d.zodType as ZodObject<ZodRawShape>));
     } else if (
       d.kind === 'string' ||
       d.kind === 'longText' ||

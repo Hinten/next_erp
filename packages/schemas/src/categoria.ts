@@ -15,16 +15,9 @@ const PERM_CATEGORIA_DELETE = 1n << 13n;
  */
 export const categoriaSchema = z.object({
   nome: z.string().min(1).max(255).describe('Nome'),
-  nomeCompleto: z
-    .string()
-    .max(2000)
-    .nullable().default(null)
-    .describe('Nome completo'),
+  nomeCompleto: z.string().max(2000).nullable().default(null).describe('Nome completo'),
   permiteCadastro: z.boolean().default(true).describe('Permite cadastro'),
-  categoriaGoogleId: z
-    .string()
-    .nullable().default(null)
-    .describe('Google Product Category ID'),
+  categoriaGoogleId: z.string().nullable().default(null).describe('Google Product Category ID'),
   categoriaPaiOuterRef: z.unknown().nullable().default(null),
   timestamp: z.string().datetime().nullable().default(null),
   // System field — creation stays in `timestamp`; this is stamped by

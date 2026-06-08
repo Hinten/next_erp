@@ -117,7 +117,13 @@ export function labeledRow(
   const valW = Math.max(10, x + w - valX);
   const valClipped = clipToWidth(doc, value.toUpperCase(), valW, FONT, size);
   text(doc, label, x, y, { size, bold: true, lineBreak: false });
-  text(doc, valClipped, valX, y, { size, width: valW, align: 'right', upper: false, lineBreak: false });
+  text(doc, valClipped, valX, y, {
+    size,
+    width: valW,
+    align: 'right',
+    upper: false,
+    lineBreak: false,
+  });
 }
 
 /**

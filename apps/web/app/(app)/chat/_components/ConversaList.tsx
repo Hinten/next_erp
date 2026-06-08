@@ -15,11 +15,7 @@ import {
 import { useRouter } from 'next/navigation';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import {
-  ESTADO_CONVERSA_LABELS,
-  ORIGEM_LABELS,
-  type Conversa,
-} from '@delfrance/schemas';
+import { ESTADO_CONVERSA_LABELS, ORIGEM_LABELS, type Conversa } from '@delfrance/schemas';
 import { conversaCollection } from '@/lib/data/conversaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 
@@ -42,10 +38,7 @@ export function ConversaList({
   const router = useRouter();
   const q = useMemo(() => {
     const base = conversaCollection.ref(getFirebaseFirestore(), {});
-    return buildQuery(base, [
-      orderByField('ultima_modificacao', 'desc'),
-      limit(PAGE_SIZE),
-    ]);
+    return buildQuery(base, [orderByField('ultima_modificacao', 'desc'), limit(PAGE_SIZE)]);
   }, []);
 
   const { data, loading, error } = useSnapshot<Conversa>(q);
@@ -54,9 +47,7 @@ export function ConversaList({
     if (!data) return [];
     const needle = search.trim().toLowerCase();
     if (!needle) return data;
-    return data.filter(({ data: c }) =>
-      (c.nome ?? '').toLowerCase().includes(needle),
-    );
+    return data.filter(({ data: c }) => (c.nome ?? '').toLowerCase().includes(needle));
   }, [data, search]);
 
   return (
@@ -121,9 +112,7 @@ function ConversaRow({
       style={(theme) => ({
         borderRadius: theme.radius.sm,
         backgroundColor: active ? theme.colors.blue[0] : undefined,
-        borderLeft: active
-          ? `3px solid ${theme.colors.blue[6]}`
-          : '3px solid transparent',
+        borderLeft: active ? `3px solid ${theme.colors.blue[6]}` : '3px solid transparent',
       })}
     >
       <Stack gap={4}>

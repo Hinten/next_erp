@@ -15,7 +15,7 @@ vi.mock('@/lib/nfe/auth', async (importOriginal) => {
   return { ...actual, verifyCaller: vi.fn() };
 });
 vi.mock('@/lib/firebase/admin', () => ({
-  getAdminFirestore: vi.fn(() => ({} as never)),
+  getAdminFirestore: vi.fn(() => ({}) as never),
 }));
 vi.mock('@/lib/nfe/runtime', () => ({ getNFeRuntime: vi.fn() }));
 vi.mock('@/lib/nfe/orchestrator', async (importOriginal) => {
@@ -27,11 +27,7 @@ import { NextResponse } from 'next/server';
 
 import { ESTADO_NFE } from '@delfrance/schemas';
 import { verifyCaller } from '@/lib/nfe/auth';
-import {
-  emitirPedido,
-  NFeBlockedError,
-  NFePedidoNotFoundError,
-} from '@/lib/nfe/orchestrator';
+import { emitirPedido, NFeBlockedError, NFePedidoNotFoundError } from '@/lib/nfe/orchestrator';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
 
 import { POST } from '../../../../../app/api/nfe/emitir/route';

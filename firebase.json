@@ -5,9 +5,7 @@
       "target": "webchat",
       "public": "apps/webchat/out",
       "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
-      "rewrites": [
-        { "source": "**", "destination": "/index.html" }
-      ],
+      "rewrites": [{ "source": "**", "destination": "/index.html" }],
       "headers": [
         {
           "source": "/loader.js",

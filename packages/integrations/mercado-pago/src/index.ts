@@ -27,9 +27,7 @@ export class MercadoPagoNotConfiguredError extends Error {
   }
 }
 
-export function createMercadoPagoGateway(
-  _config: MercadoPagoConfig,
-): PaymentGateway {
+export function createMercadoPagoGateway(_config: MercadoPagoConfig): PaymentGateway {
   return {
     id: 'mercado-pago',
     createCharge: async () => {

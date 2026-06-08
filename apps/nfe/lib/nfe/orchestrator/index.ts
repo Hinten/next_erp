@@ -33,11 +33,7 @@ export * from './carta-correcao';
 export * from './inutilizar';
 export * from './danfe';
 
-import {
-  flattenAndValidate,
-  loadPagamentosFromSnapshot,
-  parseFreteFromPedido,
-} from './bundle';
+import { flattenAndValidate, loadPagamentosFromSnapshot, parseFreteFromPedido } from './bundle';
 import {
   buildCardFromCartao,
   buildCobrFromPagamentos,

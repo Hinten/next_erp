@@ -18,10 +18,7 @@ import {
 } from '@delfrance/integrations-nfe/http-provider';
 import { ESTADO_NFE } from '@delfrance/schemas';
 
-import {
-  notificationForNFeError,
-  notificationForNFeResult,
-} from './errors';
+import { notificationForNFeError, notificationForNFeResult } from './errors';
 
 function emitResult(over: Partial<NFeEmitResult> = {}): NFeEmitResult {
   return {

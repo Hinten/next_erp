@@ -16,11 +16,17 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "test:e2e": "turbo run test:e2e",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky",
     "clean": "turbo run clean && rm -rf node_modules .turbo"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
     "dotenv-cli": "^11.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.0",
+    "prettier": "^3.4.2",
     "tsx": "^4.21.0",
     "turbo": "^2.9.14",
     "typescript": "^6.0.3",

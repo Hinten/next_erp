@@ -40,9 +40,7 @@ describe('grupoDeVariacoesSchema', () => {
   });
 
   it('rejects a tipo value outside {0,1,2}', () => {
-    expect(
-      grupoDeVariacoesSchema.safeParse({ nome: 'X', tipo: 9 }).success,
-    ).toBe(false);
+    expect(grupoDeVariacoesSchema.safeParse({ nome: 'X', tipo: 9 }).success).toBe(false);
   });
 });
 

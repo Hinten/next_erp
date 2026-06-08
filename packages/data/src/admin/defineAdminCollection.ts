@@ -54,12 +54,7 @@ export interface AdminCollectionHandle<T extends z.ZodTypeAny> {
   /** Validate + write a full doc at `id` (overwrite). */
   set(db: Firestore, ctx: PathContext, id: string, data: unknown): Promise<void>;
   /** Validate (partial) + merge-write at `id`. */
-  merge(
-    db: Firestore,
-    ctx: PathContext,
-    id: string,
-    patch: Record<string, unknown>,
-  ): Promise<void>;
+  merge(db: Firestore, ctx: PathContext, id: string, patch: Record<string, unknown>): Promise<void>;
 }
 
 function lastSegment(path: string): string {
@@ -87,14 +82,10 @@ export function defineAdminCollection<T extends z.ZodTypeAny>(
 
   const ref = (db: Firestore, ctx: PathContext): CollectionReference =>
     db.collection(resolvePath(options.path, ctx));
-  const docRef = (
-    db: Firestore,
-    ctx: PathContext,
-    id: string,
-  ): DocumentReference => db.collection(resolvePath(options.path, ctx)).doc(id);
+  const docRef = (db: Firestore, ctx: PathContext, id: string): DocumentReference =>
+    db.collection(resolvePath(options.path, ctx)).doc(id);
 
-  const parse = (data: unknown): z.infer<T> =>
-    parseForWrite(options.schema, data);
+  const parse = (data: unknown): z.infer<T> => parseForWrite(options.schema, data);
   const parseMerge = (patch: Record<string, unknown>): Partial<z.infer<T>> =>
     parseMergePatch(options.schema, patch) as Partial<z.infer<T>>;
 
@@ -106,8 +97,7 @@ export function defineAdminCollection<T extends z.ZodTypeAny>(
     groupQuery: (db) => db.collectionGroup(groupId),
     parse,
     parseMerge,
-    parseRead: (raw, path) =>
-      parseSoftRead(options.schema, raw, path ?? options.path),
+    parseRead: (raw, path) => parseSoftRead(options.schema, raw, path ?? options.path),
     async add(db, ctx, data) {
       return ref(db, ctx).add(parse(data) as DocumentData);
     },

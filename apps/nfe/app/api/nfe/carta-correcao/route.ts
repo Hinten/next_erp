@@ -40,11 +40,7 @@ const bodySchema = z
     // The specific nfev4 doc id — a pedido may hold more than one NF-e.
     nfeId: z.string().min(1).max(200),
     // SEFAZ requires the correction text to be 15–1000 chars.
-    xCorrecao: z
-      .string()
-      .trim()
-      .min(15, 'xCorrecao deve ter ao menos 15 caracteres')
-      .max(1000),
+    xCorrecao: z.string().trim().min(15, 'xCorrecao deve ter ao menos 15 caracteres').max(1000),
   })
   // The builder sanitizes xCorrecao (drops SEFAZ-restricted chars, collapses
   // spaces) before emitting <xCorrecao>; validate the SANITIZED length so a

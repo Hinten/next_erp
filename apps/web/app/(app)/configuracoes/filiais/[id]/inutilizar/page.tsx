@@ -36,9 +36,8 @@ function InutilizarContent() {
         <Stack gap={4}>
           <Title order={2}>Inutilizar numeração — {nome}</Title>
           <Text c="dimmed" size="sm">
-            Inutiliza uma faixa de números de NF-e desta filial que nunca serão
-            usados (lacunas de numeração). A operação é síncrona e definitiva na
-            SEFAZ.
+            Inutiliza uma faixa de números de NF-e desta filial que nunca serão usados (lacunas de
+            numeração). A operação é síncrona e definitiva na SEFAZ.
           </Text>
         </Stack>
         <Anchor component={Link} href="/configuracoes/filiais" size="sm">

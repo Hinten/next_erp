@@ -21,22 +21,16 @@ describe('pagamentoSchema', () => {
   });
 
   it('rejects parcelas < 1', () => {
-    expect(
-      pagamentoSchema.safeParse({ valor: 100, parcelas: 0 }).success,
-    ).toBe(false);
+    expect(pagamentoSchema.safeParse({ valor: 100, parcelas: 0 }).success).toBe(false);
   });
 
   it('rejects unknown forma_de_pagamento integers', () => {
-    expect(
-      pagamentoSchema.safeParse({ valor: 100, forma_de_pagamento: 7 }).success,
-    ).toBe(false);
+    expect(pagamentoSchema.safeParse({ valor: 100, forma_de_pagamento: 7 }).success).toBe(false);
   });
 
   it('accepts every status from STATUS_PAGAMENTO', () => {
     for (const s of Object.values(STATUS_PAGAMENTO)) {
-      expect(
-        pagamentoSchema.safeParse({ valor: 100, status_pagamento: s }).success,
-      ).toBe(true);
+      expect(pagamentoSchema.safeParse({ valor: 100, status_pagamento: s }).success).toBe(true);
     }
   });
 
@@ -52,9 +46,7 @@ describe('statusToEstadoPedido', () => {
     expect(statusToEstadoPedido(STATUS_PAGAMENTO.aprovado)).toBe('pago');
   });
   it('recusado → pagamentoNaoRealizado', () => {
-    expect(statusToEstadoPedido(STATUS_PAGAMENTO.recusado)).toBe(
-      'pagamentoNaoRealizado',
-    );
+    expect(statusToEstadoPedido(STATUS_PAGAMENTO.recusado)).toBe('pagamentoNaoRealizado');
   });
   it('cancelado → cancelado', () => {
     expect(statusToEstadoPedido(STATUS_PAGAMENTO.cancelado)).toBe('cancelado');
@@ -78,13 +70,9 @@ describe('metodoPagamentoSchema', () => {
     expect(out.hasLinkPagamento).toBe(false);
   });
   it('rejects unknown tipo', () => {
-    expect(
-      metodoPagamentoSchema.safeParse({ tipo: 999, nome: 'X' }).success,
-    ).toBe(false);
+    expect(metodoPagamentoSchema.safeParse({ tipo: 999, nome: 'X' }).success).toBe(false);
   });
   it('rejects empty nome', () => {
-    expect(metodoPagamentoSchema.safeParse({ tipo: 1, nome: '' }).success).toBe(
-      false,
-    );
+    expect(metodoPagamentoSchema.safeParse({ tipo: 1, nome: '' }).success).toBe(false);
   });
 });

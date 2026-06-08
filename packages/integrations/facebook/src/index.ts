@@ -20,17 +20,25 @@ export class FacebookNotConfiguredError extends Error {
   }
 }
 
-export function createFacebookChannel(
-  _config: FacebookConfig,
-): MarketplaceChannel {
+export function createFacebookChannel(_config: FacebookConfig): MarketplaceChannel {
   return {
     id: 'facebook',
-    syncProducts: async () => { throw new FacebookNotConfiguredError(); },
-    pullOrders: async () => { throw new FacebookNotConfiguredError(); },
-    pushTracking: async () => { throw new FacebookNotConfiguredError(); },
+    syncProducts: async () => {
+      throw new FacebookNotConfiguredError();
+    },
+    pullOrders: async () => {
+      throw new FacebookNotConfiguredError();
+    },
+    pushTracking: async () => {
+      throw new FacebookNotConfiguredError();
+    },
     oauthFlow: {
-      start: () => { throw new FacebookNotConfiguredError(); },
-      callback: async () => { throw new FacebookNotConfiguredError(); },
+      start: () => {
+        throw new FacebookNotConfiguredError();
+      },
+      callback: async () => {
+        throw new FacebookNotConfiguredError();
+      },
     },
   };
 }

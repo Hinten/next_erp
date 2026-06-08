@@ -1,4 +1,4 @@
-import base from '@delfrance/config-eslint';
+import base, { prettier, typeAware } from '@delfrance/config-eslint';
 import next from 'eslint-config-next';
 
 // Rule A — no multi-arg `console.*` in NF-e code paths. The single-arg
@@ -23,8 +23,7 @@ const ruleAConsole = {
 // Rule B — `NFE_CERT_*` env vars may only be READ inside the unified
 // loader at `packages/integrations/nfe/src/cert/index.ts`.
 const ruleBCertEnv = {
-  selector:
-    'MemberExpression[property.name=/^NFE_CERT_(BASE64|PATH|PASSWORD)$/]',
+  selector: 'MemberExpression[property.name=/^NFE_CERT_(BASE64|PATH|PASSWORD)$/]',
   message:
     'NFE_CERT_BASE64 / NFE_CERT_PATH / NFE_CERT_PASSWORD may only be ' +
     'read inside packages/integrations/nfe/src/cert/index.ts. Call ' +
@@ -61,6 +60,8 @@ const ruleCNoRawFirestoreRefs = [
 const config = [
   ...base,
   ...next,
+  // registerPlugin: false — eslint-config-next already registers @typescript-eslint.
+  ...typeAware(import.meta.dirname, { registerPlugin: false }),
   {
     rules: {
       'react-hooks/set-state-in-effect': 'warn',
@@ -80,12 +81,7 @@ const config = [
     files: ['lib/nfe/**/*.ts', 'app/api/nfe/**/*.ts'],
     ignores: ['**/*.test.ts'],
     rules: {
-      'no-restricted-syntax': [
-        'error',
-        ruleAConsole,
-        ruleBCertEnv,
-        ...ruleCNoRawFirestoreRefs,
-      ],
+      'no-restricted-syntax': ['error', ruleAConsole, ruleBCertEnv, ...ruleCNoRawFirestoreRefs],
     },
   },
   // Non-NF-e app paths — Rule B only. Console-* is unrestricted outside
@@ -98,6 +94,9 @@ const config = [
       'no-restricted-syntax': ['error', ruleBCertEnv, ...ruleCNoRawFirestoreRefs],
     },
   },
+  // eslint-config-prettier LAST — disables stylistic rules that conflict with
+  // Prettier (formatting is owned by `prettier.config.mjs` / `pnpm format`).
+  prettier,
 ];
 
 export default config;

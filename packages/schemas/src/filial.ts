@@ -23,15 +23,8 @@ export const filialSchema = z.object({
     .describe(
       '{"label":"CNAE","hint":"Classificação Nacional de Atividades Econômicas, informado pelo contador"}',
     ),
-  cnpj: z
-    .string()
-    .max(18)
-    .regex(/^\d*$/, 'apenas números')
-    .describe('CNPJ'),
-  ie: z
-    .string()
-    .regex(/^\d*$/, 'apenas números')
-    .describe('Inscrição Estadual'),
+  cnpj: z.string().max(18).regex(/^\d*$/, 'apenas números').describe('CNPJ'),
+  ie: z.string().regex(/^\d*$/, 'apenas números').describe('Inscrição Estadual'),
   iest: z
     .string()
     .regex(/^\d*$/, 'apenas números')
@@ -39,11 +32,7 @@ export const filialSchema = z.object({
     .describe(
       '{"label":"IEST","hint":"Inscrição Estadual do substituto tributário, quando houver"}',
     ),
-  imun: z
-    .string()
-    .regex(/^\d*$/, 'apenas números')
-    .nullable()
-    .describe('Inscrição Municipal'),
+  imun: z.string().regex(/^\d*$/, 'apenas números').nullable().describe('Inscrição Municipal'),
   sede: enderecoSchema.describe('Endereço sede'),
   timestamp: z.string().datetime().nullable().optional(),
 });

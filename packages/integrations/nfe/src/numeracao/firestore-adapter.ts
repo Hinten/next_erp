@@ -115,36 +115,33 @@ export function nfeConfigStoreFromFirestore(
   const refFor = (filialId: string): AdminDocRefLike =>
     fs.doc(`filiais/${filialId}/nfeconfig/${configDocId}`);
 
-  const sleep = (ms: number): Promise<void> =>
-    new Promise((resolve) => setTimeout(resolve, ms));
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
   return {
     async runTransaction<T>(fn: (tx: NFeConfigTx) => Promise<T>): Promise<T> {
       let lastErr: unknown;
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-          return await fs.runTransaction(
-            async (txAdmin) => {
-              const tx: NFeConfigTx = {
-                async get(filialId) {
-                  const snap = await txAdmin.get(refFor(filialId));
-                  if (!snap.exists) return null;
-                  const data = snap.data();
-                  if (!data) return null;
-                  // Re-validate at the boundary — the Firestore document is
-                  // the ground truth, but we want a typed object internally.
-                  return nfeConfigSchema.parse(data) as NFeConfig;
-                },
-                set(filialId, next) {
-                  txAdmin.set(refFor(filialId), {
-                    ...next,
-                    timestamp: new Date().toISOString(),
-                  });
-                },
-              };
-              return fn(tx);
-            },
-          );
+          return await fs.runTransaction(async (txAdmin) => {
+            const tx: NFeConfigTx = {
+              async get(filialId) {
+                const snap = await txAdmin.get(refFor(filialId));
+                if (!snap.exists) return null;
+                const data = snap.data();
+                if (!data) return null;
+                // Re-validate at the boundary — the Firestore document is
+                // the ground truth, but we want a typed object internally.
+                return nfeConfigSchema.parse(data) as NFeConfig;
+              },
+              set(filialId, next) {
+                txAdmin.set(refFor(filialId), {
+                  ...next,
+                  timestamp: new Date().toISOString(),
+                });
+              },
+            };
+            return fn(tx);
+          });
         } catch (err) {
           lastErr = err;
           if (!isFirestoreAbortedError(err)) throw err;

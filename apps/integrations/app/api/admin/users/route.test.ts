@@ -20,10 +20,7 @@ vi.mock('@/lib/firebase/admin', () => ({
   getAdminFirestore: () => ({
     collection: (name: string) => ({
       doc: (id: string) => ({
-        get:
-          name === 'cargos'
-            ? () => mocks.cargoGet(id)
-            : async () => ({ data: () => undefined }),
+        get: name === 'cargos' ? () => mocks.cargoGet(id) : async () => ({ data: () => undefined }),
         set:
           name === 'usuarios'
             ? (data: unknown) => mocks.usuarioSet(id, data)
@@ -58,12 +55,7 @@ const VALID_BODY = {
 // Caller holds configuracoes.read|write AND cliente.read|write — enough to
 // grant the cargo used in the happy-path test (which grants cliente.read|write).
 const CALLER_CLAIM = {
-  permissions: (
-    (1n << 41n) |
-    (1n << 40n) |
-    (1n << 1n) |
-    (1n << 0n)
-  ).toString(),
+  permissions: ((1n << 41n) | (1n << 40n) | (1n << 1n) | (1n << 0n)).toString(),
 };
 
 const SU_CLAIM = {
@@ -81,9 +73,7 @@ describe('POST /api/admin/users', () => {
   });
 
   it('rejects invalid JSON bodies', async () => {
-    const res = await POST(
-      req('not json', { authorization: 'Bearer xyz' }),
-    );
+    const res = await POST(req('not json', { authorization: 'Bearer xyz' }));
     expect(res.status).toBe(400);
   });
 
@@ -123,10 +113,7 @@ describe('POST /api/admin/users', () => {
     mocks.verifyIdToken.mockResolvedValue(CALLER_CLAIM);
     mocks.cargoGet.mockResolvedValue({ data: () => undefined });
     const res = await POST(
-      req(
-        { ...VALID_BODY, cargos: [], isSuperUser: true },
-        { authorization: 'Bearer t' },
-      ),
+      req({ ...VALID_BODY, cargos: [], isSuperUser: true }, { authorization: 'Bearer t' }),
     );
     expect(res.status).toBe(403);
     expect(mocks.createUser).not.toHaveBeenCalled();
@@ -140,10 +127,7 @@ describe('POST /api/admin/users', () => {
     mocks.usuarioSet.mockResolvedValue(undefined);
 
     const res = await POST(
-      req(
-        { ...VALID_BODY, cargos: [], isSuperUser: true },
-        { authorization: 'Bearer t' },
-      ),
+      req({ ...VALID_BODY, cargos: [], isSuperUser: true }, { authorization: 'Bearer t' }),
     );
     expect(res.status).toBe(201);
     expect(mocks.setCustomUserClaims).toHaveBeenCalledWith('uid_su', {

@@ -37,11 +37,7 @@ export function buildNFeProc(
   protNFe: TProtNFe,
   versao: '4.00' = '4.00',
 ): string {
-  const protXml = serializeFragment(
-    'TProtNFe',
-    'protNFe',
-    protNFe as unknown as XmlValue,
-  );
+  const protXml = serializeFragment('TProtNFe', 'protNFe', protNFe as unknown as XmlValue);
   const nfeInner = stripXmlDeclaration(signedNfeXml).trim();
   return (
     '<?xml version="1.0" encoding="UTF-8"?>' +

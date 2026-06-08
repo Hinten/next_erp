@@ -24,8 +24,7 @@
   }
 
   var widgetUrl =
-    (script && script.getAttribute('data-widget-url')) ||
-    new URL('.', script.src).href;
+    (script && script.getAttribute('data-widget-url')) || new URL('.', script.src).href;
 
   if (window.__delfranceWebchatMounted) return;
   window.__delfranceWebchatMounted = true;

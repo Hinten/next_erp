@@ -92,7 +92,8 @@ function unescapeText(s: string): string {
     .replace(/&amp;/g, '&');
 }
 
-const localName = (tag: string): string => (tag.includes(':') ? tag.slice(tag.indexOf(':') + 1) : tag);
+const localName = (tag: string): string =>
+  tag.includes(':') ? tag.slice(tag.indexOf(':') + 1) : tag;
 
 /** Minimal XML parser — enough for SEFAZ payloads (no DTD). */
 function parseXml(text: string): XNode {

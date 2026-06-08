@@ -14,9 +14,8 @@ export function PlaceholderPage({ title, description }: PlaceholderPageProps) {
     <Stack>
       <PageHeader title={title} description={description} />
       <Alert color="yellow" title="Em construção">
-        Esta tela ainda não foi implementada no rewrite. Ela está listada no menu
-        para refletir a paridade com o app Flutter e será desenvolvida em uma
-        próxima fase.
+        Esta tela ainda não foi implementada no rewrite. Ela está listada no menu para refletir a
+        paridade com o app Flutter e será desenvolvida em uma próxima fase.
       </Alert>
     </Stack>
   );

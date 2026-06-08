@@ -53,9 +53,7 @@ function findRepoRoot(startDir) {
     if (existsSync(resolve(dir, 'pnpm-workspace.yaml'))) return dir;
     dir = dirname(dir);
   }
-  throw new Error(
-    `@delfrance/config-vitest: could not find pnpm-workspace.yaml above ${startDir}`,
-  );
+  throw new Error(`@delfrance/config-vitest: could not find pnpm-workspace.yaml above ${startDir}`);
 }
 
 /**

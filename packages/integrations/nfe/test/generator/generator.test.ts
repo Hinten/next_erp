@@ -1,11 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import forge from 'node-forge';
-import type {
-  Cliente,
-  Endereco,
-  Filial,
-  Operacao,
-} from '@delfrance/schemas';
+import type { Cliente, Endereco, Filial, Operacao } from '@delfrance/schemas';
 
 import { signNFe } from '../../src/sign';
 import type { NFeCertificate } from '../../src/cert';
@@ -119,7 +114,8 @@ const ITEM: GeneratorItem = {
   uTrib: 'UN',
   qTrib: 1,
   vUnTrib: 1500,
-  impostoXml: '<imposto><ICMS><ICMS00><orig>0</orig><CST>00</CST><modBC>3</modBC><vBC>1500.00</vBC><pICMS>18.00</pICMS><vICMS>270.00</vICMS></ICMS00></ICMS></imposto>',
+  impostoXml:
+    '<imposto><ICMS><ICMS00><orig>0</orig><CST>00</CST><modBC>3</modBC><vBC>1500.00</vBC><pICMS>18.00</pICMS><vICMS>270.00</vICMS></ICMS00></ICMS></imposto>',
 };
 
 const TOTAL_XML =
@@ -127,8 +123,7 @@ const TOTAL_XML =
 
 const TRANSP_XML = '<transp><modFrete>9</modFrete></transp>';
 
-const PAG_XML =
-  '<pag><detPag><tPag>03</tPag><vPag>1500.00</vPag></detPag></pag>';
+const PAG_XML = '<pag><detPag><tPag>03</tPag><vPag>1500.00</vPag></detPag></pag>';
 
 const BASE_INPUT: GeneratorInput = {
   ambiente: 'homologacao',

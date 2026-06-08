@@ -95,18 +95,13 @@ describe('computeBackoffDelay', () => {
 describe('retryAsync', () => {
   it('returns on the first successful attempt', async () => {
     const fn = vi.fn().mockResolvedValue('ok');
-    await expect(
-      retryAsync(fn, { isRetryable: isRetryableFirestoreError }),
-    ).resolves.toBe('ok');
+    await expect(retryAsync(fn, { isRetryable: isRetryableFirestoreError })).resolves.toBe('ok');
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
   it('retries a transient failure then resolves', async () => {
     vi.useFakeTimers();
-    const fn = vi
-      .fn()
-      .mockRejectedValueOnce(makeErr('unavailable'))
-      .mockResolvedValue('ok');
+    const fn = vi.fn().mockRejectedValueOnce(makeErr('unavailable')).mockResolvedValue('ok');
     const promise = retryAsync(fn, { isRetryable: isRetryableFirestoreError });
     await vi.runAllTimersAsync();
     await expect(promise).resolves.toBe('ok');
@@ -132,9 +127,7 @@ describe('retryAsync', () => {
   it('rethrows a non-retryable error immediately without retrying', async () => {
     const err = makeErr('permission-denied');
     const fn = vi.fn().mockRejectedValue(err);
-    await expect(
-      retryAsync(fn, { isRetryable: isRetryableFirestoreError }),
-    ).rejects.toBe(err);
+    await expect(retryAsync(fn, { isRetryable: isRetryableFirestoreError })).rejects.toBe(err);
     expect(fn).toHaveBeenCalledTimes(1);
   });
 

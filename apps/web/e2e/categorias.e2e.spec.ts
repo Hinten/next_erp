@@ -43,11 +43,7 @@ test.describe.serial('Categorias e2e — TableView / ObjectView', () => {
       seedCategorias(prefix, 7),
       // Pre-compile the routes this suite drives so the Next dev cold-compile
       // cost isn't charged to the first assertion (was flaking on 5s expects).
-      warmRoutes(browser, [
-        '/categorias',
-        '/categorias/novo',
-        '/categorias/__aquecimento__',
-      ]),
+      warmRoutes(browser, ['/categorias', '/categorias/novo', '/categorias/__aquecimento__']),
     ]);
   });
 
@@ -116,17 +112,13 @@ test.describe.serial('Categorias e2e — TableView / ObjectView', () => {
     // explicitly: a plain /categorias/[^/]+$ also matches the /categorias/novo
     // we're already on, so it would resolve before the create even commits.
     await page.waitForURL(
-      (url) =>
-        /^\/categorias\/[^/]+$/.test(url.pathname) &&
-        url.pathname !== '/categorias/novo',
+      (url) => /^\/categorias\/[^/]+$/.test(url.pathname) && url.pathname !== '/categorias/novo',
       { timeout: 15_000 },
     );
     // Confirm the doc is actually committed (Admin SDK reads are strongly
     // consistent) before loading the list, so the list query can't race the
     // write. A failure here localises the bug to the create itself.
-    await expect
-      .poll(() => docExistsByName('categorias', nome), { timeout: 15_000 })
-      .toBe(true);
+    await expect.poll(() => docExistsByName('categorias', nome), { timeout: 15_000 }).toBe(true);
 
     await page.goto('/categorias');
     await applyTextFilter(page, 'Nome', nome);
@@ -170,9 +162,7 @@ test.describe.serial('Categorias e2e — TableView / ObjectView', () => {
     await page.waitForURL(/\/categorias$/, { timeout: 15_000 });
 
     await page.goto(`/categorias/${row(5)}`);
-    await expect(
-      page.getByLabel('Nome completo', { exact: true }),
-    ).toHaveValue('editado-e2e');
+    await expect(page.getByLabel('Nome completo', { exact: true })).toHaveValue('editado-e2e');
   });
 
   test('edits a categoria and continues editing', async ({ page }) => {
@@ -221,8 +211,6 @@ test.describe.serial('Categorias e2e — TableView / ObjectView', () => {
     await page.getByRole('checkbox', { name: 'Nome completo' }).uncheck();
     await page.keyboard.press('Escape');
     await page.reload();
-    await expect(
-      page.getByRole('columnheader', { name: /Nome completo/ }),
-    ).toHaveCount(0);
+    await expect(page.getByRole('columnheader', { name: /Nome completo/ })).toHaveCount(0);
   });
 });

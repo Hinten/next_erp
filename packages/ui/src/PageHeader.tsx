@@ -26,11 +26,7 @@ export function PageHeader({ title, description, actions }: PageHeaderProps) {
   return (
     <Group justify="space-between" align="flex-end" wrap="nowrap">
       <Stack gap={2}>
-        {typeof title === 'string' ? (
-          <Title order={2}>{title}</Title>
-        ) : (
-          title
-        )}
+        {typeof title === 'string' ? <Title order={2}>{title}</Title> : title}
         {description && (
           <Text c="dimmed" size="sm">
             {description}

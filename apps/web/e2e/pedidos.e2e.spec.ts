@@ -1,10 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { db } from '@delfrance/test-fixtures';
-import {
-  cleanupPedidoFixtures,
-  e2ePrefix,
-  seedPedidoFixtures,
-} from './_helpers/seed-data';
+import { cleanupPedidoFixtures, e2ePrefix, seedPedidoFixtures } from './_helpers/seed-data';
 import { fillField } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
@@ -33,10 +29,7 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
     fixtures = await seedPedidoFixtures(prefix);
-    await warmRoutes(browser, [
-      '/pedidos',
-      '/pedidos/novo',
-    ]);
+    await warmRoutes(browser, ['/pedidos', '/pedidos/novo']);
   });
 
   test.afterAll(async () => {
@@ -47,16 +40,16 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await page.goto('/pedidos');
     await page.getByRole('link', { name: 'Novo pedido' }).click();
     await expect(page).toHaveURL(/\/pedidos\/novo$/);
-    await expect(
-      page.getByRole('heading', { name: 'Novo pedido' }),
-    ).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole('heading', { name: 'Novo pedido' })).toBeVisible({
+      timeout: 15_000,
+    });
   });
 
   test('renders /pedidos/novo with empty defaults', async ({ page }) => {
     await page.goto('/pedidos/novo');
-    await expect(
-      page.getByRole('heading', { name: 'Novo pedido' }),
-    ).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole('heading', { name: 'Novo pedido' })).toBeVisible({
+      timeout: 15_000,
+    });
     await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible();
     await expect(page.getByRole('tab', { name: 'Fiscal' })).toBeVisible();
     await expect(page.getByRole('tab', { name: 'Frete' })).toBeVisible();
@@ -68,34 +61,22 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await page.goto('/pedidos/novo');
 
     // Cliente picker — open dropdown, type the prefix, choose first row.
-    await page
-      .getByPlaceholder('Buscar cliente por nome…')
-      .fill(fixtures.clienteNome);
+    await page.getByPlaceholder('Buscar cliente por nome…').fill(fixtures.clienteNome);
     await page
       .getByRole('option', { name: new RegExp(fixtures.clienteNome) })
       .first()
       .click();
 
     // Operação picker — Mantine searchable Select exposes role="combobox".
-    await page
-      .getByRole('combobox', { name: 'Operação fiscal', exact: true })
-      .click();
-    await page
-      .getByRole('option', { name: fixtures.operacaoNome })
-      .click();
+    await page.getByRole('combobox', { name: 'Operação fiscal', exact: true }).click();
+    await page.getByRole('option', { name: fixtures.operacaoNome }).click();
 
     // Integração picker — same shape.
-    await page
-      .getByRole('combobox', { name: 'Integração', exact: true })
-      .click();
-    await page
-      .getByRole('option', { name: fixtures.integracaoNome })
-      .click();
+    await page.getByRole('combobox', { name: 'Integração', exact: true }).click();
+    await page.getByRole('option', { name: fixtures.integracaoNome }).click();
 
     // Add one item via the produto picker. Trigger search then pick.
-    await page
-      .getByPlaceholder('Adicionar item por busca…')
-      .fill(fixtures.produtoNome);
+    await page.getByPlaceholder('Adicionar item por busca…').fill(fixtures.produtoNome);
     await page
       .getByRole('option', { name: new RegExp(fixtures.produtoNome) })
       .first()
@@ -120,10 +101,9 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await page.getByRole('button', { name: 'Criar' }).click();
 
     // After create we redirect to /pedidos/{id}/editar.
-    await page.waitForURL(
-      (url) => /\/pedidos\/[^/]+\/editar$/.test(url.pathname),
-      { timeout: 30_000 },
-    );
+    await page.waitForURL((url) => /\/pedidos\/[^/]+\/editar$/.test(url.pathname), {
+      timeout: 30_000,
+    });
 
     const match = page.url().match(/\/pedidos\/([^/]+)\/editar/);
     if (!match) throw new Error(`Unexpected URL after create: ${page.url()}`);
@@ -134,10 +114,7 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await expect
       .poll(
         async () => {
-          const snap = await db()
-            .collection('pedidos')
-            .doc(state.pedidoId!)
-            .get();
+          const snap = await db().collection('pedidos').doc(state.pedidoId!).get();
           return snap.exists;
         },
         { timeout: 15_000 },
@@ -145,9 +122,7 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
       .toBe(true);
   });
 
-  test('edit page reloads the just-created pedido and persists observações', async ({
-    page,
-  }) => {
+  test('edit page reloads the just-created pedido and persists observações', async ({ page }) => {
     test.skip(!state.pedidoId, 'Create step did not produce a pedido id.');
     const pedidoId = state.pedidoId!;
 
@@ -161,9 +136,7 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     // Observations textarea — fill, save, reload, assert.
     const obs = `${prefix}-observacao-${Date.now()}`;
     await fillField(page, 'Observações internas', obs);
-    await page
-      .getByRole('button', { name: 'Salvar alterações' })
-      .click();
+    await page.getByRole('button', { name: 'Salvar alterações' }).click();
 
     // Saving an existing pedido redirects back to the list.
     await page.waitForURL((url) => /\/pedidos$/.test(url.pathname), {
@@ -171,8 +144,6 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     });
 
     await page.goto(`/pedidos/${pedidoId}/editar`);
-    await expect(
-      page.getByLabel('Observações internas', { exact: true }),
-    ).toHaveValue(obs);
+    await expect(page.getByLabel('Observações internas', { exact: true })).toHaveValue(obs);
   });
 });

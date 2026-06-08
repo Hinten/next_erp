@@ -226,7 +226,10 @@ export async function cartaCorrecaoNFe(
   // from <evento> on the wire; add it explicitly so the standalone fragment
   // validates (e110110 is elementFormDefault=qualified).
   const detEvento = buildCCeDetEvento(args);
-  await validateXsd('detEventoCCe', detEvento.replace('<detEvento', `<detEvento xmlns="${NFE_NS}"`));
+  await validateXsd(
+    'detEventoCCe',
+    detEvento.replace('<detEvento', `<detEvento xmlns="${NFE_NS}"`),
+  );
   const eventoXml = buildCCeEvento({ ...args, tpAmb: call.tpAmb });
   const signedEventoXml = signEvento(eventoXml, call.cert);
   const envEventoXml = buildEnvEvento(signedEventoXml);

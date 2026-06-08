@@ -74,12 +74,7 @@ export const bandeiraCartaoSchema = z.object({
   tarifa: z.number().min(0).default(0).describe('Tarifa (%)'),
   tarifaFixa: z.number().min(0).default(0).describe('Tarifa fixa'),
   maxParcelas: z.number().int().min(1).default(1).describe('Máximo de parcelas'),
-  prazoRecebimento: z
-    .number()
-    .int()
-    .min(0)
-    .default(0)
-    .describe('Prazo de recebimento (dias)'),
+  prazoRecebimento: z.number().int().min(0).default(0).describe('Prazo de recebimento (dias)'),
   dataCadastro: z.string().datetime().nullable().optional(),
   ultimaModificacao: z.string().datetime().nullable().optional(),
 });

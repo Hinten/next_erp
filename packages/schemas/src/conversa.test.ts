@@ -71,12 +71,8 @@ describe('podeReabrirConversa', () => {
   it('returns true for finalizadas/canceladas', () => {
     expect(podeReabrirConversa(ESTADO_CONVERSA.atendimentoFinalizado)).toBe(true);
     expect(podeReabrirConversa(ESTADO_CONVERSA.atendimentoCancelado)).toBe(true);
-    expect(
-      podeReabrirConversa(ESTADO_CONVERSA.atendimentoCanceladoPeloCliente),
-    ).toBe(true);
-    expect(
-      podeReabrirConversa(ESTADO_CONVERSA.atendimentoCanceladoPeloAtendente),
-    ).toBe(true);
+    expect(podeReabrirConversa(ESTADO_CONVERSA.atendimentoCanceladoPeloCliente)).toBe(true);
+    expect(podeReabrirConversa(ESTADO_CONVERSA.atendimentoCanceladoPeloAtendente)).toBe(true);
     expect(podeReabrirConversa(ESTADO_CONVERSA.finalizadoSemAtendimento)).toBe(true);
   });
 

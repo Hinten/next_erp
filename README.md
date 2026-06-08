@@ -8,13 +8,13 @@ Open-source ERP for business process automation: clients, products, orders, paym
 
 Multi-app Turborepo monorepo split by **persona/runtime**, not by ERP domain:
 
-| App | Persona | Runtime | Hosting |
-|---|---|---|---|
-| `apps/web/` | Internal staff (auth) + customer-facing public pages | SSR | Firebase App Hosting |
-| `apps/integrations/` | External systems (webhooks, OAuth callbacks) | SSR API-only | Firebase App Hosting |
-| `apps/webchat/` | End-visitor on tenant's site | Static export | Firebase Hosting |
-| `apps/docs/` | Contributors / users | Astro Starlight | external (TBD) |
-| `apps/example/` | OSS demo | Static / SSR | external |
+| App                  | Persona                                              | Runtime         | Hosting              |
+| -------------------- | ---------------------------------------------------- | --------------- | -------------------- |
+| `apps/web/`          | Internal staff (auth) + customer-facing public pages | SSR             | Firebase App Hosting |
+| `apps/integrations/` | External systems (webhooks, OAuth callbacks)         | SSR API-only    | Firebase App Hosting |
+| `apps/webchat/`      | End-visitor on tenant's site                         | Static export   | Firebase Hosting     |
+| `apps/docs/`         | Contributors / users                                 | Astro Starlight | external (TBD)       |
+| `apps/example/`      | OSS demo                                             | Static / SSR    | external             |
 
 Heavy webhook work is dispatched from `apps/integrations` to **Cloud Functions** (Node 20 + the existing Python functions).
 
@@ -56,9 +56,9 @@ Brazilian features (NFe, Mercado Pago, marketplaces) are **opt-in plugins** behi
 # Useful Commands:
 
 pnpm --filter @delfrance/test-fixtures seed:pedidos
-pnpm --filter @delfrance/test-fixtures seed:nfe              # varied estados (all NFCell branches)
-pnpm --filter @delfrance/test-fixtures seed:nfe --estado=a   # all → Aprovada (run again with n, e, etc.)
-pnpm --filter @delfrance/test-fixtures seed:nfe --clean      # remove NFe docs, keep pedidos
+pnpm --filter @delfrance/test-fixtures seed:nfe # varied estados (all NFCell branches)
+pnpm --filter @delfrance/test-fixtures seed:nfe --estado=a # all → Aprovada (run again with n, e, etc.)
+pnpm --filter @delfrance/test-fixtures seed:nfe --clean # remove NFe docs, keep pedidos
 
 ## Contributing
 

@@ -29,9 +29,7 @@ describe('filialSchema', () => {
   });
 
   it('rejects empty razaoSocial', () => {
-    expect(
-      filialSchema.safeParse({ ...MINIMAL_FILIAL, razaoSocial: '' }).success,
-    ).toBe(false);
+    expect(filialSchema.safeParse({ ...MINIMAL_FILIAL, razaoSocial: '' }).success).toBe(false);
   });
 
   it('rejects razaoSocial > 1000 chars', () => {
@@ -62,12 +60,8 @@ describe('filialSchema', () => {
   });
 
   it('rejects non-digit cnpj/ie/iest/imun', () => {
-    expect(
-      filialSchema.safeParse({ ...MINIMAL_FILIAL, cnpj: '12.345.678' }).success,
-    ).toBe(false);
-    expect(
-      filialSchema.safeParse({ ...MINIMAL_FILIAL, ie: 'ABCD' }).success,
-    ).toBe(false);
+    expect(filialSchema.safeParse({ ...MINIMAL_FILIAL, cnpj: '12.345.678' }).success).toBe(false);
+    expect(filialSchema.safeParse({ ...MINIMAL_FILIAL, ie: 'ABCD' }).success).toBe(false);
   });
 
   // Regression: Firebase JS SDK v12 rejects `undefined` in addDoc/setDoc.

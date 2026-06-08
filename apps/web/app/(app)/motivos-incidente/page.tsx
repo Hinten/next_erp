@@ -36,15 +36,12 @@ export default function MotivosIncidentePage() {
           refreshOnComplete: true,
           confirm: {
             title: 'Excluir motivos de incidente',
-            message:
-              'Motivos excluídos não podem ser restaurados. Confirmar exclusão?',
+            message: 'Motivos excluídos não podem ser restaurados. Confirmar exclusão?',
           },
           run: async (rows) => {
             const db = getFirebaseFirestore();
             await Promise.all(
-              rows.map((r) =>
-                deleteDoc(motivoIncidenteCollection.docRef(db, {}, r.id)),
-              ),
+              rows.map((r) => deleteDoc(motivoIncidenteCollection.docRef(db, {}, r.id))),
             );
           },
         },

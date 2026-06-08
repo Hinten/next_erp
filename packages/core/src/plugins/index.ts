@@ -17,7 +17,9 @@ export interface TaxProvider {
 
 export interface InvoiceProvider {
   id: string;
-  issue(orderId: string): Promise<{ status: 'authorized' | 'pending' | 'rejected'; protocol?: string }>;
+  issue(
+    orderId: string,
+  ): Promise<{ status: 'authorized' | 'pending' | 'rejected'; protocol?: string }>;
 }
 
 export interface PaymentGateway {
@@ -43,9 +45,11 @@ export interface MarketplaceChannel {
 
 export interface FreightProvider {
   id: string;
-  quote(input: { fromCep: string; toCep: string; weightG: number }): Promise<
-    Array<{ carrier: string; service: string; price: number; etaDays: number }>
-  >;
+  quote(input: {
+    fromCep: string;
+    toCep: string;
+    weightG: number;
+  }): Promise<Array<{ carrier: string; service: string; price: number; etaDays: number }>>;
   purchase(quoteId: string): Promise<{ trackingCode: string }>;
   track(trackingCode: string): Promise<{ status: string; events: unknown[] }>;
 }
@@ -68,17 +72,37 @@ export class PluginRegistry {
   private marketplaces = new Map<string, MarketplaceChannel>();
   private freight = new Map<string, FreightProvider>();
 
-  registerTax(p: TaxProvider) { this.taxes.set(p.id, p); }
-  registerInvoice(p: InvoiceProvider) { this.invoices.set(p.id, p); }
-  registerPayment(p: PaymentGateway) { this.payments.set(p.id, p); }
-  registerMarketplace(p: MarketplaceChannel) { this.marketplaces.set(p.id, p); }
-  registerFreight(p: FreightProvider) { this.freight.set(p.id, p); }
+  registerTax(p: TaxProvider) {
+    this.taxes.set(p.id, p);
+  }
+  registerInvoice(p: InvoiceProvider) {
+    this.invoices.set(p.id, p);
+  }
+  registerPayment(p: PaymentGateway) {
+    this.payments.set(p.id, p);
+  }
+  registerMarketplace(p: MarketplaceChannel) {
+    this.marketplaces.set(p.id, p);
+  }
+  registerFreight(p: FreightProvider) {
+    this.freight.set(p.id, p);
+  }
 
-  tax(id: string) { return this.must(this.taxes, id, 'TaxProvider'); }
-  invoice(id: string) { return this.must(this.invoices, id, 'InvoiceProvider'); }
-  payment(id: string) { return this.must(this.payments, id, 'PaymentGateway'); }
-  marketplace(id: string) { return this.must(this.marketplaces, id, 'MarketplaceChannel'); }
-  freightProvider(id: string) { return this.must(this.freight, id, 'FreightProvider'); }
+  tax(id: string) {
+    return this.must(this.taxes, id, 'TaxProvider');
+  }
+  invoice(id: string) {
+    return this.must(this.invoices, id, 'InvoiceProvider');
+  }
+  payment(id: string) {
+    return this.must(this.payments, id, 'PaymentGateway');
+  }
+  marketplace(id: string) {
+    return this.must(this.marketplaces, id, 'MarketplaceChannel');
+  }
+  freightProvider(id: string) {
+    return this.must(this.freight, id, 'FreightProvider');
+  }
 
   private must<T>(map: Map<string, T>, id: string, kind: string): T {
     const v = map.get(id);

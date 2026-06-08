@@ -18,7 +18,10 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const querySchema = z.object({
-  chave: z.string().length(44).regex(/^\d{44}$/, 'chave must be 44 digits'),
+  chave: z
+    .string()
+    .length(44)
+    .regex(/^\d{44}$/, 'chave must be 44 digits'),
 });
 
 export async function GET(req: Request): Promise<NextResponse> {

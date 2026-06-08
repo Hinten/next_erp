@@ -4,11 +4,7 @@ import { useMemo } from 'react';
 import { Select } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import {
-  type DocumentReference,
-  type Firestore,
-  getDocs,
-} from 'firebase/firestore';
+import { type DocumentReference, type Firestore, getDocs } from 'firebase/firestore';
 import { buildQuery, orderByField, whereOp } from '@delfrance/data';
 import type { Operacao } from '@delfrance/schemas';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
@@ -44,10 +40,7 @@ export function OperacaoPicker({
     queryFn: async () => {
       const base = operacaoCollection.ref(db, {});
       const tipo = ehSaida ? 1 : 0;
-      const q = buildQuery(base, [
-        whereOp('tipo', '==', tipo),
-        orderByField('nome'),
-      ]);
+      const q = buildQuery(base, [whereOp('tipo', '==', tipo), orderByField('nome')]);
       try {
         const snap = await getDocs(q);
         return snap.docs.map((d) => ({

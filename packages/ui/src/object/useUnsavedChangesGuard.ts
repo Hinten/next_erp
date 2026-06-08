@@ -47,10 +47,7 @@ export function useUnsavedChangesGuard(
       const url = new URL(href, window.location.href);
       if (url.origin !== window.location.origin) return;
       // Same route (only hash/identical) — not a real navigation.
-      if (
-        url.pathname === window.location.pathname &&
-        url.search === window.location.search
-      ) {
+      if (url.pathname === window.location.pathname && url.search === window.location.search) {
         return;
       }
       if (!window.confirm(message)) {

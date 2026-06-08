@@ -99,13 +99,7 @@ function CopyIconButton({ value, label }: { value: string; label: string }) {
     <CopyButton value={value} timeout={1500}>
       {({ copied, copy }) => (
         <Tooltip label={copied ? 'Copiado!' : label} withArrow withinPortal position="top">
-          <ActionIcon
-            variant="subtle"
-            color="gray"
-            size="sm"
-            onClick={copy}
-            aria-label={label}
-          >
+          <ActionIcon variant="subtle" color="gray" size="sm" onClick={copy} aria-label={label}>
             {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
           </ActionIcon>
         </Tooltip>
@@ -146,7 +140,8 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
   // the outline variant so the operator can tell at a glance.
   const variant = latest.tpEmis !== 1 ? 'outline' : 'light';
   const hasCStatMsg = latest.cStat != null && latest.xMotivo != null;
-  const messageCopyValue = latest.error ?? (hasCStatMsg ? `${latest.cStat} - ${latest.xMotivo}` : null);
+  const messageCopyValue =
+    latest.error ?? (hasCStatMsg ? `${latest.cStat} - ${latest.xMotivo}` : null);
   return (
     <HoverCard
       withinPortal
@@ -157,12 +152,7 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
       width={360}
     >
       <HoverCard.Target>
-        <Badge
-          variant={variant}
-          color={color}
-          style={{ cursor: 'help' }}
-          tabIndex={0}
-        >
+        <Badge variant={variant} color={color} style={{ cursor: 'help' }} tabIndex={0}>
           {label}
         </Badge>
       </HoverCard.Target>
@@ -171,20 +161,26 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
             onClick — stop it so the copy/cancelar controls don't navigate. */}
         <Stack gap="xs" onClick={(e) => e.stopPropagation()}>
           <Group gap="xs" wrap="nowrap">
-            <Text size="sm" fw={500}>Estado:</Text>
+            <Text size="sm" fw={500}>
+              Estado:
+            </Text>
             <Text size="sm">{label}</Text>
           </Group>
 
           {latest.cStat != null && (
             <Group gap="xs" wrap="nowrap">
-              <Text size="sm" fw={500}>cStat:</Text>
+              <Text size="sm" fw={500}>
+                cStat:
+              </Text>
               <Text size="sm">{latest.cStat}</Text>
             </Group>
           )}
 
           {latest.xMotivo != null && (
             <Group gap="xs" wrap="nowrap" align="flex-start">
-              <Text size="sm" fw={500} style={{ flexShrink: 0 }}>xMotivo:</Text>
+              <Text size="sm" fw={500} style={{ flexShrink: 0 }}>
+                xMotivo:
+              </Text>
               <Text size="sm" style={{ wordBreak: 'break-word' }}>
                 {latest.xMotivo}
               </Text>
@@ -193,30 +189,21 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
 
           <Group gap="xs" wrap="nowrap" justify="space-between">
             <Group gap="xs" wrap="nowrap">
-              <Text size="sm" fw={500}>Número:</Text>
+              <Text size="sm" fw={500}>
+                Número:
+              </Text>
               <Text size="sm">{latest.numeracao}</Text>
             </Group>
-            <CopyIconButton
-              value={String(latest.numeracao)}
-              label="Copiar número"
-            />
+            <CopyIconButton value={String(latest.numeracao)} label="Copiar número" />
           </Group>
 
           {latest.chave != null && (
-            <Group
-              gap="xs"
-              wrap="nowrap"
-              justify="space-between"
-              align="center"
-            >
+            <Group gap="xs" wrap="nowrap" justify="space-between" align="center">
               <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
-                <Text size="sm" fw={500} style={{ flexShrink: 0 }}>Chave:</Text>
-                <Text
-                  ff="monospace"
-                  size="xs"
-                  truncate
-                  style={{ minWidth: 0 }}
-                >
+                <Text size="sm" fw={500} style={{ flexShrink: 0 }}>
+                  Chave:
+                </Text>
+                <Text ff="monospace" size="xs" truncate style={{ minWidth: 0 }}>
                   {latest.chave}
                 </Text>
               </Group>
@@ -225,18 +212,8 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
           )}
 
           {messageCopyValue != null && (
-            <Group
-              gap="xs"
-              wrap="nowrap"
-              justify="space-between"
-              align="flex-start"
-            >
-              <Group
-                gap="xs"
-                wrap="nowrap"
-                align="flex-start"
-                style={{ minWidth: 0 }}
-              >
+            <Group gap="xs" wrap="nowrap" justify="space-between" align="flex-start">
+              <Group gap="xs" wrap="nowrap" align="flex-start" style={{ minWidth: 0 }}>
                 <Text size="sm" fw={500} style={{ flexShrink: 0 }}>
                   {latest.error != null ? 'Erro:' : 'Mensagem:'}
                 </Text>
@@ -347,7 +324,7 @@ export function ClienteCell({ pedido }: { pedido: Pedido }) {
   const cpfCnpj = data?.cpf_cnpj ? formatCpfCnpj(data.cpf_cnpj) : null;
   const tipoLabel = data?.tipo ? TIPO_CLIENTE_LABELS[data.tipo] : null;
   const tooltip =
-    cpfCnpj && tipoLabel ? `${tipoLabel}: ${cpfCnpj}` : cpfCnpj ?? tipoLabel ?? nome;
+    cpfCnpj && tipoLabel ? `${tipoLabel}: ${cpfCnpj}` : (cpfCnpj ?? tipoLabel ?? nome);
   return (
     <Tooltip label={tooltip} withinPortal>
       <Anchor
@@ -405,8 +382,7 @@ export function FreteCell({ pedido }: { pedido: Pedido }) {
   const label = ESTADO_FRETE_LABELS[estado] ?? estado;
   const tooltipParts: string[] = [];
   if (frete?.codRastreio) tooltipParts.push(`Rastreio: ${frete.codRastreio}`);
-  if (frete?.prazoDespacho)
-    tooltipParts.push(`Prazo: ${formatMillis(frete.prazoDespacho)}`);
+  if (frete?.prazoDespacho) tooltipParts.push(`Prazo: ${formatMillis(frete.prazoDespacho)}`);
   if (tooltipParts.length === 0) return <Text>{label}</Text>;
   return (
     <Tooltip label={tooltipParts.join(' • ')} withinPortal>
@@ -434,11 +410,7 @@ export function ImpCell({ pedido }: { pedido: Pedido }) {
   if (pedido.dtImpressao == null) return null;
   return (
     <Tooltip label={formatMillis(pedido.dtImpressao)} withinPortal>
-      <IconCheck
-        size={18}
-        color="var(--mantine-color-teal-6)"
-        aria-label="Impresso"
-      />
+      <IconCheck size={18} color="var(--mantine-color-teal-6)" aria-label="Impresso" />
     </Tooltip>
   );
 }

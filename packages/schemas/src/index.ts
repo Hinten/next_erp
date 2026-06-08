@@ -1,9 +1,6 @@
 export type { CollectionMetadata, DomainSchema } from './types';
 
-export {
-  auditEntrySchema,
-  type AuditEntry,
-} from './audit';
+export { auditEntrySchema, type AuditEntry } from './audit';
 
 export {
   cliente,
@@ -24,19 +21,9 @@ export {
   type UF,
 } from './endereco';
 
-export {
-  produto,
-  produtoSchema,
-  produtoMeta,
-  type Produto,
-} from './produto';
+export { produto, produtoSchema, produtoMeta, type Produto } from './produto';
 
-export {
-  categoria,
-  categoriaSchema,
-  categoriaMeta,
-  type Categoria,
-} from './categoria';
+export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './categoria';
 
 export {
   ESTADO_FRETE_LABELS,
@@ -158,12 +145,7 @@ export {
   type Usuario,
 } from './usuario';
 
-export {
-  deposito,
-  depositoSchema,
-  depositoMeta,
-  type Deposito,
-} from './deposito';
+export { deposito, depositoSchema, depositoMeta, type Deposito } from './deposito';
 
 export {
   grupoDeVariacoes,
@@ -229,12 +211,7 @@ export {
   type MotivoIncidente,
 } from './motivoIncidente';
 
-export {
-  filial,
-  filialSchema,
-  filialMeta,
-  type Filial,
-} from './filial';
+export { filial, filialSchema, filialMeta, type Filial } from './filial';
 
 export {
   bandeiraCartao,

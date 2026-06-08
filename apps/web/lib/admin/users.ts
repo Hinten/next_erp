@@ -28,11 +28,7 @@ export interface CreateUserResult {
   uid: string;
 }
 
-async function call<T>(
-  path: string,
-  init: RequestInit,
-  idToken: string,
-): Promise<T> {
+async function call<T>(path: string, init: RequestInit, idToken: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
@@ -55,10 +51,7 @@ async function call<T>(
   return (await res.json()) as T;
 }
 
-export function createUser(
-  payload: CreateUserPayload,
-  idToken: string,
-): Promise<CreateUserResult> {
+export function createUser(payload: CreateUserPayload, idToken: string): Promise<CreateUserResult> {
   return call<CreateUserResult>(
     '/api/admin/users',
     { method: 'POST', body: JSON.stringify(payload) },

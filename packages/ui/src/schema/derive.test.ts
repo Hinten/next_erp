@@ -80,9 +80,7 @@ describe('extractFieldsFromSchema', () => {
       obj: z.object({ x: z.string() }),
       un: z.unknown(),
     });
-    const map = Object.fromEntries(
-      extractFieldsFromSchema(schema).map((f) => [f.key, f.kind]),
-    );
+    const map = Object.fromEntries(extractFieldsFromSchema(schema).map((f) => [f.key, f.kind]));
     expect(map).toEqual({ arr: 'array', obj: 'object', un: 'unknown' });
   });
 
@@ -108,9 +106,7 @@ describe('extractFieldsFromSchema', () => {
       cpf_cnpj: z.string(),
       nomeCompleto: z.string(),
     });
-    const map = Object.fromEntries(
-      extractFieldsFromSchema(schema).map((f) => [f.key, f.label]),
-    );
+    const map = Object.fromEntries(extractFieldsFromSchema(schema).map((f) => [f.key, f.label]));
     expect(map['cpf_cnpj']).toBe('Cpf cnpj');
     expect(map['nomeCompleto']).toBe('Nome Completo');
   });

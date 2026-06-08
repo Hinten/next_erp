@@ -16,11 +16,7 @@ import {
 import { useDebouncedValue } from '@mantine/hooks';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import {
-  type DocumentReference,
-  type Firestore,
-  getDocs,
-} from 'firebase/firestore';
+import { type DocumentReference, type Firestore, getDocs } from 'firebase/firestore';
 import { buildQuery, limit, orderByField, whereOp } from '@delfrance/data';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import type { Cliente } from '@delfrance/schemas';
@@ -63,8 +59,7 @@ export function ClientePicker({
     if (!currentRef) return null;
     return clienteCollection.docRef(db, {}, currentRef.id);
   }, [db, currentRef]);
-  const { data: currentDoc, loading: loadingCurrent } =
-    useDocSnapshot(currentRefTyped);
+  const { data: currentDoc, loading: loadingCurrent } = useDocSnapshot(currentRefTyped);
   const currentLabel = currentDoc?.data.nome ?? '';
 
   const query = useQuery({
@@ -159,9 +154,7 @@ export function ClientePicker({
 
       <Combobox.Dropdown>
         <Combobox.Options>
-          {query.isLoading && (
-            <Combobox.Empty>Carregando…</Combobox.Empty>
-          )}
+          {query.isLoading && <Combobox.Empty>Carregando…</Combobox.Empty>}
           {!query.isLoading && rows.length === 0 && (
             <Combobox.Empty>Nenhum cliente encontrado.</Combobox.Empty>
           )}
@@ -183,12 +176,7 @@ export function ClientePicker({
             <Text size="xs" c="dimmed">
               {rows.length} resultado(s)
             </Text>
-            <Anchor
-              size="xs"
-              component={Link}
-              href="/clientes/novo"
-              target="_blank"
-            >
+            <Anchor size="xs" component={Link} href="/clientes/novo" target="_blank">
               + Novo cliente
             </Anchor>
           </Group>

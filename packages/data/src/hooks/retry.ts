@@ -68,9 +68,7 @@ export function computeBackoffDelay(
   options: { baseMs?: number; maxMs?: number } = {},
 ): number {
   if (!Number.isInteger(attempt) || attempt < 1) {
-    throw new RangeError(
-      `computeBackoffDelay: attempt must be an integer >= 1, got ${attempt}`,
-    );
+    throw new RangeError(`computeBackoffDelay: attempt must be an integer >= 1, got ${attempt}`);
   }
   const baseMs = options.baseMs ?? READ_RETRY_BACKOFF_BASE_MS;
   const maxMs = options.maxMs ?? READ_RETRY_BACKOFF_MAX_MS;
@@ -78,8 +76,7 @@ export function computeBackoffDelay(
   return ceiling / 2 + Math.random() * (ceiling / 2);
 }
 
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 export interface RetryOptions {
   /** Total attempts (initial try + retries). Defaults to `READ_RETRY_MAX_ATTEMPTS`. */
@@ -101,15 +98,10 @@ export interface RetryOptions {
  * error from the final attempt is what propagates once the budget is spent, so
  * the caller's existing error handling sees the real failure unchanged.
  */
-export async function retryAsync<T>(
-  fn: () => Promise<T>,
-  options: RetryOptions,
-): Promise<T> {
+export async function retryAsync<T>(fn: () => Promise<T>, options: RetryOptions): Promise<T> {
   const maxAttempts = options.maxAttempts ?? READ_RETRY_MAX_ATTEMPTS;
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
-    throw new RangeError(
-      `retryAsync: maxAttempts must be an integer >= 1, got ${maxAttempts}`,
-    );
+    throw new RangeError(`retryAsync: maxAttempts must be an integer >= 1, got ${maxAttempts}`);
   }
   const isCancelled = options.isCancelled ?? (() => false);
   let lastErr: unknown;

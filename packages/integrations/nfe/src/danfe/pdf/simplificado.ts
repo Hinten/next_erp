@@ -11,7 +11,17 @@
  * Rendered from the already-parsed `DanfeModel` (see `../model`) — never from
  * order data.
  */
-import { cmToPt, formatChaveAcesso, formatCep, formatCpfCnpj, formatDate, formatMoney, formatNNF, formatSerie, formatTimeSeconds } from '../format';
+import {
+  cmToPt,
+  formatChaveAcesso,
+  formatCep,
+  formatCpfCnpj,
+  formatDate,
+  formatMoney,
+  formatNNF,
+  formatSerie,
+  formatTimeSeconds,
+} from '../format';
 import type { DanfeModel, DanfeEndereco } from '../model';
 import { code128Png } from '../barcode';
 import { createPdf, drawBarcode, labeledRow, strokeBox, text, watermark } from './primitives';
@@ -129,7 +139,13 @@ export async function renderSimplificado(
   section('Dados do emitente', [
     { kind: 'kv', label: model.emit.cnpj ? 'Razão Social' : 'Nome', value: model.emit.nome },
     ...(emitDoc
-      ? [{ kind: 'kv' as const, label: model.emit.cnpj ? 'CNPJ' : 'CPF', value: formatCpfCnpj(emitDoc) }]
+      ? [
+          {
+            kind: 'kv' as const,
+            label: model.emit.cnpj ? 'CNPJ' : 'CPF',
+            value: formatCpfCnpj(emitDoc),
+          },
+        ]
       : []),
     { kind: 'kv', label: 'IE', value: model.emit.ie },
     { kind: 'wrap', text: enderecoLinha(model.emit.endereco), lines: 3 },
@@ -149,7 +165,11 @@ export async function renderSimplificado(
   const destRows: Row[] = [{ kind: 'kv', label: 'Nome', value: model.dest.nome }];
   if (destDoc) {
     const label = model.dest.cnpj ? 'CNPJ' : model.dest.cpf ? 'CPF' : 'ID Estrangeiro';
-    destRows.push({ kind: 'kv', label, value: model.dest.idEstrangeiro ? destDoc : formatCpfCnpj(destDoc) });
+    destRows.push({
+      kind: 'kv',
+      label,
+      value: model.dest.idEstrangeiro ? destDoc : formatCpfCnpj(destDoc),
+    });
   }
   if (model.dest.ie) destRows.push({ kind: 'kv', label: 'IE', value: model.dest.ie });
   if (model.dest.endereco) {
