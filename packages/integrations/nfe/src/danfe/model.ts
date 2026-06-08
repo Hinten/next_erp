@@ -85,6 +85,8 @@ export interface DanfeIde {
   /** `0` = entrada, `1` = saída. */
   readonly tpNF: '0' | '1';
   readonly tpEmis: string;
+  /** Referenced NF-e chaves (`ide.NFref[].refNFe`) — shown in infCpl. */
+  readonly refNFes: ReadonlyArray<string>;
 }
 
 /** One item row (det → prod + the extracted ICMS/IPI columns). */
@@ -313,6 +315,9 @@ function mapModel(infNFe: TNFe_infNFe, prot: DanfeProtocolo | null): DanfeModel 
       dhSaiEnt: ide.dhSaiEnt ?? null,
       tpNF: ide.tpNF,
       tpEmis: ide.tpEmis,
+      refNFes: (ide.NFref ?? [])
+        .map((r) => r.refNFe)
+        .filter((c): c is string => Boolean(c)),
     },
     emit: {
       nome: emit.xNome,

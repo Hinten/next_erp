@@ -139,12 +139,14 @@ function drawEmitente(
     { size: 7, width: cm(2.54) - 4, align: 'center', lineBreak: true },
   );
 
-  // C — Code 128 barcode.
+  // C — Code 128 barcode. The right column (cbx..20.75) is `RIGHT_W` wide so
+  // every block ends at the same right edge as the canhoto's NF-e box.
   const cbx = 12.79;
-  strokeBox(doc, cm(cbx), cm(t), cm(8.04), cm(1.48));
-  drawBarcode(doc, barcodePng, cm(cbx) + 4, cm(t) + 3, cm(8.04) - 8, cm(1.48) - 6);
+  const RIGHT_W = 7.96; // 12.79 + 7.96 = 20.75
+  strokeBox(doc, cm(cbx), cm(t), cm(RIGHT_W), cm(1.48));
+  drawBarcode(doc, barcodePng, cm(cbx) + 4, cm(t) + 3, cm(RIGHT_W) - 8, cm(1.48) - 6);
   // D — chave de acesso.
-  field(doc, cbx, t + 1.48, 8.04, 0.85, 'CHAVE DE ACESSO', formatChaveAcesso(model.chave), {
+  field(doc, cbx, t + 1.48, RIGHT_W, 0.85, 'CHAVE DE ACESSO', formatChaveAcesso(model.chave), {
     valueAlign: 'center',
     valueBold: true,
     valueSize: 8,
@@ -154,7 +156,7 @@ function drawEmitente(
     doc,
     cbx,
     t + 2.33,
-    8.04,
+    RIGHT_W,
     1.59,
     null,
     'Consulta de autenticidade no portal nacional da NF-e www.nfe.fazenda.gov.br/portal ou no site da Sefaz Autorizadora',
@@ -168,13 +170,13 @@ function drawEmitente(
     model.prot && (model.prot.cStat === '100' || model.prot.cStat === '150')
       ? `${model.prot.nProt ?? ''} ${formatDate(model.prot.dhRecbto)} ${formatTimeSeconds(model.prot.dhRecbto)}`
       : '';
-  field(doc, 12.79, t + 3.92, 8.04, 0.85, 'PROTOCOLO DE AUTORIZAÇÃO DE USO', prot, {
+  field(doc, cbx, t + 3.92, RIGHT_W, 0.85, 'PROTOCOLO DE AUTORIZAÇÃO DE USO', prot, {
     valueAlign: 'center',
   });
-  // H/I/J — inscrições + CNPJ.
+  // H/I/J — inscrições + CNPJ (the CNPJ box closes the row at 20.75).
   field(doc, MARGIN, t + 4.77, 6.86, 0.85, 'INSCRIÇÃO ESTADUAL', model.emit.ie, { valueSize: 9 });
   field(doc, 7.11, t + 4.77, 6.86, 0.85, 'INSCR. ESTADUAL DO SUBST. TRIB.', model.emit.iest ?? '', { valueSize: 9 });
-  field(doc, 13.97, t + 4.77, 6.86, 0.85, 'CNPJ/CPF', formatCpfCnpj(model.emit.cnpj ?? model.emit.cpf ?? ''), {
+  field(doc, 13.97, t + 4.77, 6.78, 0.85, 'CNPJ/CPF', formatCpfCnpj(model.emit.cnpj ?? model.emit.cpf ?? ''), {
     valueSize: 9,
   });
   return t + 5.62 + 0.1;
@@ -269,11 +271,14 @@ function drawImposto(doc: Doc, model: DanfeModel, y: number): number {
   field(doc, 12.43, t, 4.06, 0.85, 'VALOR DO ICMS ST', tot.vST, { money: true });
   field(doc, 16.49, t, 4.26, 0.85, 'VALOR TOTAL DOS PRODUTOS', tot.vProd, { money: true });
   t += 0.85;
-  field(doc, MARGIN, t, 3.3, 0.85, 'VALOR DO FRETE', tot.vFrete, { money: true });
-  field(doc, 3.55, t, 3.3, 0.85, 'VALOR DO SEGURO', tot.vSeg, { money: true });
-  field(doc, 6.85, t, 3.3, 0.85, 'DESCONTO', tot.vDesc, { money: true });
-  field(doc, 10.15, t, 3.3, 0.85, 'OUTRAS DESPESAS', tot.vOutro, { money: true });
-  field(doc, 13.45, t, 3.0, 0.85, 'VALOR DO IPI', tot.vIPI, { money: true });
+  // Five equal boxes fill 0.25→16.49 (no gap, IPI no longer cramped); vNF closes
+  // the row at 20.75.
+  const w2 = 3.248;
+  field(doc, MARGIN, t, w2, 0.85, 'VALOR DO FRETE', tot.vFrete, { money: true });
+  field(doc, MARGIN + w2, t, w2, 0.85, 'VALOR DO SEGURO', tot.vSeg, { money: true });
+  field(doc, MARGIN + 2 * w2, t, w2, 0.85, 'DESCONTO', tot.vDesc, { money: true });
+  field(doc, MARGIN + 3 * w2, t, w2, 0.85, 'OUTRAS DESPESAS', tot.vOutro, { money: true });
+  field(doc, MARGIN + 4 * w2, t, w2, 0.85, 'VALOR DO IPI', tot.vIPI, { money: true });
   field(doc, 16.49, t, 4.26, 0.85, 'VALOR TOTAL DA NOTA', tot.vNF, { money: true, valueBold: true });
   return t + 0.85 + 0.1;
 }
@@ -337,6 +342,19 @@ function drawProdutoRow(doc: Doc, item: DanfeItem, y: number, rowH: number, hasG
   cell(doc, COL.pIpi.left, y, COL.pIpi.w, rowH, item.pIpi, { money: true });
 }
 
+/**
+ * Compose the INFORMAÇÕES COMPLEMENTARES text: the contribuinte's `infCpl`
+ * followed by the referenced NF-e chaves (`NFref. {chave}`), mirroring the
+ * legacy retrato. `infAdFisco` does NOT belong here — it goes to RESERVADO AO
+ * FISCO.
+ */
+export function composeInfoComplementares(model: DanfeModel): string {
+  const parts: string[] = [];
+  if (model.infAdic.infCpl) parts.push(model.infAdic.infCpl);
+  for (const chave of model.ide.refNFes) parts.push(`NFref. ${chave}`);
+  return parts.join(' ');
+}
+
 /** ISSQN + dados adicionais footer (last page). */
 function drawFooter(doc: Doc, model: DanfeModel): void {
   if (model.issqn) {
@@ -348,12 +366,16 @@ function drawFooter(doc: Doc, model: DanfeModel): void {
     field(doc, 15.49, t, 5.26, 0.85, 'VALOR DO ISSQN', model.issqn.vISS, { money: true });
   }
   sectionTitle(doc, MARGIN, FOOTER_DADOS_TOP, 'DADOS ADICIONAIS');
-  const infCpl = [model.infAdic.infAdFisco, model.infAdic.infCpl].filter(Boolean).join(' ');
-  field(doc, MARGIN, FOOTER_DADOS_TOP + 0.42, 12.95, 3.07, 'INFORMAÇÕES COMPLEMENTARES', infCpl, {
+  // INFORMAÇÕES COMPLEMENTARES = infCpl + NFref; RESERVADO AO FISCO = infAdFisco.
+  // infCpl box ends at 13.17 (= reservado's left edge) — shared border, no overlap.
+  field(doc, MARGIN, FOOTER_DADOS_TOP + 0.42, 12.92, 3.07, 'INFORMAÇÕES COMPLEMENTARES', composeInfoComplementares(model), {
     valueSize: 6,
-    valueLines: 9,
+    valueLines: 13,
   });
-  field(doc, 13.17, FOOTER_DADOS_TOP + 0.42, 7.58, 3.07, 'RESERVADO AO FISCO', null);
+  field(doc, 13.17, FOOTER_DADOS_TOP + 0.42, 7.58, 3.07, 'RESERVADO AO FISCO', model.infAdic.infAdFisco ?? '', {
+    valueSize: 6,
+    valueLines: 13,
+  });
 }
 
 function pageWatermark(doc: Doc, model: DanfeModel, cancelada: boolean): void {

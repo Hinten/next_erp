@@ -26,7 +26,7 @@ export type {
   DanfeProtocolo,
 } from './model';
 export { renderSimplificado, type RenderSimplificadoOptions } from './pdf/simplificado';
-export { renderRetrato, type RenderA4Options } from './pdf/retrato';
+export { renderRetrato, composeInfoComplementares, type RenderA4Options } from './pdf/retrato';
 export { renderSimplificadoZpl, type ZplOptions } from './zpl2';
 export { code128Png } from './barcode';
 export * from './format';
