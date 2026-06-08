@@ -102,6 +102,17 @@ export interface NFeInutilizarResult {
   readonly reconciled: number;
 }
 
+/** DANFE output formats the `GET /api/nfe/danfe` route serves. */
+export type NFeDanfeFormat = 'simplificado' | 'zpl2';
+
+/** A downloaded DANFE artifact — the binary Blob plus its server filename. */
+export interface NFeDanfeArtifact {
+  readonly blob: Blob;
+  /** Filename from the `Content-Disposition` header (e.g. `danfe-7.pdf`). */
+  readonly filename: string;
+  readonly contentType: string;
+}
+
 /** Mirrors `apps/nfe/app/api/nfe/carta-correcao/route.ts` response. */
 export interface NFeCartaCorrecaoResult {
   readonly pedidoId: string;
@@ -143,6 +154,24 @@ export interface NFeHttpClient {
     nfeId: string,
     xCorrecao: string,
   ): Promise<NFeCartaCorrecaoResult>;
+  /**
+   * Download the DANFE for an authorized NF-e as a binary artifact (PDF for
+   * `simplificado`, the ZPL label text for `zpl2`). `dpi` tunes the ZPL
+   * printhead density (default 203). Returns the Blob + its server filename.
+   */
+  danfe(
+    pedidoId: string,
+    nfeId: string,
+    format: NFeDanfeFormat,
+    dpi?: number,
+  ): Promise<NFeDanfeArtifact>;
+}
+
+/** Pull the filename out of a `Content-Disposition` header, if present. */
+function filenameFromDisposition(header: string | null): string | null {
+  if (!header) return null;
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(header);
+  return m?.[1] ? decodeURIComponent(m[1]) : null;
 }
 
 /** Strip a trailing slash off `baseUrl` so route concatenation is clean. */
@@ -256,6 +285,42 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
     return body as T;
   }
 
+  /** Like `call`, but for a binary (non-JSON) success body. Errors are JSON. */
+  async function fetchArtifact(
+    path: string,
+    fallbackName: string,
+  ): Promise<NFeDanfeArtifact> {
+    const token = await config.getAuthToken();
+    let res: Response;
+    try {
+      res = await doFetch(`${baseUrl}${path}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch (err) {
+      throw new NFeNetworkError(err instanceof Error ? err.message : 'fetch failed', err);
+    }
+    if (!res.ok) {
+      let body: unknown = null;
+      const text = await res.text();
+      if (text.length > 0) {
+        try {
+          body = JSON.parse(text);
+        } catch (err) {
+          if (err instanceof SyntaxError) body = { error: text };
+          else throw err;
+        }
+      }
+      throw errorFromResponse(res.status, body, {});
+    }
+    const blob = await res.blob();
+    return {
+      blob,
+      filename: filenameFromDisposition(res.headers.get('content-disposition')) ?? fallbackName,
+      contentType: res.headers.get('content-type') ?? 'application/octet-stream',
+    };
+  }
+
   return {
     emitir: (pedidoId) =>
       call<NFeEmitResult>('POST', '/api/nfe/emitir', {
@@ -284,5 +349,11 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
         body: { pedidoId, nfeId, xCorrecao },
         context: { pedidoId },
       }),
+    danfe: (pedidoId, nfeId, format, dpi) => {
+      const params = new URLSearchParams({ pedidoId, nfeId, format });
+      if (dpi != null) params.set('dpi', String(dpi));
+      const ext = format === 'zpl2' ? 'txt' : 'pdf';
+      return fetchArtifact(`/api/nfe/danfe?${params.toString()}`, `danfe.${ext}`);
+    },
   };
 }

@@ -52,6 +52,7 @@ import { IconBan, IconCheck, IconCopy, IconFileText } from '@tabler/icons-react'
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { DanfeMenu } from '@/components/DanfeMenu';
 
 const DASH = '—';
 
@@ -245,6 +246,7 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
 
           {isAprovada && latestId && (
             <Group gap="xs" mt="xs">
+              <DanfeMenu pedidoId={pedidoId} nfeId={latestId} />
               <Button
                 color="blue"
                 variant="light"

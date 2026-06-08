@@ -291,7 +291,9 @@ deste skill** (NF-e modelo 55 backend).
 
 Antes de incorporar uma NT, ler o título e a Resumo:
 - "NFC-e" ou "Modelo 65" → fora de escopo deste skill.
-- "DANFE" ou "Documento Auxiliar" → fora de escopo (DANFE é apresentação).
+- "DANFE" ou "Documento Auxiliar" → **em escopo** (render do modelo 55):
+  vide `references/danfe.md`. NTs específicas de NFC-e/Modelo 65 (ex. DANFE
+  Simplificado Tipo 2, NT 2026.003) permanecem fora de escopo.
 - "Tabela NCM / CFOP / Países / Unidades" → dados operacionais, não
   protocolo; raramente justifica mudança no skill.
 

@@ -10,6 +10,8 @@ export {
   type NFeBatchEmitResult,
   type NFeCartaCorrecaoResult,
   type NFeConsultaResult,
+  type NFeDanfeArtifact,
+  type NFeDanfeFormat,
   type NFeEmitError,
   type NFeEmitResult,
   type NFeHttpClient,

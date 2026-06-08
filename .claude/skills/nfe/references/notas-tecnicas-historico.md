@@ -21,7 +21,7 @@ substitute.
 | NT | Production | Topic | Skill impact |
 |---|---|---|---|
 | `2026.004 v1.00` | — | Altera schema NFC-e/NF-e — **CNPJ Alfanumérico** | Schema regen needed (codegen.md). Affects chave structure if alfanumérico estende-se a NF-e. |
-| `2026.003 v1.00` | — | DANFE Simplificado Tipo 2 | Out of scope — DANFE only. (PDF kept for completeness; not under sources after prune.) |
+| `2026.003 v1.00` | — | DANFE Simplificado Tipo 2 | Out of scope — **NFC-e** (model 65) layout. Our model-55 DANFE render is in scope (`references/danfe.md`); this Tipo 2 simplificado is not. |
 | `2026.002 v1.00` | — | (details: PDF) | tbd — see PDF |
 | `2026.001 v1.00` | — | PAA — Pagamento Antecipado de Adquirente | New flow related to RTC; cross-reference with `rtc-ibs-cbs-is.md` (gPagAntecipado Grupo BC). |
 

@@ -20,6 +20,7 @@
  *   - `cancelar.ts`        — cancelamento (RecepcaoEvento 110111)
  *   - `carta-correcao.ts`  — carta de correção / CC-e (RecepcaoEvento 110110)
  *   - `inutilizar.ts`      — inutilização de numeração (NfeInutilizacao4)
+ *   - `danfe.ts`           — DANFE artifact rendering (PDF + ZPL) from procNFe
  */
 export * from './errors';
 export * from './bundle';
@@ -30,6 +31,7 @@ export * from './consultar';
 export * from './cancelar';
 export * from './carta-correcao';
 export * from './inutilizar';
+export * from './danfe';
 
 import {
   flattenAndValidate,

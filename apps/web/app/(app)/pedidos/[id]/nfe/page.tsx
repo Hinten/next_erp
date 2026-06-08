@@ -21,6 +21,7 @@ import {
 } from '@delfrance/schemas';
 
 import { RequirePerm } from '@/lib/auth';
+import { DanfeMenu } from '@/components/DanfeMenu';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
@@ -104,6 +105,12 @@ function PedidoNfeContent() {
                 <Text size="sm" c="dimmed">
                   Sem chave — histórico de comunicações indisponível.
                 </Text>
+              )}
+
+              {(estado === ESTADO_NFE.aprovada || estado === ESTADO_NFE.cancelada) && (
+                <Group gap="xs">
+                  <DanfeMenu pedidoId={pedidoId} nfeId={row.id} />
+                </Group>
               )}
 
               {estado === ESTADO_NFE.aprovada && (
