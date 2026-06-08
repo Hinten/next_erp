@@ -102,7 +102,7 @@ export interface NFeInutilizarResult {
 }
 
 /** DANFE output formats the `GET /api/nfe/danfe` route serves. */
-export type NFeDanfeFormat = 'simplificado' | 'zpl2';
+export type NFeDanfeFormat = 'simplificado' | 'retrato' | 'zpl2';
 
 /** A downloaded DANFE artifact — the binary Blob plus its server filename. */
 export interface NFeDanfeArtifact {

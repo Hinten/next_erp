@@ -63,6 +63,81 @@ export const PROCNFE_FIXTURE = `<?xml version="1.0" encoding="UTF-8"?>
         </enderDest>
         <indIEDest>9</indIEDest>
       </dest>
+      <det nItem="1">
+        <prod>
+          <cProd>SKU-001</cProd>
+          <cEAN>SEM GTIN</cEAN>
+          <xProd>CAMISETA ALGODAO PRETA M</xProd>
+          <NCM>61091000</NCM>
+          <CFOP>5102</CFOP>
+          <uCom>UN</uCom>
+          <qCom>2.0000</qCom>
+          <vUnCom>49.9000</vUnCom>
+          <vProd>99.80</vProd>
+          <cEANTrib>SEM GTIN</cEANTrib>
+          <uTrib>UN</uTrib>
+          <qTrib>2.0000</qTrib>
+          <vUnTrib>49.9000</vUnTrib>
+          <indTot>1</indTot>
+        </prod>
+        <imposto>
+          <ICMS>
+            <ICMSSN102>
+              <orig>0</orig>
+              <CSOSN>102</CSOSN>
+            </ICMSSN102>
+          </ICMS>
+        </imposto>
+      </det>
+      <det nItem="2">
+        <prod>
+          <cProd>SKU-002</cProd>
+          <cEAN>7891234567890</cEAN>
+          <xProd>CALCA JEANS AZUL 42</xProd>
+          <NCM>62034200</NCM>
+          <CFOP>5102</CFOP>
+          <uCom>UN</uCom>
+          <qCom>1.0000</qCom>
+          <vUnCom>1134.7600</vUnCom>
+          <vProd>1134.76</vProd>
+          <cEANTrib>7891234567890</cEANTrib>
+          <uTrib>UN</uTrib>
+          <qTrib>1.0000</qTrib>
+          <vUnTrib>1134.7600</vUnTrib>
+          <indTot>1</indTot>
+        </prod>
+        <imposto>
+          <ICMS>
+            <ICMSSN102>
+              <orig>0</orig>
+              <CSOSN>102</CSOSN>
+            </ICMSSN102>
+          </ICMS>
+        </imposto>
+      </det>
+      <transp>
+        <modFrete>1</modFrete>
+        <transporta>
+          <xNome>TRANSPORTADORA EXEMPLO LTDA</xNome>
+          <CNPJ>12345678000199</CNPJ>
+          <IE>111222333444</IE>
+          <xEnder>RUA DO TRANSPORTE, 50</xEnder>
+          <xMun>SAO PAULO</xMun>
+          <UF>SP</UF>
+        </transporta>
+        <veicTransp>
+          <placa>ABC1D23</placa>
+          <UF>SP</UF>
+        </veicTransp>
+        <vol>
+          <qVol>1</qVol>
+          <esp>CAIXA</esp>
+          <marca>EXEMPLO</marca>
+          <nVol>0001</nVol>
+          <pesoL>1.500</pesoL>
+          <pesoB>1.800</pesoB>
+        </vol>
+      </transp>
       <total>
         <ICMSTot>
           <vBC>0.00</vBC>

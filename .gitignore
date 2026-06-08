@@ -41,3 +41,6 @@ devlogs/
 *next-env.d.ts
 *env.d.ts
 .ignore/
+
+# Locally-rendered DANFE samples for manual review (pnpm render:danfe-samples)
+danfe-samples/
