@@ -324,7 +324,7 @@ export {
   type Arquivo,
   type Filetype,
   type ExternalId,
-} from './arquivo';
+} from './storage/arquivo';
 
 export {
   STORAGE_ROOT,
@@ -340,7 +340,10 @@ export {
   parseProductOriginalPath,
   isWatchedProductOriginal,
   isDerivativeName,
+  firebaseDownloadUrl,
   normalizeName,
   type VariantSpec,
   type ParsedOriginalPath,
-} from './storagePaths';
+} from './storage/storagePaths';
+
+export { buildFotoRefs, type FotoRefs } from './storage/foto';

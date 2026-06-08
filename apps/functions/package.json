@@ -10,7 +10,7 @@
   "scripts": {
     "lint": "echo 'no lint configured for this package yet'",
     "typecheck": "tsc --noEmit",
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:firebase-admin --external:firebase-functions --external:sharp",
+    "build": "node build.mjs",
     "test": "vitest run --config vitest.config.ts",
     "test:storage": "vitest run --config vitest.storage.config.ts",
     "clean": "rm -rf dist .turbo *.tsbuildinfo coverage"

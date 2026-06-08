@@ -152,6 +152,23 @@ export function isDerivativeName(name: string): boolean {
 }
 
 /**
+ * Build a Firebase Storage public download URL carrying a download token. The
+ * Admin SDK does not mint tokened URLs the way the client `getDownloadURL`
+ * does, so the resize function writes a `firebaseStorageDownloadTokens`
+ * custom-metadata value and constructs the matching URL with this helper.
+ */
+export function firebaseDownloadUrl(
+  bucketName: string,
+  objectPath: string,
+  token: string,
+): string {
+  return (
+    `https://firebasestorage.googleapis.com/v0/b/${bucketName}` +
+    `/o/${encodeURIComponent(objectPath)}?alt=media&token=${token}`
+  );
+}
+
+/**
  * Sanitize a human filename for use as a storage name. Lowercases, replaces
  * any non-alphanumeric run with `_`, and preserves a trailing extension.
  * Ported from the Flutter `Arquivo.normalize`.

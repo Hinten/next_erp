@@ -1,8 +1,5 @@
-import {
-  ARQUIVOS_COLLECTION,
-  derivativeArquivoId,
-  productArquivoId,
-} from '@delfrance/schemas';
+import { ARQUIVOS_COLLECTION } from './arquivo';
+import { derivativeArquivoId, productArquivoId } from './storagePaths';
 
 /**
  * The `Foto`-compatible reference fields for a product photo. Each value is a
@@ -11,6 +8,9 @@ import {
  * deterministic, so these can be written **optimistically** at upload time; the
  * resize Cloud Function later creates the derivative `Arquivo` docs at those
  * ids.
+ *
+ * This lives in `@delfrance/schemas` (next to the Produto schema) because it is
+ * a Produto wire-shape concern, not an upload concern.
  */
 export interface FotoRefs {
   arquivoOuterRef: string;

@@ -5,15 +5,14 @@ import { onObjectFinalized } from 'firebase-functions/v2/storage';
 import { arquivoCollection } from '@delfrance/data/admin/collections';
 import {
   derivativeArquivoId,
+  firebaseDownloadUrl,
   parseProductOriginalPath,
   productDerivativePath,
 } from '@delfrance/schemas';
 
-import { getAdminApp, getDb } from './admin';
+import { getAdminApp, getDb } from '../lib/admin';
 import { shouldResize } from './guards';
 import { renderAllVariants } from './variants';
-
-const REGION = 'us-east1';
 
 /**
  * Resize a product photo into its 200px / 400px / full-JPEG derivatives.
@@ -28,7 +27,7 @@ const REGION = 'us-east1';
  * derivative whose `Arquivo` doc already exists is skipped.
  */
 export const resizeProductImage = onObjectFinalized(
-  { region: REGION, memory: '512MiB', retry: false },
+  { memory: '512MiB', retry: false },
   async (event) => {
     const name = event.data.name;
     if (!name) return;
@@ -71,9 +70,7 @@ export const resizeProductImage = onObjectFinalized(
           },
         },
       });
-      const url =
-        `https://firebasestorage.googleapis.com/v0/b/${bucket.name}` +
-        `/o/${encodeURIComponent(path)}?alt=media&token=${token}`;
+      const url = firebaseDownloadUrl(bucket.name, path, token);
 
       const slash = path.lastIndexOf('/');
       await arquivoCollection.set(db, {}, derivId, {

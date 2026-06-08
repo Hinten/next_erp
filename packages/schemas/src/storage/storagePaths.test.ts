@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   derivativeArquivoId,
+  firebaseDownloadUrl,
   isDerivativeName,
   isWatchedProductOriginal,
   mediaPath,
@@ -83,5 +84,16 @@ describe('normalizeName', () => {
   it('lowercases and sanitizes, preserving the extension', () => {
     expect(normalizeName('Minha Foto (1).JPG')).toBe('minha_foto__1_.jpg');
     expect(normalizeName('semextensao')).toBe('semextensao');
+  });
+});
+
+describe('firebaseDownloadUrl', () => {
+  it('builds a tokened, percent-encoded download URL', () => {
+    expect(
+      firebaseDownloadUrl('demo-erp.appspot.com', 'produtos/p1/derivatives/h_200.jpeg', 'tok-123'),
+    ).toBe(
+      'https://firebasestorage.googleapis.com/v0/b/demo-erp.appspot.com' +
+        '/o/produtos%2Fp1%2Fderivatives%2Fh_200.jpeg?alt=media&token=tok-123',
+    );
   });
 });

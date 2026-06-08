@@ -17,6 +17,9 @@ e2e/.auth/
 .env.local
 .env.*.local
 !.env.example
+# Committed (non-secret): feeds the FUNCTIONS_REGION param to Firebase
+# non-interactively (emulator + deploy). See apps/functions/src/options.ts.
+!apps/functions/.env
 .secrets/
 
 .DS_Store

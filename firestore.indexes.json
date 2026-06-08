@@ -1,24 +1,4 @@
 {
-  "indexes": [
-    {
-      "//": "onArquivoDeleted refcount — two equality filters on arquivos (filepath, filename) require a composite index. Firestore Enterprise edition does not auto-create it.",
-      "collectionGroup": "arquivos",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "filepath", "order": "ASCENDING" },
-        { "fieldPath": "filename", "order": "ASCENDING" }
-      ]
-    }
-  ],
-  "fieldOverrides": [
-    {
-      "//": "cleanupOrphanArquivos grace-period scan — where('criadoEm','<', cutoff). Single-field index, explicit for Enterprise edition.",
-      "collectionGroup": "arquivos",
-      "fieldPath": "criadoEm",
-      "indexes": [
-        { "order": "ASCENDING", "queryScope": "COLLECTION" },
-        { "order": "DESCENDING", "queryScope": "COLLECTION" }
-      ]
-    }
-  ]
+  "indexes": [],
+  "fieldOverrides": []
 }

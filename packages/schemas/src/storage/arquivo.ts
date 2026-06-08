@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { CollectionMetadata } from './types';
+import type { CollectionMetadata } from '../types';
 
 // Mirror `PERM.arquivo` from @delfrance/auth (byte 80); duplicated locally to
 // avoid a circular dep — same approach as cargo.ts / deposito.ts.
@@ -91,10 +91,10 @@ export const arquivoSchema = z
     contentType: z.string().nullable().default(null).describe('Content-Type'),
     url: z.string().nullable().default(null).describe('URL'),
     externalIds: z.array(externalIdSchema).default([]),
-    // Server/helper-set creation time (ISO-8601). The orphan sweep filters on
-    // it (`where('criadoEm','<', cutoff)`); ISO strings sort chronologically.
-    // Optional because the Flutter app's docs predate it — those are simply
-    // never reaped by our sweep, which is the safe behaviour.
+    // Server/helper-set creation time (ISO-8601), set on write by the upload
+    // helpers and the resize function. Reserved for the future arquivo-lifecycle
+    // rework (orphan detection / grace period) — see the deferred issue. Optional
+    // because the Flutter app's docs predate it.
     criadoEm: z.string().datetime().nullable().optional(),
   })
   .passthrough();

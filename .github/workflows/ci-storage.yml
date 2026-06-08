@@ -46,6 +46,10 @@ jobs:
   storage-build-test:
     name: Lint / typecheck / unit / build (offline)
     runs-on: ubuntu-latest
+    # Inlined into the functions bundle at build time (build.mjs); the build
+    # fails without it. Must match the Storage bucket region.
+    env:
+      FUNCTIONS_REGION: us-east1
     steps:
       - uses: actions/checkout@v4
         with:
@@ -106,6 +110,9 @@ jobs:
     name: Emulator integration (firestore + storage + functions)
     runs-on: ubuntu-latest
     needs: storage-build-test
+    # Inlined into the functions bundle at build time (build.mjs).
+    env:
+      FUNCTIONS_REGION: us-east1
     steps:
       - uses: actions/checkout@v4
         with:
@@ -138,9 +145,9 @@ jobs:
 
       - name: Run storage suite on the emulators
         # Demo-project mode → no real credentials, nothing touches staging. The
-        # functions emulator fires the Storage + Firestore triggers; the
-        # *.storage.test.ts suite asserts the resize round-trip. All queries are
-        # pipeline-free (the Firestore emulator does not support pipelines).
+        # functions emulator fires the Storage trigger; the *.storage.test.ts
+        # suite asserts the resize round-trip. The function region resolves from
+        # the FUNCTIONS_REGION param default (us-east1) — no env needed here.
         run: |
           firebase emulators:exec \
             --config firebase.functions.json \
