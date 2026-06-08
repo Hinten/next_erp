@@ -34,8 +34,7 @@ describe('danfe/pdf retrato (A4)', () => {
     const pdf = await renderRetrato(many);
     expect(isPdf(pdf)).toBe(true);
     // A 120-row table cannot fit on one A4 sheet → the PDF must carry >1 page.
-    const pageCount = (pdf.toString('latin1').match(/\/Type\s*\/Page[^s]/g) ?? []).length;
-    expect(pageCount).toBeGreaterThan(1);
+    expect(pageCount(pdf)).toBeGreaterThan(1);
   });
 
   it('renders the cancelada overlay variant without throwing', async () => {

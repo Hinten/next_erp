@@ -31,7 +31,7 @@ export { renderSimplificadoZpl, type ZplOptions } from './zpl2';
 export { code128Png } from './barcode';
 export * from './format';
 
-/** PDF output formats. `retrato`/`paisagem` are implemented in PR2. */
+/** PDF output formats. `paisagem` (A4 landscape) is a follow-up. */
 export type DanfeFormat = 'simplificado' | 'retrato' | 'paisagem';
 
 export interface RenderDanfeOptions {
@@ -53,7 +53,9 @@ export function renderDanfe(xml: string, opts: RenderDanfeOptions): Promise<Buff
     case 'retrato':
       return renderRetrato(model, { cancelada: opts.cancelada });
     case 'paisagem':
-      throw new Error(`DANFE format '${opts.format}' is not implemented yet (PR2).`);
+      throw new Error(
+        `DANFE format '${opts.format}' (A4 landscape) is not implemented yet — it lands in a follow-up.`,
+      );
   }
 }
 
