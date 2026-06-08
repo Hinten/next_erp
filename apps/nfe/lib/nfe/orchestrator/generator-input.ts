@@ -361,9 +361,7 @@ export function buildTranspFromFrete(frete: FreteDoPedido | null): {
  * surface a clear NFeOrchestratorError so the operator sees it before
  * SEFAZ does. Phase A doesn't apply `vDesc` at the fatura level.
  */
-export function buildCobrFromPagamentos(
-  pagamentos: ReadonlyArray<Pagamento>,
-):
+export function buildCobrFromPagamentos(pagamentos: ReadonlyArray<Pagamento>):
   | {
       fat?: { nFat?: string; vOrig?: string; vDesc?: string; vLiq?: string };
       dup?: ReadonlyArray<{ nDup?: string; dVenc?: string; vDup: string }>;

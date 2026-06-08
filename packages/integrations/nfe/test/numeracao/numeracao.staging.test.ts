@@ -178,6 +178,11 @@ describeOrSkip('numeração — live Firestore concurrency contract', () => {
     }
   }, 180_000);
 
+  // 180s timeout rationale: 50 contenders × 1 doc means the last winner must
+  // lose 49 times via optimistic-retry. SDK round-trips (~100–300ms each) + our
+  // jittered outer backoff (0–1s × up to 5 attempts) can push wall time past 60s
+  // under network jitter. 180s gives generous headroom without slowing fast runs
+  // — Vitest only waits as long as the test takes.
   it('nextIdLote × 50 parallel → exactly {1..50}, independent of nNF counter', async () => {
     const filialId = newFilial();
     const { path, store } = await seedAndStore(filialId);
@@ -198,10 +203,5 @@ describeOrSkip('numeração — live Firestore concurrency contract', () => {
     } finally {
       await teardown(path);
     }
-  }, // 50 contenders × 1 doc means the last winner must lose 49 times via
-  // optimistic-retry. SDK round-trips (~100–300ms each) + our jittered
-  // outer backoff (0–1s × up to 5 attempts) can push wall time past
-  // 60s under network jitter. 180s gives generous headroom without
-  // slowing fast runs — Vitest only waits as long as the test takes.
-  180_000);
+  }, 180_000);
 });
