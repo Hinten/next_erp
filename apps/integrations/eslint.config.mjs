@@ -1,4 +1,4 @@
-import base from '@delfrance/config-eslint';
+import base, { prettier } from '@delfrance/config-eslint';
 import next from 'eslint-config-next';
 
 // Flat config REPLACES a rule's value per matching `files` block — it does not
@@ -74,6 +74,9 @@ const config = [
       'no-restricted-syntax': ['error', ...baseRestrictedSyntax],
     },
   },
+  // eslint-config-prettier LAST — disables stylistic rules that conflict with
+  // Prettier (formatting is owned by `prettier.config.mjs` / `pnpm format`).
+  prettier,
 ];
 
 export default config;

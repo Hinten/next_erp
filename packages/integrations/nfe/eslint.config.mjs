@@ -7,6 +7,7 @@
 // pre-real-cert audit. So we ship only the two cert-leak guard rules
 // here; the catch rule remains enforced at the apps/* boundary.
 import tseslint from 'typescript-eslint';
+import eslintConfigPrettier from 'eslint-config-prettier';
 
 // Rule A — no multi-arg `console.*` in NF-e code paths. See the
 // apps-side config for the rationale; the leak shape is the same and
@@ -84,6 +85,9 @@ const config = [
       'no-restricted-syntax': ['error', ruleBCertEnv],
     },
   },
+  // eslint-config-prettier LAST — disables stylistic rules that conflict with
+  // Prettier (formatting is owned by `prettier.config.mjs` / `pnpm format`).
+  eslintConfigPrettier,
 ];
 
 export default config;

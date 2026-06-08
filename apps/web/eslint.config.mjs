@@ -1,4 +1,4 @@
-import base from '@delfrance/config-eslint';
+import base, { prettier } from '@delfrance/config-eslint';
 import next from 'eslint-config-next';
 
 const config = [
@@ -42,6 +42,9 @@ const config = [
       ],
     },
   },
+  // eslint-config-prettier LAST — disables stylistic rules that conflict with
+  // Prettier (formatting is owned by `prettier.config.mjs` / `pnpm format`).
+  prettier,
 ];
 
 export default config;

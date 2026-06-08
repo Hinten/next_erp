@@ -1,0 +1,24 @@
+# Build output
+**/.next/
+**/dist/
+**/out/
+**/build/
+**/coverage/
+**/.turbo/
+**/*.tsbuildinfo
+**/playwright-report/
+**/test-results/
+
+# Dependencies & lockfile
+**/node_modules/
+pnpm-lock.yaml
+
+# Codegen output (regenerated, never hand-formatted)
+**/generated/
+
+# Prose docs & agent instructions — excluded to avoid markdown reflow churn.
+# (Code, config, JSON/YAML and the root README are still formatted.)
+**/CLAUDE.md
+.github/
+apps/docs/
+.changeset/

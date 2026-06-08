@@ -1,6 +1,12 @@
 // Flat config base. Apps and packages extend this and add framework-specific
 // rules (e.g., apps/web extends with eslint-config-next).
 import noInlineAdminCollection from './rules/no-inline-admin-collection.js';
+import eslintConfigPrettier from 'eslint-config-prettier';
+
+// Re-export eslint-config-prettier so every consumer can append it as the LAST
+// element of its flat config, switching off any stylistic rules that would
+// conflict with Prettier. Centralized here so the dependency lives in one place.
+export const prettier = eslintConfigPrettier;
 
 const config = [
   {
