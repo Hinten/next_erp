@@ -287,7 +287,9 @@ function mapTransporte(t: TNFe_infNFe_transp | undefined): DanfeTransporte {
   };
 }
 
-function mapLocal(l: RawEndereco & { xNome?: string; CNPJ?: string; CPF?: string; IE?: string }): DanfeLocal {
+function mapLocal(
+  l: RawEndereco & { xNome?: string; CNPJ?: string; CPF?: string; IE?: string },
+): DanfeLocal {
   return {
     nome: l.xNome ?? null,
     cnpj: l.CNPJ ?? null,
@@ -315,9 +317,7 @@ function mapModel(infNFe: TNFe_infNFe, prot: DanfeProtocolo | null): DanfeModel 
       dhSaiEnt: ide.dhSaiEnt ?? null,
       tpNF: ide.tpNF,
       tpEmis: ide.tpEmis,
-      refNFes: (ide.NFref ?? [])
-        .map((r) => r.refNFe)
-        .filter((c): c is string => Boolean(c)),
+      refNFes: (ide.NFref ?? []).map((r) => r.refNFe).filter((c): c is string => Boolean(c)),
     },
     emit: {
       nome: emit.xNome,

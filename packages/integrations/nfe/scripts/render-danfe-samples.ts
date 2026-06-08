@@ -60,25 +60,34 @@ async function main(): Promise<void> {
   write('retrato-100-itens.pdf', await renderRetrato(big));
 
   // chNFe referenciada → aparece em informações complementares.
-  const nfref = PROCNFE_FIXTURE.replace('</ide>', `<NFref><refNFe>${REF_CHAVE}</refNFe></NFref></ide>`);
+  const nfref = PROCNFE_FIXTURE.replace(
+    '</ide>',
+    `<NFref><refNFe>${REF_CHAVE}</refNFe></NFref></ide>`,
+  );
   write('retrato-nfref.pdf', await renderRetrato(parseProcNFe(nfref)));
 
   // infCpl no limite do XML (5000 chars).
   const maxInfCpl: DanfeModel = {
     ...base,
-    infAdic: { infCpl: 'LOREM IPSUM DOLOR SIT AMET. '.repeat(200).slice(0, 5000), infAdFisco: 'INFO FISCO. '.repeat(40) },
+    infAdic: {
+      infCpl: 'LOREM IPSUM DOLOR SIT AMET. '.repeat(200).slice(0, 5000),
+      infAdFisco: 'INFO FISCO. '.repeat(40),
+    },
   };
   write('retrato-infcpl-max.pdf', await renderRetrato(maxInfCpl));
 
   // Caracteres escapados no XML.
-  const escaped = PROCNFE_FIXTURE.replace('CAMISETA ALGODAO PRETA M', 'CAMISETA P&amp;B &lt;PROMO&gt;').replace(
-    'ME ou EPP',
-    'ME &amp; EPP &gt; 2024',
-  );
+  const escaped = PROCNFE_FIXTURE.replace(
+    'CAMISETA ALGODAO PRETA M',
+    'CAMISETA P&amp;B &lt;PROMO&gt;',
+  ).replace('ME ou EPP', 'ME &amp; EPP &gt; 2024');
   write('retrato-escaped.pdf', await renderRetrato(parseProcNFe(escaped)));
 
   // Transportadora + local de entrega/retirada.
-  const entrega = PROCNFE_FIXTURE.replace('</dest>', `</dest>${local('retirada')}${local('entrega')}`);
+  const entrega = PROCNFE_FIXTURE.replace(
+    '</dest>',
+    `</dest>${local('retirada')}${local('entrega')}`,
+  );
   write('retrato-entrega-transp.pdf', await renderRetrato(parseProcNFe(entrega)));
 
   console.log('\nDone. Open the PDFs in', OUT_DIR);

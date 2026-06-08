@@ -72,10 +72,7 @@ export function DanfeMenu({ pedidoId, nfeId, size = 'xs', variant = 'light' }: D
         </Button>
       </Menu.Target>
       <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
-        <Menu.Item
-          leftSection={<IconFileText size={14} />}
-          onClick={() => void run('retrato')}
-        >
+        <Menu.Item leftSection={<IconFileText size={14} />} onClick={() => void run('retrato')}>
           Retrato A4 (PDF)
         </Menu.Item>
         <Menu.Item

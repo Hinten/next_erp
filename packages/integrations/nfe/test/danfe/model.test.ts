@@ -62,17 +62,20 @@ describe('danfe/model edge cases', () => {
   });
 
   it('unescapes XML-escaped characters in text fields', () => {
-    const xml = PROCNFE_FIXTURE.replace('CAMISETA ALGODAO PRETA M', 'CAMISETA P&amp;B &lt;PROMO&gt;').replace(
-      'ME ou EPP',
-      'ME &amp; EPP',
-    );
+    const xml = PROCNFE_FIXTURE.replace(
+      'CAMISETA ALGODAO PRETA M',
+      'CAMISETA P&amp;B &lt;PROMO&gt;',
+    ).replace('ME ou EPP', 'ME &amp; EPP');
     const m = parseProcNFe(xml);
     expect(m.itens[0]?.xProd).toBe('CAMISETA P&B <PROMO>');
     expect(m.infAdic.infCpl).toContain('ME & EPP');
   });
 
   it('separates infAdFisco (RESERVADO AO FISCO) from infCpl', () => {
-    const xml = PROCNFE_FIXTURE.replace('</infAdic>', '<infAdFisco>OBSERVACAO DE INTERESSE DO FISCO</infAdFisco></infAdic>');
+    const xml = PROCNFE_FIXTURE.replace(
+      '</infAdic>',
+      '<infAdFisco>OBSERVACAO DE INTERESSE DO FISCO</infAdFisco></infAdic>',
+    );
     const m = parseProcNFe(xml);
     expect(m.infAdic.infAdFisco).toBe('OBSERVACAO DE INTERESSE DO FISCO');
     expect(m.infAdic.infCpl).toContain('Simples Nacional');

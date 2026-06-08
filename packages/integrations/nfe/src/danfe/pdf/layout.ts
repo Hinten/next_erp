@@ -55,7 +55,7 @@ export function field(
       size: vs,
       bold: opts.valueBold,
       width: innerW,
-      align: opts.money ? 'right' : opts.valueAlign ?? 'left',
+      align: opts.money ? 'right' : (opts.valueAlign ?? 'left'),
       lineBreak: lines > 1,
       height: lines > 1 ? lines * (vs + 1) : undefined,
       ellipsis: true,
@@ -64,7 +64,14 @@ export function field(
 }
 
 /** A centered, bordered table-header cell (`Código Produto`, `NCM/SH`, …). */
-export function headerCell(doc: Doc, xCm: number, yCm: number, wCm: number, hCm: number, value: string): void {
+export function headerCell(
+  doc: Doc,
+  xCm: number,
+  yCm: number,
+  wCm: number,
+  hCm: number,
+  value: string,
+): void {
   strokeBox(doc, cm(xCm), cm(yCm), cm(wCm), cm(hCm));
   text(doc, value, cm(xCm) + 1, cm(yCm) + 1.5, {
     size: 5,
@@ -90,7 +97,7 @@ export function cell(
   text(doc, opts.money ? formatMoney(value) : value, cm(xCm) + 1.5, cm(yCm) + 1.5, {
     size: 5,
     width: cm(wCm) - 3,
-    align: opts.money ? 'right' : opts.align ?? 'left',
+    align: opts.money ? 'right' : (opts.align ?? 'left'),
     lineBreak: lines > 1,
     height: lines > 1 ? cm(hCm) - 2 : undefined,
     ellipsis: true,

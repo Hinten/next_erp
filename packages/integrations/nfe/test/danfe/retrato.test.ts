@@ -83,7 +83,10 @@ describe('danfe/pdf retrato (A4)', () => {
   });
 
   it('keeps a short infCpl on a single page', async () => {
-    const small = { ...model, infAdic: { infCpl: 'Observação curta de teste.', infAdFisco: 'Fisco.' } };
+    const small = {
+      ...model,
+      infAdic: { infCpl: 'Observação curta de teste.', infAdFisco: 'Fisco.' },
+    };
     expect(pageCount(await renderRetrato(small))).toBe(1);
   });
 
@@ -92,7 +95,10 @@ describe('danfe/pdf retrato (A4)', () => {
       `<${tag}><xNome>LOCAL ${tag.toUpperCase()}</xNome><CNPJ>11222333000181</CNPJ>` +
       `<xLgr>RUA EXEMPLO</xLgr><nro>10</nro><xBairro>CENTRO</xBairro><cMun>3550308</cMun>` +
       `<xMun>SAO PAULO</xMun><UF>SP</UF><CEP>01001000</CEP></${tag}>`;
-    const xml = PROCNFE_FIXTURE.replace('</dest>', `</dest>${local('retirada')}${local('entrega')}`);
+    const xml = PROCNFE_FIXTURE.replace(
+      '</dest>',
+      `</dest>${local('retirada')}${local('entrega')}`,
+    );
     const m2 = parseProcNFe(xml);
     expect(m2.retirada?.nome).toBe('LOCAL RETIRADA');
     expect(m2.entrega?.nome).toBe('LOCAL ENTREGA');
