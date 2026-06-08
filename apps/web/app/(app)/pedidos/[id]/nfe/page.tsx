@@ -10,15 +10,20 @@
 import { useMemo } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { Anchor, Badge, Card, Group, type MantineColor, Skeleton, Stack, Text, Title } from '@mantine/core';
+import {
+  Anchor,
+  Badge,
+  Card,
+  Group,
+  type MantineColor,
+  Skeleton,
+  Stack,
+  Text,
+  Title,
+} from '@mantine/core';
 import { PERM } from '@delfrance/auth';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
-import {
-  ESTADO_NFE,
-  ESTADO_NFE_LABELS,
-  type EstadoNFe,
-  type Pedido,
-} from '@delfrance/schemas';
+import { ESTADO_NFE, ESTADO_NFE_LABELS, type EstadoNFe, type Pedido } from '@delfrance/schemas';
 
 import { RequirePerm } from '@/lib/auth';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
@@ -84,9 +89,7 @@ function PedidoNfeContent() {
             <Stack gap="sm">
               <Group justify="space-between" align="center" wrap="nowrap">
                 <Group gap="sm" wrap="nowrap">
-                  <Badge color={estadoColor(estado)}>
-                    {ESTADO_NFE_LABELS[estado] ?? estado}
-                  </Badge>
+                  <Badge color={estadoColor(estado)}>{ESTADO_NFE_LABELS[estado] ?? estado}</Badge>
                   <Text fw={500}>
                     NF-e nº {nfe.numeracao} · série {nfe.serie}
                   </Text>

@@ -92,12 +92,14 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
         const prefix = `${path}/`;
         let items = Object.entries(docs)
           .filter(
-            ([k, v]) =>
-              k.startsWith(prefix) && v != null && !k.slice(prefix.length).includes('/'),
+            ([k, v]) => k.startsWith(prefix) && v != null && !k.slice(prefix.length).includes('/'),
           )
           .map(([k, v]) => ({ id: k.slice(prefix.length), data: v as Record<string, unknown> }));
         for (const w of wheres) items = items.filter((it) => it.data[w.field] === w.value);
-        return { size: items.length, docs: items.map((it) => ({ id: it.id, data: () => it.data })) };
+        return {
+          size: items.length,
+          docs: items.map((it) => ({ id: it.id, data: () => it.data })),
+        };
       },
     };
   }

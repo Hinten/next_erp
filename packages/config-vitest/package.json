@@ -6,5 +6,7 @@
   "exports": {
     "./env": "./env.js"
   },
-  "files": ["env.js"]
+  "files": [
+    "env.js"
+  ]
 }

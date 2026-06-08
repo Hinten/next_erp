@@ -97,9 +97,9 @@ describe('loadCertificateFromPath', () => {
   });
 
   it('throws NFeCertError on missing file', () => {
-    expect(() =>
-      loadCertificateFromPath(join(tempDir, 'does-not-exist.pfx'), 'pwd'),
-    ).toThrow(NFeCertError);
+    expect(() => loadCertificateFromPath(join(tempDir, 'does-not-exist.pfx'), 'pwd')).toThrow(
+      NFeCertError,
+    );
   });
 
   it('throws NFeCertError on wrong password', () => {
@@ -293,7 +293,7 @@ describe('warnIfCertNearExpiry', () => {
 });
 
 describe('CNPJ extraction from Subject CN', () => {
-  it('extracts a 14-digit CNPJ (today\'s pre-July-2026 format)', () => {
+  it("extracts a 14-digit CNPJ (today's pre-July-2026 format)", () => {
     // CN suffix is the universally-recognized "fake CNPJ" placeholder
     // used across SEFAZ test packs. We assert format, not the specific
     // 14 digits — the test owns both sides of the fixture, so a format

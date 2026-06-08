@@ -30,8 +30,23 @@ import { fmtMoney } from './format';
  * '17' Pix, '99' outros.
  */
 export const tPagSchema = z.enum([
-  '01', '02', '03', '04', '05', '10', '11', '12', '13', '14',
-  '15', '16', '17', '18', '19', '90', '99',
+  '01',
+  '02',
+  '03',
+  '04',
+  '05',
+  '10',
+  '11',
+  '12',
+  '13',
+  '14',
+  '15',
+  '16',
+  '17',
+  '18',
+  '19',
+  '90',
+  '99',
 ]);
 export type TPag = z.infer<typeof tPagSchema>;
 
@@ -104,9 +119,7 @@ function toDetPag(p: Payment): TNFe_infNFe_pag_detPag {
  * (DANFE renderer, fiscal audit, …); use `buildPagXml` to emit the
  * wire XML directly.
  */
-export function buildPagObject(
-  payments: ReadonlyArray<Payment>,
-): TNFe_infNFe_pag {
+export function buildPagObject(payments: ReadonlyArray<Payment>): TNFe_infNFe_pag {
   if (payments.length === 0) {
     throw new Error('buildPagObject: at least one payment is required');
   }

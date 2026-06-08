@@ -7,17 +7,17 @@ is sent to SEFAZ — making it the anchor for loss recovery.
 
 ## Composition (layout 4.00)
 
-| Pos | Field | Digits | Source (id) |
-|----:|---|---:|---|
-| 1 | `cUF` — IBGE code of the issuer's state | 2 | B02 |
-| 2 | `AAMM` — year+month of emission | 4 | from B09 (`dhEmi`) |
-| 3 | `CNPJ`/`CPF` of the issuer | 14 | C02 / C02a |
-| 4 | `mod` — document model (`55`) | 2 | B06 |
-| 5 | `serie` | 3 | B07 |
-| 6 | `nNF` — NF-e number | 9 | B08 |
-| 7 | `tpEmis` — emission type | 1 | B22 |
-| 8 | `cNF` — random numeric code | 8 | B03 |
-| 9 | `cDV` — check digit | 1 | B23 |
+| Pos | Field                                   | Digits | Source (id)        |
+| --: | --------------------------------------- | -----: | ------------------ |
+|   1 | `cUF` — IBGE code of the issuer's state |      2 | B02                |
+|   2 | `AAMM` — year+month of emission         |      4 | from B09 (`dhEmi`) |
+|   3 | `CNPJ`/`CPF` of the issuer              |     14 | C02 / C02a         |
+|   4 | `mod` — document model (`55`)           |      2 | B06                |
+|   5 | `serie`                                 |      3 | B07                |
+|   6 | `nNF` — NF-e number                     |      9 | B08                |
+|   7 | `tpEmis` — emission type                |      1 | B22                |
+|   8 | `cNF` — random numeric code             |      8 | B03                |
+|   9 | `cDV` — check digit                     |      1 | B23                |
 
 Total: 2+4+14+2+3+9+1+8+1 = **44**.
 
@@ -40,7 +40,8 @@ Computed over the **first 43 digits**:
 
 ```ts
 function calcDV(chave43: string): number {
-  let soma = 0, peso = 2;
+  let soma = 0,
+    peso = 2;
   for (let i = chave43.length - 1; i >= 0; i--) {
     soma += Number(chave43[i]) * peso;
     peso = peso === 9 ? 2 : peso + 1;
@@ -53,7 +54,7 @@ function calcDV(chave43: string): number {
 ## Chave Natural
 
 A **subset** of the key — `UF + CNPJ/CPF + modelo + série + número` (plus
-`tpEmis` for NFC-e) — is the *natural key*. SEFAZ rejects a new authorization
+`tpEmis` for NFC-e) — is the _natural key_. SEFAZ rejects a new authorization
 request when an NF-e with the same natural key already exists. This is the root
 cause of the **duplicidade** rejections (see `cstat-rejeicoes.md`): resending an
 NF-e (even after a lost response) collides on the natural key.

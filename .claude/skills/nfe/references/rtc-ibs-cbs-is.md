@@ -8,22 +8,22 @@ Legal basis: **Lei Complementar 214/2025** + **EC 132/2023**, regulated by
 
 Three new taxes enter the NF-e layout 4.00 at the item level and totals:
 
-| Tributo | Federal? | Detalhes |
-|---|---|---|
-| **IBS** — Imposto sobre Bens e Serviços | State + municipal (split UF / Município) | Replaces ICMS + ISS (long transition) |
-| **CBS** — Contribuição sobre Bens e Serviços | Federal | Replaces PIS + COFINS |
-| **IS**  — Imposto Seletivo | Federal | "Sin tax" on health/environment-harmful goods |
+| Tributo                                      | Federal?                                 | Detalhes                                      |
+| -------------------------------------------- | ---------------------------------------- | --------------------------------------------- |
+| **IBS** — Imposto sobre Bens e Serviços      | State + municipal (split UF / Município) | Replaces ICMS + ISS (long transition)         |
+| **CBS** — Contribuição sobre Bens e Serviços | Federal                                  | Replaces PIS + COFINS                         |
+| **IS** — Imposto Seletivo                    | Federal                                  | "Sin tax" on health/environment-harmful goods |
 
 ### Cronograma (CRT=3 — Regime Normal)
 
-| Phase | What |
-|---|---|
-| **Jul/2025** | Campos IBS/CBS facultativos em homologação; em produção **erro de schema se enviados**. |
-| **Out/2025** | Facultativos em ambos; **sem valor jurídico**. |
-| **01/01/2026** | **Valor jurídico** quando preenchidos. Ainda facultativos por RV. |
-| **01/07/2026** | **Obrigatórios em homologação** (RV UB12-10 começa a rejeitar ausência). |
-| **03/08/2026** | **Obrigatórios em produção** (RV UB12-10). Esta é a data-limite real. |
-| **2027+** | Alíquotas reduzidas (pIBSUF/pIBSMun de 0,1% → 0,05% para 2027-2028); referência publicada para anos posteriores. |
+| Phase          | What                                                                                                                                                              |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Jul/2025**   | Campos IBS/CBS facultativos em homologação; em produção **erro de schema se enviados**.                                                                           |
+| **Out/2025**   | Facultativos em ambos; **sem valor jurídico**.                                                                                                                    |
+| **01/01/2026** | **Valor jurídico** quando preenchidos. Ainda facultativos por RV.                                                                                                 |
+| **01/07/2026** | **Obrigatórios em homologação** (RV UB12-10 começa a rejeitar ausência).                                                                                          |
+| **03/08/2026** | **Obrigatórios em produção** (RV UB12-10). Esta é a data-limite real.                                                                                             |
+| **2027+**      | Alíquotas reduzidas (pIBSUF/pIBSMun de 0,1% → 0,05% para 2027-2028); referência publicada para anos posteriores.                                                  |
 | **04/01/2027** | Obrigatoriedade estende-se a CRT=1 (Simples), CRT=2 (Simples-Excesso), CRT=4 (MEI) e Tributação Monofásica de Combustíveis — quando NT futura publicar as regras. |
 
 **Until 03/08/2026 the skill should default to NOT emitting RTC groups in
@@ -136,6 +136,7 @@ behavior dynamically.
   the corresponding subgroup; sending a forbidden subgroup → rejection.
 
 Common cClassTrib examples (from validation tables):
+
 - `410030` — Estorno de crédito por perda (tpNFDebito=07)
 - `800001` — Transferência de crédito do associado (cooperativa)
 - `800002` — Fusão/cisão/incorporação
@@ -163,6 +164,7 @@ Com sub-campos obrigatórios `tpNFDebito` (B25.1) ou `tpNFCredito` (B25.2),
 conforme a finalidade.
 
 **`tpNFDebito` valores:**
+
 1. Transferência de créditos para Cooperativas
 2. Anulação de Crédito por Saídas Imunes/Isentas
 3. Débitos de notas fiscais não processadas na apuração
@@ -173,6 +175,7 @@ conforme a finalidade.
 8. Desenquadramento do SN
 
 **`tpNFCredito` valores:**
+
 1. Multa e Juros
 2. Apropriação de crédito presumido de IBS sobre o saldo devedor na ZFM
    (art. 450, § 1º, LC 214/25)
@@ -219,38 +222,38 @@ antecipado) a referenciamento via gPagAntecipado.
 
 ## Outras inclusões no Grupo B (Identificação)
 
-| Campo | ID | Descrição |
-|---|---|---|
+| Campo          | ID   | Descrição                                                                                                                                                                                            |
+| -------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dPrevEntrega` | B10a | Data prevista de entrega/disponibilização. Obrigatório calcular para frete CIF (modFrete=0, 1) e finNFe=1 ou 4. Limites: até 3 meses após `dhSaiEnt`; nunca anterior. Atualizável via Evento 112150. |
-| `cMunFGIBS` | B12a | Município de consumo (fato gerador IBS/CBS). Só preenchido quando `indPres=5` (operação presencial fora do estabelecimento) e nem endereço dest nem local de entrega informados. |
-| `cIndOp` | B25d | Código indicador do local da operação. Obrigatório quando: `010104` = leilão judicial / licitação pública; `010105` = constatação de irregularidade por fiscalização. |
+| `cMunFGIBS`    | B12a | Município de consumo (fato gerador IBS/CBS). Só preenchido quando `indPres=5` (operação presencial fora do estabelecimento) e nem endereço dest nem local de entrega informados.                     |
+| `cIndOp`       | B25d | Código indicador do local da operação. Obrigatório quando: `010104` = leilão judicial / licitação pública; `010105` = constatação de irregularidade por fiscalização.                                |
 
 ## Outras inclusões no Grupo C (Emitente)
 
-| Campo | ID | Descrição |
-|---|---|---|
+| Campo      | ID  | Descrição                                                                                                                                                                            |
+| ---------- | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ISUFEmit` | C22 | Inscrição SUFRAMA do emitente. Obrigatório quando operação se beneficia de alíquota zero CBS em ZFM/ALC (arts. 451 e 466 LC 214/25). 8-9 dígitos. Verificador DV validado em C22-20. |
 
 ## Eventos novos da RTC (todos para NF-e modelo 55)
 
-| Código | Evento | Autor |
-|---|---|---|
-| `112110` | Informação de efetivo pagamento integral (libera crédito presumido) | Emitente |
-| `112120` | Importação em ALC/ZFM não convertida em isenção | Emitente |
-| `112130` | Perecimento/perda/roubo/furto em transporte CIF | Emitente |
-| `112140` | Fornecimento não realizado com pagamento antecipado | Emitente |
-| `112150` | Atualização da Data de Previsão de Entrega | Emitente |
-| `211110` | Solicitação de Apropriação de crédito presumido | Emitente ou Destinatário |
-| `211124` | Perecimento em transporte FOB (autor adquirente) | Destinatário |
-| `211128` | Aceite de débito na apuração por emissão de nota de crédito | Destinatário |
-| `211130` | Imobilização de Item (ativo imobilizado) | Destinatário |
-| `211140` | Solicitação de Apropriação de Crédito de Combustível | Destinatário |
-| `211150` | Solicitação de Apropriação de Crédito (depende da atividade do adquirente) | Destinatário |
-| `212110` | Manifestação sobre Pedido de Transferência de Crédito de IBS em Sucessão | Sucessora |
-| `212120` | Idem CBS | Sucessora |
-| `412120` | Manifestação do Fisco sobre Pedido de Transferência IBS Sucessão | Fisco |
-| `412130` | Idem CBS | Fisco |
-| `110001` | **Cancelamento genérico de qualquer evento** acima | Mesmo autor do evento cancelado |
+| Código   | Evento                                                                     | Autor                           |
+| -------- | -------------------------------------------------------------------------- | ------------------------------- |
+| `112110` | Informação de efetivo pagamento integral (libera crédito presumido)        | Emitente                        |
+| `112120` | Importação em ALC/ZFM não convertida em isenção                            | Emitente                        |
+| `112130` | Perecimento/perda/roubo/furto em transporte CIF                            | Emitente                        |
+| `112140` | Fornecimento não realizado com pagamento antecipado                        | Emitente                        |
+| `112150` | Atualização da Data de Previsão de Entrega                                 | Emitente                        |
+| `211110` | Solicitação de Apropriação de crédito presumido                            | Emitente ou Destinatário        |
+| `211124` | Perecimento em transporte FOB (autor adquirente)                           | Destinatário                    |
+| `211128` | Aceite de débito na apuração por emissão de nota de crédito                | Destinatário                    |
+| `211130` | Imobilização de Item (ativo imobilizado)                                   | Destinatário                    |
+| `211140` | Solicitação de Apropriação de Crédito de Combustível                       | Destinatário                    |
+| `211150` | Solicitação de Apropriação de Crédito (depende da atividade do adquirente) | Destinatário                    |
+| `212110` | Manifestação sobre Pedido de Transferência de Crédito de IBS em Sucessão   | Sucessora                       |
+| `212120` | Idem CBS                                                                   | Sucessora                       |
+| `412120` | Manifestação do Fisco sobre Pedido de Transferência IBS Sucessão           | Fisco                           |
+| `412130` | Idem CBS                                                                   | Fisco                           |
+| `110001` | **Cancelamento genérico de qualquer evento** acima                         | Mesmo autor do evento cancelado |
 
 > **Lote de eventos**: o WS de eventos historicamente aceita até 20 eventos
 > em uma requisição, mas a NT **orienta explicitamente** que para esses
@@ -282,43 +285,43 @@ Categorização por área. Lista completa no PDF (~150 RVs novas).
 
 ### Identificação e finalidades
 
-| RV | cStat | Quando rejeita |
-|---|---|---|
-| `B10a-10` | 1153 | NFC-e com dPrevEntrega informado |
-| `B10a-20` | 1154 | dPrevEntrega > 3 meses após dhSaiEnt |
-| `B10a-30` | 1155 | dPrevEntrega anterior a dhSaiEnt |
-| `B10a-40` | 1156 | dPrevEntrega informado para finNFe ≠ 1 (normal) ou 4 (devolução) |
-| `B25-30` a `B25-50` | 254/255/269 | NF-e referenciada ausente/duplicada/CNPJ divergente para finNFe=2/5/6 |
-| `B25-80` | 1001 | Crédito/Débito com ICMS/ISSQN/PIS/COFINS informado (deveria só ter IBS/CBS) |
-| `B25-100` | 1003 | NF-e de Crédito referenciando modelo ≠ 55 |
-| `B25.2-30` | 1145 | NF-e de Crédito tipo 2 (ZFM) com ano emissão < 2029 |
+| RV                  | cStat       | Quando rejeita                                                              |
+| ------------------- | ----------- | --------------------------------------------------------------------------- |
+| `B10a-10`           | 1153        | NFC-e com dPrevEntrega informado                                            |
+| `B10a-20`           | 1154        | dPrevEntrega > 3 meses após dhSaiEnt                                        |
+| `B10a-30`           | 1155        | dPrevEntrega anterior a dhSaiEnt                                            |
+| `B10a-40`           | 1156        | dPrevEntrega informado para finNFe ≠ 1 (normal) ou 4 (devolução)            |
+| `B25-30` a `B25-50` | 254/255/269 | NF-e referenciada ausente/duplicada/CNPJ divergente para finNFe=2/5/6       |
+| `B25-80`            | 1001        | Crédito/Débito com ICMS/ISSQN/PIS/COFINS informado (deveria só ter IBS/CBS) |
+| `B25-100`           | 1003        | NF-e de Crédito referenciando modelo ≠ 55                                   |
+| `B25.2-30`          | 1145        | NF-e de Crédito tipo 2 (ZFM) com ano emissão < 2029                         |
 
 ### IBS/CBS — Item
 
-| RV | cStat | Quando rejeita |
-|---|---|---|
-| `UB12-10` | 1115 | **IBS/CBS não informado** (obrigatório CRT=3 desde 03/08/2026; CRT=1/2/4 desde 04/01/2027). Exceções: NF-e devolução/complementar referenciando NF-e pré-2026; combustíveis na tabela monofásica. |
-| `UB13-10` | 1020 | CST IBS/CBS inexistente |
-| `UB13-20` | 1021 | gIBSCBS informado quando CST não permite |
-| `UB13-30` | 1022 | gIBSCBS ausente quando CST exige |
-| `UB14-10` | 1023 | cClassTrib inexistente |
-| `UB14-20` | 1024 | cClassTrib incompatível com CST |
-| `UB14-60` | 1202 | cClassTrib incompatível com tpNFDebito/Credito |
-| `UB16-10` | 1104 | Base de cálculo IBS/CBS difere do somatório |
-| `UB18-10` | 1026 | pIBSUF inválida para o ano (0,1% em 2025-2026, 0,05% em 2027-2028) |
-| `UB35-10` | 1041 | vIBSUF difere do calculado |
-| `UB56-10` | 1037 | pCBS inválida (0,9% em 2025-2026; alíquota efetiva após 2027) |
-| `UB66a-10/20` | 1190/1191 | gALCZFMCBS sem ISUFEmit OU produto fora da lista permitida em ZFM |
+| RV            | cStat     | Quando rejeita                                                                                                                                                                                    |
+| ------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UB12-10`     | 1115      | **IBS/CBS não informado** (obrigatório CRT=3 desde 03/08/2026; CRT=1/2/4 desde 04/01/2027). Exceções: NF-e devolução/complementar referenciando NF-e pré-2026; combustíveis na tabela monofásica. |
+| `UB13-10`     | 1020      | CST IBS/CBS inexistente                                                                                                                                                                           |
+| `UB13-20`     | 1021      | gIBSCBS informado quando CST não permite                                                                                                                                                          |
+| `UB13-30`     | 1022      | gIBSCBS ausente quando CST exige                                                                                                                                                                  |
+| `UB14-10`     | 1023      | cClassTrib inexistente                                                                                                                                                                            |
+| `UB14-20`     | 1024      | cClassTrib incompatível com CST                                                                                                                                                                   |
+| `UB14-60`     | 1202      | cClassTrib incompatível com tpNFDebito/Credito                                                                                                                                                    |
+| `UB16-10`     | 1104      | Base de cálculo IBS/CBS difere do somatório                                                                                                                                                       |
+| `UB18-10`     | 1026      | pIBSUF inválida para o ano (0,1% em 2025-2026, 0,05% em 2027-2028)                                                                                                                                |
+| `UB35-10`     | 1041      | vIBSUF difere do calculado                                                                                                                                                                        |
+| `UB56-10`     | 1037      | pCBS inválida (0,9% em 2025-2026; alíquota efetiva após 2027)                                                                                                                                     |
+| `UB66a-10/20` | 1190/1191 | gALCZFMCBS sem ISUFEmit OU produto fora da lista permitida em ZFM                                                                                                                                 |
 
 ### Total
 
-| RV | cStat | Quando rejeita |
-|---|---|---|
-| `W07-10` | 564 | Total dos itens difere do somatório (incluindo IBS/CBS/IS via indTot=1) |
-| `W34-10/20` | 1118/1119 | Total IBSCBSTot informado/ausente incorretamente |
-| `W47-10` | 1085 | Total IBS difere da soma dos vIBS dos itens |
-| `W56-10` | 1091 | Total CBS difere da soma dos vCBS |
-| `W60-10` | 1094 | vNFTot difere da soma dos vItem |
+| RV          | cStat     | Quando rejeita                                                          |
+| ----------- | --------- | ----------------------------------------------------------------------- |
+| `W07-10`    | 564       | Total dos itens difere do somatório (incluindo IBS/CBS/IS via indTot=1) |
+| `W34-10/20` | 1118/1119 | Total IBSCBSTot informado/ausente incorretamente                        |
+| `W47-10`    | 1085      | Total IBS difere da soma dos vIBS dos itens                             |
+| `W56-10`    | 1091      | Total CBS difere da soma dos vCBS                                       |
+| `W60-10`    | 1094      | vNFTot difere da soma dos vItem                                         |
 
 ## Notas para implementação
 
@@ -341,13 +344,13 @@ Categorização por área. Lista completa no PDF (~150 RVs novas).
 
 ## Schemas
 
-| Arquivo | Propósito |
-|---|---|
-| `DFeTiposBasicos_v1.00.xsd` | Tipos básicos compartilhados (CST, cClassTrib, etc.) |
-| `nfe_v4.00.xsd` | Layout da NF-e atualizado |
-| `envEventoNFe_v9.99.xsd` | Wrapper genérico de envio de eventos |
+| Arquivo                                   | Propósito                                                              |
+| ----------------------------------------- | ---------------------------------------------------------------------- |
+| `DFeTiposBasicos_v1.00.xsd`               | Tipos básicos compartilhados (CST, cClassTrib, etc.)                   |
+| `nfe_v4.00.xsd`                           | Layout da NF-e atualizado                                              |
+| `envEventoNFe_v9.99.xsd`                  | Wrapper genérico de envio de eventos                                   |
 | `e112110_v1.00.xsd` … `e412130_v1.00.xsd` | Schemas específicos por evento (um por código de evento listado acima) |
-| `retEnviNFe_v2.00.xsd` | Retorno enviNFe com cStat de 4 dígitos e nProt de 15/17 |
+| `retEnviNFe_v2.00.xsd`                    | Retorno enviNFe com cStat de 4 dígitos e nProt de 15/17                |
 
 Quando este projeto regenerar tipos TypeScript a partir dos XSDs (vide
 `codegen.md`), incluir esses schemas — eles ainda não estão sob

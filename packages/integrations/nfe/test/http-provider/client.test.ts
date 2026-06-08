@@ -181,9 +181,7 @@ describe('createNFeHttpClient — consultar', () => {
         raw: { dummy: true },
       },
     });
-    const got = await makeClient(fetch).consultar(
-      '35260514200166000187550010000000071000000018',
-    );
+    const got = await makeClient(fetch).consultar('35260514200166000187550010000000071000000018');
 
     expect(got.cStat).toBe('100');
     expect(got.nProt).toBe('12345');
@@ -225,7 +223,11 @@ describe('createNFeHttpClient — cancelar', () => {
 
   it('POSTs to /api/nfe/cancelar with { pedidoId, nfeId, xJust } + Bearer token', async () => {
     const fetch = mockFetch({ status: 200, body: cancelled });
-    const got = await makeClient(fetch).cancelar('PED-001', 'nfev4-001', 'Cancelamento por erro de digitacao');
+    const got = await makeClient(fetch).cancelar(
+      'PED-001',
+      'nfev4-001',
+      'Cancelamento por erro de digitacao',
+    );
 
     expect(got).toEqual(cancelled);
     const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
@@ -242,7 +244,11 @@ describe('createNFeHttpClient — cancelar', () => {
   it('maps 404 → NFePedidoNotFoundError carrying the pedidoId', async () => {
     const fetch = mockFetch({ status: 404, body: { error: 'no nfev4 doc' } });
     try {
-      await makeClient(fetch).cancelar('PED-MISSING', 'nfev4-001', 'Cancelamento de teste invalido');
+      await makeClient(fetch).cancelar(
+        'PED-MISSING',
+        'nfev4-001',
+        'Cancelamento de teste invalido',
+      );
       throw new Error('expected throw');
     } catch (err) {
       expect(err).toBeInstanceOf(NFePedidoNotFoundError);
@@ -262,9 +268,9 @@ describe('createNFeHttpClient — cancelar', () => {
 
   it('maps 400 → NFeBadRequestError (xJust too short)', async () => {
     const fetch = mockFetch({ status: 400, body: { error: 'Bad body' } });
-    await expect(makeClient(fetch).cancelar('PED-001', 'nfev4-001', 'curto')).rejects.toBeInstanceOf(
-      NFeBadRequestError,
-    );
+    await expect(
+      makeClient(fetch).cancelar('PED-001', 'nfev4-001', 'curto'),
+    ).rejects.toBeInstanceOf(NFeBadRequestError);
   });
 });
 
@@ -357,7 +363,10 @@ describe('createNFeHttpClient — inutilizar', () => {
 
 describe('createNFeHttpClient — baseUrl normalisation', () => {
   it('strips a single trailing slash off baseUrl', async () => {
-    const fetch = mockFetch({ status: 200, body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 } });
+    const fetch = mockFetch({
+      status: 200,
+      body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 },
+    });
     const client = createNFeHttpClient({
       baseUrl: 'http://localhost:3004/',
       getAuthToken: async () => TOKEN,
@@ -369,7 +378,10 @@ describe('createNFeHttpClient — baseUrl normalisation', () => {
   });
 
   it('calls getAuthToken on every request (token refresh)', async () => {
-    const fetch = mockFetch({ status: 200, body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 } });
+    const fetch = mockFetch({
+      status: 200,
+      body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 },
+    });
     const getAuthToken = vi.fn().mockResolvedValue(TOKEN);
     const client = createNFeHttpClient({
       baseUrl: 'http://localhost:3004',

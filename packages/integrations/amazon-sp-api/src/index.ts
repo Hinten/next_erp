@@ -20,17 +20,25 @@ export class AmazonSpApiNotConfiguredError extends Error {
   }
 }
 
-export function createAmazonSpApiChannel(
-  _config: AmazonSpApiConfig,
-): MarketplaceChannel {
+export function createAmazonSpApiChannel(_config: AmazonSpApiConfig): MarketplaceChannel {
   return {
     id: 'amazon-sp-api',
-    syncProducts: async () => { throw new AmazonSpApiNotConfiguredError(); },
-    pullOrders: async () => { throw new AmazonSpApiNotConfiguredError(); },
-    pushTracking: async () => { throw new AmazonSpApiNotConfiguredError(); },
+    syncProducts: async () => {
+      throw new AmazonSpApiNotConfiguredError();
+    },
+    pullOrders: async () => {
+      throw new AmazonSpApiNotConfiguredError();
+    },
+    pushTracking: async () => {
+      throw new AmazonSpApiNotConfiguredError();
+    },
     oauthFlow: {
-      start: () => { throw new AmazonSpApiNotConfiguredError(); },
-      callback: async () => { throw new AmazonSpApiNotConfiguredError(); },
+      start: () => {
+        throw new AmazonSpApiNotConfiguredError();
+      },
+      callback: async () => {
+        throw new AmazonSpApiNotConfiguredError();
+      },
     },
   };
 }

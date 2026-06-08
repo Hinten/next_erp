@@ -89,9 +89,7 @@ describe('nextNumeracao', () => {
   });
 
   it('throws NFeConfigNotFoundError when the filial has no config', async () => {
-    await expect(nextNumeracao(store, 'UNKNOWN')).rejects.toBeInstanceOf(
-      NFeConfigNotFoundError,
-    );
+    await expect(nextNumeracao(store, 'UNKNOWN')).rejects.toBeInstanceOf(NFeConfigNotFoundError);
   });
 
   it('serialises concurrent calls — no duplicates, no gaps', async () => {

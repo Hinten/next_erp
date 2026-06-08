@@ -17,7 +17,12 @@ describe('serialize', () => {
   });
 
   it('emits no formatting whitespace between tags', () => {
-    const xml = serialize('consStatServ', { tpAmb: '2', cUF: '35', xServ: 'STATUS', versao: '4.00' });
+    const xml = serialize('consStatServ', {
+      tpAmb: '2',
+      cUF: '35',
+      xServ: 'STATUS',
+      versao: '4.00',
+    });
     expect(xml).not.toMatch(/>\s+</);
   });
 
@@ -81,9 +86,7 @@ describe('ROOTS xmlName for tpEvento-keyed event payloads', () => {
       xCorrecao: 'Correcao de teste com ao menos quinze caracteres',
       xCondUso: 'texto fixo de condicoes de uso',
     });
-    expect(xml).toContain(
-      '<detEvento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00">',
-    );
+    expect(xml).toContain('<detEvento xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00">');
     expect(xml).not.toContain('detEvento_e110110');
   });
 

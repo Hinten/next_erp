@@ -41,11 +41,7 @@ test.describe.serial('Depositos e2e — TableView / ObjectView', () => {
     test.setTimeout(240_000);
     await Promise.all([
       seedDepositos(prefix, 7),
-      warmRoutes(browser, [
-        '/depositos',
-        '/depositos/novo',
-        '/depositos/__aquecimento__',
-      ]),
+      warmRoutes(browser, ['/depositos', '/depositos/novo', '/depositos/__aquecimento__']),
     ]);
   });
 
@@ -55,16 +51,12 @@ test.describe.serial('Depositos e2e — TableView / ObjectView', () => {
 
   test('TableView query works without a filter', async ({ page }) => {
     await page.goto('/depositos');
-    await expect(
-      page.getByRole('heading', { name: 'Depósitos de estoque' }),
-    ).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Depósitos de estoque' })).toBeVisible();
     await expect(page.getByRole('table')).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText('Erro ao carregar')).toHaveCount(0);
   });
 
-  test('filters rows by the Nome (text) and Ativo (boolean) columns', async ({
-    page,
-  }) => {
+  test('filters rows by the Nome (text) and Ativo (boolean) columns', async ({ page }) => {
     await page.goto('/depositos');
     await applyTextFilter(page, 'Nome', row(3));
     await expectRowVisible(page, row(3));
@@ -102,9 +94,7 @@ test.describe.serial('Depositos e2e — TableView / ObjectView', () => {
     await page.goto('/depositos');
     await page.getByRole('link', { name: 'Novo depósito' }).click();
     await expect(page).toHaveURL(/\/depositos\/novo$/);
-    await expect(
-      page.getByRole('heading', { name: 'Novo depósito' }),
-    ).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Novo depósito' })).toBeVisible();
   });
 
   test('creates a new deposito', async ({ page }) => {
@@ -113,23 +103,17 @@ test.describe.serial('Depositos e2e — TableView / ObjectView', () => {
     await fillField(page, 'Nome', nome);
     await clickSave(page, 'Criar');
     await page.waitForURL(
-      (url) =>
-        /^\/depositos\/[^/]+$/.test(url.pathname) &&
-        url.pathname !== '/depositos/novo',
+      (url) => /^\/depositos\/[^/]+$/.test(url.pathname) && url.pathname !== '/depositos/novo',
       { timeout: 15_000 },
     );
-    await expect
-      .poll(() => docExistsByName('depositos', nome), { timeout: 15_000 })
-      .toBe(true);
+    await expect.poll(() => docExistsByName('depositos', nome), { timeout: 15_000 }).toBe(true);
 
     await page.goto('/depositos');
     await applyTextFilter(page, 'Nome', nome);
     await expectRowVisible(page, nome);
   });
 
-  test('rejects creating a deposito without a Nome (required field)', async ({
-    page,
-  }) => {
+  test('rejects creating a deposito without a Nome (required field)', async ({ page }) => {
     await page.goto('/depositos/novo');
     await clickSave(page, 'Criar');
     await expectFieldError(page, 'Nome');
@@ -144,9 +128,7 @@ test.describe.serial('Depositos e2e — TableView / ObjectView', () => {
     await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(row(2));
   });
 
-  test('warns about unsaved changes when leaving the edit page', async ({
-    page,
-  }) => {
+  test('warns about unsaved changes when leaving the edit page', async ({ page }) => {
     await page.goto(`/depositos/${row(4)}`);
     await fillField(page, 'Nome', `${prefix}-004-edicao-nao-salva`);
 
@@ -167,9 +149,7 @@ test.describe.serial('Depositos e2e — TableView / ObjectView', () => {
     await page.waitForURL(/\/depositos$/, { timeout: 15_000 });
 
     await page.goto(`/depositos/${row(5)}`);
-    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(
-      `${prefix}-005-editado`,
-    );
+    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(`${prefix}-005-editado`);
   });
 
   test('edits a deposito and continues editing', async ({ page }) => {
@@ -209,9 +189,7 @@ test.describe.serial('Depositos e2e — TableView / ObjectView', () => {
     await expect(page).not.toHaveURL(/nome=contains/);
   });
 
-  test('keeps the sort in the URL and persists hidden columns', async ({
-    page,
-  }) => {
+  test('keeps the sort in the URL and persists hidden columns', async ({ page }) => {
     await page.goto('/depositos');
     await clickColumnSort(page, 'Ativo');
     await expect(page).toHaveURL(/sort=ativo%3A/);
@@ -220,8 +198,6 @@ test.describe.serial('Depositos e2e — TableView / ObjectView', () => {
     await page.getByRole('checkbox', { name: 'Ativo' }).uncheck();
     await page.keyboard.press('Escape');
     await page.reload();
-    await expect(
-      page.getByRole('columnheader', { name: /Ativo/ }),
-    ).toHaveCount(0);
+    await expect(page.getByRole('columnheader', { name: /Ativo/ })).toHaveCount(0);
   });
 });

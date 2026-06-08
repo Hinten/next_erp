@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "main": "./index.js",
-  "files": ["index.js", "react.js", "rules"],
+  "files": [
+    "index.js",
+    "react.js",
+    "rules"
+  ],
   "dependencies": {
     "eslint-config-prettier": "^10.1.5"
   },

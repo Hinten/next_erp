@@ -35,52 +35,49 @@ export const DEV_REGRA_IMPOSTO_ID = 'dev-regra-01';
 
 export async function seedDevOperacoes(): Promise<{ created: number }> {
   const now = new Date().toISOString();
-  await db()
-    .collection('operacao')
-    .doc(DEV_OPERACAO_ID)
-    .set({
-      nome: 'Venda interna SP (dev)',
-      naturezaDaOperacao: 'Venda de mercadoria',
-      tipo: 1, // saída
-      ehServico: false,
-      ehExterior: false,
-      // Cliente seeded by seed-pedidos-dev is PF (no IE) → orchestrator
-      // stamps `indIEDest='9'` (Não Contribuinte). SEFAZ requires the
-      // matching `indFinal='1'` on `<ide>`, which only flips when
-      // `operacao.ehConsumidorFinal=true` (parties.ts:84 + ide.ts:103).
-      // Without this pair, SEFAZ rejects with cStat=696.
-      ehConsumidorFinal: true,
-      padrao: true,
-      ativo: true,
-      movimentaEstoque: true,
-      movimentaIndisponivelEstoque: true,
-      ehFiscal: true,
+  await db().collection('operacao').doc(DEV_OPERACAO_ID).set({
+    nome: 'Venda interna SP (dev)',
+    naturezaDaOperacao: 'Venda de mercadoria',
+    tipo: 1, // saída
+    ehServico: false,
+    ehExterior: false,
+    // Cliente seeded by seed-pedidos-dev is PF (no IE) → orchestrator
+    // stamps `indIEDest='9'` (Não Contribuinte). SEFAZ requires the
+    // matching `indFinal='1'` on `<ide>`, which only flips when
+    // `operacao.ehConsumidorFinal=true` (parties.ts:84 + ide.ts:103).
+    // Without this pair, SEFAZ rejects with cStat=696.
+    ehConsumidorFinal: true,
+    padrao: true,
+    ativo: true,
+    movimentaEstoque: true,
+    movimentaIndisponivelEstoque: true,
+    ehFiscal: true,
 
-      finNFe: 1, // normal
-      indPres: '2', // operação não presencial pela internet
-      indIntermed: '0', // sem intermediador (no integracaoPedidoOuterRef seeded)
+    finNFe: 1, // normal
+    indPres: '2', // operação não presencial pela internet
+    indIntermed: '0', // sem intermediador (no integracaoPedidoOuterRef seeded)
 
-      cfop: '5102', // venda de mercadoria adquirida de terceiros — interna
-      cfopInterestadual: '6102', // mesma natureza, interestadual
-      origem: '0', // nacional
+    cfop: '5102', // venda de mercadoria adquirida de terceiros — interna
+    cfopInterestadual: '6102', // mesma natureza, interestadual
+    origem: '0', // nacional
 
-      // Item-level fallbacks (used when pedido.itens[i].imposto is missing).
-      NCM: '21069090', // placeholder generic — SEFAZ accepts any valid NCM
-      CEST: null,
-      unidade: 'UN',
+    // Item-level fallbacks (used when pedido.itens[i].imposto is missing).
+    NCM: '21069090', // placeholder generic — SEFAZ accepts any valid NCM
+    CEST: null,
+    unidade: 'UN',
 
-      estadosDestino: null,
-      estados: null,
+    estadosDestino: null,
+    estados: null,
 
-      configuracaoICMS: null,
-      configuracaoIPI: null,
-      configuracaoPIS: null,
-      configuracaoPISST: null,
+    configuracaoICMS: null,
+    configuracaoIPI: null,
+    configuracaoPIS: null,
+    configuracaoPISST: null,
 
-      infCpl: null,
+    infCpl: null,
 
-      timestamp: now,
-    });
+    timestamp: now,
+  });
 
   // Seed the regraImposto rule under this operação. The resolver
   // cascade walks item.imposto → impostoProduto → impostoCategoria →
@@ -111,10 +108,7 @@ export async function seedDevOperacoes(): Promise<{ created: number }> {
 
 export async function cleanupDevOperacoes(): Promise<{ deleted: number }> {
   // Remove the regraImposto subcoll before the parent doc.
-  const regraRef = db()
-    .collection('operacao')
-    .doc(DEV_OPERACAO_ID)
-    .collection('regraimposto');
+  const regraRef = db().collection('operacao').doc(DEV_OPERACAO_ID).collection('regraimposto');
   const regraSnap = await regraRef.get();
   for (const doc of regraSnap.docs) {
     await doc.ref.delete();

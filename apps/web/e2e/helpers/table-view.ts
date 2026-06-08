@@ -7,16 +7,14 @@ import { type Page, expect } from '@playwright/test';
 
 /** Assert a data row containing `text` is visible. */
 export async function expectRowVisible(page: Page, text: string): Promise<void> {
-  await expect(
-    page.getByRole('row', { name: new RegExp(text) }),
-  ).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole('row', { name: new RegExp(text) })).toBeVisible({ timeout: 10_000 });
 }
 
 /** Assert no data row contains `text`. */
 export async function expectRowHidden(page: Page, text: string): Promise<void> {
-  await expect(
-    page.getByRole('row', { name: new RegExp(text) }),
-  ).toHaveCount(0, { timeout: 10_000 });
+  await expect(page.getByRole('row', { name: new RegExp(text) })).toHaveCount(0, {
+    timeout: 10_000,
+  });
 }
 
 /** Assert the TableView's "no results" empty state is shown. */
@@ -61,10 +59,7 @@ export async function applySelectFilter(
 }
 
 /** Open a column's filter popover and click "Limpar". */
-export async function clearColumnFilter(
-  page: Page,
-  columnLabel: string,
-): Promise<void> {
+export async function clearColumnFilter(page: Page, columnLabel: string): Promise<void> {
   await page.getByRole('button', { name: `Filtrar ${columnLabel}`, exact: true }).click();
   await page.getByRole('button', { name: 'Limpar', exact: true }).click();
 }

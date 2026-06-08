@@ -44,9 +44,7 @@ describe('InutilizarForm — validation (fixed filial)', () => {
     const { container } = wrap(<InutilizarForm filialId="F-1" />);
     submitForm(container);
 
-    expect(
-      await screen.findByText(/justificativa deve ter ao menos 15 caracteres/i),
-    ).toBeTruthy();
+    expect(await screen.findByText(/justificativa deve ter ao menos 15 caracteres/i)).toBeTruthy();
     expect(screen.getByText('Informe a série')).toBeTruthy();
     expect(screen.getByText('Informe o número inicial')).toBeTruthy();
     expect(inutilizarMock).not.toHaveBeenCalled();
@@ -62,9 +60,7 @@ describe('InutilizarForm — validation (fixed filial)', () => {
     });
     submitForm(container);
 
-    expect(
-      await screen.findByText(/número inicial deve ser .* ao número final/i),
-    ).toBeTruthy();
+    expect(await screen.findByText(/número inicial deve ser .* ao número final/i)).toBeTruthy();
     expect(inutilizarMock).not.toHaveBeenCalled();
   });
 });

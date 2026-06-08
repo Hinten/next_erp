@@ -17,25 +17,50 @@ function wrap(node: React.ReactNode) {
 }
 
 const stringDesc: FieldDescriptor = {
-  key: 's', kind: 'string', optional: true, nullable: true, label: 'S', zodType: z.string(),
+  key: 's',
+  kind: 'string',
+  optional: true,
+  nullable: true,
+  label: 'S',
+  zodType: z.string(),
 };
 const enumDesc: FieldDescriptor = {
-  key: 't', kind: 'enum', optional: false, nullable: false, label: 'T',
+  key: 't',
+  kind: 'enum',
+  optional: false,
+  nullable: false,
+  label: 'T',
   enumValues: [{ value: '0', label: 'Pessoa Física' }],
   zodType: z.enum(['0']),
 };
 const currencyDesc: FieldDescriptor = {
-  key: 'c', kind: 'currency', optional: false, nullable: false, label: 'C', zodType: z.number(),
+  key: 'c',
+  kind: 'currency',
+  optional: false,
+  nullable: false,
+  label: 'C',
+  zodType: z.number(),
 };
 const boolDesc: FieldDescriptor = {
-  key: 'b', kind: 'boolean', optional: false, nullable: false, label: 'B', zodType: z.boolean(),
+  key: 'b',
+  kind: 'boolean',
+  optional: false,
+  nullable: false,
+  label: 'B',
+  zodType: z.boolean(),
 };
 const dateDesc: FieldDescriptor = {
-  key: 'd', kind: 'date', optional: false, nullable: false, label: 'D', zodType: z.string().datetime(),
+  key: 'd',
+  kind: 'date',
+  optional: false,
+  nullable: false,
+  label: 'D',
+  zodType: z.string().datetime(),
 };
 
 function cellText() {
-  return within(screen.getByTestId('cell')).getByText(/.+/, { selector: ':not(style)' }).textContent;
+  return within(screen.getByTestId('cell')).getByText(/.+/, { selector: ':not(style)' })
+    .textContent;
 }
 
 describe('renderCell', () => {

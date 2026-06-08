@@ -22,12 +22,7 @@
  *       composition + mod-11 DV are exactly the documented shape.
  */
 import { describe, it, expect } from 'vitest';
-import type {
-  Cliente,
-  Endereco,
-  Filial,
-  Operacao,
-} from '@delfrance/schemas';
+import type { Cliente, Endereco, Filial, Operacao } from '@delfrance/schemas';
 
 import { generateNFe } from '../../src/generator/index';
 import { HOMOLOGACAO_XNOME } from '../../src/generator/parties';
@@ -199,8 +194,7 @@ const SENT_TOTAL_XML =
 
 const SENT_TRANSP_XML = '<transp><modFrete>9</modFrete></transp>';
 
-const SENT_PAG_XML =
-  '<pag><detPag><tPag>17</tPag><vPag>315.21</vPag></detPag></pag>';
+const SENT_PAG_XML = '<pag><detPag><tPag>17</tPag><vPag>315.21</vPag></detPag></pag>';
 
 function buildInput(overrides: Partial<GeneratorInput> = {}): GeneratorInput {
   // Default to homologação — fixtures must never default to produção
@@ -398,8 +392,15 @@ describe('fidelity — raw-splice contracts', () => {
   });
 
   it('canonical block order: ide → emit → dest → det → total → transp → pag', () => {
-    const positions = ['<ide>', '<emit>', '<dest>', '<det nItem="1">', '<total>', '<transp>', '<pag>']
-      .map((tag) => out.nfeXml.indexOf(tag));
+    const positions = [
+      '<ide>',
+      '<emit>',
+      '<dest>',
+      '<det nItem="1">',
+      '<total>',
+      '<transp>',
+      '<pag>',
+    ].map((tag) => out.nfeXml.indexOf(tag));
     for (let i = 1; i < positions.length; i++) {
       expect(positions[i]).toBeGreaterThan(positions[i - 1]!);
     }
@@ -468,10 +469,9 @@ describe('fidelity — deterministic chave + structural round-trip', () => {
 
   it('parse(NFe) round-trips the structural fields back to the input shape', () => {
     const out = generateNFe(buildInput());
-    const parsed = parse<{ infNFe: { ide: { nNF: string; serie: string; cNF: string; cDV: string } } }>(
-      'NFe',
-      out.nfeXml,
-    );
+    const parsed = parse<{
+      infNFe: { ide: { nNF: string; serie: string; cNF: string; cDV: string } };
+    }>('NFe', out.nfeXml);
     expect(parsed.infNFe.ide.nNF).toBe(String(SENT_NUMERACAO));
     expect(parsed.infNFe.ide.serie).toBe(String(SENT_SERIE));
     expect(parsed.infNFe.ide.cNF).toBe(SENT_FIXED_CNF);
@@ -571,9 +571,7 @@ describe('fidelity — fiscal fields fail loudly on overflow', () => {
         infAdic: { infAdFisco: 'A'.repeat(2001), infCpl: undefined },
       }),
     );
-    await expect(validateXsd('NFe', out.nfeXml)).rejects.toBeInstanceOf(
-      NFeXsdValidationError,
-    );
+    await expect(validateXsd('NFe', out.nfeXml)).rejects.toBeInstanceOf(NFeXsdValidationError);
   });
 
   it('infCpl > 5000 chars → validateXsd rejects with NFeXsdValidationError', async () => {
@@ -582,9 +580,7 @@ describe('fidelity — fiscal fields fail loudly on overflow', () => {
         infAdic: { infAdFisco: undefined, infCpl: 'B'.repeat(5001) },
       }),
     );
-    await expect(validateXsd('NFe', out.nfeXml)).rejects.toBeInstanceOf(
-      NFeXsdValidationError,
-    );
+    await expect(validateXsd('NFe', out.nfeXml)).rejects.toBeInstanceOf(NFeXsdValidationError);
   });
 });
 
@@ -626,8 +622,12 @@ describe('fidelity — cobr (billing) block', () => {
     // Field-level checks.
     expectField(out.nfeXml, 'fat', 'nFat', 'FAT-001');
     expectField(out.nfeXml, 'fat', 'vOrig', '1500.00');
-    expect(out.nfeXml).toContain('<dup><nDup>001</nDup><dVenc>2026-06-20</dVenc><vDup>750.00</vDup></dup>');
-    expect(out.nfeXml).toContain('<dup><nDup>002</nDup><dVenc>2026-07-20</dVenc><vDup>750.00</vDup></dup>');
+    expect(out.nfeXml).toContain(
+      '<dup><nDup>001</nDup><dVenc>2026-06-20</dVenc><vDup>750.00</vDup></dup>',
+    );
+    expect(out.nfeXml).toContain(
+      '<dup><nDup>002</nDup><dVenc>2026-07-20</dVenc><vDup>750.00</vDup></dup>',
+    );
   });
 
   it('omits <cobr> entirely when input.cobr is undefined', () => {

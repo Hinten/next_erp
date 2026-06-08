@@ -59,14 +59,7 @@ export interface PipelineOrderSpec {
   direction?: 'asc' | 'desc';
 }
 
-export type PipelineFilterOp =
-  | 'contains'
-  | 'startsWith'
-  | 'eq'
-  | 'lt'
-  | 'lte'
-  | 'gt'
-  | 'gte';
+export type PipelineFilterOp = 'contains' | 'startsWith' | 'eq' | 'lt' | 'lte' | 'gt' | 'gte';
 
 export interface PipelineFieldFilter {
   field: string;
@@ -143,10 +136,7 @@ function escapeRegex(s: string): string {
 export function buildSimilarityPattern(term: string): string {
   const trimmed = term.trim();
   if (!trimmed) return '';
-  const ascii = trimmed
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .toLowerCase();
+  const ascii = trimmed.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   const escaped = escapeRegex(ascii);
   const expanded = escaped.replace(/[aeiouncy]/g, (ch) => ACCENT_GROUPS[ch] ?? ch);
   return `(?i)${expanded}`;
@@ -212,9 +202,7 @@ export function buildPipeline(db: Firestore, spec: PipelineSpec): Pipeline {
 
   if (spec.orderBy?.length) {
     const orderings = spec.orderBy.map((o) =>
-      (o.direction ?? 'asc') === 'desc'
-        ? descending(field(o.field))
-        : ascending(field(o.field)),
+      (o.direction ?? 'asc') === 'desc' ? descending(field(o.field)) : ascending(field(o.field)),
     );
     pipe = pipe.sort(orderings[0]!, ...orderings.slice(1));
   }

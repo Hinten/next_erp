@@ -23,10 +23,9 @@ describe('useUnsavedChangesGuard', () => {
   });
 
   it('installs beforeunload + popstate + click when dirty, removes on cleanup', () => {
-    const { rerender, unmount } = renderHook(
-      ({ d }: { d: boolean }) => useUnsavedChangesGuard(d),
-      { initialProps: { d: true } },
-    );
+    const { rerender, unmount } = renderHook(({ d }: { d: boolean }) => useUnsavedChangesGuard(d), {
+      initialProps: { d: true },
+    });
     expect(addSpy).toHaveBeenCalledWith('beforeunload', expect.any(Function));
     expect(addSpy).toHaveBeenCalledWith('popstate', expect.any(Function));
     expect(docAddSpy).toHaveBeenCalledWith('click', expect.any(Function), true);

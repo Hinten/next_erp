@@ -17,9 +17,7 @@ const { snapState, queryState, dereferenceMock } = vi.hoisted(() => ({
   },
   queryState: {
     current: {
-      data: null as
-        | { nome?: string | null; cpf_cnpj?: string | null; tipo?: string | null }
-        | null,
+      data: null as { nome?: string | null; cpf_cnpj?: string | null; tipo?: string | null } | null,
       isLoading: false,
     },
   },
@@ -42,9 +40,7 @@ vi.mock('@/lib/data/dereferenceOuterRef', () => ({
 }));
 
 vi.mock('@delfrance/data', async () => {
-  const actual = await vi.importActual<typeof import('@delfrance/data')>(
-    '@delfrance/data',
-  );
+  const actual = await vi.importActual<typeof import('@delfrance/data')>('@delfrance/data');
   return {
     ...actual,
     // The hook is mocked too, so the returned object only needs a stable
@@ -56,25 +52,21 @@ vi.mock('@delfrance/data', async () => {
 });
 
 vi.mock('@delfrance/data/hooks', async () => {
-  const actual = await vi.importActual<typeof import('@delfrance/data/hooks')>(
-    '@delfrance/data/hooks',
-  );
+  const actual =
+    await vi.importActual<typeof import('@delfrance/data/hooks')>('@delfrance/data/hooks');
   return { ...actual, useSnapshot: () => snapState.current };
 });
 
 vi.mock('@tanstack/react-query', async () => {
-  const actual = await vi.importActual<typeof import('@tanstack/react-query')>(
-    '@tanstack/react-query',
-  );
+  const actual =
+    await vi.importActual<typeof import('@tanstack/react-query')>('@tanstack/react-query');
   return { ...actual, useQuery: () => queryState.current };
 });
 
 // firebase/firestore.getDoc is wrapped by the mocked useQuery, but the
 // component still imports it at module-load. Stub it so the import resolves.
 vi.mock('firebase/firestore', async () => {
-  const actual = await vi.importActual<typeof import('firebase/firestore')>(
-    'firebase/firestore',
-  );
+  const actual = await vi.importActual<typeof import('firebase/firestore')>('firebase/firestore');
   return { ...actual, getDoc: vi.fn() };
 });
 
@@ -84,13 +76,7 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 
-import {
-  ClienteCell,
-  FreteCell,
-  ImpCell,
-  NFCell,
-  VlrCell,
-} from './PedidoCells';
+import { ClienteCell, FreteCell, ImpCell, NFCell, VlrCell } from './PedidoCells';
 
 function wrap(node: React.ReactNode) {
   return render(<MantineProvider env="test">{node}</MantineProvider>);
@@ -279,9 +265,7 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       setSnap({ data: [rowFromNFe(makeNFe('a', { chave: '3'.repeat(44) }))] });
       const { container } = wrap(<NFCell pedidoId="p1" />);
       fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
-      expect(
-        await screen.findByRole('button', { name: /cancelar nf-e/i }),
-      ).toBeTruthy();
+      expect(await screen.findByRole('button', { name: /cancelar nf-e/i })).toBeTruthy();
     });
 
     it.each<NotaFiscalEletronica['estado']>(['0', '1', '2', 'n', 'c', 'e'])(
@@ -292,9 +276,7 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
         fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
         // The dropdown is open once "Estado:" is in the document.
         await screen.findByText('Estado:');
-        expect(
-          screen.queryByRole('button', { name: /cancelar nf-e/i }),
-        ).toBeNull();
+        expect(screen.queryByRole('button', { name: /cancelar nf-e/i })).toBeNull();
       },
     );
   });
@@ -304,9 +286,7 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       setSnap({ data: [rowFromNFe(makeNFe('a', { chave: '3'.repeat(44) }))] });
       const { container } = wrap(<NFCell pedidoId="p1" />);
       fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
-      expect(
-        await screen.findByRole('button', { name: /carta de corre/i }),
-      ).toBeTruthy();
+      expect(await screen.findByRole('button', { name: /carta de corre/i })).toBeTruthy();
     });
 
     it.each<NotaFiscalEletronica['estado']>(['0', '1', '2', 'n', 'c', 'e'])(
@@ -316,9 +296,7 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
         const { container } = wrap(<NFCell pedidoId="p1" />);
         fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
         await screen.findByText('Estado:');
-        expect(
-          screen.queryByRole('button', { name: /carta de corre/i }),
-        ).toBeNull();
+        expect(screen.queryByRole('button', { name: /carta de corre/i })).toBeNull();
       },
     );
   });
@@ -332,11 +310,7 @@ describe('ClienteCell — static cached read', () => {
 
   it('renders "Anônimo" when the pedido has no cliente ref', () => {
     dereferenceMock.mockReturnValue(null);
-    wrap(
-      <ClienteCell
-        pedido={{ clientePedidoOuterRef: null } as unknown as Pedido}
-      />,
-    );
+    wrap(<ClienteCell pedido={{ clientePedidoOuterRef: null } as unknown as Pedido} />);
     expect(screen.getByText('Anônimo')).toBeTruthy();
   });
 
@@ -374,28 +348,20 @@ describe('FreteCell — passthrough', () => {
   });
 
   it('renders the PT-BR label for the estado', () => {
-    wrap(
-      <FreteCell
-        pedido={{ freteInicial: { estado: 'entregue' } } as unknown as Pedido}
-      />,
-    );
+    wrap(<FreteCell pedido={{ freteInicial: { estado: 'entregue' } } as unknown as Pedido} />);
     expect(screen.getByText('Entregue')).toBeTruthy();
   });
 });
 
 describe('ImpCell — printed indicator', () => {
   it('renders nothing when dtImpressao is null', () => {
-    const { container } = wrap(
-      <ImpCell pedido={{ dtImpressao: null } as unknown as Pedido} />,
-    );
+    const { container } = wrap(<ImpCell pedido={{ dtImpressao: null } as unknown as Pedido} />);
     expect(container.querySelector('svg')).toBeNull();
   });
 
   it('renders the check icon when dtImpressao is set', () => {
     const { container } = wrap(
-      <ImpCell
-        pedido={{ dtImpressao: Date.parse('2026-05-21T10:00:00Z') } as unknown as Pedido}
-      />,
+      <ImpCell pedido={{ dtImpressao: Date.parse('2026-05-21T10:00:00Z') } as unknown as Pedido} />,
     );
     expect(container.querySelector('svg')).toBeTruthy();
     expect(container.querySelector('[aria-label="Impresso"]')).toBeTruthy();
@@ -404,20 +370,12 @@ describe('ImpCell — printed indicator', () => {
 
 describe('VlrCell — passthrough', () => {
   it('renders DASH when there is no value and no itens', () => {
-    wrap(
-      <VlrCell
-        pedido={{ valorCobrado: null, itens: {} } as unknown as Pedido}
-      />,
-    );
+    wrap(<VlrCell pedido={{ valorCobrado: null, itens: {} } as unknown as Pedido} />);
     expect(screen.getByText('—')).toBeTruthy();
   });
 
   it('renders the cached valorCobrado formatted as BRL', () => {
-    wrap(
-      <VlrCell
-        pedido={{ valorCobrado: 1234.56, itens: {} } as unknown as Pedido}
-      />,
-    );
+    wrap(<VlrCell pedido={{ valorCobrado: 1234.56, itens: {} } as unknown as Pedido} />);
     // Match by the integer + fraction parts; locale formatting varies in jsdom.
     expect(screen.getByText(/1\.234,56|1234.56/)).toBeTruthy();
   });

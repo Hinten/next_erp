@@ -76,12 +76,7 @@ export function PagamentosSection({ pedidoId }: { pedidoId: string }) {
           </Table.Thead>
           <Table.Tbody>
             {data.map(({ id, data: pgto }) => (
-              <PagamentoRow
-                key={id}
-                pedidoId={pedidoId}
-                id={id}
-                pagamento={pgto}
-              />
+              <PagamentoRow key={id} pedidoId={pedidoId} id={id} pagamento={pgto} />
             ))}
           </Table.Tbody>
         </Table>
@@ -107,18 +102,11 @@ function PagamentoRow({
   // metodoPagamentoOuterRef points at a known TIPO_INTEGRACAO_PGTO).
   // Today the registry has no implementations, so getGateway() returns
   // null and the refund button stays disabled with a tooltip.
-  const ref = pagamento.metodoPagamentoOuterRef as
-    | { tipo?: number }
-    | null
-    | undefined;
+  const ref = pagamento.metodoPagamentoOuterRef as { tipo?: number } | null | undefined;
   const gatewayId = ref?.tipo ? gatewayIdFromTipo(ref.tipo) : null;
   const gateway = gatewayId ? getGateway(gatewayId) : null;
 
-  const docRef = pagamentoCollection.docRef(
-    getFirebaseFirestore(),
-    { pedidoId },
-    id,
-  );
+  const docRef = pagamentoCollection.docRef(getFirebaseFirestore(), { pedidoId }, id);
 
   async function handleStatusChange(next: string | null) {
     if (next === null) return;
@@ -165,8 +153,7 @@ function PagamentoRow({
             <Select
               data={statusOptions}
               value={
-                pagamento.status_pagamento !== undefined &&
-                pagamento.status_pagamento !== null
+                pagamento.status_pagamento !== undefined && pagamento.status_pagamento !== null
                   ? String(pagamento.status_pagamento)
                   : null
               }
@@ -178,13 +165,9 @@ function PagamentoRow({
           </Stack>
         </Table.Td>
         <Table.Td>
-          {FORMA_PAGAMENTO_LABELS[
-            pagamento.forma_de_pagamento as FormaPagamento
-          ] ?? '—'}
+          {FORMA_PAGAMENTO_LABELS[pagamento.forma_de_pagamento as FormaPagamento] ?? '—'}
         </Table.Td>
-        <Table.Td align="right">
-          {format(money(Math.round(pagamento.valor * 100)))}
-        </Table.Td>
+        <Table.Td align="right">{format(money(Math.round(pagamento.valor * 100)))}</Table.Td>
         <Table.Td align="right">{pagamento.parcelas}</Table.Td>
         <Table.Td>
           <Group gap="xs">
@@ -198,11 +181,7 @@ function PagamentoRow({
               </Badge>
             )}
             <Tooltip
-              label={
-                gateway
-                  ? 'Estorna via gateway'
-                  : 'Plugin de gateway não registrado (Fase 5)'
-              }
+              label={gateway ? 'Estorna via gateway' : 'Plugin de gateway não registrado (Fase 5)'}
             >
               <Button
                 size="xs"

@@ -50,9 +50,7 @@ export interface ImpostoResolverDeps {
   /** Read every doc under `produtos/{produtoUid}/imposto`. */
   readImpostoProdutoSubcoll(produtoUid: string): Promise<readonly ImpostoProduto[]>;
   /** Read every doc under `categorias/{categoriaUid}/impostocategoria`. */
-  readImpostoCategoriaSubcoll(
-    categoriaUid: string,
-  ): Promise<readonly ImpostoCategoria[]>;
+  readImpostoCategoriaSubcoll(categoriaUid: string): Promise<readonly ImpostoCategoria[]>;
 }
 
 export interface ImpostoResolver {
@@ -81,10 +79,7 @@ interface CachedResult {
 export function createImpostoResolver(deps: ImpostoResolverDeps): ImpostoResolver {
   const cache = new Map<string, CachedResult>();
 
-  async function resolveImpl(
-    produtoUid: string,
-    itemImposto: unknown,
-  ): Promise<Imposto | null> {
+  async function resolveImpl(produtoUid: string, itemImposto: unknown): Promise<Imposto | null> {
     // 1. item-stamped imposto wins when valid.
     if (itemImposto != null) {
       const parsed = impostoSchema.safeParse(itemImposto);
@@ -154,10 +149,7 @@ export function createImpostoResolver(deps: ImpostoResolverDeps): ImpostoResolve
  * `bundle.operacaoId` (Flutter parity — the Dart side stores these as
  * DocumentReferences that serialise to paths).
  */
-function operacaoMatches(
-  ref: string | null,
-  activeOperacaoId: string,
-): boolean {
+function operacaoMatches(ref: string | null, activeOperacaoId: string): boolean {
   if (ref == null) return true;
   const trimmed = ref.replace(/^\/+|\/+$/g, '');
   const last = trimmed.split('/').pop();
@@ -200,11 +192,7 @@ export function createFirestoreImpostoResolver(
       return snap.exists ? (snap.data() ?? null) : null;
     },
     async readImpostoProdutoSubcoll(produtoUid) {
-      const snap = await fs
-        .collection('produtos')
-        .doc(produtoUid)
-        .collection('imposto')
-        .get();
+      const snap = await fs.collection('produtos').doc(produtoUid).collection('imposto').get();
       const out: ImpostoProduto[] = [];
       for (const doc of snap.docs) {
         const parsed = impostoProdutoSchema.safeParse({ id: doc.id, ...doc.data() });

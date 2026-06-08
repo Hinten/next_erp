@@ -34,7 +34,9 @@
     "react-dom": "^19.2.0"
   },
   "peerDependenciesMeta": {
-    "next": { "optional": true }
+    "next": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",

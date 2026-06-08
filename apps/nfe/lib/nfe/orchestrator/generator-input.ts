@@ -49,8 +49,7 @@ export function buildGeneratorInput(
   // Compute frete value upfront so it can ride into both the totals
   // aggregator (NF-e level) and onto det[0].prod.vFrete (item level)
   // when the issuer contracts the carrier (modalidade='0').
-  const freteEmitente =
-    bundle.frete?.modalidade === '0' && (bundle.frete.valorCobrado ?? 0) > 0;
+  const freteEmitente = bundle.frete?.modalidade === '0' && (bundle.frete.valorCobrado ?? 0) > 0;
   const vFrete = freteEmitente ? (bundle.frete!.valorCobrado as number) : 0;
   if (vFrete > 0 && genItems.length > 0) {
     // Mirror of Flutter `pedido_nfe_base.dart:932`: stamp the full frete
@@ -199,9 +198,7 @@ export function buildPaymentsFromPagamentos(
     return [{ tPag: '90', vPag: 0 }];
   }
   const freteEmitenteOverride =
-    pagamentos.length === 1 &&
-    ctx.frete?.modalidade === '0' &&
-    (ctx.frete.valorCobrado ?? 0) > 0;
+    pagamentos.length === 1 && ctx.frete?.modalidade === '0' && (ctx.frete.valorCobrado ?? 0) > 0;
 
   return pagamentos.map((p): Payment => {
     const isOutros = p.forma_de_pagamento === FORMA_PAGAMENTO.outros;
@@ -224,8 +221,7 @@ export function buildPaymentsFromPagamentos(
       xPag = cleaned ?? 'Outro';
     }
 
-    const card =
-      p.cartao != null && !isOutros ? buildCardFromCartao(p.cartao) : undefined;
+    const card = p.cartao != null && !isOutros ? buildCardFromCartao(p.cartao) : undefined;
 
     return {
       tPag,
@@ -252,8 +248,7 @@ export function buildCardFromCartao(cartao: unknown): NonNullable<Payment['card'
   if (cartao == null || typeof cartao !== 'object') return undefined;
   const c = cartao as Record<string, unknown>;
   const tpIntegraRaw = c.tpIntegra;
-  const tpIntegraStr =
-    typeof tpIntegraRaw === 'number' ? String(tpIntegraRaw) : tpIntegraRaw;
+  const tpIntegraStr = typeof tpIntegraRaw === 'number' ? String(tpIntegraRaw) : tpIntegraRaw;
   if (tpIntegraStr !== '1' && tpIntegraStr !== '2') return undefined;
   const card: NonNullable<Payment['card']> = { tpIntegra: tpIntegraStr };
   if (typeof c.cnpj_instituicao === 'string') card.CNPJ = c.cnpj_instituicao;
@@ -322,9 +317,7 @@ export function buildTranspFromFrete(frete: FreteDoPedido | null): {
       .filter((r) => typeof r.placa === 'string' && r.placa)
       .map((r) => ({
         placa: r.placa as string,
-        ...(r.UF
-          ? { UF: r.UF as NonNullable<typeof out.veicTransp>['UF'] }
-          : {}),
+        ...(r.UF ? { UF: r.UF as NonNullable<typeof out.veicTransp>['UF'] } : {}),
         ...(r.RNTC ? { RNTC: r.RNTC } : {}),
       }));
     if (reboques.length > 0) out.reboque = reboques;
@@ -370,7 +363,12 @@ export function buildTranspFromFrete(frete: FreteDoPedido | null): {
  */
 export function buildCobrFromPagamentos(
   pagamentos: ReadonlyArray<Pagamento>,
-): { fat?: { nFat?: string; vOrig?: string; vDesc?: string; vLiq?: string }; dup?: ReadonlyArray<{ nDup?: string; dVenc?: string; vDup: string }> } | undefined {
+):
+  | {
+      fat?: { nFat?: string; vOrig?: string; vDesc?: string; vLiq?: string };
+      dup?: ReadonlyArray<{ nDup?: string; dVenc?: string; vDup: string }>;
+    }
+  | undefined {
   const dups = pagamentos.filter((p) => p.duplicata === true);
   if (dups.length === 0) return undefined;
 
@@ -391,8 +389,7 @@ export function buildCobrFromPagamentos(
   });
 
   const vOrig = dups.reduce((acc, p) => acc + p.valor + (p.juros ?? 0), 0);
-  const nFat =
-    (dups[0]?.nFat ?? '').trim() || dup[0]?.nDup || undefined;
+  const nFat = (dups[0]?.nFat ?? '').trim() || dup[0]?.nDup || undefined;
   const fat: { nFat?: string; vOrig?: string; vDesc?: string; vLiq?: string } = {
     vOrig: vOrig.toFixed(2),
     vDesc: (0).toFixed(2),
@@ -414,7 +411,7 @@ export function buildInfAdic(
 ): { infCpl?: string } | undefined {
   const pedidoCpl =
     typeof (pedido as { infCpl?: unknown }).infCpl === 'string'
-      ? ((pedido as { infCpl: string }).infCpl).trim()
+      ? (pedido as { infCpl: string }).infCpl.trim()
       : '';
   const operacaoCpl = (operacao.infCpl ?? '').trim();
   const parts = [pedidoCpl, operacaoCpl].filter((s) => s.length > 0);
@@ -432,14 +429,40 @@ export function buildInfAdic(
 export function buildExporta(
   operacao: Operacao,
   filial: Filial,
-): {
-  UFSaidaPais:
-    | 'AC' | 'AL' | 'AM' | 'AP' | 'BA' | 'CE' | 'DF' | 'ES' | 'GO'
-    | 'MA' | 'MG' | 'MS' | 'MT' | 'PA' | 'PB' | 'PE' | 'PI' | 'PR'
-    | 'RJ' | 'RN' | 'RO' | 'RR' | 'RS' | 'SC' | 'SE' | 'SP' | 'TO';
-  xLocExporta: string;
-  xLocDespacho?: string;
-} | undefined {
+):
+  | {
+      UFSaidaPais:
+        | 'AC'
+        | 'AL'
+        | 'AM'
+        | 'AP'
+        | 'BA'
+        | 'CE'
+        | 'DF'
+        | 'ES'
+        | 'GO'
+        | 'MA'
+        | 'MG'
+        | 'MS'
+        | 'MT'
+        | 'PA'
+        | 'PB'
+        | 'PE'
+        | 'PI'
+        | 'PR'
+        | 'RJ'
+        | 'RN'
+        | 'RO'
+        | 'RR'
+        | 'RS'
+        | 'SC'
+        | 'SE'
+        | 'SP'
+        | 'TO';
+      xLocExporta: string;
+      xLocDespacho?: string;
+    }
+  | undefined {
   if (!operacao.ehExterior) return undefined;
   const ufRaw = filial.sede.estado;
   if (ufRaw === 'EX') {
@@ -451,9 +474,7 @@ export function buildExporta(
   }
   const cityRaw = sanitizeNFeText(filial.sede.cidade, 60);
   if (!cityRaw) {
-    throw new NFeOrchestratorError(
-      `pedido marked ehExterior=true but filial.sede.cidade is empty`,
-    );
+    throw new NFeOrchestratorError(`pedido marked ehExterior=true but filial.sede.cidade is empty`);
   }
   return {
     UFSaidaPais: ufRaw,

@@ -44,11 +44,7 @@ export default function NovoCargoPage() {
       </Group>
       {loading && <Skeleton height={300} />}
       {!loading && (
-        <CargoForm
-          submitLabel="Criar"
-          onSubmit={handleSubmit}
-          callerBits={callerBits}
-        />
+        <CargoForm submitLabel="Criar" onSubmit={handleSubmit} callerBits={callerBits} />
       )}
     </Stack>
   );

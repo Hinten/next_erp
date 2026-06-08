@@ -1,8 +1,5 @@
 import { defineCollection } from '@delfrance/data';
-import {
-  metodoPagamentoSchema,
-  pagamentoSchema,
-} from '@delfrance/schemas';
+import { metodoPagamentoSchema, pagamentoSchema } from '@delfrance/schemas';
 
 /**
  * Subcollection: `pedidos/{pedidoId}/pagamento` (singular — matches the

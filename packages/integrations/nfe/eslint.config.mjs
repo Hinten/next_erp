@@ -26,8 +26,7 @@ const ruleAConsole = {
 // loader at `src/cert/index.ts`. Anywhere else must call
 // `loadCertificateFromEnv()` or `hasNFeCertEnv()` (both from `./cert`).
 const ruleBCertEnv = {
-  selector:
-    'MemberExpression[property.name=/^NFE_CERT_(BASE64|PATH|PASSWORD)$/]',
+  selector: 'MemberExpression[property.name=/^NFE_CERT_(BASE64|PATH|PASSWORD)$/]',
   message:
     'NFE_CERT_BASE64 / NFE_CERT_PATH / NFE_CERT_PASSWORD may only be ' +
     'read inside packages/integrations/nfe/src/cert/index.ts. Call ' +

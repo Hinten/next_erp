@@ -6,9 +6,8 @@ import next from 'eslint-config-next';
 // we must re-include the base selectors (the `catch` convention), or they'd be
 // silently dropped.
 const baseRestrictedSyntax =
-  base.find((c) => c.rules?.['no-restricted-syntax'])?.rules?.[
-    'no-restricted-syntax'
-  ]?.slice(1) ?? [];
+  base.find((c) => c.rules?.['no-restricted-syntax'])?.rules?.['no-restricted-syntax']?.slice(1) ??
+  [];
 
 // Funnel all Firestore access through schema-validated `defineAdminCollection`
 // handles from the shared registry (`@delfrance/data/admin/collections`). Admin
@@ -56,11 +55,7 @@ const config = [
           ],
         },
       ],
-      'no-restricted-syntax': [
-        'error',
-        ...baseRestrictedSyntax,
-        ...noRawAdminFirestoreRefs,
-      ],
+      'no-restricted-syntax': ['error', ...baseRestrictedSyntax, ...noRawAdminFirestoreRefs],
     },
   },
   {

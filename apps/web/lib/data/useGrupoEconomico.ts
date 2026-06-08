@@ -18,11 +18,7 @@ export function useGrupoEconomico() {
   const ref = useMemo(() => {
     if (claimsLoading) return null;
     if (!claims?.grupoEconomico) return null;
-    return grupoEconomicoCollection.docRef(
-      getFirebaseFirestore(),
-      {},
-      claims.grupoEconomico,
-    );
+    return grupoEconomicoCollection.docRef(getFirebaseFirestore(), {}, claims.grupoEconomico);
   }, [claimsLoading, claims?.grupoEconomico]);
 
   const snapshot = useDocSnapshot(ref);

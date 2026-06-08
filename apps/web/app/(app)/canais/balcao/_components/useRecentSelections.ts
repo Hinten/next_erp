@@ -21,11 +21,7 @@ export const MAX_RECENTS = 5;
  * the result to the 5 most recent. Pure — `now` is injected so the expiry
  * logic is deterministically unit-testable.
  */
-export function mergeRecent(
-  list: RecentEntry[],
-  entry: RecentEntry,
-  now: number,
-): RecentEntry[] {
+export function mergeRecent(list: RecentEntry[], entry: RecentEntry, now: number): RecentEntry[] {
   return [entry, ...list.filter((e) => e.id !== entry.id)]
     .filter((e) => now - e.at < RECENT_TTL_MS)
     .slice(0, MAX_RECENTS);

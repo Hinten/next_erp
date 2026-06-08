@@ -16,9 +16,7 @@ import type { SnapshotRow, SnapshotState } from './useSnapshot';
  *
  * Pass `null` to no-op (e.g. while context is still loading).
  */
-export function usePipelineSnapshot<T>(
-  pipeline: Pipeline | null,
-): SnapshotState<SnapshotRow<T>[]> {
+export function usePipelineSnapshot<T>(pipeline: Pipeline | null): SnapshotState<SnapshotRow<T>[]> {
   const [state, setState] = useState<SnapshotState<SnapshotRow<T>[]>>({
     data: undefined,
     loading: true,

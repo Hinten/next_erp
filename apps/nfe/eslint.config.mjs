@@ -23,8 +23,7 @@ const ruleAConsole = {
 // Rule B — `NFE_CERT_*` env vars may only be READ inside the unified
 // loader at `packages/integrations/nfe/src/cert/index.ts`.
 const ruleBCertEnv = {
-  selector:
-    'MemberExpression[property.name=/^NFE_CERT_(BASE64|PATH|PASSWORD)$/]',
+  selector: 'MemberExpression[property.name=/^NFE_CERT_(BASE64|PATH|PASSWORD)$/]',
   message:
     'NFE_CERT_BASE64 / NFE_CERT_PATH / NFE_CERT_PASSWORD may only be ' +
     'read inside packages/integrations/nfe/src/cert/index.ts. Call ' +
@@ -80,12 +79,7 @@ const config = [
     files: ['lib/nfe/**/*.ts', 'app/api/nfe/**/*.ts'],
     ignores: ['**/*.test.ts'],
     rules: {
-      'no-restricted-syntax': [
-        'error',
-        ruleAConsole,
-        ruleBCertEnv,
-        ...ruleCNoRawFirestoreRefs,
-      ],
+      'no-restricted-syntax': ['error', ruleAConsole, ruleBCertEnv, ...ruleCNoRawFirestoreRefs],
     },
   },
   // Non-NF-e app paths — Rule B only. Console-* is unrestricted outside

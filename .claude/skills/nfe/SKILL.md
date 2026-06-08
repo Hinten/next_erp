@@ -60,7 +60,7 @@ re-readable source).
 - **Sign `<infNFe>`**, not `<NFe>`: enveloped XMLDSig, C14N + RSA-SHA1 + SHA-1.
   The `<Signature>` is a sibling placed **after** `<infNFe>` inside `<NFe>`.
 - **The chave de acesso is computable before sending** — it is the anti-loss
-  anchor. Persist `{chave, estado:'enviando'}` *before* the SOAP call so a
+  anchor. Persist `{chave, estado:'enviando'}` _before_ the SOAP call so a
   lost response is always recoverable via `consSitNFe`.
 - **Lote de 1 NF-e exige `indSinc=1`** (NT 2025.001, RV GAP03a-3). Enviar
   `indSinc=0` com lote de 1 retorna **cStat=452** — rejeição. Cliente precisa
@@ -88,22 +88,22 @@ re-readable source).
 
 ## Reference files
 
-| File | Use for |
-|---|---|
-| `references/chave-acesso.md` | 44-digit key composition + módulo-11 DV |
-| `references/assinatura.md` | XMLDSig signing rules, certificate, A1/A3 |
-| `references/webservices.md` | SOAP services, sync/async lote flow, leiautes |
-| `references/sincrono-vs-assincrono.md` | NT 2025.001 sync-when-lote-1 in depth |
-| `references/cstat-rejeicoes.md` | cStat codes, duplicidade & recovery rules |
-| `references/contingencia.md` | tpEmis modes, EPEC, SVC, pendentes de retorno |
-| `references/eventos.md` | cancelamento, carta de correção, inutilização |
-| `references/rtc-ibs-cbs-is.md` | RTC: Grupo UB, W03, cClassTrib, novos eventos |
-| `references/homologacao.md` | homologação (tpAmb=2) testing rules |
-| `references/leiaute.md` | infNFe field groups + XML formatting rules |
-| `references/codegen.md` | re-running the XSD → TypeScript generator |
-| `references/notas-tecnicas-historico.md` | NT changelog since MOC 7.0 |
-| `references/gargalos-e-problemas.md` | production failure modes & pitfalls |
-| `references/sources/` | original SEFAZ PDFs (MOC 7.0 + NTs vigentes) |
+| File                                     | Use for                                       |
+| ---------------------------------------- | --------------------------------------------- |
+| `references/chave-acesso.md`             | 44-digit key composition + módulo-11 DV       |
+| `references/assinatura.md`               | XMLDSig signing rules, certificate, A1/A3     |
+| `references/webservices.md`              | SOAP services, sync/async lote flow, leiautes |
+| `references/sincrono-vs-assincrono.md`   | NT 2025.001 sync-when-lote-1 in depth         |
+| `references/cstat-rejeicoes.md`          | cStat codes, duplicidade & recovery rules     |
+| `references/contingencia.md`             | tpEmis modes, EPEC, SVC, pendentes de retorno |
+| `references/eventos.md`                  | cancelamento, carta de correção, inutilização |
+| `references/rtc-ibs-cbs-is.md`           | RTC: Grupo UB, W03, cClassTrib, novos eventos |
+| `references/homologacao.md`              | homologação (tpAmb=2) testing rules           |
+| `references/leiaute.md`                  | infNFe field groups + XML formatting rules    |
+| `references/codegen.md`                  | re-running the XSD → TypeScript generator     |
+| `references/notas-tecnicas-historico.md` | NT changelog since MOC 7.0                    |
+| `references/gargalos-e-problemas.md`     | production failure modes & pitfalls           |
+| `references/sources/`                    | original SEFAZ PDFs (MOC 7.0 + NTs vigentes)  |
 
 When implementing, read the specific reference for the layer you are building.
 Keep these files current with the SEFAZ update-watch routine — when a new NT

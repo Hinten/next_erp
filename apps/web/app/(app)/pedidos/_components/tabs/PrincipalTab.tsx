@@ -14,11 +14,7 @@ import {
 } from '@mantine/core';
 import { Controller, useFieldArray, type UseFormReturn } from 'react-hook-form';
 import { type DocumentReference, type Firestore } from 'firebase/firestore';
-import {
-  type Pedido,
-  type Produto,
-  itemSubtotal,
-} from '@delfrance/schemas';
+import { type Pedido, type Produto, itemSubtotal } from '@delfrance/schemas';
 import { format, money } from '@delfrance/core/money';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { ClientePicker } from '@/components/pickers/ClientePicker';
@@ -43,12 +39,7 @@ export interface PrincipalTabProps {
   vendedorLabel?: string;
 }
 
-export function PrincipalTab({
-  form,
-  db,
-  disabled,
-  vendedorLabel,
-}: PrincipalTabProps) {
+export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTabProps) {
   const ehSaida = form.watch('ehSaida') ?? true;
   const listaDePrecosOuterRef = form.watch('listaDePrecosOuterRef');
 
@@ -62,10 +53,7 @@ export function PrincipalTab({
   const itensFlat = useMemo(() => itensFlatRaw ?? [], [itensFlatRaw]);
   const descontoTotal = form.watch('descontoTotal') ?? 0;
 
-  const subtotal = useMemo(
-    () => itensFlat.reduce((n, i) => n + itemSubtotal(i), 0),
-    [itensFlat],
-  );
+  const subtotal = useMemo(() => itensFlat.reduce((n, i) => n + itemSubtotal(i), 0), [itensFlat]);
   const total = subtotal - (descontoTotal ?? 0);
 
   const listaRef = useMemo(
@@ -78,11 +66,12 @@ export function PrincipalTab({
   );
   const { data: listaDoc } = useDocSnapshot(listaRefTyped);
 
-  function addItem(produto: Produto | null, produtoRef: DocumentReference<Produto> | null, produtoId: string | null) {
-    const nextOrdem =
-      itensFlat.length === 0
-        ? 1
-        : Math.max(...itensFlat.map((i) => i.ordem)) + 1;
+  function addItem(
+    produto: Produto | null,
+    produtoRef: DocumentReference<Produto> | null,
+    produtoId: string | null,
+  ) {
+    const nextOrdem = itensFlat.length === 0 ? 1 : Math.max(...itensFlat.map((i) => i.ordem)) + 1;
     fieldArray.append({
       _rowId: makeRowId(),
       produtoUid: produtoId,
@@ -118,12 +107,7 @@ export function PrincipalTab({
       />
 
       <Group grow align="flex-start">
-        <TextInput
-          label="Vendedor"
-          value={vendedorLabel ?? '—'}
-          readOnly
-          disabled
-        />
+        <TextInput label="Vendedor" value={vendedorLabel ?? '—'} readOnly disabled />
         <Controller
           control={form.control}
           name="operacaoPedidoOuterRef"
@@ -174,11 +158,7 @@ export function PrincipalTab({
             db={db}
             disabled={disabled}
             onPicked={(result) => {
-              addItem(
-                result?.data ?? null,
-                result?.ref ?? null,
-                result?.id ?? null,
-              );
+              addItem(result?.data ?? null, result?.ref ?? null, result?.id ?? null);
             }}
           />
         </Group>
@@ -240,9 +220,7 @@ export function PrincipalTab({
                   render={({ field }) => (
                     <NumberInput
                       value={field.value ?? 0}
-                      onChange={(v) =>
-                        field.onChange(typeof v === 'number' ? v : 0)
-                      }
+                      onChange={(v) => field.onChange(typeof v === 'number' ? v : 0)}
                       onBlur={field.onBlur}
                       min={0}
                       decimalScale={2}
@@ -295,11 +273,13 @@ function AddItemControl({
 }: {
   db: Firestore;
   disabled?: boolean;
-  onPicked: (result: {
-    ref: DocumentReference<Produto>;
-    id: string;
-    data: Produto;
-  } | null) => void;
+  onPicked: (
+    result: {
+      ref: DocumentReference<Produto>;
+      id: string;
+      data: Produto;
+    } | null,
+  ) => void;
 }) {
   // The picker is a one-shot selector here — clearing the value also
   // resets it, so each search adds a fresh row.
@@ -345,9 +325,7 @@ function ItemRow({
           render={({ field }) => (
             <NumberInput
               value={field.value ?? 1}
-              onChange={(v) =>
-                field.onChange(typeof v === 'number' ? v : 1)
-              }
+              onChange={(v) => field.onChange(typeof v === 'number' ? v : 1)}
               onBlur={field.onBlur}
               min={1}
               step={1}
@@ -364,9 +342,7 @@ function ItemRow({
           render={({ field }) => (
             <TextInput
               value={field.value ?? ''}
-              onChange={(e) =>
-                field.onChange(e.currentTarget.value || null)
-              }
+              onChange={(e) => field.onChange(e.currentTarget.value || null)}
               onBlur={field.onBlur}
               placeholder="Nome no pedido"
               disabled={disabled}
@@ -381,9 +357,7 @@ function ItemRow({
           render={({ field }) => (
             <TextInput
               value={field.value ?? ''}
-              onChange={(e) =>
-                field.onChange(e.currentTarget.value || null)
-              }
+              onChange={(e) => field.onChange(e.currentTarget.value || null)}
               onBlur={field.onBlur}
               disabled={disabled}
             />
@@ -397,9 +371,7 @@ function ItemRow({
           render={({ field }) => (
             <NumberInput
               value={field.value ?? 0}
-              onChange={(v) =>
-                field.onChange(typeof v === 'number' ? v : 0)
-              }
+              onChange={(v) => field.onChange(typeof v === 'number' ? v : 0)}
               onBlur={field.onBlur}
               min={0}
               decimalScale={3}
@@ -417,9 +389,7 @@ function ItemRow({
           render={({ field }) => (
             <NumberInput
               value={field.value ?? 0.01}
-              onChange={(v) =>
-                field.onChange(typeof v === 'number' ? v : 0.01)
-              }
+              onChange={(v) => field.onChange(typeof v === 'number' ? v : 0.01)}
               onBlur={field.onBlur}
               min={0.01}
               decimalScale={2}
@@ -437,9 +407,7 @@ function ItemRow({
           render={({ field }) => (
             <NumberInput
               value={field.value ?? 0}
-              onChange={(v) =>
-                field.onChange(typeof v === 'number' ? v : 0)
-              }
+              onChange={(v) => field.onChange(typeof v === 'number' ? v : 0)}
               onBlur={field.onBlur}
               min={0}
               decimalScale={2}

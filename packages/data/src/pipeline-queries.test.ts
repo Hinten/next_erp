@@ -26,11 +26,7 @@ const { mockPipelinesExports } = vi.hoisted(() => ({
 vi.mock('firebase/firestore/pipelines', () => mockPipelinesExports);
 
 import type { Firestore } from 'firebase/firestore';
-import {
-  PipelineUnsupportedError,
-  buildPipeline,
-  isPipelineSupported,
-} from './pipeline-queries';
+import { PipelineUnsupportedError, buildPipeline, isPipelineSupported } from './pipeline-queries';
 
 interface Stage {
   where: ReturnType<typeof vi.fn>;
@@ -71,9 +67,9 @@ function makeDb(withPipeline: boolean): {
 } {
   const stage = makeStage();
   const collection = vi.fn(() => stage);
-  const db = (
-    withPipeline ? { pipeline: vi.fn(() => ({ collection })) } : {}
-  ) as unknown as Firestore;
+  const db = (withPipeline
+    ? { pipeline: vi.fn(() => ({ collection })) }
+    : {}) as unknown as Firestore;
   return { db, stage, collection };
 }
 
@@ -96,9 +92,7 @@ describe('isPipelineSupported', () => {
 describe('buildPipeline', () => {
   it('throws PipelineUnsupportedError when db.pipeline is missing', () => {
     const { db } = makeDb(false);
-    expect(() => buildPipeline(db, { collection: 'clientes' })).toThrow(
-      PipelineUnsupportedError,
-    );
+    expect(() => buildPipeline(db, { collection: 'clientes' })).toThrow(PipelineUnsupportedError);
   });
 
   it('builds collection -> where(or(regexContains, regexContains)) -> sort -> limit', () => {
@@ -112,12 +106,8 @@ describe('buildPipeline', () => {
 
     expect(collection).toHaveBeenCalledWith('clientes');
     expect(stage.__calls).toEqual(['where', 'sort', 'limit']);
-    expect(stage.where).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'or' }),
-    );
-    expect(stage.sort).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'asc' }),
-    );
+    expect(stage.where).toHaveBeenCalledWith(expect.objectContaining({ kind: 'or' }));
+    expect(stage.sort).toHaveBeenCalledWith(expect.objectContaining({ kind: 'asc' }));
     expect(stage.limit).toHaveBeenCalledWith(50);
   });
 
@@ -127,9 +117,7 @@ describe('buildPipeline', () => {
       collection: 'x',
       search: { fields: ['nome'], term: 'a' },
     });
-    expect(stage.where).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'regexContains' }),
-    );
+    expect(stage.where).toHaveBeenCalledWith(expect.objectContaining({ kind: 'regexContains' }));
   });
 
   it('similarity search is case- and accent-insensitive and trims whitespace', () => {
@@ -163,9 +151,7 @@ describe('buildPipeline', () => {
       collection: 'x',
       orderBy: [{ field: 'createdAt', direction: 'desc' }],
     });
-    expect(stage.sort).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'desc' }),
-    );
+    expect(stage.sort).toHaveBeenCalledWith(expect.objectContaining({ kind: 'desc' }));
   });
 
   it('applies a single eq filter as where(equal)', () => {
@@ -174,9 +160,7 @@ describe('buildPipeline', () => {
       collection: 'x',
       filters: [{ field: 'tipo', op: 'eq', value: '1' }],
     });
-    expect(stage.where).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'equal' }),
-    );
+    expect(stage.where).toHaveBeenCalledWith(expect.objectContaining({ kind: 'equal' }));
   });
 
   it('contains filter uses regexContains with an accent-folded pattern', () => {
@@ -203,9 +187,7 @@ describe('buildPipeline', () => {
         { field: 'age', op: 'gte', value: 18 },
       ],
     });
-    expect(stage.where).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'and' }),
-    );
+    expect(stage.where).toHaveBeenCalledWith(expect.objectContaining({ kind: 'and' }));
   });
 
   it('search + filters apply as two separate where stages', () => {

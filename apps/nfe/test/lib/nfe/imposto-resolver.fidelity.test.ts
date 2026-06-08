@@ -11,11 +11,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import type {
-  ImpostoCategoria,
-  ImpostoProduto,
-  RegraImposto,
-} from '@delfrance/schemas';
+import type { ImpostoCategoria, ImpostoProduto, RegraImposto } from '@delfrance/schemas';
 import { buildImpostoXml } from '@delfrance/integrations-nfe';
 
 import {
@@ -48,7 +44,11 @@ function itemImposto(): Record<string, unknown> {
   return impostoBlob(CSOSN_ITEM);
 }
 
-function produtoDoc(produtoUid: string, csosn: string, scope: string | null = null): ImpostoProduto {
+function produtoDoc(
+  produtoUid: string,
+  csosn: string,
+  scope: string | null = null,
+): ImpostoProduto {
   return {
     id: `${produtoUid}-imp`,
     impostoOperacaoOuterRef: scope,
@@ -57,7 +57,11 @@ function produtoDoc(produtoUid: string, csosn: string, scope: string | null = nu
   };
 }
 
-function categoriaDoc(categoriaUid: string, csosn: string, scope: string | null = null): ImpostoCategoria {
+function categoriaDoc(
+  categoriaUid: string,
+  csosn: string,
+  scope: string | null = null,
+): ImpostoCategoria {
   return {
     id: `${categoriaUid}-imp`,
     impostoOperacaoOuterRef: scope,
@@ -112,7 +116,9 @@ describe('resolver fidelity — single-source resolution', () => {
   it('impostoCategoria resolves through produto.categoriaProdutoOuterRef', async () => {
     const deps = makeDeps({
       readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef: 'categorias/cat-7' }),
-      readImpostoCategoriaSubcoll: vi.fn().mockResolvedValue([categoriaDoc('cat-7', CSOSN_CATEGORIA)]),
+      readImpostoCategoriaSubcoll: vi
+        .fn()
+        .mockResolvedValue([categoriaDoc('cat-7', CSOSN_CATEGORIA)]),
     });
     const out = await createImpostoResolver(deps).resolve('P-1', null);
     expect(out?.configuracaoICMS?.csosn).toBe(CSOSN_CATEGORIA);
@@ -142,7 +148,9 @@ describe('resolver fidelity — stacked priority enforcement', () => {
         NCM: '61091000',
       }),
       readImpostoProdutoSubcoll: vi.fn().mockResolvedValue([produtoDoc('P-1', CSOSN_PRODUTO)]),
-      readImpostoCategoriaSubcoll: vi.fn().mockResolvedValue([categoriaDoc('cat-7', CSOSN_CATEGORIA)]),
+      readImpostoCategoriaSubcoll: vi
+        .fn()
+        .mockResolvedValue([categoriaDoc('cat-7', CSOSN_CATEGORIA)]),
       bundle: {
         operacaoId: ACTIVE_OPERACAO,
         regrasImposto: [regraDoc({ produtos: ['P-1'] }, CSOSN_REGRA)],
@@ -233,7 +241,9 @@ describe('resolver fidelity — categoriaProdutoOuterRef shape tolerance', () =>
   it('accepts string-shaped categoriaProdutoOuterRef', async () => {
     const deps = makeDeps({
       readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef: 'categorias/cat-7' }),
-      readImpostoCategoriaSubcoll: vi.fn().mockResolvedValue([categoriaDoc('cat-7', CSOSN_CATEGORIA)]),
+      readImpostoCategoriaSubcoll: vi
+        .fn()
+        .mockResolvedValue([categoriaDoc('cat-7', CSOSN_CATEGORIA)]),
     });
     const out = await createImpostoResolver(deps).resolve('P-1', null);
     expect(out?.configuracaoICMS?.csosn).toBe(CSOSN_CATEGORIA);
@@ -245,7 +255,9 @@ describe('resolver fidelity — categoriaProdutoOuterRef shape tolerance', () =>
       readProduto: vi.fn().mockResolvedValue({
         categoriaProdutoOuterRef: { path: 'categorias/cat-7' },
       }),
-      readImpostoCategoriaSubcoll: vi.fn().mockResolvedValue([categoriaDoc('cat-7', CSOSN_CATEGORIA)]),
+      readImpostoCategoriaSubcoll: vi
+        .fn()
+        .mockResolvedValue([categoriaDoc('cat-7', CSOSN_CATEGORIA)]),
     });
     const out = await createImpostoResolver(deps).resolve('P-1', null);
     expect(out?.configuracaoICMS?.csosn).toBe(CSOSN_CATEGORIA);

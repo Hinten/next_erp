@@ -36,9 +36,7 @@ describe('applyCascade', () => {
       permissions: { read: 1n, write: 1n, delete: 1n },
     };
     const admin = fakeAdmin({});
-    await expect(
-      applyCascade(meta, { admin, resolvePath: (p) => p }),
-    ).resolves.toBeUndefined();
+    await expect(applyCascade(meta, { admin, resolvePath: (p) => p })).resolves.toBeUndefined();
   });
 
   it('throws CascadeBlockedError when restrict-declared subcollection is non-empty', async () => {

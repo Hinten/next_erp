@@ -31,9 +31,7 @@ describe('removerCharRestrito', () => {
     // XSD TString pattern is `[!-ÿ]` — anything above U+00FF fails the
     // facet at the pre-send gate. Drop them here so the XML never carries
     // them across the boundary. Adjacent spaces are then collapsed.
-    expect(removerCharRestrito('EMPRESA & CIA. LTDA — ME')).toBe(
-      'EMPRESA & CIA. LTDA ME',
-    );
+    expect(removerCharRestrito('EMPRESA & CIA. LTDA — ME')).toBe('EMPRESA & CIA. LTDA ME');
     expect(removerCharRestrito('Rua A – Bloco B')).toBe('Rua A Bloco B');
     expect(removerCharRestrito('“aspas” e ‘curvas’')).toBe('aspas e curvas');
     expect(removerCharRestrito('Tres pontos…')).toBe('Tres pontos');
@@ -52,9 +50,7 @@ describe('sanitizeNFeText', () => {
 
   describe('maxLen — XSD facet truncation', () => {
     it('passes through inputs shorter than maxLen unchanged', () => {
-      expect(sanitizeNFeText('Avenida Paulista 1500', 60)).toBe(
-        'Avenida Paulista 1500',
-      );
+      expect(sanitizeNFeText('Avenida Paulista 1500', 60)).toBe('Avenida Paulista 1500');
     });
     it('truncates to maxLen and trims a trailing partial space', () => {
       // 70-char input; after slice(0, 60) → 60 chars; in this fixture the

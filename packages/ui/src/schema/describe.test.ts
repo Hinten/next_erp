@@ -15,9 +15,7 @@ describe('parseZodDescription', () => {
 
   it('parses JSON describe() into structured fields', () => {
     const parsed = parseZodDescription(
-      z
-        .string()
-        .describe('{"label":"Cliente","kind":"reference","collection":"clientes"}'),
+      z.string().describe('{"label":"Cliente","kind":"reference","collection":"clientes"}'),
     );
     expect(parsed).toEqual({
       label: 'Cliente',

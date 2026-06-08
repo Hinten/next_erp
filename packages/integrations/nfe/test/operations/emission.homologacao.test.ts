@@ -68,11 +68,7 @@ import {
   type Imposto,
 } from '../../src/tribute';
 import type { TProtNFe } from '../../src/types/nfe-schema';
-import {
-  autorizarLote,
-  consultarLote,
-  consultarSituacaoNFe,
-} from '../../src/operations/index';
+import { autorizarLote, consultarLote, consultarSituacaoNFe } from '../../src/operations/index';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VENDORED_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-sp-homologacao.pem');
@@ -396,81 +392,71 @@ describe('SEFAZ-SP homologação — library duplicidade-recovery contract', () 
   // duplicidade test below stays because it pins the consSitNFe
   // recovery contract the orchestrator's anti-loss path depends on
   // (see `recoverFrom539` in `apps/nfe/lib/nfe/orchestrator.ts`).
-  it(
-    'duplicidade recovery — second emission returns 204, consSitNFe resolves to original 100',
-    async () => {
-      // SEFAZ status pre-flight intentionally removed — the ci-nfe.yml
-      // "SEFAZ-SP HOM status gate" step runs operations.homologacao
-      // immediately before this test and short-circuits the whole job
-      // on cStat ≠ 107/108/109, so re-pinging the status endpoint here
-      // would just feed the 656 throttle for no extra signal.
-      const numeracao = seedNNF();
-      const fixture = buildFixture(numeracao);
-      const out = generateNFe(fixture);
+  it('duplicidade recovery — second emission returns 204, consSitNFe resolves to original 100', async () => {
+    // SEFAZ status pre-flight intentionally removed — the ci-nfe.yml
+    // "SEFAZ-SP HOM status gate" step runs operations.homologacao
+    // immediately before this test and short-circuits the whole job
+    // on cStat ≠ 107/108/109, so re-pinging the status endpoint here
+    // would just feed the 656 throttle for no extra signal.
+    const numeracao = seedNNF();
+    const fixture = buildFixture(numeracao);
+    const out = generateNFe(fixture);
 
-      const autorizacaoCall = buildCall(
-        getEndpoints('SP', 'homologacao').NfeAutorizacao,
-        TEST_CERT!,
-      );
-      const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
+    const autorizacaoCall = buildCall(getEndpoints('SP', 'homologacao').NfeAutorizacao, TEST_CERT!);
+    const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
 
-      // 1st submission — must succeed.
-      const first = await autorizarLote(autorizacaoCall, {
-        idLote: out.chave.slice(-15),
-        NFe: [signedXml],
-        indSinc: '1',
-      });
-      assertNotConsumoIndevido(first, 'duplicidade/autorizarLote#1');
-      const firstProt = await resolveProtocol(first, autorizacaoCall);
-      if (firstProt) assertNotConsumoIndevido(firstProt.infProt, 'duplicidade/protNFe#1');
-      expect(firstProt?.infProt.cStat).toBe('100');
-      const firstNProt = firstProt!.infProt.nProt;
+    // 1st submission — must succeed.
+    const first = await autorizarLote(autorizacaoCall, {
+      idLote: out.chave.slice(-15),
+      NFe: [signedXml],
+      indSinc: '1',
+    });
+    assertNotConsumoIndevido(first, 'duplicidade/autorizarLote#1');
+    const firstProt = await resolveProtocol(first, autorizacaoCall);
+    if (firstProt) assertNotConsumoIndevido(firstProt.infProt, 'duplicidade/protNFe#1');
+    expect(firstProt?.infProt.cStat).toBe('100');
+    const firstNProt = firstProt!.infProt.nProt;
 
-      // Throttle between identical-payload submissions.
-      await new Promise((r) => setTimeout(r, 1000));
+    // Throttle between identical-payload submissions.
+    await new Promise((r) => setTimeout(r, 1000));
 
-      // 2nd submission — same chave, expect cStat=204 (Duplicidade).
-      // SEFAZ surfaces 204 either at the lote level OR inside protNFe
-      // depending on lot composition; accept either as long as the
-      // chave is rejected as duplicate.
-      const second = await autorizarLote(autorizacaoCall, {
-        idLote: out.chave.slice(-15),
-        NFe: [signedXml],
-        indSinc: '1',
-      });
-      assertNotConsumoIndevido(second, 'duplicidade/autorizarLote#2');
-      // eslint-disable-next-line no-console
-      console.log(
-        `[duplicidade lote2] cStat=${second.cStat} xMotivo="${second.xMotivo}"`,
-      );
-      const secondProt = await resolveProtocol(second, autorizacaoCall);
-      if (secondProt) assertNotConsumoIndevido(secondProt.infProt, 'duplicidade/protNFe#2');
-      const dupCStat = secondProt?.infProt.cStat ?? second.cStat;
-      expect(['204', '539']).toContain(dupCStat);
+    // 2nd submission — same chave, expect cStat=204 (Duplicidade).
+    // SEFAZ surfaces 204 either at the lote level OR inside protNFe
+    // depending on lot composition; accept either as long as the
+    // chave is rejected as duplicate.
+    const second = await autorizarLote(autorizacaoCall, {
+      idLote: out.chave.slice(-15),
+      NFe: [signedXml],
+      indSinc: '1',
+    });
+    assertNotConsumoIndevido(second, 'duplicidade/autorizarLote#2');
+    // eslint-disable-next-line no-console
+    console.log(`[duplicidade lote2] cStat=${second.cStat} xMotivo="${second.xMotivo}"`);
+    const secondProt = await resolveProtocol(second, autorizacaoCall);
+    if (secondProt) assertNotConsumoIndevido(secondProt.infProt, 'duplicidade/protNFe#2');
+    const dupCStat = secondProt?.infProt.cStat ?? second.cStat;
+    expect(['204', '539']).toContain(dupCStat);
 
-      // Recovery query — proves the original 100 + nProt are still
-      // resolvable by chave. This is the exact path the orchestrator's
-      // anti-loss recovery uses when a SOAP response goes missing.
-      await new Promise((r) => setTimeout(r, 1000));
-      const consultaCall = buildCall(
-        getEndpoints('SP', 'homologacao').NfeConsultaProtocolo,
-        TEST_CERT!,
-      );
-      const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
-      assertNotConsumoIndevido(sit, 'duplicidade/consSitNFe');
-      // eslint-disable-next-line no-console
-      console.log(
-        `[consSitNFe] cStat=${sit.cStat} xMotivo="${sit.xMotivo}" prot.cStat=${sit.protNFe?.infProt.cStat}`,
-      );
-      // SEFAZ retConsSitNFe.cStat=100 means "consulta atendida"; the
-      // **inner** protNFe.infProt.cStat is the actual NF-e status.
-      expect(sit.chNFe).toBe(out.chave);
-      expect(sit.protNFe?.infProt.cStat).toBe('100');
-      expect(sit.protNFe?.infProt.nProt).toBe(firstNProt);
-    },
-    180_000,
-  );
-
+    // Recovery query — proves the original 100 + nProt are still
+    // resolvable by chave. This is the exact path the orchestrator's
+    // anti-loss recovery uses when a SOAP response goes missing.
+    await new Promise((r) => setTimeout(r, 1000));
+    const consultaCall = buildCall(
+      getEndpoints('SP', 'homologacao').NfeConsultaProtocolo,
+      TEST_CERT!,
+    );
+    const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
+    assertNotConsumoIndevido(sit, 'duplicidade/consSitNFe');
+    // eslint-disable-next-line no-console
+    console.log(
+      `[consSitNFe] cStat=${sit.cStat} xMotivo="${sit.xMotivo}" prot.cStat=${sit.protNFe?.infProt.cStat}`,
+    );
+    // SEFAZ retConsSitNFe.cStat=100 means "consulta atendida"; the
+    // **inner** protNFe.infProt.cStat is the actual NF-e status.
+    expect(sit.chNFe).toBe(out.chave);
+    expect(sit.protNFe?.infProt.cStat).toBe('100');
+    expect(sit.protNFe?.infProt.nProt).toBe(firstNProt);
+  }, 180_000);
 });
 
 /**

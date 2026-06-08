@@ -4,10 +4,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Alert, Anchor, Group, Stack, Title } from '@mantine/core';
 import { useAuth, useIsSuperUser } from '@/lib/auth';
-import {
-  UsuarioCreateForm,
-  type CreateUserValues,
-} from '../_components/UsuarioCreateForm';
+import { UsuarioCreateForm, type CreateUserValues } from '../_components/UsuarioCreateForm';
 import { createUser } from '@/lib/admin/users';
 
 export default function NovoUsuarioPage() {
@@ -30,15 +27,8 @@ export default function NovoUsuarioPage() {
           Voltar
         </Anchor>
       </Group>
-      {!user && (
-        <Alert color="yellow">Aguardando sessão de autenticação…</Alert>
-      )}
-      {user && (
-        <UsuarioCreateForm
-          onSubmit={handleSubmit}
-          callerIsSuperUser={callerIsSuperUser}
-        />
-      )}
+      {!user && <Alert color="yellow">Aguardando sessão de autenticação…</Alert>}
+      {user && <UsuarioCreateForm onSubmit={handleSubmit} callerIsSuperUser={callerIsSuperUser} />}
     </Stack>
   );
 }

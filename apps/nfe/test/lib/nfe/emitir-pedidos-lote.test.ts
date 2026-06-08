@@ -20,18 +20,10 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
   };
 });
 
-import {
-  autorizarLote,
-  consultarLote,
-  generateNFe,
-  signNFe,
-} from '@delfrance/integrations-nfe';
+import { autorizarLote, consultarLote, generateNFe, signNFe } from '@delfrance/integrations-nfe';
 import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
-import {
-  emitirPedidosLote,
-  NFeOrchestratorError,
-} from '../../../lib/nfe/orchestrator';
+import { emitirPedidosLote, NFeOrchestratorError } from '../../../lib/nfe/orchestrator';
 import type { NFeRuntime } from '../../../lib/nfe/runtime';
 
 function fakeRuntime(): NFeRuntime {
@@ -225,9 +217,7 @@ function fakeFirestore(opts: BatchHarnessOpts) {
       const cfg = opts.nfeConfigByFilial?.[spec.filialId];
       const seed = cfg !== undefined ? cfg : SEED_NFE_CONFIG;
       docs[`filiais/${spec.filialId}/nfeconfig/default`] =
-        seed === null
-          ? null
-          : (seed as unknown as Record<string, unknown>);
+        seed === null ? null : (seed as unknown as Record<string, unknown>);
     }
   }
   // Seed pedidos + their pre-existing nfev4 docs.
@@ -290,7 +280,10 @@ function fakeFirestore(opts: BatchHarnessOpts) {
             ([key, val]) =>
               key.startsWith(prefix) && val != null && !key.slice(prefix.length).includes('/'),
           )
-          .map(([key, val]) => ({ id: key.slice(prefix.length), data: val as Record<string, unknown> }));
+          .map(([key, val]) => ({
+            id: key.slice(prefix.length),
+            data: val as Record<string, unknown>,
+          }));
         for (const op of ops) {
           if (op.kind === 'where' && op.op === 'array-contains') {
             items = items.filter((it) => {
@@ -464,27 +457,30 @@ function autorizarLoteAsync(nRec: string): void {
 }
 
 function consultarLoteResolves(chaves: ReadonlyArray<string>): void {
-  vi.mocked(consultarLote).mockImplementation(async () => ({
-    versao: '4.00',
-    tpAmb: '2',
-    verAplic: 'TEST',
-    cStat: '104',
-    xMotivo: 'Lote processado',
-    cUF: '35',
-    protNFe: chaves.map((ch, i) => ({
-      versao: '4.00',
-      infProt: {
+  vi.mocked(consultarLote).mockImplementation(
+    async () =>
+      ({
+        versao: '4.00',
         tpAmb: '2',
         verAplic: 'TEST',
-        chNFe: ch,
-        dhRecbto: new Date().toISOString(),
-        cStat: '100',
-        xMotivo: 'Autorizado o uso da NF-e',
-        nProt: `135${ch.slice(0, 9)}${i}`,
-        digVal: `dig-${i}`,
-      },
-    })),
-  } as never));
+        cStat: '104',
+        xMotivo: 'Lote processado',
+        cUF: '35',
+        protNFe: chaves.map((ch, i) => ({
+          versao: '4.00',
+          infProt: {
+            tpAmb: '2',
+            verAplic: 'TEST',
+            chNFe: ch,
+            dhRecbto: new Date().toISOString(),
+            cStat: '100',
+            xMotivo: 'Autorizado o uso da NF-e',
+            nProt: `135${ch.slice(0, 9)}${i}`,
+            digVal: `dig-${i}`,
+          },
+        })),
+      }) as never,
+  );
 }
 
 beforeEach(() => {
@@ -499,17 +495,17 @@ afterEach(() => {
 describe('emitirPedidosLote — input validation', () => {
   it('throws on empty pedidoIds', async () => {
     const { fs } = fakeFirestore({ events: [], pedidos: [] });
-    await expect(
-      emitirPedidosLote(fs as never, fakeRuntime(), []),
-    ).rejects.toBeInstanceOf(NFeOrchestratorError);
+    await expect(emitirPedidosLote(fs as never, fakeRuntime(), [])).rejects.toBeInstanceOf(
+      NFeOrchestratorError,
+    );
   });
 
   it('throws on >50 pedidoIds', async () => {
     const ids = Array.from({ length: 51 }, (_, i) => `PED-${i}`);
     const { fs } = fakeFirestore({ events: [], pedidos: [] });
-    await expect(
-      emitirPedidosLote(fs as never, fakeRuntime(), ids),
-    ).rejects.toThrow(/MAX_PEDIDOS_PER_BATCH/);
+    await expect(emitirPedidosLote(fs as never, fakeRuntime(), ids)).rejects.toThrow(
+      /MAX_PEDIDOS_PER_BATCH/,
+    );
   });
 });
 
@@ -542,32 +538,31 @@ describe('emitirPedidosLote — single filial happy path', () => {
     autorizarLoteAsync('RECIBO-1');
     // Resolve the lote via the chaves the generateNFe mock pushed to
     // `generatedChaves` — captured at generate-time, no XML regex needed.
-    vi.mocked(consultarLote).mockImplementation(async () => ({
-      versao: '4.00',
-      tpAmb: '2',
-      verAplic: 'TEST',
-      cStat: '104',
-      xMotivo: 'Lote processado',
-      cUF: '35',
-      protNFe: generatedChaves.map((ch, i) => ({
-        versao: '4.00',
-        infProt: {
+    vi.mocked(consultarLote).mockImplementation(
+      async () =>
+        ({
+          versao: '4.00',
           tpAmb: '2',
           verAplic: 'TEST',
-          chNFe: ch,
-          dhRecbto: new Date().toISOString(),
-          cStat: '100',
-          xMotivo: 'Autorizado o uso da NF-e',
-          nProt: `135${i.toString().padStart(15, '0')}`,
-          digVal: `dig-${i}`,
-        },
-      })),
-    } as never));
-    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
-      'PED-1',
-      'PED-2',
-      'PED-3',
-    ]);
+          cStat: '104',
+          xMotivo: 'Lote processado',
+          cUF: '35',
+          protNFe: generatedChaves.map((ch, i) => ({
+            versao: '4.00',
+            infProt: {
+              tpAmb: '2',
+              verAplic: 'TEST',
+              chNFe: ch,
+              dhRecbto: new Date().toISOString(),
+              cStat: '100',
+              xMotivo: 'Autorizado o uso da NF-e',
+              nProt: `135${i.toString().padStart(15, '0')}`,
+              digVal: `dig-${i}`,
+            },
+          })),
+        }) as never,
+    );
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1', 'PED-2', 'PED-3']);
     expect(out.results).toHaveLength(3);
     for (const r of out.results) {
       expect('estado' in r ? r.estado : null).toBe(ESTADO_NFE.aprovada);
@@ -589,33 +584,32 @@ describe('emitirPedidosLote — batch read dedup (PR-δ)', () => {
       ],
     });
     autorizarLoteAsync('RECIBO-1');
-    vi.mocked(consultarLote).mockImplementation(async () => ({
-      versao: '4.00',
-      tpAmb: '2',
-      verAplic: 'TEST',
-      cStat: '104',
-      xMotivo: 'Lote processado',
-      cUF: '35',
-      protNFe: generatedChaves.map((ch, i) => ({
-        versao: '4.00',
-        infProt: {
+    vi.mocked(consultarLote).mockImplementation(
+      async () =>
+        ({
+          versao: '4.00',
           tpAmb: '2',
           verAplic: 'TEST',
-          chNFe: ch,
-          dhRecbto: new Date().toISOString(),
-          cStat: '100',
-          xMotivo: 'Autorizado o uso da NF-e',
-          nProt: `135${i.toString().padStart(15, '0')}`,
-          digVal: `dig-${i}`,
-        },
-      })),
-    } as never));
+          cStat: '104',
+          xMotivo: 'Lote processado',
+          cUF: '35',
+          protNFe: generatedChaves.map((ch, i) => ({
+            versao: '4.00',
+            infProt: {
+              tpAmb: '2',
+              verAplic: 'TEST',
+              chNFe: ch,
+              dhRecbto: new Date().toISOString(),
+              cStat: '100',
+              xMotivo: 'Autorizado o uso da NF-e',
+              nProt: `135${i.toString().padStart(15, '0')}`,
+              digVal: `dig-${i}`,
+            },
+          })),
+        }) as never,
+    );
 
-    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
-      'PED-1',
-      'PED-2',
-      'PED-3',
-    ]);
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1', 'PED-2', 'PED-3']);
     expect(out.results).toHaveLength(3);
 
     // The three pedidos share filial F-1 and operação O-1. Without the
@@ -669,10 +663,7 @@ describe('emitirPedidosLote — multi-filial fan-out', () => {
         },
       } as never;
     });
-    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
-      'PED-A',
-      'PED-B',
-    ]);
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-A', 'PED-B']);
     expect(out.results).toHaveLength(2);
     expect(vi.mocked(autorizarLote)).toHaveBeenCalledTimes(2);
   });
@@ -680,27 +671,30 @@ describe('emitirPedidosLote — multi-filial fan-out', () => {
 
 describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
   function consultarLoteResolvesGenerated(): void {
-    vi.mocked(consultarLote).mockImplementation(async () => ({
-      versao: '4.00',
-      tpAmb: '2',
-      verAplic: 'TEST',
-      cStat: '104',
-      xMotivo: 'Lote processado',
-      cUF: '35',
-      protNFe: generatedChaves.map((ch, i) => ({
-        versao: '4.00',
-        infProt: {
+    vi.mocked(consultarLote).mockImplementation(
+      async () =>
+        ({
+          versao: '4.00',
           tpAmb: '2',
           verAplic: 'TEST',
-          chNFe: ch,
-          dhRecbto: new Date().toISOString(),
-          cStat: '100',
-          xMotivo: 'Autorizado o uso da NF-e',
-          nProt: `135${i.toString().padStart(15, '0')}`,
-          digVal: `dig-${i}`,
-        },
-      })),
-    } as never));
+          cStat: '104',
+          xMotivo: 'Lote processado',
+          cUF: '35',
+          protNFe: generatedChaves.map((ch, i) => ({
+            versao: '4.00',
+            infProt: {
+              tpAmb: '2',
+              verAplic: 'TEST',
+              chNFe: ch,
+              dhRecbto: new Date().toISOString(),
+              cStat: '100',
+              xMotivo: 'Autorizado o uso da NF-e',
+              nProt: `135${i.toString().padStart(15, '0')}`,
+              digVal: `dig-${i}`,
+            },
+          })),
+        }) as never,
+    );
   }
 
   /** nNF lives at chave[25..34) for the test's fakeChave layout. */
@@ -773,15 +767,11 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
     // PED-REUSE: the cNF baked into reuseExisting.chave (offsets [35,43))
     // must be forwarded to generateNFe so the regenerated chave is stable.
     const reuseCNF = reuseExisting.chave.slice(35, 43);
-    const reuseGenCall = vi
-      .mocked(generateNFe)
-      .mock.calls.find((c) => c[0]?.numeracao === 7);
+    const reuseGenCall = vi.mocked(generateNFe).mock.calls.find((c) => c[0]?.numeracao === 7);
     expect(reuseGenCall?.[0].cNF).toBe(reuseCNF);
     // PED-FRESH: no chave to preserve → cNF stays undefined and the
     // generator draws a fresh random one.
-    const freshGenCall = vi
-      .mocked(generateNFe)
-      .mock.calls.find((c) => c[0]?.numeracao === 1);
+    const freshGenCall = vi.mocked(generateNFe).mock.calls.find((c) => c[0]?.numeracao === 1);
     expect(freshGenCall?.[0].cNF).toBeUndefined();
   });
 
@@ -798,11 +788,7 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
     autorizarLoteAsync('RECIBO-1');
     consultarLoteResolvesGenerated();
 
-    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
-      'PED-1',
-      'PED-2',
-      'PED-3',
-    ]);
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1', 'PED-2', 'PED-3']);
     expect(out.results).toHaveLength(3);
     expect(
       (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
@@ -851,9 +837,10 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
     ).toBe(3);
     // The bad pedido's placeholder persists with its numeração but no chave
     // (the generate/sign step that would have stamped them threw).
-    const badDoc = docs['pedidos/PED-BADGEN/nfev4/s1'] as
-      | { chave: unknown; numeracao: number }
-      | null;
+    const badDoc = docs['pedidos/PED-BADGEN/nfev4/s1'] as {
+      chave: unknown;
+      numeracao: number;
+    } | null;
     expect(badDoc?.chave).toBeNull();
     expect(badDoc?.numeracao).toBe(2);
   });
@@ -871,10 +858,7 @@ describe('emitirPedidosLote — partial-failure aggregation', () => {
       ],
     });
     autorizarLoteSync(['35260514200166000187550010000000001100000001']);
-    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
-      'PED-OK',
-      'PED-MISSING',
-    ]);
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-OK', 'PED-MISSING']);
     expect(out.results).toHaveLength(2);
     const okResult = out.results.find((r) => r.pedidoId === 'PED-OK')!;
     const missingResult = out.results.find((r) => r.pedidoId === 'PED-MISSING')!;
@@ -913,10 +897,7 @@ describe('emitirPedidosLote — partial-failure aggregation', () => {
       ],
     });
     autorizarLoteSync(['35260514200166000187550010000000001100000002']);
-    const out = await emitirPedidosLote(fs as never, fakeRuntime(), [
-      'PED-DONE',
-      'PED-NEW',
-    ]);
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-DONE', 'PED-NEW']);
     const done = out.results.find((r) => r.pedidoId === 'PED-DONE')!;
     const fresh = out.results.find((r) => r.pedidoId === 'PED-NEW')!;
     expect('reused' in done ? done.reused : null).toBe(true);

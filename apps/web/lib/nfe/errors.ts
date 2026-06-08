@@ -33,9 +33,7 @@ export interface NotificationShape {
  * happy-ish paths (`aprovada` / `enviando` / `aguardandoResposta`).
  * Includes a defensive default for any unexpected estado.
  */
-export function notificationForNFeResult(
-  result: NFeEmitResult,
-): NotificationShape {
+export function notificationForNFeResult(result: NFeEmitResult): NotificationShape {
   // `reused: true` means the dedup branch short-circuited: the pedido
   // already had an nfev4 doc in a bloqueada cStat (100/101/102/...).
   // Show a distinct yellow toast so the user knows their click was
@@ -57,10 +55,7 @@ export function notificationForNFeResult(
       color: 'green',
     };
   }
-  if (
-    result.estado === ESTADO_NFE.enviando ||
-    result.estado === ESTADO_NFE.aguardandoResposta
-  ) {
+  if (result.estado === ESTADO_NFE.enviando || result.estado === ESTADO_NFE.aguardandoResposta) {
     return {
       title: 'NF-e em processamento',
       message: `Lote enviado a SEFAZ; aguardando protocolo (cStat=${result.cStat} ${result.xMotivo}).`,
@@ -113,9 +108,7 @@ export function notificationForNFeError(err: unknown): NotificationShape {
     if (err.status === 403) {
       return {
         title: 'Sem permissão',
-        message:
-          err.message ||
-          'Você não tem permissão para emitir NF-e (fiscal.write).',
+        message: err.message || 'Você não tem permissão para emitir NF-e (fiscal.write).',
         color: 'red',
       };
     }
@@ -153,7 +146,8 @@ export function notificationForNFeError(err: unknown): NotificationShape {
   if (err instanceof NFeNetworkError) {
     return {
       title: 'Erro de rede',
-      message: 'Não foi possível alcançar o servidor de NF-e. Verifique a conexão e tente novamente.',
+      message:
+        'Não foi possível alcançar o servidor de NF-e. Verifique a conexão e tente novamente.',
       color: 'red',
     };
   }

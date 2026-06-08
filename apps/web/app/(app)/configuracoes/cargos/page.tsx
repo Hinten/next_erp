@@ -3,17 +3,7 @@
 import { useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import {
-  Alert,
-  Anchor,
-  Badge,
-  Button,
-  Group,
-  Skeleton,
-  Stack,
-  Table,
-  Title,
-} from '@mantine/core';
+import { Alert, Anchor, Badge, Button, Group, Skeleton, Stack, Table, Title } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
 import { decodePermissoes } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
@@ -103,9 +93,7 @@ export default function CargosPage() {
                 </Table.Td>
                 <Table.Td>{c.descricao ?? '—'}</Table.Td>
                 <Table.Td>
-                  <Badge variant="light">
-                    {countBits(decodePermissoes(c))} permissões
-                  </Badge>
+                  <Badge variant="light">{countBits(decodePermissoes(c))} permissões</Badge>
                 </Table.Td>
               </Table.Tr>
             ))}

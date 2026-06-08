@@ -2,14 +2,7 @@
 
 import './widget.css';
 
-import {
-  type FormEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FirebaseError } from 'firebase/app';
 import {
   Timestamp,
@@ -117,9 +110,7 @@ export default function WebchatPage() {
   }, [conversaId]);
 
   const merged = useMemo(() => {
-    const seenMids = new Set(
-      messages.map((m) => m.mid).filter((v): v is string => Boolean(v)),
-    );
+    const seenMids = new Set(messages.map((m) => m.mid).filter((v): v is string => Boolean(v)));
     return [...messages, ...pending.filter((p) => !p.mid || !seenMids.has(p.mid))];
   }, [messages, pending]);
 
@@ -150,19 +141,16 @@ export default function WebchatPage() {
       ]);
       setDraft('');
       try {
-        await addDoc(
-          collection(getFirebaseFirestore(), `chat/${conversaId}/mensagem`),
-          {
-            conteudo: text,
-            user_id: uid,
-            estadoEnvio: ESTADO.salva,
-            tipo: 'c',
-            canal: 0,
-            timestamp: now,
-            mid: localId,
-            createdAt: Timestamp.now(),
-          },
-        );
+        await addDoc(collection(getFirebaseFirestore(), `chat/${conversaId}/mensagem`), {
+          conteudo: text,
+          user_id: uid,
+          estadoEnvio: ESTADO.salva,
+          tipo: 'c',
+          canal: 0,
+          timestamp: now,
+          mid: localId,
+          createdAt: Timestamp.now(),
+        });
         await setDoc(
           doc(getFirebaseFirestore(), `chat/${conversaId}`),
           { ultima_modificacao: now },
@@ -171,9 +159,7 @@ export default function WebchatPage() {
       } catch (err) {
         if (err instanceof FirebaseError) {
           setPending((p) =>
-            p.map((m) =>
-              m._localId === localId ? { ...m, estadoEnvio: ESTADO.erro } : m,
-            ),
+            p.map((m) => (m._localId === localId ? { ...m, estadoEnvio: ESTADO.erro } : m)),
           );
           setError(err.message);
         } else {
@@ -194,9 +180,7 @@ export default function WebchatPage() {
       {error && <div className="error">{error}</div>}
 
       <div ref={scrollRef} className="thread" role="log">
-        {merged.length === 0 && uid && (
-          <p className="empty">Como podemos ajudar?</p>
-        )}
+        {merged.length === 0 && uid && <p className="empty">Como podemos ajudar?</p>}
         {merged.map((m, i) => {
           const own = m.user_id === uid;
           return (

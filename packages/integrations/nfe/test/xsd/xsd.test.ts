@@ -80,9 +80,7 @@ describe('validateXsd — consStatServ', () => {
       `<consStatServ xmlns="${NFE_NS}" versao="4.00">` +
       `<tpAmb>9</tpAmb><cUF>35</cUF><xServ>STATUS</xServ>` +
       `</consStatServ>`;
-    await expect(validateXsd('consStatServ', xml)).rejects.toBeInstanceOf(
-      NFeXsdValidationError,
-    );
+    await expect(validateXsd('consStatServ', xml)).rejects.toBeInstanceOf(NFeXsdValidationError);
   });
 
   it('rejects a missing required field (cUF)', async () => {
@@ -90,9 +88,7 @@ describe('validateXsd — consStatServ', () => {
       `<consStatServ xmlns="${NFE_NS}" versao="4.00">` +
       `<tpAmb>2</tpAmb><xServ>STATUS</xServ>` +
       `</consStatServ>`;
-    await expect(validateXsd('consStatServ', xml)).rejects.toBeInstanceOf(
-      NFeXsdValidationError,
-    );
+    await expect(validateXsd('consStatServ', xml)).rejects.toBeInstanceOf(NFeXsdValidationError);
   });
 
   it('rejects a wrong-namespace document', async () => {
@@ -100,9 +96,7 @@ describe('validateXsd — consStatServ', () => {
       `<consStatServ xmlns="http://wrong/namespace" versao="4.00">` +
       `<tpAmb>2</tpAmb><cUF>35</cUF><xServ>STATUS</xServ>` +
       `</consStatServ>`;
-    await expect(validateXsd('consStatServ', xml)).rejects.toBeInstanceOf(
-      NFeXsdValidationError,
-    );
+    await expect(validateXsd('consStatServ', xml)).rejects.toBeInstanceOf(NFeXsdValidationError);
   });
 });
 
@@ -122,9 +116,7 @@ describe('validateXsd — consSitNFe', () => {
       `<tpAmb>2</tpAmb><xServ>CONSULTAR</xServ>` +
       `<chNFe>3520071420016600018755001000000007100000001</chNFe>` +
       `</consSitNFe>`;
-    await expect(validateXsd('consSitNFe', xml)).rejects.toBeInstanceOf(
-      NFeXsdValidationError,
-    );
+    await expect(validateXsd('consSitNFe', xml)).rejects.toBeInstanceOf(NFeXsdValidationError);
   });
 });
 
@@ -161,9 +153,7 @@ describe('validateXsd — envEvento (cancelamento, signed)', () => {
         tpAmb: '2',
       }),
     );
-    await expect(validateXsd('envEvento', unsigned)).rejects.toBeInstanceOf(
-      NFeXsdValidationError,
-    );
+    await expect(validateXsd('envEvento', unsigned)).rejects.toBeInstanceOf(NFeXsdValidationError);
   });
 
   it('rejects a chNFe of the wrong length', async () => {
@@ -173,9 +163,7 @@ describe('validateXsd — envEvento (cancelamento, signed)', () => {
       `<chNFe>${CHAVE}</chNFe>`,
       `<chNFe>${CHAVE.slice(0, 43)}</chNFe>`,
     );
-    await expect(validateXsd('envEvento', bad)).rejects.toBeInstanceOf(
-      NFeXsdValidationError,
-    );
+    await expect(validateXsd('envEvento', bad)).rejects.toBeInstanceOf(NFeXsdValidationError);
   });
 });
 
@@ -209,9 +197,7 @@ describe('validateXsd — detEvento (e110111 cancelamento payload)', () => {
       `<detEvento xmlns="${NFE_NS}" versao="1.00">` +
       `<descEvento>Cancelamento</descEvento>` +
       `<nProt>135200000012345</nProt>` +
-      (opts?.omitXJust
-        ? ''
-        : `<xJust>Cancelamento por erro de digitacao no pedido</xJust>`) +
+      (opts?.omitXJust ? '' : `<xJust>Cancelamento por erro de digitacao no pedido</xJust>`) +
       `</detEvento>`
     );
   }
@@ -231,8 +217,7 @@ describe('validateXsd — detEventoCCe (e110110 carta de correção payload)', (
   // buildCCeDetEvento emits the bare fragment; add the NFe namespace it inherits
   // from <evento> on the wire so the standalone fragment validates (e110110 is
   // elementFormDefault=qualified) — same shape the operation layer sends.
-  const withNs = (det: string): string =>
-    det.replace('<detEvento', `<detEvento xmlns="${NFE_NS}"`);
+  const withNs = (det: string): string => det.replace('<detEvento', `<detEvento xmlns="${NFE_NS}"`);
 
   it('accepts a well-formed CC-e detEvento (fixed xCondUso + valid xCorrecao)', async () => {
     const det = withNs(
@@ -284,8 +269,7 @@ describe('validateXsd — event/inut responses', () => {
 
 describe('NFeXsdValidationError', () => {
   it('carries the rootKey and the error list', async () => {
-    const badXml =
-      `<consStatServ xmlns="${NFE_NS}" versao="4.00"><tpAmb>9</tpAmb><cUF>35</cUF><xServ>STATUS</xServ></consStatServ>`;
+    const badXml = `<consStatServ xmlns="${NFE_NS}" versao="4.00"><tpAmb>9</tpAmb><cUF>35</cUF><xServ>STATUS</xServ></consStatServ>`;
     try {
       await validateXsd('consStatServ', badXml);
       throw new Error('expected validateXsd to throw');

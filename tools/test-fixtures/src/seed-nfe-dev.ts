@@ -112,11 +112,7 @@ export async function seedDevNFe(
 export async function cleanupDevNFe(): Promise<{ deleted: number }> {
   let deleted = 0;
   for (const id of devPedidoIds()) {
-    const ref = db()
-      .collection('pedidos')
-      .doc(id)
-      .collection('nfev4')
-      .doc(`${id}-nfe`);
+    const ref = db().collection('pedidos').doc(id).collection('nfev4').doc(`${id}-nfe`);
     const snap = await ref.get();
     if (snap.exists) {
       await ref.delete();
@@ -132,9 +128,7 @@ function parseEstadoFlag(): string | null {
   if (!arg) return null;
   const code = arg.slice('--estado='.length);
   if (!ESTADO_CODES.includes(code)) {
-    throw new Error(
-      `Invalid --estado=${code}. Valid codes: ${ESTADO_CODES.join(' ')}`,
-    );
+    throw new Error(`Invalid --estado=${code}. Valid codes: ${ESTADO_CODES.join(' ')}`);
   }
   return code;
 }

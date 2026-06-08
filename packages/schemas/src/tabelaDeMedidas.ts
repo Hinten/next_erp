@@ -22,14 +22,8 @@ export const tabelaDeMedidasSchema = z.object({
 
   // Tabelas por integração — chave = integracao_id. Pass-through (cada
   // marketplace tem sua estrutura interna específica).
-  tabelasDeMedidasMercadoLivre: z
-    .record(z.string(), z.unknown())
-    .nullable()
-    .optional(),
-  tabelasMedidasShopee: z
-    .record(z.string(), z.array(z.unknown()))
-    .nullable()
-    .optional(),
+  tabelasDeMedidasMercadoLivre: z.record(z.string(), z.unknown()).nullable().optional(),
+  tabelasMedidasShopee: z.record(z.string(), z.array(z.unknown())).nullable().optional(),
 
   dataCadastro: z.string().datetime().nullable().optional(),
   ultimaModificacao: z.string().datetime().nullable().optional(),

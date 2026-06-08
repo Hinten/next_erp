@@ -25,10 +25,7 @@ import { StatusBadge } from '../../_components/StatusBadge';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useNFeClient } from '@/lib/nfe/client';
-import {
-  notificationForNFeError,
-  notificationForNFeResult,
-} from '@/lib/nfe/errors';
+import { notificationForNFeError, notificationForNFeResult } from '@/lib/nfe/errors';
 import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
 
 export default function EditarPedidoPage() {
@@ -130,11 +127,7 @@ export default function EditarPedidoPage() {
         <Stack>
           <Text>Emitir NF-e para este pedido?</Text>
           <Group justify="flex-end">
-            <Button
-              variant="subtle"
-              onClick={() => setEmitConfirmOpen(false)}
-              disabled={emitting}
-            >
+            <Button variant="subtle" onClick={() => setEmitConfirmOpen(false)} disabled={emitting}>
               Cancelar
             </Button>
             <Button color="teal" onClick={handleEmitir} loading={emitting}>

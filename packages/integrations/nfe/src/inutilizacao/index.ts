@@ -60,9 +60,7 @@ export interface InutilizacaoInput {
  */
 export function buildInutNFe(input: InutilizacaoInput): string {
   if (input.nNFIni > input.nNFFin) {
-    throw new NFeInutilizacaoError(
-      `nNFIni (${input.nNFIni}) must be ≤ nNFFin (${input.nNFFin})`,
-    );
+    throw new NFeInutilizacaoError(`nNFIni (${input.nNFIni}) must be ≤ nNFFin (${input.nNFFin})`);
   }
   const seriePad = String(input.serie).padStart(3, '0');
   const iniPad = String(input.nNFIni).padStart(9, '0');

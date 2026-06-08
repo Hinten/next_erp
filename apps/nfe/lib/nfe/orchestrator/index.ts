@@ -31,11 +31,7 @@ export * from './cancelar';
 export * from './carta-correcao';
 export * from './inutilizar';
 
-import {
-  flattenAndValidate,
-  loadPagamentosFromSnapshot,
-  parseFreteFromPedido,
-} from './bundle';
+import { flattenAndValidate, loadPagamentosFromSnapshot, parseFreteFromPedido } from './bundle';
 import {
   buildCardFromCartao,
   buildCobrFromPagamentos,

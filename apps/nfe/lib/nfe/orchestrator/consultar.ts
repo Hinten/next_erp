@@ -68,11 +68,7 @@ export async function consultarPedido(
     agent: rt.agent,
     tpAmb: rt.tpAmb,
   } as const;
-  const msgWithNRec = await findLatestEnviNFeMsgWithNRec(
-    fs,
-    bundle.filialId,
-    nota.chave,
-  );
+  const msgWithNRec = await findLatestEnviNFeMsgWithNRec(fs, bundle.filialId, nota.chave);
 
   let outcome: SefazOutcome;
   if (msgWithNRec?.nRec) {
@@ -101,10 +97,7 @@ export async function consultarPedido(
     outcome = outcomeFromRetConsSit(retSit);
   }
 
-  const patch = applyOutcome(
-    { estado: nota.estado, retries: nota.retries ?? 0 },
-    outcome,
-  );
+  const patch = applyOutcome({ estado: nota.estado, retries: nota.retries ?? 0 }, outcome);
   await persistPatch(nfeRef, patch);
 
   return {

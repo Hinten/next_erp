@@ -42,9 +42,7 @@ function parseArgs(argv: ReadonlyArray<string>): CliArgs {
     else if (flag === '--out') args.out = argv[++i];
   }
   if (!args.in || !args.out) {
-    process.stderr.write(
-      'Usage: rotate-pfx-password --in <input.pfx> --out <output.pfx>\n',
-    );
+    process.stderr.write('Usage: rotate-pfx-password --in <input.pfx> --out <output.pfx>\n');
     process.exit(2);
   }
   return args as CliArgs;

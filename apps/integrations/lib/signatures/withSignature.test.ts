@@ -18,18 +18,16 @@ function buildReq(body: string, headers: Record<string, string> = {}): Request {
 
 describe('withSignature', () => {
   it('returns 500 when secret is undefined', async () => {
-    const handler = withSignature(
-      { secret: undefined, getSignature: () => 'whatever' },
-      async () => Response.json({ ok: true }),
+    const handler = withSignature({ secret: undefined, getSignature: () => 'whatever' }, async () =>
+      Response.json({ ok: true }),
     );
     const res = await handler(buildReq(''));
     expect(res.status).toBe(500);
   });
 
   it('returns 401 when signature header is missing', async () => {
-    const handler = withSignature(
-      { secret: SECRET, getSignature: () => null },
-      async () => Response.json({ ok: true }),
+    const handler = withSignature({ secret: SECRET, getSignature: () => null }, async () =>
+      Response.json({ ok: true }),
     );
     const res = await handler(buildReq(''));
     expect(res.status).toBe(401);
@@ -41,9 +39,7 @@ describe('withSignature', () => {
       async () => Response.json({ ok: true }),
     );
     const body = '{"event":"x"}';
-    const res = await handler(
-      buildReq(body, { 'x-signature': sign(body, 'wrong-secret') }),
-    );
+    const res = await handler(buildReq(body, { 'x-signature': sign(body, 'wrong-secret') }));
     expect(res.status).toBe(401);
   });
 
@@ -63,8 +59,7 @@ describe('withSignature', () => {
     const body = 'plain=text&v=1'; // form-encoded, not JSON
     const handler = withSignature(
       { secret: SECRET, getSignature: (r) => r.headers.get('x-signature') },
-      async ({ payload, json }) =>
-        Response.json({ payload, json: json ?? null }),
+      async ({ payload, json }) => Response.json({ payload, json: json ?? null }),
     );
     const res = await handler(buildReq(body, { 'x-signature': sign(body) }));
     const data = (await res.json()) as { payload: string; json: unknown };

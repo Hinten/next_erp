@@ -2,33 +2,17 @@
 
 import { useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
-import {
-  Alert,
-  Badge,
-  Box,
-  Group,
-  Select,
-  Skeleton,
-  Stack,
-  Text,
-  Title,
-} from '@mantine/core';
+import { Alert, Badge, Box, Group, Select, Skeleton, Stack, Text, Title } from '@mantine/core';
 import { setDoc } from 'firebase/firestore';
 import { PageHeader } from '@delfrance/ui';
 import { useDocSnapshot } from '@delfrance/data/hooks';
-import {
-  ESTADO_CONVERSA,
-  ESTADO_CONVERSA_LABELS,
-  type EstadoConversa,
-} from '@delfrance/schemas';
+import { ESTADO_CONVERSA, ESTADO_CONVERSA_LABELS, type EstadoConversa } from '@delfrance/schemas';
 import { conversaCollection } from '@/lib/data/conversaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { WhatsAppList } from '../_components/WhatsAppList';
 import { MensagemThread } from '../../chat/_components/MensagemThread';
 
-const estadoOptions = (
-  Object.values(ESTADO_CONVERSA) as EstadoConversa[]
-)
+const estadoOptions = (Object.values(ESTADO_CONVERSA) as EstadoConversa[])
   .sort((a, b) => a - b)
   .map((value) => ({
     value: String(value),
@@ -71,11 +55,7 @@ export default function WhatsAppDetailPage() {
             paddingRight: 12,
           }}
         >
-          <WhatsAppList
-            activeId={params.id}
-            search={search}
-            onSearchChange={setSearch}
-          />
+          <WhatsAppList activeId={params.id} search={search} onSearchChange={setSearch} />
         </Box>
         <Stack style={{ flex: 1, minHeight: 0 }} gap={0}>
           {error && <Alert color="red">{error.message}</Alert>}
@@ -92,10 +72,7 @@ export default function WhatsAppDetailPage() {
           )}
           {!loading && data && data.data.origem === 'whatsapp' && (
             <>
-              <Box
-                p="md"
-                style={{ borderBottom: '1px solid var(--mantine-color-gray-2)' }}
-              >
+              <Box p="md" style={{ borderBottom: '1px solid var(--mantine-color-gray-2)' }}>
                 <Group justify="space-between" wrap="nowrap">
                   <Stack gap={2}>
                     <Title order={4}>{data.data.nome}</Title>

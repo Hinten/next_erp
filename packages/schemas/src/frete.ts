@@ -212,16 +212,8 @@ export const freteDoPedidoSchema = z
   .object({
     // External tracking ----------------------------------------------------
     externalId: z.string().nullable().default(null).describe('ID externo'),
-    printLabelId: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe('ID da etiqueta'),
-    externalOptionId: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe('Opção externa (ID)'),
+    printLabelId: z.string().nullable().default(null).describe('ID da etiqueta'),
+    externalOptionId: z.string().nullable().default(null).describe('Opção externa (ID)'),
     externalOptionIntegracao: integracoesFreteSchema
       .nullable()
       .default(null)
@@ -241,22 +233,10 @@ export const freteDoPedidoSchema = z
 
     // Status + routing ------------------------------------------------------
     estado: estadoFreteSchema.describe('Estado do frete'),
-    integracaoFreteOuterRef: z
-      .unknown()
-      .nullable()
-      .default(null)
-      .describe('Integração do frete'),
-    integracaoTargetOuterRef: z
-      .unknown()
-      .nullable()
-      .default(null)
-      .describe('Target da integração'),
+    integracaoFreteOuterRef: z.unknown().nullable().default(null).describe('Integração do frete'),
+    integracaoTargetOuterRef: z.unknown().nullable().default(null).describe('Target da integração'),
     /** Legacy path field; kept for parse compatibility, slated for removal. */
-    integracao_path: z
-      .string()
-      .nullable()
-      .default(null)
-      .describe('Path da integração'),
+    integracao_path: z.string().nullable().default(null).describe('Path da integração'),
 
     // Recipients ------------------------------------------------------------
     clienteRecebedorOuterReference: z
@@ -272,42 +252,18 @@ export const freteDoPedidoSchema = z
 
     // Modality + entities ---------------------------------------------------
     modalidade: modalidadeFreteSchema.default('0').describe('Modalidade'),
-    transportadora: transportadoraSchema
-      .nullable()
-      .default(null)
-      .describe('Transportadora'),
+    transportadora: transportadoraSchema.nullable().default(null).describe('Transportadora'),
     veiculo: veiculoSchema.nullable().default(null).describe('Veículo'),
-    reboques: z
-      .array(reboqueSchema)
-      .nullable()
-      .default(null)
-      .describe('Reboques'),
+    reboques: z.array(reboqueSchema).nullable().default(null).describe('Reboques'),
     vagao: z.string().max(20).nullable().default(null).describe('Vagão'),
     balsa: z.string().max(20).nullable().default(null).describe('Balsa'),
-    volumes: z
-      .array(volumeSchema)
-      .nullable()
-      .default(null)
-      .describe('Volumes'),
+    volumes: z.array(volumeSchema).nullable().default(null).describe('Volumes'),
     /** Tracking code (max 200 per Flutter constraint). */
-    codRastreio: z
-      .string()
-      .max(200)
-      .nullable()
-      .default(null)
-      .describe('Código de rastreio'),
+    codRastreio: z.string().max(200).nullable().default(null).describe('Código de rastreio'),
 
     // Costs -----------------------------------------------------------------
-    valorCobrado: z
-      .number()
-      .nullable()
-      .default(null)
-      .describe('Valor cobrado do frete'),
-    custoCalculado: z
-      .number()
-      .nullable()
-      .default(null)
-      .describe('Custo calculado'),
+    valorCobrado: z.number().nullable().default(null).describe('Valor cobrado do frete'),
+    custoCalculado: z.number().nullable().default(null).describe('Custo calculado'),
     custoFinal: z.number().nullable().default(null).describe('Custo final'),
 
     // Schedule — DateTime fields stored as ms since epoch -------------------
@@ -315,55 +271,18 @@ export const freteDoPedidoSchema = z
     /** Extra days added to the shipping deadline. */
     prazoExtra: z.number().int().default(0).describe('Prazo extra (dias)'),
     /** Max dispatch deadline (the field the table view's "Expedição" column reads). */
-    prazoDespacho: z
-      .number()
-      .int()
-      .nullable()
-      .default(null)
-      .describe('Prazo de despacho'),
-    dataEntrega: z
-      .number()
-      .int()
-      .nullable()
-      .default(null)
-      .describe('Data de entrega'),
-    dataPrevisaoEntrega: z
-      .number()
-      .int()
-      .nullable()
-      .default(null)
-      .describe('Previsão de entrega'),
+    prazoDespacho: z.number().int().nullable().default(null).describe('Prazo de despacho'),
+    dataEntrega: z.number().int().nullable().default(null).describe('Data de entrega'),
+    dataPrevisaoEntrega: z.number().int().nullable().default(null).describe('Previsão de entrega'),
 
     // Insurance + delivery options -----------------------------------------
-    valor_assegurado: z
-      .number()
-      .nullable()
-      .default(null)
-      .describe('Valor assegurado'),
-    maoPropria: z
-      .boolean()
-      .nullable()
-      .default(null)
-      .describe('Mão própria'),
-    avisoRecebimento: z
-      .boolean()
-      .nullable()
-      .default(null)
-      .describe('Aviso de recebimento'),
+    valor_assegurado: z.number().nullable().default(null).describe('Valor assegurado'),
+    maoPropria: z.boolean().nullable().default(null).describe('Mão própria'),
+    avisoRecebimento: z.boolean().nullable().default(null).describe('Aviso de recebimento'),
 
     // Timestamps — ms since epoch ------------------------------------------
-    ultimaModificacao: z
-      .number()
-      .int()
-      .nullable()
-      .default(null)
-      .describe('Última modificação'),
-    timestamp: z
-      .number()
-      .int()
-      .nullable()
-      .default(null)
-      .describe('Criação'),
+    ultimaModificacao: z.number().int().nullable().default(null).describe('Última modificação'),
+    timestamp: z.number().int().nullable().default(null).describe('Criação'),
   })
   .passthrough();
 export type FreteDoPedido = z.infer<typeof freteDoPedidoSchema>;

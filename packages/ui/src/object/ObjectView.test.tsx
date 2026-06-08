@@ -6,11 +6,18 @@ import { z } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
 
 // Default to "no existing doc" — individual tests can override.
-const docState: { current: { data: undefined | null | { id: string; data: unknown }; loading: boolean; error: undefined } } = {
+const docState: {
+  current: {
+    data: undefined | null | { id: string; data: unknown };
+    loading: boolean;
+    error: undefined;
+  };
+} = {
   current: { data: null, loading: false, error: undefined },
 };
 vi.mock('@delfrance/data/hooks', async () => {
-  const actual = await vi.importActual<typeof import('@delfrance/data/hooks')>('@delfrance/data/hooks');
+  const actual =
+    await vi.importActual<typeof import('@delfrance/data/hooks')>('@delfrance/data/hooks');
   return {
     ...actual,
     useDocSnapshot: () => docState.current,
@@ -26,7 +33,11 @@ import { ObjectView } from './ObjectView';
 const schema = z.object({
   nome: z.string().nullable().optional().describe('Nome'),
   tipo: z.enum(['0', '1']).nullable().optional().describe('Tipo'),
-  obs: z.string().nullable().optional().describe('{"label":"Observações","kind":"longText","section":"Notas"}'),
+  obs: z
+    .string()
+    .nullable()
+    .optional()
+    .describe('{"label":"Observações","kind":"longText","section":"Notas"}'),
 });
 
 function fakeCollection(): CollectionHandle<typeof schema> {

@@ -30,9 +30,34 @@ export type ModFrete = z.infer<typeof modFreteSchema>;
  * foreign carriers.
  */
 const transpUfSchema = z.enum([
-  'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA',
-  'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN',
-  'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO', 'EX',
+  'AC',
+  'AL',
+  'AM',
+  'AP',
+  'BA',
+  'CE',
+  'DF',
+  'ES',
+  'GO',
+  'MA',
+  'MG',
+  'MS',
+  'MT',
+  'PA',
+  'PB',
+  'PE',
+  'PI',
+  'PR',
+  'RJ',
+  'RN',
+  'RO',
+  'RR',
+  'RS',
+  'SC',
+  'SE',
+  'SP',
+  'TO',
+  'EX',
 ]);
 
 /**
@@ -96,9 +121,7 @@ export interface BuildTranspOptions {
  * wire XML; this overload is the typed entry point for consumers
  * that want to plug the result into a larger value.
  */
-export function buildTranspObject(
-  opts: BuildTranspOptions = {},
-): TNFe_infNFe_transp {
+export function buildTranspObject(opts: BuildTranspOptions = {}): TNFe_infNFe_transp {
   const out: TNFe_infNFe_transp = {
     modFrete: modFreteSchema.parse(opts.modFrete ?? '9'),
   };

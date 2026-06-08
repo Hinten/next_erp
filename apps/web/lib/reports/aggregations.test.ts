@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ItemDoPedido, Pedido } from '@delfrance/schemas';
-import {
-  type PedidoLite,
-  overview,
-  porBucket,
-  porEstado,
-  topProdutos,
-} from './aggregations';
+import { type PedidoLite, overview, porBucket, porEstado, topProdutos } from './aggregations';
 
 // All nullable fields of ItemDoPedido set to null. Spread to override only
 // what each test cares about. Avoids repeating 10+ null lines per object.
@@ -47,7 +41,15 @@ describe('topProdutos', () => {
   it('ranks by total quantity sold across pedidos', () => {
     const dataset: PedidoLite[] = [
       p('pago', {
-        a: [i({ ordem: 1, precoDeVenda: 10, descontoUnitario: 0, quantidade: 3, nomeDeVenda: 'Camiseta' })],
+        a: [
+          i({
+            ordem: 1,
+            precoDeVenda: 10,
+            descontoUnitario: 0,
+            quantidade: 3,
+            nomeDeVenda: 'Camiseta',
+          }),
+        ],
         b: [i({ ordem: 2, precoDeVenda: 5, descontoUnitario: 0, quantidade: 1 })],
       }),
       p('pago', {
@@ -90,7 +92,9 @@ describe('porEstado', () => {
     const rows = porEstado([
       p('pago', { x: [i({ ordem: 1, precoDeVenda: 100, descontoUnitario: 0, quantidade: 1 })] }),
       p('pago', { x: [i({ ordem: 1, precoDeVenda: 50, descontoUnitario: 0, quantidade: 1 })] }),
-      p('cancelado', { x: [i({ ordem: 1, precoDeVenda: 40, descontoUnitario: 0, quantidade: 1 })] }),
+      p('cancelado', {
+        x: [i({ ordem: 1, precoDeVenda: 40, descontoUnitario: 0, quantidade: 1 })],
+      }),
     ]);
     const pago = rows.find((r) => r.estado === 'pago');
     expect(pago?.count).toBe(2);
@@ -103,10 +107,7 @@ describe('porEstado', () => {
 
 describe('porBucket', () => {
   it('returns all four buckets even when some are empty', () => {
-    const rows = porBucket([
-      p('pago', {}),
-      p('iniciado', {}),
-    ]);
+    const rows = porBucket([p('pago', {}), p('iniciado', {})]);
     const ids = rows.map((r) => r.bucket).sort();
     expect(ids).toEqual(['aberto', 'cancelado', 'concluido', 'processo']);
     const concluido = rows.find((r) => r.bucket === 'concluido');

@@ -22,14 +22,22 @@ export class ShopeeNotConfiguredError extends Error {
 export function createShopeeChannel(_config: ShopeeConfig): MarketplaceChannel {
   return {
     id: 'shopee',
-    syncProducts: async () => { throw new ShopeeNotConfiguredError(); },
-    pullOrders: async () => { throw new ShopeeNotConfiguredError(); },
-    pushTracking: async () => { throw new ShopeeNotConfiguredError(); },
+    syncProducts: async () => {
+      throw new ShopeeNotConfiguredError();
+    },
+    pullOrders: async () => {
+      throw new ShopeeNotConfiguredError();
+    },
+    pushTracking: async () => {
+      throw new ShopeeNotConfiguredError();
+    },
     oauthFlow: {
       start: () => {
         throw new ShopeeNotConfiguredError();
       },
-      callback: async () => { throw new ShopeeNotConfiguredError(); },
+      callback: async () => {
+        throw new ShopeeNotConfiguredError();
+      },
     },
   };
 }

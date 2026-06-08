@@ -4,11 +4,7 @@ import { useMemo } from 'react';
 import { Select } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import {
-  type DocumentReference,
-  type Firestore,
-  getDocs,
-} from 'firebase/firestore';
+import { type DocumentReference, type Firestore, getDocs } from 'firebase/firestore';
 import { buildQuery, orderByField } from '@delfrance/data';
 import type { Integracao } from '@delfrance/schemas';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
@@ -86,9 +82,7 @@ export function IntegracaoPicker({
       required={required}
       disabled={disabled || query.isLoading}
       error={error ?? (query.error instanceof FirebaseError ? query.error.message : undefined)}
-      placeholder={
-        query.isLoading ? 'Carregando…' : 'Selecione uma integração'
-      }
+      placeholder={query.isLoading ? 'Carregando…' : 'Selecione uma integração'}
       searchable
       clearable
       nothingFoundMessage="Nenhuma integração encontrada"

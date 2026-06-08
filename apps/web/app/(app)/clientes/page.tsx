@@ -24,10 +24,7 @@ import {
 import { TableView } from '@delfrance/ui';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
-import {
-  ENDERECO_SEARCH_LIMIT,
-  searchClienteIdsByEndereco,
-} from './_lib/buscaPorEndereco';
+import { ENDERECO_SEARCH_LIMIT, searchClienteIdsByEndereco } from './_lib/buscaPorEndereco';
 
 // Stable empty reference so the `queryOverride` memo doesn't churn while no
 // search results exist.
@@ -55,18 +52,14 @@ export default function ClientesPage() {
   const queryOverride = useMemo(
     () =>
       searching && matchedIds.length > 0
-        ? query(
-            clienteCollection.ref(db, {}),
-            where(documentId(), 'in', matchedIds),
-          )
+        ? query(clienteCollection.ref(db, {}), where(documentId(), 'in', matchedIds))
         : undefined,
     [db, searching, matchedIds],
   );
 
   // Show the table for the normal list and for a search that matched. Hide
   // it while the search is loading, errored, or returned nothing.
-  const showTable =
-    !searching || (enderecoSearch.isSuccess && matchedIds.length > 0);
+  const showTable = !searching || (enderecoSearch.isSuccess && matchedIds.length > 0);
 
   function runSearch() {
     setEnderecoTerm(enderecoInput);
@@ -90,10 +83,7 @@ export default function ClientesPage() {
           }}
           rightSection={
             enderecoInput ? (
-              <CloseButton
-                aria-label="Limpar busca por endereço"
-                onClick={clearSearch}
-              />
+              <CloseButton aria-label="Limpar busca por endereço" onClick={clearSearch} />
             ) : undefined
           }
           style={{ flex: 1, maxWidth: 420 }}
@@ -133,8 +123,7 @@ export default function ClientesPage() {
 
       {searching && matchedIds.length >= ENDERECO_SEARCH_LIMIT && (
         <Alert color="yellow">
-          Muitos endereços correspondem — exibindo os primeiros{' '}
-          {ENDERECO_SEARCH_LIMIT} clientes.
+          Muitos endereços correspondem — exibindo os primeiros {ENDERECO_SEARCH_LIMIT} clientes.
         </Alert>
       )}
 
@@ -160,8 +149,7 @@ export default function ClientesPage() {
               renderCell: (value) =>
                 value ? (
                   <Badge variant="light">
-                    {TIPO_CLIENTE_LABELS[value as TipoCliente] ??
-                      String(value)}
+                    {TIPO_CLIENTE_LABELS[value as TipoCliente] ?? String(value)}
                   </Badge>
                 ) : (
                   '—'
@@ -178,8 +166,7 @@ export default function ClientesPage() {
               refreshOnComplete: true,
               confirm: {
                 title: 'Excluir clientes',
-                message:
-                  'Clientes excluídos não podem ser restaurados. Confirmar exclusão?',
+                message: 'Clientes excluídos não podem ser restaurados. Confirmar exclusão?',
               },
               run: async (rows) => {
                 await Promise.all(

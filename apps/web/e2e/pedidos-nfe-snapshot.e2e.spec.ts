@@ -1,10 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { db } from '@delfrance/test-fixtures';
-import {
-  cleanupPedidoWithNFe,
-  e2ePrefix,
-  seedPedidoWithNFe,
-} from './_helpers/seed-data';
+import { cleanupPedidoWithNFe, e2ePrefix, seedPedidoWithNFe } from './_helpers/seed-data';
 import { applyTextFilter, expectRowVisible } from './helpers/table-view';
 import { warmRoutes } from './helpers/warmup';
 
@@ -36,7 +32,9 @@ test.describe.serial('Pedidos NF cell — live snapshot updates', () => {
     if (pedidoId) await cleanupPedidoWithNFe(pedidoId);
   });
 
-  test('badge starts at "Gerado", flips to "Aprovada" and then "Rejeitada" without reload', async ({ page }) => {
+  test('badge starts at "Gerado", flips to "Aprovada" and then "Rejeitada" without reload', async ({
+    page,
+  }) => {
     await page.goto('/pedidos');
     await expect(page.getByRole('heading', { name: 'Pedidos' })).toBeVisible();
     // Wait for the table to render before asserting on rows — the cold

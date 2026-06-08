@@ -6,12 +6,12 @@
 `packages/integrations/nfe/src/operations/`.** They are the canonical
 entry points for every SEFAZ call:
 
-| Helper | What it does |
-|---|---|
-| `consultarStatusServico(call, { cUF })` | NFeStatusServico4 — service availability |
-| `consultarSituacaoNFe(call, { chave })` | NfeConsultaProtocolo4 — query one NF-e by chave (the **recovery** call) |
-| `consultarLote(call, { nRec })` | NFeRetAutorizacao4 — poll a lote by nRec (async path only) |
-| `autorizarLote(call, { idLote, NFe })` | NFeAutorizacao4 — submit a lote. **The helper computes `indSinc` from `NFe.length`** (lote=1 → 1; lote 2–50 → 0). Do not pass `indSinc` manually. |
+| Helper                                  | What it does                                                                                                                                      |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `consultarStatusServico(call, { cUF })` | NFeStatusServico4 — service availability                                                                                                          |
+| `consultarSituacaoNFe(call, { chave })` | NfeConsultaProtocolo4 — query one NF-e by chave (the **recovery** call)                                                                           |
+| `consultarLote(call, { nRec })`         | NFeRetAutorizacao4 — poll a lote by nRec (async path only)                                                                                        |
+| `autorizarLote(call, { idLote, NFe })`  | NFeAutorizacao4 — submit a lote. **The helper computes `indSinc` from `NFe.length`** (lote=1 → 1; lote 2–50 → 0). Do not pass `indSinc` manually. |
 
 Each helper accepts a typed object, builds the request XML via
 `serialize(...)` (Zod-validated at the object boundary), runs it through
@@ -20,6 +20,7 @@ XSD), and parses the response back into a typed `Tret*` shape. Typed
 object in → typed object out, with all the validation gates between.
 
 **Reach for the low-level SOAP transport in `src/soap/` only when:**
+
 - Replaying an archived `xml_assinado` for recovery (raw signed bytes).
 - Recovery flows that intentionally bypass the typed shape.
 - Implementing a new SEFAZ NT that hasn't been wired into a helper yet
@@ -44,25 +45,25 @@ and the production-safety guard — they're not unsafe, just unergonomic.
 
 > **Cert ops** — Brazilian A1 PFX format, SEFAZ CA chain refresh, A1 client
 > cert annual renewal, and the apps/nfe deploy strategy live in the master
-> plan's *"Cert format gotchas (lessons learned)"* and *"Cert lifecycle
-> (operations)"* sections at
+> plan's _"Cert format gotchas (lessons learned)"_ and _"Cert lifecycle
+> (operations)"_ sections at
 > `C:\Users\Lucas\.claude\plans\velvet-purring-bear.md`. Run
 > `pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca` to vendor /
 > refresh the SEFAZ TLS chain locally.
 
 ## Services (layout 4.00)
 
-| Service | Method | Process | Purpose |
-|---|---|---|---|
-| `NfeAutorizacao4` | `nfeAutorizacaoLote` | **sync (lote=1)** or async (lote 2–50) | Send an NF-e lote |
-| `NfeRetAutorizacao4` | `nfeRetAutorizacao` | async only | Poll a lote by `nRec` (sync path skips this) |
-| `NfeConsultaProtocolo4` | `nfeConsultaNF` | sync | Query one NF-e by chave |
-| `NfeStatusServico4` | `nfeStatusServicoNF` | sync | Service availability |
-| `NfeInutilizacao4` | `nfeInutilizacaoNF` | sync | Void a number range |
-| `RecepcaoEvento4` | `nfeRecepcaoEvento` | sync | Cancelamento / CCe / EPEC. **Para eventos novos da RTC, enviar individualmente (lote=1)** — NT 2025.002 §8.2 |
-| `NfeConsultaCadastro` | `consultaCadastro` | sync | Taxpayer registration |
-| `NFeDistribuicaoDFe` | `nfeDistDFeInteresse` | sync | Download issued DF-e (NT 2014.002) |
-| `NfeConsultaGTIN` | `consGTIN` | sync | Consulta cadastro GTIN (NT 2022.001) |
+| Service                 | Method                | Process                                | Purpose                                                                                                      |
+| ----------------------- | --------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `NfeAutorizacao4`       | `nfeAutorizacaoLote`  | **sync (lote=1)** or async (lote 2–50) | Send an NF-e lote                                                                                            |
+| `NfeRetAutorizacao4`    | `nfeRetAutorizacao`   | async only                             | Poll a lote by `nRec` (sync path skips this)                                                                 |
+| `NfeConsultaProtocolo4` | `nfeConsultaNF`       | sync                                   | Query one NF-e by chave                                                                                      |
+| `NfeStatusServico4`     | `nfeStatusServicoNF`  | sync                                   | Service availability                                                                                         |
+| `NfeInutilizacao4`      | `nfeInutilizacaoNF`   | sync                                   | Void a number range                                                                                          |
+| `RecepcaoEvento4`       | `nfeRecepcaoEvento`   | sync                                   | Cancelamento / CCe / EPEC. **Para eventos novos da RTC, enviar individualmente (lote=1)** — NT 2025.002 §8.2 |
+| `NfeConsultaCadastro`   | `consultaCadastro`    | sync                                   | Taxpayer registration                                                                                        |
+| `NFeDistribuicaoDFe`    | `nfeDistDFeInteresse` | sync                                   | Download issued DF-e (NT 2014.002)                                                                           |
+| `NfeConsultaGTIN`       | `consGTIN`            | sync                                   | Consulta cadastro GTIN (NT 2022.001)                                                                         |
 
 ## Autorização flow (the core path)
 

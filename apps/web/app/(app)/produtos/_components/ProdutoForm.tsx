@@ -4,15 +4,7 @@ import { useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
-import {
-  Alert,
-  Button,
-  Checkbox,
-  Group,
-  NumberInput,
-  Stack,
-  TextInput,
-} from '@mantine/core';
+import { Alert, Button, Checkbox, Group, NumberInput, Stack, TextInput } from '@mantine/core';
 import type { z } from 'zod';
 import { type Produto, produtoSchema } from '@delfrance/schemas';
 
@@ -59,11 +51,7 @@ const DEFAULTS: ProdutoFormInput = {
   nome_embedding: null,
 };
 
-export function ProdutoForm({
-  defaultValues,
-  submitLabel = 'Salvar',
-  onSubmit,
-}: ProdutoFormProps) {
+export function ProdutoForm({ defaultValues, submitLabel = 'Salvar', onSubmit }: ProdutoFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const form = useForm<ProdutoFormInput, unknown, Produto>({
@@ -153,9 +141,7 @@ export function ProdutoForm({
             render={({ field, fieldState }) => (
               <NumberInput
                 value={field.value ?? ''}
-                onChange={(v) =>
-                  field.onChange(typeof v === 'number' ? v : null)
-                }
+                onChange={(v) => field.onChange(typeof v === 'number' ? v : null)}
                 onBlur={field.onBlur}
                 label="Peso líquido (kg)"
                 description="Em kilogramas"
@@ -171,9 +157,7 @@ export function ProdutoForm({
             render={({ field, fieldState }) => (
               <NumberInput
                 value={field.value ?? ''}
-                onChange={(v) =>
-                  field.onChange(typeof v === 'number' ? v : null)
-                }
+                onChange={(v) => field.onChange(typeof v === 'number' ? v : null)}
                 onBlur={field.onBlur}
                 label="Peso bruto (kg)"
                 error={fieldState.error?.message}
@@ -191,9 +175,7 @@ export function ProdutoForm({
             render={({ field }) => (
               <NumberInput
                 value={field.value ?? ''}
-                onChange={(v) =>
-                  field.onChange(typeof v === 'number' ? v : null)
-                }
+                onChange={(v) => field.onChange(typeof v === 'number' ? v : null)}
                 onBlur={field.onBlur}
                 label="Altura (cm)"
                 decimalScale={2}
@@ -207,9 +189,7 @@ export function ProdutoForm({
             render={({ field }) => (
               <NumberInput
                 value={field.value ?? ''}
-                onChange={(v) =>
-                  field.onChange(typeof v === 'number' ? v : null)
-                }
+                onChange={(v) => field.onChange(typeof v === 'number' ? v : null)}
                 onBlur={field.onBlur}
                 label="Largura (cm)"
                 decimalScale={2}
@@ -223,9 +203,7 @@ export function ProdutoForm({
             render={({ field }) => (
               <NumberInput
                 value={field.value ?? ''}
-                onChange={(v) =>
-                  field.onChange(typeof v === 'number' ? v : null)
-                }
+                onChange={(v) => field.onChange(typeof v === 'number' ? v : null)}
                 onBlur={field.onBlur}
                 label="Profundidade (cm)"
                 decimalScale={2}
@@ -292,9 +270,7 @@ export function ProdutoForm({
           render={({ field, fieldState }) => (
             <NumberInput
               value={field.value ?? ''}
-              onChange={(v) =>
-                field.onChange(typeof v === 'number' ? v : null)
-              }
+              onChange={(v) => field.onChange(typeof v === 'number' ? v : null)}
               onBlur={field.onBlur}
               label="Crossdocking"
               description="Prazo extra de postagem em dias"

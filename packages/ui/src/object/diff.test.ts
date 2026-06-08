@@ -3,9 +3,7 @@ import { isEmpty, pickDirty } from './diff';
 
 describe('pickDirty', () => {
   it('keeps only keys flagged as dirty', () => {
-    expect(
-      pickDirty({ a: 1, b: 2, c: 3 }, { a: true, c: true }),
-    ).toEqual({ a: 1, c: 3 });
+    expect(pickDirty({ a: 1, b: 2, c: 3 }, { a: true, c: true })).toEqual({ a: 1, c: 3 });
   });
 
   it('preserves null values when the key is dirty (NullClearButton case)', () => {

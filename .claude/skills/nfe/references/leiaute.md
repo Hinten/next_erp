@@ -26,34 +26,34 @@ NFe
 
 ## Field groups (Anexo I)
 
-| Group | Content |
-|---|---|
-| A | Dados da NF-e (root `infNFe`) |
-| B | `ide` — identification (cUF, natureza, mod, série, nNF, dhEmi, tpNF, idDest, cMunFG, tpImp, tpEmis, cDV, tpAmb, finNFe, indFinal, indPres, procEmi) |
-| BA | `NFref` — referenced fiscal documents |
-| C | `emit` — issuer (CNPJ/CPF, xNome, IE, CRT, enderEmit) |
-| D | `avulsa` — fisco-issued NFA-e only |
-| E | `dest` — recipient (CNPJ/CPF/idEstrangeiro, xNome, indIEDest, IE, enderDest) |
-| F / G | `retirada` / `entrega` — pickup / delivery addresses |
-| H | `det` — line item wrapper (attribute `nItem`) |
-| I | `prod` — product (cProd, cEAN, xProd, NCM, CFOP, uCom, qCom, vUnCom, vProd…) |
-| I01/I03/I05/I07/I80 | import declaration / export / purchase order / misc / traceability |
-| J–LB | vehicle / medicine / weapon / fuel / immune-paper specifics |
-| M–U | `imposto` — ICMS (N), IPI (O), II (P), PIS (Q/R), COFINS (S/T), ISSQN (U) |
-| N02–N10h | ICMS sub-groups by CST/CSOSN |
-| V | `infAdProd` — per-item additional info |
-| W | `total` — `ICMSTot`, `ISSQNtot`, `retTrib` |
-| X | `transp` — transport mode, transporter, volumes |
-| Y | `cobr` — `fat` + `dup` (duplicatas) |
-| YA | `pag` — `detPag` payment methods + `vTroco` |
-| YB | `infIntermed` — transaction intermediary |
-| Z | `infAdic` — `infCpl`, `infAdFisco`, `obsCont`, `procRef` |
-| ZA–ZD | comércio exterior / compras / cana / responsável técnico |
-| ZX | `infNFeSupl` — qrCode + urlChave (NFC-e; ZX01 ampliado pela NT 2015.002) |
-| **UB** | **`IBSCBS` — tributos IBS/CBS e Imposto Seletivo (NT 2025.002 — RTC)**. Vide `rtc-ibs-cbs-is.md`. Mandatório em produção desde 03/08/2026 para CRT=3. |
-| **BB** | **`gCompraGov` — Compras Governamentais (NT 2025.002)**. Renomeado: era "antecipação de pagamento", que migrou para Grupo BC. |
-| **BC** | **`gPagAntecipado` — Notas de antecipação de pagamento (NT 2025.002)** |
-| **W03** | **Totais IBS/CBS/IS — Grupo W03 (NT 2025.002)**. Substitui parcialmente o cálculo do `vNF`. Vide `rtc-ibs-cbs-is.md`. |
+| Group               | Content                                                                                                                                               |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A                   | Dados da NF-e (root `infNFe`)                                                                                                                         |
+| B                   | `ide` — identification (cUF, natureza, mod, série, nNF, dhEmi, tpNF, idDest, cMunFG, tpImp, tpEmis, cDV, tpAmb, finNFe, indFinal, indPres, procEmi)   |
+| BA                  | `NFref` — referenced fiscal documents                                                                                                                 |
+| C                   | `emit` — issuer (CNPJ/CPF, xNome, IE, CRT, enderEmit)                                                                                                 |
+| D                   | `avulsa` — fisco-issued NFA-e only                                                                                                                    |
+| E                   | `dest` — recipient (CNPJ/CPF/idEstrangeiro, xNome, indIEDest, IE, enderDest)                                                                          |
+| F / G               | `retirada` / `entrega` — pickup / delivery addresses                                                                                                  |
+| H                   | `det` — line item wrapper (attribute `nItem`)                                                                                                         |
+| I                   | `prod` — product (cProd, cEAN, xProd, NCM, CFOP, uCom, qCom, vUnCom, vProd…)                                                                          |
+| I01/I03/I05/I07/I80 | import declaration / export / purchase order / misc / traceability                                                                                    |
+| J–LB                | vehicle / medicine / weapon / fuel / immune-paper specifics                                                                                           |
+| M–U                 | `imposto` — ICMS (N), IPI (O), II (P), PIS (Q/R), COFINS (S/T), ISSQN (U)                                                                             |
+| N02–N10h            | ICMS sub-groups by CST/CSOSN                                                                                                                          |
+| V                   | `infAdProd` — per-item additional info                                                                                                                |
+| W                   | `total` — `ICMSTot`, `ISSQNtot`, `retTrib`                                                                                                            |
+| X                   | `transp` — transport mode, transporter, volumes                                                                                                       |
+| Y                   | `cobr` — `fat` + `dup` (duplicatas)                                                                                                                   |
+| YA                  | `pag` — `detPag` payment methods + `vTroco`                                                                                                           |
+| YB                  | `infIntermed` — transaction intermediary                                                                                                              |
+| Z                   | `infAdic` — `infCpl`, `infAdFisco`, `obsCont`, `procRef`                                                                                              |
+| ZA–ZD               | comércio exterior / compras / cana / responsável técnico                                                                                              |
+| ZX                  | `infNFeSupl` — qrCode + urlChave (NFC-e; ZX01 ampliado pela NT 2015.002)                                                                              |
+| **UB**              | **`IBSCBS` — tributos IBS/CBS e Imposto Seletivo (NT 2025.002 — RTC)**. Vide `rtc-ibs-cbs-is.md`. Mandatório em produção desde 03/08/2026 para CRT=3. |
+| **BB**              | **`gCompraGov` — Compras Governamentais (NT 2025.002)**. Renomeado: era "antecipação de pagamento", que migrou para Grupo BC.                         |
+| **BC**              | **`gPagAntecipado` — Notas de antecipação de pagamento (NT 2025.002)**                                                                                |
+| **W03**             | **Totais IBS/CBS/IS — Grupo W03 (NT 2025.002)**. Substitui parcialmente o cálculo do `vNF`. Vide `rtc-ibs-cbs-is.md`.                                 |
 
 ## XML formatting rules (Anexo I §4.2 / MOC §4.2.1)
 
@@ -78,13 +78,13 @@ XML-significant characters in free text (xNome, addresses, infCpl…) must be
 escaped — and these escape sequences count as **one character** for length
 validation:
 
-| Char | Escape |
-|---|---|
-| `<` | `&lt;` |
-| `>` | `&gt;` |
-| `&` | `&amp;` |
-| `"` | `&quot;` |
-| `'` | `&#39;` |
+| Char | Escape   |
+| ---- | -------- |
+| `<`  | `&lt;`   |
+| `>`  | `&gt;`   |
+| `&`  | `&amp;`  |
+| `"`  | `&quot;` |
+| `'`  | `&#39;`  |
 
 Beyond escaping, the old ERP applied two passes (port them — see
 `.old/docs/nfe-character-sanitization.md` and `.old/packages/nfe_client`):
