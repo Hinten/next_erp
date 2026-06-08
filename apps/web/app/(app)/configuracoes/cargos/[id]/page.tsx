@@ -4,15 +4,7 @@ import { useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { deleteDoc, setDoc } from 'firebase/firestore';
-import {
-  Alert,
-  Anchor,
-  Button,
-  Group,
-  Skeleton,
-  Stack,
-  Title,
-} from '@mantine/core';
+import { Alert, Anchor, Button, Group, Skeleton, Stack, Title } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
 import type { Cargo } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';

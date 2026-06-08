@@ -14,11 +14,7 @@ import {
   orderByField,
   whereOp,
 } from '@delfrance/data';
-import {
-  useDocSnapshot,
-  usePipelineSnapshot,
-  useSnapshot,
-} from '@delfrance/data/hooks';
+import { useDocSnapshot, usePipelineSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useRecentSelections } from './useRecentSelections';
@@ -112,9 +108,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
 
   // One recents cache per (collection, field). `resolvePath({})` is safe —
   // every collection wired to this component is placeholder-free.
-  const cacheKey = `delfrance:collectionselect:recents:${collection.resolvePath(
-    {},
-  )}:${fieldName}`;
+  const cacheKey = `delfrance:collectionselect:recents:${collection.resolvePath({})}:${fieldName}`;
   const { recents, record } = useRecentSelections(cacheKey);
 
   const [searchValue, setSearchValue] = useState('');
@@ -136,9 +130,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
     try {
       return buildPipeline(db, {
         collection: collection.resolvePath({}),
-        ...(term !== ''
-          ? { search: { fields: searchFieldsKey.split('|'), term } }
-          : {}),
+        ...(term !== '' ? { search: { fields: searchFieldsKey.split('|'), term } } : {}),
         orderBy: [{ field: labelField, direction: 'asc' }],
         limit,
       });
@@ -170,10 +162,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
 
   // The saved value may point to a doc outside the limited list — fetch it
   // directly so its label still renders.
-  const selectedRef = useMemo(
-    () => dereferenceOuterRef(db, value),
-    [db, value],
-  );
+  const selectedRef = useMemo(() => dereferenceOuterRef(db, value), [db, value]);
   const { data: selectedDoc } = useDocSnapshot(selectedRef);
 
   const selectedLabel =
@@ -217,9 +206,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
         onChange(null);
         return;
       }
-      const picked =
-        resultItems.find((o) => o.value === id) ??
-        recents.find((r) => r.id === id);
+      const picked = resultItems.find((o) => o.value === id) ?? recents.find((r) => r.id === id);
       record(id, picked?.label ?? id);
       onChange(collection.docRef(db, {}, id));
     },

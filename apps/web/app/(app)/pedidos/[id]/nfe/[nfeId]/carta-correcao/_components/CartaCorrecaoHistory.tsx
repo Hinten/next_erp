@@ -13,13 +13,7 @@ import { EventRoundtripHistory } from '@/components/EventRoundtripHistory';
 import { cartaCorrecaoCollection } from '@/lib/data/cartaCorrecaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 
-export function CartaCorrecaoHistory({
-  pedidoId,
-  nfeId,
-}: {
-  pedidoId: string;
-  nfeId: string;
-}) {
+export function CartaCorrecaoHistory({ pedidoId, nfeId }: { pedidoId: string; nfeId: string }) {
   const db = getFirebaseFirestore();
   const query = useMemo(
     () => cartaCorrecaoCollection.ref(db, { pedidoId, nfeId }),

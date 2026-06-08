@@ -1,16 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import {
-  ActionIcon,
-  Button,
-  Group,
-  Menu,
-  Modal,
-  Stack,
-  Text,
-  Tooltip,
-} from '@mantine/core';
+import { ActionIcon, Button, Group, Menu, Modal, Stack, Text, Tooltip } from '@mantine/core';
 import { IconDotsVertical } from '@tabler/icons-react';
 import Link from 'next/link';
 import type { Route } from 'next';
@@ -90,14 +81,17 @@ export function ActionBar<T>({
   // Resolve the effective layout: `'auto'` collapses once the action count
   // exceeds the threshold.
   const useMenu =
-    actionsLayout === 'menu' ||
-    (actionsLayout === 'auto' && actions.length > overflowThreshold);
+    actionsLayout === 'menu' || (actionsLayout === 'auto' && actions.length > overflowThreshold);
 
   return (
     <>
       <Group justify="flex-end" gap="xs">
-        {renderNewButton ? renderNewButton() : newHref ? (
-          <Button component="a" href={newHref}>Novo</Button>
+        {renderNewButton ? (
+          renderNewButton()
+        ) : newHref ? (
+          <Button component="a" href={newHref}>
+            Novo
+          </Button>
         ) : null}
         {copyHref &&
           (copyRow ? (
@@ -129,8 +123,7 @@ export function ActionBar<T>({
             </Menu.Target>
             <Menu.Dropdown>
               {actions.map((a) => {
-                const disabled =
-                  !!a.requiresSelection && selectedRows.length === 0;
+                const disabled = !!a.requiresSelection && selectedRows.length === 0;
                 return (
                   <Menu.Item
                     key={a.id}
@@ -147,8 +140,7 @@ export function ActionBar<T>({
           </Menu>
         ) : (
           actions.map((a) => {
-            const disabled =
-              !!a.requiresSelection && selectedRows.length === 0;
+            const disabled = !!a.requiresSelection && selectedRows.length === 0;
             return (
               <Button
                 key={a.id}
@@ -173,7 +165,9 @@ export function ActionBar<T>({
         <Stack>
           <Text>{pending?.confirm?.message}</Text>
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setPending(null)}>Cancelar</Button>
+            <Button variant="default" onClick={() => setPending(null)}>
+              Cancelar
+            </Button>
             <Button
               color={pending?.color ?? 'red'}
               onClick={async () => {

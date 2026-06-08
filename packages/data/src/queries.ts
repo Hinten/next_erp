@@ -20,25 +20,15 @@ import {
  * imports everywhere. No magic — these just return `QueryConstraint`.
  */
 
-export function whereEqual<T extends string>(
-  field: T,
-  value: unknown,
-): QueryConstraint {
+export function whereEqual<T extends string>(field: T, value: unknown): QueryConstraint {
   return where(field, '==', value);
 }
 
-export function whereOp(
-  field: string,
-  op: WhereFilterOp,
-  value: unknown,
-): QueryConstraint {
+export function whereOp(field: string, op: WhereFilterOp, value: unknown): QueryConstraint {
   return where(field, op, value);
 }
 
-export function orderByField(
-  field: string,
-  direction: 'asc' | 'desc' = 'asc',
-): QueryConstraint {
+export function orderByField(field: string, direction: 'asc' | 'desc' = 'asc'): QueryConstraint {
   return fsOrderBy(field, direction);
 }
 
@@ -67,10 +57,7 @@ export function paginate(input: {
  * Each constraint must be created via the helpers above so the call site
  * stays free of `firebase/firestore` imports.
  */
-export function buildQuery<T>(
-  base: Query<T>,
-  constraints: QueryConstraint[],
-): Query<T> {
+export function buildQuery<T>(base: Query<T>, constraints: QueryConstraint[]): Query<T> {
   if (constraints.length === 0) return base;
   return query(base, ...constraints);
 }

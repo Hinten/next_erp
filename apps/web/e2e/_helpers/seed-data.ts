@@ -92,10 +92,7 @@ export async function seedDepositos(prefix: string, n: number): Promise<void> {
 /**
  * Seed `n` motivoIncidente docs. `ativo` alternates for the boolean filter.
  */
-export async function seedMotivosIncidente(
-  prefix: string,
-  n: number,
-): Promise<void> {
+export async function seedMotivosIncidente(prefix: string, n: number): Promise<void> {
   const col = db().collection('motivosincidentes');
   const batch = db().batch();
   for (let i = 1; i <= n; i += 1) {
@@ -112,10 +109,7 @@ export async function seedMotivosIncidente(
  * and `ehCredito` alternates, so the enum + boolean column filters have
  * something to bite on.
  */
-export async function seedBandeirasCartao(
-  prefix: string,
-  n: number,
-): Promise<void> {
+export async function seedBandeirasCartao(prefix: string, n: number): Promise<void> {
   const bandeiras = ['01', '02', '06'] as const; // Visa, Mastercard, Elo
   const col = db().collection('bandeirasCartao');
   const batch = db().batch();
@@ -242,11 +236,14 @@ export async function seedBalcaoFixtures(
       ultimaModificacao: now,
     });
 
-  await db().collection('depositos').doc(depositoId).set({
-    nome: `${prefix}-ref-deposito`,
-    ativo: true,
-    timestamp: now,
-  });
+  await db()
+    .collection('depositos')
+    .doc(depositoId)
+    .set({
+      nome: `${prefix}-ref-deposito`,
+      ativo: true,
+      timestamp: now,
+    });
 
   const filialRef = db().collection('filiais').doc(filialId);
   const listaRef = db().collection('listaDePrecos').doc(listaId);
@@ -466,29 +463,26 @@ export async function seedPedidoWithNFe(
   const pedidoId = `${prefix}-${pad(index)}`;
   const nfeId = `${prefix}-${pad(index)}-nfe`;
   const now = Date.now();
-  await db()
-    .collection('pedidos')
-    .doc(pedidoId)
-    .set({
-      ehSaida: true,
-      estado: 'pago',
-      numero: pedidoId,
-      itens: {},
-      itensIds: [],
-      descontoTotal: 0,
-      timestamp: now,
-      ultimaModificacao: now,
-      foiImpresso: false,
-      // The TableView's NF column reads `pedido.id`, not these inner refs;
-      // outer refs stay null so the cell exercises the snapshot path
-      // without dragging a cliente lookup into the assertion.
-      vendedorPedidoOuterRef: null,
-      integracaoPedidoOuterRef: null,
-      operacaoPedidoOuterRef: null,
-      clientePedidoOuterRef: null,
-      enderecoFiscalOuterRef: null,
-      listaDePrecosOuterRef: null,
-    });
+  await db().collection('pedidos').doc(pedidoId).set({
+    ehSaida: true,
+    estado: 'pago',
+    numero: pedidoId,
+    itens: {},
+    itensIds: [],
+    descontoTotal: 0,
+    timestamp: now,
+    ultimaModificacao: now,
+    foiImpresso: false,
+    // The TableView's NF column reads `pedido.id`, not these inner refs;
+    // outer refs stay null so the cell exercises the snapshot path
+    // without dragging a cliente lookup into the assertion.
+    vendedorPedidoOuterRef: null,
+    integracaoPedidoOuterRef: null,
+    operacaoPedidoOuterRef: null,
+    clientePedidoOuterRef: null,
+    enderecoFiscalOuterRef: null,
+    listaDePrecosOuterRef: null,
+  });
   await db()
     .collection('pedidos')
     .doc(pedidoId)
@@ -522,11 +516,7 @@ export async function seedPedidoWithNFe(
  * the Firestore SDK; we delete them explicitly.
  */
 export async function cleanupPedidoWithNFe(pedidoId: string): Promise<void> {
-  const nfeSnap = await db()
-    .collection('pedidos')
-    .doc(pedidoId)
-    .collection('nfev4')
-    .get();
+  const nfeSnap = await db().collection('pedidos').doc(pedidoId).collection('nfev4').get();
   if (!nfeSnap.empty) {
     const batch = db().batch();
     nfeSnap.docs.forEach((d) => batch.delete(d.ref));
@@ -559,10 +549,7 @@ export async function cleanupByFieldPrefix(
  * Delete every doc in `collection` whose `nome` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
  */
-export async function cleanupByNamePrefix(
-  collection: string,
-  prefix: string,
-): Promise<void> {
+export async function cleanupByNamePrefix(collection: string, prefix: string): Promise<void> {
   await cleanupByFieldPrefix(collection, 'nome', prefix);
 }
 
@@ -572,11 +559,7 @@ export async function cleanupByNamePrefix(
  * `enderecos` subcollection must be cleared explicitly.
  */
 export async function cleanupEnderecos(clienteId: string): Promise<void> {
-  const snap = await db()
-    .collection('clientes')
-    .doc(clienteId)
-    .collection('enderecos')
-    .get();
+  const snap = await db().collection('clientes').doc(clienteId).collection('enderecos').get();
   if (snap.empty) return;
   const batch = db().batch();
   snap.docs.forEach((d) => batch.delete(d.ref));
@@ -589,11 +572,7 @@ export async function cleanupEnderecos(clienteId: string): Promise<void> {
  * the table or running the address search.
  */
 export async function enderecoCount(clienteId: string): Promise<number> {
-  const snap = await db()
-    .collection('clientes')
-    .doc(clienteId)
-    .collection('enderecos')
-    .get();
+  const snap = await db().collection('clientes').doc(clienteId).collection('enderecos').get();
   return snap.size;
 }
 
@@ -603,10 +582,7 @@ export async function enderecoCount(clienteId: string): Promise<number> {
  * — Admin SDK reads are strongly consistent — before navigating on, so the
  * list query can't race ahead of the write.
  */
-export async function docExistsByName(
-  collection: string,
-  nome: string,
-): Promise<boolean> {
+export async function docExistsByName(collection: string, nome: string): Promise<boolean> {
   return docExistsByField(collection, 'nome', nome);
 }
 
@@ -620,10 +596,6 @@ export async function docExistsByField(
   field: string,
   value: string,
 ): Promise<boolean> {
-  const snap = await db()
-    .collection(collection)
-    .where(field, '==', value)
-    .limit(1)
-    .get();
+  const snap = await db().collection(collection).where(field, '==', value).limit(1).get();
   return !snap.empty;
 }

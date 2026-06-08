@@ -37,10 +37,7 @@ export interface ProdutoSalesRow {
  * total quantity sold. Items without a `produtoUid` (or with the literal
  * 'NONE' bucket) are dropped — there's no produto to report on.
  */
-export function topProdutos(
-  pedidos: PedidoLite[],
-  topN = 10,
-): ProdutoSalesRow[] {
+export function topProdutos(pedidos: PedidoLite[], topN = 10): ProdutoSalesRow[] {
   const byUid = new Map<string, ProdutoSalesRow & { _orderIds: Set<string> }>();
 
   for (const { id: pedidoId, data } of pedidos) {
@@ -48,18 +45,16 @@ export function topProdutos(
       const produtoUid = groupKey && groupKey !== 'NONE' ? groupKey : null;
       if (!produtoUid) continue;
       for (const item of list) {
-        const existing: ProdutoSalesRow & { _orderIds: Set<string> } =
-          byUid.get(produtoUid) ?? {
-            produtoUid,
-            label: item.nomeDeVenda ?? produtoUid,
-            quantidade: 0,
-            receita: 0,
-            pedidos: 0,
-            _orderIds: new Set<string>(),
-          };
+        const existing: ProdutoSalesRow & { _orderIds: Set<string> } = byUid.get(produtoUid) ?? {
+          produtoUid,
+          label: item.nomeDeVenda ?? produtoUid,
+          quantidade: 0,
+          receita: 0,
+          pedidos: 0,
+          _orderIds: new Set<string>(),
+        };
         existing.quantidade += item.quantidade;
-        existing.receita +=
-          (item.precoDeVenda - (item.descontoUnitario ?? 0)) * item.quantidade;
+        existing.receita += (item.precoDeVenda - (item.descontoUnitario ?? 0)) * item.quantidade;
         if (item.nomeDeVenda && existing.label === produtoUid) {
           existing.label = item.nomeDeVenda;
         }

@@ -69,8 +69,8 @@ packages/
   core/          money, address, documents, tenant, plugin contracts
   integrations/  Domain sub-packages: NFe, MP, marketplaces, freight (Phase 5)
   plugin-sdk/    Public surface for third-party plugins
-  config-*/      Shared ESLint/TS/Prettier configs (config-eslint,
-                 config-prettier, config-tsconfig)
+  config-*/      Shared ESLint/TS configs (config-eslint, config-tsconfig).
+                 Prettier config lives at the repo root (prettier.config.mjs).
 tools/
   test-fixtures/  Admin SDK seed/teardown for staging
   migrations/     (empty until Phase 6)

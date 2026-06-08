@@ -1,0 +1,8 @@
+# Revisions to ignore in `git blame` (bulk, mechanical changes only).
+#
+# Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (GitHub honours this file automatically.)
+
+# style: format with Prettier — first repo-wide `prettier --write .`
+3adb09f23ca330bdb180bae88021def95e497959

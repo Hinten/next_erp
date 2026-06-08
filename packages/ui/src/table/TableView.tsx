@@ -4,8 +4,16 @@ import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useLocalStorage } from '@mantine/hooks';
 import {
-  ActionIcon, Alert, Checkbox, Group, Skeleton, Stack, Table, Text,
-  Title, Tooltip,
+  ActionIcon,
+  Alert,
+  Checkbox,
+  Group,
+  Skeleton,
+  Stack,
+  Table,
+  Text,
+  Title,
+  Tooltip,
 } from '@mantine/core';
 import type { Route } from 'next';
 import type { Firestore, Query } from 'firebase/firestore';
@@ -18,11 +26,7 @@ import {
   limit as fsLimit,
   orderByField,
 } from '@delfrance/data';
-import {
-  type SnapshotRow,
-  type SnapshotState,
-  useSnapshot,
-} from '@delfrance/data/hooks';
+import { type SnapshotRow, type SnapshotState, useSnapshot } from '@delfrance/data/hooks';
 import { usePipelineSnapshot } from '@delfrance/data/hooks/usePipelineSnapshot';
 import {
   type Pipeline,
@@ -30,14 +34,10 @@ import {
   isPipelineSupported,
 } from '@delfrance/data/pipeline-queries';
 import { extractFieldsFromSchema } from '../schema/derive';
-import type {
-  ActionConfig, FieldConfig, FieldDescriptor, VirtualColumn,
-} from '../schema/types';
+import type { ActionConfig, FieldConfig, FieldDescriptor, VirtualColumn } from '../schema/types';
 import { ActionBar } from './ActionBar';
 import { useCollectionMonitor } from './useCollectionMonitor';
-import {
-  IconArrowDown, IconArrowsSort, IconArrowUp, IconRefreshAlert,
-} from '@tabler/icons-react';
+import { IconArrowDown, IconArrowsSort, IconArrowUp, IconRefreshAlert } from '@tabler/icons-react';
 import { ColumnFilter, type ColumnFilterValue } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
 import { Pagination } from './Pagination';
@@ -126,7 +126,13 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
 type SortState = { field: string; direction: 'asc' | 'desc' };
 
 const FILTER_OPS = new Set<PipelineFilterOp>([
-  'contains', 'startsWith', 'eq', 'lt', 'lte', 'gt', 'gte',
+  'contains',
+  'startsWith',
+  'eq',
+  'lt',
+  'lte',
+  'gt',
+  'gte',
 ]);
 
 /**
@@ -256,8 +262,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Per-column filters keyed by field key. AND-combined; cleared by setting
   // the entry to `undefined` (or deleting the key). Hydrated once from the
   // URL query string so a shared/bookmarked link reopens filtered.
-  const [filters, setFilters] = useState<Record<string, ColumnFilterValue>>(
-    () => parseFiltersFromParams(searchParams, descriptors),
+  const [filters, setFilters] = useState<Record<string, ColumnFilterValue>>(() =>
+    parseFiltersFromParams(searchParams, descriptors),
   );
   // Active sort. Seeded from the URL, then the `orderBy` prop; the user
   // changes it by clicking column headers.
@@ -273,10 +279,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Deterministic key for the visible-column set. Toggling a column in the
   // ColumnPicker changes this, which re-runs the `pipeline` useMemo → new
   // Pipeline with the new `select` → the query re-executes.
-  const visibleKeysSerial = useMemo(
-    () => [...visibleKeys].sort().join('|'),
-    [visibleKeys],
-  );
+  const visibleKeysSerial = useMemo(() => [...visibleKeys].sort().join('|'), [visibleKeys]);
 
   // Mirror filters + sort into the URL query string so the view is shareable
   // and survives a reload. Uses `window.history.replaceState`, NOT
@@ -337,9 +340,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         select:
           virtualColumns.length > 0
             ? undefined
-            : [...visibleKeys].filter((k) =>
-                descriptors.some((d) => d.key === k),
-              ),
+            : [...visibleKeys].filter((k) => descriptors.some((d) => d.key === k)),
         orderBy: sort ? [{ field: sort.field, direction: sort.direction }] : undefined,
         limit: pageSize,
       });
@@ -349,7 +350,17 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // `pathContext` is intentionally not stringified; consumers should keep
     // the object stable across renders (matches the rest of the data layer).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, collection, queryOverride, pageSize, sort?.field, sort?.direction, filtersSerial, visibleKeysSerial, refreshKey]);
+  }, [
+    db,
+    collection,
+    queryOverride,
+    pageSize,
+    sort?.field,
+    sort?.direction,
+    filtersSerial,
+    visibleKeysSerial,
+    refreshKey,
+  ]);
 
   const fallbackQuery: Query<z.infer<S>> | null = useMemo(() => {
     if (queryOverride) return queryOverride;
@@ -407,17 +418,14 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
    * need to know about virtual columns.
    */
   const visibleDescriptors = useMemo(
-    () =>
-      visibleColumns.flatMap((c) => (c.kind === 'schema' ? [c.descriptor] : [])),
+    () => visibleColumns.flatMap((c) => (c.kind === 'schema' ? [c.descriptor] : [])),
     [visibleColumns],
   );
 
   // Hiding drops the key; showing appends it to the end of the order. The
   // array doubles as the display order — see `visibleColumns` above.
   function toggleColumn(key: string) {
-    setVisibleKeysArr((cur) =>
-      cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key],
-    );
+    setVisibleKeysArr((cur) => (cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]));
   }
 
   function reorderColumns(next: string[]) {
@@ -468,7 +476,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       {(title || description) && (
         <Stack gap={2}>
           {title && (typeof title === 'string' ? <Title order={2}>{title}</Title> : title)}
-          {description && <Text c="dimmed" size="sm">{description}</Text>}
+          {description && (
+            <Text c="dimmed" size="sm">
+              {description}
+            </Text>
+          )}
         </Stack>
       )}
 
@@ -556,9 +568,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                     <Table.Th
                       key={col.column.key}
                       style={
-                        col.column.width !== undefined
-                          ? { width: col.column.width }
-                          : undefined
+                        col.column.width !== undefined ? { width: col.column.width } : undefined
                       }
                       title={col.column.tooltip}
                     >
@@ -578,10 +588,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                         title="Ordenar por esta coluna"
                       >
                         <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
-                        <SortIndicator
-                          active={sort?.field === d.key}
-                          direction={sort?.direction}
-                        />
+                        <SortIndicator active={sort?.field === d.key} direction={sort?.direction} />
                       </Group>
                       <ColumnFilter
                         descriptor={d}
@@ -604,7 +611,10 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           <Table.Tbody>
             {snap.data.length === 0 && (
               <Table.Tr>
-                <Table.Td colSpan={visibleColumns.length + (selectionEnabled ? 1 : 0)} align="center">
+                <Table.Td
+                  colSpan={visibleColumns.length + (selectionEnabled ? 1 : 0)}
+                  align="center"
+                >
                   <Text c="dimmed">Nenhum resultado.</Text>
                 </Table.Td>
               </Table.Tr>
@@ -647,11 +657,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                   )}
                   {visibleColumns.map((col) => {
                     if (col.kind === 'virtual') {
-                      return (
-                        <Table.Td key={col.column.key}>
-                          {col.column.renderCell(row)}
-                        </Table.Td>
-                      );
+                      return <Table.Td key={col.column.key}>{col.column.renderCell(row)}</Table.Td>;
                     }
                     const d = col.descriptor;
                     const override = fieldOverrides[d.key];
@@ -687,19 +693,9 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
  * column; a dimmed neutral icon on the rest to advertise that the header is
  * clickable.
  */
-function SortIndicator({
-  active,
-  direction,
-}: {
-  active: boolean;
-  direction?: 'asc' | 'desc';
-}) {
+function SortIndicator({ active, direction }: { active: boolean; direction?: 'asc' | 'desc' }) {
   if (!active) {
     return <IconArrowsSort size={14} style={{ opacity: 0.35 }} />;
   }
-  return direction === 'desc' ? (
-    <IconArrowDown size={14} />
-  ) : (
-    <IconArrowUp size={14} />
-  );
+  return direction === 'desc' ? <IconArrowDown size={14} /> : <IconArrowUp size={14} />;
 }

@@ -6,10 +6,7 @@
 // - Storage admin expects `STORAGE_EMULATOR_HOST` as a full URL, while
 //   emulators:exec exports `FIREBASE_STORAGE_EMULATOR_HOST` as host:port —
 //   bridge it here.
-if (
-  !process.env.STORAGE_EMULATOR_HOST &&
-  process.env.FIREBASE_STORAGE_EMULATOR_HOST
-) {
+if (!process.env.STORAGE_EMULATOR_HOST && process.env.FIREBASE_STORAGE_EMULATOR_HOST) {
   process.env.STORAGE_EMULATOR_HOST = `http://${process.env.FIREBASE_STORAGE_EMULATOR_HOST}`;
 }
 

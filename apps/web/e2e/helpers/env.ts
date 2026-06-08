@@ -11,9 +11,6 @@
 export function requiresAuthEnv(): boolean {
   return (
     !!process.env.FIREBASE_PROJECT_ID &&
-    !!(
-      process.env.FIREBASE_SERVICE_ACCOUNT ??
-      process.env.FIREBASE_SERVICE_ACCOUNT_PATH
-    )
+    !!(process.env.FIREBASE_SERVICE_ACCOUNT ?? process.env.FIREBASE_SERVICE_ACCOUNT_PATH)
   );
 }

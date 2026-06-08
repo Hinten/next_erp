@@ -3,16 +3,7 @@
 import { useState } from 'react';
 import { FirebaseError } from 'firebase/app';
 import { sendPasswordResetEmail } from 'firebase/auth';
-import {
-  Alert,
-  Anchor,
-  Button,
-  Center,
-  Paper,
-  Stack,
-  TextInput,
-  Title,
-} from '@mantine/core';
+import { Alert, Anchor, Button, Center, Paper, Stack, TextInput, Title } from '@mantine/core';
 import { getFirebaseAuth } from '@/lib/firebase/client';
 
 export default function RecoverPage() {

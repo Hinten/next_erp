@@ -13,7 +13,8 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
     unobserve() {}
     disconnect() {}
   }
-  (globalThis as unknown as { ResizeObserver: typeof ResizeObserverShim }).ResizeObserver = ResizeObserverShim;
+  (globalThis as unknown as { ResizeObserver: typeof ResizeObserverShim }).ResizeObserver =
+    ResizeObserverShim;
 }
 
 // JSDOM lacks `window.matchMedia`, which Mantine providers query during render.

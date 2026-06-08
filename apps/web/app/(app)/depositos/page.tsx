@@ -36,16 +36,11 @@ export default function DepositosPage() {
           refreshOnComplete: true,
           confirm: {
             title: 'Excluir depósitos',
-            message:
-              'Depósitos excluídos não podem ser restaurados. Confirmar exclusão?',
+            message: 'Depósitos excluídos não podem ser restaurados. Confirmar exclusão?',
           },
           run: async (rows) => {
             const db = getFirebaseFirestore();
-            await Promise.all(
-              rows.map((r) =>
-                deleteDoc(depositoCollection.docRef(db, {}, r.id)),
-              ),
-            );
+            await Promise.all(rows.map((r) => deleteDoc(depositoCollection.docRef(db, {}, r.id))));
           },
         },
       ]}

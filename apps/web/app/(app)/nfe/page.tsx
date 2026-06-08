@@ -2,15 +2,7 @@
 
 import { useMemo } from 'react';
 import Link from 'next/link';
-import {
-  Alert,
-  Anchor,
-  Code,
-  Skeleton,
-  Stack,
-  Table,
-  Text,
-} from '@mantine/core';
+import { Alert, Anchor, Code, Skeleton, Stack, Table, Text } from '@mantine/core';
 import { PageHeader } from '@delfrance/ui';
 import { buildQuery, limit, orderByField, whereOp } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
@@ -43,17 +35,13 @@ export default function NfeListPage() {
 
   return (
     <Stack>
-      <PageHeader
-        title="NFe"
-        description="Notas Fiscais Eletrônicas vinculadas a pedidos"
-      />
+      <PageHeader title="NFe" description="Notas Fiscais Eletrônicas vinculadas a pedidos" />
 
       <Alert color="blue" title="Onde a emissão acontece">
         A geração, assinatura e envio à SEFAZ vivem em
-        <Code mx={4}>apps/integrations</Code>+ Cloud Functions, atrás do
-        plugin <Code mx={4}>@delfrance/integrations-nfe</Code>. Esta tela é
-        somente leitura: lista pedidos que já receberam chNFe da
-        emissão. A configuração de numeração / série / certificado fica em
+        <Code mx={4}>apps/integrations</Code>+ Cloud Functions, atrás do plugin{' '}
+        <Code mx={4}>@delfrance/integrations-nfe</Code>. Esta tela é somente leitura: lista pedidos
+        que já receberam chNFe da emissão. A configuração de numeração / série / certificado fica em
         <Anchor component={Link} href="/configuracoes" ml={4}>
           Configurações
         </Anchor>

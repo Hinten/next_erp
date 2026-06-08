@@ -29,10 +29,7 @@ import type { Pedido } from '@delfrance/schemas';
 import type { ActionConfig } from '@delfrance/ui';
 
 import { useNFeClient } from './client';
-import {
-  notificationForNFeError,
-  notificationForNFeResult,
-} from './errors';
+import { notificationForNFeError, notificationForNFeResult } from './errors';
 import { showErrorNotification } from '../notifications/showErrorNotification';
 
 /**

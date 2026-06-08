@@ -9,10 +9,7 @@ import { getApp } from './admin';
  * one with `emailVerified: true` so the login page accepts it without an
  * email verification round-trip.
  */
-export async function ensureTestUser(
-  email: string,
-  password: string,
-): Promise<UserRecord> {
+export async function ensureTestUser(email: string, password: string): Promise<UserRecord> {
   getApp();
   const auth = getAuth();
   try {

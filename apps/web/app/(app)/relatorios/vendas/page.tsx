@@ -2,15 +2,7 @@
 
 import { useMemo } from 'react';
 import Link from 'next/link';
-import {
-  Alert,
-  Anchor,
-  Group,
-  Skeleton,
-  Stack,
-  Table,
-  Text,
-} from '@mantine/core';
+import { Alert, Anchor, Group, Skeleton, Stack, Table, Text } from '@mantine/core';
 import { DonutChart } from '@mantine/charts';
 import { PageHeader } from '@delfrance/ui';
 import { format, money } from '@delfrance/core/money';
@@ -67,9 +59,7 @@ export default function VendasPorEstadoPage() {
               thickness={36}
               withLabelsLine
               withLabels
-              chartLabel={
-                data ? `${data.length} pedidos` : undefined
-              }
+              chartLabel={data ? `${data.length} pedidos` : undefined}
             />
             <Stack flex={1} gap="xs">
               {byBucket.map((b) => (

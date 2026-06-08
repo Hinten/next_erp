@@ -19,13 +19,11 @@ const projectId = process.env.GCLOUD_PROJECT ?? 'demo-erp';
 const bucketName = `${projectId}.appspot.com`;
 
 function getDb() {
-  const app =
-    getApps()[0] ?? initializeApp({ projectId, storageBucket: bucketName });
+  const app = getApps()[0] ?? initializeApp({ projectId, storageBucket: bucketName });
   return getFirestore(app);
 }
 function getBucket() {
-  const app =
-    getApps()[0] ?? initializeApp({ projectId, storageBucket: bucketName });
+  const app = getApps()[0] ?? initializeApp({ projectId, storageBucket: bucketName });
   return getStorage(app).bucket(bucketName);
 }
 

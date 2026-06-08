@@ -1,15 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import {
-  Center,
-  NavLink,
-  Skeleton,
-  Stack,
-  Text,
-  TextInput,
-  Tooltip,
-} from '@mantine/core';
+import { Center, NavLink, Skeleton, Stack, Text, TextInput, Tooltip } from '@mantine/core';
 import Link from 'next/link';
 import type { Route } from 'next';
 import { usePathname } from 'next/navigation';
@@ -130,8 +122,7 @@ const NAV: NavEntry[] = [
 
 const isDev = process.env.NODE_ENV === 'development';
 
-const matches = (haystack: string, needle: string) =>
-  haystack.toLocaleLowerCase().includes(needle);
+const matches = (haystack: string, needle: string) => haystack.toLocaleLowerCase().includes(needle);
 
 export function SidebarNav() {
   const { claims, loading } = useTenant();
@@ -201,12 +192,7 @@ export function SidebarNav() {
               pathname={pathname}
             />
           ) : (
-            <LeafNode
-              key={entry.href}
-              leaf={entry}
-              permitted={permitted}
-              pathname={pathname}
-            />
+            <LeafNode key={entry.href} leaf={entry} permitted={permitted} pathname={pathname} />
           ),
         )}
       </Stack>
@@ -240,12 +226,7 @@ function GroupNode({
       childrenOffset={28}
     >
       {group.children.map((leaf) => (
-        <LeafNode
-          key={leaf.href}
-          leaf={leaf}
-          permitted={permitted}
-          pathname={pathname}
-        />
+        <LeafNode key={leaf.href} leaf={leaf} permitted={permitted} pathname={pathname} />
       ))}
     </NavLink>
   );
@@ -277,12 +258,5 @@ function LeafNode({
     );
   }
 
-  return (
-    <NavLink
-      component={Link}
-      href={leaf.href}
-      label={leaf.label}
-      active={active ?? false}
-    />
-  );
+  return <NavLink component={Link} href={leaf.href} label={leaf.label} active={active ?? false} />;
 }

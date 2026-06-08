@@ -22,9 +22,8 @@ const { snapState } = vi.hoisted(() => ({
 }));
 
 vi.mock('@delfrance/data/hooks', async () => {
-  const actual = await vi.importActual<typeof import('@delfrance/data/hooks')>(
-    '@delfrance/data/hooks',
-  );
+  const actual =
+    await vi.importActual<typeof import('@delfrance/data/hooks')>('@delfrance/data/hooks');
   return { ...actual, useSnapshot: () => snapState.current };
 });
 

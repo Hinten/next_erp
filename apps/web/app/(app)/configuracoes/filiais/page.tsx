@@ -50,8 +50,7 @@ export default function FiliaisPage() {
             if (rows.length !== 1 || !target) {
               showErrorNotification({
                 title: 'Selecione uma única filial',
-                message:
-                  'A inutilização de numeração é feita por filial. Selecione apenas uma.',
+                message: 'A inutilização de numeração é feita por filial. Selecione apenas uma.',
               });
               return;
             }
@@ -65,14 +64,11 @@ export default function FiliaisPage() {
           requiresSelection: true,
           confirm: {
             title: 'Excluir filiais',
-            message:
-              'Filiais excluídas não podem ser restauradas. Confirmar exclusão?',
+            message: 'Filiais excluídas não podem ser restauradas. Confirmar exclusão?',
           },
           run: async (rows) => {
             const db = getFirebaseFirestore();
-            await Promise.all(
-              rows.map((r) => deleteDoc(filialCollection.docRef(db, {}, r.id))),
-            );
+            await Promise.all(rows.map((r) => deleteDoc(filialCollection.docRef(db, {}, r.id))));
           },
         },
       ]}

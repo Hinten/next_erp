@@ -3,19 +3,10 @@ import type { Firestore } from 'firebase/firestore';
 // before any use of `db.pipeline`.
 import 'firebase/firestore/pipelines';
 import { execute, or, regexContains } from 'firebase/firestore/pipelines';
-import {
-  buildSimilarityPattern,
-  isPipelineSupported,
-} from '@delfrance/data/pipeline-queries';
+import { buildSimilarityPattern, isPipelineSupported } from '@delfrance/data/pipeline-queries';
 
 /** Address fields scanned by the "find a client by address" search. */
-const ENDERECO_SEARCH_FIELDS = [
-  'logradouro',
-  'bairro',
-  'cidade',
-  'complemento',
-  'cep',
-];
+const ENDERECO_SEARCH_FIELDS = ['logradouro', 'bairro', 'cidade', 'complemento', 'cep'];
 
 /**
  * Max number of distinct clients returned. Bounded by Firestore's 30-value
@@ -47,19 +38,14 @@ export class EnderecoSearchUnsupportedError extends Error {
  * Returns at most `ENDERECO_SEARCH_LIMIT` distinct ids. An empty/whitespace
  * term yields `[]`.
  */
-export async function searchClienteIdsByEndereco(
-  db: Firestore,
-  term: string,
-): Promise<string[]> {
+export async function searchClienteIdsByEndereco(db: Firestore, term: string): Promise<string[]> {
   const pattern = buildSimilarityPattern(term);
   if (!pattern) return [];
   if (!isPipelineSupported(db)) throw new EnderecoSearchUnsupportedError();
 
   const perField = ENDERECO_SEARCH_FIELDS.map((f) => regexContains(f, pattern));
   const matchExpr =
-    perField.length === 1
-      ? perField[0]!
-      : or(perField[0]!, perField[1]!, ...perField.slice(2));
+    perField.length === 1 ? perField[0]! : or(perField[0]!, perField[1]!, ...perField.slice(2));
 
   // Pipelines are one-shot — run via the standalone `execute()`; the
   // `Pipeline` object itself has no `.execute()` method.

@@ -19,9 +19,7 @@ export const TIPO_CLIENTE_LABELS = {
   '2': 'Estrangeiro',
 } as const;
 
-export const tipoClienteSchema = z
-  .enum(['0', '1', '2'])
-  .meta({ labels: TIPO_CLIENTE_LABELS });
+export const tipoClienteSchema = z.enum(['0', '1', '2']).meta({ labels: TIPO_CLIENTE_LABELS });
 export type TipoCliente = z.infer<typeof tipoClienteSchema>;
 
 /**
@@ -44,43 +42,39 @@ export const clienteSchema = z.object({
     .string()
     .max(18)
     .regex(/^\d*$/, 'apenas números')
-    .nullable().default(null)
+    .nullable()
+    .default(null)
     .describe('CPF / CNPJ'),
-  idEstrangeiro: z
-    .string()
-    .max(20)
-    .nullable().default(null)
-    .describe('ID estrangeiro'),
+  idEstrangeiro: z.string().max(20).nullable().default(null).describe('ID estrangeiro'),
   ie: z.string().max(16).nullable().default(null).describe('Inscrição estadual'),
   imun: z
     .string()
     .max(15)
     .regex(/^\d*$/, 'apenas números')
-    .nullable().default(null)
+    .nullable()
+    .default(null)
     .describe('Inscrição municipal'),
   isUF: z
     .string()
     .min(8)
     .max(9)
     .regex(/^\d+$/, 'apenas números')
-    .nullable().default(null)
+    .nullable()
+    .default(null)
     .describe('IS UF'),
-  email: z
-    .string()
-    .max(255)
-    .email()
-    .nullable().default(null)
-    .describe('E-mail'),
+  email: z.string().max(255).email().nullable().default(null).describe('E-mail'),
   telefone: z
     .string()
     .max(16)
     .regex(/^\d*$/, 'apenas números')
-    .nullable().default(null)
+    .nullable()
+    .default(null)
     .describe('Telefone'),
   observacoesInternas: z
     .string()
     .max(255)
-    .nullable().default(null)
+    .nullable()
+    .default(null)
     .describe('Observações internas'),
   // ISO 8601; Firestore stores these as Timestamps, the data layer converts.
   timestamp: z.string().datetime().nullable().default(null),
@@ -104,9 +98,7 @@ export const clienteMeta: CollectionMetadata = {
     write: PERM_CLIENTE_WRITE,
     delete: PERM_CLIENTE_DELETE,
   },
-  cascade: [
-    { path: 'clientes/{clienteId}/enderecos', onDelete: 'cascade' },
-  ],
+  cascade: [{ path: 'clientes/{clienteId}/enderecos', onDelete: 'cascade' }],
 };
 
 export const cliente = { schema: clienteSchema, meta: clienteMeta };

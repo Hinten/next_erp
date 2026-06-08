@@ -12,7 +12,9 @@ description: >-
   in `apps/nfe` or `packages/integrations/nfe`, and on terms like infNFe,
   enviNFe, retEnviNFe, consReciNFe, consSitNFe, indSinc, SEFAZ, cStat, nRec,
   duplicidade, protNFe, procNFe, tpEmis, certificado A1, ICP-Brasil, IBS, CBS,
-  IS, RTC, Reforma Tributária, gIBSCBS, cClassTrib, NT 2025.001, NT 2025.002.
+  IS, RTC, Reforma Tributária, gIBSCBS, cClassTrib, NT 2025.001, NT 2025.002,
+  DANFE, DANFE Simplificado, retrato, paisagem, etiqueta, canhoto, Code128,
+  bwip-js, pdfkit, ZPL, ZPL2, Zebra.
 ---
 
 # NF-e — Nota Fiscal Eletrônica (modelo 55, layout 4.00)
@@ -97,6 +99,7 @@ re-readable source).
 | `references/cstat-rejeicoes.md` | cStat codes, duplicidade & recovery rules |
 | `references/contingencia.md` | tpEmis modes, EPEC, SVC, pendentes de retorno |
 | `references/eventos.md` | cancelamento, carta de correção, inutilização |
+| `references/danfe.md` | DANFE render (retrato/paisagem/simplificado) + ZPL2 label |
 | `references/rtc-ibs-cbs-is.md` | RTC: Grupo UB, W03, cClassTrib, novos eventos |
 | `references/homologacao.md` | homologação (tpAmb=2) testing rules |
 | `references/leiaute.md` | infNFe field groups + XML formatting rules |

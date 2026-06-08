@@ -101,10 +101,7 @@ export default function UsuariosPage() {
                 onClick={() => router.push(`/configuracoes/usuarios/${id}`)}
               >
                 <Table.Td>
-                  <Anchor
-                    component={Link}
-                    href={`/configuracoes/usuarios/${id}`}
-                  >
+                  <Anchor component={Link} href={`/configuracoes/usuarios/${id}`}>
                     {u.nome}
                   </Anchor>
                 </Table.Td>

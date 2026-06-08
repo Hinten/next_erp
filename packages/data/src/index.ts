@@ -27,7 +27,4 @@ export {
   type PipelineFilterOp,
 } from './pipeline-queries';
 
-export {
-  writeAuditEntry,
-  type AuditEntryInput,
-} from './audit';
+export { writeAuditEntry, type AuditEntryInput } from './audit';

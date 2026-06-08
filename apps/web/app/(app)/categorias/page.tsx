@@ -36,16 +36,11 @@ export default function CategoriasPage() {
           refreshOnComplete: true,
           confirm: {
             title: 'Excluir categorias',
-            message:
-              'Categorias excluídas não podem ser restauradas. Confirmar exclusão?',
+            message: 'Categorias excluídas não podem ser restauradas. Confirmar exclusão?',
           },
           run: async (rows) => {
             const db = getFirebaseFirestore();
-            await Promise.all(
-              rows.map((r) =>
-                deleteDoc(categoriaCollection.docRef(db, {}, r.id)),
-              ),
-            );
+            await Promise.all(rows.map((r) => deleteDoc(categoriaCollection.docRef(db, {}, r.id))));
           },
         },
       ]}

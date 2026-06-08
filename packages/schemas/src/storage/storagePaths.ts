@@ -51,36 +51,18 @@ function withExt(base: string, ext?: string | null): string {
 }
 
 /** `produtos/<produtoId>/originals/<hash>[.<ext>]` — the watched prefix. */
-export function productOriginalPath(
-  produtoId: string,
-  hash: string,
-  ext?: string | null,
-): string {
-  return withExt(
-    `${STORAGE_ROOT.produtos}/${produtoId}/${PRODUTO_SUBDIR.originals}/${hash}`,
-    ext,
-  );
+export function productOriginalPath(produtoId: string, hash: string, ext?: string | null): string {
+  return withExt(`${STORAGE_ROOT.produtos}/${produtoId}/${PRODUTO_SUBDIR.originals}/${hash}`, ext);
 }
 
 /** `produtos/<produtoId>/derivatives/<hash>_<variantKey>.jpeg`. */
-export function productDerivativePath(
-  produtoId: string,
-  hash: string,
-  variantKey: string,
-): string {
+export function productDerivativePath(produtoId: string, hash: string, variantKey: string): string {
   return `${STORAGE_ROOT.produtos}/${produtoId}/${PRODUTO_SUBDIR.derivatives}/${hash}_${variantKey}.${DERIVATIVE_EXT}`;
 }
 
 /** `produtos/<produtoId>/videos/<hash>[.<ext>]` — NOT watched, NOT resized. */
-export function productVideoPath(
-  produtoId: string,
-  hash: string,
-  ext?: string | null,
-): string {
-  return withExt(
-    `${STORAGE_ROOT.produtos}/${produtoId}/${PRODUTO_SUBDIR.videos}/${hash}`,
-    ext,
-  );
+export function productVideoPath(produtoId: string, hash: string, ext?: string | null): string {
+  return withExt(`${STORAGE_ROOT.produtos}/${produtoId}/${PRODUTO_SUBDIR.videos}/${hash}`, ext);
 }
 
 /** `media/<hash>[.<ext>]` — generic, non-product files. */
@@ -94,11 +76,7 @@ export function productArquivoId(produtoId: string, hash: string): string {
 }
 
 /** Product-scoped `Arquivo` doc id for a derivative. */
-export function derivativeArquivoId(
-  produtoId: string,
-  hash: string,
-  variantKey: string,
-): string {
+export function derivativeArquivoId(produtoId: string, hash: string, variantKey: string): string {
   return `${productArquivoId(produtoId, hash)}_${variantKey}`;
 }
 
@@ -114,9 +92,7 @@ export interface ParsedOriginalPath {
  * name is not a `produtos/<produtoId>/originals/<file>` path. Used by the
  * resize function to recover `{produtoId, hash}` from the finalized object.
  */
-export function parseProductOriginalPath(
-  name: string,
-): ParsedOriginalPath | null {
+export function parseProductOriginalPath(name: string): ParsedOriginalPath | null {
   const parts = name.split('/');
   if (
     parts.length !== 4 ||
@@ -157,11 +133,7 @@ export function isDerivativeName(name: string): boolean {
  * does, so the resize function writes a `firebaseStorageDownloadTokens`
  * custom-metadata value and constructs the matching URL with this helper.
  */
-export function firebaseDownloadUrl(
-  bucketName: string,
-  objectPath: string,
-  token: string,
-): string {
+export function firebaseDownloadUrl(bucketName: string, objectPath: string, token: string): string {
   return (
     `https://firebasestorage.googleapis.com/v0/b/${bucketName}` +
     `/o/${encodeURIComponent(objectPath)}?alt=media&token=${token}`
@@ -176,8 +148,14 @@ export function firebaseDownloadUrl(
 export function normalizeName(name: string): string {
   const dot = name.lastIndexOf('.');
   if (dot > 0) {
-    const stem = name.slice(0, dot).toLowerCase().replace(/[^a-z0-9]/g, '_');
-    const ext = name.slice(dot + 1).toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const stem = name
+      .slice(0, dot)
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '_');
+    const ext = name
+      .slice(dot + 1)
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '_');
     return `${stem}.${ext}`;
   }
   return name.toLowerCase().replace(/[^a-z0-9]/g, '_');

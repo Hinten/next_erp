@@ -3,15 +3,7 @@
 import { useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import {
-  Alert,
-  Button,
-  Checkbox,
-  Group,
-  PasswordInput,
-  Stack,
-  TextInput,
-} from '@mantine/core';
+import { Alert, Button, Checkbox, Group, PasswordInput, Stack, TextInput } from '@mantine/core';
 import { z } from 'zod';
 import { CargoMultiSelect } from './CargoMultiSelect';
 
@@ -33,10 +25,7 @@ export interface UsuarioCreateFormProps {
   callerIsSuperUser: boolean;
 }
 
-export function UsuarioCreateForm({
-  onSubmit,
-  callerIsSuperUser,
-}: UsuarioCreateFormProps) {
+export function UsuarioCreateForm({ onSubmit, callerIsSuperUser }: UsuarioCreateFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const form = useForm<CreateUserInput, unknown, CreateUserValues>({

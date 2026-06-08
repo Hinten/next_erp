@@ -44,10 +44,7 @@ export type FormulaCalculoPreco = z.infer<typeof formulaCalculoPrecoSchema>;
  */
 export const formulasPorCategoriaSchema = z.object({
   name: z.string(),
-  formulasCalculoPreco: z
-    .array(formulaCalculoPrecoSchema)
-    .nullable()
-    .optional(),
+  formulasCalculoPreco: z.array(formulaCalculoPrecoSchema).nullable().optional(),
 });
 export type FormulasPorCategoria = z.infer<typeof formulasPorCategoriaSchema>;
 
@@ -60,14 +57,8 @@ export const listaDePrecosSchema = z.object({
   nome: z.string().min(1).max(255),
   padrao: z.boolean().default(false),
   ativo: z.boolean().default(true),
-  formulasCalculoPreco: z
-    .array(formulaCalculoPrecoSchema)
-    .nullable()
-    .optional(),
-  formulasPorCategoria: z
-    .record(z.string(), formulasPorCategoriaSchema)
-    .nullable()
-    .optional(),
+  formulasCalculoPreco: z.array(formulaCalculoPrecoSchema).nullable().optional(),
+  formulasPorCategoria: z.record(z.string(), formulasPorCategoriaSchema).nullable().optional(),
   ultimaModificacao: z.string().datetime().nullable().optional(),
   timestamp: z.string().datetime().nullable().optional(),
 });

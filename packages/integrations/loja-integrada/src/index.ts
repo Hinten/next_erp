@@ -16,17 +16,25 @@ export class LojaIntegradaNotConfiguredError extends Error {
   }
 }
 
-export function createLojaIntegradaChannel(
-  _config: LojaIntegradaConfig,
-): MarketplaceChannel {
+export function createLojaIntegradaChannel(_config: LojaIntegradaConfig): MarketplaceChannel {
   return {
     id: 'loja-integrada',
-    syncProducts: async () => { throw new LojaIntegradaNotConfiguredError(); },
-    pullOrders: async () => { throw new LojaIntegradaNotConfiguredError(); },
-    pushTracking: async () => { throw new LojaIntegradaNotConfiguredError(); },
+    syncProducts: async () => {
+      throw new LojaIntegradaNotConfiguredError();
+    },
+    pullOrders: async () => {
+      throw new LojaIntegradaNotConfiguredError();
+    },
+    pushTracking: async () => {
+      throw new LojaIntegradaNotConfiguredError();
+    },
     oauthFlow: {
-      start: () => { throw new LojaIntegradaNotConfiguredError(); },
-      callback: async () => { throw new LojaIntegradaNotConfiguredError(); },
+      start: () => {
+        throw new LojaIntegradaNotConfiguredError();
+      },
+      callback: async () => {
+        throw new LojaIntegradaNotConfiguredError();
+      },
     },
   };
 }

@@ -30,15 +30,15 @@ export function FilialTabs({ children }: { children: ReactNode }) {
 
       <Tabs.Panel value="nfe" pt="md">
         <Alert color="blue" title="Em breve">
-          A configuração de numeração e ambiente da NF-e desta filial será
-          disponibilizada na fase de NF-e.
+          A configuração de numeração e ambiente da NF-e desta filial será disponibilizada na fase
+          de NF-e.
         </Alert>
       </Tabs.Panel>
 
       <Tabs.Panel value="certificado" pt="md">
         <Alert color="blue" title="Em breve">
-          O envio do certificado digital A1 (.pfx/.pem) desta filial será
-          disponibilizado na fase de NF-e.
+          O envio do certificado digital A1 (.pfx/.pem) desta filial será disponibilizado na fase de
+          NF-e.
         </Alert>
       </Tabs.Panel>
     </Tabs>

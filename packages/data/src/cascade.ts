@@ -64,10 +64,7 @@ export interface CascadeOptions {
  * Throws `CascadeBlockedError` for any restrict-declared subcollection
  * that is non-empty.
  */
-export async function applyCascade(
-  meta: CollectionMetadata,
-  opts: CascadeOptions,
-): Promise<void> {
+export async function applyCascade(meta: CollectionMetadata, opts: CascadeOptions): Promise<void> {
   if (!meta.cascade?.length) return;
   const pageSize = opts.pageSize ?? 200;
 

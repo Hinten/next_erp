@@ -15,8 +15,8 @@ import { getApp } from './admin.js';
 
 // All permission bits OR'd together — mirrors PERM in packages/auth/src/permissions.ts
 export const ALL_PERMS =
-  0b111111n |   // cliente (bits 0-2) + endereco (bits 3-5): read | write | delete
-  (7n << 8n) |  // produto
+  0b111111n | // cliente (bits 0-2) + endereco (bits 3-5): read | write | delete
+  (7n << 8n) | // produto
   (7n << 16n) | // pedido
   (7n << 24n) | // pagamento
   (7n << 32n) | // nfe
@@ -24,7 +24,7 @@ export const ALL_PERMS =
   (7n << 48n) | // chat
   (7n << 56n) | // integracao
   (7n << 64n) | // estoque
-  (7n << 72n);  // fiscal
+  (7n << 72n); // fiscal
 
 export interface GrantAllPermsResult {
   uid: string;
@@ -76,7 +76,10 @@ if (isDirectInvocation) {
     process.exit(1);
   }
 
-  if ((process.argv.includes('--service-account') || process.argv.includes('-s')) && !serviceAccountPath) {
+  if (
+    (process.argv.includes('--service-account') || process.argv.includes('-s')) &&
+    !serviceAccountPath
+  ) {
     console.error('Missing value for --service-account');
     process.exit(1);
   }

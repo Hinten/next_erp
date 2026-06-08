@@ -2,22 +2,9 @@
 
 import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import {
-  Alert,
-  Button,
-  Group,
-  Stack,
-  TextInput,
-  Textarea,
-  Title,
-} from '@mantine/core';
+import { Alert, Button, Group, Stack, TextInput, Textarea, Title } from '@mantine/core';
 import type { z } from 'zod';
-import {
-  type Cargo,
-  cargoSchema,
-  decodePermissoes,
-  encodePermissoes,
-} from '@delfrance/schemas';
+import { type Cargo, cargoSchema, decodePermissoes, encodePermissoes } from '@delfrance/schemas';
 import { useState } from 'react';
 import { PermissionEditor } from '../../_components/PermissionEditor';
 
@@ -62,9 +49,7 @@ export function CargoForm({
     const bits = decodePermissoes(values);
     const excess = bits & ~callerBits;
     if (excess !== 0n) {
-      setSubmitError(
-        'Você não tem permissão para atribuir todos os bits selecionados.',
-      );
+      setSubmitError('Você não tem permissão para atribuir todos os bits selecionados.');
       return;
     }
     try {

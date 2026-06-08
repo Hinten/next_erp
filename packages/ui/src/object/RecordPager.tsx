@@ -19,12 +19,7 @@ export interface RecordPagerProps {
  * which threads in `confirmNavigation` when the form is dirty so the user
  * gets a "Descartar alterações?" modal rather than silent data loss.
  */
-export function RecordPager({
-  ids,
-  current,
-  onChange,
-  confirmNavigation,
-}: RecordPagerProps) {
+export function RecordPager({ ids, current, onChange, confirmNavigation }: RecordPagerProps) {
   const [pendingId, setPendingId] = useState<string | null>(null);
   const idx = ids.indexOf(current);
   const prev = idx > 0 ? ids[idx - 1] : null;
@@ -66,12 +61,17 @@ export function RecordPager({
             Você tem alterações não salvas neste registro. Continuar irá descartá-las.
           </Text>
           <Group justify="flex-end">
-            <Button variant="default" onClick={() => setPendingId(null)}>Cancelar</Button>
-            <Button color="red" onClick={() => {
-              const id = pendingId!;
-              setPendingId(null);
-              onChange(id);
-            }}>
+            <Button variant="default" onClick={() => setPendingId(null)}>
+              Cancelar
+            </Button>
+            <Button
+              color="red"
+              onClick={() => {
+                const id = pendingId!;
+                setPendingId(null);
+                onChange(id);
+              }}
+            >
               Descartar
             </Button>
           </Group>

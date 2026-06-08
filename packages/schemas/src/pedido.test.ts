@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  ESTADO_BUCKET_LABELS,
-  bucketOf,
-  itemSubtotal,
-  pedidoSchema,
-  pedidoTotal,
-} from './pedido';
+import { ESTADO_BUCKET_LABELS, bucketOf, itemSubtotal, pedidoSchema, pedidoTotal } from './pedido';
 import type { ItemDoPedido } from './pedido';
 
 const baseInput = {
@@ -45,9 +39,7 @@ describe('pedidoSchema', () => {
   });
 
   it('rejects unknown estado', () => {
-    expect(
-      pedidoSchema.safeParse({ ...baseInput, estado: 'bogus' }).success,
-    ).toBe(false);
+    expect(pedidoSchema.safeParse({ ...baseInput, estado: 'bogus' }).success).toBe(false);
   });
 
   it('round-trips itens grouped by produtoUid', () => {
@@ -83,9 +75,9 @@ describe('itemSubtotal', () => {
   });
 
   it('treats zero desconto as no discount', () => {
-    expect(
-      itemSubtotal({ ...baseItem, precoDeVenda: 7, quantidade: 2, descontoUnitario: 0 }),
-    ).toBe(14);
+    expect(itemSubtotal({ ...baseItem, precoDeVenda: 7, quantidade: 2, descontoUnitario: 0 })).toBe(
+      14,
+    );
   });
 });
 

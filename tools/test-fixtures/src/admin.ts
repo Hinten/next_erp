@@ -60,7 +60,9 @@ export function getApp(serviceAccountPath?: string): App {
   };
   const projectId = process.env.FIREBASE_PROJECT_ID?.trim() || credentials.projectId;
   if (!projectId) {
-    throw new Error('Project ID not found. Set FIREBASE_PROJECT_ID or provide a service account with project_id.');
+    throw new Error(
+      'Project ID not found. Set FIREBASE_PROJECT_ID or provide a service account with project_id.',
+    );
   }
   app = getApps()[0] ?? initializeApp({ credential: cert(credentials), projectId });
   return app;

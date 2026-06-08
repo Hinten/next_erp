@@ -1,10 +1,4 @@
-import {
-  type Browser,
-  type FullConfig,
-  type Page,
-  chromium,
-  request,
-} from '@playwright/test';
+import { type Browser, type FullConfig, type Page, chromium, request } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -96,8 +90,7 @@ export default async function globalSetup(_config: FullConfig) {
   // must already be set or the app would restore a token without them.
   await grantAllPerms(email, { extraClaims: { grupoEconomico: 'seed' } });
 
-  const baseURL =
-    process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
+  const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? `http://localhost:${process.env.PORT ?? 3000}`;
 
   // Wait for the web server to be reachable. Playwright's webServer block
   // already does this for `webServer.port`, but in CI globalSetup can race
@@ -209,10 +202,7 @@ async function captureAuthenticatedState(
  * Resolves once the Firebase `firebaseLocalStorageDb` IndexedDB database holds
  * a `firebase:authUser:*` key — the persisted Auth session. Throws on timeout.
  */
-async function waitForFirebaseAuthPersisted(
-  page: Page,
-  timeoutMs = 10_000,
-): Promise<void> {
+async function waitForFirebaseAuthPersisted(page: Page, timeoutMs = 10_000): Promise<void> {
   await page.waitForFunction(
     () =>
       new Promise<boolean>((resolveAuth) => {
@@ -237,8 +227,7 @@ async function waitForFirebaseAuthPersisted(
             db.close();
             resolveAuth(
               keysReq.result.some(
-                (key) =>
-                  typeof key === 'string' && key.startsWith('firebase:authUser:'),
+                (key) => typeof key === 'string' && key.startsWith('firebase:authUser:'),
               ),
             );
           };
@@ -271,18 +260,14 @@ async function verifyStorageState(
     // non-null user; an unrestored session redirects to /login instead.
     const dashboardHeading = page.getByRole('heading', { name: 'Início' });
     const outcome = await Promise.race([
-      dashboardHeading
-        .waitFor({ state: 'visible', timeout: 20_000 })
-        .then(
-          () => 'authenticated' as const,
-          () => 'inconclusive' as const,
-        ),
-      page
-        .waitForURL('**/login', { timeout: 20_000 })
-        .then(
-          () => 'login' as const,
-          () => 'inconclusive' as const,
-        ),
+      dashboardHeading.waitFor({ state: 'visible', timeout: 20_000 }).then(
+        () => 'authenticated' as const,
+        () => 'inconclusive' as const,
+      ),
+      page.waitForURL('**/login', { timeout: 20_000 }).then(
+        () => 'login' as const,
+        () => 'inconclusive' as const,
+      ),
     ]);
     return outcome === 'authenticated';
   } finally {

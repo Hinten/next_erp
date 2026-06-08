@@ -165,7 +165,9 @@ function parsePfxBuffer(pfxBuffer: Buffer, password: string): NFeCertificate {
   } catch (err) {
     // node-forge throws plain Error instances on bad password / malformed PFX.
     if (err instanceof Error) {
-      throw new NFeCertError(`Failed to open PFX (wrong password or malformed file): ${err.message}`);
+      throw new NFeCertError(
+        `Failed to open PFX (wrong password or malformed file): ${err.message}`,
+      );
     }
     throw err;
   }
@@ -201,8 +203,7 @@ function parsePfxBuffer(pfxBuffer: Buffer, password: string): NFeCertificate {
   // against CNPJ_FORMAT — that's both today's 14-digit and the upcoming
   // alphanumeric format (IN RFB 2229/2024, effective July 2026).
   const colonIdx = subjectCommonName.lastIndexOf(':');
-  const cnpjCandidate =
-    colonIdx >= 0 ? subjectCommonName.slice(colonIdx + 1).trim() : '';
+  const cnpjCandidate = colonIdx >= 0 ? subjectCommonName.slice(colonIdx + 1).trim() : '';
   if (!CNPJ_FORMAT.test(cnpjCandidate)) {
     throw new NFeCertError(
       `Certificate Subject CN does not contain a valid CNPJ suffix ` +
@@ -286,7 +287,9 @@ export function loadCertificateFromPath(path: string, password: string): NFeCert
     pfxBuffer = readFileSync(resolvedPath);
   } catch (err) {
     if (err instanceof Error) {
-      throw new NFeCertError(`Failed to read certificate file at '${resolvedPath}': ${err.message}`);
+      throw new NFeCertError(
+        `Failed to read certificate file at '${resolvedPath}': ${err.message}`,
+      );
     }
     throw err;
   }
@@ -333,9 +336,7 @@ export function loadCertificateFromEnv(env: NodeJS.ProcessEnv = process.env): NF
   // "the cert was loaded N times this boot" (expected N=1 in prod).
   // Uses console.debug so it survives the base config's `no-console`
   // allowlist (matches warnIfCertNearExpiry's channel).
-  console.debug(
-    `[nfe-cert] loaded source=${source}`,
-  );
+  console.debug(`[nfe-cert] loaded source=${source}`);
   return cert;
 }
 
@@ -350,8 +351,7 @@ export function loadCertificateFromEnv(env: NodeJS.ProcessEnv = process.env): NF
  */
 export function hasNFeCertEnv(env: NodeJS.ProcessEnv = process.env): boolean {
   return (
-    (Boolean(env.NFE_CERT_PATH) || Boolean(env.NFE_CERT_BASE64)) &&
-    env.NFE_CERT_PASSWORD != null
+    (Boolean(env.NFE_CERT_PATH) || Boolean(env.NFE_CERT_BASE64)) && env.NFE_CERT_PASSWORD != null
   );
 }
 

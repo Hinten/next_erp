@@ -78,8 +78,8 @@ export function CancelarNFeForm({ pedidoId, nfeId, numero }: CancelarNFeFormProp
         icon={<IconAlertTriangle size={18} />}
         title="Ação irreversível"
       >
-        O cancelamento é definitivo e registrado na SEFAZ. Só é possível cancelar
-        dentro do prazo legal (24&nbsp;horas após a autorização).
+        O cancelamento é definitivo e registrado na SEFAZ. Só é possível cancelar dentro do prazo
+        legal (24&nbsp;horas após a autorização).
       </Alert>
 
       <Textarea

@@ -2,12 +2,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { PERM, hasPerm } from '@delfrance/auth';
 import { cargoCollection, usuarioCollection } from '@delfrance/data/admin/collections';
-import {
-  aggregatePermissoes,
-  type Cargo,
-  isSuperUserBits,
-  type Usuario,
-} from '@delfrance/schemas';
+import { aggregatePermissoes, type Cargo, isSuperUserBits, type Usuario } from '@delfrance/schemas';
 import { getAdminAuth, getAdminFirestore } from '@/lib/firebase/admin';
 
 export const dynamic = 'force-dynamic';
@@ -118,9 +113,7 @@ export async function POST(req: Request) {
   const auth = await verifyCaller(req);
   if (auth.error) return auth.error;
   const { decoded } = auth;
-  const callerBits = decodeCallerBits(
-    decoded.permissions as string | undefined,
-  );
+  const callerBits = decodeCallerBits(decoded.permissions as string | undefined);
 
   const db = getAdminFirestore();
 
@@ -130,10 +123,7 @@ export async function POST(req: Request) {
       const snap = await cargoCollection.docRef(db, {}, cid).get();
       const data = snap.data();
       if (data)
-        cargosById.set(
-          cid,
-          cargoCollection.parseRead(data, cargoCollection.docPath({}, cid)),
-        );
+        cargosById.set(cid, cargoCollection.parseRead(data, cargoCollection.docPath({}, cid)));
     }),
   );
 
@@ -147,8 +137,7 @@ export async function POST(req: Request) {
   // is the security boundary (until Firestore rules cover it too).
   if ((bits & ~callerBits) !== 0n) {
     return err(403, {
-      error:
-        'Você não pode atribuir cargos com permissões que ultrapassem as suas.',
+      error: 'Você não pode atribuir cargos com permissões que ultrapassem as suas.',
     });
   }
   if (body.isSuperUser && !isSuperUserBits(callerBits)) {

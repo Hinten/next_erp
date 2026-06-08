@@ -17,9 +17,7 @@ describe('verifyHmac', () => {
 
   it('rejects when signature does not match payload', () => {
     const signature = sign(PAYLOAD, SECRET);
-    expect(
-      verifyHmac({ payload: PAYLOAD + 'tampered', signature, secret: SECRET }),
-    ).toBe(false);
+    expect(verifyHmac({ payload: PAYLOAD + 'tampered', signature, secret: SECRET })).toBe(false);
   });
 
   it('rejects when signature was generated with a different secret', () => {
@@ -34,8 +32,8 @@ describe('verifyHmac', () => {
 
   it('supports sha1 when both sides agree', () => {
     const signature = sign(PAYLOAD, SECRET, 'sha1');
-    expect(
-      verifyHmac({ payload: PAYLOAD, signature, secret: SECRET, algorithm: 'sha1' }),
-    ).toBe(true);
+    expect(verifyHmac({ payload: PAYLOAD, signature, secret: SECRET, algorithm: 'sha1' })).toBe(
+      true,
+    );
   });
 });

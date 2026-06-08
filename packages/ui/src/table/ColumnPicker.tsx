@@ -97,14 +97,8 @@ export function ColumnPicker({
   // Reorder-mode list: the visible keys in their stored order, resolved to
   // labels. Keys with no matching field — stale entries left behind by a
   // removed schema column — are dropped.
-  const labelByKey = useMemo(
-    () => new Map(fields.map((f) => [f.key, f.label])),
-    [fields],
-  );
-  const reorderItems = useMemo(
-    () => order.filter((k) => labelByKey.has(k)),
-    [order, labelByKey],
-  );
+  const labelByKey = useMemo(() => new Map(fields.map((f) => [f.key, f.label])), [fields]);
+  const reorderItems = useMemo(() => order.filter((k) => labelByKey.has(k)), [order, labelByKey]);
   const canReorder = reorderItems.length > 1;
 
   const sensors = useSensors(
@@ -175,7 +169,9 @@ export function ColumnPicker({
               <ScrollArea.Autosize mah={400} type="auto" offsetScrollbars>
                 <Stack gap="xs">
                   {visibleFields.length === 0 ? (
-                    <Text size="xs" c="dimmed">Nenhuma coluna encontrada.</Text>
+                    <Text size="xs" c="dimmed">
+                      Nenhuma coluna encontrada.
+                    </Text>
                   ) : (
                     visibleFields.map((f) => (
                       <Checkbox
@@ -192,17 +188,16 @@ export function ColumnPicker({
           ) : (
             <ScrollArea.Autosize mah={400} type="auto" offsetScrollbars>
               {reorderItems.length === 0 ? (
-                <Text size="xs" c="dimmed">Nenhuma coluna para reordenar.</Text>
+                <Text size="xs" c="dimmed">
+                  Nenhuma coluna para reordenar.
+                </Text>
               ) : (
                 <DndContext
                   sensors={sensors}
                   collisionDetection={closestCenter}
                   onDragEnd={handleDragEnd}
                 >
-                  <SortableContext
-                    items={reorderItems}
-                    strategy={verticalListSortingStrategy}
-                  >
+                  <SortableContext items={reorderItems} strategy={verticalListSortingStrategy}>
                     <Stack gap={4}>
                       {reorderItems.map((key, i) => (
                         <SortableColumnRow
@@ -211,12 +206,8 @@ export function ColumnPicker({
                           label={labelByKey.get(key) ?? key}
                           index={i}
                           total={reorderItems.length}
-                          onMoveUp={() =>
-                            onReorder(arrayMove(reorderItems, i, i - 1))
-                          }
-                          onMoveDown={() =>
-                            onReorder(arrayMove(reorderItems, i, i + 1))
-                          }
+                          onMoveUp={() => onReorder(arrayMove(reorderItems, i, i - 1))}
+                          onMoveDown={() => onReorder(arrayMove(reorderItems, i, i + 1))}
                         />
                       ))}
                     </Stack>
@@ -252,14 +243,9 @@ function SortableColumnRow({
   onMoveUp: () => void;
   onMoveDown: () => void;
 }) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id });
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id,
+  });
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,

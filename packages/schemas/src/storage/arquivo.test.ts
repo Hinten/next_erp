@@ -26,12 +26,8 @@ describe('arquivoSchema', () => {
   });
 
   it('rejects an unknown filetype and an empty filename', () => {
-    expect(arquivoSchema.safeParse({ filetype: 'nope', filename: 'a' }).success).toBe(
-      false,
-    );
-    expect(arquivoSchema.safeParse({ filetype: 'image', filename: '' }).success).toBe(
-      false,
-    );
+    expect(arquivoSchema.safeParse({ filetype: 'nope', filename: 'a' }).success).toBe(false);
+    expect(arquivoSchema.safeParse({ filetype: 'image', filename: '' }).success).toBe(false);
   });
 
   it('passes through fields the Flutter app writes that we do not model', () => {

@@ -15,7 +15,6 @@
     "@delfrance/example",
     "@delfrance/test-fixtures",
     "@delfrance/config-eslint",
-    "@delfrance/config-tsconfig",
-    "@delfrance/config-prettier"
+    "@delfrance/config-tsconfig"
   ]
 }

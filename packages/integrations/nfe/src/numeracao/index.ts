@@ -98,10 +98,7 @@ export async function nextNumeracaoBulk(
  * `NFeConfig.proximo_lote_transaction`. Independent counter from
  * `nNF` — the same filial advances both on every emission.
  */
-export async function nextIdLote(
-  store: NFeConfigStore,
-  filialId: string,
-): Promise<number> {
+export async function nextIdLote(store: NFeConfigStore, filialId: string): Promise<number> {
   return store.runTransaction(async (tx) => {
     const cfg = await tx.get(filialId);
     if (cfg == null) throw new NFeConfigNotFoundError(filialId);
@@ -116,10 +113,7 @@ export async function nextIdLote(
  * Useful for `apps/nfe`'s `/api/health` to surface the configured
  * `ambiente` + `serie` per filial.
  */
-export async function readNFeConfig(
-  store: NFeConfigStore,
-  filialId: string,
-): Promise<NFeConfig> {
+export async function readNFeConfig(store: NFeConfigStore, filialId: string): Promise<NFeConfig> {
   return store.runTransaction(async (tx) => {
     const cfg = await tx.get(filialId);
     if (cfg == null) throw new NFeConfigNotFoundError(filialId);

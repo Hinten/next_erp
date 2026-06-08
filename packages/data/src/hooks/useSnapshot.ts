@@ -34,9 +34,7 @@ export interface SnapshotRow<T> {
  * Pass `null` to no-op (e.g. while a tenantId is still loading). The hook
  * tears down the subscription on unmount and on query identity change.
  */
-export function useSnapshot<T>(
-  q: Query<T> | null,
-): SnapshotState<SnapshotRow<T>[]> {
+export function useSnapshot<T>(q: Query<T> | null): SnapshotState<SnapshotRow<T>[]> {
   const [state, setState] = useState<SnapshotState<SnapshotRow<T>[]>>({
     data: undefined,
     loading: true,
@@ -77,9 +75,7 @@ export function useSnapshot<T>(
 export function useDocSnapshot<T>(
   ref: DocumentReference<T> | null,
 ): SnapshotState<{ id: string; data: T } | null> {
-  const [state, setState] = useState<
-    SnapshotState<{ id: string; data: T } | null>
-  >({
+  const [state, setState] = useState<SnapshotState<{ id: string; data: T } | null>>({
     data: undefined,
     loading: true,
     error: undefined,

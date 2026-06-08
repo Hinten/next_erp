@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  GRUPO_ECONOMICO_COLLECTION_PATH,
-  grupoEconomicoSchema,
-} from './index';
+import { GRUPO_ECONOMICO_COLLECTION_PATH, grupoEconomicoSchema } from './index';
 
 describe('grupoEconomicoSchema', () => {
   it('parses a minimal grupo with defaults applied', () => {
@@ -20,9 +17,7 @@ describe('grupoEconomicoSchema', () => {
   });
 
   it('rejects nome longer than 255 chars', () => {
-    expect(
-      grupoEconomicoSchema.safeParse({ nome: 'x'.repeat(256) }).success,
-    ).toBe(false);
+    expect(grupoEconomicoSchema.safeParse({ nome: 'x'.repeat(256) }).success).toBe(false);
   });
 
   it('passes databaseMap entries through with extra fields', () => {

@@ -1,10 +1,6 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
-import {
-  impostoSchema,
-  type Imposto,
-  type TpEmis,
-} from '@delfrance/integrations-nfe';
+import { impostoSchema, type Imposto, type TpEmis } from '@delfrance/integrations-nfe';
 import {
   STATUS_PAGAMENTO,
   freteDoPedidoSchema,
@@ -25,11 +21,7 @@ import {
 
 import { createFirestoreImpostoResolver } from '../imposto-resolver';
 import type { ImpostoResolver } from '../imposto-resolver';
-import {
-  NFeMissingImpostoError,
-  NFeOrchestratorError,
-  NFePedidoNotFoundError,
-} from './errors';
+import { NFeMissingImpostoError, NFeOrchestratorError, NFePedidoNotFoundError } from './errors';
 
 /** Round to 2 decimals (monetary). Shared by the fiscal-item + generator-input builders. */
 export function round2(n: number): number {
@@ -192,18 +184,30 @@ export async function loadPedidoBundle(
   const pedido = pedidoSnap.data() as PedidoBundle['pedido'];
 
   const filialPath = refToPath(getField(pedido, 'filialPedidoOuterRef'));
-  console.debug(`[nfe/orchestrator] Resolved filialPath '${filialPath}' for pedidoId '${pedidoId}'`);
+  console.debug(
+    `[nfe/orchestrator] Resolved filialPath '${filialPath}' for pedidoId '${pedidoId}'`,
+  );
   const clientePath = refToPath(getField(pedido, 'clientePedidoOuterRef'));
-  console.debug(`[nfe/orchestrator] Resolved clientePath '${clientePath}' for pedidoId '${pedidoId}'`);
+  console.debug(
+    `[nfe/orchestrator] Resolved clientePath '${clientePath}' for pedidoId '${pedidoId}'`,
+  );
   const operacaoPath = refToPath(getField(pedido, 'operacaoPedidoOuterRef'));
-  console.debug(`[nfe/orchestrator] Resolved operacaoPath '${operacaoPath}' for pedidoId '${pedidoId}'`);
+  console.debug(
+    `[nfe/orchestrator] Resolved operacaoPath '${operacaoPath}' for pedidoId '${pedidoId}'`,
+  );
   const enderecoPath = refToPath(getField(pedido, 'enderecoFiscalOuterRef'));
-  console.debug(`[nfe/orchestrator] Resolved enderecoPath '${enderecoPath}' for pedidoId '${pedidoId}'`);
+  console.debug(
+    `[nfe/orchestrator] Resolved enderecoPath '${enderecoPath}' for pedidoId '${pedidoId}'`,
+  );
 
-  if (!filialPath) throw new NFeOrchestratorError(`pedido '${pedidoId}': filialPedidoOuterRef missing`);
-  if (!clientePath) throw new NFeOrchestratorError(`pedido '${pedidoId}': clientePedidoOuterRef missing`);
-  if (!operacaoPath) throw new NFeOrchestratorError(`pedido '${pedidoId}': operacaoPedidoOuterRef missing`);
-  if (!enderecoPath) throw new NFeOrchestratorError(`pedido '${pedidoId}': enderecoFiscalOuterRef missing`);
+  if (!filialPath)
+    throw new NFeOrchestratorError(`pedido '${pedidoId}': filialPedidoOuterRef missing`);
+  if (!clientePath)
+    throw new NFeOrchestratorError(`pedido '${pedidoId}': clientePedidoOuterRef missing`);
+  if (!operacaoPath)
+    throw new NFeOrchestratorError(`pedido '${pedidoId}': operacaoPedidoOuterRef missing`);
+  if (!enderecoPath)
+    throw new NFeOrchestratorError(`pedido '${pedidoId}': enderecoFiscalOuterRef missing`);
 
   const [filialSnap, clienteSnap, operacaoSnap, enderecoSnap, pagamentoSnap, regraImpostoSnap] =
     await Promise.all([
@@ -315,9 +319,7 @@ export async function maybeLoadIntegracao(
   operacao: Operacao,
 ): Promise<Integracao | null> {
   if (operacao.indIntermed !== '1') return null;
-  const integracaoPath = refToPath(
-    getField(pedido, 'integracaoPedidoOuterRef'),
-  );
+  const integracaoPath = refToPath(getField(pedido, 'integracaoPedidoOuterRef'));
   if (!integracaoPath) {
     console.warn(
       `[nfe/orchestrator] pedido '${pedidoId}': operacao.indIntermed='1' ` +
@@ -367,10 +369,7 @@ export function loadPagamentosFromSnapshot(
       continue;
     }
     const p = parsed.data;
-    if (
-      p.status_pagamento === null ||
-      p.status_pagamento === STATUS_PAGAMENTO.aprovado
-    ) {
+    if (p.status_pagamento === null || p.status_pagamento === STATUS_PAGAMENTO.aprovado) {
       out.push(p);
     }
   }

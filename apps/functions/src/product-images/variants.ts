@@ -15,10 +15,7 @@ export interface RenderedVariant {
  * a smaller-than-target source is never upscaled. EXIF orientation is baked in
  * via `.rotate()`.
  */
-export async function renderVariant(
-  input: Buffer,
-  spec: VariantSpec,
-): Promise<Buffer> {
+export async function renderVariant(input: Buffer, spec: VariantSpec): Promise<Buffer> {
   let pipeline = sharp(input).rotate();
   if (spec.width !== null) {
     pipeline = pipeline.resize({ width: spec.width, withoutEnlargement: true });
@@ -27,9 +24,7 @@ export async function renderVariant(
 }
 
 /** Render every {@link PRODUCT_IMAGE_VARIANTS} entry for the input image. */
-export async function renderAllVariants(
-  input: Buffer,
-): Promise<RenderedVariant[]> {
+export async function renderAllVariants(input: Buffer): Promise<RenderedVariant[]> {
   const out: RenderedVariant[] = [];
   for (const spec of PRODUCT_IMAGE_VARIANTS) {
     out.push({

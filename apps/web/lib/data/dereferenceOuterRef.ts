@@ -42,10 +42,7 @@ function looksLikeDocumentReference(value: unknown): value is DocumentReference 
   );
 }
 
-export function dereferenceOuterRef(
-  db: Firestore,
-  outerRef: unknown,
-): DocumentReference | null {
+export function dereferenceOuterRef(db: Firestore, outerRef: unknown): DocumentReference | null {
   if (outerRef == null) return null;
   if (looksLikeDocumentReference(outerRef)) {
     return outerRef;

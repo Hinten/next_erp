@@ -112,25 +112,17 @@ export default function ProdutoDetailPage() {
           <Field label="Código pai" value={p.codPai} />
           <Divider my="sm" />
           {typeof p.pesoLiquidoKg === 'number' && (
-            <Field
-              label="Peso líquido"
-              value={`${p.pesoLiquidoKg.toFixed(3)} kg`}
-            />
+            <Field label="Peso líquido" value={`${p.pesoLiquidoKg.toFixed(3)} kg`} />
           )}
           {typeof p.pesoBrutoKg === 'number' && (
-            <Field
-              label="Peso bruto"
-              value={`${p.pesoBrutoKg.toFixed(3)} kg`}
-            />
+            <Field label="Peso bruto" value={`${p.pesoBrutoKg.toFixed(3)} kg`} />
           )}
           {dimensions.length > 0 && (
             <Field
               label="Dimensões (A × L × P)"
-              value={
-                [p.alturaCm, p.larguraCm, p.profundidadeCm]
-                  .map((v) => (typeof v === 'number' ? `${v} cm` : '—'))
-                  .join(' × ')
-              }
+              value={[p.alturaCm, p.larguraCm, p.profundidadeCm]
+                .map((v) => (typeof v === 'number' ? `${v} cm` : '—'))
+                .join(' × ')}
             />
           )}
           <Divider my="sm" />
@@ -145,10 +137,7 @@ export default function ProdutoDetailPage() {
           {p.variacoesUid && p.variacoesUid.length > 0 && (
             <>
               <Divider my="sm" />
-              <Field
-                label="Variações"
-                value={`${p.variacoesUid.length} ID(s)`}
-              />
+              <Field label="Variações" value={`${p.variacoesUid.length} ID(s)`} />
             </>
           )}
         </Stack>

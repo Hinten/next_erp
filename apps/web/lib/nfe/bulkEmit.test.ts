@@ -44,6 +44,7 @@ function fakeClient(impl: NFeHttpClient['emitir']): NFeHttpClient {
     cancelar: vi.fn(),
     inutilizar: vi.fn(),
     cartaCorrecao: vi.fn(),
+    danfe: vi.fn(),
   };
 }
 
@@ -91,9 +92,7 @@ describe('dispatchEmitirNFe', () => {
   });
 
   it('single row, client throws NFeRejectedError → shows error notification with copy support', async () => {
-    const emitir = vi.fn().mockRejectedValue(
-      new NFeRejectedError('226', 'UF inválida', {}),
-    );
+    const emitir = vi.fn().mockRejectedValue(new NFeRejectedError('226', 'UF inválida', {}));
     await dispatchEmitirNFe(fakeClient(emitir), [fakeRow('PED-002')]);
 
     expect(emitir).toHaveBeenCalledWith('PED-002');
@@ -119,9 +118,9 @@ describe('dispatchEmitirNFe', () => {
 
   it('re-throws non-Error values from client (programming bugs surface)', async () => {
     const emitir = vi.fn().mockRejectedValue('not an Error');
-    await expect(
-      dispatchEmitirNFe(fakeClient(emitir), [fakeRow('PED-001')]),
-    ).rejects.toBe('not an Error');
+    await expect(dispatchEmitirNFe(fakeClient(emitir), [fakeRow('PED-001')])).rejects.toBe(
+      'not an Error',
+    );
     expect(showSpy).not.toHaveBeenCalled();
     expect(showErrorSpy).not.toHaveBeenCalled();
   });

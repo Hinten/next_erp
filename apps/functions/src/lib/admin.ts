@@ -24,8 +24,6 @@ export function getAdminApp(): App {
 export function getDb(): Firestore {
   if (db) return db;
   const databaseId = process.env.FIREBASE_DATABASE_ID;
-  db = databaseId
-    ? getFirestore(getAdminApp(), databaseId)
-    : getFirestore(getAdminApp());
+  db = databaseId ? getFirestore(getAdminApp(), databaseId) : getFirestore(getAdminApp());
   return db;
 }

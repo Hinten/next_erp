@@ -14,10 +14,7 @@ export default function NovoPedidoPage() {
   const router = useRouter();
 
   async function handleSubmit(values: Pedido) {
-    const ref = await addDoc(
-      pedidoCollection.ref(getFirebaseFirestore(), {}),
-      values,
-    );
+    const ref = await addDoc(pedidoCollection.ref(getFirebaseFirestore(), {}), values);
     router.replace(`/pedidos/${ref.id}/editar`);
   }
 

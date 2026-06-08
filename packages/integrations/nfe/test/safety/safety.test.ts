@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { assertSafeTpAmb, NFeProductionGuardError, tpAmbFromAmbiente } from '../../src/safety/index';
+import {
+  assertSafeTpAmb,
+  NFeProductionGuardError,
+  tpAmbFromAmbiente,
+} from '../../src/safety/index';
 
 describe('assertSafeTpAmb', () => {
   beforeEach(() => {

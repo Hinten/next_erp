@@ -18,18 +18,12 @@ const HASH = 'a'.repeat(16);
 
 describe('path builders', () => {
   it('builds product original / derivative / video and media paths', () => {
-    expect(productOriginalPath(PID, HASH, 'png')).toBe(
-      `produtos/${PID}/originals/${HASH}.png`,
-    );
-    expect(productOriginalPath(PID, HASH)).toBe(
-      `produtos/${PID}/originals/${HASH}`,
-    );
+    expect(productOriginalPath(PID, HASH, 'png')).toBe(`produtos/${PID}/originals/${HASH}.png`);
+    expect(productOriginalPath(PID, HASH)).toBe(`produtos/${PID}/originals/${HASH}`);
     expect(productDerivativePath(PID, HASH, '200')).toBe(
       `produtos/${PID}/derivatives/${HASH}_200.jpeg`,
     );
-    expect(productVideoPath(PID, HASH, 'mp4')).toBe(
-      `produtos/${PID}/videos/${HASH}.mp4`,
-    );
+    expect(productVideoPath(PID, HASH, 'mp4')).toBe(`produtos/${PID}/videos/${HASH}.mp4`);
     expect(mediaPath(HASH, '.PNG')).toBe(`media/${HASH}.png`);
   });
 });

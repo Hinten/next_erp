@@ -12,10 +12,7 @@ import type { Browser } from '@playwright/test';
  * GET — which is the expensive part. `waitUntil: 'commit'` returns as soon as
  * the response lands; compilation has already finished server-side by then.
  */
-export async function warmRoutes(
-  browser: Browser,
-  routes: string[],
-): Promise<void> {
+export async function warmRoutes(browser: Browser, routes: string[]): Promise<void> {
   await Promise.all(
     routes.map(async (route) => {
       const page = await browser.newPage();

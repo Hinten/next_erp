@@ -2,15 +2,7 @@
 
 import { useMemo } from 'react';
 import Link from 'next/link';
-import {
-  Alert,
-  Anchor,
-  Card,
-  Group,
-  Skeleton,
-  Stack,
-  Text,
-} from '@mantine/core';
+import { Alert, Anchor, Card, Group, Skeleton, Stack, Text } from '@mantine/core';
 import { PageHeader } from '@delfrance/ui';
 import { format, money } from '@delfrance/core/money';
 import { ESTADO_BUCKET_LABELS } from '@delfrance/schemas';
@@ -54,10 +46,7 @@ export default function RelatoriosIndexPage() {
             <SummaryCard label="Pedidos" value={String(stats.ov.pedidos)} />
             <SummaryCard label="Receita" value={brl(stats.ov.receita)} />
             <SummaryCard label="Ticket médio" value={brl(stats.ov.ticketMedio)} />
-            <SummaryCard
-              label="Itens vendidos"
-              value={String(stats.ov.itensVendidos)}
-            />
+            <SummaryCard label="Itens vendidos" value={String(stats.ov.itensVendidos)} />
           </Group>
 
           <Group grow align="stretch">
@@ -85,15 +74,7 @@ export default function RelatoriosIndexPage() {
   );
 }
 
-function SummaryCard({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: 'red';
-}) {
+function SummaryCard({ label, value, tone }: { label: string; value: string; tone?: 'red' }) {
   return (
     <Card withBorder padding="md" shadow="xs">
       <Stack gap={4}>

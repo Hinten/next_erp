@@ -12,9 +12,7 @@ export const E2E_SU_PASSWORD = process.env.E2E_SU_PASSWORD ?? '';
  */
 export async function loginAsSuperUser(page: Page): Promise<void> {
   if (!E2E_SU_EMAIL || !E2E_SU_PASSWORD) {
-    throw new Error(
-      'E2E_SU_EMAIL and E2E_SU_PASSWORD must be set to run authenticated e2e tests.',
-    );
+    throw new Error('E2E_SU_EMAIL and E2E_SU_PASSWORD must be set to run authenticated e2e tests.');
   }
   await page.goto('/login');
   await page.getByLabel('E-mail').fill(E2E_SU_EMAIL);

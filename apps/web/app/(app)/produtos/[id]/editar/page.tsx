@@ -4,14 +4,7 @@ import { useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { setDoc } from 'firebase/firestore';
-import {
-  Alert,
-  Anchor,
-  Button,
-  Group,
-  Skeleton,
-  Stack,
-} from '@mantine/core';
+import { Alert, Anchor, Button, Group, Skeleton, Stack } from '@mantine/core';
 import { PageHeader } from '@delfrance/ui';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import type { Produto } from '@delfrance/schemas';

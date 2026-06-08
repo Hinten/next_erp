@@ -43,7 +43,7 @@ describe('showErrorNotification', () => {
 
   it('renders a long cert-path message in full without dropping the copy button', () => {
     const longMessage =
-      "Could not read the SEFAZ TLS chain at C:\\Users\\Lucas\\dev\\next_erp\\packages\\integrations\\nfe\\ca\\sefaz-sp-homologacao.pem: ENOENT: no such file or directory. " +
+      'Could not read the SEFAZ TLS chain at C:\\Users\\Lucas\\dev\\next_erp\\packages\\integrations\\nfe\\ca\\sefaz-sp-homologacao.pem: ENOENT: no such file or directory. ' +
       "Run 'pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca' to vendor it for this (UF, ambiente).";
     showErrorNotification({ title: 'Erro de certificado', message: longMessage });
     const arg = showSpy.mock.calls[0]![0]!;
@@ -86,9 +86,7 @@ describe('showErrorNotification', () => {
       }),
     );
     fireEvent.mouseLeave(text);
-    expect(updateSpy).toHaveBeenLastCalledWith(
-      expect.objectContaining({ id, autoClose: 8000 }),
-    );
+    expect(updateSpy).toHaveBeenLastCalledWith(expect.objectContaining({ id, autoClose: 8000 }));
   });
 
   it('respects custom color and autoClose', () => {

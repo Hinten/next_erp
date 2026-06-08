@@ -37,25 +37,18 @@ function isPlainRecord(v: unknown): v is Record<string, unknown> {
  * so the strict re-check below never fires and their unknown fields pass through
  * as before. Plain `z.object` (strip-policy) schemas reject unknown keys.
  */
-export function parseForWrite<T extends z.ZodTypeAny>(
-  schema: T,
-  data: unknown,
-): z.infer<T> {
+export function parseForWrite<T extends z.ZodTypeAny>(schema: T, data: unknown): z.infer<T> {
   const parsed = schema.parse(data);
-  if (
-    schema instanceof z.ZodObject &&
-    isPlainRecord(data) &&
-    isPlainRecord(parsed)
-  ) {
+  if (schema instanceof z.ZodObject && isPlainRecord(data) && isPlainRecord(parsed)) {
     // If the (strip-policy) schema dropped a key the caller supplied, re-parse
     // strictly so they get a proper ZodError (`unrecognized_keys`) naming it.
     // `Object.hasOwn` (not `in`) so prototype keys like `toString`/`__proto__`
     // can't masquerade as known and slip past the strict re-check.
     const dropped = Object.keys(data).filter((k) => !Object.hasOwn(parsed, k));
     if (dropped.length > 0) {
-      return (
-        schema as unknown as { strict(): { parse(d: unknown): unknown } }
-      ).strict().parse(data) as z.infer<T>;
+      return (schema as unknown as { strict(): { parse(d: unknown): unknown } })
+        .strict()
+        .parse(data) as z.infer<T>;
     }
   }
   return parsed as z.infer<T>;

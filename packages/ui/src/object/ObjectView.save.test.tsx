@@ -22,7 +22,8 @@ const { docState, saveRecordMock, NothingChanged, notifyShow } = vi.hoisted(() =
 });
 
 vi.mock('@delfrance/data/hooks', async () => {
-  const actual = await vi.importActual<typeof import('@delfrance/data/hooks')>('@delfrance/data/hooks');
+  const actual =
+    await vi.importActual<typeof import('@delfrance/data/hooks')>('@delfrance/data/hooks');
   return { ...actual, useDocSnapshot: () => docState.current };
 });
 
@@ -36,7 +37,8 @@ vi.mock('./saveRecord', () => ({
 }));
 
 vi.mock('@mantine/notifications', async () => {
-  const actual = await vi.importActual<typeof import('@mantine/notifications')>('@mantine/notifications');
+  const actual =
+    await vi.importActual<typeof import('@mantine/notifications')>('@mantine/notifications');
   return { ...actual, notifications: { show: (...args: unknown[]) => notifyShow(...args) } };
 });
 

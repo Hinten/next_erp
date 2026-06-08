@@ -28,8 +28,7 @@ export function useTenant(): { claims: TenantClaims | null; loading: boolean } {
       .then((result) => {
         if (cancelled) return;
         setClaims({
-          grupoEconomico:
-            (result.claims.grupoEconomico as string | undefined) ?? null,
+          grupoEconomico: (result.claims.grupoEconomico as string | undefined) ?? null,
           permissions: (result.claims.permissions as string | undefined) ?? null,
         });
         setLoading(false);

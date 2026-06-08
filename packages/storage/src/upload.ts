@@ -59,8 +59,7 @@ async function putArquivo(args: PutArquivoArgs): Promise<UploadResult> {
 
   const slash = args.storagePath.lastIndexOf('/');
   const filepath = slash >= 0 ? args.storagePath.slice(0, slash) : null;
-  const filename =
-    slash >= 0 ? args.storagePath.slice(slash + 1) : args.storagePath;
+  const filename = slash >= 0 ? args.storagePath.slice(slash + 1) : args.storagePath;
 
   const arquivo: Arquivo = {
     filetype: args.filetype,
@@ -121,9 +120,7 @@ export interface UploadProductImageArgs {
  * with the product-scoped doc id `<produtoId>_<hash>`. The resize Cloud
  * Function (`apps/functions`) then generates the 200/400/jpeg derivatives.
  */
-export async function uploadProductImage(
-  args: UploadProductImageArgs,
-): Promise<UploadResult> {
+export async function uploadProductImage(args: UploadProductImageArgs): Promise<UploadResult> {
   if (!args.contentType.startsWith('image/')) {
     throw new StorageUploadError(
       `uploadProductImage expects an image/* content type, got "${args.contentType}".`,
@@ -157,14 +154,10 @@ export interface UploadFromUrlArgs {
  * Fetch a URL and upload its bytes (content-addressed). Mirrors the Flutter
  * `UploadFileManager.fromUrl` — handy for importing marketplace images.
  */
-export async function uploadFromUrl(
-  args: UploadFromUrlArgs,
-): Promise<UploadResult> {
+export async function uploadFromUrl(args: UploadFromUrlArgs): Promise<UploadResult> {
   const resp = await fetch(args.url);
   if (!resp.ok) {
-    throw new StorageUploadError(
-      `Failed to fetch "${args.url}": HTTP ${resp.status}.`,
-    );
+    throw new StorageUploadError(`Failed to fetch "${args.url}": HTTP ${resp.status}.`);
   }
   const contentType = resp.headers.get('content-type');
   if (!contentType) {

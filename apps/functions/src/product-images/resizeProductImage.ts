@@ -85,8 +85,6 @@ export const resizeProductImage = onObjectFinalized(
       written += 1;
     }
 
-    logger.info(
-      `resizeProductImage: ${name} → ${written}/${variants.length} derivatives`,
-    );
+    logger.info(`resizeProductImage: ${name} → ${written}/${variants.length} derivatives`);
   },
 );

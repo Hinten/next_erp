@@ -19,9 +19,7 @@ export async function sha512Hex(bytes: Uint8Array): Promise<string> {
 }
 
 /** Normalize an upload input to `Uint8Array` for hashing + upload. */
-export async function toBytes(
-  input: Uint8Array | ArrayBuffer | Blob,
-): Promise<Uint8Array> {
+export async function toBytes(input: Uint8Array | ArrayBuffer | Blob): Promise<Uint8Array> {
   if (input instanceof Uint8Array) return input;
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
   return new Uint8Array(await input.arrayBuffer());

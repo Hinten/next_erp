@@ -46,11 +46,14 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      - name: Typecheck
+        run: pnpm turbo run typecheck
+
       - name: Lint
         run: pnpm turbo run lint
 
-      - name: Typecheck
-        run: pnpm turbo run typecheck
+      - name: Format check
+        run: pnpm format:check
 
       - name: Test
         # NF-e packages are excluded here because ci-nfe.yml owns their

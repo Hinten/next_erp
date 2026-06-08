@@ -10,17 +10,23 @@
 import { useMemo } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { Anchor, Badge, Card, Group, type MantineColor, Skeleton, Stack, Text, Title } from '@mantine/core';
+import {
+  Anchor,
+  Badge,
+  Card,
+  Group,
+  type MantineColor,
+  Skeleton,
+  Stack,
+  Text,
+  Title,
+} from '@mantine/core';
 import { PERM } from '@delfrance/auth';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
-import {
-  ESTADO_NFE,
-  ESTADO_NFE_LABELS,
-  type EstadoNFe,
-  type Pedido,
-} from '@delfrance/schemas';
+import { ESTADO_NFE, ESTADO_NFE_LABELS, type EstadoNFe, type Pedido } from '@delfrance/schemas';
 
 import { RequirePerm } from '@/lib/auth';
+import { DanfeMenu } from '@/components/DanfeMenu';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
@@ -84,9 +90,7 @@ function PedidoNfeContent() {
             <Stack gap="sm">
               <Group justify="space-between" align="center" wrap="nowrap">
                 <Group gap="sm" wrap="nowrap">
-                  <Badge color={estadoColor(estado)}>
-                    {ESTADO_NFE_LABELS[estado] ?? estado}
-                  </Badge>
+                  <Badge color={estadoColor(estado)}>{ESTADO_NFE_LABELS[estado] ?? estado}</Badge>
                   <Text fw={500}>
                     NF-e nº {nfe.numeracao} · série {nfe.serie}
                   </Text>
@@ -104,6 +108,12 @@ function PedidoNfeContent() {
                 <Text size="sm" c="dimmed">
                   Sem chave — histórico de comunicações indisponível.
                 </Text>
+              )}
+
+              {(estado === ESTADO_NFE.aprovada || estado === ESTADO_NFE.cancelada) && (
+                <Group gap="xs">
+                  <DanfeMenu pedidoId={pedidoId} nfeId={row.id} />
+                </Group>
               )}
 
               {estado === ESTADO_NFE.aprovada && (

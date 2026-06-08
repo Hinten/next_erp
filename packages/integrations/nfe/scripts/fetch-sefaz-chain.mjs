@@ -65,16 +65,16 @@ const outFile = join(PKG_ROOT, 'ca', `sefaz-${UF.toLowerCase()}-${AMBIENTE}.pem`
 // ---------------------------------------------------------------------------
 
 function rawToPem(raw) {
-  const b64 = raw.toString('base64').match(/.{1,64}/g).join('\n');
+  const b64 = raw
+    .toString('base64')
+    .match(/.{1,64}/g)
+    .join('\n');
   return `-----BEGIN CERTIFICATE-----\n${b64}\n-----END CERTIFICATE-----\n`;
 }
 
 /** node-forge X.509 → DER buffer. */
 function forgeCertToDer(forgeCert) {
-  return Buffer.from(
-    forge.asn1.toDer(forge.pki.certificateToAsn1(forgeCert)).getBytes(),
-    'binary',
-  );
+  return Buffer.from(forge.asn1.toDer(forge.pki.certificateToAsn1(forgeCert)).getBytes(), 'binary');
 }
 
 /** Parse a TLS-peer cert (raw DER buffer) into a node-forge certificate. */
@@ -120,7 +120,9 @@ function findCaIssuersUrl(forgeCert) {
       // GeneralName URI = CONTEXT-SPECIFIC, tag 6 (IMPLICIT IA5String)
       if (locNode.tagClass === forge.asn1.Class.CONTEXT_SPECIFIC && locNode.type === 6) {
         // value is the IA5String bytes (as JS string in node-forge)
-        return typeof locNode.value === 'string' ? locNode.value : Buffer.from(locNode.value, 'binary').toString();
+        return typeof locNode.value === 'string'
+          ? locNode.value
+          : Buffer.from(locNode.value, 'binary').toString();
       }
     }
   } catch (err) {
@@ -189,7 +191,9 @@ function parseDownloadedBody(buffer) {
   } catch {
     // Fall through
   }
-  throw new Error(`Could not parse downloaded body as PEM, DER, or PKCS#7 (${buffer.length} bytes)`);
+  throw new Error(
+    `Could not parse downloaded body as PEM, DER, or PKCS#7 (${buffer.length} bytes)`,
+  );
 }
 
 function splitPem(text) {
@@ -209,8 +213,9 @@ function issuerCN(forgeCert) {
   return field?.value ?? '(no CN)';
 }
 function isSelfSigned(forgeCert) {
-  return JSON.stringify(forgeCert.subject.attributes)
-    === JSON.stringify(forgeCert.issuer.attributes);
+  return (
+    JSON.stringify(forgeCert.subject.attributes) === JSON.stringify(forgeCert.issuer.attributes)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -248,14 +253,16 @@ socket.once('secureConnect', async () => {
 
   // 2. Walk UP from the topmost cert via its AIA caIssuers URL until we hit
   //    a self-signed cert. Use a fingerprint set so a cycle can't loop us.
-  const fingerprints = new Set(chain.map((c) => forge.md.sha256.create().update(forgeCertToDer(c).toString('binary')).digest().toHex()));
+  const fingerprints = new Set(
+    chain.map((c) =>
+      forge.md.sha256.create().update(forgeCertToDer(c).toString('binary')).digest().toHex(),
+    ),
+  );
   let top = chain[chain.length - 1];
   while (!isSelfSigned(top)) {
     const url = findCaIssuersUrl(top);
     if (!url) {
-      console.warn(
-        `  ! "${subjectCN(top)}" has no AIA caIssuers URL — chain stops here.`,
-      );
+      console.warn(`  ! "${subjectCN(top)}" has no AIA caIssuers URL — chain stops here.`);
       break;
     }
     console.log(`  ↑ following AIA: ${url}`);
@@ -275,13 +282,15 @@ socket.once('secureConnect', async () => {
     }
     let progressed = false;
     for (const next of parsed) {
-      const fp = forge.md.sha256.create().update(forgeCertToDer(next).toString('binary')).digest().toHex();
+      const fp = forge.md.sha256
+        .create()
+        .update(forgeCertToDer(next).toString('binary'))
+        .digest()
+        .toHex();
       if (fingerprints.has(fp)) continue;
       fingerprints.add(fp);
       chain.push(next);
-      console.log(
-        `    + added subject="${subjectCN(next)}" issuer="${issuerCN(next)}"`,
-      );
+      console.log(`    + added subject="${subjectCN(next)}" issuer="${issuerCN(next)}"`);
       top = next;
       progressed = true;
     }
@@ -318,9 +327,7 @@ socket.once('secureConnect', async () => {
   mkdirSync(dirname(outFile), { recursive: true });
   writeFileSync(outFile, trustBundle, 'utf8');
   console.log(`\nWrote ${chain.length - 1} CA cert(s) to:\n  ${outFile}`);
-  console.log(
-    '\nVerify the captured chain against ICP-Brasil before trusting in produção.',
-  );
+  console.log('\nVerify the captured chain against ICP-Brasil before trusting in produção.');
 
   captured = true;
   process.exit(0);

@@ -35,7 +35,9 @@ async function main(): Promise<void> {
     console.log('[emit-dev-pedido] ✓ SEFAZ accepted (cStat=100)');
     return;
   }
-  console.error(`[emit-dev-pedido] ✗ SEFAZ did NOT accept — cStat=${result.cStat} ${result.xMotivo}`);
+  console.error(
+    `[emit-dev-pedido] ✗ SEFAZ did NOT accept — cStat=${result.cStat} ${result.xMotivo}`,
+  );
   process.exit(2);
 }
 

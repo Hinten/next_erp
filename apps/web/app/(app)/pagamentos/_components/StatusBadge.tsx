@@ -22,13 +22,13 @@ const COLOR: Record<StatusPagamento, MantineColor> = {
   [STATUS_PAGAMENTO.estornado_totalmente]: 'red',
 };
 
-export function PagamentoStatusBadge({
-  status,
-}: {
-  status: StatusPagamento | null | undefined;
-}) {
+export function PagamentoStatusBadge({ status }: { status: StatusPagamento | null | undefined }) {
   if (status === null || status === undefined) {
-    return <Badge color="gray" variant="light">Sem status</Badge>;
+    return (
+      <Badge color="gray" variant="light">
+        Sem status
+      </Badge>
+    );
   }
   return (
     <Badge color={COLOR[status]} variant="light" radius="sm">

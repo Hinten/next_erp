@@ -21,9 +21,7 @@ const CHAVE = '35200714200166000187550010000000071000000017';
 
 describe('extractMarkers', () => {
   it('pulls nRec out of a 204 xMotivo', () => {
-    const { nRec, chNFe } = extractMarkers(
-      'Rejeição: Duplicidade de NF-e [nRec:351000000000123]',
-    );
+    const { nRec, chNFe } = extractMarkers('Rejeição: Duplicidade de NF-e [nRec:351000000000123]');
     expect(nRec).toBe('351000000000123');
     expect(chNFe).toBeNull();
   });
@@ -296,57 +294,42 @@ describe('isStuckEnviando', () => {
       ESTADO_NFE.cancelada,
       ESTADO_NFE.gerado,
     ]) {
-      expect(
-        isStuckEnviando({ estado, ultima_modificacao: '2020-01-01T00:00:00Z' }, NOW),
-      ).toBe(false);
+      expect(isStuckEnviando({ estado, ultima_modificacao: '2020-01-01T00:00:00Z' }, NOW)).toBe(
+        false,
+      );
     }
   });
 
   it('returns false when enviando is recent (within timeout)', () => {
     const recent = new Date(NOW.getTime() - 60_000).toISOString(); // 1 min ago
-    expect(
-      isStuckEnviando(
-        { estado: ESTADO_NFE.enviando, ultima_modificacao: recent },
-        NOW,
-      ),
-    ).toBe(false);
+    expect(isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: recent }, NOW)).toBe(
+      false,
+    );
   });
 
   it('returns true when enviando is older than the default timeout', () => {
     const old = new Date(NOW.getTime() - 10 * 60_000).toISOString(); // 10 min ago
-    expect(
-      isStuckEnviando(
-        { estado: ESTADO_NFE.enviando, ultima_modificacao: old },
-        NOW,
-      ),
-    ).toBe(true);
+    expect(isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: old }, NOW)).toBe(
+      true,
+    );
   });
 
   it('returns true when aguardandoResposta is older than the timeout', () => {
     const old = new Date(NOW.getTime() - 10 * 60_000).toISOString();
     expect(
-      isStuckEnviando(
-        { estado: ESTADO_NFE.aguardandoResposta, ultima_modificacao: old },
-        NOW,
-      ),
+      isStuckEnviando({ estado: ESTADO_NFE.aguardandoResposta, ultima_modificacao: old }, NOW),
     ).toBe(true);
   });
 
   it('treats missing ultima_modificacao as stuck (defensive)', () => {
-    expect(
-      isStuckEnviando(
-        { estado: ESTADO_NFE.enviando, ultima_modificacao: null },
-        NOW,
-      ),
-    ).toBe(true);
+    expect(isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: null }, NOW)).toBe(
+      true,
+    );
   });
 
   it('treats unparseable timestamps as stuck', () => {
     expect(
-      isStuckEnviando(
-        { estado: ESTADO_NFE.enviando, ultima_modificacao: 'not-a-date' },
-        NOW,
-      ),
+      isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: 'not-a-date' }, NOW),
     ).toBe(true);
   });
 
@@ -354,10 +337,7 @@ describe('isStuckEnviando', () => {
     const twoMinutesAgo = new Date(NOW.getTime() - 2 * 60_000).toISOString();
     // 5min default — not stuck yet
     expect(
-      isStuckEnviando(
-        { estado: ESTADO_NFE.enviando, ultima_modificacao: twoMinutesAgo },
-        NOW,
-      ),
+      isStuckEnviando({ estado: ESTADO_NFE.enviando, ultima_modificacao: twoMinutesAgo }, NOW),
     ).toBe(false);
     // 1min custom — stuck
     expect(

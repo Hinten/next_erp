@@ -14,16 +14,7 @@
 import { useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import {
-  Alert,
-  Button,
-  Group,
-  NumberInput,
-  Paper,
-  Stack,
-  Text,
-  Textarea,
-} from '@mantine/core';
+import { Alert, Button, Group, NumberInput, Paper, Stack, Text, Textarea } from '@mantine/core';
 import { IconCircleCheck } from '@tabler/icons-react';
 import { z } from 'zod';
 import {
@@ -205,8 +196,8 @@ export function InutilizarForm({ filialId }: { filialId: string }) {
           />
 
           <Alert color="yellow" variant="light">
-            A inutilização é definitiva e registrada na SEFAZ — os números da
-            faixa não poderão mais ser usados. Não toca o contador de numeração.
+            A inutilização é definitiva e registrada na SEFAZ — os números da faixa não poderão mais
+            ser usados. Não toca o contador de numeração.
           </Alert>
 
           <Group justify="flex-end">
@@ -229,7 +220,10 @@ export function InutilizarForm({ filialId }: { filialId: string }) {
                 </Text>
                 {result.nProt && (
                   <Text size="sm">
-                    Protocolo: <Text span ff="monospace">{result.nProt}</Text>
+                    Protocolo:{' '}
+                    <Text span ff="monospace">
+                      {result.nProt}
+                    </Text>
                   </Text>
                 )}
                 <Text size="sm">

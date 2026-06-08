@@ -201,7 +201,12 @@ function fakeFirestore(opts: FakeOpts) {
       id: path.split('/').pop()!,
       async get() {
         const data = docs[path];
-        return { exists: data != null, id: path.split('/').pop()!, ref: makeRef(path), data: () => data };
+        return {
+          exists: data != null,
+          id: path.split('/').pop()!,
+          ref: makeRef(path),
+          data: () => data,
+        };
       },
       async set(data: Record<string, unknown>, opt?: { merge?: boolean }) {
         writes.push({ path, data, merge: opt?.merge });
@@ -248,8 +253,14 @@ function fakeFirestore(opts: FakeOpts) {
       async get() {
         const prefix = `${path}/`;
         let items = Object.entries(docs)
-          .filter(([key, val]) => key.startsWith(prefix) && val != null && !key.slice(prefix.length).includes('/'))
-          .map(([key, val]) => ({ id: key.slice(prefix.length), data: val as Record<string, unknown> }));
+          .filter(
+            ([key, val]) =>
+              key.startsWith(prefix) && val != null && !key.slice(prefix.length).includes('/'),
+          )
+          .map(([key, val]) => ({
+            id: key.slice(prefix.length),
+            data: val as Record<string, unknown>,
+          }));
         for (const op of ops) {
           if (op.kind === 'where') {
             items = items.filter((it) => matchWhere(it.data[op.field], op.op, op.value));
@@ -367,9 +378,7 @@ function fakeFirestore(opts: FakeOpts) {
           async commit() {
             for (const q of queued) {
               writes.push({ path: q.ref.path, data: q.data, merge: q.opt?.merge });
-              docs[q.ref.path] = q.opt?.merge
-                ? { ...(docs[q.ref.path] ?? {}), ...q.data }
-                : q.data;
+              docs[q.ref.path] = q.opt?.merge ? { ...(docs[q.ref.path] ?? {}), ...q.data } : q.data;
               opts.events.push(`set:${q.ref.path}`);
             }
           },
@@ -465,7 +474,8 @@ function inutResult(cStat: string) {
         tpAmb: '2' as const,
         verAplic: 'SP_NFE',
         cStat,
-        xMotivo: cStat === '102' ? 'Inutilizacao de numero homologada' : 'Rejeicao: numero ja utilizado',
+        xMotivo:
+          cStat === '102' ? 'Inutilizacao de numero homologada' : 'Rejeicao: numero ja utilizado',
         cUF: '35' as const,
         ano: '26',
         CNPJ: '14200166000187',
@@ -618,9 +628,7 @@ describe('cancelarNFeService', () => {
     expect(err).toBeInstanceOf(NFeCancelamentoError);
     expect((err as NFeCancelamentoError).cStat).toBe('236');
     expect((err as NFeCancelamentoError).xMotivo).toBeTruthy();
-    expect((docs['pedidos/PED-1/nfev4/s1'] as { estado: string }).estado).toBe(
-      ESTADO_NFE.aprovada,
-    );
+    expect((docs['pedidos/PED-1/nfev4/s1'] as { estado: string }).estado).toBe(ESTADO_NFE.aprovada);
   });
 
   it('throws NFePedidoNotFoundError (→ 404) when the nfev4 doc id does not exist', async () => {
@@ -683,9 +691,7 @@ describe('cancelarNFeService', () => {
     expect((docs['pedidos/PED-1/nfev4/s1'] as { estado: string }).estado).toBe(
       ESTADO_NFE.cancelada,
     );
-    expect((docs['pedidos/PED-1/nfev4/s2'] as { estado: string }).estado).toBe(
-      ESTADO_NFE.aprovada,
-    );
+    expect((docs['pedidos/PED-1/nfev4/s2'] as { estado: string }).estado).toBe(ESTADO_NFE.aprovada);
   });
 });
 

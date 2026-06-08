@@ -67,33 +67,22 @@ describe('aggregatePermissoes', () => {
   ]);
 
   it('OR-merges bits from every assigned cargo', () => {
-    const bits = aggregatePermissoes(
-      { cargos: ['admin', 'sales'], isSuperUser: false },
-      cargos,
-    );
+    const bits = aggregatePermissoes({ cargos: ['admin', 'sales'], isSuperUser: false }, cargos);
     expect(bits).toBe((1n << 0n) | (1n << 1n) | (1n << 40n) | (1n << 41n));
   });
 
   it('ignores cargo IDs that are not in the map (treats missing as 0n)', () => {
-    const bits = aggregatePermissoes(
-      { cargos: ['admin', 'ghost'], isSuperUser: false },
-      cargos,
-    );
+    const bits = aggregatePermissoes({ cargos: ['admin', 'ghost'], isSuperUser: false }, cargos);
     expect(bits).toBe((1n << 40n) | (1n << 41n));
   });
 
   it('returns the full mask for a superuser regardless of cargos', () => {
-    const bits = aggregatePermissoes(
-      { cargos: [], isSuperUser: true },
-      new Map(),
-    );
+    const bits = aggregatePermissoes({ cargos: [], isSuperUser: true }, new Map());
     expect(bits).toBe((1n << 64n) - 1n);
   });
 
   it('returns 0n when no cargos are assigned and not a superuser', () => {
-    expect(
-      aggregatePermissoes({ cargos: [], isSuperUser: false }, cargos),
-    ).toBe(0n);
+    expect(aggregatePermissoes({ cargos: [], isSuperUser: false }, cargos)).toBe(0n);
   });
 });
 

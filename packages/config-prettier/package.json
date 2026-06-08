@@ -1,7 +1,0 @@
-{
-  "name": "@delfrance/config-prettier",
-  "version": "0.0.0",
-  "private": true,
-  "main": "./index.json",
-  "files": ["index.json"]
-}

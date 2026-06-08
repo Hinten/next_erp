@@ -64,9 +64,7 @@ describe('uploadProductImage', () => {
     expect(result.arquivo.filetype).toBe('image');
     expect(result.arquivo.contentType).toBe('image/png');
     expect(result.arquivo.originalFilename).toBe('foto.png');
-    expect(result.arquivo.url).toBe(
-      `https://dl/${productOriginalPath('p1', hash, 'png')}`,
-    );
+    expect(result.arquivo.url).toBe(`https://dl/${productOriginalPath('p1', hash, 'png')}`);
 
     expect(mocks.uploadBytes).toHaveBeenCalledTimes(1);
     expect(mocks.setDoc).toHaveBeenCalledTimes(1);

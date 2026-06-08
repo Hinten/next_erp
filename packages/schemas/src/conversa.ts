@@ -75,13 +75,15 @@ export const ESTADO_CONVERSA_LABELS: Record<EstadoConversa, string> = {
 };
 
 export function podeReabrirConversa(estado: EstadoConversa): boolean {
-  return ([
-    ESTADO_CONVERSA.atendimentoFinalizado,
-    ESTADO_CONVERSA.atendimentoCancelado,
-    ESTADO_CONVERSA.atendimentoCanceladoPeloCliente,
-    ESTADO_CONVERSA.atendimentoCanceladoPeloAtendente,
-    ESTADO_CONVERSA.finalizadoSemAtendimento,
-  ] as EstadoConversa[]).includes(estado);
+  return (
+    [
+      ESTADO_CONVERSA.atendimentoFinalizado,
+      ESTADO_CONVERSA.atendimentoCancelado,
+      ESTADO_CONVERSA.atendimentoCanceladoPeloCliente,
+      ESTADO_CONVERSA.atendimentoCanceladoPeloAtendente,
+      ESTADO_CONVERSA.finalizadoSemAtendimento,
+    ] as EstadoConversa[]
+  ).includes(estado);
 }
 
 /**
@@ -89,40 +91,42 @@ export function podeReabrirConversa(estado: EstadoConversa): boolean {
  * shape so Flutter and Next coexist on the same docs. Outer references
  * stay opaque pass-through; UI surfaces the IDs and resolves names lazily.
  */
-export const conversaSchema = z.object({
-  id: z.string().nullable().default(null),
-  sender_id: z.string().nullable().default(null),
-  estadoConversa: estadoConversaSchema.default(ESTADO_CONVERSA.naoRespondido),
-  origem: origemConversaSchema.default('site'),
+export const conversaSchema = z
+  .object({
+    id: z.string().nullable().default(null),
+    sender_id: z.string().nullable().default(null),
+    estadoConversa: estadoConversaSchema.default(ESTADO_CONVERSA.naoRespondido),
+    origem: origemConversaSchema.default('site'),
 
-  // Outer refs (pass-through; the Flutter app authors them with full paths).
-  usarioOuterRef: z.unknown().nullable().default(null),
-  integracaoOuterRef: z.unknown().nullable().default(null),
-  pedidoOuterRef: z.unknown().nullable().default(null),
-  incidenteOuterRef: z.unknown().nullable().default(null),
-  produtoOuterRef: z.unknown().nullable().default(null),
+    // Outer refs (pass-through; the Flutter app authors them with full paths).
+    usarioOuterRef: z.unknown().nullable().default(null),
+    integracaoOuterRef: z.unknown().nullable().default(null),
+    pedidoOuterRef: z.unknown().nullable().default(null),
+    incidenteOuterRef: z.unknown().nullable().default(null),
+    produtoOuterRef: z.unknown().nullable().default(null),
 
-  usuarios: z.array(z.string()).nullable().default(null),
+    usuarios: z.array(z.string()).nullable().default(null),
 
-  data_cadastro: z.string().datetime().nullable().default(null),
-  ultima_modificacao: z.string().datetime().nullable().default(null),
-  ultimaModificacaoIntegracao: z.string().datetime().nullable().default(null),
-  prazo_resposta: z.string().datetime().nullable().default(null),
-  recebido_fora_atendimento: z.string().datetime().nullable().default(null),
-  recebido_durante_atendimento: z.string().datetime().nullable().default(null),
+    data_cadastro: z.string().datetime().nullable().default(null),
+    ultima_modificacao: z.string().datetime().nullable().default(null),
+    ultimaModificacaoIntegracao: z.string().datetime().nullable().default(null),
+    prazo_resposta: z.string().datetime().nullable().default(null),
+    recebido_fora_atendimento: z.string().datetime().nullable().default(null),
+    recebido_durante_atendimento: z.string().datetime().nullable().default(null),
 
-  nome: z.string().default('Conversa sem título'),
-  urlAvatar: z.string().default(''),
-  cor_etiqueta: z.number().int().nullable().default(null),
-  atendido: z.boolean().default(false),
+    nome: z.string().default('Conversa sem título'),
+    urlAvatar: z.string().default(''),
+    cor_etiqueta: z.number().int().nullable().default(null),
+    atendido: z.boolean().default(false),
 
-  externalLink: z.string().nullable().default(null),
-  internalLink: z.string().nullable().default(null),
+    externalLink: z.string().nullable().default(null),
+    internalLink: z.string().nullable().default(null),
 
-  versao: z.number().int().nullable().default(null),
-  mensagensIdMap: z.record(z.string(), z.unknown()).nullable().default(null),
-  mensagensId: z.array(z.string()).nullable().default(null),
-}).passthrough();
+    versao: z.number().int().nullable().default(null),
+    mensagensIdMap: z.record(z.string(), z.unknown()).nullable().default(null),
+    mensagensId: z.array(z.string()).nullable().default(null),
+  })
+  .passthrough();
 
 export type Conversa = z.infer<typeof conversaSchema>;
 
@@ -200,27 +204,29 @@ export type TipoMensagem = z.infer<typeof tipoMensagemSchema>;
  * Mensagem — subcollection `chat/{conversaId}/mensagem`. Mirrors
  * `Mensagem extends _MensagemModel` from the Flutter atendimento package.
  */
-export const mensagemSchema = z.object({
-  estadoEnvio: estadoEnvioMensagemSchema.default(ESTADO_ENVIO.salva),
-  tipo: tipoMensagemSchema.default('c'),
-  conteudo: z.string().nullable().default(null),
-  resposta: z.string().nullable().default(null),
-  canal: z.number().int().default(0),
-  usarioMensagemOuterRef: z.unknown().nullable().default(null),
-  user_id: z.string().nullable().default(null),
-  urlAvatar: z.string().nullable().default(null),
-  mid: z.string().nullable().default(null),
-  midGroup: z.string().nullable().default(null),
-  error: z.string().nullable().default(null),
-  visualizado: z.string().datetime().nullable().default(null),
-  transcription: z.string().nullable().default(null),
-  anexo: z.string().nullable().default(null),
-  anexoUrl: z.string().nullable().default(null),
-  // Mensagem timestamp ordering field. Flutter writes either createTime
-  // (Firestore metadata) or an explicit `timestamp` — we expect the
-  // latter when authoring from this app.
-  timestamp: z.string().datetime().nullable().default(null),
-}).passthrough();
+export const mensagemSchema = z
+  .object({
+    estadoEnvio: estadoEnvioMensagemSchema.default(ESTADO_ENVIO.salva),
+    tipo: tipoMensagemSchema.default('c'),
+    conteudo: z.string().nullable().default(null),
+    resposta: z.string().nullable().default(null),
+    canal: z.number().int().default(0),
+    usarioMensagemOuterRef: z.unknown().nullable().default(null),
+    user_id: z.string().nullable().default(null),
+    urlAvatar: z.string().nullable().default(null),
+    mid: z.string().nullable().default(null),
+    midGroup: z.string().nullable().default(null),
+    error: z.string().nullable().default(null),
+    visualizado: z.string().datetime().nullable().default(null),
+    transcription: z.string().nullable().default(null),
+    anexo: z.string().nullable().default(null),
+    anexoUrl: z.string().nullable().default(null),
+    // Mensagem timestamp ordering field. Flutter writes either createTime
+    // (Firestore metadata) or an explicit `timestamp` — we expect the
+    // latter when authoring from this app.
+    timestamp: z.string().datetime().nullable().default(null),
+  })
+  .passthrough();
 
 export type Mensagem = z.infer<typeof mensagemSchema>;
 

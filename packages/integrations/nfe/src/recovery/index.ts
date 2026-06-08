@@ -19,11 +19,7 @@
  * (an `apps/nfe` route handler) wires these helpers up against persisted
  * NF-e documents and the typed operation calls in `src/operations`.
  */
-import type {
-  TRetConsReciNFe,
-  TRetConsSitNFe,
-  TRetEnviNFe,
-} from '../types/nfe-schema';
+import type { TRetConsReciNFe, TRetConsSitNFe, TRetEnviNFe } from '../types/nfe-schema';
 import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
 import { classifyCStat, type SefazOutcome } from '../state';
 

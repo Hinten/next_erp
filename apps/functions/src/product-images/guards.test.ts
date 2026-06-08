@@ -18,15 +18,11 @@ describe('shouldResize', () => {
         metadata: { resized: 'true' },
       }),
     ).toBe(false);
-    expect(
-      shouldResize({ name: `produtos/p1/videos/${HASH}.mp4`, contentType: 'video/mp4' }),
-    ).toBe(false);
-    expect(
-      shouldResize({ name: `media/${HASH}.png`, contentType: 'image/png' }),
-    ).toBe(false);
-    expect(
-      shouldResize({ name: `produtos/${HASH}`, contentType: 'image/png' }),
-    ).toBe(false);
+    expect(shouldResize({ name: `produtos/p1/videos/${HASH}.mp4`, contentType: 'video/mp4' })).toBe(
+      false,
+    );
+    expect(shouldResize({ name: `media/${HASH}.png`, contentType: 'image/png' })).toBe(false);
+    expect(shouldResize({ name: `produtos/${HASH}`, contentType: 'image/png' })).toBe(false);
   });
 
   it('returns false for a non-image content type', () => {

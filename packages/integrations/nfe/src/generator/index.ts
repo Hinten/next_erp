@@ -66,11 +66,7 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
   const destXml = serializeFragment('TNFe_infNFe_dest', 'dest', dest as unknown as XmlValue);
   const detXml = input.itens.map(buildDetXml).join('');
   const cobrXml = input.cobr
-    ? serializeFragment(
-        'TNFe_infNFe_cobr',
-        'cobr',
-        input.cobr as unknown as XmlValue,
-      )
+    ? serializeFragment('TNFe_infNFe_cobr', 'cobr', input.cobr as unknown as XmlValue)
     : '';
   const infIntermedXml = input.infIntermed
     ? serializeFragment(
@@ -81,11 +77,7 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
     : '';
   const infAdicXml = buildInfAdicXml(input.infAdic);
   const exportaXml = input.exporta
-    ? serializeFragment(
-        'TNFe_infNFe_exporta',
-        'exporta',
-        input.exporta as unknown as XmlValue,
-      )
+    ? serializeFragment('TNFe_infNFe_exporta', 'exporta', input.exporta as unknown as XmlValue)
     : '';
   const infRespTecXml = buildInfRespTecXml(input);
 
@@ -109,8 +101,7 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
   // `pag` as structured types, so we cannot serialize via `serializeFragment`
   // when those slots arrive as caller-built raw XML. The structural pieces
   // (ide, emit, dest, prod) still go through the serializer.
-  const infNFeXml =
-    `<infNFe Id="NFe${chave}" versao="${VERSAO}">` + infNFeBody + '</infNFe>';
+  const infNFeXml = `<infNFe Id="NFe${chave}" versao="${VERSAO}">` + infNFeBody + '</infNFe>';
   const nfeXml = `<NFe xmlns="${NFE_NS}">${infNFeXml}</NFe>`;
 
   return { chave, cNF, cDV, nfeXml };
@@ -118,14 +109,10 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
 
 function validateInput(input: GeneratorInput): void {
   if (!Number.isInteger(input.numeracao) || input.numeracao < 1) {
-    throw new NFeGeneratorError(
-      `numeracao must be a positive integer, got ${input.numeracao}`,
-    );
+    throw new NFeGeneratorError(`numeracao must be a positive integer, got ${input.numeracao}`);
   }
   if (!Number.isInteger(input.serie) || input.serie < 0 || input.serie > 889) {
-    throw new NFeGeneratorError(
-      `serie must be an integer in [0, 889], got ${input.serie}`,
-    );
+    throw new NFeGeneratorError(`serie must be an integer in [0, 889], got ${input.serie}`);
   }
   if (input.itens.length === 0) {
     throw new NFeGeneratorError('itens must contain at least one item');

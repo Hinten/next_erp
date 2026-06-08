@@ -25,9 +25,9 @@ describe('cartaCorrecaoSchema', () => {
   });
 
   it('rejects xCorrecao longer than 1000 chars (SEFAZ rule)', () => {
-    expect(
-      cartaCorrecaoSchema.safeParse({ ...MINIMAL, xCorrecao: 'a'.repeat(1001) }).success,
-    ).toBe(false);
+    expect(cartaCorrecaoSchema.safeParse({ ...MINIMAL, xCorrecao: 'a'.repeat(1001) }).success).toBe(
+      false,
+    );
   });
 
   it('requires nSeqEvento ≥ 1', () => {
@@ -49,8 +49,6 @@ describe('cartaCorrecaoSchema', () => {
   });
 
   it('targets the per-NF-e cartacorrecao subcollection', () => {
-    expect(cartaCorrecaoMeta.collectionPath).toBe(
-      'pedidos/{pedidoId}/nfev4/{nfeId}/cartacorrecao',
-    );
+    expect(cartaCorrecaoMeta.collectionPath).toBe('pedidos/{pedidoId}/nfev4/{nfeId}/cartacorrecao');
   });
 });
