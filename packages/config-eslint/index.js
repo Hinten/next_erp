@@ -17,20 +17,28 @@ export const prettier = eslintConfigPrettier;
  * for each linted file; `tsconfigRootDir` must be the consuming workspace dir,
  * so always pass `import.meta.dirname`. Scope `files` to what that workspace's
  * tsconfig `include`s — apps include everything (default
- * `**​/*.{ts,tsx,mts}`), while library packages keep sources under `src/` and
- * should pass `{ files: ['src/**​/*.{ts,mts}'] }` so root-level config `.ts`
+ * `**​/*.{ts,tsx,mts,cts}`), while library packages keep sources under `src/`
+ * and should pass `{ files: ['src/**​/*.{ts,mts}'] }` so root-level config `.ts`
  * files (outside the typed program) don't trip "file not in project".
  *
  * We deliberately do NOT enable `recommendedTypeChecked`: its `no-unsafe-*`
  * family floods on the untyped Firebase / SOAP SDK surfaces. These three rules
  * are the high-value async-correctness subset worth gating CI on.
  *
- * NOTE: this block does NOT register the `@typescript-eslint` plugin — spread
- * it AFTER `eslint-config-next`, which already registers that plugin (flat
- * config forbids redefining a plugin name). It only layers the type-aware
- * parser settings + the three rules on top.
+ * `registerPlugin` (default `true`) makes the block self-contained — it
+ * registers the `@typescript-eslint` plugin the rules below need, so a config
+ * that does NOT extend `eslint-config-next` works out of the box. Consumers
+ * that DO spread `eslint-config-next` (every app in this repo) must pass
+ * `registerPlugin: false`: next already registers that plugin and flat config
+ * forbids defining a plugin name twice ("Cannot redefine plugin").
+ *
+ * @param {string} tsconfigRootDir usually `import.meta.dirname`
+ * @param {{ files?: string[], registerPlugin?: boolean }} [opts]
  */
-export function typeAware(tsconfigRootDir, { files = ['**/*.{ts,tsx,mts}'] } = {}) {
+export function typeAware(
+  tsconfigRootDir,
+  { files = ['**/*.{ts,tsx,mts,cts}'], registerPlugin = true } = {},
+) {
   return [
     {
       files,
@@ -38,6 +46,7 @@ export function typeAware(tsconfigRootDir, { files = ['**/*.{ts,tsx,mts}'] } = {
         parser: tseslint.parser,
         parserOptions: { projectService: true, tsconfigRootDir },
       },
+      ...(registerPlugin ? { plugins: { '@typescript-eslint': tseslint.plugin } } : {}),
       rules: {
         '@typescript-eslint/no-floating-promises': 'error',
         // checksVoidReturn.attributes:false silences only the benign JSX

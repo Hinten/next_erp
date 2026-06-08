@@ -60,7 +60,8 @@ const ruleCNoRawFirestoreRefs = [
 const config = [
   ...base,
   ...next,
-  ...typeAware(import.meta.dirname),
+  // registerPlugin: false — eslint-config-next already registers @typescript-eslint.
+  ...typeAware(import.meta.dirname, { registerPlugin: false }),
   {
     rules: {
       'react-hooks/set-state-in-effect': 'warn',

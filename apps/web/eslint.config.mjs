@@ -4,7 +4,8 @@ import next from 'eslint-config-next';
 const config = [
   ...base,
   ...next,
-  ...typeAware(import.meta.dirname),
+  // registerPlugin: false — eslint-config-next already registers @typescript-eslint.
+  ...typeAware(import.meta.dirname, { registerPlugin: false }),
   {
     rules: {
       // React Compiler-aware rules from eslint-plugin-react-hooks v7. The
