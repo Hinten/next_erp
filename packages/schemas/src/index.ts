@@ -288,3 +288,40 @@ export {
   regraImpostoMeta,
   type RegraImposto,
 } from './regraImposto';
+
+export {
+  arquivo,
+  arquivoSchema,
+  arquivoMeta,
+  filetypeSchema,
+  filetypeFromMime,
+  normalizeContentType,
+  externalIdSchema,
+  FILETYPE,
+  ARQUIVOS_COLLECTION,
+  type Arquivo,
+  type Filetype,
+  type ExternalId,
+} from './storage/arquivo';
+
+export {
+  STORAGE_ROOT,
+  PRODUTO_SUBDIR,
+  PRODUCT_IMAGE_VARIANTS,
+  DERIVATIVE_EXT,
+  productOriginalPath,
+  productDerivativePath,
+  productVideoPath,
+  mediaPath,
+  productArquivoId,
+  derivativeArquivoId,
+  parseProductOriginalPath,
+  isWatchedProductOriginal,
+  isDerivativeName,
+  firebaseDownloadUrl,
+  normalizeName,
+  type VariantSpec,
+  type ParsedOriginalPath,
+} from './storage/storagePaths';
+
+export { buildFotoRefs, type FotoRefs } from './storage/foto';

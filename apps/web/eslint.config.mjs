@@ -39,6 +39,23 @@ const config = [
               message:
                 'Do not build raw Firestore refs. Use a defineCollection() handle: `xCollection.ref(db, ctx)` / `xCollection.docRef(db, ctx, id)` (apps/web/lib/data/*), or `groupQuery(db, id, xCollection.converter)` from @delfrance/data for collection groups.',
             },
+            {
+              // Flat config replaces (does not merge) this rule, so the base's
+              // firebase/storage ban (packages/config-eslint) must be repeated
+              // here. Uploads go through @delfrance/storage helpers; getStorage
+              // for the singleton stays allowed.
+              name: 'firebase/storage',
+              importNames: [
+                'ref',
+                'uploadBytes',
+                'uploadBytesResumable',
+                'uploadString',
+                'getDownloadURL',
+                'deleteObject',
+              ],
+              message:
+                'Do not call the raw Storage SDK. Use the helpers from @delfrance/storage (uploadFile / uploadProductImage / uploadFromUrl) — `getStorage()` for the singleton is fine.',
+            },
           ],
         },
       ],

@@ -1,0 +1,123 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Firestore } from 'firebase/firestore';
+import type { FirebaseStorage } from 'firebase/storage';
+import { productArquivoId, productOriginalPath } from '@delfrance/schemas';
+
+import { sha512Hex } from './hash';
+
+const mocks = vi.hoisted(() => ({
+  getDoc: vi.fn(),
+  setDoc: vi.fn(),
+  uploadBytes: vi.fn(),
+  getDownloadURL: vi.fn(),
+}));
+
+vi.mock('firebase/firestore', () => ({
+  getDoc: mocks.getDoc,
+  setDoc: mocks.setDoc,
+}));
+
+vi.mock('firebase/storage', () => ({
+  ref: (_storage: unknown, path: string) => ({ __path: path }),
+  uploadBytes: mocks.uploadBytes,
+  getDownloadURL: mocks.getDownloadURL,
+}));
+
+vi.mock('./collection', () => ({
+  arquivoCollection: {
+    docRef: (_db: unknown, _ctx: unknown, id: string) => ({ __id: id }),
+  },
+}));
+
+// Imported after the mocks are registered (vi.mock is hoisted).
+const { uploadProductImage, uploadFile } = await import('./upload');
+
+const db = {} as unknown as Firestore;
+const storage = {} as unknown as FirebaseStorage;
+const bytes = new Uint8Array([1, 2, 3, 4]);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.getDoc.mockResolvedValue({ exists: () => false, data: () => undefined });
+  mocks.uploadBytes.mockResolvedValue(undefined);
+  mocks.getDownloadURL.mockImplementation(
+    async (r: { __path: string }) => `https://dl/${r.__path}`,
+  );
+  mocks.setDoc.mockResolvedValue(undefined);
+});
+
+describe('uploadProductImage', () => {
+  it('uploads the original to the product-scoped path + id and writes the Arquivo', async () => {
+    const hash = await sha512Hex(bytes);
+    const result = await uploadProductImage({
+      storage,
+      db,
+      produtoId: 'p1',
+      bytes,
+      contentType: 'image/png',
+      originalFilename: 'foto.png',
+    });
+
+    expect(result.id).toBe(productArquivoId('p1', hash));
+    expect(result.arquivo.filepath).toBe('produtos/p1/originals');
+    expect(result.arquivo.filename).toBe(`${hash}.png`);
+    expect(result.arquivo.filetype).toBe('image');
+    expect(result.arquivo.contentType).toBe('image/png');
+    expect(result.arquivo.originalFilename).toBe('foto.png');
+    expect(result.arquivo.url).toBe(`https://dl/${productOriginalPath('p1', hash, 'png')}`);
+
+    expect(mocks.uploadBytes).toHaveBeenCalledTimes(1);
+    expect(mocks.setDoc).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a non-image content type', async () => {
+    await expect(
+      uploadProductImage({
+        storage,
+        db,
+        produtoId: 'p1',
+        bytes,
+        contentType: 'application/pdf',
+      }),
+    ).rejects.toThrow(/image\/\*/);
+    expect(mocks.uploadBytes).not.toHaveBeenCalled();
+  });
+
+  it('dedups: reuses an existing Arquivo and skips the upload', async () => {
+    const existing = {
+      filetype: 'image',
+      filepath: 'produtos/p1/originals',
+      filename: 'x.png',
+      url: 'https://dl/existing',
+    };
+    mocks.getDoc.mockResolvedValue({ exists: () => true, data: () => existing });
+
+    const result = await uploadProductImage({
+      storage,
+      db,
+      produtoId: 'p1',
+      bytes,
+      contentType: 'image/png',
+    });
+
+    expect(result.arquivo).toEqual(existing);
+    expect(mocks.uploadBytes).not.toHaveBeenCalled();
+    expect(mocks.setDoc).not.toHaveBeenCalled();
+  });
+});
+
+describe('uploadFile', () => {
+  it('defaults to media/<hash>.<ext> with a bare-hash id', async () => {
+    const hash = await sha512Hex(bytes);
+    const result = await uploadFile({
+      storage,
+      db,
+      bytes,
+      contentType: 'application/pdf',
+    });
+    expect(result.id).toBe(hash);
+    expect(result.arquivo.filepath).toBe('media');
+    expect(result.arquivo.filename).toBe(`${hash}.pdf`);
+    expect(result.arquivo.filetype).toBe('document');
+  });
+});
