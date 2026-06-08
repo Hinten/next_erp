@@ -107,7 +107,9 @@ export async function renderSimplificado(
       }
       yy += rowHeight(r);
     }
-    y += boxH + cm(0.12);
+    // Contiguous boxes: each box's bottom border is the next box's top border
+    // (a single DANFE grid line, not doubled lines with a gap between).
+    y += boxH;
   };
 
   // Protocolo de autorização de uso.
@@ -129,7 +131,7 @@ export async function renderSimplificado(
       ? [{ kind: 'kv' as const, label: model.emit.cnpj ? 'CNPJ' : 'CPF', value: formatCpfCnpj(emitDoc) }]
       : []),
     { kind: 'kv', label: 'IE', value: model.emit.ie },
-    { kind: 'wrap', text: enderecoLinha(model.emit.endereco), lines: 2 },
+    { kind: 'wrap', text: enderecoLinha(model.emit.endereco), lines: 3 },
   ]);
 
   // Dados gerais da NF-e.
@@ -150,7 +152,7 @@ export async function renderSimplificado(
   }
   if (model.dest.ie) destRows.push({ kind: 'kv', label: 'IE', value: model.dest.ie });
   if (model.dest.endereco) {
-    destRows.push({ kind: 'wrap', text: enderecoLinha(model.dest.endereco), lines: 2 });
+    destRows.push({ kind: 'wrap', text: enderecoLinha(model.dest.endereco), lines: 3 });
   }
   section('Dados do destinatário/remetente', destRows);
 

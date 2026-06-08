@@ -38,8 +38,8 @@ const INNER_W_MM = LABEL_W_MM - 2 * MARGIN_MM;
 const PAD_X_MM = MARGIN_MM + 2; // text left inset inside a box
 const VAL_RIGHT_MM = LABEL_W_MM - MARGIN_MM - 2; // value right edge
 const TEXT_W_MM = INNER_W_MM - 4;
-const LH_MM = 4.2; // line height
-const BOX_PAD_MM = 1.4; // box inner top/bottom padding
+const LH_MM = 4.0; // line height
+const BOX_PAD_MM = 1.3; // box inner top/bottom padding
 /** Max chars for a razão social / nome so the right-aligned value clears the label. */
 const NAME_MAX = 36;
 
@@ -94,16 +94,17 @@ export function renderSimplificadoZpl(model: DanfeModel, opts: ZplOptions = {}):
   centered(y, 'DANFE SIMPLIFICADO - ETIQUETA', H_TITLE);
   y += 6;
 
-  // Centered Code 128. For an all-numeric chave bwip/ZPL use subset C
-  // (two digits/symbol); the printed width is deterministic, so compute it and
-  // center the field. Module (narrow-bar) width scales with dpi (~0.25 mm).
+  // Centered Code 128. `^BC` defaults to subset B (one wide symbol per digit);
+  // the `>;` prefix forces **subset C** so the 44-digit chave packs two digits
+  // per symbol — half the width, and the printed width becomes deterministic.
+  // Module (narrow-bar) width scales with dpi (~0.25 mm).
   const moduleDots = Math.max(2, Math.round(0.25 * dpm));
   const dataSymbols = Math.ceil(model.chave.length / 2);
   // (start C + data + checksum) × 11 modules + 13-module stop pattern.
   const barModules = (dataSymbols + 2) * 11 + 13;
   const barWidthDots = barModules * moduleDots;
   const bcX = Math.max(mm(MARGIN_MM), Math.round((widthDots - barWidthDots) / 2));
-  out.push(`^FO${bcX},${mm(y)}^BY${moduleDots}^BCN,${mm(11)},N,N,N^FD${model.chave}^FS`);
+  out.push(`^FO${bcX},${mm(y)}^BY${moduleDots}^BCN,${mm(11)},N,N,N^FD>;${model.chave}^FS`);
   y += 12;
   centered(y, formatChaveAcesso(model.chave), H_CHAVE);
   y += 5;
@@ -134,7 +135,9 @@ export function renderSimplificadoZpl(model: DanfeModel, opts: ZplOptions = {}):
         yy += LH_MM;
       }
     }
-    y += hMm + 1.5;
+    // No inter-box gap: each box shares its bottom border with the next box's
+    // top border (a contiguous DANFE grid, not doubled lines).
+    y += hMm;
   };
 
   // Protocolo de autorização de uso.
@@ -156,7 +159,7 @@ export function renderSimplificadoZpl(model: DanfeModel, opts: ZplOptions = {}):
       ? [{ kind: 'kv' as const, label: model.emit.cnpj ? 'CNPJ' : 'CPF', value: formatCpfCnpj(emitDoc) }]
       : []),
     { kind: 'kv', label: 'IE', value: model.emit.ie },
-    { kind: 'line', text: cutString(enderecoLinha(model.emit.endereco), 64) },
+    { kind: 'wrap', text: enderecoLinha(model.emit.endereco), lines: 3 },
   ]);
 
   // Dados gerais da NF-e.
@@ -177,7 +180,7 @@ export function renderSimplificadoZpl(model: DanfeModel, opts: ZplOptions = {}):
   }
   if (model.dest.ie) destRows.push({ kind: 'kv', label: 'IE', value: model.dest.ie });
   if (model.dest.endereco) {
-    destRows.push({ kind: 'line', text: cutString(enderecoLinha(model.dest.endereco), 64) });
+    destRows.push({ kind: 'wrap', text: enderecoLinha(model.dest.endereco), lines: 3 });
   }
   section('Dados do destinatário/remetente', destRows);
 

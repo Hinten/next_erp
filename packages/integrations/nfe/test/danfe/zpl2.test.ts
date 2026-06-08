@@ -13,7 +13,7 @@ describe('danfe/zpl2 renderSimplificadoZpl', () => {
     expect(zpl.endsWith('^XZ')).toBe(true);
     expect(zpl).toContain('^CI28'); // UTF-8
     expect(zpl).toContain('^BCN'); // native Code 128
-    expect(zpl).toContain(`^FD${CHAVE}^FS`); // chave fed to the barcode
+    expect(zpl).toContain(`^FD>;${CHAVE}^FS`); // chave in Code 128 subset C
     expect(zpl).toContain('DANFE SIMPLIFICADO - ETIQUETA');
     expect(zpl).toContain('SEM VALOR FISCAL'); // tpAmb=2
   });
