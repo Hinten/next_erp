@@ -14,9 +14,11 @@ with `git filter-repo` — that split is **done**; ignore any lingering
 references to a `next-rewrite/` subfolder.) The Flutter ERP is a separate repo
 and out of scope here.
 
-CI is **active** — see `.github/workflows/`: `ci.yml` (lint/typecheck/test/
-build) and `e2e.yml` (a single Playwright workflow that runs every e2e
-suite). See "When making changes".
+CI is **active** — see `.github/workflows/`: `ci.yml` (offline:
+lint/typecheck/format/test/build), the domain pipelines `ci-nfe.yml` and
+`ci-storage.yml`, and **two** Playwright e2e workflows split by domain —
+`e2e-cadastros.yml` and `e2e-vendas.yml` (sharing the `e2e-reusable.yml`
+engine) — each gated on `ci.yml` passing first. See "When making changes".
 
 ## Critical rules
 
@@ -74,7 +76,7 @@ packages/
 tools/
   test-fixtures/  Admin SDK seed/teardown for staging
   migrations/     (empty until Phase 6)
-.github/workflows/  Active CI: ci.yml, e2e.yml (single Playwright workflow)
+.github/workflows/  Active CI: ci.yml, ci-nfe.yml, ci-storage.yml, e2e-*.yml
 ```
 
 Root config: `pnpm-workspace.yaml` (globs `apps/*`, `packages/*`,
@@ -112,7 +114,7 @@ pnpm --filter @delfrance/integrations-app dev
 - New OAuth callback → same: `apps/integrations/app/api/oauth/<channel>/callback/route.ts`.
 - Heavy work (sync, retry, long-running) from a webhook → dispatch to a Cloud Function; route handler responds 200 fast.
 - Adding a Server Component / Server Action / route handler in `apps/web` → justify in the PR description. Default answer is no.
-- **New e2e test** → there is **one** e2e workflow, `.github/workflows/e2e.yml`. Adding a schema-driven CRUD page needs only a new `apps/web/e2e/<x>.e2e.spec.ts` — the `crud` Playwright project (`testMatch: /\.e2e\.spec\.ts$/`) picks it up automatically. **Do not** create a per-module `*-e2e.yml` and **do not** add an e2e job to `ci.yml`. `e2e.yml` runs every project (smoke, configuracoes, crud) in a single job: one `globalSetup` mints one ephemeral test user (`e2e-user-<runId>@example.com`, created via the Admin SDK and deleted by `globalTeardown` — there are no `E2E_USER_*` secrets), and Playwright `workers` parallelize the suites. Failures are reported by the workflow's own `report-failure` job.
+- **New e2e test** → e2e is **two** Playwright workflows split by domain — `e2e-cadastros.yml` (smoke + `crud-cadastros`) and `e2e-vendas.yml` (configuracoes + `crud-vendas`) — sharing the `e2e-reusable.yml` engine. Both are gated on the offline `CI` workflow via `workflow_run` (they run only after `ci.yml` succeeds on a same-repo PR) and serve a **production build** (`next build` + `next start`), not `pnpm dev`. Adding a schema-driven CRUD page needs a new `apps/web/e2e/<x>.e2e.spec.ts` **plus** one line: add its filename to the matching project's `testMatch` (`crud-cadastros` or `crud-vendas`) in `apps/web/playwright.config.ts` — it is no longer auto-matched by a single `crud` glob. **Do not** add an e2e job to `ci.yml`. Each workflow run mints its **own** ephemeral test user (`e2e-user-<runId>@example.com`) and Firestore namespace (`e2e_<runId>`), isolated by `GITHUB_RUN_ID` (so the two run concurrently; `globalTeardown` run-scopes its stray-doc sweep in CI to match — there are no `E2E_USER_*` secrets). Each workflow posts an `e2e (<slug>)` commit status on the PR and comments the failing-job log tail on failure.
 
 ## Key fixed decisions
 

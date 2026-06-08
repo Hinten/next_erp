@@ -1,0 +1,33 @@
+name: E2E — Cadastros
+
+# Master-data e2e suite (smoke + crud-cadastros: clientes, enderecos,
+# categorias, depositos, filiais). Gated on the offline `CI` workflow — runs
+# only after CI SUCCEEDS on a same-repo PR — then delegates to e2e-reusable.yml
+# (production build + serve + Playwright). Runs concurrently with E2E — Vendas;
+# its own GITHUB_RUN_ID isolates its Firestore namespace + ephemeral user.
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-cadastros-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    # Only after offline CI passed, only for same-repo PR runs (fork PRs must
+    # not trigger a secret-bearing run against staging). Manual dispatch is
+    # always allowed (post-merge validation — workflow_run uses the default
+    # branch definition, so it can't self-test on the introducing PR).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'pull_request' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    uses: ./.github/workflows/e2e-reusable.yml
+    with:
+      projects: smoke crud-cadastros
+      slug: cadastros
+    secrets: inherit

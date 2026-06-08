@@ -41,47 +41,64 @@ export default defineConfig({
   globalTeardown: './e2e/global-teardown.ts',
   use: {
     baseURL: BASE_URL,
-    trace: 'on-first-retry',
+    // retain-on-failure keeps a trace for every failed attempt (not just the
+    // retry), so a flake that passes on retry is still debuggable. Pairs with
+    // the production-build CI serving + client source maps (E2E_SOURCEMAPS).
+    trace: 'retain-on-failure',
     video: 'retain-on-failure',
     // Default: every spec runs as the seeded test user. Specs that need to
     // assert unauthenticated behaviour set `test.use({ storageState: { ... } })`.
     storageState: STORAGE_STATE,
   },
   projects: [
-    // Every e2e suite runs in the single `.github/workflows/e2e.yml` job —
-    // one globalSetup, one ephemeral user, Playwright `workers` parallelize.
+    // Suites are split across two e2e workflows by domain (e2e-cadastros.yml,
+    // e2e-vendas.yml), each gated on the offline `CI` workflow and serving a
+    // production build. A plain local `playwright test` still runs every
+    // project below = full coverage.
     //
     // Smoke specs (cheap; login.smoke / auth-guard.smoke opt out of the
-    // authenticated session per-spec via `test.use`).
+    // authenticated session per-spec via `test.use`). → e2e-cadastros.yml
     {
       name: 'smoke',
       testMatch: /.*\.smoke\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
     // Auth-gated User+Cargo CRUD (uses the SU storageState, set in the spec).
+    // → e2e-vendas.yml
     {
       name: 'configuracoes',
       testMatch: /configuracoes\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
-    // Schema-driven TableView/ObjectView CRUD suites. One project matches
-    // every `*.e2e.spec.ts` — adding a new CRUD page needs only the spec
-    // file, no config change.
+    // Schema-driven TableView/ObjectView CRUD suites, split into two domain
+    // projects so the two workflows run disjoint halves concurrently. A new
+    // CRUD spec must be added to the matching project's testMatch below.
     {
-      name: 'crud',
-      testMatch: /\.e2e\.spec\.ts$/,
+      // Master-data domain → e2e-cadastros.yml
+      name: 'crud-cadastros',
+      testMatch: /(clientes|enderecos|categorias|depositos|filiais)\.e2e\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      // Sales / fiscal / config domain → e2e-vendas.yml
+      name: 'crud-vendas',
+      testMatch:
+        /(pedidos|pedidos-nfe-snapshot|canais-balcao|bandeiras-cartao|motivos-incidente)\.e2e\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
   ],
   webServer: process.env.PLAYWRIGHT_BASE_URL
     ? undefined
     : {
-        command: 'pnpm dev',
+        // Local dev serves with `pnpm dev`. CI overrides this with
+        // `PLAYWRIGHT_WEB_CMD='pnpm exec next start --port 3000'` to serve a
+        // production build — no per-route cold compile, so it answers fast.
+        command: process.env.PLAYWRIGHT_WEB_CMD ?? 'pnpm dev',
         port: PORT,
         reuseExistingServer: !process.env.CI,
-        // Next 16 cold-compiles every imported module on first request; in
+        // Next 16 dev cold-compiles every imported module on first request; in
         // CI we've seen this exceed the previous 60s budget. 180s gives
-        // headroom while still failing the run if dev never comes up.
+        // headroom while still failing the run if the server never comes up.
         timeout: 180_000,
         stdout: 'pipe',
         stderr: 'pipe',

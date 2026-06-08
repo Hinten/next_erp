@@ -1,0 +1,244 @@
+name: E2E (reusable)
+
+# Shared engine for the themed e2e workflows (e2e-cadastros.yml,
+# e2e-vendas.yml). Called via `workflow_call` from a thin `workflow_run`-gated
+# caller that has already confirmed the offline `CI` workflow SUCCEEDED on a
+# same-repo PR. It builds apps/web for production, serves it with `next start`
+# (Playwright's webServer), and runs the caller's Playwright projects against
+# staging Firebase. Each caller is its own workflow run → its own
+# GITHUB_RUN_ID → a distinct Firestore namespace + ephemeral user, so the two
+# themes run concurrently without colliding.
+#
+# NOTE: workflow_run runs the DEFAULT-branch definition of these files, so
+# edits here only take effect after merge. Use the callers' workflow_dispatch
+# to validate post-merge.
+
+on:
+  workflow_call:
+    inputs:
+      projects:
+        description: Space-separated Playwright project names to run.
+        required: true
+        type: string
+      slug:
+        description: Short theme id used for the commit-status context and artifact name.
+        required: true
+        type: string
+
+jobs:
+  # Preserve the former single-workflow path-scoping: workflow_run can't use
+  # `paths:`, so resolve the PR and diff it here. Output gates the e2e job below.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    outputs:
+      should_run: ${{ steps.detect.outputs.should_run }}
+      pr: ${{ steps.detect.outputs.pr }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Resolve PR and detect e2e-relevant changes
+        id: detect
+        run: |
+          set -uo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch — forcing e2e run."
+            { echo "should_run=true"; echo "pr="; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pr='${{ github.event.workflow_run.pull_requests[0].number }}'
+          if [ -z "$pr" ]; then
+            pr=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" --jq '.[0].number' 2>/dev/null || true)
+          fi
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+          # Fail open: if the PR or its diff can't be determined, run e2e rather
+          # than risk silently skipping a relevant change.
+          if [ -z "$pr" ]; then
+            echo "No PR resolved for $HEAD_SHA — running e2e to be safe."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files=$(gh pr diff "$pr" --repo "$REPO" --name-only 2>/dev/null || true)
+          if [ -z "$files" ]; then
+            echo "Empty diff for PR #$pr — running e2e to be safe."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if echo "$files" | grep -Eq '^(apps/web/|packages/(schemas|ui|data|auth|core)/|tools/test-fixtures/|pnpm-lock\.yaml$|\.github/workflows/e2e)'; then
+            echo "Relevant paths changed — running e2e."
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No e2e-relevant paths changed — skipping."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mark skipped run as success (keeps a required check green)
+        if: steps.detect.outputs.should_run != 'true'
+        run: |
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=success \
+            -f context="e2e (${{ inputs.slug }})" \
+            -f description="skipped — no e2e-relevant changes" \
+            -f target_url="$RUN_URL" >/dev/null || true
+
+  e2e:
+    needs: changes
+    if: needs.changes.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write
+      pull-requests: write
+      actions: read
+    env:
+      FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+      FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+      NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+      NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
+      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ secrets.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
+      NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+      NEXT_PUBLIC_FIREBASE_APP_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_APP_ID }}
+      # SU credentials for the configuracoes suite (only present in the vendas
+      # theme; harmless when the suite isn't selected — its setup self-skips).
+      E2E_SU_EMAIL: ${{ secrets.E2E_SU_EMAIL }}
+      E2E_SU_PASSWORD: ${{ secrets.E2E_SU_PASSWORD }}
+      # Emit client source maps so prod-build stack traces are readable in the
+      # Playwright trace. Build-only; real App Hosting deploys leave it unset.
+      E2E_SOURCEMAPS: 'true'
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Mark status pending
+        run: |
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=pending \
+            -f context="e2e (${{ inputs.slug }})" \
+            -f description="running…" \
+            -f target_url="$RUN_URL" >/dev/null || true
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.HEAD_SHA }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.4 --activate
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - run: pnpm install --frozen-lockfile
+
+      # Cache the chromium binary keyed on the lockfile (which pins the exact
+      # @playwright/test version), so the key invalidates on a Playwright bump.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
+
+      - name: Install Playwright browsers (cache miss)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @delfrance/web exec playwright install --with-deps chromium
+
+      - name: Install Playwright system deps (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm --filter @delfrance/web exec playwright install-deps chromium
+
+      - name: Build web (production)
+        # NEXT_PUBLIC_* + E2E_SOURCEMAPS are inlined here. Call next directly to
+        # skip the `dotenv -e ../../.env.local` wrapper (absent in CI). No dep
+        # pre-build needed — transpilePackages compiles the workspace packages
+        # (which export ./src) from source.
+        run: pnpm --filter @delfrance/web exec next build
+
+      - name: e2e (web) — ${{ inputs.slug }}
+        # Playwright's webServer runs PLAYWRIGHT_WEB_CMD (next start) and waits
+        # for :3000 before the suites — a precompiled prod server, no cold
+        # compile, so workers don't race the compiler.
+        env:
+          PLAYWRIGHT_WEB_CMD: pnpm exec next start --port 3000
+        run: |
+          args=""
+          for p in ${{ inputs.projects }}; do args="$args --project=$p"; done
+          pnpm --filter @delfrance/web exec playwright test $args
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ inputs.slug }}
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Mark final commit status
+        if: always()
+        run: |
+          state=success
+          [ "${{ job.status }}" != "success" ] && state=failure
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state="$state" \
+            -f context="e2e (${{ inputs.slug }})" \
+            -f description="$state" \
+            -f target_url="$RUN_URL" >/dev/null || true
+
+      - name: Comment failure log on PR
+        if: ${{ failure() && needs.changes.outputs.pr != '' }}
+        run: |
+          set -uo pipefail
+          PR="${{ needs.changes.outputs.pr }}"
+          gh api "repos/$REPO/actions/runs/$GITHUB_RUN_ID/jobs" --paginate \
+            --jq '.jobs[] | select(.conclusion == "failure") | [.id, .name] | @tsv' > /tmp/failed-jobs.tsv || true
+          {
+            echo "## E2E falhou — e2e (${{ inputs.slug }})"
+            echo
+            echo "Commit <code>${HEAD_SHA:0:7}</code> · [ver run completo]($RUN_URL)"
+            echo
+          } > /tmp/body.md
+          if [ -s /tmp/failed-jobs.tsv ]; then
+            while IFS=$'\t' read -r job_id job_name; do
+              gh api "repos/$REPO/actions/jobs/$job_id/logs" > "/tmp/job-$job_id.log" 2>/dev/null \
+                || echo "(log indisponível — abra o run no GitHub)" > "/tmp/job-$job_id.log"
+              {
+                echo "<details>"
+                echo "<summary>Job <code>$job_name</code> — últimos 12KB do log</summary>"
+                echo
+                echo '```'
+                tail -c 12000 "/tmp/job-$job_id.log"
+                echo
+                echo '```'
+                echo
+                echo "</details>"
+                echo
+              } >> /tmp/body.md
+            done < /tmp/failed-jobs.tsv
+          fi
+          gh pr comment "$PR" --repo "$REPO" --body-file /tmp/body.md || true

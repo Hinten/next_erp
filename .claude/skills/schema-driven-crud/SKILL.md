@@ -268,23 +268,29 @@ Create `apps/web/e2e/<x>.e2e.spec.ts` (template: `clientes.e2e.spec.ts`).
    `requiresAuthEnv()`; `warmup.ts` exports `warmRoutes()` (call it in
    `beforeAll` — see §11 on cold-start timeouts).
 
-## 8. CI workflow — nothing to create
+## 8. CI workflow — one line to add
 
-There is **one** e2e workflow, `.github/workflows/e2e.yml`, and it already
-runs every project (`smoke`, `configuracoes`, `crud`). A new
-`*.e2e.spec.ts` is collected by the `crud` project automatically — **do not
-create a per-module `*-e2e.yml`**. `e2e.yml` runs all suites in a single job:
-one `globalSetup` mints one ephemeral test user
-(`e2e-user-<runId>@example.com`, created via the Admin SDK, deleted by
-`globalTeardown`), and Playwright `workers` parallelize the suites. Its own
-`report-failure` job posts the log tail to the PR on failure.
+e2e is **two** domain workflows — `.github/workflows/e2e-cadastros.yml` and
+`e2e-vendas.yml` — sharing the `e2e-reusable.yml` engine. Both are gated on
+the offline `CI` workflow via `workflow_run` (they run only after `ci.yml`
+succeeds on a same-repo PR) and serve a **production build** (`next build` +
+`next start`). A new `*.e2e.spec.ts` is **not** auto-collected: add its
+filename to the matching project's `testMatch` in
+`apps/web/playwright.config.ts` — `crud-cadastros` (clientes, enderecos,
+categorias, depositos, filiais) or `crud-vendas` (pedidos,
+pedidos-nfe-snapshot, canais-balcao, bandeiras-cartao, motivos-incidente).
+The spec then rides the existing workflow — **do not** create a new workflow
+file or add an e2e job to `ci.yml`. Each workflow run mints its own ephemeral
+test user (`e2e-user-<runId>@example.com`, Admin SDK, deleted by
+`globalTeardown`), posts an `e2e (<slug>)` commit status, and comments the
+log tail to the PR on failure.
 
 ## 9. Verification
 
 - `pnpm turbo run lint typecheck test` — green.
 - `pnpm --filter @delfrance/web build` — no Suspense/SSR error.
-- `pnpm --filter @delfrance/web exec playwright test --list --project=crud`
-  — lists the new spec's tests alongside the other CRUD suites.
+- `pnpm --filter @delfrance/web exec playwright test --list --project=crud-cadastros`
+  (or `--project=crud-vendas`) — lists the new spec's tests alongside its suite.
 - e2e against staging: needs `FIREBASE_PROJECT_ID` + `FIREBASE_SERVICE_ACCOUNT`
   (and `E2E_SU_*` for the configuracoes suite). The test user is ephemeral —
   `globalSetup` mints it via the Admin SDK; there are no `E2E_USER_*` secrets.

@@ -3,9 +3,10 @@ title: Running tests
 description: Run the unit, lint/typecheck/build and Playwright e2e suites on your machine.
 ---
 
-The same suites that CI runs (`.github/workflows/ci.yml` and `e2e.yml`) can all
-run locally. Unit tests, lint, typecheck and build need nothing but a clean
-install; only the e2e suite needs Firebase credentials.
+The same suites that CI runs (`.github/workflows/ci.yml` and the e2e workflows
+`e2e-cadastros.yml` / `e2e-vendas.yml`) can all run locally. Unit tests, lint,
+typecheck and build need nothing but a clean install; only the e2e suite needs
+Firebase credentials.
 
 ## Prerequisites
 
@@ -86,7 +87,8 @@ pnpm --filter @delfrance/web test:e2e
 
 # filter to one Playwright project:
 pnpm --filter @delfrance/web exec playwright test --project smoke
-pnpm --filter @delfrance/web exec playwright test --project crud
+pnpm --filter @delfrance/web exec playwright test --project crud-cadastros
+pnpm --filter @delfrance/web exec playwright test --project crud-vendas
 ```
 
 Playwright starts `pnpm dev` on `:3000` itself. If you already have `pnpm dev`
@@ -95,14 +97,20 @@ lands in `apps/web/playwright-report/`.
 
 ### Suites & lifecycle
 
-Three Playwright projects run in one job:
+Locally, a plain `playwright test` runs all four projects; CI splits them across
+two workflows (`e2e-cadastros.yml`, `e2e-vendas.yml`) that run concurrently,
+each gated on `ci.yml` passing first and serving a production build:
 
 - **`smoke`** — unauthenticated specs (`*.smoke.spec.ts`): login page,
-  auth-guard redirects.
+  auth-guard redirects. _(e2e-cadastros)_
 - **`configuracoes`** — User + Cargo CRUD; signs in as the SU
-  (`E2E_SU_*`).
-- **`crud`** — schema-driven `TableView`/`ObjectView` CRUD specs
-  (`*.e2e.spec.ts`). Adding a page needs only a new spec file.
+  (`E2E_SU_*`). _(e2e-vendas)_
+- **`crud-cadastros`** — master-data CRUD specs: clientes, enderecos,
+  categorias, depositos, filiais. _(e2e-cadastros)_
+- **`crud-vendas`** — sales/fiscal/config CRUD specs: pedidos,
+  pedidos-nfe-snapshot, canais-balcao, bandeiras-cartao, motivos-incidente.
+  _(e2e-vendas)_ Adding a page needs a new spec **and** its filename in the
+  matching project's `testMatch`.
 
 `globalSetup` runs once per run: it seeds the namespaced tenant and mints an
 **ephemeral** Firebase Auth user (`e2e-user-<runId>@example.com`) with all
