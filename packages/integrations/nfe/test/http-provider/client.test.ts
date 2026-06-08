@@ -385,7 +385,10 @@ describe('createNFeHttpClient — danfe', () => {
 
   it('passes dpi for zpl2 and falls back to a default filename', async () => {
     const fetch = vi.fn().mockResolvedValue(
-      new Response('^XA^XZ', { status: 200, headers: { 'Content-Type': 'text/plain; charset=utf-8' } }),
+      new Response('^XA^XZ', {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      }),
     );
     const art = await makeClient(fetch as never).danfe('PED-1', 's1', 'zpl2', 300);
     expect(art.filename).toBe('danfe.txt'); // no Content-Disposition → fallback
@@ -396,7 +399,9 @@ describe('createNFeHttpClient — danfe', () => {
 
   it('maps a 422 to NFeDanfeUnavailableError, NOT NFeRejectedError', async () => {
     const fetch = mockFetch({ status: 422, body: { error: 'estado não renderável' } });
-    const err = await makeClient(fetch).danfe('PED-1', 's1', 'simplificado').catch((e: unknown) => e);
+    const err = await makeClient(fetch)
+      .danfe('PED-1', 's1', 'simplificado')
+      .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(NFeDanfeUnavailableError);
     expect(err).not.toBeInstanceOf(NFeRejectedError);
     expect((err as NFeDanfeUnavailableError).message).toBe('estado não renderável');
@@ -404,7 +409,9 @@ describe('createNFeHttpClient — danfe', () => {
 
   it('maps a 404 to NFePedidoNotFoundError carrying the known pedidoId', async () => {
     const fetch = mockFetch({ status: 404, body: { error: 'not found' } });
-    const err = await makeClient(fetch).danfe('PED-X', 's1', 'simplificado').catch((e: unknown) => e);
+    const err = await makeClient(fetch)
+      .danfe('PED-X', 's1', 'simplificado')
+      .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(NFePedidoNotFoundError);
     expect((err as NFePedidoNotFoundError).pedidoId).toBe('PED-X');
   });

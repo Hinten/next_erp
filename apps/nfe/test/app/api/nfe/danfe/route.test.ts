@@ -23,7 +23,11 @@ vi.mock('@/lib/nfe/orchestrator', async (importOriginal) => {
 import { NextResponse } from 'next/server';
 
 import { verifyCaller } from '@/lib/nfe/auth';
-import { danfeArtifactService, NFeDanfeError, NFePedidoNotFoundError } from '@/lib/nfe/orchestrator';
+import {
+  danfeArtifactService,
+  NFeDanfeError,
+  NFePedidoNotFoundError,
+} from '@/lib/nfe/orchestrator';
 
 import { GET } from '../../../../../app/api/nfe/danfe/route';
 

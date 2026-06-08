@@ -154,9 +154,19 @@ export function renderSimplificadoZpl(model: DanfeModel, opts: ZplOptions = {}):
   // Emitente.
   const emitDoc = model.emit.cnpj ?? model.emit.cpf;
   section('Dados do emitente', [
-    { kind: 'kv', label: model.emit.cnpj ? 'Razão Social' : 'Nome', value: cutString(model.emit.nome, NAME_MAX) },
+    {
+      kind: 'kv',
+      label: model.emit.cnpj ? 'Razão Social' : 'Nome',
+      value: cutString(model.emit.nome, NAME_MAX),
+    },
     ...(emitDoc
-      ? [{ kind: 'kv' as const, label: model.emit.cnpj ? 'CNPJ' : 'CPF', value: formatCpfCnpj(emitDoc) }]
+      ? [
+          {
+            kind: 'kv' as const,
+            label: model.emit.cnpj ? 'CNPJ' : 'CPF',
+            value: formatCpfCnpj(emitDoc),
+          },
+        ]
       : []),
     { kind: 'kv', label: 'IE', value: model.emit.ie },
     { kind: 'wrap', text: enderecoLinha(model.emit.endereco), lines: 3 },
@@ -173,10 +183,16 @@ export function renderSimplificadoZpl(model: DanfeModel, opts: ZplOptions = {}):
 
   // Destinatário.
   const destDoc = model.dest.cnpj ?? model.dest.cpf ?? model.dest.idEstrangeiro;
-  const destRows: Row[] = [{ kind: 'kv', label: 'Nome', value: cutString(model.dest.nome, NAME_MAX) }];
+  const destRows: Row[] = [
+    { kind: 'kv', label: 'Nome', value: cutString(model.dest.nome, NAME_MAX) },
+  ];
   if (destDoc) {
     const label = model.dest.cnpj ? 'CNPJ' : model.dest.cpf ? 'CPF' : 'ID Estrangeiro';
-    destRows.push({ kind: 'kv', label, value: model.dest.idEstrangeiro ? destDoc : formatCpfCnpj(destDoc) });
+    destRows.push({
+      kind: 'kv',
+      label,
+      value: model.dest.idEstrangeiro ? destDoc : formatCpfCnpj(destDoc),
+    });
   }
   if (model.dest.ie) destRows.push({ kind: 'kv', label: 'IE', value: model.dest.ie });
   if (model.dest.endereco) {

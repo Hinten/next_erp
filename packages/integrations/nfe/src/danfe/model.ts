@@ -16,11 +16,7 @@
  * the A4 retrato/paisagem layouts lands in PR2 and extends this same model.
  */
 import { parse } from '../xml';
-import type {
-  TNfeProc,
-  TNFe_infNFe,
-  TNFe_infNFe_total_ICMSTot,
-} from '../types/nfe-schema';
+import type { TNfeProc, TNFe_infNFe, TNFe_infNFe_total_ICMSTot } from '../types/nfe-schema';
 import { onlyDigits } from './format';
 
 /** A structured address (raw values — the renderers format cep/fone). */

@@ -48,8 +48,7 @@ export async function danfeArtifactService(
   }
   const nota = snap.data() as NotaFiscalEletronica;
 
-  const renderable =
-    nota.estado === ESTADO_NFE.aprovada || nota.estado === ESTADO_NFE.cancelada;
+  const renderable = nota.estado === ESTADO_NFE.aprovada || nota.estado === ESTADO_NFE.cancelada;
   if (!renderable) {
     throw new NFeDanfeError(
       `pedido '${pedidoId}' nfe '${nfeId}': estado='${nota.estado}' não possui DANFE — ` +
