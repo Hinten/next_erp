@@ -15,6 +15,7 @@ import { IconFileText, IconPrinter, IconTag } from '@tabler/icons-react';
 
 import {
   NFeHttpError,
+  NFeNetworkError,
   type NFeDanfeFormat,
 } from '@delfrance/integrations-nfe/http-provider';
 
@@ -38,7 +39,11 @@ export function DanfeMenu({ pedidoId, nfeId, size = 'xs', variant = 'light' }: D
     try {
       await downloadDanfe(client, pedidoId, nfeId, format);
     } catch (err) {
-      if (err instanceof NFeHttpError) {
+      // Both an HTTP-status error and a transport/network failure are expected,
+      // user-facing outcomes — surface a notification. Network failures throw
+      // `NFeNetworkError` (not an `NFeHttpError` subclass), so handle it too;
+      // only truly unexpected errors rethrow.
+      if (err instanceof NFeHttpError || err instanceof NFeNetworkError) {
         notifications.show({
           color: 'red',
           title: 'Falha ao gerar a DANFE',

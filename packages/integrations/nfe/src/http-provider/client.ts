@@ -290,6 +290,7 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
   async function fetchArtifact(
     path: string,
     fallbackName: string,
+    context: { pedidoId?: string } = {},
   ): Promise<NFeDanfeArtifact> {
     const token = await config.getAuthToken();
     let res: Response;
@@ -322,7 +323,7 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
             : 'DANFE indisponível';
         throw new NFeDanfeUnavailableError(message, body);
       }
-      throw errorFromResponse(res.status, body, {});
+      throw errorFromResponse(res.status, body, context);
     }
     const blob = await res.blob();
     return {
@@ -364,7 +365,7 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       const params = new URLSearchParams({ pedidoId, nfeId, format });
       if (dpi != null) params.set('dpi', String(dpi));
       const ext = format === 'zpl2' ? 'txt' : 'pdf';
-      return fetchArtifact(`/api/nfe/danfe?${params.toString()}`, `danfe.${ext}`);
+      return fetchArtifact(`/api/nfe/danfe?${params.toString()}`, `danfe.${ext}`, { pedidoId });
     },
   };
 }

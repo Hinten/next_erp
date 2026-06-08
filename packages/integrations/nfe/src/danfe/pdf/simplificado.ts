@@ -1,8 +1,9 @@
 /**
  * DANFE Simplificado — Etiqueta (10×15 cm) PDF renderer.
  *
- * Ports `gerenerateDanfeSimplificadoEtiqueta10x15` from the legacy Flutter
- * package: a compact label with the title, Code 128 of the chave + the grouped
+ * Ports the legacy Flutter `gerenerateDanfeSimplificadoEtiqueta10x15` (sic —
+ * the original Dart function name, misspelled at the source): a compact label
+ * with the title, Code 128 of the chave + the grouped
  * chave text, the autorização protocolo, and bordered boxes for emitente, dados
  * gerais da NF-e, destinatário and dados adicionais. `tpAmb=2` stamps a
  * "SEM VALOR FISCAL" watermark; a cancelada NF-e stamps "CANCELADO".

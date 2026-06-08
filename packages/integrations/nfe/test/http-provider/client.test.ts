@@ -396,11 +396,18 @@ describe('createNFeHttpClient — danfe', () => {
     expect((err as NFeDanfeUnavailableError).message).toBe('estado não renderável');
   });
 
-  it('maps a 404 to NFePedidoNotFoundError', async () => {
+  it('maps a 404 to NFePedidoNotFoundError carrying the known pedidoId', async () => {
     const fetch = mockFetch({ status: 404, body: { error: 'not found' } });
+    const err = await makeClient(fetch).danfe('PED-X', 's1', 'simplificado').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFePedidoNotFoundError);
+    expect((err as NFePedidoNotFoundError).pedidoId).toBe('PED-X');
+  });
+
+  it('wraps a transport failure in NFeNetworkError', async () => {
+    const fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
     await expect(
-      makeClient(fetch).danfe('PED-X', 's1', 'simplificado'),
-    ).rejects.toBeInstanceOf(NFePedidoNotFoundError);
+      makeClient(fetch as never).danfe('PED-1', 's1', 'simplificado'),
+    ).rejects.toBeInstanceOf(NFeNetworkError);
   });
 });
 
