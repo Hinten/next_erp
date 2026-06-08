@@ -189,7 +189,9 @@ async function postSoap(input: PostInput): Promise<PostResult> {
 
   const { statusCode, body } = await new Promise<{ statusCode: number; body: string }>(
     (resolve, reject) => {
-      client.request(
+      // Fire-and-forget: the callback resolves/rejects the surrounding Promise;
+      // the request handle itself is intentionally not awaited.
+      void client.request(
         input.url,
         envelope,
         (err: unknown, res: { status?: number } | undefined, responseBody: unknown) => {

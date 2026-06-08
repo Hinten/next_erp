@@ -50,7 +50,7 @@ export default function WebchatPage() {
   // Boot: anonymous auth + create-or-resume Conversa keyed by uid.
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    void (async () => {
       try {
         const userId = await ensureAnonAuth();
         if (cancelled) return;

@@ -1,9 +1,10 @@
-import base, { prettier } from '@delfrance/config-eslint';
+import base, { prettier, typeAware } from '@delfrance/config-eslint';
 import next from 'eslint-config-next';
 
 const config = [
   ...base,
   ...next,
+  ...typeAware(import.meta.dirname),
   {
     rules: {
       // React Compiler-aware rules from eslint-plugin-react-hooks v7. The

@@ -1,4 +1,4 @@
-import base, { prettier } from '@delfrance/config-eslint';
+import base, { prettier, typeAware } from '@delfrance/config-eslint';
 import next from 'eslint-config-next';
 
 // Flat config REPLACES a rule's value per matching `files` block — it does not
@@ -35,6 +35,7 @@ const noRawAdminFirestoreRefs = [
 const config = [
   ...base,
   ...next,
+  ...typeAware(import.meta.dirname),
   {
     rules: {
       'react-hooks/set-state-in-effect': 'warn',

@@ -84,6 +84,25 @@ const config = [
       'no-restricted-syntax': ['error', ruleBCertEnv],
     },
   },
+  // Type-aware async-correctness rules. Scoped to `src/**` so the file set
+  // matches this package's tsconfig `include` (`src/**/*.ts`) — the root
+  // `vitest.config.ts` stays outside the typed program and is parsed by the
+  // non-type-aware block above. `projectService` discovers the nearest tsconfig.
+  {
+    files: ['src/**/*.{ts,mts}'],
+    languageOptions: {
+      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
+    },
+    plugins: { '@typescript-eslint': tseslint.plugin },
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-misused-promises': [
+        'error',
+        { checksVoidReturn: { attributes: false } },
+      ],
+      '@typescript-eslint/await-thenable': 'error',
+    },
+  },
   // eslint-config-prettier LAST — disables stylistic rules that conflict with
   // Prettier (formatting is owned by `prettier.config.mjs` / `pnpm format`).
   eslintConfigPrettier,

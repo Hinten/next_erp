@@ -2,11 +2,55 @@
 // rules (e.g., apps/web extends with eslint-config-next).
 import noInlineAdminCollection from './rules/no-inline-admin-collection.js';
 import eslintConfigPrettier from 'eslint-config-prettier';
+import tseslint from 'typescript-eslint';
 
 // Re-export eslint-config-prettier so every consumer can append it as the LAST
 // element of its flat config, switching off any stylistic rules that would
 // conflict with Prettier. Centralized here so the dependency lives in one place.
 export const prettier = eslintConfigPrettier;
+
+/**
+ * High-signal, type-aware async-correctness rules. Spread the result into a
+ * workspace's flat config: `...typeAware(import.meta.dirname)`.
+ *
+ * `projectService: true` lets typescript-eslint discover the nearest tsconfig
+ * for each linted file; `tsconfigRootDir` must be the consuming workspace dir,
+ * so always pass `import.meta.dirname`. Scope `files` to what that workspace's
+ * tsconfig `include`s — apps include everything (default
+ * `**​/*.{ts,tsx,mts}`), while library packages keep sources under `src/` and
+ * should pass `{ files: ['src/**​/*.{ts,mts}'] }` so root-level config `.ts`
+ * files (outside the typed program) don't trip "file not in project".
+ *
+ * We deliberately do NOT enable `recommendedTypeChecked`: its `no-unsafe-*`
+ * family floods on the untyped Firebase / SOAP SDK surfaces. These three rules
+ * are the high-value async-correctness subset worth gating CI on.
+ *
+ * NOTE: this block does NOT register the `@typescript-eslint` plugin — spread
+ * it AFTER `eslint-config-next`, which already registers that plugin (flat
+ * config forbids redefining a plugin name). It only layers the type-aware
+ * parser settings + the three rules on top.
+ */
+export function typeAware(tsconfigRootDir, { files = ['**/*.{ts,tsx,mts}'] } = {}) {
+  return [
+    {
+      files,
+      languageOptions: {
+        parser: tseslint.parser,
+        parserOptions: { projectService: true, tsconfigRootDir },
+      },
+      rules: {
+        '@typescript-eslint/no-floating-promises': 'error',
+        // checksVoidReturn.attributes:false silences only the benign JSX
+        // handler case (onClick={async () => …}); the dangerous misuses still fire.
+        '@typescript-eslint/no-misused-promises': [
+          'error',
+          { checksVoidReturn: { attributes: false } },
+        ],
+        '@typescript-eslint/await-thenable': 'error',
+      },
+    },
+  ];
+}
 
 const config = [
   {
