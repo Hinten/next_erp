@@ -40,6 +40,19 @@ export class NFeMissingImpostoError extends Error {
   }
 }
 
+/**
+ * A DANFE artifact cannot be produced for this NF-e: it never reached an
+ * authorizable estado (only aprovada / cancelada have a procNFe to render), or
+ * its `xml_nfe_proc` is missing. A presentation-layer precondition, never a
+ * SEFAZ round-trip — the route maps it to **422**.
+ */
+export class NFeDanfeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NFeDanfeError';
+  }
+}
+
 /** Cancelamento rejected by SEFAZ, or the NF-e is not in a cancellable state. */
 export class NFeCancelamentoError extends Error {
   constructor(
