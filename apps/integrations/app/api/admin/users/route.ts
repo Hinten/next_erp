@@ -4,9 +4,12 @@ import { PERM, hasPerm } from '@delfrance/auth';
 import { cargoCollection, usuarioCollection } from '@delfrance/data/admin/collections';
 import { aggregatePermissoes, type Cargo, isSuperUserBits, type Usuario } from '@delfrance/schemas';
 import { getAdminAuth, getAdminFirestore } from '@/lib/firebase/admin';
+import { rootLog } from '@/lib/log';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+
+const log = rootLog.child({ mod: 'admin/users' });
 
 const createUserSchema = z.object({
   email: z.string().email().max(255),
@@ -66,7 +69,7 @@ async function verifyCaller(req: Request) {
     }
     return { decoded };
   } catch (e) {
-    console.error('[admin/users] verifyIdToken failed:', e);
+    log.error({ err: e }, 'verifyIdToken failed');
     // firebase-admin throws `FirebaseAuthError` (an Error subclass with a
     // string `code` like `auth/id-token-expired`). We can't `instanceof` it
     // because the class isn't part of the package's public runtime API; the
