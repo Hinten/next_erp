@@ -78,10 +78,27 @@ export function text(doc: Doc, str: string, x: number, y: number, opts: TextOpts
     .text(upper ? str.toUpperCase() : str, x, y, { width, align, lineBreak, height, ellipsis });
 }
 
+/** Clip an (already-cased) string to `maxWidth` points, appending `…`. */
+export function clipToWidth(
+  doc: Doc,
+  str: string,
+  maxWidth: number,
+  font: string,
+  size: number,
+): string {
+  doc.font(font).fontSize(size);
+  if (doc.widthOfString(str) <= maxWidth) return str;
+  let s = str;
+  while (s.length > 1 && doc.widthOfString(`${s}…`) > maxWidth) s = s.slice(0, -1);
+  return `${s}…`;
+}
+
 /**
- * A bold label on the left and its value on the right, within `[x, x+w]` on one
- * line. Mirrors the `Row(label … Expanded … value)` pattern repeated across the
- * legacy boxes.
+ * A bold label on the left and its value right-aligned in the space that
+ * **remains after the label**, on one line within `[x, x+w]`. The value is
+ * clipped (with `…`) to that remaining width so a long razão social can never
+ * overlap the label. Mirrors the `Row(label … Expanded … value)` pattern
+ * repeated across the legacy boxes.
  */
 export function labeledRow(
   doc: Doc,
@@ -92,8 +109,15 @@ export function labeledRow(
   value: string,
   size = 7,
 ): void {
+  const labelUpper = label.toUpperCase();
+  doc.font(FONT_BOLD).fontSize(size);
+  const labelW = doc.widthOfString(labelUpper);
+  const gap = 6;
+  const valX = x + labelW + gap;
+  const valW = Math.max(10, x + w - valX);
+  const valClipped = clipToWidth(doc, value.toUpperCase(), valW, FONT, size);
   text(doc, label, x, y, { size, bold: true, lineBreak: false });
-  text(doc, value, x, y, { size, width: w, align: 'right', lineBreak: false });
+  text(doc, valClipped, valX, y, { size, width: valW, align: 'right', upper: false, lineBreak: false });
 }
 
 /**

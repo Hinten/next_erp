@@ -143,7 +143,7 @@ export async function renderSimplificado(
 
   // Destinatário.
   const destDoc = model.dest.cnpj ?? model.dest.cpf ?? model.dest.idEstrangeiro;
-  const destRows: Row[] = [{ kind: 'kv', label: 'Nome/Razão Social', value: model.dest.nome }];
+  const destRows: Row[] = [{ kind: 'kv', label: 'Nome', value: model.dest.nome }];
   if (destDoc) {
     const label = model.dest.cnpj ? 'CNPJ' : model.dest.cpf ? 'CPF' : 'ID Estrangeiro';
     destRows.push({ kind: 'kv', label, value: model.dest.idEstrangeiro ? destDoc : formatCpfCnpj(destDoc) });
