@@ -28,16 +28,13 @@ describe('bandeiraCartaoSchema', () => {
   });
 
   it('rejects empty nome', () => {
-    expect(
-      bandeiraCartaoSchema.safeParse({ ...MINIMAL, nome: '' }).success,
-    ).toBe(false);
+    expect(bandeiraCartaoSchema.safeParse({ ...MINIMAL, nome: '' }).success).toBe(false);
   });
 
   it('rejects nome > 255 chars', () => {
-    expect(
-      bandeiraCartaoSchema.safeParse({ ...MINIMAL, nome: 'x'.repeat(256) })
-        .success,
-    ).toBe(false);
+    expect(bandeiraCartaoSchema.safeParse({ ...MINIMAL, nome: 'x'.repeat(256) }).success).toBe(
+      false,
+    );
   });
 
   it('rejects cnpj_instituicao > 14 chars', () => {
@@ -59,15 +56,11 @@ describe('bandeiraCartaoSchema', () => {
   });
 
   it('rejects tarifa < 0', () => {
-    expect(
-      bandeiraCartaoSchema.safeParse({ ...MINIMAL, tarifa: -1 }).success,
-    ).toBe(false);
+    expect(bandeiraCartaoSchema.safeParse({ ...MINIMAL, tarifa: -1 }).success).toBe(false);
   });
 
   it('rejects maxParcelas < 1', () => {
-    expect(
-      bandeiraCartaoSchema.safeParse({ ...MINIMAL, maxParcelas: 0 }).success,
-    ).toBe(false);
+    expect(bandeiraCartaoSchema.safeParse({ ...MINIMAL, maxParcelas: 0 }).success).toBe(false);
   });
 
   it('accepts a known bandeira code', () => {
@@ -79,9 +72,7 @@ describe('bandeiraCartaoSchema', () => {
   });
 
   it('rejects an unknown bandeira code', () => {
-    expect(
-      bandeiraCartaoSchema.safeParse({ ...MINIMAL, bandeira: '00' }).success,
-    ).toBe(false);
+    expect(bandeiraCartaoSchema.safeParse({ ...MINIMAL, bandeira: '00' }).success).toBe(false);
   });
 
   // Regression: Firebase JS SDK v12 rejects `undefined` in addDoc/setDoc.

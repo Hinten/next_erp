@@ -54,16 +54,11 @@ describe('ColumnPicker', () => {
       />,
     );
     openPicker();
-    expect(
-      screen.getByRole('textbox', { name: 'Buscar coluna' }),
-    ).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Buscar coluna' })).toBeTruthy();
   });
 
   it('filters the checkbox list by label as the user types', () => {
-    const fields: ColumnPickerItem[] = [
-      ...makeFields(7),
-      { key: 'nf', label: 'Nota Fiscal' },
-    ];
+    const fields: ColumnPickerItem[] = [...makeFields(7), { key: 'nf', label: 'Nota Fiscal' }];
     wrap(
       <ColumnPicker
         fields={fields}
@@ -101,10 +96,7 @@ describe('ColumnPicker', () => {
 
   it('toggling a checkbox still calls onToggle with the column key', () => {
     const onToggle = vi.fn();
-    const fields: ColumnPickerItem[] = [
-      ...makeFields(7),
-      { key: 'nf', label: 'Nota Fiscal' },
-    ];
+    const fields: ColumnPickerItem[] = [...makeFields(7), { key: 'nf', label: 'Nota Fiscal' }];
     wrap(
       <ColumnPicker
         fields={fields}
@@ -130,9 +122,10 @@ describe('ColumnPicker', () => {
       />,
     );
     openPicker();
-    expect(
-      screen.getByRole('button', { name: 'Reordenar colunas' }),
-    ).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Reordenar colunas' })).toHaveProperty(
+      'disabled',
+      true,
+    );
   });
 
   it('reorder mode lists only the visible columns', () => {
@@ -150,9 +143,7 @@ describe('ColumnPicker', () => {
     // (Campo 02) does not.
     expect(screen.getByRole('button', { name: 'Arrastar Campo 01' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Arrastar Campo 03' })).toBeTruthy();
-    expect(
-      screen.queryByRole('button', { name: 'Arrastar Campo 02' }),
-    ).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Arrastar Campo 02' })).toBeNull();
   });
 
   it('the down arrow reorders and calls onReorder with the new order', () => {
@@ -167,9 +158,7 @@ describe('ColumnPicker', () => {
       />,
     );
     openReorder();
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Mover Campo 01 para baixo' }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Mover Campo 01 para baixo' }));
     expect(onReorder).toHaveBeenCalledWith(['c2', 'c1', 'c3']);
   });
 
@@ -184,12 +173,14 @@ describe('ColumnPicker', () => {
       />,
     );
     openReorder();
-    expect(
-      screen.getByRole('button', { name: 'Mover Campo 01 para cima' }),
-    ).toHaveProperty('disabled', true);
-    expect(
-      screen.getByRole('button', { name: 'Mover Campo 02 para baixo' }),
-    ).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Mover Campo 01 para cima' })).toHaveProperty(
+      'disabled',
+      true,
+    );
+    expect(screen.getByRole('button', { name: 'Mover Campo 02 para baixo' })).toHaveProperty(
+      'disabled',
+      true,
+    );
   });
 
   it('the back button returns from reorder mode to the checkbox list', () => {

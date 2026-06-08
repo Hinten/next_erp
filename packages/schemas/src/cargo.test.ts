@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  cargoMeta,
-  cargoSchema,
-  decodePermissoes,
-  encodePermissoes,
-} from './cargo';
+import { cargoMeta, cargoSchema, decodePermissoes, encodePermissoes } from './cargo';
 
 describe('cargoSchema', () => {
   it('accepts a minimal cargo with null descricao and applies permissoes default', () => {
@@ -18,15 +13,11 @@ describe('cargoSchema', () => {
   });
 
   it('rejects empty nome', () => {
-    expect(
-      cargoSchema.safeParse({ nome: '', descricao: null }).success,
-    ).toBe(false);
+    expect(cargoSchema.safeParse({ nome: '', descricao: null }).success).toBe(false);
   });
 
   it('rejects nome longer than 255 chars', () => {
-    expect(
-      cargoSchema.safeParse({ nome: 'x'.repeat(256), descricao: null }).success,
-    ).toBe(false);
+    expect(cargoSchema.safeParse({ nome: 'x'.repeat(256), descricao: null }).success).toBe(false);
   });
 
   it('rejects non-numeric permissoes', () => {

@@ -6,12 +6,7 @@ import {
   seedBalcaoFixtures,
 } from './_helpers/seed-data';
 import { expectRowHidden, expectRowVisible } from './helpers/table-view';
-import {
-  clickSave,
-  confirmDelete,
-  fillField,
-  selectFieldWithSearch,
-} from './helpers/object-view';
+import { clickSave, confirmDelete, fillField, selectFieldWithSearch } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -60,9 +55,7 @@ test.describe.serial('Canais Balcão e2e — TableView / ObjectView', () => {
     await page.goto('/canais/balcao');
     await page.getByRole('link', { name: 'Novo balcão' }).click();
     await expect(page).toHaveURL(/\/canais\/balcao\/novo$/);
-    await expect(
-      page.getByRole('heading', { name: 'Novo balcão' }),
-    ).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Novo balcão' })).toBeVisible();
   });
 
   test('creates a new balcao', async ({ page }) => {
@@ -79,13 +72,10 @@ test.describe.serial('Canais Balcão e2e — TableView / ObjectView', () => {
     // onSaved does router.replace('/canais/balcao/<id>').
     await page.waitForURL(
       (url) =>
-        /^\/canais\/balcao\/[^/]+$/.test(url.pathname) &&
-        url.pathname !== '/canais/balcao/novo',
+        /^\/canais\/balcao\/[^/]+$/.test(url.pathname) && url.pathname !== '/canais/balcao/novo',
       { timeout: 15_000 },
     );
-    await expect
-      .poll(() => docExistsByName('integracao', nome), { timeout: 15_000 })
-      .toBe(true);
+    await expect.poll(() => docExistsByName('integracao', nome), { timeout: 15_000 }).toBe(true);
 
     await page.goto('/canais/balcao');
     await expectRowVisible(page, nome);
@@ -105,9 +95,7 @@ test.describe.serial('Canais Balcão e2e — TableView / ObjectView', () => {
     await page.waitForURL(/\/canais\/balcao$/, { timeout: 15_000 });
 
     await page.goto(`/canais/balcao/${row(4)}`);
-    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(
-      `${prefix}-004-editado`,
-    );
+    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(`${prefix}-004-editado`);
   });
 
   test('deletes a balcao through the typed-confirm modal', async ({ page }) => {

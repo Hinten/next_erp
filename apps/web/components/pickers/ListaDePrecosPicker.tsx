@@ -4,11 +4,7 @@ import { useMemo } from 'react';
 import { Select } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import {
-  type DocumentReference,
-  type Firestore,
-  getDocs,
-} from 'firebase/firestore';
+import { type DocumentReference, type Firestore, getDocs } from 'firebase/firestore';
 import { buildQuery, orderByField } from '@delfrance/data';
 import type { ListaDePrecos } from '@delfrance/schemas';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
@@ -83,9 +79,7 @@ export function ListaDePrecosPicker({
       }}
       disabled={disabled || query.isLoading}
       error={error ?? (query.error instanceof FirebaseError ? query.error.message : undefined)}
-      placeholder={
-        query.isLoading ? 'Carregando…' : 'Opcional — selecione uma lista'
-      }
+      placeholder={query.isLoading ? 'Carregando…' : 'Opcional — selecione uma lista'}
       searchable
       clearable
       nothingFoundMessage="Nenhuma lista encontrada"

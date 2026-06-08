@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type {
-  ImpostoCategoria,
-  ImpostoProduto,
-  RegraImposto,
-} from '@delfrance/schemas';
+import type { ImpostoCategoria, ImpostoProduto, RegraImposto } from '@delfrance/schemas';
 
 import {
   createImpostoResolver,
@@ -94,9 +90,7 @@ describe('resolveItemImposto — cascade priority', () => {
       ...VALID_IMPOSTO_BLOB,
     };
     const deps = makeDeps({
-      readProduto: vi
-        .fn()
-        .mockResolvedValue({ categoriaProdutoOuterRef: 'categorias/cat-7' }),
+      readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef: 'categorias/cat-7' }),
       readImpostoCategoriaSubcoll: vi.fn().mockResolvedValue([impostoCategoria]),
     });
     const resolver = createImpostoResolver(deps);
@@ -144,9 +138,7 @@ describe('resolveItemImposto — cascade priority', () => {
     };
     const deps = makeDeps({
       bundle: { operacaoId: ACTIVE_OPERACAO, regrasImposto: [regra] },
-      readProduto: vi
-        .fn()
-        .mockResolvedValue({ categoriaProdutoOuterRef: 'categorias/cat-7' }),
+      readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef: 'categorias/cat-7' }),
     });
     const resolver = createImpostoResolver(deps);
     const out = await resolver.resolve('p1', null);

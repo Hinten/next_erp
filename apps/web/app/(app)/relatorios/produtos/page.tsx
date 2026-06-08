@@ -2,15 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
-import {
-  Alert,
-  Anchor,
-  NumberInput,
-  Skeleton,
-  Stack,
-  Table,
-  Text,
-} from '@mantine/core';
+import { Alert, Anchor, NumberInput, Skeleton, Stack, Table, Text } from '@mantine/core';
 import { BarChart } from '@mantine/charts';
 import { PageHeader } from '@delfrance/ui';
 import { format, money } from '@delfrance/core/money';

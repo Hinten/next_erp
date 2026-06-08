@@ -9,12 +9,7 @@ import {
   doc,
 } from 'firebase/firestore';
 import type { z } from 'zod';
-import {
-  type PathContext,
-  parseForWrite,
-  parseSoftRead,
-  resolvePath,
-} from './zodParse';
+import { type PathContext, parseForWrite, parseSoftRead, resolvePath } from './zodParse';
 
 export type { PathContext };
 
@@ -32,11 +27,7 @@ export interface CollectionHandle<T extends z.ZodTypeAny> {
   /** Resolved collection path string for a given context. */
   resolvePath(ctx: PathContext): string;
   ref(db: Firestore, ctx: PathContext): CollectionReference<z.infer<T>>;
-  docRef(
-    db: Firestore,
-    ctx: PathContext,
-    id: string,
-  ): DocumentReference<z.infer<T>>;
+  docRef(db: Firestore, ctx: PathContext, id: string): DocumentReference<z.infer<T>>;
   converter: FirestoreDataConverter<z.infer<T>>;
 }
 

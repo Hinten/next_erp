@@ -7,11 +7,11 @@ NF-e (Nota Fiscal Eletrônica, model 55, layout 4.00) for SEFAZ.
 Pick one of two ways to provide the A1 PFX (`.pfx` and `.p12` are the
 same PKCS#12 format — both are accepted):
 
-| Env var | When to use | Value |
-|---|---|---|
-| `NFE_CERT_PATH` | Local dev — most convenient | Filesystem path to the PFX file |
-| `NFE_CERT_BASE64` | CI / secret managers | Base-64 of the PFX bytes |
-| `NFE_CERT_PASSWORD` | **Always required** | Passphrase the PFX was exported with |
+| Env var             | When to use                 | Value                                |
+| ------------------- | --------------------------- | ------------------------------------ |
+| `NFE_CERT_PATH`     | Local dev — most convenient | Filesystem path to the PFX file      |
+| `NFE_CERT_BASE64`   | CI / secret managers        | Base-64 of the PFX bytes             |
+| `NFE_CERT_PASSWORD` | **Always required**         | Passphrase the PFX was exported with |
 
 If both `NFE_CERT_PATH` and `NFE_CERT_BASE64` are set, **path wins** —
 typically a developer overriding a checked-in CI value.
@@ -47,7 +47,6 @@ in a route handler) reach for `loadCertificateFromPath(path, pwd)` or
    endpoints chain through Brazilian CAs (ICP-Brasil → SERPRO /
    SAFEWEB / VALID → leaf), not all of which are in Node's bundled
    Mozilla root store. Three resolution paths, in priority order:
-
    1. **Vendor the chain (recommended)** — run the helper script once:
 
       ```powershell
@@ -70,7 +69,7 @@ in a route handler) reach for `loadCertificateFromPath(path, pwd)` or
       Linux containers it typically doesn't.
 
    For `apps/nfe` route handlers in production, `createSefazAgent(cert,
-   { ca })` accepts the PEM bundle programmatically — load the chain
+{ ca })` accepts the PEM bundle programmatically — load the chain
    once at server start and reuse the agent.
 
 ## How to use — the typed operations layer
@@ -164,8 +163,13 @@ const out = generateNFe({
   numeracao: 7,
   serie: 1,
   dhEmi: new Date(),
-  filial, operacao, cliente, enderecoDest,
-  itens: [/* ... */],
+  filial,
+  operacao,
+  cliente,
+  enderecoDest,
+  itens: [
+    /* ... */
+  ],
   totalXml: '<total>...</total>',
   transpXml: '<transp>...</transp>',
   pagXml: '<pag>...</pag>',
@@ -179,16 +183,16 @@ const signedXml = signNFe(out.nfeXml, cert);
 
 ## Layers
 
-| Module | Job |
-|---|---|
-| `src/operations/` | **Typed entry points** — start here |
-| `src/generator/` | Pedido data → unsigned `<NFe>` + 44-digit chave |
-| `src/sign/` | XMLDSig signing via `xml-crypto` |
-| `src/xsd/` | Canonical SEFAZ XSD validation (`xmllint-wasm`) |
-| `src/safety/` | Production-traffic guard (`assertSafeTpAmb`) |
-| `src/soap/` | Low-level SOAP 1.2 transport + mTLS — power users only |
-| `src/cert/` | A1 PFX loader |
-| `src/state/` | cStat → estado mapping, retry policy |
-| `src/xml/` | NF-e XML (de)serializer (META-driven) |
-| `src/sanitize/` | SEFAZ-safe text sanitization |
-| `src/endpoints/` | SEFAZ URLs by UF + ambiente |
+| Module            | Job                                                    |
+| ----------------- | ------------------------------------------------------ |
+| `src/operations/` | **Typed entry points** — start here                    |
+| `src/generator/`  | Pedido data → unsigned `<NFe>` + 44-digit chave        |
+| `src/sign/`       | XMLDSig signing via `xml-crypto`                       |
+| `src/xsd/`        | Canonical SEFAZ XSD validation (`xmllint-wasm`)        |
+| `src/safety/`     | Production-traffic guard (`assertSafeTpAmb`)           |
+| `src/soap/`       | Low-level SOAP 1.2 transport + mTLS — power users only |
+| `src/cert/`       | A1 PFX loader                                          |
+| `src/state/`      | cStat → estado mapping, retry policy                   |
+| `src/xml/`        | NF-e XML (de)serializer (META-driven)                  |
+| `src/sanitize/`   | SEFAZ-safe text sanitization                           |
+| `src/endpoints/`  | SEFAZ URLs by UF + ambiente                            |

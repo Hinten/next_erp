@@ -41,9 +41,7 @@ async function main(): Promise<void> {
     console.log('[consult-dev-pedido] · still processing (cStat=105) — re-run later');
     return;
   }
-  console.error(
-    `[consult-dev-pedido] ✗ unexpected cStat=${result.cStat} ${result.xMotivo}`,
-  );
+  console.error(`[consult-dev-pedido] ✗ unexpected cStat=${result.cStat} ${result.xMotivo}`);
   process.exit(2);
 }
 

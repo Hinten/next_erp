@@ -29,11 +29,7 @@ export interface PermissionEditorProps {
   readOnly?: boolean;
 }
 
-export function PermissionEditor({
-  value,
-  onChange,
-  readOnly = false,
-}: PermissionEditorProps) {
+export function PermissionEditor({ value, onChange, readOnly = false }: PermissionEditorProps) {
   function toggle(bit: bigint, checked: boolean) {
     if (readOnly || !onChange) return;
     const next = checked ? value | bit : value & ~bit;

@@ -39,9 +39,7 @@ describe('WhatsAppClient.sendText', () => {
   });
 
   it('attaches context when replyTo is set', async () => {
-    const fetcher = fakeFetch([
-      { status: 200, body: { messages: [{ id: 'wamid.456' }] } },
-    ]);
+    const fetcher = fakeFetch([{ status: 200, body: { messages: [{ id: 'wamid.456' }] } }]);
     const client = new WhatsAppClient({
       phoneNumberId: '111',
       accessToken: 'tk',
@@ -57,17 +55,13 @@ describe('WhatsAppClient.sendText', () => {
   });
 
   it('throws on non-2xx response with body content', async () => {
-    const fetcher = fakeFetch([
-      { status: 401, body: { error: 'unauthorized' } },
-    ]);
+    const fetcher = fakeFetch([{ status: 401, body: { error: 'unauthorized' } }]);
     const client = new WhatsAppClient({
       phoneNumberId: '111',
       accessToken: 'tk',
       fetch: fetcher as unknown as typeof fetch,
     });
-    await expect(
-      client.sendText({ to: '55', text: 'x' }),
-    ).rejects.toThrow(/401/);
+    await expect(client.sendText({ to: '55', text: 'x' })).rejects.toThrow(/401/);
   });
 
   it('throws when response is missing messages[0].id', async () => {
@@ -77,8 +71,6 @@ describe('WhatsAppClient.sendText', () => {
       accessToken: 'tk',
       fetch: fetcher as unknown as typeof fetch,
     });
-    await expect(
-      client.sendText({ to: '55', text: 'x' }),
-    ).rejects.toThrow(/messages\[0\]\.id/);
+    await expect(client.sendText({ to: '55', text: 'x' })).rejects.toThrow(/messages\[0\]\.id/);
   });
 });

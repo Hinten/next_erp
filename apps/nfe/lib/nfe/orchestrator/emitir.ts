@@ -185,9 +185,7 @@ export async function runAllocateGenerateSignTx(
   return fs.runTransaction<TxOutcome>(async (tx) => {
     // Reads MUST precede writes in a Firestore transaction.
     const nfeSnap = await tx.get(nfeRef);
-    const existing = nfeSnap.exists
-      ? (nfeSnap.data() as NotaFiscalEletronica)
-      : null;
+    const existing = nfeSnap.exists ? (nfeSnap.data() as NotaFiscalEletronica) : null;
 
     // Bloqueada NFes (cStat in STATUS_BLOQUEADORES) short-circuit —
     // covers both the normal pre-check AND the race where another emit
@@ -200,8 +198,10 @@ export async function runAllocateGenerateSignTx(
       return { skip: true, existing };
     }
 
-    console.debug(`[nfe/orchestrator] No bloqueada NFe found for pedidoId '${pedidoId}' — proceeding with emit. ` +
-      `Existing NFe doc ${existing ? 'is not bloqueada (cStat=' + existing.cStat + ')' : 'does not exist'}.`);
+    console.debug(
+      `[nfe/orchestrator] No bloqueada NFe found for pedidoId '${pedidoId}' — proceeding with emit. ` +
+        `Existing NFe doc ${existing ? 'is not bloqueada (cStat=' + existing.cStat + ')' : 'does not exist'}.`,
+    );
 
     const cfgSnap = await tx.get(nfeConfigRef);
     if (!cfgSnap.exists) throw new NFeConfigNotFoundError(bundle.filialId);
@@ -218,8 +218,7 @@ export async function runAllocateGenerateSignTx(
     const reuse = existing != null;
     const nNF = reuse ? existing.numeracao : cfg.numeracao_atual + 1;
     const serie = reuse ? existing.serie : cfg.serie;
-    const reuseCNF =
-      reuse && existing.chave ? extractCNFFromChave(existing.chave) : undefined;
+    const reuseCNF = reuse && existing.chave ? extractCNFFromChave(existing.chave) : undefined;
     const idLote = cfg.idLote + 1;
 
     const { chave, signedXml, docData } = buildNfeDocWrite(
@@ -335,19 +334,13 @@ export async function runChunkAllocateTx(
   filialId: string,
   group: ReadonlyArray<{ prep: EmissionPrep; pedidoId: string }>,
 ): Promise<{ members: ChunkMember[]; idLote: number }> {
-  const nfeConfigRef = nfeConfigCollection.docRef(
-    fs,
-    { filialId },
-    DEFAULT_NFE_CONFIG_DOC_ID,
-  );
+  const nfeConfigRef = nfeConfigCollection.docRef(fs, { filialId }, DEFAULT_NFE_CONFIG_DOC_ID);
   return fs.runTransaction(async (tx) => {
     // Reads first (Firestore rule): config once + every nfev4 doc.
     const cfgSnap = await tx.get(nfeConfigRef);
     if (!cfgSnap.exists) throw new NFeConfigNotFoundError(filialId);
     const cfg = nfeConfigSchema.parse(cfgSnap.data()) as NFeConfig;
-    const existingSnaps = await Promise.all(
-      group.map((sp) => tx.get(sp.prep.nfeRef)),
-    );
+    const existingSnaps = await Promise.all(group.map((sp) => tx.get(sp.prep.nfeRef)));
 
     const idLote = cfg.idLote + 1;
     const members: ChunkMember[] = [];
@@ -362,9 +355,7 @@ export async function runChunkAllocateTx(
     for (let i = 0; i < group.length; i++) {
       const sp = group[i]!;
       const snap = existingSnaps[i]!;
-      const existing = snap.exists
-        ? (snap.data() as NotaFiscalEletronica)
-        : null;
+      const existing = snap.exists ? (snap.data() as NotaFiscalEletronica) : null;
 
       if (existing && isBloqueada(existing.cStat)) {
         members.push({ skip: true, pedidoId: sp.pedidoId, prep: sp.prep, existing });
@@ -468,10 +459,7 @@ export async function applyAutorizadoOutcome(args: {
   let outcome: SefazOutcome = args.protNFeForChave
     ? outcomeFromInfProt(args.protNFeForChave.infProt)
     : outcomeFromRetEnviNFe(retEnvi);
-  let patch = applyOutcome(
-    { estado: ESTADO_NFE.enviando, retries: 0 },
-    outcome,
-  );
+  let patch = applyOutcome({ estado: ESTADO_NFE.enviando, retries: 0 }, outcome);
   // The chave that ends up on the result (and on the nfev4 doc) may
   // change during a cStat=539 recovery: the "real" NF-e at SEFAZ lives
   // under a different chave (the one in xMotivo's [chNFe:...] marker).
@@ -481,8 +469,7 @@ export async function applyAutorizadoOutcome(args: {
   // branch that surfaces one. Used at the end to build `<nfeProc>`.
   // Left as `null` for 539 (chave swap) since our local signedXml
   // doesn't match the recovered protocol's chNFe.
-  let protNFeRaw: typeof retEnvi.protNFe | null =
-    args.protNFeForChave ?? retEnvi.protNFe ?? null;
+  let protNFeRaw: typeof retEnvi.protNFe | null = args.protNFeForChave ?? retEnvi.protNFe ?? null;
 
   // Duplicidade / lote-not-found → query SEFAZ for the real status.
   if (patch.action === 'recover-via-consulta') {
@@ -506,8 +493,7 @@ export async function applyAutorizadoOutcome(args: {
       await enviNfeCollection(fs, bundle.filialId).add(
         buildEnviNFeMsgFromConsulta({ chave, nRec: patch.nRec, ret: retRec, tpEmis }),
       );
-      protNFeRaw =
-        retRec.protNFe?.find((p) => p.infProt.chNFe === chave) ?? null;
+      protNFeRaw = retRec.protNFe?.find((p) => p.infProt.chNFe === chave) ?? null;
       outcome = outcomeFromConsReci(retRec, chave);
       patch = applyOutcome({ estado: patch.estado, retries: patch.retries }, outcome);
     } else {
@@ -526,17 +512,11 @@ export async function applyAutorizadoOutcome(args: {
   // we still have the matching local signedXml (no chave swap). This
   // is the canonical form for DANFE rendering and fiscal archives.
   const nfeProcXml =
-    classifyCStat(patch.cStat) === 'autorizada' &&
-    protNFeRaw != null &&
-    finalChave === chave
+    classifyCStat(patch.cStat) === 'autorizada' && protNFeRaw != null && finalChave === chave
       ? buildNFeProc(signedXml, protNFeRaw)
       : null;
 
-  await persistPatch(
-    nfeRef,
-    patch,
-    nfeProcXml != null ? { xml_nfe_proc: nfeProcXml } : undefined,
-  );
+  await persistPatch(nfeRef, patch, nfeProcXml != null ? { xml_nfe_proc: nfeProcXml } : undefined);
 
   return {
     nfeId: nfeRef.id,
@@ -565,7 +545,9 @@ export async function emitirPedido(
   rt: NFeRuntime,
   pedidoId: string,
 ): Promise<EmitResult> {
-  console.debug(`[nfe/orchestrator] Starting emit cycle for pedidoId '${pedidoId}', runtime ambiente '${rt.ambiente}'`);
+  console.debug(
+    `[nfe/orchestrator] Starting emit cycle for pedidoId '${pedidoId}', runtime ambiente '${rt.ambiente}'`,
+  );
 
   const prep = await prepareEmission(fs, rt, pedidoId);
   const captured = await runAllocateGenerateSignTx(fs, rt, prep);
@@ -664,7 +646,9 @@ export async function emitirPedidosLote(
       `emitirPedidosLote: ${pedidoIds.length} pedidos exceeds MAX_PEDIDOS_PER_BATCH (${MAX_PEDIDOS_PER_BATCH})`,
     );
   }
-  console.debug(`[nfe/orchestrator] Batch emit starting — ${pedidoIds.length} pedido(s), ambiente '${rt.ambiente}'`);
+  console.debug(
+    `[nfe/orchestrator] Batch emit starting — ${pedidoIds.length} pedido(s), ambiente '${rt.ambiente}'`,
+  );
 
   // 1. Prepare every pedido in parallel. prepareEmission failures
   //    (NFeBlockedError, NFePedidoNotFoundError, NFeMissingImpostoError,
@@ -674,9 +658,7 @@ export async function emitirPedidosLote(
   // operação / regraimposto reads and shares one imposto resolver per
   // operacaoId across all pedidos (PR-δ).
   const ctx = createBatchReadContext();
-  const preps = await Promise.allSettled(
-    pedidoIds.map((id) => prepareEmission(fs, rt, id, ctx)),
-  );
+  const preps = await Promise.allSettled(pedidoIds.map((id) => prepareEmission(fs, rt, id, ctx)));
   const results: Array<EmitResult | EmitError> = [];
   const successPreps: Array<{ prep: EmissionPrep; pedidoId: string }> = [];
   preps.forEach((p, i) => {
@@ -700,7 +682,10 @@ export async function emitirPedidosLote(
   }
 
   // 3. Sub-chunk each filial group into runs of ≤20 (Flutter parity).
-  const chunks: Array<{ filialId: string; group: Array<{ prep: EmissionPrep; pedidoId: string }> }> = [];
+  const chunks: Array<{
+    filialId: string;
+    group: Array<{ prep: EmissionPrep; pedidoId: string }>;
+  }> = [];
   for (const [filialId, group] of groups) {
     for (let i = 0; i < group.length; i += MAX_PEDIDOS_PER_CHUNK) {
       chunks.push({
@@ -747,11 +732,7 @@ export async function processChunk(
   //     each fresh pedido's numeração in ONE transaction (Flutter parity:
   //     .old/packages/pedido_nfe/lib/src/tasks.dart:255-285). A chunk-level
   //     throw cascades to every pedido via emitirPedidosLote's allSettled.
-  const { members, idLote: sharedIdLote } = await runChunkAllocateTx(
-    fs,
-    filialId,
-    group,
-  );
+  const { members, idLote: sharedIdLote } = await runChunkAllocateTx(fs, filialId, group);
   const txResults: Array<EmitResult | EmitError> = [];
   const fresh: Array<{
     prep: EmissionPrep;
@@ -793,9 +774,7 @@ export async function processChunk(
   }> = [];
   const signed = await Promise.allSettled(
     fresh.map(async (f) => {
-      const reuseCNF = f.existingChave
-        ? extractCNFFromChave(f.existingChave)
-        : undefined;
+      const reuseCNF = f.existingChave ? extractCNFFromChave(f.existingChave) : undefined;
       const { chave, signedXml, docData } = buildNfeDocWrite(
         f.prep.bundle,
         f.prep.items,
@@ -1047,10 +1026,7 @@ export async function recoverFrom539(params: {
         `${recoveredChave} não encontrada no audit log com nRec; marcando como error.`,
     );
     return {
-      patch: markAsLost(
-        patch,
-        `cStat=539 — chave ${recoveredChave} não está no audit log local`,
-      ),
+      patch: markAsLost(patch, `cStat=539 — chave ${recoveredChave} não está no audit log local`),
     };
   }
 
@@ -1065,10 +1041,7 @@ export async function recoverFrom539(params: {
     }),
   );
   const recoveredOutcome = outcomeFromConsReci(retRec, recoveredChave);
-  const recoveredPatch = applyOutcome(
-    { estado: patch.estado, retries: 0 },
-    recoveredOutcome,
-  );
+  const recoveredPatch = applyOutcome({ estado: patch.estado, retries: 0 }, recoveredOutcome);
 
   // Swap chave on the nfev4 doc — done outside persistPatch (which is
   // generic) since this only happens on 539 recovery.
@@ -1082,4 +1055,3 @@ export async function recoverFrom539(params: {
 
   return { patch: recoveredPatch, chaveOverride: recoveredChave };
 }
-

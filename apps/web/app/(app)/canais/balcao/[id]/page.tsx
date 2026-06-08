@@ -10,10 +10,7 @@ import { ObjectView } from '@delfrance/ui';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
-import {
-  balcaoExcludedFields,
-  balcaoFields,
-} from '../_components/balcaoFieldOverrides';
+import { balcaoExcludedFields, balcaoFields } from '../_components/balcaoFieldOverrides';
 
 export default function BalcaoPage() {
   const params = useParams<{ id: string }>();

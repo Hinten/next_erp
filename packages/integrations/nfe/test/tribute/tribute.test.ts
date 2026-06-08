@@ -96,7 +96,9 @@ function wrap(impostoXml: string, totalXml: string, transpXml: string, pagXml: s
     '</prod>' +
     impostoXml +
     '</det>' +
-    totalXml + transpXml + pagXml +
+    totalXml +
+    transpXml +
+    pagXml +
     '</infNFe></NFe>'
   );
 }
@@ -104,9 +106,7 @@ function wrap(impostoXml: string, totalXml: string, transpXml: string, pagXml: s
 /** Build a single-item SN-102 NF-e and assert it's XSD-valid after signing. */
 async function assertXsdValid(impostoXml: string) {
   const cert = fixtureCert();
-  const totals = aggregateTotals([
-    { item: { vProd: 1500 }, imposto: impostoFor102() },
-  ]);
+  const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto: impostoFor102() }]);
   const xml = wrap(
     impostoXml,
     buildTotalXml(totals),
@@ -412,9 +412,7 @@ describe('buildImpostoXml — ISSQN (xs:choice with ICMS)', () => {
 
 describe('aggregateISSQN', () => {
   it('returns undefined when no item carries ISSQN', () => {
-    const out = aggregateISSQN([
-      { item: { vProd: 100 }, imposto: impostoFor102() },
-    ]);
+    const out = aggregateISSQN([{ item: { vProd: 100 }, imposto: impostoFor102() }]);
     expect(out).toBeUndefined();
   });
 
@@ -423,7 +421,10 @@ describe('aggregateISSQN', () => {
     const out = aggregateISSQN(
       [
         { item: { vProd: 500 }, imposto: issqnImposto },
-        { item: { vProd: 300 }, imposto: { origem: '0', configuracaoISSQN: issqnFor({ vBC: 300, vISSQN: 15 }) } },
+        {
+          item: { vProd: 300 },
+          imposto: { origem: '0', configuracaoISSQN: issqnFor({ vBC: 300, vISSQN: 15 }) },
+        },
         { item: { vProd: 100 }, imposto: impostoFor102() }, // mixed — ignored by ISSQN aggregator
       ],
       { dCompet: '2026-05-27' },
@@ -436,17 +437,17 @@ describe('aggregateISSQN', () => {
 
   it('throws when ISSQN items are present but extras.dCompet is missing', () => {
     const issqnImposto: Imposto = { origem: '0', configuracaoISSQN: issqnFor() };
-    expect(() =>
-      aggregateISSQN([{ item: { vProd: 500 }, imposto: issqnImposto }]),
-    ).toThrow(/dCompet/);
+    expect(() => aggregateISSQN([{ item: { vProd: 500 }, imposto: issqnImposto }])).toThrow(
+      /dCompet/,
+    );
   });
 
   it('emits cRegTrib when supplied via extras', () => {
     const issqnImposto: Imposto = { origem: '0', configuracaoISSQN: issqnFor() };
-    const out = aggregateISSQN(
-      [{ item: { vProd: 500 }, imposto: issqnImposto }],
-      { dCompet: '2026-05-27', cRegTrib: '3' },
-    );
+    const out = aggregateISSQN([{ item: { vProd: 500 }, imposto: issqnImposto }], {
+      dCompet: '2026-05-27',
+      cRegTrib: '3',
+    });
     expect(out?.cRegTrib).toBe('3');
   });
 });
@@ -457,9 +458,7 @@ describe('aggregateISSQN', () => {
 
 describe('aggregateRetTrib', () => {
   it('returns undefined when no item carries retencao', () => {
-    const out = aggregateRetTrib([
-      { item: { vProd: 100 }, imposto: impostoFor102() },
-    ]);
+    const out = aggregateRetTrib([{ item: { vProd: 100 }, imposto: impostoFor102() }]);
     expect(out).toBeUndefined();
   });
 
@@ -568,34 +567,28 @@ describe('aggregateTotals', () => {
   });
 
   it('CSOSN 101 adds vCredICMSSN to the vICMS bucket', () => {
-    const totals = aggregateTotals([
-      { item: { vProd: 1500 }, imposto: impostoFor101() },
-    ]);
+    const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto: impostoFor101() }]);
     expect(totals.vICMS).toBe(18.75);
   });
 
   it('CSOSN 500 adds vFCPSTRet but leaves vNF = vProd (no ST in this op)', () => {
-    const totals = aggregateTotals([
-      { item: { vProd: 1500 }, imposto: impostoFor500() },
-    ]);
+    const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto: impostoFor500() }]);
     expect(totals.vFCPSTRet).toBe(0); // our fixture has no FCP
     expect(totals.vNF).toBe(1500);
   });
 
   it('extras.vFrete is added to vNF and surfaces on the aggregation', () => {
-    const totals = aggregateTotals(
-      [{ item: { vProd: 100 }, imposto: impostoFor102() }],
-      { vFrete: 25 },
-    );
+    const totals = aggregateTotals([{ item: { vProd: 100 }, imposto: impostoFor102() }], {
+      vFrete: 25,
+    });
     expect(totals.vFrete).toBe(25);
     expect(totals.vNF).toBe(125);
   });
 
   it('extras.vDesc is subtracted from vNF', () => {
-    const totals = aggregateTotals(
-      [{ item: { vProd: 100 }, imposto: impostoFor102() }],
-      { vDesc: 10 },
-    );
+    const totals = aggregateTotals([{ item: { vProd: 100 }, imposto: impostoFor102() }], {
+      vDesc: 10,
+    });
     expect(totals.vDesc).toBe(10);
     expect(totals.vNF).toBe(90);
   });
@@ -674,10 +667,7 @@ describe('buildTranspXml', () => {
   it('emits one <reboque> per trailer entry', () => {
     const xml = buildTranspXml({
       modFrete: '0',
-      reboque: [
-        { placa: 'XYZ9876', UF: 'SP' },
-        { placa: 'XYZ5432' },
-      ],
+      reboque: [{ placa: 'XYZ9876', UF: 'SP' }, { placa: 'XYZ5432' }],
     });
     expect((xml.match(/<reboque>/g) ?? []).length).toBe(2);
     expect(xml).toContain('<reboque><placa>XYZ9876</placa><UF>SP</UF></reboque>');
@@ -707,9 +697,7 @@ describe('buildTranspXml', () => {
 describe('buildPagXml', () => {
   it('emits one detPag for a single Pix payment', () => {
     const xml = buildPagXml([{ tPag: '17', vPag: 1500 }]);
-    expect(xml).toBe(
-      '<pag><detPag><tPag>17</tPag><vPag>1500.00</vPag></detPag></pag>',
-    );
+    expect(xml).toBe('<pag><detPag><tPag>17</tPag><vPag>1500.00</vPag></detPag></pag>');
   });
   it('emits multiple detPag entries with indPag when supplied', () => {
     const xml = buildPagXml([

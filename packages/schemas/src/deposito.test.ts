@@ -12,9 +12,7 @@ describe('depositoSchema', () => {
   });
 
   it('rejects nome longer than 255 chars', () => {
-    expect(
-      depositoSchema.safeParse({ nome: 'x'.repeat(256) }).success,
-    ).toBe(false);
+    expect(depositoSchema.safeParse({ nome: 'x'.repeat(256) }).success).toBe(false);
   });
 
   it('accepts explicit ativo=false', () => {

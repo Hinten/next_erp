@@ -6,9 +6,11 @@ import type { CollectionHandle } from '@delfrance/data';
 // `vi.hoisted`.
 const { firestoreMock, auditMock } = vi.hoisted(() => {
   const txMock = { set: vi.fn(), update: vi.fn() };
-  const runTransactionMock = vi.fn(async (_db: unknown, fn: (tx: typeof txMock) => Promise<void>) => {
-    await fn(txMock);
-  });
+  const runTransactionMock = vi.fn(
+    async (_db: unknown, fn: (tx: typeof txMock) => Promise<void>) => {
+      await fn(txMock);
+    },
+  );
   const docMock = vi.fn(() => ({ id: 'NEW_ID' }));
   const collectionMock = vi.fn(() => ({ withConverter: () => 'COLL_REF' }));
   const writeAuditEntryMock = vi.fn();

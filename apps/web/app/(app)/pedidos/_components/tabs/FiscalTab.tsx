@@ -65,7 +65,10 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
           </Group>
           {enderecoFiscalRef ? (
             <Text size="sm" c="dimmed">
-              Endereço atual: <Text component="span" inherit>{enderecoFiscalRef.path}</Text>
+              Endereço atual:{' '}
+              <Text component="span" inherit>
+                {enderecoFiscalRef.path}
+              </Text>
             </Text>
           ) : clienteDoc ? (
             <Text size="sm" c="dimmed">
@@ -92,9 +95,7 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
             label="Informações complementares (infCpl)"
             description="Texto adicional impresso no DANFE."
             value={field.value ?? ''}
-            onChange={(e) =>
-              field.onChange(e.currentTarget.value || null)
-            }
+            onChange={(e) => field.onChange(e.currentTarget.value || null)}
             onBlur={field.onBlur}
             rows={6}
             disabled={disabled}
@@ -156,9 +157,7 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
               <ActionIcon
                 color="red"
                 variant="subtle"
-                onClick={() =>
-                  updateChNFe(chNFeList.filter((_, i) => i !== index))
-                }
+                onClick={() => updateChNFe(chNFeList.filter((_, i) => i !== index))}
                 aria-label="Remover chave"
                 disabled={disabled}
               >
@@ -171,8 +170,8 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
 
       <Alert color="gray" variant="light">
         <Text size="sm">
-          A reatribuição de endereço a outro cliente (quando o endereço
-          fiscal pertence a outro cliente) ainda usa o app antigo.
+          A reatribuição de endereço a outro cliente (quando o endereço fiscal pertence a outro
+          cliente) ainda usa o app antigo.
         </Text>
       </Alert>
     </Stack>

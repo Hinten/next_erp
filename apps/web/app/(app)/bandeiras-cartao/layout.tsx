@@ -8,11 +8,7 @@ import { RequirePerm } from '@/lib/auth';
  * Bandeiras de cartão pertencem ao domínio de pagamentos. Writes seguem
  * protegidos separadamente pelas Firestore rules.
  */
-export default function BandeirasCartaoLayout({
-  children,
-}: {
-  children: ReactNode;
-}) {
+export default function BandeirasCartaoLayout({ children }: { children: ReactNode }) {
   return (
     <RequirePerm bit={PERM.pagamento.read} redirectTo="/inicio">
       {children}

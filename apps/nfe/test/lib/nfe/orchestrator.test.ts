@@ -268,8 +268,14 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
       async get() {
         const prefix = `${path}/`;
         let items = Object.entries(docs)
-          .filter(([key, val]) => key.startsWith(prefix) && val != null && !key.slice(prefix.length).includes('/'))
-          .map(([key, val]) => ({ id: key.slice(prefix.length), data: val as Record<string, unknown> }));
+          .filter(
+            ([key, val]) =>
+              key.startsWith(prefix) && val != null && !key.slice(prefix.length).includes('/'),
+          )
+          .map(([key, val]) => ({
+            id: key.slice(prefix.length),
+            data: val as Record<string, unknown>,
+          }));
         for (const op of ops) {
           if (op.kind === 'where' && op.op === 'array-contains') {
             items = items.filter((it) => {
@@ -523,13 +529,22 @@ const OTHER_NREC = '351000131407057';
 
 /** retEnviNFe for sync mode (indSinc=1) returning a 539 inline protocol. */
 function retEnvi539(): {
-  tpAmb: '2'; verAplic: string; cStat: string; xMotivo: string;
-  cUF: '35'; dhRecbto: string; versao: '4.00';
+  tpAmb: '2';
+  verAplic: string;
+  cStat: string;
+  xMotivo: string;
+  cUF: '35';
+  dhRecbto: string;
+  versao: '4.00';
   protNFe: {
     versao: '4.00';
     infProt: {
-      tpAmb: '2'; verAplic: string; chNFe: string;
-      dhRecbto: string; cStat: string; xMotivo: string;
+      tpAmb: '2';
+      verAplic: string;
+      chNFe: string;
+      dhRecbto: string;
+      cStat: string;
+      xMotivo: string;
     };
   };
 } {
@@ -648,9 +663,7 @@ describe('emitirPedido — cStat=539 (duplicidade with different chave)', () => 
     expect(result.chave).toBe(CHAVE);
     // No chave-swap write on the doc.
     expect(
-      writes.some(
-        (w) => w.path === 'pedidos/PED-1/nfev4/s1' && w.data.chave === OTHER_CHAVE,
-      ),
+      writes.some((w) => w.path === 'pedidos/PED-1/nfev4/s1' && w.data.chave === OTHER_CHAVE),
     ).toBe(false);
   });
 
@@ -705,9 +718,7 @@ describe('emitirPedido — guards', () => {
       enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
     };
     const { fs } = fakeFirestore({ events, pedido: blockedPedido });
-    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(
-      NFeBlockedError,
-    );
+    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(NFeBlockedError);
   });
 });
 
@@ -751,11 +762,7 @@ describe('emitirPedido — magic-string fallbacks removed', () => {
       // The orchestrator resolves field <- item.imposto[field] ?? operacao[field].
       // To prove the terminal error path we have to null out BOTH sources.
       const operacaoOverride: Record<string, unknown> =
-        field === 'cfop'
-          ? { cfop: null }
-          : field === 'NCM'
-            ? { NCM: null }
-            : { unidade: null };
+        field === 'cfop' ? { cfop: null } : field === 'NCM' ? { NCM: null } : { unidade: null };
       const { fs } = fakeFirestore({
         events: [],
         pedido: pedidoWithItemMissing(field),
@@ -789,7 +796,9 @@ describe('emitirPedido — operação fallback for fiscal codes', () => {
    * fires. `field='_keep'` preserves the full imposto for the
    * "item wins" precedence test.
    */
-  function pedidoMissingItemField(field: 'cfop' | 'NCM' | 'unidade' | '_keep'): Record<string, unknown> {
+  function pedidoMissingItemField(
+    field: 'cfop' | 'NCM' | 'unidade' | '_keep',
+  ): Record<string, unknown> {
     const baseImposto = impostoCsosn102();
     if (field !== '_keep') delete baseImposto[field];
     return {
@@ -1300,18 +1309,29 @@ describe('consultarPedido — consReci(nRec) preferred over consSit(chave)', () 
     const { fs, docs } = fakeFirestore({ events });
     // Seed an already-emitted nfev4 doc + the matching EnviNFeMsg.
     docs['pedidos/PED-1/nfev4/s1'] = {
-      numeracao: 7, serie: 1, tpEmis: 1,
+      numeracao: 7,
+      serie: 1,
+      tpEmis: 1,
       estado: ESTADO_NFE.aguardandoResposta,
-      chave: CHAVE, cStat: '103', xMotivo: 'Lote recebido',
-      nRec: '351000000000123', retries: 0,
+      chave: CHAVE,
+      cStat: '103',
+      xMotivo: 'Lote recebido',
+      nRec: '351000000000123',
+      retries: 0,
     };
     docs['filiais/F-1/enviNfe/seed-1'] = {
-      targetsChnfe: [CHAVE], idLote: 1, indSinc: '1',
+      targetsChnfe: [CHAVE],
+      idLote: 1,
+      indSinc: '1',
       xml_enviado: '<NFe>…</NFe>',
       xml_retorno: JSON.stringify(RET_ENVI_103),
-      nRec: '351000000000123', cStat: '103',
-      xMotivo: 'Lote recebido', error: null, tpEmis: 1,
-      estado: '2', timestamp: '2026-05-20T10:30:00.000Z',
+      nRec: '351000000000123',
+      cStat: '103',
+      xMotivo: 'Lote recebido',
+      error: null,
+      tpEmis: 1,
+      estado: '2',
+      timestamp: '2026-05-20T10:30:00.000Z',
       ultima_modificacao: '2026-05-20T10:30:00.000Z',
     };
     vi.mocked(consultarLote).mockResolvedValue(RET_CONS_REC_104);
@@ -1331,10 +1351,15 @@ describe('consultarPedido — consReci(nRec) preferred over consSit(chave)', () 
     const events: string[] = [];
     const { fs, docs } = fakeFirestore({ events });
     docs['pedidos/PED-1/nfev4/s1'] = {
-      numeracao: 7, serie: 1, tpEmis: 1,
+      numeracao: 7,
+      serie: 1,
+      tpEmis: 1,
       estado: ESTADO_NFE.aguardandoResposta,
-      chave: CHAVE, cStat: null, xMotivo: null,
-      nRec: null, retries: 0,
+      chave: CHAVE,
+      cStat: null,
+      xMotivo: null,
+      nRec: null,
+      retries: 0,
     };
     // No enviNfe seed → no nRec to recover → falls back to consSit.
     vi.mocked(consultarSituacaoNFe).mockResolvedValue(RET_SIT_100);
@@ -1349,18 +1374,29 @@ describe('consultarPedido — consReci(nRec) preferred over consSit(chave)', () 
     const events: string[] = [];
     const { fs, writes, docs } = fakeFirestore({ events });
     docs['pedidos/PED-1/nfev4/s1'] = {
-      numeracao: 7, serie: 1, tpEmis: 1,
+      numeracao: 7,
+      serie: 1,
+      tpEmis: 1,
       estado: ESTADO_NFE.aguardandoResposta,
-      chave: CHAVE, cStat: '103', xMotivo: 'Lote recebido',
-      nRec: '351000000000123', retries: 0,
+      chave: CHAVE,
+      cStat: '103',
+      xMotivo: 'Lote recebido',
+      nRec: '351000000000123',
+      retries: 0,
     };
     docs['filiais/F-1/enviNfe/seed-1'] = {
-      targetsChnfe: [CHAVE], idLote: 1, indSinc: '1',
+      targetsChnfe: [CHAVE],
+      idLote: 1,
+      indSinc: '1',
       xml_enviado: '<NFe>…</NFe>',
       xml_retorno: JSON.stringify(RET_ENVI_103),
-      nRec: '351000000000123', cStat: '103',
-      xMotivo: 'Lote recebido', error: null, tpEmis: 1,
-      estado: '2', timestamp: '2026-05-20T10:30:00.000Z',
+      nRec: '351000000000123',
+      cStat: '103',
+      xMotivo: 'Lote recebido',
+      error: null,
+      tpEmis: 1,
+      estado: '2',
+      timestamp: '2026-05-20T10:30:00.000Z',
       ultima_modificacao: '2026-05-20T10:30:00.000Z',
     };
     vi.mocked(consultarLote).mockResolvedValue(RET_CONS_REC_104);
@@ -1385,10 +1421,15 @@ describe('consultarPedido — consReci(nRec) preferred over consSit(chave)', () 
     const events: string[] = [];
     const { fs, writes, docs } = fakeFirestore({ events });
     docs['pedidos/PED-1/nfev4/s1'] = {
-      numeracao: 7, serie: 1, tpEmis: 1,
+      numeracao: 7,
+      serie: 1,
+      tpEmis: 1,
       estado: ESTADO_NFE.aguardandoResposta,
-      chave: CHAVE, cStat: '103', xMotivo: 'Lote recebido',
-      nRec: '351000000000123', retries: 0,
+      chave: CHAVE,
+      cStat: '103',
+      xMotivo: 'Lote recebido',
+      nRec: '351000000000123',
+      retries: 0,
     };
     // No enviNfe with nRec → falls back to consSit, whose response
     // doesn't include an nRec → patch.nRec becomes null.
@@ -1430,9 +1471,7 @@ describe('buildPaymentsFromPagamentos', () => {
     const out = __internal.buildPaymentsFromPagamentos([
       pagamento({ valor: 1499.9, forma_de_pagamento: FORMA_PAGAMENTO.pix, aVista: true }),
     ]);
-    expect(out).toEqual([
-      { tPag: '17', vPag: 1499.9, indPag: '0' },
-    ]);
+    expect(out).toEqual([{ tPag: '17', vPag: 1499.9, indPag: '0' }]);
   });
 
   it('boleto a prazo (forma=15, aVista=false) → indPag=1', () => {
@@ -1471,7 +1510,7 @@ describe('buildPaymentsFromPagamentos', () => {
     expect(out[0]?.xPag).toBe('Permuta de mercadoria');
   });
 
-  it('outros (forma=99) with empty descricaoPagamento → xPag=\'Outro\' (Flutter default)', () => {
+  it("outros (forma=99) with empty descricaoPagamento → xPag='Outro' (Flutter default)", () => {
     const out = __internal.buildPaymentsFromPagamentos([
       pagamento({
         valor: 50,
@@ -1689,9 +1728,7 @@ describe('emitirPedido — <nfeProc> envelope', () => {
     // The persist-before-send writes `xml_nfe_proc: null` on the fresh
     // doc; later persistPatch merges must NOT stamp a string envelope.
     const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s1');
-    const procWrites = docWrites.filter(
-      (w) => typeof w.data.xml_nfe_proc === 'string',
-    );
+    const procWrites = docWrites.filter((w) => typeof w.data.xml_nfe_proc === 'string');
     expect(procWrites).toHaveLength(0);
   });
 
@@ -1725,9 +1762,7 @@ describe('emitirPedido — <nfeProc> envelope', () => {
     // The persist-before-send writes `xml_nfe_proc: null` on the fresh
     // doc; later persistPatch merges must NOT stamp a string envelope.
     const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s1');
-    const procWrites = docWrites.filter(
-      (w) => typeof w.data.xml_nfe_proc === 'string',
-    );
+    const procWrites = docWrites.filter((w) => typeof w.data.xml_nfe_proc === 'string');
     expect(procWrites).toHaveLength(0);
   });
 
@@ -1743,9 +1778,7 @@ describe('emitirPedido — <nfeProc> envelope', () => {
     // The persist-before-send writes `xml_nfe_proc: null` on the fresh
     // doc; later persistPatch merges must NOT stamp a string envelope.
     const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s1');
-    const procWrites = docWrites.filter(
-      (w) => typeof w.data.xml_nfe_proc === 'string',
-    );
+    const procWrites = docWrites.filter((w) => typeof w.data.xml_nfe_proc === 'string');
     expect(procWrites).toHaveLength(0);
   });
 });
@@ -1911,9 +1944,9 @@ describe('buildInfIntermed', () => {
   });
 
   it('throws when indIntermed=1 but no Integracao doc is loaded', () => {
-    expect(() =>
-      __internal.buildInfIntermed(null, { indIntermed: '1' } as never),
-    ).toThrow(/no Integracao doc resolved/);
+    expect(() => __internal.buildInfIntermed(null, { indIntermed: '1' } as never)).toThrow(
+      /no Integracao doc resolved/,
+    );
   });
 
   it('returns CNPJ + idCadIntTran when Integracao is loaded', () => {

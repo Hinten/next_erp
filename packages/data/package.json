@@ -32,9 +32,15 @@
     "react": ">=18"
   },
   "peerDependenciesMeta": {
-    "@tanstack/react-query": { "optional": true },
-    "firebase-admin": { "optional": true },
-    "react": { "optional": true }
+    "@tanstack/react-query": {
+      "optional": true
+    },
+    "firebase-admin": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",

@@ -27,10 +27,7 @@ function CartaCorrecaoContent() {
   const nfeId = params.nfeId;
   const db = getFirebaseFirestore();
 
-  const ref = useMemo(
-    () => nfeCollection.docRef(db, { pedidoId }, nfeId),
-    [db, pedidoId, nfeId],
-  );
+  const ref = useMemo(() => nfeCollection.docRef(db, { pedidoId }, nfeId), [db, pedidoId, nfeId]);
   const { data: nfeDoc } = useDocSnapshot(ref);
   const nfe = nfeDoc?.data;
 
@@ -47,8 +44,8 @@ function CartaCorrecaoContent() {
             </Text>
           )}
           <Text c="dimmed" size="sm">
-            Corrige uma NF-e autorizada sem cancelá-la. A operação é síncrona e
-            registrada na SEFAZ; cada correção recebe um novo número de sequência.
+            Corrige uma NF-e autorizada sem cancelá-la. A operação é síncrona e registrada na SEFAZ;
+            cada correção recebe um novo número de sequência.
           </Text>
         </Stack>
         <Anchor component={Link} href={`/pedidos/${pedidoId}/nfe`} size="sm">

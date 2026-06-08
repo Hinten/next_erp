@@ -7,6 +7,7 @@
 // pre-real-cert audit. So we ship only the two cert-leak guard rules
 // here; the catch rule remains enforced at the apps/* boundary.
 import tseslint from 'typescript-eslint';
+import eslintConfigPrettier from 'eslint-config-prettier';
 
 // Rule A — no multi-arg `console.*` in NF-e code paths. See the
 // apps-side config for the rationale; the leak shape is the same and
@@ -25,8 +26,7 @@ const ruleAConsole = {
 // loader at `src/cert/index.ts`. Anywhere else must call
 // `loadCertificateFromEnv()` or `hasNFeCertEnv()` (both from `./cert`).
 const ruleBCertEnv = {
-  selector:
-    'MemberExpression[property.name=/^NFE_CERT_(BASE64|PATH|PASSWORD)$/]',
+  selector: 'MemberExpression[property.name=/^NFE_CERT_(BASE64|PATH|PASSWORD)$/]',
   message:
     'NFE_CERT_BASE64 / NFE_CERT_PATH / NFE_CERT_PASSWORD may only be ' +
     'read inside packages/integrations/nfe/src/cert/index.ts. Call ' +
@@ -84,6 +84,28 @@ const config = [
       'no-restricted-syntax': ['error', ruleBCertEnv],
     },
   },
+  // Type-aware async-correctness rules. Scoped to `src/**` so the file set
+  // matches this package's tsconfig `include` (`src/**/*.ts`) — the root
+  // `vitest.config.ts` stays outside the typed program and is parsed by the
+  // non-type-aware block above. `projectService` discovers the nearest tsconfig.
+  {
+    files: ['src/**/*.{ts,mts}'],
+    languageOptions: {
+      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
+    },
+    plugins: { '@typescript-eslint': tseslint.plugin },
+    rules: {
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-misused-promises': [
+        'error',
+        { checksVoidReturn: { attributes: false } },
+      ],
+      '@typescript-eslint/await-thenable': 'error',
+    },
+  },
+  // eslint-config-prettier LAST — disables stylistic rules that conflict with
+  // Prettier (formatting is owned by `prettier.config.mjs` / `pnpm format`).
+  eslintConfigPrettier,
 ];
 
 export default config;

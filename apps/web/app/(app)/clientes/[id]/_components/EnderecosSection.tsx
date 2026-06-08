@@ -70,20 +70,11 @@ export function EnderecosSection({ clienteId }: { clienteId: string }) {
         collection={enderecoCollection}
         db={db}
         pathContext={pathContext}
-        defaultColumns={[
-          'logradouro',
-          'numero',
-          'bairro',
-          'cidade',
-          'estado',
-          'cep',
-        ]}
+        defaultColumns={['logradouro', 'numero', 'bairro', 'cidade', 'estado', 'cep']}
         orderBy={{ field: 'logradouro', direction: 'asc' }}
         onRowClick={(id) => openEdit(id)}
         renderNewButton={
-          canWrite
-            ? () => <Button onClick={openCreate}>Novo endereço</Button>
-            : undefined
+          canWrite ? () => <Button onClick={openCreate}>Novo endereço</Button> : undefined
         }
       />
 

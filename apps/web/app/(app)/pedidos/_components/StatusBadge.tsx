@@ -1,11 +1,7 @@
 'use client';
 
 import { Badge, type MantineColor } from '@mantine/core';
-import {
-  ESTADO_PEDIDO_LABELS,
-  type EstadoPedido,
-  bucketOf,
-} from '@delfrance/schemas';
+import { ESTADO_PEDIDO_LABELS, type EstadoPedido, bucketOf } from '@delfrance/schemas';
 
 const BUCKET_COLOR: Record<ReturnType<typeof bucketOf>, MantineColor> = {
   aberto: 'blue',

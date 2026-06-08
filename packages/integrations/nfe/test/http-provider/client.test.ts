@@ -182,9 +182,7 @@ describe('createNFeHttpClient — consultar', () => {
         raw: { dummy: true },
       },
     });
-    const got = await makeClient(fetch).consultar(
-      '35260514200166000187550010000000071000000018',
-    );
+    const got = await makeClient(fetch).consultar('35260514200166000187550010000000071000000018');
 
     expect(got.cStat).toBe('100');
     expect(got.nProt).toBe('12345');
@@ -226,7 +224,11 @@ describe('createNFeHttpClient — cancelar', () => {
 
   it('POSTs to /api/nfe/cancelar with { pedidoId, nfeId, xJust } + Bearer token', async () => {
     const fetch = mockFetch({ status: 200, body: cancelled });
-    const got = await makeClient(fetch).cancelar('PED-001', 'nfev4-001', 'Cancelamento por erro de digitacao');
+    const got = await makeClient(fetch).cancelar(
+      'PED-001',
+      'nfev4-001',
+      'Cancelamento por erro de digitacao',
+    );
 
     expect(got).toEqual(cancelled);
     const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
@@ -243,7 +245,11 @@ describe('createNFeHttpClient — cancelar', () => {
   it('maps 404 → NFePedidoNotFoundError carrying the pedidoId', async () => {
     const fetch = mockFetch({ status: 404, body: { error: 'no nfev4 doc' } });
     try {
-      await makeClient(fetch).cancelar('PED-MISSING', 'nfev4-001', 'Cancelamento de teste invalido');
+      await makeClient(fetch).cancelar(
+        'PED-MISSING',
+        'nfev4-001',
+        'Cancelamento de teste invalido',
+      );
       throw new Error('expected throw');
     } catch (err) {
       expect(err).toBeInstanceOf(NFePedidoNotFoundError);
@@ -263,9 +269,9 @@ describe('createNFeHttpClient — cancelar', () => {
 
   it('maps 400 → NFeBadRequestError (xJust too short)', async () => {
     const fetch = mockFetch({ status: 400, body: { error: 'Bad body' } });
-    await expect(makeClient(fetch).cancelar('PED-001', 'nfev4-001', 'curto')).rejects.toBeInstanceOf(
-      NFeBadRequestError,
-    );
+    await expect(
+      makeClient(fetch).cancelar('PED-001', 'nfev4-001', 'curto'),
+    ).rejects.toBeInstanceOf(NFeBadRequestError);
   });
 });
 
@@ -379,7 +385,10 @@ describe('createNFeHttpClient — danfe', () => {
 
   it('passes dpi for zpl2 and falls back to a default filename', async () => {
     const fetch = vi.fn().mockResolvedValue(
-      new Response('^XA^XZ', { status: 200, headers: { 'Content-Type': 'text/plain; charset=utf-8' } }),
+      new Response('^XA^XZ', {
+        status: 200,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      }),
     );
     const art = await makeClient(fetch as never).danfe('PED-1', 's1', 'zpl2', 300);
     expect(art.filename).toBe('danfe.txt'); // no Content-Disposition → fallback
@@ -390,7 +399,9 @@ describe('createNFeHttpClient — danfe', () => {
 
   it('maps a 422 to NFeDanfeUnavailableError, NOT NFeRejectedError', async () => {
     const fetch = mockFetch({ status: 422, body: { error: 'estado não renderável' } });
-    const err = await makeClient(fetch).danfe('PED-1', 's1', 'simplificado').catch((e: unknown) => e);
+    const err = await makeClient(fetch)
+      .danfe('PED-1', 's1', 'simplificado')
+      .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(NFeDanfeUnavailableError);
     expect(err).not.toBeInstanceOf(NFeRejectedError);
     expect((err as NFeDanfeUnavailableError).message).toBe('estado não renderável');
@@ -398,7 +409,9 @@ describe('createNFeHttpClient — danfe', () => {
 
   it('maps a 404 to NFePedidoNotFoundError carrying the known pedidoId', async () => {
     const fetch = mockFetch({ status: 404, body: { error: 'not found' } });
-    const err = await makeClient(fetch).danfe('PED-X', 's1', 'simplificado').catch((e: unknown) => e);
+    const err = await makeClient(fetch)
+      .danfe('PED-X', 's1', 'simplificado')
+      .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(NFePedidoNotFoundError);
     expect((err as NFePedidoNotFoundError).pedidoId).toBe('PED-X');
   });
@@ -413,7 +426,10 @@ describe('createNFeHttpClient — danfe', () => {
 
 describe('createNFeHttpClient — baseUrl normalisation', () => {
   it('strips a single trailing slash off baseUrl', async () => {
-    const fetch = mockFetch({ status: 200, body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 } });
+    const fetch = mockFetch({
+      status: 200,
+      body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 },
+    });
     const client = createNFeHttpClient({
       baseUrl: 'http://localhost:3004/',
       getAuthToken: async () => TOKEN,
@@ -425,7 +441,10 @@ describe('createNFeHttpClient — baseUrl normalisation', () => {
   });
 
   it('calls getAuthToken on every request (token refresh)', async () => {
-    const fetch = mockFetch({ status: 200, body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 } });
+    const fetch = mockFetch({
+      status: 200,
+      body: { scanned: 0, recovered: 0, stillPending: 0, errors: 0 },
+    });
     const getAuthToken = vi.fn().mockResolvedValue(TOKEN);
     const client = createNFeHttpClient({
       baseUrl: 'http://localhost:3004',

@@ -13,10 +13,7 @@ const PERM_FISCAL_DELETE = 1n << 74n;
 export const tipoNFeSchema = z.union([z.literal(0), z.literal(1)]);
 export type TipoNFe = z.infer<typeof tipoNFeSchema>;
 
-export const TIPO_NFE = { entrada: 0, saida: 1 } as const satisfies Record<
-  string,
-  TipoNFe
->;
+export const TIPO_NFE = { entrada: 0, saida: 1 } as const satisfies Record<string, TipoNFe>;
 
 export const TIPO_NFE_LABELS: Record<TipoNFe, string> = {
   0: 'Entrada',
@@ -71,17 +68,7 @@ export const IND_INTERMED_OPERACAO_LABELS: Record<IndIntermedOperacao, string> =
 /**
  * origemProdutoImposto — string-coded ('0'..'8').
  */
-export const origemProdutoImpostoSchema = z.enum([
-  '0',
-  '1',
-  '2',
-  '3',
-  '4',
-  '5',
-  '6',
-  '7',
-  '8',
-]);
+export const origemProdutoImpostoSchema = z.enum(['0', '1', '2', '3', '4', '5', '6', '7', '8']);
 export type OrigemProdutoImposto = z.infer<typeof origemProdutoImpostoSchema>;
 
 /**

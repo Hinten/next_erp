@@ -10,12 +10,12 @@ export default function ChatIndexPage() {
 
   return (
     <Stack h="calc(100vh - 96px)" gap="md">
-      <PageHeader
-        title="Chat"
-        description="Atendimentos em tempo real"
-      />
+      <PageHeader title="Chat" description="Atendimentos em tempo real" />
       <Group align="stretch" gap="md" style={{ flex: 1, minHeight: 0 }}>
-        <Box w={320} style={{ borderRight: '1px solid var(--mantine-color-gray-2)', paddingRight: 12 }}>
+        <Box
+          w={320}
+          style={{ borderRight: '1px solid var(--mantine-color-gray-2)', paddingRight: 12 }}
+        >
           <ConversaList search={search} onSearchChange={setSearch} />
         </Box>
         <Center style={{ flex: 1 }}>

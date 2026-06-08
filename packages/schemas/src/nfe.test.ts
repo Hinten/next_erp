@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  ESTADO_NFE,
-  ESTADO_NFE_LABELS,
-  estadoNFeSchema,
-  nfeMeta,
-  nfeSchema,
-} from './nfe';
+import { ESTADO_NFE, ESTADO_NFE_LABELS, estadoNFeSchema, nfeMeta, nfeSchema } from './nfe';
 import { pedidoMeta } from './pedido';
 
 const MINIMAL = {
@@ -67,15 +61,11 @@ describe('nfeSchema', () => {
   });
 
   it('rejects unknown estado value', () => {
-    expect(
-      nfeSchema.safeParse({ ...MINIMAL, estado: 'z' }).success,
-    ).toBe(false);
+    expect(nfeSchema.safeParse({ ...MINIMAL, estado: 'z' }).success).toBe(false);
   });
 
   it('rejects non-integer numeracao / serie', () => {
-    expect(
-      nfeSchema.safeParse({ ...MINIMAL, numeracao: 1.5 }).success,
-    ).toBe(false);
+    expect(nfeSchema.safeParse({ ...MINIMAL, numeracao: 1.5 }).success).toBe(false);
     expect(nfeSchema.safeParse({ ...MINIMAL, serie: 1.5 }).success).toBe(false);
   });
 
@@ -133,9 +123,7 @@ describe('nfeMeta', () => {
   });
 
   it('is registered as a cascade child of pedido (deletes on parent delete)', () => {
-    const entry = pedidoMeta.cascade?.find(
-      (c) => c.path === nfeMeta.collectionPath,
-    );
+    const entry = pedidoMeta.cascade?.find((c) => c.path === nfeMeta.collectionPath);
     expect(entry).toBeDefined();
     expect(entry?.onDelete).toBe('cascade');
   });

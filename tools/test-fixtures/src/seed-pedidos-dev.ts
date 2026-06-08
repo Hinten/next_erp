@@ -298,32 +298,29 @@ export function devPedidoIds(): string[] {
 }
 
 async function writeCliente(): Promise<void> {
-  await db()
-    .collection('clientes')
-    .doc(CLIENTE_ID)
-    .set({
-      tipo: '0', // Pessoa Física
-      nome: 'Cliente Dev Pessoa Fisica',
-      // Known-valid test CPF (passes check digits). PF avoids
-      // cStat=234 ("IE do destinatário não vinculada ao CNPJ") — the
-      // previous PJ pair (CNPJ 11222333000181 + IE 110042490114) was
-      // not recognised by SEFAZ-SP HOM. PF has no IE; the orchestrator
-      // stamps `indIEDest='9'` (Não Contribuinte) and the paired
-      // `operacao.ehConsumidorFinal=true` keeps `indFinal='1'` so
-      // SEFAZ doesn't reject with cStat=696.
-      cpf_cnpj: '12345678909',
-      idEstrangeiro: null,
-      ie: null,
-      imun: null,
-      isUF: null,
-      email: 'dev-pedidos@example.com',
-      telefone: '11999990000',
-      observacoesInternas: null,
-      timestamp: new Date().toISOString(),
-      nome_embedding: null,
-      telefone_embedding: null,
-      userCliente: null,
-    });
+  await db().collection('clientes').doc(CLIENTE_ID).set({
+    tipo: '0', // Pessoa Física
+    nome: 'Cliente Dev Pessoa Fisica',
+    // Known-valid test CPF (passes check digits). PF avoids
+    // cStat=234 ("IE do destinatário não vinculada ao CNPJ") — the
+    // previous PJ pair (CNPJ 11222333000181 + IE 110042490114) was
+    // not recognised by SEFAZ-SP HOM. PF has no IE; the orchestrator
+    // stamps `indIEDest='9'` (Não Contribuinte) and the paired
+    // `operacao.ehConsumidorFinal=true` keeps `indFinal='1'` so
+    // SEFAZ doesn't reject with cStat=696.
+    cpf_cnpj: '12345678909',
+    idEstrangeiro: null,
+    ie: null,
+    imun: null,
+    isUF: null,
+    email: 'dev-pedidos@example.com',
+    telefone: '11999990000',
+    observacoesInternas: null,
+    timestamp: new Date().toISOString(),
+    nome_embedding: null,
+    telefone_embedding: null,
+    userCliente: null,
+  });
 }
 
 /**
@@ -420,9 +417,7 @@ async function writePagamentos(
 async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
   const id = devPedidoId(i);
   const now = Date.now();
-  const clienteRef = spec.withCliente
-    ? db().collection('clientes').doc(CLIENTE_ID)
-    : null;
+  const clienteRef = spec.withCliente ? db().collection('clientes').doc(CLIENTE_ID) : null;
   // Filial, operação, and endereço fiscal refs stamped on every seeded
   // pedido so the NFe orchestrator can resolve `<emit>` + `<ide>` +
   // `<dest><enderDest>`. The docs themselves are provisioned by
@@ -509,11 +504,7 @@ export async function cleanupDevPedidos(): Promise<{ deleted: number }> {
     // we own: `nfev4` (the NF-e generator's output) and `pagamento`
     // (this seed's own writes).
     for (const sub of ['nfev4', 'pagamento']) {
-      const subSnap = await db()
-        .collection('pedidos')
-        .doc(id)
-        .collection(sub)
-        .get();
+      const subSnap = await db().collection('pedidos').doc(id).collection(sub).get();
       if (!subSnap.empty) {
         const batch = db().batch();
         subSnap.docs.forEach((d) => batch.delete(d.ref));

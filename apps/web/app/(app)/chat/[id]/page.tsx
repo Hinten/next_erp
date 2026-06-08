@@ -2,17 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
-import {
-  Alert,
-  Badge,
-  Box,
-  Group,
-  Select,
-  Skeleton,
-  Stack,
-  Text,
-  Title,
-} from '@mantine/core';
+import { Alert, Badge, Box, Group, Select, Skeleton, Stack, Text, Title } from '@mantine/core';
 import { setDoc } from 'firebase/firestore';
 import { PageHeader } from '@delfrance/ui';
 import { useDocSnapshot } from '@delfrance/data/hooks';
@@ -27,9 +17,7 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { ConversaList } from '../_components/ConversaList';
 import { MensagemThread } from '../_components/MensagemThread';
 
-const estadoOptions = (
-  Object.values(ESTADO_CONVERSA) as EstadoConversa[]
-)
+const estadoOptions = (Object.values(ESTADO_CONVERSA) as EstadoConversa[])
   .sort((a, b) => a - b)
   .map((value) => ({
     value: String(value),
@@ -72,11 +60,7 @@ export default function ConversaDetailPage() {
             paddingRight: 12,
           }}
         >
-          <ConversaList
-            activeId={params.id}
-            search={search}
-            onSearchChange={setSearch}
-          />
+          <ConversaList activeId={params.id} search={search} onSearchChange={setSearch} />
         </Box>
         <Stack style={{ flex: 1, minHeight: 0 }} gap={0}>
           {error && <Alert color="red">{error.message}</Alert>}
@@ -106,10 +90,7 @@ export default function ConversaDetailPage() {
                       )}
                       {data.data.prazo_resposta && (
                         <Text size="xs" c="dimmed">
-                          Prazo:{' '}
-                          {new Date(data.data.prazo_resposta).toLocaleString(
-                            'pt-BR',
-                          )}
+                          Prazo: {new Date(data.data.prazo_resposta).toLocaleString('pt-BR')}
                         </Text>
                       )}
                     </Group>

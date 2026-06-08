@@ -13,17 +13,9 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { EnderecosSection } from './_components/EnderecosSection';
 
-function CpfCnpjInput({
-  value,
-  onChange,
-  onBlur,
-  error,
-  label,
-  hint,
-}: FieldRenderProps) {
+function CpfCnpjInput({ value, onChange, onBlur, error, label, hint }: FieldRenderProps) {
   const v = (value as string | null | undefined) ?? '';
-  const formatted =
-    v.length === 11 ? formatCPF(v) : v.length === 14 ? formatCNPJ(v) : null;
+  const formatted = v.length === 11 ? formatCPF(v) : v.length === 14 ? formatCNPJ(v) : null;
   return (
     <TextInput
       label={label}

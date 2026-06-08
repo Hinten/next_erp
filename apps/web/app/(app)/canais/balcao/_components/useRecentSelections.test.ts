@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  MAX_RECENTS,
-  RECENT_TTL_MS,
-  type RecentEntry,
-  mergeRecent,
-} from './useRecentSelections';
+import { MAX_RECENTS, RECENT_TTL_MS, type RecentEntry, mergeRecent } from './useRecentSelections';
 
 const NOW = 1_700_000_000_000;
 const entry = (id: string, at: number = NOW): RecentEntry => ({
@@ -20,11 +15,7 @@ describe('mergeRecent', () => {
   });
 
   it('dedupes by id, keeping the new entry on top', () => {
-    const out = mergeRecent(
-      [entry('a', NOW - 100), entry('b', NOW - 200)],
-      entry('a'),
-      NOW,
-    );
+    const out = mergeRecent([entry('a', NOW - 100), entry('b', NOW - 200)], entry('a'), NOW);
     expect(out.map((e) => e.id)).toEqual(['a', 'b']);
     expect(out).toHaveLength(2);
   });

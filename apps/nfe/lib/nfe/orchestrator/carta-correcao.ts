@@ -1,11 +1,7 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
 import { cartaCorrecaoNFe, sanitizeNFeText, type SefazCall } from '@delfrance/integrations-nfe';
-import {
-  ESTADO_ENVI_NFE_MSG,
-  ESTADO_NFE,
-  type NotaFiscalEletronica,
-} from '@delfrance/schemas';
+import { ESTADO_ENVI_NFE_MSG, ESTADO_NFE, type NotaFiscalEletronica } from '@delfrance/schemas';
 
 import { cartaCorrecaoCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 
@@ -62,9 +58,7 @@ export async function cartaCorrecaoService(
   nfeId: string,
   xCorrecao: string,
 ): Promise<CartaCorrecaoServiceResult> {
-  console.debug(
-    `[nfe/orchestrator] cartaCorrecaoService pedidoId='${pedidoId}' nfeId='${nfeId}'`,
-  );
+  console.debug(`[nfe/orchestrator] cartaCorrecaoService pedidoId='${pedidoId}' nfeId='${nfeId}'`);
 
   const nfeRef = nfev4Collection.docRef(fs, { pedidoId }, nfeId);
   const snap = await nfeRef.get();

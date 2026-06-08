@@ -28,10 +28,9 @@ function wrap(node: React.ReactNode) {
 const VALID_XJUST = 'Cancelamento por erro de digitacao no pedido';
 
 function fillAndConfirm() {
-  fireEvent.change(
-    screen.getByPlaceholderText('Descreva o motivo do cancelamento'),
-    { target: { value: VALID_XJUST } },
-  );
+  fireEvent.change(screen.getByPlaceholderText('Descreva o motivo do cancelamento'), {
+    target: { value: VALID_XJUST },
+  });
   fireEvent.click(screen.getByRole('button', { name: 'Cancelar NF-e' }));
 }
 
@@ -46,9 +45,7 @@ describe('CancelarNFeForm', () => {
 
     fillAndConfirm();
 
-    await waitFor(() =>
-      expect(cancelarMock).toHaveBeenCalledWith('PED-1', 's1', VALID_XJUST),
-    );
+    await waitFor(() => expect(cancelarMock).toHaveBeenCalledWith('PED-1', 's1', VALID_XJUST));
     expect(notifShowMock).toHaveBeenCalledWith(
       expect.objectContaining({ color: 'teal', title: 'NF-e cancelada' }),
     );

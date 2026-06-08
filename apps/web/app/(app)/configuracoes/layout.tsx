@@ -10,11 +10,7 @@ import { RequirePerm } from '@/lib/auth';
  * rules; this layout protects the UI from rendering for users who can't see
  * settings at all.
  */
-export default function ConfiguracoesLayout({
-  children,
-}: {
-  children: ReactNode;
-}) {
+export default function ConfiguracoesLayout({ children }: { children: ReactNode }) {
   return (
     <RequirePerm bit={PERM.configuracoes.read} redirectTo="/inicio">
       {children}

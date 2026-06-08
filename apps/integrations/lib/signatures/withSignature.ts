@@ -37,10 +37,7 @@ export function withSignature<T = unknown>(
 ) {
   return async function POST(req: Request): Promise<Response> {
     if (!options.secret) {
-      return NextResponse.json(
-        { error: 'webhook secret is not configured' },
-        { status: 500 },
-      );
+      return NextResponse.json({ error: 'webhook secret is not configured' }, { status: 500 });
     }
     const signature = options.getSignature(req) ?? '';
     if (!signature) {

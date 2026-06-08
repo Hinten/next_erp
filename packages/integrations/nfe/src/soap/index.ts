@@ -98,11 +98,8 @@ export function createSefazAgent(
   // would be trusted, but it must itself chain UP to a trusted root — and
   // dropping Mozilla's roots means losing the ICP-Brasil root that lives
   // there. Always merge: defaults + caller's extras.
-  const extras: ReadonlyArray<string | Buffer> = options.ca === undefined
-    ? []
-    : Array.isArray(options.ca)
-      ? options.ca
-      : [options.ca];
+  const extras: ReadonlyArray<string | Buffer> =
+    options.ca === undefined ? [] : Array.isArray(options.ca) ? options.ca : [options.ca];
   return new https.Agent({
     key: cert.privateKeyPem,
     cert: cert.certificatePem,
@@ -192,7 +189,9 @@ async function postSoap(input: PostInput): Promise<PostResult> {
 
   const { statusCode, body } = await new Promise<{ statusCode: number; body: string }>(
     (resolve, reject) => {
-      client.request(
+      // Fire-and-forget: the callback resolves/rejects the surrounding Promise;
+      // the request handle itself is intentionally not awaited.
+      void client.request(
         input.url,
         envelope,
         (err: unknown, res: { status?: number } | undefined, responseBody: unknown) => {
@@ -252,7 +251,11 @@ async function postSoap(input: PostInput): Promise<PostResult> {
   );
 
   if (RE_SOAP_FAULT.test(body)) {
-    throw new NFeTransportError(`SEFAZ returned a SOAP Fault (HTTP ${statusCode})`, statusCode, body);
+    throw new NFeTransportError(
+      `SEFAZ returned a SOAP Fault (HTTP ${statusCode})`,
+      statusCode,
+      body,
+    );
   }
   const match = RE_RESULT_MSG.exec(body);
   if (!match || match[1] === undefined) {
@@ -357,10 +360,7 @@ async function postSoapValidated(
 }
 
 /** `NFeAutorizacao4 / nfeAutorizacaoLote` — send an `<enviNFe>` lote. */
-export async function nfeAutorizacaoLote(
-  call: SefazCall,
-  enviNFeXml: string,
-): Promise<PostResult> {
+export async function nfeAutorizacaoLote(call: SefazCall, enviNFeXml: string): Promise<PostResult> {
   return postSoapValidated(CONTRACTS.nfeAutorizacaoLote!, call, enviNFeXml);
 }
 
@@ -397,10 +397,7 @@ export async function nfeRecepcaoEvento(
 }
 
 /** `NFeInutilizacao4 / nfeInutilizacaoNF` — burn an unused número range. */
-export async function nfeInutilizacao(
-  call: SefazCall,
-  inutNFeXml: string,
-): Promise<PostResult> {
+export async function nfeInutilizacao(call: SefazCall, inutNFeXml: string): Promise<PostResult> {
   return postSoapValidated(CONTRACTS.nfeInutilizacao!, call, inutNFeXml);
 }
 

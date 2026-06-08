@@ -14,18 +14,10 @@
  * 4. Permission helpers — check claim against required bit.
  */
 
-import {
-  PluginRegistry,
-  type TaxProvider,
-} from '@delfrance/core/plugins';
+import { PluginRegistry, type TaxProvider } from '@delfrance/core/plugins';
 import { format, money, add } from '@delfrance/core/money';
 import { brDocumentProvider } from '@delfrance/core/documents';
-import {
-  clienteSchema,
-  produtoSchema,
-  pedidoSchema,
-  pedidoTotal,
-} from '@delfrance/schemas';
+import { clienteSchema, produtoSchema, pedidoSchema, pedidoTotal } from '@delfrance/schemas';
 import { PERM, hasPerm } from '@delfrance/auth';
 import demoPlugin from './customPlugin';
 
@@ -41,7 +33,12 @@ async function main() {
     email: 'maria@example.com',
     tipo: '0',
   });
-  console.log('cliente:', cliente.nome, '·', brDocumentProvider.formatIndividual(cliente.cpf_cnpj!));
+  console.log(
+    'cliente:',
+    cliente.nome,
+    '·',
+    brDocumentProvider.formatIndividual(cliente.cpf_cnpj!),
+  );
 
   const produto = produtoSchema.parse({
     nome: 'Camiseta básica',

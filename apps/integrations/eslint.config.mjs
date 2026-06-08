@@ -1,4 +1,4 @@
-import base from '@delfrance/config-eslint';
+import base, { prettier, typeAware } from '@delfrance/config-eslint';
 import next from 'eslint-config-next';
 
 // Flat config REPLACES a rule's value per matching `files` block — it does not
@@ -6,9 +6,8 @@ import next from 'eslint-config-next';
 // we must re-include the base selectors (the `catch` convention), or they'd be
 // silently dropped.
 const baseRestrictedSyntax =
-  base.find((c) => c.rules?.['no-restricted-syntax'])?.rules?.[
-    'no-restricted-syntax'
-  ]?.slice(1) ?? [];
+  base.find((c) => c.rules?.['no-restricted-syntax'])?.rules?.['no-restricted-syntax']?.slice(1) ??
+  [];
 
 // Funnel all Firestore access through schema-validated `defineAdminCollection`
 // handles from the shared registry (`@delfrance/data/admin/collections`). Admin
@@ -36,6 +35,8 @@ const noRawAdminFirestoreRefs = [
 const config = [
   ...base,
   ...next,
+  // registerPlugin: false — eslint-config-next already registers @typescript-eslint.
+  ...typeAware(import.meta.dirname, { registerPlugin: false }),
   {
     rules: {
       'react-hooks/set-state-in-effect': 'warn',
@@ -56,11 +57,7 @@ const config = [
           ],
         },
       ],
-      'no-restricted-syntax': [
-        'error',
-        ...baseRestrictedSyntax,
-        ...noRawAdminFirestoreRefs,
-      ],
+      'no-restricted-syntax': ['error', ...baseRestrictedSyntax, ...noRawAdminFirestoreRefs],
     },
   },
   {
@@ -74,6 +71,9 @@ const config = [
       'no-restricted-syntax': ['error', ...baseRestrictedSyntax],
     },
   },
+  // eslint-config-prettier LAST — disables stylistic rules that conflict with
+  // Prettier (formatting is owned by `prettier.config.mjs` / `pnpm format`).
+  prettier,
 ];
 
 export default config;

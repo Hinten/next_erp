@@ -40,21 +40,10 @@ export {
 } from './endpoints';
 
 // XML (de)serializer
-export {
-  NFeXmlError,
-  parse,
-  serialize,
-  serializeFragment,
-  type XmlValue,
-} from './xml';
+export { NFeXmlError, parse, serialize, serializeFragment, type XmlValue } from './xml';
 
 // Sanitization
-export {
-  removerAcentos,
-  removerCharRestrito,
-  sanitizeNFeEmail,
-  sanitizeNFeText,
-} from './sanitize';
+export { removerAcentos, removerCharRestrito, sanitizeNFeEmail, sanitizeNFeText } from './sanitize';
 
 // State machine
 export {
@@ -77,12 +66,7 @@ export {
 } from './state';
 
 // Sign
-export {
-  NFeSignatureError,
-  signEvento,
-  signInutilizacao,
-  signNFe,
-} from './sign';
+export { NFeSignatureError, signEvento, signInutilizacao, signNFe } from './sign';
 
 // SOAP transport (low-level — most callers reach for src/operations)
 export {
@@ -108,12 +92,7 @@ export {
 } from './xsd';
 
 // Safety guard
-export {
-  NFeProductionGuardError,
-  assertSafeTpAmb,
-  tpAmbFromAmbiente,
-  type TpAmb,
-} from './safety';
+export { NFeProductionGuardError, assertSafeTpAmb, tpAmbFromAmbiente, type TpAmb } from './safety';
 
 // Generator
 export {
@@ -148,11 +127,7 @@ export {
 } from './eventos';
 
 // Inutilização de numeração — builder for the NfeInutilizacao lote.
-export {
-  buildInutNFe,
-  NFeInutilizacaoError,
-  type InutilizacaoInput,
-} from './inutilizacao';
+export { buildInutNFe, NFeInutilizacaoError, type InutilizacaoInput } from './inutilizacao';
 
 // Recovery / anti-loss
 export {

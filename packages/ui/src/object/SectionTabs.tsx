@@ -22,7 +22,9 @@ export function SectionTabs({ sections, contents, defaultSection }: SectionTabsP
     <Tabs defaultValue={defaultSection ?? sections[0]}>
       <Tabs.List>
         {sections.map((s) => (
-          <Tabs.Tab key={s} value={s}>{s}</Tabs.Tab>
+          <Tabs.Tab key={s} value={s}>
+            {s}
+          </Tabs.Tab>
         ))}
       </Tabs.List>
       {sections.map((s) => (

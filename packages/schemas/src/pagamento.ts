@@ -160,27 +160,29 @@ export function statusToEstadoPedido(status: StatusPagamento): EstadoPedido {
  * details remain pass-through; the typed surface is what this app reads
  * and writes today.
  */
-export const pagamentoSchema = z.object({
-  id: z.string().nullable().default(null),
-  metodoPagamentoOuterRef: z.unknown().nullable().default(null),
-  forma_de_pagamento: formaPagamentoSchema.default(FORMA_PAGAMENTO.dinheiro),
-  status_pagamento: statusPagamentoSchema.nullable().default(null),
-  cartao: z.unknown().nullable().default(null),
-  cheque: z.unknown().nullable().default(null),
-  descricaoPagamento: z.string().nullable().default(null),
-  valor: z.number().min(0),
-  parcelas: z.number().int().min(1).default(1),
-  juros: z.number().min(0).nullable().default(null),
-  tarifas: z.number().min(0).nullable().default(null),
-  aVista: z.boolean().default(true),
-  duplicata: z.boolean().default(false),
-  nFat: z.string().max(60).nullable().default(null),
-  vencimento: z.string().datetime().nullable().default(null),
-  ultimaModificacao: z.string().datetime().nullable().default(null),
-  dataCancelamento: z.string().datetime().nullable().default(null),
-  dataAprovacao: z.string().datetime().nullable().default(null),
-  dataCadastro: z.string().datetime().nullable().default(null),
-}).passthrough();
+export const pagamentoSchema = z
+  .object({
+    id: z.string().nullable().default(null),
+    metodoPagamentoOuterRef: z.unknown().nullable().default(null),
+    forma_de_pagamento: formaPagamentoSchema.default(FORMA_PAGAMENTO.dinheiro),
+    status_pagamento: statusPagamentoSchema.nullable().default(null),
+    cartao: z.unknown().nullable().default(null),
+    cheque: z.unknown().nullable().default(null),
+    descricaoPagamento: z.string().nullable().default(null),
+    valor: z.number().min(0),
+    parcelas: z.number().int().min(1).default(1),
+    juros: z.number().min(0).nullable().default(null),
+    tarifas: z.number().min(0).nullable().default(null),
+    aVista: z.boolean().default(true),
+    duplicata: z.boolean().default(false),
+    nFat: z.string().max(60).nullable().default(null),
+    vencimento: z.string().datetime().nullable().default(null),
+    ultimaModificacao: z.string().datetime().nullable().default(null),
+    dataCancelamento: z.string().datetime().nullable().default(null),
+    dataAprovacao: z.string().datetime().nullable().default(null),
+    dataCadastro: z.string().datetime().nullable().default(null),
+  })
+  .passthrough();
 
 export type Pagamento = z.infer<typeof pagamentoSchema>;
 

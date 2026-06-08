@@ -1,23 +1,11 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
 import { enviNfeMsgCollection, nfev4Collection } from '@delfrance/data/admin/collections';
-import {
-  cancelarNFe,
-  type SefazCall,
-  type TpEmis,
-} from '@delfrance/integrations-nfe';
-import {
-  ESTADO_ENVI_NFE_MSG,
-  ESTADO_NFE,
-  type NotaFiscalEletronica,
-} from '@delfrance/schemas';
+import { cancelarNFe, type SefazCall, type TpEmis } from '@delfrance/integrations-nfe';
+import { ESTADO_ENVI_NFE_MSG, ESTADO_NFE, type NotaFiscalEletronica } from '@delfrance/schemas';
 
 import type { NFeRuntime } from '../runtime';
-import {
-  NFeCancelamentoError,
-  NFeOrchestratorError,
-  NFePedidoNotFoundError,
-} from './errors';
+import { NFeCancelamentoError, NFeOrchestratorError, NFePedidoNotFoundError } from './errors';
 import { getField, refToPath, type EmitResult } from './bundle';
 import { enviNfeCollection } from './audit';
 
@@ -107,7 +95,6 @@ export async function cancelarNFeService(
     filialId = filialPath.split('/').pop()!;
   }
 
-
   // nProt from the stored proc envelope — never from a SEFAZ consult.
   const nProt = nota.xml_nfe_proc ? RE_NPROT.exec(nota.xml_nfe_proc)?.[1]?.trim() : undefined;
   if (!nProt) {
@@ -160,8 +147,7 @@ export async function cancelarNFeService(
   // 135 (registrado + vinculado) / 155 (homologado fora de prazo) = cancelled.
   // 573 (duplicidade de evento) = the cancelamento is already registered at
   // SEFAZ → reconcile the local estado. Anything else is a real rejection.
-  const cancelled =
-    cStat === '135' || cStat === '155' || cStat === CSTAT_DUPLICIDADE_EVENTO;
+  const cancelled = cStat === '135' || cStat === '155' || cStat === CSTAT_DUPLICIDADE_EVENTO;
   if (!cancelled) {
     throw new NFeCancelamentoError(
       `pedido '${pedidoId}' nfe '${nfeId}': cancelamento rejeitado por SEFAZ — cStat=${cStat} ${xMotivo}`,

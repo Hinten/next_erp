@@ -28,8 +28,7 @@ export default async function globalTeardown() {
   if (!requiresAuthEnv()) {
     // eslint-disable-next-line no-console
     console.warn(
-      '[globalTeardown] skipping — auth env incomplete; specs skipped, ' +
-        'nothing to clean up.',
+      '[globalTeardown] skipping — auth env incomplete; specs skipped, ' + 'nothing to clean up.',
     );
     return;
   }

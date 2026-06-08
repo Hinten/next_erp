@@ -83,7 +83,10 @@ describe('signNFe', () => {
   it('produces a cryptographically valid signature (xml-crypto round-trip)', () => {
     const signed = signNFe(buildNFe(), cert);
     const doc = new DOMParser().parseFromString(signed, 'text/xml');
-    const sigNode = doc.getElementsByTagNameNS('http://www.w3.org/2000/09/xmldsig#', 'Signature')[0];
+    const sigNode = doc.getElementsByTagNameNS(
+      'http://www.w3.org/2000/09/xmldsig#',
+      'Signature',
+    )[0];
     expect(sigNode).toBeTruthy();
     const verifier = new SignedXml({ publicCert: cert.certificatePem });
     // loadSignature accepts a string; serialize to side-step @xmldom Element vs DOM Node mismatch.

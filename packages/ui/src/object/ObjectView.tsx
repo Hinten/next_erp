@@ -18,10 +18,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, type FieldValues } from 'react-hook-form';
 import type { Firestore } from 'firebase/firestore';
 import type { z, ZodObject, ZodRawShape } from 'zod';
-import {
-  type CollectionHandle,
-  type PathContext,
-} from '@delfrance/data';
+import { type CollectionHandle, type PathContext } from '@delfrance/data';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
 import type { FieldConfig, FieldDescriptor } from '../schema/types';
@@ -308,13 +305,20 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
 
   return (
     <form
-      onSubmit={(e) => { e.preventDefault(); void submitDefault(); }}
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submitDefault();
+      }}
     >
       <Stack>
         {(title || description) && (
           <Stack gap={2}>
             {title && (typeof title === 'string' ? <Title order={2}>{title}</Title> : title)}
-            {description && <Text c="dimmed" size="sm">{description}</Text>}
+            {description && (
+              <Text c="dimmed" size="sm">
+                {description}
+              </Text>
+            )}
           </Stack>
         )}
 
@@ -326,28 +330,34 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
               onChange={pager.onChange}
               confirmNavigation={form.formState.isDirty ? () => false : undefined}
             />
-          ) : <span />}
+          ) : (
+            <span />
+          )}
         </Group>
 
         {copyFromId && copySnap.data && (
           <Alert color="blue">
-            Registro pré-preenchido a partir de uma cópia. Revise os campos e
-            clique em {saveLabel} para criar um novo registro.
+            Registro pré-preenchido a partir de uma cópia. Revise os campos e clique em {saveLabel}{' '}
+            para criar um novo registro.
           </Alert>
         )}
 
-        {loading && <Stack><Skeleton height={42} /><Skeleton height={42} /></Stack>}
+        {loading && (
+          <Stack>
+            <Skeleton height={42} />
+            <Skeleton height={42} />
+          </Stack>
+        )}
 
-        {!loading && (
-          sections && sections.length > 0 ? (
+        {!loading &&
+          (sections && sections.length > 0 ? (
             <SectionTabs
               sections={sections}
-              contents={Object.fromEntries(
-                sections.map((s) => [s, fieldsBlock(grouped[s] ?? [])]),
-              )}
+              contents={Object.fromEntries(sections.map((s) => [s, fieldsBlock(grouped[s] ?? [])]))}
             />
-          ) : fieldsBlock(grouped['default'] ?? visibleDescriptors)
-        )}
+          ) : (
+            fieldsBlock(grouped['default'] ?? visibleDescriptors)
+          ))}
 
         {submitError && <Alert color="red">{submitError}</Alert>}
 
@@ -364,7 +374,9 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
             >
               {deleteLabel}
             </Button>
-          ) : <span />}
+          ) : (
+            <span />
+          )}
           <Group>
             {editingAllowed && showSaveAndContinue && (
               <Button
@@ -392,9 +404,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
         centered
       >
         <Stack>
-          <Text size="sm">
-            {deleteConfirmMessage ?? 'Esta ação não pode ser desfeita.'}
-          </Text>
+          <Text size="sm">{deleteConfirmMessage ?? 'Esta ação não pode ser desfeita.'}</Text>
           <TextInput
             label='Digite "excluir" para confirmar'
             value={deleteText}

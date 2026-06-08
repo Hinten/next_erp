@@ -34,10 +34,7 @@ const rule = {
     // The canonical owner package is where the factory is *supposed* to be
     // called (registry handles + the defineAdminCollection unit test). Skip it
     // so this app-facing guard never fires on @delfrance/data itself.
-    const filename = (context.filename ?? context.getFilename?.() ?? '').replace(
-      /\\/g,
-      '/',
-    );
+    const filename = (context.filename ?? context.getFilename?.() ?? '').replace(/\\/g, '/');
     if (filename.includes('/packages/data/src/admin/')) {
       return {};
     }

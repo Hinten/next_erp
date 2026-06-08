@@ -22,9 +22,7 @@ describe('listaDePrecosSchema', () => {
   });
 
   it('rejects nome longer than 255 chars', () => {
-    expect(
-      listaDePrecosSchema.safeParse({ nome: 'x'.repeat(256) }).success,
-    ).toBe(false);
+    expect(listaDePrecosSchema.safeParse({ nome: 'x'.repeat(256) }).success).toBe(false);
   });
 
   it('round-trips embedded formulas with peso ranges', () => {
@@ -56,10 +54,7 @@ describe('listaDePrecosSchema', () => {
         'cat-2': { name: 'Acessórios' },
       },
     });
-    expect(Object.keys(out.formulasPorCategoria ?? {})).toEqual([
-      'cat-1',
-      'cat-2',
-    ]);
+    expect(Object.keys(out.formulasPorCategoria ?? {})).toEqual(['cat-1', 'cat-2']);
   });
 });
 
@@ -91,18 +86,14 @@ describe('formulaCalculoPrecoSchema', () => {
   });
 
   it('rejects empty formula', () => {
-    expect(
-      formulaCalculoPrecoSchema.safeParse({ limiar: 1, formula: '' }).success,
-    ).toBe(false);
+    expect(formulaCalculoPrecoSchema.safeParse({ limiar: 1, formula: '' }).success).toBe(false);
   });
 });
 
 describe('formulasPorCategoriaSchema', () => {
   it('requires name', () => {
     expect(formulasPorCategoriaSchema.safeParse({}).success).toBe(false);
-    expect(formulasPorCategoriaSchema.parse({ name: 'Eletrônicos' }).name).toBe(
-      'Eletrônicos',
-    );
+    expect(formulasPorCategoriaSchema.parse({ name: 'Eletrônicos' }).name).toBe('Eletrônicos');
   });
 });
 

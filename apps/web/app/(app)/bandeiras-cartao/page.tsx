@@ -36,15 +36,12 @@ export default function BandeirasCartaoPage() {
           refreshOnComplete: true,
           confirm: {
             title: 'Excluir bandeiras de cartão',
-            message:
-              'Bandeiras excluídas não podem ser restauradas. Confirmar exclusão?',
+            message: 'Bandeiras excluídas não podem ser restauradas. Confirmar exclusão?',
           },
           run: async (rows) => {
             const db = getFirebaseFirestore();
             await Promise.all(
-              rows.map((r) =>
-                deleteDoc(bandeiraCartaoCollection.docRef(db, {}, r.id)),
-              ),
+              rows.map((r) => deleteDoc(bandeiraCartaoCollection.docRef(db, {}, r.id))),
             );
           },
         },

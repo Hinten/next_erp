@@ -93,9 +93,9 @@ describe('consultarStatusServico', () => {
     vi.mocked(mockedNfeStatusServico).mockRejectedValueOnce(
       new NFeXsdValidationError('consStatServ', [{ message: 'invalid', line: 1 }]),
     );
-    await expect(
-      consultarStatusServico(dummyCall(), { cUF: '35' }),
-    ).rejects.toBeInstanceOf(NFeXsdValidationError);
+    await expect(consultarStatusServico(dummyCall(), { cUF: '35' })).rejects.toBeInstanceOf(
+      NFeXsdValidationError,
+    );
   });
 });
 
@@ -225,8 +225,8 @@ describe('autorizarLote', () => {
   });
 
   it('rejects an empty NFe array', async () => {
-    await expect(
-      autorizarLote(dummyCall(), { idLote: '1', NFe: [] }),
-    ).rejects.toThrow(/at least one signed NFe/);
+    await expect(autorizarLote(dummyCall(), { idLote: '1', NFe: [] })).rejects.toThrow(
+      /at least one signed NFe/,
+    );
   });
 });

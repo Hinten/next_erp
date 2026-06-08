@@ -21,12 +21,22 @@ export class MagaluNotConfiguredError extends Error {
 export function createMagaluChannel(_config: MagaluConfig): MarketplaceChannel {
   return {
     id: 'magalu',
-    syncProducts: async () => { throw new MagaluNotConfiguredError(); },
-    pullOrders: async () => { throw new MagaluNotConfiguredError(); },
-    pushTracking: async () => { throw new MagaluNotConfiguredError(); },
+    syncProducts: async () => {
+      throw new MagaluNotConfiguredError();
+    },
+    pullOrders: async () => {
+      throw new MagaluNotConfiguredError();
+    },
+    pushTracking: async () => {
+      throw new MagaluNotConfiguredError();
+    },
     oauthFlow: {
-      start: () => { throw new MagaluNotConfiguredError(); },
-      callback: async () => { throw new MagaluNotConfiguredError(); },
+      start: () => {
+        throw new MagaluNotConfiguredError();
+      },
+      callback: async () => {
+        throw new MagaluNotConfiguredError();
+      },
     },
   };
 }

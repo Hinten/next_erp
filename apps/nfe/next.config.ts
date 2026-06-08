@@ -19,14 +19,7 @@ const config: NextConfig = {
   // them as externals means Next emits a plain `require()` at runtime and the
   // package resolves its own sibling files via real node_modules paths.
   // Same fix-pattern as `apps/nfe/lib/nfe/runtime.ts:resolveChainPath`.
-  serverExternalPackages: [
-    'xmllint-wasm',
-    'soap',
-    'node-forge',
-    'pdfkit',
-    'fontkit',
-    'bwip-js',
-  ],
+  serverExternalPackages: ['xmllint-wasm', 'soap', 'node-forge', 'pdfkit', 'fontkit', 'bwip-js'],
 };
 
 export default config;

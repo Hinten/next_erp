@@ -313,25 +313,22 @@ async function seedFixtures(
 
   // Cliente + endereço.
   await fs.collection('clientes').doc(CLIENTE_ID).set(clienteDoc());
-  await fs
-    .doc(`clientes/${CLIENTE_ID}/enderecos/${ENDERECO_ID}`)
-    .set(enderecoDoc());
+  await fs.doc(`clientes/${CLIENTE_ID}/enderecos/${ENDERECO_ID}`).set(enderecoDoc());
 
   // Operação + regraImposto (the latter exercises the cascade for PED8).
   await fs.collection('operacao').doc(OPERACAO_ID).set(operacaoDoc());
-  await fs
-    .doc(`operacao/${OPERACAO_ID}/regraimposto/${REGRA_ID}`)
-    .set(regraImpostoDoc());
+  await fs.doc(`operacao/${OPERACAO_ID}/regraimposto/${REGRA_ID}`).set(regraImpostoDoc());
 
   // Pedidos + one approved pagamento each (otherwise tPag='90' is the
   // default and we want to exercise the real <pag>/<detPag>/forma=01 path).
   for (const pedidoId of [PED1, PED3, PED8]) {
     const valor = 100 + Number(pedidoId.slice(-1)); // 101, 103, 108
     const omitImposto = pedidoId === PED8;
-    await fs.collection('pedidos').doc(pedidoId).set(pedidoDoc(pedidoId, valor, { omitImposto }));
     await fs
-      .doc(`pedidos/${pedidoId}/pagamento/pag-01`)
-      .set(pagamentoDoc(valor));
+      .collection('pedidos')
+      .doc(pedidoId)
+      .set(pedidoDoc(pedidoId, valor, { omitImposto }));
+    await fs.doc(`pedidos/${pedidoId}/pagamento/pag-01`).set(pagamentoDoc(valor));
   }
 
   // Dedicated cancelamento pedido (id doesn't end in a digit, so seed it
@@ -350,13 +347,8 @@ async function seedFixtures(
   for (let i = 0; i < PARALLEL_PEDIDO_IDS.length; i++) {
     const pedidoId = PARALLEL_PEDIDO_IDS[i]!;
     const valor = 200 + i;
-    await fs
-      .collection('pedidos')
-      .doc(pedidoId)
-      .set(pedidoDoc(pedidoId, valor));
-    await fs
-      .doc(`pedidos/${pedidoId}/pagamento/pag-01`)
-      .set(pagamentoDoc(valor));
+    await fs.collection('pedidos').doc(pedidoId).set(pedidoDoc(pedidoId, valor));
+    await fs.doc(`pedidos/${pedidoId}/pagamento/pag-01`).set(pagamentoDoc(valor));
   }
 }
 
@@ -421,10 +413,7 @@ function shieldBatch(
       continue;
     }
     const msg = r.errorMessage;
-    if (
-      msg != null &&
-      (msg.includes('656') || msg.toLowerCase().includes('consumo indevido'))
-    ) {
+    if (msg != null && (msg.includes('656') || msg.toLowerCase().includes('consumo indevido'))) {
       throw new NFeConsumoIndevidoError({
         cStat: '656',
         xMotivo: msg,
@@ -489,216 +478,196 @@ describe('orchestrator — SEFAZ-SP homologação', () => {
     expect(result.reused).toBe(false);
   }, 90_000);
 
-  it(
-    'emitirPedidosLote batch of 3 — jaAprovadas mirror (PED-1 + PED-8 reused, PED-3 fresh)',
-    async () => {
-      // Tests above already emitted PED-1 and PED-8 → their nfev4 docs
-      // are now cStat=100 (bloqueada per STATUS_BLOQUEADORES). PED-3 is
-      // still fresh. The batch should classify them as 2 reused + 1
-      // fresh, all `estado='a'`, and only ONE entry hits the SEFAZ
-      // autorizarLote NFe[] array.
-      const batch = await emitirPedidosLote(fs, rt, [PED1, PED3, PED8]);
-      shieldBatch(batch.results, 'batch-of-3-jaAprovadas');
-      expect(batch.results).toHaveLength(3);
-      for (const r of batch.results) {
-        expect('estado' in r).toBe(true);
-        if ('estado' in r) {
-          expect(r.estado).toBe(ESTADO_NFE.aprovada);
-        }
+  it('emitirPedidosLote batch of 3 — jaAprovadas mirror (PED-1 + PED-8 reused, PED-3 fresh)', async () => {
+    // Tests above already emitted PED-1 and PED-8 → their nfev4 docs
+    // are now cStat=100 (bloqueada per STATUS_BLOQUEADORES). PED-3 is
+    // still fresh. The batch should classify them as 2 reused + 1
+    // fresh, all `estado='a'`, and only ONE entry hits the SEFAZ
+    // autorizarLote NFe[] array.
+    const batch = await emitirPedidosLote(fs, rt, [PED1, PED3, PED8]);
+    shieldBatch(batch.results, 'batch-of-3-jaAprovadas');
+    expect(batch.results).toHaveLength(3);
+    for (const r of batch.results) {
+      expect('estado' in r).toBe(true);
+      if ('estado' in r) {
+        expect(r.estado).toBe(ESTADO_NFE.aprovada);
       }
-      const fresh = batch.results.filter((r) => 'reused' in r && r.reused === false);
-      const reused = batch.results.filter((r) => 'reused' in r && r.reused === true);
-      expect(fresh).toHaveLength(1);
-      expect(reused).toHaveLength(2);
-      expect(fresh[0]!.pedidoId).toBe(PED3);
-    },
-    120_000,
-  );
+    }
+    const fresh = batch.results.filter((r) => 'reused' in r && r.reused === false);
+    const reused = batch.results.filter((r) => 'reused' in r && r.reused === true);
+    expect(fresh).toHaveLength(1);
+    expect(reused).toHaveLength(2);
+    expect(fresh[0]!.pedidoId).toBe(PED3);
+  }, 120_000);
 
-  it(
-    'emitirPedidosLote × 10 parallel — unique consecutive nNFs, all aprovadas',
-    async () => {
-      // Throttle before a 10-emission batch so the prior 3 tests'
-      // round-trips don't push us into SEFAZ's cStat=656 ("Consumo
-      // Indevido") window.
-      await new Promise((r) => setTimeout(r, 1000));
+  it('emitirPedidosLote × 10 parallel — unique consecutive nNFs, all aprovadas', async () => {
+    // Throttle before a 10-emission batch so the prior 3 tests'
+    // round-trips don't push us into SEFAZ's cStat=656 ("Consumo
+    // Indevido") window.
+    await new Promise((r) => setTimeout(r, 1000));
 
-      // Snapshot numeracao_atual + idLote BEFORE the batch so we can
-      // assert the orchestrator's parallel `nextNumeracao` path produced
-      // exactly 10 consecutive allocations and exactly 1 idLote bump.
-      const cfgBefore = (
-        await fs.doc(`filiais/${FILIAL_ID}/nfeconfig/default`).get()
-      ).data() as { numeracao_atual: number; idLote: number };
+    // Snapshot numeracao_atual + idLote BEFORE the batch so we can
+    // assert the orchestrator's parallel `nextNumeracao` path produced
+    // exactly 10 consecutive allocations and exactly 1 idLote bump.
+    const cfgBefore = (await fs.doc(`filiais/${FILIAL_ID}/nfeconfig/default`).get()).data() as {
+      numeracao_atual: number;
+      idLote: number;
+    };
 
-      const batch = await emitirPedidosLote(fs, rt, PARALLEL_PEDIDO_IDS);
-      shieldBatch(batch.results, 'batch-parallel-10');
+    const batch = await emitirPedidosLote(fs, rt, PARALLEL_PEDIDO_IDS);
+    shieldBatch(batch.results, 'batch-parallel-10');
 
-      // Outcome shape — every pedido aprovada, all fresh.
-      expect(batch.results).toHaveLength(10);
-      for (const r of batch.results) {
-        expect('estado' in r).toBe(true);
-        if ('estado' in r) {
-          expect(r.estado).toBe(ESTADO_NFE.aprovada);
-          expect(r.reused).toBe(false);
-          expect(r.chave).toMatch(/^\d{44}$/);
-        }
+    // Outcome shape — every pedido aprovada, all fresh.
+    expect(batch.results).toHaveLength(10);
+    for (const r of batch.results) {
+      expect('estado' in r).toBe(true);
+      if ('estado' in r) {
+        expect(r.estado).toBe(ESTADO_NFE.aprovada);
+        expect(r.reused).toBe(false);
+        expect(r.chave).toMatch(/^\d{44}$/);
       }
+    }
 
-      // nNF extraction — positions 25..34 (9-digit nNF field inside the
-      // 44-digit chave). All 10 must be distinct AND form a consecutive
-      // run starting at `cfgBefore.numeracao_atual + 1`.
-      const nNFs: number[] = [];
-      for (const r of batch.results) {
-        if ('chave' in r) nNFs.push(Number(r.chave.substring(25, 34)));
-      }
-      nNFs.sort((a, b) => a - b);
-      expect(new Set(nNFs).size).toBe(10);
-      expect(nNFs[0]).toBe(cfgBefore.numeracao_atual + 1);
-      expect(nNFs[9]).toBe(cfgBefore.numeracao_atual + 10);
-      expect(nNFs).toEqual(
-        Array.from({ length: 10 }, (_, i) => cfgBefore.numeracao_atual + 1 + i),
-      );
+    // nNF extraction — positions 25..34 (9-digit nNF field inside the
+    // 44-digit chave). All 10 must be distinct AND form a consecutive
+    // run starting at `cfgBefore.numeracao_atual + 1`.
+    const nNFs: number[] = [];
+    for (const r of batch.results) {
+      if ('chave' in r) nNFs.push(Number(r.chave.substring(25, 34)));
+    }
+    nNFs.sort((a, b) => a - b);
+    expect(new Set(nNFs).size).toBe(10);
+    expect(nNFs[0]).toBe(cfgBefore.numeracao_atual + 1);
+    expect(nNFs[9]).toBe(cfgBefore.numeracao_atual + 10);
+    expect(nNFs).toEqual(Array.from({ length: 10 }, (_, i) => cfgBefore.numeracao_atual + 1 + i));
 
-      // Persisted counter state — numeracao_atual advanced by exactly 10
-      // (one per pedido); idLote advanced by exactly 1 (one chunk = one
-      // shared lote, regardless of pedido count).
-      const cfgAfter = (
-        await fs.doc(`filiais/${FILIAL_ID}/nfeconfig/default`).get()
-      ).data() as { numeracao_atual: number; idLote: number };
-      expect(cfgAfter.numeracao_atual).toBe(cfgBefore.numeracao_atual + 10);
-      expect(cfgAfter.idLote).toBe(cfgBefore.idLote + 1);
-    },
-    180_000,
-  );
+    // Persisted counter state — numeracao_atual advanced by exactly 10
+    // (one per pedido); idLote advanced by exactly 1 (one chunk = one
+    // shared lote, regardless of pedido count).
+    const cfgAfter = (await fs.doc(`filiais/${FILIAL_ID}/nfeconfig/default`).get()).data() as {
+      numeracao_atual: number;
+      idLote: number;
+    };
+    expect(cfgAfter.numeracao_atual).toBe(cfgBefore.numeracao_atual + 10);
+    expect(cfgAfter.idLote).toBe(cfgBefore.idLote + 1);
+  }, 180_000);
 
-  it(
-    'cancelarNFeService — emit a fresh NF-e then cancel it (135) → estado=cancelada; re-cancel is idempotent',
-    async () => {
-      // Throttle so the prior emissions don't push us into the 656 window.
-      await new Promise((r) => setTimeout(r, 1000));
+  it('cancelarNFeService — emit a fresh NF-e then cancel it (135) → estado=cancelada; re-cancel is idempotent', async () => {
+    // Throttle so the prior emissions don't push us into the 656 window.
+    await new Promise((r) => setTimeout(r, 1000));
 
-      // 1. Emit PEDCANCEL fresh (serie 1 lane) so we have a real authorized
-      //    NF-e with a chave + protocolo to cancel.
-      const emit = await emitirPedido(fs, rt, PEDCANCEL);
-      assertNotConsumoIndevido(emit, 'cancelamento/emit-PEDCANCEL');
-      expect(emit.cStat).toBe('100');
-      expect(emit.estado).toBe(ESTADO_NFE.aprovada);
+    // 1. Emit PEDCANCEL fresh (serie 1 lane) so we have a real authorized
+    //    NF-e with a chave + protocolo to cancel.
+    const emit = await emitirPedido(fs, rt, PEDCANCEL);
+    assertNotConsumoIndevido(emit, 'cancelamento/emit-PEDCANCEL');
+    expect(emit.cStat).toBe('100');
+    expect(emit.estado).toBe(ESTADO_NFE.aprovada);
 
-      // 2. Cancel the specific nfev4 doc (s1) — well within the 24 h window.
-      //    cancelarNFeService reads estado + nProt from the DB (no SEFAZ
-      //    consult), sends the evento, and on 135 persists estado='c'.
-      const cancel = await cancelarNFeService(
-        fs,
-        rt,
-        PEDCANCEL,
-        's1',
-        'Cancelamento de teste de homologacao - erro de emissao',
-      );
-      assertNotConsumoIndevido(cancel, 'cancelamento/cancel-PEDCANCEL');
-      expect(['135', '155']).toContain(cancel.cStat);
-      expect(cancel.estado).toBe(ESTADO_NFE.cancelada);
-      expect(cancel.chave).toBe(emit.chave);
+    // 2. Cancel the specific nfev4 doc (s1) — well within the 24 h window.
+    //    cancelarNFeService reads estado + nProt from the DB (no SEFAZ
+    //    consult), sends the evento, and on 135 persists estado='c'.
+    const cancel = await cancelarNFeService(
+      fs,
+      rt,
+      PEDCANCEL,
+      's1',
+      'Cancelamento de teste de homologacao - erro de emissao',
+    );
+    assertNotConsumoIndevido(cancel, 'cancelamento/cancel-PEDCANCEL');
+    expect(['135', '155']).toContain(cancel.cStat);
+    expect(cancel.estado).toBe(ESTADO_NFE.cancelada);
+    expect(cancel.chave).toBe(emit.chave);
 
-      // The persisted nfev4 doc reflects the cancelamento.
-      const nfeSnap = await fs.doc(`pedidos/${PEDCANCEL}/nfev4/s1`).get();
-      expect((nfeSnap.data() as { estado: string }).estado).toBe(ESTADO_NFE.cancelada);
+    // The persisted nfev4 doc reflects the cancelamento.
+    const nfeSnap = await fs.doc(`pedidos/${PEDCANCEL}/nfev4/s1`).get();
+    expect((nfeSnap.data() as { estado: string }).estado).toBe(ESTADO_NFE.cancelada);
 
-      // 3. Re-cancel → idempotent: estado is already cancelada in the DB, so
-      //    NO new SEFAZ event is sent (no Consumo Indevido), returns cancelada.
-      const again = await cancelarNFeService(
-        fs,
-        rt,
-        PEDCANCEL,
-        's1',
-        'Cancelamento de teste de homologacao - erro de emissao',
-      );
-      expect(again.estado).toBe(ESTADO_NFE.cancelada);
-      expect(again.reused).toBe(true);
-    },
-    120_000,
-  );
+    // 3. Re-cancel → idempotent: estado is already cancelada in the DB, so
+    //    NO new SEFAZ event is sent (no Consumo Indevido), returns cancelada.
+    const again = await cancelarNFeService(
+      fs,
+      rt,
+      PEDCANCEL,
+      's1',
+      'Cancelamento de teste de homologacao - erro de emissao',
+    );
+    expect(again.estado).toBe(ESTADO_NFE.cancelada);
+    expect(again.reused).toBe(true);
+  }, 120_000);
 
-  it(
-    'inutilizarNumeracao — burn a fresh range on the reserved série 9 → cStat 102',
-    async () => {
-      await new Promise((r) => setTimeout(r, 1000));
+  it('inutilizarNumeracao — burn a fresh range on the reserved série 9 → cStat 102', async () => {
+    await new Promise((r) => setTimeout(r, 1000));
 
-      // Série 9 is reserved for inutilização (no emission test emits there),
-      // and the nNF is a fresh high-zone value per run (SEED_NNF_START is
-      // Date.now()-seeded) — so this can never collide with the serie-1/2
-      // emission lanes nor hit "número já inutilizado" on a re-run.
-      const inutNNF = SEED_NNF_START;
-      const result = await inutilizarNumeracao(fs, rt, {
-        filialId: FILIAL_ID,
-        serie: SEFAZ_HOM_INUT_SERIE,
-        nNFIni: inutNNF,
-        nNFFin: inutNNF,
-        xJust: 'Inutilizacao de teste de homologacao - faixa nao utilizada',
-      });
-      assertNotConsumoIndevido(
-        { cStat: result.cStat, xMotivo: result.xMotivo },
-        'inutilizacao/serie-9',
-      );
-      expect(result.cStat).toBe('102');
-      expect(result.serie).toBe(SEFAZ_HOM_INUT_SERIE);
-      expect(result.nProt).toBeTruthy();
-    },
-    90_000,
-  );
+    // Série 9 is reserved for inutilização (no emission test emits there),
+    // and the nNF is a fresh high-zone value per run (SEED_NNF_START is
+    // Date.now()-seeded) — so this can never collide with the serie-1/2
+    // emission lanes nor hit "número já inutilizado" on a re-run.
+    const inutNNF = SEED_NNF_START;
+    const result = await inutilizarNumeracao(fs, rt, {
+      filialId: FILIAL_ID,
+      serie: SEFAZ_HOM_INUT_SERIE,
+      nNFIni: inutNNF,
+      nNFFin: inutNNF,
+      xJust: 'Inutilizacao de teste de homologacao - faixa nao utilizada',
+    });
+    assertNotConsumoIndevido(
+      { cStat: result.cStat, xMotivo: result.xMotivo },
+      'inutilizacao/serie-9',
+    );
+    expect(result.cStat).toBe('102');
+    expect(result.serie).toBe(SEFAZ_HOM_INUT_SERIE);
+    expect(result.nProt).toBeTruthy();
+  }, 90_000);
 
-  it(
-    'cartaCorrecaoService — emit a fresh NF-e then register CC-e (135); nSeqEvento increments 1 → 2',
-    async () => {
-      // Throttle so the prior round-trips don't push us into the 656 window.
-      await new Promise((r) => setTimeout(r, 1000));
+  it('cartaCorrecaoService — emit a fresh NF-e then register CC-e (135); nSeqEvento increments 1 → 2', async () => {
+    // Throttle so the prior round-trips don't push us into the 656 window.
+    await new Promise((r) => setTimeout(r, 1000));
 
-      // 1. Emit PEDCCE fresh (serie 1 lane) → a real authorized NF-e with a
-      //    chave to correct.
-      const emit = await emitirPedido(fs, rt, PEDCCE);
-      assertNotConsumoIndevido(emit, 'cce/emit-PEDCCE');
-      expect(emit.cStat).toBe('100');
-      expect(emit.estado).toBe(ESTADO_NFE.aprovada);
+    // 1. Emit PEDCCE fresh (serie 1 lane) → a real authorized NF-e with a
+    //    chave to correct.
+    const emit = await emitirPedido(fs, rt, PEDCCE);
+    assertNotConsumoIndevido(emit, 'cce/emit-PEDCCE');
+    expect(emit.cStat).toBe('100');
+    expect(emit.estado).toBe(ESTADO_NFE.aprovada);
 
-      // 2. First CC-e → cStat 135 (registrado e vinculado), nSeqEvento 1.
-      //    cartaCorrecaoService validates aprovada, computes the sequence,
-      //    sends the evento, and persists a concluido cartacorrecao record.
-      const cce1 = await cartaCorrecaoService(
-        fs,
-        rt,
-        PEDCCE,
-        's1',
-        'Correcao de dados complementares - teste de homologacao da carta de correcao',
-      );
-      assertNotConsumoIndevido({ cStat: cce1.cStat, xMotivo: cce1.xMotivo }, 'cce/1');
-      expect(cce1.accepted).toBe(true);
-      expect(cce1.cStat).toBe('135');
-      expect(cce1.nSeqEvento).toBe(1);
-      expect(cce1.nProt).toBeTruthy();
+    // 2. First CC-e → cStat 135 (registrado e vinculado), nSeqEvento 1.
+    //    cartaCorrecaoService validates aprovada, computes the sequence,
+    //    sends the evento, and persists a concluido cartacorrecao record.
+    const cce1 = await cartaCorrecaoService(
+      fs,
+      rt,
+      PEDCCE,
+      's1',
+      'Correcao de dados complementares - teste de homologacao da carta de correcao',
+    );
+    assertNotConsumoIndevido({ cStat: cce1.cStat, xMotivo: cce1.xMotivo }, 'cce/1');
+    expect(cce1.accepted).toBe(true);
+    expect(cce1.cStat).toBe('135');
+    expect(cce1.nSeqEvento).toBe(1);
+    expect(cce1.nProt).toBeTruthy();
 
-      // 3. Second CC-e → nSeqEvento advances to 2 (the fix over Flutter's
-      //    always-1 behavior: the sequence only advances past accepted CC-e).
-      await new Promise((r) => setTimeout(r, 1000));
-      const cce2 = await cartaCorrecaoService(
-        fs,
-        rt,
-        PEDCCE,
-        's1',
-        'Segunda correcao - complemento de informacao no campo de observacoes da nota',
-      );
-      assertNotConsumoIndevido({ cStat: cce2.cStat, xMotivo: cce2.xMotivo }, 'cce/2');
-      expect(cce2.accepted).toBe(true);
-      expect(cce2.nSeqEvento).toBe(2);
+    // 3. Second CC-e → nSeqEvento advances to 2 (the fix over Flutter's
+    //    always-1 behavior: the sequence only advances past accepted CC-e).
+    await new Promise((r) => setTimeout(r, 1000));
+    const cce2 = await cartaCorrecaoService(
+      fs,
+      rt,
+      PEDCCE,
+      's1',
+      'Segunda correcao - complemento de informacao no campo de observacoes da nota',
+    );
+    assertNotConsumoIndevido({ cStat: cce2.cStat, xMotivo: cce2.xMotivo }, 'cce/2');
+    expect(cce2.accepted).toBe(true);
+    expect(cce2.nSeqEvento).toBe(2);
 
-      // 4. Two concluido records persisted under the NF-e, carrying the
-      //    sequential nSeqEvento (1, 2) — not just a count.
-      const recs = await fs.collection(`pedidos/${PEDCCE}/nfev4/s1/cartacorrecao`).get();
-      expect(recs.size).toBe(2);
-      const persisted = recs.docs
-        .map((d) => d.data() as { nSeqEvento: number; estado: string })
-        .sort((a, b) => a.nSeqEvento - b.nSeqEvento);
-      expect(persisted.map((r) => r.nSeqEvento)).toEqual([1, 2]);
-      expect(persisted.every((r) => r.estado === ESTADO_ENVI_NFE_MSG.concluido)).toBe(true);
-    },
-    120_000,
-  );
+    // 4. Two concluido records persisted under the NF-e, carrying the
+    //    sequential nSeqEvento (1, 2) — not just a count.
+    const recs = await fs.collection(`pedidos/${PEDCCE}/nfev4/s1/cartacorrecao`).get();
+    expect(recs.size).toBe(2);
+    const persisted = recs.docs
+      .map((d) => d.data() as { nSeqEvento: number; estado: string })
+      .sort((a, b) => a.nSeqEvento - b.nSeqEvento);
+    expect(persisted.map((r) => r.nSeqEvento)).toEqual([1, 2]);
+    expect(persisted.every((r) => r.estado === ESTADO_ENVI_NFE_MSG.concluido)).toBe(true);
+  }, 120_000);
 });

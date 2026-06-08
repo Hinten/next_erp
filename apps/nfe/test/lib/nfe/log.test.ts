@@ -10,12 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { NFeTransportError } from '@delfrance/integrations-nfe';
 
-import {
-  redactSensitive,
-  safeErrorShape,
-  safeLog,
-  SENSITIVE_KEYS,
-} from '../../../lib/nfe/log';
+import { redactSensitive, safeErrorShape, safeLog, SENSITIVE_KEYS } from '../../../lib/nfe/log';
 
 describe('safeErrorShape', () => {
   it('extracts name + message from a plain Error', () => {
@@ -26,11 +21,7 @@ describe('safeErrorShape', () => {
   });
 
   it('drops responseBody from NFeTransportError — never logs the raw SEFAZ reply', () => {
-    const err = new NFeTransportError(
-      'SOAP request failed',
-      500,
-      '<x>SECRET_PROT_SIGNATURE</x>',
-    );
+    const err = new NFeTransportError('SOAP request failed', 500, '<x>SECRET_PROT_SIGNATURE</x>');
     const shape = safeErrorShape(err);
     expect(shape).toEqual({ name: 'NFeTransportError', message: 'SOAP request failed' });
     expect(JSON.stringify(shape)).not.toContain('SECRET_PROT_SIGNATURE');

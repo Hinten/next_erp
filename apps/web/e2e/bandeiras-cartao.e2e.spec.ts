@@ -56,9 +56,7 @@ test.describe.serial('Bandeiras de cartão e2e — TableView / ObjectView', () =
 
   test('TableView query works without a filter', async ({ page }) => {
     await page.goto('/bandeiras-cartao');
-    await expect(
-      page.getByRole('heading', { name: 'Bandeiras de cartão' }),
-    ).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Bandeiras de cartão' })).toBeVisible();
     await expect(page.getByRole('table')).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText('Erro ao carregar')).toHaveCount(0);
   });
@@ -109,9 +107,7 @@ test.describe.serial('Bandeiras de cartão e2e — TableView / ObjectView', () =
     await page.goto('/bandeiras-cartao');
     await page.getByRole('link', { name: 'Nova bandeira' }).click();
     await expect(page).toHaveURL(/\/bandeiras-cartao\/novo$/);
-    await expect(
-      page.getByRole('heading', { name: 'Nova bandeira de cartão' }),
-    ).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Nova bandeira de cartão' })).toBeVisible();
   });
 
   test('creates a new bandeira', async ({ page }) => {
@@ -134,9 +130,7 @@ test.describe.serial('Bandeiras de cartão e2e — TableView / ObjectView', () =
     await expectRowVisible(page, nome);
   });
 
-  test('rejects creating a bandeira without a Nome (required field)', async ({
-    page,
-  }) => {
+  test('rejects creating a bandeira without a Nome (required field)', async ({ page }) => {
     await page.goto('/bandeiras-cartao/novo');
     await clickSave(page, 'Criar');
     await expectFieldError(page, 'Nome');
@@ -151,9 +145,7 @@ test.describe.serial('Bandeiras de cartão e2e — TableView / ObjectView', () =
     await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(row(2));
   });
 
-  test('warns about unsaved changes when leaving the edit page', async ({
-    page,
-  }) => {
+  test('warns about unsaved changes when leaving the edit page', async ({ page }) => {
     await page.goto(`/bandeiras-cartao/${row(4)}`);
     await fillField(page, 'CNPJ da instituição', '11222333000181');
 
@@ -174,9 +166,9 @@ test.describe.serial('Bandeiras de cartão e2e — TableView / ObjectView', () =
     await page.waitForURL(/\/bandeiras-cartao$/, { timeout: 15_000 });
 
     await page.goto(`/bandeiras-cartao/${row(5)}`);
-    await expect(
-      page.getByLabel('CNPJ da instituição', { exact: true }),
-    ).toHaveValue('12345678000199');
+    await expect(page.getByLabel('CNPJ da instituição', { exact: true })).toHaveValue(
+      '12345678000199',
+    );
   });
 
   test('edits a bandeira and continues editing', async ({ page }) => {
@@ -216,9 +208,7 @@ test.describe.serial('Bandeiras de cartão e2e — TableView / ObjectView', () =
     await expect(page).not.toHaveURL(/nome=contains/);
   });
 
-  test('keeps the sort in the URL and persists hidden columns', async ({
-    page,
-  }) => {
+  test('keeps the sort in the URL and persists hidden columns', async ({ page }) => {
     await page.goto('/bandeiras-cartao');
     await clickColumnSort(page, 'Bandeira');
     await expect(page).toHaveURL(/sort=bandeira%3A/);
@@ -227,8 +217,6 @@ test.describe.serial('Bandeiras de cartão e2e — TableView / ObjectView', () =
     await page.getByRole('checkbox', { name: 'Bandeira' }).uncheck();
     await page.keyboard.press('Escape');
     await page.reload();
-    await expect(
-      page.getByRole('columnheader', { name: /Bandeira/ }),
-    ).toHaveCount(0);
+    await expect(page.getByRole('columnheader', { name: /Bandeira/ })).toHaveCount(0);
   });
 });

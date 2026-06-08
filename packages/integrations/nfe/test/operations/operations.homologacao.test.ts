@@ -75,8 +75,8 @@ describe('SEFAZ-SP homologação smoke (typed)', () => {
     //   2. Vendored chain at packages/integrations/nfe/ca/sefaz-sp-homologacao.pem
     //      (run `pnpm fetch:sefaz-ca` once to populate it)
     //   3. None — relies on Node's default + NODE_OPTIONS=--use-system-ca
-    const caPath = process.env.NFE_TLS_CA_PATH
-      ?? (existsSync(VENDORED_CHAIN) ? VENDORED_CHAIN : undefined);
+    const caPath =
+      process.env.NFE_TLS_CA_PATH ?? (existsSync(VENDORED_CHAIN) ? VENDORED_CHAIN : undefined);
     const ca = caPath ? readFileSync(caPath, 'utf8') : undefined;
     if (caPath) {
       // eslint-disable-next-line no-console
@@ -95,8 +95,6 @@ describe('SEFAZ-SP homologação smoke (typed)', () => {
     expect(result.xMotivo).toBeTruthy();
     expect(result.cUF).toBe('35');
     // eslint-disable-next-line no-console
-    console.log(
-      `[SEFAZ-SP homologação] cStat=${result.cStat} xMotivo="${result.xMotivo}"`,
-    );
+    console.log(`[SEFAZ-SP homologação] cStat=${result.cStat} xMotivo="${result.xMotivo}"`);
   }, 45_000);
 });

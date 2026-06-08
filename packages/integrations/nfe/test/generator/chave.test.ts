@@ -49,9 +49,9 @@ describe('composeChave43', () => {
   });
 
   it('rejects cNF equal to nNF', () => {
-    expect(() =>
-      composeChave43({ ...BASE, nNF: '000000001', cNF: '00000001' }),
-    ).toThrow(NFeChaveError);
+    expect(() => composeChave43({ ...BASE, nNF: '000000001', cNF: '00000001' })).toThrow(
+      NFeChaveError,
+    );
   });
 
   it('rejects bad mod value', () => {
@@ -67,9 +67,7 @@ describe('composeChave43', () => {
     ['tpEmis', ''],
     ['cNF', '1'],
   ] as const)('rejects wrong-length %s', (field, badValue) => {
-    expect(() =>
-      composeChave43({ ...BASE, [field]: badValue } as never),
-    ).toThrow(NFeChaveError);
+    expect(() => composeChave43({ ...BASE, [field]: badValue } as never)).toThrow(NFeChaveError);
   });
 });
 
@@ -142,9 +140,7 @@ describe('extractCNFFromChave', () => {
 
   it('reads cNF from a fixed 44-digit chave at offsets [35, 43)', () => {
     // Same fixture as composeChave43's golden test, plus DV=8 → 44 digits.
-    expect(
-      extractCNFFromChave('35200714200166000187550010000000071000000018'),
-    ).toBe('00000001');
+    expect(extractCNFFromChave('35200714200166000187550010000000071000000018')).toBe('00000001');
   });
 
   it('rejects wrong-length input', () => {

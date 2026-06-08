@@ -1,11 +1,7 @@
 import { NextResponse } from 'next/server';
 import { PERM, hasPerm } from '@delfrance/auth';
 import { cargoCollection, usuarioCollection } from '@delfrance/data/admin/collections';
-import {
-  aggregatePermissoes,
-  type Cargo,
-  isSuperUserBits,
-} from '@delfrance/schemas';
+import { aggregatePermissoes, type Cargo, isSuperUserBits } from '@delfrance/schemas';
 import { getAdminAuth, getAdminFirestore } from '@/lib/firebase/admin';
 
 export const dynamic = 'force-dynamic';
@@ -35,10 +31,7 @@ function decodeCallerBits(perms: string | undefined): bigint {
  * Idempotent — safe to call on every edit. Used by the web app right after
  * saving usuario changes so the next token refresh reflects new cargos.
  */
-export async function POST(
-  req: Request,
-  { params }: { params: Promise<{ uid: string }> },
-) {
+export async function POST(req: Request, { params }: { params: Promise<{ uid: string }> }) {
   const { uid } = await params;
 
   const authHeader = req.headers.get('authorization');
@@ -78,10 +71,7 @@ export async function POST(
       const snap = await cargoCollection.docRef(db, {}, cid).get();
       const data = snap.data();
       if (data)
-        cargosById.set(
-          cid,
-          cargoCollection.parseRead(data, cargoCollection.docPath({}, cid)),
-        );
+        cargosById.set(cid, cargoCollection.parseRead(data, cargoCollection.docPath({}, cid)));
     }),
   );
 
@@ -92,8 +82,7 @@ export async function POST(
   // could edit a user's cargos to grant bits they don't hold themselves.
   if ((bits & ~callerBits) !== 0n) {
     return err(403, {
-      error:
-        'Você não pode promover este usuário com permissões superiores às suas.',
+      error: 'Você não pode promover este usuário com permissões superiores às suas.',
     });
   }
   if (user.isSuperUser && !isSuperUserBits(callerBits)) {

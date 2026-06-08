@@ -41,9 +41,7 @@ describe('operacaoSchema', () => {
   });
 
   it('rejects empty nome', () => {
-    expect(operacaoSchema.safeParse({ ...MINIMAL, nome: '' }).success).toBe(
-      false,
-    );
+    expect(operacaoSchema.safeParse({ ...MINIMAL, nome: '' }).success).toBe(false);
   });
 
   it('rejects naturezaDaOperacao > 60 chars', () => {
@@ -56,39 +54,27 @@ describe('operacaoSchema', () => {
   });
 
   it('rejects NCM > 8 chars', () => {
-    expect(
-      operacaoSchema.safeParse({ ...MINIMAL, NCM: '123456789' }).success,
-    ).toBe(false);
+    expect(operacaoSchema.safeParse({ ...MINIMAL, NCM: '123456789' }).success).toBe(false);
   });
 
   it('rejects CEST > 7 chars', () => {
-    expect(
-      operacaoSchema.safeParse({ ...MINIMAL, CEST: '12345678' }).success,
-    ).toBe(false);
+    expect(operacaoSchema.safeParse({ ...MINIMAL, CEST: '12345678' }).success).toBe(false);
   });
 
   it('rejects unidade > 6 chars', () => {
-    expect(
-      operacaoSchema.safeParse({ ...MINIMAL, unidade: 'ABCDEFG' }).success,
-    ).toBe(false);
+    expect(operacaoSchema.safeParse({ ...MINIMAL, unidade: 'ABCDEFG' }).success).toBe(false);
   });
 
   it('rejects infCpl > 5000 chars', () => {
-    expect(
-      operacaoSchema.safeParse({ ...MINIMAL, infCpl: 'x'.repeat(5001) }).success,
-    ).toBe(false);
+    expect(operacaoSchema.safeParse({ ...MINIMAL, infCpl: 'x'.repeat(5001) }).success).toBe(false);
   });
 
   it('rejects tipo not in {0,1}', () => {
-    expect(operacaoSchema.safeParse({ ...MINIMAL, tipo: 2 }).success).toBe(
-      false,
-    );
+    expect(operacaoSchema.safeParse({ ...MINIMAL, tipo: 2 }).success).toBe(false);
   });
 
   it('rejects unknown indPres value', () => {
-    expect(
-      operacaoSchema.safeParse({ ...MINIMAL, indPres: '7' }).success,
-    ).toBe(false);
+    expect(operacaoSchema.safeParse({ ...MINIMAL, indPres: '7' }).success).toBe(false);
   });
 
   it('accepts known UFs in estados and estadosDestino', () => {
@@ -101,9 +87,7 @@ describe('operacaoSchema', () => {
   });
 
   it('rejects invalid UF', () => {
-    expect(
-      operacaoSchema.safeParse({ ...MINIMAL, estados: ['ZZ'] }).success,
-    ).toBe(false);
+    expect(operacaoSchema.safeParse({ ...MINIMAL, estados: ['ZZ'] }).success).toBe(false);
   });
 
   // Regression: Firebase JS SDK v12 rejects `undefined` in addDoc/setDoc.

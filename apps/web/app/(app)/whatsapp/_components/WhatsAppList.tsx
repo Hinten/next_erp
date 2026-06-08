@@ -2,26 +2,10 @@
 
 import { useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  Badge,
-  Group,
-  Skeleton,
-  Stack,
-  Text,
-  TextInput,
-  UnstyledButton,
-} from '@mantine/core';
-import {
-  buildQuery,
-  limit,
-  orderByField,
-  whereEqual,
-} from '@delfrance/data';
+import { Badge, Group, Skeleton, Stack, Text, TextInput, UnstyledButton } from '@mantine/core';
+import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import {
-  ESTADO_CONVERSA_LABELS,
-  type Conversa,
-} from '@delfrance/schemas';
+import { ESTADO_CONVERSA_LABELS, type Conversa } from '@delfrance/schemas';
 import { conversaCollection } from '@/lib/data/conversaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 
@@ -57,9 +41,7 @@ export function WhatsAppList({
     if (!data) return [];
     const needle = search.trim().toLowerCase();
     if (!needle) return data;
-    return data.filter(({ data: c }) =>
-      (c.nome ?? '').toLowerCase().includes(needle),
-    );
+    return data.filter(({ data: c }) => (c.nome ?? '').toLowerCase().includes(needle));
   }, [data, search]);
 
   return (
@@ -99,12 +81,9 @@ export function WhatsAppList({
             p="xs"
             style={(theme) => ({
               borderRadius: theme.radius.sm,
-              backgroundColor:
-                id === activeId ? theme.colors.green[0] : undefined,
+              backgroundColor: id === activeId ? theme.colors.green[0] : undefined,
               borderLeft:
-                id === activeId
-                  ? `3px solid ${theme.colors.green[6]}`
-                  : '3px solid transparent',
+                id === activeId ? `3px solid ${theme.colors.green[6]}` : '3px solid transparent',
             })}
           >
             <Stack gap={4}>

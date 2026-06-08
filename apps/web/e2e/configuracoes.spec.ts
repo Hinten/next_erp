@@ -1,9 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { PERM } from '@delfrance/auth';
-import {
-  E2E_SU_EMAIL,
-  E2E_SU_PASSWORD,
-} from './_helpers/auth';
+import { E2E_SU_EMAIL, E2E_SU_PASSWORD } from './_helpers/auth';
 import {
   deleteAuthUserByEmail,
   deleteCargoById,
@@ -66,10 +63,7 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     await page.getByLabel('Nome').fill(cargoNome);
 
     // PermissionEditor renders one Card per domain. Scope by card text.
-    const clientesCard = page
-      .locator('.mantine-Card-root')
-      .filter({ hasText: 'Clientes' })
-      .first();
+    const clientesCard = page.locator('.mantine-Card-root').filter({ hasText: 'Clientes' }).first();
     await clientesCard.getByLabel('Ler').check();
     await clientesCard.getByLabel('Editar').check();
 
@@ -91,10 +85,7 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     await page.goto(`/configuracoes/cargos/${cargoId}/editar`);
     await expect(page.getByRole('heading', { name: 'Editar cargo' })).toBeVisible();
 
-    const clientesCard = page
-      .locator('.mantine-Card-root')
-      .filter({ hasText: 'Clientes' })
-      .first();
+    const clientesCard = page.locator('.mantine-Card-root').filter({ hasText: 'Clientes' }).first();
     await clientesCard.getByLabel('Excluir').check();
 
     await page.getByRole('button', { name: /Salvar/i }).click();
@@ -117,8 +108,7 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     await page.keyboard.press('Escape');
 
     const createResp = page.waitForResponse(
-      (r) =>
-        r.url().endsWith('/api/admin/users') && r.request().method() === 'POST',
+      (r) => r.url().endsWith('/api/admin/users') && r.request().method() === 'POST',
     );
     await page.getByRole('button', { name: 'Criar usuário' }).click();
     const response = await createResp;
@@ -134,25 +124,19 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
     expect(perms).toBe(editedBits.toString());
   });
 
-  test('edita usuario: remove cargo aciona refreshClaims e zera bits', async ({
-    page,
-  }) => {
+  test('edita usuario: remove cargo aciona refreshClaims e zera bits', async ({ page }) => {
     expect(userUid).not.toBe('');
     await page.goto(`/configuracoes/usuarios/${userUid}/editar`);
     await expect(page.getByRole('heading', { name: 'Editar usuário' })).toBeVisible();
 
     // Remove the cargo pill from the MultiSelect. Mantine v9 renders an
     // aria-label="remove" button on each Pill.
-    const pill = page
-      .locator('.mantine-Pill-root')
-      .filter({ hasText: cargoNome })
-      .first();
+    const pill = page.locator('.mantine-Pill-root').filter({ hasText: cargoNome }).first();
     await pill.getByLabel(/remove|remover/i).click();
 
     const refreshResp = page.waitForResponse(
       (r) =>
-        r.url().includes(`/api/admin/users/${userUid}/claims`) &&
-        r.request().method() === 'POST',
+        r.url().includes(`/api/admin/users/${userUid}/claims`) && r.request().method() === 'POST',
     );
     await page.getByRole('button', { name: /Salvar/i }).click();
     const response = await refreshResp;

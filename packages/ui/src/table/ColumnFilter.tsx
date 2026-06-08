@@ -50,13 +50,7 @@ export function ColumnFilter({ descriptor, value, onChange }: ColumnFilterProps)
   const active = value !== undefined;
 
   return (
-    <Popover
-      opened={opened}
-      onChange={setOpened}
-      position="bottom-end"
-      shadow="md"
-      withArrow
-    >
+    <Popover opened={opened} onChange={setOpened} position="bottom-end" shadow="md" withArrow>
       <Popover.Target>
         <ActionIcon
           variant={active ? 'filled' : 'subtle'}
@@ -154,9 +148,7 @@ function FilterBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
   }
 
   // string-ish: TextInput → contains (regex similarity)
-  return (
-    <TextBody descriptor={descriptor} value={value} onApply={onApply} onClear={onClear} />
-  );
+  return <TextBody descriptor={descriptor} value={value} onApply={onApply} onClear={onClear} />;
 }
 
 function TextBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {

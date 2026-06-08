@@ -91,9 +91,9 @@ test.describe('All pages load', () => {
       // Wait for the app shell instead of `domcontentloaded` so client
       // routing + RequirePerm have a chance to settle. The Delfrance title
       // lives in the AppShell header.
-      await expect(
-        page.getByRole('heading', { name: 'Delfrance' }).first(),
-      ).toBeVisible({ timeout: 10_000 });
+      await expect(page.getByRole('heading', { name: 'Delfrance' }).first()).toBeVisible({
+        timeout: 10_000,
+      });
 
       // Auth + claim check: the test user has all PERM bits, so we should
       // never end up bounced back to /login or stuck on the "Sem permissão"

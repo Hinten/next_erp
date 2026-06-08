@@ -10,10 +10,7 @@ export default function WhatsAppIndexPage() {
 
   return (
     <Stack h="calc(100vh - 96px)" gap="md">
-      <PageHeader
-        title="WhatsApp"
-        description="Inbox de WhatsApp Cloud API (origem='whatsapp')"
-      />
+      <PageHeader title="WhatsApp" description="Inbox de WhatsApp Cloud API (origem='whatsapp')" />
       <Group align="stretch" gap="md" style={{ flex: 1, minHeight: 0 }}>
         <Box
           w={320}

@@ -46,11 +46,7 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
       seedClientes(prefix, 7),
       // Pre-compile the routes this suite drives so the Next dev cold-compile
       // cost isn't charged to the first assertion (was flaking on 5s expects).
-      warmRoutes(browser, [
-        '/clientes',
-        '/clientes/novo',
-        '/clientes/__aquecimento__',
-      ]),
+      warmRoutes(browser, ['/clientes', '/clientes/novo', '/clientes/__aquecimento__']),
     ]);
   });
 
@@ -122,17 +118,13 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
     // explicitly: a plain /clientes/[^/]+$ also matches the /clientes/novo
     // we're already on, so it would resolve before the create even commits.
     await page.waitForURL(
-      (url) =>
-        /^\/clientes\/[^/]+$/.test(url.pathname) &&
-        url.pathname !== '/clientes/novo',
+      (url) => /^\/clientes\/[^/]+$/.test(url.pathname) && url.pathname !== '/clientes/novo',
       { timeout: 15_000 },
     );
     // Confirm the doc is actually committed (Admin SDK reads are strongly
     // consistent) before loading the list, so the list query can't race the
     // write. A failure here localises the bug to the create itself.
-    await expect
-      .poll(() => docExistsByName('clientes', nome), { timeout: 15_000 })
-      .toBe(true);
+    await expect.poll(() => docExistsByName('clientes', nome), { timeout: 15_000 }).toBe(true);
 
     await page.goto('/clientes');
     await applyTextFilter(page, 'Nome', nome);
@@ -178,9 +170,9 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
     await page.waitForURL(/\/clientes$/, { timeout: 15_000 });
 
     await page.goto(`/clientes/${row(5)}`);
-    await expect(
-      page.getByLabel('Observações internas', { exact: true }),
-    ).toHaveValue('editado-e2e');
+    await expect(page.getByLabel('Observações internas', { exact: true })).toHaveValue(
+      'editado-e2e',
+    );
   });
 
   test('edits a cliente and continues editing', async ({ page }) => {
@@ -243,9 +235,7 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
     // Open the ColumnPicker, switch to reorder mode and nudge the first
     // column one slot down via its ▼ button.
     await page.getByRole('button', { name: 'Configurar colunas' }).click();
-    await page
-      .getByRole('button', { name: 'Reordenar colunas', exact: true })
-      .click();
+    await page.getByRole('button', { name: 'Reordenar colunas', exact: true }).click();
     await page
       .getByRole('button', { name: /^Mover .+ para baixo$/ })
       .first()

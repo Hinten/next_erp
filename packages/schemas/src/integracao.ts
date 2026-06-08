@@ -53,16 +53,24 @@ export const INTEGRACAO_TIPO_LABELS: Record<IntegracaoTipo, string> = {
  */
 export function pluginIdForTipo(tipo: IntegracaoTipo): string | null {
   switch (tipo) {
-    case INTEGRACAO_TIPO.mercadoLivre: return 'mercado-livre';
-    case INTEGRACAO_TIPO.shopee:       return 'shopee';
-    case INTEGRACAO_TIPO.amazon:       return 'amazon-sp-api';
-    case INTEGRACAO_TIPO.magalu:       return 'magalu';
-    case INTEGRACAO_TIPO.lojaIntegrada: return 'loja-integrada';
-    case INTEGRACAO_TIPO.facebook:     return 'facebook';
-    case INTEGRACAO_TIPO.whatsapp:     return 'whatsapp-cloud-api';
+    case INTEGRACAO_TIPO.mercadoLivre:
+      return 'mercado-livre';
+    case INTEGRACAO_TIPO.shopee:
+      return 'shopee';
+    case INTEGRACAO_TIPO.amazon:
+      return 'amazon-sp-api';
+    case INTEGRACAO_TIPO.magalu:
+      return 'magalu';
+    case INTEGRACAO_TIPO.lojaIntegrada:
+      return 'loja-integrada';
+    case INTEGRACAO_TIPO.facebook:
+      return 'facebook';
+    case INTEGRACAO_TIPO.whatsapp:
+      return 'whatsapp-cloud-api';
     case INTEGRACAO_TIPO.balcao:
     case INTEGRACAO_TIPO.nenhuma:
-    default:                            return null;
+    default:
+      return null;
   }
 }
 
@@ -72,30 +80,28 @@ export function pluginIdForTipo(tipo: IntegracaoTipo): string | null {
  * remain pass-through; the UI surfaces them as ids and resolves
  * lookups lazily.
  */
-export const integracaoSchema = z.object({
-  tipo: integracaoTipoSchema.default(INTEGRACAO_TIPO.nenhuma),
-  padrao: z.boolean().default(false),
-  nome: z.string().min(1).max(255),
-  cpf_cnpj: z
-    .string()
-    .max(18)
-    .regex(/^\d*$/, 'apenas números')
-    .nullable().default(null),
-  idCadIntTran: z.string().max(60).nullable().default(null),
-  ativo: z.boolean().default(true),
-  cor: z.number().int().nullable().default(null),
-  modalidadeFreteImportacao: z.number().int().nullable().default(null),
+export const integracaoSchema = z
+  .object({
+    tipo: integracaoTipoSchema.default(INTEGRACAO_TIPO.nenhuma),
+    padrao: z.boolean().default(false),
+    nome: z.string().min(1).max(255),
+    cpf_cnpj: z.string().max(18).regex(/^\d*$/, 'apenas números').nullable().default(null),
+    idCadIntTran: z.string().max(60).nullable().default(null),
+    ativo: z.boolean().default(true),
+    cor: z.number().int().nullable().default(null),
+    modalidadeFreteImportacao: z.number().int().nullable().default(null),
 
-  // Outer references — opaque pass-through.
-  filialIntegracaoPedidoOuterRef: z.unknown(),
-  tabelaNormalOuterRef: z.unknown(),
-  tabelaPromocionalOuterRef: z.unknown().nullable().default(null),
-  operacaoOuterRef: z.unknown().nullable().default(null),
-  operacaoDevolucaoOuterRef: z.unknown().nullable().default(null),
-  depositoOuterRef: z.unknown(),
+    // Outer references — opaque pass-through.
+    filialIntegracaoPedidoOuterRef: z.unknown(),
+    tabelaNormalOuterRef: z.unknown(),
+    tabelaPromocionalOuterRef: z.unknown().nullable().default(null),
+    operacaoOuterRef: z.unknown().nullable().default(null),
+    operacaoDevolucaoOuterRef: z.unknown().nullable().default(null),
+    depositoOuterRef: z.unknown(),
 
-  dataCadastro: z.string().datetime().nullable().default(null),
-}).passthrough();
+    dataCadastro: z.string().datetime().nullable().default(null),
+  })
+  .passthrough();
 
 export type Integracao = z.infer<typeof integracaoSchema>;
 

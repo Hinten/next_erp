@@ -26,13 +26,18 @@ import {
 import { EmitirLoteDialog } from './_components/EmitirLoteDialog';
 
 const virtualColumns: ReadonlyArray<VirtualColumn<Pedido>> = [
-  { key: 'nf',        label: 'NF',        tooltip: 'Nota Fiscal',       renderCell: (r) => <NFCell pedidoId={r.id} /> },
-  { key: 'cliente',   label: 'Cliente',   renderCell: (r) => <ClienteCell pedido={r.data} /> },
-  { key: 'vlr',       label: 'Vlr',       renderCell: (r) => <VlrCell pedido={r.data} /> },
+  { key: 'nf', label: 'NF', tooltip: 'Nota Fiscal', renderCell: (r) => <NFCell pedidoId={r.id} /> },
+  { key: 'cliente', label: 'Cliente', renderCell: (r) => <ClienteCell pedido={r.data} /> },
+  { key: 'vlr', label: 'Vlr', renderCell: (r) => <VlrCell pedido={r.data} /> },
   { key: 'expedicao', label: 'Expedição', renderCell: (r) => <ExpedicaoCell pedido={r.data} /> },
-  { key: 'frete',     label: 'Frete',     renderCell: (r) => <FreteCell pedido={r.data} /> },
-  { key: 'criacao',   label: 'Criação',   renderCell: (r) => <CriacaoCell pedido={r.data} /> },
-  { key: 'imp',       label: 'Imp.',      tooltip: 'Data de Impressão', renderCell: (r) => <ImpCell pedido={r.data} /> },
+  { key: 'frete', label: 'Frete', renderCell: (r) => <FreteCell pedido={r.data} /> },
+  { key: 'criacao', label: 'Criação', renderCell: (r) => <CriacaoCell pedido={r.data} /> },
+  {
+    key: 'imp',
+    label: 'Imp.',
+    tooltip: 'Data de Impressão',
+    renderCell: (r) => <ImpCell pedido={r.data} />,
+  },
 ];
 
 export default function PedidosPage() {
@@ -61,9 +66,7 @@ export default function PedidosPage() {
           estado: {
             label: 'Pagamento',
             renderCell: (value) => (
-              <Badge variant="light">
-                {ESTADO_PEDIDO_LABELS[value as EstadoPedido] ?? '—'}
-              </Badge>
+              <Badge variant="light">{ESTADO_PEDIDO_LABELS[value as EstadoPedido] ?? '—'}</Badge>
             ),
           },
         }}

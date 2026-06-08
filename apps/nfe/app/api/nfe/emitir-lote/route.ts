@@ -58,11 +58,7 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   try {
-    const result = await emitirPedidosLote(
-      getAdminFirestore(),
-      runtimeInstance,
-      body.pedidoIds,
-    );
+    const result = await emitirPedidosLote(getAdminFirestore(), runtimeInstance, body.pedidoIds);
     return NextResponse.json(result, { status: 200 });
   } catch (e) {
     if (e instanceof NFeOrchestratorError) {

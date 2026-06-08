@@ -27,7 +27,10 @@ const ENVELOPED_URI = 'http://www.w3.org/2000/09/xmldsig#enveloped-signature';
 const SHA1_URI = 'http://www.w3.org/2000/09/xmldsig#sha1';
 
 export class NFeSignatureError extends Error {
-  constructor(message: string, public override readonly cause?: unknown) {
+  constructor(
+    message: string,
+    public override readonly cause?: unknown,
+  ) {
     super(message);
     this.name = 'NFeSignatureError';
   }
@@ -71,7 +74,7 @@ function signWithReference(xml: string, cert: NFeCertificate, referenceXPath: st
   });
   // EndCertOnly: only <X509Certificate>, no KeyValue / X509SubjectName / etc.
   sig.getKeyInfoContent = ({ publicCert }) => {
-    const pem = typeof publicCert === 'string' ? publicCert : publicCert?.toString('utf8') ?? '';
+    const pem = typeof publicCert === 'string' ? publicCert : (publicCert?.toString('utf8') ?? '');
     const der = pem
       .replace(/-----BEGIN CERTIFICATE-----/g, '')
       .replace(/-----END CERTIFICATE-----/g, '')

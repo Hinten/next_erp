@@ -38,9 +38,7 @@ describe('defineAdminCollection', () => {
     });
 
     it('throws on an unknown field (strip-policy schema)', () => {
-      expect(() =>
-        handle.parse({ nome: 'x', cStat: null, bogus: 'nope' }),
-      ).toThrow(z.ZodError);
+      expect(() => handle.parse({ nome: 'x', cStat: null, bogus: 'nope' })).toThrow(z.ZodError);
     });
 
     it('preserves unknown fields on a .passthrough() schema', () => {
@@ -49,9 +47,7 @@ describe('defineAdminCollection', () => {
     });
 
     it('rejects a prototype-named unknown key (Object.hasOwn, not `in`)', () => {
-      expect(() =>
-        handle.parse({ nome: 'x', cStat: null, toString: 'evil' }),
-      ).toThrow(z.ZodError);
+      expect(() => handle.parse({ nome: 'x', cStat: null, toString: 'evil' })).toThrow(z.ZodError);
     });
   });
 
@@ -115,9 +111,7 @@ describe('defineAdminCollection', () => {
     });
 
     it('docPath returns the concrete collection/id path', () => {
-      expect(handle.docPath({ thingId: 'abc' }, 'doc1')).toBe(
-        'things/abc/sub/doc1',
-      );
+      expect(handle.docPath({ thingId: 'abc' }, 'doc1')).toBe('things/abc/sub/doc1');
     });
   });
 });

@@ -49,9 +49,7 @@ export interface NFeEmitError {
 }
 
 /** Discriminate `NFeEmitResult` from `NFeEmitError` in a batch result. */
-export function isNFeEmitError(
-  r: NFeEmitResult | NFeEmitError,
-): r is NFeEmitError {
+export function isNFeEmitError(r: NFeEmitResult | NFeEmitError): r is NFeEmitError {
   return (r as NFeEmitError).errorCode !== undefined;
 }
 
@@ -216,11 +214,7 @@ function errorFromResponse(
   if (status === 422) {
     // The route returns the full EmitResult on 422 — extract cStat + xMotivo.
     const result = body as Partial<NFeEmitResult> | null;
-    return new NFeRejectedError(
-      result?.cStat ?? '(unknown)',
-      result?.xMotivo ?? message,
-      body,
-    );
+    return new NFeRejectedError(result?.cStat ?? '(unknown)', result?.xMotivo ?? message, body);
   }
   if (status === 503) return new NFeRuntimeNotReadyError(message, body);
   return new NFeServerError(message, status, body);
@@ -256,10 +250,7 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
     } catch (err) {
       // fetch throws TypeError on network/abort failures — never on HTTP
       // status. Distinguish so callers can retry confidently.
-      throw new NFeNetworkError(
-        err instanceof Error ? err.message : 'fetch failed',
-        err,
-      );
+      throw new NFeNetworkError(err instanceof Error ? err.message : 'fetch failed', err);
     }
 
     // Body parse — tolerate empty bodies on errors (some 503 paths

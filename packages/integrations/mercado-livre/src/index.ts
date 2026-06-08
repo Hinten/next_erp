@@ -20,14 +20,18 @@ export class MercadoLivreNotConfiguredError extends Error {
   }
 }
 
-export function createMercadoLivreChannel(
-  config: MercadoLivreConfig,
-): MarketplaceChannel {
+export function createMercadoLivreChannel(config: MercadoLivreConfig): MarketplaceChannel {
   return {
     id: 'mercado-livre',
-    syncProducts: async () => { throw new MercadoLivreNotConfiguredError(); },
-    pullOrders: async () => { throw new MercadoLivreNotConfiguredError(); },
-    pushTracking: async () => { throw new MercadoLivreNotConfiguredError(); },
+    syncProducts: async () => {
+      throw new MercadoLivreNotConfiguredError();
+    },
+    pullOrders: async () => {
+      throw new MercadoLivreNotConfiguredError();
+    },
+    pushTracking: async () => {
+      throw new MercadoLivreNotConfiguredError();
+    },
     oauthFlow: {
       start(state: string): string {
         // Exposed today so the UI in /canais can render the "Conectar"

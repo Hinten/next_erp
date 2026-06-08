@@ -2,22 +2,9 @@
 
 import { useMemo } from 'react';
 import Link from 'next/link';
-import {
-  Alert,
-  Anchor,
-  Skeleton,
-  Stack,
-  Table,
-  Text,
-} from '@mantine/core';
+import { Alert, Anchor, Skeleton, Stack, Table, Text } from '@mantine/core';
 import { PageHeader } from '@delfrance/ui';
-import {
-  buildQuery,
-  defineCollection,
-  groupQuery,
-  limit,
-  orderByField,
-} from '@delfrance/data';
+import { buildQuery, defineCollection, groupQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import {
   FORMA_PAGAMENTO_LABELS,
@@ -53,15 +40,8 @@ function pedidoIdFromPath(path: string): string | null {
 
 export default function PagamentosListPage() {
   const q = useMemo(() => {
-    const base = groupQuery(
-      getFirebaseFirestore(),
-      'pagamentos',
-      converterHandle.converter,
-    );
-    return buildQuery(base, [
-      orderByField('dataCadastro', 'desc'),
-      limit(PAGE_SIZE),
-    ]);
+    const base = groupQuery(getFirebaseFirestore(), 'pagamentos', converterHandle.converter);
+    return buildQuery(base, [orderByField('dataCadastro', 'desc'), limit(PAGE_SIZE)]);
   }, []);
 
   const { data, loading, error } = useSnapshot<Pagamento>(q);
@@ -77,8 +57,8 @@ export default function PagamentosListPage() {
         <Alert color="red" title="Erro ao carregar pagamentos">
           {error.message}
           <Text size="xs" mt={4}>
-            Pode ser necessário criar um índice composto no Firestore — o
-            console mostra o link na primeira execução.
+            Pode ser necessário criar um índice composto no Firestore — o console mostra o link na
+            primeira execução.
           </Text>
         </Alert>
       )}
@@ -113,21 +93,13 @@ export default function PagamentosListPage() {
             )}
             {data.map(({ id, path, data: pgto }) => {
               const pedidoId = pedidoIdFromPath(path);
-              const formattedValor = format(
-                money(Math.round(pgto.valor * 100)),
-              );
-              const formaLabel =
-                FORMA_PAGAMENTO_LABELS[
-                  pgto.forma_de_pagamento as FormaPagamento
-                ];
+              const formattedValor = format(money(Math.round(pgto.valor * 100)));
+              const formaLabel = FORMA_PAGAMENTO_LABELS[pgto.forma_de_pagamento as FormaPagamento];
               return (
                 <Table.Tr key={path}>
                   <Table.Td>
                     {pedidoId ? (
-                      <Anchor
-                        component={Link}
-                        href={`/pedidos/${pedidoId}/editar`}
-                      >
+                      <Anchor component={Link} href={`/pedidos/${pedidoId}/editar`}>
                         #{pedidoId.slice(0, 8)}
                       </Anchor>
                     ) : (
@@ -135,9 +107,7 @@ export default function PagamentosListPage() {
                     )}
                   </Table.Td>
                   <Table.Td>
-                    <PagamentoStatusBadge
-                      status={pgto.status_pagamento ?? null}
-                    />
+                    <PagamentoStatusBadge status={pgto.status_pagamento ?? null} />
                   </Table.Td>
                   <Table.Td>{formaLabel}</Table.Td>
                   <Table.Td align="right">{formattedValor}</Table.Td>

@@ -1,17 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import {
-  Alert,
-  Badge,
-  Card,
-  Code,
-  Group,
-  Skeleton,
-  Stack,
-  Text,
-  Tooltip,
-} from '@mantine/core';
+import { Alert, Badge, Card, Code, Group, Skeleton, Stack, Text, Tooltip } from '@mantine/core';
 import { PageHeader } from '@delfrance/ui';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
@@ -40,14 +30,13 @@ export default function CanaisListPage() {
       />
 
       <Alert color="blue" title="OAuth + sincronização">
-        A configuração inicial (OAuth) e sincronização contínua (catálogo,
-        pedidos, tracking) vivem em
-        <Code mx={4}>apps/integrations</Code>+ Cloud Functions. Esta tela é
-        a visão consolidada das integrações já cadastradas no Firestore.
-        Plugins de canal (
+        A configuração inicial (OAuth) e sincronização contínua (catálogo, pedidos, tracking) vivem
+        em
+        <Code mx={4}>apps/integrations</Code>+ Cloud Functions. Esta tela é a visão consolidada das
+        integrações já cadastradas no Firestore. Plugins de canal (
         <Code>@delfrance/integrations-mercado-livre</Code>,
-        <Code>@delfrance/integrations-shopee</Code>, etc.) são scaffolds
-        hoje; implementação concreta entra na Fase 5.
+        <Code>@delfrance/integrations-shopee</Code>, etc.) são scaffolds hoje; implementação
+        concreta entra na Fase 5.
       </Alert>
 
       {error && <Alert color="red">{error.message}</Alert>}
@@ -74,13 +63,7 @@ export default function CanaisListPage() {
   );
 }
 
-function IntegracaoCard({
-  id,
-  integracao,
-}: {
-  id: string;
-  integracao: Integracao;
-}) {
+function IntegracaoCard({ id, integracao }: { id: string; integracao: Integracao }) {
   const tipoLabel = INTEGRACAO_TIPO_LABELS[integracao.tipo as IntegracaoTipo];
   const pluginId = pluginIdForTipo(integracao.tipo as IntegracaoTipo);
   return (
@@ -109,9 +92,7 @@ function IntegracaoCard({
         <Group gap="xs">
           <Tooltip
             label={
-              pluginId
-                ? `Plugin: @delfrance/integrations-${pluginId}`
-                : 'Sem plugin associado'
+              pluginId ? `Plugin: @delfrance/integrations-${pluginId}` : 'Sem plugin associado'
             }
           >
             <Badge variant="light" color={pluginId ? 'blue' : 'gray'} size="xs">

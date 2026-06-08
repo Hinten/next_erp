@@ -16,13 +16,7 @@
  */
 import { z } from 'zod';
 
-import {
-  fmtMoney,
-  fmtMoneyOpt,
-  fmtQuantity,
-  fmtRate,
-  fmtRateOpt,
-} from './format';
+import { fmtMoney, fmtMoneyOpt, fmtQuantity, fmtRate, fmtRateOpt } from './format';
 import {
   type ConfCOFINS,
   type ConfPIS,
@@ -63,13 +57,14 @@ export function buildImpostoXml(rawImposto: unknown, rawItem: unknown): string {
   // require an ICMS config.
   const pis = buildPIS(imposto.configuracaoPIS, item);
   const cofins = buildCOFINS(imposto.configuracaoCOFINS, item);
-  const impostoValue: TNFe_infNFe_det_imposto = imposto.configuracaoISSQN != null
-    ? { ISSQN: buildISSQN(imposto.configuracaoISSQN), PIS: pis, COFINS: cofins }
-    : {
-        ICMS: buildICMS(requireICMSConfig(imposto.configuracaoICMS), imposto.origem),
-        PIS: pis,
-        COFINS: cofins,
-      };
+  const impostoValue: TNFe_infNFe_det_imposto =
+    imposto.configuracaoISSQN != null
+      ? { ISSQN: buildISSQN(imposto.configuracaoISSQN), PIS: pis, COFINS: cofins }
+      : {
+          ICMS: buildICMS(requireICMSConfig(imposto.configuracaoICMS), imposto.origem),
+          PIS: pis,
+          COFINS: cofins,
+        };
   if (imposto.configuracaoIPI != null) {
     impostoValue.IPI = buildIPI(imposto.configuracaoIPI);
   }
@@ -84,21 +79,14 @@ export function buildImpostoXml(rawImposto: unknown, rawItem: unknown): string {
 // ICMS dispatcher
 // ---------------------------------------------------------------------------
 
-function requireICMSConfig(
-  cfg: ConfiguracaoICMS | null | undefined,
-): ConfiguracaoICMS {
+function requireICMSConfig(cfg: ConfiguracaoICMS | null | undefined): ConfiguracaoICMS {
   if (cfg == null) {
-    throw new NFeTributeError(
-      'imposto requires either `configuracaoICMS` or `configuracaoISSQN`',
-    );
+    throw new NFeTributeError('imposto requires either `configuracaoICMS` or `configuracaoISSQN`');
   }
   return cfg;
 }
 
-function buildICMS(
-  config: ConfiguracaoICMS,
-  origem: Origem,
-): TNFe_infNFe_det_imposto_ICMS {
+function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_imposto_ICMS {
   if (config.crt === '3') {
     throw new NFeTributeError(
       'CRT=3 (Regime Normal) is not implemented in this engine (Phase D). ' +
@@ -163,9 +151,7 @@ function buildICMS(
     case '203': {
       const c = config.csosn202ou203;
       if (c == null) {
-        throw new NFeTributeError(
-          `CSOSN '${csosn}' requires \`configuracaoICMS.csosn202ou203\``,
-        );
+        throw new NFeTributeError(`CSOSN '${csosn}' requires \`configuracaoICMS.csosn202ou203\``);
       }
       return {
         ICMSSN202: {
@@ -316,10 +302,7 @@ function buildISSQN(cfg: ConfiguracaoISSQN): TNFe_infNFe_det_imposto_ISSQN {
 // PIS / COFINS dispatchers
 // ---------------------------------------------------------------------------
 
-function buildPIS(
-  cfg: ConfPIS | null | undefined,
-  item: TributeItem,
-): TNFe_infNFe_det_imposto_PIS {
+function buildPIS(cfg: ConfPIS | null | undefined, item: TributeItem): TNFe_infNFe_det_imposto_PIS {
   // Default for SN: PIS NT (CST 07 — não tributado).
   if (cfg == null) return { PISNT: { CST: '07' } };
   return buildPISByCST(cfg, item);
@@ -357,7 +340,7 @@ function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto
     case '03': {
       // PISQtde — by quantity (vAliqProd × qBCProd).
       if (cfg.vAliqProd == null) {
-        throw new NFeTributeError("PIS CST=03 requires `vAliqProd`");
+        throw new NFeTributeError('PIS CST=03 requires `vAliqProd`');
       }
       return {
         PISQtde: {
@@ -420,10 +403,7 @@ function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto
   }
 }
 
-function buildCOFINSByCST(
-  cfg: ConfCOFINS,
-  item: TributeItem,
-): TNFe_infNFe_det_imposto_COFINS {
+function buildCOFINSByCST(cfg: ConfCOFINS, item: TributeItem): TNFe_infNFe_det_imposto_COFINS {
   switch (cfg.CST) {
     case '01':
     case '02': {
@@ -443,7 +423,7 @@ function buildCOFINSByCST(
     }
     case '03': {
       if (cfg.vAliqProd == null) {
-        throw new NFeTributeError("COFINS CST=03 requires `vAliqProd`");
+        throw new NFeTributeError('COFINS CST=03 requires `vAliqProd`');
       }
       return {
         COFINSQtde: {

@@ -1,14 +1,6 @@
 'use client';
 
-import {
-  Fieldset,
-  NumberInput,
-  Select,
-  Stack,
-  Switch,
-  TextInput,
-  Textarea,
-} from '@mantine/core';
+import { Fieldset, NumberInput, Select, Stack, Switch, TextInput, Textarea } from '@mantine/core';
 import { DatePickerInput } from '@mantine/dates';
 import { Controller, type Control, type FieldValues } from 'react-hook-form';
 import type { ZodObject, ZodRawShape } from 'zod';
@@ -52,9 +44,7 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
   // overrides come through `config.fields`; when the parent is not editable,
   // propagate `editable: false` to every descendant.
   if (kind === 'object' && !config?.renderInput) {
-    const nested = extractFieldsFromSchema(
-      descriptor.zodType as ZodObject<ZodRawShape>,
-    );
+    const nested = extractFieldsFromSchema(descriptor.zodType as ZodObject<ZodRawShape>);
     const nestedOverrides = config?.fields ?? {};
     return (
       <Fieldset legend={label}>
@@ -88,7 +78,8 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
         if (config?.renderInput) {
           const props: FieldRenderProps = {
             name: fieldName,
-            label, hint,
+            label,
+            hint,
             value: field.value,
             onChange: field.onChange,
             onBlur: field.onBlur,
@@ -103,7 +94,8 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
         const valueString = (field.value as string | null | undefined) ?? '';
 
         const clearButton =
-          descriptor.nullable && (kind === 'string' || kind === 'email' || kind === 'tel' || kind === 'url') ? (
+          descriptor.nullable &&
+          (kind === 'string' || kind === 'email' || kind === 'tel' || kind === 'url') ? (
             <NullClearButton onClear={() => field.onChange(null)} />
           ) : null;
 
@@ -113,9 +105,12 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
               <Textarea
                 {...field}
                 value={valueString}
-                label={label} description={hint} error={error}
+                label={label}
+                description={hint}
+                error={error}
                 disabled={!editable}
-                autosize minRows={2}
+                autosize
+                minRows={2}
               />
             );
           case 'email':
@@ -123,7 +118,9 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
               <TextInput
                 {...field}
                 value={valueString}
-                label={label} description={hint} error={error}
+                label={label}
+                description={hint}
+                error={error}
                 disabled={!editable}
                 type="email"
                 rightSection={clearButton}
@@ -134,7 +131,9 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
               <TextInput
                 {...field}
                 value={valueString}
-                label={label} description={hint} error={error}
+                label={label}
+                description={hint}
+                error={error}
                 disabled={!editable}
                 inputMode="tel"
                 rightSection={clearButton}
@@ -145,7 +144,9 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
               <TextInput
                 {...field}
                 value={valueString}
-                label={label} description={hint} error={error}
+                label={label}
+                description={hint}
+                error={error}
                 disabled={!editable}
                 type="url"
                 rightSection={clearButton}
@@ -154,20 +155,24 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
           case 'number':
             return (
               <NumberInput
-                value={field.value as number | string | undefined ?? ''}
+                value={(field.value as number | string | undefined) ?? ''}
                 onChange={(v) => field.onChange(typeof v === 'string' ? Number(v) : v)}
                 onBlur={field.onBlur}
-                label={label} description={hint} error={error}
+                label={label}
+                description={hint}
+                error={error}
                 disabled={!editable}
               />
             );
           case 'integer':
             return (
               <NumberInput
-                value={field.value as number | string | undefined ?? ''}
+                value={(field.value as number | string | undefined) ?? ''}
                 onChange={(v) => field.onChange(typeof v === 'string' ? Number(v) : v)}
                 onBlur={field.onBlur}
-                label={label} description={hint} error={error}
+                label={label}
+                description={hint}
+                error={error}
                 disabled={!editable}
                 allowDecimal={false}
               />
@@ -175,10 +180,11 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
           case 'currency':
             return (
               <NumberInput
-                value={field.value as number | string | undefined ?? ''}
+                value={(field.value as number | string | undefined) ?? ''}
                 onChange={(v) => field.onChange(typeof v === 'string' ? Number(v) : v)}
                 onBlur={field.onBlur}
-                label={label} description={hint ?? 'Valor em centavos (BRL).'}
+                label={label}
+                description={hint ?? 'Valor em centavos (BRL).'}
                 error={error}
                 disabled={!editable}
                 allowDecimal={false}
@@ -190,7 +196,8 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
                 checked={!!field.value}
                 onChange={(e) => field.onChange(e.currentTarget.checked)}
                 onBlur={field.onBlur}
-                label={label} description={hint}
+                label={label}
+                description={hint}
                 disabled={!editable}
               />
             );
@@ -198,7 +205,9 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
             const data = config?.options ?? descriptor.enumValues ?? [];
             return (
               <Select
-                label={label} description={hint} error={error}
+                label={label}
+                description={hint}
+                error={error}
                 disabled={!editable}
                 data={data}
                 value={(field.value as string | null | undefined) ?? null}
@@ -221,7 +230,9 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
                   : null;
             return (
               <DatePickerInput
-                label={label} description={hint} error={error}
+                label={label}
+                description={hint}
+                error={error}
                 disabled={!editable}
                 value={dateStr}
                 onChange={(v) => {
@@ -241,7 +252,12 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
                 {...field}
                 value={valueString}
                 label={label}
-                description={hint ?? (descriptor.referenceCollection ? `Ref → ${descriptor.referenceCollection}` : undefined)}
+                description={
+                  hint ??
+                  (descriptor.referenceCollection
+                    ? `Ref → ${descriptor.referenceCollection}`
+                    : undefined)
+                }
                 error={error}
                 disabled={!editable}
                 rightSection={clearButton}
@@ -253,7 +269,9 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
               <TextInput
                 {...field}
                 value={valueString}
-                label={label} description={hint} error={error}
+                label={label}
+                description={hint}
+                error={error}
                 disabled={!editable}
                 rightSection={clearButton}
               />

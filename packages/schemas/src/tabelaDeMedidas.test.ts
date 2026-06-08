@@ -43,9 +43,7 @@ describe('tabelaDeMedidasSchema', () => {
 
   // Regression: Firebase JS SDK v12 rejects `undefined` in addDoc/setDoc.
   it('rejects missing codigo (must be string | null, not undefined)', () => {
-    expect(
-      tabelaDeMedidasSchema.safeParse({ nome: 'X', descricao: null }).success,
-    ).toBe(false);
+    expect(tabelaDeMedidasSchema.safeParse({ nome: 'X', descricao: null }).success).toBe(false);
   });
 
   it('accepts marketplace integration maps keyed by integracao_id', () => {

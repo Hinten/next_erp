@@ -347,9 +347,11 @@ if (opaqueTypes.size > 0) {
   for (const iface of interfaces)
     for (const f of iface.fields) {
       const bare = f.tsType.replace(/^Array<(.+)>$/, '$1');
-      if (opaqueTypes.has(bare)) f.tsType = f.tsType.startsWith('Array<') ? 'Array<string>' : 'string';
+      if (opaqueTypes.has(bare))
+        f.tsType = f.tsType.startsWith('Array<') ? 'Array<string>' : 'string';
     }
-  for (const z of zodTypes) for (const f of z.fields) if (opaqueTypes.has(f.metaType)) f.metaType = '#raw';
+  for (const z of zodTypes)
+    for (const f of z.fields) if (opaqueTypes.has(f.metaType)) f.metaType = '#raw';
   const dropOpaque = (arr) => {
     for (let i = arr.length - 1; i >= 0; i--) if (opaqueTypes.has(arr[i].name)) arr.splice(i, 1);
   };
@@ -368,7 +370,7 @@ out.push(`/* Source XSD packs: ${files.length} files — see schemas/MANIFEST.js
 out.push('');
 out.push('/** Ordered field descriptor used by the XML (de)serializer. */');
 out.push('export interface FieldDef {');
-out.push("  readonly name: string;");
+out.push('  readonly name: string;');
 out.push("  readonly kind: 'element' | 'attribute';");
 out.push("  /** A complexType name, or '#string' (leaf) / '#raw' (opaque XML). */");
 out.push('  readonly type: string;');
@@ -441,7 +443,7 @@ zodOut.push(`/* Source XSD packs: ${files.length} files — see schemas/MANIFEST
 zodOut.push('');
 zodOut.push("import { z } from 'zod';");
 zodOut.push('');
-zodOut.push("import type {");
+zodOut.push('import type {');
 for (const t of zodTypes) zodOut.push(`  ${t.name},`);
 zodOut.push("} from './nfe-schema';");
 zodOut.push('');
@@ -469,9 +471,7 @@ function zodFieldExpr(f) {
 for (const t of zodTypes) {
   // Annotate with the matching TS type so editor tooltips show the same
   // shape as the interface.
-  zodOut.push(
-    `export const ${t.name}Schema: z.ZodType<${t.name}> = z.lazy(() => z.object({`,
-  );
+  zodOut.push(`export const ${t.name}Schema: z.ZodType<${t.name}> = z.lazy(() => z.object({`);
   for (const f of t.fields) {
     zodOut.push(`  ${propName(f.jsName)}: ${zodFieldExpr(f)},`);
   }

@@ -81,10 +81,7 @@ function resolveChainPath(uf: string, ambiente: Ambiente): string {
     // require.resolve failures fall through to the cwd-relative walk.
   }
 
-  return resolve(
-    process.cwd(),
-    '..', '..', 'packages', 'integrations', 'nfe', 'ca', filename,
-  );
+  return resolve(process.cwd(), '..', '..', 'packages', 'integrations', 'nfe', 'ca', filename);
 }
 
 function loadChain(uf: string, ambiente: Ambiente): { ca: string; source: string } {

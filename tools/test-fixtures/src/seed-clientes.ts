@@ -261,16 +261,12 @@ const isDirectInvocation =
 
 if (isDirectInvocation) {
   const clean = process.argv.slice(2).includes('--clean');
-  const run = clean
-    ? cleanupClientesComEnderecos()
-    : seedClientesComEnderecos();
+  const run = clean ? cleanupClientesComEnderecos() : seedClientesComEnderecos();
   run
     .then(({ clientes, enderecos }) => {
       const verb = clean ? 'removed' : 'wrote';
       // eslint-disable-next-line no-console
-      console.log(
-        `[seed-clientes] ${verb} ${clientes} cliente(s) and ${enderecos} endereço(s)`,
-      );
+      console.log(`[seed-clientes] ${verb} ${clientes} cliente(s) and ${enderecos} endereço(s)`);
     })
     .catch((err: unknown) => {
       console.error(err);

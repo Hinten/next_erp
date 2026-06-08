@@ -12,16 +12,7 @@
  * without reaching a different terminal state.
  */
 import { useEffect, useState } from 'react';
-import {
-  Badge,
-  Button,
-  Group,
-  Loader,
-  Modal,
-  ScrollArea,
-  Stack,
-  Text,
-} from '@mantine/core';
+import { Badge, Button, Group, Loader, Modal, ScrollArea, Stack, Text } from '@mantine/core';
 import {
   isNFeEmitError,
   type NFeBatchEmitResult,
@@ -62,11 +53,7 @@ type DialogState =
   | { readonly kind: 'done'; readonly result: NFeBatchEmitResult }
   | { readonly kind: 'error'; readonly message: string };
 
-export function EmitirLoteDialog({
-  opened,
-  pedidoIds,
-  onClose,
-}: EmitirLoteDialogProps) {
+export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialogProps) {
   const client = useNFeClient();
   const [state, setState] = useState<DialogState>({ kind: 'idle' });
 
@@ -183,11 +170,7 @@ export function EmitirLoteDialog({
   );
 }
 
-function ResultRow({
-  result,
-}: {
-  readonly result: NFeEmitResult | NFeEmitError;
-}) {
+function ResultRow({ result }: { readonly result: NFeEmitResult | NFeEmitError }) {
   const bucket = classify(result);
   const color = bucket === 'sucesso' ? 'teal' : bucket === 'falhas' ? 'red' : 'yellow';
   return (
@@ -195,7 +178,11 @@ function ResultRow({
       <Text size="sm" fw={500} truncate maw={140}>
         {result.pedidoId}
       </Text>
-      <Group gap="xs" wrap="nowrap" style={{ flexGrow: 1, minWidth: 0, justifyContent: 'flex-end' }}>
+      <Group
+        gap="xs"
+        wrap="nowrap"
+        style={{ flexGrow: 1, minWidth: 0, justifyContent: 'flex-end' }}
+      >
         <Badge size="sm" color={color} variant="light">
           {isNFeEmitError(result) ? result.errorCode : result.cStat}
         </Badge>

@@ -9,9 +9,33 @@ const PERM_ENDERECO_DELETE = 1n << 5n;
  * UF (Brazilian state code). Includes 'EX' for endereços no exterior.
  */
 export const ufSchema = z.enum([
-  'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO',
-  'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR',
-  'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SE', 'SP', 'TO',
+  'AC',
+  'AL',
+  'AM',
+  'AP',
+  'BA',
+  'CE',
+  'DF',
+  'ES',
+  'GO',
+  'MA',
+  'MG',
+  'MS',
+  'MT',
+  'PA',
+  'PB',
+  'PE',
+  'PI',
+  'PR',
+  'RJ',
+  'RN',
+  'RS',
+  'RO',
+  'RR',
+  'SC',
+  'SE',
+  'SP',
+  'TO',
   'EX',
 ]);
 export type UF = z.infer<typeof ufSchema>;
@@ -26,12 +50,17 @@ export const enderecoSchema = z.object({
   numero: z.string().min(1).max(10).describe('Número'),
   bairro: z.string().min(1).max(100).default('SEM BAIRRO').describe('Bairro'),
   complemento: z.string().max(50).nullable().default(null).describe('Complemento'),
-  cep: z.string().regex(/^\d{8}$/, 'CEP deve ter 8 dígitos').describe('CEP'),
+  cep: z
+    .string()
+    .regex(/^\d{8}$/, 'CEP deve ter 8 dígitos')
+    .describe('CEP'),
   codigoMunicipio: z
     .string()
     .max(8)
     .regex(/^\d*$/, 'apenas números')
-    .nullable().default(null).describe('Código do Município'),
+    .nullable()
+    .default(null)
+    .describe('Código do Município'),
   cidade: z.string().min(1).max(100).describe('Cidade'),
   estado: ufSchema.describe('Estado (UF)'),
   cPais: z.string().nullable().default(null).describe('Código do País'),
@@ -42,20 +71,26 @@ export const enderecoSchema = z.object({
     .string()
     .max(18)
     .regex(/^\d*$/, 'apenas números')
-    .nullable().default(null).describe('CPF/CNPJ do recebedor'),
+    .nullable()
+    .default(null)
+    .describe('CPF/CNPJ do recebedor'),
   rg: z.string().nullable().default(null).describe('RG'),
   ie: z.string().max(14).nullable().default(null).describe('Inscrição Estadual'),
   imun: z
     .string()
     .max(15)
     .regex(/^\d*$/, 'apenas números')
-    .nullable().default(null).describe('Inscrição Municipal'),
+    .nullable()
+    .default(null)
+    .describe('Inscrição Municipal'),
   email: z.string().max(255).email().nullable().default(null).describe('E-mail'),
   telefone: z
     .string()
     .max(16)
     .regex(/^\d*$/, 'apenas números')
-    .nullable().default(null).describe('Telefone'),
+    .nullable()
+    .default(null)
+    .describe('Telefone'),
 });
 
 export type Endereco = z.infer<typeof enderecoSchema>;
