@@ -9,7 +9,7 @@
  * web bundle); this only calls the typed HTTP client and saves the Blob.
  */
 import { useState } from 'react';
-import { Button, Menu } from '@mantine/core';
+import { Button, type ButtonProps, Menu } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconFileText, IconPrinter, IconTag } from '@tabler/icons-react';
 
@@ -24,8 +24,8 @@ import { downloadDanfe } from '@/lib/nfe/downloadDanfe';
 export interface DanfeMenuProps {
   readonly pedidoId: string;
   readonly nfeId: string;
-  readonly size?: string;
-  readonly variant?: string;
+  readonly size?: ButtonProps['size'];
+  readonly variant?: ButtonProps['variant'];
 }
 
 export function DanfeMenu({ pedidoId, nfeId, size = 'xs', variant = 'light' }: DanfeMenuProps) {

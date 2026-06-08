@@ -13,6 +13,7 @@ import {
   NFeAuthError,
   NFeBadRequestError,
   NFeBlockedError,
+  NFeDanfeUnavailableError,
   NFeHttpError,
   NFeInutilizacaoAbortedError,
   NFeNetworkError,
@@ -310,6 +311,16 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
           if (err instanceof SyntaxError) body = { error: text };
           else throw err;
         }
+      }
+      // The DANFE route's 422 means "not renderable" (a presentation
+      // precondition), NOT a SEFAZ rejection — `errorFromResponse` would
+      // mis-map it to `NFeRejectedError`. Surface the dedicated error instead.
+      if (res.status === 422) {
+        const message =
+          body !== null && typeof body === 'object' && 'error' in body
+            ? String((body as { error: unknown }).error)
+            : 'DANFE indisponível';
+        throw new NFeDanfeUnavailableError(message, body);
       }
       throw errorFromResponse(res.status, body, {});
     }

@@ -58,9 +58,10 @@ export async function GET(req: Request): Promise<NextResponse> {
       format: query.format,
       dpi: query.dpi,
     });
-    const body: BodyInit =
-      typeof artifact.body === 'string' ? artifact.body : new Uint8Array(artifact.body);
-    return new NextResponse(body, {
+    // Stream the body as-is — no copy. A Node `Buffer` (PDF) is Uint8Array-backed
+    // and a `string` (ZPL) is a valid body; undici accepts both. The cast is only
+    // because the DOM lib's `BodyInit` doesn't model Node's `Buffer` type.
+    return new NextResponse(artifact.body as BodyInit, {
       status: 200,
       headers: {
         'Content-Type': artifact.contentType,

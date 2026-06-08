@@ -135,6 +135,10 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
   if (!latest) return <Text c="dimmed">{DASH}</Text>;
   // Only an authorized NF-e can be cancelled (110111) or corrected (CC-e, 110110).
   const isAprovada = latest.estado === ESTADO_NFE.aprovada;
+  // A DANFE can be printed for an authorized NF-e and for a cancelada one (it
+  // retains its procNFe and prints with a CANCELADO overlay) — same set the
+  // per-NF-e screen + the danfeArtifactService allow.
+  const canPrintDanfe = isAprovada || latest.estado === ESTADO_NFE.cancelada;
   const color = NFE_STATE_COLOR[latest.estado] ?? 'gray';
   const label = ESTADO_NFE_LABELS[latest.estado] ?? latest.estado;
   // tpEmis === 1 is the normal (SEFAZ síncrono) path. Anything else
@@ -244,37 +248,41 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
             </Group>
           )}
 
-          {isAprovada && latestId && (
+          {latestId && canPrintDanfe && (
             <Group gap="xs" mt="xs">
               <DanfeMenu pedidoId={pedidoId} nfeId={latestId} />
-              <Button
-                color="blue"
-                variant="light"
-                size="xs"
-                leftSection={<IconFileText size={14} />}
-                onClick={(e) => {
-                  // Stop the row's navigate-onClick; go straight to this NF-e's
-                  // carta de correção screen (form + history of CC-e).
-                  e.stopPropagation();
-                  router.push(`/pedidos/${pedidoId}/nfe/${latestId}/carta-correcao`);
-                }}
-              >
-                Carta de correção
-              </Button>
-              <Button
-                color="red"
-                variant="light"
-                size="xs"
-                leftSection={<IconBan size={14} />}
-                onClick={(e) => {
-                  // Stop the row's navigate-onClick; go to the per-NF-e screen
-                  // (communication history + cancelamento form).
-                  e.stopPropagation();
-                  router.push(`/pedidos/${pedidoId}/nfe`);
-                }}
-              >
-                Cancelar NF-e
-              </Button>
+              {isAprovada && (
+                <>
+                  <Button
+                    color="blue"
+                    variant="light"
+                    size="xs"
+                    leftSection={<IconFileText size={14} />}
+                    onClick={(e) => {
+                      // Stop the row's navigate-onClick; go straight to this NF-e's
+                      // carta de correção screen (form + history of CC-e).
+                      e.stopPropagation();
+                      router.push(`/pedidos/${pedidoId}/nfe/${latestId}/carta-correcao`);
+                    }}
+                  >
+                    Carta de correção
+                  </Button>
+                  <Button
+                    color="red"
+                    variant="light"
+                    size="xs"
+                    leftSection={<IconBan size={14} />}
+                    onClick={(e) => {
+                      // Stop the row's navigate-onClick; go to the per-NF-e screen
+                      // (communication history + cancelamento form).
+                      e.stopPropagation();
+                      router.push(`/pedidos/${pedidoId}/nfe`);
+                    }}
+                  >
+                    Cancelar NF-e
+                  </Button>
+                </>
+              )}
             </Group>
           )}
         </Stack>

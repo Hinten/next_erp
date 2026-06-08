@@ -9,6 +9,7 @@ import {
   NFeAuthError,
   NFeBadRequestError,
   NFeBlockedError,
+  NFeDanfeUnavailableError,
   NFeInutilizacaoAbortedError,
   NFeNetworkError,
   NFePedidoNotFoundError,
@@ -352,6 +353,54 @@ describe('createNFeHttpClient — inutilizar', () => {
         xJust: 'Inutilizacao de faixa nao utilizada teste',
       }),
     ).rejects.toBeInstanceOf(NFeBadRequestError);
+  });
+});
+
+describe('createNFeHttpClient — danfe', () => {
+  it('returns the Blob + filename (from Content-Disposition) + contentType', async () => {
+    const fetch = vi.fn().mockResolvedValue(
+      new Response('%PDF-1.7 …', {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': 'attachment; filename="danfe-7.pdf"',
+        },
+      }),
+    );
+    const art = await makeClient(fetch as never).danfe('PED-1', 's1', 'simplificado');
+    expect(art.filename).toBe('danfe-7.pdf');
+    expect(art.contentType).toBe('application/pdf');
+    expect(await art.blob.text()).toContain('%PDF-');
+    const [url] = fetch.mock.calls[0] as [string];
+    expect(url).toContain('/api/nfe/danfe?');
+    expect(url).toContain('pedidoId=PED-1');
+    expect(url).toContain('format=simplificado');
+  });
+
+  it('passes dpi for zpl2 and falls back to a default filename', async () => {
+    const fetch = vi.fn().mockResolvedValue(
+      new Response('^XA^XZ', { status: 200, headers: { 'Content-Type': 'text/plain; charset=utf-8' } }),
+    );
+    const art = await makeClient(fetch as never).danfe('PED-1', 's1', 'zpl2', 300);
+    expect(art.filename).toBe('danfe.txt'); // no Content-Disposition → fallback
+    const [url] = fetch.mock.calls[0] as [string];
+    expect(url).toContain('format=zpl2');
+    expect(url).toContain('dpi=300');
+  });
+
+  it('maps a 422 to NFeDanfeUnavailableError, NOT NFeRejectedError', async () => {
+    const fetch = mockFetch({ status: 422, body: { error: 'estado não renderável' } });
+    const err = await makeClient(fetch).danfe('PED-1', 's1', 'simplificado').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFeDanfeUnavailableError);
+    expect(err).not.toBeInstanceOf(NFeRejectedError);
+    expect((err as NFeDanfeUnavailableError).message).toBe('estado não renderável');
+  });
+
+  it('maps a 404 to NFePedidoNotFoundError', async () => {
+    const fetch = mockFetch({ status: 404, body: { error: 'not found' } });
+    await expect(
+      makeClient(fetch).danfe('PED-X', 's1', 'simplificado'),
+    ).rejects.toBeInstanceOf(NFePedidoNotFoundError);
   });
 });
 

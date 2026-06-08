@@ -90,6 +90,20 @@ export class NFeRejectedError extends NFeHttpError {
 }
 
 /**
+ * 422 from the DANFE artifact endpoint (`GET /api/nfe/danfe`) — the NF-e is
+ * **not renderable**: it never reached an authorizable estado
+ * (aprovada / cancelada) or has no persisted procNFe. Distinct from
+ * `NFeRejectedError`: this is a presentation precondition, not a SEFAZ
+ * rejection, so it carries no `cStat` — callers must not treat it as one.
+ */
+export class NFeDanfeUnavailableError extends NFeHttpError {
+  constructor(message: string, body: unknown) {
+    super(message, 422, body);
+    this.name = 'NFeDanfeUnavailableError';
+  }
+}
+
+/**
  * 503 — `apps/nfe` reports `getNFeRuntime()` failed. Usually cert
  * load, cert expiry, or SEFAZ TLS chain missing. The body's `error`
  * field carries the specific reason.
