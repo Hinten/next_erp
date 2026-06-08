@@ -19,6 +19,7 @@ import {
   formatCpfCnpj,
   formatDate,
   formatNNF,
+  formatQty,
   formatSerie,
   formatTelefone,
   formatTime,
@@ -238,7 +239,6 @@ function drawFaturaDup(doc: Doc, model: DanfeModel, y: number): number {
   if (model.dup.length > 0) {
     sectionTitle(doc, MARGIN, t, model.dup.length === 1 ? 'DUPLICATA' : 'DUPLICATAS');
     t += 0.42;
-    const boxW = (CONTENT_W - 0.0) / 3 / 2; // 3 duplicatas per row, 2 sub-cols would be wide; use simple 3/row
     const perRow = 3;
     const dupW = CONTENT_W / perRow;
     model.dup.forEach((d, i) => {
@@ -257,7 +257,6 @@ function drawFaturaDup(doc: Doc, model: DanfeModel, y: number): number {
         { money: true, valueSize: 6, labelSize: 5 },
       );
     });
-    void boxW;
     t += Math.ceil(model.dup.length / perRow) * 0.84 + 0.05;
   }
   return t + 0.05;
@@ -304,16 +303,19 @@ function drawTransporte(doc: Doc, model: DanfeModel, y: number): number {
   field(doc, 16.89, t, 3.86, 0.85, 'INSCRIÇÃO ESTADUAL', tp.transportadorIe ?? '');
   t += 0.85;
   const v = tp.volumes;
-  const sum = (key: 'qVol' | 'pesoB' | 'pesoL'): string => {
-    const n = v.reduce((acc, x) => acc + Number(x[key] ?? 0), 0);
-    return n ? String(n) : '';
-  };
-  field(doc, MARGIN, t, 2.92, 0.85, 'QUANTIDADE', sum('qVol'));
+  const sumNum = (key: 'qVol' | 'pesoB' | 'pesoL'): number =>
+    v.reduce((acc, x) => acc + Number(x[key] ?? 0), 0);
+  const qVol = sumNum('qVol');
+  // Weights keep their own precision (up to 4 decimals) — `money` would round a
+  // 3-decimal weight (1.800 → 1,80). `formatQty` is right-aligned by the field.
+  const pesoB = sumNum('pesoB');
+  const pesoL = sumNum('pesoL');
+  field(doc, MARGIN, t, 2.92, 0.85, 'QUANTIDADE', qVol ? String(qVol) : '', { valueAlign: 'right' });
   field(doc, 3.17, t, 3.05, 0.85, 'ESPÉCIE', v[0]?.esp ?? '');
   field(doc, 6.22, t, 3.05, 0.85, 'MARCA', v[0]?.marca ?? '');
   field(doc, 9.27, t, 4.83, 0.85, 'NUMERAÇÃO', v[0]?.nVol ?? '');
-  field(doc, 14.1, t, 3.43, 0.85, 'PESO BRUTO', sum('pesoB'), { money: !!sum('pesoB') });
-  field(doc, 17.53, t, 3.22, 0.85, 'PESO LÍQUIDO', sum('pesoL'), { money: !!sum('pesoL') });
+  field(doc, 14.1, t, 3.43, 0.85, 'PESO BRUTO', pesoB ? formatQty(pesoB) : '', { valueAlign: 'right' });
+  field(doc, 17.53, t, 3.22, 0.85, 'PESO LÍQUIDO', pesoL ? formatQty(pesoL) : '', { valueAlign: 'right' });
   return t + 0.85 + 0.1;
 }
 
@@ -334,7 +336,7 @@ function drawProdutoRow(doc: Doc, item: DanfeItem, y: number, rowH: number, hasG
   cell(doc, COL.cfop.left, y, COL.cfop.w, rowH, item.cfop, { align: 'center' });
   cell(doc, COL.cson.left, y, COL.cson.w, rowH, item.cstCsosn, { align: 'center' });
   cell(doc, COL.un.left, y, COL.un.w, rowH, item.uCom, { align: 'center' });
-  cell(doc, COL.qtd.left, y, COL.qtd.w, rowH, item.qCom, { money: true });
+  cell(doc, COL.qtd.left, y, COL.qtd.w, rowH, formatQty(item.qCom), { align: 'right' });
   cell(doc, COL.vUn.left, y, COL.vUn.w, rowH, item.vUnCom, { money: true });
   cell(doc, COL.vDesc.left, y, COL.vDesc.w, rowH, item.vDesc, { money: true });
   cell(doc, COL.vProd.left, y, COL.vProd.w, rowH, item.vProd, { money: true });
@@ -464,20 +466,28 @@ function pageWatermark(doc: Doc, model: DanfeModel, cancelada: boolean): void {
   else if (cancelada) watermark(doc, 'CANCELADO', cm(A4_W_CM), cm(A4_H_CM));
 }
 
-/** Split N item rows across pages, leaving footer room on the last page. */
-function paginate(
+/**
+ * Split N item rows across pages, reserving footer room. Exported for tests.
+ * Every returned slice is ≥ 1 (for n ≥ 1) and the slices sum to n.
+ */
+export function paginate(
   n: number,
   rowsFirstFull: number,
   rowsFirstLast: number,
   rowsOtherFull: number,
   rowsOtherLast: number,
 ): number[] {
-  if (n <= rowsFirstLast) return [n];
-  const pages = [rowsFirstFull];
-  let rem = n - rowsFirstFull;
+  if (n <= rowsFirstLast) return [Math.max(n, 0)];
+  // More than one page. Page 1 takes a full page but always leaves ≥1 row for a
+  // later (last) page, so no page can end up with 0 rows (which would render an
+  // empty table header + push the footer onto a blank page).
+  const first = Math.min(rowsFirstFull, n - 1);
+  const pages = [first];
+  let rem = n - first;
   while (rem > rowsOtherLast) {
-    pages.push(rowsOtherFull);
-    rem -= rowsOtherFull;
+    const take = Math.min(rowsOtherFull, rem - 1);
+    pages.push(take);
+    rem -= take;
   }
   pages.push(rem);
   return pages;

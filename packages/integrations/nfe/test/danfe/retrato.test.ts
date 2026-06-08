@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { renderDanfe } from '../../src/danfe';
 import { parseProcNFe } from '../../src/danfe/model';
-import { composeInfoComplementares, renderRetrato } from '../../src/danfe/pdf/retrato';
+import { composeInfoComplementares, paginate, renderRetrato } from '../../src/danfe/pdf/retrato';
 import { PROCNFE_FIXTURE } from './fixtures';
 
 const pageCount = (pdf: Buffer): number =>
@@ -99,5 +99,21 @@ describe('danfe/pdf retrato (A4)', () => {
     expect(m2.transp.transportadorNome).toBe('TRANSPORTADORA EXEMPLO LTDA');
     expect(m2.transp.veicPlaca).toBe('ABC1D23');
     expect(isPdf(await renderRetrato(m2))).toBe(true);
+  });
+
+  it('paginate never yields a 0-row page and the slices sum to n', () => {
+    const cases: Array<[number, number, number, number, number]> = [
+      [9, 10, 8, 12, 10], // n between rowsFirstLast+1 and rowsFirstFull (the old 0/neg-row bug)
+      [1, 10, 8, 12, 10],
+      [8, 10, 8, 12, 10],
+      [50, 10, 8, 12, 10],
+      [25, 10, 10, 10, 10],
+      [11, 10, 8, 12, 10],
+    ];
+    for (const [n, ff, fl, of, ol] of cases) {
+      const slices = paginate(n, ff, fl, of, ol);
+      expect(slices.reduce((a, b) => a + b, 0)).toBe(n);
+      for (const s of slices) expect(s).toBeGreaterThanOrEqual(1);
+    }
   });
 });
