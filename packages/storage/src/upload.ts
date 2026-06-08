@@ -10,6 +10,7 @@ import {
   type Filetype,
   STORAGE_ROOT,
   filetypeFromMime,
+  normalizeContentType,
   productArquivoId,
   productOriginalPath,
 } from '@delfrance/schemas';
@@ -66,7 +67,7 @@ async function putArquivo(args: PutArquivoArgs): Promise<UploadResult> {
     filepath,
     filename,
     originalFilename: args.originalFilename ?? null,
-    contentType: args.contentType,
+    contentType: normalizeContentType(args.contentType),
     url,
     externalIds: [],
     criadoEm: new Date().toISOString(),

@@ -9,6 +9,11 @@ describe('extensionForContentType', () => {
     expect(extensionForContentType('video/mp4')).toBe('mp4');
   });
 
+  it('tolerates full Content-Type headers (params + casing)', () => {
+    expect(extensionForContentType('image/png; charset=utf-8')).toBe('png');
+    expect(extensionForContentType('IMAGE/PNG')).toBe('png');
+  });
+
   it('returns null for unknown content types', () => {
     expect(extensionForContentType('font/woff2')).toBeNull();
   });

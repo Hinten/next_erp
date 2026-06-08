@@ -1,3 +1,5 @@
+import { normalizeContentType } from '@delfrance/schemas';
+
 /**
  * MIME ↔ extension maps. Ported from the Flutter `Arquivo.maybeExtension` /
  * `Arquivo.mimetype`. Used to give content-addressed objects a sensible
@@ -23,7 +25,8 @@ const MIME_TO_EXT: Record<string, string> = {
   'video/quicktime': 'mov',
 };
 
-/** Extension (no dot) for a content type, or `null` when unknown. */
+/** Extension (no dot) for a content type, or `null` when unknown. Tolerates
+ *  full Content-Type header values (params/casing). */
 export function extensionForContentType(contentType: string): string | null {
-  return MIME_TO_EXT[contentType] ?? null;
+  return MIME_TO_EXT[normalizeContentType(contentType)] ?? null;
 }

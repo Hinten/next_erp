@@ -51,17 +51,30 @@ const DOCUMENT_MIMES = new Set([
 ]);
 
 /**
+ * Reduce a Content-Type header value to its base MIME type: strip parameters
+ * (`; charset=…`), trim, and lowercase — e.g. `Text/Plain; charset=utf-8` →
+ * `text/plain`. Real HTTP `content-type` headers carry params + casing that
+ * would otherwise defeat the exact-match lookups below.
+ */
+export function normalizeContentType(contentType: string): string {
+  return contentType.split(';')[0]?.trim().toLowerCase() ?? '';
+}
+
+/**
  * Bucket a MIME type into a {@link Filetype}. Ported from the Flutter
  * `FILETYPE.fromMime` so an upload's `filetype` is derived identically.
+ * Tolerates full Content-Type header values (params/casing) via
+ * {@link normalizeContentType}.
  */
 export function filetypeFromMime(mimeType: string): Filetype {
-  if (mimeType.startsWith('image/')) return 'image';
-  if (mimeType.startsWith('audio/')) return 'audio';
-  if (mimeType.startsWith('video/')) return 'video';
-  if (mimeType === 'text/plain') return 'txt';
-  if (mimeType === 'text/html') return 'html';
-  if (DOCUMENT_MIMES.has(mimeType)) return 'document';
-  if (mimeType.startsWith('application/')) return 'application';
+  const mime = normalizeContentType(mimeType);
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('audio/')) return 'audio';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime === 'text/plain') return 'txt';
+  if (mime === 'text/html') return 'html';
+  if (DOCUMENT_MIMES.has(mime)) return 'document';
+  if (mime.startsWith('application/')) return 'application';
   return 'fallback';
 }
 

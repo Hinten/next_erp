@@ -295,6 +295,7 @@ export {
   arquivoMeta,
   filetypeSchema,
   filetypeFromMime,
+  normalizeContentType,
   externalIdSchema,
   FILETYPE,
   ARQUIVOS_COLLECTION,

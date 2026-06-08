@@ -11,8 +11,9 @@ on:
     paths:
       - 'packages/storage/**'
       - 'apps/functions/**'
-      - 'packages/schemas/src/arquivo.ts'
-      - 'packages/schemas/src/storagePaths.ts'
+      - 'packages/schemas/src/storage/arquivo.ts'
+      - 'packages/schemas/src/storage/storagePaths.ts'
+      - 'packages/schemas/src/storage/foto.ts'
       - 'packages/data/src/admin/collections/arquivoCollection.ts'
       - 'packages/data/src/admin/collections/produtoCollection.ts'
       - 'storage.rules'
@@ -26,8 +27,9 @@ on:
     paths:
       - 'packages/storage/**'
       - 'apps/functions/**'
-      - 'packages/schemas/src/arquivo.ts'
-      - 'packages/schemas/src/storagePaths.ts'
+      - 'packages/schemas/src/storage/arquivo.ts'
+      - 'packages/schemas/src/storage/storagePaths.ts'
+      - 'packages/schemas/src/storage/foto.ts'
       - 'packages/data/src/admin/collections/arquivoCollection.ts'
       - 'packages/data/src/admin/collections/produtoCollection.ts'
       - 'storage.rules'

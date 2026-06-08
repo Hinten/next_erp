@@ -142,8 +142,8 @@ export function firebaseDownloadUrl(bucketName: string, objectPath: string, toke
 
 /**
  * Sanitize a human filename for use as a storage name. Lowercases, replaces
- * any non-alphanumeric run with `_`, and preserves a trailing extension.
- * Ported from the Flutter `Arquivo.normalize`.
+ * each non-alphanumeric character with `_` (so runs become multiple `_`), and
+ * preserves a trailing extension. Ported from the Flutter `Arquivo.normalize`.
  */
 export function normalizeName(name: string): string {
   const dot = name.lastIndexOf('.');

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { arquivoMeta, arquivoSchema, filetypeFromMime } from './arquivo';
+import { arquivoMeta, arquivoSchema, filetypeFromMime, normalizeContentType } from './arquivo';
+
+describe('normalizeContentType', () => {
+  it('strips params, trims and lowercases', () => {
+    expect(normalizeContentType('text/plain; charset=utf-8')).toBe('text/plain');
+    expect(normalizeContentType('Image/PNG')).toBe('image/png');
+    expect(normalizeContentType('image/jpeg ; charset=binary')).toBe('image/jpeg');
+  });
+});
 
 describe('filetypeFromMime', () => {
   it('buckets common MIME types like the Flutter FILETYPE.fromMime', () => {
@@ -12,6 +20,12 @@ describe('filetypeFromMime', () => {
     expect(filetypeFromMime('application/pdf')).toBe('document');
     expect(filetypeFromMime('application/zip')).toBe('application');
     expect(filetypeFromMime('font/woff2')).toBe('fallback');
+  });
+
+  it('tolerates full Content-Type headers (params + casing)', () => {
+    expect(filetypeFromMime('text/plain; charset=utf-8')).toBe('txt');
+    expect(filetypeFromMime('application/pdf; qs=0.9')).toBe('document');
+    expect(filetypeFromMime('Image/PNG; charset=binary')).toBe('image');
   });
 });
 
