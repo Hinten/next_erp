@@ -70,10 +70,21 @@ describe('danfe/pdf retrato (A4)', () => {
     expect(info).toContain(model.infAdic.infCpl!); // infCpl still present
   });
 
-  it('renders a max-length infCpl (5000 chars) without throwing', async () => {
-    const big = { ...model, infAdic: { infCpl: 'A'.repeat(5000), infAdFisco: null } };
+  it('paginates a max-length infCpl (5000 chars) across pages instead of clipping', async () => {
+    const big = { ...model, infAdic: { infCpl: 'PALAVRA '.repeat(625), infAdFisco: null } };
     const pdf = await renderRetrato(big);
     expect(isPdf(pdf)).toBe(true);
+    expect(pageCount(pdf)).toBeGreaterThan(1); // the infCpl alone forces extra pages
+  });
+
+  it('spills a very long infCpl onto multiple continuation pages', async () => {
+    const big = { ...model, infAdic: { infCpl: 'LOREM IPSUM '.repeat(1500), infAdFisco: null } };
+    expect(pageCount(await renderRetrato(big))).toBeGreaterThan(2);
+  });
+
+  it('keeps a short infCpl on a single page', async () => {
+    const small = { ...model, infAdic: { infCpl: 'Observação curta de teste.', infAdFisco: 'Fisco.' } };
+    expect(pageCount(await renderRetrato(small))).toBe(1);
   });
 
   it('renders transportadora + local de entrega/retirada', async () => {

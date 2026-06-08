@@ -26,7 +26,7 @@ import {
   freteLabel,
 } from '../format';
 import type { DanfeItem, DanfeLocal, DanfeModel } from '../model';
-import { createPdf, drawBarcode, strokeBox, text, watermark, type Doc } from './primitives';
+import { createPdf, drawBarcode, FONT, strokeBox, text, watermark, type Doc } from './primitives';
 import { A4_H_CM, A4_W_CM, cell, cm, field, headerCell, sectionTitle } from './layout';
 
 export interface RenderA4Options {
@@ -34,8 +34,11 @@ export interface RenderA4Options {
 }
 
 const MARGIN = 0.25; // cm, left/right
-const FOOTER_DADOS_TOP = 25.91; // cm — dados adicionais block top (last page)
-const PAGE_BOTTOM = 28.6; // cm — produtos may run down to here on non-last pages
+const PAGE_BOTTOM = 28.6; // cm — content may run down to here
+const DADOS_MIN_H = 2.0; // cm — minimum dados adicionais box height (reserved every page)
+const TITLE_H = 0.42; // cm — section-title strip
+const ISSQN_H = 1.27; // cm — ISSQN block (title + 1 row), last produtos page only
+const LABEL_PAD_PT = 12; // points reserved inside a dados box for its label + padding
 
 /** Item-table column geometry (cm) — verbatim from the legacy produtosTableHeader. */
 const COL = {
@@ -355,28 +358,106 @@ export function composeInfoComplementares(model: DanfeModel): string {
   return parts.join(' ');
 }
 
-/** ISSQN + dados adicionais footer (last page). */
-function drawFooter(doc: Doc, model: DanfeModel): void {
-  if (model.issqn) {
-    sectionTitle(doc, MARGIN, 24.64, 'CÁLCULO DO ISSQN');
-    const t = 25.06;
-    field(doc, MARGIN, t, 5.08, 0.85, 'INSCRIÇÃO MUNICIPAL', model.emit.im ?? '');
-    field(doc, 5.33, t, 5.08, 0.85, 'VALOR TOTAL DOS SERVIÇOS', model.issqn.vServ, { money: true });
-    field(doc, 10.41, t, 5.08, 0.85, 'BASE DE CÁLCULO DO ISSQN', model.issqn.vBC, { money: true });
-    field(doc, 15.49, t, 5.26, 0.85, 'VALOR DO ISSQN', model.issqn.vISS, { money: true });
-  }
-  sectionTitle(doc, MARGIN, FOOTER_DADOS_TOP, 'DADOS ADICIONAIS');
-  // INFORMAÇÕES COMPLEMENTARES = infCpl + NFref; RESERVADO AO FISCO = infAdFisco.
-  // infCpl box ends at 13.17 (= reservado's left edge) — shared border, no overlap.
-  field(doc, MARGIN, FOOTER_DADOS_TOP + 0.42, 12.92, 3.07, 'INFORMAÇÕES COMPLEMENTARES', composeInfoComplementares(model), {
-    valueSize: 6,
-    valueLines: 13,
-  });
-  field(doc, 13.17, FOOTER_DADOS_TOP + 0.42, 7.58, 3.07, 'RESERVADO AO FISCO', model.infAdic.infAdFisco ?? '', {
-    valueSize: 6,
-    valueLines: 13,
-  });
+/** Cálculo do ISSQN block (once, above the dados box on the last produtos page). */
+function drawIssqn(doc: Doc, model: DanfeModel, topCm: number): void {
+  if (!model.issqn) return;
+  sectionTitle(doc, MARGIN, topCm, 'CÁLCULO DO ISSQN');
+  const t = topCm + TITLE_H;
+  field(doc, MARGIN, t, 5.08, 0.85, 'INSCRIÇÃO MUNICIPAL', model.emit.im ?? '');
+  field(doc, 5.33, t, 5.08, 0.85, 'VALOR TOTAL DOS SERVIÇOS', model.issqn.vServ, { money: true });
+  field(doc, 10.41, t, 5.08, 0.85, 'BASE DE CÁLCULO DO ISSQN', model.issqn.vBC, { money: true });
+  field(doc, 15.49, t, 5.26, 0.85, 'VALOR DO ISSQN', model.issqn.vISS, { money: true });
 }
+
+const COMPL_W = 12.92; // cm — INFORMAÇÕES COMPLEMENTARES box width
+const FISCO_X = 13.17; // cm — RESERVADO AO FISCO box left (= COMPL right edge)
+const FISCO_W = 7.58; // cm
+
+/**
+ * Draw the DADOS ADICIONAIS block at `topCm` with the given box height: the
+ * INFORMAÇÕES COMPLEMENTARES chunk (pre-sized to fit, no ellipsis) + the
+ * RESERVADO AO FISCO box (infAdFisco only on the first occurrence).
+ */
+function drawDadosAdicionais(
+  doc: Doc,
+  topCm: number,
+  boxHCm: number,
+  complChunk: string,
+  infAdFisco: string,
+): void {
+  sectionTitle(doc, MARGIN, topCm, 'DADOS ADICIONAIS');
+  const by = topCm + TITLE_H;
+  strokeBox(doc, cm(MARGIN), cm(by), cm(COMPL_W), cm(boxHCm));
+  text(doc, 'INFORMAÇÕES COMPLEMENTARES', cm(MARGIN) + 2, cm(by) + 2, { size: 5, width: cm(COMPL_W) - 4, lineBreak: false });
+  if (complChunk) {
+    text(doc, complChunk, cm(MARGIN) + 2, cm(by) + 9, {
+      size: 6,
+      width: cm(COMPL_W) - 4,
+      upper: false,
+      lineBreak: true,
+      height: cm(boxHCm) - 10,
+    });
+  }
+  strokeBox(doc, cm(FISCO_X), cm(by), cm(FISCO_W), cm(boxHCm));
+  text(doc, 'RESERVADO AO FISCO', cm(FISCO_X) + 2, cm(by) + 2, { size: 5, width: cm(FISCO_W) - 4, lineBreak: false });
+  if (infAdFisco) {
+    text(doc, infAdFisco, cm(FISCO_X) + 2, cm(by) + 9, {
+      size: 6,
+      width: cm(FISCO_W) - 4,
+      upper: false,
+      lineBreak: true,
+      height: cm(boxHCm) - 10,
+    });
+  }
+}
+
+/**
+ * Split `text` so the leading chunk fits `availBoxPt` (box height in points,
+ * minus the label/padding) for the INFORMAÇÕES COMPLEMENTARES box. Returns the
+ * chunk, the box height to use (clamped to [DADOS_MIN_H, avail]), and the rest.
+ * Lossless: `chunk + rest` reconstruct the text (modulo the boundary space).
+ */
+function measureSplit(
+  doc: Doc,
+  str: string,
+  widthPt: number,
+  availBoxPt: number,
+): { chunk: string; boxHCm: number; rest: string } {
+  const minPt = cm(DADOS_MIN_H);
+  if (!str) return { chunk: '', boxHCm: DADOS_MIN_H, rest: '' };
+  doc.font(FONT).fontSize(6);
+  const textAvail = availBoxPt - LABEL_PAD_PT;
+  const fullH = doc.heightOfString(str, { width: widthPt });
+  if (fullH <= textAvail) {
+    const boxHPt = Math.max(minPt, fullH + LABEL_PAD_PT);
+    return { chunk: str, boxHCm: boxHPt / cm(1), rest: '' };
+  }
+  // Largest prefix whose wrapped height fits the available text height.
+  let lo = 1;
+  let hi = str.length;
+  let best = 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (doc.heightOfString(str.slice(0, mid), { width: widthPt }) <= textAvail) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const sp = str.lastIndexOf(' ', best);
+  const cut = sp > best * 0.6 ? sp : best; // prefer a word boundary when close
+  return { chunk: str.slice(0, cut).trimEnd(), boxHCm: availBoxPt / cm(1), rest: str.slice(cut).trimStart() };
+}
+
+/**
+ * A rendered page: produtos rows + its dados-adicionais slice, or a
+ * continuation page that carries only more of the infCpl. The dados box is
+ * drawn at the live cursor (`y`), so only its height + chunk are carried here.
+ */
+type PagePlan =
+  | { kind: 'produtos'; rows: number; hasIssqn: boolean; dadosBoxHCm: number; dadosChunk: string }
+  | { kind: 'continuation'; dadosBoxHCm: number; dadosChunk: string };
 
 function pageWatermark(doc: Doc, model: DanfeModel, cancelada: boolean): void {
   if (model.homologacao) watermark(doc, 'SEM VALOR FISCAL', cm(A4_W_CM), cm(A4_H_CM));
@@ -407,32 +488,66 @@ export async function renderRetrato(model: DanfeModel, opts: RenderA4Options = {
   const hasGtin = model.itens.some((i) => i.cEAN !== 'SEM GTIN' && i.cEAN !== '');
   const rowH = hasGtin ? 1.26 : 0.84;
 
-  // Header height on page 1 (sum of the blocks present) → produtos top.
+  // Page-1 header height (over-estimate of the blocks present) → produtos top;
+  // later pages carry only the emitente strip.
   let headerH = 1.85 /* canhoto */ + 5.72 /* emitente */ + 3.49 /* destinatário */;
-  if (model.entrega) headerH += 2.07;
-  if (model.retirada) headerH += 2.07;
+  if (model.entrega) headerH += 2.25;
+  if (model.retirada) headerH += 2.25;
   headerH += drawFaturaDupHeight(model);
   headerH += 2.62 /* imposto */ + 3.49 /* transporte */;
   const produtosTop1 = MARGIN + headerH + 0.84; // + table title + header
   const produtosTopN = MARGIN + 5.72 + 0.84; // emitente strip + table header on later pages
-  const lastBottom = (model.issqn ? 24.64 : FOOTER_DADOS_TOP) - 0.1;
 
-  const rowsFirstFull = Math.max(1, Math.floor((PAGE_BOTTOM - produtosTop1) / rowH));
-  const rowsFirstLast = Math.max(1, Math.floor((lastBottom - produtosTop1) / rowH));
-  const rowsOtherFull = Math.max(1, Math.floor((PAGE_BOTTOM - produtosTopN) / rowH));
-  const rowsOtherLast = Math.max(1, Math.floor((lastBottom - produtosTopN) / rowH));
-  const slices = paginate(model.itens.length, rowsFirstFull, rowsFirstLast, rowsOtherFull, rowsOtherLast);
-  const totalPages = slices.length;
+  // Every page reserves the dados-adicionais footer; the last produtos page
+  // additionally reserves the ISSQN block.
+  const issqnReserve = model.issqn ? ISSQN_H : 0;
+  const bottomEvery = PAGE_BOTTOM - (DADOS_MIN_H + TITLE_H);
+  const rowsFor = (top: number, extra: number): number =>
+    Math.max(1, Math.floor((bottomEvery - extra - top) / rowH));
+  const slices = paginate(
+    model.itens.length,
+    rowsFor(produtosTop1, 0),
+    rowsFor(produtosTop1, issqnReserve),
+    rowsFor(produtosTopN, 0),
+    rowsFor(produtosTopN, issqnReserve),
+  );
 
   const barcodePng = await code128Png(model.chave);
   const { doc, done } = createPdf([cm(A4_W_CM), cm(A4_H_CM)]);
+  const innerWidthPt = cm(COMPL_W) - 4;
 
+  // ---- Measuring pass: assign infCpl chunks to produtos pages (using whatever
+  // blank space each leaves), then spill the rest onto continuation pages. ----
+  const plans: PagePlan[] = [];
+  let remaining = composeInfoComplementares(model);
+  for (let p = 0; p < slices.length; p++) {
+    const top = p === 0 ? produtosTop1 : produtosTopN;
+    const isLast = p === slices.length - 1;
+    const hasIssqn = isLast && model.issqn != null;
+    const dadosTop = top + slices[p]! * rowH + 0.1 + (hasIssqn ? ISSQN_H + 0.1 : 0);
+    const avail = cm(PAGE_BOTTOM - dadosTop - TITLE_H);
+    const { chunk, boxHCm, rest } = measureSplit(doc, remaining, innerWidthPt, avail);
+    plans.push({ kind: 'produtos', rows: slices[p]!, hasIssqn, dadosBoxHCm: boxHCm, dadosChunk: chunk });
+    remaining = rest;
+  }
+  const contDadosTop = produtosTopN - 0.54; // just below the emitente strip
+  while (remaining.length > 0) {
+    const avail = cm(PAGE_BOTTOM - contDadosTop - TITLE_H);
+    const { chunk, boxHCm, rest } = measureSplit(doc, remaining, innerWidthPt, avail);
+    plans.push({ kind: 'continuation', dadosBoxHCm: boxHCm, dadosChunk: chunk });
+    remaining = rest;
+  }
+  const totalPages = plans.length;
+
+  // ---- Render pass — position the dados box at the live cursor `y`. ----
+  const infAdFisco = model.infAdic.infAdFisco ?? '';
   let itemIdx = 0;
-  for (let p = 0; p < totalPages; p++) {
-    if (p > 0) doc.addPage();
+  for (let i = 0; i < plans.length; i++) {
+    if (i > 0) doc.addPage();
     pageWatermark(doc, model, cancelada);
+    const plan = plans[i]!;
     let y = MARGIN;
-    if (p === 0) {
+    if (i === 0) {
       y = drawCanhoto(doc, model, y);
       y = drawEmitente(doc, model, barcodePng, y, 1, totalPages);
       y = drawDestinatario(doc, model, y);
@@ -442,15 +557,22 @@ export async function renderRetrato(model: DanfeModel, opts: RenderA4Options = {
       y = drawImposto(doc, model, y);
       y = drawTransporte(doc, model, y);
     } else {
-      y = drawEmitente(doc, model, barcodePng, y, p + 1, totalPages);
+      y = drawEmitente(doc, model, barcodePng, y, i + 1, totalPages);
     }
-    y = drawProdutosHeader(doc, y);
-    for (let r = 0; r < slices[p]!; r++) {
-      drawProdutoRow(doc, model.itens[itemIdx]!, y, rowH, hasGtin);
-      y += rowH;
-      itemIdx += 1;
+    if (plan.kind === 'produtos') {
+      y = drawProdutosHeader(doc, y);
+      for (let r = 0; r < plan.rows; r++) {
+        drawProdutoRow(doc, model.itens[itemIdx]!, y, rowH, hasGtin);
+        y += rowH;
+        itemIdx += 1;
+      }
+      if (plan.hasIssqn) {
+        drawIssqn(doc, model, y + 0.1);
+        y += 0.1 + ISSQN_H;
+      }
     }
-    if (p === totalPages - 1) drawFooter(doc, model);
+    // The dados block frame sits on every page; infAdFisco only on the first.
+    drawDadosAdicionais(doc, y + 0.1, plan.dadosBoxHCm, plan.dadosChunk, i === 0 ? infAdFisco : '');
   }
 
   doc.end();
