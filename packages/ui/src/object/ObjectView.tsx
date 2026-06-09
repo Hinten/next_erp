@@ -303,6 +303,16 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
 
   const loading = internalId && docSnap.loading;
 
+  // In genuine edit mode (a `recordId` was supplied) surface load errors and
+  // missing documents instead of rendering an empty, un-saveable form — saving
+  // would throw on `tx.update` for a non-existent doc. Gated on `recordId`, not
+  // `internalId`, so a freshly-created record (whose snapshot may briefly be
+  // empty right after the create save) never flashes "não encontrado".
+  const editingExisting = recordId !== undefined;
+  const loadError = editingExisting ? docSnap.error : null;
+  const notFound = editingExisting && !docSnap.loading && !docSnap.data;
+  const blocked = Boolean(loadError) || notFound;
+
   return (
     <form
       onSubmit={(e) => {
@@ -349,7 +359,14 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
           </Stack>
         )}
 
+        {!loading && loadError && <Alert color="red">{loadError.message}</Alert>}
+
+        {!loading && !loadError && notFound && (
+          <Alert color="yellow">Registro não encontrado.</Alert>
+        )}
+
         {!loading &&
+          !blocked &&
           (sections && sections.length > 0 ? (
             <SectionTabs
               sections={sections}
@@ -362,7 +379,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
         {submitError && <Alert color="red">{submitError}</Alert>}
 
         <Group justify="space-between">
-          {deleteVisible && internalId ? (
+          {deleteVisible && internalId && !blocked ? (
             <Button
               type="button"
               color="red"
@@ -378,7 +395,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
             <span />
           )}
           <Group>
-            {editingAllowed && showSaveAndContinue && (
+            {editingAllowed && !blocked && showSaveAndContinue && (
               <Button
                 type="button"
                 variant="default"
@@ -388,7 +405,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
                 Salvar e continuar
               </Button>
             )}
-            {editingAllowed && (
+            {editingAllowed && !blocked && (
               <Button type="submit" loading={form.formState.isSubmitting}>
                 {saveLabel}
               </Button>
