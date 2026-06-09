@@ -324,4 +324,4 @@ export {
   type ParsedOriginalPath,
 } from './storage/storagePaths';
 
-export { buildFotoRefs, type FotoRefs } from './storage/foto';
+export { buildFotoRefs, fotoSchema, type Foto, type FotoRefs } from './storage/foto';
