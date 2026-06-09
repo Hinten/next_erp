@@ -26,6 +26,16 @@ concurrency:
   group: e2e-cadastros-${{ github.ref }}
   cancel-in-progress: true
 
+# Grant the union of what the reusable workflow's jobs request. A reusable
+# workflow's per-job permissions can't exceed the caller's token, so without
+# this the run fails at startup (the caller would otherwise get the repo's
+# read-only default while the e2e job needs pull-requests: write, etc.).
+permissions:
+  contents: read
+  checks: read
+  pull-requests: write
+  actions: read
+
 jobs:
   run:
     uses: ./.github/workflows/e2e-reusable.yml
