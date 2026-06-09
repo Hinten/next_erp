@@ -22,8 +22,9 @@ straight from it.
 
 **Do not use** when the form escapes the generic case — cross-field logic,
 sub-collections edited on the same screen, wizards. For those, write a
-custom react-hook-form form (see
-`apps/web/app/(app)/produtos/_components/ProdutoForm.tsx`).
+custom react-hook-form form using the 3-generic
+`useForm<Input, Context, Output>` pattern (needed because Zod `.default()`
+makes the schema's input/output types differ).
 
 ## 2. Architecture
 

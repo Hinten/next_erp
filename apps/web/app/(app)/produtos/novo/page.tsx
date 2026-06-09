@@ -1,22 +1,23 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { addDoc } from 'firebase/firestore';
+import { useRouter } from 'next/navigation';
 import { Button, Stack } from '@mantine/core';
-import { PageHeader } from '@delfrance/ui';
-import type { Produto } from '@delfrance/schemas';
-import { ProdutoForm } from '../_components/ProdutoForm';
+import { ObjectView, PageHeader } from '@delfrance/ui';
+import { produtoSchema } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { useAuth } from '@/lib/auth';
+import {
+  PRODUTO_CREATE_DEFAULTS,
+  PRODUTO_EXCLUDED_FIELDS,
+  PRODUTO_SECTIONS,
+  produtoFieldOverrides,
+} from '../_components/produtoFields';
 
 export default function NovoProdutoPage() {
   const router = useRouter();
-
-  async function handleSubmit(values: Produto) {
-    const ref = await addDoc(produtoCollection.ref(getFirebaseFirestore(), {}), values);
-    router.replace(`/produtos/${ref.id}`);
-  }
+  const { user } = useAuth();
 
   return (
     <Stack>
@@ -28,7 +29,19 @@ export default function NovoProdutoPage() {
           </Button>
         }
       />
-      <ProdutoForm submitLabel="Criar" onSubmit={handleSubmit} />
+      <ObjectView
+        schema={produtoSchema}
+        collection={produtoCollection}
+        db={getFirebaseFirestore()}
+        currentUserUid={user?.uid ?? ''}
+        defaultValues={PRODUTO_CREATE_DEFAULTS}
+        sections={PRODUTO_SECTIONS}
+        fields={produtoFieldOverrides}
+        excludedFields={PRODUTO_EXCLUDED_FIELDS}
+        saveLabel="Criar"
+        showSaveAndContinue={false}
+        onSaved={(id) => router.replace(`/produtos/${id}`)}
+      />
     </Stack>
   );
 }

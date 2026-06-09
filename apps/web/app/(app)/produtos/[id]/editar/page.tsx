@@ -1,32 +1,25 @@
 'use client';
 
-import { useMemo } from 'react';
-import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { setDoc } from 'firebase/firestore';
-import { Alert, Anchor, Button, Group, Skeleton, Stack } from '@mantine/core';
-import { PageHeader } from '@delfrance/ui';
-import { useDocSnapshot } from '@delfrance/data/hooks';
-import type { Produto } from '@delfrance/schemas';
-import { ProdutoForm } from '../../_components/ProdutoForm';
+import { useParams, useRouter } from 'next/navigation';
+import { Anchor, Stack } from '@mantine/core';
+import { ObjectView, PageHeader } from '@delfrance/ui';
+import { PERM } from '@delfrance/auth';
+import { produtoSchema } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { useAuth, usePermission } from '@/lib/auth';
+import {
+  PRODUTO_EXCLUDED_FIELDS,
+  PRODUTO_SECTIONS,
+  produtoFieldOverrides,
+} from '../../_components/produtoFields';
 
 export default function EditarProdutoPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
-
-  const docRef = useMemo(
-    () => produtoCollection.docRef(getFirebaseFirestore(), {}, params.id),
-    [params.id],
-  );
-
-  const { data, loading, error } = useDocSnapshot(docRef);
-
-  async function handleSubmit(values: Produto) {
-    await setDoc(docRef, values, { merge: true });
-    router.replace(`/produtos/${params.id}`);
-  }
+  const { user } = useAuth();
+  const { allowed: canWrite } = usePermission(PERM.produto.write);
 
   return (
     <Stack>
@@ -38,23 +31,20 @@ export default function EditarProdutoPage() {
           </Anchor>
         }
       />
-      {error && <Alert color="red">{error.message}</Alert>}
-      {loading && <Skeleton height={420} />}
-      {!loading && !data && <Alert color="yellow">Produto não encontrado.</Alert>}
-      {!loading && data && (
-        <ProdutoForm
-          defaultValues={data.data}
-          submitLabel="Salvar alterações"
-          onSubmit={handleSubmit}
-        />
-      )}
-      {!loading && (
-        <Group>
-          <Button component={Link} href="/produtos" variant="subtle">
-            Voltar à lista
-          </Button>
-        </Group>
-      )}
+      <ObjectView
+        schema={produtoSchema}
+        collection={produtoCollection}
+        db={getFirebaseFirestore()}
+        currentUserUid={user?.uid ?? ''}
+        recordId={params.id}
+        sections={PRODUTO_SECTIONS}
+        fields={produtoFieldOverrides}
+        excludedFields={PRODUTO_EXCLUDED_FIELDS}
+        saveLabel="Salvar alterações"
+        canEdit={canWrite}
+        readOnly={!canWrite}
+        onSaved={() => router.replace(`/produtos/${params.id}`)}
+      />
     </Stack>
   );
 }
