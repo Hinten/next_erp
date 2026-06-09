@@ -271,9 +271,9 @@ Create `apps/web/e2e/<x>.e2e.spec.ts` (template: `clientes.e2e.spec.ts`).
 ## 8. CI workflow — one line to add
 
 e2e is **two** domain workflows — `.github/workflows/e2e-cadastros.yml` and
-`e2e-vendas.yml` — sharing the `e2e-reusable.yml` engine. Both are gated on
-the offline `CI` workflow via `workflow_run` (they run only after `ci.yml`
-succeeds on a same-repo PR) and serve a **production build** (`next build` +
+`e2e-vendas.yml` — sharing the `e2e-reusable.yml` engine. Both trigger on
+`pull_request` and wait for `ci.yml`'s `lint-typecheck-test` check to pass
+before the e2e job runs, then serve a **production build** (`next build` +
 `next start`). A new `*.e2e.spec.ts` is **not** auto-collected: add its
 filename to the matching project's `testMatch` in
 `apps/web/playwright.config.ts` — `crud-cadastros` (clientes, enderecos,
@@ -282,8 +282,7 @@ pedidos-nfe-snapshot, canais-balcao, bandeiras-cartao, motivos-incidente).
 The spec then rides the existing workflow — **do not** create a new workflow
 file or add an e2e job to `ci.yml`. Each workflow run mints its own ephemeral
 test user (`e2e-user-<runId>@example.com`, Admin SDK, deleted by
-`globalTeardown`), posts an `e2e (<slug>)` commit status, and comments the
-log tail to the PR on failure.
+`globalTeardown`) and comments the log tail to the PR on failure.
 
 ## 9. Verification
 

@@ -2,31 +2,33 @@ name: E2E — Vendas
 
 # Sales / fiscal / config e2e suite (configuracoes + crud-vendas: pedidos,
 # pedidos-nfe-snapshot, canais-balcao, bandeiras-cartao, motivos-incidente).
-# Gated on the offline `CI` workflow — runs only after CI SUCCEEDS on a
-# same-repo PR — then delegates to e2e-reusable.yml (production build + serve +
-# Playwright). Runs concurrently with E2E — Cadastros; its own GITHUB_RUN_ID
+# Triggers on the PR (so it self-tests on the PR that introduces it), then
+# delegates to e2e-reusable.yml, which waits for the offline `CI` workflow to
+# pass before building apps/web for production, serving it, and running the
+# suite. Runs concurrently with E2E — Cadastros; its own GITHUB_RUN_ID
 # isolates its Firestore namespace + ephemeral user.
 on:
-  workflow_run:
-    workflows: ['CI']
-    types: [completed]
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'apps/web/**'
+      - 'packages/schemas/**'
+      - 'packages/ui/**'
+      - 'packages/data/**'
+      - 'packages/auth/**'
+      - 'packages/core/**'
+      - 'tools/test-fixtures/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/e2e-vendas.yml'
+      - '.github/workflows/e2e-reusable.yml'
   workflow_dispatch:
 
 concurrency:
-  group: e2e-vendas-${{ github.event.workflow_run.head_branch || github.ref }}
+  group: e2e-vendas-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   run:
-    # Only after offline CI passed, only for same-repo PR runs (fork PRs must
-    # not trigger a secret-bearing run against staging). Manual dispatch is
-    # always allowed (post-merge validation — workflow_run uses the default
-    # branch definition, so it can't self-test on the introducing PR).
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'pull_request' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     uses: ./.github/workflows/e2e-reusable.yml
     with:
       projects: configuracoes crud-vendas
