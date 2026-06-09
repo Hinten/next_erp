@@ -7,7 +7,7 @@
  * **centimetres**; `cm()` converts to points.
  */
 import { cmToPt, formatMoney } from '../format';
-import { type Doc, strokeBox, text } from './primitives';
+import { type Doc, strokeBox, text, textRotated } from './primitives';
 
 export const cm = cmToPt;
 export const A4_W_CM = 21;
@@ -107,4 +107,21 @@ export function cell(
 /** A small section title above a block (`CÁLCULO DO IMPOSTO`), no border. */
 export function sectionTitle(doc: Doc, xCm: number, yCm: number, value: string): void {
   text(doc, value, cm(xCm) + PAD, cm(yCm) + 1, { size: 6, width: cm(A4_W_CM), lineBreak: false });
+}
+
+/**
+ * A bordered vertical group-title strip with its label rotated 90° (the
+ * landscape DANFE's `getGroupTitle`): a narrow box on the left of a block whose
+ * bold label reads bottom-to-top. Used only by the paisagem renderer.
+ */
+export function groupTitleVertical(
+  doc: Doc,
+  xCm: number,
+  yCm: number,
+  wCm: number,
+  hCm: number,
+  label: string,
+): void {
+  strokeBox(doc, cm(xCm), cm(yCm), cm(wCm), cm(hCm));
+  textRotated(doc, label, cm(xCm), cm(yCm), cm(wCm), cm(hCm), { size: 6, bold: true });
 }

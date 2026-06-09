@@ -155,6 +155,52 @@ export function watermark(
 }
 
 /**
+ * Draw text rotated 90° counter-clockwise (reading bottom-to-top) inside the
+ * box `[x, y, w, h]` (points) — the landscape DANFE's canhoto labels and the
+ * vertical group titles (`PROD./SERV.`, `DESTINATÁRIO`, …).
+ *
+ * The rotation origin is the box's bottom-left corner; after `rotate(-90)` the
+ * text's writing direction (+x) points up the box height and line-wrapping (+y)
+ * points across the box width, so the run length is `h` and lines stack within
+ * `w`. The text is single-line, clipped with an ellipsis, and offset to sit
+ * roughly centred across `w`.
+ */
+export function textRotated(
+  doc: Doc,
+  str: string,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  opts: {
+    size?: number;
+    bold?: boolean;
+    align?: 'left' | 'center' | 'right';
+    upper?: boolean;
+  } = {},
+): void {
+  const { size = 6, bold = false, align = 'center', upper = true } = opts;
+  const pad = 2;
+  doc.save();
+  doc.rotate(-90, { origin: [x, y + h] });
+  doc
+    .font(bold ? FONT_BOLD : FONT)
+    .fontSize(size)
+    .fillColor('#000000')
+    .text(upper ? str.toUpperCase() : str, x + pad, y + h + (w - size) / 2, {
+      width: h - 2 * pad,
+      // `height` bounds pdfkit's line-wrapper to a single line: after the −90°
+      // rotation the text sits near the page bottom in *user* space, and without
+      // a height bound the wrapper would auto-add a page to "continue" it.
+      height: size + 2,
+      align,
+      lineBreak: false,
+      ellipsis: true,
+    });
+  doc.restore();
+}
+
+/**
  * Draw a barcode PNG fitted (aspect-preserving, centered) inside `[x, y, w, h]`.
  */
 export function drawBarcode(

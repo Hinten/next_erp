@@ -27,12 +27,18 @@ import {
   freteLabel,
 } from '../format';
 import type { DanfeItem, DanfeLocal, DanfeModel } from '../model';
-import { createPdf, drawBarcode, FONT, strokeBox, text, watermark, type Doc } from './primitives';
+import { createPdf, drawBarcode, strokeBox, text, type Doc } from './primitives';
 import { A4_H_CM, A4_W_CM, cell, cm, field, headerCell, sectionTitle } from './layout';
+import {
+  composeInfoComplementares,
+  measureSplit,
+  pageWatermark,
+  paginate,
+  type RenderA4Options,
+} from './a4-common';
 
-export interface RenderA4Options {
-  readonly cancelada?: boolean;
-}
+// Re-exported so `index.ts` and the retrato tests keep importing them from here.
+export { composeInfoComplementares, paginate, type RenderA4Options };
 
 const MARGIN = 0.25; // cm, left/right
 const PAGE_BOTTOM = 28.6; // cm — content may run down to here
@@ -40,6 +46,7 @@ const DADOS_MIN_H = 2.0; // cm — minimum dados adicionais box height (reserved
 const TITLE_H = 0.42; // cm — section-title strip
 const ISSQN_H = 1.27; // cm — ISSQN block (title + 1 row), last produtos page only
 const LABEL_PAD_PT = 12; // points reserved inside a dados box for its label + padding
+const SPLIT_OPTS = { minBoxCm: DADOS_MIN_H, labelPadPt: LABEL_PAD_PT };
 
 /** Item-table column geometry (cm) — verbatim from the legacy produtosTableHeader. */
 const COL = {
@@ -443,19 +450,6 @@ function drawProdutoRow(
   cell(doc, COL.pIpi.left, y, COL.pIpi.w, rowH, item.pIpi, { money: true });
 }
 
-/**
- * Compose the INFORMAÇÕES COMPLEMENTARES text: the contribuinte's `infCpl`
- * followed by the referenced NF-e chaves (`NFref. {chave}`), mirroring the
- * legacy retrato. `infAdFisco` does NOT belong here — it goes to RESERVADO AO
- * FISCO.
- */
-export function composeInfoComplementares(model: DanfeModel): string {
-  const parts: string[] = [];
-  if (model.infAdic.infCpl) parts.push(model.infAdic.infCpl);
-  for (const chave of model.ide.refNFes) parts.push(`NFref. ${chave}`);
-  return parts.join(' ');
-}
-
 /** Cálculo do ISSQN block (once, above the dados box on the last produtos page). */
 function drawIssqn(doc: Doc, model: DanfeModel, topCm: number): void {
   if (!model.issqn) return;
@@ -518,49 +512,6 @@ function drawDadosAdicionais(
 }
 
 /**
- * Split `text` so the leading chunk fits `availBoxPt` (box height in points,
- * minus the label/padding) for the INFORMAÇÕES COMPLEMENTARES box. Returns the
- * chunk, the box height to use (clamped to [DADOS_MIN_H, avail]), and the rest.
- * Lossless: `chunk + rest` reconstruct the text (modulo the boundary space).
- */
-function measureSplit(
-  doc: Doc,
-  str: string,
-  widthPt: number,
-  availBoxPt: number,
-): { chunk: string; boxHCm: number; rest: string } {
-  const minPt = cm(DADOS_MIN_H);
-  if (!str) return { chunk: '', boxHCm: DADOS_MIN_H, rest: '' };
-  doc.font(FONT).fontSize(6);
-  const textAvail = availBoxPt - LABEL_PAD_PT;
-  const fullH = doc.heightOfString(str, { width: widthPt });
-  if (fullH <= textAvail) {
-    const boxHPt = Math.max(minPt, fullH + LABEL_PAD_PT);
-    return { chunk: str, boxHCm: boxHPt / cm(1), rest: '' };
-  }
-  // Largest prefix whose wrapped height fits the available text height.
-  let lo = 1;
-  let hi = str.length;
-  let best = 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (doc.heightOfString(str.slice(0, mid), { width: widthPt }) <= textAvail) {
-      best = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  const sp = str.lastIndexOf(' ', best);
-  const cut = sp > best * 0.6 ? sp : best; // prefer a word boundary when close
-  return {
-    chunk: str.slice(0, cut).trimEnd(),
-    boxHCm: availBoxPt / cm(1),
-    rest: str.slice(cut).trimStart(),
-  };
-}
-
-/**
  * A rendered page: produtos rows + its dados-adicionais slice, or a
  * continuation page that carries only more of the infCpl. The dados box is
  * drawn at the live cursor (`y`), so only its height + chunk are carried here.
@@ -568,38 +519,6 @@ function measureSplit(
 type PagePlan =
   | { kind: 'produtos'; rows: number; hasIssqn: boolean; dadosBoxHCm: number; dadosChunk: string }
   | { kind: 'continuation'; dadosBoxHCm: number; dadosChunk: string };
-
-function pageWatermark(doc: Doc, model: DanfeModel, cancelada: boolean): void {
-  if (model.homologacao) watermark(doc, 'SEM VALOR FISCAL', cm(A4_W_CM), cm(A4_H_CM));
-  else if (cancelada) watermark(doc, 'CANCELADO', cm(A4_W_CM), cm(A4_H_CM));
-}
-
-/**
- * Split N item rows across pages, reserving footer room. Exported for tests.
- * Every returned slice is ≥ 1 (for n ≥ 1) and the slices sum to n.
- */
-export function paginate(
-  n: number,
-  rowsFirstFull: number,
-  rowsFirstLast: number,
-  rowsOtherFull: number,
-  rowsOtherLast: number,
-): number[] {
-  if (n <= rowsFirstLast) return [Math.max(n, 0)];
-  // More than one page. Page 1 takes a full page but always leaves ≥1 row for a
-  // later (last) page, so no page can end up with 0 rows (which would render an
-  // empty table header + push the footer onto a blank page).
-  const first = Math.min(rowsFirstFull, n - 1);
-  const pages = [first];
-  let rem = n - first;
-  while (rem > rowsOtherLast) {
-    const take = Math.min(rowsOtherFull, rem - 1);
-    pages.push(take);
-    rem -= take;
-  }
-  pages.push(rem);
-  return pages;
-}
 
 export async function renderRetrato(
   model: DanfeModel,
@@ -647,7 +566,7 @@ export async function renderRetrato(
     const hasIssqn = isLast && model.issqn != null;
     const dadosTop = top + slices[p]! * rowH + 0.1 + (hasIssqn ? ISSQN_H + 0.1 : 0);
     const avail = cm(PAGE_BOTTOM - dadosTop - TITLE_H);
-    const { chunk, boxHCm, rest } = measureSplit(doc, remaining, innerWidthPt, avail);
+    const { chunk, boxHCm, rest } = measureSplit(doc, remaining, innerWidthPt, avail, SPLIT_OPTS);
     plans.push({
       kind: 'produtos',
       rows: slices[p]!,
@@ -660,7 +579,7 @@ export async function renderRetrato(
   const contDadosTop = produtosTopN - 0.54; // just below the emitente strip
   while (remaining.length > 0) {
     const avail = cm(PAGE_BOTTOM - contDadosTop - TITLE_H);
-    const { chunk, boxHCm, rest } = measureSplit(doc, remaining, innerWidthPt, avail);
+    const { chunk, boxHCm, rest } = measureSplit(doc, remaining, innerWidthPt, avail, SPLIT_OPTS);
     plans.push({ kind: 'continuation', dadosBoxHCm: boxHCm, dadosChunk: chunk });
     remaining = rest;
   }
@@ -671,7 +590,7 @@ export async function renderRetrato(
   let itemIdx = 0;
   for (let i = 0; i < plans.length; i++) {
     if (i > 0) doc.addPage();
-    pageWatermark(doc, model, cancelada);
+    pageWatermark(doc, model, cancelada, cm(A4_W_CM), cm(A4_H_CM));
     const plan = plans[i]!;
     let y = MARGIN;
     if (i === 0) {
