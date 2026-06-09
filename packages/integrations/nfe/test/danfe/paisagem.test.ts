@@ -66,6 +66,20 @@ describe('danfe/pdf paisagem (A4 landscape)', () => {
     expect(pageCount(await renderPaisagem(small))).toBe(1);
   });
 
+  it('renders the ISSQN block on a later (expanded-left) last page', async () => {
+    // 100 itens force the last produtos page onto a non-page-1 sheet, where the
+    // layout has expanded left — the ISSQN block must follow that `left`, not the
+    // page-1 coordinates.
+    const big = {
+      ...model,
+      itens: Array.from({ length: 100 }, () => model.itens[0]!),
+      issqn: { vServ: '100.00', vBC: '100.00', vISS: '5.00' },
+    };
+    const pdf = await renderPaisagem(big);
+    expect(isPdf(pdf)).toBe(true);
+    expect(pageCount(pdf)).toBeGreaterThan(1);
+  });
+
   it('renders transportadora + local de entrega/retirada', async () => {
     const local = (tag: string): string =>
       `<${tag}><xNome>LOCAL ${tag.toUpperCase()}</xNome><CNPJ>11222333000181</CNPJ>` +

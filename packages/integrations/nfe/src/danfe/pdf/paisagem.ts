@@ -280,21 +280,14 @@ function drawEmitente(
     valueAlign: 'center',
   });
 
-  // G — natureza da operação (expands left on later pages).
-  field(
-    doc,
-    left,
-    TOP + 3.1,
-    14.48 - LEFT_P1 + left,
-    0.64,
-    'NATUREZA DA OPERAÇÃO',
-    model.ide.natOp,
-    {
-      valueSize: 9,
-    },
-  );
-  // H/I/J — inscrições + CNPJ (the CNPJ box closes the row at RIGHT).
-  field(doc, left, TOP + 3.74, 9.4 - LEFT_P1 + left, 0.64, 'INSCRIÇÃO ESTADUAL', model.emit.ie, {
+  // G — natureza da operação (expands left on later pages, ending at the barcode
+  // box so it never leaves a gap — end-at-fixed-x, not a LEFT_P1-relative width).
+  field(doc, left, TOP + 3.1, cbx - left, 0.64, 'NATUREZA DA OPERAÇÃO', model.ide.natOp, {
+    valueSize: 9,
+  });
+  // H/I/J — inscrições + CNPJ. The IE box ends at the IEST box (x=11.81), so it
+  // expands left with the page; IEST + CNPJ are fixed and close the row at RIGHT.
+  field(doc, left, TOP + 3.74, 11.81 - left, 0.64, 'INSCRIÇÃO ESTADUAL', model.emit.ie, {
     valueSize: 9,
   });
   field(doc, 11.81, TOP + 3.74, 8.89, 0.64, 'INSCRIÇÃO ESTADUAL DE ST', model.emit.iest ?? '', {
@@ -550,18 +543,27 @@ function drawProdutoRow(
   cell(doc, cols.pIpi.left, top, cols.pIpi.w, rowH, item.pIpi, { money: true });
 }
 
-/** Cálculo do ISSQN block (once, above the dados box on the last produtos page). */
-function drawIssqn(doc: Doc, model: DanfeModel, top: number): void {
+/**
+ * Cálculo do ISSQN block (once, above the dados box on the last produtos page).
+ * Anchored to the page's `left` and computed from it (the last produtos page may
+ * be a later page, where the layout has expanded left), the last box closing the
+ * row at `RIGHT`.
+ */
+function drawIssqn(doc: Doc, model: DanfeModel, left: number, top: number): void {
   if (!model.issqn) return;
-  groupTitleVertical(doc, LEFT_P1, top, TITLE_W, ISSQN_H, 'ISSQN');
-  field(doc, 2.92, top, 6.6, ISSQN_H, 'INSCRIÇÃO MUNICIPAL', model.emit.im ?? '');
-  field(doc, 9.52, top, 6.6, ISSQN_H, 'VALOR TOTAL DOS SERVIÇOS', model.issqn.vServ, {
+  groupTitleVertical(doc, left, top, TITLE_W, ISSQN_H, 'ISSQN');
+  const x0 = left + TITLE_W;
+  const w = 6.6;
+  field(doc, x0, top, w, ISSQN_H, 'INSCRIÇÃO MUNICIPAL', model.emit.im ?? '');
+  field(doc, x0 + w, top, w, ISSQN_H, 'VALOR TOTAL DOS SERVIÇOS', model.issqn.vServ, {
     money: true,
   });
-  field(doc, 16.12, top, 6.6, ISSQN_H, 'BASE DE CÁLCULO DO ISSQN', model.issqn.vBC, {
+  field(doc, x0 + 2 * w, top, w, ISSQN_H, 'BASE DE CÁLCULO DO ISSQN', model.issqn.vBC, {
     money: true,
   });
-  field(doc, 22.72, top, 6.74, ISSQN_H, 'VALOR DO ISSQN', model.issqn.vISS, { money: true });
+  field(doc, x0 + 3 * w, top, RIGHT - (x0 + 3 * w), ISSQN_H, 'VALOR DO ISSQN', model.issqn.vISS, {
+    money: true,
+  });
 }
 
 /**
@@ -728,7 +730,7 @@ export async function renderPaisagem(
         itemIdx += 1;
       }
       if (plan.hasIssqn) {
-        drawIssqn(doc, model, y + 0.1);
+        drawIssqn(doc, model, left, y + 0.1);
         y += 0.1 + ISSQN_H;
       }
     } else {
