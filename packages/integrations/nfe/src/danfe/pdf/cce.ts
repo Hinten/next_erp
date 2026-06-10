@@ -14,7 +14,14 @@
  * The content is bounded (xCorrecao ≤ 1000 chars, xCondUso ~600), so unlike the
  * DANFE renderers this never paginates.
  */
-import { formatChaveAcesso, formatCpfCnpj, formatDate, formatNNF, formatSerie, formatTimeSeconds } from '../format';
+import {
+  formatChaveAcesso,
+  formatCpfCnpj,
+  formatDate,
+  formatNNF,
+  formatSerie,
+  formatTimeSeconds,
+} from '../format';
 import type { DanfeModel } from '../model';
 import { XCONDUSO_CCE } from '../../eventos';
 import { createPdf, strokeBox, text, type Doc } from './primitives';
