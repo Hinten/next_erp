@@ -67,7 +67,8 @@ describe('svcAuthorizerForUF', () => {
       'SP',
       'TO',
     ];
-    expect(all).toHaveLength(27);
+    // Uniqueness too — a duplicate + an omission would keep the length at 27.
+    expect(new Set(all).size).toBe(27);
     for (const uf of all) {
       expect(['svc-an', 'svc-rs']).toContain(svcAuthorizerForUF(uf));
     }
