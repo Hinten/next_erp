@@ -1,7 +1,5 @@
 'use client';
 
-import '@mantine/dropzone/styles.css';
-
 import { useMemo, useState } from 'react';
 import {
   ActionIcon,
@@ -267,10 +265,12 @@ function SortableFoto({
     return id ? arquivoCollection.docRef(db, {}, id) : null;
   }, [db, foto.arquivoOuterRef]);
   const deriv = useDocSnapshot(derivRef);
-  const original = useDocSnapshot(originalRef);
   // Prefer the 200px derivative when it exists; otherwise show the original.
-  // The live snapshot upgrades the thumbnail automatically if/when the resize
-  // function later produces the derivative — no "processing" badge needed.
+  // Once the derivative is available the original listener is redundant, so we
+  // pass `null` to release it (one live listener per thumbnail, not two). The
+  // live snapshot still upgrades the thumbnail automatically when the resize
+  // function later produces the derivative.
+  const original = useDocSnapshot(deriv.data ? null : originalRef);
   const url = deriv.data?.data?.url ?? original.data?.data?.url ?? null;
 
   return (

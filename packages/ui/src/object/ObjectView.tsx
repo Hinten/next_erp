@@ -218,12 +218,17 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
     // `prepareForSave: stripMarkedForDeletion` drops items marked for removal).
     // We reset the form to these transformed values on success so the UI
     // reflects what was actually persisted.
-    const raw = form.getValues();
-    const values: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+    const raw = form.getValues() as Record<string, unknown>;
+    const values: Record<string, unknown> = { ...raw };
+    const isUpdate = !!internalId;
+    const dirty = form.formState.dirtyFields as Record<string, unknown>;
     for (const [key, cfg] of Object.entries(fieldOverrides)) {
-      if (cfg?.prepareForSave) {
-        values[key] = cfg.prepareForSave((raw as Record<string, unknown>)[key]);
-      }
+      if (!cfg?.prepareForSave) continue;
+      // Only transform fields that will actually be written — all fields on
+      // create, just the dirty ones on update — so `form.reset(values)` can't
+      // show a transformed value that never reached Firestore.
+      if (isUpdate && !dirty[key]) continue;
+      values[key] = cfg.prepareForSave(raw[key]);
     }
     try {
       const result = await saveRecord<S, Record<string, unknown>>({
