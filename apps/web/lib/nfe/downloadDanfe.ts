@@ -6,16 +6,14 @@
  * browser download via a transient object URL. The web bundle never imports the
  * pdfkit/bwip-js renderers — only this thin HTTP path.
  */
-import type { NFeDanfeFormat, NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
+import type {
+  NFeDanfeArtifact,
+  NFeDanfeFormat,
+  NFeHttpClient,
+} from '@delfrance/integrations-nfe/http-provider';
 
-/** Fetch + save the DANFE for an NF-e. Throws the client's typed HTTP errors. */
-export async function downloadDanfe(
-  client: NFeHttpClient,
-  pedidoId: string,
-  nfeId: string,
-  format: NFeDanfeFormat,
-): Promise<void> {
-  const artifact = await client.danfe(pedidoId, nfeId, format);
+/** Trigger a browser download of an already-fetched artifact via a transient object URL. */
+function saveArtifact(artifact: NFeDanfeArtifact): void {
   const url = URL.createObjectURL(artifact.blob);
   try {
     const a = document.createElement('a');
@@ -27,4 +25,24 @@ export async function downloadDanfe(
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+/** Fetch + save the DANFE for an NF-e. Throws the client's typed HTTP errors. */
+export async function downloadDanfe(
+  client: NFeHttpClient,
+  pedidoId: string,
+  nfeId: string,
+  format: NFeDanfeFormat,
+): Promise<void> {
+  saveArtifact(await client.danfe(pedidoId, nfeId, format));
+}
+
+/** Fetch + save the Carta de Correção PDF for a registrada CC-e. */
+export async function downloadCartaCorrecao(
+  client: NFeHttpClient,
+  pedidoId: string,
+  nfeId: string,
+  cceId: string,
+): Promise<void> {
+  saveArtifact(await client.cartaCorrecaoDanfe(pedidoId, nfeId, cceId));
 }

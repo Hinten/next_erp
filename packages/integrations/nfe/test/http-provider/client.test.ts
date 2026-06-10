@@ -424,6 +424,47 @@ describe('createNFeHttpClient — danfe', () => {
   });
 });
 
+describe('createNFeHttpClient — cartaCorrecaoDanfe', () => {
+  it('GETs /api/nfe/carta-correcao/danfe with pedidoId/nfeId/cceId + returns the Blob', async () => {
+    const fetch = vi.fn().mockResolvedValue(
+      new Response('%PDF-1.7 …', {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': 'attachment; filename="carta-correcao-7-seq2.pdf"',
+        },
+      }),
+    );
+    const art = await makeClient(fetch as never).cartaCorrecaoDanfe('PED-1', 's1', 'cce-9');
+    expect(art.filename).toBe('carta-correcao-7-seq2.pdf');
+    expect(art.contentType).toBe('application/pdf');
+    expect(await art.blob.text()).toContain('%PDF-');
+    const [url] = fetch.mock.calls[0] as [string];
+    expect(url).toContain('/api/nfe/carta-correcao/danfe?');
+    expect(url).toContain('pedidoId=PED-1');
+    expect(url).toContain('nfeId=s1');
+    expect(url).toContain('cceId=cce-9');
+  });
+
+  it('maps a 422 to NFeDanfeUnavailableError (CC-e not registrada)', async () => {
+    const fetch = mockFetch({ status: 422, body: { error: 'carta de correção não registrada' } });
+    const err = await makeClient(fetch)
+      .cartaCorrecaoDanfe('PED-1', 's1', 'cce-9')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFeDanfeUnavailableError);
+    expect(err).not.toBeInstanceOf(NFeRejectedError);
+  });
+
+  it('maps a 404 to NFePedidoNotFoundError carrying the known pedidoId', async () => {
+    const fetch = mockFetch({ status: 404, body: { error: 'not found' } });
+    const err = await makeClient(fetch)
+      .cartaCorrecaoDanfe('PED-X', 's1', 'cce-9')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFePedidoNotFoundError);
+    expect((err as NFePedidoNotFoundError).pedidoId).toBe('PED-X');
+  });
+});
+
 describe('createNFeHttpClient — baseUrl normalisation', () => {
   it('strips a single trailing slash off baseUrl', async () => {
     const fetch = mockFetch({

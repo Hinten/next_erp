@@ -1,12 +1,24 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
 import { cartaCorrecaoNFe, sanitizeNFeText, type SefazCall } from '@delfrance/integrations-nfe';
-import { ESTADO_ENVI_NFE_MSG, ESTADO_NFE, type NotaFiscalEletronica } from '@delfrance/schemas';
+import { renderCartaCorrecao } from '@delfrance/integrations-nfe/danfe';
+import {
+  type CartaCorrecao,
+  ESTADO_ENVI_NFE_MSG,
+  ESTADO_NFE,
+  type NotaFiscalEletronica,
+} from '@delfrance/schemas';
 
 import { cartaCorrecaoCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 
 import type { NFeRuntime } from '../runtime';
-import { NFeCartaCorrecaoError, NFeOrchestratorError, NFePedidoNotFoundError } from './errors';
+import type { DanfeArtifact } from './danfe';
+import {
+  NFeCartaCorrecaoError,
+  NFeDanfeError,
+  NFeOrchestratorError,
+  NFePedidoNotFoundError,
+} from './errors';
 
 /**
  * SEFAZ event cStat that means the CC-e was **accepted** — "evento registrado e
@@ -144,4 +156,61 @@ export async function cartaCorrecaoService(
   }
 
   return { pedidoId, nfeId, nSeqEvento, cStat, xMotivo, nProt, accepted: true };
+}
+
+/**
+ * Produce the Carta de Correção PDF for a specific **registrada** CC-e, rendered
+ * from the NF-e's persisted procNFe (`nfev4.xml_nfe_proc`) + the CC-e record
+ * (`cartacorrecao/{cceId}`) — never re-generated. Only a registrada CC-e (estado
+ * `concluido`, cStat 135) has a valid printout; a rejeitada one is a 422.
+ *
+ * Errors: `NFePedidoNotFoundError` (404 — no such nfev4 / cce doc), `NFeDanfeError`
+ * (422 — no procNFe persisted, or the CC-e is not registrada).
+ */
+export async function cartaCorrecaoArtifactService(
+  fs: Firestore,
+  pedidoId: string,
+  nfeId: string,
+  cceId: string,
+): Promise<DanfeArtifact> {
+  const nfeSnap = await nfev4Collection.docRef(fs, { pedidoId }, nfeId).get();
+  if (!nfeSnap.exists) {
+    throw new NFePedidoNotFoundError(pedidoId);
+  }
+  const nota = nfeSnap.data() as NotaFiscalEletronica;
+  if (!nota.xml_nfe_proc) {
+    throw new NFeDanfeError(
+      `pedido '${pedidoId}' nfe '${nfeId}': sem procNFe (xml_nfe_proc) persistido — ` +
+        'não é possível gerar a carta de correção.',
+    );
+  }
+
+  const cceSnap = await cartaCorrecaoCollection.docRef(fs, { pedidoId, nfeId }, cceId).get();
+  if (!cceSnap.exists) {
+    throw new NFePedidoNotFoundError(pedidoId);
+  }
+  const cce = cceSnap.data() as CartaCorrecao;
+  if (cce.estado !== ESTADO_ENVI_NFE_MSG.concluido || !cce.xml_retorno) {
+    throw new NFeDanfeError(
+      `pedido '${pedidoId}' nfe '${nfeId}' cce '${cceId}': carta de correção não registrada ` +
+        `(estado='${cce.estado}') — sem PDF.`,
+    );
+  }
+
+  const cancelada = nota.estado === ESTADO_NFE.cancelada;
+  const pdf = await renderCartaCorrecao(
+    {
+      procNFeXml: nota.xml_nfe_proc,
+      xmlRetorno: cce.xml_retorno,
+      xCorrecao: cce.xCorrecao,
+      nProt: cce.nProt,
+      nSeqEvento: cce.nSeqEvento,
+    },
+    { cancelada },
+  );
+  return {
+    contentType: 'application/pdf',
+    filename: `carta-correcao-${nota.numeracao}-seq${cce.nSeqEvento}.pdf`,
+    body: pdf,
+  };
 }

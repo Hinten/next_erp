@@ -44,6 +44,12 @@ export interface EventRoundtripHistoryProps<T extends EventRoundtripRecord> {
   renderSummary: (m: T) => ReactNode;
   /** Override the panel's detail line. Default: `xMotivo ?? error ?? '—'`. */
   renderPanelDetail?: (m: T) => ReactNode;
+  /**
+   * Per-row actions rendered at the bottom of the expanded panel (gets the
+   * record + its Firestore doc id) — e.g. a "Baixar PDF" button. Omit for the
+   * read-only history screens.
+   */
+  renderActions?: (m: T, id: string) => ReactNode;
   /** Max width of the titled wrapper (ignored when `title` is omitted). */
   maw?: number;
 }
@@ -75,6 +81,7 @@ export function EventRoundtripHistory<T extends EventRoundtripRecord>({
   renderBadge,
   renderSummary,
   renderPanelDetail,
+  renderActions,
   maw = 720,
 }: EventRoundtripHistoryProps<T>) {
   const { data, loading, error } = useSnapshot(query);
@@ -145,6 +152,7 @@ export function EventRoundtripHistory<T extends EventRoundtripRecord>({
                   )}
                   {m.xml_enviado && <XmlBlock label="Enviado" xml={m.xml_enviado} />}
                   {m.xml_retorno && <XmlBlock label="Retorno" xml={m.xml_retorno} />}
+                  {renderActions && <Group gap="xs">{renderActions(m, row.id)}</Group>}
                 </Stack>
               </Accordion.Panel>
             </Accordion.Item>
