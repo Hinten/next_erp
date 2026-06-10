@@ -1,7 +1,18 @@
 [
   {
     "origin": ["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],
-    "method": ["GET"],
+    "method": ["GET", "HEAD", "PUT", "POST", "DELETE"],
+    "responseHeader": [
+      "Content-Type",
+      "Content-Length",
+      "Content-Range",
+      "Content-Disposition",
+      "Content-Encoding",
+      "Authorization",
+      "Range",
+      "x-goog-resumable",
+      "x-goog-meta-firebaseStorageDownloadTokens"
+    ],
     "maxAgeSeconds": 3600
   }
 ]

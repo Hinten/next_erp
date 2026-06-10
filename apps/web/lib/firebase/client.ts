@@ -48,5 +48,9 @@ export function getFirebaseFirestore(): Firestore {
 export function getFirebaseStorage(): FirebaseStorage {
   if (storage) return storage;
   storage = getStorage(getFirebaseApp());
+  // Bound the SDK's internal retry window so a blocked/failed upload (e.g. a
+  // bucket CORS misconfiguration) surfaces a real FirebaseError in ~30s instead
+  // of retrying silently for the ~120s default — which looks like a hung UI.
+  storage.maxUploadRetryTime = 30_000;
   return storage;
 }

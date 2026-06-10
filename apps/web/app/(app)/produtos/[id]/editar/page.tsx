@@ -25,10 +25,8 @@ export default function EditarProdutoPage() {
   const db = getFirebaseFirestore();
   const storage = getFirebaseStorage();
 
-  // The product exists here (edit mode), so the Fotos tab is available and the
-  // `fotos` field gets a PhotoManager renderer scoped to this product.
-  const sections = useMemo(() => [...PRODUTO_SECTIONS, 'Fotos'], []);
-  const excludedFields = useMemo(() => PRODUTO_EXCLUDED_FIELDS.filter((f) => f !== 'fotos'), []);
+  // The product exists here (edit mode), so the Fotos tab's PhotoManager is
+  // scoped to this product and uploads are enabled.
   const fields = useMemo<Record<string, FieldConfig>>(
     () => ({
       ...produtoFieldOverrides,
@@ -66,9 +64,9 @@ export default function EditarProdutoPage() {
         db={db}
         currentUserUid={user?.uid ?? ''}
         recordId={params.id}
-        sections={sections}
+        sections={PRODUTO_SECTIONS}
         fields={fields}
-        excludedFields={excludedFields}
+        excludedFields={PRODUTO_EXCLUDED_FIELDS}
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}

@@ -28,6 +28,17 @@ test.describe.serial('Produtos fotos e2e — ObjectView Fotos tab', () => {
     await cleanupByNamePrefix('produtos', prefix);
   });
 
+  test('shows the "save first" message on the Fotos tab of the create screen', async ({ page }) => {
+    await page.goto('/produtos/novo');
+    await expect(page.getByRole('heading', { name: 'Novo produto' })).toBeVisible();
+    await page.getByRole('tab', { name: 'Fotos' }).click();
+    // No produtoId yet → PhotoManager prompts to save first, no dropzone.
+    await expect(page.getByText('Salve o produto para poder enviar fotos.')).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText('Arraste imagens aqui ou clique para selecionar')).toHaveCount(0);
+  });
+
   test('creates a produto and exposes the Fotos tab in the editor', async ({ page }) => {
     // Create via the ObjectView create screen — only `nome` is required.
     await page.goto('/produtos/novo');

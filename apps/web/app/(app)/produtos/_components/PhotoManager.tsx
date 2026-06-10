@@ -51,8 +51,12 @@ function idFromRef(ref: string | null | undefined): string | null {
 }
 
 export interface PhotoManagerProps {
-  /** Owning product id — uploads are scoped to `produtos/<produtoId>/…`. */
-  produtoId: string;
+  /**
+   * Owning product id — uploads are scoped to `produtos/<produtoId>/…`. `null`
+   * in create mode (the product isn't saved yet): the manager then renders a
+   * "save first" message instead of a dead dropzone.
+   */
+  produtoId: string | null;
   db: Firestore;
   storage: FirebaseStorage;
   /** Current `Produto.fotos` value from the form. */
@@ -86,6 +90,20 @@ export function PhotoManager({
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
+  // No product id yet (create mode): uploads can't be scoped to a product, so
+  // prompt the user to save first instead of showing a dropzone that can't work.
+  if (!produtoId) {
+    return (
+      <Alert color="blue" variant="light">
+        Salve o produto para poder enviar fotos.
+      </Alert>
+    );
+  }
+
+  // produtoId is non-null past the guard; capture it as a string so the upload
+  // closure below keeps the narrowing (TS doesn't carry it into nested fns).
+  const ownerId: string = produtoId;
+
   async function handleDrop(files: FileWithPath[]) {
     setError(null);
     setUploading(true);
@@ -96,23 +114,29 @@ export function PhotoManager({
         const { id } = await uploadProductImage({
           storage,
           db,
-          produtoId,
+          produtoId: ownerId,
           bytes: file,
           contentType: file.type,
           originalFilename: file.name,
         });
         // `id` is `<produtoId>_<hash>`; recover the hash to build the refs.
-        const hash = id.startsWith(`${produtoId}_`) ? id.slice(produtoId.length + 1) : id;
-        const refs = buildFotoRefs(produtoId, hash);
+        const hash = id.startsWith(`${ownerId}_`) ? id.slice(ownerId.length + 1) : id;
+        const refs = buildFotoRefs(ownerId, hash);
         if (seen.has(refs.arquivoOuterRef)) continue; // dedup identical uploads
         seen.add(refs.arquivoOuterRef);
         added.push({ ...refs, grupoDeVariacoesOuterRef: null, variantePath: null });
       }
       if (added.length > 0) onChange([...fotos, ...added]);
     } catch (err) {
-      if (err instanceof FirebaseError || err instanceof StorageUploadError) {
+      // Always log so a failed upload is traceable — the dropzone otherwise just
+      // drops its spinner with no trace. Surface a message for the known cases.
+      console.error('[PhotoManager] upload failed', err);
+      if (err instanceof FirebaseError) {
+        setError(`Falha ao enviar a foto (${err.code}). ${err.message}`);
+      } else if (err instanceof StorageUploadError) {
         setError(err.message);
       } else {
+        setError('Falha inesperada ao enviar a foto. Veja o console para detalhes.');
         throw err;
       }
     } finally {
