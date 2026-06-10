@@ -90,16 +90,6 @@ export async function cartaCorrecaoService(
         'apenas NF-e autorizada (aprovada) pode receber carta de correção.',
     );
   }
-  // CC-e is NOT among the services SVC offers (MOC Anexo III), and whether
-  // the home SEFAZ accepts events for an SVC-authorized NF-e depends on the
-  // post-outage sync — conservatively rejected here; revisit with the async
-  // reconciliation phase (#81).
-  if (nota.tpEmis === 6 || nota.tpEmis === 7) {
-    throw new NFeCartaCorrecaoError(
-      `pedido '${pedidoId}' nfe '${nfeId}': NF-e emitida em contingência SVC ` +
-        `(tpEmis=${nota.tpEmis}) — o SVC não oferece carta de correção.`,
-    );
-  }
 
   // Next sequence = (count of already-accepted CC-e) + 1. A single-field
   // equality query rides Firestore's automatic index — no composite index.
@@ -114,7 +104,11 @@ export async function cartaCorrecaoService(
   // actually received (and the <xCorrecao> inside xml_enviado).
   const xCorrecaoWire = sanitizeNFeText(xCorrecao) ?? xCorrecao;
 
-  // Send the CC-e evento (cOrgao + cnpj come from the chave).
+  // Send the CC-e evento (cOrgao + cnpj come from the chave) — ALWAYS to the
+  // home SEFAZ, including for SVC-authorized notas (tpEmis 6/7): the SVC does
+  // not serve CC-e, but authorized documents are automatically shared between
+  // the SVC and the normal environment, which registers the event (MOC 7.0
+  // Anexo III §2.1.3.4-d).
   const cceCall: SefazCall = {
     cert: rt.cert,
     agent: rt.agent,

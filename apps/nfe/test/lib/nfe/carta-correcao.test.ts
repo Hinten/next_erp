@@ -266,17 +266,24 @@ describe('cartaCorrecaoService', () => {
     expect(cartaCorrecaoNFe).not.toHaveBeenCalled();
   });
 
-  it('SVC contingency NF-e (tpEmis=6) → throws NFeCartaCorrecaoError, no event sent', async () => {
-    // SVC offers no CC-e (MOC Anexo III) — the guard must fire before any SOAP.
-    const { fs } = fakeFirestore({
+  it('SVC contingency NF-e (tpEmis=6) → CC-e sent to the HOME SEFAZ RecepcaoEvento', async () => {
+    // The SVC does not serve CC-e, but SVC-authorized documents are shared
+    // with the normal environment, which registers the event (MOC 7.0 Anexo
+    // III §2.1.3.4-d) — so the CC-e must go out, routed to the home SEFAZ.
+    const { fs, writes } = fakeFirestore({
       'pedidos/PED-1/nfev4/s6': { ...aprovadaNfev4(), tpEmis: 6 },
     });
-    const err = await cartaCorrecaoService(fs, fakeRuntime(), 'PED-1', 's6', XCORRECAO).catch(
-      (e: unknown) => e,
+    vi.mocked(cartaCorrecaoNFe).mockResolvedValue(cceResult('135', 1) as never);
+
+    const result = await cartaCorrecaoService(fs, fakeRuntime(), 'PED-1', 's6', XCORRECAO);
+
+    expect(result.accepted).toBe(true);
+    expect(vi.mocked(cartaCorrecaoNFe)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/sefaz/rec' }),
+      expect.anything(),
     );
-    expect(err).toBeInstanceOf(NFeCartaCorrecaoError);
-    expect((err as NFeCartaCorrecaoError).message).toContain('SVC');
-    expect(cartaCorrecaoNFe).not.toHaveBeenCalled();
+    const rec = writes.find((w) => w.path.startsWith('pedidos/PED-1/nfev4/s6/cartacorrecao/'));
+    expect(rec?.data.estado).toBe(ESTADO_ENVI_NFE_MSG.concluido);
   });
 
   it('throws NFePedidoNotFoundError (→ 404) when the nfev4 doc id does not exist', async () => {
