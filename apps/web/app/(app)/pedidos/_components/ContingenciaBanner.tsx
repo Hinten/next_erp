@@ -9,12 +9,12 @@
 import Link from 'next/link';
 import { Alert, Anchor } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
-import { getDoc, getDocs } from 'firebase/firestore';
+import { collectionGroup, getDoc, getDocs, query as fsQuery, where } from 'firebase/firestore';
 
 import type { ContingenciaModo } from '@delfrance/schemas';
 
 import { filialCollection } from '@/lib/data/filialCollection';
-import { NFE_CONFIG_DOC_ID, nfeConfigCollection } from '@/lib/data/nfeConfigCollection';
+import { nfeConfigCollection } from '@/lib/data/nfeConfigCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 
 interface ActiveContingency {
@@ -28,22 +28,29 @@ export function ContingenciaBanner() {
   const query = useQuery({
     queryKey: ['contingencia-banner'],
     queryFn: async (): Promise<ActiveContingency[]> => {
-      // One parallel `nfeconfig/default` read per filial. Deliberately NOT a
-      // collectionGroup('nfeconfig') filter: that would require a
-      // collection-group index AND a `{path=**}/nfeconfig` rules match, and a
-      // tenant has a handful of filiais — the fan-out is bounded and cached
-      // (staleTime below), so the simpler reads win.
-      const filiais = await getDocs(filialCollection.ref(db, {}));
-      const checks = filiais.docs.map(async (f): Promise<ActiveContingency | null> => {
-        const cfgSnap = await getDoc(
-          nfeConfigCollection.docRef(db, { filialId: f.id }, NFE_CONFIG_DOC_ID),
-        );
-        const cfg = cfgSnap.exists() ? cfgSnap.data() : null;
-        if (!cfg || cfg.contingencia_modo === 'none') return null;
+      // One collection-group query for ACTIVE configs only (modo != 'none' —
+      // docs that never got the field are normal-mode by definition and are
+      // excluded by Firestore's != semantics). Only the matched configs
+      // (usually zero) trigger a filial read for the display name.
+      // NOTE: runs index-free on Firestore Enterprise; the index audit for
+      // the NF-e module's queries is a tracked follow-up.
+      const activeSnap = await getDocs(
+        fsQuery(
+          collectionGroup(db, 'nfeconfig').withConverter(nfeConfigCollection.converter),
+          where('contingencia_modo', '!=', 'none'),
+        ),
+      );
+      const checks = activeSnap.docs.map(async (cfgDoc): Promise<ActiveContingency | null> => {
+        // `filiais/{filialId}/nfeconfig/{id}` → the filial doc is the
+        // grandparent of the config doc.
+        const filialRef = cfgDoc.ref.parent.parent;
+        if (!filialRef) return null;
+        const filial = await getDoc(filialCollection.docRef(db, {}, filialRef.id));
+        if (!filial.exists()) return null;
         return {
-          filialId: f.id,
-          filialNome: f.data().fantasia ?? f.data().razaoSocial,
-          modo: cfg.contingencia_modo,
+          filialId: filialRef.id,
+          filialNome: filial.data().fantasia ?? filial.data().razaoSocial,
+          modo: cfgDoc.data().contingencia_modo,
         };
       });
       return (await Promise.all(checks)).filter((c): c is ActiveContingency => c !== null);
