@@ -1,0 +1,50 @@
+name: E2E — Cadastros
+
+# Master-data e2e suite (smoke + crud-cadastros: clientes, enderecos,
+# categorias, depositos, filiais). Triggers on the PR (so it self-tests on the
+# PR that introduces it), then delegates to e2e-reusable.yml, which waits for
+# the offline `CI` workflow to pass before building apps/web for production,
+# serving it, and running the suite. Runs concurrently with E2E — Vendas; its
+# own GITHUB_RUN_ID isolates its Firestore namespace + ephemeral user.
+on:
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'apps/web/**'
+      - 'packages/schemas/**'
+      - 'packages/ui/**'
+      - 'packages/data/**'
+      - 'packages/auth/**'
+      - 'packages/core/**'
+      - 'tools/test-fixtures/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/e2e-cadastros.yml'
+      - '.github/workflows/e2e-reusable.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-cadastros-${{ github.ref }}
+  cancel-in-progress: true
+
+# Grant the union of what the reusable workflow's jobs request. A reusable
+# workflow's per-job permissions can't exceed the caller's token, so without
+# this the run fails at startup (the caller would otherwise get the repo's
+# read-only default while the e2e job needs pull-requests: write, etc.).
+permissions:
+  contents: read
+  checks: read
+  pull-requests: write
+  actions: read
+
+jobs:
+  run:
+    # Fork PRs can't see repo secrets, so the run would only fail noisily at
+    # the Firebase steps — skip it. Manual dispatch always runs (same-repo).
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          github.event.pull_request.head.repo.fork == false }}
+    uses: ./.github/workflows/e2e-reusable.yml
+    with:
+      projects: smoke crud-cadastros
+      slug: cadastros
+    secrets: inherit
