@@ -8,6 +8,7 @@ import type { NFeRuntime } from '../runtime';
 import { NFeCancelamentoError, NFeOrchestratorError, NFePedidoNotFoundError } from './errors';
 import { getField, refToPath, type EmitResult } from './bundle';
 import { enviNfeCollection } from './audit';
+import { sefazCallFor } from './sefaz-call';
 
 /**
  * Extract the authorization protocol (`nProt`) from a stored procNFe envelope.
@@ -108,12 +109,9 @@ export async function cancelarNFeService(
   const now = (): string => new Date().toISOString();
 
   // Send the cancelamento evento (cOrgao + cnpj come from the chave).
-  const cancelCall: SefazCall = {
-    cert: rt.cert,
-    agent: rt.agent,
-    tpAmb: rt.tpAmb,
-    url: rt.endpoints.RecepcaoEvento,
-  };
+  // Routed by the persisted tpEmis: an SVC-authorized NF-e is cancelled at
+  // its SVC (cancelamento is one of the services SVC does offer).
+  const cancelCall: SefazCall = sefazCallFor(rt, tpEmis, 'RecepcaoEvento');
   const res = await cancelarNFe(cancelCall, {
     chNFe: nota.chave,
     cOrgao: nota.chave.slice(0, 2),

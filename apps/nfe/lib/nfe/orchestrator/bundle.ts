@@ -1,10 +1,17 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
-import { impostoSchema, type Imposto, type TpEmis } from '@delfrance/integrations-nfe';
+import { nfeConfigCollection } from '@delfrance/data/admin/collections';
+import {
+  NFeConfigNotFoundError,
+  impostoSchema,
+  type Imposto,
+  type TpEmis,
+} from '@delfrance/integrations-nfe';
 import {
   STATUS_PAGAMENTO,
   freteDoPedidoSchema,
   integracaoSchema,
+  nfeConfigSchema,
   pagamentoSchema,
   regraImpostoSchema,
   type Cliente,
@@ -13,6 +20,7 @@ import {
   type Filial,
   type FreteDoPedido,
   type Integracao,
+  type NFeConfig,
   type Operacao,
   type Pagamento,
   type Pedido,
@@ -142,6 +150,30 @@ export function createBatchReadContext(): BatchReadContext {
     regraByOperacaoPath: new Map(),
     resolverByOperacaoId: new Map(),
   };
+}
+
+/**
+ * Read + parse the filial's NFeConfig OUTSIDE a transaction — for the
+ * pre-allocation decisions that depend on it (contingency mode →
+ * `tpEmis`). The allocation transaction still re-reads it transactionally
+ * for the counters; a mode flip between the two reads only affects WHICH
+ * doc/lote the emission targets, never counter integrity. Memoized on the
+ * batch context so a 50-pedido batch reads each filial's config once.
+ */
+export async function loadNfeConfigForEmission(
+  fs: Firestore,
+  filialId: string,
+  ctx?: BatchReadContext,
+): Promise<NFeConfig> {
+  const ref = nfeConfigCollection.docRef(fs, { filialId }, DEFAULT_NFE_CONFIG_DOC_ID);
+  let snapP = ctx?.docByPath.get(ref.path);
+  if (!snapP) {
+    snapP = ref.get();
+    ctx?.docByPath.set(ref.path, snapP);
+  }
+  const snap = await snapP;
+  if (!snap.exists) throw new NFeConfigNotFoundError(filialId);
+  return nfeConfigSchema.parse(snap.data()) as NFeConfig;
 }
 
 export async function loadPedidoBundle(

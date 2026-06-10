@@ -3,6 +3,7 @@ import forge from 'node-forge';
 import type { Cliente, Endereco, Filial, Operacao } from '@delfrance/schemas';
 
 import { signNFe } from '../../src/sign';
+import { validateXsd } from '../../src/xsd';
 import type { NFeCertificate } from '../../src/cert';
 import { generateNFe, NFeGeneratorError } from '../../src/generator/index';
 import { HOMOLOGACAO_XNOME } from '../../src/generator/parties';
@@ -217,6 +218,60 @@ describe('generateNFe', () => {
 
   it('rejects serie outside [0, 889]', () => {
     expect(() => generateNFe({ ...BASE_INPUT, serie: 999 })).toThrow(NFeGeneratorError);
+  });
+
+  describe('contingência (tpEmis ≠ 1 → dhCont/xJust, B28/B29)', () => {
+    const XJUST = 'SEFAZ-SP indisponivel desde as 08h de hoje';
+    const CONT_INPUT: GeneratorInput = {
+      ...BASE_INPUT,
+      // The XSD allows <CNAE> only after <IM> — the shared FILIAL fixture has
+      // cnae without imun, which trips the (unrelated) emit sequence in the
+      // signed-XSD check below. Not a contingency concern; drop cnae here.
+      filial: { ...FILIAL, cnae: null },
+      tpEmis: 6,
+      dhCont: new Date(2026, 5, 10, 8, 0, 0),
+      xJust: XJUST,
+    };
+
+    it('bakes the contingency tpEmis into the chave (digit 35)', () => {
+      const out = generateNFe(CONT_INPUT);
+      expect(out.chave[34]).toBe('6');
+      expect(out.nfeXml).toContain('<tpEmis>6</tpEmis>');
+    });
+
+    it('emits dhCont then xJust right after verProc (XSD order)', () => {
+      const out = generateNFe(CONT_INPUT);
+      expect(out.nfeXml).toMatch(
+        /<verProc>[^<]*<\/verProc><dhCont>2026-06-10T08:00:00[^<]*<\/dhCont><xJust>SEFAZ-SP indisponivel desde as 08h de hoje<\/xJust><\/ide>/,
+      );
+    });
+
+    it('emits NO dhCont/xJust for normal emission', () => {
+      const out = generateNFe(BASE_INPUT);
+      expect(out.nfeXml).not.toContain('<dhCont>');
+      expect(out.nfeXml).not.toContain('<xJust>');
+    });
+
+    it('rejects contingency input missing dhCont or xJust', () => {
+      expect(() => generateNFe({ ...CONT_INPUT, dhCont: undefined })).toThrow(NFeGeneratorError);
+      expect(() => generateNFe({ ...CONT_INPUT, xJust: undefined })).toThrow(NFeGeneratorError);
+    });
+
+    it('rejects an xJust shorter than 15 chars after sanitisation', () => {
+      expect(() => generateNFe({ ...CONT_INPUT, xJust: 'curta demais' })).toThrow(/15.255|15–255/);
+    });
+
+    it('signed contingency NF-e passes the NFe XSD', async () => {
+      const out = generateNFe(CONT_INPUT);
+      const signed = signNFe(out.nfeXml, fixtureCertificate());
+      await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+    });
+
+    it('rejects dhCont/xJust on a normal (tpEmis=1) emission', () => {
+      expect(() => generateNFe({ ...BASE_INPUT, dhCont: new Date(), xJust: XJUST })).toThrow(
+        /forbidden/,
+      );
+    });
   });
 
   it('produces XML the signer accepts (xml-crypto round-trip)', () => {

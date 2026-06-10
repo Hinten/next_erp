@@ -17,6 +17,7 @@
  */
 import { ESTADO_NFE, type EstadoNFe, type UF } from '@delfrance/schemas';
 
+import { svcAuthorizerForUF } from '../endpoints';
 import type { TpEmis } from '../generator/types';
 
 export {
@@ -54,7 +55,7 @@ export type CStatCategory =
   | 'lote-nao-localizado'
   /** 107 — service up. */
   | 'servico-em-operacao'
-  /** 108, 109 — service down (momentary / no forecast). */
+  /** 108, 109 — service down; 113, 114 — SVC em desativação / desabilitada. */
   | 'servico-paralisado'
   /** 204, 205, 218, 539, 635 — duplicidade: recover via `consSitNFe`. */
   | 'duplicidade'
@@ -84,6 +85,10 @@ export function classifyCStat(cStat: string): CStatCategory {
   if (cStat === '106') return 'lote-nao-localizado';
   if (cStat === '107') return 'servico-em-operacao';
   if (cStat === '108' || cStat === '109') return 'servico-paralisado';
+  // SVC status codes (MOC Anexo III): 113 = SVC em desativação (stop using
+  // it), 114 = SVC desabilitada para a UF. Both mean "this authorizer is not
+  // usable right now" — same handling as a paralisado service.
+  if (cStat === '113' || cStat === '114') return 'servico-paralisado';
   if (DUPLICIDADE.has(cStat)) return 'duplicidade';
   if (cStat === '215' || cStat === '225') return 'rejeitada-schema';
   if (cStat === '252') return 'rejeitada-ambiente';
@@ -265,21 +270,21 @@ export type ContingenciaMode = 'none' | 'svc' | 'epec';
  * `filial.sede.estado.{tpEmis,tpEmisSVC,tpEmisEPEC}` selector
  * (`.old/packages/pedido_nfe/lib/src/tasks.dart:136-140`).
  *
- * Phase A scope: only `mode='none'` is supported (normal emission,
- * tpEmis=1 Brazil-wide). SVC / EPEC contingência is per-UF and Phase B
- * — this function throws on those modes so call sites have to ramp them
- * in explicitly.
+ * `'svc'` resolves per-UF: SVC-AN UFs → 6, SVC-RS UFs → 7 (the SVC-RS leg
+ * lands in PR `nfe-contingencia-svc-rs`; until then those UFs throw inside
+ * `svcAuthorizerForUF`). `'epec'` (tpEmis=4) lands in PR
+ * `nfe-contingencia-epec`.
  *
  * Production-traffic safety (`NFE_ALLOW_PRODUCAO` opt-in) is enforced
  * by `assertSafeTpAmb` at the SOAP layer — not duplicated here.
  */
-export function resolveTpEmis(_uf: UF, mode: ContingenciaMode = 'none'): TpEmis {
+export function resolveTpEmis(uf: UF, mode: ContingenciaMode = 'none'): TpEmis {
   switch (mode) {
     case 'none':
       return 1;
     case 'svc':
-      throw new Error(`Contingência '${mode}' ainda não implementada (Phase B).`);
+      return svcAuthorizerForUF(uf) === 'svc-an' ? 6 : 7;
     case 'epec':
-      throw new Error(`Contingência '${mode}' ainda não implementada (Phase B).`);
+      throw new Error(`Contingência '${mode}' ainda não implementada (PR nfe-contingencia-epec).`);
   }
 }

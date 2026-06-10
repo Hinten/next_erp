@@ -24,6 +24,7 @@ import {
 } from '../format';
 import type { DanfeModel, DanfeEndereco } from '../model';
 import { code128Png } from '../barcode';
+import { contingencyNote } from './a4-common';
 import { createPdf, drawBarcode, labeledRow, strokeBox, text, watermark } from './primitives';
 
 export interface RenderSimplificadoOptions {
@@ -177,8 +178,11 @@ export async function renderSimplificado(
   }
   section('Dados do destinatário/remetente', destRows);
 
-  // Dados adicionais.
-  const infCpl = [model.infAdic.infCpl, model.infAdic.infAdFisco].filter(Boolean).join(' ');
+  // Dados adicionais — the contingency note (dhCont/xJust, mandatory on the
+  // printout when tpEmis ≠ 1) leads, then infCpl + infAdFisco.
+  const infCpl = [contingencyNote(model), model.infAdic.infCpl, model.infAdic.infAdFisco]
+    .filter(Boolean)
+    .join(' ');
   if (infCpl) {
     section('Dados adicionais', [{ kind: 'wrap', text: infCpl, lines: 3 }]);
   }

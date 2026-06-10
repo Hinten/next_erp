@@ -23,11 +23,13 @@ import {
   DEFAULT_STUCK_TIMEOUT_MS,
   isStuckEnviando,
   outcomeFromRetConsSit,
+  type TpEmis,
 } from '@delfrance/integrations-nfe';
 import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
+import { sefazCallFor } from '@/lib/nfe/orchestrator/sefaz-call';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
 
 export const dynamic = 'force-dynamic';
@@ -45,6 +47,7 @@ interface PendingDoc {
   readonly path: string;
   readonly estado: EstadoNFe;
   readonly chave: string | null;
+  readonly tpEmis: number | null;
   readonly ultima_modificacao: string | null;
   readonly retries: number | null;
 }
@@ -107,13 +110,11 @@ export async function POST(req: Request): Promise<NextResponse> {
       continue;
     }
     try {
+      // Consult the authorizer that owns the NF-e's tpEmis — an SVC-emitted
+      // doc (6/7) is recovered at its SVC, not at the (possibly still down)
+      // home SEFAZ.
       const retSit = await consultarSituacaoNFe(
-        {
-          url: runtimeInstance.endpoints.NfeConsultaProtocolo,
-          cert: runtimeInstance.cert,
-          agent: runtimeInstance.agent,
-          tpAmb: runtimeInstance.tpAmb,
-        },
+        sefazCallFor(runtimeInstance, (data.tpEmis ?? 1) as TpEmis, 'NfeConsultaProtocolo'),
         { chave: data.chave },
       );
       const outcome = outcomeFromRetConsSit(retSit);

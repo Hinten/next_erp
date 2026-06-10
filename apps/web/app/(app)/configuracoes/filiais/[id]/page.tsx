@@ -34,7 +34,7 @@ export default function FilialPage() {
         </Anchor>
       </Group>
 
-      <FilialTabs>
+      <FilialTabs filialId={params.id}>
         <ObjectView
           schema={filialSchema}
           collection={filialCollection}

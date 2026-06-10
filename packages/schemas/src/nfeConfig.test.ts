@@ -64,3 +64,58 @@ describe('nfeConfigMeta', () => {
     expect(nfeConfigMeta.permissions.delete).toBe(1n << 74n);
   });
 });
+
+describe('nfeConfigSchema — contingência', () => {
+  it('defaults to modo none with null justificativa/dataInicio (legacy docs parse)', () => {
+    const out = nfeConfigSchema.parse(MINIMAL);
+    expect(out.contingencia_modo).toBe('none');
+    expect(out.contingencia_justificativa).toBeNull();
+    expect(out.contingencia_dataInicio).toBeNull();
+  });
+
+  it('accepts an active svc mode with justificativa + dataInicio', () => {
+    const out = nfeConfigSchema.parse({
+      ...MINIMAL,
+      contingencia_modo: 'svc',
+      contingencia_justificativa: 'SEFAZ indisponível desde as 08h',
+      contingencia_dataInicio: '2026-06-10T08:00:00.000Z',
+    });
+    expect(out.contingencia_modo).toBe('svc');
+  });
+
+  it('rejects an active mode without justificativa or dataInicio', () => {
+    expect(nfeConfigSchema.safeParse({ ...MINIMAL, contingencia_modo: 'svc' }).success).toBe(false);
+    expect(
+      nfeConfigSchema.safeParse({
+        ...MINIMAL,
+        contingencia_modo: 'svc',
+        contingencia_justificativa: 'SEFAZ indisponível desde as 08h',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a justificativa shorter than 15 or longer than 255 chars', () => {
+    expect(
+      nfeConfigSchema.safeParse({
+        ...MINIMAL,
+        contingencia_modo: 'svc',
+        contingencia_justificativa: 'curta',
+        contingencia_dataInicio: '2026-06-10T08:00:00.000Z',
+      }).success,
+    ).toBe(false);
+    expect(
+      nfeConfigSchema.safeParse({
+        ...MINIMAL,
+        contingencia_modo: 'svc',
+        contingencia_justificativa: 'x'.repeat(256),
+        contingencia_dataInicio: '2026-06-10T08:00:00.000Z',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an unknown modo', () => {
+    expect(nfeConfigSchema.safeParse({ ...MINIMAL, contingencia_modo: 'scan' }).success).toBe(
+      false,
+    );
+  });
+});

@@ -6,6 +6,7 @@ import {
   cStatToEstado,
   MAX_LOTE_POLL_RETRIES,
   nextAction,
+  resolveTpEmis,
 } from '../../src/state/index';
 
 describe('classifyCStat', () => {
@@ -21,6 +22,8 @@ describe('classifyCStat', () => {
     ['107', 'servico-em-operacao'],
     ['108', 'servico-paralisado'],
     ['109', 'servico-paralisado'],
+    ['113', 'servico-paralisado'],
+    ['114', 'servico-paralisado'],
     ['110', 'denegada'],
     ['204', 'duplicidade'],
     ['205', 'duplicidade'],
@@ -143,5 +146,25 @@ describe('applyOutcome', () => {
       { cStat: '105', xMotivo: 'Lote em processamento' },
     );
     expect(patch.retries).toBe(1);
+  });
+});
+
+describe('resolveTpEmis', () => {
+  it('mode none → 1 for any UF', () => {
+    expect(resolveTpEmis('SP')).toBe(1);
+    expect(resolveTpEmis('PR', 'none')).toBe(1);
+  });
+
+  it("mode 'svc' resolves per UF — SP (SVC-AN) → 6", () => {
+    expect(resolveTpEmis('SP', 'svc')).toBe(6);
+    expect(resolveTpEmis('MG', 'svc')).toBe(6);
+  });
+
+  it("mode 'svc' for an SVC-RS UF throws until the svc-rs PR lands", () => {
+    expect(() => resolveTpEmis('PR', 'svc')).toThrow(/SVC-RS/);
+  });
+
+  it("mode 'epec' throws until the epec PR lands", () => {
+    expect(() => resolveTpEmis('SP', 'epec')).toThrow(/epec/);
   });
 });

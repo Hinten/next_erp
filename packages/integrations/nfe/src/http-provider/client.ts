@@ -112,6 +112,20 @@ export interface NFeDanfeArtifact {
   readonly contentType: string;
 }
 
+/** Mirrors `apps/nfe/app/api/nfe/status-servico/route.ts` response. */
+export interface NFeStatusServicoResult {
+  readonly target: 'normal' | 'svc';
+  /** `'sefaz'` for the home SEFAZ; `'svc-an'` / `'svc-rs'` for the SVC. */
+  readonly authorizer: string;
+  readonly cStat: string;
+  readonly xMotivo: string;
+  readonly dhRecbto: string | null;
+  /** Average processing time hint (seconds), when SEFAZ returns one. */
+  readonly tMed: string | null;
+  /** `classifyCStat` category — `'servico-em-operacao'` is the green state. */
+  readonly category: string;
+}
+
 /** Mirrors `apps/nfe/app/api/nfe/carta-correcao/route.ts` response. */
 export interface NFeCartaCorrecaoResult {
   readonly pedidoId: string;
@@ -169,6 +183,12 @@ export interface NFeHttpClient {
    * (`cartacorrecao/{cceId}`). Returns the Blob + its server filename.
    */
   cartaCorrecaoDanfe(pedidoId: string, nfeId: string, cceId: string): Promise<NFeDanfeArtifact>;
+  /**
+   * Check SEFAZ availability (NfeStatusServico4) — `'normal'` asks the home
+   * SEFAZ, `'svc'` asks the UF's contingency environment. Decision support
+   * for the manual contingency toggle.
+   */
+  statusServico(target: 'normal' | 'svc'): Promise<NFeStatusServicoResult>;
 }
 
 /** Pull the filename out of a `Content-Disposition` header, if present. */
@@ -371,5 +391,10 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
         { pedidoId },
       );
     },
+    statusServico: (target) =>
+      call<NFeStatusServicoResult>(
+        'GET',
+        `/api/nfe/status-servico?target=${encodeURIComponent(target)}`,
+      ),
   };
 }

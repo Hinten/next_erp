@@ -9,6 +9,7 @@
  * both call, so the splitting/pagination logic lives in exactly one place.
  */
 import type { DanfeModel } from '../model';
+import { formatDate, formatTimeSeconds } from '../format';
 import { cm } from './layout';
 import { FONT, type Doc, watermark } from './primitives';
 
@@ -16,14 +17,40 @@ export interface RenderA4Options {
   readonly cancelada?: boolean;
 }
 
+/** Human label for each contingency `tpEmis` (MOC Anexo III). */
+const TPEMIS_CONTINGENCIA: Record<string, string> = {
+  '2': 'FS-IA',
+  '4': 'EPEC',
+  '5': 'FS-DA',
+  '6': 'SVC-AN',
+  '7': 'SVC-RS',
+  '9': 'OFF-LINE',
+};
+
 /**
- * Compose the INFORMAÇÕES COMPLEMENTARES text: the contribuinte's `infCpl`
- * followed by the referenced NF-e chaves (`NFref. {chave}`), mirroring the
- * legacy layout. `infAdFisco` does NOT belong here — it goes to RESERVADO AO
- * FISCO.
+ * The mandatory contingency note for a tpEmis ≠ 1 NF-e — `dhCont` + `xJust`
+ * must be printed on the DANFE (MOC Anexo III). Returns `null` for normal
+ * emission.
+ */
+export function contingencyNote(model: DanfeModel): string | null {
+  const { tpEmis, dhCont, xJust } = model.ide;
+  if (tpEmis === '1') return null;
+  const label = TPEMIS_CONTINGENCIA[tpEmis] ?? `tpEmis ${tpEmis}`;
+  const when = dhCont ? ` Início: ${formatDate(dhCont)} ${formatTimeSeconds(dhCont)}.` : '';
+  const why = xJust ? ` Justificativa: ${xJust}.` : '';
+  return `EMISSÃO EM CONTINGÊNCIA (${label}).${when}${why}`;
+}
+
+/**
+ * Compose the INFORMAÇÕES COMPLEMENTARES text: the contingency note (when the
+ * NF-e was emitted with tpEmis ≠ 1), the contribuinte's `infCpl`, then the
+ * referenced NF-e chaves (`NFref. {chave}`), mirroring the legacy layout.
+ * `infAdFisco` does NOT belong here — it goes to RESERVADO AO FISCO.
  */
 export function composeInfoComplementares(model: DanfeModel): string {
   const parts: string[] = [];
+  const contingency = contingencyNote(model);
+  if (contingency) parts.push(contingency);
   if (model.infAdic.infCpl) parts.push(model.infAdic.infCpl);
   for (const chave of model.ide.refNFes) parts.push(`NFref. ${chave}`);
   return parts.join(' ');

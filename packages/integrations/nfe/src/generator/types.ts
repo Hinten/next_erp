@@ -164,10 +164,20 @@ export interface GeneratorInput {
   readonly numeracao: number;
   /** `serie` (0–889 for normal emission). */
   readonly serie: number;
-  /** Defaults to 1 (normal); Phase A only ships 1. */
+  /** Defaults to 1 (normal). 4 = EPEC, 6 = SVC-AN, 7 = SVC-RS. */
   readonly tpEmis?: TpEmis;
   /** Emission timestamp. Used for `ide.dhEmi` and the `AAMM` part of the chave. */
   readonly dhEmi: Date;
+  /**
+   * `ide.dhCont` (B28) — when the contingency mode was activated. Required
+   * (with `xJust`) when `tpEmis` ≠ 1, forbidden otherwise.
+   */
+  readonly dhCont?: Date;
+  /**
+   * `ide.xJust` (B29) — contingency justification, 15–255 chars after
+   * sanitisation. Required when `tpEmis` ≠ 1, forbidden otherwise.
+   */
+  readonly xJust?: string;
   readonly filial: Filial;
   readonly operacao: Operacao;
   readonly cliente: Cliente;

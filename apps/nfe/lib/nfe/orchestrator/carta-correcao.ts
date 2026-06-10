@@ -90,6 +90,16 @@ export async function cartaCorrecaoService(
         'apenas NF-e autorizada (aprovada) pode receber carta de correção.',
     );
   }
+  // CC-e is NOT among the services SVC offers (MOC Anexo III), and whether
+  // the home SEFAZ accepts events for an SVC-authorized NF-e depends on the
+  // post-outage sync — conservatively rejected here; revisit with the async
+  // reconciliation phase (#81).
+  if (nota.tpEmis === 6 || nota.tpEmis === 7) {
+    throw new NFeCartaCorrecaoError(
+      `pedido '${pedidoId}' nfe '${nfeId}': NF-e emitida em contingência SVC ` +
+        `(tpEmis=${nota.tpEmis}) — o SVC não oferece carta de correção.`,
+    );
+  }
 
   // Next sequence = (count of already-accepted CC-e) + 1. A single-field
   // equality query rides Firestore's automatic index — no composite index.

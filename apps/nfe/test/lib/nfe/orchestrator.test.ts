@@ -79,6 +79,16 @@ function fakeRuntime(): NFeRuntime {
       NfeInutilizacao: 'https://example/sefaz/inu',
       RecepcaoEvento: 'https://example/sefaz/rec',
     },
+    svc: (authorizer) => ({
+      endpoints: {
+        NfeAutorizacao: `https://example/${authorizer}/aut`,
+        NfeRetAutorizacao: `https://example/${authorizer}/ret`,
+        NfeConsultaProtocolo: `https://example/${authorizer}/cons`,
+        NfeStatusServico: `https://example/${authorizer}/sta`,
+        RecepcaoEvento: `https://example/${authorizer}/rec`,
+      },
+      agent: {} as never,
+    }),
     diagnostics: {
       subjectCommonName: 'TEST',
       notAfter: new Date(Date.now() + 86_400_000).toISOString(),
@@ -107,12 +117,15 @@ const SEED_NFE_CONFIG: NFeConfig = {
   serie: 1,
   idLote: 0,
   ambiente: '2',
+  contingencia_modo: 'none',
+  contingencia_justificativa: null,
+  contingencia_dataInicio: null,
 };
 
 interface FakeFirestoreOptions {
   events: string[];
   pedido?: Record<string, unknown> | null;
-  nfeConfig?: NFeConfig | null;
+  nfeConfig?: Partial<NFeConfig> | null;
   /** Partial override for `operacao/O-1` — merged onto the default. */
   operacao?: Record<string, unknown>;
   /** Partial override for `clientes/C-1/enderecos/E-1` — merged onto the default. */
@@ -470,6 +483,86 @@ describe('emitirPedido — happy paths', () => {
     expect(result.cStat).toBe('103');
     expect(result.nRec).toBe('351000000000123');
     expect(result.chave).toBe(CHAVE);
+  });
+});
+
+describe('emitirPedido — contingência SVC', () => {
+  const SVC_JUST = 'SEFAZ-SP indisponível desde as 08h';
+  const SVC_CONFIG: Partial<NFeConfig> = {
+    ...SEED_NFE_CONFIG,
+    contingencia_modo: 'svc',
+    contingencia_justificativa: SVC_JUST,
+    contingencia_dataInicio: '2026-06-10T08:00:00.000Z',
+  };
+
+  it('routes the lote to the SVC-AN endpoint and targets the s6 doc slot', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events, nfeConfig: SVC_CONFIG });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/svc-an/aut' }),
+      expect.anything(),
+    );
+    const w = writes.find((x) => x.path === 'pedidos/PED-1/nfev4/s6');
+    expect(w?.data.tpEmis).toBe(6);
+    expect(w?.data.dataContingencia).toBe('2026-06-10T08:00:00.000Z');
+    expect(w?.data.justificativaContingencia).toBe(SVC_JUST);
+  });
+
+  it('threads tpEmis 6 + dhCont/xJust into the generator input', async () => {
+    const events: string[] = [];
+    const { fs } = fakeFirestore({ events, nfeConfig: SVC_CONFIG });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(generateNFe)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tpEmis: 6,
+        dhCont: new Date('2026-06-10T08:00:00.000Z'),
+        xJust: SVC_JUST,
+      }),
+    );
+  });
+
+  it('emits normally (no dhCont/xJust) when modo=none with stale contingency fields', async () => {
+    // Toggle-off leaves justificativa/dataInicio on the doc — only the modo
+    // decides; a tpEmis=1 NF-e with B28/B29 would be a generator error.
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({
+      events,
+      nfeConfig: {
+        ...SEED_NFE_CONFIG,
+        contingencia_justificativa: SVC_JUST,
+        contingencia_dataInicio: '2026-06-10T08:00:00.000Z',
+      },
+    });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/sefaz/aut' }),
+      expect.anything(),
+    );
+    const input = vi.mocked(generateNFe).mock.calls[0]![0];
+    expect(input.tpEmis).toBe(1);
+    expect(input.dhCont).toBeUndefined();
+    expect(input.xJust).toBeUndefined();
+    const w = writes.find((x) => x.path === 'pedidos/PED-1/nfev4/s1');
+    expect(w?.data.dataContingencia).toBeNull();
+  });
+
+  it('rejects emission when modo=svc but the config lacks justificativa', async () => {
+    const { fs } = fakeFirestore({
+      events: [],
+      nfeConfig: { ...SEED_NFE_CONFIG, contingencia_modo: 'svc' },
+    });
+    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toThrow();
+    expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
   });
 });
 

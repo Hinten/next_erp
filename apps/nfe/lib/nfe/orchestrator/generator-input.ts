@@ -42,6 +42,7 @@ export function buildGeneratorInput(
   ambiente: NFeRuntime['ambiente'],
   tpEmis: GeneratorInput['tpEmis'] = 1,
   cNF?: string,
+  contingencia?: { readonly dhCont: Date | null; readonly xJust: string | null } | null,
 ): GeneratorInput {
   const isInterstate = bundle.enderecoDest.estado !== bundle.filial.sede.estado;
   const genItems = buildGenItems(items, bundle, isInterstate);
@@ -93,6 +94,10 @@ export function buildGeneratorInput(
     ...(exporta ? { exporta } : {}),
     ...(infIntermed ? { infIntermed } : {}),
     ...(cNF ? { cNF } : {}),
+    // B28/B29 — the generator's validateInput enforces presence (tpEmis≠1)
+    // and absence (tpEmis=1); here we only thread the values through.
+    ...(contingencia?.dhCont ? { dhCont: contingencia.dhCont } : {}),
+    ...(contingencia?.xJust ? { xJust: contingencia.xJust } : {}),
   };
 }
 

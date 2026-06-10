@@ -9,12 +9,14 @@ import {
   resolveTpEmis,
   type SefazCall,
   type SefazOutcome,
+  type TpEmis,
 } from '@delfrance/integrations-nfe';
 import type { NotaFiscalEletronica } from '@delfrance/schemas';
 
 import type { NFeRuntime } from '../runtime';
 import { NFeOrchestratorError } from './errors';
-import { loadPedidoBundle, nfeDocId, type EmitResult } from './bundle';
+import { loadNfeConfigForEmission, loadPedidoBundle, nfeDocId, type EmitResult } from './bundle';
+import { sefazCallFor } from './sefaz-call';
 import {
   buildEnviNFeMsgFromConsulta,
   enviNfeCollection,
@@ -42,7 +44,11 @@ export async function consultarPedido(
   console.debug(`[nfe/orchestrator] consultarPedido pedidoId='${pedidoId}'`);
 
   const bundle = await loadPedidoBundle(fs, pedidoId);
-  const tpEmis = resolveTpEmis(bundle.filial.sede.estado);
+  // Target the doc slot the CURRENT config mode would emit into (`s1`
+  // normally, `s6`/`s7` while SVC contingency is active) — consulting
+  // mid-contingency must look at the contingency NF-e.
+  const cfg = await loadNfeConfigForEmission(fs, bundle.filialId);
+  const tpEmis = resolveTpEmis(bundle.filial.sede.estado, cfg.contingencia_modo);
   const nfeRef = nfev4Collection.docRef(fs, { pedidoId }, nfeDocId(tpEmis));
 
   const snap = await nfeRef.get();
@@ -58,21 +64,19 @@ export async function consultarPedido(
       `pedido '${pedidoId}': persisted nfev4 doc has no chave — cannot consult.`,
     );
   }
+  // SEFAZ routing follows the PERSISTED tpEmis (an SVC-emitted NF-e is
+  // consulted at its SVC even after the mode is switched back).
+  const notaTpEmis = (nota.tpEmis ?? 1) as TpEmis;
 
   // Prefer consReci(nRec) when an audit-log msg holds a receipt — it
   // works while the lote is still queued at SEFAZ (cStat=105) and
   // gives us the protocol once processed. Fall back to consSit(chave)
   // only when no msg with nRec exists (e.g. externally-recovered NFe).
-  const baseCall = {
-    cert: rt.cert,
-    agent: rt.agent,
-    tpAmb: rt.tpAmb,
-  } as const;
   const msgWithNRec = await findLatestEnviNFeMsgWithNRec(fs, bundle.filialId, nota.chave);
 
   let outcome: SefazOutcome;
   if (msgWithNRec?.nRec) {
-    const consReciCall: SefazCall = { ...baseCall, url: rt.endpoints.NfeRetAutorizacao };
+    const consReciCall: SefazCall = sefazCallFor(rt, notaTpEmis, 'NfeRetAutorizacao');
     const retRec = await consultarLote(consReciCall, { nRec: msgWithNRec.nRec });
     await enviNfeCollection(fs, bundle.filialId).add(
       buildEnviNFeMsgFromConsulta({
@@ -84,7 +88,7 @@ export async function consultarPedido(
     );
     outcome = outcomeFromConsReci(retRec, nota.chave);
   } else {
-    const consSitCall: SefazCall = { ...baseCall, url: rt.endpoints.NfeConsultaProtocolo };
+    const consSitCall: SefazCall = sefazCallFor(rt, notaTpEmis, 'NfeConsultaProtocolo');
     const retSit = await consultarSituacaoNFe(consSitCall, { chave: nota.chave });
     await enviNfeCollection(fs, bundle.filialId).add(
       buildEnviNFeMsgFromConsulta({
