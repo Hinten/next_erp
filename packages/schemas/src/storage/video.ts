@@ -23,8 +23,11 @@ export const videoSchema = z
     duracaoSegundos: z.number().int().nullable().default(null),
     larguraPx: z.number().int().nullable().default(null),
     alturaPx: z.number().int().nullable().default(null),
-    usarMercadoLivre: z.boolean().default(false),
-    usarShopee: z.boolean().default(false),
+    // Null-tolerant: the Flutter wire reads `as bool? ?? false`, so the stored
+    // value may be null/absent — coerce both to `false` (always boolean out) so
+    // a legacy/null flag can't break the whole Produto parse.
+    usarMercadoLivre: z.preprocess((v) => v ?? false, z.boolean()),
+    usarShopee: z.preprocess((v) => v ?? false, z.boolean()),
     dataCadastro: z.number().int().nullable().default(null),
     nomeArquivo: z.string().nullable().default(null),
   })

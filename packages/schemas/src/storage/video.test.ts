@@ -34,4 +34,14 @@ describe('videoSchema', () => {
       videoSchema.safeParse({ arquivoOuterRef: 'arquivos/x', formato: 'paisagem' }).success,
     ).toBe(false);
   });
+
+  it('coerces null/absent marketplace-compat flags to false (Flutter `as bool? ?? false`)', () => {
+    const out = videoSchema.parse({
+      arquivoOuterRef: 'arquivos/x',
+      usarMercadoLivre: null,
+      usarShopee: null,
+    });
+    expect(out.usarMercadoLivre).toBe(false);
+    expect(out.usarShopee).toBe(false);
+  });
 });

@@ -283,6 +283,7 @@ function SortableVideo({ video, db, marked, disabled, onToggleDelete }: Sortable
             src={url}
             controls
             preload="metadata"
+            aria-label="Vídeo do produto"
             style={{
               width: '100%',
               height: 160,
