@@ -160,10 +160,15 @@ export function watermark(
  * vertical group titles (`PROD./SERV.`, `DESTINATÁRIO`, …).
  *
  * The rotation origin is the box's bottom-left corner; after `rotate(-90)` the
- * text's writing direction (+x) points up the box height and line-wrapping (+y)
- * points across the box width, so the run length is `h` and lines stack within
- * `w`. The text is single-line, clipped with an ellipsis, and offset to sit
- * roughly centred across `w`.
+ * text's writing direction (+x) points up the box height (the run length is `h`)
+ * and line-wrapping (+y) stacks lines across the box width `w`.
+ *
+ * The text **auto-fits**: the font shrinks from `size` to a 4 pt floor until the
+ * word-wrapped label fits the box thickness, so it is never clipped with an
+ * ellipsis. `runAlign` positions the label along the run — `'end'` anchors it to
+ * the **top** of the box (e.g. the canhoto field labels); the default centres it.
+ * The `height` bound keeps pdfkit's line-wrapper from auto-adding a page to
+ * "continue" rotated text that sits near the page bottom in user space.
  */
 export function textRotated(
   doc: Doc,
@@ -175,27 +180,41 @@ export function textRotated(
   opts: {
     size?: number;
     bold?: boolean;
-    align?: 'left' | 'center' | 'right';
+    /** Position along the run: `'end'` = top of the box. Default `'center'`. */
+    runAlign?: 'start' | 'center' | 'end';
     upper?: boolean;
   } = {},
 ): void {
-  const { size = 6, bold = false, align = 'center', upper = true } = opts;
+  const { size = 6, bold = false, runAlign = 'center', upper = true } = opts;
   const pad = 2;
+  const runLen = h - 2 * pad; // text run-length (the box's long axis)
+  const crossAvail = w - 2 * pad; // wrap room across the box thickness
+  const s = upper ? str.toUpperCase() : str;
+  const font = bold ? FONT_BOLD : FONT;
+
+  // Auto-fit: largest size (down to a 4 pt floor) whose wrapped height fits the
+  // thickness, so the label is shown in full instead of being ellipsized.
+  doc.font(font);
+  let fontSize = size;
+  for (; fontSize > 4; fontSize -= 0.5) {
+    doc.fontSize(fontSize);
+    if (doc.heightOfString(s, { width: runLen }) <= crossAvail) break;
+  }
+  doc.fontSize(fontSize);
+  const blockH = Math.min(doc.heightOfString(s, { width: runLen }), crossAvail);
+  const align = runAlign === 'end' ? 'right' : runAlign === 'start' ? 'left' : 'center';
+
   doc.save();
   doc.rotate(-90, { origin: [x, y + h] });
   doc
-    .font(bold ? FONT_BOLD : FONT)
-    .fontSize(size)
+    .font(font)
+    .fontSize(fontSize)
     .fillColor('#000000')
-    .text(upper ? str.toUpperCase() : str, x + pad, y + h + (w - size) / 2, {
-      width: h - 2 * pad,
-      // `height` bounds pdfkit's line-wrapper to a single line: after the −90°
-      // rotation the text sits near the page bottom in *user* space, and without
-      // a height bound the wrapper would auto-add a page to "continue" it.
-      height: size + 2,
+    .text(s, x + pad, y + h + (w - blockH) / 2, {
+      width: runLen,
+      height: crossAvail,
       align,
-      lineBreak: false,
-      ellipsis: true,
+      lineBreak: true,
     });
   doc.restore();
 }

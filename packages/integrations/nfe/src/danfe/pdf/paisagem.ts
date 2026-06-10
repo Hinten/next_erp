@@ -137,18 +137,30 @@ function enderecoLinha(e: DanfeLocal['endereco']): string {
 
 /** Canhoto / recibo strip down the left edge (page 1 only), rotated 90°. */
 function drawCanhoto(doc: Doc, model: DanfeModel): void {
-  // NF-e identification box (top-left), rotated.
+  // NF-e identification box (top-left): three rotated lines (NF-e / Nº / Série)
+  // across the box width, centred — mirrors the retrato NF-e box.
   strokeBox(doc, cm(0.13), cm(TOP), cm(2.04), cm(4.53));
+  const nfeColW = 2.04 / 3;
+  textRotated(doc, 'NF-e', cm(0.13), cm(TOP), cm(nfeColW), cm(4.53), { size: 8 });
   textRotated(
     doc,
-    `NF-e  Nº ${formatNNF(model.ide.nNF)}  SÉRIE ${formatSerie(model.ide.serie)}`,
-    cm(0.13),
+    `Nº ${formatNNF(model.ide.nNF)}`,
+    cm(0.13 + nfeColW),
     cm(TOP),
-    cm(2.04),
+    cm(nfeColW),
     cm(4.53),
-    { size: 9, bold: true },
+    { size: 12, bold: true },
   );
-  // Recibo sentence (tall strip below the NF-e box).
+  textRotated(
+    doc,
+    `SÉRIE ${formatSerie(model.ide.serie)}`,
+    cm(0.13 + 2 * nfeColW),
+    cm(TOP),
+    cm(nfeColW),
+    cm(4.53),
+    { size: 7 },
+  );
+  // Recibo sentence (tall strip below the NF-e box) — anchored to the top.
   strokeBox(doc, cm(0.13), cm(5.0), cm(1.02), cm(15.53));
   textRotated(
     doc,
@@ -157,9 +169,10 @@ function drawCanhoto(doc: Doc, model: DanfeModel): void {
     cm(5.0),
     cm(1.02),
     cm(15.53),
-    { size: 6 },
+    { size: 6, runAlign: 'end' },
   );
-  // Assinatura do recebedor + data de recebimento (second column of the stub).
+  // Assinatura do recebedor + data de recebimento (second column of the stub),
+  // their labels anchored to the top of each box.
   strokeBox(doc, cm(1.15), cm(5.0), cm(1.02), cm(9.21));
   textRotated(
     doc,
@@ -170,10 +183,14 @@ function drawCanhoto(doc: Doc, model: DanfeModel): void {
     cm(9.21),
     {
       size: 6,
+      runAlign: 'end',
     },
   );
   strokeBox(doc, cm(1.15), cm(14.21), cm(1.02), cm(6.32));
-  textRotated(doc, 'DATA DE RECEBIMENTO', cm(1.15), cm(14.21), cm(1.02), cm(6.32), { size: 6 });
+  textRotated(doc, 'DATA DE RECEBIMENTO', cm(1.15), cm(14.21), cm(1.02), cm(6.32), {
+    size: 6,
+    runAlign: 'end',
+  });
 }
 
 /** Emitente header + DANFE label + Code 128 + chave + protocolo block. */
