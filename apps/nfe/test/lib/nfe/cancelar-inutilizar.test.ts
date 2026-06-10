@@ -553,6 +553,22 @@ describe('cancelarNFeService', () => {
     );
   });
 
+  it('routes a tpEmis=7 (SVC-RS) NF-e to the SVRS RecepcaoEvento endpoint', async () => {
+    const events: string[] = [];
+    const { fs } = fakeFirestore({
+      events,
+      nfev4ById: { s7: { ...aprovadaNfev4(), tpEmis: 7 } },
+    });
+    vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('135') as never);
+
+    await cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's7', XJUST);
+
+    expect(vi.mocked(cancelarNFe)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/svc-rs/rec' }),
+      expect.anything(),
+    );
+  });
+
   it('routes a tpEmis=1 NF-e to the home SEFAZ RecepcaoEvento endpoint', async () => {
     const events: string[] = [];
     const { fs } = fakeFirestore({ events, nfev4: aprovadaNfev4() });

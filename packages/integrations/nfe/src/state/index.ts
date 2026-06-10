@@ -270,9 +270,8 @@ export type ContingenciaMode = 'none' | 'svc' | 'epec';
  * `filial.sede.estado.{tpEmis,tpEmisSVC,tpEmisEPEC}` selector
  * (`.old/packages/pedido_nfe/lib/src/tasks.dart:136-140`).
  *
- * `'svc'` resolves per-UF: SVC-AN UFs → 6, SVC-RS UFs → 7 (the SVC-RS leg
- * lands in PR `nfe-contingencia-svc-rs`; until then those UFs throw inside
- * `svcAuthorizerForUF`). `'epec'` (tpEmis=4) lands in PR
+ * `'svc'` resolves per-UF: SVC-AN UFs → 6, SVC-RS UFs → 7 (Ato COTEPE
+ * 39/2012 mapping in `svcAuthorizerForUF`). `'epec'` (tpEmis=4) lands in PR
  * `nfe-contingencia-epec`.
  *
  * Production-traffic safety (`NFE_ALLOW_PRODUCAO` opt-in) is enforced

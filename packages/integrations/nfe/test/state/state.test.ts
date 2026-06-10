@@ -160,8 +160,9 @@ describe('resolveTpEmis', () => {
     expect(resolveTpEmis('MG', 'svc')).toBe(6);
   });
 
-  it("mode 'svc' for an SVC-RS UF throws until the svc-rs PR lands", () => {
-    expect(() => resolveTpEmis('PR', 'svc')).toThrow(/SVC-RS/);
+  it("mode 'svc' resolves per UF — PR (SVC-RS) → 7", () => {
+    expect(resolveTpEmis('PR', 'svc')).toBe(7);
+    expect(resolveTpEmis('BA', 'svc')).toBe(7);
   });
 
   it("mode 'epec' throws until the epec PR lands", () => {

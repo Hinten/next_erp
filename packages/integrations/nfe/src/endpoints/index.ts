@@ -88,6 +88,25 @@ const SVC_AN_ENDPOINTS: Record<Ambiente, SvcServiceUrls> = {
   },
 };
 
+const SVC_RS_ENDPOINTS: Record<Ambiente, SvcServiceUrls> = {
+  producao: {
+    NfeAutorizacao: 'https://nfe.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx',
+    NfeRetAutorizacao: 'https://nfe.svrs.rs.gov.br/ws/NfeRetAutorizacao/NFeRetAutorizacao4.asmx',
+    NfeConsultaProtocolo: 'https://nfe.svrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx',
+    NfeStatusServico: 'https://nfe.svrs.rs.gov.br/ws/NfeStatusServico/NfeStatusServico4.asmx',
+    RecepcaoEvento: 'https://nfe.svrs.rs.gov.br/ws/recepcaoevento/recepcaoevento4.asmx',
+  },
+  homologacao: {
+    NfeAutorizacao: 'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx',
+    NfeRetAutorizacao:
+      'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeRetAutorizacao/NFeRetAutorizacao4.asmx',
+    NfeConsultaProtocolo: 'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx',
+    NfeStatusServico:
+      'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeStatusServico/NfeStatusServico4.asmx',
+    RecepcaoEvento: 'https://nfe-homologacao.svrs.rs.gov.br/ws/recepcaoevento/recepcaoevento4.asmx',
+  },
+};
+
 const AN_ENDPOINTS: Record<Ambiente, AnServiceUrls> = {
   producao: {
     RecepcaoEvento: 'https://www.nfe.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
@@ -99,9 +118,9 @@ const AN_ENDPOINTS: Record<Ambiente, AnServiceUrls> = {
 
 /**
  * UF → SVC environment (Ato COTEPE 39/2012; mirrored from
- * `.old/packages/nfe_client/lib/src/enderecos{,_homologacao}.dart`).
- * SVC-RS UFs land in PR2 (`nfe-contingencia-svc-rs`) together with the
- * SVC-RS endpoint table.
+ * `.old/packages/nfe_client/lib/src/enderecos{,_homologacao}.dart` — PI
+ * appears only in the legacy homologação file; we keep the union and treat
+ * the Ato COTEPE as the authority to re-check on divergence).
  */
 const SVC_AN_UFS: ReadonlySet<string> = new Set([
   'AC',
@@ -124,6 +143,18 @@ const SVC_AN_UFS: ReadonlySet<string> = new Set([
   'TO',
 ]);
 
+const SVC_RS_UFS: ReadonlySet<string> = new Set([
+  'AM',
+  'BA',
+  'GO',
+  'MA',
+  'MS',
+  'MT',
+  'PE',
+  'PI',
+  'PR',
+]);
+
 export class NFeEndpointError extends Error {
   constructor(uf: string) {
     super(`No NF-e endpoint table for UF '${uf}'. Phase A wires SP only.`);
@@ -140,10 +171,10 @@ export class NFeContingencyEndpointError extends Error {
 
 /** Resolve which SVC environment serves a UF when its home SEFAZ is down. */
 export function svcAuthorizerForUF(uf: string): 'svc-an' | 'svc-rs' {
-  if (SVC_AN_UFS.has(uf.toUpperCase())) return 'svc-an';
-  throw new NFeContingencyEndpointError(
-    `SVC mapping for UF '${uf}' is SVC-RS, which is not wired yet (PR nfe-contingencia-svc-rs).`,
-  );
+  const upper = uf.toUpperCase();
+  if (SVC_AN_UFS.has(upper)) return 'svc-an';
+  if (SVC_RS_UFS.has(upper)) return 'svc-rs';
+  throw new NFeContingencyEndpointError(`No SVC mapping for UF '${uf}'.`);
 }
 
 /** Resolve the SVC web-service URLs for an authorizer + ambiente. */
@@ -151,10 +182,7 @@ export function getSvcEndpoints(
   authorizer: 'svc-an' | 'svc-rs',
   ambiente: Ambiente,
 ): SvcServiceUrls {
-  if (authorizer === 'svc-an') return SVC_AN_ENDPOINTS[ambiente];
-  throw new NFeContingencyEndpointError(
-    `SVC-RS endpoints are not wired yet (PR nfe-contingencia-svc-rs).`,
-  );
+  return authorizer === 'svc-an' ? SVC_AN_ENDPOINTS[ambiente] : SVC_RS_ENDPOINTS[ambiente];
 }
 
 /** Resolve the Ambiente Nacional URLs (EPEC evento drop-box). */
