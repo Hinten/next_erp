@@ -181,10 +181,16 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await expect(page.getByLabel('Nome Fantasia', { exact: true })).toHaveValue('editado-e2e');
   });
 
-  test('shows placeholder tabs for NFe config and digital certificate', async ({ page }) => {
+  test('shows the NFe config panel and the certificado placeholder on the edit page', async ({
+    page,
+  }) => {
     await page.goto(`/configuracoes/filiais/${row(1)}`);
+    // The NFe tab now hosts the real config panel: the SEFAZ status block
+    // plus — for a filial without a seeded nfeconfig/default doc, like the
+    // e2e fixtures — the "config not found" alert.
     await page.getByRole('tab', { name: 'Configurações NFe' }).click();
-    await expect(page.getByText(/configuração de numeração/i)).toBeVisible();
+    await expect(page.getByText(/status dos serviços sefaz/i)).toBeVisible();
+    await expect(page.getByText(/configuração nf-e não encontrada/i)).toBeVisible();
     await page.getByRole('tab', { name: 'Certificado Digital' }).click();
     await expect(page.getByText(/certificado digital A1/i)).toBeVisible();
   });

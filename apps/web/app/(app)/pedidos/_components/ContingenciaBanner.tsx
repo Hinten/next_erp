@@ -28,6 +28,11 @@ export function ContingenciaBanner() {
   const query = useQuery({
     queryKey: ['contingencia-banner'],
     queryFn: async (): Promise<ActiveContingency[]> => {
+      // One parallel `nfeconfig/default` read per filial. Deliberately NOT a
+      // collectionGroup('nfeconfig') filter: that would require a
+      // collection-group index AND a `{path=**}/nfeconfig` rules match, and a
+      // tenant has a handful of filiais — the fan-out is bounded and cached
+      // (staleTime below), so the simpler reads win.
       const filiais = await getDocs(filialCollection.ref(db, {}));
       const checks = filiais.docs.map(async (f): Promise<ActiveContingency | null> => {
         const cfgSnap = await getDoc(
@@ -43,8 +48,9 @@ export function ContingenciaBanner() {
       });
       return (await Promise.all(checks)).filter((c): c is ActiveContingency => c !== null);
     },
-    // The toggle changes rarely; a stale banner for a minute is fine.
-    staleTime: 60_000,
+    // The toggle flips rarely (an outage event); a stale banner for a few
+    // minutes is fine and keeps the per-navigation read cost at zero.
+    staleTime: 5 * 60_000,
   });
 
   const active = query.data ?? [];
