@@ -104,7 +104,11 @@ export async function cartaCorrecaoService(
   // actually received (and the <xCorrecao> inside xml_enviado).
   const xCorrecaoWire = sanitizeNFeText(xCorrecao) ?? xCorrecao;
 
-  // Send the CC-e evento (cOrgao + cnpj come from the chave).
+  // Send the CC-e evento (cOrgao + cnpj come from the chave) — ALWAYS to the
+  // home SEFAZ, including for SVC-authorized notas (tpEmis 6/7): the SVC does
+  // not serve CC-e, but authorized documents are automatically shared between
+  // the SVC and the normal environment, which registers the event (MOC 7.0
+  // Anexo III §2.1.3.4-d).
   const cceCall: SefazCall = {
     cert: rt.cert,
     agent: rt.agent,

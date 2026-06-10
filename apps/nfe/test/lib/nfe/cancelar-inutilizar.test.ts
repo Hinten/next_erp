@@ -62,6 +62,16 @@ function fakeRuntime(): NFeRuntime {
       NfeInutilizacao: 'https://example/sefaz/inu',
       RecepcaoEvento: 'https://example/sefaz/rec',
     },
+    svc: (authorizer) => ({
+      endpoints: {
+        NfeAutorizacao: `https://example/${authorizer}/aut`,
+        NfeRetAutorizacao: `https://example/${authorizer}/ret`,
+        NfeConsultaProtocolo: `https://example/${authorizer}/cons`,
+        NfeStatusServico: `https://example/${authorizer}/sta`,
+        RecepcaoEvento: `https://example/${authorizer}/rec`,
+      },
+      agent: {} as never,
+    }),
     diagnostics: {
       subjectCommonName: 'TEST',
       notAfter: new Date(Date.now() + 86_400_000).toISOString(),
@@ -86,6 +96,9 @@ const SEED_NFE_CONFIG: NFeConfig = {
   serie: 1,
   idLote: 0,
   ambiente: '2',
+  contingencia_modo: 'none',
+  contingencia_justificativa: null,
+  contingencia_dataInicio: null,
 };
 
 interface FakeOpts {
@@ -522,6 +535,52 @@ afterEach(() => {
 
 describe('cancelarNFeService', () => {
   const XJUST = 'Cancelamento por erro de digitacao no pedido';
+
+  it('routes a tpEmis=6 (SVC-AN) NF-e to the SVC RecepcaoEvento endpoint', async () => {
+    const events: string[] = [];
+    const { fs } = fakeFirestore({
+      events,
+      nfev4ById: { s6: { ...aprovadaNfev4(), tpEmis: 6 } },
+    });
+    vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('135') as never);
+
+    const result = await cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's6', XJUST);
+
+    expect(result.estado).toBe(ESTADO_NFE.cancelada);
+    expect(vi.mocked(cancelarNFe)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/svc-an/rec' }),
+      expect.anything(),
+    );
+  });
+
+  it('routes a tpEmis=7 (SVC-RS) NF-e to the SVRS RecepcaoEvento endpoint', async () => {
+    const events: string[] = [];
+    const { fs } = fakeFirestore({
+      events,
+      nfev4ById: { s7: { ...aprovadaNfev4(), tpEmis: 7 } },
+    });
+    vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('135') as never);
+
+    await cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's7', XJUST);
+
+    expect(vi.mocked(cancelarNFe)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/svc-rs/rec' }),
+      expect.anything(),
+    );
+  });
+
+  it('routes a tpEmis=1 NF-e to the home SEFAZ RecepcaoEvento endpoint', async () => {
+    const events: string[] = [];
+    const { fs } = fakeFirestore({ events, nfev4: aprovadaNfev4() });
+    vi.mocked(cancelarNFe).mockResolvedValue(cancelResult('135') as never);
+
+    await cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's1', XJUST);
+
+    expect(vi.mocked(cancelarNFe)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/sefaz/rec' }),
+      expect.anything(),
+    );
+  });
 
   it('cStat 135 → persists estado=cancelada (transaction) + 1 audit record, no SEFAZ consult', async () => {
     const events: string[] = [];

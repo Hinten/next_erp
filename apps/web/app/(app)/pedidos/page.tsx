@@ -23,6 +23,7 @@ import {
   NFCell,
   VlrCell,
 } from './_components/PedidoCells';
+import { ContingenciaBanner } from './_components/ContingenciaBanner';
 import { EmitirLoteDialog } from './_components/EmitirLoteDialog';
 
 const virtualColumns: ReadonlyArray<VirtualColumn<Pedido>> = [
@@ -44,6 +45,7 @@ export default function PedidosPage() {
   const { action: emitNFeAction, loteModal } = useEmitirNFeAction();
   return (
     <>
+      <ContingenciaBanner />
       <TableView
         title="Pedidos"
         description="Selecione pedidos e use o botão acima da tabela para emitir NF-e."

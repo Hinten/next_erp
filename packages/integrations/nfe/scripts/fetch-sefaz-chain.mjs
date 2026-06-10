@@ -51,6 +51,15 @@ const AMBIENTE = args.ambiente ?? 'homologacao';
 const HOSTS = {
   'SP:homologacao': 'homologacao.nfe.fazenda.sp.gov.br',
   'SP:producao': 'nfe.fazenda.sp.gov.br',
+  // Contingency authorizers — the "UF" slot carries the authorizer id
+  // (chain files land as `sefaz-svc-an-<ambiente>.pem` etc.).
+  'SVC-AN:homologacao': 'hom.svc.fazenda.gov.br',
+  'SVC-AN:producao': 'www.svc.fazenda.gov.br',
+  'SVC-RS:homologacao': 'nfe-homologacao.svrs.rs.gov.br',
+  'SVC-RS:producao': 'nfe.svrs.rs.gov.br',
+  // Ambiente Nacional (EPEC evento drop-box).
+  'AN:homologacao': 'hom1.nfe.fazenda.gov.br',
+  'AN:producao': 'www.nfe.fazenda.gov.br',
 };
 const host = HOSTS[`${UF}:${AMBIENTE}`];
 if (!host) {

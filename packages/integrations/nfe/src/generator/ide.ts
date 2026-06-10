@@ -129,5 +129,12 @@ export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_id
     indIntermed: input.operacao.indIntermed,
     procEmi: PROC_EMI as TNFe_infNFe_ide['procEmi'],
     verProc: VER_PROC,
+    // B28/B29 — only emitted in contingency. validateInput already enforced
+    // presence/length (so the sanitized value can't be null here), and the
+    // bare spread keeps the normal-emission ide byte-identical to
+    // pre-contingency builds.
+    ...(parts.tpEmis !== '1' && input.dhCont && input.xJust
+      ? { dhCont: formatDhEmi(input.dhCont), xJust: sanitizeNFeText(input.xJust) ?? '' }
+      : {}),
   };
 }

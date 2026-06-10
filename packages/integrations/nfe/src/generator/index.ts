@@ -125,6 +125,23 @@ function validateInput(input: GeneratorInput): void {
   if (!input.totalXml || !input.transpXml || !input.pagXml) {
     throw new NFeGeneratorError('totalXml, transpXml, and pagXml are all required');
   }
+  const tpEmis = input.tpEmis ?? 1;
+  if (tpEmis === 1) {
+    if (input.dhCont !== undefined || input.xJust !== undefined) {
+      throw new NFeGeneratorError('dhCont/xJust are forbidden for normal emission (tpEmis=1)');
+    }
+    return;
+  }
+  // Contingency (B28/B29): SEFAZ requires both fields, xJust 15–255 chars.
+  if (!input.dhCont) {
+    throw new NFeGeneratorError(`dhCont is required for contingency emission (tpEmis=${tpEmis})`);
+  }
+  const xJust = sanitizeNFeText(input.xJust) ?? '';
+  if (xJust.length < 15 || xJust.length > 255) {
+    throw new NFeGeneratorError(
+      `xJust must be 15–255 chars after sanitisation for contingency emission, got ${xJust.length}`,
+    );
+  }
 }
 
 function buildInfAdicXml(infAdic: GeneratorInput['infAdic']): string {

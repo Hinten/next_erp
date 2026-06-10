@@ -24,13 +24,21 @@ import {
   assertCertNotExpired,
   createSefazAgent,
   getEndpoints,
+  getSvcEndpoints,
   loadCertificateFromEnv,
   type NFeCertificate,
   type NfeServiceUrls,
+  type SvcServiceUrls,
 } from '@delfrance/integrations-nfe';
 
 export type Ambiente = 'producao' | 'homologacao';
 export type TpAmb = '1' | '2';
+
+/** A contingency authorizer's resolved transport: its URLs + an mTLS agent pinned to ITS chain. */
+export interface ContingencyTarget {
+  readonly endpoints: SvcServiceUrls;
+  readonly agent: https.Agent;
+}
 
 export interface NFeRuntime {
   readonly cert: NFeCertificate;
@@ -39,6 +47,13 @@ export interface NFeRuntime {
   readonly uf: string;
   readonly tpAmb: TpAmb;
   readonly endpoints: NfeServiceUrls;
+  /**
+   * Resolve an SVC authorizer's endpoints + agent. **Lazy** — the SVC TLS
+   * chain (`ca/sefaz-svc-an-<ambiente>.pem`) is only read on first use, so a
+   * deploy without the SVC chain boots fine and only fails if contingency is
+   * actually activated. Cached per authorizer for the process lifetime.
+   */
+  readonly svc: (authorizer: 'svc-an' | 'svc-rs') => ContingencyTarget;
   /** Subject CN of the loaded cert, plus its notAfter — surfaced by /api/health. */
   readonly diagnostics: {
     readonly subjectCommonName: string;
@@ -124,6 +139,22 @@ export function getNFeRuntime(env: NodeJS.ProcessEnv = process.env): NFeRuntime 
   const endpoints = getEndpoints(uf, ambiente);
   const tpAmb: TpAmb = ambiente === 'producao' ? '1' : '2';
 
+  // Lazy per-authorizer SVC transport. `loadChain` reuses the
+  // `sefaz-<slot>-<ambiente>.pem` naming with the authorizer in the UF slot.
+  const svcCache = new Map<string, ContingencyTarget>();
+  const svc = (authorizer: 'svc-an' | 'svc-rs'): ContingencyTarget => {
+    let entry = svcCache.get(authorizer);
+    if (!entry) {
+      const { ca } = loadChain(authorizer, ambiente);
+      entry = {
+        endpoints: getSvcEndpoints(authorizer, ambiente),
+        agent: createSefazAgent(cert, { ca }),
+      };
+      svcCache.set(authorizer, entry);
+    }
+    return entry;
+  };
+
   cached = {
     cert,
     agent,
@@ -131,6 +162,7 @@ export function getNFeRuntime(env: NodeJS.ProcessEnv = process.env): NFeRuntime 
     uf,
     tpAmb,
     endpoints,
+    svc,
     diagnostics: {
       subjectCommonName: cert.subjectCommonName,
       notAfter: cert.notAfter.toISOString(),

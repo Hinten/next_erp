@@ -50,6 +50,16 @@ function fakeRuntime(): NFeRuntime {
       NfeInutilizacao: 'https://example/sefaz/inu',
       RecepcaoEvento: 'https://example/sefaz/rec',
     },
+    svc: (authorizer) => ({
+      endpoints: {
+        NfeAutorizacao: `https://example/${authorizer}/aut`,
+        NfeRetAutorizacao: `https://example/${authorizer}/ret`,
+        NfeConsultaProtocolo: `https://example/${authorizer}/cons`,
+        NfeStatusServico: `https://example/${authorizer}/sta`,
+        RecepcaoEvento: `https://example/${authorizer}/rec`,
+      },
+      agent: {} as never,
+    }),
     diagnostics: {
       subjectCommonName: 'TEST',
       notAfter: new Date(Date.now() + 86_400_000).toISOString(),
@@ -74,6 +84,9 @@ const SEED_NFE_CONFIG: NFeConfig = {
   serie: 1,
   idLote: 0,
   ambiente: '2',
+  contingencia_modo: 'none',
+  contingencia_justificativa: null,
+  contingencia_dataInicio: null,
 };
 
 function filialDoc(): Record<string, unknown> {

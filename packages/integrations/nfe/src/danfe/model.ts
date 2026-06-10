@@ -86,6 +86,10 @@ export interface DanfeIde {
   /** `0` = entrada, `1` = saída. */
   readonly tpNF: '0' | '1';
   readonly tpEmis: string;
+  /** ISO `dhCont` (contingency activation) — only present when tpEmis ≠ 1. */
+  readonly dhCont: string | null;
+  /** `xJust` — contingency justification, only present when tpEmis ≠ 1. */
+  readonly xJust: string | null;
   /** Referenced NF-e chaves (`ide.NFref[].refNFe`) — shown in infCpl. */
   readonly refNFes: ReadonlyArray<string>;
 }
@@ -318,6 +322,8 @@ function mapModel(infNFe: TNFe_infNFe, prot: DanfeProtocolo | null): DanfeModel 
       dhSaiEnt: ide.dhSaiEnt ?? null,
       tpNF: ide.tpNF,
       tpEmis: ide.tpEmis,
+      dhCont: ide.dhCont ?? null,
+      xJust: ide.xJust ?? null,
       refNFes: (ide.NFref ?? []).map((r) => r.refNFe).filter((c): c is string => Boolean(c)),
     },
     emit: {

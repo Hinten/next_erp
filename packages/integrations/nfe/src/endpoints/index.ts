@@ -47,11 +47,147 @@ const ENDPOINTS: Partial<Record<string, Record<Ambiente, NfeServiceUrls>>> = {
   },
 };
 
+/**
+ * Contingency authorizers (MOC Anexo III). `svc-an` / `svc-rs` are the two
+ * SEFAZ Virtual de Contingência environments (Ato COTEPE 39/2012 binds each
+ * UF to exactly one); `an` is the Ambiente Nacional, which receives only the
+ * EPEC evento (tpEvento 110140).
+ */
+export type ContingencyAuthorizer = 'svc-an' | 'svc-rs' | 'an';
+
+/**
+ * SVC service URLs. SVC offers Autorização / RetAutorização / Consulta /
+ * StatusServiço / Cancelamento (via RecepcaoEvento) — it does **not** offer
+ * Inutilização or CC-e, hence no `NfeInutilizacao` key: code that tries to
+ * inutilizar via SVC must not typecheck.
+ */
+export type SvcServiceUrls = Omit<NfeServiceUrls, 'NfeInutilizacao'>;
+
+/** Ambiente Nacional — EPEC drop-box only. */
+export interface AnServiceUrls {
+  /** RecepcaoEvento4 — receives the EPEC evento (110140). */
+  readonly RecepcaoEvento: string;
+}
+
+const SVC_AN_ENDPOINTS: Record<Ambiente, SvcServiceUrls> = {
+  producao: {
+    NfeAutorizacao: 'https://www.svc.fazenda.gov.br/NFeAutorizacao4/NFeAutorizacao4.asmx',
+    NfeRetAutorizacao: 'https://www.svc.fazenda.gov.br/NFeRetAutorizacao4/NFeRetAutorizacao4.asmx',
+    NfeConsultaProtocolo:
+      'https://www.svc.fazenda.gov.br/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx',
+    NfeStatusServico: 'https://www.svc.fazenda.gov.br/NFeStatusServico4/NFeStatusServico4.asmx',
+    RecepcaoEvento: 'https://www.svc.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
+  },
+  homologacao: {
+    NfeAutorizacao: 'https://hom.svc.fazenda.gov.br/NFeAutorizacao4/NFeAutorizacao4.asmx',
+    NfeRetAutorizacao: 'https://hom.svc.fazenda.gov.br/NFeRetAutorizacao4/NFeRetAutorizacao4.asmx',
+    NfeConsultaProtocolo:
+      'https://hom.svc.fazenda.gov.br/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx',
+    NfeStatusServico: 'https://hom.svc.fazenda.gov.br/NFeStatusServico4/NFeStatusServico4.asmx',
+    RecepcaoEvento: 'https://hom.svc.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
+  },
+};
+
+const SVC_RS_ENDPOINTS: Record<Ambiente, SvcServiceUrls> = {
+  producao: {
+    NfeAutorizacao: 'https://nfe.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx',
+    NfeRetAutorizacao: 'https://nfe.svrs.rs.gov.br/ws/NfeRetAutorizacao/NFeRetAutorizacao4.asmx',
+    NfeConsultaProtocolo: 'https://nfe.svrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx',
+    NfeStatusServico: 'https://nfe.svrs.rs.gov.br/ws/NfeStatusServico/NfeStatusServico4.asmx',
+    RecepcaoEvento: 'https://nfe.svrs.rs.gov.br/ws/recepcaoevento/recepcaoevento4.asmx',
+  },
+  homologacao: {
+    NfeAutorizacao: 'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx',
+    NfeRetAutorizacao:
+      'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeRetAutorizacao/NFeRetAutorizacao4.asmx',
+    NfeConsultaProtocolo: 'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx',
+    NfeStatusServico:
+      'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeStatusServico/NfeStatusServico4.asmx',
+    RecepcaoEvento: 'https://nfe-homologacao.svrs.rs.gov.br/ws/recepcaoevento/recepcaoevento4.asmx',
+  },
+};
+
+const AN_ENDPOINTS: Record<Ambiente, AnServiceUrls> = {
+  producao: {
+    RecepcaoEvento: 'https://www.nfe.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
+  },
+  homologacao: {
+    RecepcaoEvento: 'https://hom1.nfe.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
+  },
+};
+
+/**
+ * UF → SVC environment (Ato COTEPE 39/2012; mirrored from
+ * `.old/packages/nfe_client/lib/src/enderecos{,_homologacao}.dart` — PI
+ * appears only in the legacy homologação file; we keep the union and treat
+ * the Ato COTEPE as the authority to re-check on divergence).
+ */
+const SVC_AN_UFS: ReadonlySet<string> = new Set([
+  'AC',
+  'AL',
+  'AP',
+  'CE',
+  'DF',
+  'ES',
+  'MG',
+  'PA',
+  'PB',
+  'RJ',
+  'RN',
+  'RO',
+  'RR',
+  'RS',
+  'SC',
+  'SE',
+  'SP',
+  'TO',
+]);
+
+const SVC_RS_UFS: ReadonlySet<string> = new Set([
+  'AM',
+  'BA',
+  'GO',
+  'MA',
+  'MS',
+  'MT',
+  'PE',
+  'PI',
+  'PR',
+]);
+
 export class NFeEndpointError extends Error {
   constructor(uf: string) {
     super(`No NF-e endpoint table for UF '${uf}'. Phase A wires SP only.`);
     this.name = 'NFeEndpointError';
   }
+}
+
+export class NFeContingencyEndpointError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NFeContingencyEndpointError';
+  }
+}
+
+/** Resolve which SVC environment serves a UF when its home SEFAZ is down. */
+export function svcAuthorizerForUF(uf: string): 'svc-an' | 'svc-rs' {
+  const upper = uf.toUpperCase();
+  if (SVC_AN_UFS.has(upper)) return 'svc-an';
+  if (SVC_RS_UFS.has(upper)) return 'svc-rs';
+  throw new NFeContingencyEndpointError(`No SVC mapping for UF '${uf}'.`);
+}
+
+/** Resolve the SVC web-service URLs for an authorizer + ambiente. */
+export function getSvcEndpoints(
+  authorizer: 'svc-an' | 'svc-rs',
+  ambiente: Ambiente,
+): SvcServiceUrls {
+  return authorizer === 'svc-an' ? SVC_AN_ENDPOINTS[ambiente] : SVC_RS_ENDPOINTS[ambiente];
+}
+
+/** Resolve the Ambiente Nacional URLs (EPEC evento drop-box). */
+export function getAnEndpoints(ambiente: Ambiente): AnServiceUrls {
+  return AN_ENDPOINTS[ambiente];
 }
 
 /** Resolve the SEFAZ web-service URLs for a UF + ambiente. */

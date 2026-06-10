@@ -19,6 +19,7 @@ export {
   type NFeInutilizarArgs,
   type NFeInutilizarResult,
   type NFeProcessarPendentesResult,
+  type NFeStatusServicoResult,
 } from './client';
 
 export {

@@ -26,6 +26,7 @@ import {
 import {
   ESTADO_NFE,
   nfeConfigSchema,
+  type ContingenciaModo,
   type NFeConfig,
   type NotaFiscalEletronica,
 } from '@delfrance/schemas';
@@ -41,6 +42,7 @@ import {
   createBatchReadContext,
   DEFAULT_NFE_CONFIG_DOC_ID,
   flattenAndValidate,
+  loadNfeConfigForEmission,
   loadPedidoBundle,
   nfeDocId,
   preResolveImpostos,
@@ -49,6 +51,7 @@ import {
   type FiscalItem,
   type PedidoBundle,
 } from './bundle';
+import { sefazCallFor } from './sefaz-call';
 import {
   buildEnviNFeMsgFromConsulta,
   buildEnviNFeMsgFromLote,
@@ -70,6 +73,17 @@ export interface EmissionPrep {
   readonly bundle: PedidoBundle;
   readonly items: ReadonlyArray<FiscalItem>;
   readonly tpEmis: TpEmis;
+  /**
+   * Snapshot of the filial's contingency state at prep time. `dhCont` /
+   * `xJust` are non-null exactly when `modo !== 'none'` (enforced by the
+   * nfeConfig schema's superRefine) and ride into the generated XML
+   * (B28/B29) + the persisted nfev4 doc.
+   */
+  readonly contingencia: {
+    readonly modo: ContingenciaModo;
+    readonly dhCont: Date | null;
+    readonly xJust: string | null;
+  };
   readonly nfeRef: FirebaseFirestore.DocumentReference;
   readonly nfeConfigRef: FirebaseFirestore.DocumentReference;
 }
@@ -97,18 +111,37 @@ export async function prepareEmission(
   await preResolveImpostos(bundle, fs, ctx);
   const items = flattenAndValidate(bundle);
 
+  // Contingency mode comes from the filial's NFeConfig — the operator's
+  // manual switch. It decides tpEmis BEFORE any allocation, because tpEmis
+  // is baked into both the chave and the nfev4 doc id.
+  const cfg = await loadNfeConfigForEmission(fs, bundle.filialId, ctx);
+  // dhCont/xJust may linger on the config doc after a toggle-off — only a
+  // non-'none' modo carries them forward (a tpEmis=1 NF-e with B28/B29 is a
+  // generator error by design).
+  const contingencia: EmissionPrep['contingencia'] =
+    cfg.contingencia_modo === 'none'
+      ? { modo: 'none', dhCont: null, xJust: null }
+      : {
+          modo: cfg.contingencia_modo,
+          dhCont:
+            cfg.contingencia_dataInicio != null ? new Date(cfg.contingencia_dataInicio) : null,
+          xJust: cfg.contingencia_justificativa,
+        };
+
   // Stable doc id per (pedido, tpEmis) — mirrors Flutter's
   // `NotaFiscalEletronica.nFeSaidaIdFromTpEmis(tpEmis)` so every retry
   // for the same pedido targets the same nfev4 doc instead of accreting
-  // chave-keyed duplicates.
-  const tpEmis = resolveTpEmis(bundle.filial.sede.estado);
+  // chave-keyed duplicates. Switching contingency mode targets a NEW doc
+  // (`s6` vs `s1`) → fresh numeração, which is exactly the MOC's
+  // renumbering rule for normal→contingency reissues.
+  const tpEmis = resolveTpEmis(bundle.filial.sede.estado, contingencia.modo);
   const nfeRef = nfev4Collection.docRef(fs, { pedidoId }, nfeDocId(tpEmis));
   const nfeConfigRef = nfeConfigCollection.docRef(
     fs,
     { filialId: bundle.filialId },
     DEFAULT_NFE_CONFIG_DOC_ID,
   );
-  return { bundle, items, tpEmis, nfeRef, nfeConfigRef };
+  return { bundle, items, tpEmis, contingencia, nfeRef, nfeConfigRef };
 }
 
 /**
@@ -133,8 +166,18 @@ export function buildNfeDocWrite(
   rt: NFeRuntime,
   tpEmis: TpEmis,
   cNF?: string,
+  contingencia?: EmissionPrep['contingencia'],
 ): { chave: string; signedXml: string; docData: Record<string, unknown> } {
-  const input = buildGeneratorInput(bundle, items, nNF, serie, rt.ambiente, tpEmis, cNF);
+  const input = buildGeneratorInput(
+    bundle,
+    items,
+    nNF,
+    serie,
+    rt.ambiente,
+    tpEmis,
+    cNF,
+    contingencia,
+  );
   const generated = generateNFe(input);
   const signedXml = signNFe(generated.nfeXml, rt.cert);
   const now = new Date().toISOString();
@@ -159,8 +202,8 @@ export function buildNfeDocWrite(
       xMotivo: null,
       data_emissao: now,
       data_autorizacao: null,
-      dataContingencia: null,
-      justificativaContingencia: null,
+      dataContingencia: contingencia?.dhCont?.toISOString() ?? null,
+      justificativaContingencia: contingencia?.xJust ?? null,
       error: null,
       ultima_modificacao: now,
     }),
@@ -230,6 +273,7 @@ export async function runAllocateGenerateSignTx(
       rt,
       tpEmis,
       reuseCNF,
+      prep.contingencia,
     );
 
     // Writes — counter doc first, then NFe doc. Both commit or neither.
@@ -281,6 +325,7 @@ export function buildPlaceholderNfeDoc(
   idLote: number,
   tpEmis: TpEmis,
   filialId: string,
+  contingencia?: EmissionPrep['contingencia'],
 ): Record<string, unknown> {
   const now = new Date().toISOString();
   return nfev4Collection.parse({
@@ -301,8 +346,8 @@ export function buildPlaceholderNfeDoc(
     xMotivo: null,
     data_emissao: now,
     data_autorizacao: null,
-    dataContingencia: null,
-    justificativaContingencia: null,
+    dataContingencia: contingencia?.dhCont?.toISOString() ?? null,
+    justificativaContingencia: contingencia?.xJust ?? null,
     error: null,
     ultima_modificacao: now,
   });
@@ -372,7 +417,14 @@ export async function runChunkAllocateTx(
         // overwrites this placeholder outside the tx.
         placeholders.push({
           ref: sp.prep.nfeRef,
-          data: buildPlaceholderNfeDoc(nNF, serie, idLote, sp.prep.tpEmis, sp.prep.bundle.filialId),
+          data: buildPlaceholderNfeDoc(
+            nNF,
+            serie,
+            idLote,
+            sp.prep.tpEmis,
+            sp.prep.bundle.filialId,
+            sp.prep.contingencia,
+          ),
         });
       }
       members.push({
@@ -446,13 +498,6 @@ export async function applyAutorizadoOutcome(args: {
     }),
   );
 
-  const call: SefazCall = {
-    url: rt.endpoints.NfeAutorizacao,
-    cert: rt.cert,
-    agent: rt.agent,
-    tpAmb: rt.tpAmb,
-  };
-
   // Derive the initial outcome — from the chave-specific protocol when
   // the batch caller supplied one, otherwise from the lote-level
   // retEnvi (the sync single-NFe path).
@@ -479,7 +524,6 @@ export async function applyAutorizadoOutcome(args: {
         bundle,
         nfeRef,
         rt,
-        call,
         tpEmis,
         outcome,
         patch,
@@ -488,7 +532,7 @@ export async function applyAutorizadoOutcome(args: {
       if (recovered.chaveOverride) finalChave = recovered.chaveOverride;
       protNFeRaw = null;
     } else if (patch.nRec) {
-      const consReciCall: SefazCall = { ...call, url: rt.endpoints.NfeRetAutorizacao };
+      const consReciCall: SefazCall = sefazCallFor(rt, tpEmis, 'NfeRetAutorizacao');
       const retRec = await consultarLote(consReciCall, { nRec: patch.nRec });
       await enviNfeCollection(fs, bundle.filialId).add(
         buildEnviNFeMsgFromConsulta({ chave, nRec: patch.nRec, ret: retRec, tpEmis }),
@@ -497,7 +541,7 @@ export async function applyAutorizadoOutcome(args: {
       outcome = outcomeFromConsReci(retRec, chave);
       patch = applyOutcome({ estado: patch.estado, retries: patch.retries }, outcome);
     } else {
-      const consSitCall: SefazCall = { ...call, url: rt.endpoints.NfeConsultaProtocolo };
+      const consSitCall: SefazCall = sefazCallFor(rt, tpEmis, 'NfeConsultaProtocolo');
       const retSit = await consultarSituacaoNFe(consSitCall, { chave });
       await enviNfeCollection(fs, bundle.filialId).add(
         buildEnviNFeMsgFromConsulta({ chave, nRec: null, ret: retSit, tpEmis }),
@@ -561,12 +605,7 @@ export async function emitirPedido(
   }
 
   const { chave, signedXml, idLote } = captured;
-  const call: SefazCall = {
-    url: rt.endpoints.NfeAutorizacao,
-    cert: rt.cert,
-    agent: rt.agent,
-    tpAmb: rt.tpAmb,
-  };
+  const call: SefazCall = sefazCallFor(rt, prep.tpEmis, 'NfeAutorizacao');
 
   const retEnvi = await autorizarLote(call, {
     idLote: String(idLote),
@@ -784,6 +823,7 @@ export async function processChunk(
         rt,
         f.prep.tpEmis,
         reuseCNF,
+        f.prep.contingencia,
       );
       await f.prep.nfeRef.set(docData);
       return { prep: f.prep, pedidoId: f.pedidoId, chave, signedXml };
@@ -799,13 +839,11 @@ export async function processChunk(
   if (toSend.length === 0) return txResults;
 
   // 4c. autorizarLote — one SOAP call for the whole chunk. indSinc='1'
-  //     when only one NFe survived prep+tx; '0' otherwise.
-  const call: SefazCall = {
-    url: rt.endpoints.NfeAutorizacao,
-    cert: rt.cert,
-    agent: rt.agent,
-    tpAmb: rt.tpAmb,
-  };
+  //     when only one NFe survived prep+tx; '0' otherwise. The chunk shares
+  //     one filial → one NFeConfig → one tpEmis, so the first member's
+  //     tpEmis routes the whole lote.
+  const chunkTpEmis = toSend[0]!.prep.tpEmis;
+  const call: SefazCall = sefazCallFor(rt, chunkTpEmis, 'NfeAutorizacao');
   const indSinc: '0' | '1' = toSend.length === 1 ? '1' : '0';
   const retEnvi = await autorizarLote(call, {
     idLote: String(sharedIdLote),
@@ -842,7 +880,7 @@ export async function processChunk(
       }
       return txResults;
     }
-    protNFeArr = await pollConsultarLote(rt, call, nRec);
+    protNFeArr = await pollConsultarLote(rt, chunkTpEmis, nRec);
     if (protNFeArr.length === 0) {
       // Timed out without resolution. Persist nRec on each nfev4 so
       // the cron at apps/nfe/app/api/nfe/processar-pendentes can
@@ -922,10 +960,10 @@ export async function processChunk(
  */
 export async function pollConsultarLote(
   rt: NFeRuntime,
-  call: SefazCall,
+  tpEmis: TpEmis,
   nRec: string,
 ): Promise<NonNullable<TRetEnviNFe['protNFe']>[]> {
-  const consReciCall: SefazCall = { ...call, url: rt.endpoints.NfeRetAutorizacao };
+  const consReciCall: SefazCall = sefazCallFor(rt, tpEmis, 'NfeRetAutorizacao');
   let delay = POLL_INITIAL_DELAY_MS;
   for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
     if (attempt > 0) {
@@ -1003,12 +1041,11 @@ export async function recoverFrom539(params: {
   bundle: PedidoBundle;
   nfeRef: FirebaseFirestore.DocumentReference;
   rt: NFeRuntime;
-  call: SefazCall;
   tpEmis: TpEmis;
   outcome: SefazOutcome;
   patch: NFeStatePatch;
 }): Promise<{ patch: NFeStatePatch; chaveOverride?: string }> {
-  const { fs, bundle, nfeRef, rt, call, tpEmis, outcome, patch } = params;
+  const { fs, bundle, nfeRef, rt, tpEmis, outcome, patch } = params;
 
   const recoveredChave = outcome.chNFeFromXMotivo;
   if (!recoveredChave) {
@@ -1030,7 +1067,7 @@ export async function recoverFrom539(params: {
     };
   }
 
-  const consReciCall: SefazCall = { ...call, url: rt.endpoints.NfeRetAutorizacao };
+  const consReciCall: SefazCall = sefazCallFor(rt, tpEmis, 'NfeRetAutorizacao');
   const retRec = await consultarLote(consReciCall, { nRec: prevMsg.nRec });
   await enviNfeCollection(fs, bundle.filialId).add(
     buildEnviNFeMsgFromConsulta({

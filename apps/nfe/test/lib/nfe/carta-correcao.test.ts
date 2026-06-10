@@ -54,6 +54,16 @@ function fakeRuntime(): NFeRuntime {
       NfeInutilizacao: 'https://example/sefaz/inu',
       RecepcaoEvento: 'https://example/sefaz/rec',
     },
+    svc: (authorizer) => ({
+      endpoints: {
+        NfeAutorizacao: `https://example/${authorizer}/aut`,
+        NfeRetAutorizacao: `https://example/${authorizer}/ret`,
+        NfeConsultaProtocolo: `https://example/${authorizer}/cons`,
+        NfeStatusServico: `https://example/${authorizer}/sta`,
+        RecepcaoEvento: `https://example/${authorizer}/rec`,
+      },
+      agent: {} as never,
+    }),
     diagnostics: {
       subjectCommonName: 'TEST',
       notAfter: new Date(Date.now() + 86_400_000).toISOString(),
@@ -254,6 +264,26 @@ describe('cartaCorrecaoService', () => {
       cartaCorrecaoService(fs, fakeRuntime(), 'PED-1', 's1', XCORRECAO),
     ).rejects.toBeInstanceOf(NFeCartaCorrecaoError);
     expect(cartaCorrecaoNFe).not.toHaveBeenCalled();
+  });
+
+  it('SVC contingency NF-e (tpEmis=6) → CC-e sent to the HOME SEFAZ RecepcaoEvento', async () => {
+    // The SVC does not serve CC-e, but SVC-authorized documents are shared
+    // with the normal environment, which registers the event (MOC 7.0 Anexo
+    // III §2.1.3.4-d) — so the CC-e must go out, routed to the home SEFAZ.
+    const { fs, writes } = fakeFirestore({
+      'pedidos/PED-1/nfev4/s6': { ...aprovadaNfev4(), tpEmis: 6 },
+    });
+    vi.mocked(cartaCorrecaoNFe).mockResolvedValue(cceResult('135', 1) as never);
+
+    const result = await cartaCorrecaoService(fs, fakeRuntime(), 'PED-1', 's6', XCORRECAO);
+
+    expect(result.accepted).toBe(true);
+    expect(vi.mocked(cartaCorrecaoNFe)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/sefaz/rec' }),
+      expect.anything(),
+    );
+    const rec = writes.find((w) => w.path.startsWith('pedidos/PED-1/nfev4/s6/cartacorrecao/'));
+    expect(rec?.data.estado).toBe(ESTADO_ENVI_NFE_MSG.concluido);
   });
 
   it('throws NFePedidoNotFoundError (→ 404) when the nfev4 doc id does not exist', async () => {

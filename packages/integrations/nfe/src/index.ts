@@ -32,11 +32,18 @@ export {
 
 // Endpoints
 export {
+  NFeContingencyEndpointError,
   NFeEndpointError,
+  getAnEndpoints,
   getEndpoints,
+  getSvcEndpoints,
   supportedUFs,
+  svcAuthorizerForUF,
   type Ambiente,
+  type AnServiceUrls,
+  type ContingencyAuthorizer,
   type NfeServiceUrls,
+  type SvcServiceUrls,
 } from './endpoints';
 
 // XML (de)serializer

@@ -465,6 +465,51 @@ describe('createNFeHttpClient — cartaCorrecaoDanfe', () => {
   });
 });
 
+describe('createNFeHttpClient — statusServico', () => {
+  const STATUS_OK = {
+    target: 'normal',
+    authorizer: 'sefaz',
+    cStat: '107',
+    xMotivo: 'Serviço em Operação',
+    dhRecbto: '2026-06-10T10:00:00-03:00',
+    tMed: '1',
+    category: 'servico-em-operacao',
+  };
+
+  it('GETs /api/nfe/status-servico with the target + Bearer token', async () => {
+    const fetch = mockFetch({ status: 200, body: STATUS_OK });
+    const out = await makeClient(fetch).statusServico('normal');
+    expect(out.cStat).toBe('107');
+    expect(out.category).toBe('servico-em-operacao');
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:3004/api/nfe/status-servico?target=normal');
+    expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it('passes target=svc through', async () => {
+    const fetch = mockFetch({
+      status: 200,
+      body: { ...STATUS_OK, target: 'svc', authorizer: 'svc-an' },
+    });
+    const out = await makeClient(fetch).statusServico('svc');
+    expect(out.authorizer).toBe('svc-an');
+    const [url] = fetch.mock.calls[0] as [string];
+    expect(url).toContain('target=svc');
+  });
+
+  it('maps a 502 (SEFAZ unreachable) to NFeServerError', async () => {
+    const fetch = mockFetch({
+      status: 502,
+      body: { error: 'SEFAZ inacessível: connect ETIMEDOUT', code: 'NFeTransportError' },
+    });
+    const err = await makeClient(fetch)
+      .statusServico('normal')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFeServerError);
+    expect((err as NFeServerError).message).toContain('inacessível');
+  });
+});
+
 describe('createNFeHttpClient — baseUrl normalisation', () => {
   it('strips a single trailing slash off baseUrl', async () => {
     const fetch = mockFetch({

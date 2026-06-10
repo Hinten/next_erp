@@ -240,8 +240,10 @@ export {
   nfeConfigSchema,
   nfeConfigMeta,
   ambienteNFEschema,
+  contingenciaModoSchema,
   type NFeConfig,
   type AmbienteNFE,
+  type ContingenciaModo,
 } from './nfeConfig';
 
 export {

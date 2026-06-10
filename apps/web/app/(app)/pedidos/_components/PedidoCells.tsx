@@ -136,7 +136,7 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
   const color = NFE_STATE_COLOR[latest.estado] ?? 'gray';
   const label = ESTADO_NFE_LABELS[latest.estado] ?? latest.estado;
   // tpEmis === 1 is the normal (SEFAZ síncrono) path. Anything else
-  // (2 EPEC, 9 SVC-RS, 7 SVC-AN, etc.) is a contingência variant — use
+  // (4 EPEC, 6 SVC-AN, 7 SVC-RS, 2/5 FS) is a contingência variant — use
   // the outline variant so the operator can tell at a glance.
   const variant = latest.tpEmis !== 1 ? 'outline' : 'light';
   const hasCStatMsg = latest.cStat != null && latest.xMotivo != null;

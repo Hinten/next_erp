@@ -12,6 +12,7 @@ import { consultarSituacaoNFe } from '@delfrance/integrations-nfe';
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { safeLog } from '@/lib/nfe/log';
+import { sefazCallFor, tpEmisFromChave } from '@/lib/nfe/orchestrator/sefaz-call';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
 
 export const dynamic = 'force-dynamic';
@@ -47,13 +48,10 @@ export async function GET(req: Request): Promise<NextResponse> {
   }
 
   try {
+    // The chave's own tpEmis digit (position 35) routes the consulta to the
+    // authorizer that owns the NF-e (home SEFAZ, SVC-AN or SVC-RS).
     const ret = await consultarSituacaoNFe(
-      {
-        url: runtimeInstance.endpoints.NfeConsultaProtocolo,
-        cert: runtimeInstance.cert,
-        agent: runtimeInstance.agent,
-        tpAmb: runtimeInstance.tpAmb,
-      },
+      sefazCallFor(runtimeInstance, tpEmisFromChave(query.chave), 'NfeConsultaProtocolo'),
       { chave: query.chave },
     );
     const protInf = ret.protNFe?.infProt;

@@ -30,10 +30,25 @@ Validation matrix — a `tpEmis` is only accepted by its matching environment:
 | 6 (SVC-AN) | — | OK | — |
 | 7 (SVC-RS) | — | — | OK |
 
-SVC offers Autorização, RetAutorização, Cancelamento, ConsultaProtocolo,
-StatusServico. It does **not** offer Inutilização or CCe. SVC status codes:
-`107` SVC em operação, `113` SVC em desativação, `114` SVC desabilitada.
-SVC-authorized NF-e do **not** need re-transmission to the home SEFAZ.
+SVC services (MOC 7.0 Anexo III §2.1.3.4), with their per-nota scoping:
+
+- **Autorização** — only while the SVC is activated for the home SEFAZ.
+- **RetAutorização** — "sempre disponível" for lotes sent to the SVC.
+- **Cancelamento (110111)** — "sempre disponível **somente para as NF-e
+  autorizadas pela própria SVC**". Cancelling a normal-environment NF-e during
+  the outage must be held ("represada") for the home SEFAZ afterwards.
+- **ConsultaProtocolo** — same scoping: only SVC-authorized NF-e.
+- **StatusServico** — always.
+- **CC-e and other eventos** — "não será disponibilizado para atendimento pela
+  SVC". This restricts the **webservice**, not the nota: authorized documents
+  are *"automaticamente compartilhados entre o ambiente normal de autorização
+  e o ambiente da SVC (e vice-versa)"*, so an SVC-authorized NF-e **can**
+  receive a CC-e — **send it to the home SEFAZ** RecepcaoEvento.
+- **Inutilização** — not offered; hold for the home SEFAZ.
+
+SVC status codes: `107` SVC em operação, `113` SVC em desativação, `114` SVC
+desabilitada. SVC-authorized NF-e do **not** need re-transmission to the home
+SEFAZ (the sharing above is automatic).
 
 ## EPEC (tpEmis=4)
 
