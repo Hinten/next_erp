@@ -165,10 +165,13 @@ export function watermark(
  *
  * The text **auto-fits**: the font shrinks from `size` to a 4 pt floor until the
  * word-wrapped label fits the box thickness, so it is never clipped with an
- * ellipsis. `runAlign` positions the label along the run — `'end'` anchors it to
- * the **top** of the box (e.g. the canhoto field labels); the default centres it.
- * The `height` bound keeps pdfkit's line-wrapper from auto-adding a page to
- * "continue" rotated text that sits near the page bottom in user space.
+ * ellipsis. The `height` bound keeps pdfkit's line-wrapper from auto-adding a
+ * page to "continue" rotated text that sits near the page bottom in user space.
+ *
+ * `anchor` controls where the label sits **after the rotation** (which is why a
+ * naïve "align right" lands in the wrong corner): `'center'` centres it in the
+ * box (group titles, the NF-e box); `'bottomLeft'` pins it to the box's
+ * bottom-left corner so it reads up from there — the natural left-edge canhoto.
  */
 export function textRotated(
   doc: Doc,
@@ -180,12 +183,12 @@ export function textRotated(
   opts: {
     size?: number;
     bold?: boolean;
-    /** Position along the run: `'end'` = top of the box. Default `'center'`. */
-    runAlign?: 'start' | 'center' | 'end';
+    /** Post-rotation anchor. Default `'center'`. */
+    anchor?: 'center' | 'bottomLeft';
     upper?: boolean;
   } = {},
 ): void {
-  const { size = 6, bold = false, runAlign = 'center', upper = true } = opts;
+  const { size = 6, bold = false, anchor = 'center', upper = true } = opts;
   const pad = 2;
   const runLen = h - 2 * pad; // text run-length (the box's long axis)
   const crossAvail = w - 2 * pad; // wrap room across the box thickness
@@ -202,7 +205,13 @@ export function textRotated(
   }
   doc.fontSize(fontSize);
   const blockH = Math.min(doc.heightOfString(s, { width: runLen }), crossAvail);
-  const align = runAlign === 'end' ? 'right' : runAlign === 'start' ? 'left' : 'center';
+
+  // `bottomLeft`: line block hugs the box's left edge and the run starts at the
+  // bottom (align left). `center`: block centred across the thickness, run
+  // centred. The text anchor's `y` offset selects the cross-axis position; after
+  // the −90° rotation it maps to the box's horizontal extent.
+  const crossOffset = anchor === 'bottomLeft' ? pad : (w - blockH) / 2;
+  const align = anchor === 'bottomLeft' ? 'left' : 'center';
 
   doc.save();
   doc.rotate(-90, { origin: [x, y + h] });
@@ -210,7 +219,7 @@ export function textRotated(
     .font(font)
     .fontSize(fontSize)
     .fillColor('#000000')
-    .text(s, x + pad, y + h + (w - blockH) / 2, {
+    .text(s, x + pad, y + h + crossOffset, {
       width: runLen,
       height: crossAvail,
       align,

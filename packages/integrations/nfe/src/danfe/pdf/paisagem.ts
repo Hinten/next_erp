@@ -160,7 +160,7 @@ function drawCanhoto(doc: Doc, model: DanfeModel): void {
     cm(4.53),
     { size: 7 },
   );
-  // Recibo sentence (tall strip below the NF-e box) — anchored to the top.
+  // Recibo sentence (tall strip below the NF-e box) — pinned bottom-left, read up.
   strokeBox(doc, cm(0.13), cm(5.0), cm(1.02), cm(15.53));
   textRotated(
     doc,
@@ -169,10 +169,10 @@ function drawCanhoto(doc: Doc, model: DanfeModel): void {
     cm(5.0),
     cm(1.02),
     cm(15.53),
-    { size: 6, runAlign: 'end' },
+    { size: 6, anchor: 'bottomLeft' },
   );
   // Assinatura do recebedor + data de recebimento (second column of the stub),
-  // their labels anchored to the top of each box.
+  // their labels pinned to the bottom-left corner of each box (read up).
   strokeBox(doc, cm(1.15), cm(5.0), cm(1.02), cm(9.21));
   textRotated(
     doc,
@@ -183,13 +183,13 @@ function drawCanhoto(doc: Doc, model: DanfeModel): void {
     cm(9.21),
     {
       size: 6,
-      runAlign: 'end',
+      anchor: 'bottomLeft',
     },
   );
   strokeBox(doc, cm(1.15), cm(14.21), cm(1.02), cm(6.32));
   textRotated(doc, 'DATA DE RECEBIMENTO', cm(1.15), cm(14.21), cm(1.02), cm(6.32), {
     size: 6,
-    runAlign: 'end',
+    anchor: 'bottomLeft',
   });
 }
 
