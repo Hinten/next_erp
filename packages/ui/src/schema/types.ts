@@ -71,6 +71,14 @@ export interface FieldConfig<TValue = unknown> {
   renderCell?: (value: TValue, row: unknown) => ReactNode;
   renderInput?: (props: FieldRenderProps) => ReactNode;
   /**
+   * Transform this field's value immediately before it is written on save
+   * (create or update). The app convention is staged deletion: an editor field
+   * marks items for removal in-place (see `DELETE_MARK`) and `prepareForSave`
+   * (e.g. `stripMarkedForDeletion`) drops them + strips the transient marker at
+   * save time, so nothing is destroyed until the user saves. Must be pure.
+   */
+  prepareForSave?: (value: TValue) => unknown;
+  /**
    * Per-field overrides for the sub-fields of a `kind: 'object'` field.
    * Keyed by the nested key (e.g. `sede.cpf_cnpj` → `{ cpf_cnpj: {...} }`).
    * Lets callers hide/relabel address fields without flattening the schema.

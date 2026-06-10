@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
-import { type FieldConfig, ObjectView, PageHeader } from '@delfrance/ui';
+import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import { type Foto, produtoSchema } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
@@ -33,6 +33,7 @@ export default function EditarProdutoPage() {
       fotos: {
         label: 'Fotos',
         section: 'Fotos',
+        prepareForSave: stripMarkedForDeletion,
         renderInput: (p) => (
           <PhotoManager
             produtoId={params.id}

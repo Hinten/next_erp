@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button, Stack } from '@mantine/core';
-import { type FieldConfig, ObjectView, PageHeader } from '@delfrance/ui';
+import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { type Foto, produtoSchema } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
@@ -31,6 +31,7 @@ export default function NovoProdutoPage() {
       fotos: {
         label: 'Fotos',
         section: 'Fotos',
+        prepareForSave: stripMarkedForDeletion,
         renderInput: (p) => (
           <PhotoManager
             produtoId={null}

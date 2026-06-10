@@ -19,6 +19,7 @@ import {
 import { Dropzone, IMAGE_MIME_TYPE, type FileWithPath } from '@mantine/dropzone';
 import { notifications } from '@mantine/notifications';
 import {
+  IconArrowBackUp,
   IconGripVertical,
   IconPhotoPlus,
   IconStar,
@@ -41,6 +42,11 @@ import type { FirebaseStorage } from 'firebase/storage';
 import { arquivoCollection, StorageUploadError, uploadProductImage } from '@delfrance/storage';
 import { buildFotoRefs, type Foto } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
+import { DELETE_MARK } from '@delfrance/ui';
+
+/** A `Foto` plus the transient staged-deletion marker. The literal key must
+ *  match `DELETE_MARK` from `@delfrance/ui`. */
+type EditableFoto = Foto & { _pendingDelete?: boolean };
 
 const ARQUIVOS_PREFIX = 'arquivos/';
 
@@ -85,7 +91,7 @@ export function PhotoManager({
   onChange,
   disabled,
 }: PhotoManagerProps) {
-  const fotos = useMemo(() => value ?? [], [value]);
+  const fotos = useMemo<EditableFoto[]>(() => value ?? [], [value]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -154,8 +160,11 @@ export function PhotoManager({
     if (index > 0) onChange(arrayMove(fotos, index, 0));
   }
 
-  function remove(index: number) {
-    onChange(fotos.filter((_, i) => i !== index));
+  // Staged deletion: mark the foto (kept in the array, shown struck-through with
+  // an undo) instead of removing it. ObjectView strips marked items on save via
+  // the `prepareForSave: stripMarkedForDeletion` wired on the `fotos` field.
+  function toggleDelete(index: number) {
+    onChange(fotos.map((f, i) => (i === index ? { ...f, [DELETE_MARK]: !f[DELETE_MARK] } : f)));
   }
 
   function handleDragEnd(event: DragEndEvent) {
@@ -202,9 +211,10 @@ export function PhotoManager({
                   foto={foto}
                   db={db}
                   isCover={index === 0}
+                  marked={!!foto[DELETE_MARK]}
                   disabled={disabled}
                   onCover={() => makeCover(index)}
-                  onRemove={() => remove(index)}
+                  onToggleDelete={() => toggleDelete(index)}
                 />
               ))}
             </SimpleGrid>
@@ -219,12 +229,22 @@ interface SortableFotoProps {
   foto: Foto;
   db: Firestore;
   isCover: boolean;
+  /** Marked for deletion — rendered dimmed with an undo button. */
+  marked: boolean;
   disabled?: boolean;
   onCover: () => void;
-  onRemove: () => void;
+  onToggleDelete: () => void;
 }
 
-function SortableFoto({ foto, db, isCover, disabled, onCover, onRemove }: SortableFotoProps) {
+function SortableFoto({
+  foto,
+  db,
+  isCover,
+  marked,
+  disabled,
+  onCover,
+  onToggleDelete,
+}: SortableFotoProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: foto.arquivoOuterRef,
     disabled,
@@ -232,7 +252,8 @@ function SortableFoto({ foto, db, isCover, disabled, onCover, onRemove }: Sortab
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.5 : 1,
+    opacity: isDragging ? 0.5 : marked ? 0.55 : 1,
+    borderColor: marked ? 'var(--mantine-color-red-6)' : undefined,
   };
 
   // Prefer the 200px derivative; fall back to the original while the resize
@@ -262,9 +283,14 @@ function SortableFoto({ foto, db, isCover, disabled, onCover, onRemove }: Sortab
             <Loader size="sm" />
           </Group>
         )}
-        {isCover && (
+        {isCover && !marked && (
           <Badge color="blue" size="xs" pos="absolute" top={4} left={4}>
             Capa
+          </Badge>
+        )}
+        {marked && (
+          <Badge color="red" size="xs" pos="absolute" top={4} left={4}>
+            Será excluída
           </Badge>
         )}
         {!disabled && (
@@ -289,20 +315,32 @@ function SortableFoto({ foto, db, isCover, disabled, onCover, onRemove }: Sortab
             variant="subtle"
             size="sm"
             onClick={onCover}
-            disabled={isCover}
+            disabled={isCover || marked}
             aria-label="Definir como capa"
           >
             {isCover ? <IconStarFilled size={14} /> : <IconStar size={14} />}
           </ActionIcon>
-          <ActionIcon
-            variant="subtle"
-            color="red"
-            size="sm"
-            onClick={onRemove}
-            aria-label="Remover foto"
-          >
-            <IconTrash size={14} />
-          </ActionIcon>
+          {marked ? (
+            <ActionIcon
+              variant="subtle"
+              color="blue"
+              size="sm"
+              onClick={onToggleDelete}
+              aria-label="Desfazer exclusão"
+            >
+              <IconArrowBackUp size={14} />
+            </ActionIcon>
+          ) : (
+            <ActionIcon
+              variant="subtle"
+              color="red"
+              size="sm"
+              onClick={onToggleDelete}
+              aria-label="Remover foto"
+            >
+              <IconTrash size={14} />
+            </ActionIcon>
+          )}
         </Group>
       )}
     </Paper>

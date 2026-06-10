@@ -10,6 +10,7 @@ Internal ERP UI. **Client-first.**
 4. **Forms**: react-hook-form + Zod resolver. Mantine inputs via `Controller`. With `@hookform/resolvers` v5 + Zod v4, schemas whose input/output types differ (e.g. fields with `.default()`) need the 3-generic `useForm<Input, Context, Output>` form so the resolver and `handleSubmit` callback line up. For standard list/detail/create screens prefer `TableView` / `ObjectView` from `@delfrance/ui` (derived from the Zod schema, organized into tabs via the `sections` prop and overridden per-field via the `fields` prop — see `app/(app)/produtos/` for a multi-tab example). Write a custom form only when the generics don't fit.
 5. **Permissions**: `usePermission(0b00001000n)` (BigInt literal — claims are encoded as BigInt strings to dodge the JS 53-bit number limit).
 6. **Multi-tenant context**: `useTenant()` reads `grupoEconomico` from custom claims. All queries filter by it.
+7. **Staged deletion in editors**: destructive removal of items inside an editor (array fields, sub-records) is **never immediate**. Clicking delete **marks** the item — keep it visible with a clear cue (dimmed / "Será excluída") and an **undo** affordance — and apply the removal **only when the parent record is saved**. Mechanism: mark items in-place with `DELETE_MARK` and wire the field's `FieldConfig.prepareForSave = stripMarkedForDeletion` (both from `@delfrance/ui`); `ObjectView` runs `prepareForSave` at save time. See `app/(app)/produtos/_components/PhotoManager.tsx` for the reference implementation.
 
 ## Structure
 
