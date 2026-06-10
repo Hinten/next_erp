@@ -105,12 +105,13 @@ each gated on `ci.yml` passing first and serving a production build:
   auth-guard redirects. _(e2e-cadastros)_
 - **`configuracoes`** — User + Cargo CRUD; signs in as the SU
   (`E2E_SU_*`). _(e2e-vendas)_
-- **`crud-cadastros`** — master-data CRUD specs: clientes, enderecos,
-  categorias, depositos, filiais. _(e2e-cadastros)_
-- **`crud-vendas`** — sales/fiscal/config CRUD specs: pedidos,
-  pedidos-nfe-snapshot, canais-balcao, bandeiras-cartao, motivos-incidente.
-  _(e2e-vendas)_ Adding a page needs a new spec **and** its filename in the
-  matching project's `testMatch`.
+- **`crud-cadastros`** — master-data CRUD specs (`*.cadastros.e2e.spec.ts`):
+  clientes, enderecos, categorias, depositos, filiais. _(e2e-cadastros)_
+- **`crud-vendas`** — sales/fiscal/config CRUD specs (`*.vendas.e2e.spec.ts`):
+  pedidos, pedidos-nfe-snapshot, canais-balcao, bandeiras-cartao,
+  motivos-incidente. _(e2e-vendas)_ The filename suffix decides the project
+  (and CI workflow) — a new spec named with the right suffix is collected
+  automatically.
 
 `globalSetup` runs once per run: it seeds the namespaced tenant and mints an
 **ephemeral** Firebase Auth user (`e2e-user-<runId>@example.com`) with all

@@ -71,19 +71,20 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
     // Schema-driven TableView/ObjectView CRUD suites, split into two domain
-    // projects so the two workflows run disjoint halves concurrently. A new
-    // CRUD spec must be added to the matching project's testMatch below.
+    // projects so the two workflows run disjoint halves concurrently. The
+    // domain lives in the filename suffix — a new CRUD spec is auto-collected
+    // by naming it `<x>.cadastros.e2e.spec.ts` or `<x>.vendas.e2e.spec.ts`;
+    // no config edit needed.
     {
       // Master-data domain → e2e-cadastros.yml
       name: 'crud-cadastros',
-      testMatch: /(clientes|enderecos|categorias|depositos|filiais)\.e2e\.spec\.ts$/,
+      testMatch: /\.cadastros\.e2e\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
     {
       // Sales / fiscal / config domain → e2e-vendas.yml
       name: 'crud-vendas',
-      testMatch:
-        /(pedidos|pedidos-nfe-snapshot|canais-balcao|bandeiras-cartao|motivos-incidente)\.e2e\.spec\.ts$/,
+      testMatch: /\.vendas\.e2e\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
   ],

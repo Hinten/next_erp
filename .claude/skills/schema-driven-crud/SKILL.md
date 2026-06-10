@@ -233,10 +233,13 @@ Per-field overrides, passed via `fields={{ field: { ... } }}`:
 
 ## 7. E2e tests
 
-Create `apps/web/e2e/<x>.e2e.spec.ts` (template: `clientes.e2e.spec.ts`).
+Create `apps/web/e2e/<x>.<dominio>.e2e.spec.ts`, where `<dominio>` is
+`cadastros` (master data) or `vendas` (sales/fiscal/config) — template:
+`clientes.cadastros.e2e.spec.ts`.
 
-1. **No Playwright project to register.** The `crud` project in
-   `apps/web/playwright.config.ts` already matches every `*.e2e.spec.ts`;
+1. **No Playwright project to register.** The filename suffix decides the
+   project (and therefore the CI workflow): `crud-cadastros` matches
+   `*.cadastros.e2e.spec.ts`, `crud-vendas` matches `*.vendas.e2e.spec.ts`;
    the new spec is picked up automatically.
 2. `test.describe.serial(...)`. Do NOT add a `test.skip(!requiresAuthEnv())`
    gate — when the e2e env is missing the suite should fail loudly (the
@@ -274,13 +277,13 @@ e2e is **two** domain workflows — `.github/workflows/e2e-cadastros.yml` and
 `e2e-vendas.yml` — sharing the `e2e-reusable.yml` engine. Both trigger on
 `pull_request` and wait for `ci.yml`'s `lint-typecheck-test` check to pass
 before the e2e job runs, then serve a **production build** (`next build` +
-`next start`). A new `*.e2e.spec.ts` is **not** auto-collected: add its
-filename to the matching project's `testMatch` in
-`apps/web/playwright.config.ts` — `crud-cadastros` (clientes, enderecos,
-categorias, depositos, filiais) or `crud-vendas` (pedidos,
-pedidos-nfe-snapshot, canais-balcao, bandeiras-cartao, motivos-incidente).
-The spec then rides the existing workflow — **do not** create a new workflow
-file or add an e2e job to `ci.yml`. Each workflow run mints its own ephemeral
+`next start`). The **filename suffix decides the CI**: name the spec
+`<x>.cadastros.e2e.spec.ts` (master data — clientes, enderecos, categorias,
+depositos, filiais) or `<x>.vendas.e2e.spec.ts` (sales/fiscal/config —
+pedidos, pedidos-nfe-snapshot, canais-balcao, bandeiras-cartao,
+motivos-incidente) and the matching project auto-collects it. The spec then
+rides the existing workflow — **do not** create a new workflow file, edit
+`testMatch`, or add an e2e job to `ci.yml`. Each workflow run mints its own ephemeral
 test user (`e2e-user-<runId>@example.com`, Admin SDK, deleted by
 `globalTeardown`) and comments the log tail to the PR on failure.
 

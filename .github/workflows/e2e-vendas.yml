@@ -39,6 +39,11 @@ permissions:
 
 jobs:
   run:
+    # Fork PRs can't see repo secrets, so the run would only fail noisily at
+    # the Firebase steps — skip it. Manual dispatch always runs (same-repo).
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          github.event.pull_request.head.repo.fork == false }}
     uses: ./.github/workflows/e2e-reusable.yml
     with:
       projects: configuracoes crud-vendas
