@@ -681,7 +681,11 @@ export async function renderPaisagem(
 
   const barcodePng = await code128Png(model.chave);
   const { doc, done } = createPdf([cm(PAGE_W), cm(PAGE_H)]);
-  const innerWidthPt = cm(COMPL_W_P1) - 4;
+  // The INFORMAÇÕES COMPLEMENTARES box is narrower on page 1 (the canhoto eats
+  // the left column) and wider on every later/continuation page — measureSplit
+  // must use the same width the box is actually drawn at, or it over-splits.
+  const innerWidthPtP1 = cm(COMPL_W_P1) - 4;
+  const innerWidthPtPN = cm(COMPL_W_PN) - 4;
 
   // ---- Measuring pass: assign infCpl chunks to produtos pages (using each
   // page's blank space), then spill the rest onto continuation pages. ----
@@ -693,6 +697,7 @@ export async function renderPaisagem(
     const hasIssqn = isLast && model.issqn != null;
     const dadosTop = headerTop + ROW_H + slices[p]! * rowH + 0.1 + (hasIssqn ? ISSQN_H + 0.1 : 0);
     const avail = cm(PAGE_BOTTOM - dadosTop);
+    const innerWidthPt = p === 0 ? innerWidthPtP1 : innerWidthPtPN;
     const { chunk, boxHCm, rest } = measureSplit(doc, remaining, innerWidthPt, avail, SPLIT_OPTS);
     plans.push({
       kind: 'produtos',
@@ -706,7 +711,8 @@ export async function renderPaisagem(
   const contDadosTop = PRODUTOS_HEADER_TOP_PN; // below the emitente strip on continuation pages
   while (remaining.length > 0) {
     const avail = cm(PAGE_BOTTOM - contDadosTop);
-    const { chunk, boxHCm, rest } = measureSplit(doc, remaining, innerWidthPt, avail, SPLIT_OPTS);
+    // Continuation pages are never page 1 → the wider PN box.
+    const { chunk, boxHCm, rest } = measureSplit(doc, remaining, innerWidthPtPN, avail, SPLIT_OPTS);
     plans.push({ kind: 'continuation', dadosBoxHCm: boxHCm, dadosChunk: chunk });
     remaining = rest;
   }
