@@ -1,6 +1,6 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
-import { renderDanfe, renderDanfeZpl } from '@delfrance/integrations-nfe/danfe';
+import { renderDanfe, renderDanfeEpec, renderDanfeZpl } from '@delfrance/integrations-nfe/danfe';
 import { ESTADO_NFE, type NotaFiscalEletronica } from '@delfrance/schemas';
 
 import { nfev4Collection } from '@delfrance/data/admin/collections';
@@ -30,8 +30,10 @@ export interface DanfeArtifact {
  * render; a cancelada gets the "CANCELADO" overlay, `tpAmb=2` the "SEM VALOR
  * FISCAL" watermark (handled inside the renderer).
  *
- * EPEC (`estado='p'`) renders from a different proc shape (`xml_epec_proc`) and
- * is excluded for now, consistent with the cancel/CC-e screens (issue #86).
+ * An **EPEC-approved** NF-e (`estado='p'`) is also printable (MOC Anexo III —
+ * plain paper once the EPEC is registered): it renders from the signed
+ * `xml_assinado` + the EPEC's `xml_epec_proc`, swapping the autorização box
+ * for "PROTOCOLO DE AUTORIZAÇÃO DO EPEC".
  *
  * Errors: `NFePedidoNotFoundError` (404 — no such nfev4 doc), `NFeDanfeError`
  * (422 — estado not renderable or no procNFe).
@@ -48,11 +50,35 @@ export async function danfeArtifactService(
   }
   const nota = snap.data() as NotaFiscalEletronica;
 
+  // EPEC: no procNFe yet — render from the signed NF-e + the EPEC proc.
+  if (nota.estado === ESTADO_NFE.epecAprovado) {
+    if (!nota.xml_assinado || !nota.xml_epec_proc) {
+      throw new NFeDanfeError(
+        `pedido '${pedidoId}' nfe '${nfeId}': EPEC aprovado sem xml_assinado/xml_epec_proc ` +
+          'persistidos — não é possível gerar a DANFE.',
+      );
+    }
+    if (opts.format === 'zpl2') {
+      throw new NFeDanfeError(
+        `pedido '${pedidoId}' nfe '${nfeId}': etiqueta ZPL não disponível para EPEC — ` +
+          'imprima a DANFE em PDF.',
+      );
+    }
+    const pdf = await renderDanfeEpec(nota.xml_assinado, nota.xml_epec_proc, {
+      format: opts.format,
+    });
+    return {
+      contentType: 'application/pdf',
+      filename: `danfe-epec-${nota.numeracao}.pdf`,
+      body: pdf,
+    };
+  }
+
   const renderable = nota.estado === ESTADO_NFE.aprovada || nota.estado === ESTADO_NFE.cancelada;
   if (!renderable) {
     throw new NFeDanfeError(
       `pedido '${pedidoId}' nfe '${nfeId}': estado='${nota.estado}' não possui DANFE — ` +
-        'apenas NF-e autorizada (aprovada) ou cancelada pode ser impressa.',
+        'apenas NF-e autorizada (aprovada), cancelada ou em EPEC pode ser impressa.',
     );
   }
   const xml = nota.xml_nfe_proc;

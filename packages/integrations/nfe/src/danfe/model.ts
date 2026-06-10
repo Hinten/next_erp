@@ -18,12 +18,14 @@
  */
 import { parse } from '../xml';
 import type {
+  TNFe,
   TNfeProc,
   TNFe_infNFe,
   TNFe_infNFe_det,
   TNFe_infNFe_transp,
   TNFe_infNFe_total_ICMSTot,
   TNFe_infNFe_total_ISSQNtot,
+  TProcEvento,
   TRetEnvEvento,
 } from '../types/nfe-schema';
 import { onlyDigits } from './format';
@@ -188,6 +190,19 @@ export interface DanfeModel {
   readonly infAdic: { readonly infCpl: string | null; readonly infAdFisco: string | null };
   /** Autorização protocolo, or null if the procNFe carries no protNFe. */
   readonly prot: DanfeProtocolo | null;
+  /**
+   * EPEC registration protocolo (AN evento 110140) — set only when the model
+   * was built via `parseNFeForEpec` (estado 'p': EPEC approved, full NF-e not
+   * yet authorized). Drives the "PROTOCOLO DE AUTORIZAÇÃO DO EPEC" box.
+   */
+  readonly epec: DanfeEpecProtocolo | null;
+}
+
+/** The EPEC event protocolo (`retEvento.infEvento`). */
+export interface DanfeEpecProtocolo {
+  readonly nProt: string | null;
+  /** ISO `dhRegEvento`, or null. */
+  readonly dhRegEvento: string | null;
 }
 
 /** Shape shared by `TEnderEmi`, `TEndereco` and `TLocal` — the DANFE fields. */
@@ -367,6 +382,7 @@ function mapModel(infNFe: TNFe_infNFe, prot: DanfeProtocolo | null): DanfeModel 
       infAdFisco: infNFe.infAdic?.infAdFisco ?? null,
     },
     prot,
+    epec: null,
   };
 }
 
@@ -386,6 +402,26 @@ export function parseProcNFe(xml: string): DanfeModel {
       }
     : null;
   return mapModel(proc.NFe.infNFe, prot);
+}
+
+/**
+ * Parse an EPEC-approved NF-e (estado 'p') into a `DanfeModel`: the signed
+ * `<NFe>` (there is no `<nfeProc>` yet — the home SEFAZ never authorized it)
+ * plus the archival `<procEventoNFe>` of the registered EPEC, whose
+ * `retEvento.infEvento` carries the AN protocolo printed in the
+ * "PROTOCOLO DE AUTORIZAÇÃO DO EPEC" box.
+ */
+export function parseNFeForEpec(nfeXml: string, epecProcXml: string): DanfeModel {
+  const nfe = parse<TNFe>('NFe', nfeXml);
+  const proc = parse<TProcEvento>('procEventoNFe', epecProcXml);
+  const infEvento = proc.retEvento?.infEvento;
+  return {
+    ...mapModel(nfe.infNFe, null),
+    epec: {
+      nProt: infEvento?.nProt ?? null,
+      dhRegEvento: infEvento?.dhRegEvento ?? null,
+    },
+  };
 }
 
 /** The CC-e fields read back from a persisted `retEnvEvento` reply. */

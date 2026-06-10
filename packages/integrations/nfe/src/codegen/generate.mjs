@@ -97,6 +97,10 @@ const kid = (node, tag) => node.children.find((c) => c.tag === tag);
 const complexTypes = new Map(); // name -> xs:complexType node
 const simpleTypes = new Map(); // name -> xs:simpleType node
 const rootElements = []; // { name, type }
+// Top-level <xs:element> declarations, for resolving `xs:element ref="…"`
+// within the portalfiscal namespace (the EPEC e110140 pack declares its leaf
+// elements top-level and references them from the detEvento sequence).
+const topElements = new Map(); // name -> xs:element node
 
 const files = readdirSync(SCHEMA_DIR)
   .filter((f) => f.endsWith('.xsd') && f !== 'xmldsig-core-schema_v1.01.xsd')
@@ -106,6 +110,9 @@ for (const file of files) {
   const schema = kid(parseXml(readFileSync(join(SCHEMA_DIR, file), 'utf8')), 'xs:schema');
   if (!schema) continue;
   for (const c of schema.children) {
+    if (c.tag === 'xs:element' && c.attrs.name && !topElements.has(c.attrs.name)) {
+      topElements.set(c.attrs.name, c);
+    }
     if (c.tag === 'xs:complexType' && c.attrs.name) complexTypes.set(c.attrs.name, c);
     else if (c.tag === 'xs:simpleType' && c.attrs.name) simpleTypes.set(c.attrs.name, c);
     else if (c.tag === 'xs:element' && c.attrs.name && c.attrs.type) {
@@ -175,10 +182,23 @@ function resolveElement(el, ownerName) {
   const optional = el.attrs.minOccurs === '0';
   const list = el.attrs.maxOccurs != null && el.attrs.maxOccurs !== '1';
 
-  // Referenced element (only ds:Signature occurs in NF-e) -> raw XML string.
+  // Referenced element. `ds:*` (Signature) stays an opaque raw-XML slot;
+  // a portalfiscal-namespace ref (EPEC e110140 style) is inlined from its
+  // top-level declaration, keeping the ref-site's occurrence constraints —
+  // mapping those to '#raw' would serialize the value WITHOUT its element
+  // wrapper.
   if (el.attrs.ref) {
     const local = el.attrs.ref.split(':').pop();
-    return { jsName: local, tsType: 'string', metaType: '#raw', optional, list };
+    const target = topElements.get(local);
+    if (el.attrs.ref.startsWith('ds:') || !target) {
+      return { jsName: local, tsType: 'string', metaType: '#raw', optional, list };
+    }
+    const clone = {
+      tag: 'xs:element',
+      attrs: { ...target.attrs, minOccurs: el.attrs.minOccurs, maxOccurs: el.attrs.maxOccurs },
+      children: target.children,
+    };
+    return resolveElement(clone, ownerName);
   }
 
   const type = el.attrs.type;

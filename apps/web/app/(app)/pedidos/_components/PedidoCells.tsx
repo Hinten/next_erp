@@ -129,10 +129,14 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
   if (!latest) return <Text c="dimmed">{DASH}</Text>;
   // Only an authorized NF-e can be cancelled (110111) or corrected (CC-e, 110110).
   const isAprovada = latest.estado === ESTADO_NFE.aprovada;
-  // A DANFE can be printed for an authorized NF-e and for a cancelada one (it
-  // retains its procNFe and prints with a CANCELADO overlay) — same set the
-  // per-NF-e screen + the danfeArtifactService allow.
-  const canPrintDanfe = isAprovada || latest.estado === ESTADO_NFE.cancelada;
+  // A DANFE can be printed for an authorized NF-e, a cancelada one (it
+  // retains its procNFe and prints with a CANCELADO overlay) and an
+  // EPEC-approved one (plain-paper DANFE with the EPEC protocolo box) — same
+  // set the per-NF-e screen + the danfeArtifactService allow.
+  const canPrintDanfe =
+    isAprovada ||
+    latest.estado === ESTADO_NFE.cancelada ||
+    latest.estado === ESTADO_NFE.epecAprovado;
   const color = NFE_STATE_COLOR[latest.estado] ?? 'gray';
   const label = ESTADO_NFE_LABELS[latest.estado] ?? latest.estado;
   // tpEmis === 1 is the normal (SEFAZ síncrono) path. Anything else

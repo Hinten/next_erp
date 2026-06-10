@@ -21,7 +21,8 @@
 import { formatDhEmi } from '../generator/ide';
 import { sanitizeNFeText } from '../sanitize';
 import type { TpAmb } from '../safety';
-import { serializeFragment } from '../xml';
+import type { TNFe } from '../types/nfe-schema';
+import { parse, serializeFragment } from '../xml';
 
 const EVENTO_NS = 'http://www.portalfiscal.inf.br/nfe';
 const EVENTO_VERSAO = '1.00';
@@ -194,6 +195,158 @@ export function buildCCeEvento(input: CCeEventoInput): string {
   });
 
   return `<evento xmlns="${EVENTO_NS}" versao="${EVENTO_VERSAO}">${infEvento}</evento>`;
+}
+
+// ---------------------------------------------------------------------------
+// EPEC — Evento Prévio de Emissão em Contingência — tpEvento 110140
+// ---------------------------------------------------------------------------
+export const TP_EVENTO_EPEC = '110140';
+/** EPEC eventos go to the Ambiente Nacional — `cOrgao` is fixed at 91. */
+export const C_ORGAO_AMBIENTE_NACIONAL = '91';
+
+/** The NF-e summary the EPEC detEvento carries (e110140 XSD). */
+export interface EpecEventoInput {
+  /** 44-digit chave de acesso of the contingency (tpEmis=4) NF-e. */
+  readonly chNFe: string;
+  readonly tpAmb: TpAmb;
+  /** Emitter CNPJ (14 digits). */
+  readonly cnpj: string;
+  /** Emitter IE. */
+  readonly ie: string;
+  /** Author UF (IBGE cUF 2-digit) — the issuer's home UF, NOT cOrgao. */
+  readonly cOrgaoAutor: string;
+  /** `ide.verProc` of the NF-e. */
+  readonly verAplic: string;
+  /** `ide.dhEmi` of the NF-e — already in SEFAZ lexical form. */
+  readonly dhEmi: string;
+  /** `ide.tpNF` — '0' entrada, '1' saída. */
+  readonly tpNF: string;
+  readonly dest: {
+    /** Destinatário UF — `'EX'` for a foreign buyer (idEstrangeiro). */
+    readonly uf: string;
+    readonly cnpj?: string;
+    readonly cpf?: string;
+    readonly idEstrangeiro?: string;
+    readonly ie?: string;
+    /** Totals from `total.ICMSTot`, verbatim decimal strings. */
+    readonly vNF: string;
+    readonly vICMS: string;
+    readonly vST: string;
+  };
+  /** Sequence — 1 for the first EPEC of a chave. */
+  readonly nSeqEvento?: number;
+  /** Event timestamp — defaults to now (issuer-local with offset). */
+  readonly dhEvento?: Date;
+}
+
+/**
+ * Build the `<detEvento>` for an EPEC, serialized from the generated
+ * `detEvento_e110140` META in XSD sequence order. The operation layer
+ * validates it against the real e110140 XSD (`validateXsd('detEventoEpec',
+ * …)`) before it is signed + sent.
+ */
+export function buildEpecDetEvento(input: EpecEventoInput): string {
+  return serializeFragment('detEvento_e110140', 'detEvento', {
+    versao: EVENTO_VERSAO,
+    descEvento: 'EPEC',
+    cOrgaoAutor: input.cOrgaoAutor,
+    tpAutor: '1',
+    verAplic: input.verAplic,
+    dhEmi: input.dhEmi,
+    tpNF: input.tpNF,
+    IE: input.ie,
+    dest: {
+      UF: input.dest.uf,
+      ...(input.dest.cnpj ? { CNPJ: input.dest.cnpj } : {}),
+      ...(input.dest.cpf ? { CPF: input.dest.cpf } : {}),
+      ...(input.dest.idEstrangeiro ? { idEstrangeiro: input.dest.idEstrangeiro } : {}),
+      ...(input.dest.ie ? { IE: input.dest.ie } : {}),
+      vNF: input.dest.vNF,
+      vICMS: input.dest.vICMS,
+      vST: input.dest.vST,
+    },
+  });
+}
+
+/**
+ * Build the UNSIGNED `<evento>` for an EPEC. Pass the result to `signEvento`
+ * then `buildEnvEvento`, exactly like cancelamento/CC-e — but `cOrgao` is
+ * fixed at `91` (Ambiente Nacional, the only authorizer that receives EPEC).
+ * `infEvento.Id` = `'ID' + tpEvento(6) + chNFe(44) + nSeqEvento(2)`.
+ */
+export function buildEpecEvento(input: EpecEventoInput): string {
+  if (input.chNFe.length !== 44) {
+    throw new NFeEventoError(`chNFe must be 44 digits, got ${input.chNFe.length}`);
+  }
+  const nSeq = input.nSeqEvento ?? 1;
+  const id = `ID${TP_EVENTO_EPEC}${input.chNFe}${String(nSeq).padStart(2, '0')}`;
+
+  const infEvento = serializeFragment('TEvento_infEvento', 'infEvento', {
+    Id: id,
+    cOrgao: C_ORGAO_AMBIENTE_NACIONAL,
+    tpAmb: input.tpAmb,
+    CNPJ: input.cnpj,
+    chNFe: input.chNFe,
+    dhEvento: formatDhEmi(input.dhEvento ?? new Date()),
+    tpEvento: TP_EVENTO_EPEC,
+    nSeqEvento: String(nSeq),
+    verEvento: EVENTO_VERSAO,
+    // `detEvento` is a #raw slot — injected verbatim in sequence order.
+    detEvento: buildEpecDetEvento(input),
+  });
+
+  return `<evento xmlns="${EVENTO_NS}" versao="${EVENTO_VERSAO}">${infEvento}</evento>`;
+}
+
+/**
+ * Project a signed (or unsigned) `<NFe>` into the EPEC summary the detEvento
+ * carries. Mirrors Flutter's `makeEPEC` field-for-field
+ * (`.old/packages/nfe_client/lib/src/schemas/envEPEc.dart:30`): emitter
+ * CNPJ/IE, ide dhEmi/tpNF/verProc, dest identification (UF `'EX'` for a
+ * foreign buyer) and the ICMSTot totals. Throws `NFeEventoError` when the
+ * NF-e lacks a dest or the emitter identification — an EPEC without them is
+ * unrepresentable in the e110140 schema.
+ */
+export function extractEpecInputFromNFe(
+  nfeXml: string,
+  args: { readonly tpAmb: TpAmb; readonly nSeqEvento?: number; readonly dhEvento?: Date },
+): EpecEventoInput {
+  const nfe = parse<TNFe>('NFe', nfeXml);
+  const inf = nfe.infNFe;
+  const chNFe = inf.Id.replace(/^NFe/, '');
+  const dest = inf.dest;
+  if (!dest) {
+    throw new NFeEventoError('EPEC requires a destinatário — the NF-e has no <dest>.');
+  }
+  if (!inf.emit.CNPJ || !inf.emit.IE) {
+    throw new NFeEventoError('EPEC requires the emitter CNPJ and IE.');
+  }
+  const uf = dest.idEstrangeiro != null ? 'EX' : dest.enderDest?.UF;
+  if (!uf) {
+    throw new NFeEventoError('EPEC requires the destinatário UF (enderDest.UF or idEstrangeiro).');
+  }
+  return {
+    chNFe,
+    tpAmb: args.tpAmb,
+    cnpj: inf.emit.CNPJ,
+    ie: inf.emit.IE,
+    cOrgaoAutor: inf.ide.cUF,
+    verAplic: inf.ide.verProc,
+    dhEmi: inf.ide.dhEmi,
+    tpNF: inf.ide.tpNF,
+    dest: {
+      uf,
+      cnpj: dest.CNPJ,
+      cpf: dest.CPF,
+      idEstrangeiro: dest.idEstrangeiro,
+      ie: dest.IE,
+      vNF: inf.total.ICMSTot.vNF,
+      vICMS: inf.total.ICMSTot.vICMS,
+      vST: inf.total.ICMSTot.vST,
+    },
+    nSeqEvento: args.nSeqEvento,
+    dhEvento: args.dhEvento,
+  };
 }
 
 /**

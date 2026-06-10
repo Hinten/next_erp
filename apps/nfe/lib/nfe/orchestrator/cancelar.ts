@@ -71,6 +71,14 @@ export async function cancelarNFeService(
       reused: true,
     };
   }
+  if (nota.estado === ESTADO_NFE.epecAprovado) {
+    // Issue #86: an EPEC-approved NF-e has no autorização at the home SEFAZ
+    // yet — there is nothing to cancel until the full NF-e is transmitted.
+    throw new NFeCancelamentoError(
+      `pedido '${pedidoId}' nfe '${nfeId}': NF-e em EPEC (estado='p') — ` +
+        'transmita a NF-e completa à SEFAZ antes de cancelar.',
+    );
+  }
   if (nota.estado !== ESTADO_NFE.aprovada) {
     throw new NFeCancelamentoError(
       `pedido '${pedidoId}' nfe '${nfeId}': estado='${nota.estado}' — ` +

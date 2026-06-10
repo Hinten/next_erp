@@ -190,7 +190,9 @@ function drawEmitente(
     valueBold: true,
     valueSize: 8,
   });
-  // E — consulta de autenticidade.
+  // E — consulta de autenticidade. An EPEC-approved NF-e (no autorização at
+  // the home SEFAZ yet) prints the EPEC variant (legacy retrato.dart:1707).
+  const isEpec = model.epec != null;
   field(
     doc,
     cbx,
@@ -198,7 +200,9 @@ function drawEmitente(
     RIGHT_W,
     1.59,
     null,
-    'Consulta de autenticidade no portal nacional da NF-e www.nfe.fazenda.gov.br/portal ou no site da Sefaz Autorizadora',
+    isEpec
+      ? 'Consulta de autenticidade no portal da NF-e www.nfe.fazenda.gov.br/portal'
+      : 'Consulta de autenticidade no portal nacional da NF-e www.nfe.fazenda.gov.br/portal ou no site da Sefaz Autorizadora',
     { valueSize: 7, valueAlign: 'center', valueLines: 3 },
   );
 
@@ -207,11 +211,17 @@ function drawEmitente(
     valueSize: 9,
   });
   // G — protocolo de autorização.
-  const prot =
-    model.prot && (model.prot.cStat === '100' || model.prot.cStat === '150')
+  const prot = model.epec
+    ? `${model.epec.nProt ?? ''}${
+        model.epec.dhRegEvento
+          ? ` ${formatDate(model.epec.dhRegEvento)} ${formatTimeSeconds(model.epec.dhRegEvento)}`
+          : ''
+      }`
+    : model.prot && (model.prot.cStat === '100' || model.prot.cStat === '150')
       ? `${model.prot.nProt ?? ''} ${formatDate(model.prot.dhRecbto)} ${formatTimeSeconds(model.prot.dhRecbto)}`
       : '';
-  field(doc, cbx, t + 3.92, RIGHT_W, 0.85, 'PROTOCOLO DE AUTORIZAÇÃO DE USO', prot, {
+  const protLabel = isEpec ? 'PROTOCOLO DE AUTORIZAÇÃO DO EPEC' : 'PROTOCOLO DE AUTORIZAÇÃO DE USO';
+  field(doc, cbx, t + 3.92, RIGHT_W, 0.85, protLabel, prot, {
     valueAlign: 'center',
   });
   // H/I/J — inscrições + CNPJ (the CNPJ box closes the row at 20.75).

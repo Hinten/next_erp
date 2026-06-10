@@ -10,7 +10,7 @@
  * The **simplificado** PDF + **ZPL2** label, the A4 **retrato** and **paisagem**
  * layouts all render here; the carta-de-correção PDF extends this same entry.
  */
-import { parseCceRetorno, parseProcNFe } from './model';
+import { parseCceRetorno, parseNFeForEpec, parseProcNFe } from './model';
 import { renderCce } from './pdf/cce';
 import { renderPaisagem } from './pdf/paisagem';
 import { renderRetrato } from './pdf/retrato';
@@ -18,13 +18,14 @@ import { renderSimplificado } from './pdf/simplificado';
 import { renderSimplificadoZpl, type ZplOptions } from './zpl2';
 import type { RenderA4Options } from './pdf/a4-common';
 
-export { parseProcNFe, parseCceRetorno } from './model';
+export { parseProcNFe, parseCceRetorno, parseNFeForEpec } from './model';
 export type {
   DanfeModel,
   DanfeIde,
   DanfeEmitente,
   DanfeDestinatario,
   DanfeEndereco,
+  DanfeEpecProtocolo,
   DanfeProtocolo,
   CceRetorno,
 } from './model';
@@ -61,6 +62,28 @@ export function renderDanfe(xml: string, opts: RenderDanfeOptions): Promise<Buff
 /** Render the DANFE Simplificado as a ZPL2 label string (Zebra printers). */
 export function renderDanfeZpl(xml: string, opts: ZplOptions = {}): string {
   return renderSimplificadoZpl(parseProcNFe(xml), opts);
+}
+
+/**
+ * Render the DANFE of an **EPEC-approved** NF-e (estado 'p'): the signed
+ * `<NFe>` + the registered EPEC's `<procEventoNFe>`. The A4 layouts swap the
+ * autorização box for "PROTOCOLO DE AUTORIZAÇÃO DO EPEC" (MOC Anexo III —
+ * the DANFE may be printed on plain paper once the EPEC is registered).
+ */
+export function renderDanfeEpec(
+  nfeXml: string,
+  epecProcXml: string,
+  opts: RenderDanfeOptions,
+): Promise<Buffer> {
+  const model = parseNFeForEpec(nfeXml, epecProcXml);
+  switch (opts.format) {
+    case 'simplificado':
+      return renderSimplificado(model, { cancelada: opts.cancelada });
+    case 'retrato':
+      return renderRetrato(model, { cancelada: opts.cancelada });
+    case 'paisagem':
+      return renderPaisagem(model, { cancelada: opts.cancelada });
+  }
 }
 
 /** Inputs for the CC-e PDF: the NF-e procNFe + the persisted CC-e record fields. */

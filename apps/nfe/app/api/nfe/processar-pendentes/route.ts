@@ -25,10 +25,12 @@ import {
   outcomeFromRetConsSit,
   type TpEmis,
 } from '@delfrance/integrations-nfe';
-import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
+import { ESTADO_NFE, type EstadoNFe, type NotaFiscalEletronica } from '@delfrance/schemas';
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
+import { loadNfeConfigForEmission } from '@/lib/nfe/orchestrator/bundle';
+import { transmitirPosEpec } from '@/lib/nfe/orchestrator/epec';
 import { sefazCallFor } from '@/lib/nfe/orchestrator/sefaz-call';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
 
@@ -48,6 +50,7 @@ interface PendingDoc {
   readonly estado: EstadoNFe;
   readonly chave: string | null;
   readonly tpEmis: number | null;
+  readonly filialId: string | null;
   readonly ultima_modificacao: string | null;
   readonly retries: number | null;
 }
@@ -84,7 +87,11 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const snap = await nfev4Collection
     .groupQuery(fs)
-    .where('estado', 'in', [ESTADO_NFE.enviando, ESTADO_NFE.aguardandoResposta])
+    .where('estado', 'in', [
+      ESTADO_NFE.enviando,
+      ESTADO_NFE.aguardandoResposta,
+      ESTADO_NFE.epecAprovado,
+    ])
     .limit(batchSize)
     .get();
 
@@ -92,10 +99,59 @@ export async function POST(req: Request): Promise<NextResponse> {
   let recovered = 0;
   let stillPending = 0;
   const errors: { chave: string | null; error: string }[] = [];
+  // Filial contingency modes, read once per filial per run — an approved
+  // EPEC is only transmitted once the operator flipped the modo back.
+  const modoByFilial = new Map<string, string>();
 
   for (const doc of snap.docs) {
     scanned++;
     const data = doc.data() as PendingDoc;
+
+    // Approved EPECs (estado 'p'): the pendência is the mandatory pós-EPEC
+    // full transmission to the home SEFAZ, not a lost-response recovery.
+    if (data.estado === ESTADO_NFE.epecAprovado) {
+      if (!data.filialId) {
+        errors.push({ chave: data.chave, error: `${doc.ref.path}: EPEC doc missing filialId` });
+        continue;
+      }
+      try {
+        let modo = modoByFilial.get(data.filialId);
+        if (modo === undefined) {
+          modo = (await loadNfeConfigForEmission(fs, data.filialId)).contingencia_modo;
+          modoByFilial.set(data.filialId, modo);
+        }
+        if (modo === 'epec') {
+          // Outage still on — transmitting now would just 468/fail.
+          stillPending++;
+          continue;
+        }
+        const pedidoId = doc.ref.parent.parent?.id;
+        if (!pedidoId) {
+          errors.push({ chave: data.chave, error: `${doc.ref.path}: no parent pedido` });
+          continue;
+        }
+        const result = await transmitirPosEpec({
+          fs,
+          rt: runtimeInstance,
+          filialId: data.filialId,
+          pedidoId,
+          nfeRef: doc.ref,
+          nota: doc.data() as NotaFiscalEletronica,
+        });
+        if (result.estado === ESTADO_NFE.epecAprovado) {
+          stillPending++; // 468 — EPEC not yet synced at the home SEFAZ
+        } else {
+          recovered++;
+        }
+      } catch (e) {
+        errors.push({
+          chave: data.chave,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+      continue;
+    }
+
     const stuck = isStuckEnviando(
       { estado: data.estado, ultima_modificacao: data.ultima_modificacao ?? null },
       now,

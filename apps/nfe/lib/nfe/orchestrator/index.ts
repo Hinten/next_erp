@@ -22,6 +22,7 @@
  *   - `inutilizar.ts`      — inutilização de numeração (NfeInutilizacao4)
  *   - `danfe.ts`           — DANFE artifact rendering (PDF + ZPL) from procNFe
  *   - `sefaz-call.ts`      — tpEmis-aware authorizer routing (home SEFAZ / SVC)
+ *   - `epec.ts`            — EPEC evento (110140 → AN) + pós-EPEC transmission
  */
 export * from './errors';
 export * from './bundle';
@@ -34,6 +35,7 @@ export * from './carta-correcao';
 export * from './inutilizar';
 export * from './danfe';
 export * from './sefaz-call';
+export * from './epec';
 
 import { flattenAndValidate, loadPagamentosFromSnapshot, parseFreteFromPedido } from './bundle';
 import {

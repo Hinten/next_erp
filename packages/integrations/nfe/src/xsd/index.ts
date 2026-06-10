@@ -50,6 +50,7 @@ const XSD_BY_ROOT = {
   // (cancelamento's) — see `src/codegen/generate.mjs`.
   detEvento: 'e110111_v1.00.xsd',
   detEventoCCe: 'e110110_v1.00.xsd',
+  detEventoEpec: 'e110140_v1.00.xsd',
   NFe: 'nfe_v4.00.xsd',
   // inbound — validate what SEFAZ sends us too (catches captive-portal HTML,
   // proxy junk, parser drift)
