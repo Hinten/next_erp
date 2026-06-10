@@ -2,11 +2,11 @@
  * `GET /api/nfe/danfe` — render the DANFE for an authorized NF-e.
  *
  * The document is rendered from the NF-e's persisted procNFe
- * (`pedidos/{pedidoId}/nfev4/{nfeId}.xml_nfe_proc`), never re-generated. PR1
- * serves the **simplificado** PDF and the **zpl2** Zebra label; the A4
- * retrato/paisagem formats arrive in PR2.
+ * (`pedidos/{pedidoId}/nfev4/{nfeId}.xml_nfe_proc`), never re-generated. Serves
+ * the simplificado PDF, the A4 retrato / paisagem PDFs, and the zpl2 Zebra
+ * label.
  *
- * Query: `?pedidoId&nfeId&format=simplificado|zpl2&dpi=203`
+ * Query: `?pedidoId&nfeId&format=simplificado|retrato|paisagem|zpl2&dpi=203`
  *
  * Returns:
  *   200  application/pdf            — `format=simplificado` (attachment)
@@ -36,8 +36,8 @@ export const runtime = 'nodejs';
 const querySchema = z.object({
   pedidoId: z.string().min(1).max(200),
   nfeId: z.string().min(1).max(200),
-  // simplificado + retrato (A4 portrait) + zpl2. paisagem lands next.
-  format: z.enum(['simplificado', 'retrato', 'zpl2']).default('simplificado'),
+  // simplificado + retrato (A4 portrait) + paisagem (A4 landscape) + zpl2.
+  format: z.enum(['simplificado', 'retrato', 'paisagem', 'zpl2']).default('simplificado'),
   // ZPL printhead density; ignored by the PDF formats.
   dpi: z.coerce.number().int().min(150).max(600).optional(),
 });

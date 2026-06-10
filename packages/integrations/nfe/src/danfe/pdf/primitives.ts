@@ -155,6 +155,80 @@ export function watermark(
 }
 
 /**
+ * Draw text rotated 90° counter-clockwise (reading bottom-to-top) inside the
+ * box `[x, y, w, h]` (points) — the landscape DANFE's canhoto labels and the
+ * vertical group titles (`PROD./SERV.`, `DESTINATÁRIO`, …).
+ *
+ * The rotation origin is the box's bottom-left corner; after `rotate(-90)` the
+ * text's writing direction (+x) points up the box height (the run length is `h`)
+ * and line-wrapping (+y) stacks lines across the box width `w`.
+ *
+ * The text **auto-fits**: the font shrinks from `size` to a 4 pt floor until the
+ * word-wrapped label fits the box thickness, so it is never clipped with an
+ * ellipsis. The `height` bound keeps pdfkit's line-wrapper from auto-adding a
+ * page to "continue" rotated text that sits near the page bottom in user space.
+ *
+ * `anchor` controls where the label sits **after the rotation** (which is why a
+ * naïve "align right" lands in the wrong corner): `'center'` centres it in the
+ * box (group titles, the NF-e box); `'bottomLeft'` pins it to the box's
+ * bottom-left corner so it reads up from there — the natural left-edge canhoto.
+ */
+export function textRotated(
+  doc: Doc,
+  str: string,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  opts: {
+    size?: number;
+    bold?: boolean;
+    /** Post-rotation anchor. Default `'center'`. */
+    anchor?: 'center' | 'bottomLeft';
+    upper?: boolean;
+  } = {},
+): void {
+  const { size = 6, bold = false, anchor = 'center', upper = true } = opts;
+  const pad = 2;
+  const runLen = h - 2 * pad; // text run-length (the box's long axis)
+  const crossAvail = w - 2 * pad; // wrap room across the box thickness
+  const s = upper ? str.toUpperCase() : str;
+  const font = bold ? FONT_BOLD : FONT;
+
+  // Auto-fit: largest size (down to a 4 pt floor) whose wrapped height fits the
+  // thickness, so the label is shown in full instead of being ellipsized.
+  doc.font(font);
+  let fontSize = size;
+  for (; fontSize > 4; fontSize -= 0.5) {
+    doc.fontSize(fontSize);
+    if (doc.heightOfString(s, { width: runLen }) <= crossAvail) break;
+  }
+  doc.fontSize(fontSize);
+  const blockH = Math.min(doc.heightOfString(s, { width: runLen }), crossAvail);
+
+  // `bottomLeft`: line block hugs the box's left edge and the run starts at the
+  // bottom (align left). `center`: block centred across the thickness, run
+  // centred. The text anchor's `y` offset selects the cross-axis position; after
+  // the −90° rotation it maps to the box's horizontal extent.
+  const crossOffset = anchor === 'bottomLeft' ? pad : (w - blockH) / 2;
+  const align = anchor === 'bottomLeft' ? 'left' : 'center';
+
+  doc.save();
+  doc.rotate(-90, { origin: [x, y + h] });
+  doc
+    .font(font)
+    .fontSize(fontSize)
+    .fillColor('#000000')
+    .text(s, x + pad, y + h + crossOffset, {
+      width: runLen,
+      height: crossAvail,
+      align,
+      lineBreak: true,
+    });
+  doc.restore();
+}
+
+/**
  * Draw a barcode PNG fitted (aspect-preserving, centered) inside `[x, y, w, h]`.
  */
 export function drawBarcode(

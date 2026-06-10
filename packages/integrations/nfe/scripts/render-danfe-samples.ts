@@ -11,6 +11,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { parseProcNFe, type DanfeModel } from '../src/danfe/model';
+import { renderPaisagem } from '../src/danfe/pdf/paisagem';
 import { renderRetrato } from '../src/danfe/pdf/retrato';
 import { renderSimplificado } from '../src/danfe/pdf/simplificado';
 import { renderSimplificadoZpl } from '../src/danfe/zpl2';
@@ -40,8 +41,9 @@ async function main(): Promise<void> {
 
   const base = parseProcNFe(PROCNFE_FIXTURE);
 
-  // Base scenario, all three outputs.
+  // Base scenario, every output.
   write('retrato-base.pdf', await renderRetrato(base));
+  write('paisagem-base.pdf', await renderPaisagem(base));
   write('simplificado-base.pdf', await renderSimplificado(base));
   write('etiqueta-base.zpl', renderSimplificadoZpl(base));
 
@@ -58,6 +60,7 @@ async function main(): Promise<void> {
     },
   };
   write('retrato-100-itens.pdf', await renderRetrato(big));
+  write('paisagem-100-itens.pdf', await renderPaisagem(big));
 
   // chNFe referenciada → aparece em informações complementares.
   const nfref = PROCNFE_FIXTURE.replace(
@@ -75,6 +78,7 @@ async function main(): Promise<void> {
     },
   };
   write('retrato-infcpl-max.pdf', await renderRetrato(maxInfCpl));
+  write('paisagem-infcpl-max.pdf', await renderPaisagem(maxInfCpl));
 
   // Caracteres escapados no XML.
   const escaped = PROCNFE_FIXTURE.replace(
@@ -89,6 +93,7 @@ async function main(): Promise<void> {
     `</dest>${local('retirada')}${local('entrega')}`,
   );
   write('retrato-entrega-transp.pdf', await renderRetrato(parseProcNFe(entrega)));
+  write('paisagem-entrega-transp.pdf', await renderPaisagem(parseProcNFe(entrega)));
 
   console.log('\nDone. Open the PDFs in', OUT_DIR);
 }

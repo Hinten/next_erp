@@ -4,12 +4,7 @@ import { renderDanfe } from '../../src/danfe';
 import { parseProcNFe } from '../../src/danfe/model';
 import { composeInfoComplementares, paginate, renderRetrato } from '../../src/danfe/pdf/retrato';
 import { PROCNFE_FIXTURE } from './fixtures';
-
-const pageCount = (pdf: Buffer): number =>
-  (pdf.toString('latin1').match(/\/Type\s*\/Page[^s]/g) ?? []).length;
-const REF_CHAVE = '35260514200166000187550010000000061000000010';
-
-const isPdf = (buf: Buffer): boolean => buf.subarray(0, 5).toString('latin1') === '%PDF-';
+import { isPdf, pageCount, REF_CHAVE } from './helpers';
 
 describe('danfe/pdf retrato (A4)', () => {
   const model = parseProcNFe(PROCNFE_FIXTURE);
