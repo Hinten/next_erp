@@ -1,12 +1,12 @@
 'use client';
 
-import { useState } from 'react';
-import { ActionIcon, Button, Group, Menu, Modal, Stack, Text, Tooltip } from '@mantine/core';
+import { ActionIcon, Button, Group, Menu, Tooltip } from '@mantine/core';
 import { IconDotsVertical } from '@tabler/icons-react';
 import Link from 'next/link';
 import type { Route } from 'next';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { ActionConfig } from '../schema/types';
+import { useActionRunner } from './useActionRunner';
 
 /**
  * How the ActionBar lays out its bulk actions.
@@ -45,7 +45,7 @@ export interface ActionBarProps<T> {
 
 /**
  * Toolbar above the table. Disables bulk actions when nothing is selected.
- * Confirmation flows are routed through a Mantine Modal that this bar owns.
+ * Confirmation flows are routed through `useActionRunner`'s shared Modal.
  * Many actions can collapse into an overflow `Menu` via `actionsLayout`.
  */
 export function ActionBar<T>({
@@ -58,23 +58,7 @@ export function ActionBar<T>({
   actionsLayout = 'auto',
   overflowThreshold = 3,
 }: ActionBarProps<T>) {
-  const [pending, setPending] = useState<ActionConfig<T> | null>(null);
-
-  async function execute(action: ActionConfig<T>) {
-    await action.run(selectedRows);
-    if (action.refreshOnComplete) onActionComplete?.();
-  }
-
-  // Shared dispatcher: routes through the confirm modal when the action
-  // declares one. Inline buttons and menu items both call this so the
-  // confirm semantics stay identical across layouts.
-  async function triggerAction(action: ActionConfig<T>) {
-    if (action.confirm) {
-      setPending(action);
-      return;
-    }
-    await execute(action);
-  }
+  const { trigger, confirmModal } = useActionRunner({ selectedRows, onActionComplete });
 
   const copyRow = selectedRows.length === 1 ? selectedRows[0] : null;
 
@@ -130,7 +114,7 @@ export function ActionBar<T>({
                     leftSection={a.icon}
                     color={a.color}
                     disabled={disabled}
-                    onClick={() => triggerAction(a)}
+                    onClick={() => trigger(a)}
                   >
                     {a.label}
                   </Menu.Item>
@@ -147,7 +131,7 @@ export function ActionBar<T>({
                 variant="default"
                 color={a.color}
                 disabled={disabled}
-                onClick={() => triggerAction(a)}
+                onClick={() => trigger(a)}
               >
                 {a.label}
               </Button>
@@ -156,31 +140,7 @@ export function ActionBar<T>({
         )}
       </Group>
 
-      <Modal
-        opened={!!pending}
-        onClose={() => setPending(null)}
-        title={pending?.confirm?.title ?? 'Confirmar'}
-        centered
-      >
-        <Stack>
-          <Text>{pending?.confirm?.message}</Text>
-          <Group justify="flex-end">
-            <Button variant="default" onClick={() => setPending(null)}>
-              Cancelar
-            </Button>
-            <Button
-              color={pending?.color ?? 'red'}
-              onClick={async () => {
-                const action = pending!;
-                setPending(null);
-                await execute(action);
-              }}
-            >
-              Confirmar
-            </Button>
-          </Group>
-        </Stack>
-      </Modal>
+      {confirmModal}
     </>
   );
 }

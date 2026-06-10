@@ -92,6 +92,25 @@ describe('ActionBar', () => {
     expect(screen.queryByRole('button', { name: 'Mais ações' })).toBeNull();
   });
 
+  it('routes a confirm action through the modal before running it', () => {
+    const run = vi.fn();
+    wrap(
+      <ActionBar
+        actions={[
+          { ...makeAction('1', run), confirm: { title: 'Excluir?', message: 'Tem certeza?' } },
+        ]}
+        selectedRows={[ROW]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Ação 1' }));
+    // Clicking the action opens the confirm modal instead of running.
+    expect(run).not.toHaveBeenCalled();
+    expect(screen.getByText('Tem certeza?')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar' }));
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledWith([ROW]);
+  });
+
   it('disables menu items that require selection when nothing is selected', () => {
     wrap(
       <ActionBar
