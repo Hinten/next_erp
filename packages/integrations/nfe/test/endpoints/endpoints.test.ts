@@ -31,10 +31,51 @@ describe('svcAuthorizerForUF', () => {
     }
   });
 
-  it('throws for SVC-RS UFs until the svc-rs PR lands', () => {
-    for (const uf of ['PR', 'BA', 'MT', 'PE']) {
-      expect(() => svcAuthorizerForUF(uf)).toThrow(NFeContingencyEndpointError);
+  it('maps the SVC-RS UFs to svc-rs', () => {
+    for (const uf of ['AM', 'BA', 'GO', 'MA', 'MS', 'MT', 'PE', 'PI', 'PR']) {
+      expect(svcAuthorizerForUF(uf)).toBe('svc-rs');
     }
+  });
+
+  it('covers all 27 UFs with disjoint SVC sets', () => {
+    const all = [
+      'AC',
+      'AL',
+      'AM',
+      'AP',
+      'BA',
+      'CE',
+      'DF',
+      'ES',
+      'GO',
+      'MA',
+      'MG',
+      'MS',
+      'MT',
+      'PA',
+      'PB',
+      'PE',
+      'PI',
+      'PR',
+      'RJ',
+      'RN',
+      'RO',
+      'RR',
+      'RS',
+      'SC',
+      'SE',
+      'SP',
+      'TO',
+    ];
+    // Uniqueness too — a duplicate + an omission would keep the length at 27.
+    expect(new Set(all).size).toBe(27);
+    for (const uf of all) {
+      expect(['svc-an', 'svc-rs']).toContain(svcAuthorizerForUF(uf));
+    }
+  });
+
+  it("throws for a UF that isn't an emitter ('EX')", () => {
+    expect(() => svcAuthorizerForUF('EX')).toThrow(NFeContingencyEndpointError);
   });
 });
 
@@ -61,8 +102,19 @@ describe('getSvcEndpoints', () => {
     expect('NfeInutilizacao' in urls).toBe(false);
   });
 
-  it('throws for svc-rs until the svc-rs PR lands', () => {
-    expect(() => getSvcEndpoints('svc-rs', 'producao')).toThrow(NFeContingencyEndpointError);
+  it('serves the official SVC-RS (SVRS) URL set per ambiente', () => {
+    const prod = getSvcEndpoints('svc-rs', 'producao');
+    expect(prod.NfeAutorizacao).toBe(
+      'https://nfe.svrs.rs.gov.br/ws/NfeAutorizacao/NFeAutorizacao4.asmx',
+    );
+    expect(prod.RecepcaoEvento).toBe(
+      'https://nfe.svrs.rs.gov.br/ws/recepcaoevento/recepcaoevento4.asmx',
+    );
+    const hom = getSvcEndpoints('svc-rs', 'homologacao');
+    expect(hom.NfeConsultaProtocolo).toBe(
+      'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx',
+    );
+    expect('NfeInutilizacao' in hom).toBe(false);
   });
 });
 
