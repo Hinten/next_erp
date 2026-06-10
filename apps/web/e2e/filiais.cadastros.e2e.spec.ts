@@ -103,10 +103,14 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await expect(page.getByRole('heading', { name: 'Nova filial' })).toBeVisible();
   });
 
-  test('shows placeholder tabs on the new-filial page', async ({ page }) => {
+  test('shows the save-first NFe hint + certificado placeholder on the new-filial page', async ({
+    page,
+  }) => {
     await page.goto('/configuracoes/filiais/novo');
+    // The NFe tab needs a saved filial (the panel reads its nfeconfig doc) —
+    // the create page shows the save-first hint instead.
     await page.getByRole('tab', { name: 'Configurações NFe' }).click();
-    await expect(page.getByText(/configuração de numeração/i)).toBeVisible();
+    await expect(page.getByText(/salve a filial primeiro/i)).toBeVisible();
     await page.getByRole('tab', { name: 'Certificado Digital' }).click();
     await expect(page.getByText(/certificado digital A1/i)).toBeVisible();
   });
