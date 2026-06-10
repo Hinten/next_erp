@@ -325,3 +325,4 @@ export {
 } from './storage/storagePaths';
 
 export { buildFotoRefs, fotoSchema, type Foto, type FotoRefs } from './storage/foto';
+export { videoSchema, videoFormatoSchema, type Video, type VideoFormato } from './storage/video';
