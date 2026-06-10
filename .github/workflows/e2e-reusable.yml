@@ -74,8 +74,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-      pull-requests: write
-      actions: read
     env:
       FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
       FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
@@ -167,8 +165,23 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # Separate job (not a step in `e2e`) so it starts only AFTER e2e concludes:
+  # a step inside e2e would see its own job still `in_progress` (conclusion
+  # null), so the `conclusion == "failure"` filter would match nothing and the
+  # log tail would be empty. As a downstream job, the failed e2e job has
+  # concluded and its logs are fetchable. Mirrors ci.yml's report-failure.
+  # `needs.e2e.result == 'failure'` fires only when e2e actually ran and
+  # failed — not when it was skipped because await-offline gated it out.
+  report-failure:
+    needs: [e2e]
+    if: ${{ always() && needs.e2e.result == 'failure' && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    steps:
       - name: Comment failure log on PR
-        if: ${{ failure() && github.event_name == 'pull_request' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}

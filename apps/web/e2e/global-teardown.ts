@@ -52,6 +52,7 @@ export default async function globalTeardown() {
     'clientes',
     'categorias',
     'depositos',
+    'filiais',
     'motivosincidentes',
     'bandeirasCartao',
   ];

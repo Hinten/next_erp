@@ -271,7 +271,7 @@ Create `apps/web/e2e/<x>.<dominio>.e2e.spec.ts`, where `<dominio>` is
    `requiresAuthEnv()`; `warmup.ts` exports `warmRoutes()` (call it in
    `beforeAll` — see §11 on cold-start timeouts).
 
-## 8. CI workflow — one line to add
+## 8. CI workflow — nothing to add
 
 e2e is **two** domain workflows — `.github/workflows/e2e-cadastros.yml` and
 `e2e-vendas.yml` — sharing the `e2e-reusable.yml` engine. Both trigger on
