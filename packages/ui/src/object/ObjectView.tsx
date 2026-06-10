@@ -214,19 +214,34 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
 
   async function doSave(continueEditing: boolean) {
     setSubmitError(null);
-    const values = form.getValues();
+    // Apply per-field save-time transforms (e.g. the staged-deletion convention:
+    // `prepareForSave: stripMarkedForDeletion` drops items marked for removal).
+    // We reset the form to these transformed values on success so the UI
+    // reflects what was actually persisted.
+    const raw = form.getValues() as Record<string, unknown>;
+    const values: Record<string, unknown> = { ...raw };
+    const isUpdate = !!internalId;
+    const dirty = form.formState.dirtyFields as Record<string, unknown>;
+    for (const [key, cfg] of Object.entries(fieldOverrides)) {
+      if (!cfg?.prepareForSave) continue;
+      // Only transform fields that will actually be written — all fields on
+      // create, just the dirty ones on update — so `form.reset(values)` can't
+      // show a transformed value that never reached Firestore.
+      if (isUpdate && !dirty[key]) continue;
+      values[key] = cfg.prepareForSave(raw[key]);
+    }
     try {
       const result = await saveRecord<S, Record<string, unknown>>({
         db,
         collection,
         pathContext,
         recordId: internalId,
-        values: values as Record<string, unknown>,
+        values,
         dirtyFields: form.formState.dirtyFields as Partial<Record<string, unknown>>,
         currentUserUid,
       });
-      // Zero out dirty state while preserving current values.
-      form.reset(values);
+      // Zero out dirty state while preserving the persisted (transformed) values.
+      form.reset(values as typeof raw);
       // If we just created, retain the id so subsequent saves are updates.
       if (!internalId) setInternalId(result.id);
       if (continueEditing) {
@@ -303,6 +318,16 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
 
   const loading = internalId && docSnap.loading;
 
+  // In genuine edit mode (a `recordId` was supplied) surface load errors and
+  // missing documents instead of rendering an empty, un-saveable form — saving
+  // would throw on `tx.update` for a non-existent doc. Gated on `recordId`, not
+  // `internalId`, so a freshly-created record (whose snapshot may briefly be
+  // empty right after the create save) never flashes "não encontrado".
+  const editingExisting = recordId !== undefined;
+  const loadError = editingExisting ? docSnap.error : null;
+  const notFound = editingExisting && !docSnap.loading && !docSnap.data;
+  const blocked = Boolean(loadError) || notFound;
+
   return (
     <form
       onSubmit={(e) => {
@@ -349,7 +374,14 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
           </Stack>
         )}
 
+        {!loading && loadError && <Alert color="red">{loadError.message}</Alert>}
+
+        {!loading && !loadError && notFound && (
+          <Alert color="yellow">Registro não encontrado.</Alert>
+        )}
+
         {!loading &&
+          !blocked &&
           (sections && sections.length > 0 ? (
             <SectionTabs
               sections={sections}
@@ -362,7 +394,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
         {submitError && <Alert color="red">{submitError}</Alert>}
 
         <Group justify="space-between">
-          {deleteVisible && internalId ? (
+          {deleteVisible && internalId && !blocked ? (
             <Button
               type="button"
               color="red"
@@ -378,7 +410,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
             <span />
           )}
           <Group>
-            {editingAllowed && showSaveAndContinue && (
+            {editingAllowed && !blocked && showSaveAndContinue && (
               <Button
                 type="button"
                 variant="default"
@@ -388,7 +420,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
                 Salvar e continuar
               </Button>
             )}
-            {editingAllowed && (
+            {editingAllowed && !blocked && (
               <Button type="submit" loading={form.formState.isSubmitting}>
                 {saveLabel}
               </Button>

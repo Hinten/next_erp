@@ -12,7 +12,7 @@ const { docState, saveRecordMock, NothingChanged, notifyShow } = vi.hoisted(() =
       current: { data: null, loading: false, error: undefined } as {
         data: undefined | null | { id: string; data: unknown };
         loading: boolean;
-        error: undefined;
+        error: Error | undefined;
       },
     },
     saveRecordMock: vi.fn(),
@@ -163,5 +163,70 @@ describe('ObjectView save flow', () => {
     expect(saveRecordMock).toHaveBeenCalled();
     expect(onSaved).not.toHaveBeenCalled();
     expect(notifyShow).toHaveBeenCalledWith(expect.objectContaining({ color: 'green' }));
+  });
+
+  it('applies prepareForSave to a dirty field before saving (transformed value reaches saveRecord)', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice' } },
+      loading: false,
+      error: undefined,
+    };
+    saveRecordMock.mockResolvedValueOnce({ id: 'EXISTING', patch: { nome: 'Updated!' } });
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          fields={{ nome: { prepareForSave: (v) => `${v as string}!` } }}
+        />
+      </Wrap>,
+    );
+    const nome = screen.getByRole('textbox', { name: 'Nome' }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(nome, { target: { value: 'Updated' } });
+      fireEvent.blur(nome);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    const arg = saveRecordMock.mock.calls[0]![0] as { values: Record<string, unknown> };
+    expect(arg.values.nome).toBe('Updated!');
+  });
+
+  it('shows a "não encontrado" alert and hides save in edit mode when the doc is missing', () => {
+    docState.current = { data: null, loading: false, error: undefined };
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="MISSING"
+        />
+      </Wrap>,
+    );
+    expect(screen.getByText('Registro não encontrado.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Salvar' })).toBeNull();
+  });
+
+  it('shows a load-error alert and hides save in edit mode when the snapshot errors', () => {
+    docState.current = { data: undefined, loading: false, error: new Error('boom') };
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+        />
+      </Wrap>,
+    );
+    expect(screen.getByText('boom')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Salvar' })).toBeNull();
   });
 });

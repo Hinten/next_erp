@@ -1,32 +1,53 @@
 'use client';
 
 import { useMemo } from 'react';
-import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { setDoc } from 'firebase/firestore';
-import { Alert, Anchor, Button, Group, Skeleton, Stack } from '@mantine/core';
-import { PageHeader } from '@delfrance/ui';
-import { useDocSnapshot } from '@delfrance/data/hooks';
-import type { Produto } from '@delfrance/schemas';
-import { ProdutoForm } from '../../_components/ProdutoForm';
+import { useParams, useRouter } from 'next/navigation';
+import { Anchor, Stack } from '@mantine/core';
+import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
+import { PERM } from '@delfrance/auth';
+import { type Foto, produtoSchema } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
-import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
+import { useAuth, usePermission } from '@/lib/auth';
+import { PhotoManager } from '../../_components/PhotoManager';
+import {
+  PRODUTO_EXCLUDED_FIELDS,
+  PRODUTO_SECTIONS,
+  produtoFieldOverrides,
+} from '../../_components/produtoFields';
 
 export default function EditarProdutoPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const { user } = useAuth();
+  const { allowed: canWrite } = usePermission(PERM.produto.write);
+  const db = getFirebaseFirestore();
+  const storage = getFirebaseStorage();
 
-  const docRef = useMemo(
-    () => produtoCollection.docRef(getFirebaseFirestore(), {}, params.id),
-    [params.id],
+  // The product exists here (edit mode), so the Fotos tab's PhotoManager is
+  // scoped to this product and uploads are enabled.
+  const fields = useMemo<Record<string, FieldConfig>>(
+    () => ({
+      ...produtoFieldOverrides,
+      fotos: {
+        label: 'Fotos',
+        section: 'Fotos',
+        prepareForSave: stripMarkedForDeletion,
+        renderInput: (p) => (
+          <PhotoManager
+            produtoId={params.id}
+            db={db}
+            storage={storage}
+            value={(p.value as Foto[] | null) ?? null}
+            onChange={p.onChange}
+            disabled={p.disabled}
+          />
+        ),
+      },
+    }),
+    [params.id, db, storage],
   );
-
-  const { data, loading, error } = useDocSnapshot(docRef);
-
-  async function handleSubmit(values: Produto) {
-    await setDoc(docRef, values, { merge: true });
-    router.replace(`/produtos/${params.id}`);
-  }
 
   return (
     <Stack>
@@ -38,23 +59,20 @@ export default function EditarProdutoPage() {
           </Anchor>
         }
       />
-      {error && <Alert color="red">{error.message}</Alert>}
-      {loading && <Skeleton height={420} />}
-      {!loading && !data && <Alert color="yellow">Produto não encontrado.</Alert>}
-      {!loading && data && (
-        <ProdutoForm
-          defaultValues={data.data}
-          submitLabel="Salvar alterações"
-          onSubmit={handleSubmit}
-        />
-      )}
-      {!loading && (
-        <Group>
-          <Button component={Link} href="/produtos" variant="subtle">
-            Voltar à lista
-          </Button>
-        </Group>
-      )}
+      <ObjectView
+        schema={produtoSchema}
+        collection={produtoCollection}
+        db={db}
+        currentUserUid={user?.uid ?? ''}
+        recordId={params.id}
+        sections={PRODUTO_SECTIONS}
+        fields={fields}
+        excludedFields={PRODUTO_EXCLUDED_FIELDS}
+        saveLabel="Salvar alterações"
+        canEdit={canWrite}
+        readOnly={!canWrite}
+        onSaved={() => router.replace(`/produtos/${params.id}`)}
+      />
     </Stack>
   );
 }

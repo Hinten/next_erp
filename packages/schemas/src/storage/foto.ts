@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { ARQUIVOS_COLLECTION } from './arquivo';
 import { derivativeArquivoId, productArquivoId } from './storagePaths';
 
@@ -29,3 +30,30 @@ export function buildFotoRefs(produtoId: string, hash: string): FotoRefs {
     arquivoJpegOuterRef: ref(derivativeArquivoId(produtoId, hash, 'jpeg')),
   };
 }
+
+/**
+ * A product photo, embedded as an element of `Produto.fotos`. Mirrors the
+ * Flutter `Foto2` wire shape (`packages/produtos/lib/src/models.dart` ->
+ * `_$Foto2ToJson`): every `*OuterRef` is a plain `arquivos/<id>` document-path
+ * **string** (the generated ODM reads `json['arquivoOuterRef'] as String`),
+ * and there is **no `ordem`** field — display order is the array position.
+ *
+ * `arquivoOuterRef` (the uploaded original) is required; the resize-derived
+ * refs are nullable because the resize Cloud Function fills them in
+ * asynchronously after the upload finalizes. `grupoDeVariacoesOuterRef` /
+ * `variantePath` scope a photo to a specific variation (per-variant galleries).
+ * `.passthrough()` keeps any extra fields the Flutter app may write. Build the
+ * refs with `buildFotoRefs`.
+ */
+export const fotoSchema = z
+  .object({
+    arquivoOuterRef: z.string().min(1),
+    arquivo200pxOuterRef: z.string().nullable().default(null),
+    arquivo400pxOuterRef: z.string().nullable().default(null),
+    arquivoJpegOuterRef: z.string().nullable().default(null),
+    grupoDeVariacoesOuterRef: z.string().nullable().default(null),
+    variantePath: z.string().nullable().default(null),
+  })
+  .passthrough();
+
+export type Foto = z.infer<typeof fotoSchema>;
