@@ -17,6 +17,7 @@ import {
   Text,
 } from '@mantine/core';
 import { Dropzone, IMAGE_MIME_TYPE, type FileWithPath } from '@mantine/dropzone';
+import { notifications } from '@mantine/notifications';
 import {
   IconGripVertical,
   IconPhotoPlus,
@@ -126,7 +127,12 @@ export function PhotoManager({
         seen.add(refs.arquivoOuterRef);
         added.push({ ...refs, grupoDeVariacoesOuterRef: null, variantePath: null });
       }
-      if (added.length > 0) onChange([...fotos, ...added]);
+      if (added.length > 0) {
+        onChange([...fotos, ...added]);
+        notifications.show({ color: 'green', message: `${added.length} foto(s) enviada(s).` });
+      } else {
+        notifications.show({ color: 'gray', message: 'Foto(s) já adicionada(s).' });
+      }
     } catch (err) {
       // Always log so a failed upload is traceable — the dropzone otherwise just
       // drops its spinner with no trace. Surface a message for the known cases.
@@ -241,8 +247,10 @@ function SortableFoto({ foto, db, isCover, disabled, onCover, onRemove }: Sortab
   }, [db, foto.arquivoOuterRef]);
   const deriv = useDocSnapshot(derivRef);
   const original = useDocSnapshot(originalRef);
+  // Prefer the 200px derivative when it exists; otherwise show the original.
+  // The live snapshot upgrades the thumbnail automatically if/when the resize
+  // function later produces the derivative — no "processing" badge needed.
   const url = deriv.data?.data?.url ?? original.data?.data?.url ?? null;
-  const optimizing = !deriv.data?.data?.url;
 
   return (
     <Paper ref={setNodeRef} style={style} withBorder p={4} pos="relative">
@@ -257,11 +265,6 @@ function SortableFoto({ foto, db, isCover, disabled, onCover, onRemove }: Sortab
         {isCover && (
           <Badge color="blue" size="xs" pos="absolute" top={4} left={4}>
             Capa
-          </Badge>
-        )}
-        {url && optimizing && (
-          <Badge color="gray" size="xs" pos="absolute" bottom={4} left={4}>
-            processando…
           </Badge>
         )}
         {!disabled && (
