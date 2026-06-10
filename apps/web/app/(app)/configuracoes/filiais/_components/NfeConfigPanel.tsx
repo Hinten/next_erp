@@ -32,7 +32,7 @@ import {
 import { notifications } from '@mantine/notifications';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import { getDoc, setDoc } from 'firebase/firestore';
+import { getDoc, runTransaction } from 'firebase/firestore';
 import { z } from 'zod';
 
 import { PERM } from '@delfrance/auth';
@@ -138,16 +138,27 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
     mutationFn: async () => {
       if (!cfg) return;
       const now = new Date().toISOString();
-      const next: NFeConfig = {
-        ...cfg,
-        contingencia_modo: modoValue,
-        contingencia_justificativa: modoValue === 'none' ? null : justValue,
-        // Stamp dhCont when the mode turns ON; keep it while it stays on;
-        // clear it on the way back to normal.
-        contingencia_dataInicio: modoValue === 'none' ? null : (cfg.contingencia_dataInicio ?? now),
-        timestamp: now,
-      };
-      await setDoc(nfeConfigCollection.docRef(db, { filialId }, NFE_CONFIG_DOC_ID), next);
+      const ref = nfeConfigCollection.docRef(db, { filialId }, NFE_CONFIG_DOC_ID);
+      // Transactional read-modify-write: the counters (numeracao_atual /
+      // idLote) advance server-side on every emission, so building the write
+      // from the CACHED cfg could roll them back. The tx re-reads the doc and
+      // only the three contingency fields come from the form.
+      await runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return; // deleted concurrently — nothing to update
+        const fresh = snap.data();
+        const next: NFeConfig = {
+          ...fresh,
+          contingencia_modo: modoValue,
+          contingencia_justificativa: modoValue === 'none' ? null : justValue,
+          // Stamp dhCont when the mode turns ON; keep it while it stays on;
+          // clear it on the way back to normal.
+          contingencia_dataInicio:
+            modoValue === 'none' ? null : (fresh.contingencia_dataInicio ?? now),
+          timestamp: now,
+        };
+        tx.set(ref, next);
+      });
     },
     onSuccess: () => {
       notifications.show({ color: 'green', message: 'Configuração de contingência salva.' });

@@ -1397,6 +1397,36 @@ describe('consultarPedido — consReci(nRec) preferred over consSit(chave)', () 
     ],
   };
 
+  it('finds an SVC-emitted doc (s6) and routes its consulta to the SVC, even with modo back to none', async () => {
+    // Regression for the review finding: the doc slot must come from what is
+    // PERSISTED, not derived from the current config mode (fixture = 'none').
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({ events });
+    docs['pedidos/PED-1/nfev4/s6'] = {
+      numeracao: 8,
+      serie: 1,
+      tpEmis: 6,
+      estado: ESTADO_NFE.aguardandoResposta,
+      chave: CHAVE,
+      cStat: '103',
+      xMotivo: 'Lote recebido',
+      nRec: null,
+      retries: 0,
+      ultima_modificacao: '2026-06-10T09:00:00.000Z',
+    };
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(RET_SIT_100);
+
+    const result = await consultarPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.nfeId).toBe('s6');
+    expect(result.estado).toBe(ESTADO_NFE.aprovada);
+    // Routed to the SVC-AN consulta URL (persisted tpEmis=6), not the home SEFAZ.
+    expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/svc-an/cons' }),
+      { chave: CHAVE },
+    );
+  });
+
   it('uses consultarLote when an EnviNFeMsg with nRec exists for the chave', async () => {
     const events: string[] = [];
     const { fs, docs } = fakeFirestore({ events });
