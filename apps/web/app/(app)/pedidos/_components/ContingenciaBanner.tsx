@@ -9,8 +9,9 @@
 import Link from 'next/link';
 import { Alert, Anchor } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
-import { collectionGroup, getDoc, getDocs, query as fsQuery, where } from 'firebase/firestore';
+import { getDoc, getDocs, query as fsQuery, where } from 'firebase/firestore';
 
+import { groupQuery } from '@delfrance/data';
 import type { ContingenciaModo } from '@delfrance/schemas';
 
 import { filialCollection } from '@/lib/data/filialCollection';
@@ -36,7 +37,7 @@ export function ContingenciaBanner() {
       // the NF-e module's queries is a tracked follow-up.
       const activeSnap = await getDocs(
         fsQuery(
-          collectionGroup(db, 'nfeconfig').withConverter(nfeConfigCollection.converter),
+          groupQuery(db, 'nfeconfig', nfeConfigCollection.converter),
           where('contingencia_modo', '!=', 'none'),
         ),
       );
