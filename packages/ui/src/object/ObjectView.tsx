@@ -214,19 +214,34 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
 
   async function doSave(continueEditing: boolean) {
     setSubmitError(null);
-    const values = form.getValues();
+    // Apply per-field save-time transforms (e.g. the staged-deletion convention:
+    // `prepareForSave: stripMarkedForDeletion` drops items marked for removal).
+    // We reset the form to these transformed values on success so the UI
+    // reflects what was actually persisted.
+    const raw = form.getValues() as Record<string, unknown>;
+    const values: Record<string, unknown> = { ...raw };
+    const isUpdate = !!internalId;
+    const dirty = form.formState.dirtyFields as Record<string, unknown>;
+    for (const [key, cfg] of Object.entries(fieldOverrides)) {
+      if (!cfg?.prepareForSave) continue;
+      // Only transform fields that will actually be written — all fields on
+      // create, just the dirty ones on update — so `form.reset(values)` can't
+      // show a transformed value that never reached Firestore.
+      if (isUpdate && !dirty[key]) continue;
+      values[key] = cfg.prepareForSave(raw[key]);
+    }
     try {
       const result = await saveRecord<S, Record<string, unknown>>({
         db,
         collection,
         pathContext,
         recordId: internalId,
-        values: values as Record<string, unknown>,
+        values,
         dirtyFields: form.formState.dirtyFields as Partial<Record<string, unknown>>,
         currentUserUid,
       });
-      // Zero out dirty state while preserving current values.
-      form.reset(values);
+      // Zero out dirty state while preserving the persisted (transformed) values.
+      form.reset(values as typeof raw);
       // If we just created, retain the id so subsequent saves are updates.
       if (!internalId) setInternalId(result.id);
       if (continueEditing) {

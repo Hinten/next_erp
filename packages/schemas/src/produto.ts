@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
+import { fotoSchema } from './storage/foto';
 
 const PERM_PRODUTO_READ = 1n << 8n;
 const PERM_PRODUTO_WRITE = 1n << 9n;
@@ -53,7 +54,7 @@ export const produtoSchema = z
     marketplaceIds: z.array(z.string()).nullable().default(null),
     marketplace: z.array(z.unknown()).default([]),
     statusProdutosMarketplace: z.record(z.string(), z.unknown()).nullable().default(null),
-    fotos: z.array(z.unknown()).nullable().default(null),
+    fotos: z.array(fotoSchema).nullable().default(null),
     videos: z.array(z.unknown()).nullable().default(null),
     anexos: z.array(z.unknown()).nullable().default(null),
     fotosArquivosIds: z.array(z.string()).nullable().default(null),

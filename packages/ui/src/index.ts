@@ -31,6 +31,7 @@ export { NullClearButton, type NullClearButtonProps } from './object/NullClearBu
 export { RecordPager, type RecordPagerProps } from './object/RecordPager';
 export { SectionTabs, type SectionTabsProps } from './object/SectionTabs';
 export { isEmpty, pickDirty } from './object/diff';
+export { DELETE_MARK, stripMarkedForDeletion } from './object/markForDeletion';
 export {
   NothingChangedError,
   saveRecord,

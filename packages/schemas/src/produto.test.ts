@@ -29,19 +29,25 @@ describe('produtoSchema', () => {
   });
 
   it('passes complex nested fields through unchanged (passthrough)', () => {
-    const fotos = [{ src: 'a.jpg' }];
     const componentes = { 'sku-a': { qty: 2 } };
     const parsed = produtoSchema.parse({
       nome: 'Kit',
       ehKit: true,
-      fotos,
       componentesKit: componentes,
       // unknown extra field — should be preserved by .passthrough()
       _customField: 'whatever',
     });
-    expect(parsed.fotos).toEqual(fotos);
     expect(parsed.componentesKit).toEqual(componentes);
     expect((parsed as Record<string, unknown>)._customField).toBe('whatever');
+  });
+
+  it('parses the fotos array against fotoSchema (typed, not pass-through)', () => {
+    const parsed = produtoSchema.parse({
+      nome: 'Com foto',
+      fotos: [{ arquivoOuterRef: 'arquivos/p1_h' }],
+    });
+    expect(parsed.fotos?.[0]?.arquivoOuterRef).toBe('arquivos/p1_h');
+    expect(parsed.fotos?.[0]?.arquivo200pxOuterRef).toBeNull();
   });
 
   it('keeps variation arrays as-is', () => {

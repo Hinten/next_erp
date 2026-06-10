@@ -13,7 +13,12 @@ import type { Produto } from '@delfrance/schemas';
  */
 
 /** Tab order for the Produto ObjectView. */
-export const PRODUTO_SECTIONS: string[] = ['Dados gerais', 'Dimensões e peso', 'Configurações'];
+export const PRODUTO_SECTIONS: string[] = [
+  'Dados gerais',
+  'Dimensões e peso',
+  'Configurações',
+  'Fotos',
+];
 
 /**
  * Per-field labels + section (tab) assignment. Fields not listed here fall to
@@ -46,14 +51,13 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
 };
 
 /**
- * Fields hidden from the Produto ObjectView for now. Media (fotos/videos),
- * variations, kit components and marketplace bindings get dedicated tabs in
- * later PRs; embeddings, references and internal ordering stay server-managed
- * or pass-through.
+ * Fields hidden from the Produto ObjectView for now. Videos, variations, kit
+ * components and marketplace bindings get dedicated tabs in later PRs; embeddings,
+ * references and internal ordering stay server-managed or pass-through. (`fotos`
+ * has its own tab — see `PRODUTO_SECTIONS` — so it's intentionally not listed.)
  */
 export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   'nome_embedding',
-  'fotos',
   'videos',
   'anexos',
   'variacoesUid',

@@ -6,6 +6,7 @@ import {
   indexedDBLocalPersistence,
 } from 'firebase/auth';
 import { type Firestore, getFirestore } from 'firebase/firestore';
+import { type FirebaseStorage, getStorage } from 'firebase/storage';
 
 const config = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -19,6 +20,7 @@ const config = {
 let app: FirebaseApp | undefined;
 let auth: Auth | undefined;
 let db: Firestore | undefined;
+let storage: FirebaseStorage | undefined;
 
 export function getFirebaseApp(): FirebaseApp {
   if (app) return app;
@@ -41,4 +43,14 @@ export function getFirebaseFirestore(): Firestore {
   const databaseId = process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID ?? 'default';
   db = getFirestore(getFirebaseApp(), databaseId);
   return db;
+}
+
+export function getFirebaseStorage(): FirebaseStorage {
+  if (storage) return storage;
+  storage = getStorage(getFirebaseApp());
+  // Bound the SDK's internal retry window so a blocked/failed upload (e.g. a
+  // bucket CORS misconfiguration) surfaces a real FirebaseError in ~30s instead
+  // of retrying silently for the ~120s default — which looks like a hung UI.
+  storage.maxUploadRetryTime = 30_000;
+  return storage;
 }
