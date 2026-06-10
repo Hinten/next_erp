@@ -4,8 +4,7 @@ import { renderDanfe, renderDanfeZpl } from '../../src/danfe';
 import { parseProcNFe } from '../../src/danfe/model';
 import { renderSimplificado } from '../../src/danfe/pdf/simplificado';
 import { PROCNFE_FIXTURE } from './fixtures';
-
-const isPdf = (buf: Buffer): boolean => buf.subarray(0, 5).toString('latin1') === '%PDF-';
+import { isPdf } from './helpers';
 
 describe('danfe/pdf simplificado', () => {
   it('renders a non-trivial PDF buffer', async () => {
@@ -24,8 +23,9 @@ describe('danfe/pdf simplificado', () => {
     expect(isPdf(pdf)).toBe(true);
   });
 
-  it('throws for the not-yet-implemented paisagem format', () => {
-    expect(() => renderDanfe(PROCNFE_FIXTURE, { format: 'paisagem' })).toThrow(/not implemented/i);
+  it('renders via the public renderDanfe entry (format=paisagem)', async () => {
+    const pdf = await renderDanfe(PROCNFE_FIXTURE, { format: 'paisagem' });
+    expect(isPdf(pdf)).toBe(true);
   });
 
   it('renderDanfeZpl returns a ZPL string', () => {

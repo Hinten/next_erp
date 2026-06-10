@@ -1,21 +1,20 @@
 /**
- * `GET /api/nfe/danfe` — render the DANFE for an authorized NF-e.
+ * `GET /api/nfe/carta-correcao/danfe` — render the Carta de Correção PDF for a
+ * specific registrada CC-e.
  *
  * The document is rendered from the NF-e's persisted procNFe
- * (`pedidos/{pedidoId}/nfev4/{nfeId}.xml_nfe_proc`), never re-generated. Serves
- * the simplificado PDF, the A4 retrato / paisagem PDFs, and the zpl2 Zebra
- * label.
+ * (`pedidos/{pedidoId}/nfev4/{nfeId}.xml_nfe_proc`) + the CC-e record
+ * (`…/cartacorrecao/{cceId}`), never re-generated.
  *
- * Query: `?pedidoId&nfeId&format=simplificado|retrato|paisagem|zpl2&dpi=203`
+ * Query: `?pedidoId&nfeId&cceId`
  *
  * Returns:
- *   200  application/pdf            — `format=simplificado` (attachment)
- *        text/plain; charset=utf-8  — `format=zpl2`
+ *   200  application/pdf  — attachment
  *   400  bad query
  *   401  no/invalid token
  *   403  insufficient perm (needs PERM.fiscal.read)
- *   404  pedido / NF-e not found
- *   422  NF-e not renderable (estado not aprovada/cancelada, or no procNFe)
+ *   404  pedido / NF-e / CC-e not found
+ *   422  not renderable (no procNFe, or the CC-e isn't registrada)
  *   500  unexpected error
  */
 import { NextResponse } from 'next/server';
@@ -25,7 +24,7 @@ import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { safeLog } from '@/lib/nfe/log';
 import {
-  danfeArtifactService,
+  cartaCorrecaoArtifactService,
   NFeDanfeError,
   NFePedidoNotFoundError,
 } from '@/lib/nfe/orchestrator';
@@ -36,10 +35,8 @@ export const runtime = 'nodejs';
 const querySchema = z.object({
   pedidoId: z.string().min(1).max(200),
   nfeId: z.string().min(1).max(200),
-  // simplificado + retrato (A4 portrait) + paisagem (A4 landscape) + zpl2.
-  format: z.enum(['simplificado', 'retrato', 'paisagem', 'zpl2']).default('simplificado'),
-  // ZPL printhead density; ignored by the PDF formats.
-  dpi: z.coerce.number().int().min(150).max(600).optional(),
+  // The specific cartacorrecao doc id — a NF-e may carry many CC-e.
+  cceId: z.string().min(1).max(200),
 });
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -58,13 +55,12 @@ export async function GET(req: Request): Promise<NextResponse> {
   }
 
   try {
-    const artifact = await danfeArtifactService(getAdminFirestore(), query.pedidoId, query.nfeId, {
-      format: query.format,
-      dpi: query.dpi,
-    });
-    // Stream the body as-is — no copy. A Node `Buffer` (PDF) is Uint8Array-backed
-    // and a `string` (ZPL) is a valid body; undici accepts both. The cast is only
-    // because the DOM lib's `BodyInit` doesn't model Node's `Buffer` type.
+    const artifact = await cartaCorrecaoArtifactService(
+      getAdminFirestore(),
+      query.pedidoId,
+      query.nfeId,
+      query.cceId,
+    );
     return new NextResponse(artifact.body as BodyInit, {
       status: 200,
       headers: {
@@ -80,7 +76,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     if (e instanceof NFeDanfeError) {
       return authError(422, { error: e.message });
     }
-    safeLog('error', '[nfe/danfe]', e);
+    safeLog('error', '[nfe/carta-correcao/danfe]', e);
     return authError(500, {
       error: e instanceof Error ? e.message : 'Erro interno',
       code: e instanceof Error ? e.name : undefined,

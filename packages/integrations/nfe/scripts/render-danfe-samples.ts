@@ -11,6 +11,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { parseProcNFe, type DanfeModel } from '../src/danfe/model';
+import { renderCce } from '../src/danfe/pdf/cce';
+import { renderPaisagem } from '../src/danfe/pdf/paisagem';
 import { renderRetrato } from '../src/danfe/pdf/retrato';
 import { renderSimplificado } from '../src/danfe/pdf/simplificado';
 import { renderSimplificadoZpl } from '../src/danfe/zpl2';
@@ -40,8 +42,9 @@ async function main(): Promise<void> {
 
   const base = parseProcNFe(PROCNFE_FIXTURE);
 
-  // Base scenario, all three outputs.
+  // Base scenario, every output.
   write('retrato-base.pdf', await renderRetrato(base));
+  write('paisagem-base.pdf', await renderPaisagem(base));
   write('simplificado-base.pdf', await renderSimplificado(base));
   write('etiqueta-base.zpl', renderSimplificadoZpl(base));
 
@@ -58,6 +61,7 @@ async function main(): Promise<void> {
     },
   };
   write('retrato-100-itens.pdf', await renderRetrato(big));
+  write('paisagem-100-itens.pdf', await renderPaisagem(big));
 
   // chNFe referenciada → aparece em informações complementares.
   const nfref = PROCNFE_FIXTURE.replace(
@@ -75,6 +79,7 @@ async function main(): Promise<void> {
     },
   };
   write('retrato-infcpl-max.pdf', await renderRetrato(maxInfCpl));
+  write('paisagem-infcpl-max.pdf', await renderPaisagem(maxInfCpl));
 
   // Caracteres escapados no XML.
   const escaped = PROCNFE_FIXTURE.replace(
@@ -89,6 +94,22 @@ async function main(): Promise<void> {
     `</dest>${local('retirada')}${local('entrega')}`,
   );
   write('retrato-entrega-transp.pdf', await renderRetrato(parseProcNFe(entrega)));
+  write('paisagem-entrega-transp.pdf', await renderPaisagem(parseProcNFe(entrega)));
+
+  // Carta de Correção (CC-e): base + a max-length (1000-char) correction.
+  const cceBase = {
+    xCorrecao:
+      'Onde se lê "RUA DAS FLORES, 100" leia-se "AVENIDA BRASIL, 2000, BAIRRO CENTRO". ' +
+      'Correção do endereço de entrega informado incorretamente na emissão.',
+    nProt: '135260000123456',
+    nSeqEvento: 1,
+    dhRegEvento: '2026-06-10T10:00:00-03:00',
+  };
+  write('cce-base.pdf', await renderCce(base, cceBase));
+  write(
+    'cce-max.pdf',
+    await renderCce(base, { ...cceBase, nSeqEvento: 3, xCorrecao: 'PALAVRA '.repeat(125) }),
+  );
 
   console.log('\nDone. Open the PDFs in', OUT_DIR);
 }

@@ -102,7 +102,7 @@ export interface NFeInutilizarResult {
 }
 
 /** DANFE output formats the `GET /api/nfe/danfe` route serves. */
-export type NFeDanfeFormat = 'simplificado' | 'retrato' | 'zpl2';
+export type NFeDanfeFormat = 'simplificado' | 'retrato' | 'paisagem' | 'zpl2';
 
 /** A downloaded DANFE artifact — the binary Blob plus its server filename. */
 export interface NFeDanfeArtifact {
@@ -164,6 +164,11 @@ export interface NFeHttpClient {
     format: NFeDanfeFormat,
     dpi?: number,
   ): Promise<NFeDanfeArtifact>;
+  /**
+   * Download the Carta de Correção PDF for a specific registrada CC-e
+   * (`cartacorrecao/{cceId}`). Returns the Blob + its server filename.
+   */
+  cartaCorrecaoDanfe(pedidoId: string, nfeId: string, cceId: string): Promise<NFeDanfeArtifact>;
 }
 
 /** Pull the filename out of a `Content-Disposition` header, if present. */
@@ -357,6 +362,14 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       if (dpi != null) params.set('dpi', String(dpi));
       const ext = format === 'zpl2' ? 'txt' : 'pdf';
       return fetchArtifact(`/api/nfe/danfe?${params.toString()}`, `danfe.${ext}`, { pedidoId });
+    },
+    cartaCorrecaoDanfe: (pedidoId, nfeId, cceId) => {
+      const params = new URLSearchParams({ pedidoId, nfeId, cceId });
+      return fetchArtifact(
+        `/api/nfe/carta-correcao/danfe?${params.toString()}`,
+        'carta-correcao.pdf',
+        { pedidoId },
+      );
     },
   };
 }

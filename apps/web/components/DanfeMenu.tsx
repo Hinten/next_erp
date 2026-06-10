@@ -2,8 +2,8 @@
 
 /**
  * "Imprimir DANFE" menu — downloads the DANFE for an authorized (or cancelada)
- * NF-e. PR1 offers the **Simplificado (PDF)** and the **Etiqueta (ZPL)** for
- * Zebra printers; PR2 adds the A4 retrato/paisagem options here.
+ * NF-e: the A4 Retrato / Paisagem PDFs, the Simplificado (PDF) etiqueta, and the
+ * Etiqueta (ZPL) for Zebra printers.
  *
  * Rendering happens server-side in `apps/nfe` (pdfkit/bwip-js never enter the
  * web bundle); this only calls the typed HTTP client and saves the Blob.
@@ -74,6 +74,9 @@ export function DanfeMenu({ pedidoId, nfeId, size = 'xs', variant = 'light' }: D
       <Menu.Dropdown onClick={(e) => e.stopPropagation()}>
         <Menu.Item leftSection={<IconFileText size={14} />} onClick={() => void run('retrato')}>
           Retrato A4 (PDF)
+        </Menu.Item>
+        <Menu.Item leftSection={<IconFileText size={14} />} onClick={() => void run('paisagem')}>
+          Paisagem A4 (PDF)
         </Menu.Item>
         <Menu.Item
           leftSection={<IconFileText size={14} />}

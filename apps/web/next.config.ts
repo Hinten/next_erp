@@ -4,6 +4,10 @@ const config: NextConfig = {
   reactStrictMode: true,
   // Type-check `<Link href>` / `router.push` against the real route tree.
   typedRoutes: true,
+  // Emit client source maps only when the e2e CI workflows ask for them
+  // (E2E_SOURCEMAPS=true), so Playwright traces of the production build show
+  // readable app-side stack traces. Real App Hosting deploys leave it unset.
+  productionBrowserSourceMaps: process.env.E2E_SOURCEMAPS === 'true',
   // apps/web is client-first; transpile workspace packages.
   transpilePackages: [
     '@delfrance/auth',

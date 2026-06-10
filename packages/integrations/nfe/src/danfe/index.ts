@@ -7,16 +7,18 @@
  * A DANFE is rendered from an authorized **procNFe** XML
  * (`pedidos/{id}/nfev4/{nfeId}.xml_nfe_proc`), never re-generated.
  *
- * PR1 ships the **simplificado** PDF + the **ZPL2** label. The A4 retrato /
- * paisagem layouts land in PR2 and the carta-de-correção PDF in PR3 — both
- * extend this same entry.
+ * The **simplificado** PDF + **ZPL2** label, the A4 **retrato** and **paisagem**
+ * layouts all render here; the carta-de-correção PDF extends this same entry.
  */
-import { parseProcNFe } from './model';
+import { parseCceRetorno, parseProcNFe } from './model';
+import { renderCce } from './pdf/cce';
+import { renderPaisagem } from './pdf/paisagem';
 import { renderRetrato } from './pdf/retrato';
 import { renderSimplificado } from './pdf/simplificado';
 import { renderSimplificadoZpl, type ZplOptions } from './zpl2';
+import type { RenderA4Options } from './pdf/a4-common';
 
-export { parseProcNFe } from './model';
+export { parseProcNFe, parseCceRetorno } from './model';
 export type {
   DanfeModel,
   DanfeIde,
@@ -24,14 +26,17 @@ export type {
   DanfeDestinatario,
   DanfeEndereco,
   DanfeProtocolo,
+  CceRetorno,
 } from './model';
 export { renderSimplificado, type RenderSimplificadoOptions } from './pdf/simplificado';
 export { renderRetrato, composeInfoComplementares, type RenderA4Options } from './pdf/retrato';
+export { renderPaisagem } from './pdf/paisagem';
+export { renderCce, type CceData } from './pdf/cce';
 export { renderSimplificadoZpl, type ZplOptions } from './zpl2';
 export { code128Png } from './barcode';
 export * from './format';
 
-/** PDF output formats. `paisagem` (A4 landscape) is a follow-up. */
+/** PDF output formats. */
 export type DanfeFormat = 'simplificado' | 'retrato' | 'paisagem';
 
 export interface RenderDanfeOptions {
@@ -40,11 +45,7 @@ export interface RenderDanfeOptions {
   readonly cancelada?: boolean;
 }
 
-/**
- * Render a DANFE PDF from a procNFe XML. PR1 implements `simplificado`; the A4
- * orientations throw until PR2 (the `GET /api/nfe/danfe` route only accepts the
- * implemented formats, so this is a defensive guard).
- */
+/** Render a DANFE PDF from a procNFe XML, in the requested layout. */
 export function renderDanfe(xml: string, opts: RenderDanfeOptions): Promise<Buffer> {
   const model = parseProcNFe(xml);
   switch (opts.format) {
@@ -53,13 +54,46 @@ export function renderDanfe(xml: string, opts: RenderDanfeOptions): Promise<Buff
     case 'retrato':
       return renderRetrato(model, { cancelada: opts.cancelada });
     case 'paisagem':
-      throw new Error(
-        `DANFE format '${opts.format}' (A4 landscape) is not implemented yet — it lands in a follow-up.`,
-      );
+      return renderPaisagem(model, { cancelada: opts.cancelada });
   }
 }
 
 /** Render the DANFE Simplificado as a ZPL2 label string (Zebra printers). */
 export function renderDanfeZpl(xml: string, opts: ZplOptions = {}): string {
   return renderSimplificadoZpl(parseProcNFe(xml), opts);
+}
+
+/** Inputs for the CC-e PDF: the NF-e procNFe + the persisted CC-e record fields. */
+export interface RenderCartaCorrecaoInput {
+  /** The NF-e's authorized procNFe XML (`nfev4.xml_nfe_proc`). */
+  readonly procNFeXml: string;
+  /** The CC-e record's `xml_retorno` (`retEnvEvento`) — source of `dhRegEvento`. */
+  readonly xmlRetorno: string;
+  readonly xCorrecao: string;
+  readonly nProt: string | null;
+  readonly nSeqEvento: number;
+}
+
+/**
+ * Render the Carta de Correção PDF from the NF-e procNFe + the persisted CC-e
+ * record. Mirrors `renderDanfe`'s parse-then-render entry: the NF-e identity is
+ * read from `procNFeXml`, `dhRegEvento` from `xmlRetorno`, and the remaining
+ * fields are passed through from the record.
+ */
+export function renderCartaCorrecao(
+  input: RenderCartaCorrecaoInput,
+  opts: RenderA4Options = {},
+): Promise<Buffer> {
+  const model = parseProcNFe(input.procNFeXml);
+  const { dhRegEvento } = parseCceRetorno(input.xmlRetorno);
+  return renderCce(
+    model,
+    {
+      xCorrecao: input.xCorrecao,
+      nProt: input.nProt,
+      nSeqEvento: input.nSeqEvento,
+      dhRegEvento,
+    },
+    opts,
+  );
 }

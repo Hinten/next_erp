@@ -24,6 +24,7 @@ import type {
   TNFe_infNFe_transp,
   TNFe_infNFe_total_ICMSTot,
   TNFe_infNFe_total_ISSQNtot,
+  TRetEnvEvento,
 } from '../types/nfe-schema';
 import { onlyDigits } from './format';
 
@@ -379,4 +380,30 @@ export function parseProcNFe(xml: string): DanfeModel {
       }
     : null;
   return mapModel(proc.NFe.infNFe, prot);
+}
+
+/** The CC-e fields read back from a persisted `retEnvEvento` reply. */
+export interface CceRetorno {
+  /** ISO `dhRegEvento` SEFAZ stamped on the event, or null. */
+  readonly dhRegEvento: string | null;
+  /** Event protocolo (`nProt`), or null. */
+  readonly nProt: string | null;
+  /** 44-digit chave the event was bound to, or null. */
+  readonly chNFe: string | null;
+}
+
+/**
+ * Parse the persisted `xml_retorno` (`retEnvEvento`) of a CC-e to recover the
+ * SEFAZ-stamped `dhRegEvento` (+ `nProt` / `chNFe`) the DANFE-CC-e prints. The
+ * record already carries `nProt`, but `dhRegEvento` lives only in the XML. When
+ * the reply carried no `<retEvento>` (a lote-level rejection) every field is
+ * null so the renderer degrades gracefully instead of throwing.
+ */
+export function parseCceRetorno(xmlRetorno: string): CceRetorno {
+  const ev = parse<TRetEnvEvento>('retEnvEvento', xmlRetorno).retEvento?.[0]?.infEvento;
+  return {
+    dhRegEvento: ev?.dhRegEvento ?? null,
+    nProt: ev?.nProt ?? null,
+    chNFe: ev?.chNFe ?? null,
+  };
 }
