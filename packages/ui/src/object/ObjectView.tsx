@@ -340,27 +340,32 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
       });
       return;
     }
-    // Erroring sections in display order.
+    // Erroring sections in display order. zodResolver reports the full error
+    // set, so fields hidden or excluded from the form can error too — they
+    // have no tab to point at and are named separately.
     const erroring = sections.filter((s) => errorKeys.some((k) => sectionOf.get(k) === s));
+    const outside = errorKeys.filter((k) => !sectionOf.has(k));
     const first = erroring[0];
     if (first === undefined) {
-      // zodResolver reports the full error set, including fields hidden or
-      // excluded from the form — there's no tab to switch to.
       notifications.show({
         color: 'red',
-        message: `Não foi possível salvar: campos inválidos fora do formulário (${errorKeys.join(', ')}).`,
+        message: `Não foi possível salvar: campos inválidos fora do formulário (${outside.join(', ')}).`,
       });
       return;
     }
     if (!effectiveSection || !erroring.includes(effectiveSection)) {
       setActiveSection(first);
     }
+    const inTabs =
+      erroring.length === 1
+        ? `Corrija os campos inválidos na aba "${first}".`
+        : `Corrija os campos inválidos nas abas: ${erroring.join(', ')}.`;
     notifications.show({
       color: 'red',
       message:
-        erroring.length === 1
-          ? `Corrija os campos inválidos na aba "${first}".`
-          : `Corrija os campos inválidos nas abas: ${erroring.join(', ')}.`,
+        outside.length > 0
+          ? `${inTabs} Há também campos inválidos fora do formulário (${outside.join(', ')}).`
+          : inTabs,
     });
   }
 

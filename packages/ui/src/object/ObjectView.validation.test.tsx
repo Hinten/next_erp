@@ -197,4 +197,42 @@ describe('ObjectView validation feedback across tabs', () => {
       }),
     );
   });
+
+  it('names out-of-form fields alongside tab errors when both exist', async () => {
+    const mixedSchema = z.object({
+      nome: z.string().min(1, 'Informe o nome').describe('Nome'),
+      obs: z.string().min(1, 'Informe a observação').describe('Observações'),
+      extra: z.string().min(1, 'Obrigatório').describe('Extra'),
+    });
+    render(
+      <Wrap>
+        <ObjectView
+          schema={mixedSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          sections={SECTIONS}
+          fields={FIELDS}
+          excludedFields={['extra']}
+        />
+      </Wrap>,
+    );
+    const nome = screen.getByRole('textbox', { name: 'Nome' });
+    await act(async () => {
+      fireEvent.change(nome, { target: { value: 'Alice' } });
+      fireEvent.blur(nome);
+    });
+    // `obs` (tab "Notas") and `extra` (excluded) are both invalid — the toast
+    // must name both, not just the tab.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(notifyShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'red',
+        message: expect.stringMatching(/aba "Notas".*fora do formulário \(extra\)/) as string,
+      }),
+    );
+    expect(screen.getByRole('tab', { name: /Notas/ }).getAttribute('aria-selected')).toBe('true');
+  });
 });
