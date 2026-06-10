@@ -4,7 +4,7 @@ import { clickSave, fillField } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
- * End-to-end coverage for the product photo manager (PR B). Creates a produto
+ * End-to-end coverage for the product photo manager. Creates a produto
  * through the ObjectView create screen, opens the editor and asserts the
  * "Fotos" tab renders the upload dropzone and empty state. This guards the
  * `fotoSchema` + ObjectView Fotos-tab wiring against regressions.

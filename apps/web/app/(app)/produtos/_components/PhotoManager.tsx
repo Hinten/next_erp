@@ -42,9 +42,8 @@ import { buildFotoRefs, type Foto } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { DELETE_MARK } from '@delfrance/ui';
 
-/** A `Foto` plus the transient staged-deletion marker. The literal key must
- *  match `DELETE_MARK` from `@delfrance/ui`. */
-type EditableFoto = Foto & { _pendingDelete?: boolean };
+/** A `Foto` plus the transient staged-deletion marker (keyed by `DELETE_MARK`). */
+type EditableFoto = Foto & { [DELETE_MARK]?: boolean };
 
 const ARQUIVOS_PREFIX = 'arquivos/';
 
@@ -146,7 +145,10 @@ export function PhotoManager({
       } else if (err instanceof StorageUploadError) {
         setError(err.message);
       } else {
-        setError('Falha inesperada ao enviar a foto. Veja o console para detalhes.');
+        // Unexpected (non-Firebase) error: already logged above; rethrow so it
+        // isn't silently swallowed. No user Alert here — it's a bug, not a
+        // normal upload failure, and rethrowing from an async handler would
+        // make the message pointless anyway.
         throw err;
       }
     } finally {
@@ -277,7 +279,7 @@ function SortableFoto({
     <Paper ref={setNodeRef} style={style} withBorder p={4} pos="relative">
       <Box pos="relative">
         {url ? (
-          <Image src={url} alt="" h={140} fit="cover" radius="sm" />
+          <Image src={url} alt="Foto do produto" h={140} fit="cover" radius="sm" />
         ) : (
           <Group justify="center" h={140}>
             <Loader size="sm" />
