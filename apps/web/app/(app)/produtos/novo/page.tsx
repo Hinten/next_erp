@@ -85,7 +85,7 @@ export default function NovoProdutoPage() {
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
         saveLabel="Criar"
         showSaveAndContinue={false}
-        onSaved={(id) => router.replace(`/produtos/${id}`)}
+        onSaved={(id) => router.replace(`/produtos/${id}/editar`)}
       />
     </Stack>
   );
