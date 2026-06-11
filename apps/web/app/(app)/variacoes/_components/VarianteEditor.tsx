@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ActionIcon,
   Alert,
@@ -12,7 +12,13 @@ import {
   Text,
   TextInput,
 } from '@mantine/core';
-import { IconArrowBackUp, IconGripVertical, IconPlus, IconTrash } from '@tabler/icons-react';
+import {
+  IconArrowBackUp,
+  IconGripVertical,
+  IconPlus,
+  IconSearch,
+  IconTrash,
+} from '@tabler/icons-react';
 import {
   closestCenter,
   DndContext,
@@ -71,19 +77,41 @@ export interface VarianteEditorProps {
  */
 export function VarianteEditor({ value, onChange, disabled, error }: VarianteEditorProps) {
   const variantes = useMemo<EditableVariante[]>(() => value ?? [], [value]);
+  // Search filter (#114) — long groups (dozens of sizes/colors) are hard to
+  // scan. Matches nome OR código, case-insensitive.
+  const [filtro, setFiltro] = useState('');
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+
+  const termo = filtro.trim().toLowerCase();
+  const visiveis = useMemo(
+    () =>
+      termo === ''
+        ? variantes
+        : variantes.filter(
+            (v) =>
+              v.nome.toLowerCase().includes(termo) ||
+              (v.codigo ?? '').toLowerCase().includes(termo),
+          ),
+    [variantes, termo],
+  );
+  // Reordering a filtered subset is ill-defined (order = array position is
+  // the wire contract) — drag is disabled while a filter is active.
+  const filtering = termo !== '';
 
   function addVariante() {
     const ids = new Set(variantes.map((v) => v.id));
     onChange([...variantes, { id: genVarianteId(ids), nome: '', codigo: null }]);
+    setFiltro(''); // make sure the fresh (empty-named) row is visible
   }
 
-  function patch(index: number, changes: Partial<Variante>) {
-    onChange(variantes.map((v, i) => (i === index ? { ...v, ...changes } : v)));
+  // Rows are keyed by the variante's stable `id` — positional indexes would
+  // point at the wrong element while the list is filtered.
+  function patch(id: string, changes: Partial<Variante>) {
+    onChange(variantes.map((v) => (v.id === id ? { ...v, ...changes } : v)));
   }
 
-  function toggleDelete(index: number) {
-    onChange(variantes.map((v, i) => (i === index ? { ...v, [DELETE_MARK]: !v[DELETE_MARK] } : v)));
+  function toggleDelete(id: string) {
+    onChange(variantes.map((v) => (v.id === id ? { ...v, [DELETE_MARK]: !v[DELETE_MARK] } : v)));
   }
 
   function handleDragEnd(event: DragEndEvent) {
@@ -99,26 +127,40 @@ export function VarianteEditor({ value, onChange, disabled, error }: VarianteEdi
     <Stack gap="xs">
       {error && <Alert color="red">{error}</Alert>}
 
+      {variantes.length > 0 && (
+        <TextInput
+          placeholder="Pesquisar variantes…"
+          leftSection={<IconSearch size={14} />}
+          value={filtro}
+          onChange={(e) => setFiltro(e.currentTarget.value)}
+          aria-label="Pesquisar variantes"
+        />
+      )}
+
       {variantes.length === 0 ? (
         <Text size="sm" c="dimmed">
           Nenhuma variante. Adicione os tamanhos, cores, etc. deste grupo.
         </Text>
+      ) : visiveis.length === 0 ? (
+        <Text size="sm" c="dimmed">
+          Nenhuma variante encontrada.
+        </Text>
       ) : (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <SortableContext
-            items={variantes.map((v) => v.id)}
-            strategy={verticalListSortingStrategy}
-          >
+          <SortableContext items={visiveis.map((v) => v.id)} strategy={verticalListSortingStrategy}>
             <Stack gap="xs">
-              {variantes.map((variante, index) => (
+              {visiveis.map((variante) => (
                 <SortableVariante
                   key={variante.id}
                   variante={variante}
                   marked={!!variante[DELETE_MARK]}
                   disabled={disabled}
-                  onNome={(nome) => patch(index, { nome })}
-                  onCodigo={(codigo) => patch(index, { codigo: codigo === '' ? null : codigo })}
-                  onToggleDelete={() => toggleDelete(index)}
+                  dragDisabled={filtering}
+                  onNome={(nome) => patch(variante.id, { nome })}
+                  onCodigo={(codigo) =>
+                    patch(variante.id, { codigo: codigo === '' ? null : codigo })
+                  }
+                  onToggleDelete={() => toggleDelete(variante.id)}
                 />
               ))}
             </Stack>
@@ -147,6 +189,8 @@ interface SortableVarianteProps {
   /** Marked for deletion — rendered dimmed with an undo button. */
   marked: boolean;
   disabled?: boolean;
+  /** Reorder suspended (e.g. while a search filter is active). */
+  dragDisabled?: boolean;
   onNome: (value: string) => void;
   onCodigo: (value: string) => void;
   onToggleDelete: () => void;
@@ -156,13 +200,14 @@ function SortableVariante({
   variante,
   marked,
   disabled,
+  dragDisabled,
   onNome,
   onCodigo,
   onToggleDelete,
 }: SortableVarianteProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: variante.id,
-    disabled,
+    disabled: disabled || dragDisabled,
   });
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -174,7 +219,7 @@ function SortableVariante({
   return (
     <Paper ref={setNodeRef} style={style} withBorder p="xs">
       <Group wrap="nowrap" align="flex-end" gap="xs">
-        {!disabled && (
+        {!disabled && !dragDisabled && (
           <ActionIcon
             variant="subtle"
             mb={4}
