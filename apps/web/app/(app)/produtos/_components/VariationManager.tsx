@@ -43,6 +43,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { type Firestore, writeBatch } from 'firebase/firestore';
 import { ZodError } from 'zod';
 import { buildQuery, whereEqual } from '@delfrance/data';
+import { useFormContext } from 'react-hook-form';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import {
   type GrupoComId,
@@ -154,14 +155,25 @@ export function VariationManager({
 }: VariationManagerProps) {
   const uids = useMemo(() => value ?? [], [value]);
 
-  // Persisted parent doc — Gerar/Reconstituir read the SAVED nome/sku (the
-  // Flutter flows used getInitialValue, not live edits).
+  // Persisted parent doc — fallback source for the parent fields.
   const parentRef = useMemo(
     () => (produtoId ? produtoCollection.docRef(db, {}, produtoId) : null),
     [db, produtoId],
   );
   const parentSnap = useDocSnapshot(parentRef);
   const parent = parentSnap.data?.data;
+
+  // The surrounding ObjectView form (via FormProvider). Gerar/Reconstituir and
+  // the dims inheritance read the LIVE form values first — a nome/SKU the user
+  // just typed (still unsaved) must feed the generated children; the old
+  // Flutter flows read only the persisted doc, which left children with empty
+  // SKUs when the parent's SKU was filled in the same session.
+  const form = useFormContext();
+  const liveParent = <K extends keyof Produto>(key: K): Produto[K] | null => {
+    const live = form?.getValues(key as string) as Produto[K] | undefined;
+    if (live !== undefined && live !== null && live !== '') return live;
+    return (parent?.[key] ?? null) as Produto[K] | null;
+  };
 
   // Live children (paiId == produtoId), sorted client-side by `ordem` —
   // Firestore's orderBy would silently drop docs missing the field.
@@ -234,18 +246,20 @@ export function VariationManager({
       if (!row.id) {
         let docData: Produto;
         try {
+          // Inherited fields read the live form values first — the flush runs
+          // right after the parent save, before its snapshot re-emits.
           docData = produtoSchema.parse({
             nome: row.nome,
             sku: row.sku === '' ? null : row.sku,
             paiId: parentId,
             ordem,
             variacoesUid: normalized.length > 0 ? normalized : null,
-            codPai: parent?.codPai ?? null,
-            pesoLiquidoKg: parent?.pesoLiquidoKg ?? null,
-            pesoBrutoKg: parent?.pesoBrutoKg ?? null,
-            alturaCm: parent?.alturaCm ?? null,
-            larguraCm: parent?.larguraCm ?? null,
-            profundidadeCm: parent?.profundidadeCm ?? null,
+            codPai: liveParent('codPai'),
+            pesoLiquidoKg: liveParent('pesoLiquidoKg'),
+            pesoBrutoKg: liveParent('pesoBrutoKg'),
+            alturaCm: liveParent('alturaCm'),
+            larguraCm: liveParent('larguraCm'),
+            profundidadeCm: liveParent('profundidadeCm'),
           });
         } catch (err) {
           if (err instanceof ZodError) {
@@ -322,13 +336,14 @@ export function VariationManager({
 
   function gerar() {
     setActionError(null);
-    if (!parent?.nome) {
-      setActionError(['Para gerar variações é necessário um nome salvo no produto pai.']);
+    const parentNome = liveParent('nome');
+    if (!parentNome) {
+      setActionError(['Para gerar variações é necessário um nome no produto pai.']);
       return;
     }
     const combos = cartesianVariations({
-      parentNome: parent.nome,
-      parentSku: parent.sku ?? null,
+      parentNome,
+      parentSku: liveParent('sku'),
       grupos: grupos.filter((g) => groupsSelected.includes(g.id)),
       selectedUids: uids,
     });
@@ -363,11 +378,13 @@ export function VariationManager({
 
   function reconstituir() {
     setActionError(null);
-    if (!parent?.nome || !parent.sku) {
-      setActionError(['Para reconstituir é necessário nome e SKU salvos no produto pai.']);
+    const parentNome = liveParent('nome');
+    const parentSku = liveParent('sku');
+    if (!parentNome || !parentSku) {
+      setActionError(['Para reconstituir é necessário nome e SKU no produto pai.']);
       return;
     }
-    const ctx = { parentNome: parent.nome, parentSku: parent.sku, grupos };
+    const ctx = { parentNome, parentSku, grupos };
     const errors: string[] = [];
     for (const row of rows) {
       if (row.deleteMark) continue;

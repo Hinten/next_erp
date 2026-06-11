@@ -64,10 +64,11 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
   });
 
   test('generates Cartesian children and persists them on save', async ({ page }) => {
-    // Create the parent (nome + SKU — both are read by Gerar).
+    // Create the parent WITHOUT a SKU — it is typed later in the editor and
+    // must feed Gerar while still unsaved (regression: children used to get
+    // empty SKUs because the generator read only the persisted doc).
     await page.goto('/produtos/novo');
     await fillField(page, 'Nome', nome);
-    await fillField(page, 'SKU', sku);
     await clickSave(page, 'Criar');
     // Lands on the produto route (detail today, editor once the direct-editor
     // PR merges) — extract the id and open the editor explicitly.
@@ -80,6 +81,9 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
     const id = new URL(page.url()).pathname.split('/')[2]!;
 
     await page.goto(`/produtos/${id}/editar`);
+    // Type the SKU in the editor but do NOT save yet — Gerar must pick it up
+    // from the live form values.
+    await fillField(page, 'SKU', sku);
     await page.getByRole('tab', { name: 'Variações' }).click();
 
     // Select the Tamanhos group, then two of its variants.

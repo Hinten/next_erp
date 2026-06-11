@@ -15,7 +15,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm, type FieldErrors, type FieldValues } from 'react-hook-form';
+import { FormProvider, useForm, type FieldErrors, type FieldValues } from 'react-hook-form';
 import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import { ZodError, type z, type ZodObject, type ZodRawShape } from 'zod';
@@ -494,144 +494,151 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   const blocked = Boolean(loadError) || notFound;
 
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        void submitDefault();
-      }}
-    >
-      <Stack>
-        {(title || description) && (
-          <Stack gap={2}>
-            {title && (typeof title === 'string' ? <Title order={2}>{title}</Title> : title)}
-            {description && (
-              <Text c="dimmed" size="sm">
-                {description}
-              </Text>
-            )}
-          </Stack>
-        )}
-
-        <Group justify="space-between">
-          {pager ? (
-            <RecordPager
-              ids={pager.ids}
-              current={pager.current}
-              onChange={pager.onChange}
-              confirmNavigation={form.formState.isDirty ? () => false : undefined}
-            />
-          ) : (
-            <span />
-          )}
-        </Group>
-
-        {copyFromId && copySnap.data && (
-          <Alert color="blue">
-            Registro pré-preenchido a partir de uma cópia. Revise os campos e clique em {saveLabel}{' '}
-            para criar um novo registro.
-          </Alert>
-        )}
-
-        {loading && (
-          <Stack>
-            <Skeleton height={42} />
-            <Skeleton height={42} />
-          </Stack>
-        )}
-
-        {!loading && loadError && <Alert color="red">{loadError.message}</Alert>}
-
-        {!loading && !loadError && notFound && (
-          <Alert color="yellow">Registro não encontrado.</Alert>
-        )}
-
-        {!loading &&
-          !blocked &&
-          (sections && sections.length > 0 ? (
-            <SectionTabs
-              sections={sections}
-              contents={Object.fromEntries(sections.map((s) => [s, fieldsBlock(grouped[s] ?? [])]))}
-              value={effectiveSection}
-              onChange={setActiveSection}
-              errorSections={errorSections}
-            />
-          ) : (
-            fieldsBlock(grouped['default'] ?? visibleDescriptors)
-          ))}
-
-        {submitError && <Alert color="red">{submitError}</Alert>}
-
-        <Group justify="space-between">
-          {deleteVisible && internalId && !blocked ? (
-            <Button
-              type="button"
-              color="red"
-              variant="light"
-              onClick={() => {
-                setDeleteText('');
-                setDeleteOpen(true);
-              }}
-            >
-              {deleteLabel}
-            </Button>
-          ) : (
-            <span />
-          )}
-          <Group>
-            {editingAllowed && !blocked && showSaveAndContinue && (
-              <Button
-                type="button"
-                variant="default"
-                loading={form.formState.isSubmitting}
-                onClick={() => void submitContinue()}
-              >
-                Salvar e continuar
-              </Button>
-            )}
-            {editingAllowed && !blocked && (
-              <Button type="submit" loading={form.formState.isSubmitting}>
-                {saveLabel}
-              </Button>
-            )}
-          </Group>
-        </Group>
-      </Stack>
-
-      <Modal
-        opened={deleteOpen}
-        onClose={() => setDeleteOpen(false)}
-        title="Excluir registro"
-        centered
+    // FormProvider exposes the RHF context so custom `renderInput` widgets can
+    // read SIBLING fields live (e.g. the VariationManager generating child
+    // SKUs from the parent's unsaved `sku` via `useFormContext().getValues`).
+    <FormProvider {...form}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submitDefault();
+        }}
       >
         <Stack>
-          <Text size="sm">{deleteConfirmMessage ?? 'Esta ação não pode ser desfeita.'}</Text>
-          <TextInput
-            label='Digite "excluir" para confirmar'
-            value={deleteText}
-            onChange={(e) => setDeleteText(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && deleteConfirmed) {
-                e.preventDefault();
-                void confirmDelete();
-              }
-            }}
-            autoFocus
-          />
-          <Group justify="flex-end">
-            <Button type="button" variant="default" onClick={() => setDeleteOpen(false)}>
-              Cancelar
-            </Button>
-            <Button
-              type="button"
-              color="red"
-              disabled={!deleteConfirmed}
-              onClick={() => void confirmDelete()}
-            >
-              {deleteLabel}
-            </Button>
+          {(title || description) && (
+            <Stack gap={2}>
+              {title && (typeof title === 'string' ? <Title order={2}>{title}</Title> : title)}
+              {description && (
+                <Text c="dimmed" size="sm">
+                  {description}
+                </Text>
+              )}
+            </Stack>
+          )}
+
+          <Group justify="space-between">
+            {pager ? (
+              <RecordPager
+                ids={pager.ids}
+                current={pager.current}
+                onChange={pager.onChange}
+                confirmNavigation={form.formState.isDirty ? () => false : undefined}
+              />
+            ) : (
+              <span />
+            )}
+          </Group>
+
+          {copyFromId && copySnap.data && (
+            <Alert color="blue">
+              Registro pré-preenchido a partir de uma cópia. Revise os campos e clique em{' '}
+              {saveLabel} para criar um novo registro.
+            </Alert>
+          )}
+
+          {loading && (
+            <Stack>
+              <Skeleton height={42} />
+              <Skeleton height={42} />
+            </Stack>
+          )}
+
+          {!loading && loadError && <Alert color="red">{loadError.message}</Alert>}
+
+          {!loading && !loadError && notFound && (
+            <Alert color="yellow">Registro não encontrado.</Alert>
+          )}
+
+          {!loading &&
+            !blocked &&
+            (sections && sections.length > 0 ? (
+              <SectionTabs
+                sections={sections}
+                contents={Object.fromEntries(
+                  sections.map((s) => [s, fieldsBlock(grouped[s] ?? [])]),
+                )}
+                value={effectiveSection}
+                onChange={setActiveSection}
+                errorSections={errorSections}
+              />
+            ) : (
+              fieldsBlock(grouped['default'] ?? visibleDescriptors)
+            ))}
+
+          {submitError && <Alert color="red">{submitError}</Alert>}
+
+          <Group justify="space-between">
+            {deleteVisible && internalId && !blocked ? (
+              <Button
+                type="button"
+                color="red"
+                variant="light"
+                onClick={() => {
+                  setDeleteText('');
+                  setDeleteOpen(true);
+                }}
+              >
+                {deleteLabel}
+              </Button>
+            ) : (
+              <span />
+            )}
+            <Group>
+              {editingAllowed && !blocked && showSaveAndContinue && (
+                <Button
+                  type="button"
+                  variant="default"
+                  loading={form.formState.isSubmitting}
+                  onClick={() => void submitContinue()}
+                >
+                  Salvar e continuar
+                </Button>
+              )}
+              {editingAllowed && !blocked && (
+                <Button type="submit" loading={form.formState.isSubmitting}>
+                  {saveLabel}
+                </Button>
+              )}
+            </Group>
           </Group>
         </Stack>
-      </Modal>
-    </form>
+
+        <Modal
+          opened={deleteOpen}
+          onClose={() => setDeleteOpen(false)}
+          title="Excluir registro"
+          centered
+        >
+          <Stack>
+            <Text size="sm">{deleteConfirmMessage ?? 'Esta ação não pode ser desfeita.'}</Text>
+            <TextInput
+              label='Digite "excluir" para confirmar'
+              value={deleteText}
+              onChange={(e) => setDeleteText(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && deleteConfirmed) {
+                  e.preventDefault();
+                  void confirmDelete();
+                }
+              }}
+              autoFocus
+            />
+            <Group justify="flex-end">
+              <Button type="button" variant="default" onClick={() => setDeleteOpen(false)}>
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                color="red"
+                disabled={!deleteConfirmed}
+                onClick={() => void confirmDelete()}
+              >
+                {deleteLabel}
+              </Button>
+            </Group>
+          </Stack>
+        </Modal>
+      </form>
+    </FormProvider>
   );
 }
