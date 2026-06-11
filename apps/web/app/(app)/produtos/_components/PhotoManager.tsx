@@ -28,10 +28,12 @@ import {
   IconTrash,
 } from '@tabler/icons-react';
 import {
-  closestCenter,
+  type CollisionDetection,
   DndContext,
   type DragEndEvent,
   PointerSensor,
+  pointerWithin,
+  rectIntersection,
   useDroppable,
   useSensor,
   useSensors,
@@ -49,6 +51,7 @@ import {
   type GrupoComId,
   buildFotoRefs,
   grupoOuterRef,
+  remakeFakePath,
   splitFotoSections,
 } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
@@ -73,6 +76,22 @@ interface SectionList {
   uid: string | null;
   indexes: number[];
 }
+
+/**
+ * Multi-container collision detection. `closestCenter` made empty galleries
+ * undroppable: their tiny body always lost the center-distance contest to a
+ * photo card or a large gallery. Instead: prefer the foto card the pointer is
+ * actually over (precise within-section sorting); else the section body the
+ * pointer is inside (the empty-gallery drop); else fall back to rectangle
+ * intersection.
+ */
+const galleryCollision: CollisionDetection = (args) => {
+  const within = pointerWithin(args);
+  const itemHits = within.filter((c) => !String(c.id).startsWith(CONTAINER_PREFIX));
+  if (itemHits.length > 0) return itemHits;
+  if (within.length > 0) return within;
+  return rectIntersection(args);
+};
 
 const ARQUIVOS_PREFIX = 'arquivos/';
 
@@ -184,8 +203,9 @@ export function PhotoManager({
     try {
       // Dedup per section: the same image may legitimately appear in both the
       // parent gallery and a variant gallery, but not twice in the same one.
+      // Tags are canonicalized so Flutter-legacy path forms still dedup.
       const dedupKey = (ref: string, variantePath: string | null | undefined) =>
-        `${ref}|${variantePath ?? ''}`;
+        `${ref}|${variantePath ? (remakeFakePath(variantePath) ?? variantePath) : ''}`;
       const seen = new Set(fotos.map((f) => dedupKey(f.arquivoOuterRef, f.variantePath)));
       const added: Foto[] = [];
       for (const file of files) {
@@ -251,17 +271,29 @@ export function PhotoManager({
     onChange(fotos.map((f, i) => (set.has(i) ? { ...f, [DELETE_MARK]: !anyMarked } : f)));
   }
 
-  /** Move every variant-tagged foto to the parent gallery (staged on save). */
+  /**
+   * Move every variant-tagged foto to the parent gallery (staged on save).
+   * Merging, not duplicating: a tagged copy whose image already exists in the
+   * parent gallery (or in an earlier-stripped copy) is dropped — two untagged
+   * fotos with the same `arquivoOuterRef` would collide React keys + dnd ids.
+   */
   function moveAllToParent() {
     if (taggedIndexes.length === 0) {
       notifications.show({ color: 'gray', message: 'As variações não possuem fotos para mover.' });
       return;
     }
-    onChange(
-      fotos.map((f) =>
-        f.variantePath ? { ...f, grupoDeVariacoesOuterRef: null, variantePath: null } : f,
-      ),
-    );
+    const inParent = new Set(fotos.filter((f) => !f.variantePath).map((f) => f.arquivoOuterRef));
+    const next: Foto[] = [];
+    for (const f of fotos) {
+      if (!f.variantePath) {
+        next.push(f);
+        continue;
+      }
+      if (inParent.has(f.arquivoOuterRef)) continue; // already in the parent → merge
+      inParent.add(f.arquivoOuterRef);
+      next.push({ ...f, grupoDeVariacoesOuterRef: null, variantePath: null });
+    }
+    onChange(next);
     notifications.show({
       color: 'green',
       message: 'Fotos movidas para o produto pai — salve para gravar.',
@@ -404,7 +436,7 @@ export function PhotoManager({
         </Group>
       )}
 
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <DndContext sensors={sensors} collisionDetection={galleryCollision} onDragEnd={handleDragEnd}>
         {renderGrid('general', sections.general, true)}
 
         {sections.variants.map((section) => (
@@ -496,9 +528,20 @@ function SectionGrid({
         }
       >
         {indexes.length === 0 ? (
-          <Text size="sm" c="dimmed">
-            Nenhuma foto.
-          </Text>
+          // A real drop target even when empty — fotos can be dragged INTO
+          // this gallery from any other section.
+          <Group
+            justify="center"
+            mih={56}
+            style={{
+              border: '1px dashed var(--mantine-color-gray-4)',
+              borderRadius: 4,
+            }}
+          >
+            <Text size="sm" c="dimmed">
+              Nenhuma foto — arraste uma foto para cá.
+            </Text>
+          </Group>
         ) : (
           <SimpleGrid cols={{ base: 2, sm: 3, md: 4 }}>
             {indexes.map((index) => {
