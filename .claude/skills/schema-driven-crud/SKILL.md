@@ -63,6 +63,11 @@ a new entity, open those files and copy the pattern.
   `<x>Meta: CollectionMetadata` (`collectionPath`, `permissions`
   `{ read, write, delete }` as BigInt bits, `cascade?`).
 - Re-export everything from `packages/schemas/src/index.ts`.
+- Validation messages: Zod's defaults are globally localized to pt-BR — the
+  barrel (`packages/schemas/src/index.ts`) runs `z.config(z.locales.pt())` as
+  a side effect. Only write a custom message (e.g.
+  `.regex(/^\d*$/, 'apenas números')`) when the default Portuguese phrasing
+  isn't good enough for the field; custom messages always win over the locale.
 
 ```ts
 export const fooSchema = z.object({
