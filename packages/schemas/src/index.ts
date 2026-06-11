@@ -38,6 +38,7 @@ export {
   ESTADO_FRETE_LABELS,
   INTEGRACAO_FRETE_LABELS,
   MODALIDADE_FRETE_LABELS,
+  dimensoesSchema,
   estadoFreteSchema,
   freteDoPedidoSchema,
   integracoesFreteSchema,
@@ -46,6 +47,7 @@ export {
   transportadoraSchema,
   veiculoSchema,
   volumeSchema,
+  type Dimensoes,
   type EstadoFrete,
   type FreteDoPedido,
   type IntegracaoFrete,
@@ -55,6 +57,28 @@ export {
   type Veiculo,
   type Volume,
 } from './frete';
+
+export {
+  DIA_DA_SEMANA_LABELS,
+  diaDaSemanaSchema,
+  faixaCepOptionString,
+  faixaDeCepSchema,
+  getPrazoDespacho,
+  horarioDeCorteSchema,
+  intFrete,
+  intFreteMeta,
+  intFreteSchema,
+  mapaDeIntegracoesSchema,
+  tokenMelEnv,
+  tokenMelEnvMeta,
+  tokenMelEnvSchema,
+  type DiaDaSemana,
+  type FaixaDeCep,
+  type HorarioDeCorte,
+  type IntFrete,
+  type MapaDeIntegracoes,
+  type TokenMelEnv,
+} from './intFrete';
 
 export {
   pedido,

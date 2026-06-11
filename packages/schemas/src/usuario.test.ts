@@ -54,9 +54,18 @@ describe('isSuperUserBits', () => {
   });
 
   it('is false for any defined PERM bit alone', () => {
-    // Highest defined domain currently is `chat` at bit 50.
     expect(isSuperUserBits(1n << 50n)).toBe(false);
     expect(isSuperUserBits((1n << 51n) - 1n)).toBe(false);
+  });
+
+  it('is false for domains above bit 60 (the old >= 2^60 heuristic misfired here)', () => {
+    expect(isSuperUserBits(7n << 72n)).toBe(false); // fiscal
+    expect(isSuperUserBits(7n << 88n)).toBe(false); // frete
+    expect(isSuperUserBits((7n << 88n) | (7n << 72n) | (7n << 16n))).toBe(false);
+  });
+
+  it('is false for claims minted with the legacy 64-bit mask (re-mint required)', () => {
+    expect(isSuperUserBits((1n << 64n) - 1n)).toBe(false);
   });
 });
 
@@ -78,7 +87,9 @@ describe('aggregatePermissoes', () => {
 
   it('returns the full mask for a superuser regardless of cargos', () => {
     const bits = aggregatePermissoes({ cargos: [], isSuperUser: true }, new Map());
-    expect(bits).toBe((1n << 64n) - 1n);
+    expect(bits).toBe(SUPERUSER_MASK);
+    // The mask must cover every domain above bit 64 (estoque/fiscal/arquivo/frete).
+    expect(bits & (7n << 88n)).toBe(7n << 88n);
   });
 
   it('returns 0n when no cargos are assigned and not a superuser', () => {

@@ -11,7 +11,8 @@
     "consult:dev-pedido": "dotenv -e ../../.env.local -- tsx scripts/consult-dev-pedido.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --exclude \"**/*.homologacao.test.ts\"",
+    "test:live": "vitest run",
     "clean": "rm -rf .next .turbo dist coverage"
   },
   "dependencies": {

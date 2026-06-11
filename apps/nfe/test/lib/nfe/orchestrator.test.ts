@@ -1935,7 +1935,8 @@ describe('buildTranspFromFrete', () => {
         UF: 'SP',
       },
       veiculo: { placa: 'ABC1D23', UF: 'SP', RNTC: '12345' },
-      volumes: [{ qVol: 1, esp: 'CAIXA', pesoL: 1.25, pesoB: 1.5 }],
+      // Flutter wire names — the projector remaps them to the XSD names.
+      volumes: [{ quantidade: 1, especie: 'CAIXA', pesoLiquido: 1.25, pesoBruto: 1.5 }],
     } as never);
     expect(out.modFrete).toBe('0');
     expect(out.transporta).toEqual({

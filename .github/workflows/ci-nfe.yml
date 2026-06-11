@@ -105,16 +105,15 @@ jobs:
 
       - name: Unit tests (offline)
         # The live suites (*.homologacao + numeracao.staging) THROW on
-        # missing creds (f7f3089) — they must NOT be collected here. Turbo
-        # forwards the args after `--` to each `vitest run`, so we drop
-        # them file-by-file. They still run in nfe-live below, invoked by
-        # name (no --exclude), gated by secrets.
+        # missing creds (f7f3089) — the packages' default `test` scripts
+        # exclude them (so local `turbo run test` without creds stays
+        # green too). They still run in nfe-live below via `test:live`,
+        # invoked by name, gated by secrets.
         run: |
           pnpm turbo run test \
             --filter @delfrance/nfe-app \
             --filter @delfrance/integrations-nfe \
-            --filter @delfrance/schemas \
-            -- --exclude '**/*.homologacao.test.ts' --exclude '**/*.staging.test.ts'
+            --filter @delfrance/schemas
 
       - name: Build
         run: pnpm --filter @delfrance/nfe-app build
@@ -187,7 +186,7 @@ jobs:
           FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
         run: |
-          pnpm --filter @delfrance/integrations-nfe test operations.homologacao
+          pnpm --filter @delfrance/integrations-nfe test:live operations.homologacao
 
       - name: Live homologação emission + orchestrator round-trips
         # Inherits the gate's verdict — runs only if the status check
@@ -206,12 +205,12 @@ jobs:
           #                         contract (the orchestrator's happy
           #                         path moved to orchestrator.homologacao)
           # - numeracao.staging:    transactional concurrency on staging
-          pnpm --filter @delfrance/integrations-nfe test \
+          pnpm --filter @delfrance/integrations-nfe test:live \
             emission.homologacao numeracao.staging
 
           # Orchestrator-level live test — emitirPedido + emitirPedidosLote
           # against real SEFAZ-SP HOM + staging Firestore fixtures.
-          pnpm --filter @delfrance/nfe-app test orchestrator.homologacao
+          pnpm --filter @delfrance/nfe-app test:live orchestrator.homologacao
 
   report-consumo-indevido:
     name: Detect Consumo Indevido Shield (cStat=656)

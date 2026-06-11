@@ -332,19 +332,23 @@ export function buildTranspFromFrete(frete: FreteDoPedido | null): {
   if (frete.balsa) out.balsa = frete.balsa;
 
   if (frete.volumes && frete.volumes.length > 0) {
+    // `pedido.freteInicial.volumes` carries the Flutter wire names
+    // (quantidade/especie/numero/pesoBruto/pesoLiquido — see `volumeSchema`
+    // in @delfrance/schemas); the NFe XSD names (qVol/esp/nVol/pesoB/pesoL)
+    // exist only from this projection onward.
     const vols = frete.volumes.map((v) => {
       const vol: NonNullable<typeof out.vol>[number] = {};
-      if (typeof v.qVol === 'number' && Number.isInteger(v.qVol) && v.qVol >= 0) {
-        vol.qVol = v.qVol;
+      if (typeof v.quantidade === 'number' && Number.isInteger(v.quantidade) && v.quantidade >= 0) {
+        vol.qVol = v.quantidade;
       }
-      const esp = sanitizeNFeText(v.esp, 60);
+      const esp = sanitizeNFeText(v.especie, 60);
       if (esp) vol.esp = esp;
       const marca = sanitizeNFeText(v.marca, 60);
       if (marca) vol.marca = marca;
-      const nVol = sanitizeNFeText(v.nVol, 60);
+      const nVol = sanitizeNFeText(v.numero, 60);
       if (nVol) vol.nVol = nVol;
-      if (typeof v.pesoL === 'number' && v.pesoL >= 0) vol.pesoL = v.pesoL;
-      if (typeof v.pesoB === 'number' && v.pesoB >= 0) vol.pesoB = v.pesoB;
+      if (typeof v.pesoLiquido === 'number' && v.pesoLiquido >= 0) vol.pesoL = v.pesoLiquido;
+      if (typeof v.pesoBruto === 'number' && v.pesoBruto >= 0) vol.pesoB = v.pesoBruto;
       return vol;
     });
     out.vol = vols;

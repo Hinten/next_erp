@@ -40,20 +40,31 @@ export const usuarioMeta: CollectionMetadata = {
 export const usuario = { schema: usuarioSchema, meta: usuarioMeta };
 
 /**
- * Superuser sentinel — every defined bit in PERM falls below 2^56, so this
- * mask is "all bits granted" for any current or near-future domain. Stored
- * as the user's `permissions` custom claim when isSuperUser is true.
+ * Superuser sentinel — "all bits granted" for any current or near-future
+ * domain. Stored as the user's `permissions` custom claim when isSuperUser
+ * is true.
+ *
+ * Was `(1n << 64n) - 1n` until the frete domain landed: PERM had already
+ * outgrown 64 bits (estoque=64+, fiscal=72+, arquivo=80+, frete=88+), and
+ * `hasPerm` is a plain bit-AND, so superusers minted with the old mask are
+ * missing those domains — re-mint their claims (toggle isSuperUser or run
+ * grant-all-perms) after deploying this change.
  */
-export const SUPERUSER_MASK = (1n << 64n) - 1n;
+export const SUPERUSER_MASK = (1n << 128n) - 1n;
 
 /**
- * Cheap detector for superuser identity from a raw bitmask. Any defined PERM
- * bit lives below 2^56, so a claim with bits >= 2^60 set can only have come
- * from `SUPERUSER_MASK`. Used by both UI (toggle visibility) and the backend
- * cascade-guard (to gate creation/promotion of other superusers).
+ * Detector for superuser identity from a raw bitmask: a superuser claim
+ * carries every `SUPERUSER_MASK` bit. Used by both UI (toggle visibility)
+ * and the backend cascade-guard (to gate creation/promotion of other
+ * superusers).
+ *
+ * The previous heuristic (`bits >= 2^60`) broke once PERM domains crossed
+ * bit 60 — any user holding estoque/fiscal/arquivo/frete bits was
+ * mis-detected as superuser and could promote superusers. Claims minted
+ * with the old 64-bit mask no longer qualify; re-mint them.
  */
 export function isSuperUserBits(bits: bigint): boolean {
-  return bits >= 1n << 60n;
+  return (bits & SUPERUSER_MASK) === SUPERUSER_MASK;
 }
 
 /**
