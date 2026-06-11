@@ -1,12 +1,8 @@
 'use client';
 
-import { PlaceholderPage } from '@delfrance/ui';
+import { IntFreteListPage } from '../_components/IntFretePages';
+import { LOGISTICA_SLICES } from '../_components/slices';
 
 export default function FobPage() {
-  return (
-    <PlaceholderPage
-      title="Por conta do destinatário (FOB)"
-      description="Frete por conta do destinatário."
-    />
-  );
+  return <IntFreteListPage slice={LOGISTICA_SLICES.fob} />;
 }

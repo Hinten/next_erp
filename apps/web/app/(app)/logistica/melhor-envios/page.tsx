@@ -1,12 +1,8 @@
 'use client';
 
-import { PlaceholderPage } from '@delfrance/ui';
+import { IntFreteListPage } from '../_components/IntFretePages';
+import { LOGISTICA_SLICES } from '../_components/slices';
 
 export default function MelhorEnviosPage() {
-  return (
-    <PlaceholderPage
-      title="Melhor Envios"
-      description="Contas e configurações da integração com Melhor Envios."
-    />
-  );
+  return <IntFreteListPage slice={LOGISTICA_SLICES['melhor-envios']} />;
 }

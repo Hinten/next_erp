@@ -82,11 +82,12 @@ const NAV: NavEntry[] = [
   },
   {
     label: 'Logística',
+    perm: PERM.frete.read,
     children: [
-      { href: '/logistica/melhor-envios', label: 'Melhor Envios' },
-      { href: '/logistica/motoboy', label: 'Motoboy' },
-      { href: '/logistica/fob', label: 'Por conta do destinatário (FOB)' },
-      { href: '/logistica/retirada', label: 'Retirada' },
+      { href: '/logistica/melhor-envios', label: 'Melhor Envios', perm: PERM.frete.read },
+      { href: '/logistica/motoboy', label: 'Motoboy', perm: PERM.frete.read },
+      { href: '/logistica/fob', label: 'Por conta do destinatário (FOB)', perm: PERM.frete.read },
+      { href: '/logistica/retirada', label: 'Retirada', perm: PERM.frete.read },
     ],
   },
   {

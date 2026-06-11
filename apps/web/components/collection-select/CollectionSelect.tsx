@@ -32,9 +32,9 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
   searchFields?: string[];
   /** RHF field path — makes the per-instance recents cache key unique. */
   fieldName: string;
-  /** Current form value — DocumentReference, `{path}`-shaped object, id string, or null. */
+  /** Current form value — DocumentReference, `{path}` object, doc-path/id string, or null. */
   value: unknown;
-  /** Emits a fresh DocumentReference for the picked id, or null when cleared. */
+  /** Emits a DocumentReference (or doc-path string with `emitDocPath`), or null when cleared. */
   onChange: (next: unknown) => void;
   onBlur?: () => void;
   label: string;
@@ -44,16 +44,28 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
   error?: string;
   /** Firestore query cap. Default 15. */
   limit?: number;
+  /**
+   * Emit the picked doc as a Flutter-ODM doc-path string
+   * (`documents/<collection>/<id>`) instead of a native `DocumentReference`.
+   * Use for collections whose schema types the ref as `z.string()` — the
+   * wire format the legacy app reads and writes (`OuterRefField.toJson`).
+   */
+  emitDocPath?: boolean;
 }
 
 /**
  * Convert whatever the form holds (Firestore DocumentReference, opaque
- * `{path}` object, plain id string, or null) into the doc id Mantine's
- * `<Select>` consumes. Anything unrecognised becomes `null`.
+ * `{path}` object, doc-path string — possibly Flutter-ODM `documents/...`
+ * prefixed — plain id string, or null) into the doc id Mantine's `<Select>`
+ * consumes. Anything unrecognised becomes `null`.
  */
 function valueToId(value: unknown): string | null {
   if (value == null) return null;
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') {
+    if (value.length === 0) return null;
+    const segs = value.split('/').filter(Boolean);
+    return segs[segs.length - 1] ?? null;
+  }
   if (typeof value !== 'object') return null;
   const v = value as { id?: unknown; path?: unknown };
   if (typeof v.id === 'string' && v.id.length > 0) return v.id;
@@ -100,6 +112,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   disabled,
   error,
   limit = DEFAULT_LIMIT,
+  emitDocPath = false,
 }: CollectionSelectProps<S>) {
   const db = getFirebaseFirestore();
 
@@ -208,9 +221,13 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
       }
       const picked = resultItems.find((o) => o.value === id) ?? recents.find((r) => r.id === id);
       record(id, picked?.label ?? id);
-      onChange(collection.docRef(db, {}, id));
+      onChange(
+        emitDocPath
+          ? `documents/${collection.resolvePath({})}/${id}`
+          : collection.docRef(db, {}, id),
+      );
     },
-    [onChange, resultItems, recents, record, collection, db],
+    [onChange, resultItems, recents, record, collection, db, emitDocPath],
   );
 
   // Locked: the value renders as a removable chip inside a field-shaped

@@ -290,6 +290,126 @@ export async function cleanupBalcaoFixtures(prefix: string): Promise<void> {
 }
 
 /**
+ * Seed fixtures for the `/logistica/*` suite: one filial (named
+ * `<prefix>-ref-filial`) plus `n` Motoboy docs and one Retirada doc in the
+ * tipo-discriminated `int_frete` collection. The docs use the **Flutter wire
+ * shapes** F1 pinned: `filialIntegracaoFreteOuterRef` is a doc-path STRING
+ * (`documents/filiais/<id>`, not a DocumentReference), `dataCadastro` is a
+ * required ms-epoch int, and omit-tolerant fields are explicit null.
+ */
+export async function seedIntFreteFixtures(
+  prefix: string,
+  n: number,
+): Promise<{ filialId: string }> {
+  const filialId = `${prefix}-ref-filial`;
+  const now = new Date().toISOString();
+
+  await db()
+    .collection('filiais')
+    .doc(filialId)
+    .set({
+      razaoSocial: `${prefix}-ref-filial`,
+      fantasia: null,
+      cnae: null,
+      cnpj: '99999999999999',
+      ie: '999999999',
+      iest: null,
+      imun: null,
+      sede: {
+        idExterno: null,
+        logradouro: 'Av. Teste',
+        numero: '1',
+        bairro: 'Centro',
+        complemento: null,
+        cep: '01310100',
+        codigoMunicipio: null,
+        cidade: 'São Paulo',
+        estado: 'SP',
+        cPais: null,
+        pais: null,
+        nome: null,
+        cpf_cnpj: null,
+        rg: null,
+        ie: null,
+        imun: null,
+        email: null,
+        telefone: null,
+      },
+      timestamp: now,
+    });
+
+  const batch = db().batch();
+  const col = db().collection('int_frete');
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      tipo: 'motoboy',
+      nome: `${prefix}-${pad(i)}`,
+      ativo: i % 2 === 1,
+      filialIntegracaoFreteOuterRef: `documents/filiais/${filialId}`,
+      enderecoDeOrigem: null,
+      dataCadastro: Date.now(),
+      mapa: null,
+      faixaCep: [
+        { cepInicial: '01000000', cepFinal: '01999999', custo: 15, valor: 20, prazo: 1 },
+        { cepInicial: '02000000', cepFinal: '02999999', custo: 18.5, valor: 25, prazo: 2 },
+      ],
+      horarioDeCorte: [
+        {
+          diaDaSemana: 1,
+          horaDeCorte: 16,
+          minutosDeCorte: 30,
+          prazoDePostagem: 0,
+          horaPostagem: 18,
+          minutosPostagem: 0,
+        },
+      ],
+      prazoExtra: 0,
+      client_id: null,
+      client_secret: null,
+    });
+  }
+  batch.set(col.doc(`${prefix}-ret-001`), {
+    tipo: 'retiradaNaLoja',
+    nome: `${prefix}-ret-001`,
+    ativo: true,
+    filialIntegracaoFreteOuterRef: `documents/filiais/${filialId}`,
+    enderecoDeOrigem: null,
+    dataCadastro: Date.now(),
+    mapa: null,
+    faixaCep: null,
+    horarioDeCorte: null,
+    prazoExtra: 2,
+    client_id: null,
+    client_secret: null,
+  });
+  await batch.commit();
+
+  return { filialId };
+}
+
+/** Teardown for `seedIntFreteFixtures` (incl. UI-created docs on the prefix). */
+export async function cleanupIntFreteFixtures(prefix: string): Promise<void> {
+  await Promise.all([
+    cleanupByNamePrefix('int_frete', prefix),
+    cleanupByFieldPrefix('filiais', 'razaoSocial', prefix),
+  ]);
+}
+
+/** Full data of the first `int_frete` doc named `nome`, or null. */
+export async function getIntFreteByName(nome: string): Promise<Record<string, unknown> | null> {
+  const snap = await db().collection('int_frete').where('nome', '==', nome).limit(1).get();
+  const data = snap.docs[0]?.data();
+  return data ? (data as Record<string, unknown>) : null;
+}
+
+/** Length of `faixaCep` on the `int_frete` doc named `nome` (-1 = no array/doc). */
+export async function intFreteFaixaCount(nome: string): Promise<number> {
+  const data = await getIntFreteByName(nome);
+  const faixas = data?.faixaCep;
+  return Array.isArray(faixas) ? faixas.length : -1;
+}
+
+/**
  * Seed minimal fixtures the `/pedidos/novo` e2e flow needs:
  *  - 1 cliente,
  *  - 1 operação (saída, tipo=1),
