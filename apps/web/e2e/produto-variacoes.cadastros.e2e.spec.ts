@@ -35,12 +35,12 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
 
   /**
    * Select an option inside a Mantine MultiSelect identified by its label.
-   * Scoped to the textbox role — Mantine labels BOTH the input and its open
-   * dropdown listbox with the same accessible name, so a bare getByLabel hits
-   * a strict-mode violation.
+   * Scoped to the combobox role — the input renders `role="combobox"`
+   * (confirmed in a production trace), and a bare getByLabel can also match
+   * the open dropdown listbox (same accessible name → strict-mode violation).
    */
   async function pickOption(page: Page, selectLabel: string | RegExp, option: string | RegExp) {
-    await page.getByRole('textbox', { name: selectLabel }).click();
+    await page.getByRole('combobox', { name: selectLabel }).click();
     await page.getByRole('option', { name: option }).click();
     await page.keyboard.press('Escape'); // close the dropdown overlay
   }
@@ -84,7 +84,7 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
 
     // Select the Tamanhos group, then two of its variants.
     await pickOption(page, 'Grupos de variação', `${prefix}-Tamanhos`);
-    await expect(page.getByRole('textbox', { name: `${prefix}-Tamanhos` })).toBeVisible({
+    await expect(page.getByRole('combobox', { name: `${prefix}-Tamanhos` })).toBeVisible({
       timeout: 15_000,
     });
     await pickOption(page, `${prefix}-Tamanhos`, 'P (P)');
