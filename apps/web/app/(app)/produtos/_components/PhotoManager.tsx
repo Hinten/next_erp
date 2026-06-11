@@ -32,6 +32,7 @@ import {
   DndContext,
   type DragEndEvent,
   PointerSensor,
+  useDroppable,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
@@ -55,6 +56,23 @@ import { DELETE_MARK } from '@delfrance/ui';
 
 /** A `Foto` plus the transient staged-deletion marker (keyed by `DELETE_MARK`). */
 type EditableFoto = Foto & { [DELETE_MARK]?: boolean };
+
+/**
+ * Unique sortable id — the same arquivo may legitimately live in two galleries
+ * (parent + a variant), so the dnd id pairs the ref with the gallery tag.
+ */
+const itemIdOf = (f: EditableFoto) => `${f.arquivoOuterRef}|${f.variantePath ?? ''}`;
+
+/** Droppable id prefix for a whole gallery section (drop target when empty). */
+const CONTAINER_PREFIX = 'section::';
+
+/** One gallery in display order; `null` grupo/uid = the parent-level gallery. */
+interface SectionList {
+  key: string;
+  grupoId: string | null;
+  uid: string | null;
+  indexes: number[];
+}
 
 const ARQUIVOS_PREFIX = 'arquivos/';
 
@@ -128,6 +146,21 @@ export function PhotoManager({
   const taggedIndexes = useMemo(
     () => fotos.map((f, i) => (f.variantePath ? i : -1)).filter((i) => i >= 0),
     [fotos],
+  );
+
+  // Galleries in display order — the shared structure for rendering and for
+  // the cross-section drag handler (sections partition the fotos array).
+  const sectionLists = useMemo<SectionList[]>(
+    () => [
+      { key: 'general', grupoId: null, uid: null, indexes: sections.general },
+      ...sections.variants.map((s) => ({
+        key: s.uid,
+        grupoId: s.grupoId,
+        uid: s.uid,
+        indexes: s.fotoIndexes,
+      })),
+    ],
+    [sections],
   );
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -252,64 +285,79 @@ export function PhotoManager({
     });
   }
 
-  /**
-   * Reorder inside one section: the section's fotos move among their own
-   * positions; the global array is rebuilt as general + variant sections in
-   * display order (sections partition the array, so the rebuild is exact).
-   */
-  function handleSectionDragEnd(event: DragEndEvent, indexes: number[]) {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    const sectionFotos = indexes.map((i) => fotos[i]!);
-    const from = sectionFotos.findIndex((f) => f.arquivoOuterRef === active.id);
-    const to = sectionFotos.findIndex((f) => f.arquivoOuterRef === over.id);
-    if (from < 0 || to < 0) return;
-    const reordered = new Map(
-      arrayMove(indexes, from, to).map((globalIndex, pos) => [indexes[pos]!, globalIndex]),
-    );
-    // Rebuild: every position keeps its foto except inside this section, where
-    // positions take the moved order.
-    onChange(fotos.map((f, i) => (reordered.has(i) ? fotos[reordered.get(i)!]! : f)));
+  /** Find a dragged foto by its sortable id: which gallery + position inside it. */
+  function locate(id: string): { list: number; pos: number } | null {
+    for (let li = 0; li < sectionLists.length; li += 1) {
+      const pos = sectionLists[li]!.indexes.findIndex((i) => itemIdOf(fotos[i]!) === id);
+      if (pos >= 0) return { list: li, pos };
+    }
+    return null;
   }
 
-  function renderGrid(indexes: number[], withCover: boolean) {
-    if (indexes.length === 0) {
-      return (
-        <Text size="sm" c="dimmed">
-          Nenhuma foto.
-        </Text>
-      );
+  /**
+   * One drag handler for every gallery: reorder inside a section, or — like
+   * the old app's single reorderable list — drop a foto onto ANOTHER section
+   * to move it there (retagging `grupoDeVariacoesOuterRef`/`variantePath`,
+   * staged like any other edit). The global array is rebuilt section-major;
+   * sections partition it, so the rebuild is exact and capa stays the first
+   * parent-gallery foto.
+   */
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const src = locate(String(active.id));
+    if (!src) return;
+
+    const overId = String(over.id);
+    let dstList: number;
+    let dstPos: number;
+    if (overId.startsWith(CONTAINER_PREFIX)) {
+      // Dropped on a section body (e.g. an empty gallery) → append at the end.
+      dstList = sectionLists.findIndex((l) => `${CONTAINER_PREFIX}${l.key}` === overId);
+      if (dstList < 0) return;
+      dstPos = sectionLists[dstList]!.indexes.length;
+    } else {
+      const dst = locate(overId);
+      if (!dst) return;
+      dstList = dst.list;
+      dstPos = dst.pos;
     }
+
+    const listsFotos = sectionLists.map((l) => l.indexes.map((i) => fotos[i]!));
+    if (dstList === src.list) {
+      listsFotos[src.list] = arrayMove(listsFotos[src.list]!, src.pos, dstPos);
+    } else {
+      const target = sectionLists[dstList]!;
+      const moving = listsFotos[src.list]![src.pos]!;
+      if (listsFotos[dstList]!.some((f) => f.arquivoOuterRef === moving.arquivoOuterRef)) {
+        notifications.show({
+          color: 'gray',
+          message: 'Esta foto já existe na galeria de destino.',
+        });
+        return;
+      }
+      listsFotos[src.list]!.splice(src.pos, 1);
+      listsFotos[dstList]!.splice(dstPos, 0, {
+        ...moving,
+        grupoDeVariacoesOuterRef: target.grupoId ? grupoOuterRef(target.grupoId) : null,
+        variantePath: target.uid,
+      });
+    }
+    onChange(listsFotos.flat());
+  }
+
+  function renderGrid(sectionKey: string, indexes: number[], withCover: boolean) {
     return (
-      <DndContext
-        sensors={sensors}
-        collisionDetection={closestCenter}
-        onDragEnd={(e) => handleSectionDragEnd(e, indexes)}
-      >
-        <SortableContext
-          items={indexes.map((i) => fotos[i]!.arquivoOuterRef)}
-          strategy={rectSortingStrategy}
-        >
-          <SimpleGrid cols={{ base: 2, sm: 3, md: 4 }}>
-            {indexes.map((index) => {
-              const foto = fotos[index]!;
-              return (
-                <SortableFoto
-                  key={foto.arquivoOuterRef}
-                  foto={foto}
-                  db={db}
-                  isCover={withCover && index === 0}
-                  showCover={withCover}
-                  marked={!!foto[DELETE_MARK]}
-                  disabled={disabled}
-                  onCover={() => makeCover(index)}
-                  onToggleDelete={() => toggleDelete(index)}
-                />
-              );
-            })}
-          </SimpleGrid>
-        </SortableContext>
-      </DndContext>
+      <SectionGrid
+        sectionKey={sectionKey}
+        indexes={indexes}
+        fotos={fotos}
+        db={db}
+        withCover={withCover}
+        disabled={disabled}
+        onCover={makeCover}
+        onToggleDelete={toggleDelete}
+      />
     );
   }
 
@@ -356,53 +404,130 @@ export function PhotoManager({
         </Group>
       )}
 
-      {renderGrid(sections.general, true)}
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        {renderGrid('general', sections.general, true)}
 
-      {sections.variants.map((section) => (
-        <Stack key={section.uid} gap="xs">
-          <Divider
-            label={
-              <Group gap="xs">
-                <Text size="sm" fw={600}>
-                  {section.grupoNome}: {section.varianteNome}
-                </Text>
-                {!disabled && section.fotoIndexes.length > 0 && (
-                  <Button
-                    variant="subtle"
-                    color="red"
-                    size="compact-xs"
-                    onClick={() => toggleDeleteSection(section.fotoIndexes)}
-                  >
-                    {sectionDeleteLabel(section.fotoIndexes)}
-                  </Button>
-                )}
-              </Group>
-            }
-            labelPosition="left"
-          />
-          {renderGrid(section.fotoIndexes, false)}
-          {!disabled && (
-            <Dropzone
-              onDrop={(files) => handleDrop(files, section)}
-              accept={IMAGE_MIME_TYPE}
-              loading={uploading}
-              multiple
-            >
-              <Group justify="center" gap="xs" mih={48} style={{ pointerEvents: 'none' }}>
-                <IconPhotoPlus size={20} />
-                <Text size="xs" c="dimmed">
-                  Adicionar fotos para {section.varianteNome}
-                </Text>
-              </Group>
-            </Dropzone>
-          )}
-        </Stack>
-      ))}
+        {sections.variants.map((section) => (
+          <Stack key={section.uid} gap="xs">
+            <Divider
+              label={
+                <Group gap="xs">
+                  <Text size="sm" fw={600}>
+                    {section.grupoNome}: {section.varianteNome}
+                  </Text>
+                  {!disabled && section.fotoIndexes.length > 0 && (
+                    <Button
+                      variant="subtle"
+                      color="red"
+                      size="compact-xs"
+                      onClick={() => toggleDeleteSection(section.fotoIndexes)}
+                    >
+                      {sectionDeleteLabel(section.fotoIndexes)}
+                    </Button>
+                  )}
+                </Group>
+              }
+              labelPosition="left"
+            />
+            {renderGrid(section.uid, section.fotoIndexes, false)}
+            {!disabled && (
+              <Dropzone
+                onDrop={(files) => handleDrop(files, section)}
+                accept={IMAGE_MIME_TYPE}
+                loading={uploading}
+                multiple
+              >
+                <Group justify="center" gap="xs" mih={48} style={{ pointerEvents: 'none' }}>
+                  <IconPhotoPlus size={20} />
+                  <Text size="xs" c="dimmed">
+                    Adicionar fotos para {section.varianteNome}
+                  </Text>
+                </Group>
+              </Dropzone>
+            )}
+          </Stack>
+        ))}
+      </DndContext>
     </Stack>
   );
 }
 
+interface SectionGridProps {
+  sectionKey: string;
+  /** Global indexes of this gallery's fotos, in display order. */
+  indexes: number[];
+  fotos: EditableFoto[];
+  db: Firestore;
+  withCover: boolean;
+  disabled?: boolean;
+  onCover: (index: number) => void;
+  onToggleDelete: (index: number) => void;
+}
+
+/**
+ * One gallery's sortable grid. The whole body is a droppable container so a
+ * foto can be dragged INTO this section even when it's empty (the drop retags
+ * it — see `handleDragEnd`).
+ */
+function SectionGrid({
+  sectionKey,
+  indexes,
+  fotos,
+  db,
+  withCover,
+  disabled,
+  onCover,
+  onToggleDelete,
+}: SectionGridProps) {
+  const { setNodeRef, isOver } = useDroppable({ id: `${CONTAINER_PREFIX}${sectionKey}` });
+  return (
+    <SortableContext items={indexes.map((i) => itemIdOf(fotos[i]!))} strategy={rectSortingStrategy}>
+      <Box
+        ref={setNodeRef}
+        p={2}
+        style={
+          isOver
+            ? {
+                outline: '2px dashed var(--mantine-color-blue-4)',
+                outlineOffset: 2,
+                borderRadius: 4,
+              }
+            : undefined
+        }
+      >
+        {indexes.length === 0 ? (
+          <Text size="sm" c="dimmed">
+            Nenhuma foto.
+          </Text>
+        ) : (
+          <SimpleGrid cols={{ base: 2, sm: 3, md: 4 }}>
+            {indexes.map((index) => {
+              const foto = fotos[index]!;
+              return (
+                <SortableFoto
+                  key={itemIdOf(foto)}
+                  sortableId={itemIdOf(foto)}
+                  foto={foto}
+                  db={db}
+                  isCover={withCover && index === 0}
+                  showCover={withCover}
+                  marked={!!foto[DELETE_MARK]}
+                  disabled={disabled}
+                  onCover={() => onCover(index)}
+                  onToggleDelete={() => onToggleDelete(index)}
+                />
+              );
+            })}
+          </SimpleGrid>
+        )}
+      </Box>
+    </SortableContext>
+  );
+}
+
 interface SortableFotoProps {
+  /** Unique dnd id (`ref|variantePath`) — see `itemIdOf`. */
+  sortableId: string;
   foto: Foto;
   db: Firestore;
   isCover: boolean;
@@ -416,6 +541,7 @@ interface SortableFotoProps {
 }
 
 function SortableFoto({
+  sortableId,
   foto,
   db,
   isCover,
@@ -426,7 +552,7 @@ function SortableFoto({
   onToggleDelete,
 }: SortableFotoProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: foto.arquivoOuterRef,
+    id: sortableId,
     disabled,
   });
   const style = {
