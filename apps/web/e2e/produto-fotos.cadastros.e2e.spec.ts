@@ -1,5 +1,11 @@
 import { expect, test } from '@playwright/test';
-import { cleanupByNamePrefix, docExistsByName, e2ePrefix } from './_helpers/seed-data';
+import {
+  cleanupByNamePrefix,
+  docExistsByName,
+  e2ePrefix,
+  seedGruposDeVariacao,
+  seedProdutoComVariacoes,
+} from './_helpers/seed-data';
 import { clickSave, fillField } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
@@ -26,6 +32,7 @@ test.describe.serial('Produtos fotos e2e — ObjectView Fotos tab', () => {
 
   test.afterAll(async () => {
     await cleanupByNamePrefix('produtos', prefix);
+    await cleanupByNamePrefix('grupoDeVariacoes', prefix);
   });
 
   test('shows the "save first" message on the Fotos tab of the create screen', async ({ page }) => {
@@ -62,6 +69,30 @@ test.describe.serial('Produtos fotos e2e — ObjectView Fotos tab', () => {
     await expect(page.getByText('Arraste imagens aqui ou clique para selecionar')).toBeVisible({
       timeout: 15_000,
     });
-    await expect(page.getByText('Nenhuma foto.')).toBeVisible();
+    await expect(page.getByText('Nenhuma foto.').first()).toBeVisible();
+  });
+
+  test('renders per-variant photo sections for permiteFotos groups only', async ({ page }) => {
+    // Seed groups (Cores has permiteFotos; Tamanhos doesn't) + a parent produto
+    // selecting Tamanhos P and Cores Azul/Verde.
+    const grupos = await seedGruposDeVariacao(prefix);
+    const { produtoId } = await seedProdutoComVariacoes(prefix, grupos);
+
+    await page.goto(`/produtos/${produtoId}/editar`);
+    await expect(page.getByRole('heading', { name: 'Editar produto' })).toBeVisible();
+    await page.getByRole('tab', { name: 'Fotos' }).click();
+
+    // One section per Cores variant (the permiteFotos group), with its own
+    // tagged dropzone; Tamanhos (permiteFotos=false) gets no section.
+    await expect(page.getByText(`${prefix}-Cores: Azul`)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(`${prefix}-Cores: Verde`)).toBeVisible();
+    await expect(page.getByText('Adicionar fotos para Azul')).toBeVisible();
+    await expect(page.getByText('Adicionar fotos para Verde')).toBeVisible();
+    await expect(page.getByText(`${prefix}-Tamanhos: P`)).toHaveCount(0);
+
+    // No variant-tagged fotos yet → the bulk actions stay hidden.
+    await expect(page.getByRole('button', { name: 'Mover fotos para o produto pai' })).toHaveCount(
+      0,
+    );
   });
 });

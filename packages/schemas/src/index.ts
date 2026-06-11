@@ -173,6 +173,7 @@ export {
 
 export {
   varianteFakePath,
+  grupoOuterRef,
   parseFakePath,
   remakeFakePath,
   sortGruposByOrdem,
@@ -183,9 +184,12 @@ export {
   sameCombo,
   reconstructFromVariacoesUid,
   reconstructFromSkuSuffix,
+  splitFotoSections,
   type GrupoComId,
   type VariationCombo,
   type ReconstructResult,
+  type FotoSections,
+  type FotoVariantSection,
 } from './variacoes';
 
 export {

@@ -572,6 +572,44 @@ export async function seedGruposDeVariacao(prefix: string): Promise<{
 }
 
 /**
+ * Seed a parent produto wired to the groups from `seedGruposDeVariacao` —
+ * `grupoDeVariacoesUid` (bare ids) + `variacoesUid` (fake paths, group-major:
+ * Tamanhos P + Cores Azul/Verde). Gives the per-variant photo sections
+ * something to render. Returns the parent id.
+ */
+export async function seedProdutoComVariacoes(
+  prefix: string,
+  grupos: { tamanhosId: string; coresId: string },
+): Promise<{ produtoId: string }> {
+  const produtoId = `${prefix}-pai`;
+  const fake = (g: string, v: string) => `documents/grupoDeVariacoes/${g}/variacoes/${v}`;
+  await db()
+    .collection('produtos')
+    .doc(produtoId)
+    .set({
+      nome: `${prefix}-pai`,
+      sku: `${prefix.toUpperCase().replace(/-/g, '_')}_PAI`,
+      paiId: null,
+      ordem: null,
+      grupoDeVariacoesUid: [grupos.tamanhosId, grupos.coresId],
+      variacoesUid: [
+        fake(grupos.tamanhosId, 'p'),
+        fake(grupos.coresId, 'az'),
+        fake(grupos.coresId, 'vd'),
+      ],
+      publicado: true,
+      ehKit: false,
+      ehKitVirtual: false,
+      ofereceFreteGratis: false,
+      permiteVendaSemEstoque: false,
+      fotos: null,
+      videos: null,
+      timestamp: new Date().toISOString(),
+    });
+  return { produtoId };
+}
+
+/**
  * Delete every doc in `collection` whose `field` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
  */

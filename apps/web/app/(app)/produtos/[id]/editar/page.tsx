@@ -68,6 +68,7 @@ export default function EditarProdutoPage() {
             produtoId={params.id}
             db={db}
             storage={storage}
+            grupos={grupos}
             value={(p.value as Foto[] | null) ?? null}
             onChange={p.onChange}
             disabled={p.disabled}

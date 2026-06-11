@@ -30,6 +30,14 @@ export function varianteFakePath(grupoId: string, varianteId: string): string {
 }
 
 /**
+ * The `Foto.grupoDeVariacoesOuterRef` wire shape — Flutter tags a per-variant
+ * photo with the group's `docId.pathWithDocuments` (`widgets.dart:334`).
+ */
+export function grupoOuterRef(grupoId: string): string {
+  return `documents/grupoDeVariacoes/${grupoId}`;
+}
+
+/**
  * Parse any tolerated fake-path form (`documents/...`, leading-slash, or the
  * bare `grupoDeVariacoes/<g>/variacoes/<v>`) into its ids. Mirrors Flutter's
  * `getIdFromPath` (last segment) + `getGrupoIdFromPath` (3rd from the end).
@@ -280,4 +288,73 @@ export function reconstructFromSkuSuffix(input: {
     variacoesUid: uidsDesc.reverse(),
     sortKey: sortKeyDesc.reverse(),
   };
+}
+
+/** One per-variant photo section of the parent's gallery. */
+export interface FotoVariantSection {
+  /** Canonical variant fake path — the `Foto.variantePath` tag. */
+  uid: string;
+  grupoId: string;
+  varianteId: string;
+  grupoNome: string;
+  varianteNome: string;
+  /** Indexes into the input `fotos` array, in array order. */
+  fotoIndexes: number[];
+}
+
+export interface FotoSections {
+  /** Indexes of untagged/orphaned fotos (the parent-level gallery). */
+  general: number[];
+  variants: FotoVariantSection[];
+}
+
+/**
+ * Split a parent's `fotos` into the per-variant gallery sections — port of the
+ * Flutter `Fotos2ProdutoWidget` grouping (`widgets.dart:142-237`):
+ *
+ *  - One section per entry of the parent's `variacoesUid` (order preserved)
+ *    whose group exists and has `permiteFotos`.
+ *  - A foto belongs to a variant section when its `variantePath` matches that
+ *    entry (compared canonically, tolerating legacy path forms).
+ *  - Everything else — untagged fotos, tags pointing at unselected variants,
+ *    unknown groups, or groups without `permiteFotos` — falls back to the
+ *    general (parent-level) section, exactly like the old app.
+ */
+export function splitFotoSections(input: {
+  fotos: Array<{ variantePath?: string | null }>;
+  /** The parent's `variacoesUid` (variant fake paths). */
+  parentUids: string[];
+  grupos: GrupoComId[];
+}): FotoSections {
+  const byId = grupoById(input.grupos);
+
+  const variants: FotoVariantSection[] = [];
+  for (const rawUid of input.parentUids) {
+    const uid = remakeFakePath(rawUid);
+    if (!uid) continue;
+    const { grupoId, varianteId } = parseFakePath(uid)!;
+    const grupo = byId.get(grupoId);
+    if (!grupo || grupo.data.permiteFotos !== true) continue;
+    const variante = grupo.data.variacoes?.find((v) => v.id === varianteId);
+    if (variants.some((s) => s.uid === uid)) continue;
+    variants.push({
+      uid,
+      grupoId,
+      varianteId,
+      grupoNome: grupo.data.nome,
+      varianteNome: variante?.nome ?? varianteId,
+      fotoIndexes: [],
+    });
+  }
+
+  const general: number[] = [];
+  const byUid = new Map(variants.map((s) => [s.uid, s]));
+  input.fotos.forEach((foto, index) => {
+    const tag = foto.variantePath ? remakeFakePath(foto.variantePath) : null;
+    const section = tag ? byUid.get(tag) : undefined;
+    if (section) section.fotoIndexes.push(index);
+    else general.push(index);
+  });
+
+  return { general, variants };
 }
