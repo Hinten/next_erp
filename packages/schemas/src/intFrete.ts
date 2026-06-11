@@ -5,6 +5,7 @@ import { integracoesFreteSchema } from './frete';
 
 const PERM_FRETE_READ = 1n << 88n;
 const PERM_FRETE_WRITE = 1n << 89n;
+const PERM_FRETE_DELETE = 1n << 90n;
 
 /**
  * IntegracaoFrete (`int_frete` collection) — shipping integration configs,
@@ -208,7 +209,7 @@ export const intFreteMeta: CollectionMetadata = {
   permissions: {
     read: PERM_FRETE_READ,
     write: PERM_FRETE_WRITE,
-    delete: PERM_FRETE_WRITE,
+    delete: PERM_FRETE_DELETE,
   },
   cascade: [{ path: 'int_frete/{intFreteId}/tokenMelEnv', onDelete: 'cascade' }],
 };
@@ -238,12 +239,13 @@ export type TokenMelEnv = z.infer<typeof tokenMelEnvSchema>;
 
 export const tokenMelEnvMeta: CollectionMetadata = {
   collectionPath: 'int_frete/{intFreteId}/tokenMelEnv',
-  // Tokens carry live credentials — every action gated on frete.write; the
-  // real consumers run through the Admin SDK in apps/integrations anyway.
+  // Tokens carry live credentials — reads require frete.write (not mere
+  // frete.read); the real consumers run through the Admin SDK in
+  // apps/integrations anyway.
   permissions: {
     read: PERM_FRETE_WRITE,
     write: PERM_FRETE_WRITE,
-    delete: PERM_FRETE_WRITE,
+    delete: PERM_FRETE_DELETE,
   },
 };
 

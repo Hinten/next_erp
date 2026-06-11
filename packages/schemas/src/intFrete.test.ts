@@ -260,6 +260,21 @@ describe('metas', () => {
   it('tokenMelEnvMeta targets the subcollection', () => {
     expect(tokenMelEnvMeta.collectionPath).toBe('int_frete/{intFreteId}/tokenMelEnv');
   });
+
+  it('permission bits line up with the PERM.frete domain (88–90)', () => {
+    expect(intFreteMeta.permissions).toEqual({
+      read: 1n << 88n,
+      write: 1n << 89n,
+      delete: 1n << 90n,
+    });
+    // Token reads deliberately require frete.write (credentials), delete uses
+    // the dedicated delete bit.
+    expect(tokenMelEnvMeta.permissions).toEqual({
+      read: 1n << 89n,
+      write: 1n << 89n,
+      delete: 1n << 90n,
+    });
+  });
 });
 
 /* -------------------------------------------------------------------------- */
