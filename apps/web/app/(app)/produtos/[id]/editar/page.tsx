@@ -6,11 +6,12 @@ import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
-import { type Foto, produtoSchema } from '@delfrance/schemas';
+import { type Foto, type Video, produtoSchema } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { PhotoManager } from '../../_components/PhotoManager';
+import { VideoManager } from '../../_components/VideoManager';
 import {
   PRODUTO_EXCLUDED_FIELDS,
   PRODUTO_SECTIONS,
@@ -25,8 +26,8 @@ export default function EditarProdutoPage() {
   const db = getFirebaseFirestore();
   const storage = getFirebaseStorage();
 
-  // The product exists here (edit mode), so the Fotos tab's PhotoManager is
-  // scoped to this product and uploads are enabled.
+  // The product exists here (edit mode), so the Fotos/Vídeos managers are scoped
+  // to this product and uploads are enabled.
   const fields = useMemo<Record<string, FieldConfig>>(
     () => ({
       ...produtoFieldOverrides,
@@ -40,6 +41,21 @@ export default function EditarProdutoPage() {
             db={db}
             storage={storage}
             value={(p.value as Foto[] | null) ?? null}
+            onChange={p.onChange}
+            disabled={p.disabled}
+          />
+        ),
+      },
+      videos: {
+        label: 'Vídeos',
+        section: 'Vídeos',
+        prepareForSave: stripMarkedForDeletion,
+        renderInput: (p) => (
+          <VideoManager
+            produtoId={params.id}
+            db={db}
+            storage={storage}
+            value={(p.value as Video[] | null) ?? null}
             onChange={p.onChange}
             disabled={p.disabled}
           />

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase/firestore';
 import type { FirebaseStorage } from 'firebase/storage';
-import { productArquivoId, productOriginalPath } from '@delfrance/schemas';
+import { productArquivoId, productOriginalPath, productVideoPath } from '@delfrance/schemas';
 
 import { sha512Hex } from './hash';
 
@@ -30,7 +30,7 @@ vi.mock('./collection', () => ({
 }));
 
 // Imported after the mocks are registered (vi.mock is hoisted).
-const { uploadProductImage, uploadFile } = await import('./upload');
+const { uploadProductImage, uploadProductVideo, uploadFile } = await import('./upload');
 
 const db = {} as unknown as Firestore;
 const storage = {} as unknown as FirebaseStorage;
@@ -103,6 +103,51 @@ describe('uploadProductImage', () => {
     expect(result.arquivo).toEqual(existing);
     expect(mocks.uploadBytes).not.toHaveBeenCalled();
     expect(mocks.setDoc).not.toHaveBeenCalled();
+  });
+});
+
+describe('uploadProductVideo', () => {
+  it('uploads to the product-scoped video path + id and writes the Arquivo', async () => {
+    const hash = await sha512Hex(bytes);
+    const result = await uploadProductVideo({
+      storage,
+      db,
+      produtoId: 'p1',
+      bytes,
+      contentType: 'video/mp4',
+      originalFilename: 'clip.mp4',
+    });
+
+    expect(result.id).toBe(productArquivoId('p1', hash));
+    expect(result.arquivo.filepath).toBe('produtos/p1/videos');
+    expect(result.arquivo.filename).toBe(`${hash}.mp4`);
+    expect(result.arquivo.filetype).toBe('video');
+    expect(result.arquivo.url).toBe(`https://dl/${productVideoPath('p1', hash, 'mp4')}`);
+    expect(mocks.uploadBytes).toHaveBeenCalledTimes(1);
+    expect(mocks.setDoc).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a non-video content type', async () => {
+    await expect(
+      uploadProductVideo({ storage, db, produtoId: 'p1', bytes, contentType: 'image/png' }),
+    ).rejects.toThrow(/video\/\*/);
+    expect(mocks.uploadBytes).not.toHaveBeenCalled();
+  });
+
+  it('dedups: reuses an existing Arquivo and skips the upload', async () => {
+    const existing = { filetype: 'video', filepath: 'produtos/p1/videos', filename: 'x.mp4' };
+    mocks.getDoc.mockResolvedValue({ exists: () => true, data: () => existing });
+
+    const result = await uploadProductVideo({
+      storage,
+      db,
+      produtoId: 'p1',
+      bytes,
+      contentType: 'video/mp4',
+    });
+
+    expect(result.arquivo).toEqual(existing);
+    expect(mocks.uploadBytes).not.toHaveBeenCalled();
   });
 });
 

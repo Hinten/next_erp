@@ -13,6 +13,7 @@ import {
   normalizeContentType,
   productArquivoId,
   productOriginalPath,
+  productVideoPath,
 } from '@delfrance/schemas';
 
 import { arquivoCollection } from './collection';
@@ -138,6 +139,44 @@ export async function uploadProductImage(args: UploadProductImageArgs): Promise<
     docId: productArquivoId(args.produtoId, hash),
     storagePath: productOriginalPath(args.produtoId, hash, ext),
     filetype: 'image',
+    originalFilename: args.originalFilename,
+  });
+}
+
+export interface UploadProductVideoArgs {
+  storage: FirebaseStorage;
+  db: Firestore;
+  /** Owning product id. For a NEW product, mint it first and pass it before saving. */
+  produtoId: string;
+  bytes: Uint8Array | ArrayBuffer | Blob;
+  contentType: string;
+  originalFilename?: string | null;
+}
+
+/**
+ * Upload a product video to `produtos/<produtoId>/videos/<hash>.ext` with the
+ * product-scoped doc id `<produtoId>_<hash>`. Unlike product images, videos are
+ * **not** resized — the original is played back directly, so this writes to the
+ * `videos` subdir (which the resize Cloud Function does not watch) and never
+ * triggers it.
+ */
+export async function uploadProductVideo(args: UploadProductVideoArgs): Promise<UploadResult> {
+  if (!args.contentType.startsWith('video/')) {
+    throw new StorageUploadError(
+      `uploadProductVideo expects a video/* content type, got "${args.contentType}".`,
+    );
+  }
+  const bytes = await toBytes(args.bytes);
+  const hash = await sha512Hex(bytes);
+  const ext = extensionForContentType(args.contentType);
+  return putArquivo({
+    storage: args.storage,
+    db: args.db,
+    bytes,
+    contentType: args.contentType,
+    docId: productArquivoId(args.produtoId, hash),
+    storagePath: productVideoPath(args.produtoId, hash, ext),
+    filetype: 'video',
     originalFilename: args.originalFilename,
   });
 }

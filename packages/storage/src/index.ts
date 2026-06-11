@@ -5,9 +5,11 @@ export { extensionForContentType } from './mime';
 export {
   uploadFile,
   uploadProductImage,
+  uploadProductVideo,
   uploadFromUrl,
   type UploadResult,
   type UploadFileArgs,
   type UploadProductImageArgs,
+  type UploadProductVideoArgs,
   type UploadFromUrlArgs,
 } from './upload';

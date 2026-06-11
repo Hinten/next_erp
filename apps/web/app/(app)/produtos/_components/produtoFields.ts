@@ -6,10 +6,10 @@ import type { Produto } from '@delfrance/schemas';
  * and edit (`[id]/editar`) screens so the tab layout and labels stay in sync.
  *
  * The product screen is large (Flutter parity: fotos, vídeos, variações,
- * estoque, preços, impostos, kit, anexos, marketplace). This PR ports only the
- * scalar fields into a tabbed ObjectView; the media/variation/marketplace tabs
- * land in follow-up PRs. Until then those fields are hidden via
- * `PRODUTO_EXCLUDED_FIELDS` (the Flutter app keeps authoring them).
+ * estoque, preços, impostos, kit, anexos, marketplace). This config covers the
+ * scalar fields (tabbed) plus the Fotos and Vídeos tabs; the remaining
+ * variações/marketplace tabs land in follow-up PRs and stay hidden via
+ * `PRODUTO_EXCLUDED_FIELDS` until then (the Flutter app keeps authoring them).
  */
 
 /** Tab order for the Produto ObjectView. */
@@ -18,6 +18,7 @@ export const PRODUTO_SECTIONS: string[] = [
   'Dimensões e peso',
   'Configurações',
   'Fotos',
+  'Vídeos',
 ];
 
 /**
@@ -51,14 +52,14 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
 };
 
 /**
- * Fields hidden from the Produto ObjectView for now. Videos, variations, kit
- * components and marketplace bindings get dedicated tabs in later PRs; embeddings,
+ * Fields hidden from the Produto ObjectView for now. Variations, kit components
+ * and marketplace bindings get dedicated tabs in later PRs; embeddings,
  * references and internal ordering stay server-managed or pass-through. (`fotos`
- * has its own tab — see `PRODUTO_SECTIONS` — so it's intentionally not listed.)
+ * and `videos` have their own tabs — see `PRODUTO_SECTIONS` — so they're
+ * intentionally not listed.)
  */
 export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   'nome_embedding',
-  'videos',
   'anexos',
   'variacoesUid',
   'grupoDeVariacoesUid',
