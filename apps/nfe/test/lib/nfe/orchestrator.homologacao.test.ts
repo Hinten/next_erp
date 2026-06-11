@@ -68,10 +68,16 @@ const hasFirebase =
     Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_PATH));
 // NFE_TEST_IE is REQUIRED — no placeholder fallback. A bogus IE only
 // earns a guaranteed cStat=209, so when it (or the cert / Firebase) is
-// unset the suite throws (see beforeAll) rather than emitting garbage
-// or silently skipping a fiscal live lane.
+// unset the suite must not emit garbage.
 const TEST_IE = process.env.NFE_TEST_IE;
 const hasFullCreds = hasCert && hasFirebase && Boolean(TEST_IE);
+
+// Local run without credentials → skip cleanly (a dev checkout without
+// .env.local must not fail `pnpm turbo run test`). In CI the suite is
+// always collected when invoked by name, and the beforeAll throw below
+// fails loud on missing secrets — a live fiscal lane that silently skips
+// in CI could report green with zero coverage.
+const describeOrSkip = !hasFullCreds && !process.env.CI ? describe.skip : describe;
 
 // ---------------------------------------------------------------------------
 // Per-run fixture ids — keep CI runs from colliding on the staging project
@@ -427,13 +433,13 @@ function shieldBatch(
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('orchestrator — SEFAZ-SP homologação', () => {
+describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
   let fs: FirebaseFirestore.Firestore;
   let rt: NFeRuntime;
 
   beforeAll(async () => {
-    // Fail loud, never skip: a live fiscal lane that silently skips on
-    // missing credentials can report green with zero coverage.
+    // Only reachable in CI (locally the suite skips via describeOrSkip):
+    // fail loud on missing secrets — never report green with zero coverage.
     if (!hasFullCreds) {
       throw new Error(
         'Live orchestrator homologação test requires real credentials. ' +

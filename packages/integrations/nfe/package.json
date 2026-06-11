@@ -15,8 +15,7 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --exclude \"**/*.homologacao.test.ts\" --exclude \"**/*.staging.test.ts\"",
-    "test:live": "vitest run",
+    "test": "vitest run",
     "gen:nfe-types": "node src/codegen/generate.mjs",
     "render:danfe-samples": "tsx scripts/render-danfe-samples.ts",
     "fetch:sefaz-ca": "node scripts/fetch-sefaz-chain.mjs",
