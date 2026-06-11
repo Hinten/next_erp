@@ -84,6 +84,14 @@ export async function cartaCorrecaoService(
       `pedido '${pedidoId}' nfe '${nfeId}': persisted nfev4 doc has no chave — cannot emit CC-e.`,
     );
   }
+  if (nota.estado === ESTADO_NFE.epecAprovado) {
+    // Issue #86: the NF-e is only registered as an EPEC summary at the AN —
+    // events can't attach until the full NF-e is authorized at the SEFAZ.
+    throw new NFeCartaCorrecaoError(
+      `pedido '${pedidoId}' nfe '${nfeId}': NF-e em EPEC (estado='p') — ` +
+        'transmita a NF-e completa à SEFAZ antes de emitir carta de correção.',
+    );
+  }
   if (nota.estado !== ESTADO_NFE.aprovada) {
     throw new NFeCartaCorrecaoError(
       `pedido '${pedidoId}' nfe '${nfeId}': estado='${nota.estado}' — ` +

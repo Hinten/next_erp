@@ -64,6 +64,10 @@ function fakeRuntime(): NFeRuntime {
       },
       agent: {} as never,
     }),
+    an: () => ({
+      endpoints: { RecepcaoEvento: 'https://example/an/rec' },
+      agent: {} as never,
+    }),
     diagnostics: {
       subjectCommonName: 'TEST',
       notAfter: new Date(Date.now() + 86_400_000).toISOString(),
@@ -263,6 +267,18 @@ describe('cartaCorrecaoService', () => {
     await expect(
       cartaCorrecaoService(fs, fakeRuntime(), 'PED-1', 's1', XCORRECAO),
     ).rejects.toBeInstanceOf(NFeCartaCorrecaoError);
+    expect(cartaCorrecaoNFe).not.toHaveBeenCalled();
+  });
+
+  it("EPEC-approved (estado 'p') → rejected with the transmit-first message, no event sent (#86)", async () => {
+    // The NF-e exists only as an EPEC summary at the AN — events can't attach
+    // until the full NF-e is authorized at the home SEFAZ.
+    const { fs } = fakeFirestore({
+      'pedidos/PED-1/nfev4/s4': { ...aprovadaNfev4(), tpEmis: 4, estado: ESTADO_NFE.epecAprovado },
+    });
+    await expect(cartaCorrecaoService(fs, fakeRuntime(), 'PED-1', 's4', XCORRECAO)).rejects.toThrow(
+      /transmita a NF-e completa/,
+    );
     expect(cartaCorrecaoNFe).not.toHaveBeenCalled();
   });
 

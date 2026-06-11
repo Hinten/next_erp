@@ -77,6 +77,36 @@ describe('notificationForNFeResult', () => {
     expect(n.title).toBe('NF-e enviada');
   });
 
+  it('maps estado=epecAprovado (cStat 135/136) → teal EPEC-registered toast with next step', () => {
+    const n = notificationForNFeResult(
+      emitResult({
+        estado: ESTADO_NFE.epecAprovado,
+        cStat: '136',
+        xMotivo: 'Evento registrado, mas nao vinculado a NF-e',
+        nRec: null,
+      }),
+    );
+    expect(n.color).toBe('teal');
+    expect(n.title).toBe('EPEC registrado');
+    expect(n.message).toContain('136');
+    expect(n.message).toContain('transmitir a NF-e completa');
+  });
+
+  it("maps estado=epecAprovado + cStat 468 → yellow 'não sincronizado' wait-and-retry toast", () => {
+    const n = notificationForNFeResult(
+      emitResult({
+        estado: ESTADO_NFE.epecAprovado,
+        cStat: '468',
+        xMotivo: 'Rejeição: EPEC não Sincronizado na Base de Dados da SEFAZ Autorizadora',
+        nRec: null,
+      }),
+    );
+    expect(n.color).toBe('yellow');
+    expect(n.title).toBe('EPEC ainda não sincronizado na SEFAZ');
+    expect(n.message).toContain('cStat=468');
+    expect(n.message).toContain('Aguarde alguns minutos');
+  });
+
   it('reused=true → yellow "já emitida" toast (dedup skip), overrides estado branch', () => {
     const n = notificationForNFeResult(emitResult({ reused: true }));
     expect(n.color).toBe('yellow');

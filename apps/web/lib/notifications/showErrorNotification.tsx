@@ -1,11 +1,15 @@
 'use client';
 
 /**
- * Show an error toast with a copy button next to the message and
- * hover-to-pause dismissal. Pause is implemented via
- * `notifications.update({ id, autoClose })` — Mantine's timer reads
- * the latest value, so toggling `false` on `mouseenter` and back to
- * the original on `mouseleave` is enough.
+ * Show a toast with a copy button next to the message and hover-to-pause
+ * dismissal. Pause is implemented via `notifications.update({ id,
+ * autoClose })` — Mantine's timer reads the latest value, so toggling
+ * `false` on `mouseenter` and back to the original on `mouseleave` is
+ * enough.
+ *
+ * `showCopyableNotification` is the general entry (any color — emit
+ * results, SEFAZ cStat outcomes, …); `showErrorNotification` is the
+ * red-by-default error variant kept for the existing call sites.
  *
  * `message` is a string so the copy button can write it to clipboard.
  * Callers needing rich JSX should call `notifications.show()` directly.
@@ -18,12 +22,15 @@ import { IconCheck, IconCopy } from '@tabler/icons-react';
 
 const DEFAULT_AUTO_CLOSE = 8000;
 
-export interface ErrorNotificationConfig {
+export interface CopyableNotificationConfig {
   readonly title: string;
   readonly message: string;
   readonly color?: MantineColor;
   readonly autoClose?: number;
 }
+
+/** Back-compat alias — the config shape predates the generic entry. */
+export type ErrorNotificationConfig = CopyableNotificationConfig;
 
 function makeId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -43,10 +50,10 @@ const ERROR_NOTIFICATION_STYLES = {
 // diagnostics inside the toast bounds instead of overflowing it.
 const MESSAGE_MAX_HEIGHT = 240;
 
-export function showErrorNotification(config: ErrorNotificationConfig): void {
+export function showCopyableNotification(config: CopyableNotificationConfig): void {
   const id = makeId();
   const autoClose = config.autoClose ?? DEFAULT_AUTO_CLOSE;
-  const color = config.color ?? 'red';
+  const color = config.color ?? 'gray';
   const { title, message } = config;
 
   // Shared props re-passed on every show/update so the title-wrap style and
@@ -78,7 +85,7 @@ export function showErrorNotification(config: ErrorNotificationConfig): void {
           {message}
         </Text>
       </div>
-      <CopyButton value={message} timeout={1500}>
+      <CopyButton value={`${title}: ${message}`} timeout={1500}>
         {({ copied, copy }) => (
           <Tooltip label={copied ? 'Copiado!' : 'Copiar'} withArrow position="left">
             <ActionIcon
@@ -86,7 +93,7 @@ export function showErrorNotification(config: ErrorNotificationConfig): void {
               color="gray"
               size="sm"
               onClick={copy}
-              aria-label="Copiar mensagem de erro"
+              aria-label="Copiar mensagem"
             >
               {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
             </ActionIcon>
@@ -97,4 +104,9 @@ export function showErrorNotification(config: ErrorNotificationConfig): void {
   );
 
   notifications.show({ ...base, autoClose, message: messageNode });
+}
+
+/** Red-by-default error toast — the original entry, kept for existing call sites. */
+export function showErrorNotification(config: CopyableNotificationConfig): void {
+  showCopyableNotification({ color: 'red', ...config });
 }

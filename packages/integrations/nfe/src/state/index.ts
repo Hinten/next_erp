@@ -271,8 +271,8 @@ export type ContingenciaMode = 'none' | 'svc' | 'epec';
  * (`.old/packages/pedido_nfe/lib/src/tasks.dart:136-140`).
  *
  * `'svc'` resolves per-UF: SVC-AN UFs → 6, SVC-RS UFs → 7 (Ato COTEPE
- * 39/2012 mapping in `svcAuthorizerForUF`). `'epec'` (tpEmis=4) lands in PR
- * `nfe-contingencia-epec`.
+ * 39/2012 mapping in `svcAuthorizerForUF`). `'epec'` → 4, UF-independent —
+ * the EPEC evento goes to the Ambiente Nacional.
  *
  * Production-traffic safety (`NFE_ALLOW_PRODUCAO` opt-in) is enforced
  * by `assertSafeTpAmb` at the SOAP layer — not duplicated here.
@@ -284,6 +284,25 @@ export function resolveTpEmis(uf: UF, mode: ContingenciaMode = 'none'): TpEmis {
     case 'svc':
       return svcAuthorizerForUF(uf) === 'svc-an' ? 6 : 7;
     case 'epec':
-      throw new Error(`Contingência '${mode}' ainda não implementada (PR nfe-contingencia-epec).`);
+      return 4;
   }
 }
+
+/**
+ * Event cStat values that mean the EPEC is REGISTERED at the Ambiente
+ * Nacional. Unlike CC-e (where 136 = "registrado mas não vinculado" is a
+ * rejection), the legacy flow treats **both 135 and 136 as EPEC aprovado**
+ * (`.old/packages/pedido_nfe/lib/src/tasks.dart` `statusEpecAprovado`) — the
+ * linkage happens when the full NF-e reaches the home SEFAZ afterwards.
+ */
+export const EPEC_EVENT_REGISTRADO: ReadonlySet<string> = new Set(['135', '136']);
+
+/**
+ * Full-NF-e cStat after an EPEC: the home SEFAZ has not yet received the
+ * EPEC from the Ambiente Nacional — keep estado 'p' and retry later
+ * (legacy `statusEpecNaoSincronizado`).
+ */
+export const CSTAT_EPEC_NAO_SINCRONIZADO = '468';
+
+/** Event cStat for a duplicate EPEC (the chave already has one registered). */
+export const CSTAT_EPEC_DUPLICIDADE = '485';

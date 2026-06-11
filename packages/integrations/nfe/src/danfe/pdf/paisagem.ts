@@ -277,7 +277,9 @@ function drawEmitente(
     valueBold: true,
     valueSize: 8,
   });
-  // E — consulta de autenticidade.
+  // E — consulta de autenticidade. An EPEC-approved NF-e (no autorização at
+  // the home SEFAZ yet) prints the EPEC variant (legacy retrato.dart:1707).
+  const isEpec = model.epec != null;
   field(
     doc,
     cbx,
@@ -285,15 +287,27 @@ function drawEmitente(
     cbw,
     1.27,
     null,
-    'Consulta de autenticidade no portal nacional da NF-e www.nfe.fazenda.gov.br/portal ou no site da Sefaz Autorizadora',
+    isEpec
+      ? 'Consulta de autenticidade no portal da NF-e www.nfe.fazenda.gov.br/portal'
+      : 'Consulta de autenticidade no portal nacional da NF-e www.nfe.fazenda.gov.br/portal ou no site da Sefaz Autorizadora',
     { valueSize: 7, valueAlign: 'center', valueLines: 3 },
   );
   // F — protocolo de autorização.
-  const prot =
-    model.prot && (model.prot.cStat === '100' || model.prot.cStat === '150')
-      ? `${model.prot.nProt ?? ''} ${formatDate(model.prot.dhRecbto)} ${formatTimeSeconds(model.prot.dhRecbto)}`
-      : '';
-  field(doc, cbx, TOP + 3.1, cbw, 0.64, 'PROTOCOLO DE AUTORIZAÇÃO DE USO', prot, {
+  // .trim(): either side may be absent (nProt-less EPEC, dh-less protocolo) —
+  // a leading/trailing space would render oddly in the centered box.
+  const prot = (
+    model.epec
+      ? `${model.epec.nProt ?? ''}${
+          model.epec.dhRegEvento
+            ? ` ${formatDate(model.epec.dhRegEvento)} ${formatTimeSeconds(model.epec.dhRegEvento)}`
+            : ''
+        }`
+      : model.prot && (model.prot.cStat === '100' || model.prot.cStat === '150')
+        ? `${model.prot.nProt ?? ''} ${formatDate(model.prot.dhRecbto)} ${formatTimeSeconds(model.prot.dhRecbto)}`
+        : ''
+  ).trim();
+  const protLabel = isEpec ? 'PROTOCOLO DE AUTORIZAÇÃO DO EPEC' : 'PROTOCOLO DE AUTORIZAÇÃO DE USO';
+  field(doc, cbx, TOP + 3.1, cbw, 0.64, protLabel, prot, {
     valueAlign: 'center',
   });
 

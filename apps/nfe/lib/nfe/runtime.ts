@@ -23,9 +23,11 @@ import type https from 'node:https';
 import {
   assertCertNotExpired,
   createSefazAgent,
+  getAnEndpoints,
   getEndpoints,
   getSvcEndpoints,
   loadCertificateFromEnv,
+  type AnServiceUrls,
   type NFeCertificate,
   type NfeServiceUrls,
   type SvcServiceUrls,
@@ -54,6 +56,11 @@ export interface NFeRuntime {
    * actually activated. Cached per authorizer for the process lifetime.
    */
   readonly svc: (authorizer: 'svc-an' | 'svc-rs') => ContingencyTarget;
+  /**
+   * Resolve the Ambiente Nacional transport (EPEC evento drop-box). Lazy and
+   * cached exactly like `svc` — chain at `ca/sefaz-an-<ambiente>.pem`.
+   */
+  readonly an: () => { readonly endpoints: AnServiceUrls; readonly agent: https.Agent };
   /** Subject CN of the loaded cert, plus its notAfter — surfaced by /api/health. */
   readonly diagnostics: {
     readonly subjectCommonName: string;
@@ -155,6 +162,16 @@ export function getNFeRuntime(env: NodeJS.ProcessEnv = process.env): NFeRuntime 
     return entry;
   };
 
+  // Lazy Ambiente Nacional transport (EPEC). Same chain-naming convention.
+  let anCache: { endpoints: AnServiceUrls; agent: https.Agent } | undefined;
+  const an = (): { endpoints: AnServiceUrls; agent: https.Agent } => {
+    if (!anCache) {
+      const { ca } = loadChain('an', ambiente);
+      anCache = { endpoints: getAnEndpoints(ambiente), agent: createSefazAgent(cert, { ca }) };
+    }
+    return anCache;
+  };
+
   cached = {
     cert,
     agent,
@@ -163,6 +180,7 @@ export function getNFeRuntime(env: NodeJS.ProcessEnv = process.env): NFeRuntime 
     tpAmb,
     endpoints,
     svc,
+    an,
     diagnostics: {
       subjectCommonName: cert.subjectCommonName,
       notAfter: cert.notAfter.toISOString(),

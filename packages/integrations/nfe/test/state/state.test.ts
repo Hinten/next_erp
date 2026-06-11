@@ -4,6 +4,9 @@ import {
   applyOutcome,
   classifyCStat,
   cStatToEstado,
+  CSTAT_EPEC_DUPLICIDADE,
+  CSTAT_EPEC_NAO_SINCRONIZADO,
+  EPEC_EVENT_REGISTRADO,
   MAX_LOTE_POLL_RETRIES,
   nextAction,
   resolveTpEmis,
@@ -165,7 +168,22 @@ describe('resolveTpEmis', () => {
     expect(resolveTpEmis('BA', 'svc')).toBe(7);
   });
 
-  it("mode 'epec' throws until the epec PR lands", () => {
-    expect(() => resolveTpEmis('SP', 'epec')).toThrow(/epec/);
+  it("mode 'epec' → 4 for ANY UF (the evento goes to the Ambiente Nacional)", () => {
+    expect(resolveTpEmis('SP', 'epec')).toBe(4);
+    expect(resolveTpEmis('PR', 'epec')).toBe(4);
+    expect(resolveTpEmis('AM', 'epec')).toBe(4);
+  });
+});
+
+describe('EPEC constants', () => {
+  it('135 AND 136 both register the EPEC (legacy parity — unlike CC-e, where 136 rejects)', () => {
+    expect(EPEC_EVENT_REGISTRADO.has('135')).toBe(true);
+    expect(EPEC_EVENT_REGISTRADO.has('136')).toBe(true);
+    expect(EPEC_EVENT_REGISTRADO.size).toBe(2);
+  });
+
+  it('468 = EPEC não sincronizado (keep estado p + retry); 485 = duplicidade de EPEC', () => {
+    expect(CSTAT_EPEC_NAO_SINCRONIZADO).toBe('468');
+    expect(CSTAT_EPEC_DUPLICIDADE).toBe('485');
   });
 });

@@ -60,6 +60,10 @@ function fakeRuntime(): NFeRuntime {
       },
       agent: {} as never,
     }),
+    an: () => ({
+      endpoints: { RecepcaoEvento: 'https://example/an/rec' },
+      agent: {} as never,
+    }),
     diagnostics: { subjectCommonName: 'TEST', notAfter: '2027-01-01', chainSource: 'x' },
   };
 }

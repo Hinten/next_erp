@@ -65,6 +65,9 @@ export {
   isBloqueada,
   nextAction,
   resolveTpEmis,
+  CSTAT_EPEC_DUPLICIDADE,
+  CSTAT_EPEC_NAO_SINCRONIZADO,
+  EPEC_EVENT_REGISTRADO,
   type ContingenciaMode,
   type CStatCategory,
   type NextAction,
@@ -118,19 +121,25 @@ export {
 // `<nfeProc>` envelope — post-emission stitching of signed NFe + protNFe.
 export { buildNFeProc } from './nfeproc';
 
-// Eventos (cancelamento + CC-e) — builders for the RecepcaoEvento lote.
+// Eventos (cancelamento + CC-e + EPEC) — builders for the RecepcaoEvento lote.
 export {
   buildCancelamentoEvento,
   buildCCeDetEvento,
   buildCCeEvento,
   buildEnvEvento,
+  buildEpecDetEvento,
+  buildEpecEvento,
   buildProcEventoNFe,
+  extractEpecInputFromNFe,
+  C_ORGAO_AMBIENTE_NACIONAL,
   NFeEventoError,
   TP_EVENTO_CANCELAMENTO,
   TP_EVENTO_CCE,
+  TP_EVENTO_EPEC,
   XCONDUSO_CCE,
   type CancelamentoEventoInput,
   type CCeEventoInput,
+  type EpecEventoInput,
 } from './eventos';
 
 // Inutilização de numeração — builder for the NfeInutilizacao lote.
@@ -160,10 +169,12 @@ export {
   consultarLote,
   consultarSituacaoNFe,
   consultarStatusServico,
+  enviarEpec,
   inutilizarNumeracao,
   type CancelarNFeResult,
   type CartaCorrecaoResult,
   type CUFCode,
+  type EpecResult,
   type InutilizarResult,
 } from './operations';
 

@@ -65,8 +65,40 @@ describe('result unwrap regex', () => {
       `</soap12:Envelope>`;
     const match = __internal.RE_RESULT_MSG.exec(body);
     expect(match).not.toBeNull();
-    expect(match![1]).toContain('<retEnviNFe');
-    expect(match![1]).toContain('<cStat>103</cStat>');
+    expect(match![2]).toContain('<retEnviNFe');
+    expect(match![2]).toContain('<cStat>103</cStat>');
+  });
+
+  it("extracts the Ambiente Nacional's ASMX-style wrapper (nfeRecepcaoEventoNFResult)", () => {
+    // Captured live from hom1.nfe.fazenda.gov.br (AN_1.10.2) — the AN does
+    // NOT use the standard <nfeResultMsg>; its classic .NET service wraps
+    // the payload in `{operation}Result`. Regression for the EPEC emission
+    // failing with "SEFAZ response missing <nfeResultMsg> (HTTP 200)".
+    const body =
+      `<?xml version="1.0" encoding="utf-8"?>` +
+      `<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope">` +
+      `<soap:Body>` +
+      `<nfeRecepcaoEventoNFResult xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeRecepcaoEvento4">` +
+      `<retEnvEvento versao="1.00" xmlns="http://www.portalfiscal.inf.br/nfe">` +
+      `<idLote>1</idLote><tpAmb>2</tpAmb><verAplic>AN_1.10.2</verAplic><cOrgao>91</cOrgao>` +
+      `<cStat>128</cStat><xMotivo>Lote de Evento Processado</xMotivo></retEnvEvento>` +
+      `</nfeRecepcaoEventoNFResult>` +
+      `</soap:Body>` +
+      `</soap:Envelope>`;
+    const match = __internal.RE_RESULT_MSG.exec(body);
+    expect(match).not.toBeNull();
+    expect(match![2]).toContain('<retEnvEvento');
+    expect(match![2]).toContain('<cOrgao>91</cOrgao>');
+    // The wrapper itself must not leak into the extracted payload.
+    expect(match![2]).not.toContain('nfeRecepcaoEventoNFResult');
+  });
+
+  it('closes the wrapper match on the SAME tag (backreference), not a sibling', () => {
+    const body =
+      `<x><nfeResultMsg xmlns="a"><retEnviNFe>ok</retEnviNFe></nfeResultMsg>` +
+      `<nfeOtherResult>junk</nfeOtherResult></x>`;
+    const match = __internal.RE_RESULT_MSG.exec(body);
+    expect(match![2]).toBe('<retEnviNFe>ok</retEnviNFe>');
   });
 
   it('detects a SOAP Fault response', () => {
@@ -76,6 +108,15 @@ describe('result unwrap regex', () => {
       `<soap12:Fault><soap12:Code><soap12:Value>soap12:Sender</soap12:Value></soap12:Code></soap12:Fault>` +
       `</soap12:Body>` +
       `</soap12:Envelope>`;
+    expect(__internal.RE_SOAP_FAULT.test(fault)).toBe(true);
+  });
+
+  it('detects a WCF-style Fault with an arbitrary namespace prefix', () => {
+    const fault =
+      `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>` +
+      `<s:Fault><s:Code><s:Value>s:Sender</s:Value></s:Code>` +
+      `<s:Reason><s:Text>The message with Action '' cannot be processed</s:Text></s:Reason>` +
+      `</s:Fault></s:Body></s:Envelope>`;
     expect(__internal.RE_SOAP_FAULT.test(fault)).toBe(true);
   });
 });

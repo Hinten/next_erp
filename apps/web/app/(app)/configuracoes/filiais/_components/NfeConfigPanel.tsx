@@ -230,8 +230,7 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
             data={[
               { value: 'none', label: MODO_LABELS.none },
               { value: 'svc', label: MODO_LABELS.svc },
-              // EPEC lands in the nfe-contingencia-epec PR.
-              { value: 'epec', label: `${MODO_LABELS.epec} (em breve)`, disabled: true },
+              { value: 'epec', label: MODO_LABELS.epec },
             ]}
             allowDeselect={false}
             disabled={!canWrite}

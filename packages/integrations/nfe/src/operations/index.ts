@@ -24,9 +24,12 @@ import {
   buildCCeDetEvento,
   buildCCeEvento,
   buildEnvEvento,
+  buildEpecDetEvento,
+  buildEpecEvento,
   buildProcEventoNFe,
   type CancelamentoEventoInput,
   type CCeEventoInput,
+  type EpecEventoInput,
 } from '../eventos';
 import { buildInutNFe, type InutilizacaoInput } from '../inutilizacao';
 import { signEvento, signInutilizacao } from '../sign';
@@ -231,6 +234,44 @@ export async function cartaCorrecaoNFe(
     detEvento.replace('<detEvento', `<detEvento xmlns="${NFE_NS}"`),
   );
   const eventoXml = buildCCeEvento({ ...args, tpAmb: call.tpAmb });
+  const signedEventoXml = signEvento(eventoXml, call.cert);
+  const envEventoXml = buildEnvEvento(signedEventoXml);
+  const { resultXml } = await nfeRecepcaoEvento(call, envEventoXml);
+  const ret = parse<TRetEnvEvento>('retEnvEvento', resultXml);
+  const procEventoNFe = buildProcEventoNFe(signedEventoXml, resultXml);
+  return { ret, signedEventoXml, procEventoNFe, rawResponse: resultXml };
+}
+
+/** Result of an EPEC round-trip — same shape as the other eventos. */
+export type EpecResult = RecepcaoEventoResult;
+
+/**
+ * EPEC — Evento Prévio de Emissão em Contingência (`RecepcaoEvento4`,
+ * `tpEvento=110140`), sent to the **Ambiente Nacional** (`cOrgao=91`).
+ *
+ * Builds + signs the `<evento>`, wraps the single-evento `<envEvento>` lote,
+ * sends, and parses `retEnvEvento`. The caller inspects
+ * `ret.retEvento[0].infEvento.cStat`: **135 AND 136 both mean the EPEC is
+ * registered** (unlike CC-e, where 136 rejects) — after the outage the full
+ * NF-e (same chave, tpEmis=4) must still be transmitted to the home SEFAZ.
+ * `tpAmb` is taken from the call context; `call.url` must be the AN
+ * RecepcaoEvento (`getAnEndpoints(ambiente)`).
+ */
+export async function enviarEpec(
+  call: SefazCall,
+  args: Omit<EpecEventoInput, 'tpAmb'>,
+): Promise<EpecResult> {
+  // Validate detEvento against the real e110140 XSD before send — the generic
+  // envEvento envelope declares detEvento as xs:any (skip), so this is the
+  // only gate on the EPEC summary fields. detEvento inherits the NFe namespace
+  // from <evento> on the wire; add it explicitly so the standalone fragment
+  // validates (e110140 is elementFormDefault=qualified).
+  const detEvento = buildEpecDetEvento({ ...args, tpAmb: call.tpAmb });
+  await validateXsd(
+    'detEventoEpec',
+    detEvento.replace('<detEvento', `<detEvento xmlns="${NFE_NS}"`),
+  );
+  const eventoXml = buildEpecEvento({ ...args, tpAmb: call.tpAmb });
   const signedEventoXml = signEvento(eventoXml, call.cert);
   const envEventoXml = buildEnvEvento(signedEventoXml);
   const { resultXml } = await nfeRecepcaoEvento(call, envEventoXml);

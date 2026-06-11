@@ -63,6 +63,7 @@ import {
   persistPatch,
 } from './audit';
 import { buildGeneratorInput } from './generator-input';
+import { enviarEpecParaNota, transmitirPosEpec } from './epec';
 
 /**
  * Result of `prepareEmission` — the inputs `runAllocateGenerateSignTx`
@@ -90,6 +91,12 @@ export interface EmissionPrep {
 
 export type TxOutcome =
   | { skip: true; existing: NotaFiscalEletronica }
+  /**
+   * The doc is an approved EPEC awaiting its full transmission — the emit
+   * cycle must NOT regenerate/resend (a fresh EPEC would 485-duplicate);
+   * it routes into `transmitirPosEpec` instead.
+   */
+  | { skip: true; epecPending: true; existing: NotaFiscalEletronica }
   | { skip: false; chave: string; signedXml: string; idLote: number };
 
 /**
@@ -229,6 +236,14 @@ export async function runAllocateGenerateSignTx(
     // Reads MUST precede writes in a Firestore transaction.
     const nfeSnap = await tx.get(nfeRef);
     const existing = nfeSnap.exists ? (nfeSnap.data() as NotaFiscalEletronica) : null;
+
+    // EPEC-approved docs (estado 'p') are checked BEFORE isBloqueada — their
+    // event cStat (135/136) is not in STATUS_BLOQUEADORES, so they'd
+    // otherwise fall into the reuse branch and re-send a duplicate EPEC.
+    // The emit cycle routes them into the pós-EPEC full transmission.
+    if (existing?.estado === ESTADO_NFE.epecAprovado) {
+      return { skip: true, epecPending: true, existing };
+    }
 
     // Bloqueada NFes (cStat in STATUS_BLOQUEADORES) short-circuit —
     // covers both the normal pre-check AND the race where another emit
@@ -402,6 +417,12 @@ export async function runChunkAllocateTx(
       const snap = existingSnaps[i]!;
       const existing = snap.exists ? (snap.data() as NotaFiscalEletronica) : null;
 
+      // Approved EPECs never re-ride a lote — the batch reports the persisted
+      // state; the pendentes poller (or a single-pedido emit) transmits them.
+      if (existing?.estado === ESTADO_NFE.epecAprovado) {
+        members.push({ skip: true, pedidoId: sp.pedidoId, prep: sp.prep, existing });
+        continue;
+      }
       if (existing && isBloqueada(existing.cStat)) {
         members.push({ skip: true, pedidoId: sp.pedidoId, prep: sp.prep, existing });
         continue;
@@ -469,7 +490,8 @@ export async function runChunkAllocateTx(
 export async function applyAutorizadoOutcome(args: {
   fs: Firestore;
   rt: NFeRuntime;
-  bundle: PedidoBundle;
+  /** Only ids are needed — the pós-EPEC transmit calls in without a full bundle. */
+  bundle: Pick<PedidoBundle, 'pedidoId' | 'filialId'>;
   nfeRef: FirebaseFirestore.DocumentReference;
   chave: string;
   signedXml: string;
@@ -597,6 +619,22 @@ export async function emitirPedido(
   const captured = await runAllocateGenerateSignTx(fs, rt, prep);
 
   if (captured.skip) {
+    if ('epecPending' in captured) {
+      // Approved EPEC — the emit action becomes "transmit the full NF-e to
+      // the home SEFAZ" (same chave, stored xml_assinado).
+      console.debug(
+        `[nfe/orchestrator] pedido '${pedidoId}' has an approved EPEC — ` +
+          'routing into the pós-EPEC full transmission',
+      );
+      return transmitirPosEpec({
+        fs,
+        rt,
+        filialId: prep.bundle.filialId,
+        pedidoId,
+        nfeRef: prep.nfeRef,
+        nota: captured.existing,
+      });
+    }
     console.debug(
       `[nfe/orchestrator] pedido '${pedidoId}' has existing bloqueada NFe ` +
         `(cStat=${captured.existing.cStat}) — returning persisted state without re-emission`,
@@ -605,6 +643,22 @@ export async function emitirPedido(
   }
 
   const { chave, signedXml, idLote } = captured;
+
+  // EPEC mode: the NF-e is persisted (anti-loss anchor) but NOT sent to the
+  // (down) home SEFAZ — the EPEC summary evento goes to the Ambiente
+  // Nacional instead. The full NF-e is transmitted post-outage.
+  if (prep.contingencia.modo === 'epec') {
+    return enviarEpecParaNota({
+      fs,
+      rt,
+      filialId: prep.bundle.filialId,
+      pedidoId,
+      nfeRef: prep.nfeRef,
+      chave,
+      signedXml,
+    });
+  }
+
   const call: SefazCall = sefazCallFor(rt, prep.tpEmis, 'NfeAutorizacao');
 
   const retEnvi = await autorizarLote(call, {
@@ -838,6 +892,32 @@ export async function processChunk(
   });
   if (toSend.length === 0) return txResults;
 
+  // EPEC mode: no lote — each NF-e gets its own EPEC evento at the Ambiente
+  // Nacional (one evento per envEvento in v1). Failures stay per-pedido.
+  if (toSend[0]!.prep.contingencia.modo === 'epec') {
+    const epecs = await Promise.allSettled(
+      toSend.map((s) =>
+        enviarEpecParaNota({
+          fs,
+          rt,
+          filialId: s.prep.bundle.filialId,
+          pedidoId: s.pedidoId,
+          nfeRef: s.prep.nfeRef,
+          chave: s.chave,
+          signedXml: s.signedXml,
+        }),
+      ),
+    );
+    epecs.forEach((e, i) => {
+      if (e.status === 'rejected') {
+        txResults.push(toEmitError(toSend[i]!.pedidoId, e.reason));
+      } else {
+        txResults.push(e.value);
+      }
+    });
+    return txResults;
+  }
+
   // 4c. autorizarLote — one SOAP call for the whole chunk. indSinc='1'
   //     when only one NFe survived prep+tx; '0' otherwise. The chunk shares
   //     one filial → one NFeConfig → one tpEmis, so the first member's
@@ -1038,7 +1118,7 @@ export function toEmitError(pedidoId: string, reason: unknown): EmitError {
  */
 export async function recoverFrom539(params: {
   fs: Firestore;
-  bundle: PedidoBundle;
+  bundle: Pick<PedidoBundle, 'pedidoId' | 'filialId'>;
   nfeRef: FirebaseFirestore.DocumentReference;
   rt: NFeRuntime;
   tpEmis: TpEmis;

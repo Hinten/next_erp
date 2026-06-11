@@ -110,7 +110,17 @@ function PedidoNfeContent() {
                 </Text>
               )}
 
-              {(estado === ESTADO_NFE.aprovada || estado === ESTADO_NFE.cancelada) && (
+              {estado === ESTADO_NFE.epecAprovado && (
+                <Text size="sm" c="orange">
+                  EPEC aprovado — aguardando a transmissão da NF-e completa à SEFAZ (automática
+                  quando a contingência for desligada). Cancelamento e carta de correção ficam
+                  disponíveis após a autorização.
+                </Text>
+              )}
+
+              {(estado === ESTADO_NFE.aprovada ||
+                estado === ESTADO_NFE.cancelada ||
+                estado === ESTADO_NFE.epecAprovado) && (
                 <Group gap="xs">
                   <DanfeMenu pedidoId={pedidoId} nfeId={row.id} />
                 </Group>

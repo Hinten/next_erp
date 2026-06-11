@@ -30,7 +30,10 @@ import type { ActionConfig } from '@delfrance/ui';
 
 import { useNFeClient } from './client';
 import { notificationForNFeError, notificationForNFeResult } from './errors';
-import { showErrorNotification } from '../notifications/showErrorNotification';
+import {
+  showCopyableNotification,
+  showErrorNotification,
+} from '../notifications/showErrorNotification';
 
 /**
  * Thrown when N>1 pedidos are dispatched through the legacy
@@ -77,10 +80,10 @@ export async function dispatchEmitirNFe(
   const pedido = rows[0]!;
   try {
     const result = await client.emitir(pedido.id);
-    notifications.show({
-      ...notificationForNFeResult(result),
-      autoClose: 8000,
-    });
+    // Copyable toast — SEFAZ outcomes (cStat/xMotivo, e.g. the EPEC 468
+    // "não sincronizado" wait-and-retry) need to be copy-pasteable for
+    // diagnosis, exactly like the error path below.
+    showCopyableNotification(notificationForNFeResult(result));
   } catch (err) {
     if (!(err instanceof Error)) throw err;
     showErrorNotification(notificationForNFeError(err));

@@ -23,6 +23,9 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
     autorizarLote: vi.fn(),
     consultarLote: vi.fn(),
     consultarSituacaoNFe: vi.fn(),
+    // EPEC evento round-trip to the Ambiente Nacional. extractEpecInputFromNFe
+    // stays REAL — the signNFe mock in the EPEC describe returns a parseable NFe.
+    enviarEpec: vi.fn(),
   };
 });
 
@@ -30,6 +33,7 @@ import {
   autorizarLote,
   consultarLote,
   consultarSituacaoNFe,
+  enviarEpec,
   generateNFe,
   signNFe,
 } from '@delfrance/integrations-nfe';
@@ -87,6 +91,10 @@ function fakeRuntime(): NFeRuntime {
         NfeStatusServico: `https://example/${authorizer}/sta`,
         RecepcaoEvento: `https://example/${authorizer}/rec`,
       },
+      agent: {} as never,
+    }),
+    an: () => ({
+      endpoints: { RecepcaoEvento: 'https://example/an/rec' },
       agent: {} as never,
     }),
     diagnostics: {
@@ -562,6 +570,257 @@ describe('emitirPedido — contingência SVC', () => {
       nfeConfig: { ...SEED_NFE_CONFIG, contingencia_modo: 'svc' },
     });
     await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toThrow();
+    expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
+  });
+});
+
+describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
+  const EPEC_JUST = 'SEFAZ-SP indisponível desde as 08h';
+  const EPEC_CONFIG: Partial<NFeConfig> = {
+    ...SEED_NFE_CONFIG,
+    contingencia_modo: 'epec',
+    contingencia_justificativa: EPEC_JUST,
+    contingencia_dataInicio: '2026-06-11T08:00:00.000Z',
+  };
+
+  /**
+   * signNFe output rich enough for the REAL `extractEpecInputFromNFe` (it
+   * projects emit/ide/dest/ICMSTot into the EPEC summary before the send).
+   */
+  const EPEC_SIGNED_NFE =
+    `<NFe xmlns="${NFE_NS}"><infNFe Id="NFe${CHAVE}" versao="4.00">` +
+    '<ide><cUF>35</cUF><mod>55</mod><serie>1</serie><nNF>1</nNF>' +
+    '<dhEmi>2026-06-11T08:30:00-03:00</dhEmi><tpNF>1</tpNF><tpEmis>4</tpEmis>' +
+    '<tpAmb>2</tpAmb><verProc>erp-next 1.0</verProc></ide>' +
+    '<emit><CNPJ>14200166000187</CNPJ><IE>111111111111</IE></emit>' +
+    '<dest><CNPJ>99999999000191</CNPJ><enderDest><UF>SP</UF></enderDest><IE>222222222</IE></dest>' +
+    '<total><ICMSTot><vICMS>0.00</vICMS><vST>0.00</vST><vNF>1500.00</vNF></ICMSTot></total>' +
+    '</infNFe><Signature>…signed…</Signature></NFe>';
+
+  /** EpecResult for a given per-evento cStat (135/136 = registrado, 485 = duplicidade). */
+  function epecResult(cStat: string) {
+    return {
+      ret: {
+        idLote: '1',
+        tpAmb: '2' as const,
+        verAplic: 'AN_EVENTOS',
+        cOrgao: '91' as const,
+        cStat: '128',
+        xMotivo: 'Lote de Evento Processado',
+        versao: '1.00',
+        retEvento: [
+          {
+            versao: '1.00',
+            infEvento: {
+              tpAmb: '2' as const,
+              verAplic: 'AN_EVENTOS',
+              cOrgao: '91' as const,
+              cStat,
+              xMotivo: cStat === '485' ? 'Rejeição: Duplicidade de EPEC' : 'Evento registrado',
+              chNFe: CHAVE,
+              tpEvento: '110140',
+              nSeqEvento: '1',
+              dhRegEvento: '2026-06-11T08:31:00-03:00',
+              nProt: '891260000012345',
+            },
+          },
+        ],
+      },
+      signedEventoXml: '<evento>…signed-epec…</evento>',
+      procEventoNFe: '<procEventoNFe>…EPEC…</procEventoNFe>',
+      rawResponse: '<retEnvEvento>…</retEnvEvento>',
+    };
+  }
+
+  /** An EPEC-approved (estado 'p') s4 doc awaiting the pós-EPEC transmission. */
+  function epecPendingDoc(): Record<string, unknown> {
+    return {
+      numeracao: 9,
+      serie: 1,
+      tpEmis: 4,
+      estado: ESTADO_NFE.epecAprovado,
+      chave: CHAVE,
+      cStat: '136',
+      xMotivo: 'Evento registrado, mas nao vinculado a NF-e',
+      nRec: null,
+      retries: 0,
+      xml_assinado: EPEC_SIGNED_NFE,
+      xml_epec_proc: '<procEventoNFe>…EPEC…</procEventoNFe>',
+      dataContingencia: '2026-06-11T08:00:00.000Z',
+      justificativaContingencia: EPEC_JUST,
+    };
+  }
+
+  /** Sync retEnviNFe whose inline protocol is 468 (EPEC não sincronizado). */
+  const RET_ENVI_468 = {
+    tpAmb: '2' as const,
+    verAplic: 'SP_NFE_PL009_V4',
+    cStat: '104',
+    xMotivo: 'Lote processado',
+    cUF: '35' as const,
+    dhRecbto: '2026-06-12T09:00:00-03:00',
+    versao: '4.00' as const,
+    protNFe: {
+      versao: '4.00' as const,
+      infProt: {
+        tpAmb: '2' as const,
+        verAplic: 'SP_NFE_PL_008i2',
+        chNFe: CHAVE,
+        dhRecbto: '2026-06-12T09:00:00-03:00',
+        cStat: '468',
+        xMotivo: 'Rejeição: EPEC não Sincronizado na Base de Dados da SEFAZ Autorizadora',
+      },
+    },
+  } as const;
+
+  it('modo epec → evento to the Ambiente Nacional, estado p + xml_epec_proc on cStat 135 (no lote)', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events, nfeConfig: EPEC_CONFIG });
+    vi.mocked(signNFe).mockReturnValue(EPEC_SIGNED_NFE);
+    vi.mocked(enviarEpec).mockImplementation(async () => {
+      events.push('soap:enviarEpec');
+      return epecResult('135') as never;
+    });
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    // The (down) home SEFAZ is never called — the AN RecepcaoEvento is.
+    expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
+    expect(vi.mocked(enviarEpec)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/an/rec' }),
+      expect.objectContaining({ chNFe: CHAVE, cnpj: '14200166000187', ie: '111111111111' }),
+    );
+
+    // Persist-before-send: the s4 doc (anti-loss anchor) lands BEFORE the evento.
+    const docSetIndex = events.indexOf('set:pedidos/PED-1/nfev4/s4');
+    const soapIndex = events.indexOf('soap:enviarEpec');
+    expect(docSetIndex).toBeGreaterThanOrEqual(0);
+    expect(docSetIndex).toBeLessThan(soapIndex);
+
+    // The generator got the EPEC contingency triple.
+    expect(vi.mocked(generateNFe)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tpEmis: 4,
+        dhCont: new Date('2026-06-11T08:00:00.000Z'),
+        xJust: EPEC_JUST,
+      }),
+    );
+
+    // s4 doc: tpEmis 4 anchor, then estado 'p' + the archival EPEC proc.
+    const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s4');
+    expect(docWrites[0]?.data.tpEmis).toBe(4);
+    const finalWrite = docWrites[docWrites.length - 1]!;
+    expect(finalWrite.data.estado).toBe(ESTADO_NFE.epecAprovado);
+    expect(finalWrite.data.cStat).toBe('135');
+    expect(finalWrite.data.xml_epec_proc).toContain('procEventoNFe');
+
+    // The AN round-trip is audit-logged with tpEmis 4 and no lote.
+    const msg = writes.find((w) => w.path.startsWith('filiais/F-1/enviNfe/'));
+    expect(msg?.data.tpEmis).toBe(4);
+    expect(msg?.data.idLote).toBeNull();
+    expect(msg?.data.targetsChnfe).toEqual([CHAVE]);
+
+    expect(result.nfeId).toBe('s4');
+    expect(result.estado).toBe(ESTADO_NFE.epecAprovado);
+    expect(result.cStat).toBe('135');
+  });
+
+  it('cStat 136 ALSO registers the EPEC (estado p + xml_epec_proc) — unlike the CC-e rule', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events, nfeConfig: EPEC_CONFIG });
+    vi.mocked(signNFe).mockReturnValue(EPEC_SIGNED_NFE);
+    vi.mocked(enviarEpec).mockResolvedValue(epecResult('136') as never);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.estado).toBe(ESTADO_NFE.epecAprovado);
+    expect(result.cStat).toBe('136');
+    const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s4');
+    const finalWrite = docWrites[docWrites.length - 1]!;
+    expect(finalWrite.data.estado).toBe(ESTADO_NFE.epecAprovado);
+    expect(finalWrite.data.xml_epec_proc).toContain('procEventoNFe');
+  });
+
+  it('cStat 485 (duplicidade de EPEC) → rejeitada, no xml_epec_proc (auto-recovery is #81)', async () => {
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events, nfeConfig: EPEC_CONFIG });
+    vi.mocked(signNFe).mockReturnValue(EPEC_SIGNED_NFE);
+    vi.mocked(enviarEpec).mockResolvedValue(epecResult('485') as never);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.estado).toBe(ESTADO_NFE.rejeitada);
+    expect(result.cStat).toBe('485');
+    const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s4');
+    const finalWrite = docWrites[docWrites.length - 1]!;
+    expect(finalWrite.data.estado).toBe(ESTADO_NFE.rejeitada);
+    expect(finalWrite.data).not.toHaveProperty('xml_epec_proc');
+  });
+
+  it('emit on an EPEC-approved doc → pós-EPEC: stored xml_assinado, SAME chave, home SEFAZ, fresh idLote', async () => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({ events, nfeConfig: EPEC_CONFIG });
+    docs['pedidos/PED-1/nfev4/s4'] = epecPendingDoc();
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_100_SYNC);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    // No new EPEC, no regeneration — the registered EPEC owns the chave.
+    expect(vi.mocked(enviarEpec)).not.toHaveBeenCalled();
+    expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(signNFe)).not.toHaveBeenCalled();
+    // The FULL NF-e (stored bytes) goes to the home SEFAZ as a fresh lote.
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/sefaz/aut' }),
+      { idLote: '1', NFe: [EPEC_SIGNED_NFE] },
+    );
+
+    expect(result.estado).toBe(ESTADO_NFE.aprovada);
+    expect(result.cStat).toBe('100');
+    expect(result.chave).toBe(CHAVE);
+
+    // The standard outcome machine stamped the nfeProc envelope on s4.
+    const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s4');
+    const procWrite = docWrites.find((w) => typeof w.data.xml_nfe_proc === 'string');
+    expect(procWrite).toBeDefined();
+    expect(procWrite?.data.xml_nfe_proc).toContain('<nfeProc ');
+  });
+
+  it('pós-EPEC cStat 468 (EPEC não sincronizado) keeps estado p, bumps retries and audit-logs', async () => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({ events, nfeConfig: EPEC_CONFIG });
+    docs['pedidos/PED-1/nfev4/s4'] = epecPendingDoc();
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_468);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.estado).toBe(ESTADO_NFE.epecAprovado);
+    expect(result.cStat).toBe('468');
+
+    const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s4' && w.merge === true);
+    const patchWrite = docWrites[docWrites.length - 1]!;
+    expect(patchWrite.data.estado).toBe(ESTADO_NFE.epecAprovado);
+    expect(patchWrite.data.retries).toBe(1);
+    // The 468 round-trip still lands in the EnviNFeMsg history.
+    const msg = writes.find((w) => w.path.startsWith('filiais/F-1/enviNfe/'));
+    expect(msg?.data.cStat).toBe('104'); // lote-level cStat; the 468 lives in the protocol
+    expect(msg?.data.tpEmis).toBe(4);
+    // No nfeProc on a 468.
+    expect(
+      writes.some(
+        (w) => w.path === 'pedidos/PED-1/nfev4/s4' && typeof w.data.xml_nfe_proc === 'string',
+      ),
+    ).toBe(false);
+  });
+
+  it('pós-EPEC rejects when the p doc lacks chave/xml_assinado (nothing to transmit)', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({ events, nfeConfig: EPEC_CONFIG });
+    docs['pedidos/PED-1/nfev4/s4'] = { ...epecPendingDoc(), xml_assinado: null };
+
+    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(
+      NFeOrchestratorError,
+    );
     expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
   });
 });
@@ -1423,6 +1682,32 @@ describe('consultarPedido — consReci(nRec) preferred over consSit(chave)', () 
     // Routed to the SVC-AN consulta URL (persisted tpEmis=6), not the home SEFAZ.
     expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledWith(
       expect.objectContaining({ url: 'https://example/svc-an/cons' }),
+      { chave: CHAVE },
+    );
+  });
+
+  it('routes the consulta of an EPEC doc (s4) to the HOME SEFAZ — tpEmis 4 authorizes at home', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({ events });
+    docs['pedidos/PED-1/nfev4/s4'] = {
+      numeracao: 9,
+      serie: 1,
+      tpEmis: 4,
+      estado: ESTADO_NFE.epecAprovado,
+      chave: CHAVE,
+      cStat: '136',
+      xMotivo: 'Evento registrado',
+      nRec: null,
+      retries: 0,
+      ultima_modificacao: '2026-06-11T09:00:00.000Z',
+    };
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(RET_SIT_100);
+
+    const result = await consultarPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.nfeId).toBe('s4');
+    expect(vi.mocked(consultarSituacaoNFe)).toHaveBeenCalledWith(
+      expect.objectContaining({ url: 'https://example/sefaz/cons' }),
       { chave: CHAVE },
     );
   });
