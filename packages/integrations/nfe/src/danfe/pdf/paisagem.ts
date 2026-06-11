@@ -293,15 +293,19 @@ function drawEmitente(
     { valueSize: 7, valueAlign: 'center', valueLines: 3 },
   );
   // F — protocolo de autorização.
-  const prot = model.epec
-    ? `${model.epec.nProt ?? ''}${
-        model.epec.dhRegEvento
-          ? ` ${formatDate(model.epec.dhRegEvento)} ${formatTimeSeconds(model.epec.dhRegEvento)}`
-          : ''
-      }`
-    : model.prot && (model.prot.cStat === '100' || model.prot.cStat === '150')
-      ? `${model.prot.nProt ?? ''} ${formatDate(model.prot.dhRecbto)} ${formatTimeSeconds(model.prot.dhRecbto)}`
-      : '';
+  // .trim(): either side may be absent (nProt-less EPEC, dh-less protocolo) —
+  // a leading/trailing space would render oddly in the centered box.
+  const prot = (
+    model.epec
+      ? `${model.epec.nProt ?? ''}${
+          model.epec.dhRegEvento
+            ? ` ${formatDate(model.epec.dhRegEvento)} ${formatTimeSeconds(model.epec.dhRegEvento)}`
+            : ''
+        }`
+      : model.prot && (model.prot.cStat === '100' || model.prot.cStat === '150')
+        ? `${model.prot.nProt ?? ''} ${formatDate(model.prot.dhRecbto)} ${formatTimeSeconds(model.prot.dhRecbto)}`
+        : ''
+  ).trim();
   const protLabel = isEpec ? 'PROTOCOLO DE AUTORIZAÇÃO DO EPEC' : 'PROTOCOLO DE AUTORIZAÇÃO DE USO';
   field(doc, cbx, TOP + 3.1, cbw, 0.64, protLabel, prot, {
     valueAlign: 'center',

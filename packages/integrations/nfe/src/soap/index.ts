@@ -277,7 +277,8 @@ async function postSoap(input: PostInput): Promise<PostResult> {
     // which is redacted from logs because it can echo signed XML.
     const rootTag = /<\s*([A-Za-z!?][A-Za-z0-9:_-]*)/.exec(body)?.[1] ?? '(empty body)';
     throw new NFeTransportError(
-      `SEFAZ response missing <nfeResultMsg> (HTTP ${statusCode}; body root <${rootTag}>)`,
+      `SEFAZ response missing the result wrapper (<nfeResultMsg> or ASMX-style ` +
+        `<nfe…Result>) — HTTP ${statusCode}; body root <${rootTag}>`,
       statusCode,
       body,
     );

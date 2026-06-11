@@ -210,16 +210,20 @@ function drawEmitente(
   field(doc, MARGIN, t + 3.92, 7.87, 0.85, 'NATUREZA DA OPERAÇÃO', model.ide.natOp, {
     valueSize: 9,
   });
-  // G — protocolo de autorização.
-  const prot = model.epec
-    ? `${model.epec.nProt ?? ''}${
-        model.epec.dhRegEvento
-          ? ` ${formatDate(model.epec.dhRegEvento)} ${formatTimeSeconds(model.epec.dhRegEvento)}`
-          : ''
-      }`
-    : model.prot && (model.prot.cStat === '100' || model.prot.cStat === '150')
-      ? `${model.prot.nProt ?? ''} ${formatDate(model.prot.dhRecbto)} ${formatTimeSeconds(model.prot.dhRecbto)}`
-      : '';
+  // G — protocolo de autorização. .trim(): either side may be absent
+  // (nProt-less EPEC, dh-less protocolo) — a leading/trailing space would
+  // render oddly in the centered box.
+  const prot = (
+    model.epec
+      ? `${model.epec.nProt ?? ''}${
+          model.epec.dhRegEvento
+            ? ` ${formatDate(model.epec.dhRegEvento)} ${formatTimeSeconds(model.epec.dhRegEvento)}`
+            : ''
+        }`
+      : model.prot && (model.prot.cStat === '100' || model.prot.cStat === '150')
+        ? `${model.prot.nProt ?? ''} ${formatDate(model.prot.dhRecbto)} ${formatTimeSeconds(model.prot.dhRecbto)}`
+        : ''
+  ).trim();
   const protLabel = isEpec ? 'PROTOCOLO DE AUTORIZAÇÃO DO EPEC' : 'PROTOCOLO DE AUTORIZAÇÃO DE USO';
   field(doc, cbx, t + 3.92, RIGHT_W, 0.85, protLabel, prot, {
     valueAlign: 'center',
