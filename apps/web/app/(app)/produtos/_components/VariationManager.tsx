@@ -168,7 +168,9 @@ export function VariationManager({
   // the dims inheritance read the LIVE form values first — a nome/SKU the user
   // just typed (still unsaved) must feed the generated children; the old
   // Flutter flows read only the persisted doc, which left children with empty
-  // SKUs when the parent's SKU was filled in the same session.
+  // SKUs when the parent's SKU was filled in the same session. NOTE: RHF's
+  // `useFormContext` is TYPED non-null but actually returns `null` outside a
+  // provider (its context default), hence the optional chaining below.
   const form = useFormContext();
   const liveParent = <K extends keyof Produto>(key: K): Produto[K] | null => {
     const live = form?.getValues(key as string) as Produto[K] | undefined;

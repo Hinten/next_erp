@@ -161,7 +161,10 @@ export function PhotoManager({
 
   // Live sibling field via the ObjectView FormProvider: the variant sections
   // follow the parent's CURRENT `variacoesUid` (even unsaved edits from the
-  // Variações tab). Null outside a form (defensive) → no variant sections.
+  // Variações tab). NOTE: react-hook-form's `useFormContext` is TYPED non-null
+  // but actually returns `null` outside a provider (its context default —
+  // verified against v7.75 dist), so the optional chaining is load-bearing:
+  // without a form context the manager just renders no variant sections.
   const formCtx = useFormContext();
   const watchedUids = formCtx?.watch('variacoesUid') as string[] | null | undefined;
 
