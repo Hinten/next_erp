@@ -93,6 +93,14 @@ const galleryCollision: CollisionDetection = (args) => {
   return rectIntersection(args);
 };
 
+/**
+ * Alternating section background ("zebra striping") so each gallery reads as
+ * its own block. `--mantine-color-default-hover` adapts to light/dark schemes.
+ */
+function stripeBg(index: number): string | undefined {
+  return index % 2 === 1 ? 'var(--mantine-color-default-hover)' : undefined;
+}
+
 const ARQUIVOS_PREFIX = 'arquivos/';
 
 /** `arquivos/<id>` → `<id>` (or `null` for an absent ref). */
@@ -437,47 +445,53 @@ export function PhotoManager({
       )}
 
       <DndContext sensors={sensors} collisionDetection={galleryCollision} onDragEnd={handleDragEnd}>
-        {renderGrid('general', sections.general, true)}
+        {/* Zebra-striped sections (alternating background) so each gallery
+            reads as its own block — the parent gallery is stripe 0. */}
+        <Paper p="sm" radius="md" bg={stripeBg(0)}>
+          {renderGrid('general', sections.general, true)}
+        </Paper>
 
-        {sections.variants.map((section) => (
-          <Stack key={section.uid} gap="xs">
-            <Divider
-              label={
-                <Group gap="xs">
-                  <Text size="sm" fw={600}>
-                    {section.grupoNome}: {section.varianteNome}
-                  </Text>
-                  {!disabled && section.fotoIndexes.length > 0 && (
-                    <Button
-                      variant="subtle"
-                      color="red"
-                      size="compact-xs"
-                      onClick={() => toggleDeleteSection(section.fotoIndexes)}
-                    >
-                      {sectionDeleteLabel(section.fotoIndexes)}
-                    </Button>
-                  )}
-                </Group>
-              }
-              labelPosition="left"
-            />
-            {renderGrid(section.uid, section.fotoIndexes, false)}
-            {!disabled && (
-              <Dropzone
-                onDrop={(files) => handleDrop(files, section)}
-                accept={IMAGE_MIME_TYPE}
-                loading={uploading}
-                multiple
-              >
-                <Group justify="center" gap="xs" mih={48} style={{ pointerEvents: 'none' }}>
-                  <IconPhotoPlus size={20} />
-                  <Text size="xs" c="dimmed">
-                    Adicionar fotos para {section.varianteNome}
-                  </Text>
-                </Group>
-              </Dropzone>
-            )}
-          </Stack>
+        {sections.variants.map((section, idx) => (
+          <Paper key={section.uid} p="sm" radius="md" bg={stripeBg(idx + 1)}>
+            <Stack gap="xs">
+              <Divider
+                label={
+                  <Group gap="xs">
+                    <Text size="sm" fw={600}>
+                      {section.grupoNome}: {section.varianteNome}
+                    </Text>
+                    {!disabled && section.fotoIndexes.length > 0 && (
+                      <Button
+                        variant="subtle"
+                        color="red"
+                        size="compact-xs"
+                        onClick={() => toggleDeleteSection(section.fotoIndexes)}
+                      >
+                        {sectionDeleteLabel(section.fotoIndexes)}
+                      </Button>
+                    )}
+                  </Group>
+                }
+                labelPosition="left"
+              />
+              {renderGrid(section.uid, section.fotoIndexes, false)}
+              {!disabled && (
+                <Dropzone
+                  onDrop={(files) => handleDrop(files, section)}
+                  accept={IMAGE_MIME_TYPE}
+                  loading={uploading}
+                  multiple
+                >
+                  <Group justify="center" gap="xs" mih={48} style={{ pointerEvents: 'none' }}>
+                    <IconPhotoPlus size={20} />
+                    <Text size="xs" c="dimmed">
+                      Adicionar fotos para {section.varianteNome}
+                    </Text>
+                  </Group>
+                </Dropzone>
+              )}
+            </Stack>
+          </Paper>
         ))}
       </DndContext>
     </Stack>

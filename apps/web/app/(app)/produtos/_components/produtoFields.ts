@@ -12,14 +12,14 @@ import type { Produto } from '@delfrance/schemas';
  * `PRODUTO_EXCLUDED_FIELDS` until then (the Flutter app keeps authoring them).
  */
 
-/** Tab order for the Produto ObjectView. */
+/** Tab order for the Produto ObjectView — Variações before the media tabs. */
 export const PRODUTO_SECTIONS: string[] = [
   'Dados gerais',
   'Dimensões e peso',
   'Configurações',
+  'Variações',
   'Fotos',
   'Vídeos',
-  'Variações',
 ];
 
 /**
