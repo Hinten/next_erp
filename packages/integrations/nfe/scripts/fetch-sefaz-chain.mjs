@@ -310,6 +310,25 @@ socket.once('secureConnect', async () => {
   }
   if (isSelfSigned(top)) {
     console.log(`  ✓ reached self-signed root: "${subjectCN(top)}"`);
+  } else if (chain.length >= 2) {
+    // (The leaf-only case falls through to the interception-aware fatal
+    // below.) A trust bundle that doesn't reach a self-signed root can NEVER
+    // validate — Node's `ca` option replaces the default store entirely, so
+    // verification dies with UNABLE_TO_GET_ISSUER_CERT at the first call.
+    // Writing the partial bundle anyway would look like success and only
+    // fail later at runtime, so abort without writing.
+    console.error(
+      `\nFatal: the chain stops at "${subjectCN(top)}" (issued by ` +
+        `"${issuerCN(top)}"), which is not self-signed.`,
+    );
+    console.error(
+      'Fetch the missing root from its CA (ICP-Brasil roots: ' +
+        'https://acraiz.icpbrasil.gov.br/) and append it to the bundle, or ' +
+        're-run on a network where the AIA URLs above are reachable. Another ' +
+        'vendored bundle in ca/ may already contain the same root — for ' +
+        'ICP-Brasil chains, check sefaz-sp-homologacao.pem.',
+    );
+    process.exit(4);
   }
 
   // 3. Skip the leaf (index 0) and write the trust bundle. If the leaf is
