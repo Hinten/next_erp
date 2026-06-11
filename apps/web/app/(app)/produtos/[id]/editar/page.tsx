@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
+import { deleteDoc } from 'firebase/firestore';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import { type Foto, type Video, produtoSchema } from '@delfrance/schemas';
@@ -65,12 +66,19 @@ export default function EditarProdutoPage() {
     [params.id, db, storage],
   );
 
+  // The editor is the product screen now (the intermediate detail view was
+  // removed) — it owns deletion too, behind ObjectView's typed-confirm modal.
+  async function handleDelete(id: string) {
+    await deleteDoc(produtoCollection.docRef(db, {}, id));
+    router.replace('/produtos');
+  }
+
   return (
     <Stack>
       <PageHeader
         title="Editar produto"
         actions={
-          <Anchor component={Link} href={`/produtos/${params.id}`} size="sm">
+          <Anchor component={Link} href="/produtos" size="sm">
             Cancelar
           </Anchor>
         }
@@ -87,7 +95,10 @@ export default function EditarProdutoPage() {
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}
-        onSaved={() => router.replace(`/produtos/${params.id}`)}
+        canDelete={canWrite}
+        onDelete={handleDelete}
+        deleteConfirmMessage="O produto será excluído permanentemente. Esta ação não pode ser desfeita."
+        onSaved={() => router.replace('/produtos')}
       />
     </Stack>
   );

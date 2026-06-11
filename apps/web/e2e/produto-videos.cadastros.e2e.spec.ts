@@ -46,17 +46,14 @@ test.describe.serial('Produtos vídeos e2e — ObjectView Vídeos tab', () => {
     await fillField(page, 'Nome', nome);
     await clickSave(page, 'Criar');
 
-    // onSaved → router.replace('/produtos/<id>'). Match the detail route
-    // explicitly so it can't resolve against the /produtos/novo we start on.
-    await page.waitForURL(
-      (url) => /^\/produtos\/[^/]+$/.test(url.pathname) && url.pathname !== '/produtos/novo',
-      { timeout: 15_000 },
-    );
+    // onSaved → router.replace('/produtos/<id>/editar') — create lands straight
+    // in the editor (the intermediate detail view was removed).
+    await page.waitForURL((url) => /^\/produtos\/[^/]+\/editar$/.test(url.pathname), {
+      timeout: 15_000,
+    });
     await expect.poll(() => docExistsByName('produtos', nome), { timeout: 15_000 }).toBe(true);
 
-    // Open the editor and switch to the Vídeos tab.
-    const id = new URL(page.url()).pathname.split('/').pop();
-    await page.goto(`/produtos/${id}/editar`);
+    // Already in the editor — switch to the Vídeos tab.
     await expect(page.getByRole('heading', { name: 'Editar produto' })).toBeVisible();
     await page.getByRole('tab', { name: 'Vídeos' }).click();
 

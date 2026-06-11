@@ -98,10 +98,10 @@ export default function ProdutosPage() {
               <Table.Tr
                 key={id}
                 style={{ cursor: 'pointer' }}
-                onClick={() => router.push(`/produtos/${id}`)}
+                onClick={() => router.push(`/produtos/${id}/editar`)}
               >
                 <Table.Td>
-                  <Anchor component={Link} href={`/produtos/${id}`}>
+                  <Anchor component={Link} href={`/produtos/${id}/editar`}>
                     {p.nome}
                   </Anchor>
                   {p.paiId && (

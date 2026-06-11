@@ -74,7 +74,7 @@ export default function ProdutosMaisVendidosPage() {
                 <Table.Tr key={r.produtoUid}>
                   <Table.Td>{i + 1}</Table.Td>
                   <Table.Td>
-                    <Anchor component={Link} href={`/produtos/${r.produtoUid}`}>
+                    <Anchor component={Link} href={`/produtos/${r.produtoUid}/editar`}>
                       {r.label}
                     </Anchor>
                   </Table.Td>
