@@ -33,9 +33,14 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
     await cleanupByNamePrefix('grupoDeVariacoes', prefix);
   });
 
-  /** Select an option inside a Mantine MultiSelect identified by its label. */
+  /**
+   * Select an option inside a Mantine MultiSelect identified by its label.
+   * Scoped to the textbox role — Mantine labels BOTH the input and its open
+   * dropdown listbox with the same accessible name, so a bare getByLabel hits
+   * a strict-mode violation.
+   */
   async function pickOption(page: Page, selectLabel: string | RegExp, option: string | RegExp) {
-    await page.getByLabel(selectLabel).click();
+    await page.getByRole('textbox', { name: selectLabel }).click();
     await page.getByRole('option', { name: option }).click();
     await page.keyboard.press('Escape'); // close the dropdown overlay
   }
@@ -79,7 +84,9 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
 
     // Select the Tamanhos group, then two of its variants.
     await pickOption(page, 'Grupos de variação', `${prefix}-Tamanhos`);
-    await expect(page.getByLabel(`${prefix}-Tamanhos`)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole('textbox', { name: `${prefix}-Tamanhos` })).toBeVisible({
+      timeout: 15_000,
+    });
     await pickOption(page, `${prefix}-Tamanhos`, 'P (P)');
     await pickOption(page, `${prefix}-Tamanhos`, 'M (M)');
 
@@ -109,9 +116,8 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
     await expect
       .poll(() => docExistsByName('produtos', `${nome} P`), { timeout: 15_000 })
       .toBe(true);
-    // Open the parent through the list URL captured in the previous test is
-    // not available across tests — find it via the editor of any child? The
-    // parent doc id is stable: navigate via the produtos list search instead.
+    // The parent's id isn't carried across tests — find it again through the
+    // produtos list search (exact-name link, so children don't match).
     await page.goto('/produtos');
     await page.getByPlaceholder('Buscar por nome…').fill(nome);
     await page.getByRole('link', { name: nome, exact: true }).click();
