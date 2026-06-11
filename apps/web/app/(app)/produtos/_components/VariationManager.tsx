@@ -49,6 +49,7 @@ import {
   type GrupoComId,
   type Produto,
   cartesianVariations,
+  compareSortKeys,
   normalizeVariacoesUid,
   parseFakePath,
   produtoSchema,
@@ -322,6 +323,9 @@ export function VariationManager({
     onGroupsChange(ids);
     // Unselecting a group also drops its variant chips from the parent
     // selection (the old app left them dangling in a "no group" bucket).
+    // Group ids the snapshot doesn't know are rendered as placeholder chips
+    // (see `groupOptions`), so they survive every edit unless the user
+    // removes them explicitly — a removal here is always deliberate.
     const kept = uids.filter((u) => {
       const grupoId = parseFakePath(u)?.grupoId;
       return grupoId === undefined || ids.includes(grupoId);
@@ -386,6 +390,7 @@ export function VariationManager({
     }
     const ctx = { parentNome, parentSku, grupos };
     const errors: string[] = [];
+    const keyed: Array<{ key: string; sortKey: number[] }> = [];
     for (const row of rows) {
       if (row.deleteMark) continue;
       const result =
@@ -396,10 +401,20 @@ export function VariationManager({
         errors.push(result.error);
         continue;
       }
+      keyed.push({ key: row.key, sortKey: result.sortKey });
       patchRow(row, { nome: result.nome, sku: result.sku, variacoesUid: result.variacoesUid });
     }
     setActionError(errors.length > 0 ? errors : null);
     if (errors.length === 0) {
+      // Apply the recovered Cartesian order — `flushStagedChildren` rewrites
+      // `ordem` from the final row order, so reordering here is what actually
+      // fixes a legacy child's position on save. Delete-marked rows keep
+      // their current place at the end.
+      const sorted = [...keyed]
+        .sort((a, b) => compareSortKeys(a.sortKey, b.sortKey))
+        .map((k) => k.key);
+      const deletedKeys = rows.filter((r) => r.deleteMark).map((r) => r.key);
+      setLocalOrder([...sorted, ...deletedKeys]);
       notifications.show({
         color: 'green',
         message: 'Variações reconstituídas — salve para gravar.',
@@ -438,7 +453,16 @@ export function VariationManager({
     setLocalOrder(arrayMove(keys, from, to));
   }
 
-  const groupOptions = grupos.map((g) => ({ value: g.id, label: g.data.nome }));
+  // Known groups plus a placeholder option for every selected id the snapshot
+  // doesn't carry (still loading / query limit / permissions) — Mantine only
+  // renders chips for values present in `data`, so without placeholders those
+  // selections would be invisible and silently dropped on the next edit.
+  const groupOptions = [
+    ...grupos.map((g) => ({ value: g.id, label: g.data.nome })),
+    ...groupsSelected
+      .filter((id) => !grupos.some((g) => g.id === id))
+      .map((id) => ({ value: id, label: `${id} (grupo não carregado)` })),
+  ];
 
   return (
     <Stack>
@@ -449,7 +473,7 @@ export function VariationManager({
         label="Grupos de variação"
         description="Selecione os grupos (Tamanho, Cor, …) aplicados a este produto"
         data={groupOptions}
-        value={groupsSelected.filter((id) => grupos.some((g) => g.id === id))}
+        value={groupsSelected}
         onChange={changeGroups}
         disabled={disabled}
         searchable
