@@ -187,14 +187,41 @@ export type Veiculo = z.infer<typeof veiculoSchema>;
 export const reboqueSchema = veiculoSchema;
 export type Reboque = Veiculo;
 
+/**
+ * Dimensões (cm) of a Volume. Mirrors `Dimensoes` at
+ * `.old/packages/pedido/lib/src/models.dart:1048` — all three required.
+ */
+export const dimensoesSchema = z
+  .object({
+    altura: z.number().describe('Altura (cm)'),
+    largura: z.number().describe('Largura (cm)'),
+    comprimento: z.number().describe('Comprimento (cm)'),
+  })
+  .passthrough();
+export type Dimensoes = z.infer<typeof dimensoesSchema>;
+
+/**
+ * Volume — Flutter wire shape from `Volume` at
+ * `.old/packages/pedido/lib/src/models.dart:955-1037` (`quantidade`,
+ * `especie`, `pesoBruto`…), NOT the NFe XSD `<vol>` names (`qVol`, `esp`,
+ * `pesoB`…). The NFe orchestrator remaps to XSD names at the `<transp>`
+ * boundary (`apps/nfe/lib/nfe/orchestrator/generator-input.ts`).
+ */
 export const volumeSchema = z
   .object({
-    qVol: z.number().nullable().default(null),
-    esp: z.string().nullable().default(null),
-    marca: z.string().nullable().default(null),
-    nVol: z.string().nullable().default(null),
-    pesoL: z.number().nullable().default(null),
-    pesoB: z.number().nullable().default(null),
+    quantidade: z
+      .number()
+      .int()
+      .nullable()
+      .default(null)
+      .describe('Quantidade de volumes transportados'),
+    especie: z.string().max(60).nullable().default(null).describe('Espécie'),
+    marca: z.string().max(60).nullable().default(null).describe('Marca'),
+    numero: z.string().max(60).nullable().default(null).describe('Numeração'),
+    pesoBruto: z.number().nullable().default(null).describe('Peso Bruto (KG)'),
+    pesoLiquido: z.number().nullable().default(null).describe('Peso Líquido (KG)'),
+    dimensoes: dimensoesSchema.nullable().default(null).describe('Dimensões'),
+    lacres: z.array(z.string()).nullable().default(null).describe('Lacres'),
   })
   .passthrough();
 export type Volume = z.infer<typeof volumeSchema>;

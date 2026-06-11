@@ -78,6 +78,16 @@ export const PERM = {
     write: 1n << 81n,
     delete: 1n << 82n,
   },
+  // Frete — freight integration configs (`int_frete` collection, /logistica
+  // screens) and freight actions on pedidos (quote / label / tracking).
+  // Mirrored by `intFreteMeta` in packages/schemas/src/intFrete.ts. The old
+  // Flutter app gated this with its dedicated 'F0' perm code; the BigInt
+  // claim system is independent of those codes, so this is a fresh domain.
+  frete: {
+    read: 1n << 88n,
+    write: 1n << 89n,
+    delete: 1n << 90n,
+  },
 } as const;
 
 export function hasPerm(grantedClaim: string | undefined, requiredBit: bigint): boolean {

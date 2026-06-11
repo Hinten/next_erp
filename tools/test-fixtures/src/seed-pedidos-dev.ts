@@ -103,13 +103,14 @@ interface DevFreteSeed {
     UF?: string;
     RNTC?: string;
   };
+  /** Flutter wire names (the NFe orchestrator remaps to qVol/esp/… itself). */
   readonly volumes?: ReadonlyArray<{
-    qVol?: number;
-    esp?: string;
+    quantidade?: number;
+    especie?: string;
     marca?: string;
-    nVol?: string;
-    pesoL?: number;
-    pesoB?: number;
+    numero?: string;
+    pesoLiquido?: number;
+    pesoBruto?: number;
   }>;
 }
 
@@ -169,12 +170,12 @@ const PEDIDOS: PedidoSeed[] = [
       veiculo: { placa: 'ABC1D23', UF: 'SP', RNTC: '12345' },
       volumes: [
         {
-          qVol: 1,
-          esp: 'CAIXA',
+          quantidade: 1,
+          especie: 'CAIXA',
           marca: 'Dev',
-          nVol: '001',
-          pesoL: 1.25,
-          pesoB: 1.5,
+          numero: '001',
+          pesoLiquido: 1.25,
+          pesoBruto: 1.5,
         },
       ],
     },

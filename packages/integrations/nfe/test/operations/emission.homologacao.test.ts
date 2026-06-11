@@ -90,6 +90,11 @@ const TEST_IE = process.env.NFE_TEST_IE;
 
 const hasFullCreds = hasNFeCertEnv() && Boolean(TEST_IE);
 
+// Local run without credentials → skip cleanly (a dev checkout without
+// .env.local must not fail `pnpm turbo run test`). In CI the beforeAll
+// throw below still fails loud on missing secrets.
+const describeOrSkip = !hasFullCreds && !process.env.CI ? describe.skip : describe;
+
 // Load the cert once when env vars are set so the fixture can read its
 // CNPJ. SEFAZ rejection 213 (CNPJ-Base do Emitente difere do CNPJ-Base
 // do Certificado Digital) fires whenever the emit CNPJ's first 8 digits
@@ -371,9 +376,9 @@ function buildCall(url: string, cert: NFeCertificate): SefazCall {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('SEFAZ-SP homologação — library duplicidade-recovery contract', () => {
-  // Fail loud, never skip: a live fiscal lane that silently skips on
-  // missing credentials can report green with zero coverage.
+describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract', () => {
+  // Only reachable in CI (locally the suite skips via describeOrSkip):
+  // fail loud on missing secrets — never report green with zero coverage.
   beforeAll(() => {
     if (!hasFullCreds) {
       throw new Error(

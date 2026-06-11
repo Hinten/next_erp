@@ -683,6 +683,16 @@ describe('buildTranspXml', () => {
     );
   });
 
+  it('emits one <lacres><nLacre> per seal inside <vol>', () => {
+    const xml = buildTranspXml({
+      modFrete: '0',
+      vol: [{ qVol: 1, esp: 'CAIXA', lacres: ['SEAL-001', 'SEAL-002'] }],
+    });
+    expect(xml).toContain(
+      '<lacres><nLacre>SEAL-001</nLacre></lacres><lacres><nLacre>SEAL-002</nLacre></lacres>',
+    );
+  });
+
   it('emits <vagao> and <balsa> when supplied', () => {
     const xml = buildTranspXml({
       modFrete: '0',

@@ -16,6 +16,7 @@ const DOMAIN_LABELS: Record<keyof typeof PERM, string> = {
   estoque: 'Estoque',
   fiscal: 'Fiscal',
   arquivo: 'Arquivos',
+  frete: 'Frete',
 };
 
 const ACTION_LABELS: Record<string, string> = {

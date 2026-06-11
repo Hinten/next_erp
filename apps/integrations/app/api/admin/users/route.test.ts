@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { SUPERUSER_MASK } from '@delfrance/schemas';
 
 // Mock the firebase-admin singleton wrapper. The test exercises route logic
 // only — we don't run against a real Firebase project. Set up the mock BEFORE
@@ -59,7 +60,7 @@ const CALLER_CLAIM = {
 };
 
 const SU_CLAIM = {
-  permissions: ((1n << 64n) - 1n).toString(),
+  permissions: SUPERUSER_MASK.toString(),
 };
 
 beforeEach(() => {
@@ -131,7 +132,7 @@ describe('POST /api/admin/users', () => {
     );
     expect(res.status).toBe(201);
     expect(mocks.setCustomUserClaims).toHaveBeenCalledWith('uid_su', {
-      permissions: ((1n << 64n) - 1n).toString(),
+      permissions: SUPERUSER_MASK.toString(),
     });
   });
 
