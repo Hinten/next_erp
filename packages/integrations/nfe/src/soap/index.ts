@@ -148,8 +148,16 @@ function buildEnvelope(operation: SoapOperation, dadosMsg: string): string {
   );
 }
 
-const RE_RESULT_MSG = /<nfeResultMsg\b[^>]*>([\s\S]*?)<\/nfeResultMsg>/i;
-const RE_SOAP_FAULT = /<(?:soap12?:)?Fault\b[\s\S]*?<\/(?:soap12?:)?Fault>/i;
+// The standard v4.00 wrapper is `<nfeResultMsg>`, but the **Ambiente
+// Nacional**'s NFeRecepcaoEvento4 (classic .NET ASMX) wraps the payload in
+// the `{operation}Result` style instead — `<nfeRecepcaoEventoNFResult>`.
+// Accept both: any `nfe…Result`/`nfe…ResultMsg` element, closed by the same
+// tag (backreference), with the payload in group 2.
+const RE_RESULT_MSG =
+  /<((?:[A-Za-z0-9_]+:)?nfe[A-Za-z0-9_]*Result(?:Msg)?)\b[^>]*>([\s\S]*?)<\/\1>/i;
+// Any-prefix Fault — classic ASMX answers `<soap:Fault>`/`<soap12:Fault>`,
+// WCF-based services answer `<s:Fault>`.
+const RE_SOAP_FAULT = /<(?:[A-Za-z0-9_]+:)?Fault\b[\s\S]*?<\/(?:[A-Za-z0-9_]+:)?Fault>/i;
 
 /**
  * Project an axios / Node error onto a safe shape for use as
@@ -242,6 +250,11 @@ async function postSoap(input: PostInput): Promise<PostResult> {
           httpsAgent: input.agent,
           timeout: input.timeoutMs ?? 60_000,
           responseType: 'text',
+          // Never follow redirects with a signed fiscal payload — SEFAZ
+          // services don't redirect a valid POST, so a 3xx (observed from
+          // the AN's fronting load balancer) must surface as a transport
+          // error, not be silently re-POSTed somewhere else.
+          maxRedirects: 0,
           // SEFAZ never returns 5xx in the SOAP body for app-level errors;
           // genuine 4xx/5xx mean transport/cert/firewall problems.
           validateStatus: (s: number) => s >= 200 && s < 300,
@@ -258,14 +271,18 @@ async function postSoap(input: PostInput): Promise<PostResult> {
     );
   }
   const match = RE_RESULT_MSG.exec(body);
-  if (!match || match[1] === undefined) {
+  if (!match || match[2] === undefined) {
+    // Sanitized diagnosis hint: only the ROOT TAG of whatever came back (an
+    // HTML error page, a load-balancer stub, …) — never the body itself,
+    // which is redacted from logs because it can echo signed XML.
+    const rootTag = /<\s*([A-Za-z!?][A-Za-z0-9:_-]*)/.exec(body)?.[1] ?? '(empty body)';
     throw new NFeTransportError(
-      `SEFAZ response missing <nfeResultMsg> (HTTP ${statusCode})`,
+      `SEFAZ response missing <nfeResultMsg> (HTTP ${statusCode}; body root <${rootTag}>)`,
       statusCode,
       body,
     );
   }
-  return { resultXml: match[1].trim(), rawBody: body };
+  return { resultXml: match[2].trim(), rawBody: body };
 }
 
 // ---------------------------------------------------------------------------
