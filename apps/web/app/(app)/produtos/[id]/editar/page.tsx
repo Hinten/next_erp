@@ -14,6 +14,7 @@ import {
   produtoSchema,
   sortGrupoUids,
 } from '@delfrance/schemas';
+import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
@@ -37,8 +38,13 @@ export default function EditarProdutoPage() {
   const storage = getFirebaseStorage();
 
   // Variation groups (live) — shared between the Variações tab and the
-  // save-time normalization in `deriveOnSave`.
-  const gruposQuery = useMemo(() => grupoDeVariacoesCollection.ref(db, {}), [db]);
+  // save-time normalization in `deriveOnSave`. Bounded query (orderBy +
+  // limit), matching the /variacoes TableView shape: the staging rules are
+  // Flutter-owned and may reject unbounded collection scans.
+  const gruposQuery = useMemo(
+    () => buildQuery(grupoDeVariacoesCollection.ref(db, {}), [orderByField('ordem'), limit(200)]),
+    [db],
+  );
   const gruposSnap = useSnapshot(gruposQuery);
   const grupos = useMemo(() => gruposSnap.data ?? [], [gruposSnap.data]);
 
@@ -90,6 +96,7 @@ export default function EditarProdutoPage() {
             produtoId={params.id}
             db={db}
             grupos={grupos}
+            gruposError={gruposSnap.error?.message}
             value={(p.value as string[] | null) ?? null}
             onChange={p.onChange}
             onGroupsChange={(ids) => {
@@ -101,7 +108,7 @@ export default function EditarProdutoPage() {
         ),
       },
     }),
-    [params.id, db, storage, grupos],
+    [params.id, db, storage, grupos, gruposSnap.error?.message],
   );
 
   return (

@@ -92,6 +92,8 @@ export interface VariationManagerProps {
   db: Firestore;
   /** All variation groups (live), supplied by the page. */
   grupos: GrupoComId[];
+  /** Load error from the page's grupos snapshot — surfaced, never swallowed. */
+  gruposError?: string;
   /** Parent `variacoesUid` (variant fake paths) from the form. */
   value: string[] | null;
   onChange: (next: string[]) => void;
@@ -143,6 +145,7 @@ export function VariationManager({
   produtoId,
   db,
   grupos,
+  gruposError,
   value,
   onChange,
   onGroupsChange,
@@ -422,6 +425,9 @@ export function VariationManager({
 
   return (
     <Stack>
+      {gruposError && (
+        <Alert color="red">Falha ao carregar os grupos de variação: {gruposError}</Alert>
+      )}
       <MultiSelect
         label="Grupos de variação"
         description="Selecione os grupos (Tamanho, Cor, …) aplicados a este produto"
