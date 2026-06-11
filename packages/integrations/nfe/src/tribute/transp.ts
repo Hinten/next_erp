@@ -95,6 +95,8 @@ export type VeicTransp = z.infer<typeof veicTranspSchema>;
 /**
  * Volume entry — one per packed unit / bundle. Every field optional
  * (the whole `<vol>` element is itself optional). Weights are kg.
+ * `lacres` are plain seal numbers — `toVol` wraps each into the XSD's
+ * `<lacres><nLacre>` shape.
  */
 export const volumeTranspSchema = z.object({
   qVol: z.number().int().nonnegative().optional(),
@@ -103,6 +105,7 @@ export const volumeTranspSchema = z.object({
   nVol: z.string().optional(),
   pesoL: z.number().nonnegative().optional(),
   pesoB: z.number().nonnegative().optional(),
+  lacres: z.array(z.string().min(1)).optional(),
 });
 export type VolumeTransp = z.infer<typeof volumeTranspSchema>;
 
@@ -167,6 +170,9 @@ function toVol(v: VolumeTransp): TNFe_infNFe_transp_vol {
   // pesoL / pesoB use XSD pattern TDec_1203 — 3 decimals.
   if (v.pesoL != null) out.pesoL = v.pesoL.toFixed(3);
   if (v.pesoB != null) out.pesoB = v.pesoB.toFixed(3);
+  if (v.lacres != null && v.lacres.length > 0) {
+    out.lacres = v.lacres.map((nLacre) => ({ nLacre }));
+  }
   return out;
 }
 

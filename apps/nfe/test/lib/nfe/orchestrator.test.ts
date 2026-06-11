@@ -1936,7 +1936,15 @@ describe('buildTranspFromFrete', () => {
       },
       veiculo: { placa: 'ABC1D23', UF: 'SP', RNTC: '12345' },
       // Flutter wire names — the projector remaps them to the XSD names.
-      volumes: [{ quantidade: 1, especie: 'CAIXA', pesoLiquido: 1.25, pesoBruto: 1.5 }],
+      volumes: [
+        {
+          quantidade: 1,
+          especie: 'CAIXA',
+          pesoLiquido: 1.25,
+          pesoBruto: 1.5,
+          lacres: ['SEAL-1', 'SEAL-2'],
+        },
+      ],
     } as never);
     expect(out.modFrete).toBe('0');
     expect(out.transporta).toEqual({
@@ -1948,7 +1956,9 @@ describe('buildTranspFromFrete', () => {
       UF: 'SP',
     });
     expect(out.veicTransp).toEqual({ placa: 'ABC1D23', UF: 'SP', RNTC: '12345' });
-    expect(out.vol).toEqual([{ qVol: 1, esp: 'CAIXA', pesoL: 1.25, pesoB: 1.5 }]);
+    expect(out.vol).toEqual([
+      { qVol: 1, esp: 'CAIXA', pesoL: 1.25, pesoB: 1.5, lacres: ['SEAL-1', 'SEAL-2'] },
+    ]);
   });
 
   it('CPF carrier (no CNPJ) → emits transporta.CPF', () => {

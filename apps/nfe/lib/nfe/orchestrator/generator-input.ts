@@ -271,9 +271,9 @@ export function buildCardFromCartao(cartao: unknown): NonNullable<Payment['card'
  *     reboque / vol / vagao / balsa as available.
  *
  * Free-text fields go through `sanitizeNFeText` (maxLen per XSD): xNome /
- * xEnder / xMun ≤60, vol[i].esp / marca / nVol ≤60. We don't gate on a
- * specific modalidade beyond '9' — every other code carries the same
- * optional sub-blocks at the XSD level; emit what we have.
+ * xEnder / xMun ≤60, vol[i].esp / marca / nVol ≤60, vol[i].lacres[j] ≤60.
+ * We don't gate on a specific modalidade beyond '9' — every other code
+ * carries the same optional sub-blocks at the XSD level; emit what we have.
  */
 export function buildTranspFromFrete(frete: FreteDoPedido | null): {
   modFrete: '0' | '1' | '2' | '3' | '4' | '9';
@@ -349,6 +349,14 @@ export function buildTranspFromFrete(frete: FreteDoPedido | null): {
       if (nVol) vol.nVol = nVol;
       if (typeof v.pesoLiquido === 'number' && v.pesoLiquido >= 0) vol.pesoL = v.pesoLiquido;
       if (typeof v.pesoBruto === 'number' && v.pesoBruto >= 0) vol.pesoB = v.pesoBruto;
+      if (Array.isArray(v.lacres) && v.lacres.length > 0) {
+        // Seal numbers → <lacres><nLacre> (Flutter parity:
+        // pedido_nfe_base.dart:1548). toVol wraps each string.
+        const lacres = v.lacres
+          .map((l) => sanitizeNFeText(typeof l === 'string' ? l : null, 60))
+          .filter((l): l is string => l !== null);
+        if (lacres.length > 0) vol.lacres = lacres;
+      }
       return vol;
     });
     out.vol = vols;
