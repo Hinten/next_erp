@@ -520,6 +520,28 @@ describe('emitirPedido — contingência SVC', () => {
     expect(w?.data.justificativaContingencia).toBe(SVC_JUST);
   });
 
+  it('NFE_SVC_AUTHORIZER_OVERRIDE=svc-rs reroutes modo svc to SVC-RS (tpEmis 7, s7 slot)', async () => {
+    vi.stubEnv('NFE_SVC_AUTHORIZER_OVERRIDE', 'svc-rs');
+    try {
+      const events: string[] = [];
+      const { fs, writes } = fakeFirestore({ events, nfeConfig: SVC_CONFIG });
+      vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+      await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+      expect(vi.mocked(autorizarLote)).toHaveBeenCalledWith(
+        expect.objectContaining({ url: 'https://example/svc-rs/aut' }),
+        expect.anything(),
+      );
+      expect(vi.mocked(generateNFe)).toHaveBeenCalledWith(expect.objectContaining({ tpEmis: 7 }));
+      const w = writes.find((x) => x.path === 'pedidos/PED-1/nfev4/s7');
+      expect(w?.data.tpEmis).toBe(7);
+      expect(w?.data.justificativaContingencia).toBe(SVC_JUST);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('threads tpEmis 6 + dhCont/xJust into the generator input', async () => {
     const events: string[] = [];
     const { fs } = fakeFirestore({ events, nfeConfig: SVC_CONFIG });
