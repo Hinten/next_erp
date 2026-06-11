@@ -15,7 +15,7 @@ import {
   TextInput,
 } from '@mantine/core';
 import { PageHeader } from '@delfrance/ui';
-import { buildQuery, limit, orderByField, whereOp } from '@delfrance/data';
+import { buildQuery, limit, orderByField, whereEqual, whereOp } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -29,11 +29,16 @@ export default function ProdutosPage() {
 
   const q = useMemo(() => {
     const base = produtoCollection.ref(getFirebaseFirestore(), {});
+    // Parents only (#119): variation children carry `paiId = <parentId>` and
+    // are reached through their parent's Variações tab — listing them would
+    // drown the catalog. Both Flutter and this app always write `paiId`
+    // (explicitly null on parents), so the equality filter misses nothing.
     if (!trimmed) {
-      return buildQuery(base, [orderByField('nome'), limit(PAGE_SIZE)]);
+      return buildQuery(base, [whereEqual('paiId', null), orderByField('nome'), limit(PAGE_SIZE)]);
     }
     // Same prefix-match pattern as clientes: nome >= trimmed && nome <= trimmed + .
     return buildQuery(base, [
+      whereEqual('paiId', null),
       orderByField('nome'),
       whereOp('nome', '>=', trimmed),
       whereOp('nome', '<=', `${trimmed}`),
