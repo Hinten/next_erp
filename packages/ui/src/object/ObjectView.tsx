@@ -53,6 +53,16 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>> {
   /** Section names → renders a Mantine tabs view. Omit for a flat layout. */
   sections?: string[];
 
+  /**
+   * Derive additional top-level fields from the (already per-field
+   * `prepareForSave`-transformed) values, immediately before save — e.g. a
+   * denormalized array such as `variacoesIds` computed from `variacoes`. The
+   * returned keys are merged into the written values; on update each is marked
+   * dirty only when its value actually changed, so a pristine save still skips
+   * via `NothingChangedError`. Must be pure.
+   */
+  deriveOnSave?: (values: Record<string, unknown>) => Record<string, unknown>;
+
   /** Auth uid for the audit entry. */
   currentUserUid: string;
 
@@ -119,6 +129,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   excludedFields = [],
   fields: fieldOverrides = {},
   sections,
+  deriveOnSave,
   currentUserUid,
   pager,
   onSaved,
@@ -230,6 +241,17 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
       if (isUpdate && !dirty[key]) continue;
       values[key] = cfg.prepareForSave(raw[key]);
     }
+    // Record-level derivations (e.g. denormalized `variacoesIds` from the
+    // already-transformed `variacoes`). Merge the derived keys into the values
+    // and mark each dirty only when it changed, so a pristine update still
+    // short-circuits via NothingChangedError instead of writing a no-op patch.
+    const dirtyFields: Record<string, unknown> = { ...dirty };
+    if (deriveOnSave) {
+      for (const [key, next] of Object.entries(deriveOnSave(values))) {
+        if (JSON.stringify(next) !== JSON.stringify(raw[key])) dirtyFields[key] = true;
+        values[key] = next;
+      }
+    }
     try {
       const result = await saveRecord<S, Record<string, unknown>>({
         db,
@@ -237,7 +259,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
         pathContext,
         recordId: internalId,
         values,
-        dirtyFields: form.formState.dirtyFields as Partial<Record<string, unknown>>,
+        dirtyFields,
         currentUserUid,
       });
       // Zero out dirty state while preserving the persisted (transformed) values.
