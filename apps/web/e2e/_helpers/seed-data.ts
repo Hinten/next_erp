@@ -610,6 +610,48 @@ export async function seedProdutoComVariacoes(
 }
 
 /**
+ * Seed a parent produto (`paiId: null`) plus one variation child
+ * (`paiId: <parentId>`) — the fixture for the parents-only list filter
+ * (#119). Both names are prefix-scoped for the sweep.
+ */
+export async function seedProdutoComFilho(prefix: string): Promise<{
+  parentNome: string;
+  childNome: string;
+}> {
+  const parentId = `${prefix}-pai`;
+  const parentNome = `${prefix}-pai`;
+  const childNome = `${prefix}-pai P`;
+  const now = new Date().toISOString();
+  const base = {
+    publicado: true,
+    ehKit: false,
+    ehKitVirtual: false,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    fotos: null,
+    videos: null,
+    timestamp: now,
+  };
+  const batch = db().batch();
+  batch.set(db().collection('produtos').doc(parentId), {
+    ...base,
+    nome: parentNome,
+    sku: `${prefix.toUpperCase().replace(/-/g, '_')}_PAI`,
+    paiId: null,
+    ordem: null,
+  });
+  batch.set(db().collection('produtos').doc(`${parentId}-filho`), {
+    ...base,
+    nome: childNome,
+    sku: `${prefix.toUpperCase().replace(/-/g, '_')}_PAI_P`,
+    paiId: parentId,
+    ordem: 0,
+  });
+  await batch.commit();
+  return { parentNome, childNome };
+}
+
+/**
  * Delete every doc in `collection` whose `field` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
  */
