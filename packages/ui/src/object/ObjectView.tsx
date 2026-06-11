@@ -79,6 +79,16 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>> {
 
   /** Called after a successful save with the doc's id. */
   onSaved?: (id: string) => void;
+  /**
+   * Awaited after a successful save (both "Salvar" and "Salvar e continuar"),
+   * before `onSaved`/the toast — the hook for sibling writes that belong to
+   * the same user action (e.g. flushing staged child documents). A rejection
+   * is shown in the form alert and skips `onSaved`; the main record is already
+   * persisted at that point. It also runs when the record itself had nothing
+   * to write (sibling edits don't dirty the form), in which case the action
+   * still counts as a save instead of the "nothing changed" toast.
+   */
+  onAfterSave?: (id: string) => Promise<void> | void;
   saveLabel?: string;
   /** Show a secondary "Salvar e continuar" button. Default true. */
   showSaveAndContinue?: boolean;
@@ -139,6 +149,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   currentUserUid,
   pager,
   onSaved,
+  onAfterSave,
   saveLabel = 'Salvar',
   showSaveAndContinue = true,
   canEdit = true,
@@ -277,6 +288,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
       form.reset(values as typeof raw);
       // If we just created, retain the id so subsequent saves are updates.
       if (!internalId) setInternalId(result.id);
+      // Sibling writes that belong to this save (e.g. a manager flushing
+      // staged child documents). Runs on BOTH save paths; a failure surfaces
+      // in the form alert and skips onSaved (the record itself is saved — the
+      // user can retry just the sibling step by saving again).
+      await onAfterSave?.(result.id);
       if (continueEditing) {
         notifications.show({ color: 'green', message: 'Salvo.' });
       } else {
@@ -284,6 +300,27 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
       }
     } catch (err) {
       if (err instanceof NothingChangedError) {
+        // The record itself is pristine — but sibling writes may still be
+        // pending (e.g. staged child documents). When an `onAfterSave` is
+        // wired, run it and treat the action as a successful save; without
+        // one, keep the "nothing changed" toast.
+        if (onAfterSave && internalId) {
+          try {
+            await onAfterSave(internalId);
+          } catch (afterErr) {
+            if (afterErr instanceof FirebaseError || afterErr instanceof ZodError) {
+              setSubmitError(afterErr.message);
+              return;
+            }
+            throw afterErr;
+          }
+          if (continueEditing) {
+            notifications.show({ color: 'green', message: 'Salvo.' });
+          } else {
+            onSaved?.(internalId);
+          }
+          return;
+        }
         notifications.show({ color: 'yellow', message: err.message });
         return;
       }

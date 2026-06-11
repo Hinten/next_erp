@@ -19,6 +19,7 @@ export const PRODUTO_SECTIONS: string[] = [
   'Configurações',
   'Fotos',
   'Vídeos',
+  'Variações',
 ];
 
 /**
@@ -52,16 +53,16 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
 };
 
 /**
- * Fields hidden from the Produto ObjectView for now. Variations, kit components
- * and marketplace bindings get dedicated tabs in later PRs; embeddings,
- * references and internal ordering stay server-managed or pass-through. (`fotos`
- * and `videos` have their own tabs — see `PRODUTO_SECTIONS` — so they're
- * intentionally not listed.)
+ * Fields hidden from the Produto ObjectView for now. Kit components and
+ * marketplace bindings get dedicated tabs in later PRs; embeddings, references
+ * and internal ordering stay server-managed or pass-through. (`fotos`,
+ * `videos` and `variacoesUid` have their own tabs — see `PRODUTO_SECTIONS` —
+ * so they're intentionally not listed. `grupoDeVariacoesUid` stays excluded:
+ * the Variações tab manages it and the page's `deriveOnSave` persists it.)
  */
 export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   'nome_embedding',
   'anexos',
-  'variacoesUid',
   'grupoDeVariacoesUid',
   'componentesKit',
   'componentesKitKeys',

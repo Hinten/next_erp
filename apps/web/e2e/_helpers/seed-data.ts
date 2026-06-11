@@ -526,6 +526,52 @@ export async function cleanupPedidoWithNFe(pedidoId: string): Promise<void> {
 }
 
 /**
+ * Seed two variation groups for the produto-variações suite — Tamanhos
+ * (P/M/G, ordem 1) and Cores (Azul/Verde, ordem 2, `permiteFotos`). Names are
+ * prefix-scoped for the sweep; variant ids are fixed so the spec can assert
+ * generated fake paths deterministically.
+ */
+export async function seedGruposDeVariacao(prefix: string): Promise<{
+  tamanhosId: string;
+  coresId: string;
+}> {
+  const col = db().collection('grupoDeVariacoes');
+  const batch = db().batch();
+  const now = new Date().toISOString();
+  const tamanhosId = `${prefix}-tam`;
+  const coresId = `${prefix}-cor`;
+  batch.set(col.doc(tamanhosId), {
+    nome: `${prefix}-Tamanhos`,
+    codigo: 'tam',
+    ordem: 1,
+    tipo: 1,
+    permiteFotos: false,
+    variacoesIds: ['p', 'm', 'g'],
+    variacoes: [
+      { id: 'p', nome: 'P', codigo: 'P', timestamp: now },
+      { id: 'm', nome: 'M', codigo: 'M', timestamp: now },
+      { id: 'g', nome: 'G', codigo: 'G', timestamp: now },
+    ],
+    timestamp: now,
+  });
+  batch.set(col.doc(coresId), {
+    nome: `${prefix}-Cores`,
+    codigo: 'cor',
+    ordem: 2,
+    tipo: 2,
+    permiteFotos: true,
+    variacoesIds: ['az', 'vd'],
+    variacoes: [
+      { id: 'az', nome: 'Azul', codigo: 'AZ', timestamp: now },
+      { id: 'vd', nome: 'Verde', codigo: 'VD', timestamp: now },
+    ],
+    timestamp: now,
+  });
+  await batch.commit();
+  return { tamanhosId, coresId };
+}
+
+/**
  * Delete every doc in `collection` whose `field` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
  */

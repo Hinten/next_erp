@@ -11,6 +11,7 @@ import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client'
 import { useAuth } from '@/lib/auth';
 import { PhotoManager } from '../_components/PhotoManager';
 import { VideoManager } from '../_components/VideoManager';
+import { VariationManager } from '../_components/VariationManager';
 import {
   PRODUTO_CREATE_DEFAULTS,
   PRODUTO_EXCLUDED_FIELDS,
@@ -56,6 +57,23 @@ export default function NovoProdutoPage() {
             storage={storage}
             value={(p.value as Video[] | null) ?? null}
             onChange={p.onChange}
+            disabled={p.disabled}
+          />
+        ),
+      },
+      variacoesUid: {
+        label: 'Variações',
+        section: 'Variações',
+        // produtoId null → "save first" guard; children need a saved parent.
+        renderInput: (p) => (
+          <VariationManager
+            produtoId={null}
+            db={db}
+            grupos={[]}
+            value={(p.value as string[] | null) ?? null}
+            onChange={p.onChange}
+            onGroupsChange={() => undefined}
+            flushRef={{ current: null }}
             disabled={p.disabled}
           />
         ),
