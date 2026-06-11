@@ -21,10 +21,21 @@ export interface LogisticaSlice {
   novoLabel: string;
   /** Slice-specific exclusions on top of the shared ones. */
   extraExcluded: readonly string[];
+  /** ObjectView tabs — only tabs whose fields aren't excluded on the slice. */
+  sections: readonly string[];
 }
 
 /** Hidden on every slice: pinned/stamped/no-UI-yet fields. */
 export const SHARED_EXCLUDED = ['tipo', 'dataCadastro', 'mapa'] as const;
+
+/** Tab names — `intFreteFields` assigns the special editors to them; every
+ * unsectioned field lands on the first tab. */
+export const SECTION = {
+  geral: 'Dados gerais',
+  enderecoOrigem: 'Endereço de origem',
+  faixasCep: 'Faixas de CEP',
+  horarios: 'Horários de corte',
+} as const;
 
 export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = {
   retirada: {
@@ -35,6 +46,7 @@ export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = 
     descricao: 'Pontos de retirada (balcão) com horários de corte para disponibilidade.',
     novoLabel: 'Nova retirada',
     extraExcluded: ['faixaCep', 'client_id', 'client_secret'],
+    sections: [SECTION.geral, SECTION.enderecoOrigem, SECTION.horarios],
   },
   motoboy: {
     slug: 'motoboy',
@@ -44,6 +56,7 @@ export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = 
     descricao: 'Entrega local por motoboy — tarifas por faixa de CEP e horários de corte.',
     novoLabel: 'Novo motoboy',
     extraExcluded: ['client_id', 'client_secret'],
+    sections: [SECTION.geral, SECTION.faixasCep, SECTION.horarios, SECTION.enderecoOrigem],
   },
   fob: {
     slug: 'fob',
@@ -53,6 +66,7 @@ export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = 
     descricao: 'Entrega organizada e paga pelo destinatário.',
     novoLabel: 'Novo FOB',
     extraExcluded: ['faixaCep', 'client_id', 'client_secret'],
+    sections: [SECTION.geral, SECTION.enderecoOrigem, SECTION.horarios],
   },
   'melhor-envios': {
     slug: 'melhor-envios',
@@ -62,5 +76,6 @@ export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = 
     descricao: 'Contas Melhor Envios — credenciais OAuth e endereço de origem das cotações.',
     novoLabel: 'Nova conta',
     extraExcluded: ['faixaCep'],
+    sections: [SECTION.geral, SECTION.enderecoOrigem, SECTION.horarios],
   },
 };

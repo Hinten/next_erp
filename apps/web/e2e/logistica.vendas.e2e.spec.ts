@@ -93,13 +93,15 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
     await page.getByRole('row', { name: new RegExp(row(2)) }).click();
     await page.waitForURL(/\/logistica\/motoboy\/[^/]+$/, { timeout: 10_000 });
     await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(row(2));
-    // The seeded faixaCep rows render in the editor.
+    // The faixaCep editor lives on its own tab; the seeded rows render there.
+    await page.getByRole('tab', { name: 'Faixas de CEP' }).click();
     await expect(page.getByLabel('CEP Inicial 1')).toHaveValue('01000000');
     await expect(page.getByLabel('CEP Inicial 2')).toHaveValue('02000000');
   });
 
   test('adds a faixa de CEP and saves', async ({ page }) => {
     await page.goto(`/logistica/motoboy/${row(3)}`);
+    await page.getByRole('tab', { name: 'Faixas de CEP' }).click();
     await expect(page.getByLabel('CEP Inicial 1')).toHaveValue('01000000');
     await page.getByRole('button', { name: 'Adicionar faixa' }).click();
     await page.getByLabel('CEP Inicial 3').fill('03000000');
@@ -114,6 +116,7 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
 
   test('staged deletion: marked faixa survives until save, then is dropped', async ({ page }) => {
     await page.goto(`/logistica/motoboy/${row(4)}`);
+    await page.getByRole('tab', { name: 'Faixas de CEP' }).click();
     await expect(page.getByLabel('CEP Inicial 1')).toHaveValue('01000000');
 
     await page.getByRole('button', { name: 'Excluir faixa 1' }).click();

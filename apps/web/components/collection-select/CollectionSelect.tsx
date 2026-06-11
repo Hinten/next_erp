@@ -51,6 +51,17 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
    * wire format the legacy app reads and writes (`OuterRefField.toJson`).
    */
   emitDocPath?: boolean;
+  /**
+   * Ordering for the option list (initial AND searched), pipeline path only.
+   * Defaults to `[{ field: labelField, direction: 'asc' }]`. Multi-key sorts
+   * are supported (e.g. recency: `ultimaModificacao desc, timestamp desc` —
+   * pipeline sorts treat a missing field as null instead of excluding the
+   * doc). The non-pipeline fallback keeps the labelField-asc prefix query —
+   * classic `orderBy` on a possibly-missing field would silently EXCLUDE
+   * legacy docs, and pipelines are the supported path on Firestore
+   * Enterprise anyway.
+   */
+  orderBy?: Array<{ field: string; direction?: 'asc' | 'desc' }>;
 }
 
 /**
@@ -113,6 +124,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   error,
   limit = DEFAULT_LIMIT,
   emitDocPath = false,
+  orderBy,
 }: CollectionSelectProps<S>) {
   const db = getFirebaseFirestore();
 
@@ -130,9 +142,10 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   // value can't fire a phantom query.
   const term = locked ? '' : debounced.trim();
 
-  // Value-stable key for the `searchFields` array so the query memos below
-  // don't rebuild (and re-query) on every render.
+  // Value-stable keys for the array props so the query memos below don't
+  // rebuild (and re-query) on every render.
   const searchFieldsKey = (searchFields ?? [labelField]).join('|');
+  const orderByKey = JSON.stringify(orderBy ?? [{ field: labelField, direction: 'asc' }]);
 
   // Primary source: the Firestore Pipeline API — a typed term is matched
   // (case/accent-insensitive substring) against every `searchFields` entry,
@@ -144,14 +157,14 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
       return buildPipeline(db, {
         collection: collection.resolvePath({}),
         ...(term !== '' ? { search: { fields: searchFieldsKey.split('|'), term } } : {}),
-        orderBy: [{ field: labelField, direction: 'asc' }],
+        orderBy: JSON.parse(orderByKey) as Array<{ field: string; direction?: 'asc' | 'desc' }>,
         limit,
       });
     } catch (err) {
       if (err instanceof PipelineUnsupportedError) return null;
       throw err;
     }
-  }, [db, collection, locked, term, searchFieldsKey, labelField, limit]);
+  }, [db, collection, locked, term, searchFieldsKey, orderByKey, limit]);
 
   // Fallback when the SDK lacks the Pipeline API: a single-field Firestore
   // prefix-range query — substring / multi-field search is pipeline-only.

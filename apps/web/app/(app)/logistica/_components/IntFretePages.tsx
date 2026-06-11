@@ -138,6 +138,7 @@ export function IntFreteCreatePage({ slice }: { slice: LogisticaSlice }) {
         }}
         excludedFields={excludedFor(slice)}
         fields={intFreteFields}
+        sections={[...slice.sections]}
         saveLabel="Criar"
         showSaveAndContinue={false}
         canEdit={canWrite}
@@ -178,6 +179,7 @@ export function IntFreteEditPage({ slice }: { slice: LogisticaSlice }) {
         recordId={params.id}
         excludedFields={excludedFor(slice)}
         fields={intFreteFields}
+        sections={[...slice.sections]}
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}
