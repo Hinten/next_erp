@@ -44,10 +44,7 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
   function hasInputValue(page: Page, value: string): Promise<boolean> {
     return page
       .locator('input')
-      .evaluateAll(
-        (els, v) => els.some((e) => (e as HTMLInputElement).value === v),
-        value,
-      );
+      .evaluateAll((els, v) => els.some((e) => (e as HTMLInputElement).value === v), value);
   }
 
   test('shows the "save first" message on the Variações tab of the create screen', async ({
