@@ -80,8 +80,9 @@ NFE_CERT_PATH=./.ignore/cert.pfx    # or NFE_CERT_BASE64
 NFE_CERT_PASSWORD=...
 # NFE_ALLOW_PRODUCAO=true            # only if NFE_AMBIENTE=producao
 # NFE_SVC_AUTHORIZER_OVERRIDE=svc-rs # homologação-only: force the SVC lane to
-                                     # SVC-RS (SVC-AN has no DNS outside SEFAZ
-                                     # activation windows); throws in produção
+                                     # either SVC regardless of the UF binding
+                                     # (off-binding SVC → cStat 410, which still
+                                     # proves the transport); throws in produção
 
 ALLOWED_ADMIN_ORIGINS=https://app.example.com  # CSV; localhost allowed by default
 TZ=America/Sao_Paulo                 # SEFAZ wants the issuer's local time

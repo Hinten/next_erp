@@ -69,22 +69,38 @@ export interface AnServiceUrls {
   readonly RecepcaoEvento: string;
 }
 
+// SVC-AN lives on the `sefazvirtual.fazenda.gov.br` hosts (the AN's SEFAZ
+// Virtual infrastructure) — the portal's "Sefaz Virtual de Contingência
+// Ambiente Nacional" table, re-checked 2026-06-11. The legacy
+// `svc.fazenda.gov.br` hosts inherited from the Flutter table are
+// decommissioned (NXDOMAIN on public resolvers). The portal also lists
+// NfeInutilizacao on SVC-AN, but `SvcServiceUrls` deliberately omits it:
+// number ranges belong to the home SEFAZ, so inutilização via SVC must not
+// typecheck. The produção URLs follow the portal pattern and answer probes;
+// still, run a status check against them before relying on SVC-AN in a real
+// produção contingency.
 const SVC_AN_ENDPOINTS: Record<Ambiente, SvcServiceUrls> = {
   producao: {
-    NfeAutorizacao: 'https://www.svc.fazenda.gov.br/NFeAutorizacao4/NFeAutorizacao4.asmx',
-    NfeRetAutorizacao: 'https://www.svc.fazenda.gov.br/NFeRetAutorizacao4/NFeRetAutorizacao4.asmx',
+    NfeAutorizacao: 'https://www.sefazvirtual.fazenda.gov.br/NFeAutorizacao4/NFeAutorizacao4.asmx',
+    NfeRetAutorizacao:
+      'https://www.sefazvirtual.fazenda.gov.br/NFeRetAutorizacao4/NFeRetAutorizacao4.asmx',
     NfeConsultaProtocolo:
-      'https://www.svc.fazenda.gov.br/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx',
-    NfeStatusServico: 'https://www.svc.fazenda.gov.br/NFeStatusServico4/NFeStatusServico4.asmx',
-    RecepcaoEvento: 'https://www.svc.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
+      'https://www.sefazvirtual.fazenda.gov.br/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx',
+    NfeStatusServico:
+      'https://www.sefazvirtual.fazenda.gov.br/NFeStatusServico4/NFeStatusServico4.asmx',
+    RecepcaoEvento:
+      'https://www.sefazvirtual.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
   },
   homologacao: {
-    NfeAutorizacao: 'https://hom.svc.fazenda.gov.br/NFeAutorizacao4/NFeAutorizacao4.asmx',
-    NfeRetAutorizacao: 'https://hom.svc.fazenda.gov.br/NFeRetAutorizacao4/NFeRetAutorizacao4.asmx',
+    NfeAutorizacao: 'https://hom.sefazvirtual.fazenda.gov.br/NFeAutorizacao4/NFeAutorizacao4.asmx',
+    NfeRetAutorizacao:
+      'https://hom.sefazvirtual.fazenda.gov.br/NFeRetAutorizacao4/NFeRetAutorizacao4.asmx',
     NfeConsultaProtocolo:
-      'https://hom.svc.fazenda.gov.br/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx',
-    NfeStatusServico: 'https://hom.svc.fazenda.gov.br/NFeStatusServico4/NFeStatusServico4.asmx',
-    RecepcaoEvento: 'https://hom.svc.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
+      'https://hom.sefazvirtual.fazenda.gov.br/NFeConsultaProtocolo4/NFeConsultaProtocolo4.asmx',
+    NfeStatusServico:
+      'https://hom.sefazvirtual.fazenda.gov.br/NFeStatusServico4/NFeStatusServico4.asmx',
+    RecepcaoEvento:
+      'https://hom.sefazvirtual.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
   },
 };
 

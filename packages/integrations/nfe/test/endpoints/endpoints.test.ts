@@ -80,20 +80,20 @@ describe('svcAuthorizerForUF', () => {
 });
 
 describe('getSvcEndpoints', () => {
-  it('serves the official SVC-AN URL set per ambiente', () => {
+  it('serves the official SVC-AN URL set per ambiente (sefazvirtual hosts)', () => {
     const prod = getSvcEndpoints('svc-an', 'producao');
     expect(prod.NfeAutorizacao).toBe(
-      'https://www.svc.fazenda.gov.br/NFeAutorizacao4/NFeAutorizacao4.asmx',
+      'https://www.sefazvirtual.fazenda.gov.br/NFeAutorizacao4/NFeAutorizacao4.asmx',
     );
     expect(prod.NfeStatusServico).toBe(
-      'https://www.svc.fazenda.gov.br/NFeStatusServico4/NFeStatusServico4.asmx',
+      'https://www.sefazvirtual.fazenda.gov.br/NFeStatusServico4/NFeStatusServico4.asmx',
     );
     const hom = getSvcEndpoints('svc-an', 'homologacao');
     expect(hom.NfeRetAutorizacao).toBe(
-      'https://hom.svc.fazenda.gov.br/NFeRetAutorizacao4/NFeRetAutorizacao4.asmx',
+      'https://hom.sefazvirtual.fazenda.gov.br/NFeRetAutorizacao4/NFeRetAutorizacao4.asmx',
     );
     expect(hom.RecepcaoEvento).toBe(
-      'https://hom.svc.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
+      'https://hom.sefazvirtual.fazenda.gov.br/NFeRecepcaoEvento4/NFeRecepcaoEvento4.asmx',
     );
   });
 

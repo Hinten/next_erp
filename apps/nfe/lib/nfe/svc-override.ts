@@ -2,14 +2,11 @@
  * Homologação-only dev override of the SVC authorizer.
  *
  * Each UF is legally bound to exactly one SVC (Ato COTEPE 39/2012) — SP to
- * SVC-AN. But SEFAZ publishes the `*.svc.fazenda.gov.br` DNS records only
- * while an SVC activation window is open; outside one the host does not
- * resolve and the SVC lane cannot be exercised live at all. SVC-RS runs on
- * SVRS's permanent infrastructure (`nfe-homologacao.svrs.rs.gov.br`), so
- * redirecting the lane there is the only way to live-test the SVC transport
- * (chain vendoring, mutual TLS, SVRS SOAP paths, response parsing) before a
- * real activation. SVC-RS may still reject the nota at the application level
- * for a UF it does not serve — that round-trip is the point.
+ * SVC-AN. The knob lets homologação exercise EITHER SVC transport regardless
+ * of that binding, so both lanes (chain vendoring, mutual TLS, each SVC's
+ * SOAP paths, response parsing) can be live-tested from a single issuer —
+ * the off-binding SVC answers with an application-level rejection (cStat 410
+ * "UF não atendida"), and that round-trip is the point.
  *
  * Never honored in produção: a real contingency must hit the UF's bound
  * authorizer, so a produção process with the variable set fails loudly
