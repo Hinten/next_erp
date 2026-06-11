@@ -33,7 +33,11 @@ export function IntFreteListPage({ slice }: { slice: LogisticaSlice }) {
 
   const sliceQuery = useMemo(
     () =>
-      query(intFreteCollection.ref(db, {}), where('tipo', '==', slice.tipo), orderBy('nome', 'asc')),
+      query(
+        intFreteCollection.ref(db, {}),
+        where('tipo', '==', slice.tipo),
+        orderBy('nome', 'asc'),
+      ),
     [db, slice.tipo],
   );
 
