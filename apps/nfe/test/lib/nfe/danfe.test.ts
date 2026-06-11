@@ -121,3 +121,71 @@ describe('danfeArtifactService', () => {
     ).rejects.toBeInstanceOf(NFeDanfeError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// EPEC-approved (estado 'p') — the DANFE renders from xml_assinado +
+// xml_epec_proc (no nfeProc yet); the ZPL label is not available.
+// ---------------------------------------------------------------------------
+
+describe('danfeArtifactService — EPEC (estado p)', () => {
+  /** The bare signed NFe (EPEC has no nfeProc) — the fixture's <NFe>, tpEmis 4. */
+  const NFE_ASSINADO = `<?xml version="1.0" encoding="UTF-8"?>
+<NFe xmlns="http://www.portalfiscal.inf.br/nfe"><infNFe Id="NFe${CHAVE}" versao="4.00">
+  <ide><cUF>35</cUF><natOp>VENDA</natOp><mod>55</mod><serie>1</serie><nNF>7</nNF>
+    <dhEmi>2026-06-11T08:30:00-03:00</dhEmi><tpNF>1</tpNF><tpEmis>4</tpEmis><tpAmb>2</tpAmb>
+    <verProc>erp-next 1.0</verProc>
+    <dhCont>2026-06-11T08:00:00-03:00</dhCont><xJust>SEFAZ-SP indisponivel desde as 08h</xJust></ide>
+  <emit><CNPJ>14200166000187</CNPJ><xNome>DELFRANCE LTDA</xNome>
+    <enderEmit><xLgr>RUA A</xLgr><nro>1</nro><xBairro>CENTRO</xBairro>
+      <xMun>SAO PAULO</xMun><UF>SP</UF><CEP>01001000</CEP></enderEmit>
+    <IE>110042490114</IE><CRT>1</CRT></emit>
+  <dest><CNPJ>99999090910270</CNPJ><xNome>HOMOLOGACAO</xNome><indIEDest>9</indIEDest></dest>
+  <total><ICMSTot><vNF>1234.56</vNF><vProd>1234.56</vProd></ICMSTot></total>
+</infNFe><Signature>…</Signature></NFe>`;
+
+  const XML_EPEC_PROC = `<?xml version="1.0" encoding="UTF-8"?>
+<procEventoNFe xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.00">
+  <evento versao="1.00"><infEvento Id="ID110140${CHAVE}01"><cOrgao>91</cOrgao><chNFe>${CHAVE}</chNFe></infEvento></evento>
+  <retEvento versao="1.00"><infEvento><tpAmb>2</tpAmb><cOrgao>91</cOrgao><cStat>136</cStat>
+    <xMotivo>Evento registrado, mas nao vinculado a NF-e</xMotivo><chNFe>${CHAVE}</chNFe>
+    <tpEvento>110140</tpEvento><nSeqEvento>1</nSeqEvento>
+    <dhRegEvento>2026-06-11T08:31:02-03:00</dhRegEvento><nProt>891260000012345</nProt>
+  </infEvento></retEvento>
+</procEventoNFe>`;
+
+  function epecDoc(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return aprovadaDoc({
+      estado: ESTADO_NFE.epecAprovado,
+      tpEmis: 4,
+      xml_nfe_proc: null,
+      xml_assinado: NFE_ASSINADO,
+      xml_epec_proc: XML_EPEC_PROC,
+      ...overrides,
+    });
+  }
+
+  it('renders the retrato PDF from xml_assinado + xml_epec_proc with the epec filename', async () => {
+    const fs = fakeFirestore({ 'pedidos/PED-1/nfev4/s4': epecDoc() });
+    const art = await danfeArtifactService(fs, 'PED-1', 's4', { format: 'retrato' });
+
+    expect(art.contentType).toBe('application/pdf');
+    expect(art.filename).toBe('danfe-epec-7.pdf');
+    expect((art.body as Buffer).subarray(0, 5).toString('latin1')).toBe('%PDF-');
+  });
+
+  it('rejects the ZPL label for an EPEC (PDF only)', async () => {
+    const fs = fakeFirestore({ 'pedidos/PED-1/nfev4/s4': epecDoc() });
+    await expect(danfeArtifactService(fs, 'PED-1', 's4', { format: 'zpl2' })).rejects.toThrow(
+      /etiqueta ZPL não disponível para EPEC/,
+    );
+  });
+
+  it('throws NFeDanfeError when the p doc lacks xml_epec_proc', async () => {
+    const fs = fakeFirestore({
+      'pedidos/PED-1/nfev4/s4': epecDoc({ xml_epec_proc: null }),
+    });
+    await expect(
+      danfeArtifactService(fs, 'PED-1', 's4', { format: 'retrato' }),
+    ).rejects.toBeInstanceOf(NFeDanfeError);
+  });
+});

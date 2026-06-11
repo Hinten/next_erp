@@ -17,10 +17,17 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
     autorizarLote: vi.fn(),
     consultarLote: vi.fn(),
     consultarSituacaoNFe: vi.fn(),
+    enviarEpec: vi.fn(),
   };
 });
 
-import { autorizarLote, consultarLote, generateNFe, signNFe } from '@delfrance/integrations-nfe';
+import {
+  autorizarLote,
+  consultarLote,
+  enviarEpec,
+  generateNFe,
+  signNFe,
+} from '@delfrance/integrations-nfe';
 import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
 import { emitirPedidosLote, NFeOrchestratorError } from '../../../lib/nfe/orchestrator';
@@ -921,5 +928,140 @@ describe('emitirPedidosLote — partial-failure aggregation', () => {
     expect('reused' in fresh ? fresh.reused : null).toBe(false);
     // Only ONE entry in the autorizarLote NFe[] — bloqueada didn't ride.
     expect(vi.mocked(autorizarLote).mock.calls[0]?.[1].NFe).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EPEC contingency mode — no lote: each pedido's NF-e becomes its own EPEC
+// evento at the Ambiente Nacional (one evento per envEvento in v1).
+// ---------------------------------------------------------------------------
+
+describe('emitirPedidosLote — contingência EPEC', () => {
+  const EPEC_NFE_CONFIG: NFeConfig = {
+    ...SEED_NFE_CONFIG,
+    contingencia_modo: 'epec',
+    contingencia_justificativa: 'SEFAZ-SP indisponível desde as 08h',
+    contingencia_dataInicio: '2026-06-11T08:00:00.000Z',
+  };
+
+  const EPEC_CHAVE = '35260614200166000187550010000000091400000010';
+
+  /** signNFe output parseable by the REAL extractEpecInputFromNFe. */
+  const EPEC_SIGNED_NFE =
+    '<NFe xmlns="http://www.portalfiscal.inf.br/nfe">' +
+    `<infNFe Id="NFe${EPEC_CHAVE}" versao="4.00">` +
+    '<ide><cUF>35</cUF><mod>55</mod><serie>1</serie><nNF>9</nNF>' +
+    '<dhEmi>2026-06-11T08:30:00-03:00</dhEmi><tpNF>1</tpNF><tpEmis>4</tpEmis>' +
+    '<tpAmb>2</tpAmb><verProc>erp-next 1.0</verProc></ide>' +
+    '<emit><CNPJ>14200166000187</CNPJ><IE>111111111111</IE></emit>' +
+    '<dest><CNPJ>99999999000191</CNPJ><enderDest><UF>SP</UF></enderDest><IE>222222222</IE></dest>' +
+    '<total><ICMSTot><vICMS>0.00</vICMS><vST>0.00</vST><vNF>1500.00</vNF></ICMSTot></total>' +
+    '</infNFe><Signature>…</Signature></NFe>';
+
+  function epecResult(cStat: string) {
+    return {
+      ret: {
+        idLote: '1',
+        tpAmb: '2',
+        verAplic: 'AN_EVENTOS',
+        cOrgao: '91',
+        cStat: '128',
+        xMotivo: 'Lote de Evento Processado',
+        versao: '1.00',
+        retEvento: [
+          {
+            versao: '1.00',
+            infEvento: {
+              tpAmb: '2',
+              verAplic: 'AN_EVENTOS',
+              cOrgao: '91',
+              cStat,
+              xMotivo: 'Evento registrado',
+              chNFe: EPEC_CHAVE,
+              tpEvento: '110140',
+              nSeqEvento: '1',
+              dhRegEvento: '2026-06-11T08:31:00-03:00',
+              nProt: '891260000012345',
+            },
+          },
+        ],
+      },
+      signedEventoXml: '<evento>…</evento>',
+      procEventoNFe: '<procEventoNFe>…EPEC…</procEventoNFe>',
+      rawResponse: '<retEnvEvento>…</retEnvEvento>',
+    };
+  }
+
+  it('fans out one EPEC evento per pedido — no autorizarLote, every result estado p', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-1', filialId: 'F-1' },
+        { pedidoId: 'PED-2', filialId: 'F-1' },
+      ],
+      nfeConfigByFilial: { 'F-1': EPEC_NFE_CONFIG },
+    });
+    vi.mocked(signNFe).mockImplementation(() => EPEC_SIGNED_NFE);
+    vi.mocked(enviarEpec).mockResolvedValue(epecResult('135') as never);
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1', 'PED-2']);
+
+    expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
+    expect(vi.mocked(enviarEpec)).toHaveBeenCalledTimes(2);
+    expect(out.results).toHaveLength(2);
+    for (const r of out.results) {
+      expect('estado' in r ? r.estado : null).toBe(ESTADO_NFE.epecAprovado);
+    }
+    // The anchors live at the EPEC doc slot (s4) and carry tpEmis 4.
+    expect((docs['pedidos/PED-1/nfev4/s4'] as { tpEmis: number }).tpEmis).toBe(4);
+    expect((docs['pedidos/PED-1/nfev4/s4'] as { estado: string }).estado).toBe(
+      ESTADO_NFE.epecAprovado,
+    );
+    expect(docs['pedidos/PED-1/nfev4/s1']).toBeUndefined();
+  });
+
+  it('skips an already EPEC-approved pedido (reports it; the transmission belongs to the poller)', async () => {
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-PENDING', filialId: 'F-1' },
+        { pedidoId: 'PED-NEW', filialId: 'F-1' },
+      ],
+      nfeConfigByFilial: { 'F-1': EPEC_NFE_CONFIG },
+    });
+    // Pre-existing approved EPEC at the s4 slot (the harness helper seeds s1,
+    // so seed the EPEC slot directly).
+    docs['pedidos/PED-PENDING/nfev4/s4'] = {
+      numeracao: 5,
+      serie: 1,
+      tpEmis: 4,
+      estado: ESTADO_NFE.epecAprovado,
+      chave: EPEC_CHAVE,
+      idLote: '2',
+      cStat: '136',
+      xMotivo: 'Evento registrado, mas nao vinculado a NF-e',
+      nRec: null,
+      retries: 0,
+      data_emissao: new Date().toISOString(),
+      xml_assinado: EPEC_SIGNED_NFE,
+      xml_epec_proc: '<procEventoNFe>…</procEventoNFe>',
+    };
+    vi.mocked(signNFe).mockImplementation(() => EPEC_SIGNED_NFE);
+    vi.mocked(enviarEpec).mockResolvedValue(epecResult('135') as never);
+
+    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-PENDING', 'PED-NEW']);
+
+    // Only the fresh pedido sent an EPEC; the approved one was reported as-is.
+    expect(vi.mocked(enviarEpec)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(autorizarLote)).not.toHaveBeenCalled();
+    const pending = out.results.find((r) => r.pedidoId === 'PED-PENDING')!;
+    const fresh = out.results.find((r) => r.pedidoId === 'PED-NEW')!;
+    expect('reused' in pending ? pending.reused : null).toBe(true);
+    expect('estado' in pending ? pending.estado : null).toBe(ESTADO_NFE.epecAprovado);
+    expect('estado' in fresh ? fresh.estado : null).toBe(ESTADO_NFE.epecAprovado);
+    // The approved EPEC's doc was not touched by the batch.
+    expect(events.filter((e) => e === 'set:pedidos/PED-PENDING/nfev4/s4')).toHaveLength(0);
   });
 });

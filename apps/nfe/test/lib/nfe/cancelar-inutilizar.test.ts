@@ -586,6 +586,24 @@ describe('cancelarNFeService', () => {
     );
   });
 
+  it("EPEC-approved (estado 'p') → rejected with the transmit-first message, no event sent (#86)", async () => {
+    // An EPEC-approved NF-e has no autorização at the home SEFAZ yet — there
+    // is nothing to cancel until the full NF-e is transmitted.
+    const events: string[] = [];
+    const { fs } = fakeFirestore({
+      events,
+      nfev4ById: { s4: { ...aprovadaNfev4(), tpEmis: 4, estado: ESTADO_NFE.epecAprovado } },
+    });
+
+    await expect(cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's4', XJUST)).rejects.toThrow(
+      /transmita a NF-e completa/,
+    );
+    await expect(
+      cancelarNFeService(fs, fakeRuntime(), 'PED-1', 's4', XJUST),
+    ).rejects.toBeInstanceOf(NFeCancelamentoError);
+    expect(vi.mocked(cancelarNFe)).not.toHaveBeenCalled();
+  });
+
   it('cStat 135 → persists estado=cancelada (transaction) + 1 audit record, no SEFAZ consult', async () => {
     const events: string[] = [];
     const { fs, writes, docs } = fakeFirestore({ events, nfev4: aprovadaNfev4() });

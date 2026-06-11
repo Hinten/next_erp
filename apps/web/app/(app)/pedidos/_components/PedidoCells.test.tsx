@@ -268,7 +268,7 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       expect(await screen.findByRole('button', { name: /cancelar nf-e/i })).toBeTruthy();
     });
 
-    it.each<NotaFiscalEletronica['estado']>(['0', '1', '2', 'n', 'c', 'e'])(
+    it.each<NotaFiscalEletronica['estado']>(['0', '1', '2', 'n', 'c', 'e', 'p'])(
       'does NOT offer "Cancelar NF-e" for estado %s',
       async (estado) => {
         setSnap({ data: [rowFromNFe(makeNFe(estado))] });
@@ -289,7 +289,7 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
       expect(await screen.findByRole('button', { name: /carta de corre/i })).toBeTruthy();
     });
 
-    it.each<NotaFiscalEletronica['estado']>(['0', '1', '2', 'n', 'c', 'e'])(
+    it.each<NotaFiscalEletronica['estado']>(['0', '1', '2', 'n', 'c', 'e', 'p'])(
       'does NOT offer "Carta de correção" for estado %s',
       async (estado) => {
         setSnap({ data: [rowFromNFe(makeNFe(estado))] });
@@ -299,6 +299,20 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
         expect(screen.queryByRole('button', { name: /carta de corre/i })).toBeNull();
       },
     );
+  });
+
+  describe('EPEC aprovado (estado p) action gating — issue #86', () => {
+    it('offers the DANFE menu (plain-paper print) but neither Cancelar nor Carta de correção', async () => {
+      setSnap({
+        data: [rowFromNFe(makeNFe('p', { tpEmis: 4, chave: '3'.repeat(44), cStat: '136' }))],
+      });
+      const { container } = wrap(<NFCell pedidoId="p1" />);
+      fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+      await screen.findByText('Estado:');
+      expect(screen.getByRole('button', { name: /imprimir danfe/i })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /cancelar nf-e/i })).toBeNull();
+      expect(screen.queryByRole('button', { name: /carta de corre/i })).toBeNull();
+    });
   });
 });
 

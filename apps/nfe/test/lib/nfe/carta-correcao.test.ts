@@ -270,6 +270,18 @@ describe('cartaCorrecaoService', () => {
     expect(cartaCorrecaoNFe).not.toHaveBeenCalled();
   });
 
+  it("EPEC-approved (estado 'p') → rejected with the transmit-first message, no event sent (#86)", async () => {
+    // The NF-e exists only as an EPEC summary at the AN — events can't attach
+    // until the full NF-e is authorized at the home SEFAZ.
+    const { fs } = fakeFirestore({
+      'pedidos/PED-1/nfev4/s4': { ...aprovadaNfev4(), tpEmis: 4, estado: ESTADO_NFE.epecAprovado },
+    });
+    await expect(cartaCorrecaoService(fs, fakeRuntime(), 'PED-1', 's4', XCORRECAO)).rejects.toThrow(
+      /transmita a NF-e completa/,
+    );
+    expect(cartaCorrecaoNFe).not.toHaveBeenCalled();
+  });
+
   it('SVC contingency NF-e (tpEmis=6) → CC-e sent to the HOME SEFAZ RecepcaoEvento', async () => {
     // The SVC does not serve CC-e, but SVC-authorized documents are shared
     // with the normal environment, which registers the event (MOC 7.0 Anexo

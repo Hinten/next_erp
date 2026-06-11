@@ -35,7 +35,7 @@ import type { NFeRuntime } from '../runtime';
 import { NFeOrchestratorError } from './errors';
 import type { EmitResult } from './bundle';
 import { applyAutorizadoOutcome } from './emitir';
-import { enviNfeCollection, persistPatch } from './audit';
+import { buildEnviNFeMsgFromLote, enviNfeCollection, persistPatch } from './audit';
 import { sefazCallFor } from './sefaz-call';
 
 /**
@@ -160,6 +160,18 @@ export async function transmitirPosEpec(args: {
   // generic outcome machine would mis-map 468 to rejeitada.
   const protCStat = retEnvi.protNFe?.infProt.cStat;
   if (protCStat === CSTAT_EPEC_NAO_SINCRONIZADO) {
+    // The non-468 path audit-logs inside applyAutorizadoOutcome — log this
+    // round-trip too, or the 468 retries vanish from the EnviNFeMsg history.
+    await enviNfeCollection(fs, filialId).add(
+      buildEnviNFeMsgFromLote({
+        chave: nota.chave,
+        idLote,
+        tpEmis: 4,
+        signedXml: nota.xml_assinado,
+        retEnvi,
+        indSinc: '1',
+      }),
+    );
     await persistPatch(nfeRef, {
       estado: ESTADO_NFE.epecAprovado,
       cStat: protCStat,
