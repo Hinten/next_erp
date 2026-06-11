@@ -13,6 +13,7 @@
     "seed:enderecos": "dotenv -e ../../.env.local -- tsx src/seed-enderecos-dev.ts",
     "seed:pedidos": "dotenv -e ../../.env.local -- tsx src/seed-pedidos-dev.ts",
     "seed:nfe": "dotenv -e ../../.env.local -- tsx src/seed-nfe-dev.ts",
+    "seed:variacoes": "dotenv -e ../../.env.local -- tsx src/seed-variacoes-dev.ts",
     "teardown": "dotenv -e ../../.env.local -- tsx src/teardown.ts",
     "grant-all-perms": "dotenv -e ../../.env.local -- tsx src/grant-all-perms.ts",
     "typecheck": "tsc --noEmit",

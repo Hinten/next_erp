@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { FirebaseError } from 'firebase/app';
+import { useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
 
@@ -301,6 +302,87 @@ describe('ObjectView save flow', () => {
     expect(arg.dirtyFields.email).toBeUndefined();
   });
 
+  it('awaits onAfterSave on both save paths and a FirebaseError from it skips onSaved', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice' } },
+      loading: false,
+      error: undefined,
+    };
+    saveRecordMock.mockResolvedValue({ id: 'EXISTING', patch: {} });
+    const onAfterSave = vi.fn().mockResolvedValueOnce(undefined);
+    const onSaved = vi.fn();
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          onAfterSave={onAfterSave}
+          onSaved={onSaved}
+        />
+      </Wrap>,
+    );
+    const nome = screen.getByRole('textbox', { name: 'Nome' }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(nome, { target: { value: 'Once' } });
+      fireEvent.blur(nome);
+    });
+    // Path 1: "Salvar e continuar" → onAfterSave runs, green toast, no onSaved.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar' }));
+    });
+    expect(onAfterSave).toHaveBeenCalledWith('EXISTING');
+    expect(onSaved).not.toHaveBeenCalled();
+
+    // Path 2: "Salvar" with onAfterSave rejecting → alert shown, onSaved skipped.
+    onAfterSave.mockRejectedValueOnce(
+      new FirebaseError('permission-denied', 'Falha ao salvar as variações.'),
+    );
+    await act(async () => {
+      fireEvent.change(nome, { target: { value: 'Twice' } });
+      fireEvent.blur(nome);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(onAfterSave).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Falha ao salvar as variações.')).toBeTruthy();
+    expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it('runs onAfterSave on a pristine form (NothingChanged) and treats it as a save', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice' } },
+      loading: false,
+      error: undefined,
+    };
+    saveRecordMock.mockRejectedValueOnce(new NothingChanged('Nenhuma alteração para salvar'));
+    const onAfterSave = vi.fn().mockResolvedValueOnce(undefined);
+    const onSaved = vi.fn();
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          onAfterSave={onAfterSave}
+          onSaved={onSaved}
+        />
+      </Wrap>,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    // Sibling writes still flush and the action counts as a save — no yellow toast.
+    expect(onAfterSave).toHaveBeenCalledWith('EXISTING');
+    expect(onSaved).toHaveBeenCalledWith('EXISTING');
+    expect(notifyShow).not.toHaveBeenCalledWith(expect.objectContaining({ color: 'yellow' }));
+  });
+
   it('surfaces a FirebaseError from saveRecord in the form alert', async () => {
     docState.current = {
       data: { id: 'EXISTING', data: { nome: 'Alice' } },
@@ -330,6 +412,40 @@ describe('ObjectView save flow', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
     });
     expect(screen.getByText('Missing or insufficient permissions.')).toBeTruthy();
+  });
+
+  it('exposes the RHF context to custom renderInput (live sibling-field reads)', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice', email: 'a@x.com' } },
+      loading: false,
+      error: undefined,
+    };
+    // A custom widget reading a SIBLING field live through the FormProvider —
+    // the mechanism the VariationManager uses to generate child SKUs from the
+    // parent's unsaved `sku`.
+    function SiblingEcho() {
+      const nome = useWatch({ name: 'nome' });
+      return <div data-testid="echo">{String(nome)}</div>;
+    }
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          fields={{ email: { renderInput: () => <SiblingEcho /> } }}
+        />
+      </Wrap>,
+    );
+    expect(screen.getByTestId('echo').textContent).toBe('Alice');
+    const nome = screen.getByRole('textbox', { name: 'Nome' }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(nome, { target: { value: 'Unsaved edit' } });
+    });
+    // Live (unsaved) edits propagate to the sibling widget.
+    expect(screen.getByTestId('echo').textContent).toBe('Unsaved edit');
   });
 
   it('shows a "não encontrado" alert and hides save in edit mode when the doc is missing', () => {

@@ -172,6 +172,23 @@ export {
 } from './grupoDeVariacoes';
 
 export {
+  varianteFakePath,
+  parseFakePath,
+  remakeFakePath,
+  sortGruposByOrdem,
+  sortGrupoUids,
+  normalizeVariacoesUid,
+  cartesianVariations,
+  compareSortKeys,
+  sameCombo,
+  reconstructFromVariacoesUid,
+  reconstructFromSkuSuffix,
+  type GrupoComId,
+  type VariationCombo,
+  type ReconstructResult,
+} from './variacoes';
+
+export {
   tabelaDeMedidas,
   tabelaDeMedidasSchema,
   tabelaDeMedidasMeta,

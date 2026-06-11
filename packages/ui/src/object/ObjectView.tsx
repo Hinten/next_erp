@@ -15,7 +15,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm, type FieldErrors, type FieldValues } from 'react-hook-form';
+import { FormProvider, useForm, type FieldErrors, type FieldValues } from 'react-hook-form';
 import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import { ZodError, type z, type ZodObject, type ZodRawShape } from 'zod';
@@ -79,6 +79,16 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>> {
 
   /** Called after a successful save with the doc's id. */
   onSaved?: (id: string) => void;
+  /**
+   * Awaited after a successful save (both "Salvar" and "Salvar e continuar"),
+   * before `onSaved`/the toast — the hook for sibling writes that belong to
+   * the same user action (e.g. flushing staged child documents). A rejection
+   * is shown in the form alert and skips `onSaved`; the main record is already
+   * persisted at that point. It also runs when the record itself had nothing
+   * to write (sibling edits don't dirty the form), in which case the action
+   * still counts as a save instead of the "nothing changed" toast.
+   */
+  onAfterSave?: (id: string) => Promise<void> | void;
   saveLabel?: string;
   /** Show a secondary "Salvar e continuar" button. Default true. */
   showSaveAndContinue?: boolean;
@@ -139,6 +149,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   currentUserUid,
   pager,
   onSaved,
+  onAfterSave,
   saveLabel = 'Salvar',
   showSaveAndContinue = true,
   canEdit = true,
@@ -277,6 +288,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
       form.reset(values as typeof raw);
       // If we just created, retain the id so subsequent saves are updates.
       if (!internalId) setInternalId(result.id);
+      // Sibling writes that belong to this save (e.g. a manager flushing
+      // staged child documents). Runs on BOTH save paths; a failure surfaces
+      // in the form alert and skips onSaved (the record itself is saved — the
+      // user can retry just the sibling step by saving again).
+      await onAfterSave?.(result.id);
       if (continueEditing) {
         notifications.show({ color: 'green', message: 'Salvo.' });
       } else {
@@ -284,6 +300,27 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
       }
     } catch (err) {
       if (err instanceof NothingChangedError) {
+        // The record itself is pristine — but sibling writes may still be
+        // pending (e.g. staged child documents). When an `onAfterSave` is
+        // wired, run it and treat the action as a successful save; without
+        // one, keep the "nothing changed" toast.
+        if (onAfterSave && internalId) {
+          try {
+            await onAfterSave(internalId);
+          } catch (afterErr) {
+            if (afterErr instanceof FirebaseError || afterErr instanceof ZodError) {
+              setSubmitError(afterErr.message);
+              return;
+            }
+            throw afterErr;
+          }
+          if (continueEditing) {
+            notifications.show({ color: 'green', message: 'Salvo.' });
+          } else {
+            onSaved?.(internalId);
+          }
+          return;
+        }
         notifications.show({ color: 'yellow', message: err.message });
         return;
       }
@@ -457,144 +494,151 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   const blocked = Boolean(loadError) || notFound;
 
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        void submitDefault();
-      }}
-    >
-      <Stack>
-        {(title || description) && (
-          <Stack gap={2}>
-            {title && (typeof title === 'string' ? <Title order={2}>{title}</Title> : title)}
-            {description && (
-              <Text c="dimmed" size="sm">
-                {description}
-              </Text>
-            )}
-          </Stack>
-        )}
-
-        <Group justify="space-between">
-          {pager ? (
-            <RecordPager
-              ids={pager.ids}
-              current={pager.current}
-              onChange={pager.onChange}
-              confirmNavigation={form.formState.isDirty ? () => false : undefined}
-            />
-          ) : (
-            <span />
-          )}
-        </Group>
-
-        {copyFromId && copySnap.data && (
-          <Alert color="blue">
-            Registro pré-preenchido a partir de uma cópia. Revise os campos e clique em {saveLabel}{' '}
-            para criar um novo registro.
-          </Alert>
-        )}
-
-        {loading && (
-          <Stack>
-            <Skeleton height={42} />
-            <Skeleton height={42} />
-          </Stack>
-        )}
-
-        {!loading && loadError && <Alert color="red">{loadError.message}</Alert>}
-
-        {!loading && !loadError && notFound && (
-          <Alert color="yellow">Registro não encontrado.</Alert>
-        )}
-
-        {!loading &&
-          !blocked &&
-          (sections && sections.length > 0 ? (
-            <SectionTabs
-              sections={sections}
-              contents={Object.fromEntries(sections.map((s) => [s, fieldsBlock(grouped[s] ?? [])]))}
-              value={effectiveSection}
-              onChange={setActiveSection}
-              errorSections={errorSections}
-            />
-          ) : (
-            fieldsBlock(grouped['default'] ?? visibleDescriptors)
-          ))}
-
-        {submitError && <Alert color="red">{submitError}</Alert>}
-
-        <Group justify="space-between">
-          {deleteVisible && internalId && !blocked ? (
-            <Button
-              type="button"
-              color="red"
-              variant="light"
-              onClick={() => {
-                setDeleteText('');
-                setDeleteOpen(true);
-              }}
-            >
-              {deleteLabel}
-            </Button>
-          ) : (
-            <span />
-          )}
-          <Group>
-            {editingAllowed && !blocked && showSaveAndContinue && (
-              <Button
-                type="button"
-                variant="default"
-                loading={form.formState.isSubmitting}
-                onClick={() => void submitContinue()}
-              >
-                Salvar e continuar
-              </Button>
-            )}
-            {editingAllowed && !blocked && (
-              <Button type="submit" loading={form.formState.isSubmitting}>
-                {saveLabel}
-              </Button>
-            )}
-          </Group>
-        </Group>
-      </Stack>
-
-      <Modal
-        opened={deleteOpen}
-        onClose={() => setDeleteOpen(false)}
-        title="Excluir registro"
-        centered
+    // FormProvider exposes the RHF context so custom `renderInput` widgets can
+    // read SIBLING fields live (e.g. the VariationManager generating child
+    // SKUs from the parent's unsaved `sku` via `useFormContext().getValues`).
+    <FormProvider {...form}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submitDefault();
+        }}
       >
         <Stack>
-          <Text size="sm">{deleteConfirmMessage ?? 'Esta ação não pode ser desfeita.'}</Text>
-          <TextInput
-            label='Digite "excluir" para confirmar'
-            value={deleteText}
-            onChange={(e) => setDeleteText(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && deleteConfirmed) {
-                e.preventDefault();
-                void confirmDelete();
-              }
-            }}
-            autoFocus
-          />
-          <Group justify="flex-end">
-            <Button type="button" variant="default" onClick={() => setDeleteOpen(false)}>
-              Cancelar
-            </Button>
-            <Button
-              type="button"
-              color="red"
-              disabled={!deleteConfirmed}
-              onClick={() => void confirmDelete()}
-            >
-              {deleteLabel}
-            </Button>
+          {(title || description) && (
+            <Stack gap={2}>
+              {title && (typeof title === 'string' ? <Title order={2}>{title}</Title> : title)}
+              {description && (
+                <Text c="dimmed" size="sm">
+                  {description}
+                </Text>
+              )}
+            </Stack>
+          )}
+
+          <Group justify="space-between">
+            {pager ? (
+              <RecordPager
+                ids={pager.ids}
+                current={pager.current}
+                onChange={pager.onChange}
+                confirmNavigation={form.formState.isDirty ? () => false : undefined}
+              />
+            ) : (
+              <span />
+            )}
+          </Group>
+
+          {copyFromId && copySnap.data && (
+            <Alert color="blue">
+              Registro pré-preenchido a partir de uma cópia. Revise os campos e clique em{' '}
+              {saveLabel} para criar um novo registro.
+            </Alert>
+          )}
+
+          {loading && (
+            <Stack>
+              <Skeleton height={42} />
+              <Skeleton height={42} />
+            </Stack>
+          )}
+
+          {!loading && loadError && <Alert color="red">{loadError.message}</Alert>}
+
+          {!loading && !loadError && notFound && (
+            <Alert color="yellow">Registro não encontrado.</Alert>
+          )}
+
+          {!loading &&
+            !blocked &&
+            (sections && sections.length > 0 ? (
+              <SectionTabs
+                sections={sections}
+                contents={Object.fromEntries(
+                  sections.map((s) => [s, fieldsBlock(grouped[s] ?? [])]),
+                )}
+                value={effectiveSection}
+                onChange={setActiveSection}
+                errorSections={errorSections}
+              />
+            ) : (
+              fieldsBlock(grouped['default'] ?? visibleDescriptors)
+            ))}
+
+          {submitError && <Alert color="red">{submitError}</Alert>}
+
+          <Group justify="space-between">
+            {deleteVisible && internalId && !blocked ? (
+              <Button
+                type="button"
+                color="red"
+                variant="light"
+                onClick={() => {
+                  setDeleteText('');
+                  setDeleteOpen(true);
+                }}
+              >
+                {deleteLabel}
+              </Button>
+            ) : (
+              <span />
+            )}
+            <Group>
+              {editingAllowed && !blocked && showSaveAndContinue && (
+                <Button
+                  type="button"
+                  variant="default"
+                  loading={form.formState.isSubmitting}
+                  onClick={() => void submitContinue()}
+                >
+                  Salvar e continuar
+                </Button>
+              )}
+              {editingAllowed && !blocked && (
+                <Button type="submit" loading={form.formState.isSubmitting}>
+                  {saveLabel}
+                </Button>
+              )}
+            </Group>
           </Group>
         </Stack>
-      </Modal>
-    </form>
+
+        <Modal
+          opened={deleteOpen}
+          onClose={() => setDeleteOpen(false)}
+          title="Excluir registro"
+          centered
+        >
+          <Stack>
+            <Text size="sm">{deleteConfirmMessage ?? 'Esta ação não pode ser desfeita.'}</Text>
+            <TextInput
+              label='Digite "excluir" para confirmar'
+              value={deleteText}
+              onChange={(e) => setDeleteText(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && deleteConfirmed) {
+                  e.preventDefault();
+                  void confirmDelete();
+                }
+              }}
+              autoFocus
+            />
+            <Group justify="flex-end">
+              <Button type="button" variant="default" onClick={() => setDeleteOpen(false)}>
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                color="red"
+                disabled={!deleteConfirmed}
+                onClick={() => void confirmDelete()}
+              >
+                {deleteLabel}
+              </Button>
+            </Group>
+          </Stack>
+        </Modal>
+      </form>
+    </FormProvider>
   );
 }
