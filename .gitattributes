@@ -1,0 +1,7 @@
+# Husky hooks must check out with LF: Git for Windows cannot spawn a CRLF,
+# shebang-less hook ("cannot spawn .husky/pre-commit: Exec format error"),
+# which silently breaks every commit. The index already stores them as LF —
+# this rule stops the autocrlf smudge from re-corrupting working copies on
+# checkout/merge. Scoped to .husky/ on purpose; broader rules (e.g. *.sh)
+# would re-flag unrelated files across existing working trees.
+.husky/** text eol=lf
