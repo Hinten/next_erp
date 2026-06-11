@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
+import { FirebaseError } from 'firebase/app';
 import { z } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
 
@@ -194,6 +195,37 @@ describe('ObjectView save flow', () => {
     });
     const arg = saveRecordMock.mock.calls[0]![0] as { values: Record<string, unknown> };
     expect(arg.values.nome).toBe('Updated!');
+  });
+
+  it('surfaces a FirebaseError from saveRecord in the form alert', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice' } },
+      loading: false,
+      error: undefined,
+    };
+    saveRecordMock.mockRejectedValueOnce(
+      new FirebaseError('permission-denied', 'Missing or insufficient permissions.'),
+    );
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+        />
+      </Wrap>,
+    );
+    const nome = screen.getByRole('textbox', { name: 'Nome' }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(nome, { target: { value: 'Updated' } });
+      fireEvent.blur(nome);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(screen.getByText('Missing or insufficient permissions.')).toBeTruthy();
   });
 
   it('shows a "não encontrado" alert and hides save in edit mode when the doc is missing', () => {

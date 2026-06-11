@@ -21,7 +21,6 @@ export { ColumnPicker, type ColumnPickerItem, type ColumnPickerProps } from './t
 export { ActionBar, type ActionBarProps } from './table/ActionBar';
 export { useCollectionMonitor, type CollectionMonitorResult } from './table/useCollectionMonitor';
 export { SearchBar, type SearchBarProps } from './table/SearchBar';
-export { Pagination, type PaginationProps } from './table/Pagination';
 export { renderCell } from './table/cell-renderers';
 
 // Object primitives

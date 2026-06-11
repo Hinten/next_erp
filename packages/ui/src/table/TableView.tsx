@@ -30,17 +30,18 @@ import { type SnapshotRow, type SnapshotState, useSnapshot } from '@delfrance/da
 import { usePipelineSnapshot } from '@delfrance/data/hooks/usePipelineSnapshot';
 import {
   type Pipeline,
+  PipelineUnsupportedError,
   buildPipeline,
   isPipelineSupported,
 } from '@delfrance/data/pipeline-queries';
 import { extractFieldsFromSchema } from '../schema/derive';
 import type { ActionConfig, FieldConfig, FieldDescriptor, VirtualColumn } from '../schema/types';
 import { ActionBar } from './ActionBar';
+import { ActionSidePanel } from './ActionSidePanel';
 import { useCollectionMonitor } from './useCollectionMonitor';
 import { IconArrowDown, IconArrowsSort, IconArrowUp, IconRefreshAlert } from '@tabler/icons-react';
 import { ColumnFilter, type ColumnFilterValue } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
-import { Pagination } from './Pagination';
 import { renderCell } from './cell-renderers';
 
 export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
@@ -121,6 +122,16 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * ignored — the caller owns the query lifecycle.
    */
   queryOverride?: Query<z.infer<S>>;
+
+  /**
+   * Opt-in persistent action panel docked to the right of the table. When
+   * enabled it REPLACES the top ActionBar — "Novo" / "Copiar" / bulk
+   * `actions` move into the panel, still acting on the current selection
+   * (the same actions in two places would mean two confirm modals). The
+   * panel collapses to a slim rail; the collapsed state persists per
+   * collection in localStorage.
+   */
+  actionsPanel?: boolean | { defaultCollapsed?: boolean };
 }
 
 type SortState = { field: string; direction: 'asc' | 'desc' };
@@ -213,6 +224,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   pageSize = 50,
   orderBy,
   queryOverride,
+  actionsPanel,
 }: TableViewProps<S>) {
   // Derive once per schema identity.
   const descriptors = useMemo(() => extractFieldsFromSchema(schema), [schema]);
@@ -245,6 +257,21 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const [visibleKeysArr, setVisibleKeysArr] = useLocalStorage<string[]>({
     key: columnsStorageKey,
     defaultValue: defaultVisibleKeys,
+  });
+
+  // Right-side action panel (opt-in). Collapse state persists per
+  // collection, same key scheme as the column prefs above.
+  const panelEnabled = !!actionsPanel;
+  const panelStorageKey = useMemo(
+    () => `delfrance:tableview:actionspanel:${collection.resolvePath(pathContext)}`,
+    // pathContext is identity-tracked like the rest of the data layer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [collection],
+  );
+  const [panelCollapsed, setPanelCollapsed] = useLocalStorage<boolean>({
+    key: panelStorageKey,
+    defaultValue:
+      typeof actionsPanel === 'object' ? (actionsPanel.defaultCollapsed ?? false) : false,
   });
 
   const visibleKeys = useMemo(() => new Set(visibleKeysArr), [visibleKeysArr]);
@@ -344,8 +371,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         orderBy: sort ? [{ field: sort.field, direction: sort.direction }] : undefined,
         limit: pageSize,
       });
-    } catch {
-      return null;
+    } catch (err) {
+      // Only the documented "SDK lacks pipeline()" signal falls back to
+      // buildQuery; anything else (bad field path, SDK bug) must surface.
+      if (err instanceof PipelineUnsupportedError) return null;
+      throw err;
     }
     // `pathContext` is intentionally not stringified; consumers should keep
     // the object stable across renders (matches the rest of the data layer).
@@ -376,6 +406,21 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const fromPipeline = usePipelineSnapshot<z.infer<S>>(pipeline);
   const fromQuery = useSnapshot<z.infer<S>>(fallbackQuery);
   const snap: SnapshotState<SnapshotRow<z.infer<S>>[]> = pipeline ? fromPipeline : fromQuery;
+
+  // Drop selected ids that left the current row set (filter change, refresh,
+  // delete in another tab) so bulk actions and the header checkbox never act
+  // on ghost rows. Returns the same Set when nothing changed, so the effect
+  // can't loop on Set identity.
+  useEffect(() => {
+    const rows = snap.data;
+    if (!rows) return;
+    setSelected((cur) => {
+      if (cur.size === 0) return cur;
+      const live = new Set(rows.map((r) => r.id));
+      const next = new Set([...cur].filter((id) => live.has(id)));
+      return next.size === cur.size ? cur : next;
+    });
+  }, [snap.data]);
 
   /**
    * Ordered list of columns to render — schema descriptors AND virtual
@@ -484,206 +529,222 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         </Stack>
       )}
 
-      <Group justify="flex-end" wrap="nowrap" align="flex-end">
-        <Group gap="xs">
-          {monitor.stale && (
-            <Tooltip
-              label="Os dados desta coleção foram alterados desde que a página carregou. Clique para atualizar."
-              withinPortal
-              multiline
-              maw={260}
-            >
-              <ActionIcon
-                variant="subtle"
-                color="yellow"
-                aria-label="Página desatualizada — atualizar"
-                onClick={() => {
-                  monitor.acknowledge();
-                  setRefreshKey((k) => k + 1);
-                }}
-              >
-                <IconRefreshAlert size={18} />
-              </ActionIcon>
-            </Tooltip>
-          )}
-          <ColumnPicker
-            fields={[
-              ...descriptors
-                .filter((d) => d.kind !== 'unknown')
-                .map((d) => ({ key: d.key, label: d.label })),
-              ...virtualColumns.map((v) => ({ key: v.key, label: v.label })),
-            ]}
-            visibleKeys={visibleKeys}
-            onToggle={toggleColumn}
-            order={visibleKeysArr}
-            onReorder={reorderColumns}
-          />
-          {(actions.length > 0 || newHref || renderNewButton || copyHref) && (
-            <ActionBar
-              actions={actions}
-              selectedRows={selectedRows}
-              newHref={newHref}
-              renderNewButton={renderNewButton}
-              copyHref={copyHref}
-              onActionComplete={() => {
-                setSelected(new Set());
-                setRefreshKey((k) => k + 1);
-              }}
-            />
-          )}
-        </Group>
-      </Group>
-
-      {snap.error && (
-        <Alert color="red" title="Erro ao carregar">
-          {snap.error.message}
-        </Alert>
-      )}
-
-      {snap.loading && (
-        <Stack>
-          <Skeleton height={36} />
-          <Skeleton height={36} />
-          <Skeleton height={36} />
-        </Stack>
-      )}
-
-      {!snap.loading && snap.data && (
-        <Table striped highlightOnHover>
-          <Table.Thead>
-            <Table.Tr>
-              {selectionEnabled && (
-                <Table.Th style={{ width: 36 }}>
-                  <Checkbox
-                    aria-label="Selecionar todas as linhas"
-                    checked={selected.size > 0 && selected.size === snap.data.length}
-                    indeterminate={selected.size > 0 && selected.size < snap.data.length}
-                    onChange={toggleAll}
-                  />
-                </Table.Th>
+      {/* Table column + optional right action panel. `minWidth: 0` lets the
+          table shrink inside the nowrap flex row instead of overflowing. */}
+      <Group align="flex-start" wrap="nowrap" gap="md">
+        <Stack style={{ flex: 1, minWidth: 0 }}>
+          <Group justify="flex-end" wrap="nowrap" align="flex-end">
+            <Group gap="xs">
+              {monitor.stale && (
+                <Tooltip
+                  label="Os dados desta coleção foram alterados desde que a página carregou. Clique para atualizar."
+                  withinPortal
+                  multiline
+                  maw={260}
+                >
+                  <ActionIcon
+                    variant="subtle"
+                    color="yellow"
+                    aria-label="Página desatualizada — atualizar"
+                    onClick={() => {
+                      monitor.acknowledge();
+                      setRefreshKey((k) => k + 1);
+                    }}
+                  >
+                    <IconRefreshAlert size={18} />
+                  </ActionIcon>
+                </Tooltip>
               )}
-              {visibleColumns.map((col) => {
-                if (col.kind === 'virtual') {
-                  return (
-                    <Table.Th
-                      key={col.column.key}
-                      style={
-                        col.column.width !== undefined ? { width: col.column.width } : undefined
-                      }
-                      title={col.column.tooltip}
-                    >
-                      {col.column.label}
-                    </Table.Th>
-                  );
-                }
-                const d = col.descriptor;
-                return (
-                  <Table.Th key={d.key}>
-                    <Group gap={4} wrap="nowrap" justify="space-between">
-                      <Group
-                        gap={2}
-                        wrap="nowrap"
-                        style={{ cursor: 'pointer', userSelect: 'none' }}
-                        onClick={() => toggleSort(d.key)}
-                        title="Ordenar por esta coluna"
-                      >
-                        <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
-                        <SortIndicator active={sort?.field === d.key} direction={sort?.direction} />
-                      </Group>
-                      <ColumnFilter
-                        descriptor={d}
-                        value={filters[d.key]}
-                        onChange={(next) =>
-                          setFilters((cur) => {
-                            const copy = { ...cur };
-                            if (next === undefined) delete copy[d.key];
-                            else copy[d.key] = next;
-                            return copy;
-                          })
-                        }
-                      />
-                    </Group>
-                  </Table.Th>
-                );
-              })}
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {snap.data.length === 0 && (
-              <Table.Tr>
-                <Table.Td
-                  colSpan={visibleColumns.length + (selectionEnabled ? 1 : 0)}
-                  align="center"
-                >
-                  <Text c="dimmed">Nenhum resultado.</Text>
-                </Table.Td>
-              </Table.Tr>
-            )}
-            {snap.data.map((row) => {
-              const href = rowHref ? rowHref(row.id, row.data) : undefined;
-              // `onRowClick` takes precedence over `rowHref` navigation.
-              const clickable = !!row.id && (!!onRowClick || !!href);
-              return (
-                <Table.Tr
-                  key={row.id}
-                  // Whole row navigates when rowHref is supplied, or invokes
-                  // `onRowClick` when that's set instead. <Table> has
-                  // `highlightOnHover`, so the row highlights and the cursor
-                  // becomes a pointer. Empty `id` (e.g. a pipeline that used
-                  // .select() and lost the ref) would generate /collection/''
-                  // — skip onClick in that case.
-                  //
-                  // If the user has an active text selection, treat the click
-                  // as a select-and-copy gesture and don't act on it.
-                  onClick={
-                    clickable
-                      ? () => {
-                          if (window.getSelection()?.toString()) return;
-                          if (onRowClick) onRowClick(row.id, row.data);
-                          else if (href) router.push(href);
-                        }
-                      : undefined
-                  }
-                  style={clickable ? { cursor: 'pointer' } : undefined}
-                >
+              <ColumnPicker
+                fields={[
+                  ...descriptors
+                    .filter((d) => d.kind !== 'unknown')
+                    .map((d) => ({ key: d.key, label: d.label })),
+                  ...virtualColumns.map((v) => ({ key: v.key, label: v.label })),
+                ]}
+                visibleKeys={visibleKeys}
+                onToggle={toggleColumn}
+                order={visibleKeysArr}
+                onReorder={reorderColumns}
+              />
+              {!panelEnabled && (actions.length > 0 || newHref || renderNewButton || copyHref) && (
+                <ActionBar
+                  actions={actions}
+                  selectedRows={selectedRows}
+                  newHref={newHref}
+                  renderNewButton={renderNewButton}
+                  copyHref={copyHref}
+                  onActionComplete={() => {
+                    setSelected(new Set());
+                    setRefreshKey((k) => k + 1);
+                  }}
+                />
+              )}
+            </Group>
+          </Group>
+
+          {snap.error && (
+            <Alert color="red" title="Erro ao carregar">
+              {snap.error.message}
+            </Alert>
+          )}
+
+          {snap.loading && (
+            <Stack>
+              <Skeleton height={36} />
+              <Skeleton height={36} />
+              <Skeleton height={36} />
+            </Stack>
+          )}
+
+          {!snap.loading && snap.data && (
+            <Table striped highlightOnHover>
+              <Table.Thead>
+                <Table.Tr>
                   {selectionEnabled && (
-                    <Table.Td onClick={(e) => e.stopPropagation()}>
+                    <Table.Th style={{ width: 36 }}>
                       <Checkbox
-                        aria-label={`Selecionar ${row.id}`}
-                        checked={selected.has(row.id)}
-                        onChange={() => toggleRow(row.id)}
+                        aria-label="Selecionar todas as linhas"
+                        checked={selected.size > 0 && selected.size === snap.data.length}
+                        indeterminate={selected.size > 0 && selected.size < snap.data.length}
+                        onChange={toggleAll}
                       />
-                    </Table.Td>
+                    </Table.Th>
                   )}
                   {visibleColumns.map((col) => {
                     if (col.kind === 'virtual') {
-                      return <Table.Td key={col.column.key}>{col.column.renderCell(row)}</Table.Td>;
+                      return (
+                        <Table.Th
+                          key={col.column.key}
+                          style={
+                            col.column.width !== undefined ? { width: col.column.width } : undefined
+                          }
+                          title={col.column.tooltip}
+                        >
+                          {col.column.label}
+                        </Table.Th>
+                      );
                     }
                     const d = col.descriptor;
-                    const override = fieldOverrides[d.key];
-                    const value = (row.data as Record<string, unknown>)[d.key];
-                    const content = override?.renderCell
-                      ? override.renderCell(value as never, row.data)
-                      : renderCell(value, d);
-                    return <Table.Td key={d.key}>{content}</Table.Td>;
+                    return (
+                      <Table.Th key={d.key}>
+                        <Group gap={4} wrap="nowrap" justify="space-between">
+                          <Group
+                            gap={2}
+                            wrap="nowrap"
+                            style={{ cursor: 'pointer', userSelect: 'none' }}
+                            onClick={() => toggleSort(d.key)}
+                            title="Ordenar por esta coluna"
+                          >
+                            <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
+                            <SortIndicator
+                              active={sort?.field === d.key}
+                              direction={sort?.direction}
+                            />
+                          </Group>
+                          <ColumnFilter
+                            descriptor={d}
+                            value={filters[d.key]}
+                            onChange={(next) =>
+                              setFilters((cur) => {
+                                const copy = { ...cur };
+                                if (next === undefined) delete copy[d.key];
+                                else copy[d.key] = next;
+                                return copy;
+                              })
+                            }
+                          />
+                        </Group>
+                      </Table.Th>
+                    );
                   })}
                 </Table.Tr>
-              );
-            })}
-          </Table.Tbody>
-        </Table>
-      )}
+              </Table.Thead>
+              <Table.Tbody>
+                {snap.data.length === 0 && (
+                  <Table.Tr>
+                    <Table.Td
+                      colSpan={visibleColumns.length + (selectionEnabled ? 1 : 0)}
+                      align="center"
+                    >
+                      <Text c="dimmed">Nenhum resultado.</Text>
+                    </Table.Td>
+                  </Table.Tr>
+                )}
+                {snap.data.map((row) => {
+                  const href = rowHref ? rowHref(row.id, row.data) : undefined;
+                  // `onRowClick` takes precedence over `rowHref` navigation.
+                  const clickable = !!row.id && (!!onRowClick || !!href);
+                  return (
+                    <Table.Tr
+                      key={row.id}
+                      // Whole row navigates when rowHref is supplied, or invokes
+                      // `onRowClick` when that's set instead. <Table> has
+                      // `highlightOnHover`, so the row highlights and the cursor
+                      // becomes a pointer. Empty `id` (e.g. a pipeline that used
+                      // .select() and lost the ref) would generate /collection/''
+                      // — skip onClick in that case.
+                      //
+                      // If the user has an active text selection, treat the click
+                      // as a select-and-copy gesture and don't act on it.
+                      onClick={
+                        clickable
+                          ? () => {
+                              if (window.getSelection()?.toString()) return;
+                              if (onRowClick) onRowClick(row.id, row.data);
+                              else if (href) router.push(href);
+                            }
+                          : undefined
+                      }
+                      style={clickable ? { cursor: 'pointer' } : undefined}
+                    >
+                      {selectionEnabled && (
+                        <Table.Td onClick={(e) => e.stopPropagation()}>
+                          <Checkbox
+                            aria-label={`Selecionar ${row.id}`}
+                            checked={selected.has(row.id)}
+                            onChange={() => toggleRow(row.id)}
+                          />
+                        </Table.Td>
+                      )}
+                      {visibleColumns.map((col) => {
+                        if (col.kind === 'virtual') {
+                          return (
+                            <Table.Td key={col.column.key}>{col.column.renderCell(row)}</Table.Td>
+                          );
+                        }
+                        const d = col.descriptor;
+                        const override = fieldOverrides[d.key];
+                        const value = (row.data as Record<string, unknown>)[d.key];
+                        const content = override?.renderCell
+                          ? override.renderCell(value as never, row.data)
+                          : renderCell(value, d);
+                        return <Table.Td key={d.key}>{content}</Table.Td>;
+                      })}
+                    </Table.Tr>
+                  );
+                })}
+              </Table.Tbody>
+            </Table>
+          )}
+        </Stack>
 
-      {/*
-        Cursor-based pagination is wired into the Pipelines layer next iter;
-        the buttons are surfaced now so the visual contract is in place.
-      */}
-      <Pagination
-        canGoPrev={false}
-        canGoNext={!!snap.data && snap.data.length >= pageSize}
-        onPrev={() => {}}
-        onNext={() => {}}
-      />
+        {panelEnabled && (
+          <ActionSidePanel
+            actions={actions}
+            selectedRows={selectedRows}
+            newHref={newHref}
+            renderNewButton={renderNewButton}
+            copyHref={copyHref}
+            onActionComplete={() => {
+              setSelected(new Set());
+              setRefreshKey((k) => k + 1);
+            }}
+            collapsed={panelCollapsed}
+            onToggleCollapsed={() => setPanelCollapsed((c) => !c)}
+          />
+        )}
+      </Group>
     </Stack>
   );
 }
