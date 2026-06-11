@@ -23,7 +23,7 @@ import { ESTADO_NFE } from '@delfrance/schemas';
 export interface NotificationShape {
   readonly title: string;
   readonly message: string;
-  readonly color: 'green' | 'blue' | 'yellow' | 'red' | 'gray';
+  readonly color: 'green' | 'teal' | 'blue' | 'yellow' | 'red' | 'gray';
 }
 
 /**
@@ -67,6 +67,30 @@ export function notificationForNFeResult(result: NFeEmitResult): NotificationSha
       title: 'NF-e rejeitada',
       message: `cStat=${result.cStat}: ${result.xMotivo}`,
       color: 'red',
+    };
+  }
+  if (result.estado === ESTADO_NFE.epecAprovado) {
+    // 468 — the pós-EPEC transmission ran but the home SEFAZ hasn't pulled
+    // the EPEC from the Ambiente Nacional yet. The doc stays 'p'; the
+    // operator just waits a few minutes and emits again.
+    if (result.cStat === '468') {
+      return {
+        title: 'EPEC ainda não sincronizado na SEFAZ',
+        message:
+          `cStat=468: ${result.xMotivo} — a SEFAZ autorizadora ainda não recebeu o EPEC ` +
+          'do Ambiente Nacional. Aguarde alguns minutos e emita novamente para transmitir ' +
+          'a NF-e completa.',
+        color: 'yellow',
+      };
+    }
+    // 135/136 — the EPEC summary was registered at the Ambiente Nacional.
+    return {
+      title: 'EPEC registrado',
+      message:
+        `cStat=${result.cStat}: ${result.xMotivo} — NF-e em contingência EPEC. A DANFE já ` +
+        'pode ser impressa; com o modo EPEC ainda ativo, emita novamente quando a SEFAZ ' +
+        'normalizar para transmitir a NF-e completa (mesma chave).',
+      color: 'teal',
     };
   }
   return {

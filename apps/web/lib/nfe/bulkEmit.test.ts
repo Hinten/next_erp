@@ -23,13 +23,18 @@ vi.mock('@mantine/notifications', () => ({
 
 vi.mock('../notifications/showErrorNotification', () => ({
   showErrorNotification: vi.fn(),
+  showCopyableNotification: vi.fn(),
 }));
 
 import { notifications } from '@mantine/notifications';
-import { showErrorNotification } from '../notifications/showErrorNotification';
+import {
+  showCopyableNotification,
+  showErrorNotification,
+} from '../notifications/showErrorNotification';
 
 const showSpy = vi.mocked(notifications.show);
 const showErrorSpy = vi.mocked(showErrorNotification);
+const showCopyableSpy = vi.mocked(showCopyableNotification);
 
 function fakeRow(id: string): { id: string; data: Pedido } {
   return { id, data: {} as unknown as Pedido };
@@ -66,6 +71,7 @@ function emitResult(over: Partial<NFeEmitResult> = {}): NFeEmitResult {
 beforeEach(() => {
   showSpy.mockClear();
   showErrorSpy.mockClear();
+  showCopyableSpy.mockClear();
 });
 
 afterEach(() => {
@@ -79,18 +85,41 @@ describe('dispatchEmitirNFe', () => {
     expect(emitir).not.toHaveBeenCalled();
     expect(showSpy).not.toHaveBeenCalled();
     expect(showErrorSpy).not.toHaveBeenCalled();
+    expect(showCopyableSpy).not.toHaveBeenCalled();
   });
 
-  it('single row → calls client.emitir(id) + shows success notification', async () => {
+  it('single row → calls client.emitir(id) + shows a COPYABLE success notification', async () => {
     const emitir = vi.fn().mockResolvedValue(emitResult());
     await dispatchEmitirNFe(fakeClient(emitir), [fakeRow('PED-001')]);
 
     expect(emitir).toHaveBeenCalledOnce();
     expect(emitir).toHaveBeenCalledWith('PED-001');
-    expect(showSpy).toHaveBeenCalledOnce();
-    const arg = showSpy.mock.calls[0]![0]!;
+    // Results route through the copyable toast (cStat/xMotivo must be
+    // copy-pasteable for diagnosis), not a plain notifications.show.
+    expect(showSpy).not.toHaveBeenCalled();
+    expect(showCopyableSpy).toHaveBeenCalledOnce();
+    const arg = showCopyableSpy.mock.calls[0]![0]!;
     expect(arg.color).toBe('green');
     expect(arg.title).toBe('NF-e autorizada');
+  });
+
+  it("EPEC 468 result → copyable yellow 'não sincronizado' toast (wait-and-retry)", async () => {
+    const emitir = vi.fn().mockResolvedValue(
+      emitResult({
+        estado: 'p',
+        cStat: '468',
+        xMotivo: 'Rejeição: EPEC não Sincronizado na Base de Dados da SEFAZ Autorizadora',
+        nRec: null,
+      }),
+    );
+    await dispatchEmitirNFe(fakeClient(emitir), [fakeRow('PED-001')]);
+
+    expect(showCopyableSpy).toHaveBeenCalledOnce();
+    const arg = showCopyableSpy.mock.calls[0]![0]!;
+    expect(arg.color).toBe('yellow');
+    expect(arg.title).toContain('não sincronizado');
+    expect(arg.message).toContain('468');
+    expect(arg.message).toContain('Aguarde alguns minutos');
   });
 
   it('single row, client throws NFeRejectedError → shows error notification with copy support', async () => {

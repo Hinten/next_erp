@@ -11,7 +11,7 @@ vi.mock('@mantine/notifications', () => ({
 }));
 
 import { notifications } from '@mantine/notifications';
-import { showErrorNotification } from './showErrorNotification';
+import { showCopyableNotification, showErrorNotification } from './showErrorNotification';
 
 const showSpy = vi.mocked(notifications.show);
 const updateSpy = vi.mocked(notifications.update);
@@ -52,7 +52,7 @@ describe('showErrorNotification', () => {
     // The full string is present in the DOM (nothing clipped out), and the copy
     // button is still rendered alongside it.
     expect(screen.getByText(longMessage).textContent).toBe(longMessage);
-    expect(screen.getByLabelText('Copiar mensagem de erro')).toBeTruthy();
+    expect(screen.getByLabelText('Copiar mensagem')).toBeTruthy();
   });
 
   it('renders the message text and a copy button inside the JSX message', () => {
@@ -63,7 +63,7 @@ describe('showErrorNotification', () => {
     // getByText / getByLabelText throw if not found, so reaching here means
     // both nodes are in the rendered output.
     expect(screen.getByText('Cert file not found').textContent).toBe('Cert file not found');
-    expect(screen.getByLabelText('Copiar mensagem de erro')).toBeTruthy();
+    expect(screen.getByLabelText('Copiar mensagem')).toBeTruthy();
   });
 
   it('hover-pause: mouseenter calls update with autoClose=false, mouseleave restores autoClose', () => {
@@ -94,5 +94,31 @@ describe('showErrorNotification', () => {
     const arg = showSpy.mock.calls[0]![0]!;
     expect(arg.color).toBe('orange');
     expect(arg.autoClose).toBe(3000);
+  });
+});
+
+describe('showCopyableNotification', () => {
+  it('is the generic entry — honors the caller color (emit-result toasts)', () => {
+    showCopyableNotification({ title: 'EPEC registrado', message: 'cStat=136 …', color: 'teal' });
+    const arg = showSpy.mock.calls[0]![0]!;
+    expect(arg.color).toBe('teal');
+    expect(arg.title).toBe('EPEC registrado');
+    // Same copyable JSX message as the error variant.
+    render(<MantineProvider>{arg.message as React.ReactNode}</MantineProvider>);
+    expect(screen.getByLabelText('Copiar mensagem')).toBeTruthy();
+  });
+
+  it('copies the TITLE + message (the title carries the outcome context)', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+      writable: true,
+    });
+    showCopyableNotification({ title: 'EPEC registrado', message: 'cStat=136: ok', color: 'teal' });
+    const arg = showSpy.mock.calls[0]![0]!;
+    render(<MantineProvider>{arg.message as React.ReactNode}</MantineProvider>);
+    fireEvent.click(screen.getByLabelText('Copiar mensagem'));
+    expect(writeText).toHaveBeenCalledWith('EPEC registrado: cStat=136: ok');
   });
 });
