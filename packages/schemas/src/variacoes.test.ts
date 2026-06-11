@@ -3,6 +3,7 @@ import type { GrupoComId } from './variacoes';
 import {
   cartesianVariations,
   compareSortKeys,
+  grupoOuterRef,
   normalizeVariacoesUid,
   parseFakePath,
   reconstructFromSkuSuffix,
@@ -10,6 +11,7 @@ import {
   remakeFakePath,
   sameCombo,
   sortGrupoUids,
+  splitFotoSections,
   varianteFakePath,
 } from './variacoes';
 
@@ -258,5 +260,62 @@ describe('reconstructFromSkuSuffix (mode B — legacy children)', () => {
     if (!a.ok || !b.ok) throw new Error('expected ok');
     // P+Verde [0,1] sorts before M+Azul [1,0].
     expect(compareSortKeys(a.sortKey, b.sortKey)).toBeLessThan(0);
+  });
+});
+
+describe('grupoOuterRef', () => {
+  it('matches the Flutter pathWithDocuments wire shape', () => {
+    expect(grupoOuterRef('CORES')).toBe('documents/grupoDeVariacoes/CORES');
+  });
+});
+
+describe('splitFotoSections', () => {
+  const az = varianteFakePath('CORES', 'az');
+  const vd = varianteFakePath('CORES', 'vd');
+  const p = varianteFakePath('TAM', 'p');
+
+  it('creates one section per selected variant of a permiteFotos group, in variacoesUid order', () => {
+    const out = splitFotoSections({
+      fotos: [
+        { variantePath: null }, // parent-level
+        { variantePath: vd },
+        { variantePath: az },
+      ],
+      parentUids: [p, az, vd], // TAM has permiteFotos=false → no section
+      grupos: fixtures(),
+    });
+    expect(out.variants.map((s) => s.uid)).toEqual([az, vd]);
+    expect(out.variants[0]).toMatchObject({
+      grupoNome: 'Cores',
+      varianteNome: 'Azul',
+      fotoIndexes: [2],
+    });
+    expect(out.variants[1]!.fotoIndexes).toEqual([1]);
+    expect(out.general).toEqual([0]);
+  });
+
+  it('falls orphaned tags back to the general section (unselected variant / unknown group / no permiteFotos)', () => {
+    const out = splitFotoSections({
+      fotos: [
+        { variantePath: vd }, // variant not selected on the parent
+        { variantePath: varianteFakePath('ZZZ', 'x') }, // unknown group
+        { variantePath: p }, // group without permiteFotos
+      ],
+      parentUids: [az, p],
+      grupos: fixtures(),
+    });
+    expect(out.variants.map((s) => s.uid)).toEqual([az]);
+    expect(out.general).toEqual([0, 1, 2]);
+  });
+
+  it('matches legacy non-canonical variantePath forms and dedups repeated uids', () => {
+    const out = splitFotoSections({
+      fotos: [{ variantePath: 'grupoDeVariacoes/CORES/variacoes/az' }],
+      parentUids: [az, 'grupoDeVariacoes/CORES/variacoes/az'],
+      grupos: fixtures(),
+    });
+    expect(out.variants).toHaveLength(1);
+    expect(out.variants[0]!.fotoIndexes).toEqual([0]);
+    expect(out.general).toEqual([]);
   });
 });
