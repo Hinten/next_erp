@@ -69,7 +69,7 @@ test.describe.serial('Produtos fotos e2e — ObjectView Fotos tab', () => {
     await expect(page.getByText('Arraste imagens aqui ou clique para selecionar')).toBeVisible({
       timeout: 15_000,
     });
-    await expect(page.getByText('Nenhuma foto.').first()).toBeVisible();
+    await expect(page.getByText(/Nenhuma foto — arraste/).first()).toBeVisible();
   });
 
   test('renders per-variant photo sections for permiteFotos groups only', async ({ page }) => {
