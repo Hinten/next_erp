@@ -1,3 +1,12 @@
+import { z } from 'zod';
+
+// Global pt-BR error map for every consumer of these schemas — web forms
+// (zodResolver), the data-layer converters (parseForWrite/parseSoftRead),
+// integrations route handlers and test fixtures all import from this barrel,
+// so the config runs before any parse. Schema-level custom messages still
+// take precedence; this only replaces Zod's English defaults.
+z.config(z.locales.pt());
+
 export type { CollectionMetadata, DomainSchema } from './types';
 
 export { auditEntrySchema, type AuditEntry } from './audit';
