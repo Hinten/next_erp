@@ -28,3 +28,38 @@ export function pickDirty<T extends Record<string, unknown>>(
 export function isEmpty(obj: object): boolean {
   return Object.keys(obj).length === 0;
 }
+
+/**
+ * Structural equality for form/Firestore values: primitives (including
+ * `BigInt`, which `JSON.stringify` would throw on), `Date` (by epoch),
+ * arrays and plain objects. Used by `deriveOnSave` to decide whether a
+ * derived field actually changed — never serializes, so it can't crash on
+ * non-JSON values.
+ */
+export function valuesEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, i) => valuesEqual(item, b[i]));
+  }
+  if (
+    a !== null &&
+    b !== null &&
+    typeof a === 'object' &&
+    typeof b === 'object' &&
+    !Array.isArray(a) &&
+    !Array.isArray(b) &&
+    !(a instanceof Date) &&
+    !(b instanceof Date)
+  ) {
+    const ka = Object.keys(a as Record<string, unknown>);
+    const kb = Object.keys(b as Record<string, unknown>);
+    return (
+      ka.length === kb.length &&
+      ka.every((k) =>
+        valuesEqual((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]),
+      )
+    );
+  }
+  return false;
+}

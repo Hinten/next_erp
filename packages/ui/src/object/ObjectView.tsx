@@ -23,6 +23,7 @@ import { type CollectionHandle, type PathContext } from '@delfrance/data';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
 import type { FieldConfig, FieldDescriptor } from '../schema/types';
+import { valuesEqual } from './diff';
 import { FieldRenderer } from './FieldRenderer';
 import { RecordPager } from './RecordPager';
 import { SectionTabs } from './SectionTabs';
@@ -53,6 +54,18 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>> {
   fields?: Record<string, FieldConfig>;
   /** Section names → renders a Mantine tabs view. Omit for a flat layout. */
   sections?: string[];
+
+  /**
+   * Derive additional top-level fields from the (already per-field
+   * `prepareForSave`-transformed) values, immediately before save — e.g. a
+   * denormalized array such as `variacoesIds` computed from `variacoes`. The
+   * returned keys are merged into the written values; on update each is marked
+   * dirty only when its value actually changed (structural comparison), so a
+   * pristine save still skips via `NothingChangedError`. Keys whose derived
+   * value is `undefined` are ignored — yield `null` to clear a field, never
+   * `undefined` (Firestore rejects it). Must be pure.
+   */
+  deriveOnSave?: (values: Record<string, unknown>) => Record<string, unknown>;
 
   /** Auth uid for the audit entry. */
   currentUserUid: string;
@@ -122,6 +135,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   excludedFields = [],
   fields: fieldOverrides = {},
   sections,
+  deriveOnSave,
   currentUserUid,
   pager,
   onSaved,
@@ -233,6 +247,22 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
       if (isUpdate && !dirty[key]) continue;
       values[key] = cfg.prepareForSave(raw[key]);
     }
+    // Record-level derivations (e.g. denormalized `variacoesIds` from the
+    // already-transformed `variacoes`). Merge the derived keys into the values
+    // and mark each dirty only when it changed, so a pristine update still
+    // short-circuits via NothingChangedError instead of writing a no-op patch.
+    // `undefined` results are skipped entirely (Firestore rejects undefined —
+    // a derivation must yield `null`, like every other optional field), and
+    // the comparison is structural (`valuesEqual`), never JSON serialization,
+    // so non-JSON values such as BigInt can't crash the save.
+    const dirtyFields: Record<string, unknown> = { ...dirty };
+    if (deriveOnSave) {
+      for (const [key, next] of Object.entries(deriveOnSave(values))) {
+        if (next === undefined) continue;
+        if (!valuesEqual(next, raw[key])) dirtyFields[key] = true;
+        values[key] = next;
+      }
+    }
     try {
       const result = await saveRecord<S, Record<string, unknown>>({
         db,
@@ -240,7 +270,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
         pathContext,
         recordId: internalId,
         values,
-        dirtyFields: form.formState.dirtyFields as Partial<Record<string, unknown>>,
+        dirtyFields,
         currentUserUid,
       });
       // Zero out dirty state while preserving the persisted (transformed) values.

@@ -197,6 +197,110 @@ describe('ObjectView save flow', () => {
     expect(arg.values.nome).toBe('Updated!');
   });
 
+  it('deriveOnSave adds a derived field to the patch and marks it dirty when its source changed', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice', email: 'a@x.com' } },
+      loading: false,
+      error: undefined,
+    };
+    saveRecordMock.mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          deriveOnSave={(v) => ({ email: `${v.nome as string}@x.com` })}
+        />
+      </Wrap>,
+    );
+    const nome = screen.getByRole('textbox', { name: 'Nome' }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(nome, { target: { value: 'Updated' } });
+      fireEvent.blur(nome);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    const arg = saveRecordMock.mock.calls[0]![0] as {
+      values: Record<string, unknown>;
+      dirtyFields: Record<string, unknown>;
+    };
+    expect(arg.values.email).toBe('Updated@x.com');
+    expect(arg.dirtyFields.email).toBe(true);
+  });
+
+  it('deriveOnSave leaves an unchanged derived field out of the dirty set', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'alice', email: 'alice@x.com' } },
+      loading: false,
+      error: undefined,
+    };
+    saveRecordMock.mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          deriveOnSave={(v) => ({ email: `${v.nome as string}@x.com` })}
+        />
+      </Wrap>,
+    );
+    // Pristine submit: the derived `email` equals the loaded value, so it must
+    // not be marked dirty (a no-op update still short-circuits downstream).
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    const arg = saveRecordMock.mock.calls[0]![0] as {
+      values: Record<string, unknown>;
+      dirtyFields: Record<string, unknown>;
+    };
+    expect(arg.values.email).toBe('alice@x.com');
+    expect(arg.dirtyFields.email).toBeUndefined();
+  });
+
+  it('deriveOnSave skips keys whose derived value is undefined (never written, never dirty)', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice', email: 'a@x.com' } },
+      loading: false,
+      error: undefined,
+    };
+    saveRecordMock.mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          deriveOnSave={() => ({ email: undefined as unknown as string })}
+        />
+      </Wrap>,
+    );
+    const nome = screen.getByRole('textbox', { name: 'Nome' }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(nome, { target: { value: 'Updated' } });
+      fireEvent.blur(nome);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    const arg = saveRecordMock.mock.calls[0]![0] as {
+      values: Record<string, unknown>;
+      dirtyFields: Record<string, unknown>;
+    };
+    // Firestore rejects undefined: the derived key must keep its form value
+    // and must not be marked dirty.
+    expect(arg.values.email).toBe('a@x.com');
+    expect(arg.dirtyFields.email).toBeUndefined();
+  });
+
   it('surfaces a FirebaseError from saveRecord in the form alert', async () => {
     docState.current = {
       data: { id: 'EXISTING', data: { nome: 'Alice' } },
