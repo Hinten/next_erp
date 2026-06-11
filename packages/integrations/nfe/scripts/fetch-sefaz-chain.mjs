@@ -27,7 +27,7 @@
  *   pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca
  *   node scripts/fetch-sefaz-chain.mjs --uf=SP --ambiente=homologacao
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { dirname, join, resolve } from 'node:path';
@@ -227,6 +227,29 @@ function isSelfSigned(forgeCert) {
   );
 }
 
+/**
+ * Every cert found in the other vendored bundles under `ca/`. ICP-Brasil
+ * intermediates often carry no AIA caIssuers extension (the SERPRO SSLv1 one
+ * behind SVRS doesn't), so the walk can dead-end even though the missing
+ * root is already vendored for another UF — recover it locally instead of
+ * failing.
+ */
+function loadSiblingBundleCerts() {
+  const dir = join(PKG_ROOT, 'ca');
+  const out = [];
+  for (const name of readdirSync(dir).filter((n) => n.endsWith('.pem'))) {
+    for (const pem of splitPem(readFileSync(join(dir, name), 'utf8'))) {
+      try {
+        out.push({ cert: forge.pki.certificateFromPem(pem), file: name });
+      } catch {
+        // Skip unparseable blocks (hand-edited bundle) — the cert pool is
+        // best-effort; a miss just means the fatal below still fires.
+      }
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Main flow
 // ---------------------------------------------------------------------------
@@ -308,6 +331,33 @@ socket.once('secureConnect', async () => {
       break;
     }
   }
+  // 2b. AIA dead end? Try to complete the chain from certs already vendored
+  //     for other UFs before declaring failure.
+  if (!isSelfSigned(top)) {
+    const pool = loadSiblingBundleCerts();
+    let progressed = true;
+    while (!isSelfSigned(top) && progressed) {
+      progressed = false;
+      for (const { cert: cand, file } of pool) {
+        if (JSON.stringify(cand.subject.attributes) !== JSON.stringify(top.issuer.attributes)) {
+          continue;
+        }
+        const fp = forge.md.sha256
+          .create()
+          .update(forgeCertToDer(cand).toString('binary'))
+          .digest()
+          .toHex();
+        if (fingerprints.has(fp)) continue;
+        fingerprints.add(fp);
+        chain.push(cand);
+        top = cand;
+        console.log(`  ↺ recovered "${subjectCN(cand)}" from sibling bundle ${file}`);
+        progressed = true;
+        break;
+      }
+    }
+  }
+
   if (isSelfSigned(top)) {
     console.log(`  ✓ reached self-signed root: "${subjectCN(top)}"`);
   } else if (chain.length >= 2) {
