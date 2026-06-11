@@ -15,9 +15,10 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm, type FieldValues } from 'react-hook-form';
+import { useForm, type FieldErrors, type FieldValues } from 'react-hook-form';
+import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
-import type { z, ZodObject, ZodRawShape } from 'zod';
+import { ZodError, type z, type ZodObject, type ZodRawShape } from 'zod';
 import { type CollectionHandle, type PathContext } from '@delfrance/data';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
@@ -95,6 +96,8 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>> {
    * Delete the current record. Receives the doc id. When omitted, no
    * delete button is rendered. The button is also hidden when
    * `canDelete === false` or there's no `internalId` (create mode).
+   * `FirebaseError` rejections surface in the form's error alert; any other
+   * error propagates — catch domain errors inside the callback.
    */
   onDelete?: (id: string) => Promise<void>;
   /** Default 'Excluir'. */
@@ -276,14 +279,21 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
         notifications.show({ color: 'yellow', message: err.message });
         return;
       }
-      setSubmitError(err instanceof Error ? err.message : 'Falha ao salvar.');
+      if (err instanceof FirebaseError) {
+        setSubmitError(err.message);
+        return;
+      }
+      // Create mode runs the converter's `schema.parse` before the write —
+      // e.g. unknown keys copied from a legacy doc.
+      if (err instanceof ZodError) {
+        setSubmitError(`Dados inválidos: ${err.issues.map((i) => i.message).join('; ')}`);
+        return;
+      }
+      // Anything else is a bug, not a save failure — surface it loudly as an
+      // unhandled rejection instead of masking it behind a generic message.
+      throw err;
     }
   }
-
-  // RHF's handleSubmit runs validation first — we route both buttons through
-  // it so zodResolver always gets to validate before saveRecord runs.
-  const submitDefault = form.handleSubmit(() => doSave(false));
-  const submitContinue = form.handleSubmit(() => doSave(true));
 
   // Field visibility is a design-time decision (excludedFields / hidden in
   // fieldOverrides) — end users don't get a toggle. Build the list once.
@@ -302,6 +312,89 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
     return map;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleDescriptors, fieldOverrides, sections?.join('|')]);
+
+  // Reverse of `grouped`: top-level field key → section name, for mapping
+  // validation errors to tabs. RHF nests sub-field errors under the
+  // top-level key, so this level is enough.
+  const sectionOf = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [section, descs] of Object.entries(grouped)) {
+      for (const d of descs) map.set(d.key, section);
+    }
+    return map;
+  }, [grouped]);
+
+  // Active tab is owned here (not by SectionTabs) so an invalid submit can
+  // jump to the first erroring tab. Derived with a fallback instead of a
+  // reset effect, so a `sections` prop change can't strand a stale value.
+  const [activeSection, setActiveSection] = useState<string | null>(null);
+  const firstSection = sections?.[0];
+  const effectiveSection =
+    firstSection !== undefined
+      ? activeSection && sections?.includes(activeSection)
+        ? activeSection
+        : firstSection
+      : null;
+
+  // Tabs containing invalid fields. Computed inline on purpose: RHF mutates
+  // `formState.errors` in place, so it's not a usable memo dependency —
+  // reading it during render subscribes via the formState proxy (the same
+  // mechanism behind the `isDirty` / `isSubmitting` reads elsewhere).
+  const errorSections = new Set<string>();
+  if (firstSection !== undefined) {
+    for (const key of Object.keys(form.formState.errors)) {
+      const section = sectionOf.get(key);
+      if (section) errorSections.add(section);
+    }
+  }
+
+  // Invalid submit. Without this, an error on a non-active tab is silent:
+  // RHF blocks the save and the inline message sits in a hidden panel. Jump
+  // to the first erroring tab and name the offenders in a toast. RHF's
+  // `shouldFocusError` runs before the tab switch renders, so focusing a
+  // field in a still-hidden panel is a no-op — cosmetic, accepted.
+  function onInvalid(errors: FieldErrors) {
+    const errorKeys = Object.keys(errors);
+    if (!sections || sections.length === 0) {
+      notifications.show({
+        color: 'red',
+        message: 'Corrija os campos inválidos antes de salvar.',
+      });
+      return;
+    }
+    // Erroring sections in display order. zodResolver reports the full error
+    // set, so fields hidden or excluded from the form can error too — they
+    // have no tab to point at and are named separately.
+    const erroring = sections.filter((s) => errorKeys.some((k) => sectionOf.get(k) === s));
+    const outside = errorKeys.filter((k) => !sectionOf.has(k));
+    const first = erroring[0];
+    if (first === undefined) {
+      notifications.show({
+        color: 'red',
+        message: `Não foi possível salvar: campos inválidos fora do formulário (${outside.join(', ')}).`,
+      });
+      return;
+    }
+    if (!effectiveSection || !erroring.includes(effectiveSection)) {
+      setActiveSection(first);
+    }
+    const inTabs =
+      erroring.length === 1
+        ? `Corrija os campos inválidos na aba "${first}".`
+        : `Corrija os campos inválidos nas abas: ${erroring.join(', ')}.`;
+    notifications.show({
+      color: 'red',
+      message:
+        outside.length > 0
+          ? `${inTabs} Há também campos inválidos fora do formulário (${outside.join(', ')}).`
+          : inTabs,
+    });
+  }
+
+  // RHF's handleSubmit runs validation first — we route both buttons through
+  // it so zodResolver always gets to validate before saveRecord runs.
+  const submitDefault = form.handleSubmit(() => doSave(false), onInvalid);
+  const submitContinue = form.handleSubmit(() => doSave(true), onInvalid);
 
   function fieldsBlock(descs: FieldDescriptor[]) {
     return (
@@ -334,7 +427,12 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
     try {
       await onDelete(internalId);
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : 'Falha ao excluir.');
+      if (err instanceof FirebaseError) {
+        setSubmitError(err.message);
+        return;
+      }
+      // `onDelete` is caller-supplied — domain errors belong to the caller.
+      throw err;
     }
   }
 
@@ -408,6 +506,9 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
             <SectionTabs
               sections={sections}
               contents={Object.fromEntries(sections.map((s) => [s, fieldsBlock(grouped[s] ?? [])]))}
+              value={effectiveSection}
+              onChange={setActiveSection}
+              errorSections={errorSections}
             />
           ) : (
             fieldsBlock(grouped['default'] ?? visibleDescriptors)

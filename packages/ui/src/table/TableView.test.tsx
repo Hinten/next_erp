@@ -234,6 +234,91 @@ describe('TableView', () => {
     replaceState.mockRestore();
   });
 
+  it('actionsPanel renders the right-side panel and replaces the top ActionBar', () => {
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        selectable
+        actionsPanel
+        newHref="/tests/novo"
+        actions={[{ id: 'del', label: 'Excluir', requiresSelection: true, run: vi.fn() }]}
+      />,
+    );
+    const panel = screen.getByRole('complementary', { name: 'Ações' });
+    expect(within(panel).getByRole('button', { name: 'Excluir' })).toBeTruthy();
+    expect(within(panel).getByRole('link', { name: 'Novo' })).toBeTruthy();
+    // The top ActionBar is replaced — the action exists once, in the panel.
+    expect(screen.getAllByRole('button', { name: 'Excluir' })).toHaveLength(1);
+  });
+
+  it('persists the panel collapse state per collection in localStorage', () => {
+    wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        actionsPanel
+        actions={[{ id: 'del', label: 'Excluir', run: vi.fn() }]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Recolher ações' }));
+    expect(localStorage.getItem('delfrance:tableview:actionspanel:tests')).toBe('true');
+    expect(screen.queryByRole('button', { name: 'Excluir' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Expandir ações' })).toBeTruthy();
+  });
+
+  it('drops selected ids that leave the row set (ghost selection)', () => {
+    const { rerender } = wrap(
+      <TableView
+        schema={testSchema}
+        collection={fakeCollection()}
+        db={{} as never}
+        selectable
+        actions={[{ id: 'del', label: 'Excluir', requiresSelection: true, run: vi.fn() }]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Selecionar 1' }));
+    const button = screen.getByRole('button', { name: 'Excluir' }) as HTMLButtonElement;
+    expect(button.hasAttribute('disabled')).toBe(false);
+
+    // Row '1' disappears from the snapshot (filter change / deleted elsewhere).
+    snapState.current = {
+      data: [{ id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } }],
+      loading: false,
+      error: undefined,
+    };
+    rerender(
+      <MantineProvider env="test">
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          selectable
+          actions={[{ id: 'del', label: 'Excluir', requiresSelection: true, run: vi.fn() }]}
+        />
+      </MantineProvider>,
+    );
+    // The stale id was reconciled away: bulk actions disable again and the
+    // header checkbox is neither checked nor indeterminate.
+    expect(button.hasAttribute('disabled')).toBe(true);
+    const headerCheckbox = screen.getByRole('checkbox', {
+      name: 'Selecionar todas as linhas',
+    }) as HTMLInputElement;
+    expect(headerCheckbox.checked).toBe(false);
+    expect(headerCheckbox.indeterminate).toBe(false);
+    // Reset for sibling tests.
+    snapState.current = {
+      data: [
+        { id: '1', path: 'x/1', data: { nome: 'Alice', tipo: '0' } },
+        { id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } },
+      ],
+      loading: false,
+      error: undefined,
+    };
+  });
+
   it('selectable adds a checkbox column and enables bulk actions on selection', async () => {
     const run = vi.fn().mockResolvedValue(undefined);
     const { container } = wrap(

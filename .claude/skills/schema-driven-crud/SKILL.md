@@ -183,11 +183,14 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `defaultColumns` | Initial visible columns. Omitted → every non-`unknown` field. |
 | `orderBy` | Initial sort `{ field, direction }`. User changes it by clicking the header. |
 | `rowHref` | `(id, row) => string` — row-click target. |
+| `onRowClick` | `(id, row) => void` — row-click handler instead of navigation (e.g. a modal editor for an embedded subcollection table). `rowHref` is ignored while set. |
 | `renderRowLink` | `(href, content) => ReactNode` — wrap the row in a custom link (e.g. Next `<Link>`). |
 | `newHref` | "New" button as a plain href — simpler alternative to `renderNewButton`. |
 | `renderNewButton` | "New" button render-prop (use `<Button component={Link}>`). |
 | `fields` | `Record<string, FieldConfig>` — per-field overrides (see §6). |
+| `virtualColumns` | Columns outside the Zod schema (derived / dereferenced / async cells). Each declares `key`, `label`, `renderCell(row)` (+ optional `tooltip`, `width`). No sort/filter UI, but they appear in the ColumnPicker. Their presence disables column projection (the full doc is fetched). |
 | `selectable` + `actions` | Selection checkbox + bulk actions (e.g. delete). |
+| `actionsPanel` | `boolean \| { defaultCollapsed?: boolean }` — opt-in action panel docked to the right of the table. When enabled it **replaces** the top ActionBar ("Novo" / "Copiar" / bulk `actions` move into it, still acting on the current selection). Collapses to a slim rail; collapsed state persists per collection in localStorage. |
 | `copyHref` | Enables the built-in "Copiar" action. Setting it is the on/off toggle; it also implies row selection. Selecting exactly one row + "Copiar" navigates to `${copyHref}?copyFrom=<id>` (the create page pre-fills from that doc). |
 | `monitorField` | Field the update-monitor orders by (`limit(1)`, desc) to flag a stale page. `false` disables; omitted auto-resolves `ultimaModificacao` → `timestamp` → disabled. |
 | `pageSize` | Rows per page (default 50). |
@@ -218,6 +221,11 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `saveLabel` | Primary button text ("Criar" / "Salvar alterações"). |
 | `showSaveAndContinue` | Secondary "Salvar e continuar" button (default true). |
 
+Validation feedback across tabs is automatic: on an invalid submit, ObjectView
+switches to the first tab containing an error (when the active one is clean),
+shows a red notification naming the offending tab(s), and marks erroring tabs
+with a red label + error icon until the field is fixed. Nothing to wire.
+
 ## 6. Reference — `FieldConfig` (`packages/ui/src/schema/types.ts`)
 
 Per-field overrides, passed via `fields={{ field: { ... } }}`:
@@ -231,6 +239,12 @@ Per-field overrides, passed via `fields={{ field: { ... } }}`:
 - `renderCell: (value, row) => ReactNode` — custom cell in TableView.
 - `renderInput: (props: FieldRenderProps) => ReactNode` — custom input in
   ObjectView (e.g. `CpfCnpjInput` in `clientes/[id]/page.tsx`).
+- `prepareForSave: (value) => unknown` — pure transform applied to the field
+  right before the write (always on create; only when dirty on update). The
+  app convention is staged deletion: the editor marks items with
+  `DELETE_MARK` and sets `prepareForSave: stripMarkedForDeletion` (both from
+  `@delfrance/ui`) so removals only land on save — see
+  `produtos/_components/PhotoManager.tsx`.
 
 ## 7. E2e tests
 
