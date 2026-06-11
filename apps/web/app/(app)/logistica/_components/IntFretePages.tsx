@@ -30,6 +30,8 @@ const excludedFor = (slice: LogisticaSlice): string[] => [
 
 export function IntFreteListPage({ slice }: { slice: LogisticaSlice }) {
   const db = getFirebaseFirestore();
+  const { allowed: canWrite } = usePermission(PERM.frete.write);
+  const { allowed: canDelete } = usePermission(PERM.frete.delete);
 
   const sliceQuery = useMemo(
     () =>
@@ -51,11 +53,18 @@ export function IntFreteListPage({ slice }: { slice: LogisticaSlice }) {
       queryOverride={sliceQuery}
       defaultColumns={['nome', 'ativo', 'prazoExtra']}
       rowHref={(id) => `/logistica/${slice.slug}/${id}`}
-      renderNewButton={() => (
-        <Button component={Link} href={`/logistica/${slice.slug}/novo` as Route}>
-          {slice.novoLabel}
-        </Button>
-      )}
+      // Create/delete affordances only for users holding the matching
+      // PERM.frete bits — the backend (rules) is the real gate; hiding
+      // them avoids offering flows that would be rejected.
+      renderNewButton={
+        canWrite
+          ? () => (
+              <Button component={Link} href={`/logistica/${slice.slug}/novo` as Route}>
+                {slice.novoLabel}
+              </Button>
+            )
+          : undefined
+      }
       fields={{
         ativo: {
           renderCell: (value) =>
@@ -71,26 +80,30 @@ export function IntFreteListPage({ slice }: { slice: LogisticaSlice }) {
         },
       }}
       selectable
-      actions={[
-        {
-          id: 'delete',
-          label: 'Excluir',
-          color: 'red',
-          requiresSelection: true,
-          refreshOnComplete: true,
-          confirm: {
-            title: `Excluir — ${slice.titulo}`,
-            message: 'Integrações excluídas não podem ser restauradas. Confirmar exclusão?',
-          },
-          run: async (rows) => {
-            await Promise.all(
-              rows.map((r: { id: string; data: IntFrete }) =>
-                deleteDoc(intFreteCollection.docRef(db, {}, r.id)),
-              ),
-            );
-          },
-        },
-      ]}
+      actions={
+        canDelete
+          ? [
+              {
+                id: 'delete',
+                label: 'Excluir',
+                color: 'red',
+                requiresSelection: true,
+                refreshOnComplete: true,
+                confirm: {
+                  title: `Excluir — ${slice.titulo}`,
+                  message: 'Integrações excluídas não podem ser restauradas. Confirmar exclusão?',
+                },
+                run: async (rows) => {
+                  await Promise.all(
+                    rows.map((r: { id: string; data: IntFrete }) =>
+                      deleteDoc(intFreteCollection.docRef(db, {}, r.id)),
+                    ),
+                  );
+                },
+              },
+            ]
+          : []
+      }
     />
   );
 }
@@ -98,6 +111,7 @@ export function IntFreteListPage({ slice }: { slice: LogisticaSlice }) {
 export function IntFreteCreatePage({ slice }: { slice: LogisticaSlice }) {
   const router = useRouter();
   const { user } = useAuth();
+  const { allowed: canWrite } = usePermission(PERM.frete.write);
   // Stamped once per mount (lazy initializer keeps the render pure).
   // Required ms-epoch int — the Flutter read crashes on null.
   const [dataCadastro] = useState(() => Date.now());
@@ -126,6 +140,8 @@ export function IntFreteCreatePage({ slice }: { slice: LogisticaSlice }) {
         fields={intFreteFields}
         saveLabel="Criar"
         showSaveAndContinue={false}
+        canEdit={canWrite}
+        readOnly={!canWrite}
         onSaved={(id) => router.replace(`/logistica/${slice.slug}/${id}` as Route)}
       />
     </Stack>
