@@ -299,13 +299,22 @@ export function buildEpecEvento(input: EpecEventoInput): string {
 }
 
 /**
+ * The e110140 `IE` element only accepts a numeric inscrição estadual —
+ * narrower than the NF-e leiaute, whose `TIe`/`TIeDest` also admit `ISENTO`
+ * (and an empty dest IE).
+ */
+const RE_IE_EPEC = /^[0-9]{2,14}$/;
+
+/**
  * Project a signed (or unsigned) `<NFe>` into the EPEC summary the detEvento
  * carries. Mirrors Flutter's `makeEPEC` field-for-field
  * (`.old/packages/nfe_client/lib/src/schemas/envEPEc.dart:30`): emitter
  * CNPJ/IE, ide dhEmi/tpNF/verProc, dest identification (UF `'EX'` for a
  * foreign buyer) and the ICMSTot totals. Throws `NFeEventoError` when the
- * NF-e lacks a dest or the emitter identification — an EPEC without them is
- * unrepresentable in the e110140 schema.
+ * NF-e lacks a dest, the dest identification, or a numeric emitter IE — an
+ * EPEC without them is unrepresentable in the e110140 schema, and a clear
+ * typed error here beats the generic XSD failure downstream. A non-numeric
+ * dest IE (`ISENTO`) is simply omitted — it is optional in the e110140.
  */
 export function extractEpecInputFromNFe(
   nfeXml: string,
@@ -320,6 +329,18 @@ export function extractEpecInputFromNFe(
   }
   if (!inf.emit.CNPJ || !inf.emit.IE) {
     throw new NFeEventoError('EPEC requires the emitter CNPJ and IE.');
+  }
+  if (!RE_IE_EPEC.test(inf.emit.IE)) {
+    throw new NFeEventoError(
+      `EPEC requires a numeric emitter IE (the e110140 schema accepts [0-9]{2,14}) — ` +
+        `got '${inf.emit.IE}'.`,
+    );
+  }
+  if (!dest.CNPJ && !dest.CPF && dest.idEstrangeiro == null) {
+    throw new NFeEventoError(
+      'EPEC requires the destinatário identification — the NF-e <dest> carries no CNPJ, ' +
+        'CPF or idEstrangeiro.',
+    );
   }
   const uf = dest.idEstrangeiro != null ? 'EX' : dest.enderDest?.UF;
   if (!uf) {
@@ -339,7 +360,7 @@ export function extractEpecInputFromNFe(
       cnpj: dest.CNPJ,
       cpf: dest.CPF,
       idEstrangeiro: dest.idEstrangeiro,
-      ie: dest.IE,
+      ie: dest.IE && RE_IE_EPEC.test(dest.IE) ? dest.IE : undefined,
       vNF: inf.total.ICMSTot.vNF,
       vICMS: inf.total.ICMSTot.vICMS,
       vST: inf.total.ICMSTot.vST,

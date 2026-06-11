@@ -327,6 +327,37 @@ describe('extractEpecInputFromNFe', () => {
     ).toThrow(NFeEventoError);
   });
 
+  it("throws a CLEAR NFeEventoError for emitter IE='ISENTO' (legal in the NF-e, not in e110140)", () => {
+    expect(() =>
+      extractEpecInputFromNFe(
+        nfeXml({ emit: '<emit><CNPJ>14200166000187</CNPJ><IE>ISENTO</IE></emit>' }),
+        { tpAmb: '2' },
+      ),
+    ).toThrow(/numeric emitter IE.*ISENTO/);
+  });
+
+  it("omits a non-numeric dest IE ('ISENTO') — optional in e110140, must not break the XSD gate", () => {
+    const input = extractEpecInputFromNFe(
+      nfeXml({
+        dest: '<dest><CNPJ>99999999000191</CNPJ><enderDest><UF>SP</UF></enderDest><IE>ISENTO</IE></dest>',
+      }),
+      { tpAmb: '2' },
+    );
+    expect(input.dest.ie).toBeUndefined();
+    expect(buildEpecDetEvento(input)).not.toContain('ISENTO');
+  });
+
+  it('throws NFeEventoError when the dest carries no CNPJ, CPF or idEstrangeiro', () => {
+    // The e110140 <dest> choice REQUIRES one of the three; a clear typed
+    // error here beats the opaque XSD failure downstream.
+    expect(() =>
+      extractEpecInputFromNFe(
+        nfeXml({ dest: '<dest><enderDest><UF>SP</UF></enderDest><IE>222222222</IE></dest>' }),
+        { tpAmb: '2' },
+      ),
+    ).toThrow(/destinatário identification/);
+  });
+
   it('throws NFeEventoError when the dest has neither enderDest.UF nor idEstrangeiro', () => {
     expect(() =>
       extractEpecInputFromNFe(nfeXml({ dest: '<dest><CNPJ>99999999000191</CNPJ></dest>' }), {
