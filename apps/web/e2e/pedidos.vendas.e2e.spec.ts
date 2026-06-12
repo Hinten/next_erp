@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { db } from '@delfrance/test-fixtures';
 import { cleanupPedidoFixtures, e2ePrefix, seedPedidoFixtures } from './_helpers/seed-data';
-import { fillField } from './helpers/object-view';
+import { fillField, selectFieldWithSearch } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -60,12 +60,14 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
   }) => {
     await page.goto('/pedidos/novo');
 
-    // Cliente picker — open dropdown, type the prefix, choose first row.
-    await page.getByPlaceholder('Buscar cliente por nome…').fill(fixtures.clienteNome);
-    await page
-      .getByRole('option', { name: new RegExp(fixtures.clienteNome) })
-      .first()
-      .click();
+    // Cliente picker — CollectionSelect preset; the option's accessible name
+    // carries the cpf_cnpj hint line, so match by regex.
+    await selectFieldWithSearch(
+      page,
+      'Cliente',
+      fixtures.clienteNome,
+      new RegExp(fixtures.clienteNome),
+    );
 
     // Operação picker — Mantine searchable Select exposes role="combobox".
     await page.getByRole('combobox', { name: 'Operação fiscal', exact: true }).click();

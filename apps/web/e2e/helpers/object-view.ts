@@ -31,18 +31,24 @@ export async function selectField(page: Page, label: string, optionText: string)
  * Pick an option in a searchable Mantine `Select` whose option list is
  * server-filtered (e.g. `CollectionSelect`). Opens the combobox, types
  * `searchText` to trigger the server query, then clicks the matching option.
- * `optionText` defaults to `searchText` for the common type-the-exact-name case.
+ * `optionText` defaults to `searchText` for the common type-the-exact-name
+ * case; pass a RegExp when the option's accessible name carries extra text
+ * (e.g. the `optionHintField` second line on `ClientePicker` options).
  */
 export async function selectFieldWithSearch(
   page: Page,
   label: string,
   searchText: string,
-  optionText: string = searchText,
+  optionText: string | RegExp = searchText,
 ): Promise<void> {
   const combobox = page.getByRole('combobox', { name: label, exact: true });
   await combobox.click();
   await combobox.fill(searchText);
-  await page.getByRole('option', { name: optionText, exact: true }).click();
+  const option =
+    typeof optionText === 'string'
+      ? page.getByRole('option', { name: optionText, exact: true })
+      : page.getByRole('option', { name: optionText }).first();
+  await option.click();
 }
 
 /**

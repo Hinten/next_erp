@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import { Pill, PillsInput, Select, type ComboboxData } from '@mantine/core';
+import { Pill, PillsInput, Select, Stack, Text, type ComboboxData } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
 import type { ZodObject, ZodRawShape, z } from 'zod';
 import {
@@ -62,6 +62,12 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
    * Enterprise anyway.
    */
   orderBy?: Array<{ field: string; direction?: 'asc' | 'desc' }>;
+  /**
+   * Doc field rendered as a dimmed second line under each option label
+   * (e.g. `cpf_cnpj` on a cliente). Query-result options only — "Recentes"
+   * entries cache just the label.
+   */
+  optionHintField?: string;
 }
 
 /**
@@ -125,6 +131,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   limit = DEFAULT_LIMIT,
   emitDocPath = false,
   orderBy,
+  optionHintField,
 }: CollectionSelectProps<S>) {
   const db = getFirebaseFirestore();
 
@@ -206,6 +213,17 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
     [listData, labelField],
   );
 
+  // id → hint lookup for renderOption (recents entries carry no hint).
+  const optionHints = useMemo(() => {
+    if (!optionHintField) return null;
+    const hints: Record<string, string> = {};
+    for (const row of listData ?? []) {
+      const hintValue = readLabelField(row.data, optionHintField);
+      if (hintValue) hints[row.id] = hintValue;
+    }
+    return hints;
+  }, [listData, optionHintField]);
+
   const data: ComboboxData = useMemo(() => {
     if (term !== '') {
       return resultItems;
@@ -285,6 +303,20 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
       filter={({ options }) => options}
       placeholder={listData === undefined ? 'Carregando…' : undefined}
       nothingFoundMessage="Nenhum registro"
+      renderOption={
+        optionHints
+          ? ({ option }) => (
+              <Stack gap={0}>
+                <Text size="sm">{option.label}</Text>
+                {optionHints[option.value] && (
+                  <Text size="xs" c="dimmed">
+                    {optionHints[option.value]}
+                  </Text>
+                )}
+              </Stack>
+            )
+          : undefined
+      }
     />
   );
 }
