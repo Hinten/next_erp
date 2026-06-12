@@ -64,6 +64,7 @@ import {
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import {
   describeReferences,
+  findManyProdutoReferences,
   findProdutoReferences,
   hasReferences,
 } from '@/lib/produtos/references';
@@ -280,15 +281,16 @@ export function VariationManager({
     const { rows: reconciled, reusedIds } = reconcileStagedChildren(rows);
 
     const deleteTargets = reconciled.filter((r) => r.deleteMark && r.id);
-    const blocked: string[] = [];
-    await Promise.all(
-      deleteTargets.map(async (row) => {
-        const refs = await findProdutoReferences(db, row.id!);
-        if (hasReferences(refs)) {
-          blocked.push(`variação "${row.nome || row.sku}" está ${describeReferences(refs)}`);
-        }
-      }),
+    const refsById = await findManyProdutoReferences(
+      db,
+      deleteTargets.map((r) => r.id!),
     );
+    const blocked = deleteTargets
+      .filter((row) => hasReferences(refsById.get(row.id!)!))
+      .map(
+        (row) =>
+          `variação "${row.nome || row.sku}" está ${describeReferences(refsById.get(row.id!)!)}`,
+      );
     if (blocked.length > 0) {
       throw flushAbort(`Exclusão bloqueada — ${blocked.join('; ')}.`);
     }
@@ -567,17 +569,55 @@ export function VariationManager({
     if (await checkDeletable(row)) patchRow(row, { deleteMark: true });
   }
 
+  /**
+   * Bulk mark/unmark. Marking runs the reference guard over every persisted
+   * row through the concurrency-capped bulk lookup (~8 reads per row — an
+   * unbounded fan-out would throttle) and reports every blocked row in ONE
+   * notification. Fail-closed: a lookup error marks nothing.
+   */
   async function toggleDeleteAll() {
     const target = !rows.every((r) => r.deleteMark);
     if (!target) {
       for (const row of rows) patchRow(row, { deleteMark: false });
       return;
     }
-    await Promise.all(
-      rows.map(async (row) => {
-        if (!row.deleteMark && (await checkDeletable(row))) patchRow(row, { deleteMark: true });
-      }),
-    );
+    const pending = rows.filter((r) => !r.deleteMark);
+    setChecking(new Set(pending.map((r) => r.key)));
+    try {
+      const refsById = await findManyProdutoReferences(
+        db,
+        pending.filter((r) => r.id).map((r) => r.id!),
+      );
+      const blocked = pending.filter((row) => row.id && hasReferences(refsById.get(row.id)!));
+      for (const row of pending) {
+        if (!blocked.includes(row)) patchRow(row, { deleteMark: true });
+      }
+      if (blocked.length > 0) {
+        notifications.show({
+          color: 'red',
+          title: 'Não é possível excluir',
+          message: `${blocked
+            .map(
+              (row) =>
+                `"${row.nome || row.sku}" está ${describeReferences(refsById.get(row.id!)!)}`,
+            )
+            .join('; ')}. Remova os vínculos antes de excluí-la(s).`,
+          autoClose: 10_000,
+        });
+      }
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        console.error('[VariationManager] bulk reference check failed', err);
+        notifications.show({
+          color: 'red',
+          message: `Falha ao verificar vínculos (${err.code}) — exclusões não aplicadas.`,
+        });
+        return;
+      }
+      throw err;
+    } finally {
+      setChecking(new Set());
+    }
   }
 
   function handleDragEnd(event: DragEndEvent) {

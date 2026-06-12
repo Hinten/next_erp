@@ -48,6 +48,29 @@ export async function findProdutoReferences(
   };
 }
 
+/**
+ * Reference lookup over many produtos with bounded concurrency — each id
+ * costs ~8 reads (kit query + 7 subcollection probes), so bulk callers
+ * (delete-all, parent cascade, the flush re-check) must not fan all ids out
+ * in one burst. Rejects on the first lookup failure: deletion guards are
+ * fail-closed, so a partial result must never be acted on.
+ */
+export async function findManyProdutoReferences(
+  db: Firestore,
+  produtoIds: string[],
+  concurrency = 4,
+): Promise<Map<string, ProdutoReferences>> {
+  const out = new Map<string, ProdutoReferences>();
+  for (let i = 0; i < produtoIds.length; i += concurrency) {
+    const slice = produtoIds.slice(i, i + concurrency);
+    const results = await Promise.all(
+      slice.map(async (id) => [id, await findProdutoReferences(db, id)] as const),
+    );
+    for (const [id, refs] of results) out.set(id, refs);
+  }
+  return out;
+}
+
 /** True when any reference exists (the produto must not be deleted). */
 export function hasReferences(refs: ProdutoReferences): boolean {
   return refs.kits.length > 0 || refs.marketplaces.length > 0;

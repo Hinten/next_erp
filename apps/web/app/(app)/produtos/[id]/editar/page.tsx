@@ -22,7 +22,7 @@ import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import {
   describeReferences,
-  findProdutoReferences,
+  findManyProdutoReferences,
   hasReferences,
 } from '@/lib/produtos/references';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
@@ -121,10 +121,10 @@ export default function EditarProdutoPage() {
 
   // The editor is the product screen now (the intermediate detail view was
   // removed) — it owns deletion too, behind ObjectView's typed-confirm modal.
-  // Deleting a parent cascades its variation children in the same batch, but
-  // only after every target passes the inbound-reference guard — a produto
-  // still in a kit or linked to a marketplace listing blocks the whole
-  // operation (#117/#135). Subcollection orphans are server-side (#136).
+  // Deleting a parent cascades its variation children, but only after every
+  // target passes the inbound-reference guard — a produto still in a kit or
+  // linked to a marketplace listing blocks the whole operation (#117/#135).
+  // Subcollection orphans are server-side (#136).
   async function handleDelete(id: string) {
     const childrenSnap = await getDocs(
       buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', id)]),
@@ -133,11 +133,13 @@ export default function EditarProdutoPage() {
       { id, nome: 'o produto' },
       ...childrenSnap.docs.map((d) => ({ id: d.id, nome: `a variação "${d.data().nome}"` })),
     ];
-    const referenced = (
-      await Promise.all(
-        targets.map(async (t) => ({ ...t, refs: await findProdutoReferences(db, t.id) })),
-      )
-    ).filter((t) => hasReferences(t.refs));
+    const refsById = await findManyProdutoReferences(
+      db,
+      targets.map((t) => t.id),
+    );
+    const referenced = targets
+      .map((t) => ({ ...t, refs: refsById.get(t.id)! }))
+      .filter((t) => hasReferences(t.refs));
     if (referenced.length > 0) {
       notifications.show({
         color: 'red',
@@ -149,10 +151,16 @@ export default function EditarProdutoPage() {
       });
       return;
     }
-    const batch = writeBatch(db);
-    for (const child of childrenSnap.docs) batch.delete(child.ref);
-    batch.delete(produtoCollection.docRef(db, {}, id));
-    await batch.commit();
+    // A writeBatch caps at 500 operations — chunk large variation sets. The
+    // parent goes in the LAST batch so a partial failure leaves it (and the
+    // delete affordance) in place; retrying resumes over the remaining docs.
+    const docRefs = [...childrenSnap.docs.map((d) => d.ref), produtoCollection.docRef(db, {}, id)];
+    const BATCH_LIMIT = 499;
+    for (let i = 0; i < docRefs.length; i += BATCH_LIMIT) {
+      const batch = writeBatch(db);
+      for (const ref of docRefs.slice(i, i + BATCH_LIMIT)) batch.delete(ref);
+      await batch.commit();
+    }
     router.replace('/produtos');
   }
 
