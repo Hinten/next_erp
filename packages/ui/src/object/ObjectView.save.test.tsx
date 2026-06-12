@@ -4,7 +4,7 @@ import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { FirebaseError } from 'firebase/app';
 import { useWatch } from 'react-hook-form';
-import { z } from 'zod';
+import { z, ZodError } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
 
 const { docState, saveRecordMock, NothingChanged, notifyShow } = vi.hoisted(() => {
@@ -382,6 +382,44 @@ describe('ObjectView save flow', () => {
     expect(onAfterSave).toHaveBeenCalledWith('EXISTING');
     expect(onSaved).toHaveBeenCalledWith('EXISTING');
     expect(notifyShow).not.toHaveBeenCalledWith(expect.objectContaining({ color: 'yellow' }));
+  });
+
+  it('formats a ZodError from onAfterSave on the pristine path as joined issue messages', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice' } },
+      loading: false,
+      error: undefined,
+    };
+    saveRecordMock.mockRejectedValueOnce(new NothingChanged('Nenhuma alteração para salvar'));
+    // Sibling flushes abort with contextualized custom issues (e.g. duplicate
+    // SKUs / blocked deletions in the variations manager) — the alert must
+    // show the human messages, not ZodError's serialized-issues `message`.
+    const onAfterSave = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new ZodError([
+          { code: 'custom', path: [], message: 'SKU duplicado entre as variações: X.' } as never,
+        ]),
+      );
+    const onSaved = vi.fn();
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          onAfterSave={onAfterSave}
+          onSaved={onSaved}
+        />
+      </Wrap>,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(screen.getByText('SKU duplicado entre as variações: X.')).toBeTruthy();
+    expect(onSaved).not.toHaveBeenCalled();
   });
 
   it('surfaces a FirebaseError from saveRecord in the form alert', async () => {

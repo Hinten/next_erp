@@ -882,15 +882,21 @@ export async function seedProdutoComVariacoes(
 /**
  * Seed a parent produto (`paiId: null`) plus one variation child
  * (`paiId: <parentId>`) — the fixture for the parents-only list filter
- * (#119). Both names are prefix-scoped for the sweep.
+ * (#119) and the deletion-integrity flows (#117). Both names are
+ * prefix-scoped for the sweep.
  */
 export async function seedProdutoComFilho(prefix: string): Promise<{
+  parentId: string;
+  childId: string;
   parentNome: string;
   childNome: string;
+  childSku: string;
 }> {
   const parentId = `${prefix}-pai`;
+  const childId = `${parentId}-filho`;
   const parentNome = `${prefix}-pai`;
   const childNome = `${prefix}-pai P`;
+  const childSku = `${prefix.toUpperCase().replace(/-/g, '_')}_PAI_P`;
   const now = new Date().toISOString();
   const base = {
     publicado: true,
@@ -910,15 +916,90 @@ export async function seedProdutoComFilho(prefix: string): Promise<{
     paiId: null,
     ordem: null,
   });
-  batch.set(db().collection('produtos').doc(`${parentId}-filho`), {
+  batch.set(db().collection('produtos').doc(childId), {
     ...base,
     nome: childNome,
-    sku: `${prefix.toUpperCase().replace(/-/g, '_')}_PAI_P`,
+    sku: childSku,
     paiId: parentId,
     ordem: 0,
   });
   await batch.commit();
-  return { parentNome, childNome };
+  return { parentId, childId, parentNome, childNome, childSku };
+}
+
+/**
+ * Seed a kit produto whose `componentesKit` references `componentId` — the
+ * Flutter wire shape: a map keyed by the component's doc id plus the
+ * denormalized `componentesKitKeys` id array the delete guard queries.
+ */
+export async function seedKitReferencing(
+  prefix: string,
+  componentId: string,
+): Promise<{ kitId: string; kitNome: string }> {
+  const kitId = `${prefix}-kit`;
+  const kitNome = `${prefix}-kit`;
+  await db()
+    .collection('produtos')
+    .doc(kitId)
+    .set({
+      nome: kitNome,
+      sku: `${prefix.toUpperCase().replace(/-/g, '_')}_KIT`,
+      paiId: null,
+      ordem: null,
+      publicado: true,
+      ehKit: true,
+      ehKitVirtual: false,
+      ofereceFreteGratis: false,
+      permiteVendaSemEstoque: false,
+      componentesKitKeys: [componentId],
+      componentesKit: { [componentId]: { quantidade: 1, limitarEstoque: false } },
+      fotos: null,
+      videos: null,
+      timestamp: new Date().toISOString(),
+    });
+  return { kitId, kitNome };
+}
+
+/**
+ * Seed a Mercado Livre variation-link doc under the produto — the Flutter
+ * shape: `produtos/<id>/variacoesml/<x>` with `produtoVariacaoOuterRef`
+ * pointing back at the produto (`pathNoDocuments`, see
+ * `produtoTableProvider.dart:1557`). Makes the produto "marketplace-linked"
+ * for the delete guard.
+ */
+export async function seedVariacaoMlLink(produtoId: string): Promise<void> {
+  await db()
+    .collection('produtos')
+    .doc(produtoId)
+    .collection('variacoesml')
+    .doc('mlb-test')
+    .set({
+      id: 123456789,
+      produtoVariacaoOuterRef: `produtos/${produtoId}`,
+      produtoMercadoLivreOuterRef: `produtos/${produtoId}/produtomercadolivre/mlb-item`,
+      sku: null,
+    });
+}
+
+/**
+ * Delete every doc of one produto subcollection (Firestore never cascades —
+ * link docs seeded by `seedVariacaoMlLink` must be swept before the produto).
+ */
+export async function cleanupProdutoSubcollection(
+  produtoId: string,
+  subcollection: string,
+): Promise<void> {
+  const snap = await db().collection('produtos').doc(produtoId).collection(subcollection).get();
+  if (snap.empty) return;
+  const batch = db().batch();
+  snap.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+}
+
+/** Doc id of the first produto whose `sku` equals `sku`, or null. */
+export async function getProdutoIdBySku(sku: string): Promise<string | null> {
+  const snap = await db().collection('produtos').where('sku', '==', sku).limit(1).get();
+  return snap.docs[0]?.id ?? null;
 }
 
 /**

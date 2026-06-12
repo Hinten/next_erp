@@ -290,6 +290,105 @@ export function reconstructFromSkuSuffix(input: {
   };
 }
 
+/**
+ * Non-empty trimmed SKUs shared by two or more live (non-delete-marked) rows.
+ * Returns `sku → row keys` with only the offending SKUs present. Empty SKUs
+ * never count — legacy data legally holds several empty-SKU children (parent
+ * without SKU + variants without código), and the child-SKU == parent-SKU
+ * case is also legacy-legal, so uniqueness is only enforced among siblings.
+ */
+export function findDuplicateSkus(
+  rows: Array<{ key: string; sku: string; deleteMark: boolean }>,
+): Map<string, string[]> {
+  const bySku = new Map<string, string[]>();
+  for (const row of rows) {
+    if (row.deleteMark) continue;
+    const sku = row.sku.trim();
+    if (sku === '') continue;
+    const keys = bySku.get(sku);
+    if (keys) keys.push(row.key);
+    else bySku.set(sku, [row.key]);
+  }
+  for (const [sku, keys] of bySku) {
+    if (keys.length < 2) bySku.delete(sku);
+  }
+  return bySku;
+}
+
+/** The staged-row fields `reconcileStagedChildren` needs (issue #117). */
+export interface ReconcilableRow {
+  /** Firestore doc id — empty/null for staged creates. */
+  id: string | null;
+  sku: string;
+  variacoesUid: string[];
+  deleteMark: boolean;
+}
+
+/**
+ * Reconcile staged (delete, create) pairs into id-reusing updates — the user
+ * who deletes a child and recreates "the same" variation (same SKU, e.g. via
+ * Gerar after an accidental delete) must keep the original doc id, because
+ * the id anchors estoque docs, marketplace variation links, kit entries and
+ * NF-e history (issue #117).
+ *
+ * Pairing rules (per staged create, in row order):
+ *  1. Non-empty trimmed SKU equal to a staged-delete's SKU. Several matches
+ *     (legacy duplicate SKUs) prefer the delete with the same variant combo
+ *     (`sameCombo`), else the first in order.
+ *  2. Empty-SKU creates pair only by `sameCombo`, and only when both combos
+ *     are non-empty (two blank manual rows are not "the same variation").
+ *
+ * A paired create comes back with the delete's `id` (everything else
+ * unchanged); the absorbed delete row is removed from the output. The caller
+ * must persist the pair as an UPDATE writing the reconciled display fields
+ * (nome/sku/variacoesUid/ordem) — never dims/pesos or other doc fields, which
+ * is the point of preserving the doc. Unpaired deletes stay in the output for
+ * the real-deletion path (reference guard + delete).
+ */
+export function reconcileStagedChildren<R extends ReconcilableRow>(
+  rows: R[],
+): { rows: R[]; reusedIds: string[] } {
+  const deletes = rows.filter((r) => r.deleteMark && r.id);
+  const paired = new Set<R>();
+  const reusedBy = new Map<R, string>();
+
+  for (const row of rows) {
+    if (row.deleteMark || row.id) continue; // only staged creates
+    const sku = row.sku.trim();
+    let candidates: R[];
+    if (sku !== '') {
+      candidates = deletes.filter((d) => !paired.has(d) && d.sku.trim() === sku);
+    } else {
+      candidates =
+        row.variacoesUid.length === 0
+          ? []
+          : deletes.filter(
+              (d) =>
+                !paired.has(d) &&
+                d.variacoesUid.length > 0 &&
+                sameCombo(d.variacoesUid, row.variacoesUid),
+            );
+    }
+    const match =
+      candidates.length > 1
+        ? (candidates.find((d) => sameCombo(d.variacoesUid, row.variacoesUid)) ?? candidates[0]!)
+        : candidates[0];
+    if (!match) continue;
+    paired.add(match);
+    reusedBy.set(row, match.id!);
+  }
+
+  return {
+    rows: rows
+      .filter((r) => !paired.has(r))
+      .map((r) => {
+        const reusedId = reusedBy.get(r);
+        return reusedId === undefined ? r : { ...r, id: reusedId };
+      }),
+    reusedIds: [...reusedBy.values()],
+  };
+}
+
 /** One per-variant photo section of the parent's gallery. */
 export interface FotoVariantSection {
   /** Canonical variant fake path — the `Foto.variantePath` tag. */

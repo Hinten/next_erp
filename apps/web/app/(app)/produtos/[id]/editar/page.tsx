@@ -4,7 +4,8 @@ import { useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
-import { deleteDoc } from 'firebase/firestore';
+import { notifications } from '@mantine/notifications';
+import { getDocs, writeBatch } from 'firebase/firestore';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import {
@@ -15,10 +16,15 @@ import {
   produtoSchema,
   sortGrupoUids,
 } from '@delfrance/schemas';
-import { buildQuery, limit, orderByField } from '@delfrance/data';
+import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
+import {
+  describeReferences,
+  findManyProdutoReferences,
+  hasReferences,
+} from '@/lib/produtos/references';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { PhotoManager } from '../../_components/PhotoManager';
@@ -115,8 +121,46 @@ export default function EditarProdutoPage() {
 
   // The editor is the product screen now (the intermediate detail view was
   // removed) — it owns deletion too, behind ObjectView's typed-confirm modal.
+  // Deleting a parent cascades its variation children, but only after every
+  // target passes the inbound-reference guard — a produto still in a kit or
+  // linked to a marketplace listing blocks the whole operation (#117/#135).
+  // Subcollection orphans are server-side (#136).
   async function handleDelete(id: string) {
-    await deleteDoc(produtoCollection.docRef(db, {}, id));
+    const childrenSnap = await getDocs(
+      buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', id)]),
+    );
+    const targets = [
+      { id, nome: 'o produto' },
+      ...childrenSnap.docs.map((d) => ({ id: d.id, nome: `a variação "${d.data().nome}"` })),
+    ];
+    const refsById = await findManyProdutoReferences(
+      db,
+      targets.map((t) => t.id),
+    );
+    const referenced = targets
+      .map((t) => ({ ...t, refs: refsById.get(t.id)! }))
+      .filter((t) => hasReferences(t.refs));
+    if (referenced.length > 0) {
+      notifications.show({
+        color: 'red',
+        title: 'Não é possível excluir',
+        message: `${referenced
+          .map((t) => `${t.nome} está ${describeReferences(t.refs)}`)
+          .join('; ')}. Remova os vínculos antes de excluir.`,
+        autoClose: 12_000,
+      });
+      return;
+    }
+    // A writeBatch caps at 500 operations — chunk large variation sets. The
+    // parent goes in the LAST batch so a partial failure leaves it (and the
+    // delete affordance) in place; retrying resumes over the remaining docs.
+    const docRefs = [...childrenSnap.docs.map((d) => d.ref), produtoCollection.docRef(db, {}, id)];
+    const BATCH_LIMIT = 499;
+    for (let i = 0; i < docRefs.length; i += BATCH_LIMIT) {
+      const batch = writeBatch(db);
+      for (const ref of docRefs.slice(i, i + BATCH_LIMIT)) batch.delete(ref);
+      await batch.commit();
+    }
     router.replace('/produtos');
   }
 
@@ -168,7 +212,7 @@ export default function EditarProdutoPage() {
         readOnly={!canWrite}
         canDelete={canWrite}
         onDelete={handleDelete}
-        deleteConfirmMessage="O produto será excluído permanentemente. Esta ação não pode ser desfeita."
+        deleteConfirmMessage="O produto e suas variações serão excluídos permanentemente. Esta ação não pode ser desfeita."
         onSaved={() => router.replace('/produtos')}
       />
     </Stack>

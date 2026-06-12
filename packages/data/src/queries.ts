@@ -28,6 +28,16 @@ export function whereOp(field: string, op: WhereFilterOp, value: unknown): Query
   return where(field, op, value);
 }
 
+/**
+ * Membership test on an array field (`array-contains`). Typical use:
+ * denormalized id arrays such as `produto.componentesKitKeys`, where
+ * "which kits include component X" becomes
+ * `whereArrayContains('componentesKitKeys', x)`.
+ */
+export function whereArrayContains(field: string, value: unknown): QueryConstraint {
+  return where(field, 'array-contains', value);
+}
+
 export function orderByField(field: string, direction: 'asc' | 'desc' = 'asc'): QueryConstraint {
   return fsOrderBy(field, direction);
 }
