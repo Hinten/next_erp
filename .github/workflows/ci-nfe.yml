@@ -177,6 +177,22 @@ jobs:
           fi
           echo "All 5 live-test secrets are configured."
 
+      - name: Restore last-known-good SEFAZ chains
+        # Fallback for SEFAZ hosts' intermittent unreachability from
+        # hosted runners: a fresh fetch is ALWAYS attempted first (chains
+        # rotate — SERPRO swapped the SVC-AN root on 2026-06-12); the
+        # cache only backstops a failed fetch. These are PUBLIC server
+        # chains — the A1 client certificate is a secret and is never
+        # cached. `key` is run-unique so restore always falls through to
+        # the newest `restore-keys` match; the save step below refreshes
+        # the cache with whatever this run ended up with.
+        uses: actions/cache/restore@v4
+        with:
+          path: packages/integrations/nfe/ca/*.pem
+          key: sefaz-chains-${{ github.run_id }}
+          restore-keys: |
+            sefaz-chains-
+
       - name: Refresh SEFAZ TLS chain
         # See velvet-purring-bear.md "Cert lifecycle (operations)".
         # A fresh fetch per CI run avoids stale-bundle failures when
@@ -185,7 +201,16 @@ jobs:
         # one on 2026-06-12 — a committed bundle would have gone stale).
         # SP only here — the SVC chains are fetched inside the advisory
         # SVC step below, so SERPRO reachability can't sink the SP lanes.
-        run: pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca
+        # A failed fetch falls back to the cached chain when one exists.
+        run: |
+          if ! pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca; then
+            if [[ -f packages/integrations/nfe/ca/sefaz-sp-homologacao.pem ]]; then
+              echo "::warning::SP chain fetch failed — using the last-known-good cached chain"
+            else
+              echo "::error::SP chain fetch failed and no cached chain is available"
+              exit 1
+            fi
+          fi
 
       - name: SEFAZ-SP HOM status gate (single status call per CI run)
         # Dedicated step so the emission + orchestrator steps below
@@ -249,26 +274,46 @@ jobs:
         run: |
           # SVC chains are fetched here (not in the SP chain step) so
           # SERPRO reachability shares this step's advisory semantics.
-          # SVC-AN is fatal within the step (it gates the whole suite);
-          # SVC-RS degrades — svc.homologacao's 410 transport test
+          # A failed fetch falls back to the cached last-known-good chain
+          # (restored above) — SVRS in particular RSTs CERTLESS handshakes
+          # while still accepting the mTLS SOAP calls, so a cached chain
+          # lets the tests run even when the TOFU fetch is blocked. With
+          # neither fetch nor cache, SVC-AN fails the step (it gates the
+          # whole suite); SVC-RS degrades — the 410 transport test
           # self-skips when its chain file is absent.
-          fetch_chain() {
+          ensure_chain() {
+            local file="packages/integrations/nfe/ca/$1"; shift
             for i in 1 2 3; do
               pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca "$@" && return 0
               echo "fetch:sefaz-ca $* — attempt $i failed; retrying in 15s"
               sleep 15
             done
+            if [[ -f "$file" ]]; then
+              echo "::warning::fetch:sefaz-ca $* failed after 3 attempts — using the last-known-good cached chain"
+              return 0
+            fi
             return 1
           }
-          fetch_chain -- --uf=SVC-AN --ambiente=homologacao
-          fetch_chain -- --uf=SVC-RS --ambiente=homologacao \
-            || echo "::warning::SVC-RS chain fetch failed after 3 attempts (SVRS resets certless handshakes intermittently) — the 410 transport test will self-skip this run"
+          ensure_chain sefaz-svc-an-homologacao.pem -- --uf=SVC-AN --ambiente=homologacao
+          ensure_chain sefaz-svc-rs-homologacao.pem -- --uf=SVC-RS --ambiente=homologacao \
+            || echo "::warning::SVC-RS chain unavailable (fetch failed, no cache) — the 410 transport test will self-skip this run"
           pnpm --filter @delfrance/integrations-nfe test svc.homologacao
 
       - name: Surface advisory SVC failure
         if: steps.svc-live.outcome == 'failure'
         run: |
           echo "::warning::SVC live suite failed — ADVISORY on PR/push runs (SERPRO hosts are intermittently unreachable from hosted runners). The weekly scheduled run treats this as fatal; investigate there if it persists."
+
+      - name: Save SEFAZ chains to cache (last-known-good)
+        # Refresh the fallback with whatever this run ended up with —
+        # freshly fetched chains when SEFAZ was reachable, the restored
+        # ones otherwise. Public server certs only; runs even when the
+        # advisory SVC step failed.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: packages/integrations/nfe/ca/*.pem
+          key: sefaz-chains-${{ github.run_id }}
 
   report-consumo-indevido:
     name: Detect Consumo Indevido Shield (cStat=656)
