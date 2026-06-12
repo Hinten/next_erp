@@ -3,11 +3,11 @@
  * `svc.homologacao.test.ts`): coerce a `retEnviNFe` (sync or async) down
  * to the inner `protNFe`.
  *
- * - `cStat=104` (Lote processado) → `ret.protNFe` is set inline.
+ * - `protNFe` already inline (the sync cStat=104 shape) → returned directly.
  * - `cStat=103` (Lote recebido) → poll `consultarLote` for the protNFe.
- * - `cStat=100` (rare for autorizarLote) → return ret as-is, no protNFe.
- * - anything else (denial, signature error, etc.) → return undefined so
- *   the caller surfaces the lote-level message.
+ * - anything else without an inline protNFe (denial, signature error, the
+ *   rare lote-level 100) → returns `undefined` so the caller surfaces the
+ *   lote-level cStat/xMotivo.
  */
 import { assertNotConsumoIndevido } from '../../src/state';
 import { consultarLote } from '../../src/operations/index';
