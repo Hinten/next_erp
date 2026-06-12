@@ -14,8 +14,9 @@ import { CollectionSelect } from '@/components/collection-select/CollectionSelec
  *   carries the stamp; pipeline sorts treat a missing field as null, so
  *   legacy Flutter-written clientes sort last instead of being excluded).
  * - Typing triggers the pipeline **regex** search (case/accent-insensitive
- *   `regexContains`) across nome, CPF/CNPJ, e-mail and telefone — any
- *   cliente is reachable regardless of the 5-doc initial window.
+ *   `regexContains`) across nome, CPF/CNPJ, idEstrangeiro, e-mail and
+ *   telefone — any cliente is reachable regardless of the 5-doc initial
+ *   window.
  * - `emitDocPath` picks the emitted wire shape: `true` → Flutter-ODM
  *   doc-path string `documents/clientes/<id>` (e.g.
  *   `freteInicial.clienteRecebedorOuterReference`); `false` → native
@@ -29,7 +30,7 @@ const RECENCY_ORDER: Array<{ field: string; direction: 'desc' }> = [
   { field: 'ultimaModificacao', direction: 'desc' },
   { field: 'timestamp', direction: 'desc' },
 ];
-const SEARCH_FIELDS = ['nome', 'cpf_cnpj', 'email', 'telefone'];
+const SEARCH_FIELDS = ['nome', 'cpf_cnpj', 'idEstrangeiro', 'email', 'telefone'];
 
 export interface ClientePickerProps {
   /** RHF field path — keys the per-instance "Recentes" cache. */
