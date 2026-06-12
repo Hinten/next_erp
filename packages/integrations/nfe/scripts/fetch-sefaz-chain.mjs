@@ -27,7 +27,7 @@
  *   pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca
  *   node scripts/fetch-sefaz-chain.mjs --uf=SP --ambiente=homologacao
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { dirname, join, resolve } from 'node:path';
@@ -53,8 +53,8 @@ const HOSTS = {
   'SP:producao': 'nfe.fazenda.sp.gov.br',
   // Contingency authorizers — the "UF" slot carries the authorizer id
   // (chain files land as `sefaz-svc-an-<ambiente>.pem` etc.).
-  'SVC-AN:homologacao': 'hom.svc.fazenda.gov.br',
-  'SVC-AN:producao': 'www.svc.fazenda.gov.br',
+  'SVC-AN:homologacao': 'hom.sefazvirtual.fazenda.gov.br',
+  'SVC-AN:producao': 'www.sefazvirtual.fazenda.gov.br',
   'SVC-RS:homologacao': 'nfe-homologacao.svrs.rs.gov.br',
   'SVC-RS:producao': 'nfe.svrs.rs.gov.br',
   // Ambiente Nacional (EPEC evento drop-box).
@@ -227,6 +227,29 @@ function isSelfSigned(forgeCert) {
   );
 }
 
+/**
+ * Every cert found in the other vendored bundles under `ca/`. ICP-Brasil
+ * intermediates often carry no AIA caIssuers extension (the SERPRO SSLv1 one
+ * behind SVRS doesn't), so the walk can dead-end even though the missing
+ * root is already vendored for another UF — recover it locally instead of
+ * failing.
+ */
+function loadSiblingBundleCerts() {
+  const dir = join(PKG_ROOT, 'ca');
+  const out = [];
+  for (const name of readdirSync(dir).filter((n) => n.endsWith('.pem'))) {
+    for (const pem of splitPem(readFileSync(join(dir, name), 'utf8'))) {
+      try {
+        out.push({ cert: forge.pki.certificateFromPem(pem), file: name });
+      } catch {
+        // Skip unparseable blocks (hand-edited bundle) — the cert pool is
+        // best-effort; a miss just means the fatal below still fires.
+      }
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Main flow
 // ---------------------------------------------------------------------------
@@ -308,8 +331,65 @@ socket.once('secureConnect', async () => {
       break;
     }
   }
+  // 2b. AIA dead end? Try to complete the chain from certs already vendored
+  //     for other UFs before declaring failure.
+  if (!isSelfSigned(top)) {
+    const pool = loadSiblingBundleCerts();
+    let progressed = true;
+    while (!isSelfSigned(top) && progressed) {
+      progressed = false;
+      for (const { cert: cand, file } of pool) {
+        if (JSON.stringify(cand.subject.attributes) !== JSON.stringify(top.issuer.attributes)) {
+          continue;
+        }
+        // A DN match alone is not proof of issuance: cross-signed or rotated
+        // CAs reuse the same DN across different keys, and appending the
+        // wrong one writes a bundle that can never validate. Accept only a
+        // candidate whose key actually signed `top`.
+        try {
+          if (!cand.verify(top)) continue;
+        } catch {
+          // forge throws on signature mismatch and on signature algorithms
+          // it can't process — either way this candidate is not the issuer.
+          continue;
+        }
+        const fp = forge.md.sha256
+          .create()
+          .update(forgeCertToDer(cand).toString('binary'))
+          .digest()
+          .toHex();
+        if (fingerprints.has(fp)) continue;
+        fingerprints.add(fp);
+        chain.push(cand);
+        top = cand;
+        console.log(`  ↺ recovered "${subjectCN(cand)}" from sibling bundle ${file}`);
+        progressed = true;
+        break;
+      }
+    }
+  }
+
   if (isSelfSigned(top)) {
     console.log(`  ✓ reached self-signed root: "${subjectCN(top)}"`);
+  } else if (chain.length >= 2) {
+    // (The leaf-only case falls through to the interception-aware fatal
+    // below.) A trust bundle that doesn't reach a self-signed root can NEVER
+    // validate — Node's `ca` option replaces the default store entirely, so
+    // verification dies with UNABLE_TO_GET_ISSUER_CERT at the first call.
+    // Writing the partial bundle anyway would look like success and only
+    // fail later at runtime, so abort without writing.
+    console.error(
+      `\nFatal: the chain stops at "${subjectCN(top)}" (issued by ` +
+        `"${issuerCN(top)}"), which is not self-signed.`,
+    );
+    console.error(
+      'Fetch the missing root from its CA (ICP-Brasil roots: ' +
+        'https://acraiz.icpbrasil.gov.br/) and append it to the bundle, or ' +
+        're-run on a network where the AIA URLs above are reachable. Another ' +
+        'vendored bundle in ca/ may already contain the same root — for ' +
+        'ICP-Brasil chains, check sefaz-sp-homologacao.pem.',
+    );
+    process.exit(4);
   }
 
   // 3. Skip the leaf (index 0) and write the trust bundle. If the leaf is
