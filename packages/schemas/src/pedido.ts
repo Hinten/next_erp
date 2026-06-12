@@ -276,3 +276,50 @@ export function pedidoTotal(p: Pedido): number {
   }
   return sum;
 }
+
+/**
+ * Legacy `duasCasasDecimais` (`.old/packages/global/lib/src/mathExtensions.dart:4`):
+ * `double.parse(toStringAsFixed(2))` — JS `toFixed` rounds the same way for
+ * the 2-decimal money values this is applied to.
+ */
+export function round2(n: number): number {
+  return Number(n.toFixed(2));
+}
+
+/**
+ * Derive the pedido money caches from the items + `freteInicial`, exactly as
+ * the legacy app does:
+ *
+ *   - `valorCobrado` — port of `Pedido.total`
+ *     (`.old/packages/pedido/lib/src/models.dart:3316-3320`):
+ *     `round2(round2(round2(Σ itemSubtotal) − descontoTotal) + (frete?.valorCobrado ?? 0))`.
+ *     The legacy form assigns `pedidoSave.valorCobrado = pedidoSave.total` on
+ *     every integral save (`cadastroPedidoProvider.dart:1186`).
+ *   - `valorFreteInicial` / `custoFreteInicial` — port of the `Pedido.factory`
+ *     reporting caches (`models.dart:3601-3602`):
+ *     `round2(frete?.valorCobrado ?? 0)` and
+ *     `round2(frete?.custoCalculado ?? frete?.custoFinal ?? 0)` — note
+ *     `custoCalculado` wins over `custoFinal`, matching the factory.
+ *
+ * `freteInicial.valorCobrado` participates regardless of `modalidade` — the
+ * legacy total has no special case for '9' (sem frete); a collapsed frete
+ * block keeps its data and its charge.
+ */
+export function derivePedidoFreteTotals(args: {
+  itens: ReadonlyArray<ItemDoPedido>;
+  descontoTotal: number;
+  freteInicial: {
+    valorCobrado?: number | null;
+    custoCalculado?: number | null;
+    custoFinal?: number | null;
+  } | null;
+}): { valorCobrado: number; valorFreteInicial: number; custoFreteInicial: number } {
+  const { itens, descontoTotal, freteInicial } = args;
+  const subtotal = round2(itens.reduce((sum, item) => sum + itemSubtotal(item), 0));
+  const subtotalComDesconto = round2(subtotal - descontoTotal);
+  return {
+    valorCobrado: round2(subtotalComDesconto + (freteInicial?.valorCobrado ?? 0)),
+    valorFreteInicial: round2(freteInicial?.valorCobrado ?? 0),
+    custoFreteInicial: round2(freteInicial?.custoCalculado ?? freteInicial?.custoFinal ?? 0),
+  };
+}

@@ -87,21 +87,32 @@ interface DevFreteSeed {
    * '2'=terceiros, '3'/'4'=próprio, '9'=sem transporte. Default '0'.
    */
   readonly modalidade?: '0' | '1' | '2' | '3' | '4' | '9';
-  /** Issuer-paid freight value — only meaningful with modalidade='0'. */
+  /**
+   * Freight value charged to the customer. Participates in the pedido money
+   * caches (`valorCobrado`/`valorFreteInicial`) for EVERY modalidade — see
+   * `derivePedidoFreteTotals` (legacy `Pedido.total`). Only the NF-e side is
+   * modalidade-gated: `<total>.vFrete` counts it solely under modalidade='0'
+   * (contratação pelo emitente).
+   */
   readonly valorCobrado?: number;
+  /** Flutter wire names (the NFe orchestrator remaps to CNPJ/xNome/… itself). */
   readonly transportadora?: {
-    CNPJ?: string;
-    CPF?: string;
-    xNome?: string;
-    IE?: string;
-    xEnder?: string;
-    xMun?: string;
-    UF?: string;
+    cnpj?: string;
+    ie?: string;
+    nome?: string;
+    endereco?: string;
+    municipio?: string;
+    uf?: string;
   };
+  /**
+   * Flutter wire names (the NFe orchestrator remaps to placa/UF/RNTC
+   * itself). `placa` and `uf` are required on the wire — the legacy decoder
+   * crashes on null, so a fixture without them would be invalid.
+   */
   readonly veiculo?: {
     placa: string;
-    UF?: string;
-    RNTC?: string;
+    uf: string;
+    rntc?: string;
   };
   /** Flutter wire names (the NFe orchestrator remaps to qVol/esp/… itself). */
   readonly volumes?: ReadonlyArray<{
@@ -160,14 +171,14 @@ const PEDIDOS: PedidoSeed[] = [
       modalidade: '0',
       valorCobrado: 49.9,
       transportadora: {
-        CNPJ: '99999999000191',
-        xNome: 'Transportadora Dev SA',
-        IE: '110042490114',
-        xEnder: 'Av Carrier 100',
-        xMun: 'Sao Paulo',
-        UF: 'SP',
+        cnpj: '99999999000191',
+        nome: 'Transportadora Dev SA',
+        ie: '110042490114',
+        endereco: 'Av Carrier 100',
+        municipio: 'Sao Paulo',
+        uf: 'SP',
       },
-      veiculo: { placa: 'ABC1D23', UF: 'SP', RNTC: '12345' },
+      veiculo: { placa: 'ABC1D23', uf: 'SP', rntc: '12345' },
       volumes: [
         {
           quantidade: 1,

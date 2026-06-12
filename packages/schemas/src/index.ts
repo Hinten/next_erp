@@ -91,6 +91,8 @@ export {
   bucketOf,
   itemSubtotal,
   pedidoTotal,
+  round2,
+  derivePedidoFreteTotals,
   type Pedido,
   type ItemDoPedido,
   type EstadoPedido,

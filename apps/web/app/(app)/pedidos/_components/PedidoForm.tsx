@@ -6,14 +6,15 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
 import { Alert, Button, Group, Stack, Tabs, Tooltip } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
-import { type Pedido, pedidoSchema } from '@delfrance/schemas';
+import { derivePedidoFreteTotals, type Pedido, pedidoSchema } from '@delfrance/schemas';
 import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
-import { FiscalTab, PlaceholderTab, PrincipalTab } from './tabs';
+import { FiscalTab, FreteTab, PlaceholderTab, PrincipalTab } from './tabs';
 import { PagamentosSection } from './PagamentosSection';
 import { regroupItens } from './regroupItens';
 import { flattenItens } from './flattenItens';
+import { normalizeFreteInicial } from './freteDerivation';
 import type { FlatItem, PedidoFormState } from './types';
 
 export interface PedidoFormProps {
@@ -78,8 +79,16 @@ const baseResolver = zodResolver(pedidoSchema) as unknown as AnyResolver;
 /**
  * Custom resolver. Regroups the flat `_itensFlat` array back into
  * `itens: Record<produtoUid, ItemDoPedido[]>` (stripping the synthetic
- * `_rowId` keys) before delegating to zodResolver. The synthetic
- * `_itensFlat` field is dropped so it never reaches Firestore.
+ * `_rowId` keys), normalizes `freteInicial` and derives the legacy money
+ * caches before delegating to zodResolver — validation and the saved doc
+ * see the same values (validate-what-you-save):
+ *
+ *   - `valorCobrado` = legacy `Pedido.total` (subtotal − desconto + frete);
+ *   - `valorFreteInicial` / `custoFreteInicial` = the `Pedido.factory`
+ *     reporting caches.
+ *
+ * The synthetic `_itensFlat` field is dropped so it never reaches
+ * Firestore.
  */
 const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
   values,
@@ -91,7 +100,20 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
     const { _rowId, ...item } = row as FlatItem;
     return item;
   });
-  const merged = { ...rest, itens: regroupItens(cleanItens) };
+  const freteInicial = normalizeFreteInicial(rest.freteInicial);
+  const totals = derivePedidoFreteTotals({
+    itens: cleanItens,
+    descontoTotal: rest.descontoTotal ?? 0,
+    freteInicial,
+  });
+  const merged = {
+    ...rest,
+    itens: regroupItens(cleanItens),
+    freteInicial,
+    valorCobrado: totals.valorCobrado,
+    valorFreteInicial: totals.valorFreteInicial,
+    custoFreteInicial: totals.custoFreteInicial,
+  };
   return baseResolver(merged, context, options) as Awaited<
     ReturnType<Resolver<PedidoFormState, unknown, Pedido>>
   >;
@@ -102,6 +124,10 @@ function buildDefaults(existing?: Pedido): PedidoFormState {
   return {
     ...EMPTY_DEFAULTS,
     ...existing,
+    // `freteDoPedidoSchema` is `.passthrough()`, so its inferred type has an
+    // index signature `PedidoFormState` deliberately avoids (RHF path
+    // inference) — structurally the same wire shape.
+    freteInicial: (existing.freteInicial ?? null) as PedidoFormState['freteInicial'],
     _itensFlat: flattenItens(existing.itens ?? {}),
   };
 }
@@ -173,7 +199,7 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="frete" pt="md">
-            <PlaceholderTab name="Frete" preview={form.getValues('freteInicial')} />
+            <FreteTab form={form} db={db} disabled={disabled} pedidoId={pedidoId} />
           </Tabs.Panel>
 
           <Tabs.Panel value="pagamento" pt="md">

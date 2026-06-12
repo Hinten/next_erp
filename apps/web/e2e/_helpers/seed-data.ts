@@ -568,6 +568,156 @@ export async function cleanupPedidoFixtures(prefix: string): Promise<void> {
 }
 
 /**
+ * Fixtures for the pedido **Frete tab** suite: everything
+ * `seedPedidoFixtures` provides plus
+ *   - one endereço under the cliente (CEP inside the motoboy faixa below);
+ *   - a Retirada na Loja and a Motoboy `int_frete` doc (Flutter wire shape —
+ *     string `documents/...` refs, ms-epoch `dataCadastro`), both with a
+ *     7-day cut-off schedule so `getPrazoDespacho` always resolves;
+ *   - a marketplace-managed pedido (`<prefix>-mkt-001`) whose `freteInicial`
+ *     points at a Mercado Livre integração, for the read-only rendering.
+ */
+export async function seedPedidoFreteFixtures(prefix: string): Promise<{
+  base: Awaited<ReturnType<typeof seedPedidoFixtures>>;
+  clienteId: string;
+  enderecoPath: string;
+  retiradaId: string;
+  retiradaNome: string;
+  motoboyId: string;
+  motoboyNome: string;
+  mktPedidoId: string;
+}> {
+  const base = await seedPedidoFixtures(prefix);
+  const clienteId = `${prefix}-cli-001`;
+  const enderecoId = `${prefix}-end-001`;
+  const retiradaId = `${prefix}-fr-ret`;
+  const retiradaNome = `${prefix}-frete-retirada`;
+  const motoboyId = `${prefix}-fr-mot`;
+  const motoboyNome = `${prefix}-frete-motoboy`;
+  const mlIntId = `${prefix}-fr-ml`;
+  const mktPedidoId = `${prefix}-mkt-001`;
+
+  // Cut-off at 23:59 every weekday: the inclusive same-day check always
+  // passes, so the autofilled prazoDespacho is deterministic (today 18:00).
+  const horarioDeCorte = [1, 2, 3, 4, 5, 6, 7].map((diaDaSemana) => ({
+    diaDaSemana,
+    horaDeCorte: 23,
+    minutosDeCorte: 59,
+    prazoDePostagem: 0,
+    horaPostagem: 18,
+    minutosPostagem: 0,
+  }));
+
+  const intFreteBase = {
+    ativo: true,
+    filialIntegracaoFreteOuterRef: `documents/filiais/${prefix}-fil-001`,
+    enderecoDeOrigem: null,
+    dataCadastro: Date.now(),
+    mapa: null,
+    horarioDeCorte,
+    prazoExtra: 0,
+    client_id: null,
+    client_secret: null,
+  };
+
+  const batch = db().batch();
+  batch.set(db().collection('clientes').doc(clienteId).collection('enderecos').doc(enderecoId), {
+    idExterno: null,
+    logradouro: 'Av Paulista',
+    numero: '1000',
+    bairro: 'Bela Vista',
+    complemento: null,
+    cep: '01310100',
+    codigoMunicipio: null,
+    cidade: 'São Paulo',
+    estado: 'SP',
+    cPais: null,
+    pais: null,
+    nome: null,
+    cpf_cnpj: null,
+    rg: null,
+    ie: null,
+    imun: null,
+    email: null,
+    telefone: null,
+  });
+  batch.set(db().collection('int_frete').doc(retiradaId), {
+    ...intFreteBase,
+    tipo: 'retiradaNaLoja',
+    nome: retiradaNome,
+    faixaCep: null,
+  });
+  batch.set(db().collection('int_frete').doc(motoboyId), {
+    ...intFreteBase,
+    tipo: 'motoboy',
+    nome: motoboyNome,
+    faixaCep: [{ cepInicial: '01000000', cepFinal: '01999999', custo: 15, valor: 20, prazo: 1 }],
+  });
+  batch.set(db().collection('int_frete').doc(mlIntId), {
+    ...intFreteBase,
+    tipo: 'mercadoLivre',
+    nome: `${prefix}-frete-ml`,
+    faixaCep: null,
+  });
+  batch.set(db().collection('pedidos').doc(mktPedidoId), {
+    ehSaida: true,
+    estado: 'pago',
+    numero: mktPedidoId,
+    itens: {},
+    itensIds: [],
+    descontoTotal: 0,
+    timestamp: Date.now(),
+    freteInicial: {
+      externalId: 'ML-0001',
+      externalOptionId: 'ml-opt-1',
+      externalOptionIntegracao: 'mercadoLivre',
+      externalOptionData: { shipment_id: 'SHP-123' },
+      estado: 'postado',
+      integracaoFreteOuterRef: `documents/int_frete/${mlIntId}`,
+      modalidade: '0',
+      codRastreio: 'BR123456789ML',
+      valorCobrado: 25.9,
+      custoCalculado: null,
+      custoFinal: null,
+      ehReverso: false,
+      prazoExtra: 0,
+      prazoDespacho: null,
+      dataEntrega: null,
+      dataPrevisaoEntrega: null,
+      valor_assegurado: null,
+      transportadora: null,
+      veiculo: null,
+      reboques: null,
+      vagao: null,
+      balsa: null,
+      volumes: null,
+      integracao_path: null,
+      clienteRecebedorOuterReference: null,
+      enderecoFreteOuterReference: null,
+      ultimaModificacao: null,
+    },
+  });
+  await batch.commit();
+
+  return {
+    base,
+    clienteId,
+    enderecoPath: `clientes/${clienteId}/enderecos/${enderecoId}`,
+    retiradaId,
+    retiradaNome,
+    motoboyId,
+    motoboyNome,
+    mktPedidoId,
+  };
+}
+
+/** Teardown for `seedPedidoFreteFixtures`. */
+export async function cleanupPedidoFreteFixtures(prefix: string): Promise<void> {
+  await cleanupEnderecos(`${prefix}-cli-001`);
+  await Promise.all([cleanupPedidoFixtures(prefix), cleanupByNamePrefix('int_frete', prefix)]);
+}
+
+/**
  * Seed a pedido (with `numero = <prefix>-NNN`) plus one NFe doc in its
  * `nfev4` subcollection at the requested estado. Returns the pair of ids so
  * the test can mutate the NFe mid-run via `db().collection(...)...update(...)`.

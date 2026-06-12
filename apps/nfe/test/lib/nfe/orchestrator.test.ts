@@ -2236,16 +2236,17 @@ describe('buildTranspFromFrete', () => {
   it('modalidade=0 with full carrier + vehicle + volumes → projects every block', () => {
     const out = __internal.buildTranspFromFrete({
       modalidade: '0',
+      // Flutter wire names everywhere — the projector remaps them to the
+      // XSD names (cnpj→CNPJ, nome→xNome, uf→UF, quantidade→qVol, …).
       transportadora: {
-        CNPJ: '99999999000191',
-        xNome: 'Trans Dev',
-        IE: '110042490114',
-        xEnder: 'Av Carrier 100',
-        xMun: 'Sao Paulo',
-        UF: 'SP',
+        cnpj: '99999999000191',
+        nome: 'Trans Dev',
+        ie: '110042490114',
+        endereco: 'Av Carrier 100',
+        municipio: 'Sao Paulo',
+        uf: 'SP',
       },
-      veiculo: { placa: 'ABC1D23', UF: 'SP', RNTC: '12345' },
-      // Flutter wire names — the projector remaps them to the XSD names.
+      veiculo: { placa: 'ABC1D23', uf: 'SP', rntc: '12345' },
       volumes: [
         {
           quantidade: 1,
@@ -2271,20 +2272,31 @@ describe('buildTranspFromFrete', () => {
     ]);
   });
 
-  it('CPF carrier (no CNPJ) → emits transporta.CPF', () => {
+  it('IE is stripped to alphanumerics (Flutter removerNaoAlfaNumericos parity)', () => {
     const out = __internal.buildTranspFromFrete({
       modalidade: '1',
-      transportadora: { CPF: '12345678909', xNome: 'Pedro Carrier' },
+      transportadora: { cnpj: '99999999000191', ie: '110.042.490.114' },
     } as never);
-    expect(out.transporta).toEqual({ CPF: '12345678909', xNome: 'Pedro Carrier' });
+    expect(out.transporta).toEqual({ CNPJ: '99999999000191', IE: '110042490114' });
+  });
+
+  it('legacy XSD-named carrier keys are NOT read (wire is Flutter-shaped)', () => {
+    // Regression for the original bug: the projector used to read
+    // CNPJ/xNome/UF, which never exist on Flutter-written freteInicial
+    // docs — the <transporta> block silently came out empty.
+    const out = __internal.buildTranspFromFrete({
+      modalidade: '0',
+      transportadora: { CNPJ: '99999999000191', xNome: 'Trans Dev' },
+    } as never);
+    expect(out.transporta).toBeUndefined();
   });
 
   it('reboques without placa are filtered out', () => {
     const out = __internal.buildTranspFromFrete({
       modalidade: '0',
-      reboques: [{ placa: 'XYZ9876' }, { placa: null }],
+      reboques: [{ placa: 'XYZ9876', uf: 'SP' }, { placa: null }],
     } as never);
-    expect(out.reboque).toEqual([{ placa: 'XYZ9876' }]);
+    expect(out.reboque).toEqual([{ placa: 'XYZ9876', UF: 'SP' }]);
   });
 });
 
