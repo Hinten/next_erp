@@ -139,6 +139,31 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
     await expect.poll(() => intFreteFaixaCount(row(4)), { timeout: 15_000 }).toBe(1);
   });
 
+  test('invalid create from a non-first tab toasts and jumps back to Dados gerais', async ({
+    page,
+  }) => {
+    await page.goto('/logistica/motoboy/novo');
+    // Move away from the tab that holds the empty required fields.
+    await page.getByRole('tab', { name: 'Horários de corte' }).click();
+    await expect(page.getByRole('tab', { name: 'Horários de corte' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+
+    await clickSave(page, 'Criar');
+
+    // Red toast names the erroring tab, the form jumps to it, and the
+    // inline required-field error is visible there.
+    await expect(page.getByText(/Corrija os campos inválidos na aba "Dados gerais"/)).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(page.getByRole('tab', { name: /Dados gerais/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await expect(page).toHaveURL(/\/logistica\/motoboy\/novo$/);
+  });
+
   test('duplicate weekday in horários de corte blocks the save with a visible message', async ({
     page,
   }) => {

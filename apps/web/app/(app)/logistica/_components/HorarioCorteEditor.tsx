@@ -134,6 +134,7 @@ export function HorarioCorteEditor({
                     Será excluído
                   </Text>
                   <ActionIcon
+                    type="button"
                     variant="subtle"
                     aria-label={`Desfazer exclusão do horário ${i + 1}`}
                     onClick={() => patchRow(i, { [DELETE_MARK]: false })}
@@ -144,6 +145,7 @@ export function HorarioCorteEditor({
                 </Group>
               ) : (
                 <ActionIcon
+                  type="button"
                   variant="subtle"
                   color="red"
                   aria-label={`Excluir horário ${i + 1}`}
@@ -163,6 +165,9 @@ export function HorarioCorteEditor({
         )}
         <Group>
           <Button
+            // Inside the ObjectView <form> an untyped button defaults to
+            // type="submit" — row management must never submit.
+            type="button"
             variant="light"
             size="xs"
             onClick={() => onChange([...rows, { ...EMPTY_ROW }])}

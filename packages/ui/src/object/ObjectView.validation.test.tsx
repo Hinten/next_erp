@@ -42,6 +42,7 @@ vi.mock('@mantine/notifications', async () => {
 });
 
 import { ObjectView } from './ObjectView';
+import { stripMarkedForDeletion } from './markForDeletion';
 
 const schema = z.object({
   nome: z.string().min(1, 'Informe o nome').describe('Nome'),
@@ -196,6 +197,65 @@ describe('ObjectView validation feedback across tabs', () => {
         message: expect.stringContaining('fora do formulário (obs)') as string,
       }),
     );
+  });
+
+  it('invalid submit from a NON-first tab still toasts + jumps when the form has prepareForSave transforms (the /logistica regression)', async () => {
+    // Mirrors the real /logistica create form: required fields on the first
+    // tab, a staged-deletion array field with `prepareForSave` on another
+    // tab (this activates the validate-what-you-save resolver wrapper), the
+    // `sections` array passed as a FRESH array per render, create-mode
+    // defaultValues.
+    const logisticaSchema = z.object({
+      nome: z.string().min(1, 'Informe o nome').describe('Nome'),
+      ativo: z.boolean().default(true).describe('Ativo'),
+      itens: z
+        .array(z.object({ cep: z.string().regex(/^\d{8}$/, 'CEP inválido') }).passthrough())
+        .nullable()
+        .default(null)
+        .describe('Itens'),
+    });
+    const stripThenNull = (v: unknown) => {
+      const s = stripMarkedForDeletion(v);
+      return Array.isArray(s) && s.length === 0 ? null : s;
+    };
+    const logisticaFields = {
+      itens: { section: 'Itens', prepareForSave: stripThenNull },
+    };
+    function Harness() {
+      return (
+        <Wrap>
+          <ObjectView
+            schema={logisticaSchema}
+            collection={fakeCollection() as never}
+            db={{} as never}
+            currentUserUid="u1"
+            sections={['Geral', 'Itens']}
+            fields={logisticaFields}
+            defaultValues={{ ativo: true }}
+          />
+        </Wrap>
+      );
+    }
+    render(<Harness />);
+
+    // Move to the non-first tab, then submit with `nome` empty.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: 'Itens' }));
+    });
+    expect(screen.getByRole('tab', { name: 'Itens' }).getAttribute('aria-selected')).toBe('true');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+
+    expect(saveRecordMock).not.toHaveBeenCalled();
+    expect(notifyShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'red',
+        message: expect.stringContaining('Geral') as string,
+      }),
+    );
+    expect(screen.getByRole('tab', { name: /Geral/ }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByText('Informe o nome')).toBeTruthy();
   });
 
   it('names out-of-form fields alongside tab errors when both exist', async () => {

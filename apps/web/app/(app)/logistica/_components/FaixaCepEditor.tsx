@@ -139,6 +139,7 @@ export function FaixaCepEditor({
                     Será excluída
                   </Text>
                   <ActionIcon
+                    type="button"
                     variant="subtle"
                     aria-label={`Desfazer exclusão da faixa ${i + 1}`}
                     onClick={() => patchRow(i, { [DELETE_MARK]: false })}
@@ -149,6 +150,7 @@ export function FaixaCepEditor({
                 </Group>
               ) : (
                 <ActionIcon
+                  type="button"
                   variant="subtle"
                   color="red"
                   aria-label={`Excluir faixa ${i + 1}`}
@@ -168,6 +170,9 @@ export function FaixaCepEditor({
         )}
         <Group>
           <Button
+            // Inside the ObjectView <form> an untyped button defaults to
+            // type="submit" — row management must never submit.
+            type="button"
             variant="light"
             size="xs"
             onClick={() => onChange([...rows, { ...EMPTY_ROW }])}
