@@ -1,6 +1,12 @@
 import { expect, test } from '@playwright/test';
 import { db } from '@delfrance/test-fixtures';
-import { cleanupPedidoFixtures, e2ePrefix, seedPedidoFixtures } from './_helpers/seed-data';
+import {
+  cleanupPedidoFixtures,
+  docExistsByName,
+  e2ePrefix,
+  getClienteByName,
+  seedPedidoFixtures,
+} from './_helpers/seed-data';
 import { fillField, selectFieldWithSearch } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
@@ -147,5 +153,60 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
 
     await page.goto(`/pedidos/${pedidoId}/editar`);
     await expect(page.getByLabel('Observações internas', { exact: true })).toHaveValue(obs);
+  });
+
+  test('creates a cliente through the quick-create modal and emits it into the form', async ({
+    page,
+  }) => {
+    const nome = `${prefix}-qc-001`;
+    await page.goto('/pedidos/novo');
+
+    // `.first()` — the Frete tab keeps a second (hidden) ClientePicker
+    // mounted, so the role query would otherwise be ambiguous.
+    await page.getByRole('button', { name: '+ Novo cliente' }).first().click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+
+    await dialog.getByLabel('Nome', { exact: true }).fill(nome);
+    await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill('39053344705');
+    await dialog.getByLabel('E-mail', { exact: true }).fill(`${nome}@example.com`);
+    await dialog.getByLabel('Telefone', { exact: true }).fill('11988887777');
+    await dialog.getByRole('button', { name: 'Criar', exact: true }).click();
+
+    // The modal resolves and the picker locks onto the new cliente.
+    await expect(dialog).toBeHidden({ timeout: 15_000 });
+    await expect(page.getByText(nome).first()).toBeVisible({ timeout: 15_000 });
+
+    // Wire assertions (Admin SDK): doc committed, telefone stored in the
+    // standardized wa_id shape (55 + DDD + number), cpf_cnpj as typed.
+    await expect.poll(() => docExistsByName('clientes', nome), { timeout: 15_000 }).toBe(true);
+    const doc = await getClienteByName(nome);
+    expect(doc?.telefone).toBe('5511988887777');
+    expect(doc?.cpf_cnpj).toBe('39053344705');
+    expect(doc?.tipo).toBe('0');
+  });
+
+  test('blocks a duplicate CPF/CNPJ in the quick-create modal and offers the existing cliente', async ({
+    page,
+  }) => {
+    await page.goto('/pedidos/novo');
+
+    await page.getByRole('button', { name: '+ Novo cliente' }).first().click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+
+    await dialog.getByLabel('Nome', { exact: true }).fill(`${prefix}-qc-dup`);
+    // The seeded pedido fixture cliente owns this CNPJ — blur triggers the
+    // debounced dedup check and the blocking alert.
+    await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill('11222333000181');
+    await dialog.getByLabel('CPF / CNPJ', { exact: true }).blur();
+
+    await expect(dialog.getByText('Cliente já cadastrado')).toBeVisible({ timeout: 15_000 });
+    await expect(dialog.getByRole('button', { name: 'Criar', exact: true })).toBeDisabled();
+
+    // Resolve with the existing cliente instead — the picker locks onto it.
+    await dialog.getByRole('button', { name: 'Usar cliente existente' }).first().click();
+    await expect(dialog).toBeHidden({ timeout: 15_000 });
+    await expect(page.getByText(fixtures.clienteNome).first()).toBeVisible({ timeout: 15_000 });
   });
 });

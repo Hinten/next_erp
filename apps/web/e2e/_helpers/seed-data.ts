@@ -24,6 +24,27 @@ export function e2ePrefix(tag: string): string {
 const pad = (n: number): string => String(n).padStart(3, '0');
 
 /**
+ * Checksum-valid CPF derived from a sequence number — `clienteSchema` now
+ * validates CPF/CNPJ check digits, so editing a seeded row through
+ * ObjectView would fail with an arbitrary 11-digit string. Mirrors the
+ * mod-11 algorithm in `@delfrance/core/documents`.
+ */
+export function validTestCpf(i: number): string {
+  const base = String(100000000 + i); // 9 digits
+  const dv = (digits: string): number => {
+    let sum = 0;
+    for (let k = 0; k < digits.length; k += 1) {
+      sum += Number(digits[k]) * (digits.length + 1 - k);
+    }
+    const rest = (sum * 10) % 11;
+    return rest === 10 ? 0 : rest;
+  };
+  const dv1 = dv(base);
+  const dv2 = dv(`${base}${dv1}`);
+  return `${base}${dv1}${dv2}`;
+}
+
+/**
  * Seed `n` cliente docs. `nome` = `<prefix>-NNN`; `tipo`, `cpf_cnpj` and
  * `email` are varied so filter/sort tests have something to bite on.
  */
@@ -35,7 +56,7 @@ export async function seedClientes(prefix: string, n: number): Promise<void> {
     batch.set(col.doc(`${prefix}-${pad(i)}`), {
       tipo: tipos[i % tipos.length],
       nome: `${prefix}-${pad(i)}`,
-      cpf_cnpj: String(10000000000 + i),
+      cpf_cnpj: validTestCpf(i),
       idEstrangeiro: null,
       ie: null,
       imun: null,
@@ -402,6 +423,13 @@ export async function getIntFreteByName(nome: string): Promise<Record<string, un
   return data ? (data as Record<string, unknown>) : null;
 }
 
+/** First cliente doc whose `nome` equals `nome` (null = not found). */
+export async function getClienteByName(nome: string): Promise<Record<string, unknown> | null> {
+  const snap = await db().collection('clientes').where('nome', '==', nome).limit(1).get();
+  const data = snap.docs[0]?.data();
+  return data ? (data as Record<string, unknown>) : null;
+}
+
 /** Length of `faixaCep` on the `int_frete` doc named `nome` (-1 = no array/doc). */
 export async function intFreteFaixaCount(nome: string): Promise<number> {
   const data = await getIntFreteByName(nome);
@@ -444,7 +472,7 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
   batch.set(db().collection('clientes').doc(clienteId), {
     tipo: '1',
     nome: clienteNome,
-    cpf_cnpj: '12345678901',
+    cpf_cnpj: '11222333000181',
     idEstrangeiro: null,
     ie: null,
     imun: null,
