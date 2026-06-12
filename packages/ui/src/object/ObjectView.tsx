@@ -530,6 +530,14 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
     // SKUs from the parent's unsaved `sku` via `useFormContext().getValues`).
     <FormProvider {...form}>
       <form
+        // Zod (via the resolver) owns ALL validation. Without noValidate the
+        // browser's native constraint validation intercepts the submit when
+        // any control carries the native `required` attribute (e.g. Mantine
+        // inputs with `required`): if that control is empty AND inside a
+        // hidden section tab, Chrome can't focus it, BLOCKS the submission
+        // silently ("An invalid form control with name='' is not focusable")
+        // and React's onSubmit never fires — no toast, no tab jump, nothing.
+        noValidate
         onSubmit={(e) => {
           e.preventDefault();
           void submitDefault();
