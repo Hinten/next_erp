@@ -165,7 +165,9 @@ test.describe.serial('Pedidos — aba Frete', () => {
     await page.getByRole('tab', { name: 'Frete' }).click();
 
     await expect(page.getByText('Frete gerenciado pelo marketplace')).toBeVisible();
-    await expect(page.getByText('Postado', { exact: true })).toBeVisible();
+    // Scope to the tab panel: the (closed) "Status do frete" Select keeps a
+    // hidden 'Postado' option span in its portal, which getByText also sees.
+    await expect(page.getByRole('tabpanel').getByText('Postado', { exact: true })).toBeVisible();
 
     const codRastreio = page.getByLabel('Código de rastreio', { exact: true });
     await expect(codRastreio).toHaveValue('BR123456789ML');
