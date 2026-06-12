@@ -94,9 +94,12 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   // common header fields too — modalidade, endereço, recebedor, status and
   // the integração itself — not just the per-tipo body. Remapping a
   // marketplace shipping option happens via the integração's `mapa`, never
-  // by hand-editing the pedido.
+  // by hand-editing the pedido. While the integração doc is still resolving
+  // the header stays locked as well (tipo unknown = ownership unknown); a
+  // resolved-but-missing doc unlocks it so a dangling ref can be fixed.
   const marketplaceOwned = tipo != null && MARKETPLACE_TIPOS.has(tipo);
-  const headerDisabled = disabled || marketplaceOwned;
+  const headerDisabled =
+    disabled || marketplaceOwned || (integracaoRef != null && loadingIntegracao);
 
   function renderTipoFields() {
     if (!integracaoRef) return <GenericFreteFields form={form} disabled={disabled} />;
