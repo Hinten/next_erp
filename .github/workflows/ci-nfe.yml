@@ -171,15 +171,31 @@ jobs:
       - name: Refresh SEFAZ TLS chains (SP + both SVCs)
         # See velvet-purring-bear.md "Cert lifecycle (operations)".
         # A fresh fetch per CI run avoids stale-bundle failures when
-        # SEFAZ rotates intermediates between runs.
+        # SEFAZ rotates intermediates between runs (live-observed: SERPRO
+        # swapped SVC-AN from the ICP-Brasil chain to a GlobalSign-rooted
+        # one on 2026-06-12 — a committed bundle would have gone stale).
         # ORDER MATTERS: SP first — its bundle carries the ICP-Brasil
         # Raiz v10 root, which the script's sibling-bundle recovery uses
-        # to complete SERPRO chains whose intermediates ship no AIA
-        # caIssuers URL (the SVRS "AC do SERPRO SSLv1" case).
+        # to complete chains whose intermediates ship no AIA caIssuers
+        # URL (the SVRS "AC do SERPRO SSLv1" case).
+        # Each fetch retries 3× — the TOFU connect is certless and SVRS
+        # in particular intermittently RESETs certless handshakes. SP and
+        # SVC-AN stay fatal (they gate real test lanes); SVC-RS degrades
+        # to a workflow warning and svc.homologacao's 410 transport test
+        # self-skips when its chain file is absent (loud in both places).
         run: |
-          pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca
-          pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca -- --uf=SVC-AN --ambiente=homologacao
-          pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca -- --uf=SVC-RS --ambiente=homologacao
+          fetch_chain() {
+            for i in 1 2 3; do
+              pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca "$@" && return 0
+              echo "fetch:sefaz-ca $* — attempt $i failed; retrying in 15s"
+              sleep 15
+            done
+            return 1
+          }
+          fetch_chain
+          fetch_chain -- --uf=SVC-AN --ambiente=homologacao
+          fetch_chain -- --uf=SVC-RS --ambiente=homologacao \
+            || echo "::warning::SVC-RS chain fetch failed after 3 attempts (SVRS resets certless handshakes intermittently) — the svc.homologacao 410 transport test will self-skip this run"
 
       - name: SEFAZ-SP HOM status gate (single status call per CI run)
         # Dedicated step so the emission + orchestrator steps below

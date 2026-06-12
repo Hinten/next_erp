@@ -24,6 +24,8 @@
  *      `NFE_SVC_AUTHORIZER_OVERRIDE` knob (#126): the knob existed only
  *      so the *orchestrator* could reach the off-binding SVC; at the
  *      library level we just build the call against SVC-RS directly.
+ *      Self-skips (loudly) when the SVC-RS chain isn't vendored — see
+ *      the `hasSvcRsChain` note below.
  *
  * **Homologação-only, by construction**: every URL comes from
  * `getSvcEndpoints(<authorizer>, 'homologacao')` — the produção table is
@@ -68,6 +70,14 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SVC_AN_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-svc-an-homologacao.pem');
 const SVC_RS_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-svc-rs-homologacao.pem');
+
+// SVRS intermittently RESETs certless TLS handshakes, so the ci-nfe.yml
+// chain-refresh step lets the SVC-RS fetch degrade to a workflow warning
+// instead of failing the whole live lane. When that happened, the chain
+// file is absent and the 410 transport test below self-skips — loudly on
+// both sides (workflow ::warning:: + the skip in the vitest report). The
+// SVC-AN lane (SP's real contingency authorizer) never degrades.
+const hasSvcRsChain = existsSync(SVC_RS_CHAIN);
 
 // Same credential posture as emission.homologacao.test.ts — see the
 // NFE_TEST_IE rationale there (state IE is not derivable from the cert).
@@ -178,21 +188,26 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
     expect(sit.protNFe?.infProt.nProt).toBe(prot!.infProt.nProt);
   }, 180_000);
 
-  it('SVC-RS off-binding status for SP → cStat=410 (transport proven, no numeração burned)', async () => {
-    const call = buildSvcCall(
-      getSvcEndpoints('svc-rs', 'homologacao').NfeStatusServico,
-      TEST_CERT!,
-      SVC_RS_CHAIN,
-    );
-    const ret = await consultarStatusServico(call, { cUF: '35' });
-    assertNotConsumoIndevido(ret, 'svc-rs/statusServico');
-    // eslint-disable-next-line no-console
-    console.log(`[SVC-RS status] cStat=${ret.cStat} xMotivo="${ret.xMotivo}"`);
-    // SP is bound to SVC-AN (Ato COTEPE 39/2012), so SVC-RS answering
-    // 410 "UF informada no campo cUF não é atendida pelo Web Service"
-    // is the EXPECTED outcome — the round-trip itself (mTLS handshake,
-    // XSD gates, typed parse) is what this test proves.
-    expect(ret.tpAmb).toBe('2');
-    expect(ret.cStat).toBe('410');
-  }, 45_000);
+  it.skipIf(!hasSvcRsChain)(
+    'SVC-RS off-binding status for SP → cStat=410 (transport proven, no numeração burned)',
+    // retry once — a single mid-run SVRS reset shouldn't redden the lane.
+    { timeout: 45_000, retry: 1 },
+    async () => {
+      const call = buildSvcCall(
+        getSvcEndpoints('svc-rs', 'homologacao').NfeStatusServico,
+        TEST_CERT!,
+        SVC_RS_CHAIN,
+      );
+      const ret = await consultarStatusServico(call, { cUF: '35' });
+      assertNotConsumoIndevido(ret, 'svc-rs/statusServico');
+      // eslint-disable-next-line no-console
+      console.log(`[SVC-RS status] cStat=${ret.cStat} xMotivo="${ret.xMotivo}"`);
+      // SP is bound to SVC-AN (Ato COTEPE 39/2012), so SVC-RS answering
+      // 410 "UF informada no campo cUF não é atendida pelo Web Service"
+      // is the EXPECTED outcome — the round-trip itself (mTLS handshake,
+      // XSD gates, typed parse) is what this test proves.
+      expect(ret.tpAmb).toBe('2');
+      expect(ret.cStat).toBe('410');
+    },
+  );
 });
