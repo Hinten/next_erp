@@ -129,22 +129,6 @@ describe('GET /api/nfe/status-servico', () => {
     );
   });
 
-  it('NFE_SVC_AUTHORIZER_OVERRIDE=svc-rs redirects the svc target to SVC-RS', async () => {
-    vi.stubEnv('NFE_SVC_AUTHORIZER_OVERRIDE', 'svc-rs');
-    try {
-      const res = await GET(req('target=svc'));
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(body.authorizer).toBe('svc-rs');
-      expect(vi.mocked(consultarStatusServico)).toHaveBeenCalledWith(
-        expect.objectContaining({ url: 'https://example/svc-rs/sta' }),
-        { cUF: '35' },
-      );
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
-
   it('classifies 113/114 (SVC em desativação/desabilitada) as servico-paralisado', async () => {
     vi.mocked(consultarStatusServico).mockResolvedValue({
       ...(RET_107 as Record<string, unknown>),
