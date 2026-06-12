@@ -1,5 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { cleanupByNamePrefix, docExistsByName, e2ePrefix } from './_helpers/seed-data';
+import {
+  cleanupByNamePrefix,
+  docExistsByName,
+  e2ePrefix,
+  seedGruposDeVariacao,
+} from './_helpers/seed-data';
 import { applyTextFilter, expectRowVisible } from './helpers/table-view';
 import { clickSave, expectFieldError, fillField } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
@@ -74,5 +79,28 @@ test.describe.serial('Variações e2e — TableView / ObjectView', () => {
     // A new row appears with its own remove affordance (unambiguous, unlike the
     // duplicate "Nome" label shared with the group's own field).
     await expect(page.getByRole('button', { name: 'Remover variante' })).toBeVisible();
+  });
+
+  test('filters variantes through the search bar (#114)', async ({ page }) => {
+    // Seed a group with 3 variantes (Tamanhos P/M/G) via the Admin SDK.
+    const { tamanhosId } = await seedGruposDeVariacao(prefix);
+
+    await page.goto(`/variacoes/${tamanhosId}`);
+    await page.getByRole('tab', { name: 'Variantes' }).click();
+    await expect(page.getByRole('button', { name: 'Remover variante' })).toHaveCount(3, {
+      timeout: 15_000,
+    });
+
+    // Filter by nome — only the matching row stays; drag handles hide while
+    // filtering (reordering a subset is suspended).
+    await page.getByRole('textbox', { name: 'Pesquisar variantes' }).fill('P');
+    await expect(page.getByRole('button', { name: 'Remover variante' })).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Reordenar' })).toHaveCount(0);
+
+    // No match → empty state; clearing restores everything.
+    await page.getByRole('textbox', { name: 'Pesquisar variantes' }).fill('zzz');
+    await expect(page.getByText('Nenhuma variante encontrada.')).toBeVisible();
+    await page.getByRole('textbox', { name: 'Pesquisar variantes' }).fill('');
+    await expect(page.getByRole('button', { name: 'Remover variante' })).toHaveCount(3);
   });
 });
