@@ -5,7 +5,7 @@ import {
   e2ePrefix,
   seedPedidoFreteFixtures,
 } from './_helpers/seed-data';
-import { selectField } from './helpers/object-view';
+import { selectField, selectFieldWithSearch } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /** Pick an option in a Mantine Select when the option label needs a regex. */
@@ -43,11 +43,12 @@ test.describe.serial('Pedidos — aba Frete', () => {
 
   /** Fill the Principal tab: cliente + operação + integração + one item. */
   async function fillPrincipal(page: Page, precoItem: string) {
-    await page.getByPlaceholder('Buscar cliente por nome…').fill(fixtures.base.clienteNome);
-    await page
-      .getByRole('option', { name: new RegExp(fixtures.base.clienteNome) })
-      .first()
-      .click();
+    await selectFieldWithSearch(
+      page,
+      'Cliente',
+      fixtures.base.clienteNome,
+      new RegExp(fixtures.base.clienteNome),
+    );
     await page.getByRole('combobox', { name: 'Operação fiscal', exact: true }).click();
     await page.getByRole('option', { name: fixtures.base.operacaoNome }).click();
     await page.getByRole('combobox', { name: 'Integração', exact: true }).click();
@@ -105,6 +106,16 @@ test.describe.serial('Pedidos — aba Frete', () => {
 
     await page.getByRole('tab', { name: 'Frete' }).click();
     await selectField(page, 'Modalidade de frete', 'Contratação por conta do Emitente (CIF)');
+
+    // "Quem recebe" — the optimized ClientePicker emits the Flutter-ODM
+    // doc-path string for this field (emitDocPath).
+    await selectFieldWithSearch(
+      page,
+      'Quem recebe',
+      fixtures.base.clienteNome,
+      new RegExp(fixtures.base.clienteNome),
+    );
+
     await selectFieldMatching(page, 'Integração de frete', new RegExp(fixtures.retiradaNome));
 
     // The retirada subform mounts and autofills the dispatch deadline from
@@ -116,8 +127,9 @@ test.describe.serial('Pedidos — aba Frete', () => {
 
     const pedido = await createAndReadBack(page);
     const frete = pedido.freteInicial as Record<string, unknown>;
-    // Wire shape: STRING doc path, not a native DocumentReference.
+    // Wire shape: STRING doc paths, not native DocumentReferences.
     expect(frete.integracaoFreteOuterRef).toBe(`documents/int_frete/${fixtures.retiradaId}`);
+    expect(frete.clienteRecebedorOuterReference).toBe(`documents/clientes/${fixtures.clienteId}`);
     expect(frete.modalidade).toBe('0');
     expect(frete.estado).toBe('iniciado');
     expect(frete.prazoExtra).toBe(0);
