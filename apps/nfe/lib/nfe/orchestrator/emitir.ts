@@ -62,6 +62,7 @@ import {
   markAsLost,
   outcomeFromConsReci,
   persistPatch,
+  procPersistExtras,
 } from './audit';
 import { buildGeneratorInput } from './generator-input';
 import { enviarEpecParaNota, transmitirPosEpec } from './epec';
@@ -593,7 +594,7 @@ export async function applyAutorizadoOutcome(args: {
       ? buildNFeProc(signedXml, protNFeRaw)
       : null;
 
-  await persistPatch(nfeRef, patch, nfeProcXml != null ? { xml_nfe_proc: nfeProcXml } : undefined);
+  await persistPatch(nfeRef, patch, nfeProcXml != null ? procPersistExtras(nfeProcXml) : undefined);
 
   return {
     nfeId: nfeRef.id,

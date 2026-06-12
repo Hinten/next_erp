@@ -19,6 +19,8 @@ import { z } from 'zod';
 import { nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
+  buildNFeProc,
+  classifyCStat,
   consultarSituacaoNFe,
   DEFAULT_STUCK_TIMEOUT_MS,
   isStuckEnviando,
@@ -29,6 +31,7 @@ import { ESTADO_NFE, type EstadoNFe, type NotaFiscalEletronica } from '@delfranc
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
+import { procPersistExtras } from '@/lib/nfe/orchestrator/audit';
 import { loadNfeConfigForEmission } from '@/lib/nfe/orchestrator/bundle';
 import { transmitirPosEpec } from '@/lib/nfe/orchestrator/epec';
 import { sefazCallFor } from '@/lib/nfe/orchestrator/sefaz-call';
@@ -53,6 +56,8 @@ interface PendingDoc {
   readonly filialId: string | null;
   readonly ultima_modificacao: string | null;
   readonly retries: number | null;
+  /** The persist-before-send anchor — feeds `buildNFeProc` when the consult recovers `autorizada`. */
+  readonly xml_assinado: string | null;
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -175,6 +180,17 @@ export async function POST(req: Request): Promise<NextResponse> {
       );
       const outcome = outcomeFromRetConsSit(retSit);
       const patch = applyOutcome({ estado: data.estado, retries: data.retries }, outcome);
+      // A consult that lands `autorizada` carries the authoritative protNFe —
+      // persist the `nfeProc` here too (the emit path does it inside
+      // `applyAutorizadoOutcome`), so a cron-recovered doc can render a DANFE
+      // and sheds the duplicate signed XML in the same atomic write (#128).
+      const nfeProcXml =
+        classifyCStat(patch.cStat) === 'autorizada' &&
+        retSit.protNFe != null &&
+        retSit.protNFe.infProt.chNFe === data.chave &&
+        data.xml_assinado != null
+          ? buildNFeProc(data.xml_assinado, retSit.protNFe)
+          : null;
       await doc.ref.set(
         nfev4Collection.parseMerge({
           estado: patch.estado,
@@ -182,6 +198,7 @@ export async function POST(req: Request): Promise<NextResponse> {
           xMotivo: patch.xMotivo,
           retries: patch.retries,
           nRec: patch.nRec,
+          ...(nfeProcXml != null ? procPersistExtras(nfeProcXml) : {}),
           ultima_modificacao: new Date().toISOString(),
         }),
         { merge: true },

@@ -55,6 +55,7 @@ import {
   __internal,
 } from '../../../lib/nfe/orchestrator';
 import type { NFeRuntime } from '../../../lib/nfe/runtime';
+import { assertSignedXmlNeverLost } from '../../helpers/xml-invariant';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
@@ -260,6 +261,7 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
         };
       },
       async set(data: Record<string, unknown>, opt?: { merge?: boolean }) {
+        assertSignedXmlNeverLost(path, data, opt?.merge);
         writes.push({ path, data, merge: opt?.merge });
         docs[path] = opt?.merge ? { ...(docs[path] ?? {}), ...data } : data;
         opts.events.push(`set:${path}`);
@@ -369,6 +371,7 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
         const tx = {
           get: (ref: ReturnType<typeof makeRef>) => ref.get(),
           set: (ref: ReturnType<typeof makeRef>, data: Record<string, unknown>) => {
+            assertSignedXmlNeverLost(ref.path, data, undefined);
             writes.push({ path: ref.path, data });
             docs[ref.path] = data;
             opts.events.push(`set:${ref.path}`);
@@ -806,6 +809,8 @@ describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
     const procWrite = docWrites.find((w) => typeof w.data.xml_nfe_proc === 'string');
     expect(procWrite).toBeDefined();
     expect(procWrite?.data.xml_nfe_proc).toContain('<nfeProc ');
+    // #128 — the proc write also retires the anchor the pós-EPEC resend used.
+    expect(procWrite?.data.xml_assinado).toBeNull();
   });
 
   it('pós-EPEC cStat 468 (EPEC não sincronizado) keeps estado p, bumps retries and audit-logs', async () => {
@@ -831,6 +836,14 @@ describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
     expect(
       writes.some(
         (w) => w.path === 'pedidos/PED-1/nfev4/s4' && typeof w.data.xml_nfe_proc === 'string',
+      ),
+    ).toBe(false);
+    // #128 — estado stays 'p' and the anchor stays: the next pós-EPEC
+    // attempt must resend the very same signed XML.
+    expect(
+      writes.some(
+        (w) =>
+          w.path === 'pedidos/PED-1/nfev4/s4' && w.merge === true && w.data.xml_assinado === null,
       ),
     ).toBe(false);
   });
@@ -2062,6 +2075,11 @@ describe('emitirPedido — <nfeProc> envelope', () => {
     expect(xml).toContain(`<chNFe>${CHAVE}</chNFe>`);
     expect(xml).toContain('<nProt>135200000000789</nProt>');
     expect(xml).toContain('<Signature');
+    // #128 — the SAME payload clears the anti-loss anchor: the nfeProc
+    // embeds the signed NFe, so the doc never carries the XML twice and
+    // there is no window where neither field holds it.
+    expect(finalWrite?.merge).toBe(true);
+    expect(finalWrite?.data.xml_assinado).toBeNull();
   });
 
   it('builds xml_nfe_proc when cStat=100 is reached via consReci recovery (204 → 100)', async () => {
@@ -2102,6 +2120,8 @@ describe('emitirPedido — <nfeProc> envelope', () => {
     const xml = finalWrite?.data.xml_nfe_proc as string;
     expect(xml).toContain('<nfeProc ');
     expect(xml).toContain('<nProt>135200000000456</nProt>'); // from consReci
+    // #128 — recovery-reached autorizada clears the anchor in the same write.
+    expect(finalWrite?.data.xml_assinado).toBeNull();
   });
 
   it('does NOT build xml_nfe_proc on cStat=539 success (chave swap — signedXml does not match)', async () => {
@@ -2160,6 +2180,9 @@ describe('emitirPedido — <nfeProc> envelope', () => {
     const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s1');
     const procWrites = docWrites.filter((w) => typeof w.data.xml_nfe_proc === 'string');
     expect(procWrites).toHaveLength(0);
+    // #128 — no proc means the anti-loss anchor must survive: no merge
+    // may clear xml_assinado (it still holds the only copy of OUR XML).
+    expect(docWrites.some((w) => w.merge === true && w.data.xml_assinado === null)).toBe(false);
   });
 
   it('does NOT build xml_nfe_proc on a rejection (cStat=215 schema error)', async () => {
@@ -2194,6 +2217,8 @@ describe('emitirPedido — <nfeProc> envelope', () => {
     const docWrites = writes.filter((w) => w.path === 'pedidos/PED-1/nfev4/s1');
     const procWrites = docWrites.filter((w) => typeof w.data.xml_nfe_proc === 'string');
     expect(procWrites).toHaveLength(0);
+    // #128 — a rejeitada doc keeps its anchor: the retry path resends it.
+    expect(docWrites.some((w) => w.merge === true && w.data.xml_assinado === null)).toBe(false);
   });
 
   it('does NOT build xml_nfe_proc on the async-103 path (lote received, no protocol yet)', async () => {

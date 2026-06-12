@@ -11,7 +11,11 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    computed `chave`, and the signed `xml_assinado` **before** the SOAP
    request. This is the anti-loss anchor — see
    `lib/nfe/orchestrator/emitir.ts:emitirPedido` and the master plan's A8
-   recovery section.
+   recovery section. Once SEFAZ authorizes, the write that persists
+   `xml_nfe_proc` sets `xml_assinado: null` in the **same** patch
+   (`procPersistExtras` in `lib/nfe/orchestrator/audit.ts`) — the
+   `nfeProc` embeds the signed XML, so the anchor is replaced, never
+   lost. Never clear `xml_assinado` any other way.
 2. **No UI code.** Same shape as `apps/integrations`. The placeholder
    `page.tsx` exists only because Next requires a root route.
 3. **Auth is Bearer `idToken` from Firebase Auth.** Pattern in

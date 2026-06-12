@@ -32,6 +32,7 @@ import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
 import { emitirPedidosLote, NFeOrchestratorError } from '../../../lib/nfe/orchestrator';
 import type { NFeRuntime } from '../../../lib/nfe/runtime';
+import { assertSignedXmlNeverLost } from '../../helpers/xml-invariant';
 
 function fakeRuntime(): NFeRuntime {
   return {
@@ -275,6 +276,7 @@ function fakeFirestore(opts: BatchHarnessOpts) {
         };
       },
       async set(data: Record<string, unknown>, opt?: { merge?: boolean }) {
+        assertSignedXmlNeverLost(path, data, opt?.merge);
         writes.push({ path, data, merge: opt?.merge });
         docs[path] = opt?.merge ? { ...(docs[path] ?? {}), ...data } : data;
         opts.events.push(`set:${path}`);
@@ -381,6 +383,7 @@ function fakeFirestore(opts: BatchHarnessOpts) {
         const tx = {
           get: (ref: ReturnType<typeof makeRef>) => ref.get(),
           set: (ref: ReturnType<typeof makeRef>, data: Record<string, unknown>) => {
+            assertSignedXmlNeverLost(ref.path, data, undefined);
             writes.push({ path: ref.path, data });
             docs[ref.path] = data;
             opts.events.push(`set:${ref.path}`);
@@ -536,7 +539,7 @@ describe('emitirPedidosLote — input validation', () => {
 describe('emitirPedidosLote — single filial happy path', () => {
   it('single pedido routes through indSinc=1 path', async () => {
     const events: string[] = [];
-    const { fs } = fakeFirestore({
+    const { fs, writes } = fakeFirestore({
       events,
       pedidos: [{ pedidoId: 'PED-1', filialId: 'F-1' }],
     });
@@ -547,11 +550,18 @@ describe('emitirPedidosLote — single filial happy path', () => {
     expect('estado' in first ? first.estado : null).toBe(ESTADO_NFE.aprovada);
     expect(vi.mocked(autorizarLote).mock.calls[0]?.[1].indSinc).toBe('1');
     expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+    // #128 — the authorized member's proc write clears the anchor in the
+    // very same payload.
+    const procWrite = writes.find(
+      (w) => w.path === 'pedidos/PED-1/nfev4/s1' && typeof w.data.xml_nfe_proc === 'string',
+    );
+    expect(procWrite).toBeDefined();
+    expect(procWrite?.data.xml_assinado).toBeNull();
   });
 
   it('multi-pedido (single filial, no resolution drift) goes async + polls once', async () => {
     const events: string[] = [];
-    const { fs } = fakeFirestore({
+    const { fs, writes } = fakeFirestore({
       events,
       pedidos: [
         { pedidoId: 'PED-1', filialId: 'F-1' },
@@ -593,6 +603,14 @@ describe('emitirPedidosLote — single filial happy path', () => {
     }
     expect(vi.mocked(autorizarLote).mock.calls[0]?.[1].indSinc).toBe('0');
     expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(1);
+    // #128 — every authorized member gets the proc + cleared-anchor pair.
+    for (const pedidoId of ['PED-1', 'PED-2', 'PED-3']) {
+      const procWrite = writes.find(
+        (w) => w.path === `pedidos/${pedidoId}/nfev4/s1` && typeof w.data.xml_nfe_proc === 'string',
+      );
+      expect(procWrite).toBeDefined();
+      expect(procWrite?.data.xml_assinado).toBeNull();
+    }
   });
 });
 
