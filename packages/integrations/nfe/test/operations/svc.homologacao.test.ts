@@ -38,6 +38,13 @@
  * SP emission suites. SVC-AN/SVC-RS are separate infrastructures from
  * SEFAZ-SP, so the extra status calls don't feed SP's cStat=656 throttle.
  *
+ * **CI posture**: SERPRO's hosts are intermittently unreachable from
+ * GitHub-hosted runners (TCP-level, so client certs don't help), so
+ * ci-nfe.yml runs this suite in its own step — ADVISORY on
+ * pull_request/push (failure → workflow warning) and FATAL on the
+ * weekly schedule + workflow_dispatch. A real SVC regression alerts
+ * within a week; a SERPRO hiccup never blocks a merge.
+ *
  * **serie lane**: this suite owns **serie=3** (registry in
  * `../helpers/homologacao-seed.ts`); `numeracao` comes from `seedNNF()`.
  */

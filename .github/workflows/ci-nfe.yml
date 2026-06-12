@@ -43,6 +43,15 @@ on:
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-nfe.yml'
   workflow_dispatch:
+  schedule:
+    # Weekly full run (Mondays 06:00 UTC). Primarily for the SVC live
+    # suite: SERPRO's hosts (hom.sefazvirtual + SVRS) are intermittently
+    # unreachable from GitHub-hosted runners (live-observed: certless
+    # handshake RST from SVRS, then a 3×-retry TCP ETIMEDOUT to SVC-AN
+    # two hours later), so the SVC step is ADVISORY on pull_request/push
+    # and FATAL here — a real SVC regression alerts within a week
+    # without letting a SERPRO hiccup block merges.
+    - cron: '0 6 * * 1'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -168,34 +177,15 @@ jobs:
           fi
           echo "All 5 live-test secrets are configured."
 
-      - name: Refresh SEFAZ TLS chains (SP + both SVCs)
+      - name: Refresh SEFAZ TLS chain
         # See velvet-purring-bear.md "Cert lifecycle (operations)".
         # A fresh fetch per CI run avoids stale-bundle failures when
         # SEFAZ rotates intermediates between runs (live-observed: SERPRO
         # swapped SVC-AN from the ICP-Brasil chain to a GlobalSign-rooted
         # one on 2026-06-12 — a committed bundle would have gone stale).
-        # ORDER MATTERS: SP first — its bundle carries the ICP-Brasil
-        # Raiz v10 root, which the script's sibling-bundle recovery uses
-        # to complete chains whose intermediates ship no AIA caIssuers
-        # URL (the SVRS "AC do SERPRO SSLv1" case).
-        # Each fetch retries 3× — the TOFU connect is certless and SVRS
-        # in particular intermittently RESETs certless handshakes. SP and
-        # SVC-AN stay fatal (they gate real test lanes); SVC-RS degrades
-        # to a workflow warning and svc.homologacao's 410 transport test
-        # self-skips when its chain file is absent (loud in both places).
-        run: |
-          fetch_chain() {
-            for i in 1 2 3; do
-              pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca "$@" && return 0
-              echo "fetch:sefaz-ca $* — attempt $i failed; retrying in 15s"
-              sleep 15
-            done
-            return 1
-          }
-          fetch_chain
-          fetch_chain -- --uf=SVC-AN --ambiente=homologacao
-          fetch_chain -- --uf=SVC-RS --ambiente=homologacao \
-            || echo "::warning::SVC-RS chain fetch failed after 3 attempts (SVRS resets certless handshakes intermittently) — the svc.homologacao 410 transport test will self-skip this run"
+        # SP only here — the SVC chains are fetched inside the advisory
+        # SVC step below, so SERPRO reachability can't sink the SP lanes.
+        run: pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca
 
       - name: SEFAZ-SP HOM status gate (single status call per CI run)
         # Dedicated step so the emission + orchestrator steps below
@@ -229,17 +219,56 @@ jobs:
           # - emission.homologacao: duplicidade-recovery library
           #                         contract (the orchestrator's happy
           #                         path moved to orchestrator.homologacao)
-          # - svc.homologacao:      SVC contingency lanes — native SVC-AN
-          #                         emission (tpEmis=6 → cStat=100) +
-          #                         consulta, and the off-binding SVC-RS
-          #                         410 transport check (issue #129)
           # - numeracao.staging:    transactional concurrency on staging
           pnpm --filter @delfrance/integrations-nfe test \
-            emission.homologacao svc.homologacao numeracao.staging
+            emission.homologacao numeracao.staging
 
           # Orchestrator-level live test — emitirPedido + emitirPedidosLote
           # against real SEFAZ-SP HOM + staging Firestore fixtures.
           pnpm --filter @delfrance/nfe-app test orchestrator.homologacao
+
+      - name: Live SVC contingency suite (advisory on PRs, fatal on schedule)
+        # SERPRO's hosts are intermittently unreachable from GitHub-hosted
+        # runners (SVRS RSTs certless handshakes; SVC-AN observed in a
+        # 7-minute TCP ETIMEDOUT window) — a TCP-level block ignores
+        # client certs, so no amount of in-test retrying makes this lane
+        # deterministic per-PR. Posture: ADVISORY on pull_request/push
+        # (failure becomes a workflow warning via continue-on-error) and
+        # FATAL on the weekly schedule + workflow_dispatch, so a real SVC
+        # regression (endpoints, chains, tpEmis stamping, SOAP contract)
+        # still alerts within a week without blocking merges on a SERPRO
+        # hiccup. Issue #129.
+        id: svc-live
+        continue-on-error: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
+        env:
+          NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
+          NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
+          FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+        run: |
+          # SVC chains are fetched here (not in the SP chain step) so
+          # SERPRO reachability shares this step's advisory semantics.
+          # SVC-AN is fatal within the step (it gates the whole suite);
+          # SVC-RS degrades — svc.homologacao's 410 transport test
+          # self-skips when its chain file is absent.
+          fetch_chain() {
+            for i in 1 2 3; do
+              pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca "$@" && return 0
+              echo "fetch:sefaz-ca $* — attempt $i failed; retrying in 15s"
+              sleep 15
+            done
+            return 1
+          }
+          fetch_chain -- --uf=SVC-AN --ambiente=homologacao
+          fetch_chain -- --uf=SVC-RS --ambiente=homologacao \
+            || echo "::warning::SVC-RS chain fetch failed after 3 attempts (SVRS resets certless handshakes intermittently) — the 410 transport test will self-skip this run"
+          pnpm --filter @delfrance/integrations-nfe test svc.homologacao
+
+      - name: Surface advisory SVC failure
+        if: steps.svc-live.outcome == 'failure'
+        run: |
+          echo "::warning::SVC live suite failed — ADVISORY on PR/push runs (SERPRO hosts are intermittently unreachable from hosted runners). The weekly scheduled run treats this as fatal; investigate there if it persists."
 
   report-consumo-indevido:
     name: Detect Consumo Indevido Shield (cStat=656)
