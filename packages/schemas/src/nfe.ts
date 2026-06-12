@@ -83,6 +83,10 @@ export const nfeSchema = z.object({
   /**
    * Signed NF-e XML archived **before** the SOAP send (the anti-loss anchor).
    * The poller / recovery flow re-queries SEFAZ with this, never regenerates.
+   * Set to `null` in the same write that persists `xml_nfe_proc` — the
+   * nfeProc embeds the signed NFe, so keeping both would double the XML
+   * payload (#128). EPEC docs (estado `'p'`) keep it until the pós-EPEC
+   * transmission lands the proc.
    */
   xml_assinado: z.string().min(1).nullable(),
   /**

@@ -177,6 +177,23 @@ export function markAsLost(patch: NFeStatePatch, reason: string): NFeStatePatch 
   };
 }
 
+/**
+ * The ONLY legal way to clear the anti-loss anchor: in the same write that
+ * persists the `nfeProc` embedding the very same signed XML (issue #128 —
+ * keeping both roughly doubles the XML payload per authorized doc, and the
+ * Firestore 1 MiB doc limit is the pressure point). Atomicity is the
+ * guarantee that the signed XML is never lost: either the write fails and
+ * `xml_assinado` stays, or it succeeds and `xml_nfe_proc` carries the XML.
+ * `null` (not `FieldValue.delete()`) because the nfev4 schema requires the
+ * field to be present (`.nullable()` without `.optional()`).
+ */
+export function procPersistExtras(nfeProcXml: string): {
+  xml_nfe_proc: string;
+  xml_assinado: null;
+} {
+  return { xml_nfe_proc: nfeProcXml, xml_assinado: null };
+}
+
 export async function persistPatch(
   nfeRef: FirebaseFirestore.DocumentReference,
   patch: NFeStatePatch,

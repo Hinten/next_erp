@@ -35,6 +35,7 @@ import { transmitirPosEpec } from '@/lib/nfe/orchestrator/epec';
 import { getNFeRuntime, type NFeRuntime } from '@/lib/nfe/runtime';
 
 import { POST } from '../../../../../app/api/nfe/processar-pendentes/route';
+import { assertSignedXmlNeverLost } from '../../../../helpers/xml-invariant';
 
 const CHAVE = '35260614200166000187550010000000091400000010';
 
@@ -104,6 +105,7 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
         return { exists: data != null, id: segments[segments.length - 1]!, data: () => data };
       },
       async set(data: Record<string, unknown>, opt?: { merge?: boolean }) {
+        assertSignedXmlNeverLost(path, data, opt?.merge);
         writes.push({ path, data, merge: opt?.merge });
         docs[path] = opt?.merge ? { ...(docs[path] ?? {}), ...data } : data;
       },
@@ -274,46 +276,60 @@ describe('POST /api/nfe/processar-pendentes — EPEC (estado p)', () => {
   });
 });
 
+/** A stuck doc (hours past any timeout) for the consult-recovery branch. */
+function stuckDoc(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    numeracao: 8,
+    serie: 1,
+    tpEmis: 6,
+    estado: ESTADO_NFE.aguardandoResposta,
+    filialId: 'F-1',
+    chave: CHAVE,
+    cStat: '103',
+    xMotivo: 'Lote recebido',
+    retries: 0,
+    xml_assinado: '<NFe>…signed…</NFe>',
+    ultima_modificacao: '2026-06-10T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function consSitRet(cStat: string, withProt: boolean): Record<string, unknown> {
+  return {
+    tpAmb: '2',
+    verAplic: 'SVC_AN',
+    cStat,
+    xMotivo: cStat === '100' ? 'Autorizado o uso da NF-e' : 'Uso Denegado',
+    cUF: '35',
+    dhRecbto: '2026-06-11T09:00:00-03:00',
+    chNFe: CHAVE,
+    versao: '4.00',
+    ...(withProt
+      ? {
+          protNFe: {
+            versao: '4.00',
+            infProt: {
+              tpAmb: '2',
+              verAplic: 'SVC_AN',
+              chNFe: CHAVE,
+              dhRecbto: '2026-06-11T09:00:00-03:00',
+              nProt: '635260000000123',
+              cStat,
+              xMotivo: cStat === '100' ? 'Autorizado o uso da NF-e' : 'Uso Denegado',
+            },
+          },
+        }
+      : {}),
+  };
+}
+
 describe('POST /api/nfe/processar-pendentes — stuck-doc recovery routing', () => {
   it('consults a stuck SVC doc (tpEmis 6) at the SVC, not the home SEFAZ', async () => {
-    const { fs, docs } = fakeFirestore({
-      'pedidos/PED-2/nfev4/s6': {
-        numeracao: 8,
-        serie: 1,
-        tpEmis: 6,
-        estado: ESTADO_NFE.aguardandoResposta,
-        filialId: 'F-1',
-        chave: CHAVE,
-        cStat: '103',
-        xMotivo: 'Lote recebido',
-        retries: 0,
-        // Hours past any stuck timeout.
-        ultima_modificacao: '2026-06-10T00:00:00.000Z',
-      },
+    const { fs, docs, writes } = fakeFirestore({
+      'pedidos/PED-2/nfev4/s6': stuckDoc(),
     });
     vi.mocked(getAdminFirestore).mockReturnValue(fs);
-    vi.mocked(consultarSituacaoNFe).mockResolvedValue({
-      tpAmb: '2',
-      verAplic: 'SVC_AN',
-      cStat: '100',
-      xMotivo: 'Autorizado o uso da NF-e',
-      cUF: '35',
-      dhRecbto: '2026-06-11T09:00:00-03:00',
-      chNFe: CHAVE,
-      versao: '4.00',
-      protNFe: {
-        versao: '4.00',
-        infProt: {
-          tpAmb: '2',
-          verAplic: 'SVC_AN',
-          chNFe: CHAVE,
-          dhRecbto: '2026-06-11T09:00:00-03:00',
-          nProt: '635260000000123',
-          cStat: '100',
-          xMotivo: 'Autorizado o uso da NF-e',
-        },
-      },
-    } as never);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('100', true) as never);
 
     const res = await POST(req());
     const body = (await res.json()) as Record<string, unknown>;
@@ -324,5 +340,62 @@ describe('POST /api/nfe/processar-pendentes — stuck-doc recovery routing', () 
       { chave: CHAVE },
     );
     expect((docs['pedidos/PED-2/nfev4/s6'] as { estado: string }).estado).toBe(ESTADO_NFE.aprovada);
+    // #128 — the recovery merge persists the nfeProc (so the doc can render
+    // a DANFE) and clears the anchor in the very same payload.
+    const recoveryWrite = writes.find((w) => w.path === 'pedidos/PED-2/nfev4/s6');
+    expect(recoveryWrite?.data.xml_nfe_proc).toEqual(expect.any(String));
+    expect(recoveryWrite?.data.xml_nfe_proc).toContain('<nfeProc ');
+    expect(recoveryWrite?.data.xml_nfe_proc).toContain('<NFe>…signed…</NFe>');
+    expect(recoveryWrite?.data.xml_nfe_proc).toContain('<nProt>635260000000123</nProt>');
+    expect(recoveryWrite?.data.xml_assinado).toBeNull();
+  });
+
+  it('preserves the nRec saved on cStat=103 — a consSit outcome carries no receipt', async () => {
+    const { fs, docs } = fakeFirestore({
+      'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-103' }),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('100', true) as never);
+
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+
+    // persistPatch omits nRec when the patch lacks one — the receipt the
+    // lote response saved must survive the recovery merge.
+    expect((docs['pedidos/PED-2/nfev4/s6'] as { nRec: string }).nRec).toBe('REC-103');
+  });
+
+  it('a consult landing denegada (110) leaves the anchor and writes no proc', async () => {
+    const { fs, writes } = fakeFirestore({
+      'pedidos/PED-2/nfev4/s6': stuckDoc(),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('110', true) as never);
+
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+
+    const docWrites = writes.filter((w) => w.path === 'pedidos/PED-2/nfev4/s6');
+    expect(docWrites.length).toBeGreaterThan(0);
+    expect(docWrites.some((w) => typeof w.data.xml_nfe_proc === 'string')).toBe(false);
+    expect(docWrites.some((w) => w.data.xml_assinado === null)).toBe(false);
+  });
+
+  it('a doc without xml_assinado (crashed placeholder) recovers to aprovada without a proc', async () => {
+    const { fs, docs, writes } = fakeFirestore({
+      'pedidos/PED-2/nfev4/s6': stuckDoc({ xml_assinado: null }),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('100', true) as never);
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(body).toMatchObject({ scanned: 1, recovered: 1 });
+    expect((docs['pedidos/PED-2/nfev4/s6'] as { estado: string }).estado).toBe(ESTADO_NFE.aprovada);
+    // Nothing to pair — no signed XML to embed, so no proc and no clearing.
+    const docWrites = writes.filter((w) => w.path === 'pedidos/PED-2/nfev4/s6');
+    expect(docWrites.some((w) => typeof w.data.xml_nfe_proc === 'string')).toBe(false);
+    expect(docWrites.some((w) => w.data.xml_assinado === null)).toBe(false);
   });
 });
