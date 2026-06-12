@@ -30,16 +30,17 @@
  * running `pnpm --filter @delfrance/integrations-nfe test
  * operations.homologacao` before this suite.
  *
- * The test hand-builds a complete `GeneratorInput` so it has **no
+ * The fixture is a complete hand-built `GeneratorInput` (shared with the
+ * SVC suite via `../helpers/homologacao-fixture.ts`) so the test has **no
  * Firestore dependency** and stays library-level. `numeracao` comes
  * from `seedNNF()` in `../helpers/homologacao-seed.ts` — see that file
  * for the cross-CI-run collision-avoidance rationale (high-zone +
  * Date.now()-based offset over ~500M slots).
  *
- * **serie lane**: this test runs on **serie=2**; the orchestrator test
- * at `apps/nfe/test/lib/nfe/orchestrator.homologacao.test.ts` owns
- * serie=1. SEFAZ keys persistence on serie, so the two test paths can
- * never collide at the (CNPJ, serie, tpAmb, tpEmis, nNF) key.
+ * **serie lane**: this test runs on **serie=2** — full lane registry in
+ * `../helpers/homologacao-seed.ts`. SEFAZ keys persistence on serie, so
+ * the live suites can never collide at the (CNPJ, serie, tpAmb, tpEmis,
+ * nNF) key.
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -47,6 +48,8 @@ import { fileURLToPath } from 'node:url';
 
 import { beforeAll, describe, expect, it } from 'vitest';
 
+import { buildHomologacaoFixture } from '../helpers/homologacao-fixture';
+import { resolveProtocol } from '../helpers/resolve-protocol';
 import { seedNNF } from '../helpers/homologacao-seed';
 import {
   assertCertNotExpired,
@@ -56,19 +59,10 @@ import {
 } from '../../src/cert';
 import { assertNotConsumoIndevido } from '../../src/state';
 import { getEndpoints } from '../../src/endpoints';
-import { generateNFe, type GeneratorInput } from '../../src/generator';
+import { generateNFe } from '../../src/generator';
 import { signNFe } from '../../src/sign';
 import { createSefazAgent, type SefazCall } from '../../src/soap';
-import {
-  buildImpostoXml,
-  buildPagXml,
-  buildTotalXml,
-  buildTranspXml,
-  aggregateTotals,
-  type Imposto,
-} from '../../src/tribute';
-import type { TProtNFe } from '../../src/types/nfe-schema';
-import { autorizarLote, consultarLote, consultarSituacaoNFe } from '../../src/operations/index';
+import { autorizarLote, consultarSituacaoNFe } from '../../src/operations/index';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VENDORED_CHAIN = resolve(HERE, '..', '..', 'ca', 'sefaz-sp-homologacao.pem');
@@ -107,248 +101,27 @@ const TEST_CERT = hasFullCreds ? loadCertificateFromEnv() : null;
 // ---------------------------------------------------------------------------
 
 /**
- * Hand-built CSOSN 102 fixture — the minimum SN posture the tribute engine
- * builds. Default `PIS NT` + `COFINS NT` (CST 07) are stamped by the engine
- * itself when `configuracaoPIS` / `configuracaoCOFINS` are absent.
- */
-function impostoCsosn102(): Imposto {
-  return {
-    origem: '0',
-    cfop: '5102',
-    cfopInterestadual: '6102',
-    NCM: '61099000',
-    unidade: 'UN',
-    configuracaoICMS: {
-      crt: '1',
-      csosn: '102',
-    },
-    configuracaoPIS: null,
-    configuracaoCOFINS: null,
-  };
-}
-
-/**
- * Build a `GeneratorInput` for a single-item CSOSN 102 NF-e against
- * SEFAZ-SP homologação. Caller passes the unique `numeracao` so each
- * sub-test gets a fresh chave (≠ duplicidade collision with itself).
+ * Build the shared homologação fixture on THIS suite's lane.
  *
- * **Stress-tested free-text fields.** Marketplaces frequently ship
- * fiscally-dirty data into address / razão social / complemento fields
- * (accents, `@#%$[]{}` etc.). The fixture intentionally seeds those
- * shapes so the live round-trip proves the sanitizer cleans them well
- * enough for SEFAZ to accept the resulting XML.
+ * serie=2 is the library test's lane; serie=1 belongs to the orchestrator
+ * test at apps/nfe/test/lib/nfe/orchestrator.homologacao.test.ts and
+ * serie=3 to the SVC suite (svc.homologacao.test.ts). Keeping the lanes
+ * split eliminates the cross-test (CNPJ, serie, tpAmb, tpEmis, nNF)
+ * collision that would otherwise surface as cStat=539 ("duplicidade") on
+ * whichever runs second at SEFAZ.
+ *
+ * CNPJ comes from the loaded A1 cert (rejection 213 otherwise); IE from
+ * NFE_TEST_IE (rejection 209 otherwise). The non-null assertions are
+ * sound: this helper is only reachable inside `describeOrSkip`, whose
+ * `beforeAll` throws when either is missing.
  */
-function buildFixture(numeracao: number): GeneratorInput {
-  const imposto = impostoCsosn102();
-  const item = {
-    nItem: 1,
-    // xProd flows through sanitizeNFeText — accents + restricted chars
-    // here exercise the per-item sanitization path.
-    cProd: 'SKU-A',
-    cEAN: 'SEM GTIN',
-    xProd: 'Mercadoria com acentuação — ÁÉÍÓÚ@#$%',
-    NCM: '61099000',
-    CFOP: '5102',
-    uCom: 'UN',
-    qCom: 1,
-    vUnCom: 1500,
-    vProd: 1500,
-    cEANTrib: 'SEM GTIN',
-    uTrib: 'UN',
-    qTrib: 1,
-    vUnTrib: 1500,
-    impostoXml: buildImpostoXml(imposto, { vProd: 1500 }),
-  } as const;
-
-  const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto }]);
-
-  return {
-    ambiente: 'homologacao',
+function buildFixture(numeracao: number) {
+  return buildHomologacaoFixture({
     numeracao,
-    // serie=2 is the library test's lane; serie=1 belongs to the
-    // orchestrator test at apps/nfe/test/lib/nfe/orchestrator.homologacao.test.ts.
-    // Keeping the lanes split eliminates the cross-test (CNPJ, serie,
-    // tpAmb, tpEmis, nNF) collision that would otherwise surface as
-    // cStat=539 ("duplicidade") on whichever runs second at SEFAZ.
     serie: 2,
-    dhEmi: new Date(),
-    filial: {
-      // CNPJ comes from the loaded A1 cert — SEFAZ enforces "first 8
-      // digits of emit CNPJ must match cert CNPJ-base" (rejection 213).
-      // The non-null assertion is sound: this fixture is only reachable
-      // inside `describeOrSkip`, which short-circuits when `hasCert`
-      // (and therefore TEST_CERT) is false.
-      cnpj: TEST_CERT!.cnpj,
-      // razão social often arrives from cadastro with stray symbols + accents.
-      razaoSocial: 'EMPRESA HOMOLOGAÇÃO & CIA. LTDA — ME [@#$%]',
-      fantasia: null,
-      cnae: null,
-      // IE comes from NFE_TEST_IE — must be the IE registered at the
-      // state SEFAZ for the same CNPJ that signs the cert (rejection
-      // 209 fires otherwise). Guaranteed present here: the suite's
-      // `beforeAll` throws when NFE_TEST_IE is unset.
-      ie: TEST_IE!,
-      iest: null,
-      imun: null,
-      sede: {
-        idExterno: null,
-        // Endereço fields go through sanitizeNFeText (acentos stripped,
-        // restricted chars dropped). Real marketplace data routinely
-        // contains `Nº`, `°`, accentuated bairros, and stray symbols.
-        logradouro: 'Rua das Açucenas Nº 1234 — Bloco A',
-        numero: '1',
-        bairro: 'Vila São João',
-        complemento: 'Sala 12 — Andar 3º [@] $%',
-        cep: '01001000',
-        codigoMunicipio: '3550308',
-        cidade: 'São Paulo',
-        estado: 'SP',
-        cPais: '1058',
-        pais: 'BRASIL',
-        nome: null,
-        cpf_cnpj: null,
-        rg: null,
-        ie: null,
-        imun: null,
-        email: null,
-        telefone: null,
-      },
-    },
-    operacao: {
-      nome: 'Venda',
-      naturezaDaOperacao: 'Venda de mercadoria',
-      tipo: 1,
-      ehServico: false,
-      ehExterior: false,
-      // The fixture's cliente has no IE (cliente.ie is null), so
-      // `buildDest` stamps indIEDest='9' (não contribuinte). SEFAZ rule
-      // 696 then demands indFinal='1' — i.e. the operation must be
-      // marked as final-consumer. Flipping this to `true` satisfies
-      // the cross-field consistency check and matches the semantics
-      // of the fixture (a marketplace-style sale to an end consumer
-      // without state inscription).
-      ehConsumidorFinal: true,
-      padrao: false,
-      ativo: true,
-      movimentaEstoque: true,
-      movimentaIndisponivelEstoque: true,
-      ehFiscal: true,
-      finNFe: 1,
-      indPres: '2',
-      // indIntermed='1' means the sale was brokered by a marketplace.
-      // Pairs with the `infIntermed` block below (CNPJ + seller's
-      // store ID on the marketplace). SEFAZ NT 2020.006.
-      indIntermed: '1',
-      cfop: '5102',
-      cfopInterestadual: '6102',
-      NCM: '61099000',
-      CEST: '2803800',
-      unidade: 'UN',
-      infCpl: null,
-    },
-    cliente: {
-      tipo: '1',
-      // dest.xNome is replaced by the homologação literal — cliente.nome
-      // here exists only for completeness; sanitization is exercised by
-      // the address fields above.
-      nome: 'CLIENTE HOMOLOGACAO',
-      cpf_cnpj: '99999999000191',
-      idEstrangeiro: null,
-      ie: null,
-      imun: null,
-      isUF: null,
-      email: null,
-      telefone: null,
-      observacoesInternas: null,
-      timestamp: null,
-      nome_embedding: null,
-      telefone_embedding: null,
-      userCliente: null,
-    },
-    enderecoDest: {
-      idExterno: null,
-      logradouro: 'Avenida Brigadeiro Faria Lima — Nº 500',
-      numero: '100',
-      bairro: 'Jardim Paulistano (zona oeste)',
-      complemento: 'Apto 101 — Bloco B [acentos: éáí] @$%',
-      cep: '01001000',
-      codigoMunicipio: '3550308',
-      cidade: 'São Paulo',
-      estado: 'SP',
-      cPais: '1058',
-      pais: 'BRASIL',
-      nome: null,
-      cpf_cnpj: null,
-      rg: null,
-      ie: null,
-      imun: null,
-      email: null,
-      telefone: null,
-    },
-    itens: [item],
-    totalXml: buildTotalXml(totals),
-    // Exercise the optional <transporta> block (carrier disclosure).
-    // modFrete='0' = CIF (frete contratado pelo Remetente) — the
-    // sender contracts a third-party carrier. modes 3/4 ("transporte
-    // próprio") would force the transporta CNPJ-base to match the
-    // emit/dest CNPJ-base (rejection 846), which doesn't make sense
-    // when a marketplace order uses a third-party carrier.
-    transpXml: buildTranspXml({
-      modFrete: '0',
-      transporta: {
-        CNPJ: '99999999000191',
-        xNome: 'TRANSPORTADORA HOMOLOGACAO LTDA',
-        IE: 'ISENTO',
-        xEnder: 'Avenida das Cargas 100',
-        xMun: 'Sao Paulo',
-        UF: 'SP',
-      },
-    }),
-    pagXml: buildPagXml([
-      {
-        tPag: '17',
-        vPag: 1500,
-        // SEFAZ rejects PIX with cStat=391 when the <card> block is
-        // absent; tpIntegra='2' (standalone — the marketplace / PSP
-        // is the acquirer, not an integrated POS) plus the PSP CNPJ
-        // satisfies the rule. Real production callers would pass
-        // the actual acquirer CNPJ; the placeholder works in HOM.
-        card: { tpIntegra: '2', CNPJ: '99999999000191' },
-      },
-    ]),
-    // <infIntermed> — required when indIntermed='1'. CNPJ is the
-    // marketplace's, idCadIntTran is the seller's store id on that
-    // marketplace. Both fake here for HOM smoke; production reads
-    // these from Pedido.intermediador (Phase D wiring).
-    infIntermed: {
-      CNPJ: '99999999000191',
-      idCadIntTran: 'SELLER-HOMOLOGACAO-001',
-    },
-    // <cobr> — billing structure (fatura + duplicatas). Even though
-    // this fixture pays via PIX (single tPag='17' of R$1500), shipping
-    // a <cobr> alongside is structurally legal and exercises the new
-    // typed cobr builder end-to-end against live SEFAZ. vLiq + sum of
-    // dup.vDup must match the pag.vPag total or SEFAZ rejects with a
-    // cross-field cStat — here we use a single duplicata of 1500.00
-    // to keep the math trivial.
-    cobr: {
-      fat: {
-        nFat: 'FAT-HOMOLOG-001',
-        vOrig: '1500.00',
-        vDesc: '0.00',
-        vLiq: '1500.00',
-      },
-      dup: [{ nDup: '001', dVenc: '2026-06-20', vDup: '1500.00' }],
-    },
-    // <infAdic.infCpl> — fiscal complementary text shown on the
-    // DANFE. Marketplaces typically inject order ID + buyer name
-    // here. Free-text, sanitized by the generator (≤5000 chars).
-    infAdic: {
-      infCpl:
-        'Pedido marketplace #ML-HOMOLOG-001 — comprador: CLIENTE HOMOLOGACAO. ' +
-        'Mercadoria sem valor fiscal — emitida em ambiente de homologacao.',
-    },
-  };
+    cnpj: TEST_CERT!.cnpj,
+    ie: TEST_IE!,
+  });
 }
 
 /** Read the vendored SEFAZ TLS chain (created by `pnpm fetch:sefaz-ca`). */

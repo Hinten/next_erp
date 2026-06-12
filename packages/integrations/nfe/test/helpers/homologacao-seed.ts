@@ -15,9 +15,11 @@
  * A1 cert) and the same `tpAmb=2` + `tpEmis=1`, so the only freely
  * separable axes are `serie` and `nNF`. This file owns the `nNF` story:
  *
- * - `serie` separation is the orchestrator/library inter-test isolation
- *   contract — orchestrator owns serie=1, library owns serie=2 (see the
- *   companion comment in each test file).
+ * - `serie` separation is the inter-test isolation contract. Registry:
+ *   serie 1 = orchestrator (apps/nfe orchestrator.homologacao), serie 2 =
+ *   library emission (emission.homologacao), serie 3 = SVC contingency
+ *   (svc.homologacao, `SEFAZ_HOM_SVC_SERIE`), serie 9 = inutilização
+ *   (`SEFAZ_HOM_INUT_SERIE`). See the companion comment in each test file.
  * - `nNF` seeding has to dodge collisions across CI runs of the *same*
  *   test, in the same serie. SEFAZ exposes **no** "query last nNF used"
  *   endpoint (the only NFeConsulta web services are
@@ -72,6 +74,15 @@
  * inutilizado" on this série.
  */
 export const SEFAZ_HOM_INUT_SERIE = 9;
+
+/**
+ * Série reserved exclusively for the SVC contingency live suite
+ * (`svc.homologacao.test.ts`). Its emissions ride tpEmis=6, so they could
+ * never 539-collide with the tpEmis=1 lanes anyway (tpEmis is part of the
+ * SEFAZ persistence key AND the chave) — but a dedicated série keeps the
+ * lane registry uniform and the failure triage unambiguous.
+ */
+export const SEFAZ_HOM_SVC_SERIE = 3;
 
 /** High base for the homologação test nNF zone. See file header. */
 export const SEFAZ_HOM_TEST_NNF_BASE = 500_000_000;

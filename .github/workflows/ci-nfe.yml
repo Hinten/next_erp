@@ -168,11 +168,18 @@ jobs:
           fi
           echo "All 5 live-test secrets are configured."
 
-      - name: Refresh SEFAZ TLS chain
+      - name: Refresh SEFAZ TLS chains (SP + both SVCs)
         # See velvet-purring-bear.md "Cert lifecycle (operations)".
         # A fresh fetch per CI run avoids stale-bundle failures when
         # SEFAZ rotates intermediates between runs.
-        run: pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca
+        # ORDER MATTERS: SP first — its bundle carries the ICP-Brasil
+        # Raiz v10 root, which the script's sibling-bundle recovery uses
+        # to complete SERPRO chains whose intermediates ship no AIA
+        # caIssuers URL (the SVRS "AC do SERPRO SSLv1" case).
+        run: |
+          pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca
+          pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca -- --uf=SVC-AN --ambiente=homologacao
+          pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca -- --uf=SVC-RS --ambiente=homologacao
 
       - name: SEFAZ-SP HOM status gate (single status call per CI run)
         # Dedicated step so the emission + orchestrator steps below
@@ -206,9 +213,13 @@ jobs:
           # - emission.homologacao: duplicidade-recovery library
           #                         contract (the orchestrator's happy
           #                         path moved to orchestrator.homologacao)
+          # - svc.homologacao:      SVC contingency lanes — native SVC-AN
+          #                         emission (tpEmis=6 → cStat=100) +
+          #                         consulta, and the off-binding SVC-RS
+          #                         410 transport check (issue #129)
           # - numeracao.staging:    transactional concurrency on staging
           pnpm --filter @delfrance/integrations-nfe test \
-            emission.homologacao numeracao.staging
+            emission.homologacao svc.homologacao numeracao.staging
 
           # Orchestrator-level live test — emitirPedido + emitirPedidosLote
           # against real SEFAZ-SP HOM + staging Firestore fixtures.
