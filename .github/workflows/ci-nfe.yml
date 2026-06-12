@@ -43,15 +43,11 @@ on:
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-nfe.yml'
   workflow_dispatch:
-  schedule:
-    # Weekly full run (Mondays 06:00 UTC). Primarily for the SVC live
-    # suite: SERPRO's hosts (hom.sefazvirtual + SVRS) are intermittently
-    # unreachable from GitHub-hosted runners (live-observed: certless
-    # handshake RST from SVRS, then a 3×-retry TCP ETIMEDOUT to SVC-AN
-    # two hours later), so the SVC step is ADVISORY on pull_request/push
-    # and FATAL here — a real SVC regression alerts within a week
-    # without letting a SERPRO hiccup block merges.
-    - cron: '0 6 * * 1'
+  # NOTE: a scheduled (cron) run that treats the SVC live suite as FATAL
+  # is deliberately deferred — it will land together with the scheduled
+  # EPEC live test as one alerting workflow. Until then the SVC suite is
+  # advisory on PRs and fatal only on workflow_dispatch. See the
+  # follow-up issue referenced in PR #140.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -258,17 +254,17 @@ jobs:
           # against real SEFAZ-SP HOM + staging Firestore fixtures.
           pnpm --filter @delfrance/nfe-app test orchestrator.homologacao
 
-      - name: Live SVC contingency suite (advisory on PRs, fatal on schedule)
+      - name: Live SVC contingency suite (advisory on PRs, fatal on dispatch)
         # SERPRO's hosts are intermittently unreachable from GitHub-hosted
         # runners (SVRS RSTs certless handshakes; SVC-AN observed in a
         # 7-minute TCP ETIMEDOUT window) — a TCP-level block ignores
         # client certs, so no amount of in-test retrying makes this lane
         # deterministic per-PR. Posture: ADVISORY on pull_request/push
         # (failure becomes a workflow warning via continue-on-error) and
-        # FATAL on the weekly schedule + workflow_dispatch, so a real SVC
-        # regression (endpoints, chains, tpEmis stamping, SOAP contract)
-        # still alerts within a week without blocking merges on a SERPRO
-        # hiccup. Issue #129.
+        # FATAL on workflow_dispatch. A scheduled fatal run (so a real SVC
+        # regression alerts on its own) is deferred to the EPEC scheduled
+        # workflow — see the follow-up issue referenced in PR #140.
+        # Issue #129.
         id: svc-live
         continue-on-error: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
         env:
@@ -308,7 +304,7 @@ jobs:
       - name: Surface advisory SVC failure
         if: steps.svc-live.outcome == 'failure'
         run: |
-          echo "::warning::SVC live suite failed — ADVISORY on PR/push runs (SERPRO hosts are intermittently unreachable from hosted runners). The weekly scheduled run treats this as fatal; investigate there if it persists."
+          echo "::warning::SVC live suite failed — ADVISORY on PR/push runs (SERPRO hosts are intermittently unreachable from hosted runners). Re-run via workflow_dispatch (fatal there) to verify; a scheduled fatal run arrives with the EPEC workflow."
 
       - name: Save SEFAZ chains to cache (last-known-good)
         # Refresh the fallback with whatever this run ended up with —
