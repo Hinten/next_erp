@@ -45,6 +45,22 @@ describe('extractFieldsFromSchema', () => {
     expect(extractFieldsFromSchema(schema)[0]!.kind).toBe('integer');
   });
 
+  it('keeps a refined string introspectable (Zod 4 refine stays in-class)', () => {
+    // clienteSchema relies on this: `.refine()` must not wrap the ZodString
+    // in a pipe/effects type, or kind/nullable detection would break.
+    const schema = z.object({
+      doc: z
+        .string()
+        .regex(/^[0-9A-Z]*$/)
+        .refine((v) => v.length !== 1)
+        .nullable()
+        .default(null),
+    });
+    const f = extractFieldsFromSchema(schema)[0]!;
+    expect(f.kind).toBe('string');
+    expect(f.nullable).toBe(true);
+  });
+
   it('returns ZodDate as date', () => {
     const schema = z.object({ d: z.date() });
     expect(extractFieldsFromSchema(schema)[0]!.kind).toBe('date');
