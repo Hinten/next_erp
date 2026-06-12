@@ -91,7 +91,8 @@ export function IntFreteListPage({ slice }: { slice: LogisticaSlice }) {
                 refreshOnComplete: true,
                 confirm: {
                   title: `Excluir — ${slice.titulo}`,
-                  message: 'Integrações excluídas não podem ser restauradas. Confirmar exclusão?',
+                  message:
+                    'Configurações de frete excluídas não podem ser restauradas. Confirmar exclusão?',
                 },
                 run: async (rows) => {
                   await Promise.all(

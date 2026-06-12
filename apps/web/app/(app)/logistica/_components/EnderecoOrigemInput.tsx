@@ -145,12 +145,15 @@ export function EnderecoOrigemInput({
               <Select
                 label="Estado (UF)"
                 data={UF_OPTIONS}
-                value={endereco?.estado ?? 'SP'}
+                // No 'SP' fallback: a missing estado must render unselected
+                // (and fail validation) instead of silently looking set.
+                value={endereco?.estado ?? null}
                 onChange={(v) => {
                   if (v) patch({ estado: v });
                 }}
                 onBlur={onBlur}
                 disabled={disabled}
+                error={err('estado')}
                 allowDeselect={false}
                 searchable
                 maw={120}
