@@ -350,6 +350,21 @@ describe('POST /api/nfe/processar-pendentes — stuck-doc recovery routing', () 
     expect(recoveryWrite?.data.xml_assinado).toBeNull();
   });
 
+  it('preserves the nRec saved on cStat=103 — a consSit outcome carries no receipt', async () => {
+    const { fs, docs } = fakeFirestore({
+      'pedidos/PED-2/nfev4/s6': stuckDoc({ nRec: 'REC-103' }),
+    });
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(consSitRet('100', true) as never);
+
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+
+    // persistPatch omits nRec when the patch lacks one — the receipt the
+    // lote response saved must survive the recovery merge.
+    expect((docs['pedidos/PED-2/nfev4/s6'] as { nRec: string }).nRec).toBe('REC-103');
+  });
+
   it('a consult landing denegada (110) leaves the anchor and writes no proc', async () => {
     const { fs, writes } = fakeFirestore({
       'pedidos/PED-2/nfev4/s6': stuckDoc(),

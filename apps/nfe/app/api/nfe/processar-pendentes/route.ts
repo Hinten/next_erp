@@ -31,7 +31,7 @@ import { ESTADO_NFE, type EstadoNFe, type NotaFiscalEletronica } from '@delfranc
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
-import { procPersistExtras } from '@/lib/nfe/orchestrator/audit';
+import { persistPatch, procPersistExtras } from '@/lib/nfe/orchestrator/audit';
 import { loadNfeConfigForEmission } from '@/lib/nfe/orchestrator/bundle';
 import { transmitirPosEpec } from '@/lib/nfe/orchestrator/epec';
 import { sefazCallFor } from '@/lib/nfe/orchestrator/sefaz-call';
@@ -191,17 +191,13 @@ export async function POST(req: Request): Promise<NextResponse> {
         data.xml_assinado != null
           ? buildNFeProc(data.xml_assinado, retSit.protNFe)
           : null;
-      await doc.ref.set(
-        nfev4Collection.parseMerge({
-          estado: patch.estado,
-          cStat: patch.cStat,
-          xMotivo: patch.xMotivo,
-          retries: patch.retries,
-          nRec: patch.nRec,
-          ...(nfeProcXml != null ? procPersistExtras(nfeProcXml) : {}),
-          ultima_modificacao: new Date().toISOString(),
-        }),
-        { merge: true },
+      // persistPatch (not an inline merge) so its nRec preservation applies
+      // here too: a consSit outcome carries no receipt, and overwriting the
+      // nRec saved on cStat=103 with null would orphan the lote-poll trail.
+      await persistPatch(
+        doc.ref,
+        patch,
+        nfeProcXml != null ? procPersistExtras(nfeProcXml) : undefined,
       );
       recovered++;
     } catch (e) {
