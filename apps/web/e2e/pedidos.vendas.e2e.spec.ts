@@ -167,7 +167,11 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
 
-    await dialog.getByLabel('Nome', { exact: true }).fill(nome);
+    // Nome is `required` — Mantine puts the asterisk inside the label
+    // ("Nome *"), so an exact getByLabel never matches (same caveat as the
+    // login fields in _helpers/auth.ts). The dialog scope keeps the
+    // substring match unambiguous.
+    await dialog.getByLabel('Nome').fill(nome);
     await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill('39053344705');
     await dialog.getByLabel('E-mail', { exact: true }).fill(`${nome}@example.com`);
     await dialog.getByLabel('Telefone', { exact: true }).fill('11988887777');
@@ -195,7 +199,8 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
 
-    await dialog.getByLabel('Nome', { exact: true }).fill(`${prefix}-qc-dup`);
+    // Non-exact: the required asterisk lives inside the Nome label.
+    await dialog.getByLabel('Nome').fill(`${prefix}-qc-dup`);
     // The seeded pedido fixture cliente owns this CNPJ — blur triggers the
     // debounced dedup check and the blocking alert.
     await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill('11222333000181');
