@@ -124,6 +124,11 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
     // Corrupt the row FIRST (schema-invalid CEP), then mark it for deletion —
     // validation must ignore rows that will be stripped on save.
     await page.getByLabel('CEP Inicial 1').fill('1');
+    // Blur explicitly and wait for the per-row message (the inline-error fix)
+    // BEFORE clicking the trash icon: the message render shifts the layout,
+    // and a click during that shift misses the icon.
+    await page.getByLabel('CEP Inicial 1').blur();
+    await expect(page.getByText('CEP deve ter 8 dígitos')).toBeVisible();
     await page.getByRole('button', { name: 'Excluir faixa 1' }).click();
     await expect(page.getByText('Será excluída')).toBeVisible();
     // Nothing committed yet — the doc still has both rows.
