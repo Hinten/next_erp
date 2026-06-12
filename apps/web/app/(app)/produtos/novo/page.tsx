@@ -4,12 +4,24 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button, Stack } from '@mantine/core';
+import { writeBatch } from 'firebase/firestore';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
-import { type Foto, type Video, produtoSchema } from '@delfrance/schemas';
+import {
+  type Foto,
+  type PrecosMap,
+  type Video,
+  diffPrecos,
+  produtoSchema,
+} from '@delfrance/schemas';
+import { buildQuery, limit, orderByField } from '@delfrance/data';
+import { useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
+import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
+import { appendPrecoHistory } from '@/lib/produtos/precoHistory';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
 import { PhotoManager } from '../_components/PhotoManager';
+import { PrecoCustoManager } from '../_components/PrecoCustoManager';
 import { VideoManager } from '../_components/VideoManager';
 import { VariationManager } from '../_components/VariationManager';
 import {
@@ -24,6 +36,22 @@ export default function NovoProdutoPage() {
   const { user } = useAuth();
   const db = getFirebaseFirestore();
   const storage = getFirebaseStorage();
+
+  // Listas de preços (live, bounded) — the Preço e custo tab is editable
+  // before the first save (precos is a doc field, unlike fotos).
+  const listasQuery = useMemo(
+    () => buildQuery(listaDePrecosCollection.ref(db, {}), [orderByField('nome'), limit(200)]),
+    [db],
+  );
+  const listasSnap = useSnapshot(listasQuery);
+  const listas = useMemo(() => listasSnap.data ?? [], [listasSnap.data]);
+
+  // Captured by the precos field's prepareForSave; onAfterSave writes the
+  // initial history records (old = null → one valorFinal entry per lista).
+  // Stable mutable box rather than a ref: it's written inside ObjectView's
+  // save handler — an event-time context the react-hooks/refs rule would
+  // misread as a render-time ref access.
+  const pendingPrecos = useMemo(() => ({ current: null as PrecosMap }), []);
 
   // The Fotos/Vídeos tabs show even before the product is saved — the managers
   // render a "save first" message when produtoId is null (uploads need a saved
@@ -78,8 +106,27 @@ export default function NovoProdutoPage() {
           />
         ),
       },
+      precos: {
+        label: 'Preços',
+        section: 'Preço e custo',
+        prepareForSave: (value) => {
+          pendingPrecos.current = (value as PrecosMap) ?? null;
+          return value;
+        },
+        renderInput: (p) => (
+          <PrecoCustoManager
+            produtoId={null}
+            db={db}
+            listas={listas}
+            listasError={listasSnap.error?.message}
+            value={(p.value as PrecosMap) ?? null}
+            onChange={p.onChange}
+            disabled={p.disabled}
+          />
+        ),
+      },
     }),
-    [db, storage],
+    [db, storage, listas, listasSnap.error?.message, pendingPrecos],
   );
 
   return (
@@ -103,6 +150,16 @@ export default function NovoProdutoPage() {
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
         saveLabel="Criar"
         showSaveAndContinue={false}
+        onAfterSave={async (id) => {
+          // First save of a produto born with prices → initial history
+          // records, mirroring Flutter's oldPrecos-null branch.
+          const changes = diffPrecos(null, pendingPrecos.current);
+          if (changes.length > 0) {
+            const batch = writeBatch(db);
+            appendPrecoHistory(batch, db, id, changes);
+            await batch.commit();
+          }
+        }}
         onSaved={(id) => router.replace(`/produtos/${id}/editar`)}
       />
     </Stack>

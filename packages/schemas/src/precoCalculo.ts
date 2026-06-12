@@ -1,0 +1,262 @@
+import type { FormulaCalculoPreco, ListaDePrecos } from './listaDePrecos';
+import type { Preco } from './produto';
+
+/**
+ * Pure price-formula engine — port of the Flutter `ListaDePrecos.calcularPreco`
+ * / `_calcularPrecoParaFormula` (`packages/produtos/lib/src/models.dart:144-212`)
+ * and `FormulaCalculoPreco.getTaxaFixaPorPeso` (`:402-419`). Behavior mirrors
+ * the Dart implementation exactly (selection by `limiar`, weight-banded
+ * `taxaFixa`, 2-decimal rounding) so both apps price identically.
+ */
+
+/** Mirror of Dart `double.parse(toStringAsFixed(2))`. */
+function round2(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+// ---------------------------------------------------------------------------
+// Expression evaluator
+// ---------------------------------------------------------------------------
+//
+// The Flutter app parses `formula` with the `math_expressions` package and
+// binds single-letter variables. This is a minimal recursive-descent
+// equivalent: numbers, variables, + - * / ^ (right-assoc power), unary minus
+// and parentheses. Anything unparsable returns null — the Dart code wraps the
+// parse in try/catch and skips the formula.
+
+class ParseError extends Error {}
+
+class Tokenizer {
+  private pos = 0;
+  constructor(private readonly src: string) {}
+
+  peek(): string | null {
+    while (this.pos < this.src.length && this.src[this.pos] === ' ') this.pos += 1;
+    return this.pos < this.src.length ? this.src[this.pos]! : null;
+  }
+
+  next(): string | null {
+    const ch = this.peek();
+    if (ch !== null) this.pos += 1;
+    return ch;
+  }
+
+  /** Consume a number literal starting at the cursor. */
+  number(): number {
+    const start = this.pos;
+    while (this.pos < this.src.length && /[0-9.]/.test(this.src[this.pos]!)) this.pos += 1;
+    const text = this.src.slice(start, this.pos);
+    const value = Number(text);
+    if (text === '' || Number.isNaN(value)) throw new ParseError(`número inválido: "${text}"`);
+    return value;
+  }
+}
+
+function parseExpression(t: Tokenizer, vars: Record<string, number>): number {
+  let value = parseTerm(t, vars);
+  for (;;) {
+    const ch = t.peek();
+    if (ch === '+') {
+      t.next();
+      value += parseTerm(t, vars);
+    } else if (ch === '-') {
+      t.next();
+      value -= parseTerm(t, vars);
+    } else {
+      return value;
+    }
+  }
+}
+
+function parseTerm(t: Tokenizer, vars: Record<string, number>): number {
+  let value = parseFactor(t, vars);
+  for (;;) {
+    const ch = t.peek();
+    if (ch === '*') {
+      t.next();
+      value *= parseFactor(t, vars);
+    } else if (ch === '/') {
+      t.next();
+      value /= parseFactor(t, vars);
+    } else {
+      return value;
+    }
+  }
+}
+
+function parseFactor(t: Tokenizer, vars: Record<string, number>): number {
+  const base = parseUnary(t, vars);
+  if (t.peek() === '^') {
+    t.next();
+    // Right-associative, like math_expressions' power operator.
+    return base ** parseFactor(t, vars);
+  }
+  return base;
+}
+
+function parseUnary(t: Tokenizer, vars: Record<string, number>): number {
+  if (t.peek() === '-') {
+    t.next();
+    return -parseUnary(t, vars);
+  }
+  return parsePrimary(t, vars);
+}
+
+function parsePrimary(t: Tokenizer, vars: Record<string, number>): number {
+  const ch = t.peek();
+  if (ch === null) throw new ParseError('expressão terminou inesperadamente');
+  if (ch === '(') {
+    t.next();
+    const value = parseExpression(t, vars);
+    if (t.next() !== ')') throw new ParseError('parêntese não fechado');
+    return value;
+  }
+  if (/[0-9.]/.test(ch)) return t.number();
+  if (/[a-zA-Z]/.test(ch)) {
+    t.next();
+    const bound = vars[ch];
+    if (bound === undefined) throw new ParseError(`variável desconhecida: ${ch}`);
+    return bound;
+  }
+  throw new ParseError(`caractere inesperado: ${ch}`);
+}
+
+/**
+ * Evaluate a formula string with the given single-letter variable bindings.
+ * Commas are decimal separators on the wire (`','→'.'`, mirroring the Dart
+ * `replaceAll`). Returns null on any parse/evaluation error.
+ */
+export function evaluateFormula(expr: string, vars: Record<string, number>): number | null {
+  const t = new Tokenizer(expr.replaceAll(',', '.'));
+  try {
+    const value = parseExpression(t, vars);
+    if (t.peek() !== null) return null; // trailing garbage
+    return Number.isFinite(value) ? value : null;
+  } catch (err) {
+    if (err instanceof ParseError) return null;
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Formula selection / price calculation
+// ---------------------------------------------------------------------------
+
+/**
+ * Weight-banded fixed fee: weight rounded UP at 2 decimals, first band
+ * containing it (inclusive both ends) wins, else the formula's `taxaFixa`.
+ */
+export function taxaFixaPorPeso(formula: FormulaCalculoPreco, pesoKg: number): number {
+  const faixas = formula.faixasTaxaFixaPeso;
+  if (!faixas || faixas.length === 0) return formula.taxaFixa;
+  const peso = Math.ceil(pesoKg * 100) / 100;
+  const faixa = faixas.find((f) => peso >= f.pesoMinKg && peso <= f.pesoMaxKg);
+  return faixa ? faixa.taxaFixa : formula.taxaFixa;
+}
+
+function evaluateForFormula(
+  custo: number,
+  formula: FormulaCalculoPreco,
+  pesoKg: number,
+): number | null {
+  return evaluateFormula(formula.formula, {
+    C: custo,
+    c: formula.custoFixo,
+    T: taxaFixaPorPeso(formula, pesoKg),
+    L: formula.margemDeLucro,
+    M: formula.comissaoMarketplace,
+    I: formula.imposto,
+    F: formula.frete,
+    K: formula.marketing,
+  });
+}
+
+/**
+ * Compute the price for a custo under a lista's formulas. Category-specific
+ * formulas take precedence when present (falling back to the default list
+ * when the category bucket has none); candidates run in ascending `limiar`
+ * order and the first valid (>0) result that does not exceed its own limiar
+ * wins, rounded to 2 decimals. Null when no formula applies — exactly the
+ * Dart `calcularPreco`.
+ */
+export function calcularPreco(
+  lista: Pick<ListaDePrecos, 'formulasCalculoPreco' | 'formulasPorCategoria'>,
+  custo: number,
+  options: { idCategoria?: string | null; pesoKg?: number | null } = {},
+): Preco | null {
+  if (custo <= 0) return null;
+
+  const pesoKg = options.pesoKg ?? 0.25;
+  let formulas: FormulaCalculoPreco[] | null | undefined;
+  if (options.idCategoria && lista.formulasPorCategoria) {
+    formulas = lista.formulasPorCategoria[options.idCategoria]?.formulasCalculoPreco;
+  }
+  formulas ??= lista.formulasCalculoPreco;
+  if (!formulas || formulas.length === 0) return null;
+
+  const sorted = [...formulas].sort((a, b) => a.limiar - b.limiar);
+  for (const formula of sorted) {
+    const valor = evaluateForFormula(custo, formula, pesoKg);
+    if (valor === null || valor <= 0) continue;
+    if (valor <= formula.limiar) return { valor: round2(valor) };
+  }
+  return null;
+}
+
+/** True when a lista can recalc for this produto (any usable formula list). */
+export function temFormulas(
+  lista: Pick<ListaDePrecos, 'formulasCalculoPreco' | 'formulasPorCategoria'>,
+  idCategoria?: string | null,
+): boolean {
+  const daCategoria =
+    idCategoria && lista.formulasPorCategoria
+      ? (lista.formulasPorCategoria[idCategoria]?.formulasCalculoPreco?.length ?? 0)
+      : 0;
+  return daCategoria > 0 || (lista.formulasCalculoPreco?.length ?? 0) > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Price-map diffing (history records)
+// ---------------------------------------------------------------------------
+
+export type PrecosMap = Record<string, Preco> | null | undefined;
+
+/** Per-lista history record to persist after a precos change. */
+export interface PrecoChange {
+  listaId: string;
+  valorOriginal: number | null;
+  valorFinal: number | null;
+}
+
+/** Entry-wise equality of two precos maps (by `valor`). */
+export function samePrecos(a: PrecosMap, b: PrecosMap): boolean {
+  const ea = Object.entries(a ?? {});
+  const eb = b ?? {};
+  if (ea.length !== Object.keys(eb).length) return false;
+  return ea.every(([k, v]) => eb[k]?.valor === v.valor);
+}
+
+/**
+ * The history records a precos transition produces — mirror of the Flutter
+ * `Produto.save()` logic (`models.dart:2078-2124`): changed entry → both
+ * values; added → valorFinal only; removed → valorOriginal only; no change →
+ * empty list.
+ */
+export function diffPrecos(oldPrecos: PrecosMap, newPrecos: PrecosMap): PrecoChange[] {
+  if (samePrecos(oldPrecos, newPrecos)) return [];
+  const oldMap = oldPrecos ?? {};
+  const newMap = newPrecos ?? {};
+  const changes: PrecoChange[] = [];
+  for (const [listaId, preco] of Object.entries(newMap)) {
+    const before = oldMap[listaId]?.valor ?? null;
+    if (before !== preco.valor) {
+      changes.push({ listaId, valorOriginal: before, valorFinal: preco.valor });
+    }
+  }
+  for (const [listaId, preco] of Object.entries(oldMap)) {
+    if (!(listaId in newMap)) {
+      changes.push({ listaId, valorOriginal: preco.valor, valorFinal: null });
+    }
+  }
+  return changes;
+}

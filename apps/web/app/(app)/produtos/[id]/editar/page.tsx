@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
@@ -10,16 +10,20 @@ import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from
 import { PERM } from '@delfrance/auth';
 import {
   type Foto,
+  type PrecosMap,
   type Video,
+  diffPrecos,
   normalizeVariacoesUid,
   parseFakePath,
   produtoSchema,
   sortGrupoUids,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
-import { useSnapshot } from '@delfrance/data/hooks';
+import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
+import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
+import { appendPrecoHistory } from '@/lib/produtos/precoHistory';
 import {
   describeReferences,
   findManyProdutoReferences,
@@ -28,6 +32,7 @@ import {
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { PhotoManager } from '../../_components/PhotoManager';
+import { PrecoCustoManager } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
 import { VariationManager } from '../../_components/VariationManager';
 import {
@@ -55,10 +60,39 @@ export default function EditarProdutoPage() {
   const gruposSnap = useSnapshot(gruposQuery);
   const grupos = useMemo(() => gruposSnap.data ?? [], [gruposSnap.data]);
 
+  // Listas de preços (live, bounded) — feed the Preço e custo tab.
+  const listasQuery = useMemo(
+    () => buildQuery(listaDePrecosCollection.ref(db, {}), [orderByField('nome'), limit(200)]),
+    [db],
+  );
+  const listasSnap = useSnapshot(listasQuery);
+  const listas = useMemo(() => listasSnap.data ?? [], [listasSnap.data]);
+
   // Lifted from the VariationManager: the user's group selection (null until
   // touched) and the staged-children flush, committed after the parent saves.
   const groupsRef = useRef<string[] | null>(null);
   const flushChildrenRef = useRef<((parentId: string) => Promise<void>) | null>(null);
+
+  // Price-history bookkeeping (Flutter parity: `Produto.save()` records every
+  // precos change). `lastSavedPrecos` pins the PERSISTED map once, from the
+  // first doc emit — the live snapshot re-emits the NEW value during a save,
+  // so it can't serve as "old" at onAfterSave time. `pendingPrecos` is
+  // captured by the field's prepareForSave on every save attempt.
+  const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, params.id), [db, params.id]);
+  const produtoSnap = useDocSnapshot(produtoDocRef);
+  const lastSavedPrecos = useRef<{ ready: boolean; value: PrecosMap }>({
+    ready: false,
+    value: null,
+  });
+  useEffect(() => {
+    if (!lastSavedPrecos.current.ready && produtoSnap.data) {
+      lastSavedPrecos.current = { ready: true, value: produtoSnap.data.data.precos ?? null };
+    }
+  }, [produtoSnap.data]);
+  // Stable mutable box rather than a ref: it's written inside ObjectView's
+  // save handler (prepareForSave) — an event-time context the
+  // react-hooks/refs rule would misread as a render-time ref access.
+  const pendingPrecos = useMemo(() => ({ current: null as PrecosMap }), []);
 
   // The product exists here (edit mode), so the Fotos/Vídeos managers are scoped
   // to this product and uploads are enabled.
@@ -115,8 +149,38 @@ export default function EditarProdutoPage() {
           />
         ),
       },
+      precos: {
+        label: 'Preços',
+        section: 'Preço e custo',
+        // Capture the map heading into this save — onAfterSave diffs it
+        // against the last persisted value for the history records.
+        prepareForSave: (value) => {
+          pendingPrecos.current = (value as PrecosMap) ?? null;
+          return value;
+        },
+        renderInput: (p) => (
+          <PrecoCustoManager
+            produtoId={params.id}
+            db={db}
+            listas={listas}
+            listasError={listasSnap.error?.message}
+            value={(p.value as PrecosMap) ?? null}
+            onChange={p.onChange}
+            disabled={p.disabled}
+          />
+        ),
+      },
     }),
-    [params.id, db, storage, grupos, gruposSnap.error?.message],
+    [
+      params.id,
+      db,
+      storage,
+      grupos,
+      gruposSnap.error?.message,
+      listas,
+      listasSnap.error?.message,
+      pendingPrecos,
+    ],
   );
 
   // The editor is the product screen now (the intermediate detail view was
@@ -205,6 +269,18 @@ export default function EditarProdutoPage() {
           };
         }}
         onAfterSave={async (id) => {
+          // Price history first (Flutter parity), then the children flush —
+          // which propagates the new precos to every variation child and
+          // writes the initial records for children created with prices.
+          if (lastSavedPrecos.current.ready) {
+            const changes = diffPrecos(lastSavedPrecos.current.value, pendingPrecos.current);
+            if (changes.length > 0) {
+              const batch = writeBatch(db);
+              appendPrecoHistory(batch, db, id, changes);
+              await batch.commit();
+            }
+            lastSavedPrecos.current = { ready: true, value: pendingPrecos.current };
+          }
           await flushChildrenRef.current?.(id);
         }}
         saveLabel="Salvar alterações"

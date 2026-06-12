@@ -17,6 +17,7 @@ export const PRODUTO_SECTIONS: string[] = [
   'Dados gerais',
   'Dimensões e peso',
   'Configurações',
+  'Preço e custo',
   'Variações',
   'Fotos',
   'Vídeos',
@@ -50,6 +51,14 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
   ehKitVirtual: { label: 'É kit virtual', section: 'Configurações' },
   ofereceFreteGratis: { label: 'Oferece frete grátis', section: 'Configurações' },
   permiteVendaSemEstoque: { label: 'Permite venda sem estoque', section: 'Configurações' },
+
+  custo: {
+    label: 'Custo',
+    hint: 'Alimenta o recálculo de preço pelas fórmulas da lista. Para kits, o custo dos componentes será somado (aba Kit, futura).',
+    section: 'Preço e custo',
+  },
+  // `precos` gets its renderInput (PrecoCustoManager) on each page — it
+  // needs the page's listas snapshot and produtoId.
 };
 
 /**

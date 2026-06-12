@@ -1002,6 +1002,84 @@ export async function getProdutoIdBySku(sku: string): Promise<string | null> {
   return snap.docs[0]?.id ?? null;
 }
 
+/** Full data of a produto doc, or null when missing. */
+export async function getProdutoData(produtoId: string): Promise<Record<string, unknown> | null> {
+  const snap = await db().collection('produtos').doc(produtoId).get();
+  return (snap.data() as Record<string, unknown> | undefined) ?? null;
+}
+
+/**
+ * Seed two prefix-scoped `listaDePrecos` docs for the Preço/Custo suite:
+ * "varejo" carries one deterministic formula (`C*L+T`, L=2 T=5, no weight
+ * bands — custo 10 → 25) and "atacado" has none (Recalcular stays disabled).
+ */
+export async function seedListasDePreco(prefix: string): Promise<{
+  varejoId: string;
+  varejoNome: string;
+  atacadoId: string;
+  atacadoNome: string;
+}> {
+  const varejoId = `${prefix}-varejo`;
+  const atacadoId = `${prefix}-atacado`;
+  const now = new Date().toISOString();
+  const batch = db().batch();
+  batch.set(db().collection('listaDePrecos').doc(varejoId), {
+    nome: varejoId,
+    padrao: true,
+    ativo: true,
+    formulasCalculoPreco: [
+      {
+        limiar: 999999,
+        formula: 'C*L+T',
+        taxaFixa: 5,
+        custoFixo: 0,
+        margemDeLucro: 2,
+        comissaoMarketplace: 0,
+        imposto: 0,
+        frete: 0,
+        marketing: 0,
+        faixasTaxaFixaPeso: null,
+      },
+    ],
+    formulasPorCategoria: null,
+    timestamp: now,
+    ultimaModificacao: now,
+  });
+  batch.set(db().collection('listaDePrecos').doc(atacadoId), {
+    nome: atacadoId,
+    padrao: false,
+    ativo: true,
+    formulasCalculoPreco: null,
+    formulasPorCategoria: null,
+    timestamp: now,
+    ultimaModificacao: now,
+  });
+  await batch.commit();
+  return { varejoId, varejoNome: varejoId, atacadoId, atacadoNome: atacadoId };
+}
+
+/** All `historicoDePrecos` docs of a produto (unsorted). */
+export async function listHistoricoPrecos(
+  produtoId: string,
+): Promise<Array<Record<string, unknown>>> {
+  const snap = await db()
+    .collection('produtos')
+    .doc(produtoId)
+    .collection('historicoDePrecos')
+    .get();
+  return snap.docs.map((d) => d.data() as Record<string, unknown>);
+}
+
+/** Seed one read-only `historicoDeCusto` record (the old app's wire shape). */
+export async function seedHistoricoCusto(produtoId: string, valor: number): Promise<void> {
+  await db()
+    .collection('produtos')
+    .doc(produtoId)
+    .collection('historicoDeCusto')
+    .doc('custo-test')
+    .set({ valor, timestamp: Date.now() });
+}
+
 /**
  * Delete every doc in `collection` whose `field` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
