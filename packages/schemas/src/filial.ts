@@ -35,6 +35,11 @@ export const filialSchema = z.object({
   imun: z.string().regex(/^\d*$/, 'apenas números').nullable().describe('Inscrição Municipal'),
   sede: enderecoSchema.describe('Endereço sede'),
   timestamp: z.string().datetime().nullable().optional(),
+  // Update-monitor field — `saveRecord` stamps it on every write. Legacy
+  // (Flutter-written) docs lack it; pipeline sorts treat the missing field
+  // as null (sorted last on desc) instead of excluding the doc, which is
+  // what FilialPicker's recency ordering relies on.
+  ultimaModificacao: z.string().datetime().nullable().optional(),
 });
 
 export type Filial = z.infer<typeof filialSchema>;

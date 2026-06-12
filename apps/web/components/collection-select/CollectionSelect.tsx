@@ -32,9 +32,9 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
   searchFields?: string[];
   /** RHF field path — makes the per-instance recents cache key unique. */
   fieldName: string;
-  /** Current form value — DocumentReference, `{path}`-shaped object, id string, or null. */
+  /** Current form value — DocumentReference, `{path}` object, doc-path/id string, or null. */
   value: unknown;
-  /** Emits a fresh DocumentReference for the picked id, or null when cleared. */
+  /** Emits a DocumentReference (or doc-path string with `emitDocPath`), or null when cleared. */
   onChange: (next: unknown) => void;
   onBlur?: () => void;
   label: string;
@@ -44,16 +44,39 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
   error?: string;
   /** Firestore query cap. Default 15. */
   limit?: number;
+  /**
+   * Emit the picked doc as a Flutter-ODM doc-path string
+   * (`documents/<collection>/<id>`) instead of a native `DocumentReference`.
+   * Use for collections whose schema types the ref as `z.string()` — the
+   * wire format the legacy app reads and writes (`OuterRefField.toJson`).
+   */
+  emitDocPath?: boolean;
+  /**
+   * Ordering for the option list (initial AND searched), pipeline path only.
+   * Defaults to `[{ field: labelField, direction: 'asc' }]`. Multi-key sorts
+   * are supported (e.g. recency: `ultimaModificacao desc, timestamp desc` —
+   * pipeline sorts treat a missing field as null instead of excluding the
+   * doc). The non-pipeline fallback keeps the labelField-asc prefix query —
+   * classic `orderBy` on a possibly-missing field would silently EXCLUDE
+   * legacy docs, and pipelines are the supported path on Firestore
+   * Enterprise anyway.
+   */
+  orderBy?: Array<{ field: string; direction?: 'asc' | 'desc' }>;
 }
 
 /**
  * Convert whatever the form holds (Firestore DocumentReference, opaque
- * `{path}` object, plain id string, or null) into the doc id Mantine's
- * `<Select>` consumes. Anything unrecognised becomes `null`.
+ * `{path}` object, doc-path string — possibly Flutter-ODM `documents/...`
+ * prefixed — plain id string, or null) into the doc id Mantine's `<Select>`
+ * consumes. Anything unrecognised becomes `null`.
  */
 function valueToId(value: unknown): string | null {
   if (value == null) return null;
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') {
+    if (value.length === 0) return null;
+    const segs = value.split('/').filter(Boolean);
+    return segs[segs.length - 1] ?? null;
+  }
   if (typeof value !== 'object') return null;
   const v = value as { id?: unknown; path?: unknown };
   if (typeof v.id === 'string' && v.id.length > 0) return v.id;
@@ -100,6 +123,8 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   disabled,
   error,
   limit = DEFAULT_LIMIT,
+  emitDocPath = false,
+  orderBy,
 }: CollectionSelectProps<S>) {
   const db = getFirebaseFirestore();
 
@@ -117,9 +142,10 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   // value can't fire a phantom query.
   const term = locked ? '' : debounced.trim();
 
-  // Value-stable key for the `searchFields` array so the query memos below
-  // don't rebuild (and re-query) on every render.
+  // Value-stable keys for the array props so the query memos below don't
+  // rebuild (and re-query) on every render.
   const searchFieldsKey = (searchFields ?? [labelField]).join('|');
+  const orderByKey = JSON.stringify(orderBy ?? [{ field: labelField, direction: 'asc' }]);
 
   // Primary source: the Firestore Pipeline API — a typed term is matched
   // (case/accent-insensitive substring) against every `searchFields` entry,
@@ -131,14 +157,14 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
       return buildPipeline(db, {
         collection: collection.resolvePath({}),
         ...(term !== '' ? { search: { fields: searchFieldsKey.split('|'), term } } : {}),
-        orderBy: [{ field: labelField, direction: 'asc' }],
+        orderBy: JSON.parse(orderByKey) as Array<{ field: string; direction?: 'asc' | 'desc' }>,
         limit,
       });
     } catch (err) {
       if (err instanceof PipelineUnsupportedError) return null;
       throw err;
     }
-  }, [db, collection, locked, term, searchFieldsKey, labelField, limit]);
+  }, [db, collection, locked, term, searchFieldsKey, orderByKey, limit]);
 
   // Fallback when the SDK lacks the Pipeline API: a single-field Firestore
   // prefix-range query — substring / multi-field search is pipeline-only.
@@ -208,9 +234,13 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
       }
       const picked = resultItems.find((o) => o.value === id) ?? recents.find((r) => r.id === id);
       record(id, picked?.label ?? id);
-      onChange(collection.docRef(db, {}, id));
+      onChange(
+        emitDocPath
+          ? `documents/${collection.resolvePath({})}/${id}`
+          : collection.docRef(db, {}, id),
+      );
     },
-    [onChange, resultItems, recents, record, collection, db],
+    [onChange, resultItems, recents, record, collection, db, emitDocPath],
   );
 
   // Locked: the value renders as a removable chip inside a field-shaped

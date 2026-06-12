@@ -1,12 +1,8 @@
 'use client';
 
-import { PlaceholderPage } from '@delfrance/ui';
+import { IntFreteListPage } from '../_components/IntFretePages';
+import { LOGISTICA_SLICES } from '../_components/slices';
 
 export default function MotoboyPage() {
-  return (
-    <PlaceholderPage
-      title="Motoboy"
-      description="Cadastro de motoboys e tarifas de entrega local."
-    />
-  );
+  return <IntFreteListPage slice={LOGISTICA_SLICES.motoboy} />;
 }

@@ -1,14 +1,17 @@
 'use client';
 
 /**
- * Outer references on legacy Flutter docs come through Firestore in two
+ * Outer references on legacy Flutter docs come through Firestore in three
  * shapes:
  *   - a real `DocumentReference` (typed by `firebase/firestore`), with
  *     `.path`, `.id`, etc.
  *   - an opaque object literal with a `path` string (Flutter sometimes
  *     serializes refs that way for marketplaces).
+ *   - a plain doc-path **string**, usually with the Flutter-ODM
+ *     `documents/` prefix (`OuterRefField.toJson()` writes
+ *     `documents/<collection>/<id>` — e.g. `int_frete` refs).
  *
- * `dereferenceOuterRef` accepts either shape and returns a typed
+ * `dereferenceOuterRef` accepts any of these and returns a typed
  * `DocumentReference` safe to pass into `useDocSnapshot` or `getDoc`.
  * Returns `null` when the ref is absent or unrecognized.
  */
@@ -49,6 +52,16 @@ export function dereferenceOuterRef(db: Firestore, outerRef: unknown): DocumentR
   }
   if (looksLikeOpaqueRef(outerRef)) {
     return doc(db, outerRef.path);
+  }
+  if (typeof outerRef === 'string') {
+    // Strip the Flutter-ODM `documents/` prefix; a doc path needs an even
+    // segment count ≥ 2 or `doc()` throws.
+    const segs = outerRef.split('/').filter(Boolean);
+    if (segs[0] === 'documents') segs.shift();
+    if (segs.length >= 2 && segs.length % 2 === 0) {
+      return doc(db, segs.join('/'));
+    }
+    return null;
   }
   return null;
 }

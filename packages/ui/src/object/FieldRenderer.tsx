@@ -85,6 +85,10 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
             onBlur: field.onBlur,
             disabled: !editable,
             error: fieldState.error?.message,
+            // The full nested error node — array/object editors read their
+            // per-row / per-key messages from it (the flat `error` above is
+            // undefined for composite fields, whose issues live on children).
+            errorTree: fieldState.error,
             descriptor,
           };
           return <>{config.renderInput(props)}</>;

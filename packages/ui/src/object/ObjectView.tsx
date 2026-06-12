@@ -15,7 +15,13 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { FormProvider, useForm, type FieldErrors, type FieldValues } from 'react-hook-form';
+import {
+  FormProvider,
+  useForm,
+  type FieldErrors,
+  type FieldValues,
+  type Resolver,
+} from 'react-hook-form';
 import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import { ZodError, type z, type ZodObject, type ZodRawShape } from 'zod';
@@ -197,8 +203,33 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   // get a stable initial value.
   const emptyDefaults = useMemo(() => buildEmptyDefaults(descriptors), [descriptors]);
 
+  // Validate what will be SAVED, not the raw editor state: apply each
+  // field's `prepareForSave` before delegating to zodResolver. Staged
+  // deletions are the motivating case — a schema-invalid row marked with
+  // DELETE_MARK must not block the save, since `doSave` strips it anyway.
+  // Note for editors: error paths therefore index the TRANSFORMED value
+  // (e.g. the array with marked rows removed) — composite editors map the
+  // indices back (see FaixaCepEditor).
+  // `fieldOverrides` is identity-tracked deliberately: every call site
+  // passes a module-level const (the lint rule on inline configs is the
+  // backstop).
+  const resolver = useMemo<Resolver<FieldValues>>(() => {
+    const base = zodResolver(schema as never) as Resolver<FieldValues>;
+    const transforms = Object.entries(fieldOverrides).filter(([, cfg]) => cfg?.prepareForSave);
+    if (transforms.length === 0) return base;
+    const wrapped: Resolver<FieldValues> = (values, ctx, opts) => {
+      const prepared: Record<string, unknown> = { ...(values as Record<string, unknown>) };
+      for (const [key, cfg] of transforms) {
+        prepared[key] = cfg!.prepareForSave!(prepared[key]);
+      }
+      return base(prepared as FieldValues, ctx, opts);
+    };
+    return wrapped;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schema, fieldOverrides]);
+
   const form = useForm<FieldValues>({
-    resolver: zodResolver(schema as never),
+    resolver,
     defaultValues: { ...emptyDefaults, ...(defaultValues ?? {}) } as FieldValues,
     mode: 'onBlur',
   });
@@ -499,6 +530,14 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
     // SKUs from the parent's unsaved `sku` via `useFormContext().getValues`).
     <FormProvider {...form}>
       <form
+        // Zod (via the resolver) owns ALL validation. Without noValidate the
+        // browser's native constraint validation intercepts the submit when
+        // any control carries the native `required` attribute (e.g. Mantine
+        // inputs with `required`): if that control is empty AND inside a
+        // hidden section tab, Chrome can't focus it, BLOCKS the submission
+        // silently ("An invalid form control with name='' is not focusable")
+        // and React's onSubmit never fires — no toast, no tab jump, nothing.
+        noValidate
         onSubmit={(e) => {
           e.preventDefault();
           void submitDefault();

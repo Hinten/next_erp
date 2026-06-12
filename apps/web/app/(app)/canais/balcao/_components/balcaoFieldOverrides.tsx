@@ -1,47 +1,12 @@
 'use client';
 
 import { ColorInput } from '@mantine/core';
-import type { ZodObject, ZodRawShape } from 'zod';
-import { type CollectionHandle } from '@delfrance/data';
 import type { FieldConfig, FieldRenderProps } from '@delfrance/ui';
 import { depositoCollection } from '@/lib/data/depositoCollection';
-import { filialCollection } from '@/lib/data/filialCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
-import { CollectionSelect } from './CollectionSelect';
-
-/**
- * Wrap a collection in a `renderInput` that the schema-driven ObjectView can
- * mount. `required` only controls the Mantine asterisk + clearable flag — the
- * actual gate on save is the Firestore client rejecting `undefined` for the
- * mandatory `z.unknown()` refs in `integracaoSchema`.
- */
-function refRenderInput<S extends ZodObject<ZodRawShape>>(
-  collection: CollectionHandle<S>,
-  required: boolean,
-  labelField: string = 'nome',
-  searchFields?: string[],
-): FieldConfig['renderInput'] {
-  function RefInput(props: FieldRenderProps) {
-    return (
-      <CollectionSelect
-        collection={collection}
-        labelField={labelField}
-        searchFields={searchFields}
-        fieldName={props.name}
-        label={props.label}
-        hint={props.hint}
-        value={props.value}
-        onChange={props.onChange}
-        onBlur={props.onBlur}
-        disabled={props.disabled}
-        error={props.error}
-        required={required}
-      />
-    );
-  }
-  return RefInput;
-}
+import { refRenderInput } from '@/components/collection-select/refRenderInput';
+import { filialRefRenderInput } from '@/components/pickers/FilialPicker';
 
 /** RGB int (`0xRRGGBB`) → `#rrggbb`. */
 function intToHex(value: number): string {
@@ -94,13 +59,9 @@ function CorInput({ value, onChange, onBlur, label, hint, disabled, error }: Fie
 export const balcaoFields: Record<string, FieldConfig> = {
   filialIntegracaoPedidoOuterRef: {
     label: 'Filial',
-    // `filial` has no `nome` field — display + ordering use `razaoSocial`;
-    // the search also matches the trade name and CNPJ.
-    renderInput: refRenderInput(filialCollection, true, 'razaoSocial', [
-      'razaoSocial',
-      'fantasia',
-      'cnpj',
-    ]),
+    // Shared optimized picker (5 most-recent + regex search). `integracao`
+    // refs stay native DocumentReferences — emitDocPath=false.
+    renderInput: filialRefRenderInput(true, false),
   },
   tabelaNormalOuterRef: {
     label: 'Tabela de preços',

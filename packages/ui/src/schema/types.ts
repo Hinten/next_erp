@@ -54,6 +54,14 @@ export interface FieldRenderProps {
   onBlur: () => void;
   disabled?: boolean;
   error?: string;
+  /**
+   * Raw RHF error node for this field. For array fields it is a sparse array
+   * of per-row error maps (`errorTree[i].cepInicial.message`, plus an
+   * optional `root`); for object fields a map of per-key errors. The flat
+   * `error` string above only carries the field's OWN message — custom
+   * editors of composite values read row/child messages from here.
+   */
+  errorTree?: unknown;
   descriptor: FieldDescriptor;
 }
 

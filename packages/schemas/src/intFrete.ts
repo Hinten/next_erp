@@ -189,6 +189,24 @@ export const intFreteSchema = z
     faixaCep: z.array(faixaDeCepSchema).nullable().default(null).describe('Faixas de CEP'),
     horarioDeCorte: z
       .array(horarioDeCorteSchema)
+      .superRefine((rows, ctx) => {
+        // One entry per weekday — `getPrazoDespacho` silently uses only the
+        // first match, so a duplicate is always a configuration mistake.
+        // Legacy docs with duplicates still read (parseSoftRead tolerates);
+        // editing one forces the cleanup.
+        const seen = new Set<number>();
+        rows.forEach((row, i) => {
+          if (seen.has(row.diaDaSemana)) {
+            ctx.addIssue({
+              code: 'custom',
+              path: [i, 'diaDaSemana'],
+              message: 'Dia da semana duplicado',
+            });
+          } else {
+            seen.add(row.diaDaSemana);
+          }
+        });
+      })
       .nullable()
       .default(null)
       .describe('Horários de corte'),

@@ -142,7 +142,10 @@ export function PedidoForm({
   const disabled = !canWrite;
 
   return (
-    <form onSubmit={form.handleSubmit(handleSubmit)}>
+    // noValidate: Zod owns validation — native constraint validation would
+    // silently block the submit when a `required` control is empty inside a
+    // hidden tab (see ObjectView's form for the full story).
+    <form noValidate onSubmit={form.handleSubmit(handleSubmit)}>
       <Stack>
         <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
           <Tabs.List>
