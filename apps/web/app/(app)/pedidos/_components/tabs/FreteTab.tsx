@@ -190,7 +190,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
             name={fretePath('clienteRecebedorOuterReference')}
             render={({ field, fieldState }) => (
               <ClientePicker
-                fieldName="freteInicial.clienteRecebedorOuterReference"
+                fieldName={field.name}
                 label="Quem recebe"
                 value={field.value}
                 onChange={field.onChange}

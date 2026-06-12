@@ -100,7 +100,7 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
         name="clientePedidoOuterRef"
         render={({ field, fieldState }) => (
           <ClientePicker
-            fieldName="clientePedidoOuterRef"
+            fieldName={field.name}
             value={field.value}
             onChange={field.onChange}
             onBlur={field.onBlur}
