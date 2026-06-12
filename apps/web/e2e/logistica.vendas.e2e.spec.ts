@@ -114,11 +114,16 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
     await expect.poll(() => intFreteFaixaCount(row(3)), { timeout: 15_000 }).toBe(3);
   });
 
-  test('staged deletion: marked faixa survives until save, then is dropped', async ({ page }) => {
+  test('staged deletion: a marked (even invalid) faixa does not block the save, then is dropped', async ({
+    page,
+  }) => {
     await page.goto(`/logistica/motoboy/${row(4)}`);
     await page.getByRole('tab', { name: 'Faixas de CEP' }).click();
     await expect(page.getByLabel('CEP Inicial 1')).toHaveValue('01000000');
 
+    // Corrupt the row FIRST (schema-invalid CEP), then mark it for deletion —
+    // validation must ignore rows that will be stripped on save.
+    await page.getByLabel('CEP Inicial 1').fill('1');
     await page.getByRole('button', { name: 'Excluir faixa 1' }).click();
     await expect(page.getByText('Será excluída')).toBeVisible();
     // Nothing committed yet — the doc still has both rows.
@@ -127,6 +132,21 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
     await clickSave(page, 'Salvar alterações');
     await page.waitForURL(/\/logistica\/motoboy$/, { timeout: 15_000 });
     await expect.poll(() => intFreteFaixaCount(row(4)), { timeout: 15_000 }).toBe(1);
+  });
+
+  test('duplicate weekday in horários de corte blocks the save with a visible message', async ({
+    page,
+  }) => {
+    await page.goto(`/logistica/motoboy/${row(2)}`);
+    await page.getByRole('tab', { name: 'Horários de corte' }).click();
+    // The seeded schedule already has a segunda-feira row; the new row
+    // defaults to segunda-feira → duplicate.
+    await page.getByRole('button', { name: 'Adicionar horário' }).click();
+    await clickSave(page, 'Salvar alterações');
+
+    await expect(page.getByText('Dia da semana duplicado')).toBeVisible({ timeout: 10_000 });
+    // Save blocked — still on the edit page.
+    await expect(page).toHaveURL(new RegExp(`/logistica/motoboy/${row(2)}$`));
   });
 
   test('deletes a motoboy through the typed-confirm modal', async ({ page }) => {

@@ -45,6 +45,7 @@ vi.mock('@mantine/notifications', async () => {
 });
 
 import { ObjectView } from './ObjectView';
+import { DELETE_MARK, stripMarkedForDeletion } from './markForDeletion';
 
 const schema = z.object({
   nome: z.string().nullable().optional().describe('Nome'),
@@ -480,5 +481,64 @@ describe('ObjectView save flow', () => {
     );
     expect(screen.getByText('boom')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Salvar' })).toBeNull();
+  });
+});
+
+describe('validate-what-you-save resolver (prepareForSave before validation)', () => {
+  const stagedSchema = z.object({
+    nome: z.string().min(1).describe('Nome'),
+    itens: z
+      .array(z.object({ cep: z.string().regex(/^\d{8}$/) }).passthrough())
+      .nullable()
+      .default(null)
+      .describe('Itens'),
+  });
+  const stagedFields = {
+    itens: { hidden: true, prepareForSave: stripMarkedForDeletion },
+  };
+
+  it('a schema-invalid row marked for deletion does NOT block the save', async () => {
+    saveRecordMock.mockResolvedValueOnce({ id: 'NEW', patch: {} });
+    render(
+      <Wrap>
+        <ObjectView
+          schema={stagedSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          defaultValues={{
+            nome: 'ok',
+            itens: [{ cep: '01000000' }, { cep: '1', [DELETE_MARK]: true }],
+          }}
+          fields={stagedFields}
+        />
+      </Wrap>,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(saveRecordMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a schema-invalid UNMARKED row still blocks the save', async () => {
+    render(
+      <Wrap>
+        <ObjectView
+          schema={stagedSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          defaultValues={{
+            nome: 'ok',
+            itens: [{ cep: '1' }],
+          }}
+          fields={stagedFields}
+        />
+      </Wrap>,
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(saveRecordMock).not.toHaveBeenCalled();
   });
 });

@@ -12,6 +12,7 @@ import {
 } from '@mantine/core';
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
 import { DELETE_MARK, type FieldRenderProps } from '@delfrance/ui';
+import { rootError, rowFieldError, validatedIndices } from './editorErrors';
 
 /**
  * One editable row of `intFrete.faixaCep`. Rows marked with `DELETE_MARK`
@@ -45,12 +46,18 @@ export function FaixaCepEditor({
   onBlur,
   disabled,
   error,
+  errorTree,
 }: FieldRenderProps) {
   const rows = toRows(value);
 
   const patchRow = (index: number, patch: Partial<FaixaRow>) => {
     onChange(rows.map((r, i) => (i === index ? { ...r, ...patch } : r)));
   };
+
+  // Validation runs on the value with marked rows stripped, so the error
+  // index of a visible row is the count of UNMARKED rows before it; marked
+  // rows aren't validated and show no errors (errIdx = -1).
+  const errIndices = validatedIndices(rows, DELETE_MARK);
 
   return (
     <Fieldset legend={label}>
@@ -67,6 +74,7 @@ export function FaixaCepEditor({
         )}
         {rows.map((row, i) => {
           const marked = row[DELETE_MARK] === true;
+          const errIdx = errIndices[i] ?? -1;
           return (
             <Group key={i} align="flex-end" gap="xs" opacity={marked ? 0.45 : 1} wrap="nowrap">
               <TextInput
@@ -76,6 +84,7 @@ export function FaixaCepEditor({
                 onChange={(e) => patchRow(i, { cepInicial: onlyDigits(e.currentTarget.value) })}
                 onBlur={onBlur}
                 disabled={disabled || marked}
+                error={rowFieldError(errorTree, errIdx, 'cepInicial')}
                 w={110}
               />
               <TextInput
@@ -85,6 +94,7 @@ export function FaixaCepEditor({
                 onChange={(e) => patchRow(i, { cepFinal: onlyDigits(e.currentTarget.value) })}
                 onBlur={onBlur}
                 disabled={disabled || marked}
+                error={rowFieldError(errorTree, errIdx, 'cepFinal')}
                 w={110}
               />
               <NumberInput
@@ -94,6 +104,7 @@ export function FaixaCepEditor({
                 onChange={(v) => patchRow(i, { custo: typeof v === 'number' ? v : 0 })}
                 onBlur={onBlur}
                 disabled={disabled || marked}
+                error={rowFieldError(errorTree, errIdx, 'custo')}
                 min={0}
                 decimalScale={2}
                 w={100}
@@ -105,6 +116,7 @@ export function FaixaCepEditor({
                 onChange={(v) => patchRow(i, { valor: typeof v === 'number' ? v : 0 })}
                 onBlur={onBlur}
                 disabled={disabled || marked}
+                error={rowFieldError(errorTree, errIdx, 'valor')}
                 min={0}
                 decimalScale={2}
                 w={100}
@@ -116,6 +128,7 @@ export function FaixaCepEditor({
                 onChange={(v) => patchRow(i, { prazo: typeof v === 'number' ? Math.trunc(v) : 0 })}
                 onBlur={onBlur}
                 disabled={disabled || marked}
+                error={rowFieldError(errorTree, errIdx, 'prazo')}
                 min={0}
                 allowDecimal={false}
                 w={100}
@@ -148,9 +161,9 @@ export function FaixaCepEditor({
             </Group>
           );
         })}
-        {error && (
+        {rootError(errorTree, error) && (
           <Text size="xs" c="red">
-            {error}
+            {rootError(errorTree, error)}
           </Text>
         )}
         <Group>

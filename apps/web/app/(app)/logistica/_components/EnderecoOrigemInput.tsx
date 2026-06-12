@@ -3,6 +3,7 @@
 import { Fieldset, Group, Select, Stack, Switch, Text, TextInput } from '@mantine/core';
 import { ufSchema } from '@delfrance/schemas';
 import type { FieldRenderProps } from '@delfrance/ui';
+import { childFieldError, rootError } from './editorErrors';
 
 /**
  * Optional origin-address override (`intFrete.enderecoDeOrigem`). The whole
@@ -53,6 +54,7 @@ export function EnderecoOrigemInput({
   onBlur,
   disabled,
   error,
+  errorTree,
 }: FieldRenderProps) {
   const endereco = (value ?? null) as EnderecoValue | null;
   const enabled = endereco !== null;
@@ -60,6 +62,8 @@ export function EnderecoOrigemInput({
   const patch = (p: Partial<EnderecoValue>) => {
     onChange({ ...(endereco ?? EMPTY_ENDERECO), ...p });
   };
+
+  const err = (key: string) => childFieldError(errorTree, key);
 
   return (
     <Fieldset legend={label}>
@@ -80,6 +84,7 @@ export function EnderecoOrigemInput({
                 onChange={(e) => patch({ logradouro: e.currentTarget.value })}
                 onBlur={onBlur}
                 disabled={disabled}
+                error={err('logradouro')}
                 required
               />
               <TextInput
@@ -88,6 +93,7 @@ export function EnderecoOrigemInput({
                 onChange={(e) => patch({ numero: e.currentTarget.value })}
                 onBlur={onBlur}
                 disabled={disabled}
+                error={err('numero')}
                 required
                 maw={120}
               />
@@ -99,6 +105,7 @@ export function EnderecoOrigemInput({
                 onChange={(e) => patch({ bairro: e.currentTarget.value })}
                 onBlur={onBlur}
                 disabled={disabled}
+                error={err('bairro')}
                 required
               />
               <TextInput
@@ -122,6 +129,7 @@ export function EnderecoOrigemInput({
                 }
                 onBlur={onBlur}
                 disabled={disabled}
+                error={err('cep')}
                 required
                 maw={140}
               />
@@ -131,6 +139,7 @@ export function EnderecoOrigemInput({
                 onChange={(e) => patch({ cidade: e.currentTarget.value })}
                 onBlur={onBlur}
                 disabled={disabled}
+                error={err('cidade')}
                 required
               />
               <Select
@@ -149,9 +158,9 @@ export function EnderecoOrigemInput({
             </Group>
           </>
         )}
-        {error && (
+        {rootError(errorTree, error) && (
           <Text size="xs" c="red">
-            {error}
+            {rootError(errorTree, error)}
           </Text>
         )}
       </Stack>

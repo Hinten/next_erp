@@ -192,6 +192,39 @@ describe('intFreteSchema — golden Flutter docs', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('rejects duplicate weekdays in horarioDeCorte, pointing at the duplicate row', () => {
+    const base = {
+      tipo: 'retiradaNaLoja',
+      nome: 'X',
+      ativo: true,
+      filialIntegracaoFreteOuterRef: 'documents/filiais/f',
+      dataCadastro: 1718000000000,
+    };
+    const horario = (dia: number) => ({
+      diaDaSemana: dia,
+      horaDeCorte: 12,
+      minutosDeCorte: 0,
+      prazoDePostagem: 0,
+      horaPostagem: 9,
+      minutosPostagem: 0,
+    });
+
+    const dup = intFreteSchema.safeParse({
+      ...base,
+      horarioDeCorte: [horario(1), horario(3), horario(1)],
+    });
+    expect(dup.success).toBe(false);
+    if (!dup.success) {
+      const issue = dup.error.issues.find((i) => i.message === 'Dia da semana duplicado');
+      expect(issue?.path).toEqual(['horarioDeCorte', 2, 'diaDaSemana']);
+    }
+
+    expect(
+      intFreteSchema.safeParse({ ...base, horarioDeCorte: [horario(1), horario(2)] }).success,
+    ).toBe(true);
+    expect(intFreteSchema.safeParse({ ...base, horarioDeCorte: null }).success).toBe(true);
+  });
 });
 
 /* -------------------------------------------------------------------------- */

@@ -13,6 +13,7 @@ import {
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
 import { DIA_DA_SEMANA_LABELS, type DiaDaSemana } from '@delfrance/schemas';
 import { DELETE_MARK, type FieldRenderProps } from '@delfrance/ui';
+import { rootError, rowFieldError, validatedIndices } from './editorErrors';
 
 /**
  * Editable rows of `intFrete.horarioDeCorte` — the cut-off schedule
@@ -55,6 +56,7 @@ export function HorarioCorteEditor({
   onBlur,
   disabled,
   error,
+  errorTree,
 }: FieldRenderProps) {
   const rows = toRows(value);
 
@@ -64,6 +66,7 @@ export function HorarioCorteEditor({
 
   const numberCell = (
     index: number,
+    errIdx: number,
     marked: boolean,
     key: keyof HorarioRow & string,
     cellLabel: string,
@@ -76,12 +79,17 @@ export function HorarioCorteEditor({
       onChange={(v) => patchRow(index, { [key]: typeof v === 'number' ? Math.trunc(v) : null })}
       onBlur={onBlur}
       disabled={disabled || marked}
+      error={rowFieldError(errorTree, errIdx, key)}
       min={0}
       max={max}
       allowDecimal={false}
       w={92}
     />
   );
+
+  // Validation runs on the value with marked rows stripped — see
+  // FaixaCepEditor for the index-mapping rationale.
+  const errIndices = validatedIndices(rows, DELETE_MARK);
 
   return (
     <Fieldset legend={label}>
@@ -98,6 +106,7 @@ export function HorarioCorteEditor({
         )}
         {rows.map((row, i) => {
           const marked = row[DELETE_MARK] === true;
+          const errIdx = errIndices[i] ?? -1;
           return (
             <Group key={i} align="flex-end" gap="xs" opacity={marked ? 0.45 : 1} wrap="nowrap">
               <Select
@@ -110,14 +119,15 @@ export function HorarioCorteEditor({
                 }}
                 onBlur={onBlur}
                 disabled={disabled || marked}
+                error={rowFieldError(errorTree, errIdx, 'diaDaSemana')}
                 allowDeselect={false}
                 w={150}
               />
-              {numberCell(i, marked, 'horaDeCorte', 'Corte (h)', 23)}
-              {numberCell(i, marked, 'minutosDeCorte', 'Corte (min)', 59)}
-              {numberCell(i, marked, 'prazoDePostagem', 'Dias úteis', 31)}
-              {numberCell(i, marked, 'horaPostagem', 'Postagem (h)', 23)}
-              {numberCell(i, marked, 'minutosPostagem', 'Postagem (min)', 59)}
+              {numberCell(i, errIdx, marked, 'horaDeCorte', 'Corte (h)', 23)}
+              {numberCell(i, errIdx, marked, 'minutosDeCorte', 'Corte (min)', 59)}
+              {numberCell(i, errIdx, marked, 'prazoDePostagem', 'Dias úteis', 31)}
+              {numberCell(i, errIdx, marked, 'horaPostagem', 'Postagem (h)', 23)}
+              {numberCell(i, errIdx, marked, 'minutosPostagem', 'Postagem (min)', 59)}
               {marked ? (
                 <Group gap={4} wrap="nowrap">
                   <Text size="xs" c="red" fw={500}>
@@ -146,9 +156,9 @@ export function HorarioCorteEditor({
             </Group>
           );
         })}
-        {error && (
+        {rootError(errorTree, error) && (
           <Text size="xs" c="red">
-            {error}
+            {rootError(errorTree, error)}
           </Text>
         )}
         <Group>
