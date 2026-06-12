@@ -342,6 +342,17 @@ socket.once('secureConnect', async () => {
         if (JSON.stringify(cand.subject.attributes) !== JSON.stringify(top.issuer.attributes)) {
           continue;
         }
+        // A DN match alone is not proof of issuance: cross-signed or rotated
+        // CAs reuse the same DN across different keys, and appending the
+        // wrong one writes a bundle that can never validate. Accept only a
+        // candidate whose key actually signed `top`.
+        try {
+          if (!cand.verify(top)) continue;
+        } catch {
+          // forge throws on signature mismatch and on signature algorithms
+          // it can't process — either way this candidate is not the issuer.
+          continue;
+        }
         const fp = forge.md.sha256
           .create()
           .update(forgeCertToDer(cand).toString('binary'))
