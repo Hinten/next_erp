@@ -1,0 +1,35 @@
+{
+  "name": "@delfrance/rules-gen",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "lint": "echo 'no lint configured for this package yet'",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts",
+    "test:rules": "vitest run --config vitest.rules.config.ts",
+    "gen:rules": "tsx src/cli.ts",
+    "gen:rules:check": "tsx src/cli.ts --check",
+    "validate:api": "tsx scripts/api-validate.ts",
+    "clean": "rm -rf dist .turbo *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@delfrance/auth": "workspace:*",
+    "@delfrance/core": "workspace:*",
+    "@delfrance/schemas": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@delfrance/config-tsconfig": "workspace:*",
+    "@firebase/rules-unit-testing": "^5.0.1",
+    "@types/node": "^24.10.0",
+    "firebase": "^12.13.0",
+    "gaxios": "^7.1.4",
+    "google-auth-library": "^10.6.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
+  }
+}
