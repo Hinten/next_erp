@@ -64,7 +64,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          # On pull_request, pin the PR head; on push/schedule/dispatch the
+          # PR context is unset, so fall back to the triggering commit
+          # (same pattern as e2e-reusable.yml).
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -139,7 +142,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          # On pull_request, pin the PR head; on push/schedule/dispatch the
+          # PR context is unset, so fall back to the triggering commit
+          # (same pattern as e2e-reusable.yml).
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - uses: actions/setup-node@v4
         with:

@@ -181,6 +181,9 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
     const out = generateNFe(fixture);
 
     const autorizacaoCall = buildCall(getEndpoints('SP', 'homologacao').NfeAutorizacao, TEST_CERT!);
+    // resolveProtocol's 103 fallback polls consReciNFe, which lives on the
+    // RetAutorizacao service — never reuse the Autorizacao call for it.
+    const consReciCall = buildCall(getEndpoints('SP', 'homologacao').NfeRetAutorizacao, TEST_CERT!);
     const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
 
     // 1st submission — must succeed.
@@ -190,7 +193,7 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
       indSinc: '1',
     });
     assertNotConsumoIndevido(first, 'duplicidade/autorizarLote#1');
-    const firstProt = await resolveProtocol(first, autorizacaoCall);
+    const firstProt = await resolveProtocol(first, consReciCall);
     if (firstProt) assertNotConsumoIndevido(firstProt.infProt, 'duplicidade/protNFe#1');
     expect(firstProt?.infProt.cStat).toBe('100');
     const firstNProt = firstProt!.infProt.nProt;
@@ -210,7 +213,7 @@ describeOrSkip('SEFAZ-SP homologação — library duplicidade-recovery contract
     assertNotConsumoIndevido(second, 'duplicidade/autorizarLote#2');
     // eslint-disable-next-line no-console
     console.log(`[duplicidade lote2] cStat=${second.cStat} xMotivo="${second.xMotivo}"`);
-    const secondProt = await resolveProtocol(second, autorizacaoCall);
+    const secondProt = await resolveProtocol(second, consReciCall);
     if (secondProt) assertNotConsumoIndevido(secondProt.infProt, 'duplicidade/protNFe#2');
     const dupCStat = secondProt?.infProt.cStat ?? second.cStat;
     expect(['204', '539']).toContain(dupCStat);
