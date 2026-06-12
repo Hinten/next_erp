@@ -14,7 +14,7 @@ import {
 } from '@mantine/core';
 import { Controller, useFieldArray, type UseFormReturn } from 'react-hook-form';
 import { type DocumentReference, type Firestore } from 'firebase/firestore';
-import { type Pedido, type Produto, itemSubtotal } from '@delfrance/schemas';
+import { type Pedido, type Produto, itemSubtotal, round2 } from '@delfrance/schemas';
 import { format, money } from '@delfrance/core/money';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { ClientePicker } from '@/components/pickers/ClientePicker';
@@ -52,9 +52,12 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
   const itensFlatRaw = form.watch('_itensFlat');
   const itensFlat = useMemo(() => itensFlatRaw ?? [], [itensFlatRaw]);
   const descontoTotal = form.watch('descontoTotal') ?? 0;
+  const freteValor = form.watch('freteInicial')?.valorCobrado ?? 0;
 
   const subtotal = useMemo(() => itensFlat.reduce((n, i) => n + itemSubtotal(i), 0), [itensFlat]);
-  const total = subtotal - (descontoTotal ?? 0);
+  // Mirror of the saved `valorCobrado` (legacy `Pedido.total` — see
+  // `derivePedidoFreteTotals`): subtotal − desconto + frete, 2-decimal.
+  const total = round2(round2(round2(subtotal) - descontoTotal) + freteValor);
 
   const listaRef = useMemo(
     () => dereferenceOuterRef(db, listaDePrecosOuterRef),
@@ -234,6 +237,15 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
             </Table.Tr>
             <Table.Tr>
               <Table.Td colSpan={6} align="right">
+                <Text size="sm" c="dimmed">
+                  Frete
+                </Text>
+              </Table.Td>
+              <Table.Td align="right">{brl(freteValor)}</Table.Td>
+              <Table.Td />
+            </Table.Tr>
+            <Table.Tr>
+              <Table.Td colSpan={6} align="right">
                 <Text fw={700}>Total</Text>
               </Table.Td>
               <Table.Td align="right">
@@ -244,7 +256,7 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
           </Table.Tfoot>
         </Table>
         <Text size="xs" c="dimmed">
-          Frete e devoluções não inclusos nesta visualização.
+          Frete definido na aba Frete; devoluções não inclusas nesta visualização.
         </Text>
       </Stack>
 

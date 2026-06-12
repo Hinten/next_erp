@@ -290,30 +290,39 @@ export function buildTranspFromFrete(frete: FreteDoPedido | null): {
   const out: ReturnType<typeof buildTranspFromFrete> = { modFrete: frete.modalidade };
 
   if (frete.transportadora) {
+    // `freteInicial.transportadora` carries the Flutter wire names
+    // (cnpj/ie/nome/endereco/municipio/uf — see `transportadoraSchema`);
+    // the XSD names (CNPJ/IE/xNome/xEnder/xMun/UF) exist only from this
+    // projection onward. Flutter parity: pedido_nfe_base.dart:1521-1527 —
+    // the legacy wire has no CPF carrier, only a 14-digit `cnpj`, and the
+    // IE is stripped to alphanumerics before emission.
     const t = frete.transportadora;
     const transporta: NonNullable<typeof out.transporta> = {};
-    if (typeof t.CNPJ === 'string' && t.CNPJ) transporta.CNPJ = t.CNPJ;
-    else if (typeof t.CPF === 'string' && t.CPF) transporta.CPF = t.CPF;
-    const xNome = sanitizeNFeText(t.xNome, 60);
+    if (typeof t.cnpj === 'string' && t.cnpj) transporta.CNPJ = t.cnpj;
+    const xNome = sanitizeNFeText(t.nome, 60);
     if (xNome) transporta.xNome = xNome;
-    if (typeof t.IE === 'string' && t.IE) transporta.IE = t.IE;
-    const xEnder = sanitizeNFeText(t.xEnder, 60);
+    if (typeof t.ie === 'string') {
+      const ie = t.ie.replace(/[^0-9A-Za-z]/g, '');
+      if (ie) transporta.IE = ie;
+    }
+    const xEnder = sanitizeNFeText(t.endereco, 60);
     if (xEnder) transporta.xEnder = xEnder;
-    const xMun = sanitizeNFeText(t.xMun, 60);
+    const xMun = sanitizeNFeText(t.municipio, 60);
     if (xMun) transporta.xMun = xMun;
-    if (typeof t.UF === 'string' && t.UF) {
-      transporta.UF = t.UF as NonNullable<typeof transporta.UF>;
+    if (typeof t.uf === 'string' && t.uf) {
+      transporta.UF = t.uf as NonNullable<typeof transporta.UF>;
     }
     if (Object.keys(transporta).length > 0) out.transporta = transporta;
   }
 
   if (frete.veiculo?.placa) {
+    // Flutter wire: placa/uf/rntc (veiculoSchema) → XSD placa/UF/RNTC.
     out.veicTransp = {
       placa: frete.veiculo.placa,
-      ...(frete.veiculo.UF
-        ? { UF: frete.veiculo.UF as NonNullable<typeof out.veicTransp>['UF'] }
+      ...(frete.veiculo.uf
+        ? { UF: frete.veiculo.uf as NonNullable<typeof out.veicTransp>['UF'] }
         : {}),
-      ...(frete.veiculo.RNTC ? { RNTC: frete.veiculo.RNTC } : {}),
+      ...(frete.veiculo.rntc ? { RNTC: frete.veiculo.rntc } : {}),
     };
   }
 
@@ -322,8 +331,8 @@ export function buildTranspFromFrete(frete: FreteDoPedido | null): {
       .filter((r) => typeof r.placa === 'string' && r.placa)
       .map((r) => ({
         placa: r.placa as string,
-        ...(r.UF ? { UF: r.UF as NonNullable<typeof out.veicTransp>['UF'] } : {}),
-        ...(r.RNTC ? { RNTC: r.RNTC } : {}),
+        ...(r.uf ? { UF: r.uf as NonNullable<typeof out.veicTransp>['UF'] } : {}),
+        ...(r.rntc ? { RNTC: r.rntc } : {}),
       }));
     if (reboques.length > 0) out.reboque = reboques;
   }

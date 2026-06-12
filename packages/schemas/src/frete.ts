@@ -19,6 +19,7 @@
  *     writes that we haven't enumerated yet.
  */
 import { z } from 'zod';
+import { ufSchema } from './endereco';
 
 /* -------------------------------------------------------------------------- */
 /*                            ESTADOS_FRETE enum                              */
@@ -156,34 +157,50 @@ export type IntegracaoFrete = z.infer<typeof integracoesFreteSchema>;
 /* -------------------------------------------------------------------------- */
 /*           Nested entity schemas — Transportadora, Veiculo, etc.            */
 /*                                                                            */
-/*  Starter shapes from the NFe XSD's `<transporta>`, `<veicTransp>`,         */
-/*  `<reboque>`, `<vol>` blocks. `.passthrough()` so additional Flutter       */
-/*  fields land cleanly until enumerated.                                     */
+/*  Flutter wire shapes — lowercase field names, NOT the NFe XSD names        */
+/*  (`CNPJ`/`xNome`/`xEnder`…). The NFe orchestrator remaps to the XSD        */
+/*  names at the `<transp>` boundary, exactly like Volume → `<vol>`           */
+/*  (`apps/nfe/lib/nfe/orchestrator/generator-input.ts`).                     */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Transportadora — Flutter wire shape from `Transportadora` at
+ * `.old/packages/pedido/lib/src/models.dart:796-848` (`cnpj`, `ie`, `nome`,
+ * `endereco`, `municipio`, `uf`). There is no CPF field on the wire — the
+ * legacy model only carries a 14-digit `cnpj`.
+ */
 export const transportadoraSchema = z
   .object({
-    CNPJ: z.string().nullable().default(null),
-    CPF: z.string().nullable().default(null),
-    xNome: z.string().nullable().default(null),
-    IE: z.string().nullable().default(null),
-    xEnder: z.string().nullable().default(null),
-    xMun: z.string().nullable().default(null),
-    UF: z.string().nullable().default(null),
+    cnpj: z.string().nullable().default(null).describe('CNPJ'),
+    ie: z.string().nullable().default(null).describe('Inscrição Estadual'),
+    nome: z.string().max(60).nullable().default(null).describe('Razão social ou nome'),
+    endereco: z.string().max(60).nullable().default(null).describe('Endereço'),
+    municipio: z.string().max(60).nullable().default(null).describe('Município'),
+    uf: ufSchema.nullable().default(null).describe('UF'),
   })
   .passthrough();
 export type Transportadora = z.infer<typeof transportadoraSchema>;
 
+/**
+ * Veiculo — Flutter wire shape from `Veiculo` at
+ * `.old/packages/pedido/lib/src/models.dart:860-895` (`placa`, `uf`,
+ * `rntc`). `placa` and `uf` are required — the legacy decoder crashes on
+ * null, so Flutter-written docs always carry both.
+ */
 export const veiculoSchema = z
   .object({
-    placa: z.string().nullable().default(null),
-    UF: z.string().nullable().default(null),
-    RNTC: z.string().nullable().default(null),
+    placa: z.string().min(1).max(60).describe('Placa'),
+    uf: ufSchema.describe('UF'),
+    rntc: z.string().max(60).nullable().default(null).describe('RNTC'),
   })
   .passthrough();
 export type Veiculo = z.infer<typeof veiculoSchema>;
 
-/** Reboque (trailer) shares Veiculo's shape per NFe XSD. */
+/**
+ * Reboque (trailer) — separate legacy class
+ * (`.old/packages/pedido/lib/src/models.dart:907-934`) with the same wire
+ * shape as Veiculo.
+ */
 export const reboqueSchema = veiculoSchema;
 export type Reboque = Veiculo;
 
