@@ -174,5 +174,12 @@ test.describe.serial('Pedidos — aba Frete', () => {
     await expect(codRastreio).toBeDisabled();
     // No editable money fields — the marketplace owns this block.
     await expect(page.getByLabel('Custo calculado', { exact: true })).toHaveCount(0);
+    // The common header locks too (importer owns the whole frete block).
+    await expect(
+      page.getByRole('combobox', { name: 'Modalidade de frete', exact: true }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole('combobox', { name: 'Integração de frete', exact: true }),
+    ).toBeDisabled();
   });
 });

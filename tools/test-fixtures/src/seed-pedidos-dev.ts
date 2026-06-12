@@ -98,10 +98,14 @@ interface DevFreteSeed {
     municipio?: string;
     uf?: string;
   };
-  /** Flutter wire names (the NFe orchestrator remaps to placa/UF/RNTC itself). */
+  /**
+   * Flutter wire names (the NFe orchestrator remaps to placa/UF/RNTC
+   * itself). `placa` and `uf` are required on the wire — the legacy decoder
+   * crashes on null, so a fixture without them would be invalid.
+   */
   readonly veiculo?: {
     placa: string;
-    uf?: string;
+    uf: string;
     rntc?: string;
   };
   /** Flutter wire names (the NFe orchestrator remaps to qVol/esp/… itself). */

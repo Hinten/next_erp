@@ -90,6 +90,13 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   }
 
   const tipo = integracaoDoc?.data.tipo;
+  // Marketplace-managed freight (importer owns the whole block): lock the
+  // common header fields too — modalidade, endereço, recebedor, status and
+  // the integração itself — not just the per-tipo body. Remapping a
+  // marketplace shipping option happens via the integração's `mapa`, never
+  // by hand-editing the pedido.
+  const marketplaceOwned = tipo != null && MARKETPLACE_TIPOS.has(tipo);
+  const headerDisabled = disabled || marketplaceOwned;
 
   function renderTipoFields() {
     if (!integracaoRef) return <GenericFreteFields form={form} disabled={disabled} />;
@@ -101,7 +108,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
         </Alert>
       );
     }
-    if (tipo && MARKETPLACE_TIPOS.has(tipo)) {
+    if (marketplaceOwned && tipo) {
       return <MarketplaceReadOnly frete={freteInicial!} tipo={tipo} />;
     }
     switch (tipo) {
@@ -151,7 +158,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
         value={modalidade}
         onChange={onModalidadeChange}
         allowDeselect={false}
-        disabled={disabled}
+        disabled={headerDisabled}
       />
 
       {!temFrete && (
@@ -172,7 +179,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
                 shouldValidate: true,
               })
             }
-            disabled={disabled}
+            disabled={headerDisabled}
           />
 
           <Controller
@@ -184,7 +191,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
                 label="Quem recebe"
                 value={field.value}
                 onChange={(ref) => field.onChange(ref ? `documents/${ref.path}` : null)}
-                disabled={disabled}
+                disabled={headerDisabled}
                 error={fieldState.error?.message}
               />
             )}
@@ -204,7 +211,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
                 onChange={(v) => field.onChange(v)}
                 allowDeselect={false}
                 searchable
-                disabled={disabled}
+                disabled={headerDisabled}
                 error={fieldState.error?.message}
               />
             )}
@@ -229,7 +236,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
                 { shouldDirty: true, shouldValidate: true },
               )
             }
-            disabled={disabled}
+            disabled={headerDisabled}
           />
 
           <Divider />
