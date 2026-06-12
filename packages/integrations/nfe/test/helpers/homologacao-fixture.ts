@@ -44,6 +44,11 @@ export function impostoCsosn102(): Imposto {
   };
 }
 
+/** `YYYY-MM-DD` for now + `days` — keeps date-bearing fixture fields evergreen. */
+function isoDatePlusDays(days: number): string {
+  return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+}
+
 export interface HomologacaoFixtureOpts {
   /** Fresh `nNF` per emission — draw from `seedNNF()` and increment. */
   readonly numeracao: number;
@@ -256,7 +261,9 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
     // cobr builder end-to-end against live SEFAZ. vLiq + sum of
     // dup.vDup must match the pag.vPag total or SEFAZ rejects with a
     // cross-field cStat — here we use a single duplicata of 1500.00
-    // to keep the math trivial.
+    // to keep the math trivial. dVenc is derived (emission + 30 days):
+    // SEFAZ rejects a duplicata that falls due before dhEmi, so a
+    // hard-coded date would turn into a time bomb for the live suites.
     cobr: {
       fat: {
         nFat: 'FAT-HOMOLOG-001',
@@ -264,7 +271,7 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
         vDesc: '0.00',
         vLiq: '1500.00',
       },
-      dup: [{ nDup: '001', dVenc: '2026-06-20', vDup: '1500.00' }],
+      dup: [{ nDup: '001', dVenc: isoDatePlusDays(30), vDup: '1500.00' }],
     },
     // <infAdic.infCpl> — fiscal complementary text shown on the
     // DANFE. Marketplaces typically inject order ID + buyer name

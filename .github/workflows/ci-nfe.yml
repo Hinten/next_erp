@@ -310,8 +310,13 @@ jobs:
         # Refresh the fallback with whatever this run ended up with —
         # freshly fetched chains when SEFAZ was reachable, the restored
         # ones otherwise. Public server certs only; runs even when the
-        # advisory SVC step failed.
+        # advisory SVC step failed. The run-unique key is what makes
+        # "restore the newest" work; entries are ~15 KB and GitHub
+        # LRU-evicts at the repo cache quota, so growth self-manages —
+        # and continue-on-error keeps any cache-service hiccup from
+        # failing the job (the cache is a fallback, never a requirement).
         if: always()
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: packages/integrations/nfe/ca/*.pem
