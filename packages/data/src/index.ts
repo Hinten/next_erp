@@ -8,6 +8,7 @@ export {
 export {
   whereEqual,
   whereOp,
+  whereArrayContains,
   orderByField,
   limit,
   paginate,

@@ -40,6 +40,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { FirebaseError } from 'firebase/app';
 import { type Firestore, writeBatch } from 'firebase/firestore';
 import { ZodError } from 'zod';
 import { buildQuery, whereEqual } from '@delfrance/data';
@@ -50,15 +51,22 @@ import {
   type Produto,
   cartesianVariations,
   compareSortKeys,
+  findDuplicateSkus,
   normalizeVariacoesUid,
   parseFakePath,
   produtoSchema,
+  reconcileStagedChildren,
   reconstructFromSkuSuffix,
   reconstructFromVariacoesUid,
   sameCombo,
   varianteFakePath,
 } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
+import {
+  describeReferences,
+  findProdutoReferences,
+  hasReferences,
+} from '@/lib/produtos/references';
 
 /**
  * One row of the children list: a persisted child `Produto` (with its doc id)
@@ -125,6 +133,15 @@ function newDocId(): string {
   let id = '';
   for (const b of bytes) id += DOC_ID_CHARS[b % DOC_ID_CHARS.length];
   return id;
+}
+
+/**
+ * A flush-abort error. ObjectView only renders `ZodError`/`FirebaseError`
+ * rejections from `onAfterSave` in the form alert (anything else is treated
+ * as a bug and rethrown), so integrity violations ship as custom Zod issues.
+ */
+function flushAbort(message: string): ZodError {
+  return new ZodError([{ code: 'custom', path: [], message } as never]);
 }
 
 /** Bare group ids referenced by a parent doc + its current variant selection. */
@@ -197,6 +214,8 @@ export function VariationManager({
   const [localOrder, setLocalOrder] = useState<string[] | null>(null);
   const [groupsTouched, setGroupsTouched] = useState<string[] | null>(null);
   const [actionError, setActionError] = useState<string[] | null>(null);
+  // Rows with an in-flight reference check (the delete-guard lookup).
+  const [checking, setChecking] = useState<Set<string>>(new Set());
 
   const groupsSelected = groupsTouched ?? impliedGroupIds(parent, uids);
 
@@ -225,19 +244,59 @@ export function VariationManager({
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
+  // Sibling SKU uniqueness: non-empty SKUs shared by two or more live rows
+  // get an inline error here and a hard gate in the flush — duplicates would
+  // make the SKU-based id reuse (#117) ambiguous.
+  const duplicateSkuKeys = useMemo(
+    () => new Set([...findDuplicateSkus(rows).values()].flat()),
+    [rows],
+  );
+
   /**
    * Commit every staged child mutation in ONE batch: deletes, creates (full
    * docs through the Zod converter) and updates, rewriting `ordem` as the
    * final position over the non-deleted rows. Children inherit the parent's
-   * dims/weights on create (Flutter parity). Plain deletes for now — the
-   * cascade runtime is admin-only; subcollection cleanup stays with the
-   * Flutter maintenance function / issue #95.
+   * dims/weights on create (Flutter parity). Plain doc deletes — subcollection
+   * orphan cleanup is server-side (issues #95/#136).
+   *
+   * Integrity passes before any write:
+   *  1. duplicate-SKU gate (sibling uniqueness);
+   *  2. `reconcileStagedChildren` turns same-SKU (delete, create) pairs into
+   *     updates that keep the original doc id (#117) — a reused row carries
+   *     `serverOrdem: null`, so the update branch below always writes it;
+   *  3. reference re-check on every remaining real delete (kits/marketplace
+   *     links may have appeared since the stage-time check) — any hit aborts
+   *     the whole flush.
    */
   const flushStagedChildren = async (parentId: string): Promise<void> => {
+    const duplicates = findDuplicateSkus(rows);
+    if (duplicates.size > 0) {
+      throw flushAbort(
+        `SKU duplicado entre as variações: ${[...duplicates.keys()].join(', ')}. ` +
+          'Cada variação precisa de um SKU próprio — ajuste antes de salvar.',
+      );
+    }
+
+    const { rows: reconciled, reusedIds } = reconcileStagedChildren(rows);
+
+    const deleteTargets = reconciled.filter((r) => r.deleteMark && r.id);
+    const blocked: string[] = [];
+    await Promise.all(
+      deleteTargets.map(async (row) => {
+        const refs = await findProdutoReferences(db, row.id!);
+        if (hasReferences(refs)) {
+          blocked.push(`variação "${row.nome || row.sku}" está ${describeReferences(refs)}`);
+        }
+      }),
+    );
+    if (blocked.length > 0) {
+      throw flushAbort(`Exclusão bloqueada — ${blocked.join('; ')}.`);
+    }
+
     const batch = writeBatch(db);
     let writes = 0;
     let ordem = 0;
-    for (const row of rows) {
+    for (const row of reconciled) {
       if (row.deleteMark) {
         if (row.id) {
           batch.delete(produtoCollection.docRef(db, {}, row.id));
@@ -294,7 +353,13 @@ export function VariationManager({
     setPatches({});
     setNewRows([]);
     setLocalOrder(null);
-    notifications.show({ color: 'green', message: `${writes} variação(ões) gravada(s).` });
+    notifications.show({
+      color: 'green',
+      message:
+        reusedIds.length > 0
+          ? `${writes} variação(ões) gravada(s) — ${reusedIds.length} id(s) reaproveitado(s) por SKU.`
+          : `${writes} variação(ões) gravada(s).`,
+    });
   };
 
   // Hand the page the current flush closure (it captures this render's rows).
@@ -380,6 +445,20 @@ export function VariationManager({
           ? `${fresh.length} variação(ões) gerada(s) — salve para gravar.`
           : 'Todas as combinações já existem.',
     });
+    // Duplicate SKUs out of the generation (two variants sharing a código)
+    // would be rejected at save — warn right away so the user fixes the
+    // códigos (or the SKUs) before hitting the flush gate.
+    const dupAfterGen = findDuplicateSkus([
+      ...rows.map((r) => ({ key: r.key, sku: r.sku, deleteMark: r.deleteMark })),
+      ...fresh.map((c, i) => ({ key: `gen-${i}`, sku: c.sku, deleteMark: false })),
+    ]);
+    if (dupAfterGen.size > 0) {
+      notifications.show({
+        color: 'yellow',
+        message: `SKUs duplicados após gerar: ${[...dupAfterGen.keys()].join(', ')} — ajuste os códigos das variantes ou os SKUs antes de salvar.`,
+        autoClose: 10_000,
+      });
+    }
   }
 
   function reconstituir() {
@@ -440,9 +519,65 @@ export function VariationManager({
     ]);
   }
 
-  function toggleDeleteAll() {
+  /**
+   * Probe a persisted row's inbound references (kits, marketplace links) and
+   * block the staging when any exist — deleting a referenced child severs the
+   * kit/listing keyed to its doc id (#117/#135). Fail-closed: if the lookup
+   * itself fails, the deletion is NOT staged.
+   */
+  async function checkDeletable(row: ChildRow): Promise<boolean> {
+    if (!row.id) return true; // unsaved rows have no doc, hence no references
+    setChecking((prev) => new Set(prev).add(row.key));
+    try {
+      const refs = await findProdutoReferences(db, row.id);
+      if (hasReferences(refs)) {
+        notifications.show({
+          color: 'red',
+          title: 'Não é possível excluir',
+          message: `A variação "${row.nome || row.sku}" está ${describeReferences(refs)}. Remova os vínculos antes de excluí-la.`,
+          autoClose: 10_000,
+        });
+        return false;
+      }
+      return true;
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        console.error('[VariationManager] reference check failed', err);
+        notifications.show({
+          color: 'red',
+          message: `Falha ao verificar vínculos (${err.code}) — exclusão não aplicada.`,
+        });
+        return false;
+      }
+      throw err;
+    } finally {
+      setChecking((prev) => {
+        const next = new Set(prev);
+        next.delete(row.key);
+        return next;
+      });
+    }
+  }
+
+  async function requestDelete(row: ChildRow) {
+    if (row.deleteMark) {
+      patchRow(row, { deleteMark: false }); // undo is always allowed
+      return;
+    }
+    if (await checkDeletable(row)) patchRow(row, { deleteMark: true });
+  }
+
+  async function toggleDeleteAll() {
     const target = !rows.every((r) => r.deleteMark);
-    for (const row of rows) patchRow(row, { deleteMark: target });
+    if (!target) {
+      for (const row of rows) patchRow(row, { deleteMark: false });
+      return;
+    }
+    await Promise.all(
+      rows.map(async (row) => {
+        if (!row.deleteMark && (await checkDeletable(row))) patchRow(row, { deleteMark: true });
+      }),
+    );
   }
 
   function handleDragEnd(event: DragEndEvent) {
@@ -547,9 +682,13 @@ export function VariationManager({
                   key={row.key}
                   row={row}
                   disabled={disabled}
+                  checkingRefs={checking.has(row.key)}
+                  skuError={
+                    duplicateSkuKeys.has(row.key) ? 'SKU duplicado entre as variações' : undefined
+                  }
                   onNome={(nome) => patchRow(row, { nome })}
                   onSku={(sku) => patchRow(row, { sku })}
-                  onToggleDelete={() => patchRow(row, { deleteMark: !row.deleteMark })}
+                  onToggleDelete={() => void requestDelete(row)}
                 />
               ))}
             </Stack>
@@ -568,7 +707,13 @@ export function VariationManager({
             Nova variante
           </Button>
           {rows.length > 0 && (
-            <Button variant="subtle" color="red" size="xs" onClick={toggleDeleteAll}>
+            <Button
+              variant="subtle"
+              color="red"
+              size="xs"
+              onClick={() => void toggleDeleteAll()}
+              loading={checking.size > 0}
+            >
               Excluir/restaurar todas
             </Button>
           )}
@@ -581,12 +726,24 @@ export function VariationManager({
 interface SortableChildProps {
   row: ChildRow;
   disabled?: boolean;
+  /** Reference lookup in flight for this row (delete guard). */
+  checkingRefs?: boolean;
+  /** Sibling-uniqueness violation message for the SKU input. */
+  skuError?: string;
   onNome: (value: string) => void;
   onSku: (value: string) => void;
   onToggleDelete: () => void;
 }
 
-function SortableChild({ row, disabled, onNome, onSku, onToggleDelete }: SortableChildProps) {
+function SortableChild({
+  row,
+  disabled,
+  checkingRefs,
+  skuError,
+  onNome,
+  onSku,
+  onToggleDelete,
+}: SortableChildProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: row.key,
     disabled,
@@ -625,6 +782,7 @@ function SortableChild({ row, disabled, onNome, onSku, onToggleDelete }: Sortabl
           value={row.sku}
           onChange={(e) => onSku(e.currentTarget.value)}
           disabled={disabled || row.deleteMark}
+          error={skuError}
           w={160}
         />
         {!row.id && (
@@ -665,6 +823,7 @@ function SortableChild({ row, disabled, onNome, onSku, onToggleDelete }: Sortabl
               color="red"
               mb={4}
               onClick={onToggleDelete}
+              loading={checkingRefs}
               aria-label="Remover variação"
             >
               <IconTrash size={16} />

@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { GrupoComId } from './variacoes';
+import type { GrupoComId, ReconcilableRow } from './variacoes';
 import {
   cartesianVariations,
   compareSortKeys,
+  findDuplicateSkus,
   grupoOuterRef,
   normalizeVariacoesUid,
   parseFakePath,
+  reconcileStagedChildren,
   reconstructFromSkuSuffix,
   reconstructFromVariacoesUid,
   remakeFakePath,
@@ -317,5 +319,99 @@ describe('splitFotoSections', () => {
     expect(out.variants).toHaveLength(1);
     expect(out.variants[0]!.fotoIndexes).toEqual([0]);
     expect(out.general).toEqual([]);
+  });
+});
+
+describe('findDuplicateSkus', () => {
+  it('flags non-empty SKUs shared by two or more live rows', () => {
+    const out = findDuplicateSkus([
+      { key: 'a', sku: 'CAM-P', deleteMark: false },
+      { key: 'b', sku: 'CAM-P', deleteMark: false },
+      { key: 'c', sku: 'CAM-M', deleteMark: false },
+    ]);
+    expect([...out.entries()]).toEqual([['CAM-P', ['a', 'b']]]);
+  });
+
+  it('trims before comparing', () => {
+    const out = findDuplicateSkus([
+      { key: 'a', sku: ' CAM-P', deleteMark: false },
+      { key: 'b', sku: 'CAM-P ', deleteMark: false },
+    ]);
+    expect(out.get('CAM-P')).toEqual(['a', 'b']);
+  });
+
+  it('ignores empty SKUs and delete-marked rows', () => {
+    const out = findDuplicateSkus([
+      { key: 'a', sku: '', deleteMark: false },
+      { key: 'b', sku: '  ', deleteMark: false },
+      { key: 'c', sku: 'X', deleteMark: true },
+      { key: 'd', sku: 'X', deleteMark: false },
+    ]);
+    expect(out.size).toBe(0);
+  });
+});
+
+describe('reconcileStagedChildren', () => {
+  const az = varianteFakePath('CORES', 'az');
+  const vd = varianteFakePath('CORES', 'vd');
+  const p = varianteFakePath('TAM', 'p');
+
+  function row(over: Partial<ReconcilableRow> & { key?: string }) {
+    return {
+      key: over.key ?? 'k',
+      id: null,
+      sku: '',
+      variacoesUid: [],
+      deleteMark: false,
+      ...over,
+    };
+  }
+
+  it('pairs a staged-create with a staged-delete by SKU, reusing the doc id', () => {
+    const del = row({ key: 'old', id: 'DOC1', sku: 'CAM-P', variacoesUid: [p], deleteMark: true });
+    const cre = row({ key: 'new', sku: 'CAM-P', variacoesUid: [p] });
+    const out = reconcileStagedChildren([del, cre]);
+    expect(out.reusedIds).toEqual(['DOC1']);
+    expect(out.rows).toHaveLength(1);
+    expect(out.rows[0]).toMatchObject({ key: 'new', id: 'DOC1', sku: 'CAM-P' });
+  });
+
+  it('prefers the same-combo delete when legacy duplicate SKUs match', () => {
+    const delA = row({ key: 'dA', id: 'DOC-A', sku: 'X', variacoesUid: [az], deleteMark: true });
+    const delB = row({ key: 'dB', id: 'DOC-B', sku: 'X', variacoesUid: [vd], deleteMark: true });
+    const cre = row({ key: 'new', sku: 'X', variacoesUid: [vd] });
+    const out = reconcileStagedChildren([delA, delB, cre]);
+    expect(out.reusedIds).toEqual(['DOC-B']);
+    // The non-matching duplicate stays staged for real deletion.
+    expect(out.rows.map((r) => r.key)).toEqual(['dA', 'new']);
+  });
+
+  it('pairs empty-SKU rows by combo only when both combos are non-empty', () => {
+    const del = row({ key: 'old', id: 'DOC1', variacoesUid: [az, p], deleteMark: true });
+    const cre = row({ key: 'new', variacoesUid: [p, az] }); // unordered combo match
+    const out = reconcileStagedChildren([del, cre]);
+    expect(out.rows[0]).toMatchObject({ key: 'new', id: 'DOC1' });
+
+    const blankDel = row({ key: 'bd', id: 'DOC2', deleteMark: true });
+    const blankCre = row({ key: 'bc' });
+    const blank = reconcileStagedChildren([blankDel, blankCre]);
+    expect(blank.reusedIds).toEqual([]);
+    expect(blank.rows).toHaveLength(2);
+  });
+
+  it('leaves unpaired deletes and creates untouched', () => {
+    const del = row({ key: 'old', id: 'DOC1', sku: 'A', variacoesUid: [az], deleteMark: true });
+    const cre = row({ key: 'new', sku: 'B', variacoesUid: [vd] });
+    const out = reconcileStagedChildren([del, cre]);
+    expect(out.reusedIds).toEqual([]);
+    expect(out.rows).toEqual([del, cre]);
+  });
+
+  it('never pairs two creates or rows that already have ids', () => {
+    const persisted = row({ key: 'p1', id: 'DOC1', sku: 'A' }); // live persisted row
+    const cre = row({ key: 'new', sku: 'A' });
+    const out = reconcileStagedChildren([persisted, cre]);
+    expect(out.reusedIds).toEqual([]);
+    expect(out.rows).toHaveLength(2);
   });
 });

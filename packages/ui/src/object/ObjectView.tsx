@@ -339,7 +339,14 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
           try {
             await onAfterSave(internalId);
           } catch (afterErr) {
-            if (afterErr instanceof FirebaseError || afterErr instanceof ZodError) {
+            if (afterErr instanceof ZodError) {
+              // `ZodError.message` is the serialized issues array — join the
+              // human messages instead (sibling flushes throw contextualized
+              // issues, e.g. per-row validation in the variations manager).
+              setSubmitError(afterErr.issues.map((i) => i.message).join('; '));
+              return;
+            }
+            if (afterErr instanceof FirebaseError) {
               setSubmitError(afterErr.message);
               return;
             }
