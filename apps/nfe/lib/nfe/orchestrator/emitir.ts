@@ -32,7 +32,6 @@ import {
 } from '@delfrance/schemas';
 
 import type { NFeRuntime } from '../runtime';
-import { svcAuthorizerOverride } from '../svc-override';
 import {
   NFeBlockedError,
   NFeMissingImpostoError,
@@ -142,17 +141,7 @@ export async function prepareEmission(
   // chave-keyed duplicates. Switching contingency mode targets a NEW doc
   // (`s6` vs `s1`) → fresh numeração, which is exactly the MOC's
   // renumbering rule for normal→contingency reissues.
-  // The homologação-only SVC override applies BEFORE the doc id is computed
-  // so chave (index 34), XML tpEmis, nfev4 doc id and transport all agree.
-  // It only swaps one SVC for the other — normal/EPEC modes never shift.
-  const resolvedTpEmis = resolveTpEmis(bundle.filial.sede.estado, contingencia.modo);
-  const override = svcAuthorizerOverride(rt.ambiente);
-  const tpEmis: TpEmis =
-    override !== undefined && (resolvedTpEmis === 6 || resolvedTpEmis === 7)
-      ? override === 'svc-an'
-        ? 6
-        : 7
-      : resolvedTpEmis;
+  const tpEmis = resolveTpEmis(bundle.filial.sede.estado, contingencia.modo);
   const nfeRef = nfev4Collection.docRef(fs, { pedidoId }, nfeDocId(tpEmis));
   const nfeConfigRef = nfeConfigCollection.docRef(
     fs,

@@ -34,7 +34,6 @@ import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { safeLog } from '@/lib/nfe/log';
 import { sefazCallFor } from '@/lib/nfe/orchestrator/sefaz-call';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
-import { svcAuthorizerOverride } from '@/lib/nfe/svc-override';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -70,10 +69,7 @@ export async function GET(req: Request): Promise<NextResponse> {
     // `svc` routes through the same tpEmis-aware helper emission uses: the
     // UF's SVC authorizer (6 = SVC-AN, 7 = SVC-RS). The consStatServ payload
     // still carries the ISSUER's cUF — that's who we ask the SVC about.
-    const authorizer =
-      query.target === 'svc'
-        ? (svcAuthorizerOverride(rt.ambiente) ?? svcAuthorizerForUF(uf))
-        : 'sefaz';
+    const authorizer = query.target === 'svc' ? svcAuthorizerForUF(uf) : 'sefaz';
     const call = sefazCallFor(
       rt,
       query.target === 'svc' ? (authorizer === 'svc-an' ? 6 : 7) : 1,
