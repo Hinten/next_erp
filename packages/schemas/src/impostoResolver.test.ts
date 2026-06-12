@@ -71,8 +71,9 @@ describe('regraImpostoSchema', () => {
   });
 
   it('uses fresh permission bits, not aliased to existing ones', () => {
-    expect(regraImpostoMeta.permissions.read).toBe(1n << 81n);
-    expect(regraImpostoMeta.permissions.write).toBe(1n << 82n);
-    expect(regraImpostoMeta.permissions.delete).toBe(1n << 83n);
+    // Byte 12 — relocated off 81-83, which collided with PERM.arquivo (80-82).
+    expect(regraImpostoMeta.permissions.read).toBe(1n << 99n);
+    expect(regraImpostoMeta.permissions.write).toBe(1n << 100n);
+    expect(regraImpostoMeta.permissions.delete).toBe(1n << 101n);
   });
 });
