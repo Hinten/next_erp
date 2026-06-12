@@ -9,6 +9,8 @@ z.config(z.locales.pt());
 
 export type { CollectionMetadata, DomainSchema } from './types';
 
+export { ALL_DOMAINS } from './registry';
+
 export { auditEntrySchema, type AuditEntry } from './audit';
 
 export {
