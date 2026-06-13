@@ -7,7 +7,14 @@ import { z } from 'zod';
 // take precedence; this only replaces Zod's English defaults.
 z.config(z.locales.pt());
 
-export type { CollectionMetadata, DomainSchema } from './types';
+export type {
+  CollectionMetadata,
+  CollectionDefaultQuery,
+  DefaultQueryWhere,
+  DefaultQueryOrderBy,
+  DefaultQueryValue,
+  DomainSchema,
+} from './types';
 
 export { auditEntrySchema, type AuditEntry } from './audit';
 

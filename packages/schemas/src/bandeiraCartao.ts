@@ -88,6 +88,10 @@ export const bandeiraCartaoMeta: CollectionMetadata = {
     write: PERM_PAGAMENTO_WRITE,
     delete: PERM_PAGAMENTO_DELETE,
   },
+  defaultQuery: {
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
+  },
 };
 
 export const bandeiraCartao = {
