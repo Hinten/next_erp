@@ -5,7 +5,9 @@ import {
   docExistsByName,
   e2ePrefix,
   getClienteByName,
+  runDigits,
   seedPedidoFixtures,
+  validTestCpf,
 } from './_helpers/seed-data';
 import { fillField, selectFieldWithSearch } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
@@ -157,8 +159,16 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
 
   test('creates a cliente through the quick-create modal and emits it into the form', async ({
     page,
-  }) => {
-    const nome = `${prefix}-qc-001`;
+  }, testInfo) => {
+    // Run+retry-unique identity values. The staging `clientes` collection is
+    // shared (runs isolate by nome prefix only) and holds long-lived dev
+    // seeds, and a failed attempt may leave its created doc behind until
+    // afterAll — a fixed CPF/telefone/nome would trip the modal's own dedup
+    // (blocking alert or "Criar mesmo assim" review) and the dialog would
+    // never close.
+    const nome = `${prefix}-qc-${testInfo.retry}`;
+    const cpf = validTestCpf(Number(runDigits(7)) * 10 + testInfo.retry);
+    const telefone = `11${cpf.slice(0, 9)}`;
     await page.goto('/pedidos/novo');
 
     // `.first()` — the Frete tab keeps a second (hidden) ClientePicker
@@ -172,9 +182,9 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     // login fields in _helpers/auth.ts). The dialog scope keeps the
     // substring match unambiguous.
     await dialog.getByLabel('Nome').fill(nome);
-    await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill('39053344705');
+    await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill(cpf);
     await dialog.getByLabel('E-mail', { exact: true }).fill(`${nome}@example.com`);
-    await dialog.getByLabel('Telefone', { exact: true }).fill('11988887777');
+    await dialog.getByLabel('Telefone', { exact: true }).fill(telefone);
     await dialog.getByRole('button', { name: 'Criar', exact: true }).click();
 
     // The modal resolves and the picker locks onto the new cliente.
@@ -185,8 +195,8 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     // standardized wa_id shape (55 + DDD + number), cpf_cnpj as typed.
     await expect.poll(() => docExistsByName('clientes', nome), { timeout: 15_000 }).toBe(true);
     const doc = await getClienteByName(nome);
-    expect(doc?.telefone).toBe('5511988887777');
-    expect(doc?.cpf_cnpj).toBe('39053344705');
+    expect(doc?.telefone).toBe(`55${telefone}`);
+    expect(doc?.cpf_cnpj).toBe(cpf);
     expect(doc?.tipo).toBe('0');
   });
 
@@ -201,9 +211,10 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
 
     // Non-exact: the required asterisk lives inside the Nome label.
     await dialog.getByLabel('Nome').fill(`${prefix}-qc-dup`);
-    // The seeded pedido fixture cliente owns this CNPJ — blur triggers the
-    // debounced dedup check and the blocking alert.
-    await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill('11222333000181');
+    // The seeded pedido fixture cliente owns this run-unique CNPJ, so it is
+    // the only blocking candidate — blur triggers the debounced dedup check
+    // and the blocking alert.
+    await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill(fixtures.clienteCpfCnpj);
     await dialog.getByLabel('CPF / CNPJ', { exact: true }).blur();
 
     await expect(dialog.getByText('Cliente já cadastrado')).toBeVisible({ timeout: 15_000 });

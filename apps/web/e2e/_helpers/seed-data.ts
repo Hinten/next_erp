@@ -45,6 +45,39 @@ export function validTestCpf(i: number): string {
 }
 
 /**
+ * Last `n` digits derived from the run id. Identity values the quick-create
+ * dedup queries see (CPF/CNPJ, telefone) must be unique per run: the staging
+ * `clientes` collection is shared across runs — isolation is by `nome`
+ * prefix only — and also holds long-lived dev seeds, so a fixed document
+ * number would trip the modal's blocking dedup. Pads with '7' when the run
+ * id has too few digits (the local base36 fallback).
+ */
+export function runDigits(n: number): string {
+  const digits = getRunId().replace(/\D/g, '') || String(Date.now());
+  return digits.padStart(n, '7').slice(-n);
+}
+
+/**
+ * Checksum-valid CNPJ derived from a digit string — same rationale as
+ * `validTestCpf`, with the CNPJ mod-11 weight vectors.
+ */
+export function validTestCnpj(seedDigits: string): string {
+  const base = seedDigits.replace(/\D/g, '').padStart(12, '7').slice(-12);
+  const dv = (digits: string, weights: number[]): number => {
+    let sum = 0;
+    for (let k = 0; k < weights.length; k += 1) {
+      sum += Number(digits[k]) * weights[k]!;
+    }
+    const rest = sum % 11;
+    return rest < 2 ? 0 : 11 - rest;
+  };
+  const dv1Weights = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+  const dv1 = dv(base, dv1Weights);
+  const dv2 = dv(`${base}${dv1}`, [6, ...dv1Weights]);
+  return `${base}${dv1}${dv2}`;
+}
+
+/**
  * Seed `n` cliente docs. `nome` = `<prefix>-NNN`; `tipo`, `cpf_cnpj` and
  * `email` are varied so filter/sort tests have something to bite on.
  */
@@ -453,6 +486,7 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
   integracaoPath: string;
   produtoPath: string;
   clienteNome: string;
+  clienteCpfCnpj: string;
   operacaoNome: string;
   integracaoNome: string;
   produtoNome: string;
@@ -463,6 +497,9 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
   const integracaoId = `${prefix}-int-001`;
   const produtoId = `${prefix}-pro-001`;
   const clienteNome = `${prefix}-cli-001`;
+  // Run-unique valid CNPJ: the quick-create dedup spec fills it expecting
+  // exactly ONE blocking candidate (this fixture) in the shared collection.
+  const clienteCpfCnpj = validTestCnpj(runDigits(12));
   const operacaoNome = `${prefix}-op-001`;
   const integracaoNome = `${prefix}-int-001`;
   const produtoNome = `${prefix}-pro-001`;
@@ -472,7 +509,7 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
   batch.set(db().collection('clientes').doc(clienteId), {
     tipo: '1',
     nome: clienteNome,
-    cpf_cnpj: '11222333000181',
+    cpf_cnpj: clienteCpfCnpj,
     idEstrangeiro: null,
     ie: null,
     imun: null,
@@ -574,6 +611,7 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     integracaoPath: `integracao/${integracaoId}`,
     produtoPath: `produtos/${produtoId}`,
     clienteNome,
+    clienteCpfCnpj,
     operacaoNome,
     integracaoNome,
     produtoNome,
