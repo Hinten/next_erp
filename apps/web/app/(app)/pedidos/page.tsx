@@ -27,17 +27,55 @@ import {
 import { ContingenciaBanner } from './_components/ContingenciaBanner';
 import { EmitirLoteDialog } from './_components/EmitirLoteDialog';
 
+// `dependsOn` lists the schema fields each cell reads from `row.data`, so
+// TableView can keep Pipeline projection enabled on this heavy collection
+// (it would otherwise read full pedido docs). Keep these in sync with the
+// cell implementations in ./_components/PedidoCells.tsx.
 const virtualColumns: ReadonlyArray<VirtualColumn<Pedido>> = [
-  { key: 'nf', label: 'NF', tooltip: 'Nota Fiscal', renderCell: (r) => <NFCell pedidoId={r.id} /> },
-  { key: 'cliente', label: 'Cliente', renderCell: (r) => <ClienteCell pedido={r.data} /> },
-  { key: 'vlr', label: 'Vlr', renderCell: (r) => <VlrCell pedido={r.data} /> },
-  { key: 'expedicao', label: 'Expedição', renderCell: (r) => <ExpedicaoCell pedido={r.data} /> },
-  { key: 'frete', label: 'Frete', renderCell: (r) => <FreteCell pedido={r.data} /> },
-  { key: 'criacao', label: 'Criação', renderCell: (r) => <CriacaoCell pedido={r.data} /> },
+  {
+    key: 'nf',
+    label: 'NF',
+    tooltip: 'Nota Fiscal',
+    // Reads only the pedido id (subscribes to the nfev4 subcollection).
+    dependsOn: [],
+    renderCell: (r) => <NFCell pedidoId={r.id} />,
+  },
+  {
+    key: 'cliente',
+    label: 'Cliente',
+    dependsOn: ['clientePedidoOuterRef'],
+    renderCell: (r) => <ClienteCell pedido={r.data} />,
+  },
+  {
+    key: 'vlr',
+    label: 'Vlr',
+    // valorCobrado cache, falling back to pedidoTotal over itens.
+    dependsOn: ['valorCobrado', 'itens'],
+    renderCell: (r) => <VlrCell pedido={r.data} />,
+  },
+  {
+    key: 'expedicao',
+    label: 'Expedição',
+    dependsOn: ['freteInicial'],
+    renderCell: (r) => <ExpedicaoCell pedido={r.data} />,
+  },
+  {
+    key: 'frete',
+    label: 'Frete',
+    dependsOn: ['freteInicial'],
+    renderCell: (r) => <FreteCell pedido={r.data} />,
+  },
+  {
+    key: 'criacao',
+    label: 'Criação',
+    dependsOn: ['timestamp'],
+    renderCell: (r) => <CriacaoCell pedido={r.data} />,
+  },
   {
     key: 'imp',
     label: 'Imp.',
     tooltip: 'Data de Impressão',
+    dependsOn: ['dtImpressao'],
     renderCell: (r) => <ImpCell pedido={r.data} />,
   },
 ];

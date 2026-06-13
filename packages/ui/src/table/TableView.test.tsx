@@ -413,6 +413,42 @@ describe('TableView', () => {
       );
     });
 
+    it('keeps projection enabled when every visible virtual column declares dependsOn', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          virtualColumns={[
+            { key: 'v1', label: 'V1', dependsOn: ['extra'], renderCell: () => null },
+          ]}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          select: expect.arrayContaining(['nome', 'tipo', 'observacoes', 'extra']),
+        }),
+      );
+    });
+
+    it('disables projection when a visible virtual column omits dependsOn', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          virtualColumns={[{ key: 'v1', label: 'V1', renderCell: () => null }]}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ select: undefined }),
+      );
+    });
+
     it('throws when a declared param has no queryParams binding', () => {
       // The component throws during render (baseFilters memo) — an unbound
       // filter would silently widen the list to the whole collection.

@@ -142,4 +142,14 @@ export interface VirtualColumn<T> {
   readonly renderCell: (row: SnapshotRow<T>) => ReactNode;
   /** Optional width hint (CSS units or px number). */
   readonly width?: number | string;
+  /**
+   * Schema fields this cell reads from `row.data`. When every visible virtual
+   * column declares `dependsOn`, TableView keeps Pipeline projection enabled
+   * (`select` = visible schema columns ∪ all `dependsOn`), cutting payload.
+   * OMIT (or leave any visible virtual column without it) to force a
+   * full-document fetch — the safe default when a renderer reads arbitrary
+   * fields. An empty array means "reads no schema field" (e.g. uses only
+   * `row.id`).
+   */
+  readonly dependsOn?: ReadonlyArray<string>;
 }

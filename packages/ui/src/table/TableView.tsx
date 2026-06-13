@@ -334,10 +334,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // filters changes shape per click; bucket it into a deterministic string
   // so the pipeline only rebuilds when content actually changes.
   const filtersSerial = useMemo(() => JSON.stringify(filters), [filters]);
-  // Deterministic key for the visible-column set. Toggling a column in the
-  // ColumnPicker changes this, which re-runs the `pipeline` useMemo → new
-  // Pipeline with the new `select` → the query re-executes.
-  const visibleKeysSerial = useMemo(() => [...visibleKeys].sort().join('|'), [visibleKeys]);
   // Stable serial for `queryParams` so the base-filter memo rebuilds only when
   // a bound value actually changes (callers needn't memoize the object).
   const queryParamsSerial = useMemo(() => JSON.stringify(queryParams ?? null), [queryParams]);
@@ -384,6 +380,25 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     (defaultQuery?.orderBy?.[0]
       ? { field: defaultQuery.orderBy[0].field, direction: defaultQuery.orderBy[0].direction }
       : undefined);
+
+  // Pipeline projection (`select`). Project the visible schema columns to cut
+  // payload; `buildPipeline` re-appends the doc id. Visible virtual columns
+  // can read arbitrary fields from `row.data`, so a visible virtual WITHOUT a
+  // `dependsOn` declaration disables projection (full-doc read); otherwise we
+  // widen the projection by every declared dependsOn. `undefined` = no select.
+  const selectFields = useMemo<string[] | undefined>(() => {
+    const schemaKeys = [...visibleKeys].filter((k) => descriptors.some((d) => d.key === k));
+    const visibleVirtuals = virtualColumns.filter((v) => visibleKeys.has(v.key));
+    if (visibleVirtuals.length === 0) return schemaKeys;
+    if (visibleVirtuals.some((v) => v.dependsOn === undefined)) return undefined;
+    const union = new Set(schemaKeys);
+    for (const v of visibleVirtuals) for (const f of v.dependsOn ?? []) union.add(f);
+    return [...union];
+  }, [visibleKeys, descriptors, virtualColumns]);
+  const selectFieldsSerial = useMemo(
+    () => (selectFields ? selectFields.join('|') : '*'),
+    [selectFields],
+  );
 
   // Mirror filters + sort into the URL query string so the view is shareable
   // and survives a reload. Uses `window.history.replaceState`, NOT
@@ -434,22 +449,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           ...baseFilters,
           ...Object.entries(filters).map(([field, v]) => ({ field, ...v })),
         ],
-        // Project only the visible schema columns to cut data transfer
-        // (skips the heavy embedding fields). `buildPipeline` appends the
-        // document-id projection so row identity survives `.select()` —
-        // see PIPELINE_ID_FIELD. `visibleKeysSerial` is in the deps below
-        // so toggling a column re-executes the query with the new field
-        // set.
-        //
-        // **When virtual columns are present, projection is disabled**:
-        // virtual cells can read any field from `row.data` (passthrough
-        // values, outer refs, etc.) and we can't predict which keys
-        // they'll touch. Reading the full doc keeps virtual renderers
-        // simple at the cost of slightly larger payloads.
-        select:
-          virtualColumns.length > 0
-            ? undefined
-            : [...visibleKeys].filter((k) => descriptors.some((d) => d.key === k)),
+        // Project the visible schema columns (+ any virtual-column
+        // `dependsOn`) to cut data transfer; `undefined` reads the full doc.
+        // See `selectFields` above. `buildPipeline` re-appends the document-id
+        // projection so row identity survives `.select()` (PIPELINE_ID_FIELD).
+        select: selectFields,
         orderBy: effectiveOrderBy,
         limit: resolvedPageSize,
       });
@@ -470,7 +474,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     effectiveOrderBy,
     baseFiltersSerial,
     filtersSerial,
-    visibleKeysSerial,
+    selectFieldsSerial,
     refreshKey,
   ]);
 
