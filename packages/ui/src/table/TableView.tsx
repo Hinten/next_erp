@@ -46,6 +46,7 @@ import { useCollectionMonitor } from './useCollectionMonitor';
 import { IconArrowDown, IconArrowsSort, IconArrowUp, IconRefreshAlert } from '@tabler/icons-react';
 import { ColumnFilter, type ColumnFilterValue } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
+import { applyColumnFilters } from './filterRows';
 import { renderCell } from './cell-renderers';
 
 export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
@@ -505,12 +506,23 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const fromQuery = useSnapshot<z.infer<S>>(fallbackQuery);
   const snap: SnapshotState<SnapshotRow<z.infer<S>>[]> = pipeline ? fromPipeline : fromQuery;
 
+  // Rows to display. The Pipeline path applies per-column filters server-side;
+  // the classic fallback and `queryOverride` paths can't, so narrow them here
+  // to match (base meta filters are already in the fallback query / owned by
+  // the override). Everything below — selection, counts, the table body —
+  // reads `rows`, not `snap.data`, so it all stays consistent with the filter.
+  const rows = useMemo<SnapshotRow<z.infer<S>>[] | undefined>(
+    () => (pipeline || !snap.data ? snap.data : applyColumnFilters(snap.data, filters)),
+    // filtersSerial stands in for the `filters` object content.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pipeline, snap.data, filtersSerial],
+  );
+
   // Drop selected ids that left the current row set (filter change, refresh,
   // delete in another tab) so bulk actions and the header checkbox never act
   // on ghost rows. Returns the same Set when nothing changed, so the effect
   // can't loop on Set identity.
   useEffect(() => {
-    const rows = snap.data;
     if (!rows) return;
     setSelected((cur) => {
       if (cur.size === 0) return cur;
@@ -518,7 +530,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       const next = new Set([...cur].filter((id) => live.has(id)));
       return next.size === cur.size ? cur : next;
     });
-  }, [snap.data]);
+  }, [rows]);
 
   /**
    * Ordered list of columns to render — schema descriptors AND virtual
@@ -585,15 +597,13 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   }
 
   function toggleAll() {
-    if (!snap.data) return;
-    setSelected((cur) =>
-      cur.size === snap.data!.length ? new Set() : new Set(snap.data!.map((r) => r.id)),
-    );
+    if (!rows) return;
+    setSelected((cur) => (cur.size === rows.length ? new Set() : new Set(rows.map((r) => r.id))));
   }
 
   const selectedRows = useMemo(
-    () => (snap.data ?? []).filter((r) => selected.has(r.id)),
-    [snap.data, selected],
+    () => (rows ?? []).filter((r) => selected.has(r.id)),
+    [rows, selected],
   );
 
   // Update-monitor field: explicit prop wins; otherwise prefer a
@@ -695,7 +705,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Stack>
           )}
 
-          {!snap.loading && snap.data && (
+          {!snap.loading && rows && (
             <Table striped highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
@@ -703,8 +713,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                     <Table.Th style={{ width: 36 }}>
                       <Checkbox
                         aria-label="Selecionar todas as linhas"
-                        checked={selected.size > 0 && selected.size === snap.data.length}
-                        indeterminate={selected.size > 0 && selected.size < snap.data.length}
+                        checked={selected.size > 0 && selected.size === rows.length}
+                        indeterminate={selected.size > 0 && selected.size < rows.length}
                         onChange={toggleAll}
                       />
                     </Table.Th>
@@ -759,7 +769,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
-                {snap.data.length === 0 && (
+                {rows.length === 0 && (
                   <Table.Tr>
                     <Table.Td
                       colSpan={visibleColumns.length + (selectionEnabled ? 1 : 0)}
@@ -769,7 +779,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                     </Table.Td>
                   </Table.Tr>
                 )}
-                {snap.data.map((row) => {
+                {rows.map((row) => {
                   const href = rowHref ? rowHref(row.id, row.data) : undefined;
                   // `onRowClick` takes precedence over `rowHref` navigation.
                   const clickable = !!row.id && (!!onRowClick || !!href);

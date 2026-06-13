@@ -11,21 +11,25 @@ import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 // navigation; `searchParamsRef` lets a test seed the URL. The URL-sync effect
 // writes via `window.history.replaceState`, so cases that assert on it spy on
 // that directly rather than on the router.
-const { snapState, pushSpy, searchParamsRef, buildPipelineSpy } = vi.hoisted(() => ({
-  snapState: {
-    current: {
-      data: [
-        { id: '1', path: 'x/1', data: { nome: 'Alice', tipo: '0' } },
-        { id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } },
-      ],
-      loading: false,
-      error: undefined,
-    } as SnapshotState<SnapshotRow<{ nome?: string; tipo?: string }>[]>,
-  },
-  pushSpy: vi.fn(),
-  searchParamsRef: { current: new URLSearchParams() },
-  buildPipelineSpy: vi.fn(() => ({ __pipeline: true })),
-}));
+const { snapState, pushSpy, searchParamsRef, buildPipelineSpy, pipelineSupportedRef } = vi.hoisted(
+  () => ({
+    snapState: {
+      current: {
+        data: [
+          { id: '1', path: 'x/1', data: { nome: 'Alice', tipo: '0' } },
+          { id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } },
+        ],
+        loading: false,
+        error: undefined,
+      } as SnapshotState<SnapshotRow<{ nome?: string; tipo?: string }>[]>,
+    },
+    pushSpy: vi.fn(),
+    searchParamsRef: { current: new URLSearchParams() },
+    buildPipelineSpy: vi.fn(() => ({ __pipeline: true })),
+    // Flip to false in a test to exercise the classic-query fallback path.
+    pipelineSupportedRef: { current: true },
+  }),
+);
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
@@ -51,7 +55,7 @@ vi.mock('@delfrance/data/pipeline-queries', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/data/pipeline-queries')>();
   return {
     ...actual,
-    isPipelineSupported: (_db: unknown) => true,
+    isPipelineSupported: (_db: unknown) => pipelineSupportedRef.current,
     buildPipeline: buildPipelineSpy,
   };
 });
@@ -98,6 +102,7 @@ describe('TableView', () => {
     // The URL-sync effect mutates the URL via history.replaceState; reset it
     // so one case's query string doesn't bleed into the next.
     window.history.replaceState(null, '', '/clientes');
+    pipelineSupportedRef.current = true;
   });
 
   it('renders one header per non-unknown field by default', () => {
@@ -447,6 +452,17 @@ describe('TableView', () => {
         expect.anything(),
         expect.objectContaining({ select: undefined }),
       );
+    });
+
+    it('applies column filters client-side on the classic-query fallback path', () => {
+      // No Pipelines support → fromQuery (also stubbed to snapState) feeds the
+      // rows; the server didn't filter, so TableView must narrow them itself.
+      pipelineSupportedRef.current = false;
+      searchParamsRef.current = new URLSearchParams('nome=contains:alice');
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      expect(screen.getByText('Alice')).toBeTruthy();
+      expect(screen.queryByText('Bob')).toBeNull();
+      searchParamsRef.current = new URLSearchParams();
     });
 
     it('throws when a declared param has no queryParams binding', () => {
