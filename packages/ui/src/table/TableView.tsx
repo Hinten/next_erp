@@ -6,6 +6,8 @@ import { useLocalStorage } from '@mantine/hooks';
 import {
   ActionIcon,
   Alert,
+  Button,
+  Center,
   Checkbox,
   Group,
   Skeleton,
@@ -259,6 +261,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Bumped by the update-monitor's "Atualizar" button to force the row query
   // to re-execute (the Pipelines path is one-shot — see `pipeline` below).
   const [refreshKey, setRefreshKey] = useState(0);
+  // "Carregar mais": grows the query limit by `resolvedPageSize` per click.
+  // Each bump re-reads the whole window (the one-shot pipeline has no cursor) —
+  // fine for admin lists; true cursor pagination is deliberately deferred.
+  const [pages, setPages] = useState(1);
+  const effectiveLimit = resolvedPageSize * pages;
 
   // The copy action needs row selection; enabling copy implies `selectable`.
   const selectionEnabled = selectable || !!copyHref;
@@ -368,7 +375,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
         // projection so row identity survives `.select()` (PIPELINE_ID_FIELD).
         select: selectFields,
         orderBy: effectiveOrderBy,
-        limit: resolvedPageSize,
+        limit: effectiveLimit,
       });
     } catch (err) {
       // Only the documented "SDK lacks pipeline()" signal falls back to
@@ -383,7 +390,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     db,
     collection,
     queryOverride,
-    resolvedPageSize,
+    effectiveLimit,
     effectiveOrderBy,
     baseFiltersSerial,
     filtersSerial,
@@ -400,7 +407,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // never be dropped. equality + orderBy is a legal classic query.
     for (const f of baseFilters) constraints.push(whereEqual(f.field, f.value));
     for (const o of effectiveOrderBy ?? []) constraints.push(orderByField(o.field, o.direction));
-    constraints.push(fsLimit(resolvedPageSize));
+    constraints.push(fsLimit(effectiveLimit));
     return buildQuery(base, constraints);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -408,7 +415,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     collection,
     queryOverride,
     pipeline,
-    resolvedPageSize,
+    effectiveLimit,
     effectiveOrderBy,
     baseFiltersSerial,
     refreshKey,
@@ -429,6 +436,14 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [pipeline, snap.data, filtersSerial],
   );
+
+  // Collapse "Carregar mais" back to one page whenever the query shape changes
+  // (filters, sort, base filters or bound params) — the expanded window only
+  // makes sense for the result set the user was looking at.
+  useEffect(() => {
+    setPages(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtersSerial, baseFiltersSerial, queryParamsSerial, sort?.field, sort?.direction]);
 
   // Drop selected ids that left the current row set (filter change, refresh,
   // delete in another tab) so bulk actions and the header checkbox never act
@@ -746,6 +761,18 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                 })}
               </Table.Tbody>
             </Table>
+          )}
+
+          {/* A full page implies there may be more — offer to grow the window.
+              `rows.length === effectiveLimit` is the standard "page was full"
+              heuristic (it over-offers by one click when the count is an exact
+              multiple, which is harmless). */}
+          {!snap.loading && rows && rows.length === effectiveLimit && (
+            <Center>
+              <Button variant="subtle" onClick={() => setPages((p) => p + 1)}>
+                Carregar mais
+              </Button>
+            </Center>
           )}
         </Stack>
 

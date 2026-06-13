@@ -454,6 +454,25 @@ describe('TableView', () => {
       );
     });
 
+    it('"Carregar mais" grows the query limit by the page size', () => {
+      // 2 rows in the snapshot === pageSize 2 → the page looks full → button.
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          pageSize={2}
+        />,
+      );
+      const button = screen.getByRole('button', { name: 'Carregar mais' });
+      buildPipelineSpy.mockClear();
+      fireEvent.click(button);
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ limit: 4 }),
+      );
+    });
+
     it('applies column filters client-side on the classic-query fallback path', () => {
       // No Pipelines support → fromQuery (also stubbed to snapState) feeds the
       // rows; the server didn't filter, so TableView must narrow them itself.
