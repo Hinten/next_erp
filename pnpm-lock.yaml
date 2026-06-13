@@ -739,6 +739,9 @@ importers:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../config-tsconfig
+      '@types/node':
+        specifier: ^24.10.0
+        version: 24.12.4
       eslint:
         specifier: ^9.39.4
         version: 9.39.4
