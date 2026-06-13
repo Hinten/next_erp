@@ -338,4 +338,103 @@ describe('TableView', () => {
     fireEvent.click(button);
     expect(run).toHaveBeenCalled();
   });
+
+  describe('meta.defaultQuery', () => {
+    const metaBase = {
+      collectionPath: 'tests',
+      permissions: { read: 0n, write: 0n, delete: 0n },
+    } as const;
+
+    it('seeds the pipeline orderBy and limit from meta.defaultQuery', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' }], limit: 25 },
+          }}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orderBy: [{ field: 'nome', direction: 'asc' }],
+          limit: 25,
+        }),
+      );
+    });
+
+    it('lets the pageSize prop override meta.defaultQuery.limit', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          pageSize={10}
+          meta={{
+            ...metaBase,
+            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' }], limit: 25 },
+          }}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ limit: 10 }),
+      );
+    });
+
+    it('prepends literal base filters and binds param filters from queryParams', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          queryParams={{ tipo: '1' }}
+          meta={{
+            ...metaBase,
+            defaultQuery: {
+              where: [{ field: 'tipo', param: true }],
+              orderBy: [{ field: 'nome', direction: 'asc' }],
+              limit: 50,
+            },
+          }}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          filters: [{ field: 'tipo', op: 'eq', value: '1' }],
+        }),
+      );
+    });
+
+    it('throws when a declared param has no queryParams binding', () => {
+      // The component throws during render (baseFilters memo) — an unbound
+      // filter would silently widen the list to the whole collection.
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      expect(() =>
+        wrap(
+          <TableView
+            schema={testSchema}
+            collection={fakeCollection()}
+            db={{} as never}
+            meta={{
+              ...metaBase,
+              defaultQuery: {
+                where: [{ field: 'tipo', param: true }],
+                orderBy: [{ field: 'nome', direction: 'asc' }],
+                limit: 50,
+              },
+            }}
+          />,
+        ),
+      ).toThrow(/param "tipo"/);
+      spy.mockRestore();
+    });
+  });
 });

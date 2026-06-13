@@ -21,15 +21,19 @@ import type { z, ZodObject, ZodRawShape } from 'zod';
 import {
   type CollectionHandle,
   type PathContext,
+  type PipelineFieldFilter,
   type PipelineFilterOp,
   buildQuery,
   limit as fsLimit,
   orderByField,
+  whereEqual,
 } from '@delfrance/data';
+import type { CollectionMetadata } from '@delfrance/schemas';
 import { type SnapshotRow, type SnapshotState, useSnapshot } from '@delfrance/data/hooks';
 import { usePipelineSnapshot } from '@delfrance/data/hooks/usePipelineSnapshot';
 import {
   type Pipeline,
+  type PipelineOrderSpec,
   PipelineUnsupportedError,
   buildPipeline,
   isPipelineSupported,
@@ -112,14 +116,35 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   /** Optional rich row-link renderer (defaults to plain <a>). */
   renderRowLink?: (href: string, content: ReactNode) => ReactNode;
 
+  /**
+   * Collection metadata — pass the schema's `<x>Meta`. Its `defaultQuery`
+   * supplies the initial sort, the base equality filters, and the page size
+   * (the single source of truth the Firestore index validators check). Each
+   * is individually overridable by the props below; `queryOverride` bypasses
+   * all of it.
+   */
+  meta?: CollectionMetadata;
+  /**
+   * Values for `meta.defaultQuery.where` entries declared `param: true`
+   * (e.g. `{ tipo: 7 }` for a channel slice of a shared collection). Missing
+   * a declared param throws — an unbound filter would silently widen the list
+   * to the whole collection.
+   */
+  queryParams?: Record<string, string | number | boolean | null>;
+
+  /** Overrides `meta.defaultQuery.limit`; falls back to 50. */
   pageSize?: number;
-  /** Initial sort. The user can change it by clicking column headers. */
+  /**
+   * Initial sort — overrides `meta.defaultQuery.orderBy`. The user can change
+   * it by clicking column headers.
+   */
   orderBy?: { field: string; direction?: 'asc' | 'desc' };
 
   /**
    * Escape hatch: pass a custom `Query` (e.g. with composite filters the
-   * Pipelines wrapper doesn't cover). When set, search/orderBy/pageSize are
-   * ignored — the caller owns the query lifecycle.
+   * Pipelines wrapper doesn't cover). When set, search/orderBy/pageSize and
+   * `meta.defaultQuery` are ignored — the caller owns the query lifecycle.
+   * Column filters still apply client-side to the returned rows.
    */
   queryOverride?: Query<z.infer<S>>;
 
@@ -221,13 +246,19 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   newHref,
   renderNewButton,
   renderRowLink,
-  pageSize = 50,
+  meta,
+  queryParams,
+  pageSize,
   orderBy,
   queryOverride,
   actionsPanel,
 }: TableViewProps<S>) {
   // Derive once per schema identity.
   const descriptors = useMemo(() => extractFieldsFromSchema(schema), [schema]);
+
+  const defaultQuery = meta?.defaultQuery;
+  // pageSize prop wins, then the declared default, then 50.
+  const resolvedPageSize = pageSize ?? defaultQuery?.limit ?? 50;
 
   // Columns visible by default: caller-supplied keys, or every non-unknown
   // schema field (drops embeddings and other opaque blobs automatically)
@@ -307,6 +338,52 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // ColumnPicker changes this, which re-runs the `pipeline` useMemo → new
   // Pipeline with the new `select` → the query re-executes.
   const visibleKeysSerial = useMemo(() => [...visibleKeys].sort().join('|'), [visibleKeys]);
+  // Stable serial for `queryParams` so the base-filter memo rebuilds only when
+  // a bound value actually changes (callers needn't memoize the object).
+  const queryParamsSerial = useMemo(() => JSON.stringify(queryParams ?? null), [queryParams]);
+
+  // Base equality filters from `meta.defaultQuery.where`. Always applied,
+  // independent of user column filters — silently dropping them (e.g. listing
+  // variation children on a catalog screen) would be a data bug. `param`
+  // entries are bound from `queryParams`; a missing binding throws.
+  const baseFilters = useMemo<PipelineFieldFilter[]>(() => {
+    const where = defaultQuery?.where;
+    if (!where || where.length === 0) return [];
+    return where.map((w) => {
+      if ('param' in w) {
+        if (!queryParams || !(w.field in queryParams)) {
+          throw new Error(
+            `TableView: meta.defaultQuery declares param "${w.field}" but no ` +
+              `queryParams value was provided. Pass queryParams={{ ${w.field}: … }}.`,
+          );
+        }
+        return { field: w.field, op: 'eq' as const, value: queryParams[w.field] ?? null };
+      }
+      return { field: w.field, op: 'eq' as const, value: w.value };
+    });
+    // queryParamsSerial stands in for queryParams; defaultQuery is identity-
+    // tracked like meta itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultQuery, queryParamsSerial]);
+  const baseFiltersSerial = useMemo(() => JSON.stringify(baseFilters), [baseFilters]);
+
+  // Sort actually issued to Firestore: an explicit user/prop sort wins;
+  // otherwise the declared default `orderBy` (full array — supports multi-key
+  // defaults and matches the declared composite index).
+  const effectiveOrderBy = useMemo<PipelineOrderSpec[] | undefined>(() => {
+    if (sort) return [{ field: sort.field, direction: sort.direction }];
+    if (defaultQuery?.orderBy?.length) {
+      return defaultQuery.orderBy.map((o) => ({ field: o.field, direction: o.direction }));
+    }
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sort?.field, sort?.direction, defaultQuery]);
+  // Column the header arrow points at when the user hasn't sorted yet.
+  const displaySort: SortState | undefined =
+    sort ??
+    (defaultQuery?.orderBy?.[0]
+      ? { field: defaultQuery.orderBy[0].field, direction: defaultQuery.orderBy[0].direction }
+      : undefined);
 
   // Mirror filters + sort into the URL query string so the view is shareable
   // and survives a reload. Uses `window.history.replaceState`, NOT
@@ -351,7 +428,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     try {
       return buildPipeline(db, {
         collection: collection.resolvePath(pathContext),
-        filters: Object.entries(filters).map(([field, v]) => ({ field, ...v })),
+        // Base equality filters (from meta.defaultQuery) AND the user's
+        // per-column filters. Base first so it reads like the declared query.
+        filters: [
+          ...baseFilters,
+          ...Object.entries(filters).map(([field, v]) => ({ field, ...v })),
+        ],
         // Project only the visible schema columns to cut data transfer
         // (skips the heavy embedding fields). `buildPipeline` appends the
         // document-id projection so row identity survives `.select()` —
@@ -368,8 +450,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           virtualColumns.length > 0
             ? undefined
             : [...visibleKeys].filter((k) => descriptors.some((d) => d.key === k)),
-        orderBy: sort ? [{ field: sort.field, direction: sort.direction }] : undefined,
-        limit: pageSize,
+        orderBy: effectiveOrderBy,
+        limit: resolvedPageSize,
       });
     } catch (err) {
       // Only the documented "SDK lacks pipeline()" signal falls back to
@@ -384,9 +466,9 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     db,
     collection,
     queryOverride,
-    pageSize,
-    sort?.field,
-    sort?.direction,
+    resolvedPageSize,
+    effectiveOrderBy,
+    baseFiltersSerial,
     filtersSerial,
     visibleKeysSerial,
     refreshKey,
@@ -397,11 +479,23 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     if (pipeline) return null;
     const base = collection.ref(db, pathContext);
     const constraints = [];
-    if (sort) constraints.push(orderByField(sort.field, sort.direction));
-    constraints.push(fsLimit(pageSize));
+    // Base equality filters first (same as the pipeline path) — these must
+    // never be dropped. equality + orderBy is a legal classic query.
+    for (const f of baseFilters) constraints.push(whereEqual(f.field, f.value));
+    for (const o of effectiveOrderBy ?? []) constraints.push(orderByField(o.field, o.direction));
+    constraints.push(fsLimit(resolvedPageSize));
     return buildQuery(base, constraints);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, collection, queryOverride, pipeline, pageSize, sort?.field, sort?.direction, refreshKey]);
+  }, [
+    db,
+    collection,
+    queryOverride,
+    pipeline,
+    resolvedPageSize,
+    effectiveOrderBy,
+    baseFiltersSerial,
+    refreshKey,
+  ]);
 
   const fromPipeline = usePipelineSnapshot<z.infer<S>>(pipeline);
   const fromQuery = useSnapshot<z.infer<S>>(fallbackQuery);
@@ -638,8 +732,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                           >
                             <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
                             <SortIndicator
-                              active={sort?.field === d.key}
-                              direction={sort?.direction}
+                              active={displaySort?.field === d.key}
+                              direction={displaySort?.direction}
                             />
                           </Group>
                           <ColumnFilter

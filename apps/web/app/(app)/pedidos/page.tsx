@@ -6,6 +6,7 @@ import {
   ESTADO_PEDIDO_LABELS,
   type EstadoPedido,
   type Pedido,
+  pedidoMeta,
   pedidoSchema,
 } from '@delfrance/schemas';
 import { TableView, type VirtualColumn } from '@delfrance/ui';
@@ -52,6 +53,7 @@ export default function PedidosPage() {
         schema={pedidoSchema}
         collection={pedidoCollection}
         db={getFirebaseFirestore()}
+        meta={pedidoMeta}
         defaultColumns={[
           'numero',
           'estado',
@@ -72,8 +74,6 @@ export default function PedidosPage() {
             ),
           },
         }}
-        orderBy={{ field: 'numero', direction: 'desc' }}
-        pageSize={50}
         rowHref={(id) => `/pedidos/${id}/editar`}
         renderNewButton={() => (
           <Button component={Link} href="/pedidos/novo">

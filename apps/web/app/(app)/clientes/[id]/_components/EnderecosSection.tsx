@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { Button, Modal, Stack, Title } from '@mantine/core';
 import { deleteDoc } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
-import { enderecoSchema } from '@delfrance/schemas';
+import { enderecoMeta, enderecoSchema } from '@delfrance/schemas';
 import { ObjectView, TableView } from '@delfrance/ui';
 import { enderecoCollection } from '@/lib/data/enderecoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -70,8 +70,8 @@ export function EnderecosSection({ clienteId }: { clienteId: string }) {
         collection={enderecoCollection}
         db={db}
         pathContext={pathContext}
+        meta={enderecoMeta}
         defaultColumns={['logradouro', 'numero', 'bairro', 'cidade', 'estado', 'cep']}
-        orderBy={{ field: 'logradouro', direction: 'asc' }}
         onRowClick={(id) => openEdit(id)}
         renderNewButton={
           canWrite ? () => <Button onClick={openCreate}>Novo endereço</Button> : undefined

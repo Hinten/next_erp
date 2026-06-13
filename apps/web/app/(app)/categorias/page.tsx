@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { deleteDoc } from 'firebase/firestore';
 import { Button } from '@mantine/core';
-import { categoriaSchema } from '@delfrance/schemas';
+import { categoriaMeta, categoriaSchema } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { categoriaCollection } from '@/lib/data/categoriaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -16,9 +16,8 @@ export default function CategoriasPage() {
       schema={categoriaSchema}
       collection={categoriaCollection}
       db={getFirebaseFirestore()}
+      meta={categoriaMeta}
       defaultColumns={['nome', 'nomeCompleto', 'permiteCadastro']}
-      orderBy={{ field: 'nome', direction: 'asc' }}
-      pageSize={50}
       rowHref={(id) => `/categorias/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/categorias/novo">
