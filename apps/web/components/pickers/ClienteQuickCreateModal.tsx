@@ -30,7 +30,6 @@ import {
   type ClienteDedupResult,
   type DedupCandidate,
   checkClienteDuplicates,
-  hasDedupFindings,
 } from '@/lib/clientes/dedup';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -162,9 +161,15 @@ function QuickCreateForm({
         if (seq === checkSeq.current) setDedup(result);
       })
       .catch((err) => {
-        // Live checks are advisory — a transient failure must not lock the
-        // form; the mandatory re-check at submit surfaces persistent errors.
-        if (!(err instanceof FirebaseError)) throw err;
+        // Live checks are advisory and fire-and-forget: a failure must never
+        // become an unhandled rejection or leave stale (possibly blocking)
+        // findings on screen. Drop this input's findings; the awaited re-check
+        // at submit is what surfaces a real, persistent error to the user.
+        if (seq === checkSeq.current) setDedup(null);
+        if (!(err instanceof FirebaseError)) {
+          // eslint-disable-next-line no-console
+          console.error('[ClienteQuickCreate] live dedup check failed', err);
+        }
       });
   }, 300);
 
@@ -203,7 +208,10 @@ function QuickCreateForm({
         setConfirmRequired(false);
         return;
       }
-      if (!forceCreate.current && hasDedupFindings(result)) {
+      // Only similar-nome candidates require an explicit "Criar mesmo assim".
+      // Telefone/e-mail matches are warning-only — shown, but never blocking
+      // and never a second confirmation step (per the issue spec).
+      if (!forceCreate.current && result.similarNome.length > 0) {
         setConfirmRequired(true);
         return;
       }

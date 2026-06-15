@@ -41,17 +41,8 @@ export interface ClienteDedupResult {
   similarNome: DedupCandidate[];
   /** Same telefone (either wire shape) — warning only, never blocks. */
   telefoneMatches: DedupCandidate[];
-  /** Same e-mail (case-insensitive) — warning only, never blocks. */
+  /** Same e-mail (best-effort, see `checkClienteDuplicates`) — warning only. */
   emailMatches: DedupCandidate[];
-}
-
-export function hasDedupFindings(result: ClienteDedupResult): boolean {
-  return (
-    result.blocking.length > 0 ||
-    result.similarNome.length > 0 ||
-    result.telefoneMatches.length > 0 ||
-    result.emailMatches.length > 0
-  );
 }
 
 function readString(data: Record<string, unknown>, key: string): string | null {
@@ -112,9 +103,14 @@ async function querySimilarNome(db: Firestore, term: string): Promise<DedupCandi
  * One-shot duplicate lookup before creating a cliente. Empty inputs skip
  * their sub-check; all sub-checks run in parallel. Telefone is matched
  * against BOTH wire shapes (normalized `55…` written by this app and the
- * raw 10/11-digit shape the live Flutter app still writes); e-mail is
- * matched case-insensitively via an `in` query on the typed and lowercased
- * forms.
+ * raw 10/11-digit shape the live Flutter app still writes).
+ *
+ * E-mail is matched best-effort via an `in` query on the typed and lowercased
+ * forms — Firestore has no case-insensitive operator, so a stored mixed-case
+ * variant the user did not type is missed. That is acceptable here: e-mail is
+ * a non-blocking warning, not a hard dedup key. True case-insensitivity would
+ * need a normalized `emailLower` field written on every create (out of scope
+ * while the Flutter app co-owns the collection).
  */
 export async function checkClienteDuplicates(
   db: Firestore,

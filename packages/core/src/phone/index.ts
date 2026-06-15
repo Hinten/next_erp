@@ -13,9 +13,15 @@
 /**
  * Normalize a phone to digits-only E.164 without `+`. Strips every
  * non-digit, then prepends the BR country code to 10/11-digit inputs
- * (DDD + subscriber). Anything else — including already-normalized
- * 12/13-digit `55…` values and foreign full E.164 numbers — passes
- * through unchanged, which makes the function idempotent.
+ * (DDD + subscriber).
+ *
+ * BR assumption: any 10/11-digit input is treated as Brazilian, since that
+ * is the only shape this ERP receives without a country code. A foreign
+ * subscriber number of that length typed WITHOUT its country code would be
+ * mis-prefixed with `55` — foreign callers must include the country code
+ * (≥12 digits). Inputs of 12+ digits — already-normalized `55…` values and
+ * any number that already carries a country code — pass through unchanged,
+ * which makes the function idempotent.
  */
 export function normalizeTelefone(input: string): string {
   const digits = input.replace(/\D/g, '');

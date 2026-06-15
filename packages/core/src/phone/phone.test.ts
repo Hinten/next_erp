@@ -22,10 +22,16 @@ describe('normalizeTelefone', () => {
     expect(normalizeTelefone('(11) 3333-4444')).toBe('551133334444');
   });
 
-  it('passes foreign full-E.164 numbers through unchanged', () => {
-    expect(normalizeTelefone('14155552671')).toBe('5514155552671'); // 11 digits → treated as BR
+  it('treats any 10/11-digit input as BR, even a foreign subscriber number', () => {
+    // BR assumption: a bare 10/11-digit number is always prefixed with 55,
+    // so a foreign number of that length typed without its country code is
+    // mis-tagged as Brazilian (callers must include the country code).
+    expect(normalizeTelefone('14155552671')).toBe('5514155552671'); // 11 digits → BR
+  });
+
+  it('passes through numbers that already carry a country code (12+ digits)', () => {
     expect(normalizeTelefone('441632960961')).toBe('441632960961'); // 12 digits, not BR-shaped
-    expect(normalizeTelefone('+1 415 555 26711')).toBe('141555526711');
+    expect(normalizeTelefone('+1 415 555 26711')).toBe('141555526711'); // strips '+', already 12 digits
   });
 
   it('leaves too-short inputs as bare digits (schema rejects them)', () => {
