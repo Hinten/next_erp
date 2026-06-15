@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { getDoc, getDocs, writeBatch } from 'firebase/firestore';
+import { getDocs, writeBatch } from 'firebase/firestore';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import {
@@ -250,18 +250,16 @@ export default function EditarProdutoPage() {
             variacoesUid: normalizeVariacoesUid(uids, grupos),
           };
         }}
-        onAfterSave={async (id) => {
-          // Read the precos back from the just-saved parent doc — the source of
-          // truth, free of any captured-form-state staleness (ObjectView only
-          // re-runs a field's prepareForSave for dirty fields). Record the
-          // history (Flutter parity) and, when the map changed, propagate it to
-          // every existing variation child with this FRESH value — propagation
-          // must fire even when the user only touched the Preço e custo tab, so
-          // it can't depend on the Variações tab's live snapshot. The flush runs
+        onAfterSave={async (id, values) => {
+          // `values.precos` is exactly what this save persisted (ObjectView
+          // hands us the transformed values) — no captured-state staleness, no
+          // re-read race. Record the history (Flutter parity) and, when the map
+          // changed, propagate it to every existing variation child — this must
+          // fire even when the user only touched the Preço e custo tab, so it
+          // can't depend on the Variações tab's live snapshot. The flush runs
           // last: it creates any new children already carrying the parent's
           // precos (plus their initial history records).
-          const savedSnap = await getDoc(produtoCollection.docRef(db, {}, id));
-          const newPrecos = savedSnap.data()?.precos ?? null;
+          const newPrecos = (values.precos as PrecosMap) ?? null;
           let precosChanged = !lastSavedPrecos.current.ready;
           if (lastSavedPrecos.current.ready) {
             const changes = diffPrecos(lastSavedPrecos.current.value, newPrecos);

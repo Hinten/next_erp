@@ -334,7 +334,8 @@ describe('ObjectView save flow', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Salvar e continuar' }));
     });
-    expect(onAfterSave).toHaveBeenCalledWith('EXISTING');
+    // The transformed save values are handed through as the second argument.
+    expect(onAfterSave).toHaveBeenCalledWith('EXISTING', expect.objectContaining({ nome: 'Once' }));
     expect(onSaved).not.toHaveBeenCalled();
 
     // Path 2: "Salvar" with onAfterSave rejecting → alert shown, onSaved skipped.
@@ -379,7 +380,11 @@ describe('ObjectView save flow', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
     });
     // Sibling writes still flush and the action counts as a save — no yellow toast.
-    expect(onAfterSave).toHaveBeenCalledWith('EXISTING');
+    // The pristine path passes the (unchanged) values through too.
+    expect(onAfterSave).toHaveBeenCalledWith(
+      'EXISTING',
+      expect.objectContaining({ nome: 'Alice' }),
+    );
     expect(onSaved).toHaveBeenCalledWith('EXISTING');
     expect(notifyShow).not.toHaveBeenCalledWith(expect.objectContaining({ color: 'yellow' }));
   });

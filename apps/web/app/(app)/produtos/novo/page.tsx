@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button, Stack } from '@mantine/core';
-import { getDoc, writeBatch } from 'firebase/firestore';
+import { writeBatch } from 'firebase/firestore';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import {
   type Foto,
@@ -139,13 +139,12 @@ export default function NovoProdutoPage() {
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
         saveLabel="Criar"
         showSaveAndContinue={false}
-        onAfterSave={async (id) => {
-          // First save of a produto born with prices → initial history
-          // records, mirroring Flutter's oldPrecos-null branch. Read the precos
-          // back from the just-created doc (source of truth). New produtos have
-          // no variation children yet, so there's nothing to propagate.
-          const savedSnap = await getDoc(produtoCollection.docRef(db, {}, id));
-          const changes = diffPrecos(null, savedSnap.data()?.precos ?? null);
+        onAfterSave={async (id, values) => {
+          // First save of a produto born with prices → initial history records,
+          // mirroring Flutter's oldPrecos-null branch. `values.precos` is what
+          // was just persisted. New produtos have no variation children yet, so
+          // there's nothing to propagate.
+          const changes = diffPrecos(null, (values.precos as PrecosMap) ?? null);
           if (changes.length > 0) {
             const batch = writeBatch(db);
             appendPrecoHistory(batch, db, id, changes);
