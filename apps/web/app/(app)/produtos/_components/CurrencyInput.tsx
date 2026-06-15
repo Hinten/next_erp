@@ -3,6 +3,25 @@
 import type { CSSProperties } from 'react';
 import { NumberInput } from '@mantine/core';
 
+/**
+ * Coerce Mantine `NumberInput`'s `onChange` payload to a number (or `null` when
+ * empty). With pt-BR separators the control hands back a FORMATTED STRING
+ * ("R$ 1.234,56") — and Playwright `.fill()` always yields a string — so a
+ * naive `typeof v === 'number'` check silently drops every value. Strip the
+ * prefix and thousands dots, turn the decimal comma into a dot, then parse.
+ */
+function parseBrl(v: number | string): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v !== 'string') return null;
+  const cleaned = v
+    .replace(/[^\d.,-]/g, '') // drop "R$", spaces, NBSP
+    .replace(/\./g, '') // thousands separator
+    .replace(',', '.'); // decimal separator → dot
+  if (cleaned === '' || cleaned === '-') return null;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
 export interface CurrencyInputProps {
   /** Numeric value; `null` renders empty. */
   value: number | null;
@@ -43,7 +62,7 @@ export function CurrencyInput({
       aria-label={ariaLabel}
       style={style}
       value={value ?? ''}
-      onChange={(v) => onChange(typeof v === 'number' ? v : null)}
+      onChange={(v) => onChange(parseBrl(v))}
       prefix="R$ "
       decimalScale={2}
       fixedDecimalScale

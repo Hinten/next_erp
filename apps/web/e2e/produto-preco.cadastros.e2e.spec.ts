@@ -141,4 +141,23 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
     await page.getByRole('button', { name: 'Histórico de custo' }).click();
     await expect(page.getByText(/8,50/)).toBeVisible({ timeout: 15_000 });
   });
+
+  test('rejects a price of 0 (min R$ 0,01) without silently dropping it', async ({ page }) => {
+    await openPrecoTab(page);
+    await page.getByRole('textbox', { name: varejoNome }).fill('0');
+    await clickSave(page, 'Salvar alterações');
+    // Validation blocks the save and shows the row error — the value is NOT
+    // silently dropped, and the persisted price stays at 40 (from the test above).
+    await expect(page.getByText(/preço mínimo é R\$ 0,01/)).toBeVisible({ timeout: 10_000 });
+    expect((await getProdutoData(parentId))?.precos).toEqual({ [varejoId]: { valor: 40 } });
+  });
+
+  test('removes a price only via the trash button (staged), applied on save', async ({ page }) => {
+    await openPrecoTab(page);
+    await page.getByRole('button', { name: `Remover preço ${varejoNome}` }).click();
+    await clickSave(page, 'Salvar alterações');
+    await expect
+      .poll(async () => (await getProdutoData(parentId))?.precos, { timeout: 15_000 })
+      .toBeNull();
+  });
 });

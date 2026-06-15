@@ -23,7 +23,7 @@ import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client'
 import { useAuth } from '@/lib/auth';
 import { PhotoManager } from '../_components/PhotoManager';
 import { CustoField } from '../_components/CustoField';
-import { PrecoCustoManager } from '../_components/PrecoCustoManager';
+import { PrecoCustoManager, stripPrecosForSave } from '../_components/PrecoCustoManager';
 import { VideoManager } from '../_components/VideoManager';
 import { VariationManager } from '../_components/VariationManager';
 import {
@@ -119,6 +119,7 @@ export default function NovoProdutoPage() {
       precos: {
         label: 'Preços',
         section: 'Preço e custo',
+        prepareForSave: stripPrecosForSave,
         renderInput: (p) => (
           <PrecoCustoManager
             produtoId={null}
