@@ -61,7 +61,6 @@ import {
   reconstructFromSkuSuffix,
   reconstructFromVariacoesUid,
   sameCombo,
-  samePrecos,
   varianteFakePath,
 } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
@@ -260,12 +259,12 @@ export function VariationManager({
    *     links may have appeared since the stage-time check) — any hit aborts
    *     the whole flush.
    *
-   * Pricing parity: children carry the PARENT's `precos` — copied on create
-   * (with their initial history records) and refreshed on every child whose
-   * persisted map differs, mirroring Flutter's per-child `updateOnly`
-   * propagation (`produtoTableProvider.dart:497,556-568` — which writes NO
-   * history). Pedidos resolve prices on the sold doc (the child), so a stale
-   * child map would sell at the old price.
+   * Pricing parity: children CREATED here carry the PARENT's `precos` (with
+   * their initial history records — `produtoTableProvider.dart:497`). Refreshing
+   * the precos of EXISTING children when the parent's map changes happens at the
+   * page layer (`propagateParentPrecosToChildren`) so it fires even when the
+   * Variações tab — and therefore this manager's live children snapshot — was
+   * never opened.
    */
   const flushStagedChildren = async (parentId: string): Promise<void> => {
     const duplicates = findDuplicateSkus(rows);
@@ -278,14 +277,12 @@ export function VariationManager({
 
     const { rows: reconciled, reusedIds } = reconcileStagedChildren(rows);
 
-    // The parent's just-saved precos: the live form value when available
-    // (null = all prices cleared — deliberate, must NOT fall back to the
-    // stale persisted doc), the persisted doc only without a form context.
+    // The parent's just-saved precos for children CREATED here: the live form
+    // value when available (null = all prices cleared — deliberate, must NOT
+    // fall back to the stale persisted doc), the persisted doc only without a
+    // form context.
     const livePrecos = form?.getValues('precos') as PrecosMap | undefined;
     const parentPrecos = livePrecos !== undefined ? livePrecos : (parent?.precos ?? null);
-    const persistedPrecos = new Map(
-      (childrenSnap.data ?? []).map((r) => [r.id, r.data.precos ?? null]),
-    );
 
     const deleteTargets = reconciled.filter((r) => r.deleteMark && r.id);
     const refsById = await findManyProdutoReferences(
@@ -351,18 +348,15 @@ export function VariationManager({
         // Flutter parity: a child born with prices gets its initial history
         // records (its save() runs the same oldPrecos-null diff).
         appendPrecoHistory(batch, db, childId, diffPrecos(null, parentPrecos));
-      } else {
-        const precosDiffer = !samePrecos(persistedPrecos.get(row.id) ?? null, parentPrecos);
-        if (row.dirty || ordem !== row.serverOrdem || precosDiffer) {
-          batch.update(produtoCollection.docRef(db, {}, row.id), {
-            nome: row.nome,
-            sku: row.sku === '' ? null : row.sku,
-            variacoesUid: normalized.length > 0 ? normalized : null,
-            ordem,
-            ...(precosDiffer ? { precos: parentPrecos } : {}),
-          } as never);
-          writes += 1;
-        }
+      } else if (row.dirty || ordem !== row.serverOrdem) {
+        // precos is propagated to existing children at the page layer.
+        batch.update(produtoCollection.docRef(db, {}, row.id), {
+          nome: row.nome,
+          sku: row.sku === '' ? null : row.sku,
+          variacoesUid: normalized.length > 0 ? normalized : null,
+          ordem,
+        } as never);
+        writes += 1;
       }
       ordem += 1;
     }

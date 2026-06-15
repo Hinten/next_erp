@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button, Stack } from '@mantine/core';
-import { writeBatch } from 'firebase/firestore';
+import { getDoc, writeBatch } from 'firebase/firestore';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import {
   type Foto,
@@ -45,13 +45,6 @@ export default function NovoProdutoPage() {
   );
   const listasSnap = useSnapshot(listasQuery);
   const listas = useMemo(() => listasSnap.data ?? [], [listasSnap.data]);
-
-  // Captured by the precos field's prepareForSave; onAfterSave writes the
-  // initial history records (old = null → one valorFinal entry per lista).
-  // Stable mutable box rather than a ref: it's written inside ObjectView's
-  // save handler — an event-time context the react-hooks/refs rule would
-  // misread as a render-time ref access.
-  const pendingPrecos = useMemo(() => ({ current: null as PrecosMap }), []);
 
   // The Fotos/Vídeos tabs show even before the product is saved — the managers
   // render a "save first" message when produtoId is null (uploads need a saved
@@ -109,10 +102,6 @@ export default function NovoProdutoPage() {
       precos: {
         label: 'Preços',
         section: 'Preço e custo',
-        prepareForSave: (value) => {
-          pendingPrecos.current = (value as PrecosMap) ?? null;
-          return value;
-        },
         renderInput: (p) => (
           <PrecoCustoManager
             produtoId={null}
@@ -126,7 +115,7 @@ export default function NovoProdutoPage() {
         ),
       },
     }),
-    [db, storage, listas, listasSnap.error?.message, pendingPrecos],
+    [db, storage, listas, listasSnap.error?.message],
   );
 
   return (
@@ -152,8 +141,11 @@ export default function NovoProdutoPage() {
         showSaveAndContinue={false}
         onAfterSave={async (id) => {
           // First save of a produto born with prices → initial history
-          // records, mirroring Flutter's oldPrecos-null branch.
-          const changes = diffPrecos(null, pendingPrecos.current);
+          // records, mirroring Flutter's oldPrecos-null branch. Read the precos
+          // back from the just-created doc (source of truth). New produtos have
+          // no variation children yet, so there's nothing to propagate.
+          const savedSnap = await getDoc(produtoCollection.docRef(db, {}, id));
+          const changes = diffPrecos(null, savedSnap.data()?.precos ?? null);
           if (changes.length > 0) {
             const batch = writeBatch(db);
             appendPrecoHistory(batch, db, id, changes);

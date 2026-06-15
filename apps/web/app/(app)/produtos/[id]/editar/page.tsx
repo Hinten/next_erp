@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { getDocs, writeBatch } from 'firebase/firestore';
+import { getDoc, getDocs, writeBatch } from 'firebase/firestore';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import {
@@ -24,6 +24,7 @@ import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { appendPrecoHistory } from '@/lib/produtos/precoHistory';
+import { propagateParentPrecosToChildren } from '@/lib/produtos/childPrecos';
 import {
   describeReferences,
   findManyProdutoReferences,
@@ -75,9 +76,9 @@ export default function EditarProdutoPage() {
 
   // Price-history bookkeeping (Flutter parity: `Produto.save()` records every
   // precos change). `lastSavedPrecos` pins the PERSISTED map once, from the
-  // first doc emit — the live snapshot re-emits the NEW value during a save,
-  // so it can't serve as "old" at onAfterSave time. `pendingPrecos` is
-  // captured by the field's prepareForSave on every save attempt.
+  // first doc emit, so it can serve as the "old" value at onAfterSave time;
+  // the "new" value is read back fresh from the just-saved parent doc (the
+  // live snapshot can't be trusted to have re-emitted yet).
   const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, params.id), [db, params.id]);
   const produtoSnap = useDocSnapshot(produtoDocRef);
   const lastSavedPrecos = useRef<{ ready: boolean; value: PrecosMap }>({
@@ -89,10 +90,6 @@ export default function EditarProdutoPage() {
       lastSavedPrecos.current = { ready: true, value: produtoSnap.data.data.precos ?? null };
     }
   }, [produtoSnap.data]);
-  // Stable mutable box rather than a ref: it's written inside ObjectView's
-  // save handler (prepareForSave) — an event-time context the
-  // react-hooks/refs rule would misread as a render-time ref access.
-  const pendingPrecos = useMemo(() => ({ current: null as PrecosMap }), []);
 
   // The product exists here (edit mode), so the Fotos/Vídeos managers are scoped
   // to this product and uploads are enabled.
@@ -152,12 +149,6 @@ export default function EditarProdutoPage() {
       precos: {
         label: 'Preços',
         section: 'Preço e custo',
-        // Capture the map heading into this save — onAfterSave diffs it
-        // against the last persisted value for the history records.
-        prepareForSave: (value) => {
-          pendingPrecos.current = (value as PrecosMap) ?? null;
-          return value;
-        },
         renderInput: (p) => (
           <PrecoCustoManager
             produtoId={params.id}
@@ -171,16 +162,7 @@ export default function EditarProdutoPage() {
         ),
       },
     }),
-    [
-      params.id,
-      db,
-      storage,
-      grupos,
-      gruposSnap.error?.message,
-      listas,
-      listasSnap.error?.message,
-      pendingPrecos,
-    ],
+    [params.id, db, storage, grupos, gruposSnap.error?.message, listas, listasSnap.error?.message],
   );
 
   // The editor is the product screen now (the intermediate detail view was
@@ -269,17 +251,30 @@ export default function EditarProdutoPage() {
           };
         }}
         onAfterSave={async (id) => {
-          // Price history first (Flutter parity), then the children flush —
-          // which propagates the new precos to every variation child and
-          // writes the initial records for children created with prices.
+          // Read the precos back from the just-saved parent doc — the source of
+          // truth, free of any captured-form-state staleness (ObjectView only
+          // re-runs a field's prepareForSave for dirty fields). Record the
+          // history (Flutter parity) and, when the map changed, propagate it to
+          // every existing variation child with this FRESH value — propagation
+          // must fire even when the user only touched the Preço e custo tab, so
+          // it can't depend on the Variações tab's live snapshot. The flush runs
+          // last: it creates any new children already carrying the parent's
+          // precos (plus their initial history records).
+          const savedSnap = await getDoc(produtoCollection.docRef(db, {}, id));
+          const newPrecos = savedSnap.data()?.precos ?? null;
+          let precosChanged = !lastSavedPrecos.current.ready;
           if (lastSavedPrecos.current.ready) {
-            const changes = diffPrecos(lastSavedPrecos.current.value, pendingPrecos.current);
+            const changes = diffPrecos(lastSavedPrecos.current.value, newPrecos);
+            precosChanged = changes.length > 0;
             if (changes.length > 0) {
               const batch = writeBatch(db);
               appendPrecoHistory(batch, db, id, changes);
               await batch.commit();
             }
-            lastSavedPrecos.current = { ready: true, value: pendingPrecos.current };
+          }
+          lastSavedPrecos.current = { ready: true, value: newPrecos };
+          if (precosChanged) {
+            await propagateParentPrecosToChildren(db, id, newPrecos);
           }
           await flushChildrenRef.current?.(id);
         }}
