@@ -94,8 +94,10 @@ export const CERTIFICADO_SECRETO_DOC_ID = 'default';
  */
 export const certificadoSecretoMeta: CollectionMetadata = {
   collectionPath: CERTIFICADO_SECRETO_PATH,
-  // No client domain grants these bits — placeholder values; the generated
-  // rules deny client access to this path entirely (see the cert rules step).
+  // No client domain grants these bits — placeholder values. This collection is
+  // deliberately NOT registered in `ALL_DOMAINS`, so the rules generator emits
+  // no match block for it and Firestore default-denies every client read/write.
+  // Only the Admin SDK (apps/nfe), which bypasses rules, reaches the secret.
   permissions: {
     read: 0n,
     write: 0n,
@@ -103,7 +105,7 @@ export const certificadoSecretoMeta: CollectionMetadata = {
   },
 };
 
-export const certificadoSecreto = {
-  schema: certificadoSecretoSchema,
-  meta: certificadoSecretoMeta,
-};
+// NOTE: intentionally NOT exported as a `{ schema, meta }` DomainSchema and NOT
+// added to `ALL_DOMAINS` — that would make the rules generator grant clients
+// access. Admin-only = default-deny (see `certificadoSecretoMeta`). The admin
+// collection handle consumes `CERTIFICADO_SECRETO_PATH` + the schema directly.

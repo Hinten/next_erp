@@ -282,7 +282,6 @@ export {
 export { filial, filialSchema, filialMeta, type Filial } from './filial';
 
 export {
-  certificadoSecreto,
   certificadoSecretoSchema,
   certificadoSecretoMeta,
   certificadoFilialInfoSchema,
