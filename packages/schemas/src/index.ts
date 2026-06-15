@@ -49,8 +49,12 @@ export {
 } from './produto';
 
 export {
+  historicoPreco,
   historicoPrecoSchema,
+  historicoPrecoMeta,
+  historicoCusto,
   historicoCustoSchema,
+  historicoCustoMeta,
   type HistoricoPreco,
   type HistoricoCusto,
 } from './historicos';

@@ -27,6 +27,7 @@ import { cartaCorrecao } from './cartaCorrecao';
 import { impostoProduto } from './impostoProduto';
 import { impostoCategoria } from './impostoCategoria';
 import { regraImposto } from './regraImposto';
+import { historicoPreco, historicoCusto } from './historicos';
 import { arquivo } from './storage/arquivo';
 
 /**
@@ -70,5 +71,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   impostoProduto,
   impostoCategoria,
   regraImposto,
+  historicoPreco,
+  historicoCusto,
   arquivo,
 ];
