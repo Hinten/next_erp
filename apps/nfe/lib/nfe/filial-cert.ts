@@ -1,0 +1,103 @@
+/**
+ * Per-filial A1 certificate resolution.
+ *
+ * SEFAZ enforces "signing-cert CNPJ = emitente CNPJ", so each filial signs
+ * with its own A1. At emission time we read the filial's encrypted secret doc
+ * (`filiais/{filialId}/certificadoSecreto/default`), decrypt the private key
+ * with the env master key (`NFE_CERT_ENC_KEY`), rebuild the `NFeCertificate`,
+ * and derive a runtime bound to it (`deriveRuntimeForCert`).
+ *
+ * When a filial has no stored cert, `NFE_CERT_ENV_FALLBACK` decides:
+ *   - on  → use the env cert (the base runtime as loaded) — for the live
+ *           homologação suites, which run against a fixture filial.
+ *   - off → throw (production default — every filial must upload its cert).
+ *
+ * The decrypted cert is cached per filialId for the process lifetime; rotating
+ * a filial's cert requires an apps/nfe restart (same model as the env-cert
+ * singleton + svc chain cache). The upload route evicts its own filialId entry
+ * so an in-process re-upload is picked up immediately.
+ */
+import type { Firestore } from 'firebase-admin/firestore';
+
+import { certificadoSecretoCollection } from '@delfrance/data/admin/collections';
+import { CERTIFICADO_SECRETO_DOC_ID } from '@delfrance/schemas';
+import {
+  NFeCertError,
+  assertCertNotExpired,
+  buildCertFromStored,
+  decryptSecret,
+  getCertEncryptionKey,
+  type NFeCertificate,
+} from '@delfrance/integrations-nfe';
+
+import { deriveRuntimeForCert, type NFeRuntime } from './runtime';
+
+/** True when the env opts into env-cert fallback for filiais without a stored cert. */
+function envFallbackEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env.NFE_CERT_ENV_FALLBACK;
+  return v === '1' || v?.toLowerCase() === 'true';
+}
+
+/** Decrypted cert cache, keyed by filialId. Cleared on restart / explicit evict. */
+const certCache = new Map<string, NFeCertificate>();
+
+/**
+ * Read + decrypt a filial's stored A1 cert. Returns `null` when the filial has
+ * no uploaded cert. Throws `NFeCertError` when the master key is missing or
+ * the ciphertext fails to authenticate (tamper / wrong key).
+ */
+export async function resolveFilialCert(
+  fs: Firestore,
+  filialId: string,
+): Promise<NFeCertificate | null> {
+  const hit = certCache.get(filialId);
+  if (hit) return hit;
+
+  const snap = await certificadoSecretoCollection
+    .docRef(fs, { filialId }, CERTIFICADO_SECRETO_DOC_ID)
+    .get();
+  if (!snap.exists) return null;
+
+  const doc = certificadoSecretoCollection.parseRead(
+    snap.data(),
+    certificadoSecretoCollection.docPath({ filialId }, CERTIFICADO_SECRETO_DOC_ID),
+  );
+
+  const key = getCertEncryptionKey();
+  const privateKeyPem = decryptSecret(doc.encPrivateKey, key);
+  const cert = buildCertFromStored({ privateKeyPem, certificatePem: doc.certificatePem });
+  certCache.set(filialId, cert);
+  return cert;
+}
+
+/**
+ * Resolve the runtime that emits for `filialId`: the filial's stored cert when
+ * present (expiry-checked), else the env cert when `NFE_CERT_ENV_FALLBACK` is
+ * on, else throw. The orchestrator consumes the returned runtime unchanged.
+ */
+export async function resolveFilialRuntime(
+  fs: Firestore,
+  base: NFeRuntime,
+  filialId: string,
+): Promise<NFeRuntime> {
+  const stored = await resolveFilialCert(fs, filialId);
+  if (stored) {
+    assertCertNotExpired(stored);
+    return deriveRuntimeForCert(base, stored);
+  }
+  if (envFallbackEnabled()) return base;
+  throw new NFeCertError(
+    `Filial '${filialId}' não possui certificado digital cadastrado. ` +
+      'Faça o upload do certificado A1 na aba "Certificado Digital" da filial.',
+  );
+}
+
+/** Evict a filial's cached cert (call after an upload / delete). */
+export function evictFilialCert(filialId: string): void {
+  certCache.delete(filialId);
+}
+
+/** Test-only: clear the per-filial cert cache so each test sees a fresh state. */
+export function __resetFilialCertCacheForTests(): void {
+  certCache.clear();
+}

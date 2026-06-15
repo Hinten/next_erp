@@ -280,6 +280,19 @@ export {
 export { filial, filialSchema, filialMeta, type Filial } from './filial';
 
 export {
+  certificadoSecreto,
+  certificadoSecretoSchema,
+  certificadoSecretoMeta,
+  certificadoFilialInfoSchema,
+  encryptedBlobSchema,
+  CERTIFICADO_SECRETO_PATH,
+  CERTIFICADO_SECRETO_DOC_ID,
+  type CertificadoSecreto,
+  type CertificadoFilialInfo,
+  type EncryptedBlob,
+} from './certificadoFilial';
+
+export {
   bandeiraCartao,
   bandeiraCartaoSchema,
   bandeiraCartaoMeta,

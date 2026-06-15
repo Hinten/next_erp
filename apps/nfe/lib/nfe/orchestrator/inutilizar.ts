@@ -16,6 +16,7 @@ import {
 } from '@delfrance/schemas';
 
 import type { NFeRuntime } from '../runtime';
+import { resolveFilialRuntime } from '../filial-cert';
 import { NFeInutilizacaoAbortedError, NFeOrchestratorError } from './errors';
 
 /** Result of an inutilização de numeração. */
@@ -65,7 +66,7 @@ export const ESTADOS_NFE_AUTORIZADAS: ReadonlySet<EstadoNFe> = new Set<EstadoNFe
  */
 export async function inutilizarNumeracao(
   fs: Firestore,
-  rt: NFeRuntime,
+  baseRt: NFeRuntime,
   args: {
     readonly filialId: string;
     readonly serie: number;
@@ -89,6 +90,8 @@ export async function inutilizarNumeracao(
     throw new NFeOrchestratorError(`filial '${args.filialId}' not found`);
   }
   const filial = filialSnap.data() as Filial;
+  // Inutilização is sent + signed with the filial's own cert (or env fallback).
+  const rt = await resolveFilialRuntime(fs, baseRt, args.filialId);
   const cUF = cUFFromUF(filial.sede.estado);
   const ano = String(new Date().getFullYear() % 100).padStart(2, '0');
 

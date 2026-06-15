@@ -10,6 +10,7 @@
     "./http-provider": "./src/http-provider/index.ts",
     "./danfe": "./src/danfe/index.ts",
     "./test-helpers/homologacao-seed": "./test/helpers/homologacao-seed.ts",
+    "./test-helpers/pfx-fixture": "./test/helpers/pfx-fixture.ts",
     "./package.json": "./package.json"
   },
   "scripts": {

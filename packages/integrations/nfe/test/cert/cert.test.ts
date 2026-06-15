@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import forge from 'node-forge';
 import {
   assertCertNotExpired,
   CNPJ_FORMAT,
@@ -15,33 +14,7 @@ import {
   warnIfCertNearExpiry,
   type NFeCertificate,
 } from '../../src/cert/index';
-
-/** Build a self-signed PFX in-memory so tests don't ship a real certificate. */
-function buildPfxFixture(opts: {
-  commonName?: string;
-  password: string;
-  /** Override `notAfter` for expiry tests. Default: +365 days. */
-  notAfter?: Date;
-}): string {
-  // 1024-bit keeps the fixture build fast — fine for unit tests, **never** in
-  // production NF-e signing where ICP-Brasil mandates 2048-bit minimum.
-  const keys = forge.pki.rsa.generateKeyPair(1024);
-  const cert = forge.pki.createCertificate();
-  cert.publicKey = keys.publicKey;
-  cert.serialNumber = '01';
-  cert.validity.notBefore = new Date(Date.now() - 86_400_000);
-  cert.validity.notAfter = opts.notAfter ?? new Date(Date.now() + 365 * 24 * 3600 * 1000);
-  const attrs = [{ name: 'commonName', value: opts.commonName ?? 'TEST CERT:12345678000199' }];
-  cert.setSubject(attrs);
-  cert.setIssuer(attrs);
-  cert.sign(keys.privateKey, forge.md.sha256.create());
-
-  const p12Asn1 = forge.pkcs12.toPkcs12Asn1(keys.privateKey, [cert], opts.password, {
-    algorithm: '3des',
-  });
-  const der = forge.asn1.toDer(p12Asn1).getBytes();
-  return Buffer.from(der, 'binary').toString('base64');
-}
+import { buildPfxFixture } from '../helpers/pfx-fixture';
 
 describe('loadCertificateFromBase64', () => {
   it('parses a valid PFX and exposes key + cert PEMs', () => {

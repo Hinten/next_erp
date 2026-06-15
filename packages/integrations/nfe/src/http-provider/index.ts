@@ -9,6 +9,7 @@ export {
   isNFeEmitError,
   type NFeBatchEmitResult,
   type NFeCartaCorrecaoResult,
+  type NFeCertificadoMeta,
   type NFeConsultaResult,
   type NFeDanfeArtifact,
   type NFeDanfeFormat,

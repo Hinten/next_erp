@@ -114,13 +114,24 @@ exist as module-private callees inside `src/cert/index.ts` — they are
 not re-exported, so every cert-bearing byte that enters the system
 flows through one function in one file. Audit surface = one file.
 
-The `NFE_CERT_BASE64` / `NFE_CERT_PATH` / `NFE_CERT_PASSWORD` env vars
-may only be **read** inside `src/cert/index.ts`. Anywhere else, call
-`loadCertificateFromEnv()` or `hasNFeCertEnv()` (the helper exported
-for gate-checks). **Enforced by ESLint** — `eslint.config.mjs` Rule B
+The `NFE_CERT_BASE64` / `NFE_CERT_PATH` / `NFE_CERT_PASSWORD` /
+`NFE_CERT_ENC_KEY` env vars may only be **read** inside `src/cert/index.ts`.
+Anywhere else, call `loadCertificateFromEnv()` / `hasNFeCertEnv()` /
+`getCertEncryptionKey()`. **Enforced by ESLint** — `eslint.config.mjs` Rule B
 is `no-restricted-syntax` on
-`MemberExpression[property.name=/^NFE_CERT_(BASE64|PATH|PASSWORD)$/]`,
+`MemberExpression[property.name=/^NFE_CERT_(BASE64|PATH|PASSWORD|ENC_KEY)$/]`,
 scoped to `src/**` with `src/cert/index.ts` exempt.
+
+**Per-filial certs (multi-CNPJ).** Beyond the env cert, certs enter via the
+filial upload: `loadCertificateFromBase64` parses an uploaded PFX, the private
+key is AES-256-GCM-encrypted (`encryptSecret`, `src/cert/encrypt.ts`) with the
+`NFE_CERT_ENC_KEY` master key, and stored in `filiais/{id}/certificadoSecreto`.
+At emission `decryptSecret` + `buildCertFromStored` rebuild the same
+`NFeCertificateImpl` (cnpj/notAfter/DER re-derived from the public PEM, sharing
+`buildCertFromForgeParts` with `parsePfxBuffer`). So the cert-entry surface is
+the `cert/` module's loaders — all return the redaction-wrapped impl. The
+encryption primitives take the key as a parameter (pure, env-free) so unit
+tests use a throwaway key, never the real env cert.
 
 The loaders return an `NFeCertificateImpl` class instance (an
 `NFeCertificate` structurally) whose `[nodejs.util.inspect.custom]()`

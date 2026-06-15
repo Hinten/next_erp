@@ -123,39 +123,45 @@ function loadChain(uf: string, ambiente: Ambiente): { ca: string; source: string
 }
 
 /**
- * Build (or return the cached) NF-e runtime. Throws on missing env vars,
- * malformed cert, expired cert, or missing TLS chain — boot-time failure
- * is the right semantics for any of these.
+ * Process-level cache of vendored TLS chains, keyed `${slot}-${ambiente}`.
+ * The chain bytes are cert-independent, so deriving a per-filial runtime
+ * reuses them instead of re-reading the .pem off disk on every emission.
  */
-export function getNFeRuntime(env: NodeJS.ProcessEnv = process.env): NFeRuntime {
-  if (cached) return cached;
-
-  const ambienteRaw = (env.NFE_AMBIENTE ?? 'homologacao').toLowerCase();
-  if (ambienteRaw !== 'producao' && ambienteRaw !== 'homologacao') {
-    throw new Error(`NFE_AMBIENTE must be 'producao' or 'homologacao', got '${ambienteRaw}'`);
+const chainCache = new Map<string, { ca: string; source: string }>();
+function loadChainCached(uf: string, ambiente: Ambiente): { ca: string; source: string } {
+  const key = `${uf.toLowerCase()}-${ambiente}`;
+  let entry = chainCache.get(key);
+  if (!entry) {
+    entry = loadChain(uf, ambiente);
+    chainCache.set(key, entry);
   }
-  const ambiente = ambienteRaw as Ambiente;
-  const uf = (env.NFE_UF ?? 'SP').toUpperCase();
+  return entry;
+}
 
-  const cert = loadCertificateFromEnv(env);
-  assertCertNotExpired(cert); // belt + suspenders — loadCertificateFromEnv warns; we throw
-
-  const { ca, source: chainSource } = loadChain(uf, ambiente);
+/**
+ * Assemble an `NFeRuntime` for a specific certificate over the (cached) TLS
+ * chains for `(uf, ambiente)`. The home + SVC + AN mTLS agents are all bound
+ * to THIS cert — so swapping the cert (per filial) is enough to make every
+ * SEFAZ call present and sign with the right identity. The chains are
+ * cert-independent and shared via `loadChainCached`. Pure of `process.env`.
+ */
+function buildRuntime(cert: NFeCertificate, ambiente: Ambiente, uf: string): NFeRuntime {
+  const { ca, source: chainSource } = loadChainCached(uf, ambiente);
   const agent = createSefazAgent(cert, { ca });
 
   const endpoints = getEndpoints(uf, ambiente);
   const tpAmb: TpAmb = ambiente === 'producao' ? '1' : '2';
 
-  // Lazy per-authorizer SVC transport. `loadChain` reuses the
+  // Lazy per-authorizer SVC transport. `loadChainCached` reuses the
   // `sefaz-<slot>-<ambiente>.pem` naming with the authorizer in the UF slot.
   const svcCache = new Map<string, ContingencyTarget>();
   const svc = (authorizer: 'svc-an' | 'svc-rs'): ContingencyTarget => {
     let entry = svcCache.get(authorizer);
     if (!entry) {
-      const { ca } = loadChain(authorizer, ambiente);
+      const chain = loadChainCached(authorizer, ambiente);
       entry = {
         endpoints: getSvcEndpoints(authorizer, ambiente),
-        agent: createSefazAgent(cert, { ca }),
+        agent: createSefazAgent(cert, { ca: chain.ca }),
       };
       svcCache.set(authorizer, entry);
     }
@@ -166,13 +172,16 @@ export function getNFeRuntime(env: NodeJS.ProcessEnv = process.env): NFeRuntime 
   let anCache: { endpoints: AnServiceUrls; agent: https.Agent } | undefined;
   const an = (): { endpoints: AnServiceUrls; agent: https.Agent } => {
     if (!anCache) {
-      const { ca } = loadChain('an', ambiente);
-      anCache = { endpoints: getAnEndpoints(ambiente), agent: createSefazAgent(cert, { ca }) };
+      const chain = loadChainCached('an', ambiente);
+      anCache = {
+        endpoints: getAnEndpoints(ambiente),
+        agent: createSefazAgent(cert, { ca: chain.ca }),
+      };
     }
     return anCache;
   };
 
-  cached = {
+  return {
     cert,
     agent,
     ambiente,
@@ -187,10 +196,45 @@ export function getNFeRuntime(env: NodeJS.ProcessEnv = process.env): NFeRuntime 
       chainSource,
     },
   };
+}
+
+/**
+ * Build (or return the cached) BASE NF-e runtime. The cert comes from the env
+ * (`NFE_CERT_*`) — it is the `/api/health` diagnostics cert and the fallback
+ * signing cert when `NFE_CERT_ENV_FALLBACK` is on and a filial has no stored
+ * cert. Per-filial emission derives its own runtime via `deriveRuntimeForCert`
+ * (see `lib/nfe/filial-cert.ts`). Throws on missing env vars, malformed/expired
+ * cert, or missing TLS chain — boot-time failure is the right semantics.
+ */
+export function getNFeRuntime(env: NodeJS.ProcessEnv = process.env): NFeRuntime {
+  if (cached) return cached;
+
+  const ambienteRaw = (env.NFE_AMBIENTE ?? 'homologacao').toLowerCase();
+  if (ambienteRaw !== 'producao' && ambienteRaw !== 'homologacao') {
+    throw new Error(`NFE_AMBIENTE must be 'producao' or 'homologacao', got '${ambienteRaw}'`);
+  }
+  const ambiente = ambienteRaw as Ambiente;
+  const uf = (env.NFE_UF ?? 'SP').toUpperCase();
+
+  const cert = loadCertificateFromEnv(env);
+  assertCertNotExpired(cert); // belt + suspenders — loadCertificateFromEnv warns; we throw
+
+  cached = buildRuntime(cert, ambiente, uf);
   return cached;
 }
 
-/** Test-only: clear the singleton so each test sees a fresh boot. */
+/**
+ * Derive a runtime that signs + transmits with `cert` (a filial's A1) instead
+ * of the env cert, reusing the base runtime's ambiente/uf and the cached TLS
+ * chains. The caller (`resolveFilialRuntime`) is responsible for the expiry
+ * check on `cert` before handing the runtime to the orchestrator.
+ */
+export function deriveRuntimeForCert(base: NFeRuntime, cert: NFeCertificate): NFeRuntime {
+  return buildRuntime(cert, base.ambiente, base.uf);
+}
+
+/** Test-only: clear the singleton + chain cache so each test sees a fresh boot. */
 export function __resetNFeRuntimeForTests(): void {
   cached = undefined;
+  chainCache.clear();
 }

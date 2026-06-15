@@ -141,6 +141,18 @@ export interface NFeCartaCorrecaoResult {
 }
 
 /**
+ * Public A1 certificate metadata returned by the cert upload route — mirrors
+ * `certificadoFilialInfoSchema`. Never carries key material.
+ */
+export interface NFeCertificadoMeta {
+  readonly subjectCommonName: string;
+  readonly cnpj: string;
+  readonly notAfter: string;
+  readonly filename: string;
+  readonly uploadedAt: string;
+}
+
+/**
  * Caller-provided config. `baseUrl` is the origin of `apps/nfe`
  * (in dev: `http://localhost:3004`; in prod: `https://nfe-<env>.web.app`).
  * `getAuthToken` runs on every call so a Firebase ID-token refresh
@@ -189,6 +201,19 @@ export interface NFeHttpClient {
    * for the manual contingency toggle.
    */
   statusServico(target: 'normal' | 'svc'): Promise<NFeStatusServicoResult>;
+  /**
+   * Upload a filial's A1 certificate (.pfx/.p12, base64) + its password. The
+   * server validates the PFX, encrypts the private key at rest, and returns
+   * only the public metadata — the password + key never come back.
+   */
+  uploadCertificado(
+    filialId: string,
+    pfxBase64: string,
+    password: string,
+    filename: string,
+  ): Promise<NFeCertificadoMeta>;
+  /** Remove a filial's stored A1 certificate (secret doc + filial metadata). */
+  deleteCertificado(filialId: string): Promise<void>;
 }
 
 /** Pull the filename out of a `Content-Disposition` header, if present. */
@@ -254,7 +279,7 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
   const doFetch = config.fetch ?? globalThis.fetch;
 
   async function call<T>(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE',
     path: string,
     init: { body?: unknown; context?: { pedidoId?: string } } = {},
   ): Promise<T> {
@@ -396,5 +421,15 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
         'GET',
         `/api/nfe/status-servico?target=${encodeURIComponent(target)}`,
       ),
+    uploadCertificado: (filialId, pfxBase64, password, filename) =>
+      call<NFeCertificadoMeta>('POST', '/api/nfe/certificado', {
+        body: { filialId, pfxBase64, password, filename },
+      }),
+    deleteCertificado: async (filialId) => {
+      await call<{ ok: boolean }>(
+        'DELETE',
+        `/api/nfe/certificado?filialId=${encodeURIComponent(filialId)}`,
+      );
+    },
   };
 }

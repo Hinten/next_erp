@@ -50,7 +50,13 @@ export const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   // Raw env-var-style secret names (caller may stash them in a config object)
   'NFE_CERT_BASE64',
   'NFE_CERT_PASSWORD',
+  'NFE_CERT_ENC_KEY',
   'FIREBASE_SERVICE_ACCOUNT',
+  // Per-filial cert upload + at-rest fields: the uploaded PFX, the
+  // AES-256-GCM-encrypted private key, and its raw ciphertext.
+  'pfxBase64',
+  'encPrivateKey',
+  'ciphertext',
 ]);
 
 /**

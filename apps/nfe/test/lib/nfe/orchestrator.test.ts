@@ -430,6 +430,10 @@ const RET_SIT_100 = {
 } as const;
 
 beforeEach(() => {
+  // The fixtures have no per-filial stored cert — emit with the fakeRuntime's
+  // (env) cert via the fallback. Per-filial resolution is covered separately
+  // in filial-cert.test.ts + certificado/route.test.ts.
+  process.env.NFE_CERT_ENV_FALLBACK = '1';
   vi.mocked(generateNFe).mockReturnValue({
     chave: CHAVE,
     cNF: '00000001',
