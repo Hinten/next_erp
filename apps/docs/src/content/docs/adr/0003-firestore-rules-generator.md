@@ -25,8 +25,16 @@ Goal of this spike: decide whether an off-the-shelf npm package suffices or we n
 
 ## Outcome
 
-*To be filled by spike.* If at least one package meets criteria 1–4, adopt it and skip writing `packages/rules-gen/`. Otherwise, write a small TS generator (~200 LOC) that reads `CollectionMetadata` from `packages/schemas/` and emits `firestore.rules`.
+No npm candidate survived the spike:
+
+- `fireschema` — peer deps pinned to firebase 8 / firebase-admin 9 (2021-era), and rules are authored as free-text expression strings; it cannot be driven by our `CollectionMetadata` permission bitmask.
+- `firestore-jet` — 404 on npm; unpublished or removed.
+- `firestore-typed` — deprecated typed wrapper around the SDK; emits no rules at all.
+
+**Decision: custom generator, `packages/rules-gen/`.** It consumes `ALL_DOMAINS` from `packages/schemas` (collection paths + permission bits) plus the per-domain `d_*` claims helpers in `packages/auth` (rules CEL has no bitwise operators, so the 128-bit `permissions` claim is undecodable in rules; the generator emits `(token.get('d_x', 0) / k) % 2 == 1` bit tests instead). Field validators are restricted to a critical-collection whitelist and a build-time size gate fails generation well below the 256 KiB deploy limit — both lessons from the Flutter generator, which hit that limit in production because the emulator does not enforce it.
+
+CI validates three layers (`ci-rules.yml`): offline drift check (`gen:rules:check`), behavior tests on the Firestore emulator, and a server-side compile via `firebaserules.googleapis.com` `projects.test` with a source-only payload — it compiles on the production API and persists nothing (no ruleset created, no release touched), so no deploy-to-staging step is needed.
 
 ## Status
 
-Open.
+Closed (2026-06). Implemented in `packages/rules-gen/`; the committed `firestore.rules` is generated. Deploy remains manual/coordinated.

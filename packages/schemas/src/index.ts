@@ -16,6 +16,8 @@ export type {
   DomainSchema,
 } from './types';
 
+export { ALL_DOMAINS } from './registry';
+
 export { auditEntrySchema, type AuditEntry } from './audit';
 
 export {

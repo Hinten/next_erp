@@ -1,0 +1,194 @@
+name: CI — Rules
+
+# Dedicated Firestore-rules pipeline. Runs when the generator, its schema/PERM
+# inputs, or the generated ruleset change. Three layers:
+#   1. rules-offline      — unit tests + drift check (firestore.rules must match
+#                           the generator output byte-for-byte) + size gate.
+#   2. rules-emulator     — behavior suite on the Firestore emulator (offline
+#                           demo project, port 8081 via firebase.rules.json).
+#   3. rules-api-validate — server-side compile via firebaserules.googleapis.com
+#                           `projects.test` (source-only payload: persists
+#                           nothing). Covers the deploy-size/compile checks the
+#                           emulator does NOT enforce.
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'packages/rules-gen/**'
+      - 'packages/schemas/**'
+      - 'packages/auth/**'
+      - 'packages/core/src/tenant/**'
+      - 'firestore.rules'
+      - 'firebase.rules.json'
+      - 'firestore.indexes.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/ci-rules.yml'
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'packages/rules-gen/**'
+      - 'packages/schemas/**'
+      - 'packages/auth/**'
+      - 'packages/core/src/tenant/**'
+      - 'firestore.rules'
+      - 'firebase.rules.json'
+      - 'firestore.indexes.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/ci-rules.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rules-offline:
+    name: Lint / typecheck / unit / drift check (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.4 --activate
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: |
+          pnpm turbo run lint \
+            --filter @delfrance/rules-gen \
+            --filter @delfrance/schemas \
+            --filter @delfrance/auth
+
+      - name: Typecheck
+        run: |
+          pnpm turbo run typecheck \
+            --filter @delfrance/rules-gen \
+            --filter @delfrance/schemas \
+            --filter @delfrance/auth
+
+      - name: Unit tests (offline — excludes test/*.rules.test.ts)
+        run: |
+          pnpm turbo run test \
+            --filter @delfrance/rules-gen \
+            --filter @delfrance/schemas \
+            --filter @delfrance/auth
+
+      - name: Drift check + size gate (firestore.rules matches the generator)
+        run: pnpm --filter @delfrance/rules-gen gen:rules:check
+
+  rules-emulator:
+    name: Behavior suite on the Firestore emulator
+    runs-on: ubuntu-latest
+    needs: rules-offline
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      # The Firestore emulator runs on the JVM; firebase-tools >= 15 requires
+      # JDK 21+.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.4 --activate
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install firebase-tools (pinned)
+        run: npm i -g firebase-tools@15.15.0
+
+      - name: Run rules suite on the emulator
+        # Demo-project mode → no real credentials, nothing touches staging.
+        run: |
+          firebase emulators:exec \
+            --config firebase.rules.json \
+            --project demo-erp \
+            --only firestore \
+            "pnpm --filter @delfrance/rules-gen test:rules"
+
+  rules-api-validate:
+    name: Server-side compile validation (Rules API)
+    runs-on: ubuntu-latest
+    needs: rules-offline
+    # Fork PRs can't see repo secrets, so the call would only fail noisily —
+    # skip it there. Pushes and manual dispatch are always same-repo.
+    if: >-
+      ${{ github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.fork == false }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.4 --activate
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate firestore.rules via projects.test (persists nothing)
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+        run: pnpm --filter @delfrance/rules-gen validate:api
+
+  report-failure:
+    name: Post failure note on PR
+    needs: [rules-offline, rules-emulator, rules-api-validate]
+    if: failure() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Comment failure summary
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const body =
+              `❌ \`ci-rules.yml\` failed on this PR.\n\n` +
+              `See the Actions tab for full logs: ` +
+              `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: prNumber, body,
+            });
