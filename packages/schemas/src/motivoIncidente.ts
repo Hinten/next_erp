@@ -27,6 +27,10 @@ export const motivoIncidenteMeta: CollectionMetadata = {
     write: PERM_PEDIDO_WRITE,
     delete: PERM_PEDIDO_DELETE,
   },
+  defaultQuery: {
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
+  },
 };
 
 export const motivoIncidente = {

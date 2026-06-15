@@ -22,6 +22,13 @@ export const PERM = {
     write: 1n << 9n,
     delete: 1n << 10n,
   },
+  // Categoria — catálogo de produtos. Bits 11-13 share the produto byte and
+  // are already used by `categoriaMeta` in packages/schemas/src/categoria.ts.
+  categoria: {
+    read: 1n << 11n,
+    write: 1n << 12n,
+    delete: 1n << 13n,
+  },
   pedido: {
     read: 1n << 16n,
     write: 1n << 17n,
@@ -32,6 +39,14 @@ export const PERM = {
     write: 1n << 25n,
     delete: 1n << 26n,
   },
+  // MetodoPagamento — `metodo_pgto` collection. Bits 27-29 share the
+  // pagamento byte; mirrored by `metodoPagamentoMeta` in
+  // packages/schemas/src/pagamento.ts.
+  metodoPagamento: {
+    read: 1n << 27n,
+    write: 1n << 28n,
+    delete: 1n << 29n,
+  },
   nfe: {
     read: 1n << 32n,
     write: 1n << 33n,
@@ -41,11 +56,20 @@ export const PERM = {
     read: 1n << 40n,
     write: 1n << 41n,
   },
-  // Chat / atendimento — Conversa + Mensagem live in the same domain.
+  // Chat / atendimento — Conversa documents (`chat` collection).
   chat: {
     read: 1n << 48n,
     write: 1n << 49n,
     delete: 1n << 50n,
+  },
+  // Mensagem — `chat/{conversaId}/mensagem` subcollection. Bits 51-53 share
+  // the chat byte; mirrored by `mensagemMeta` in
+  // packages/schemas/src/conversa.ts. Cargos granting chat access should
+  // normally pair both domains.
+  mensagem: {
+    read: 1n << 51n,
+    write: 1n << 52n,
+    delete: 1n << 53n,
   },
   // Integracao — canais de venda / integrações (Flutter `integracao`).
   // Already in use by `packages/schemas/src/integracao.ts` since launch;
@@ -67,6 +91,14 @@ export const PERM = {
     write: 1n << 73n,
     delete: 1n << 74n,
   },
+  // ImpostoProduto — `produtos/{produtoId}/imposto` subcollection. Bits 75-77
+  // share the fiscal byte; mirrored by `impostoProdutoMeta` in
+  // packages/schemas/src/impostoProduto.ts.
+  impostoProduto: {
+    read: 1n << 75n,
+    write: 1n << 76n,
+    delete: 1n << 77n,
+  },
   // Arquivo — file/storage metadata (`arquivos` collection): product images +
   // derivatives, videos, attachments, chat media. Cross-domain, so it gets its
   // own byte. Mirrored by `arquivoMeta` in packages/schemas/src/storage/arquivo.ts.
@@ -87,6 +119,28 @@ export const PERM = {
     read: 1n << 88n,
     write: 1n << 89n,
     delete: 1n << 90n,
+  },
+  // ImpostoCategoria — `categorias/{categoriaId}/impostocategoria`
+  // subcollection. Historically mis-assigned to bits 78-80: bit 80 belongs to
+  // arquivo.read, and 78-79 sit in the fiscal byte but were never grantable
+  // (absent from this map, the cargo editor and ALL_PERMS), so relocating to
+  // byte 12 has no migration cost. Bits 78-79 stay unused; do not reuse them
+  // without auditing stored cargo bitmasks first. Mirrored by
+  // `impostoCategoriaMeta` in packages/schemas/src/impostoCategoria.ts.
+  impostoCategoria: {
+    read: 1n << 96n,
+    write: 1n << 97n,
+    delete: 1n << 98n,
+  },
+  // RegraImposto — `operacao/{operacaoId}/regraimposto` subcollection.
+  // Historically mis-assigned to bits 81-83 (81-82 belong to arquivo
+  // write/delete); never grantable, relocated alongside impostoCategoria in
+  // byte 12. Mirrored by `regraImpostoMeta` in
+  // packages/schemas/src/regraImposto.ts.
+  regraImposto: {
+    read: 1n << 99n,
+    write: 1n << 100n,
+    delete: 1n << 101n,
   },
 } as const;
 

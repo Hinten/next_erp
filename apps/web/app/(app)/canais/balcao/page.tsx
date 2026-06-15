@@ -1,10 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo } from 'react';
-import { deleteDoc, orderBy, query, where } from 'firebase/firestore';
+import { deleteDoc } from 'firebase/firestore';
 import { Badge, Button } from '@mantine/core';
-import { INTEGRACAO_TIPO, type Integracao, integracaoSchema } from '@delfrance/schemas';
+import {
+  INTEGRACAO_TIPO,
+  type Integracao,
+  integracaoMeta,
+  integracaoSchema,
+} from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -12,24 +16,10 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 export default function CanalBalcaoPage() {
   const db = getFirebaseFirestore();
 
-  // The `integracao` collection holds every channel type; the Balcão screen
-  // is just one slice (`tipo == 7`). `queryOverride` is the documented escape
-  // hatch — when set, the TableView's own orderBy/pageSize AND its column-
-  // filter pipeline are bypassed (the caller owns the query lifecycle), so
-  // both the `where` and the `orderBy` ship together here. The column-filter
-  // popovers still render but won't narrow the result set; until TableView
-  // grows a `baseFilters` prop, restricting the channel by `tipo` and giving
-  // up user-driven column filters on this screen is the trade-off.
-  const balcaoQuery = useMemo(
-    () =>
-      query(
-        integracaoCollection.ref(db, {}),
-        where('tipo', '==', INTEGRACAO_TIPO.balcao),
-        orderBy('nome', 'asc'),
-      ),
-    [db],
-  );
-
+  // The `integracao` collection holds every channel type; the Balcão screen is
+  // one slice. integracaoMeta.defaultQuery declares the `tipo` param + `nome`
+  // ordering (and its Firestore index); `queryParams` binds the slice. Column
+  // filters keep working on top of the base `tipo` filter.
   return (
     <TableView<typeof integracaoSchema>
       title="Balcão"
@@ -37,7 +27,8 @@ export default function CanalBalcaoPage() {
       schema={integracaoSchema}
       collection={integracaoCollection}
       db={db}
-      queryOverride={balcaoQuery}
+      meta={integracaoMeta}
+      queryParams={{ tipo: INTEGRACAO_TIPO.balcao }}
       defaultColumns={['nome', 'ativo', 'padrao', 'dataCadastro']}
       rowHref={(id) => `/canais/balcao/${id}`}
       renderNewButton={() => (

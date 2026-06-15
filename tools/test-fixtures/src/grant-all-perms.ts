@@ -11,22 +11,15 @@
  * to take effect (Firebase ID tokens are cached for ~1 hour).
  */
 import { getAuth } from 'firebase-admin/auth';
+import { PERM, rulesClaimsFromBits } from '@delfrance/auth';
 import { getApp } from './admin.js';
 
-// All permission bits OR'd together — mirrors PERM in packages/auth/src/permissions.ts
-export const ALL_PERMS =
-  0b111111n | // cliente (bits 0-2) + endereco (bits 3-5): read | write | delete
-  (7n << 8n) | // produto
-  (7n << 16n) | // pedido
-  (7n << 24n) | // pagamento
-  (7n << 32n) | // nfe
-  (3n << 40n) | // configuracoes: read | write (no delete)
-  (7n << 48n) | // chat
-  (7n << 56n) | // integracao
-  (7n << 64n) | // estoque
-  (7n << 72n) | // fiscal
-  (7n << 80n) | // arquivo
-  (7n << 88n); // frete
+// Every permission bit OR'd together — derived from PERM so new domains join
+// automatically (the previous hand-maintained mirror had drifted: it missed
+// categoria, metodoPagamento, mensagem and the imposto domains).
+export const ALL_PERMS = Object.values(PERM)
+  .flatMap((actions) => Object.values(actions))
+  .reduce((acc, bit) => acc | bit, 0n);
 
 export interface GrantAllPermsResult {
   uid: string;
@@ -44,8 +37,10 @@ export async function grantAllPerms(
   getApp(options.serviceAccountPath);
   const auth = getAuth();
   const user = await auth.getUserByEmail(email);
+  // d_* rules claims spread BEFORE extraClaims so e2e overrides still win.
   await auth.setCustomUserClaims(user.uid, {
     permissions: ALL_PERMS.toString(),
+    ...rulesClaimsFromBits(ALL_PERMS),
     ...options.extraClaims,
   });
   return { uid: user.uid, permissionsClaim: ALL_PERMS.toString() };

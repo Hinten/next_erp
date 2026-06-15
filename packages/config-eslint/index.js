@@ -1,6 +1,7 @@
 // Flat config base. Apps and packages extend this and add framework-specific
 // rules (e.g., apps/web extends with eslint-config-next).
 import noInlineAdminCollection from './rules/no-inline-admin-collection.js';
+import defaultQueryNeedsIndex from './rules/default-query-needs-index.js';
 import eslintConfigPrettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
@@ -68,7 +69,10 @@ const config = [
   {
     plugins: {
       delfrance: {
-        rules: { 'no-inline-admin-collection': noInlineAdminCollection },
+        rules: {
+          'no-inline-admin-collection': noInlineAdminCollection,
+          'default-query-needs-index': defaultQueryNeedsIndex,
+        },
       },
     },
     rules: {
@@ -127,6 +131,13 @@ const config = [
       // @delfrance/data/admin/collections). Warn — a guard against
       // re-scattering, not a hard gate. See rules/no-inline-admin-collection.js.
       'delfrance/no-inline-admin-collection': 'warn',
+
+      // Every collection defaultQuery must have a matching Firestore index in
+      // firestore.indexes.json (Enterprise creates none automatically). Error —
+      // a missing index is a real collection-scan bug. Only fires on
+      // CollectionMetadata literals (objects with a string collectionPath).
+      // See rules/default-query-needs-index.js.
+      'delfrance/default-query-needs-index': 'error',
     },
   },
 ];

@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { deleteDoc } from 'firebase/firestore';
 import { Button } from '@mantine/core';
-import { motivoIncidenteSchema } from '@delfrance/schemas';
+import { motivoIncidenteMeta, motivoIncidenteSchema } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { motivoIncidenteCollection } from '@/lib/data/motivoIncidenteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -16,9 +16,8 @@ export default function MotivosIncidentePage() {
       schema={motivoIncidenteSchema}
       collection={motivoIncidenteCollection}
       db={getFirebaseFirestore()}
+      meta={motivoIncidenteMeta}
       defaultColumns={['nome', 'ativo']}
-      orderBy={{ field: 'nome', direction: 'asc' }}
-      pageSize={50}
       rowHref={(id) => `/motivos-incidente/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/motivos-incidente/novo">
