@@ -110,6 +110,11 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
     await expect
       .poll(async () => (await getProdutoData(parentId))?.precos, { timeout: 15_000 })
       .toEqual({ [varejoId]: { valor: 25 } });
+    // DIAGNOSTIC: assert the child propagated here so this test's trace (with
+    // the [ONAFTERSAVE]/[PROPAGATE] console logs) is retained on failure.
+    await expect
+      .poll(async () => (await getProdutoData(childId))?.precos, { timeout: 15_000 })
+      .toEqual({ [varejoId]: { valor: 25 } });
   });
 
   test('propagates the parent prices to variation children on save', async ({ page }) => {

@@ -29,6 +29,16 @@ export async function propagateParentPrecosToChildren(
     buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', parentId)]),
   );
   const stale = snap.docs.filter((d) => !samePrecos(d.data().precos ?? null, precos));
+  console.warn(
+    '[PROPAGATE]',
+    JSON.stringify({
+      parentId,
+      precos,
+      found: snap.docs.length,
+      childPrecos: snap.docs.map((d) => d.data().precos ?? null),
+      stale: stale.map((d) => d.id),
+    }),
+  );
   for (let i = 0; i < stale.length; i += BATCH_LIMIT) {
     const batch = writeBatch(db);
     for (const d of stale.slice(i, i + BATCH_LIMIT)) {
