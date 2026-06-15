@@ -15,7 +15,11 @@ import { fileURLToPath } from 'node:url';
 import { GaxiosError } from 'gaxios';
 import { GoogleAuth } from 'google-auth-library';
 
-const RULES_PATH = fileURLToPath(new URL('../../../firestore.rules', import.meta.url));
+// `--e2e` validates the staging variant (firestore.e2e.rules) instead of the
+// production file — the regex-bearing namespace block only exists there.
+const e2e = process.argv.slice(2).includes('--e2e');
+const fileName = e2e ? 'firestore.e2e.rules' : 'firestore.rules';
+const RULES_PATH = fileURLToPath(new URL(`../../../${fileName}`, import.meta.url));
 
 interface Issue {
   sourcePosition?: { line?: number; column?: number };
@@ -55,7 +59,7 @@ async function main(): Promise<number> {
       url: `https://firebaserules.googleapis.com/v1/projects/${projectId}:test`,
       method: 'POST',
       // No testSuite: source-only payloads just compile server-side.
-      data: { source: { files: [{ name: 'firestore.rules', content }] } },
+      data: { source: { files: [{ name: fileName, content }] } },
     });
     issues = res.data.issues ?? [];
   } catch (err) {
@@ -71,15 +75,13 @@ async function main(): Promise<number> {
   for (const issue of issues) {
     const pos = issue.sourcePosition;
     const where = pos ? `${pos.line ?? '?'}:${pos.column ?? '?'}` : '?:?';
-    console.log(
-      `[${issue.severity ?? 'UNKNOWN'}] firestore.rules:${where} ${issue.description ?? ''}`,
-    );
+    console.log(`[${issue.severity ?? 'UNKNOWN'}] ${fileName}:${where} ${issue.description ?? ''}`);
     if (issue.severity === 'ERROR') failed = true;
   }
   if (failed) return 1;
 
   console.log(
-    `firestore.rules compiled cleanly on project ${projectId}` +
+    `${fileName} compiled cleanly on project ${projectId}` +
       (issues.length > 0 ? ` (${issues.length} non-error issue(s) above)` : ''),
   );
   return 0;

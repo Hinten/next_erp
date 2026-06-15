@@ -19,7 +19,9 @@ on:
       - 'packages/auth/**'
       - 'packages/core/src/tenant/**'
       - 'firestore.rules'
+      - 'firestore.e2e.rules'
       - 'firebase.rules.json'
+      - 'firebase.staging.json'
       - 'firestore.indexes.json'
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-rules.yml'
@@ -31,7 +33,9 @@ on:
       - 'packages/auth/**'
       - 'packages/core/src/tenant/**'
       - 'firestore.rules'
+      - 'firestore.e2e.rules'
       - 'firebase.rules.json'
+      - 'firebase.staging.json'
       - 'firestore.indexes.json'
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-rules.yml'
@@ -97,6 +101,9 @@ jobs:
 
       - name: Drift check + size gate (firestore.rules matches the generator)
         run: pnpm --filter @delfrance/rules-gen gen:rules:check
+
+      - name: Drift check + size gate (firestore.e2e.rules — staging variant)
+        run: pnpm --filter @delfrance/rules-gen gen:rules:e2e:check
 
   rules-emulator:
     name: Behavior suite on the Firestore emulator
@@ -169,6 +176,12 @@ jobs:
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
         run: pnpm --filter @delfrance/rules-gen validate:api
+
+      - name: Validate firestore.e2e.rules via projects.test (staging variant)
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
+        run: pnpm --filter @delfrance/rules-gen validate:api:e2e
 
   report-failure:
     name: Post failure note on PR
