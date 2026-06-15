@@ -1,6 +1,6 @@
 'use client';
 
-import type { CSSProperties } from 'react';
+import { type CSSProperties, useState } from 'react';
 import { NumberInput } from '@mantine/core';
 
 /**
@@ -39,13 +39,17 @@ export interface CurrencyInputProps {
 
 /**
  * BRL money input (pt-BR): `R$ ` prefix, comma decimal separator, up to two
- * decimal places. Either `,` or `.` is accepted as the decimal key. We do NOT
- * use `fixedDecimalScale` or `thousandSeparator`: with a controlled value they
- * re-format mid-typing and react-number-format then re-reads the padded `,00`
- * as integer digits — that mis-scaled every keystroke (×100) and blocked
- * decimal entry. Negatives are blocked; clamping is left to Zod
- * (`clampBehavior="none"`) so an invalid 0 surfaces as a form error instead of
- * being silently corrected. Emits `null` when cleared.
+ * decimal places. Either `,` or `.` is accepted as the decimal key.
+ *
+ * `fixedDecimalScale` is enabled ONLY while the field is NOT focused, so a
+ * loaded/idle value always shows both decimals (e.g. `R$ 30,00`). It is turned
+ * OFF during editing: with a controlled value, fixed decimals re-format
+ * mid-typing and react-number-format re-reads the padded `,00` as integer
+ * digits, which mis-scaled every keystroke (×100) and blocked decimal entry.
+ * `thousandSeparator` is intentionally omitted for the same parsing-ambiguity
+ * reason. Negatives are blocked; clamping is left to Zod (`clampBehavior="none"`)
+ * so an invalid 0 surfaces as a form error instead of being silently corrected.
+ * Emits `null` when cleared.
  */
 export function CurrencyInput({
   value,
@@ -57,6 +61,7 @@ export function CurrencyInput({
   ariaLabel,
   style,
 }: CurrencyInputProps) {
+  const [editing, setEditing] = useState(false);
   return (
     <NumberInput
       label={label}
@@ -67,8 +72,11 @@ export function CurrencyInput({
       style={style}
       value={value ?? ''}
       onChange={(v) => onChange(parseBrl(v))}
+      onFocus={() => setEditing(true)}
+      onBlur={() => setEditing(false)}
       prefix="R$ "
       decimalScale={2}
+      fixedDecimalScale={!editing}
       decimalSeparator=","
       allowedDecimalSeparators={[',', '.']}
       allowNegative={false}
