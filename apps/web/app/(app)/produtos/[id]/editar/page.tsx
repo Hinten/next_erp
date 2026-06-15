@@ -24,6 +24,7 @@ import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { appendPrecoHistory } from '@/lib/produtos/precoHistory';
+import { appendCustoHistory } from '@/lib/produtos/custoHistory';
 import { propagateParentPrecosToChildren } from '@/lib/produtos/childPrecos';
 import {
   describeReferences,
@@ -33,6 +34,7 @@ import {
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { PhotoManager } from '../../_components/PhotoManager';
+import { CustoField } from '../../_components/CustoField';
 import { PrecoCustoManager } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
 import { VariationManager } from '../../_components/VariationManager';
@@ -85,9 +87,16 @@ export default function EditarProdutoPage() {
     ready: false,
     value: null,
   });
+  // Same bookkeeping for `custo`: a historicoDeCusto record is written on each
+  // change. `ready` guards the first emit so we don't record on initial load.
+  const lastSavedCusto = useRef<{ ready: boolean; value: number | null }>({
+    ready: false,
+    value: null,
+  });
   useEffect(() => {
     if (!lastSavedPrecos.current.ready && produtoSnap.data) {
       lastSavedPrecos.current = { ready: true, value: produtoSnap.data.data.precos ?? null };
+      lastSavedCusto.current = { ready: true, value: produtoSnap.data.data.custo ?? null };
     }
   }, [produtoSnap.data]);
 
@@ -146,6 +155,21 @@ export default function EditarProdutoPage() {
           />
         ),
       },
+      custo: {
+        ...produtoFieldOverrides.custo,
+        renderInput: (p) => (
+          <CustoField
+            produtoId={params.id}
+            db={db}
+            value={(p.value as number | null) ?? null}
+            onChange={p.onChange}
+            label={p.label}
+            hint={p.hint}
+            disabled={p.disabled}
+            error={p.error}
+          />
+        ),
+      },
       precos: {
         label: 'Preços',
         section: 'Preço e custo',
@@ -157,6 +181,7 @@ export default function EditarProdutoPage() {
             listasError={listasSnap.error?.message}
             value={(p.value as PrecosMap) ?? null}
             onChange={p.onChange}
+            errorTree={p.errorTree}
             disabled={p.disabled}
           />
         ),
@@ -271,6 +296,22 @@ export default function EditarProdutoPage() {
             }
           }
           lastSavedPrecos.current = { ready: true, value: newPrecos };
+
+          // Cost history (historicoDeCusto): one record per change. Only a
+          // numeric custo that actually differs from the last persisted value
+          // is recorded (a cleared/null custo can't be represented as a record).
+          const newCusto = typeof values.custo === 'number' ? values.custo : null;
+          if (
+            lastSavedCusto.current.ready &&
+            newCusto !== null &&
+            newCusto !== lastSavedCusto.current.value
+          ) {
+            const batch = writeBatch(db);
+            appendCustoHistory(batch, db, id, newCusto);
+            await batch.commit();
+          }
+          lastSavedCusto.current = { ready: true, value: newCusto };
+
           if (precosChanged) {
             await propagateParentPrecosToChildren(db, id, newPrecos);
           }

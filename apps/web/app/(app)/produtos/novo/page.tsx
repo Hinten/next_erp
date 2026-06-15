@@ -18,9 +18,11 @@ import { useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { appendPrecoHistory } from '@/lib/produtos/precoHistory';
+import { appendCustoHistory } from '@/lib/produtos/custoHistory';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
 import { PhotoManager } from '../_components/PhotoManager';
+import { CustoField } from '../_components/CustoField';
 import { PrecoCustoManager } from '../_components/PrecoCustoManager';
 import { VideoManager } from '../_components/VideoManager';
 import { VariationManager } from '../_components/VariationManager';
@@ -99,6 +101,21 @@ export default function NovoProdutoPage() {
           />
         ),
       },
+      custo: {
+        ...produtoFieldOverrides.custo,
+        renderInput: (p) => (
+          <CustoField
+            produtoId={null}
+            db={db}
+            value={(p.value as number | null) ?? null}
+            onChange={p.onChange}
+            label={p.label}
+            hint={p.hint}
+            disabled={p.disabled}
+            error={p.error}
+          />
+        ),
+      },
       precos: {
         label: 'Preços',
         section: 'Preço e custo',
@@ -110,6 +127,7 @@ export default function NovoProdutoPage() {
             listasError={listasSnap.error?.message}
             value={(p.value as PrecosMap) ?? null}
             onChange={p.onChange}
+            errorTree={p.errorTree}
             disabled={p.disabled}
           />
         ),
@@ -140,14 +158,16 @@ export default function NovoProdutoPage() {
         saveLabel="Criar"
         showSaveAndContinue={false}
         onAfterSave={async (id, values) => {
-          // First save of a produto born with prices → initial history records,
-          // mirroring Flutter's oldPrecos-null branch. `values.precos` is what
+          // First save of a produto born with prices/cost → initial history
+          // records, mirroring Flutter's oldPrecos-null branch. `values` is what
           // was just persisted. New produtos have no variation children yet, so
           // there's nothing to propagate.
           const changes = diffPrecos(null, (values.precos as PrecosMap) ?? null);
-          if (changes.length > 0) {
+          const custo = typeof values.custo === 'number' ? values.custo : null;
+          if (changes.length > 0 || custo !== null) {
             const batch = writeBatch(db);
-            appendPrecoHistory(batch, db, id, changes);
+            if (changes.length > 0) appendPrecoHistory(batch, db, id, changes);
+            if (custo !== null) appendCustoHistory(batch, db, id, custo);
             await batch.commit();
           }
         }}

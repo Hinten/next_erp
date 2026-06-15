@@ -4,6 +4,7 @@ import {
   cleanupProdutoSubcollection,
   e2ePrefix,
   getProdutoData,
+  listHistoricoCusto,
   listHistoricoPrecos,
   seedHistoricoCusto,
   seedListasDePreco,
@@ -126,7 +127,15 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
       .toEqual({ [varejoId]: { valor: 40 } });
   });
 
-  test('shows the read-only custo history', async ({ page }) => {
+  test('records cost history on a custo change and shows it', async ({ page }) => {
+    // The recalc test above saved custo=10 → a historicoDeCusto record must
+    // have been written (the write fix). Then a seeded record shows in the modal.
+    await expect
+      .poll(async () => (await listHistoricoCusto(parentId)).some((r) => r.valor === 10), {
+        timeout: 15_000,
+      })
+      .toBe(true);
+
     await seedHistoricoCusto(parentId, 8.5);
     await openPrecoTab(page);
     await page.getByRole('button', { name: 'Histórico de custo' }).click();

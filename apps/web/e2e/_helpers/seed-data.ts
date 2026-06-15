@@ -1070,7 +1070,19 @@ export async function listHistoricoPrecos(
   return snap.docs.map((d) => d.data() as Record<string, unknown>);
 }
 
-/** Seed one read-only `historicoDeCusto` record (the old app's wire shape). */
+/** All `historicoDeCusto` records of a produto (raw wire data). */
+export async function listHistoricoCusto(
+  produtoId: string,
+): Promise<Array<Record<string, unknown>>> {
+  const snap = await db()
+    .collection('produtos')
+    .doc(produtoId)
+    .collection('historicoDeCusto')
+    .get();
+  return snap.docs.map((d) => d.data() as Record<string, unknown>);
+}
+
+/** Seed one `historicoDeCusto` record (the old app's wire shape). */
 export async function seedHistoricoCusto(produtoId: string, valor: number): Promise<void> {
   await db()
     .collection('produtos')

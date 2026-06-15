@@ -12,9 +12,9 @@ export const historicoPrecoCollection = defineCollection({
 });
 
 /**
- * Cost history ("data da compra") — READ-ONLY in the Next app: the old app
- * defines the model + rules but never writes records; we only display what
- * exists (decision 2026-06-12).
+ * Cost history ("data da compra") — the Next editor records every `custo`
+ * change here (`appendCustoHistory`); the old Flutter app defines the model +
+ * rules but never wrote records. Same wire shape, so reads coexist.
  */
 export const historicoCustoCollection = defineCollection({
   path: 'produtos/{produtoId}/historicoDeCusto',

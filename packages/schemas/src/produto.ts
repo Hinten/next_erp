@@ -10,9 +10,13 @@ const PERM_PRODUTO_DELETE = 1n << 10n;
 /**
  * One entry of the `produto.precos` map — Flutter `Preco` serializes as
  * `{ valor: double }` (`models.g.dart:136-138`); the map is keyed by the
- * ListaDePrecos doc id.
+ * ListaDePrecos doc id. A price is a real monetary value: `min(0.01)` rejects
+ * 0/sub-cent entries at the form (clearing the input removes the entry instead
+ * of storing 0).
  */
-export const precoSchema = z.object({ valor: z.number() }).passthrough();
+export const precoSchema = z
+  .object({ valor: z.number().min(0.01, 'O preço mínimo é R$ 0,01') })
+  .passthrough();
 
 export type Preco = z.infer<typeof precoSchema>;
 
