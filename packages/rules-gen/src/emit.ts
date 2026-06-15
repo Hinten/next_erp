@@ -30,6 +30,11 @@ export function emitRules(
   const validators = new Map<string, string[]>(); // name -> clause exprs
   const flatBlocks: string[][] = [];
   const groupReads = new Map<string, ClaimCheck>(); // leaf -> read check
+  const topLevel = new Set<string>(); // single-segment collection names
+
+  // Extra blocks are hand-written top-level collections (e.g. grupoEconomico);
+  // count their first segment so a leaf can never silently collide with them.
+  for (const extra of extraBlocks) topLevel.add(extra.path.split('/')[0]!);
 
   for (const domain of [...domains].sort(byPath)) {
     const { collectionPath } = domain.meta;
@@ -63,6 +68,23 @@ export function emitRules(
         );
       }
       groupReads.set(leaf, perms.read);
+    } else {
+      topLevel.add(collectionPath);
+    }
+  }
+
+  // rules_version '2' recursive wildcards match an empty prefix, so a
+  // `match /{path=**}/<leaf>/{docId}` group-read block ALSO matches a top-level
+  // collection literally named <leaf> — granting it the leaf's read bit. Today
+  // no leaf collides; make that structural so a future colliding top-level
+  // collection fails generation instead of silently widening reads on deploy.
+  for (const leaf of groupReads.keys()) {
+    if (topLevel.has(leaf)) {
+      throw new Error(
+        `collection-group leaf '${leaf}' collides with a top-level collection of the same name; ` +
+          `the recursive '{path=**}/${leaf}' read block would also grant reads on /${leaf}/{docId}. ` +
+          `Rename one of them before this can be deployed.`,
+      );
     }
   }
 

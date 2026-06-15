@@ -57,6 +57,24 @@ describe('emitRules', () => {
     ).toThrow(/conflicting read permissions/);
   });
 
+  it('rejects a group leaf that collides with a top-level collection name', () => {
+    // {path=**} matches an empty prefix, so /{path=**}/leaf would also grant
+    // reads on a top-level /leaf — generation must fail instead.
+    expect(() => emitRules([domain('a/{aId}/leaf'), domain('leaf')], [], new Set())).toThrow(
+      /collides with a top-level collection/,
+    );
+  });
+
+  it('rejects a group leaf that collides with an extra (hand-written) top-level block', () => {
+    expect(() =>
+      emitRules(
+        [domain('a/{aId}/leaf')],
+        [{ path: 'leaf/{leafId}', body: ['allow read: if false;'] }],
+        new Set(),
+      ),
+    ).toThrow(/collides with a top-level collection/);
+  });
+
   it('rejects duplicate collection paths', () => {
     expect(() => emitRules([domain('foo'), domain('foo')], [], new Set())).toThrow(
       /duplicate collectionPath/,
