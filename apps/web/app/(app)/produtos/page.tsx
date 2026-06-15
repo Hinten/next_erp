@@ -15,12 +15,15 @@ import {
   TextInput,
 } from '@mantine/core';
 import { PageHeader } from '@delfrance/ui';
-import { buildQuery, limit, orderByField, whereEqual, whereOp } from '@delfrance/data';
+import { buildQuery, defaultQueryConstraints, whereOp } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
+import { produtoMeta } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 
-const PAGE_SIZE = 50;
+// U+F8FF: a very high private-use code point. Appended to the search term it
+// bounds a nome prefix range (nome >= term && nome <= term + sentinel).
+const PREFIX_SENTINEL = '\uf8ff';
 
 export default function ProdutosPage() {
   const router = useRouter();
@@ -29,21 +32,17 @@ export default function ProdutosPage() {
 
   const q = useMemo(() => {
     const base = produtoCollection.ref(getFirebaseFirestore(), {});
-    // Parents only (#119): variation children carry `paiId = <parentId>` and
-    // are reached through their parent's Variações tab — listing them would
-    // drown the catalog. Both Flutter and this app always write `paiId`
-    // (explicitly null on parents), so the equality filter misses nothing.
-    if (!trimmed) {
-      return buildQuery(base, [whereEqual('paiId', null), orderByField('nome'), limit(PAGE_SIZE)]);
-    }
-    // Same prefix-match pattern as clientes: nome >= trimmed && nome <= trimmed + .
-    return buildQuery(base, [
-      whereEqual('paiId', null),
-      orderByField('nome'),
-      whereOp('nome', '>=', trimmed),
-      whereOp('nome', '<=', `${trimmed}`),
-      limit(PAGE_SIZE),
-    ]);
+    // The catalog listing (parents only — #119) is declared once on
+    // produtoMeta.defaultQuery (`paiId == null`, orderBy nome, limit 50), so
+    // the query and its Firestore index stay in lockstep. When searching, add
+    // the nome prefix range on top: nome >= term && nome <= term + sentinel.
+    const extraConstraints = trimmed
+      ? [whereOp('nome', '>=', trimmed), whereOp('nome', '<=', `${trimmed}${PREFIX_SENTINEL}`)]
+      : [];
+    return buildQuery(
+      base,
+      defaultQueryConstraints(produtoMeta.defaultQuery!, { extraConstraints }),
+    );
   }, [trimmed]);
 
   const { data, loading, error } = useSnapshot(q);

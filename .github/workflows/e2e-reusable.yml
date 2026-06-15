@@ -91,11 +91,11 @@ jobs:
       # Playwright trace. Build-only; real App Hosting deploys leave it unset.
       E2E_SOURCEMAPS: 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
 
@@ -108,7 +108,7 @@ jobs:
         id: pnpm-store
         run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: ${{ steps.pnpm-store.outputs.path }}
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
@@ -121,7 +121,7 @@ jobs:
       # @playwright/test version), so the key invalidates on a Playwright bump.
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
@@ -156,7 +156,7 @@ jobs:
 
       - name: Upload Playwright report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report-${{ inputs.slug }}
           path: |

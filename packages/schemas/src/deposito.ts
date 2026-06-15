@@ -29,6 +29,10 @@ export const depositoMeta: CollectionMetadata = {
     write: PERM_ESTOQUE_WRITE,
     delete: PERM_ESTOQUE_DELETE,
   },
+  defaultQuery: {
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
+  },
 };
 
 export const deposito = { schema: depositoSchema, meta: depositoMeta };

@@ -92,6 +92,15 @@ export const produtoMeta: CollectionMetadata = {
     write: PERM_PRODUTO_WRITE,
     delete: PERM_PRODUTO_DELETE,
   },
+  // Catalog listing shows parents only — variation children carry
+  // `paiId = <parentId>` and are reached through their parent's Variações tab.
+  // Both Flutter and this app always write `paiId` (explicitly null on
+  // parents), so the equality filter misses nothing.
+  defaultQuery: {
+    where: [{ field: 'paiId', value: null }],
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
+  },
 };
 
 export const produto = { schema: produtoSchema, meta: produtoMeta };

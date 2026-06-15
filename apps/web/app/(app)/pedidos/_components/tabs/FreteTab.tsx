@@ -190,12 +190,14 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
             name={fretePath('clienteRecebedorOuterReference')}
             render={({ field, fieldState }) => (
               <ClientePicker
-                db={db}
+                fieldName={field.name}
                 label="Quem recebe"
                 value={field.value}
-                onChange={(ref) => field.onChange(ref ? `documents/${ref.path}` : null)}
+                onChange={field.onChange}
+                onBlur={field.onBlur}
                 disabled={headerDisabled}
                 error={fieldState.error?.message}
+                emitDocPath
               />
             )}
           />

@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
 
-const PERM_IMPOSTO_CATEGORIA_READ = 1n << 78n;
-const PERM_IMPOSTO_CATEGORIA_WRITE = 1n << 79n;
-const PERM_IMPOSTO_CATEGORIA_DELETE = 1n << 80n;
+// Mirrors PERM.impostoCategoria in packages/auth/src/permissions.ts (byte 12;
+// relocated from the mis-assigned 78-80 — bit 80 belongs to arquivo.read).
+const PERM_IMPOSTO_CATEGORIA_READ = 1n << 96n;
+const PERM_IMPOSTO_CATEGORIA_WRITE = 1n << 97n;
+const PERM_IMPOSTO_CATEGORIA_DELETE = 1n << 98n;
 
 /**
  * ImpostoCategoria — subcoleção

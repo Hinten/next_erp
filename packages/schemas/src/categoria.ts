@@ -34,6 +34,10 @@ export const categoriaMeta: CollectionMetadata = {
     write: PERM_CATEGORIA_WRITE,
     delete: PERM_CATEGORIA_DELETE,
   },
+  defaultQuery: {
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
+  },
 };
 
 export const categoria = { schema: categoriaSchema, meta: categoriaMeta };

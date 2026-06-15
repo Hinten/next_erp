@@ -11,21 +11,25 @@ import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
 // navigation; `searchParamsRef` lets a test seed the URL. The URL-sync effect
 // writes via `window.history.replaceState`, so cases that assert on it spy on
 // that directly rather than on the router.
-const { snapState, pushSpy, searchParamsRef, buildPipelineSpy } = vi.hoisted(() => ({
-  snapState: {
-    current: {
-      data: [
-        { id: '1', path: 'x/1', data: { nome: 'Alice', tipo: '0' } },
-        { id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } },
-      ],
-      loading: false,
-      error: undefined,
-    } as SnapshotState<SnapshotRow<{ nome?: string; tipo?: string }>[]>,
-  },
-  pushSpy: vi.fn(),
-  searchParamsRef: { current: new URLSearchParams() },
-  buildPipelineSpy: vi.fn(() => ({ __pipeline: true })),
-}));
+const { snapState, pushSpy, searchParamsRef, buildPipelineSpy, pipelineSupportedRef } = vi.hoisted(
+  () => ({
+    snapState: {
+      current: {
+        data: [
+          { id: '1', path: 'x/1', data: { nome: 'Alice', tipo: '0' } },
+          { id: '2', path: 'x/2', data: { nome: 'Bob', tipo: '1' } },
+        ],
+        loading: false,
+        error: undefined,
+      } as SnapshotState<SnapshotRow<{ nome?: string; tipo?: string }>[]>,
+    },
+    pushSpy: vi.fn(),
+    searchParamsRef: { current: new URLSearchParams() },
+    buildPipelineSpy: vi.fn(() => ({ __pipeline: true })),
+    // Flip to false in a test to exercise the classic-query fallback path.
+    pipelineSupportedRef: { current: true },
+  }),
+);
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
@@ -51,7 +55,7 @@ vi.mock('@delfrance/data/pipeline-queries', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/data/pipeline-queries')>();
   return {
     ...actual,
-    isPipelineSupported: (_db: unknown) => true,
+    isPipelineSupported: (_db: unknown) => pipelineSupportedRef.current,
     buildPipeline: buildPipelineSpy,
   };
 });
@@ -98,6 +102,7 @@ describe('TableView', () => {
     // The URL-sync effect mutates the URL via history.replaceState; reset it
     // so one case's query string doesn't bleed into the next.
     window.history.replaceState(null, '', '/clientes');
+    pipelineSupportedRef.current = true;
   });
 
   it('renders one header per non-unknown field by default', () => {
@@ -337,5 +342,192 @@ describe('TableView', () => {
     expect(button.hasAttribute('disabled')).toBe(false);
     fireEvent.click(button);
     expect(run).toHaveBeenCalled();
+  });
+
+  describe('meta.defaultQuery', () => {
+    const metaBase = {
+      collectionPath: 'tests',
+      permissions: { read: 0n, write: 0n, delete: 0n },
+    } as const;
+
+    it('seeds the pipeline orderBy and limit from meta.defaultQuery', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' }], limit: 25 },
+          }}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orderBy: [{ field: 'nome', direction: 'asc' }],
+          limit: 25,
+        }),
+      );
+    });
+
+    it('first header click flips the meta-default ascending sort to descending', () => {
+      // Regression: with the default sort coming from meta (not the legacy
+      // orderBy prop), the column shows ascending but `sort` state is still
+      // undefined. toggleSort must flip relative to the *displayed* sort, so
+      // one click goes to desc — not re-set asc (a visual no-op).
+      const replaceState = vi.spyOn(window.history, 'replaceState');
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' }], limit: 50 },
+          }}
+        />,
+      );
+      fireEvent.click(screen.getByText('Nome'));
+      expect(replaceState).toHaveBeenCalledWith(null, '', '/clientes?sort=nome%3Adesc');
+      replaceState.mockRestore();
+    });
+
+    it('lets the pageSize prop override meta.defaultQuery.limit', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          pageSize={10}
+          meta={{
+            ...metaBase,
+            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' }], limit: 25 },
+          }}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ limit: 10 }),
+      );
+    });
+
+    it('prepends literal base filters and binds param filters from queryParams', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          queryParams={{ tipo: '1' }}
+          meta={{
+            ...metaBase,
+            defaultQuery: {
+              where: [{ field: 'tipo', param: true }],
+              orderBy: [{ field: 'nome', direction: 'asc' }],
+              limit: 50,
+            },
+          }}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          filters: [{ field: 'tipo', op: 'eq', value: '1' }],
+        }),
+      );
+    });
+
+    it('keeps projection enabled when every visible virtual column declares dependsOn', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          virtualColumns={[
+            { key: 'v1', label: 'V1', dependsOn: ['extra'], renderCell: () => null },
+          ]}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          select: expect.arrayContaining(['nome', 'tipo', 'observacoes', 'extra']),
+        }),
+      );
+    });
+
+    it('disables projection when a visible virtual column omits dependsOn', () => {
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          virtualColumns={[{ key: 'v1', label: 'V1', renderCell: () => null }]}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ select: undefined }),
+      );
+    });
+
+    it('"Carregar mais" grows the query limit by the page size', () => {
+      // 2 rows in the snapshot === pageSize 2 → the page looks full → button.
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          pageSize={2}
+        />,
+      );
+      const button = screen.getByRole('button', { name: 'Carregar mais' });
+      buildPipelineSpy.mockClear();
+      fireEvent.click(button);
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ limit: 4 }),
+      );
+    });
+
+    it('applies column filters client-side on the classic-query fallback path', () => {
+      // No Pipelines support → fromQuery (also stubbed to snapState) feeds the
+      // rows; the server didn't filter, so TableView must narrow them itself.
+      pipelineSupportedRef.current = false;
+      searchParamsRef.current = new URLSearchParams('nome=contains:alice');
+      wrap(<TableView schema={testSchema} collection={fakeCollection()} db={{} as never} />);
+      expect(screen.getByText('Alice')).toBeTruthy();
+      expect(screen.queryByText('Bob')).toBeNull();
+      searchParamsRef.current = new URLSearchParams();
+    });
+
+    it('throws when a declared param has no queryParams binding', () => {
+      // The component throws during render (baseFilters memo) — an unbound
+      // filter would silently widen the list to the whole collection.
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      expect(() =>
+        wrap(
+          <TableView
+            schema={testSchema}
+            collection={fakeCollection()}
+            db={{} as never}
+            meta={{
+              ...metaBase,
+              defaultQuery: {
+                where: [{ field: 'tipo', param: true }],
+                orderBy: [{ field: 'nome', direction: 'asc' }],
+                limit: 50,
+              },
+            }}
+          />,
+        ),
+      ).toThrow(/param "tipo"/);
+      spy.mockRestore();
+    });
   });
 });

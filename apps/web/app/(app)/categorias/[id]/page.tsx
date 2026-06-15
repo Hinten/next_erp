@@ -15,7 +15,7 @@ export default function CategoriaPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const { user } = useAuth();
-  const { allowed: canWrite } = usePermission(PERM.produto.write);
+  const { allowed: canWrite } = usePermission(PERM.categoria.write);
   const db = getFirebaseFirestore();
 
   async function handleDelete(id: string) {

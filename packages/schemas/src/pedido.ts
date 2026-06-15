@@ -213,6 +213,10 @@ export const pedidoMeta: CollectionMetadata = {
     { path: 'pedidos/{pedidoId}/frete', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/nfev4', onDelete: 'cascade' },
   ],
+  defaultQuery: {
+    orderBy: [{ field: 'numero', direction: 'desc' }],
+    limit: 50,
+  },
 };
 
 export const pedido = { schema: pedidoSchema, meta: pedidoMeta };
