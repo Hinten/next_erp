@@ -372,6 +372,28 @@ describe('TableView', () => {
       );
     });
 
+    it('first header click flips the meta-default ascending sort to descending', () => {
+      // Regression: with the default sort coming from meta (not the legacy
+      // orderBy prop), the column shows ascending but `sort` state is still
+      // undefined. toggleSort must flip relative to the *displayed* sort, so
+      // one click goes to desc — not re-set asc (a visual no-op).
+      const replaceState = vi.spyOn(window.history, 'replaceState');
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          meta={{
+            ...metaBase,
+            defaultQuery: { orderBy: [{ field: 'nome', direction: 'asc' }], limit: 50 },
+          }}
+        />,
+      );
+      fireEvent.click(screen.getByText('Nome'));
+      expect(replaceState).toHaveBeenCalledWith(null, '', '/clientes?sort=nome%3Adesc');
+      replaceState.mockRestore();
+    });
+
     it('lets the pageSize prop override meta.defaultQuery.limit', () => {
       buildPipelineSpy.mockClear();
       wrap(

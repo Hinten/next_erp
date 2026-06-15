@@ -344,14 +344,14 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     [selectFields],
   );
 
-  // Clicking a header cycles that column's sort: a different column starts
-  // ascending; the active column flips asc ⇄ desc.
+  // Clicking a header cycles that column's sort. Flip relative to the
+  // *displayed* sort (`displaySort`, which includes the meta default), not the
+  // raw `sort` state — otherwise the first click on a column shown ascending
+  // by the meta default would re-set ascending (a visual no-op) instead of
+  // going to descending. A different column starts ascending.
   function toggleSort(fieldKey: string) {
-    setSort((cur) =>
-      cur?.field === fieldKey
-        ? { field: fieldKey, direction: cur.direction === 'asc' ? 'desc' : 'asc' }
-        : { field: fieldKey, direction: 'asc' },
-    );
+    const current = displaySort?.field === fieldKey ? displaySort.direction : undefined;
+    setSort({ field: fieldKey, direction: current === 'asc' ? 'desc' : 'asc' });
   }
 
   // --- Data source selection ----------------------------------------------
