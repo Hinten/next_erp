@@ -27,4 +27,11 @@ export class DocumentRegistry {
   }
 }
 
-export { brDocumentProvider, validateCPF, validateCNPJ, formatCPF, formatCNPJ } from './br';
+export {
+  brDocumentProvider,
+  validateCPF,
+  validateCNPJ,
+  validateCpfCnpj,
+  formatCPF,
+  formatCNPJ,
+} from './br';

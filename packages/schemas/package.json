@@ -12,6 +12,7 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
+    "@delfrance/core": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

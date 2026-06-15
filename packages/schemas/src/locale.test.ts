@@ -32,7 +32,7 @@ describe('Zod pt-BR locale (configured by the schemas barrel)', () => {
     const result = clienteSchema.shape.cpf_cnpj.safeParse('12a45');
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.error.issues[0]?.message).toBe('apenas números');
+      expect(result.error.issues[0]?.message).toBe('apenas números e letras maiúsculas');
     }
   });
 });
