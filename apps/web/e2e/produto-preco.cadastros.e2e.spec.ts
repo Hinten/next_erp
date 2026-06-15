@@ -10,7 +10,7 @@ import {
   seedListasDePreco,
   seedProdutoComFilho,
 } from './_helpers/seed-data';
-import { clickSave, fillField } from './helpers/object-view';
+import { clickSave, typeMoney } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -62,7 +62,7 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
 
   test('writes the precos map wire shape and the initial history record', async ({ page }) => {
     await openPrecoTab(page);
-    await page.getByRole('textbox', { name: varejoNome }).fill('30');
+    await typeMoney(page, varejoNome, '30');
     await clickSave(page, 'Salvar alterações');
 
     await expect
@@ -81,7 +81,7 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
 
   test('records valorOriginal → valorFinal on a price change', async ({ page }) => {
     await openPrecoTab(page);
-    await page.getByRole('textbox', { name: varejoNome }).fill('35');
+    await typeMoney(page, varejoNome, '35');
     await clickSave(page, 'Salvar alterações');
 
     await expect
@@ -98,7 +98,7 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
   test('recalculates the price from custo via the lista formulas', async ({ page }) => {
     await openPrecoTab(page);
     // Custo typed but UNSAVED must feed the recalc (live form read).
-    await fillField(page, 'Custo', '10');
+    await typeMoney(page, 'Custo', '10');
 
     // The formula-less lista cannot recalc; the varejo one can.
     await expect(page.getByRole('button', { name: `Recalcular ${atacadoNome}` })).toBeDisabled();
@@ -120,7 +120,7 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
 
     // And a fresh save keeps them in sync after another change.
     await openPrecoTab(page);
-    await page.getByRole('textbox', { name: varejoNome }).fill('40');
+    await typeMoney(page, varejoNome, '40');
     await clickSave(page, 'Salvar alterações');
     await expect
       .poll(async () => (await getProdutoData(childId))?.precos, { timeout: 15_000 })
@@ -144,7 +144,7 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
 
   test('rejects a price of 0 (min R$ 0,01) without silently dropping it', async ({ page }) => {
     await openPrecoTab(page);
-    await page.getByRole('textbox', { name: varejoNome }).fill('0');
+    await typeMoney(page, varejoNome, '0');
     await clickSave(page, 'Salvar alterações');
     // Validation blocks the save and shows the row error — the value is NOT
     // silently dropped, and the persisted price stays at 40 (from the test above).
