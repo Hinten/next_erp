@@ -57,7 +57,7 @@ const NAV: NavEntry[] = [
     children: [
       { href: '/produtos', label: 'Produtos', perm: PERM.produto.read },
       { href: '/variacoes', label: 'Variações', perm: PERM.produto.read },
-      { href: '/categorias', label: 'Categorias', perm: PERM.produto.read },
+      { href: '/categorias', label: 'Categorias', perm: PERM.categoria.read },
       { href: '/medidas', label: 'Medidas', perm: PERM.produto.read },
       { href: '/listas-de-precos', label: 'Lista de Precos', perm: PERM.produto.read },
       { href: '/depositos', label: 'Depositos de Estoque', perm: PERM.estoque.read },

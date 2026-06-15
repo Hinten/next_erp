@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
 
-const PERM_REGRA_IMPOSTO_READ = 1n << 81n;
-const PERM_REGRA_IMPOSTO_WRITE = 1n << 82n;
-const PERM_REGRA_IMPOSTO_DELETE = 1n << 83n;
+// Mirrors PERM.regraImposto in packages/auth/src/permissions.ts (byte 12;
+// relocated from the mis-assigned 81-83 — 81-82 belong to arquivo).
+const PERM_REGRA_IMPOSTO_READ = 1n << 99n;
+const PERM_REGRA_IMPOSTO_WRITE = 1n << 100n;
+const PERM_REGRA_IMPOSTO_DELETE = 1n << 101n;
 
 /**
  * RegraImposto — subcoleção

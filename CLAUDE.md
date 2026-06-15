@@ -22,17 +22,23 @@ engine) — each gated on `ci.yml` passing first. See "When making changes".
 
 ## Critical rules
 
-1. **Do NOT deploy `firestore.rules` as-is**. The committed `firestore.rules`
-   at the repo root is a deny-all placeholder — it exists so `firebase.json`
-   resolves. A future phase wires up the real ruleset (generated or
-   hand-written); `packages/rules-gen/` is planned and does not exist yet.
-   Don't hand-author a real ruleset without coordinating that phase.
+1. **`firestore.rules` is GENERATED — never hand-edit, never deploy
+   unilaterally**. `packages/rules-gen` emits it from the Zod collection
+   metadata (`pnpm --filter @delfrance/rules-gen gen:rules`); `ci-rules.yml`
+   fails on drift. Deploy stays manual/coordinated: production still runs the
+   Flutter-generated ruleset, and the staging e2e namespaces (`e2e_<runId>_*`)
+   are not covered by the generated fixed paths.
 2. **Codegen is deliberately minimal**. The only generator is `firestore.rules`
-   (and only if no npm package suffices). Form widgets, query builders,
-   cascade, JSON converters — all manual TS, no codegen.
-3. **No Firebase emulators**. Tests run against the staging Firebase project
-   (set via `FIREBASE_PROJECT_ID`). Fixture seed/teardown lives in
-   `tools/test-fixtures`; see the `schema-driven-crud` skill for the e2e flow.
+   (`packages/rules-gen`, custom — ADR 0003 found no npm package that fits).
+   Form widgets, query builders, cascade, JSON converters — all manual TS, no
+   codegen.
+3. **No Firebase emulators** — except the two dedicated CI suites. App/e2e
+   tests run against the staging Firebase project (set via
+   `FIREBASE_PROJECT_ID`); fixture seed/teardown lives in `tools/test-fixtures`
+   (see the `schema-driven-crud` skill). The carve-outs: `ci-storage.yml`
+   (`firebase.functions.json`, ports 8080/9199) and `ci-rules.yml`
+   (`firebase.rules.json`, port 8081) run emulator suites against offline demo
+   projects.
 4. **`apps/web` is client-first**. Default to `'use client'`. Server
    Components, Server Actions, route handlers, and middleware are exceptions
    that need explicit justification in PRs (cost + simplicity reasons). The
@@ -67,22 +73,24 @@ packages/
                  zod, react-hook-form, @mantine/dates, @tabler/icons-react)
   schemas/       Zod schemas + collection metadata (single source of truth)
   data/          defineCollection<T>, cascade runtime
-  auth/          Permission helpers, BigInt-encoded claims
+  auth/          Permission helpers, BigInt-encoded claims + d_* rules claims
   core/          money, address, documents, tenant, plugin contracts
   integrations/  Domain sub-packages: NFe, MP, marketplaces, freight (Phase 5)
   plugin-sdk/    Public surface for third-party plugins
+  rules-gen/     firestore.rules generator (gen:rules / gen:rules:check) +
+                 emulator behavior suite (test:rules) + Rules API validation
   config-*/      Shared ESLint/TS configs (config-eslint, config-tsconfig).
                  Prettier config lives at the repo root (prettier.config.mjs).
 tools/
   test-fixtures/  Admin SDK seed/teardown for staging
   migrations/     (empty until Phase 6)
-.github/workflows/  Active CI: ci.yml, ci-nfe.yml, ci-storage.yml, e2e-*.yml
+.github/workflows/  Active CI: ci.yml, ci-nfe.yml, ci-storage.yml, ci-rules.yml, e2e-*.yml
 ```
 
 Root config: `pnpm-workspace.yaml` (globs `apps/*`, `packages/*`,
 `packages/integrations/*`, `tools/*`), `turbo.json`, `tsconfig.base.json`,
-`vitest.workspace.ts`, `firebase.json`, `.changeset/`. `packages/rules-gen/`
-is planned (Phase 1) and not present.
+`vitest.workspace.ts`, `firebase.json` (+ `firebase.functions.json` /
+`firebase.rules.json`, the deploy-isolated emulator configs), `.changeset/`.
 
 ## Common commands
 
@@ -104,7 +112,8 @@ pnpm --filter @delfrance/integrations-app dev
 
 ## When making changes
 
-- New schema → `packages/schemas/<domain>.ts` first; Zod is the source of truth.
+- New schema → `packages/schemas/<domain>.ts` first; Zod is the source of truth. Register the new `{ schema, meta }` domain object in `packages/schemas/src/registry.ts` (`ALL_DOMAINS`) — `registry.test.ts` fails if you forget.
+- **Any `*Meta` permission/path change, PERM change, or validator-whitelist change** → regenerate and commit the ruleset: `pnpm --filter @delfrance/rules-gen gen:rules`. `ci-rules.yml`'s drift check fails otherwise; the snapshot diff in `packages/rules-gen/src/__snapshots__/` shows reviewers the exact rules impact.
 - **Optional Firestore fields**: prefer `z.string().nullable()` over `z.string().nullable().optional()`. Firebase JS SDK v12 rejects `undefined` in `addDoc`/`setDoc` (`Function addDoc() called with invalid data ... Unsupported field value: undefined`). `.nullable()` alone makes the parsed type `T | null` — the field must be present, never `undefined`. Forms default empty inputs to `null`; Firestore stores `null` cleanly. Only use `.optional()` for fields that are truly optional in the wire format (e.g. server-side defaults like `timestamp` that the client never sets).
 - New collection → use `defineCollection({ path, schema })` from `packages/data`. Do not write Firestore SDK calls in app code unless `defineCollection` cannot express it.
 - New schema-driven CRUD screen (list/detail/create with `TableView` + `ObjectView`) → follow the `schema-driven-crud` skill.
