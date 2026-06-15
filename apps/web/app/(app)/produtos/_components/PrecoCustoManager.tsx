@@ -19,7 +19,7 @@ import { IconCalculator, IconHistory } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { type Firestore, getDocs } from 'firebase/firestore';
 import { useFormContext } from 'react-hook-form';
-import { buildQuery, limit } from '@delfrance/data';
+import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { format, money } from '@delfrance/core';
 import {
   type ListaDePrecos,
@@ -152,8 +152,14 @@ export function PrecoCustoManager({
     setHistory({ title, loading: true, rows: [], error: null });
     try {
       if (kind === 'preco') {
+        // Order by timestamp desc server-side so the 100-doc cap keeps the
+        // NEWEST records (a bare `limit` returns an arbitrary subset); the
+        // client-side sort below stays as a defensive tiebreak.
         const snap = await getDocs(
-          buildQuery(historicoPrecoCollection.ref(db, { produtoId }), [limit(100)]),
+          buildQuery(historicoPrecoCollection.ref(db, { produtoId }), [
+            orderByField('timestamp', 'desc'),
+            limit(100),
+          ]),
         );
         const rows = snap.docs
           .map((d) => ({ id: d.id, data: d.data() }))
@@ -171,7 +177,10 @@ export function PrecoCustoManager({
         setHistory({ title, loading: false, rows, error: null });
       } else {
         const snap = await getDocs(
-          buildQuery(historicoCustoCollection.ref(db, { produtoId }), [limit(100)]),
+          buildQuery(historicoCustoCollection.ref(db, { produtoId }), [
+            orderByField('timestamp', 'desc'),
+            limit(100),
+          ]),
         );
         const rows = snap.docs
           .map((d) => ({ id: d.id, data: d.data() }))

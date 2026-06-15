@@ -20,7 +20,7 @@ export const historicoPrecoSchema = z
     listaDePrecoHistoricoOuterRef: z.string().min(1),
     valorOriginal: z.number().nullable().default(null),
     valorFinal: z.number().nullable().default(null),
-    timestamp: z.number().nullable().default(null),
+    timestamp: z.number().int().nullable().default(null),
   })
   .passthrough();
 
@@ -34,7 +34,7 @@ export type HistoricoPreco = z.infer<typeof historicoPrecoSchema>;
 export const historicoCustoSchema = z
   .object({
     valor: z.number().min(0),
-    timestamp: z.number().nullable().default(null),
+    timestamp: z.number().int().nullable().default(null),
   })
   .passthrough();
 
