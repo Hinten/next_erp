@@ -110,8 +110,7 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
     await expect
       .poll(async () => (await getProdutoData(parentId))?.precos, { timeout: 15_000 })
       .toEqual({ [varejoId]: { valor: 25 } });
-    // DIAGNOSTIC: assert the child propagated here so this test's trace (with
-    // the [ONAFTERSAVE]/[PROPAGATE] console logs) is retained on failure.
+    // The recalc save must propagate the new price to the variation child too.
     await expect
       .poll(async () => (await getProdutoData(childId))?.precos, { timeout: 15_000 })
       .toEqual({ [varejoId]: { valor: 25 } });

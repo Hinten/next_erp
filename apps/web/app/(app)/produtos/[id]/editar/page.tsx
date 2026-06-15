@@ -287,16 +287,6 @@ export default function EditarProdutoPage() {
           // precos (plus their initial history records).
           const newPrecos = (values.precos as PrecosMap) ?? null;
           let precosChanged = !lastSavedPrecos.current.ready;
-          console.warn(
-            '[ONAFTERSAVE]',
-            JSON.stringify({
-              id,
-              newPrecos,
-              lastReady: lastSavedPrecos.current.ready,
-              lastValue: lastSavedPrecos.current.value,
-              custo: values.custo,
-            }),
-          );
           if (lastSavedPrecos.current.ready) {
             const changes = diffPrecos(lastSavedPrecos.current.value, newPrecos);
             precosChanged = changes.length > 0;

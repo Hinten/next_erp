@@ -1,4 +1,4 @@
-import { type Firestore, getDocs, writeBatch } from 'firebase/firestore';
+import { type Firestore, getDocsFromServer, writeBatch } from 'firebase/firestore';
 import { buildQuery, whereEqual } from '@delfrance/data';
 import { type PrecosMap, samePrecos } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
@@ -19,26 +19,21 @@ const BATCH_LIMIT = 499;
  * live children snapshot). Children created in this same save already carry the
  * parent's precos (set by the VariationManager flush), so they never differ
  * here.
+ *
+ * The children read is forced to the SERVER (`getDocsFromServer`): on a freshly
+ * navigated editor the SDK's local cache for this query can still be cold, and
+ * a cache-served read would return zero children — silently skipping the
+ * propagation, leaving the child at its previous price.
  */
 export async function propagateParentPrecosToChildren(
   db: Firestore,
   parentId: string,
   precos: PrecosMap,
 ): Promise<void> {
-  const snap = await getDocs(
+  const snap = await getDocsFromServer(
     buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', parentId)]),
   );
   const stale = snap.docs.filter((d) => !samePrecos(d.data().precos ?? null, precos));
-  console.warn(
-    '[PROPAGATE]',
-    JSON.stringify({
-      parentId,
-      precos,
-      found: snap.docs.length,
-      childPrecos: snap.docs.map((d) => d.data().precos ?? null),
-      stale: stale.map((d) => d.id),
-    }),
-  );
   for (let i = 0; i < stale.length; i += BATCH_LIMIT) {
     const batch = writeBatch(db);
     for (const d of stale.slice(i, i + BATCH_LIMIT)) {
