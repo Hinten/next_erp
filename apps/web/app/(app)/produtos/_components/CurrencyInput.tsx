@@ -5,18 +5,19 @@ import { NumberInput } from '@mantine/core';
 
 /**
  * Coerce Mantine `NumberInput`'s `onChange` payload to a number (or `null` when
- * empty). With pt-BR separators the control hands back a FORMATTED STRING
- * ("R$ 1.234,56") — and Playwright `.fill()` always yields a string — so a
- * naive `typeof v === 'number'` check silently drops every value. Strip the
- * prefix and thousands dots, turn the decimal comma into a dot, then parse.
+ * empty). The control hands back a FORMATTED STRING with a comma decimal (and
+ * Playwright `.fill()` always yields a string), so a naive
+ * `typeof v === 'number'` check silently drops every value. Drop the prefix,
+ * fold any thousands dots that precede a comma, then turn the decimal comma
+ * into a dot (a lone dot is also accepted as the decimal separator).
  */
-function parseBrl(v: number | string): number | null {
+export function parseBrl(v: number | string): number | null {
   if (typeof v === 'number') return Number.isFinite(v) ? v : null;
   if (typeof v !== 'string') return null;
   const cleaned = v
     .replace(/[^\d.,-]/g, '') // drop "R$", spaces, NBSP
-    .replace(/\./g, '') // thousands separator
-    .replace(',', '.'); // decimal separator → dot
+    .replace(/\.(?=.*,)/g, '') // dots before a comma are thousands → drop
+    .replace(',', '.'); // decimal comma → dot
   if (cleaned === '' || cleaned === '-') return null;
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : null;
@@ -37,11 +38,14 @@ export interface CurrencyInputProps {
 }
 
 /**
- * BRL money input (pt-BR): `R$ ` prefix, comma decimal separator, dot thousands
- * grouping, and a FIXED two-decimal scale so values loaded from Firestore show
- * as e.g. `R$ 30,00` (not `R$ 30`). Negatives are blocked. Clamping is left to
- * Zod validation (`clampBehavior="none"`) so an invalid 0 surfaces as a form
- * error instead of being silently corrected. Emits `null` when cleared.
+ * BRL money input (pt-BR): `R$ ` prefix, comma decimal separator, up to two
+ * decimal places. Either `,` or `.` is accepted as the decimal key. We do NOT
+ * use `fixedDecimalScale` or `thousandSeparator`: with a controlled value they
+ * re-format mid-typing and react-number-format then re-reads the padded `,00`
+ * as integer digits — that mis-scaled every keystroke (×100) and blocked
+ * decimal entry. Negatives are blocked; clamping is left to Zod
+ * (`clampBehavior="none"`) so an invalid 0 surfaces as a form error instead of
+ * being silently corrected. Emits `null` when cleared.
  */
 export function CurrencyInput({
   value,
@@ -65,9 +69,8 @@ export function CurrencyInput({
       onChange={(v) => onChange(parseBrl(v))}
       prefix="R$ "
       decimalScale={2}
-      fixedDecimalScale
       decimalSeparator=","
-      thousandSeparator="."
+      allowedDecimalSeparators={[',', '.']}
       allowNegative={false}
       clampBehavior="none"
       hideControls
