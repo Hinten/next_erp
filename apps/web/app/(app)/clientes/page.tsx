@@ -19,6 +19,7 @@ import {
   type Cliente,
   type TipoCliente,
   TIPO_CLIENTE_LABELS,
+  clienteMeta,
   clienteSchema,
 } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
@@ -133,9 +134,8 @@ export default function ClientesPage() {
           schema={clienteSchema}
           collection={clienteCollection}
           db={db}
+          meta={clienteMeta}
           defaultColumns={['nome', 'tipo', 'cpf_cnpj', 'email']}
-          orderBy={{ field: 'nome', direction: 'asc' }}
-          pageSize={50}
           rowHref={(id) => `/clientes/${id}`}
           queryOverride={queryOverride}
           renderNewButton={() => (

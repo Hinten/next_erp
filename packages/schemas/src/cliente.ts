@@ -99,6 +99,10 @@ export const clienteMeta: CollectionMetadata = {
     delete: PERM_CLIENTE_DELETE,
   },
   cascade: [{ path: 'clientes/{clienteId}/enderecos', onDelete: 'cascade' }],
+  defaultQuery: {
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
+  },
 };
 
 export const cliente = { schema: clienteSchema, meta: clienteMeta };

@@ -112,6 +112,14 @@ export const integracaoMeta: CollectionMetadata = {
     write: PERM_INTEGRACAO_WRITE,
     delete: PERM_INTEGRACAO_DELETE,
   },
+  // The `integracao` collection holds every channel type; each channel screen
+  // (e.g. Balcão) lists a single `tipo` slice supplied via TableView's
+  // `queryParams`.
+  defaultQuery: {
+    where: [{ field: 'tipo', param: true }],
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
+  },
 };
 
 export const integracao = { schema: integracaoSchema, meta: integracaoMeta };

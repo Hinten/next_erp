@@ -1,0 +1,69 @@
+import type { SnapshotRow } from '@delfrance/data/hooks';
+import { buildSimilarityRegExp } from '@delfrance/data/pipeline-queries';
+import type { ColumnFilterValue } from './ColumnFilter';
+
+/**
+ * Apply per-column filters to already-fetched rows, matching the Pipeline
+ * `filters` semantics (see `filterExpr` in
+ * packages/data/src/pipeline-queries.ts). Used on the non-Pipeline row sources
+ * — the classic `buildQuery` fallback and `queryOverride` — which can't push
+ * column filters to the server, so without this they were silently ignored.
+ *
+ * Scope note: filtering happens within the already-fetched page window
+ * (the query's `limit`), not across the whole collection — same as any
+ * client-side narrowing of a paged result.
+ */
+export function applyColumnFilters<T>(
+  rows: SnapshotRow<T>[],
+  filters: Record<string, ColumnFilterValue>,
+): SnapshotRow<T>[] {
+  const entries = Object.entries(filters);
+  if (entries.length === 0) return rows;
+  // Compile each filter to a value predicate ONCE per pass: a `contains` filter
+  // builds a similarity RegExp that depends only on the filter value, not the
+  // row, so compiling it per row (over a whole page) is wasted work.
+  const predicates = entries.map(([field, f]) => [field, compileFilter(f)] as const);
+  return rows.filter((row) =>
+    predicates.every(([field, test]) => test((row.data as Record<string, unknown>)[field])),
+  );
+}
+
+/**
+ * Build a value predicate for a single column filter. Mirrors the Pipeline
+ * `filterExpr` semantics; any per-value derivation (the `contains` RegExp,
+ * numeric coercion of the bound) happens here, once, instead of per row.
+ */
+function compileFilter(f: ColumnFilterValue): (value: unknown) => boolean {
+  switch (f.op) {
+    case 'contains': {
+      // Case- and accent-insensitive substring, like regexContains server-side.
+      const re = buildSimilarityRegExp(String(f.value));
+      return (value) => (value == null ? false : re ? re.test(String(value)) : true);
+    }
+    case 'startsWith': {
+      const prefix = String(f.value);
+      return (value) => value != null && String(value).startsWith(prefix);
+    }
+    case 'eq':
+      // eq null matches missing/null; otherwise strict equality.
+      return (value) => (f.value === null ? value == null : value === f.value);
+    case 'lt': {
+      const bound = Number(f.value);
+      return (value) => value != null && Number(value) < bound;
+    }
+    case 'lte': {
+      const bound = Number(f.value);
+      return (value) => value != null && Number(value) <= bound;
+    }
+    case 'gt': {
+      const bound = Number(f.value);
+      return (value) => value != null && Number(value) > bound;
+    }
+    case 'gte': {
+      const bound = Number(f.value);
+      return (value) => value != null && Number(value) >= bound;
+    }
+    default:
+      return () => true;
+  }
+}

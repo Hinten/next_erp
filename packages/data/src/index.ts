@@ -16,6 +16,8 @@ export {
   groupQuery,
 } from './queries';
 
+export { defaultQueryConstraints, type DefaultQueryOptions } from './defaultQuery';
+
 export {
   PipelineUnsupportedError,
   buildPipeline,
