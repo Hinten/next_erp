@@ -1,7 +1,9 @@
 /**
- * Map known Melhor Envio / context errors to HTTP responses. Routes call
- * `isMelhorEnvioError` in a catch (which also rethrows non-ME errors) and
- * pass the narrowed error here.
+ * Map known Melhor Envio / context errors to HTTP responses. In a route's
+ * catch, narrow with the `isMelhorEnvioError` type guard (it only tests the
+ * error; it does not throw) and pass the matched error here. The route's
+ * own catch rethrows anything the guard rejects, so non-ME failures surface
+ * as 500s instead of being swallowed.
  */
 import { NextResponse } from 'next/server';
 import {

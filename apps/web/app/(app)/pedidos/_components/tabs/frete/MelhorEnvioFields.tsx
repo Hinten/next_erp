@@ -119,11 +119,16 @@ export function MelhorEnvioFields({
 
   function onSelectQuote(value: string | null) {
     if (value == null) {
+      // Clear every quote-derived field so no metadata from a previous
+      // selection lingers after the user clears the option.
       form.setValue(fretePath('externalOptionId'), null, { shouldDirty: true });
+      form.setValue(fretePath('externalOptionIntegracao'), null, { shouldDirty: true });
       form.setValue(fretePath('externalOptionData'), null, { shouldDirty: true });
+      form.setValue(fretePath('externalOptionSelectionDate'), null, { shouldDirty: true });
       form.setValue(fretePath('valorCobrado'), 0, { shouldDirty: true });
       form.setValue(fretePath('custoCalculado'), 0, { shouldDirty: true });
       form.setValue(fretePath('custoFinal'), 0, { shouldDirty: true });
+      form.setValue(fretePath('dataPrevisaoEntrega'), null, { shouldDirty: true });
       return;
     }
     const option = quotes?.find((q) => String(q.id) === value);
