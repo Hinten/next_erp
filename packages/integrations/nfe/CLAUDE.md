@@ -154,6 +154,14 @@ re-wraps the PKCS#12 with a fresh 256-bit random password —
 non-destructive (the X.509 cert + RSA key are byte-identical; only
 the PKCS#12 wrapper changes).
 
+To exercise the per-filial cert UPLOAD flow locally, generate a
+throwaway self-signed `.pfx` with `pnpm gen:test-cert --
+--cnpj=<filial CNPJ> --senha=<senha> --out=cert-teste.pfx`
+(`scripts/gen-test-cert.mjs`; same in-memory generator as
+`test/helpers/pfx-fixture.ts`). The CN's CNPJ must match the filial
+(the upload route's rejection-213 guard). **Self-signed — validates
+the upload/storage path only, never SEFAZ emission.**
+
 ## SN-only tribute engine
 
 Phase A is Simples Nacional only (`src/tribute/imposto.ts:75` throws

@@ -20,6 +20,7 @@
     "gen:nfe-types": "node src/codegen/generate.mjs",
     "render:danfe-samples": "tsx scripts/render-danfe-samples.ts",
     "fetch:sefaz-ca": "node scripts/fetch-sefaz-chain.mjs",
+    "gen:test-cert": "node scripts/gen-test-cert.mjs",
     "rotate:pfx-password": "tsx scripts/rotate-pfx-password.ts",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
