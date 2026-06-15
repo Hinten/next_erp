@@ -13,17 +13,23 @@ import {
   MelhorEnvioValidationError,
 } from '@delfrance/integrations-freight-br';
 
-import { MelhorEnvioContaNotConfiguredError } from './melhorEnvio';
+import { MelhorEnvioConfigError, MelhorEnvioContaNotConfiguredError } from './melhorEnvio';
 
-export function isMelhorEnvioError(
-  err: unknown,
-): err is MelhorEnvioError | MelhorEnvioContaNotConfiguredError {
-  return err instanceof MelhorEnvioError || err instanceof MelhorEnvioContaNotConfiguredError;
+type KnownError = MelhorEnvioError | MelhorEnvioContaNotConfiguredError | MelhorEnvioConfigError;
+
+export function isMelhorEnvioError(err: unknown): err is KnownError {
+  return (
+    err instanceof MelhorEnvioError ||
+    err instanceof MelhorEnvioContaNotConfiguredError ||
+    err instanceof MelhorEnvioConfigError
+  );
 }
 
-export function melhorEnvioErrorResponse(
-  err: MelhorEnvioError | MelhorEnvioContaNotConfiguredError,
-): NextResponse {
+export function melhorEnvioErrorResponse(err: KnownError): NextResponse {
+  if (err instanceof MelhorEnvioConfigError) {
+    // Server misconfig (missing app credentials) — not the caller's fault.
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
   if (err instanceof MelhorEnvioContaNotConfiguredError) {
     return NextResponse.json({ error: err.message }, { status: 404 });
   }

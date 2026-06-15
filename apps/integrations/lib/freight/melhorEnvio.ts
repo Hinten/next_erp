@@ -30,6 +30,20 @@ export class MelhorEnvioContaNotConfiguredError extends Error {
   }
 }
 
+/**
+ * Server is misconfigured — the app-wide Melhor Envio OAuth credentials
+ * (`MELHOR_ENVIO_CLIENT_ID` / `MELHOR_ENVIO_CLIENT_SECRET`) aren't set. These
+ * identify the single registered ME application (one app, many connected
+ * accounts), so they live in env / Cloud Secret Manager, not per-integration.
+ * Maps to HTTP 500.
+ */
+export class MelhorEnvioConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MelhorEnvioConfigError';
+  }
+}
+
 const DEFAULT_USER_AGENT = '@delfrance/erp-next (contato@delfrance.com.br)';
 
 /** Sandbox unless `MELHOR_ENVIO_SANDBOX=false` is set (prod must opt out). */
@@ -71,16 +85,21 @@ export async function loadMelhorEnvioContext(
       `Integração ${intFreteId} não é do tipo Melhor Envio.`,
     );
   }
-  if (!conta.client_id || !conta.client_secret) {
-    throw new MelhorEnvioContaNotConfiguredError(
-      'Configure Client ID e Secret na integração antes de conectar.',
+  // App-wide ME application credentials — one registered ME app serves every
+  // connected account (each integration stores its own OAuth token). Read from
+  // env (Cloud Secret Manager in prod), never per-integration.
+  const clientId = process.env.MELHOR_ENVIO_CLIENT_ID;
+  const clientSecret = process.env.MELHOR_ENVIO_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    throw new MelhorEnvioConfigError(
+      'MELHOR_ENVIO_CLIENT_ID / MELHOR_ENVIO_CLIENT_SECRET não configurados no ambiente.',
     );
   }
 
   const oauthConfig: OAuthConfig = {
     baseUrl: melhorEnvioBaseUrl(isSandbox()),
-    clientId: conta.client_id,
-    clientSecret: conta.client_secret,
+    clientId,
+    clientSecret,
     redirectUri: melhorEnvioRedirectUri(),
     userAgent: process.env.MELHOR_ENVIO_USER_AGENT ?? DEFAULT_USER_AGENT,
   };

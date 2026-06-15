@@ -73,9 +73,12 @@ export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = 
     tipo: 'melhorEnvios',
     titulo: 'Melhor Envios',
     tituloNovo: 'Nova conta Melhor Envios',
-    descricao: 'Contas Melhor Envios — credenciais OAuth e endereço de origem das cotações.',
+    descricao:
+      'Contas Melhor Envios — endereço de origem das cotações. As credenciais do app (Client ID/Secret) ficam no ambiente, não por conta.',
     novoLabel: 'Nova conta',
-    extraExcluded: ['faixaCep'],
+    // client_id/client_secret are app-wide ME credentials (one registered ME
+    // application), read from env on the server — not collected per-integration.
+    extraExcluded: ['faixaCep', 'client_id', 'client_secret'],
     sections: [SECTION.geral, SECTION.enderecoOrigem, SECTION.horarios],
   },
 };
