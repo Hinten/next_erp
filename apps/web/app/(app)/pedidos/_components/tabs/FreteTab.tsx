@@ -24,6 +24,7 @@ import { GenericFreteFields } from './frete/GenericFreteFields';
 import { RetiradaFields } from './frete/RetiradaFields';
 import { MotoboyFields } from './frete/MotoboyFields';
 import { FobFields } from './frete/FobFields';
+import { MelhorEnvioFields } from './frete/MelhorEnvioFields';
 import { MarketplaceReadOnly } from './frete/MarketplaceReadOnly';
 
 const MARKETPLACE_TIPOS = new Set(['mercadoLivre', 'lojaIntegrada', 'amz', 'magalu', 'shopee']);
@@ -137,13 +138,13 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
         return <FobFields form={form} disabled={disabled} />;
       case 'melhorEnvios':
         return (
-          <Stack gap="sm">
-            <Alert color="blue" variant="light">
-              O cálculo e a compra de etiquetas Melhor Envio chegam em uma próxima fase — por
-              enquanto os campos podem ser preenchidos manualmente.
-            </Alert>
-            <GenericFreteFields form={form} disabled={disabled} />
-          </Stack>
+          <MelhorEnvioFields
+            form={form}
+            disabled={disabled}
+            integracao={integracaoDoc.data}
+            cepDestino={cepDestino}
+            intFreteId={integracaoDoc.id}
+          />
         );
       default:
         return <GenericFreteFields form={form} disabled={disabled} />;
