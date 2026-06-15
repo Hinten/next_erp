@@ -115,8 +115,20 @@ export function useTableUrlState(
   );
 
   // filters changes shape per click; bucket it into a deterministic string so
-  // downstream memos only rebuild when content actually changes.
-  const filtersSerial = useMemo(() => JSON.stringify(filters), [filters]);
+  // downstream memos only rebuild when content actually changes. Keys are
+  // sorted first: `setFilters` rebuilds the object with `{ ...cur }` + `delete`
+  // + re-add, which reorders keys without changing content — a plain
+  // `JSON.stringify` would then churn the serial (and re-run the URL-sync /
+  // requery effects) on a no-op edit.
+  const filtersSerial = useMemo(
+    () =>
+      JSON.stringify(
+        Object.keys(filters)
+          .sort()
+          .map((k) => [k, filters[k]]),
+      ),
+    [filters],
+  );
 
   useEffect(() => {
     const params = new URLSearchParams();

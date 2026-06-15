@@ -764,10 +764,15 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           )}
 
           {/* A full page implies there may be more — offer to grow the window.
-              `rows.length === effectiveLimit` is the standard "page was full"
-              heuristic (it over-offers by one click when the count is an exact
-              multiple, which is harmless). */}
-          {!snap.loading && rows && rows.length === effectiveLimit && (
+              Gauge "page was full" on the *fetched* window (`snap.data`), not
+              the post-filter `rows`: client-side column filtering (the fallback
+              / queryOverride paths) can shrink `rows` below the limit even when
+              the server returned a full page, which would wrongly hide the
+              button and strand matches on later pages. The standard heuristic
+              over-offers by one click on an exact multiple, which is harmless.
+              Hidden entirely under `queryOverride`: that query is caller-owned
+              and ignores `effectiveLimit`, so the button couldn't fetch more. */}
+          {!snap.loading && !queryOverride && snap.data && snap.data.length === effectiveLimit && (
             <Center>
               <Button variant="subtle" onClick={() => setPages((p) => p + 1)}>
                 Carregar mais
