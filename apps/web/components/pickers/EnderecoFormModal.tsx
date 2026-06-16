@@ -71,34 +71,41 @@ export function EnderecoFormModal({
       title={recordId ? 'Editar endereço' : 'Novo endereço'}
       size="lg"
     >
-      {/* Conditional mount so every open starts with a fresh form. */}
+      {/* Conditional mount so every open starts with a fresh form. The
+          `onSubmit` guard stops the inner form's submit event from bubbling up
+          the React tree (the Modal is portaled in the DOM but not in the React
+          tree) into an ancestor <form> — e.g. the pedido form when this modal
+          is opened from the Frete tab's EnderecoPicker — which would otherwise
+          submit the pedido on every "Criar". */}
       {opened && (
-        <ObjectView
-          schema={enderecoSchema}
-          collection={enderecoCollection}
-          db={db}
-          pathContext={pathContext}
-          currentUserUid={user?.uid ?? ''}
-          recordId={recordId}
-          defaultValues={{ bairro: 'SEM BAIRRO' }}
-          excludedFields={['idExterno']}
-          sections={['Endereço', RECEBEDOR_SECTION]}
-          fields={ENDERECO_FORM_FIELDS}
-          saveLabel={recordId ? 'Salvar alterações' : 'Criar'}
-          showSaveAndContinue={false}
-          canEdit={canWrite}
-          readOnly={!canWrite}
-          canDelete={allowDelete && canDelete}
-          onDelete={
-            allowDelete
-              ? async (id) => {
-                  await deleteDoc(enderecoCollection.docRef(db, pathContext, id));
-                  onDeleted?.();
-                }
-              : undefined
-          }
-          onSaved={onSaved}
-        />
+        <div onSubmit={(e) => e.stopPropagation()}>
+          <ObjectView
+            schema={enderecoSchema}
+            collection={enderecoCollection}
+            db={db}
+            pathContext={pathContext}
+            currentUserUid={user?.uid ?? ''}
+            recordId={recordId}
+            defaultValues={{ bairro: 'SEM BAIRRO' }}
+            excludedFields={['idExterno']}
+            sections={['Endereço', RECEBEDOR_SECTION]}
+            fields={ENDERECO_FORM_FIELDS}
+            saveLabel={recordId ? 'Salvar alterações' : 'Criar'}
+            showSaveAndContinue={false}
+            canEdit={canWrite}
+            readOnly={!canWrite}
+            canDelete={allowDelete && canDelete}
+            onDelete={
+              allowDelete
+                ? async (id) => {
+                    await deleteDoc(enderecoCollection.docRef(db, pathContext, id));
+                    onDeleted?.();
+                  }
+                : undefined
+            }
+            onSaved={onSaved}
+          />
+        </div>
       )}
     </Modal>
   );
