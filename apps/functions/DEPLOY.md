@@ -62,7 +62,9 @@ without solving the workspace-resolution problem another way.
    read of the Next-uploaded+resized photo sees the same derivative shape.
 
 Once step 5 passes, close **#137**. The same lane will later ship the deletion-
-lifecycle functions (#136 / #95) — see ADR 0010.
+lifecycle functions (#136 / #95) — see ADR 0010, the produto deletion lifecycle
+ADR added in PR #170 (`apps/docs/src/content/docs/adr/0010-produto-deletion-lifecycle.md`;
+it lands with that PR, so the path resolves once both merge to main).
 
 ## Known first-run gotchas (not yet executed)
 
