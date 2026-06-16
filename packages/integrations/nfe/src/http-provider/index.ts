@@ -27,6 +27,7 @@ export {
   NFeAuthError,
   NFeBadRequestError,
   NFeBlockedError,
+  NFeCertificateError,
   NFeDanfeUnavailableError,
   NFeHttpError,
   NFeInutilizacaoAbortedError,

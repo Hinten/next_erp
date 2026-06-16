@@ -104,6 +104,25 @@ export class NFeDanfeUnavailableError extends NFeHttpError {
 }
 
 /**
+ * Per-filial A1 certificate UPLOAD failure (`POST /api/nfe/certificado`) —
+ * a client-side cert problem (wrong password, invalid/malformed PFX, CNPJ
+ * mismatch, expired cert). The route returns these as **422** with a pt-BR
+ * `error` message + a stable `code`. This is deliberately distinct from
+ * `NFeRejectedError`: the upload **never contacts SEFAZ**, so its 422 must NOT
+ * be surfaced as a "SEFAZ rejected" outcome. The message is the route's
+ * pt-BR text, ready to show to the user.
+ */
+export class NFeCertificateError extends NFeHttpError {
+  /** Stable code from the route body (e.g. `CERT_INVALIDO`, `CERT_EXPIRADO`, `CNPJ_DIVERGENTE`). */
+  public readonly code?: string;
+  constructor(message: string, status: number, body: unknown, code?: string) {
+    super(message, status, body);
+    this.name = 'NFeCertificateError';
+    if (code !== undefined) this.code = code;
+  }
+}
+
+/**
  * 503 — `apps/nfe` reports `getNFeRuntime()` failed. Usually cert
  * load, cert expiry, or SEFAZ TLS chain missing. The body's `error`
  * field carries the specific reason.

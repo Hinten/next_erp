@@ -35,6 +35,7 @@ import { usePermission } from '@/lib/auth';
 import { filialCollection } from '@/lib/data/filialCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useNFeClient } from '@/lib/nfe/client';
+import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
 
 /** Read a File's bytes as base64 (browser-safe — no Buffer). */
 async function fileToBase64(file: File): Promise<string> {
@@ -84,10 +85,12 @@ export function CertificadoPanel({ filialId }: { filialId: string }) {
       void queryClient.invalidateQueries({ queryKey: ['filial', filialId] });
     },
     onError: (err) => {
-      // A wrong password / malformed PFX / CNPJ mismatch comes back as an
-      // NFeHttpError (422) — show its message; network errors likewise.
+      // A wrong password / invalid PFX / CNPJ mismatch comes back as an
+      // NFeCertificateError (a NFeHttpError subclass) with a pt-BR message;
+      // network errors likewise. The copyable toast keeps it open on hover and
+      // gives a copy button (the message can be long).
       if (err instanceof NFeHttpError || err instanceof NFeNetworkError) {
-        notifications.show({ color: 'red', title: 'Falha no envio', message: err.message });
+        showErrorNotification({ title: 'Falha no envio do certificado', message: err.message });
         return;
       }
       throw err;
@@ -105,7 +108,7 @@ export function CertificadoPanel({ filialId }: { filialId: string }) {
     },
     onError: (err) => {
       if (err instanceof NFeHttpError || err instanceof NFeNetworkError) {
-        notifications.show({ color: 'red', title: 'Falha ao remover', message: err.message });
+        showErrorNotification({ title: 'Falha ao remover o certificado', message: err.message });
         return;
       }
       throw err;

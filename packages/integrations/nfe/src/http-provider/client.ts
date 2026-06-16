@@ -13,6 +13,7 @@ import {
   NFeAuthError,
   NFeBadRequestError,
   NFeBlockedError,
+  NFeCertificateError,
   NFeDanfeUnavailableError,
   NFeHttpError,
   NFeInutilizacaoAbortedError,
@@ -271,6 +272,27 @@ function errorFromResponse(
 }
 
 /**
+ * Error mapping for the cert endpoints (`/api/nfe/certificado`). The upload
+ * **never contacts SEFAZ**, so its 422 is a cert-validation failure carrying a
+ * pt-BR `error` message — NOT an `NFeRejectedError` ("SEFAZ rejected: …"), which
+ * the generic 422 mapping would wrongly produce. Auth (401/403) still maps to
+ * `NFeAuthError`; everything else becomes an `NFeCertificateError` whose message
+ * is the route's pt-BR text, ready to show.
+ */
+function certErrorFromResponse(status: number, body: unknown): NFeHttpError {
+  const message =
+    body !== null && typeof body === 'object' && 'error' in body
+      ? String((body as { error: unknown }).error)
+      : `HTTP ${status}`;
+  if (status === 401 || status === 403) return new NFeAuthError(message, status, body);
+  const code =
+    body !== null && typeof body === 'object' && 'code' in body
+      ? String((body as { code: unknown }).code)
+      : undefined;
+  return new NFeCertificateError(message, status, body, code);
+}
+
+/**
  * Construct the HTTP client. The returned object is stateless modulo
  * the auth-token callback — safe to share across requests.
  */
@@ -281,7 +303,12 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
   async function call<T>(
     method: 'GET' | 'POST' | 'DELETE',
     path: string,
-    init: { body?: unknown; context?: { pedidoId?: string } } = {},
+    init: {
+      body?: unknown;
+      context?: { pedidoId?: string };
+      /** Override the default status→error mapping (cert endpoints use this). */
+      mapError?: (status: number, body: unknown) => NFeHttpError;
+    } = {},
   ): Promise<T> {
     const token = await config.getAuthToken();
     const headers: Record<string, string> = {
@@ -322,7 +349,9 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
     }
 
     if (!res.ok) {
-      throw errorFromResponse(res.status, body, init.context ?? {});
+      const mapError =
+        init.mapError ?? ((s: number, b: unknown) => errorFromResponse(s, b, init.context ?? {}));
+      throw mapError(res.status, body);
     }
     return body as T;
   }
@@ -424,11 +453,13 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
     uploadCertificado: (filialId, pfxBase64, password, filename) =>
       call<NFeCertificadoMeta>('POST', '/api/nfe/certificado', {
         body: { filialId, pfxBase64, password, filename },
+        mapError: certErrorFromResponse,
       }),
     deleteCertificado: async (filialId) => {
       await call<{ ok: boolean }>(
         'DELETE',
         `/api/nfe/certificado?filialId=${encodeURIComponent(filialId)}`,
+        { mapError: certErrorFromResponse },
       );
     },
   };

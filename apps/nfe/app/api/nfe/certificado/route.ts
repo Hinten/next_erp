@@ -30,9 +30,9 @@ import { certificadoSecretoCollection, filialCollection } from '@delfrance/data/
 import { CERTIFICADO_SECRETO_DOC_ID, type Filial } from '@delfrance/schemas';
 import {
   NFeCertError,
-  assertCertNotExpired,
   encryptSecret,
   getCertEncryptionKey,
+  isCertExpired,
   loadCertificateFromBase64,
 } from '@delfrance/integrations-nfe';
 
@@ -88,17 +88,32 @@ export async function POST(req: Request): Promise<NextResponse> {
     filialCollection.docPath({}, body.filialId),
   ) as Filial;
 
-  // Parse + validate the PFX. NFeCertError here is a client-side cert problem
-  // (wrong password / malformed / expired / no CNPJ suffix) → 422.
+  // Parse the PFX. A failure here (wrong password / malformed file / not an
+  // ICP-Brasil e-CNPJ cert) is a client-side problem — return a pt-BR message,
+  // never the English library text or env-var hints. This upload NEVER contacts
+  // SEFAZ. `safeLog` keeps the real (redacted) cause for ops.
   let cert;
   try {
     cert = loadCertificateFromBase64(body.pfxBase64, body.password);
-    assertCertNotExpired(cert);
   } catch (e) {
     if (e instanceof NFeCertError) {
-      return authError(422, { error: e.message, code: e.name });
+      safeLog('warn', '[nfe/certificado] PFX inválido', e);
+      return authError(422, {
+        error: 'Senha incorreta ou arquivo de certificado (.pfx/.p12) inválido.',
+        code: 'CERT_INVALIDO',
+      });
     }
     throw e;
+  }
+
+  // Expired cert (using isCertExpired so we keep `cert.notAfter` for the date).
+  if (isCertExpired(cert)) {
+    return authError(422, {
+      error:
+        `Certificado expirado em ${cert.notAfter.toLocaleDateString('pt-BR')}. ` +
+        'Renove o certificado A1 junto à sua AC (Autoridade Certificadora).',
+      code: 'CERT_EXPIRADO',
+    });
   }
 
   // The cert's CNPJ base must match the filial's — otherwise SEFAZ rejects
@@ -109,6 +124,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       error:
         `O CNPJ do certificado (${cert.cnpj}) não corresponde ao CNPJ da filial ` +
         `(${filial.cnpj || 'não informado'}). Envie o certificado A1 desta filial.`,
+      code: 'CNPJ_DIVERGENTE',
     });
   }
 

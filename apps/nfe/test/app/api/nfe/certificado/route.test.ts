@@ -109,7 +109,7 @@ describe('POST /api/nfe/certificado', () => {
     expect(writes.some((w) => w.path === 'filiais/F-1' && w.merge === true)).toBe(true);
   });
 
-  it('rejects a wrong password with 422', async () => {
+  it('rejects a wrong password with 422 — pt-BR message + CERT_INVALIDO, no SEFAZ wording', async () => {
     const { fs } = fakeFirestore({ 'filiais/F-1': { cnpj: CNPJ } });
     vi.mocked(getAdminFirestore).mockReturnValue(fs);
     const pfxBase64 = buildPfxFixture({ password: 'right', commonName: `ACME:${CNPJ}` });
@@ -117,9 +117,14 @@ describe('POST /api/nfe/certificado', () => {
       postReq({ filialId: 'F-1', pfxBase64, password: 'wrong', filename: 'c.pfx' }),
     );
     expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string; code: string };
+    expect(body.code).toBe('CERT_INVALIDO');
+    expect(body.error).toMatch(/senha incorreta/i);
+    // The upload never contacts SEFAZ and must not leak env-var hints.
+    expect(body.error).not.toMatch(/SEFAZ|NFE_CERT|Failed to open/i);
   });
 
-  it('rejects a CNPJ mismatch with 422 (rejection 213 guard)', async () => {
+  it('rejects a CNPJ mismatch with 422 — pt-BR message + CNPJ_DIVERGENTE (rejection 213 guard)', async () => {
     const { fs, docs } = fakeFirestore({ 'filiais/F-1': { cnpj: '11111111000191' } });
     vi.mocked(getAdminFirestore).mockReturnValue(fs);
     const pfxBase64 = buildPfxFixture({ password: 'pw', commonName: `ACME:${CNPJ}` });
@@ -127,11 +132,14 @@ describe('POST /api/nfe/certificado', () => {
       postReq({ filialId: 'F-1', pfxBase64, password: 'pw', filename: 'c.pfx' }),
     );
     expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string; code: string };
+    expect(body.code).toBe('CNPJ_DIVERGENTE');
+    expect(body.error).toMatch(/não corresponde/i);
     // Nothing persisted on a mismatch.
     expect(docs['filiais/F-1/certificadoSecreto/default']).toBeUndefined();
   });
 
-  it('rejects an expired cert with 422', async () => {
+  it('rejects an expired cert with 422 — pt-BR message + CERT_EXPIRADO', async () => {
     const { fs } = fakeFirestore({ 'filiais/F-1': { cnpj: CNPJ } });
     vi.mocked(getAdminFirestore).mockReturnValue(fs);
     const pfxBase64 = buildPfxFixture({
@@ -143,6 +151,10 @@ describe('POST /api/nfe/certificado', () => {
       postReq({ filialId: 'F-1', pfxBase64, password: 'pw', filename: 'c.pfx' }),
     );
     expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string; code: string };
+    expect(body.code).toBe('CERT_EXPIRADO');
+    expect(body.error).toMatch(/expirado/i);
+    expect(body.error).not.toMatch(/SEFAZ|NFE_CERT/i);
   });
 
   it('404 when the filial does not exist', async () => {

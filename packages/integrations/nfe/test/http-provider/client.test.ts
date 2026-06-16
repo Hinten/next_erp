@@ -9,6 +9,7 @@ import {
   NFeAuthError,
   NFeBadRequestError,
   NFeBlockedError,
+  NFeCertificateError,
   NFeDanfeUnavailableError,
   NFeInutilizacaoAbortedError,
   NFeNetworkError,
@@ -540,5 +541,72 @@ describe('createNFeHttpClient — baseUrl normalisation', () => {
     await client.processarPendentes();
     await client.processarPendentes();
     expect(getAuthToken).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('createNFeHttpClient — certificado', () => {
+  it('uploadCertificado POSTs the cert + password and returns the metadata', async () => {
+    const meta = {
+      subjectCommonName: 'ACME:99999999000191',
+      cnpj: '99999999000191',
+      notAfter: '2027-01-01T00:00:00.000Z',
+      filename: 'cert.pfx',
+      uploadedAt: '2026-06-16T00:00:00.000Z',
+    };
+    const fetch = mockFetch({ status: 200, body: meta });
+    const got = await makeClient(fetch).uploadCertificado('F-1', 'cGZ4', 'senha', 'cert.pfx');
+    expect(got).toEqual(meta);
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:3004/api/nfe/certificado');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      filialId: 'F-1',
+      pfxBase64: 'cGZ4',
+      password: 'senha',
+      filename: 'cert.pfx',
+    });
+  });
+
+  it('maps a cert 422 → NFeCertificateError with the pt-BR message, NOT NFeRejectedError', async () => {
+    // The upload never contacts SEFAZ — a 422 must NOT become a "SEFAZ rejected" error.
+    const fetch = mockFetch({
+      status: 422,
+      body: {
+        error: 'Senha incorreta ou arquivo de certificado (.pfx/.p12) inválido.',
+        code: 'CERT_INVALIDO',
+      },
+    });
+    const err = await makeClient(fetch)
+      .uploadCertificado('F-1', 'cGZ4', 'wrong', 'cert.pfx')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFeCertificateError);
+    expect(err).not.toBeInstanceOf(NFeRejectedError);
+    expect((err as NFeCertificateError).message).toBe(
+      'Senha incorreta ou arquivo de certificado (.pfx/.p12) inválido.',
+    );
+    expect((err as NFeCertificateError).message).not.toMatch(/SEFAZ/i);
+    expect((err as NFeCertificateError).code).toBe('CERT_INVALIDO');
+  });
+
+  it('maps a cert 401/403 → NFeAuthError', async () => {
+    const fetch = mockFetch({ status: 403, body: { error: 'Sem permissão para esta operação.' } });
+    const err = await makeClient(fetch)
+      .uploadCertificado('F-1', 'cGZ4', 'senha', 'cert.pfx')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFeAuthError);
+  });
+
+  it('deleteCertificado DELETEs with the filialId query + maps errors to NFeCertificateError', async () => {
+    const ok = mockFetch({ status: 200, body: { ok: true } });
+    await makeClient(ok).deleteCertificado('F-1');
+    const [url, init] = ok.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:3004/api/nfe/certificado?filialId=F-1');
+    expect(init.method).toBe('DELETE');
+
+    const fail = mockFetch({ status: 422, body: { error: 'falha', code: 'X' } });
+    const err = await makeClient(fail)
+      .deleteCertificado('F-1')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFeCertificateError);
   });
 });
