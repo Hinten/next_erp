@@ -62,12 +62,17 @@ function parseArgs(argv: string[]): {
 
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
+    const next = rest[index + 1];
+    // Only consume the next token as a value when it exists and isn't itself a
+    // flag — otherwise `--grupo --service-account x` would set grupo to
+    // "--service-account" and the "Missing value" check below would never fire.
+    const value = next !== undefined && !next.startsWith('-') ? next : undefined;
     if (arg === '--service-account' || arg === '-s') {
-      serviceAccountPath = rest[index + 1];
-      index += 1;
+      serviceAccountPath = value;
+      if (value !== undefined) index += 1;
     } else if (arg === '--grupo' || arg === '-g') {
-      grupo = rest[index + 1];
-      index += 1;
+      grupo = value;
+      if (value !== undefined) index += 1;
     }
   }
 
