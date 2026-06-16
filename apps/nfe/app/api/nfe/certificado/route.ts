@@ -132,7 +132,8 @@ export async function POST(req: Request): Promise<NextResponse> {
     // Encrypt ONLY the private key. NFeCertError from here (missing/short
     // NFE_CERT_ENC_KEY) is a server misconfiguration → 500 via the outer catch.
     const encPrivateKey = encryptSecret(cert.privateKeyPem, getCertEncryptionKey());
-    const uploadedAt = new Date().toISOString();
+    // Dates as ms since epoch (Dart/Flutter convention; SDK-agnostic, sortable).
+    const uploadedAt = Date.now();
 
     await certificadoSecretoCollection.set(
       fs,
@@ -144,7 +145,7 @@ export async function POST(req: Request): Promise<NextResponse> {
         certificateDerBase64: cert.certificateDerBase64,
         subjectCommonName: cert.subjectCommonName,
         cnpj: cert.cnpj,
-        notAfter: cert.notAfter.toISOString(),
+        notAfter: cert.notAfter.getTime(),
         algoritmo: 'aes-256-gcm',
         keyVersion: 1,
         uploadedAt,
@@ -154,7 +155,7 @@ export async function POST(req: Request): Promise<NextResponse> {
     const certificado = {
       subjectCommonName: cert.subjectCommonName,
       cnpj: cert.cnpj,
-      notAfter: cert.notAfter.toISOString(),
+      notAfter: cert.notAfter.getTime(),
       filename: body.filename,
       uploadedAt,
     };

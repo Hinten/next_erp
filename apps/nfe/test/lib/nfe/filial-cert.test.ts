@@ -80,10 +80,10 @@ function seedSecret(): Record<string, unknown> {
     certificateDerBase64: original.certificateDerBase64,
     subjectCommonName: original.subjectCommonName,
     cnpj: original.cnpj,
-    notAfter: original.notAfter.toISOString(),
+    notAfter: original.notAfter.getTime(),
     algoritmo: 'aes-256-gcm',
     keyVersion: 1,
-    uploadedAt: new Date().toISOString(),
+    uploadedAt: Date.now(),
   };
 }
 

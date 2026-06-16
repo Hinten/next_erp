@@ -45,9 +45,9 @@ async function fileToBase64(file: File): Promise<string> {
   return btoa(binary);
 }
 
-/** Badge color + label from a cert's notAfter (válido / vence em N dias / expirado). */
-function certStatus(notAfter: string): { color: string; label: string } {
-  const daysLeft = Math.floor((new Date(notAfter).getTime() - Date.now()) / 86_400_000);
+/** Badge color + label from a cert's notAfter (ms epoch): válido / vence em N dias / expirado. */
+function certStatus(notAfter: number): { color: string; label: string } {
+  const daysLeft = Math.floor((notAfter - Date.now()) / 86_400_000);
   if (daysLeft < 0) return { color: 'red', label: 'Expirado' };
   if (daysLeft <= 30) return { color: 'yellow', label: `Vence em ${daysLeft} dia(s)` };
   return { color: 'green', label: 'Válido' };
