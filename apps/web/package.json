@@ -18,6 +18,7 @@
     "@delfrance/auth": "workspace:*",
     "@delfrance/core": "workspace:*",
     "@delfrance/data": "workspace:*",
+    "@delfrance/integrations-freight-br": "workspace:*",
     "@delfrance/integrations-nfe": "workspace:*",
     "@delfrance/schemas": "workspace:*",
     "@delfrance/storage": "workspace:*",

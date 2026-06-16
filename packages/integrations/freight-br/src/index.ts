@@ -1,37 +1,18 @@
-import type { FreightProvider } from '@delfrance/core/plugins';
-
 /**
- * Brazilian freight providers (Melhor Envio + Correios + others) plugin
- * scaffold. Phase 5 wraps the `melhor-envio` npm package (or HTTP
- * directly if the wrapper isn't maintained) and provides a unified
- * FreightProvider implementation.
+ * `@delfrance/integrations-freight-br` — Brazilian freight providers.
+ *
+ * The root entry is the **server-facing** Melhor Envio core (OAuth,
+ * token lifecycle, API client). It's fetch-based and platform-neutral
+ * but is meant to run in `apps/integrations`, which holds the OAuth
+ * `client_secret` and persists tokens via an injected `TokenStore`.
+ *
+ * The browser-safe typed client for the `apps/integrations` freight
+ * routes lives at the `./http-client` subpath (imported by `apps/web`),
+ * mirroring the nfe package's `./http-provider` split.
+ *
+ * Decision: this package **bypasses** the `core/plugins` `FreightProvider`
+ * registry — that 3-method contract can't express OAuth +
+ * cart→checkout→generate + per-tipo UI, and has no consumers. See the
+ * freight-integrations skill (F5) for the rationale.
  */
-export interface FreightBrConfig {
-  /** Which provider to instantiate. */
-  provider: 'melhor-envio' | 'correios' | 'motoboy' | 'retirar-loja';
-  apiKeyEnvVar?: string;
-  /** Sandbox / production. */
-  ambiente?: 'sandbox' | 'producao';
-}
-
-export class FreightBrNotConfiguredError extends Error {
-  constructor() {
-    super('freight-br plugin not yet implemented (Phase 5).');
-    this.name = 'FreightBrNotConfiguredError';
-  }
-}
-
-export function createFreightBrProvider(config: FreightBrConfig): FreightProvider {
-  return {
-    id: `freight-br-${config.provider}`,
-    quote: async () => {
-      throw new FreightBrNotConfiguredError();
-    },
-    purchase: async () => {
-      throw new FreightBrNotConfiguredError();
-    },
-    track: async () => {
-      throw new FreightBrNotConfiguredError();
-    },
-  };
-}
+export * from './melhor-envio';
