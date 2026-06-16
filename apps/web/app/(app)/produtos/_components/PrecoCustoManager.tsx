@@ -173,7 +173,10 @@ export function PrecoCustoManager({
           entry !== undefined && entry.valor == null
             ? 'Informe um preço (ou remova a lista)'
             : undefined;
-        const rowError = marked ? undefined : (zodError ?? emptyError);
+        // A cleared price shows the localized guidance, not Zod's generic
+        // "required" — `emptyError` wins when the value is missing; the Zod
+        // message (e.g. the R$ 0,01 minimum) shows for a present-but-invalid one.
+        const rowError = marked ? undefined : (emptyError ?? zodError);
         return (
           <Group key={lista.id} wrap="nowrap" align="flex-end" gap="xs" opacity={marked ? 0.55 : 1}>
             <CurrencyInput

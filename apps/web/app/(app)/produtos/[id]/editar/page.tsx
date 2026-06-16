@@ -286,27 +286,31 @@ export default function EditarProdutoPage() {
           // last: it creates any new children already carrying the parent's
           // precos (plus their initial history records).
           const newPrecos = (values.precos as PrecosMap) ?? null;
-          let precosChanged = !lastSavedPrecos.current.ready;
-          if (lastSavedPrecos.current.ready) {
-            const changes = diffPrecos(lastSavedPrecos.current.value, newPrecos);
-            precosChanged = changes.length > 0;
-            if (changes.length > 0) {
-              const batch = writeBatch(db);
-              appendPrecoHistory(batch, db, id, changes);
-              await batch.commit();
-            }
+          // "Old" value = the ref pinned at the first doc emit, or — if a save
+          // beat that emit — the live snapshot. Driving the diff off this
+          // (instead of skipping when the ref isn't primed) means a fast first
+          // save still records its history record and only propagates on a real
+          // change.
+          const oldPrecos = lastSavedPrecos.current.ready
+            ? lastSavedPrecos.current.value
+            : (produtoSnap.data?.data.precos ?? null);
+          const precoChanges = diffPrecos(oldPrecos, newPrecos);
+          if (precoChanges.length > 0) {
+            const batch = writeBatch(db);
+            appendPrecoHistory(batch, db, id, precoChanges);
+            await batch.commit();
           }
+          const precosChanged = precoChanges.length > 0;
           lastSavedPrecos.current = { ready: true, value: newPrecos };
 
           // Cost history (historicoDeCusto): one record per change. Only a
           // numeric custo that actually differs from the last persisted value
           // is recorded (a cleared/null custo can't be represented as a record).
           const newCusto = typeof values.custo === 'number' ? values.custo : null;
-          if (
-            lastSavedCusto.current.ready &&
-            newCusto !== null &&
-            newCusto !== lastSavedCusto.current.value
-          ) {
+          const oldCusto = lastSavedCusto.current.ready
+            ? lastSavedCusto.current.value
+            : (produtoSnap.data?.data.custo ?? null);
+          if (newCusto !== null && newCusto !== oldCusto) {
             const batch = writeBatch(db);
             appendCustoHistory(batch, db, id, newCusto);
             await batch.commit();
