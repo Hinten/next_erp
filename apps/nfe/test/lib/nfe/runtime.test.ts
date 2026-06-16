@@ -1,12 +1,37 @@
 /**
  * `getNFeRuntime` is the cert-OPTIONAL base runtime: the process must boot with
  * NO env cert (per-filial signing). These tests pass an explicit `env` so they
- * never touch the real `NFE_CERT_*` — they only read the vendored SP-homologação
- * TLS chain off disk (cert-free, the boot-time guard).
+ * never touch the real `NFE_CERT_*`. The offline CI runner has no vendored TLS
+ * chain (it's fetched only in the live lane), so `NFE_CA_DIR` points at a
+ * throwaway dir with a dummy chain — the cert-free boot guard just needs a file
+ * to read; the base runtime never builds an mTLS agent from it.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { __resetNFeRuntimeForTests, getNFeRuntime } from '@/lib/nfe/runtime';
+
+let caDir: string;
+let prevCaDir: string | undefined;
+
+beforeAll(() => {
+  caDir = mkdtempSync(join(tmpdir(), 'nfe-ca-'));
+  writeFileSync(
+    join(caDir, 'sefaz-sp-homologacao.pem'),
+    '-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n',
+  );
+  prevCaDir = process.env.NFE_CA_DIR;
+  process.env.NFE_CA_DIR = caDir;
+});
+
+afterAll(() => {
+  if (prevCaDir === undefined) delete process.env.NFE_CA_DIR;
+  else process.env.NFE_CA_DIR = prevCaDir;
+  rmSync(caDir, { recursive: true, force: true });
+});
 
 beforeEach(() => {
   __resetNFeRuntimeForTests();
