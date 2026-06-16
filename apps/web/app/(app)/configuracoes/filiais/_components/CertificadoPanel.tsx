@@ -37,12 +37,20 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useNFeClient } from '@/lib/nfe/client';
 import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
 
-/** Read a File's bytes as base64 (browser-safe — no Buffer). */
+/**
+ * Read a File's bytes as base64 (browser-safe). Uses `FileReader.readAsDataURL`
+ * — linear time — instead of per-byte `String.fromCharCode` concatenation,
+ * which is quadratic and could jank the UI on larger files.
+ */
 async function fileToBase64(file: File): Promise<string> {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let binary = '';
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary);
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error('Falha ao ler o arquivo.'));
+    reader.readAsDataURL(file);
+  });
+  // dataUrl is "data:<mime>;base64,<b64>" — strip the prefix.
+  return dataUrl.slice(dataUrl.indexOf(',') + 1);
 }
 
 /** Badge color + label from a cert's notAfter (válido / vence em N dias / expirado). */
