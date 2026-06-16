@@ -31,7 +31,7 @@ export const EXTRA_MATCH_BLOCKS: ReadonlyArray<{ path: string; body: ReadonlyArr
   {
     path: `${GRUPO_ECONOMICO_COLLECTION_PATH}/{grupoId}`,
     body: [
-      "allow read: if request.auth != null && request.auth.token.get('grupoEconomico', '') == grupoId;",
+      "allow read: if isSuperUser() || (request.auth != null && request.auth.token.get('grupoEconomico', '') == grupoId);",
     ],
   },
 ];
