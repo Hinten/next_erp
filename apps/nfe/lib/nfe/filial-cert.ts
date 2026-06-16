@@ -71,6 +71,14 @@ export async function resolveFilialCert(
 }
 
 /**
+ * Per-filial DERIVED runtime cache (cert + the mTLS `https.Agent`s). The SOAP
+ * layer relies on reusing ONE keep-alive agent per cert, so we cache the whole
+ * derived runtime — not just the cert — to avoid a fresh TLS handshake + socket
+ * churn on every emission. Keyed by filialId; evicted on upload/delete.
+ */
+const runtimeCache = new Map<string, NFeRuntime>();
+
+/**
  * Resolve the runtime that emits for `filialId`: the filial's stored cert when
  * present (expiry-checked), else the env cert when `NFE_CERT_ENV_FALLBACK` is
  * on, else throw. The orchestrator consumes the returned runtime unchanged.
@@ -80,24 +88,37 @@ export async function resolveFilialRuntime(
   base: NFeRuntime,
   filialId: string,
 ): Promise<NFeRuntime> {
+  // Fast path: reuse the derived runtime (and its keep-alive agent). Re-check
+  // expiry every call so a long-running process can't keep signing with a cert
+  // that expired after it was cached.
+  const cachedRt = runtimeCache.get(filialId);
+  if (cachedRt) {
+    assertCertNotExpired(cachedRt.cert);
+    return cachedRt;
+  }
+
   const stored = await resolveFilialCert(fs, filialId);
   if (stored) {
     assertCertNotExpired(stored);
-    return deriveRuntimeForCert(base, stored);
+    const rt = deriveRuntimeForCert(base, stored);
+    runtimeCache.set(filialId, rt);
+    return rt;
   }
-  if (envFallbackEnabled()) return base;
+  if (envFallbackEnabled()) return base; // the shared base runtime — not cached per filial
   throw new NFeCertError(
     `Filial '${filialId}' não possui certificado digital cadastrado. ` +
       'Faça o upload do certificado A1 na aba "Certificado Digital" da filial.',
   );
 }
 
-/** Evict a filial's cached cert (call after an upload / delete). */
+/** Evict a filial's cached cert + derived runtime (call after an upload / delete). */
 export function evictFilialCert(filialId: string): void {
   certCache.delete(filialId);
+  runtimeCache.delete(filialId);
 }
 
-/** Test-only: clear the per-filial cert cache so each test sees a fresh state. */
+/** Test-only: clear the per-filial cert + runtime caches so each test sees a fresh state. */
 export function __resetFilialCertCacheForTests(): void {
   certCache.clear();
+  runtimeCache.clear();
 }

@@ -31,6 +31,7 @@ import {
   resolveFilialCert,
   resolveFilialRuntime,
 } from '@/lib/nfe/filial-cert';
+import { deriveRuntimeForCert } from '@/lib/nfe/runtime';
 import type { NFeRuntime } from '@/lib/nfe/runtime';
 
 const CNPJ = '99999999000191';
@@ -120,6 +121,15 @@ describe('resolveFilialRuntime', () => {
     const { fs } = fakeFirestore({ 'filiais/F-1/certificadoSecreto/default': seedSecret() });
     const rt = await resolveFilialRuntime(fs, fakeBaseRuntime(), 'F-1');
     expect(rt.cert.cnpj).toBe(CNPJ);
+  });
+
+  it('caches the derived runtime per filial — reuses it (one derive, agent kept alive)', async () => {
+    const { fs } = fakeFirestore({ 'filiais/F-1/certificadoSecreto/default': seedSecret() });
+    const base = fakeBaseRuntime();
+    const rt1 = await resolveFilialRuntime(fs, base, 'F-1');
+    const rt2 = await resolveFilialRuntime(fs, base, 'F-1');
+    expect(rt2).toBe(rt1); // same cached runtime → same keep-alive https.Agent
+    expect(vi.mocked(deriveRuntimeForCert)).toHaveBeenCalledTimes(1);
   });
 
   it('throws NFeCertError when there is no stored cert and fallback is off', async () => {
