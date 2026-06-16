@@ -12,31 +12,36 @@ the lane; it does not run in CI.
 
 - Firebase CLI logged in (`firebase login`) with deploy rights on the **staging**
   project.
-- Root `.env.local` populated, including **`FUNCTIONS_REGION`** — it must match the
-  Storage bucket region (`us-east1`). The build **fails** if it is unset
-  (`build.mjs`), because the region is inlined into the bundle at build time.
 - A clean `pnpm install` (workspace deps resolved).
+
+No secrets are needed to build/deploy. The only build-time value is the function
+region, a non-secret constant that `build.mjs` defaults to `us-east1` (the Storage
+bucket region); **`.env.local` is never read by the deploy** — it holds secrets that
+must not reach the build/deploy process. Override the region only for another
+environment via the `FUNCTIONS_REGION` env var.
 
 ## Deploy lane
 
-The bundle inlines `FUNCTIONS_REGION` at build time, so **build first**, then deploy
-with the deploy-isolated config:
+**One command.** The deploy config carries a `predeploy` hook that builds the bundle
+(`dist/index.js`) automatically first — so the build can't be skipped and a
+stale/missing bundle can't ship:
 
 ```bash
-# 1. Build (inlines FUNCTIONS_REGION from the root .env.local).
-dotenv -e .env.local -- pnpm --filter @delfrance/functions build
-
-# 2. Deploy ONLY the `storage` functions codebase to staging.
-#    --config firebase.functions.deploy.json is functions-only: it cannot push
-#    firestore/storage rules even by accident.
 firebase deploy --only functions:storage \
   --config firebase.functions.deploy.json \
   --project <staging-project-id>     # same project id as FIREBASE_PROJECT_ID / e2e staging
 ```
 
+`--config firebase.functions.deploy.json` is **functions-only** (no firestore/storage
+rules keys), so it cannot push the Flutter-owned rules even by accident; `--only
+functions:storage` scopes to this codebase.
+
 > **Never** point this at the production project until the functions phase is
 > coordinated. The config is functions-only by design, but the `--project` flag is
 > still yours to get right.
+
+To build by hand (e.g. to inspect `dist/` before deploying), the predeploy command is:
+`pnpm --filter @delfrance/functions build`.
 
 ## Why `@delfrance/data` / `@delfrance/schemas` are `devDependencies`
 

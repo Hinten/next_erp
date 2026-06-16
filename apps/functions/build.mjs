@@ -1,21 +1,15 @@
 import { build } from 'esbuild';
 
-// Bundle the Cloud Functions, inlining FUNCTIONS_REGION at build time. Firebase
-// can't read `process.env`/params/`.env` during codebase analysis (where
-// setGlobalOptions runs), so the region is baked into the bundle here instead.
+// Bundle the Cloud Functions, inlining the function region at build time.
+// Firebase can't read `process.env`/params/`.env` during codebase analysis (where
+// setGlobalOptions runs), so the region is baked into the bundle here.
 //
-// Source the value from the env: dev loads the root `.env.local` via the shared
-// `dotenv -e ../../.env.local --` loader; CI sets it on the job. Fail the build
-// if it's unset so an unconfigured/mismatched region can never ship.
-const region = process.env.FUNCTIONS_REGION;
-if (!region) {
-  throw new Error(
-    'FUNCTIONS_REGION is not set.\n' +
-      '  dev: dotenv -e ../../.env.local -- pnpm --filter @delfrance/functions build\n' +
-      '  CI : set FUNCTIONS_REGION on the job\n' +
-      'It must match the Storage bucket region.',
-  );
-}
+// The region is a non-secret project constant: the Storage bucket lives in
+// us-east1 and the gen2 trigger must match it. It is deliberately NOT sourced
+// from `.env.local` — that file holds secrets that must never be loaded into the
+// deploy/build process. It defaults to the bucket region and can be overridden
+// via FUNCTIONS_REGION for another environment.
+const region = process.env.FUNCTIONS_REGION || 'us-east1';
 
 await build({
   entryPoints: ['src/index.ts'],
