@@ -26,6 +26,7 @@ export {
   clienteMeta,
   tipoClienteSchema,
   TIPO_CLIENTE_LABELS,
+  refineClienteTipoDocumento,
   type Cliente,
   type TipoCliente,
 } from './cliente';

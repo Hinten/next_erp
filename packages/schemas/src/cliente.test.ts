@@ -92,6 +92,43 @@ describe('clienteSchema', () => {
   });
 });
 
+describe('clienteSchema — tipo ↔ documento (CPF/CNPJ)', () => {
+  const CPF = '52998224725';
+  const CNPJ = '11222333000181';
+
+  it('Pessoa Física (tipo 0) rejects a CNPJ', () => {
+    const r = clienteSchema.safeParse({ tipo: '0', cpf_cnpj: CNPJ });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(r.error.issues.some((i) => i.path.includes('cpf_cnpj'))).toBe(true);
+    }
+  });
+
+  it('Pessoa Física (tipo 0) accepts a CPF', () => {
+    expect(clienteSchema.safeParse({ tipo: '0', cpf_cnpj: CPF }).success).toBe(true);
+  });
+
+  it('Pessoa Jurídica (tipo 1) rejects a CPF', () => {
+    expect(clienteSchema.safeParse({ tipo: '1', cpf_cnpj: CPF }).success).toBe(false);
+  });
+
+  it('Pessoa Jurídica (tipo 1) accepts a numeric and an alphanumeric CNPJ', () => {
+    expect(clienteSchema.safeParse({ tipo: '1', cpf_cnpj: CNPJ }).success).toBe(true);
+    expect(clienteSchema.safeParse({ tipo: '1', cpf_cnpj: '12ABC34501DE35' }).success).toBe(true);
+  });
+
+  it('no tipo (null) leaves the document unconstrained (legacy-tolerant)', () => {
+    expect(clienteSchema.safeParse({ cpf_cnpj: CNPJ }).success).toBe(true);
+    expect(clienteSchema.safeParse({ cpf_cnpj: CPF }).success).toBe(true);
+  });
+
+  it('Estrangeiro (tipo 2) with empty cpf_cnpj is valid', () => {
+    expect(
+      clienteSchema.safeParse({ tipo: '2', cpf_cnpj: null, idEstrangeiro: 'ABC123' }).success,
+    ).toBe(true);
+  });
+});
+
 describe('clienteMeta', () => {
   it('points at the legacy Flutter collection path', () => {
     expect(clienteMeta.collectionPath).toBe('clientes');

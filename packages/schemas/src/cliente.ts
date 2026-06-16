@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { validateCpfCnpj } from '@delfrance/core/documents';
+import { validateCNPJ, validateCPF, validateCpfCnpj } from '@delfrance/core/documents';
 import { isValidTelefone } from '@delfrance/core/phone';
 import type { CollectionMetadata } from './types';
 
@@ -25,6 +25,35 @@ export const tipoClienteSchema = z.enum(['0', '1', '2']).meta({ labels: TIPO_CLI
 export type TipoCliente = z.infer<typeof tipoClienteSchema>;
 
 /**
+ * Cross-field rule: the document must match the tipo. A Pessoa Física (tipo
+ * '0') requires a CPF; a Pessoa Jurídica (tipo '1') requires a CNPJ. The
+ * field-level refine already guarantees `cpf_cnpj` is a valid CPF *or* CNPJ —
+ * this ties it to the selected tipo (without it, a PF could save a CNPJ).
+ * Estrangeiro (tipo '2') uses `idEstrangeiro` and leaves `cpf_cnpj` empty.
+ * Shared by the full cliente form and the quick-create modal.
+ */
+export function refineClienteTipoDocumento(
+  data: { tipo?: string | null; cpf_cnpj?: string | null },
+  ctx: z.RefinementCtx,
+): void {
+  const doc = data.cpf_cnpj;
+  if (!doc) return;
+  if (data.tipo === '0' && !validateCPF(doc)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['cpf_cnpj'],
+      message: 'Pessoa Física exige um CPF válido (11 dígitos).',
+    });
+  } else if (data.tipo === '1' && !validateCNPJ(doc)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['cpf_cnpj'],
+      message: 'Pessoa Jurídica exige um CNPJ válido (14 caracteres).',
+    });
+  }
+}
+
+/**
  * Cliente schema. Fields mirror `packages/clientes/lib/src/models.dart`
  * shape so the Flutter app and this app share the same Firestore documents.
  *
@@ -37,67 +66,69 @@ export type TipoCliente = z.infer<typeof tipoClienteSchema>;
  * server-side code (Functions). They aren't part of the form schema; the
  * runtime treats them as opaque pass-through.
  */
-export const clienteSchema = z.object({
-  tipo: tipoClienteSchema.nullable().default(null).describe('Tipo'),
-  nome: z.string().max(255).nullable().default(null).describe('Nome'),
-  // Letters allowed: the alphanumeric CNPJ (IN RFB 2.229/2024) has 12
-  // alphanumeric positions + 2 numeric check digits. CPF stays numeric.
-  cpf_cnpj: z
-    .string()
-    .max(18)
-    .regex(/^[0-9A-Z]*$/, 'apenas números e letras maiúsculas')
-    .refine((v) => v === '' || validateCpfCnpj(v), 'CPF/CNPJ inválido')
-    .nullable()
-    .default(null)
-    .describe('CPF / CNPJ'),
-  idEstrangeiro: z.string().max(20).nullable().default(null).describe('ID estrangeiro'),
-  ie: z.string().max(16).nullable().default(null).describe('Inscrição estadual'),
-  imun: z
-    .string()
-    .max(15)
-    .regex(/^\d*$/, 'apenas números')
-    .nullable()
-    .default(null)
-    .describe('Inscrição municipal'),
-  isUF: z
-    .string()
-    .min(8)
-    .max(9)
-    .regex(/^\d+$/, 'apenas números')
-    .nullable()
-    .default(null)
-    .describe('IS UF'),
-  email: z.string().max(255).email().nullable().default(null).describe('E-mail'),
-  // Standardized wire format: digits-only E.164 without '+' (WhatsApp
-  // wa_id compatible — see @delfrance/core/phone). Lenient bounds so
-  // foreign phones (tipo Estrangeiro) and legacy Flutter-written raw
-  // 10/11-digit BR numbers both stay valid; forms normalize on write.
-  telefone: z
-    .string()
-    .max(16)
-    .regex(/^\d*$/, 'apenas números')
-    .refine((v) => v === '' || isValidTelefone(v), 'telefone inválido (10 a 15 dígitos, com DDD)')
-    .nullable()
-    .default(null)
-    .describe('Telefone'),
-  observacoesInternas: z
-    .string()
-    .max(255)
-    .nullable()
-    .default(null)
-    .describe('Observações internas'),
-  // ISO 8601; Firestore stores these as Timestamps, the data layer converts.
-  timestamp: z.string().datetime().nullable().default(null),
-  // System field — creation stays in `timestamp`; this is stamped by
-  // `saveRecord` on every write so the TableView update-monitor sees edits.
-  ultimaModificacao: z.string().datetime().nullable().optional(),
-  // Embeddings are server-managed; treat as opaque on the client.
-  nome_embedding: z.unknown().nullable().default(null),
-  telefone_embedding: z.unknown().nullable().default(null),
-  // userCliente outer reference: stored as a Firestore document path string
-  // (`users/<uid>`) on writes from this app. Phase 1 keeps it pass-through.
-  userCliente: z.string().nullable().default(null),
-});
+export const clienteSchema = z
+  .object({
+    tipo: tipoClienteSchema.nullable().default(null).describe('Tipo'),
+    nome: z.string().max(255).nullable().default(null).describe('Nome'),
+    // Letters allowed: the alphanumeric CNPJ (IN RFB 2.229/2024) has 12
+    // alphanumeric positions + 2 numeric check digits. CPF stays numeric.
+    cpf_cnpj: z
+      .string()
+      .max(18)
+      .regex(/^[0-9A-Z]*$/, 'apenas números e letras maiúsculas')
+      .refine((v) => v === '' || validateCpfCnpj(v), 'CPF/CNPJ inválido')
+      .nullable()
+      .default(null)
+      .describe('CPF / CNPJ'),
+    idEstrangeiro: z.string().max(20).nullable().default(null).describe('ID estrangeiro'),
+    ie: z.string().max(16).nullable().default(null).describe('Inscrição estadual'),
+    imun: z
+      .string()
+      .max(15)
+      .regex(/^\d*$/, 'apenas números')
+      .nullable()
+      .default(null)
+      .describe('Inscrição municipal'),
+    isUF: z
+      .string()
+      .min(8)
+      .max(9)
+      .regex(/^\d+$/, 'apenas números')
+      .nullable()
+      .default(null)
+      .describe('IS UF'),
+    email: z.string().max(255).email().nullable().default(null).describe('E-mail'),
+    // Standardized wire format: digits-only E.164 without '+' (WhatsApp
+    // wa_id compatible — see @delfrance/core/phone). Lenient bounds so
+    // foreign phones (tipo Estrangeiro) and legacy Flutter-written raw
+    // 10/11-digit BR numbers both stay valid; forms normalize on write.
+    telefone: z
+      .string()
+      .max(16)
+      .regex(/^\d*$/, 'apenas números')
+      .refine((v) => v === '' || isValidTelefone(v), 'telefone inválido (10 a 15 dígitos, com DDD)')
+      .nullable()
+      .default(null)
+      .describe('Telefone'),
+    observacoesInternas: z
+      .string()
+      .max(255)
+      .nullable()
+      .default(null)
+      .describe('Observações internas'),
+    // ISO 8601; Firestore stores these as Timestamps, the data layer converts.
+    timestamp: z.string().datetime().nullable().default(null),
+    // System field — creation stays in `timestamp`; this is stamped by
+    // `saveRecord` on every write so the TableView update-monitor sees edits.
+    ultimaModificacao: z.string().datetime().nullable().optional(),
+    // Embeddings are server-managed; treat as opaque on the client.
+    nome_embedding: z.unknown().nullable().default(null),
+    telefone_embedding: z.unknown().nullable().default(null),
+    // userCliente outer reference: stored as a Firestore document path string
+    // (`users/<uid>`) on writes from this app. Phase 1 keeps it pass-through.
+    userCliente: z.string().nullable().default(null),
+  })
+  .superRefine(refineClienteTipoDocumento);
 
 export type Cliente = z.infer<typeof clienteSchema>;
 
