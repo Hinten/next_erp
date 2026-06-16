@@ -21,6 +21,17 @@ describe('summarizePedidoErrors', () => {
     expect(s.firstTab).toBe('principal');
   });
 
+  it('routes preview-only tab fields to the tab that shows them', () => {
+    // `estado` and `itensDevolvidos` are rendered read-only via PlaceholderTab,
+    // so an error on them must mark the right tab, not report "fora do formulário".
+    expect(summarizePedidoErrors(['estado']).firstTab).toBe('estado');
+    expect(summarizePedidoErrors(['estado']).outsideKeys).toEqual([]);
+    expect(summarizePedidoErrors(['itensDevolvidos']).firstTab).toBe('devolucao');
+    expect(summarizePedidoErrors(['itensDevolvidos']).message).toBe(
+      'Corrija os campos inválidos na aba "Devolução".',
+    );
+  });
+
   it('names multiple erroring tabs in display order regardless of input order', () => {
     const s = summarizePedidoErrors(['freteInicial', 'infCpl', 'integracaoPedidoOuterRef']);
     expect(s.firstTab).toBe('principal');

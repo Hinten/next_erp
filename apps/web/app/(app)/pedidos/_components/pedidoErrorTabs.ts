@@ -55,6 +55,11 @@ export const TAB_OF_FIELD: Readonly<Record<string, string>> = {
   freteInicial: 'frete',
   valorFreteInicial: 'frete',
   custoFreteInicial: 'frete',
+  // Preview-only fields rendered read-only in their tabs via PlaceholderTab —
+  // map them so a stray validation error marks the right tab instead of being
+  // reported as "fora do formulário".
+  estado: 'estado',
+  itensDevolvidos: 'devolucao',
 };
 
 export interface PedidoErrorSummary {
