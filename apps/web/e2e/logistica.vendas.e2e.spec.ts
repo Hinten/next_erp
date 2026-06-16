@@ -184,8 +184,12 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
     await page.getByRole('tab', { name: 'Endereço de origem' }).click();
 
     // Off by default (origin = filial sede): the Switch is unchecked and the
-    // address sub-fields are hidden.
-    const toggle = page.getByLabel('Informar endereço de origem', { exact: true });
+    // address sub-fields are hidden. Mantine's Switch is a checkbox-role
+    // control — target it by accessible name, not getByLabel.
+    const toggle = page.getByRole('checkbox', {
+      name: 'Informar endereço de origem',
+      exact: true,
+    });
     await expect(toggle).not.toBeChecked();
     await expect(page.getByLabel('CEP', { exact: true })).toHaveCount(0);
 
