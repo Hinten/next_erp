@@ -179,6 +179,50 @@ test.describe.serial('Logística e2e — int_frete TableView / ObjectView', () =
     await expect(page).toHaveURL(new RegExp(`/logistica/motoboy/${row(2)}$`));
   });
 
+  test('origin address: toggle on, CEP leads the form, fill and persist', async ({ page }) => {
+    await page.goto(`/logistica/motoboy/${row(3)}`);
+    await page.getByRole('tab', { name: 'Endereço de origem' }).click();
+
+    // Off by default (origin = filial sede): the Switch is unchecked and the
+    // address sub-fields are hidden.
+    const toggle = page.getByLabel('Informar endereço de origem', { exact: true });
+    await expect(toggle).not.toBeChecked();
+    await expect(page.getByLabel('CEP', { exact: true })).toHaveCount(0);
+
+    await toggle.click();
+
+    // CEP is the first address field (schema order), ahead of Logradouro, and
+    // Estado was seeded to SP by the field's defaultValue.
+    const cep = page.getByLabel('CEP', { exact: true });
+    const logradouro = page.getByLabel('Logradouro', { exact: true });
+    await expect(cep).toBeVisible();
+    await expect(logradouro).toBeVisible();
+    const cepTop = await cep.boundingBox();
+    const logrTop = await logradouro.boundingBox();
+    expect(cepTop!.y).toBeLessThan(logrTop!.y);
+    await expect(page.getByRole('combobox', { name: 'Estado (UF)', exact: true })).toHaveValue(
+      'SP',
+    );
+
+    // Fill the required location fields (no ViaCEP lookup — keep it offline).
+    await fillField(page, 'CEP', '01310100');
+    await fillField(page, 'Logradouro', 'Av. Paulista');
+    await fillField(page, 'Número', '1000');
+    await fillField(page, 'Bairro', 'Bela Vista');
+    await fillField(page, 'Cidade', 'São Paulo');
+    await clickSave(page, 'Salvar alterações');
+    await page.waitForURL(/\/logistica\/motoboy$/, { timeout: 15_000 });
+
+    const origem = async () =>
+      (await getIntFreteByName(row(3)))?.enderecoDeOrigem as Record<string, unknown> | null;
+    await expect.poll(async () => (await origem())?.cep, { timeout: 15_000 }).toBe('01310100');
+    const data = await origem();
+    expect(data?.logradouro).toBe('Av. Paulista');
+    // Brazil seeded on toggle-on (hidden NFe country fields).
+    expect(data?.cPais).toBe('1058');
+    expect(data?.pais).toBe('Brasil');
+  });
+
   test('deletes a motoboy through the typed-confirm modal', async ({ page }) => {
     await page.goto(`/logistica/motoboy/${row(1)}`);
     await confirmDelete(page);

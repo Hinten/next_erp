@@ -92,6 +92,14 @@ export interface FieldConfig<TValue = unknown> {
    * Lets callers hide/relabel address fields without flattening the schema.
    */
   fields?: Record<string, FieldConfig>;
+  /**
+   * Seed merged over the schema's empty defaults when a NULLABLE
+   * `kind: 'object'` field is toggled on (see the FieldRenderer nullable-object
+   * Switch). Lets callers preset hidden sub-fields — e.g. a freight origin
+   * address that should default to Brazil (`cPais: '1058'`, `pais: 'Brasil'`).
+   * Ignored for non-nullable objects.
+   */
+  defaultValue?: Record<string, unknown>;
 }
 
 /**
