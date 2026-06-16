@@ -44,3 +44,5 @@ devlogs/
 
 # Locally-rendered DANFE samples for manual review (pnpm render:danfe-samples)
 danfe-samples/
+# local scratch (trace/error-context extraction)
+tmp-e2e/

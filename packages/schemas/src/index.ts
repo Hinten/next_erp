@@ -39,7 +39,36 @@ export {
   type UF,
 } from './endereco';
 
-export { produto, produtoSchema, produtoMeta, type Produto } from './produto';
+export {
+  produto,
+  produtoSchema,
+  produtoMeta,
+  precoSchema,
+  type Produto,
+  type Preco,
+} from './produto';
+
+export {
+  historicoPreco,
+  historicoPrecoSchema,
+  historicoPrecoMeta,
+  historicoCusto,
+  historicoCustoSchema,
+  historicoCustoMeta,
+  type HistoricoPreco,
+  type HistoricoCusto,
+} from './historicos';
+
+export {
+  evaluateFormula,
+  taxaFixaPorPeso,
+  calcularPreco,
+  temFormulas,
+  samePrecos,
+  diffPrecos,
+  type PrecosMap,
+  type PrecoChange,
+} from './precoCalculo';
 
 export {
   produtoMercadoLivre,

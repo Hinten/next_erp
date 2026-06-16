@@ -14,6 +14,7 @@ const ESLINT_WORKSPACES = [
   'apps/nfe',
   'apps/webchat',
   'packages/integrations/nfe',
+  'packages/integrations/freight-br',
 ].sort((a, b) => b.length - a.length);
 
 const CODE_RE = /\.(ts|tsx|mts|cts)$/;

@@ -131,6 +131,9 @@ importers:
       '@delfrance/data':
         specifier: workspace:*
         version: link:../../packages/data
+      '@delfrance/integrations-freight-br':
+        specifier: workspace:*
+        version: link:../../packages/integrations/freight-br
       '@delfrance/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
@@ -250,6 +253,9 @@ importers:
       '@delfrance/data':
         specifier: workspace:*
         version: link:../../packages/data
+      '@delfrance/integrations-freight-br':
+        specifier: workspace:*
+        version: link:../../packages/integrations/freight-br
       '@delfrance/integrations-nfe':
         specifier: workspace:*
         version: link:../../packages/integrations/nfe
@@ -525,16 +531,25 @@ importers:
 
   packages/integrations/freight-br:
     dependencies:
-      '@delfrance/core':
-        specifier: workspace:*
-        version: link:../../core
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
+      eslint:
+        specifier: ^9.39.4
+        version: 9.39.4
+      eslint-config-prettier:
+        specifier: ^10.1.5
+        version: 10.1.8(eslint@9.39.4)
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
+      typescript-eslint:
+        specifier: ^8.59.3
+        version: 8.59.3(eslint@9.39.4)(typescript@6.0.3)
       vitest:
         specifier: ^4.1.6
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))

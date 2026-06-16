@@ -14,6 +14,7 @@
     "seed:pedidos": "dotenv -e ../../.env.local -- tsx src/seed-pedidos-dev.ts",
     "seed:nfe": "dotenv -e ../../.env.local -- tsx src/seed-nfe-dev.ts",
     "seed:variacoes": "dotenv -e ../../.env.local -- tsx src/seed-variacoes-dev.ts",
+    "seed:precos": "dotenv -e ../../.env.local -- tsx src/seed-precos-dev.ts",
     "teardown": "dotenv -e ../../.env.local -- tsx src/teardown.ts",
     "grant-all-perms": "dotenv -e ../../.env.local -- tsx src/grant-all-perms.ts",
     "create-super-user": "dotenv -e ../../.env.local -- tsx src/create-super-user.ts",

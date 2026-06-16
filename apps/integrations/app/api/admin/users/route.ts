@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { PERM, hasPerm, rulesClaimsFromBits } from '@delfrance/auth';
+import { PERM, rulesClaimsFromBits } from '@delfrance/auth';
 import { cargoCollection, usuarioCollection } from '@delfrance/data/admin/collections';
 import { aggregatePermissoes, type Cargo, isSuperUserBits, type Usuario } from '@delfrance/schemas';
+import { verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminAuth, getAdminFirestore } from '@/lib/firebase/admin';
 
 export const dynamic = 'force-dynamic';
@@ -50,34 +51,6 @@ function mapFirebaseError(e: unknown): { status: number; body: ErrorBody } {
   }
 }
 
-async function verifyCaller(req: Request) {
-  const authHeader = req.headers.get('authorization');
-  if (!authHeader?.startsWith('Bearer ')) {
-    return { error: err(401, { error: 'Authorization Bearer token ausente.' }) };
-  }
-  const idToken = authHeader.slice('Bearer '.length);
-  try {
-    const decoded = await getAdminAuth().verifyIdToken(idToken);
-    const perms = decoded.permissions as string | undefined;
-    if (!hasPerm(perms, PERM.configuracoes.write)) {
-      return {
-        error: err(403, { error: 'Sem permissão configuracoes.write.' }),
-      };
-    }
-    return { decoded };
-  } catch (e) {
-    console.error('[admin/users] verifyIdToken failed:', e);
-    // firebase-admin throws `FirebaseAuthError` (an Error subclass with a
-    // string `code` like `auth/id-token-expired`). We can't `instanceof` it
-    // because the class isn't part of the package's public runtime API; the
-    // duck-typed Error+code check covers it without depending on internals.
-    if (e instanceof Error && typeof (e as { code?: unknown }).code === 'string') {
-      return { error: err(401, { error: 'Token inválido ou expirado.' }) };
-    }
-    throw e;
-  }
-}
-
 function decodeCallerBits(perms: string | undefined): bigint {
   try {
     return BigInt(perms ?? '0');
@@ -110,10 +83,9 @@ export async function POST(req: Request) {
   }
   const body = parsed.data;
 
-  const auth = await verifyCaller(req);
-  if (auth.error) return auth.error;
-  const { decoded } = auth;
-  const callerBits = decodeCallerBits(decoded.permissions as string | undefined);
+  const auth = await verifyCaller(req, PERM.configuracoes.write);
+  if ('error' in auth) return auth.error;
+  const callerBits = decodeCallerBits(auth.caller.permissions);
 
   const db = getAdminFirestore();
 

@@ -8,6 +8,19 @@ const PERM_PRODUTO_WRITE = 1n << 9n;
 const PERM_PRODUTO_DELETE = 1n << 10n;
 
 /**
+ * One entry of the `produto.precos` map — Flutter `Preco` serializes as
+ * `{ valor: double }` (`models.g.dart:136-138`); the map is keyed by the
+ * ListaDePrecos doc id. A price is a real monetary value: `min(0.01)` rejects
+ * 0/sub-cent entries at the form (clearing the input removes the entry instead
+ * of storing 0).
+ */
+export const precoSchema = z
+  .object({ valor: z.number().min(0.01, 'O preço mínimo é R$ 0,01') })
+  .passthrough();
+
+export type Preco = z.infer<typeof precoSchema>;
+
+/**
  * Produto schema. Parity with `packages/produtos/lib/src/models.dart`
  * for the fields this app reads/writes today. Complex nested structures
  * (componentesKit, marketplace integrations, fotos, videos, anexos) are
@@ -43,6 +56,11 @@ export const produtoSchema = z
     ofereceFreteGratis: z.boolean().default(false),
     permiteVendaSemEstoque: z.boolean().default(false),
     crossdocking: z.number().int().min(0).nullable().default(null),
+
+    // Pricing — `precos` keyed by ListaDePrecos doc id; `custo` feeds the
+    // formula recalc (kits: Flutter sums component costs — Kit tab concern).
+    precos: z.record(z.string(), precoSchema).nullable().default(null),
+    custo: z.number().min(0).nullable().default(null),
 
     // Variations.
     grupoDeVariacoesUid: z.array(z.string()).nullable().default(null),
