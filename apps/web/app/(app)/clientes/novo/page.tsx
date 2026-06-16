@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
-import { clienteSchema } from '@delfrance/schemas';
+import { clienteFormSchema } from '@delfrance/schemas';
 import { ObjectView } from '@delfrance/ui';
 import { CpfCnpjField } from '@/components/inputs/CpfCnpjInput';
 import { TelefoneField, prepareForSaveTelefone } from '@/components/inputs/TelefoneInput';
@@ -31,7 +31,7 @@ export default function NovoClientePage() {
       </Group>
 
       <ObjectView
-        schema={clienteSchema}
+        schema={clienteFormSchema}
         collection={clienteCollection}
         db={getFirebaseFirestore()}
         currentUserUid={user?.uid ?? ''}

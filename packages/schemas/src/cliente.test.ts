@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TIPO_CLIENTE_LABELS, clienteMeta, clienteSchema } from './cliente';
+import { TIPO_CLIENTE_LABELS, clienteFormSchema, clienteMeta, clienteSchema } from './cliente';
 
 describe('clienteSchema', () => {
   it('accepts a minimal cliente — missing fields default to null', () => {
@@ -92,12 +92,18 @@ describe('clienteSchema', () => {
   });
 });
 
-describe('clienteSchema — tipo ↔ documento (CPF/CNPJ)', () => {
+describe('clienteFormSchema — tipo ↔ documento (CPF/CNPJ)', () => {
   const CPF = '52998224725';
   const CNPJ = '11222333000181';
 
+  it('plain clienteSchema stays pickable (no refinement — Zod 4 `.pick()`)', () => {
+    // The form-only refine must NOT live on clienteSchema, or the quick-create
+    // modal's `clienteSchema.pick()` throws at runtime.
+    expect(() => clienteSchema.pick({ cpf_cnpj: true })).not.toThrow();
+  });
+
   it('Pessoa Física (tipo 0) rejects a CNPJ', () => {
-    const r = clienteSchema.safeParse({ tipo: '0', cpf_cnpj: CNPJ });
+    const r = clienteFormSchema.safeParse({ tipo: '0', cpf_cnpj: CNPJ });
     expect(r.success).toBe(false);
     if (!r.success) {
       expect(r.error.issues.some((i) => i.path.includes('cpf_cnpj'))).toBe(true);
@@ -105,26 +111,28 @@ describe('clienteSchema — tipo ↔ documento (CPF/CNPJ)', () => {
   });
 
   it('Pessoa Física (tipo 0) accepts a CPF', () => {
-    expect(clienteSchema.safeParse({ tipo: '0', cpf_cnpj: CPF }).success).toBe(true);
+    expect(clienteFormSchema.safeParse({ tipo: '0', cpf_cnpj: CPF }).success).toBe(true);
   });
 
   it('Pessoa Jurídica (tipo 1) rejects a CPF', () => {
-    expect(clienteSchema.safeParse({ tipo: '1', cpf_cnpj: CPF }).success).toBe(false);
+    expect(clienteFormSchema.safeParse({ tipo: '1', cpf_cnpj: CPF }).success).toBe(false);
   });
 
   it('Pessoa Jurídica (tipo 1) accepts a numeric and an alphanumeric CNPJ', () => {
-    expect(clienteSchema.safeParse({ tipo: '1', cpf_cnpj: CNPJ }).success).toBe(true);
-    expect(clienteSchema.safeParse({ tipo: '1', cpf_cnpj: '12ABC34501DE35' }).success).toBe(true);
+    expect(clienteFormSchema.safeParse({ tipo: '1', cpf_cnpj: CNPJ }).success).toBe(true);
+    expect(clienteFormSchema.safeParse({ tipo: '1', cpf_cnpj: '12ABC34501DE35' }).success).toBe(
+      true,
+    );
   });
 
   it('no tipo (null) leaves the document unconstrained (legacy-tolerant)', () => {
-    expect(clienteSchema.safeParse({ cpf_cnpj: CNPJ }).success).toBe(true);
-    expect(clienteSchema.safeParse({ cpf_cnpj: CPF }).success).toBe(true);
+    expect(clienteFormSchema.safeParse({ cpf_cnpj: CNPJ }).success).toBe(true);
+    expect(clienteFormSchema.safeParse({ cpf_cnpj: CPF }).success).toBe(true);
   });
 
   it('Estrangeiro (tipo 2) with empty cpf_cnpj is valid', () => {
     expect(
-      clienteSchema.safeParse({ tipo: '2', cpf_cnpj: null, idEstrangeiro: 'ABC123' }).success,
+      clienteFormSchema.safeParse({ tipo: '2', cpf_cnpj: null, idEstrangeiro: 'ABC123' }).success,
     ).toBe(true);
   });
 });
