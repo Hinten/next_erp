@@ -1,12 +1,15 @@
 'use client';
 
-import { useMemo } from 'react';
-import { Select } from '@mantine/core';
-import { useQuery } from '@tanstack/react-query';
+import { useMemo, useState } from 'react';
+import { Anchor, Select, Stack } from '@mantine/core';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getDoc, getDocs, type Firestore } from 'firebase/firestore';
+import { PERM } from '@delfrance/auth';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { enderecoCollection } from '@/lib/data/enderecoCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
+import { usePermission } from '@/lib/auth';
+import { EnderecoFormModal } from './EnderecoFormModal';
 
 /**
  * The subset of the endereco doc the picker reads. Docs come back from a
@@ -90,6 +93,9 @@ export function EnderecoPicker({
 }: EnderecoPickerProps) {
   const clienteRef = useMemo(() => dereferenceOuterRef(db, clienteOuterRef), [db, clienteOuterRef]);
   const current = useEnderecoFromRef(db, value);
+  const queryClient = useQueryClient();
+  const { allowed: canWrite } = usePermission(PERM.endereco.write);
+  const [modalOpen, setModalOpen] = useState(false);
 
   const list = useQuery({
     queryKey: ['enderecoPicker', clienteRef?.path ?? null],
@@ -110,17 +116,42 @@ export function EnderecoPicker({
   }, [list.data, current.path, current.endereco]);
 
   return (
-    <Select
-      label={label}
-      data={rows.map((r) => ({ value: r.path, label: enderecoLabel(r.data) }))}
-      value={current.path}
-      onChange={(path) => onChange(path ? `documents/${path}` : null)}
-      placeholder={clienteRef ? 'Selecione um endereço…' : 'Selecione um cliente na aba Principal'}
-      nothingFoundMessage="Nenhum endereço cadastrado para o cliente."
-      clearable
-      searchable
-      disabled={disabled || (!clienteRef && !current.path)}
-      error={error}
-    />
+    <Stack gap={2}>
+      <Select
+        label={label}
+        data={rows.map((r) => ({ value: r.path, label: enderecoLabel(r.data) }))}
+        value={current.path}
+        onChange={(path) => onChange(path ? `documents/${path}` : null)}
+        placeholder={
+          clienteRef ? 'Selecione um endereço…' : 'Selecione um cliente na aba Principal'
+        }
+        nothingFoundMessage="Nenhum endereço cadastrado para o cliente."
+        clearable
+        searchable
+        disabled={disabled || (!clienteRef && !current.path)}
+        error={error}
+      />
+      {!disabled && canWrite && clienteRef && (
+        <Anchor component="button" type="button" size="xs" onClick={() => setModalOpen(true)}>
+          + Novo endereço
+        </Anchor>
+      )}
+      {clienteRef && (
+        <EnderecoFormModal
+          opened={modalOpen}
+          onClose={() => setModalOpen(false)}
+          clienteId={clienteRef.id}
+          onSaved={(newId) => {
+            setModalOpen(false);
+            // Select the just-created endereço immediately. `useEnderecoFromRef`
+            // resolves it as the out-of-list "current" value even before the
+            // list query refetches; invalidating the list folds it in too.
+            const newPath = enderecoCollection.docRef(db, { clienteId: clienteRef.id }, newId).path;
+            void queryClient.invalidateQueries({ queryKey: ['enderecoPicker', clienteRef.path] });
+            onChange(`documents/${newPath}`);
+          }}
+        />
+      )}
+    </Stack>
   );
 }
