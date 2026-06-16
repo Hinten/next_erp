@@ -127,15 +127,18 @@ export function EnderecoOrigemInput({
                 value={endereco?.cep ?? ''}
                 onChange={(cep) => patch({ cep })}
                 onBlur={onBlur}
-                onFound={(f) =>
-                  patch({
-                    logradouro: f.logradouro,
-                    bairro: f.bairro || 'SEM BAIRRO',
-                    cidade: f.cidade,
-                    estado: f.estado,
-                    codigoMunicipio: f.codigoMunicipio,
-                  })
-                }
+                onFound={(f) => {
+                  // Only patch fields ViaCEP actually returned — empty values
+                  // (city-wide CEP) must not clear what the user already typed
+                  // or introduce empty-string codigoMunicipio. Bairro keeps the
+                  // 'SEM BAIRRO' fallback.
+                  const next: Partial<EnderecoValue> = { bairro: f.bairro || 'SEM BAIRRO' };
+                  if (f.logradouro) next.logradouro = f.logradouro;
+                  if (f.cidade) next.cidade = f.cidade;
+                  if (f.estado) next.estado = f.estado;
+                  if (f.codigoMunicipio) next.codigoMunicipio = f.codigoMunicipio;
+                  patch(next);
+                }}
                 disabled={disabled}
                 error={err('cep')}
                 required

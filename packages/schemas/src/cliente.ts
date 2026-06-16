@@ -29,7 +29,8 @@ export type TipoCliente = z.infer<typeof tipoClienteSchema>;
  * '0') requires a CPF; a Pessoa Jurídica (tipo '1') requires a CNPJ. The
  * field-level refine already guarantees `cpf_cnpj` is a valid CPF *or* CNPJ —
  * this ties it to the selected tipo (without it, a PF could save a CNPJ).
- * Estrangeiro (tipo '2') uses `idEstrangeiro` and leaves `cpf_cnpj` empty.
+ * Estrangeiro (tipo '2') is NOT constrained here — its foreign id lives in
+ * `idEstrangeiro` and the quick-create modal already nulls `cpf_cnpj` for it.
  * Shared by the full cliente form and the quick-create modal.
  */
 export function refineClienteTipoDocumento(

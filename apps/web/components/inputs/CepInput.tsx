@@ -116,13 +116,15 @@ export function CepField({ value, onChange, onBlur, error, label, disabled }: Fi
       error={error}
       disabled={disabled}
       onFound={(found) => {
-        setValue('logradouro', found.logradouro, { shouldDirty: true, shouldValidate: true });
-        setValue('bairro', found.bairro || 'SEM BAIRRO', {
-          shouldDirty: true,
-          shouldValidate: true,
-        });
-        setValue('cidade', found.cidade, { shouldDirty: true, shouldValidate: true });
-        setValue('estado', found.estado, { shouldDirty: true, shouldValidate: true });
+        // Only overwrite a sibling when ViaCEP actually returned a value —
+        // otherwise a city-wide CEP (empty logradouro/bairro) would clear what
+        // the user already typed or set a required field to ''. Bairro keeps
+        // its 'SEM BAIRRO' fallback (the schema default).
+        const opts = { shouldDirty: true, shouldValidate: true } as const;
+        if (found.logradouro) setValue('logradouro', found.logradouro, opts);
+        setValue('bairro', found.bairro || 'SEM BAIRRO', opts);
+        if (found.cidade) setValue('cidade', found.cidade, opts);
+        if (found.estado) setValue('estado', found.estado, opts);
         if (found.codigoMunicipio) {
           setValue('codigoMunicipio', found.codigoMunicipio, { shouldDirty: true });
         }
