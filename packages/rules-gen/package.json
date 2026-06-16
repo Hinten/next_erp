@@ -12,7 +12,10 @@
     "test:rules": "vitest run --config vitest.rules.config.ts",
     "gen:rules": "tsx src/cli.ts",
     "gen:rules:check": "tsx src/cli.ts --check",
+    "gen:rules:e2e": "tsx src/cli.ts --e2e",
+    "gen:rules:e2e:check": "tsx src/cli.ts --e2e --check",
     "validate:api": "tsx scripts/api-validate.ts",
+    "validate:api:e2e": "tsx scripts/api-validate.ts --e2e",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {

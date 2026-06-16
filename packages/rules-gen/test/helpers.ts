@@ -21,10 +21,19 @@ if (!EMULATED && process.env.CI) {
 // exercises the COMMITTED firestore.rules — the drift check (gen:rules:check)
 // guarantees it matches the generator output.
 const RULES_PATH = fileURLToPath(new URL('../../../firestore.rules', import.meta.url));
+const E2E_RULES_PATH = fileURLToPath(new URL('../../../firestore.e2e.rules', import.meta.url));
 
 export function createTestEnv(): Promise<RulesTestEnvironment> {
   return initializeTestEnvironment({
     projectId: 'demo-erp',
     firestore: { rules: readFileSync(RULES_PATH, 'utf8') },
+  });
+}
+
+/** Staging variant (firestore.e2e.rules) — adds the e2e_<runId>_* namespace. */
+export function createE2ETestEnv(): Promise<RulesTestEnvironment> {
+  return initializeTestEnvironment({
+    projectId: 'demo-erp',
+    firestore: { rules: readFileSync(E2E_RULES_PATH, 'utf8') },
   });
 }

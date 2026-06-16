@@ -111,7 +111,7 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
     await page.goto('/clientes/novo');
     await fillField(page, 'Nome', nome);
     await selectField(page, 'Tipo', 'Pessoa Física');
-    await fillField(page, 'CPF / CNPJ', '12345678901');
+    await fillField(page, 'CPF / CNPJ', '52998224725'); // checksum-valid CPF
     await fillField(page, 'E-mail', `${prefix}-novo@example.com`);
     await clickSave(page, 'Criar');
     // onSaved does router.replace('/clientes/<id>'). Match the detail route
@@ -134,9 +134,11 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
   test('rejects creating a cliente with an invalid CPF/CNPJ', async ({ page }) => {
     await page.goto('/clientes/novo');
     await fillField(page, 'Nome', `${prefix}-erro`);
-    await fillField(page, 'CPF / CNPJ', 'abc'); // letters → regex fails
+    // Digits with a wrong checksum — the input uppercases/strips as you
+    // type, so the checksum refine is the validation users actually hit.
+    await fillField(page, 'CPF / CNPJ', '12345678901');
     await clickSave(page, 'Criar');
-    await expectErrorText(page, 'apenas números');
+    await expectErrorText(page, 'CPF/CNPJ inválido');
     await expect(page).toHaveURL(/\/clientes\/novo$/);
   });
 

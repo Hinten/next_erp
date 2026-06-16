@@ -14,7 +14,7 @@ describe('clienteSchema', () => {
     const input = {
       tipo: '0' as const,
       nome: 'Maria Silva',
-      cpf_cnpj: '12345678901',
+      cpf_cnpj: '52998224725',
       email: 'maria@example.com',
       telefone: '5511999998888',
       observacoesInternas: 'preferred client',
@@ -33,9 +33,41 @@ describe('clienteSchema', () => {
     expect(out.ie).toBeNull();
   });
 
-  it('rejects cpf_cnpj with non-digit characters', () => {
+  it('rejects cpf_cnpj with punctuation', () => {
     const result = clienteSchema.safeParse({ cpf_cnpj: '123.456.789-01' });
     expect(result.success).toBe(false);
+  });
+
+  it('rejects cpf_cnpj with a bad checksum', () => {
+    expect(clienteSchema.safeParse({ cpf_cnpj: '12345678901' }).success).toBe(false);
+    expect(clienteSchema.safeParse({ cpf_cnpj: '11222333000182' }).success).toBe(false);
+  });
+
+  it('accepts checksum-valid CPF, numeric CNPJ and alphanumeric CNPJ', () => {
+    expect(clienteSchema.safeParse({ cpf_cnpj: '52998224725' }).success).toBe(true);
+    expect(clienteSchema.safeParse({ cpf_cnpj: '11222333000181' }).success).toBe(true);
+    expect(clienteSchema.safeParse({ cpf_cnpj: '12ABC34501DE35' }).success).toBe(true);
+  });
+
+  it('rejects lowercase letters in cpf_cnpj (wire format is uppercase)', () => {
+    expect(clienteSchema.safeParse({ cpf_cnpj: '12abc34501de35' }).success).toBe(false);
+  });
+
+  it('accepts empty and null cpf_cnpj', () => {
+    expect(clienteSchema.safeParse({ cpf_cnpj: '' }).success).toBe(true);
+    expect(clienteSchema.safeParse({ cpf_cnpj: null }).success).toBe(true);
+  });
+
+  it('accepts null, empty, raw-BR and normalized telefone', () => {
+    expect(clienteSchema.safeParse({ telefone: null }).success).toBe(true);
+    expect(clienteSchema.safeParse({ telefone: '' }).success).toBe(true);
+    expect(clienteSchema.safeParse({ telefone: '11999998888' }).success).toBe(true);
+    expect(clienteSchema.safeParse({ telefone: '5511999998888' }).success).toBe(true);
+  });
+
+  it('rejects too-short and non-digit telefone', () => {
+    expect(clienteSchema.safeParse({ telefone: '999988887' }).success).toBe(false);
+    expect(clienteSchema.safeParse({ telefone: '(11) 99999-8888' }).success).toBe(false);
   });
 
   it('rejects email with invalid format', () => {

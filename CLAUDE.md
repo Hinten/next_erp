@@ -25,9 +25,16 @@ engine) — each gated on `ci.yml` passing first. See "When making changes".
 1. **`firestore.rules` is GENERATED — never hand-edit, never deploy
    unilaterally**. `packages/rules-gen` emits it from the Zod collection
    metadata (`pnpm --filter @delfrance/rules-gen gen:rules`); `ci-rules.yml`
-   fails on drift. Deploy stays manual/coordinated: production still runs the
-   Flutter-generated ruleset, and the staging e2e namespaces (`e2e_<runId>_*`)
-   are not covered by the generated fixed paths.
+   fails on drift. Deploy stays manual/coordinated. There are **two** generated
+   rulesets: **production** runs `firestore.rules` (root `firebase.json`); the
+   **staging** project runs the `--e2e` variant `firestore.e2e.rules`
+   (`gen:rules:e2e`, deployed via `firebase.staging.json`), which adds one
+   `e2e_<runId>_*` namespace block so the Playwright fixtures aren't
+   default-denied. Deploying the plain `firestore.rules` to staging breaks e2e
+   on every branch (#160). Staging deploy:
+   `firebase deploy --only firestore:rules --config firebase.staging.json --project <staging>`.
+   **Never deploy `firestore.e2e.rules` to production** — it opens every
+   `e2e_`-prefixed collection.
 2. **Codegen is deliberately minimal**. The only generator is `firestore.rules`
    (`packages/rules-gen`, custom — ADR 0003 found no npm package that fits).
    Form widgets, query builders, cascade, JSON converters — all manual TS, no
