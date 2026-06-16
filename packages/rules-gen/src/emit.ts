@@ -97,6 +97,13 @@ export function emitRules(
   lines.push('    function p(d, k) {');
   lines.push('      return request.auth != null && (request.auth.token.get(d, 0) / k) % 2 == 1;');
   lines.push('    }');
+  lines.push('');
+  lines.push('    // Break-glass super user: the dedicated `su` claim short-circuits the');
+  lines.push('    // permission + tenancy checks below (field validators still apply). Minted');
+  lines.push('    // server-side only for usuario.isSuperUser accounts — never self-grantable.');
+  lines.push('    function isSuperUser() {');
+  lines.push("      return request.auth != null && request.auth.token.get('su', false) == true;");
+  lines.push('    }');
 
   for (const name of [...validators.keys()].sort()) {
     const clauses = validators.get(name)!;
@@ -126,7 +133,7 @@ export function emitRules(
     for (const leaf of [...groupReads.keys()].sort()) {
       const check = groupReads.get(leaf)!;
       lines.push(`    match /{path=**}/${leaf}/{docId} {`);
-      lines.push(`      allow read: if p('${check.claim}', ${check.k});`);
+      lines.push(`      allow read: if isSuperUser() || p('${check.claim}', ${check.k});`);
       lines.push('    }');
     }
   }
@@ -143,8 +150,10 @@ function matchBlock(
 ): string[] {
   const lines: string[] = [];
   lines.push(`    match /${collectionPath}/{docId} {`);
-  lines.push(`      allow read: if p('${perms.read.claim}', ${perms.read.k});`);
-  const w = `p('${perms.write.claim}', ${perms.write.k})`;
+  lines.push(`      allow read: if isSuperUser() || p('${perms.read.claim}', ${perms.read.k});`);
+  // Super user bypasses the write-permission check; the field validator (when
+  // present) is ANDed OUTSIDE the bypass, so even a super user writes valid data.
+  const w = `(isSuperUser() || p('${perms.write.claim}', ${perms.write.k}))`;
   if (validatorName) {
     lines.push(
       `      allow create: if ${w} && ${validatorName}(request.resource.data, request.resource.data.keys());`,
@@ -153,9 +162,13 @@ function matchBlock(
       `      allow update: if ${w} && ${validatorName}(request.resource.data, request.resource.data.diff(resource.data).affectedKeys());`,
     );
   } else {
-    lines.push(`      allow create, update: if ${w};`);
+    lines.push(
+      `      allow create, update: if isSuperUser() || p('${perms.write.claim}', ${perms.write.k});`,
+    );
   }
-  lines.push(`      allow delete: if p('${perms.delete.claim}', ${perms.delete.k});`);
+  lines.push(
+    `      allow delete: if isSuperUser() || p('${perms.delete.claim}', ${perms.delete.k});`,
+  );
   lines.push('    }');
   return lines;
 }

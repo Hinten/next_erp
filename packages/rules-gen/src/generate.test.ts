@@ -24,6 +24,19 @@ describe('generateRulesSource', () => {
     // unique marker (it never appears in the production header or body).
     expect(generateRulesSource()).not.toContain('nsColl');
   });
+
+  it('emits the super-user helper and short-circuits the allow rules', () => {
+    const out = generateRulesSource();
+    expect(out).toContain('function isSuperUser() {');
+    expect(out).toContain("request.auth.token.get('su', false) == true");
+    // Permission checks are short-circuited by isSuperUser()...
+    expect(out).toContain("allow read: if isSuperUser() || p('d_cliente', 1);");
+    // ...but the field validator stays ANDed OUTSIDE the bypass (decision: a
+    // super user can write without the bit, but still writes valid data).
+    expect(out).toContain(
+      "allow create: if (isSuperUser() || p('d_cliente', 2)) && v_clientes(request.resource.data, request.resource.data.keys());",
+    );
+  });
 });
 
 describe('generateRulesSource({ e2e: true })', () => {

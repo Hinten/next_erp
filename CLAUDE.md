@@ -34,7 +34,13 @@ engine) — each gated on `ci.yml` passing first. See "When making changes".
    on every branch (#160). Staging deploy:
    `firebase deploy --only firestore:rules --config firebase.staging.json --project <staging>`.
    **Never deploy `firestore.e2e.rules` to production** — it opens every
-   `e2e_`-prefixed collection.
+   `e2e_`-prefixed collection. The generated rules also carry a break-glass
+   **super user**: a dedicated boolean `su` claim (minted server-side for
+   `usuario.isSuperUser` accounts — never self-grantable) short-circuits every
+   permission + tenancy check via `isSuperUser()`, though field validators still
+   apply. Mint one with `pnpm --filter @delfrance/test-fixtures create-super-user
+   <email>` (durable: also sets `usuarios/<uid>.isSuperUser`); `grant-all-perms`
+   grants all *defined* bits but is NOT a super user.
 2. **Codegen is deliberately minimal**. The only generator is `firestore.rules`
    (`packages/rules-gen`, custom — ADR 0003 found no npm package that fits).
    Form widgets, query builders, cascade, JSON converters — all manual TS, no

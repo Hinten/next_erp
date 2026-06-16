@@ -20,14 +20,15 @@ function domain(
 describe('emitRules', () => {
   it('emits split create/update with validator calls for whitelisted paths only', () => {
     const out = emitRules([domain('foo'), domain('bar')], [], new Set(['foo']));
+    // Super user bypasses the write check; the validator is ANDed OUTSIDE it.
     expect(out).toContain(
-      "allow create: if p('d_cliente', 2) && v_foo(request.resource.data, request.resource.data.keys());",
+      "allow create: if (isSuperUser() || p('d_cliente', 2)) && v_foo(request.resource.data, request.resource.data.keys());",
     );
     expect(out).toContain(
-      "allow update: if p('d_cliente', 2) && v_foo(request.resource.data, request.resource.data.diff(resource.data).affectedKeys());",
+      "allow update: if (isSuperUser() || p('d_cliente', 2)) && v_foo(request.resource.data, request.resource.data.diff(resource.data).affectedKeys());",
     );
     expect(out).toContain('match /bar/{docId} {');
-    expect(out).toContain("allow create, update: if p('d_cliente', 2);");
+    expect(out).toContain("allow create, update: if isSuperUser() || p('d_cliente', 2);");
     expect(out).not.toContain('v_bar');
   });
 

@@ -910,6 +910,9 @@ importers:
       '@delfrance/auth':
         specifier: workspace:*
         version: link:../../packages/auth
+      '@delfrance/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
       firebase-admin:
         specifier: ^13.9.0
         version: 13.9.0

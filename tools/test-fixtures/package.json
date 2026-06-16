@@ -16,11 +16,13 @@
     "seed:variacoes": "dotenv -e ../../.env.local -- tsx src/seed-variacoes-dev.ts",
     "teardown": "dotenv -e ../../.env.local -- tsx src/teardown.ts",
     "grant-all-perms": "dotenv -e ../../.env.local -- tsx src/grant-all-perms.ts",
+    "create-super-user": "dotenv -e ../../.env.local -- tsx src/create-super-user.ts",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
     "@delfrance/auth": "workspace:*",
+    "@delfrance/schemas": "workspace:*",
     "firebase-admin": "^13.9.0"
   },
   "devDependencies": {

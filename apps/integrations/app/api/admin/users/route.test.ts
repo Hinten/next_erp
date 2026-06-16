@@ -134,6 +134,7 @@ describe('POST /api/admin/users', () => {
     expect(res.status).toBe(201);
     expect(mocks.setCustomUserClaims).toHaveBeenCalledWith('uid_su', {
       permissions: SUPERUSER_MASK.toString(),
+      su: true,
       ...rulesClaimsFromBits(SUPERUSER_MASK),
     });
   });
@@ -165,6 +166,7 @@ describe('POST /api/admin/users', () => {
     // the generated Firestore rules read.
     expect(mocks.setCustomUserClaims).toHaveBeenCalledWith('uid_42', {
       permissions: ((1n << 0n) | (1n << 1n)).toString(),
+      su: false,
       d_cliente: 3,
     });
     expect(mocks.usuarioSet).toHaveBeenCalled();
