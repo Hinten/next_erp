@@ -111,7 +111,9 @@ describe('FieldRenderer', () => {
       <Harness
         schema={schema}
         values={{ origem: null }}
-        fields={{ origem: { label: 'Informar origem', defaultValue: { estado: 'SP' } } }}
+        fields={{
+          origem: { label: 'Informar origem', defaultValue: { estado: 'SP', bogus: 'x' } },
+        }}
         onSubmit={onSubmit}
       />,
     );
@@ -122,7 +124,8 @@ describe('FieldRenderer', () => {
     expect(screen.queryByLabelText('CEP')).toBeNull();
 
     // On: the object is seeded (empty defaults + `defaultValue`) and the
-    // sub-fields appear — `estado` preselected to 'SP', `cep` empty.
+    // sub-fields appear — `estado` preselected to 'SP', `cep` empty. The stray
+    // `bogus` key in `defaultValue` is dropped (it isn't in the nested schema).
     await act(async () => {
       fireEvent.click(sw);
     });

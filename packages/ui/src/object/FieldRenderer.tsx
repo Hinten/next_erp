@@ -71,6 +71,19 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
     // seeded object. The parent Controller owns only the null/non-null state;
     // the leaves keep their own Controllers on `<fieldName>.<childKey>`.
     if (descriptor.nullable) {
+      // Seed the object when toggled on: schema empty-defaults overlaid with
+      // `config.defaultValue`, restricted to keys that exist in the nested
+      // schema. The filter matters because some embedded objects are
+      // `.passthrough()` (and ObjectView writes via `tx.update`, bypassing the
+      // converter), so a stray default key would otherwise be persisted.
+      const nestedKeys = new Set(nested.map((d) => d.key));
+      const seedObject = (): Record<string, unknown> => {
+        const base = buildEmptyDefaults(nested);
+        for (const [k, v] of Object.entries(config?.defaultValue ?? {})) {
+          if (nestedKeys.has(k)) base[k] = v;
+        }
+        return base;
+      };
       return (
         <Controller
           control={control}
@@ -84,13 +97,7 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
                   description={hint}
                   checked={enabled}
                   disabled={!editable}
-                  onChange={(e) =>
-                    field.onChange(
-                      e.currentTarget.checked
-                        ? { ...buildEmptyDefaults(nested), ...(config?.defaultValue ?? {}) }
-                        : null,
-                    )
-                  }
+                  onChange={(e) => field.onChange(e.currentTarget.checked ? seedObject() : null)}
                 />
                 {enabled && (
                   <Fieldset legend={label}>
