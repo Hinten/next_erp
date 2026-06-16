@@ -129,6 +129,29 @@ describe('createNFeHttpClient — emitir', () => {
     }
   });
 
+  it('maps a cert-coded 422 → NFeCertificateError, NOT NFeRejectedError (no SEFAZ contact)', async () => {
+    // resolveFilialRuntime threw before any SEFAZ call (filial has no stored
+    // cert). The route tags it `code: 'NFeCertError'` so the client must show
+    // the pt-BR message, never "SEFAZ rejected: cStat=(unknown) …".
+    const fetch = mockFetch({
+      status: 422,
+      body: {
+        error:
+          "Filial 'dev-filial-01' não possui certificado digital cadastrado. " +
+          'Faça o upload do certificado A1 na aba "Certificado Digital" da filial.',
+        code: 'NFeCertError',
+      },
+    });
+    const err = await makeClient(fetch)
+      .emitir('PED-001')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFeCertificateError);
+    expect(err).not.toBeInstanceOf(NFeRejectedError);
+    expect((err as NFeCertificateError).message).toMatch(/não possui certificado digital/);
+    expect((err as NFeCertificateError).message).not.toMatch(/SEFAZ/i);
+    expect((err as NFeCertificateError).code).toBe('NFeCertError');
+  });
+
   it('maps 503 → NFeRuntimeNotReadyError', async () => {
     const fetch = mockFetch({
       status: 503,

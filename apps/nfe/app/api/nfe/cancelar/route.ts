@@ -17,7 +17,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
-import { sanitizeNFeText } from '@delfrance/integrations-nfe';
+import { NFeCertError, sanitizeNFeText } from '@delfrance/integrations-nfe';
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -97,6 +97,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
     if (e instanceof NFeOrchestratorError) {
       return authError(400, { error: e.message });
+    }
+    if (e instanceof NFeCertError) {
+      // No SEFAZ contact — per-filial cert pre-flight failure. The `code` lets
+      // the client show the pt-BR message instead of "SEFAZ rejected".
+      return authError(422, { error: e.message, code: e.name });
     }
     safeLog('error', '[nfe/cancelar]', e);
     return authError(500, {

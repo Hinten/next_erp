@@ -253,6 +253,15 @@ function errorFromResponse(
       ? (body as { code: unknown }).code
       : undefined;
 
+  // A per-filial cert pre-flight failure (no stored cert / wrong key / expired)
+  // is resolved BEFORE any SEFAZ contact. The routes tag it `code: 'NFeCertError'`
+  // — surface it as a dedicated cert error carrying the route's pt-BR message,
+  // never as an `NFeRejectedError` ("SEFAZ rejected: …"), which the generic 422
+  // mapping below would otherwise produce.
+  if (bodyCode === 'NFeCertError') {
+    return new NFeCertificateError(message, status, body, 'NFeCertError');
+  }
+
   if (status === 400) return new NFeBadRequestError(message, body);
   if (status === 401 || status === 403) return new NFeAuthError(message, status, body);
   if (status === 404) {
