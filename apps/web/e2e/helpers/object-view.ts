@@ -19,6 +19,21 @@ export async function fillField(page: Page, label: string, value: string): Promi
   await input.blur();
 }
 
+/**
+ * Fill a BRL-masked money input (`CurrencyInput`) found by accessible name.
+ * Playwright's `.fill()` mis-scales a fixed-decimal masked input — it sets the
+ * value wholesale and `react-number-format` reads "30" as 3000 — so clear and
+ * type the digits like a real user, which the mask handles correctly.
+ */
+export async function typeMoney(page: Page, name: string, value: string): Promise<void> {
+  const input = page.getByRole('textbox', { name });
+  await input.click();
+  await input.press('ControlOrMeta+a');
+  await input.press('Delete');
+  await input.pressSequentially(value);
+  await input.blur();
+}
+
 /** Pick an option in a Mantine `Select` field (enum kind) by its label. */
 export async function selectField(page: Page, label: string, optionText: string): Promise<void> {
   // `getByLabel` also matches the Select's `role="listbox"` popup (same

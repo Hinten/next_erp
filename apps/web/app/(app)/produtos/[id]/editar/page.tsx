@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
@@ -10,16 +10,22 @@ import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from
 import { PERM } from '@delfrance/auth';
 import {
   type Foto,
+  type PrecosMap,
   type Video,
+  diffPrecos,
   normalizeVariacoesUid,
   parseFakePath,
   produtoSchema,
   sortGrupoUids,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
-import { useSnapshot } from '@delfrance/data/hooks';
+import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
+import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
+import { appendPrecoHistory } from '@/lib/produtos/precoHistory';
+import { appendCustoHistory } from '@/lib/produtos/custoHistory';
+import { propagateParentPrecosToChildren } from '@/lib/produtos/childPrecos';
 import {
   describeReferences,
   findManyProdutoReferences,
@@ -28,6 +34,8 @@ import {
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { PhotoManager } from '../../_components/PhotoManager';
+import { CustoField } from '../../_components/CustoField';
+import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
 import { VariationManager } from '../../_components/VariationManager';
 import {
@@ -55,10 +63,42 @@ export default function EditarProdutoPage() {
   const gruposSnap = useSnapshot(gruposQuery);
   const grupos = useMemo(() => gruposSnap.data ?? [], [gruposSnap.data]);
 
+  // Listas de preços (live, bounded) — feed the Preço e custo tab.
+  const listasQuery = useMemo(
+    () => buildQuery(listaDePrecosCollection.ref(db, {}), [orderByField('nome'), limit(200)]),
+    [db],
+  );
+  const listasSnap = useSnapshot(listasQuery);
+  const listas = useMemo(() => listasSnap.data ?? [], [listasSnap.data]);
+
   // Lifted from the VariationManager: the user's group selection (null until
   // touched) and the staged-children flush, committed after the parent saves.
   const groupsRef = useRef<string[] | null>(null);
   const flushChildrenRef = useRef<((parentId: string) => Promise<void>) | null>(null);
+
+  // Price-history bookkeeping (Flutter parity: `Produto.save()` records every
+  // precos change). `lastSavedPrecos` pins the PERSISTED map once, from the
+  // first doc emit, so it can serve as the "old" value at onAfterSave time;
+  // the "new" value is read back fresh from the just-saved parent doc (the
+  // live snapshot can't be trusted to have re-emitted yet).
+  const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, params.id), [db, params.id]);
+  const produtoSnap = useDocSnapshot(produtoDocRef);
+  const lastSavedPrecos = useRef<{ ready: boolean; value: PrecosMap }>({
+    ready: false,
+    value: null,
+  });
+  // Same bookkeeping for `custo`: a historicoDeCusto record is written on each
+  // change. `ready` guards the first emit so we don't record on initial load.
+  const lastSavedCusto = useRef<{ ready: boolean; value: number | null }>({
+    ready: false,
+    value: null,
+  });
+  useEffect(() => {
+    if (!lastSavedPrecos.current.ready && produtoSnap.data) {
+      lastSavedPrecos.current = { ready: true, value: produtoSnap.data.data.precos ?? null };
+      lastSavedCusto.current = { ready: true, value: produtoSnap.data.data.custo ?? null };
+    }
+  }, [produtoSnap.data]);
 
   // The product exists here (edit mode), so the Fotos/Vídeos managers are scoped
   // to this product and uploads are enabled.
@@ -115,8 +155,40 @@ export default function EditarProdutoPage() {
           />
         ),
       },
+      custo: {
+        ...produtoFieldOverrides.custo,
+        renderInput: (p) => (
+          <CustoField
+            produtoId={params.id}
+            db={db}
+            value={(p.value as number | null) ?? null}
+            onChange={p.onChange}
+            label={p.label}
+            hint={p.hint}
+            disabled={p.disabled}
+            error={p.error}
+          />
+        ),
+      },
+      precos: {
+        label: 'Preços',
+        section: 'Preço e custo',
+        prepareForSave: stripPrecosForSave,
+        renderInput: (p) => (
+          <PrecoCustoManager
+            produtoId={params.id}
+            db={db}
+            listas={listas}
+            listasError={listasSnap.error?.message}
+            value={(p.value as PrecosMap) ?? null}
+            onChange={p.onChange}
+            errorTree={p.errorTree}
+            disabled={p.disabled}
+          />
+        ),
+      },
     }),
-    [params.id, db, storage, grupos, gruposSnap.error?.message],
+    [params.id, db, storage, grupos, gruposSnap.error?.message, listas, listasSnap.error?.message],
   );
 
   // The editor is the product screen now (the intermediate detail view was
@@ -204,7 +276,50 @@ export default function EditarProdutoPage() {
             variacoesUid: normalizeVariacoesUid(uids, grupos),
           };
         }}
-        onAfterSave={async (id) => {
+        onAfterSave={async (id, values) => {
+          // `values.precos` is exactly what this save persisted (ObjectView
+          // hands us the transformed values) — no captured-state staleness, no
+          // re-read race. Record the history (Flutter parity) and, when the map
+          // changed, propagate it to every existing variation child — this must
+          // fire even when the user only touched the Preço e custo tab, so it
+          // can't depend on the Variações tab's live snapshot. The flush runs
+          // last: it creates any new children already carrying the parent's
+          // precos (plus their initial history records).
+          const newPrecos = (values.precos as PrecosMap) ?? null;
+          // "Old" value = the ref pinned at the first doc emit, or — if a save
+          // beat that emit — the live snapshot. Driving the diff off this
+          // (instead of skipping when the ref isn't primed) means a fast first
+          // save still records its history record and only propagates on a real
+          // change.
+          const oldPrecos = lastSavedPrecos.current.ready
+            ? lastSavedPrecos.current.value
+            : (produtoSnap.data?.data.precos ?? null);
+          const precoChanges = diffPrecos(oldPrecos, newPrecos);
+          if (precoChanges.length > 0) {
+            const batch = writeBatch(db);
+            appendPrecoHistory(batch, db, id, precoChanges);
+            await batch.commit();
+          }
+          const precosChanged = precoChanges.length > 0;
+          lastSavedPrecos.current = { ready: true, value: newPrecos };
+
+          // Cost history (historicoDeCusto): one record per change. Only a
+          // numeric custo that actually differs from the last persisted value
+          // is recorded (a cleared/null custo can't be represented as a record).
+          const newCusto = typeof values.custo === 'number' ? values.custo : null;
+          const oldCusto = lastSavedCusto.current.ready
+            ? lastSavedCusto.current.value
+            : (produtoSnap.data?.data.custo ?? null);
+          if (newCusto !== null && newCusto !== oldCusto) {
+            const batch = writeBatch(db);
+            appendCustoHistory(batch, db, id, newCusto);
+            await batch.commit();
+          }
+          lastSavedCusto.current = { ready: true, value: newCusto };
+
+          if (precosChanged) {
+            await propagateParentPrecosToChildren(db, id, newPrecos);
+          }
           await flushChildrenRef.current?.(id);
         }}
         saveLabel="Salvar alterações"

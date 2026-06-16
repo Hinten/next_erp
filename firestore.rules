@@ -103,6 +103,7 @@ service cloud.firestore {
         && (!c.hasAny(['componentesKit']) || (d.get('componentesKit', null) == null || d.get('componentesKit', null) is map))
         && (!c.hasAny(['componentesKitKeys']) || (d.get('componentesKitKeys', null) == null || d.get('componentesKitKeys', null) is list))
         && (!c.hasAny(['crossdocking']) || (d.get('crossdocking', null) == null || (d.get('crossdocking', null) is int && d.get('crossdocking', null) >= 0)))
+        && (!c.hasAny(['custo']) || (d.get('custo', null) == null || (d.get('custo', null) is number && d.get('custo', null) >= 0)))
         && (!c.hasAny(['ehKit']) || d.get('ehKit', null) is bool)
         && (!c.hasAny(['ehKitVirtual']) || d.get('ehKitVirtual', null) is bool)
         && (!c.hasAny(['fotos']) || (d.get('fotos', null) == null || d.get('fotos', null) is list))
@@ -120,6 +121,7 @@ service cloud.firestore {
         && (!c.hasAny(['permiteVendaSemEstoque']) || d.get('permiteVendaSemEstoque', null) is bool)
         && (!c.hasAny(['pesoBrutoKg']) || (d.get('pesoBrutoKg', null) == null || d.get('pesoBrutoKg', null) is number))
         && (!c.hasAny(['pesoLiquidoKg']) || (d.get('pesoLiquidoKg', null) == null || d.get('pesoLiquidoKg', null) is number))
+        && (!c.hasAny(['precos']) || (d.get('precos', null) == null || d.get('precos', null) is map))
         && (!c.hasAny(['profundidadeCm']) || (d.get('profundidadeCm', null) == null || d.get('profundidadeCm', null) is number))
         && (!c.hasAny(['publicado']) || d.get('publicado', null) is bool)
         && (!c.hasAny(['sku']) || (d.get('sku', null) == null || d.get('sku', null) is string && d.get('sku', null).size() <= 255))
@@ -301,6 +303,18 @@ service cloud.firestore {
       allow delete: if p('d_produto', 4);
     }
 
+    match /produtos/{produtoId}/historicoDeCusto/{docId} {
+      allow read: if p('d_produto', 1);
+      allow create, update: if p('d_produto', 2);
+      allow delete: if p('d_produto', 4);
+    }
+
+    match /produtos/{produtoId}/historicoDePrecos/{docId} {
+      allow read: if p('d_produto', 1);
+      allow create, update: if p('d_produto', 2);
+      allow delete: if p('d_produto', 4);
+    }
+
     match /produtos/{produtoId}/imposto/{docId} {
       allow read: if p('d_impostoProduto', 1);
       allow create, update: if p('d_impostoProduto', 2);
@@ -374,6 +388,12 @@ service cloud.firestore {
     }
     match /{path=**}/enviNfe/{docId} {
       allow read: if p('d_fiscal', 1);
+    }
+    match /{path=**}/historicoDeCusto/{docId} {
+      allow read: if p('d_produto', 1);
+    }
+    match /{path=**}/historicoDePrecos/{docId} {
+      allow read: if p('d_produto', 1);
     }
     match /{path=**}/imposto/{docId} {
       allow read: if p('d_impostoProduto', 1);
