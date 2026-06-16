@@ -70,6 +70,18 @@ export {
   type PrecoChange,
 } from './precoCalculo';
 
+export {
+  produtoMercadoLivre,
+  variacaoMercadoLivre,
+  produtoShopee,
+  variacaoShopee,
+  produtoMagalu,
+  produtoAmazon,
+  produtoLojaIntegrada,
+  PRODUTO_SUBCOLLECTION_DOMAINS,
+  PRODUTO_SUBCOLLECTION_NAMES,
+} from './produtoSubcollections';
+
 export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './categoria';
 
 export {

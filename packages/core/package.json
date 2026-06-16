@@ -10,6 +10,7 @@
     "./money": "./src/money/index.ts",
     "./address": "./src/address/index.ts",
     "./documents": "./src/documents/index.ts",
+    "./phone": "./src/phone/index.ts",
     "./tenant": "./src/tenant/index.ts",
     "./plugins": "./src/plugins/index.ts"
   },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatCNPJ, formatCPF, validateCNPJ, validateCPF } from './br';
+import { formatCNPJ, formatCPF, validateCNPJ, validateCPF, validateCpfCnpj } from './br';
 
 // Valid samples generated with public algorithms; use widely-known
 // test fixtures so failures are easy to reason about.
@@ -7,6 +7,9 @@ const VALID_CPF = '52998224725';
 const VALID_CPF_FORMATTED = '529.982.247-25';
 const VALID_CNPJ = '11222333000181';
 const VALID_CNPJ_FORMATTED = '11.222.333/0001-81';
+// SERPRO's published alphanumeric example (IN RFB 2.229/2024); DVs 3 and 5.
+const VALID_CNPJ_ALPHA = '12ABC34501DE35';
+const VALID_CNPJ_ALPHA_FORMATTED = '12.ABC.345/01DE-35';
 
 describe('validateCPF', () => {
   it('accepts a valid CPF with no formatting', () => {
@@ -56,6 +59,49 @@ describe('validateCNPJ', () => {
     expect(validateCNPJ('11222333')).toBe(false);
     expect(validateCNPJ('112223330001811')).toBe(false);
   });
+
+  it('accepts a valid alphanumeric CNPJ (IN RFB 2.229/2024)', () => {
+    expect(validateCNPJ(VALID_CNPJ_ALPHA)).toBe(true);
+    expect(validateCNPJ(VALID_CNPJ_ALPHA_FORMATTED)).toBe(true);
+  });
+
+  it('accepts lowercase alphanumeric input via uppercase cleaning', () => {
+    expect(validateCNPJ('12abc34501de35')).toBe(true);
+  });
+
+  it('rejects an alphanumeric CNPJ with wrong checksum', () => {
+    expect(validateCNPJ('12ABC34501DE36')).toBe(false);
+    expect(validateCNPJ('12ABC34501DE45')).toBe(false);
+  });
+
+  it('rejects letters in the check-digit positions', () => {
+    expect(validateCNPJ('12ABC34501DEA5')).toBe(false);
+    expect(validateCNPJ('12ABC34501DE3A')).toBe(false);
+  });
+});
+
+describe('validateCpfCnpj', () => {
+  it('routes 11 chars to CPF validation', () => {
+    expect(validateCpfCnpj(VALID_CPF)).toBe(true);
+    expect(validateCpfCnpj('12345678901')).toBe(false);
+  });
+
+  it('routes 14 chars to CNPJ validation (numeric and alphanumeric)', () => {
+    expect(validateCpfCnpj(VALID_CNPJ)).toBe(true);
+    expect(validateCpfCnpj(VALID_CNPJ_ALPHA)).toBe(true);
+    expect(validateCpfCnpj('11222333000182')).toBe(false);
+  });
+
+  it('rejects any other length', () => {
+    expect(validateCpfCnpj('')).toBe(false);
+    expect(validateCpfCnpj('123')).toBe(false);
+    expect(validateCpfCnpj('1234567890123')).toBe(false);
+  });
+
+  it('cleans punctuation before routing by length', () => {
+    expect(validateCpfCnpj(VALID_CPF_FORMATTED)).toBe(true);
+    expect(validateCpfCnpj(VALID_CNPJ_ALPHA_FORMATTED)).toBe(true);
+  });
 });
 
 describe('formatCPF', () => {
@@ -79,5 +125,10 @@ describe('formatCNPJ', () => {
 
   it('returns digits-only for partial input', () => {
     expect(formatCNPJ('1122233')).toBe('1122233');
+  });
+
+  it('formats an alphanumeric CNPJ with the same mask', () => {
+    expect(formatCNPJ(VALID_CNPJ_ALPHA)).toBe(VALID_CNPJ_ALPHA_FORMATTED);
+    expect(formatCNPJ('12abc34501de35')).toBe(VALID_CNPJ_ALPHA_FORMATTED);
   });
 });

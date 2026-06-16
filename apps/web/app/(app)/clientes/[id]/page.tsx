@@ -2,33 +2,23 @@
 
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
-import { Anchor, Group, Stack, TextInput, Title } from '@mantine/core';
+import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { deleteDoc } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
 import { clienteSchema } from '@delfrance/schemas';
-import { ObjectView, type FieldRenderProps } from '@delfrance/ui';
-import { formatCNPJ, formatCPF } from '@delfrance/core/documents';
+import { ObjectView } from '@delfrance/ui';
+import { CpfCnpjField } from '@/components/inputs/CpfCnpjInput';
+import { TelefoneField, prepareForSaveTelefone } from '@/components/inputs/TelefoneInput';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { EnderecosSection } from './_components/EnderecosSection';
 
-function CpfCnpjInput({ value, onChange, onBlur, error, label, hint }: FieldRenderProps) {
-  const v = (value as string | null | undefined) ?? '';
-  const formatted = v.length === 11 ? formatCPF(v) : v.length === 14 ? formatCNPJ(v) : null;
-  return (
-    <TextInput
-      label={label}
-      description={formatted ?? hint ?? 'Apenas números'}
-      value={v}
-      onChange={(e) => onChange(e.currentTarget.value)}
-      onBlur={onBlur}
-      error={error}
-      maxLength={14}
-      inputMode="numeric"
-    />
-  );
-}
+// Module-level: ObjectView identity-tracks `fields`.
+const CLIENTE_FORM_FIELDS = {
+  cpf_cnpj: { renderInput: CpfCnpjField },
+  telefone: { renderInput: TelefoneField, prepareForSave: prepareForSaveTelefone },
+};
 
 export default function ClientePage() {
   const params = useParams<{ id: string }>();
@@ -66,7 +56,7 @@ export default function ClientePage() {
           'isUF',
           'idEstrangeiro',
         ]}
-        fields={{ cpf_cnpj: { renderInput: CpfCnpjInput } }}
+        fields={CLIENTE_FORM_FIELDS}
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}

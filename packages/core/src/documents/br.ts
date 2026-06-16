@@ -5,6 +5,16 @@ function digitsOnly(value: string): string {
 }
 
 /**
+ * Strip the usual document punctuation (dots, dash, slash, spaces) and
+ * uppercase. Unlike `digitsOnly` this keeps letters — required for the
+ * alphanumeric CNPJ (IN RFB 2.229/2024: the 12 root+order positions may be
+ * letters or digits; the 2 check digits stay numeric).
+ */
+function cleanDocumentChars(value: string): string {
+  return value.replace(/[.\-/\s]/g, '').toUpperCase();
+}
+
+/**
  * Validate a CPF using the standard mod-11 checksum with the canonical
  * weights (10..2 for the first DV, 11..2 for the second). Reject the
  * known degenerate inputs (all-same-digit). Accepts 11-digit strings.
@@ -27,18 +37,23 @@ export function validateCPF(input: string): boolean {
 }
 
 /**
- * Validate a CNPJ (14 digits) using the canonical mod-11 checksum.
+ * Validate a CNPJ (14 chars) using the canonical mod-11 checksum.
  * Weights: [5,4,3,2,9,8,7,6,5,4,3,2] for DV1, prefixed with 6 for DV2.
+ *
+ * Supports the alphanumeric CNPJ (IN RFB 2.229/2024): the first 12
+ * positions may be A-Z or 0-9, the 2 check digits are always numeric, and
+ * each char enters the checksum as `charCode - 48` (identical to the digit
+ * value for 0-9, so purely numeric CNPJs validate exactly as before).
  */
 export function validateCNPJ(input: string): boolean {
-  const cnpj = digitsOnly(input);
-  if (cnpj.length !== 14) return false;
+  const cnpj = cleanDocumentChars(input);
+  if (!/^[A-Z0-9]{12}\d{2}$/.test(cnpj)) return false;
   if (/^(\d)\1{13}$/.test(cnpj)) return false;
 
-  const compute = (digits: string, weights: number[]): number => {
+  const compute = (chars: string, weights: number[]): number => {
     let sum = 0;
     for (let i = 0; i < weights.length; i++) {
-      sum += Number(digits[i]) * weights[i]!;
+      sum += (chars.charCodeAt(i) - 48) * weights[i]!;
     }
     const rest = sum % 11;
     return rest < 2 ? 0 : 11 - rest;
@@ -53,6 +68,17 @@ export function validateCNPJ(input: string): boolean {
   );
 }
 
+/**
+ * Validate a combined CPF/CNPJ field by length: 11 chars → CPF,
+ * 14 chars → CNPJ (numeric or alphanumeric), anything else → invalid.
+ */
+export function validateCpfCnpj(input: string): boolean {
+  const cleaned = cleanDocumentChars(input);
+  if (cleaned.length === 11) return validateCPF(cleaned);
+  if (cleaned.length === 14) return validateCNPJ(cleaned);
+  return false;
+}
+
 export function formatCPF(input: string): string {
   const v = digitsOnly(input).slice(0, 11);
   if (v.length !== 11) return v;
@@ -60,7 +86,7 @@ export function formatCPF(input: string): string {
 }
 
 export function formatCNPJ(input: string): string {
-  const v = digitsOnly(input).slice(0, 14);
+  const v = cleanDocumentChars(input).slice(0, 14);
   if (v.length !== 14) return v;
   return `${v.slice(0, 2)}.${v.slice(2, 5)}.${v.slice(5, 8)}/${v.slice(8, 12)}-${v.slice(12)}`;
 }
