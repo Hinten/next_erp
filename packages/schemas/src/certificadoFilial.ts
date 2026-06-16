@@ -29,12 +29,15 @@ export const certificadoFilialInfoSchema = z.object({
   subjectCommonName: z.string().min(1).describe('Titular do certificado'),
   /** CNPJ extracted from the cert CN — must match the filial's CNPJ. */
   cnpj: z.string().min(1).describe('CNPJ do certificado'),
-  /** Certificate `notAfter` (ISO datetime) — drives the expiry badge. */
-  notAfter: z.string().datetime({ offset: true }).describe('Validade'),
+  /**
+   * Certificate `notAfter` as **ms since epoch** (Dart/Flutter date convention,
+   * SDK-agnostic) — drives the expiry badge. UI converts via `new Date(value)`.
+   */
+  notAfter: z.number().int().describe('Validade'),
   /** Original uploaded filename (.pfx/.p12), for operator recognition. */
   filename: z.string().min(1).describe('Arquivo'),
-  /** When the cert was uploaded (ISO datetime). */
-  uploadedAt: z.string().datetime({ offset: true }).describe('Enviado em'),
+  /** Upload time as **ms since epoch**. UI converts via `new Date(value)`. */
+  uploadedAt: z.number().int().describe('Enviado em'),
 });
 
 export type CertificadoFilialInfo = z.infer<typeof certificadoFilialInfoSchema>;
@@ -69,14 +72,14 @@ export const certificadoSecretoSchema = z.object({
   subjectCommonName: z.string().min(1),
   /** CNPJ extracted from the cert CN. */
   cnpj: z.string().min(1),
-  /** Certificate `notAfter` (ISO datetime). */
-  notAfter: z.string().datetime({ offset: true }),
+  /** Certificate `notAfter` as ms since epoch (metadata; emissor re-derives it from the PEM). */
+  notAfter: z.number().int(),
   /** Encryption algorithm tag — pinned so a future migration can branch. */
   algoritmo: z.literal('aes-256-gcm'),
   /** Master-key version that encrypted this doc (for future key rotation). */
   keyVersion: z.number().int().min(1),
-  /** Upload timestamp (ISO datetime). */
-  uploadedAt: z.string().datetime({ offset: true }),
+  /** Upload timestamp as ms since epoch. */
+  uploadedAt: z.number().int(),
 });
 
 export type CertificadoSecreto = z.infer<typeof certificadoSecretoSchema>;

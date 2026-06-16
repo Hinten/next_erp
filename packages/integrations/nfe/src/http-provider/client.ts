@@ -148,9 +148,11 @@ export interface NFeCartaCorrecaoResult {
 export interface NFeCertificadoMeta {
   readonly subjectCommonName: string;
   readonly cnpj: string;
-  readonly notAfter: string;
+  /** ms since epoch. */
+  readonly notAfter: number;
   readonly filename: string;
-  readonly uploadedAt: string;
+  /** ms since epoch. */
+  readonly uploadedAt: number;
 }
 
 /**

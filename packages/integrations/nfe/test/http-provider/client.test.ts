@@ -549,9 +549,9 @@ describe('createNFeHttpClient — certificado', () => {
     const meta = {
       subjectCommonName: 'ACME:99999999000191',
       cnpj: '99999999000191',
-      notAfter: '2027-01-01T00:00:00.000Z',
+      notAfter: Date.UTC(2027, 0, 1), // ms since epoch
       filename: 'cert.pfx',
-      uploadedAt: '2026-06-16T00:00:00.000Z',
+      uploadedAt: Date.UTC(2026, 5, 16),
     };
     const fetch = mockFetch({ status: 200, body: meta });
     const got = await makeClient(fetch).uploadCertificado('F-1', 'cGZ4', 'senha', 'cert.pfx');

@@ -92,6 +92,10 @@ describe('POST /api/nfe/certificado', () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.cnpj).toBe(CNPJ);
     expect(body.filename).toBe('cert.pfx');
+    // Dates are ms-epoch numbers (not ISO strings).
+    expect(typeof body.notAfter).toBe('number');
+    expect(typeof body.uploadedAt).toBe('number');
+    expect(typeof docs['filiais/F-1/certificadoSecreto/default']?.notAfter).toBe('number');
     // The response is public metadata only — never key material.
     const raw = JSON.stringify(body);
     expect(raw).not.toContain('PRIVATE KEY');
