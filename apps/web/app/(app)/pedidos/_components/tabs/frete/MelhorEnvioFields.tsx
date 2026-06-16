@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { Alert, Button, Group, Select, Stack } from '@mantine/core';
 import type { IntFrete } from '@delfrance/schemas';
+import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
 import {
   type CalculateOption,
   FreightHttpError,
@@ -140,14 +141,14 @@ export function MelhorEnvioFields({
     form.setValue(fretePath('externalOptionId'), value, { shouldDirty: true });
     form.setValue(fretePath('externalOptionIntegracao'), intFreteId, { shouldDirty: true });
     form.setValue(fretePath('externalOptionData'), optionData, { shouldDirty: true });
-    form.setValue(fretePath('externalOptionSelectionDate'), Date.now(), { shouldDirty: true });
+    form.setValue(fretePath('externalOptionSelectionDate'), nowMicros(), { shouldDirty: true });
     form.setValue(fretePath('valorCobrado'), price, { shouldDirty: true });
     form.setValue(fretePath('custoCalculado'), price, { shouldDirty: true });
     form.setValue(fretePath('custoFinal'), price, { shouldDirty: true });
     if (option.delivery_time != null) {
       form.setValue(
         fretePath('dataPrevisaoEntrega'),
-        Date.now() + option.delivery_time * 86_400_000,
+        millisToMicros(Date.now() + option.delivery_time * 86_400_000),
         { shouldDirty: true },
       );
     }

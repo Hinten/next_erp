@@ -6,9 +6,11 @@
  * Veiculo, Reboque, Volume).
  *
  * Convention recap (matches `pedido.ts`):
- *   - All Dart `DateTime?` fields are serialized to Firestore as
- *     `int` (milliseconds since epoch). The Zod types here use
- *     `z.number().int().nullable()` to match.
+ *   - Datetime fields are **microseconds since epoch** (`microsSinceEpoch()`),
+ *     the project standard — NOT the legacy Flutter `int` milliseconds. The
+ *     builder reads tolerantly (ms / µs / ISO / `Date` → µs); the legacy ms↔µs
+ *     mapping is documented in
+ *     `tools/migrations/pedido-pagamento-micros.README.md`.
  *   - Enums serialize by their `.value` (a string), not the enum
  *     name itself. For `modalidadeFrete` the values are the
  *     single-digit codes the NFe XSD uses ('0'..'9'); for
@@ -19,6 +21,7 @@
  *     writes that we haven't enumerated yet.
  */
 import { z } from 'zod';
+import { microsSinceEpoch } from './datetime';
 import { ufSchema } from './endereco';
 
 /* -------------------------------------------------------------------------- */
@@ -267,13 +270,10 @@ export const freteDoPedidoSchema = z
       .nullable()
       .default(null)
       .describe('Dados da opção externa'),
-    /** Selection moment for the marketplace freight option (ms since epoch). */
-    externalOptionSelectionDate: z
-      .number()
-      .int()
+    /** Selection moment for the marketplace freight option (µs since epoch). */
+    externalOptionSelectionDate: microsSinceEpoch('Data de seleção da opção externa')
       .nullable()
-      .default(null)
-      .describe('Data de seleção da opção externa'),
+      .default(null),
 
     // Status + routing ------------------------------------------------------
     estado: estadoFreteSchema.describe('Estado do frete'),
@@ -310,23 +310,23 @@ export const freteDoPedidoSchema = z
     custoCalculado: z.number().nullable().default(null).describe('Custo calculado'),
     custoFinal: z.number().nullable().default(null).describe('Custo final'),
 
-    // Schedule — DateTime fields stored as ms since epoch -------------------
+    // Schedule — DateTime fields stored as µs since epoch -------------------
     ehReverso: z.boolean().default(false).describe('Frete reverso'),
-    /** Extra days added to the shipping deadline. */
+    /** Extra days added to the shipping deadline (a day count, not a date). */
     prazoExtra: z.number().int().default(0).describe('Prazo extra (dias)'),
     /** Max dispatch deadline (the field the table view's "Expedição" column reads). */
-    prazoDespacho: z.number().int().nullable().default(null).describe('Prazo de despacho'),
-    dataEntrega: z.number().int().nullable().default(null).describe('Data de entrega'),
-    dataPrevisaoEntrega: z.number().int().nullable().default(null).describe('Previsão de entrega'),
+    prazoDespacho: microsSinceEpoch('Prazo de despacho').nullable().default(null),
+    dataEntrega: microsSinceEpoch('Data de entrega').nullable().default(null),
+    dataPrevisaoEntrega: microsSinceEpoch('Previsão de entrega').nullable().default(null),
 
     // Insurance + delivery options -----------------------------------------
     valor_assegurado: z.number().nullable().default(null).describe('Valor assegurado'),
     maoPropria: z.boolean().nullable().default(null).describe('Mão própria'),
     avisoRecebimento: z.boolean().nullable().default(null).describe('Aviso de recebimento'),
 
-    // Timestamps — ms since epoch ------------------------------------------
-    ultimaModificacao: z.number().int().nullable().default(null).describe('Última modificação'),
-    timestamp: z.number().int().nullable().default(null).describe('Criação'),
+    // Timestamps — µs since epoch ------------------------------------------
+    ultimaModificacao: microsSinceEpoch('Última modificação').nullable().default(null),
+    timestamp: microsSinceEpoch('Criação').nullable().default(null),
   })
   .passthrough();
 export type FreteDoPedido = z.infer<typeof freteDoPedidoSchema>;

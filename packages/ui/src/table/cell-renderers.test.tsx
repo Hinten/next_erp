@@ -57,6 +57,15 @@ const dateDesc: FieldDescriptor = {
   label: 'D',
   zodType: z.string().datetime(),
 };
+const datetimeUsDesc: FieldDescriptor = {
+  key: 'du',
+  kind: 'datetime',
+  optional: false,
+  nullable: false,
+  label: 'DU',
+  dateUnit: 'us',
+  zodType: z.number().int(),
+};
 
 function cellText() {
   return within(screen.getByTestId('cell')).getByText(/.+/, { selector: ':not(style)' })
@@ -87,6 +96,12 @@ describe('renderCell', () => {
   it('formats date strings', () => {
     wrap(renderCell('2026-01-15T10:30:00.000Z', dateDesc));
     // pt-BR short date includes a slash.
+    expect(within(screen.getByTestId('cell')).getByText(/\//)).toBeTruthy();
+  });
+
+  it('formats a microsecond-epoch datetime as a localized date', () => {
+    const us = Date.parse('2026-01-15T10:30:00.000Z') * 1000;
+    wrap(renderCell(us, datetimeUsDesc));
     expect(within(screen.getByTestId('cell')).getByText(/\//)).toBeTruthy();
   });
 });

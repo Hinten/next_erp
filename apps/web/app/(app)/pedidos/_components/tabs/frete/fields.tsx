@@ -3,6 +3,7 @@
 import { Controller, type FieldPath, type UseFormReturn } from 'react-hook-form';
 import { NumberInput, Switch, TextInput } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
+import { epochToPickerString, pickerStringToEpoch } from '@delfrance/ui';
 import type { Pedido } from '@delfrance/schemas';
 import type { FreteInicialFormState, PedidoFormState } from '../../types';
 
@@ -117,29 +118,11 @@ export function FreteSwitchField({
 }
 
 /**
- * Wire format is ms since epoch; Mantine 9's DateTimePicker speaks
- * `YYYY-MM-DD HH:mm:ss` strings in the user's local timezone — same wall
- * clock the legacy Flutter client showed.
+ * Wire format is microseconds since epoch (`microsSinceEpoch()`); Mantine 9's
+ * DateTimePicker speaks `YYYY-MM-DD HH:mm:ss` strings in the user's local
+ * timezone — same wall clock the legacy Flutter client showed. Conversion is
+ * shared with the generic `FieldRenderer` via `@delfrance/ui`.
  */
-export function msToPickerString(ms: number | null | undefined): string | null {
-  if (ms == null) return null;
-  const d = new Date(ms);
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
-
-export function pickerStringToMs(value: string | null): number | null {
-  if (!value) return null;
-  // 'YYYY-MM-DD HH:mm:ss' → ISO-local; bare 'YYYY-MM-DD' gets midnight.
-  const iso = value.includes(' ')
-    ? value.replace(' ', 'T')
-    : value.length === 10
-      ? `${value}T00:00:00`
-      : value;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d.getTime();
-}
-
 export function FreteDateTimeField({
   form,
   name,
@@ -155,8 +138,8 @@ export function FreteDateTimeField({
         <DateTimePicker
           label={label}
           description={description}
-          value={msToPickerString(field.value as number | null)}
-          onChange={(v) => field.onChange(pickerStringToMs(v))}
+          value={epochToPickerString(field.value as number | null, 'us')}
+          onChange={(v) => field.onChange(pickerStringToEpoch(v, 'us'))}
           onBlur={field.onBlur}
           valueFormat="DD/MM/YYYY HH:mm"
           clearable

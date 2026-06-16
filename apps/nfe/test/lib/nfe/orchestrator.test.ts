@@ -44,6 +44,7 @@ import {
   type NFeConfig,
   type Pagamento,
 } from '@delfrance/schemas';
+import { dateToMicros } from '@delfrance/core/datetime';
 
 import {
   consultarPedido,
@@ -2313,7 +2314,7 @@ describe('buildCobrFromPagamentos', () => {
   });
 
   it('one duplicata → fat + single dup', () => {
-    const venc = new Date('2026-06-30T03:00:00Z').toISOString();
+    const venc = dateToMicros(new Date('2026-06-30T03:00:00Z'));
     const out = __internal.buildCobrFromPagamentos([
       pagamento({
         valor: 250,

@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { Group, Stack } from '@mantine/core';
 import { getPrazoDespacho, type IntFrete } from '@delfrance/schemas';
+import { dateToMicros } from '@delfrance/core/datetime';
 import { FreteDateTimeField, FreteNumberField, fretePath, type PedidoFormHandle } from './fields';
 import { TransportadoraFields } from './TransportadoraFields';
 import { VolumesEditor } from './VolumesEditor';
@@ -35,7 +36,7 @@ export function RetiradaFields({
     if (!isCreate && !integracaoDirty) return;
     const data = getPrazoDespacho(horarios, new Date());
     if (data) {
-      form.setValue(fretePath('prazoDespacho'), data.getTime(), { shouldDirty: true });
+      form.setValue(fretePath('prazoDespacho'), dateToMicros(data), { shouldDirty: true });
     }
     // Re-run only when the schedule source changes — prazoDespacho is read
     // fresh inside and the fill is one-shot (non-null afterwards).

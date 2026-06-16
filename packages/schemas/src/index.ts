@@ -18,6 +18,8 @@ export type {
 
 export { ALL_DOMAINS } from './registry';
 
+export { millisSinceEpoch, microsSinceEpoch } from './datetime';
+
 export { auditEntrySchema, type AuditEntry } from './audit';
 
 export {

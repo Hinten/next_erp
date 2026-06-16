@@ -11,6 +11,8 @@ export interface ParsedDescription {
   kind?: string;
   /** Collection name for `kind: 'reference'`. */
   collection?: string;
+  /** Epoch unit for `kind: 'datetime'` (set by the schema datetime builders). */
+  unit?: 'ms' | 'us';
 }
 
 /**

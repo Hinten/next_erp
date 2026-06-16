@@ -19,6 +19,7 @@ export type FieldKind =
   | 'boolean'
   | 'enum'
   | 'date'
+  | 'datetime'
   | 'reference'
   | 'array'
   | 'object'
@@ -35,6 +36,12 @@ export interface FieldDescriptor {
   hint?: string;
   /** Populated when `kind === 'enum'`. */
   enumValues?: Array<{ value: string; label: string }>;
+  /**
+   * Epoch unit for `kind === 'datetime'` (numeric-epoch fields built with
+   * `millisSinceEpoch()` / `microsSinceEpoch()`). Drives the ×/÷1000 the date
+   * picker and cell renderer apply when converting to/from a `Date`.
+   */
+  dateUnit?: 'ms' | 'us';
   /** Collection name for references (parsed from describe JSON). */
   referenceCollection?: string;
   /** Original Zod type (unwrapped — not the optional/nullable wrapper). */

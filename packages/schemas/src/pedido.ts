@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
+import { microsSinceEpoch } from './datetime';
 import { freteDoPedidoSchema } from './frete';
 
 const PERM_PEDIDO_READ = 1n << 16n;
@@ -69,7 +70,7 @@ export const itemDoPedidoSchema = z
     descontoUnitario: z.number().min(0).nullable().default(0),
     quantidade: z.number().min(0),
     custo: z.number().nullable().default(null),
-    timestamp: z.string().datetime().nullable().default(null),
+    timestamp: microsSinceEpoch().nullable().default(null),
     imposto: z.unknown().nullable().default(null),
   })
   .passthrough();
@@ -83,11 +84,14 @@ export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
  * default semantics. `.passthrough()` is preserved on the outer
  * object so any not-yet-ported Flutter field still flows through.
  *
- * Timestamp convention: Dart `DateTime?` is serialized to Firestore
- * as `int` (milliseconds since epoch), confirmed by the legacy
- * table-view code (`DateTime.fromMillisecondsSinceEpoch(...)`).
- * UI components convert via `new Date(value)` at the display
- * boundary.
+ * Timestamp convention: datetime fields are **microseconds since epoch**
+ * (`microsSinceEpoch()`), the project's higher-precision standard — NOT the
+ * legacy Flutter `int` milliseconds. The builder reads tolerantly (ms / µs /
+ * ISO / `Date` all normalize to µs), so docs written before the backfill still
+ * render correctly. The legacy ms↔µs mapping is documented in
+ * `tools/migrations/pedido-pagamento-micros.README.md` for the future Flutter
+ * import. UI rendering/editing is driven by the `kind: 'datetime'` metadata the
+ * builder carries.
  */
 export const pedidoSchema = z
   .object({
@@ -155,35 +159,23 @@ export const pedidoSchema = z
     valorComissoes: z.number().nullable().default(null).describe('Comissões'),
     impostos: z.number().nullable().default(null).describe('Impostos'),
 
-    // Timestamps — all stored as ms since epoch ----------------------------
-    /** Creation timestamp (ms since epoch). */
-    timestamp: z.number().int().nullable().default(null).describe('Criação'),
-    ultimaModificacao: z.number().int().nullable().default(null).describe('Última modificação'),
+    // Timestamps — all stored as µs since epoch ----------------------------
+    timestamp: microsSinceEpoch('Criação').nullable().default(null),
+    ultimaModificacao: microsSinceEpoch('Última modificação').nullable().default(null),
     /** Deprecated in Flutter (kept for parse compatibility). */
-    dataFinalExpedicao: z
-      .number()
-      .int()
+    dataFinalExpedicao: microsSinceEpoch('Data final de expedição').nullable().default(null),
+    dataIndisponivelEstoque: microsSinceEpoch('Indisponibilidade de estoque')
       .nullable()
-      .default(null)
-      .describe('Data final de expedição'),
-    dataIndisponivelEstoque: z
-      .number()
-      .int()
+      .default(null),
+    dataRemocaoEstoque: microsSinceEpoch('Remoção de estoque').nullable().default(null),
+    lastMarketplaceUpdate: microsSinceEpoch('Última atualização do marketplace')
       .nullable()
-      .default(null)
-      .describe('Indisponibilidade de estoque'),
-    dataRemocaoEstoque: z.number().int().nullable().default(null).describe('Remoção de estoque'),
-    lastMarketplaceUpdate: z
-      .number()
-      .int()
-      .nullable()
-      .default(null)
-      .describe('Última atualização do marketplace'),
+      .default(null),
 
     // Print metadata --------------------------------------------------------
     foiImpresso: z.boolean().default(false).describe('Impresso'),
-    /** Print date (ms since epoch). The table view renders an icon if set. */
-    dtImpressao: z.number().int().nullable().default(null).describe('Data de impressão'),
+    /** Print date (µs since epoch). The table view renders an icon if set. */
+    dtImpressao: microsSinceEpoch('Data de impressão').nullable().default(null),
 
     // NF-e + observability --------------------------------------------------
     /** When true the orchestrator refuses to emit NF-e for this pedido. */

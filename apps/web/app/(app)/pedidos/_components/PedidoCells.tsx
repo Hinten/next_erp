@@ -32,6 +32,7 @@ import {
   type TipoCliente,
   pedidoTotal,
 } from '@delfrance/schemas';
+import { microsToMillis } from '@delfrance/core/datetime';
 import { format, money } from '@delfrance/core/money';
 import {
   ActionIcon,
@@ -57,12 +58,12 @@ import { DanfeMenu } from '@/components/DanfeMenu';
 const DASH = '—';
 
 /**
- * Pretty-print a millisecond-since-epoch value as a Brazilian date+time.
+ * Pretty-print a microsecond-since-epoch value as a Brazilian date+time.
  * Returns `DASH` when null/undefined.
  */
-function formatMillis(ms: number | null | undefined): string {
-  if (ms == null) return DASH;
-  return new Date(ms).toLocaleString('pt-BR', {
+function formatMicros(us: number | null | undefined): string {
+  if (us == null) return DASH;
+  return new Date(microsToMillis(us)).toLocaleString('pt-BR', {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
@@ -368,7 +369,7 @@ export function VlrCell({ pedido }: { pedido: Pedido }) {
 /* -------------------------------------------------------------------------- */
 
 export function ExpedicaoCell({ pedido }: { pedido: Pedido }) {
-  return <Text>{formatMillis(pedido.freteInicial?.prazoDespacho)}</Text>;
+  return <Text>{formatMicros(pedido.freteInicial?.prazoDespacho)}</Text>;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -386,7 +387,7 @@ export function FreteCell({ pedido }: { pedido: Pedido }) {
   const label = ESTADO_FRETE_LABELS[estado] ?? estado;
   const tooltipParts: string[] = [];
   if (frete?.codRastreio) tooltipParts.push(`Rastreio: ${frete.codRastreio}`);
-  if (frete?.prazoDespacho) tooltipParts.push(`Prazo: ${formatMillis(frete.prazoDespacho)}`);
+  if (frete?.prazoDespacho) tooltipParts.push(`Prazo: ${formatMicros(frete.prazoDespacho)}`);
   if (tooltipParts.length === 0) return <Text>{label}</Text>;
   return (
     <Tooltip label={tooltipParts.join(' • ')} withinPortal>
@@ -400,7 +401,7 @@ export function FreteCell({ pedido }: { pedido: Pedido }) {
 /* -------------------------------------------------------------------------- */
 
 export function CriacaoCell({ pedido }: { pedido: Pedido }) {
-  return <Text>{formatMillis(pedido.timestamp)}</Text>;
+  return <Text>{formatMicros(pedido.timestamp)}</Text>;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -413,7 +414,7 @@ export function CriacaoCell({ pedido }: { pedido: Pedido }) {
 export function ImpCell({ pedido }: { pedido: Pedido }) {
   if (pedido.dtImpressao == null) return null;
   return (
-    <Tooltip label={formatMillis(pedido.dtImpressao)} withinPortal>
+    <Tooltip label={formatMicros(pedido.dtImpressao)} withinPortal>
       <IconCheck size={18} color="var(--mantine-color-teal-6)" aria-label="Impresso" />
     </Tooltip>
   );

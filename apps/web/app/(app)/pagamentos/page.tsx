@@ -13,6 +13,7 @@ import {
   pagamentoSchema,
 } from '@delfrance/schemas';
 import { format, money } from '@delfrance/core/money';
+import { microsToMillis } from '@delfrance/core/datetime';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { PagamentoStatusBadge } from './_components/StatusBadge';
 
@@ -114,7 +115,7 @@ export default function PagamentosListPage() {
                   <Table.Td align="right">{pgto.parcelas}</Table.Td>
                   <Table.Td>
                     {pgto.dataCadastro
-                      ? new Date(pgto.dataCadastro).toLocaleDateString('pt-BR')
+                      ? new Date(microsToMillis(pgto.dataCadastro)).toLocaleDateString('pt-BR')
                       : '—'}
                   </Table.Td>
                 </Table.Tr>

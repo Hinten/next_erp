@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
+import { microsSinceEpoch } from './datetime';
 import type { EstadoPedido } from './pedido';
 
 const PERM_PAGAMENTO_READ = 1n << 24n;
@@ -176,11 +177,14 @@ export const pagamentoSchema = z
     aVista: z.boolean().default(true),
     duplicata: z.boolean().default(false),
     nFat: z.string().max(60).nullable().default(null),
-    vencimento: z.string().datetime().nullable().default(null),
-    ultimaModificacao: z.string().datetime().nullable().default(null),
-    dataCancelamento: z.string().datetime().nullable().default(null),
-    dataAprovacao: z.string().datetime().nullable().default(null),
-    dataCadastro: z.string().datetime().nullable().default(null),
+    // Datetime fields — microseconds since epoch (`microsSinceEpoch()`), the
+    // project standard. Migrated from the legacy ISO-8601 strings; the builder
+    // reads both during rollout (see tools/migrations/pedido-pagamento-micros).
+    vencimento: microsSinceEpoch('Vencimento').nullable().default(null),
+    ultimaModificacao: microsSinceEpoch('Última modificação').nullable().default(null),
+    dataCancelamento: microsSinceEpoch('Data de cancelamento').nullable().default(null),
+    dataAprovacao: microsSinceEpoch('Data de aprovação').nullable().default(null),
+    dataCadastro: microsSinceEpoch('Data de cadastro').nullable().default(null),
   })
   .passthrough();
 
@@ -221,7 +225,7 @@ export const metodoPagamentoSchema = z.object({
   tipo: tipoIntegracaoPgtoSchema,
   hasLinkPagamento: z.boolean().default(false),
   nome: z.string().min(1).max(255),
-  dataCadastro: z.string().datetime().nullable().default(null),
+  dataCadastro: microsSinceEpoch('Data de cadastro').nullable().default(null),
 });
 export type MetodoPagamento = z.infer<typeof metodoPagamentoSchema>;
 

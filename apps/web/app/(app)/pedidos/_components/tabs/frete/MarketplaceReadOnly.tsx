@@ -3,8 +3,8 @@
 import { Accordion, Alert, Badge, Code, Group, Stack, Text, TextInput } from '@mantine/core';
 import { ESTADO_FRETE_LABELS, INTEGRACAO_FRETE_LABELS } from '@delfrance/schemas';
 import { format, money } from '@delfrance/core/money';
+import { epochToPickerString } from '@delfrance/ui';
 import type { FreteInicialFormState } from '../../types';
-import { msToPickerString } from './fields';
 
 function labelOf(map: Record<string, string>, key: string | null | undefined): string {
   return key ? (map[key] ?? key) : '—';
@@ -65,8 +65,8 @@ export function MarketplaceReadOnly({
           'Valor cobrado',
           frete.valorCobrado != null ? format(money(Math.round(frete.valorCobrado * 100))) : null,
         )}
-        {ro('Previsão de entrega', msToPickerString(frete.dataPrevisaoEntrega))}
-        {ro('Data de entrega', msToPickerString(frete.dataEntrega))}
+        {ro('Previsão de entrega', epochToPickerString(frete.dataPrevisaoEntrega, 'us'))}
+        {ro('Data de entrega', epochToPickerString(frete.dataEntrega, 'us'))}
       </Group>
 
       {frete.externalOptionData && (

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { microsSinceEpoch, millisSinceEpoch } from '@delfrance/schemas';
 import { extractFieldsFromSchema } from './derive';
 
 describe('extractFieldsFromSchema', () => {
@@ -43,6 +44,24 @@ describe('extractFieldsFromSchema', () => {
   it('detects integer for z.number().int()', () => {
     const schema = z.object({ n: z.number().int() });
     expect(extractFieldsFromSchema(schema)[0]!.kind).toBe('integer');
+  });
+
+  it('detects datetime kind + unit for the numeric-epoch builders', () => {
+    // Proves the describe-JSON metadata the builders attach (on the preprocess
+    // node) survives `.nullable().default()` and drives kind + unit detection,
+    // so numeric-epoch fields render as date pickers, not bare integers.
+    const schema = z.object({
+      us: microsSinceEpoch('Criação').nullable().default(null),
+      ms: millisSinceEpoch(),
+    });
+    const fields = extractFieldsFromSchema(schema);
+    const us = fields.find((f) => f.key === 'us')!;
+    expect(us.kind).toBe('datetime');
+    expect(us.dateUnit).toBe('us');
+    expect(us.label).toBe('Criação');
+    const ms = fields.find((f) => f.key === 'ms')!;
+    expect(ms.kind).toBe('datetime');
+    expect(ms.dateUnit).toBe('ms');
   });
 
   it('keeps a refined string introspectable (Zod 4 refine stays in-class)', () => {

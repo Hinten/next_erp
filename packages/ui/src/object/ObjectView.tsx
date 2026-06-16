@@ -305,6 +305,11 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
         values[key] = next;
       }
     }
+    // Resolve the unit for the `ultimaModificacao` stamp from the schema so a
+    // numeric-epoch collection gets a number, not an ISO string.
+    const stampDesc = descriptors.find((d) => d.key === 'ultimaModificacao');
+    const stampUnit: 'iso' | 'ms' | 'us' =
+      stampDesc?.kind === 'datetime' ? (stampDesc.dateUnit ?? 'ms') : 'iso';
     try {
       const result = await saveRecord<S, Record<string, unknown>>({
         db,
@@ -314,6 +319,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
         values,
         dirtyFields,
         currentUserUid,
+        stampUnit,
       });
       // Zero out dirty state while preserving the persisted (transformed) values.
       form.reset(values as typeof raw);
