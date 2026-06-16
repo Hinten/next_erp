@@ -5,7 +5,7 @@
  * service uses only `collection().doc().get()`, `collection().where().get()`
  * and `collection().add()` — no transaction / collection-group / batch.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/integrations-nfe')>();
@@ -157,6 +157,9 @@ function aprovadaNfev4(): Record<string, unknown> {
     cStat: '100',
     xMotivo: 'Autorizado o uso da NF-e',
     tpEmis: 1,
+    // Denormalized on every emitted doc (buildPlaceholderNfeDoc / buildNfeDocWrite);
+    // cartaCorrecaoService reads it to resolve the filial's signing cert.
+    filialId: 'F-1',
     ultima_modificacao: '2026-05-29T10:00:00.000Z',
   };
 }
@@ -199,8 +202,15 @@ function cceResult(cStat: string, nSeq: number) {
   };
 }
 
+beforeEach(() => {
+  // Fixtures have no per-filial stored cert — emit the CC-e with the env cert
+  // via the fallback (per-filial resolution covered in filial-cert.test.ts).
+  process.env.NFE_CERT_ENV_FALLBACK = '1';
+});
+
 afterEach(() => {
   vi.clearAllMocks();
+  delete process.env.NFE_CERT_ENV_FALLBACK;
 });
 
 describe('cartaCorrecaoService', () => {

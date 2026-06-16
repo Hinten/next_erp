@@ -185,6 +185,9 @@ function pDoc(overrides: Record<string, unknown> = {}): Record<string, unknown> 
 }
 
 beforeEach(() => {
+  // Pendentes docs' filiais have no per-filial stored cert here — recover with
+  // the env cert via the fallback (per-filial resolution covered elsewhere).
+  process.env.NFE_CERT_ENV_FALLBACK = '1';
   vi.mocked(verifyCaller).mockResolvedValue({
     caller: { uid: 'u-1', permissions: '0xff' },
   } as never);
@@ -193,6 +196,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  delete process.env.NFE_CERT_ENV_FALLBACK;
 });
 
 describe('POST /api/nfe/processar-pendentes — EPEC (estado p)', () => {

@@ -31,7 +31,7 @@ export default function NovaFilialPage() {
           db={getFirebaseFirestore()}
           currentUserUid={user?.uid ?? ''}
           defaultValues={{ timestamp: new Date().toISOString() }}
-          excludedFields={['timestamp']}
+          excludedFields={['timestamp', 'certificado']}
           fields={filialObjectFields}
           saveLabel="Criar"
           showSaveAndContinue={false}

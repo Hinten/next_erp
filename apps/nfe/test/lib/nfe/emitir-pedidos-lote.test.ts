@@ -511,6 +511,9 @@ function consultarLoteResolves(chaves: ReadonlyArray<string>): void {
 }
 
 beforeEach(() => {
+  // Fixtures have no per-filial stored cert — emit with the env cert via the
+  // fallback (per-filial resolution is covered in filial-cert.test.ts).
+  process.env.NFE_CERT_ENV_FALLBACK = '1';
   vi.clearAllMocks();
   mockGenerateAndSign();
 });

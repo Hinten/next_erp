@@ -533,8 +533,15 @@ function rangeNfev4(
   };
 }
 
+beforeEach(() => {
+  // Fixtures have no per-filial stored cert — cancel/inutilizar with the env
+  // cert via the fallback (per-filial resolution covered in filial-cert.test.ts).
+  process.env.NFE_CERT_ENV_FALLBACK = '1';
+});
+
 afterEach(() => {
   vi.clearAllMocks();
+  delete process.env.NFE_CERT_ENV_FALLBACK;
 });
 
 describe('cancelarNFeService', () => {

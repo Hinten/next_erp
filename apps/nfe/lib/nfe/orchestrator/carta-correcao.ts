@@ -12,6 +12,7 @@ import {
 import { cartaCorrecaoCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 
 import type { NFeRuntime } from '../runtime';
+import { resolveFilialRuntime } from '../filial-cert';
 import type { DanfeArtifact } from './danfe';
 import {
   NFeCartaCorrecaoError,
@@ -61,11 +62,12 @@ export interface CartaCorrecaoServiceResult {
  * record is saved with `estado='error'` and `NFeCartaCorrecaoError` is thrown
  * (the route maps it to 422, carrying cStat/xMotivo for a clean UI message).
  *
- * No filialId is needed — the chave carries cUF (cOrgao) + CNPJ.
+ * The chave carries cUF (cOrgao) + CNPJ for routing; the denormalized
+ * `nota.filialId` resolves the filial's A1 cert that signs + transmits the CC-e.
  */
 export async function cartaCorrecaoService(
   fs: Firestore,
-  rt: NFeRuntime,
+  baseRt: NFeRuntime,
   pedidoId: string,
   nfeId: string,
   xCorrecao: string,
@@ -111,6 +113,16 @@ export async function cartaCorrecaoService(
   // chars); store that same value so the persisted record matches what SEFAZ
   // actually received (and the <xCorrecao> inside xml_enviado).
   const xCorrecaoWire = sanitizeNFeText(xCorrecao) ?? xCorrecao;
+
+  if (!nota.filialId) {
+    throw new NFeOrchestratorError(
+      `pedido '${pedidoId}' nfe '${nfeId}': nfev4 doc sem filialId — ` +
+        'não é possível resolver o certificado da filial.',
+    );
+  }
+  // CC-e is signed + transmitted with the filial's own cert (or the env
+  // fallback), even though it always routes to the home SEFAZ.
+  const rt = await resolveFilialRuntime(fs, baseRt, nota.filialId);
 
   // Send the CC-e evento (cOrgao + cnpj come from the chave) — ALWAYS to the
   // home SEFAZ, including for SVC-authorized notas (tpEmis 6/7): the SVC does

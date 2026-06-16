@@ -32,6 +32,7 @@ import {
 } from '@delfrance/schemas';
 
 import type { NFeRuntime } from '../runtime';
+import { resolveFilialRuntime } from '../filial-cert';
 import {
   NFeBlockedError,
   NFeMissingImpostoError,
@@ -609,14 +610,18 @@ export async function applyAutorizadoOutcome(args: {
  */
 export async function emitirPedido(
   fs: Firestore,
-  rt: NFeRuntime,
+  baseRt: NFeRuntime,
   pedidoId: string,
 ): Promise<EmitResult> {
   console.debug(
-    `[nfe/orchestrator] Starting emit cycle for pedidoId '${pedidoId}', runtime ambiente '${rt.ambiente}'`,
+    `[nfe/orchestrator] Starting emit cycle for pedidoId '${pedidoId}', runtime ambiente '${baseRt.ambiente}'`,
   );
 
-  const prep = await prepareEmission(fs, rt, pedidoId);
+  const prep = await prepareEmission(fs, baseRt, pedidoId);
+  // Per-filial cert: sign + transmit with the filial's own A1 (or the env
+  // fallback). `prepareEmission` is cert-free, so deriving here — once the
+  // bundle reveals filialId — binds the rest of the cycle to the right cert.
+  const rt = await resolveFilialRuntime(fs, baseRt, prep.bundle.filialId);
   const captured = await runAllocateGenerateSignTx(fs, rt, prep);
 
   if (captured.skip) {
@@ -818,10 +823,13 @@ export async function emitirPedidosLote(
  */
 export async function processChunk(
   fs: Firestore,
-  rt: NFeRuntime,
+  baseRt: NFeRuntime,
   filialId: string,
   group: ReadonlyArray<{ prep: EmissionPrep; pedidoId: string }>,
 ): Promise<Array<EmitResult | EmitError>> {
+  // The chunk is single-filial — resolve its A1 cert (or env fallback) once
+  // and bind signing + every SOAP send below to it.
+  const rt = await resolveFilialRuntime(fs, baseRt, filialId);
   // 4a. Allocate idLote + bulk-allocate nNF (fresh count only) and anchor
   //     each fresh pedido's numeração in ONE transaction (Flutter parity:
   //     .old/packages/pedido_nfe/lib/src/tasks.dart:255-285). A chunk-level
