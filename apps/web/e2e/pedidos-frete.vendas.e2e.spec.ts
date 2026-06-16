@@ -143,6 +143,46 @@ test.describe.serial('Pedidos — aba Frete', () => {
     expect(pedido.valorCobrado).toBe(112.5);
   });
 
+  test('inline "+ Novo endereço" creates and selects the destination address', async ({ page }) => {
+    await page.goto('/pedidos/novo');
+    await fillPrincipal(page, '100');
+
+    await page.getByRole('tab', { name: 'Frete' }).click();
+    await selectField(page, 'Modalidade de frete', 'Contratação por conta do Emitente (CIF)');
+    await selectFieldMatching(page, 'Integração de frete', new RegExp(fixtures.retiradaNome));
+
+    // Inline create-or-select: open the shared endereço modal under
+    // "Endereço de entrega", fill the required fields and save. The modal's
+    // own "Criar" lives inside the dialog (distinct from the pedido form's).
+    await page.getByRole('button', { name: /Novo endereço/ }).click();
+    const dialog = page.getByRole('dialog');
+    const logradouro = `${prefix} Rua Inline`;
+    await dialog.getByLabel('Logradouro', { exact: true }).fill(logradouro);
+    await dialog.getByLabel('Número', { exact: true }).fill('123');
+    await dialog.getByLabel('CEP', { exact: true }).fill('02020020');
+    await dialog.getByLabel('Cidade', { exact: true }).fill('São Paulo');
+    await dialog.getByRole('combobox', { name: 'Estado (UF)', exact: true }).click();
+    await page.getByRole('option', { name: 'SP', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Criar', exact: true }).click();
+
+    // On save the modal closes; the just-created endereço is selected (proven
+    // by the saved `enderecoFreteOuterReference` below).
+    await expect(dialog).toBeHidden();
+
+    const valorCobrado = page.getByLabel('Valor cobrado', { exact: true });
+    await valorCobrado.fill('10');
+    await valorCobrado.blur();
+
+    const pedido = await createAndReadBack(page);
+    const frete = pedido.freteInicial as Record<string, unknown>;
+    // The inline-created endereço is stamped as a Flutter-ODM doc-path STRING
+    // under the pedido cliente's `enderecos` subcollection.
+    expect(typeof frete.enderecoFreteOuterReference).toBe('string');
+    expect(frete.enderecoFreteOuterReference as string).toMatch(
+      new RegExp(`^documents/clientes/${fixtures.clienteId}/enderecos/[^/]+$`),
+    );
+  });
+
   test('motoboy: faixa de CEP option stamps the Dart optionString + costs', async ({ page }) => {
     await page.goto('/pedidos/novo');
     await fillPrincipal(page, '50');

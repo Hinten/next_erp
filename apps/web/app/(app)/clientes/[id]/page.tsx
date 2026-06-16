@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { deleteDoc } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
-import { clienteSchema } from '@delfrance/schemas';
+import { clienteFormSchema } from '@delfrance/schemas';
 import { ObjectView } from '@delfrance/ui';
 import { CpfCnpjField } from '@/components/inputs/CpfCnpjInput';
 import { TelefoneField, prepareForSaveTelefone } from '@/components/inputs/TelefoneInput';
@@ -42,7 +42,7 @@ export default function ClientePage() {
       </Group>
 
       <ObjectView
-        schema={clienteSchema}
+        schema={clienteFormSchema}
         collection={clienteCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}

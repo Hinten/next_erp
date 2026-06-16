@@ -7,6 +7,7 @@ import { FirebaseError } from 'firebase/app';
 import { Alert, Button, Group, Stack, Tabs, Tooltip } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
 import { derivePedidoFreteTotals, type Pedido, pedidoSchema } from '@delfrance/schemas';
+import { useUnsavedChangesGuard } from '@delfrance/ui';
 import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -35,7 +36,10 @@ const EMPTY_DEFAULTS: PedidoFormState = {
   estado: 'iniciado',
   numero: null,
   vendedorPedidoOuterRef: null,
-  integracaoPedidoOuterRef: undefined,
+  // null (not undefined): Firestore's addDoc rejects `undefined` field values
+  // (CLAUDE.md — prefer null). Required in the UI (IntegracaoPicker), but a
+  // null keeps a stray submit from crashing with "Unsupported field value".
+  integracaoPedidoOuterRef: null,
   operacaoPedidoOuterRef: null,
   clientePedidoOuterRef: null,
   enderecoFiscalOuterRef: null,
@@ -151,6 +155,11 @@ export function PedidoForm({
     defaultValues: initial,
     mode: 'onBlur',
   });
+
+  // Warn before navigating away from an unsaved pedido. The schema-driven
+  // screens get this from ObjectView; PedidoForm is a custom form, so wire the
+  // shared guard directly.
+  useUnsavedChangesGuard(form.formState.isDirty);
 
   async function handleSubmit(values: Pedido) {
     setSubmitError(null);

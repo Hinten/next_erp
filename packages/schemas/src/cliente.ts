@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { validateCpfCnpj } from '@delfrance/core/documents';
+import { validateCNPJ, validateCPF, validateCpfCnpj } from '@delfrance/core/documents';
 import { isValidTelefone } from '@delfrance/core/phone';
 import type { CollectionMetadata } from './types';
 
@@ -23,6 +23,36 @@ export const TIPO_CLIENTE_LABELS = {
 
 export const tipoClienteSchema = z.enum(['0', '1', '2']).meta({ labels: TIPO_CLIENTE_LABELS });
 export type TipoCliente = z.infer<typeof tipoClienteSchema>;
+
+/**
+ * Cross-field rule: the document must match the tipo. A Pessoa Física (tipo
+ * '0') requires a CPF; a Pessoa Jurídica (tipo '1') requires a CNPJ. The
+ * field-level refine already guarantees `cpf_cnpj` is a valid CPF *or* CNPJ —
+ * this ties it to the selected tipo (without it, a PF could save a CNPJ).
+ * Estrangeiro (tipo '2') is NOT constrained here — its foreign id lives in
+ * `idEstrangeiro` and the quick-create modal already nulls `cpf_cnpj` for it.
+ * Shared by the full cliente form and the quick-create modal.
+ */
+export function refineClienteTipoDocumento(
+  data: { tipo?: string | null; cpf_cnpj?: string | null },
+  ctx: z.RefinementCtx,
+): void {
+  const doc = data.cpf_cnpj;
+  if (!doc) return;
+  if (data.tipo === '0' && !validateCPF(doc)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['cpf_cnpj'],
+      message: 'Pessoa Física exige um CPF válido (11 dígitos).',
+    });
+  } else if (data.tipo === '1' && !validateCNPJ(doc)) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['cpf_cnpj'],
+      message: 'Pessoa Jurídica exige um CNPJ válido (14 caracteres).',
+    });
+  }
+}
 
 /**
  * Cliente schema. Fields mirror `packages/clientes/lib/src/models.dart`
@@ -100,6 +130,16 @@ export const clienteSchema = z.object({
 });
 
 export type Cliente = z.infer<typeof clienteSchema>;
+
+/**
+ * Form-validation variant of {@link clienteSchema} adding the tipo ↔ document
+ * cross-field rule. Kept SEPARATE because Zod 4's `.pick()` throws at runtime
+ * on a schema carrying refinements ("`.pick()` cannot be used on object
+ * schemas containing refinements"). The registry / rules-gen use the plain
+ * `clienteSchema`, the quick-create modal `.pick()`s it, and only the cliente
+ * FORM (ObjectView) validates with this refined variant.
+ */
+export const clienteFormSchema = clienteSchema.superRefine(refineClienteTipoDocumento);
 
 export const clienteMeta: CollectionMetadata = {
   collectionPath: 'clientes',

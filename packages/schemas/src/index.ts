@@ -23,9 +23,11 @@ export { auditEntrySchema, type AuditEntry } from './audit';
 export {
   cliente,
   clienteSchema,
+  clienteFormSchema,
   clienteMeta,
   tipoClienteSchema,
   TIPO_CLIENTE_LABELS,
+  refineClienteTipoDocumento,
   type Cliente,
   type TipoCliente,
 } from './cliente';
