@@ -19,6 +19,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
+import { NFeCertError } from '@delfrance/integrations-nfe';
 import { ESTADO_NFE } from '@delfrance/schemas';
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
@@ -79,6 +80,12 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
     if (e instanceof NFeOrchestratorError) {
       return authError(400, { error: e.message });
+    }
+    if (e instanceof NFeCertError) {
+      // No SEFAZ contact — a per-filial cert pre-flight failure (no stored cert /
+      // wrong key / expired). User-actionable: upload the filial's A1. The `code`
+      // lets the client surface the pt-BR message instead of "SEFAZ rejected".
+      return authError(422, { error: e.message, code: e.name });
     }
     // Library errors (NFeXsdValidationError, NFeSignatureError, NFeTransportError, …)
     // surface as 500 with their structured message. `safeLog` runs every

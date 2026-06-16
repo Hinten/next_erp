@@ -4,7 +4,7 @@ import { enviNfeMsgCollection, nfev4Collection } from '@delfrance/data/admin/col
 import { cancelarNFe, type SefazCall, type TpEmis } from '@delfrance/integrations-nfe';
 import { ESTADO_ENVI_NFE_MSG, ESTADO_NFE, type NotaFiscalEletronica } from '@delfrance/schemas';
 
-import type { NFeRuntime } from '../runtime';
+import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
 import { NFeCancelamentoError, NFeOrchestratorError, NFePedidoNotFoundError } from './errors';
 import { getField, refToPath, type EmitResult } from './bundle';
@@ -39,7 +39,7 @@ export const CSTAT_DUPLICIDADE_EVENTO = '573';
  */
 export async function cancelarNFeService(
   fs: Firestore,
-  baseRt: NFeRuntime,
+  baseRt: NFeBaseRuntime,
   pedidoId: string,
   nfeId: string,
   xJust: string,

@@ -26,6 +26,7 @@ import {
   getAnEndpoints,
   getEndpoints,
   getSvcEndpoints,
+  hasNFeCertEnv,
   loadCertificateFromEnv,
   type AnServiceUrls,
   type NFeCertificate,
@@ -69,7 +70,28 @@ export interface NFeRuntime {
   };
 }
 
-let cached: NFeRuntime | undefined;
+/**
+ * Cert-INDEPENDENT base runtime returned by `getNFeRuntime`. The process boots
+ * with NO signing cert: every SEFAZ call derives a per-filial `NFeRuntime` via
+ * `deriveRuntimeForCert` (see `lib/nfe/filial-cert.ts`). The env cert
+ * (`NFE_CERT_*`) is **optional** — `envRuntime()` builds it lazily as the
+ * `NFE_CERT_ENV_FALLBACK` signing cert + the `/api/health` diagnostics; it is
+ * `null` when no env cert is configured.
+ */
+export interface NFeBaseRuntime {
+  readonly ambiente: Ambiente;
+  readonly uf: string;
+  readonly tpAmb: TpAmb;
+  readonly endpoints: NfeServiceUrls;
+  /**
+   * The env-cert runtime, built lazily on first call (fallback + health).
+   * `null` when `NFE_CERT_*` is unset. Throws on a malformed/expired env cert,
+   * but only when actually accessed — so boot never depends on the env cert.
+   */
+  readonly envRuntime: () => NFeRuntime | null;
+}
+
+let cachedBase: NFeBaseRuntime | undefined;
 
 /**
  * Resolve the vendored chain path inside the workspace package.
@@ -199,15 +221,15 @@ function buildRuntime(cert: NFeCertificate, ambiente: Ambiente, uf: string): NFe
 }
 
 /**
- * Build (or return the cached) BASE NF-e runtime. The cert comes from the env
- * (`NFE_CERT_*`) — it is the `/api/health` diagnostics cert and the fallback
- * signing cert when `NFE_CERT_ENV_FALLBACK` is on and a filial has no stored
- * cert. Per-filial emission derives its own runtime via `deriveRuntimeForCert`
- * (see `lib/nfe/filial-cert.ts`). Throws on missing env vars, malformed/expired
- * cert, or missing TLS chain — boot-time failure is the right semantics.
+ * Build (or return the cached) BASE NF-e runtime. **Boots without a signing
+ * cert** — per-filial emission derives its own runtime via `deriveRuntimeForCert`
+ * (see `lib/nfe/filial-cert.ts`). The env cert (`NFE_CERT_*`) is OPTIONAL: it's
+ * loaded lazily by `envRuntime()` as the `NFE_CERT_ENV_FALLBACK` signing cert +
+ * the `/api/health` diagnostics. Throws on a bad `NFE_AMBIENTE` or a missing TLS
+ * chain (validated eagerly, cert-free), but NOT on a missing/expired env cert.
  */
-export function getNFeRuntime(env: NodeJS.ProcessEnv = process.env): NFeRuntime {
-  if (cached) return cached;
+export function getNFeRuntime(env: NodeJS.ProcessEnv = process.env): NFeBaseRuntime {
+  if (cachedBase) return cachedBase;
 
   const ambienteRaw = (env.NFE_AMBIENTE ?? 'homologacao').toLowerCase();
   if (ambienteRaw !== 'producao' && ambienteRaw !== 'homologacao') {
@@ -216,25 +238,45 @@ export function getNFeRuntime(env: NodeJS.ProcessEnv = process.env): NFeRuntime 
   const ambiente = ambienteRaw as Ambiente;
   const uf = (env.NFE_UF ?? 'SP').toUpperCase();
 
-  const cert = loadCertificateFromEnv(env);
-  assertCertNotExpired(cert); // belt + suspenders — loadCertificateFromEnv warns; we throw
+  // Boot-time guard: the home TLS chain must be vendored (cert not needed).
+  loadChainCached(uf, ambiente);
 
-  cached = buildRuntime(cert, ambiente, uf);
-  return cached;
+  // Lazy env-cert runtime — `undefined` = not yet resolved, `null` = no env cert.
+  let envRt: NFeRuntime | null | undefined;
+  const envRuntime = (): NFeRuntime | null => {
+    if (envRt === undefined) {
+      if (hasNFeCertEnv(env)) {
+        const cert = loadCertificateFromEnv(env);
+        assertCertNotExpired(cert);
+        envRt = buildRuntime(cert, ambiente, uf);
+      } else {
+        envRt = null;
+      }
+    }
+    return envRt;
+  };
+
+  cachedBase = {
+    ambiente,
+    uf,
+    tpAmb: ambiente === 'producao' ? '1' : '2',
+    endpoints: getEndpoints(uf, ambiente),
+    envRuntime,
+  };
+  return cachedBase;
 }
 
 /**
- * Derive a runtime that signs + transmits with `cert` (a filial's A1) instead
- * of the env cert, reusing the base runtime's ambiente/uf and the cached TLS
- * chains. The caller (`resolveFilialRuntime`) is responsible for the expiry
- * check on `cert` before handing the runtime to the orchestrator.
+ * Derive a runtime that signs + transmits with `cert` (a filial's A1), reusing
+ * the base runtime's ambiente/uf and the cached TLS chains. The caller
+ * (`resolveFilialRuntime`) runs the expiry check on `cert` first.
  */
-export function deriveRuntimeForCert(base: NFeRuntime, cert: NFeCertificate): NFeRuntime {
+export function deriveRuntimeForCert(base: NFeBaseRuntime, cert: NFeCertificate): NFeRuntime {
   return buildRuntime(cert, base.ambiente, base.uf);
 }
 
-/** Test-only: clear the singleton + chain cache so each test sees a fresh boot. */
+/** Test-only: clear the base singleton + chain cache so each test sees a fresh boot. */
 export function __resetNFeRuntimeForTests(): void {
-  cached = undefined;
+  cachedBase = undefined;
   chainCache.clear();
 }

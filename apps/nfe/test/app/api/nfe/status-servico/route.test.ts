@@ -1,10 +1,13 @@
 /**
- * Route tests for GET /api/nfe/status-servico. vi.mock auth + runtime + the
- * library's consultarStatusServico to isolate the route contract:
+ * Route tests for GET /api/nfe/status-servico. vi.mock auth + runtime +
+ * resolveFilialRuntime + the library's consultarStatusServico to isolate the
+ * route contract:
  *   - 401 on auth
- *   - 400 on a bad target
+ *   - 400 on a bad target / a missing filialId
+ *   - 422 when the filial has no cert (resolveFilialRuntime → NFeCertError)
  *   - 200 with {target, authorizer, cStat, category} for normal + svc
  *   - the svc target hits the SVC URL with the issuer's cUF
+ *   - the check signs with the named filial's runtime (no shared env cert)
  *   - 502 when SEFAZ is unreachable (NFeTransportError)
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,6 +17,8 @@ vi.mock('@/lib/nfe/auth', async (importOriginal) => {
   return { ...actual, verifyCaller: vi.fn() };
 });
 vi.mock('@/lib/nfe/runtime', () => ({ getNFeRuntime: vi.fn() }));
+vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: vi.fn(() => ({})) }));
+vi.mock('@/lib/nfe/filial-cert', () => ({ resolveFilialRuntime: vi.fn() }));
 vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/integrations-nfe')>();
   return { ...actual, consultarStatusServico: vi.fn() };
@@ -21,22 +26,29 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
 
 import { NextResponse } from 'next/server';
 
-import { NFeTransportError, consultarStatusServico } from '@delfrance/integrations-nfe';
+import {
+  NFeCertError,
+  NFeTransportError,
+  consultarStatusServico,
+} from '@delfrance/integrations-nfe';
 
 import { verifyCaller } from '@/lib/nfe/auth';
-import { getNFeRuntime, type NFeRuntime } from '@/lib/nfe/runtime';
+import { resolveFilialRuntime } from '@/lib/nfe/filial-cert';
+import { getNFeRuntime, type NFeBaseRuntime, type NFeRuntime } from '@/lib/nfe/runtime';
 
 import { GET } from '../../../../../app/api/nfe/status-servico/route';
 
-function req(qs = ''): Request {
+const FILIAL = 'F-1';
+
+function req(qs = `filialId=${FILIAL}`): Request {
   return new Request(`http://localhost/api/nfe/status-servico${qs ? `?${qs}` : ''}`, {
     method: 'GET',
     headers: { authorization: 'Bearer t' },
   });
 }
 
-function fakeRuntime(): NFeRuntime {
-  return {
+function fakeRuntime(): NFeRuntime & NFeBaseRuntime {
+  const rt: NFeRuntime = {
     cert: {} as never,
     agent: {} as never,
     ambiente: 'homologacao',
@@ -66,6 +78,7 @@ function fakeRuntime(): NFeRuntime {
     }),
     diagnostics: { subjectCommonName: 'TEST', notAfter: '2027-01-01', chainSource: 'x' },
   };
+  return { ...rt, envRuntime: () => rt };
 }
 
 const RET_107 = {
@@ -82,6 +95,8 @@ const RET_107 = {
 beforeEach(() => {
   vi.mocked(verifyCaller).mockResolvedValue({ caller: { uid: 'u-1', permissions: '0xff' } });
   vi.mocked(getNFeRuntime).mockReturnValue(fakeRuntime());
+  // The named filial resolves to a per-filial signing runtime.
+  vi.mocked(resolveFilialRuntime).mockResolvedValue(fakeRuntime());
   vi.mocked(consultarStatusServico).mockResolvedValue(RET_107);
 });
 
@@ -99,12 +114,27 @@ describe('GET /api/nfe/status-servico', () => {
   });
 
   it('400 on an unknown target', async () => {
-    const res = await GET(req('target=banana'));
+    const res = await GET(req(`target=banana&filialId=${FILIAL}`));
     expect(res.status).toBe(400);
   });
 
-  it('200 normal → home SEFAZ status URL with the issuer cUF', async () => {
+  it('400 when filialId is missing', async () => {
     const res = await GET(req('target=normal'));
+    expect(res.status).toBe(400);
+  });
+
+  it('422 when the filial has no cert (resolveFilialRuntime → NFeCertError)', async () => {
+    vi.mocked(resolveFilialRuntime).mockRejectedValue(
+      new NFeCertError('Filial sem certificado digital cadastrado.'),
+    );
+    const res = await GET(req(`target=normal&filialId=${FILIAL}`));
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.code).toBe('NFeCertError');
+  });
+
+  it('200 normal → home SEFAZ status URL with the issuer cUF', async () => {
+    const res = await GET(req(`target=normal&filialId=${FILIAL}`));
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.target).toBe('normal');
@@ -115,10 +145,16 @@ describe('GET /api/nfe/status-servico', () => {
       expect.objectContaining({ url: 'https://example/sefaz/sta' }),
       { cUF: '35' },
     );
+    // The status check resolves + signs with the named filial's runtime.
+    expect(vi.mocked(resolveFilialRuntime)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      FILIAL,
+    );
   });
 
   it("200 svc → the UF's SVC status URL (SP → svc-an), still the issuer cUF", async () => {
-    const res = await GET(req('target=svc'));
+    const res = await GET(req(`target=svc&filialId=${FILIAL}`));
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.target).toBe('svc');
@@ -135,7 +171,7 @@ describe('GET /api/nfe/status-servico', () => {
       cStat: '114',
       xMotivo: 'SVC desabilitada pela SEFAZ de origem',
     } as never);
-    const res = await GET(req('target=svc'));
+    const res = await GET(req(`target=svc&filialId=${FILIAL}`));
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.cStat).toBe('114');
     expect(body.category).toBe('servico-paralisado');
@@ -145,7 +181,7 @@ describe('GET /api/nfe/status-servico', () => {
     vi.mocked(consultarStatusServico).mockRejectedValue(
       new NFeTransportError('connect ETIMEDOUT 1.2.3.4:443'),
     );
-    const res = await GET(req('target=normal'));
+    const res = await GET(req(`target=normal&filialId=${FILIAL}`));
     expect(res.status).toBe(502);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.code).toBe('NFeTransportError');

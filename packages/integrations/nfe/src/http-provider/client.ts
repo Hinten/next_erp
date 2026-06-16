@@ -200,10 +200,12 @@ export interface NFeHttpClient {
   cartaCorrecaoDanfe(pedidoId: string, nfeId: string, cceId: string): Promise<NFeDanfeArtifact>;
   /**
    * Check SEFAZ availability (NfeStatusServico4) — `'normal'` asks the home
-   * SEFAZ, `'svc'` asks the UF's contingency environment. Decision support
-   * for the manual contingency toggle.
+   * SEFAZ, `'svc'` asks the UF's contingency environment. `filialId` names the
+   * filial whose A1 cert signs the mTLS handshake (the server doesn't require a
+   * shared env cert — it signs per-filial). Decision support for the manual
+   * contingency toggle.
    */
-  statusServico(target: 'normal' | 'svc'): Promise<NFeStatusServicoResult>;
+  statusServico(target: 'normal' | 'svc', filialId: string): Promise<NFeStatusServicoResult>;
   /**
    * Upload a filial's A1 certificate (.pfx/.p12, base64) + its password. The
    * server validates the PFX, encrypts the private key at rest, and returns
@@ -250,6 +252,15 @@ function errorFromResponse(
     body !== null && typeof body === 'object' && 'code' in body
       ? (body as { code: unknown }).code
       : undefined;
+
+  // A per-filial cert pre-flight failure (no stored cert / wrong key / expired)
+  // is resolved BEFORE any SEFAZ contact. The routes tag it `code: 'NFeCertError'`
+  // — surface it as a dedicated cert error carrying the route's pt-BR message,
+  // never as an `NFeRejectedError` ("SEFAZ rejected: …"), which the generic 422
+  // mapping below would otherwise produce.
+  if (bodyCode === 'NFeCertError') {
+    return new NFeCertificateError(message, status, body, 'NFeCertError');
+  }
 
   if (status === 400) return new NFeBadRequestError(message, body);
   if (status === 401 || status === 403) return new NFeAuthError(message, status, body);
@@ -447,10 +458,10 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
         { pedidoId },
       );
     },
-    statusServico: (target) =>
+    statusServico: (target, filialId) =>
       call<NFeStatusServicoResult>(
         'GET',
-        `/api/nfe/status-servico?target=${encodeURIComponent(target)}`,
+        `/api/nfe/status-servico?target=${encodeURIComponent(target)}&filialId=${encodeURIComponent(filialId)}`,
       ),
     uploadCertificado: (filialId, pfxBase64, password, filename) =>
       call<NFeCertificadoMeta>('POST', '/api/nfe/certificado', {

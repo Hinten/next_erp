@@ -15,7 +15,7 @@ import {
   type NotaFiscalEletronica,
 } from '@delfrance/schemas';
 
-import type { NFeRuntime } from '../runtime';
+import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
 import { NFeInutilizacaoAbortedError, NFeOrchestratorError } from './errors';
 
@@ -66,7 +66,7 @@ export const ESTADOS_NFE_AUTORIZADAS: ReadonlySet<EstadoNFe> = new Set<EstadoNFe
  */
 export async function inutilizarNumeracao(
   fs: Firestore,
-  baseRt: NFeRuntime,
+  baseRt: NFeBaseRuntime,
   args: {
     readonly filialId: string;
     readonly serie: number;

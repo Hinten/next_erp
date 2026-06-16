@@ -9,6 +9,7 @@ import {
   NFeAuthError,
   NFeBadRequestError,
   NFeBlockedError,
+  NFeCertificateError,
   NFeNetworkError,
   NFePedidoNotFoundError,
   NFeRejectedError,
@@ -124,6 +125,21 @@ describe('notificationForNFeError', () => {
     expect(n.title).toBe('SEFAZ rejeitou a NF-e');
     expect(n.message).toContain('226');
     expect(n.message).toContain('UF inválida');
+  });
+
+  it('NFeCertificateError → cert toast with the pt-BR message, never framed as SEFAZ', () => {
+    const err = new NFeCertificateError(
+      "Filial 'dev-filial-01' não possui certificado digital cadastrado. " +
+        'Faça o upload do certificado A1 na aba "Certificado Digital" da filial.',
+      422,
+      { code: 'NFeCertError' },
+      'NFeCertError',
+    );
+    const n = notificationForNFeError(err);
+    expect(n.color).toBe('red');
+    expect(n.title).toBe('Certificado digital da filial');
+    expect(n.message).toContain('não possui certificado digital');
+    expect(n.message).not.toMatch(/SEFAZ/i);
   });
 
   it('NFeBlockedError → yellow', () => {
