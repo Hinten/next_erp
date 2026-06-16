@@ -12,12 +12,16 @@
  *   pnpm --filter @delfrance/nfe-app consult:dev-pedido PED-12345  # specific id
  *
  * Requires the same env the apps/nfe dev server needs (FIREBASE_*,
- * NFE_AMBIENTE, NFE_UF, NFE_CERT_PATH + NFE_CERT_PASSWORD) plus the
- * vendored SEFAZ TLS chain (`sefaz-<uf>-<ambiente>.pem`).
+ * NFE_AMBIENTE, NFE_UF) plus the vendored SEFAZ TLS chain
+ * (`sefaz-<uf>-<ambiente>.pem`). The env A1 cert (`NFE_CERT_PATH` +
+ * `NFE_CERT_PASSWORD`) is OPTIONAL — the consulta signs with the cert of the
+ * filial that emitted the chave; the env cert is only the fallback.
  */
+import { NFeCertError } from '@delfrance/integrations-nfe';
+
 import { getAdminFirestore } from '../lib/firebase/admin';
 import { consultarPedido } from '../lib/nfe/orchestrator';
-import { getNFeRuntime } from '../lib/nfe/runtime';
+import { getNFeRuntime, type NFeRuntime } from '../lib/nfe/runtime';
 
 async function main(): Promise<void> {
   const pedidoId = process.argv[2] ?? 'dev-pedidos-01';
@@ -25,9 +29,15 @@ async function main(): Promise<void> {
 
   const fs = getAdminFirestore();
   const base = getNFeRuntime();
-  // The env cert is now only the fallback — the consulta signs with the cert of
-  // the filial that emitted the chave, resolved inside consultarPedido.
-  const env = base.envRuntime();
+  // The env cert is only the fallback — the consulta signs with the cert of the
+  // filial that emitted the chave (resolved inside consultarPedido). A bad/absent
+  // env cert must NOT abort the script, so guard the diagnostics read.
+  let env: NFeRuntime | null = null;
+  try {
+    env = base.envRuntime();
+  } catch (e) {
+    if (!(e instanceof NFeCertError)) throw e;
+  }
   console.log(
     `[consult-dev-pedido] runtime ready — ambiente=${base.ambiente} uf=${base.uf} ` +
       `cert=${env?.diagnostics.subjectCommonName ?? '(per-filial)'}`,

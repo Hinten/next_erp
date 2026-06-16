@@ -74,7 +74,8 @@ function StatusRow({
     setBusy(true);
     setError(null);
     try {
-      // The status check signs with this filial's cert (no shared env cert).
+      // The status check signs with this filial's own cert (the server signs
+      // per-filial — it doesn't require a shared env cert).
       setResult(await client.statusServico(target, filialId));
     } catch (err) {
       if (err instanceof NFeHttpError || err instanceof NFeNetworkError) {

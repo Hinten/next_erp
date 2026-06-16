@@ -201,8 +201,9 @@ export interface NFeHttpClient {
   /**
    * Check SEFAZ availability (NfeStatusServico4) — `'normal'` asks the home
    * SEFAZ, `'svc'` asks the UF's contingency environment. `filialId` names the
-   * filial whose A1 cert signs the mTLS handshake (the server keeps no shared
-   * env cert). Decision support for the manual contingency toggle.
+   * filial whose A1 cert signs the mTLS handshake (the server doesn't require a
+   * shared env cert — it signs per-filial). Decision support for the manual
+   * contingency toggle.
    */
   statusServico(target: 'normal' | 'svc', filialId: string): Promise<NFeStatusServicoResult>;
   /**
