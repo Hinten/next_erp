@@ -15,15 +15,16 @@
     "test:storage": "vitest run --config vitest.storage.config.ts",
     "clean": "rm -rf dist .turbo *.tsbuildinfo coverage"
   },
+  "//runtime-deps": "@delfrance/data + @delfrance/schemas are BUILD-time only: esbuild bundles them into dist/index.js (only firebase-admin/firebase-functions/sharp are `external`). They MUST stay out of `dependencies` so the cloud `npm install` at deploy time — which does not understand pnpm `workspace:*` — only installs the three real runtime packages. See apps/functions/DEPLOY.md before moving them back.",
   "dependencies": {
-    "@delfrance/data": "workspace:*",
-    "@delfrance/schemas": "workspace:*",
     "firebase-admin": "^13.9.0",
     "firebase-functions": "^6.0.0",
     "sharp": "^0.34.0"
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",
+    "@delfrance/data": "workspace:*",
+    "@delfrance/schemas": "workspace:*",
     "@types/node": "^24.10.0",
     "esbuild": "^0.25.0",
     "typescript": "^6.0.3",

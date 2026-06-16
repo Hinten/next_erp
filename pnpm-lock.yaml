@@ -91,12 +91,6 @@ importers:
 
   apps/functions:
     dependencies:
-      '@delfrance/data':
-        specifier: workspace:*
-        version: link:../../packages/data
-      '@delfrance/schemas':
-        specifier: workspace:*
-        version: link:../../packages/schemas
       firebase-admin:
         specifier: ^13.9.0
         version: 13.9.0
@@ -110,6 +104,12 @@ importers:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
+      '@delfrance/data':
+        specifier: workspace:*
+        version: link:../../packages/data
+      '@delfrance/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
       '@types/node':
         specifier: ^24.10.0
         version: 24.12.4

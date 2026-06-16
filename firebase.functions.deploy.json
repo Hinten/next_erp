@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/firebase",
+  "//": "Deploy-ISOLATED config for shipping the apps/functions (codebase `storage`) Cloud Functions to a real Firebase project. It contains ONLY the `functions` block — deliberately NO `firestore`/`storage`/`emulators` keys — so a `firebase deploy` with this config can never push the Flutter-owned firestore.rules/storage.rules over live (CLAUDE.md critical rule #1). Companion configs: firebase.json (prod firestore rules), firebase.staging.json (staging firestore.e2e.rules), firebase.functions.json (emulator suite only), firebase.rules.json (rules emulator). Deploy: see apps/functions/DEPLOY.md. The bundle inlines FUNCTIONS_REGION at build time (build.mjs), so you MUST build before deploying.",
+  "functions": [
+    {
+      "source": "apps/functions",
+      "codebase": "storage",
+      "runtime": "nodejs20",
+      "ignore": [
+        "node_modules",
+        ".turbo",
+        "src/**/*.test.ts",
+        "src/**/*.storage.test.ts",
+        "vitest*.ts"
+      ]
+    }
+  ]
+}
