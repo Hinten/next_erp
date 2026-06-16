@@ -6,22 +6,30 @@ import { deleteDoc } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
 import { enderecoSchema } from '@delfrance/schemas';
 import { ObjectView } from '@delfrance/ui';
+import { CepField } from '@/components/inputs/CepInput';
 import { enderecoCollection } from '@/lib/data/enderecoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 
-const RECEBEDOR_SECTION = 'Recebedor (NFe)';
+/**
+ * Recebedor (NFe / destinatário) keys — edited in the SEPARATE
+ * `RecebedorNfeModal`, so the address modal hides them. System/auto fields
+ * (`idExterno`, country code, IBGE município) are hidden too: `cPais`/`pais`
+ * default to Brazil and `codigoMunicipio` is filled by the CEP lookup.
+ */
+const RECEBEDOR_KEYS = ['nome', 'cpf_cnpj', 'rg', 'ie', 'imun', 'email', 'telefone'];
+const ADDRESS_HIDDEN_KEYS = [...RECEBEDOR_KEYS, 'idExterno', 'cPais', 'pais', 'codigoMunicipio'];
 
-// The NFe-recebedor fields go into a second tab; every other field falls
-// through to the first section ('Endereço').
-const ENDERECO_FORM_FIELDS = {
-  nome: { section: RECEBEDOR_SECTION },
-  cpf_cnpj: { section: RECEBEDOR_SECTION },
-  rg: { section: RECEBEDOR_SECTION },
-  ie: { section: RECEBEDOR_SECTION },
-  imun: { section: RECEBEDOR_SECTION },
-  email: { section: RECEBEDOR_SECTION },
-  telefone: { section: RECEBEDOR_SECTION },
+const ADDRESS_FIELDS = {
+  cep: { renderInput: CepField },
+};
+
+const ADDRESS_DEFAULTS = {
+  bairro: 'SEM BAIRRO',
+  // Brazil by default (NFe country code 1058 / xPais BRASIL). Hidden in the
+  // form but written on create; legacy docs keep their stored values.
+  cPais: '1058',
+  pais: 'Brasil',
 };
 
 export interface EnderecoFormModalProps {
@@ -40,12 +48,12 @@ export interface EnderecoFormModalProps {
 }
 
 /**
- * Schema-driven endereço create/edit modal over the
- * `clientes/{clienteId}/enderecos` subcollection. Shared by the cliente
- * detail page (`EnderecosSection`) and the pedido Frete tab's address picker
- * (`EnderecoPicker` — inline "create-or-select"). Editing/creating an
- * endereço always goes through this one modal so the field set and defaults
- * stay in sync.
+ * Schema-driven **endereço (address-only)** create/edit modal over the
+ * `clientes/{clienteId}/enderecos` subcollection. The Recebedor (NFe) fields
+ * live in the separate `RecebedorNfeModal`. The CEP field carries a "Buscar
+ * CEP" (ViaCEP) lookup that autofills logradouro/bairro/cidade/estado/IBGE.
+ * Shared by the cliente detail screen (`EnderecosSection`) and the pedido
+ * Frete tab's inline "+ Novo endereço".
  */
 export function EnderecoFormModal({
   opened,
@@ -71,12 +79,10 @@ export function EnderecoFormModal({
       title={recordId ? 'Editar endereço' : 'Novo endereço'}
       size="lg"
     >
-      {/* Conditional mount so every open starts with a fresh form. The
-          `onSubmit` guard stops the inner form's submit event from bubbling up
-          the React tree (the Modal is portaled in the DOM but not in the React
-          tree) into an ancestor <form> — e.g. the pedido form when this modal
-          is opened from the Frete tab's EnderecoPicker — which would otherwise
-          submit the pedido on every "Criar". */}
+      {/* Conditional mount so every open starts fresh. The `onSubmit` guard
+          stops the inner form's submit from bubbling up the React tree (the
+          portaled Modal is still a React-tree descendant) into an ancestor
+          <form> — e.g. the pedido form when opened from the Frete tab. */}
       {opened && (
         <div onSubmit={(e) => e.stopPropagation()}>
           <ObjectView
@@ -86,10 +92,9 @@ export function EnderecoFormModal({
             pathContext={pathContext}
             currentUserUid={user?.uid ?? ''}
             recordId={recordId}
-            defaultValues={{ bairro: 'SEM BAIRRO' }}
-            excludedFields={['idExterno']}
-            sections={['Endereço', RECEBEDOR_SECTION]}
-            fields={ENDERECO_FORM_FIELDS}
+            defaultValues={ADDRESS_DEFAULTS}
+            excludedFields={ADDRESS_HIDDEN_KEYS}
+            fields={ADDRESS_FIELDS}
             saveLabel={recordId ? 'Salvar alterações' : 'Criar'}
             showSaveAndContinue={false}
             canEdit={canWrite}

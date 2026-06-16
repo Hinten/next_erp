@@ -3,6 +3,7 @@
 import { Fieldset, Group, Select, Stack, Switch, Text, TextInput } from '@mantine/core';
 import { ufSchema } from '@delfrance/schemas';
 import type { FieldRenderProps } from '@delfrance/ui';
+import { CepTextInput } from '@/components/inputs/CepInput';
 import { childFieldError, rootError } from './editorErrors';
 
 /**
@@ -33,8 +34,9 @@ const EMPTY_ENDERECO: EnderecoValue = {
   codigoMunicipio: null,
   cidade: '',
   estado: 'SP',
-  cPais: null,
-  pais: null,
+  // Brazil by default (NFe country code 1058) — endereços de origem are domestic.
+  cPais: '1058',
+  pais: 'Brasil',
   nome: null,
   cpf_cnpj: null,
   rg: null,
@@ -121,17 +123,22 @@ export function EnderecoOrigemInput({
               />
             </Group>
             <Group grow align="flex-start">
-              <TextInput
-                label="CEP"
+              <CepTextInput
                 value={endereco?.cep ?? ''}
-                onChange={(e) =>
-                  patch({ cep: e.currentTarget.value.replace(/\D/g, '').slice(0, 8) })
-                }
+                onChange={(cep) => patch({ cep })}
                 onBlur={onBlur}
+                onFound={(f) =>
+                  patch({
+                    logradouro: f.logradouro,
+                    bairro: f.bairro || 'SEM BAIRRO',
+                    cidade: f.cidade,
+                    estado: f.estado,
+                    codigoMunicipio: f.codigoMunicipio,
+                  })
+                }
                 disabled={disabled}
                 error={err('cep')}
                 required
-                maw={140}
               />
               <TextInput
                 label="Cidade"
