@@ -48,6 +48,33 @@ async function waitFor<T>(
   }
 }
 
+/**
+ * Poll `count()` until the value stops changing for `stableMs`, then return the
+ * settled value. More robust than a blind sleep for asserting "nothing further
+ * happened": a late or runaway write (e.g. the function recursing on its own
+ * outputs) keeps the count changing, so it never settles early at the expected
+ * value — and if it settles higher, the caller's assertion catches it.
+ */
+async function waitForStableCount(
+  count: () => Promise<number>,
+  { stableMs = 2_000, stepMs = 500, timeoutMs = 20_000 } = {},
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let last = await count();
+  let stableSince = Date.now();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, stepMs));
+    const cur = await count();
+    if (cur !== last) {
+      last = cur;
+      stableSince = Date.now();
+    } else if (Date.now() - stableSince >= stableMs) {
+      return cur;
+    }
+    if (Date.now() > deadline) return cur;
+  }
+}
+
 /** List this product's derivative objects (the `derivatives/` subdir). */
 async function listDerivatives(produtoId: string): Promise<string[]> {
   const [files] = await getBucket().getFiles({
@@ -122,12 +149,12 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
 
   it('does not recurse on its own derivative outputs', async () => {
     // The function fires on EVERY finalize, including the derivatives it just
-    // wrote — the loop guard must stop it. Give any errant re-trigger time to
-    // land, then assert exactly one derivative per variant (no
-    // derivative-of-derivative).
-    await sleep(4_000);
+    // wrote — the loop guard must stop it. Wait for the derivative count to
+    // SETTLE (a runaway recursion would keep it climbing) and assert it settled
+    // at exactly one per variant, with no derivative-of-derivative names.
+    const settled = await waitForStableCount(async () => (await listDerivatives(produtoId)).length);
+    expect(settled).toBe(PRODUCT_IMAGE_VARIANTS.length);
     const names = await listDerivatives(produtoId);
-    expect(names).toHaveLength(PRODUCT_IMAGE_VARIANTS.length);
     expect(names.every((n) => !/_(?:200|400|jpeg)_(?:200|400|jpeg)\./.test(n))).toBe(true);
   });
 
@@ -150,12 +177,17 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
 
   it('ignores a non-product upload (skip path)', async () => {
     // A file outside `produtos/<id>/originals/` is not a watched original, so
-    // the function bails and produces no derivatives.
+    // the function bails and produces no derivatives — neither under `media/`
+    // NOR (the assertion that actually matters) against the existing product.
+    const before = (await listDerivatives(produtoId)).length;
     const otherHash = randomUUID().replace(/-/g, '');
     await getBucket()
       .file(mediaPath(otherHash, 'png'))
       .save(original, { contentType: 'image/png' });
-    await sleep(5_000);
+
+    // The product's derivative set must stay put through the unrelated upload.
+    const after = await waitForStableCount(async () => (await listDerivatives(produtoId)).length);
+    expect(after).toBe(before);
 
     const [mediaFiles] = await getBucket().getFiles({ prefix: 'media/' });
     expect(mediaFiles.map((f) => f.name)).toEqual([mediaPath(otherHash, 'png')]);
