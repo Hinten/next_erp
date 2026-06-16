@@ -51,6 +51,10 @@ export const filialMeta: CollectionMetadata = {
     write: PERM_CONFIG_WRITE,
     delete: PERM_CONFIG_WRITE,
   },
+  defaultQuery: {
+    orderBy: [{ field: 'razaoSocial', direction: 'asc' }],
+    limit: 50,
+  },
 };
 
 export const filial = { schema: filialSchema, meta: filialMeta };

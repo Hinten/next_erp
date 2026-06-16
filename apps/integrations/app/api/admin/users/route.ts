@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { PERM } from '@delfrance/auth';
+import { PERM, rulesClaimsFromBits } from '@delfrance/auth';
 import { cargoCollection, usuarioCollection } from '@delfrance/data/admin/collections';
 import { aggregatePermissoes, type Cargo, isSuperUserBits, type Usuario } from '@delfrance/schemas';
 import { verifyCaller } from '@/lib/auth/verifyCaller';
@@ -134,8 +134,11 @@ export async function POST(req: Request) {
     throw e;
   }
 
+  // `permissions` is the app-side source of truth (hasPerm); the d_* claims
+  // are its rules-only projection — Firestore rules CEL has no bitwise ops.
   await getAdminAuth().setCustomUserClaims(uid, {
     permissions: bits.toString(),
+    ...rulesClaimsFromBits(bits),
   });
 
   const usuarioDoc: Usuario = {

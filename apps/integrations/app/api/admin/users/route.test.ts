@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { rulesClaimsFromBits } from '@delfrance/auth';
 import { SUPERUSER_MASK } from '@delfrance/schemas';
 
 // Mock the firebase-admin singleton wrapper. The test exercises route logic
@@ -133,6 +134,7 @@ describe('POST /api/admin/users', () => {
     expect(res.status).toBe(201);
     expect(mocks.setCustomUserClaims).toHaveBeenCalledWith('uid_su', {
       permissions: SUPERUSER_MASK.toString(),
+      ...rulesClaimsFromBits(SUPERUSER_MASK),
     });
   });
 
@@ -158,8 +160,12 @@ describe('POST /api/admin/users', () => {
       password: VALID_BODY.senha,
       displayName: VALID_BODY.nome,
     });
+    // cliente.read|write → the d_cliente rules claim is minted alongside,
+    // with read|write = 1|2 = 3. Pinned literally — this is the wire shape
+    // the generated Firestore rules read.
     expect(mocks.setCustomUserClaims).toHaveBeenCalledWith('uid_42', {
       permissions: ((1n << 0n) | (1n << 1n)).toString(),
+      d_cliente: 3,
     });
     expect(mocks.usuarioSet).toHaveBeenCalled();
   });

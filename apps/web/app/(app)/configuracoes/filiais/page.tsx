@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { deleteDoc } from 'firebase/firestore';
 import { Button } from '@mantine/core';
-import { filialSchema } from '@delfrance/schemas';
+import { filialMeta, filialSchema } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { formatCNPJ } from '@delfrance/core/documents';
 import { filialCollection } from '@/lib/data/filialCollection';
@@ -20,9 +20,8 @@ export default function FiliaisPage() {
       schema={filialSchema}
       collection={filialCollection}
       db={getFirebaseFirestore()}
+      meta={filialMeta}
       defaultColumns={['razaoSocial', 'fantasia', 'cnpj', 'timestamp']}
-      orderBy={{ field: 'razaoSocial', direction: 'asc' }}
-      pageSize={50}
       rowHref={(id) => `/configuracoes/filiais/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/configuracoes/filiais/novo">

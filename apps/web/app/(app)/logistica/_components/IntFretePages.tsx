@@ -3,11 +3,11 @@
 import Link from 'next/link';
 import type { Route } from 'next';
 import { useParams, useRouter } from 'next/navigation';
-import { useMemo, useState } from 'react';
-import { deleteDoc, orderBy, query, where } from 'firebase/firestore';
+import { useState } from 'react';
+import { deleteDoc } from 'firebase/firestore';
 import { Anchor, Badge, Button, Group, Stack, Title } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
-import { type IntFrete, intFreteSchema } from '@delfrance/schemas';
+import { type IntFrete, intFreteMeta, intFreteSchema } from '@delfrance/schemas';
 import { ObjectView, TableView } from '@delfrance/ui';
 import { intFreteCollection } from '@/lib/data/intFreteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -18,9 +18,9 @@ import { SHARED_EXCLUDED, type LogisticaSlice } from './slices';
 /**
  * The three shared screens behind every `/logistica/<slug>` slice. Same
  * collection (`int_frete`), discriminated by `tipo` — mirror of the
- * `/canais/balcao` slice over `integracao` (see that screen for the
- * `queryOverride` trade-off note: the tipo `where` + `orderBy` ship
- * together, so the column-filter popovers don't narrow this table).
+ * `/canais/balcao` slice over `integracao`. The list binds the slice's `tipo`
+ * via intFreteMeta.defaultQuery's `param`, so the per-column filters still
+ * work on top of the base filter.
  */
 
 const excludedFor = (slice: LogisticaSlice): string[] => [
@@ -33,16 +33,6 @@ export function IntFreteListPage({ slice }: { slice: LogisticaSlice }) {
   const { allowed: canWrite } = usePermission(PERM.frete.write);
   const { allowed: canDelete } = usePermission(PERM.frete.delete);
 
-  const sliceQuery = useMemo(
-    () =>
-      query(
-        intFreteCollection.ref(db, {}),
-        where('tipo', '==', slice.tipo),
-        orderBy('nome', 'asc'),
-      ),
-    [db, slice.tipo],
-  );
-
   return (
     <TableView<typeof intFreteSchema>
       title={slice.titulo}
@@ -50,7 +40,8 @@ export function IntFreteListPage({ slice }: { slice: LogisticaSlice }) {
       schema={intFreteSchema}
       collection={intFreteCollection}
       db={db}
-      queryOverride={sliceQuery}
+      meta={intFreteMeta}
+      queryParams={{ tipo: slice.tipo }}
       defaultColumns={['nome', 'ativo', 'prazoExtra']}
       rowHref={(id) => `/logistica/${slice.slug}/${id}`}
       // Create/delete affordances only for users holding the matching

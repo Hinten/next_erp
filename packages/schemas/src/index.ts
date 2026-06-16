@@ -7,7 +7,16 @@ import { z } from 'zod';
 // take precedence; this only replaces Zod's English defaults.
 z.config(z.locales.pt());
 
-export type { CollectionMetadata, DomainSchema } from './types';
+export type {
+  CollectionMetadata,
+  CollectionDefaultQuery,
+  DefaultQueryWhere,
+  DefaultQueryOrderBy,
+  DefaultQueryValue,
+  DomainSchema,
+} from './types';
+
+export { ALL_DOMAINS } from './registry';
 
 export { auditEntrySchema, type AuditEntry } from './audit';
 
@@ -31,6 +40,18 @@ export {
 } from './endereco';
 
 export { produto, produtoSchema, produtoMeta, type Produto } from './produto';
+
+export {
+  produtoMercadoLivre,
+  variacaoMercadoLivre,
+  produtoShopee,
+  variacaoShopee,
+  produtoMagalu,
+  produtoAmazon,
+  produtoLojaIntegrada,
+  PRODUTO_SUBCOLLECTION_DOMAINS,
+  PRODUTO_SUBCOLLECTION_NAMES,
+} from './produtoSubcollections';
 
 export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './categoria';
 

@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { deleteDoc } from 'firebase/firestore';
 import { Button } from '@mantine/core';
-import { bandeiraCartaoSchema } from '@delfrance/schemas';
+import { bandeiraCartaoMeta, bandeiraCartaoSchema } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { bandeiraCartaoCollection } from '@/lib/data/bandeiraCartaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -16,9 +16,8 @@ export default function BandeirasCartaoPage() {
       schema={bandeiraCartaoSchema}
       collection={bandeiraCartaoCollection}
       db={getFirebaseFirestore()}
+      meta={bandeiraCartaoMeta}
       defaultColumns={['nome', 'bandeira', 'ehCredito', 'maxParcelas']}
-      orderBy={{ field: 'nome', direction: 'asc' }}
-      pageSize={50}
       rowHref={(id) => `/bandeiras-cartao/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/bandeiras-cartao/novo">

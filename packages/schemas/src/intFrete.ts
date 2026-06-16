@@ -230,6 +230,13 @@ export const intFreteMeta: CollectionMetadata = {
     delete: PERM_FRETE_DELETE,
   },
   cascade: [{ path: 'int_frete/{intFreteId}/tokenMelEnv', onDelete: 'cascade' }],
+  // Like `integracao`, this collection mixes freight-integration types; each
+  // logistics slice lists one `tipo` via TableView's `queryParams`.
+  defaultQuery: {
+    where: [{ field: 'tipo', param: true }],
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
+  },
 };
 
 export const intFrete = { schema: intFreteSchema, meta: intFreteMeta };

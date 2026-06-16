@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { deleteDoc } from 'firebase/firestore';
 import { Button } from '@mantine/core';
-import { grupoDeVariacoesSchema } from '@delfrance/schemas';
+import { grupoDeVariacoesMeta, grupoDeVariacoesSchema } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -16,9 +16,8 @@ export default function VariacoesPage() {
       schema={grupoDeVariacoesSchema}
       collection={grupoDeVariacoesCollection}
       db={getFirebaseFirestore()}
+      meta={grupoDeVariacoesMeta}
       defaultColumns={['nome', 'codigo', 'ordem', 'permiteFotos']}
-      orderBy={{ field: 'ordem', direction: 'asc' }}
-      pageSize={50}
       rowHref={(id) => `/variacoes/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/variacoes/novo">

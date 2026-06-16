@@ -1,11 +1,13 @@
 'use client';
 
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { useLocalStorage } from '@mantine/hooks';
 import {
   ActionIcon,
   Alert,
+  Button,
+  Center,
   Checkbox,
   Group,
   Skeleton,
@@ -21,15 +23,18 @@ import type { z, ZodObject, ZodRawShape } from 'zod';
 import {
   type CollectionHandle,
   type PathContext,
-  type PipelineFilterOp,
+  type PipelineFieldFilter,
   buildQuery,
   limit as fsLimit,
   orderByField,
+  whereEqual,
 } from '@delfrance/data';
+import type { CollectionMetadata } from '@delfrance/schemas';
 import { type SnapshotRow, type SnapshotState, useSnapshot } from '@delfrance/data/hooks';
 import { usePipelineSnapshot } from '@delfrance/data/hooks/usePipelineSnapshot';
 import {
   type Pipeline,
+  type PipelineOrderSpec,
   PipelineUnsupportedError,
   buildPipeline,
   isPipelineSupported,
@@ -40,9 +45,20 @@ import { ActionBar } from './ActionBar';
 import { ActionSidePanel } from './ActionSidePanel';
 import { useCollectionMonitor } from './useCollectionMonitor';
 import { IconArrowDown, IconArrowsSort, IconArrowUp, IconRefreshAlert } from '@tabler/icons-react';
-import { ColumnFilter, type ColumnFilterValue } from './ColumnFilter';
+import { ColumnFilter } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
+import { applyColumnFilters } from './filterRows';
+import {
+  type SortState,
+  parseFiltersFromParams,
+  parseSortFromParams,
+  useTableUrlState,
+} from './useTableUrlState';
 import { renderCell } from './cell-renderers';
+
+// Re-exported for back-compat; the implementations now live in
+// ./useTableUrlState alongside the hook that owns this state.
+export { parseFiltersFromParams, parseSortFromParams };
 
 export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   /** Title shown above the table. */
@@ -112,14 +128,35 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   /** Optional rich row-link renderer (defaults to plain <a>). */
   renderRowLink?: (href: string, content: ReactNode) => ReactNode;
 
+  /**
+   * Collection metadata — pass the schema's `<x>Meta`. Its `defaultQuery`
+   * supplies the initial sort, the base equality filters, and the page size
+   * (the single source of truth the Firestore index validators check). Each
+   * is individually overridable by the props below; `queryOverride` bypasses
+   * all of it.
+   */
+  meta?: CollectionMetadata;
+  /**
+   * Values for `meta.defaultQuery.where` entries declared `param: true`
+   * (e.g. `{ tipo: 7 }` for a channel slice of a shared collection). Missing
+   * a declared param throws — an unbound filter would silently widen the list
+   * to the whole collection.
+   */
+  queryParams?: Record<string, string | number | boolean | null>;
+
+  /** Overrides `meta.defaultQuery.limit`; falls back to 50. */
   pageSize?: number;
-  /** Initial sort. The user can change it by clicking column headers. */
+  /**
+   * Initial sort — overrides `meta.defaultQuery.orderBy`. The user can change
+   * it by clicking column headers.
+   */
   orderBy?: { field: string; direction?: 'asc' | 'desc' };
 
   /**
    * Escape hatch: pass a custom `Query` (e.g. with composite filters the
-   * Pipelines wrapper doesn't cover). When set, search/orderBy/pageSize are
-   * ignored — the caller owns the query lifecycle.
+   * Pipelines wrapper doesn't cover). When set, search/orderBy/pageSize and
+   * `meta.defaultQuery` are ignored — the caller owns the query lifecycle.
+   * Column filters still apply client-side to the returned rows.
    */
   queryOverride?: Query<z.infer<S>>;
 
@@ -132,69 +169,6 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * collection in localStorage.
    */
   actionsPanel?: boolean | { defaultCollapsed?: boolean };
-}
-
-type SortState = { field: string; direction: 'asc' | 'desc' };
-
-const FILTER_OPS = new Set<PipelineFilterOp>([
-  'contains',
-  'startsWith',
-  'eq',
-  'lt',
-  'lte',
-  'gt',
-  'gte',
-]);
-
-/**
- * Parse `?<field>=<op>:<value>` query params into the `filters` state. The
- * value is coerced by the field's `kind` (boolean / number / string). Params
- * that don't map to a known descriptor, or carry an unknown op, are skipped.
- */
-export function parseFiltersFromParams(
-  params: URLSearchParams,
-  descriptors: FieldDescriptor[],
-): Record<string, ColumnFilterValue> {
-  const byKey = new Map(descriptors.map((d) => [d.key, d]));
-  const out: Record<string, ColumnFilterValue> = {};
-  for (const [key, raw] of params.entries()) {
-    if (key === 'sort') continue;
-    const descriptor = byKey.get(key);
-    if (!descriptor) continue;
-    const sep = raw.indexOf(':');
-    if (sep < 0) continue;
-    const op = raw.slice(0, sep) as PipelineFilterOp;
-    if (!FILTER_OPS.has(op)) continue;
-    const rawValue = raw.slice(sep + 1);
-    let value: ColumnFilterValue['value'];
-    if (descriptor.kind === 'boolean') {
-      value = rawValue === 'true';
-    } else if (
-      descriptor.kind === 'number' ||
-      descriptor.kind === 'integer' ||
-      descriptor.kind === 'currency'
-    ) {
-      const n = Number(rawValue);
-      if (Number.isNaN(n)) continue;
-      value = n;
-    } else {
-      value = rawValue;
-    }
-    out[key] = { op, value };
-  }
-  return out;
-}
-
-/** Parse `?sort=<field>:<asc|desc>`. */
-export function parseSortFromParams(params: URLSearchParams): SortState | undefined {
-  const raw = params.get('sort');
-  if (!raw) return undefined;
-  const sep = raw.indexOf(':');
-  if (sep < 0) return undefined;
-  const field = raw.slice(0, sep);
-  const direction = raw.slice(sep + 1);
-  if (!field || (direction !== 'asc' && direction !== 'desc')) return undefined;
-  return { field, direction };
 }
 
 /**
@@ -221,13 +195,19 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   newHref,
   renderNewButton,
   renderRowLink,
-  pageSize = 50,
+  meta,
+  queryParams,
+  pageSize,
   orderBy,
   queryOverride,
   actionsPanel,
 }: TableViewProps<S>) {
   // Derive once per schema identity.
   const descriptors = useMemo(() => extractFieldsFromSchema(schema), [schema]);
+
+  const defaultQuery = meta?.defaultQuery;
+  // pageSize prop wins, then the declared default, then 50.
+  const resolvedPageSize = pageSize ?? defaultQuery?.limit ?? 50;
 
   // Columns visible by default: caller-supplied keys, or every non-unknown
   // schema field (drops embeddings and other opaque blobs automatically)
@@ -277,69 +257,101 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const visibleKeys = useMemo(() => new Set(visibleKeysArr), [visibleKeysArr]);
 
   const router = useRouter();
-  const pathname = usePathname();
-  const searchParams = useSearchParams();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Bumped by the update-monitor's "Atualizar" button to force the row query
   // to re-execute (the Pipelines path is one-shot — see `pipeline` below).
   const [refreshKey, setRefreshKey] = useState(0);
+  // "Carregar mais": grows the query limit by `resolvedPageSize` per click.
+  // Each bump re-reads the whole window (the one-shot pipeline has no cursor) —
+  // fine for admin lists; true cursor pagination is deliberately deferred.
+  const [pages, setPages] = useState(1);
+  const effectiveLimit = resolvedPageSize * pages;
 
   // The copy action needs row selection; enabling copy implies `selectable`.
   const selectionEnabled = selectable || !!copyHref;
-  // Per-column filters keyed by field key. AND-combined; cleared by setting
-  // the entry to `undefined` (or deleting the key). Hydrated once from the
-  // URL query string so a shared/bookmarked link reopens filtered.
-  const [filters, setFilters] = useState<Record<string, ColumnFilterValue>>(() =>
-    parseFiltersFromParams(searchParams, descriptors),
-  );
-  // Active sort. Seeded from the URL, then the `orderBy` prop; the user
-  // changes it by clicking column headers.
-  const [sort, setSort] = useState<SortState | undefined>(
-    () =>
-      parseSortFromParams(searchParams) ??
-      (orderBy ? { field: orderBy.field, direction: orderBy.direction ?? 'asc' } : undefined),
+
+  // URL-synced per-column filters + sort (hydrated from the query string,
+  // mirrored back via history.replaceState). `orderBy` is the initial-sort
+  // fallback when the URL carries none.
+  const { filters, setFilters, filtersSerial, sort, setSort } = useTableUrlState(
+    descriptors,
+    orderBy,
   );
 
-  // filters changes shape per click; bucket it into a deterministic string
-  // so the pipeline only rebuilds when content actually changes.
-  const filtersSerial = useMemo(() => JSON.stringify(filters), [filters]);
-  // Deterministic key for the visible-column set. Toggling a column in the
-  // ColumnPicker changes this, which re-runs the `pipeline` useMemo → new
-  // Pipeline with the new `select` → the query re-executes.
-  const visibleKeysSerial = useMemo(() => [...visibleKeys].sort().join('|'), [visibleKeys]);
+  // Stable serial for `queryParams` so the base-filter memo rebuilds only when
+  // a bound value actually changes (callers needn't memoize the object).
+  const queryParamsSerial = useMemo(() => JSON.stringify(queryParams ?? null), [queryParams]);
 
-  // Mirror filters + sort into the URL query string so the view is shareable
-  // and survives a reload. Uses `window.history.replaceState`, NOT
-  // `router.replace`: these pages are client-rendered (no Server Component
-  // reads the query), so a router navigation needlessly refetches the RSC —
-  // and worse, on a statically-prerendered route loaded *with* query params,
-  // a search-param-only `router.replace` is silently dropped by the App
-  // Router (the RSC is identical, so it dedupes the navigation and the URL
-  // never changes). `history.replaceState` always updates the URL, doesn't
-  // scroll, and Next keeps `useSearchParams()` in sync with it. Hydration
-  // above is one-shot, so there's no read-back loop.
-  useEffect(() => {
-    const params = new URLSearchParams();
-    for (const [field, v] of Object.entries(filters)) {
-      params.set(field, `${v.op}:${String(v.value)}`);
-    }
-    if (sort) params.set('sort', `${sort.field}:${sort.direction}`);
-    const qs = params.toString();
-    const next = qs ? `${pathname}?${qs}` : pathname;
-    if (next !== `${pathname}${window.location.search}`) {
-      window.history.replaceState(null, '', next);
-    }
+  // Base equality filters from `meta.defaultQuery.where`. Always applied,
+  // independent of user column filters — silently dropping them (e.g. listing
+  // variation children on a catalog screen) would be a data bug. `param`
+  // entries are bound from `queryParams`; a missing binding throws.
+  const baseFilters = useMemo<PipelineFieldFilter[]>(() => {
+    const where = defaultQuery?.where;
+    if (!where || where.length === 0) return [];
+    return where.map((w) => {
+      if ('param' in w) {
+        if (!queryParams || !(w.field in queryParams)) {
+          throw new Error(
+            `TableView: meta.defaultQuery declares param "${w.field}" but no ` +
+              `queryParams value was provided. Pass queryParams={{ ${w.field}: … }}.`,
+          );
+        }
+        return { field: w.field, op: 'eq' as const, value: queryParams[w.field] ?? null };
+      }
+      return { field: w.field, op: 'eq' as const, value: w.value };
+    });
+    // queryParamsSerial stands in for queryParams; defaultQuery is identity-
+    // tracked like meta itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtersSerial, sort?.field, sort?.direction, pathname]);
+  }, [defaultQuery, queryParamsSerial]);
+  const baseFiltersSerial = useMemo(() => JSON.stringify(baseFilters), [baseFilters]);
 
-  // Clicking a header cycles that column's sort: a different column starts
-  // ascending; the active column flips asc ⇄ desc.
+  // Sort actually issued to Firestore: an explicit user/prop sort wins;
+  // otherwise the declared default `orderBy` (full array — supports multi-key
+  // defaults and matches the declared composite index).
+  const effectiveOrderBy = useMemo<PipelineOrderSpec[] | undefined>(() => {
+    if (sort) return [{ field: sort.field, direction: sort.direction }];
+    if (defaultQuery?.orderBy?.length) {
+      return defaultQuery.orderBy.map((o) => ({ field: o.field, direction: o.direction }));
+    }
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sort?.field, sort?.direction, defaultQuery]);
+  // Column the header arrow points at when the user hasn't sorted yet.
+  const displaySort: SortState | undefined =
+    sort ??
+    (defaultQuery?.orderBy?.[0]
+      ? { field: defaultQuery.orderBy[0].field, direction: defaultQuery.orderBy[0].direction }
+      : undefined);
+
+  // Pipeline projection (`select`). Project the visible schema columns to cut
+  // payload; `buildPipeline` re-appends the doc id. Visible virtual columns
+  // can read arbitrary fields from `row.data`, so a visible virtual WITHOUT a
+  // `dependsOn` declaration disables projection (full-doc read); otherwise we
+  // widen the projection by every declared dependsOn. `undefined` = no select.
+  const selectFields = useMemo<string[] | undefined>(() => {
+    const schemaKeys = [...visibleKeys].filter((k) => descriptors.some((d) => d.key === k));
+    const visibleVirtuals = virtualColumns.filter((v) => visibleKeys.has(v.key));
+    if (visibleVirtuals.length === 0) return schemaKeys;
+    if (visibleVirtuals.some((v) => v.dependsOn === undefined)) return undefined;
+    const union = new Set(schemaKeys);
+    for (const v of visibleVirtuals) for (const f of v.dependsOn ?? []) union.add(f);
+    return [...union];
+  }, [visibleKeys, descriptors, virtualColumns]);
+  const selectFieldsSerial = useMemo(
+    () => (selectFields ? selectFields.join('|') : '*'),
+    [selectFields],
+  );
+
+  // Clicking a header cycles that column's sort. Flip relative to the
+  // *displayed* sort (`displaySort`, which includes the meta default), not the
+  // raw `sort` state — otherwise the first click on a column shown ascending
+  // by the meta default would re-set ascending (a visual no-op) instead of
+  // going to descending. A different column starts ascending.
   function toggleSort(fieldKey: string) {
-    setSort((cur) =>
-      cur?.field === fieldKey
-        ? { field: fieldKey, direction: cur.direction === 'asc' ? 'desc' : 'asc' }
-        : { field: fieldKey, direction: 'asc' },
-    );
+    const current = displaySort?.field === fieldKey ? displaySort.direction : undefined;
+    setSort({ field: fieldKey, direction: current === 'asc' ? 'desc' : 'asc' });
   }
 
   // --- Data source selection ----------------------------------------------
@@ -351,25 +363,19 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     try {
       return buildPipeline(db, {
         collection: collection.resolvePath(pathContext),
-        filters: Object.entries(filters).map(([field, v]) => ({ field, ...v })),
-        // Project only the visible schema columns to cut data transfer
-        // (skips the heavy embedding fields). `buildPipeline` appends the
-        // document-id projection so row identity survives `.select()` —
-        // see PIPELINE_ID_FIELD. `visibleKeysSerial` is in the deps below
-        // so toggling a column re-executes the query with the new field
-        // set.
-        //
-        // **When virtual columns are present, projection is disabled**:
-        // virtual cells can read any field from `row.data` (passthrough
-        // values, outer refs, etc.) and we can't predict which keys
-        // they'll touch. Reading the full doc keeps virtual renderers
-        // simple at the cost of slightly larger payloads.
-        select:
-          virtualColumns.length > 0
-            ? undefined
-            : [...visibleKeys].filter((k) => descriptors.some((d) => d.key === k)),
-        orderBy: sort ? [{ field: sort.field, direction: sort.direction }] : undefined,
-        limit: pageSize,
+        // Base equality filters (from meta.defaultQuery) AND the user's
+        // per-column filters. Base first so it reads like the declared query.
+        filters: [
+          ...baseFilters,
+          ...Object.entries(filters).map(([field, v]) => ({ field, ...v })),
+        ],
+        // Project the visible schema columns (+ any virtual-column
+        // `dependsOn`) to cut data transfer; `undefined` reads the full doc.
+        // See `selectFields` above. `buildPipeline` re-appends the document-id
+        // projection so row identity survives `.select()` (PIPELINE_ID_FIELD).
+        select: selectFields,
+        orderBy: effectiveOrderBy,
+        limit: effectiveLimit,
       });
     } catch (err) {
       // Only the documented "SDK lacks pipeline()" signal falls back to
@@ -384,11 +390,11 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     db,
     collection,
     queryOverride,
-    pageSize,
-    sort?.field,
-    sort?.direction,
+    effectiveLimit,
+    effectiveOrderBy,
+    baseFiltersSerial,
     filtersSerial,
-    visibleKeysSerial,
+    selectFieldsSerial,
     refreshKey,
   ]);
 
@@ -397,22 +403,53 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     if (pipeline) return null;
     const base = collection.ref(db, pathContext);
     const constraints = [];
-    if (sort) constraints.push(orderByField(sort.field, sort.direction));
-    constraints.push(fsLimit(pageSize));
+    // Base equality filters first (same as the pipeline path) — these must
+    // never be dropped. equality + orderBy is a legal classic query.
+    for (const f of baseFilters) constraints.push(whereEqual(f.field, f.value));
+    for (const o of effectiveOrderBy ?? []) constraints.push(orderByField(o.field, o.direction));
+    constraints.push(fsLimit(effectiveLimit));
     return buildQuery(base, constraints);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, collection, queryOverride, pipeline, pageSize, sort?.field, sort?.direction, refreshKey]);
+  }, [
+    db,
+    collection,
+    queryOverride,
+    pipeline,
+    effectiveLimit,
+    effectiveOrderBy,
+    baseFiltersSerial,
+    refreshKey,
+  ]);
 
   const fromPipeline = usePipelineSnapshot<z.infer<S>>(pipeline);
   const fromQuery = useSnapshot<z.infer<S>>(fallbackQuery);
   const snap: SnapshotState<SnapshotRow<z.infer<S>>[]> = pipeline ? fromPipeline : fromQuery;
+
+  // Rows to display. The Pipeline path applies per-column filters server-side;
+  // the classic fallback and `queryOverride` paths can't, so narrow them here
+  // to match (base meta filters are already in the fallback query / owned by
+  // the override). Everything below — selection, counts, the table body —
+  // reads `rows`, not `snap.data`, so it all stays consistent with the filter.
+  const rows = useMemo<SnapshotRow<z.infer<S>>[] | undefined>(
+    () => (pipeline || !snap.data ? snap.data : applyColumnFilters(snap.data, filters)),
+    // filtersSerial stands in for the `filters` object content.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pipeline, snap.data, filtersSerial],
+  );
+
+  // Collapse "Carregar mais" back to one page whenever the query shape changes
+  // (filters, sort, base filters or bound params) — the expanded window only
+  // makes sense for the result set the user was looking at.
+  useEffect(() => {
+    setPages(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtersSerial, baseFiltersSerial, queryParamsSerial, sort?.field, sort?.direction]);
 
   // Drop selected ids that left the current row set (filter change, refresh,
   // delete in another tab) so bulk actions and the header checkbox never act
   // on ghost rows. Returns the same Set when nothing changed, so the effect
   // can't loop on Set identity.
   useEffect(() => {
-    const rows = snap.data;
     if (!rows) return;
     setSelected((cur) => {
       if (cur.size === 0) return cur;
@@ -420,7 +457,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       const next = new Set([...cur].filter((id) => live.has(id)));
       return next.size === cur.size ? cur : next;
     });
-  }, [snap.data]);
+  }, [rows]);
 
   /**
    * Ordered list of columns to render — schema descriptors AND virtual
@@ -487,15 +524,13 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   }
 
   function toggleAll() {
-    if (!snap.data) return;
-    setSelected((cur) =>
-      cur.size === snap.data!.length ? new Set() : new Set(snap.data!.map((r) => r.id)),
-    );
+    if (!rows) return;
+    setSelected((cur) => (cur.size === rows.length ? new Set() : new Set(rows.map((r) => r.id))));
   }
 
   const selectedRows = useMemo(
-    () => (snap.data ?? []).filter((r) => selected.has(r.id)),
-    [snap.data, selected],
+    () => (rows ?? []).filter((r) => selected.has(r.id)),
+    [rows, selected],
   );
 
   // Update-monitor field: explicit prop wins; otherwise prefer a
@@ -597,7 +632,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Stack>
           )}
 
-          {!snap.loading && snap.data && (
+          {!snap.loading && rows && (
             <Table striped highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
@@ -605,8 +640,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                     <Table.Th style={{ width: 36 }}>
                       <Checkbox
                         aria-label="Selecionar todas as linhas"
-                        checked={selected.size > 0 && selected.size === snap.data.length}
-                        indeterminate={selected.size > 0 && selected.size < snap.data.length}
+                        checked={selected.size > 0 && selected.size === rows.length}
+                        indeterminate={selected.size > 0 && selected.size < rows.length}
                         onChange={toggleAll}
                       />
                     </Table.Th>
@@ -638,8 +673,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                           >
                             <span>{fieldOverrides[d.key]?.label ?? d.label}</span>
                             <SortIndicator
-                              active={sort?.field === d.key}
-                              direction={sort?.direction}
+                              active={displaySort?.field === d.key}
+                              direction={displaySort?.direction}
                             />
                           </Group>
                           <ColumnFilter
@@ -661,7 +696,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
-                {snap.data.length === 0 && (
+                {rows.length === 0 && (
                   <Table.Tr>
                     <Table.Td
                       colSpan={visibleColumns.length + (selectionEnabled ? 1 : 0)}
@@ -671,7 +706,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                     </Table.Td>
                   </Table.Tr>
                 )}
-                {snap.data.map((row) => {
+                {rows.map((row) => {
                   const href = rowHref ? rowHref(row.id, row.data) : undefined;
                   // `onRowClick` takes precedence over `rowHref` navigation.
                   const clickable = !!row.id && (!!onRowClick || !!href);
@@ -726,6 +761,23 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                 })}
               </Table.Tbody>
             </Table>
+          )}
+
+          {/* A full page implies there may be more — offer to grow the window.
+              Gauge "page was full" on the *fetched* window (`snap.data`), not
+              the post-filter `rows`: client-side column filtering (the fallback
+              / queryOverride paths) can shrink `rows` below the limit even when
+              the server returned a full page, which would wrongly hide the
+              button and strand matches on later pages. The standard heuristic
+              over-offers by one click on an exact multiple, which is harmless.
+              Hidden entirely under `queryOverride`: that query is caller-owned
+              and ignores `effectiveLimit`, so the button couldn't fetch more. */}
+          {!snap.loading && !queryOverride && snap.data && snap.data.length === effectiveLimit && (
+            <Center>
+              <Button variant="subtle" onClick={() => setPages((p) => p + 1)}>
+                Carregar mais
+              </Button>
+            </Center>
           )}
         </Stack>
 

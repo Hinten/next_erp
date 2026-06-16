@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { validateCpfCnpj } from '@delfrance/core/documents';
+import { isValidTelefone } from '@delfrance/core/phone';
 import type { CollectionMetadata } from './types';
 
 // Permission bits live in @delfrance/auth. Duplicating the literal values
@@ -38,10 +40,13 @@ export type TipoCliente = z.infer<typeof tipoClienteSchema>;
 export const clienteSchema = z.object({
   tipo: tipoClienteSchema.nullable().default(null).describe('Tipo'),
   nome: z.string().max(255).nullable().default(null).describe('Nome'),
+  // Letters allowed: the alphanumeric CNPJ (IN RFB 2.229/2024) has 12
+  // alphanumeric positions + 2 numeric check digits. CPF stays numeric.
   cpf_cnpj: z
     .string()
     .max(18)
-    .regex(/^\d*$/, 'apenas números')
+    .regex(/^[0-9A-Z]*$/, 'apenas números e letras maiúsculas')
+    .refine((v) => v === '' || validateCpfCnpj(v), 'CPF/CNPJ inválido')
     .nullable()
     .default(null)
     .describe('CPF / CNPJ'),
@@ -63,10 +68,15 @@ export const clienteSchema = z.object({
     .default(null)
     .describe('IS UF'),
   email: z.string().max(255).email().nullable().default(null).describe('E-mail'),
+  // Standardized wire format: digits-only E.164 without '+' (WhatsApp
+  // wa_id compatible — see @delfrance/core/phone). Lenient bounds so
+  // foreign phones (tipo Estrangeiro) and legacy Flutter-written raw
+  // 10/11-digit BR numbers both stay valid; forms normalize on write.
   telefone: z
     .string()
     .max(16)
     .regex(/^\d*$/, 'apenas números')
+    .refine((v) => v === '' || isValidTelefone(v), 'telefone inválido (10 a 15 dígitos, com DDD)')
     .nullable()
     .default(null)
     .describe('Telefone'),
@@ -99,6 +109,10 @@ export const clienteMeta: CollectionMetadata = {
     delete: PERM_CLIENTE_DELETE,
   },
   cascade: [{ path: 'clientes/{clienteId}/enderecos', onDelete: 'cascade' }],
+  defaultQuery: {
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
+  },
 };
 
 export const cliente = { schema: clienteSchema, meta: clienteMeta };

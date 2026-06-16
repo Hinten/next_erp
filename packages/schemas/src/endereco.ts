@@ -102,6 +102,10 @@ export const enderecoMeta: CollectionMetadata = {
     write: PERM_ENDERECO_WRITE,
     delete: PERM_ENDERECO_DELETE,
   },
+  defaultQuery: {
+    orderBy: [{ field: 'logradouro', direction: 'asc' }],
+    limit: 50,
+  },
 };
 
 export const endereco = { schema: enderecoSchema, meta: enderecoMeta };

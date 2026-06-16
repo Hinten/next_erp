@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineCollection } from '@delfrance/data';
+import { PRODUTO_SUBCOLLECTION_NAMES } from '@delfrance/schemas';
 
 /**
  * The marketplace-link subcollections every `produtos/<id>` doc can carry,
@@ -12,6 +13,11 @@ import { defineCollection } from '@delfrance/data';
  *
  * The Next app only ever READS these for existence checks (deletion guard);
  * the loose schema keeps the Flutter wire shape untouched.
+ *
+ * The path/name list is the shared schemas registry
+ * (`PRODUTO_SUBCOLLECTION_NAMES`) — the same list the rules generator covers —
+ * so the app's collections can never drift from the rules (#160). This file
+ * only layers on the human channel labels shown in guard messages.
  */
 const marketplaceLinkSchema = z.object({}).passthrough();
 
@@ -22,17 +28,27 @@ function subcollection(name: string) {
   });
 }
 
-/** Subcollection handle + the human label shown in guard messages. */
-export const PRODUTO_MARKETPLACE_SUBCOLLECTIONS = [
-  {
-    name: 'produtomercadolivre',
-    label: 'Mercado Livre',
-    handle: subcollection('produtomercadolivre'),
-  },
-  { name: 'variacoesml', label: 'Mercado Livre', handle: subcollection('variacoesml') },
-  { name: 'produtoshopee', label: 'Shopee', handle: subcollection('produtoshopee') },
-  { name: 'variacaoshopee', label: 'Shopee', handle: subcollection('variacaoshopee') },
-  { name: 'produtomagalu', label: 'Magalu', handle: subcollection('produtomagalu') },
-  { name: 'produtoamazon', label: 'Amazon', handle: subcollection('produtoamazon') },
-  { name: 'produtointegrada', label: 'Loja Integrada', handle: subcollection('produtointegrada') },
-] as const;
+/** Channel label per subcollection name, shown in deletion-guard messages. */
+const CHANNEL_LABELS: Record<string, string> = {
+  produtomercadolivre: 'Mercado Livre',
+  variacoesml: 'Mercado Livre',
+  produtoshopee: 'Shopee',
+  variacaoshopee: 'Shopee',
+  produtomagalu: 'Magalu',
+  produtoamazon: 'Amazon',
+  produtointegrada: 'Loja Integrada',
+};
+
+/**
+ * Subcollection handle + the human label shown in guard messages, built from
+ * the shared registry. A new subcollection added to `@delfrance/schemas`
+ * without a label here throws at load time — keeping the app and the rules in
+ * lock-step.
+ */
+export const PRODUTO_MARKETPLACE_SUBCOLLECTIONS = PRODUTO_SUBCOLLECTION_NAMES.map((name) => {
+  const label = CHANNEL_LABELS[name];
+  if (!label) {
+    throw new Error(`produtoMarketplaceSubcollections: missing channel label for "${name}"`);
+  }
+  return { name, label, handle: subcollection(name) };
+});

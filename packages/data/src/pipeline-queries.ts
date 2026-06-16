@@ -142,6 +142,19 @@ export function buildSimilarityPattern(term: string): string {
   return `(?i)${expanded}`;
 }
 
+/**
+ * JS `RegExp` form of {@link buildSimilarityPattern} for client-side filtering
+ * (the classic-query / queryOverride paths can't push a regex to the server).
+ * Strips the server-only `(?i)` inline flag and applies the `i` flag instead.
+ * Returns `null` for empty / whitespace-only input so callers can skip the
+ * filter (matching the server-side "empty pattern → no filter" semantics).
+ */
+export function buildSimilarityRegExp(term: string): RegExp | null {
+  const pattern = buildSimilarityPattern(term);
+  if (!pattern) return null;
+  return new RegExp(pattern.replace(/^\(\?i\)/, ''), 'i');
+}
+
 function filterExpr(f: PipelineFieldFilter): BooleanExpression {
   const fld = field(f.field);
   switch (f.op) {

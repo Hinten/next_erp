@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { deleteDoc } from 'firebase/firestore';
 import { Button } from '@mantine/core';
-import { depositoSchema } from '@delfrance/schemas';
+import { depositoMeta, depositoSchema } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { depositoCollection } from '@/lib/data/depositoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -16,9 +16,8 @@ export default function DepositosPage() {
       schema={depositoSchema}
       collection={depositoCollection}
       db={getFirebaseFirestore()}
+      meta={depositoMeta}
       defaultColumns={['nome', 'ativo']}
-      orderBy={{ field: 'nome', direction: 'asc' }}
-      pageSize={50}
       rowHref={(id) => `/depositos/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/depositos/novo">

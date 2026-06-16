@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json.schemastore.org/firebase",
+  "//": "Deploy config for the STAGING project ONLY. Points Firestore at the --e2e ruleset (firestore.e2e.rules) so the run-scoped e2e_<runId>_* namespaces the Playwright fixtures write are reachable by the ephemeral test user — without it the fixed-path production rules default-deny them and e2e goes red on every branch (#160). Deploy: firebase deploy --only firestore:rules --config firebase.staging.json --project <staging-project-id>. PRODUCTION uses the root firebase.json (firestore.rules, no e2e block) — NEVER deploy this config to production. Kept separate from firebase.json and firebase.rules.json (emulator) so deploy stays explicit and coordinated (CLAUDE.md critical rule 1).",
+  "firestore": {
+    "rules": "firestore.e2e.rules",
+    "indexes": "firestore.indexes.json"
+  }
+}
