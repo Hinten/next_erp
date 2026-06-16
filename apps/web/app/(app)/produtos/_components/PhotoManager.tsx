@@ -62,9 +62,15 @@ type EditableFoto = Foto & { [DELETE_MARK]?: boolean };
 
 /**
  * Unique sortable id — the same arquivo may legitimately live in two galleries
- * (parent + a variant), so the dnd id pairs the ref with the gallery tag.
+ * (parent + a variant), so the dnd id pairs the ref with the gallery tag. It
+ * also appends the foto's global array index `i` so that a duplicate
+ * `arquivoOuterRef` within the SAME gallery (legacy Flutter data, #139) still
+ * gets a distinct dnd/React id instead of colliding. The index is stable within
+ * a render and across a drag (the array only changes on drop), which is all
+ * dnd-kit needs.
  */
-const itemIdOf = (f: EditableFoto) => `${f.arquivoOuterRef}|${f.variantePath ?? ''}`;
+export const sortableIdOf = (f: EditableFoto, i: number) =>
+  `${f.arquivoOuterRef}|${f.variantePath ?? ''}|${i}`;
 
 /** Droppable id prefix for a whole gallery section (drop target when empty). */
 const CONTAINER_PREFIX = 'section::';
@@ -331,7 +337,7 @@ export function PhotoManager({
   /** Find a dragged foto by its sortable id: which gallery + position inside it. */
   function locate(id: string): { list: number; pos: number } | null {
     for (let li = 0; li < sectionLists.length; li += 1) {
-      const pos = sectionLists[li]!.indexes.findIndex((i) => itemIdOf(fotos[i]!) === id);
+      const pos = sectionLists[li]!.indexes.findIndex((i) => sortableIdOf(fotos[i]!, i) === id);
       if (pos >= 0) return { list: li, pos };
     }
     return null;
@@ -530,7 +536,10 @@ function SectionGrid({
 }: SectionGridProps) {
   const { setNodeRef, isOver } = useDroppable({ id: `${CONTAINER_PREFIX}${sectionKey}` });
   return (
-    <SortableContext items={indexes.map((i) => itemIdOf(fotos[i]!))} strategy={rectSortingStrategy}>
+    <SortableContext
+      items={indexes.map((i) => sortableIdOf(fotos[i]!, i))}
+      strategy={rectSortingStrategy}
+    >
       <Box
         ref={setNodeRef}
         p={2}
@@ -565,8 +574,8 @@ function SectionGrid({
               const foto = fotos[index]!;
               return (
                 <SortableFoto
-                  key={itemIdOf(foto)}
-                  sortableId={itemIdOf(foto)}
+                  key={sortableIdOf(foto, index)}
+                  sortableId={sortableIdOf(foto, index)}
                   foto={foto}
                   db={db}
                   isCover={withCover && index === 0}
@@ -586,7 +595,7 @@ function SectionGrid({
 }
 
 interface SortableFotoProps {
-  /** Unique dnd id (`ref|variantePath`) — see `itemIdOf`. */
+  /** Unique dnd id (`ref|variantePath|index`) — see `sortableIdOf`. */
   sortableId: string;
   foto: Foto;
   db: Firestore;
