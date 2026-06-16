@@ -11,7 +11,7 @@ import {
 
 import { cartaCorrecaoCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 
-import type { NFeRuntime } from '../runtime';
+import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
 import type { DanfeArtifact } from './danfe';
 import {
@@ -67,7 +67,7 @@ export interface CartaCorrecaoServiceResult {
  */
 export async function cartaCorrecaoService(
   fs: Firestore,
-  baseRt: NFeRuntime,
+  baseRt: NFeBaseRuntime,
   pedidoId: string,
   nfeId: string,
   xCorrecao: string,

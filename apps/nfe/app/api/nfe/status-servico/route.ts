@@ -21,6 +21,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
 import {
+  NFeCertError,
   NFeTransportError,
   classifyCStat,
   consultarStatusServico,
@@ -31,7 +32,9 @@ import {
 import type { UF } from '@delfrance/schemas';
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
+import { getAdminFirestore } from '@/lib/firebase/admin';
 import { safeLog } from '@/lib/nfe/log';
+import { resolveFilialRuntime } from '@/lib/nfe/filial-cert';
 import { sefazCallFor } from '@/lib/nfe/orchestrator/sefaz-call';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
 
@@ -40,6 +43,9 @@ export const runtime = 'nodejs';
 
 const querySchema = z.object({
   target: z.enum(['normal', 'svc']).default('normal'),
+  // The status check signs the mTLS handshake with this filial's cert — the
+  // service boots without a shared env cert, so the caller names the filial.
+  filialId: z.string().min(1).max(200),
 });
 
 export async function GET(req: Request): Promise<NextResponse> {
@@ -57,15 +63,23 @@ export async function GET(req: Request): Promise<NextResponse> {
     throw e;
   }
 
-  let rt;
+  let base;
   try {
-    rt = getNFeRuntime();
+    base = getNFeRuntime();
   } catch (e) {
     return authError(503, { error: e instanceof Error ? e.message : 'runtime not ready' });
   }
 
+  let rt;
   try {
-    const uf = rt.uf as UF;
+    rt = await resolveFilialRuntime(getAdminFirestore(), base, query.filialId);
+  } catch (e) {
+    if (e instanceof NFeCertError) return authError(422, { error: e.message, code: e.name });
+    throw e;
+  }
+
+  try {
+    const uf = base.uf as UF;
     // `svc` routes through the same tpEmis-aware helper emission uses: the
     // UF's SVC authorizer (6 = SVC-AN, 7 = SVC-RS). The consStatServ payload
     // still carries the ISSUER's cUF — that's who we ask the SVC about.

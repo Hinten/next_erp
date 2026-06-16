@@ -32,7 +32,7 @@ import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 import { verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { transmitirPosEpec } from '@/lib/nfe/orchestrator/epec';
-import { getNFeRuntime, type NFeRuntime } from '@/lib/nfe/runtime';
+import { getNFeRuntime, type NFeBaseRuntime, type NFeRuntime } from '@/lib/nfe/runtime';
 
 import { POST } from '../../../../../app/api/nfe/processar-pendentes/route';
 import { assertSignedXmlNeverLost } from '../../../../helpers/xml-invariant';
@@ -47,8 +47,8 @@ function req(body = '{}'): Request {
   });
 }
 
-function fakeRuntime(): NFeRuntime {
-  return {
+function fakeRuntime(): NFeRuntime & NFeBaseRuntime {
+  const rt: NFeRuntime = {
     cert: {} as never,
     agent: {} as never,
     ambiente: 'homologacao',
@@ -78,6 +78,7 @@ function fakeRuntime(): NFeRuntime {
     }),
     diagnostics: { subjectCommonName: 'TEST', notAfter: '2027-01-01', chainSource: 'x' },
   };
+  return { ...rt, envRuntime: () => rt };
 }
 
 /**

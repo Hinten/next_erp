@@ -31,7 +31,7 @@ import {
   type NotaFiscalEletronica,
 } from '@delfrance/schemas';
 
-import type { NFeRuntime } from '../runtime';
+import type { NFeBaseRuntime, NFeRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
 import {
   NFeBlockedError,
@@ -109,7 +109,7 @@ export type TxOutcome =
  */
 export async function prepareEmission(
   fs: Firestore,
-  rt: NFeRuntime,
+  rt: NFeBaseRuntime,
   pedidoId: string,
   ctx?: BatchReadContext,
 ): Promise<EmissionPrep> {
@@ -610,7 +610,7 @@ export async function applyAutorizadoOutcome(args: {
  */
 export async function emitirPedido(
   fs: Firestore,
-  baseRt: NFeRuntime,
+  baseRt: NFeBaseRuntime,
   pedidoId: string,
 ): Promise<EmitResult> {
   console.debug(
@@ -734,7 +734,7 @@ export interface BatchEmitResult {
  */
 export async function emitirPedidosLote(
   fs: Firestore,
-  rt: NFeRuntime,
+  rt: NFeBaseRuntime,
   pedidoIds: ReadonlyArray<string>,
 ): Promise<BatchEmitResult> {
   if (pedidoIds.length === 0) {
@@ -823,7 +823,7 @@ export async function emitirPedidosLote(
  */
 export async function processChunk(
   fs: Firestore,
-  baseRt: NFeRuntime,
+  baseRt: NFeBaseRuntime,
   filialId: string,
   group: ReadonlyArray<{ prep: EmissionPrep; pedidoId: string }>,
 ): Promise<Array<EmitResult | EmitError>> {

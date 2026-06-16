@@ -12,7 +12,7 @@ import {
 } from '@delfrance/integrations-nfe';
 import type { NotaFiscalEletronica } from '@delfrance/schemas';
 
-import type { NFeRuntime } from '../runtime';
+import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
 import { NFeOrchestratorError } from './errors';
 import { loadPedidoBundle, type EmitResult } from './bundle';
@@ -40,7 +40,7 @@ import {
  */
 export async function consultarPedido(
   fs: Firestore,
-  baseRt: NFeRuntime,
+  baseRt: NFeBaseRuntime,
   pedidoId: string,
 ): Promise<EmitResult> {
   console.debug(`[nfe/orchestrator] consultarPedido pedidoId='${pedidoId}'`);

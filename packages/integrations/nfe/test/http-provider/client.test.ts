@@ -477,25 +477,26 @@ describe('createNFeHttpClient — statusServico', () => {
     category: 'servico-em-operacao',
   };
 
-  it('GETs /api/nfe/status-servico with the target + Bearer token', async () => {
+  it('GETs /api/nfe/status-servico with the target + filialId + Bearer token', async () => {
     const fetch = mockFetch({ status: 200, body: STATUS_OK });
-    const out = await makeClient(fetch).statusServico('normal');
+    const out = await makeClient(fetch).statusServico('normal', 'F-1');
     expect(out.cStat).toBe('107');
     expect(out.category).toBe('servico-em-operacao');
     const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('http://localhost:3004/api/nfe/status-servico?target=normal');
+    expect(url).toBe('http://localhost:3004/api/nfe/status-servico?target=normal&filialId=F-1');
     expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${TOKEN}`);
   });
 
-  it('passes target=svc through', async () => {
+  it('passes target=svc + filialId through', async () => {
     const fetch = mockFetch({
       status: 200,
       body: { ...STATUS_OK, target: 'svc', authorizer: 'svc-an' },
     });
-    const out = await makeClient(fetch).statusServico('svc');
+    const out = await makeClient(fetch).statusServico('svc', 'F-1');
     expect(out.authorizer).toBe('svc-an');
     const [url] = fetch.mock.calls[0] as [string];
     expect(url).toContain('target=svc');
+    expect(url).toContain('filialId=F-1');
   });
 
   it('maps a 502 (SEFAZ unreachable) to NFeServerError', async () => {
@@ -504,7 +505,7 @@ describe('createNFeHttpClient — statusServico', () => {
       body: { error: 'SEFAZ inacessível: connect ETIMEDOUT', code: 'NFeTransportError' },
     });
     const err = await makeClient(fetch)
-      .statusServico('normal')
+      .statusServico('normal', 'F-1')
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(NFeServerError);
     expect((err as NFeServerError).message).toContain('inacessível');

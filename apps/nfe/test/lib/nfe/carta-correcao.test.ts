@@ -24,14 +24,14 @@ import {
   NFeOrchestratorError,
   NFePedidoNotFoundError,
 } from '../../../lib/nfe/orchestrator';
-import type { NFeRuntime } from '../../../lib/nfe/runtime';
+import type { NFeBaseRuntime, NFeRuntime } from '../../../lib/nfe/runtime';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
 const XCORRECAO = 'Correcao do peso bruto informado no campo de transporte da nota';
 
-function fakeRuntime(): NFeRuntime {
-  return {
+function fakeRuntime(): NFeRuntime & NFeBaseRuntime {
+  const rt: NFeRuntime = {
     cert: {
       privateKeyPem: '',
       certificatePem: '',
@@ -74,6 +74,9 @@ function fakeRuntime(): NFeRuntime {
       chainSource: '/tmp/fake.pem',
     },
   };
+  // Base runtime for the entry points; the fallback path (no stored cert)
+  // resolves to this same fake via `envRuntime`.
+  return { ...rt, envRuntime: () => rt };
 }
 
 /** Compact in-memory Firestore — only what cartaCorrecaoService touches. */

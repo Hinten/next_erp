@@ -24,13 +24,16 @@ async function main(): Promise<void> {
   console.log(`[consult-dev-pedido] starting — pedidoId=${pedidoId}`);
 
   const fs = getAdminFirestore();
-  const runtime = getNFeRuntime();
+  const base = getNFeRuntime();
+  // The env cert is now only the fallback — the consulta signs with the cert of
+  // the filial that emitted the chave, resolved inside consultarPedido.
+  const env = base.envRuntime();
   console.log(
-    `[consult-dev-pedido] runtime ready — ambiente=${runtime.ambiente} uf=${runtime.uf} ` +
-      `cert=${runtime.diagnostics.subjectCommonName}`,
+    `[consult-dev-pedido] runtime ready — ambiente=${base.ambiente} uf=${base.uf} ` +
+      `cert=${env?.diagnostics.subjectCommonName ?? '(per-filial)'}`,
   );
 
-  const result = await consultarPedido(fs, runtime, pedidoId);
+  const result = await consultarPedido(fs, base, pedidoId);
   console.log('[consult-dev-pedido] result:', JSON.stringify(result, null, 2));
 
   if (result.cStat === '100' || result.cStat === '150') {

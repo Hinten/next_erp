@@ -35,7 +35,7 @@ import { persistPatch, procPersistExtras } from '@/lib/nfe/orchestrator/audit';
 import { loadNfeConfigForEmission } from '@/lib/nfe/orchestrator/bundle';
 import { transmitirPosEpec } from '@/lib/nfe/orchestrator/epec';
 import { sefazCallFor } from '@/lib/nfe/orchestrator/sefaz-call';
-import { resolveFilialRuntime } from '@/lib/nfe/filial-cert';
+import { resolveFilialRuntime, resolveFilialRuntimeByCnpj } from '@/lib/nfe/filial-cert';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
 
 export const dynamic = 'force-dynamic';
@@ -173,10 +173,11 @@ export async function POST(req: Request): Promise<NextResponse> {
     }
     try {
       // mTLS presents the filial's cert (or env fallback) when the doc carries
-      // a filialId; legacy docs without one use the base runtime.
+      // a filialId; legacy docs without one resolve the cert from the emit CNPJ
+      // baked into the chave (positions 6–20) — there is no shared env cert.
       const frt = data.filialId
         ? await resolveFilialRuntime(fs, runtimeInstance, data.filialId)
-        : runtimeInstance;
+        : await resolveFilialRuntimeByCnpj(fs, runtimeInstance, data.chave.slice(6, 20));
       // Consult the authorizer that owns the NF-e's tpEmis — an SVC-emitted
       // doc (6/7) is recovered at its SVC, not at the (possibly still down)
       // home SEFAZ.

@@ -30,9 +30,10 @@ import {
   __resetFilialCertCacheForTests,
   resolveFilialCert,
   resolveFilialRuntime,
+  resolveFilialRuntimeByCnpj,
 } from '@/lib/nfe/filial-cert';
 import { deriveRuntimeForCert } from '@/lib/nfe/runtime';
-import type { NFeRuntime } from '@/lib/nfe/runtime';
+import type { NFeBaseRuntime, NFeRuntime } from '@/lib/nfe/runtime';
 
 const CNPJ = '99999999000191';
 const KEY = Buffer.alloc(32, 5);
@@ -47,15 +48,42 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null> = {}
       },
     };
   }
+  // Minimal `collection(p).where(f,op,v).limit(n).get()` over the seed: matches
+  // only DIRECT children of `p` (one path segment past `${p}/`) by equality.
+  function collection(p: string) {
+    return {
+      doc: (id: string) => ref(`${p}/${id}`),
+      where(field: string, _op: string, value: unknown) {
+        return {
+          limit(n: number) {
+            return {
+              async get() {
+                const matched = Object.entries(docs)
+                  .filter(([path, d]) => {
+                    if (d == null || !path.startsWith(`${p}/`)) return false;
+                    if (path.slice(p.length + 1).includes('/')) return false;
+                    return d[field] === value;
+                  })
+                  .slice(0, n)
+                  .map(([path, d]) => ({ id: path.split('/').pop()!, data: () => d }));
+                return { docs: matched, empty: matched.length === 0 };
+              },
+            };
+          },
+        };
+      },
+    };
+  }
   return {
     fs: {
       doc: (p: string) => ref(p),
-      collection: (p: string) => ({ doc: (id: string) => ref(`${p}/${id}`) }),
+      collection,
     } as never,
   };
 }
 
-function fakeBaseRuntime(): NFeRuntime {
+/** The lazy env-cert runtime a base resolves to on the fallback path. */
+function fakeEnvRuntime(): NFeRuntime {
   return {
     cert: { cnpj: 'ENV-CERT' } as never,
     agent: {} as never,
@@ -66,6 +94,23 @@ function fakeBaseRuntime(): NFeRuntime {
     svc: (() => ({ endpoints: {}, agent: {} })) as never,
     an: (() => ({ endpoints: {}, agent: {} })) as never,
     diagnostics: { subjectCommonName: 'ENV', notAfter: '2027-01-01', chainSource: 'x' },
+  };
+}
+
+/**
+ * Cert-free base runtime — boots with NO signing cert. `envRuntime` returns a
+ * stable env runtime (the fallback path) unless overridden to `null` (full
+ * cutover). `deriveRuntimeForCert` (mocked) spreads this base, so it carries the
+ * fields the spread reads.
+ */
+function fakeBaseRuntime(envRuntime: () => NFeRuntime | null = fakeEnvRuntime): NFeBaseRuntime {
+  const env = envRuntime();
+  return {
+    ambiente: 'homologacao',
+    uf: 'SP',
+    tpAmb: '2',
+    endpoints: {} as never,
+    envRuntime: () => env,
   };
 }
 
@@ -139,10 +184,36 @@ describe('resolveFilialRuntime', () => {
     );
   });
 
-  it('falls back to the base (env) runtime when NFE_CERT_ENV_FALLBACK=1', async () => {
+  it('falls back to the env runtime (base.envRuntime()) when NFE_CERT_ENV_FALLBACK=1', async () => {
     process.env.NFE_CERT_ENV_FALLBACK = '1';
     const { fs } = fakeFirestore({});
     const base = fakeBaseRuntime();
-    expect(await resolveFilialRuntime(fs, base, 'F-1')).toBe(base);
+    expect(await resolveFilialRuntime(fs, base, 'F-1')).toBe(base.envRuntime());
+  });
+
+  it('still throws when fallback is on but there is no env cert (full cutover)', async () => {
+    process.env.NFE_CERT_ENV_FALLBACK = '1';
+    const { fs } = fakeFirestore({});
+    // base.envRuntime() === null → the fallback has nothing to return.
+    const base = fakeBaseRuntime(() => null);
+    await expect(resolveFilialRuntime(fs, base, 'F-1')).rejects.toBeInstanceOf(NFeCertError);
+  });
+});
+
+describe('resolveFilialRuntimeByCnpj', () => {
+  it('finds the filial by CNPJ then derives its stored-cert runtime', async () => {
+    const { fs } = fakeFirestore({
+      'filiais/F-1': { cnpj: CNPJ },
+      'filiais/F-1/certificadoSecreto/default': seedSecret(),
+    });
+    const rt = await resolveFilialRuntimeByCnpj(fs, fakeBaseRuntime(), CNPJ);
+    expect(rt.cert.cnpj).toBe(CNPJ);
+  });
+
+  it('throws NFeCertError when no filial carries the CNPJ', async () => {
+    const { fs } = fakeFirestore({});
+    await expect(resolveFilialRuntimeByCnpj(fs, fakeBaseRuntime(), CNPJ)).rejects.toBeInstanceOf(
+      NFeCertError,
+    );
   });
 });

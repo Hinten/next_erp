@@ -22,13 +22,17 @@ async function main(): Promise<void> {
   console.log(`[emit-dev-pedido] starting — pedidoId=${pedidoId}`);
 
   const fs = getAdminFirestore();
-  const runtime = getNFeRuntime();
+  const base = getNFeRuntime();
+  // The env cert is now only the fallback — when none is configured the per-filial
+  // cert is resolved at emission, so there is no transmitter CN to log here.
+  const env = base.envRuntime();
   console.log(
-    `[emit-dev-pedido] runtime ready — ambiente=${runtime.ambiente} uf=${runtime.uf} ` +
-      `cert=${runtime.diagnostics.subjectCommonName} chain=${runtime.diagnostics.chainSource}`,
+    `[emit-dev-pedido] runtime ready — ambiente=${base.ambiente} uf=${base.uf} ` +
+      `cert=${env?.diagnostics.subjectCommonName ?? '(per-filial)'} ` +
+      `chain=${env?.diagnostics.chainSource ?? '(per-filial)'}`,
   );
 
-  const result = await emitirPedido(fs, runtime, pedidoId);
+  const result = await emitirPedido(fs, base, pedidoId);
   console.log('[emit-dev-pedido] result:', JSON.stringify(result, null, 2));
 
   if (result.cStat === '100') {

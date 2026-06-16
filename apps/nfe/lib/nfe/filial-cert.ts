@@ -19,7 +19,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 
-import { certificadoSecretoCollection } from '@delfrance/data/admin/collections';
+import { certificadoSecretoCollection, filialCollection } from '@delfrance/data/admin/collections';
 import { CERTIFICADO_SECRETO_DOC_ID } from '@delfrance/schemas';
 import {
   NFeCertError,
@@ -30,7 +30,7 @@ import {
   type NFeCertificate,
 } from '@delfrance/integrations-nfe';
 
-import { deriveRuntimeForCert, type NFeRuntime } from './runtime';
+import { deriveRuntimeForCert, type NFeBaseRuntime, type NFeRuntime } from './runtime';
 
 /** True when the env opts into env-cert fallback for filiais without a stored cert. */
 function envFallbackEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -85,7 +85,7 @@ const runtimeCache = new Map<string, NFeRuntime>();
  */
 export async function resolveFilialRuntime(
   fs: Firestore,
-  base: NFeRuntime,
+  base: NFeBaseRuntime,
   filialId: string,
 ): Promise<NFeRuntime> {
   // Fast path: reuse the derived runtime (and its keep-alive agent). Re-check
@@ -104,11 +104,37 @@ export async function resolveFilialRuntime(
     runtimeCache.set(filialId, rt);
     return rt;
   }
-  if (envFallbackEnabled()) return base; // the shared base runtime — not cached per filial
+  if (envFallbackEnabled()) {
+    // Fall back to the env cert (homologação suites / single-cert dev). With a
+    // full cutover (no env cert) this is null → fall through to the throw.
+    const envRt = base.envRuntime();
+    if (envRt) return envRt;
+  }
   throw new NFeCertError(
     `Filial '${filialId}' não possui certificado digital cadastrado. ` +
       'Faça o upload do certificado A1 na aba "Certificado Digital" da filial.',
   );
+}
+
+/**
+ * Resolve the runtime for a filial identified by **CNPJ** (14 digits) — used by
+ * the by-chave consulta, which has no filialId but carries the emit CNPJ in the
+ * chave (positions 6–20). Single-field equality query → Firestore auto-index.
+ */
+export async function resolveFilialRuntimeByCnpj(
+  fs: Firestore,
+  base: NFeBaseRuntime,
+  cnpj: string,
+): Promise<NFeRuntime> {
+  const snap = await filialCollection.ref(fs, {}).where('cnpj', '==', cnpj).limit(1).get();
+  const doc = snap.docs[0];
+  if (!doc) {
+    throw new NFeCertError(
+      `Nenhuma filial cadastrada com o CNPJ ${cnpj} (extraído da chave) — ` +
+        'não é possível resolver o certificado para a consulta.',
+    );
+  }
+  return resolveFilialRuntime(fs, base, doc.id);
 }
 
 /** Evict a filial's cached cert + derived runtime (call after an upload / delete). */
