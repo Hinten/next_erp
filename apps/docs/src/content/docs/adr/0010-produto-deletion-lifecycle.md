@@ -6,8 +6,9 @@ description: How deleting a produto (or its variation children) cleans up subcol
 ## Context
 
 When the Next app deletes a produto — a variation child via the Variações-tab
-flush (`VariationManager.flushStagedChildren`) or a parent via the editor's
-Excluir — it deletes **only the doc**. Three classes of debris are left behind,
+flush (the `flushStagedChildren` closure in
+`apps/web/app/(app)/produtos/_components/VariationManager.tsx`) or a parent via
+the editor's Excluir — it deletes **only the doc**. Three classes of debris are left behind,
 each tracked by its own issue:
 
 1. **Subcollection orphans (#136).** The Flutter app's generated
@@ -101,9 +102,10 @@ settled.
 
 ### Deployment
 
-All functions ship through the manual, coordinated deploy lane established for
-the storage codebase (`firebase.functions.deploy.json` +
-`apps/functions/DEPLOY.md`). No automated deploy workflow yet.
+All functions ship through the manual, coordinated deploy lane added for the
+storage codebase in #137 / PR #169 — a functions-only `firebase.functions.deploy.json`
+config plus an `apps/functions/DEPLOY.md` runbook (those files land with that PR,
+not this one). No automated deploy workflow yet.
 
 ## Consequences
 
