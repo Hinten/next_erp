@@ -1,10 +1,12 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { useForm, type Resolver } from 'react-hook-form';
+import { useForm, type FieldErrors, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
 import { Alert, Button, Group, Stack, Tabs, Tooltip } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
+import { IconExclamationCircle } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
 import { derivePedidoFreteTotals, type Pedido, pedidoSchema } from '@delfrance/schemas';
 import { useUnsavedChangesGuard } from '@delfrance/ui';
@@ -16,6 +18,7 @@ import { PagamentosSection } from './PagamentosSection';
 import { regroupItens } from './regroupItens';
 import { flattenItens } from './flattenItens';
 import { normalizeFreteInicial } from './freteDerivation';
+import { summarizePedidoErrors, TAB_OF_FIELD } from './pedidoErrorTabs';
 import type { FlatItem, PedidoFormState } from './types';
 
 export interface PedidoFormProps {
@@ -118,9 +121,27 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
     valorFreteInicial: totals.valorFreteInicial,
     custoFreteInicial: totals.custoFreteInicial,
   };
-  return baseResolver(merged, context, options) as Awaited<
-    ReturnType<Resolver<PedidoFormState, unknown, Pedido>>
-  >;
+  type ResolverResult = Awaited<ReturnType<Resolver<PedidoFormState, unknown, Pedido>>>;
+  const result = (await baseResolver(merged, context, options)) as ResolverResult;
+
+  // UI-required fields the wire schema leaves loose: `integracaoPedidoOuterRef`
+  // is `z.unknown()` (accepts null) and `itens` defaults to `{}`, so without
+  // this an empty submit passes validation and saves silently. Enforce them
+  // form-side only — keeping them out of `pedidoSchema` avoids breaking
+  // parse/read-back of legacy docs with null/empty values. Both errors route
+  // to the Principal tab (see `TAB_OF_FIELD`).
+  const extraErrors: Record<string, { type: string; message: string }> = {};
+  if (rest.integracaoPedidoOuterRef == null) {
+    extraErrors.integracaoPedidoOuterRef = {
+      type: 'required',
+      message: 'Selecione a integração.',
+    };
+  }
+  if (cleanItens.length === 0) {
+    extraErrors._itensFlat = { type: 'required', message: 'Adicione ao menos um item.' };
+  }
+  if (Object.keys(extraErrors).length === 0) return result;
+  return { values: {}, errors: { ...result.errors, ...extraErrors } } as unknown as ResolverResult;
 };
 
 function buildDefaults(existing?: Pedido): PedidoFormState {
@@ -174,24 +195,74 @@ export function PedidoForm({
     }
   }
 
+  // Invalid submit. Without this, an error on a non-active tab is silent: RHF
+  // blocks the save and the inline message sits in a hidden panel. Jump to the
+  // first erroring tab and name the offenders in a red toast — the same
+  // behavior ObjectView gives its tabbed forms.
+  function onInvalid(errors: FieldErrors<PedidoFormState>) {
+    const summary = summarizePedidoErrors(Object.keys(errors));
+    if (summary.firstTab && (!activeTab || !summary.errorTabValues.has(activeTab))) {
+      setActiveTab(summary.firstTab);
+    }
+    notifications.show({ color: 'red', message: summary.message });
+  }
+
+  // Tabs containing invalid fields. Read the `formState.errors` proxy during
+  // render (RHF mutates it in place, so it's not a usable memo dep) — this
+  // subscribes the form to error changes, just like ObjectView.
+  const errorTabs = new Set<string>();
+  for (const key of Object.keys(form.formState.errors)) {
+    const tab = TAB_OF_FIELD[key];
+    if (tab) errorTabs.add(tab);
+  }
+
+  // Red text + error icon for a tab with invalid fields (mirrors SectionTabs).
+  function tabErrorProps(value: string) {
+    const hasError = errorTabs.has(value);
+    return {
+      // `c` (text color), not `color`: `color` only re-tints the active tab.
+      c: hasError ? 'red' : undefined,
+      'data-error': hasError || undefined,
+      rightSection: hasError ? (
+        <IconExclamationCircle size={14} role="img" aria-label="contém campos inválidos" />
+      ) : undefined,
+    };
+  }
+
   const disabled = !canWrite;
 
   return (
     // noValidate: Zod owns validation — native constraint validation would
     // silently block the submit when a `required` control is empty inside a
     // hidden tab (see ObjectView's form for the full story).
-    <form noValidate onSubmit={form.handleSubmit(handleSubmit)}>
+    <form noValidate onSubmit={form.handleSubmit(handleSubmit, onInvalid)}>
       <Stack>
         <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
           <Tabs.List>
-            <Tabs.Tab value="principal">Principal</Tabs.Tab>
-            <Tabs.Tab value="fiscal">Fiscal</Tabs.Tab>
-            <Tabs.Tab value="frete">Frete</Tabs.Tab>
-            <Tabs.Tab value="pagamento">Pagamento</Tabs.Tab>
-            <Tabs.Tab value="link-pgto">Link Pgto</Tabs.Tab>
-            <Tabs.Tab value="incidentes">Incidentes</Tabs.Tab>
-            <Tabs.Tab value="devolucao">Devolução</Tabs.Tab>
-            <Tabs.Tab value="estado">Estado/Histórico</Tabs.Tab>
+            <Tabs.Tab value="principal" {...tabErrorProps('principal')}>
+              Principal
+            </Tabs.Tab>
+            <Tabs.Tab value="fiscal" {...tabErrorProps('fiscal')}>
+              Fiscal
+            </Tabs.Tab>
+            <Tabs.Tab value="frete" {...tabErrorProps('frete')}>
+              Frete
+            </Tabs.Tab>
+            <Tabs.Tab value="pagamento" {...tabErrorProps('pagamento')}>
+              Pagamento
+            </Tabs.Tab>
+            <Tabs.Tab value="link-pgto" {...tabErrorProps('link-pgto')}>
+              Link Pgto
+            </Tabs.Tab>
+            <Tabs.Tab value="incidentes" {...tabErrorProps('incidentes')}>
+              Incidentes
+            </Tabs.Tab>
+            <Tabs.Tab value="devolucao" {...tabErrorProps('devolucao')}>
+              Devolução
+            </Tabs.Tab>
+            <Tabs.Tab value="estado" {...tabErrorProps('estado')}>
+              Estado/Histórico
+            </Tabs.Tab>
           </Tabs.List>
 
           <Tabs.Panel value="principal" pt="md">
