@@ -44,7 +44,9 @@ export async function createSuperUser(
     await ref.set({ isSuperUser: true, jaFoiSuperUser: true }, { merge: true });
   } else {
     const doc = usuarioSchema.parse({
-      nome: user.displayName ?? email,
+      // `??` keeps an empty/whitespace displayName (Firebase stores ''), which
+      // would fail usuarioSchema's nome.min(1); `|| email` falls back instead.
+      nome: user.displayName?.trim() || email,
       email,
       isSuperUser: true,
       jaFoiSuperUser: true,
