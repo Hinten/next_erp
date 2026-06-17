@@ -179,6 +179,7 @@ export async function transmitirPosEpec(args: {
       retries: (nota.retries ?? 0) + 1,
       nRec: null,
       action: 'backoff',
+      tMed: null,
     });
     return {
       nfeId: nfeRef.id,

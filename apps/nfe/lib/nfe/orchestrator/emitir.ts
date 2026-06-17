@@ -12,6 +12,7 @@ import {
   generateNFe,
   isBloqueada,
   NFeConfigNotFoundError,
+  nextConsultaDelayMs,
   outcomeFromInfProt,
   outcomeFromRetConsSit,
   outcomeFromRetEnviNFe,
@@ -66,6 +67,7 @@ import {
 } from './audit';
 import { buildGeneratorInput } from './generator-input';
 import { enviarEpecParaNota, transmitirPosEpec } from './epec';
+import { noopTaskScheduler, type TaskScheduler } from '../tasks';
 
 /**
  * Result of `prepareEmission` — the inputs `runAllocateGenerateSignTx`
@@ -258,6 +260,26 @@ export async function runAllocateGenerateSignTx(
       return { skip: true, existing };
     }
 
+    // In-flight with a saved receipt → the lote was DEFINITELY sent to SEFAZ,
+    // even if `cStat` is still null (crashed after the send but before the
+    // response was recorded). Re-emitting would risk a duplicate; instead skip
+    // and let the async reconciler / backstop confirm it by recibo (#77). Only
+    // a true crashed-before-send placeholder (no nRec) proceeds to re-emit
+    // below — terminal rejeitada/error docs (also not bloqueada) keep their
+    // fix-and-resend path because they are not enviando/aguardandoResposta.
+    if (
+      existing &&
+      existing.nRec &&
+      (existing.estado === ESTADO_NFE.enviando ||
+        existing.estado === ESTADO_NFE.aguardandoResposta)
+    ) {
+      console.debug(
+        `[nfe/orchestrator] pedido '${pedidoId}' has an in-flight NFe with a saved ` +
+          `nRec — skipping re-emit, the reconciler will confirm by recibo`,
+      );
+      return { skip: true, existing };
+    }
+
     console.debug(
       `[nfe/orchestrator] No bloqueada NFe found for pedidoId '${pedidoId}' — proceeding with emit. ` +
         `Existing NFe doc ${existing ? 'is not bloqueada (cStat=' + existing.cStat + ')' : 'does not exist'}.`,
@@ -429,6 +451,19 @@ export async function runChunkAllocateTx(
         members.push({ skip: true, pedidoId: sp.pedidoId, prep: sp.prep, existing });
         continue;
       }
+      // In-flight with a saved receipt → definitely sent (even if cStat is
+      // null after a crash). Skip re-send; the reconciler confirms by recibo
+      // (#77). Terminal rejeitada/error docs (not enviando/aguardandoResposta)
+      // keep their fix-and-resend path.
+      if (
+        existing &&
+        existing.nRec &&
+        (existing.estado === ESTADO_NFE.enviando ||
+          existing.estado === ESTADO_NFE.aguardandoResposta)
+      ) {
+        members.push({ skip: true, pedidoId: sp.pedidoId, prep: sp.prep, existing });
+        continue;
+      }
 
       const reuse = existing != null;
       const nNF = reuse ? existing.numeracao : cfg.numeracao_atual + 1 + freshCount;
@@ -505,8 +540,11 @@ export async function applyAutorizadoOutcome(args: {
   protNFeForChave: NonNullable<Awaited<ReturnType<typeof autorizarLote>>['protNFe']> | null;
   /** `'1'` (sync, single NFe) or `'0'` (async, batch). */
   indSinc: '0' | '1';
+  /** Cloud Tasks scheduler — enqueues a reconcile task if the outcome lands async. */
+  scheduler?: TaskScheduler;
 }): Promise<EmitResult> {
   const { fs, rt, bundle, nfeRef, chave, signedXml, idLote, tpEmis, retEnvi, indSinc } = args;
+  const scheduler = args.scheduler ?? noopTaskScheduler;
 
   // Audit-log the SOAP round-trip BEFORE running the state machine — so
   // nRec is durable even if anything below this line crashes.
@@ -586,6 +624,19 @@ export async function applyAutorizadoOutcome(args: {
 
   await persistPatch(nfeRef, patch, nfeProcXml != null ? procPersistExtras(nfeProcXml) : undefined);
 
+  // Degraded async: SEFAZ replied 103 to a (nominally sync) single-pedido send.
+  // The doc is now aguardandoResposta with a receipt — hand off to the async
+  // reconciler exactly like the batch path (the in-request poll is gone).
+  if (patch.estado === ESTADO_NFE.aguardandoResposta && patch.nRec) {
+    await scheduler.enqueueConsulta({
+      filialId: bundle.filialId,
+      nRec: patch.nRec,
+      tpEmis,
+      attempt: 0,
+      scheduleAtMs: Date.now() + nextConsultaDelayMs(0, patch.tMed),
+    });
+  }
+
   return {
     nfeId: nfeRef.id,
     pedidoId: bundle.pedidoId,
@@ -612,6 +663,7 @@ export async function emitirPedido(
   fs: Firestore,
   baseRt: NFeBaseRuntime,
   pedidoId: string,
+  scheduler: TaskScheduler = noopTaskScheduler,
 ): Promise<EmitResult> {
   console.debug(
     `[nfe/orchestrator] Starting emit cycle for pedidoId '${pedidoId}', runtime ambiente '${baseRt.ambiente}'`,
@@ -687,6 +739,7 @@ export async function emitirPedido(
     retEnvi,
     protNFeForChave: null,
     indSinc: '1',
+    scheduler,
   });
 }
 
@@ -703,9 +756,6 @@ export const MAX_PEDIDOS_PER_BATCH = 50;
  * that battle-tested limit.
  */
 export const MAX_PEDIDOS_PER_CHUNK = 20;
-export const POLL_MAX_ATTEMPTS = 12;
-export const POLL_INITIAL_DELAY_MS = 1000;
-export const POLL_MAX_DELAY_MS = 8000;
 
 /** Per-pedido failure inside a batch. Distinct shape from EmitResult so callers can branch. */
 export interface EmitError {
@@ -736,6 +786,7 @@ export async function emitirPedidosLote(
   fs: Firestore,
   rt: NFeBaseRuntime,
   pedidoIds: ReadonlyArray<string>,
+  scheduler: TaskScheduler = noopTaskScheduler,
 ): Promise<BatchEmitResult> {
   if (pedidoIds.length === 0) {
     throw new NFeOrchestratorError('emitirPedidosLote: pedidoIds is empty');
@@ -800,7 +851,7 @@ export async function emitirPedidosLote(
   // 4. Process each chunk in parallel. Chunk-level failures (e.g.
   //    NFeConfig missing) cascade to every pedido in that chunk.
   const chunkResults = await Promise.allSettled(
-    chunks.map((c) => processChunk(fs, rt, c.filialId, c.group)),
+    chunks.map((c) => processChunk(fs, rt, c.filialId, c.group, scheduler)),
   );
   chunkResults.forEach((cr, i) => {
     const chunk = chunks[i]!;
@@ -826,6 +877,7 @@ export async function processChunk(
   baseRt: NFeBaseRuntime,
   filialId: string,
   group: ReadonlyArray<{ prep: EmissionPrep; pedidoId: string }>,
+  scheduler: TaskScheduler = noopTaskScheduler,
 ): Promise<Array<EmitResult | EmitError>> {
   // The chunk is single-filial — resolve its A1 cert (or env fallback) once
   // and bind signing + every SOAP send below to it.
@@ -945,16 +997,36 @@ export async function processChunk(
       `retCStat=${retEnvi.cStat}`,
   );
 
-  // 4d. For async chunks, poll consultarLote until cStat=104 (lote
-  //     processado) or the budget runs out.
+  // 4d. Async chunk (indSinc='0'): SEFAZ returns cStat=103 + nRec. Hand off
+  //     IMMEDIATELY — audit the send, persist each doc aguardandoResposta with
+  //     nRec + proximaConsultaEm (seeded by SEFAZ's tMed), enqueue ONE Cloud
+  //     Task to reconcile the whole lote by receipt, and return at once. No
+  //     in-request poll (the ~88 s block is gone — issue "processo congelado").
   let protNFeArr: NonNullable<TRetEnviNFe['protNFe']>[] = [];
   if (indSinc === '0') {
     const nRec = retEnvi.infRec?.nRec ?? null;
+    const tMed = retEnvi.infRec?.tMed ?? null;
+    const retEnviJsonAsync = JSON.stringify(retEnvi);
+    // Audit the lote send for every chave (carries nRec for recovery).
+    await Promise.all(
+      toSend.map((s) =>
+        enviNfeCollection(fs, filialId).add(
+          buildEnviNFeMsgFromLote({
+            chave: s.chave,
+            idLote: sharedIdLote,
+            tpEmis: chunkTpEmis,
+            signedXml: s.signedXml,
+            retEnvi,
+            retEnviJson: retEnviJsonAsync,
+            indSinc: '0',
+          }),
+        ),
+      ),
+    );
     if (!nRec) {
-      // SEFAZ accepted but didn't give us nRec — exceptional but
-      // defended. Each pedido stays in aguardandoResposta; the
-      // processar-pendentes cron has nothing to look up, so the
-      // operator handles via consSit(chave).
+      // SEFAZ accepted but gave no nRec — exceptional. Each pedido stays
+      // aguardandoResposta; there's nothing to consult by recibo, so the
+      // backstop sweep recovers via consSit(chave).
       for (const s of toSend) {
         txResults.push({
           nfeId: s.prep.nfeRef.id,
@@ -969,37 +1041,37 @@ export async function processChunk(
       }
       return txResults;
     }
-    protNFeArr = await pollConsultarLote(rt, chunkTpEmis, nRec);
-    if (protNFeArr.length === 0) {
-      // Timed out without resolution. Persist nRec on each nfev4 so
-      // the cron at apps/nfe/app/api/nfe/processar-pendentes can
-      // drain it later, then return aguardandoResposta entries.
-      await Promise.all(
-        toSend.map((s) =>
-          persistPatch(s.prep.nfeRef, {
-            estado: ESTADO_NFE.aguardandoResposta,
-            retries: 0,
-            nRec,
-            cStat: '105',
-            xMotivo: 'Lote em processamento — handed off to processar-pendentes',
-            action: 'backoff',
-          }),
+    // Persist aguardandoResposta + nRec + proximaConsultaEm on each doc
+    // (persistPatch seeds proximaConsultaEm from tMed), then enqueue one task.
+    const outcome = outcomeFromRetEnviNFe(retEnvi);
+    await Promise.all(
+      toSend.map((s) =>
+        persistPatch(
+          s.prep.nfeRef,
+          applyOutcome({ estado: ESTADO_NFE.enviando, retries: 0 }, outcome),
         ),
-      );
-      for (const s of toSend) {
-        txResults.push({
-          nfeId: s.prep.nfeRef.id,
-          pedidoId: s.pedidoId,
-          estado: ESTADO_NFE.aguardandoResposta,
-          chave: s.chave,
-          nRec,
-          cStat: '105',
-          xMotivo: 'Lote em processamento — handed off to processar-pendentes',
-          reused: false,
-        });
-      }
-      return txResults;
+      ),
+    );
+    await scheduler.enqueueConsulta({
+      filialId,
+      nRec,
+      tpEmis: chunkTpEmis,
+      attempt: 0,
+      scheduleAtMs: Date.now() + nextConsultaDelayMs(0, tMed),
+    });
+    for (const s of toSend) {
+      txResults.push({
+        nfeId: s.prep.nfeRef.id,
+        pedidoId: s.pedidoId,
+        estado: ESTADO_NFE.aguardandoResposta,
+        chave: s.chave,
+        nRec,
+        cStat: retEnvi.cStat,
+        xMotivo: retEnvi.xMotivo,
+        reused: false,
+      });
     }
+    return txResults;
   } else {
     // Sync (single-NFe) chunk — retEnvi.protNFe is the singular protocol.
     if (retEnvi.protNFe) protNFeArr = [retEnvi.protNFe];
@@ -1028,6 +1100,7 @@ export async function processChunk(
         retEnviJson,
         protNFeForChave: proto,
         indSinc,
+        scheduler,
       });
     }),
   );
@@ -1040,40 +1113,6 @@ export async function processChunk(
     }
   });
   return txResults;
-}
-
-/**
- * Poll `consultarLote(nRec)` until cStat=104 (lote processado) or the
- * budget runs out. Returns the `protNFe[]` on success; empty array on
- * timeout (caller persists nRec and hands off to the cron).
- */
-export async function pollConsultarLote(
-  rt: NFeRuntime,
-  tpEmis: TpEmis,
-  nRec: string,
-): Promise<NonNullable<TRetEnviNFe['protNFe']>[]> {
-  const consReciCall: SefazCall = sefazCallFor(rt, tpEmis, 'NfeRetAutorizacao');
-  let delay = POLL_INITIAL_DELAY_MS;
-  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
-    if (attempt > 0) {
-      await new Promise<void>((r) => setTimeout(r, delay));
-      delay = Math.min(delay * 2, POLL_MAX_DELAY_MS);
-    }
-    const retRec = await consultarLote(consReciCall, { nRec });
-    console.debug(
-      `[nfe/orchestrator] pollConsultarLote nRec=${nRec} attempt=${attempt} ` +
-        `cStat=${retRec.cStat} protNFe=${retRec.protNFe?.length ?? 0}`,
-    );
-    if (retRec.cStat === '104' && retRec.protNFe && retRec.protNFe.length > 0) {
-      return retRec.protNFe;
-    }
-    if (retRec.cStat !== '105') {
-      // 4xx / 5xx / unexpected — bail out. The caller's per-chave
-      // recovery branch handles non-104/105 outcomes via consSit.
-      return [];
-    }
-  }
-  return []; // budget exhausted
 }
 
 /**

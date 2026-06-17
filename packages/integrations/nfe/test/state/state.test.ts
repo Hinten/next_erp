@@ -8,7 +8,11 @@ import {
   CSTAT_EPEC_NAO_SINCRONIZADO,
   EPEC_EVENT_REGISTRADO,
   MAX_LOTE_POLL_RETRIES,
+  MAX_RECONCILE_ATTEMPTS,
   nextAction,
+  nextConsultaDelayMs,
+  RECONCILE_BASE_DELAY_MS,
+  RECONCILE_MAX_DELAY_MS,
   resolveTpEmis,
 } from '../../src/state/index';
 
@@ -107,6 +111,7 @@ describe('applyOutcome', () => {
       retries: 0,
       nRec: null,
       action: 'done-authorized',
+      tMed: null,
     });
   });
 
@@ -149,6 +154,44 @@ describe('applyOutcome', () => {
       { cStat: '105', xMotivo: 'Lote em processamento' },
     );
     expect(patch.retries).toBe(1);
+  });
+});
+
+describe('nextConsultaDelayMs', () => {
+  it('attempt 0 respects SEFAZ tMed (seconds → ms) when present', () => {
+    expect(nextConsultaDelayMs(0, '3')).toBe(3000);
+    expect(nextConsultaDelayMs(0, 5)).toBe(5000);
+  });
+
+  it('attempt 0 falls back to the base delay when tMed is absent/invalid', () => {
+    expect(nextConsultaDelayMs(0)).toBe(RECONCILE_BASE_DELAY_MS);
+    expect(nextConsultaDelayMs(0, null)).toBe(RECONCILE_BASE_DELAY_MS);
+    expect(nextConsultaDelayMs(0, '0')).toBe(RECONCILE_BASE_DELAY_MS);
+    expect(nextConsultaDelayMs(0, 'abc')).toBe(RECONCILE_BASE_DELAY_MS);
+  });
+
+  it('attempt 0 caps a huge tMed at the max delay', () => {
+    expect(nextConsultaDelayMs(0, '99999')).toBe(RECONCILE_MAX_DELAY_MS);
+  });
+
+  it('later attempts back off exponentially within [base/2·2^n, base·2^n], capped', () => {
+    for (const attempt of [1, 2, 3]) {
+      const delay = nextConsultaDelayMs(attempt);
+      const base = Math.min(RECONCILE_BASE_DELAY_MS * 2 ** attempt, RECONCILE_MAX_DELAY_MS);
+      expect(delay).toBeGreaterThanOrEqual(base / 2);
+      expect(delay).toBeLessThanOrEqual(base);
+    }
+  });
+
+  it('never exceeds the max delay even for large attempts', () => {
+    for (const attempt of [8, 12, 20]) {
+      expect(nextConsultaDelayMs(attempt)).toBeLessThanOrEqual(RECONCILE_MAX_DELAY_MS);
+    }
+  });
+
+  it('MAX_RECONCILE_ATTEMPTS is a sane positive cap', () => {
+    expect(MAX_RECONCILE_ATTEMPTS).toBeGreaterThan(0);
+    expect(Number.isInteger(MAX_RECONCILE_ATTEMPTS)).toBe(true);
   });
 });
 

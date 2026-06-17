@@ -82,6 +82,7 @@ export function outcomeFromRetEnviNFe(ret: TRetEnviNFe): SefazOutcome {
     cStat: ret.cStat,
     xMotivo: ret.xMotivo,
     nRec: ret.infRec?.nRec ?? markers.nRec,
+    tMed: ret.infRec?.tMed ?? null,
     chNFeFromXMotivo: markers.chNFe,
   };
 }
@@ -100,6 +101,8 @@ export function outcomeFromRetConsRec(ret: TRetConsReciNFe): SefazOutcome {
     cStat: ret.cStat,
     xMotivo: ret.xMotivo,
     nRec: ret.nRec ?? markers.nRec,
+    // `retConsReciNFe` carries no `tMed` (only the autorizarLote receipt does) —
+    // subsequent consult backoff is attempt-based, so none is needed here.
     chNFeFromXMotivo: markers.chNFe,
   };
 }

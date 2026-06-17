@@ -5,12 +5,14 @@ import {
   autorizarLote,
   consultarLote,
   consultarSituacaoNFe,
+  nextConsultaDelayMs,
   outcomeFromInfProt,
   outcomeFromRetConsRec,
   type NFeStatePatch,
   type SefazOutcome,
   type TpEmis,
 } from '@delfrance/integrations-nfe';
+import { nowMicros } from '@delfrance/core/datetime';
 import {
   ESTADO_ENVI_NFE_MSG,
   ESTADO_NFE,
@@ -209,6 +211,21 @@ export async function persistPatch(
   // currently used for `xml_nfe_proc` on cStat=100 (autorizada). Kept
   // generic so future fields (e.g. `data_autorizacao`, `nProt`) can
   // ride along without another method.
+  //
+  // `proximaConsultaEm` (µs epoch) is the async-reconciler gate: when the
+  // patch leaves the doc still awaiting SEFAZ (`aguardandoResposta`), stamp
+  // the next-allowed-consult time (`now + backoff`, seeded by `tMed` on the
+  // first round) so the backstop sweep skips it until then and a re-enqueued
+  // Cloud Task lands roughly on it. Any terminal/other estado clears it to
+  // `null` so the doc stops being scanned. An explicit `extras` override
+  // (rare) wins. Caller-provided `extras` are spread AFTER so they can force
+  // a value if ever needed.
+  const stampProxima =
+    extras != null && Object.prototype.hasOwnProperty.call(extras, 'proximaConsultaEm');
+  const proximaConsultaEm =
+    patch.estado === ESTADO_NFE.aguardandoResposta
+      ? nowMicros() + nextConsultaDelayMs(patch.retries, patch.tMed) * 1000
+      : null;
   await nfeRef.set(
     nfev4Collection.parseMerge({
       estado: patch.estado,
@@ -216,6 +233,7 @@ export async function persistPatch(
       xMotivo: patch.xMotivo,
       retries: patch.retries,
       ...(patch.nRec != null ? { nRec: patch.nRec } : {}),
+      ...(stampProxima ? {} : { proximaConsultaEm }),
       ...(extras ?? {}),
       ultima_modificacao: new Date().toISOString(),
     }),

@@ -22,6 +22,7 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { safeLog } from '@/lib/nfe/log';
 import { emitirPedidosLote, NFeOrchestratorError } from '@/lib/nfe/orchestrator';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
+import { createTaskScheduler, NFeTasksConfigError } from '@/lib/nfe/tasks';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -58,9 +59,17 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   try {
-    const result = await emitirPedidosLote(getAdminFirestore(), runtimeInstance, body.pedidoIds);
+    const result = await emitirPedidosLote(
+      getAdminFirestore(),
+      runtimeInstance,
+      body.pedidoIds,
+      createTaskScheduler(),
+    );
     return NextResponse.json(result, { status: 200 });
   } catch (e) {
+    if (e instanceof NFeTasksConfigError) {
+      return authError(503, { error: e.message, code: e.name });
+    }
     if (e instanceof NFeOrchestratorError) {
       return authError(400, { error: e.message });
     }
