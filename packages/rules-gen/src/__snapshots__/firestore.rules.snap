@@ -35,7 +35,9 @@ service cloud.firestore {
         && (!c.hasAny(['nome']) || (d.get('nome', null) == null || d.get('nome', null) is string && d.get('nome', null).size() <= 255))
         && (!c.hasAny(['observacoesInternas']) || (d.get('observacoesInternas', null) == null || d.get('observacoesInternas', null) is string && d.get('observacoesInternas', null).size() <= 255))
         && (!c.hasAny(['telefone']) || (d.get('telefone', null) == null || d.get('telefone', null) is string && d.get('telefone', null).size() <= 16))
+        && (!c.hasAny(['timestamp']) || (d.get('timestamp', null) == null || d.get('timestamp', null) is int))
         && (!c.hasAny(['tipo']) || (d.get('tipo', null) == null || d.get('tipo', null) in ['0', '1', '2']))
+        && (!c.hasAny(['ultimaModificacao']) || (d.get('ultimaModificacao', null) == null || d.get('ultimaModificacao', null) is int))
         && (!c.hasAny(['userCliente']) || (d.get('userCliente', null) == null || d.get('userCliente', null) is string));
     }
 

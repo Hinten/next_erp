@@ -174,7 +174,8 @@ export interface SeedClientesResult {
 export async function seedClientesComEnderecos(): Promise<SeedClientesResult> {
   const firestore = db();
   const clientesCol = firestore.collection('clientes');
-  const now = new Date().toISOString();
+  // cliente.timestamp is milliseconds since epoch (numeric-epoch standard).
+  const now = Date.now();
   let enderecos = 0;
 
   for (const sample of SAMPLE_CLIENTES) {

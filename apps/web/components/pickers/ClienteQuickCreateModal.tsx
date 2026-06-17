@@ -27,6 +27,7 @@ import {
 } from '@delfrance/schemas';
 import { saveRecord } from '@delfrance/ui';
 import { formatCNPJ, formatCPF } from '@delfrance/core/documents';
+import { nowMillis } from '@delfrance/core/datetime';
 import { normalizeTelefone } from '@delfrance/core/phone';
 import { CpfCnpjTextInput } from '@/components/inputs/CpfCnpjInput';
 import { TelefoneTextInput } from '@/components/inputs/TelefoneInput';
@@ -191,7 +192,7 @@ function QuickCreateForm({
       idEstrangeiro: values.tipo === '2' ? values.idEstrangeiro || null : null,
       email: values.email || null,
       telefone: values.telefone ? normalizeTelefone(values.telefone) : null,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMillis(),
       // Key presence makes saveRecord stamp the actual value.
       ultimaModificacao: null,
     });

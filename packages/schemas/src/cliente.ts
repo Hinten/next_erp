@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { validateCNPJ, validateCPF, validateCpfCnpj } from '@delfrance/core/documents';
 import { isValidTelefone } from '@delfrance/core/phone';
+import { millisSinceEpoch } from './datetime';
 import type { CollectionMetadata } from './types';
 
 // Permission bits live in @delfrance/auth. Duplicating the literal values
@@ -116,11 +117,12 @@ export const clienteSchema = z.object({
     .nullable()
     .default(null)
     .describe('Observações internas'),
-  // ISO 8601; Firestore stores these as Timestamps, the data layer converts.
-  timestamp: z.string().datetime().nullable().default(null),
+  // Milliseconds since epoch (the numeric-epoch standard). The builder reads
+  // tolerantly, so legacy ISO-string docs still render until the backfill.
+  timestamp: millisSinceEpoch().nullable().default(null),
   // System field — creation stays in `timestamp`; this is stamped by
   // `saveRecord` on every write so the TableView update-monitor sees edits.
-  ultimaModificacao: z.string().datetime().nullable().optional(),
+  ultimaModificacao: millisSinceEpoch().nullable().optional(),
   // Embeddings are server-managed; treat as opaque on the client.
   nome_embedding: z.unknown().nullable().default(null),
   telefone_embedding: z.unknown().nullable().default(null),
