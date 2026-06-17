@@ -2,8 +2,14 @@ import type { z } from 'zod';
 import type { DomainSchema } from './types';
 import { cliente } from './cliente';
 import { endereco } from './endereco';
-import { produto } from './produto';
-import { PRODUTO_SUBCOLLECTION_DOMAINS } from './produtoSubcollections';
+import {
+  produto,
+  produtoExtraData,
+  estoqueProduto,
+  historicoPreco,
+  historicoCusto,
+  PRODUTO_SUBCOLLECTION_DOMAINS,
+} from './produto';
 import { categoria } from './categoria';
 import { intFrete, tokenMelEnv } from './intFrete';
 import { pedido } from './pedido';
@@ -28,7 +34,6 @@ import { cartaCorrecao } from './cartaCorrecao';
 import { impostoProduto } from './impostoProduto';
 import { impostoCategoria } from './impostoCategoria';
 import { regraImposto } from './regraImposto';
-import { historicoPreco, historicoCusto } from './historicos';
 import { arquivo } from './storage/arquivo';
 
 /**
@@ -75,5 +80,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   regraImposto,
   historicoPreco,
   historicoCusto,
+  produtoExtraData,
+  estoqueProduto,
   arquivo,
 ];

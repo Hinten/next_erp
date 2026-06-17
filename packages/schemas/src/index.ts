@@ -43,48 +43,10 @@ export {
   type UF,
 } from './endereco';
 
-export {
-  produto,
-  produtoSchema,
-  produtoMeta,
-  precoSchema,
-  type Produto,
-  type Preco,
-} from './produto';
-
-export {
-  historicoPreco,
-  historicoPrecoSchema,
-  historicoPrecoMeta,
-  historicoCusto,
-  historicoCustoSchema,
-  historicoCustoMeta,
-  type HistoricoPreco,
-  type HistoricoCusto,
-} from './historicos';
-
-export {
-  evaluateFormula,
-  taxaFixaPorPeso,
-  calcularPreco,
-  temFormulas,
-  samePrecos,
-  diffPrecos,
-  type PrecosMap,
-  type PrecoChange,
-} from './precoCalculo';
-
-export {
-  produtoMercadoLivre,
-  variacaoMercadoLivre,
-  produtoShopee,
-  variacaoShopee,
-  produtoMagalu,
-  produtoAmazon,
-  produtoLojaIntegrada,
-  PRODUTO_SUBCOLLECTION_DOMAINS,
-  PRODUTO_SUBCOLLECTION_NAMES,
-} from './produtoSubcollections';
+// All produto-owned schemas + logic live in ./produto, grouped by kind
+// (collections, embedded objects, pure logic, page model). Domains produto only
+// references (grupoDeVariacoes, listaDePrecos, deposito, categoria, …) stay below.
+export * from './produto';
 
 export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './categoria';
 
@@ -250,30 +212,6 @@ export {
   type ExternalVariacaoLink,
   type TipoVariacao,
 } from './grupoDeVariacoes';
-
-export {
-  varianteFakePath,
-  grupoOuterRef,
-  parseFakePath,
-  remakeFakePath,
-  sortGruposByOrdem,
-  sortGrupoUids,
-  normalizeVariacoesUid,
-  cartesianVariations,
-  compareSortKeys,
-  sameCombo,
-  reconstructFromVariacoesUid,
-  reconstructFromSkuSuffix,
-  findDuplicateSkus,
-  reconcileStagedChildren,
-  splitFotoSections,
-  type ReconcilableRow,
-  type GrupoComId,
-  type VariationCombo,
-  type ReconstructResult,
-  type FotoSections,
-  type FotoVariantSection,
-} from './variacoes';
 
 export {
   tabelaDeMedidas,

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { FormulaCalculoPreco } from './listaDePrecos';
+import type { FormulaCalculoPreco } from '../../listaDePrecos';
 import {
   calcularPreco,
+  custoDoKit,
   diffPrecos,
   evaluateFormula,
   samePrecos,
@@ -176,5 +177,27 @@ describe('precos diffing', () => {
       { listaId: 'a', valorOriginal: 1, valorFinal: null },
     ]);
     expect(diffPrecos(null, null)).toEqual([]);
+  });
+});
+
+describe('custoDoKit', () => {
+  const kit = (quantidade: number) => ({ quantidade, limitarEstoque: true, timestamp: null });
+
+  it('sums component cost × quantidade, rounded to 2 decimals', () => {
+    const out = custoDoKit({ p1: kit(2), p2: kit(3) }, { p1: 10.5, p2: 1.005 });
+    expect(out).toEqual({ custo: 24.02, faltando: [] }); // 21 + 3.015 = 24.015 → 24.02
+  });
+
+  it('returns null cost with the missing ids when a component cost is unresolved', () => {
+    expect(custoDoKit({ p1: kit(1), p2: kit(1) }, { p1: 10 })).toEqual({
+      custo: null,
+      faltando: ['p2'],
+    });
+    expect(custoDoKit({ p1: kit(1) }, { p1: null })).toEqual({ custo: null, faltando: ['p1'] });
+  });
+
+  it('returns null for an empty/absent kit (Flutter parity)', () => {
+    expect(custoDoKit({}, {})).toEqual({ custo: null, faltando: [] });
+    expect(custoDoKit(null, {})).toEqual({ custo: null, faltando: [] });
   });
 });

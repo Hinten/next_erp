@@ -296,3 +296,82 @@ describe('ObjectView validation feedback across tabs', () => {
     expect(screen.getByRole('tab', { name: /Notas/ }).getAttribute('aria-selected')).toBe('true');
   });
 });
+
+describe('ObjectView cross-document validate() hook', () => {
+  // Both fields in one visible section so the test never has to reach into a
+  // hidden (keepMounted) tab panel to fill an input.
+  const ONE_SECTION = ['Geral'];
+  const FIELDS_ONE = { nome: { section: 'Geral' }, obs: { section: 'Geral' } };
+
+  function renderWithValidate(
+    validate: (v: Record<string, unknown>) => { path: string; message: string }[],
+  ) {
+    return render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          sections={ONE_SECTION}
+          fields={FIELDS_ONE}
+          validate={validate}
+        />
+      </Wrap>,
+    );
+  }
+
+  async function fillBoth() {
+    const nome = screen.getByRole('textbox', { name: 'Nome' });
+    const obs = screen.getByRole('textbox', { name: 'Observações' });
+    await act(async () => {
+      fireEvent.change(nome, { target: { value: 'Alice' } });
+      fireEvent.change(obs, { target: { value: 'ok' } });
+      fireEvent.blur(obs);
+    });
+  }
+
+  it('blocks the save and surfaces the issue even when the schema is valid', async () => {
+    // Schema is satisfied (both fields filled) — only the cross-document rule,
+    // keyed at `obs`, should block.
+    renderWithValidate(() => [{ path: 'obs', message: 'Conflito entre documentos' }]);
+    await fillBoth();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(saveRecordMock).not.toHaveBeenCalled();
+    expect(notifyShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'red',
+        message: expect.stringContaining('Geral') as string,
+      }),
+    );
+    expect(screen.getByText('Conflito entre documentos')).toBeTruthy();
+  });
+
+  it('saves when validate() returns no issues', async () => {
+    saveRecordMock.mockResolvedValue({ id: 'x1' });
+    renderWithValidate(() => []);
+    await fillBoth();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(saveRecordMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips prototype-polluting issue paths but still applies safe ones', async () => {
+    renderWithValidate(() => [
+      { path: '__proto__', message: 'unsafe' },
+      { path: 'obs', message: 'safe issue' },
+    ]);
+    await fillBoth();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    // The unsafe key was skipped (no crash, no pollution); the safe issue still
+    // blocks the save and renders.
+    expect(saveRecordMock).not.toHaveBeenCalled();
+    expect(screen.getByText('safe issue')).toBeTruthy();
+    expect(Object.prototype).not.toHaveProperty('message');
+  });
+});

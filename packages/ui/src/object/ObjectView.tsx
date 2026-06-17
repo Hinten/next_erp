@@ -42,6 +42,12 @@ import { useUnsavedChangesGuard } from './useUnsavedChangesGuard';
  */
 const COPY_STRIP_KEYS = ['timestamp', 'ultimaModificacao'];
 
+/** A cross-document validation problem, keyed by a dotted field path. */
+export interface ValidationIssue {
+  path: string;
+  message: string;
+}
+
 export interface ObjectViewProps<S extends ZodObject<ZodRawShape>> {
   title?: ReactNode;
   description?: ReactNode;
@@ -72,6 +78,18 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>> {
    * `undefined` (Firestore rejects it). Must be pure.
    */
   deriveOnSave?: (values: Record<string, unknown>) => Record<string, unknown>;
+
+  /**
+   * Cross-document validation run alongside the schema resolver (after each
+   * field's `prepareForSave`). Returns issues keyed by a dotted field path;
+   * each is merged into the resolver errors at its path's first segment, so a
+   * cross-document problem blocks the save and surfaces in the same per-tab
+   * error UI as a schema error (route it to a tab by giving that key a
+   * `section` in `fields`). The hook reads what's about to be saved plus any
+   * page-held state the closure captures (e.g. subcollection editors), so the
+   * whole page model can validate in one place. Must be pure; a real shape
+   * error on a key always wins over a cross-document one. */
+  validate?: (values: Record<string, unknown>) => readonly ValidationIssue[];
 
   /** Auth uid for the audit entry. */
   currentUserUid: string;
@@ -157,6 +175,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   fields: fieldOverrides = {},
   sections,
   deriveOnSave,
+  validate,
   currentUserUid,
   pager,
   onSaved,
@@ -221,17 +240,35 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   const resolver = useMemo<Resolver<FieldValues>>(() => {
     const base = zodResolver(schema as never) as Resolver<FieldValues>;
     const transforms = Object.entries(fieldOverrides).filter(([, cfg]) => cfg?.prepareForSave);
-    if (transforms.length === 0) return base;
-    const wrapped: Resolver<FieldValues> = (values, ctx, opts) => {
+    if (transforms.length === 0 && !validate) return base;
+    const wrapped: Resolver<FieldValues> = async (values, ctx, opts) => {
       const prepared: Record<string, unknown> = { ...(values as Record<string, unknown>) };
       for (const [key, cfg] of transforms) {
         prepared[key] = cfg!.prepareForSave!(prepared[key]);
       }
-      return base(prepared as FieldValues, ctx, opts);
+      const result = await base(prepared as FieldValues, ctx, opts);
+      if (!validate) return result;
+      // Merge cross-document issues at each path's first segment. A real shape
+      // error already on that key wins (don't clobber); otherwise the issue
+      // blocks the save and routes to the key's tab via the section map.
+      const issues = validate(prepared);
+      if (issues.length === 0) return result;
+      const errors: Record<string, unknown> = { ...(result.errors as Record<string, unknown>) };
+      for (const issue of issues) {
+        const key = issue.path.split('.')[0];
+        // Skip empty or prototype-polluting keys: the hook merges arbitrary
+        // caller-supplied paths into a plain object, and `errors['__proto__'] = …`
+        // would mutate its prototype.
+        if (!key || key === '__proto__' || key === 'constructor' || key === 'prototype') {
+          continue;
+        }
+        if (!errors[key]) errors[key] = { type: 'custom', message: issue.message };
+      }
+      return { ...result, errors } as typeof result;
     };
     return wrapped;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schema, fieldOverrides]);
+  }, [schema, fieldOverrides, validate]);
 
   const form = useForm<FieldValues>({
     resolver,

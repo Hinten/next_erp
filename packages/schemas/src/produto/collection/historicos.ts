@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { CollectionMetadata } from './types';
+import type { CollectionMetadata } from '../../types';
 
 // Price/cost history is produto-scoped: it reuses the produto permission bits
 // (byte 8 — see `produto.ts`), so reading/writing a produto's history requires

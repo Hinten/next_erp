@@ -13,7 +13,8 @@
     "./audit": "./src/audit.ts",
     "./server": "./src/server/index.ts",
     "./admin": "./src/admin/index.ts",
-    "./admin/collections": "./src/admin/collections/index.ts"
+    "./admin/collections": "./src/admin/collections/index.ts",
+    "./produto": "./src/produto/index.ts"
   },
   "scripts": {
     "lint": "echo 'no lint configured for this package yet'",

@@ -1,7 +1,9 @@
 import { z } from 'zod';
-import type { CollectionMetadata } from './types';
-import { fotoSchema } from './storage/foto';
-import { videoSchema } from './storage/video';
+import type { CollectionMetadata } from '../../types';
+import { fotoSchema } from '../../storage/foto';
+import { videoSchema } from '../../storage/video';
+import { componentesKitSchema } from './embedded/kit';
+import { anexoSchema } from './embedded/anexo';
 
 const PERM_PRODUTO_READ = 1n << 8n;
 const PERM_PRODUTO_WRITE = 1n << 9n;
@@ -22,10 +24,10 @@ export type Preco = z.infer<typeof precoSchema>;
 
 /**
  * Produto schema. Parity with `packages/produtos/lib/src/models.dart`
- * for the fields this app reads/writes today. Complex nested structures
- * (componentesKit, marketplace integrations, fotos, videos, anexos) are
- * pass-through `unknown` for now — the Flutter app continues to author
- * those, and we surface them later when their respective verticals land.
+ * for the fields this app reads/writes today. `componentesKit`, `anexos`,
+ * `fotos` and `videos` are typed against their own schemas; the marketplace
+ * integrations stay pass-through `unknown` — the Flutter app continues to
+ * author those, and we surface them when their vertical lands.
  */
 export const produtoSchema = z
   .object({
@@ -68,14 +70,14 @@ export const produtoSchema = z
 
     // Pass-through complex structures (kits, marketplace bindings, media).
     componentesKitKeys: z.array(z.string()).nullable().default(null),
-    componentesKit: z.record(z.string(), z.unknown()).nullable().default(null),
+    componentesKit: componentesKitSchema.nullable().default(null),
     integracoesComProduto: z.array(z.string()).default([]),
     marketplaceIds: z.array(z.string()).nullable().default(null),
     marketplace: z.array(z.unknown()).default([]),
     statusProdutosMarketplace: z.record(z.string(), z.unknown()).nullable().default(null),
     fotos: z.array(fotoSchema).nullable().default(null),
     videos: z.array(videoSchema).nullable().default(null),
-    anexos: z.array(z.unknown()).nullable().default(null),
+    anexos: z.array(anexoSchema).nullable().default(null),
     fotosArquivosIds: z.array(z.string()).nullable().default(null),
 
     // Server-managed.

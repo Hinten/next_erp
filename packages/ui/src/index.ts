@@ -24,7 +24,7 @@ export { SearchBar, type SearchBarProps } from './table/SearchBar';
 export { renderCell } from './table/cell-renderers';
 
 // Object primitives
-export { ObjectView, type ObjectViewProps } from './object/ObjectView';
+export { ObjectView, type ObjectViewProps, type ValidationIssue } from './object/ObjectView';
 export { FieldRenderer, type FieldRendererProps } from './object/FieldRenderer';
 export { NullClearButton, type NullClearButtonProps } from './object/NullClearButton';
 export { epochToPickerString, pickerStringToEpoch, type EpochUnit } from './object/datetimeField';
