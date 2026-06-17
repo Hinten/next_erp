@@ -42,7 +42,8 @@ const formulaBase = {
 };
 
 export async function seedDevPrecos(): Promise<{ produtosPatched: number }> {
-  const now = new Date().toISOString();
+  // listaDePrecos.timestamp / ultimaModificacao are milliseconds since epoch now.
+  const now = Date.now();
   const batch = db().batch();
   const listas = db().collection('listaDePrecos');
 

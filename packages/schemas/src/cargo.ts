@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './datetime';
 import type { CollectionMetadata } from './types';
 
 // Permission bits live in @delfrance/auth. Duplicating literal values here
@@ -20,7 +21,8 @@ export const cargoSchema = z.object({
   // `T | null | undefined`. Forms default empty inputs to `null`.
   descricao: z.string().max(500).nullable(),
   permissoes: z.string().regex(/^\d+$/, 'apenas dígitos').default('0'),
-  timestamp: z.string().datetime().nullable().default(null),
+  // Milliseconds since epoch (numeric-epoch standard); reads tolerantly.
+  timestamp: millisSinceEpoch().nullable().default(null),
 });
 
 export type Cargo = z.infer<typeof cargoSchema>;

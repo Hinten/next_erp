@@ -49,7 +49,8 @@ function requireEnv(name: string): string {
 export async function seedDevFiliais(): Promise<{ created: number }> {
   const cnpj = requireEnv('NFE_TEST_CNPJ');
   const ie = requireEnv('NFE_TEST_IE');
-  const now = new Date().toISOString();
+  // filial.timestamp / ultimaModificacao are milliseconds since epoch now.
+  const now = Date.now();
 
   await db()
     .collection('filiais')

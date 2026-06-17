@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './datetime';
 import type { CollectionMetadata } from './types';
 
 // Mirror `PERM.produto` from @delfrance/auth; duplicated locally to avoid a
@@ -59,8 +60,8 @@ export const listaDePrecosSchema = z.object({
   ativo: z.boolean().default(true),
   formulasCalculoPreco: z.array(formulaCalculoPrecoSchema).nullable().optional(),
   formulasPorCategoria: z.record(z.string(), formulasPorCategoriaSchema).nullable().optional(),
-  ultimaModificacao: z.string().datetime().nullable().optional(),
-  timestamp: z.string().datetime().nullable().optional(),
+  ultimaModificacao: millisSinceEpoch().nullable().optional(),
+  timestamp: millisSinceEpoch().nullable().optional(),
 });
 
 export type ListaDePrecos = z.infer<typeof listaDePrecosSchema>;

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './datetime';
 import type { CollectionMetadata } from './types';
 
 // Mirror `PERM.pedido` from @delfrance/auth.
@@ -15,7 +16,7 @@ export const motivoIncidenteSchema = z.object({
   ativo: z.boolean().default(true).describe('Ativo'),
   // System field — stamped by `saveRecord` on every write so the TableView
   // update-monitor sees edits.
-  ultimaModificacao: z.string().datetime().nullable().optional(),
+  ultimaModificacao: millisSinceEpoch().nullable().optional(),
 });
 
 export type MotivoIncidente = z.infer<typeof motivoIncidenteSchema>;

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './datetime';
 import type { CollectionMetadata } from './types';
 
 // Mirror `PERM.pagamento` from @delfrance/auth.
@@ -75,8 +76,8 @@ export const bandeiraCartaoSchema = z.object({
   tarifaFixa: z.number().min(0).default(0).describe('Tarifa fixa'),
   maxParcelas: z.number().int().min(1).default(1).describe('Máximo de parcelas'),
   prazoRecebimento: z.number().int().min(0).default(0).describe('Prazo de recebimento (dias)'),
-  dataCadastro: z.string().datetime().nullable().optional(),
-  ultimaModificacao: z.string().datetime().nullable().optional(),
+  dataCadastro: millisSinceEpoch().nullable().optional(),
+  ultimaModificacao: millisSinceEpoch().nullable().optional(),
 });
 
 export type BandeiraCartao = z.infer<typeof bandeiraCartaoSchema>;
