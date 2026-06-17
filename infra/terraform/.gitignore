@@ -1,0 +1,14 @@
+# Local Terraform state must never be committed (may contain resource ids /
+# sensitive values). Real state lives in the GCS backend.
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.tfstate.lock.info
+crash.log
+crash.*.log
+
+# Per-environment inputs — keep the *.example templates, ignore the real ones.
+*.tfvars
+backend.hcl
+!*.tfvars.example
+!backend.hcl.example

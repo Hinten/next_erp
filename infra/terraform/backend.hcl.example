@@ -1,0 +1,7 @@
+# Copy to backend.hcl (gitignored) and pass via:
+#   terraform init -backend-config=backend.hcl
+#
+# Use a bucket IN THE SAME PROJECT and a per-project prefix so state can never
+# bleed across projects.
+bucket = "tf-state-<your-project-id>"
+prefix = "nfe-cloud-tasks"

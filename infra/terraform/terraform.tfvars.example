@@ -1,0 +1,12 @@
+# Copy to <env>.tfvars (gitignored) and pass via:
+#   terraform plan  -var-file=prod.tfvars
+#   terraform apply -var-file=prod.tfvars
+
+project_id           = "veste-france"
+region               = "us-east1"
+nfe_runtime_sa_email = "firebase-app-hosting-compute@veste-france.iam.gserviceaccount.com"
+nfe_backend_uri      = "https://nfe-veste.web.app"
+
+# Optional overrides:
+# queue_name        = "nfe-consulta"
+# task_runner_sa_id = "nfe-task-runner"

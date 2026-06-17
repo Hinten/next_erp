@@ -1,0 +1,41 @@
+name: ci-terraform
+
+# Lints the IaC under infra/terraform/ — fmt + validate only, NEVER apply
+# (apply stays manual + coordinated, like the Firestore-rules deploy). Runs
+# only when Terraform files change.
+on:
+  pull_request:
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/ci-terraform.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/terraform/**'
+      - '.github/workflows/ci-terraform.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  terraform-validate:
+    name: Terraform fmt + validate (no apply)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.13.3'
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Init (no backend — validate only)
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform validate
