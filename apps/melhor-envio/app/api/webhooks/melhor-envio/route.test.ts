@@ -28,10 +28,15 @@ function req(body: unknown, opts: { sig?: string } = {}): Request {
   });
 }
 
-/** A snapshot with one pedido at the given freteInicial.estado. */
-function pedidoSnap(estado: string) {
+/** A snapshot with one pedido at the given freteInicial.estado/codRastreio. */
+function pedidoSnap(estado: string, codRastreio: string | null = null) {
   return {
-    docs: [{ id: 'ped-1', data: () => ({ freteInicial: { estado, printLabelId: 'lbl-1' } }) }],
+    docs: [
+      {
+        id: 'ped-1',
+        data: () => ({ freteInicial: { estado, codRastreio, printLabelId: 'lbl-1' } }),
+      },
+    ],
   };
 }
 
@@ -122,6 +127,17 @@ describe('POST /api/webhooks/melhor-envio', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).applied).toBe(false);
     expect(h.update).not.toHaveBeenCalled();
+  });
+
+  it('persists codRastreio on a retry that adds tracking to an already-applied estado', async () => {
+    h.query.mockResolvedValue(pedidoSnap('postado')); // estado matches, no codRastreio yet
+    const res = await POST(
+      req({ event: 'order.posted', data: { id: 'lbl-1', status: 'posted', tracking: 'ME9BR' } }),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).applied).toBe(true);
+    // Only codRastreio is written — estado is unchanged.
+    expect(h.update).toHaveBeenCalledWith({ 'freteInicial.codRastreio': 'ME9BR' });
   });
 
   it('derives the status from the event suffix when data.status is absent', async () => {

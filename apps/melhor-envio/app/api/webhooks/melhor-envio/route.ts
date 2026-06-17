@@ -57,13 +57,15 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ error: 'Webhook secret não configurado.' }, { status: 500 });
   }
 
-  // Read the RAW body for the HMAC (a re-serialized JSON wouldn't match).
-  const raw = await req.text();
+  // Fail fast on a missing signature — don't buffer the body for an
+  // unauthenticated request. Read the RAW body only to verify the HMAC (a
+  // re-serialized JSON wouldn't match).
   const signature = req.headers.get('x-me-signature');
-  if (
-    !signature ||
-    !verifyHmac({ payload: raw, signature, secret, algorithm: 'sha256', encoding: 'hex' })
-  ) {
+  if (!signature) {
+    return NextResponse.json({ error: 'Assinatura ausente.' }, { status: 401 });
+  }
+  const raw = await req.text();
+  if (!verifyHmac({ payload: raw, signature, secret, algorithm: 'sha256', encoding: 'hex' })) {
     return NextResponse.json({ error: 'Assinatura inválida.' }, { status: 401 });
   }
 
@@ -107,16 +109,24 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: true, applied: false });
   }
 
-  const pedido = doc.data() as { freteInicial?: { estado?: string } } | undefined;
-  if (pedido?.freteInicial?.estado === target) {
-    // Idempotent: already in the target state.
+  const frete = (
+    doc.data() as { freteInicial?: { estado?: string; codRastreio?: string | null } } | undefined
+  )?.freteInicial;
+  const tracking = typeof data.tracking === 'string' ? data.tracking : null;
+
+  // Idempotent over BOTH fields: only persist what would actually change, so a
+  // retry that adds `tracking` to an already-applied estado still records it.
+  const patch: Record<string, unknown> = {};
+  if (frete?.estado !== target) patch['freteInicial.estado'] = target;
+  if (tracking !== null && frete?.codRastreio !== tracking) {
+    patch['freteInicial.codRastreio'] = tracking;
+  }
+
+  if (Object.keys(patch).length === 0) {
+    // Nothing would change — ack idempotently.
     return NextResponse.json({ ok: true, applied: false });
   }
 
-  const tracking = typeof data.tracking === 'string' ? data.tracking : null;
-  const patch: Record<string, unknown> = { 'freteInicial.estado': target };
-  if (tracking) patch['freteInicial.codRastreio'] = tracking;
   await pedidoCollection.docRef(db, {}, doc.id).update(patch);
-
   return NextResponse.json({ ok: true, applied: true, estado: target });
 }
