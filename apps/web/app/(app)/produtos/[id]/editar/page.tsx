@@ -5,32 +5,30 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { getDocs, writeBatch } from 'firebase/firestore';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import {
   type Foto,
   type PrecosMap,
   type Video,
-  diffPrecos,
   normalizeVariacoesUid,
   parseFakePath,
+  produtoPageIssues,
   produtoSchema,
   sortGrupoUids,
 } from '@delfrance/schemas';
-import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
+import { buildQuery, limit, orderByField } from '@delfrance/data';
+import {
+  ProdutoReferencedError,
+  applyPrecosChange,
+  deleteProdutoCascade,
+  recordCustoHistory,
+} from '@delfrance/data/produto';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
-import { appendPrecoHistory } from '@/lib/produtos/precoHistory';
-import { appendCustoHistory } from '@/lib/produtos/custoHistory';
-import { propagateParentPrecosToChildren } from '@/lib/produtos/childPrecos';
-import {
-  describeReferences,
-  findManyProdutoReferences,
-  hasReferences,
-} from '@/lib/produtos/references';
+import { createClientProdutoPort } from '@/lib/produtos/clientPort';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { PhotoManager } from '../../_components/PhotoManager';
@@ -51,6 +49,9 @@ export default function EditarProdutoPage() {
   const { allowed: canWrite } = usePermission(PERM.produto.write);
   const db = getFirebaseFirestore();
   const storage = getFirebaseStorage();
+  // Client adapter for the framework-agnostic produto use-cases (history,
+  // child-precos propagation, reference guard + cascade delete).
+  const port = useMemo(() => createClientProdutoPort(db), [db]);
 
   // Variation groups (live) — shared between the Variações tab and the
   // save-time normalization in `deriveOnSave`. Bounded query (orderBy +
@@ -193,45 +194,25 @@ export default function EditarProdutoPage() {
 
   // The editor is the product screen now (the intermediate detail view was
   // removed) — it owns deletion too, behind ObjectView's typed-confirm modal.
-  // Deleting a parent cascades its variation children, but only after every
-  // target passes the inbound-reference guard — a produto still in a kit or
-  // linked to a marketplace listing blocks the whole operation (#117/#135).
-  // Subcollection orphans are server-side (#136).
+  // The reference guard + variation cascade live in the domain use-case
+  // (`deleteProdutoCascade`); a still-referenced target throws
+  // `ProdutoReferencedError`, which we surface as a notification (any other
+  // error — e.g. a FirebaseError from the batch — propagates to ObjectView's
+  // alert). Subcollection orphans are swept server-side (#136).
   async function handleDelete(id: string) {
-    const childrenSnap = await getDocs(
-      buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', id)]),
-    );
-    const targets = [
-      { id, nome: 'o produto' },
-      ...childrenSnap.docs.map((d) => ({ id: d.id, nome: `a variação "${d.data().nome}"` })),
-    ];
-    const refsById = await findManyProdutoReferences(
-      db,
-      targets.map((t) => t.id),
-    );
-    const referenced = targets
-      .map((t) => ({ ...t, refs: refsById.get(t.id)! }))
-      .filter((t) => hasReferences(t.refs));
-    if (referenced.length > 0) {
-      notifications.show({
-        color: 'red',
-        title: 'Não é possível excluir',
-        message: `${referenced
-          .map((t) => `${t.nome} está ${describeReferences(t.refs)}`)
-          .join('; ')}. Remova os vínculos antes de excluir.`,
-        autoClose: 12_000,
-      });
-      return;
-    }
-    // A writeBatch caps at 500 operations — chunk large variation sets. The
-    // parent goes in the LAST batch so a partial failure leaves it (and the
-    // delete affordance) in place; retrying resumes over the remaining docs.
-    const docRefs = [...childrenSnap.docs.map((d) => d.ref), produtoCollection.docRef(db, {}, id)];
-    const BATCH_LIMIT = 499;
-    for (let i = 0; i < docRefs.length; i += BATCH_LIMIT) {
-      const batch = writeBatch(db);
-      for (const ref of docRefs.slice(i, i + BATCH_LIMIT)) batch.delete(ref);
-      await batch.commit();
+    try {
+      await deleteProdutoCascade(port, id);
+    } catch (err) {
+      if (err instanceof ProdutoReferencedError) {
+        notifications.show({
+          color: 'red',
+          title: 'Não é possível excluir',
+          message: err.message,
+          autoClose: 12_000,
+        });
+        return;
+      }
+      throw err;
     }
     router.replace('/produtos');
   }
@@ -276,31 +257,32 @@ export default function EditarProdutoPage() {
             variacoesUid: normalizeVariacoesUid(uids, grupos),
           };
         }}
+        validate={(values) =>
+          // Cross-document rules, concentrated in the page model
+          // (`produtoPageIssues`). Today this sees the produto doc fields; the
+          // Estoque/Imposto tabs will add their subdocuments to the aggregate.
+          produtoPageIssues({
+            id: params.id,
+            ehKit: values.ehKit as boolean | null,
+            componentesKit: values.componentesKit as Record<string, { quantidade: number }> | null,
+          })
+        }
         onAfterSave={async (id, values) => {
-          // `values.precos` is exactly what this save persisted (ObjectView
-          // hands us the transformed values) — no captured-state staleness, no
-          // re-read race. Record the history (Flutter parity) and, when the map
-          // changed, propagate it to every existing variation child — this must
-          // fire even when the user only touched the Preço e custo tab, so it
-          // can't depend on the Variações tab's live snapshot. The flush runs
-          // last: it creates any new children already carrying the parent's
-          // precos (plus their initial history records).
-          const newPrecos = (values.precos as PrecosMap) ?? null;
+          // `values.precos`/`values.custo` are exactly what this save persisted
+          // (ObjectView hands us the transformed values) — no captured-state
+          // staleness, no re-read race. The domain use-cases record the history
+          // and (on a real change) propagate the precos to every variation child
+          // — which must fire even when only the Preço e custo tab was touched,
+          // so it can't depend on the Variações tab's live snapshot.
+          //
           // "Old" value = the ref pinned at the first doc emit, or — if a save
-          // beat that emit — the live snapshot. Driving the diff off this
-          // (instead of skipping when the ref isn't primed) means a fast first
-          // save still records its history record and only propagates on a real
-          // change.
+          // beat that emit — the live snapshot, so a fast first save still
+          // records history and only propagates on a real change.
+          const newPrecos = (values.precos as PrecosMap) ?? null;
           const oldPrecos = lastSavedPrecos.current.ready
             ? lastSavedPrecos.current.value
             : (produtoSnap.data?.data.precos ?? null);
-          const precoChanges = diffPrecos(oldPrecos, newPrecos);
-          if (precoChanges.length > 0) {
-            const batch = writeBatch(db);
-            appendPrecoHistory(batch, db, id, precoChanges);
-            await batch.commit();
-          }
-          const precosChanged = precoChanges.length > 0;
+          await applyPrecosChange(port, { produtoId: id, oldPrecos, newPrecos });
           lastSavedPrecos.current = { ready: true, value: newPrecos };
 
           // Cost history (historicoDeCusto): one record per change. Only a
@@ -311,15 +293,12 @@ export default function EditarProdutoPage() {
             ? lastSavedCusto.current.value
             : (produtoSnap.data?.data.custo ?? null);
           if (newCusto !== null && newCusto !== oldCusto) {
-            const batch = writeBatch(db);
-            appendCustoHistory(batch, db, id, newCusto);
-            await batch.commit();
+            await recordCustoHistory(port, id, newCusto);
           }
           lastSavedCusto.current = { ready: true, value: newCusto };
 
-          if (precosChanged) {
-            await propagateParentPrecosToChildren(db, id, newPrecos);
-          }
+          // The flush runs last: it creates any new children already carrying
+          // the parent's precos (plus their initial history records).
           await flushChildrenRef.current?.(id);
         }}
         saveLabel="Salvar alterações"
