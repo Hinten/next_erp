@@ -17,13 +17,16 @@ export function getAdminApp(): App {
 }
 
 /**
- * Firestore singleton. Uses the `(default)` database unless
- * `FIREBASE_DATABASE_ID` names another — `(default)` keeps the emulator path
- * simple.
+ * Firestore singleton. Targets the database named by `FIREBASE_DATABASE_ID`,
+ * defaulting to `'default'` — the repo-wide convention (Firestore *Enterprise*
+ * edition's database is literally named `default`, NOT `(default)`; see
+ * apps/web/lib/firebase/client.ts, tools/test-fixtures, .env.example). Calling
+ * `getFirestore()` without the id hits the non-existent `(default)` database and
+ * fails every operation with gRPC `5 NOT_FOUND`.
  */
 export function getDb(): Firestore {
   if (db) return db;
-  const databaseId = process.env.FIREBASE_DATABASE_ID;
-  db = databaseId ? getFirestore(getAdminApp(), databaseId) : getFirestore(getAdminApp());
+  const databaseId = process.env.FIREBASE_DATABASE_ID ?? 'default';
+  db = getFirestore(getAdminApp(), databaseId);
   return db;
 }

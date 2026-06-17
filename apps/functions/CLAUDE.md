@@ -102,6 +102,15 @@ deploy config or `prepare-deploy.mjs`.
    (Deleting deployed cloud functions is a destructive shared-infra action — the
    agent is correctly blocked from doing it; ask the user to run the delete.)
 
+8. **gRPC `5 NOT_FOUND` at runtime on a Firestore `.get()`/write** — this project family uses the
+   **named `default`** Firestore database (Firestore *Enterprise* edition: the database is
+   literally named `default`, NOT `(default)`). `getDb()` (`src/lib/admin.ts`) defaults the id to
+   `'default'`, overridable via `FIREBASE_DATABASE_ID` — never call `getFirestore()` without the
+   id, or it targets the non-existent `(default)` database and every operation fails with
+   `5 NOT_FOUND`. The emulator suite must read the same id (see the storage test's `getDb`). The
+   convention is repo-wide (apps/web, apps/integrations, apps/nfe, tools/test-fixtures,
+   `.env.example`).
+
 ## Build notes
 
 - `build.mjs` exports `bundle(outfile)` and resolves paths from `import.meta.url`,
