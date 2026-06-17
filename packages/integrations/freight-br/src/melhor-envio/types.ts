@@ -203,13 +203,16 @@ export type Order = z.infer<typeof orderSchema>;
 /**
  * `POST /api/v2/me/cart` (201) — the inserted cart item. The pipeline only
  * needs `id` (the label/order id it then checks out, generates and prints).
+ * Monetary fields (`price`/`quote`) are intentionally NOT modeled: Melhor Envio
+ * types them inconsistently across endpoints (strings in `calculate`, numbers
+ * in the cart 201), so a fixed type would risk a parse failure — `.passthrough()`
+ * keeps them available untyped for any caller that wants them.
  */
 export const cartItemSchema = z
   .object({
     id: z.string(),
     protocol: z.string().nullable().optional(),
     status: z.string().nullable().optional(),
-    price: z.number().nullable().optional(),
   })
   .passthrough();
 export type CartItem = z.infer<typeof cartItemSchema>;
