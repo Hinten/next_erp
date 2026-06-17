@@ -69,6 +69,10 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
   );
   const { data: listaDoc } = useDocSnapshot(listaRefTyped);
 
+  // Surfaced by PedidoForm's resolver when the pedido has no items — the items
+  // table has no inline error slot of its own, so render it next to the title.
+  const itensErrorMessage = form.formState.errors._itensFlat?.message;
+
   function addItem(
     produto: Produto | null,
     produtoRef: DocumentReference<Produto> | null,
@@ -166,6 +170,12 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
             }}
           />
         </Group>
+
+        {itensErrorMessage && (
+          <Text c="red" size="sm">
+            {itensErrorMessage}
+          </Text>
+        )}
 
         <Table>
           <Table.Thead>
