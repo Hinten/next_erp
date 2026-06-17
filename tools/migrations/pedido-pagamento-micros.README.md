@@ -1,9 +1,10 @@
 # Migration: `pedido` + `pagamento` datetime fields → microseconds
 
-**Status: DESIGNED, NOT YET EXECUTED.** The backfill runs once the project core
-is finished. Until then the schemas read tolerantly (see below), so no data has
-to move for the app to work — this document is the runbook for when it does, and
-the reference for the future Flutter import.
+**Status: TOOLING BUILT, NOT YET EXECUTED.** The runner + script live in the
+`@delfrance/migrations` package (see **How to run** below); the backfill is
+executed once the project core is finished. Until then the schemas read
+tolerantly (see below), so no data has to move for the app to work — this
+document is the runbook and the reference for the future Flutter import.
 
 ## Why
 
@@ -42,16 +43,18 @@ so there is one definition of "what is microseconds":
 
 ```ts
 import { coerceToMicros } from '@delfrance/core/datetime';
-// number (ms, ≤ 1e13) → ×1000 ; number (µs, ≥ 1e14) → unchanged ;
+// number (ms, ≤ MILLIS_UPPER_BOUND) → ×1000 ; number (µs, ≥ MICROS_LOWER_BOUND) → unchanged ;
 // ISO string → Date.parse ×1000 ; Date → ×1000 ; null/unparseable/gap → null
 ```
 
 Idempotency falls out of the magnitude heuristic: a value already in
-microseconds (`≥ MICROS_LOWER_BOUND = 1e14`) is returned unchanged, so re-running
-is a no-op. A value in the undeterminable gap `(1e13, 1e14)` — unreachable by any
-real ERP timestamp in either unit — returns `null`; the migration must **log and
-skip** it, never guess. Only write a field back when `coerceToMicros` returns a
-value **different** from what is stored.
+microseconds (`≥ MICROS_LOWER_BOUND` = 1e14) is returned unchanged, so re-running
+is a no-op. A value in the undeterminable gap `(MILLIS_UPPER_BOUND, MICROS_LOWER_BOUND)`
+= `(9e12, 1e14)` — unreachable by any real ERP timestamp in either unit, and
+capped at 9e12 so `ms × 1000` never overflows `Number.MAX_SAFE_INTEGER` —
+returns `null`; the migration **logs and skips** it, never guesses. A field is
+written back only when `coerceToMicros` returns a value **different** from what
+is stored.
 
 ## Scope to rewrite per document
 
@@ -74,13 +77,38 @@ Batch writes ≤ 500 ops/commit.
 - **Dry-run by default**; `--apply` to write. Dry-run logs every intended
   `path · field · old → new` without writing.
 - **Log every change** to a timestamped file under `out/`.
-- firebase-admin v13. Narrow every `catch` to a specific error class and
-  rethrow (repo lint rule — no generic `catch`).
+- firebase-admin v13.
 
-Suggested layout when built: `tools/migrations/src/runner.ts` (arg parsing +
-`out/` logging) and `tools/migrations/2026-XX-pedido-pagamento-micros/migrate.ts`
-(the per-doc transform importing `coerceToMicros`), with a unit test feeding a
-microsecond value back in to assert the no-op.
+This is implemented by the `@delfrance/migrations` package:
+
+- `src/runner.ts` — `parseArgs` (`--project` required, `--apply`, dry-run
+  default), the `out/` change log (`ChangeSink`), and a batched `BatchWriter`
+  (≤ 400 ops/commit). `src/admin.ts` binds to the **explicit** `--project` and
+  refuses if the service account names a different project.
+- `src/2026-06-pedido-pagamento-micros/transform.ts` — the **pure** per-doc
+  transforms (`transformPedido` / `transformPagamento` / `transformMetodoPgto`)
+  reusing `coerceToMicros`; `migrate.ts` — the Firestore walk + CLI entry.
+- `transform.test.ts` feeds the output back in to assert the no-op (idempotency)
+  and covers every legacy shape; `runner.test.ts` covers the arg contract.
+
+## How to run
+
+```bash
+# 1. Dry-run (no writes) — logs every intended `path · field · old → new`:
+pnpm --filter @delfrance/migrations migrate:pedido-pagamento-micros -- \
+  --project <staging-project-id>
+
+# 2. Inspect the log under tools/migrations/out/<timestamp>-…-dryrun.jsonl
+# 3. Apply (writes), once the core is ready and the dry-run looks right:
+pnpm --filter @delfrance/migrations migrate:pedido-pagamento-micros -- \
+  --project <staging-project-id> --apply
+```
+
+Credentials come from `FIREBASE_SERVICE_ACCOUNT` / `FIREBASE_SERVICE_ACCOUNT_PATH`
+(the `migrate:*` script loads `.env.local`), or `--service-account <path>`. The
+target database is `FIREBASE_DATABASE_ID` (default `default`). Re-running is
+safe (idempotent). **Run against staging first; never default `--project` to a
+production project.**
 
 ## Legacy Flutter coexistence (future third-backend import)
 
