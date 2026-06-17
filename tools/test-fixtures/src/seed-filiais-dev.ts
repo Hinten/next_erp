@@ -49,8 +49,9 @@ function requireEnv(name: string): string {
 export async function seedDevFiliais(): Promise<{ created: number }> {
   const cnpj = requireEnv('NFE_TEST_CNPJ');
   const ie = requireEnv('NFE_TEST_IE');
-  // filial.timestamp / ultimaModificacao are milliseconds since epoch now.
-  const now = Date.now();
+  // nfeconfig.timestamp is still ISO (that collection isn't converted yet);
+  // filial.timestamp (below) is milliseconds since epoch.
+  const now = new Date().toISOString();
 
   await db()
     .collection('filiais')
@@ -83,7 +84,7 @@ export async function seedDevFiliais(): Promise<{ created: number }> {
         email: null,
         telefone: null,
       },
-      timestamp: now,
+      timestamp: Date.now(),
     });
 
   await db()
