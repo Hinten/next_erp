@@ -34,7 +34,8 @@ export const DEV_OPERACAO_ID = 'dev-operacao-01';
 export const DEV_REGRA_IMPOSTO_ID = 'dev-regra-01';
 
 export async function seedDevOperacoes(): Promise<{ created: number }> {
-  const now = new Date().toISOString();
+  // operacao.timestamp + regraImposto.dataCadastro are milliseconds since epoch.
+  const now = Date.now();
   await db().collection('operacao').doc(DEV_OPERACAO_ID).set({
     nome: 'Venda interna SP (dev)',
     naturezaDaOperacao: 'Venda de mercadoria',
@@ -76,9 +77,7 @@ export async function seedDevOperacoes(): Promise<{ created: number }> {
 
     infCpl: null,
 
-    // operacao.timestamp is milliseconds since epoch now (regraImposto below
-    // keeps ISO `now` until its own batch).
-    timestamp: Date.now(),
+    timestamp: now,
   });
 
   // Seed the regraImposto rule under this operação. The resolver

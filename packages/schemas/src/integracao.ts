@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './datetime';
 import type { CollectionMetadata } from './types';
 
 const PERM_INTEGRACAO_READ = 1n << 56n;
@@ -99,7 +100,7 @@ export const integracaoSchema = z
     operacaoDevolucaoOuterRef: z.unknown().nullable().default(null),
     depositoOuterRef: z.unknown(),
 
-    dataCadastro: z.string().datetime().nullable().default(null),
+    dataCadastro: millisSinceEpoch().nullable().default(null),
   })
   .passthrough();
 
