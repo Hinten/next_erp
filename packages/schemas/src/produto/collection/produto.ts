@@ -58,8 +58,10 @@ export const produtoSchema = z
     publicado: z.boolean().default(true),
     ofereceFreteGratis: z.boolean().default(false),
     permiteVendaSemEstoque: z.boolean().default(false),
-    // "Produto usado" flag — nullable bool (Flutter `writeNotNull` / `as bool?`).
-    ehUsado: z.boolean().nullable().default(null),
+    // "Produto usado" — Flutter reads `as bool?`, but we default to false like
+    // the other flags so the ObjectView switch can't be left in an unclearable
+    // null; an absent Flutter value reads back as false.
+    ehUsado: z.boolean().default(false),
     crossdocking: z.number().int().min(0).nullable().default(null),
 
     // Pricing — `precos` keyed by ListaDePrecos doc id; `custo` feeds the

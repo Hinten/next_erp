@@ -4,7 +4,8 @@ import { useState } from 'react';
 import { ActionIcon, TextInput, Tooltip } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconRefresh } from '@tabler/icons-react';
-import { getDocs } from 'firebase/firestore';
+import { FirebaseError } from 'firebase/app';
+import { getDocsFromServer } from 'firebase/firestore';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import type { FieldConfig, FieldRenderProps } from '@delfrance/ui';
 import { produtoCollection } from '@/lib/data/produtoCollection';
@@ -18,7 +19,10 @@ async function generateUniqueSku(): Promise<string | null> {
   const db = getFirebaseFirestore();
   for (let i = 0; i < MAX_TRIES; i += 1) {
     const candidate = String(Math.floor(Math.random() * 999_999_999));
-    const snap = await getDocs(
+    // Server read (fail-closed): a cache-served empty result could let us mint a
+    // SKU that already exists. A probe error means we can't guarantee
+    // uniqueness, so it propagates to the caller as a generation failure.
+    const snap = await getDocsFromServer(
       buildQuery(produtoCollection.ref(db, {}), [whereEqual('sku', candidate), limit(1)]),
     );
     if (snap.empty) return candidate;
@@ -36,6 +40,15 @@ function SkuField(props: FieldRenderProps) {
       const sku = await generateUniqueSku();
       if (sku) props.onChange(sku);
       else notifications.show({ color: 'red', message: 'Não foi possível gerar um SKU único.' });
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        notifications.show({
+          color: 'red',
+          message: 'Não foi possível verificar a unicidade do SKU. Tente novamente.',
+        });
+      } else {
+        throw err;
+      }
     } finally {
       setGenerating(false);
     }

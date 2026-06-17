@@ -121,7 +121,7 @@ service cloud.firestore {
         && (!c.hasAny(['custo']) || (d.get('custo', null) == null || (d.get('custo', null) is number && d.get('custo', null) >= 0)))
         && (!c.hasAny(['ehKit']) || d.get('ehKit', null) is bool)
         && (!c.hasAny(['ehKitVirtual']) || d.get('ehKitVirtual', null) is bool)
-        && (!c.hasAny(['ehUsado']) || (d.get('ehUsado', null) == null || d.get('ehUsado', null) is bool))
+        && (!c.hasAny(['ehUsado']) || d.get('ehUsado', null) is bool)
         && (!c.hasAny(['fotos']) || (d.get('fotos', null) == null || d.get('fotos', null) is list))
         && (!c.hasAny(['fotosArquivosIds']) || (d.get('fotosArquivosIds', null) == null || d.get('fotosArquivosIds', null) is list))
         && (!c.hasAny(['grupoDeVariacoesUid']) || (d.get('grupoDeVariacoesUid', null) == null || d.get('grupoDeVariacoesUid', null) is list))
