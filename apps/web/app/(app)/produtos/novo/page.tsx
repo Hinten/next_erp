@@ -4,21 +4,20 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button, Stack } from '@mantine/core';
-import { writeBatch } from 'firebase/firestore';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import {
   type Foto,
   type PrecosMap,
   type Video,
-  diffPrecos,
+  produtoPageIssues,
   produtoSchema,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
+import { applyPrecosChange, recordCustoHistory } from '@delfrance/data/produto';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
-import { appendPrecoHistory } from '@/lib/produtos/precoHistory';
-import { appendCustoHistory } from '@/lib/produtos/custoHistory';
+import { createClientProdutoPort } from '@/lib/produtos/clientPort';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
 import { PhotoManager } from '../_components/PhotoManager';
@@ -38,6 +37,7 @@ export default function NovoProdutoPage() {
   const { user } = useAuth();
   const db = getFirebaseFirestore();
   const storage = getFirebaseStorage();
+  const port = useMemo(() => createClientProdutoPort(db), [db]);
 
   // Listas de preços (live, bounded) — the Preço e custo tab is editable
   // before the first save (precos is a doc field, unlike fotos).
@@ -158,19 +158,24 @@ export default function NovoProdutoPage() {
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
         saveLabel="Criar"
         showSaveAndContinue={false}
+        validate={(values) =>
+          produtoPageIssues({
+            ehKit: values.ehKit as boolean | null,
+            componentesKit: values.componentesKit as Record<string, { quantidade: number }> | null,
+          })
+        }
         onAfterSave={async (id, values) => {
           // First save of a produto born with prices/cost → initial history
-          // records, mirroring Flutter's oldPrecos-null branch. `values` is what
-          // was just persisted. New produtos have no variation children yet, so
-          // there's nothing to propagate.
-          const changes = diffPrecos(null, (values.precos as PrecosMap) ?? null);
+          // records (Flutter's oldPrecos-null branch). New produtos have no
+          // variation children yet, so the propagation inside applyPrecosChange
+          // is a no-op.
+          await applyPrecosChange(port, {
+            produtoId: id,
+            oldPrecos: null,
+            newPrecos: (values.precos as PrecosMap) ?? null,
+          });
           const custo = typeof values.custo === 'number' ? values.custo : null;
-          if (changes.length > 0 || custo !== null) {
-            const batch = writeBatch(db);
-            if (changes.length > 0) appendPrecoHistory(batch, db, id, changes);
-            if (custo !== null) appendCustoHistory(batch, db, id, custo);
-            await batch.commit();
-          }
+          if (custo !== null) await recordCustoHistory(port, id, custo);
         }}
         onSaved={(id) => router.replace(`/produtos/${id}/editar`)}
       />
