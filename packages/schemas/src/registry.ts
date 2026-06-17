@@ -29,6 +29,8 @@ import { impostoProduto } from './impostoProduto';
 import { impostoCategoria } from './impostoCategoria';
 import { regraImposto } from './regraImposto';
 import { historicoPreco, historicoCusto } from './historicos';
+import { produtoExtraData } from './produtoExtraData';
+import { estoqueProduto } from './estoqueProduto';
 import { arquivo } from './storage/arquivo';
 
 /**
@@ -75,5 +77,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   regraImposto,
   historicoPreco,
   historicoCusto,
+  produtoExtraData,
+  estoqueProduto,
   arquivo,
 ];

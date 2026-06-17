@@ -1,4 +1,5 @@
 import type { FormulaCalculoPreco, ListaDePrecos } from './listaDePrecos';
+import type { ComponentesKit } from './kit';
 import type { Preco } from './produto';
 
 /**
@@ -259,4 +260,50 @@ export function diffPrecos(oldPrecos: PrecosMap, newPrecos: PrecosMap): PrecoCha
     }
   }
   return changes;
+}
+
+// ---------------------------------------------------------------------------
+// Kit cost
+// ---------------------------------------------------------------------------
+
+/** Result of {@link custoDoKit}. */
+export interface CustoKitResult {
+  /** Total kit cost (2-decimal), or null when it cannot be fully computed. */
+  custo: number | null;
+  /** Component produto ids whose cost could not be resolved. */
+  faltando: string[];
+}
+
+/**
+ * Sum a kit's component costs — pure port of the kit branch of Flutter's
+ * `Produto.custoProdutoContabilizandoKit` (`models.dart:1265-1290`):
+ * `Σ custo(component) × quantidade`, rounded to 2 decimals. Unlike the Flutter
+ * getter — which reads each component (and its parent) from Firestore inline and
+ * throws on a missing cost — this is pure: the caller resolves component costs
+ * up front (one batched read) into `custoByProdutoId`, and a component with no
+ * resolvable cost is reported in `faltando` (cost stays null) instead of
+ * throwing, so the page can surface it as a validation error.
+ *
+ * Empty/absent `componentes` → `{ custo: null, faltando: [] }` (Flutter returns
+ * null for a kit with no components).
+ */
+export function custoDoKit(
+  componentes: ComponentesKit | null | undefined,
+  custoByProdutoId: Record<string, number | null | undefined>,
+): CustoKitResult {
+  const entries = Object.entries(componentes ?? {});
+  if (entries.length === 0) return { custo: null, faltando: [] };
+
+  const faltando: string[] = [];
+  let total = 0;
+  for (const [produtoId, kit] of entries) {
+    const custo = custoByProdutoId[produtoId];
+    if (custo === null || custo === undefined) {
+      faltando.push(produtoId);
+      continue;
+    }
+    total += custo * kit.quantidade;
+  }
+  if (faltando.length > 0) return { custo: null, faltando };
+  return { custo: round2(total), faltando: [] };
 }

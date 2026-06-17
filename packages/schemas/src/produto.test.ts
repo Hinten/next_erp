@@ -28,16 +28,20 @@ describe('produtoSchema', () => {
     expect(produtoSchema.safeParse({ nome: 'X', crossdocking: -1 }).success).toBe(false);
   });
 
-  it('passes complex nested fields through unchanged (passthrough)', () => {
-    const componentes = { 'sku-a': { qty: 2 } };
+  it('parses componentesKit against kitSchema and preserves unknown top-level fields', () => {
     const parsed = produtoSchema.parse({
       nome: 'Kit',
       ehKit: true,
-      componentesKit: componentes,
+      componentesKit: { 'sku-a': { quantidade: 2 } },
       // unknown extra field — should be preserved by .passthrough()
       _customField: 'whatever',
     });
-    expect(parsed.componentesKit).toEqual(componentes);
+    // componentesKit is now typed: kitSchema fills its defaults.
+    expect(parsed.componentesKit?.['sku-a']).toMatchObject({
+      quantidade: 2,
+      limitarEstoque: true,
+      timestamp: null,
+    });
     expect((parsed as Record<string, unknown>)._customField).toBe('whatever');
   });
 

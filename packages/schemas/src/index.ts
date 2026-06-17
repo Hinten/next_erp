@@ -70,9 +70,55 @@ export {
   temFormulas,
   samePrecos,
   diffPrecos,
+  custoDoKit,
   type PrecosMap,
   type PrecoChange,
+  type CustoKitResult,
 } from './precoCalculo';
+
+export { kitSchema, componentesKitSchema, type Kit, type ComponentesKit } from './kit';
+
+export { anexoSchema, type Anexo } from './anexo';
+
+export {
+  produtoExtraData,
+  produtoExtraDataSchema,
+  produtoExtraDataMeta,
+  googleMerchantDataSchema,
+  condicaoProdutoSchema,
+  googleAgeGroupSchema,
+  googleGenderSchema,
+  CONDICAO_PRODUTO,
+  CONDICAO_PRODUTO_LABELS,
+  GOOGLE_AGE_GROUP_LABELS,
+  GOOGLE_GENDER_LABELS,
+  PRODUTO_EXTRA_DATA_DOC_ID,
+  type ProdutoExtraData,
+  type GoogleMerchantData,
+  type CondicaoProduto,
+  type GoogleAgeGroup,
+  type GoogleGender,
+} from './produtoExtraData';
+
+export {
+  estoqueProduto,
+  estoqueProdutoSchema,
+  estoqueProdutoMeta,
+  estoqueDisponivel,
+  makeEstoqueUid,
+  type EstoqueProduto,
+} from './estoqueProduto';
+
+export {
+  produtoPageBaseSchema,
+  produtoPageSchema,
+  produtoPageIssues,
+  refineProdutoPage,
+  type ProdutoPage,
+  type ProdutoPageBase,
+  type ProdutoPageIssue,
+  type ProdutoPageValidationInput,
+} from './pageModel/produtoPage';
 
 export {
   produtoMercadoLivre,
