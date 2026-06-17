@@ -112,4 +112,15 @@ describe('safe-integer headroom', () => {
   it('the unit bounds leave an undeterminable gap', () => {
     expect(MILLIS_UPPER_BOUND).toBeLessThan(MICROS_LOWER_BOUND);
   });
+
+  it('scaling the largest classifiable millisecond value to µs stays safe', () => {
+    // The cap exists so ms × 1000 never overflows Number.MAX_SAFE_INTEGER.
+    expect(MILLIS_UPPER_BOUND * 1000).toBeLessThan(Number.MAX_SAFE_INTEGER);
+  });
+
+  it('refuses a millisecond value large enough to overflow µs (no silent precision loss)', () => {
+    const farFutureMs = 1.05e13; // ~year 2302 in ms — above the cap
+    expect(farFutureMs * 1000).toBeGreaterThan(Number.MAX_SAFE_INTEGER);
+    expect(coerceToMicros(farFutureMs)).toBeNull();
+  });
 });

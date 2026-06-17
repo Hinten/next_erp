@@ -27,6 +27,12 @@ describe('microsSinceEpoch', () => {
     expect(() => microsSinceEpoch().parse('garbage')).toThrow();
   });
 
+  it('rejects a number in the undeterminable ms/µs gap (not silently accepted)', () => {
+    // 5e13 sits between MILLIS_UPPER_BOUND and MICROS_LOWER_BOUND — coerce
+    // refuses it, so the builder must reject rather than store a raw int.
+    expect(() => microsSinceEpoch().parse(5e13)).toThrow();
+  });
+
   it('carries datetime UI metadata in describe()', () => {
     const meta = JSON.parse(microsSinceEpoch('Criação').description ?? '{}');
     expect(meta).toMatchObject({ kind: 'datetime', unit: 'us', label: 'Criação' });

@@ -36,11 +36,14 @@ export type MicrosSinceEpoch = number;
 export const MICROS_LOWER_BOUND = 1e14;
 /**
  * A stored numeric epoch at or below this is treated as milliseconds
- * (1e13 ms ≈ year 2286). The open gap `(MILLIS_UPPER_BOUND, MICROS_LOWER_BOUND)`
- * is unreachable by any plausible ERP timestamp in either unit, so a value
- * landing there is treated as undeterminable rather than guessed.
+ * (9e12 ms ≈ year 2255). Capped so that scaling a millisecond value up to
+ * microseconds (`× 1000` = 9e15) stays below `Number.MAX_SAFE_INTEGER`
+ * (≈ 9.007e15) — a larger "ms" value would lose precision on conversion, so it
+ * is treated as undeterminable instead of silently scaled. The open gap
+ * `(MILLIS_UPPER_BOUND, MICROS_LOWER_BOUND)` is unreachable by any plausible
+ * ERP timestamp in either unit.
  */
-export const MILLIS_UPPER_BOUND = 1e13;
+export const MILLIS_UPPER_BOUND = 9e12;
 
 /* --------------------------------- now ----------------------------------- */
 

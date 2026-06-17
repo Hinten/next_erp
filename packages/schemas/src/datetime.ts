@@ -36,12 +36,15 @@ function describeJson(unit: 'ms' | 'us', label?: string): string {
 /**
  * Tolerant preprocess: pass null/undefined through to the outer
  * nullable/default/required handling; coerce everything else to the target
- * unit. On an unparseable value `coerce` returns null, so we return the raw
- * input and let `z.number().int()` reject it (a clear error on write, a soft
- * log on read) rather than silently nulling data.
+ * unit. When `coerce` refuses a non-null value (unparseable, out of safe
+ * range, or a number in the undeterminable ms/µs gap) it returns null — we
+ * substitute `NaN` so `z.number().int()` rejects it (a clear error on write, a
+ * soft log on read) rather than silently accepting an unclassifiable epoch.
+ * `?? NaN` (not `?? v`) is the fix: a raw dead-zone *number* would otherwise
+ * pass `z.number().int()` as a valid integer.
  */
 function tolerant(coerce: (v: unknown) => number | null) {
-  return (v: unknown): unknown => (v == null ? v : (coerce(v) ?? v));
+  return (v: unknown): unknown => (v == null ? v : (coerce(v) ?? Number.NaN));
 }
 
 /** Milliseconds since epoch. Tolerant read; renders as a date in the UI. */
