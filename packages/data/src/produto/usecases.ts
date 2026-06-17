@@ -8,7 +8,7 @@ import {
   type PrecoChange,
   type PrecosMap,
 } from '@delfrance/schemas';
-import type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
+import type { ProdutoDataPort, ProdutoWriteOp } from './port';
 
 // ---------------------------------------------------------------------------
 // Paths (derived from the schema metas so they can never drift from the rules)
