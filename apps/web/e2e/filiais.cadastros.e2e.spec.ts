@@ -122,6 +122,11 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await fillField(page, 'CNPJ', '11222333000181');
     await fillField(page, 'Inscrição Estadual', '123456789');
     await fillSede(page);
+    // The sede reuses the shared endereço config: the CEP carries the "Buscar
+    // CEP" (ViaCEP) lookup, and the technical fields are hidden.
+    await expect(page.getByRole('button', { name: 'Buscar CEP' })).toBeVisible();
+    await expect(page.getByLabel('País', { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel('Código do Município', { exact: true })).toHaveCount(0);
     await clickSave(page, 'Criar');
     await page.waitForURL(
       (url) =>
