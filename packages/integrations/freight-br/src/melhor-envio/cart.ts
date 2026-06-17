@@ -114,17 +114,22 @@ export function buildCartItem(p: BuildCartItemParams): CartInsertRequest {
   const insuranceValue = p.options?.insuranceValue ?? 0;
   const tags = p.options?.pedidoNumero != null ? [{ tag: `Pedido ${p.options.pedidoNumero}` }] : [];
 
+  // Normalize once so `non_commercial` and the `invoice` block can never
+  // disagree: a blank/whitespace key (common from optional form fields) is
+  // treated as "no NF-e", i.e. non_commercial true and no invoice attached.
+  const invoiceKey = (p.options?.invoiceKey ?? '').trim() || null;
+
   const options: Record<string, unknown> = {
     // Floor of 1 — ME rejects a 0 insurance value.
     insurance_value: insuranceValue >= 1 ? insuranceValue : 1,
     receipt: p.options?.receipt ?? false,
     own_hand: p.options?.ownHand ?? false,
     reverse,
-    non_commercial: p.options?.invoiceKey == null,
+    non_commercial: invoiceKey == null,
     platform: p.options?.platform ?? DEFAULT_PLATFORM,
     tags,
   };
-  if (p.options?.invoiceKey) options.invoice = { key: p.options.invoiceKey };
+  if (invoiceKey) options.invoice = { key: invoiceKey };
 
   const payload: Record<string, unknown> = {
     service: p.service,

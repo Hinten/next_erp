@@ -101,6 +101,16 @@ describe('buildCartItem', () => {
     expect(payload.options.invoice).toEqual({ key: '3526'.padEnd(44, '0') });
   });
 
+  it('treats a blank invoice key as no NF-e (non_commercial true, no invoice block)', () => {
+    const payload = buildCartItem(params({ options: { invoiceKey: '   ' } })) as Record<
+      string,
+      any
+    >;
+
+    expect(payload.options.non_commercial).toBe(true);
+    expect(payload.options.invoice).toBeUndefined();
+  });
+
   it('caps the address line at 39 chars and the product name at 50', () => {
     const longAddress = 'A'.repeat(60);
     const longName = 'P'.repeat(70);
