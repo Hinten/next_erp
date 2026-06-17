@@ -63,3 +63,18 @@ export class MelhorEnvioReauthRequiredError extends MelhorEnvioError {
     this.body = body;
   }
 }
+
+/**
+ * The label can't continue through the buy pipeline because Melhor Envio has
+ * it in a terminal state — `canceled` or `suspended`. Re-buying requires a
+ * fresh label (a new `printLabelId`); the route layer maps this to HTTP 409
+ * so the UI can prompt the user to start over.
+ */
+export class MelhorEnvioLabelTerminalError extends MelhorEnvioError {
+  public readonly reason: 'canceled' | 'suspended';
+  constructor(reason: 'canceled' | 'suspended', message: string) {
+    super(message);
+    this.name = 'MelhorEnvioLabelTerminalError';
+    this.reason = reason;
+  }
+}
