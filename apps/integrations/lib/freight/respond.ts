@@ -9,6 +9,7 @@ import { NextResponse } from 'next/server';
 import {
   MelhorEnvioError,
   MelhorEnvioHttpError,
+  MelhorEnvioLabelTerminalError,
   MelhorEnvioReauthRequiredError,
   MelhorEnvioValidationError,
 } from '@delfrance/integrations-freight-br';
@@ -36,6 +37,13 @@ export function melhorEnvioErrorResponse(err: KnownError): NextResponse {
   if (err instanceof MelhorEnvioReauthRequiredError) {
     return NextResponse.json(
       { error: err.message, code: 'ME_REAUTH', reason: err.reason },
+      { status: 409 },
+    );
+  }
+  if (err instanceof MelhorEnvioLabelTerminalError) {
+    // The label is canceled/suspended at ME — re-buying needs a fresh label.
+    return NextResponse.json(
+      { error: err.message, code: 'ME_LABEL_TERMINAL', reason: err.reason },
       { status: 409 },
     );
   }

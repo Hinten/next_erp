@@ -4,6 +4,7 @@ import { mockFetch } from '../_helpers/mockFetch';
 import { createFreightHttpClient } from '../../src/http-client/client';
 import {
   FreightAuthError,
+  FreightLabelTerminalError,
   FreightNetworkError,
   FreightNotFoundError,
   FreightReauthRequiredError,
@@ -95,5 +96,56 @@ describe('FreightHttpClient error mapping', () => {
       .conta('int-1')
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(FreightNetworkError);
+  });
+
+  it('maps 409 ME_LABEL_TERMINAL → FreightLabelTerminalError (not reauth)', async () => {
+    const body = { error: 'cancelada', code: 'ME_LABEL_TERMINAL', reason: 'canceled' };
+    const fetchMock = mockFetch(async () => new Response(JSON.stringify(body), { status: 409 }));
+    const err = await client(fetchMock)
+      .comprar('int-1', 'ped-1', { service: 3 })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FreightLabelTerminalError);
+    expect((err as FreightLabelTerminalError).reason).toBe('canceled');
+  });
+});
+
+describe('FreightHttpClient label methods', () => {
+  it('comprar POSTs the cart payload + pedido id and returns the bought label', async () => {
+    const body = {
+      printLabelId: 'label-1',
+      printUrl: 'https://sandbox/imprimir/abc',
+      tracking: 'ME123BR',
+      estado: 'aguardandoPostagem',
+    };
+    const fetchMock = mockFetch(async () => new Response(JSON.stringify(body), { status: 200 }));
+    const out = await client(fetchMock).comprar('int-1', 'ped-1', { service: 3 }, 'resume-1');
+
+    expect(out.printLabelId).toBe('label-1');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:3001/api/freight/melhor-envio/comprar');
+    expect(JSON.parse(init?.body as string)).toEqual({
+      intFreteId: 'int-1',
+      pedidoId: 'ped-1',
+      cartPayload: { service: 3 },
+      printLabelId: 'resume-1',
+    });
+  });
+
+  it('imprimir returns the label URL', async () => {
+    const fetchMock = mockFetch(
+      async () =>
+        new Response(JSON.stringify({ url: 'https://sandbox/imprimir/abc' }), { status: 200 }),
+    );
+    const out = await client(fetchMock).imprimir('int-1', 'label-1');
+    expect(out.url).toBe('https://sandbox/imprimir/abc');
+    const [url] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('http://localhost:3001/api/freight/melhor-envio/imprimir');
+  });
+
+  it('rastrear returns the tracking payload', async () => {
+    const body = { tracking: { 'label-1': { status: 'posted' } } };
+    const fetchMock = mockFetch(async () => new Response(JSON.stringify(body), { status: 200 }));
+    const out = await client(fetchMock).rastrear('int-1', 'label-1');
+    expect(out.tracking).toEqual({ 'label-1': { status: 'posted' } });
   });
 });

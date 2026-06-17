@@ -67,6 +67,21 @@ export class FreightValidationError extends FreightHttpError {
   }
 }
 
+/**
+ * 409 `{ code: 'ME_LABEL_TERMINAL' }` — the label is canceled/suspended at
+ * Melhor Envio, so the buy pipeline can't continue. Distinct from
+ * `FreightReauthRequiredError` (also 409): the UI prompts the user to generate
+ * a fresh label rather than to reconnect the account.
+ */
+export class FreightLabelTerminalError extends FreightHttpError {
+  public readonly reason: string | undefined;
+  constructor(message: string, reason: string | undefined, body: unknown) {
+    super(message, 409, body);
+    this.name = 'FreightLabelTerminalError';
+    this.reason = reason;
+  }
+}
+
 /** 5xx — internal `apps/integrations` failure. */
 export class FreightServerError extends FreightHttpError {
   constructor(message: string, status: number, body: unknown) {
