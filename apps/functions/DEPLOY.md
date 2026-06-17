@@ -23,9 +23,8 @@ environment via the `FUNCTIONS_REGION` env var.
 ## Deploy lane
 
 **One command.** The deploy config carries a `predeploy` hook that runs
-`scripts/prepare-deploy.mjs`, regenerating the deploy artifact in
-`apps/functions/.deploy/` first — so the build can't be skipped and a stale/missing
-bundle can't ship:
+`scripts/prepare-deploy.mjs`, regenerating the deploy artifact in `.deploy/functions/`
+first — so the build can't be skipped and a stale/missing bundle can't ship:
 
 ```bash
 firebase deploy --only functions:storage \
