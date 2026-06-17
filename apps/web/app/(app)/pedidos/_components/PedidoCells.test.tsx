@@ -100,6 +100,7 @@ function makeNFe(
     xml_assinado: null,
     nRec: null,
     retries: null,
+    proximaConsultaEm: null,
     cStat: null,
     xMotivo: null,
     cMsg: null,

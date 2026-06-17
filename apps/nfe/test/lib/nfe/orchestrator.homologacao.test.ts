@@ -51,6 +51,8 @@ import {
   emitirPedidosLote,
   inutilizarNumeracao,
 } from '../../../lib/nfe/orchestrator';
+import { reconcileByRecibo } from '../../../lib/nfe/orchestrator/reconcile';
+import { resolveFilialRuntime } from '../../../lib/nfe/filial-cert';
 import {
   __resetNFeRuntimeForTests,
   getNFeRuntime,
@@ -525,16 +527,45 @@ describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
     const batch = await emitirPedidosLote(fs, rt, PARALLEL_PEDIDO_IDS);
     shieldBatch(batch.results, 'batch-parallel-10');
 
-    // Outcome shape — every pedido aprovada, all fresh.
+    // Immediate hand-off: a 10-pedido lote is async (indSinc='0'), so emit
+    // returns `aguardandoResposta` + a shared nRec at once — no in-request
+    // poll. Authorization is confirmed below by the reconciler (the same
+    // consult-by-recibo path the Cloud Task / backstop sweep runs).
     expect(batch.results).toHaveLength(10);
+    const nRecs = new Set<string>();
     for (const r of batch.results) {
       expect('estado' in r).toBe(true);
       if ('estado' in r) {
-        expect(r.estado).toBe(ESTADO_NFE.aprovada);
+        expect(r.estado).toBe(ESTADO_NFE.aguardandoResposta);
         expect(r.reused).toBe(false);
         expect(r.chave).toMatch(/^\d{44}$/);
+        expect(r.nRec).toBeTruthy();
+        if (r.nRec) nRecs.add(r.nRec);
       }
     }
+    // One chunk = one lote = one receipt shared by all 10.
+    expect(nRecs.size).toBe(1);
+    const nRec = [...nRecs][0]!;
+
+    // Drive the reconcile loop to confirm all 10 reach aprovada. Consult by
+    // recibo with a small backoff (respecting tMed so we never trip cStat=656).
+    const filialRt = await resolveFilialRuntime(fs, rt, FILIAL_ID);
+    let recovered = 0;
+    for (let attempt = 0; attempt < 12; attempt++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const rec = await reconcileByRecibo({
+        fs,
+        rt: filialRt,
+        filialId: FILIAL_ID,
+        nRec,
+        tpEmis: 1,
+        attempt,
+      });
+      expect(rec.errored).toBe(0); // a 656 or cap-exceeded here is a real failure
+      recovered += rec.recovered;
+      if (rec.stillPending === 0) break;
+    }
+    expect(recovered).toBe(10);
 
     // nNF extraction — positions 25..34 (9-digit nNF field inside the
     // 44-digit chave). All 10 must be distinct AND form a consecutive
