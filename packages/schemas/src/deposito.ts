@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './datetime';
 import type { CollectionMetadata } from './types';
 
 // Mirror `PERM.estoque` from @delfrance/auth; duplicated locally to avoid a
@@ -14,10 +15,11 @@ const PERM_ESTOQUE_DELETE = 1n << 66n;
 export const depositoSchema = z.object({
   nome: z.string().min(1).max(255).describe('Nome'),
   ativo: z.boolean().default(true).describe('Ativo'),
-  timestamp: z.string().datetime().nullable().optional(),
+  // Milliseconds since epoch (numeric-epoch standard); reads tolerantly.
+  timestamp: millisSinceEpoch().nullable().optional(),
   // System field — stamped by `saveRecord` on every write so the TableView
   // update-monitor sees edits.
-  ultimaModificacao: z.string().datetime().nullable().optional(),
+  ultimaModificacao: millisSinceEpoch().nullable().optional(),
 });
 
 export type Deposito = z.infer<typeof depositoSchema>;

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { clienteFormSchema } from '@delfrance/schemas';
+import { nowMillis } from '@delfrance/core/datetime';
 import { ObjectView } from '@delfrance/ui';
 import { CpfCnpjField } from '@/components/inputs/CpfCnpjInput';
 import { TelefoneField, prepareForSaveTelefone } from '@/components/inputs/TelefoneInput';
@@ -35,7 +36,7 @@ export default function NovoClientePage() {
         collection={clienteCollection}
         db={getFirebaseFirestore()}
         currentUserUid={user?.uid ?? ''}
-        defaultValues={{ timestamp: new Date().toISOString() }}
+        defaultValues={{ timestamp: nowMillis() }}
         excludedFields={[
           'timestamp',
           'ultimaModificacao',

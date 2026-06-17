@@ -98,7 +98,7 @@ export async function seedClientes(prefix: string, n: number): Promise<void> {
       email: i % 2 === 0 ? `${prefix}-${pad(i)}@example.com` : null,
       telefone: null,
       observacoesInternas: null,
-      timestamp: new Date().toISOString(),
+      timestamp: Date.now(),
       nome_embedding: null,
       telefone_embedding: null,
       userCliente: null,
@@ -121,7 +121,7 @@ export async function seedCategorias(prefix: string, n: number): Promise<void> {
       permiteCadastro: i % 2 === 0,
       categoriaGoogleId: null,
       categoriaPaiOuterRef: null,
-      timestamp: new Date().toISOString(),
+      timestamp: Date.now(),
     });
   }
   await batch.commit();
@@ -138,7 +138,7 @@ export async function seedDepositos(prefix: string, n: number): Promise<void> {
     batch.set(col.doc(`${prefix}-${pad(i)}`), {
       nome: `${prefix}-${pad(i)}`,
       ativo: i % 2 === 0,
-      timestamp: new Date().toISOString(),
+      timestamp: Date.now(),
     });
   }
   await batch.commit();
@@ -518,7 +518,7 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     email: null,
     telefone: null,
     observacoesInternas: null,
-    timestamp: new Date().toISOString(),
+    timestamp: Date.now(),
     nome_embedding: null,
     telefone_embedding: null,
     userCliente: null,

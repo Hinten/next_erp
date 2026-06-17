@@ -328,7 +328,7 @@ async function writeCliente(): Promise<void> {
     email: 'dev-pedidos@example.com',
     telefone: '11999990000',
     observacoesInternas: null,
-    timestamp: new Date().toISOString(),
+    timestamp: Date.now(),
     nome_embedding: null,
     telefone_embedding: null,
     userCliente: null,

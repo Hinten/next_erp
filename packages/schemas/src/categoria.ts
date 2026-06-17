@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './datetime';
 import type { CollectionMetadata } from './types';
 
 const PERM_CATEGORIA_READ = 1n << 11n;
@@ -19,10 +20,11 @@ export const categoriaSchema = z.object({
   permiteCadastro: z.boolean().default(true).describe('Permite cadastro'),
   categoriaGoogleId: z.string().nullable().default(null).describe('Google Product Category ID'),
   categoriaPaiOuterRef: z.unknown().nullable().default(null),
-  timestamp: z.string().datetime().nullable().default(null),
+  // Milliseconds since epoch (numeric-epoch standard); reads tolerantly.
+  timestamp: millisSinceEpoch().nullable().default(null),
   // System field — creation stays in `timestamp`; this is stamped by
   // `saveRecord` on every write so the TableView update-monitor sees edits.
-  ultimaModificacao: z.string().datetime().nullable().optional(),
+  ultimaModificacao: millisSinceEpoch().nullable().optional(),
 });
 
 export type Categoria = z.infer<typeof categoriaSchema>;

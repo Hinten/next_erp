@@ -27,7 +27,8 @@ describe('clienteSchema', () => {
     expect(out.email).toBe(input.email);
     expect(out.telefone).toBe(input.telefone);
     expect(out.observacoesInternas).toBe(input.observacoesInternas);
-    expect(out.timestamp).toBe(input.timestamp);
+    // timestamp is millisSinceEpoch() now: a legacy ISO string coerces to ms.
+    expect(out.timestamp).toBe(Date.parse(input.timestamp));
     // Unset fields default to null
     expect(out.idEstrangeiro).toBeNull();
     expect(out.ie).toBeNull();
