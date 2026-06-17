@@ -262,7 +262,7 @@ export function VariationManager({
    * Pricing parity: children CREATED here carry the PARENT's `precos` (with
    * their initial history records — `produtoTableProvider.dart:497`). Refreshing
    * the precos of EXISTING children when the parent's map changes happens at the
-   * page layer (`propagateParentPrecosToChildren`) so it fires even when the
+   * page layer (the `applyPrecosChange` use-case) so it fires even when the
    * Variações tab — and therefore this manager's live children snapshot — was
    * never opened.
    */
