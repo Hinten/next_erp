@@ -15,10 +15,18 @@ import {
   type Balance,
   type CalculateRequest,
   type CalculateResponse,
+  type CartInsertRequest,
+  type CartItem,
   type Me,
+  type Order,
+  type PrintResponse,
   balanceSchema,
   calculateResponseSchema,
+  cartItemSchema,
   meSchema,
+  opaqueResponseSchema,
+  orderSchema,
+  printResponseSchema,
   validationErrorSchema,
 } from './types';
 import type { z } from 'zod';
@@ -40,6 +48,18 @@ export interface MelhorEnvioApi {
   getMe(): Promise<Me>;
   /** `GET /api/v2/me/balance` — wallet balance. */
   getBalance(): Promise<Balance>;
+  /** `POST /api/v2/me/cart` — insert a freight item, returns the label/order. */
+  addToCart(req: CartInsertRequest): Promise<CartItem>;
+  /** `GET /api/v2/me/orders/{id}` — current state of a label/order. */
+  getOrder(id: string): Promise<Order>;
+  /** `POST /api/v2/me/shipment/checkout` — buy labels (spends wallet balance). */
+  checkout(orderIds: readonly string[]): Promise<unknown>;
+  /** `POST /api/v2/me/shipment/generate` — generate the bought labels. */
+  generate(orderIds: readonly string[]): Promise<unknown>;
+  /** `POST /api/v2/me/shipment/print` — printable label URL `{ url }`. */
+  print(orderIds: readonly string[]): Promise<PrintResponse>;
+  /** `POST /api/v2/me/shipment/tracking` — tracking info, keyed by order id. */
+  tracking(orderIds: readonly string[]): Promise<unknown>;
 }
 
 export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioApi {
@@ -111,5 +131,24 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
       ),
     getMe: () => request<Me>('GET', '/api/v2/me', meSchema),
     getBalance: () => request<Balance>('GET', '/api/v2/me/balance', balanceSchema),
+    addToCart: (req) => request<CartItem>('POST', '/api/v2/me/cart', cartItemSchema, req),
+    getOrder: (id) =>
+      request<Order>('GET', `/api/v2/me/orders/${encodeURIComponent(id)}`, orderSchema),
+    checkout: (orderIds) =>
+      request<unknown>('POST', '/api/v2/me/shipment/checkout', opaqueResponseSchema, {
+        orders: [...orderIds],
+      }),
+    generate: (orderIds) =>
+      request<unknown>('POST', '/api/v2/me/shipment/generate', opaqueResponseSchema, {
+        orders: [...orderIds],
+      }),
+    print: (orderIds) =>
+      request<PrintResponse>('POST', '/api/v2/me/shipment/print', printResponseSchema, {
+        orders: [...orderIds],
+      }),
+    tracking: (orderIds) =>
+      request<unknown>('POST', '/api/v2/me/shipment/tracking', opaqueResponseSchema, {
+        orders: [...orderIds],
+      }),
   };
 }

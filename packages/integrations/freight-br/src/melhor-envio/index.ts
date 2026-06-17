@@ -10,3 +10,4 @@ export * from './oauth';
 export * from './token-store';
 export * from './api';
 export * from './calculate';
+export * from './comprarEtiqueta';

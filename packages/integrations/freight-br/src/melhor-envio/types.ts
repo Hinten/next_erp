@@ -170,3 +170,73 @@ export const balanceSchema = z
   })
   .passthrough();
 export type Balance = z.infer<typeof balanceSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                          Etiqueta (label) flow                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `GET /api/v2/me/orders/{id}` — a Melhor Envio order/label. Only the fields
+ * the buy pipeline + the webhook status map read are modeled; `.passthrough()`
+ * keeps ME's large payload (from/to/service/invoice/…). The lifecycle is
+ * encoded as nullable timestamp strings: a non-null `paid_at`/`generated_at`
+ * means that step is done; `canceled_at`/`suspended_at` are terminal.
+ */
+export const orderSchema = z
+  .object({
+    id: z.string(),
+    protocol: z.string().nullable().optional(),
+    status: z.string().nullable().optional(),
+    tracking: z.string().nullable().optional(),
+    self_tracking: z.string().nullable().optional(),
+    paid_at: z.string().nullable().optional(),
+    generated_at: z.string().nullable().optional(),
+    posted_at: z.string().nullable().optional(),
+    delivered_at: z.string().nullable().optional(),
+    canceled_at: z.string().nullable().optional(),
+    suspended_at: z.string().nullable().optional(),
+    expired_at: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type Order = z.infer<typeof orderSchema>;
+
+/**
+ * `POST /api/v2/me/cart` (201) — the inserted cart item. The pipeline only
+ * needs `id` (the label/order id it then checks out, generates and prints).
+ * Monetary fields (`price`/`quote`) are intentionally NOT modeled: Melhor Envio
+ * types them inconsistently across endpoints (strings in `calculate`, numbers
+ * in the cart 201), so a fixed type would risk a parse failure — `.passthrough()`
+ * keeps them available untyped for any caller that wants them.
+ */
+export const cartItemSchema = z
+  .object({
+    id: z.string(),
+    protocol: z.string().nullable().optional(),
+    status: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type CartItem = z.infer<typeof cartItemSchema>;
+
+/**
+ * `POST /api/v2/me/cart` request. The full body (from/to/products/volumes/
+ * options) is a domain mapping built server-side from the pedido + frete — the
+ * package stays domain-neutral, so only the `service` ME requires is modeled
+ * and the rest passes through.
+ */
+export const cartInsertRequestSchema = z
+  .object({
+    service: z.number(),
+  })
+  .passthrough();
+export type CartInsertRequest = z.infer<typeof cartInsertRequestSchema>;
+
+/** `POST /api/v2/me/shipment/print` → `{ url }` (the printable label URL). */
+export const printResponseSchema = z.object({ url: z.string() }).passthrough();
+export type PrintResponse = z.infer<typeof printResponseSchema>;
+
+/**
+ * Checkout / generate / tracking responses are keyed by order id (or wrap a
+ * `purchase`) and the buy pipeline reads none of their body — it only needs
+ * the call to succeed (a non-2xx throws upstream). Parsed permissively.
+ */
+export const opaqueResponseSchema = z.unknown();
