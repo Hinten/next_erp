@@ -24,10 +24,10 @@ export type Preco = z.infer<typeof precoSchema>;
 
 /**
  * Produto schema. Parity with `packages/produtos/lib/src/models.dart`
- * for the fields this app reads/writes today. Complex nested structures
- * (componentesKit, marketplace integrations, fotos, videos, anexos) are
- * pass-through `unknown` for now — the Flutter app continues to author
- * those, and we surface them later when their respective verticals land.
+ * for the fields this app reads/writes today. `componentesKit`, `anexos`,
+ * `fotos` and `videos` are typed against their own schemas; the marketplace
+ * integrations stay pass-through `unknown` — the Flutter app continues to
+ * author those, and we surface them when their vertical lands.
  */
 export const produtoSchema = z
   .object({

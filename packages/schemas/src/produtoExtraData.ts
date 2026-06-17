@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { CollectionMetadata } from './types';
 
 // ProdutoExtraData is produto-scoped: it reuses the produto permission bits
-// (byte 8 — see `produto.ts`), so reading/writing a produto's extra data
+// (bits 8–10 — see `produto.ts`), so reading/writing a produto's extra data
 // requires the same claims as the produto itself.
 const PERM_PRODUTO_READ = 1n << 8n;
 const PERM_PRODUTO_WRITE = 1n << 9n;

@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
 
-// Stock is its own permission domain (`PERM.estoque`, byte 64 — same bits the
-// `deposito` schema mirrors), distinct from the produto bits even though the
-// docs live under `produtos/{id}/estoques`.
+// Stock is its own permission domain (`PERM.estoque`, bits 64–66 — same bits
+// the `deposito` schema mirrors), distinct from the produto bits even though
+// the docs live under `produtos/{id}/estoques`.
 const PERM_ESTOQUE_READ = 1n << 64n;
 const PERM_ESTOQUE_WRITE = 1n << 65n;
 const PERM_ESTOQUE_DELETE = 1n << 66n;
