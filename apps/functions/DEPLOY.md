@@ -46,29 +46,35 @@ predeploy command is: `node apps/functions/scripts/prepare-deploy.mjs`. (A plain
 `pnpm --filter @delfrance/functions build` writes `dist/index.js` for local
 inspection only — the deploy does not use `dist/`.)
 
-## Why the deploy uploads a generated `.deploy/` folder
+## Why the deploy uploads a generated `.deploy/functions` folder
 
-The deploy `source` is **not** `apps/functions` but a generated
-`apps/functions/.deploy/` (gitignored) holding just two files: the esbuild bundle
+The deploy `source` is **not** `apps/functions` but a generated `.deploy/functions/`
+(at the repo root, gitignored) holding just two files: the esbuild bundle
 (`index.js`) and a **minimal `package.json`**. esbuild bundles everything except
 `firebase-admin`, `firebase-functions`, and `sharp` (the only `external`s) — so
 `@delfrance/data` / `@delfrance/schemas` are inlined and the cloud needs only those
 three runtime packages.
 
-This indirection is required: Firebase's gen2 buildpack runs `npm install`
-**including `devDependencies`**, and that cloud `npm` does **not** understand pnpm's
-`workspace:*` protocol. The real `apps/functions/package.json` carries `workspace:*`
-specs (`@delfrance/config-tsconfig` / `data` / `schemas`, in devDependencies), so
-uploading it fails with `Unsupported URL Type "workspace:"`
-(`EUNSUPPORTEDPROTOCOL`). The generated `package.json` (`scripts/prepare-deploy.mjs`)
-carries **only the three real `dependencies` — no devDependencies, no `workspace:*`,
-no build script** — so the cloud install resolves cleanly and runs no build.
+This indirection is required: Firebase's gen2 buildpack runs `npm install`, and that
+cloud `npm` does **not** understand pnpm's `workspace:*` protocol — it even parses
+devDependency specs with `--omit=dev`, so the workaround of merely moving deps to
+devDependencies does not help. The real `apps/functions/package.json` carries
+`workspace:*` specs (`@delfrance/config-tsconfig` / `data` / `schemas`), so uploading
+it fails with `Unsupported URL Type "workspace:"` (`EUNSUPPORTEDPROTOCOL`). The
+generated `package.json` (`scripts/prepare-deploy.mjs`) carries **only the three real
+`dependencies` — no devDependencies, no `workspace:*`, no build script** — so the
+cloud install resolves cleanly and runs no build.
 
-`prepare-deploy.mjs` also junctions the workspace's `node_modules` into `.deploy/`,
-because firebase-tools' **local** trigger analysis locates the Functions SDK by
-looking for `<source>/node_modules/.bin/firebase-functions` and does not walk up to
-parent `node_modules`. The `ignore: ["node_modules"]` entry keeps that junction out
-of the upload — it is only there so the local analysis step can run.
+`prepare-deploy.mjs` also junctions the workspace's `node_modules` into
+`.deploy/functions/`, because firebase-tools' **local** trigger analysis locates and
+spawns the Functions SDK by looking for `<source>/node_modules/.bin/firebase-functions`
+and does not walk up to parent `node_modules`. The artifact is placed at
+`.deploy/functions` — the **same directory depth** as `apps/functions` — on purpose:
+pnpm's symlinks inside `node_modules` are _relative_, so they only resolve through the
+junction when referenced from a path at that same depth (`apps/functions/.deploy`
+would be one level too deep and the links would overshoot). The
+`ignore: ["node_modules"]` entry keeps that junction out of the upload — it is only
+there so the local analysis step can run.
 
 ## Verify (on staging, after the deploy)
 

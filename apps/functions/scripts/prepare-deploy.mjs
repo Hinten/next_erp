@@ -1,27 +1,36 @@
 import { bundle } from '../build.mjs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { mkdirSync, rmSync, readFileSync, writeFileSync, symlinkSync, existsSync } from 'node:fs';
 
-// Builds the deploy artifact for the `storage` Cloud Functions codebase into
-// apps/functions/.deploy/ — the directory `firebase.functions.deploy.json` points
-// `source` at. Run as the deploy `predeploy` hook (`node
-// apps/functions/scripts/prepare-deploy.mjs`) from the repo root.
+// Builds the deploy artifact for the `storage` Cloud Functions codebase. Run as
+// the deploy `predeploy` hook (`node apps/functions/scripts/prepare-deploy.mjs`)
+// from the repo root; `firebase.functions.deploy.json` points `source` at the
+// generated folder.
 //
 // Why a generated folder instead of deploying apps/functions directly: the cloud
 // `npm install` run by Firebase's gen2 buildpack cannot resolve pnpm `workspace:*`
-// specs (npm error EUNSUPPORTEDPROTOCOL), and it installs devDependencies too — so
-// the real package.json's workspace devDeps (@delfrance/config-tsconfig / data /
-// schemas) break the build. esbuild already bundles data & schemas into index.js,
-// so the cloud only needs the 3 real runtime deps. We emit a minimal package.json
-// carrying exactly those — no devDependencies, no `workspace:*`, no build script.
+// specs (npm error EUNSUPPORTEDPROTOCOL) — and it parses devDependencies' specs
+// even with `--omit=dev`, so the real package.json's workspace devDeps
+// (@delfrance/config-tsconfig / data / schemas) break the build no matter what.
+// esbuild already bundles data & schemas into index.js, so the cloud only needs
+// the 3 real runtime deps. We emit a minimal package.json carrying exactly those —
+// no devDependencies, no `workspace:*`, no build script.
 
 // apps/functions (this script lives in apps/functions/scripts/).
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
-const deployDir = join(pkgDir, '.deploy');
+const repoRoot = resolve(pkgDir, '..', '..');
+
+// The artifact lives at <root>/.deploy/functions — deliberately the SAME directory
+// depth as <root>/apps/functions. The node_modules junction created below points
+// at apps/functions/node_modules, whose pnpm symlinks are RELATIVE; they only
+// resolve correctly when referenced from a path at the same depth (a deeper path
+// makes `../../..` overshoot). `.deploy` is not matched by the pnpm-workspace
+// globs (apps/* etc.), so it is never treated as a workspace package.
+const deployDir = join(repoRoot, '.deploy', 'functions');
 
 // Fresh artifact every run. rmSync does NOT follow the node_modules junction
-// created below (it unlinks the junction, never the real node_modules) — verified.
+// (it unlinks the junction, never the real node_modules) — verified.
 rmSync(deployDir, { recursive: true, force: true });
 mkdirSync(deployDir, { recursive: true });
 
@@ -45,13 +54,13 @@ const deployPkg = {
 };
 writeFileSync(join(deployDir, 'package.json'), JSON.stringify(deployPkg, null, 2) + '\n');
 
-// 3. Link the workspace's installed deps into the artifact as node_modules.
-//    firebase-tools' LOCAL trigger analysis locates the Functions SDK by looking
-//    for `<source>/node_modules/.bin/firebase-functions` (it does not walk up),
-//    so the generated folder needs a node_modules with that shim. A junction to
-//    the package's real node_modules exposes it without copying. This is kept OUT
-//    of the upload by `ignore: ["node_modules"]` in firebase.functions.deploy.json
-//    — the cloud installs the 3 deps from the minimal package.json above.
+// 3. Junction the workspace's installed node_modules into the artifact, so
+//    firebase-tools' LOCAL trigger analysis can find and spawn the Functions SDK
+//    from `<source>/node_modules/.bin` (it does not walk up to parent
+//    node_modules). The same-depth artifact path (above) is what makes the pnpm
+//    relative symlinks inside resolve through the junction. Kept OUT of the upload
+//    by `ignore: ["node_modules"]` in firebase.functions.deploy.json — the cloud
+//    reinstalls the 3 deps from the minimal package.json above.
 const realNodeModules = join(pkgDir, 'node_modules');
 if (existsSync(realNodeModules)) {
   // 'junction' needs an absolute target on Windows and is ignored (→ dir symlink)
@@ -64,5 +73,5 @@ if (existsSync(realNodeModules)) {
 }
 
 console.log(
-  `prepared .deploy/ — region=${region}, deps=${Object.keys(realPkg.dependencies).join(', ')}`,
+  `prepared .deploy/functions — region=${region}, deps=${Object.keys(realPkg.dependencies).join(', ')}`,
 );
