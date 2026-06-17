@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './datetime';
 import type { CollectionMetadata } from './types';
 
 const PERM_IMPOSTO_PRODUTO_READ = 1n << 75n;
@@ -27,7 +28,7 @@ export const impostoProdutoSchema = z
   .object({
     id: z.string().nullable().default(null),
     impostoOperacaoOuterRef: z.string().nullable().default(null),
-    dataCadastro: z.string().datetime().nullable().default(null),
+    dataCadastro: millisSinceEpoch().nullable().default(null),
   })
   .passthrough();
 

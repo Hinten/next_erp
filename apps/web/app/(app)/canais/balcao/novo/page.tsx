@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { INTEGRACAO_TIPO, integracaoSchema } from '@delfrance/schemas';
+import { nowMillis } from '@delfrance/core/datetime';
 import { ObjectView } from '@delfrance/ui';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -32,7 +33,7 @@ export default function NovoBalcaoPage() {
           tipo: INTEGRACAO_TIPO.balcao,
           padrao: false,
           ativo: true,
-          dataCadastro: new Date().toISOString(),
+          dataCadastro: nowMillis(),
         }}
         excludedFields={balcaoExcludedFields}
         fields={balcaoFields}

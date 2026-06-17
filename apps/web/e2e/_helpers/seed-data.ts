@@ -242,7 +242,9 @@ export async function seedBalcaoFixtures(
   const filialId = `${prefix}-ref-filial`;
   const listaId = `${prefix}-ref-lista`;
   const depositoId = `${prefix}-ref-deposito`;
-  const now = new Date().toISOString();
+  // filial / listaDePrecos / deposito / integracao below are all numeric-epoch
+  // (ms) now — one Date.now() feeds them all.
+  const now = Date.now();
 
   await db()
     .collection('filiais')
@@ -568,7 +570,7 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     operacaoOuterRef: null,
     operacaoDevolucaoOuterRef: null,
     depositoOuterRef: null,
-    dataCadastro: new Date().toISOString(),
+    dataCadastro: Date.now(),
   });
   batch.set(db().collection('produtos').doc(produtoId), {
     nome: produtoNome,
