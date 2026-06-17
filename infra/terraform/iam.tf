@@ -24,10 +24,20 @@ resource "google_service_account_iam_member" "runtime_acts_as_runner" {
 
 # The Cloud Tasks service agent mints the OIDC token for dispatch — it needs
 # tokenCreator on the runner SA.
+#
+# GCP provisions the Cloud Tasks service agent lazily — after the API is enabled
+# AND first used (the queue creation). Without ordering, the FIRST apply on a
+# project that never used Cloud Tasks can fail here with "service account
+# service-…@gcp-sa-cloudtasks… does not exist". `depends_on` the queue (which
+# itself depends_on the API) materializes the agent before this binding. If a
+# race ever survives that, `google_project_service_identity` (google-beta) is the
+# bulletproof upgrade — kept out here to avoid a second provider.
 resource "google_service_account_iam_member" "cloudtasks_agent_token_creator" {
   service_account_id = google_service_account.nfe_task_runner.name
   role               = "roles/iam.serviceAccountTokenCreator"
   member             = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-cloudtasks.iam.gserviceaccount.com"
+
+  depends_on = [google_cloud_tasks_queue.nfe_consulta]
 }
 
 # NOTE: no Cloud Run invoker grant. The apps/nfe backend is public (the web app
