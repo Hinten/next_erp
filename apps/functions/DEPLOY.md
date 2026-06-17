@@ -64,6 +64,12 @@ uploading it fails with `Unsupported URL Type "workspace:"`
 carries **only the three real `dependencies` — no devDependencies, no `workspace:*`,
 no build script** — so the cloud install resolves cleanly and runs no build.
 
+`prepare-deploy.mjs` also junctions the workspace's `node_modules` into `.deploy/`,
+because firebase-tools' **local** trigger analysis locates the Functions SDK by
+looking for `<source>/node_modules/.bin/firebase-functions` and does not walk up to
+parent `node_modules`. The `ignore: ["node_modules"]` entry keeps that junction out
+of the upload — it is only there so the local analysis step can run.
+
 ## Verify (on staging, after the deploy)
 
 1. Upload one product photo in the produto editor (`/produtos/<id>/editar`,

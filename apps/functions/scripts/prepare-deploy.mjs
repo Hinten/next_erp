@@ -1,7 +1,7 @@
 import { bundle } from '../build.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, readFileSync, writeFileSync, symlinkSync, existsSync } from 'node:fs';
 
 // Builds the deploy artifact for the `storage` Cloud Functions codebase into
 // apps/functions/.deploy/ — the directory `firebase.functions.deploy.json` points
@@ -20,7 +20,8 @@ import { mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const deployDir = join(pkgDir, '.deploy');
 
-// Fresh artifact every run.
+// Fresh artifact every run. rmSync does NOT follow the node_modules junction
+// created below (it unlinks the junction, never the real node_modules) — verified.
 rmSync(deployDir, { recursive: true, force: true });
 mkdirSync(deployDir, { recursive: true });
 
@@ -43,6 +44,24 @@ const deployPkg = {
   dependencies: realPkg.dependencies,
 };
 writeFileSync(join(deployDir, 'package.json'), JSON.stringify(deployPkg, null, 2) + '\n');
+
+// 3. Link the workspace's installed deps into the artifact as node_modules.
+//    firebase-tools' LOCAL trigger analysis locates the Functions SDK by looking
+//    for `<source>/node_modules/.bin/firebase-functions` (it does not walk up),
+//    so the generated folder needs a node_modules with that shim. A junction to
+//    the package's real node_modules exposes it without copying. This is kept OUT
+//    of the upload by `ignore: ["node_modules"]` in firebase.functions.deploy.json
+//    — the cloud installs the 3 deps from the minimal package.json above.
+const realNodeModules = join(pkgDir, 'node_modules');
+if (existsSync(realNodeModules)) {
+  // 'junction' needs an absolute target on Windows and is ignored (→ dir symlink)
+  // on POSIX, so it is the portable choice here.
+  symlinkSync(realNodeModules, join(deployDir, 'node_modules'), 'junction');
+} else {
+  console.warn(
+    'warning: apps/functions/node_modules not found — run `pnpm install` before deploying',
+  );
+}
 
 console.log(
   `prepared .deploy/ — region=${region}, deps=${Object.keys(realPkg.dependencies).join(', ')}`,
