@@ -109,6 +109,13 @@ export const arquivoSchema = z
     // rework (orphan detection / grace period) — see the deferred issue. Optional
     // because the Flutter app's docs predate it.
     criadoEm: z.string().datetime().nullable().optional(),
+    // Resize lifecycle marker for product-image ORIGINALS only: 'pending' when
+    // the client uploads (set by uploadProductImage), 'done' once the resize
+    // Cloud Function has written all derivatives. `null` for everything else
+    // (derivatives, videos, generic/chat media). The scheduled reconcile sweep
+    // queries `where resizeState == 'pending'` to find originals whose
+    // derivatives are missing — see apps/functions `reconcileProductImages`.
+    resizeState: z.enum(['pending', 'done']).nullable().default(null).describe('Estado do resize'),
   })
   .passthrough();
 

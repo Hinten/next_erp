@@ -38,6 +38,8 @@ interface PutArquivoArgs {
   storagePath: string;
   filetype: Filetype;
   originalFilename?: string | null;
+  /** Resize lifecycle marker — only product-image originals pass `'pending'`. */
+  resizeState?: 'pending' | 'done' | null;
 }
 
 /**
@@ -72,6 +74,7 @@ async function putArquivo(args: PutArquivoArgs): Promise<UploadResult> {
     url,
     externalIds: [],
     criadoEm: new Date().toISOString(),
+    resizeState: args.resizeState ?? null,
   };
   await setDoc(docRef, arquivo);
   return { id: args.docId, arquivo };
@@ -140,6 +143,9 @@ export async function uploadProductImage(args: UploadProductImageArgs): Promise<
     storagePath: productOriginalPath(args.produtoId, hash, ext),
     filetype: 'image',
     originalFilename: args.originalFilename,
+    // Marks the original so the resize function (→ 'done') and the reconcile
+    // sweep (queries 'pending') can track derivative completion.
+    resizeState: 'pending',
   });
 }
 

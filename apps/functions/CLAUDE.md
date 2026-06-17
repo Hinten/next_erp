@@ -6,12 +6,21 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Currently one trigger:
-`resizeProductImage` (`onObjectFinalized`) — resizes a freshly uploaded product
-photo into its **200px / 400px / full-JPEG** derivatives and writes the
-derivative `arquivos` docs. Trigger contract (see `src/product-images/guards.ts`):
-fires ONLY for `produtos/<produtoId>/originals/<hash>.<ext>`, `image/*`, without
-the `resized=true` marker — the loop guard.
+gen2 (2nd-gen / Eventarc) Cloud Functions. Two exports:
+
+- **`resizeProductImage`** (`onObjectFinalized`) — resizes a freshly uploaded
+  product photo into its **200px / 400px / full-JPEG** derivatives and writes the
+  derivative `arquivos` docs. Trigger contract (see `src/product-images/guards.ts`):
+  fires ONLY for `produtos/<produtoId>/originals/<hash>.<ext>`, `image/*`, without
+  the `resized=true` marker — the loop guard.
+- **`reconcileProductImages`** (`onSchedule`, hourly) — backfills derivatives for
+  originals the trigger never finished (issue #189). Uploads are content-addressed
+  and deduped, so a re-upload won't re-fire the trigger; instead, the client stamps
+  each original's `arquivos` doc `resizeState: 'pending'`, the resize flips it to
+  `'done'`, and the sweep queries ONLY `where resizeState == 'pending'` — a filtered
+  query (O(missing)), never a full catalog scan. Both share the idempotent
+  `processProductOriginal` (`src/product-images/processOriginal.ts`), which writes
+  only missing derivatives and skips the download when complete.
 
 - The entry (`src/index.ts`) is **esbuild-bundled into a single ESM file**.
   Only `firebase-admin`, `firebase-functions`, and `sharp` are `external`;
