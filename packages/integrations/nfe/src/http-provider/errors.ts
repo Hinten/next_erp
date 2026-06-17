@@ -156,3 +156,25 @@ export class NFeNetworkError extends Error {
     if (cause !== undefined) this.cause = cause;
   }
 }
+
+/**
+ * Is this NF-e client error transient (worth a client-side retry)? `true` only
+ * for the three non-deterministic failures: a dropped connection
+ * (`NFeNetworkError`), a 5xx (`NFeServerError`), or the runtime-not-ready 503
+ * (`NFeRuntimeNotReadyError`). Every deterministic error — bad request, auth,
+ * SEFAZ rejection, not-found, blocked, cert, inutilização-aborted, DANFE
+ * unavailable — returns `false`: retrying would just replay the same failure.
+ *
+ * Pure + dependency-free (only `instanceof`), so the `./http-provider` subpath
+ * stays browser-safe. Callers in `apps/web` feed this to `retryAsync`.
+ * NOTE: an endpoint that is NOT idempotent (e.g. `cartaCorrecao`, which
+ * increments `nSeqEvento` per send) must NOT use this — only retry its
+ * pre-send-503 (`NFeRuntimeNotReadyError`).
+ */
+export function isRetryableNFeHttpError(err: unknown): boolean {
+  return (
+    err instanceof NFeNetworkError ||
+    err instanceof NFeServerError ||
+    err instanceof NFeRuntimeNotReadyError
+  );
+}

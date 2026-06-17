@@ -25,6 +25,7 @@ export {
 
 export {
   NFeAuthError,
+  isRetryableNFeHttpError,
   NFeBadRequestError,
   NFeBlockedError,
   NFeCertificateError,
