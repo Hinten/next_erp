@@ -5,7 +5,7 @@ import { DatePickerInput } from '@mantine/dates';
 import { Controller, type Control, type FieldValues } from 'react-hook-form';
 import type { ZodObject, ZodRawShape } from 'zod';
 import type { FieldConfig, FieldDescriptor, FieldRenderProps } from '../schema/types';
-import { extractFieldsFromSchema } from '../schema/derive';
+import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
 import { NullClearButton } from './NullClearButton';
 
 export interface FieldRendererProps {
@@ -31,6 +31,12 @@ export interface FieldRendererProps {
  * `FieldRenderer`s — each leaf still owns its own Controller, bound to the
  * dotted path `<key>.<childKey>` (RHF resolves dotted names natively, and
  * `pickDirty` copies the whole object when any descendant is dirty).
+ *
+ * A NULLABLE object gets a leading `Switch`: off ⇒ the whole field is `null`
+ * (the sub-fields unmount), on ⇒ the object is seeded from the schema's empty
+ * defaults merged with `config.defaultValue`. Lets a "use the default / enter
+ * your own" sub-form (e.g. a freight origin address) ride the schema-driven
+ * renderer instead of a hand-coded component.
  */
 export function FieldRenderer({ control, descriptor, config, namePrefix }: FieldRendererProps) {
   const label = config?.label ?? descriptor.label;
@@ -39,31 +45,75 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
   const kind = config?.kind ?? descriptor.kind;
   const fieldName = namePrefix ? `${namePrefix}.${descriptor.key}` : descriptor.key;
 
-  // Nested object: render a fieldset of sub-fields. The container has no
-  // Controller of its own — only the leaves bind to RHF. Per-sub-field
-  // overrides come through `config.fields`; when the parent is not editable,
-  // propagate `editable: false` to every descendant.
+  // Nested object: render a fieldset of sub-fields. The leaves bind to RHF via
+  // their own Controllers on the dotted path. Per-sub-field overrides come
+  // through `config.fields`; when the parent is not editable, propagate
+  // `editable: false` to every descendant.
   if (kind === 'object' && !config?.renderInput) {
     const nested = extractFieldsFromSchema(descriptor.zodType as ZodObject<ZodRawShape>);
     const nestedOverrides = config?.fields ?? {};
+    const subFields = nested
+      .filter((d) => !nestedOverrides[d.key]?.hidden)
+      .map((d) => {
+        const childConfig = nestedOverrides[d.key];
+        return (
+          <FieldRenderer
+            key={d.key}
+            control={control}
+            descriptor={d}
+            namePrefix={fieldName}
+            config={editable ? childConfig : { ...childConfig, editable: false }}
+          />
+        );
+      });
+
+    // Nullable object: a Switch toggles the whole value between `null` and a
+    // seeded object. The parent Controller owns only the null/non-null state;
+    // the leaves keep their own Controllers on `<fieldName>.<childKey>`.
+    if (descriptor.nullable) {
+      // Seed the object when toggled on: schema empty-defaults overlaid with
+      // `config.defaultValue`, restricted to keys that exist in the nested
+      // schema. The filter matters because some embedded objects are
+      // `.passthrough()` (and ObjectView writes via `tx.update`, bypassing the
+      // converter), so a stray default key would otherwise be persisted.
+      const nestedKeys = new Set(nested.map((d) => d.key));
+      const seedObject = (): Record<string, unknown> => {
+        const base = buildEmptyDefaults(nested);
+        for (const [k, v] of Object.entries(config?.defaultValue ?? {})) {
+          if (nestedKeys.has(k)) base[k] = v;
+        }
+        return base;
+      };
+      return (
+        <Controller
+          control={control}
+          name={fieldName}
+          render={({ field }) => {
+            const enabled = field.value != null;
+            return (
+              <Stack>
+                <Switch
+                  label={label}
+                  description={hint}
+                  checked={enabled}
+                  disabled={!editable}
+                  onChange={(e) => field.onChange(e.currentTarget.checked ? seedObject() : null)}
+                />
+                {enabled && (
+                  <Fieldset legend={label}>
+                    <Stack>{subFields}</Stack>
+                  </Fieldset>
+                )}
+              </Stack>
+            );
+          }}
+        />
+      );
+    }
+
     return (
       <Fieldset legend={label}>
-        <Stack>
-          {nested
-            .filter((d) => !nestedOverrides[d.key]?.hidden)
-            .map((d) => {
-              const childConfig = nestedOverrides[d.key];
-              return (
-                <FieldRenderer
-                  key={d.key}
-                  control={control}
-                  descriptor={d}
-                  namePrefix={fieldName}
-                  config={editable ? childConfig : { ...childConfig, editable: false }}
-                />
-              );
-            })}
-        </Stack>
+        <Stack>{subFields}</Stack>
       </Fieldset>
     );
   }

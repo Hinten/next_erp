@@ -29,7 +29,8 @@ export interface CepTextInputProps {
  * CEP input with a live `#####-###` mask (emits the clean 8 digits) and a
  * "Buscar CEP" button that resolves the address via ViaCEP. The caller fills
  * the sibling fields from `onFound` (the schema-driven `CepField` adapter does
- * it through the RHF form context; `EnderecoOrigemInput` patches its object).
+ * it through the RHF form context, resolving the sibling paths relative to its
+ * own field name so it works both top-level and nested).
  */
 export function CepTextInput({
   value,
@@ -105,8 +106,21 @@ export function CepTextInput({
  * the form context ObjectView exposes (`<FormProvider>`), so a successful CEP
  * lookup fills logradouro/bairro/cidade/estado/codigoMunicipio.
  */
-export function CepField({ value, onChange, onBlur, error, label, disabled }: FieldRenderProps) {
+export function CepField({
+  name,
+  value,
+  onChange,
+  onBlur,
+  error,
+  label,
+  disabled,
+}: FieldRenderProps) {
   const { setValue } = useFormContext();
+  // The sibling address fields share this CEP's parent path. Top-level forms
+  // give a bare `name` ('cep' → no prefix); a nested address (e.g. the freight
+  // origin's `enderecoDeOrigem.cep`) gives a dotted one, so the autofill must
+  // target `enderecoDeOrigem.logradouro`, not the top-level `logradouro`.
+  const prefix = name.includes('.') ? name.slice(0, name.lastIndexOf('.') + 1) : '';
   return (
     <CepTextInput
       value={(value as string | null | undefined) ?? ''}
@@ -121,12 +135,12 @@ export function CepField({ value, onChange, onBlur, error, label, disabled }: Fi
         // the user already typed or set a required field to ''. Bairro keeps
         // its 'SEM BAIRRO' fallback (the schema default).
         const opts = { shouldDirty: true, shouldValidate: true } as const;
-        if (found.logradouro) setValue('logradouro', found.logradouro, opts);
-        setValue('bairro', found.bairro || 'SEM BAIRRO', opts);
-        if (found.cidade) setValue('cidade', found.cidade, opts);
-        if (found.estado) setValue('estado', found.estado, opts);
+        if (found.logradouro) setValue(`${prefix}logradouro`, found.logradouro, opts);
+        setValue(`${prefix}bairro`, found.bairro || 'SEM BAIRRO', opts);
+        if (found.cidade) setValue(`${prefix}cidade`, found.cidade, opts);
+        if (found.estado) setValue(`${prefix}estado`, found.estado, opts);
         if (found.codigoMunicipio) {
-          setValue('codigoMunicipio', found.codigoMunicipio, { shouldDirty: true });
+          setValue(`${prefix}codigoMunicipio`, found.codigoMunicipio, { shouldDirty: true });
         }
       }}
     />
