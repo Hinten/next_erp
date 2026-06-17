@@ -23,3 +23,6 @@ pnpm-lock.yaml
 .github/
 apps/docs/
 .changeset/
+# Infra runbook — hand-formatted (tables + aligned CLI examples); keep it out of
+# prettier's markdown reflow.
+infra/terraform/README.md
