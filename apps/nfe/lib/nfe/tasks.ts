@@ -48,8 +48,21 @@ export const consultaTaskPayloadSchema = z.object({
   filialId: z.string().min(1),
   /** Lote receipt (`consReciNFe` is consulted by this, never by chave). */
   nRec: z.string().min(1),
-  /** SEFAZ `tpEmis` of the lote — routes the consult to the right authorizer. */
-  tpEmis: z.number().int(),
+  /**
+   * SEFAZ `tpEmis` of the lote — routes the consult to the right authorizer.
+   * Closed to the valid `TpEmis` set (1|2|3|4|5|6|7|9) so a malformed/mis-enqueued
+   * payload can't reach SEFAZ routing with an invalid emission type.
+   */
+  tpEmis: z.union([
+    z.literal(1),
+    z.literal(2),
+    z.literal(3),
+    z.literal(4),
+    z.literal(5),
+    z.literal(6),
+    z.literal(7),
+    z.literal(9),
+  ]),
   /** 0-based consult attempt; the reconciler caps it at `MAX_RECONCILE_ATTEMPTS`. */
   attempt: z.number().int().min(0),
 });

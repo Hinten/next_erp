@@ -22,7 +22,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
-import { nextConsultaDelayMs, type TpEmis } from '@delfrance/integrations-nfe';
+import { nextConsultaDelayMs } from '@delfrance/integrations-nfe';
 
 import { allowedServiceEmails, authError, verifyServiceCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -85,7 +85,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       rt,
       filialId,
       nRec,
-      tpEmis: tpEmis as TpEmis,
+      tpEmis,
       attempt,
     });
 
@@ -96,7 +96,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       await scheduler.enqueueConsulta({
         filialId,
         nRec,
-        tpEmis: tpEmis as TpEmis,
+        tpEmis,
         attempt: nextAttempt,
         scheduleAtMs: Date.now() + nextConsultaDelayMs(nextAttempt),
       });

@@ -174,18 +174,20 @@ describe('nextConsultaDelayMs', () => {
     expect(nextConsultaDelayMs(0, '99999')).toBe(RECONCILE_MAX_DELAY_MS);
   });
 
-  it('later attempts back off exponentially within [base/2·2^n, base·2^n], capped', () => {
+  it('later attempts back off exponentially (deterministic — base·2^n, capped)', () => {
+    // Deterministic so the backstop due-gate (proximaConsultaEm) can be derived
+    // from the same value and never drift ahead of the task (#77 review).
     for (const attempt of [1, 2, 3]) {
-      const delay = nextConsultaDelayMs(attempt);
-      const base = Math.min(RECONCILE_BASE_DELAY_MS * 2 ** attempt, RECONCILE_MAX_DELAY_MS);
-      expect(delay).toBeGreaterThanOrEqual(base / 2);
-      expect(delay).toBeLessThanOrEqual(base);
+      const expected = Math.min(RECONCILE_BASE_DELAY_MS * 2 ** attempt, RECONCILE_MAX_DELAY_MS);
+      expect(nextConsultaDelayMs(attempt)).toBe(expected);
+      // Stable across calls — no random jitter.
+      expect(nextConsultaDelayMs(attempt)).toBe(nextConsultaDelayMs(attempt));
     }
   });
 
   it('never exceeds the max delay even for large attempts', () => {
     for (const attempt of [8, 12, 20]) {
-      expect(nextConsultaDelayMs(attempt)).toBeLessThanOrEqual(RECONCILE_MAX_DELAY_MS);
+      expect(nextConsultaDelayMs(attempt)).toBe(RECONCILE_MAX_DELAY_MS);
     }
   });
 

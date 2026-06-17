@@ -43,19 +43,29 @@ export const MAX_RECONCILE_ATTEMPTS = 10;
 export const RECONCILE_BASE_DELAY_MS = 60_000;
 /** Backoff ceiling — a single attempt never waits longer than this. */
 export const RECONCILE_MAX_DELAY_MS = 15 * 60_000;
+/**
+ * Grace the backstop sweep adds on top of the task delay before a lote is
+ * "due". The Cloud Task is the primary trigger (fires at `now + delay`); the
+ * sweep only steps in when that task is overdue by this much (i.e. lost). Keeps
+ * the sweep from consulting the same `nRec` a healthy task is about to consult —
+ * which, with 656 now terminal, would risk a wrongful terminal error.
+ */
+export const RECONCILE_SWEEP_GRACE_MS = 60_000;
 
 /**
- * How long to wait before the next consult of a still-processing lote.
+ * How long to wait before the next consult of a still-processing lote — the
+ * delay the Cloud Task is scheduled with.
  *
  *  - **attempt 0** (the first consult, scheduled at emit time): respect
  *    SEFAZ's own `tMed` estimate (seconds) when present — the polite first
  *    check — else `RECONCILE_BASE_DELAY_MS`.
  *  - **attempt ≥ 1**: exponential backoff (`base × 2^attempt`) capped at
- *    `RECONCILE_MAX_DELAY_MS`, with equal jitter (half fixed + half random)
- *    so concurrent lotes don't stampede SEFAZ on the same tick.
+ *    `RECONCILE_MAX_DELAY_MS`.
  *
- * Pure except for `Math.random()` in the jitter; callers that need
- * determinism pass attempt 0 (no jitter) or assert on the [half, base] range.
+ * **Deterministic** (no jitter): the queue's `rate_limits` already pace
+ * dispatch, and the backstop sweep's due-gate (`proximaConsultaEm`) is derived
+ * from this same value (+ `RECONCILE_SWEEP_GRACE_MS`), so a jittered delay here
+ * would let the sweep drift ahead of the task and double-consult (#77 review).
  */
 export function nextConsultaDelayMs(attempt: number, tMedSeconds?: string | number | null): number {
   if (attempt <= 0) {
@@ -65,9 +75,7 @@ export function nextConsultaDelayMs(attempt: number, tMedSeconds?: string | numb
     }
     return RECONCILE_BASE_DELAY_MS;
   }
-  const base = Math.min(RECONCILE_BASE_DELAY_MS * 2 ** attempt, RECONCILE_MAX_DELAY_MS);
-  const half = base / 2;
-  return Math.round(half + Math.random() * half);
+  return Math.min(RECONCILE_BASE_DELAY_MS * 2 ** attempt, RECONCILE_MAX_DELAY_MS);
 }
 
 /**

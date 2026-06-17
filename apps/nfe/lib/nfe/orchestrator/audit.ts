@@ -8,6 +8,7 @@ import {
   nextConsultaDelayMs,
   outcomeFromInfProt,
   outcomeFromRetConsRec,
+  RECONCILE_SWEEP_GRACE_MS,
   type NFeStatePatch,
   type SefazOutcome,
   type TpEmis,
@@ -212,19 +213,21 @@ export async function persistPatch(
   // generic so future fields (e.g. `data_autorizacao`, `nProt`) can
   // ride along without another method.
   //
-  // `proximaConsultaEm` (µs epoch) is the async-reconciler gate: when the
-  // patch leaves the doc still awaiting SEFAZ (`aguardandoResposta`), stamp
-  // the next-allowed-consult time (`now + backoff`, seeded by `tMed` on the
-  // first round) so the backstop sweep skips it until then and a re-enqueued
-  // Cloud Task lands roughly on it. Any terminal/other estado clears it to
-  // `null` so the doc stops being scanned. An explicit `extras` override
-  // (rare) wins. Caller-provided `extras` are spread AFTER so they can force
-  // a value if ever needed.
+  // `proximaConsultaEm` (µs epoch) is the BACKSTOP sweep's due-gate: when the
+  // patch leaves the doc still awaiting SEFAZ (`aguardandoResposta`), stamp the
+  // task delay (deterministic — same value the Cloud Task is scheduled with)
+  // PLUS `RECONCILE_SWEEP_GRACE_MS`, so the sweep only steps in once the task is
+  // overdue (lost). Without the grace + determinism the sweep could drift ahead
+  // of a healthy task and double-consult the same `nRec` — and with 656 now
+  // terminal that risks a wrongful terminal error (#77 review). Any
+  // terminal/other estado clears it to `null` so the doc stops being scanned.
+  // An explicit `extras.proximaConsultaEm` override (rare) wins.
   const stampProxima =
     extras != null && Object.prototype.hasOwnProperty.call(extras, 'proximaConsultaEm');
   const proximaConsultaEm =
     patch.estado === ESTADO_NFE.aguardandoResposta
-      ? nowMicros() + nextConsultaDelayMs(patch.retries, patch.tMed) * 1000
+      ? nowMicros() +
+        (nextConsultaDelayMs(patch.retries, patch.tMed) + RECONCILE_SWEEP_GRACE_MS) * 1000
       : null;
   await nfeRef.set(
     nfev4Collection.parseMerge({
