@@ -27,7 +27,7 @@ export interface VolumeInput {
   readonly weight?: number | null;
 }
 
-function normalizeVolume(v: VolumeInput): DimensionsWeight {
+export function normalizeVolume(v: VolumeInput): DimensionsWeight {
   return {
     width: v.width ?? DEFAULT_DIM,
     height: v.height ?? DEFAULT_DIM,
