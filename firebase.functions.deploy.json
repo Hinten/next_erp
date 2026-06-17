@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/firebase",
+  "//": "Deploy-ISOLATED config for shipping the apps/functions (codebase `storage`) Cloud Functions to a real Firebase project. It contains ONLY the `functions` block — deliberately NO `firestore`/`storage`/`emulators` keys — so a `firebase deploy` with this config can never push the Flutter-owned firestore.rules/storage.rules over live (CLAUDE.md critical rule #1). Companion configs: firebase.json (prod firestore rules), firebase.staging.json (staging firestore.e2e.rules), firebase.functions.json (emulator suite only), firebase.rules.json (rules emulator). Deploy: see apps/functions/DEPLOY.md. The `predeploy` hook runs apps/functions/scripts/prepare-deploy.mjs, which esbuild-bundles the function and writes a MINIMAL package.json (the 3 runtime deps only — no devDeps, no `workspace:*`) into the generated .deploy/functions/ folder that `source` points at. This is required because the cloud `npm install` run by the gen2 buildpack cannot resolve pnpm `workspace:*` specs (EUNSUPPORTEDPROTOCOL) and parses devDependencies' specs even with --omit=dev. prepare-deploy.mjs also junctions the workspace node_modules into .deploy/functions/ so firebase-tools' local trigger analysis can find and spawn the Functions SDK binary (it looks in <source>/node_modules/.bin and does not walk up); the artifact sits at the SAME directory depth as apps/functions so the pnpm RELATIVE symlinks resolve through the junction. `ignore: [node_modules]` keeps that junction OUT of the upload. The build reads NO secret file — it inlines only the function region, a non-secret constant that defaults to us-east1 (the Storage bucket region); `.env.local` is never loaded by the deploy.",
+  "functions": [
+    {
+      "source": ".deploy/functions",
+      "codebase": "storage",
+      "runtime": "nodejs22",
+      "predeploy": ["node apps/functions/scripts/prepare-deploy.mjs"],
+      "ignore": ["node_modules"]
+    }
+  ]
+}

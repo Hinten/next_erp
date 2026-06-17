@@ -25,7 +25,9 @@ const SOURCE_HEIGHT = 600;
 
 function getDb() {
   const app = getApps()[0] ?? initializeApp({ projectId, storageBucket: bucketName });
-  return getFirestore(app);
+  // Must match the database the function writes to (src/lib/admin.ts) — the named
+  // `default` database, not `(default)`.
+  return getFirestore(app, process.env.FIREBASE_DATABASE_ID ?? 'default');
 }
 function getBucket() {
   const app = getApps()[0] ?? initializeApp({ projectId, storageBucket: bucketName });

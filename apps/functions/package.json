@@ -15,15 +15,16 @@
     "test:storage": "vitest run --config vitest.storage.config.ts",
     "clean": "rm -rf dist .turbo *.tsbuildinfo coverage"
   },
+  "//runtime-deps": "@delfrance/data + @delfrance/schemas are BUILD-time only: esbuild bundles them into the deploy artifact (only firebase-admin/firebase-functions/sharp stay `external`), so they live in devDependencies. The deploy does NOT upload this file — scripts/prepare-deploy.mjs emits a MINIMAL package.json (just the 3 `dependencies` below, no devDeps) into the generated .deploy/ folder, because the cloud `npm install` cannot resolve pnpm `workspace:*` (and the buildpack installs devDeps too). See apps/functions/DEPLOY.md.",
   "dependencies": {
-    "@delfrance/data": "workspace:*",
-    "@delfrance/schemas": "workspace:*",
     "firebase-admin": "^13.9.0",
     "firebase-functions": "^6.0.0",
     "sharp": "^0.34.0"
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",
+    "@delfrance/data": "workspace:*",
+    "@delfrance/schemas": "workspace:*",
     "@types/node": "^24.10.0",
     "esbuild": "^0.25.0",
     "typescript": "^6.0.3",
