@@ -24,6 +24,18 @@ export class MigrationArgError extends Error {
 }
 
 /**
+ * Read the value token after a `--flag <value>` argument, rejecting a missing
+ * value or another flag — so `--project --apply` errors out instead of treating
+ * `--apply` as the project id and running against an invalid target.
+ */
+function requireValue(next: string | undefined, flag: string): string {
+  if (next === undefined || next.startsWith('--')) {
+    throw new MigrationArgError(`${flag} requires a value.`);
+  }
+  return next;
+}
+
+/**
  * Parse the migration CLI contract (see `tools/migrations/README.md`):
  *   --project <id>   REQUIRED — never defaults, so prod is never touched by accident
  *   --apply          write changes (omit for a dry-run that only logs)
@@ -40,12 +52,12 @@ export function parseArgs(argv: readonly string[]): MigrationArgs {
     if (arg === '--apply') {
       apply = true;
     } else if (arg === '--project') {
-      projectId = argv[i + 1];
+      projectId = requireValue(argv[i + 1], '--project');
       i += 1;
     } else if (arg.startsWith('--project=')) {
       projectId = arg.slice('--project='.length);
     } else if (arg === '--service-account') {
-      serviceAccountPath = argv[i + 1];
+      serviceAccountPath = requireValue(argv[i + 1], '--service-account');
       i += 1;
     } else if (arg.startsWith('--service-account=')) {
       serviceAccountPath = arg.slice('--service-account='.length);

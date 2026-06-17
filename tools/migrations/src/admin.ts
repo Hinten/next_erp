@@ -3,6 +3,9 @@ import { resolve } from 'node:path';
 import { type App, type ServiceAccount, cert, getApps, initializeApp } from 'firebase-admin/app';
 import { type Firestore, getFirestore } from 'firebase-admin/firestore';
 
+/** Dedicated app name so migrations never reuse a stray default app. */
+const MIGRATIONS_APP_NAME = 'migrations';
+
 type RawServiceAccount = ServiceAccount & {
   project_id?: string;
   private_key?: string;
@@ -64,8 +67,12 @@ export function migrationDb(projectId: string, serviceAccountPath?: string): Fir
         'Refusing to run against a project the credentials were not issued for.',
     );
   }
+  // Select OUR named app, never `getApps()[0]` — a stray default app
+  // (possibly another project) must not be reused, which would defeat the
+  // explicit `--project` guard.
   const app: App =
-    getApps()[0] ?? initializeApp({ credential: cert(credentials), projectId }, 'migrations');
+    getApps().find((a) => a.name === MIGRATIONS_APP_NAME) ??
+    initializeApp({ credential: cert(credentials), projectId }, MIGRATIONS_APP_NAME);
   const databaseId = process.env.FIREBASE_DATABASE_ID?.trim() || 'default';
   return getFirestore(app, databaseId);
 }

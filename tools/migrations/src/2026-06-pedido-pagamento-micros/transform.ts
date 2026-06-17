@@ -94,14 +94,16 @@ function transformItemArray(
 ): { changed: boolean; value: unknown } {
   if (!Array.isArray(items)) return { changed: false, value: items };
   let changed = false;
-  const value = items.map((item) => {
+  const value = items.map((item, i) => {
     if (!isPlainObject(item)) return item;
     const r = classify(item.timestamp);
     if (r.kind === 'change') {
       changed = true;
       return { ...item, timestamp: r.to };
     }
-    if (r.kind === 'skip') skips.push({ path: skipPath, value: item.timestamp });
+    if (r.kind === 'skip') {
+      skips.push({ path: [...skipPath, String(i), 'timestamp'], value: item.timestamp });
+    }
     return item;
   });
   return { changed, value };
@@ -117,7 +119,7 @@ function transformItensMap(
   let changed = false;
   const value: Record<string, unknown> = {};
   for (const [key, arr] of Object.entries(itens)) {
-    const r = transformItemArray(arr, skips, skipPath);
+    const r = transformItemArray(arr, skips, [...skipPath, key]);
     value[key] = r.value;
     if (r.changed) changed = true;
   }
@@ -144,7 +146,7 @@ export function transformPedido(data: Record<string, unknown>): DocTransform {
     let changed = false;
     const value: Record<string, unknown> = {};
     for (const [key, inner] of Object.entries(data.itensDevolvidos)) {
-      const r = transformItensMap(inner, out.skips, ['itensDevolvidos']);
+      const r = transformItensMap(inner, out.skips, ['itensDevolvidos', key]);
       value[key] = r.value;
       if (r.changed) changed = true;
     }

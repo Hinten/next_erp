@@ -30,4 +30,15 @@ describe('parseArgs', () => {
   it('rejects an unknown flag', () => {
     expect(() => parseArgs(['--project', 'x', '--force'])).toThrow(/Unknown argument/);
   });
+
+  it('rejects a flag where a value is expected (does not consume the next flag)', () => {
+    expect(() => parseArgs(['--project', '--apply'])).toThrow(/--project requires a value/);
+    expect(() => parseArgs(['--project', 'x', '--service-account', '--apply'])).toThrow(
+      /--service-account requires a value/,
+    );
+  });
+
+  it('rejects a trailing flag with no value', () => {
+    expect(() => parseArgs(['--project'])).toThrow(MigrationArgError);
+  });
 });

@@ -56,6 +56,19 @@ describe('transformPedido', () => {
     expect(t.skips).toEqual([{ path: ['timestamp'], value: GAP }]);
   });
 
+  it('records a locatable path for a skipped nested item.timestamp', () => {
+    const t = transformPedido({
+      itens: { ABC: [{ timestamp: US }, { timestamp: GAP }] },
+      itensDevolvidos: { v1: { XYZ: [{ timestamp: GAP }] } },
+    });
+    expect(t.skips).toEqual(
+      expect.arrayContaining([
+        { path: ['itens', 'ABC', '1', 'timestamp'], value: GAP },
+        { path: ['itensDevolvidos', 'v1', 'XYZ', '0', 'timestamp'], value: GAP },
+      ]),
+    );
+  });
+
   it('converts embedded frete ms fields', () => {
     const t = transformPedido({ freteInicial: { prazoDespacho: MS, timestamp: null } });
     expect(t.changes).toEqual([{ path: ['freteInicial', 'prazoDespacho'], from: MS, to: US }]);
