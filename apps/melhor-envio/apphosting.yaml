@@ -1,0 +1,23 @@
+# Firebase App Hosting backend config for apps/melhor-envio.
+# API-only service for the Melhor Envio freight integration: OAuth connect,
+# quote, buy/print/track labels, and the ME status webhook.
+runConfig:
+  cpu: 1
+  memoryMiB: 512
+  maxInstances: 20
+  minInstances: 0
+  concurrency: 80
+# Required env (set per-environment in the Firebase console → App Hosting →
+# Environment variables, or via Cloud Secret Manager for secrets):
+#   FIREBASE_PROJECT_ID         the GCP / Firebase project id
+#   FIREBASE_DATABASE_ID        Firestore database id (default: "default")
+#   MELHOR_ENVIO_CLIENT_ID      ME application id            (Secret Manager)
+#   MELHOR_ENVIO_CLIENT_SECRET  ME application secret        (Secret Manager)
+#   MELHOR_ENVIO_STATE_SECRET   HMAC key for the OAuth state (Secret Manager)
+#   MELHOR_ENVIO_SANDBOX        "true" (default) or "false" for production ME
+#   MELHOR_ENVIO_USER_AGENT     app name + contact email (ME requires it)
+#   MELHOR_ENVIO_PUBLIC_URL     this backend's public origin — used to build the
+#                               OAuth redirect_uri (must match the URI registered
+#                               in the Melhor Envio dashboard)
+#   WEB_APP_URL                 apps/web origin (the callback redirects back here)
+#   ALLOWED_ADMIN_ORIGINS       CSV of apps/web origins for CORS (no localhost in prod)

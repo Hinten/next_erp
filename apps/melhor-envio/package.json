@@ -1,12 +1,12 @@
 {
-  "name": "@delfrance/integrations-app",
+  "name": "@delfrance/melhor-envio-app",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "dotenv -e ../../.env.local -- next dev --port 3001",
+    "dev": "dotenv -e ../../.env.local -- next dev --port 3005",
     "build": "dotenv -e ../../.env.local -- next build",
-    "start": "dotenv -e ../../.env.local -- next start --port 3001",
+    "start": "dotenv -e ../../.env.local -- next start --port 3005",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -15,6 +15,7 @@
   "dependencies": {
     "@delfrance/auth": "workspace:*",
     "@delfrance/data": "workspace:*",
+    "@delfrance/integrations-freight-br": "workspace:*",
     "@delfrance/schemas": "workspace:*",
     "firebase-admin": "^13.9.0",
     "next": "^16.2.6",

@@ -1,13 +1,16 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
-// The admin (/api/admin/*) endpoints are called from the apps/web browser,
-// which is on a different origin (dev: :3000 → :3001; prod: app-* → api-*). The
-// route handlers carry `Authorization: Bearer <idToken>`, which makes them
-// non-simple cross-origin requests — so the browser fires a CORS preflight.
-// Without an OPTIONS handler + ACAO header on the response, the fetch surfaces
-// as a CORS error ("falta cabeçalho 'Access-Control-Allow-Origin'").
-// (The Melhor Envio freight routes moved to apps/melhor-envio, which carries
-// its own proxy.ts for /api/freight/*; webhooks stay OUT of any matcher.)
+// The freight (/api/freight/*) endpoints are called from the apps/web browser,
+// which is on a different origin (dev: :3000 → :3005; prod: app-* →
+// melhor-envio-*). The route handlers carry `Authorization: Bearer <idToken>`,
+// which makes them non-simple cross-origin requests — so the browser fires a
+// CORS preflight. Without an OPTIONS handler + ACAO header on the response, the
+// fetch surfaces as a CORS error. The freight routes use both GET (oauth/start,
+// conta) and POST (calculate, comprar, imprimir, rastrear), so GET is in the
+// allowed methods. The Melhor Envio OAuth **callback**
+// (/api/oauth/melhor-envio/callback) is a top-level browser redirect from ME +
+// a server→ME token exchange — no preflight — so it stays OUT of the matcher,
+// along with the webhook (server→server).
 
 const DEV_ORIGIN = 'http://localhost:3000';
 
@@ -51,5 +54,5 @@ export function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/api/admin/:path*'],
+  matcher: ['/api/freight/:path*'],
 };

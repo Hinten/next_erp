@@ -2,6 +2,10 @@
 
 API-only Next.js app. Receives webhooks and OAuth callbacks from external systems. Deploys to Firebase App Hosting.
 
+> **Melhor Envio freight lives in its own app** — `apps/melhor-envio`
+> (`@delfrance/melhor-envio-app`, `:3005`), split out for isolated logs/deploy.
+> Don't add freight routes here.
+
 ## Rules specific to this app
 
 1. **No UI code**. No React components beyond the placeholder root page. Add nothing under `app/(app)/` or any client routes.

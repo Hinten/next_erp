@@ -2,10 +2,11 @@
 
 /**
  * `useFreightClient()` — a memoized `FreightHttpClient` bound to the
- * current Firebase auth state, talking to the apps/integrations Melhor
- * Envio routes. Mirrors `useNFeClient` (lib/nfe/client.ts): returns
- * `null` while logged out so components can disable their buttons, and
- * passes `() => user.getIdToken()` so token refreshes propagate.
+ * current Firebase auth state, talking to the apps/melhor-envio Melhor
+ * Envio routes (its own App Hosting backend, separate from apps/integrations).
+ * Mirrors `useNFeClient` (lib/nfe/client.ts): returns `null` while logged out
+ * so components can disable their buttons, and passes `() => user.getIdToken()`
+ * so token refreshes propagate.
  */
 import { useMemo } from 'react';
 
@@ -16,13 +17,13 @@ import {
 
 import { useAuth } from '@/lib/auth/useAuth';
 
-const DEFAULT_INTEGRATIONS_URL = 'http://localhost:3001';
+const DEFAULT_MELHOR_ENVIO_URL = 'http://localhost:3005';
 
 export function useFreightClient(): FreightHttpClient | null {
   const { user } = useAuth();
   return useMemo(() => {
     if (!user) return null;
-    const baseUrl = process.env.NEXT_PUBLIC_INTEGRATIONS_URL ?? DEFAULT_INTEGRATIONS_URL;
+    const baseUrl = process.env.NEXT_PUBLIC_MELHOR_ENVIO_URL ?? DEFAULT_MELHOR_ENVIO_URL;
     return createFreightHttpClient({
       baseUrl,
       getAuthToken: () => user.getIdToken(),
