@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import { produtoSchema } from './produto';
-import { produtoExtraDataSchema } from './extraData';
-import { estoqueProdutoSchema } from './estoque';
-import { impostoProdutoSchema } from '../impostoProduto';
+import { produtoSchema } from '../collection/produto';
+import { produtoExtraDataSchema } from '../collection/extraData';
+import { estoqueProdutoSchema } from '../collection/estoque';
+import { impostoProdutoSchema } from '../../impostoProduto';
 
 /**
  * # Produto page model

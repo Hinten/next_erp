@@ -1,9 +1,9 @@
 import { z } from 'zod';
-import type { CollectionMetadata } from '../types';
-import { fotoSchema } from '../storage/foto';
-import { videoSchema } from '../storage/video';
-import { componentesKitSchema } from './kit';
-import { anexoSchema } from './anexo';
+import type { CollectionMetadata } from '../../types';
+import { fotoSchema } from '../../storage/foto';
+import { videoSchema } from '../../storage/video';
+import { componentesKitSchema } from './embedded/kit';
+import { anexoSchema } from './embedded/anexo';
 
 const PERM_PRODUTO_READ = 1n << 8n;
 const PERM_PRODUTO_WRITE = 1n << 9n;

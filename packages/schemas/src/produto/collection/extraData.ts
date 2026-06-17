@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { CollectionMetadata } from '../types';
+import type { CollectionMetadata } from '../../types';
 
 // ProdutoExtraData is produto-scoped: it reuses the produto permission bits
 // (bits 8–10 — see `produto.ts`), so reading/writing a produto's extra data

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { CollectionMetadata, DomainSchema } from '../types';
+import type { CollectionMetadata, DomainSchema } from '../../types';
 import { produtoMeta } from './produto';
 
 /**

@@ -1,4 +1,4 @@
-import type { GrupoDeVariacoes, Variante } from '../grupoDeVariacoes';
+import type { GrupoDeVariacoes, Variante } from '../../grupoDeVariacoes';
 
 /**
  * Pure helpers for product variations — the Cartesian child-product

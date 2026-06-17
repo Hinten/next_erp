@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FormulaCalculoPreco } from '../listaDePrecos';
+import type { FormulaCalculoPreco } from '../../listaDePrecos';
 import {
   calcularPreco,
   custoDoKit,

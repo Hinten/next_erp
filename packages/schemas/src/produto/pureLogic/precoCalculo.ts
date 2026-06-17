@@ -1,6 +1,6 @@
-import type { FormulaCalculoPreco, ListaDePrecos } from '../listaDePrecos';
-import type { ComponentesKit } from './kit';
-import type { Preco } from './produto';
+import type { FormulaCalculoPreco, ListaDePrecos } from '../../listaDePrecos';
+import type { ComponentesKit } from '../collection/embedded/kit';
+import type { Preco } from '../collection/produto';
 
 /**
  * Pure price-formula engine — port of the Flutter `ListaDePrecos.calcularPreco`
