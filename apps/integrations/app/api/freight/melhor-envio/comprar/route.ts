@@ -57,6 +57,16 @@ export async function POST(req: Request): Promise<NextResponse> {
   const { intFreteId, pedidoId, cartPayload, printLabelId } = parsed.data;
 
   const db = getAdminFirestore();
+  const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
+
+  // Confirm the pedido exists BEFORE touching Melhor Envio — checkout spends
+  // wallet balance, so we must never buy a label for a pedido we can't persist
+  // it to. A missing pedido is the caller's mistake (404), not a 500.
+  const snap = await pedidoRef.get();
+  if (!snap.exists) {
+    return NextResponse.json({ error: `Pedido ${pedidoId} não encontrado.` }, { status: 404 });
+  }
+
   try {
     const ctx = await loadMelhorEnvioContext(db, intFreteId);
     const result = await comprarEtiqueta({
@@ -65,11 +75,11 @@ export async function POST(req: Request): Promise<NextResponse> {
       buildCartPayload: () => cartPayload,
       // Anti-loss anchor: persist the label id before checkout spends balance.
       persistPrintLabelId: async (id) => {
-        await pedidoCollection.docRef(db, {}, pedidoId).update({ 'freteInicial.printLabelId': id });
+        await pedidoRef.update({ 'freteInicial.printLabelId': id });
       },
     });
 
-    await pedidoCollection.docRef(db, {}, pedidoId).update({
+    await pedidoRef.update({
       'freteInicial.estado': 'aguardandoPostagem',
       'freteInicial.codRastreio': result.tracking,
     });

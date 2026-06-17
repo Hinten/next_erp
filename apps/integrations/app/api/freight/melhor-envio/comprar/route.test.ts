@@ -15,6 +15,7 @@ const h = vi.hoisted(() => ({
   checkout: vi.fn(),
   generate: vi.fn(),
   print: vi.fn(),
+  pedidoGet: vi.fn(),
   pedidoUpdate: vi.fn(),
 }));
 
@@ -24,7 +25,7 @@ vi.mock('@/lib/firebase/admin', () => ({
 }));
 
 vi.mock('@delfrance/data/admin/collections', () => ({
-  pedidoCollection: { docRef: () => ({ update: h.pedidoUpdate }) },
+  pedidoCollection: { docRef: () => ({ get: h.pedidoGet, update: h.pedidoUpdate }) },
 }));
 
 vi.mock('@/lib/freight/melhorEnvio', async (importActual) => {
@@ -47,6 +48,7 @@ const VALID_BODY = { intFreteId: 'int-1', pedidoId: 'ped-1', cartPayload: { serv
 
 beforeEach(() => {
   vi.clearAllMocks();
+  h.pedidoGet.mockResolvedValue({ exists: true });
   h.addToCart.mockResolvedValue({ id: 'new-label' });
   h.checkout.mockResolvedValue({});
   h.generate.mockResolvedValue({});
@@ -84,6 +86,16 @@ describe('POST /api/freight/melhor-envio/comprar', () => {
       req({ intFreteId: 'int-1', cartPayload: { service: 3 } }, { authorization: 'Bearer t' }),
     );
     expect(res.status).toBe(400);
+  });
+
+  it('returns 404 without touching Melhor Envio when the pedido does not exist', async () => {
+    h.verifyIdToken.mockResolvedValue(WRITER);
+    h.pedidoGet.mockResolvedValue({ exists: false });
+    const res = await POST(req(VALID_BODY, { authorization: 'Bearer t' }));
+    expect(res.status).toBe(404);
+    // No label is bought for a pedido we can't persist to.
+    expect(h.loadCtx).not.toHaveBeenCalled();
+    expect(h.addToCart).not.toHaveBeenCalled();
   });
 
   it('buys the label, persists printLabelId before checkout, then writes estado/codRastreio', async () => {
