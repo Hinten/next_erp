@@ -5,12 +5,15 @@ import {
   autorizarLote,
   consultarLote,
   consultarSituacaoNFe,
+  nextConsultaDelayMs,
   outcomeFromInfProt,
   outcomeFromRetConsRec,
+  RECONCILE_SWEEP_GRACE_MS,
   type NFeStatePatch,
   type SefazOutcome,
   type TpEmis,
 } from '@delfrance/integrations-nfe';
+import { nowMicros } from '@delfrance/core/datetime';
 import {
   ESTADO_ENVI_NFE_MSG,
   ESTADO_NFE,
@@ -209,6 +212,23 @@ export async function persistPatch(
   // currently used for `xml_nfe_proc` on cStat=100 (autorizada). Kept
   // generic so future fields (e.g. `data_autorizacao`, `nProt`) can
   // ride along without another method.
+  //
+  // `proximaConsultaEm` (µs epoch) is the BACKSTOP sweep's due-gate: when the
+  // patch leaves the doc still awaiting SEFAZ (`aguardandoResposta`), stamp the
+  // task delay (deterministic — same value the Cloud Task is scheduled with)
+  // PLUS `RECONCILE_SWEEP_GRACE_MS`, so the sweep only steps in once the task is
+  // overdue (lost). Without the grace + determinism the sweep could drift ahead
+  // of a healthy task and double-consult the same `nRec` — and with 656 now
+  // terminal that risks a wrongful terminal error (#77 review). Any
+  // terminal/other estado clears it to `null` so the doc stops being scanned.
+  // An explicit `extras.proximaConsultaEm` override (rare) wins.
+  const stampProxima =
+    extras != null && Object.prototype.hasOwnProperty.call(extras, 'proximaConsultaEm');
+  const proximaConsultaEm =
+    patch.estado === ESTADO_NFE.aguardandoResposta
+      ? nowMicros() +
+        (nextConsultaDelayMs(patch.retries, patch.tMed) + RECONCILE_SWEEP_GRACE_MS) * 1000
+      : null;
   await nfeRef.set(
     nfev4Collection.parseMerge({
       estado: patch.estado,
@@ -216,6 +236,7 @@ export async function persistPatch(
       xMotivo: patch.xMotivo,
       retries: patch.retries,
       ...(patch.nRec != null ? { nRec: patch.nRec } : {}),
+      ...(stampProxima ? {} : { proximaConsultaEm }),
       ...(extras ?? {}),
       ultima_modificacao: new Date().toISOString(),
     }),

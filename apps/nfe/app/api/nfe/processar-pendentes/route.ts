@@ -34,6 +34,7 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { persistPatch, procPersistExtras } from '@/lib/nfe/orchestrator/audit';
 import { loadNfeConfigForEmission } from '@/lib/nfe/orchestrator/bundle';
 import { transmitirPosEpec } from '@/lib/nfe/orchestrator/epec';
+import { reconcileByRecibo } from '@/lib/nfe/orchestrator/reconcile';
 import { sefazCallFor } from '@/lib/nfe/orchestrator/sefaz-call';
 import { resolveFilialRuntime, resolveFilialRuntimeByCnpj } from '@/lib/nfe/filial-cert';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
@@ -57,8 +58,30 @@ interface PendingDoc {
   readonly filialId: string | null;
   readonly ultima_modificacao: string | null;
   readonly retries: number | null;
+  /** Lote receipt — when present, the doc is reconciled by recibo (consReci), not consSit. */
+  readonly nRec: string | null;
+  /** Async-reconciler due gate (µs epoch). Null on legacy docs → fall back to `isStuckEnviando`. */
+  readonly proximaConsultaEm: number | null;
   /** The persist-before-send anchor — feeds `buildNFeProc` when the consult recovers `autorizada`. */
   readonly xml_assinado: string | null;
+}
+
+/**
+ * Backstop due-gate: a doc is due iff its `proximaConsultaEm` (µs epoch) has
+ * passed. Legacy docs predating the field (`proximaConsultaEm == null`) fall
+ * back to the coarse `isStuckEnviando` timeout. Respecting `proximaConsultaEm`
+ * is what keeps the sweep from consulting a lote the Cloud Task is already
+ * pacing — the consumo-indevido guard (#77).
+ */
+function isDue(data: PendingDoc, now: Date, timeoutMs: number): boolean {
+  if (data.proximaConsultaEm != null) {
+    return data.proximaConsultaEm <= now.getTime() * 1000;
+  }
+  return isStuckEnviando(
+    { estado: data.estado, ultima_modificacao: data.ultima_modificacao ?? null },
+    now,
+    timeoutMs,
+  );
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
@@ -108,6 +131,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   // Filial contingency modes, read once per filial per run — an approved
   // EPEC is only transmitted once the operator flipped the modo back.
   const modoByFilial = new Map<string, string>();
+  // Due lotes to reconcile by receipt, deduped by nRec so each lote is
+  // consulted ONCE per run (consReci returns the whole lote) — consulting the
+  // same recibo once per member doc would be the consumo-indevido vector (#77).
+  const dueLotes = new Map<string, { filialId: string; tpEmis: number }>();
 
   for (const doc of snap.docs) {
     scanned++;
@@ -158,19 +185,27 @@ export async function POST(req: Request): Promise<NextResponse> {
       continue;
     }
 
-    const stuck = isStuckEnviando(
-      { estado: data.estado, ultima_modificacao: data.ultima_modificacao ?? null },
-      now,
-      timeoutMs,
-    );
-    if (!stuck) {
+    // Due-gate: respect `proximaConsultaEm` (the task's pacing) so the backstop
+    // never consults a lote ahead of its scheduled time. Not-yet-due docs are
+    // left for the Cloud Task (or a later sweep tick).
+    if (!isDue(data, now, timeoutMs)) {
       stillPending++;
+      continue;
+    }
+    // Preferred path: reconcile by RECEIPT. Bucket by nRec so the whole lote is
+    // consulted once after the scan (reconcileByRecibo re-queries by nRec, so it
+    // also picks up lote members beyond this batch's limit). Needs the filial to
+    // resolve its A1 cert; nRec-but-no-filialId legacy docs fall through to
+    // consSit below.
+    if (data.nRec && data.filialId) {
+      dueLotes.set(data.nRec, { filialId: data.filialId, tpEmis: data.tpEmis ?? 1 });
       continue;
     }
     if (!data.chave) {
       errors.push({ chave: null, error: `${doc.ref.path}: missing chave on stuck doc` });
       continue;
     }
+    // Fallback: legacy docs with no nRec (or no filialId) — consult by chave.
     try {
       // mTLS presents the filial's cert (or env fallback) when the doc carries
       // a filialId; legacy docs without one resolve the cert from the emit CNPJ
@@ -211,6 +246,32 @@ export async function POST(req: Request): Promise<NextResponse> {
       errors.push({
         chave: data.chave,
         error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  // Reconcile each due lote by receipt — once per nRec. The shared core consults
+  // `consReciNFe`, applies per-chave outcomes, enforces the 656-terminal rule and
+  // the attempt cap, and re-stamps each doc's `proximaConsultaEm`. The backstop
+  // does NOT re-enqueue a Cloud Task — its own cadence (gated by the refreshed
+  // `proximaConsultaEm`) is the recovery when the primary task path is lost.
+  for (const [nRec, info] of dueLotes) {
+    try {
+      const rt = await resolveFilialRuntime(fs, runtimeInstance, info.filialId);
+      const r = await reconcileByRecibo({
+        fs,
+        rt,
+        filialId: info.filialId,
+        nRec,
+        tpEmis: info.tpEmis as TpEmis,
+        attempt: 0,
+      });
+      recovered += r.recovered + r.errored;
+      stillPending += r.stillPending;
+    } catch (e) {
+      errors.push({
+        chave: null,
+        error: `nRec ${nRec}: ${e instanceof Error ? e.message : String(e)}`,
       });
     }
   }

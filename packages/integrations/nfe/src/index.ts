@@ -62,6 +62,10 @@ export { removerAcentos, removerCharRestrito, sanitizeNFeEmail, sanitizeNFeText 
 export {
   CONSUMO_INDEVIDO_MARKER,
   MAX_LOTE_POLL_RETRIES,
+  MAX_RECONCILE_ATTEMPTS,
+  RECONCILE_BASE_DELAY_MS,
+  RECONCILE_MAX_DELAY_MS,
+  RECONCILE_SWEEP_GRACE_MS,
   NFeConsumoIndevidoError,
   STATUS_BLOQUEADORES,
   applyOutcome,
@@ -70,6 +74,7 @@ export {
   cStatToEstado,
   isBloqueada,
   nextAction,
+  nextConsultaDelayMs,
   resolveTpEmis,
   CSTAT_EPEC_DUPLICIDADE,
   CSTAT_EPEC_NAO_SINCRONIZADO,

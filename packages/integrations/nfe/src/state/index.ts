@@ -33,6 +33,52 @@ export {
 export const MAX_LOTE_POLL_RETRIES = 4;
 
 /**
+ * Async reconciler tuning (Cloud Tasks + backstop sweep). A lote stuck at
+ * `cStat=105` is re-consulted at most `MAX_RECONCILE_ATTEMPTS` times; past
+ * that it is marked terminal `error` for manual review (never re-queried
+ * forever — that is the consumo-indevido / SEFAZ-ban vector behind #77).
+ */
+export const MAX_RECONCILE_ATTEMPTS = 10;
+/** First-consult / floor backoff when SEFAZ returns no `tMed`. */
+export const RECONCILE_BASE_DELAY_MS = 60_000;
+/** Backoff ceiling — a single attempt never waits longer than this. */
+export const RECONCILE_MAX_DELAY_MS = 15 * 60_000;
+/**
+ * Grace the backstop sweep adds on top of the task delay before a lote is
+ * "due". The Cloud Task is the primary trigger (fires at `now + delay`); the
+ * sweep only steps in when that task is overdue by this much (i.e. lost). Keeps
+ * the sweep from consulting the same `nRec` a healthy task is about to consult —
+ * which, with 656 now terminal, would risk a wrongful terminal error.
+ */
+export const RECONCILE_SWEEP_GRACE_MS = 60_000;
+
+/**
+ * How long to wait before the next consult of a still-processing lote — the
+ * delay the Cloud Task is scheduled with.
+ *
+ *  - **attempt 0** (the first consult, scheduled at emit time): respect
+ *    SEFAZ's own `tMed` estimate (seconds) when present — the polite first
+ *    check — else `RECONCILE_BASE_DELAY_MS`.
+ *  - **attempt ≥ 1**: exponential backoff (`base × 2^attempt`) capped at
+ *    `RECONCILE_MAX_DELAY_MS`.
+ *
+ * **Deterministic** (no jitter): the queue's `rate_limits` already pace
+ * dispatch, and the backstop sweep's due-gate (`proximaConsultaEm`) is derived
+ * from this same value (+ `RECONCILE_SWEEP_GRACE_MS`), so a jittered delay here
+ * would let the sweep drift ahead of the task and double-consult (#77 review).
+ */
+export function nextConsultaDelayMs(attempt: number, tMedSeconds?: string | number | null): number {
+  if (attempt <= 0) {
+    const tMed = typeof tMedSeconds === 'string' ? Number(tMedSeconds) : tMedSeconds;
+    if (tMed != null && Number.isFinite(tMed) && tMed > 0) {
+      return Math.min(Math.round(tMed * 1000), RECONCILE_MAX_DELAY_MS);
+    }
+    return RECONCILE_BASE_DELAY_MS;
+  }
+  return Math.min(RECONCILE_BASE_DELAY_MS * 2 ** attempt, RECONCILE_MAX_DELAY_MS);
+}
+
+/**
  * Coarse semantic category of a `cStat`. Drives the next action without
  * exposing every numeric code to callers.
  */
@@ -193,6 +239,12 @@ export interface SefazOutcome {
   readonly xMotivo: string;
   /** Lote receipt number, when SEFAZ returned one (cStat 103 / duplicidade). */
   readonly nRec?: string | null;
+  /**
+   * SEFAZ's `tMed` — estimated lote-processing time in **seconds** (from
+   * `retEnviNFe.infRec.tMed` / `retConsReciNFe.tMed`). Seeds the first
+   * `proximaConsultaEm`; not persisted on the doc. Carried in-memory only.
+   */
+  readonly tMed?: string | null;
   /** The 44-char chave SEFAZ asserts in 539 responses, if present. */
   readonly chNFeFromXMotivo?: string | null;
 }
@@ -205,6 +257,11 @@ export interface NFeStatePatch {
   readonly retries: number;
   readonly nRec: string | null;
   readonly action: NextAction;
+  /**
+   * SEFAZ's `tMed` estimate (seconds), carried so `persistPatch` can seed the
+   * first `proximaConsultaEm`. Not a persisted field — see `SefazOutcome.tMed`.
+   */
+  readonly tMed: string | null;
 }
 
 /**
@@ -233,6 +290,7 @@ export function applyOutcome(
     retries,
     nRec: outcome.nRec ?? null,
     action,
+    tMed: outcome.tMed ?? null,
   };
 }
 

@@ -32,6 +32,7 @@ import {
   NFePedidoNotFoundError,
 } from '@/lib/nfe/orchestrator';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
+import { createTaskScheduler, NFeTasksConfigError } from '@/lib/nfe/tasks';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -68,10 +69,20 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   try {
-    const result = await emitirPedido(getAdminFirestore(), runtimeInstance, body.pedidoId);
+    const result = await emitirPedido(
+      getAdminFirestore(),
+      runtimeInstance,
+      body.pedidoId,
+      createTaskScheduler(),
+    );
     const status = result.estado === ESTADO_NFE.rejeitada ? 422 : 200;
     return NextResponse.json(result, { status });
   } catch (e) {
+    if (e instanceof NFeTasksConfigError) {
+      // Deploy-config gap (fail-fast): Cloud Tasks env missing and not
+      // explicitly disabled. Same class of error as runtime-not-ready.
+      return authError(503, { error: e.message, code: e.name });
+    }
     if (e instanceof NFePedidoNotFoundError) {
       return authError(404, { error: e.message });
     }

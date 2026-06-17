@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
+import { microsSinceEpoch } from './datetime';
 
 // Mirror `PERM.nfe` from @delfrance/auth.
 const PERM_NFE_READ = 1n << 32n;
@@ -97,9 +98,20 @@ export const nfeSchema = z.object({
   nRec: z.string().min(1).nullable(),
   /**
    * Bounded retry counter for the lote-pendente (cStat=105) poll loop.
-   * The state machine resets this on every non-105 outcome.
+   * The state machine resets this on every non-105 outcome. Also the
+   * attempt counter the async reconciler caps at `MAX_RECONCILE_ATTEMPTS`.
    */
   retries: z.number().int().min(0).nullable(),
+  /**
+   * Earliest time the async reconciler may consult this lote again — the
+   * consumo-indevido gate (avoids SEFAZ rejection 656). Seeded at emit time
+   * to `now + tMed` (SEFAZ's estimate), then pushed out by the per-attempt
+   * backoff (`nextConsultaDelayMs`). The Cloud Task is scheduled for this
+   * instant; the backstop sweep skips docs whose `proximaConsultaEm` is in
+   * the future. Cleared to `null` on any terminal outcome. Microseconds
+   * since epoch (the project datetime standard — see `@delfrance/core/datetime`).
+   */
+  proximaConsultaEm: microsSinceEpoch().nullable().default(null),
 
   cStat: z.string().nullable(),
   xMotivo: z.string().nullable(),

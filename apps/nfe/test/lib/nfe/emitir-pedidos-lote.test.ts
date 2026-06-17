@@ -32,7 +32,21 @@ import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
 import { emitirPedidosLote, NFeOrchestratorError } from '../../../lib/nfe/orchestrator';
 import type { NFeBaseRuntime, NFeRuntime } from '../../../lib/nfe/runtime';
+import type { ConsultaTaskInput, TaskScheduler } from '../../../lib/nfe/tasks';
 import { assertSignedXmlNeverLost } from '../../helpers/xml-invariant';
+
+/** Fake Cloud Tasks scheduler that records what the orchestrator would enqueue. */
+function recordingScheduler(): { scheduler: TaskScheduler; enqueued: ConsultaTaskInput[] } {
+  const enqueued: ConsultaTaskInput[] = [];
+  return {
+    scheduler: {
+      async enqueueConsulta(input) {
+        enqueued.push(input);
+      },
+    },
+    enqueued,
+  };
+}
 
 function fakeRuntime(): NFeRuntime & NFeBaseRuntime {
   const rt: NFeRuntime = {
@@ -565,7 +579,7 @@ describe('emitirPedidosLote — single filial happy path', () => {
     expect(procWrite?.data.xml_assinado).toBeNull();
   });
 
-  it('multi-pedido (single filial, no resolution drift) goes async + polls once', async () => {
+  it('multi-pedido (single filial) hands off async without polling', async () => {
     const events: string[] = [];
     const { fs, writes } = fakeFirestore({
       events,
@@ -575,47 +589,38 @@ describe('emitirPedidosLote — single filial happy path', () => {
         { pedidoId: 'PED-3', filialId: 'F-1' },
       ],
     });
-    autorizarLoteAsync('RECIBO-1');
-    // Resolve the lote via the chaves the generateNFe mock pushed to
-    // `generatedChaves` — captured at generate-time, no XML regex needed.
-    vi.mocked(consultarLote).mockImplementation(
-      async () =>
-        ({
-          versao: '4.00',
-          tpAmb: '2',
-          verAplic: 'TEST',
-          cStat: '104',
-          xMotivo: 'Lote processado',
-          cUF: '35',
-          protNFe: generatedChaves.map((ch, i) => ({
-            versao: '4.00',
-            infProt: {
-              tpAmb: '2',
-              verAplic: 'TEST',
-              chNFe: ch,
-              dhRecbto: new Date().toISOString(),
-              cStat: '100',
-              xMotivo: 'Autorizado o uso da NF-e',
-              nProt: `135${i.toString().padStart(15, '0')}`,
-              digVal: `dig-${i}`,
-            },
-          })),
-        }) as never,
+    autorizarLoteAsync('RECIBO-1'); // cStat=103, nRec=RECIBO-1, tMed='1'
+    const { scheduler, enqueued } = recordingScheduler();
+    const before = Date.now();
+    const out = await emitirPedidosLote(
+      fs as never,
+      fakeRuntime(),
+      ['PED-1', 'PED-2', 'PED-3'],
+      scheduler,
     );
-    const out = await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-1', 'PED-2', 'PED-3']);
     expect(out.results).toHaveLength(3);
+    // Immediate hand-off: each pedido is aguardandoResposta with the receipt,
+    // NOT polled to aprovada in-request.
     for (const r of out.results) {
-      expect('estado' in r ? r.estado : null).toBe(ESTADO_NFE.aprovada);
+      expect('estado' in r ? r.estado : null).toBe(ESTADO_NFE.aguardandoResposta);
+      expect('nRec' in r ? r.nRec : null).toBe('RECIBO-1');
     }
     expect(vi.mocked(autorizarLote).mock.calls[0]?.[1].indSinc).toBe('0');
-    expect(vi.mocked(consultarLote)).toHaveBeenCalledTimes(1);
-    // #128 — every authorized member gets the proc + cleared-anchor pair.
+    // The in-request poll is gone — the reconcile task does the consult.
+    expect(vi.mocked(consultarLote)).not.toHaveBeenCalled();
+    // Exactly one reconcile task enqueued for the whole lote, at ~now + tMed.
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]).toMatchObject({ filialId: 'F-1', nRec: 'RECIBO-1', attempt: 0 });
+    expect(enqueued[0]!.scheduleAtMs).toBeGreaterThanOrEqual(before + 1000);
+    // Each doc persisted aguardandoResposta + nRec + a future proximaConsultaEm;
+    // no <nfeProc> yet (authorization is confirmed later by the reconciler).
     for (const pedidoId of ['PED-1', 'PED-2', 'PED-3']) {
-      const procWrite = writes.find(
-        (w) => w.path === `pedidos/${pedidoId}/nfev4/s1` && typeof w.data.xml_nfe_proc === 'string',
+      const w = writes.find(
+        (x) => x.path === `pedidos/${pedidoId}/nfev4/s1` && x.data.nRec === 'RECIBO-1',
       );
-      expect(procWrite).toBeDefined();
-      expect(procWrite?.data.xml_assinado).toBeNull();
+      expect(w).toBeDefined();
+      expect(w?.data.estado).toBe(ESTADO_NFE.aguardandoResposta);
+      expect(typeof w?.data.proximaConsultaEm).toBe('number');
     }
   });
 });
@@ -874,8 +879,9 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
     expect('errorCode' in bad).toBe(true);
     expect('estado' in bad).toBe(false);
     // ...while the other two still emit (the chunk is NOT sunk by one bad pedido).
-    expect('estado' in good ? good.estado : null).toBe(ESTADO_NFE.aprovada);
-    expect('estado' in good2 ? good2.estado : null).toBe(ESTADO_NFE.aprovada);
+    // The lote is async (N=2) so they hand off as aguardandoResposta.
+    expect('estado' in good ? good.estado : null).toBe(ESTADO_NFE.aguardandoResposta);
+    expect('estado' in good2 ? good2.estado : null).toBe(ESTADO_NFE.aguardandoResposta);
     // Only the two good NF-es rode the lote.
     expect(vi.mocked(autorizarLote).mock.calls[0]?.[1].NFe).toHaveLength(2);
     // All three were fresh → the counter advanced by 3; the bad pedido's

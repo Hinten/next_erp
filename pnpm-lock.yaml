@@ -198,6 +198,9 @@ importers:
       firebase-admin:
         specifier: ^13.9.0
         version: 13.9.0
+      google-auth-library:
+        specifier: ^10.6.2
+        version: 10.6.2
       next:
         specifier: ^16.2.6
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)

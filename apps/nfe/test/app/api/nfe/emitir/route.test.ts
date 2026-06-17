@@ -41,6 +41,10 @@ function req(body: unknown, headers: Record<string, string> = {}): Request {
 }
 
 beforeEach(() => {
+  // The orchestrator is mocked, so Cloud Tasks isn't exercised here — run in
+  // the explicit sweep-only mode so `createTaskScheduler()` returns a no-op
+  // instead of fail-fasting on the absent NFE_TASKS_* config.
+  process.env.NFE_TASKS_DISABLED = '1';
   vi.mocked(verifyCaller).mockResolvedValue({
     caller: { uid: 'u-1', permissions: '0xff' },
   });
@@ -48,6 +52,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete process.env.NFE_TASKS_DISABLED;
   vi.clearAllMocks();
 });
 
