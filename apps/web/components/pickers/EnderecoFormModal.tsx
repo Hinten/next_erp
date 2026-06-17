@@ -7,18 +7,19 @@ import { PERM } from '@delfrance/auth';
 import { enderecoSchema } from '@delfrance/schemas';
 import { ObjectView } from '@delfrance/ui';
 import { CepField } from '@/components/inputs/CepInput';
+import { ENDERECO_HIDDEN_KEYS } from '@/components/inputs/enderecoFields';
 import { enderecoCollection } from '@/lib/data/enderecoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 
 /**
- * Recebedor (NFe / destinatário) keys — edited in the SEPARATE
- * `RecebedorNfeModal`, so the address modal hides them. System/auto fields
- * (`idExterno`, country code, IBGE município) are hidden too: `cPais`/`pais`
- * default to Brazil and `codigoMunicipio` is filled by the CEP lookup.
+ * Recebedor (NFe / destinatário) keys are edited in the SEPARATE
+ * `RecebedorNfeModal`, and system/auto fields (`idExterno`, country code, IBGE
+ * município) aren't user-entered — both are hidden here. This modal renders the
+ * endereço at the TOP level, so it hides via `excludedFields` (a flat array),
+ * sharing the key list with the embedded forms.
  */
-const RECEBEDOR_KEYS = ['nome', 'cpf_cnpj', 'rg', 'ie', 'imun', 'email', 'telefone'];
-const ADDRESS_HIDDEN_KEYS = [...RECEBEDOR_KEYS, 'idExterno', 'cPais', 'pais', 'codigoMunicipio'];
+const ADDRESS_HIDDEN_KEYS = [...ENDERECO_HIDDEN_KEYS];
 
 const ADDRESS_FIELDS = {
   cep: { renderInput: CepField },
