@@ -7,6 +7,7 @@
  * has its `nome` start with the run-scoped prefix from `e2ePrefix()`, so a
  * single prefix sweep cleans the whole suite without tracking ids.
  */
+import { millisToMicros } from '@delfrance/core/datetime';
 import { db } from '@delfrance/test-fixtures';
 import { getRunId } from './run-id';
 
@@ -732,7 +733,7 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
     itens: {},
     itensIds: [],
     descontoTotal: 0,
-    timestamp: Date.now(),
+    timestamp: millisToMicros(Date.now()),
     freteInicial: {
       externalId: 'ML-0001',
       externalOptionId: 'ml-opt-1',
@@ -799,26 +800,29 @@ export async function seedPedidoWithNFe(
   const pedidoId = `${prefix}-${pad(index)}`;
   const nfeId = `${prefix}-${pad(index)}-nfe`;
   const now = Date.now();
-  await db().collection('pedidos').doc(pedidoId).set({
-    ehSaida: true,
-    estado: 'pago',
-    numero: pedidoId,
-    itens: {},
-    itensIds: [],
-    descontoTotal: 0,
-    timestamp: now,
-    ultimaModificacao: now,
-    foiImpresso: false,
-    // The TableView's NF column reads `pedido.id`, not these inner refs;
-    // outer refs stay null so the cell exercises the snapshot path
-    // without dragging a cliente lookup into the assertion.
-    vendedorPedidoOuterRef: null,
-    integracaoPedidoOuterRef: null,
-    operacaoPedidoOuterRef: null,
-    clientePedidoOuterRef: null,
-    enderecoFiscalOuterRef: null,
-    listaDePrecosOuterRef: null,
-  });
+  await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .set({
+      ehSaida: true,
+      estado: 'pago',
+      numero: pedidoId,
+      itens: {},
+      itensIds: [],
+      descontoTotal: 0,
+      timestamp: millisToMicros(now),
+      ultimaModificacao: millisToMicros(now),
+      foiImpresso: false,
+      // The TableView's NF column reads `pedido.id`, not these inner refs;
+      // outer refs stay null so the cell exercises the snapshot path
+      // without dragging a cliente lookup into the assertion.
+      vendedorPedidoOuterRef: null,
+      integracaoPedidoOuterRef: null,
+      operacaoPedidoOuterRef: null,
+      clientePedidoOuterRef: null,
+      enderecoFiscalOuterRef: null,
+      listaDePrecosOuterRef: null,
+    });
   await db()
     .collection('pedidos')
     .doc(pedidoId)

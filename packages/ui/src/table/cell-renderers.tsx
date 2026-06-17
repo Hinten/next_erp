@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Badge, Text } from '@mantine/core';
+import { microsToMillis } from '@delfrance/core/datetime';
 import { format, money } from '@delfrance/core/money';
 import type { FieldDescriptor } from '../schema/types';
 
@@ -38,6 +39,22 @@ export function renderCell(value: unknown, descriptor: FieldDescriptor): ReactNo
       if (!str) return String(value);
       const date = typeof str === 'string' ? new Date(str) : str;
       if (Number.isNaN(date.getTime())) return String(value);
+      return dateFormatter.format(date);
+    }
+    case 'datetime': {
+      // Canonical wire form is a numeric epoch in `descriptor.dateUnit`. Stay
+      // tolerant of a raw Date / ISO string too, in case a doc with another
+      // broken field bypassed the converter's normalization (parseSoftRead
+      // returns raw on a mismatch).
+      let date: Date | null = null;
+      if (typeof value === 'number') {
+        date = new Date(descriptor.dateUnit === 'us' ? microsToMillis(value) : value);
+      } else if (value instanceof Date) {
+        date = value;
+      } else if (typeof value === 'string') {
+        date = new Date(value);
+      }
+      if (!date || Number.isNaN(date.getTime())) return String(value);
       return dateFormatter.format(date);
     }
     case 'number':

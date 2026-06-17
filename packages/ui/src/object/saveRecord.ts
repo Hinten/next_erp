@@ -6,6 +6,7 @@ import {
   runTransaction,
 } from 'firebase/firestore';
 import type { z, ZodTypeAny } from 'zod';
+import { nowMicros, nowMillis } from '@delfrance/core/datetime';
 import { type CollectionHandle, type PathContext } from '@delfrance/data';
 import { writeAuditEntry } from '@delfrance/data/audit';
 import { isEmpty, pickDirty } from './diff';
@@ -21,6 +22,15 @@ export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, 
   dirtyFields: Partial<Record<keyof T, unknown>>;
   /** Uid threaded through to the audit entry. */
   currentUserUid: string;
+  /**
+   * Wire unit for the `ultimaModificacao` stamp, resolved from the schema by
+   * the caller (ObjectView reads the field descriptor). `'iso'` (the default)
+   * writes an ISO-8601 string; `'ms'` / `'us'` write a numeric epoch for
+   * collections whose timestamp fields use `millisSinceEpoch()` /
+   * `microsSinceEpoch()`. Without this, a numeric-epoch collection would get an
+   * ISO string stamped into a `z.number()` field.
+   */
+  stampUnit?: 'iso' | 'ms' | 'us';
 }
 
 export interface SaveRecordResult<T> {
@@ -64,7 +74,12 @@ export async function saveRecord<
   // TableView update-monitor detect edits, not just creations. On create
   // `patch` aliases `input.values`, so stamping `input.values` covers both.
   if ('ultimaModificacao' in input.values) {
-    const now = new Date().toISOString();
+    const now =
+      input.stampUnit === 'us'
+        ? nowMicros()
+        : input.stampUnit === 'ms'
+          ? nowMillis()
+          : new Date().toISOString();
     if (isUpdate) {
       (patch as Record<string, unknown>).ultimaModificacao = now;
     } else {

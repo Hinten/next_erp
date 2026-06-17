@@ -27,6 +27,7 @@ export { renderCell } from './table/cell-renderers';
 export { ObjectView, type ObjectViewProps } from './object/ObjectView';
 export { FieldRenderer, type FieldRendererProps } from './object/FieldRenderer';
 export { NullClearButton, type NullClearButtonProps } from './object/NullClearButton';
+export { epochToPickerString, pickerStringToEpoch, type EpochUnit } from './object/datetimeField';
 export { RecordPager, type RecordPagerProps } from './object/RecordPager';
 export { SectionTabs, type SectionTabsProps } from './object/SectionTabs';
 export { isEmpty, pickDirty } from './object/diff';

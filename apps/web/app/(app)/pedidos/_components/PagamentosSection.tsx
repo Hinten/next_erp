@@ -27,6 +27,7 @@ import {
   type StatusPagamento,
 } from '@delfrance/schemas';
 import { format, money } from '@delfrance/core/money';
+import { nowMicros } from '@delfrance/core/datetime';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { PagamentoStatusBadge } from '../../pagamentos/_components/StatusBadge';
@@ -118,7 +119,7 @@ function PagamentoRow({
         docRef,
         {
           status_pagamento: nextStatus,
-          ultimaModificacao: new Date().toISOString(),
+          ultimaModificacao: nowMicros(),
         },
         { merge: true },
       );

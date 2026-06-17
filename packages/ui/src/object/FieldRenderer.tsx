@@ -1,11 +1,12 @@
 'use client';
 
 import { Fieldset, NumberInput, Select, Stack, Switch, TextInput, Textarea } from '@mantine/core';
-import { DatePickerInput } from '@mantine/dates';
+import { DatePickerInput, DateTimePicker } from '@mantine/dates';
 import { Controller, type Control, type FieldValues } from 'react-hook-form';
 import type { ZodObject, ZodRawShape } from 'zod';
 import type { FieldConfig, FieldDescriptor, FieldRenderProps } from '../schema/types';
 import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
+import { epochToPickerString, pickerStringToEpoch } from './datetimeField';
 import { NullClearButton } from './NullClearButton';
 
 export interface FieldRendererProps {
@@ -294,6 +295,26 @@ export function FieldRenderer({ control, descriptor, config, namePrefix }: Field
                   // to keep wire format stable.
                   field.onChange(v ? new Date(`${v}T00:00:00.000Z`).toISOString() : v);
                 }}
+              />
+            );
+          }
+          case 'datetime': {
+            // Numeric-epoch field (millisSinceEpoch/microsSinceEpoch). The
+            // wire value is a number in `descriptor.dateUnit`; the picker
+            // speaks a local `YYYY-MM-DD HH:mm:ss` string. A null clears to
+            // literal null so the patch preserves intent.
+            const unit = descriptor.dateUnit ?? 'ms';
+            return (
+              <DateTimePicker
+                label={label}
+                description={hint}
+                error={error}
+                disabled={!editable}
+                value={epochToPickerString(field.value as number | null | undefined, unit)}
+                onChange={(v) => field.onChange(pickerStringToEpoch(v, unit))}
+                onBlur={field.onBlur}
+                valueFormat="DD/MM/YYYY HH:mm"
+                clearable={descriptor.nullable || descriptor.optional}
               />
             );
           }

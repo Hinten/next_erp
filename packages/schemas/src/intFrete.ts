@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
+import { millisSinceEpoch } from './datetime';
 import { enderecoSchema } from './endereco';
 import { integracoesFreteSchema } from './frete';
 
@@ -183,7 +184,7 @@ export const intFreteSchema = z
       .default(null)
       .describe('Endereço de origem'),
     /** Required ms since epoch — Flutter crashes on null (late final DateTime). */
-    dataCadastro: z.number().int().describe('Data de cadastro'),
+    dataCadastro: millisSinceEpoch('Data de cadastro'),
 
     mapa: z.array(mapaDeIntegracoesSchema).nullable().default(null).describe('Mapa de integrações'),
     faixaCep: z.array(faixaDeCepSchema).nullable().default(null).describe('Faixas de CEP'),
@@ -256,8 +257,8 @@ export const tokenMelEnvSchema = z
   .object({
     access_token: z.string().min(1),
     refresh_token: z.string().min(1),
-    /** Required ms since epoch (`now + expires_in`). */
-    expirationDate: z.number().int(),
+    /** Required ms since epoch (`now + expires_in`). Server-side only. */
+    expirationDate: millisSinceEpoch(),
   })
   .passthrough();
 export type TokenMelEnv = z.infer<typeof tokenMelEnvSchema>;

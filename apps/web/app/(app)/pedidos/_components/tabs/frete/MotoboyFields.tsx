@@ -3,6 +3,7 @@
 import { useMemo } from 'react';
 import { Alert, Group, Select, Stack } from '@mantine/core';
 import { faixaCepOptionString, getPrazoDespacho, type IntFrete } from '@delfrance/schemas';
+import { dateToMicros } from '@delfrance/core/datetime';
 import {
   FreteDateTimeField,
   FreteNumberField,
@@ -72,7 +73,7 @@ export function MotoboyFields({
       form.setValue(fretePath('custoFinal'), option.custo, { shouldDirty: true });
     }
     const dataPostagem = getPrazoDespacho(integracao.horarioDeCorte, new Date());
-    form.setValue(fretePath('prazoDespacho'), dataPostagem ? dataPostagem.getTime() : null, {
+    form.setValue(fretePath('prazoDespacho'), dataPostagem ? dateToMicros(dataPostagem) : null, {
       shouldDirty: true,
     });
   };

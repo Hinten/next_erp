@@ -9,6 +9,7 @@ import {
   type GeneratorItem,
   type Payment,
 } from '@delfrance/integrations-nfe';
+import { microsToMillis } from '@delfrance/core/datetime';
 import {
   FORMA_PAGAMENTO,
   type Filial,
@@ -402,9 +403,10 @@ export function buildCobrFromPagamentos(pagamentos: ReadonlyArray<Pagamento>):
       vDup: valor.toFixed(2),
     };
     out.nDup = String(i + 1).padStart(3, '0');
-    if (p.vencimento) {
-      // pagamento.vencimento is `z.string().datetime()` (ISO timestamp).
-      const parsed = new Date(p.vencimento);
+    if (p.vencimento != null) {
+      // pagamento.vencimento is `microsSinceEpoch()` (µs since epoch); nullish
+      // check, not truthy — 0 (Unix epoch) is a valid timestamp.
+      const parsed = new Date(microsToMillis(p.vencimento));
       if (!Number.isNaN(parsed.getTime())) {
         out.dVenc = parsed.toISOString().slice(0, 10); // YYYY-MM-DD
       }

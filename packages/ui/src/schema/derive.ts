@@ -82,6 +82,7 @@ function detectKind(inner: ZodTypeAny, override?: string): FieldKind {
       'boolean',
       'enum',
       'date',
+      'datetime',
       'reference',
       'array',
       'object',
@@ -161,6 +162,7 @@ export function extractFieldsFromSchema<T extends ZodRawShape>(
       hint: desc.hint,
       enumValues: deriveEnumValues(inner),
       referenceCollection: kind === 'reference' ? desc.collection : undefined,
+      dateUnit: kind === 'datetime' ? (desc.unit ?? 'ms') : undefined,
       zodType: inner,
     });
   }

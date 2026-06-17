@@ -388,6 +388,15 @@ function devPagamentoId(n: number): string {
 }
 
 /**
+ * ms → µs. Pedido / pagamento / frete datetime fields are microseconds since
+ * epoch (`microsSinceEpoch()`); the seed builds values from `Date.now()` /
+ * ISO, which are ms — scale to the wire unit. Mirrors
+ * `@delfrance/core/datetime` `millisToMicros` (not imported: this dev seed
+ * keeps its deps to firebase-admin + @delfrance/auth).
+ */
+const us = (ms: number): number => ms * 1000;
+
+/**
  * Write the pagamentos for a seeded pedido under
  * `pedidos/{pedidoId}/pagamento/`. Status is hard-coded to
  * `STATUS_PAGAMENTO.aprovado` (= 4) so the NF-e orchestrator's status
@@ -397,7 +406,7 @@ async function writePagamentos(
   pedidoId: string,
   pagamentos: ReadonlyArray<DevPagamentoSeed>,
 ): Promise<void> {
-  const now = new Date().toISOString();
+  const now = us(Date.now());
   const pagRef = db().collection('pedidos').doc(pedidoId).collection('pagamento');
   for (let i = 0; i < pagamentos.length; i += 1) {
     const p = pagamentos[i]!;
@@ -417,7 +426,7 @@ async function writePagamentos(
       aVista: p.aVista ?? true,
       duplicata: p.duplicata ?? false,
       nFat: p.nFat ?? null,
-      vencimento: p.vencimento ?? null,
+      vencimento: p.vencimento != null ? us(new Date(p.vencimento).getTime()) : null,
       ultimaModificacao: now,
       dataCancelamento: null,
       dataAprovacao: now,
@@ -453,10 +462,10 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
       ...devItensMap(spec.valorCobrado ?? 100, { omitImposto: spec.omitImposto }),
       descontoTotal: 0,
       valorCobrado: spec.valorCobrado ?? null,
-      timestamp: now - i * 3_600_000,
-      ultimaModificacao: now - i * 3_600_000,
+      timestamp: us(now - i * 3_600_000),
+      ultimaModificacao: us(now - i * 3_600_000),
       foiImpresso: spec.dtImpressao != null,
-      dtImpressao: spec.dtImpressao ?? null,
+      dtImpressao: spec.dtImpressao != null ? us(spec.dtImpressao) : null,
       // Outer refs the cells dereference. `clientePedidoOuterRef`
       // matters for the UI walk; the other three (filial, operação,
       // endereço fiscal) are required by the NFe orchestrator
@@ -476,7 +485,7 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
         ? {
             estado: spec.frete.estado,
             codRastreio: spec.frete.codRastreio ?? null,
-            prazoDespacho: spec.frete.prazoDespacho ?? null,
+            prazoDespacho: spec.frete.prazoDespacho != null ? us(spec.frete.prazoDespacho) : null,
             modalidade: spec.frete.modalidade ?? '0',
             valorCobrado: spec.frete.valorCobrado ?? null,
             transportadora: spec.frete.transportadora ?? null,
@@ -487,7 +496,7 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
             volumes: spec.frete.volumes ?? null,
             ehReverso: false,
             prazoExtra: 0,
-            timestamp: now - i * 3_600_000,
+            timestamp: us(now - i * 3_600_000),
           }
         : null,
       infCpl: spec.infCpl ?? null,

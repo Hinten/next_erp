@@ -183,6 +183,9 @@ importers:
       '@delfrance/auth':
         specifier: workspace:*
         version: link:../../packages/auth
+      '@delfrance/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@delfrance/data':
         specifier: workspace:*
         version: link:../../packages/data

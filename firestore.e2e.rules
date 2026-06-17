@@ -41,7 +41,8 @@ service cloud.firestore {
     // d = incoming document, c = touched keys (keys() on create,
     // diff().affectedKeys() on update — legacy docs stay updatable).
     function v_metodo_pgto(d, c) {
-      return (!c.hasAny(['hasLinkPagamento']) || d.get('hasLinkPagamento', null) is bool)
+      return (!c.hasAny(['dataCadastro']) || (d.get('dataCadastro', null) == null || d.get('dataCadastro', null) is int))
+        && (!c.hasAny(['hasLinkPagamento']) || d.get('hasLinkPagamento', null) is bool)
         && (!c.hasAny(['nome']) || d.get('nome', null) is string && d.get('nome', null).size() <= 255)
         && (!c.hasAny(['tipo']) || d.get('tipo', null) == 1);
     }
@@ -89,6 +90,9 @@ service cloud.firestore {
     // diff().affectedKeys() on update — legacy docs stay updatable).
     function v_pedidos_pagamento(d, c) {
       return (!c.hasAny(['aVista']) || d.get('aVista', null) is bool)
+        && (!c.hasAny(['dataAprovacao']) || (d.get('dataAprovacao', null) == null || d.get('dataAprovacao', null) is int))
+        && (!c.hasAny(['dataCadastro']) || (d.get('dataCadastro', null) == null || d.get('dataCadastro', null) is int))
+        && (!c.hasAny(['dataCancelamento']) || (d.get('dataCancelamento', null) == null || d.get('dataCancelamento', null) is int))
         && (!c.hasAny(['descricaoPagamento']) || (d.get('descricaoPagamento', null) == null || d.get('descricaoPagamento', null) is string))
         && (!c.hasAny(['duplicata']) || d.get('duplicata', null) is bool)
         && (!c.hasAny(['id']) || (d.get('id', null) == null || d.get('id', null) is string))
@@ -96,7 +100,9 @@ service cloud.firestore {
         && (!c.hasAny(['nFat']) || (d.get('nFat', null) == null || d.get('nFat', null) is string && d.get('nFat', null).size() <= 60))
         && (!c.hasAny(['parcelas']) || (d.get('parcelas', null) is int && d.get('parcelas', null) >= 1))
         && (!c.hasAny(['tarifas']) || (d.get('tarifas', null) == null || (d.get('tarifas', null) is number && d.get('tarifas', null) >= 0)))
-        && (!c.hasAny(['valor']) || (d.get('valor', null) is number && d.get('valor', null) >= 0));
+        && (!c.hasAny(['ultimaModificacao']) || (d.get('ultimaModificacao', null) == null || d.get('ultimaModificacao', null) is int))
+        && (!c.hasAny(['valor']) || (d.get('valor', null) is number && d.get('valor', null) >= 0))
+        && (!c.hasAny(['vencimento']) || (d.get('vencimento', null) == null || d.get('vencimento', null) is int));
     }
 
     // d = incoming document, c = touched keys (keys() on create,
