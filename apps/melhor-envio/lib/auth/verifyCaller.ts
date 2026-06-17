@@ -1,14 +1,14 @@
 /**
- * Bearer-token verification for callable-style routes in apps/integrations.
+ * Bearer-token verification for callable-style routes in apps/melhor-envio.
  *
  * `Authorization: Bearer <idToken>` → `getAdminAuth().verifyIdToken` →
  * permission check against the BigInt-encoded `permissions` claim. Returns
  * either `{ caller }` (success) or `{ error: NextResponse }` (failure with
  * the right status code already prepared).
  *
- * Parameterized port of `apps/nfe/lib/nfe/auth.ts:verifyCaller` — extracted
- * here so the freight routes and the existing admin routes share one
- * implementation.
+ * Per-app copy of the same helper apps/integrations and apps/nfe each carry
+ * (`apps/nfe/lib/nfe/auth.ts:verifyCaller`) — each server app keeps its own so
+ * they deploy and log independently.
  */
 import { NextResponse } from 'next/server';
 import { PERM, hasPerm } from '@delfrance/auth';
@@ -55,10 +55,10 @@ export async function verifyCaller(
     if (e instanceof Error && typeof (e as { code?: unknown }).code === 'string') {
       const code = (e as Error & { code: string }).code;
       if (code.startsWith('auth/')) {
-        console.warn(`[integrations/auth] verifyIdToken rejected: ${code}`);
+        console.warn(`[melhor-envio/auth] verifyIdToken rejected: ${code}`);
         return { error: authError(401, { error: `Token inválido ou expirado (${code}).`, code }) };
       }
-      console.error(`[integrations/auth] admin init failed: ${code} - ${e.message}`);
+      console.error(`[melhor-envio/auth] admin init failed: ${code} - ${e.message}`);
       return {
         error: authError(500, {
           error: `Falha ao inicializar Firebase Admin (${code}).`,

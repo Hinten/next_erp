@@ -16,8 +16,11 @@ export function verifyHmac({
   encoding = 'hex',
 }: HmacVerifyInput): boolean {
   const expected = createHmac(algorithm, secret).update(payload).digest(encoding);
-  const a = Buffer.from(expected);
-  const b = Buffer.from(signature);
+  // Decode both with `encoding` so the constant-time comparison runs over the
+  // raw digest bytes (not their textual form) and the option is actually
+  // honored — a hex `expected` vs a base64 `signature` would never match.
+  const a = Buffer.from(expected, encoding);
+  const b = Buffer.from(signature, encoding);
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
 }
