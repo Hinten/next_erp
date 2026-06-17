@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { addDoc } from 'firebase/firestore';
 import { Anchor, Group, Skeleton, Stack, Title } from '@mantine/core';
 import type { Cargo } from '@delfrance/schemas';
+import { nowMillis } from '@delfrance/core/datetime';
 import { useTenant } from '@/lib/auth';
 import { CargoForm } from '../_components/CargoForm';
 import { cargoCollection } from '@/lib/data/cargoCollection';
@@ -29,7 +30,7 @@ export default function NovoCargoPage() {
   async function handleSubmit(values: Cargo) {
     const ref = await addDoc(cargoCollection.ref(getFirebaseFirestore(), {}), {
       ...values,
-      timestamp: new Date().toISOString(),
+      timestamp: nowMillis(),
     });
     router.replace(`/configuracoes/cargos/${ref.id}`);
   }

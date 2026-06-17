@@ -178,8 +178,8 @@ export async function seedBandeirasCartao(prefix: string, n: number): Promise<vo
       tarifaFixa: 0,
       maxParcelas: 1 + (i % 12),
       prazoRecebimento: 0,
-      dataCadastro: new Date().toISOString(),
-      ultimaModificacao: new Date().toISOString(),
+      dataCadastro: Date.now(),
+      ultimaModificacao: Date.now(),
     });
   }
   await batch.commit();
@@ -222,7 +222,7 @@ export async function seedFiliais(prefix: string, n: number): Promise<void> {
         email: null,
         telefone: null,
       },
-      timestamp: new Date().toISOString(),
+      timestamp: Date.now(),
     });
   }
   await batch.commit();
@@ -551,7 +551,7 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     configuracaoPIS: null,
     configuracaoPISST: null,
     infCpl: null,
-    timestamp: new Date().toISOString(),
+    timestamp: Date.now(),
   });
   batch.set(db().collection('integracao').doc(integracaoId), {
     tipo: 7, // balcao

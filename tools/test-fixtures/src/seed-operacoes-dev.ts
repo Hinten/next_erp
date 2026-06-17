@@ -76,7 +76,9 @@ export async function seedDevOperacoes(): Promise<{ created: number }> {
 
     infCpl: null,
 
-    timestamp: now,
+    // operacao.timestamp is milliseconds since epoch now (regraImposto below
+    // keeps ISO `now` until its own batch).
+    timestamp: Date.now(),
   });
 
   // Seed the regraImposto rule under this operação. The resolver

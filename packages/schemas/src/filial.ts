@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './datetime';
 import type { CollectionMetadata } from './types';
 import { enderecoSchema } from './endereco';
 import { certificadoFilialInfoSchema } from './certificadoFilial';
@@ -42,12 +43,12 @@ export const filialSchema = z.object({
   // never wipes it. The secret key lives in the admin-only
   // `certificadoSecreto` subcollection; this is just the public badge data.
   certificado: certificadoFilialInfoSchema.nullable().optional().describe('Certificado Digital'),
-  timestamp: z.string().datetime().nullable().optional(),
+  timestamp: millisSinceEpoch().nullable().optional(),
   // Update-monitor field — `saveRecord` stamps it on every write. Legacy
   // (Flutter-written) docs lack it; pipeline sorts treat the missing field
   // as null (sorted last on desc) instead of excluding the doc, which is
   // what FilialPicker's recency ordering relies on.
-  ultimaModificacao: z.string().datetime().nullable().optional(),
+  ultimaModificacao: millisSinceEpoch().nullable().optional(),
 });
 
 export type Filial = z.infer<typeof filialSchema>;

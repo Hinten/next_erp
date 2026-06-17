@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './datetime';
 import type { CollectionMetadata } from './types';
 import { ufSchema } from './endereco';
 
@@ -115,7 +116,7 @@ export const operacaoSchema = z.object({
 
   infCpl: z.string().max(5000).nullable(),
 
-  timestamp: z.string().datetime().nullable().optional(),
+  timestamp: millisSinceEpoch().nullable().optional(),
 });
 
 export type Operacao = z.infer<typeof operacaoSchema>;

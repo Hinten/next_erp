@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './datetime';
 import type { CollectionMetadata } from './types';
 
 // Mirror `PERM.produto` from @delfrance/auth; duplicated locally to avoid a
@@ -25,8 +26,8 @@ export const tabelaDeMedidasSchema = z.object({
   tabelasDeMedidasMercadoLivre: z.record(z.string(), z.unknown()).nullable().optional(),
   tabelasMedidasShopee: z.record(z.string(), z.array(z.unknown())).nullable().optional(),
 
-  dataCadastro: z.string().datetime().nullable().optional(),
-  ultimaModificacao: z.string().datetime().nullable().optional(),
+  dataCadastro: millisSinceEpoch().nullable().optional(),
+  ultimaModificacao: millisSinceEpoch().nullable().optional(),
 });
 
 export type TabelaDeMedidas = z.infer<typeof tabelaDeMedidasSchema>;
