@@ -1,4 +1,4 @@
-import type { FormulaCalculoPreco, ListaDePrecos } from './listaDePrecos';
+import type { FormulaCalculoPreco, ListaDePrecos } from '../listaDePrecos';
 import type { ComponentesKit } from './kit';
 import type { Preco } from './produto';
 

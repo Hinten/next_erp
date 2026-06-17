@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { produtoPageBaseSchema, produtoPageIssues, produtoPageSchema } from './produtoPage';
+import { produtoPageBaseSchema, produtoPageIssues, produtoPageSchema } from './pageModel';
 
 const baseProduto = { nome: 'Camiseta' };
 

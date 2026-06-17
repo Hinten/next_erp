@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import { produtoSchema } from '../produto';
-import { produtoExtraDataSchema } from '../produtoExtraData';
-import { estoqueProdutoSchema } from '../estoqueProduto';
+import { produtoSchema } from './produto';
+import { produtoExtraDataSchema } from './extraData';
+import { estoqueProdutoSchema } from './estoque';
 import { impostoProdutoSchema } from '../impostoProduto';
 
 /**
