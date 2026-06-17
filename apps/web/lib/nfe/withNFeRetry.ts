@@ -7,16 +7,18 @@
  *   - GET / idempotent (`consultar`, `statusServico`, `danfe`,
  *     `cartaCorrecaoDanfe`, `processarPendentes`) → full transient set
  *     (`isRetryableNFeHttpError`: network / 5xx / 503).
- *   - server-deduped POSTs (`emitir`, `emitirLote`, `cancelar`, `inutilizar`)
- *     → full transient set. Server dedup (stable doc id + `isBloqueada` + the
- *     in-flight-nRec skip from PR1) makes a re-POST converge to `reused:true`
- *     instead of a duplicate emission.
+ *   - server-deduped POSTs (`emitir`, `emitirLote`, `cancelar`) → full transient
+ *     set. A re-POST converges to a no-op: emit/lote via PR1's dedup (stable doc
+ *     id + `isBloqueada` + in-flight-nRec skip) → `reused:true`; `cancelar`
+ *     reconciles a duplicate-event 573 → `cancelada`.
  *   - cert management (`uploadCertificado`, `deleteCertificado`) → full
  *     transient set (upload overwrites the same cert; delete is idempotent).
- *   - **`cartaCorrecao` → pre-send 503 only.** It is NOT idempotent (each send
- *     increments `nSeqEvento`), so a post-send network/5xx must never auto-retry
- *     — only `NFeRuntimeNotReadyError`, which is provably raised before any
- *     SEFAZ contact.
+ *   - **`cartaCorrecao` and `inutilizar` → pre-send 503 only.** Neither is
+ *     idempotent on a re-send: `cartaCorrecao` increments `nSeqEvento`, and a
+ *     re-sent `inutilizar` of an already-homologada range returns cStat 563,
+ *     which `inutilizar.ts` surfaces as a rejection (unlike `cancelar`'s 573).
+ *     So a post-send network/5xx must never auto-retry these — only
+ *     `NFeRuntimeNotReadyError`, provably raised before any SEFAZ contact.
  */
 import { retryAsync } from '@delfrance/data/hooks';
 import {
@@ -40,7 +42,8 @@ export function withNFeRetry(client: NFeHttpClient): NFeHttpClient {
     processarPendentes: () => retryTransient(() => client.processarPendentes()),
     cancelar: (pedidoId, nfeId, xJust) =>
       retryTransient(() => client.cancelar(pedidoId, nfeId, xJust)),
-    inutilizar: (args) => retryTransient(() => client.inutilizar(args)),
+    // Not idempotent on a re-send (563 duplicidade) — retry only the pre-send 503.
+    inutilizar: (args) => retryAsync(() => client.inutilizar(args), { isRetryable: isPreSendOnly }),
     cartaCorrecao: (pedidoId, nfeId, xCorrecao) =>
       retryAsync(() => client.cartaCorrecao(pedidoId, nfeId, xCorrecao), {
         isRetryable: isPreSendOnly,

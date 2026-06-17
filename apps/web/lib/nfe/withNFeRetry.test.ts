@@ -90,4 +90,22 @@ describe('withNFeRetry', () => {
     });
     expect(cartaCorrecao).toHaveBeenCalledTimes(2);
   });
+
+  const inutArgs = { filialId: 'F-1', serie: 1, nNFIni: 1, nNFFin: 1, xJust: 'x'.repeat(20) };
+
+  it('inutilizar does NOT retry a post-send NFeServerError (563 is not idempotent)', async () => {
+    const inutilizar = vi.fn(() => Promise.reject(new NFeServerError('boom', 500, null)));
+    const client = withNFeRetry(fakeClient({ inutilizar }));
+    await expect(client.inutilizar(inutArgs)).rejects.toBeInstanceOf(NFeServerError);
+    expect(inutilizar).toHaveBeenCalledTimes(1);
+  });
+
+  it('inutilizar DOES retry the pre-send NFeRuntimeNotReadyError', async () => {
+    const inutilizar = vi.fn(
+      failThenSucceed(1, new NFeRuntimeNotReadyError('cert', null), { aprovada: true } as never),
+    );
+    const client = withNFeRetry(fakeClient({ inutilizar }));
+    await expect(client.inutilizar(inutArgs)).resolves.toMatchObject({ aprovada: true });
+    expect(inutilizar).toHaveBeenCalledTimes(2);
+  });
 });
