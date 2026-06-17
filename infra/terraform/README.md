@@ -10,12 +10,13 @@ infra modules can be added later without broadening these grants.
 
 ## What it creates
 
-| Resource | Purpose |
-|---|---|
-| `google_project_service.cloudtasks` | enables `cloudtasks.googleapis.com` |
-| `google_cloud_tasks_queue.nfe_consulta` | the reconcile queue (conservative rate/retry) |
-| `google_service_account.nfe_task_runner` | OIDC identity the queue impersonates |
-| IAM (`*_iam_member`) | runtime SA → `cloudtasks.enqueuer` + `serviceAccountUser`; Cloud Tasks agent → `serviceAccountTokenCreator` |
+- `google_project_service.cloudtasks` — enables `cloudtasks.googleapis.com`.
+- `google_cloud_tasks_queue.nfe_consulta` — the reconcile queue (conservative
+  rate/retry).
+- `google_service_account.nfe_task_runner` — OIDC identity the queue impersonates.
+- IAM (`*_iam_member`) — runtime SA → `cloudtasks.enqueuer` +
+  `serviceAccountUser`; Cloud Tasks agent → `serviceAccountTokenCreator` on the
+  runner SA.
 
 Outputs (`terraform output -json`): `queue_path`, `reconcile_endpoint`,
 `task_runner_sa_email`, and `nfe_tasks_env` (the ready-to-apply `NFE_TASKS_*`
