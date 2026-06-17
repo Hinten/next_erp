@@ -32,7 +32,7 @@ the `resized=true` marker — the loop guard.
 
 ## Deploying (manual & coordinated — root rule #1)
 
-One command, from the checkout that carries `firebase.functions.deploy.json`:
+One command, from the checkout that carries `firebase.functions.deploy.json`, ASK USER FOR PERMISSION BEFORE RUNNING IT:
 
 ```bash
 firebase deploy --only functions:storage \
