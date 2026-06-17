@@ -1,7 +1,6 @@
 import {
   type DocumentReference,
   type Firestore,
-  getDocs,
   getDocsFromServer,
   writeBatch,
 } from 'firebase/firestore';
@@ -77,7 +76,10 @@ export function createClientProdutoPort(db: Firestore): ProdutoDataPort {
     },
 
     async getKitReferences(produtoId, max) {
-      const snap = await getDocs(
+      // Forced to the server: this read is part of the delete guard, which must
+      // be fail-closed — a cache-served empty result would wrongly permit
+      // deleting a produto still used in a kit.
+      const snap = await getDocsFromServer(
         buildQuery(produtoCollection.ref(db, {}), [
           whereArrayContains('componentesKitKeys', produtoId),
           limit(max),
@@ -89,7 +91,9 @@ export function createClientProdutoPort(db: Firestore): ProdutoDataPort {
     async subcollectionHasDocs(produtoId, subcollection) {
       const handle = subcollectionHandles.get(subcollection);
       if (!handle) throw new Error(`clientProdutoPort: unknown subcollection "${subcollection}"`);
-      const snap = await getDocs(buildQuery(handle.ref(db, { produtoId }), [limit(1)]));
+      // Server read for the same fail-closed reason: a stale/cold cache must not
+      // hide a marketplace link and permit an unsafe delete.
+      const snap = await getDocsFromServer(buildQuery(handle.ref(db, { produtoId }), [limit(1)]));
       return !snap.empty;
     },
 
