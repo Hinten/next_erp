@@ -8,12 +8,19 @@
  * The OAuth callback is hit by Melhor Envio's redirect, not by this
  * client, so there is no method for it.
  */
-import type { Balance, CalculateRequest, CalculateResponse, Me } from '../melhor-envio/types';
+import type {
+  Balance,
+  CalculateRequest,
+  CalculateResponse,
+  CartInsertRequest,
+  Me,
+} from '../melhor-envio/types';
 
 import {
   FreightAuthError,
   FreightBadRequestError,
   FreightHttpError,
+  FreightLabelTerminalError,
   FreightNetworkError,
   FreightNotFoundError,
   FreightReauthRequiredError,
@@ -33,6 +40,24 @@ export interface FreightContaResult {
   readonly balance: Balance | null;
 }
 
+/** `comprar` result — the bought label, its print URL and tracking code. */
+export interface FreightComprarResult {
+  readonly printLabelId: string;
+  readonly printUrl: string;
+  readonly tracking: string | null;
+  readonly estado: string;
+}
+
+/** `imprimir` result — the printable label URL. */
+export interface FreightImprimirResult {
+  readonly url: string;
+}
+
+/** `rastrear` result — Melhor Envio's tracking payload (keyed by order id). */
+export interface FreightRastrearResult {
+  readonly tracking: unknown;
+}
+
 export interface FreightHttpClientConfig {
   /** Origin of `apps/integrations` (dev: `http://localhost:3001`). */
   readonly baseUrl: string;
@@ -47,6 +72,17 @@ export interface FreightHttpClient {
   calculate(intFreteId: string, req: CalculateRequest): Promise<CalculateResponse>;
   /** Account connection status + `/me` + `/balance`. */
   conta(intFreteId: string): Promise<FreightContaResult>;
+  /** Buy + generate + print a label for `pedidoId` (idempotent on resume). */
+  comprar(
+    intFreteId: string,
+    pedidoId: string,
+    cartPayload: CartInsertRequest,
+    printLabelId?: string | null,
+  ): Promise<FreightComprarResult>;
+  /** Get the printable URL of an already-bought label. */
+  imprimir(intFreteId: string, printLabelId: string): Promise<FreightImprimirResult>;
+  /** Get the tracking payload for a label. */
+  rastrear(intFreteId: string, printLabelId: string): Promise<FreightRastrearResult>;
 }
 
 function normalizeBase(baseUrl: string): string {
@@ -64,7 +100,14 @@ function errorFromResponse(status: number, body: unknown): FreightHttpError {
   if (status === 400) return new FreightBadRequestError(message, body);
   if (status === 401 || status === 403) return new FreightAuthError(message, status, body);
   if (status === 404) return new FreightNotFoundError(message, body);
-  if (status === 409) return new FreightReauthRequiredError(message, body);
+  if (status === 409) {
+    const obj = body !== null && typeof body === 'object' ? (body as Record<string, unknown>) : {};
+    if (obj.code === 'ME_LABEL_TERMINAL') {
+      const reason = typeof obj.reason === 'string' ? obj.reason : undefined;
+      return new FreightLabelTerminalError(message, reason, body);
+    }
+    return new FreightReauthRequiredError(message, body);
+  }
   if (status === 422) {
     const errors =
       body !== null && typeof body === 'object' && 'errors' in body
@@ -129,5 +172,22 @@ export function createFreightHttpClient(config: FreightHttpClientConfig): Freigh
         'GET',
         `/api/freight/melhor-envio/conta?intFreteId=${encodeURIComponent(intFreteId)}`,
       ),
+    comprar: (intFreteId, pedidoId, cartPayload, printLabelId) =>
+      call<FreightComprarResult>('POST', '/api/freight/melhor-envio/comprar', {
+        intFreteId,
+        pedidoId,
+        cartPayload,
+        printLabelId: printLabelId ?? null,
+      }),
+    imprimir: (intFreteId, printLabelId) =>
+      call<FreightImprimirResult>('POST', '/api/freight/melhor-envio/imprimir', {
+        intFreteId,
+        printLabelId,
+      }),
+    rastrear: (intFreteId, printLabelId) =>
+      call<FreightRastrearResult>('POST', '/api/freight/melhor-envio/rastrear', {
+        intFreteId,
+        printLabelId,
+      }),
   };
 }
