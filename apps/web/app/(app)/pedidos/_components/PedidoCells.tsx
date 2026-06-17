@@ -387,7 +387,8 @@ export function FreteCell({ pedido }: { pedido: Pedido }) {
   const label = ESTADO_FRETE_LABELS[estado] ?? estado;
   const tooltipParts: string[] = [];
   if (frete?.codRastreio) tooltipParts.push(`Rastreio: ${frete.codRastreio}`);
-  if (frete?.prazoDespacho) tooltipParts.push(`Prazo: ${formatMicros(frete.prazoDespacho)}`);
+  if (frete?.prazoDespacho != null)
+    tooltipParts.push(`Prazo: ${formatMicros(frete.prazoDespacho)}`);
   if (tooltipParts.length === 0) return <Text>{label}</Text>;
   return (
     <Tooltip label={tooltipParts.join(' • ')} withinPortal>
