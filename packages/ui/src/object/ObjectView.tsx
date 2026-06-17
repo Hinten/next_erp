@@ -255,7 +255,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
       if (issues.length === 0) return result;
       const errors: Record<string, unknown> = { ...(result.errors as Record<string, unknown>) };
       for (const issue of issues) {
-        const key = issue.path.split('.')[0]!;
+        const key = issue.path.split('.')[0];
+        // Skip empty or prototype-polluting keys: the hook merges arbitrary
+        // caller-supplied paths into a plain object, and `errors['__proto__'] = …`
+        // would mutate its prototype.
+        if (!key || key === '__proto__' || key === 'constructor' || key === 'prototype') {
+          continue;
+        }
         if (!errors[key]) errors[key] = { type: 'custom', message: issue.message };
       }
       return { ...result, errors } as typeof result;

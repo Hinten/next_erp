@@ -358,4 +358,20 @@ describe('ObjectView cross-document validate() hook', () => {
     });
     expect(saveRecordMock).toHaveBeenCalledTimes(1);
   });
+
+  it('skips prototype-polluting issue paths but still applies safe ones', async () => {
+    renderWithValidate(() => [
+      { path: '__proto__', message: 'unsafe' },
+      { path: 'obs', message: 'safe issue' },
+    ]);
+    await fillBoth();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    // The unsafe key was skipped (no crash, no pollution); the safe issue still
+    // blocks the save and renders.
+    expect(saveRecordMock).not.toHaveBeenCalled();
+    expect(screen.getByText('safe issue')).toBeTruthy();
+    expect(Object.prototype).not.toHaveProperty('message');
+  });
 });
