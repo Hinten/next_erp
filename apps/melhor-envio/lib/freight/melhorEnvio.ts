@@ -53,7 +53,7 @@ function isSandbox(): boolean {
 
 /** The OAuth redirect URI — must match what's registered in the ME app. */
 export function melhorEnvioRedirectUri(): string {
-  const base = (process.env.INTEGRATIONS_PUBLIC_URL ?? 'http://localhost:3001').replace(/\/$/, '');
+  const base = (process.env.MELHOR_ENVIO_PUBLIC_URL ?? 'http://localhost:3005').replace(/\/$/, '');
   return `${base}/api/oauth/melhor-envio/callback`;
 }
 

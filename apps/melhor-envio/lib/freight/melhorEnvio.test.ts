@@ -54,7 +54,7 @@ beforeEach(() => {
   });
   vi.stubEnv('MELHOR_ENVIO_CLIENT_ID', 'cid');
   vi.stubEnv('MELHOR_ENVIO_CLIENT_SECRET', 'csecret');
-  vi.stubEnv('INTEGRATIONS_PUBLIC_URL', 'http://localhost:3001');
+  vi.stubEnv('MELHOR_ENVIO_PUBLIC_URL', 'http://localhost:3005');
   // Unset → sandbox is the default (prod must opt out with 'false').
   vi.stubEnv('MELHOR_ENVIO_SANDBOX', '');
 });
@@ -98,7 +98,7 @@ describe('loadMelhorEnvioContext', () => {
     expect(ctx.oauthConfig.clientId).toBe('cid');
     expect(ctx.oauthConfig.clientSecret).toBe('csecret');
     expect(ctx.oauthConfig.redirectUri).toBe(
-      'http://localhost:3001/api/oauth/melhor-envio/callback',
+      'http://localhost:3005/api/oauth/melhor-envio/callback',
     );
     expect(ctx.oauthConfig.baseUrl).toBe(melhorEnvioBaseUrl(true));
   });
