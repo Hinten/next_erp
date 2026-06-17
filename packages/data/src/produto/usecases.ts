@@ -133,6 +133,9 @@ export async function applyPrecosChange(
 // Inbound-reference guard + cascade delete (#117 / #135)
 // ---------------------------------------------------------------------------
 
+/** Max concurrent reference probes in the delete guard (each target ~8 reads). */
+const GUARD_PROBE_CONCURRENCY = 4;
+
 /** Human channel label per marketplace subcollection, for guard messages. */
 export const MARKETPLACE_CHANNEL_LABELS: Record<string, string> = {
   produtomercadolivre: 'Mercado Livre',
@@ -218,8 +221,19 @@ export async function deleteProdutoCascade(
     ...children.map((c) => ({ id: c.id, nome: `a variação "${c.nome ?? c.id}"` })),
   ];
 
+  // Probe references in parallel but BOUNDED — each target costs ~8 reads (the
+  // kit query + one probe per marketplace subcollection), so a parent with many
+  // variation children must not fan every id out in one burst. `Promise.all`
+  // rejects on the first failure, which is the correct fail-closed behaviour for
+  // a deletion guard (a partial result must never green-light a delete).
   const refsById = new Map<string, ProdutoReferences>();
-  for (const t of targets) refsById.set(t.id, await findProdutoReferences(port, t.id));
+  for (let i = 0; i < targets.length; i += GUARD_PROBE_CONCURRENCY) {
+    const slice = targets.slice(i, i + GUARD_PROBE_CONCURRENCY);
+    const probed = await Promise.all(
+      slice.map(async (t) => [t.id, await findProdutoReferences(port, t.id)] as const),
+    );
+    for (const [id, refs] of probed) refsById.set(id, refs);
+  }
   const blocked = targets
     .map((t) => ({ ...t, refs: refsById.get(t.id)! }))
     .filter((t) => hasReferences(t.refs));
