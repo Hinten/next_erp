@@ -1,19 +1,13 @@
 {
   "$schema": "https://json.schemastore.org/firebase",
-  "//": "Deploy-ISOLATED config for shipping the apps/functions (codebase `storage`) Cloud Functions to a real Firebase project. It contains ONLY the `functions` block — deliberately NO `firestore`/`storage`/`emulators` keys — so a `firebase deploy` with this config can never push the Flutter-owned firestore.rules/storage.rules over live (CLAUDE.md critical rule #1). Companion configs: firebase.json (prod firestore rules), firebase.staging.json (staging firestore.e2e.rules), firebase.functions.json (emulator suite only), firebase.rules.json (rules emulator). Deploy: see apps/functions/DEPLOY.md. The `predeploy` hook builds the bundle automatically before every deploy. The build reads NO secret file — it inlines only the function region, a non-secret constant that build.mjs defaults to us-east1 (the Storage bucket region); `.env.local` is never loaded by the deploy.",
+  "//": "Deploy-ISOLATED config for shipping the apps/functions (codebase `storage`) Cloud Functions to a real Firebase project. It contains ONLY the `functions` block — deliberately NO `firestore`/`storage`/`emulators` keys — so a `firebase deploy` with this config can never push the Flutter-owned firestore.rules/storage.rules over live (CLAUDE.md critical rule #1). Companion configs: firebase.json (prod firestore rules), firebase.staging.json (staging firestore.e2e.rules), firebase.functions.json (emulator suite only), firebase.rules.json (rules emulator). Deploy: see apps/functions/DEPLOY.md. The `predeploy` hook runs apps/functions/scripts/prepare-deploy.mjs, which esbuild-bundles the function and writes a MINIMAL package.json (the 3 runtime deps only — no devDeps, no `workspace:*`) into the generated apps/functions/.deploy/ folder that `source` points at. This is required because the cloud `npm install` run by the gen2 buildpack cannot resolve pnpm `workspace:*` specs (EUNSUPPORTEDPROTOCOL) and installs devDependencies too. The build reads NO secret file — it inlines only the function region, a non-secret constant that defaults to us-east1 (the Storage bucket region); `.env.local` is never loaded by the deploy.",
   "functions": [
     {
-      "source": "apps/functions",
+      "source": "apps/functions/.deploy",
       "codebase": "storage",
       "runtime": "nodejs22",
-      "predeploy": ["pnpm --filter @delfrance/functions build"],
-      "ignore": [
-        "node_modules",
-        ".turbo",
-        "src/**/*.test.ts",
-        "src/**/*.storage.test.ts",
-        "vitest*.ts"
-      ]
+      "predeploy": ["node apps/functions/scripts/prepare-deploy.mjs"],
+      "ignore": ["node_modules"]
     }
   ]
 }

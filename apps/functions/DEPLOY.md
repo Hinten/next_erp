@@ -22,9 +22,10 @@ environment via the `FUNCTIONS_REGION` env var.
 
 ## Deploy lane
 
-**One command.** The deploy config carries a `predeploy` hook that builds the bundle
-(`dist/index.js`) automatically first — so the build can't be skipped and a
-stale/missing bundle can't ship:
+**One command.** The deploy config carries a `predeploy` hook that runs
+`scripts/prepare-deploy.mjs`, regenerating the deploy artifact in
+`apps/functions/.deploy/` first — so the build can't be skipped and a stale/missing
+bundle can't ship:
 
 ```bash
 firebase deploy --only functions:storage \
@@ -40,18 +41,28 @@ functions:storage` scopes to this codebase.
 > coordinated. The config is functions-only by design, but the `--project` flag is
 > still yours to get right.
 
-To build by hand (e.g. to inspect `dist/` before deploying), the predeploy command is:
-`pnpm --filter @delfrance/functions build`.
+To regenerate the artifact by hand (e.g. to inspect it before deploying), the
+predeploy command is: `node apps/functions/scripts/prepare-deploy.mjs`. (A plain
+`pnpm --filter @delfrance/functions build` writes `dist/index.js` for local
+inspection only — the deploy does not use `dist/`.)
 
-## Why `@delfrance/data` / `@delfrance/schemas` are `devDependencies`
+## Why the deploy uploads a generated `.deploy/` folder
 
-esbuild **bundles** those workspace packages into `dist/index.js` (only
-`firebase-admin`, `firebase-functions`, and `sharp` are marked `external`). Firebase's
-cloud `npm install` at deploy time does **not** understand pnpm's `workspace:*`
-protocol, so if those packages sat in `dependencies` the deploy would fail with
-`Unsupported URL Type "workspace:"`. Keeping them in `devDependencies` means the
-cloud install only pulls the three real runtime packages. Do not move them back
-without solving the workspace-resolution problem another way.
+The deploy `source` is **not** `apps/functions` but a generated
+`apps/functions/.deploy/` (gitignored) holding just two files: the esbuild bundle
+(`index.js`) and a **minimal `package.json`**. esbuild bundles everything except
+`firebase-admin`, `firebase-functions`, and `sharp` (the only `external`s) — so
+`@delfrance/data` / `@delfrance/schemas` are inlined and the cloud needs only those
+three runtime packages.
+
+This indirection is required: Firebase's gen2 buildpack runs `npm install`
+**including `devDependencies`**, and that cloud `npm` does **not** understand pnpm's
+`workspace:*` protocol. The real `apps/functions/package.json` carries `workspace:*`
+specs (`@delfrance/config-tsconfig` / `data` / `schemas`, in devDependencies), so
+uploading it fails with `Unsupported URL Type "workspace:"`
+(`EUNSUPPORTEDPROTOCOL`). The generated `package.json` (`scripts/prepare-deploy.mjs`)
+carries **only the three real `dependencies` — no devDependencies, no `workspace:*`,
+no build script** — so the cloud install resolves cleanly and runs no build.
 
 ## Verify (on staging, after the deploy)
 
@@ -76,6 +87,9 @@ it lands with that PR, so the path resolves once both merge to main).
 This lane has been prepared but **not run end-to-end** yet. On a first cloud deploy,
 watch for: `sharp` native-binary platform resolution in the Cloud Build image; the
 gen2 (Eventarc) trigger requiring the Eventarc / Pub/Sub APIs enabled and the
-runtime service account having the right roles; and the region mismatch backstop
-(the build throws if `FUNCTIONS_REGION` ≠ the bucket region). Surface any of these
-back as a follow-up rather than forcing the deploy.
+runtime service account having the right roles (a first-deploy `storage.buckets.get`
+403 right after those APIs are enabled is usually IAM-propagation lag — re-run);
+and the region: the bundle inlines `us-east1` by default, which **must match the
+Storage bucket's region** — if the bucket is elsewhere, deploy with
+`FUNCTIONS_REGION=<bucket-region>` set. Surface any of these back as a follow-up
+rather than forcing the deploy.

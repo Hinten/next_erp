@@ -5,12 +5,12 @@ import { setGlobalOptions } from 'firebase-functions/v2';
 // the project/bucket location).
 //
 // FUNCTIONS_REGION is INLINED at build time by build.mjs (esbuild `define`),
-// sourced from the env — dev: the root `.env.local` via the `dotenv -e
-// ../../.env.local --` loader; CI: the job env. build.mjs FAILS the build if
-// it's unset, so an unconfigured region can never ship. (Firebase populates
-// neither `process.env` nor params from `.env` during the codebase-analysis
-// phase where `setGlobalOptions` runs, so the build-time literal is what makes
-// the region available there; the throw below is the backstop.)
+// which defaults it to us-east1 (the Storage bucket region) and never reads
+// `.env.local`; override via the FUNCTIONS_REGION env var for another
+// environment. (Firebase populates neither `process.env` nor params from `.env`
+// during the codebase-analysis phase where `setGlobalOptions` runs, so the
+// build-time literal is what makes the region available there; the throw below
+// is the backstop for an unbundled run, e.g. tests without the env set.)
 const region = process.env.FUNCTIONS_REGION;
 if (!region) {
   throw new Error(
