@@ -82,11 +82,22 @@ export async function processProductOriginal(
   }
 
   await markDone(db, produtoId, hash);
-  logger.info(`resizeProductImage: ${name} → ${written}/${variants.length} derivatives`);
+  logger.info(`processProductOriginal: ${name} → ${written}/${variants.length} derivatives`);
   return written;
 }
 
-/** Stamp the ORIGINAL arquivo doc as fully resized (merge, idempotent). */
+/**
+ * Stamp the ORIGINAL arquivo doc as fully resized. UPDATE-only — never creates
+ * the doc: the upload path (`uploadProductImage`) writes the full original with
+ * `resizeState: 'pending'`, so a missing doc here means either the trigger raced
+ * ahead of the client's `setDoc` or the object was uploaded out-of-band (e.g.
+ * the Console). In both cases we skip rather than leave a partial Arquivo doc;
+ * the sweep flips it to `'done'` once the real `'pending'` doc exists.
+ */
 async function markDone(db: Firestore, produtoId: string, hash: string): Promise<void> {
-  await arquivoCollection.merge(db, {}, productArquivoId(produtoId, hash), { resizeState: 'done' });
+  const ref = arquivoCollection.docRef(db, {}, productArquivoId(produtoId, hash));
+  const snap = await ref.get();
+  if (snap.exists) {
+    await ref.update({ resizeState: 'done' });
+  }
 }

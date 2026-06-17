@@ -106,9 +106,26 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
     })
       .png()
       .toBuffer();
-    await getBucket()
-      .file(productOriginalPath(produtoId, hash, 'png'))
-      .save(original, { contentType: 'image/png' });
+
+    // Seed the ORIGINAL Arquivo doc with resizeState:'pending' BEFORE the upload,
+    // mirroring the real upload path (uploadProductImage) — so the trigger's
+    // markDone flips an EXISTING doc to 'done' (it never creates one). Written
+    // first so the doc exists by the time the finalize event fires.
+    const oPath = productOriginalPath(produtoId, hash, 'png');
+    const slash = oPath.lastIndexOf('/');
+    await getDb()
+      .collection('arquivos')
+      .doc(productArquivoId(produtoId, hash))
+      .set({
+        filetype: 'image',
+        filepath: oPath.slice(0, slash),
+        filename: oPath.slice(slash + 1),
+        contentType: 'image/png',
+        url: null,
+        externalIds: [],
+        resizeState: 'pending',
+      });
+    await getBucket().file(oPath).save(original, { contentType: 'image/png' });
   });
 
   it('creates the 200/400/jpeg derivative Arquivo docs', async () => {

@@ -144,7 +144,12 @@ export async function uploadProductImage(args: UploadProductImageArgs): Promise<
     filetype: 'image',
     originalFilename: args.originalFilename,
     // Marks the original so the resize function (→ 'done') and the reconcile
-    // sweep (queries 'pending') can track derivative completion.
+    // sweep (queries 'pending') can track derivative completion. Only written
+    // when this CREATES the doc — a dedup hit (doc already exists) keeps the
+    // existing marker, which is correct: the first upload already stamped
+    // 'pending', so a failed resize leaves it 'pending' and the sweep heals it.
+    // (Docs created before this marker existed — legacy / Flutter-written — have
+    // no marker and would need a one-off migration; there is no such backlog yet.)
     resizeState: 'pending',
   });
 }
