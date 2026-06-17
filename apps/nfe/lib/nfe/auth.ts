@@ -116,12 +116,16 @@ export async function verifyServiceCaller(
   }
   if (!opts.audience) {
     return {
-      error: authError(500, { error: 'NFE_TASKS_ENDPOINT ausente — não é possível validar a audience OIDC.' }),
+      error: authError(500, {
+        error: 'NFE_TASKS_ENDPOINT ausente — não é possível validar a audience OIDC.',
+      }),
     };
   }
   if (opts.allowedEmails.size === 0) {
     return {
-      error: authError(500, { error: 'NFE_TASK_SA_EMAILS ausente — nenhuma service account autorizada.' }),
+      error: authError(500, {
+        error: 'NFE_TASK_SA_EMAILS ausente — nenhuma service account autorizada.',
+      }),
     };
   }
   const idToken = authHeader.slice('Bearer '.length);
@@ -134,7 +138,9 @@ export async function verifyServiceCaller(
       !payload.email ||
       !opts.allowedEmails.has(payload.email)
     ) {
-      return { error: authError(403, { error: 'Service account não autorizada para esta operação.' }) };
+      return {
+        error: authError(403, { error: 'Service account não autorizada para esta operação.' }),
+      };
     }
     return { service: { email: payload.email } };
   } catch (e) {

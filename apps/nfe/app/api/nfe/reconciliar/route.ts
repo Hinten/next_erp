@@ -29,7 +29,11 @@ import { getAdminFirestore } from '@/lib/firebase/admin';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
 import { resolveFilialRuntime } from '@/lib/nfe/filial-cert';
 import { reconcileByRecibo } from '@/lib/nfe/orchestrator/reconcile';
-import { consultaTaskPayloadSchema, createTaskScheduler, NFeTasksConfigError } from '@/lib/nfe/tasks';
+import {
+  consultaTaskPayloadSchema,
+  createTaskScheduler,
+  NFeTasksConfigError,
+} from '@/lib/nfe/tasks';
 import { safeErrorShape } from '@/lib/nfe/log';
 
 export const dynamic = 'force-dynamic';
@@ -47,7 +51,8 @@ export async function POST(req: Request): Promise<NextResponse> {
   try {
     payload = consultaTaskPayloadSchema.parse(await req.json());
   } catch (e) {
-    if (e instanceof z.ZodError) return authError(400, { error: e.issues[0]?.message ?? 'bad body' });
+    if (e instanceof z.ZodError)
+      return authError(400, { error: e.issues[0]?.message ?? 'bad body' });
     if (e instanceof SyntaxError) return authError(400, { error: 'Bad JSON body' });
     throw e;
   }
@@ -75,7 +80,14 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   try {
     const rt = await resolveFilialRuntime(fs, baseRt, filialId);
-    const result = await reconcileByRecibo({ fs, rt, filialId, nRec, tpEmis: tpEmis as TpEmis, attempt });
+    const result = await reconcileByRecibo({
+      fs,
+      rt,
+      filialId,
+      nRec,
+      tpEmis: tpEmis as TpEmis,
+      attempt,
+    });
 
     // Still processing (under the cap) → schedule the next consult with backoff.
     // 656 and the attempt cap leave `stillPending === 0`, so neither re-enqueues.

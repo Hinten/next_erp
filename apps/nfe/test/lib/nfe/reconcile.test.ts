@@ -20,7 +20,9 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/integrations-nfe')>();
   return { ...actual, consultarLote: vi.fn() };
 });
-vi.mock('../../../lib/nfe/orchestrator/sefaz-call', () => ({ sefazCallFor: vi.fn(() => ({}) as never) }));
+vi.mock('../../../lib/nfe/orchestrator/sefaz-call', () => ({
+  sefazCallFor: vi.fn(() => ({}) as never),
+}));
 vi.mock('../../../lib/nfe/orchestrator/audit', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../lib/nfe/orchestrator/audit')>();
   return {
@@ -93,7 +95,13 @@ function loteRet(cStat: string, protCStat?: string): unknown {
   };
 }
 
-const baseArgs = { fs: {} as never, rt: {} as never, filialId: 'F-1', nRec: 'REC-1', tpEmis: 1 as never };
+const baseArgs = {
+  fs: {} as never,
+  rt: {} as never,
+  filialId: 'F-1',
+  nRec: 'REC-1',
+  tpEmis: 1 as never,
+};
 
 beforeEach(() => vi.clearAllMocks());
 afterEach(() => vi.restoreAllMocks());

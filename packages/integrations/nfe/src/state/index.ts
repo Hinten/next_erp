@@ -57,10 +57,7 @@ export const RECONCILE_MAX_DELAY_MS = 15 * 60_000;
  * Pure except for `Math.random()` in the jitter; callers that need
  * determinism pass attempt 0 (no jitter) or assert on the [half, base] range.
  */
-export function nextConsultaDelayMs(
-  attempt: number,
-  tMedSeconds?: string | number | null,
-): number {
+export function nextConsultaDelayMs(attempt: number, tMedSeconds?: string | number | null): number {
   if (attempt <= 0) {
     const tMed = typeof tMedSeconds === 'string' ? Number(tMedSeconds) : tMedSeconds;
     if (tMed != null && Number.isFinite(tMed) && tMed > 0) {

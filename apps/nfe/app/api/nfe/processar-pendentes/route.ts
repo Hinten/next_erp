@@ -269,7 +269,10 @@ export async function POST(req: Request): Promise<NextResponse> {
       recovered += r.recovered + r.errored;
       stillPending += r.stillPending;
     } catch (e) {
-      errors.push({ chave: null, error: `nRec ${nRec}: ${e instanceof Error ? e.message : String(e)}` });
+      errors.push({
+        chave: null,
+        error: `nRec ${nRec}: ${e instanceof Error ? e.message : String(e)}`,
+      });
     }
   }
 

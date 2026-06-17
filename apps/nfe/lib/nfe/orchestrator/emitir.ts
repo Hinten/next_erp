@@ -270,8 +270,7 @@ export async function runAllocateGenerateSignTx(
     if (
       existing &&
       existing.nRec &&
-      (existing.estado === ESTADO_NFE.enviando ||
-        existing.estado === ESTADO_NFE.aguardandoResposta)
+      (existing.estado === ESTADO_NFE.enviando || existing.estado === ESTADO_NFE.aguardandoResposta)
     ) {
       console.debug(
         `[nfe/orchestrator] pedido '${pedidoId}' has an in-flight NFe with a saved ` +
