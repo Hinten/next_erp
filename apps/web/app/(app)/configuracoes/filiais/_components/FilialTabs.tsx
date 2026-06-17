@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { Alert, Tabs } from '@mantine/core';
 
 import { NfeConfigPanel } from './NfeConfigPanel';
+import { CertificadoPanel } from './CertificadoPanel';
 
 /**
  * Tab shell shared by the Filial create and edit pages, porting the
@@ -45,10 +46,14 @@ export function FilialTabs({ children, filialId }: { children: ReactNode; filial
       </Tabs.Panel>
 
       <Tabs.Panel value="certificado" pt="md">
-        <Alert color="blue" title="Em breve">
-          O envio do certificado digital A1 (.pfx/.pem) desta filial será disponibilizado na fase de
-          NF-e.
-        </Alert>
+        {filialId ? (
+          <CertificadoPanel filialId={filialId} />
+        ) : (
+          <Alert color="blue" title="Salve a filial primeiro">
+            O envio do certificado digital A1 (.pfx/.p12) fica disponível depois que a filial é
+            salva.
+          </Alert>
+        )}
       </Tabs.Panel>
     </Tabs>
   );

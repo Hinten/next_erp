@@ -239,6 +239,10 @@ jobs:
           NFE_CERT_BASE64:          ${{ secrets.NFE_CERT_BASE64 }}
           NFE_CERT_PASSWORD:        ${{ secrets.NFE_CERT_PASSWORD }}
           NFE_TEST_IE:              ${{ secrets.NFE_TEST_IE }}
+          # The orchestrator suite emits against a staging fixture filial that
+          # has no uploaded cert — fall back to the env cert (per-filial certs
+          # are the production path; this keeps the live lane on the env cert).
+          NFE_CERT_ENV_FALLBACK:    '1'
           FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
         run: |

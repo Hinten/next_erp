@@ -5,7 +5,7 @@
  * service uses only `collection().doc().get()`, `collection().where().get()`
  * and `collection().add()` — no transaction / collection-group / batch.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@delfrance/integrations-nfe')>();
@@ -24,14 +24,14 @@ import {
   NFeOrchestratorError,
   NFePedidoNotFoundError,
 } from '../../../lib/nfe/orchestrator';
-import type { NFeRuntime } from '../../../lib/nfe/runtime';
+import type { NFeBaseRuntime, NFeRuntime } from '../../../lib/nfe/runtime';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
 const XCORRECAO = 'Correcao do peso bruto informado no campo de transporte da nota';
 
-function fakeRuntime(): NFeRuntime {
-  return {
+function fakeRuntime(): NFeRuntime & NFeBaseRuntime {
+  const rt: NFeRuntime = {
     cert: {
       privateKeyPem: '',
       certificatePem: '',
@@ -74,6 +74,9 @@ function fakeRuntime(): NFeRuntime {
       chainSource: '/tmp/fake.pem',
     },
   };
+  // Base runtime for the entry points; the fallback path (no stored cert)
+  // resolves to this same fake via `envRuntime`.
+  return { ...rt, envRuntime: () => rt };
 }
 
 /** Compact in-memory Firestore — only what cartaCorrecaoService touches. */
@@ -157,6 +160,9 @@ function aprovadaNfev4(): Record<string, unknown> {
     cStat: '100',
     xMotivo: 'Autorizado o uso da NF-e',
     tpEmis: 1,
+    // Denormalized on every emitted doc (buildPlaceholderNfeDoc / buildNfeDocWrite);
+    // cartaCorrecaoService reads it to resolve the filial's signing cert.
+    filialId: 'F-1',
     ultima_modificacao: '2026-05-29T10:00:00.000Z',
   };
 }
@@ -199,8 +205,15 @@ function cceResult(cStat: string, nSeq: number) {
   };
 }
 
+beforeEach(() => {
+  // Fixtures have no per-filial stored cert — emit the CC-e with the env cert
+  // via the fallback (per-filial resolution covered in filial-cert.test.ts).
+  process.env.NFE_CERT_ENV_FALLBACK = '1';
+});
+
 afterEach(() => {
   vi.clearAllMocks();
+  delete process.env.NFE_CERT_ENV_FALLBACK;
 });
 
 describe('cartaCorrecaoService', () => {

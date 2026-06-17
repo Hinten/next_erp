@@ -54,7 +54,7 @@ import {
 import {
   __resetNFeRuntimeForTests,
   getNFeRuntime,
-  type NFeRuntime,
+  type NFeBaseRuntime,
 } from '../../../lib/nfe/runtime';
 
 // ---------------------------------------------------------------------------
@@ -435,7 +435,9 @@ function shieldBatch(
 
 describeOrSkip('orchestrator — SEFAZ-SP homologação', () => {
   let fs: FirebaseFirestore.Firestore;
-  let rt: NFeRuntime;
+  // The cert-free base runtime — each entry point derives the filial's signing
+  // runtime internally (or the env-cert fallback when NFE_CERT_ENV_FALLBACK=1).
+  let rt: NFeBaseRuntime;
 
   beforeAll(async () => {
     // Only reachable in CI (locally the suite skips via describeOrSkip):

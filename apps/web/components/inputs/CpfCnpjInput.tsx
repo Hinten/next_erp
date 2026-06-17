@@ -1,7 +1,6 @@
 'use client';
 
 import { TextInput } from '@mantine/core';
-import { formatCNPJ, formatCPF } from '@delfrance/core/documents';
 import type { FieldRenderProps } from '@delfrance/ui';
 
 const DEFAULT_HINT = 'CPF (11 dígitos) ou CNPJ (14 — pode conter letras)';
@@ -17,12 +16,40 @@ export interface CpfCnpjTextInputProps {
   required?: boolean;
 }
 
+/** Strip a typed/pasted value down to the clean wire format (uppercase
+ *  alphanumeric, max 14). Punctuation, spaces and lowercase are removed, so a
+ *  pasted `95.473.997/0001-03` becomes `95473997000103`. */
+function cleanDocumento(input: string): string {
+  return input
+    .toUpperCase()
+    .replace(/[^0-9A-Z]/g, '')
+    .slice(0, 14);
+}
+
+/** Live display mask over the clean value: CPF `###.###.###-##`, CNPJ
+ *  `##.###.###/####-##`. A clean value with a letter or >11 chars is a CNPJ
+ *  (CPF is numeric, 11 digits). Partial values format as far as they go. */
+function maskDocumento(clean: string): string {
+  const isCnpj = clean.length > 11 || /[A-Z]/.test(clean);
+  const groups = isCnpj ? [2, 3, 3, 4, 2] : [3, 3, 3, 2];
+  const seps = isCnpj ? ['.', '.', '/', '-'] : ['.', '.', '-'];
+  let out = '';
+  let i = 0;
+  for (let g = 0; g < groups.length && i < clean.length; g++) {
+    const size = groups[g] ?? 0;
+    if (g > 0) out += seps[g - 1] ?? '';
+    out += clean.slice(i, i + size);
+    i += size;
+  }
+  return out;
+}
+
 /**
- * CPF/CNPJ input for the uppercase-alphanumeric wire format. Typing is
- * uppercased and common punctuation is stripped on the fly (so pasting
- * `12.ABC.345/01DE-35` works); the description previews the formatted
- * document once the length matches CPF or CNPJ. No `inputMode="numeric"` —
- * the alphanumeric CNPJ (IN RFB 2.229/2024) contains letters.
+ * CPF/CNPJ input for the uppercase-alphanumeric wire format. The field shows a
+ * live mask (`95.473.997/0001-03`) while emitting the clean value, and pasting
+ * a formatted document works (punctuation is stripped before the 14-char cap —
+ * the old `maxLength={14}` truncated an 18-char paste before cleaning). No
+ * `inputMode="numeric"`: the alphanumeric CNPJ (IN RFB 2.229/2024) has letters.
  */
 export function CpfCnpjTextInput({
   value,
@@ -34,20 +61,14 @@ export function CpfCnpjTextInput({
   disabled,
   required,
 }: CpfCnpjTextInputProps) {
-  const formatted = /^\d{11}$/.test(value)
-    ? formatCPF(value)
-    : /^[0-9A-Z]{14}$/.test(value)
-      ? formatCNPJ(value)
-      : null;
   return (
     <TextInput
       label={label}
-      description={formatted ?? description ?? DEFAULT_HINT}
-      value={value}
-      onChange={(e) => onChange(e.currentTarget.value.toUpperCase().replace(/[.\-/\s]/g, ''))}
+      description={description ?? DEFAULT_HINT}
+      value={maskDocumento(value)}
+      onChange={(e) => onChange(cleanDocumento(e.currentTarget.value))}
       onBlur={onBlur}
       error={error}
-      maxLength={14}
       disabled={disabled}
       required={required}
     />

@@ -19,7 +19,12 @@ import {
 import { useDebouncedCallback } from '@mantine/hooks';
 import { FirebaseError } from 'firebase/app';
 import { z, ZodError } from 'zod';
-import { TIPO_CLIENTE_LABELS, clienteSchema, tipoClienteSchema } from '@delfrance/schemas';
+import {
+  TIPO_CLIENTE_LABELS,
+  clienteSchema,
+  refineClienteTipoDocumento,
+  tipoClienteSchema,
+} from '@delfrance/schemas';
 import { saveRecord } from '@delfrance/ui';
 import { formatCNPJ, formatCPF } from '@delfrance/core/documents';
 import { normalizeTelefone } from '@delfrance/core/phone';
@@ -60,7 +65,10 @@ const quickCreateSchema = clienteSchema
   .extend({
     tipo: tipoClienteSchema.default('0'),
     nome: z.string().min(1, 'Obrigatório').max(255),
-  });
+  })
+  // `.pick()` drops the base object's cross-field refine — re-apply it so the
+  // modal blocks a Pessoa Física + CNPJ (or PJ + CPF) just like the full form.
+  .superRefine(refineClienteTipoDocumento);
 
 type QuickCreateInput = z.input<typeof quickCreateSchema>;
 type QuickCreateOutput = z.output<typeof quickCreateSchema>;
@@ -140,6 +148,9 @@ function QuickCreateForm({
 
   // Any edit invalidates a pending "criar mesmo assim" confirmation.
   useEffect(() => {
+    // form.watch() returns a subscription (not a memoizable value); the
+    // React Compiler flags the API but the subscribe/unsubscribe usage is safe.
+    // eslint-disable-next-line react-hooks/incompatible-library
     const sub = form.watch(() => {
       forceCreate.current = false;
       setConfirmRequired(false);
@@ -167,7 +178,6 @@ function QuickCreateForm({
         // at submit is what surfaces a real, persistent error to the user.
         if (seq === checkSeq.current) setDedup(null);
         if (!(err instanceof FirebaseError)) {
-          // eslint-disable-next-line no-console
           console.error('[ClienteQuickCreate] live dedup check failed', err);
         }
       });
@@ -448,8 +458,17 @@ export function ClienteQuickCreateModal({
 }: ClienteQuickCreateModalProps) {
   return (
     <Modal opened={opened} onClose={onClose} title="Novo cliente" size="lg">
-      {/* Conditional mount so every open starts with fresh form/dedup state. */}
-      {opened && <QuickCreateForm onResolve={onResolve} onCancel={onClose} />}
+      {/* Conditional mount so every open starts with fresh form/dedup state.
+          The `onSubmit` guard stops the inner form's submit from bubbling up the
+          React tree (the portaled Modal is still a React-tree descendant) into
+          an ancestor <form> — e.g. the pedido form when this modal is opened
+          from the Principal/Frete ClientePicker — which would otherwise submit
+          (and `addDoc`) the pedido on every "Criar". */}
+      {opened && (
+        <div onSubmit={(e) => e.stopPropagation()}>
+          <QuickCreateForm onResolve={onResolve} onCancel={onClose} />
+        </div>
+      )}
     </Modal>
   );
 }

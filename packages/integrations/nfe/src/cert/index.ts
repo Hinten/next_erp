@@ -31,6 +31,8 @@ import { resolve } from 'node:path';
 
 import forge from 'node-forge';
 
+export { decryptSecret, encryptSecret, type EncryptedBlob } from './encrypt';
+
 // Same pattern as `apps/{nfe,integrations}/lib/firebase/admin.ts` and
 // `tools/test-fixtures/src/admin.ts`: the path from `.env.local`
 // (e.g. `NFE_CERT_PATH=.ignore/cert.pfx`) is conventionally repo-root-relative
@@ -187,12 +189,27 @@ function parsePfxBuffer(pfxBuffer: Buffer, password: string): NFeCertificate {
   }
 
   const privateKeyPem = forge.pki.privateKeyToPem(keyBag.key);
-  const certificatePem = forge.pki.certificateToPem(certBag.cert);
+  return buildCertFromForgeParts(certBag.cert, privateKeyPem, pfxBuffer, password);
+}
+
+/**
+ * Assemble the typed `NFeCertificate` from a parsed forge X.509 cert + the
+ * private key PEM. Shared by the PFX path (`parsePfxBuffer`) and the
+ * stored-cert path (`buildCertFromStored`) so the CN→CNPJ extraction, DER
+ * encoding, and redaction-wrapping can never diverge between them.
+ */
+function buildCertFromForgeParts(
+  cert: forge.pki.Certificate,
+  privateKeyPem: string,
+  pfxBuffer: Buffer,
+  password: string,
+): NFeCertificate {
+  const certificatePem = forge.pki.certificateToPem(cert);
   const certificateDerBase64 = forge.util.encode64(
-    forge.asn1.toDer(forge.pki.certificateToAsn1(certBag.cert)).getBytes(),
+    forge.asn1.toDer(forge.pki.certificateToAsn1(cert)).getBytes(),
   );
 
-  const subjectCn = certBag.cert.subject.getField('CN');
+  const subjectCn = cert.subject.getField('CN');
   const subjectCommonName: string =
     typeof subjectCn === 'object' && subjectCn !== null && 'value' in subjectCn
       ? String(subjectCn.value)
@@ -208,23 +225,45 @@ function parsePfxBuffer(pfxBuffer: Buffer, password: string): NFeCertificate {
     throw new NFeCertError(
       `Certificate Subject CN does not contain a valid CNPJ suffix ` +
         `(got "${subjectCommonName}"). Expected ICP-Brasil A1 format ` +
-        `"<COMPANY NAME>:<CNPJ>" where the CNPJ matches ${CNPJ_FORMAT}. ` +
-        `Verify NFE_CERT_PATH / NFE_CERT_BASE64 points to an ICP-Brasil ` +
-        `e-CNPJ certificate.`,
+        `"<COMPANY NAME>:<CNPJ>" where the CNPJ matches ${CNPJ_FORMAT}.`,
     );
   }
-  const cnpj = cnpjCandidate;
 
   return new NFeCertificateImpl({
     privateKeyPem,
     certificatePem,
     certificateDerBase64,
     subjectCommonName,
-    cnpj,
-    notAfter: certBag.cert.validity.notAfter,
+    cnpj: cnpjCandidate,
+    notAfter: cert.validity.notAfter,
     pfxBuffer,
     password,
   });
+}
+
+/**
+ * Reconstruct an `NFeCertificate` from a decrypted private key PEM + the
+ * stored public cert PEM — the per-filial path. The cert was parsed from a
+ * PFX at upload, then split into an encrypted key + plaintext public cert;
+ * this rebuilds the exact shape the PFX path produces (cnpj / notAfter / DER
+ * re-derived from the public cert). `pfxBuffer`/`password` are unused for
+ * stored certs — signing + mTLS need only the PEMs. Returns the same
+ * redaction-wrapped `NFeCertificateImpl` as every other loader.
+ */
+export function buildCertFromStored(parts: {
+  privateKeyPem: string;
+  certificatePem: string;
+}): NFeCertificate {
+  let cert: forge.pki.Certificate;
+  try {
+    cert = forge.pki.certificateFromPem(parts.certificatePem);
+  } catch (err) {
+    if (err instanceof Error) {
+      throw new NFeCertError(`Failed to parse stored certificate PEM: ${err.message}`);
+    }
+    throw err;
+  }
+  return buildCertFromForgeParts(cert, parts.privateKeyPem, Buffer.alloc(0), '');
 }
 
 /**
@@ -353,6 +392,33 @@ export function hasNFeCertEnv(env: NodeJS.ProcessEnv = process.env): boolean {
   return (
     (Boolean(env.NFE_CERT_PATH) || Boolean(env.NFE_CERT_BASE64)) && env.NFE_CERT_PASSWORD != null
   );
+}
+
+/**
+ * Load the AES-256 master key used to encrypt per-filial private keys at rest,
+ * from `NFE_CERT_ENC_KEY` (base-64 of 32 random bytes —
+ * `openssl rand -base64 32`). Throws `NFeCertError` if unset or not 32 bytes.
+ *
+ * Read here, in the one cert-env-owning file, so `NFE_CERT_ENC_KEY` obeys the
+ * same single-file containment ESLint Rule B enforces for the other secrets.
+ * The encryption/decryption primitives (`encryptSecret`/`decryptSecret`) take
+ * the key as a parameter, so they stay pure + env-free for unit tests.
+ */
+export function getCertEncryptionKey(env: NodeJS.ProcessEnv = process.env): Buffer {
+  const raw = env.NFE_CERT_ENC_KEY;
+  if (raw == null || raw.trim().length === 0) {
+    throw new NFeCertError(
+      'NFE_CERT_ENC_KEY is not set. Generate a base-64 32-byte key with `openssl rand -base64 32`.',
+    );
+  }
+  const key = Buffer.from(raw, 'base64');
+  if (key.length !== 32) {
+    throw new NFeCertError(
+      `NFE_CERT_ENC_KEY must decode to 32 bytes (AES-256); got ${key.length}. ` +
+        'Generate with `openssl rand -base64 32`.',
+    );
+  }
+  return key;
 }
 
 /**

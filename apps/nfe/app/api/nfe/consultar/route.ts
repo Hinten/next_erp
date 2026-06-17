@@ -8,9 +8,11 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 
-import { consultarSituacaoNFe } from '@delfrance/integrations-nfe';
+import { NFeCertError, consultarSituacaoNFe } from '@delfrance/integrations-nfe';
 
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
+import { getAdminFirestore } from '@/lib/firebase/admin';
+import { resolveFilialRuntimeByCnpj } from '@/lib/nfe/filial-cert';
 import { safeLog } from '@/lib/nfe/log';
 import { sefazCallFor, tpEmisFromChave } from '@/lib/nfe/orchestrator/sefaz-call';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
@@ -40,18 +42,28 @@ export async function GET(req: Request): Promise<NextResponse> {
     throw e;
   }
 
-  let runtimeInstance;
+  let base;
   try {
-    runtimeInstance = getNFeRuntime();
+    base = getNFeRuntime();
   } catch (e) {
     return authError(503, { error: e instanceof Error ? e.message : 'runtime not ready' });
+  }
+
+  // The consulta signs the mTLS handshake with the cert of the filial that owns
+  // the NF-e — resolved from the emit CNPJ in the chave (positions 6–20).
+  let rt;
+  try {
+    rt = await resolveFilialRuntimeByCnpj(getAdminFirestore(), base, query.chave.slice(6, 20));
+  } catch (e) {
+    if (e instanceof NFeCertError) return authError(422, { error: e.message, code: e.name });
+    throw e;
   }
 
   try {
     // The chave's own tpEmis digit (position 35) routes the consulta to the
     // authorizer that owns the NF-e (home SEFAZ, SVC-AN or SVC-RS).
     const ret = await consultarSituacaoNFe(
-      sefazCallFor(runtimeInstance, tpEmisFromChave(query.chave), 'NfeConsultaProtocolo'),
+      sefazCallFor(rt, tpEmisFromChave(query.chave), 'NfeConsultaProtocolo'),
       { chave: query.chave },
     );
     const protInf = ret.protNFe?.infProt;

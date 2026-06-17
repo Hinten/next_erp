@@ -11,6 +11,7 @@ import {
   NFeAuthError,
   NFeBadRequestError,
   NFeBlockedError,
+  NFeCertificateError,
   NFeNetworkError,
   NFePedidoNotFoundError,
   NFeRejectedError,
@@ -111,6 +112,16 @@ export function notificationForNFeError(err: unknown): NotificationShape {
     return {
       title: 'SEFAZ rejeitou a NF-e',
       message: `cStat=${err.cStat}: ${err.xMotivo}`,
+      color: 'red',
+    };
+  }
+  if (err instanceof NFeCertificateError) {
+    // A per-filial cert pre-flight failure — resolved BEFORE any SEFAZ contact
+    // (no stored cert / wrong key / expired). The message is the route's pt-BR
+    // text; never frame it as a SEFAZ rejection.
+    return {
+      title: 'Certificado digital da filial',
+      message: err.message,
       color: 'red',
     };
   }

@@ -48,9 +48,11 @@ import { useFormContext } from 'react-hook-form';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import {
   type GrupoComId,
+  type PrecosMap,
   type Produto,
   cartesianVariations,
   compareSortKeys,
+  diffPrecos,
   findDuplicateSkus,
   normalizeVariacoesUid,
   parseFakePath,
@@ -62,6 +64,8 @@ import {
   varianteFakePath,
 } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
+import { newDocId } from '@/lib/produtos/docId';
+import { appendPrecoHistory } from '@/lib/produtos/precoHistory';
 import {
   describeReferences,
   findManyProdutoReferences,
@@ -120,20 +124,6 @@ export interface VariationManagerProps {
 
 function localKey(): string {
   return `new-${crypto.randomUUID()}`;
-}
-
-const DOC_ID_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-
-/**
- * Mint a Firestore-style 20-char doc id client-side. `defineCollection` has no
- * auto-id helper and raw `doc(collection(...))` refs are lint-forbidden in
- * apps/web, so we generate the id and go through `produtoCollection.docRef`.
- */
-function newDocId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(20));
-  let id = '';
-  for (const b of bytes) id += DOC_ID_CHARS[b % DOC_ID_CHARS.length];
-  return id;
 }
 
 /**
@@ -268,6 +258,13 @@ export function VariationManager({
    *  3. reference re-check on every remaining real delete (kits/marketplace
    *     links may have appeared since the stage-time check) — any hit aborts
    *     the whole flush.
+   *
+   * Pricing parity: children CREATED here carry the PARENT's `precos` (with
+   * their initial history records — `produtoTableProvider.dart:497`). Refreshing
+   * the precos of EXISTING children when the parent's map changes happens at the
+   * page layer (`propagateParentPrecosToChildren`) so it fires even when the
+   * Variações tab — and therefore this manager's live children snapshot — was
+   * never opened.
    */
   const flushStagedChildren = async (parentId: string): Promise<void> => {
     const duplicates = findDuplicateSkus(rows);
@@ -279,6 +276,13 @@ export function VariationManager({
     }
 
     const { rows: reconciled, reusedIds } = reconcileStagedChildren(rows);
+
+    // The parent's just-saved precos for children CREATED here: the live form
+    // value when available (null = all prices cleared — deliberate, must NOT
+    // fall back to the stale persisted doc), the persisted doc only without a
+    // form context.
+    const livePrecos = form?.getValues('precos') as PrecosMap | undefined;
+    const parentPrecos = livePrecos !== undefined ? livePrecos : (parent?.precos ?? null);
 
     const deleteTargets = reconciled.filter((r) => r.deleteMark && r.id);
     const refsById = await findManyProdutoReferences(
@@ -318,6 +322,7 @@ export function VariationManager({
             paiId: parentId,
             ordem,
             variacoesUid: normalized.length > 0 ? normalized : null,
+            precos: parentPrecos,
             codPai: liveParent('codPai'),
             pesoLiquidoKg: liveParent('pesoLiquidoKg'),
             pesoBrutoKg: liveParent('pesoBrutoKg'),
@@ -337,9 +342,14 @@ export function VariationManager({
           }
           throw err;
         }
-        batch.set(produtoCollection.docRef(db, {}, newDocId()), docData);
+        const childId = newDocId();
+        batch.set(produtoCollection.docRef(db, {}, childId), docData);
         writes += 1;
+        // Flutter parity: a child born with prices gets its initial history
+        // records (its save() runs the same oldPrecos-null diff).
+        appendPrecoHistory(batch, db, childId, diffPrecos(null, parentPrecos));
       } else if (row.dirty || ordem !== row.serverOrdem) {
+        // precos is propagated to existing children at the page layer.
         batch.update(produtoCollection.docRef(db, {}, row.id), {
           nome: row.nome,
           sku: row.sku === '' ? null : row.sku,

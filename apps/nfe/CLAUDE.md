@@ -22,13 +22,32 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    `lib/nfe/auth.ts:verifyCaller`. Required perm:
    - `PERM.fiscal.read`  → `/api/nfe/consultar`
    - `PERM.fiscal.write` → `/api/nfe/emitir` and `/api/nfe/processar-pendentes`
-4. **Cert + chain at boot.** The NF-e runtime
-   (`lib/nfe/runtime.ts:getNFeRuntime`) is a process-level singleton.
-   Boot fails hard if the A1 cert is missing/expired or the SEFAZ TLS
-   chain isn't vendored under
-   `packages/integrations/nfe/ca/sefaz-<uf>-<ambiente>.pem`. Run
-   `pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca` to capture
-   the chain locally.
+4. **Cert-free boot, per-filial at every SEFAZ call.**
+   `lib/nfe/runtime.ts:getNFeRuntime` is the process-level BASE singleton —
+   it is **cert-optional**: it eagerly validates `NFE_AMBIENTE`/`NFE_UF` and
+   loads the SEFAZ TLS chains (vendored under
+   `packages/integrations/nfe/ca/sefaz-<uf>-<ambiente>.pem`; run
+   `pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca`) but **never the
+   cert** — the process boots with NO env cert. The env cert (`NFE_CERT_*`) is
+   OPTIONAL, built lazily by `base.envRuntime()` only as the
+   `NFE_CERT_ENV_FALLBACK` cert + the `/api/health` diagnostics.
+   **Every SEFAZ call signs with the FILIAL's own A1**: orchestrator entry
+   points take the base and call
+   `lib/nfe/filial-cert.ts:resolveFilialRuntime(fs, baseRt, filialId)`, which
+   reads `filiais/{filialId}/certificadoSecreto/default`, decrypts the private
+   key with `NFE_CERT_ENC_KEY` (AES-256-GCM), and rebuilds the runtime via
+   `deriveRuntimeForCert` (same chains, filial cert). The two filial-agnostic
+   routes resolve the cert another way: `consultar` derives it from the emit
+   CNPJ in the chave (`resolveFilialRuntimeByCnpj`), and `status-servico` takes
+   a required `?filialId=`. SEFAZ enforces cert CNPJ = emitente CNPJ
+   (rejection 213), so a single env cert can only emit for one CNPJ — hence
+   per-filial. A filial with no stored cert throws unless `NFE_CERT_ENV_FALLBACK`
+   is on AND an env cert exists (then it uses the env cert — tests/dev only).
+   **Rotating a filial's cert needs an apps/nfe restart** (the decrypted cert
+   is process-cached; the upload route evicts its own instance's entry).
+   Upload/remove via `POST`/`DELETE /api/nfe/certificado` (`PERM.configuracoes.write`).
+   **Losing `NFE_CERT_ENC_KEY` = all stored filial certs become undecryptable**
+   (re-upload required) — treat it as a secret.
 5. **Per-item `imposto` must be stamped on every Pedido item.** The
    orchestrator reads `pedido.itens[i].imposto` and validates it via
    the library's `impostoSchema` (`@delfrance/integrations-nfe`
@@ -80,8 +99,10 @@ FIREBASE_DATABASE_ID=default
 
 NFE_AMBIENTE=homologacao            # or 'producao'
 NFE_UF=SP
-NFE_CERT_PATH=./.ignore/cert.pfx    # or NFE_CERT_BASE64
-NFE_CERT_PASSWORD=...
+# NFE_CERT_PATH=./.ignore/cert.pfx  # OPTIONAL — or NFE_CERT_BASE64 (health + fallback only)
+# NFE_CERT_PASSWORD=...             # required iff a cert above is set
+NFE_CERT_ENC_KEY=...                 # base64 32 bytes (openssl rand -base64 32) — encrypts filial keys
+# NFE_CERT_ENV_FALLBACK=1            # filial w/o stored cert → use the env cert (tests/dev). Default off.
 # NFE_ALLOW_PRODUCAO=true            # only if NFE_AMBIENTE=producao
 
 ALLOWED_ADMIN_ORIGINS=https://app.example.com  # CSV; localhost allowed by default
@@ -99,15 +120,17 @@ app/
   layout.tsx                       Minimal HTML shell
   page.tsx                         Placeholder landing
   api/
-    health/route.ts                GET — uptime + cert subject + notAfter
+    health/route.ts                GET — uptime + ambiente (cert null w/o env cert)
     nfe/
       emitir/route.ts              POST — generate + sign + persist + send
       consultar/route.ts           GET  — consSitNFe by chave
       processar-pendentes/route.ts POST — anti-loss poller (cron-driven)
+      certificado/route.ts         POST/DELETE — per-filial A1 upload/remove
 lib/
   firebase/admin.ts                Admin SDK singletons (same as apps/integrations)
   nfe/
-    runtime.ts                     Process-level cert + agent + endpoints cache
+    runtime.ts                     Process-level cert-OPTIONAL base (endpoints + chain cache + lazy envRuntime)
+    filial-cert.ts                 resolveFilialRuntime / resolveFilialRuntimeByCnpj (per-filial signing)
     orchestrator/                  Pedido → emit/consultar/cancelar/inutilizar,
                                    split per-service behind an index.ts barrel
     tribute.ts                     Homologação tributary stub (Phase A scaffolding)

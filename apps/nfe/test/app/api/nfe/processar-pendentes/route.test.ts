@@ -32,7 +32,7 @@ import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 import { verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { transmitirPosEpec } from '@/lib/nfe/orchestrator/epec';
-import { getNFeRuntime, type NFeRuntime } from '@/lib/nfe/runtime';
+import { getNFeRuntime, type NFeBaseRuntime, type NFeRuntime } from '@/lib/nfe/runtime';
 
 import { POST } from '../../../../../app/api/nfe/processar-pendentes/route';
 import { assertSignedXmlNeverLost } from '../../../../helpers/xml-invariant';
@@ -47,8 +47,8 @@ function req(body = '{}'): Request {
   });
 }
 
-function fakeRuntime(): NFeRuntime {
-  return {
+function fakeRuntime(): NFeRuntime & NFeBaseRuntime {
+  const rt: NFeRuntime = {
     cert: {} as never,
     agent: {} as never,
     ambiente: 'homologacao',
@@ -78,6 +78,7 @@ function fakeRuntime(): NFeRuntime {
     }),
     diagnostics: { subjectCommonName: 'TEST', notAfter: '2027-01-01', chainSource: 'x' },
   };
+  return { ...rt, envRuntime: () => rt };
 }
 
 /**
@@ -185,6 +186,9 @@ function pDoc(overrides: Record<string, unknown> = {}): Record<string, unknown> 
 }
 
 beforeEach(() => {
+  // Pendentes docs' filiais have no per-filial stored cert here — recover with
+  // the env cert via the fallback (per-filial resolution covered elsewhere).
+  process.env.NFE_CERT_ENV_FALLBACK = '1';
   vi.mocked(verifyCaller).mockResolvedValue({
     caller: { uid: 'u-1', permissions: '0xff' },
   } as never);
@@ -193,6 +197,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  delete process.env.NFE_CERT_ENV_FALLBACK;
 });
 
 describe('POST /api/nfe/processar-pendentes — EPEC (estado p)', () => {

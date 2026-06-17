@@ -60,11 +60,29 @@ import { DELETE_MARK } from '@delfrance/ui';
 /** A `Foto` plus the transient staged-deletion marker (keyed by `DELETE_MARK`). */
 type EditableFoto = Foto & { [DELETE_MARK]?: boolean };
 
+/** The identity-bearing fields of a foto's sortable id (no editor-only markers). */
+type FotoIdParts = Pick<Foto, 'arquivoOuterRef' | 'variantePath'>;
+
 /**
- * Unique sortable id — the same arquivo may legitimately live in two galleries
- * (parent + a variant), so the dnd id pairs the ref with the gallery tag.
+ * Build the dnd/React sortable id for every foto, indexed by global array
+ * position. The id is `arquivoOuterRef|variantePath` plus an occurrence ordinal
+ * that is **0 for a unique (ref, gallery) pair** — so the common case yields an
+ * id that stays STABLE across reorders: it tracks the item's identity, not its
+ * position, so a drag doesn't change ids for the cards it passes (no
+ * unmount/remount, no thumbnail snapshot re-subscribe). The ordinal only climbs
+ * for a duplicated `arquivoOuterRef` within the same gallery (legacy Flutter
+ * data, #139) — index is thus a last-resort disambiguator for true duplicates,
+ * not the primary key.
  */
-const itemIdOf = (f: EditableFoto) => `${f.arquivoOuterRef}|${f.variantePath ?? ''}`;
+export function buildSortableIds(fotos: readonly FotoIdParts[]): string[] {
+  const seen = new Map<string, number>();
+  return fotos.map((f) => {
+    const base = `${f.arquivoOuterRef}|${f.variantePath ?? ''}`;
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return `${base}#${n}`;
+  });
+}
 
 /** Droppable id prefix for a whole gallery section (drop target when empty). */
 const CONTAINER_PREFIX = 'section::';
@@ -192,6 +210,10 @@ export function PhotoManager({
     ],
     [sections],
   );
+
+  // dnd/React ids for every foto, by global array index — computed once over
+  // the whole array so `locate` and each SectionGrid agree on the same ids.
+  const sortableIds = useMemo(() => buildSortableIds(fotos), [fotos]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
@@ -331,7 +353,7 @@ export function PhotoManager({
   /** Find a dragged foto by its sortable id: which gallery + position inside it. */
   function locate(id: string): { list: number; pos: number } | null {
     for (let li = 0; li < sectionLists.length; li += 1) {
-      const pos = sectionLists[li]!.indexes.findIndex((i) => itemIdOf(fotos[i]!) === id);
+      const pos = sectionLists[li]!.indexes.findIndex((i) => sortableIds[i] === id);
       if (pos >= 0) return { list: li, pos };
     }
     return null;
@@ -395,6 +417,7 @@ export function PhotoManager({
         sectionKey={sectionKey}
         indexes={indexes}
         fotos={fotos}
+        sortableIds={sortableIds}
         db={db}
         withCover={withCover}
         disabled={disabled}
@@ -506,6 +529,8 @@ interface SectionGridProps {
   /** Global indexes of this gallery's fotos, in display order. */
   indexes: number[];
   fotos: EditableFoto[];
+  /** dnd/React ids by global array index — see `buildSortableIds`. */
+  sortableIds: string[];
   db: Firestore;
   withCover: boolean;
   disabled?: boolean;
@@ -522,6 +547,7 @@ function SectionGrid({
   sectionKey,
   indexes,
   fotos,
+  sortableIds,
   db,
   withCover,
   disabled,
@@ -530,7 +556,7 @@ function SectionGrid({
 }: SectionGridProps) {
   const { setNodeRef, isOver } = useDroppable({ id: `${CONTAINER_PREFIX}${sectionKey}` });
   return (
-    <SortableContext items={indexes.map((i) => itemIdOf(fotos[i]!))} strategy={rectSortingStrategy}>
+    <SortableContext items={indexes.map((i) => sortableIds[i]!)} strategy={rectSortingStrategy}>
       <Box
         ref={setNodeRef}
         p={2}
@@ -565,8 +591,8 @@ function SectionGrid({
               const foto = fotos[index]!;
               return (
                 <SortableFoto
-                  key={itemIdOf(foto)}
-                  sortableId={itemIdOf(foto)}
+                  key={sortableIds[index]!}
+                  sortableId={sortableIds[index]!}
                   foto={foto}
                   db={db}
                   isCover={withCover && index === 0}
@@ -586,7 +612,7 @@ function SectionGrid({
 }
 
 interface SortableFotoProps {
-  /** Unique dnd id (`ref|variantePath`) — see `itemIdOf`. */
+  /** Unique dnd id (`ref|variantePath#occurrence`) — see `buildSortableIds`. */
   sortableId: string;
   foto: Foto;
   db: Firestore;

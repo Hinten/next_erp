@@ -64,6 +64,19 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
       const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
       await assertFails(getDoc(doc(su, 'colecao-inexistente/x')));
     });
+
+    it('denies even a superuser on the admin-only filial cert secret', async () => {
+      // The encrypted A1 private key lives at filiais/{id}/certificadoSecreto —
+      // intentionally unregistered in ALL_DOMAINS, so no client (even max
+      // claims) can read or write it. Only the Admin SDK (apps/nfe), which
+      // bypasses rules, reaches the secret.
+      await seed('filiais/F-1/certificadoSecreto/default', {
+        encPrivateKey: { ciphertext: 'x' },
+      });
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(getDoc(doc(su, 'filiais/F-1/certificadoSecreto/default')));
+      await assertFails(setDoc(doc(su, 'filiais/F-1/certificadoSecreto/default'), { x: 1 }));
+    });
   });
 
   describe('bit-exactness (no >= lattice)', () => {

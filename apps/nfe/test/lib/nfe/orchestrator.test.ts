@@ -55,14 +55,14 @@ import {
   NFePedidoNotFoundError,
   __internal,
 } from '../../../lib/nfe/orchestrator';
-import type { NFeRuntime } from '../../../lib/nfe/runtime';
+import type { NFeBaseRuntime, NFeRuntime } from '../../../lib/nfe/runtime';
 import { assertSignedXmlNeverLost } from '../../helpers/xml-invariant';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
 
-function fakeRuntime(): NFeRuntime {
-  return {
+function fakeRuntime(): NFeRuntime & NFeBaseRuntime {
+  const rt: NFeRuntime = {
     cert: {
       privateKeyPem: '',
       certificatePem: '',
@@ -105,6 +105,10 @@ function fakeRuntime(): NFeRuntime {
       chainSource: '/tmp/fake.pem',
     },
   };
+  // The base runtime the orchestrator entry points consume — `envRuntime`
+  // returns this same fake so the `NFE_CERT_ENV_FALLBACK` path (the fixtures
+  // carry no per-filial stored cert) resolves to it.
+  return { ...rt, envRuntime: () => rt };
 }
 
 /** Build a valid Imposto blob (Simples Nacional CSOSN 102) for an item. */
@@ -431,6 +435,10 @@ const RET_SIT_100 = {
 } as const;
 
 beforeEach(() => {
+  // The fixtures have no per-filial stored cert — emit with the fakeRuntime's
+  // (env) cert via the fallback. Per-filial resolution is covered separately
+  // in filial-cert.test.ts + certificado/route.test.ts.
+  process.env.NFE_CERT_ENV_FALLBACK = '1';
   vi.mocked(generateNFe).mockReturnValue({
     chave: CHAVE,
     cNF: '00000001',

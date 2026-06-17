@@ -31,11 +31,11 @@ import {
 import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
 import { emitirPedidosLote, NFeOrchestratorError } from '../../../lib/nfe/orchestrator';
-import type { NFeRuntime } from '../../../lib/nfe/runtime';
+import type { NFeBaseRuntime, NFeRuntime } from '../../../lib/nfe/runtime';
 import { assertSignedXmlNeverLost } from '../../helpers/xml-invariant';
 
-function fakeRuntime(): NFeRuntime {
-  return {
+function fakeRuntime(): NFeRuntime & NFeBaseRuntime {
+  const rt: NFeRuntime = {
     cert: {
       privateKeyPem: '',
       certificatePem: '',
@@ -78,6 +78,9 @@ function fakeRuntime(): NFeRuntime {
       chainSource: '/tmp/fake.pem',
     },
   };
+  // Base runtime for the entry points; the fallback path (no stored cert)
+  // resolves to this same fake via `envRuntime`.
+  return { ...rt, envRuntime: () => rt };
 }
 
 function impostoCsosn102(): Record<string, unknown> {
@@ -511,6 +514,9 @@ function consultarLoteResolves(chaves: ReadonlyArray<string>): void {
 }
 
 beforeEach(() => {
+  // Fixtures have no per-filial stored cert — emit with the env cert via the
+  // fallback (per-filial resolution is covered in filial-cert.test.ts).
+  process.env.NFE_CERT_ENV_FALLBACK = '1';
   vi.clearAllMocks();
   mockGenerateAndSign();
 });

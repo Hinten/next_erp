@@ -4,12 +4,26 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button, Stack } from '@mantine/core';
+import { writeBatch } from 'firebase/firestore';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
-import { type Foto, type Video, produtoSchema } from '@delfrance/schemas';
+import {
+  type Foto,
+  type PrecosMap,
+  type Video,
+  diffPrecos,
+  produtoSchema,
+} from '@delfrance/schemas';
+import { buildQuery, limit, orderByField } from '@delfrance/data';
+import { useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
+import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
+import { appendPrecoHistory } from '@/lib/produtos/precoHistory';
+import { appendCustoHistory } from '@/lib/produtos/custoHistory';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
 import { PhotoManager } from '../_components/PhotoManager';
+import { CustoField } from '../_components/CustoField';
+import { PrecoCustoManager, stripPrecosForSave } from '../_components/PrecoCustoManager';
 import { VideoManager } from '../_components/VideoManager';
 import { VariationManager } from '../_components/VariationManager';
 import {
@@ -24,6 +38,15 @@ export default function NovoProdutoPage() {
   const { user } = useAuth();
   const db = getFirebaseFirestore();
   const storage = getFirebaseStorage();
+
+  // Listas de preços (live, bounded) — the Preço e custo tab is editable
+  // before the first save (precos is a doc field, unlike fotos).
+  const listasQuery = useMemo(
+    () => buildQuery(listaDePrecosCollection.ref(db, {}), [orderByField('nome'), limit(200)]),
+    [db],
+  );
+  const listasSnap = useSnapshot(listasQuery);
+  const listas = useMemo(() => listasSnap.data ?? [], [listasSnap.data]);
 
   // The Fotos/Vídeos tabs show even before the product is saved — the managers
   // render a "save first" message when produtoId is null (uploads need a saved
@@ -78,8 +101,40 @@ export default function NovoProdutoPage() {
           />
         ),
       },
+      custo: {
+        ...produtoFieldOverrides.custo,
+        renderInput: (p) => (
+          <CustoField
+            produtoId={null}
+            db={db}
+            value={(p.value as number | null) ?? null}
+            onChange={p.onChange}
+            label={p.label}
+            hint={p.hint}
+            disabled={p.disabled}
+            error={p.error}
+          />
+        ),
+      },
+      precos: {
+        label: 'Preços',
+        section: 'Preço e custo',
+        prepareForSave: stripPrecosForSave,
+        renderInput: (p) => (
+          <PrecoCustoManager
+            produtoId={null}
+            db={db}
+            listas={listas}
+            listasError={listasSnap.error?.message}
+            value={(p.value as PrecosMap) ?? null}
+            onChange={p.onChange}
+            errorTree={p.errorTree}
+            disabled={p.disabled}
+          />
+        ),
+      },
     }),
-    [db, storage],
+    [db, storage, listas, listasSnap.error?.message],
   );
 
   return (
@@ -103,6 +158,20 @@ export default function NovoProdutoPage() {
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
         saveLabel="Criar"
         showSaveAndContinue={false}
+        onAfterSave={async (id, values) => {
+          // First save of a produto born with prices/cost → initial history
+          // records, mirroring Flutter's oldPrecos-null branch. `values` is what
+          // was just persisted. New produtos have no variation children yet, so
+          // there's nothing to propagate.
+          const changes = diffPrecos(null, (values.precos as PrecosMap) ?? null);
+          const custo = typeof values.custo === 'number' ? values.custo : null;
+          if (changes.length > 0 || custo !== null) {
+            const batch = writeBatch(db);
+            if (changes.length > 0) appendPrecoHistory(batch, db, id, changes);
+            if (custo !== null) appendCustoHistory(batch, db, id, custo);
+            await batch.commit();
+          }
+        }}
         onSaved={(id) => router.replace(`/produtos/${id}/editar`)}
       />
     </Stack>

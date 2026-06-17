@@ -173,6 +173,36 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
 
       {temFrete && (
         <Stack gap="sm">
+          {/* The integração drives the tipo (and the whole body below), so it
+              comes first — picking it is the entry point for configuring the
+              frete. */}
+          <IntegracaoFreteSelect
+            db={db}
+            value={integracaoRef?.id ?? null}
+            currentFallback={
+              integracaoDoc
+                ? {
+                    id: integracaoDoc.id,
+                    nome: integracaoDoc.data.nome,
+                    tipo: integracaoDoc.data.tipo,
+                  }
+                : null
+            }
+            onChange={(id) =>
+              form.setValue(
+                fretePath('integracaoFreteOuterRef'),
+                id ? `documents/int_frete/${id}` : null,
+                { shouldDirty: true, shouldValidate: true },
+              )
+            }
+            disabled={headerDisabled}
+          />
+          <Text size="xs" c="dimmed">
+            A integração de frete define o tipo de cálculo e as opções disponíveis abaixo.
+          </Text>
+
+          <Divider label="Entrega" labelPosition="left" />
+
           <EnderecoPicker
             db={db}
             clienteOuterRef={clientePedidoOuterRef}
@@ -221,28 +251,6 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
                 error={fieldState.error?.message}
               />
             )}
-          />
-
-          <IntegracaoFreteSelect
-            db={db}
-            value={integracaoRef?.id ?? null}
-            currentFallback={
-              integracaoDoc
-                ? {
-                    id: integracaoDoc.id,
-                    nome: integracaoDoc.data.nome,
-                    tipo: integracaoDoc.data.tipo,
-                  }
-                : null
-            }
-            onChange={(id) =>
-              form.setValue(
-                fretePath('integracaoFreteOuterRef'),
-                id ? `documents/int_frete/${id}` : null,
-                { shouldDirty: true, shouldValidate: true },
-              )
-            }
-            disabled={headerDisabled}
           />
 
           <Divider />

@@ -23,11 +23,11 @@ const ruleAConsole = {
 // Rule B — `NFE_CERT_*` env vars may only be READ inside the unified
 // loader at `packages/integrations/nfe/src/cert/index.ts`.
 const ruleBCertEnv = {
-  selector: 'MemberExpression[property.name=/^NFE_CERT_(BASE64|PATH|PASSWORD)$/]',
+  selector: 'MemberExpression[property.name=/^NFE_CERT_(BASE64|PATH|PASSWORD|ENC_KEY)$/]',
   message:
-    'NFE_CERT_BASE64 / NFE_CERT_PATH / NFE_CERT_PASSWORD may only be ' +
-    'read inside packages/integrations/nfe/src/cert/index.ts. Call ' +
-    'loadCertificateFromEnv() or hasNFeCertEnv() from ' +
+    'NFE_CERT_BASE64 / NFE_CERT_PATH / NFE_CERT_PASSWORD / NFE_CERT_ENC_KEY may ' +
+    'only be read inside packages/integrations/nfe/src/cert/index.ts. Call ' +
+    'loadCertificateFromEnv() / hasNFeCertEnv() / getCertEncryptionKey() from ' +
     '@delfrance/integrations-nfe instead.',
 };
 

@@ -55,7 +55,15 @@ const MODO_LABELS: Record<ContingenciaModo, string> = {
 };
 
 /** One status-servico row: target label + check button + result badge. */
-function StatusRow({ target, label }: { target: 'normal' | 'svc'; label: string }) {
+function StatusRow({
+  target,
+  label,
+  filialId,
+}: {
+  target: 'normal' | 'svc';
+  label: string;
+  filialId: string;
+}) {
   const client = useNFeClient();
   const [result, setResult] = useState<NFeStatusServicoResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -66,7 +74,9 @@ function StatusRow({ target, label }: { target: 'normal' | 'svc'; label: string 
     setBusy(true);
     setError(null);
     try {
-      setResult(await client.statusServico(target));
+      // The status check signs with this filial's own cert (the server signs
+      // per-filial — it doesn't require a shared env cert).
+      setResult(await client.statusServico(target, filialId));
     } catch (err) {
       if (err instanceof NFeHttpError || err instanceof NFeNetworkError) {
         // Unreachable / 5xx IS the answer the operator is looking for here.
@@ -188,8 +198,8 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
     <Stack gap="lg" maw={720}>
       <Stack gap="xs">
         <Title order={5}>Status dos serviços SEFAZ</Title>
-        <StatusRow target="normal" label="SEFAZ (normal)" />
-        <StatusRow target="svc" label="SVC (contingência)" />
+        <StatusRow target="normal" label="SEFAZ (normal)" filialId={filialId} />
+        <StatusRow target="svc" label="SVC (contingência)" filialId={filialId} />
       </Stack>
 
       {!cfg ? (

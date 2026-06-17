@@ -12,7 +12,8 @@ import {
 } from '@delfrance/integrations-nfe';
 import type { NotaFiscalEletronica } from '@delfrance/schemas';
 
-import type { NFeRuntime } from '../runtime';
+import type { NFeBaseRuntime } from '../runtime';
+import { resolveFilialRuntime } from '../filial-cert';
 import { NFeOrchestratorError } from './errors';
 import { loadPedidoBundle, type EmitResult } from './bundle';
 import { sefazCallFor } from './sefaz-call';
@@ -39,12 +40,15 @@ import {
  */
 export async function consultarPedido(
   fs: Firestore,
-  rt: NFeRuntime,
+  baseRt: NFeBaseRuntime,
   pedidoId: string,
 ): Promise<EmitResult> {
   console.debug(`[nfe/orchestrator] consultarPedido pedidoId='${pedidoId}'`);
 
   const bundle = await loadPedidoBundle(fs, pedidoId);
+  // mTLS for the consulta must present this filial's cert (or the env
+  // fallback) — SEFAZ identifies the transmitter by the handshake cert.
+  const rt = await resolveFilialRuntime(fs, baseRt, bundle.filialId);
   // Scan the pedido's nfev4 slots (at most a handful) instead of deriving
   // one slot from the CURRENT config mode — after a contingency toggle the
   // live NF-e may sit in `s6`/`s7` while the mode is already back to none

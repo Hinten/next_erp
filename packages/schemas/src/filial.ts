@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
 import { enderecoSchema } from './endereco';
+import { certificadoFilialInfoSchema } from './certificadoFilial';
 
 // Mirror `PERM.configuracoes` from @delfrance/auth.
 const PERM_CONFIG_READ = 1n << 40n;
@@ -34,6 +35,13 @@ export const filialSchema = z.object({
     ),
   imun: z.string().regex(/^\d*$/, 'apenas números').nullable().describe('Inscrição Municipal'),
   sede: enderecoSchema.describe('Endereço sede'),
+  // Public A1 cert metadata, managed by the cert upload endpoint (apps/nfe),
+  // NOT by this form — it is excluded from the Dados ObjectView. `.optional()`
+  // keeps legacy/never-uploaded docs parseable, and because edits write only
+  // dirty fields (`saveRecord` → `tx.update(pickDirty(...))`), a Dados save
+  // never wipes it. The secret key lives in the admin-only
+  // `certificadoSecreto` subcollection; this is just the public badge data.
+  certificado: certificadoFilialInfoSchema.nullable().optional().describe('Certificado Digital'),
   timestamp: z.string().datetime().nullable().optional(),
   // Update-monitor field — `saveRecord` stamps it on every write. Legacy
   // (Flutter-written) docs lack it; pipeline sorts treat the missing field

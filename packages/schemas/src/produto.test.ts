@@ -57,6 +57,20 @@ describe('produtoSchema', () => {
     });
     expect(parsed.variacoesUid).toEqual(['cor:azul', 'tam:M']);
   });
+
+  it('accepts a precos entry at or above R$ 0,01', () => {
+    const parsed = produtoSchema.parse({ nome: 'X', precos: { listaA: { valor: 0.01 } } });
+    expect(parsed.precos).toEqual({ listaA: { valor: 0.01 } });
+  });
+
+  it('rejects a precos entry of 0 or below R$ 0,01 (min price)', () => {
+    expect(produtoSchema.safeParse({ nome: 'X', precos: { listaA: { valor: 0 } } }).success).toBe(
+      false,
+    );
+    expect(
+      produtoSchema.safeParse({ nome: 'X', precos: { listaA: { valor: 0.009 } } }).success,
+    ).toBe(false);
+  });
 });
 
 describe('produtoMeta', () => {

@@ -93,8 +93,13 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>> {
    * persisted at that point. It also runs when the record itself had nothing
    * to write (sibling edits don't dirty the form), in which case the action
    * still counts as a save instead of the "nothing changed" toast.
+   *
+   * Receives the transformed values heading into the save (post-`prepareForSave`
+   * / `deriveOnSave`), so sibling writes can read exactly what was persisted
+   * without a re-read race — e.g. the produto editor diffs `values.precos` for
+   * its history records and child propagation.
    */
-  onAfterSave?: (id: string) => Promise<void> | void;
+  onAfterSave?: (id: string, values: Record<string, unknown>) => Promise<void> | void;
   saveLabel?: string;
   /** Show a secondary "Salvar e continuar" button. Default true. */
   showSaveAndContinue?: boolean;
@@ -329,7 +334,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
       // staged child documents). Runs on BOTH save paths; a failure surfaces
       // in the form alert and skips onSaved (the record itself is saved — the
       // user can retry just the sibling step by saving again).
-      await onAfterSave?.(result.id);
+      await onAfterSave?.(result.id, values);
       if (continueEditing) {
         notifications.show({ color: 'green', message: 'Salvo.' });
       } else {
@@ -343,7 +348,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
         // one, keep the "nothing changed" toast.
         if (onAfterSave && internalId) {
           try {
-            await onAfterSave(internalId);
+            await onAfterSave(internalId, values);
           } catch (afterErr) {
             if (afterErr instanceof ZodError) {
               // `ZodError.message` is the serialized issues array — join the

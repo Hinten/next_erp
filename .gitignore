@@ -17,6 +17,11 @@ e2e/.auth/
 .env.local
 .env.*.local
 !.env.example
+
+# A1 digital certificates — NEVER commit. The env cert ships as a base64
+# secret; `pnpm gen:test-cert` writes throwaway .pfx files to test the upload.
+*.pfx
+*.p12
 # Committed (non-secret): feeds the FUNCTIONS_REGION param to Firebase
 # non-interactively (emulator + deploy). See apps/functions/src/options.ts.
 !apps/functions/.env
@@ -44,3 +49,5 @@ devlogs/
 
 # Locally-rendered DANFE samples for manual review (pnpm render:danfe-samples)
 danfe-samples/
+# local scratch (trace/error-context extraction)
+tmp-e2e/

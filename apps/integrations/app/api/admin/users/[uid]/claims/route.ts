@@ -93,8 +93,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ uid: st
 
   // `permissions` is the app-side source of truth (hasPerm); the d_* claims
   // are its rules-only projection — Firestore rules CEL has no bitwise ops.
+  // `su` is the rules super-user short-circuit (rules can't bit-AND SUPERUSER_MASK).
   await getAdminAuth().setCustomUserClaims(uid, {
     permissions: bits.toString(),
+    su: isSuperUserBits(bits),
     ...rulesClaimsFromBits(bits),
   });
 

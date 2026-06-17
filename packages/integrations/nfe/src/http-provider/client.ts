@@ -13,6 +13,7 @@ import {
   NFeAuthError,
   NFeBadRequestError,
   NFeBlockedError,
+  NFeCertificateError,
   NFeDanfeUnavailableError,
   NFeHttpError,
   NFeInutilizacaoAbortedError,
@@ -141,6 +142,20 @@ export interface NFeCartaCorrecaoResult {
 }
 
 /**
+ * Public A1 certificate metadata returned by the cert upload route — mirrors
+ * `certificadoFilialInfoSchema`. Never carries key material.
+ */
+export interface NFeCertificadoMeta {
+  readonly subjectCommonName: string;
+  readonly cnpj: string;
+  /** ms since epoch. */
+  readonly notAfter: number;
+  readonly filename: string;
+  /** ms since epoch. */
+  readonly uploadedAt: number;
+}
+
+/**
  * Caller-provided config. `baseUrl` is the origin of `apps/nfe`
  * (in dev: `http://localhost:3004`; in prod: `https://nfe-<env>.web.app`).
  * `getAuthToken` runs on every call so a Firebase ID-token refresh
@@ -185,10 +200,25 @@ export interface NFeHttpClient {
   cartaCorrecaoDanfe(pedidoId: string, nfeId: string, cceId: string): Promise<NFeDanfeArtifact>;
   /**
    * Check SEFAZ availability (NfeStatusServico4) — `'normal'` asks the home
-   * SEFAZ, `'svc'` asks the UF's contingency environment. Decision support
-   * for the manual contingency toggle.
+   * SEFAZ, `'svc'` asks the UF's contingency environment. `filialId` names the
+   * filial whose A1 cert signs the mTLS handshake (the server doesn't require a
+   * shared env cert — it signs per-filial). Decision support for the manual
+   * contingency toggle.
    */
-  statusServico(target: 'normal' | 'svc'): Promise<NFeStatusServicoResult>;
+  statusServico(target: 'normal' | 'svc', filialId: string): Promise<NFeStatusServicoResult>;
+  /**
+   * Upload a filial's A1 certificate (.pfx/.p12, base64) + its password. The
+   * server validates the PFX, encrypts the private key at rest, and returns
+   * only the public metadata — the password + key never come back.
+   */
+  uploadCertificado(
+    filialId: string,
+    pfxBase64: string,
+    password: string,
+    filename: string,
+  ): Promise<NFeCertificadoMeta>;
+  /** Remove a filial's stored A1 certificate (secret doc + filial metadata). */
+  deleteCertificado(filialId: string): Promise<void>;
 }
 
 /** Pull the filename out of a `Content-Disposition` header, if present. */
@@ -223,6 +253,15 @@ function errorFromResponse(
       ? (body as { code: unknown }).code
       : undefined;
 
+  // A per-filial cert pre-flight failure (no stored cert / wrong key / expired)
+  // is resolved BEFORE any SEFAZ contact. The routes tag it `code: 'NFeCertError'`
+  // — surface it as a dedicated cert error carrying the route's pt-BR message,
+  // never as an `NFeRejectedError` ("SEFAZ rejected: …"), which the generic 422
+  // mapping below would otherwise produce.
+  if (bodyCode === 'NFeCertError') {
+    return new NFeCertificateError(message, status, body, 'NFeCertError');
+  }
+
   if (status === 400) return new NFeBadRequestError(message, body);
   if (status === 401 || status === 403) return new NFeAuthError(message, status, body);
   if (status === 404) {
@@ -246,6 +285,27 @@ function errorFromResponse(
 }
 
 /**
+ * Error mapping for the cert endpoints (`/api/nfe/certificado`). The upload
+ * **never contacts SEFAZ**, so its 422 is a cert-validation failure carrying a
+ * pt-BR `error` message — NOT an `NFeRejectedError` ("SEFAZ rejected: …"), which
+ * the generic 422 mapping would wrongly produce. Auth (401/403) still maps to
+ * `NFeAuthError`; everything else becomes an `NFeCertificateError` whose message
+ * is the route's pt-BR text, ready to show.
+ */
+function certErrorFromResponse(status: number, body: unknown): NFeHttpError {
+  const message =
+    body !== null && typeof body === 'object' && 'error' in body
+      ? String((body as { error: unknown }).error)
+      : `HTTP ${status}`;
+  if (status === 401 || status === 403) return new NFeAuthError(message, status, body);
+  const code =
+    body !== null && typeof body === 'object' && 'code' in body
+      ? String((body as { code: unknown }).code)
+      : undefined;
+  return new NFeCertificateError(message, status, body, code);
+}
+
+/**
  * Construct the HTTP client. The returned object is stateless modulo
  * the auth-token callback — safe to share across requests.
  */
@@ -254,9 +314,14 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
   const doFetch = config.fetch ?? globalThis.fetch;
 
   async function call<T>(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'DELETE',
     path: string,
-    init: { body?: unknown; context?: { pedidoId?: string } } = {},
+    init: {
+      body?: unknown;
+      context?: { pedidoId?: string };
+      /** Override the default status→error mapping (cert endpoints use this). */
+      mapError?: (status: number, body: unknown) => NFeHttpError;
+    } = {},
   ): Promise<T> {
     const token = await config.getAuthToken();
     const headers: Record<string, string> = {
@@ -297,7 +362,9 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
     }
 
     if (!res.ok) {
-      throw errorFromResponse(res.status, body, init.context ?? {});
+      const mapError =
+        init.mapError ?? ((s: number, b: unknown) => errorFromResponse(s, b, init.context ?? {}));
+      throw mapError(res.status, body);
     }
     return body as T;
   }
@@ -391,10 +458,22 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
         { pedidoId },
       );
     },
-    statusServico: (target) =>
+    statusServico: (target, filialId) =>
       call<NFeStatusServicoResult>(
         'GET',
-        `/api/nfe/status-servico?target=${encodeURIComponent(target)}`,
+        `/api/nfe/status-servico?target=${encodeURIComponent(target)}&filialId=${encodeURIComponent(filialId)}`,
       ),
+    uploadCertificado: (filialId, pfxBase64, password, filename) =>
+      call<NFeCertificadoMeta>('POST', '/api/nfe/certificado', {
+        body: { filialId, pfxBase64, password, filename },
+        mapError: certErrorFromResponse,
+      }),
+    deleteCertificado: async (filialId) => {
+      await call<{ ok: boolean }>(
+        'DELETE',
+        `/api/nfe/certificado?filialId=${encodeURIComponent(filialId)}`,
+        { mapError: certErrorFromResponse },
+      );
+    },
   };
 }

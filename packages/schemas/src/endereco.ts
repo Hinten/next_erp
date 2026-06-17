@@ -46,14 +46,17 @@ export type UF = z.infer<typeof ufSchema>;
  */
 export const enderecoSchema = z.object({
   idExterno: z.string().nullable().default(null).describe('ID Externo'),
-  logradouro: z.string().min(1).max(150).describe('Logradouro'),
-  numero: z.string().min(1).max(10).describe('Número'),
-  bairro: z.string().min(1).max(100).default('SEM BAIRRO').describe('Bairro'),
-  complemento: z.string().max(50).nullable().default(null).describe('Complemento'),
+  // CEP first: it's the entry point of the form (the "Buscar CEP" lookup
+  // autofills logradouro/bairro/cidade/estado), so it leads the visible
+  // fields. Field order here drives render order in every address form.
   cep: z
     .string()
     .regex(/^\d{8}$/, 'CEP deve ter 8 dígitos')
     .describe('CEP'),
+  logradouro: z.string().min(1).max(150).describe('Logradouro'),
+  numero: z.string().min(1).max(10).describe('Número'),
+  bairro: z.string().min(1).max(100).default('SEM BAIRRO').describe('Bairro'),
+  complemento: z.string().max(50).nullable().default(null).describe('Complemento'),
   codigoMunicipio: z
     .string()
     .max(8)

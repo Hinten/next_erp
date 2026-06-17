@@ -25,9 +25,11 @@ export { auditEntrySchema, type AuditEntry } from './audit';
 export {
   cliente,
   clienteSchema,
+  clienteFormSchema,
   clienteMeta,
   tipoClienteSchema,
   TIPO_CLIENTE_LABELS,
+  refineClienteTipoDocumento,
   type Cliente,
   type TipoCliente,
 } from './cliente';
@@ -41,7 +43,36 @@ export {
   type UF,
 } from './endereco';
 
-export { produto, produtoSchema, produtoMeta, type Produto } from './produto';
+export {
+  produto,
+  produtoSchema,
+  produtoMeta,
+  precoSchema,
+  type Produto,
+  type Preco,
+} from './produto';
+
+export {
+  historicoPreco,
+  historicoPrecoSchema,
+  historicoPrecoMeta,
+  historicoCusto,
+  historicoCustoSchema,
+  historicoCustoMeta,
+  type HistoricoPreco,
+  type HistoricoCusto,
+} from './historicos';
+
+export {
+  evaluateFormula,
+  taxaFixaPorPeso,
+  calcularPreco,
+  temFormulas,
+  samePrecos,
+  diffPrecos,
+  type PrecosMap,
+  type PrecoChange,
+} from './precoCalculo';
 
 export {
   produtoMercadoLivre,
@@ -294,6 +325,18 @@ export {
 } from './motivoIncidente';
 
 export { filial, filialSchema, filialMeta, type Filial } from './filial';
+
+export {
+  certificadoSecretoSchema,
+  certificadoSecretoMeta,
+  certificadoFilialInfoSchema,
+  encryptedBlobSchema,
+  CERTIFICADO_SECRETO_PATH,
+  CERTIFICADO_SECRETO_DOC_ID,
+  type CertificadoSecreto,
+  type CertificadoFilialInfo,
+  type EncryptedBlob,
+} from './certificadoFilial';
 
 export {
   bandeiraCartao,

@@ -103,16 +103,16 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await expect(page.getByRole('heading', { name: 'Nova filial' })).toBeVisible();
   });
 
-  test('shows the save-first NFe hint + certificado placeholder on the new-filial page', async ({
-    page,
-  }) => {
+  test('shows the save-first hints on the new-filial NFe + certificado tabs', async ({ page }) => {
     await page.goto('/configuracoes/filiais/novo');
-    // The NFe tab needs a saved filial (the panel reads its nfeconfig doc) —
-    // the create page shows the save-first hint instead.
+    // Both the NFe config and the certificado upload need a saved filial; the
+    // create page shows a save-first hint on each. They share the same alert
+    // TITLE ("Salve a filial primeiro"), so assert each tab's UNIQUE body text
+    // to avoid a strict-mode collision across the kept-mounted panels.
     await page.getByRole('tab', { name: 'Configurações NFe' }).click();
-    await expect(page.getByText(/salve a filial primeiro/i)).toBeVisible();
+    await expect(page.getByText(/a configuração de nf-e/i)).toBeVisible();
     await page.getByRole('tab', { name: 'Certificado Digital' }).click();
-    await expect(page.getByText(/certificado digital A1/i)).toBeVisible();
+    await expect(page.getByText(/o envio do certificado digital a1/i)).toBeVisible();
   });
 
   test('creates a new filial with a sede address', async ({ page }) => {
@@ -181,7 +181,7 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await expect(page.getByLabel('Nome Fantasia', { exact: true })).toHaveValue('editado-e2e');
   });
 
-  test('shows the NFe config panel and the certificado placeholder on the edit page', async ({
+  test('shows the NFe config panel and the certificado upload panel on the edit page', async ({
     page,
   }) => {
     await page.goto(`/configuracoes/filiais/${row(1)}`);
@@ -191,8 +191,11 @@ test.describe.serial('Filiais e2e — TableView / ObjectView', () => {
     await page.getByRole('tab', { name: 'Configurações NFe' }).click();
     await expect(page.getByText(/status dos serviços sefaz/i)).toBeVisible();
     await expect(page.getByText(/configuração nf-e não encontrada/i)).toBeVisible();
+    // The certificado tab now hosts the real upload panel: with no cert on the
+    // fixture filial it shows the "sem certificado" empty state + the upload form.
     await page.getByRole('tab', { name: 'Certificado Digital' }).click();
-    await expect(page.getByText(/certificado digital A1/i)).toBeVisible();
+    await expect(page.getByText(/sem certificado/i)).toBeVisible();
+    await expect(page.getByText(/formato \.pfx ou \.p12/i)).toBeVisible();
   });
 
   test('deletes a filial through the typed-confirm modal', async ({ page }) => {

@@ -33,13 +33,13 @@ import {
   NFeOrchestratorError,
   NFePedidoNotFoundError,
 } from '../../../lib/nfe/orchestrator';
-import type { NFeRuntime } from '../../../lib/nfe/runtime';
+import type { NFeBaseRuntime, NFeRuntime } from '../../../lib/nfe/runtime';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
 
-function fakeRuntime(): NFeRuntime {
-  return {
+function fakeRuntime(): NFeRuntime & NFeBaseRuntime {
+  const rt: NFeRuntime = {
     cert: {
       privateKeyPem: '',
       certificatePem: '',
@@ -82,6 +82,9 @@ function fakeRuntime(): NFeRuntime {
       chainSource: '/tmp/fake.pem',
     },
   };
+  // Base runtime for the entry points; the fallback path (no stored cert)
+  // resolves to this same fake via `envRuntime`.
+  return { ...rt, envRuntime: () => rt };
 }
 
 function impostoCsosn102(): Record<string, unknown> {
@@ -533,8 +536,15 @@ function rangeNfev4(
   };
 }
 
+beforeEach(() => {
+  // Fixtures have no per-filial stored cert — cancel/inutilizar with the env
+  // cert via the fallback (per-filial resolution covered in filial-cert.test.ts).
+  process.env.NFE_CERT_ENV_FALLBACK = '1';
+});
+
 afterEach(() => {
   vi.clearAllMocks();
+  delete process.env.NFE_CERT_ENV_FALLBACK;
 });
 
 describe('cancelarNFeService', () => {

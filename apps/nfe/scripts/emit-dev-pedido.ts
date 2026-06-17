@@ -9,26 +9,39 @@
  *   pnpm --filter @delfrance/nfe-app emit:dev-pedido PED-12345  # specific id
  *
  * Requires the same env the apps/nfe dev server needs: FIREBASE_*,
- * NFE_AMBIENTE, NFE_UF, NFE_CERT_PATH (+ NFE_CERT_PASSWORD), plus the
- * vendored SEFAZ TLS chain at
- * `packages/integrations/nfe/ca/sefaz-<uf>-<ambiente>.pem`.
+ * NFE_AMBIENTE, NFE_UF, plus the vendored SEFAZ TLS chain at
+ * `packages/integrations/nfe/ca/sefaz-<uf>-<ambiente>.pem`. The env A1 cert
+ * (`NFE_CERT_PATH` + `NFE_CERT_PASSWORD`) is OPTIONAL — emission signs with the
+ * target filial's own A1; the env cert is only the `NFE_CERT_ENV_FALLBACK` cert.
  */
+import { NFeCertError } from '@delfrance/integrations-nfe';
+
 import { getAdminFirestore } from '../lib/firebase/admin';
 import { emitirPedido } from '../lib/nfe/orchestrator';
-import { getNFeRuntime } from '../lib/nfe/runtime';
+import { getNFeRuntime, type NFeRuntime } from '../lib/nfe/runtime';
 
 async function main(): Promise<void> {
   const pedidoId = process.argv[2] ?? 'dev-pedidos-01';
   console.log(`[emit-dev-pedido] starting — pedidoId=${pedidoId}`);
 
   const fs = getAdminFirestore();
-  const runtime = getNFeRuntime();
+  const base = getNFeRuntime();
+  // The env cert is only the fallback — when none is configured (or it's
+  // expired/malformed) the per-filial cert is resolved at emission, so there is
+  // no transmitter CN to log here. A bad env cert must NOT abort the script.
+  let env: NFeRuntime | null = null;
+  try {
+    env = base.envRuntime();
+  } catch (e) {
+    if (!(e instanceof NFeCertError)) throw e;
+  }
   console.log(
-    `[emit-dev-pedido] runtime ready — ambiente=${runtime.ambiente} uf=${runtime.uf} ` +
-      `cert=${runtime.diagnostics.subjectCommonName} chain=${runtime.diagnostics.chainSource}`,
+    `[emit-dev-pedido] runtime ready — ambiente=${base.ambiente} uf=${base.uf} ` +
+      `cert=${env?.diagnostics.subjectCommonName ?? '(per-filial)'} ` +
+      `chain=${env?.diagnostics.chainSource ?? '(per-filial)'}`,
   );
 
-  const result = await emitirPedido(fs, runtime, pedidoId);
+  const result = await emitirPedido(fs, base, pedidoId);
   console.log('[emit-dev-pedido] result:', JSON.stringify(result, null, 2));
 
   if (result.cStat === '100') {
