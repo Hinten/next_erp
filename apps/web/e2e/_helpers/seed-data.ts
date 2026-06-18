@@ -145,6 +145,19 @@ export async function seedDepositos(prefix: string, n: number): Promise<void> {
 }
 
 /**
+ * Seed exactly one ACTIVE deposito (`<prefix>-dep`, `ativo: true`) and return
+ * its id + nome. `timestamp` is stamped `Date.now()` so it is the most recent
+ * deposito — the Estoque tab's name-ordered list (and the prefix sweep) still
+ * pick it up regardless of how many strays the shared collection holds.
+ */
+export async function seedDepositoAtivo(prefix: string): Promise<{ id: string; nome: string }> {
+  const id = `${prefix}-dep`;
+  const nome = `${prefix}-dep`;
+  await db().collection('depositos').doc(id).set({ nome, ativo: true, timestamp: Date.now() });
+  return { id, nome };
+}
+
+/**
  * Seed `n` motivoIncidente docs. `ativo` alternates for the boolean filter.
  */
 export async function seedMotivosIncidente(prefix: string, n: number): Promise<void> {
@@ -1095,6 +1108,24 @@ export async function getProdutoExtraData(
     .doc(produtoId)
     .collection('extraData')
     .doc('singleton')
+    .get();
+  return (snap.data() as Record<string, unknown> | undefined) ?? null;
+}
+
+/**
+ * The per-depósito estoque doc `produtos/<id>/estoques/est-<produtoId>-<depositoId>`
+ * (`makeEstoqueUid`), or null. The Estoque tab persists it atomically with the
+ * produto doc.
+ */
+export async function getProdutoEstoque(
+  produtoId: string,
+  depositoId: string,
+): Promise<Record<string, unknown> | null> {
+  const snap = await db()
+    .collection('produtos')
+    .doc(produtoId)
+    .collection('estoques')
+    .doc(`est-${produtoId}-${depositoId}`)
     .get();
   return (snap.data() as Record<string, unknown> | undefined) ?? null;
 }

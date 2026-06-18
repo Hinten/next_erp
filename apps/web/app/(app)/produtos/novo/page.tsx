@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Button, Stack } from '@mantine/core';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import {
+  type EstoqueProduto,
   type Foto,
   type PrecosMap,
   type ProdutoExtraData,
@@ -23,6 +24,7 @@ import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client'
 import { useAuth } from '@/lib/auth';
 import { PhotoManager } from '../_components/PhotoManager';
 import { CustoField } from '../_components/CustoField';
+import { EstoqueManager } from '../_components/EstoqueManager';
 import { ExtraDataManager } from '../_components/ExtraDataManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../_components/PrecoCustoManager';
 import { VideoManager } from '../_components/VideoManager';
@@ -150,6 +152,19 @@ export default function NovoProdutoPage() {
           />
         ),
       },
+      estoques: {
+        label: 'Estoque',
+        section: 'Estoque',
+        renderInput: (p) => (
+          <EstoqueManager
+            produtoId={null}
+            db={db}
+            value={(p.value as EstoqueProduto[] | null) ?? null}
+            onChange={p.onChange}
+            disabled={p.disabled}
+          />
+        ),
+      },
     }),
     [db, storage, listas, listasSnap.error?.message],
   );
@@ -181,6 +196,7 @@ export default function NovoProdutoPage() {
           produtoPageIssues({
             ehKit: values.ehKit as boolean | null,
             componentesKit: values.componentesKit as Record<string, { quantidade: number }> | null,
+            estoques: (values.estoques as EstoqueProduto[] | null) ?? null,
           })
         }
         onAfterSave={async (id, values) => {

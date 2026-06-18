@@ -6,19 +6,21 @@ import {
 } from 'firebase/firestore';
 import { buildQuery, limit, whereArrayContains, whereEqual } from '@delfrance/data';
 import {
+  buildEstoqueWriteOps,
   buildExtraDataWriteOps,
   type ProdutoDataPort,
   type ProdutoSnapshot,
   type ProdutoWriteOp,
 } from '@delfrance/data/produto';
 import type { TransactionWrite } from '@delfrance/ui';
-import type { ProdutoExtraData } from '@delfrance/schemas';
+import type { EstoqueProduto, ProdutoExtraData } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import {
   historicoCustoCollection,
   historicoPrecoCollection,
 } from '@/lib/data/historicoCollections';
 import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
+import { estoqueProdutoCollection } from '@/lib/data/estoqueProdutoCollection';
 import { PRODUTO_MARKETPLACE_SUBCOLLECTIONS } from '@/lib/data/produtoMarketplaceSubcollections';
 import { newDocId } from './docId';
 
@@ -52,17 +54,20 @@ function refForPath(db: Firestore, path: string): DocumentReference {
     if (sub === 'extraData') {
       return produtoExtraDataCollection.docRef(db, { produtoId }, id) as DocumentReference;
     }
+    if (sub === 'estoques') {
+      return estoqueProdutoCollection.docRef(db, { produtoId }, id) as DocumentReference;
+    }
   }
   throw new Error(`clientProdutoPort: unmapped write path "${path}"`);
 }
 
 /**
  * The produto's transient subdocuments to write ATOMICALLY with the produto doc
- * (ObjectView `transactionWrites`): currently the `extraData` singleton. Reuses
- * the framework-agnostic `buildExtraDataWriteOps` use-case for the wire shape and
- * maps each domain path to a converter-bound ref so it rides `saveRecord`'s
- * transaction — one commit, all-or-nothing (no orphan produto on a flaky link).
- * (Estoque/imposto append their own writes here when their tabs land.)
+ * (ObjectView `transactionWrites`): the `extraData` singleton and the per-depósito
+ * `estoques` docs. Reuses the framework-agnostic `build*WriteOps` use-cases for
+ * the wire shapes and maps each domain path to a converter-bound ref so they ride
+ * `saveRecord`'s transaction — one commit, all-or-nothing (no orphan produto on a
+ * flaky link). (Imposto appends its own writes here when its tab lands.)
  */
 export function buildProdutoTransactionWrites(
   db: Firestore,
@@ -70,17 +75,25 @@ export function buildProdutoTransactionWrites(
   values: Record<string, unknown>,
 ): TransactionWrite[] {
   const writes: TransactionWrite[] = [];
+  const pushOp = (op: ProdutoWriteOp) => {
+    if (op.type === 'delete') return;
+    writes.push({
+      type: op.type,
+      ref: refForPath(db, op.path) as DocumentReference<unknown>,
+      data: op.data,
+    });
+  };
+
   const extra = (values.extraData as ProdutoExtraData | null) ?? null;
   if (extra) {
-    for (const op of buildExtraDataWriteOps(produtoId, extra)) {
-      if (op.type === 'delete') continue;
-      writes.push({
-        type: op.type,
-        ref: refForPath(db, op.path) as DocumentReference<unknown>,
-        data: op.data,
-      });
-    }
+    for (const op of buildExtraDataWriteOps(produtoId, extra)) pushOp(op);
   }
+
+  const estoques = (values.estoques as EstoqueProduto[] | null) ?? null;
+  if (estoques && estoques.length > 0) {
+    for (const op of buildEstoqueWriteOps(produtoId, estoques, Date.now())) pushOp(op);
+  }
+
   return writes;
 }
 

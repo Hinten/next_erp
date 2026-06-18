@@ -8,6 +8,7 @@ import { notifications } from '@mantine/notifications';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import {
+  type EstoqueProduto,
   type Foto,
   type PrecosMap,
   type ProdutoExtraData,
@@ -34,6 +35,7 @@ import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client'
 import { useAuth, usePermission } from '@/lib/auth';
 import { PhotoManager } from '../../_components/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
+import { EstoqueManager } from '../../_components/EstoqueManager';
 import { ExtraDataManager } from '../../_components/ExtraDataManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
@@ -205,6 +207,19 @@ export default function EditarProdutoPage() {
           />
         ),
       },
+      estoques: {
+        label: 'Estoque',
+        section: 'Estoque',
+        renderInput: (p) => (
+          <EstoqueManager
+            produtoId={params.id}
+            db={db}
+            value={(p.value as EstoqueProduto[] | null) ?? null}
+            onChange={p.onChange}
+            disabled={p.disabled}
+          />
+        ),
+      },
     }),
     [params.id, db, storage, grupos, gruposSnap.error?.message, listas, listasSnap.error?.message],
   );
@@ -278,12 +293,13 @@ export default function EditarProdutoPage() {
         }}
         validate={(values) =>
           // Cross-document rules, concentrated in the page model
-          // (`produtoPageIssues`). Today this sees the produto doc fields; the
-          // Estoque/Imposto tabs will add their subdocuments to the aggregate.
+          // (`produtoPageIssues`): produto doc fields + the Estoque subdocuments
+          // (reservada ≤ quantidade). The Imposto tab will add its own.
           produtoPageIssues({
             id: params.id,
             ehKit: values.ehKit as boolean | null,
             componentesKit: values.componentesKit as Record<string, { quantidade: number }> | null,
+            estoques: (values.estoques as EstoqueProduto[] | null) ?? null,
           })
         }
         onAfterSave={async (id, values) => {

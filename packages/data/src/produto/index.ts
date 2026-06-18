@@ -7,6 +7,8 @@ export {
   recordCustoHistory,
   buildExtraDataWriteOps,
   saveProdutoExtraData,
+  buildEstoqueWriteOps,
+  saveProdutoEstoques,
   propagatePrecosToChildren,
   applyPrecosChange,
   findProdutoReferences,

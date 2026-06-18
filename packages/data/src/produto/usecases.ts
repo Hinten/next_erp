@@ -1,13 +1,17 @@
 import {
   diffPrecos,
+  estoqueProdutoMeta,
+  estoqueProdutoSchema,
   historicoCustoMeta,
   historicoPrecoMeta,
+  makeEstoqueUid,
   produtoExtraDataMeta,
   produtoExtraDataSchema,
   produtoMeta,
   samePrecos,
   PRODUTO_EXTRA_DATA_DOC_ID,
   PRODUTO_SUBCOLLECTION_NAMES,
+  type EstoqueProduto,
   type PrecoChange,
   type PrecosMap,
   type ProdutoExtraData,
@@ -22,6 +26,12 @@ const PRODUTOS = produtoMeta.collectionPath; // produtos
 const HISTORICO_PRECO = historicoPrecoMeta.collectionPath; // produtos/{produtoId}/historicoDePrecos
 const HISTORICO_CUSTO = historicoCustoMeta.collectionPath; // produtos/{produtoId}/historicoDeCusto
 const EXTRA_DATA = produtoExtraDataMeta.collectionPath; // produtos/{produtoId}/extraData
+const ESTOQUE = estoqueProdutoMeta.collectionPath; // produtos/{produtoId}/estoques
+
+/** Deposito doc id from a `documents/depositos/<id>` (or bare `depositos/<id>`) ref. */
+function depositoIdFromRef(ref: string): string {
+  return ref.split('/').filter(Boolean).pop() ?? '';
+}
 
 const produtoDocPath = (id: string) => `${PRODUTOS}/${id}`;
 const subDocPath = (template: string, produtoId: string, docId: string) =>
@@ -118,6 +128,72 @@ export async function saveProdutoExtraData(
   extraData: ProdutoExtraData,
 ): Promise<void> {
   await port.commit(buildExtraDataWriteOps(produtoId, extraData));
+}
+
+// ---------------------------------------------------------------------------
+// Produto estoque (per-depósito stock — the `estoques` subcollection)
+// ---------------------------------------------------------------------------
+
+/**
+ * True when an estoque entry carries information worth persisting — a
+ * localização, a quantity, a reservation, or an existing creation date. A
+ * pristine empty row (a depósito the user merely glanced at and never touched)
+ * is skipped so the save never creates a stray zero doc.
+ */
+function estoqueCarriesInfo(e: EstoqueProduto): boolean {
+  return (
+    (e.localizacao != null && e.localizacao.trim() !== '') ||
+    e.quantidade !== 0 ||
+    e.quantidadeReservada !== 0 ||
+    e.dataCriacao != null
+  );
+}
+
+/**
+ * Build one `set` op per informative estoque entry, each at the deterministic
+ * id `est-<produtoId>-<depositoId>` (`makeEstoqueUid`, Flutter parity) so the
+ * produto and the legacy app coexist on the same doc. The screen only edits
+ * `localizacao`: `quantidade` / `quantidadeReservada` are movement-owned and
+ * merely round-tripped from what the manager loaded (preserved on write).
+ * `parentId` is forced to the produto, `dataCriacao` is stamped once and
+ * `ultimaModificacao` on every write. The value is parsed through
+ * `estoqueProdutoSchema` so the wire shape is enforced here in the use-case
+ * (the agent/admin path has no Zod converter to lean on).
+ *
+ * NOTE: existing docs are rewritten with a full `set`, preserving the loaded
+ * quantities. That is safe today (there is no movement system yet); once
+ * movements own `quantidade`/`quantidadeReservada`, existing rows should switch
+ * to a `localizacao`-only `update` to avoid clobbering a concurrent movement.
+ */
+export function buildEstoqueWriteOps(
+  produtoId: string,
+  estoques: EstoqueProduto[],
+  now: number,
+): ProdutoWriteOp[] {
+  return estoques.filter(estoqueCarriesInfo).map((estoque) => {
+    const depositoId = depositoIdFromRef(estoque.depositoOuterRef);
+    return {
+      type: 'set',
+      path: subDocPath(ESTOQUE, produtoId, makeEstoqueUid(produtoId, depositoId)),
+      data: estoqueProdutoSchema.parse({
+        ...estoque,
+        parentId: produtoId,
+        dataCriacao: estoque.dataCriacao ?? now,
+        ultimaModificacao: now,
+      }) as Record<string, unknown>,
+    };
+  });
+}
+
+/** Persist the produto's per-depósito estoque docs (no-op when none carry info). */
+export async function saveProdutoEstoques(
+  port: ProdutoDataPort,
+  produtoId: string,
+  estoques: EstoqueProduto[],
+): Promise<void> {
+  const ops = buildEstoqueWriteOps(produtoId, estoques, port.now());
+  if (ops.length === 0) return;
+  await port.commit(ops);
 }
 
 // ---------------------------------------------------------------------------
