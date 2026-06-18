@@ -26,6 +26,8 @@ import {
 } from '@delfrance/data/pedido';
 import type { Pedido } from '@delfrance/schemas';
 import { PedidoForm } from '../../_components/PedidoForm';
+import { PedidoConflictModal } from '../../_components/PedidoConflictModal';
+import { conflictFields } from '../../_components/conflictFields';
 import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { StatusBadge } from '../../_components/StatusBadge';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
@@ -49,6 +51,14 @@ export default function EditarPedidoPage() {
   const [emitting, setEmitting] = useState(false);
   const nfeClient = useNFeClient();
 
+  // The conflict the optimistic-concurrency guard tripped on. Holds the pending
+  // patch + the remote doc so the modal can show the diff and re-save with force.
+  const [conflict, setConflict] = useState<{
+    patch: Record<string, unknown>;
+    current: Record<string, unknown>;
+  } | null>(null);
+  const [savingConflict, setSavingConflict] = useState(false);
+
   async function handleSubmit(values: Pedido, dirtyFields: Readonly<Record<string, unknown>>) {
     // Partial save: write only the touched fields (never the whole doc), guarded
     // against concurrent edits. The form never mutates `ultimaModificacao` (no
@@ -68,10 +78,42 @@ export default function EditarPedidoPage() {
         return;
       }
       if (err instanceof PedidoConflictError) {
-        showErrorNotification({ title: 'Pedido alterado', message: err.message });
+        // Doc edited by someone else → let the user review + decide (modal). Doc
+        // deleted (`current` null) → nothing to overwrite, just a toast.
+        if (err.current) {
+          setConflict({ patch, current: err.current });
+        } else {
+          showErrorNotification({ title: 'Pedido alterado', message: err.message });
+        }
         return;
       }
       throw err;
+    }
+  }
+
+  // "Salvar mesmo assim": re-run the same patch bypassing the guard.
+  async function handleForceSave() {
+    if (!conflict) return;
+    setSavingConflict(true);
+    try {
+      await savePedido(createClientPedidoPort(getFirebaseFirestore()), {
+        pedidoId: params.id,
+        patch: conflict.patch,
+        baseUltimaModificacao: null, // ignored under force
+        force: true,
+      });
+      setConflict(null);
+      router.replace('/pedidos');
+    } catch (err) {
+      // The only conflict left under force is a deleted doc (current null).
+      if (err instanceof PedidoConflictError) {
+        showErrorNotification({ title: 'Pedido alterado', message: err.message });
+        setConflict(null);
+        return;
+      }
+      throw err;
+    } finally {
+      setSavingConflict(false);
     }
   }
 
@@ -163,6 +205,14 @@ export default function EditarPedidoPage() {
           </Group>
         </Stack>
       </Modal>
+
+      <PedidoConflictModal
+        opened={!!conflict}
+        fields={conflict ? conflictFields(conflict.patch, conflict.current) : []}
+        saving={savingConflict}
+        onForceSave={handleForceSave}
+        onCancel={() => setConflict(null)}
+      />
 
       <PedidoForm
         defaultValues={p}
