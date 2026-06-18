@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { pedidoSchema, estadoPedidoSchema, type EstadoPedido } from '../collection/pedido';
+import { pedidoSchema, type EstadoPedido } from '../collection/pedido';
 import { pagamentoSchema, STATUS_PAGAMENTO } from '../collection/pagamento';
 import { incidenteSchema } from '../collection/incidente';
 import { historicoEstadoPedidoSchema } from '../collection/historicoEstadoPedido';
@@ -28,8 +28,6 @@ export const pedidoPageBaseSchema = pedidoSchema
     // Transient validation context — never written to the pedido doc.
     /** The pedido doc id (null on create). */
     id: z.string().nullable().default(null),
-    /** `estado` as loaded, to detect transitions / immutability. */
-    oldEstado: estadoPedidoSchema.nullable().default(null),
     /** `ehSaida` as loaded — the direction flag cannot flip on an existing order. */
     ehSaidaOriginal: z.boolean().nullable().default(null),
 

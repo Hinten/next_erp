@@ -88,7 +88,6 @@ describe('pedidoPageBaseSchema', () => {
     // form always defaults it to null); only its value is opaque.
     const out = pedidoPageBaseSchema.parse({ estado: 'iniciado', integracaoPedidoOuterRef: null });
     expect(out.id).toBeNull();
-    expect(out.oldEstado).toBeNull();
     expect(out.ehSaidaOriginal).toBeNull();
     expect(out.pagamentos).toBeNull();
     expect(out.incidentes).toBeNull();
