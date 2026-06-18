@@ -98,8 +98,8 @@ lands in `apps/web/playwright-report/`.
 ### Suites & lifecycle
 
 Locally, a plain `playwright test` runs all four projects; CI splits them across
-two workflows (`e2e-cadastros.yml`, `e2e-vendas.yml`) that run concurrently,
-each gated on `ci.yml` passing first and serving a production build:
+two workflows (`e2e-cadastros.yml`, `e2e-vendas.yml`) that run concurrently with
+`ci.yml` (not gated on it), each serving a production build:
 
 - **`smoke`** — unauthenticated specs (`*.smoke.spec.ts`): login page,
   auth-guard redirects. _(e2e-cadastros)_

@@ -295,9 +295,9 @@ Create `apps/web/e2e/<x>.<dominio>.e2e.spec.ts`, where `<dominio>` is
 
 e2e is **two** domain workflows — `.github/workflows/e2e-cadastros.yml` and
 `e2e-vendas.yml` — sharing the `e2e-reusable.yml` engine. Both trigger on
-`pull_request` and wait for `ci.yml`'s `lint-typecheck-test` check to pass
-before the e2e job runs, then serve a **production build** (`next build` +
-`next start`). The **filename suffix decides the CI**: name the spec
+`pull_request` and run concurrently with `ci.yml` (not gated on it), serving a
+**production build** (`next build` + `next start`). The **filename suffix
+decides the CI**: name the spec
 `<x>.cadastros.e2e.spec.ts` (master data — clientes, enderecos, categorias,
 depositos, filiais) or `<x>.vendas.e2e.spec.ts` (sales/fiscal/config —
 pedidos, pedidos-nfe-snapshot, canais-balcao, bandeiras-cartao,
