@@ -71,6 +71,17 @@ jobs:
   e2e:
     needs: await-offline
     runs-on: ubuntu-latest
+    # Run inside Playwright's official image: Chromium and all of its system
+    # deps are pre-baked, so there's no per-run `playwright install-deps` (apt)
+    # cost — the previous bottleneck. Pin the tag to the @playwright/test version
+    # in pnpm-lock.yaml; `-noble` is Ubuntu 24.04, matching ubuntu-latest.
+    container:
+      image: mcr.microsoft.com/playwright:v1.60.0-noble
+      # Chromium in a container gets Docker's tiny default /dev/shm (64 MB),
+      # which can crash tabs mid-run. Share the host IPC namespace so it uses
+      # the runner's full shared memory — Playwright's recommended container
+      # setting for CI stability.
+      options: --ipc=host
     timeout-minutes: 30
     permissions:
       contents: read
@@ -117,24 +128,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Cache the chromium binary keyed on the lockfile (which pins the exact
-      # @playwright/test version), so the key invalidates on a Playwright bump.
-      - name: Cache Playwright browsers
-        id: playwright-cache
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: |
-            playwright-${{ runner.os }}-
-
-      - name: Install Playwright browsers (cache miss)
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: pnpm --filter @delfrance/web exec playwright install --with-deps chromium
-
-      - name: Install Playwright system deps (cache hit)
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: pnpm --filter @delfrance/web exec playwright install-deps chromium
+      # Browsers + their system deps are baked into the Playwright image, pinned
+      # to the @playwright/test version. This is a no-op when the image tag
+      # matches the lockfile; it only re-fetches the browser if a Playwright bump
+      # outruns the tag. When upgrading @playwright/test, bump the
+      # `container.image` tag above to match.
+      - name: Ensure Chromium matches the lockfile
+        run: pnpm --filter @delfrance/web exec playwright install chromium
 
       - name: Build web (production)
         # NEXT_PUBLIC_* + E2E_SOURCEMAPS are inlined here. Call next directly to

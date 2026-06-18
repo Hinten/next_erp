@@ -30,7 +30,7 @@ export { NullClearButton, type NullClearButtonProps } from './object/NullClearBu
 export { epochToPickerString, pickerStringToEpoch, type EpochUnit } from './object/datetimeField';
 export { RecordPager, type RecordPagerProps } from './object/RecordPager';
 export { SectionTabs, type SectionTabsProps } from './object/SectionTabs';
-export { isEmpty, pickDirty } from './object/diff';
+export { isEmpty, pickDirty, valuesEqual } from './object/diff';
 export { DELETE_MARK, stripMarkedForDeletion } from './object/markForDeletion';
 export {
   NothingChangedError,
