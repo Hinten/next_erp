@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -26,6 +26,8 @@ import {
 } from '@delfrance/data/pedido';
 import type { Pedido } from '@delfrance/schemas';
 import { PedidoForm } from '../../_components/PedidoForm';
+import { PedidoConflictModal } from '../../_components/PedidoConflictModal';
+import { conflictFields } from '../../_components/conflictFields';
 import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { StatusBadge } from '../../_components/StatusBadge';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
@@ -45,21 +47,41 @@ export default function EditarPedidoPage() {
 
   const { data, loading, error } = useDocSnapshot(docRef);
 
+  // The pedido as first loaded — the concurrency baseline savePedido compares the
+  // live Firestore doc against. Captured ONCE in an effect (useDocSnapshot is
+  // real-time; reading it live at save time would defeat the guard). Refs are
+  // touched in effects/handlers, never during render.
+  const baselineRef = useRef<Record<string, unknown> | null>(null);
+  useEffect(() => {
+    if (baselineRef.current === null && data?.data) {
+      baselineRef.current = data.data as Record<string, unknown>;
+    }
+  }, [data]);
+
   const [emitConfirmOpen, setEmitConfirmOpen] = useState(false);
   const [emitting, setEmitting] = useState(false);
   const nfeClient = useNFeClient();
 
+  // The conflict the snapshot guard tripped on. Holds the pending patch, the
+  // baseline the user reviewed, and the remote doc so the modal can show the diff
+  // and re-save against the reviewed version.
+  const [conflict, setConflict] = useState<{
+    patch: Record<string, unknown>;
+    baseline: Record<string, unknown>;
+    current: Record<string, unknown>;
+  } | null>(null);
+  const [savingConflict, setSavingConflict] = useState(false);
+
   async function handleSubmit(values: Pedido, dirtyFields: Readonly<Record<string, unknown>>) {
-    // Partial save: write only the touched fields (never the whole doc), guarded
-    // against concurrent edits. The form never mutates `ultimaModificacao` (no
-    // input binds to it), so `values.ultimaModificacao` is still the value the
-    // doc was loaded with — the optimistic-concurrency base.
+    // Partial save: write only the touched fields, guarded against concurrent
+    // edits by comparing the live doc to the snapshot loaded into the editor.
+    const baseline = baselineRef.current ?? (values as unknown as Record<string, unknown>);
     const patch = buildPedidoPatch(values, dirtyFields);
     try {
       await savePedido(createClientPedidoPort(getFirebaseFirestore()), {
         pedidoId: params.id,
         patch,
-        baseUltimaModificacao: values.ultimaModificacao ?? null,
+        baseline,
       });
       router.replace('/pedidos');
     } catch (err) {
@@ -68,10 +90,48 @@ export default function EditarPedidoPage() {
         return;
       }
       if (err instanceof PedidoConflictError) {
-        showErrorNotification({ title: 'Pedido alterado', message: err.message });
+        // Doc changed remotely → let the user review + decide (modal). Doc deleted
+        // (`current` null) → nothing to overwrite, just a toast.
+        if (err.current) {
+          setConflict({ patch, baseline, current: err.current });
+        } else {
+          showErrorNotification({ title: 'Pedido alterado', message: err.message });
+        }
         return;
       }
       throw err;
+    }
+  }
+
+  // "Salvar mesmo assim": override the version the user JUST reviewed — re-save
+  // with the baseline set to that remote snapshot, NOT a blind force. If the doc
+  // changed AGAIN since the modal opened, the guard re-trips and we re-open the
+  // modal with the newer diff, so an unreviewed edit is never clobbered.
+  async function handleForceSave() {
+    if (!conflict) return;
+    setSavingConflict(true);
+    try {
+      await savePedido(createClientPedidoPort(getFirebaseFirestore()), {
+        pedidoId: params.id,
+        patch: conflict.patch,
+        baseline: conflict.current,
+      });
+      setConflict(null);
+      router.replace('/pedidos');
+    } catch (err) {
+      if (err instanceof PedidoConflictError) {
+        if (err.current) {
+          // Changed again since the modal opened — re-review the newer version.
+          setConflict({ patch: conflict.patch, baseline: conflict.current, current: err.current });
+        } else {
+          showErrorNotification({ title: 'Pedido alterado', message: err.message });
+          setConflict(null);
+        }
+        return;
+      }
+      throw err;
+    } finally {
+      setSavingConflict(false);
     }
   }
 
@@ -163,6 +223,14 @@ export default function EditarPedidoPage() {
           </Group>
         </Stack>
       </Modal>
+
+      <PedidoConflictModal
+        opened={!!conflict}
+        fields={conflict ? conflictFields(conflict.baseline, conflict.current, conflict.patch) : []}
+        saving={savingConflict}
+        onForceSave={handleForceSave}
+        onCancel={() => setConflict(null)}
+      />
 
       <PedidoForm
         defaultValues={p}
