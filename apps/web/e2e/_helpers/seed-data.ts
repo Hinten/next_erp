@@ -1074,6 +1074,12 @@ export async function getProdutoIdBySku(sku: string): Promise<string | null> {
   return snap.docs[0]?.id ?? null;
 }
 
+/** Doc id of the first produto whose `nome` equals `nome`, or null. */
+export async function getProdutoIdByNome(nome: string): Promise<string | null> {
+  const snap = await db().collection('produtos').where('nome', '==', nome).limit(1).get();
+  return snap.docs[0]?.id ?? null;
+}
+
 /** Full data of a produto doc, or null when missing. */
 export async function getProdutoData(produtoId: string): Promise<Record<string, unknown> | null> {
   const snap = await db().collection('produtos').doc(produtoId).get();
