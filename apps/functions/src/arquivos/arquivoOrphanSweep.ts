@@ -21,7 +21,12 @@ const BATCH_LIMIT = 100;
  * emulator suite can drop it to 0. 48h by default.
  */
 function orphanGraceMs(): number {
-  return Number(process.env.ARQUIVO_ORPHAN_GRACE_HOURS ?? '48') * 3_600_000;
+  const raw = Number(process.env.ARQUIVO_ORPHAN_GRACE_HOURS ?? '48');
+  // Guard a non-numeric / negative env value: a NaN cutoff makes every grace
+  // check false → everything treated as past the window → in-flight uploads
+  // could be deleted. Fall back to the safe 48h default.
+  const hours = Number.isFinite(raw) && raw >= 0 ? raw : 48;
+  return hours * 3_600_000;
 }
 
 /**
@@ -55,7 +60,11 @@ export async function sweepPhantomDocs(db: Firestore, bucket: Bucket): Promise<n
       const filepath = data.filepath as string | null | undefined;
       const filename = data.filename as string | undefined;
       if (!filename) {
+        // A 'pending' doc with no filename can't be resolved to an object — it
+        // can't happen via create-first (filename is schema-required), so warn
+        // rather than skip silently (mirrors reconcileProductImages).
         kept += 1;
+        logger.warn(`sweepPhantomDocs: ${doc.id} is 'pending' with no filename — skipping`);
         continue;
       }
       const objectName = filepath ? `${filepath}/${filename}` : filename;
@@ -90,8 +99,16 @@ export async function sweepOrphanObjects(db: Firestore, bucket: Bucket): Promise
   let kept = 0;
   let failed = 0;
   for (const prefix of [`${STORAGE_ROOT.produtos}/`, `${STORAGE_ROOT.media}/`]) {
-    const [files] = await bucket.getFiles({ prefix, maxResults: BATCH_LIMIT });
+    // Scan the FULL listing (getFiles auto-paginates): listing order is
+    // lexicographic, not by age, so a single bounded page would let orphans that
+    // sort later never be examined (permanent starvation, since kept objects
+    // don't shrink the set). DELETES are still capped at BATCH_LIMIT/run, so a
+    // large orphan backlog drains over runs; deletes are terminal, so nothing is
+    // re-examined indefinitely. (Holds one prefix's listing in memory — fine for
+    // a per-tenant catalog on a 48h backstop.)
+    const [files] = await bucket.getFiles({ prefix });
     for (const file of files) {
+      if (deleted >= BATCH_LIMIT) break;
       try {
         const created = file.metadata.timeCreated
           ? Date.parse(String(file.metadata.timeCreated))
