@@ -1080,6 +1080,19 @@ export async function getProdutoData(produtoId: string): Promise<Record<string, 
   return (snap.data() as Record<string, unknown> | undefined) ?? null;
 }
 
+/** The `produtos/<id>/extraData/singleton` doc (Descrição + Google Merchant), or null. */
+export async function getProdutoExtraData(
+  produtoId: string,
+): Promise<Record<string, unknown> | null> {
+  const snap = await db()
+    .collection('produtos')
+    .doc(produtoId)
+    .collection('extraData')
+    .doc('singleton')
+    .get();
+  return (snap.data() as Record<string, unknown> | undefined) ?? null;
+}
+
 /**
  * Seed two prefix-scoped `listaDePrecos` docs for the Preço/Custo suite:
  * "varejo" carries one deterministic formula (`C*L+T`, L=2 T=5, no weight

@@ -18,6 +18,7 @@ import { skuRenderInput } from './SkuField';
 /** Tab order for the Produto ObjectView — Variações before the media tabs. */
 export const PRODUTO_SECTIONS: string[] = [
   'Dados gerais',
+  'Descrição',
   'Dimensões e peso',
   'Configurações',
   'Preço e custo',
@@ -69,7 +70,21 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
   },
   // `precos` gets its renderInput (PrecoCustoManager) on each page — it
   // needs the page's listas snapshot and produtoId.
+
+  // `extraData` is the aggregate page model's Descrição + Google Merchant block
+  // (a TRANSIENT field — see `PRODUTO_TRANSIENT_FIELDS`). Its renderInput
+  // (ExtraDataManager) is wired per page since it needs `produtoId`/`db`.
+  extraData: { label: 'Descrição', section: 'Descrição' },
 };
+
+/**
+ * Aggregate page-model fields that are validated + rendered but live in their
+ * own documents, NOT on the produto doc — passed to `ObjectView.transientFields`
+ * so they are stripped from the produto write and persisted in `onAfterSave`.
+ * `id` is the produto id, present only for the cross-document self-reference
+ * check; `estoques`/`impostos` land with their own tabs (excluded for now).
+ */
+export const PRODUTO_TRANSIENT_FIELDS: string[] = ['id', 'extraData', 'estoques', 'impostos'];
 
 /**
  * Fields hidden from the Produto ObjectView for now. Kit components and
@@ -92,6 +107,12 @@ export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   'fotosArquivosIds',
   'paiId',
   'ordem',
+  // Aggregate page-model fields with no UI of their own yet: `id` is only a
+  // validation context; `estoques`/`impostos` get dedicated tabs in later
+  // slices. (`extraData` renders in the Descrição tab.)
+  'id',
+  'estoques',
+  'impostos',
 ];
 
 /**

@@ -11,6 +11,7 @@ import {
   historicoCustoCollection,
   historicoPrecoCollection,
 } from '@/lib/data/historicoCollections';
+import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
 import { PRODUTO_MARKETPLACE_SUBCOLLECTIONS } from '@/lib/data/produtoMarketplaceSubcollections';
 import { newDocId } from './docId';
 
@@ -40,6 +41,9 @@ function refForPath(db: Firestore, path: string): DocumentReference {
     }
     if (sub === 'historicoDeCusto') {
       return historicoCustoCollection.docRef(db, { produtoId }, id) as DocumentReference;
+    }
+    if (sub === 'extraData') {
+      return produtoExtraDataCollection.docRef(db, { produtoId }, id) as DocumentReference;
     }
   }
   throw new Error(`clientProdutoPort: unmapped write path "${path}"`);

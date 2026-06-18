@@ -527,6 +527,106 @@ describe('ObjectView save flow', () => {
   });
 });
 
+describe('transientFields (aggregate page-model extras kept out of the doc write)', () => {
+  const transientSchema = z.object({
+    nome: z.string().nullable().optional().describe('Nome'),
+    anotacao: z.string().nullable().optional().describe('Anotação'),
+  });
+
+  it('strips transient fields from the document write but delivers them to onAfterSave', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice' } },
+      loading: false,
+      error: undefined,
+    };
+    saveRecordMock.mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
+    const onAfterSave = vi.fn().mockResolvedValueOnce(undefined);
+    render(
+      <Wrap>
+        <ObjectView
+          schema={transientSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          transientFields={['anotacao']}
+          onAfterSave={onAfterSave}
+        />
+      </Wrap>,
+    );
+    const nome = screen.getByRole('textbox', { name: 'Nome' }) as HTMLInputElement;
+    const anotacao = screen.getByRole('textbox', { name: 'Anotação' }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(nome, { target: { value: 'Updated' } });
+      fireEvent.blur(nome);
+      fireEvent.change(anotacao, { target: { value: 'oculto' } });
+      fireEvent.blur(anotacao);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    const arg = saveRecordMock.mock.calls[0]![0] as {
+      values: Record<string, unknown>;
+      dirtyFields: Record<string, unknown>;
+    };
+    // The transient key never reaches the document write (values + dirty set)…
+    expect(arg.values).not.toHaveProperty('anotacao');
+    expect(arg.values.nome).toBe('Updated');
+    expect(arg.dirtyFields).not.toHaveProperty('anotacao');
+    expect(arg.dirtyFields.nome).toBe(true);
+    // …but the FULL values (transient included) flow to onAfterSave for the
+    // sibling write.
+    expect(onAfterSave).toHaveBeenCalledWith(
+      'EXISTING',
+      expect.objectContaining({ nome: 'Updated', anotacao: 'oculto' }),
+    );
+  });
+
+  it('a save touching ONLY a transient field leaves an empty doc patch yet still runs onAfterSave', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice' } },
+      loading: false,
+      error: undefined,
+    };
+    // With the transient key stripped, the doc patch is empty — real saveRecord
+    // throws NothingChanged; the mock emulates that so we can assert the sibling
+    // write still runs and the action counts as a save.
+    saveRecordMock.mockRejectedValueOnce(new NothingChanged('Nenhuma alteração para salvar'));
+    const onAfterSave = vi.fn().mockResolvedValueOnce(undefined);
+    const onSaved = vi.fn();
+    render(
+      <Wrap>
+        <ObjectView
+          schema={transientSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          transientFields={['anotacao']}
+          onAfterSave={onAfterSave}
+          onSaved={onSaved}
+        />
+      </Wrap>,
+    );
+    const anotacao = screen.getByRole('textbox', { name: 'Anotação' }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(anotacao, { target: { value: 'oculto' } });
+      fireEvent.blur(anotacao);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    const arg = saveRecordMock.mock.calls[0]![0] as { dirtyFields: Record<string, unknown> };
+    expect(arg.dirtyFields).not.toHaveProperty('anotacao');
+    expect(Object.keys(arg.dirtyFields)).toHaveLength(0);
+    expect(onAfterSave).toHaveBeenCalledWith(
+      'EXISTING',
+      expect.objectContaining({ anotacao: 'oculto' }),
+    );
+    expect(onSaved).toHaveBeenCalledWith('EXISTING');
+  });
+});
+
 describe('validate-what-you-save resolver (prepareForSave before validation)', () => {
   const stagedSchema = z.object({
     nome: z.string().min(1).describe('Nome'),

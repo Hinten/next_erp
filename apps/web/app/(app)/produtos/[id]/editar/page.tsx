@@ -10,11 +10,12 @@ import { PERM } from '@delfrance/auth';
 import {
   type Foto,
   type PrecosMap,
+  type ProdutoExtraData,
   type Video,
   normalizeVariacoesUid,
   parseFakePath,
+  produtoPageBaseSchema,
   produtoPageIssues,
-  produtoSchema,
   sortGrupoUids,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
@@ -23,6 +24,7 @@ import {
   applyPrecosChange,
   deleteProdutoCascade,
   recordCustoHistory,
+  saveProdutoExtraData,
 } from '@delfrance/data/produto';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
@@ -33,12 +35,14 @@ import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client'
 import { useAuth, usePermission } from '@/lib/auth';
 import { PhotoManager } from '../../_components/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
+import { ExtraDataManager } from '../../_components/ExtraDataManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
 import { VariationManager } from '../../_components/VariationManager';
 import {
   PRODUTO_EXCLUDED_FIELDS,
   PRODUTO_SECTIONS,
+  PRODUTO_TRANSIENT_FIELDS,
   produtoFieldOverrides,
 } from '../../_components/produtoFields';
 
@@ -76,6 +80,11 @@ export default function EditarProdutoPage() {
   // touched) and the staged-children flush, committed after the parent saves.
   const groupsRef = useRef<string[] | null>(null);
   const flushChildrenRef = useRef<((parentId: string) => Promise<void>) | null>(null);
+
+  // Set true by the ExtraDataManager once the extraData singleton has resolved,
+  // so `onAfterSave` never persists `extraData` before the existing doc loaded
+  // (a fast save mustn't overwrite copy the user never saw).
+  const extraDataReadyRef = useRef(false);
 
   // Price-history bookkeeping (Flutter parity: `Produto.save()` records every
   // precos change). `lastSavedPrecos` pins the PERSISTED map once, from the
@@ -188,6 +197,21 @@ export default function EditarProdutoPage() {
           />
         ),
       },
+      extraData: {
+        label: 'Descrição',
+        section: 'Descrição',
+        renderInput: (p) => (
+          <ExtraDataManager
+            produtoId={params.id}
+            db={db}
+            value={(p.value as ProdutoExtraData | null) ?? null}
+            onChange={p.onChange}
+            readyRef={extraDataReadyRef}
+            errorTree={p.errorTree}
+            disabled={p.disabled}
+          />
+        ),
+      },
     }),
     [params.id, db, storage, grupos, gruposSnap.error?.message, listas, listasSnap.error?.message],
   );
@@ -228,7 +252,7 @@ export default function EditarProdutoPage() {
         }
       />
       <ObjectView
-        schema={produtoSchema}
+        schema={produtoPageBaseSchema}
         collection={produtoCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}
@@ -236,6 +260,7 @@ export default function EditarProdutoPage() {
         sections={PRODUTO_SECTIONS}
         fields={fields}
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
+        transientFields={PRODUTO_TRANSIENT_FIELDS}
         deriveOnSave={(values) => {
           // Keep the Flutter wire shapes on every save: bare group ids sorted
           // by ordem, canonical group-major fake paths for the variants. The
@@ -296,6 +321,15 @@ export default function EditarProdutoPage() {
             await recordCustoHistory(port, id, newCusto);
           }
           lastSavedCusto.current = { ready: true, value: newCusto };
+
+          // Persist the Descrição + Google Merchant block (the transient
+          // `extraData` field) to its singleton subdocument. Guarded by the
+          // manager's `ready` flag so a fast save can't overwrite a copy the
+          // user never loaded; `values.extraData` is null when untouched.
+          const extra = (values.extraData as ProdutoExtraData | null) ?? null;
+          if (extraDataReadyRef.current && extra) {
+            await saveProdutoExtraData(port, id, extra);
+          }
 
           // The flush runs last: it creates any new children already carrying
           // the parent's precos (plus their initial history records).

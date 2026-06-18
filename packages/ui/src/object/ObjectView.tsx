@@ -24,7 +24,7 @@ import {
 } from 'react-hook-form';
 import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
-import { ZodError, type z, type ZodObject, type ZodRawShape } from 'zod';
+import { ZodError, type z, type ZodObject, type ZodRawShape, type ZodTypeAny } from 'zod';
 import { type CollectionHandle, type PathContext } from '@delfrance/data';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { buildEmptyDefaults, extractFieldsFromSchema } from '../schema/derive';
@@ -48,11 +48,27 @@ export interface ValidationIssue {
   message: string;
 }
 
-export interface ObjectViewProps<S extends ZodObject<ZodRawShape>> {
+export interface ObjectViewProps<
+  S extends ZodObject<ZodRawShape>,
+  C extends ZodTypeAny = S,
+> {
   title?: ReactNode;
   description?: ReactNode;
+  /**
+   * The schema that drives the FORM: the resolver, the field descriptors, and
+   * the empty defaults. Usually the same as the collection's schema, but it may
+   * be a wider **aggregate** (a page model) whose extra fields are validated and
+   * rendered here yet persisted elsewhere — see `transientFields`. In that case
+   * pass the collection's own (narrower) schema as `C` via `collection`.
+   */
   schema: S;
-  collection: CollectionHandle<S>;
+  /**
+   * The document collection this view writes. Its schema (`C`) governs the
+   * converter + path; when `schema` (`S`) is a wider aggregate, only the keys
+   * that belong to `C` (i.e. everything except `transientFields`) reach the doc.
+   * Defaults to the same schema as the form (`C = S`).
+   */
+  collection: CollectionHandle<C>;
   db: Firestore;
   pathContext?: PathContext;
 
@@ -90,6 +106,18 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>> {
    * whole page model can validate in one place. Must be pure; a real shape
    * error on a key always wins over a cross-document one. */
   validate?: (values: Record<string, unknown>) => readonly ValidationIssue[];
+
+  /**
+   * Top-level form keys that are validated + rendered like any field but are
+   * NOT written to the document. They are stripped from the patch before
+   * `saveRecord` (and from the dirty set, so a save that touched ONLY transient
+   * fields still routes through `onAfterSave` via `NothingChangedError`), while
+   * the FULL values — transient fields included — are handed to `onAfterSave`
+   * so a sibling write can persist them (e.g. an aggregate page model whose
+   * `extraData`/`estoques`/`impostos` live in their own subcollections). Use
+   * with a wider `schema` (`S`) over a narrower `collection` (`C`).
+   */
+  transientFields?: string[];
 
   /** Auth uid for the audit entry. */
   currentUserUid: string;
@@ -162,7 +190,7 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>> {
  *  - "Salvar" without changes shows a yellow toast and skips the network.
  *  - Dirty form blocks tab close (beforeunload) and pager navigation.
  */
-export function ObjectView<S extends ZodObject<ZodRawShape>>({
+export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAny = S>({
   title,
   description,
   schema,
@@ -176,6 +204,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   sections,
   deriveOnSave,
   validate,
+  transientFields = [],
   currentUserUid,
   pager,
   onSaved,
@@ -188,10 +217,13 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
   deleteLabel = 'Excluir',
   canDelete = true,
   deleteConfirmMessage,
-}: ObjectViewProps<S>) {
+}: ObjectViewProps<S, C>) {
   const editingAllowed = !readOnly && canEdit;
   const deleteVisible = !!onDelete && canDelete;
-  type Doc = z.infer<S>;
+  // The document loaded/saved is the COLLECTION's shape (`C`), which may be
+  // narrower than the form schema (`S`) when an aggregate page model adds
+  // transient fields persisted elsewhere.
+  type Doc = z.infer<C>;
 
   const descriptors = useMemo(() => extractFieldsFromSchema(schema), [schema]);
 
@@ -352,14 +384,26 @@ export function ObjectView<S extends ZodObject<ZodRawShape>>({
     const stampDesc = descriptors.find((d) => d.key === 'ultimaModificacao');
     const stampUnit: 'iso' | 'ms' | 'us' =
       stampDesc?.kind === 'datetime' ? (stampDesc.dateUnit ?? 'ms') : 'iso';
+    // Transient fields (aggregate page-model extras) are validated + rendered
+    // but never reach the document: strip them — and their dirty flags — from
+    // what `saveRecord` writes. The FULL `values` still flow to `form.reset`
+    // and `onAfterSave` (below), so a sibling write can persist them. When ONLY
+    // transient fields changed, the doc patch is empty and `saveRecord` throws
+    // `NothingChangedError`, whose handler runs `onAfterSave` anyway.
+    const docValues: Record<string, unknown> = { ...values };
+    const docDirty: Record<string, unknown> = { ...dirtyFields };
+    for (const key of transientFields) {
+      delete docValues[key];
+      delete docDirty[key];
+    }
     try {
-      const result = await saveRecord<S, Record<string, unknown>>({
+      const result = await saveRecord<C, Record<string, unknown>>({
         db,
         collection,
         pathContext,
         recordId: internalId,
-        values,
-        dirtyFields,
+        values: docValues,
+        dirtyFields: docDirty,
         currentUserUid,
         stampUnit,
       });
