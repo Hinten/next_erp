@@ -46,6 +46,16 @@ export function meStatusToEstadoFrete(status: string | null | undefined): Estado
   }
 }
 
+/**
+ * Estados a webhook must never re-open. The legacy polling job got this for
+ * free: it only queried pedidos whose estado was still "in transit"
+ * (`estadosVerificarRastreio`, which excludes `entregue`/`cancelado`), so a
+ * terminal pedido was never re-processed. A push webhook has no such filter, so
+ * a late or out-of-order event (e.g. a delayed `posted` after `delivered`)
+ * could otherwise regress the estado — we guard against that explicitly.
+ */
+const TERMINAL_ESTADOS: ReadonlySet<EstadoFrete> = new Set(['entregue', 'cancelado']);
+
 interface MeWebhookBody {
   event?: unknown;
   data?: { id?: unknown; status?: unknown; tracking?: unknown };
@@ -114,21 +124,29 @@ export async function POST(req: Request): Promise<NextResponse> {
   const frete = (
     doc.data() as { freteInicial?: { estado?: string; codRastreio?: string | null } } | undefined
   )?.freteInicial;
+  const currentEstado = frete?.estado;
   const tracking = typeof data.tracking === 'string' ? data.tracking : null;
+
+  // A pedido already in a terminal estado is never re-opened — a late `posted`
+  // after `delivered` must not regress it. Tracking-only updates are still
+  // allowed (a late event may carry the final tracking code).
+  const isTerminal = currentEstado != null && TERMINAL_ESTADOS.has(currentEstado as EstadoFrete);
 
   // Idempotent over BOTH fields: only persist what would actually change, so a
   // retry that adds `tracking` to an already-applied estado still records it.
   const patch: Record<string, unknown> = {};
-  if (frete?.estado !== target) patch['freteInicial.estado'] = target;
+  if (!isTerminal && currentEstado !== target) patch['freteInicial.estado'] = target;
   if (tracking !== null && frete?.codRastreio !== tracking) {
     patch['freteInicial.codRastreio'] = tracking;
   }
 
   if (Object.keys(patch).length === 0) {
-    // Nothing would change — ack idempotently.
+    // Nothing would change (terminal estado and/or same tracking) — ack idempotently.
     return NextResponse.json({ ok: true, applied: false });
   }
 
   await pedidoCollection.docRef(db, {}, doc.id).update(patch);
-  return NextResponse.json({ ok: true, applied: true, estado: target });
+  // Report the estado actually in effect (unchanged when terminal).
+  const appliedEstado = (patch['freteInicial.estado'] as EstadoFrete | undefined) ?? currentEstado;
+  return NextResponse.json({ ok: true, applied: true, estado: appliedEstado ?? null });
 }

@@ -143,6 +143,35 @@ describe('POST /api/webhooks/melhor-envio', () => {
     expect(h.update).toHaveBeenCalledWith({ 'freteInicial.codRastreio': 'ME9BR' });
   });
 
+  it('never regresses a terminal estado — a late posted after entregue is a no-op', async () => {
+    h.query.mockResolvedValue(pedidoSnap('entregue', 'ME9BR'));
+    const res = await POST(
+      req({ event: 'order.posted', data: { id: 'lbl-1', status: 'posted', tracking: 'ME9BR' } }),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).applied).toBe(false);
+    expect(h.update).not.toHaveBeenCalled();
+  });
+
+  it('does not flip a cancelado pedido to entregue on a late delivered event', async () => {
+    h.query.mockResolvedValue(pedidoSnap('cancelado'));
+    const res = await POST(req({ event: 'order.delivered', data: { id: 'lbl-1' } }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).applied).toBe(false);
+    expect(h.update).not.toHaveBeenCalled();
+  });
+
+  it('still records tracking on a terminal pedido without touching estado', async () => {
+    h.query.mockResolvedValue(pedidoSnap('entregue')); // delivered, no tracking yet
+    const res = await POST(
+      req({ event: 'order.delivered', data: { id: 'lbl-1', tracking: 'ME9BR' } }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ applied: true, estado: 'entregue' });
+    // Only codRastreio is written — the terminal estado is preserved.
+    expect(h.update).toHaveBeenCalledWith({ 'freteInicial.codRastreio': 'ME9BR' });
+  });
+
   it('derives the status from the event suffix when data.status is absent', async () => {
     h.query.mockResolvedValue(pedidoSnap('postado'));
     const res = await POST(req({ event: 'order.delivered', data: { id: 'lbl-1' } }));
