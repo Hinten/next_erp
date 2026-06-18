@@ -72,13 +72,13 @@ jobs:
 
       # Persist Next.js's incremental build cache across runs for every Next app
       # `turbo run build` compiles (apps/*/.next/cache — non-Next apps have none
-      # and are ignored). github.sha keys it per commit: restore the newest prior
-      # cache via restore-keys, save a fresh one each run.
+      # and are ignored). Keyed on the head SHA (the ref actually built):
+      # restore the newest prior cache via restore-keys, save this commit's.
       - name: Cache Next.js builds
         uses: actions/cache@v5
         with:
           path: apps/*/.next/cache
-          key: nextjs-ci-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+          key: nextjs-ci-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.event.pull_request.head.sha || github.sha }}
           restore-keys: |
             nextjs-ci-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
 

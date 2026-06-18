@@ -129,13 +129,13 @@ jobs:
             -- --exclude '**/*.homologacao.test.ts' --exclude '**/*.staging.test.ts'
 
       # Persist Next.js's incremental build cache between runs so the nfe-app
-      # `next build` isn't cold every time. github.sha keys it per commit:
-      # restore the newest prior cache via restore-keys, save a fresh one.
+      # `next build` isn't cold every time. Keyed on the head SHA (the ref
+      # actually built): restore the newest prior cache, save this commit's.
       - name: Cache Next.js build (nfe)
         uses: actions/cache@v5
         with:
           path: apps/nfe/.next/cache
-          key: nextjs-nfe-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+          key: nextjs-nfe-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.event.pull_request.head.sha || github.sha }}
           restore-keys: |
             nextjs-nfe-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
 
