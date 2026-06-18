@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, type MutableRefObject } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Fieldset, Select, Stack, Switch, TagsInput, Textarea, TextInput } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
 import {
@@ -48,18 +48,12 @@ interface ExtraDataErrorTree {
 }
 
 export interface ExtraDataManagerProps {
-  /** `null` in create mode — nothing to load yet; persisted after first save. */
+  /** `null` in create mode — nothing to load yet; persisted on first save. */
   produtoId: string | null;
   db: Firestore;
   /** The transient `extraData` form value (null until seeded / edited). */
   value: ProdutoExtraData | null;
   onChange: (next: ProdutoExtraData) => void;
-  /**
-   * Flipped to `true` once the singleton has resolved (or immediately in create
-   * mode). The page's `onAfterSave` reads it so it never persists `extraData`
-   * before the existing doc loaded — a fast save can't blow away unread copy.
-   */
-  readyRef: MutableRefObject<boolean>;
   errorTree?: unknown;
   disabled?: boolean;
 }
@@ -68,19 +62,20 @@ export interface ExtraDataManagerProps {
  * Descrição + Google Merchant tab — editor for the produto's `extraData`
  * singleton (`produtos/<id>/extraData/singleton`). It is a TRANSIENT field on
  * the aggregate page model: validated + rendered here, stripped from the produto
- * doc write, and persisted to its subcollection in the page's `onAfterSave` via
- * `saveProdutoExtraData`.
+ * doc write, and persisted to its subcollection ATOMICALLY with the produto doc
+ * (the page's `transactionWrites` hook).
  *
  * It self-loads the singleton and seeds the transient field once it resolves,
  * re-seeding if ObjectView's produto-doc `reset` wipes the field back to null
- * (guarded by `value == null` so user edits are never clobbered).
+ * (guarded by `value == null` so user edits are never clobbered). When the
+ * singleton hasn't loaded yet, `value` stays null → the save simply doesn't
+ * write it (no unread-copy clobber), so no readiness flag is needed.
  */
 export function ExtraDataManager({
   produtoId,
   db,
   value,
   onChange,
-  readyRef,
   errorTree,
   disabled,
 }: ExtraDataManagerProps) {
@@ -96,14 +91,10 @@ export function ExtraDataManager({
   // Seed the transient field from the loaded singleton. Re-runs when the
   // produto-doc reset zeroes the field back to null (re-seeds the same doc);
   // never seeds an EMPTY doc when the produto has none (avoids creating a
-  // stray singleton on save). Create mode is "ready" immediately.
+  // stray singleton on save). Create mode has nothing to load.
   useEffect(() => {
-    if (!produtoId) {
-      readyRef.current = true;
-      return;
-    }
+    if (!produtoId) return;
     if (snap.loading) return;
-    readyRef.current = true;
     if (value != null) return;
     if (snap.data) onChange(produtoExtraDataSchema.parse(snap.data.data));
     // eslint-disable-next-line react-hooks/exhaustive-deps

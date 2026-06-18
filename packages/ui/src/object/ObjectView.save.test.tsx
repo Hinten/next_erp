@@ -625,6 +625,49 @@ describe('transientFields (aggregate page-model extras kept out of the doc write
     );
     expect(onSaved).toHaveBeenCalledWith('EXISTING');
   });
+
+  it('forwards transactionWrites to saveRecord as siblingWrites keyed by the record id', async () => {
+    docState.current = {
+      data: { id: 'EXISTING', data: { nome: 'Alice' } },
+      loading: false,
+      error: undefined,
+    };
+    saveRecordMock.mockResolvedValueOnce({ id: 'EXISTING', patch: {} });
+    const fakeRef = { id: 'sibling-doc' } as never;
+    render(
+      <Wrap>
+        <ObjectView
+          schema={transientSchema}
+          collection={fakeCollection() as never}
+          db={{} as never}
+          currentUserUid="u1"
+          recordId="EXISTING"
+          transientFields={['anotacao']}
+          transactionWrites={(id, values) => [
+            { type: 'set', ref: fakeRef, data: { id, anotacao: values.anotacao } },
+          ]}
+        />
+      </Wrap>,
+    );
+    const anotacao = screen.getByRole('textbox', { name: 'Anotação' }) as HTMLInputElement;
+    await act(async () => {
+      fireEvent.change(anotacao, { target: { value: 'oculto' } });
+      fireEvent.blur(anotacao);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    // ObjectView hands saveRecord a `siblingWrites(id)` closure that resolves the
+    // transactionWrites hook with the record id + the FULL values (transient
+    // included), so the sibling rides the same transaction.
+    const arg = saveRecordMock.mock.calls[0]![0] as {
+      siblingWrites?: (id: string) => unknown[];
+    };
+    expect(typeof arg.siblingWrites).toBe('function');
+    expect(arg.siblingWrites!('EXISTING')).toEqual([
+      { type: 'set', ref: fakeRef, data: { id: 'EXISTING', anotacao: 'oculto' } },
+    ]);
+  });
 });
 
 describe('validate-what-you-save resolver (prepareForSave before validation)', () => {

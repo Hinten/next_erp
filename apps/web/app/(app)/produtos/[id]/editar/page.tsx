@@ -24,13 +24,12 @@ import {
   applyPrecosChange,
   deleteProdutoCascade,
   recordCustoHistory,
-  saveProdutoExtraData,
 } from '@delfrance/data/produto';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
-import { createClientProdutoPort } from '@/lib/produtos/clientPort';
+import { buildProdutoTransactionWrites, createClientProdutoPort } from '@/lib/produtos/clientPort';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { PhotoManager } from '../../_components/PhotoManager';
@@ -80,11 +79,6 @@ export default function EditarProdutoPage() {
   // touched) and the staged-children flush, committed after the parent saves.
   const groupsRef = useRef<string[] | null>(null);
   const flushChildrenRef = useRef<((parentId: string) => Promise<void>) | null>(null);
-
-  // Set true by the ExtraDataManager once the extraData singleton has resolved,
-  // so `onAfterSave` never persists `extraData` before the existing doc loaded
-  // (a fast save mustn't overwrite copy the user never saw).
-  const extraDataReadyRef = useRef(false);
 
   // Price-history bookkeeping (Flutter parity: `Produto.save()` records every
   // precos change). `lastSavedPrecos` pins the PERSISTED map once, from the
@@ -206,7 +200,6 @@ export default function EditarProdutoPage() {
             db={db}
             value={(p.value as ProdutoExtraData | null) ?? null}
             onChange={p.onChange}
-            readyRef={extraDataReadyRef}
             errorTree={p.errorTree}
             disabled={p.disabled}
           />
@@ -261,6 +254,7 @@ export default function EditarProdutoPage() {
         fields={fields}
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
         transientFields={PRODUTO_TRANSIENT_FIELDS}
+        transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
         deriveOnSave={(values) => {
           // Keep the Flutter wire shapes on every save: bare group ids sorted
           // by ordem, canonical group-major fake paths for the variants. The
@@ -322,14 +316,9 @@ export default function EditarProdutoPage() {
           }
           lastSavedCusto.current = { ready: true, value: newCusto };
 
-          // Persist the Descrição + Google Merchant block (the transient
-          // `extraData` field) to its singleton subdocument. Guarded by the
-          // manager's `ready` flag so a fast save can't overwrite a copy the
-          // user never loaded; `values.extraData` is null when untouched.
-          const extra = (values.extraData as ProdutoExtraData | null) ?? null;
-          if (extraDataReadyRef.current && extra) {
-            await saveProdutoExtraData(port, id, extra);
-          }
+          // (The extraData singleton is now written atomically with the produto
+          // doc via `transactionWrites`, not here — so a flaky connection can't
+          // leave the produto saved without its Descrição.)
 
           // The flush runs last: it creates any new children already carrying
           // the parent's precos (plus their initial history records).

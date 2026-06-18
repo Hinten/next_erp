@@ -33,8 +33,10 @@ import { valuesEqual } from './diff';
 import { FieldRenderer } from './FieldRenderer';
 import { RecordPager } from './RecordPager';
 import { SectionTabs } from './SectionTabs';
-import { NothingChangedError, saveRecord } from './saveRecord';
+import { NothingChangedError, saveRecord, type TransactionWrite } from './saveRecord';
 import { useUnsavedChangesGuard } from './useUnsavedChangesGuard';
+
+export type { TransactionWrite };
 
 /**
  * Fields dropped from a copied source document — the new record must get its
@@ -115,6 +117,18 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    * with a wider `schema` (`S`) over a narrower `collection` (`C`).
    */
   transientFields?: string[];
+
+  /**
+   * Sibling documents to write ATOMICALLY with the main record, in the same
+   * transaction (one commit, all-or-nothing). Called with the resolved record
+   * id (the minted id on create) + the full post-transform values, so a
+   * transient field's persistence (e.g. the `extraData` singleton) can ride the
+   * produto-doc save instead of being a separate write that a flaky connection
+   * could drop. Return converter-bound refs (built from a `defineCollection`
+   * handle). Pairs with `transientFields`: those keys stay off the main doc but
+   * are persisted here.
+   */
+  transactionWrites?: (id: string, values: Record<string, unknown>) => TransactionWrite[];
 
   /** Auth uid for the audit entry. */
   currentUserUid: string;
@@ -202,6 +216,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   deriveOnSave,
   validate,
   transientFields = [],
+  transactionWrites,
   currentUserUid,
   pager,
   onSaved,
@@ -401,6 +416,10 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         recordId: internalId,
         values: docValues,
         dirtyFields: docDirty,
+        // Persist transient fields (e.g. the extraData singleton) in the SAME
+        // transaction as the document — the full `values` carry them; the hook
+        // turns them into sibling writes keyed by the resolved record id.
+        siblingWrites: transactionWrites ? (id) => transactionWrites(id, values) : undefined,
         currentUserUid,
         stampUnit,
       });
