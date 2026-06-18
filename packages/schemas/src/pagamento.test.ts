@@ -5,7 +5,7 @@ import {
   metodoPagamentoSchema,
   pagamentoSchema,
   statusToEstadoPedido,
-} from './pagamento';
+} from './pedido';
 
 describe('pagamentoSchema', () => {
   it('parses a minimal Pagamento with defaults', () => {

@@ -336,17 +336,17 @@ async function seedFixtures(
       .collection('pedidos')
       .doc(pedidoId)
       .set(pedidoDoc(pedidoId, valor, { omitImposto }));
-    await fs.doc(`pedidos/${pedidoId}/pagamento/pag-01`).set(pagamentoDoc(valor));
+    await fs.doc(`pedidos/${pedidoId}/pagamentos/pag-01`).set(pagamentoDoc(valor));
   }
 
   // Dedicated cancelamento pedido (id doesn't end in a digit, so seed it
   // explicitly rather than via the slice(-1) valor trick above).
   await fs.collection('pedidos').doc(PEDCANCEL).set(pedidoDoc(PEDCANCEL, 115));
-  await fs.doc(`pedidos/${PEDCANCEL}/pagamento/pag-01`).set(pagamentoDoc(115));
+  await fs.doc(`pedidos/${PEDCANCEL}/pagamentos/pag-01`).set(pagamentoDoc(115));
 
   // Dedicated carta de correção (CC-e) pedido — emitted then corrected.
   await fs.collection('pedidos').doc(PEDCCE).set(pedidoDoc(PEDCCE, 117));
-  await fs.doc(`pedidos/${PEDCCE}/pagamento/pag-01`).set(pagamentoDoc(117));
+  await fs.doc(`pedidos/${PEDCCE}/pagamentos/pag-01`).set(pagamentoDoc(117));
 
   // 10 fresh pedidos for the parallel-batch test. Each carries `imposto`
   // pre-stamped so the orchestrator's parallel `nextNumeracao` path is
@@ -356,7 +356,7 @@ async function seedFixtures(
     const pedidoId = PARALLEL_PEDIDO_IDS[i]!;
     const valor = 200 + i;
     await fs.collection('pedidos').doc(pedidoId).set(pedidoDoc(pedidoId, valor));
-    await fs.doc(`pedidos/${pedidoId}/pagamento/pag-01`).set(pagamentoDoc(valor));
+    await fs.doc(`pedidos/${pedidoId}/pagamentos/pag-01`).set(pagamentoDoc(valor));
   }
 }
 
@@ -382,7 +382,7 @@ async function cleanupFixtures(fs: FirebaseFirestore.Firestore): Promise<void> {
   }
 
   for (const pedidoId of [PED1, PED3, PED8, PEDCANCEL, PEDCCE, ...PARALLEL_PEDIDO_IDS]) {
-    await deleteDocWithSubcoll(`pedidos/${pedidoId}`, ['nfev4', 'pagamento']);
+    await deleteDocWithSubcoll(`pedidos/${pedidoId}`, ['nfev4', 'pagamentos']);
   }
   await deleteDocWithSubcoll(`operacao/${OPERACAO_ID}`, ['regraimposto']);
   await fs.doc(`clientes/${CLIENTE_ID}/enderecos/${ENDERECO_ID}`).delete();

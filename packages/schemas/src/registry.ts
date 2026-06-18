@@ -12,8 +12,13 @@ import {
 } from './produto';
 import { categoria } from './categoria';
 import { intFrete, tokenMelEnv } from './intFrete';
-import { pedido } from './pedido';
-import { metodoPagamento, pagamento } from './pagamento';
+import {
+  pedido,
+  pagamento,
+  metodoPagamento,
+  incidente,
+  historicoEstadoPedido,
+} from './pedido';
 import { conversa, mensagem } from './conversa';
 import { integracao } from './integracao';
 import { cargo } from './cargo';
@@ -57,6 +62,8 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   pedido,
   pagamento,
   metodoPagamento,
+  incidente,
+  historicoEstadoPedido,
   conversa,
   mensagem,
   integracao,
