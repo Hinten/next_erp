@@ -91,24 +91,35 @@ export default function EditarPedidoPage() {
     }
   }
 
-  // "Salvar mesmo assim": re-run the same patch bypassing the guard.
+  // "Salvar mesmo assim": override the version the user just reviewed — re-save
+  // with the base set to the reviewed doc's `ultimaModificacao`, NOT a blind
+  // force. If the doc changed AGAIN since the modal opened, the guard re-trips
+  // and we re-open the modal with the newer diff, so an unreviewed edit is never
+  // clobbered.
   async function handleForceSave() {
     if (!conflict) return;
     setSavingConflict(true);
+    const reviewedVersion =
+      typeof conflict.current.ultimaModificacao === 'number'
+        ? conflict.current.ultimaModificacao
+        : null;
     try {
       await savePedido(createClientPedidoPort(getFirebaseFirestore()), {
         pedidoId: params.id,
         patch: conflict.patch,
-        baseUltimaModificacao: null, // ignored under force
-        force: true,
+        baseUltimaModificacao: reviewedVersion,
       });
       setConflict(null);
       router.replace('/pedidos');
     } catch (err) {
-      // The only conflict left under force is a deleted doc (current null).
       if (err instanceof PedidoConflictError) {
-        showErrorNotification({ title: 'Pedido alterado', message: err.message });
-        setConflict(null);
+        if (err.current) {
+          // Edited again since the modal opened — re-review the newer version.
+          setConflict({ patch: conflict.patch, current: err.current });
+        } else {
+          showErrorNotification({ title: 'Pedido alterado', message: err.message });
+          setConflict(null);
+        }
         return;
       }
       throw err;

@@ -160,14 +160,12 @@ describe('savePedido', () => {
     ).rejects.toBeInstanceOf(PedidoConflictError);
   });
 
-  it('force bypasses the guard (F3 "salvar mesmo assim")', async () => {
+  it('overrides a conflict by re-basing on the reviewed version (F3 "salvar mesmo assim")', async () => {
+    // First save saw base=10 but the doc is at 20 → conflict. The user reviews
+    // the version-20 doc and re-saves with base=20 → succeeds (and a FURTHER edit
+    // moving it past 20 would conflict again, never a blind clobber).
     const { port, written } = fakePort({ ultimaModificacao: 20 }, 5);
-    await savePedido(port, {
-      pedidoId: 'x',
-      patch: { numero: 'A' },
-      baseUltimaModificacao: 10,
-      force: true,
-    });
+    await savePedido(port, { pedidoId: 'x', patch: { numero: 'A' }, baseUltimaModificacao: 20 });
     expect(written()).toEqual({ numero: 'A', ultimaModificacao: 5 });
   });
 });

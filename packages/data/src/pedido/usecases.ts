@@ -101,35 +101,35 @@ export class PedidoConflictError extends Error {
 /**
  * Persist a pedido patch with an optimistic-concurrency guard. Inside a
  * transaction it re-reads the doc and aborts (`PedidoConflictError`) when its
- * `ultimaModificacao` no longer matches `baseUltimaModificacao` (the value
- * loaded into the form). `baseUltimaModificacao` is a real baseline, not a
+ * `ultimaModificacao` no longer matches `baseUltimaModificacao` (the version the
+ * caller is overwriting). `baseUltimaModificacao` is a real baseline, not a
  * sentinel: `null` means "the doc had no `ultimaModificacao` when loaded", and a
  * concurrent write that stamps one (null → number) is correctly flagged as a
- * conflict. To deliberately bypass the guard — F3's "salvar mesmo assim" after
- * the user reviewed the conflicting changes — pass `force: true`. Always stamps a
- * fresh `ultimaModificacao` on the write (after the no-op check, so an unchanged
- * save still throws `PedidoNothingChangedError`).
+ * conflict.
+ *
+ * There is no "force" escape hatch by design: F3's "salvar mesmo assim" overrides
+ * a conflict by re-calling with `baseUltimaModificacao` set to the version the
+ * user just reviewed — so a *further* edit that lands after the review is still
+ * caught instead of being clobbered blindly. Always stamps a fresh
+ * `ultimaModificacao` on the write (after the no-op check, so an unchanged save
+ * still throws `PedidoNothingChangedError`).
  */
 export async function savePedido(
   port: PedidoDataPort,
   args: {
     pedidoId: string;
     patch: Record<string, unknown>;
-    /** The pedido's `ultimaModificacao` as loaded (µs epoch, or null if absent). */
+    /** The `ultimaModificacao` of the doc version being overwritten (µs epoch, or null). */
     baseUltimaModificacao: number | null;
-    /** Bypass the concurrency guard (F3 override). Default false. */
-    force?: boolean;
   },
 ): Promise<void> {
   if (Object.keys(args.patch).length === 0) throw new PedidoNothingChangedError();
 
   await port.updatePedido(args.pedidoId, (current) => {
     if (current === null) throw new PedidoConflictError(null);
-    if (!args.force) {
-      const currentUM =
-        typeof current.ultimaModificacao === 'number' ? current.ultimaModificacao : null;
-      if (currentUM !== args.baseUltimaModificacao) throw new PedidoConflictError(current);
-    }
+    const currentUM =
+      typeof current.ultimaModificacao === 'number' ? current.ultimaModificacao : null;
+    if (currentUM !== args.baseUltimaModificacao) throw new PedidoConflictError(current);
     return { ...args.patch, ultimaModificacao: port.now() };
   });
 }
