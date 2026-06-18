@@ -13,6 +13,13 @@ if (!region) {
   );
 }
 
+// Re-enqueues from INSIDE this function (runReconcile → scheduler) target the
+// `reconciliarNfe` queue, which lives in THIS function's region. Default
+// NFE_TASKS_REGION to the inlined region so a non-us-east1 deployment doesn't
+// enqueue follow-up consults into the wrong region's queue (which would silently
+// drop the reconcile loop). An explicit NFE_TASKS_REGION still overrides.
+process.env.NFE_TASKS_REGION ??= region;
+
 // Point the bundled @delfrance/integrations-nfe data-file readers at the copies
 // shipped NEXT TO this bundle (prepare-deploy.mjs copies ca/ + schemas/ into the
 // artifact). esbuild collapses the package's own dir layout, so runtime.ts's
