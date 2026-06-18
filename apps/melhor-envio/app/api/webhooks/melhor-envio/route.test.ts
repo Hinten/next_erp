@@ -54,8 +54,9 @@ describe('meStatusToEstadoFrete', () => {
   it('maps the legacy ME statuses', () => {
     expect(meStatusToEstadoFrete('delivered')).toBe('entregue');
     expect(meStatusToEstadoFrete('posted')).toBe('postado');
-    expect(meStatusToEstadoFrete('released')).toBe('postado');
     expect(meStatusToEstadoFrete('received')).toBe('postado');
+    // `released` = label printed but still in the warehouse → no estado change.
+    expect(meStatusToEstadoFrete('released')).toBeNull();
     expect(meStatusToEstadoFrete('canceled')).toBe('cancelado');
     expect(meStatusToEstadoFrete('cancelled')).toBe('cancelado');
     expect(meStatusToEstadoFrete('suspended')).toBe('suspenso');
@@ -96,6 +97,16 @@ describe('POST /api/webhooks/melhor-envio', () => {
 
   it('acks without writing for an unmapped event (no query)', async () => {
     const res = await POST(req({ event: 'order.created', data: { id: 'lbl-1' } }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).applied).toBe(false);
+    expect(h.query).not.toHaveBeenCalled();
+    expect(h.update).not.toHaveBeenCalled();
+  });
+
+  it('treats a released event as a no-op (label printed, not posted yet)', async () => {
+    const res = await POST(
+      req({ event: 'order.released', data: { id: 'lbl-1', status: 'released' } }),
+    );
     expect(res.status).toBe(200);
     expect((await res.json()).applied).toBe(false);
     expect(h.query).not.toHaveBeenCalled();

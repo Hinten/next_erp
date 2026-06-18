@@ -29,8 +29,13 @@ export function meStatusToEstadoFrete(status: string | null | undefined): Estado
   switch (status) {
     case 'delivered':
       return 'entregue';
-    case 'posted':
     case 'released':
+      // The label was just printed and is still in the warehouse — the pedido
+      // has NOT been posted yet, so we deliberately do nothing (matches the
+      // legacy `tasks.dart`, which skips `released`). Only `posted`/`received`
+      // mean the parcel actually left for the carrier.
+      return null;
+    case 'posted':
     case 'received':
       return 'postado';
     case 'canceled':
