@@ -398,10 +398,12 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       stampDesc?.kind === 'datetime' ? (stampDesc.dateUnit ?? 'ms') : 'iso';
     // Transient fields (aggregate page-model extras) are validated + rendered
     // but never reach the document: strip them — and their dirty flags — from
-    // what `saveRecord` writes. The FULL `values` still flow to `form.reset`
-    // and `onAfterSave` (below), so a sibling write can persist them. When ONLY
-    // transient fields changed, the doc patch is empty and `saveRecord` throws
-    // `NothingChangedError`, whose handler runs `onAfterSave` anyway.
+    // what `saveRecord` writes. The FULL `values` still flow to `form.reset`,
+    // `onAfterSave`, and `transactionWrites` (below) so the extras can persist.
+    // When ONLY transient fields changed, the doc patch is empty: if
+    // `transactionWrites` yields sibling writes, `saveRecord` commits those and
+    // skips the main doc; otherwise it throws `NothingChangedError`, whose
+    // handler runs `onAfterSave` anyway.
     const docValues: Record<string, unknown> = { ...values };
     const docDirty: Record<string, unknown> = { ...dirtyFields };
     for (const key of transientFields) {

@@ -106,15 +106,22 @@ export async function saveRecord<
 
   const siblings = input.siblingWrites?.(ref.id) ?? [];
 
-  // Nothing to write only when the doc patch is empty AND there are no siblings.
-  // A save that touched only a sibling (e.g. just the Descrição) still commits it.
-  if (isUpdate && isEmpty(patch) && siblings.length === 0) throw new NothingChangedError();
+  // The main doc is written on every create, and on an update only when its
+  // dirty patch is non-empty. A sibling-only update (empty patch) skips the main
+  // write entirely — so neither the data NOR the `ultimaModificacao` stamp
+  // touches the otherwise-unchanged doc.
+  const writeMainDoc = !isUpdate || !isEmpty(patch);
 
-  // Stamp the last-modified field (when the schema has one) on every write,
-  // after the no-op check so an unchanged update still throws. This lets the
-  // TableView update-monitor detect edits, not just creations. On create
-  // `patch` aliases `input.values`, so stamping `input.values` covers both.
-  if ('ultimaModificacao' in input.values) {
+  // Nothing to write at all → "no changes" (only reachable on update; a create
+  // always writes). A pending sibling keeps the save alive (e.g. just the
+  // Descrição), so the no-op only fires when neither side has work.
+  if (!writeMainDoc && siblings.length === 0) throw new NothingChangedError();
+
+  // Stamp the last-modified field (when the schema has one) ONLY when the main
+  // doc is actually written — so the TableView update-monitor sees real edits,
+  // and a sibling-only save doesn't bump an otherwise-unchanged parent. On
+  // create `patch` aliases `input.values`, so stamping `input.values` covers both.
+  if (writeMainDoc && 'ultimaModificacao' in input.values) {
     const now =
       input.stampUnit === 'us'
         ? nowMicros()
@@ -129,19 +136,21 @@ export async function saveRecord<
   }
 
   await runTransaction(input.db, async (tx: Transaction) => {
-    if (isUpdate) {
-      // tx.update bypasses the Firestore converter (only set/add invoke it).
-      // The dirty-field patch already passed zodResolver per-field on the
-      // client, so we accept the partial write as-is. Skip it entirely when the
-      // doc itself is unchanged but a sibling write is pending.
-      if (!isEmpty(patch)) tx.update(ref, patch as never);
-    } else {
-      // Full create — runs through the converter, which calls schema.parse.
-      tx.set(ref, input.values as never);
+    if (writeMainDoc) {
+      if (isUpdate) {
+        // tx.update bypasses the Firestore converter (only set/add invoke it).
+        // The dirty-field patch already passed zodResolver per-field on the
+        // client, so we accept the partial write as-is.
+        tx.update(ref, patch as never);
+      } else {
+        // Full create — runs through the converter, which calls schema.parse.
+        tx.set(ref, input.values as never);
+      }
     }
 
     // Sibling writes ride the SAME atomic boundary — they commit with the main
-    // record or not at all, in one round-trip (robust on a flaky connection).
+    // record (or on their own, for a sibling-only save) or not at all, in one
+    // round-trip (robust on a flaky connection).
     for (const w of siblings) {
       if (w.type === 'update') tx.update(w.ref as DocumentReference, w.data as never);
       else tx.set(w.ref as DocumentReference, w.data as never);
