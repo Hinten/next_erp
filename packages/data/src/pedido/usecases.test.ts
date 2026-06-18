@@ -84,7 +84,10 @@ describe('buildPedidoPatch', () => {
   });
 });
 
-function fakePort(current: PedidoDocData, nowVal = 777): {
+function fakePort(
+  current: PedidoDocData,
+  nowVal = 777,
+): {
   port: PedidoDataPort;
   written: () => Record<string, unknown> | undefined;
 } {

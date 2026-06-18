@@ -8,7 +8,12 @@ import { Alert, Button, Group, Stack, Tabs, Tooltip } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconExclamationCircle } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
-import { derivePedidoTotals, pedidoPageIssues, type Pedido, pedidoSchema } from '@delfrance/schemas';
+import {
+  derivePedidoTotals,
+  pedidoPageIssues,
+  type Pedido,
+  pedidoSchema,
+} from '@delfrance/schemas';
 import { useUnsavedChangesGuard } from '@delfrance/ui';
 import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
