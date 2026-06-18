@@ -49,14 +49,16 @@ const ESTADOS_COMPRADOS: ReadonlySet<EstadoFrete> = new Set([
   'cancelado',
 ]);
 
-/** One-shot resolve of an outer ref (any legacy shape) to its typed doc. */
-function useResolvedDoc<T>(outerRef: unknown): T | null {
+/** One-shot resolve of an outer ref (any legacy shape) to its typed doc.
+ *  `loading` is true only while a present ref is in flight — so callers can
+ *  tell "still resolving" apart from "absent / not found". */
+function useResolvedDoc<T>(outerRef: unknown): { data: T | null; loading: boolean } {
   const db = getFirebaseFirestore();
   const ref = useMemo(
     () => dereferenceOuterRef(db, outerRef) as DocumentReference<T> | null,
     [db, outerRef],
   );
-  const { data } = useQuery<T | null>({
+  const { data, isLoading } = useQuery<T | null>({
     queryKey: ['etiquetaDoc', ref?.path ?? null],
     enabled: ref != null,
     staleTime: 60_000,
@@ -65,7 +67,7 @@ function useResolvedDoc<T>(outerRef: unknown): T | null {
       return snap.exists() ? (snap.data() as T) : null;
     },
   });
-  return ref ? (data ?? null) : null;
+  return { data: ref ? (data ?? null) : null, loading: ref != null && isLoading };
 }
 
 /** A pt-BR message for a known freight error, or `null` when `err` is not a
@@ -109,15 +111,27 @@ export function EtiquetaMelhorEnvioPanel({
   // Resolve the cart parties. Origin address is embedded on the integração;
   // the filial (razão social/CNPJ/IE/CNAE) and recipient cliente/endereço come
   // from outer refs.
-  const filial = useResolvedDoc<Filial>(integracao.filialIntegracaoFreteOuterRef);
-  const clienteDestino = useResolvedDoc<ClienteDestinoLike>(form.watch('clientePedidoOuterRef'));
-  const enderecoDestino = useResolvedDoc<Endereco>(
+  const enderecoOrigem = integracao.enderecoDeOrigem;
+  const { data: filial, loading: filialLoading } = useResolvedDoc<Filial>(
+    integracao.filialIntegracaoFreteOuterRef,
+  );
+  const { data: clienteDestino } = useResolvedDoc<ClienteDestinoLike>(
+    form.watch('clientePedidoOuterRef'),
+  );
+  const { data: enderecoDestino, loading: enderecoLoading } = useResolvedDoc<Endereco>(
     form.watch(fretePath('enderecoFreteOuterReference')),
   );
 
   const [busy, setBusy] = useState<null | 'comprar' | 'imprimir' | 'rastrear'>(null);
   const [error, setError] = useState<string | null>(null);
   const [rastreio, setRastreio] = useState<unknown>(null);
+
+  // The buy needs the origin (filial identity + address) and the destination
+  // address fully resolved — `useResolvedDoc` returns null while loading, so
+  // without this gate a fast click would build a payload with empty strings
+  // and fail at ME with a 422 (or stamp a label with blank parties).
+  const cartResolving = filialLoading || enderecoLoading;
+  const cartReady = filial != null && enderecoDestino != null && enderecoOrigem != null;
 
   const jaComprado = printLabelId != null && ESTADOS_COMPRADOS.has(estado);
   const canComprar =
@@ -126,7 +140,8 @@ export function EtiquetaMelhorEnvioPanel({
     Boolean(externalOptionId) &&
     !isDirty &&
     !jaComprado &&
-    busy === null;
+    busy === null &&
+    cartReady;
 
   async function handleComprar() {
     if (!client) return;
@@ -135,7 +150,7 @@ export function EtiquetaMelhorEnvioPanel({
     try {
       const payload = buildPedidoCartPayload({
         frete: form.getValues('freteInicial') as FreteInicialFormState,
-        enderecoOrigem: integracao.enderecoDeOrigem,
+        enderecoOrigem,
         filial,
         enderecoDestino,
         clienteDestino,
@@ -208,6 +223,20 @@ export function EtiquetaMelhorEnvioPanel({
       {externalOptionId && isDirty && !jaComprado && (
         <Alert color="yellow" variant="light">
           Salve o pedido antes de comprar a etiqueta.
+        </Alert>
+      )}
+      {externalOptionId && !isDirty && !jaComprado && cartResolving && (
+        <Text size="sm" c="dimmed">
+          Carregando dados da etiqueta…
+        </Text>
+      )}
+      {externalOptionId && !isDirty && !jaComprado && !cartResolving && !cartReady && (
+        <Alert color="yellow" variant="light">
+          {!enderecoOrigem
+            ? 'Configure o endereço de origem da integração Melhor Envio para comprar a etiqueta.'
+            : !filial
+              ? 'Filial da integração de frete não encontrada — verifique a configuração da integração.'
+              : 'Selecione um endereço de entrega para comprar a etiqueta.'}
         </Alert>
       )}
 
