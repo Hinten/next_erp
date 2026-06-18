@@ -14,7 +14,11 @@ import {
   produtoPageIssues,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
-import { applyPrecosChange, recordCustoHistory, saveProdutoExtraData } from '@delfrance/data/produto';
+import {
+  applyPrecosChange,
+  recordCustoHistory,
+  saveProdutoExtraData,
+} from '@delfrance/data/produto';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';

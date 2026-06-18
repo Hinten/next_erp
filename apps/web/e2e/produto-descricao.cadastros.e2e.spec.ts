@@ -18,7 +18,8 @@ import { warmRoutes } from './helpers/warmup';
  * OFF the produto document (the transient strip). Runs serially — the reload
  * test reads what the first test wrote.
  */
-test.describe.serial('Produtos descrição e2e — Descrição + Google Merchant (extraData singleton)', () => {
+test.describe
+  .serial('Produtos descrição e2e — Descrição + Google Merchant (extraData singleton)', () => {
   const prefix = e2ePrefix('prod-extradata');
   let produtoId = '';
 
@@ -58,8 +59,15 @@ test.describe.serial('Produtos descrição e2e — Descrição + Google Merchant
       .poll(async () => (await getProdutoExtraData(produtoId))?.descricao, { timeout: 15_000 })
       .toBe('Camiseta 100% algodão');
     const extra = await getProdutoExtraData(produtoId);
-    expect(extra).toMatchObject({ descricao: 'Camiseta 100% algodão', marca: 'Delfrance', condicao: 2 });
-    expect(extra!.googleMerchantData).toMatchObject({ title: 'Camiseta básica', age_group: 'adult' });
+    expect(extra).toMatchObject({
+      descricao: 'Camiseta 100% algodão',
+      marca: 'Delfrance',
+      condicao: 2,
+    });
+    expect(extra!.googleMerchantData).toMatchObject({
+      title: 'Camiseta básica',
+      age_group: 'adult',
+    });
 
     // The transient field never leaked onto the produto document.
     const produto = await getProdutoData(produtoId);
@@ -69,7 +77,9 @@ test.describe.serial('Produtos descrição e2e — Descrição + Google Merchant
 
   test('round-trips the saved values back into the form on reload', async ({ page }) => {
     await openDescricaoTab(page);
-    await expect(page.getByLabel('Descrição', { exact: true })).toHaveValue('Camiseta 100% algodão');
+    await expect(page.getByLabel('Descrição', { exact: true })).toHaveValue(
+      'Camiseta 100% algodão',
+    );
     await expect(page.getByLabel('Marca', { exact: true })).toHaveValue('Delfrance');
     await expect(page.getByLabel('Título', { exact: true })).toHaveValue('Camiseta básica');
   });

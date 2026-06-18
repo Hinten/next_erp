@@ -48,10 +48,7 @@ export interface ValidationIssue {
   message: string;
 }
 
-export interface ObjectViewProps<
-  S extends ZodObject<ZodRawShape>,
-  C extends ZodTypeAny = S,
-> {
+export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends ZodTypeAny = S> {
   title?: ReactNode;
   description?: ReactNode;
   /**

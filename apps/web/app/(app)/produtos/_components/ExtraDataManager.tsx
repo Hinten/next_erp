@@ -1,15 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, type MutableRefObject } from 'react';
-import {
-  Fieldset,
-  Select,
-  Stack,
-  Switch,
-  TagsInput,
-  Textarea,
-  TextInput,
-} from '@mantine/core';
+import { Fieldset, Select, Stack, Switch, TagsInput, Textarea, TextInput } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
 import {
   CONDICAO_PRODUTO_LABELS,
