@@ -3,7 +3,6 @@
 import { useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { setDoc } from 'firebase/firestore';
 import {
   Alert,
   Anchor,
@@ -19,8 +18,15 @@ import {
 import { notifications } from '@mantine/notifications';
 import { PageHeader } from '@delfrance/ui';
 import { useDocSnapshot } from '@delfrance/data/hooks';
+import {
+  buildPedidoPatch,
+  PedidoConflictError,
+  PedidoNothingChangedError,
+  savePedido,
+} from '@delfrance/data/pedido';
 import type { Pedido } from '@delfrance/schemas';
 import { PedidoForm } from '../../_components/PedidoForm';
+import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { StatusBadge } from '../../_components/StatusBadge';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -43,9 +49,30 @@ export default function EditarPedidoPage() {
   const [emitting, setEmitting] = useState(false);
   const nfeClient = useNFeClient();
 
-  async function handleSubmit(values: Pedido) {
-    await setDoc(docRef, values, { merge: true });
-    router.replace('/pedidos');
+  async function handleSubmit(values: Pedido, dirtyFields: Readonly<Record<string, unknown>>) {
+    // Partial save: write only the touched fields (never the whole doc), guarded
+    // against concurrent edits. The form never mutates `ultimaModificacao` (no
+    // input binds to it), so `values.ultimaModificacao` is still the value the
+    // doc was loaded with — the optimistic-concurrency base.
+    const patch = buildPedidoPatch(values, dirtyFields);
+    try {
+      await savePedido(createClientPedidoPort(getFirebaseFirestore()), {
+        pedidoId: params.id,
+        patch,
+        baseUltimaModificacao: values.ultimaModificacao ?? null,
+      });
+      router.replace('/pedidos');
+    } catch (err) {
+      if (err instanceof PedidoNothingChangedError) {
+        notifications.show({ color: 'yellow', message: err.message });
+        return;
+      }
+      if (err instanceof PedidoConflictError) {
+        showErrorNotification({ title: 'Pedido alterado', message: err.message });
+        return;
+      }
+      throw err;
+    }
   }
 
   async function handleEmitir() {

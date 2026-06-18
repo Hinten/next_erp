@@ -1,0 +1,12 @@
+/**
+ * Pedido domain use-cases behind an SDK-agnostic port (mirrors `../produto`).
+ * The web app and a future MCP/admin agent share this orchestration; each
+ * supplies its own {@link PedidoDataPort} adapter.
+ */
+export type { PedidoDataPort, PedidoDocData } from './port';
+export {
+  buildPedidoPatch,
+  savePedido,
+  PedidoConflictError,
+  PedidoNothingChangedError,
+} from './usecases';

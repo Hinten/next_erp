@@ -8,7 +8,7 @@ import { Alert, Button, Group, Stack, Tabs, Tooltip } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconExclamationCircle } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
-import { derivePedidoFreteTotals, type Pedido, pedidoSchema } from '@delfrance/schemas';
+import { derivePedidoTotals, pedidoPageIssues, type Pedido, pedidoSchema } from '@delfrance/schemas';
 import { useUnsavedChangesGuard } from '@delfrance/ui';
 import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
@@ -30,7 +30,12 @@ export interface PedidoFormProps {
    */
   pedidoId?: string;
   submitLabel?: string;
-  onSubmit: (values: Pedido) => Promise<void>;
+  /**
+   * Receives the resolved (validate-what-you-save) doc values plus RHF's
+   * `dirtyFields` so the edit page can build a partial patch (`buildPedidoPatch`)
+   * and write only the touched fields. Create-mode callers ignore `dirtyFields`.
+   */
+  onSubmit: (values: Pedido, dirtyFields: Readonly<Record<string, unknown>>) => Promise<void>;
 }
 
 const EMPTY_DEFAULTS: PedidoFormState = {
@@ -108,37 +113,45 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
     return item;
   });
   const freteInicial = normalizeFreteInicial(rest.freteInicial);
-  const totals = derivePedidoFreteTotals({
+  const itens = regroupItens(cleanItens);
+  // `itensIds` mirrors the legacy denormalized produtoUid list (the `itens` map
+  // keys), recomputed here so it never drifts from the items.
+  const itensIds = Object.keys(itens);
+  // Full factory port — derives every money cache the doc stores, so the saved
+  // doc and the dirty patch (buildPedidoPatch) see consistent values.
+  const totals = derivePedidoTotals({
     itens: cleanItens,
     descontoTotal: rest.descontoTotal ?? 0,
     freteInicial,
+    itensDevolvidos: rest.itensDevolvidos,
   });
   const merged = {
     ...rest,
-    itens: regroupItens(cleanItens),
+    itens,
+    itensIds,
     freteInicial,
     valorCobrado: totals.valorCobrado,
+    valorCusto: totals.valorCusto,
     valorFreteInicial: totals.valorFreteInicial,
     custoFreteInicial: totals.custoFreteInicial,
+    valorDevolucao: totals.valorDevolucao,
+    valorCustoDevolvidos: totals.valorCustoDevolvidos,
   };
   type ResolverResult = Awaited<ReturnType<Resolver<PedidoFormState, unknown, Pedido>>>;
   const result = (await baseResolver(merged, context, options)) as ResolverResult;
 
-  // UI-required fields the wire schema leaves loose: `integracaoPedidoOuterRef`
-  // is `z.unknown()` (accepts null) and `itens` defaults to `{}`, so without
-  // this an empty submit passes validation and saves silently. Enforce them
-  // form-side only — keeping them out of `pedidoSchema` avoids breaking
-  // parse/read-back of legacy docs with null/empty values. Both errors route
-  // to the Principal tab (see `TAB_OF_FIELD`).
+  // Cross-document / UI-required rules live in the page model (single source);
+  // the resolver runs the subset that applies to the doc form — at-least-one-item
+  // and integração required — and routes each issue to its tab. Keeping these out
+  // of the plain `pedidoSchema` avoids breaking parse/read-back of legacy docs.
+  // ('itens' is held by the form as the synthetic `_itensFlat` field.)
   const extraErrors: Record<string, { type: string; message: string }> = {};
-  if (rest.integracaoPedidoOuterRef == null) {
-    extraErrors.integracaoPedidoOuterRef = {
-      type: 'required',
-      message: 'Selecione a integração.',
-    };
-  }
-  if (cleanItens.length === 0) {
-    extraErrors._itensFlat = { type: 'required', message: 'Adicione ao menos um item.' };
+  for (const issue of pedidoPageIssues({
+    itens: merged.itens,
+    integracaoPedidoOuterRef: merged.integracaoPedidoOuterRef,
+  })) {
+    const field = issue.path === 'itens' ? '_itensFlat' : issue.path;
+    extraErrors[field] = { type: 'pageModel', message: issue.message };
   }
   if (Object.keys(extraErrors).length === 0) return result;
   return { values: {}, errors: { ...result.errors, ...extraErrors } } as unknown as ResolverResult;
@@ -185,7 +198,7 @@ export function PedidoForm({
   async function handleSubmit(values: Pedido) {
     setSubmitError(null);
     try {
-      await onSubmit(values);
+      await onSubmit(values, form.formState.dirtyFields as Readonly<Record<string, unknown>>);
     } catch (err) {
       if (err instanceof FirebaseError) {
         setSubmitError(err.message);
