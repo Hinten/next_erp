@@ -11,7 +11,15 @@
  * of produto's fire-and-forget `commit(ops)`.
  */
 
-/** A raw pedido document as the transaction reads it (null when missing). */
+/**
+ * A pedido document as the use-cases read it inside the transaction (null when
+ * the doc is missing). Field values MUST already be in the parsed **wire shape**
+ * the use-cases expect — in particular `ultimaModificacao` is a `number | null`
+ * (µs epoch), NOT a raw Firestore `Timestamp`. The client adapter gets this for
+ * free by reading through the Zod converter; a firebase-admin adapter MUST
+ * normalize SDK types (e.g. `Timestamp` → µs epoch) before calling `apply`, or
+ * the concurrency guard would never match and conflict permanently.
+ */
 export type PedidoDocData = Record<string, unknown> | null;
 
 export interface PedidoDataPort {

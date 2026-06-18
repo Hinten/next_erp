@@ -124,16 +124,50 @@ describe('savePedido', () => {
     ).rejects.toMatchObject({ name: 'PedidoConflictError', current });
   });
 
-  it('throws PedidoConflictError when the doc vanished', async () => {
+  it('throws PedidoConflictError with a "deleted" message when the doc vanished', async () => {
     const { port } = fakePort(null);
+    const err = await savePedido(port, {
+      pedidoId: 'x',
+      patch: { numero: 'A' },
+      baseUltimaModificacao: 10,
+    }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(PedidoConflictError);
+    expect((err as PedidoConflictError).current).toBeNull();
+    expect((err as Error).message).toMatch(/excluíd/i);
+  });
+
+  it('treats a null base as a real baseline (null is NOT a skip sentinel)', async () => {
+    // Loaded with no ultimaModificacao, still none → guard passes.
+    const ok = fakePort({ ultimaModificacao: null }, 5);
+    await savePedido(ok.port, {
+      pedidoId: 'x',
+      patch: { numero: 'A' },
+      baseUltimaModificacao: null,
+    });
+    expect(ok.written()).toEqual({ numero: 'A', ultimaModificacao: 5 });
+
+    // Someone stamped it since load (null → number) → conflict, not a clobber.
+    const moved = fakePort({ ultimaModificacao: 20 });
     await expect(
-      savePedido(port, { pedidoId: 'x', patch: { numero: 'A' }, baseUltimaModificacao: 10 }),
+      savePedido(moved.port, {
+        pedidoId: 'x',
+        patch: { numero: 'A' },
+        baseUltimaModificacao: null,
+      }),
     ).rejects.toBeInstanceOf(PedidoConflictError);
   });
 
-  it('skips the guard when baseUltimaModificacao is null (override)', async () => {
+  it('force bypasses the guard (F3 "salvar mesmo assim")', async () => {
     const { port, written } = fakePort({ ultimaModificacao: 20 }, 5);
-    await savePedido(port, { pedidoId: 'x', patch: { numero: 'A' }, baseUltimaModificacao: null });
+    await savePedido(port, {
+      pedidoId: 'x',
+      patch: { numero: 'A' },
+      baseUltimaModificacao: 10,
+      force: true,
+    });
     expect(written()).toEqual({ numero: 'A', ultimaModificacao: 5 });
   });
 });

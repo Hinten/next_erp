@@ -84,11 +84,16 @@ export class PedidoNothingChangedError extends Error {
 /**
  * Thrown when the pedido changed in Firestore since it was loaded — the
  * optimistic-concurrency guard (legacy `cadastroPedidoProvider.save`'s re-read).
- * Carries the current doc so the UI can show the conflict (F3 modal).
+ * Carries the current doc (null when the doc was deleted) so the UI can show the
+ * conflict (F3 modal); the message is tailored to the deleted vs edited case.
  */
 export class PedidoConflictError extends Error {
   constructor(readonly current: PedidoDocData) {
-    super('O pedido foi alterado por outra pessoa. Recarregue antes de salvar.');
+    super(
+      current === null
+        ? 'O pedido não existe mais — pode ter sido excluído. Recarregue a lista.'
+        : 'O pedido foi alterado por outra pessoa. Recarregue antes de salvar.',
+    );
     this.name = 'PedidoConflictError';
   }
 }
@@ -96,25 +101,31 @@ export class PedidoConflictError extends Error {
 /**
  * Persist a pedido patch with an optimistic-concurrency guard. Inside a
  * transaction it re-reads the doc and aborts (`PedidoConflictError`) when its
- * `ultimaModificacao` no longer matches the value loaded into the form; pass
- * `baseUltimaModificacao: null` to skip the guard (e.g. F3's "salvar mesmo
- * assim" override after the user refreshes). Always stamps a fresh
- * `ultimaModificacao` on the write (after the no-op check, so an unchanged save
- * still throws `PedidoNothingChangedError`).
+ * `ultimaModificacao` no longer matches `baseUltimaModificacao` (the value
+ * loaded into the form). `baseUltimaModificacao` is a real baseline, not a
+ * sentinel: `null` means "the doc had no `ultimaModificacao` when loaded", and a
+ * concurrent write that stamps one (null → number) is correctly flagged as a
+ * conflict. To deliberately bypass the guard — F3's "salvar mesmo assim" after
+ * the user reviewed the conflicting changes — pass `force: true`. Always stamps a
+ * fresh `ultimaModificacao` on the write (after the no-op check, so an unchanged
+ * save still throws `PedidoNothingChangedError`).
  */
 export async function savePedido(
   port: PedidoDataPort,
   args: {
     pedidoId: string;
     patch: Record<string, unknown>;
+    /** The pedido's `ultimaModificacao` as loaded (µs epoch, or null if absent). */
     baseUltimaModificacao: number | null;
+    /** Bypass the concurrency guard (F3 override). Default false. */
+    force?: boolean;
   },
 ): Promise<void> {
   if (Object.keys(args.patch).length === 0) throw new PedidoNothingChangedError();
 
   await port.updatePedido(args.pedidoId, (current) => {
     if (current === null) throw new PedidoConflictError(null);
-    if (args.baseUltimaModificacao !== null) {
+    if (!args.force) {
       const currentUM =
         typeof current.ultimaModificacao === 'number' ? current.ultimaModificacao : null;
       if (currentUM !== args.baseUltimaModificacao) throw new PedidoConflictError(current);
