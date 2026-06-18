@@ -49,14 +49,13 @@ describe('buildPedidoPatch', () => {
       _itensFlat: [{ precoDeVenda: true }],
       error: true,
       id: true,
-      oldEstado: true,
       ehSaidaOriginal: true,
     });
-    // _itensFlat dirty → items branch; error/id/oldEstado/ehSaidaOriginal dropped
+    // _itensFlat dirty → items branch; error/id/ehSaidaOriginal dropped
     expect(patch).not.toHaveProperty('error');
     expect(patch).not.toHaveProperty('_itensFlat');
     expect(patch).not.toHaveProperty('id');
-    expect(patch).not.toHaveProperty('oldEstado');
+    expect(patch).not.toHaveProperty('ehSaidaOriginal');
   });
 
   it('pulls itens + itensIds + every cache when items change', () => {

@@ -18,9 +18,9 @@ const DERIVED_CACHES = [
 /**
  * Form-only / transient keys that must never reach the pedido doc: the
  * synthetic flat-items array, the persisted error, and the page-model transient
- * context (`id` / `oldEstado` / `ehSaidaOriginal`).
+ * validation context (`id` / `ehSaidaOriginal`).
  */
-const NON_DOC_KEYS = new Set(['_itensFlat', 'error', 'id', 'oldEstado', 'ehSaidaOriginal']);
+const NON_DOC_KEYS = new Set(['_itensFlat', 'error', 'id', 'ehSaidaOriginal']);
 
 /**
  * Build the **partial** Firestore patch for a pedido update from the resolved
