@@ -7,3 +7,4 @@ import './options';
  */
 export { resizeProductImage } from './product-images/resizeProductImage';
 export { reconcileProductImages } from './product-images/reconcileSweep';
+export { onArquivoDeleted } from './arquivos/onArquivoDeleted';

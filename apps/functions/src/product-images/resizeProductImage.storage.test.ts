@@ -225,6 +225,9 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
       return d.exists && d.data()?.resizeState === 'done' ? d : null;
     });
     expect(orig.data()?.resizeState).toBe('done');
+    // The same trigger run flips uploadState → 'finalized' (markUploadFinalized
+    // runs before the resize), so by the time resizeState is 'done' it is set.
+    expect(orig.data()?.uploadState).toBe('finalized');
 
     // Simulate a straggler (issue #189): drop one derivative doc, then run the
     // reconcile core — what the scheduled sweep calls — and assert it backfills
