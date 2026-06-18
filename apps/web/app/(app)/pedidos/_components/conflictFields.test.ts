@@ -2,54 +2,59 @@ import { describe, expect, it } from 'vitest';
 import { conflictFields } from './conflictFields';
 
 describe('conflictFields', () => {
-  it('lists fields where the user value differs from the server, with schema labels', () => {
+  it('lists fields changed remotely, with schema labels + loaded/server values', () => {
     const result = conflictFields(
-      { numero: 'B', descontoTotal: 10 },
-      { numero: 'A', descontoTotal: 10 },
+      { numero: 'A', descontoTotal: 5 },
+      { numero: 'B', descontoTotal: 5 },
+      {},
     );
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({
       field: 'numero',
       label: 'Número',
-      server: 'A',
-      mine: 'B',
+      loaded: 'A',
+      server: 'B',
       complex: false,
+      overwritten: false,
     });
   });
 
-  it('omits fields whose value matches the server', () => {
-    expect(conflictFields({ numero: 'A' }, { numero: 'A' })).toEqual([]);
+  it('is empty when nothing changed remotely', () => {
+    expect(conflictFields({ numero: 'A' }, { numero: 'A' }, { numero: 'Z' })).toEqual([]);
   });
 
-  it('treats a missing (undefined) server value as null', () => {
-    const result = conflictFields({ observacoesInternas: 'x' }, {});
-    expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({ server: null, mine: 'x' });
-  });
-
-  it('flags whitelisted complex fields (itens) as complex with a clean label', () => {
+  it('flags overwritten=true when the pending patch also touches the changed field', () => {
+    // Both the backend and the user changed cliente → real data-loss risk.
     const result = conflictFields(
-      { itens: { p1: [{ quantidade: 2 }] } },
+      { clientePedidoOuterRef: 'documents/clientes/1' },
+      { clientePedidoOuterRef: 'documents/clientes/2' },
+      { clientePedidoOuterRef: 'documents/clientes/3' },
+    );
+    expect(result[0]).toMatchObject({ overwritten: true });
+  });
+
+  it('flags overwritten=false when the user is not touching the remote change', () => {
+    // The reported scenario: backend changed itens, the user only changed cliente.
+    const result = conflictFields(
       { itens: { p1: [{ quantidade: 1 }] } },
+      { itens: { p1: [{ quantidade: 5 }] } },
+      { clientePedidoOuterRef: 'documents/clientes/1' },
     );
     expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({ complex: true, label: 'Itens' });
+    expect(result[0]).toMatchObject({
+      field: 'itens',
+      label: 'Itens',
+      complex: true,
+      overwritten: false,
+    });
   });
 
-  it('flags any object/array value as complex (e.g. outer refs)', () => {
-    const result = conflictFields(
-      { vendedorPedidoOuterRef: { id: 'a' } },
-      { vendedorPedidoOuterRef: { id: 'b' } },
-    );
-    expect(result[0]).toMatchObject({ complex: true });
-  });
-
-  it('skips ultimaModificacao (the guard field)', () => {
-    expect(conflictFields({ ultimaModificacao: 999 }, { ultimaModificacao: 1 })).toEqual([]);
+  it('ignores ultimaModificacao stamp-only differences', () => {
+    expect(conflictFields({ ultimaModificacao: 1 }, { ultimaModificacao: 2 }, {})).toEqual([]);
   });
 
   it('falls back to the field name when there is no schema label', () => {
-    const result = conflictFields({ algumCampoNovo: 1 }, { algumCampoNovo: 2 });
+    const result = conflictFields({ algumCampoNovo: 1 }, { algumCampoNovo: 2 }, {});
     expect(result[0]).toMatchObject({ label: 'algumCampoNovo' });
   });
 });

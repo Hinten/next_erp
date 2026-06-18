@@ -1,20 +1,25 @@
 import type { ZodTypeAny } from 'zod';
 import { pedidoSchema } from '@delfrance/schemas';
-import { parseZodDescription, valuesEqual } from '@delfrance/ui';
+import { remotelyChangedFields } from '@delfrance/data/pedido';
+import { parseZodDescription } from '@delfrance/ui';
 
-/** One field the user would overwrite, with the server vs the user's value. */
+/** One field that changed remotely since the editor opened. */
 export interface ConflictField {
   field: string;
   label: string;
   /** Objects/arrays we don't render inline (itens, frete, refs) — shown as "alterado". */
   complex: boolean;
+  /** The value as the user loaded it. */
+  loaded: unknown;
+  /** The value currently in Firestore. */
   server: unknown;
-  mine: unknown;
+  /** True when the pending save would overwrite this remotely-changed field. */
+  overwritten: boolean;
 }
 
 /**
  * Doc fields whose values are objects/arrays too large to show inline; the modal
- * lists them as "alterado" instead of a server-vs-yours value.
+ * lists them as "alterado" instead of a loaded-vs-server value.
  */
 const COMPLEX_FIELDS = new Set([
   'itens',
@@ -37,32 +42,27 @@ function labelFor(field: string): string {
 const isComplexValue = (v: unknown): boolean => v !== null && typeof v === 'object';
 
 /**
- * The fields the pending save (`patch` = `buildPedidoPatch`) would overwrite
- * where the server's CURRENT value (`current` = the conflicting remote doc from
- * `PedidoConflictError`) differs from the user's value. With partial save this is
- * precise: if the user's edits don't overlap what changed remotely, the list is
- * empty — i.e. the optimistic guard tripped but there is no real field conflict.
- *
- * `ultimaModificacao` is excluded (it's the guard field — it always differs, and
- * `buildPedidoPatch` doesn't even include it).
+ * The fields that changed in Firestore since the editor opened — `baseline` (the
+ * doc as loaded) vs `current` (the conflicting remote doc from
+ * `PedidoConflictError`), via the shared `remotelyChangedFields` (so the UI and
+ * the use-case agree on what "changed" means). Each row flags whether the pending
+ * save (`patch` = `buildPedidoPatch`) would overwrite it — a real data-loss risk —
+ * vs a remote change the user simply isn't touching.
  */
 export function conflictFields(
-  patch: Record<string, unknown>,
+  baseline: Record<string, unknown>,
   current: Record<string, unknown>,
+  patch: Record<string, unknown>,
 ): ConflictField[] {
-  const out: ConflictField[] = [];
-  for (const field of Object.keys(patch)) {
-    if (field === 'ultimaModificacao') continue;
-    const mine = patch[field];
-    const server = current[field] ?? null;
-    if (valuesEqual(mine, server)) continue;
-    out.push({
-      field,
-      label: labelFor(field),
-      complex: COMPLEX_FIELDS.has(field) || isComplexValue(mine) || isComplexValue(server),
-      server,
-      mine,
-    });
-  }
-  return out;
+  return remotelyChangedFields(baseline, current).map((field) => ({
+    field,
+    label: labelFor(field),
+    complex:
+      COMPLEX_FIELDS.has(field) ||
+      isComplexValue(baseline[field]) ||
+      isComplexValue(current[field]),
+    loaded: baseline[field] ?? null,
+    server: current[field] ?? null,
+    overwritten: Object.prototype.hasOwnProperty.call(patch, field),
+  }));
 }

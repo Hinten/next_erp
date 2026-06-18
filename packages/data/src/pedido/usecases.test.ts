@@ -5,6 +5,7 @@ import {
   PedidoConflictError,
   PedidoNothingChangedError,
   buildPedidoPatch,
+  remotelyChangedFields,
   savePedido,
 } from './usecases';
 
@@ -102,35 +103,62 @@ function fakePort(
   };
 }
 
+describe('remotelyChangedFields', () => {
+  it('is empty when the snapshot is unchanged', () => {
+    expect(
+      remotelyChangedFields({ numero: 'A', itens: { p1: 1 } }, { numero: 'A', itens: { p1: 1 } }),
+    ).toEqual([]);
+  });
+
+  it('detects a backend edit that did NOT bump ultimaModificacao (the bug)', () => {
+    // Raw Firebase-console edit: itens changed, ultimaModificacao identical.
+    const baseline = { itens: { p1: [{ quantidade: 1 }] }, ultimaModificacao: 99 };
+    const current = { itens: { p1: [{ quantidade: 5 }] }, ultimaModificacao: 99 };
+    expect(remotelyChangedFields(baseline, current)).toEqual(['itens']);
+  });
+
+  it('ignores ultimaModificacao / timestamp stamp-only differences', () => {
+    expect(
+      remotelyChangedFields(
+        { numero: 'A', ultimaModificacao: 1, timestamp: 1 },
+        { numero: 'A', ultimaModificacao: 2, timestamp: 2 },
+      ),
+    ).toEqual([]);
+  });
+
+  it('reports a key present on only one side', () => {
+    expect(remotelyChangedFields({ a: 1 }, { a: 1, b: 2 })).toEqual(['b']);
+  });
+});
+
 describe('savePedido', () => {
+  const baseline = { numero: 'A', itens: { p1: [{ quantidade: 1 }] }, ultimaModificacao: 10 };
+
   it('throws PedidoNothingChangedError on an empty patch', async () => {
-    const { port } = fakePort({ ultimaModificacao: 1 });
-    await expect(
-      savePedido(port, { pedidoId: 'x', patch: {}, baseUltimaModificacao: 1 }),
-    ).rejects.toBeInstanceOf(PedidoNothingChangedError);
+    const { port } = fakePort(baseline);
+    await expect(savePedido(port, { pedidoId: 'x', patch: {}, baseline })).rejects.toBeInstanceOf(
+      PedidoNothingChangedError,
+    );
   });
 
-  it('writes the patch + a fresh ultimaModificacao when the base matches', async () => {
-    const { port, written } = fakePort({ ultimaModificacao: 10 }, 999);
-    await savePedido(port, { pedidoId: 'x', patch: { numero: 'A' }, baseUltimaModificacao: 10 });
-    expect(written()).toEqual({ numero: 'A', ultimaModificacao: 999 });
+  it('writes the patch + a fresh ultimaModificacao when the snapshot is unchanged', async () => {
+    const { port, written } = fakePort({ ...baseline }, 999);
+    await savePedido(port, { pedidoId: 'x', patch: { numero: 'B' }, baseline });
+    expect(written()).toEqual({ numero: 'B', ultimaModificacao: 999 });
   });
 
-  it('throws PedidoConflictError when the doc moved since load', async () => {
-    const current = { ultimaModificacao: 20 };
+  it('conflicts on a backend edit even though ultimaModificacao is unchanged', async () => {
+    // The reported bug: items changed directly in Firebase, no timestamp bump.
+    const current = { ...baseline, itens: { p1: [{ quantidade: 5 }] } };
     const { port } = fakePort(current);
     await expect(
-      savePedido(port, { pedidoId: 'x', patch: { numero: 'A' }, baseUltimaModificacao: 10 }),
+      savePedido(port, { pedidoId: 'x', patch: { numero: 'B' }, baseline }),
     ).rejects.toMatchObject({ name: 'PedidoConflictError', current });
   });
 
   it('throws PedidoConflictError with a "deleted" message when the doc vanished', async () => {
     const { port } = fakePort(null);
-    const err = await savePedido(port, {
-      pedidoId: 'x',
-      patch: { numero: 'A' },
-      baseUltimaModificacao: 10,
-    }).then(
+    const err = await savePedido(port, { pedidoId: 'x', patch: { numero: 'B' }, baseline }).then(
       () => null,
       (e: unknown) => e,
     );
@@ -139,33 +167,12 @@ describe('savePedido', () => {
     expect((err as Error).message).toMatch(/excluíd/i);
   });
 
-  it('treats a null base as a real baseline (null is NOT a skip sentinel)', async () => {
-    // Loaded with no ultimaModificacao, still none → guard passes.
-    const ok = fakePort({ ultimaModificacao: null }, 5);
-    await savePedido(ok.port, {
-      pedidoId: 'x',
-      patch: { numero: 'A' },
-      baseUltimaModificacao: null,
-    });
-    expect(ok.written()).toEqual({ numero: 'A', ultimaModificacao: 5 });
-
-    // Someone stamped it since load (null → number) → conflict, not a clobber.
-    const moved = fakePort({ ultimaModificacao: 20 });
-    await expect(
-      savePedido(moved.port, {
-        pedidoId: 'x',
-        patch: { numero: 'A' },
-        baseUltimaModificacao: null,
-      }),
-    ).rejects.toBeInstanceOf(PedidoConflictError);
-  });
-
-  it('overrides a conflict by re-basing on the reviewed version (F3 "salvar mesmo assim")', async () => {
-    // First save saw base=10 but the doc is at 20 → conflict. The user reviews
-    // the version-20 doc and re-saves with base=20 → succeeds (and a FURTHER edit
-    // moving it past 20 would conflict again, never a blind clobber).
-    const { port, written } = fakePort({ ultimaModificacao: 20 }, 5);
-    await savePedido(port, { pedidoId: 'x', patch: { numero: 'A' }, baseUltimaModificacao: 20 });
-    expect(written()).toEqual({ numero: 'A', ultimaModificacao: 5 });
+  it('overrides a conflict by re-basing on the reviewed snapshot (F3 "salvar mesmo assim")', async () => {
+    // The user reviewed the version with quantidade=5; re-save with that as the
+    // baseline → succeeds (a FURTHER edit would conflict again, never a clobber).
+    const reviewed = { ...baseline, itens: { p1: [{ quantidade: 5 }] } };
+    const { port, written } = fakePort(reviewed, 5);
+    await savePedido(port, { pedidoId: 'x', patch: { numero: 'B' }, baseline: reviewed });
+    expect(written()).toEqual({ numero: 'B', ultimaModificacao: 5 });
   });
 });

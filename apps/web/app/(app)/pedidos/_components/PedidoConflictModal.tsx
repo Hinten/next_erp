@@ -1,12 +1,12 @@
 'use client';
 
-import { Alert, Button, Group, Modal, Stack, Table, Text } from '@mantine/core';
+import { Alert, Badge, Button, Group, Modal, Stack, Table, Text } from '@mantine/core';
 import { IconAlertTriangle } from '@tabler/icons-react';
 import type { ConflictField } from './conflictFields';
 
 export interface PedidoConflictModalProps {
   opened: boolean;
-  /** Fields the save would overwrite where the server differs (may be empty). */
+  /** Fields that changed in Firestore since the editor opened. */
   fields: ConflictField[];
   /** The "salvar mesmo assim" request is in flight. */
   saving: boolean;
@@ -24,10 +24,10 @@ function formatValue(v: unknown): string {
 
 /**
  * Shown when `savePedido` raises a `PedidoConflictError` (the pedido changed in
- * Firestore since it was loaded). Lists the fields the user would overwrite —
- * server value vs theirs — and lets them re-run the save with `force: true`
- * ("salvar mesmo assim") after reviewing, or cancel and keep editing. The F3
- * follow-up to the F2 optimistic-concurrency guard.
+ * Firestore since it was loaded — by another user OR a raw backend edit). Lists
+ * what changed remotely (loaded vs server) and flags which of those the save
+ * would overwrite, then lets the user re-save overriding the version they just
+ * reviewed ("salvar mesmo assim") or cancel. The F3 follow-up to the F2 guard.
  */
 export function PedidoConflictModal({
   opened,
@@ -36,50 +36,60 @@ export function PedidoConflictModal({
   onForceSave,
   onCancel,
 }: PedidoConflictModalProps) {
+  const anyOverwritten = fields.some((f) => f.overwritten);
+
   return (
     <Modal opened={opened} onClose={onCancel} title="Pedido alterado" centered size="lg">
       <Stack>
-        <Alert color="yellow" icon={<IconAlertTriangle size={18} />}>
-          Este pedido foi alterado por outra pessoa desde que você o abriu.
+        <Alert color={anyOverwritten ? 'red' : 'yellow'} icon={<IconAlertTriangle size={18} />}>
+          Este pedido foi alterado desde que você o abriu.{' '}
+          {anyOverwritten
+            ? 'Salvar vai SOBRESCREVER alterações marcadas abaixo.'
+            : 'Suas alterações não sobrescrevem as mudanças abaixo.'}
         </Alert>
 
-        {fields.length === 0 ? (
-          <Text>Suas alterações não conflitam com as dela. Deseja salvar mesmo assim?</Text>
-        ) : (
-          <>
-            <Text>
-              Salvar vai <b>sobrescrever</b> os campos abaixo com os seus valores:
-            </Text>
-            <Table withTableBorder withColumnBorders striped>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Campo</Table.Th>
-                  <Table.Th>No servidor</Table.Th>
-                  <Table.Th>Seu valor</Table.Th>
+        {fields.length > 0 && (
+          <Table withTableBorder withColumnBorders striped>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Campo</Table.Th>
+                <Table.Th>Você carregou</Table.Th>
+                <Table.Th>No servidor</Table.Th>
+                <Table.Th>Sua gravação</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {fields.map((f) => (
+                <Table.Tr key={f.field}>
+                  <Table.Td>{f.label}</Table.Td>
+                  <Table.Td>
+                    {f.complex ? <Text c="dimmed">alterado</Text> : formatValue(f.loaded)}
+                  </Table.Td>
+                  <Table.Td>
+                    {f.complex ? <Text c="dimmed">alterado</Text> : formatValue(f.server)}
+                  </Table.Td>
+                  <Table.Td>
+                    {f.overwritten ? (
+                      <Badge color="red" variant="light">
+                        Sobrescreve
+                      </Badge>
+                    ) : (
+                      <Text c="dimmed" size="sm">
+                        mantém o servidor
+                      </Text>
+                    )}
+                  </Table.Td>
                 </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {fields.map((f) => (
-                  <Table.Tr key={f.field}>
-                    <Table.Td>{f.label}</Table.Td>
-                    <Table.Td>
-                      {f.complex ? <Text c="dimmed">alterado</Text> : formatValue(f.server)}
-                    </Table.Td>
-                    <Table.Td>
-                      {f.complex ? <Text c="dimmed">alterado</Text> : formatValue(f.mine)}
-                    </Table.Td>
-                  </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
-          </>
+              ))}
+            </Table.Tbody>
+          </Table>
         )}
 
         <Group justify="flex-end">
           <Button variant="default" onClick={onCancel} disabled={saving}>
             Cancelar
           </Button>
-          <Button color="orange" onClick={onForceSave} loading={saving}>
+          <Button color={anyOverwritten ? 'red' : 'orange'} onClick={onForceSave} loading={saving}>
             Salvar mesmo assim
           </Button>
         </Group>

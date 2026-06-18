@@ -7,6 +7,7 @@ export type { PedidoDataPort, PedidoDocData } from './port';
 export {
   buildPedidoPatch,
   savePedido,
+  remotelyChangedFields,
   PedidoConflictError,
   PedidoNothingChangedError,
 } from './usecases';

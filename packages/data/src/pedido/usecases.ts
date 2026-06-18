@@ -1,4 +1,4 @@
-import type { Pedido } from '@delfrance/schemas';
+import { valuesEqual, type Pedido } from '@delfrance/schemas';
 import type { PedidoDataPort, PedidoDocData } from './port';
 
 /**
@@ -99,37 +99,67 @@ export class PedidoConflictError extends Error {
 }
 
 /**
- * Persist a pedido patch with an optimistic-concurrency guard. Inside a
- * transaction it re-reads the doc and aborts (`PedidoConflictError`) when its
- * `ultimaModificacao` no longer matches `baseUltimaModificacao` (the version the
- * caller is overwriting). `baseUltimaModificacao` is a real baseline, not a
- * sentinel: `null` means "the doc had no `ultimaModificacao` when loaded", and a
- * concurrent write that stamps one (null → number) is correctly flagged as a
- * conflict.
+ * Doc metadata excluded from the concurrency snapshot: `ultimaModificacao` /
+ * `timestamp` are stamps, not user data, so a difference in them alone is not a
+ * meaningful conflict to warn about.
+ */
+const CONCURRENCY_IGNORE = new Set(['ultimaModificacao', 'timestamp']);
+
+/**
+ * Field keys whose value changed between the doc as loaded into the editor
+ * (`baseline`) and the doc now in Firestore (`current`) — i.e. what someone (or
+ * something) else changed since the editor opened. Structural + order-independent
+ * (`valuesEqual`); metadata stamps are ignored.
  *
- * There is no "force" escape hatch by design: F3's "salvar mesmo assim" overrides
- * a conflict by re-calling with `baseUltimaModificacao` set to the version the
- * user just reviewed — so a *further* edit that lands after the review is still
- * caught instead of being clobbered blindly. Always stamps a fresh
- * `ultimaModificacao` on the write (after the no-op check, so an unchanged save
- * still throws `PedidoNothingChangedError`).
+ * This is the heart of the guard: comparing a SNAPSHOT, not just
+ * `ultimaModificacao`, is what lets it catch raw backend edits (a Firebase
+ * console / script change that never stamps `ultimaModificacao`) — exactly the
+ * case a timestamp-only check silently misses.
+ */
+export function remotelyChangedFields(
+  baseline: Record<string, unknown>,
+  current: Record<string, unknown>,
+): string[] {
+  const keys = new Set([...Object.keys(baseline), ...Object.keys(current)]);
+  const changed: string[] = [];
+  for (const key of keys) {
+    if (CONCURRENCY_IGNORE.has(key)) continue;
+    if (!valuesEqual(baseline[key], current[key])) changed.push(key);
+  }
+  return changed;
+}
+
+/**
+ * Persist a pedido patch with a SNAPSHOT optimistic-concurrency guard. Inside a
+ * transaction it re-reads the doc and aborts (`PedidoConflictError`) when any
+ * field differs from `baseline` (the doc as it was loaded into the editor) —
+ * porting the legacy `cadastroPedidoProvider.save` "if changed since load,
+ * abort". Unlike a bare `ultimaModificacao` check, this catches backend edits
+ * that never stamp the timestamp.
+ *
+ * There is no "force" escape hatch: F3's "salvar mesmo assim" overrides a
+ * conflict by re-calling with `baseline` set to the version the user JUST
+ * reviewed — so a *further* edit landing after the review is still caught instead
+ * of clobbered blindly. Always stamps a fresh `ultimaModificacao` on the write
+ * (after the no-op check, so an unchanged save still throws
+ * `PedidoNothingChangedError`).
  */
 export async function savePedido(
   port: PedidoDataPort,
   args: {
     pedidoId: string;
     patch: Record<string, unknown>;
-    /** The `ultimaModificacao` of the doc version being overwritten (µs epoch, or null). */
-    baseUltimaModificacao: number | null;
+    /** The pedido document as loaded into the editor — the concurrency baseline. */
+    baseline: Record<string, unknown>;
   },
 ): Promise<void> {
   if (Object.keys(args.patch).length === 0) throw new PedidoNothingChangedError();
 
   await port.updatePedido(args.pedidoId, (current) => {
     if (current === null) throw new PedidoConflictError(null);
-    const currentUM =
-      typeof current.ultimaModificacao === 'number' ? current.ultimaModificacao : null;
-    if (currentUM !== args.baseUltimaModificacao) throw new PedidoConflictError(current);
+    if (remotelyChangedFields(args.baseline, current).length > 0) {
+      throw new PedidoConflictError(current);
+    }
     return { ...args.patch, ultimaModificacao: port.now() };
   });
 }
