@@ -37,15 +37,22 @@ test.describe
     await cleanupByNamePrefix('produtos', prefix);
   });
 
+  // The "Descrição" tab panel ALSO carries the accessible name "Descrição"
+  // (Mantine's tabpanel is aria-labelledby its tab), so `getByLabel('Descrição')`
+  // is ambiguous — scope to the textarea via its `textbox` role.
+  const descricaoBox = (page: Page) =>
+    page.getByRole('textbox', { name: 'Descrição', exact: true });
+
   async function openDescricaoTab(page: Page) {
     await page.goto(`/produtos/${produtoId}/editar`);
     await page.getByRole('tab', { name: 'Descrição' }).click();
-    await expect(page.getByLabel('Descrição', { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(descricaoBox(page)).toBeVisible({ timeout: 15_000 });
   }
 
   test('persists the extraData singleton and keeps it off the produto doc', async ({ page }) => {
     await openDescricaoTab(page);
-    await fillField(page, 'Descrição', 'Camiseta 100% algodão');
+    await descricaoBox(page).fill('Camiseta 100% algodão');
+    await descricaoBox(page).blur();
     await fillField(page, 'Marca', 'Delfrance');
     await selectField(page, 'Condição', 'Usado');
     // Google Merchant block.
@@ -77,9 +84,7 @@ test.describe
 
   test('round-trips the saved values back into the form on reload', async ({ page }) => {
     await openDescricaoTab(page);
-    await expect(page.getByLabel('Descrição', { exact: true })).toHaveValue(
-      'Camiseta 100% algodão',
-    );
+    await expect(descricaoBox(page)).toHaveValue('Camiseta 100% algodão');
     await expect(page.getByLabel('Marca', { exact: true })).toHaveValue('Delfrance');
     await expect(page.getByLabel('Título', { exact: true })).toHaveValue('Camiseta básica');
   });
