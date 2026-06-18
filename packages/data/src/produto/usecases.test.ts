@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import { produtoExtraDataSchema } from '@delfrance/schemas';
 import type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
 import {
   ProdutoReferencedError,
   applyPrecosChange,
+  buildExtraDataWriteOps,
   buildPrecoHistoryOps,
   deleteProdutoCascade,
   findProdutoReferences,
   propagatePrecosToChildren,
   recordPrecoHistory,
+  saveProdutoExtraData,
 } from './usecases';
 
 interface MemoryOpts {
@@ -62,6 +65,31 @@ describe('preco/custo history ops', () => {
     const { port, committed } = memoryPort();
     await recordPrecoHistory(port, 'p1', []);
     expect(committed).toEqual([]);
+  });
+});
+
+describe('produto extra data (Descrição + Google Merchant singleton)', () => {
+  it('buildExtraDataWriteOps targets the fixed singleton path and fills wire defaults', () => {
+    const ops = buildExtraDataWriteOps('p1', produtoExtraDataSchema.parse({ descricao: 'Olá' }));
+    expect(ops).toHaveLength(1);
+    const op = ops[0]!;
+    expect(op.type).toBe('set');
+    expect(op.path).toBe('produtos/p1/extraData/singleton');
+    if (op.type !== 'set') throw new Error('expected a set op');
+    // The use-case parses, so the persisted doc carries the wire defaults
+    // (condicao=1=novo, coteudoAdulto=false) alongside the edited field.
+    expect(op.data).toMatchObject({ descricao: 'Olá', condicao: 1, coteudoAdulto: false });
+  });
+
+  it('saveProdutoExtraData commits exactly one set op at the singleton path', async () => {
+    const { port, committed } = memoryPort();
+    await saveProdutoExtraData(port, 'p9', produtoExtraDataSchema.parse({ marca: 'Acme' }));
+    expect(committed).toHaveLength(1);
+    expect(committed[0]).toHaveLength(1);
+    expect(committed[0]![0]).toMatchObject({
+      type: 'set',
+      path: 'produtos/p9/extraData/singleton',
+    });
   });
 });
 

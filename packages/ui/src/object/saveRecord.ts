@@ -1,4 +1,5 @@
 import {
+  type DocumentReference,
   type Firestore,
   type Transaction,
   collection as fsCollection,
@@ -11,6 +12,21 @@ import { type CollectionHandle, type PathContext } from '@delfrance/data';
 import { writeAuditEntry } from '@delfrance/data/audit';
 import { isEmpty, pickDirty } from './diff';
 
+/**
+ * A sibling document write that must ride the SAME transaction as the main
+ * record — so the two commit together or not at all, in a single round-trip.
+ * The motivating case: a produto's `extraData` singleton, which on a flaky
+ * connection used to be a separate `writeBatch` that could be lost while the
+ * produto doc committed (orphan state). `ref` is a converter-bound
+ * `DocumentReference` (the caller resolves it via a `defineCollection` handle);
+ * `set` runs the converter (validation), `update` is a partial patch.
+ */
+export interface TransactionWrite {
+  type: 'set' | 'update';
+  ref: DocumentReference<unknown>;
+  data: Record<string, unknown>;
+}
+
 export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, unknown>> {
   db: Firestore;
   collection: CollectionHandle<S>;
@@ -22,6 +38,15 @@ export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, 
   dirtyFields: Partial<Record<keyof T, unknown>>;
   /** Uid threaded through to the audit entry. */
   currentUserUid: string;
+  /**
+   * Additional documents to write atomically with the main record, in the SAME
+   * transaction. Called with the resolved record id (the freshly-minted id on
+   * create), so a sibling under that id — e.g. `produtos/<id>/extraData/singleton`
+   * — can target the right path. The main-record write is SKIPPED when its patch
+   * is empty but siblings exist (so a save that only touched a sibling still
+   * commits it); `NothingChangedError` is thrown only when BOTH are empty.
+   */
+  siblingWrites?: (id: string) => TransactionWrite[];
   /**
    * Wire unit for the `ultimaModificacao` stamp, resolved from the schema by
    * the caller (ObjectView reads the field descriptor). `'iso'` (the default)
@@ -67,13 +92,36 @@ export async function saveRecord<
     ? (pickDirty(input.values, input.dirtyFields) as Partial<T>)
     : input.values;
 
-  if (isUpdate && isEmpty(patch)) throw new NothingChangedError();
+  // Resolve the ref outside the transaction — refs don't need to be re-derived
+  // inside it (only reads/writes do). Done BEFORE the no-op check so the sibling
+  // writes can target docs under this record's id (the freshly-minted id on
+  // create, e.g. `produtos/<id>/extraData/singleton`).
+  const ref = isUpdate
+    ? input.collection.docRef(input.db, input.pathContext, input.recordId!)
+    : fsDoc(
+        fsCollection(input.db, input.collection.resolvePath(input.pathContext)).withConverter(
+          input.collection.converter,
+        ),
+      );
 
-  // Stamp the last-modified field (when the schema has one) on every write,
-  // after the no-op check so an unchanged update still throws. This lets the
-  // TableView update-monitor detect edits, not just creations. On create
-  // `patch` aliases `input.values`, so stamping `input.values` covers both.
-  if ('ultimaModificacao' in input.values) {
+  const siblings = input.siblingWrites?.(ref.id) ?? [];
+
+  // The main doc is written on every create, and on an update only when its
+  // dirty patch is non-empty. A sibling-only update (empty patch) skips the main
+  // write entirely — so neither the data NOR the `ultimaModificacao` stamp
+  // touches the otherwise-unchanged doc.
+  const writeMainDoc = !isUpdate || !isEmpty(patch);
+
+  // Nothing to write at all → "no changes" (only reachable on update; a create
+  // always writes). A pending sibling keeps the save alive (e.g. just the
+  // Descrição), so the no-op only fires when neither side has work.
+  if (!writeMainDoc && siblings.length === 0) throw new NothingChangedError();
+
+  // Stamp the last-modified field (when the schema has one) ONLY when the main
+  // doc is actually written — so the TableView update-monitor sees real edits,
+  // and a sibling-only save doesn't bump an otherwise-unchanged parent. On
+  // create `patch` aliases `input.values`, so stamping `input.values` covers both.
+  if (writeMainDoc && 'ultimaModificacao' in input.values) {
     const now =
       input.stampUnit === 'us'
         ? nowMicros()
@@ -87,25 +135,25 @@ export async function saveRecord<
     }
   }
 
-  // Resolve the ref outside the transaction — refs don't need to be
-  // re-derived inside it (only reads/writes do).
-  const ref = isUpdate
-    ? input.collection.docRef(input.db, input.pathContext, input.recordId!)
-    : fsDoc(
-        fsCollection(input.db, input.collection.resolvePath(input.pathContext)).withConverter(
-          input.collection.converter,
-        ),
-      );
-
   await runTransaction(input.db, async (tx: Transaction) => {
-    if (isUpdate) {
-      // tx.update bypasses the Firestore converter (only set/add invoke it).
-      // The dirty-field patch already passed zodResolver per-field on the
-      // client, so we accept the partial write as-is.
-      tx.update(ref, patch as never);
-    } else {
-      // Full create — runs through the converter, which calls schema.parse.
-      tx.set(ref, input.values as never);
+    if (writeMainDoc) {
+      if (isUpdate) {
+        // tx.update bypasses the Firestore converter (only set/add invoke it).
+        // The dirty-field patch already passed zodResolver per-field on the
+        // client, so we accept the partial write as-is.
+        tx.update(ref, patch as never);
+      } else {
+        // Full create — runs through the converter, which calls schema.parse.
+        tx.set(ref, input.values as never);
+      }
+    }
+
+    // Sibling writes ride the SAME atomic boundary — they commit with the main
+    // record (or on their own, for a sibling-only save) or not at all, in one
+    // round-trip (robust on a flaky connection).
+    for (const w of siblings) {
+      if (w.type === 'update') tx.update(w.ref as DocumentReference, w.data as never);
+      else tx.set(w.ref as DocumentReference, w.data as never);
     }
 
     writeAuditEntry(tx, {

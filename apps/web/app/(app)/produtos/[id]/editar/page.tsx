@@ -10,11 +10,12 @@ import { PERM } from '@delfrance/auth';
 import {
   type Foto,
   type PrecosMap,
+  type ProdutoExtraData,
   type Video,
   normalizeVariacoesUid,
   parseFakePath,
+  produtoPageBaseSchema,
   produtoPageIssues,
-  produtoSchema,
   sortGrupoUids,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
@@ -28,17 +29,19 @@ import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
-import { createClientProdutoPort } from '@/lib/produtos/clientPort';
+import { buildProdutoTransactionWrites, createClientProdutoPort } from '@/lib/produtos/clientPort';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { PhotoManager } from '../../_components/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
+import { ExtraDataManager } from '../../_components/ExtraDataManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
 import { VariationManager } from '../../_components/VariationManager';
 import {
   PRODUTO_EXCLUDED_FIELDS,
   PRODUTO_SECTIONS,
+  PRODUTO_TRANSIENT_FIELDS,
   produtoFieldOverrides,
 } from '../../_components/produtoFields';
 
@@ -188,6 +191,20 @@ export default function EditarProdutoPage() {
           />
         ),
       },
+      extraData: {
+        label: 'Descrição',
+        section: 'Descrição',
+        renderInput: (p) => (
+          <ExtraDataManager
+            produtoId={params.id}
+            db={db}
+            value={(p.value as ProdutoExtraData | null) ?? null}
+            onChange={p.onChange}
+            errorTree={p.errorTree}
+            disabled={p.disabled}
+          />
+        ),
+      },
     }),
     [params.id, db, storage, grupos, gruposSnap.error?.message, listas, listasSnap.error?.message],
   );
@@ -228,7 +245,7 @@ export default function EditarProdutoPage() {
         }
       />
       <ObjectView
-        schema={produtoSchema}
+        schema={produtoPageBaseSchema}
         collection={produtoCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}
@@ -236,6 +253,8 @@ export default function EditarProdutoPage() {
         sections={PRODUTO_SECTIONS}
         fields={fields}
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
+        transientFields={PRODUTO_TRANSIENT_FIELDS}
+        transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
         deriveOnSave={(values) => {
           // Keep the Flutter wire shapes on every save: bare group ids sorted
           // by ordem, canonical group-major fake paths for the variants. The
@@ -296,6 +315,10 @@ export default function EditarProdutoPage() {
             await recordCustoHistory(port, id, newCusto);
           }
           lastSavedCusto.current = { ready: true, value: newCusto };
+
+          // (The extraData singleton is now written atomically with the produto
+          // doc via `transactionWrites`, not here — so a flaky connection can't
+          // leave the produto saved without its Descrição.)
 
           // The flush runs last: it creates any new children already carrying
           // the parent's precos (plus their initial history records).

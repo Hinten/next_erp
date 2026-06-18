@@ -2,11 +2,15 @@ import {
   diffPrecos,
   historicoCustoMeta,
   historicoPrecoMeta,
+  produtoExtraDataMeta,
+  produtoExtraDataSchema,
   produtoMeta,
   samePrecos,
+  PRODUTO_EXTRA_DATA_DOC_ID,
   PRODUTO_SUBCOLLECTION_NAMES,
   type PrecoChange,
   type PrecosMap,
+  type ProdutoExtraData,
 } from '@delfrance/schemas';
 import type { ProdutoDataPort, ProdutoWriteOp } from './port';
 
@@ -17,6 +21,7 @@ import type { ProdutoDataPort, ProdutoWriteOp } from './port';
 const PRODUTOS = produtoMeta.collectionPath; // produtos
 const HISTORICO_PRECO = historicoPrecoMeta.collectionPath; // produtos/{produtoId}/historicoDePrecos
 const HISTORICO_CUSTO = historicoCustoMeta.collectionPath; // produtos/{produtoId}/historicoDeCusto
+const EXTRA_DATA = produtoExtraDataMeta.collectionPath; // produtos/{produtoId}/extraData
 
 const produtoDocPath = (id: string) => `${PRODUTOS}/${id}`;
 const subDocPath = (template: string, produtoId: string, docId: string) =>
@@ -80,6 +85,39 @@ export async function recordCustoHistory(
   valor: number,
 ): Promise<void> {
   await port.commit([buildCustoHistoryOp(port, produtoId, valor)]);
+}
+
+// ---------------------------------------------------------------------------
+// Produto extra data (Descrição + Google Merchant — the singleton subdocument)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the single `set` op that persists the produto's extra-data singleton
+ * (`produtos/<id>/extraData/singleton`). The doc id is the fixed
+ * `PRODUTO_EXTRA_DATA_DOC_ID`; the value is parsed through
+ * `produtoExtraDataSchema` so defaults are filled and the wire shape is enforced
+ * here in the use-case (the agent/admin path has no Zod converter to lean on).
+ */
+export function buildExtraDataWriteOps(
+  produtoId: string,
+  extraData: ProdutoExtraData,
+): ProdutoWriteOp[] {
+  return [
+    {
+      type: 'set',
+      path: subDocPath(EXTRA_DATA, produtoId, PRODUTO_EXTRA_DATA_DOC_ID),
+      data: produtoExtraDataSchema.parse(extraData) as Record<string, unknown>,
+    },
+  ];
+}
+
+/** Persist the produto's extra-data singleton (Descrição + Google Merchant). */
+export async function saveProdutoExtraData(
+  port: ProdutoDataPort,
+  produtoId: string,
+  extraData: ProdutoExtraData,
+): Promise<void> {
+  await port.commit(buildExtraDataWriteOps(produtoId, extraData));
 }
 
 // ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ vi.mock('@delfrance/data/audit', () => ({
   writeAuditEntry: auditMock.writeAuditEntryMock,
 }));
 
-import { NothingChangedError, saveRecord } from './saveRecord';
+import { NothingChangedError, saveRecord, type TransactionWrite } from './saveRecord';
 
 const schema = z.object({
   nome: z.string().nullable().optional(),
@@ -159,5 +159,66 @@ describe('saveRecord', () => {
         patch: { nome: 'y' },
       }),
     );
+  });
+});
+
+describe('saveRecord — siblingWrites (atomic same-transaction writes)', () => {
+  const sibling: TransactionWrite = {
+    type: 'set',
+    ref: { id: 'sibling' } as never,
+    data: { x: 1 },
+  };
+
+  it('on create, writes the main doc AND the siblings in the same transaction', async () => {
+    const result = await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      values: { nome: 'novo' },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      siblingWrites: (id) => [{ ...sibling, data: { x: id } }],
+    });
+    // One set for the main doc, one for the sibling — keyed by the minted id.
+    expect(firestoreMock.txMock.set).toHaveBeenCalledTimes(2);
+    expect(firestoreMock.txMock.set).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'sibling' }),
+      { x: 'NEW_ID' },
+    );
+    expect(result.id).toBe('NEW_ID');
+  });
+
+  it('an update touching ONLY a sibling commits the sibling but skips the main-doc write', async () => {
+    // Empty dirtyFields ⇒ empty produto patch; `ultimaModificacao` present in
+    // values would (pre-fix) get stamped onto the patch and resurrect the main
+    // write — assert it does NOT (Copilot review #203).
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      recordId: 'EXISTING_ID',
+      values: { nome: 'unchanged', ultimaModificacao: null } as never,
+      dirtyFields: {},
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+      siblingWrites: () => [sibling],
+    });
+    expect(firestoreMock.txMock.set).toHaveBeenCalledTimes(1); // only the sibling
+    expect(firestoreMock.txMock.update).not.toHaveBeenCalled(); // main doc untouched
+  });
+
+  it('still throws NothingChangedError when the patch is empty AND there are no siblings', async () => {
+    await expect(
+      saveRecord({
+        db: {} as never,
+        collection: fakeCollection(),
+        pathContext: {},
+        recordId: 'EXISTING_ID',
+        values: { nome: 'x' },
+        dirtyFields: {},
+        currentUserUid: 'u1',
+        siblingWrites: () => [],
+      }),
+    ).rejects.toBeInstanceOf(NothingChangedError);
   });
 });

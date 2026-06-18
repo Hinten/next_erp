@@ -8,20 +8,22 @@ import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from
 import {
   type Foto,
   type PrecosMap,
+  type ProdutoExtraData,
   type Video,
+  produtoPageBaseSchema,
   produtoPageIssues,
-  produtoSchema,
 } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { applyPrecosChange, recordCustoHistory } from '@delfrance/data/produto';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
-import { createClientProdutoPort } from '@/lib/produtos/clientPort';
+import { buildProdutoTransactionWrites, createClientProdutoPort } from '@/lib/produtos/clientPort';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
 import { PhotoManager } from '../_components/PhotoManager';
 import { CustoField } from '../_components/CustoField';
+import { ExtraDataManager } from '../_components/ExtraDataManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../_components/PrecoCustoManager';
 import { VideoManager } from '../_components/VideoManager';
 import { VariationManager } from '../_components/VariationManager';
@@ -29,6 +31,7 @@ import {
   PRODUTO_CREATE_DEFAULTS,
   PRODUTO_EXCLUDED_FIELDS,
   PRODUTO_SECTIONS,
+  PRODUTO_TRANSIENT_FIELDS,
   produtoFieldOverrides,
 } from '../_components/produtoFields';
 
@@ -133,6 +136,20 @@ export default function NovoProdutoPage() {
           />
         ),
       },
+      extraData: {
+        label: 'Descrição',
+        section: 'Descrição',
+        renderInput: (p) => (
+          <ExtraDataManager
+            produtoId={null}
+            db={db}
+            value={(p.value as ProdutoExtraData | null) ?? null}
+            onChange={p.onChange}
+            errorTree={p.errorTree}
+            disabled={p.disabled}
+          />
+        ),
+      },
     }),
     [db, storage, listas, listasSnap.error?.message],
   );
@@ -148,7 +165,7 @@ export default function NovoProdutoPage() {
         }
       />
       <ObjectView
-        schema={produtoSchema}
+        schema={produtoPageBaseSchema}
         collection={produtoCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}
@@ -156,6 +173,8 @@ export default function NovoProdutoPage() {
         sections={PRODUTO_SECTIONS}
         fields={fields}
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
+        transientFields={PRODUTO_TRANSIENT_FIELDS}
+        transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
         saveLabel="Criar"
         showSaveAndContinue={false}
         validate={(values) =>
@@ -176,6 +195,9 @@ export default function NovoProdutoPage() {
           });
           const custo = typeof values.custo === 'number' ? values.custo : null;
           if (custo !== null) await recordCustoHistory(port, id, custo);
+
+          // (The extraData singleton is written atomically with the produto doc
+          // via `transactionWrites` — not here.)
         }}
         onSaved={(id) => router.replace(`/produtos/${id}/editar`)}
       />

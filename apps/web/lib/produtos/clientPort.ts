@@ -5,12 +5,20 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { buildQuery, limit, whereArrayContains, whereEqual } from '@delfrance/data';
-import type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from '@delfrance/data/produto';
+import {
+  buildExtraDataWriteOps,
+  type ProdutoDataPort,
+  type ProdutoSnapshot,
+  type ProdutoWriteOp,
+} from '@delfrance/data/produto';
+import type { TransactionWrite } from '@delfrance/ui';
+import type { ProdutoExtraData } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import {
   historicoCustoCollection,
   historicoPrecoCollection,
 } from '@/lib/data/historicoCollections';
+import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
 import { PRODUTO_MARKETPLACE_SUBCOLLECTIONS } from '@/lib/data/produtoMarketplaceSubcollections';
 import { newDocId } from './docId';
 
@@ -41,8 +49,39 @@ function refForPath(db: Firestore, path: string): DocumentReference {
     if (sub === 'historicoDeCusto') {
       return historicoCustoCollection.docRef(db, { produtoId }, id) as DocumentReference;
     }
+    if (sub === 'extraData') {
+      return produtoExtraDataCollection.docRef(db, { produtoId }, id) as DocumentReference;
+    }
   }
   throw new Error(`clientProdutoPort: unmapped write path "${path}"`);
+}
+
+/**
+ * The produto's transient subdocuments to write ATOMICALLY with the produto doc
+ * (ObjectView `transactionWrites`): currently the `extraData` singleton. Reuses
+ * the framework-agnostic `buildExtraDataWriteOps` use-case for the wire shape and
+ * maps each domain path to a converter-bound ref so it rides `saveRecord`'s
+ * transaction — one commit, all-or-nothing (no orphan produto on a flaky link).
+ * (Estoque/imposto append their own writes here when their tabs land.)
+ */
+export function buildProdutoTransactionWrites(
+  db: Firestore,
+  produtoId: string,
+  values: Record<string, unknown>,
+): TransactionWrite[] {
+  const writes: TransactionWrite[] = [];
+  const extra = (values.extraData as ProdutoExtraData | null) ?? null;
+  if (extra) {
+    for (const op of buildExtraDataWriteOps(produtoId, extra)) {
+      if (op.type === 'delete') continue;
+      writes.push({
+        type: op.type,
+        ref: refForPath(db, op.path) as DocumentReference<unknown>,
+        data: op.data,
+      });
+    }
+  }
+  return writes;
 }
 
 const toSnapshot = (
