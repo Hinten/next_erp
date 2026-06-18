@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/firebase",
+  "//": "Deploy-ISOLATED config for the apps/nfe/functions (codebase `nfe`) Cloud Functions — the async NF-e reconciler (reconciliarNfe onTaskDispatched + nfeReconcileSweep onSchedule), which EXECUTE the reconcile/sweep in-process (no HTTP hop). Contains ONLY a functions block — deliberately NO firestore/storage/emulators keys — so a deploy with this config can never push the Flutter-owned rules (CLAUDE.md critical rule #1). Separate codebase `nfe` (apart from `storage`) so the heavy NF-e deps (soap/node-forge/xml-crypto/xmllint-wasm + the bundled @delfrance/integrations-nfe) don't bloat the storage functions. The predeploy hook runs apps/nfe/functions/scripts/prepare-deploy.mjs, which esbuild-bundles the function, writes a MINIMAL workspace-free package.json, AND copies the SEFAZ ca/*.pem chains + MOC XSD schemas next to the bundle (NFE_CA_DIR / NFE_SCHEMA_DIR in src/options.ts point at them). The function needs NFE_AMBIENTE / NFE_UF / NFE_CERT_ENC_KEY (+ NFE_ALLOW_PRODUCAO in prod) + admin creds in its env. Deploy: firebase deploy --only functions:nfe --config firebase.nfe.deploy.json --project <id>. See apps/nfe/functions/DEPLOY.md.",
+  "functions": [
+    {
+      "source": ".deploy/nfe-functions",
+      "codebase": "nfe",
+      "runtime": "nodejs22",
+      "predeploy": ["node apps/nfe/functions/scripts/prepare-deploy.mjs"],
+      "ignore": ["node_modules"]
+    }
+  ]
+}

@@ -5,11 +5,14 @@
  * `Authorization: Bearer <idToken>` → `getAdminAuth().verifyIdToken` →
  * permission check via the BigInt-encoded `permissions` claim.
  *
- * Returns either `{ decoded }` (success) or `{ error: NextResponse }`
+ * Returns either `{ caller }` (success) or `{ error: NextResponse }`
  * (failure with the right status code already prepared).
+ *
+ * There is no OIDC service-caller path: the async reconciler runs **in-process**
+ * inside the `nfe` Cloud Functions codebase (no Function → HTTP hop), so the only
+ * callers of these routes are Firebase users.
  */
 import { NextResponse } from 'next/server';
-import { OAuth2Client } from 'google-auth-library';
 import { PERM, hasPerm } from '@delfrance/auth';
 
 import { getAdminAuth } from '@/lib/firebase/admin';
@@ -75,93 +78,6 @@ export async function verifyCaller(
     }
     throw e;
   }
-}
-
-/**
- * A service caller authenticated by a Google **OIDC** token — the identity
- * Cloud Tasks (and Cloud Scheduler) presents. Distinct from `VerifiedCaller`,
- * which is a Firebase Auth user.
- */
-export interface VerifiedServiceCaller {
-  readonly email: string;
-}
-
-// Google's OIDC token verifier — validates signature, expiry and issuer
-// (`accounts.google.com`) against Google's public certs. One instance reused
-// across requests (it caches the cert set).
-const oidcVerifier = new OAuth2Client();
-
-/**
- * Verify a Google-issued OIDC bearer token (Cloud Tasks / Cloud Scheduler).
- *
- * Unlike `verifyCaller`, this does NOT go through Firebase Auth — a Cloud Tasks
- * token is signed by Google, not Firebase's securetoken service, so
- * `verifyIdToken` (Firebase) would reject it. We instead check:
- *   - the token's signature + expiry + issuer (via `OAuth2Client.verifyIdToken`),
- *   - `aud` equals our own endpoint URL (`audience`) — Cloud Tasks set it to the
- *     target URL, so this binds the token to this exact endpoint,
- *   - `email_verified` is true and `email` is in the allow-list (the
- *     `nfe-task-runner` service account).
- *
- * `audience` / `allowedEmails` are passed in (from `NFE_TASKS_ENDPOINT` /
- * `NFE_TASK_SA_EMAILS`) so the route owns the config read and tests can inject.
- */
-export async function verifyServiceCaller(
-  req: Request,
-  opts: { audience: string | undefined; allowedEmails: ReadonlySet<string> },
-): Promise<{ service: VerifiedServiceCaller } | { error: NextResponse }> {
-  const authHeader = req.headers.get('authorization');
-  if (!authHeader?.startsWith('Bearer ')) {
-    return { error: authError(401, { error: 'Authorization Bearer token ausente.' }) };
-  }
-  if (!opts.audience) {
-    return {
-      error: authError(500, {
-        error: 'NFE_TASKS_ENDPOINT ausente — não é possível validar a audience OIDC.',
-      }),
-    };
-  }
-  if (opts.allowedEmails.size === 0) {
-    return {
-      error: authError(500, {
-        error: 'NFE_TASK_SA_EMAILS ausente — nenhuma service account autorizada.',
-      }),
-    };
-  }
-  const idToken = authHeader.slice('Bearer '.length);
-  try {
-    const ticket = await oidcVerifier.verifyIdToken({ idToken, audience: opts.audience });
-    const payload = ticket.getPayload();
-    if (
-      !payload ||
-      payload.email_verified !== true ||
-      !payload.email ||
-      !opts.allowedEmails.has(payload.email)
-    ) {
-      return {
-        error: authError(403, { error: 'Service account não autorizada para esta operação.' }),
-      };
-    }
-    return { service: { email: payload.email } };
-  } catch (e) {
-    // verifyIdToken throws a plain Error on signature/expiry/audience mismatch.
-    if (e instanceof Error) {
-      console.warn(`[nfe/auth] verifyServiceCaller rejected OIDC token: ${e.message}`);
-      return { error: authError(401, { error: 'Token OIDC inválido ou expirado.' }) };
-    }
-    throw e;
-  }
-}
-
-/** Parse the `NFE_TASK_SA_EMAILS` CSV allow-list into a set. */
-export function allowedServiceEmails(): ReadonlySet<string> {
-  const csv = process.env.NFE_TASK_SA_EMAILS ?? '';
-  return new Set(
-    csv
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0),
-  );
 }
 
 /** Re-export PERM for ergonomic per-route imports. */

@@ -31,7 +31,21 @@ import { validateXML, type XMLFileInfo } from 'xmllint-wasm';
 const ACTIVE_MOC = '7.0';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCHEMA_DIR = join(HERE, '..', '..', 'generated', `moc${ACTIVE_MOC}`, 'schemas');
+
+/**
+ * The vendored XSD schema directory. Resolved lazily (read at first
+ * `validateXsd`, not at import) and **overridable via `NFE_SCHEMA_DIR`** — a
+ * consumer that esbuild-bundles this package into a single file (e.g.
+ * `apps/nfe/functions`) loses the package's `generated/.../schemas/` dir layout
+ * at runtime, so it ships the schemas alongside the bundle and points
+ * `NFE_SCHEMA_DIR` at them. Mirrors `runtime.ts`'s `NFE_CA_DIR` for the TLS
+ * chains. Unset → the in-repo vendored path.
+ */
+function schemaDir(): string {
+  return (
+    process.env.NFE_SCHEMA_DIR ?? join(HERE, '..', '..', 'generated', `moc${ACTIVE_MOC}`, 'schemas')
+  );
+}
 
 /** Root XML name → XSD file that defines that root. */
 const XSD_BY_ROOT = {
@@ -94,10 +108,11 @@ export class NFeXsdValidationError extends Error {
 let preloadCache: ReadonlyArray<XMLFileInfo> | null = null;
 function loadPreload(): ReadonlyArray<XMLFileInfo> {
   if (preloadCache) return preloadCache;
-  const files = readdirSync(SCHEMA_DIR).filter((f) => f.endsWith('.xsd'));
+  const dir = schemaDir();
+  const files = readdirSync(dir).filter((f) => f.endsWith('.xsd'));
   preloadCache = files.map((fileName) => ({
     fileName,
-    contents: readFileSync(join(SCHEMA_DIR, fileName), 'utf8'),
+    contents: readFileSync(join(dir, fileName), 'utf8'),
   }));
   return preloadCache;
 }

@@ -1,5 +1,10 @@
 import type { NextConfig } from 'next';
 
+// NOTE: `apps/nfe/functions/` is a deploy-artifact-only sub-build (the `nfe`
+// Cloud Functions codebase) — it imports `firebase-functions` and is built by its
+// own esbuild lane (functions/build.mjs), NEVER by `next build`. It lives outside
+// `app/`, so Next never bundles it; it is only type-checked via the shared
+// tsconfig. Do not add it (or `firebase-functions`) to transpilePackages.
 const config: NextConfig = {
   reactStrictMode: true,
   // Workspace packages need transpilation. The library lives in
