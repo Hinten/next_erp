@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Three exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Four exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -34,6 +34,15 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Three exports:
   metadata. ⚠️ Like every Firestore access here, the trigger targets the **named
   `default`** database (`database: FIREBASE_DATABASE_ID ?? 'default'`) — see
   gotcha #8; a trigger that omits `database` binds to `(default)` and never fires.
+- **`reconcileArquivoOrphans`** (`onSchedule`, every 48h) — orphan cleanup, both
+  directions, plain existence checks (no pipeline API; ADR 0010 Phase 2).
+  **Phantom-doc sweep**: `arquivos where uploadState == 'pending'` past a 48h
+  grace window whose object never arrived → delete the doc (or self-heal to
+  `'finalized'` if the object IS present). **Storage-orphan sweep**: paginate
+  `produtos/` + `media/`; an object past the window whose owning doc (via
+  `arquivoId` metadata, else `arquivoIdForStoragePath`) is absent → delete the
+  object. Pass cores `sweepPhantomDocs` / `sweepOrphanObjects` are exported for
+  the emulator suite; grace is `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests).
 
 - The entry (`src/index.ts`) is **esbuild-bundled into a single ESM file**.
   Only `firebase-admin`, `firebase-functions`, and `sharp` are `external`;

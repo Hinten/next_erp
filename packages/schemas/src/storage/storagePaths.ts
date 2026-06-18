@@ -117,6 +117,40 @@ export function isWatchedProductOriginal(name: string): boolean {
 }
 
 /**
+ * Map ANY recognized storage object path back to its owning `arquivos` doc id —
+ * original, derivative, video (all `produtos/<id>/<sub>/<file>`) or generic
+ * `media/<file>` — or `null` when the path is not one we manage. Used by the
+ * storage-orphan sweep to look up whether an object still has a doc.
+ *
+ * The mapping is uniform because doc ids mirror the file stem:
+ * `produtos/<id>/<sub>/<stem>[.ext]` → `<id>_<stem>` (an original/video stem is
+ * the hash → `<id>_<hash>`; a derivative stem is `<hash>_<key>` →
+ * `<id>_<hash>_<key>`, i.e. {@link derivativeArquivoId}); `media/<stem>[.ext]` →
+ * `<stem>` (the bare-hash id `uploadFile` uses).
+ */
+export function arquivoIdForStoragePath(name: string): string | null {
+  const stripExt = (file: string): string =>
+    file.includes('.') ? file.slice(0, file.lastIndexOf('.')) : file;
+  const parts = name.split('/');
+  if (parts.length === 4 && parts[0] === STORAGE_ROOT.produtos) {
+    const [, produtoId, sub, file] = parts;
+    if (!produtoId || !file) return null;
+    const known: readonly string[] = [
+      PRODUTO_SUBDIR.originals,
+      PRODUTO_SUBDIR.derivatives,
+      PRODUTO_SUBDIR.videos,
+    ];
+    if (!sub || !known.includes(sub)) return null;
+    return `${produtoId}_${stripExt(file)}`;
+  }
+  if (parts.length === 2 && parts[0] === STORAGE_ROOT.media) {
+    const file = parts[1];
+    return file ? stripExt(file) : null;
+  }
+  return null;
+}
+
+/**
  * Defense-in-depth guard: true when the file name carries a derivative suffix
  * (`<hash>_200`, `_400`, `_jpeg`). A real original is content-hashed (hex, no
  * such suffix), so this only matches our own outputs.

@@ -343,6 +343,7 @@ export {
   productArquivoId,
   derivativeArquivoId,
   parseProductOriginalPath,
+  arquivoIdForStoragePath,
   isWatchedProductOriginal,
   isDerivativeName,
   firebaseDownloadUrl,

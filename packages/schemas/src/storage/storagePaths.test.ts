@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  arquivoIdForStoragePath,
   derivativeArquivoId,
   firebaseDownloadUrl,
   isDerivativeName,
@@ -71,6 +72,32 @@ describe('arquivo ids', () => {
   it('builds product-scoped original and derivative ids', () => {
     expect(productArquivoId(PID, HASH)).toBe(`${PID}_${HASH}`);
     expect(derivativeArquivoId(PID, HASH, '200')).toBe(`${PID}_${HASH}_200`);
+  });
+});
+
+describe('arquivoIdForStoragePath', () => {
+  it('maps every recognized path back to its owning doc id', () => {
+    expect(arquivoIdForStoragePath(productOriginalPath(PID, HASH, 'png'))).toBe(
+      productArquivoId(PID, HASH),
+    );
+    expect(arquivoIdForStoragePath(productOriginalPath(PID, HASH))).toBe(
+      productArquivoId(PID, HASH),
+    );
+    expect(arquivoIdForStoragePath(productVideoPath(PID, HASH, 'mp4'))).toBe(
+      productArquivoId(PID, HASH),
+    );
+    expect(arquivoIdForStoragePath(productDerivativePath(PID, HASH, '200'))).toBe(
+      derivativeArquivoId(PID, HASH, '200'),
+    );
+    expect(arquivoIdForStoragePath(mediaPath(HASH, 'png'))).toBe(HASH);
+    expect(arquivoIdForStoragePath(mediaPath(HASH))).toBe(HASH);
+  });
+
+  it('returns null for unrecognized paths', () => {
+    expect(arquivoIdForStoragePath(`produtos/${PID}/unknownsub/${HASH}.png`)).toBeNull();
+    expect(arquivoIdForStoragePath('produtos/x/originals/a/b')).toBeNull();
+    expect(arquivoIdForStoragePath('media/a/b')).toBeNull();
+    expect(arquivoIdForStoragePath('whatever')).toBeNull();
   });
 });
 

@@ -164,9 +164,10 @@ not this one). No automated deploy workflow yet.
 
 ## Status
 
-Proposed (2026-06). Phasing: Phase 1 in progress — the **arquivo side**
-(`onArquivoDeleted` + the create-first upload contract, #95/#202) lands first;
-the produto-side `onDocumentDeleted('produtos/{id}')` subcollection sweep (#136)
-follows. Phase 2 reshaped into two emulator-testable existence-check sweeps (no
-secret-gated lane needed). Phase 3 blocked on the `apps/integrations`
-remote-delist design. Refs #136, #95, #135, #202.
+Proposed (2026-06). Phasing: Phase 1 **arquivo side** done — `onArquivoDeleted`
++ the create-first upload contract (#95/#202); the produto-side
+`onDocumentDeleted('produtos/{id}')` subcollection sweep (#136) still follows.
+Phase 2 **implemented** as `reconcileArquivoOrphans` — the two emulator-testable
+existence-check sweeps (phantom-doc + storage-orphan), every 48h, no secret-gated
+lane needed. Phase 3 blocked on the `apps/integrations` remote-delist design.
+Refs #136, #95, #135, #202.
