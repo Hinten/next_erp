@@ -77,6 +77,11 @@ jobs:
     # in pnpm-lock.yaml; `-noble` is Ubuntu 24.04, matching ubuntu-latest.
     container:
       image: mcr.microsoft.com/playwright:v1.60.0-noble
+      # Chromium in a container gets Docker's tiny default /dev/shm (64 MB),
+      # which can crash tabs mid-run. Share the host IPC namespace so it uses
+      # the runner's full shared memory — Playwright's recommended container
+      # setting for CI stability.
+      options: --ipc=host
     timeout-minutes: 30
     permissions:
       contents: read
