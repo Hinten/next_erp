@@ -148,6 +148,14 @@ describe('uploadProductVideo', () => {
     expect(result.arquivo.uploadState).toBe('pending');
     expect(mocks.uploadBytes).toHaveBeenCalledTimes(1);
     expect(mocks.setDoc).toHaveBeenCalledTimes(1);
+    // Create-first contract applies to videos too: URL is patched, and the object
+    // carries its arquivoId so the finalize trigger can flip uploadState (else a
+    // video upload would stay stuck 'pending').
+    expect(mocks.updateDoc).toHaveBeenCalledTimes(1);
+    const uploadOpts = mocks.uploadBytes.mock.calls[0]![2] as {
+      customMetadata?: { arquivoId?: string };
+    };
+    expect(uploadOpts.customMetadata?.arquivoId).toBe(productArquivoId('p1', hash));
   });
 
   it('rejects a non-video content type', async () => {
@@ -171,6 +179,7 @@ describe('uploadProductVideo', () => {
 
     expect(result.arquivo).toEqual(existing);
     expect(mocks.uploadBytes).not.toHaveBeenCalled();
+    expect(mocks.setDoc).not.toHaveBeenCalled();
     expect(mocks.updateDoc).not.toHaveBeenCalled();
   });
 });

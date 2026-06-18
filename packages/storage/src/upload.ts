@@ -96,8 +96,11 @@ async function putArquivo(args: PutArquivoArgs): Promise<UploadResult> {
 
   // 3. Patch the public URL for an immediate UI render (partial update — bypasses
   //    the converter's full-doc validation). `uploadState` stays 'pending' until
-  //    the trigger confirms; the trigger also backfills `url` if the client died
-  //    before reaching here.
+  //    the onObjectFinalized trigger flips it to 'finalized'. If the client dies
+  //    after the upload but before this patch, the doc keeps `url: null`
+  //    (the trigger only flips `uploadState`, it does NOT backfill `url` today —
+  //    a deferred refinement; product images still render via their derivative
+  //    docs, which carry their own URLs).
   const url = await getDownloadURL(objectRef);
   await updateDoc(docRef, { url });
 
