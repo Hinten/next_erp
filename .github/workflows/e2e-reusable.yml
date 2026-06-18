@@ -3,13 +3,12 @@ name: E2E (reusable)
 # Shared engine for the themed e2e workflows (e2e-cadastros.yml,
 # e2e-vendas.yml). Called via `workflow_call` from a thin `pull_request`
 # caller, so it runs from the PR-head definition (it self-tests on the PR that
-# introduces it, unlike workflow_run). It first waits for the offline `CI`
-# workflow's `lint-typecheck-test` check to pass on the PR head, then builds
-# apps/web for production, serves it with `next start` (Playwright's
-# webServer), and runs the caller's Playwright projects against staging
-# Firebase. Each caller is its own workflow run → its own GITHUB_RUN_ID → a
-# distinct Firestore namespace + ephemeral user, so the two themes run
-# concurrently without colliding.
+# introduces it, unlike workflow_run). It builds apps/web for production,
+# serves it with `next start` (Playwright's webServer), and runs the caller's
+# Playwright projects against staging Firebase — running concurrently with the
+# offline `CI` workflow, not gated on it. Each caller is its own workflow run →
+# its own GITHUB_RUN_ID → a distinct Firestore namespace + ephemeral user, so
+# the two themes run concurrently without colliding.
 
 on:
   workflow_call:
@@ -24,52 +23,7 @@ on:
         type: string
 
 jobs:
-  # Gate: hold until the offline CI (ci.yml's lint-typecheck-test) succeeds on
-  # this commit, so e2e only spends staging I/O on PRs that already pass the
-  # mandatory offline checks. If offline fails, this job fails → the e2e job
-  # below is skipped. Manual workflow_dispatch runs skip the wait.
-  await-offline:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    permissions:
-      contents: read
-      checks: read
-    steps:
-      - name: Wait for offline CI (lint-typecheck-test)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          EVENT: ${{ github.event_name }}
-        run: |
-          set -uo pipefail
-          if [ "$EVENT" = "workflow_dispatch" ]; then
-            echo "Manual dispatch — skipping the offline gate."
-            exit 0
-          fi
-          echo "Waiting for 'lint-typecheck-test' to conclude on $SHA…"
-          for i in $(seq 1 80); do
-            resp=$(gh api "repos/$REPO/commits/$SHA/check-runs?per_page=100" 2>/dev/null || echo '{}')
-            latest=$(printf '%s' "$resp" \
-              | jq -c '[.check_runs[]? | select(.name=="lint-typecheck-test")] | sort_by(.started_at) | last // {}')
-            status=$(printf '%s' "$latest" | jq -r '.status // ""')
-            conclusion=$(printf '%s' "$latest" | jq -r '.conclusion // ""')
-            if [ "$status" = "completed" ]; then
-              if [ "$conclusion" = "success" ]; then
-                echo "Offline CI passed — proceeding to e2e."
-                exit 0
-              fi
-              echo "::error::Offline CI concluded '$conclusion'; gating e2e out."
-              exit 1
-            fi
-            echo "  attempt $i/80 — offline status='${status:-pending}', sleeping 15s"
-            sleep 15
-          done
-          echo "::error::Timed out after ~20 min waiting for offline CI."
-          exit 1
-
   e2e:
-    needs: await-offline
     runs-on: ubuntu-latest
     # Run inside Playwright's official image: Chromium and all of its system
     # deps are pre-baked, so there's no per-run `playwright install-deps` (apt)
@@ -171,7 +125,7 @@ jobs:
   # log tail would be empty. As a downstream job, the failed e2e job has
   # concluded and its logs are fetchable. Mirrors ci.yml's report-failure.
   # `needs.e2e.result == 'failure'` fires only when e2e actually ran and
-  # failed — not when it was skipped because await-offline gated it out.
+  # failed (e.g. not on cancellation).
   report-failure:
     needs: [e2e]
     if: ${{ always() && needs.e2e.result == 'failure' && github.event_name == 'pull_request' }}

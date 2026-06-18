@@ -18,7 +18,7 @@ CI is **active** — see `.github/workflows/`: `ci.yml` (offline:
 lint/typecheck/format/test/build), the domain pipelines `ci-nfe.yml` and
 `ci-storage.yml`, and **two** Playwright e2e workflows split by domain —
 `e2e-cadastros.yml` and `e2e-vendas.yml` (sharing the `e2e-reusable.yml`
-engine) — each gated on `ci.yml` passing first. See "When making changes".
+engine) — each running concurrently with `ci.yml`. See "When making changes".
 
 ## Critical rules
 
@@ -136,7 +136,7 @@ pnpm --filter @delfrance/integrations-app dev
 - New OAuth callback → same: `apps/integrations/app/api/oauth/<channel>/callback/route.ts`.
 - Heavy work (sync, retry, long-running) from a webhook → dispatch to a Cloud Function; route handler responds 200 fast.
 - Adding a Server Component / Server Action / route handler in `apps/web` → justify in the PR description. Default answer is no.
-- **New e2e test** → e2e is **two** Playwright workflows split by domain — `e2e-cadastros.yml` (smoke + `crud-cadastros`) and `e2e-vendas.yml` (configuracoes + `crud-vendas`) — sharing the `e2e-reusable.yml` engine. Both trigger on `pull_request` (same-repo only; fork PRs are skipped); a first `await-offline` job waits for `ci.yml`'s `lint-typecheck-test` check to pass before the e2e job runs (so e2e only spends staging I/O once the mandatory offline checks are green), and they serve a **production build** (`next build` + `next start`), not `pnpm dev`. The **filename suffix decides the CI**: a schema-driven CRUD page needs only a new spec named `apps/web/e2e/<x>.cadastros.e2e.spec.ts` (master data) or `<x>.vendas.e2e.spec.ts` (sales/fiscal/config) — the matching project auto-collects it; no config or workflow edit. **Do not** add an e2e job to `ci.yml`. Each workflow run mints its **own** ephemeral test user (`e2e-user-<runId>@example.com`) and Firestore namespace (`e2e_<runId>`), isolated by `GITHUB_RUN_ID` (so the two run concurrently; `globalTeardown` run-scopes its stray-doc sweep in CI to match — there are no `E2E_USER_*` secrets). Each workflow comments the failing-job log tail on the PR on failure.
+- **New e2e test** → e2e is **two** Playwright workflows split by domain — `e2e-cadastros.yml` (smoke + `crud-cadastros`) and `e2e-vendas.yml` (configuracoes + `crud-vendas`) — sharing the `e2e-reusable.yml` engine. Both trigger on `pull_request` (same-repo only; fork PRs are skipped) and run **concurrently** with `ci.yml` (not gated on it), serving a **production build** (`next build` + `next start`), not `pnpm dev`. The **filename suffix decides the CI**: a schema-driven CRUD page needs only a new spec named `apps/web/e2e/<x>.cadastros.e2e.spec.ts` (master data) or `<x>.vendas.e2e.spec.ts` (sales/fiscal/config) — the matching project auto-collects it; no config or workflow edit. **Do not** add an e2e job to `ci.yml`. Each workflow run mints its **own** ephemeral test user (`e2e-user-<runId>@example.com`) and Firestore namespace (`e2e_<runId>`), isolated by `GITHUB_RUN_ID` (so the two run concurrently; `globalTeardown` run-scopes its stray-doc sweep in CI to match — there are no `E2E_USER_*` secrets). Each workflow comments the failing-job log tail on the PR on failure.
 
 ## Key fixed decisions
 

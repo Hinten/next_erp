@@ -2,10 +2,10 @@ name: E2E — Cadastros
 
 # Master-data e2e suite (smoke + crud-cadastros: clientes, enderecos,
 # categorias, depositos, filiais). Triggers on the PR (so it self-tests on the
-# PR that introduces it), then delegates to e2e-reusable.yml, which waits for
-# the offline `CI` workflow to pass before building apps/web for production,
-# serving it, and running the suite. Runs concurrently with E2E — Vendas; its
-# own GITHUB_RUN_ID isolates its Firestore namespace + ephemeral user.
+# PR that introduces it), then delegates to e2e-reusable.yml, which builds
+# apps/web for production, serves it, and runs the suite concurrently with the
+# offline `CI` workflow (not gated on it). Runs concurrently with E2E — Vendas;
+# its own GITHUB_RUN_ID isolates its Firestore namespace + ephemeral user.
 on:
   pull_request:
     branches: [master, main]
@@ -32,7 +32,6 @@ concurrency:
 # read-only default while the e2e job needs pull-requests: write, etc.).
 permissions:
   contents: read
-  checks: read
   pull-requests: write
   actions: read
 

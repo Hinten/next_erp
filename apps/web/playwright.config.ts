@@ -52,9 +52,9 @@ export default defineConfig({
   },
   projects: [
     // Suites are split across two e2e workflows by domain (e2e-cadastros.yml,
-    // e2e-vendas.yml), each gated on the offline `CI` workflow and serving a
-    // production build. A plain local `playwright test` still runs every
-    // project below = full coverage.
+    // e2e-vendas.yml), running concurrently with the offline `CI` workflow
+    // (not gated on it) and serving a production build. A plain local
+    // `playwright test` still runs every project below = full coverage.
     //
     // Smoke specs (cheap; login.smoke / auth-guard.smoke opt out of the
     // authenticated session per-spec via `test.use`). → e2e-cadastros.yml
