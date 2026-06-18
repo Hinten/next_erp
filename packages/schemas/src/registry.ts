@@ -12,13 +12,7 @@ import {
 } from './produto';
 import { categoria } from './categoria';
 import { intFrete, tokenMelEnv } from './intFrete';
-import {
-  pedido,
-  pagamento,
-  metodoPagamento,
-  incidente,
-  historicoEstadoPedido,
-} from './pedido';
+import { pedido, pagamento, metodoPagamento, incidente, historicoEstadoPedido } from './pedido';
 import { conversa, mensagem } from './conversa';
 import { integracao } from './integracao';
 import { cargo } from './cargo';

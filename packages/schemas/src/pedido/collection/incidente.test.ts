@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  TIPO_INCIDENTE,
-  incidenteMeta,
-  incidenteSchema,
-  resolucaoSchema,
-} from './incidente';
+import { TIPO_INCIDENTE, incidenteMeta, incidenteSchema, resolucaoSchema } from './incidente';
 
 describe('incidenteSchema', () => {
   it('defaults tipo to devolução and the rest to null', () => {

@@ -79,10 +79,7 @@ export function derivePedidoFreteTotals(args: {
 
 /** Flatten the nested `itensDevolvidos` map into a single item list. */
 export function flattenItensDevolvidos(
-  itensDevolvidos:
-    | Record<string, Record<string, ReadonlyArray<ItemDoPedido>>>
-    | null
-    | undefined,
+  itensDevolvidos: Record<string, Record<string, ReadonlyArray<ItemDoPedido>>> | null | undefined,
 ): ItemDoPedido[] {
   const out: ItemDoPedido[] = [];
   for (const porProduto of Object.values(itensDevolvidos ?? {})) {
@@ -120,9 +117,7 @@ export function derivePedidoTotals(args: {
   itens: ReadonlyArray<ItemDoPedido>;
   descontoTotal: number;
   freteInicial: FreteTotals;
-  itensDevolvidos?:
-    | Record<string, Record<string, ReadonlyArray<ItemDoPedido>>>
-    | null;
+  itensDevolvidos?: Record<string, Record<string, ReadonlyArray<ItemDoPedido>>> | null;
 }): PedidoDerivedTotals {
   const { itens, descontoTotal, freteInicial, itensDevolvidos } = args;
 

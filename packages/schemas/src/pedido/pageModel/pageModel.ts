@@ -78,10 +78,7 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
 
   // A pedido must have at least one item (legacy
   // `cadastroPedidoProvider.dart:959`).
-  const itemCount = Object.values(data.itens ?? {}).reduce(
-    (n, list) => n + (list?.length ?? 0),
-    0,
-  );
+  const itemCount = Object.values(data.itens ?? {}).reduce((n, list) => n + (list?.length ?? 0), 0);
   if (itemCount === 0) {
     issues.push({ path: 'itens', message: 'Adicione ao menos um item.' });
   }
