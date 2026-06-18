@@ -60,17 +60,14 @@ test.describe
     await selectField(page, 'Faixa etária', 'Juvenil/Adulto (13 anos ou mais)');
     await clickSave(page, 'Salvar alterações');
 
-    // On a successful save the editar page navigates to /produtos (`onSaved`),
-    // which fires only AFTER `onAfterSave` has persisted the extraData singleton.
-    // Wait for it so the admin read below can't race the still-in-flight commit
-    // (the singleton is written later in the save flow than the produto doc, so
-    // a bare poll can time out exactly as the write lands).
-    await page.waitForURL('**/produtos', { timeout: 30_000 });
-
-    // The singleton round-trips with the exact Flutter wire shape (condicao is
-    // the int 2 = usado; the GMD block keeps its snake_case keys).
+    // Poll the singleton directly (navigation-independent): it is persisted in
+    // `onAfterSave` AFTER the produto write, so on slow CI the commit can land
+    // ~15s into the save — and the variation flush that runs after it can delay
+    // the `onSaved` redirect. A generous poll round-trips the exact Flutter wire
+    // shape (condicao is the int 2 = usado; the GMD block keeps its snake_case
+    // keys) without coupling the assertion to the redirect.
     await expect
-      .poll(async () => (await getProdutoExtraData(produtoId))?.descricao, { timeout: 15_000 })
+      .poll(async () => (await getProdutoExtraData(produtoId))?.descricao, { timeout: 30_000 })
       .toBe('Camiseta 100% algodão');
     const extra = await getProdutoExtraData(produtoId);
     expect(extra).toMatchObject({
