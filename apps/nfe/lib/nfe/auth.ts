@@ -94,17 +94,19 @@ const oidcVerifier = new OAuth2Client();
 /**
  * Verify a Google-issued OIDC bearer token (Cloud Tasks / Cloud Scheduler).
  *
- * Unlike `verifyCaller`, this does NOT go through Firebase Auth — a Cloud Tasks
- * token is signed by Google, not Firebase's securetoken service, so
- * `verifyIdToken` (Firebase) would reject it. We instead check:
+ * Unlike `verifyCaller`, this does NOT go through Firebase Auth — the OIDC token
+ * the reconcile Cloud Functions present is signed by Google, not Firebase's
+ * securetoken service, so `verifyIdToken` (Firebase) would reject it. We instead
+ * check:
  *   - the token's signature + expiry + issuer (via `OAuth2Client.verifyIdToken`),
- *   - `aud` equals our own endpoint URL (`audience`) — Cloud Tasks set it to the
- *     target URL, so this binds the token to this exact endpoint,
- *   - `email_verified` is true and `email` is in the allow-list (the
- *     `nfe-task-runner` service account).
+ *   - `aud` equals our own endpoint URL (`audience`) — the function mints the
+ *     token for this exact URL, so this binds the token to this endpoint,
+ *   - `email_verified` is true and `email` is in the allow-list (the functions
+ *     runtime service account).
  *
- * `audience` / `allowedEmails` are passed in (from `NFE_TASKS_ENDPOINT` /
- * `NFE_TASK_SA_EMAILS`) so the route owns the config read and tests can inject.
+ * `audience` / `allowedEmails` are passed in (from `serviceAudience(path)`,
+ * derived from `NFE_BASE_URL`, and `NFE_TASK_SA_EMAILS`) so the route owns the
+ * config read and tests can inject.
  */
 export async function verifyServiceCaller(
   req: Request,
@@ -151,6 +153,19 @@ export async function verifyServiceCaller(
     }
     throw e;
   }
+}
+
+/**
+ * The OIDC `audience` a service caller must target to reach `path` on this app:
+ * `${NFE_BASE_URL}${path}` (NFE_BASE_URL = apps/nfe's own public base, no
+ * trailing slash). The reconcile Cloud Functions mint their identity token for
+ * this exact URL, and `verifyServiceCaller` validates the token's `aud` against
+ * it. Returns `undefined` when `NFE_BASE_URL` is unset — `verifyServiceCaller`
+ * then 500s, surfacing the misconfig instead of accepting an unbound audience.
+ */
+export function serviceAudience(path: string): string | undefined {
+  const base = process.env.NFE_BASE_URL;
+  return base ? `${base}${path}` : undefined;
 }
 
 /** Parse the `NFE_TASK_SA_EMAILS` CSV allow-list into a set. */

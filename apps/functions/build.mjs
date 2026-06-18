@@ -41,6 +41,11 @@ export async function bundle(outfile) {
     ],
     define: {
       'process.env.FUNCTIONS_REGION': JSON.stringify(region),
+      // apps/nfe public base URL — where the NF-e reconcile functions call back
+      // over OIDC (audience = `${NFE_BASE_URL}<path>`). Like the region, it is a
+      // non-secret per-environment value baked at build; set it in the deploy
+      // shell (no default — the runtime throws a clear error if it's empty).
+      'process.env.NFE_BASE_URL': JSON.stringify(process.env.NFE_BASE_URL ?? ''),
     },
   });
   return region;

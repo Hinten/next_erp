@@ -1,8 +1,9 @@
 # Deploying `apps/functions` (codebase `storage`)
 
-These are the **Cloud Functions** for the storage pipeline (currently
-`resizeProductImage`). They have never been deployed — `firebase.functions.json`
-at the repo root exists **only** for the emulator suite (`ci-storage.yml`) and is
+These are the gen2 **Cloud Functions** (codebase `storage`): the storage pipeline
+(`resizeProductImage`, `reconcileProductImages`) and the async NF-e reconciler
+triggers (`reconciliarNfe`, `nfeReconcileSweep`). `firebase.functions.json` at the
+repo root exists **only** for the emulator suite (`ci-storage.yml`) and is
 deliberately kept away from `firebase deploy`.
 
 Deploys are **manual and coordinated** (CLAUDE.md critical rule #1). This doc is
@@ -44,6 +45,47 @@ To regenerate the artifact by hand (e.g. to inspect it before deploying), the
 predeploy command is: `node apps/functions/scripts/prepare-deploy.mjs`. (A plain
 `pnpm --filter @delfrance/functions build` writes `dist/index.js` for local
 inspection only — the deploy does not use `dist/`.)
+
+## NF-e reconciler functions (`reconciliarNfe` / `nfeReconcileSweep`)
+
+These ship in the same `--only functions:storage` deploy. `reconciliarNfe`
+(`onTaskDispatched`) auto-provisions its Cloud Tasks queue; `nfeReconcileSweep`
+(`onSchedule`) auto-provisions its Cloud Scheduler job — **no Terraform**. Both
+call back into the apps/nfe App Hosting backend over OIDC.
+
+**Build env — `NFE_BASE_URL`.** Like `FUNCTIONS_REGION`, it is inlined at build by
+`build.mjs`'s esbuild `define` (no default; the runtime throws if empty). It is
+apps/nfe's own public base URL (no trailing slash) and must equal apps/nfe's
+`NFE_BASE_URL` so the minted OIDC audience matches what `verifyServiceCaller`
+validates. Set it in the deploy shell:
+
+```bash
+NFE_BASE_URL=https://nfe-<deployment>.web.app \
+  firebase deploy --only functions:storage \
+  --config firebase.functions.deploy.json --project <project-id>
+```
+
+**One-time IAM (replaces the old Terraform IAM module).** Run once per project:
+
+```bash
+PROJECT=<project-id>
+# Firebase-resolvable SAs (adjust to your project):
+NFE_RUNTIME_SA=<apps/nfe App Hosting runtime SA>     # the enqueuer
+FN_RUNTIME_SA=<functions runtime SA>                 # the function's identity (default: <projnum>-compute@developer.gserviceaccount.com)
+
+# apps/nfe must be able to enqueue onto the reconciliarNfe queue …
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:$NFE_RUNTIME_SA" --role="roles/cloudtasks.enqueuer"
+# … and act as the function's invoker identity when it sets the task's OIDC token.
+gcloud iam service-accounts add-iam-policy-binding "$FN_RUNTIME_SA" \
+  --project="$PROJECT" \
+  --member="serviceAccount:$NFE_RUNTIME_SA" --role="roles/iam.serviceAccountUser"
+```
+
+Then set apps/nfe env: `NFE_BASE_URL` (its own URL) and `NFE_TASK_SA_EMAILS`
+(the functions runtime SA email, so `verifyServiceCaller` allow-lists the
+callback). The function mints its own OIDC identity token via the metadata
+server — no extra IAM for that.
 
 ## Why the deploy uploads a generated `.deploy/functions` folder
 

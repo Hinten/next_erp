@@ -1,40 +1,45 @@
 /**
- * Cloud Tasks scheduler for the async NF-e reconciler.
+ * Task scheduler for the async NF-e reconciler — backed by a **Firebase
+ * Functions task queue** (`onTaskDispatched`), not raw Cloud Tasks / Terraform.
  *
  * When a lote is accepted asynchronously (`cStat=103` + `nRec`), the emitter
- * hands off immediately and schedules a **Cloud Task** that POSTs
- * `/api/nfe/reconciliar` at `now + tMed` (SEFAZ's estimate, default 60 s). The
- * reconcile endpoint consults the lote by receipt and, while still processing
- * (`cStat=105`), re-enqueues the next consult with backoff up to a cap. This
- * mirrors the old Flutter `gerarTaskConsultarNFe` / `CloudTasksClient`
- * (`.old/packages/pedido_nfe/lib/src/tasks.dart:2119`,
- * `.old/.../bigquerydart/lib/src/tasks_client.dart`).
+ * hands off immediately and enqueues a task scheduled at `now + tMed` onto the
+ * `reconciliarNfe` queue (auto-provisioned by the function on deploy — see
+ * `apps/functions/src/nfe/reconciliar.ts`). The queue dispatches to that
+ * function, which calls back into `/api/nfe/reconciliar`; while still processing
+ * (`cStat=105`) the route re-enqueues the next consult with backoff up to a cap.
+ * This mirrors the old Flutter `gerarTaskConsultarNFe` design, now on managed
+ * Firebase infra.
  *
- * Transport note: we create tasks through the Cloud Tasks **REST** API with an
- * ADC-authenticated `google-auth-library` client — the same library used for
- * verifying the incoming OIDC token in `auth.ts`. This avoids pulling the heavy
- * `@google-cloud/tasks` gRPC client for one call (and keeps the dependency set
- * to a package already vendored in the monorepo). The queue mints the OIDC
- * token at dispatch from `serviceAccountEmail` + `audience`; we only name them.
+ * Transport: `firebase-admin`'s `getFunctions().taskQueue(...).enqueue(...)` —
+ * the Admin SDK already in this app. There is **no queue-path / runner-SA env and
+ * no google-auth-library**: the Cloud Tasks queue is named after the function and
+ * the OIDC token that invokes it is minted by the Cloud Tasks ↔ Functions
+ * integration. (This replaces the previous REST + Terraform design.)
  *
- * Config (wired from Terraform outputs at deploy — see `infra/terraform`):
- *   - `NFE_TASKS_QUEUE`     full queue path `projects/<p>/locations/<r>/queues/<name>`
- *   - `NFE_TASKS_ENDPOINT`  absolute reconcile URL (also the OIDC audience)
- *   - `NFE_TASK_RUNNER_SA`  service-account email the queue impersonates
- *   - `NFE_TASKS_DISABLED=1` deliberate opt-out → sweep-only (the backstop cron
- *      still reconciles). Any *other* incomplete config throws `NFeTasksConfigError`
- *      so a half-configured deploy fails loud instead of silently dropping tasks.
+ * Config:
+ *   - `NFE_TASKS_DISABLED=1` → `noopTaskScheduler` (local dev / deliberate
+ *     sweep-only opt-out; the backstop sweep still reconciles).
+ *   - `NFE_TASKS_REGION` (default `us-east1`) → the region the `reconciliarNfe`
+ *     function + its queue are deployed to (must match apps/functions'
+ *     `FUNCTIONS_REGION`).
+ *
+ * The transport itself needs no required env, so a misconfigured enqueue (missing
+ * queue / permission) surfaces as an enqueue error at call time — caught by the
+ * route and covered by the backstop sweep — rather than at construction.
  */
 import { z } from 'zod';
-import { GoogleAuth } from 'google-auth-library';
+import { getFunctions } from 'firebase-admin/functions';
 
 import type { TpEmis } from '@delfrance/integrations-nfe';
 
+import { getAdminApp } from '@/lib/firebase/admin';
 import { safeLog } from './log';
 
-/** Cloud Tasks REST endpoint (v2). `{queue}` is the full queue resource path. */
-const CLOUD_TASKS_API = 'https://cloudtasks.googleapis.com/v2';
-const CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+/** The `onTaskDispatched` function in apps/functions (and its auto-created queue). */
+const RECONCILE_FUNCTION = 'reconciliarNfe';
+/** Region the reconcile function/queue live in (must match apps/functions FUNCTIONS_REGION). */
+const reconcileRegion = (): string => process.env.NFE_TASKS_REGION ?? 'us-east1';
 
 /**
  * JSON body the queue delivers to `/api/nfe/reconciliar`. Shared between the
@@ -79,9 +84,9 @@ export interface ConsultaTaskInput {
 }
 
 /**
- * The enqueue seam. The orchestrator depends on this interface, not on Cloud
- * Tasks directly, so unit tests pass a fake recorder. Routes obtain the real
- * one via `createTaskScheduler()`.
+ * The enqueue seam. The orchestrator depends on this interface, not on the
+ * transport, so unit tests pass a fake recorder. Routes obtain the real one via
+ * `createTaskScheduler()`.
  */
 export interface TaskScheduler {
   enqueueConsulta(input: ConsultaTaskInput): Promise<void>;
@@ -89,10 +94,10 @@ export interface TaskScheduler {
 
 /**
  * Silent no-op scheduler — the orchestrator's **default** when no scheduler is
- * threaded in (e.g. unit tests that don't assert enqueue). A missing enqueue
- * degrades to "the backstop sweep reconciles it later", never to incorrect
- * state — so the default is safe, while production routes opt into the real
- * scheduler explicitly.
+ * threaded in (e.g. unit tests that don't assert enqueue), and the
+ * `NFE_TASKS_DISABLED=1` mode. A missing enqueue degrades to "the backstop sweep
+ * reconciles it later", never to incorrect state — so the default is safe, while
+ * production routes opt into the real scheduler explicitly.
  */
 export const noopTaskScheduler: TaskScheduler = {
   async enqueueConsulta() {
@@ -101,10 +106,10 @@ export const noopTaskScheduler: TaskScheduler = {
 };
 
 /**
- * Thrown when Cloud Tasks is expected (deployed env, not `NFE_TASKS_DISABLED`)
- * but the config is incomplete. Fails loud at the route boundary so a
- * half-configured deploy is caught in testing rather than silently dropping the
- * async reconcile onto the slow backstop sweep.
+ * Retained error type for the route contract: routes still defensively map a
+ * scheduler-construction failure to a 5xx. With the Firebase-managed queue the
+ * transport has no required env to validate, so `createTaskScheduler()` no longer
+ * throws this — but keeping the type avoids churning the emit/reconcile routes.
  */
 export class NFeTasksConfigError extends Error {
   public readonly missing: ReadonlyArray<string>;
@@ -118,17 +123,8 @@ export class NFeTasksConfigError extends Error {
   }
 }
 
-/** Real scheduler — creates a Cloud Task via the REST API (ADC auth). */
-class CloudTasksRestScheduler implements TaskScheduler {
-  // One GoogleAuth instance reused across calls — caches the ADC token.
-  private readonly auth = new GoogleAuth({ scopes: [CLOUD_PLATFORM_SCOPE] });
-
-  constructor(
-    private readonly queue: string,
-    private readonly endpoint: string,
-    private readonly serviceAccountEmail: string,
-  ) {}
-
+/** Real scheduler — enqueues onto the `reconciliarNfe` Firebase task queue. */
+class FirebaseTaskQueueScheduler implements TaskScheduler {
   async enqueueConsulta(input: ConsultaTaskInput): Promise<void> {
     const payload: ConsultaTaskPayload = {
       kind: 'consulta-lote',
@@ -137,54 +133,25 @@ class CloudTasksRestScheduler implements TaskScheduler {
       tpEmis: input.tpEmis,
       attempt: input.attempt,
     };
-    const client = await this.auth.getClient();
-    await client.request({
-      url: `${CLOUD_TASKS_API}/${this.queue}/tasks`,
-      method: 'POST',
-      data: {
-        task: {
-          scheduleTime: new Date(input.scheduleAtMs).toISOString(),
-          httpRequest: {
-            url: this.endpoint,
-            httpMethod: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            // Cloud Tasks wants the body base64-encoded on the wire.
-            body: Buffer.from(JSON.stringify(payload), 'utf8').toString('base64'),
-            oidcToken: {
-              serviceAccountEmail: this.serviceAccountEmail,
-              audience: this.endpoint,
-            },
-          },
-        },
-      },
-    });
+    // Region-qualified name so the queue resolves to the deployed function's
+    // region (the Admin SDK otherwise defaults to us-central1).
+    const queue = getFunctions(getAdminApp()).taskQueue<ConsultaTaskPayload>(
+      `locations/${reconcileRegion()}/functions/${RECONCILE_FUNCTION}`,
+    );
+    await queue.enqueue(payload, { scheduleTime: new Date(input.scheduleAtMs) });
   }
 }
 
 /**
- * Build the scheduler from the environment.
- *
- *  - `NFE_TASKS_DISABLED=1` → `noopTaskScheduler` (deliberate sweep-only) with a
- *    one-line warning so the mode is visible in logs.
- *  - All of `NFE_TASKS_QUEUE` / `NFE_TASKS_ENDPOINT` / `NFE_TASK_RUNNER_SA`
- *    present → real `CloudTasksRestScheduler`.
- *  - Otherwise → `NFeTasksConfigError` (fail loud).
- *
- * Routes call this per request and let the error surface (the route maps it to
- * a 5xx) so a misconfigured deploy is impossible to miss.
+ * Build the scheduler from the environment:
+ *   - `NFE_TASKS_DISABLED=1` → `noopTaskScheduler` (sweep-only) with a one-line
+ *     warning so the mode is visible in logs.
+ *   - otherwise → the real `FirebaseTaskQueueScheduler`.
  */
 export function createTaskScheduler(): TaskScheduler {
   if (process.env.NFE_TASKS_DISABLED === '1') {
     safeLog('warn', '[nfe/tasks] NFE_TASKS_DISABLED=1 — async reconcile runs in sweep-only mode');
     return noopTaskScheduler;
   }
-  const queue = process.env.NFE_TASKS_QUEUE;
-  const endpoint = process.env.NFE_TASKS_ENDPOINT;
-  const serviceAccountEmail = process.env.NFE_TASK_RUNNER_SA;
-  const missing: string[] = [];
-  if (!queue) missing.push('NFE_TASKS_QUEUE');
-  if (!endpoint) missing.push('NFE_TASKS_ENDPOINT');
-  if (!serviceAccountEmail) missing.push('NFE_TASK_RUNNER_SA');
-  if (missing.length > 0) throw new NFeTasksConfigError(missing);
-  return new CloudTasksRestScheduler(queue!, endpoint!, serviceAccountEmail!);
+  return new FirebaseTaskQueueScheduler();
 }

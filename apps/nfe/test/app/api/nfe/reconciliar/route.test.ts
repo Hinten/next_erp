@@ -39,7 +39,7 @@ const PAYLOAD = { kind: 'consulta-lote', filialId: 'F-1', nRec: 'REC-1', tpEmis:
 let enqueued: unknown[];
 
 beforeEach(() => {
-  process.env.NFE_TASKS_ENDPOINT = 'https://nfe.example/api/nfe/reconciliar';
+  process.env.NFE_BASE_URL = 'https://nfe.example';
   enqueued = [];
   vi.mocked(verifyServiceCaller).mockResolvedValue({ service: { email: 'runner@p.iam' } });
   vi.mocked(createTaskScheduler).mockReturnValue({
@@ -49,7 +49,7 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
-  delete process.env.NFE_TASKS_ENDPOINT;
+  delete process.env.NFE_BASE_URL;
   vi.clearAllMocks();
 });
 

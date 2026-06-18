@@ -1,23 +1,32 @@
 /**
- * Unit tests for the Cloud Tasks scheduler config (`createTaskScheduler`).
- * Covers the fail-fast contract: disabled → no-op, incomplete → throw,
- * complete → a usable scheduler. The actual REST enqueue is integration-tested
- * in staging (no emulator for Cloud Tasks).
+ * Unit tests for the Firebase task-queue scheduler (`createTaskScheduler`).
+ * `NFE_TASKS_DISABLED=1` → no-op (sweep-only); otherwise a real scheduler that
+ * enqueues the `consulta-lote` payload onto the region-qualified `reconciliarNfe`
+ * queue via `firebase-admin`'s `getFunctions().taskQueue().enqueue()`. The actual
+ * dispatch is integration-tested in staging (no emulator parity asserted here).
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  createTaskScheduler,
-  NFeTasksConfigError,
-  noopTaskScheduler,
-} from '../../../lib/nfe/tasks';
+const enqueue = vi.fn(async (_data: unknown, _opts?: { scheduleTime?: Date }) => {});
+const taskQueue = vi.fn(() => ({ enqueue }));
 
-const KEYS = ['NFE_TASKS_DISABLED', 'NFE_TASKS_QUEUE', 'NFE_TASKS_ENDPOINT', 'NFE_TASK_RUNNER_SA'];
+vi.mock('firebase-admin/functions', () => ({
+  getFunctions: vi.fn(() => ({ taskQueue })),
+}));
+vi.mock('@/lib/firebase/admin', () => ({
+  getAdminApp: vi.fn(() => ({})),
+}));
+
+import { createTaskScheduler, noopTaskScheduler } from '../../../lib/nfe/tasks';
+
+const KEYS = ['NFE_TASKS_DISABLED', 'NFE_TASKS_REGION'];
 let saved: Record<string, string | undefined>;
 
 beforeEach(() => {
   saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
   for (const k of KEYS) delete process.env[k];
+  enqueue.mockClear();
+  taskQueue.mockClear();
 });
 afterEach(() => {
   for (const k of KEYS) {
@@ -32,25 +41,45 @@ describe('createTaskScheduler', () => {
     expect(createTaskScheduler()).toBe(noopTaskScheduler);
   });
 
-  it('throws NFeTasksConfigError when config is incomplete (fail-fast)', () => {
-    process.env.NFE_TASKS_QUEUE = 'projects/p/locations/us-east1/queues/q';
-    // endpoint + runner SA missing
-    expect(() => createTaskScheduler()).toThrow(NFeTasksConfigError);
-    try {
-      createTaskScheduler();
-    } catch (e) {
-      if (!(e instanceof NFeTasksConfigError)) throw e;
-      expect(e.missing).toEqual(['NFE_TASKS_ENDPOINT', 'NFE_TASK_RUNNER_SA']);
-    }
-  });
-
-  it('returns a real scheduler when fully configured', () => {
-    process.env.NFE_TASKS_QUEUE = 'projects/p/locations/us-east1/queues/q';
-    process.env.NFE_TASKS_ENDPOINT = 'https://nfe.example/api/nfe/reconciliar';
-    process.env.NFE_TASK_RUNNER_SA = 'runner@p.iam.gserviceaccount.com';
+  it('returns a real Firebase task-queue scheduler otherwise', () => {
     const scheduler = createTaskScheduler();
     expect(scheduler).not.toBe(noopTaskScheduler);
     expect(typeof scheduler.enqueueConsulta).toBe('function');
+  });
+
+  it('enqueues the consulta-lote payload onto the region-qualified reconciliarNfe queue', async () => {
+    process.env.NFE_TASKS_REGION = 'southamerica-east1';
+    const at = 1_700_000_000_000;
+    await createTaskScheduler().enqueueConsulta({
+      filialId: 'F1',
+      nRec: 'R1',
+      tpEmis: 1,
+      attempt: 2,
+      scheduleAtMs: at,
+    });
+    expect(taskQueue).toHaveBeenCalledWith('locations/southamerica-east1/functions/reconciliarNfe');
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    const [payload, opts] = enqueue.mock.calls[0]!;
+    expect(payload).toEqual({
+      kind: 'consulta-lote',
+      filialId: 'F1',
+      nRec: 'R1',
+      tpEmis: 1,
+      attempt: 2,
+    });
+    expect(opts?.scheduleTime).toBeInstanceOf(Date);
+    expect(opts?.scheduleTime?.getTime()).toBe(at);
+  });
+
+  it('defaults the queue region to us-east1 when NFE_TASKS_REGION is unset', async () => {
+    await createTaskScheduler().enqueueConsulta({
+      filialId: 'F',
+      nRec: 'R',
+      tpEmis: 6,
+      attempt: 0,
+      scheduleAtMs: Date.now(),
+    });
+    expect(taskQueue).toHaveBeenCalledWith('locations/us-east1/functions/reconciliarNfe');
   });
 
   it('noopTaskScheduler.enqueueConsulta resolves without side effects', async () => {

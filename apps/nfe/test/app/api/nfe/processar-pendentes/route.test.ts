@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/nfe/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/nfe/auth')>();
-  return { ...actual, verifyCaller: vi.fn() };
+  return { ...actual, verifyCaller: vi.fn(), verifyServiceCaller: vi.fn() };
 });
 vi.mock('@/lib/nfe/runtime', () => ({ getNFeRuntime: vi.fn() }));
 vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: vi.fn() }));
@@ -26,10 +26,12 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
   return { ...actual, consultarSituacaoNFe: vi.fn() };
 });
 
+import { NextResponse } from 'next/server';
+
 import { consultarSituacaoNFe } from '@delfrance/integrations-nfe';
 import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
-import { verifyCaller } from '@/lib/nfe/auth';
+import { verifyCaller, verifyServiceCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { transmitirPosEpec } from '@/lib/nfe/orchestrator/epec';
 import { getNFeRuntime, type NFeBaseRuntime, type NFeRuntime } from '@/lib/nfe/runtime';
@@ -191,6 +193,12 @@ beforeEach(() => {
   process.env.NFE_CERT_ENV_FALLBACK = '1';
   vi.mocked(verifyCaller).mockResolvedValue({
     caller: { uid: 'u-1', permissions: '0xff' },
+  } as never);
+  // Default the OIDC service caller to "not a service account" so the dual-auth
+  // gate falls through to the (mocked) Firebase user — the existing scan tests
+  // run as a manual operator invocation.
+  vi.mocked(verifyServiceCaller).mockResolvedValue({
+    error: NextResponse.json({ error: 'service account não autorizada' }, { status: 403 }),
   } as never);
   vi.mocked(getNFeRuntime).mockReturnValue(fakeRuntime());
 });
@@ -402,5 +410,43 @@ describe('POST /api/nfe/processar-pendentes — stuck-doc recovery routing', () 
     const docWrites = writes.filter((w) => w.path === 'pedidos/PED-2/nfev4/s6');
     expect(docWrites.some((w) => typeof w.data.xml_nfe_proc === 'string')).toBe(false);
     expect(docWrites.some((w) => w.data.xml_assinado === null)).toBe(false);
+  });
+});
+
+describe('POST /api/nfe/processar-pendentes — dual auth', () => {
+  it('rejects with the user-facing error when neither the service account nor a user authenticates', async () => {
+    vi.mocked(verifyServiceCaller).mockResolvedValue({
+      error: NextResponse.json({ error: 'service account não autorizada' }, { status: 403 }),
+    } as never);
+    vi.mocked(verifyCaller).mockResolvedValue({
+      error: NextResponse.json({ error: 'sem permissão' }, { status: 403 }),
+    } as never);
+
+    const res = await POST(req());
+    expect(res.status).toBe(403);
+    expect(vi.mocked(getNFeRuntime)).not.toHaveBeenCalled(); // never reached the sweep
+  });
+
+  it('proceeds for the sweep service account without falling back to the user check', async () => {
+    vi.mocked(verifyServiceCaller).mockResolvedValue({ service: { email: 'fn@p.iam' } } as never);
+    const { fs } = fakeFirestore({});
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+    const res = await POST(req());
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(res.status).toBe(200);
+    expect(body).toMatchObject({ scanned: 0 });
+    expect(vi.mocked(verifyCaller)).not.toHaveBeenCalled(); // service path short-circuits
+  });
+
+  it('falls back to a Firebase user with PERM.fiscal.write when not a service caller', async () => {
+    // verifyServiceCaller defaults to an error in beforeEach; the mocked
+    // verifyCaller authorizes the manual operator.
+    const { fs } = fakeFirestore({});
+    vi.mocked(getAdminFirestore).mockReturnValue(fs);
+
+    const res = await POST(req());
+    expect(res.status).toBe(200);
+    expect(vi.mocked(verifyCaller)).toHaveBeenCalledTimes(1);
   });
 });

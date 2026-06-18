@@ -29,7 +29,14 @@ import {
 } from '@delfrance/integrations-nfe';
 import { ESTADO_NFE, type EstadoNFe, type NotaFiscalEletronica } from '@delfrance/schemas';
 
-import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
+import {
+  allowedServiceEmails,
+  authError,
+  PERM,
+  serviceAudience,
+  verifyCaller,
+  verifyServiceCaller,
+} from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { persistPatch, procPersistExtras } from '@/lib/nfe/orchestrator/audit';
 import { loadNfeConfigForEmission } from '@/lib/nfe/orchestrator/bundle';
@@ -85,8 +92,20 @@ function isDue(data: PendingDoc, now: Date, timeoutMs: number): boolean {
 }
 
 export async function POST(req: Request): Promise<NextResponse> {
-  const auth = await verifyCaller(req, PERM.fiscal.write);
-  if ('error' in auth) return auth.error;
+  // Dual auth: the `nfeReconcileSweep` onSchedule backstop presents a Google
+  // OIDC token (the functions service account); a manual invocation presents a
+  // Firebase user token with PERM.fiscal.write. Try the service caller first
+  // (the common, automated path); fall back to the Firebase user, returning the
+  // user-facing error if neither authenticates (so a real operator gets the
+  // clearer "sem permissão" message rather than the SA-rejection one).
+  const service = await verifyServiceCaller(req, {
+    audience: serviceAudience('/api/nfe/processar-pendentes'),
+    allowedEmails: allowedServiceEmails(),
+  });
+  if ('error' in service) {
+    const user = await verifyCaller(req, PERM.fiscal.write);
+    if ('error' in user) return user.error;
+  }
 
   let params: z.infer<typeof bodySchema>;
   try {

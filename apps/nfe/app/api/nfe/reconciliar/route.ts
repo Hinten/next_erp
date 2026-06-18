@@ -1,16 +1,18 @@
 /**
- * `POST /api/nfe/reconciliar` — Cloud Task target: reconcile one async lote.
+ * `POST /api/nfe/reconciliar` — reconcile one async lote (target of the
+ * `reconciliarNfe` Cloud Tasks function).
  *
- * Triggered by a Cloud Task scheduled at `now + tMed` (then per-attempt backoff)
- * carrying `{ kind, filialId, nRec, tpEmis, attempt }`. Consults the lote by
- * receipt (`consReciNFe`), applies the per-chave outcome, and — while still
- * `cStat=105` and under the attempt cap — re-enqueues the next consult.
+ * A task is scheduled at `now + tMed` (then per-attempt backoff) carrying
+ * `{ kind, filialId, nRec, tpEmis, attempt }`; the `reconciliarNfe`
+ * onTaskDispatched function forwards it here. Consults the lote by receipt
+ * (`consReciNFe`), applies the per-chave outcome, and — while still `cStat=105`
+ * and under the attempt cap — re-enqueues the next consult.
  *
- * Auth: a Google **OIDC** token from the `nfe-task-runner` service account
- * (`verifyServiceCaller`), NOT a Firebase user token — Cloud Tasks mints the
- * OIDC token at dispatch.
+ * Auth: a Google **OIDC** token from the reconcile functions' runtime service
+ * account (`verifyServiceCaller`), NOT a Firebase user token — the function mints
+ * the token for this endpoint's audience.
  *
- * Status-code contract (Cloud Tasks retries on non-2xx):
+ * Status-code contract (the function retries on non-2xx via its queue):
  *   - **200** on any handled outcome — including `cStat=656` (consumo indevido),
  *     which is terminal: we must NOT let Cloud Tasks retry it (re-querying after
  *     656 risks a SEFAZ ban, #77).
@@ -24,7 +26,12 @@ import { z } from 'zod';
 
 import { nextConsultaDelayMs } from '@delfrance/integrations-nfe';
 
-import { allowedServiceEmails, authError, verifyServiceCaller } from '@/lib/nfe/auth';
+import {
+  allowedServiceEmails,
+  authError,
+  serviceAudience,
+  verifyServiceCaller,
+} from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
 import { resolveFilialRuntime } from '@/lib/nfe/filial-cert';
@@ -40,9 +47,10 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(req: Request): Promise<NextResponse> {
-  // OIDC service-caller check (Cloud Tasks). Audience = our own reconcile URL.
+  // OIDC service-caller check (the reconciliarNfe task dispatcher). Audience =
+  // our own reconcile URL, which the Cloud Function minted the token for.
   const auth = await verifyServiceCaller(req, {
-    audience: process.env.NFE_TASKS_ENDPOINT,
+    audience: serviceAudience('/api/nfe/reconciliar'),
     allowedEmails: allowedServiceEmails(),
   });
   if ('error' in auth) return auth.error;

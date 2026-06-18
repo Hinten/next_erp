@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Two exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Four exports — two storage, two NF-e:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — resizes a freshly uploaded
   product photo into its **200px / 400px / full-JPEG** derivatives and writes the
@@ -21,6 +21,20 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Two exports:
   query (O(missing)), never a full catalog scan. Both share the idempotent
   `processProductOriginal` (`src/product-images/processOriginal.ts`), which writes
   only missing derivatives and skips the download when complete.
+- **`reconciliarNfe`** (`onTaskDispatched`, `src/nfe/reconciliar.ts`) — the async
+  NF-e reconciler's Cloud Tasks dispatcher (#77/#81). Its queue is auto-provisioned
+  on deploy; apps/nfe enqueues onto it (`getFunctions().taskQueue('reconciliarNfe')`)
+  and the function forwards each task to apps/nfe `/api/nfe/reconciliar` over OIDC.
+- **`nfeReconcileSweep`** (`onSchedule`, every 30 min 08:00–19:00 Mon–Fri,
+  America/São_Paulo; `src/nfe/sweep.ts`) — the backstop that calls apps/nfe
+  `/api/nfe/processar-pendentes` over OIDC.
+
+  Both NF-e functions are **thin dispatchers**: the SEFAZ/cert work stays in
+  apps/nfe (the cert/chain boundary is deliberately not duplicated here). They mint
+  an OIDC identity token from the **GCE metadata server** (`src/nfe/call-nfe.ts`),
+  audience = `${NFE_BASE_URL}<path>`, so no `google-auth-library` dep is added.
+  `NFE_BASE_URL` is inlined at build like `FUNCTIONS_REGION` (`build.mjs`); set it
+  in the deploy shell.
 
 - The entry (`src/index.ts`) is **esbuild-bundled into a single ESM file**.
   Only `firebase-admin`, `firebase-functions`, and `sharp` are `external`;

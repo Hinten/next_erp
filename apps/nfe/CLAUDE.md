@@ -22,12 +22,16 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    `lib/nfe/auth.ts:verifyCaller`. Required perm:
    - `PERM.fiscal.read`  → `/api/nfe/consultar`
    - `PERM.fiscal.write` → `/api/nfe/emitir` and `/api/nfe/processar-pendentes`
-   - **`/api/nfe/reconciliar` is NOT a Firebase-user route** — it is the Cloud
-     Tasks target and authenticates a **Google OIDC token** from the
-     `nfe-task-runner` service account via `verifyServiceCaller` (audience =
-     `NFE_TASKS_ENDPOINT`, allow-list = `NFE_TASK_SA_EMAILS`). A Cloud Tasks
-     token is Google-signed, not Firebase's securetoken service, so
-     `verifyCaller` (Firebase `verifyIdToken`) would reject it.
+   - **`/api/nfe/reconciliar` is NOT a Firebase-user route** — it is the target
+     of the `reconciliarNfe` Cloud Tasks function and authenticates a **Google
+     OIDC token** from the functions runtime service account via
+     `verifyServiceCaller` (audience = `serviceAudience('/api/nfe/reconciliar')`
+     from `NFE_BASE_URL`, allow-list = `NFE_TASK_SA_EMAILS`). The token is
+     Google-signed, not Firebase's securetoken service, so `verifyCaller`
+     (Firebase `verifyIdToken`) would reject it.
+   - **`/api/nfe/processar-pendentes` accepts EITHER** a Firebase user with
+     `PERM.fiscal.write` **or** the OIDC service account (the `nfeReconcileSweep`
+     onSchedule backstop) — dual auth, service caller tried first.
 4. **Cert-free boot, per-filial at every SEFAZ call.**
    `lib/nfe/runtime.ts:getNFeRuntime` is the process-level BASE singleton —
    it is **cert-optional**: it eagerly validates `NFE_AMBIENTE`/`NFE_UF` and
@@ -111,14 +115,14 @@ NFE_CERT_ENC_KEY=...                 # base64 32 bytes (openssl rand -base64 32)
 # NFE_CERT_ENV_FALLBACK=1            # filial w/o stored cert → use the env cert (tests/dev). Default off.
 # NFE_ALLOW_PRODUCAO=true            # only if NFE_AMBIENTE=producao
 
-# Async reconciler (Cloud Tasks) — wired from Terraform outputs at deploy.
-# When set, async-lote emits schedule a Cloud Task that calls /api/nfe/reconciliar.
-# If INCOMPLETE (and not explicitly disabled), emit fails fast (NFeTasksConfigError).
-# NFE_TASKS_QUEUE=projects/<p>/locations/<r>/queues/nfe-consulta
-# NFE_TASKS_ENDPOINT=https://nfe-<deployment>.web.app/api/nfe/reconciliar
-# NFE_TASK_RUNNER_SA=nfe-task-runner@<p>.iam.gserviceaccount.com
-# NFE_TASK_SA_EMAILS=nfe-task-runner@<p>.iam.gserviceaccount.com  # OIDC allow-list (CSV)
-# NFE_TASKS_DISABLED=1               # deliberate sweep-only / local dev (no Cloud Tasks)
+# Async reconciler (Firebase Functions: Cloud Tasks + Scheduler).
+# Async-lote emits enqueue a task onto the `reconciliarNfe` queue (auto-created by
+# the onTaskDispatched function in apps/functions); the onSchedule backstop sweep
+# calls /api/nfe/processar-pendentes. Both call back over OIDC, validated here.
+NFE_BASE_URL=https://nfe-<deployment>.web.app   # this app's own public base (OIDC audience)
+NFE_TASK_SA_EMAILS=<functions-runtime-sa>@<p>.iam.gserviceaccount.com  # OIDC allow-list (CSV)
+# NFE_TASKS_REGION=us-east1          # region of the reconciliarNfe function/queue (default us-east1)
+# NFE_TASKS_DISABLED=1               # deliberate sweep-only / local dev (no enqueue)
 
 ALLOWED_ADMIN_ORIGINS=https://app.example.com  # CSV; localhost allowed by default
 TZ=America/Sao_Paulo                 # SEFAZ wants the issuer's local time
@@ -147,7 +151,7 @@ lib/
   firebase/admin.ts                Admin SDK singletons (same as apps/integrations)
   nfe/
     runtime.ts                     Process-level cert-OPTIONAL base (endpoints + chain cache + lazy envRuntime)
-    tasks.ts                       Cloud Tasks scheduler (enqueue reconcile tasks; fail-fast config)
+    tasks.ts                       Enqueues reconcile tasks onto the reconciliarNfe Firebase task queue
     orchestrator/reconcile.ts      reconcileByRecibo — shared by /reconciliar + the backstop sweep
     filial-cert.ts                 resolveFilialRuntime / resolveFilialRuntimeByCnpj (per-filial signing)
     orchestrator/                  Pedido → emit/consultar/cancelar/inutilizar,
@@ -170,34 +174,33 @@ homologação chain at `packages/integrations/nfe/ca/sefaz-sp-homologacao.pem`
 must exist — `pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca`
 captures it on first setup.
 
-## Async reconcile: Cloud Tasks (primary) + sweep (backstop)
+## Async reconcile: Cloud Tasks (primary) + sweep (backstop) — via Firebase Functions
 
-The **primary** confirmation path for an async lote is a **Cloud Task**: emit
-schedules a task at `now + tMed` that calls `/api/nfe/reconciliar`, which
-consults by recibo and re-enqueues with backoff until terminal (capped at
-`MAX_RECONCILE_ATTEMPTS`; cStat 656 is terminal — never retried). The queue +
-`nfe-task-runner` SA + IAM are provisioned by `infra/terraform`; the deploy
-wires the `NFE_TASKS_*` env from its outputs.
+Both triggers are **Firebase Functions** (in `apps/functions`), so there is **no
+Terraform / manual `gcloud` provisioning** — `firebase deploy` creates the Cloud
+Tasks queue and the Cloud Scheduler job. apps/nfe stays THE SEFAZ/cert boundary;
+the functions are thin dispatchers that call back here over OIDC.
 
-`processar-pendentes` is the **backstop sweep** — a *slow* cron that catches
-lost tasks / enqueue failures / pre-existing stuck docs. It shares the same
-`reconcileByRecibo` core and respects each doc's `proximaConsultaEm`, so it
-never consults ahead of the task's schedule. Wire it at deploy (slow cadence —
-the per-doc due-gate makes it cheap):
+The **primary** confirmation path is a **Cloud Task**: emit enqueues a task at
+`now + tMed` onto the `reconciliarNfe` queue (`firebase-admin`'s
+`getFunctions().taskQueue(...).enqueue()` — `lib/nfe/tasks.ts`). The
+`onTaskDispatched` `reconciliarNfe` function (auto-provisions the queue on
+deploy) forwards it to `/api/nfe/reconciliar`, which consults by recibo and
+re-enqueues with backoff until terminal (capped at `MAX_RECONCILE_ATTEMPTS`;
+cStat 656 is terminal — never retried).
 
-```bash
-gcloud scheduler jobs create http nfe-processar-pendentes \
-  --schedule="every 15 minutes" \
-  --uri="https://nfe-<deployment>.web.app/api/nfe/processar-pendentes" \
-  --http-method=POST \
-  --oidc-service-account-email=<sa>@<project>.iam.gserviceaccount.com \
-  --headers="Content-Type=application/json" \
-  --message-body='{}'
-```
+`processar-pendentes` is the **backstop sweep** — driven by the
+`nfeReconcileSweep` `onSchedule` function (every 30 min, 08:00–19:00 Mon–Fri,
+America/São_Paulo). It catches lost tasks / enqueue failures / pre-existing stuck
+docs, shares the same `reconcileByRecibo` core, and respects each doc's
+`proximaConsultaEm`, so it never consults ahead of the task's schedule.
 
-The OIDC token Scheduler sends counts as a Bearer token; verify in
-`lib/nfe/auth.ts` against a service account allowlist (or grant
-`PERM.fiscal.write` to the SA in Firestore claims).
+Both functions present a Google OIDC token (their runtime SA, audience =
+`serviceAudience(path)` from `NFE_BASE_URL`); verify in `lib/nfe/auth.ts`
+(`verifyServiceCaller`) against the `NFE_TASK_SA_EMAILS` allow-list. One-time IAM
+(the apps/nfe runtime SA needs `roles/cloudtasks.enqueuer` +
+`roles/iam.serviceAccountUser` on the functions runtime SA) is in
+`apps/functions/DEPLOY.md`.
 
 ## Deploy
 
