@@ -39,6 +39,23 @@ describe('arquivoSchema', () => {
     expect(out.externalIds).toEqual([]);
     // resizeState defaults null — only product-image originals set 'pending'.
     expect(out.resizeState).toBeNull();
+    // uploadState defaults null — create-first uploads set 'pending'.
+    expect(out.uploadState).toBeNull();
+  });
+
+  it('accepts the uploadState marker', () => {
+    expect(
+      arquivoSchema.parse({ filetype: 'image', filename: 'a.png', uploadState: 'pending' })
+        .uploadState,
+    ).toBe('pending');
+    expect(
+      arquivoSchema.parse({ filetype: 'image', filename: 'a.png', uploadState: 'finalized' })
+        .uploadState,
+    ).toBe('finalized');
+    expect(
+      arquivoSchema.safeParse({ filetype: 'image', filename: 'a.png', uploadState: 'nope' })
+        .success,
+    ).toBe(false);
   });
 
   it('accepts the resizeState marker', () => {

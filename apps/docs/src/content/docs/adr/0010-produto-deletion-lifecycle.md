@@ -64,21 +64,50 @@ debris-producing deletes are covered first.
   subcollections in batched deletes. Idempotent; tolerant of partially-cleaned
   docs (Flutter may have already swept some). Fully exercisable on the Firestore
   emulator in `ci-storage.yml`.
-- **`onArquivoDeleted` (#95)** — on `arquivos/{id}` delete, perform a
-  **refcount-aware** Storage object delete scoped per product (delete the object
-  only when no other arquivo doc references it). `arquivo.criadoEm` is already in
-  place to back a grace-period guard against deleting an object whose doc is
-  mid-creation. Emulator-testable (Storage + Firestore emulators).
+- **`onArquivoDeleted` (#95)** — on `arquivos/{id}` delete, delete the Storage
+  object the doc owned (and, for a product-image original, cascade to its 3
+  derivative objects + docs). Product media is **product-scoped** (paths are
+  `produtos/<id>/…`, ids are `<produtoId>_<hash>`), so there is no cross-product
+  object sharing and an **owner-scoped delete needs no refcount table** — the
+  earlier "refcount-aware" framing was for a shared-object model this layout
+  rules out. Guards a content-addressed race with a **dedup-resurrection check**
+  (skip the delete if a doc with the same id exists again — a re-upload recreated
+  it) rather than a `criadoEm` time window. Core extracted as
+  `processArquivoDeletion` so the emulator suite drives it directly (Firestore
+  triggers on a **named** database are awkward to exercise in the emulator).
+  Targets the named `default` database explicitly. Emulator-testable.
+
+  This pairs with a **create-first** upload contract in `@delfrance/storage`
+  (the maturation of #202): the client writes the `arquivos` doc — the lifecycle
+  **anchor** — BEFORE uploading the bytes, stamping `uploadState: 'pending'` and
+  tagging the object with its `arquivoId` in custom metadata; the
+  `onObjectFinalized` trigger flips `uploadState` to `'finalized'`. The old order
+  (upload-then-`setDoc`) orphaned the OBJECT when the client died mid-write;
+  create-first instead leaves a detectable phantom DOC.
 
 ### Phase 2 — scheduled orphan reconciliation (deferred)
 
-- A **scheduled pipeline anti-join** returning `arquivos` with no `produto`
-  reference (replacing the old full-collection scan), plus an equivalent
-  subcollection-orphan sweep for pre-existing debris. Because pipeline queries
-  **cannot run in the emulator**, this needs a **secret-gated real-test-project
-  CI job**, modelled on `ci-nfe`'s live SEFAZ step: **advisory** (non-blocking)
-  on `pull_request`/`push`, **fatal** on `workflow_dispatch`. Deferred until
-  Phase 1 has stopped the orphan set from growing.
+Reshaped from the original "pipeline anti-join" idea into **two existence-check
+sweeps** (`onSchedule`, every 48h). `Produto.fotos` is an **embedded array** of
+`arquivos/<id>` ref-strings, which makes a "no produto reference" anti-join an
+array-contains join (pipeline-only, and pipeline queries **cannot run in the
+emulator**). Anchoring on the `arquivos` doc instead lets both directions be
+plain existence checks — **no pipeline API, fully emulator-testable** — so they
+do **not** need the secret-gated real-project CI lane the anti-join would have:
+
+- **Phantom-doc sweep** — query `arquivos where uploadState == 'pending'`
+  (bounded `.limit`); for each doc older than a 48h grace window, if its Storage
+  object is absent, delete the doc (an abandoned create-first upload). Subsumes
+  #189's observation that product-image phantoms sit at `resizeState: 'pending'`
+  forever.
+- **Storage-orphan sweep** — paginate the bucket under `produtos/` + `media/`;
+  for each object older than the window whose owning doc (`arquivoId` metadata,
+  else derived from the path) is absent, delete the object.
+
+The remaining "doc + object both exist but no `produto` references them" case is
+handled at the **produto-delete** path (#136 deletes the `arquivos` docs →
+`onArquivoDeleted` frees Storage), not by a storage sweep. Deferred until Phase 1
+has stopped the orphan set from growing.
 
 ### Phase 3 — reference cascade (#135), replaces the block
 
@@ -116,8 +145,10 @@ not this one). No automated deploy workflow yet.
   (Phase 2); idempotency is now a hard requirement because Flutter cascades
   concurrently during coexistence; the cross-package remote-delist (Phase 3)
   introduces partial-failure states that need explicit handling.
-- **Cost:** the pipeline anti-join relies on Firebase Enterprise edition pricing;
-  the design is invalid on the standard per-read model.
+- **Cost:** the reshaped Phase 2 existence-check sweeps are bounded
+  (`uploadState == 'pending'` query + 48h age filter + per-run `.limit`), so they
+  avoid both the old full-collection per-read scan AND the Enterprise-only
+  pipeline anti-join — they run on any pricing tier and in the emulator.
 
 ## Alternatives considered
 
@@ -133,6 +164,9 @@ not this one). No automated deploy workflow yet.
 
 ## Status
 
-Proposed (2026-06). Phasing: Phase 1 next (event triggers, emulator-tested);
-Phase 2 deferred (pipeline anti-join + secret-gated real-project lane); Phase 3
-blocked on the `apps/integrations` remote-delist design. Refs #136, #95, #135.
+Proposed (2026-06). Phasing: Phase 1 in progress — the **arquivo side**
+(`onArquivoDeleted` + the create-first upload contract, #95/#202) lands first;
+the produto-side `onDocumentDeleted('produtos/{id}')` subcollection sweep (#136)
+follows. Phase 2 reshaped into two emulator-testable existence-check sweeps (no
+secret-gated lane needed). Phase 3 blocked on the `apps/integrations`
+remote-delist design. Refs #136, #95, #135, #202.

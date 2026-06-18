@@ -116,6 +116,18 @@ export const arquivoSchema = z
     // queries `where resizeState == 'pending'` to find originals whose
     // derivatives are missing — see apps/functions `reconcileProductImages`.
     resizeState: z.enum(['pending', 'done']).nullable().default(null).describe('Estado do resize'),
+    // Upload lifecycle marker (general — images, videos AND generic media):
+    // 'pending' when the client CREATES the doc just before uploading the bytes
+    // (create-first), flipped to 'finalized' by the `onObjectFinalized` trigger
+    // once the object actually arrives. Orthogonal to `resizeState` (which only
+    // tracks derivative creation for product images). `null` for legacy docs that
+    // predate create-first. The phantom-doc orphan sweep queries
+    // `where uploadState == 'pending'` to find docs whose upload never completed.
+    uploadState: z
+      .enum(['pending', 'finalized'])
+      .nullable()
+      .default(null)
+      .describe('Estado do upload'),
   })
   .passthrough();
 
