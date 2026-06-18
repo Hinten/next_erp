@@ -144,6 +144,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
             integracao={integracaoDoc.data}
             cepDestino={cepDestino}
             intFreteId={integracaoDoc.id}
+            pedidoId={pedidoId}
           />
         );
       default:

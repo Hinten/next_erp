@@ -4,16 +4,20 @@
  */
 export {
   createFreightHttpClient,
+  type FreightComprarResult,
   type FreightContaResult,
   type FreightHttpClient,
   type FreightHttpClientConfig,
+  type FreightImprimirResult,
   type FreightOAuthStartResult,
+  type FreightRastrearResult,
 } from './client';
 
 export {
   FreightAuthError,
   FreightBadRequestError,
   FreightHttpError,
+  FreightLabelTerminalError,
   FreightNetworkError,
   FreightNotFoundError,
   FreightReauthRequiredError,
@@ -41,3 +45,15 @@ export {
   type BuildCalculateParams,
   type VolumeInput,
 } from '../melhor-envio/calculate';
+
+// Pure cart-item builder + its primitive inputs — apps/web resolves the
+// pedido/filial/endereço/cliente into these and composes the `comprar`
+// request before calling `client.comprar`. Domain-neutral, no server deps.
+export {
+  buildCartItem,
+  type BuildCartItemParams,
+  type CartAddressInput,
+  type CartOptionsInput,
+  type CartProductInput,
+} from '../melhor-envio/cart';
+export type { CartInsertRequest } from '../melhor-envio/types';

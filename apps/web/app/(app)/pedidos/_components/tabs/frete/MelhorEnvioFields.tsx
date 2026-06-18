@@ -24,6 +24,7 @@ import {
   type PedidoFormHandle,
 } from './fields';
 import { VolumesEditor } from './VolumesEditor';
+import { EtiquetaMelhorEnvioPanel } from './EtiquetaMelhorEnvioPanel';
 
 /**
  * Melhor Envio — quote step (F4). Replaces the F4 placeholder: edit the
@@ -44,12 +45,15 @@ export function MelhorEnvioFields({
   integracao,
   cepDestino,
   intFreteId,
+  pedidoId,
 }: {
   form: PedidoFormHandle;
   disabled?: boolean;
   integracao: IntFrete;
   cepDestino: string | null;
   intFreteId: string;
+  /** Present in edit mode (a saved pedido) — gates the etiqueta panel. */
+  pedidoId?: string;
 }) {
   const client = useFreightClient();
   const cepOrigem = integracao.enderecoDeOrigem?.cep ?? null;
@@ -235,6 +239,16 @@ export function MelhorEnvioFields({
         <FreteSwitchField form={form} name="maoPropria" label="Mão própria" disabled={disabled} />
         <FreteSwitchField form={form} name="ehReverso" label="Frete reverso" disabled={disabled} />
       </Group>
+
+      {pedidoId && (
+        <EtiquetaMelhorEnvioPanel
+          form={form}
+          disabled={disabled}
+          integracao={integracao}
+          intFreteId={intFreteId}
+          pedidoId={pedidoId}
+        />
+      )}
     </Stack>
   );
 }
