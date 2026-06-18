@@ -28,6 +28,24 @@ describe('produtoSchema', () => {
     expect(produtoSchema.safeParse({ nome: 'X', crossdocking: -1 }).success).toBe(false);
   });
 
+  it('ehUsado defaults to false and accepts only booleans', () => {
+    expect(produtoSchema.parse({ nome: 'X' }).ehUsado).toBe(false);
+    expect(produtoSchema.parse({ nome: 'X', ehUsado: true }).ehUsado).toBe(true);
+    expect(produtoSchema.safeParse({ nome: 'X', ehUsado: 'sim' }).success).toBe(false);
+  });
+
+  it('categoriaProdutoOuterRef is a nullable doc-path string', () => {
+    const ref = 'documents/categorias/cat-1';
+    expect(
+      produtoSchema.parse({ nome: 'X', categoriaProdutoOuterRef: ref }).categoriaProdutoOuterRef,
+    ).toBe(ref);
+    expect(produtoSchema.parse({ nome: 'X' }).categoriaProdutoOuterRef).toBeNull();
+    // A non-string (e.g. a raw object) is rejected — the wire shape is a string.
+    expect(
+      produtoSchema.safeParse({ nome: 'X', categoriaProdutoOuterRef: { id: 'cat-1' } }).success,
+    ).toBe(false);
+  });
+
   it('parses componentesKit against kitSchema and preserves unknown top-level fields', () => {
     const parsed = produtoSchema.parse({
       nome: 'Kit',

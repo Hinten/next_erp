@@ -1,5 +1,8 @@
 import type { FieldConfig } from '@delfrance/ui';
 import type { Produto } from '@delfrance/schemas';
+import { refRenderInput } from '@/components/collection-select/refRenderInput';
+import { categoriaCollection } from '@/lib/data/categoriaCollection';
+import { skuRenderInput } from './SkuField';
 
 /**
  * Shared Produto ObjectView configuration, used by both the create (`novo`)
@@ -30,10 +33,16 @@ export const PRODUTO_SECTIONS: string[] = [
  */
 export const produtoFieldOverrides: Record<string, FieldConfig> = {
   nome: { label: 'Nome', section: 'Dados gerais' },
-  sku: { label: 'SKU', section: 'Dados gerais' },
+  sku: { label: 'SKU', section: 'Dados gerais', renderInput: skuRenderInput },
   gtin: { label: 'GTIN / EAN', section: 'Dados gerais' },
   codFornecedor: { label: 'Código no fornecedor', section: 'Dados gerais' },
   codPai: { label: 'Código do pai', section: 'Dados gerais' },
+  categoriaProdutoOuterRef: {
+    label: 'Categoria',
+    section: 'Dados gerais',
+    // Emits the Flutter `documents/categorias/<id>` doc-path string.
+    renderInput: refRenderInput(categoriaCollection, false, 'nome', undefined, true),
+  },
   publicado: { label: 'Publicado', section: 'Dados gerais' },
 
   pesoLiquidoKg: { label: 'Peso líquido (kg)', section: 'Dimensões e peso' },
@@ -51,6 +60,7 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
   ehKitVirtual: { label: 'É kit virtual', section: 'Configurações' },
   ofereceFreteGratis: { label: 'Oferece frete grátis', section: 'Configurações' },
   permiteVendaSemEstoque: { label: 'Permite venda sem estoque', section: 'Configurações' },
+  ehUsado: { label: 'Produto usado', section: 'Configurações' },
 
   custo: {
     label: 'Custo',
@@ -82,7 +92,6 @@ export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   'fotosArquivosIds',
   'paiId',
   'ordem',
-  'categoriaProdutoOuterRef',
 ];
 
 /**

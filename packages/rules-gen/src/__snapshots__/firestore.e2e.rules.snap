@@ -112,6 +112,7 @@ service cloud.firestore {
     function v_produtos(d, c) {
       return (!c.hasAny(['alturaCm']) || (d.get('alturaCm', null) == null || d.get('alturaCm', null) is number))
         && (!c.hasAny(['anexos']) || (d.get('anexos', null) == null || d.get('anexos', null) is list))
+        && (!c.hasAny(['categoriaProdutoOuterRef']) || (d.get('categoriaProdutoOuterRef', null) == null || d.get('categoriaProdutoOuterRef', null) is string))
         && (!c.hasAny(['codFornecedor']) || (d.get('codFornecedor', null) == null || d.get('codFornecedor', null) is string && d.get('codFornecedor', null).size() <= 255))
         && (!c.hasAny(['codPai']) || (d.get('codPai', null) == null || d.get('codPai', null) is string && d.get('codPai', null).size() <= 255))
         && (!c.hasAny(['componentesKit']) || (d.get('componentesKit', null) == null || d.get('componentesKit', null) is map))
@@ -120,6 +121,7 @@ service cloud.firestore {
         && (!c.hasAny(['custo']) || (d.get('custo', null) == null || (d.get('custo', null) is number && d.get('custo', null) >= 0)))
         && (!c.hasAny(['ehKit']) || d.get('ehKit', null) is bool)
         && (!c.hasAny(['ehKitVirtual']) || d.get('ehKitVirtual', null) is bool)
+        && (!c.hasAny(['ehUsado']) || d.get('ehUsado', null) is bool)
         && (!c.hasAny(['fotos']) || (d.get('fotos', null) == null || d.get('fotos', null) is list))
         && (!c.hasAny(['fotosArquivosIds']) || (d.get('fotosArquivosIds', null) == null || d.get('fotosArquivosIds', null) is list))
         && (!c.hasAny(['grupoDeVariacoesUid']) || (d.get('grupoDeVariacoesUid', null) == null || d.get('grupoDeVariacoesUid', null) is list))

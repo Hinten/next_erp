@@ -39,9 +39,10 @@ export const produtoSchema = z
     gtin: z.string().max(255).nullable().default(null),
     codFornecedor: z.string().max(255).nullable().default(null),
 
-    // Categoria reference (Flutter `OuterReference<Categoria>`). Stored as a
-    // path-bearing object on disk; pass-through here.
-    categoriaProdutoOuterRef: z.unknown().nullable().default(null),
+    // Categoria reference — the Flutter `OuterReference<Categoria>` serializes
+    // to a `documents/categorias/<id>` doc-path string (read `as String?`). The
+    // Categoria picker emits that exact shape (refRenderInput `emitDocPath`).
+    categoriaProdutoOuterRef: z.string().nullable().default(null),
 
     // Dimensions / weights — all optional doubles.
     pesoLiquidoKg: z.number().nullable().default(null),
@@ -57,6 +58,10 @@ export const produtoSchema = z
     publicado: z.boolean().default(true),
     ofereceFreteGratis: z.boolean().default(false),
     permiteVendaSemEstoque: z.boolean().default(false),
+    // "Produto usado" — Flutter reads `as bool?`, but we default to false like
+    // the other flags so the ObjectView switch can't be left in an unclearable
+    // null; an absent Flutter value reads back as false.
+    ehUsado: z.boolean().default(false),
     crossdocking: z.number().int().min(0).nullable().default(null),
 
     // Pricing — `precos` keyed by ListaDePrecos doc id; `custo` feeds the
