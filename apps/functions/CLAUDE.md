@@ -13,7 +13,7 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Two exports:
   derivative `arquivos` docs. Trigger contract (see `src/product-images/guards.ts`):
   fires ONLY for `produtos/<produtoId>/originals/<hash>.<ext>`, `image/*`, without
   the `resized=true` marker — the loop guard.
-- **`reconcileProductImages`** (`onSchedule`, hourly) — backfills derivatives for
+- **`reconcileProductImages`** (`onSchedule`, every 48h) — backfills derivatives for
   originals the trigger never finished (issue #189). Uploads are content-addressed
   and deduped, so a re-upload won't re-fire the trigger; instead, the client stamps
   each original's `arquivos` doc `resizeState: 'pending'`, the resize flips it to

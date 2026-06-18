@@ -17,11 +17,11 @@ import { processProductOriginal } from './processOriginal';
  * reconciles each through the shared, idempotent {@link processProductOriginal}.
  */
 // Bound each run so a large backlog (resize down for a while) can't blow the
-// function's time/memory budget — the hourly schedule drains it over several runs.
+// function's time/memory budget — the every-48h schedule drains it over several runs.
 const BATCH_LIMIT = 100;
 
 export const reconcileProductImages = onSchedule(
-  { schedule: 'every 1 hours', memory: '512MiB' },
+  { schedule: 'every 48 hours', memory: '512MiB' },
   async () => {
     const db = getDb();
     const bucket = getStorage(getAdminApp()).bucket(); // default bucket — the sweep has no event
