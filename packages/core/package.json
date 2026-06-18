@@ -13,7 +13,8 @@
     "./documents": "./src/documents/index.ts",
     "./phone": "./src/phone/index.ts",
     "./tenant": "./src/tenant/index.ts",
-    "./plugins": "./src/plugins/index.ts"
+    "./plugins": "./src/plugins/index.ts",
+    "./equality": "./src/equality/index.ts"
   },
   "scripts": {
     "lint": "echo 'no lint configured for this package yet'",

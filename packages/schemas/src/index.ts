@@ -20,6 +20,10 @@ export { ALL_DOMAINS } from './registry';
 
 export { millisSinceEpoch, microsSinceEpoch } from './datetime';
 
+// Canonical structural equality lives in @delfrance/core; re-exported here so the
+// data layer (which depends on schemas, not core directly) can detect changes.
+export { valuesEqual } from '@delfrance/core';
+
 export { auditEntrySchema, type AuditEntry } from './audit';
 
 export {
