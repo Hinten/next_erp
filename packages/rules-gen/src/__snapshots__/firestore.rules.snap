@@ -91,7 +91,7 @@ service cloud.firestore {
 
     // d = incoming document, c = touched keys (keys() on create,
     // diff().affectedKeys() on update — legacy docs stay updatable).
-    function v_pedidos_pagamento(d, c) {
+    function v_pedidos_pagamentos(d, c) {
       return (!c.hasAny(['aVista']) || d.get('aVista', null) is bool)
         && (!c.hasAny(['dataAprovacao']) || (d.get('dataAprovacao', null) == null || d.get('dataAprovacao', null) is int))
         && (!c.hasAny(['dataCadastro']) || (d.get('dataCadastro', null) == null || d.get('dataCadastro', null) is int))
@@ -294,6 +294,18 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_pedido', 4);
     }
 
+    match /pedidos/{pedidoId}/historicoEstadoPedido/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+      allow create, update: if isSuperUser() || p('d_pedido', 2);
+      allow delete: if isSuperUser() || p('d_pedido', 4);
+    }
+
+    match /pedidos/{pedidoId}/incidentes/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+      allow create, update: if isSuperUser() || p('d_pedido', 2);
+      allow delete: if isSuperUser() || p('d_pedido', 4);
+    }
+
     match /pedidos/{pedidoId}/nfev4/{docId} {
       allow read: if isSuperUser() || p('d_nfe', 1);
       allow create, update: if isSuperUser() || p('d_nfe', 2);
@@ -306,10 +318,10 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_fiscal', 4);
     }
 
-    match /pedidos/{pedidoId}/pagamento/{docId} {
+    match /pedidos/{pedidoId}/pagamentos/{docId} {
       allow read: if isSuperUser() || p('d_pagamento', 1);
-      allow create: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamento(request.resource.data, request.resource.data.keys());
-      allow update: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamento(request.resource.data, request.resource.data.diff(resource.data).affectedKeys());
+      allow create: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamentos(request.resource.data, request.resource.data.keys());
+      allow update: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamentos(request.resource.data, request.resource.data.diff(resource.data).affectedKeys());
       allow delete: if isSuperUser() || p('d_pagamento', 4);
     }
 
@@ -430,11 +442,17 @@ service cloud.firestore {
     match /{path=**}/historicoDePrecos/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
+    match /{path=**}/historicoEstadoPedido/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+    }
     match /{path=**}/imposto/{docId} {
       allow read: if isSuperUser() || p('d_impostoProduto', 1);
     }
     match /{path=**}/impostocategoria/{docId} {
       allow read: if isSuperUser() || p('d_impostoCategoria', 1);
+    }
+    match /{path=**}/incidentes/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
     }
     match /{path=**}/inutilizacao/{docId} {
       allow read: if isSuperUser() || p('d_fiscal', 1);
@@ -448,7 +466,7 @@ service cloud.firestore {
     match /{path=**}/nfev4/{docId} {
       allow read: if isSuperUser() || p('d_nfe', 1);
     }
-    match /{path=**}/pagamento/{docId} {
+    match /{path=**}/pagamentos/{docId} {
       allow read: if isSuperUser() || p('d_pagamento', 1);
     }
     match /{path=**}/produtoamazon/{docId} {

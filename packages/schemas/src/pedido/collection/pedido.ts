@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import type { CollectionMetadata } from './types';
-import { microsSinceEpoch } from './datetime';
-import { freteDoPedidoSchema } from './frete';
+import type { CollectionMetadata } from '../../types';
+import { microsSinceEpoch } from '../../datetime';
+import { freteDoPedidoSchema } from '../../frete';
 
 const PERM_PEDIDO_READ = 1n << 16n;
 const PERM_PEDIDO_WRITE = 1n << 17n;
@@ -92,6 +92,12 @@ export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
  * `tools/migrations/pedido-pagamento-micros.README.md` for the future Flutter
  * import. UI rendering/editing is driven by the `kind: 'datetime'` metadata the
  * builder carries.
+ *
+ * Keep this schema **plain** (no top-level `.refine`/`.superRefine`): the
+ * registry + rules generator + any `.pick()` call run against it. Cross-document
+ * and cross-field rules live in `../pageModel/pageModel.ts` instead (Zod 4 throws
+ * on `.pick()` over a refined object — see the `zod4-pick-refine-runtime-crash`
+ * note).
  */
 export const pedidoSchema = z
   .object({
@@ -212,110 +218,3 @@ export const pedidoMeta: CollectionMetadata = {
 };
 
 export const pedido = { schema: pedidoSchema, meta: pedidoMeta };
-
-/* -------------------------------------------------------------------------- */
-/*                          Kanban / status helpers                           */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Visual buckets for the kanban view. The 16 raw states are too many to
- * render as columns; we group into 4 lanes that match how the team
- * thinks about pedido lifecycle.
- */
-export type EstadoBucket = 'aberto' | 'processo' | 'concluido' | 'cancelado';
-
-export const ESTADO_BUCKET_LABELS: Record<EstadoBucket, string> = {
-  aberto: 'Em aberto',
-  processo: 'Em processo',
-  concluido: 'Concluído',
-  cancelado: 'Cancelado / Erro',
-};
-
-const BUCKET_BY_STATE: Record<EstadoPedido, EstadoBucket> = {
-  iniciado: 'aberto',
-  carrinho: 'aberto',
-  escolhendoFormaDePagamento: 'aberto',
-  aguardandoConfirmacaoDePagamento: 'aberto',
-  emAnalise: 'processo',
-  emProcessamento: 'processo',
-  pago: 'concluido',
-  finalizado: 'concluido',
-  carrinhoAbandonado: 'cancelado',
-  pagamentoNaoRealizado: 'cancelado',
-  estornadoParcialmente: 'cancelado',
-  estornadoIntegralmente: 'cancelado',
-  processandoCancelamento: 'cancelado',
-  cancelado: 'cancelado',
-  fraude: 'cancelado',
-  error: 'cancelado',
-};
-
-export function bucketOf(estado: EstadoPedido): EstadoBucket {
-  return BUCKET_BY_STATE[estado];
-}
-
-/**
- * Helper to compute the subtotal of an item using the same formula as
- * the Flutter ItemDoPedido.subtotal getter:
- * `(precoDeVenda - descontoUnitario) * quantidade`.
- */
-export function itemSubtotal(item: ItemDoPedido): number {
-  return (item.precoDeVenda - (item.descontoUnitario ?? 0)) * item.quantidade;
-}
-
-export function pedidoTotal(p: Pedido): number {
-  let sum = 0;
-  for (const list of Object.values(p.itens)) {
-    for (const item of list) {
-      sum += itemSubtotal(item);
-    }
-  }
-  return sum;
-}
-
-/**
- * Legacy `duasCasasDecimais` (`.old/packages/global/lib/src/mathExtensions.dart:4`):
- * `double.parse(toStringAsFixed(2))` — JS `toFixed` rounds the same way for
- * the 2-decimal money values this is applied to.
- */
-export function round2(n: number): number {
-  return Number(n.toFixed(2));
-}
-
-/**
- * Derive the pedido money caches from the items + `freteInicial`, exactly as
- * the legacy app does:
- *
- *   - `valorCobrado` — port of `Pedido.total`
- *     (`.old/packages/pedido/lib/src/models.dart:3316-3320`):
- *     `round2(round2(round2(Σ itemSubtotal) − descontoTotal) + (frete?.valorCobrado ?? 0))`.
- *     The legacy form assigns `pedidoSave.valorCobrado = pedidoSave.total` on
- *     every integral save (`cadastroPedidoProvider.dart:1186`).
- *   - `valorFreteInicial` / `custoFreteInicial` — port of the `Pedido.factory`
- *     reporting caches (`models.dart:3601-3602`):
- *     `round2(frete?.valorCobrado ?? 0)` and
- *     `round2(frete?.custoCalculado ?? frete?.custoFinal ?? 0)` — note
- *     `custoCalculado` wins over `custoFinal`, matching the factory.
- *
- * `freteInicial.valorCobrado` participates regardless of `modalidade` — the
- * legacy total has no special case for '9' (sem frete); a collapsed frete
- * block keeps its data and its charge.
- */
-export function derivePedidoFreteTotals(args: {
-  itens: ReadonlyArray<ItemDoPedido>;
-  descontoTotal: number;
-  freteInicial: {
-    valorCobrado?: number | null;
-    custoCalculado?: number | null;
-    custoFinal?: number | null;
-  } | null;
-}): { valorCobrado: number; valorFreteInicial: number; custoFreteInicial: number } {
-  const { itens, descontoTotal, freteInicial } = args;
-  const subtotal = round2(itens.reduce((sum, item) => sum + itemSubtotal(item), 0));
-  const subtotalComDesconto = round2(subtotal - descontoTotal);
-  return {
-    valorCobrado: round2(subtotalComDesconto + (freteInicial?.valorCobrado ?? 0)),
-    valorFreteInicial: round2(freteInicial?.valorCobrado ?? 0),
-    custoFreteInicial: round2(freteInicial?.custoCalculado ?? freteInicial?.custoFinal ?? 0),
-  };
-}

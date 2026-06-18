@@ -27,7 +27,7 @@ const VALIDATED_PAYLOAD: Record<string, Record<string, unknown>> = {
   clientes: { tipo: '1' },
   produtos: { ehKit: false },
   pedidos: { ehSaida: true },
-  'pedidos/{pedidoId}/pagamento': { aVista: true },
+  'pedidos/{pedidoId}/pagamentos': { aVista: true },
   metodo_pgto: { tipo: 1 },
 };
 

@@ -41,7 +41,7 @@ export function devPedidoId(i: number): string {
 }
 
 /**
- * Shape of a Pagamento doc seeded under `pedidos/{id}/pagamento`.
+ * Shape of a Pagamento doc seeded under `pedidos/{id}/pagamentos`.
  * Mirrors `pagamentoSchema` — kept inline here so the fixture doesn't
  * pull `@delfrance/schemas` (this script runs under tsx without the
  * monorepo build), but the fields line up 1-1 with the schema.
@@ -137,7 +137,7 @@ interface PedidoSeed {
   /** Cached total — the cell prefers this over recomputing from `itens`. */
   readonly valorCobrado?: number;
   /**
-   * Approved pagamentos to write under `pedidos/{id}/pagamento/`. Empty
+   * Approved pagamentos to write under `pedidos/{id}/pagamentos/`. Empty
    * (or omitted) exercises the orchestrator's `tPag='90'` (sem
    * pagamento) fallback. Status is always `aprovado` so the NF-e
    * orchestrator's status filter picks them up.
@@ -398,7 +398,7 @@ const us = (ms: number): number => ms * 1000;
 
 /**
  * Write the pagamentos for a seeded pedido under
- * `pedidos/{pedidoId}/pagamento/`. Status is hard-coded to
+ * `pedidos/{pedidoId}/pagamentos/`. Status is hard-coded to
  * `STATUS_PAGAMENTO.aprovado` (= 4) so the NF-e orchestrator's status
  * filter accepts them.
  */
@@ -407,7 +407,7 @@ async function writePagamentos(
   pagamentos: ReadonlyArray<DevPagamentoSeed>,
 ): Promise<void> {
   const now = us(Date.now());
-  const pagRef = db().collection('pedidos').doc(pedidoId).collection('pagamento');
+  const pagRef = db().collection('pedidos').doc(pedidoId).collection('pagamentos');
   for (let i = 0; i < pagamentos.length; i += 1) {
     const p = pagamentos[i]!;
     const id = devPagamentoId(i + 1);
@@ -522,9 +522,9 @@ export async function cleanupDevPedidos(): Promise<{ deleted: number }> {
   for (const id of devPedidoIds()) {
     // Subcollections must be deleted explicitly — the Admin SDK doesn't
     // cascade them with the parent doc. Sweeps the two subcollections
-    // we own: `nfev4` (the NF-e generator's output) and `pagamento`
+    // we own: `nfev4` (the NF-e generator's output) and `pagamentos`
     // (this seed's own writes).
-    for (const sub of ['nfev4', 'pagamento']) {
+    for (const sub of ['nfev4', 'pagamentos']) {
       const subSnap = await db().collection('pedidos').doc(id).collection(sub).get();
       if (!subSnap.empty) {
         const batch = db().batch();
