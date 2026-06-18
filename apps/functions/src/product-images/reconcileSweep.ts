@@ -34,11 +34,24 @@ export const reconcileProductImages = onSchedule(
     let processed = 0;
     let written = 0;
     let failed = 0;
+    let skipped = 0;
     for (const doc of pending.docs) {
       const data = doc.data();
       const filepath = data.filepath as string | null | undefined;
       const filename = data.filename as string | undefined;
-      if (!filepath || !filename) continue; // not a resolvable original path
+      if (!filepath || !filename) {
+        // A 'pending' marker is only ever written by uploadProductImage, which
+        // always sets filepath + filename — so an unresolvable path means an
+        // out-of-band / malformed doc, not something the real upload path can
+        // produce. Warn instead of skipping silently; it stays 'pending' but
+        // can't stall the sweep at scale because the real path never makes one.
+        skipped += 1;
+        logger.warn(
+          `reconcileProductImages: ${doc.id} is 'pending' but has no resolvable path ` +
+            `(filepath=${filepath ?? 'null'}, filename=${filename ?? 'null'}) — skipping`,
+        );
+        continue;
+      }
       const name = `${filepath}/${filename}`;
       try {
         written += await processProductOriginal(bucket, db, name);
@@ -52,7 +65,7 @@ export const reconcileProductImages = onSchedule(
       }
     }
     logger.info(
-      `reconcileProductImages: ${processed} processed, ${written} written, ${failed} failed (limit ${BATCH_LIMIT})`,
+      `reconcileProductImages: ${processed} processed, ${written} written, ${failed} failed, ${skipped} skipped (limit ${BATCH_LIMIT})`,
     );
   },
 );
