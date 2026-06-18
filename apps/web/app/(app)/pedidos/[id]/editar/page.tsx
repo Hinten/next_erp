@@ -16,6 +16,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { FirebaseError } from 'firebase/app';
 import { PageHeader } from '@delfrance/ui';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import {
@@ -76,19 +77,32 @@ export default function EditarPedidoPage() {
   const [savingConflict, setSavingConflict] = useState(false);
 
   // A manual estado change appends a historicoEstadoPedido audit row (legacy
-  // `Pedido.save()` behavior) — but only after the doc save committed it, and only
-  // when it actually changed vs the version being overwritten.
+  // `Pedido.save()` behavior) — only after the doc save committed it, and only
+  // when it actually changed. Best-effort: the estado itself is already
+  // persisted, so a failed audit-log write (e.g. a rules gap) must NOT block the
+  // save/navigation — warn and move on.
   async function recordEstadoIfChanged(
     port: ReturnType<typeof createClientPedidoPort>,
     patch: Record<string, unknown>,
     prevEstado: unknown,
   ) {
     if (!('estado' in patch) || patch.estado === prevEstado) return;
-    await recordEstadoChange(port, {
-      pedidoId: params.id,
-      estado: patch.estado as Pedido['estado'],
-      usuarioRef: user ? `documents/usuarios/${user.uid}` : null,
-    });
+    try {
+      await recordEstadoChange(port, {
+        pedidoId: params.id,
+        estado: patch.estado as Pedido['estado'],
+        usuarioRef: user ? `documents/usuarios/${user.uid}` : null,
+      });
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        notifications.show({
+          color: 'yellow',
+          message: 'Estado salvo, mas o histórico não pôde ser registrado.',
+        });
+        return;
+      }
+      throw err;
+    }
   }
 
   async function handleSubmit(values: Pedido, dirtyFields: Readonly<Record<string, unknown>>) {

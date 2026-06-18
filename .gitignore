@@ -52,3 +52,7 @@ devlogs/
 danfe-samples/
 # local scratch (trace/error-context extraction)
 tmp-e2e/
+
+# local e2e debug artifact downloads
+dbg_e2e_2/
+dbg_trace/
