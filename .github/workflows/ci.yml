@@ -17,6 +17,8 @@ jobs:
     # FUNCTIONS_REGION and fails without it. Must match the Storage bucket region.
     env:
       FUNCTIONS_REGION: us-east1
+      # Skip Next.js telemetry collection + its build-time notice in CI.
+      NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -67,6 +69,18 @@ jobs:
             --filter '!@delfrance/integrations-nfe' \
             --filter '!@delfrance/storage' \
             --filter '!@delfrance/functions'
+
+      # Persist Next.js's incremental build cache across runs for every Next app
+      # `turbo run build` compiles (apps/*/.next/cache — non-Next apps have none
+      # and are ignored). github.sha keys it per commit: restore the newest prior
+      # cache via restore-keys, save a fresh one each run.
+      - name: Cache Next.js builds
+        uses: actions/cache@v5
+        with:
+          path: apps/*/.next/cache
+          key: nextjs-ci-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+          restore-keys: |
+            nextjs-ci-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
 
       - name: Build
         run: pnpm turbo run build

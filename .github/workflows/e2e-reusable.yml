@@ -101,6 +101,8 @@ jobs:
       # Emit client source maps so prod-build stack traces are readable in the
       # Playwright trace. Build-only; real App Hosting deploys leave it unset.
       E2E_SOURCEMAPS: 'true'
+      # Skip Next.js telemetry collection + its build-time notice in CI.
+      NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -135,6 +137,18 @@ jobs:
       # `container.image` tag above to match.
       - name: Ensure Chromium matches the lockfile
         run: pnpm --filter @delfrance/web exec playwright install chromium
+
+      # Persist Next.js's incremental build cache between runs so `next build`
+      # isn't cold every time. `-e2e-` keeps this distinct from ci.yml's web
+      # build (this one emits source maps). github.sha makes the key unique per
+      # commit: always restore the newest prior cache, always save a fresh one.
+      - name: Cache Next.js build (web)
+        uses: actions/cache@v5
+        with:
+          path: apps/web/.next/cache
+          key: nextjs-web-e2e-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.sha }}
+          restore-keys: |
+            nextjs-web-e2e-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
 
       - name: Build web (production)
         # NEXT_PUBLIC_* + E2E_SOURCEMAPS are inlined here. Call next directly to
