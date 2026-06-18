@@ -16,7 +16,7 @@ export const VALIDATOR_WHITELIST: ReadonlySet<string> = new Set([
   'clientes',
   'produtos',
   'pedidos',
-  'pedidos/{pedidoId}/pagamento',
+  'pedidos/{pedidoId}/pagamentos',
   'metodo_pgto',
 ]);
 

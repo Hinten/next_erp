@@ -1,4 +1,4 @@
-import { getDoc, setDoc, type Firestore } from 'firebase/firestore';
+import { getDoc, setDoc, updateDoc, type Firestore } from 'firebase/firestore';
 import {
   getDownloadURL,
   ref as storageRef,
@@ -38,12 +38,23 @@ interface PutArquivoArgs {
   storagePath: string;
   filetype: Filetype;
   originalFilename?: string | null;
+  /** Resize lifecycle marker — only product-image originals pass `'pending'`. */
+  resizeState?: 'pending' | 'done' | null;
 }
 
 /**
- * Upload bytes and create (or reuse) the `Arquivo` doc. Content-addressed:
- * if the doc already exists at `docId` the object is already in Storage, so we
- * reuse it and skip both the upload and the write (the Flutter dedup contract).
+ * Create the `Arquivo` doc, then upload the bytes (**create-first**).
+ * Content-addressed: if the doc already exists at `docId` the object is already
+ * in Storage, so we reuse it and skip both the upload and the write (the Flutter
+ * dedup contract).
+ *
+ * The doc is the durable **anchor**: it is written BEFORE the upload so that a
+ * client that dies mid-upload leaves a `uploadState: 'pending'` doc with no
+ * object — a phantom the orphan sweep reaps — rather than the old failure mode
+ * (upload-then-`setDoc`) that orphaned the OBJECT with no doc. The object is
+ * tagged with its owning doc id (`arquivoId` custom metadata) so the finalize
+ * trigger and the storage-orphan sweep can map object → doc directly.
+ *
  * All Firestore access goes through the schema-validated `arquivoCollection`
  * handle, never raw refs.
  */
@@ -55,26 +66,45 @@ async function putArquivo(args: PutArquivoArgs): Promise<UploadResult> {
     return { id: args.docId, arquivo: existing.data() };
   }
 
-  const objectRef = storageRef(args.storage, args.storagePath);
-  await uploadBytes(objectRef, args.bytes, { contentType: args.contentType });
-  const url = await getDownloadURL(objectRef);
-
   const slash = args.storagePath.lastIndexOf('/');
   const filepath = slash >= 0 ? args.storagePath.slice(0, slash) : null;
   const filename = slash >= 0 ? args.storagePath.slice(slash + 1) : args.storagePath;
 
+  // 1. Create-first: write the anchor doc with `url` not yet known and
+  //    `uploadState: 'pending'` (flipped to 'finalized' by the onObjectFinalized
+  //    trigger once the object lands — the authoritative upload-complete signal).
   const arquivo: Arquivo = {
     filetype: args.filetype,
     filepath,
     filename,
     originalFilename: args.originalFilename ?? null,
     contentType: normalizeContentType(args.contentType),
-    url,
+    url: null,
     externalIds: [],
     criadoEm: new Date().toISOString(),
+    resizeState: args.resizeState ?? null,
+    uploadState: 'pending',
   };
   await setDoc(docRef, arquivo);
-  return { id: args.docId, arquivo };
+
+  // 2. Upload the bytes, tagging the object with its owning doc id.
+  const objectRef = storageRef(args.storage, args.storagePath);
+  await uploadBytes(objectRef, args.bytes, {
+    contentType: args.contentType,
+    customMetadata: { arquivoId: args.docId },
+  });
+
+  // 3. Patch the public URL for an immediate UI render (partial update — bypasses
+  //    the converter's full-doc validation). `uploadState` stays 'pending' until
+  //    the onObjectFinalized trigger flips it to 'finalized'. If the client dies
+  //    after the upload but before this patch, the doc keeps `url: null`
+  //    (the trigger only flips `uploadState`, it does NOT backfill `url` today —
+  //    a deferred refinement; product images still render via their derivative
+  //    docs, which carry their own URLs).
+  const url = await getDownloadURL(objectRef);
+  await updateDoc(docRef, { url });
+
+  return { id: args.docId, arquivo: { ...arquivo, url } };
 }
 
 export interface UploadFileArgs {
@@ -140,6 +170,14 @@ export async function uploadProductImage(args: UploadProductImageArgs): Promise<
     storagePath: productOriginalPath(args.produtoId, hash, ext),
     filetype: 'image',
     originalFilename: args.originalFilename,
+    // Marks the original so the resize function (→ 'done') and the reconcile
+    // sweep (queries 'pending') can track derivative completion. Only written
+    // when this CREATES the doc — a dedup hit (doc already exists) keeps the
+    // existing marker, which is correct: the first upload already stamped
+    // 'pending', so a failed resize leaves it 'pending' and the sweep heals it.
+    // (Docs created before this marker existed — legacy / Flutter-written — have
+    // no marker and would need a one-off migration; there is no such backlog yet.)
+    resizeState: 'pending',
   });
 }
 

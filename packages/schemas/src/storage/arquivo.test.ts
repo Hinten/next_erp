@@ -37,6 +37,40 @@ describe('arquivoSchema', () => {
     expect(out.contentType).toBeNull();
     expect(out.url).toBeNull();
     expect(out.externalIds).toEqual([]);
+    // resizeState defaults null — only product-image originals set 'pending'.
+    expect(out.resizeState).toBeNull();
+    // uploadState defaults null — create-first uploads set 'pending'.
+    expect(out.uploadState).toBeNull();
+  });
+
+  it('accepts the uploadState marker', () => {
+    expect(
+      arquivoSchema.parse({ filetype: 'image', filename: 'a.png', uploadState: 'pending' })
+        .uploadState,
+    ).toBe('pending');
+    expect(
+      arquivoSchema.parse({ filetype: 'image', filename: 'a.png', uploadState: 'finalized' })
+        .uploadState,
+    ).toBe('finalized');
+    expect(
+      arquivoSchema.safeParse({ filetype: 'image', filename: 'a.png', uploadState: 'nope' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('accepts the resizeState marker', () => {
+    expect(
+      arquivoSchema.parse({ filetype: 'image', filename: 'a.png', resizeState: 'pending' })
+        .resizeState,
+    ).toBe('pending');
+    expect(
+      arquivoSchema.parse({ filetype: 'image', filename: 'a.png', resizeState: 'done' })
+        .resizeState,
+    ).toBe('done');
+    expect(
+      arquivoSchema.safeParse({ filetype: 'image', filename: 'a.png', resizeState: 'nope' })
+        .success,
+    ).toBe(false);
   });
 
   it('rejects an unknown filetype and an empty filename', () => {

@@ -20,6 +20,10 @@ export { ALL_DOMAINS } from './registry';
 
 export { millisSinceEpoch, microsSinceEpoch } from './datetime';
 
+// Canonical structural equality lives in @delfrance/core; re-exported here so the
+// data layer (which depends on schemas, not core directly) can detect changes.
+export { valuesEqual } from '@delfrance/core';
+
 export { auditEntrySchema, type AuditEntry } from './audit';
 
 export {
@@ -96,48 +100,10 @@ export {
   type TokenMelEnv,
 } from './intFrete';
 
-export {
-  pedido,
-  pedidoSchema,
-  pedidoMeta,
-  itemDoPedidoSchema,
-  estadoPedidoSchema,
-  ESTADO_PEDIDO_LABELS,
-  ESTADO_BUCKET_LABELS,
-  bucketOf,
-  itemSubtotal,
-  pedidoTotal,
-  round2,
-  derivePedidoFreteTotals,
-  type Pedido,
-  type ItemDoPedido,
-  type EstadoPedido,
-  type EstadoBucket,
-} from './pedido';
-
-export {
-  pagamento,
-  pagamentoSchema,
-  pagamentoMeta,
-  metodoPagamento,
-  metodoPagamentoSchema,
-  metodoPagamentoMeta,
-  formaPagamentoSchema,
-  statusPagamentoSchema,
-  tipoIntegracaoPgtoSchema,
-  FORMA_PAGAMENTO,
-  FORMA_PAGAMENTO_LABELS,
-  STATUS_PAGAMENTO,
-  STATUS_PAGAMENTO_LABELS,
-  TIPO_INTEGRACAO_PGTO,
-  TIPO_INTEGRACAO_PGTO_LABELS,
-  statusToEstadoPedido,
-  type Pagamento,
-  type MetodoPagamento,
-  type FormaPagamento,
-  type StatusPagamento,
-  type TipoIntegracaoPgto,
-} from './pagamento';
+// Pedido domain (pedido + pagamento + incidente + historicoEstadoPedido
+// collections, the totals factory, kanban buckets, and the page model) all live
+// in ./pedido, grouped by kind like ./produto.
+export * from './pedido';
 
 export {
   conversa,

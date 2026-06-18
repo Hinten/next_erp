@@ -73,8 +73,9 @@ export interface PedidoBundle {
   readonly operacaoId: string;
   readonly operacao: Operacao;
   /**
-   * Pagamentos under `pedidos/{pedidoId}/pagamento` (subcollection,
-   * singular path — mirrors the Flutter ERP). Already filtered to
+   * Pagamentos under `pedidos/{pedidoId}/pagamentos` (subcollection,
+   * plural path — mirrors the Flutter ERP's `PAGAMENTO_COLLECTION`).
+   * Already filtered to
    * `status_pagamento ∈ { null, aprovado }` — matches Flutter's
    * `pedido_nfe_base.dart:449` predicate. May be empty (the NF-e
    * stamps `tPag='90'` sem-pagamento in that case).
@@ -247,8 +248,8 @@ export async function loadPedidoBundle(
       getDoc(clientePath),
       getDoc(operacaoPath),
       getDoc(enderecoPath),
-      // eslint-disable-next-line no-restricted-syntax -- read-only legacy `pagamento` subcollection
-      fs.collection('pedidos').doc(pedidoId).collection('pagamento').get(),
+      // eslint-disable-next-line no-restricted-syntax -- read-only `pagamentos` subcollection
+      fs.collection('pedidos').doc(pedidoId).collection('pagamentos').get(),
       getRegra(operacaoPath),
     ]);
 
@@ -380,7 +381,7 @@ export async function maybeLoadIntegracao(
 }
 
 /**
- * Parse + filter raw pagamento docs from the `pedidos/{id}/pagamento`
+ * Parse + filter raw pagamento docs from the `pedidos/{id}/pagamentos`
  * subcollection. Mirrors Flutter's `pedido_nfe_base.dart:449`:
  * keep pagamentos with `status_pagamento` null OR `aprovado`. Docs
  * that fail schema parse are skipped with a warn — a single malformed

@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import type { CollectionMetadata } from './types';
-import { microsSinceEpoch } from './datetime';
+import type { CollectionMetadata } from '../../types';
+import { microsSinceEpoch } from '../../datetime';
 import type { EstadoPedido } from './pedido';
 
 const PERM_PAGAMENTO_READ = 1n << 24n;
@@ -155,11 +155,11 @@ export function statusToEstadoPedido(status: StatusPagamento): EstadoPedido {
 }
 
 /**
- * Pagamento — subcoleção `pedidos/{pedidoId}/pagamento` (singular,
- * matching the Flutter ERP's wire format). Mirrors
- * `packages/pedido/lib/src/models.dart` Pagamento. Cartão / cheque
- * details remain pass-through; the typed surface is what this app reads
- * and writes today.
+ * Pagamento — subcoleção `pedidos/{pedidoId}/pagamentos` (plural, matching the
+ * Flutter ERP's `PAGAMENTO_COLLECTION` constant,
+ * `.old/packages/pedido/lib/src/models.dart:24`). Mirrors
+ * `packages/pedido/lib/src/models.dart` Pagamento. Cartão / cheque details
+ * remain pass-through; the typed surface is what this app reads and writes today.
  */
 export const pagamentoSchema = z
   .object({
@@ -191,7 +191,7 @@ export const pagamentoSchema = z
 export type Pagamento = z.infer<typeof pagamentoSchema>;
 
 export const pagamentoMeta: CollectionMetadata = {
-  collectionPath: 'pedidos/{pedidoId}/pagamento',
+  collectionPath: 'pedidos/{pedidoId}/pagamentos',
   permissions: {
     read: PERM_PAGAMENTO_READ,
     write: PERM_PAGAMENTO_WRITE,

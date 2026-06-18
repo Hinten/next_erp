@@ -6,3 +6,5 @@ import './options';
  * Cloud Functions entrypoint (gen2). Firebase deploys each exported trigger.
  */
 export { resizeProductImage } from './product-images/resizeProductImage';
+export { reconcileProductImages } from './product-images/reconcileSweep';
+export { onArquivoDeleted } from './arquivos/onArquivoDeleted';

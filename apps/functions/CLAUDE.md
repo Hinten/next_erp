@@ -6,12 +6,34 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Currently one trigger:
-`resizeProductImage` (`onObjectFinalized`) — resizes a freshly uploaded product
-photo into its **200px / 400px / full-JPEG** derivatives and writes the
-derivative `arquivos` docs. Trigger contract (see `src/product-images/guards.ts`):
-fires ONLY for `produtos/<produtoId>/originals/<hash>.<ext>`, `image/*`, without
-the `resized=true` marker — the loop guard.
+gen2 (2nd-gen / Eventarc) Cloud Functions. Three exports:
+
+- **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
+  finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
+  `uploadState` to `'finalized'` (`src/arquivos/markUploadFinalized.ts`) — the
+  authoritative "the bytes arrived" signal, for images, videos AND generic media.
+  (2) **Resize**: for a fresh product-image original (`src/product-images/guards.ts`:
+  `produtos/<produtoId>/originals/<hash>.<ext>`, `image/*`, no `resized=true`
+  loop-guard marker) generates the **200px / 400px / full-JPEG** derivatives + docs.
+- **`reconcileProductImages`** (`onSchedule`, every 48h) — backfills derivatives for
+  originals the trigger never finished (issue #189). Uploads are content-addressed
+  and deduped, so a re-upload won't re-fire the trigger; instead, the client stamps
+  each original's `arquivos` doc `resizeState: 'pending'`, the resize flips it to
+  `'done'`, and the sweep queries ONLY `where resizeState == 'pending'` — a filtered
+  query (O(missing)), never a full catalog scan. Both share the idempotent
+  `processProductOriginal` (`src/product-images/processOriginal.ts`), which writes
+  only missing derivatives and skips the download when complete.
+- **`onArquivoDeleted`** (`onDocumentDeleted('arquivos/{id}')`) — doc-anchored
+  Storage cleanup: deleting an `arquivos` doc deletes the object it owned; for a
+  product-image original it cascades to the 3 derivative objects + docs. Core logic
+  in `processArquivoDeletion` (exported for the emulator suite); a dedup-resurrection
+  guard skips the delete if a doc with the same content-addressed id exists again.
+  Pairs with the **create-first** upload contract in `@delfrance/storage`: the doc
+  is written BEFORE the bytes (so a dead upload leaves a `uploadState: 'pending'`
+  phantom, not an orphan object) and the object carries its `arquivoId` in custom
+  metadata. ⚠️ Like every Firestore access here, the trigger targets the **named
+  `default`** database (`database: FIREBASE_DATABASE_ID ?? 'default'`) — see
+  gotcha #8; a trigger that omits `database` binds to `(default)` and never fires.
 
 - The entry (`src/index.ts`) is **esbuild-bundled into a single ESM file**.
   Only `firebase-admin`, `firebase-functions`, and `sharp` are `external`;
