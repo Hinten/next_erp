@@ -55,8 +55,11 @@ describe('meStatusToEstadoFrete', () => {
     expect(meStatusToEstadoFrete('delivered')).toBe('entregue');
     expect(meStatusToEstadoFrete('posted')).toBe('postado');
     expect(meStatusToEstadoFrete('released')).toBe('postado');
+    expect(meStatusToEstadoFrete('received')).toBe('postado');
     expect(meStatusToEstadoFrete('canceled')).toBe('cancelado');
+    expect(meStatusToEstadoFrete('cancelled')).toBe('cancelado');
     expect(meStatusToEstadoFrete('suspended')).toBe('suspenso');
+    expect(meStatusToEstadoFrete('paused')).toBe('suspenso');
     expect(meStatusToEstadoFrete('undelivered')).toBe('falhaNaEntrega');
     expect(meStatusToEstadoFrete('created')).toBeNull();
     expect(meStatusToEstadoFrete(null)).toBeNull();

@@ -80,7 +80,9 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   const data = body.data ?? {};
-  const orderId = typeof data.id === 'string' ? data.id : null;
+  // ME's `data.id` is the **label** id — what we persisted as
+  // `freteInicial.printLabelId` when buying the etiqueta, not a pedido id.
+  const labelId = typeof data.id === 'string' ? data.id : null;
   // Prefer the explicit order status; fall back to the event suffix
   // (`order.posted` → `posted`).
   const meStatus =
@@ -91,15 +93,15 @@ export async function POST(req: Request): Promise<NextResponse> {
         : null;
   const target = meStatusToEstadoFrete(meStatus);
 
-  // No order id, or a status we don't map → ack so ME stops retrying.
-  if (!orderId || !target) {
+  // No label id, or a status we don't map → ack so ME stops retrying.
+  if (!labelId || !target) {
     return NextResponse.json({ ok: true, applied: false });
   }
 
   const db = getAdminFirestore();
   const snap = await pedidoCollection
     .ref(db, {})
-    .where('freteInicial.printLabelId', '==', orderId)
+    .where('freteInicial.printLabelId', '==', labelId)
     .limit(1)
     .get();
 
