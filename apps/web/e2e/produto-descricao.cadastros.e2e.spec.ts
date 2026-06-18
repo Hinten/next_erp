@@ -60,6 +60,13 @@ test.describe
     await selectField(page, 'Faixa etária', 'Juvenil/Adulto (13 anos ou mais)');
     await clickSave(page, 'Salvar alterações');
 
+    // On a successful save the editar page navigates to /produtos (`onSaved`),
+    // which fires only AFTER `onAfterSave` has persisted the extraData singleton.
+    // Wait for it so the admin read below can't race the still-in-flight commit
+    // (the singleton is written later in the save flow than the produto doc, so
+    // a bare poll can time out exactly as the write lands).
+    await page.waitForURL('**/produtos', { timeout: 30_000 });
+
     // The singleton round-trips with the exact Flutter wire shape (condicao is
     // the int 2 = usado; the GMD block keeps its snake_case keys).
     await expect
