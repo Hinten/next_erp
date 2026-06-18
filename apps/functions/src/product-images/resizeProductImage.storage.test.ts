@@ -8,9 +8,12 @@ import {
   PRODUCT_IMAGE_VARIANTS,
   derivativeArquivoId,
   mediaPath,
+  productArquivoId,
   productDerivativePath,
   productOriginalPath,
 } from '@delfrance/schemas';
+
+import { processProductOriginal } from './processOriginal';
 
 // Integration test — requires the Firebase emulators (firestore + storage +
 // functions). Run via `firebase emulators:exec`; skipped when run bare so the
@@ -103,9 +106,26 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
     })
       .png()
       .toBuffer();
-    await getBucket()
-      .file(productOriginalPath(produtoId, hash, 'png'))
-      .save(original, { contentType: 'image/png' });
+
+    // Seed the ORIGINAL Arquivo doc with resizeState:'pending' BEFORE the upload,
+    // mirroring the real upload path (uploadProductImage) — so the trigger's
+    // markDone flips an EXISTING doc to 'done' (it never creates one). Written
+    // first so the doc exists by the time the finalize event fires.
+    const oPath = productOriginalPath(produtoId, hash, 'png');
+    const slash = oPath.lastIndexOf('/');
+    await getDb()
+      .collection('arquivos')
+      .doc(productArquivoId(produtoId, hash))
+      .set({
+        filetype: 'image',
+        filepath: oPath.slice(0, slash),
+        filename: oPath.slice(slash + 1),
+        contentType: 'image/png',
+        url: null,
+        externalIds: [],
+        resizeState: 'pending',
+      });
+    await getBucket().file(oPath).save(original, { contentType: 'image/png' });
   });
 
   it('creates the 200/400/jpeg derivative Arquivo docs', async () => {
@@ -193,5 +213,31 @@ describe.skipIf(!EMULATED)('resizeProductImage (emulator)', () => {
 
     const [mediaFiles] = await getBucket().getFiles({ prefix: 'media/' });
     expect(mediaFiles.map((f) => f.name)).toEqual([mediaPath(otherHash, 'png')]);
+  });
+
+  it('marks the original resizeState=done and the reconcile core backfills a missing derivative', async () => {
+    const db = getDb();
+    const origId = productArquivoId(produtoId, hash);
+
+    // The trigger stamps the ORIGINAL arquivo doc `done` once derivatives exist.
+    const orig = await waitFor(async () => {
+      const d = await db.collection('arquivos').doc(origId).get();
+      return d.exists && d.data()?.resizeState === 'done' ? d : null;
+    });
+    expect(orig.data()?.resizeState).toBe('done');
+
+    // Simulate a straggler (issue #189): drop one derivative doc, then run the
+    // reconcile core — what the scheduled sweep calls — and assert it backfills
+    // ONLY the missing one and re-stamps the original done.
+    const id200 = derivativeArquivoId(produtoId, hash, '200');
+    await db.collection('arquivos').doc(id200).delete();
+    const written = await processProductOriginal(
+      getBucket(),
+      db,
+      productOriginalPath(produtoId, hash, 'png'),
+    );
+    expect(written).toBe(1);
+    expect((await db.collection('arquivos').doc(id200).get()).exists).toBe(true);
+    expect((await db.collection('arquivos').doc(origId).get()).data()?.resizeState).toBe('done');
   });
 });

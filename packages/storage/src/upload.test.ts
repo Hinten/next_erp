@@ -65,6 +65,8 @@ describe('uploadProductImage', () => {
     expect(result.arquivo.contentType).toBe('image/png');
     expect(result.arquivo.originalFilename).toBe('foto.png');
     expect(result.arquivo.url).toBe(`https://dl/${productOriginalPath('p1', hash, 'png')}`);
+    // Product originals are marked 'pending' so the resize fn / reconcile sweep track them.
+    expect(result.arquivo.resizeState).toBe('pending');
 
     expect(mocks.uploadBytes).toHaveBeenCalledTimes(1);
     expect(mocks.setDoc).toHaveBeenCalledTimes(1);
@@ -123,6 +125,8 @@ describe('uploadProductVideo', () => {
     expect(result.arquivo.filename).toBe(`${hash}.mp4`);
     expect(result.arquivo.filetype).toBe('video');
     expect(result.arquivo.url).toBe(`https://dl/${productVideoPath('p1', hash, 'mp4')}`);
+    // Videos are not resized → no marker (only product-image originals get one).
+    expect(result.arquivo.resizeState).toBeNull();
     expect(mocks.uploadBytes).toHaveBeenCalledTimes(1);
     expect(mocks.setDoc).toHaveBeenCalledTimes(1);
   });

@@ -37,6 +37,23 @@ describe('arquivoSchema', () => {
     expect(out.contentType).toBeNull();
     expect(out.url).toBeNull();
     expect(out.externalIds).toEqual([]);
+    // resizeState defaults null — only product-image originals set 'pending'.
+    expect(out.resizeState).toBeNull();
+  });
+
+  it('accepts the resizeState marker', () => {
+    expect(
+      arquivoSchema.parse({ filetype: 'image', filename: 'a.png', resizeState: 'pending' })
+        .resizeState,
+    ).toBe('pending');
+    expect(
+      arquivoSchema.parse({ filetype: 'image', filename: 'a.png', resizeState: 'done' })
+        .resizeState,
+    ).toBe('done');
+    expect(
+      arquivoSchema.safeParse({ filetype: 'image', filename: 'a.png', resizeState: 'nope' })
+        .success,
+    ).toBe(false);
   });
 
   it('rejects an unknown filetype and an empty filename', () => {
