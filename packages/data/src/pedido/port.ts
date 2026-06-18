@@ -22,12 +22,25 @@
  */
 export type PedidoDocData = Record<string, unknown> | null;
 
+/**
+ * One write in a logical batch — `path` is a full Firestore document path
+ * (e.g. `pedidos/<id>/historicoEstadoPedido/<docId>`). The adapter chunks the op
+ * list into ≤499-op batches, preserving order. Mirrors `ProdutoWriteOp`.
+ */
+export type PedidoWriteOp =
+  | { type: 'set'; path: string; data: Record<string, unknown> }
+  | { type: 'update'; path: string; data: Record<string, unknown> }
+  | { type: 'delete'; path: string };
+
 export interface PedidoDataPort {
   /**
    * Current time as a µs-epoch int — the wire unit for the pedido's
-   * `microsSinceEpoch()` `ultimaModificacao` field.
+   * `microsSinceEpoch()` datetime fields (`ultimaModificacao`, history `data`).
    */
   now(): number;
+
+  /** Mint a new document id (client random id or admin auto-id). */
+  newId(): string;
 
   /**
    * Atomically read-modify-write the pedido doc. `apply` runs INSIDE the
@@ -39,4 +52,10 @@ export interface PedidoDataPort {
     pedidoId: string,
     apply: (current: PedidoDocData) => Record<string, unknown>,
   ): Promise<void>;
+
+  /**
+   * Apply subcollection writes (history, incidentes, pagamentos) — fire-and-
+   * forget, in order. The adapter chunks into ≤499-op batches.
+   */
+  commit(ops: PedidoWriteOp[]): Promise<void>;
 }

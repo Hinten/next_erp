@@ -1,5 +1,5 @@
-import { valuesEqual, type Pedido } from '@delfrance/schemas';
-import type { PedidoDataPort, PedidoDocData } from './port';
+import { valuesEqual, type EstadoPedido, type Pedido } from '@delfrance/schemas';
+import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 
 /**
  * Money caches the legacy factory derives — never edited directly, so they ride
@@ -162,4 +162,48 @@ export async function savePedido(
     }
     return { ...args.patch, ultimaModificacao: port.now() };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Estado history (legacy `HistoricoEstadosPedido` write on estado change)
+// ---------------------------------------------------------------------------
+
+const HISTORICO_ESTADO_PATH = (pedidoId: string, docId: string): string =>
+  `pedidos/${pedidoId}/historicoEstadoPedido/${docId}`;
+
+/**
+ * Build one `historicoEstadoPedido` set-op recording a pedido's new `estado` and
+ * who set it — mirror of the legacy `Pedido.save()` history write
+ * (`models.dart:3838`). `data` is a µs-epoch stamp; `usuarioRef` is the
+ * `documents/usuarios/<uid>` outer-ref string (null when unknown).
+ */
+export function buildEstadoHistoryOp(
+  port: PedidoDataPort,
+  pedidoId: string,
+  estado: EstadoPedido,
+  usuarioRef: string | null,
+): PedidoWriteOp {
+  return {
+    type: 'set',
+    path: HISTORICO_ESTADO_PATH(pedidoId, port.newId()),
+    data: {
+      estado,
+      usuarioHistoricoEstadosPedidoOuterRef: usuarioRef,
+      data: port.now(),
+    },
+  };
+}
+
+/**
+ * Append a `historicoEstadoPedido` audit row for a manual estado change. The
+ * editor calls this AFTER the pedido doc save committed the new `estado`, so the
+ * history reflects what was persisted; a future MCP agent calls it the same way.
+ */
+export async function recordEstadoChange(
+  port: PedidoDataPort,
+  args: { pedidoId: string; estado: EstadoPedido; usuarioRef?: string | null },
+): Promise<void> {
+  await port.commit([
+    buildEstadoHistoryOp(port, args.pedidoId, args.estado, args.usuarioRef ?? null),
+  ]);
 }
