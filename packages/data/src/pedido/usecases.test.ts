@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { Pedido } from '@delfrance/schemas';
-import type { PedidoDataPort, PedidoDocData } from './port';
+import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 import {
   PedidoConflictError,
   PedidoNothingChangedError,
+  buildEstadoHistoryOp,
   buildPedidoPatch,
+  recordEstadoChange,
   remotelyChangedFields,
   savePedido,
 } from './usecases';
@@ -90,16 +92,23 @@ function fakePort(
 ): {
   port: PedidoDataPort;
   written: () => Record<string, unknown> | undefined;
+  committed: () => PedidoWriteOp[];
 } {
   let out: Record<string, unknown> | undefined;
+  const committed: PedidoWriteOp[] = [];
   return {
     port: {
       now: () => nowVal,
+      newId: () => 'newid',
       async updatePedido(_id, apply) {
         out = apply(current);
       },
+      async commit(ops) {
+        committed.push(...ops);
+      },
     },
     written: () => out,
+    committed: () => committed,
   };
 }
 
@@ -174,5 +183,30 @@ describe('savePedido', () => {
     const { port, written } = fakePort(reviewed, 5);
     await savePedido(port, { pedidoId: 'x', patch: { numero: 'B' }, baseline: reviewed });
     expect(written()).toEqual({ numero: 'B', ultimaModificacao: 5 });
+  });
+});
+
+describe('estado history', () => {
+  it('buildEstadoHistoryOp writes estado + usuario ref + µs stamp to the subcollection', () => {
+    const { port } = fakePort(null, 4242);
+    const op = buildEstadoHistoryOp(port, 'ped1', 'pago', 'documents/usuarios/u1');
+    expect(op).toEqual({
+      type: 'set',
+      path: 'pedidos/ped1/historicoEstadoPedido/newid',
+      data: {
+        estado: 'pago',
+        usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
+        data: 4242,
+      },
+    });
+  });
+
+  it('recordEstadoChange commits one op (usuario defaults to null)', async () => {
+    const { port, committed } = fakePort(null);
+    await recordEstadoChange(port, { pedidoId: 'ped1', estado: 'cancelado' });
+    expect(committed()).toHaveLength(1);
+    expect(committed()[0]).toMatchObject({
+      data: { estado: 'cancelado', usuarioHistoricoEstadosPedidoOuterRef: null },
+    });
   });
 });

@@ -16,15 +16,18 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { FirebaseError } from 'firebase/app';
 import { PageHeader } from '@delfrance/ui';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import {
   buildPedidoPatch,
   PedidoConflictError,
   PedidoNothingChangedError,
+  recordEstadoChange,
   savePedido,
 } from '@delfrance/data/pedido';
 import type { Pedido } from '@delfrance/schemas';
+import { useAuth } from '@/lib/auth/useAuth';
 import { PedidoForm } from '../../_components/PedidoForm';
 import { PedidoConflictModal } from '../../_components/PedidoConflictModal';
 import { conflictFields } from '../../_components/conflictFields';
@@ -61,6 +64,7 @@ export default function EditarPedidoPage() {
   const [emitConfirmOpen, setEmitConfirmOpen] = useState(false);
   const [emitting, setEmitting] = useState(false);
   const nfeClient = useNFeClient();
+  const { user } = useAuth();
 
   // The conflict the snapshot guard tripped on. Holds the pending patch, the
   // baseline the user reviewed, and the remote doc so the modal can show the diff
@@ -72,17 +76,44 @@ export default function EditarPedidoPage() {
   } | null>(null);
   const [savingConflict, setSavingConflict] = useState(false);
 
+  // A manual estado change appends a historicoEstadoPedido audit row (legacy
+  // `Pedido.save()` behavior) — only after the doc save committed it, and only
+  // when it actually changed. Best-effort: the estado itself is already
+  // persisted, so a failed audit-log write (e.g. a rules gap) must NOT block the
+  // save/navigation — warn and move on.
+  async function recordEstadoIfChanged(
+    port: ReturnType<typeof createClientPedidoPort>,
+    patch: Record<string, unknown>,
+    prevEstado: unknown,
+  ) {
+    if (!('estado' in patch) || patch.estado === prevEstado) return;
+    try {
+      await recordEstadoChange(port, {
+        pedidoId: params.id,
+        estado: patch.estado as Pedido['estado'],
+        usuarioRef: user ? `documents/usuarios/${user.uid}` : null,
+      });
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        notifications.show({
+          color: 'yellow',
+          message: 'Estado salvo, mas o histórico não pôde ser registrado.',
+        });
+        return;
+      }
+      throw err;
+    }
+  }
+
   async function handleSubmit(values: Pedido, dirtyFields: Readonly<Record<string, unknown>>) {
     // Partial save: write only the touched fields, guarded against concurrent
     // edits by comparing the live doc to the snapshot loaded into the editor.
     const baseline = baselineRef.current ?? (values as unknown as Record<string, unknown>);
     const patch = buildPedidoPatch(values, dirtyFields);
+    const port = createClientPedidoPort(getFirebaseFirestore());
     try {
-      await savePedido(createClientPedidoPort(getFirebaseFirestore()), {
-        pedidoId: params.id,
-        patch,
-        baseline,
-      });
+      await savePedido(port, { pedidoId: params.id, patch, baseline });
+      await recordEstadoIfChanged(port, patch, baseline.estado);
       router.replace('/pedidos');
     } catch (err) {
       if (err instanceof PedidoNothingChangedError) {
@@ -110,12 +141,14 @@ export default function EditarPedidoPage() {
   async function handleForceSave() {
     if (!conflict) return;
     setSavingConflict(true);
+    const port = createClientPedidoPort(getFirebaseFirestore());
     try {
-      await savePedido(createClientPedidoPort(getFirebaseFirestore()), {
+      await savePedido(port, {
         pedidoId: params.id,
         patch: conflict.patch,
         baseline: conflict.current,
       });
+      await recordEstadoIfChanged(port, conflict.patch, conflict.current.estado);
       setConflict(null);
       router.replace('/pedidos');
     } catch (err) {
