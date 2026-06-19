@@ -206,7 +206,9 @@ function freteInicial(opts: {
     // A pre-selected quote (Correios PAC = service 1) so the panel is "ready".
     // If a live buy 422s, re-quote with "Calcular frete" and re-select.
     externalOptionId: '1',
-    externalOptionIntegracao: opts.intFreteId,
+    // The integração **tipo** enum (`integracoesFreteSchema`), not the doc id —
+    // matches what `onSelectQuote` writes (see #218 / PR #223).
+    externalOptionIntegracao: 'melhorEnvios',
     externalOptionData: { id: 1, name: 'PAC', company: { id: 1, name: 'Correios' } },
     externalOptionSelectionDate: us(now),
     estado: opts.estado,
