@@ -18,7 +18,14 @@ import { useUnsavedChangesGuard } from '@delfrance/ui';
 import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
-import { EstadoHistoricoTab, FiscalTab, FreteTab, PlaceholderTab, PrincipalTab } from './tabs';
+import {
+  EstadoHistoricoTab,
+  FiscalTab,
+  FreteTab,
+  IncidentesTab,
+  PlaceholderTab,
+  PrincipalTab,
+} from './tabs';
 import { PagamentosSection } from './PagamentosSection';
 import { regroupItens } from './regroupItens';
 import { flattenItens } from './flattenItens';
@@ -313,7 +320,7 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="incidentes" pt="md">
-            <PlaceholderTab name="Incidentes" />
+            <IncidentesTab pedidoId={pedidoId} disabled={disabled} />
           </Tabs.Panel>
 
           <Tabs.Panel value="devolucao" pt="md">

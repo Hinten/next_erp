@@ -5,10 +5,13 @@ import {
   PedidoConflictError,
   PedidoNothingChangedError,
   buildEstadoHistoryOp,
+  buildIncidenteOp,
   buildPedidoPatch,
+  deleteIncidente,
   recordEstadoChange,
   remotelyChangedFields,
   savePedido,
+  saveIncidente,
 } from './usecases';
 
 const VALUES = {
@@ -208,5 +211,42 @@ describe('estado history', () => {
     expect(committed()[0]).toMatchObject({
       data: { estado: 'cancelado', usuarioHistoricoEstadosPedidoOuterRef: null },
     });
+  });
+});
+
+describe('incidentes', () => {
+  const inc = { tipo: 'returns', origem: null, motivoDoIncidente: 'x', comentarios: null };
+
+  it('buildIncidenteOp creates with a fresh id + timestamp + ultimaModificacao', () => {
+    const { port } = fakePort(null, 555);
+    const op = buildIncidenteOp(port, 'ped1', null, inc);
+    expect(op).toEqual({
+      type: 'set',
+      path: 'pedidos/ped1/incidentes/newid',
+      data: { ...inc, ultimaModificacao: 555, timestamp: 555 },
+    });
+  });
+
+  it('buildIncidenteOp updates at the given id WITHOUT touching timestamp', () => {
+    const { port } = fakePort(null, 555);
+    const op = buildIncidenteOp(port, 'ped1', 'inc1', { ...inc, timestamp: 1 });
+    expect(op.path).toBe('pedidos/ped1/incidentes/inc1');
+    expect((op as { data: Record<string, unknown> }).data).toMatchObject({
+      timestamp: 1,
+      ultimaModificacao: 555,
+    });
+  });
+
+  it('saveIncidente commits one set op', async () => {
+    const { port, committed } = fakePort(null);
+    await saveIncidente(port, { pedidoId: 'ped1', incidente: inc });
+    expect(committed()).toHaveLength(1);
+    expect(committed()[0]?.type).toBe('set');
+  });
+
+  it('deleteIncidente commits one delete op at the doc path', async () => {
+    const { port, committed } = fakePort(null);
+    await deleteIncidente(port, { pedidoId: 'ped1', incidenteId: 'inc1' });
+    expect(committed()).toEqual([{ type: 'delete', path: 'pedidos/ped1/incidentes/inc1' }]);
   });
 });

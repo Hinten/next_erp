@@ -8,6 +8,7 @@ import { nowMicros } from '@delfrance/core/datetime';
 import type { PedidoDataPort, PedidoWriteOp } from '@delfrance/data/pedido';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { historicoEstadoCollection } from '@/lib/data/historicoEstadoCollection';
+import { incidenteCollection } from '@/lib/data/incidenteCollection';
 import { newDocId } from '@/lib/data/newDocId';
 
 // A writeBatch caps at 500 operations.
@@ -26,6 +27,9 @@ function refForPath(db: Firestore, path: string): DocumentReference {
     const [, pedidoId, sub, id] = parts as [string, string, string, string];
     if (sub === 'historicoEstadoPedido') {
       return historicoEstadoCollection.docRef(db, { pedidoId }, id) as DocumentReference;
+    }
+    if (sub === 'incidentes') {
+      return incidenteCollection.docRef(db, { pedidoId }, id) as DocumentReference;
     }
   }
   throw new Error(`clientPedidoPort: unmapped write path "${path}"`);

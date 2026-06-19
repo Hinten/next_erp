@@ -10,6 +10,9 @@ export {
   remotelyChangedFields,
   buildEstadoHistoryOp,
   recordEstadoChange,
+  buildIncidenteOp,
+  saveIncidente,
+  deleteIncidente,
   PedidoConflictError,
   PedidoNothingChangedError,
 } from './usecases';
