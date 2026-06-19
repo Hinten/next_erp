@@ -194,9 +194,44 @@ describe('ObjectView validation feedback across tabs', () => {
     expect(notifyShow).toHaveBeenCalledWith(
       expect.objectContaining({
         color: 'red',
-        message: expect.stringContaining('fora do formulário (obs)') as string,
+        // Named by its human label ("Observações"), not its raw key ("obs").
+        message: expect.stringContaining('fora do formulário (Observações)') as string,
       }),
     );
+  });
+
+  it('flat layout names invisible-field errors instead of a generic message', async () => {
+    // No `sections` (flat) + an excluded-but-required field. Before the fix the
+    // flat branch only said "Corrija os campos inválidos…" with no field named
+    // and no input to point at — a silent dead end.
+    render(
+      <Wrap>
+        <ObjectView
+          schema={schema}
+          collection={fakeCollection()}
+          db={{} as never}
+          currentUserUid="u1"
+          excludedFields={['obs']}
+        />
+      </Wrap>,
+    );
+    const nome = screen.getByRole('textbox', { name: 'Nome' });
+    await act(async () => {
+      fireEvent.change(nome, { target: { value: 'Alice' } });
+      fireEvent.blur(nome);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(saveRecordMock).not.toHaveBeenCalled();
+    expect(notifyShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'red',
+        message: expect.stringContaining('fora do formulário (Observações)') as string,
+      }),
+    );
+    // And it persists in the form-level Alert (toasts vanish; this does not).
+    expect(screen.getByText('Observações: Informe a observação')).toBeTruthy();
   });
 
   it('invalid submit from a NON-first tab still toasts + jumps when the form has prepareForSave transforms (the /logistica regression)', async () => {
@@ -290,7 +325,7 @@ describe('ObjectView validation feedback across tabs', () => {
     expect(notifyShow).toHaveBeenCalledWith(
       expect.objectContaining({
         color: 'red',
-        message: expect.stringMatching(/aba "Notas".*fora do formulário \(extra\)/) as string,
+        message: expect.stringMatching(/aba "Notas".*fora do formulário \(Extra\)/) as string,
       }),
     );
     expect(screen.getByRole('tab', { name: /Notas/ }).getAttribute('aria-selected')).toBe('true');
@@ -357,6 +392,25 @@ describe('ObjectView cross-document validate() hook', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
     });
     expect(saveRecordMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces a key-less (root / between-fields) issue instead of dropping it', async () => {
+    // An empty path is a cross-field rule with no field to point at. Before the
+    // fix the resolver `continue`d on it and the message vanished. Now it routes
+    // to RHF's `root` error → toast + persistent Alert.
+    renderWithValidate(() => [{ path: '', message: 'Regra entre campos violada' }]);
+    await fillBoth();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    });
+    expect(saveRecordMock).not.toHaveBeenCalled();
+    expect(notifyShow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        color: 'red',
+        message: expect.stringContaining('Regra entre campos violada') as string,
+      }),
+    );
+    expect(screen.getByText('Regra entre campos violada')).toBeTruthy();
   });
 
   it('skips prototype-polluting issue paths but still applies safe ones', async () => {
