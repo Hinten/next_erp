@@ -397,7 +397,7 @@ describe('ObjectView cross-document validate() hook', () => {
   it('surfaces a key-less (root / between-fields) issue instead of dropping it', async () => {
     // An empty path is a cross-field rule with no field to point at. Before the
     // fix the resolver `continue`d on it and the message vanished. Now it routes
-    // to RHF's `root` error → toast + persistent Alert.
+    // to the synthetic FORM_LEVEL_ERROR_KEY (`@form`) → toast + persistent Alert.
     renderWithValidate(() => [{ path: '', message: 'Regra entre campos violada' }]);
     await fillBoth();
     await act(async () => {

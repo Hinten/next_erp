@@ -795,8 +795,8 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
           {hiddenErrors.length > 0 && (
             <Alert color="red" title="Campos inválidos fora do formulário">
               <Stack gap="xs">
-                {hiddenErrors.map((m) => (
-                  <Text key={m} size="sm">
+                {hiddenErrors.map((m, i) => (
+                  <Text key={`${i}:${m}`} size="sm">
                     {m}
                   </Text>
                 ))}
