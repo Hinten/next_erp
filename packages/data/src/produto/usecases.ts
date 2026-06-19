@@ -11,7 +11,6 @@ import {
   samePrecos,
   PRODUTO_EXTRA_DATA_DOC_ID,
   PRODUTO_SUBCOLLECTION_NAMES,
-  type EstoqueProduto,
   type PrecoChange,
   type PrecosMap,
   type ProdutoExtraData,
@@ -27,11 +26,6 @@ const HISTORICO_PRECO = historicoPrecoMeta.collectionPath; // produtos/{produtoI
 const HISTORICO_CUSTO = historicoCustoMeta.collectionPath; // produtos/{produtoId}/historicoDeCusto
 const EXTRA_DATA = produtoExtraDataMeta.collectionPath; // produtos/{produtoId}/extraData
 const ESTOQUE = estoqueProdutoMeta.collectionPath; // produtos/{produtoId}/estoques
-
-/** Deposito doc id from a `documents/depositos/<id>` (or bare `depositos/<id>`) ref. */
-function depositoIdFromRef(ref: string): string {
-  return ref.split('/').filter(Boolean).pop() ?? '';
-}
 
 const produtoDocPath = (id: string) => `${PRODUTOS}/${id}`;
 const subDocPath = (template: string, produtoId: string, docId: string) =>
@@ -132,68 +126,107 @@ export async function saveProdutoExtraData(
 
 // ---------------------------------------------------------------------------
 // Produto estoque (per-depósito stock — the `estoques` subcollection)
+//
+// Stock editing is decoupled from the parent produto save (it spans the parent
+// AND its variation children — each a separate produto doc with its own
+// `estoques`). The Estoque tab edits each row directly, like the Flutter app:
+// `localizacao` via a `localizacao`-only update, and quantities via a
+// conflict-safe movement (atomic increment + a HistoricoEstoque record).
 // ---------------------------------------------------------------------------
 
-/**
- * True when an estoque entry carries information worth persisting — a
- * localização, a quantity, a reservation, or an existing creation date. A
- * pristine empty row (a depósito the user merely glanced at and never touched)
- * is skipped so the save never creates a stray zero doc.
- */
-function estoqueCarriesInfo(e: EstoqueProduto): boolean {
-  return (
-    (e.localizacao != null && e.localizacao.trim() !== '') ||
-    e.quantidade !== 0 ||
-    e.quantidadeReservada !== 0 ||
-    e.dataCriacao != null
-  );
+/** Deterministic estoque doc path for `(produto, depósito)`. */
+function estoqueDocPath(produtoId: string, depositoId: string): string {
+  return subDocPath(ESTOQUE, produtoId, makeEstoqueUid(produtoId, depositoId));
 }
 
 /**
- * Build one `set` op per informative estoque entry, each at the deterministic
- * id `est-<produtoId>-<depositoId>` (`makeEstoqueUid`, Flutter parity) so the
- * produto and the legacy app coexist on the same doc. The screen only edits
- * `localizacao`: `quantidade` / `quantidadeReservada` are movement-owned and
- * merely round-tripped from what the manager loaded (preserved on write).
- * `parentId` is forced to the produto, `dataCriacao` is stamped once and
- * `ultimaModificacao` on every write. The value is parsed through
- * `estoqueProdutoSchema` so the wire shape is enforced here in the use-case
- * (the agent/admin path has no Zod converter to lean on).
- *
- * NOTE: existing docs are rewritten with a full `set`, preserving the loaded
- * quantities. That is safe today (there is no movement system yet); once
- * movements own `quantidade`/`quantidadeReservada`, existing rows should switch
- * to a `localizacao`-only `update` to avoid clobbering a concurrent movement.
+ * Build the write that sets a depósito's `localizacao` for a produto — mirror of
+ * the Flutter `editarLocalizacao` (`produtoTableProvider.dart:1301`). On an
+ * EXISTING estoque doc it is a `localizacao`-only `update` (so `quantidade` /
+ * `quantidadeReservada` — owned by stock movements — are never touched); when no
+ * doc exists yet it `set`s a fresh estoque (`quantidade: 0`). An empty string
+ * clears the field (stored `null`).
  */
-export function buildEstoqueWriteOps(
+export function buildLocalizacaoOp(
   produtoId: string,
-  estoques: EstoqueProduto[],
+  depositoId: string,
+  localizacao: string | null,
+  hasExisting: boolean,
   now: number,
-): ProdutoWriteOp[] {
-  return estoques.filter(estoqueCarriesInfo).map((estoque) => {
-    const depositoId = depositoIdFromRef(estoque.depositoOuterRef);
-    return {
-      type: 'set',
-      path: subDocPath(ESTOQUE, produtoId, makeEstoqueUid(produtoId, depositoId)),
-      data: estoqueProdutoSchema.parse({
-        ...estoque,
-        parentId: produtoId,
-        dataCriacao: estoque.dataCriacao ?? now,
-        ultimaModificacao: now,
-      }) as Record<string, unknown>,
-    };
-  });
+): ProdutoWriteOp {
+  const path = estoqueDocPath(produtoId, depositoId);
+  const loc = localizacao != null && localizacao.trim() !== '' ? localizacao : null;
+  if (hasExisting) {
+    return { type: 'update', path, data: { localizacao: loc, ultimaModificacao: now } };
+  }
+  return {
+    type: 'set',
+    path,
+    data: estoqueProdutoSchema.parse({
+      parentId: produtoId,
+      depositoOuterRef: `documents/depositos/${depositoId}`,
+      localizacao: loc,
+      quantidade: 0,
+      quantidadeReservada: 0,
+      dataCriacao: now,
+      ultimaModificacao: now,
+    }) as Record<string, unknown>,
+  };
 }
 
-/** Persist the produto's per-depósito estoque docs (no-op when none carry info). */
-export async function saveProdutoEstoques(
-  port: ProdutoDataPort,
-  produtoId: string,
-  estoques: EstoqueProduto[],
-): Promise<void> {
-  const ops = buildEstoqueWriteOps(produtoId, estoques, port.now());
-  if (ops.length === 0) return;
-  await port.commit(ops);
+/** A stock movement kind (Flutter `movimentar` tipos). */
+export type TipoMovimentacao = 'entrada' | 'saida' | 'balanco';
+
+/** Raw movement input as entered in the editor (magnitudes — non-negative). */
+export interface MovimentacaoInput {
+  tipo: TipoMovimentacao;
+  quantidade: number;
+  quantidadeReservada: number;
+  motivo: string | null;
+}
+
+/** The resolved movement: signed deltas (or absolutes for balanço) + audit record. */
+export interface MovimentacaoPlan {
+  /** `true` for a balanço (absolute set) vs a regular increment movement. */
+  ehBalanco: boolean;
+  /** Entrada/saída: the signed delta to `increment`. Balanço: the absolute value. */
+  quantidade: number;
+  quantidadeReservada: number;
+  /** The `HistoricoEstoque` audit record to append (signed delta, Flutter parity). */
+  historico: {
+    ehBalanco: boolean | null;
+    quantidade: number;
+    quantidadeReservada: number;
+    motivo: string | null;
+    timestamp: number;
+  };
+}
+
+/**
+ * Resolve a movement into signed quantities + its audit record — pure mirror of
+ * the Flutter `Estoque.movimentar` (`models.dart:4164`). Saída negates the
+ * magnitudes (the delta the caller `increment`s); balanço passes them through as
+ * the absolute counted values. The caller (client adapter) applies the
+ * conflict-safe write: `increment` for entrada/saída (never overwrites the server
+ * count), an absolute set for balanço — plus this `historico` record.
+ */
+export function planMovimentacao(input: MovimentacaoInput, now: number): MovimentacaoPlan {
+  const sign = input.tipo === 'saida' ? -1 : 1;
+  const quantidade = sign * input.quantidade;
+  const quantidadeReservada = sign * input.quantidadeReservada;
+  const ehBalanco = input.tipo === 'balanco';
+  return {
+    ehBalanco,
+    quantidade,
+    quantidadeReservada,
+    historico: {
+      ehBalanco: ehBalanco ? true : null,
+      quantidade,
+      quantidadeReservada,
+      motivo: input.motivo,
+      timestamp: now,
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

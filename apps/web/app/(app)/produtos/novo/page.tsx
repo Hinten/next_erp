@@ -6,7 +6,6 @@ import { useRouter } from 'next/navigation';
 import { Button, Stack } from '@mantine/core';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import {
-  type EstoqueProduto,
   type Foto,
   type PrecosMap,
   type ProdutoExtraData,
@@ -155,15 +154,9 @@ export default function NovoProdutoPage() {
       estoques: {
         label: 'Estoque',
         section: 'Estoque',
-        renderInput: (p) => (
-          <EstoqueManager
-            produtoId={null}
-            db={db}
-            value={(p.value as EstoqueProduto[] | null) ?? null}
-            onChange={p.onChange}
-            disabled={p.disabled}
-          />
-        ),
+        // Self-contained tab (decoupled from the parent save): in create mode it
+        // shows "Salve o produto antes de editar o estoque".
+        renderInput: (p) => <EstoqueManager produtoId={null} db={db} disabled={p.disabled} />,
       },
     }),
     [db, storage, listas, listasSnap.error?.message],
@@ -196,7 +189,6 @@ export default function NovoProdutoPage() {
           produtoPageIssues({
             ehKit: values.ehKit as boolean | null,
             componentesKit: values.componentesKit as Record<string, { quantidade: number }> | null,
-            estoques: (values.estoques as EstoqueProduto[] | null) ?? null,
           })
         }
         onAfterSave={async (id, values) => {

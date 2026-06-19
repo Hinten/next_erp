@@ -1,33 +1,31 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
   cleanupByNamePrefix,
-  cleanupProdutoSubcollection,
+  cleanupProdutoEstoque,
   e2ePrefix,
-  getProdutoData,
   getProdutoEstoque,
-  getProdutoIdByNome,
+  listHistoricoEstoque,
   seedDepositoAtivo,
+  seedProdutoComFilho,
 } from './_helpers/seed-data';
-import { fillField } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
- * End-to-end coverage for the Estoque por depósito tab — the second consumer of
- * the ObjectView `transientFields` enabler. It proves the `estoques` aggregate
- * field is persisted to its per-depósito subdocument
- * (`produtos/<id>/estoques/est-<produtoId>-<depositoId>`) ATOMICALLY with the
- * produto doc (the page's `transactionWrites`), with the Flutter wire shape, and
- * kept OFF the produto document (the transient strip).
+ * End-to-end coverage for the Estoque por depósito tab (the per-variation rework).
+ * It proves the two decoupled, conflict-safe write paths:
+ *  - inline `localizacao` editing writes ONLY `localizacao` (an existing/new
+ *    estoque keeps `quantidade` at 0 — quantities are movement-owned);
+ *  - the movement modal applies an atomic `increment` and appends a
+ *    `historicoEstoque` audit record.
  *
- * Driven through the CREATE flow, like the Descrição suite: the estoque doc
- * commits inside the produto-create transaction, so a single
- * "create produto + sibling estoque" commit is far less flaky on staging than
- * the editar save's later writes.
+ * Driven on the EDIT screen (stock needs a saved produto) against a parent +
+ * one variation child, so the parent and the variation rows are both exercised.
  */
-test.describe.serial('Produtos estoque e2e — Estoque por depósito (estoques subcollection)', () => {
+test.describe
+  .serial('Produtos estoque e2e — Estoque por depósito (variações + movimentação)', () => {
   const prefix = e2ePrefix('prod-estoque');
-  const nome = `${prefix}-camiseta`;
-  let produtoId = '';
+  let parentId = '';
+  let childId = '';
   let depositoId = '';
   let depositoNome = '';
 
@@ -36,60 +34,78 @@ test.describe.serial('Produtos estoque e2e — Estoque por depósito (estoques s
     const dep = await seedDepositoAtivo(prefix);
     depositoId = dep.id;
     depositoNome = dep.nome;
-    await warmRoutes(browser, ['/produtos/novo']);
+    const seeded = await seedProdutoComFilho(prefix);
+    parentId = seeded.parentId;
+    childId = seeded.childId;
+    await warmRoutes(browser, [`/produtos/${parentId}/editar`]);
   });
 
   test.afterAll(async () => {
-    if (produtoId) await cleanupProdutoSubcollection(produtoId, 'estoques');
+    if (parentId) await cleanupProdutoEstoque(parentId);
+    if (childId) await cleanupProdutoEstoque(childId);
     await cleanupByNamePrefix('produtos', prefix);
     await cleanupByNamePrefix('depositos', prefix);
   });
 
-  async function fillEstoqueTab(page: Page) {
+  async function openEstoqueTab(page: Page) {
+    await page.goto(`/produtos/${parentId}/editar`);
     await page.getByRole('tab', { name: 'Estoque' }).click();
-    // Each active depósito is a Mantine Fieldset (role "group", named by its
-    // legend); scope to the seeded one so its "Localização" input is unambiguous.
-    const depGroup = page.getByRole('group', { name: depositoNome });
-    await expect(depGroup).toBeVisible();
-    await depGroup.getByLabel('Localização').fill('Corredor 3, Prateleira B');
+    // The parent's depósito row mounts once depósitos + produtos load.
+    await expect(page.getByLabel(`Localização ${parentId} ${depositoNome}`)).toBeVisible({
+      timeout: 30_000,
+    });
   }
 
-  test('creates a produto and persists its estoque doc off the produto doc', async ({ page }) => {
-    await page.goto('/produtos/novo');
-    await fillField(page, 'Nome', nome);
-    await fillEstoqueTab(page);
-    await page.getByRole('button', { name: 'Criar', exact: true }).click();
-
-    // Navigation-independent: poll Firestore for the created produto by its
-    // unique name, then for its per-depósito estoque doc (committed atomically
-    // in the same transaction).
-    await expect
-      .poll(async () => await getProdutoIdByNome(nome), { timeout: 30_000 })
-      .not.toBeNull();
-    produtoId = (await getProdutoIdByNome(nome))!;
+  test('inline localização writes only localizacao (quantidade stays 0)', async ({ page }) => {
+    await openEstoqueTab(page);
+    const input = page.getByLabel(`Localização ${parentId} ${depositoNome}`);
+    await input.fill('Corredor 3, Prateleira B');
+    await input.blur();
 
     await expect
-      .poll(async () => (await getProdutoEstoque(produtoId, depositoId))?.localizacao, {
-        timeout: 15_000,
+      .poll(async () => (await getProdutoEstoque(parentId, depositoId))?.localizacao, {
+        timeout: 20_000,
       })
       .toBe('Corredor 3, Prateleira B');
-
-    const estoque = await getProdutoEstoque(produtoId, depositoId);
-    // Flutter wire shape: parentId = produto, doc-path depositoOuterRef, the
-    // movement-owned quantities default to 0 (no movement system yet).
+    const estoque = await getProdutoEstoque(parentId, depositoId);
+    // A fresh estoque created by the localização write keeps quantidade at 0.
     expect(estoque).toMatchObject({
-      parentId: produtoId,
+      parentId,
       depositoOuterRef: `documents/depositos/${depositoId}`,
       localizacao: 'Corredor 3, Prateleira B',
       quantidade: 0,
       quantidadeReservada: 0,
     });
-    expect(typeof estoque!.dataCriacao).toBe('number');
-    expect(typeof estoque!.ultimaModificacao).toBe('number');
+  });
 
-    // The transient field never leaked onto the produto document.
-    const produto = await getProdutoData(produtoId);
-    expect(produto).not.toHaveProperty('estoques');
-    expect(produto).not.toHaveProperty('localizacao');
+  test('a movement (entrada) increments the variation stock and logs a record', async ({
+    page,
+  }) => {
+    await openEstoqueTab(page);
+    // Open the movement modal on the VARIATION child's depósito row.
+    await page.getByRole('button', { name: `Editar estoque ${childId} ${depositoNome}` }).click();
+
+    const modal = page.getByRole('dialog');
+    await expect(modal.getByText('Edição de estoque')).toBeVisible();
+    // tipo defaults to Entrada; enter a quantity of 5 and save.
+    await modal.getByLabel('Quantidade', { exact: true }).fill('5');
+    await modal.getByRole('button', { name: 'Salvar' }).click();
+
+    await expect
+      .poll(async () => (await getProdutoEstoque(childId, depositoId))?.quantidade, {
+        timeout: 20_000,
+      })
+      .toBe(5);
+    const records = await listHistoricoEstoque(childId, depositoId);
+    expect(records.length).toBeGreaterThanOrEqual(1);
+    expect(records.some((r) => r.quantidade === 5)).toBe(true);
+  });
+
+  test('the filter field accepts a variation SKU term', async ({ page }) => {
+    await openEstoqueTab(page);
+    // The filter highlights matches (visual); assert it is present and typeable.
+    const filter = page.getByLabel('Filtrar');
+    await filter.fill(prefix.toUpperCase().replace(/-/g, '_'));
+    await expect(filter).toHaveValue(prefix.toUpperCase().replace(/-/g, '_'));
   });
 });

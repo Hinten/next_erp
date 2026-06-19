@@ -8,7 +8,6 @@ import { notifications } from '@mantine/notifications';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import {
-  type EstoqueProduto,
   type Foto,
   type PrecosMap,
   type ProdutoExtraData,
@@ -210,15 +209,9 @@ export default function EditarProdutoPage() {
       estoques: {
         label: 'Estoque',
         section: 'Estoque',
-        renderInput: (p) => (
-          <EstoqueManager
-            produtoId={params.id}
-            db={db}
-            value={(p.value as EstoqueProduto[] | null) ?? null}
-            onChange={p.onChange}
-            disabled={p.disabled}
-          />
-        ),
+        // Self-contained tab: lists the produto + each variation child, each
+        // edited directly (decoupled from this form's save).
+        renderInput: (p) => <EstoqueManager produtoId={params.id} db={db} disabled={p.disabled} />,
       },
     }),
     [params.id, db, storage, grupos, gruposSnap.error?.message, listas, listasSnap.error?.message],
@@ -293,13 +286,12 @@ export default function EditarProdutoPage() {
         }}
         validate={(values) =>
           // Cross-document rules, concentrated in the page model
-          // (`produtoPageIssues`): produto doc fields + the Estoque subdocuments
-          // (reservada ≤ quantidade). The Imposto tab will add its own.
+          // (`produtoPageIssues`). Estoque is edited directly in its tab (not on
+          // this save), so it's not part of the form value here.
           produtoPageIssues({
             id: params.id,
             ehKit: values.ehKit as boolean | null,
             componentesKit: values.componentesKit as Record<string, { quantidade: number }> | null,
-            estoques: (values.estoques as EstoqueProduto[] | null) ?? null,
           })
         }
         onAfterSave={async (id, values) => {

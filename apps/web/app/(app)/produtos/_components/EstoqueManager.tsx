@@ -1,112 +1,120 @@
 'use client';
 
-import { useEffect, useMemo } from 'react';
-import { Fieldset, Group, Stack, Text, TextInput } from '@mantine/core';
+import { type FocusEvent, useMemo, useState } from 'react';
+import { ActionIcon, Box, Divider, Group, Stack, Text, TextInput, Tooltip } from '@mantine/core';
+import { IconPencil } from '@tabler/icons-react';
+import { notifications } from '@mantine/notifications';
+import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
-import { estoqueDisponivel, estoqueProdutoSchema, type EstoqueProduto } from '@delfrance/schemas';
-import { buildQuery, limit, orderByField } from '@delfrance/data';
-import { useSnapshot } from '@delfrance/data/hooks';
+import { estoqueDisponivel, makeEstoqueUid, type EstoqueProduto } from '@delfrance/schemas';
+import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
+import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { depositoCollection } from '@/lib/data/depositoCollection';
+import { produtoCollection } from '@/lib/data/produtoCollection';
 import { estoqueProdutoCollection } from '@/lib/data/estoqueProdutoCollection';
+import { setEstoqueLocalizacao } from '@/lib/produtos/clientPort';
+import { EstoqueMovimentacaoModal } from './EstoqueMovimentacaoModal';
 
-// Depósitos are inherently few (physical warehouses); a bounded, name-ordered
-// query is plenty and `ativo` is filtered client-side so it needs no index.
+// Depósitos and variation children are inherently few; bounded queries suffice.
 const DEPOSITO_LIMIT = 200;
 const ESTOQUE_LIMIT = 500;
+const CHILDREN_LIMIT = 500;
 
-/** Depósito doc id from a `documents/depositos/<id>` (or bare) ref string. */
-function depositoIdOf(ref: string): string {
-  return ref.split('/').filter(Boolean).pop() ?? '';
+interface ProdutoRow {
+  id: string;
+  nome: string | null;
+  sku: string | null;
+}
+interface DepositoRow {
+  id: string;
+  nome: string;
 }
 
-/** A fresh, all-zero estoque row for a depósito the produto has no doc for yet. */
-function emptyEstoque(depositoId: string, produtoId: string | null): EstoqueProduto {
-  return estoqueProdutoSchema.parse({
-    parentId: produtoId,
-    depositoOuterRef: `documents/depositos/${depositoId}`,
-  });
+const fmt = (n: number) =>
+  n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const produtoLabel = (p: ProdutoRow): string => `${p.sku ?? 'Sem SKU'} - ${p.nome ?? 'Sem nome'}`;
+
+/** Old-app filter: nome substring (case-insensitive) OR sku prefix. */
+function matchesFilter(p: ProdutoRow, term: string): boolean {
+  const t = term.toLowerCase();
+  return (p.nome ?? '').toLowerCase().includes(t) || (p.sku ?? '').startsWith(term);
 }
 
 export interface EstoqueManagerProps {
-  /** `null` in create mode — nothing to load yet; persisted on first save. */
+  /** `null` in create mode — the produto must be saved before editing stock. */
   produtoId: string | null;
   db: Firestore;
-  /** The transient `estoques` form value (null until seeded / edited). */
-  value: EstoqueProduto[] | null;
-  onChange: (next: EstoqueProduto[]) => void;
   disabled?: boolean;
 }
 
 /**
- * Estoque por depósito tab — editor for the produto's `estoques` subcollection
- * (`produtos/<id>/estoques/est-<produtoId>-<depositoId>`). It is a TRANSIENT
- * field on the aggregate page model: validated + rendered here, stripped from
- * the produto doc write, and persisted to its subcollection ATOMICALLY with the
- * produto doc (the page's `transactionWrites` hook).
+ * Estoque por depósito tab (Flutter `EstoqueProdutosVariacoesWidget`). Lists the
+ * parent produto plus each variation child (each a separate produto doc with its
+ * own `estoques`), with a `<sku> - <nome>` header per produto, a filter, and
+ * zebra-striped rows. Per (produto × depósito): inline `localizacao` (saved on
+ * blur — a `localizacao`-only write) and a conflict-safe quantity editor modal.
  *
- * One row per active depósito. `quantidade` / `quantidadeReservada` /
- * `disponível` are shown READ-ONLY — they are owned by stock movements (there is
- * no movement system here yet) — and the screen only edits `localizacao`. A
- * depósito the produto has no estoque doc for yet shows zeros; typing a
- * `localização` creates the doc on save.
- *
- * It self-loads the produto's estoque docs and seeds the transient field once
- * they resolve, re-seeding if ObjectView's produto-doc `reset` wipes the field
- * back to null (guarded by `value == null` so user edits are never clobbered).
+ * Self-contained — stock editing is decoupled from the parent form save (it spans
+ * many produto docs), so this ignores the ObjectView field value/onChange.
  */
-export function EstoqueManager({ produtoId, db, value, onChange, disabled }: EstoqueManagerProps) {
-  // Active depósitos (bounded, ordered by nome). `ativo` is filtered client-side
-  // (treat a missing flag as active, matching the schema default).
+export function EstoqueManager({ produtoId, db, disabled }: EstoqueManagerProps) {
+  // Active depósitos (bounded, name-ordered; `ativo` filtered client-side).
   const depositosQuery = useMemo(
     () => buildQuery(depositoCollection.ref(db, {}), [orderByField('nome'), limit(DEPOSITO_LIMIT)]),
     [db],
   );
   const depositosSnap = useSnapshot(depositosQuery);
-  const depositos = useMemo(
-    () => (depositosSnap.data ?? []).filter((d) => d.data.ativo !== false),
+  const depositos: DepositoRow[] = useMemo(
+    () =>
+      (depositosSnap.data ?? [])
+        .filter((d) => d.data.ativo !== false)
+        .map((d) => ({ id: d.id, nome: d.data.nome })),
     [depositosSnap.data],
   );
 
-  // The produto's existing estoque docs (edit mode only).
-  const estoquesQuery = useMemo(
+  // The parent produto + its variation children (each their own estoque docs).
+  const parentRef = useMemo(
+    () => (produtoId ? produtoCollection.docRef(db, {}, produtoId) : null),
+    [db, produtoId],
+  );
+  const parentSnap = useDocSnapshot(parentRef);
+  const childrenQuery = useMemo(
     () =>
       produtoId
-        ? buildQuery(estoqueProdutoCollection.ref(db, { produtoId }), [limit(ESTOQUE_LIMIT)])
+        ? buildQuery(produtoCollection.ref(db, {}), [
+            whereEqual('paiId', produtoId),
+            limit(CHILDREN_LIMIT),
+          ])
         : null,
     [db, produtoId],
   );
-  const estoquesSnap = useSnapshot(estoquesQuery);
+  const childrenSnap = useSnapshot(childrenQuery);
 
-  // Seed the transient field from the loaded docs. Re-runs when the produto-doc
-  // reset zeroes the field back to null (re-seeds the same docs); create mode
-  // has nothing to load (value stays null until the user types a localização).
-  useEffect(() => {
-    if (!produtoId) return;
-    if (estoquesSnap.loading) return;
-    if (value != null) return;
-    onChange((estoquesSnap.data ?? []).map((d) => estoqueProdutoSchema.parse(d.data)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [produtoId, estoquesSnap.loading, value]);
+  const produtos: ProdutoRow[] = useMemo(() => {
+    if (!produtoId || !parentSnap.data) return [];
+    const parent: ProdutoRow = {
+      id: produtoId,
+      nome: parentSnap.data.data.nome ?? null,
+      sku: parentSnap.data.data.sku ?? null,
+    };
+    const ordemOf = (d: { data: { ordem?: number | null } }) => d.data.ordem ?? 0;
+    const children = (childrenSnap.data ?? [])
+      .slice()
+      .sort((a, b) => ordemOf(a) - ordemOf(b))
+      .map((d) => ({ id: d.id, nome: d.data.nome ?? null, sku: d.data.sku ?? null }));
+    return [parent, ...children];
+  }, [produtoId, parentSnap.data, childrenSnap.data]);
 
-  const rows = useMemo(() => value ?? [], [value]);
-  const byDeposito = useMemo(() => {
-    const map = new Map<string, EstoqueProduto>();
-    for (const e of rows) map.set(depositoIdOf(e.depositoOuterRef), e);
-    return map;
-  }, [rows]);
+  const [filter, setFilter] = useState('');
 
-  const setLocalizacao = (depositoId: string, localizacao: string) => {
-    const loc = localizacao.length > 0 ? localizacao : null;
-    const next = [...rows];
-    const i = next.findIndex((e) => depositoIdOf(e.depositoOuterRef) === depositoId);
-    if (i >= 0) {
-      next[i] = { ...next[i]!, localizacao: loc };
-    } else {
-      next.push({ ...emptyEstoque(depositoId, produtoId), localizacao: loc });
-    }
-    onChange(next);
-  };
-
+  if (!produtoId) {
+    return (
+      <Text c="dimmed" size="sm">
+        Salve o produto antes de editar o estoque.
+      </Text>
+    );
+  }
   if (depositosSnap.error) {
     return (
       <Text c="red" size="sm">
@@ -121,44 +129,203 @@ export function EstoqueManager({ produtoId, db, value, onChange, disabled }: Est
       </Text>
     );
   }
+  if (produtos.length === 0) {
+    return (
+      <Text c="dimmed" size="sm">
+        Carregando…
+      </Text>
+    );
+  }
+
+  const term = filter.trim();
+  const filtering = term !== '';
 
   return (
-    <Stack>
-      <Text size="sm" c="dimmed">
-        Quantidade e reservada são controladas por movimentações de estoque. Aqui você define a
-        localização do produto em cada depósito.
-      </Text>
-      {depositos.map((d) => {
-        const e = byDeposito.get(d.id);
-        const quantidade = e?.quantidade ?? 0;
-        const reservada = e?.quantidadeReservada ?? 0;
+    <Stack gap="xs">
+      <TextInput
+        label="Filtrar"
+        placeholder="Nome ou SKU da variação"
+        value={filter}
+        onChange={(e) => setFilter(e.currentTarget.value)}
+      />
+      {produtos.map((p, index) => {
+        const highlight = filtering && matchesFilter(p, term);
         return (
-          <Fieldset key={d.id} legend={d.data.nome}>
-            <Stack gap="xs">
-              <Group gap="xl">
-                <Text size="sm">
-                  Quantidade: <b>{quantidade}</b>
-                </Text>
-                <Text size="sm">
-                  Reservada: <b>{reservada}</b>
-                </Text>
-                <Text size="sm">
-                  Disponível:{' '}
-                  <b>{estoqueDisponivel({ quantidade, quantidadeReservada: reservada })}</b>
-                </Text>
-              </Group>
-              <TextInput
-                label="Localização"
-                placeholder="Ex.: Corredor 3, Prateleira B"
-                maxLength={50}
-                value={e?.localizacao ?? ''}
-                onChange={(ev) => setLocalizacao(d.id, ev.currentTarget.value)}
-                disabled={disabled}
-              />
-            </Stack>
-          </Fieldset>
+          <EstoqueProdutoSection
+            key={p.id}
+            db={db}
+            produto={p}
+            depositos={depositos}
+            disabled={disabled}
+            zebra={index % 2 === 1}
+            highlight={highlight}
+            dimmed={filtering && !highlight}
+          />
         );
       })}
     </Stack>
+  );
+}
+
+interface SectionProps {
+  db: Firestore;
+  produto: ProdutoRow;
+  depositos: DepositoRow[];
+  disabled?: boolean;
+  zebra: boolean;
+  highlight: boolean;
+  dimmed: boolean;
+}
+
+/** One produto (parent or variation) — its `<sku> - <nome>` header + depósito rows. */
+function EstoqueProdutoSection({
+  db,
+  produto,
+  depositos,
+  disabled,
+  zebra,
+  highlight,
+  dimmed,
+}: SectionProps) {
+  const estoquesQuery = useMemo(
+    () =>
+      buildQuery(estoqueProdutoCollection.ref(db, { produtoId: produto.id }), [
+        limit(ESTOQUE_LIMIT),
+      ]),
+    [db, produto.id],
+  );
+  const estoquesSnap = useSnapshot(estoquesQuery);
+  const byId = useMemo(() => {
+    const map = new Map<string, EstoqueProduto>();
+    for (const d of estoquesSnap.data ?? []) map.set(d.id, d.data);
+    return map;
+  }, [estoquesSnap.data]);
+
+  const label = produtoLabel(produto);
+
+  return (
+    <Box
+      bg={highlight ? 'yellow.1' : zebra ? 'gray.0' : undefined}
+      style={{ opacity: dimmed ? 0.45 : 1, borderRadius: 4, padding: 8 }}
+    >
+      <Divider label={label} labelPosition="left" mb={6} />
+      <Stack gap={4}>
+        {depositos.map((dep) => {
+          const est = byId.get(makeEstoqueUid(produto.id, dep.id));
+          return (
+            <EstoqueDepositoRow
+              key={dep.id}
+              db={db}
+              produtoId={produto.id}
+              produtoLabel={label}
+              deposito={dep}
+              estoque={est}
+              disabled={disabled}
+            />
+          );
+        })}
+      </Stack>
+    </Box>
+  );
+}
+
+interface RowProps {
+  db: Firestore;
+  produtoId: string;
+  produtoLabel: string;
+  deposito: DepositoRow;
+  estoque: EstoqueProduto | undefined;
+  disabled?: boolean;
+}
+
+/** One depósito row: nome | inline localização | qty | reservado | disponível | edit. */
+function EstoqueDepositoRow({
+  db,
+  produtoId,
+  produtoLabel,
+  deposito,
+  estoque,
+  disabled,
+}: RowProps) {
+  const [modalOpen, setModalOpen] = useState(false);
+  const quantidade = estoque?.quantidade ?? 0;
+  const reservada = estoque?.quantidadeReservada ?? 0;
+  const loc = estoque?.localizacao ?? '';
+  const hasExisting = estoque !== undefined;
+  // Re-mount the uncontrolled input when the persisted localização changes.
+  const inputKey = `${deposito.id}:${loc}`;
+  const ariaSuffix = `${produtoId} ${deposito.nome}`;
+
+  const handleBlur = async (e: FocusEvent<HTMLInputElement>) => {
+    const next = e.currentTarget.value.trim();
+    if (next === loc.trim()) return;
+    try {
+      await setEstoqueLocalizacao(db, {
+        produtoId,
+        depositoId: deposito.id,
+        localizacao: next === '' ? null : next,
+        hasExisting,
+      });
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        notifications.show({
+          color: 'red',
+          title: 'Falha ao salvar a localização',
+          message: err.message,
+        });
+        return;
+      }
+      throw err;
+    }
+  };
+
+  return (
+    <Group gap="sm" wrap="nowrap" align="center">
+      <Text size="sm" style={{ flex: 2, minWidth: 0 }}>
+        {deposito.nome}
+      </Text>
+      <TextInput
+        key={inputKey}
+        aria-label={`Localização ${ariaSuffix}`}
+        placeholder="Localização"
+        defaultValue={loc}
+        onBlur={handleBlur}
+        maxLength={50}
+        disabled={disabled}
+        size="xs"
+        style={{ flex: 3 }}
+      />
+      <Text size="sm" ta="right" style={{ flex: 1 }}>
+        {fmt(quantidade)}
+      </Text>
+      <Text size="sm" ta="right" style={{ flex: 1 }}>
+        {fmt(reservada)}
+      </Text>
+      <Text size="sm" ta="right" style={{ flex: 1 }}>
+        {fmt(estoqueDisponivel({ quantidade, quantidadeReservada: reservada }))}
+      </Text>
+      <Tooltip label="Editar estoque">
+        <ActionIcon
+          variant="subtle"
+          aria-label={`Editar estoque ${ariaSuffix}`}
+          onClick={() => setModalOpen(true)}
+          disabled={disabled}
+        >
+          <IconPencil size={16} />
+        </ActionIcon>
+      </Tooltip>
+      <EstoqueMovimentacaoModal
+        opened={modalOpen}
+        onClose={() => setModalOpen(false)}
+        db={db}
+        produtoId={produtoId}
+        depositoId={deposito.id}
+        produtoLabel={produtoLabel}
+        depositoNome={deposito.nome}
+        quantidade={quantidade}
+        quantidadeReservada={reservada}
+        hasExisting={hasExisting}
+      />
+    </Group>
   );
 }

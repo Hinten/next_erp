@@ -6,6 +6,7 @@ import {
   produto,
   produtoExtraData,
   estoqueProduto,
+  historicoEstoque,
   historicoPreco,
   historicoCusto,
   PRODUTO_SUBCOLLECTION_DOMAINS,
@@ -83,5 +84,6 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   historicoCusto,
   produtoExtraData,
   estoqueProduto,
+  historicoEstoque,
   arquivo,
 ];

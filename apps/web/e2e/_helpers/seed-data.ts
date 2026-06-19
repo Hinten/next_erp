@@ -1114,8 +1114,7 @@ export async function getProdutoExtraData(
 
 /**
  * The per-depósito estoque doc `produtos/<id>/estoques/est-<produtoId>-<depositoId>`
- * (`makeEstoqueUid`), or null. The Estoque tab persists it atomically with the
- * produto doc.
+ * (`makeEstoqueUid`), or null. The Estoque tab edits it directly.
  */
 export async function getProdutoEstoque(
   produtoId: string,
@@ -1128,6 +1127,41 @@ export async function getProdutoEstoque(
     .doc(`est-${produtoId}-${depositoId}`)
     .get();
   return (snap.data() as Record<string, unknown> | undefined) ?? null;
+}
+
+/**
+ * All `historicoEstoque` movement records of a (produto, depósito) estoque doc
+ * (`produtos/<id>/estoques/est-..-../historicoEstoque`), raw wire data.
+ */
+export async function listHistoricoEstoque(
+  produtoId: string,
+  depositoId: string,
+): Promise<Array<Record<string, unknown>>> {
+  const snap = await db()
+    .collection('produtos')
+    .doc(produtoId)
+    .collection('estoques')
+    .doc(`est-${produtoId}-${depositoId}`)
+    .collection('historicoEstoque')
+    .get();
+  return snap.docs.map((d) => d.data() as Record<string, unknown>);
+}
+
+/**
+ * Delete a produto's `estoques` docs AND their nested `historicoEstoque` records
+ * (Firestore never cascades subcollections). Call per produto (parent + each
+ * variation child) in teardown.
+ */
+export async function cleanupProdutoEstoque(produtoId: string): Promise<void> {
+  const estoques = await db().collection('produtos').doc(produtoId).collection('estoques').get();
+  if (estoques.empty) return;
+  const batch = db().batch();
+  for (const est of estoques.docs) {
+    const hist = await est.ref.collection('historicoEstoque').get();
+    hist.docs.forEach((h) => batch.delete(h.ref));
+    batch.delete(est.ref);
+  }
+  await batch.commit();
 }
 
 /**
