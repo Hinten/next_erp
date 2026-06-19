@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { Alert, Divider, Group, Select, Skeleton, Stack, Text } from '@mantine/core';
+import { IconExclamationCircle } from '@tabler/icons-react';
 import { Controller } from 'react-hook-form';
 import { type Firestore } from 'firebase/firestore';
 import {
@@ -18,6 +19,7 @@ import { EnderecoPicker, useEnderecoFromRef } from '@/components/pickers/Enderec
 import { intFreteCollection } from '@/lib/data/intFreteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import type { FreteInicialFormState } from '../types';
+import { collectFreteErrors } from '../freteErrors';
 import { fretePath, type PedidoFormHandle } from './frete/fields';
 import { IntegracaoFreteSelect } from './frete/IntegracaoFreteSelect';
 import { GenericFreteFields } from './frete/GenericFreteFields';
@@ -52,6 +54,11 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   const temFrete = freteInicial != null && modalidade !== '9';
 
   const clientePedidoOuterRef = form.watch('clientePedidoOuterRef');
+
+  // Surface every invalid `freteInicial` field — including derived/cache fields
+  // with no rendered input, which only mark the tab and never show inline
+  // (#218). Reading `formState.errors` here subscribes the tab to error changes.
+  const freteErrors = collectFreteErrors(form.formState.errors.freteInicial);
 
   const { endereco: enderecoFrete } = useEnderecoFromRef(
     db,
@@ -153,6 +160,25 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
 
   return (
     <Stack>
+      {freteErrors.length > 0 && (
+        <Alert
+          color="red"
+          title="Corrija os campos do frete"
+          icon={<IconExclamationCircle size={16} />}
+        >
+          <Stack gap={2}>
+            {freteErrors.map((e) => (
+              <Text key={e.path} size="sm">
+                <Text span fw={500}>
+                  {e.label}:
+                </Text>{' '}
+                {e.message}
+              </Text>
+            ))}
+          </Stack>
+        </Alert>
+      )}
+
       <Select
         label="Modalidade de frete"
         data={modalidadeFreteSchema.options.map((value) => ({
