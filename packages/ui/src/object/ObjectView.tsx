@@ -44,6 +44,15 @@ export type { TransactionWrite };
  */
 const COPY_STRIP_KEYS = ['timestamp', 'ultimaModificacao'];
 
+/**
+ * Synthetic error key for key-less (form-level / cross-field) validation
+ * issues that have no field path. The `@` guarantees it can't collide with a
+ * Zod field name (those are identifiers), and it's deliberately NOT RHF's
+ * reserved `root` key, which RHF excludes from its submit-blocking validity
+ * check. `describeOutside` / `hiddenErrors` surface it by its message.
+ */
+const FORM_LEVEL_ERROR_KEY = '@form';
+
 /** A cross-document validation problem, keyed by a dotted field path. */
 export interface ValidationIssue {
   path: string;
@@ -298,15 +307,29 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       const issues = validate(prepared);
       if (issues.length === 0) return result;
       const errors: Record<string, unknown> = { ...(result.errors as Record<string, unknown>) };
+      const rootMessages: string[] = [];
       for (const issue of issues) {
         const key = issue.path.split('.')[0];
-        // Skip empty or prototype-polluting keys: the hook merges arbitrary
+        // Skip prototype-polluting keys: the hook merges arbitrary
         // caller-supplied paths into a plain object, and `errors['__proto__'] = …`
         // would mutate its prototype.
-        if (!key || key === '__proto__' || key === 'constructor' || key === 'prototype') {
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+          continue;
+        }
+        // A key-less issue (empty path) is a cross-field / form-level rule with
+        // no field to point at. Stash it under a synthetic key so it still
+        // blocks the save and reaches `onInvalid` + the form-level Alert
+        // instead of being silently dropped. NOT RHF's reserved `root` key:
+        // RHF excludes `root` from its validity gating (it's for non-blocking
+        // server messages), so a `root` error would not stop the submit.
+        if (!key) {
+          rootMessages.push(issue.message);
           continue;
         }
         if (!errors[key]) errors[key] = { type: 'custom', message: issue.message };
+      }
+      if (rootMessages.length > 0 && !errors[FORM_LEVEL_ERROR_KEY]) {
+        errors[FORM_LEVEL_ERROR_KEY] = { type: 'custom', message: rootMessages.join('; ') };
       }
       return { ...result, errors } as typeof result;
     };
@@ -517,6 +540,28 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     return map;
   }, [grouped]);
 
+  // Key → label for EVERY top-level field, visible or not. Lets us name an
+  // invalid field that has no rendered input (excluded / hidden) by its human
+  // label instead of its raw schema key in the "fora do formulário" feedback.
+  const labelOf = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const d of descriptors) map.set(d.key, d.label);
+    return map;
+  }, [descriptors]);
+
+  // Errors with no rendered input: excluded/hidden fields and key-less
+  // (root / cross-field) rules. They never show inline, so surface them in a
+  // persistent Alert too. Computed inline on purpose — like `errorSections`
+  // below, reading `formState.errors` during render subscribes via the proxy.
+  const hiddenErrors: string[] = [];
+  for (const [key, val] of Object.entries(form.formState.errors)) {
+    if (sectionOf.has(key)) continue;
+    const message = (val as { message?: string } | undefined)?.message;
+    if (!message) continue;
+    const label = labelOf.get(key);
+    hiddenErrors.push(label !== undefined ? `${label}: ${message}` : message);
+  }
+
   // Active tab is owned here (not by SectionTabs) so an invalid submit can
   // jump to the first erroring tab. Derived with a fallback instead of a
   // reset effect, so a `sections` prop change can't strand a stale value.
@@ -546,25 +591,54 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // to the first erroring tab and name the offenders in a toast. RHF's
   // `shouldFocusError` runs before the tab switch renders, so focusing a
   // field in a still-hidden panel is a no-op — cosmetic, accepted.
+  // Build the clause that names everything invalid with no rendered input:
+  // excluded/hidden fields (by label) and key-less root / cross-field rules
+  // (by message, since their key means nothing to a user). Empty when every
+  // error is on a rendered field — those already show inline.
+  function describeOutside(errors: FieldErrors): string[] {
+    const fields: string[] = [];
+    const messages: string[] = [];
+    for (const key of Object.keys(errors)) {
+      if (sectionOf.has(key)) continue;
+      const label = labelOf.get(key);
+      if (label !== undefined) {
+        fields.push(label);
+      } else {
+        const message = (errors[key] as { message?: string } | undefined)?.message;
+        if (message) messages.push(message);
+      }
+    }
+    return [
+      fields.length > 0 ? `campos inválidos fora do formulário (${fields.join(', ')})` : null,
+      ...messages,
+    ].filter((s): s is string => s !== null);
+  }
+
   function onInvalid(errors: FieldErrors) {
-    const errorKeys = Object.keys(errors);
+    // zodResolver reports the full error set, so fields hidden or excluded from
+    // the form (and root / cross-field rules) can error too — they have no
+    // input to point at, so name them explicitly.
+    const outside = describeOutside(errors);
     if (!sections || sections.length === 0) {
+      // Flat layout: rendered-field errors already show inline. Only escalate
+      // with names when something invalid has nothing to point at.
       notifications.show({
         color: 'red',
-        message: 'Corrija os campos inválidos antes de salvar.',
+        message:
+          outside.length > 0
+            ? `Não foi possível salvar: ${outside.join('. ')}.`
+            : 'Corrija os campos inválidos antes de salvar.',
       });
       return;
     }
-    // Erroring sections in display order. zodResolver reports the full error
-    // set, so fields hidden or excluded from the form can error too — they
-    // have no tab to point at and are named separately.
+    // Erroring sections in display order.
+    const errorKeys = Object.keys(errors);
     const erroring = sections.filter((s) => errorKeys.some((k) => sectionOf.get(k) === s));
-    const outside = errorKeys.filter((k) => !sectionOf.has(k));
     const first = erroring[0];
     if (first === undefined) {
       notifications.show({
         color: 'red',
-        message: `Não foi possível salvar: campos inválidos fora do formulário (${outside.join(', ')}).`,
+        message: `Não foi possível salvar: ${outside.join('. ')}.`,
       });
       return;
     }
@@ -577,10 +651,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         : `Corrija os campos inválidos nas abas: ${erroring.join(', ')}.`;
     notifications.show({
       color: 'red',
-      message:
-        outside.length > 0
-          ? `${inTabs} Há também campos inválidos fora do formulário (${outside.join(', ')}).`
-          : inTabs,
+      message: outside.length > 0 ? `${inTabs} Há também ${outside.join('. ')}.` : inTabs,
     });
   }
 
@@ -720,6 +791,18 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
             ) : (
               fieldsBlock(grouped['default'] ?? visibleDescriptors)
             ))}
+
+          {hiddenErrors.length > 0 && (
+            <Alert color="red" title="Campos inválidos fora do formulário">
+              <Stack gap="xs">
+                {hiddenErrors.map((m, i) => (
+                  <Text key={`${i}:${m}`} size="sm">
+                    {m}
+                  </Text>
+                ))}
+              </Stack>
+            </Alert>
+          )}
 
           {submitError && <Alert color="red">{submitError}</Alert>}
 
