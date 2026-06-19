@@ -51,6 +51,13 @@ test.describe.serial('Pedidos e2e — Incidentes', () => {
     await warmRoutes(browser, ['/pedidos']);
   });
 
+  // Clear the subcollection before each attempt so a retry can't see a card left
+  // by a prior attempt whose write persisted (which would duplicate the motivo).
+  test.beforeEach(async () => {
+    const inc = await db().collection('pedidos').doc(pedidoId).collection('incidentes').get();
+    await Promise.all(inc.docs.map((d) => d.ref.delete()));
+  });
+
   test.afterAll(async () => {
     const inc = await db().collection('pedidos').doc(pedidoId).collection('incidentes').get();
     await Promise.all(inc.docs.map((d) => d.ref.delete()));
@@ -68,8 +75,13 @@ test.describe.serial('Pedidos e2e — Incidentes', () => {
     await page.getByRole('textbox', { name: 'Motivo', exact: true }).fill(motivo);
     await page.getByRole('button', { name: 'Salvar', exact: true }).click();
 
-    // The new incidente card shows the motivo.
-    await expect(page.getByText(motivo)).toBeVisible({ timeout: 15_000 });
+    // The new incidente card shows the motivo. Scope to the card's paragraph:
+    // the form stays open (immediate write, button spins until the server ack),
+    // and its Motivo <textarea> echoes the same text — a bare getByText would
+    // match both and strict-fail.
+    await expect(page.getByRole('paragraph').filter({ hasText: motivo })).toBeVisible({
+      timeout: 15_000,
+    });
 
     // And the subcollection has the doc with tipo 'returns' (Devolução).
     await expect
