@@ -143,7 +143,12 @@ export function MelhorEnvioFields({
     const optionData = JSON.parse(JSON.stringify(option)) as Record<string, unknown>;
 
     form.setValue(fretePath('externalOptionId'), value, { shouldDirty: true });
-    form.setValue(fretePath('externalOptionIntegracao'), intFreteId, { shouldDirty: true });
+    // `externalOptionIntegracao` is the integração **tipo** enum
+    // (`integracoesFreteSchema`), not a doc id — mirrors the legacy
+    // `createOrderTool.dart` (`integracao.tipo`). Writing `intFreteId` here
+    // failed the enum on save, and since the field has no input the error was
+    // invisible (#218). `integracaoFreteOuterRef` already carries which int_frete.
+    form.setValue(fretePath('externalOptionIntegracao'), integracao.tipo, { shouldDirty: true });
     form.setValue(fretePath('externalOptionData'), optionData, { shouldDirty: true });
     form.setValue(fretePath('externalOptionSelectionDate'), nowMicros(), { shouldDirty: true });
     form.setValue(fretePath('valorCobrado'), price, { shouldDirty: true });
