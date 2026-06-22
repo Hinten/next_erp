@@ -16,7 +16,10 @@ export default defineConfig({
   test: {
     name: '@delfrance/nfe-app',
     environment: 'node',
-    include: ['test/**/*.test.ts'],
+    // `functions/` holds the deploy-artifact-only `nfe` Cloud Functions codebase
+    // (a sub-build of this app, not a workspace package) — its tests live next to
+    // the code, so include them here too.
+    include: ['test/**/*.test.ts', 'functions/**/*.test.ts'],
     env: { ...envFromFiles, ...process.env },
   },
   resolve: {

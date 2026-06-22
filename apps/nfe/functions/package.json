@@ -1,0 +1,15 @@
+{
+  "name": "@delfrance/nfe-functions",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "//": "NOT a pnpm workspace package — apps/nfe/functions is a deploy-artifact-only sub-build of @delfrance/nfe-app (typecheck/lint/test run via apps/nfe's tasks; tsconfig `**/*.ts` + `eslint .` + vitest `functions/**` cover it). This file is the TEMPLATE that scripts/prepare-deploy.mjs reads to emit the MINIMAL .deploy/nfe-functions/package.json — only the 3 runtime deps below (no workspace:* — esbuild bundles @delfrance/* + soap/node-forge/xml-crypto; xmllint-wasm stays external for its WASM asset). Its deps must also be present in apps/nfe's package.json so the bundle's externals resolve locally.",
+  "dependencies": {
+    "firebase-admin": "^13.9.0",
+    "firebase-functions": "^6.0.0",
+    "xmllint-wasm": "^5.2.0"
+  }
+}
