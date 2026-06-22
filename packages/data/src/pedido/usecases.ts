@@ -207,3 +207,47 @@ export async function recordEstadoChange(
     buildEstadoHistoryOp(port, args.pedidoId, args.estado, args.usuarioRef ?? null),
   ]);
 }
+
+// ---------------------------------------------------------------------------
+// Incidentes (pedidos/{id}/incidentes subcollection CRUD)
+// ---------------------------------------------------------------------------
+
+const INCIDENTE_PATH = (pedidoId: string, docId: string): string =>
+  `pedidos/${pedidoId}/incidentes/${docId}`;
+
+/**
+ * Build a set-op for an incidente. Create (`incidenteId` null → mint an id +
+ * stamp `timestamp`) or update (id given → preserve the caller-supplied
+ * `timestamp`, which the editor spreads from the existing doc so `externalId` /
+ * `resolucao` survive). Always stamps `ultimaModificacao`. The adapter's `set`
+ * runs through the Zod converter (validates + fills defaults).
+ */
+export function buildIncidenteOp(
+  port: PedidoDataPort,
+  pedidoId: string,
+  incidenteId: string | null,
+  incidente: Record<string, unknown>,
+): PedidoWriteOp {
+  const id = incidenteId ?? port.newId();
+  const data: Record<string, unknown> = { ...incidente, ultimaModificacao: port.now() };
+  if (incidenteId === null) data.timestamp = port.now();
+  return { type: 'set', path: INCIDENTE_PATH(pedidoId, id), data };
+}
+
+/** Create (no `incidenteId`) or update an incidente. */
+export async function saveIncidente(
+  port: PedidoDataPort,
+  args: { pedidoId: string; incidenteId?: string | null; incidente: Record<string, unknown> },
+): Promise<void> {
+  await port.commit([
+    buildIncidenteOp(port, args.pedidoId, args.incidenteId ?? null, args.incidente),
+  ]);
+}
+
+/** Delete an incidente. */
+export async function deleteIncidente(
+  port: PedidoDataPort,
+  args: { pedidoId: string; incidenteId: string },
+): Promise<void> {
+  await port.commit([{ type: 'delete', path: INCIDENTE_PATH(args.pedidoId, args.incidenteId) }]);
+}
