@@ -2,6 +2,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 
 import {
   cartaCorrecaoNFe,
+  MAX_RECONCILE_ATTEMPTS,
   nextConsultaDelayMs,
   RECONCILE_SWEEP_GRACE_MS,
   sanitizeNFeText,
@@ -18,9 +19,9 @@ import {
 
 import { cartaCorrecaoCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 
-import type { NFeBaseRuntime } from '../runtime';
+import type { NFeBaseRuntime, NFeRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
-import { noopTaskScheduler, type TaskScheduler } from '../tasks';
+import { noopTaskScheduler, type CceVinculoTaskPayload, type TaskScheduler } from '../tasks';
 import type { DanfeArtifact } from './danfe';
 import {
   NFeCartaCorrecaoError,
@@ -47,6 +48,59 @@ export const CSTAT_CCE_ACEITA = '135';
  * attempt cap, to `error`.
  */
 export const CSTAT_CCE_PENDENTE = '136';
+
+/**
+ * cStat 573 — "Duplicidade de evento". On a CC-e re-check this means the same
+ * nSeqEvento was already registered AND linked: treat it as resolved (concluido),
+ * not an error. #81.
+ */
+const CSTAT_CCE_DUPLICIDADE = '573';
+
+/** The parsed outcome of one CC-e evento round-trip. */
+interface CceSendOutcome {
+  readonly signedEventoXml: string;
+  readonly rawResponse: string;
+  readonly cStat: string;
+  readonly xMotivo: string;
+  readonly nProt: string | null;
+}
+
+/**
+ * Build the `SefazCall` + send one CC-e evento, returning the parsed outcome.
+ * The CC-e ALWAYS routes to the home SEFAZ `RecepcaoEvento` (even for
+ * SVC-authorized notas, tpEmis 6/7: the SVC doesn't serve CC-e, but authorized
+ * documents are shared with the normal environment, which registers the event —
+ * MOC 7.0 Anexo III §2.1.3.4-d). Shared by the first send and the cStat-136
+ * re-check so both build the request identically.
+ */
+async function sendCceEvento(
+  rt: NFeRuntime,
+  chave: string,
+  xCorrecao: string,
+  nSeqEvento: number,
+): Promise<CceSendOutcome> {
+  const cceCall: SefazCall = {
+    cert: rt.cert,
+    agent: rt.agent,
+    tpAmb: rt.tpAmb,
+    url: rt.endpoints.RecepcaoEvento,
+  };
+  const res = await cartaCorrecaoNFe(cceCall, {
+    chNFe: chave,
+    cOrgao: chave.slice(0, 2),
+    cnpj: chave.slice(6, 20),
+    xCorrecao,
+    nSeqEvento,
+  });
+  const ev = res.ret.retEvento?.[0]?.infEvento;
+  return {
+    signedEventoXml: res.signedEventoXml,
+    rawResponse: res.rawResponse,
+    cStat: ev?.cStat ?? res.ret.cStat,
+    xMotivo: ev?.xMotivo ?? res.ret.xMotivo,
+    nProt: ev?.nProt || null,
+  };
+}
 
 /** Result of a carta de correção (CC-e) round-trip. */
 export interface CartaCorrecaoServiceResult {
@@ -159,28 +213,12 @@ export async function cartaCorrecaoService(
   // fallback), even though it always routes to the home SEFAZ.
   const rt = await resolveFilialRuntime(fs, baseRt, nota.filialId);
 
-  // Send the CC-e evento (cOrgao + cnpj come from the chave) — ALWAYS to the
-  // home SEFAZ, including for SVC-authorized notas (tpEmis 6/7): the SVC does
-  // not serve CC-e, but authorized documents are automatically shared between
-  // the SVC and the normal environment, which registers the event (MOC 7.0
-  // Anexo III §2.1.3.4-d).
-  const cceCall: SefazCall = {
-    cert: rt.cert,
-    agent: rt.agent,
-    tpAmb: rt.tpAmb,
-    url: rt.endpoints.RecepcaoEvento,
-  };
-  const res = await cartaCorrecaoNFe(cceCall, {
-    chNFe: nota.chave,
-    cOrgao: nota.chave.slice(0, 2),
-    cnpj: nota.chave.slice(6, 20),
-    xCorrecao: xCorrecaoWire,
+  const { signedEventoXml, rawResponse, cStat, xMotivo, nProt } = await sendCceEvento(
+    rt,
+    nota.chave,
+    xCorrecaoWire,
     nSeqEvento,
-  });
-  const ev = res.ret.retEvento?.[0]?.infEvento;
-  const cStat = ev?.cStat ?? res.ret.cStat;
-  const xMotivo = ev?.xMotivo ?? res.ret.xMotivo;
-  const nProt = ev?.nProt || null;
+  );
   const accepted = cStat === CSTAT_CCE_ACEITA; // 135 — registrado e vinculado
   const pending = cStat === CSTAT_CCE_PENDENTE; // 136 — registrado, ainda não vinculado
   const now = (): string => new Date().toISOString();
@@ -206,8 +244,8 @@ export async function cartaCorrecaoService(
     {
       xCorrecao: xCorrecaoWire,
       nSeqEvento,
-      xml_enviado: res.signedEventoXml,
-      xml_retorno: res.rawResponse,
+      xml_enviado: signedEventoXml,
+      xml_retorno: rawResponse,
       cStat,
       xMotivo,
       nProt,
@@ -266,6 +304,143 @@ export async function cartaCorrecaoService(
     pending: false,
     cceId: recordRef.id,
   };
+}
+
+/** Disposition of one cStat-136 CC-e re-check (#81). */
+export interface ReconcileCceResult {
+  /** The cStat SEFAZ returned on the re-send (null when it never sent). */
+  readonly cStat: string | null;
+  /**
+   * `true` → still cStat 136 under the attempt cap: the record stays
+   * `aguardandoVinculo` (retries++ / proximaConsultaEm advanced) and the caller
+   * should re-enqueue the next re-check. `false` on every terminal disposition.
+   */
+  readonly stillPending: boolean;
+  /** Set only when `stillPending`: the 0-based attempt to enqueue next. */
+  readonly nextAttempt?: number;
+  /** What happened, for logging. */
+  readonly disposition:
+    | 'resolved' // 135 / 573 → concluido
+    | 'pending' // 136 under cap → re-enqueue
+    | 'capped' // 136 past cap → error
+    | 'rejected' // any other cStat → error
+    | 'already-resolved' // record no longer aguardandoVinculo (idempotent no-op)
+    | 'gone'; // cce / nfev4 doc missing, or NF-e no longer aprovada
+}
+
+/**
+ * Re-check a cStat-136 CC-e (`aguardandoVinculo`): re-send it with its OWN
+ * (unchanged) `nSeqEvento` and resolve the durable record. Idempotent — both the
+ * `reconciliarNfe` queue (primary) and the backstop sweep can call it:
+ *   - record gone / not `aguardandoVinculo` → no-op (`gone`/`already-resolved`).
+ *   - 135 (vinculado) or 573 (duplicidade — já vinculado) → `concluido`.
+ *   - 136 again, attempt+1 < cap → bump `retries` + `proximaConsultaEm`, stay
+ *     pending; the caller re-enqueues.
+ *   - 136 again, attempt+1 ≥ cap → `error` (não vinculada após N tentativas).
+ *   - any other cStat → `error` (rejected).
+ *
+ * Persists the record patch itself; the caller only decides the re-enqueue
+ * (mirrors `reconcileByRecibo` ↔ `runReconcile`).
+ */
+export async function reconcileCartaCorrecaoVinculo(
+  fs: Firestore,
+  baseRt: NFeBaseRuntime,
+  input: CceVinculoTaskPayload,
+): Promise<ReconcileCceResult> {
+  const { pedidoId, nfeId, cceId, attempt } = input;
+  const ctx = { pedidoId, nfeId };
+  const now = (): string => new Date().toISOString();
+
+  const cceSnap = await cartaCorrecaoCollection.docRef(fs, ctx, cceId).get();
+  if (!cceSnap.exists) {
+    // Record deleted between enqueue and dispatch — nothing to resolve.
+    return { cStat: null, stillPending: false, disposition: 'gone' };
+  }
+  const cce = cceSnap.data() as CartaCorrecao;
+  if (cce.estado !== ESTADO_ENVI_NFE_MSG.aguardandoVinculo) {
+    // Already terminal (manual re-send, a prior re-check, or the sweep) —
+    // idempotent no-op; DON'T re-enqueue.
+    return { cStat: cce.cStat, stillPending: false, disposition: 'already-resolved' };
+  }
+
+  const nfeSnap = await nfev4Collection.docRef(fs, { pedidoId }, nfeId).get();
+  const nota = nfeSnap.exists ? (nfeSnap.data() as NotaFiscalEletronica) : null;
+  if (!nota || !nota.chave || !nota.filialId || nota.estado !== ESTADO_NFE.aprovada) {
+    // The NF-e vanished or is no longer correctable (cancelada, lost chave, …) —
+    // the linkage can never complete, so close the record as error.
+    await cartaCorrecaoCollection.merge(fs, ctx, cceId, {
+      estado: ESTADO_ENVI_NFE_MSG.error,
+      error: `NF-e '${nfeId}' não está mais apta a vincular CC-e (estado='${nota?.estado ?? 'ausente'}').`,
+      proximaConsultaEm: null,
+      retries: null,
+      ultima_modificacao: now(),
+    });
+    return { cStat: null, stillPending: false, disposition: 'gone' };
+  }
+
+  const rt = await resolveFilialRuntime(fs, baseRt, nota.filialId);
+  const { rawResponse, cStat, xMotivo, nProt } = await sendCceEvento(
+    rt,
+    nota.chave,
+    cce.xCorrecao,
+    cce.nSeqEvento,
+  );
+
+  // 135 (vinculado) or 573 (duplicidade → já vinculado) → resolved.
+  if (cStat === CSTAT_CCE_ACEITA || cStat === CSTAT_CCE_DUPLICIDADE) {
+    await cartaCorrecaoCollection.merge(fs, ctx, cceId, {
+      estado: ESTADO_ENVI_NFE_MSG.concluido,
+      cStat,
+      xMotivo,
+      // 573 carries no fresh nProt — keep the original event protocolo.
+      nProt: nProt ?? cce.nProt,
+      xml_retorno: rawResponse,
+      error: null,
+      proximaConsultaEm: null,
+      retries: null,
+      ultima_modificacao: now(),
+    });
+    return { cStat, stillPending: false, disposition: 'resolved' };
+  }
+
+  // Still 136 → re-check again, unless the attempt cap is reached.
+  if (cStat === CSTAT_CCE_PENDENTE) {
+    const nextAttempt = attempt + 1;
+    if (nextAttempt >= MAX_RECONCILE_ATTEMPTS) {
+      await cartaCorrecaoCollection.merge(fs, ctx, cceId, {
+        estado: ESTADO_ENVI_NFE_MSG.error,
+        cStat,
+        xMotivo,
+        error: `CC-e não vinculada à NF-e após ${MAX_RECONCILE_ATTEMPTS} tentativas (cStat 136).`,
+        proximaConsultaEm: null,
+        retries: null,
+        ultima_modificacao: now(),
+      });
+      return { cStat, stillPending: false, disposition: 'capped' };
+    }
+    await cartaCorrecaoCollection.merge(fs, ctx, cceId, {
+      cStat,
+      xMotivo,
+      retries: nextAttempt,
+      proximaConsultaEm:
+        nowMicros() + (nextConsultaDelayMs(nextAttempt) + RECONCILE_SWEEP_GRACE_MS) * 1000,
+      ultima_modificacao: now(),
+    });
+    return { cStat, stillPending: true, nextAttempt, disposition: 'pending' };
+  }
+
+  // Any other cStat → hard rejection; close the record as error.
+  await cartaCorrecaoCollection.merge(fs, ctx, cceId, {
+    estado: ESTADO_ENVI_NFE_MSG.error,
+    cStat,
+    xMotivo,
+    error: `cStat ${cStat} — ${xMotivo}`,
+    xml_retorno: rawResponse,
+    proximaConsultaEm: null,
+    retries: null,
+    ultima_modificacao: now(),
+  });
+  return { cStat, stillPending: false, disposition: 'rejected' };
 }
 
 /**
