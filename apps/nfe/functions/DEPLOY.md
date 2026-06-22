@@ -36,12 +36,31 @@ The `predeploy` hook runs `apps/nfe/functions/scripts/prepare-deploy.mjs`, which
 4. junctions `apps/nfe/node_modules` for firebase-tools' local trigger analysis
    (kept out of the upload via `ignore: ["node_modules"]`).
 
-## Function env (set on the `nfe` backend)
+## Function env
 
-`NFE_AMBIENTE` / `NFE_UF`, `NFE_CERT_ENC_KEY` (decrypts the per-filial A1 —
-treat as a secret), admin creds (ADC on Functions), and **`NFE_ALLOW_PRODUCAO=true`
-in produção** (the sweep's EPEC branch signs + emits). Optional:
-`NFE_TASKS_REGION` (default `us-east1`), `NFE_TASKS_DISABLED=1` (local/sweep-only).
+**Secrets (auto-bound).** The functions **declare** `secrets: ['NFE_CERT_ENC_KEY']`
+in their options, so Firebase mounts the secret from Secret Manager into
+`process.env` at runtime — the cert loader reads it to decrypt the filial's A1.
+Set it once (Firebase requires every declared secret to exist before deploy):
+
+```bash
+firebase functions:secrets:set NFE_CERT_ENC_KEY --project <project-id>
+```
+
+For the **env-fallback A1** path (a filial with no uploaded cert), add
+`'NFE_CERT_BASE64'` and `'NFE_CERT_PASSWORD'` to the `secrets: [...]` arrays in
+`src/reconciliar.ts` + `src/sweep.ts`, `secrets:set` them too, and set
+`NFE_CERT_ENV_FALLBACK=1` (non-secret, see below). The cleaner path is to upload a
+real A1 to the filial (encrypted with that same `NFE_CERT_ENC_KEY`) — then only
+`NFE_CERT_ENC_KEY` is needed.
+
+**Non-secret config.** `NFE_AMBIENTE` / `NFE_UF` **default to `homologacao` / `SP`**
+in `runtime.ts`, so a SP homologação test needs nothing else. Admin creds come from
+ADC (automatic on Functions); the queue region defaults to the function's own
+region (set in `options.ts`). For **produção** (`NFE_AMBIENTE=producao` +
+`NFE_ALLOW_PRODUCAO=true`, since the sweep's EPEC branch signs + emits) or any
+non-default, ship a `.env` that the predeploy copies into the artifact (follow-up)
+or inline it at build like `FUNCTIONS_REGION`.
 
 ## One-time IAM (the apps/nfe App Hosting app enqueues to this function's queue)
 

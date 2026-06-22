@@ -16,7 +16,13 @@ import { getDb } from './lib/admin';
  * consults ahead of a task's schedule. Per-doc errors are reported, not thrown.
  */
 export const nfeReconcileSweep = onSchedule(
-  { schedule: '0,30 8-19 * * 1-5', timeZone: 'America/Sao_Paulo' },
+  {
+    schedule: '0,30 8-19 * * 1-5',
+    timeZone: 'America/Sao_Paulo',
+    // Same cert master key as reconciliarNfe — the sweep resolves filial certs
+    // (and the EPEC branch signs). Set: `firebase functions:secrets:set NFE_CERT_ENC_KEY`.
+    secrets: ['NFE_CERT_ENC_KEY'],
+  },
   async () => {
     const fs = getDb();
     let baseRt;

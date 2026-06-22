@@ -73,6 +73,11 @@ export const reconciliarNfe = onTaskDispatched(
   {
     retryConfig: { maxAttempts: 5, minBackoffSeconds: 30, maxBackoffSeconds: 300, maxDoublings: 3 },
     rateLimits: { maxConcurrentDispatches: 5, maxDispatchesPerSecond: 10 },
+    // Bind the cert master key from Secret Manager → mounted as process.env at
+    // runtime, where the cert loader reads it to decrypt the filial's A1 for the
+    // mTLS consult. Set once: `firebase functions:secrets:set NFE_CERT_ENC_KEY`.
+    // For the env-fallback A1 path, also add 'NFE_CERT_BASE64', 'NFE_CERT_PASSWORD'.
+    secrets: ['NFE_CERT_ENC_KEY'],
   },
   (req) => handleReconciliarTask(req.data),
 );
