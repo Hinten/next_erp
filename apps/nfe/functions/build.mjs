@@ -34,6 +34,13 @@ export async function bundle(outfile) {
     define: {
       'process.env.FUNCTIONS_REGION': JSON.stringify(region),
     },
+    // ESM output has no `require`, but bundled CommonJS deps (node-forge's
+    // `require('crypto')`, xml-crypto, …) call it dynamically → esbuild's
+    // `__require` shim throws "Dynamic require of X is not supported" unless a
+    // real `require` exists. Inject one via createRequire so those resolve.
+    banner: {
+      js: "import { createRequire as __nfeCreateRequire } from 'node:module';\nconst require = __nfeCreateRequire(import.meta.url);",
+    },
   });
   return region;
 }
