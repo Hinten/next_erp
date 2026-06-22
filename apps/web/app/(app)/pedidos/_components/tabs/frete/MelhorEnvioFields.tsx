@@ -62,7 +62,15 @@ export function MelhorEnvioFields({
   const volumes = (form.watch(fretePath('volumes')) as VolumeFormState[] | null) ?? [];
   const valorAssegurado = form.watch(fretePath('valor_assegurado')) as number | null;
 
-  const [quotes, setQuotes] = useState<CalculateOption[] | null>(null);
+  // Seed the quote list from the persisted selection so a previously-picked
+  // option still shows after a tab switch — `PedidoForm`'s Tabs use
+  // `keepMounted={false}`, which unmounts this tab and would otherwise drop the
+  // local `quotes` state (the Select then vanishes even though the form still
+  // holds `externalOptionId`/`externalOptionData`).
+  const [quotes, setQuotes] = useState<CalculateOption[] | null>(() => {
+    const saved = form.getValues(fretePath('externalOptionData')) as CalculateOption | null;
+    return saved ? [saved] : null;
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

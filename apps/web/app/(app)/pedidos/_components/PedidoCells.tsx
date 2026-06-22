@@ -17,7 +17,7 @@
 import { type MouseEvent, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { notifications } from '@mantine/notifications';
+import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
 import { getDoc, type DocumentReference } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -428,11 +428,7 @@ export function FreteCell({ pedido }: { pedido: Pedido }) {
       window.open(url, '_blank', 'noopener,noreferrer');
     } catch (err) {
       if (err instanceof FreightHttpError || err instanceof FreightNetworkError) {
-        notifications.show({
-          color: 'red',
-          title: 'Falha ao imprimir etiqueta',
-          message: err.message,
-        });
+        showErrorNotification({ title: 'Falha ao imprimir etiqueta', message: err.message });
         return;
       }
       throw err;

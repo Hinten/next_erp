@@ -31,6 +31,7 @@ import {
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useFreightClient } from '@/lib/freight/client';
+import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
 import type { FlatItem, FreteInicialFormState } from '../../types';
 import { fretePath, type PedidoFormHandle } from './fields';
 import { buildPedidoCartPayload, type ClienteDestinoLike } from './melhorEnvioCart';
@@ -123,7 +124,6 @@ export function EtiquetaMelhorEnvioPanel({
   );
 
   const [busy, setBusy] = useState<null | 'comprar' | 'imprimir' | 'rastrear'>(null);
-  const [error, setError] = useState<string | null>(null);
   const [rastreio, setRastreio] = useState<unknown>(null);
 
   // The buy needs the origin (filial identity + address) and the destination
@@ -146,7 +146,6 @@ export function EtiquetaMelhorEnvioPanel({
   async function handleComprar() {
     if (!client) return;
     setBusy('comprar');
-    setError(null);
     try {
       const payload = buildPedidoCartPayload({
         frete: form.getValues('freteInicial') as FreteInicialFormState,
@@ -173,7 +172,7 @@ export function EtiquetaMelhorEnvioPanel({
     } catch (err) {
       const msg = freightErrorMessage(err);
       if (msg === null) throw err;
-      setError(msg);
+      showErrorNotification({ title: 'Falha ao comprar etiqueta', message: msg });
     } finally {
       setBusy(null);
     }
@@ -182,14 +181,13 @@ export function EtiquetaMelhorEnvioPanel({
   async function handleImprimir() {
     if (!client || !printLabelId) return;
     setBusy('imprimir');
-    setError(null);
     try {
       const { url } = await client.imprimir(intFreteId, printLabelId);
       window.open(url, '_blank', 'noopener,noreferrer');
     } catch (err) {
       const msg = freightErrorMessage(err);
       if (msg === null) throw err;
-      setError(msg);
+      showErrorNotification({ title: 'Falha ao imprimir etiqueta', message: msg });
     } finally {
       setBusy(null);
     }
@@ -198,14 +196,13 @@ export function EtiquetaMelhorEnvioPanel({
   async function handleRastrear() {
     if (!client || !printLabelId) return;
     setBusy('rastrear');
-    setError(null);
     try {
       const { tracking } = await client.rastrear(intFreteId, printLabelId);
       setRastreio(tracking);
     } catch (err) {
       const msg = freightErrorMessage(err);
       if (msg === null) throw err;
-      setError(msg);
+      showErrorNotification({ title: 'Falha ao rastrear', message: msg });
     } finally {
       setBusy(null);
     }
@@ -283,12 +280,6 @@ export function EtiquetaMelhorEnvioPanel({
         <Text size="xs" c="dimmed">
           Etiqueta: <Code>{printLabelId}</Code>
         </Text>
-      )}
-
-      {error && (
-        <Alert color="red" variant="light">
-          {error}
-        </Alert>
       )}
 
       <Modal
