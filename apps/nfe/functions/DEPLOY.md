@@ -38,21 +38,27 @@ The `predeploy` hook runs `apps/nfe/functions/scripts/prepare-deploy.mjs`, which
 
 ## Function env
 
-**Secrets (auto-bound).** The functions **declare** `secrets: ['NFE_CERT_ENC_KEY']`
-in their options, so Firebase mounts the secret from Secret Manager into
-`process.env` at runtime — the cert loader reads it to decrypt the filial's A1.
-Set it once (Firebase requires every declared secret to exist before deploy):
+**Secrets (auto-bound).** The functions **declare** `secrets: [...]` in their
+options, so Firebase mounts each from Secret Manager into `process.env` at runtime.
+Firebase requires **every declared secret to exist before deploy** — set them all:
 
 ```bash
-firebase functions:secrets:set NFE_CERT_ENC_KEY --project <project-id>
+firebase functions:secrets:set NFE_CERT_ENC_KEY      --project <project-id>  # decrypts an uploaded filial A1
+firebase functions:secrets:set NFE_CERT_BASE64       --project <project-id>  # env-fallback A1 (test)
+firebase functions:secrets:set NFE_CERT_PASSWORD     --project <project-id>  # env-fallback A1 password (test)
+firebase functions:secrets:set NFE_CERT_ENV_FALLBACK --project <project-id>  # value: 1  (test flag)
 ```
 
-For the **env-fallback A1** path (a filial with no uploaded cert), add
-`'NFE_CERT_BASE64'` and `'NFE_CERT_PASSWORD'` to the `secrets: [...]` arrays in
-`src/reconciliar.ts` + `src/sweep.ts`, `secrets:set` them too, and set
-`NFE_CERT_ENV_FALLBACK=1` (non-secret, see below). The cleaner path is to upload a
-real A1 to the filial (encrypted with that same `NFE_CERT_ENC_KEY`) — then only
-`NFE_CERT_ENC_KEY` is needed.
+- **Prod path:** upload a real A1 to each filial (encrypted with `NFE_CERT_ENC_KEY`)
+  → only `NFE_CERT_ENC_KEY` is actually used; **trim the other three** from the
+  `secrets` arrays in `src/reconciliar.ts` + `src/sweep.ts`.
+- **Test path (env-fallback):** a filial with no uploaded cert signs with the env
+  A1 — keep all four. `NFE_CERT_ENV_FALLBACK` is a flag, routed through secrets only
+  because there's no non-secret env channel yet.
+
+> `NFE_TEST_CNPJ` / `NFE_TEST_IE` are **not** function secrets — the reconcile path
+> never reads them. They're for the **local seed/emit script** (`.env.local`), which
+> stamps the test filial's CNPJ/IE. Don't declare them here.
 
 **Non-secret config.** `NFE_AMBIENTE` / `NFE_UF` **default to `homologacao` / `SP`**
 in `runtime.ts`, so a SP homologação test needs nothing else. Admin creds come from
