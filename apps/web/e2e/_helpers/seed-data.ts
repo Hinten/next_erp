@@ -146,9 +146,10 @@ export async function seedDepositos(prefix: string, n: number): Promise<void> {
 
 /**
  * Seed exactly one ACTIVE deposito (`<prefix>-dep`, `ativo: true`) and return
- * its id + nome. `timestamp` is stamped `Date.now()` so it is the most recent
- * deposito — the Estoque tab's name-ordered list (and the prefix sweep) still
- * pick it up regardless of how many strays the shared collection holds.
+ * its id + nome. The Estoque tab lists active depósitos ordered by `nome`
+ * (bounded), so the seeded one shows as long as the shared collection stays
+ * under that cap. `timestamp` is stamped only for parity with the other deposito
+ * seeds (it does not affect the name-ordered list).
  */
 export async function seedDepositoAtivo(prefix: string): Promise<{ id: string; nome: string }> {
   const id = `${prefix}-dep`;
