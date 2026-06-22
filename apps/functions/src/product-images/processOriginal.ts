@@ -7,6 +7,7 @@ import {
   PRODUCT_IMAGE_VARIANTS,
   derivativeArquivoId,
   firebaseDownloadUrl,
+  nowMicros,
   parseProductOriginalPath,
   productArquivoId,
   productDerivativePath,
@@ -76,7 +77,7 @@ export async function processProductOriginal(
       contentType: v.contentType,
       url,
       externalIds: [],
-      criadoEm: new Date().toISOString(),
+      criadoEm: nowMicros(),
     });
     written += 1;
   }

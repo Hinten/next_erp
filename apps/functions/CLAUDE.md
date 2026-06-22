@@ -34,15 +34,21 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Four exports:
   metadata. ⚠️ Like every Firestore access here, the trigger targets the **named
   `default`** database (`database: FIREBASE_DATABASE_ID ?? 'default'`) — see
   gotcha #8; a trigger that omits `database` binds to `(default)` and never fires.
-- **`reconcileArquivoOrphans`** (`onSchedule`, every 48h) — orphan cleanup, both
-  directions, plain existence checks (no pipeline API; ADR 0010 Phase 2).
-  **Phantom-doc sweep**: `arquivos where uploadState == 'pending'` past a 48h
-  grace window whose object never arrived → delete the doc (or self-heal to
-  `'finalized'` if the object IS present). **Storage-orphan sweep**: paginate
-  `produtos/` + `media/`; an object past the window whose owning doc (via
-  `arquivoId` metadata, else `arquivoIdForStoragePath`) is absent → delete the
-  object. Pass cores `sweepPhantomDocs` / `sweepOrphanObjects` are exported for
-  the emulator suite; grace is `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests).
+- **`reconcileArquivoOrphans`** (`onSchedule`, every 48h) — orphan cleanup, two
+  bounded passes (ADR 0010 Phase 2). **Phantom-doc sweep** (`sweepPhantomDocs`):
+  `arquivos where uploadState == 'pending'` past a 48h grace window whose object
+  never arrived → delete the doc (or self-heal to `'finalized'` if the object IS
+  present). **Unreferenced sweep** (`sweepUnreferencedArquivos`): product-scoped
+  arquivos (originals/videos) past the grace window that **no produto references**
+  → delete (then `onArquivoDeleted` frees the object + cascades derivatives) — e.g.
+  a photo removed from a produto in an edit. The referenced set is built by
+  `findReferencedArquivoRefs`, an admin **pipeline** over `produtos` projecting
+  `fotos`/`videos`/`anexos` (their `arquivoOuterRef`s). ⚠️ The pipeline needs
+  **firebase-admin v14 / `@google-cloud/firestore` v8 + Firestore Enterprise**
+  (this package only; see root CLAUDE.md) and **does NOT run in the emulator** —
+  so the sweep cores take the ref set as a parameter (emulator-testable) and the
+  pipeline is validated **live on veste-france-debug**. Grace is
+  `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests); `criadoEm` is microseconds-since-epoch.
 
 - The entry (`src/index.ts`) is **esbuild-bundled into a single ESM file**.
   Only `firebase-admin`, `firebase-functions`, and `sharp` are `external`;

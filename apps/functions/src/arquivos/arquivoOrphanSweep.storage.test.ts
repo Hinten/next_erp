@@ -3,16 +3,17 @@ import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mediaPath, productArquivoId, productOriginalPath } from '@delfrance/schemas';
+import { mediaPath, nowMicros, productArquivoId, productOriginalPath } from '@delfrance/schemas';
 
-import { sweepOrphanObjects, sweepPhantomDocs } from './arquivoOrphanSweep';
+import { sweepPhantomDocs, sweepUnreferencedArquivos } from './arquivoOrphanSweep';
 
 // Integration test — requires the firestore + storage emulators. Drives the sweep
-// passes directly (not the onSchedule trigger). Grace window forced to 0 so any
-// already-written doc/object qualifies; restored after.
+// cores directly (not the onSchedule trigger; not the pipeline). Grace window
+// forced to 0 so any already-written doc qualifies; restored after.
 const EMULATED = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 const projectId = process.env.GCLOUD_PROJECT ?? 'demo-erp';
 const bucketName = `${projectId}.appspot.com`;
+const DAY_MICROS = 24 * 3600 * 1_000_000;
 
 function getDb() {
   const app = getApps()[0] ?? initializeApp({ projectId, storageBucket: bucketName });
@@ -66,7 +67,6 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
   it('phantom-doc sweep self-heals a pending doc whose object is present', async () => {
     const db = getDb();
     const bucket = getBucket();
-    const produtoId = `p${randomUUID().replace(/-/g, '')}`;
     const hash = randomUUID().replace(/-/g, '');
     // media/ path → not watched by the resize trigger, so it won't race us.
     const oPath = mediaPath(hash, 'bin');
@@ -97,40 +97,47 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     expect(doc.data()?.uploadState).toBe('finalized');
   });
 
-  it('storage-orphan sweep deletes an object with no doc but keeps a doc-backed one', async () => {
+  it('unreferenced sweep deletes a product original no produto references, keeps referenced + within-grace', async () => {
     const db = getDb();
     const bucket = getBucket();
+    const produtoId = `p${randomUUID().replace(/-/g, '')}`;
+    const past = nowMicros() - 10 * DAY_MICROS;
+    const future = nowMicros() + 10 * DAY_MICROS;
 
-    // Orphan: object under media/ with NO arquivos doc.
-    const orphanHash = randomUUID().replace(/-/g, '');
-    const orphanPath = mediaPath(orphanHash, 'bin');
-    await bucket.file(orphanPath).save(Buffer.from('orphan'), {
-      contentType: 'application/octet-stream',
-    });
+    const seed = async (hash: string, criadoEm: number): Promise<string> => {
+      const oPath = productOriginalPath(produtoId, hash, 'png');
+      const slash = oPath.lastIndexOf('/');
+      const id = productArquivoId(produtoId, hash);
+      await db
+        .collection('arquivos')
+        .doc(id)
+        .set({
+          filetype: 'image',
+          filepath: oPath.slice(0, slash),
+          filename: oPath.slice(slash + 1),
+          contentType: 'image/png',
+          url: null,
+          externalIds: [],
+          uploadState: 'finalized',
+          criadoEm,
+        });
+      return id;
+    };
 
-    // Doc-backed: object under media/ WITH its arquivos doc.
-    const keepHash = randomUUID().replace(/-/g, '');
-    const keepPath = mediaPath(keepHash, 'bin');
-    const keepSlash = keepPath.lastIndexOf('/');
-    await bucket.file(keepPath).save(Buffer.from('keep'), {
-      contentType: 'application/octet-stream',
-    });
-    await db
-      .collection('arquivos')
-      .doc(keepHash)
-      .set({
-        filetype: 'application',
-        filepath: keepPath.slice(0, keepSlash),
-        filename: keepPath.slice(keepSlash + 1),
-        contentType: 'application/octet-stream',
-        url: null,
-        externalIds: [],
-        uploadState: 'finalized',
-      });
+    const refId = await seed(randomUUID().replace(/-/g, ''), past); // referenced
+    const unrefId = await seed(randomUUID().replace(/-/g, ''), past); // orphan
+    const recentId = await seed(randomUUID().replace(/-/g, ''), future); // within grace
 
-    await sweepOrphanObjects(db, bucket);
+    // Isolate against the shared emulator: treat every existing arquivo as
+    // referenced, then drop our one target so it's the only deletable orphan.
+    const all = await db.collection('arquivos').get();
+    const referencedRefs = new Set(all.docs.map((d) => `arquivos/${d.id}`));
+    referencedRefs.delete(`arquivos/${unrefId}`);
 
-    expect((await bucket.file(orphanPath).exists())[0]).toBe(false);
-    expect((await bucket.file(keepPath).exists())[0]).toBe(true);
+    await sweepUnreferencedArquivos(db, bucket, referencedRefs);
+
+    expect((await db.collection('arquivos').doc(unrefId).get()).exists).toBe(false);
+    expect((await db.collection('arquivos').doc(refId).get()).exists).toBe(true);
+    expect((await db.collection('arquivos').doc(recentId).get()).exists).toBe(true);
   });
 });

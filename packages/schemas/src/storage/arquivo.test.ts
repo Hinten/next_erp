@@ -87,15 +87,23 @@ describe('arquivoSchema', () => {
     expect(out.createTime).toBe('2026-06-08T00:00:00.000Z');
   });
 
-  it('accepts externalIds and criadoEm', () => {
+  it('accepts externalIds and criadoEm (microseconds, tolerant of legacy ISO)', () => {
     const out = arquivoSchema.parse({
       filetype: 'image',
       filename: 'abc.jpeg',
-      criadoEm: '2026-06-08T00:00:00.000Z',
+      criadoEm: 1_700_000_000_000_000, // µs since epoch
       externalIds: [{ externalId: 'X1', integracaoPath: 'integracoes/abc' }],
     });
-    expect(out.criadoEm).toBe('2026-06-08T00:00:00.000Z');
+    expect(out.criadoEm).toBe(1_700_000_000_000_000);
     expect(out.externalIds[0]?.externalId).toBe('X1');
+
+    // Legacy ISO-string criadoEm is coerced to microseconds on read.
+    const legacy = arquivoSchema.parse({
+      filetype: 'image',
+      filename: 'abc.jpeg',
+      criadoEm: '2026-06-08T00:00:00.000Z',
+    });
+    expect(legacy.criadoEm).toBe(Date.parse('2026-06-08T00:00:00.000Z') * 1000);
   });
 });
 
