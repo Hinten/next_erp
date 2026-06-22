@@ -29,7 +29,9 @@ export function DevolucaoTab({ form, disabled, pedidoId }: DevolucaoTabProps) {
   // state is needed.
   const flat = form.watch('_itensFlat');
   const itensDevolvidos = form.watch('itensDevolvidos');
-  const error = form.formState.errors.itensDevolvidos?.message;
+  // RHF types a Record field's error as a nested `Merge<FieldError, …>`, but the
+  // resolver attaches a plain string message (pedidoPageIssues) — read it as one.
+  const error = form.formState.errors.itensDevolvidos?.message as string | undefined;
 
   const rows = buildDevolucaoRows(flat as ItemDoPedido[], itensDevolvidos);
   const originKey = pedidoId ?? 'NONE';
