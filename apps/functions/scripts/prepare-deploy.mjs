@@ -54,6 +54,17 @@ const deployPkg = {
 };
 writeFileSync(join(deployDir, 'package.json'), JSON.stringify(deployPkg, null, 2) + '\n');
 
+// 2b. The cloud buildpack runs a STRICT `npm install` (npm 7+ peer resolution).
+//     `firebase-functions` (incl. the latest 7.x) still pins its peer to
+//     `firebase-admin@^11 || ^12 || ^13`, so admin 14 — which we need for the
+//     `@google-cloud/firestore` v8 Pipelines API (the arquivo orphan sweep) —
+//     trips ERESOLVE in the cloud even though the combo is runtime-fine (the
+//     ci-storage emulator suite passes on admin 14 + functions 6.x). Ship an
+//     `.npmrc` that relaxes ONLY the cloud peer check; the repo + CI installs are
+//     unaffected (this file lives only in the generated artifact). Drop this once
+//     firebase-functions adds `^14` to its peer range.
+writeFileSync(join(deployDir, '.npmrc'), 'legacy-peer-deps=true\n');
+
 // 3. Junction the workspace's installed node_modules into the artifact, so
 //    firebase-tools' LOCAL trigger analysis can find and spawn the Functions SDK
 //    from `<source>/node_modules/.bin` (it does not walk up to parent

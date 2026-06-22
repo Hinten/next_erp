@@ -148,6 +148,17 @@ deploy config or `prepare-deploy.mjs`.
    convention is repo-wide (apps/web, apps/integrations, apps/nfe, tools/test-fixtures,
    `.env.example`).
 
+9. **Cloud build `ERESOLVE` on `firebase-admin@14`** — this package is on
+   firebase-admin 14 (for `@google-cloud/firestore` v8 Pipelines), but
+   `firebase-functions` (incl. 7.x) still pins its peer to
+   `firebase-admin@^11 || ^12 || ^13`. pnpm tolerates the mismatch locally and the
+   combo is runtime-fine (the ci-storage emulator suite passes on admin 14 +
+   functions 6.x), but the gen2 buildpack's STRICT `npm install` fails with
+   `ERESOLVE unable to resolve dependency tree`. Fix: `prepare-deploy.mjs` writes a
+   `legacy-peer-deps=true` **`.npmrc`** into the artifact, relaxing ONLY the cloud
+   peer check (repo + CI installs are untouched). Remove once firebase-functions
+   adds `^14` to its peer range.
+
 ## Build notes
 
 - `build.mjs` exports `bundle(outfile)` and resolves paths from `import.meta.url`,
