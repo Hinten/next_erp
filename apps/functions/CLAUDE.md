@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Three exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Four exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -34,6 +34,21 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Three exports:
   metadata. ⚠️ Like every Firestore access here, the trigger targets the **named
   `default`** database (`database: FIREBASE_DATABASE_ID ?? 'default'`) — see
   gotcha #8; a trigger that omits `database` binds to `(default)` and never fires.
+- **`reconcileArquivoOrphans`** (`onSchedule`, every 48h) — orphan cleanup, two
+  bounded passes (ADR 0010 Phase 2). **Phantom-doc sweep** (`sweepPhantomDocs`):
+  `arquivos where uploadState == 'pending'` past a 48h grace window whose object
+  never arrived → delete the doc (or self-heal to `'finalized'` if the object IS
+  present). **Unreferenced sweep** (`sweepUnreferencedArquivos`): product-scoped
+  arquivos (originals/videos) past the grace window that **no produto references**
+  → delete (then `onArquivoDeleted` frees the object + cascades derivatives) — e.g.
+  a photo removed from a produto in an edit. The referenced set is built by
+  `findReferencedArquivoRefs`, an admin **pipeline** over `produtos` projecting
+  `fotos`/`videos`/`anexos` (their `arquivoOuterRef`s). ⚠️ The pipeline needs
+  **firebase-admin v14 / `@google-cloud/firestore` v8 + Firestore Enterprise**
+  (this package only; see root CLAUDE.md) and **does NOT run in the emulator** —
+  so the sweep cores take the ref set as a parameter (emulator-testable) and the
+  pipeline is validated **live on veste-france-debug**. Grace is
+  `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests); `criadoEm` is microseconds-since-epoch.
 
 - The entry (`src/index.ts`) is **esbuild-bundled into a single ESM file**.
   Only `firebase-admin`, `firebase-functions`, and `sharp` are `external`;
@@ -132,6 +147,17 @@ deploy config or `prepare-deploy.mjs`.
    `5 NOT_FOUND`. The emulator suite must read the same id (see the storage test's `getDb`). The
    convention is repo-wide (apps/web, apps/integrations, apps/nfe, tools/test-fixtures,
    `.env.example`).
+
+9. **Cloud build `ERESOLVE` on `firebase-admin@14`** — this package is on
+   firebase-admin 14 (for `@google-cloud/firestore` v8 Pipelines), but
+   `firebase-functions` (incl. 7.x) still pins its peer to
+   `firebase-admin@^11 || ^12 || ^13`. pnpm tolerates the mismatch locally and the
+   combo is runtime-fine (the ci-storage emulator suite passes on admin 14 +
+   functions 6.x), but the gen2 buildpack's STRICT `npm install` fails with
+   `ERESOLVE unable to resolve dependency tree`. Fix: `prepare-deploy.mjs` writes a
+   `legacy-peer-deps=true` **`.npmrc`** into the artifact, relaxing ONLY the cloud
+   peer check (repo + CI installs are untouched). Remove once firebase-functions
+   adds `^14` to its peer range.
 
 ## Build notes
 

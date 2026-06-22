@@ -11,6 +11,7 @@ import {
   STORAGE_ROOT,
   filetypeFromMime,
   normalizeContentType,
+  nowMicros,
   productArquivoId,
   productOriginalPath,
   productVideoPath,
@@ -81,7 +82,7 @@ async function putArquivo(args: PutArquivoArgs): Promise<UploadResult> {
     contentType: normalizeContentType(args.contentType),
     url: null,
     externalIds: [],
-    criadoEm: new Date().toISOString(),
+    criadoEm: nowMicros(),
     resizeState: args.resizeState ?? null,
     uploadState: 'pending',
   };

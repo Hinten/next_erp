@@ -85,29 +85,37 @@ debris-producing deletes are covered first.
   (upload-then-`setDoc`) orphaned the OBJECT when the client died mid-write;
   create-first instead leaves a detectable phantom DOC.
 
-### Phase 2 — scheduled orphan reconciliation (deferred)
+### Phase 2 — scheduled orphan reconciliation (`reconcileArquivoOrphans`)
 
-Reshaped from the original "pipeline anti-join" idea into **two existence-check
-sweeps** (`onSchedule`, every 48h). `Produto.fotos` is an **embedded array** of
-`arquivos/<id>` ref-strings, which makes a "no produto reference" anti-join an
-array-contains join (pipeline-only, and pipeline queries **cannot run in the
-emulator**). Anchoring on the `arquivos` doc instead lets both directions be
-plain existence checks — **no pipeline API, fully emulator-testable** — so they
-do **not** need the secret-gated real-project CI lane the anti-join would have:
+`onSchedule`, every 48h, two bounded passes:
 
-- **Phantom-doc sweep** — query `arquivos where uploadState == 'pending'`
-  (bounded `.limit`); for each doc older than a 48h grace window, if its Storage
-  object is absent, delete the doc (an abandoned create-first upload). Subsumes
-  #189's observation that product-image phantoms sit at `resizeState: 'pending'`
-  forever.
-- **Storage-orphan sweep** — paginate the bucket under `produtos/` + `media/`;
-  for each object older than the window whose owning doc (`arquivoId` metadata,
-  else derived from the path) is absent, delete the object.
+- **Phantom-doc sweep** (`sweepPhantomDocs`) — query
+  `arquivos where uploadState == 'pending'`; for each doc older than a 48h grace
+  window, if its Storage object is absent, delete the doc (an abandoned
+  create-first upload), or self-heal to `'finalized'` if the object is present.
+  Subsumes #189's product-image phantoms. No pipeline → emulator-testable.
+- **Unreferenced-arquivo sweep** (`sweepUnreferencedArquivos`) — delete
+  product-scoped arquivos (originals/videos) past the grace window that **no
+  produto references**. This is the case an edit produces: removing a photo drops
+  the `fotos[]` entry but leaves the arquivo doc + object. The referenced set is
+  built by `findReferencedArquivoRefs`, an admin **pipeline anti-join** over
+  `produtos` (project `fotos`/`videos`/`anexos`, collect their `arquivoOuterRef`s).
+  Because `Produto.fotos` is an **embedded array of objects**, a classic
+  array-contains can't match the nested ref — the pipeline (unnest/project) is the
+  right primitive. Deleting the doc lets `onArquivoDeleted` free the bytes.
 
-The remaining "doc + object both exist but no `produto` references them" case is
-handled at the **produto-delete** path (#136 deletes the `arquivos` docs →
-`onArquivoDeleted` frees Storage), not by a storage sweep. Deferred until Phase 1
-has stopped the orphan set from growing.
+**Edition + emulator note.** The pipeline requires Firestore **Enterprise** +
+`@google-cloud/firestore` v8 (firebase-admin v14, scoped to `apps/functions`), and
+**does not run in the emulator**. So `findReferencedArquivoRefs` is isolated and
+validated **live** (veste-france-debug), while `sweepUnreferencedArquivos` takes
+the ref set as a parameter and is emulator-tested. The earlier storage-orphan
+sweep was dropped: create-first guarantees an object always has a doc, so
+object-with-no-doc can't arise. `criadoEm` is microseconds-since-epoch so the
+grace window is a numeric range query.
+
+The remaining "produto deleted entirely" case is still the **produto-delete**
+path (#136: `onDocumentDeleted('produtos/{id}')` deletes the `arquivos` docs →
+`onArquivoDeleted` frees Storage).
 
 ### Phase 3 — reference cascade (#135), replaces the block
 
@@ -145,10 +153,11 @@ not this one). No automated deploy workflow yet.
   (Phase 2); idempotency is now a hard requirement because Flutter cascades
   concurrently during coexistence; the cross-package remote-delist (Phase 3)
   introduces partial-failure states that need explicit handling.
-- **Cost:** the reshaped Phase 2 existence-check sweeps are bounded
-  (`uploadState == 'pending'` query + 48h age filter + per-run `.limit`), so they
-  avoid both the old full-collection per-read scan AND the Enterprise-only
-  pipeline anti-join — they run on any pricing tier and in the emulator.
+- **Cost:** the phantom-doc sweep is bounded + emulator-testable. The
+  unreferenced sweep's `findReferencedArquivoRefs` pipeline relies on Firestore
+  **Enterprise** + `@google-cloud/firestore` v8 (firebase-admin v14, scoped to
+  `apps/functions`) and can't run in the emulator → its logic is parameterized
+  (ref set passed in) for emulator tests, and the pipeline is validated live.
 
 ## Alternatives considered
 
@@ -164,9 +173,11 @@ not this one). No automated deploy workflow yet.
 
 ## Status
 
-Proposed (2026-06). Phasing: Phase 1 in progress — the **arquivo side**
-(`onArquivoDeleted` + the create-first upload contract, #95/#202) lands first;
-the produto-side `onDocumentDeleted('produtos/{id}')` subcollection sweep (#136)
-follows. Phase 2 reshaped into two emulator-testable existence-check sweeps (no
-secret-gated lane needed). Phase 3 blocked on the `apps/integrations`
-remote-delist design. Refs #136, #95, #135, #202.
+Proposed (2026-06). Phasing: Phase 1 **arquivo side** done — `onArquivoDeleted`
++ the create-first upload contract (#95/#202); the produto-side
+`onDocumentDeleted('produtos/{id}')` subcollection sweep (#136) still follows.
+Phase 2 **implemented** as `reconcileArquivoOrphans` (every 48h): the phantom-doc
+sweep + the unreferenced-arquivo sweep (pipeline anti-join over `produtos`'
+embedded media arrays; firebase-admin v14 / firestore v8, `apps/functions`-scoped;
+validated live, emulator-tested via a parameterized ref set). Phase 3 blocked on
+the `apps/integrations` remote-delist design. Refs #136, #95, #135, #202.

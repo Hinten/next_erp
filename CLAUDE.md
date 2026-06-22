@@ -143,7 +143,11 @@ pnpm --filter @delfrance/integrations-app dev
 - Firebase backend stays.
 - Mantine v9 for UI (bumped from v7).
 - Next.js 16 (baseline for Firebase App Hosting's stable Deployment Adapter API), React 19.2.
-- Firebase JS SDK v12, firebase-admin v13.
+- Firebase JS SDK v12, firebase-admin v13 — except **`apps/functions` on
+  firebase-admin v14** (bundles `@google-cloud/firestore` v8, the Firestore
+  **Pipelines** API used by the arquivo orphan sweep). The bump is scoped to
+  `apps/functions`; all other admin consumers (nfe, integrations, web,
+  test-fixtures) stay on v13. Mixed versions validated typecheck-clean.
 - Zod v4 as schema source of truth.
 - TypeScript 6, ESLint 9 (the next-eslint-plugin chain doesn't support ESLint 10 yet), Vitest 4, Turbo 2.9.
 - pnpm 10 (declared via `packageManager`).

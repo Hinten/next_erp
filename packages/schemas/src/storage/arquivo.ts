@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { microsSinceEpoch } from '../datetime';
 import type { CollectionMetadata } from '../types';
 
 // Mirror `PERM.arquivo` from @delfrance/auth (byte 80); duplicated locally to
@@ -104,11 +105,13 @@ export const arquivoSchema = z
     contentType: z.string().nullable().default(null).describe('Content-Type'),
     url: z.string().nullable().default(null).describe('URL'),
     externalIds: z.array(externalIdSchema).default([]),
-    // Server/helper-set creation time (ISO-8601), set on write by the upload
-    // helpers and the resize function. Reserved for the future arquivo-lifecycle
-    // rework (orphan detection / grace period) — see the deferred issue. Optional
-    // because the Flutter app's docs predate it.
-    criadoEm: z.string().datetime().nullable().optional(),
+    // Creation time as **microseconds since epoch** (the repo's MicrosSinceEpoch
+    // convention), set on write by the upload helpers + the resize function via
+    // `nowMicros()`. A real number so the orphan sweep can range-query it
+    // (`where criadoEm < cutoff`) for the grace window. The `microsSinceEpoch()`
+    // builder tolerates the legacy ISO-string form on read. Optional because the
+    // Flutter app's docs predate it.
+    criadoEm: microsSinceEpoch().nullable().optional(),
     // Resize lifecycle marker for product-image ORIGINALS only: 'pending' when
     // the client uploads (set by uploadProductImage), 'done' once the resize
     // Cloud Function has written all derivatives. `null` for everything else
