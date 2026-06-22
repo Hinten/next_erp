@@ -14,16 +14,11 @@
  * The other cells are static — `ClienteCell` does a one-shot cached read
  * via TanStack Query + `getDoc`, `FreteCell` and `ImpCell` are passthroughs.
  */
-import { type MouseEvent, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
 import { getDoc, type DocumentReference } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
-import {
-  FreightHttpError,
-  FreightNetworkError,
-} from '@delfrance/integrations-freight-br/http-client';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import {
@@ -53,13 +48,13 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { IconBan, IconCheck, IconCopy, IconFileText, IconPrinter } from '@tabler/icons-react';
+import { IconBan, IconCheck, IconCopy, IconFileText } from '@tabler/icons-react';
 
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
-import { useFreightClient } from '@/lib/freight/client';
 import { DanfeMenu } from '@/components/DanfeMenu';
+import { EtiquetaRowAction } from './EtiquetaRowAction';
 
 const DASH = '—';
 
@@ -388,24 +383,17 @@ export function ExpedicaoCell({ pedido }: { pedido: Pedido }) {
 /*  waits on the historicoFrete subcollection — deferred per issue #52.        */
 /* -------------------------------------------------------------------------- */
 
-export function FreteCell({ pedido }: { pedido: Pedido }) {
-  const db = getFirebaseFirestore();
-  const client = useFreightClient();
+export function FreteCell({ pedido, pedidoId }: { pedido: Pedido; pedidoId: string }) {
   const frete = pedido.freteInicial;
-  const intFreteId = useMemo(() => {
-    const ref = dereferenceOuterRef(db, frete?.integracaoFreteOuterRef);
-    return ref?.id ?? null;
-  }, [db, frete?.integracaoFreteOuterRef]);
-  const [printing, setPrinting] = useState(false);
-
   const estado = frete?.estado;
-  const printLabelId = frete?.printLabelId ?? null;
-
   if (!estado) return <Text c="dimmed">{DASH}</Text>;
   const label = ESTADO_FRETE_LABELS[estado] ?? estado;
 
-  // No bought label → keep the lightweight tracking tooltip.
-  if (!printLabelId) {
+  // Show the etiqueta HoverCard when there's something to act on — a bought
+  // label (reprint/track) or a selected quote (buy). Otherwise keep the
+  // lightweight tracking tooltip.
+  const hasEtiquetaAction = frete?.printLabelId != null || frete?.externalOptionId != null;
+  if (!hasEtiquetaAction) {
     const tooltipParts: string[] = [];
     if (frete?.codRastreio) tooltipParts.push(`Rastreio: ${frete.codRastreio}`);
     if (frete?.prazoDespacho != null)
@@ -416,25 +404,6 @@ export function FreteCell({ pedido }: { pedido: Pedido }) {
         <Text style={{ cursor: 'help' }}>{label}</Text>
       </Tooltip>
     );
-  }
-
-  async function handleImprimir(e: MouseEvent) {
-    // Stop the row's navigate-onClick; re-print the existing label.
-    e.stopPropagation();
-    if (!client || !intFreteId || !printLabelId) return;
-    setPrinting(true);
-    try {
-      const { url } = await client.imprimir(intFreteId, printLabelId);
-      window.open(url, '_blank', 'noopener,noreferrer');
-    } catch (err) {
-      if (err instanceof FreightHttpError || err instanceof FreightNetworkError) {
-        showErrorNotification({ title: 'Falha ao imprimir etiqueta', message: err.message });
-        return;
-      }
-      throw err;
-    } finally {
-      setPrinting(false);
-    }
   }
 
   return (
@@ -467,16 +436,7 @@ export function FreteCell({ pedido }: { pedido: Pedido }) {
               {formatMicros(frete.prazoDespacho)}
             </Text>
           )}
-          <Button
-            size="xs"
-            variant="light"
-            leftSection={<IconPrinter size={14} />}
-            onClick={handleImprimir}
-            loading={printing}
-            disabled={!client || !intFreteId}
-          >
-            Imprimir etiqueta
-          </Button>
+          <EtiquetaRowAction pedido={pedido} pedidoId={pedidoId} />
         </Stack>
       </HoverCard.Dropdown>
     </HoverCard>

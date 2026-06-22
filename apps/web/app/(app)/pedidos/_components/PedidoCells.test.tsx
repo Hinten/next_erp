@@ -358,12 +358,17 @@ describe('ClienteCell — static cached read', () => {
 
 describe('FreteCell — passthrough', () => {
   it('renders DASH when freteInicial is absent', () => {
-    wrap(<FreteCell pedido={{ freteInicial: null } as unknown as Pedido} />);
+    wrap(<FreteCell pedido={{ freteInicial: null } as unknown as Pedido} pedidoId="p1" />);
     expect(screen.getByText('—')).toBeTruthy();
   });
 
   it('renders the PT-BR label for the estado', () => {
-    wrap(<FreteCell pedido={{ freteInicial: { estado: 'entregue' } } as unknown as Pedido} />);
+    wrap(
+      <FreteCell
+        pedido={{ freteInicial: { estado: 'entregue' } } as unknown as Pedido}
+        pedidoId="p1"
+      />,
+    );
     expect(screen.getByText('Entregue')).toBeTruthy();
   });
 });

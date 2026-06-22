@@ -20,17 +20,11 @@ import { IconPrinter, IconShoppingCart, IconTruckDelivery } from '@tabler/icons-
 import { getDoc, type DocumentReference } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
 import type { Endereco, EstadoFrete, Filial, IntFrete } from '@delfrance/schemas';
-import {
-  FreightHttpError,
-  FreightLabelTerminalError,
-  FreightNetworkError,
-  FreightReauthRequiredError,
-  FreightValidationError,
-} from '@delfrance/integrations-freight-br/http-client';
 
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useFreightClient } from '@/lib/freight/client';
+import { freightErrorMessage } from '@/lib/freight/errorMessage';
 import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
 import type { FlatItem, FreteInicialFormState } from '../../types';
 import { fretePath, type PedidoFormHandle } from './fields';
@@ -69,24 +63,6 @@ function useResolvedDoc<T>(outerRef: unknown): { data: T | null; loading: boolea
     },
   });
   return { data: ref ? (data ?? null) : null, loading: ref != null && isLoading };
-}
-
-/** A pt-BR message for a known freight error, or `null` when `err` is not a
- *  freight error — the caller rethrows so unexpected failures surface. */
-function freightErrorMessage(err: unknown): string | null {
-  if (err instanceof FreightReauthRequiredError) {
-    return 'Conta Melhor Envio desconectada. Reconecte em Logística › Melhor Envio.';
-  }
-  if (err instanceof FreightLabelTerminalError) {
-    return `Etiqueta em estado terminal${err.reason ? ` (${err.reason})` : ''}. Não é possível continuar a compra.`;
-  }
-  if (err instanceof FreightValidationError) {
-    const msgs = Object.values(err.errors).flat();
-    return msgs.length > 0 ? msgs.join('; ') : err.message;
-  }
-  if (err instanceof FreightHttpError) return err.message;
-  if (err instanceof FreightNetworkError) return 'Falha de rede ao falar com o Melhor Envio.';
-  return null;
 }
 
 export function EtiquetaMelhorEnvioPanel({
