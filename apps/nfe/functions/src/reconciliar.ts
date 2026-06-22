@@ -73,14 +73,8 @@ export const reconciliarNfe = onTaskDispatched(
   {
     retryConfig: { maxAttempts: 5, minBackoffSeconds: 30, maxBackoffSeconds: 300, maxDoublings: 3 },
     rateLimits: { maxConcurrentDispatches: 5, maxDispatchesPerSecond: 10 },
-    // Bind cert config from Secret Manager → mounted as process.env at runtime.
-    // `NFE_CERT_ENC_KEY` decrypts an uploaded filial A1 (the prod path). The
-    // remaining three are the **env-fallback A1** path (a filial with no stored
-    // cert signs with the env A1) — handy for testing; trim them for a prod
-    // deploy that uses uploaded per-filial certs. `NFE_CERT_ENV_FALLBACK` is a
-    // flag ('1'), routed through secrets only because the function has no
-    // non-secret env channel yet. Set each: `firebase functions:secrets:set <NAME>`.
-    secrets: ['NFE_CERT_ENC_KEY', 'NFE_CERT_BASE64', 'NFE_CERT_PASSWORD', 'NFE_CERT_ENV_FALLBACK'],
+    // Cert secrets are declared once in src/options.ts (setGlobalOptions) for the
+    // whole codebase.
   },
   (req) => handleReconciliarTask(req.data),
 );

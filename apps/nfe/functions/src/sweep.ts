@@ -16,14 +16,7 @@ import { getDb } from './lib/admin';
  * consults ahead of a task's schedule. Per-doc errors are reported, not thrown.
  */
 export const nfeReconcileSweep = onSchedule(
-  {
-    schedule: '0,30 8-19 * * 1-5',
-    timeZone: 'America/Sao_Paulo',
-    // Same cert config as reconciliarNfe — the sweep resolves filial certs (and
-    // the EPEC branch signs). The last three are the env-fallback A1 path (test
-    // convenience; trim for a prod deploy with uploaded certs).
-    secrets: ['NFE_CERT_ENC_KEY', 'NFE_CERT_BASE64', 'NFE_CERT_PASSWORD', 'NFE_CERT_ENV_FALLBACK'],
-  },
+  { schedule: '0,30 8-19 * * 1-5', timeZone: 'America/Sao_Paulo' },
   async () => {
     const fs = getDb();
     let baseRt;

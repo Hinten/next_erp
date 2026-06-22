@@ -30,4 +30,16 @@ process.env.NFE_TASKS_REGION ??= region;
 process.env.NFE_CA_DIR ??= fileURLToPath(new URL('./ca', import.meta.url));
 process.env.NFE_SCHEMA_DIR ??= fileURLToPath(new URL('./schemas', import.meta.url));
 
-setGlobalOptions({ region, maxInstances: 10 });
+setGlobalOptions({
+  region,
+  maxInstances: 10,
+  // Cert config, bound from Secret Manager for EVERY function in this codebase
+  // (both reconciliarNfe and nfeReconcileSweep resolve filial certs) — mounted as
+  // process.env at runtime. `NFE_CERT_ENC_KEY` decrypts an uploaded filial A1 (the
+  // prod path); the remaining three are the **env-fallback A1** path (a filial
+  // with no stored cert signs with the env A1) — handy for testing, trim them for
+  // a prod deploy that uses uploaded per-filial certs. `NFE_CERT_ENV_FALLBACK` is
+  // a flag ('1'), routed through secrets only because there is no non-secret env
+  // channel yet. Set each: `firebase functions:secrets:set <NAME>`.
+  secrets: ['NFE_CERT_ENC_KEY', 'NFE_CERT_BASE64', 'NFE_CERT_PASSWORD', 'NFE_CERT_ENV_FALLBACK'],
+});

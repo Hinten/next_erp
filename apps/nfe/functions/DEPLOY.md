@@ -38,9 +38,10 @@ The `predeploy` hook runs `apps/nfe/functions/scripts/prepare-deploy.mjs`, which
 
 ## Function env
 
-**Secrets (auto-bound).** The functions **declare** `secrets: [...]` in their
-options, so Firebase mounts each from Secret Manager into `process.env` at runtime.
-Firebase requires **every declared secret to exist before deploy** — set them all:
+**Secrets (auto-bound).** The codebase **declares** `secrets: [...]` once in
+`src/options.ts` (`setGlobalOptions`) — applied to every function — so Firebase
+mounts each from Secret Manager into `process.env` at runtime. Firebase requires
+**every declared secret to exist before deploy** — set them all:
 
 ```bash
 firebase functions:secrets:set NFE_CERT_ENC_KEY      --project <project-id>  # decrypts an uploaded filial A1
@@ -51,7 +52,7 @@ firebase functions:secrets:set NFE_CERT_ENV_FALLBACK --project <project-id>  # v
 
 - **Prod path:** upload a real A1 to each filial (encrypted with `NFE_CERT_ENC_KEY`)
   → only `NFE_CERT_ENC_KEY` is actually used; **trim the other three** from the
-  `secrets` arrays in `src/reconciliar.ts` + `src/sweep.ts`.
+  `secrets` array in `src/options.ts`.
 - **Test path (env-fallback):** a filial with no uploaded cert signs with the env
   A1 — keep all four. `NFE_CERT_ENV_FALLBACK` is a flag, routed through secrets only
   because there's no non-secret env channel yet.
