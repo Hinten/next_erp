@@ -9,8 +9,9 @@
  * is the pure dispatch decision; `resolveEtiquetaCartInput` lazily resolves the
  * cart primitives from a pedido **doc** (not the form) for the buy.
  */
-import { type DocumentReference, type Firestore, getDoc } from 'firebase/firestore';
+import { type DocumentReference, type Firestore, getDoc, getDocs } from 'firebase/firestore';
 import {
+  ESTADO_NFE,
   type Endereco,
   type EstadoFrete,
   type Filial,
@@ -22,6 +23,7 @@ import {
 import type { CartInsertRequest } from '@delfrance/integrations-freight-br/http-client';
 
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
+import { nfeCollection } from '@/lib/data/nfeCollection';
 import { flattenItens } from './flattenItens';
 import { type ClienteDestinoLike, buildPedidoCartPayload } from './tabs/frete/melhorEnvioCart';
 import type { FreteInicialFormState } from './types';
@@ -71,6 +73,24 @@ async function readDoc<T>(db: Firestore, ref: unknown): Promise<T | null> {
 }
 
 /**
+ * The pedido's authorized NF-e access key (modelo 55) for the ME invoice, or
+ * null. Reads `pedidos/{id}/nfev4` and picks the latest aprovada / EPEC-aprovada
+ * doc carrying a chave. Lazy — called only when a buy is triggered.
+ */
+export async function resolveNfeChave(db: Firestore, pedidoId: string): Promise<string | null> {
+  const snap = await getDocs(nfeCollection.ref(db, { pedidoId }));
+  const authorized = snap.docs
+    .map((d) => d.data())
+    .filter(
+      (n) =>
+        (n.estado === ESTADO_NFE.aprovada || n.estado === ESTADO_NFE.epecAprovado) &&
+        n.chave != null,
+    )
+    .sort((a, b) => (b.ultima_modificacao ?? '').localeCompare(a.ultima_modificacao ?? ''));
+  return authorized[0]?.chave ?? null;
+}
+
+/**
  * Resolve the Melhor Envio cart payload from a pedido **doc** (the list row
  * has no form). Lazy — call it only when the buy is actually triggered, so the
  * list never fans out these reads. Returns a discriminated result so the caller
@@ -79,6 +99,7 @@ async function readDoc<T>(db: Firestore, ref: unknown): Promise<T | null> {
 export async function resolveEtiquetaCartInput(
   db: Firestore,
   pedido: Pedido,
+  pedidoId: string,
 ): Promise<ResolveEtiquetaCartResult> {
   const frete = pedido.freteInicial;
   if (!frete) return { ok: false, error: 'Pedido sem frete.' };
@@ -98,6 +119,7 @@ export async function resolveEtiquetaCartInput(
   if (!enderecoDestino) return { ok: false, error: 'Pedido sem endereço de entrega.' };
 
   const clienteDestino = await readDoc<ClienteDestinoLike>(db, pedido.clientePedidoOuterRef);
+  const invoiceKey = await resolveNfeChave(db, pedidoId);
 
   const payload = buildPedidoCartPayload({
     // `FreteDoPedido` (wire) is structurally what the mapper reads off
@@ -109,6 +131,7 @@ export async function resolveEtiquetaCartInput(
     clienteDestino,
     itens: flattenItens(pedido.itens),
     pedidoNumero: pedido.numero,
+    invoiceKey,
   });
 
   return { ok: true, payload, intFreteId: integracaoRef.id };

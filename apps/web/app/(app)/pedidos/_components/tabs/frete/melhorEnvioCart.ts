@@ -44,6 +44,13 @@ export interface BuildPedidoCartInput {
   readonly clienteDestino: ClienteDestinoLike | null;
   readonly itens: ReadonlyArray<ItemDoPedido>;
   readonly pedidoNumero: string | number | null;
+  /**
+   * The pedido's authorized NF-e access key (modelo 55). When present it's sent
+   * as `invoice.key` and flips `non_commercial` off — most carriers (Jadlog,
+   * etc.) reject a commercial shipment without it. Null → `non_commercial: true`
+   * (declaração de conteúdo), only accepted for non-commercial shipments.
+   */
+  readonly invoiceKey?: string | null;
 }
 
 /** 14 digits = CNPJ (PJ); anything else (typically 11 = CPF) is treated as PF. */
@@ -63,8 +70,16 @@ function toCountryId(cPais: string | null | undefined): string {
 }
 
 export function buildPedidoCartPayload(input: BuildPedidoCartInput): CartInsertRequest {
-  const { frete, enderecoOrigem, filial, enderecoDestino, clienteDestino, itens, pedidoNumero } =
-    input;
+  const {
+    frete,
+    enderecoOrigem,
+    filial,
+    enderecoDestino,
+    clienteDestino,
+    itens,
+    pedidoNumero,
+    invoiceKey,
+  } = input;
 
   // `Number(null)`/`Number('')` are both 0 (finite), so guard the raw value
   // first — an unselected option must throw, not silently become service 0.
@@ -143,8 +158,10 @@ export function buildPedidoCartPayload(input: BuildPedidoCartInput): CartInsertR
       insuranceValue: frete.valor_assegurado,
       receipt: frete.avisoRecebimento ?? false,
       ownHand: frete.maoPropria ?? false,
-      // Deferred — v1 ships every label as non_commercial (no invoice block).
-      invoiceKey: null,
+      // The pedido's authorized NF-e chave (when emitted) → `invoice.key` +
+      // `non_commercial: false`; absent → non_commercial (buildCartItem handles
+      // a blank/null key).
+      invoiceKey: invoiceKey ?? null,
       pedidoNumero,
     },
   });
