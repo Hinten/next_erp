@@ -298,6 +298,7 @@ function DevolucaoRowEditor({
           }}
           min={0}
           max={row.maxQty ?? undefined}
+          decimalScale={3}
           clampBehavior="strict"
           disabled={disabled || row._delete}
           w={96}
