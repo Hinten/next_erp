@@ -157,9 +157,22 @@ async function postCart(token: string, payload: Record<string, unknown>) {
   return { status: res.status, body: body.slice(0, 500) };
 }
 
+/** The pedido's authorized NF-e chave (the #209 path), or null. */
+async function getNfeChave(pedidoId: string): Promise<string | null> {
+  const snap = await db().collection('pedidos').doc(pedidoId).collection('nfev4').get();
+  const auth = snap.docs
+    .map((d) => d.data() as { estado?: string; chave?: string; ultima_modificacao?: string })
+    .filter((n) => (n.estado === 'a' || n.estado === 'p') && n.chave)
+    .sort((a, b) =>
+      String(b.ultima_modificacao ?? '').localeCompare(String(a.ultima_modificacao ?? '')),
+    );
+  return auth[0]?.chave ?? null;
+}
+
 /** Variants to bisect the cause. Each clones + mutates the base payload. */
 function variants(
   base: Record<string, unknown>,
+  realChave: string | null,
 ): { name: string; payload: Record<string, unknown> }[] {
   const clone = () => JSON.parse(JSON.stringify(base)) as Record<string, unknown>;
   const opt = (p: Record<string, unknown>) => p.options as Record<string, unknown>;
@@ -172,6 +185,17 @@ function variants(
   const fakeKey = '35200114200166000187550010000000015000000016'; // 44 digits, fake chave
   return [
     { name: 'base (app payload)', payload: clone() },
+    {
+      name: `#209 path — REAL NF-e chave from nfev4 (${realChave ?? 'NONE on this pedido'})`,
+      payload: (() => {
+        const p = clone();
+        if (realChave) {
+          opt(p).non_commercial = false;
+          opt(p).invoice = { key: realChave };
+        }
+        return p;
+      })(),
+    },
     {
       name: 'non_commercial=false + invoice.key (fake chave)',
       payload: (() => {
@@ -223,9 +247,11 @@ async function main() {
   console.log(`[debug-me-cart] base=${ME_BASE} int=${INT_ID} pedido=${PEDIDO_ID}`);
   const token = await getAccessToken();
   const base = await buildBasePayload();
+  const realChave = await getNfeChave(PEDIDO_ID);
+  console.log(`[debug-me-cart] pedido NF-e chave: ${realChave ?? 'none'}`);
   console.log('[debug-me-cart] base payload:\n' + JSON.stringify(base, null, 2));
 
-  for (const v of variants(base)) {
+  for (const v of variants(base, realChave)) {
     const r = await postCart(token, v.payload);
     const ok = r.status >= 200 && r.status < 300;
     console.log(`\n=== ${ok ? '✅' : '❌'} [${r.status}] ${v.name}\n${r.body}`);
