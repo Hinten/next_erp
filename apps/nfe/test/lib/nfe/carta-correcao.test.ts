@@ -25,6 +25,7 @@ import {
   NFePedidoNotFoundError,
 } from '../../../lib/nfe/orchestrator';
 import type { NFeBaseRuntime, NFeRuntime } from '../../../lib/nfe/runtime';
+import type { CceVinculoTaskInput, TaskScheduler } from '../../../lib/nfe/tasks';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
@@ -100,10 +101,10 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
     };
   }
 
-  function query(path: string, wheres: { field: string; value: unknown }[]) {
+  function query(path: string, wheres: { field: string; op: string; value: unknown }[]) {
     return {
-      where(field: string, _op: string, value: unknown) {
-        return query(path, [...wheres, { field, value }]);
+      where(field: string, op: string, value: unknown) {
+        return query(path, [...wheres, { field, op, value }]);
       },
       async get() {
         const prefix = `${path}/`;
@@ -112,7 +113,12 @@ function fakeFirestore(seed: Record<string, Record<string, unknown> | null>) {
             ([k, v]) => k.startsWith(prefix) && v != null && !k.slice(prefix.length).includes('/'),
           )
           .map(([k, v]) => ({ id: k.slice(prefix.length), data: v as Record<string, unknown> }));
-        for (const w of wheres) items = items.filter((it) => it.data[w.field] === w.value);
+        for (const w of wheres)
+          items = items.filter((it) =>
+            w.op === 'in'
+              ? Array.isArray(w.value) && (w.value as unknown[]).includes(it.data[w.field])
+              : it.data[w.field] === w.value,
+          );
         return {
           size: items.length,
           docs: items.map((it) => ({ id: it.id, data: () => it.data })),
@@ -205,6 +211,22 @@ function cceResult(cStat: string, nSeq: number) {
   };
 }
 
+/** Records the cStat-136 re-check tasks the service would enqueue (#81). */
+function recordingScheduler(): { scheduler: TaskScheduler; cce: CceVinculoTaskInput[] } {
+  const cce: CceVinculoTaskInput[] = [];
+  return {
+    scheduler: {
+      async enqueueConsulta() {
+        /* CC-e never enqueues a lote consult */
+      },
+      async enqueueCceVinculo(input) {
+        cce.push(input);
+      },
+    },
+    cce,
+  };
+}
+
 beforeEach(() => {
   // Fixtures have no per-filial stored cert — emit the CC-e with the env cert
   // via the fallback (per-filial resolution covered in filial-cert.test.ts).
@@ -236,7 +258,7 @@ describe('cartaCorrecaoService', () => {
     expect(recs[0]?.data.xCorrecao).toBe(XCORRECAO);
   });
 
-  it('nSeqEvento increments past already-accepted CC-e (count of concluido + 1)', async () => {
+  it('nSeqEvento increments past already-sequenced CC-e (count of concluido + 1)', async () => {
     const { fs, writes } = fakeFirestore({
       'pedidos/PED-1/nfev4/s1': aprovadaNfev4(),
       // One prior, accepted CC-e → next sequence must be 2.
@@ -257,20 +279,63 @@ describe('cartaCorrecaoService', () => {
     expect(recs[0]?.data.nSeqEvento).toBe(2);
   });
 
-  it('cStat 136 (registrado mas NÃO vinculado) → throws + persists an error record', async () => {
+  it('nSeqEvento also counts a still-pending (aguardandoVinculo) CC-e — a 136 burns its sequence (#81)', async () => {
+    const { fs } = fakeFirestore({
+      'pedidos/PED-1/nfev4/s1': aprovadaNfev4(),
+      // A prior CC-e is registered-but-not-yet-linked: it already holds seq 1 at
+      // SEFAZ, so a FRESH CC-e must take seq 2 (the pending one is re-sent with
+      // its own unchanged sequence by the re-check task).
+      'pedidos/PED-1/nfev4/s1/cartacorrecao/pend': {
+        xCorrecao: XCORRECAO,
+        nSeqEvento: 1,
+        estado: ESTADO_ENVI_NFE_MSG.aguardandoVinculo,
+      },
+    });
+    vi.mocked(cartaCorrecaoNFe).mockResolvedValue(cceResult('135', 2) as never);
+
+    const result = await cartaCorrecaoService(fs, fakeRuntime(), 'PED-1', 's1', XCORRECAO);
+
+    expect(result.nSeqEvento).toBe(2);
+    expect(vi.mocked(cartaCorrecaoNFe).mock.calls[0]![1].nSeqEvento).toBe(2);
+  });
+
+  it('cStat 136 (registrado mas NÃO vinculado) → pending: persists aguardandoVinculo + enqueues a re-check, no throw (#81)', async () => {
     const { fs, writes } = fakeFirestore({ 'pedidos/PED-1/nfev4/s1': aprovadaNfev4() });
     vi.mocked(cartaCorrecaoNFe).mockResolvedValue(cceResult('136', 1) as never);
+    const { scheduler, cce } = recordingScheduler();
 
-    const err = await cartaCorrecaoService(fs, fakeRuntime(), 'PED-1', 's1', XCORRECAO).catch(
-      (e: unknown) => e,
+    const result = await cartaCorrecaoService(
+      fs,
+      fakeRuntime(),
+      'PED-1',
+      's1',
+      XCORRECAO,
+      scheduler,
     );
-    expect(err).toBeInstanceOf(NFeCartaCorrecaoError);
-    expect((err as NFeCartaCorrecaoError).cStat).toBe('136');
 
-    // The attempt is still recorded — as an error.
+    // 136 is non-terminal: not accepted, but NOT a rejection either — pending.
+    expect(result.accepted).toBe(false);
+    expect(result.pending).toBe(true);
+    expect(result.cStat).toBe('136');
+    expect(result.nSeqEvento).toBe(1);
+
+    // The record is persisted as aguardandoVinculo with a re-check gate.
     const recs = writes.filter((w) => w.path.startsWith('pedidos/PED-1/nfev4/s1/cartacorrecao/'));
     expect(recs).toHaveLength(1);
-    expect(recs[0]?.data.estado).toBe(ESTADO_ENVI_NFE_MSG.error);
+    expect(recs[0]?.data.estado).toBe(ESTADO_ENVI_NFE_MSG.aguardandoVinculo);
+    expect(recs[0]?.data.proximaConsultaEm).toBeTypeOf('number');
+    expect(recs[0]?.data.retries).toBe(0);
+    expect(recs[0]?.data.error).toBeNull();
+
+    // A re-check task was scheduled with the SAME nSeqEvento + the new record id.
+    expect(cce).toHaveLength(1);
+    expect(cce[0]).toMatchObject({
+      pedidoId: 'PED-1',
+      nfeId: 's1',
+      cceId: result.cceId,
+      nSeqEvento: 1,
+      attempt: 0,
+    });
   });
 
   it('estado not aprovada (rejeitada) → throws NFeCartaCorrecaoError, no event sent', async () => {

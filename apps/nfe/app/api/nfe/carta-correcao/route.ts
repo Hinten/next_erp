@@ -2,17 +2,20 @@
  * `POST /api/nfe/carta-correcao` — register a carta de correção eletrônica
  * (CC-e) for an authorized NF-e (RecepcaoEvento, tpEvento=110110).
  *
- * Computes the next `nSeqEvento`, sends the CC-e evento, and on cStat 135
- * (registrado e vinculado) persists a durable `cartacorrecao` record. A CC-e
- * can be issued many times per NF-e (each a new sequence).
+ * Computes the next `nSeqEvento`, sends the CC-e evento, and persists a durable
+ * `cartacorrecao` record. A CC-e can be issued many times per NF-e (each a new
+ * sequence).
  *
  * Returns:
- *   200 { pedidoId, nfeId, nSeqEvento, cStat:'135', xMotivo, nProt, accepted:true } — registrada
+ *   200 { …, cStat:'135', accepted:true, pending:false } — registrada e vinculada
+ *   200 { …, cStat:'136', accepted:false, pending:true } — registrada, aguardando
+ *        vínculo: an async re-send was enqueued (the client shows "em processamento"),
+ *        the re-check resolves it to 135 or, past the cap, to error (#81)
  *   400  bad body / orchestrator precondition (missing chave, etc.)
  *   401  no/invalid token
  *   403  insufficient perm
  *   404  pedido / NF-e not found
- *   422  SEFAZ rejected the CC-e (incl. 136 não vinculado), or the NF-e isn't aprovada
+ *   422  SEFAZ rejected the CC-e (any other cStat), or the NF-e isn't aprovada
  *   500  signer / transport error
  */
 import { NextResponse } from 'next/server';
@@ -30,6 +33,7 @@ import {
   NFePedidoNotFoundError,
 } from '@/lib/nfe/orchestrator';
 import { getNFeRuntime } from '@/lib/nfe/runtime';
+import { createTaskScheduler } from '@/lib/nfe/tasks';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -87,7 +91,10 @@ export async function POST(req: Request): Promise<NextResponse> {
       body.pedidoId,
       body.nfeId,
       body.xCorrecao,
+      createTaskScheduler(),
     );
+    // 200 for both registrada (135) and aguardandoVinculo (136 → pending); only
+    // a hard rejection (any other cStat) throws NFeCartaCorrecaoError → 422.
     return NextResponse.json(result, { status: 200 });
   } catch (e) {
     if (e instanceof NFePedidoNotFoundError) {

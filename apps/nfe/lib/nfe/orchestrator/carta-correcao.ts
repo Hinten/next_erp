@@ -1,7 +1,14 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
-import { cartaCorrecaoNFe, sanitizeNFeText, type SefazCall } from '@delfrance/integrations-nfe';
+import {
+  cartaCorrecaoNFe,
+  nextConsultaDelayMs,
+  RECONCILE_SWEEP_GRACE_MS,
+  sanitizeNFeText,
+  type SefazCall,
+} from '@delfrance/integrations-nfe';
 import { renderCartaCorrecao } from '@delfrance/integrations-nfe/danfe';
+import { nowMicros } from '@delfrance/core/datetime';
 import {
   type CartaCorrecao,
   ESTADO_ENVI_NFE_MSG,
@@ -13,6 +20,7 @@ import { cartaCorrecaoCollection, nfev4Collection } from '@delfrance/data/admin/
 
 import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
+import { noopTaskScheduler, type TaskScheduler } from '../tasks';
 import type { DanfeArtifact } from './danfe';
 import {
   NFeCartaCorrecaoError,
@@ -23,16 +31,22 @@ import {
 
 /**
  * SEFAZ event cStat that means the CC-e was **accepted** — "evento registrado e
- * vinculado à NF-e". Only 135 counts: 136 (registrado mas NÃO vinculado) means
- * the correction wasn't attached to the document, so we surface it as a failure
- * (not a silent success). Mirrors the cancelamento accept-set in `cancelar.ts`,
- * but cancelamento also accepts 155/573 — CC-e accepts only 135.
- *
- * TODO(#81): 136 is non-terminal — the event WAS registered, just not yet linked;
- * it should trigger an async linkage re-check (DistDFe / consulta) instead of a
- * hard rejection. Deferred to the async signals + GCloud/Firebase infra phase.
+ * vinculado à NF-e". Only 135 is terminal-accepted. Mirrors the cancelamento
+ * accept-set in `cancelar.ts`, but cancelamento also accepts 155/573 — CC-e
+ * accepts only 135.
  */
 export const CSTAT_CCE_ACEITA = '135';
+
+/**
+ * cStat 136 — "evento registrado, mas NÃO vinculado à NF-e". Non-terminal (#81):
+ * SEFAZ recorded the event but hasn't attached it to the document yet (the NF-e
+ * may still be propagating across SEFAZ environments). Instead of a hard
+ * rejection we persist `aguardandoVinculo`, schedule an async re-send with the
+ * SAME `nSeqEvento` (SEFAZ only increments the sequence on accept), and return a
+ * **pending** result — the re-check resolves it to 135 (concluido) or, past the
+ * attempt cap, to `error`.
+ */
+export const CSTAT_CCE_PENDENTE = '136';
 
 /** Result of a carta de correção (CC-e) round-trip. */
 export interface CartaCorrecaoServiceResult {
@@ -46,6 +60,14 @@ export interface CartaCorrecaoServiceResult {
   readonly nProt: string | null;
   /** `true` when SEFAZ registrou e vinculou (cStat 135). */
   readonly accepted: boolean;
+  /**
+   * `true` when SEFAZ registrou mas NÃO vinculou (cStat 136) — the CC-e is
+   * `aguardandoVinculo` and an async re-send was scheduled. Mutually exclusive
+   * with `accepted`. Both `false` only on the rejected path, which throws. #81.
+   */
+  readonly pending: boolean;
+  /** The persisted `cartacorrecao` record id (so callers can reference it). */
+  readonly cceId: string;
 }
 
 /**
@@ -54,13 +76,21 @@ export interface CartaCorrecaoServiceResult {
  *
  * Targets the `nfev4` doc by **id**. Reads the NF-e estado from the **DB** — a
  * CC-e is only allowed on an **aprovada** NF-e. Computes the next `nSeqEvento`
- * from the count of already-accepted (concluido) CC-e for this NF-e, so a
- * rejected attempt does not advance the sequence (SEFAZ only increments on
- * accept). Sends the event, then **persists a durable `cartacorrecao` record**
- * — registrada (cStat 135) OR rejeitada — as the single source of truth for the
- * round-trip (mirrors the inutilização record pattern). On any cStat ≠ 135 the
- * record is saved with `estado='error'` and `NFeCartaCorrecaoError` is thrown
- * (the route maps it to 422, carrying cStat/xMotivo for a clean UI message).
+ * from the count of CC-e that already hold a sequence (concluido OR
+ * aguardandoVinculo), so a rejected attempt does not advance the sequence (SEFAZ
+ * only increments on accept). Sends the event, then **persists a durable
+ * `cartacorrecao` record** as the single source of truth for the round-trip.
+ * Three dispositions:
+ *   - **cStat 135** (registrado e vinculado) → `estado='concluido'`,
+ *     `accepted:true` (route 200).
+ *   - **cStat 136** (registrado, NÃO vinculado) → `estado='aguardandoVinculo'`,
+ *     `pending:true`, an async re-send is enqueued with the SAME `nSeqEvento`,
+ *     and the call **returns** without throwing (route 200) — #81.
+ *   - **any other cStat** → `estado='error'` and `NFeCartaCorrecaoError` is
+ *     thrown (the route maps it to 422, carrying cStat/xMotivo).
+ *
+ * `scheduler` enqueues the cStat-136 re-check onto the `reconciliarNfe` queue;
+ * it defaults to the no-op (the backstop sweep then resolves the pending CC-e).
  *
  * The chave carries cUF (cOrgao) + CNPJ for routing; the denormalized
  * `nota.filialId` resolves the filial's A1 cert that signs + transmits the CC-e.
@@ -71,6 +101,7 @@ export async function cartaCorrecaoService(
   pedidoId: string,
   nfeId: string,
   xCorrecao: string,
+  scheduler: TaskScheduler = noopTaskScheduler,
 ): Promise<CartaCorrecaoServiceResult> {
   console.debug(`[nfe/orchestrator] cartaCorrecaoService pedidoId='${pedidoId}' nfeId='${nfeId}'`);
 
@@ -101,13 +132,17 @@ export async function cartaCorrecaoService(
     );
   }
 
-  // Next sequence = (count of already-accepted CC-e) + 1. A single-field
-  // equality query rides Firestore's automatic index — no composite index.
-  const acceptedSnap = await cartaCorrecaoCollection
+  // Next sequence = (count of CC-e that already hold a sequence) + 1 — both
+  // accepted (concluido) AND still-pending (aguardandoVinculo, cStat 136): a 136
+  // event IS registered at SEFAZ under its nSeqEvento, so a fresh CC-e must take
+  // the next number, while the pending one is re-sent with its OWN (unchanged)
+  // sequence by the re-check task. A rejected (error) attempt holds no sequence,
+  // so it's excluded. Single-field `in` rides Firestore's automatic index.
+  const sequencedSnap = await cartaCorrecaoCollection
     .ref(fs, { pedidoId, nfeId })
-    .where('estado', '==', ESTADO_ENVI_NFE_MSG.concluido)
+    .where('estado', 'in', [ESTADO_ENVI_NFE_MSG.concluido, ESTADO_ENVI_NFE_MSG.aguardandoVinculo])
     .get();
-  const nSeqEvento = acceptedSnap.size + 1;
+  const nSeqEvento = sequencedSnap.size + 1;
 
   // The wire <xCorrecao> is sanitized (the builder drops SEFAZ-restricted
   // chars); store that same value so the persisted record matches what SEFAZ
@@ -146,13 +181,26 @@ export async function cartaCorrecaoService(
   const cStat = ev?.cStat ?? res.ret.cStat;
   const xMotivo = ev?.xMotivo ?? res.ret.xMotivo;
   const nProt = ev?.nProt || null;
-  const accepted = cStat === CSTAT_CCE_ACEITA;
+  const accepted = cStat === CSTAT_CCE_ACEITA; // 135 — registrado e vinculado
+  const pending = cStat === CSTAT_CCE_PENDENTE; // 136 — registrado, ainda não vinculado
   const now = (): string => new Date().toISOString();
 
-  // Persist the durable CC-e record — registrada OR rejeitada. This is the
-  // single source of truth for the round-trip (the dedicated screen reads it
-  // directly); there is no separate enviNfe audit entry.
-  await cartaCorrecaoCollection.add(
+  // A pending (136) CC-e is re-checked asynchronously: gate the earliest re-send
+  // at now + backoff(0) + sweep grace (µs epoch), mirroring nfeSchema's
+  // proximaConsultaEm. Terminal records (accepted/rejected) carry no gate.
+  const proximaConsultaEm = pending
+    ? nowMicros() + (nextConsultaDelayMs(0) + RECONCILE_SWEEP_GRACE_MS) * 1000
+    : null;
+  const estado = accepted
+    ? ESTADO_ENVI_NFE_MSG.concluido
+    : pending
+      ? ESTADO_ENVI_NFE_MSG.aguardandoVinculo
+      : ESTADO_ENVI_NFE_MSG.error;
+
+  // Persist the durable CC-e record — registrada, aguardando vínculo, OR
+  // rejeitada. Single source of truth for the round-trip (the dedicated screen
+  // reads it directly); no separate enviNfe audit entry.
+  const recordRef = await cartaCorrecaoCollection.add(
     fs,
     { pedidoId, nfeId },
     {
@@ -163,13 +211,41 @@ export async function cartaCorrecaoService(
       cStat,
       xMotivo,
       nProt,
-      error: accepted ? null : `cStat ${cStat} — ${xMotivo}`,
+      error: accepted || pending ? null : `cStat ${cStat} — ${xMotivo}`,
       tpEmis: nota.tpEmis ?? null,
-      estado: accepted ? ESTADO_ENVI_NFE_MSG.concluido : ESTADO_ENVI_NFE_MSG.error,
+      proximaConsultaEm,
+      retries: pending ? 0 : null,
+      estado,
       timestamp: now(),
       ultima_modificacao: now(),
     },
   );
+
+  if (pending) {
+    // cStat 136: registered but not yet linked. Schedule an async re-send with
+    // the SAME nSeqEvento on the reconciliarNfe queue and return PENDING — this
+    // is NOT a rejection (#81). The route surfaces 200 (aguardandoVinculo); the
+    // re-check resolves it to 135 (concluido) or, past the cap, to error.
+    await scheduler.enqueueCceVinculo({
+      pedidoId,
+      nfeId,
+      cceId: recordRef.id,
+      nSeqEvento,
+      attempt: 0,
+      scheduleAtMs: Date.now() + nextConsultaDelayMs(0),
+    });
+    return {
+      pedidoId,
+      nfeId,
+      nSeqEvento,
+      cStat,
+      xMotivo,
+      nProt,
+      accepted: false,
+      pending: true,
+      cceId: recordRef.id,
+    };
+  }
 
   if (!accepted) {
     throw new NFeCartaCorrecaoError(
@@ -179,7 +255,17 @@ export async function cartaCorrecaoService(
     );
   }
 
-  return { pedidoId, nfeId, nSeqEvento, cStat, xMotivo, nProt, accepted: true };
+  return {
+    pedidoId,
+    nfeId,
+    nSeqEvento,
+    cStat,
+    xMotivo,
+    nProt,
+    accepted: true,
+    pending: false,
+    cceId: recordRef.id,
+  };
 }
 
 /**
