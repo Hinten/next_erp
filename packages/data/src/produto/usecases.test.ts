@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { produtoExtraDataSchema } from '@delfrance/schemas';
+import { impostoProdutoSchema, produtoExtraDataSchema } from '@delfrance/schemas';
 import type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
 import {
   ProdutoReferencedError,
   applyPrecosChange,
   buildExtraDataWriteOps,
+  buildImpostoWriteOps,
   buildLocalizacaoOp,
   buildPrecoHistoryOps,
   deleteProdutoCascade,
@@ -160,6 +161,56 @@ describe('produto estoque — movimentação (planMovimentacao)', () => {
     );
     expect(plan).toMatchObject({ ehBalanco: true, quantidade: 42, quantidadeReservada: 2 });
     expect(plan.historico).toMatchObject({ ehBalanco: true, quantidade: 42 });
+  });
+});
+
+describe('produto imposto (per-operação override)', () => {
+  const imp = (over: Record<string, unknown> = {}) =>
+    impostoProdutoSchema.parse({ impostoOpercaoOuterRef: 'operacao/op1', ...over });
+
+  it('sets one doc per configured operação, keyed by the operação id', () => {
+    const ops = buildImpostoWriteOps('p1', [imp({ cfop: '5102', NCM: '61091000' })], 1000);
+    expect(ops).toHaveLength(1);
+    const op = ops[0]!;
+    expect(op).toMatchObject({ type: 'set', path: 'produtos/p1/imposto/op1' });
+    if (op.type !== 'set') throw new Error('expected a set op');
+    // Wire shape: Flutter typo key + operação id mirrored into `id` + timestamp.
+    expect(op.data).toMatchObject({
+      id: 'op1',
+      impostoOpercaoOuterRef: 'operacao/op1',
+      cfop: '5102',
+      NCM: '61091000',
+      timestamp: 1000,
+    });
+  });
+
+  it('preserves a passthrough ICMS config on re-save', () => {
+    const ops = buildImpostoWriteOps(
+      'p1',
+      [imp({ cfop: '5102', configuracaoICMS: { csosn: '102' } })],
+      1000,
+    );
+    const op = ops[0]!;
+    if (op.type !== 'set') throw new Error('expected a set op');
+    expect(op.data.configuracaoICMS).toEqual({ csosn: '102' });
+  });
+
+  it('deletes a previously-saved imposto that was fully cleared', () => {
+    const ops = buildImpostoWriteOps('p1', [imp({ id: 'op1' })], 1000);
+    expect(ops).toEqual([{ type: 'delete', path: 'produtos/p1/imposto/op1' }]);
+  });
+
+  it('skips a pristine empty row (never persisted)', () => {
+    expect(buildImpostoWriteOps('p1', [imp({})], 1000)).toEqual([]);
+  });
+
+  it('reads the operação id from a documents/operacao/<id> ref too', () => {
+    const ops = buildImpostoWriteOps(
+      'p2',
+      [imp({ impostoOpercaoOuterRef: 'documents/operacao/opX', cfop: '6102' })],
+      1000,
+    );
+    expect(ops[0]!.path).toBe('produtos/p2/imposto/opX');
   });
 });
 

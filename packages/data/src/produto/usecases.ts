@@ -4,13 +4,17 @@ import {
   estoqueProdutoSchema,
   historicoCustoMeta,
   historicoPrecoMeta,
+  impostoProdutoMeta,
+  impostoProdutoSchema,
   makeEstoqueUid,
+  operacaoIdFromImpostoRef,
   produtoExtraDataMeta,
   produtoExtraDataSchema,
   produtoMeta,
   samePrecos,
   PRODUTO_EXTRA_DATA_DOC_ID,
   PRODUTO_SUBCOLLECTION_NAMES,
+  type ImpostoProduto,
   type PrecoChange,
   type PrecosMap,
   type ProdutoExtraData,
@@ -26,6 +30,7 @@ const HISTORICO_PRECO = historicoPrecoMeta.collectionPath; // produtos/{produtoI
 const HISTORICO_CUSTO = historicoCustoMeta.collectionPath; // produtos/{produtoId}/historicoDeCusto
 const EXTRA_DATA = produtoExtraDataMeta.collectionPath; // produtos/{produtoId}/extraData
 const ESTOQUE = estoqueProdutoMeta.collectionPath; // produtos/{produtoId}/estoques
+const IMPOSTO = impostoProdutoMeta.collectionPath; // produtos/{produtoId}/imposto
 
 const produtoDocPath = (id: string) => `${PRODUTOS}/${id}`;
 const subDocPath = (template: string, produtoId: string, docId: string) =>
@@ -227,6 +232,82 @@ export function planMovimentacao(input: MovimentacaoInput, now: number): Movimen
       timestamp: now,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Produto imposto (per-operação fiscal override — the `imposto` subcollection)
+//
+// Persisted with the produto doc (Flutter saves imposto in the same batch). One
+// doc per active operação, keyed by the operação id (deterministic, idempotent).
+// ---------------------------------------------------------------------------
+
+/** True when an imposto entry has any Dados Gerais value worth persisting. */
+function impostoCarriesInfo(imp: ImpostoProduto): boolean {
+  const strings = [
+    imp.origem,
+    imp.cfop,
+    imp.cfopInterestadual,
+    imp.NCM,
+    imp.NVE,
+    imp.CEST,
+    imp.indEscala,
+    imp.CNPJFab,
+    imp.cBenef,
+    imp.extipi,
+    imp.unidade,
+  ];
+  return (
+    strings.some((v) => typeof v === 'string' && v.trim() !== '') ||
+    imp.compoeValorTotalDaNFe === true
+  );
+}
+
+/**
+ * Build the imposto writes for a produto save (Flutter `Produto.save()` imposto
+ * loop, `produtoTableProvider.dart:597`). Each entry maps to one doc at
+ * `produtos/<id>/imposto/<operacaoId>` (deterministic id = operação id, so a
+ * re-save is idempotent). A configured entry is `set` (full doc, configs
+ * preserved via passthrough); an entry that was loaded (`id` set) but is now
+ * fully cleared is `delete`d; a pristine empty row is skipped. The wire shape is
+ * parsed here so the agent/admin path has no Zod converter to lean on.
+ */
+export function buildImpostoWriteOps(
+  produtoId: string,
+  impostos: ImpostoProduto[],
+  now: number,
+): ProdutoWriteOp[] {
+  const ops: ProdutoWriteOp[] = [];
+  for (const imp of impostos) {
+    const operacaoId = operacaoIdFromImpostoRef(imp.impostoOpercaoOuterRef);
+    if (!operacaoId) continue; // the produto UI only edits per-operação entries
+    const path = subDocPath(IMPOSTO, produtoId, operacaoId);
+    if (impostoCarriesInfo(imp)) {
+      ops.push({
+        type: 'set',
+        path,
+        data: impostoProdutoSchema.parse({
+          ...imp,
+          id: operacaoId,
+          impostoOpercaoOuterRef: `operacao/${operacaoId}`,
+          timestamp: imp.timestamp ?? now,
+        }) as Record<string, unknown>,
+      });
+    } else if (imp.id != null) {
+      ops.push({ type: 'delete', path });
+    }
+  }
+  return ops;
+}
+
+/** Persist the produto's per-operação imposto docs (no-op when none changed). */
+export async function saveProdutoImpostos(
+  port: ProdutoDataPort,
+  produtoId: string,
+  impostos: ImpostoProduto[],
+): Promise<void> {
+  const ops = buildImpostoWriteOps(produtoId, impostos, port.now());
+  if (ops.length === 0) return;
+  await port.commit(ops);
 }
 
 // ---------------------------------------------------------------------------

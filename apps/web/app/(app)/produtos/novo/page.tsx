@@ -7,6 +7,7 @@ import { Button, Stack } from '@mantine/core';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import {
   type Foto,
+  type ImpostoProduto,
   type PrecosMap,
   type ProdutoExtraData,
   type Video,
@@ -25,6 +26,7 @@ import { PhotoManager } from '../_components/PhotoManager';
 import { CustoField } from '../_components/CustoField';
 import { EstoqueManager } from '../_components/EstoqueManager';
 import { ExtraDataManager } from '../_components/ExtraDataManager';
+import { ImpostoManager } from '../_components/ImpostoManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../_components/PrecoCustoManager';
 import { VideoManager } from '../_components/VideoManager';
 import { VariationManager } from '../_components/VariationManager';
@@ -158,6 +160,20 @@ export default function NovoProdutoPage() {
         // shows "Salve o produto antes de editar o estoque".
         renderInput: (p) => <EstoqueManager produtoId={null} db={db} disabled={p.disabled} />,
       },
+      impostos: {
+        label: 'Impostos',
+        section: 'Impostos',
+        renderInput: (p) => (
+          <ImpostoManager
+            produtoId={null}
+            db={db}
+            value={(p.value as ImpostoProduto[] | null) ?? null}
+            onChange={p.onChange}
+            errorTree={p.errorTree}
+            disabled={p.disabled}
+          />
+        ),
+      },
     }),
     [db, storage, listas, listasSnap.error?.message],
   );
@@ -189,6 +205,7 @@ export default function NovoProdutoPage() {
           produtoPageIssues({
             ehKit: values.ehKit as boolean | null,
             componentesKit: values.componentesKit as Record<string, { quantidade: number }> | null,
+            impostos: (values.impostos as ImpostoProduto[] | null) ?? null,
           })
         }
         onAfterSave={async (id, values) => {

@@ -19,12 +19,14 @@ import { isEmpty, pickDirty } from './diff';
  * connection used to be a separate `writeBatch` that could be lost while the
  * produto doc committed (orphan state). `ref` is a converter-bound
  * `DocumentReference` (the caller resolves it via a `defineCollection` handle);
- * `set` runs the converter (validation), `update` is a partial patch.
+ * `set` runs the converter (validation), `update` is a partial patch, `delete`
+ * removes the doc (e.g. an imposto whose operação was cleared) — `data` is
+ * ignored for `delete`.
  */
 export interface TransactionWrite {
-  type: 'set' | 'update';
+  type: 'set' | 'update' | 'delete';
   ref: DocumentReference<unknown>;
-  data: Record<string, unknown>;
+  data?: Record<string, unknown>;
 }
 
 export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, unknown>> {
@@ -153,6 +155,7 @@ export async function saveRecord<
     // round-trip (robust on a flaky connection).
     for (const w of siblings) {
       if (w.type === 'update') tx.update(w.ref as DocumentReference, w.data as never);
+      else if (w.type === 'delete') tx.delete(w.ref as DocumentReference);
       else tx.set(w.ref as DocumentReference, w.data as never);
     }
 
