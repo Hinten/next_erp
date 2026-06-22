@@ -51,6 +51,17 @@ function isPessoaJuridica(document: string | null): boolean {
   return (document ?? '').replace(/\D/g, '').length === 14;
 }
 
+/**
+ * ME's `country_id` is an ISO-2 code (`BR`). Our endereços store the NF-e
+ * **numeric** country code (`cPais`, `1058` = Brasil) or null, so passing it
+ * straight through makes ME reject "country id inválido". Pass through only a
+ * genuine 2-letter code; everything else (numeric / null) defaults to `BR`.
+ */
+function toCountryId(cPais: string | null | undefined): string {
+  const v = (cPais ?? '').trim();
+  return /^[A-Za-z]{2}$/.test(v) ? v.toUpperCase() : 'BR';
+}
+
 export function buildPedidoCartPayload(input: BuildPedidoCartInput): CartInsertRequest {
   const { frete, enderecoOrigem, filial, enderecoDestino, clienteDestino, itens, pedidoNumero } =
     input;
@@ -69,8 +80,10 @@ export function buildPedidoCartPayload(input: BuildPedidoCartInput): CartInsertR
   // the filial doc.
   const from = {
     name: filial?.razaoSocial ?? '',
-    phone: enderecoOrigem?.telefone ?? null,
-    email: enderecoOrigem?.email ?? null,
+    // Some carriers (e.g. Jadlog, service 3) require the sender phone; fall back
+    // to the filial's sede phone when the integração's origin address has none.
+    phone: enderecoOrigem?.telefone ?? filial?.sede?.telefone ?? null,
+    email: enderecoOrigem?.email ?? filial?.sede?.email ?? null,
     companyDocument: filial?.cnpj ?? null,
     stateRegister: filial?.ie ?? null,
     economicActivityCode: filial?.cnae ?? null,
@@ -80,7 +93,7 @@ export function buildPedidoCartPayload(input: BuildPedidoCartInput): CartInsertR
     district: enderecoOrigem?.bairro ?? '',
     city: enderecoOrigem?.cidade ?? '',
     stateAbbr: enderecoOrigem?.estado ?? '',
-    countryId: enderecoOrigem?.cPais ?? 'BR',
+    countryId: toCountryId(enderecoOrigem?.cPais),
     postalCode: enderecoOrigem?.cep ?? '',
   };
 
@@ -101,7 +114,7 @@ export function buildPedidoCartPayload(input: BuildPedidoCartInput): CartInsertR
     district: enderecoDestino?.bairro ?? '',
     city: enderecoDestino?.cidade ?? '',
     stateAbbr: enderecoDestino?.estado ?? '',
-    countryId: enderecoDestino?.cPais ?? 'BR',
+    countryId: toCountryId(enderecoDestino?.cPais),
     postalCode: enderecoDestino?.cep ?? '',
   };
 

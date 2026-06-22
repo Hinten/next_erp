@@ -257,4 +257,33 @@ describe('buildPedidoCartPayload', () => {
 
     expect(payload.agency).toBe(42);
   });
+
+  it('maps the NF-e numeric cPais (1058) to the ISO country_id BR', () => {
+    const payload = buildPedidoCartPayload({
+      frete: makeFrete(),
+      enderecoOrigem: { ...ORIGIN, cPais: '1058' },
+      filial: FILIAL,
+      enderecoDestino: { ...DEST_PF, cPais: '1058' },
+      clienteDestino: null,
+      itens: ITENS,
+      pedidoNumero: null,
+    }) as Record<string, unknown>;
+
+    expect((payload.from as { country_id: string }).country_id).toBe('BR');
+    expect((payload.to as { country_id: string }).country_id).toBe('BR');
+  });
+
+  it('falls back the sender phone to the filial sede when the origin has none', () => {
+    const payload = buildPedidoCartPayload({
+      frete: makeFrete(),
+      enderecoOrigem: { ...ORIGIN, telefone: null },
+      filial: { ...FILIAL, sede: { ...ORIGIN, telefone: '1144445555' } },
+      enderecoDestino: DEST_PF,
+      clienteDestino: null,
+      itens: ITENS,
+      pedidoNumero: null,
+    }) as Record<string, unknown>;
+
+    expect((payload.from as { phone: string }).phone).toBe('1144445555');
+  });
 });
