@@ -75,11 +75,12 @@ test.describe.serial('Pedidos e2e — Incidentes', () => {
     await page.getByRole('textbox', { name: 'Motivo', exact: true }).fill(motivo);
     await page.getByRole('button', { name: 'Salvar', exact: true }).click();
 
-    // The new incidente card shows the motivo. Scope to the card's paragraph:
-    // the form stays open (immediate write, button spins until the server ack),
-    // and its Motivo <textarea> echoes the same text — a bare getByText would
-    // match both and strict-fail.
-    await expect(page.getByRole('paragraph').filter({ hasText: motivo })).toBeVisible({
+    // The new incidente card shows the motivo. The card text is a Mantine <Text>
+    // (a <p>); the editing form's Motivo <textarea> echoes the same string, so a
+    // bare getByText would match both and strict-fail. A `p` tag locator targets
+    // only the card text and excludes the textarea, regardless of whether the
+    // save form has closed yet.
+    await expect(page.locator('p').filter({ hasText: motivo })).toBeVisible({
       timeout: 15_000,
     });
 
@@ -108,8 +109,10 @@ test.describe.serial('Pedidos e2e — Incidentes', () => {
     await page.getByRole('button', { name: /Adicionar incidente/ }).click();
     await page.getByRole('textbox', { name: 'Motivo', exact: true }).fill(motivo);
 
-    // Enable the resolução section, pick a Tipo and enter a Despesa.
-    await page.getByRole('switch', { name: 'Registrar resolução' }).click();
+    // Enable the resolução section, pick a Tipo and enter a Despesa. The
+    // Incidentes tabpanel has a single switch, so select it by role within the
+    // panel rather than by accessible name (Mantine's label wiring is unreliable).
+    await page.getByRole('tabpanel').getByRole('switch').click();
     await page.getByRole('combobox', { name: 'Tipo de resolução', exact: true }).click();
     await page
       .getByRole('option', { name: 'Pagamento devolvido integralmente', exact: true })
