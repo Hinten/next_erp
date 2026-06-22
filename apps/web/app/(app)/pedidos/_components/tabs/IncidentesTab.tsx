@@ -3,32 +3,45 @@
 import { useMemo, useState } from 'react';
 import {
   Alert,
+  Badge,
   Button,
   Card,
+  Divider,
   Group,
   Modal,
   Select,
   Skeleton,
   Stack,
+  Switch,
   Text,
   Textarea,
   Title,
 } from '@mantine/core';
+import { DateTimePicker } from '@mantine/dates';
 import { FirebaseError } from 'firebase/app';
 import {
   ORIGEM_INCIDENTE_LABELS,
-  TIPO_INCIDENTE,
   TIPO_INCIDENTE_LABELS,
+  TIPO_RESOLUCAO_LABELS,
   type Incidente,
-  type OrigemIncidente,
-  type TipoIncidente,
 } from '@delfrance/schemas';
+import { epochToPickerString, pickerStringToEpoch } from '@delfrance/ui';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { deleteIncidente, saveIncidente } from '@delfrance/data/pedido';
+import { nowMicros } from '@delfrance/core/datetime';
 import { incidenteCollection } from '@/lib/data/incidenteCollection';
 import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { CurrencyInput } from '@/app/(app)/produtos/_components/CurrencyInput';
+import {
+  EMPTY_INCIDENTE_FORM,
+  formFromIncidente,
+  incidenteDataFromForm,
+  isResolucaoLocked,
+  validateIncidenteForm,
+  type IncidenteFormState,
+} from './incidenteForm';
 
 const tipoOptions = (Object.entries(TIPO_INCIDENTE_LABELS) as [string, string][]).map(
   ([value, label]) => ({ value, label }),
@@ -40,24 +53,14 @@ const origemOptions = [
     label,
   })),
 ];
+const resolucaoTipoOptions = (Object.entries(TIPO_RESOLUCAO_LABELS) as [string, string][]).map(
+  ([value, label]) => ({ value, label }),
+);
 
 function formatMicros(micros: number | null | undefined): string {
   if (micros == null) return '—';
   return new Date(Math.round(micros / 1000)).toLocaleString('pt-BR');
 }
-
-interface IncidenteForm {
-  tipo: string;
-  origem: string;
-  motivo: string;
-  comentarios: string;
-}
-const EMPTY_FORM: IncidenteForm = {
-  tipo: TIPO_INCIDENTE.devolucao,
-  origem: '',
-  motivo: '',
-  comentarios: '',
-};
 
 export interface IncidentesTabProps {
   disabled?: boolean;
@@ -87,40 +90,48 @@ function IncidentesManager({ pedidoId, disabled }: { pedidoId: string; disabled?
   const [editing, setEditing] = useState<{ id: string | null; base: Incidente | null } | null>(
     null,
   );
-  const [form, setForm] = useState<IncidenteForm>(EMPTY_FORM);
+  const [form, setForm] = useState<IncidenteFormState>(EMPTY_INCIDENTE_FORM);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // The resolução is read-only once its return shipping is in progress (legacy
+  // `bloquear`); the frete sub-editor itself is deferred (see incidenteForm.ts).
+  const resolucaoLocked = isResolucaoLocked(editing?.base ?? null);
+  const hasFrete = (editing?.base?.resolucao?.frete ?? null) != null;
+
   function openAdd() {
-    setForm(EMPTY_FORM);
+    setForm(EMPTY_INCIDENTE_FORM);
     setEditing({ id: null, base: null });
     setSaveError(null);
   }
   function openEdit(id: string, incidente: Incidente) {
-    setForm({
-      tipo: incidente.tipo,
-      origem: incidente.origem != null ? String(incidente.origem) : '',
-      motivo: incidente.motivoDoIncidente ?? '',
-      comentarios: incidente.comentarios ?? '',
-    });
+    setForm(formFromIncidente(incidente));
     setEditing({ id, base: incidente });
     setSaveError(null);
   }
 
+  function toggleResolucao(on: boolean) {
+    // Default the date to now the first time a resolução is enabled (legacy
+    // `DateTime.now()` default).
+    setForm((f) => ({
+      ...f,
+      registrarResolucao: on,
+      resData: on ? (f.resData ?? nowMicros()) : f.resData,
+    }));
+  }
+
   async function handleSave() {
     if (!editing) return;
+    const validationError = validateIncidenteForm(form);
+    if (validationError) {
+      setSaveError(validationError);
+      return;
+    }
     setSaving(true);
     setSaveError(null);
-    // Spread the existing doc on edit so externalId / resolução / timestamp survive.
-    const incidente: Record<string, unknown> = {
-      ...(editing.base ?? {}),
-      tipo: form.tipo as TipoIncidente,
-      origem: form.origem === '' ? null : (Number(form.origem) as OrigemIncidente),
-      motivoDoIncidente: form.motivo.trim() === '' ? null : form.motivo,
-      comentarios: form.comentarios.trim() === '' ? null : form.comentarios,
-    };
+    const incidente = incidenteDataFromForm(form, editing.base, nowMicros());
     try {
       await saveIncidente(createClientPedidoPort(getFirebaseFirestore()), {
         pedidoId,
@@ -152,6 +163,8 @@ function IncidentesManager({ pedidoId, disabled }: { pedidoId: string; disabled?
       setDeleting(false);
     }
   }
+
+  const resFieldsDisabled = disabled || resolucaoLocked;
 
   return (
     <Stack>
@@ -189,7 +202,14 @@ function IncidentesManager({ pedidoId, disabled }: { pedidoId: string; disabled?
               label="Motivo"
               maxLength={2000}
               value={form.motivo}
-              onChange={(e) => setForm((f) => ({ ...f, motivo: e.currentTarget.value }))}
+              onChange={(e) => {
+                // Read the value eagerly: React nulls `currentTarget` after the
+                // dispatch, and dev StrictMode re-invokes the updater later, so
+                // reading it inside `setForm((f) => …)` throws `currentTarget is
+                // null`. The const keeps the updater pure.
+                const value = e.currentTarget.value;
+                setForm((f) => ({ ...f, motivo: value }));
+              }}
               disabled={disabled}
               autosize
               minRows={2}
@@ -198,11 +218,80 @@ function IncidentesManager({ pedidoId, disabled }: { pedidoId: string; disabled?
               label="Comentários"
               maxLength={2000}
               value={form.comentarios}
-              onChange={(e) => setForm((f) => ({ ...f, comentarios: e.currentTarget.value }))}
+              onChange={(e) => {
+                const value = e.currentTarget.value;
+                setForm((f) => ({ ...f, comentarios: value }));
+              }}
               disabled={disabled}
               autosize
               minRows={2}
             />
+
+            <Divider my="xs" label="Resolução" labelPosition="left" />
+            <Group justify="space-between" align="center">
+              <Switch
+                label="Registrar resolução"
+                checked={form.registrarResolucao}
+                onChange={(e) => toggleResolucao(e.currentTarget.checked)}
+                disabled={resFieldsDisabled}
+              />
+              {resolucaoLocked && (
+                <Badge color="orange" variant="light">
+                  Bloqueada — frete em andamento
+                </Badge>
+              )}
+            </Group>
+
+            {form.registrarResolucao && (
+              <Stack gap="sm">
+                <Group grow align="flex-start">
+                  <Select
+                    label="Tipo de resolução"
+                    placeholder="Selecione"
+                    data={resolucaoTipoOptions}
+                    value={form.resTipo}
+                    onChange={(v) => setForm((f) => ({ ...f, resTipo: v ?? '' }))}
+                    disabled={resFieldsDisabled}
+                    withAsterisk
+                  />
+                  <DateTimePicker
+                    label="Data da resolução"
+                    value={epochToPickerString(form.resData, 'us')}
+                    onChange={(v) =>
+                      setForm((f) => ({ ...f, resData: pickerStringToEpoch(v, 'us') }))
+                    }
+                    valueFormat="DD/MM/YYYY HH:mm"
+                    clearable
+                    disabled={resFieldsDisabled}
+                  />
+                </Group>
+                <CurrencyInput
+                  label="Despesa da resolução"
+                  value={form.resValor}
+                  onChange={(n) => setForm((f) => ({ ...f, resValor: n }))}
+                  disabled={resFieldsDisabled}
+                />
+                <Textarea
+                  label="Comentários sobre a resolução"
+                  maxLength={2000}
+                  value={form.resComentarios}
+                  onChange={(e) => {
+                    const value = e.currentTarget.value;
+                    setForm((f) => ({ ...f, resComentarios: value }));
+                  }}
+                  disabled={resFieldsDisabled}
+                  autosize
+                  minRows={2}
+                />
+                {hasFrete && (
+                  <Text size="xs" c="dimmed">
+                    Esta resolução possui um frete de devolução. A edição do frete da resolução
+                    ainda não foi portada; o registro existente é preservado.
+                  </Text>
+                )}
+              </Stack>
+            )}
+
             {saveError && <Alert color="red">{saveError}</Alert>}
             <Group justify="flex-end">
               <Button variant="default" onClick={() => setEditing(null)} disabled={saving}>
@@ -228,7 +317,14 @@ function IncidentesManager({ pedidoId, disabled }: { pedidoId: string; disabled?
           <Card key={id} withBorder>
             <Group justify="space-between" align="flex-start">
               <Stack gap={2}>
-                <Text fw={500}>{TIPO_INCIDENTE_LABELS[inc.tipo] ?? inc.tipo}</Text>
+                <Group gap="xs">
+                  <Text fw={500}>{TIPO_INCIDENTE_LABELS[inc.tipo] ?? inc.tipo}</Text>
+                  {inc.resolucao && (
+                    <Badge color="green" variant="light">
+                      {TIPO_RESOLUCAO_LABELS[inc.resolucao.tipo] ?? 'Resolvido'}
+                    </Badge>
+                  )}
+                </Group>
                 <Text size="xs" c="dimmed">
                   {inc.origem != null ? ORIGEM_INCIDENTE_LABELS[inc.origem] : 'Sem origem'} ·{' '}
                   {formatMicros(inc.timestamp)}

@@ -98,4 +98,48 @@ test.describe.serial('Pedidos e2e — Incidentes', () => {
       )
       .toContain(motivo);
   });
+
+  test('records a resolução (tipo + despesa) on the incidente', async ({ page }) => {
+    const motivo = `${prefix}-res`;
+    await page.goto(`/pedidos/${pedidoId}/editar`);
+    await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByRole('tab', { name: 'Incidentes' }).click();
+    await page.getByRole('button', { name: /Adicionar incidente/ }).click();
+    await page.getByRole('textbox', { name: 'Motivo', exact: true }).fill(motivo);
+
+    // Enable the resolução section, pick a Tipo and enter a Despesa.
+    await page.getByRole('switch', { name: 'Registrar resolução' }).click();
+    await page.getByRole('combobox', { name: 'Tipo de resolução', exact: true }).click();
+    await page
+      .getByRole('option', { name: 'Pagamento devolvido integralmente', exact: true })
+      .click();
+    await page.getByLabel('Despesa da resolução').fill('15');
+
+    await page.getByRole('button', { name: 'Salvar', exact: true }).click();
+
+    // The card shows the green resolução badge. Scope to the tabpanel: a closed
+    // Mantine Select can leave option spans in a body-level portal, and the Select
+    // input still holds the same label — both would strict-fail a bare getByText.
+    await expect(
+      page.getByRole('tabpanel').getByText('Pagamento devolvido integralmente', { exact: true }),
+    ).toBeVisible({ timeout: 15_000 });
+
+    // The persisted doc carries the resolução sub-object (tipo 3, valor 15).
+    await expect
+      .poll(
+        async () => {
+          const snap = await db()
+            .collection('pedidos')
+            .doc(pedidoId)
+            .collection('incidentes')
+            .get();
+          const inc = snap.docs.map((d) => d.data()).find((d) => d.motivoDoIncidente === motivo);
+          const res = inc?.resolucao as { tipo?: number; valor?: number } | undefined;
+          return res ? { tipo: res.tipo, valor: res.valor } : null;
+        },
+        { timeout: 15_000 },
+      )
+      .toEqual({ tipo: 3, valor: 15 });
+  });
 });
