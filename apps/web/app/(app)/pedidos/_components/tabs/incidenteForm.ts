@@ -71,9 +71,10 @@ export function isResolucaoLocked(base: Incidente | null): boolean {
   return frete != null && frete.estado !== 'iniciado';
 }
 
-/** Empty (or whitespace-only) string → null; otherwise the trimmed-aware value. */
-function emptyToNull(s: string): string | null {
-  return s.trim() === '' ? null : s;
+/** Trim, then map an empty (or whitespace-only) string to null. */
+function trimToNull(s: string): string | null {
+  const trimmed = s.trim();
+  return trimmed === '' ? null : trimmed;
 }
 
 /**
@@ -109,7 +110,7 @@ export function buildResolucao(
     tipo: Number(form.resTipo) as TipoResolucao,
     data: form.resData ?? now,
     valor: form.resValor ?? 0,
-    comentarios: emptyToNull(form.resComentarios),
+    comentarios: trimToNull(form.resComentarios),
     frete: base?.resolucao?.frete ?? null,
   };
 }
@@ -129,8 +130,8 @@ export function incidenteDataFromForm(
     ...(base ?? {}),
     tipo: form.tipo as TipoIncidente,
     origem: form.origem === '' ? null : (Number(form.origem) as OrigemIncidente),
-    motivoDoIncidente: emptyToNull(form.motivo),
-    comentarios: emptyToNull(form.comentarios),
+    motivoDoIncidente: trimToNull(form.motivo),
+    comentarios: trimToNull(form.comentarios),
     resolucao: buildResolucao(form, base, now),
   };
 }

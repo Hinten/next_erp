@@ -160,6 +160,15 @@ describe('incidenteDataFromForm', () => {
     });
   });
 
+  it('trims surrounding whitespace on the saved text fields', () => {
+    const data = incidenteDataFromForm(
+      form({ motivo: '  defeito  ', comentarios: '\tnota\n' }),
+      null,
+      NOW,
+    );
+    expect(data).toMatchObject({ motivoDoIncidente: 'defeito', comentarios: 'nota' });
+  });
+
   it('includes the built resolução when the switch is on', () => {
     const data = incidenteDataFromForm(
       form({
