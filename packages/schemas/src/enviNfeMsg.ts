@@ -31,6 +31,7 @@ export const estadoEnviNFeMsgSchema = z.enum([
   't', // respondido_apenas_tasks
   '3', // concluido
   'i', // semMaisAcoes
+  'v', // aguardando_vinculo — CC-e registered but not yet linked (cStat 136), #81
 ]);
 export type EstadoEnviNFeMsg = z.infer<typeof estadoEnviNFeMsgSchema>;
 
@@ -45,6 +46,9 @@ export const ESTADO_ENVI_NFE_MSG = {
   aguardandoEnvio: '1',
   respondido: '2',
   concluido: '3',
+  /** CC-e registered at SEFAZ but not yet linked to the NF-e (cStat 136) — a
+   *  non-terminal pending state that an async re-send resolves to concluido (#81). */
+  aguardandoVinculo: 'v',
 } as const satisfies Record<string, EstadoEnviNFeMsg>;
 
 /**
