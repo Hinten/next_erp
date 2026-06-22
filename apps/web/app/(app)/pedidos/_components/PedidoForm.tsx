@@ -19,6 +19,7 @@ import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import {
+  DevolucaoTab,
   EstadoHistoricoTab,
   FiscalTab,
   FreteTab,
@@ -161,6 +162,7 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
   for (const issue of pedidoPageIssues({
     itens: merged.itens,
     integracaoPedidoOuterRef: merged.integracaoPedidoOuterRef,
+    itensDevolvidos: merged.itensDevolvidos,
   })) {
     const field = issue.path === 'itens' ? '_itensFlat' : issue.path;
     extraErrors[field] = { type: 'pageModel', message: issue.message };
@@ -324,7 +326,7 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="devolucao" pt="md">
-            <PlaceholderTab name="Devolução" preview={form.getValues('itensDevolvidos')} />
+            <DevolucaoTab form={form} disabled={disabled} pedidoId={pedidoId} />
           </Tabs.Panel>
 
           <Tabs.Panel value="estado" pt="md">
