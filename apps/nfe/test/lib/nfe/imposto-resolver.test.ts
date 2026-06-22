@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ImpostoCategoria, ImpostoProduto, RegraImposto } from '@delfrance/schemas';
+import {
+  impostoProdutoSchema,
+  type ImpostoCategoria,
+  type ImpostoProduto,
+  type RegraImposto,
+} from '@delfrance/schemas';
 
 import {
   createImpostoResolver,
@@ -14,6 +19,20 @@ const VALID_IMPOSTO_BLOB = {
   origem: '0',
   configuracaoICMS: { crt: '1', csosn: '102' },
 };
+
+/**
+ * Build an `impostoProduto` fixture via the schema (fills the Dados Gerais
+ * defaults and preserves the passthrough imposto blob). `impostoOpercaoOuterRef`
+ * is Flutter's typo wire key.
+ */
+function impostoProdutoDoc(over: Record<string, unknown> = {}): ImpostoProduto {
+  return impostoProdutoSchema.parse({
+    id: 'doc-1',
+    impostoOpercaoOuterRef: null,
+    ...VALID_IMPOSTO_BLOB,
+    ...over,
+  });
+}
 
 function makeDeps(over: Partial<ImpostoResolverDeps> = {}): ImpostoResolverDeps {
   const bundle: ResolverBundle = { operacaoId: ACTIVE_OPERACAO, regrasImposto: [] };
@@ -37,12 +56,7 @@ describe('resolveItemImposto — cascade priority', () => {
   });
 
   it('falls through to impostoProduto when item.imposto is null', async () => {
-    const impostoProduto: ImpostoProduto = {
-      id: 'doc-1',
-      impostoOperacaoOuterRef: null,
-      dataCadastro: null,
-      ...VALID_IMPOSTO_BLOB,
-    };
+    const impostoProduto = impostoProdutoDoc();
     const deps = makeDeps({
       readImpostoProdutoSubcoll: vi.fn().mockResolvedValue([impostoProduto]),
     });
@@ -53,12 +67,7 @@ describe('resolveItemImposto — cascade priority', () => {
   });
 
   it('honours impostoOperacaoOuterRef scope on impostoProduto', async () => {
-    const wrongScope: ImpostoProduto = {
-      id: 'doc-1',
-      impostoOperacaoOuterRef: 'operacao/op-other',
-      dataCadastro: null,
-      ...VALID_IMPOSTO_BLOB,
-    };
+    const wrongScope = impostoProdutoDoc({ impostoOpercaoOuterRef: 'operacao/op-other' });
     const deps = makeDeps({
       readImpostoProdutoSubcoll: vi.fn().mockResolvedValue([wrongScope]),
     });
@@ -68,12 +77,9 @@ describe('resolveItemImposto — cascade priority', () => {
   });
 
   it('matches impostoProduto whose ref ends with the active operacao id', async () => {
-    const matchingScope: ImpostoProduto = {
-      id: 'doc-1',
-      impostoOperacaoOuterRef: `operacao/${ACTIVE_OPERACAO}`,
-      dataCadastro: null,
-      ...VALID_IMPOSTO_BLOB,
-    };
+    const matchingScope = impostoProdutoDoc({
+      impostoOpercaoOuterRef: `operacao/${ACTIVE_OPERACAO}`,
+    });
     const deps = makeDeps({
       readImpostoProdutoSubcoll: vi.fn().mockResolvedValue([matchingScope]),
     });
@@ -203,12 +209,7 @@ describe('resolveItemImposto — cascade priority', () => {
 
 describe('resolveItemImposto — caching', () => {
   it('memoises by produtoUid across resolve() calls', async () => {
-    const impostoProduto: ImpostoProduto = {
-      id: 'd1',
-      impostoOperacaoOuterRef: null,
-      dataCadastro: null,
-      ...VALID_IMPOSTO_BLOB,
-    };
+    const impostoProduto = impostoProdutoDoc({ id: 'd1' });
     const readImpostoProduto = vi.fn().mockResolvedValue([impostoProduto]);
     const deps = makeDeps({ readImpostoProdutoSubcoll: readImpostoProduto });
     const resolver = createImpostoResolver(deps);
@@ -236,12 +237,7 @@ describe('resolveItemImposto — caching', () => {
     // p1 first carries an item-stamped imposto (CSOSN 400), then a later
     // call passes null — the cascade must still run and return whatever
     // the produto/categoria/regra resolves to (here, 102 via impostoProduto).
-    const impostoProduto: ImpostoProduto = {
-      id: 'd1',
-      impostoOperacaoOuterRef: null,
-      dataCadastro: null,
-      ...VALID_IMPOSTO_BLOB,
-    };
+    const impostoProduto = impostoProdutoDoc({ id: 'd1' });
     const deps = makeDeps({
       readImpostoProdutoSubcoll: vi.fn().mockResolvedValue([impostoProduto]),
     });
