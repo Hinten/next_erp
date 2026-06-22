@@ -5,9 +5,11 @@ import {
   ProdutoReferencedError,
   applyPrecosChange,
   buildExtraDataWriteOps,
+  buildLocalizacaoOp,
   buildPrecoHistoryOps,
   deleteProdutoCascade,
   findProdutoReferences,
+  planMovimentacao,
   propagatePrecosToChildren,
   recordPrecoHistory,
   saveProdutoExtraData,
@@ -90,6 +92,74 @@ describe('produto extra data (Descrição + Google Merchant singleton)', () => {
       type: 'set',
       path: 'produtos/p9/extraData/singleton',
     });
+  });
+});
+
+describe('produto estoque — localização (buildLocalizacaoOp)', () => {
+  it('updates ONLY localizacao on an existing estoque (quantities untouched)', () => {
+    const op = buildLocalizacaoOp('p1', 'd1', 'A1', true, 1000);
+    expect(op).toEqual({
+      type: 'update',
+      path: 'produtos/p1/estoques/est-p1-d1',
+      data: { localizacao: 'A1', ultimaModificacao: 1000 },
+    });
+  });
+
+  it('clears localizacao to null on an empty string', () => {
+    const op = buildLocalizacaoOp('p1', 'd1', '   ', true, 1000);
+    if (op.type !== 'update') throw new Error('expected an update op');
+    expect(op.data).toMatchObject({ localizacao: null });
+  });
+
+  it('sets a fresh estoque (quantidade 0) when none exists yet', () => {
+    const op = buildLocalizacaoOp('p1', 'd1', 'B2', false, 1000);
+    expect(op.type).toBe('set');
+    expect(op.path).toBe('produtos/p1/estoques/est-p1-d1');
+    if (op.type !== 'set') throw new Error('expected a set op');
+    expect(op.data).toMatchObject({
+      parentId: 'p1',
+      depositoOuterRef: 'documents/depositos/d1',
+      localizacao: 'B2',
+      quantidade: 0,
+      quantidadeReservada: 0,
+      dataCriacao: 1000,
+      ultimaModificacao: 1000,
+    });
+  });
+});
+
+describe('produto estoque — movimentação (planMovimentacao)', () => {
+  it('entrada keeps the magnitudes positive and records a non-balanço history', () => {
+    const plan = planMovimentacao(
+      { tipo: 'entrada', quantidade: 5, quantidadeReservada: 0, motivo: 'compra' },
+      1000,
+    );
+    expect(plan).toMatchObject({ ehBalanco: false, quantidade: 5, quantidadeReservada: 0 });
+    expect(plan.historico).toEqual({
+      ehBalanco: null,
+      quantidade: 5,
+      quantidadeReservada: 0,
+      motivo: 'compra',
+      timestamp: 1000,
+    });
+  });
+
+  it('saída negates both magnitudes (the delta the caller increments)', () => {
+    const plan = planMovimentacao(
+      { tipo: 'saida', quantidade: 3, quantidadeReservada: 1, motivo: null },
+      1000,
+    );
+    expect(plan).toMatchObject({ ehBalanco: false, quantidade: -3, quantidadeReservada: -1 });
+    expect(plan.historico).toMatchObject({ quantidade: -3, quantidadeReservada: -1 });
+  });
+
+  it('balanço passes through the absolute counted values and flags ehBalanco', () => {
+    const plan = planMovimentacao(
+      { tipo: 'balanco', quantidade: 42, quantidadeReservada: 2, motivo: 'contagem' },
+      1000,
+    );
+    expect(plan).toMatchObject({ ehBalanco: true, quantidade: 42, quantidadeReservada: 2 });
+    expect(plan.historico).toMatchObject({ ehBalanco: true, quantidade: 42 });
   });
 });
 

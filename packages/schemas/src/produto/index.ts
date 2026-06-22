@@ -21,6 +21,7 @@
 export * from './collection/produto'; // produtos
 export * from './collection/extraData'; // produtos/{id}/extraData (singleton)
 export * from './collection/estoque'; // produtos/{id}/estoques
+export * from './collection/historicoEstoque'; // produtos/{id}/estoques/{estId}/historicoEstoque
 export * from './collection/historicos'; // produtos/{id}/historicoDePrecos | historicoDeCusto
 export * from './collection/subcollections'; // produtos/{id}/<marketplace link docs>
 

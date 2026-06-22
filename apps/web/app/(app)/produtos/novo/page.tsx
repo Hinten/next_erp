@@ -23,6 +23,7 @@ import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client'
 import { useAuth } from '@/lib/auth';
 import { PhotoManager } from '../_components/PhotoManager';
 import { CustoField } from '../_components/CustoField';
+import { EstoqueManager } from '../_components/EstoqueManager';
 import { ExtraDataManager } from '../_components/ExtraDataManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../_components/PrecoCustoManager';
 import { VideoManager } from '../_components/VideoManager';
@@ -149,6 +150,13 @@ export default function NovoProdutoPage() {
             disabled={p.disabled}
           />
         ),
+      },
+      estoques: {
+        label: 'Estoque',
+        section: 'Estoque',
+        // Self-contained tab (decoupled from the parent save): in create mode it
+        // shows "Salve o produto antes de editar o estoque".
+        renderInput: (p) => <EstoqueManager produtoId={null} db={db} disabled={p.disabled} />,
       },
     }),
     [db, storage, listas, listasSnap.error?.message],

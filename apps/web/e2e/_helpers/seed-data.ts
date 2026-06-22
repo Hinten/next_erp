@@ -145,6 +145,20 @@ export async function seedDepositos(prefix: string, n: number): Promise<void> {
 }
 
 /**
+ * Seed exactly one ACTIVE deposito (`<prefix>-dep`, `ativo: true`) and return
+ * its id + nome. The Estoque tab lists active depósitos ordered by `nome`
+ * (bounded), so the seeded one shows as long as the shared collection stays
+ * under that cap. `timestamp` is stamped only for parity with the other deposito
+ * seeds (it does not affect the name-ordered list).
+ */
+export async function seedDepositoAtivo(prefix: string): Promise<{ id: string; nome: string }> {
+  const id = `${prefix}-dep`;
+  const nome = `${prefix}-dep`;
+  await db().collection('depositos').doc(id).set({ nome, ativo: true, timestamp: Date.now() });
+  return { id, nome };
+}
+
+/**
  * Seed `n` motivoIncidente docs. `ativo` alternates for the boolean filter.
  */
 export async function seedMotivosIncidente(prefix: string, n: number): Promise<void> {
@@ -1097,6 +1111,58 @@ export async function getProdutoExtraData(
     .doc('singleton')
     .get();
   return (snap.data() as Record<string, unknown> | undefined) ?? null;
+}
+
+/**
+ * The per-depósito estoque doc `produtos/<id>/estoques/est-<produtoId>-<depositoId>`
+ * (`makeEstoqueUid`), or null. The Estoque tab edits it directly.
+ */
+export async function getProdutoEstoque(
+  produtoId: string,
+  depositoId: string,
+): Promise<Record<string, unknown> | null> {
+  const snap = await db()
+    .collection('produtos')
+    .doc(produtoId)
+    .collection('estoques')
+    .doc(`est-${produtoId}-${depositoId}`)
+    .get();
+  return (snap.data() as Record<string, unknown> | undefined) ?? null;
+}
+
+/**
+ * All `historicoEstoque` movement records of a (produto, depósito) estoque doc
+ * (`produtos/<id>/estoques/est-..-../historicoEstoque`), raw wire data.
+ */
+export async function listHistoricoEstoque(
+  produtoId: string,
+  depositoId: string,
+): Promise<Array<Record<string, unknown>>> {
+  const snap = await db()
+    .collection('produtos')
+    .doc(produtoId)
+    .collection('estoques')
+    .doc(`est-${produtoId}-${depositoId}`)
+    .collection('historicoEstoque')
+    .get();
+  return snap.docs.map((d) => d.data() as Record<string, unknown>);
+}
+
+/**
+ * Delete a produto's `estoques` docs AND their nested `historicoEstoque` records
+ * (Firestore never cascades subcollections). Call per produto (parent + each
+ * variation child) in teardown.
+ */
+export async function cleanupProdutoEstoque(produtoId: string): Promise<void> {
+  const estoques = await db().collection('produtos').doc(produtoId).collection('estoques').get();
+  if (estoques.empty) return;
+  const batch = db().batch();
+  for (const est of estoques.docs) {
+    const hist = await est.ref.collection('historicoEstoque').get();
+    hist.docs.forEach((h) => batch.delete(h.ref));
+    batch.delete(est.ref);
+  }
+  await batch.commit();
 }
 
 /**

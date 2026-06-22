@@ -2,23 +2,34 @@ import {
   type DocumentReference,
   type Firestore,
   getDocsFromServer,
+  increment,
   writeBatch,
 } from 'firebase/firestore';
 import { buildQuery, limit, whereArrayContains, whereEqual } from '@delfrance/data';
 import {
   buildExtraDataWriteOps,
+  buildLocalizacaoOp,
+  planMovimentacao,
+  type MovimentacaoInput,
   type ProdutoDataPort,
   type ProdutoSnapshot,
   type ProdutoWriteOp,
 } from '@delfrance/data/produto';
 import type { TransactionWrite } from '@delfrance/ui';
-import type { ProdutoExtraData } from '@delfrance/schemas';
+import {
+  estoqueProdutoSchema,
+  historicoEstoqueSchema,
+  makeEstoqueUid,
+  type ProdutoExtraData,
+} from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import {
   historicoCustoCollection,
   historicoPrecoCollection,
 } from '@/lib/data/historicoCollections';
 import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
+import { estoqueProdutoCollection } from '@/lib/data/estoqueProdutoCollection';
+import { historicoEstoqueCollection } from '@/lib/data/historicoEstoqueCollection';
 import { PRODUTO_MARKETPLACE_SUBCOLLECTIONS } from '@/lib/data/produtoMarketplaceSubcollections';
 import { newDocId } from './docId';
 
@@ -52,17 +63,22 @@ function refForPath(db: Firestore, path: string): DocumentReference {
     if (sub === 'extraData') {
       return produtoExtraDataCollection.docRef(db, { produtoId }, id) as DocumentReference;
     }
+    if (sub === 'estoques') {
+      return estoqueProdutoCollection.docRef(db, { produtoId }, id) as DocumentReference;
+    }
   }
   throw new Error(`clientProdutoPort: unmapped write path "${path}"`);
 }
 
 /**
  * The produto's transient subdocuments to write ATOMICALLY with the produto doc
- * (ObjectView `transactionWrites`): currently the `extraData` singleton. Reuses
- * the framework-agnostic `buildExtraDataWriteOps` use-case for the wire shape and
- * maps each domain path to a converter-bound ref so it rides `saveRecord`'s
- * transaction — one commit, all-or-nothing (no orphan produto on a flaky link).
- * (Estoque/imposto append their own writes here when their tabs land.)
+ * (ObjectView `transactionWrites`): the `extraData` singleton. Reuses the
+ * framework-agnostic `buildExtraDataWriteOps` use-case for the wire shape and maps
+ * the domain path to a converter-bound ref so it rides `saveRecord`'s transaction
+ * — one commit, all-or-nothing (no orphan produto on a flaky link). (Estoque is
+ * NOT here — it spans the parent + each variation child, each its own produto doc,
+ * and is edited directly in the Estoque tab via `setEstoqueLocalizacao` /
+ * `movimentarEstoque`, not on the parent save.)
  */
 export function buildProdutoTransactionWrites(
   db: Firestore,
@@ -70,18 +86,102 @@ export function buildProdutoTransactionWrites(
   values: Record<string, unknown>,
 ): TransactionWrite[] {
   const writes: TransactionWrite[] = [];
+  const pushOp = (op: ProdutoWriteOp) => {
+    if (op.type === 'delete') return;
+    writes.push({
+      type: op.type,
+      ref: refForPath(db, op.path) as DocumentReference<unknown>,
+      data: op.data,
+    });
+  };
+
   const extra = (values.extraData as ProdutoExtraData | null) ?? null;
   if (extra) {
-    for (const op of buildExtraDataWriteOps(produtoId, extra)) {
-      if (op.type === 'delete') continue;
-      writes.push({
-        type: op.type,
-        ref: refForPath(db, op.path) as DocumentReference<unknown>,
-        data: op.data,
-      });
-    }
+    for (const op of buildExtraDataWriteOps(produtoId, extra)) pushOp(op);
   }
+
   return writes;
+}
+
+/**
+ * Set a depósito's `localizacao` for a produto — an immediate write decoupled
+ * from the parent form save (estoque spans the parent + each variation child).
+ * On an existing estoque it is a `localizacao`-only `update`; otherwise it
+ * creates a fresh estoque (`quantidade: 0`). Mirrors the Flutter
+ * `editarLocalizacao` — quantities are never touched here.
+ */
+export async function setEstoqueLocalizacao(
+  db: Firestore,
+  args: { produtoId: string; depositoId: string; localizacao: string | null; hasExisting: boolean },
+): Promise<void> {
+  const op = buildLocalizacaoOp(
+    args.produtoId,
+    args.depositoId,
+    args.localizacao,
+    args.hasExisting,
+    Date.now(),
+  );
+  const ref = refForPath(db, op.path);
+  const batch = writeBatch(db);
+  if (op.type === 'update') batch.update(ref, op.data as never);
+  else if (op.type === 'set') batch.set(ref, op.data as never);
+  await batch.commit();
+}
+
+/**
+ * Apply a stock movement (entrada / saída / balanço) for one (produto, depósito),
+ * conflict-safe: entrada/saída use an atomic `increment` on the estoque doc — it
+ * NEVER overwrites the server count — while balanço sets the absolute counted
+ * value; a `HistoricoEstoque` audit record is appended in the SAME `writeBatch`.
+ * When no estoque doc exists yet it is created with the movement's resulting
+ * quantities (increment-from-zero == the delta). Mirrors Flutter `movimentar`.
+ */
+export async function movimentarEstoque(
+  db: Firestore,
+  args: { produtoId: string; depositoId: string; hasExisting: boolean; input: MovimentacaoInput },
+): Promise<void> {
+  const now = Date.now();
+  const plan = planMovimentacao(args.input, now);
+  const estoqueId = makeEstoqueUid(args.produtoId, args.depositoId);
+  const estoqueRef = estoqueProdutoCollection.docRef(db, { produtoId: args.produtoId }, estoqueId);
+  const historicoRef = historicoEstoqueCollection.docRef(
+    db,
+    { produtoId: args.produtoId, estoqueId },
+    newDocId(),
+  );
+
+  const batch = writeBatch(db);
+  if (!args.hasExisting) {
+    // First movement on this (produto, depósito): create the doc with the
+    // resulting quantities (reservada floored at 0 to satisfy the schema).
+    batch.set(
+      estoqueRef,
+      estoqueProdutoSchema.parse({
+        parentId: args.produtoId,
+        depositoOuterRef: `documents/depositos/${args.depositoId}`,
+        quantidade: plan.quantidade,
+        quantidadeReservada: Math.max(0, plan.quantidadeReservada),
+        dataCriacao: now,
+        ultimaModificacao: now,
+      }) as never,
+    );
+  } else if (plan.ehBalanco) {
+    // Balanço — set the absolute counted value (a deliberate override).
+    batch.update(estoqueRef, {
+      quantidade: plan.quantidade,
+      quantidadeReservada: plan.quantidadeReservada,
+      ultimaModificacao: now,
+    } as never);
+  } else {
+    // Entrada/saída — atomic increment, never clobbering a concurrent movement.
+    batch.update(estoqueRef, {
+      quantidade: increment(plan.quantidade),
+      quantidadeReservada: increment(plan.quantidadeReservada),
+      ultimaModificacao: now,
+    } as never);
+  }
+  batch.set(historicoRef, historicoEstoqueSchema.parse(plan.historico) as never);
+  await batch.commit();
 }
 
 const toSnapshot = (

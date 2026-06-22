@@ -337,6 +337,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_estoque', 4);
     }
 
+    match /produtos/{produtoId}/estoques/{estoqueId}/historicoEstoque/{docId} {
+      allow read: if isSuperUser() || p('d_estoque', 1);
+      allow create, update: if isSuperUser() || p('d_estoque', 2);
+      allow delete: if isSuperUser() || p('d_estoque', 4);
+    }
+
     match /produtos/{produtoId}/extraData/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
@@ -447,6 +453,9 @@ service cloud.firestore {
     }
     match /{path=**}/historicoEstadoPedido/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
+    }
+    match /{path=**}/historicoEstoque/{docId} {
+      allow read: if isSuperUser() || p('d_estoque', 1);
     }
     match /{path=**}/imposto/{docId} {
       allow read: if isSuperUser() || p('d_impostoProduto', 1);

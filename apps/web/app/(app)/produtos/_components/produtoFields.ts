@@ -22,6 +22,7 @@ export const PRODUTO_SECTIONS: string[] = [
   'Dimensões e peso',
   'Configurações',
   'Preço e custo',
+  'Estoque',
   'Variações',
   'Fotos',
   'Vídeos',
@@ -75,14 +76,19 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
   // (a TRANSIENT field — see `PRODUTO_TRANSIENT_FIELDS`). Its renderInput
   // (ExtraDataManager) is wired per page since it needs `produtoId`/`db`.
   extraData: { label: 'Descrição', section: 'Descrição' },
+
+  // `estoques` is the aggregate page model's per-depósito stock (a TRANSIENT
+  // field). Its renderInput (EstoqueManager) is wired per page since it needs
+  // `produtoId`/`db`.
+  estoques: { label: 'Estoque', section: 'Estoque' },
 };
 
 /**
  * Aggregate page-model fields that are validated + rendered but live in their
  * own documents, NOT on the produto doc — passed to `ObjectView.transientFields`
- * so they are stripped from the produto write and persisted in `onAfterSave`.
- * `id` is the produto id, present only for the cross-document self-reference
- * check; `estoques`/`impostos` land with their own tabs (excluded for now).
+ * so they are stripped from the produto write and persisted atomically via the
+ * page's `transactionWrites`. `id` is the produto id, present only for the
+ * cross-document self-reference check; `impostos` lands with its own tab.
  */
 export const PRODUTO_TRANSIENT_FIELDS: string[] = ['id', 'extraData', 'estoques', 'impostos'];
 
@@ -108,10 +114,9 @@ export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   'paiId',
   'ordem',
   // Aggregate page-model fields with no UI of their own yet: `id` is only a
-  // validation context; `estoques`/`impostos` get dedicated tabs in later
-  // slices. (`extraData` renders in the Descrição tab.)
+  // validation context; `impostos` gets a dedicated tab in a later slice.
+  // (`extraData` renders in the Descrição tab, `estoques` in the Estoque tab.)
   'id',
-  'estoques',
   'impostos',
 ];
 
