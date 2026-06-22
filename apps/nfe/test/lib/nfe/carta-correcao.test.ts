@@ -488,6 +488,8 @@ describe('reconcileCartaCorrecaoVinculo (#81 CC-e 136 re-check)', () => {
     expect(w?.estado).toBeUndefined();
     expect(w?.retries).toBe(1);
     expect(w?.proximaConsultaEm).toBeTypeOf('number');
+    // The latest re-send response is persisted (diagnostics), not just the first 136.
+    expect(w?.xml_retorno).toContain('retEnvEvento');
   });
 
   it('136 at the attempt cap → terminal error, no further re-check', async () => {
@@ -510,6 +512,8 @@ describe('reconcileCartaCorrecaoVinculo (#81 CC-e 136 re-check)', () => {
     expect(w?.estado).toBe(ESTADO_ENVI_NFE_MSG.error);
     expect(w?.proximaConsultaEm).toBeNull();
     expect(w?.retries).toBeNull();
+    // Terminal closure persists the final SEFAZ response, like the other paths.
+    expect(w?.xml_retorno).toContain('retEnvEvento');
   });
 
   it('any other cStat → terminal error (rejected)', async () => {

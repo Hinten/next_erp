@@ -412,6 +412,9 @@ export async function reconcileCartaCorrecaoVinculo(
         cStat,
         xMotivo,
         error: `CC-e não vinculada à NF-e após ${MAX_RECONCILE_ATTEMPTS} tentativas (cStat 136).`,
+        // Persist the final SEFAZ response on terminal closure — consistent with
+        // the resolved/rejected paths (audit + diagnostics).
+        xml_retorno: rawResponse,
         proximaConsultaEm: null,
         retries: null,
         ultima_modificacao: now(),
@@ -421,6 +424,9 @@ export async function reconcileCartaCorrecaoVinculo(
     await cartaCorrecaoCollection.merge(fs, ctx, cceId, {
       cStat,
       xMotivo,
+      // Keep the latest re-send response so the record's diagnostics reflect the
+      // most recent SEFAZ exchange, not just the first 136.
+      xml_retorno: rawResponse,
       retries: nextAttempt,
       proximaConsultaEm:
         nowMicros() + (nextConsultaDelayMs(nextAttempt) + RECONCILE_SWEEP_GRACE_MS) * 1000,
