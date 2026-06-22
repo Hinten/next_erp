@@ -13,6 +13,7 @@
     "seed:enderecos": "dotenv -e ../../.env.local -- tsx src/seed-enderecos-dev.ts",
     "seed:pedidos": "dotenv -e ../../.env.local -- tsx src/seed-pedidos-dev.ts",
     "seed:frete-me": "dotenv -e ../../.env.local -- tsx src/seed-frete-melhor-envio-dev.ts",
+    "debug:me-cart": "dotenv -e ../../.env.local -- tsx src/debug-me-cart.ts",
     "seed:nfe": "dotenv -e ../../.env.local -- tsx src/seed-nfe-dev.ts",
     "seed:variacoes": "dotenv -e ../../.env.local -- tsx src/seed-variacoes-dev.ts",
     "seed:precos": "dotenv -e ../../.env.local -- tsx src/seed-precos-dev.ts",
