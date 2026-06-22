@@ -44,30 +44,32 @@ mounts each from Secret Manager into `process.env` at runtime. Firebase requires
 **every declared secret to exist before deploy** — set them all:
 
 ```bash
-firebase functions:secrets:set NFE_CERT_ENC_KEY      --project <project-id>  # decrypts an uploaded filial A1
-firebase functions:secrets:set NFE_CERT_BASE64       --project <project-id>  # env-fallback A1 (test)
-firebase functions:secrets:set NFE_CERT_PASSWORD     --project <project-id>  # env-fallback A1 password (test)
-firebase functions:secrets:set NFE_CERT_ENV_FALLBACK --project <project-id>  # value: 1  (test flag)
+firebase functions:secrets:set NFE_CERT_ENC_KEY  --project <project-id>  # decrypts an uploaded filial A1
+firebase functions:secrets:set NFE_CERT_BASE64    --project <project-id>  # env-fallback A1 (test)
+firebase functions:secrets:set NFE_CERT_PASSWORD  --project <project-id>  # env-fallback A1 password (test)
 ```
 
 - **Prod path:** upload a real A1 to each filial (encrypted with `NFE_CERT_ENC_KEY`)
-  → only `NFE_CERT_ENC_KEY` is actually used; **trim the other three** from the
+  → only `NFE_CERT_ENC_KEY` is actually used; **trim the other two** from the
   `secrets` array in `src/options.ts`.
 - **Test path (env-fallback):** a filial with no uploaded cert signs with the env
-  A1 — keep all four. `NFE_CERT_ENV_FALLBACK` is a flag, routed through secrets only
-  because there's no non-secret env channel yet.
+  A1 — keep all three, and set `NFE_CERT_ENV_FALLBACK=1` in `.env` (below).
 
 > `NFE_TEST_CNPJ` / `NFE_TEST_IE` are **not** function secrets — the reconcile path
 > never reads them. They're for the **local seed/emit script** (`.env.local`), which
 > stamps the test filial's CNPJ/IE. Don't declare them here.
 
-**Non-secret config.** `NFE_AMBIENTE` / `NFE_UF` **default to `homologacao` / `SP`**
-in `runtime.ts`, so a SP homologação test needs nothing else. Admin creds come from
-ADC (automatic on Functions); the queue region defaults to the function's own
-region (set in `options.ts`). For **produção** (`NFE_AMBIENTE=producao` +
-`NFE_ALLOW_PRODUCAO=true`, since the sweep's EPEC branch signs + emits) or any
-non-default, ship a `.env` that the predeploy copies into the artifact (follow-up)
-or inline it at build like `FUNCTIONS_REGION`.
+**Non-secret config (`.env`).** Put non-secret runtime config in
+**`apps/nfe/functions/.env`** (gitignored; see `.env.example`). `prepare-deploy.mjs`
+copies `.env*` (except `.env.local`/`.env.example`) into the artifact, and firebase
+loads it as the function's runtime env at deploy.
+
+- For the **env-fallback test**, the only needed var is `NFE_CERT_ENV_FALLBACK=1`.
+- `NFE_AMBIENTE` / `NFE_UF` **default to `homologacao` / `SP`** (`runtime.ts`), so a
+  SP homologação test needs nothing else. Admin creds come from ADC; the queue
+  region defaults to the function's own region.
+- **Produção:** `NFE_AMBIENTE=producao` + `NFE_ALLOW_PRODUCAO=true` (the sweep's EPEC
+  branch signs + emits). `FIREBASE_*` names are reserved and can't be set via `.env`.
 
 ## One-time IAM (the apps/nfe App Hosting app enqueues to this function's queue)
 

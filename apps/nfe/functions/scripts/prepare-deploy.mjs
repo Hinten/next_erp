@@ -9,6 +9,8 @@ import {
   symlinkSync,
   existsSync,
   cpSync,
+  readdirSync,
+  copyFileSync,
 } from 'node:fs';
 
 // Builds the deploy artifact for the `nfe` Cloud Functions codebase. Run as the
@@ -60,6 +62,16 @@ cpSync(join(nfeLib, 'ca'), join(deployDir, 'ca'), { recursive: true });
 cpSync(join(nfeLib, 'generated', 'moc7.0', 'schemas'), join(deployDir, 'schemas'), {
   recursive: true,
 });
+
+// 3b. Copy NON-secret env files into the artifact so the deployed function gets
+//     them: firebase loads `.env` + `.env.<projectId>` from the source dir at
+//     deploy. `.env.local` is emulator-only; `.env.example` is the doc template.
+//     (Secrets live in Secret Manager, declared via setGlobalOptions — NOT here.)
+for (const f of readdirSync(pkgDir)) {
+  if (f.startsWith('.env') && f !== '.env.local' && f !== '.env.example') {
+    copyFileSync(join(pkgDir, f), join(deployDir, f));
+  }
+}
 
 // 4. Junction the app's installed node_modules so firebase-tools' LOCAL trigger
 //    analysis can find + spawn the Functions SDK; kept OUT of the upload by
