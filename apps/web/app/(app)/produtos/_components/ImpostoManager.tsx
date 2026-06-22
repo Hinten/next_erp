@@ -103,7 +103,11 @@ export function ImpostoManager({
     if (operacoes.length === 0) return;
     const byOperacao = new Map<string, ImpostoProduto>();
     for (const d of impostosSnap.data ?? []) {
-      const opId = operacaoIdFromImpostoRef(d.data.impostoOpercaoOuterRef) ?? d.id;
+      const opId = operacaoIdFromImpostoRef(d.data.impostoOpercaoOuterRef);
+      // Skip a null-scoped (default-fallback) imposto — it is not a per-operação
+      // entry; leaving it out of the form keeps it untouched on save (rather than
+      // rewriting its scope to a fake `operacao/<docId>`).
+      if (!opId) continue;
       byOperacao.set(opId, { ...d.data, id: d.id, impostoOpercaoOuterRef: `operacao/${opId}` });
     }
     onChange(operacoes.map((op) => byOperacao.get(op.id) ?? emptyImposto(op.id)));

@@ -256,9 +256,11 @@ function impostoCarriesInfo(imp: ImpostoProduto): boolean {
     imp.extipi,
     imp.unidade,
   ];
+  // An explicit `compoeValorTotalDaNFe` (true OR false) is a real override worth
+  // keeping; only a pristine `null` counts as empty.
   return (
     strings.some((v) => typeof v === 'string' && v.trim() !== '') ||
-    imp.compoeValorTotalDaNFe === true
+    imp.compoeValorTotalDaNFe != null
   );
 }
 

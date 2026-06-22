@@ -95,7 +95,8 @@ export function buildProdutoTransactionWrites(
   const pushOp = (op: ProdutoWriteOp) => {
     const ref = refForPath(db, op.path) as DocumentReference<unknown>;
     if (op.type === 'delete') writes.push({ type: 'delete', ref });
-    else writes.push({ type: op.type, ref, data: op.data });
+    else if (op.type === 'update') writes.push({ type: 'update', ref, data: op.data });
+    else writes.push({ type: 'set', ref, data: op.data });
   };
 
   const extra = (values.extraData as ProdutoExtraData | null) ?? null;

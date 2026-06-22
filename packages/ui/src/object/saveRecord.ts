@@ -23,11 +23,10 @@ import { isEmpty, pickDirty } from './diff';
  * removes the doc (e.g. an imposto whose operação was cleared) — `data` is
  * ignored for `delete`.
  */
-export interface TransactionWrite {
-  type: 'set' | 'update' | 'delete';
-  ref: DocumentReference<unknown>;
-  data?: Record<string, unknown>;
-}
+export type TransactionWrite =
+  | { type: 'set'; ref: DocumentReference<unknown>; data: Record<string, unknown> }
+  | { type: 'update'; ref: DocumentReference<unknown>; data: Record<string, unknown> }
+  | { type: 'delete'; ref: DocumentReference<unknown> };
 
 export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, unknown>> {
   db: Firestore;

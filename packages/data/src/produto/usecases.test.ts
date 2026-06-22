@@ -204,6 +204,12 @@ describe('produto imposto (per-operação override)', () => {
     expect(buildImpostoWriteOps('p1', [imp({})], 1000)).toEqual([]);
   });
 
+  it('keeps an entry whose only value is an explicit compoeValorTotalDaNFe=false', () => {
+    const ops = buildImpostoWriteOps('p1', [imp({ compoeValorTotalDaNFe: false })], 1000);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/p1/imposto/op1' });
+  });
+
   it('reads the operação id from a documents/operacao/<id> ref too', () => {
     const ops = buildImpostoWriteOps(
       'p2',
