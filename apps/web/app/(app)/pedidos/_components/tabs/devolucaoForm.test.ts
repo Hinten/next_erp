@@ -1,114 +1,128 @@
 import { describe, expect, it } from 'vitest';
 import type { ItemDoPedido } from '@delfrance/schemas';
 import {
-  buildDevolucaoRows,
   buildItensDevolvidos,
-  distributeReturn,
-  returnedQtyByProduto,
-  type DevolucaoRow,
+  clonePedidoItems,
+  editRowsFromItensDevolvidos,
+  newAvulsoRow,
+  type DevolucaoEditRow,
 } from './devolucaoForm';
 
-function item(overrides: Partial<ItemDoPedido> & { _rowId?: string }): ItemDoPedido {
+function item(overrides: Partial<ItemDoPedido> = {}): ItemDoPedido {
   return {
     produtoUid: 'p1',
     ordem: 1,
     nomeDeVenda: 'Produto 1',
+    sku: 'SKU1',
     precoDeVenda: 10,
     descontoUnitario: 0,
-    quantidade: 1,
+    quantidade: 2,
     custo: 4,
     ...overrides,
   } as ItemDoPedido;
 }
 
-describe('returnedQtyByProduto', () => {
-  it('sums returned quantity per produto across origins', () => {
-    const dev = {
-      o1: { p1: [item({ quantidade: 2 })] },
-      o2: { p1: [item({ quantidade: 1 })], p2: [item({ produtoUid: 'p2', quantidade: 3 })] },
-    };
-    expect(returnedQtyByProduto(dev)).toEqual({ p1: 3, p2: 3 });
+describe('clonePedidoItems', () => {
+  it('clones an origin order into capped, produto-locked rows', () => {
+    const rows = clonePedidoItems(
+      {
+        numero: 'PED-9',
+        itens: { p1: [item({ quantidade: 3 })], p2: [item({ produtoUid: 'p2', quantidade: 1 })] },
+      },
+      'origin1',
+    );
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      originId: 'origin1',
+      originLabel: 'PED-9',
+      produtoUid: 'p1',
+      quantidade: 3,
+      maxQty: 3,
+    });
+    expect(rows[1]).toMatchObject({ produtoUid: 'p2', quantidade: 1, maxQty: 1 });
   });
 
-  it('is empty for null', () => {
-    expect(returnedQtyByProduto(null)).toEqual({});
-  });
-});
-
-describe('buildDevolucaoRows', () => {
-  it('groups sold items per produto with sold + returned quantities, ordered by ordem', () => {
-    const sold = [
-      item({ produtoUid: 'p2', ordem: 2, nomeDeVenda: 'B', quantidade: 1 }),
-      item({ produtoUid: 'p1', ordem: 1, nomeDeVenda: 'A', quantidade: 3 }),
-    ];
-    const dev = { o1: { p1: [item({ quantidade: 2 })] } };
-    const rows = buildDevolucaoRows(sold, dev);
-    expect(rows.map((r) => r.produtoUid)).toEqual(['p1', 'p2']); // ordem 1 before 2
-    expect(rows[0]).toMatchObject({ produtoUid: 'p1', nome: 'A', soldQty: 3, returnedQty: 2 });
-    expect(rows[1]).toMatchObject({ produtoUid: 'p2', nome: 'B', soldQty: 1, returnedQty: 0 });
-  });
-
-  it('buckets items without a produtoUid under NONE', () => {
-    const rows = buildDevolucaoRows([item({ produtoUid: null, nomeDeVenda: 'Avulso' })], null);
-    expect(rows[0]?.produtoUid).toBe('NONE');
-    expect(rows[0]?.nome).toBe('Avulso');
+  it('falls back to a Pedido <id> label when número is absent', () => {
+    const rows = clonePedidoItems({ itens: { p1: [item()] } }, 'abc');
+    expect(rows[0]?.originLabel).toBe('Pedido abc');
   });
 });
 
-describe('distributeReturn', () => {
-  it('fills rows in order, capped at each row quantity, preserving price/custo', () => {
-    const source = [
-      item({ ordem: 1, quantidade: 3, precoDeVenda: 10, custo: 4 }),
-      item({ ordem: 2, quantidade: 2, precoDeVenda: 12, custo: 5 }),
-    ];
-    const out = distributeReturn(source, 4);
-    expect(out).toEqual([
-      expect.objectContaining({ quantidade: 3, precoDeVenda: 10, custo: 4 }),
-      expect.objectContaining({ quantidade: 1, precoDeVenda: 12, custo: 5 }),
-    ]);
-  });
-
-  it('strips the synthetic _rowId', () => {
-    const out = distributeReturn([item({ _rowId: 'row-1', quantidade: 2 })], 1);
-    expect(out[0]).not.toHaveProperty('_rowId');
-    expect(out[0]?.quantidade).toBe(1);
-  });
-
-  it('returns nothing when the returned quantity is zero', () => {
-    expect(distributeReturn([item({ quantidade: 5 })], 0)).toEqual([]);
+describe('newAvulsoRow', () => {
+  it('creates an empty avulso row with no produto and no cap', () => {
+    const row = newAvulsoRow();
+    expect(row).toMatchObject({ originId: 'NONE', produtoUid: null, maxQty: null, quantidade: 1 });
   });
 });
 
 describe('buildItensDevolvidos', () => {
-  const rows: DevolucaoRow[] = [
-    {
+  function row(overrides: Partial<DevolucaoEditRow>): DevolucaoEditRow {
+    return {
+      rowId: 'r',
+      originId: 'origin1',
+      originLabel: 'PED-9',
       produtoUid: 'p1',
-      nome: 'A',
-      soldQty: 3,
-      returnedQty: 2,
-      sourceItems: [item({ quantidade: 3 })],
-    },
-    {
-      produtoUid: 'p2',
-      nome: 'B',
-      soldQty: 1,
-      returnedQty: 0,
-      sourceItems: [item({ produtoUid: 'p2', quantidade: 1 })],
-    },
-  ];
+      nome: 'Produto 1',
+      sku: 'SKU1',
+      precoDeVenda: 10,
+      descontoUnitario: 0,
+      custo: 4,
+      quantidade: 2,
+      maxQty: 3,
+      source: item(),
+      _delete: false,
+      ...overrides,
+    };
+  }
 
-  it('groups returned rows under the origin key, skipping zero rows', () => {
-    const out = buildItensDevolvidos(rows, 'ped1');
-    expect(out).toEqual({ ped1: { p1: [expect.objectContaining({ quantidade: 2 })] } });
+  it('groups rows under origin/produto with the edited quantity', () => {
+    const out = buildItensDevolvidos([row({ quantidade: 2 })]);
+    expect(out).toEqual({
+      origin1: { p1: [expect.objectContaining({ quantidade: 2, precoDeVenda: 10 })] },
+    });
   });
 
-  it('returns null when nothing is returned', () => {
-    const cleared = rows.map((r) => ({ ...r, returnedQty: 0 }));
-    expect(buildItensDevolvidos(cleared, 'ped1')).toBeNull();
+  it('places avulso rows under NONE keyed by the picked produto', () => {
+    const out = buildItensDevolvidos([
+      row({ originId: 'NONE', produtoUid: 'pX', nome: 'Avulso X', maxQty: null }),
+    ]);
+    expect(out).toEqual({
+      NONE: { pX: [expect.objectContaining({ produtoUid: 'pX', nomeDeVenda: 'Avulso X' })] },
+    });
   });
 
-  it('round-trips through returnedQtyByProduto', () => {
-    const out = buildItensDevolvidos(rows, 'ped1');
-    expect(returnedQtyByProduto(out)).toEqual({ p1: 2 });
+  it('skips deleted rows, zero-qty rows, and avulso rows without a produto', () => {
+    expect(buildItensDevolvidos([row({ _delete: true })])).toBeNull();
+    expect(buildItensDevolvidos([row({ quantidade: 0 })])).toBeNull();
+    expect(buildItensDevolvidos([row({ originId: 'NONE', produtoUid: null })])).toBeNull();
+  });
+
+  it('strips a synthetic _rowId leaking from the source item', () => {
+    const out = buildItensDevolvidos([
+      row({ source: { ...item(), _rowId: 'row-1' } as ItemDoPedido }),
+    ]);
+    expect(out?.origin1?.p1?.[0]).not.toHaveProperty('_rowId');
+  });
+});
+
+describe('editRowsFromItensDevolvidos round-trips', () => {
+  it('seeds rows from a saved map and rebuilds an equal map', () => {
+    const saved = {
+      origin1: { p1: [item({ quantidade: 2 })] },
+      NONE: { pX: [item({ produtoUid: 'pX', nomeDeVenda: 'Avulso X', quantidade: 1 })] },
+    };
+    const rows = editRowsFromItensDevolvidos(saved);
+    expect(rows).toHaveLength(2);
+    expect(rows.find((r) => r.originId === 'NONE')).toMatchObject({
+      produtoUid: 'pX',
+      maxQty: null,
+    });
+    const rebuilt = buildItensDevolvidos(rows);
+    expect(rebuilt?.origin1?.p1?.[0]?.quantidade).toBe(2);
+    expect(rebuilt?.NONE?.pX?.[0]?.quantidade).toBe(1);
+  });
+
+  it('is empty for null', () => {
+    expect(editRowsFromItensDevolvidos(null)).toEqual([]);
   });
 });

@@ -162,7 +162,6 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
   for (const issue of pedidoPageIssues({
     itens: merged.itens,
     integracaoPedidoOuterRef: merged.integracaoPedidoOuterRef,
-    itensDevolvidos: merged.itensDevolvidos,
   })) {
     const field = issue.path === 'itens' ? '_itensFlat' : issue.path;
     extraErrors[field] = { type: 'pageModel', message: issue.message };
@@ -326,7 +325,7 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="devolucao" pt="md">
-            <DevolucaoTab form={form} disabled={disabled} pedidoId={pedidoId} />
+            <DevolucaoTab form={form} db={db} disabled={disabled} />
           </Tabs.Panel>
 
           <Tabs.Panel value="estado" pt="md">
