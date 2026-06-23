@@ -10,7 +10,6 @@ import {
   type SefazOutcome,
   type TpEmis,
 } from '@delfrance/integrations-nfe';
-import type { NotaFiscalEletronica } from '@delfrance/schemas';
 
 import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
@@ -56,7 +55,9 @@ export async function consultarPedido(
   // the operator means.
   const slotsSnap = await nfev4Collection.ref(fs, { pedidoId }).get();
   const chosen = slotsSnap.docs
-    .map((d) => ({ id: d.id, nota: d.data() as NotaFiscalEletronica }))
+    // Admin reads bypass the converter — parse each doc so a legacy ISO
+    // `ultima_modificacao` is coerced to ms (else the numeric sort below → NaN).
+    .map((d) => ({ id: d.id, nota: nfev4Collection.parseRead(d.data(), d.ref.path) }))
     .filter((c) => c.nota.chave)
     // `ultima_modificacao` is ms since epoch → numeric compare (newest first).
     .sort((a, b) => (b.nota.ultima_modificacao ?? 0) - (a.nota.ultima_modificacao ?? 0))[0];
