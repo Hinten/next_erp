@@ -203,13 +203,16 @@ function freteInicial(opts: {
   return {
     externalId: null,
     printLabelId: opts.printLabelId,
-    // A pre-selected quote (Correios PAC = service 1) so the panel is "ready".
-    // If a live buy 422s, re-quote with "Calcular frete" and re-select.
-    externalOptionId: '1',
+    // A pre-selected quote — Jadlog .Package (service 3). Jadlog is a drop-off
+    // carrier, so the buy auto-resolves its posting agency (`ensureCartAgency`).
+    // Correios (service 1/2) needs a real NF-e (commercial) or a real DC-e
+    // (non_commercial), so it can't be bought from a plain dev pedido — use
+    // Jadlog for the live buy test. Re-quote in the UI to switch carriers.
+    externalOptionId: '3',
     // The integração **tipo** enum (`integracoesFreteSchema`), not the doc id —
     // matches what `onSelectQuote` writes (see #218 / PR #223).
     externalOptionIntegracao: 'melhorEnvios',
-    externalOptionData: { id: 1, name: 'PAC', company: { id: 1, name: 'Correios' } },
+    externalOptionData: { id: 3, name: '.Package', company: { id: 2, name: 'Jadlog' } },
     externalOptionSelectionDate: us(now),
     estado: opts.estado,
     // String doc-path refs (what IntegracaoFreteSelect / EnderecoPicker write;

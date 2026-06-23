@@ -9,6 +9,7 @@ export * from './errors';
 export * from './oauth';
 export * from './token-store';
 export * from './api';
+export * from './agency';
 export * from './calculate';
 export * from './cart';
 export * from './comprarEtiqueta';
