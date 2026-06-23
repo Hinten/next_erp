@@ -5,7 +5,7 @@ description: Get the monorepo running on your machine.
 
 ## Prerequisites
 
-- Node 20.10+
+- Node 22+
 - pnpm 9+
 - A Firebase project (your own — the maintainers' staging project is reserved for CI)
 
