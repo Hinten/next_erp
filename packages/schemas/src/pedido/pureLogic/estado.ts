@@ -40,3 +40,20 @@ const BUCKET_BY_STATE: Record<EstadoPedido, EstadoBucket> = {
 export function bucketOf(estado: EstadoPedido): EstadoBucket {
   return BUCKET_BY_STATE[estado];
 }
+
+/**
+ * States from which a pedido's items can be RETURNED (devolução): only
+ * paid/settled orders. The legacy `ESTADOS_PEDIDO.podeTrocar`
+ * (`.old/.../models.dart:2430`) used an exclusion list; we use the equivalent
+ * ALLOW-list (its complement) so a newly-added `EstadoPedido` defaults to
+ * "not returnable" — the safe default.
+ */
+const PODE_TROCAR: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  'pago',
+  'estornadoParcialmente',
+  'finalizado',
+]);
+
+export function podeTrocar(estado: EstadoPedido): boolean {
+  return PODE_TROCAR.has(estado);
+}

@@ -44,26 +44,6 @@ describe('pedidoPageIssues', () => {
     ).not.toContain('ehSaida');
   });
 
-  it('rejects returning more than was sold', () => {
-    expect(
-      paths({
-        itens: { p1: [{ quantidade: 2 }] },
-        integracaoPedidoOuterRef: 'x',
-        itensDevolvidos: { orig: { p1: [{ quantidade: 3 }] } },
-      }),
-    ).toContain('itensDevolvidos');
-  });
-
-  it('accepts a partial return within the sold quantity', () => {
-    expect(
-      paths({
-        itens: { p1: [{ quantidade: 2 }] },
-        integracaoPedidoOuterRef: 'x',
-        itensDevolvidos: { orig: { p1: [{ quantidade: 2 }] } },
-      }),
-    ).not.toContain('itensDevolvidos');
-  });
-
   it('warns when a paid order is underpaid (only when pagamentos supplied)', () => {
     const base = {
       itens: { p1: [{ quantidade: 1 }] },

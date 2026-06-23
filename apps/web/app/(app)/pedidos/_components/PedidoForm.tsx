@@ -19,6 +19,7 @@ import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import {
+  DevolucaoTab,
   EstadoHistoricoTab,
   FiscalTab,
   FreteTab,
@@ -324,7 +325,7 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="devolucao" pt="md">
-            <PlaceholderTab name="Devolução" preview={form.getValues('itensDevolvidos')} />
+            <DevolucaoTab form={form} db={db} disabled={disabled} pedidoId={pedidoId} />
           </Tabs.Panel>
 
           <Tabs.Panel value="estado" pt="md">
