@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActionIcon,
   Badge,
@@ -17,7 +17,13 @@ import {
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
 import { type UseFormReturn } from 'react-hook-form';
 import { type Firestore } from 'firebase/firestore';
-import { flattenItensDevolvidos, itemCusto, itemSubtotal, type Pedido } from '@delfrance/schemas';
+import {
+  flattenItensDevolvidos,
+  itemCusto,
+  itemSubtotal,
+  valuesEqual,
+  type Pedido,
+} from '@delfrance/schemas';
 import { ProdutoPicker } from '@/components/pickers/ProdutoPicker';
 import { CurrencyInput } from '@/app/(app)/produtos/_components/CurrencyInput';
 import type { PedidoFormState } from '../types';
@@ -75,23 +81,30 @@ export function DevolucaoTab({ form, db, disabled, pedidoId }: DevolucaoTabProps
   );
   const [originModalOpen, setOriginModalOpen] = useState(false);
 
-  // `itensDevolvidos` (the form value) is the source of truth for save + totals;
-  // every edit rebuilds it from the rows.
-  function commit(next: DevolucaoEditRow[]) {
-    setRows(next);
-    form.setValue('itensDevolvidos', buildItensDevolvidos(next), { shouldDirty: true });
-  }
+  // `itensDevolvidos` (the form value) is the source of truth for save + totals.
+  // Sync it whenever the rows change. Comparing the rebuilt value (instead of a
+  // first-run flag) keeps this idempotent under React StrictMode's double-invoke
+  // — no spurious dirty when nothing actually changed; all row mutations use
+  // functional `setRows` so rapid edits can't drop an update.
+  useEffect(() => {
+    const next = buildItensDevolvidos(rows);
+    const current = (form.getValues('itensDevolvidos') as unknown) ?? null;
+    if (!valuesEqual(next, current)) {
+      form.setValue('itensDevolvidos', next, { shouldDirty: true });
+    }
+  }, [rows, form]);
+
   function updateRow(rowId: string, patch: Partial<DevolucaoEditRow>) {
-    commit(rows.map((r) => (r.rowId === rowId ? { ...r, ...patch } : r)));
+    setRows((prev) => prev.map((r) => (r.rowId === rowId ? { ...r, ...patch } : r)));
   }
   function toggleDelete(rowId: string) {
-    commit(rows.map((r) => (r.rowId === rowId ? { ...r, _delete: !r._delete } : r)));
+    setRows((prev) => prev.map((r) => (r.rowId === rowId ? { ...r, _delete: !r._delete } : r)));
   }
 
   // The picker enforces eligibility + exclusion; just clone the chosen order. It
   // stays open so several orders can be added in a row.
   function handlePickOrigin(picked: PickedOrigem) {
-    commit([...rows, ...clonePedidoItems(picked.data, picked.id)]);
+    setRows((prev) => [...prev, ...clonePedidoItems(picked.data, picked.id)]);
   }
 
   // Hide the current pedido (can't return itself) and origins already added.
@@ -116,7 +129,7 @@ export function DevolucaoTab({ form, db, disabled, pedidoId }: DevolucaoTabProps
           <Button
             size="xs"
             variant="default"
-            onClick={() => commit([...rows, newAvulsoRow()])}
+            onClick={() => setRows((prev) => [...prev, newAvulsoRow()])}
             disabled={disabled}
           >
             + Produto avulso
@@ -253,7 +266,9 @@ function DevolucaoRowEditor({
         <CurrencyInput
           ariaLabel={`Preço de ${row.nome || 'item'}`}
           value={row.precoDeVenda}
-          onChange={(n) => onUpdate(row.rowId, { precoDeVenda: n ?? 0 })}
+          // Clearing emits null; keep the schema minimum (`precoDeVenda` is
+          // `min(0.01)`) so the row never blocks the pedido save.
+          onChange={(n) => onUpdate(row.rowId, { precoDeVenda: n ?? 0.01 })}
           disabled={disabled || row._delete}
         />
       </Table.Td>

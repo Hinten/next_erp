@@ -42,27 +42,18 @@ export function bucketOf(estado: EstadoPedido): EstadoBucket {
 }
 
 /**
- * States from which a pedido's items can be RETURNED (devolução). Port of the
- * legacy `ESTADOS_PEDIDO.podeTrocar` getter (`.old/.../models.dart:2430`), kept
- * as the same exclusion list so a new state defaults to "not returnable". Only
- * paid/settled orders qualify (`pago`, `estornadoParcialmente`, `finalizado`).
+ * States from which a pedido's items can be RETURNED (devolução): only
+ * paid/settled orders. The legacy `ESTADOS_PEDIDO.podeTrocar`
+ * (`.old/.../models.dart:2430`) used an exclusion list; we use the equivalent
+ * ALLOW-list (its complement) so a newly-added `EstadoPedido` defaults to
+ * "not returnable" — the safe default.
  */
-const NAO_PODE_TROCAR: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
-  'iniciado',
-  'carrinho',
-  'carrinhoAbandonado',
-  'escolhendoFormaDePagamento',
-  'aguardandoConfirmacaoDePagamento',
-  'pagamentoNaoRealizado',
-  'emAnalise',
-  'emProcessamento',
-  'estornadoIntegralmente',
-  'processandoCancelamento',
-  'cancelado',
-  'fraude',
-  'error',
+const PODE_TROCAR: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  'pago',
+  'estornadoParcialmente',
+  'finalizado',
 ]);
 
 export function podeTrocar(estado: EstadoPedido): boolean {
-  return !NAO_PODE_TROCAR.has(estado);
+  return PODE_TROCAR.has(estado);
 }

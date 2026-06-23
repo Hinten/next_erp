@@ -54,6 +54,15 @@ function produtoKey(produtoUid: string | null): string {
   return produtoUid && produtoUid !== '' ? produtoUid : NONE_KEY;
 }
 
+/**
+ * Normalize an `itens` map key to a real produto uid. The legacy map keys a
+ * missing produto as `'NONE'` OR `''` (see `pedido.ts` schema comment), so both
+ * become `null` — a row with no bound produto.
+ */
+function uidFromKey(uid: string): string | null {
+  return uid && uid !== NONE_KEY ? uid : null;
+}
+
 function rowFromItem(
   item: ItemDoPedido,
   originId: string,
@@ -90,7 +99,7 @@ export function clonePedidoItems(
   const label = origin.numero ?? `Pedido ${originId}`;
   const rows: DevolucaoEditRow[] = [];
   for (const [uid, list] of Object.entries(origin.itens ?? {})) {
-    const produtoUid = uid === NONE_KEY ? null : uid;
+    const produtoUid = uidFromKey(uid);
     for (const item of list) {
       rows.push(rowFromItem(item, originId, label, produtoUid, item.quantidade));
     }
@@ -123,7 +132,7 @@ export function editRowsFromItensDevolvidos(itensDevolvidos: ItensDevolvidos): D
   for (const [originId, porProduto] of Object.entries(itensDevolvidos ?? {})) {
     const label = isAvulso(originId) ? 'Avulso' : `Pedido ${originId}`;
     for (const [uid, list] of Object.entries(porProduto)) {
-      const produtoUid = uid === NONE_KEY ? null : uid;
+      const produtoUid = uidFromKey(uid);
       for (const item of list) {
         // On reload the origin sold qty is unknown; cap at the saved qty.
         rows.push(
@@ -153,10 +162,11 @@ export function buildItensDevolvidos(
   for (const row of rows) {
     if (row._delete || row.quantidade <= 0) continue;
     if (isAvulso(row.originId) && !row.produtoUid) continue; // avulso needs a produto
+    const nome = row.nome.trim();
     const item: ItemDoPedido = {
       ...row.source,
       produtoUid: row.produtoUid,
-      nomeDeVenda: row.nome.trim() === '' ? null : row.nome,
+      nomeDeVenda: nome === '' ? null : nome,
       sku: row.sku,
       precoDeVenda: row.precoDeVenda,
       descontoUnitario: row.descontoUnitario,

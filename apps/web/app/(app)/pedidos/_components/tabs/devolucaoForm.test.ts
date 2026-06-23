@@ -47,6 +47,13 @@ describe('clonePedidoItems', () => {
     const rows = clonePedidoItems({ itens: { p1: [item()] } }, 'abc');
     expect(rows[0]?.originLabel).toBe('Pedido abc');
   });
+
+  it('normalizes a "NONE" / "" produto key to no produto', () => {
+    const none = clonePedidoItems({ itens: { NONE: [item({ produtoUid: null })] } }, 'o');
+    const empty = clonePedidoItems({ itens: { '': [item({ produtoUid: null })] } }, 'o');
+    expect(none[0]?.produtoUid).toBeNull();
+    expect(empty[0]?.produtoUid).toBeNull();
+  });
 });
 
 describe('newAvulsoRow', () => {
@@ -103,6 +110,13 @@ describe('buildItensDevolvidos', () => {
       row({ source: { ...item(), _rowId: 'row-1' } as ItemDoPedido }),
     ]);
     expect(out?.origin1?.p1?.[0]).not.toHaveProperty('_rowId');
+  });
+
+  it('trims nomeDeVenda before persisting (null when blank)', () => {
+    expect(
+      buildItensDevolvidos([row({ nome: '  Produto X  ' })])?.origin1?.p1?.[0]?.nomeDeVenda,
+    ).toBe('Produto X');
+    expect(buildItensDevolvidos([row({ nome: '   ' })])?.origin1?.p1?.[0]?.nomeDeVenda).toBeNull();
   });
 });
 
