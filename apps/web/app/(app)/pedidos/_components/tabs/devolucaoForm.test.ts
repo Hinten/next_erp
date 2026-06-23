@@ -4,6 +4,7 @@ import {
   buildItensDevolvidos,
   clonePedidoItems,
   editRowsFromItensDevolvidos,
+  isReturnableOrigin,
   newAvulsoRow,
   type DevolucaoEditRow,
 } from './devolucaoForm';
@@ -124,5 +125,22 @@ describe('editRowsFromItensDevolvidos round-trips', () => {
 
   it('is empty for null', () => {
     expect(editRowsFromItensDevolvidos(null)).toEqual([]);
+  });
+});
+
+describe('isReturnableOrigin', () => {
+  const none = new Set<string>();
+
+  it('accepts a paid saída order', () => {
+    expect(isReturnableOrigin({ ehSaida: true, estado: 'pago' }, 'o1', none)).toBe(true);
+    expect(isReturnableOrigin({ ehSaida: true, estado: 'finalizado' }, 'o1', none)).toBe(true);
+  });
+
+  it('rejects an entrada, a non-returnable estado, or an excluded id', () => {
+    expect(isReturnableOrigin({ ehSaida: false, estado: 'pago' }, 'o1', none)).toBe(false);
+    expect(isReturnableOrigin({ ehSaida: true, estado: 'iniciado' }, 'o1', none)).toBe(false);
+    expect(isReturnableOrigin({ ehSaida: true, estado: 'pago' }, 'o1', new Set(['o1']))).toBe(
+      false,
+    );
   });
 });

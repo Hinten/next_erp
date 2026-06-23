@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { db } from '@delfrance/test-fixtures';
 import { cleanupPedidoFixtures, e2ePrefix, seedPedidoFixtures } from './_helpers/seed-data';
-import { selectFieldWithSearch } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -87,9 +86,11 @@ test.describe.serial('Pedidos e2e — Devolução', () => {
     await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
     await page.getByRole('tab', { name: 'Devolução' }).click();
 
-    // Open the origin selector, search the paid order by número and pick it.
+    // Open the origin picker, search the paid order by número and add it.
     await page.getByRole('button', { name: '+ Adicionar pedido' }).click();
-    await selectFieldWithSearch(page, 'Pedido de origem', originNumero);
+    await page.getByLabel('Buscar por número').fill(originNumero);
+    await page.getByRole('button', { name: `Adicionar ${originNumero}` }).click();
+    await page.getByRole('button', { name: 'Fechar' }).click();
 
     // The cloned row appears (qty = origin sold qty 2); reduce it to 1.
     const qty = page.getByLabel(`Quantidade devolvida de ${fixtures.produtoNome}`);

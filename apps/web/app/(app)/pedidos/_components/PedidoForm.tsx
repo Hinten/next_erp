@@ -325,7 +325,7 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="devolucao" pt="md">
-            <DevolucaoTab form={form} db={db} disabled={disabled} />
+            <DevolucaoTab form={form} db={db} disabled={disabled} pedidoId={pedidoId} />
           </Tabs.Panel>
 
           <Tabs.Panel value="estado" pt="md">

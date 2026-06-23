@@ -7,7 +7,6 @@ import {
   Button,
   Card,
   Group,
-  Modal,
   NumberInput,
   Stack,
   Table,
@@ -15,20 +14,10 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
 import { type UseFormReturn } from 'react-hook-form';
-import { type Firestore, getDoc } from 'firebase/firestore';
-import { FirebaseError } from 'firebase/app';
-import {
-  flattenItensDevolvidos,
-  itemCusto,
-  itemSubtotal,
-  podeTrocar,
-  type Pedido,
-} from '@delfrance/schemas';
-import { pedidoCollection } from '@/lib/data/pedidoCollection';
-import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
+import { type Firestore } from 'firebase/firestore';
+import { flattenItensDevolvidos, itemCusto, itemSubtotal, type Pedido } from '@delfrance/schemas';
 import { ProdutoPicker } from '@/components/pickers/ProdutoPicker';
 import { CurrencyInput } from '@/app/(app)/produtos/_components/CurrencyInput';
 import type { PedidoFormState } from '../types';
@@ -40,6 +29,7 @@ import {
   newAvulsoRow,
   type DevolucaoEditRow,
 } from './devolucaoForm';
+import { OrigemPedidoPicker, type PickedOrigem } from './OrigemPedidoPicker';
 
 const brl = (n: number): string =>
   n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -73,16 +63,17 @@ export interface DevolucaoTabProps {
   form: UseFormReturn<PedidoFormState, unknown, Pedido>;
   db: Firestore;
   disabled?: boolean;
+  /** Current pedido id — excluded from the origin picker (can't return itself). */
+  pedidoId?: string;
 }
 
-export function DevolucaoTab({ form, db, disabled }: DevolucaoTabProps) {
+export function DevolucaoTab({ form, db, disabled, pedidoId }: DevolucaoTabProps) {
   // Seed editable rows from the current form value. The tab remounts on every tab
   // switch (Tabs `keepMounted={false}`), so this re-reads prior edits each time.
   const [rows, setRows] = useState<DevolucaoEditRow[]>(() =>
     editRowsFromItensDevolvidos(form.getValues('itensDevolvidos')),
   );
   const [originModalOpen, setOriginModalOpen] = useState(false);
-  const [adding, setAdding] = useState(false);
 
   // `itensDevolvidos` (the form value) is the source of truth for save + totals;
   // every edit rebuilds it from the rows.
@@ -97,43 +88,18 @@ export function DevolucaoTab({ form, db, disabled }: DevolucaoTabProps) {
     commit(rows.map((r) => (r.rowId === rowId ? { ...r, _delete: !r._delete } : r)));
   }
 
-  async function handlePickOrigin(emitted: unknown) {
-    const id =
-      typeof emitted === 'string'
-        ? (emitted.split('/').filter(Boolean).pop() ?? null)
-        : ((emitted as { id?: string } | null)?.id ?? null);
-    if (!id) return;
-    if (rows.some((r) => r.originId === id)) {
-      notifications.show({ message: 'Esse pedido já foi adicionado.' });
-      return;
-    }
-    setAdding(true);
-    try {
-      const snap = await getDoc(pedidoCollection.docRef(db, {}, id));
-      const origin = snap.exists() ? (snap.data() as Pedido) : null;
-      if (!origin) {
-        notifications.show({ color: 'red', message: 'Pedido não encontrado.' });
-        return;
-      }
-      if (!podeTrocar(origin.estado)) {
-        notifications.show({
-          color: 'red',
-          message: `O pedido ${origin.numero ?? id} não pode ser devolvido pelo seu estado de pagamento.`,
-        });
-        return;
-      }
-      commit([...rows, ...clonePedidoItems(origin, id)]);
-      setOriginModalOpen(false);
-    } catch (err) {
-      if (err instanceof FirebaseError) {
-        notifications.show({ color: 'red', message: err.message });
-        return;
-      }
-      throw err;
-    } finally {
-      setAdding(false);
-    }
+  // The picker enforces eligibility + exclusion; just clone the chosen order. It
+  // stays open so several orders can be added in a row.
+  function handlePickOrigin(picked: PickedOrigem) {
+    commit([...rows, ...clonePedidoItems(picked.data, picked.id)]);
   }
+
+  // Hide the current pedido (can't return itself) and origins already added.
+  const excludeIds = useMemo(() => {
+    const ids = new Set<string>(rows.map((r) => r.originId).filter((id) => id !== NONE_KEY));
+    if (pedidoId) ids.add(pedidoId);
+    return ids;
+  }, [rows, pedidoId]);
 
   const groups = useMemo(() => groupByOrigin(rows), [rows]);
 
@@ -217,34 +183,13 @@ export function DevolucaoTab({ form, db, disabled }: DevolucaoTabProps) {
         </Text>
       </Group>
 
-      <Modal
+      <OrigemPedidoPicker
+        db={db}
         opened={originModalOpen}
         onClose={() => setOriginModalOpen(false)}
-        title="Adicionar pedido para devolução"
-        centered
-      >
-        {/* Stop the inner picker's events from bubbling to the ancestor pedido
-            <form> (React events cross the modal portal — see issue #231). */}
-        {originModalOpen && (
-          <div onSubmit={(e) => e.stopPropagation()}>
-            <Stack>
-              <Text size="sm" c="dimmed">
-                Busque um pedido de saída pago pelo número. Seus itens entram como devolução.
-              </Text>
-              <CollectionSelect
-                collection={pedidoCollection}
-                labelField="numero"
-                searchFields={['numero']}
-                fieldName="devolucao-origin"
-                value={null}
-                onChange={handlePickOrigin}
-                label="Pedido de origem"
-                disabled={adding}
-              />
-            </Stack>
-          </div>
-        )}
-      </Modal>
+        excludeIds={excludeIds}
+        onPick={handlePickOrigin}
+      />
     </Stack>
   );
 }

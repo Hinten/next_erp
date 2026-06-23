@@ -1,4 +1,4 @@
-import type { ItemDoPedido } from '@delfrance/schemas';
+import { podeTrocar, type EstadoPedido, type ItemDoPedido } from '@delfrance/schemas';
 
 /**
  * Pure mapping for the Devolução (returns) tab. The legacy app records returns in
@@ -169,4 +169,22 @@ export function buildItensDevolvidos(
     porProduto[key] = [...(porProduto[key] ?? []), item];
   }
   return Object.keys(out).length === 0 ? null : out;
+}
+
+/**
+ * Whether an order can be added as a devolução origin: a sale (`ehSaida`) whose
+ * estado allows a return ({@link podeTrocar}), and not already in the picker's
+ * exclude set (the current pedido + already-added origins).
+ */
+export function isReturnableOrigin(
+  pedido: { ehSaida?: boolean | null; estado?: EstadoPedido | null },
+  id: string,
+  excludeIds: ReadonlySet<string>,
+): boolean {
+  return (
+    pedido.ehSaida === true &&
+    pedido.estado != null &&
+    podeTrocar(pedido.estado) &&
+    !excludeIds.has(id)
+  );
 }
