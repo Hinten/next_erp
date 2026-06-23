@@ -159,6 +159,47 @@ export async function seedDepositoAtivo(prefix: string): Promise<{ id: string; n
 }
 
 /**
+ * Seed one ACTIVE + padrão Operação (`<prefix>-op`) — the Impostos tab lists
+ * active operações and the produto imposto is scoped per operação. Full wire
+ * shape so `operacaoCollection`'s converter parses it on read.
+ */
+export async function seedOperacaoAtiva(prefix: string): Promise<{ id: string; nome: string }> {
+  const id = `${prefix}-op`;
+  const nome = `${prefix}-op`;
+  await db().collection('operacao').doc(id).set({
+    nome,
+    naturezaDaOperacao: 'Venda',
+    tipo: 1,
+    ehServico: false,
+    ehExterior: false,
+    ehConsumidorFinal: true,
+    padrao: true,
+    ativo: true,
+    movimentaEstoque: true,
+    movimentaIndisponivelEstoque: true,
+    ehFiscal: true,
+    finNFe: 1,
+    indPres: '2',
+    indIntermed: '1',
+    cfop: '5102',
+    cfopInterestadual: '6102',
+    origem: '0',
+    NCM: null,
+    CEST: null,
+    unidade: 'UN',
+    estadosDestino: null,
+    estados: null,
+    configuracaoICMS: null,
+    configuracaoIPI: null,
+    configuracaoPIS: null,
+    configuracaoPISST: null,
+    infCpl: null,
+    timestamp: Date.now(),
+  });
+  return { id, nome };
+}
+
+/**
  * Seed `n` motivoIncidente docs. `ativo` alternates for the boolean filter.
  */
 export async function seedMotivosIncidente(prefix: string, n: number): Promise<void> {
@@ -1126,6 +1167,23 @@ export async function getProdutoEstoque(
     .doc(produtoId)
     .collection('estoques')
     .doc(`est-${produtoId}-${depositoId}`)
+    .get();
+  return (snap.data() as Record<string, unknown> | undefined) ?? null;
+}
+
+/**
+ * The per-operação imposto doc `produtos/<id>/imposto/<operacaoId>` (doc id is
+ * the operação id), or null. Saved atomically with the produto doc.
+ */
+export async function getProdutoImposto(
+  produtoId: string,
+  operacaoId: string,
+): Promise<Record<string, unknown> | null> {
+  const snap = await db()
+    .collection('produtos')
+    .doc(produtoId)
+    .collection('imposto')
+    .doc(operacaoId)
     .get();
   return (snap.data() as Record<string, unknown> | undefined) ?? null;
 }

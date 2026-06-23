@@ -9,6 +9,7 @@ import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from
 import { PERM } from '@delfrance/auth';
 import {
   type Foto,
+  type ImpostoProduto,
   type PrecosMap,
   type ProdutoExtraData,
   type Video,
@@ -36,6 +37,7 @@ import { PhotoManager } from '../../_components/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
 import { ExtraDataManager } from '../../_components/ExtraDataManager';
+import { ImpostoManager } from '../../_components/ImpostoManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
 import { VariationManager } from '../../_components/VariationManager';
@@ -213,6 +215,20 @@ export default function EditarProdutoPage() {
         // edited directly (decoupled from this form's save).
         renderInput: (p) => <EstoqueManager produtoId={params.id} db={db} disabled={p.disabled} />,
       },
+      impostos: {
+        label: 'Impostos',
+        section: 'Impostos',
+        renderInput: (p) => (
+          <ImpostoManager
+            produtoId={params.id}
+            db={db}
+            value={(p.value as ImpostoProduto[] | null) ?? null}
+            onChange={p.onChange}
+            errorTree={p.errorTree}
+            disabled={p.disabled}
+          />
+        ),
+      },
     }),
     [params.id, db, storage, grupos, gruposSnap.error?.message, listas, listasSnap.error?.message],
   );
@@ -292,6 +308,7 @@ export default function EditarProdutoPage() {
             id: params.id,
             ehKit: values.ehKit as boolean | null,
             componentesKit: values.componentesKit as Record<string, { quantidade: number }> | null,
+            impostos: (values.impostos as ImpostoProduto[] | null) ?? null,
           })
         }
         onAfterSave={async (id, values) => {

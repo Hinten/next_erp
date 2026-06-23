@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "packageManager": "pnpm@11.2.2",
   "engines": {
-    "node": ">=20.10.0",
+    "node": ">=22",
     "pnpm": ">=10.0.0"
   },
   "scripts": {
@@ -31,10 +31,5 @@
     "turbo": "^2.9.14",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
-  },
-  "pnpm": {
-    "overrides": {
-      "firebase-admin": "14.0.0"
-    }
   }
 }

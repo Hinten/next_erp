@@ -11,7 +11,12 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ImpostoCategoria, ImpostoProduto, RegraImposto } from '@delfrance/schemas';
+import {
+  impostoProdutoSchema,
+  type ImpostoCategoria,
+  type ImpostoProduto,
+  type RegraImposto,
+} from '@delfrance/schemas';
 import { buildImpostoXml } from '@delfrance/integrations-nfe';
 
 import {
@@ -49,12 +54,12 @@ function produtoDoc(
   csosn: string,
   scope: string | null = null,
 ): ImpostoProduto {
-  return {
+  // Flutter typo wire key; the schema fills Dados Gerais defaults + keeps the blob.
+  return impostoProdutoSchema.parse({
     id: `${produtoUid}-imp`,
-    impostoOperacaoOuterRef: scope,
-    dataCadastro: null,
+    impostoOpercaoOuterRef: scope,
     ...impostoBlob(csosn, csosn === '101' ? { csosn101: CSOSN_PRODUTO_101_CRED } : {}),
-  };
+  });
 }
 
 function categoriaDoc(

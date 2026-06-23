@@ -8,6 +8,7 @@ import {
 import { buildQuery, limit, whereArrayContains, whereEqual } from '@delfrance/data';
 import {
   buildExtraDataWriteOps,
+  buildImpostoWriteOps,
   buildLocalizacaoOp,
   planMovimentacao,
   type MovimentacaoInput,
@@ -20,6 +21,7 @@ import {
   estoqueProdutoSchema,
   historicoEstoqueSchema,
   makeEstoqueUid,
+  type ImpostoProduto,
   type ProdutoExtraData,
 } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
@@ -30,6 +32,7 @@ import {
 import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
 import { estoqueProdutoCollection } from '@/lib/data/estoqueProdutoCollection';
 import { historicoEstoqueCollection } from '@/lib/data/historicoEstoqueCollection';
+import { impostoProdutoCollection } from '@/lib/data/impostoProdutoCollection';
 import { PRODUTO_MARKETPLACE_SUBCOLLECTIONS } from '@/lib/data/produtoMarketplaceSubcollections';
 import { newDocId } from './docId';
 
@@ -66,19 +69,22 @@ function refForPath(db: Firestore, path: string): DocumentReference {
     if (sub === 'estoques') {
       return estoqueProdutoCollection.docRef(db, { produtoId }, id) as DocumentReference;
     }
+    if (sub === 'imposto') {
+      return impostoProdutoCollection.docRef(db, { produtoId }, id) as DocumentReference;
+    }
   }
   throw new Error(`clientProdutoPort: unmapped write path "${path}"`);
 }
 
 /**
  * The produto's transient subdocuments to write ATOMICALLY with the produto doc
- * (ObjectView `transactionWrites`): the `extraData` singleton. Reuses the
- * framework-agnostic `buildExtraDataWriteOps` use-case for the wire shape and maps
- * the domain path to a converter-bound ref so it rides `saveRecord`'s transaction
- * — one commit, all-or-nothing (no orphan produto on a flaky link). (Estoque is
- * NOT here — it spans the parent + each variation child, each its own produto doc,
- * and is edited directly in the Estoque tab via `setEstoqueLocalizacao` /
- * `movimentarEstoque`, not on the parent save.)
+ * (ObjectView `transactionWrites`): the `extraData` singleton and the per-operação
+ * `imposto` docs (Flutter saves imposto in the produto's batch). Reuses the
+ * framework-agnostic `build*WriteOps` use-cases for the wire shapes and maps each
+ * domain path to a converter-bound ref so they ride `saveRecord`'s transaction —
+ * one commit, all-or-nothing (no orphan produto on a flaky link). (Estoque is NOT
+ * here — it spans the parent + each variation child, each its own produto doc, and
+ * is edited directly in the Estoque tab, not on the parent save.)
  */
 export function buildProdutoTransactionWrites(
   db: Firestore,
@@ -87,17 +93,20 @@ export function buildProdutoTransactionWrites(
 ): TransactionWrite[] {
   const writes: TransactionWrite[] = [];
   const pushOp = (op: ProdutoWriteOp) => {
-    if (op.type === 'delete') return;
-    writes.push({
-      type: op.type,
-      ref: refForPath(db, op.path) as DocumentReference<unknown>,
-      data: op.data,
-    });
+    const ref = refForPath(db, op.path) as DocumentReference<unknown>;
+    if (op.type === 'delete') writes.push({ type: 'delete', ref });
+    else if (op.type === 'update') writes.push({ type: 'update', ref, data: op.data });
+    else writes.push({ type: 'set', ref, data: op.data });
   };
 
   const extra = (values.extraData as ProdutoExtraData | null) ?? null;
   if (extra) {
     for (const op of buildExtraDataWriteOps(produtoId, extra)) pushOp(op);
+  }
+
+  const impostos = (values.impostos as ImpostoProduto[] | null) ?? null;
+  if (impostos && impostos.length > 0) {
+    for (const op of buildImpostoWriteOps(produtoId, impostos, Date.now())) pushOp(op);
   }
 
   return writes;

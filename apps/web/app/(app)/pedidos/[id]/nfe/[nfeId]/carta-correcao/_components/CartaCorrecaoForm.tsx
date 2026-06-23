@@ -13,7 +13,7 @@ import { useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Alert, Button, Group, Paper, Stack, Text, Textarea } from '@mantine/core';
-import { IconCircleCheck } from '@tabler/icons-react';
+import { IconCircleCheck, IconClockHour4 } from '@tabler/icons-react';
 import { z } from 'zod';
 import {
   NFeHttpError,
@@ -109,30 +109,52 @@ export function CartaCorrecaoForm({ pedidoId, nfeId }: { pedidoId: string; nfeId
           </Button>
         </Group>
 
-        {result && (
-          <Paper withBorder p="md" radius="md" bg="var(--mantine-color-teal-light)">
-            <Group gap="xs" mb="xs">
-              <IconCircleCheck size={20} color="var(--mantine-color-teal-7)" />
-              <Text fw={600} c="teal.8">
-                Carta de correção registrada (cStat {result.cStat})
-              </Text>
-            </Group>
-            <Stack gap={2}>
-              <Text size="sm">Sequência do evento: nº {result.nSeqEvento}</Text>
-              {result.nProt && (
-                <Text size="sm">
-                  Protocolo:{' '}
-                  <Text span ff="monospace">
-                    {result.nProt}
-                  </Text>
+        {result &&
+          (result.pending ? (
+            // cStat 136: registered but not yet linked. The re-check resolves it
+            // asynchronously — surface "em processamento", NOT success/error (#81).
+            <Paper withBorder p="md" radius="md" bg="var(--mantine-color-yellow-light)">
+              <Group gap="xs" mb="xs">
+                <IconClockHour4 size={20} color="var(--mantine-color-yellow-8)" />
+                <Text fw={600} c="yellow.8">
+                  Carta de correção em processamento (cStat {result.cStat})
                 </Text>
-              )}
-              <Text size="sm" c="dimmed">
-                {result.xMotivo}
-              </Text>
-            </Stack>
-          </Paper>
-        )}
+              </Group>
+              <Stack gap={2}>
+                <Text size="sm">Sequência do evento: nº {result.nSeqEvento}</Text>
+                <Text size="sm" c="dimmed">
+                  Registrada na SEFAZ, aguardando vínculo à NF-e. A confirmação é verificada
+                  automaticamente — acompanhe o estado na lista abaixo.
+                </Text>
+                <Text size="sm" c="dimmed">
+                  {result.xMotivo}
+                </Text>
+              </Stack>
+            </Paper>
+          ) : (
+            <Paper withBorder p="md" radius="md" bg="var(--mantine-color-teal-light)">
+              <Group gap="xs" mb="xs">
+                <IconCircleCheck size={20} color="var(--mantine-color-teal-7)" />
+                <Text fw={600} c="teal.8">
+                  Carta de correção registrada (cStat {result.cStat})
+                </Text>
+              </Group>
+              <Stack gap={2}>
+                <Text size="sm">Sequência do evento: nº {result.nSeqEvento}</Text>
+                {result.nProt && (
+                  <Text size="sm">
+                    Protocolo:{' '}
+                    <Text span ff="monospace">
+                      {result.nProt}
+                    </Text>
+                  </Text>
+                )}
+                <Text size="sm" c="dimmed">
+                  {result.xMotivo}
+                </Text>
+              </Stack>
+            </Paper>
+          ))}
       </Stack>
     </form>
   );

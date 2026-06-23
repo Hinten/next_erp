@@ -307,6 +307,8 @@ export {
   impostoProduto,
   impostoProdutoSchema,
   impostoProdutoMeta,
+  operacaoIdFromImpostoRef,
+  ORIGEM_PRODUTO_LABELS,
   type ImpostoProduto,
 } from './impostoProduto';
 

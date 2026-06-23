@@ -5,7 +5,7 @@ import type { CollectionHandle } from '@delfrance/data';
 // `vi.mock` is hoisted, so anything its factory closes over must come from
 // `vi.hoisted`.
 const { firestoreMock, auditMock } = vi.hoisted(() => {
-  const txMock = { set: vi.fn(), update: vi.fn() };
+  const txMock = { set: vi.fn(), update: vi.fn(), delete: vi.fn() };
   const runTransactionMock = vi.fn(
     async (_db: unknown, fn: (tx: typeof txMock) => Promise<void>) => {
       await fn(txMock);
@@ -49,6 +49,7 @@ function fakeCollection(): CollectionHandle<typeof schema> {
 beforeEach(() => {
   firestoreMock.txMock.set.mockReset();
   firestoreMock.txMock.update.mockReset();
+  firestoreMock.txMock.delete.mockReset();
   firestoreMock.runTransactionMock.mockClear();
   firestoreMock.docMock.mockClear();
   firestoreMock.collectionMock.mockClear();
@@ -220,5 +221,22 @@ describe('saveRecord — siblingWrites (atomic same-transaction writes)', () => 
         siblingWrites: () => [],
       }),
     ).rejects.toBeInstanceOf(NothingChangedError);
+  });
+
+  it('runs a delete sibling via tx.delete (e.g. a cleared imposto)', async () => {
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      recordId: 'EXISTING_ID',
+      values: { nome: 'novo nome' },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      siblingWrites: () => [{ type: 'delete', ref: { id: 'gone' } as never }],
+    });
+    expect(firestoreMock.txMock.delete).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'gone' }),
+    );
+    expect(firestoreMock.txMock.update).toHaveBeenCalledOnce(); // main doc patch
   });
 });

@@ -48,11 +48,12 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { IconBan, IconCheck, IconCopy, IconFileText } from '@tabler/icons-react';
+import { IconBan, IconCheck, IconCopy, IconFileDownload, IconFileText } from '@tabler/icons-react';
 
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { downloadNfeXml, selectNfeXml } from '@/lib/nfe/downloadXml';
 import { DanfeMenu } from '@/components/DanfeMenu';
 
 const DASH = '—';
@@ -138,6 +139,10 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
     isAprovada ||
     latest.estado === ESTADO_NFE.cancelada ||
     latest.estado === ESTADO_NFE.epecAprovado;
+  // The XML download reads straight from the nfev4 doc (no HTTP round-trip),
+  // so it's available whenever any XML has been persisted — authorized,
+  // EPEC, or the signed pre-transmission anchor.
+  const hasXml = selectNfeXml(latest) != null;
   const color = NFE_STATE_COLOR[latest.estado] ?? 'gray';
   const label = ESTADO_NFE_LABELS[latest.estado] ?? latest.estado;
   // tpEmis === 1 is the normal (SEFAZ síncrono) path. Anything else
@@ -230,9 +235,25 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
             </Group>
           )}
 
-          {latestId && canPrintDanfe && (
+          {latestId && (canPrintDanfe || hasXml) && (
             <Group gap="xs" mt="xs">
-              <DanfeMenu pedidoId={pedidoId} nfeId={latestId} />
+              {canPrintDanfe && <DanfeMenu pedidoId={pedidoId} nfeId={latestId} />}
+              {hasXml && (
+                <Button
+                  color="gray"
+                  variant="light"
+                  size="xs"
+                  leftSection={<IconFileDownload size={14} />}
+                  onClick={(e) => {
+                    // Stop the row's navigate-onClick; download the XML
+                    // straight from the doc already in hand.
+                    e.stopPropagation();
+                    downloadNfeXml(latest);
+                  }}
+                >
+                  Baixar XML
+                </Button>
+              )}
               {isAprovada && (
                 <>
                   <Button

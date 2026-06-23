@@ -178,6 +178,14 @@ export interface NFeCartaCorrecaoResult {
   readonly nProt: string | null;
   /** `true` when SEFAZ registrou e vinculou (cStat 135). */
   readonly accepted: boolean;
+  /**
+   * `true` when SEFAZ registrou mas NÃO vinculou (cStat 136) — the CC-e is
+   * aguardando vínculo and an async re-check was scheduled (mutually exclusive
+   * with `accepted`). The route still returns 200; the re-check resolves it. #81.
+   */
+  readonly pending: boolean;
+  /** The persisted `cartacorrecao` record id. */
+  readonly cceId: string;
 }
 
 /**

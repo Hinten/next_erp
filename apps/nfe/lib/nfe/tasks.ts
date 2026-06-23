@@ -67,6 +67,33 @@ export const consultaTaskPayloadSchema = z.object({
 });
 export type ConsultaTaskPayload = z.infer<typeof consultaTaskPayloadSchema>;
 
+/**
+ * CC-e linkage re-check (#81): a cStat-136 CC-e (`aguardandoVinculo`) is re-sent
+ * with the SAME `nSeqEvento` expecting 135. Rides the SAME `reconciliarNfe`
+ * queue, discriminated by `kind`.
+ */
+export const cceVinculoTaskPayloadSchema = z.object({
+  kind: z.literal('cce-vinculo'),
+  /** Owning pedido — locates the nfev4 doc + filial cert. */
+  pedidoId: z.string().min(1),
+  /** The nfev4 doc id the CC-e corrects. */
+  nfeId: z.string().min(1),
+  /** The pending `cartacorrecao` record id to resolve. */
+  cceId: z.string().min(1),
+  /** Re-sent with the SAME nSeqEvento (SEFAZ only increments on accept). */
+  nSeqEvento: z.number().int().min(1),
+  /** 0-based re-check attempt; capped at `MAX_RECONCILE_ATTEMPTS`. */
+  attempt: z.number().int().min(0),
+});
+export type CceVinculoTaskPayload = z.infer<typeof cceVinculoTaskPayloadSchema>;
+
+/** Every payload the `reconciliarNfe` queue delivers — the function routes on `kind`. */
+export const taskPayloadSchema = z.discriminatedUnion('kind', [
+  consultaTaskPayloadSchema,
+  cceVinculoTaskPayloadSchema,
+]);
+export type TaskPayload = z.infer<typeof taskPayloadSchema>;
+
 /** Input to schedule one lote-consult task. */
 export interface ConsultaTaskInput {
   readonly filialId: string;
@@ -77,6 +104,16 @@ export interface ConsultaTaskInput {
   readonly scheduleAtMs: number;
 }
 
+/** Input to schedule one CC-e linkage re-check task. */
+export interface CceVinculoTaskInput {
+  readonly pedidoId: string;
+  readonly nfeId: string;
+  readonly cceId: string;
+  readonly nSeqEvento: number;
+  readonly attempt: number;
+  readonly scheduleAtMs: number;
+}
+
 /**
  * The enqueue seam. The orchestrator depends on this interface, not on the
  * transport, so unit tests pass a fake recorder. Routes / functions obtain the
@@ -84,6 +121,7 @@ export interface ConsultaTaskInput {
  */
 export interface TaskScheduler {
   enqueueConsulta(input: ConsultaTaskInput): Promise<void>;
+  enqueueCceVinculo(input: CceVinculoTaskInput): Promise<void>;
 }
 
 /**
@@ -94,6 +132,9 @@ export interface TaskScheduler {
  */
 export const noopTaskScheduler: TaskScheduler = {
   async enqueueConsulta() {
+    /* no-op */
+  },
+  async enqueueCceVinculo() {
     /* no-op */
   },
 };
@@ -118,6 +159,15 @@ export class NFeTasksConfigError extends Error {
 
 /** Real scheduler — enqueues onto the `reconciliarNfe` Firebase task queue. */
 class FirebaseTaskQueueScheduler implements TaskScheduler {
+  // Region-qualified name so the queue resolves to the deployed function's region
+  // (the Admin SDK otherwise defaults to us-central1). Uses the default admin app
+  // (already initialized by the host before any enqueue).
+  private queue() {
+    return getFunctions().taskQueue<TaskPayload>(
+      `locations/${reconcileRegion()}/functions/${RECONCILE_FUNCTION}`,
+    );
+  }
+
   async enqueueConsulta(input: ConsultaTaskInput): Promise<void> {
     const payload: ConsultaTaskPayload = {
       kind: 'consulta-lote',
@@ -126,13 +176,19 @@ class FirebaseTaskQueueScheduler implements TaskScheduler {
       tpEmis: input.tpEmis,
       attempt: input.attempt,
     };
-    // Region-qualified name so the queue resolves to the deployed function's
-    // region (the Admin SDK otherwise defaults to us-central1). Uses the default
-    // admin app (already initialized by the host before any enqueue).
-    const queue = getFunctions().taskQueue<ConsultaTaskPayload>(
-      `locations/${reconcileRegion()}/functions/${RECONCILE_FUNCTION}`,
-    );
-    await queue.enqueue(payload, { scheduleTime: new Date(input.scheduleAtMs) });
+    await this.queue().enqueue(payload, { scheduleTime: new Date(input.scheduleAtMs) });
+  }
+
+  async enqueueCceVinculo(input: CceVinculoTaskInput): Promise<void> {
+    const payload: CceVinculoTaskPayload = {
+      kind: 'cce-vinculo',
+      pedidoId: input.pedidoId,
+      nfeId: input.nfeId,
+      cceId: input.cceId,
+      nSeqEvento: input.nSeqEvento,
+      attempt: input.attempt,
+    };
+    await this.queue().enqueue(payload, { scheduleTime: new Date(input.scheduleAtMs) });
   }
 }
 

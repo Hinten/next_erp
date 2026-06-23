@@ -9,26 +9,43 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NFeCertError } from '@delfrance/integrations-nfe';
 
 // vi.hoisted so the mock fns exist before the hoisted vi.mock factories run.
-const { getNFeRuntime, runReconcile } = vi.hoisted(() => ({
+const { getNFeRuntime, runReconcile, runReconcileCce } = vi.hoisted(() => ({
   getNFeRuntime: vi.fn(),
   runReconcile: vi.fn(),
+  runReconcileCce: vi.fn(),
 }));
 vi.mock('./lib/admin', () => ({ getDb: () => ({}) }));
 vi.mock('../../lib/nfe/runtime', () => ({ getNFeRuntime }));
 vi.mock('../../lib/nfe/handlers/runReconcile', () => ({ runReconcile }));
+vi.mock('../../lib/nfe/handlers/runReconcileCce', () => ({ runReconcileCce }));
 vi.mock('../../lib/nfe/tasks', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../lib/nfe/tasks')>();
-  return { ...actual, createTaskScheduler: vi.fn(() => ({ async enqueueConsulta() {} })) };
+  return {
+    ...actual,
+    createTaskScheduler: vi.fn(() => ({
+      async enqueueConsulta() {},
+      async enqueueCceVinculo() {},
+    })),
+  };
 });
 
 import { handleReconciliarTask } from './reconciliar';
 
 const PAYLOAD = { kind: 'consulta-lote', filialId: 'F-1', nRec: 'REC-1', tpEmis: 1, attempt: 0 };
+const CCE_PAYLOAD = {
+  kind: 'cce-vinculo',
+  pedidoId: 'PED-1',
+  nfeId: 's1',
+  cceId: 'cce-1',
+  nSeqEvento: 1,
+  attempt: 0,
+};
 
 beforeEach(() => {
   getNFeRuntime.mockReset();
   getNFeRuntime.mockReturnValue({});
   runReconcile.mockReset();
+  runReconcileCce.mockReset();
 });
 
 describe('handleReconciliarTask disposition', () => {
@@ -64,5 +81,22 @@ describe('handleReconciliarTask disposition', () => {
   it('throws (queue retries) on a transport/unexpected error', async () => {
     runReconcile.mockRejectedValue(new Error('ETIMEDOUT'));
     await expect(handleReconciliarTask(PAYLOAD)).rejects.toThrow(/ETIMEDOUT/);
+  });
+
+  it('routes a cce-vinculo task to runReconcileCce (not runReconcile)', async () => {
+    runReconcileCce.mockResolvedValue({
+      cStat: '135',
+      stillPending: false,
+      disposition: 'resolved',
+      reEnqueued: false,
+    });
+    await expect(handleReconciliarTask(CCE_PAYLOAD)).resolves.toBeUndefined();
+    expect(runReconcileCce).toHaveBeenCalledTimes(1);
+    expect(runReconcile).not.toHaveBeenCalled();
+  });
+
+  it('throws (queue retries) on a transport error during the CC-e re-check', async () => {
+    runReconcileCce.mockRejectedValue(new Error('ETIMEDOUT'));
+    await expect(handleReconciliarTask(CCE_PAYLOAD)).rejects.toThrow(/ETIMEDOUT/);
   });
 });

@@ -6,7 +6,7 @@ Thanks for considering a contribution. This monorepo is in active development; e
 
 Prerequisites:
 
-- Node 20.10+
+- Node 22+
 - pnpm 9+
 - A Firebase project for testing (your own; the maintainers' staging project is reserved for CI)
 

@@ -45,6 +45,7 @@ export interface ProdutoPageValidationInput {
   ehKit?: boolean | null;
   componentesKit?: Record<string, { quantidade: number }> | null;
   estoques?: Array<{ quantidade?: number | null; quantidadeReservada?: number | null }> | null;
+  impostos?: Array<{ NCM?: string | null; CEST?: string | null }> | null;
 }
 
 /** One cross-document validation problem, keyed by a dotted field path. */
@@ -95,6 +96,19 @@ export function produtoPageIssues(data: ProdutoPageValidationInput): ProdutoPage
         path: `estoques.${i}.quantidadeReservada`,
         message: 'A quantidade reservada não pode ser maior que a quantidade em estoque.',
       });
+    }
+  });
+
+  // Imposto fiscal codes have fixed lengths when present (the collection schema
+  // stays lenient so legacy docs still read; the form is the enforcement point).
+  (data.impostos ?? []).forEach((imposto, i) => {
+    const ncm = imposto?.NCM;
+    const cest = imposto?.CEST;
+    if (typeof ncm === 'string' && ncm !== '' && ncm.length !== 8) {
+      issues.push({ path: `impostos.${i}.NCM`, message: 'O NCM deve ter 8 dígitos.' });
+    }
+    if (typeof cest === 'string' && cest !== '' && cest.length !== 7) {
+      issues.push({ path: `impostos.${i}.CEST`, message: 'O CEST deve ter 7 dígitos.' });
     }
   });
 

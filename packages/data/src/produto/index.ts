@@ -12,6 +12,8 @@ export {
   type TipoMovimentacao,
   type MovimentacaoInput,
   type MovimentacaoPlan,
+  buildImpostoWriteOps,
+  saveProdutoImpostos,
   propagatePrecosToChildren,
   applyPrecosChange,
   findProdutoReferences,
