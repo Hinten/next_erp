@@ -310,7 +310,7 @@ export function PedidoForm({
 
           <Tabs.Panel value="pagamento" pt="md">
             {pedidoId ? (
-              <PagamentosSection pedidoId={pedidoId} />
+              <PagamentosSection pedidoId={pedidoId} disabled={disabled} />
             ) : (
               <PlaceholderTab name="Pagamento" />
             )}

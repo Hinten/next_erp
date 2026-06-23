@@ -3,62 +3,264 @@
 import { useMemo, useState } from 'react';
 import {
   Alert,
-  Badge,
   Button,
+  Card,
   Group,
+  Modal,
+  NumberInput,
   Select,
   Skeleton,
   Stack,
+  Switch,
   Table,
   Text,
+  TextInput,
   Title,
   Tooltip,
 } from '@mantine/core';
+import { DateTimePicker } from '@mantine/dates';
 import { FirebaseError } from 'firebase/app';
-import { setDoc } from 'firebase/firestore';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
+import { deletePagamento, savePagamento } from '@delfrance/data/pedido';
 import {
   FORMA_PAGAMENTO_LABELS,
-  STATUS_PAGAMENTO,
   STATUS_PAGAMENTO_LABELS,
   type FormaPagamento,
   type Pagamento,
   type StatusPagamento,
 } from '@delfrance/schemas';
 import { format, money } from '@delfrance/core/money';
-import { nowMicros } from '@delfrance/core/datetime';
+import { epochToPickerString, pickerStringToEpoch } from '@delfrance/ui';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
+import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { CurrencyInput } from '@/app/(app)/produtos/_components/CurrencyInput';
 import { PagamentoStatusBadge } from '../../pagamentos/_components/StatusBadge';
 import { gatewayIdFromTipo, getGateway } from '@/lib/plugins/paymentRegistry';
+import {
+  EMPTY_PAGAMENTO_FORM,
+  formFromPagamento,
+  pagamentoDataFromForm,
+  validatePagamentoForm,
+  type PagamentoFormState,
+} from './PagamentoForm';
 
-const statusOptions = (Object.values(STATUS_PAGAMENTO) as StatusPagamento[])
-  .sort((a, b) => a - b)
-  .map((value) => ({
-    value: String(value),
-    label: STATUS_PAGAMENTO_LABELS[value],
-  }));
+const formaOptions = (Object.entries(FORMA_PAGAMENTO_LABELS) as [string, string][]).map(
+  ([value, label]) => ({ value, label }),
+);
+const statusOptions = [
+  { value: '', label: '(nenhum)' },
+  ...(Object.entries(STATUS_PAGAMENTO_LABELS) as [string, string][]).map(([value, label]) => ({
+    value,
+    label,
+  })),
+];
 
 /**
- * Real-time list of pagamentos for a given pedido. Status can be edited
- * inline with admin override; refund actions resolve through the
- * PaymentGateway plugin registry — until Phase 5 wires concrete
- * gateways, the actions render as disabled with an explanatory tooltip.
+ * Editable list of pagamentos for a pedido — create / edit / delete plus the
+ * inline status change. Immediate writes go through `savePagamento` /
+ * `deletePagamento` (the use-case layer), mirroring the Incidentes tab. The
+ * cartão / cheque details and the Mercado Pago link stay pass-through (preserved
+ * on edit); refunds still resolve via the PaymentGateway plugin registry.
  */
-export function PagamentosSection({ pedidoId }: { pedidoId: string }) {
+export function PagamentosSection({
+  pedidoId,
+  disabled,
+}: {
+  pedidoId: string;
+  disabled?: boolean;
+}) {
   const q = useMemo(() => {
     const base = pagamentoCollection.ref(getFirebaseFirestore(), { pedidoId });
     return buildQuery(base, [orderByField('dataCadastro', 'desc')]);
   }, [pedidoId]);
-
   const { data, loading, error } = useSnapshot<Pagamento>(q);
+
+  // null = form closed; { id: null } = adding; { id, base } = editing an existing doc.
+  const [editing, setEditing] = useState<{ id: string | null; base: Pagamento | null } | null>(
+    null,
+  );
+  const [form, setForm] = useState<PagamentoFormState>(EMPTY_PAGAMENTO_FORM);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  function openAdd() {
+    setForm(EMPTY_PAGAMENTO_FORM);
+    setEditing({ id: null, base: null });
+    setSaveError(null);
+  }
+  function openEdit(id: string, pagamento: Pagamento) {
+    setForm(formFromPagamento(pagamento));
+    setEditing({ id, base: pagamento });
+    setSaveError(null);
+  }
+
+  async function handleSave() {
+    if (!editing) return;
+    const validationError = validatePagamentoForm(form);
+    if (validationError) {
+      setSaveError(validationError);
+      return;
+    }
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await savePagamento(createClientPedidoPort(getFirebaseFirestore()), {
+        pedidoId,
+        pagamentoId: editing.id,
+        pagamento: pagamentoDataFromForm(form, editing.base),
+      });
+      setEditing(null);
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        setSaveError(err.message);
+        return;
+      }
+      throw err;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await deletePagamento(createClientPedidoPort(getFirebaseFirestore()), {
+        pedidoId,
+        pagamentoId: deleteTarget,
+      });
+      setDeleteTarget(null);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  const hasPassthrough =
+    editing?.base != null && (editing.base.cartao != null || editing.base.cheque != null);
 
   return (
     <Stack>
       <Group justify="space-between" align="center">
         <Title order={3}>Pagamentos</Title>
+        {!editing && (
+          <Button size="xs" onClick={openAdd} disabled={disabled}>
+            + Adicionar pagamento
+          </Button>
+        )}
       </Group>
+
+      {editing && (
+        <Card withBorder>
+          <Stack gap="sm">
+            <Text fw={500}>{editing.id ? 'Editar pagamento' : 'Novo pagamento'}</Text>
+            <Group grow align="flex-start">
+              <Select
+                label="Forma de pagamento"
+                data={formaOptions}
+                value={form.forma}
+                onChange={(v) => v && setForm((f) => ({ ...f, forma: v }))}
+                allowDeselect={false}
+                disabled={disabled}
+              />
+              <Select
+                label="Status"
+                data={statusOptions}
+                value={form.status}
+                onChange={(v) => setForm((f) => ({ ...f, status: v ?? '' }))}
+                disabled={disabled}
+              />
+            </Group>
+            <Group grow align="flex-start">
+              <CurrencyInput
+                label="Valor"
+                value={form.valor}
+                onChange={(n) => setForm((f) => ({ ...f, valor: n }))}
+                disabled={disabled}
+              />
+              <NumberInput
+                label="Parcelas"
+                value={form.parcelas}
+                onChange={(v) => {
+                  const n = typeof v === 'number' ? v : Number(v);
+                  setForm((f) => ({
+                    ...f,
+                    parcelas: Number.isFinite(n) && n >= 1 ? Math.trunc(n) : 1,
+                  }));
+                }}
+                min={1}
+                allowDecimal={false}
+                clampBehavior="strict"
+                disabled={disabled}
+              />
+            </Group>
+            <Group grow align="flex-start">
+              <DateTimePicker
+                label="Vencimento"
+                value={epochToPickerString(form.vencimento, 'us')}
+                onChange={(v) =>
+                  setForm((f) => ({ ...f, vencimento: pickerStringToEpoch(v, 'us') }))
+                }
+                valueFormat="DD/MM/YYYY HH:mm"
+                clearable
+                disabled={disabled}
+              />
+              <TextInput
+                label="Nº fatura/duplicata"
+                maxLength={60}
+                value={form.nFat}
+                onChange={(e) => {
+                  const value = e.currentTarget.value;
+                  setForm((f) => ({ ...f, nFat: value }));
+                }}
+                disabled={disabled}
+              />
+            </Group>
+            <TextInput
+              label="Descrição"
+              value={form.descricao}
+              onChange={(e) => {
+                const value = e.currentTarget.value;
+                setForm((f) => ({ ...f, descricao: value }));
+              }}
+              disabled={disabled}
+            />
+            <Group>
+              <Switch
+                label="À vista"
+                checked={form.aVista}
+                onChange={(e) => setForm((f) => ({ ...f, aVista: e.currentTarget.checked }))}
+                disabled={disabled}
+              />
+              <Switch
+                label="Duplicata"
+                checked={form.duplicata}
+                onChange={(e) => setForm((f) => ({ ...f, duplicata: e.currentTarget.checked }))}
+                disabled={disabled}
+              />
+            </Group>
+            {hasPassthrough && (
+              <Text size="xs" c="dimmed">
+                Este pagamento possui dados de cartão/cheque. A edição desses campos ainda não foi
+                portada; o registro existente é preservado.
+              </Text>
+            )}
+            {saveError && <Alert color="red">{saveError}</Alert>}
+            <Group justify="flex-end">
+              <Button variant="default" onClick={() => setEditing(null)} disabled={saving}>
+                Cancelar
+              </Button>
+              <Button onClick={handleSave} loading={saving} disabled={disabled}>
+                Salvar
+              </Button>
+            </Group>
+          </Stack>
+        </Card>
+      )}
+
       {error && <Alert color="red">{error.message}</Alert>}
       {loading && <Skeleton height={64} />}
       {!loading && data && data.length === 0 && (
@@ -77,11 +279,38 @@ export function PagamentosSection({ pedidoId }: { pedidoId: string }) {
           </Table.Thead>
           <Table.Tbody>
             {data.map(({ id, data: pgto }) => (
-              <PagamentoRow key={id} pedidoId={pedidoId} id={id} pagamento={pgto} />
+              <PagamentoRow
+                key={id}
+                pedidoId={pedidoId}
+                id={id}
+                pagamento={pgto}
+                disabled={disabled}
+                onEdit={() => openEdit(id, pgto)}
+                onDelete={() => setDeleteTarget(id)}
+              />
             ))}
           </Table.Tbody>
         </Table>
       )}
+
+      <Modal
+        opened={deleteTarget !== null}
+        onClose={() => setDeleteTarget(null)}
+        title="Excluir pagamento"
+        centered
+      >
+        <Stack>
+          <Text>Tem certeza que deseja excluir este pagamento?</Text>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+              Cancelar
+            </Button>
+            <Button color="red" onClick={handleDelete} loading={deleting}>
+              Excluir
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </Stack>
   );
 }
@@ -90,24 +319,27 @@ function PagamentoRow({
   pedidoId,
   id,
   pagamento,
+  disabled,
+  onEdit,
+  onDelete,
 }: {
   pedidoId: string;
   id: string;
   pagamento: Pagamento;
+  disabled?: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
 }) {
   const [savingStatus, setSavingStatus] = useState(false);
   const [refunding, setRefunding] = useState(false);
   const [refundError, setRefundError] = useState<string | null>(null);
 
   // Resolve a configured gateway for this pagamento (if its
-  // metodoPagamentoOuterRef points at a known TIPO_INTEGRACAO_PGTO).
-  // Today the registry has no implementations, so getGateway() returns
-  // null and the refund button stays disabled with a tooltip.
+  // metodoPagamentoOuterRef points at a known TIPO_INTEGRACAO_PGTO). Today the
+  // registry has no implementations, so the refund button stays disabled.
   const ref = pagamento.metodoPagamentoOuterRef as { tipo?: number } | null | undefined;
   const gatewayId = ref?.tipo ? gatewayIdFromTipo(ref.tipo) : null;
   const gateway = gatewayId ? getGateway(gatewayId) : null;
-
-  const docRef = pagamentoCollection.docRef(getFirebaseFirestore(), { pedidoId }, id);
 
   async function handleStatusChange(next: string | null) {
     if (next === null) return;
@@ -115,14 +347,11 @@ function PagamentoRow({
     if (nextStatus === pagamento.status_pagamento) return;
     setSavingStatus(true);
     try {
-      await setDoc(
-        docRef,
-        {
-          status_pagamento: nextStatus,
-          ultimaModificacao: nowMicros(),
-        },
-        { merge: true },
-      );
+      await savePagamento(createClientPedidoPort(getFirebaseFirestore()), {
+        pedidoId,
+        pagamentoId: id,
+        pagamento: { ...pagamento, status_pagamento: nextStatus },
+      });
     } finally {
       setSavingStatus(false);
     }
@@ -152,14 +381,12 @@ function PagamentoRow({
           <Stack gap={4}>
             <PagamentoStatusBadge status={pagamento.status_pagamento ?? null} />
             <Select
-              data={statusOptions}
-              value={
-                pagamento.status_pagamento !== undefined && pagamento.status_pagamento !== null
-                  ? String(pagamento.status_pagamento)
-                  : null
-              }
+              data={(Object.entries(STATUS_PAGAMENTO_LABELS) as [string, string][]).map(
+                ([value, label]) => ({ value, label }),
+              )}
+              value={pagamento.status_pagamento != null ? String(pagamento.status_pagamento) : null}
               onChange={handleStatusChange}
-              disabled={savingStatus}
+              disabled={savingStatus || disabled}
               size="xs"
               w={220}
             />
@@ -172,22 +399,19 @@ function PagamentoRow({
         <Table.Td align="right">{pagamento.parcelas}</Table.Td>
         <Table.Td>
           <Group gap="xs">
-            {gatewayId ? (
-              <Badge variant="light" color="blue">
-                {gatewayId}
-              </Badge>
-            ) : (
-              <Badge variant="light" color="gray">
-                gateway não vinculado
-              </Badge>
-            )}
+            <Button size="xs" variant="light" onClick={onEdit} disabled={disabled}>
+              Editar
+            </Button>
+            <Button size="xs" variant="light" color="red" onClick={onDelete} disabled={disabled}>
+              Excluir
+            </Button>
             <Tooltip
               label={gateway ? 'Estorna via gateway' : 'Plugin de gateway não registrado (Fase 5)'}
             >
               <Button
                 size="xs"
                 variant="light"
-                color="red"
+                color="orange"
                 disabled={!gateway || !pagamento.id}
                 loading={refunding}
                 onClick={handleRefund}
