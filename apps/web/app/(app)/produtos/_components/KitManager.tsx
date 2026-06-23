@@ -307,6 +307,9 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
           fieldName="kit-add-component"
           label="Adicionar componente"
           hint="Selecione um produto para incluir no kit."
+          // A kit cannot contain another kit — the picker query excludes them
+          // (re-checked on add for the unfiltered "Recentes" group + races).
+          filters={[{ field: 'ehKit', op: 'eq', value: false }]}
           value={pickerValue}
           onChange={(ref) => {
             void addComponent(refToId(ref));

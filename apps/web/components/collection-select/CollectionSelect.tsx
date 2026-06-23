@@ -3,9 +3,11 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Pill, PillsInput, Select, Stack, Text, type ComboboxData } from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
+import type { WhereFilterOp } from 'firebase/firestore';
 import type { ZodObject, ZodRawShape, z } from 'zod';
 import {
   type CollectionHandle,
+  type PipelineFieldFilter,
   PipelineUnsupportedError,
   buildPipeline,
   buildQuery,
@@ -68,7 +70,26 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
    * entries cache just the label.
    */
   optionHintField?: string;
+  /**
+   * Per-field equality/comparison filters AND-combined onto the option query
+   * (e.g. exclude kits with `[{ field: 'ehKit', op: 'eq', value: false }]`).
+   * Applied to BOTH query paths. NB the comparison drops docs where the field
+   * is null/absent (Firestore equality semantics), and the "Recentes" group is
+   * NOT filtered — callers that must hard-exclude a value should also guard on
+   * select. The pipeline path supports all ops; the non-pipeline fallback
+   * supports only the comparison ops (`eq`/`lt`/`lte`/`gt`/`gte`).
+   */
+  filters?: PipelineFieldFilter[];
 }
+
+/** Fallback-query operator for each comparison filter op (substring ops are pipeline-only). */
+const FALLBACK_FILTER_OP: Partial<Record<PipelineFieldFilter['op'], WhereFilterOp>> = {
+  eq: '==',
+  lt: '<',
+  lte: '<=',
+  gt: '>',
+  gte: '>=',
+};
 
 /**
  * Convert whatever the form holds (Firestore DocumentReference, opaque
@@ -132,6 +153,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   emitDocPath = false,
   orderBy,
   optionHintField,
+  filters,
 }: CollectionSelectProps<S>) {
   const db = getFirebaseFirestore();
 
@@ -153,6 +175,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   // rebuild (and re-query) on every render.
   const searchFieldsKey = (searchFields ?? [labelField]).join('|');
   const orderByKey = JSON.stringify(orderBy ?? [{ field: labelField, direction: 'asc' }]);
+  const filtersKey = JSON.stringify(filters ?? []);
 
   // Primary source: the Firestore Pipeline API — a typed term is matched
   // (case/accent-insensitive substring) against every `searchFields` entry,
@@ -161,9 +184,11 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
     if (locked) return null;
     if (!isPipelineSupported(db)) return null;
     try {
+      const parsedFilters = JSON.parse(filtersKey) as PipelineFieldFilter[];
       return buildPipeline(db, {
         collection: collection.resolvePath({}),
         ...(term !== '' ? { search: { fields: searchFieldsKey.split('|'), term } } : {}),
+        ...(parsedFilters.length > 0 ? { filters: parsedFilters } : {}),
         orderBy: JSON.parse(orderByKey) as Array<{ field: string; direction?: 'asc' | 'desc' }>,
         limit,
       });
@@ -171,20 +196,24 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
       if (err instanceof PipelineUnsupportedError) return null;
       throw err;
     }
-  }, [db, collection, locked, term, searchFieldsKey, orderByKey, limit]);
+  }, [db, collection, locked, term, searchFieldsKey, orderByKey, filtersKey, limit]);
 
   // Fallback when the SDK lacks the Pipeline API: a single-field Firestore
   // prefix-range query — substring / multi-field search is pipeline-only.
   const fallbackQuery = useMemo(() => {
     if (pipeline || locked) return null;
     const constraints = [orderByField(labelField, 'asc')];
+    for (const f of JSON.parse(filtersKey) as PipelineFieldFilter[]) {
+      const op = FALLBACK_FILTER_OP[f.op];
+      if (op) constraints.push(whereOp(f.field, op, f.value));
+    }
     if (term !== '') {
       constraints.push(whereOp(labelField, '>=', term));
       constraints.push(whereOp(labelField, '<=', `${term}${PREFIX_MAX}`));
     }
     constraints.push(limitConstraint(limit));
     return buildQuery(collection.ref(db, {}), constraints);
-  }, [db, collection, pipeline, locked, labelField, term, limit]);
+  }, [db, collection, pipeline, locked, labelField, term, filtersKey, limit]);
 
   // Pipelines are one-shot — each debounced term re-executes; the fallback
   // path stays real-time. Both hooks run every render (Rules of Hooks); only
