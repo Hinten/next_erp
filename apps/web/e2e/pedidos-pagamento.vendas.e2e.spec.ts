@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { db } from '@delfrance/test-fixtures';
 import { cleanupPedidoFixtures, e2ePrefix, seedPedidoFixtures } from './_helpers/seed-data';
+import { typeMoney } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -69,8 +70,9 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
 
     await page.getByRole('tab', { name: 'Pagamento' }).click();
     await page.getByRole('button', { name: /Adicionar pagamento/ }).click();
-    // forma defaults to "Dinheiro"; set the valor and save.
-    await page.getByLabel('Valor').fill('100');
+    // forma defaults to "Dinheiro"; set the valor and save. Drive the masked
+    // CurrencyInput via the shared `typeMoney` helper (the documented path).
+    await typeMoney(page, 'Valor', '100');
     await page.getByRole('button', { name: 'Salvar', exact: true }).click();
 
     // The list shows the new row (formatted value in a table cell, not the form input).

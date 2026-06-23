@@ -412,7 +412,7 @@ function PagamentoRow({
                 size="xs"
                 variant="light"
                 color="orange"
-                disabled={!gateway || !pagamento.id}
+                disabled={!gateway || !pagamento.id || disabled}
                 loading={refunding}
                 onClick={handleRefund}
               >
