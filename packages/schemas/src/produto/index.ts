@@ -32,6 +32,7 @@ export * from './collection/embedded/anexo'; // produto.anexos[*]
 // === PURE LOGIC (no database) ===
 export * from './pureLogic/precoCalculo'; // price-formula engine, kit cost, precos diff
 export * from './pureLogic/variacoes'; // variation cartesian / reconstruct / reconcile helpers
+export * from './pureLogic/kitVariacoes'; // "Gerar Variações" kit-component matcher
 
 // === PAGE MODEL (aggregate for the screen; NOT a collection) ===
 export * from './pageModel/pageModel';
