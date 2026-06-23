@@ -17,7 +17,12 @@
 import { Zip, ZipDeflate, strToU8 } from 'fflate';
 
 import { CSV_BOM, csvRow } from './csv';
-import { ExportIncompleteError, type ExportResult, type ExportSource, type ProgressFn } from './types';
+import {
+  ExportIncompleteError,
+  type ExportResult,
+  type ExportSource,
+  type ProgressFn,
+} from './types';
 
 const MANIFEST_NAME = '_MANIFEST.csv';
 const MANIFEST_HEADER = ['Chave', 'Número', 'Série', 'Estado', 'Data de Emissão'] as const;
@@ -51,7 +56,15 @@ export async function buildXmlZip(
       zip.add(entry);
       entry.push(strToU8(note.xmlNfeProc), true);
       if (zipError) throw zipError;
-      manifest.push(csvRow([note.chave ?? note.id, note.numeracao, note.serie, note.estado, note.dataEmissao ?? '']));
+      manifest.push(
+        csvRow([
+          note.chave ?? note.id,
+          note.numeracao,
+          note.serie,
+          note.estado,
+          note.dataEmissao ?? '',
+        ]),
+      );
       included += 1;
     }
     onProgress?.(processed, source.preCount);

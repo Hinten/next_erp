@@ -10,7 +10,12 @@
  */
 import { parseNfeReportRow } from './parseNfeReportRow';
 import { CSV_BOM, REPORT_HEADER, csvRow, reportRowCsv, reportTotalsTrailer, toCents } from './csv';
-import { ExportIncompleteError, type ExportResult, type ExportSource, type ProgressFn } from './types';
+import {
+  ExportIncompleteError,
+  type ExportResult,
+  type ExportSource,
+  type ProgressFn,
+} from './types';
 
 export async function buildCsvReport(
   source: ExportSource,

@@ -39,7 +39,10 @@ describe('buildXmlZip', () => {
       source({
         preCount: 3,
         exact: true,
-        pages: [[note({ id: 'aaa' }), note({ id: 'bbb', xmlNfeProc: null })], [note({ id: 'ccc' })]],
+        pages: [
+          [note({ id: 'aaa' }), note({ id: 'bbb', xmlNfeProc: null })],
+          [note({ id: 'ccc' })],
+        ],
       }),
     );
 

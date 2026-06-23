@@ -156,7 +156,10 @@ export async function previewExport(
 
 /** Pre-flight count + paged stream + filename stamp. `exact` is true only when no
  * client-side filter narrows the set, so the builders can assert completeness. */
-export async function buildExportSource(db: Firestore, filter: ExportFilter): Promise<ExportSource> {
+export async function buildExportSource(
+  db: Firestore,
+  filter: ExportFilter,
+): Promise<ExportSource> {
   const countSnap = await getCountFromServer(buildExportQuery(db, filter));
   const preCount = countSnap.data().count;
   const exact = filter.estados.length === 0 && !filter.operacaoId;
