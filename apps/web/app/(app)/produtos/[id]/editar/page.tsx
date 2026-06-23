@@ -321,7 +321,10 @@ export default function EditarProdutoPage() {
             grupoDeVariacoesUid: sortGrupoUids(groupsRef.current ?? implied, grupos),
             variacoesUid: normalizeVariacoesUid(uids, grupos),
             componentesKit,
-            componentesKitKeys: componentesKit ? Object.keys(componentesKit) : null,
+            // Sorted so the denorm is order-stable — the keys feed an
+            // `array-contains` query (order-insensitive), and Firestore arrays
+            // are order-sensitive, so an unsorted list churns dirty detection.
+            componentesKitKeys: componentesKit ? Object.keys(componentesKit).sort() : null,
           };
         }}
         validate={(values) =>

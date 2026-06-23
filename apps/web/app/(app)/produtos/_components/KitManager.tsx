@@ -95,9 +95,11 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
         .map(([id]) => id),
     [components],
   );
-  const activeIdsKey = activeIds.join(',');
 
   // Read the custo of any newly-added component (batched); cached ones are reused.
+  // Deps are honest (incl. `custoCache`): on a successful read this re-runs once
+  // and no-ops (nothing missing); on a transient read failure it surfaces a
+  // notification and self-heals when the components change or the tab remounts.
   useEffect(() => {
     if (!ehKit) return;
     const missing = activeIds.filter((id) => !(id in custoCache));
@@ -125,8 +127,7 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ehKit, activeIdsKey]);
+  }, [ehKit, activeIds, custoCache, db]);
 
   // Kit cost is DYNAMIC (Flutter `getCusto`): Σ(component custo × quantidade).
   // Derived (not state) — `null` until every active component's custo is cached;
@@ -144,8 +145,7 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
     if (form?.getValues('custo') !== custoResult.custo) {
       form?.setValue('custo', custoResult.custo, { shouldDirty: true });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ehKit, custoResult]);
+  }, [ehKit, custoResult, form]);
 
   const setComponent = (id: string, patch: Partial<KitDraft>) => {
     onChange({ ...components, [id]: { ...components[id], ...patch } as KitDraft });

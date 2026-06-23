@@ -60,8 +60,8 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
     section: 'Dimensões e peso',
   },
 
-  // `ehKit` / `ehKitVirtual` live on the Kit tab (old UX) so the kit toggle sits
-  // right above its component manager.
+  // `ehKit` / `ehKitVirtual` live on the Kit tab (matching the Flutter layout) so
+  // the kit toggle sits right above its component manager.
   ehKit: { label: 'É kit', section: 'Kit' },
   ehKitVirtual: { label: 'É kit virtual', section: 'Kit' },
   ofereceFreteGratis: { label: 'Oferece frete grátis', section: 'Configurações' },
@@ -70,7 +70,7 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
 
   custo: {
     label: 'Custo',
-    hint: 'Alimenta o recálculo de preço pelas fórmulas da lista. Para kits, recalcule o custo somando os componentes na aba Kit.',
+    hint: 'Alimenta o recálculo de preço pelas fórmulas da lista. Para kits, é calculado automaticamente a partir dos componentes na aba Kit.',
     section: 'Preço e custo',
   },
   // `precos` gets its renderInput (PrecoCustoManager) on each page — it
