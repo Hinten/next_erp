@@ -116,6 +116,40 @@ export function isWatchedProductOriginal(name: string): boolean {
   return parseProductOriginalPath(name) !== null;
 }
 
+/** A product-media subdir the orphan sweep is allowed to reclaim. */
+export type ProductMediaKind = 'originals' | 'videos';
+
+export interface ParsedProductMediaDir {
+  produtoId: string;
+  kind: ProductMediaKind;
+}
+
+/**
+ * Parse a product-media **directory** (`Arquivo.filepath`, no filename) into its
+ * owner `produtoId` and kind — `produtos/<produtoId>/originals` (photos) or
+ * `produtos/<produtoId>/videos`. Returns `null` for derivatives, generic
+ * `media/`, or anything else.
+ *
+ * Used by the unreferenced-arquivo sweep to (1) scope candidates to exactly the
+ * product photo + video subfolders and (2) recover the owning `produtoId` so it
+ * can check that one produto's references directly — no full-collection scan.
+ * Derivatives are excluded on purpose: they are cascade-managed by
+ * `onArquivoDeleted`, never swept independently.
+ */
+export function parseProductMediaDir(
+  filepath: string | null | undefined,
+): ParsedProductMediaDir | null {
+  if (typeof filepath !== 'string') return null;
+  const parts = filepath.split('/');
+  if (parts.length !== 3 || parts[0] !== STORAGE_ROOT.produtos) return null;
+  const produtoId = parts[1];
+  const sub = parts[2];
+  if (!produtoId) return null;
+  if (sub === PRODUTO_SUBDIR.originals) return { produtoId, kind: 'originals' };
+  if (sub === PRODUTO_SUBDIR.videos) return { produtoId, kind: 'videos' };
+  return null;
+}
+
 /**
  * Defense-in-depth guard: true when the file name carries a derivative suffix
  * (`<hash>_200`, `_400`, `_jpeg`). A real original is content-hashed (hex, no

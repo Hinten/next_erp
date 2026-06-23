@@ -354,11 +354,14 @@ export {
   derivativeArquivoId,
   parseProductOriginalPath,
   isWatchedProductOriginal,
+  parseProductMediaDir,
   isDerivativeName,
   firebaseDownloadUrl,
   normalizeName,
   type VariantSpec,
   type ParsedOriginalPath,
+  type ProductMediaKind,
+  type ParsedProductMediaDir,
 } from './storage/storagePaths';
 
 export { buildFotoRefs, fotoSchema, type Foto, type FotoRefs } from './storage/foto';

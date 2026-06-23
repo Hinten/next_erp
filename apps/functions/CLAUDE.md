@@ -38,17 +38,25 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Four exports:
   bounded passes (ADR 0010 Phase 2). **Phantom-doc sweep** (`sweepPhantomDocs`):
   `arquivos where uploadState == 'pending'` past a 48h grace window whose object
   never arrived → delete the doc (or self-heal to `'finalized'` if the object IS
-  present). **Unreferenced sweep** (`sweepUnreferencedArquivos`): product-scoped
-  arquivos (originals/videos) past the grace window that **no produto references**
-  → delete (then `onArquivoDeleted` frees the object + cascades derivatives) — e.g.
-  a photo removed from a produto in an edit. The referenced set is built by
-  `findReferencedArquivoRefs`, an admin **pipeline** over `produtos` projecting
-  `fotos`/`videos`/`anexos` (their `arquivoOuterRef`s). ⚠️ The pipeline needs
-  **firebase-admin v14 / `@google-cloud/firestore` v8 + Firestore Enterprise**
-  (this package only; see root CLAUDE.md) and **does NOT run in the emulator** —
-  so the sweep cores take the ref set as a parameter (emulator-testable) and the
-  pipeline is validated **live on veste-france-debug**. Grace is
-  `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests); `criadoEm` is microseconds-since-epoch.
+  present). **Unreferenced sweep** (`sweepUnreferencedArquivos`): product photos +
+  videos (`produtos/<id>/originals|videos`, scoped via `parseProductMediaDir`) past
+  the grace window that **no produto references** → delete (then `onArquivoDeleted`
+  frees the object + cascades derivatives) — e.g. a photo removed from a produto in
+  an edit, or a produto deleted entirely. The reference check is an
+  **owner-document lookup**, NOT a collection scan: a product arquivo encodes its
+  owner `produtoId` in its storage path, so `resolveReferencedArquivoRefs` reads
+  ONLY the produtos owning the current candidate batch (one batched `getAll`,
+  field-masked to `fotos`/`videos`/`anexos`) — O(distinct produtos in the batch),
+  never O(all produtos). Plain admin SDK reads, so the whole sweep is
+  emulator-testable (a `resolveReferenced` seam lets the test isolate from shared
+  emulator state). Grace is `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests); `criadoEm`
+  is microseconds-since-epoch. ⚠️ **Coverage caveat**: the candidate scan
+  (`where criadoEm < cutoff limit 100`) always re-reads the OLDEST docs, so a large
+  head of long-lived referenced photos can starve newer orphans — a persisted
+  round-robin cursor is the planned fix (issue #234). Both sweep queries are
+  single-field → **automatic indexes, no composite** (`firestore.indexes.json`
+  unchanged); verify index usage live with `scripts/check-sweep-indexes.mjs`
+  (`explain({ analyze: true })`).
 
 - The entry (`src/index.ts`) is **esbuild-bundled into a single ESM file**.
   Only `firebase-admin`, `firebase-functions`, and `sharp` are `external`;
@@ -149,7 +157,10 @@ deploy config or `prepare-deploy.mjs`.
    `.env.example`).
 
 9. **Cloud build `ERESOLVE` on `firebase-admin@14`** — this package is on
-   firebase-admin 14 (for `@google-cloud/firestore` v8 Pipelines), but
+   firebase-admin 14. (It was bumped for the `@google-cloud/firestore` v8
+   Pipelines API; the orphan sweep no longer uses pipelines — see
+   `reconcileArquivoOrphans` above — so admin 14 is now **retained but no longer
+   required**, and reverting to 13 would remove this gotcha entirely.) But
    `firebase-functions` (incl. 7.x) still pins its peer to
    `firebase-admin@^11 || ^12 || ^13`. pnpm tolerates the mismatch locally and the
    combo is runtime-fine (the ci-storage emulator suite passes on admin 14 +
