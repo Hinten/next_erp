@@ -5,21 +5,24 @@ import { z } from 'zod';
 import { NFeCertError } from '@delfrance/integrations-nfe';
 
 import { runReconcile } from '../../lib/nfe/handlers/runReconcile';
+import { runReconcileCce } from '../../lib/nfe/handlers/runReconcileCce';
 import { getNFeRuntime } from '../../lib/nfe/runtime';
-import { createTaskScheduler, consultaTaskPayloadSchema } from '../../lib/nfe/tasks';
+import { createTaskScheduler, taskPayloadSchema } from '../../lib/nfe/tasks';
 import { safeErrorShape } from '../../lib/nfe/log';
 import { getDb } from './lib/admin';
 
 /**
- * Cloud Tasks dispatcher for the async NF-e reconciler (#77). apps/nfe enqueues
- * one task per lote at `now + tMed` (then per-attempt backoff). This function —
- * whose queue is auto-provisioned on deploy — **executes the reconcile
- * in-process** (`runReconcile`): consults the lote by recibo and re-enqueues the
- * next consult while still pending. No HTTP hop, no OIDC.
+ * Cloud Tasks dispatcher for the async NF-e reconciler. apps/nfe enqueues two
+ * kinds of task onto this function's auto-provisioned queue, discriminated by
+ * `kind` and **executed in-process** (no HTTP hop, no OIDC):
+ *   - `consulta-lote` (#77) — consult an async lote by recibo (`runReconcile`)
+ *     and re-enqueue the next consult while still cStat 105.
+ *   - `cce-vinculo` (#81) — re-check a pending cStat-136 CC-e
+ *     (`runReconcileCce`) and re-enqueue the next re-check while still 136.
  *
  * Retry disposition (the queue retries iff this throws):
- *   - handled outcome (incl. cStat 656 terminal, attempt cap, aprovada,
- *     105-reenqueued) → **return** (no retry; re-querying a 656 is a ban risk).
+ *   - handled outcome (cStat 656 terminal, attempt cap, aprovada/resolved,
+ *     re-enqueued) → **return** (no retry; re-querying a 656 is a ban risk).
  *   - bad payload (Zod) / `NFeCertError` → **return** (deterministic; the
  *     backstop sweep covers a cert that's not yet uploaded).
  *   - runtime-not-ready / transport / Firestore → **throw** (bounded queue retry).
@@ -28,7 +31,7 @@ import { getDb } from './lib/admin';
 export async function handleReconciliarTask(data: unknown): Promise<void> {
   let payload;
   try {
-    payload = consultaTaskPayloadSchema.parse(data);
+    payload = taskPayloadSchema.parse(data);
   } catch (e) {
     if (e instanceof z.ZodError) {
       logger.error('reconciliarNfe: malformed task payload — dropping', {
@@ -38,6 +41,12 @@ export async function handleReconciliarTask(data: unknown): Promise<void> {
     }
     throw e;
   }
+
+  // A kind-aware label for the logs (cce-vinculo has no nRec).
+  const label =
+    payload.kind === 'cce-vinculo'
+      ? `cce pedido=${payload.pedidoId} nfe=${payload.nfeId} cce=${payload.cceId}`
+      : `nRec=${payload.nRec}`;
 
   const fs = getDb();
   let baseRt;
@@ -50,21 +59,30 @@ export async function handleReconciliarTask(data: unknown): Promise<void> {
 
   const scheduler = createTaskScheduler();
   try {
+    if (payload.kind === 'cce-vinculo') {
+      const result = await runReconcileCce({ fs, baseRt, scheduler, payload });
+      logger.info(
+        `reconciliarNfe ${label} cStat=${result.cStat} ` +
+          `disposition=${result.disposition} reEnqueued=${result.reEnqueued}`,
+      );
+      // handled — terminal dispositions leave reEnqueued=false; no retry.
+      return;
+    }
     const result = await runReconcile({ fs, baseRt, scheduler, payload });
     logger.info(
-      `reconciliarNfe nRec=${payload.nRec} cStat=${result.cStat} ` +
+      `reconciliarNfe ${label} cStat=${result.cStat} ` +
         `recovered=${result.recovered} errored=${result.errored} ` +
         `stillPending=${result.stillPending} reEnqueued=${result.reEnqueued}`,
     );
     // handled — including 656 / cap (stillPending=0) → no re-enqueue, no retry.
   } catch (e) {
     if (e instanceof NFeCertError) {
-      logger.error(`reconciliarNfe nRec=${payload.nRec}: cert unavailable — backstop will retry`, {
+      logger.error(`reconciliarNfe ${label}: cert unavailable — backstop will retry`, {
         name: e.name,
       });
       return; // deterministic — no retry
     }
-    logger.error(`reconciliarNfe nRec=${payload.nRec}: transport/unexpected`, safeErrorShape(e));
+    logger.error(`reconciliarNfe ${label}: transport/unexpected`, safeErrorShape(e));
     throw e; // transient — bounded queue retry
   }
 }

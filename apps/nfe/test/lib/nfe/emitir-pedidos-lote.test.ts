@@ -43,6 +43,9 @@ function recordingScheduler(): { scheduler: TaskScheduler; enqueued: ConsultaTas
       async enqueueConsulta(input) {
         enqueued.push(input);
       },
+      async enqueueCceVinculo() {
+        /* emit path never enqueues a CC-e re-check */
+      },
     },
     enqueued,
   };

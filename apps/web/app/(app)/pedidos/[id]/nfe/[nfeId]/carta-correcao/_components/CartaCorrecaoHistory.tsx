@@ -82,12 +82,25 @@ export function CartaCorrecaoHistory({ pedidoId, nfeId }: { pedidoId: string; nf
       loadingLabel="Carregando cartas de correção…"
       emptyLabel="Nenhuma carta de correção registrada para esta NF-e."
       renderBadge={(m) => {
-        const registrada = m.estado === ESTADO_ENVI_NFE_MSG.concluido;
+        const suffix = m.cStat ? ` ${m.cStat}` : '';
+        if (m.estado === ESTADO_ENVI_NFE_MSG.concluido) {
+          return (
+            <Badge color="teal" variant="light">
+              registrada{suffix}
+            </Badge>
+          );
+        }
+        // cStat 136 — registered but not yet linked: pending, NOT an error (#81).
+        if (m.estado === ESTADO_ENVI_NFE_MSG.aguardandoVinculo) {
+          return (
+            <Badge color="yellow" variant="light">
+              aguardando vínculo{suffix}
+            </Badge>
+          );
+        }
         return (
-          <Badge color={registrada ? 'teal' : 'red'} variant="light">
-            {registrada
-              ? `registrada${m.cStat ? ` ${m.cStat}` : ''}`
-              : `erro${m.cStat ? ` ${m.cStat}` : ''}`}
+          <Badge color="red" variant="light">
+            erro{suffix}
           </Badge>
         );
       }}
