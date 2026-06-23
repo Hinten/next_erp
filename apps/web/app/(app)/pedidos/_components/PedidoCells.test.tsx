@@ -330,6 +330,10 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
     it('downloads a .xml file named by the chave when clicked', async () => {
       // jsdom implements neither the object-URL API nor anchor navigation;
       // stub them and capture the anchor's download attribute at click time.
+      // Save the originals (absent in jsdom) and restore in `finally` so the
+      // global mutation never leaks into later tests.
+      const origCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+      const origRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
       const createSpy = vi.fn(() => 'blob:fake');
       const revokeSpy = vi.fn();
       Object.defineProperty(URL, 'createObjectURL', { value: createSpy, configurable: true });
@@ -341,16 +345,23 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
         downloadName = this.download;
       });
 
-      const chave = '3'.repeat(44);
-      setSnap({ data: [rowFromNFe(makeNFe('a', { chave, xml_nfe_proc: '<nfeProc/>' }))] });
-      const { container } = wrap(<NFCell pedidoId="p1" />);
-      fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
-      fireEvent.click(await screen.findByRole('button', { name: /baixar xml/i }));
+      try {
+        const chave = '3'.repeat(44);
+        setSnap({ data: [rowFromNFe(makeNFe('a', { chave, xml_nfe_proc: '<nfeProc/>' }))] });
+        const { container } = wrap(<NFCell pedidoId="p1" />);
+        fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+        fireEvent.click(await screen.findByRole('button', { name: /baixar xml/i }));
 
-      expect(createSpy).toHaveBeenCalledOnce();
-      expect(downloadName).toBe(`${chave}.xml`);
-      expect(revokeSpy).toHaveBeenCalledOnce();
-      clickSpy.mockRestore();
+        expect(createSpy).toHaveBeenCalledOnce();
+        expect(downloadName).toBe(`${chave}.xml`);
+        expect(revokeSpy).toHaveBeenCalledOnce();
+      } finally {
+        clickSpy.mockRestore();
+        if (origCreate) Object.defineProperty(URL, 'createObjectURL', origCreate);
+        else delete (URL as { createObjectURL?: unknown }).createObjectURL;
+        if (origRevoke) Object.defineProperty(URL, 'revokeObjectURL', origRevoke);
+        else delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL;
+      }
     });
   });
 
