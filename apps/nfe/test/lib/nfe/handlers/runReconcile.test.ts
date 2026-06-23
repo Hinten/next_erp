@@ -29,6 +29,9 @@ function recordingScheduler(): { scheduler: TaskScheduler; enqueued: ConsultaTas
       async enqueueConsulta(input) {
         enqueued.push(input);
       },
+      async enqueueCceVinculo() {
+        /* unused by runReconcile */
+      },
     },
     enqueued,
   };

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
+import { microsSinceEpoch } from './datetime';
 import { estadoEnviNFeMsgSchema } from './enviNfeMsg';
 
 // Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth — same audit
@@ -53,6 +54,15 @@ export const cartaCorrecaoSchema = z.object({
   error: z.string().nullable(),
   /** SEFAZ `tpEmis` for the event. */
   tpEmis: z.number().int().nullable(),
+
+  /**
+   * Async re-check gate (µs since epoch) — earliest a cStat-136 CC-e
+   * (`estado='v'` aguardandoVinculo) may be re-sent. `null` on terminal records
+   * (concluido / error). Mirrors `nfeSchema.proximaConsultaEm`. #81.
+   */
+  proximaConsultaEm: microsSinceEpoch().nullable().default(null),
+  /** Re-send attempts for a pending CC-e; `null` on terminal records. #81. */
+  retries: z.number().int().nullable().default(null),
 
   estado: estadoEnviNFeMsgSchema.default('0'),
   timestamp: z.string().datetime().nullable().optional(),
