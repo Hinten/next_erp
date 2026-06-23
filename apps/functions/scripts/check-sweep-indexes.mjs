@@ -20,7 +20,10 @@ import { getFirestore } from 'firebase-admin/firestore';
 
 const projectId = process.env.FIREBASE_PROJECT_ID ?? 'veste-france-debug';
 const databaseId = process.env.FIREBASE_DATABASE_ID ?? 'default';
-const graceHours = Number(process.env.ARQUIVO_ORPHAN_GRACE_HOURS ?? '48');
+// Mirror the production sweep's guard: non-numeric/negative falls back to 48h
+// (else NaN would poison the cutoff and fail the query).
+const graceRaw = Number(process.env.ARQUIVO_ORPHAN_GRACE_HOURS ?? '48');
+const graceHours = Number.isFinite(graceRaw) && graceRaw >= 0 ? graceRaw : 48;
 
 const app = initializeApp({ projectId });
 const db = getFirestore(app, databaseId);

@@ -3,7 +3,7 @@ import type { Storage } from 'firebase-admin/storage';
 import { getStorage } from 'firebase-admin/storage';
 import { logger } from 'firebase-functions';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
-import { arquivoCollection } from '@delfrance/data/admin/collections';
+import { arquivoCollection, produtoCollection } from '@delfrance/data/admin/collections';
 import {
   ARQUIVOS_COLLECTION,
   coerceToMicros,
@@ -108,7 +108,10 @@ export async function resolveReferencedArquivoRefs(
   const refs = new Set<string>();
   if (produtoIds.length === 0) return refs;
 
-  const docRefs = produtoIds.map((id) => db.collection('produtos').doc(id));
+  // produtoCollection.docRef returns a RAW ref (no converter — see
+  // defineAdminCollection), so the field-masked partial read below is safe; the
+  // handle just sources the 'produtos' path from schemas.
+  const docRefs = produtoIds.map((id) => produtoCollection.docRef(db, {}, id));
   // Field mask → transfer only the three media arrays, still one read per produto.
   const snaps = await db.getAll(...docRefs, { fieldMask: ['fotos', 'videos', 'anexos'] });
   for (const snap of snaps) {
