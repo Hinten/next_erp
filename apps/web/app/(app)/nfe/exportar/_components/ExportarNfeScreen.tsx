@@ -154,10 +154,8 @@ export function ExportarNfeScreen() {
           });
           return;
         }
-        showErrorNotification({
-          title: 'Erro inesperado na exportação',
-          message: err instanceof Error ? err.message : String(err),
-        });
+        // Anything else is an unexpected bug — surface it (apps/web rule: narrow
+        // + rethrow, never swallow). `finally` resets the button.
         throw err;
       } finally {
         setRunning(null);

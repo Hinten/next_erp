@@ -31,10 +31,20 @@ export const REPORT_HEADER = [
 
 type Cell = string | number | null | undefined;
 
-/** Escape one CSV cell: quote (and double inner quotes) when it contains the
- * delimiter, a quote, or a line break. */
+// A cell whose value starts with one of these can be evaluated as a formula by
+// Excel/Sheets (CSV/Excel formula injection); a genuine number — including a
+// negative total like "-5,50" — must NOT be neutralized so it stays numeric.
+const FORMULA_LEAD = /^[=+\-@\t\r]/;
+const NUMERIC = /^-?[\d.,]+$/;
+
+/** Escape one CSV cell: neutralize formula-injection leads (`=`/`+`/`-`/`@`/tab/CR
+ * on non-numeric text → prefix `'`), then quote (and double inner quotes) when it
+ * contains the delimiter, a quote, or a line break. */
 export function csvCell(value: Cell): string {
-  const s = value == null ? '' : String(value);
+  let s = value == null ? '' : String(value);
+  if (FORMULA_LEAD.test(s) && !NUMERIC.test(s)) {
+    s = `'${s}`;
+  }
   if (s.includes(';') || s.includes('"') || s.includes('\n') || s.includes('\r')) {
     return `"${s.replace(/"/g, '""')}"`;
   }

@@ -29,6 +29,19 @@ describe('csv helpers', () => {
     expect(csvRow(['a', 'b', 'c'])).toBe('a;b;c');
   });
 
+  it('neutralizes CSV/Excel formula-injection leads but leaves genuine numbers intact', () => {
+    expect(csvCell('=SUM(A1)')).toBe("'=SUM(A1)");
+    expect(csvCell('+1+1')).toBe("'+1+1");
+    expect(csvCell('@cmd')).toBe("'@cmd");
+    expect(csvCell('-DESCONTO')).toBe("'-DESCONTO");
+    // genuine numbers (incl. negative totals) must NOT be neutralized
+    expect(csvCell('-5,50')).toBe('-5,50');
+    expect(csvCell('103,00')).toBe('103,00');
+    expect(csvCell('1234.56')).toBe('1234.56');
+    // a formula that also contains the delimiter is neutralized AND quoted
+    expect(csvCell('=A1;B1')).toBe('"\'=A1;B1"');
+  });
+
   it('brNum / centsToBr produce comma decimals; toCents avoids float drift', () => {
     expect(brNum('1234.56')).toBe('1234,56');
     expect(brNum('')).toBe('');
