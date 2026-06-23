@@ -4,10 +4,10 @@
  * Resolves a filial id to authenticate the SEFAZ Consulta Cadastro mTLS call
  * from the cliente screens (which, unlike the NF-e screens, have no filial
  * context). The cert identifies the *requester*, not the queried CNPJ, so any
- * authorized filial works — we pick the most recently touched one. When the
- * grupo has no filial (or the read fails) the hook returns `undefined` and the
- * caller simply skips the SEFAZ leg (the public CNPJ API still fills nome +
- * endereço).
+ * authorized filial works — we just take the first one (a bare `limit(1)`, no
+ * ordering). When the grupo has no filial (or the read fails) the hook returns
+ * `undefined` and the caller simply skips the SEFAZ leg (the public CNPJ API
+ * still fills nome + endereço).
  */
 
 import { useQuery } from '@tanstack/react-query';

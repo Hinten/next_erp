@@ -148,22 +148,33 @@ function parseConsCadXml(text: string): ConsCadNode {
       break;
     }
     if (lt > i) top().text += text.slice(i, lt);
+    // Each of these branches scans for a terminator; a missing one (truncated /
+    // malformed XML) returns -1, which would push `i` BACKWARDS and spin the
+    // loop. Guard every `indexOf` and `break` on -1 so `i` only moves forward —
+    // the partial parse then trips `consultarCadastro`'s `!infCons` check (500).
     if (text.startsWith('<?', lt)) {
-      i = text.indexOf('?>', lt) + 2;
+      const close = text.indexOf('?>', lt);
+      if (close === -1) break;
+      i = close + 2;
       continue;
     }
     if (text.startsWith('<!--', lt)) {
-      i = text.indexOf('-->', lt) + 3;
+      const close = text.indexOf('-->', lt);
+      if (close === -1) break;
+      i = close + 3;
       continue;
     }
     if (text.startsWith('<![CDATA[', lt)) {
       const end = text.indexOf(']]>', lt);
+      if (end === -1) break;
       top().text += text.slice(lt + 9, end);
       i = end + 3;
       continue;
     }
     if (text.startsWith('<!', lt)) {
-      i = text.indexOf('>', lt) + 1;
+      const close = text.indexOf('>', lt);
+      if (close === -1) break;
+      i = close + 1;
       continue;
     }
     const gt = text.indexOf('>', lt);

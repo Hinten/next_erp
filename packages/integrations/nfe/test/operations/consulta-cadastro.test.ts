@@ -178,4 +178,18 @@ describe('consultarCadastro', () => {
       /infCons/,
     );
   });
+
+  it('fails fast (does not spin) on truncated XML — unterminated comment', async () => {
+    // Without the indexOf(-1) guards in parseConsCadXml this unterminated `<!--`
+    // pushes the cursor backwards and the loop spins forever. With the guards it
+    // breaks, leaves infCons unparsed, and consultarCadastro throws — a hang
+    // would instead trip Vitest's per-test timeout and fail loudly.
+    vi.mocked(mockedNfeConsultaCadastro).mockResolvedValueOnce({
+      resultXml: `<retConsCad versao="2.00" xmlns="${NFE_NS}"><!-- truncado`,
+      rawBody: '',
+    });
+    await expect(consultarCadastro(dummyCall(), { uf: 'SP', cnpj: CNPJ })).rejects.toThrow(
+      /infCons/,
+    );
+  });
 });

@@ -34,9 +34,11 @@ export default function NovoClientePage() {
   const pendingEnderecoRef = useRef<ClienteCnpjEndereco | null>(null);
   const [enderecoFound, setEnderecoFound] = useState(false);
 
-  function handleAddressResolved(endereco: ClienteCnpjEndereco) {
+  function handleAddressResolved(endereco: ClienteCnpjEndereco | null) {
+    // Track the latest lookup result — null retracts a previously found address
+    // (no-address lookup or an edited CNPJ) so we never relay a stale one.
     pendingEnderecoRef.current = endereco;
-    setEnderecoFound(true);
+    setEnderecoFound(endereco !== null);
   }
 
   function handleSaved(id: string) {

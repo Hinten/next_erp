@@ -52,7 +52,7 @@ export const runtime = 'nodejs';
 
 const querySchema = z.object({
   cnpj: z.string().regex(/^\d{14}$/, 'cnpj deve ter 14 dígitos'),
-  uf: z.string().length(2, 'uf deve ter 2 letras'),
+  uf: z.string().regex(/^[A-Za-z]{2}$/, 'uf deve ter 2 letras'),
   // filialId is REQUIRED in v1 — the lookup signs the mTLS handshake with this
   // filial's cert, and the home-UF restriction is checked against the runtime.
   filialId: z.string().min(1).max(200),

@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useState } from 'react';
+import { createContext, useContext, useRef, useState } from 'react';
 import { ActionIcon, Tooltip } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconSearch } from '@tabler/icons-react';
@@ -24,8 +24,12 @@ import { useNFeClient } from '@/lib/nfe/client';
 export interface CnpjLookupConfig {
   /** Filial whose A1 certificate signs the SEFAZ Consulta Cadastro call. */
   filialId?: string;
-  /** Called with the resolved address so the page can offer to register it. */
-  onAddressResolved?: (endereco: ClienteCnpjEndereco) => void;
+  /**
+   * Called with the resolved address so the page can offer to register it, or
+   * with `null` to retract a previously offered one (a no-address lookup, or an
+   * edit to the CNPJ after a successful lookup).
+   */
+  onAddressResolved?: (endereco: ClienteCnpjEndereco | null) => void;
 }
 
 const CnpjLookupContext = createContext<CnpjLookupConfig>({});
@@ -62,6 +66,9 @@ export function CnpjLookupField({
   const nfe = useNFeClient();
   const [loading, setLoading] = useState(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
+  // True once a lookup has offered an address upward — lets us retract it on the
+  // next CNPJ edit so a stale address is never relayed for the wrong cliente.
+  const offeredRef = useRef(false);
 
   const doc = (value as string | null | undefined) ?? '';
   const isPJ = watch('tipo') === '1';
@@ -112,7 +119,10 @@ export function CnpjLookupField({
       const ie = sefazIe ?? pub.ie;
       if (ie) setValue('ie', ie, SET_OPTS);
 
-      if (pub.endereco && onAddressResolved) onAddressResolved(pub.endereco);
+      // Hand the result up — null too, so a no-address lookup retracts any
+      // address a previous lookup offered for this same field.
+      onAddressResolved?.(pub.endereco);
+      offeredRef.current = pub.endereco !== null;
 
       const ieNote = ie ? ` (IE ${ie})` : sefazTried ? ' — IE não retornada pela SEFAZ' : '';
       notifications.show({ color: 'green', message: `Dados de ${pub.nome} preenchidos${ieNote}` });
@@ -126,6 +136,11 @@ export function CnpjLookupField({
       value={doc}
       onChange={(next) => {
         setLookupError(null);
+        // Editing the CNPJ invalidates any address a prior lookup offered.
+        if (offeredRef.current) {
+          offeredRef.current = false;
+          onAddressResolved?.(null);
+        }
         onChange(next);
       }}
       onBlur={onBlur}
