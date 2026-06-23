@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Button, Stack } from '@mantine/core';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import {
+  type ComponentesKit,
   type Foto,
   type ImpostoProduto,
   type PrecosMap,
@@ -27,6 +28,7 @@ import { CustoField } from '../_components/CustoField';
 import { EstoqueManager } from '../_components/EstoqueManager';
 import { ExtraDataManager } from '../_components/ExtraDataManager';
 import { ImpostoManager } from '../_components/ImpostoManager';
+import { KitManager, stripKitForSave } from '../_components/KitManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../_components/PrecoCustoManager';
 import { VideoManager } from '../_components/VideoManager';
 import { VariationManager } from '../_components/VariationManager';
@@ -174,6 +176,20 @@ export default function NovoProdutoPage() {
           />
         ),
       },
+      componentesKit: {
+        label: 'Componentes do kit',
+        section: 'Kit',
+        prepareForSave: stripKitForSave,
+        renderInput: (p) => (
+          <KitManager
+            produtoId={null}
+            db={db}
+            value={(p.value as ComponentesKit | null) ?? null}
+            onChange={p.onChange}
+            disabled={p.disabled}
+          />
+        ),
+      },
     }),
     [db, storage, listas, listasSnap.error?.message],
   );
@@ -201,6 +217,18 @@ export default function NovoProdutoPage() {
         transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
         saveLabel="Criar"
         showSaveAndContinue={false}
+        deriveOnSave={(values) => {
+          // Kit denormalization: `componentesKitKeys` mirrors the component ids
+          // (the delete-guard queries it); a non-kit clears both.
+          const ehKit = values.ehKit === true;
+          const componentesKit = ehKit
+            ? ((values.componentesKit as ComponentesKit | null) ?? null)
+            : null;
+          return {
+            componentesKit,
+            componentesKitKeys: componentesKit ? Object.keys(componentesKit) : null,
+          };
+        }}
         validate={(values) =>
           produtoPageIssues({
             ehKit: values.ehKit as boolean | null,
