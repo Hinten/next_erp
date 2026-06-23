@@ -31,6 +31,7 @@ import {
   type CCeEventoInput,
   type EpecEventoInput,
 } from '../eventos';
+import { UF_TO_IBGE } from '../generator/ide';
 import { buildInutNFe, type InutilizacaoInput } from '../inutilizacao';
 import { signEvento, signInutilizacao } from '../sign';
 import { validateConsCad, validateXsd } from '../xsd';
@@ -278,6 +279,9 @@ export async function consultarCadastro(
 ): Promise<ConsultaCadastroResult> {
   const uf = args.uf.toUpperCase();
   const cnpj = args.cnpj.replace(/\D/g, '');
+  // cUF (IBGE 2-digit) for the required `<nfeCabecMsg>` SOAP Header.
+  const cUF = UF_TO_IBGE[uf as keyof typeof UF_TO_IBGE];
+  if (!cUF) throw new NFeXmlError(`UF inválida para Consulta Cadastro: ${uf}`);
   const xml =
     `<consCad versao="2.00" xmlns="${NFE_NS}">` +
     `<infCons><xServ>CONS-CAD</xServ><UF>${uf}</UF><CNPJ>${cnpj}</CNPJ></infCons>` +
@@ -285,7 +289,7 @@ export async function consultarCadastro(
   // Pre-send XSD gate — SEFAZ rule: never POST schema-invalid XML. Repeated
   // cStat 215/225 trips cStat 656 (Consumo Indevido) → throttling/ban.
   await validateConsCad(xml);
-  const { resultXml } = await nfeConsultaCadastro(call, xml);
+  const { resultXml } = await nfeConsultaCadastro(call, xml, cUF);
 
   const doc = parseConsCadXml(resultXml);
   const infCons = findConsCadNode(doc, 'infCons');

@@ -94,6 +94,8 @@ describe('consultarCadastro', () => {
     expect(sentXml).toContain(`<CNPJ>${CNPJ}</CNPJ>`);
     // No whitespace between tags (digest/wire-shape predictability).
     expect(sentXml).not.toMatch(/>\s+</);
+    // cUF (IBGE) for the nfeCabecMsg SOAP header — '35' for SP.
+    expect(vi.mocked(mockedNfeConsultaCadastro).mock.calls[0]![2]).toBe('35');
   });
 
   it('strips non-digits from the CNPJ before sending', async () => {
