@@ -118,8 +118,11 @@ export async function resolveEtiquetaCartInput(
   const enderecoDestino = await readDoc<Endereco>(db, frete.enderecoFreteOuterReference);
   if (!enderecoDestino) return { ok: false, error: 'Pedido sem endereço de entrega.' };
 
-  const clienteDestino = await readDoc<ClienteDestinoLike>(db, pedido.clientePedidoOuterRef);
-  const invoiceKey = await resolveNfeChave(db, pedidoId);
+  // Independent reads — fetch the cliente fallback + the NF-e chave in parallel.
+  const [clienteDestino, invoiceKey] = await Promise.all([
+    readDoc<ClienteDestinoLike>(db, pedido.clientePedidoOuterRef),
+    resolveNfeChave(db, pedidoId),
+  ]);
 
   const payload = buildPedidoCartPayload({
     // `FreteDoPedido` (wire) is structurally what the mapper reads off
