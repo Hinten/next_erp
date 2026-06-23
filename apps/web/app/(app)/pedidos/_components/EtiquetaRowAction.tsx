@@ -114,6 +114,7 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
           onClose={() => setComprarOpen(false)}
           pedido={pedido}
           pedidoId={pedidoId}
+          intFreteId={intFreteId}
           needsPostedConfirm={needsPostedConfirm}
         />
       </>

@@ -8,6 +8,7 @@
  */
 import { useState } from 'react';
 import { Alert, Button, Checkbox, Group, Modal, Stack, Text } from '@mantine/core';
+import { useQuery } from '@tanstack/react-query';
 import type { Pedido } from '@delfrance/schemas';
 
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -26,12 +27,14 @@ export function EtiquetaComprarModal({
   onClose,
   pedido,
   pedidoId,
+  intFreteId,
   needsPostedConfirm,
 }: {
   opened: boolean;
   onClose: () => void;
   pedido: Pedido;
   pedidoId: string;
+  intFreteId: string | null;
   needsPostedConfirm: boolean;
 }) {
   const db = getFirebaseFirestore();
@@ -39,6 +42,23 @@ export function EtiquetaComprarModal({
   const [ack, setAck] = useState(false);
   const [buying, setBuying] = useState(false);
   const [result, setResult] = useState<BuyResult | null>(null);
+
+  // Show the ME account saldo before confirming (the legacy showed it in the
+  // buy dialog). Fresh each open (staleTime 0) — a prior buy changes it.
+  const conta = useQuery({
+    queryKey: ['freightConta', intFreteId],
+    enabled: opened && client != null && intFreteId != null,
+    staleTime: 0,
+    queryFn: () => client!.conta(intFreteId!),
+  });
+  const saldo = conta.data?.balance?.balance ?? null;
+  const saldoLabel = conta.isLoading
+    ? 'Carregando…'
+    : saldo != null
+      ? `R$ ${saldo.toFixed(2)}`
+      : 'Desconhecido';
+  const custoFrete = pedido.freteInicial?.custoFinal ?? pedido.freteInicial?.custoCalculado ?? null;
+  const saldoInsuficiente = saldo != null && custoFrete != null && saldo < custoFrete;
 
   function handleClose() {
     setAck(false);
@@ -100,6 +120,21 @@ export function EtiquetaComprarModal({
             Pedido {pedido.numero ?? pedidoId}. A compra debita o saldo da conta Melhor Envio e gera
             a etiqueta.
           </Text>
+          <Group justify="space-between">
+            <Text size="sm" c="dimmed">
+              Saldo Atual
+            </Text>
+            <Text size="sm" fw={500}>
+              {saldoLabel}
+            </Text>
+          </Group>
+          {saldoInsuficiente && (
+            <Alert color="orange" variant="light">
+              Saldo insuficiente para o frete
+              {custoFrete != null ? ` (R$ ${custoFrete.toFixed(2)})` : ''}. A compra pode ser
+              recusada pelo Melhor Envio.
+            </Alert>
+          )}
           {needsPostedConfirm && (
             <Alert color="orange" title="Atenção" variant="light">
               Este frete já tem uma etiqueta emitida — reemitir pode gerar etiquetas duplicadas e
