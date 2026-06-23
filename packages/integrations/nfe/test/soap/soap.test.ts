@@ -27,22 +27,38 @@ describe('buildEnvelope', () => {
     // recognized"). This pins the correct namespace so it can't regress.
     expect(buildEnvelope('RecepcaoEvento', '<x/>')).toContain('/NFeRecepcaoEvento4"');
     expect(buildEnvelope('RecepcaoEvento', '<x/>')).not.toContain('/RecepcaoEvento4"');
-    // Consulta Cadastro uses the same NFe<Service>4 namespace pattern.
-    expect(buildEnvelope('NFeConsultaCadastro', '<x/>')).toContain('/NFeConsultaCadastro4"');
+    // Consulta Cadastro's SP service is `CadConsultaCadastro4` (the .asmx is
+    // `cadconsultacadastro4`, NOT `nfeconsultacadastro4`). SEFAZ rejects the
+    // NFe-prefixed action as "not recognized" — pin the correct service ns.
+    expect(buildEnvelope('NFeConsultaCadastro', '<x/>')).toContain('/CadConsultaCadastro4"');
+    expect(buildEnvelope('NFeConsultaCadastro', '<x/>')).not.toContain('/NFeConsultaCadastro4"');
   });
 
-  it('wraps a consCad payload in the NFeConsultaCadastro4 namespace', () => {
+  it('wraps a consCad payload in the CadConsultaCadastro4 namespace', () => {
     const env = buildEnvelope(
       'NFeConsultaCadastro',
       '<consCad xmlns="http://www.portalfiscal.inf.br/nfe" versao="2.00">' +
         '<infCons><xServ>CONS-CAD</xServ><UF>SP</UF><CNPJ>14200166000187</CNPJ></infCons></consCad>',
     );
     expect(env).toContain(
-      '<nfeDadosMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeConsultaCadastro4">',
+      '<nfeDadosMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/CadConsultaCadastro4">',
     );
     expect(env).toContain('<consCad');
     expect(env).toContain('<xServ>CONS-CAD</xServ>');
     expect(env).not.toMatch(/>\s+</);
+  });
+
+  it('SOAPAction is the service namespace, with the consultaCadastro suffix only for Consulta Cadastro', () => {
+    const { soapActionFor } = __internal;
+    // Standard v4 services: action == the bare service namespace (no operation).
+    expect(soapActionFor('NFeStatusServico')).toBe(
+      'http://www.portalfiscal.inf.br/nfe/wsdl/NFeStatusServico4',
+    );
+    // Consulta Cadastro (classic ASMX): action carries the `/consultaCadastro`
+    // operation suffix; the bare action is rejected by SEFAZ as "not recognized".
+    expect(soapActionFor('NFeConsultaCadastro')).toBe(
+      'http://www.portalfiscal.inf.br/nfe/wsdl/CadConsultaCadastro4/consultaCadastro',
+    );
   });
 
   it('contains no formatting whitespace between elements', () => {

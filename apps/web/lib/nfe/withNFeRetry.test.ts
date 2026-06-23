@@ -72,7 +72,7 @@ describe('withNFeRetry', () => {
     expect(consultar).toHaveBeenCalledTimes(2);
   });
 
-  it('consultaCadastro retries a transient NFeNetworkError (idempotent GET)', async () => {
+  it('consultaCadastro retries a transient NFeNetworkError (read-only POST)', async () => {
     const consultaCadastro = vi.fn(
       failThenSucceed(1, new NFeNetworkError('reset'), { supported: true, infCad: [] } as never),
     );

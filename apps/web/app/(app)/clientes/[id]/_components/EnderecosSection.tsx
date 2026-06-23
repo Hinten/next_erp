@@ -54,13 +54,18 @@ export function EnderecosSection({
   const [recebedorId, setRecebedorId] = useState<string | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
-  // A resolved CNPJ address opens the create modal prefilled for review.
+  // A resolved CNPJ address opens the create modal prefilled for review — but
+  // only when the user can write endereços. Without the permission, consume the
+  // prefill instead of popping a read-only (confusing) "offer".
   useEffect(() => {
-    if (prefillEndereco) {
-      setEditingId(undefined);
-      setModalOpen(true);
+    if (!prefillEndereco) return;
+    if (!canWrite) {
+      onPrefillConsumed?.();
+      return;
     }
-  }, [prefillEndereco]);
+    setEditingId(undefined);
+    setModalOpen(true);
+  }, [prefillEndereco, canWrite, onPrefillConsumed]);
 
   function openCreate() {
     setEditingId(undefined);

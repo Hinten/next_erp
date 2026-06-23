@@ -41,12 +41,32 @@ const SOAP_NS = {
   // pattern as the others. Without the `NFe` prefix SEFAZ rejects the POST
   // with a SOAP Fault: "The action '…/RecepcaoEvento4' was not recognized."
   RecepcaoEvento: `${NFE_WSDL_BASE}/NFeRecepcaoEvento4`,
-  // Consulta Cadastro (NFeConsultaCadastro4) — query a taxpayer's IE registry
-  // for a CNPJ in a UF. Same `NFe<Service>4` namespace/SOAPAction pattern.
-  NFeConsultaCadastro: `${NFE_WSDL_BASE}/NFeConsultaCadastro4`,
+  // Consulta Cadastro — SP's service is `CadConsultaCadastro4` (the endpoint is
+  // `cadconsultacadastro4.asmx`, NOT `nfeconsultacadastro4`). This value is the
+  // `nfeDadosMsg` xmlns (the service namespace). Unlike the other v4 services,
+  // its SOAPAction additionally carries the `/consultaCadastro` operation suffix
+  // — see SOAP_ACTION_SUFFIX. SP rejected the bare/`NFe…` action with a SOAP
+  // Fault "the action … was not recognized" (HTTP 500).
+  NFeConsultaCadastro: `${NFE_WSDL_BASE}/CadConsultaCadastro4`,
 } as const;
 
 export type SoapOperation = keyof typeof SOAP_NS;
+
+/**
+ * SOAPAction = the service namespace for every v4 service EXCEPT Consulta
+ * Cadastro. SP's `CadConsultaCadastro4` (a classic ASMX) expects the default
+ * `{namespace}/{method}` action `…/CadConsultaCadastro4/consultaCadastro`, while
+ * the `nfeDadosMsg` body wrapper stays in the bare `…/CadConsultaCadastro4`
+ * namespace. So the action and the body xmlns diverge only for this op.
+ */
+const SOAP_ACTION_SUFFIX: Partial<Record<SoapOperation, string>> = {
+  NFeConsultaCadastro: '/consultaCadastro',
+};
+
+/** The SOAPAction header / Content-Type `action` for an operation. */
+function soapActionFor(operation: SoapOperation): string {
+  return SOAP_NS[operation] + (SOAP_ACTION_SUFFIX[operation] ?? '');
+}
 
 export class NFeTransportError extends Error {
   constructor(
@@ -196,7 +216,7 @@ function sanitizeTransportError(err: unknown): {
 async function postSoap(input: PostInput): Promise<PostResult> {
   const envelope = buildEnvelope(input.operation, input.dadosMsg);
   const client = new HttpClient();
-  const action = SOAP_NS[input.operation];
+  const action = soapActionFor(input.operation);
 
   const { statusCode, body } = await new Promise<{ statusCode: number; body: string }>(
     (resolve, reject) => {
@@ -423,7 +443,7 @@ export async function nfeInutilizacao(call: SefazCall, inutNFeXml: string): Prom
 }
 
 /**
- * `NFeConsultaCadastro4 / consultaCadastro4NF` — query a taxpayer's IE
+ * `CadConsultaCadastro4 / consultaCadastro` — query a taxpayer's IE
  * registry for a CNPJ in a UF.
  *
  * **Non-XSD-validated, on purpose.** The `consCad`/`retConsCad` v2.00 XSDs are
@@ -452,4 +472,4 @@ export async function nfeConsultaCadastro(
 }
 
 // Exposed for offline tests that exercise envelope shape / response unwrap.
-export const __internal = { buildEnvelope, RE_RESULT_MSG, RE_SOAP_FAULT };
+export const __internal = { buildEnvelope, soapActionFor, RE_RESULT_MSG, RE_SOAP_FAULT };

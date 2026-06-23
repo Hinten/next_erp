@@ -1,5 +1,5 @@
 /**
- * `GET /api/nfe/consulta-cadastro` — SEFAZ Consulta Cadastro (NFeConsultaCadastro4).
+ * `POST /api/nfe/consulta-cadastro` — SEFAZ Consulta Cadastro (NFeConsultaCadastro4).
  *
  * The server half of "buscar dados por CNPJ": query a taxpayer's IE registry
  * (razão social + endereço + situação cadastral) so the clientes form can
