@@ -44,7 +44,7 @@ export function EnderecosSection({
   onPrefillConsumed,
 }: EnderecosSectionProps) {
   const db = getFirebaseFirestore();
-  const { allowed: canWrite } = usePermission(PERM.endereco.write);
+  const { allowed: canWrite, loading: permLoading } = usePermission(PERM.endereco.write);
 
   // The data layer identity-tracks pathContext — keep the object stable.
   const pathContext = useMemo(() => ({ clienteId }), [clienteId]);
@@ -55,17 +55,20 @@ export function EnderecosSection({
   const [refreshNonce, setRefreshNonce] = useState(0);
 
   // A resolved CNPJ address opens the create modal prefilled for review — but
-  // only when the user can write endereços. Without the permission, consume the
-  // prefill instead of popping a read-only (confusing) "offer".
+  // only once the permission has RESOLVED. The relayed address arrives on mount,
+  // before `usePermission` settles, so we must wait for `!permLoading`; consuming
+  // during the loading window would drop the offer (this broke the e2e). Then:
+  // write allowed → open the prefilled modal; denied → consume it (no read-only
+  // "offer").
   useEffect(() => {
-    if (!prefillEndereco) return;
+    if (!prefillEndereco || permLoading) return;
     if (!canWrite) {
       onPrefillConsumed?.();
       return;
     }
     setEditingId(undefined);
     setModalOpen(true);
-  }, [prefillEndereco, canWrite, onPrefillConsumed]);
+  }, [prefillEndereco, canWrite, permLoading, onPrefillConsumed]);
 
   function openCreate() {
     setEditingId(undefined);
