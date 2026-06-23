@@ -21,6 +21,7 @@ export const PRODUTO_SECTIONS: string[] = [
   'Descrição',
   'Dimensões e peso',
   'Configurações',
+  'Kit',
   'Preço e custo',
   'Estoque',
   'Impostos',
@@ -59,15 +60,17 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
     section: 'Dimensões e peso',
   },
 
-  ehKit: { label: 'É kit', section: 'Configurações' },
-  ehKitVirtual: { label: 'É kit virtual', section: 'Configurações' },
+  // `ehKit` / `ehKitVirtual` live on the Kit tab (matching the Flutter layout) so
+  // the kit toggle sits right above its component manager.
+  ehKit: { label: 'É kit', section: 'Kit' },
+  ehKitVirtual: { label: 'É kit virtual', section: 'Kit' },
   ofereceFreteGratis: { label: 'Oferece frete grátis', section: 'Configurações' },
   permiteVendaSemEstoque: { label: 'Permite venda sem estoque', section: 'Configurações' },
   ehUsado: { label: 'Produto usado', section: 'Configurações' },
 
   custo: {
     label: 'Custo',
-    hint: 'Alimenta o recálculo de preço pelas fórmulas da lista. Para kits, o custo dos componentes será somado (aba Kit, futura).',
+    hint: 'Alimenta o recálculo de preço pelas fórmulas da lista. Para kits, é calculado automaticamente a partir dos componentes na aba Kit.',
     section: 'Preço e custo',
   },
   // `precos` gets its renderInput (PrecoCustoManager) on each page — it
@@ -87,6 +90,11 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
   // TRANSIENT field). Its renderInput (ImpostoManager) is wired per page since
   // it needs `produtoId`/`db`.
   impostos: { label: 'Impostos', section: 'Impostos' },
+
+  // `componentesKit` is a produto DOC field (a map component-id → Kit) — rides
+  // the normal save. Its renderInput (KitManager) is wired per page (needs `db`);
+  // `componentesKitKeys` is the denorm derived in `deriveOnSave`, never rendered.
+  componentesKit: { label: 'Componentes do kit', section: 'Kit' },
 };
 
 /**
@@ -110,7 +118,8 @@ export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   'nome_embedding',
   'anexos',
   'grupoDeVariacoesUid',
-  'componentesKit',
+  // `componentesKit` renders in the Kit tab; `componentesKitKeys` is the denorm
+  // the delete-guard queries — derived in `deriveOnSave`, never rendered.
   'componentesKitKeys',
   'marketplace',
   'marketplaceIds',

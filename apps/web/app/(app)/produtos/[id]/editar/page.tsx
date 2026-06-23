@@ -8,6 +8,7 @@ import { notifications } from '@mantine/notifications';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import {
+  type ComponentesKit,
   type Foto,
   type ImpostoProduto,
   type PrecosMap,
@@ -38,6 +39,7 @@ import { CustoField } from '../../_components/CustoField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
 import { ExtraDataManager } from '../../_components/ExtraDataManager';
 import { ImpostoManager } from '../../_components/ImpostoManager';
+import { KitManager, stripKitForSave } from '../../_components/KitManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
 import { VariationManager } from '../../_components/VariationManager';
@@ -229,6 +231,20 @@ export default function EditarProdutoPage() {
           />
         ),
       },
+      componentesKit: {
+        label: 'Componentes do kit',
+        section: 'Kit',
+        prepareForSave: stripKitForSave,
+        renderInput: (p) => (
+          <KitManager
+            produtoId={params.id}
+            db={db}
+            value={(p.value as ComponentesKit | null) ?? null}
+            onChange={p.onChange}
+            disabled={p.disabled}
+          />
+        ),
+      },
     }),
     [params.id, db, storage, grupos, gruposSnap.error?.message, listas, listasSnap.error?.message],
   );
@@ -295,9 +311,20 @@ export default function EditarProdutoPage() {
                 .filter((g): g is string => g !== undefined),
             ]),
           ];
+          // Kit denormalization: `componentesKitKeys` mirrors the component ids
+          // (the delete-guard queries it); a non-kit clears both.
+          const ehKit = values.ehKit === true;
+          const componentesKit = ehKit
+            ? ((values.componentesKit as ComponentesKit | null) ?? null)
+            : null;
           return {
             grupoDeVariacoesUid: sortGrupoUids(groupsRef.current ?? implied, grupos),
             variacoesUid: normalizeVariacoesUid(uids, grupos),
+            componentesKit,
+            // Sorted so the denorm is order-stable — the keys feed an
+            // `array-contains` query (order-insensitive), and Firestore arrays
+            // are order-sensitive, so an unsorted list churns dirty detection.
+            componentesKitKeys: componentesKit ? Object.keys(componentesKit).sort() : null,
           };
         }}
         validate={(values) =>
