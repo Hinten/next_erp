@@ -94,4 +94,38 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
       )
       .toEqual({ forma: 1, valor: 100 });
   });
+
+  test('shows forma-specific fields and autofills the remaining valor', async ({ page }) => {
+    await page.goto(`/pedidos/${pedidoId}/editar`);
+    await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByRole('tab', { name: 'Pagamento' }).click();
+    await page.getByRole('button', { name: /Adicionar pagamento/ }).click();
+
+    // Dinheiro (default) hides Parcelas; Cartão de Crédito shows it.
+    await expect(page.getByLabel('Parcelas')).toHaveCount(0);
+    await page.getByRole('combobox', { name: 'Forma de pagamento' }).click();
+    await page.getByRole('option', { name: 'Cartão de Crédito', exact: true }).click();
+    await expect(page.getByLabel('Parcelas')).toBeVisible();
+
+    // Autofill the remaining valor (pedido total R$ 10,00, no other payments).
+    await page.getByRole('button', { name: 'Preencher com o valor restante' }).click();
+    await page.getByRole('button', { name: 'Salvar', exact: true }).click();
+
+    // Persisted as Cartão de Crédito (forma 3) for the full remaining amount.
+    await expect
+      .poll(
+        async () => {
+          const snap = await db()
+            .collection('pedidos')
+            .doc(pedidoId)
+            .collection('pagamentos')
+            .get();
+          const p = snap.docs.map((d) => d.data())[0];
+          return p ? { forma: p.forma_de_pagamento, valor: p.valor } : null;
+        },
+        { timeout: 15_000 },
+      )
+      .toEqual({ forma: 3, valor: 10 });
+  });
 });

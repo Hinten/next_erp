@@ -4,6 +4,8 @@ import {
   EMPTY_PAGAMENTO_FORM,
   formFromPagamento,
   pagamentoDataFromForm,
+  pagamentoFieldVisibility,
+  remainingToPay,
   validatePagamentoForm,
   type PagamentoFormState,
 } from './PagamentoForm';
@@ -27,24 +29,46 @@ describe('validatePagamentoForm', () => {
 
 describe('pagamentoDataFromForm', () => {
   it('maps the edited fields and coerces the enum strings', () => {
+    // cartão crédito shows parcelas, so the edited 2 is kept.
     const data = pagamentoDataFromForm(
       form({
-        forma: String(FORMA_PAGAMENTO.pix),
+        forma: String(FORMA_PAGAMENTO.cartao_credito),
         status: String(STATUS_PAGAMENTO.aprovado),
         valor: 99.9,
         parcelas: 2,
         descricao: '  sinal  ',
-        nFat: '',
       }),
       null,
     );
     expect(data).toMatchObject({
-      forma_de_pagamento: FORMA_PAGAMENTO.pix,
+      forma_de_pagamento: FORMA_PAGAMENTO.cartao_credito,
       status_pagamento: STATUS_PAGAMENTO.aprovado,
       valor: 99.9,
       parcelas: 2,
       descricaoPagamento: 'sinal',
+    });
+  });
+
+  it('resets fields hidden for the chosen forma to their defaults', () => {
+    // Dinheiro hides parcelas/vencimento/nFat/duplicata/aVista → defaults.
+    const data = pagamentoDataFromForm(
+      form({
+        forma: String(FORMA_PAGAMENTO.dinheiro),
+        parcelas: 3,
+        vencimento: 99,
+        nFat: 'NF-9',
+        duplicata: true,
+        aVista: false,
+        valor: 10,
+      }),
+      null,
+    );
+    expect(data).toMatchObject({
+      parcelas: 1,
+      vencimento: null,
       nFat: null,
+      duplicata: false,
+      aVista: true,
     });
   });
 
@@ -92,5 +116,48 @@ describe('formFromPagamento', () => {
       duplicata: true,
       nFat: 'NF-1',
     });
+  });
+});
+
+describe('pagamentoFieldVisibility', () => {
+  it('shows installments + à vista for credit card, none for cash', () => {
+    expect(pagamentoFieldVisibility(String(FORMA_PAGAMENTO.cartao_credito))).toMatchObject({
+      parcelas: true,
+      aVista: true,
+      vencimento: false,
+    });
+    expect(pagamentoFieldVisibility(String(FORMA_PAGAMENTO.dinheiro))).toEqual({
+      parcelas: false,
+      aVista: false,
+      vencimento: false,
+      nFat: false,
+      duplicata: false,
+    });
+  });
+
+  it('shows vencimento + nFat + duplicata for boleto', () => {
+    expect(pagamentoFieldVisibility(String(FORMA_PAGAMENTO.boleto_bancario))).toMatchObject({
+      vencimento: true,
+      nFat: true,
+      duplicata: true,
+      parcelas: false,
+    });
+  });
+});
+
+describe('remainingToPay', () => {
+  it('subtracts the other non-cancelled payments from the total', () => {
+    const pagamentos = [
+      { id: 'a', valor: 30, status_pagamento: STATUS_PAGAMENTO.aprovado },
+      { id: 'b', valor: 20, status_pagamento: STATUS_PAGAMENTO.cancelado },
+    ];
+    // b is cancelled → not counted; remaining = 100 − 30 = 70.
+    expect(remainingToPay(100, pagamentos, null)).toBe(70);
+    // editing 'a' → exclude it; b still excluded → remaining = full 100.
+    expect(remainingToPay(100, pagamentos, 'a')).toBe(100);
+  });
+
+  it('never goes negative', () => {
+    expect(remainingToPay(50, [{ id: 'a', valor: 80, status_pagamento: 4 }], null)).toBe(0);
   });
 });

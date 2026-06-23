@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import {
+  ActionIcon,
   Alert,
   Button,
   Card,
@@ -19,6 +20,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
+import { IconCash } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
@@ -42,9 +44,13 @@ import {
   EMPTY_PAGAMENTO_FORM,
   formFromPagamento,
   pagamentoDataFromForm,
+  pagamentoFieldVisibility,
+  remainingToPay,
   validatePagamentoForm,
   type PagamentoFormState,
 } from './PagamentoForm';
+
+const brl = (n: number): string => format(money(Math.round(n * 100)));
 
 const formaOptions = (Object.entries(FORMA_PAGAMENTO_LABELS) as [string, string][]).map(
   ([value, label]) => ({ value, label }),
@@ -67,9 +73,12 @@ const statusOptions = [
 export function PagamentosSection({
   pedidoId,
   disabled,
+  pedidoTotal = 0,
 }: {
   pedidoId: string;
   disabled?: boolean;
+  /** Pedido charged total (`valorCobrado`) — drives the "valor restante" autofill. */
+  pedidoTotal?: number;
 }) {
   const q = useMemo(() => {
     const base = pagamentoCollection.ref(getFirebaseFirestore(), { pedidoId });
@@ -142,6 +151,19 @@ export function PagamentosSection({
   const hasPassthrough =
     editing?.base != null && (editing.base.cartao != null || editing.base.cheque != null);
 
+  // Which optional fields to show for the chosen forma, and how much is still
+  // owed (drives the Valor autofill — excludes the payment being edited).
+  const vis = pagamentoFieldVisibility(form.forma);
+  const remaining = remainingToPay(
+    pedidoTotal,
+    (data ?? []).map(({ id, data: p }) => ({
+      id,
+      valor: p.valor,
+      status_pagamento: p.status_pagamento,
+    })),
+    editing?.id ?? null,
+  );
+
   return (
     <Stack>
       <Group justify="space-between" align="center">
@@ -164,6 +186,8 @@ export function PagamentosSection({
                 value={form.forma}
                 onChange={(v) => v && setForm((f) => ({ ...f, forma: v }))}
                 allowDeselect={false}
+                searchable
+                nothingFoundMessage="Nenhuma forma encontrada"
                 disabled={disabled}
               />
               <Select
@@ -180,45 +204,65 @@ export function PagamentosSection({
                 value={form.valor}
                 onChange={(n) => setForm((f) => ({ ...f, valor: n }))}
                 disabled={disabled}
-              />
-              <NumberInput
-                label="Parcelas"
-                value={form.parcelas}
-                onChange={(v) => {
-                  const n = typeof v === 'number' ? v : Number(v);
-                  setForm((f) => ({
-                    ...f,
-                    parcelas: Number.isFinite(n) && n >= 1 ? Math.trunc(n) : 1,
-                  }));
-                }}
-                min={1}
-                allowDecimal={false}
-                clampBehavior="strict"
-                disabled={disabled}
-              />
-            </Group>
-            <Group grow align="flex-start">
-              <DateTimePicker
-                label="Vencimento"
-                value={epochToPickerString(form.vencimento, 'us')}
-                onChange={(v) =>
-                  setForm((f) => ({ ...f, vencimento: pickerStringToEpoch(v, 'us') }))
+                rightSection={
+                  <Tooltip label={`Preencher com o valor restante (${brl(remaining)})`} withArrow>
+                    <ActionIcon
+                      variant="subtle"
+                      aria-label="Preencher com o valor restante"
+                      disabled={disabled || remaining <= 0}
+                      onClick={() => setForm((f) => ({ ...f, valor: remaining }))}
+                    >
+                      <IconCash size={16} />
+                    </ActionIcon>
+                  </Tooltip>
                 }
-                valueFormat="DD/MM/YYYY HH:mm"
-                clearable
-                disabled={disabled}
               />
-              <TextInput
-                label="Nº fatura/duplicata"
-                maxLength={60}
-                value={form.nFat}
-                onChange={(e) => {
-                  const value = e.currentTarget.value;
-                  setForm((f) => ({ ...f, nFat: value }));
-                }}
-                disabled={disabled}
-              />
+              {vis.parcelas && (
+                <NumberInput
+                  label="Parcelas"
+                  value={form.parcelas}
+                  onChange={(v) => {
+                    const n = typeof v === 'number' ? v : Number(v);
+                    setForm((f) => ({
+                      ...f,
+                      parcelas: Number.isFinite(n) && n >= 1 ? Math.trunc(n) : 1,
+                    }));
+                  }}
+                  min={1}
+                  allowDecimal={false}
+                  clampBehavior="strict"
+                  disabled={disabled}
+                />
+              )}
             </Group>
+            {(vis.vencimento || vis.nFat) && (
+              <Group grow align="flex-start">
+                {vis.vencimento && (
+                  <DateTimePicker
+                    label="Vencimento"
+                    value={epochToPickerString(form.vencimento, 'us')}
+                    onChange={(v) =>
+                      setForm((f) => ({ ...f, vencimento: pickerStringToEpoch(v, 'us') }))
+                    }
+                    valueFormat="DD/MM/YYYY HH:mm"
+                    clearable
+                    disabled={disabled}
+                  />
+                )}
+                {vis.nFat && (
+                  <TextInput
+                    label="Nº fatura/duplicata"
+                    maxLength={60}
+                    value={form.nFat}
+                    onChange={(e) => {
+                      const value = e.currentTarget.value;
+                      setForm((f) => ({ ...f, nFat: value }));
+                    }}
+                    disabled={disabled}
+                  />
+                )}
+              </Group>
+            )}
             <TextInput
               label="Descrição"
               value={form.descricao}
@@ -228,20 +272,26 @@ export function PagamentosSection({
               }}
               disabled={disabled}
             />
-            <Group>
-              <Switch
-                label="À vista"
-                checked={form.aVista}
-                onChange={(e) => setForm((f) => ({ ...f, aVista: e.currentTarget.checked }))}
-                disabled={disabled}
-              />
-              <Switch
-                label="Duplicata"
-                checked={form.duplicata}
-                onChange={(e) => setForm((f) => ({ ...f, duplicata: e.currentTarget.checked }))}
-                disabled={disabled}
-              />
-            </Group>
+            {(vis.aVista || vis.duplicata) && (
+              <Group>
+                {vis.aVista && (
+                  <Switch
+                    label="À vista"
+                    checked={form.aVista}
+                    onChange={(e) => setForm((f) => ({ ...f, aVista: e.currentTarget.checked }))}
+                    disabled={disabled}
+                  />
+                )}
+                {vis.duplicata && (
+                  <Switch
+                    label="Duplicata"
+                    checked={form.duplicata}
+                    onChange={(e) => setForm((f) => ({ ...f, duplicata: e.currentTarget.checked }))}
+                    disabled={disabled}
+                  />
+                )}
+              </Group>
+            )}
             {hasPassthrough && (
               <Text size="xs" c="dimmed">
                 Este pagamento possui dados de cartão/cheque. A edição desses campos ainda não foi
