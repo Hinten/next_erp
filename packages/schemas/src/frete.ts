@@ -114,11 +114,14 @@ export const ESTADOS_FRETE_NAO_POSTADO: ReadonlySet<EstadoFrete> = new Set([
 ]);
 
 /**
- * True when the frete is already posted, so re-emitting/reprinting its etiqueta
- * should be risk-confirmed (a duplicate label causes operational problems).
+ * True when the frete has left the draft / pre-emission states — i.e. a label
+ * has likely been emitted (this INCLUDES `aguardandoPostagem`: bought but not
+ * yet physically posted). Re-emitting/reprinting from here should be
+ * risk-confirmed, since a duplicate paid label causes operational problems.
  * Mirrors the Dart guard in `emitirOuImprimirFrete`:
  * `estado != checkFinalizado && jaPostado.contains(estado)`, where `jaPostado`
- * is every estado NOT in `naoPostado`.
+ * is every estado NOT in `naoPostado`. The name follows the Dart port —
+ * "jaPostado" here means "past the draft states", not strictly dispatched.
  */
 export function isFreteJaPostado(estado: EstadoFrete): boolean {
   return estado !== 'checkFinalizado' && !ESTADOS_FRETE_NAO_POSTADO.has(estado);

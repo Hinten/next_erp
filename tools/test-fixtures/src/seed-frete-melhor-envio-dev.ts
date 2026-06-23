@@ -101,7 +101,7 @@ async function writeCliente(): Promise<void> {
   await db().collection('clientes').doc(FRETE_CLIENTE_ID).set({
     tipo: '0', // Pessoa Física
     nome: 'Cliente Frete Dev',
-    cpf_cnpj: '12345678909',
+    cpf_cnpj: '52998224725',
     idEstrangeiro: null,
     ie: null,
     imun: null,
@@ -131,7 +131,7 @@ async function writeCliente(): Promise<void> {
         cidade: 'Rio de Janeiro',
         estado: 'RJ',
         nome: 'Maria Recebedora',
-        cpf_cnpj: '12345678909',
+        cpf_cnpj: '52998224725',
         email: 'frete-dev@example.com',
         telefone: '21999998888',
       }),

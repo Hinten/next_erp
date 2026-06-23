@@ -37,8 +37,9 @@ const SP_OVERRIDE = (process.env.ME_DEBUG_SP ?? '') !== '';
  * declared product value BEFORE the quote runs — so calculate AND every
  * cart-insert use the same value. ME requires, for a non_commercial (declaração
  * de conteúdo) shipment, that the insured value equals the declared product
- * total and matches the value used in the freight quotation. Our seed has
- * insurance 100 but products total 480 (a mismatch) — the prime 500 suspect.
+ * total and matches the value used in the freight quotation. The seeded pedido's
+ * `valor_assegurado` can differ from the declared product total — this forces
+ * them to agree so that mismatch is ruled out as a cause.
  */
 const INSURANCE_DECLARED = (process.env.ME_DEBUG_INSURANCE_DECLARED ?? '') !== '';
 

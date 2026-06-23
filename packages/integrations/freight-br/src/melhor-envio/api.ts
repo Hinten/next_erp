@@ -132,10 +132,15 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
       throw new MelhorEnvioValidationError(message, errors, parsed);
     }
 
-    // Surface the ME response body — for non-422 errors (e.g. an opaque 500 on
-    // cart insert) it often carries the only hint about what was rejected.
-    const detail =
-      parsed == null ? '' : ` — ${typeof parsed === 'string' ? parsed : JSON.stringify(parsed)}`;
+    // Surface a SHORT hint from the ME response body — for non-422 errors (e.g.
+    // an opaque 500 on cart insert) it's often the only clue. Truncated to keep
+    // the thrown message (which reaches the browser) bounded; a 500 can carry a
+    // large/HTML body. The full body stays on `err.body` for server-side logs.
+    const rawDetail =
+      parsed == null ? '' : typeof parsed === 'string' ? parsed : JSON.stringify(parsed);
+    const detail = rawDetail
+      ? ` — ${rawDetail.slice(0, 300)}${rawDetail.length > 300 ? '…' : ''}`
+      : '';
     throw new MelhorEnvioHttpError(
       `Melhor Envio ${method} ${path}: HTTP ${res.status}${detail}`,
       res.status,

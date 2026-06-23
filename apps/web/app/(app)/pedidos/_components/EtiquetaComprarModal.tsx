@@ -102,7 +102,7 @@ export function EtiquetaComprarModal({
           </Text>
           {needsPostedConfirm && (
             <Alert color="orange" title="Atenção" variant="light">
-              Este frete já foi postado — reemitir a etiqueta pode gerar etiquetas duplicadas e
+              Este frete já tem uma etiqueta emitida — reemitir pode gerar etiquetas duplicadas e
               problemas operacionais.
               <Checkbox
                 mt="sm"

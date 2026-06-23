@@ -125,7 +125,7 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
     <Stack gap="xs">
       {needsPostedConfirm && (
         <Text size="xs" c="orange">
-          Frete já postado — reimprimir pode duplicar a etiqueta.
+          Etiqueta já emitida — reimprimir pode duplicar a etiqueta.
         </Text>
       )}
       <Button
