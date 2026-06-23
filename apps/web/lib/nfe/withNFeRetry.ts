@@ -4,8 +4,8 @@
  * React), so it unit-tests without an auth/Firebase context.
  *
  * Policy:
- *   - GET / idempotent (`consultar`, `statusServico`, `danfe`,
- *     `cartaCorrecaoDanfe`, `processarPendentes`) → full transient set
+ *   - GET / idempotent (`consultar`, `statusServico`, `consultaCadastro`,
+ *     `danfe`, `cartaCorrecaoDanfe`, `processarPendentes`) → full transient set
  *     (`isRetryableNFeHttpError`: network / 5xx / 503).
  *   - server-deduped POSTs (`emitir`, `emitirLote`, `cancelar`) → full transient
  *     set. A re-POST converges to a no-op: emit/lote via PR1's dedup (stable doc
@@ -54,6 +54,8 @@ export function withNFeRetry(client: NFeHttpClient): NFeHttpClient {
       retryTransient(() => client.cartaCorrecaoDanfe(pedidoId, nfeId, cceId)),
     statusServico: (target, filialId) =>
       retryTransient(() => client.statusServico(target, filialId)),
+    consultaCadastro: (cnpj, uf, filialId) =>
+      retryTransient(() => client.consultaCadastro(cnpj, uf, filialId)),
     uploadCertificado: (filialId, pfxBase64, password, filename) =>
       retryTransient(() => client.uploadCertificado(filialId, pfxBase64, password, filename)),
     deleteCertificado: (filialId) => retryTransient(() => client.deleteCertificado(filialId)),

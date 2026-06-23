@@ -23,6 +23,7 @@ function fakeClient(overrides: Partial<NFeHttpClient>): NFeHttpClient {
     emitir: notImpl as never,
     emitirLote: notImpl as never,
     consultar: notImpl as never,
+    consultaCadastro: notImpl as never,
     processarPendentes: notImpl as never,
     cancelar: notImpl as never,
     inutilizar: notImpl as never,
@@ -69,6 +70,17 @@ describe('withNFeRetry', () => {
     const client = withNFeRetry(fakeClient({ consultar }));
     await expect(client.consultar('chave')).resolves.toMatchObject({ cStat: '100' });
     expect(consultar).toHaveBeenCalledTimes(2);
+  });
+
+  it('consultaCadastro retries a transient NFeNetworkError (idempotent GET)', async () => {
+    const consultaCadastro = vi.fn(
+      failThenSucceed(1, new NFeNetworkError('reset'), { supported: true, infCad: [] } as never),
+    );
+    const client = withNFeRetry(fakeClient({ consultaCadastro }));
+    await expect(client.consultaCadastro('14200166000187', 'SP', 'F-1')).resolves.toMatchObject({
+      supported: true,
+    });
+    expect(consultaCadastro).toHaveBeenCalledTimes(2);
   });
 
   it('cartaCorrecao does NOT retry a post-send NFeServerError (not idempotent)', async () => {

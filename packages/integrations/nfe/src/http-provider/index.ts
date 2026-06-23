@@ -10,6 +10,8 @@ export {
   type NFeBatchEmitResult,
   type NFeCartaCorrecaoResult,
   type NFeCertificadoMeta,
+  type NFeConsultaCadastroInfCad,
+  type NFeConsultaCadastroResult,
   type NFeConsultaResult,
   type NFeDanfeArtifact,
   type NFeDanfeFormat,

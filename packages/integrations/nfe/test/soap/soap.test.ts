@@ -27,6 +27,22 @@ describe('buildEnvelope', () => {
     // recognized"). This pins the correct namespace so it can't regress.
     expect(buildEnvelope('RecepcaoEvento', '<x/>')).toContain('/NFeRecepcaoEvento4"');
     expect(buildEnvelope('RecepcaoEvento', '<x/>')).not.toContain('/RecepcaoEvento4"');
+    // Consulta Cadastro uses the same NFe<Service>4 namespace pattern.
+    expect(buildEnvelope('NFeConsultaCadastro', '<x/>')).toContain('/NFeConsultaCadastro4"');
+  });
+
+  it('wraps a consCad payload in the NFeConsultaCadastro4 namespace', () => {
+    const env = buildEnvelope(
+      'NFeConsultaCadastro',
+      '<consCad xmlns="http://www.portalfiscal.inf.br/nfe" versao="2.00">' +
+        '<infCons><xServ>CONS-CAD</xServ><UF>SP</UF><CNPJ>14200166000187</CNPJ></infCons></consCad>',
+    );
+    expect(env).toContain(
+      '<nfeDadosMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeConsultaCadastro4">',
+    );
+    expect(env).toContain('<consCad');
+    expect(env).toContain('<xServ>CONS-CAD</xServ>');
+    expect(env).not.toMatch(/>\s+</);
   });
 
   it('contains no formatting whitespace between elements', () => {

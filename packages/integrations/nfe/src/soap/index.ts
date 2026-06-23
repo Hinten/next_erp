@@ -41,6 +41,9 @@ const SOAP_NS = {
   // pattern as the others. Without the `NFe` prefix SEFAZ rejects the POST
   // with a SOAP Fault: "The action '…/RecepcaoEvento4' was not recognized."
   RecepcaoEvento: `${NFE_WSDL_BASE}/NFeRecepcaoEvento4`,
+  // Consulta Cadastro (NFeConsultaCadastro4) — query a taxpayer's IE registry
+  // for a CNPJ in a UF. Same `NFe<Service>4` namespace/SOAPAction pattern.
+  NFeConsultaCadastro: `${NFE_WSDL_BASE}/NFeConsultaCadastro4`,
 } as const;
 
 export type SoapOperation = keyof typeof SOAP_NS;
@@ -417,6 +420,35 @@ export async function nfeRecepcaoEvento(
 /** `NFeInutilizacao4 / nfeInutilizacaoNF` — burn an unused número range. */
 export async function nfeInutilizacao(call: SefazCall, inutNFeXml: string): Promise<PostResult> {
   return postSoapValidated(CONTRACTS.nfeInutilizacao!, call, inutNFeXml);
+}
+
+/**
+ * `NFeConsultaCadastro4 / consultaCadastro4NF` — query a taxpayer's IE
+ * registry for a CNPJ in a UF.
+ *
+ * **Non-XSD-validated, on purpose.** The `consCad`/`retConsCad` v2.00 XSDs are
+ * not vendored (codegen has no `TConsCad`/`TRetConsCad`), so this wrapper does
+ * NOT go through `postSoapValidated` — it builds the SOAP envelope + SOAPAction
+ * exactly like the other operations (same `SOAP_NS` lookup, same `postSoap`
+ * transport, same mTLS agent) but skips the request/response XSD gate. The
+ * production guard (`assertSafeTpAmb`) still runs before the POST. consCad is a
+ * tiny fixed payload (`<infCons><xServ>CONS-CAD</xServ><UF/><CNPJ/></infCons>`),
+ * built by hand in `operations/consultarCadastro`, and the read is advisory
+ * (no fiscal mutation), so the XSD gate that prevents `cStat=656 Consumo
+ * Indevido` bans on the emission path is not needed here.
+ */
+export async function nfeConsultaCadastro(
+  call: SefazCall,
+  consCadXml: string,
+): Promise<PostResult> {
+  assertSafeTpAmb(call.tpAmb);
+  return postSoap({
+    url: call.url,
+    operation: 'NFeConsultaCadastro',
+    dadosMsg: consCadXml,
+    agent: call.agent,
+    timeoutMs: call.timeoutMs,
+  });
 }
 
 // Exposed for offline tests that exercise envelope shape / response unwrap.

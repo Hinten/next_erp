@@ -23,6 +23,12 @@ export interface NfeServiceUrls {
   readonly NfeInutilizacao: string;
   /** RecepcaoEvento4 — cancelamento / CCe / EPEC (Phase B/C). */
   readonly RecepcaoEvento: string;
+  /**
+   * NFeConsultaCadastro4 — query a taxpayer's IE registry by CNPJ. **Optional**:
+   * not every UF offers Consulta Cadastro, so this key is absent for those.
+   * `getConsultaCadastroEndpoint` resolves it (or `null` when unsupported).
+   */
+  readonly NfeConsultaCadastro?: string;
 }
 
 const ENDPOINTS: Partial<Record<string, Record<Ambiente, NfeServiceUrls>>> = {
@@ -34,6 +40,9 @@ const ENDPOINTS: Partial<Record<string, Record<Ambiente, NfeServiceUrls>>> = {
       NfeStatusServico: 'https://nfe.fazenda.sp.gov.br/ws/nfestatusservico4.asmx',
       NfeInutilizacao: 'https://nfe.fazenda.sp.gov.br/ws/nfeinutilizacao4.asmx',
       RecepcaoEvento: 'https://nfe.fazenda.sp.gov.br/ws/nferecepcaoevento4.asmx',
+      // SP's consulta cadastro lives at `cadconsultacadastro4.asmx` (note the
+      // `cad` prefix) — NOT `nfeconsultacadastro4.asmx`.
+      NfeConsultaCadastro: 'https://nfe.fazenda.sp.gov.br/ws/cadconsultacadastro4.asmx',
     },
     homologacao: {
       NfeAutorizacao: 'https://homologacao.nfe.fazenda.sp.gov.br/ws/nfeautorizacao4.asmx',
@@ -43,6 +52,7 @@ const ENDPOINTS: Partial<Record<string, Record<Ambiente, NfeServiceUrls>>> = {
       NfeStatusServico: 'https://homologacao.nfe.fazenda.sp.gov.br/ws/nfestatusservico4.asmx',
       NfeInutilizacao: 'https://homologacao.nfe.fazenda.sp.gov.br/ws/nfeinutilizacao4.asmx',
       RecepcaoEvento: 'https://homologacao.nfe.fazenda.sp.gov.br/ws/nferecepcaoevento4.asmx',
+      NfeConsultaCadastro: 'https://homologacao.nfe.fazenda.sp.gov.br/ws/cadconsultacadastro4.asmx',
     },
   },
 };
@@ -59,9 +69,11 @@ export type ContingencyAuthorizer = 'svc-an' | 'svc-rs' | 'an';
  * SVC service URLs. SVC offers Autorização / RetAutorização / Consulta /
  * StatusServiço / Cancelamento (via RecepcaoEvento) — it does **not** offer
  * Inutilização or CC-e, hence no `NfeInutilizacao` key: code that tries to
- * inutilizar via SVC must not typecheck.
+ * inutilizar via SVC must not typecheck. `NfeConsultaCadastro` is likewise
+ * excluded — Consulta Cadastro is a home-SEFAZ service, never an SVC one, so it
+ * stays out of the `SefazService` keyspace that `sefazCallFor` addresses.
  */
-export type SvcServiceUrls = Omit<NfeServiceUrls, 'NfeInutilizacao'>;
+export type SvcServiceUrls = Omit<NfeServiceUrls, 'NfeInutilizacao' | 'NfeConsultaCadastro'>;
 
 /** Ambiente Nacional — EPEC drop-box only. */
 export interface AnServiceUrls {
@@ -211,6 +223,19 @@ export function getEndpoints(uf: string, ambiente: Ambiente): NfeServiceUrls {
   const table = ENDPOINTS[uf.toUpperCase()];
   if (!table) throw new NFeEndpointError(uf);
   return table[ambiente];
+}
+
+/**
+ * Resolve the NFeConsultaCadastro4 URL for a UF + ambiente, or `null` when the
+ * UF has no endpoint table wired OR does not offer Consulta Cadastro. Unlike
+ * `getEndpoints`, this **never throws** for an unwired UF — Consulta Cadastro is
+ * an advisory, best-effort lookup, so the route maps a `null` to a graceful
+ * `supported:false` payload rather than a 5xx.
+ */
+export function getConsultaCadastroEndpoint(uf: string, ambiente: Ambiente): string | null {
+  const table = ENDPOINTS[uf.toUpperCase()];
+  if (!table) return null;
+  return table[ambiente].NfeConsultaCadastro ?? null;
 }
 
 /** UFs with an endpoint table wired today. */

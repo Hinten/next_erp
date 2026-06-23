@@ -36,6 +36,7 @@ import { signEvento, signInutilizacao } from '../sign';
 import { validateXsd } from '../xsd';
 import {
   nfeAutorizacaoLote,
+  nfeConsultaCadastro,
   nfeConsultaProtocolo,
   nfeInutilizacao,
   nfeRecepcaoEvento,
@@ -53,7 +54,7 @@ import {
   type TRetEnviNFe,
   type TRetInutNFe,
 } from '../types/nfe-schema';
-import { parse, serialize } from '../xml';
+import { NFeXmlError, parse, serialize } from '../xml';
 
 const NFE_VERSAO = '4.00';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
@@ -79,6 +80,214 @@ export async function consultarStatusServico(
   });
   const { resultXml } = await nfeStatusServico(call, xml);
   return parse<TRetConsStatServ>('retConsStatServ', resultXml);
+}
+
+// ---------------------------------------------------------------------------
+// Consulta Cadastro (NFeConsultaCadastro4) — hand-built consCad, hand-parsed
+// retConsCad. See `consultarCadastro` below for the XSD-bypass rationale.
+// ---------------------------------------------------------------------------
+
+/** One taxpayer's address as it appears in `retConsCad/infCons/infCad/ender`. */
+export interface ConsultaCadastroEnder {
+  readonly xLgr: string | null;
+  readonly nro: string | null;
+  readonly xCpl: string | null;
+  readonly xBairro: string | null;
+  readonly cMun: string | null;
+  readonly xMun: string | null;
+  readonly CEP: string | null;
+}
+
+/** One `<infCad>` entry — a single IE registration for the queried CNPJ/UF. */
+export interface ConsultaCadastroInfCad {
+  readonly IE: string;
+  readonly CNPJ: string | null;
+  readonly CPF: string | null;
+  readonly UF: string;
+  /** cSit — '0' não habilitado, '1' habilitado. */
+  readonly cSit: string;
+  readonly indCredNFe: string | null;
+  readonly indCredNFCe: string | null;
+  readonly xNome: string | null;
+  readonly ender: ConsultaCadastroEnder | null;
+}
+
+/** Parsed `retConsCad/infCons` — raw-ish SEFAZ field names (the route maps to friendly keys). */
+export interface ConsultaCadastroResult {
+  readonly cStat: string | null;
+  readonly xMotivo: string | null;
+  readonly uf: string;
+  readonly infCad: ReadonlyArray<ConsultaCadastroInfCad>;
+}
+
+// Minimal, namespace-tolerant XML node reader for the retConsCad payload. The
+// repo's `xml.parse()` is driven by the codegen'd META/ROOTS and has no
+// `retConsCad` complexType (the consCad XSDs aren't vendored — see
+// `consultarCadastro`), so we read the few fields we need with a small
+// regex-free DOM walk over the same minimal shape `xml.ts` produces.
+interface ConsCadNode {
+  readonly tag: string;
+  readonly children: ConsCadNode[];
+  text: string;
+}
+
+function localTag(tag: string): string {
+  return tag.includes(':') ? tag.slice(tag.indexOf(':') + 1) : tag;
+}
+
+function parseConsCadXml(text: string): ConsCadNode {
+  const root: ConsCadNode = { tag: '#root', children: [], text: '' };
+  const stack: ConsCadNode[] = [root];
+  const top = (): ConsCadNode => stack[stack.length - 1] as ConsCadNode;
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const lt = text.indexOf('<', i);
+    if (lt === -1) {
+      top().text += text.slice(i);
+      break;
+    }
+    if (lt > i) top().text += text.slice(i, lt);
+    if (text.startsWith('<?', lt)) {
+      i = text.indexOf('?>', lt) + 2;
+      continue;
+    }
+    if (text.startsWith('<!--', lt)) {
+      i = text.indexOf('-->', lt) + 3;
+      continue;
+    }
+    if (text.startsWith('<![CDATA[', lt)) {
+      const end = text.indexOf(']]>', lt);
+      top().text += text.slice(lt + 9, end);
+      i = end + 3;
+      continue;
+    }
+    if (text.startsWith('<!', lt)) {
+      i = text.indexOf('>', lt) + 1;
+      continue;
+    }
+    const gt = text.indexOf('>', lt);
+    if (gt === -1) break;
+    let inner = text.slice(lt + 1, gt).trim();
+    if (inner.startsWith('/')) {
+      if (stack.length > 1) stack.pop();
+      i = gt + 1;
+      continue;
+    }
+    const selfClose = inner.endsWith('/');
+    if (selfClose) inner = inner.slice(0, -1).trim();
+    const sp = inner.search(/\s/);
+    const tag = sp === -1 ? inner : inner.slice(0, sp);
+    const node: ConsCadNode = { tag, children: [], text: '' };
+    top().children.push(node);
+    if (!selfClose) stack.push(node);
+    i = gt + 1;
+  }
+  return root;
+}
+
+function findConsCadNode(node: ConsCadNode, name: string): ConsCadNode | undefined {
+  for (const c of node.children) {
+    if (localTag(c.tag) === name) return c;
+    const deep = findConsCadNode(c, name);
+    if (deep) return deep;
+  }
+  return undefined;
+}
+
+function findConsCadNodes(node: ConsCadNode, name: string): ConsCadNode[] {
+  return node.children.filter((c) => localTag(c.tag) === name);
+}
+
+function unescapeXml(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/** Read the trimmed text of a direct child element, or `null` when absent/empty. */
+function childText(node: ConsCadNode, name: string): string | null {
+  const child = findConsCadNodes(node, name)[0];
+  if (!child) return null;
+  const t = unescapeXml(child.text).trim();
+  return t.length > 0 ? t : null;
+}
+
+function parseInfCad(node: ConsCadNode): ConsultaCadastroInfCad {
+  const enderNode = findConsCadNodes(node, 'ender')[0];
+  const ender: ConsultaCadastroEnder | null = enderNode
+    ? {
+        xLgr: childText(enderNode, 'xLgr'),
+        nro: childText(enderNode, 'nro'),
+        xCpl: childText(enderNode, 'xCpl'),
+        xBairro: childText(enderNode, 'xBairro'),
+        cMun: childText(enderNode, 'cMun'),
+        xMun: childText(enderNode, 'xMun'),
+        CEP: childText(enderNode, 'CEP'),
+      }
+    : null;
+  return {
+    IE: childText(node, 'IE') ?? '',
+    CNPJ: childText(node, 'CNPJ'),
+    CPF: childText(node, 'CPF'),
+    UF: childText(node, 'UF') ?? '',
+    cSit: childText(node, 'cSit') ?? '',
+    indCredNFe: childText(node, 'indCredNFe'),
+    indCredNFCe: childText(node, 'indCredNFCe'),
+    xNome: childText(node, 'xNome'),
+    ender,
+  };
+}
+
+/**
+ * `NFeConsultaCadastro4` — query a taxpayer's IE registry for a CNPJ in a UF.
+ *
+ * **XSD-bypass, by design.** The `consCad`/`retConsCad` v2.00 XSDs are NOT
+ * vendored and the codegen has no `TConsCad`/`TRetConsCad`, so this operation
+ * does not use the typed `serialize`/`parse` path nor the XSD-validated SOAP
+ * wrapper. Instead it (1) builds the tiny fixed `consCad` request as a literal
+ * string (no whitespace between tags) and (2) reads the `retConsCad` response
+ * with a small inline DOM walk. The request still travels through the existing
+ * low-level SOAP transport (`nfeConsultaCadastro` → `postSoap`): same mTLS
+ * agent, SOAP 1.2 envelope, SOAPAction, and the `assertSafeTpAmb` production
+ * guard. Acceptable because Consulta Cadastro is a read-only, advisory lookup
+ * (no fiscal mutation) — there is no `cStat=656 Consumo Indevido` exposure to
+ * gate against, which is the reason the emission path forces the XSD validator.
+ *
+ * SEFAZ returns `<infCad>` as a single object for one match and an array for
+ * several; we normalize to an array. cStat 111/112 = found; 258/259/108/109/etc
+ * = none/invalid/down, with an empty `infCad`.
+ */
+export async function consultarCadastro(
+  call: SefazCall,
+  args: { readonly uf: string; readonly cnpj: string },
+): Promise<ConsultaCadastroResult> {
+  const uf = args.uf.toUpperCase();
+  const cnpj = args.cnpj.replace(/\D/g, '');
+  const xml =
+    `<consCad versao="2.00" xmlns="${NFE_NS}">` +
+    `<infCons><xServ>CONS-CAD</xServ><UF>${uf}</UF><CNPJ>${cnpj}</CNPJ></infCons>` +
+    `</consCad>`;
+  const { resultXml } = await nfeConsultaCadastro(call, xml);
+
+  const doc = parseConsCadXml(resultXml);
+  const infCons = findConsCadNode(doc, 'infCons');
+  if (!infCons) {
+    // A retConsCad with no infCons is malformed — surface it so the route maps
+    // it to a 500 (our parse/SEFAZ-shape bug), not a misleading "no match".
+    throw new NFeXmlError('retConsCad missing <infCons>');
+  }
+  const infCad = findConsCadNodes(infCons, 'infCad').map(parseInfCad);
+  return {
+    cStat: childText(infCons, 'cStat'),
+    xMotivo: childText(infCons, 'xMotivo'),
+    uf: childText(infCons, 'UF') ?? uf,
+    infCad,
+  };
 }
 
 /**
@@ -312,6 +521,7 @@ export async function inutilizarNumeracao(
 export type { PostResult, SefazCall };
 export {
   nfeAutorizacaoLote,
+  nfeConsultaCadastro,
   nfeConsultaProtocolo,
   nfeInutilizacao,
   nfeRecepcaoEvento,

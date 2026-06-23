@@ -127,6 +127,45 @@ export interface NFeStatusServicoResult {
   readonly category: string;
 }
 
+/**
+ * One taxpayer's registry entry from a Consulta Cadastro lookup — browser-safe,
+ * friendly field names (the `apps/nfe` route maps the raw SEFAZ casing
+ * xNome/cSit/xLgr/… onto these so the browser never sees the wire shape).
+ */
+export interface NFeConsultaCadastroInfCad {
+  readonly ie: string;
+  readonly cnpj: string | null;
+  readonly cpf: string | null;
+  readonly uf: string;
+  /** cSit: '0' não habilitado, '1' habilitado. */
+  readonly situacao: string;
+  readonly razaoSocial: string | null;
+  readonly ender: {
+    readonly logradouro: string | null;
+    readonly numero: string | null;
+    readonly complemento: string | null;
+    readonly bairro: string | null;
+    /** cMun (IBGE). */
+    readonly codigoMunicipio: string | null;
+    /** xMun. */
+    readonly municipio: string | null;
+    readonly cep: string | null;
+  } | null;
+}
+
+/** Mirrors `apps/nfe/app/api/nfe/consulta-cadastro/route.ts` response. */
+export interface NFeConsultaCadastroResult {
+  /** `false` → UF doesn't offer consulta cadastro / cross-UF not vendored. */
+  readonly supported: boolean;
+  readonly uf: string;
+  /** `null` when degraded/unsupported. */
+  readonly cStat: string | null;
+  readonly xMotivo: string | null;
+  /** `true` on a transport failure where the request was otherwise valid. */
+  readonly degraded?: boolean;
+  readonly infCad: ReadonlyArray<NFeConsultaCadastroInfCad>;
+}
+
 /** Mirrors `apps/nfe/app/api/nfe/carta-correcao/route.ts` response. */
 export interface NFeCartaCorrecaoResult {
   readonly pedidoId: string;
@@ -206,6 +245,12 @@ export interface NFeHttpClient {
    * contingency toggle.
    */
   statusServico(target: 'normal' | 'svc', filialId: string): Promise<NFeStatusServicoResult>;
+  /**
+   * Query SEFAZ Consulta Cadastro (NFeConsultaCadastro4) for a CNPJ in a UF.
+   * Best-effort — resolves (never throws) on an unsupported UF or SEFAZ
+   * downtime; the route returns `supported:false` / `degraded` instead.
+   */
+  consultaCadastro(cnpj: string, uf: string, filialId: string): Promise<NFeConsultaCadastroResult>;
   /**
    * Upload a filial's A1 certificate (.pfx/.p12, base64) + its password. The
    * server validates the PFX, encrypts the private key at rest, and returns
@@ -462,6 +507,11 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       call<NFeStatusServicoResult>(
         'GET',
         `/api/nfe/status-servico?target=${encodeURIComponent(target)}&filialId=${encodeURIComponent(filialId)}`,
+      ),
+    consultaCadastro: (cnpj, uf, filialId) =>
+      call<NFeConsultaCadastroResult>(
+        'GET',
+        `/api/nfe/consulta-cadastro?cnpj=${encodeURIComponent(cnpj)}&uf=${encodeURIComponent(uf)}&filialId=${encodeURIComponent(filialId)}`,
       ),
     uploadCertificado: (filialId, pfxBase64, password, filename) =>
       call<NFeCertificadoMeta>('POST', '/api/nfe/certificado', {
