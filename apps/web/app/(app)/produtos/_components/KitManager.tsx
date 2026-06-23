@@ -1,19 +1,9 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import {
-  ActionIcon,
-  Badge,
-  Button,
-  Group,
-  NumberInput,
-  Stack,
-  Switch,
-  Text,
-  Tooltip,
-} from '@mantine/core';
+import { useEffect, useMemo, useState } from 'react';
+import { ActionIcon, Badge, Group, NumberInput, Stack, Switch, Text, Tooltip } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconArrowBackUp, IconCalculator, IconTrash } from '@tabler/icons-react';
+import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { type DocumentReference, type Firestore, getDocFromServer } from 'firebase/firestore';
 import { useFormContext } from 'react-hook-form';
@@ -42,6 +32,8 @@ export function stripKitForSave(value: unknown): ComponentesKit | null {
   }
   return Object.keys(out).length > 0 ? out : null;
 }
+
+const fmtBRL = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
 /** Produto id picked by the component `CollectionSelect` (emits a DocumentReference). */
 function refToId(ref: unknown): string | null {
@@ -76,10 +68,12 @@ export interface KitManagerProps {
  * Kit tab — port of the Flutter `KitWidget` / `KitManagerWidget`
  * (`produtoCadastro.dart:1918`). Lists the kit's components (each a produto:
  * `quantidade ≥ 1` + `limitarEstoque`), with a staged-deletion trash button
- * (mark → undo → removed on save) and a "Recalcular custo do kit" button that
- * sums the component costs (`custoDoKit`, a single batched read) into the `custo`
- * field. Gated on `ehKit` (read live via `useFormContext`). `componentesKit` is a
- * produto DOC field — it rides the normal ObjectView save.
+ * (mark → undo → removed on save). The kit cost is DYNAMIC (Flutter `getCusto`,
+ * `produtoTableProvider.dart:1339`): Σ(component custo × quantidade) — read once
+ * per component (`custoDoKit`, a single batched read) and pushed live into the
+ * read-only `custo` field on any component/quantidade change. Gated on `ehKit`
+ * (read live via `useFormContext`). `componentesKit` is a produto DOC field — it
+ * rides the normal ObjectView save.
  */
 export function KitManager({ produtoId, db, value, onChange, disabled }: KitManagerProps) {
   // RHF context is typed non-null but IS null outside a provider (ObjectView
@@ -89,7 +83,69 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
 
   const components = useMemo(() => (value ?? {}) as Record<string, KitDraft>, [value]);
   const [pickerValue, setPickerValue] = useState<unknown>(null);
-  const [recalculando, setRecalculando] = useState(false);
+  // Component costs read once per component (a component's `custo` doesn't change
+  // while editing this kit) — the kit cost re-sums from this cache on any
+  // quantidade change without re-reading. `faltando` = components with no custo.
+  const [custoCache, setCustoCache] = useState<Record<string, number | null>>({});
+
+  const activeIds = useMemo(
+    () =>
+      Object.entries(components)
+        .filter(([, e]) => !e._delete)
+        .map(([id]) => id),
+    [components],
+  );
+  const activeIdsKey = activeIds.join(',');
+
+  // Read the custo of any newly-added component (batched); cached ones are reused.
+  useEffect(() => {
+    if (!ehKit) return;
+    const missing = activeIds.filter((id) => !(id in custoCache));
+    if (missing.length === 0) return;
+    let cancelled = false;
+    Promise.all(
+      missing.map(async (id) => {
+        const snap = await getDocFromServer(produtoCollection.docRef(db, {}, id));
+        return [id, (snap.data()?.custo as number | null | undefined) ?? null] as const;
+      }),
+    )
+      .then((pairs) => {
+        if (!cancelled) setCustoCache((c) => ({ ...c, ...Object.fromEntries(pairs) }));
+      })
+      .catch((err: unknown) => {
+        if (err instanceof FirebaseError) {
+          notifications.show({
+            color: 'red',
+            message: `Falha ao ler o custo dos componentes: ${err.message}`,
+          });
+          return;
+        }
+        throw err;
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ehKit, activeIdsKey]);
+
+  // Kit cost is DYNAMIC (Flutter `getCusto`): Σ(component custo × quantidade).
+  // Derived (not state) — `null` until every active component's custo is cached;
+  // a component with no custo lands in `faltando` and leaves `custo` untouched.
+  const custoResult = useMemo(() => {
+    if (activeIds.length === 0) return { custo: null as number | null, faltando: [] as string[] };
+    if (activeIds.some((id) => !(id in custoCache))) return null; // wait for reads
+    return custoDoKit(stripKitForSave(components) ?? {}, custoCache);
+  }, [activeIds, custoCache, components]);
+
+  // Push the computed cost into the read-only `custo` form field (writing to the
+  // form = an external system, the legitimate use of an effect).
+  useEffect(() => {
+    if (!ehKit || !custoResult || custoResult.custo === null) return;
+    if (form?.getValues('custo') !== custoResult.custo) {
+      form?.setValue('custo', custoResult.custo, { shouldDirty: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ehKit, custoResult]);
 
   const setComponent = (id: string, patch: Partial<KitDraft>) => {
     onChange({ ...components, [id]: { ...components[id], ...patch } as KitDraft });
@@ -135,46 +191,8 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
     onChange(next);
   };
 
-  async function recalcularCusto() {
-    const ids = Object.entries(components)
-      .filter(([, e]) => !e._delete)
-      .map(([id]) => id);
-    if (ids.length === 0) return;
-    setRecalculando(true);
-    try {
-      const custoById: Record<string, number | null> = {};
-      await Promise.all(
-        ids.map(async (id) => {
-          const snap = await getDocFromServer(produtoCollection.docRef(db, {}, id));
-          custoById[id] = (snap.data()?.custo as number | null | undefined) ?? null;
-        }),
-      );
-      const { custo, faltando } = custoDoKit(stripKitForSave(components) ?? {}, custoById);
-      if (faltando.length > 0) {
-        notifications.show({
-          color: 'yellow',
-          message: `Sem custo cadastrado em ${faltando.length} componente(s) — custo do kit não calculado.`,
-        });
-        return;
-      }
-      if (custo !== null) {
-        form?.setValue('custo', custo, { shouldDirty: true });
-        notifications.show({ color: 'green', message: 'Custo do kit recalculado.' });
-      }
-    } catch (err) {
-      if (err instanceof FirebaseError) {
-        notifications.show({
-          color: 'red',
-          title: 'Falha ao recalcular o custo',
-          message: err.message,
-        });
-        return;
-      }
-      throw err;
-    } finally {
-      setRecalculando(false);
-    }
-  }
+  const custoKit = custoResult?.custo ?? null;
+  const faltando = custoResult?.faltando ?? [];
 
   if (!ehKit) {
     return (
@@ -188,21 +206,23 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
 
   return (
     <Stack gap="xs">
-      <Group justify="space-between" align="flex-end">
+      <Group justify="space-between" align="center">
         <Text size="sm" c="dimmed">
-          Produtos que compõem o kit. O custo do kit é a soma dos componentes × quantidade.
+          Produtos que compõem o kit. O custo do kit é calculado automaticamente (soma dos
+          componentes × quantidade) e preenche o campo Custo.
         </Text>
-        <Button
-          variant="light"
-          size="xs"
-          leftSection={<IconCalculator size={16} />}
-          onClick={recalcularCusto}
-          loading={recalculando}
-          disabled={disabled || entries.length === 0}
-        >
-          Recalcular custo do kit
-        </Button>
+        {custoKit !== null && (
+          <Text size="sm" fw={600}>
+            Custo do kit: {fmtBRL(custoKit)}
+          </Text>
+        )}
       </Group>
+      {faltando.length > 0 && (
+        <Text size="sm" c="orange">
+          {faltando.length} componente(s) sem custo cadastrado — o custo do kit não pôde ser
+          calculado.
+        </Text>
+      )}
 
       {entries.length === 0 && (
         <Text size="sm" c="dimmed">

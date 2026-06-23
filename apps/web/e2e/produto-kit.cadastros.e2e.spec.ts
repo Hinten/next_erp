@@ -35,7 +35,7 @@ test.describe.serial('Produtos kit e2e — Kit (componentesKit doc field)', () =
     await cleanupByNamePrefix('produtos', prefix);
   });
 
-  test('creates a kit, adds a component, recomputes cost, persists componentesKit + keys', async ({
+  test('creates a kit, adds a component, auto-computes cost, persists componentesKit + keys', async ({
     page,
   }) => {
     await page.goto('/produtos/novo');
@@ -53,9 +53,9 @@ test.describe.serial('Produtos kit e2e — Kit (componentesKit doc field)', () =
     );
     await page.getByLabel('Qtd').fill('3');
 
-    // Recompute: component custo 10 × 3 = 30 → the custo field.
-    await page.getByRole('button', { name: 'Recalcular custo do kit' }).click();
-    await expect(page.getByText('Custo do kit recalculado.')).toBeVisible();
+    // Kit cost is DYNAMIC (no button): component custo 10 × 3 = 30, auto-filled into
+    // the read-only Custo field — wait for the computed value shown on the Kit tab.
+    await expect(page.getByText(/Custo do kit:\s*R\$\s*30,00/)).toBeVisible({ timeout: 15_000 });
 
     await page.getByRole('button', { name: 'Criar', exact: true }).click();
 
