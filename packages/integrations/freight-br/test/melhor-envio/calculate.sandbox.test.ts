@@ -83,16 +83,17 @@ describeOrSkip('Melhor Envio sandbox (live, read-only)', () => {
       }),
     );
     // ME returns a list of carrier options; each is either quotable (carries a
-    // `price` + `company`) or errored (no pricing). We assert connectivity +
-    // shape, not specific carriers — those vary by the account's contracts.
+    // `price`) or errored. We assert connectivity + that the route quotes, not
+    // specific carriers — those vary by the account's contracts.
     expect(Array.isArray(quotes)).toBe(true);
     expect(quotes.length).toBeGreaterThan(0);
-    for (const q of quotes) {
-      if (!isErroredOption(q)) expect(q.price).toBeTruthy();
-    }
-    // The sandbox account must have at least one carrier that quotes SP→RJ —
-    // a route every default Correios contract covers. An all-errored response
-    // means the account has no usable contracts (a setup problem, not a pass).
-    expect(quotes.some((q) => !isErroredOption(q))).toBe(true);
+    // Require at least one PRICED option. We check `price` rather than just
+    // `!isErroredOption` because the schema allows a non-errored option to
+    // carry a company but no price — asserting price-per-non-errored-option
+    // would be stricter than the type contract and could flake. The SP→RJ
+    // route is covered by every default Correios contract; an all-errored
+    // response means the account has no usable contracts (a setup problem).
+    const priced = quotes.filter((q) => !isErroredOption(q) && q.price != null);
+    expect(priced.length).toBeGreaterThan(0);
   });
 });

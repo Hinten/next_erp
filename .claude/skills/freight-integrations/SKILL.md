@@ -111,9 +111,11 @@ sandbox.
 When the pedido has an authorized NF-e (modelo 55), its 44-digit **chave** is
 sent as `invoice.key` on the cart item and flips `non_commercial` **off** — most
 carriers reject a commercial shipment without it. Absent → `non_commercial: true`
-(declaração de conteúdo). `melhorEnvioCart.ts` (`buildPedidoCartPayload`) resolves
-the chave from the pedido's `nfev4` subcollection; `buildCartItem` tolerates a
-blank/null key.
+(declaração de conteúdo). The chave is resolved by
+`etiquetaActions.ts:resolveNfeChave()` (reads `pedidos/{id}/nfev4`, latest
+aprovada/EPEC chave) and passed as `invoiceKey` into the **pure**
+`buildPedidoCartPayload` (`melhorEnvioCart.ts`) — the mapper does no Firestore
+reads; `buildCartItem` tolerates a blank/null key.
 
 ## Add a new freight `tipo`
 

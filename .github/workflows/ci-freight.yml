@@ -35,6 +35,9 @@ jobs:
   freight-build-test:
     name: Lint / typecheck / unit / build (offline)
     runs-on: ubuntu-latest
+    env:
+      # Skip Next.js telemetry collection + its build-time notice (matches ci.yml).
+      NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -91,6 +94,17 @@ jobs:
             --filter @delfrance/integrations-freight-br \
             -- --exclude '**/*.sandbox.test.ts'
 
+      # Persist the ME app's incremental Next.js build cache across runs
+      # (matches ci.yml). Keyed on the head SHA actually built; restore the
+      # newest prior cache via restore-keys so iterative PR pushes aren't cold.
+      - name: Cache Next.js build
+        uses: actions/cache@v5
+        with:
+          path: apps/melhor-envio/.next/cache
+          key: nextjs-freight-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.event.pull_request.head.sha || github.sha }}
+          restore-keys: |
+            nextjs-freight-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+
       - name: Build
         run: pnpm --filter @delfrance/melhor-envio-app build
 
@@ -144,7 +158,9 @@ jobs:
   report-failure:
     name: Post failure note on PR
     needs: [freight-build-test, freight-live]
-    if: failure() && github.event_name == 'pull_request'
+    # Same-repo PRs only — fork runs get a read-only token and can't comment,
+    # which would 403 here and mask the original failure (same guard as ci.yml).
+    if: ${{ failure() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
