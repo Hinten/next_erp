@@ -260,11 +260,10 @@ function EstoqueDepositoRow({
     const next = e.currentTarget.value.trim();
     if (next === loc.trim()) return;
     try {
-      await setEstoqueLocalizacao(db, {
+      await setEstoqueLocalizacao({
         produtoId,
         depositoId: deposito.id,
         localizacao: next === '' ? null : next,
-        hasExisting,
       });
     } catch (err) {
       if (err instanceof FirebaseError) {

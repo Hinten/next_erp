@@ -6,6 +6,7 @@ import {
   indexedDBLocalPersistence,
 } from 'firebase/auth';
 import { type Firestore, getFirestore } from 'firebase/firestore';
+import { type Functions, getFunctions } from 'firebase/functions';
 import { type FirebaseStorage, getStorage } from 'firebase/storage';
 
 const config = {
@@ -21,6 +22,7 @@ let app: FirebaseApp | undefined;
 let auth: Auth | undefined;
 let db: Firestore | undefined;
 let storage: FirebaseStorage | undefined;
+let functions: Functions | undefined;
 
 export function getFirebaseApp(): FirebaseApp {
   if (app) return app;
@@ -43,6 +45,16 @@ export function getFirebaseFirestore(): Firestore {
   const databaseId = process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID ?? 'default';
   db = getFirestore(getFirebaseApp(), databaseId);
   return db;
+}
+
+export function getFirebaseFunctions(): Functions {
+  if (functions) return functions;
+  // Region MUST match the Cloud Functions deploy region (apps/functions
+  // build.mjs defaults to us-east1 — the Storage bucket region the gen2 triggers
+  // are pinned to). Kept in an env var so client + functions stay in sync.
+  const region = process.env.NEXT_PUBLIC_FUNCTIONS_REGION ?? 'us-east1';
+  functions = getFunctions(getFirebaseApp(), region);
+  return functions;
 }
 
 export function getFirebaseStorage(): FirebaseStorage {

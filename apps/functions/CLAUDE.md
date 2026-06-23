@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Four exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Seven exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -65,6 +65,34 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Four exports:
   ⚠️ **Coverage caveat**: the candidate scan still re-reads the OLDEST docs, so a
   large head of long-lived referenced photos can starve newer orphans — a persisted
   round-robin cursor is the planned fix (issue #234).
+
+- **`onProdutoDeleted`** (`onDocumentDeleted('produtos/{produtoId}')`) — estoque
+  cascade (#226). On a produto delete (parent OR variation child) it sweeps the
+  produto's `estoques` docs and each one's nested `historicoEstoque` (Firestore
+  never cascades subcollections; #136). The client `deleteProdutoCascade` (#199)
+  only deletes the produto docs — this reclaims the subcollections server-side,
+  with no dependency on the client/e2e cleanup. Core `sweepProdutoEstoques`
+  (`src/estoques/estoqueCascade.ts`, exported for the emulator suite); scoped to
+  estoque now but the natural home for the broader #136 sweep later.
+- **`onEstoqueDeleted`** (`onDocumentDeleted('produtos/{produtoId}/estoques/{estoqueId}')`)
+  — sweeps a single estoque's `historicoEstoque` (core `deleteHistoricoEstoque`).
+  Covers a standalone estoque delete; the produto-wide cascade already sweeps
+  history directly, so its re-fires of this trigger are idempotent no-ops.
+- **`aplicarEstoque`** (`onCall` — the repo's FIRST HTTPS callable) — server-owned
+  estoque write path for the web client (replaces the direct client `writeBatch`
+  from PR #217). ONE Firestore transaction does getOrCreate + the movement
+  (entrada/saída delta or balanço absolute set) / localização + the
+  `historicoEstoque` audit record — so the first-movement create race and the
+  clamping policy live in one trusted place. Enforces auth + `PERM.estoque.write`
+  itself (the `su` super-user claim short-circuits, like the rules) since the
+  Admin SDK bypasses Firestore rules; rules stay OPEN for Flutter coexistence
+  (ADR 0010). Reuses the framework-agnostic `planMovimentacao` /
+  `buildLocalizacaoOp` use-cases (`@delfrance/data/produto`) so client and server
+  never fork. Core `applyEstoqueComando` is exported (no auth) for the emulator
+  suite. ⚠️ On the app's critical path: the staging estoque tab + the estoque
+  Playwright e2e only work once this is DEPLOYED (deploy is manual — root rule #1).
+- ⚠️ All three target the NAMED `default` database (gotcha #8). `@delfrance/auth`
+  is a new build-time dep (esbuild-bundled, like data/schemas) for `hasPerm`/`PERM`.
 
 - The entry (`src/index.ts`) is **esbuild-bundled into a single ESM file**.
   Only `firebase-admin`, `firebase-functions`, `@google-cloud/firestore` (the

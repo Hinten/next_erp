@@ -116,10 +116,9 @@ export function EstoqueMovimentacaoModal({
     }
     setSaving(true);
     try {
-      await movimentarEstoque(db, {
+      await movimentarEstoque({
         produtoId,
         depositoId,
-        hasExisting,
         input: {
           tipo,
           quantidade: quantidadeNum,
