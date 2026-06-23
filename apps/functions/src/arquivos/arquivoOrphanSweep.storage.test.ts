@@ -200,9 +200,9 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
       });
 
     const missingId = `p${randomUUID().replace(/-/g, '')}`;
-    const refs = await resolveReferencedArquivoRefs(db, [produtoId, missingId]);
+    // Duplicate id exercises the de-dup; the missing one contributes nothing.
+    const refs = await resolveReferencedArquivoRefs(db, [produtoId, produtoId, missingId]);
 
-    // Reads only the two named produtos; the missing one contributes nothing.
     expect(refs).toEqual(new Set([fotoRef, videoRef, anexoRef]));
   });
 });

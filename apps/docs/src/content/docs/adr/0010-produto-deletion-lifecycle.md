@@ -46,19 +46,19 @@ photo orphans. Every function added here must therefore be **idempotent** and
 tolerate already-clean docs.
 
 **Emulator constraint.** Firestore **pipeline queries do not run in the
-emulator** — the venue for the storage CI suite (`ci-storage.yml`). The chosen
-design (Phase 2) deliberately avoids pipelines (an owner-document lookup over a
-plain `getAll`), so every function here is fully emulator-testable; were a
-pipeline ever reintroduced it would have to be validated against the **real test
-Firebase project** instead.
+emulator** — the venue for the storage CI suite (`ci-storage.yml`). Phase 2's
+unreferenced sweep uses a pipeline for its regex candidate scan, so its **core
+logic is emulator-tested via seams** (`fetchCandidates` / `resolveReferenced`
+injected) while the **pipeline itself is validated live** against the real test
+Firebase project. Every other function here is fully emulator-testable.
 
 ## Decision
 
 Handle the lifecycle **server-side** in `apps/functions` (client-side cascade was
 considered and rejected — see Alternatives), split into event-triggered cleanup
-(cheap, emulator-testable) and scheduled orphan reconciliation (bounded, also
-emulator-testable), and phase the work so the debris-producing deletes are
-covered first.
+(cheap, emulator-testable) and scheduled orphan reconciliation (bounded; core
+logic emulator-tested via seams, the regex candidate pipeline validated live), and
+phase the work so the debris-producing deletes are covered first.
 
 ### Phase 1 — event-triggered cleanup (ship first)
 

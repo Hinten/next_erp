@@ -108,12 +108,15 @@ export async function resolveReferencedArquivoRefs(
   produtoIds: string[],
 ): Promise<Set<string>> {
   const refs = new Set<string>();
-  if (produtoIds.length === 0) return refs;
+  // De-dup — this is exported/public and callers may pass repeats; one getAll per
+  // DISTINCT produto (avoids redundant reads + keeps the getAll arg list bounded).
+  const uniqueIds = [...new Set(produtoIds)];
+  if (uniqueIds.length === 0) return refs;
 
   // produtoCollection.docRef returns a RAW ref (no converter — see
   // defineAdminCollection), so the field-masked partial read below is safe; the
   // handle just sources the 'produtos' path from schemas.
-  const docRefs = produtoIds.map((id) => produtoCollection.docRef(db, {}, id));
+  const docRefs = uniqueIds.map((id) => produtoCollection.docRef(db, {}, id));
   // Field mask → transfer only the three media arrays, still one read per produto.
   const snaps = await db.getAll(...docRefs, { fieldMask: ['fotos', 'videos', 'anexos'] });
   for (const snap of snaps) {
