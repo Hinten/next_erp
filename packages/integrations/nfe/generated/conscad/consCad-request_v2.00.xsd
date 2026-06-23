@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Request-root schema for the SEFAZ Consulta Cadastro request message
+  (consCad, layout 2.00). Authored in-repo (NOT a verbatim SEFAZ file).
+
+  Why: the upstream nfephp PL_006u `consCad_v2.00.xsd` declares the root
+  element as `ConsCad` (capital C) — a transcription error (its own
+  annotation even mislabels it "retorno"). SEFAZ's actual REQUEST element is
+  `consCad` (lowercase): SP accepts the lowercase root and validates its
+  content (returning a cStat, not a "root not recognized" error). We declare
+  the correct lowercase root here and reuse the authoritative `TConsCad`
+  structure from the vendored `leiauteConsultaCadastro_v2.00.xsd`.
+-->
+<xs:schema xmlns="http://www.portalfiscal.inf.br/nfe"
+           xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="http://www.portalfiscal.inf.br/nfe"
+           elementFormDefault="qualified" attributeFormDefault="unqualified">
+  <xs:include schemaLocation="leiauteConsultaCadastro_v2.00.xsd"/>
+  <xs:element name="consCad" type="TConsCad"/>
+</xs:schema>

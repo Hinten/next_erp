@@ -24,10 +24,12 @@
  *   500  our bug (malformed request XML / parse failure)
  *   503  runtime not ready
  *
- * APPROACH TRADEOFF: the request `consCad` XML is hand-built and the
- * `retConsCad` response is hand-parsed in `consultarCadastro` — the consCad
- * v2.00 XSDs are not vendored, so there is **no pre-send XSD gate** on this op.
- * Acceptable for a read-only consulta (no `cStat=656 Consumo Indevido` risk).
+ * The request `consCad` XML is hand-built and the `retConsCad` response is
+ * hand-parsed in `consultarCadastro` (the consCad v2.00 XSDs aren't in the
+ * codegen — issue #251). The request is still **XSD-validated before sending**
+ * (`validateConsCad`) — SEFAZ rule: never POST schema-invalid XML, since
+ * repeated `cStat=215/225` trips `cStat=656` (Consumo Indevido). A schema-
+ * invalid request throws before the POST and surfaces here as a 500.
  * See `packages/integrations/nfe/src/operations/index.ts:consultarCadastro`.
  */
 import { NextResponse } from 'next/server';

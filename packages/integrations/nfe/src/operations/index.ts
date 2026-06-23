@@ -33,7 +33,7 @@ import {
 } from '../eventos';
 import { buildInutNFe, type InutilizacaoInput } from '../inutilizacao';
 import { signEvento, signInutilizacao } from '../sign';
-import { validateXsd } from '../xsd';
+import { validateConsCad, validateXsd } from '../xsd';
 import {
   nfeAutorizacaoLote,
   nfeConsultaCadastro,
@@ -255,19 +255,18 @@ function parseInfCad(node: ConsCadNode): ConsultaCadastroInfCad {
 }
 
 /**
- * `NFeConsultaCadastro4` — query a taxpayer's IE registry for a CNPJ in a UF.
+ * `CadConsultaCadastro4` — query a taxpayer's IE registry for a CNPJ in a UF.
  *
- * **XSD-bypass, by design.** The `consCad`/`retConsCad` v2.00 XSDs are NOT
- * vendored and the codegen has no `TConsCad`/`TRetConsCad`, so this operation
- * does not use the typed `serialize`/`parse` path nor the XSD-validated SOAP
- * wrapper. Instead it (1) builds the tiny fixed `consCad` request as a literal
- * string (no whitespace between tags) and (2) reads the `retConsCad` response
- * with a small inline DOM walk. The request still travels through the existing
- * low-level SOAP transport (`nfeConsultaCadastro` → `postSoap`): same mTLS
- * agent, SOAP 1.2 envelope, SOAPAction, and the `assertSafeTpAmb` production
- * guard. Acceptable because Consulta Cadastro is a read-only, advisory lookup
- * (no fiscal mutation) — there is no `cStat=656 Consumo Indevido` exposure to
- * gate against, which is the reason the emission path forces the XSD validator.
+ * The `consCad` v2.00 XSDs aren't in the codegen (adding them renumbers the
+ * emission types — issue #251), so this operation doesn't use the typed
+ * `serialize`/`parse` path: it (1) builds the fixed `consCad` request as a
+ * literal string and (2) reads `retConsCad` with a small inline DOM walk. But
+ * the request **IS XSD-validated before sending** via `validateConsCad`
+ * (vendored consCad v2.00 schema) — SEFAZ rule: never POST schema-invalid XML,
+ * since repeated `cStat=215/225` trips `cStat=656` (Consumo Indevido) →
+ * throttling/ban. It then travels the existing SOAP transport
+ * (`nfeConsultaCadastro` → `postSoap`): same mTLS agent, SOAP 1.2 envelope,
+ * SOAPAction, and `assertSafeTpAmb` guard.
  *
  * SEFAZ returns `<infCad>` as a single object for one match and an array for
  * several; we normalize to an array. cStat 111/112 = found; 258/259/108/109/etc
@@ -283,6 +282,9 @@ export async function consultarCadastro(
     `<consCad versao="2.00" xmlns="${NFE_NS}">` +
     `<infCons><xServ>CONS-CAD</xServ><UF>${uf}</UF><CNPJ>${cnpj}</CNPJ></infCons>` +
     `</consCad>`;
+  // Pre-send XSD gate — SEFAZ rule: never POST schema-invalid XML. Repeated
+  // cStat 215/225 trips cStat 656 (Consumo Indevido) → throttling/ban.
+  await validateConsCad(xml);
   const { resultXml } = await nfeConsultaCadastro(call, xml);
 
   const doc = parseConsCadXml(resultXml);

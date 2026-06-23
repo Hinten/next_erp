@@ -89,7 +89,7 @@ export interface XsdError {
 
 export class NFeXsdValidationError extends Error {
   constructor(
-    public readonly rootKey: XsdRootKey,
+    public readonly rootKey: XsdRootKey | 'consCad',
     public readonly errors: ReadonlyArray<XsdError>,
   ) {
     const first = errors[0]?.message ?? '(no detail)';
@@ -154,4 +154,54 @@ export async function validateXsd(rootKey: XsdRootKey, xml: string): Promise<voi
 /** Test helper — list the roots wired to an XSD today. */
 export function supportedRoots(): ReadonlyArray<XsdRootKey> {
   return Object.keys(XSD_BY_ROOT) as XsdRootKey[];
+}
+
+// --- Consulta Cadastro (consCad v2.00) ---------------------------------------
+// The consCad request schema is layout v2.00, a separate pack from the v4.00
+// MOC. It lives in its OWN dir (`generated/conscad/`, NOT `moc7.0/schemas/`) so
+// the codegen never scans it — adding it to the codegen dir renumbers the
+// emission types' choiceGroups (see issue #251). Same `NFE_SCHEMA_DIR`-style
+// override for esbuild-bundled consumers.
+const CONSCAD_DIR = join(HERE, '..', '..', 'generated', 'conscad');
+const CONSCAD_ROOT_FILE = 'consCad-request_v2.00.xsd';
+
+let consCadPreloadCache: ReadonlyArray<XMLFileInfo> | null = null;
+function loadConsCadPreload(): ReadonlyArray<XMLFileInfo> {
+  if (consCadPreloadCache) return consCadPreloadCache;
+  const dir = process.env.NFE_CONSCAD_SCHEMA_DIR ?? CONSCAD_DIR;
+  const files = readdirSync(dir).filter((f) => f.endsWith('.xsd'));
+  consCadPreloadCache = files.map((fileName) => ({
+    fileName,
+    contents: readFileSync(join(dir, fileName), 'utf8'),
+  }));
+  return consCadPreloadCache;
+}
+
+/**
+ * Validate a `consCad` (Consulta Cadastro request) against the v2.00 schema
+ * **before** sending it to SEFAZ. The consulta-cadastro operation hand-builds
+ * its XML (the consCad XSDs aren't in the codegen), so this is its pre-send
+ * gate — **mandatory**: repeated `cStat=215/225` schema rejections trip
+ * `cStat=656` (Consumo Indevido) → throttling → CNPJ/certificate ban. Throws
+ * `NFeXsdValidationError` (with line numbers) on failure; returns on success.
+ */
+export async function validateConsCad(xml: string): Promise<void> {
+  const preload = loadConsCadPreload();
+  const schema = preload.find((f) => f.fileName === CONSCAD_ROOT_FILE);
+  if (!schema) {
+    throw new NFeXsdValidationError('consCad', [
+      { message: `consCad schema not found in vendored conscad/: ${CONSCAD_ROOT_FILE}`, line: 0 },
+    ]);
+  }
+  const result = await validateXML({
+    xml: { fileName: 'consCad.xml', contents: xml },
+    schema: schema.contents as string,
+    preload,
+  });
+  if (result.valid) return;
+  const errors: XsdError[] = result.errors.map((e) => ({
+    message: e.message,
+    line: e.loc?.lineNumber ?? 0,
+  }));
+  throw new NFeXsdValidationError('consCad', errors);
 }
