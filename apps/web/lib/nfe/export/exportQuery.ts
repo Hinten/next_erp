@@ -71,6 +71,7 @@ function toNote(d: NfeDoc): NfeNote {
   const n = d.data();
   return {
     id: d.id,
+    path: d.ref.path,
     chave: n.chave ?? null,
     numeracao: n.numeracao,
     serie: n.serie,

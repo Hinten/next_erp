@@ -25,8 +25,11 @@ export interface ExportFilter {
 /** The few fields the builders need from each `nfev4` doc — kept minimal so the
  * heavy `xmlNfeProc` string is the only large value retained per note. */
 export interface NfeNote {
-  /** Doc id (= the 44-digit chave for nfev4 docs). */
+  /** Doc id (e.g. `s1`) — NOT unique across the collection group: different
+   * parent pedidos can each hold a `nfev4/s1`. Use `path` for a stable key. */
   readonly id: string;
+  /** Full Firestore path (`pedidos/<id>/nfev4/<docId>`) — globally unique. */
+  readonly path: string;
   readonly chave: string | null;
   readonly numeracao: number;
   readonly serie: number;

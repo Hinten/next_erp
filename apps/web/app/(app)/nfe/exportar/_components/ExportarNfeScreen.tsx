@@ -288,7 +288,7 @@ export function ExportarNfeScreen() {
                         </Table.Tr>
                       )}
                       {preview.data.sample.map((n) => (
-                        <Table.Tr key={n.id}>
+                        <Table.Tr key={n.path}>
                           <Table.Td>
                             {n.numeracao}/{n.serie}
                           </Table.Td>

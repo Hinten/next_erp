@@ -64,6 +64,7 @@ describe('csv helpers', () => {
   it('reportRowCsv leaves XML columns blank when there is no procNFe', () => {
     const note: NfeNote = {
       id: 'k',
+      path: 'pedidos/p/nfev4/k',
       chave: 'k',
       numeracao: 9,
       serie: 1,
@@ -82,6 +83,7 @@ describe('csv helpers', () => {
   it('reportRowCsv fills XML columns from a parsed procNFe', () => {
     const note: NfeNote = {
       id: 'k',
+      path: 'pedidos/p/nfev4/k',
       chave: 'k',
       numeracao: 7,
       serie: 1,

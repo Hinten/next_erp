@@ -7,6 +7,7 @@ import { ExportIncompleteError, type ExportSource, type NfeNote } from './types'
 function note(over: Partial<NfeNote> & { id: string }): NfeNote {
   return {
     chave: over.id,
+    path: `pedidos/p/nfev4/${over.id}`,
     numeracao: 1,
     serie: 1,
     estado: 'a',

@@ -22,6 +22,7 @@ describe('buildCsvReport', () => {
     const notes: NfeNote[] = [
       {
         id: 'a',
+        path: 'pedidos/p1/nfev4/a',
         chave: 'a',
         numeracao: 7,
         serie: 1,
@@ -31,6 +32,7 @@ describe('buildCsvReport', () => {
       },
       {
         id: 'b',
+        path: 'pedidos/p2/nfev4/b',
         chave: 'b',
         numeracao: 8,
         serie: 1,
@@ -40,6 +42,7 @@ describe('buildCsvReport', () => {
       },
       {
         id: 'c',
+        path: 'pedidos/p3/nfev4/c',
         chave: 'c',
         numeracao: 9,
         serie: 1,
@@ -78,6 +81,7 @@ describe('buildCsvReport', () => {
             [
               {
                 id: 'a',
+                path: 'pedidos/p1/nfev4/a',
                 chave: 'a',
                 numeracao: 1,
                 serie: 1,
