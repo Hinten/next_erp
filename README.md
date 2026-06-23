@@ -16,7 +16,7 @@ Multi-app Turborepo monorepo split by **persona/runtime**, not by ERP domain:
 | `apps/docs/`         | Contributors / users                                 | Astro Starlight | external (TBD)       |
 | `apps/example/`      | OSS demo                                             | Static / SSR    | external             |
 
-Heavy webhook work is dispatched from `apps/integrations` to **Cloud Functions** (Node 20 + the existing Python functions).
+Heavy webhook work is dispatched from `apps/integrations` to **Cloud Functions** (Node 22 + the existing Python functions).
 
 Shared code lives under `packages/`:
 
