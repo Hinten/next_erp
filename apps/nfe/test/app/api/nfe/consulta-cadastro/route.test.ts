@@ -1,5 +1,5 @@
 /**
- * Route tests for GET /api/nfe/consulta-cadastro. vi.mock auth + runtime +
+ * Route tests for POST /api/nfe/consulta-cadastro. vi.mock auth + runtime +
  * resolveFilialRuntime + the library's consultarCadastro / getConsultaCadastroEndpoint
  * to isolate the route contract:
  *   - 401 on auth
@@ -43,16 +43,18 @@ import { verifyCaller } from '@/lib/nfe/auth';
 import { resolveFilialRuntime } from '@/lib/nfe/filial-cert';
 import { getNFeRuntime, type NFeBaseRuntime, type NFeRuntime } from '@/lib/nfe/runtime';
 
-import { GET } from '../../../../../app/api/nfe/consulta-cadastro/route';
+import { POST } from '../../../../../app/api/nfe/consulta-cadastro/route';
 
 const FILIAL = 'F-1';
 const CNPJ = '14200166000187';
 const ENDPOINT = 'https://homologacao.nfe.fazenda.sp.gov.br/ws/cadconsultacadastro4.asmx';
 
-function req(qs = `cnpj=${CNPJ}&uf=SP&filialId=${FILIAL}`): Request {
-  return new Request(`http://localhost/api/nfe/consulta-cadastro${qs ? `?${qs}` : ''}`, {
-    method: 'GET',
-    headers: { authorization: 'Bearer t' },
+// POST + JSON body — the CNPJ is kept out of the URL (logs/proxies/history).
+function req(body: Record<string, unknown> = { cnpj: CNPJ, uf: 'SP', filialId: FILIAL }): Request {
+  return new Request('http://localhost/api/nfe/consulta-cadastro', {
+    method: 'POST',
+    headers: { authorization: 'Bearer t', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
   });
 }
 
@@ -124,33 +126,33 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('GET /api/nfe/consulta-cadastro', () => {
+describe('POST /api/nfe/consulta-cadastro', () => {
   it('401 when auth fails', async () => {
     vi.mocked(verifyCaller).mockResolvedValue({
       error: NextResponse.json({ error: 'no token' }, { status: 401 }),
     });
-    const res = await GET(req());
+    const res = await POST(req());
     expect(res.status).toBe(401);
   });
 
   it('400 on a malformed cnpj', async () => {
-    const res = await GET(req(`cnpj=123&uf=SP&filialId=${FILIAL}`));
+    const res = await POST(req({ cnpj: '123', uf: 'SP', filialId: FILIAL }));
     expect(res.status).toBe(400);
   });
 
   it('400 when filialId is missing', async () => {
-    const res = await GET(req(`cnpj=${CNPJ}&uf=SP`));
+    const res = await POST(req({ cnpj: CNPJ, uf: 'SP' }));
     expect(res.status).toBe(400);
   });
 
-  it('400 on a bad uf length', async () => {
-    const res = await GET(req(`cnpj=${CNPJ}&uf=SPX&filialId=${FILIAL}`));
+  it('400 on a non-letter uf', async () => {
+    const res = await POST(req({ cnpj: CNPJ, uf: 'S1', filialId: FILIAL }));
     expect(res.status).toBe(400);
   });
 
   it('200 supported:false when the UF has no consulta-cadastro endpoint', async () => {
     vi.mocked(getConsultaCadastroEndpoint).mockReturnValue(null);
-    const res = await GET(req(`cnpj=${CNPJ}&uf=SP&filialId=${FILIAL}`));
+    const res = await POST(req());
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.supported).toBe(false);
@@ -162,7 +164,7 @@ describe('GET /api/nfe/consulta-cadastro', () => {
   });
 
   it('200 supported:false on a cross-UF request (uf !== runtime uf)', async () => {
-    const res = await GET(req(`cnpj=${CNPJ}&uf=RJ&filialId=${FILIAL}`));
+    const res = await POST(req({ cnpj: CNPJ, uf: 'RJ', filialId: FILIAL }));
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.supported).toBe(false);
@@ -174,14 +176,14 @@ describe('GET /api/nfe/consulta-cadastro', () => {
     vi.mocked(resolveFilialRuntime).mockRejectedValue(
       new NFeCertError('Filial sem certificado digital cadastrado.'),
     );
-    const res = await GET(req());
+    const res = await POST(req());
     expect(res.status).toBe(422);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.code).toBe('NFeCertError');
   });
 
   it('200 supported:true with friendly-keyed infCad on cStat 111', async () => {
-    const res = await GET(req());
+    const res = await POST(req());
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.supported).toBe(true);
@@ -223,7 +225,7 @@ describe('GET /api/nfe/consulta-cadastro', () => {
 
   it('200 supported:true with empty infCad on a no-match cStat (259)', async () => {
     vi.mocked(consultarCadastro).mockResolvedValue(RET_259);
-    const res = await GET(req());
+    const res = await POST(req());
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.supported).toBe(true);
@@ -235,7 +237,7 @@ describe('GET /api/nfe/consulta-cadastro', () => {
     vi.mocked(consultarCadastro).mockRejectedValue(
       new NFeTransportError('connect ETIMEDOUT 1.2.3.4:443'),
     );
-    const res = await GET(req());
+    const res = await POST(req());
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.supported).toBe(true);
@@ -247,7 +249,7 @@ describe('GET /api/nfe/consulta-cadastro', () => {
 
   it('500 on a genuine bug (parse/our-XML error)', async () => {
     vi.mocked(consultarCadastro).mockRejectedValue(new Error('retConsCad missing <infCons>'));
-    const res = await GET(req());
+    const res = await POST(req());
     expect(res.status).toBe(500);
   });
 });

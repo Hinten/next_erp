@@ -7,8 +7,10 @@
  * fiscal-mutation path, so transport failures and unsupported UFs degrade
  * gracefully (200 with `supported:false` / `degraded:true`) instead of 5xx.
  *
- * Query: `?cnpj=<14 digits>&uf=<2>&filialId=<id>` (filialId REQUIRED in v1 —
- * the lookup signs the mTLS handshake with that filial's A1 cert).
+ * Body (JSON, POST): `{ cnpj: <14 digits>, uf: <2 letters>, filialId: <id> }`. POST
+ * (not GET) keeps the queried CNPJ out of the URL — query strings leak into access
+ * logs, proxies and browser history. filialId REQUIRED in v1 — the lookup signs the
+ * mTLS handshake with that filial's A1 cert.
  *
  * Returns (always 200 unless auth/runtime/cert/our-bug):
  *   200 { supported:true, uf, cStat, xMotivo, infCad:[...] }   — 111/112 found
@@ -81,17 +83,21 @@ function toFriendlyInfCad(raw: ConsultaCadastroInfCad): NFeConsultaCadastroInfCa
   };
 }
 
-export async function GET(req: Request): Promise<NextResponse> {
+export async function POST(req: Request): Promise<NextResponse> {
   const auth = await verifyCaller(req, PERM.fiscal.read);
   if ('error' in auth) return auth.error;
 
   let query: z.infer<typeof querySchema>;
   try {
-    const url = new URL(req.url);
-    query = querySchema.parse(Object.fromEntries(url.searchParams));
+    const body: unknown = await req.json();
+    query = querySchema.parse(body);
   } catch (e) {
     if (e instanceof z.ZodError) {
       return authError(400, { error: 'Bad query', code: e.issues[0]?.message });
+    }
+    // Malformed / non-JSON body — `req.json()` throws SyntaxError.
+    if (e instanceof SyntaxError) {
+      return authError(400, { error: 'Corpo da requisição inválido (JSON esperado)' });
     }
     throw e;
   }

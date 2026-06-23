@@ -4,9 +4,10 @@
  * React), so it unit-tests without an auth/Firebase context.
  *
  * Policy:
- *   - GET / idempotent (`consultar`, `statusServico`, `consultaCadastro`,
- *     `danfe`, `cartaCorrecaoDanfe`, `processarPendentes`) → full transient set
- *     (`isRetryableNFeHttpError`: network / 5xx / 503).
+ *   - Read-only / idempotent (`consultar`, `statusServico`, `danfe`,
+ *     `cartaCorrecaoDanfe`, `processarPendentes`, and `consultaCadastro` — a
+ *     read-only POST, body-carried so the CNPJ stays out of the URL) → full
+ *     transient set (`isRetryableNFeHttpError`: network / 5xx / 503).
  *   - server-deduped POSTs (`emitir`, `emitirLote`, `cancelar`) → full transient
  *     set. A re-POST converges to a no-op: emit/lote via PR1's dedup (stable doc
  *     id + `isBloqueada` + in-flight-nRec skip) → `reused:true`; `cancelar`

@@ -6,7 +6,11 @@ import { notifications } from '@mantine/notifications';
 import { IconSearch } from '@tabler/icons-react';
 import { useFormContext } from 'react-hook-form';
 import type { FieldRenderProps } from '@delfrance/ui';
-import { NFeHttpError, NFeNetworkError } from '@delfrance/integrations-nfe/http-provider';
+import {
+  NFeHttpError,
+  NFeNetworkError,
+  type NFeConsultaCadastroResult,
+} from '@delfrance/integrations-nfe/http-provider';
 import { CpfCnpjTextInput } from './CpfCnpjInput';
 import {
   type ClienteCnpjData,
@@ -38,6 +42,19 @@ const CnpjLookupContext = createContext<CnpjLookupConfig>({});
 export const CnpjLookupConfigProvider = CnpjLookupContext.Provider;
 
 const SET_OPTS = { shouldDirty: true, shouldValidate: true } as const;
+
+/**
+ * Human-readable reason the SEFAZ Consulta Cadastro returned no usable IE, so the
+ * operator can tell a genuine "no registration" (cStat 258/259) or a coverage gap
+ * (UF unsupported / cross-UF / SEFAZ down) from an actual problem — and knows the
+ * IE just needs manual entry.
+ */
+function sefazIeNote(cad: NFeConsultaCadastroResult, uf: string): string {
+  if (!cad.supported) return cad.xMotivo ?? `Consulta Cadastro indisponível para a UF ${uf}`;
+  if (cad.degraded) return 'SEFAZ indisponível no momento';
+  if (cad.cStat) return `SEFAZ ${cad.cStat}${cad.xMotivo ? `: ${cad.xMotivo}` : ''}`;
+  return 'SEFAZ não retornou inscrição estadual';
+}
 
 /**
  * CPF/CNPJ input that adds a "buscar dados" action for **Pessoa Jurídica only**.
@@ -100,19 +117,21 @@ export function CnpjLookupField({
 
       if (pub.nome) setValue('nome', pub.nome, SET_OPTS);
 
-      // Authoritative IE from SEFAZ Consulta Cadastro (best-effort).
+      // Authoritative IE from SEFAZ Consulta Cadastro (best-effort). `sefazNote`
+      // captures WHY no IE came back so the notification can explain it.
       let sefazIe: string | null = null;
-      let sefazTried = false;
+      let sefazNote: string | null = null;
       if (nfe && filialId && pub.uf) {
-        sefazTried = true;
         try {
           const cad = await nfe.consultaCadastro(cleanCnpj(doc), pub.uf, filialId);
           const habilitada = cad.infCad.find((c) => c.situacao === '1') ?? cad.infCad[0];
           sefazIe = habilitada?.ie ?? null;
+          if (!sefazIe) sefazNote = sefazIeNote(cad, pub.uf);
         } catch (err) {
           // Consulta Cadastro is advisory — a typed NFe failure just falls back
           // to the public IE. Anything else is a real bug, so rethrow.
           if (!(err instanceof NFeHttpError) && !(err instanceof NFeNetworkError)) throw err;
+          sefazNote = 'não foi possível consultar a SEFAZ';
         }
       }
 
@@ -124,8 +143,20 @@ export function CnpjLookupField({
       onAddressResolved?.(pub.endereco);
       offeredRef.current = pub.endereco !== null;
 
-      const ieNote = ie ? ` (IE ${ie})` : sefazTried ? ' — IE não retornada pela SEFAZ' : '';
-      notifications.show({ color: 'green', message: `Dados de ${pub.nome} preenchidos${ieNote}` });
+      if (ie) {
+        notifications.show({
+          color: 'green',
+          message: `Dados de ${pub.nome} preenchidos (IE ${ie})`,
+        });
+      } else {
+        // No IE — surface the reason so the operator can distinguish a genuine
+        // "no registration" from a coverage gap, and knows to type the IE.
+        const why = sefazNote ?? 'IE não disponível';
+        notifications.show({
+          color: 'yellow',
+          message: `Dados de ${pub.nome} preenchidos. ${why} — preencha a IE manualmente.`,
+        });
+      }
     } finally {
       setLoading(false);
     }

@@ -517,10 +517,11 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
         `/api/nfe/status-servico?target=${encodeURIComponent(target)}&filialId=${encodeURIComponent(filialId)}`,
       ),
     consultaCadastro: (cnpj, uf, filialId) =>
-      call<NFeConsultaCadastroResult>(
-        'GET',
-        `/api/nfe/consulta-cadastro?cnpj=${encodeURIComponent(cnpj)}&uf=${encodeURIComponent(uf)}&filialId=${encodeURIComponent(filialId)}`,
-      ),
+      // POST (not GET) so the queried CNPJ travels in the body, never in a URL
+      // that would land in access logs / proxies / browser history.
+      call<NFeConsultaCadastroResult>('POST', '/api/nfe/consulta-cadastro', {
+        body: { cnpj, uf, filialId },
+      }),
     uploadCertificado: (filialId, pfxBase64, password, filename) =>
       call<NFeCertificadoMeta>('POST', '/api/nfe/certificado', {
         body: { filialId, pfxBase64, password, filename },
