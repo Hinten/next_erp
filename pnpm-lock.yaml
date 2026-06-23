@@ -98,8 +98,8 @@ importers:
         specifier: ^14.0.0
         version: 14.0.0
       firebase-functions:
-        specifier: ^6.0.0
-        version: 6.6.0(firebase-admin@14.0.0)
+        specifier: ^7.0.0
+        version: 7.2.5(firebase-admin@14.0.0)
       sharp:
         specifier: ^0.34.0
         version: 0.34.5
@@ -297,8 +297,8 @@ importers:
         specifier: ^16.2.6
         version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       firebase-functions:
-        specifier: ^6.0.0
-        version: 6.6.0(firebase-admin@13.9.0)
+        specifier: ^7.0.0
+        version: 7.2.5(firebase-admin@13.9.0)
       node-forge:
         specifier: ^1.4.0
         version: 1.4.0
@@ -4380,12 +4380,22 @@ packages:
     resolution: {integrity: sha512-U88/r6VWiBQ05+UlLaF1A1AN4Y3SAGQKcQWawzafEAnXVaCZ21+2KclMPdlIQAAF5pUtN+FkXCSQnJEpc6QDZA==}
     engines: {node: '>=22'}
 
-  firebase-functions@6.6.0:
-    resolution: {integrity: sha512-wwfo6JF+N7HUExVs5gUFgkgVGHDEog9O+qtouh7IuJWk8TBQ+KwXEgRiXbatSj7EbTu3/yYnHuzh3XExbfF6wQ==}
-    engines: {node: '>=14.10.0'}
+  firebase-functions@7.2.5:
+    resolution: {integrity: sha512-K+pP0AknluAguLRbD96hibyXbnOgwnvd4hkExWdGrxnNCLoj8LBFj08uvJYxyvhsCgYzQumrUaHBW4lsXKSiRg==}
+    engines: {node: '>=18.0.0'}
     hasBin: true
     peerDependencies:
+      '@apollo/server': ^5.2.0
+      '@as-integrations/express4': ^1.1.2
       firebase-admin: ^11.10.0 || ^12.0.0 || ^13.0.0
+      graphql: ^16.12.0
+    peerDependenciesMeta:
+      '@apollo/server':
+        optional: true
+      '@as-integrations/express4':
+        optional: true
+      graphql:
+        optional: true
 
   firebase@12.13.0:
     resolution: {integrity: sha512-iutR8ejvAqk6qUClnsPz3U3VIjTWp243AX4cD3iifak5t56to1J29xUIQgSDDzaAqKvhshZerzSahwMQj2TlvA==}
@@ -10890,7 +10900,18 @@ snapshots:
       - encoding
       - supports-color
 
-  firebase-functions@6.6.0(firebase-admin@14.0.0):
+  firebase-functions@7.2.5(firebase-admin@13.9.0):
+    dependencies:
+      '@types/cors': 2.8.19
+      '@types/express': 4.17.25
+      cors: 2.8.6
+      express: 4.22.2
+      firebase-admin: 13.9.0
+      protobufjs: 7.5.8
+    transitivePeerDependencies:
+      - supports-color
+
+  firebase-functions@7.2.5(firebase-admin@14.0.0):
     dependencies:
       '@types/cors': 2.8.19
       '@types/express': 4.17.25
