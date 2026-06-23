@@ -108,6 +108,14 @@
         { "fieldPath": "tipo", "order": "ASCENDING" },
         { "fieldPath": "nome", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "filialId", "order": "ASCENDING" },
+        { "fieldPath": "data_emissao", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
