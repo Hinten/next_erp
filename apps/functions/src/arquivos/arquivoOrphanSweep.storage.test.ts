@@ -3,9 +3,19 @@ import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mediaPath, nowMicros, productArquivoId, productOriginalPath } from '@delfrance/schemas';
+import {
+  mediaPath,
+  nowMicros,
+  productArquivoId,
+  productOriginalPath,
+  productVideoPath,
+} from '@delfrance/schemas';
 
-import { sweepPhantomDocs, sweepUnreferencedArquivos } from './arquivoOrphanSweep';
+import {
+  resolveReferencedArquivoRefs,
+  sweepPhantomDocs,
+  sweepUnreferencedArquivos,
+} from './arquivoOrphanSweep';
 
 // Integration test — requires the firestore + storage emulators. Drives the sweep
 // cores directly (not the onSchedule trigger; not the pipeline). Grace window
@@ -56,6 +66,7 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
         contentType: 'image/png',
         url: null,
         externalIds: [],
+        criadoEm: nowMicros() - DAY_MICROS,
         uploadState: 'pending',
       });
 
@@ -87,6 +98,7 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
         contentType: 'application/octet-stream',
         url: null,
         externalIds: [],
+        criadoEm: nowMicros() - DAY_MICROS,
         uploadState: 'pending',
       });
 
@@ -97,47 +109,100 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     expect(doc.data()?.uploadState).toBe('finalized');
   });
 
-  it('unreferenced sweep deletes a product original no produto references, keeps referenced + within-grace', async () => {
+  it('unreferenced sweep deletes orphans (owner missing or no ref), keeps referenced', async () => {
     const db = getDb();
     const bucket = getBucket();
-    const produtoId = `p${randomUUID().replace(/-/g, '')}`;
+    const ownerId = `p${randomUUID().replace(/-/g, '')}`;
+    const missingOwnerId = `p${randomUUID().replace(/-/g, '')}`;
     const past = nowMicros() - 10 * DAY_MICROS;
-    const future = nowMicros() + 10 * DAY_MICROS;
 
-    const seed = async (hash: string, criadoEm: number): Promise<string> => {
-      const oPath = productOriginalPath(produtoId, hash, 'png');
-      const slash = oPath.lastIndexOf('/');
-      const id = productArquivoId(produtoId, hash);
+    const seedAt = async (storagePath: string, id: string, filetype: string) => {
+      const slash = storagePath.lastIndexOf('/');
+      const filepath = storagePath.slice(0, slash);
       await db
         .collection('arquivos')
         .doc(id)
         .set({
-          filetype: 'image',
-          filepath: oPath.slice(0, slash),
-          filename: oPath.slice(slash + 1),
-          contentType: 'image/png',
+          filetype,
+          filepath,
+          filename: storagePath.slice(slash + 1),
+          contentType: filetype === 'video' ? 'video/mp4' : 'image/png',
           url: null,
           externalIds: [],
           uploadState: 'finalized',
-          criadoEm,
+          criadoEm: past,
         });
-      return id;
+      return { id, filepath };
     };
 
-    const refId = await seed(randomUUID().replace(/-/g, ''), past); // referenced
-    const unrefId = await seed(randomUUID().replace(/-/g, ''), past); // orphan
-    const recentId = await seed(randomUUID().replace(/-/g, ''), future); // within grace
+    const refHash = randomUUID().replace(/-/g, '');
+    const unrefHash = randomUUID().replace(/-/g, '');
+    const vidHash = randomUUID().replace(/-/g, '');
+    const missingHash = randomUUID().replace(/-/g, '');
 
-    // Isolate against the shared emulator: treat every existing arquivo as
-    // referenced, then drop our one target so it's the only deletable orphan.
-    const all = await db.collection('arquivos').get();
-    const referencedRefs = new Set(all.docs.map((d) => `arquivos/${d.id}`));
-    referencedRefs.delete(`arquivos/${unrefId}`);
+    const ref = await seedAt(
+      productOriginalPath(ownerId, refHash, 'png'),
+      productArquivoId(ownerId, refHash),
+      'image',
+    ); // referenced by the owner produto
+    const unref = await seedAt(
+      productOriginalPath(ownerId, unrefHash, 'png'),
+      productArquivoId(ownerId, unrefHash),
+      'image',
+    ); // owner exists but does NOT reference it (photo edited out)
+    const vid = await seedAt(
+      productVideoPath(ownerId, vidHash, 'mp4'),
+      productArquivoId(ownerId, vidHash),
+      'video',
+    ); // orphan video (owner has no videos)
+    const missing = await seedAt(
+      productOriginalPath(missingOwnerId, missingHash, 'png'),
+      productArquivoId(missingOwnerId, missingHash),
+      'image',
+    ); // owner produto does not exist
 
-    await sweepUnreferencedArquivos(db, bucket, referencedRefs);
+    // The owner produto references ONLY `ref` (its single photo); videos/anexos empty.
+    await db
+      .collection('produtos')
+      .doc(ownerId)
+      .set({ fotos: [{ arquivoOuterRef: `arquivos/${ref.id}` }], videos: [], anexos: [] });
 
-    expect((await db.collection('arquivos').doc(unrefId).get()).exists).toBe(false);
-    expect((await db.collection('arquivos').doc(refId).get()).exists).toBe(true);
-    expect((await db.collection('arquivos').doc(recentId).get()).exists).toBe(true);
+    // Inject the candidate batch — the real fetch is a regex pipeline, which does
+    // not run in the emulator. The owner lookup (`resolveReferenced`) is the REAL
+    // getAll-based default, so this exercises the actual reference resolution.
+    const candidates = [ref, unref, vid, missing].map((c) => ({
+      ref: db.collection('arquivos').doc(c.id),
+      id: c.id,
+      filepath: c.filepath,
+    }));
+    await sweepUnreferencedArquivos(db, bucket, async () => candidates);
+
+    expect((await db.collection('arquivos').doc(ref.id).get()).exists).toBe(true); // referenced → kept
+    expect((await db.collection('arquivos').doc(unref.id).get()).exists).toBe(false); // no ref → deleted
+    expect((await db.collection('arquivos').doc(vid.id).get()).exists).toBe(false); // orphan video → deleted
+    expect((await db.collection('arquivos').doc(missing.id).get()).exists).toBe(false); // owner gone → deleted
+  });
+
+  it('resolveReferencedArquivoRefs reads only the named produtos and skips missing ones', async () => {
+    const db = getDb();
+    const produtoId = `p${randomUUID().replace(/-/g, '')}`;
+    const fotoRef = `arquivos/${productArquivoId(produtoId, 'a'.repeat(16))}`;
+    const videoRef = `arquivos/${productArquivoId(produtoId, 'b'.repeat(16))}`;
+    const anexoRef = `arquivos/anx${randomUUID().replace(/-/g, '')}`;
+
+    await db
+      .collection('produtos')
+      .doc(produtoId)
+      .set({
+        fotos: [{ arquivoOuterRef: fotoRef }],
+        videos: [{ arquivoOuterRef: videoRef }],
+        anexos: [{ arquivoOuterRef: anexoRef }],
+      });
+
+    const missingId = `p${randomUUID().replace(/-/g, '')}`;
+    // Duplicate id exercises the de-dup; the missing one contributes nothing.
+    const refs = await resolveReferencedArquivoRefs(db, [produtoId, produtoId, missingId]);
+
+    expect(refs).toEqual(new Set([fotoRef, videoRef, anexoRef]));
   });
 });
