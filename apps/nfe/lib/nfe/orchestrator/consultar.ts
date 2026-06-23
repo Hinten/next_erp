@@ -58,11 +58,8 @@ export async function consultarPedido(
   const chosen = slotsSnap.docs
     .map((d) => ({ id: d.id, nota: d.data() as NotaFiscalEletronica }))
     .filter((c) => c.nota.chave)
-    .sort((a, b) =>
-      String(b.nota.ultima_modificacao ?? '').localeCompare(
-        String(a.nota.ultima_modificacao ?? ''),
-      ),
-    )[0];
+    // `ultima_modificacao` is ms since epoch → numeric compare (newest first).
+    .sort((a, b) => (b.nota.ultima_modificacao ?? 0) - (a.nota.ultima_modificacao ?? 0))[0];
   if (!chosen) {
     throw new NFeOrchestratorError(
       `pedido '${pedidoId}': no nfev4 doc with a chave under pedidos/${pedidoId}/nfev4 — ` +

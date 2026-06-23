@@ -119,6 +119,7 @@ const SEED_NFE_CONFIG: NFeConfig = {
   contingencia_modo: 'none',
   contingencia_justificativa: null,
   contingencia_dataInicio: null,
+  timestamp: null,
 };
 
 function filialDoc(): Record<string, unknown> {
@@ -974,7 +975,7 @@ describe('emitirPedidosLote — contingência EPEC', () => {
     ...SEED_NFE_CONFIG,
     contingencia_modo: 'epec',
     contingencia_justificativa: 'SEFAZ-SP indisponível desde as 08h',
-    contingencia_dataInicio: '2026-06-11T08:00:00.000Z',
+    contingencia_dataInicio: new Date('2026-06-11T08:00:00.000Z').getTime(),
   };
 
   const EPEC_CHAVE = '35260614200166000187550010000000091400000010';

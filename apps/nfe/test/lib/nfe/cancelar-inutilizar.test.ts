@@ -106,6 +106,7 @@ const SEED_NFE_CONFIG: NFeConfig = {
   contingencia_modo: 'none',
   contingencia_justificativa: null,
   contingencia_dataInicio: null,
+  timestamp: null,
 };
 
 interface FakeOpts {

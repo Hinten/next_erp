@@ -86,7 +86,7 @@ export async function resolveNfeChave(db: Firestore, pedidoId: string): Promise<
         (n.estado === ESTADO_NFE.aprovada || n.estado === ESTADO_NFE.epecAprovado) &&
         n.chave != null,
     )
-    .sort((a, b) => (b.ultima_modificacao ?? '').localeCompare(a.ultima_modificacao ?? ''));
+    .sort((a, b) => (b.ultima_modificacao ?? 0) - (a.ultima_modificacao ?? 0));
   return authorized[0]?.chave ?? null;
 }
 
