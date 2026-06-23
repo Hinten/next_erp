@@ -165,7 +165,7 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
     onChange(next);
   };
 
-  const addComponent = (id: string | null) => {
+  const addComponent = async (id: string | null) => {
     if (!id) return;
     if (id === produtoId) {
       notifications.show({
@@ -178,6 +178,30 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
     if (existing && !existing._delete) {
       notifications.show({ color: 'yellow', message: 'Este componente já foi adicionado.' });
       return;
+    }
+    // A kit cannot be a component of another kit. The picker can't filter this
+    // out (a query on `ehKit` would drop legacy docs where it is null), so we
+    // validate the picked produto on add — and reuse the read to seed its custo.
+    try {
+      const snap = await getDocFromServer(produtoCollection.docRef(db, {}, id));
+      const data = snap.data();
+      if (data?.ehKit === true) {
+        notifications.show({
+          color: 'yellow',
+          message: 'Um kit não pode ser componente de outro kit.',
+        });
+        return;
+      }
+      setCustoCache((c) => ({ ...c, [id]: (data?.custo as number | null | undefined) ?? null }));
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        notifications.show({
+          color: 'red',
+          message: `Falha ao validar o componente: ${err.message}`,
+        });
+        return;
+      }
+      throw err;
     }
     // Re-add (un-delete) keeps the previous quantidade; a brand-new one defaults.
     const next = { ...components };
@@ -285,7 +309,7 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
           hint="Selecione um produto para incluir no kit."
           value={pickerValue}
           onChange={(ref) => {
-            addComponent(refToId(ref));
+            void addComponent(refToId(ref));
             setPickerValue(null);
           }}
         />
