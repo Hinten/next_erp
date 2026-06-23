@@ -29,7 +29,13 @@ const SERVICE = process.env.ME_RESET_SERVICE?.trim() || '3'; // 3 = Jadlog .Pack
 /** ms → µs — frete datetime fields are microseconds since epoch. */
 const us = (ms: number): number => ms * 1000;
 
-function jadlogQuote(service: string): Record<string, unknown> {
+interface JadlogQuote {
+  readonly id: number;
+  readonly name: string;
+  readonly company: { readonly id: number; readonly name: string };
+}
+
+function jadlogQuote(service: string): JadlogQuote {
   return {
     id: Number(service),
     name: service === '4' ? '.Com' : '.Package',

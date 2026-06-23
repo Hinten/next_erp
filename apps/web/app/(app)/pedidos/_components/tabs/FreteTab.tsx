@@ -126,6 +126,10 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
     form.setValue(fretePath('printLabelId'), null, dirty);
     form.setValue(fretePath('codRastreio'), null, dirty);
     form.setValue(fretePath('estado'), 'iniciado', dirty);
+    // Drop any stale freteInicial validation errors from the previous quote —
+    // validation runs onBlur, so without this the error Alert (#218) can keep
+    // showing errors for fields we just reset.
+    form.clearErrors('freteInicial');
 
     if (hadLabel) {
       notifications.show({

@@ -9,9 +9,9 @@
  * `apps/integrations` comprar route expects them (it takes a client-built
  * `cartPayload`, mirroring the F4 `calculate` request).
  *
- * v1 sends `non_commercial: true` (no `invoice` block): the NF-e key is
- * deferred — a follow-up resolves the pedido's authorized `nfev4` chave and
- * flips `non_commercial` off.
+ * When the pedido has an authorized NF-e, the resolved `invoiceKey` is sent as
+ * `invoice.key` and flips `non_commercial` off (#209); without one it sends
+ * `non_commercial: true` (declaração de conteúdo).
  */
 import {
   type CartInsertRequest,

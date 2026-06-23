@@ -70,16 +70,18 @@ export function EtiquetaComprarModal({
   async function handleBuy() {
     if (!client) return;
     setBuying(true);
-    const resolved = await resolveEtiquetaCartInput(db, pedido, pedidoId);
-    if (!resolved.ok) {
-      showErrorNotification({
-        title: 'Não foi possível comprar a etiqueta',
-        message: resolved.error,
-      });
-      setBuying(false);
-      return;
-    }
+    // The resolve reads several docs and can throw — keep it inside the try so
+    // `finally` always clears `buying` (otherwise a failed read leaves the modal
+    // stuck in a loading state).
     try {
+      const resolved = await resolveEtiquetaCartInput(db, pedido, pedidoId);
+      if (!resolved.ok) {
+        showErrorNotification({
+          title: 'Não foi possível comprar a etiqueta',
+          message: resolved.error,
+        });
+        return;
+      }
       const r = await client.comprar(
         resolved.intFreteId,
         pedidoId,

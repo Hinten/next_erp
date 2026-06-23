@@ -132,15 +132,21 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
       throw new MelhorEnvioValidationError(message, errors, parsed);
     }
 
-    // Surface a SHORT hint from the ME response body — for non-422 errors (e.g.
-    // an opaque 500 on cart insert) it's often the only clue. Truncated to keep
-    // the thrown message (which reaches the browser) bounded; a 500 can carry a
-    // large/HTML body. The full body stays on `err.body` for server-side logs.
-    const rawDetail =
-      parsed == null ? '' : typeof parsed === 'string' ? parsed : JSON.stringify(parsed);
-    const detail = rawDetail
-      ? ` — ${rawDetail.slice(0, 300)}${rawDetail.length > 300 ? '…' : ''}`
-      : '';
+    // Surface a SHORT, safe hint from the ME response body — for non-422 errors
+    // (e.g. an opaque 500 on cart insert) it's often the only clue. Extract a
+    // known string field (`message`/`error`/`raw`) rather than stringifying the
+    // whole object — the thrown message reaches the browser, so this avoids
+    // leaking unnecessary data / huge HTML bodies. Full body stays on `err.body`.
+    const pickHint = (o: unknown): string | null => {
+      if (typeof o === 'string') return o;
+      if (o != null && typeof o === 'object') {
+        const r = o as { message?: unknown; error?: unknown; raw?: unknown };
+        for (const v of [r.message, r.error, r.raw]) if (typeof v === 'string') return v;
+      }
+      return null;
+    };
+    const hint = pickHint(parsed);
+    const detail = hint ? ` — ${hint.slice(0, 300)}${hint.length > 300 ? '…' : ''}` : '';
     throw new MelhorEnvioHttpError(
       `Melhor Envio ${method} ${path}: HTTP ${res.status}${detail}`,
       res.status,

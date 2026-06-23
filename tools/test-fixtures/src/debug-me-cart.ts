@@ -21,7 +21,8 @@ import { db } from './admin';
 
 const SANDBOX = (process.env.MELHOR_ENVIO_SANDBOX ?? 'true') !== 'false';
 const ME_BASE = SANDBOX ? 'https://sandbox.melhorenvio.com.br' : 'https://www.melhorenvio.com.br';
-const UA = process.env.MELHOR_ENVIO_USER_AGENT ?? 'next_erp (desenvolvimento.delfrance@gmail.com)';
+// Generic default — set MELHOR_ENVIO_USER_AGENT to a real contact email if ME needs one.
+const UA = process.env.MELHOR_ENVIO_USER_AGENT ?? 'next_erp (dev tooling)';
 const INT_ID = process.env.ME_DEBUG_INT_ID ?? 'mi1a0TfrBWM3fap6NZpC';
 const PEDIDO_ID = process.env.ME_DEBUG_PEDIDO_ID ?? 'dev-frete-me-02';
 /**
