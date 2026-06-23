@@ -286,4 +286,22 @@ describe('buildPedidoCartPayload', () => {
 
     expect((payload.from as { phone: string }).phone).toBe('1144445555');
   });
+
+  it('attaches the NF-e key as invoice and flips non_commercial off', () => {
+    const chave = '35200114200166000187550010000000015000000016';
+    const payload = buildPedidoCartPayload({
+      frete: makeFrete(),
+      enderecoOrigem: ORIGIN,
+      filial: FILIAL,
+      enderecoDestino: DEST_PF,
+      clienteDestino: null,
+      itens: ITENS,
+      pedidoNumero: null,
+      invoiceKey: chave,
+    }) as Record<string, unknown>;
+
+    const options = payload.options as Record<string, unknown>;
+    expect(options.non_commercial).toBe(false);
+    expect(options.invoice).toEqual({ key: chave });
+  });
 });

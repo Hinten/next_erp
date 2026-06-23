@@ -10,8 +10,10 @@
  * transparent. A 401 bubbles as `MelhorEnvioHttpError` for the caller to
  * decide on.
  */
+import { ensureCartAgency } from './agency';
 import { MelhorEnvioError, MelhorEnvioHttpError, MelhorEnvioValidationError } from './errors';
 import {
+  type Agency,
   type Balance,
   type CalculateRequest,
   type CalculateResponse,
@@ -20,6 +22,8 @@ import {
   type Me,
   type Order,
   type PrintResponse,
+  type ShipmentService,
+  agenciesResponseSchema,
   balanceSchema,
   calculateResponseSchema,
   cartItemSchema,
@@ -27,6 +31,7 @@ import {
   opaqueResponseSchema,
   orderSchema,
   printResponseSchema,
+  shipmentServicesResponseSchema,
   validationErrorSchema,
 } from './types';
 import type { z } from 'zod';
@@ -48,7 +53,20 @@ export interface MelhorEnvioApi {
   getMe(): Promise<Me>;
   /** `GET /api/v2/me/balance` — wallet balance. */
   getBalance(): Promise<Balance>;
-  /** `POST /api/v2/me/cart` — insert a freight item, returns the label/order. */
+  /** `GET /api/v2/me/shipment/services` — carrier services + their company. */
+  listServices(): Promise<ShipmentService[]>;
+  /** `GET /api/v2/me/shipment/agencies` — a carrier's drop-off agencies. */
+  listAgencies(params: {
+    company: number | null;
+    country: string;
+    state: string;
+    city: string;
+  }): Promise<Agency[]>;
+  /**
+   * `POST /api/v2/me/cart` — insert a freight item, returns the label/order.
+   * Auto-resolves the drop-off `agency` for carriers that need one (Jadlog)
+   * when the caller hasn't set it; see `ensureCartAgency`.
+   */
   addToCart(req: CartInsertRequest): Promise<CartItem>;
   /** `GET /api/v2/me/orders/{id}` — current state of a label/order. */
   getOrder(id: string): Promise<Order>;
@@ -125,6 +143,32 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
     );
   }
 
+  const listServices = (): Promise<ShipmentService[]> =>
+    request<ShipmentService[]>(
+      'GET',
+      '/api/v2/me/shipment/services',
+      shipmentServicesResponseSchema,
+    );
+
+  const listAgencies = (params: {
+    company: number | null;
+    country: string;
+    state: string;
+    city: string;
+  }): Promise<Agency[]> => {
+    const q = new URLSearchParams({
+      country: params.country,
+      state: params.state,
+      city: params.city,
+    });
+    if (params.company != null) q.set('company', String(params.company));
+    return request<Agency[]>(
+      'GET',
+      `/api/v2/me/shipment/agencies?${q.toString()}`,
+      agenciesResponseSchema,
+    );
+  };
+
   return {
     calculate: (req) =>
       request<CalculateResponse>(
@@ -135,7 +179,12 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
       ),
     getMe: () => request<Me>('GET', '/api/v2/me', meSchema),
     getBalance: () => request<Balance>('GET', '/api/v2/me/balance', balanceSchema),
-    addToCart: (req) => request<CartItem>('POST', '/api/v2/me/cart', cartItemSchema, req),
+    listServices,
+    listAgencies,
+    addToCart: async (req) => {
+      const withAgency = await ensureCartAgency({ listServices, listAgencies }, req);
+      return request<CartItem>('POST', '/api/v2/me/cart', cartItemSchema, withAgency);
+    },
     getOrder: (id) =>
       request<Order>('GET', `/api/v2/me/orders/${encodeURIComponent(id)}`, orderSchema),
     checkout: (orderIds) =>

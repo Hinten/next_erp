@@ -27,6 +27,7 @@ import { useFreightClient } from '@/lib/freight/client';
 import { freightErrorMessage } from '@/lib/freight/errorMessage';
 import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
 import type { FlatItem, FreteInicialFormState } from '../../types';
+import { resolveNfeChave } from '../../etiquetaActions';
 import { fretePath, type PedidoFormHandle } from './fields';
 import { buildPedidoCartPayload, type ClienteDestinoLike } from './melhorEnvioCart';
 
@@ -123,6 +124,7 @@ export function EtiquetaMelhorEnvioPanel({
     if (!client) return;
     setBusy('comprar');
     try {
+      const invoiceKey = await resolveNfeChave(getFirebaseFirestore(), pedidoId);
       const payload = buildPedidoCartPayload({
         frete: form.getValues('freteInicial') as FreteInicialFormState,
         enderecoOrigem,
@@ -131,6 +133,7 @@ export function EtiquetaMelhorEnvioPanel({
         clienteDestino,
         itens: form.getValues('_itensFlat') as FlatItem[],
         pedidoNumero: form.getValues('numero'),
+        invoiceKey,
       });
       const result = await client.comprar(intFreteId, pedidoId, payload, printLabelId);
       // The route already persisted these to the doc; mirror them into the

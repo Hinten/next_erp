@@ -50,7 +50,7 @@ export function EtiquetaComprarModal({
   async function handleBuy() {
     if (!client) return;
     setBuying(true);
-    const resolved = await resolveEtiquetaCartInput(db, pedido);
+    const resolved = await resolveEtiquetaCartInput(db, pedido, pedidoId);
     if (!resolved.ok) {
       showErrorNotification({
         title: 'Não foi possível comprar a etiqueta',
