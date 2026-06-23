@@ -35,32 +35,42 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Four exports:
   `default`** database (`database: FIREBASE_DATABASE_ID ?? 'default'`) — see
   gotcha #8; a trigger that omits `database` binds to `(default)` and never fires.
 - **`reconcileArquivoOrphans`** (`onSchedule`, every 48h) — orphan cleanup, two
-  bounded passes (ADR 0010 Phase 2). **Phantom-doc sweep** (`sweepPhantomDocs`):
-  `arquivos where uploadState == 'pending'` past a 48h grace window whose object
-  never arrived → delete the doc (or self-heal to `'finalized'` if the object IS
-  present). **Unreferenced sweep** (`sweepUnreferencedArquivos`): product photos +
-  videos (`produtos/<id>/originals|videos`, scoped via `parseProductMediaDir`) past
-  the grace window that **no produto references** → delete (then `onArquivoDeleted`
-  frees the object + cascades derivatives) — e.g. a photo removed from a produto in
-  an edit, or a produto deleted entirely. The reference check is an
-  **owner-document lookup**, NOT a collection scan: a product arquivo encodes its
-  owner `produtoId` in its storage path, so `resolveReferencedArquivoRefs` reads
-  ONLY the produtos owning the current candidate batch (one batched `getAll`,
-  field-masked to `fotos`/`videos`/`anexos`) — O(distinct produtos in the batch),
-  never O(all produtos). Plain admin SDK reads, so the whole sweep is
-  emulator-testable (a `resolveReferenced` seam lets the test isolate from shared
-  emulator state). Grace is `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests); `criadoEm`
-  is microseconds-since-epoch. ⚠️ **Coverage caveat**: the candidate scan
-  (`where criadoEm < cutoff limit 100`) always re-reads the OLDEST docs, so a large
-  head of long-lived referenced photos can starve newer orphans — a persisted
-  round-robin cursor is the planned fix (issue #234). Both sweep queries are
-  single-field → **automatic indexes, no composite** (`firestore.indexes.json`
-  unchanged); verify index usage live with `scripts/check-sweep-indexes.mjs`
-  (`explain({ analyze: true })`).
+  bounded passes (ADR 0010 Phase 2), both **oldest-first** and excluding the grace
+  window **in the query**. **Phantom-doc sweep** (`sweepPhantomDocs`):
+  `arquivos where uploadState=='pending' AND criadoEm<cutoff orderBy criadoEm asc`
+  (composite index `arquivos(uploadState, criadoEm)`) whose object never arrived →
+  delete the doc (or self-heal to `'finalized'` if the object IS present).
+  **Unreferenced sweep** (`sweepUnreferencedArquivos`): product photos + videos
+  (`produtos/<id>/originals|videos`) past the grace window that **no produto
+  references** → delete (then `onArquivoDeleted` frees the object + cascades
+  derivatives) — e.g. a photo removed from a produto in an edit, or a produto
+  deleted entirely. Candidates come from a **regex pipeline**
+  (`fetchUnreferencedCandidates`: `regexContains('filepath', …) AND criadoEm<cutoff`,
+  sorted, on the `arquivos(criadoEm)` index) so non-product docs are never loaded;
+  the reference check is an **owner-document lookup**, NOT a collection scan: a
+  product arquivo encodes its owner `produtoId` in its storage path, so
+  `resolveReferencedArquivoRefs` reads ONLY the produtos owning the candidate batch
+  (one batched `getAll`, field-masked to `fotos`/`videos`/`anexos`) —
+  O(distinct produtos), never O(all produtos). ⚠️ The pipeline (admin v14 /
+  `@google-cloud/firestore` v8 `@google-cloud/firestore/pipelines`) does **not** run
+  in the emulator, so the candidate fetch and the owner lookup are **seams**
+  (`fetchCandidates` / `resolveReferenced`) the emulator suite overrides; the
+  pipeline is live-validated. Grace is `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests);
+  `criadoEm` is microseconds-since-epoch (schema default `nowMicros()`).
+  ⚠️ **Index requirement**: this Enterprise edition creates NO index automatically
+  — both sweep indexes (`arquivos(uploadState, criadoEm)` + `arquivos(criadoEm)`)
+  are declared in `firestore.indexes.json` and must be deployed
+  (`firebase deploy --only firestore:indexes`); verify usage live with
+  `scripts/check-sweep-indexes.mjs` (`explain({ analyze: true })`).
+  ⚠️ **Coverage caveat**: the candidate scan still re-reads the OLDEST docs, so a
+  large head of long-lived referenced photos can starve newer orphans — a persisted
+  round-robin cursor is the planned fix (issue #234).
 
 - The entry (`src/index.ts`) is **esbuild-bundled into a single ESM file**.
-  Only `firebase-admin`, `firebase-functions`, and `sharp` are `external`;
-  everything else (incl. `@delfrance/data`, `@delfrance/schemas`) is inlined.
+  Only `firebase-admin`, `firebase-functions`, `@google-cloud/firestore` (the
+  orphan sweep imports pipeline builders from `@google-cloud/firestore/pipelines`),
+  and `sharp` are `external`; everything else (incl. `@delfrance/data`,
+  `@delfrance/schemas`) is inlined.
 - The function **region is inlined at build time** (`build.mjs`, esbuild
   `define`), defaulting to `us-east1` — the Storage bucket region the gen2
   trigger must match. It is **never** read from `.env.local` (secrets). Override
@@ -157,14 +167,12 @@ deploy config or `prepare-deploy.mjs`.
    `.env.example`).
 
 9. **Cloud build `ERESOLVE` on `firebase-admin@14`** — this package is on
-   firebase-admin 14. (It was bumped for the `@google-cloud/firestore` v8
-   Pipelines API; the orphan sweep no longer uses pipelines — see
-   `reconcileArquivoOrphans` above — so admin 14 is now **retained but no longer
-   required**, and reverting to 13 would remove this gotcha entirely.) But
-   `firebase-functions` (incl. 7.x) still pins its peer to
-   `firebase-admin@^11 || ^12 || ^13`. pnpm tolerates the mismatch locally and the
-   combo is runtime-fine (the ci-storage emulator suite passes on admin 14 +
-   functions 6.x), but the gen2 buildpack's STRICT `npm install` fails with
+   firebase-admin 14 for the `@google-cloud/firestore` v8 **Pipelines** API, which
+   the orphan sweep's `fetchUnreferencedCandidates` regex scan needs (a hard
+   requirement — not optional). But `firebase-functions` (incl. 7.x) still pins its
+   peer to `firebase-admin@^11 || ^12 || ^13`. pnpm tolerates the mismatch locally
+   and the combo is runtime-fine (the ci-storage emulator suite passes on admin 14 +
+   functions 7.x), but the gen2 buildpack's STRICT `npm install` fails with
    `ERESOLVE unable to resolve dependency tree`. Fix: `prepare-deploy.mjs` writes a
    `legacy-peer-deps=true` **`.npmrc`** into the artifact, relaxing ONLY the cloud
    peer check (repo + CI installs are untouched). Remove once firebase-functions

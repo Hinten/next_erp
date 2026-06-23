@@ -1,3 +1,4 @@
+import { nowMicros } from '@delfrance/core/datetime';
 import { describe, expect, it } from 'vitest';
 import { arquivoMeta, arquivoSchema, filetypeFromMime, normalizeContentType } from './arquivo';
 
@@ -104,6 +105,13 @@ describe('arquivoSchema', () => {
       criadoEm: '2026-06-08T00:00:00.000Z',
     });
     expect(legacy.criadoEm).toBe(Date.parse('2026-06-08T00:00:00.000Z') * 1000);
+  });
+
+  it('defaults criadoEm to nowMicros() when omitted (required, not nullable)', () => {
+    const before = nowMicros();
+    const out = arquivoSchema.parse({ filetype: 'image', filename: 'abc.jpeg' });
+    expect(typeof out.criadoEm).toBe('number');
+    expect(out.criadoEm).toBeGreaterThanOrEqual(before);
   });
 });
 

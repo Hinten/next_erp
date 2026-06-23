@@ -4,11 +4,9 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
-  derivativeArquivoId,
   mediaPath,
   nowMicros,
   productArquivoId,
-  productDerivativePath,
   productOriginalPath,
   productVideoPath,
 } from '@delfrance/schemas';
@@ -68,6 +66,7 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
         contentType: 'image/png',
         url: null,
         externalIds: [],
+        criadoEm: nowMicros() - DAY_MICROS,
         uploadState: 'pending',
       });
 
@@ -99,6 +98,7 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
         contentType: 'application/octet-stream',
         url: null,
         externalIds: [],
+        criadoEm: nowMicros() - DAY_MICROS,
         uploadState: 'pending',
       });
 
@@ -109,87 +109,78 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     expect(doc.data()?.uploadState).toBe('finalized');
   });
 
-  it('unreferenced sweep deletes orphan photos + videos, keeps referenced / within-grace / derivatives', async () => {
+  it('unreferenced sweep deletes orphans (owner missing or no ref), keeps referenced', async () => {
     const db = getDb();
     const bucket = getBucket();
-    const produtoId = `p${randomUUID().replace(/-/g, '')}`;
+    const ownerId = `p${randomUUID().replace(/-/g, '')}`;
+    const missingOwnerId = `p${randomUUID().replace(/-/g, '')}`;
     const past = nowMicros() - 10 * DAY_MICROS;
-    const future = nowMicros() + 10 * DAY_MICROS;
 
-    const seedAt = async (storagePath: string, id: string, criadoEm: number, filetype: string) => {
+    const seedAt = async (storagePath: string, id: string, filetype: string) => {
       const slash = storagePath.lastIndexOf('/');
+      const filepath = storagePath.slice(0, slash);
       await db
         .collection('arquivos')
         .doc(id)
         .set({
           filetype,
-          filepath: storagePath.slice(0, slash),
+          filepath,
           filename: storagePath.slice(slash + 1),
           contentType: filetype === 'video' ? 'video/mp4' : 'image/png',
           url: null,
           externalIds: [],
           uploadState: 'finalized',
-          criadoEm,
+          criadoEm: past,
         });
-      return id;
+      return { id, filepath };
     };
 
     const refHash = randomUUID().replace(/-/g, '');
     const unrefHash = randomUUID().replace(/-/g, '');
-    const recentHash = randomUUID().replace(/-/g, '');
     const vidHash = randomUUID().replace(/-/g, '');
+    const missingHash = randomUUID().replace(/-/g, '');
 
-    const refId = await seedAt(
-      productOriginalPath(produtoId, refHash, 'png'),
-      productArquivoId(produtoId, refHash),
-      past,
+    const ref = await seedAt(
+      productOriginalPath(ownerId, refHash, 'png'),
+      productArquivoId(ownerId, refHash),
       'image',
-    ); // referenced original
-    const unrefId = await seedAt(
-      productOriginalPath(produtoId, unrefHash, 'png'),
-      productArquivoId(produtoId, unrefHash),
-      past,
+    ); // referenced by the owner produto
+    const unref = await seedAt(
+      productOriginalPath(ownerId, unrefHash, 'png'),
+      productArquivoId(ownerId, unrefHash),
       'image',
-    ); // orphan original
-    const recentId = await seedAt(
-      productOriginalPath(produtoId, recentHash, 'png'),
-      productArquivoId(produtoId, recentHash),
-      future,
-      'image',
-    ); // within grace
-    const vidId = await seedAt(
-      productVideoPath(produtoId, vidHash, 'mp4'),
-      productArquivoId(produtoId, vidHash),
-      past,
+    ); // owner exists but does NOT reference it (photo edited out)
+    const vid = await seedAt(
+      productVideoPath(ownerId, vidHash, 'mp4'),
+      productArquivoId(ownerId, vidHash),
       'video',
-    ); // orphan video
-    const derivId = await seedAt(
-      productDerivativePath(produtoId, unrefHash, '200'),
-      derivativeArquivoId(produtoId, unrefHash, '200'),
-      past,
+    ); // orphan video (owner has no videos)
+    const missing = await seedAt(
+      productOriginalPath(missingOwnerId, missingHash, 'png'),
+      productArquivoId(missingOwnerId, missingHash),
       'image',
-    ); // derivative (scope-excluded)
+    ); // owner produto does not exist
 
-    // Isolate against the shared emulator: stub resolver marks every existing
-    // arquivo referenced EXCEPT the targets we expect deleted. derivId is left
-    // unreferenced too — so its survival proves the scope filter (not a ref) keeps it.
-    const all = await db.collection('arquivos').get();
-    const referencedRefs = new Set(all.docs.map((d) => `arquivos/${d.id}`));
-    for (const id of [unrefId, vidId, derivId]) referencedRefs.delete(`arquivos/${id}`);
+    // The owner produto references ONLY `ref` (its single photo); videos/anexos empty.
+    await db
+      .collection('produtos')
+      .doc(ownerId)
+      .set({ fotos: [{ arquivoOuterRef: `arquivos/${ref.id}` }], videos: [], anexos: [] });
 
-    let resolverArgs: string[] = [];
-    await sweepUnreferencedArquivos(db, bucket, async (ids) => {
-      resolverArgs = ids;
-      return referencedRefs;
-    });
+    // Inject the candidate batch — the real fetch is a regex pipeline, which does
+    // not run in the emulator. The owner lookup (`resolveReferenced`) is the REAL
+    // getAll-based default, so this exercises the actual reference resolution.
+    const candidates = [ref, unref, vid, missing].map((c) => ({
+      ref: db.collection('arquivos').doc(c.id),
+      id: c.id,
+      filepath: c.filepath,
+    }));
+    await sweepUnreferencedArquivos(db, bucket, async () => candidates);
 
-    // The scope filter mapped the candidate photos/videos to their owner produtoId.
-    expect(resolverArgs).toContain(produtoId);
-    expect((await db.collection('arquivos').doc(unrefId).get()).exists).toBe(false); // orphan photo
-    expect((await db.collection('arquivos').doc(vidId).get()).exists).toBe(false); // orphan video
-    expect((await db.collection('arquivos').doc(derivId).get()).exists).toBe(true); // derivative not a candidate
-    expect((await db.collection('arquivos').doc(refId).get()).exists).toBe(true); // referenced
-    expect((await db.collection('arquivos').doc(recentId).get()).exists).toBe(true); // within grace
+    expect((await db.collection('arquivos').doc(ref.id).get()).exists).toBe(true); // referenced → kept
+    expect((await db.collection('arquivos').doc(unref.id).get()).exists).toBe(false); // no ref → deleted
+    expect((await db.collection('arquivos').doc(vid.id).get()).exists).toBe(false); // orphan video → deleted
+    expect((await db.collection('arquivos').doc(missing.id).get()).exists).toBe(false); // owner gone → deleted
   });
 
   it('resolveReferencedArquivoRefs reads only the named produtos and skips missing ones', async () => {

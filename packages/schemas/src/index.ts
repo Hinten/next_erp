@@ -19,10 +19,11 @@ export type {
 export { ALL_DOMAINS } from './registry';
 
 export { millisSinceEpoch, microsSinceEpoch } from './datetime';
-// Re-export the epoch "now" + coercion helpers so schema consumers (e.g.
-// @delfrance/storage, apps/functions) can stamp/read numeric-epoch fields without
-// a direct @delfrance/core dep.
-export { nowMicros, nowMillis, coerceToMicros, coerceToMillis } from '@delfrance/core/datetime';
+// Re-export `nowMicros` so schema consumers (e.g. @delfrance/storage,
+// apps/functions) can stamp numeric-epoch fields without a direct @delfrance/core
+// dep. (The other epoch/coercion helpers are imported straight from
+// @delfrance/core/datetime by their consumers — no re-export needed.)
+export { nowMicros } from '@delfrance/core/datetime';
 
 // Canonical structural equality lives in @delfrance/core; re-exported here so the
 // data layer (which depends on schemas, not core directly) can detect changes.

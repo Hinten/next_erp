@@ -1,15 +1,13 @@
-import type { Firestore } from 'firebase-admin/firestore';
+import type { DocumentReference, Firestore } from 'firebase-admin/firestore';
 import type { Storage } from 'firebase-admin/storage';
 import { getStorage } from 'firebase-admin/storage';
+// Pipeline expression builders live in the `/pipelines` subpath (admin
+// `@google-cloud/firestore` v8). Namespace import — the module is `export =`d.
+import * as pipelines from '@google-cloud/firestore/pipelines';
 import { logger } from 'firebase-functions';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { arquivoCollection, produtoCollection } from '@delfrance/data/admin/collections';
-import {
-  ARQUIVOS_COLLECTION,
-  coerceToMicros,
-  nowMicros,
-  parseProductMediaDir,
-} from '@delfrance/schemas';
+import { ARQUIVOS_COLLECTION, nowMicros, parseProductMediaDir } from '@delfrance/schemas';
 
 import { getAdminApp, getDb } from '../lib/admin';
 
@@ -18,6 +16,11 @@ type Bucket = ReturnType<Storage['bucket']>;
 // Bound each pass so neither can blow the function budget; the every-48h schedule
 // drains a backlog over several runs.
 const BATCH_LIMIT = 100;
+
+// Matches an `Arquivo.filepath` (a DIRECTORY, no filename) for a product photo or
+// video: `produtos/<produtoId>/originals` or `.../videos`. Excludes derivatives
+// (cascade-managed) and generic `media/`. Anchored → effectively a full match.
+const PRODUCT_MEDIA_DIR_REGEX = '^produtos/[^/]+/(originals|videos)$';
 
 /**
  * Grace window in **microseconds** below which a doc is still considered "in
@@ -37,13 +40,19 @@ function orphanGraceMicros(): number {
  * grace window whose Storage object never arrived — a create-first upload the
  * client abandoned. Deletes the doc. If the object IS present (the trigger
  * missed/lagged the finalize), self-heals the marker to `'finalized'` instead.
- * Exported for the emulator suite.
+ *
+ * The pending + grace + oldest-first selection is all in the QUERY (equality +
+ * range + orderBy), so it needs the composite index `arquivos(uploadState ASC,
+ * criadoEm ASC)` — this Firestore Enterprise edition creates no index
+ * automatically. Exported for the emulator suite.
  */
 export async function sweepPhantomDocs(db: Firestore, bucket: Bucket): Promise<number> {
   const cutoff = nowMicros() - orphanGraceMicros();
   const pending = await arquivoCollection
     .ref(db, {})
     .where('uploadState', '==', 'pending')
+    .where('criadoEm', '<', cutoff)
+    .orderBy('criadoEm', 'asc')
     .limit(BATCH_LIMIT)
     .get();
 
@@ -54,12 +63,6 @@ export async function sweepPhantomDocs(db: Firestore, bucket: Bucket): Promise<n
   for (const doc of pending.docs) {
     try {
       const data = doc.data();
-      const criadoEm = coerceToMicros(data.criadoEm); // tolerant of legacy ISO
-      // Still within the grace window → may just be mid-upload; leave it.
-      if (criadoEm !== null && criadoEm > cutoff) {
-        kept += 1;
-        continue;
-      }
       const filepath = data.filepath as string | null | undefined;
       const filename = data.filename as string | undefined;
       if (!filename) {
@@ -98,8 +101,7 @@ export async function sweepPhantomDocs(db: Firestore, bucket: Bucket): Promise<n
  * storage path, so the sweep already knows which produto to ask about.
  *
  * A produto that doesn't exist contributes nothing — its arquivos are orphans.
- * Plain admin SDK reads (no pipeline / Enterprise dependency), so this is fully
- * emulator-testable.
+ * Plain admin SDK reads (no pipeline), so this is fully emulator-testable.
  */
 export async function resolveReferencedArquivoRefs(
   db: Firestore,
@@ -129,8 +131,56 @@ export async function resolveReferencedArquivoRefs(
   return refs;
 }
 
+/** A product photo/video arquivo old enough to sweep, with its deletable ref. */
+interface UnreferencedCandidate {
+  ref: DocumentReference;
+  id: string;
+  filepath: string | null;
+}
+
+/** Fetches the candidate batch (oldest product photos/videos past the grace window). */
+type FetchCandidates = (db: Firestore, cutoffMicros: number) => Promise<UnreferencedCandidate[]>;
+
 /** Resolves the `arquivos/<id>` refs a set of produtos currently uses. */
 type ResolveReferenced = (produtoIds: string[]) => Promise<ReadonlySet<string>>;
+
+/**
+ * Default candidate fetch: an admin **pipeline** that scopes server-side to
+ * product photos + videos (regex on `filepath`) past the grace window, oldest
+ * first. The regex filter (and `regexContains`) is a pipeline-only primitive, so
+ * this is **not** emulator-runnable — it is validated live and {@link
+ * sweepUnreferencedArquivos} takes it as a seam the emulator test overrides. The
+ * `criadoEm` range + sort needs the `arquivos(criadoEm ASC)` index.
+ */
+async function fetchUnreferencedCandidates(
+  db: Firestore,
+  cutoffMicros: number,
+): Promise<UnreferencedCandidate[]> {
+  const snap = await db
+    .pipeline()
+    .collection(ARQUIVOS_COLLECTION)
+    .where(
+      pipelines.and(
+        pipelines.lessThan(pipelines.field('criadoEm'), cutoffMicros),
+        pipelines.regexContains('filepath', PRODUCT_MEDIA_DIR_REGEX),
+      ),
+    )
+    .sort(pipelines.ascending(pipelines.field('criadoEm')))
+    .limit(BATCH_LIMIT)
+    .execute();
+
+  const out: UnreferencedCandidate[] = [];
+  for (const row of snap.results) {
+    if (!row.ref) continue; // no `select` → ref is present; guard the optional type
+    const filepath = (row.data() as { filepath?: unknown } | undefined)?.filepath;
+    out.push({
+      ref: row.ref,
+      id: row.ref.id,
+      filepath: typeof filepath === 'string' ? filepath : null,
+    });
+  }
+  return out;
+}
 
 /**
  * Unreferenced-arquivo sweep: delete product photos / videos older than the
@@ -139,43 +189,33 @@ type ResolveReferenced = (produtoIds: string[]) => Promise<ReadonlySet<string>>;
  * arquivo doc), or a produto deleted entirely. Deleting the doc lets
  * `onArquivoDeleted` free the object + cascade the 3 derivatives.
  *
- * Scope is tightened to exactly the product photo + video subfolders via
- * {@link parseProductMediaDir}; derivatives (cascade-managed) and generic
- * `media/` files are never candidates. Each candidate's owning produto is read
- * directly (see {@link resolveReferencedArquivoRefs}) — no full-collection scan.
- *
- * The `resolveReferenced` seam defaults to the owner-document lookup; the
- * emulator suite injects a stub so the scan/scope/delete logic can be exercised
- * in isolation from shared emulator state. The grace window protects an arquivo
- * uploaded mid-produto-creation (referenced only once the produto is saved).
+ * Candidates come from {@link fetchUnreferencedCandidates} (a regex pipeline,
+ * server-side scoped to `produtos/<id>/originals|videos`); each owning produto is
+ * read directly (see {@link resolveReferencedArquivoRefs}) — no full-collection
+ * scan. Both seams (`fetchCandidates`, `resolveReferenced`) default to the real
+ * implementations and are overridden by the emulator suite, which can't run the
+ * pipeline. The grace window protects an arquivo uploaded mid-produto-creation
+ * (referenced only once the produto is saved).
  */
 export async function sweepUnreferencedArquivos(
   db: Firestore,
   bucket: Bucket,
   // `bucket` is unused (object cleanup is onArquivoDeleted's job) but kept for
   // signature parity with sweepPhantomDocs and the reconcile call site.
+  fetchCandidates: FetchCandidates = fetchUnreferencedCandidates,
   resolveReferenced: ResolveReferenced = (ids) => resolveReferencedArquivoRefs(db, ids),
 ): Promise<number> {
   const cutoff = nowMicros() - orphanGraceMicros();
-  // Candidate scan: product media past the grace window. Single-field range →
-  // automatic index, no composite. Coverage caveat: this always reads the OLDEST
-  // docs, so a stable head of long-lived referenced photos can starve newer
-  // orphans — a persisted round-robin cursor is the planned fix (issue #234).
-  const candidates = await arquivoCollection
-    .ref(db, {})
-    .where('criadoEm', '<', cutoff)
-    .limit(BATCH_LIMIT)
-    .get();
+  const candidates = await fetchCandidates(db, cutoff);
 
-  // Keep only product photos + videos (skip derivatives / generic media) and map
-  // each to its owning produtoId, so we read just those produtos — not all of them.
-  type Candidate = { doc: (typeof candidates.docs)[number]; refPath: string };
-  const items: Candidate[] = [];
+  // Derive each candidate's owner produtoId from its filepath (already scoped to
+  // originals|videos by the fetch); collect distinct ids for one batched lookup.
+  const items: { ref: DocumentReference; refPath: string }[] = [];
   const produtoIds = new Set<string>();
-  for (const doc of candidates.docs) {
-    const parsed = parseProductMediaDir(doc.data().filepath as string | null | undefined);
-    if (!parsed) continue;
-    items.push({ doc, refPath: `${ARQUIVOS_COLLECTION}/${doc.id}` });
+  for (const c of candidates) {
+    const parsed = parseProductMediaDir(c.filepath);
+    if (!parsed) continue; // defensive — the fetch already scopes to product media
+    items.push({ ref: c.ref, refPath: `${ARQUIVOS_COLLECTION}/${c.id}` });
     produtoIds.add(parsed.produtoId);
   }
 
@@ -184,7 +224,7 @@ export async function sweepUnreferencedArquivos(
   let deleted = 0;
   let kept = 0;
   let failed = 0;
-  for (const { doc, refPath } of items) {
+  for (const { ref, refPath } of items) {
     if (deleted >= BATCH_LIMIT) break;
     try {
       if (referencedRefs.has(refPath)) {
@@ -193,15 +233,15 @@ export async function sweepUnreferencedArquivos(
       }
       // Unreferenced + past grace → delete the doc; onArquivoDeleted frees the
       // object and cascades derivatives.
-      await doc.ref.delete();
+      await ref.delete();
       deleted += 1;
     } catch (err) {
       failed += 1;
-      logger.error(`sweepUnreferencedArquivos: ${doc.id} failed`, err);
+      logger.error(`sweepUnreferencedArquivos: ${ref.id} failed`, err);
     }
   }
   logger.info(
-    `sweepUnreferencedArquivos: ${items.length} candidates, ${deleted} deleted, ${kept} kept, ${failed} failed`,
+    `sweepUnreferencedArquivos: ${candidates.length} candidates, ${deleted} deleted, ${kept} kept, ${failed} failed`,
   );
   return deleted;
 }

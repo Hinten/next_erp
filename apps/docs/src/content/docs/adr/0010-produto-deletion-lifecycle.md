@@ -92,37 +92,41 @@ covered first.
 `onSchedule`, every 48h, two bounded passes:
 
 - **Phantom-doc sweep** (`sweepPhantomDocs`) — query
-  `arquivos where uploadState == 'pending'`; for each doc older than a 48h grace
-  window, if its Storage object is absent, delete the doc (an abandoned
-  create-first upload), or self-heal to `'finalized'` if the object is present.
-  Subsumes #189's product-image phantoms. No pipeline → emulator-testable.
+  `arquivos where uploadState == 'pending' AND criadoEm < cutoff orderBy criadoEm asc`
+  (oldest-first, grace window excluded in the query — composite index
+  `arquivos(uploadState, criadoEm)`); for each, if its Storage object is absent,
+  delete the doc (an abandoned create-first upload), or self-heal to `'finalized'`
+  if the object is present. Subsumes #189's product-image phantoms.
 - **Unreferenced-arquivo sweep** (`sweepUnreferencedArquivos`) — delete product
-  photos + videos (`produtos/<id>/originals|videos`, scoped via
-  `parseProductMediaDir`) past the grace window that **no produto references**.
-  This is the case an edit produces: removing a photo drops the `fotos[]` entry but
-  leaves the arquivo doc + object. The reference check is an **owner-document
-  lookup**, not a collection scan: a product arquivo encodes its owner `produtoId`
-  in its storage path, so `resolveReferencedArquivoRefs` reads ONLY the produtos
-  owning the current candidate batch — one batched `getAll`, field-masked to
-  `fotos`/`videos`/`anexos` — making it O(distinct produtos in the batch), never
-  O(all produtos). Deleting the doc lets `onArquivoDeleted` free the bytes.
+  photos + videos (`produtos/<id>/originals|videos`) past the grace window that **no
+  produto references**. This is the case an edit produces: removing a photo drops
+  the `fotos[]` entry but leaves the arquivo doc + object. Candidates come from a
+  **regex pipeline** (`regexContains('filepath', …) AND criadoEm < cutoff`, sorted,
+  on the `arquivos(criadoEm)` index) — server-side scoped so non-product docs are
+  never loaded. The reference check is an **owner-document lookup**, not a
+  collection scan: a product arquivo encodes its owner `produtoId` in its storage
+  path, so `resolveReferencedArquivoRefs` reads ONLY the produtos owning the
+  candidate batch — one batched `getAll`, field-masked to `fotos`/`videos`/`anexos`
+  — making it O(distinct produtos), never O(all produtos). Deleting the doc lets
+  `onArquivoDeleted` free the bytes.
 
-**Emulator note.** The reference check is plain admin SDK reads (`getAll` with a
-field mask), so the whole sweep — including `resolveReferencedArquivoRefs` — runs
-on the emulator; a `resolveReferenced` seam lets the test isolate it from shared
-emulator state. (An earlier design used a Firestore **pipeline anti-join**, which
-needs Enterprise + `@google-cloud/firestore` v8 and does not run in the emulator;
-the owner-document lookup replaced it because the arquivo's path already names its
-owner, avoiding both the full-collection scan and the pipeline dependency —
-firebase-admin v14 is retained but no longer required.) The earlier storage-orphan
-sweep was dropped: create-first guarantees an object always has a doc, so
-object-with-no-doc can't arise. `criadoEm` is microseconds-since-epoch so the
-grace window is a numeric range query.
+**Emulator note.** The candidate scan is a Firestore **pipeline** (regex on
+`filepath`), which needs Enterprise + `@google-cloud/firestore` v8 (firebase-admin
+v14, scoped to `apps/functions`) and does **not** run in the emulator. So both the
+candidate fetch and the owner lookup are **seams** (`fetchCandidates` /
+`resolveReferenced`) the emulator suite overrides — it exercises the delete loop +
+the real `resolveReferencedArquivoRefs` (plain `getAll`), while the pipeline is
+validated live. The earlier storage-orphan sweep was dropped: create-first
+guarantees an object always has a doc, so object-with-no-doc can't arise.
+`criadoEm` is microseconds-since-epoch (schema default `nowMicros()`), so the grace
+window is a numeric range query.
 
-**Coverage caveat.** The candidate scan (`where criadoEm < cutoff limit 100`)
-always re-reads the oldest docs, so a large head of long-lived referenced photos
-can starve newer orphans; a persisted round-robin cursor is the planned fix
-(#234). Both sweep queries are single-field → automatic indexes, no composite.
+**Coverage caveat.** The candidate scan still re-reads the oldest docs, so a large
+head of long-lived referenced photos can starve newer orphans; a persisted
+round-robin cursor is the planned fix (#234). This Firestore Enterprise edition
+creates no index automatically, so both sweep indexes —
+`arquivos(uploadState, criadoEm)` and `arquivos(criadoEm)` — are declared in
+`firestore.indexes.json` and deployed via `firebase deploy --only firestore:indexes`.
 
 The remaining "produto deleted entirely" case is still the **produto-delete**
 path (#136: `onDocumentDeleted('produtos/{id}')` deletes the `arquivos` docs →
@@ -163,11 +167,15 @@ not this one). No automated deploy workflow yet.
 - **Harder / new risk:** idempotency is now a hard requirement because Flutter
   cascades concurrently during coexistence; the cross-package remote-delist
   (Phase 3) introduces partial-failure states that need explicit handling.
-- **Cost:** both sweeps are bounded (BATCH 100) + emulator-testable. The
-  unreferenced sweep reads only the produtos that own the current candidate batch
-  (one batched `getAll`, field-masked), not the whole collection — O(distinct
-  produtos in the batch). Both sweep queries are single-field → automatic indexes,
-  no composite to add.
+- **Cost:** both sweeps are bounded (BATCH 100). The unreferenced sweep's candidate
+  batch is regex-scoped server-side (only product photos/videos load) and reads only
+  the produtos that own it (one batched `getAll`, field-masked) — O(distinct
+  produtos in the batch), never the whole collection. The phantom + candidate queries
+  are index-backed via declared composite/single-field entries in
+  `firestore.indexes.json` (`arquivos(uploadState, criadoEm)` + `arquivos(criadoEm)`)
+  — required because this Enterprise edition auto-creates none. The candidate scan
+  being a pipeline (regex) re-cements the firebase-admin v14 dependency in
+  `apps/functions`.
 
 ## Alternatives considered
 
@@ -190,11 +198,15 @@ Proposed (2026-06). Phasing: Phase 1 **arquivo side** done — `onArquivoDeleted
 + the create-first upload contract (#95/#202); the produto-side
 `onDocumentDeleted('produtos/{id}')` subcollection sweep (#136) still follows.
 Phase 2 **implemented** as `reconcileArquivoOrphans` (every 48h): the phantom-doc
-sweep + the unreferenced-arquivo sweep. The unreferenced check is an
-owner-document lookup (`resolveReferencedArquivoRefs` reads only the produtos
-owning the candidate batch via `getAll`), which replaced the original pipeline
-anti-join — fully emulator-tested, with no pipeline/Enterprise dependency in the
-hot path (firebase-admin v14 retained but no longer required). A coverage
-follow-up (persisted round-robin cursor for the candidate scan) is tracked in
-#234. Phase 3 blocked on the `apps/integrations` remote-delist design. Refs #136,
+sweep + the unreferenced-arquivo sweep, both oldest-first with the grace window
+excluded in the query. The unreferenced check is an owner-document lookup
+(`resolveReferencedArquivoRefs` reads only the produtos owning the candidate batch
+via `getAll`), which replaced the original full-`produtos` pipeline anti-join; the
+candidate scan is a regex pipeline that scopes server-side to product photos/videos
+(so firebase-admin v14 / `@google-cloud/firestore` v8 stays required). Both sweep
+queries are index-backed via declared `firestore.indexes.json` entries (Enterprise
+auto-creates none). The delete loop + `resolveReferencedArquivoRefs` are emulator-
+tested via seams; the pipeline is live-validated. A coverage follow-up (persisted
+round-robin cursor for the candidate scan) is tracked in #234. Phase 3 blocked on
+the `apps/integrations` remote-delist design. Refs #136,
 #95, #135, #202, #234.
