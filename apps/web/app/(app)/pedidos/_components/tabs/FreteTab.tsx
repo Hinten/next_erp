@@ -8,6 +8,7 @@ import { Controller } from 'react-hook-form';
 import { type Firestore } from 'firebase/firestore';
 import {
   ESTADO_FRETE_LABELS,
+  FREIGHT_TIPO_CAPS,
   MODALIDADE_FRETE_LABELS,
   estadoFreteSchema,
   freteDoPedidoSchema,
@@ -29,8 +30,6 @@ import { MotoboyFields } from './frete/MotoboyFields';
 import { FobFields } from './frete/FobFields';
 import { MelhorEnvioFields } from './frete/MelhorEnvioFields';
 import { MarketplaceReadOnly } from './frete/MarketplaceReadOnly';
-
-const MARKETPLACE_TIPOS = new Set(['mercadoLivre', 'lojaIntegrada', 'amz', 'magalu', 'shopee']);
 
 export interface FreteTabProps {
   form: PedidoFormHandle;
@@ -149,7 +148,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   // by hand-editing the pedido. While the integração doc is still resolving
   // the header stays locked as well (tipo unknown = ownership unknown); a
   // resolved-but-missing doc unlocks it so a dangling ref can be fixed.
-  const marketplaceOwned = tipo != null && MARKETPLACE_TIPOS.has(tipo);
+  const marketplaceOwned = tipo != null && FREIGHT_TIPO_CAPS[tipo].marketplaceOwned;
   const headerDisabled =
     disabled || marketplaceOwned || (integracaoRef != null && loadingIntegracao);
 

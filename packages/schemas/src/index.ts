@@ -62,6 +62,7 @@ export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './cat
 export {
   ESTADO_FRETE_LABELS,
   ESTADOS_FRETE_NAO_POSTADO,
+  FREIGHT_TIPO_CAPS,
   INTEGRACAO_FRETE_LABELS,
   MODALIDADE_FRETE_LABELS,
   dimensoesSchema,
@@ -76,6 +77,8 @@ export {
   volumeSchema,
   type Dimensoes,
   type EstadoFrete,
+  type FreightLabelMode,
+  type FreightTipoCapabilities,
   type FreteDoPedido,
   type IntegracaoFrete,
   type ModalidadeFrete,

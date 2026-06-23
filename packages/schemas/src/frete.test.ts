@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  FREIGHT_TIPO_CAPS,
   freteDoPedidoSchema,
+  integracoesFreteSchema,
   isFreteJaPostado,
   reboqueSchema,
   transportadoraSchema,
@@ -158,6 +160,51 @@ describe('derivePedidoFreteTotals', () => {
       freteInicial: { valorCobrado: 5, custoCalculado: null, custoFinal: null },
     });
     expect(out.valorCobrado).toBe(15);
+  });
+});
+
+describe('FREIGHT_TIPO_CAPS', () => {
+  it('has exactly one row per integração tipo (no missing / extra keys)', () => {
+    const tipos = [...integracoesFreteSchema.options].sort();
+    const capsKeys = Object.keys(FREIGHT_TIPO_CAPS).sort();
+    expect(capsKeys).toEqual(tipos);
+  });
+
+  it('Melhor Envio is the only emit provider and the only routed channel', () => {
+    expect(FREIGHT_TIPO_CAPS.melhorEnvios).toMatchObject({
+      labelMode: 'emit',
+      canQuote: true,
+      canBuy: true,
+      canPrint: true,
+      channel: 'melhor-envio',
+      marketplaceOwned: false,
+    });
+    const routed = integracoesFreteSchema.options.filter(
+      (t) => FREIGHT_TIPO_CAPS[t].channel != null,
+    );
+    expect(routed).toEqual(['melhorEnvios']);
+  });
+
+  it('every non-ME tipo is non-buyable today (→ etiquetaRowState "unsupported")', () => {
+    // Behavioral guarantee: the caps swap is byte-identical to the old
+    // `tipo !== 'melhorEnvios'` reject until a provider implements its flow.
+    for (const tipo of integracoesFreteSchema.options) {
+      if (tipo === 'melhorEnvios') continue;
+      const caps = FREIGHT_TIPO_CAPS[tipo];
+      expect(caps.canQuote).toBe(false);
+      expect(caps.canBuy).toBe(false);
+      expect(caps.canPrint).toBe(false);
+      expect(caps.canTrack).toBe(false);
+    }
+  });
+
+  it('the marketplace tipos are the read-only-tab ones', () => {
+    const marketplaceOwned = integracoesFreteSchema.options.filter(
+      (t) => FREIGHT_TIPO_CAPS[t].marketplaceOwned,
+    );
+    expect([...marketplaceOwned].sort()).toEqual(
+      ['mercadoLivre', 'lojaIntegrada', 'amz', 'magalu', 'shopee'].sort(),
+    );
   });
 });
 

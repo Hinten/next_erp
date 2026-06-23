@@ -12,6 +12,7 @@
 import { type DocumentReference, type Firestore, getDoc, getDocs } from 'firebase/firestore';
 import {
   ESTADO_NFE,
+  FREIGHT_TIPO_CAPS,
   type Endereco,
   type EstadoFrete,
   type Filial,
@@ -47,18 +48,23 @@ export interface EtiquetaRowStateResult {
 
 /**
  * Pure dispatch: given the resolved carrier tipo + the persisted frete fields,
- * decide which action the row offers. Mirrors the legacy switch (ME only here):
- * a bought label → reprint; a selected quote → buy; otherwise quote-first.
+ * decide which action the row offers. Driven by `FREIGHT_TIPO_CAPS` rather than a
+ * hard-coded carrier check — a bought, printable label → reprint; a selected
+ * quote on a buyable tipo → buy; a quotable tipo with neither → quote-first;
+ * anything else → unsupported. Today only Melhor Envio sets the `can*` flags, so
+ * every other tipo still resolves to `'unsupported'` (the marketplace fetch flow
+ * is Phase 5/6).
  */
 export function etiquetaRowState(input: EtiquetaRowStateInput): EtiquetaRowStateResult {
   const { tipo, printLabelId, externalOptionId, estado } = input;
   const needsPostedConfirm = estado != null && isFreteJaPostado(estado);
 
   if (tipo == null) return { action: 'none', needsPostedConfirm };
-  if (tipo !== 'melhorEnvios') return { action: 'unsupported', needsPostedConfirm };
-  if (printLabelId != null) return { action: 'imprimir', needsPostedConfirm };
-  if (externalOptionId != null) return { action: 'comprar', needsPostedConfirm };
-  return { action: 'quote-first', needsPostedConfirm };
+  const caps = FREIGHT_TIPO_CAPS[tipo];
+  if (printLabelId != null && caps.canPrint) return { action: 'imprimir', needsPostedConfirm };
+  if (caps.canBuy && externalOptionId != null) return { action: 'comprar', needsPostedConfirm };
+  if (caps.canQuote) return { action: 'quote-first', needsPostedConfirm };
+  return { action: 'unsupported', needsPostedConfirm };
 }
 
 export type ResolveEtiquetaCartResult =
@@ -109,7 +115,7 @@ export async function resolveEtiquetaCartInput(
   const integracao = await readDoc<IntFrete>(db, frete.integracaoFreteOuterRef);
   if (!integracao) return { ok: false, error: 'Integração de frete não encontrada.' };
   if (!integracao.enderecoDeOrigem) {
-    return { ok: false, error: 'Configure o endereço de origem da integração Melhor Envio.' };
+    return { ok: false, error: 'Configure o endereço de origem da integração de frete.' };
   }
 
   const filial = await readDoc<Filial>(db, integracao.filialIntegracaoFreteOuterRef);
