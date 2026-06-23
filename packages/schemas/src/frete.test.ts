@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { freteDoPedidoSchema, reboqueSchema, transportadoraSchema, veiculoSchema } from './frete';
+import {
+  freteDoPedidoSchema,
+  isFreteJaPostado,
+  reboqueSchema,
+  transportadoraSchema,
+  veiculoSchema,
+} from './frete';
 import { derivePedidoFreteTotals, itemDoPedidoSchema, round2 } from './pedido';
 
 /* -------------------------------------------------------------------------- */
@@ -161,5 +167,26 @@ describe('round2', () => {
     expect(round2(3.333)).toBe(3.33);
     expect(round2(99.999)).toBe(100);
     expect(round2(0)).toBe(0);
+  });
+});
+
+describe('isFreteJaPostado', () => {
+  it('is false for the não-postado estados (no re-emit confirm needed)', () => {
+    expect(isFreteJaPostado('iniciado')).toBe(false);
+    expect(isFreteJaPostado('aguardandoNFe')).toBe(false);
+    expect(isFreteJaPostado('empacotado')).toBe(false);
+    expect(isFreteJaPostado('aguardandoAgendamento')).toBe(false);
+  });
+
+  it('is false for checkFinalizado (explicitly excluded by the Dart guard)', () => {
+    expect(isFreteJaPostado('checkFinalizado')).toBe(false);
+  });
+
+  it('is true once the frete is posted / in transit / terminal', () => {
+    expect(isFreteJaPostado('postado')).toBe(true);
+    expect(isFreteJaPostado('aguardandoPostagem')).toBe(true);
+    expect(isFreteJaPostado('aCaminho')).toBe(true);
+    expect(isFreteJaPostado('entregue')).toBe(true);
+    expect(isFreteJaPostado('cancelado')).toBe(true);
   });
 });

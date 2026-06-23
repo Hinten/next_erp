@@ -24,6 +24,7 @@ import {
   type PedidoFormHandle,
 } from './fields';
 import { VolumesEditor } from './VolumesEditor';
+import { EtiquetaMelhorEnvioPanel } from './EtiquetaMelhorEnvioPanel';
 
 /**
  * Melhor Envio — quote step (F4). Replaces the F4 placeholder: edit the
@@ -44,12 +45,15 @@ export function MelhorEnvioFields({
   integracao,
   cepDestino,
   intFreteId,
+  pedidoId,
 }: {
   form: PedidoFormHandle;
   disabled?: boolean;
   integracao: IntFrete;
   cepDestino: string | null;
   intFreteId: string;
+  /** Present in edit mode (a saved pedido) — gates the etiqueta panel. */
+  pedidoId?: string;
 }) {
   const client = useFreightClient();
   const cepOrigem = integracao.enderecoDeOrigem?.cep ?? null;
@@ -58,7 +62,15 @@ export function MelhorEnvioFields({
   const volumes = (form.watch(fretePath('volumes')) as VolumeFormState[] | null) ?? [];
   const valorAssegurado = form.watch(fretePath('valor_assegurado')) as number | null;
 
-  const [quotes, setQuotes] = useState<CalculateOption[] | null>(null);
+  // Seed the quote list from the persisted selection so a previously-picked
+  // option still shows after a tab switch — `PedidoForm`'s Tabs use
+  // `keepMounted={false}`, which unmounts this tab and would otherwise drop the
+  // local `quotes` state (the Select then vanishes even though the form still
+  // holds `externalOptionId`/`externalOptionData`).
+  const [quotes, setQuotes] = useState<CalculateOption[] | null>(() => {
+    const saved = form.getValues(fretePath('externalOptionData')) as CalculateOption | null;
+    return saved ? [saved] : null;
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -139,7 +151,12 @@ export function MelhorEnvioFields({
     const optionData = JSON.parse(JSON.stringify(option)) as Record<string, unknown>;
 
     form.setValue(fretePath('externalOptionId'), value, { shouldDirty: true });
-    form.setValue(fretePath('externalOptionIntegracao'), intFreteId, { shouldDirty: true });
+    // `externalOptionIntegracao` is the integração **tipo** enum
+    // (`integracoesFreteSchema`), not a doc id — mirrors the legacy
+    // `createOrderTool.dart` (`integracao.tipo`). Writing `intFreteId` here
+    // failed the enum on save, and since the field has no input the error was
+    // invisible (#218). `integracaoFreteOuterRef` already carries which int_frete.
+    form.setValue(fretePath('externalOptionIntegracao'), integracao.tipo, { shouldDirty: true });
     form.setValue(fretePath('externalOptionData'), optionData, { shouldDirty: true });
     form.setValue(fretePath('externalOptionSelectionDate'), nowMicros(), { shouldDirty: true });
     form.setValue(fretePath('valorCobrado'), price, { shouldDirty: true });
@@ -235,6 +252,8 @@ export function MelhorEnvioFields({
         <FreteSwitchField form={form} name="maoPropria" label="Mão própria" disabled={disabled} />
         <FreteSwitchField form={form} name="ehReverso" label="Frete reverso" disabled={disabled} />
       </Group>
+
+      {pedidoId && <EtiquetaMelhorEnvioPanel form={form} intFreteId={intFreteId} />}
     </Stack>
   );
 }

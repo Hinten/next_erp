@@ -48,7 +48,8 @@ const VALID_BODY = { intFreteId: 'int-1', pedidoId: 'ped-1', cartPayload: { serv
 
 beforeEach(() => {
   vi.clearAllMocks();
-  h.pedidoGet.mockResolvedValue({ exists: true });
+  // Default: pedido exists with no bought label yet (fresh buy).
+  h.pedidoGet.mockResolvedValue({ exists: true, data: () => ({}) });
   h.addToCart.mockResolvedValue({ id: 'new-label' });
   h.checkout.mockResolvedValue({});
   h.generate.mockResolvedValue({});
@@ -119,6 +120,31 @@ describe('POST /api/freight/melhor-envio/comprar', () => {
       'freteInicial.estado': 'aguardandoPostagem',
       'freteInicial.codRastreio': 'ME123BR',
     });
+  });
+
+  it('resumes from the doc printLabelId (ignoring a stale null in the body) — no double-buy', async () => {
+    h.verifyIdToken.mockResolvedValue(WRITER);
+    // The pedido already has a bought + paid label persisted on its doc...
+    h.pedidoGet.mockResolvedValue({
+      exists: true,
+      data: () => ({ freteInicial: { printLabelId: 'existing-label' } }),
+    });
+    h.getOrder.mockResolvedValue({
+      id: 'existing-label',
+      paid_at: '2026-06-17 09:00:00',
+      generated_at: '2026-06-17 09:01:00',
+      tracking: 'ME123BR',
+    });
+    // ...even though the (stale) browser sends printLabelId: null.
+    const res = await POST(
+      req({ ...VALID_BODY, printLabelId: null }, { authorization: 'Bearer t' }),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).printLabelId).toBe('existing-label');
+    // Resumes the existing label: no new cart, no second checkout (no double spend).
+    expect(h.addToCart).not.toHaveBeenCalled();
+    expect(h.checkout).not.toHaveBeenCalled();
+    expect(h.getOrder).toHaveBeenCalledWith('existing-label');
   });
 
   it('maps a canceled label to 409 ME_LABEL_TERMINAL and does not re-buy', async () => {

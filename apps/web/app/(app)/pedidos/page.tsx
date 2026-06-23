@@ -63,7 +63,7 @@ const virtualColumns: ReadonlyArray<VirtualColumn<Pedido>> = [
     key: 'frete',
     label: 'Frete',
     dependsOn: ['freteInicial'],
-    renderCell: (r) => <FreteCell pedido={r.data} />,
+    renderCell: (r) => <FreteCell pedido={r.data} pedidoId={r.id} />,
   },
   {
     key: 'criacao',
