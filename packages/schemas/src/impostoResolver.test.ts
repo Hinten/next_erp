@@ -8,8 +8,9 @@ describe('impostoProdutoSchema', () => {
   it('accepts an empty doc (every field defaults)', () => {
     const out = impostoProdutoSchema.parse({});
     expect(out.id).toBeNull();
-    expect(out.impostoOperacaoOuterRef).toBeNull();
-    expect(out.dataCadastro).toBeNull();
+    // Flutter's typo wire key, preserved verbatim for coexistence.
+    expect(out.impostoOpercaoOuterRef).toBeNull();
+    expect(out.timestamp).toBeNull();
   });
 
   it('preserves a passthrough imposto blob', () => {

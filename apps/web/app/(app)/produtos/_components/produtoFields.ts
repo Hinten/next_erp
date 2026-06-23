@@ -23,6 +23,7 @@ export const PRODUTO_SECTIONS: string[] = [
   'Configurações',
   'Preço e custo',
   'Estoque',
+  'Impostos',
   'Variações',
   'Fotos',
   'Vídeos',
@@ -81,6 +82,11 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
   // field). Its renderInput (EstoqueManager) is wired per page since it needs
   // `produtoId`/`db`.
   estoques: { label: 'Estoque', section: 'Estoque' },
+
+  // `impostos` is the aggregate page model's per-operação fiscal override (a
+  // TRANSIENT field). Its renderInput (ImpostoManager) is wired per page since
+  // it needs `produtoId`/`db`.
+  impostos: { label: 'Impostos', section: 'Impostos' },
 };
 
 /**
@@ -113,11 +119,10 @@ export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   'fotosArquivosIds',
   'paiId',
   'ordem',
-  // Aggregate page-model fields with no UI of their own yet: `id` is only a
-  // validation context; `impostos` gets a dedicated tab in a later slice.
-  // (`extraData` renders in the Descrição tab, `estoques` in the Estoque tab.)
+  // `id` is only a cross-document validation context (the produto doc id), never
+  // rendered. (`extraData` → Descrição tab, `estoques` → Estoque tab, `impostos`
+  // → Impostos tab.)
   'id',
-  'impostos',
 ];
 
 /**

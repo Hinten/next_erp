@@ -94,7 +94,8 @@ export function createImpostoResolver(deps: ImpostoResolverDeps): ImpostoResolve
     // 2. impostoProduto match (scoped to active operacao).
     const impostoProdutos = await deps.readImpostoProdutoSubcoll(produtoUid);
     const produtoMatch = impostoProdutos.find((d) =>
-      operacaoMatches(d.impostoOperacaoOuterRef, deps.bundle.operacaoId),
+      // impostoProduto uses Flutter's typo wire key `impostoOpercaoOuterRef`.
+      operacaoMatches(d.impostoOpercaoOuterRef, deps.bundle.operacaoId),
     );
     if (produtoMatch) {
       const parsed = impostoSchema.safeParse(produtoMatch);
