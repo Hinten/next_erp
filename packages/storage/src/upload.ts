@@ -85,6 +85,7 @@ async function putArquivo(args: PutArquivoArgs): Promise<UploadResult> {
     criadoEm: nowMicros(),
     resizeState: args.resizeState ?? null,
     uploadState: 'pending',
+    markedForDeletionAt: null,
   };
   await setDoc(docRef, arquivo);
 

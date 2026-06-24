@@ -87,9 +87,35 @@ phase the work so the debris-producing deletes are covered first.
   (upload-then-`setDoc`) orphaned the OBJECT when the client died mid-write;
   create-first instead leaves a detectable phantom DOC.
 
+- **`onProdutoMediaChanged` (`onDocumentUpdated('produtos/{id}')`)** — the
+  produto-**edit** sibling of #136 (which covers produto-**delete**). When an edit
+  removes a photo/video, the `fotos`/`videos` array is rewritten without the entry
+  but the arquivo is left behind. Rather than wait for Phase 2 to *rediscover* this
+  via the regex pipeline + owner lookup, the trigger diffs `before`/`after` media
+  refs (`reconcileProdutoMediaMarks`, exported for the emulator suite) and **marks**
+  each removed arquivo (`markedForDeletionAt = now`); a re-added ref clears the mark.
+  The mark is only a **signal** — the delete is deferred to Phase 2's
+  `sweepMarkedForDeletion` (short grace + owner re-verify), so a buggy/partial/bulk
+  save that drops `fotos` can only mark (reversibly), never instantly destroy photos.
+  Writes touch only `arquivos` (never `produtos`) → no self-retrigger; one batched
+  `getAll` + `WriteBatch` per edit, zero work when the edit doesn't touch media.
+  Plain admin writes (no pipeline) → fully emulator-testable. Scoped to `fotos` +
+  `videos` (anexos stay on the Phase 2 backstop). Targets the named `default` database.
+
 ### Phase 2 — scheduled orphan reconciliation (`reconcileArquivoOrphans`)
 
-`onSchedule`, every 48h, two bounded passes:
+`onSchedule`, every 48h, three bounded passes:
+
+- **Marked-for-deletion sweep** (`sweepMarkedForDeletion`) — the back half of the
+  eager reap above: delete arquivos `onProdutoMediaChanged` flagged
+  (`markedForDeletionAt < cutoff`, past a **short** `ARQUIVO_MARKED_GRACE_HOURS`
+  grace, default 1h, oldest-first — single-field index `arquivos(markedForDeletionAt)`),
+  **re-verifying** via `resolveReferencedArquivoRefs` that the owning produto still
+  doesn't reference them (a missed unmark clears the mark instead of deleting). A
+  plain admin range query (no pipeline → emulator-testable), so it runs first and
+  cheapest. This makes the common "photo edited out" case prompt; the unreferenced
+  sweep below is now the **backstop** (produto deletes until #136, console edits,
+  missed trigger deliveries).
 
 - **Phantom-doc sweep** (`sweepPhantomDocs`) — query
   `arquivos where uploadState == 'pending' AND criadoEm < cutoff orderBy criadoEm asc`
@@ -97,10 +123,11 @@ phase the work so the debris-producing deletes are covered first.
   `arquivos(uploadState, criadoEm)`); for each, if its Storage object is absent,
   delete the doc (an abandoned create-first upload), or self-heal to `'finalized'`
   if the object is present. Subsumes #189's product-image phantoms.
-- **Unreferenced-arquivo sweep** (`sweepUnreferencedArquivos`) — delete product
-  photos + videos (`produtos/<id>/originals|videos`) past the grace window that **no
-  produto references**. This is the case an edit produces: removing a photo drops
-  the `fotos[]` entry but leaves the arquivo doc + object. Candidates come from a
+- **Unreferenced-arquivo sweep** (`sweepUnreferencedArquivos`) — the **backstop** for
+  product photos + videos (`produtos/<id>/originals|videos`) past the grace window that
+  **no produto references**, that the eager `onProdutoMediaChanged` mark missed: a
+  produto deleted entirely (until #136), a Firestore-console edit, or a dropped trigger
+  delivery. Candidates come from a
   **regex pipeline** (`regexContains('filepath', …) AND criadoEm < cutoff`, sorted,
   on the `arquivos(criadoEm)` index) — server-side scoped so non-product docs are
   never loaded. The reference check is an **owner-document lookup**, not a
@@ -123,9 +150,10 @@ window is a numeric range query.
 
 **Coverage caveat.** The candidate scan still re-reads the oldest docs, so a large
 head of long-lived referenced photos can starve newer orphans; a persisted
-round-robin cursor is the planned fix (#234). This Firestore Enterprise edition
-creates no index automatically, so both sweep indexes —
-`arquivos(uploadState, criadoEm)` and `arquivos(criadoEm)` — are declared in
+round-robin cursor is the planned fix (#234) — and it does not affect the marked sweep,
+which only reads what the trigger flagged. This Firestore Enterprise edition creates no
+index automatically, so all three sweep indexes — `arquivos(uploadState, criadoEm)`,
+`arquivos(criadoEm)` and `arquivos(markedForDeletionAt)` — are declared in
 `firestore.indexes.json` and deployed via `firebase deploy --only firestore:indexes`.
 
 The remaining "produto deleted entirely" case is still the **produto-delete**
@@ -195,10 +223,13 @@ not this one). No automated deploy workflow yet.
 ## Status
 
 Proposed (2026-06). Phasing: Phase 1 **arquivo side** done — `onArquivoDeleted`
-+ the create-first upload contract (#95/#202); the produto-side
-`onDocumentDeleted('produtos/{id}')` subcollection sweep (#136) still follows.
-Phase 2 **implemented** as `reconcileArquivoOrphans` (every 48h): the phantom-doc
-sweep + the unreferenced-arquivo sweep, both oldest-first with the grace window
++ the create-first upload contract (#95/#202) — plus `onProdutoMediaChanged`, the
+produto-**edit** eager-reap trigger (marks an arquivo when a photo/video is edited out,
+clears it on re-add); the produto-**delete** `onDocumentDeleted('produtos/{id}')`
+subcollection sweep (#136) still follows. Phase 2 **implemented** as
+`reconcileArquivoOrphans` (every 48h): the marked-for-deletion sweep (the eager reap's
+back half — re-verifies the owner before deleting), the phantom-doc sweep, and the
+unreferenced-arquivo sweep (now the backstop), all oldest-first with the grace window
 excluded in the query. The unreferenced check is an owner-document lookup
 (`resolveReferencedArquivoRefs` reads only the produtos owning the candidate batch
 via `getAll`), which replaced the original full-`produtos` pipeline anti-join; the
