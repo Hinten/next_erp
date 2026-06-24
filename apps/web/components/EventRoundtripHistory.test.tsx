@@ -84,8 +84,14 @@ describe('EventRoundtripHistory', () => {
   it('renders rows newest-first by timestamp', () => {
     setSnap({
       data: [
-        row('older', { timestamp: '2026-01-01T00:00:00.000Z', summary: 'OLDER' }),
-        row('newer', { timestamp: '2026-02-01T00:00:00.000Z', summary: 'NEWER' }),
+        row('older', {
+          timestamp: new Date('2026-01-01T00:00:00.000Z').getTime(),
+          summary: 'OLDER',
+        }),
+        row('newer', {
+          timestamp: new Date('2026-02-01T00:00:00.000Z').getTime(),
+          summary: 'NEWER',
+        }),
       ],
     });
     wrap(<EventRoundtripHistory {...baseProps} />);
@@ -99,7 +105,7 @@ describe('EventRoundtripHistory', () => {
     setSnap({
       data: [
         row('r1', {
-          timestamp: '2026-02-01T00:00:00.000Z',
+          timestamp: new Date('2026-02-01T00:00:00.000Z').getTime(),
           summary: 'sumario-1',
           xMotivo: 'Evento registrado',
           nProt: '135200000099999',

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
+import { millisSinceEpoch } from './datetime';
 
 // Mirror `PERM.fiscal` from @delfrance/auth.
 const PERM_FISCAL_READ = 1n << 72n;
@@ -68,14 +69,11 @@ export const nfeConfigSchema = z
       .nullable()
       .default(null)
       .describe('Justificativa da contingência'),
-    /** SEFAZ `dhCont` (B28) — stamped when the operator activates the mode. */
-    contingencia_dataInicio: z
-      .string()
-      .datetime({ offset: true })
-      .nullable()
-      .default(null)
-      .describe('Início da contingência'),
-    timestamp: z.string().datetime().nullable().optional(),
+    /** SEFAZ `dhCont` (B28) — stamped when the operator activates the mode. The
+     * offset-aware `dhCont` printed on the DANFE is rebuilt from this ms instant
+     * + the issuer timezone at emission time, matching the Flutter wire shape. */
+    contingencia_dataInicio: millisSinceEpoch('Início da contingência').nullable().default(null),
+    timestamp: millisSinceEpoch().nullable().default(null),
   })
   .superRefine((cfg, ctx) => {
     if (cfg.contingencia_modo !== 'none') {

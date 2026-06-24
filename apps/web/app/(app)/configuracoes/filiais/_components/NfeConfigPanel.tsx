@@ -36,6 +36,7 @@ import { getDoc, runTransaction } from 'firebase/firestore';
 import { z } from 'zod';
 
 import { PERM } from '@delfrance/auth';
+import { nowMillis } from '@delfrance/core/datetime';
 import {
   NFeHttpError,
   NFeNetworkError,
@@ -147,7 +148,7 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
   const save = useMutation({
     mutationFn: async () => {
       if (!cfg) return;
-      const now = new Date().toISOString();
+      const now = nowMillis();
       const ref = nfeConfigCollection.docRef(db, { filialId }, NFE_CONFIG_DOC_ID);
       // Transactional read-modify-write: the counters (numeracao_atual /
       // idLote) advance server-side on every emission, so building the write

@@ -157,7 +157,8 @@ const CFG_EPEC: NFeConfig = {
   ambiente: '2',
   contingencia_modo: 'epec',
   contingencia_justificativa: 'SEFAZ-SP indisponível desde as 08h',
-  contingencia_dataInicio: '2026-06-11T08:00:00.000Z',
+  contingencia_dataInicio: new Date('2026-06-11T08:00:00.000Z').getTime(),
+  timestamp: null,
 };
 const CFG_NONE: NFeConfig = {
   ...CFG_EPEC,
