@@ -1,5 +1,6 @@
 import type { Firestore } from 'firebase-admin/firestore';
 
+import { roundReais } from '@delfrance/core/money';
 import { nfeConfigCollection } from '@delfrance/data/admin/collections';
 import {
   NFeConfigNotFoundError,
@@ -30,11 +31,6 @@ import {
 import { createFirestoreImpostoResolver } from '../imposto-resolver';
 import type { ImpostoResolver } from '../imposto-resolver';
 import { NFeMissingImpostoError, NFeOrchestratorError, NFePedidoNotFoundError } from './errors';
-
-/** Round to 2 decimals (monetary). Shared by the fiscal-item + generator-input builders. */
-export function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
 
 /** Mirror of Flutter's `nFeSaidaIdFromTpEmis` — one nfev4 slot per (pedido, tpEmis). */
 export function nfeDocId(tpEmis: TpEmis): string {
@@ -534,7 +530,7 @@ export function flattenAndValidate(bundle: PedidoBundle): FiscalItem[] {
         descontoUnitario,
         quantidade,
         imposto,
-        vProd: round2((precoDeVenda - (descontoUnitario ?? 0)) * quantidade),
+        vProd: roundReais((precoDeVenda - (descontoUnitario ?? 0)) * quantidade),
       });
     });
   }

@@ -18,7 +18,7 @@ import type {
   TNFe_infNFe_total_ISSQNtot,
   TNFe_infNFe_total_retTrib,
 } from '../types/nfe-schema';
-import { fmtMoney, fmtMoneyOpt, round2 } from './format';
+import { fmtMoney, fmtMoneyOpt, roundReais } from './format';
 
 /**
  * Whole-NF-e values needed by aggregateISSQN that aren't derivable
@@ -134,26 +134,26 @@ export function aggregateTotals(
   const vSeg = extras.vSeg ?? 0;
   const vDesc = extras.vDesc ?? 0;
   const vOutro = extras.vOutro ?? 0;
-  const vNF = round2(vProd + vST + vFCPST + vFrete + vSeg + vOutro + vIPI - vDesc);
+  const vNF = roundReais(vProd + vST + vFCPST + vFrete + vSeg + vOutro + vIPI - vDesc);
   return {
-    vBC: round2(vBC),
-    vICMS: round2(vICMS),
+    vBC: roundReais(vBC),
+    vICMS: roundReais(vICMS),
     vICMSDeson: 0,
     vFCP: 0,
-    vBCST: round2(vBCST),
-    vST: round2(vST),
-    vFCPST: round2(vFCPST),
-    vFCPSTRet: round2(vFCPSTRet),
-    vProd: round2(vProd),
-    vFrete: round2(vFrete),
-    vSeg: round2(vSeg),
-    vDesc: round2(vDesc),
+    vBCST: roundReais(vBCST),
+    vST: roundReais(vST),
+    vFCPST: roundReais(vFCPST),
+    vFCPSTRet: roundReais(vFCPSTRet),
+    vProd: roundReais(vProd),
+    vFrete: roundReais(vFrete),
+    vSeg: roundReais(vSeg),
+    vDesc: roundReais(vDesc),
     vII: 0,
-    vIPI: round2(vIPI),
+    vIPI: roundReais(vIPI),
     vIPIDevol: 0,
     vPIS: 0,
     vCOFINS: 0,
-    vOutro: round2(vOutro),
+    vOutro: roundReais(vOutro),
     vNF,
   };
 }
@@ -202,16 +202,16 @@ export function aggregateISSQN(
   }
 
   const out: TNFe_infNFe_total_ISSQNtot = {
-    vServ: fmtMoney('vServ', round2(vServ)),
-    vBC: fmtMoney('vBC', round2(vBC)),
-    vISS: fmtMoney('vISS', round2(vISS)),
+    vServ: fmtMoney('vServ', roundReais(vServ)),
+    vBC: fmtMoney('vBC', roundReais(vBC)),
+    vISS: fmtMoney('vISS', roundReais(vISS)),
     dCompet: extras.dCompet,
   };
-  if (vDeducao > 0) out.vDeducao = fmtMoney('vDeducao', round2(vDeducao));
-  if (vDescIncond > 0) out.vDescIncond = fmtMoney('vDescIncond', round2(vDescIncond));
-  if (vDescCond > 0) out.vDescCond = fmtMoney('vDescCond', round2(vDescCond));
-  if (vISSRet > 0) out.vISSRet = fmtMoney('vISSRet', round2(vISSRet));
-  if (vOutro > 0) out.vOutro = fmtMoney('vOutro', round2(vOutro));
+  if (vDeducao > 0) out.vDeducao = fmtMoney('vDeducao', roundReais(vDeducao));
+  if (vDescIncond > 0) out.vDescIncond = fmtMoney('vDescIncond', roundReais(vDescIncond));
+  if (vDescCond > 0) out.vDescCond = fmtMoney('vDescCond', roundReais(vDescCond));
+  if (vISSRet > 0) out.vISSRet = fmtMoney('vISSRet', roundReais(vISSRet));
+  if (vOutro > 0) out.vOutro = fmtMoney('vOutro', roundReais(vOutro));
   if (extras.cRegTrib != null) out.cRegTrib = extras.cRegTrib;
   return out;
 }
@@ -253,13 +253,13 @@ export function aggregateRetTrib(
   if (!any) return undefined;
 
   const out: TNFe_infNFe_total_retTrib = {};
-  if (vRetPIS > 0) out.vRetPIS = fmtMoney('vRetPIS', round2(vRetPIS));
-  if (vRetCOFINS > 0) out.vRetCOFINS = fmtMoney('vRetCOFINS', round2(vRetCOFINS));
-  if (vRetCSLL > 0) out.vRetCSLL = fmtMoney('vRetCSLL', round2(vRetCSLL));
-  if (vBCIRRF > 0) out.vBCIRRF = fmtMoney('vBCIRRF', round2(vBCIRRF));
-  if (vIRRF > 0) out.vIRRF = fmtMoney('vIRRF', round2(vIRRF));
-  if (vBCRetPrev > 0) out.vBCRetPrev = fmtMoney('vBCRetPrev', round2(vBCRetPrev));
-  if (vRetPrev > 0) out.vRetPrev = fmtMoney('vRetPrev', round2(vRetPrev));
+  if (vRetPIS > 0) out.vRetPIS = fmtMoney('vRetPIS', roundReais(vRetPIS));
+  if (vRetCOFINS > 0) out.vRetCOFINS = fmtMoney('vRetCOFINS', roundReais(vRetCOFINS));
+  if (vRetCSLL > 0) out.vRetCSLL = fmtMoney('vRetCSLL', roundReais(vRetCSLL));
+  if (vBCIRRF > 0) out.vBCIRRF = fmtMoney('vBCIRRF', roundReais(vBCIRRF));
+  if (vIRRF > 0) out.vIRRF = fmtMoney('vIRRF', roundReais(vIRRF));
+  if (vBCRetPrev > 0) out.vBCRetPrev = fmtMoney('vBCRetPrev', roundReais(vBCRetPrev));
+  if (vRetPrev > 0) out.vRetPrev = fmtMoney('vRetPrev', roundReais(vRetPrev));
   return out;
 }
 

@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { Alert, Anchor, Group, Skeleton, Stack, Table, Text } from '@mantine/core';
 import { DonutChart } from '@mantine/charts';
 import { PageHeader } from '@delfrance/ui';
-import { format, money } from '@delfrance/core/money';
+import { formatReais } from '@delfrance/core/money';
 import { ESTADO_BUCKET_LABELS } from '@delfrance/schemas';
 import { porBucket, porEstado } from '@/lib/reports/aggregations';
 import { useRecentPedidos } from '../_components/useRecentPedidos';
@@ -18,7 +18,7 @@ const BUCKET_COLOR: Record<string, string> = {
 };
 
 function brl(value: number): string {
-  return format(money(Math.round(value * 100)));
+  return formatReais(value);
 }
 
 export default function VendasPorEstadoPage() {

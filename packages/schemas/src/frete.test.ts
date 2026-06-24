@@ -6,7 +6,7 @@ import {
   transportadoraSchema,
   veiculoSchema,
 } from './frete';
-import { derivePedidoFreteTotals, itemDoPedidoSchema, round2 } from './pedido';
+import { derivePedidoFreteTotals, itemDoPedidoSchema } from './pedido';
 
 /* -------------------------------------------------------------------------- */
 /*      Golden-doc round-trips — fixtures shaped exactly as Flutter writes    */
@@ -158,15 +158,6 @@ describe('derivePedidoFreteTotals', () => {
       freteInicial: { valorCobrado: 5, custoCalculado: null, custoFinal: null },
     });
     expect(out.valorCobrado).toBe(15);
-  });
-});
-
-describe('round2', () => {
-  it('matches Dart duasCasasDecimais on the money vectors', () => {
-    expect(round2(7.777)).toBe(7.78);
-    expect(round2(3.333)).toBe(3.33);
-    expect(round2(99.999)).toBe(100);
-    expect(round2(0)).toBe(0);
   });
 });
 

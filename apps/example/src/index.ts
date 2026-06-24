@@ -15,7 +15,7 @@
  */
 
 import { PluginRegistry, type TaxProvider } from '@delfrance/core/plugins';
-import { format, money, add } from '@delfrance/core/money';
+import { format, money, add, formatReais } from '@delfrance/core/money';
 import { brDocumentProvider } from '@delfrance/core/documents';
 import { clienteSchema, produtoSchema, pedidoSchema, pedidoTotal } from '@delfrance/schemas';
 import { PERM, hasPerm } from '@delfrance/auth';
@@ -64,7 +64,7 @@ async function main() {
     },
   });
   const total = pedidoTotal(pedido);
-  console.log('pedido', pedido.numero, '· total:', format(money(Math.round(total * 100))));
+  console.log('pedido', pedido.numero, '· total:', formatReais(total));
 
   section('2. Money primitives');
   const a = money(1250); // R$ 12,50

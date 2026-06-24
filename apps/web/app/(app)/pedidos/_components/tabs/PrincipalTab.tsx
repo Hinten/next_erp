@@ -14,8 +14,8 @@ import {
 } from '@mantine/core';
 import { Controller, useFieldArray, type UseFormReturn } from 'react-hook-form';
 import { type DocumentReference, type Firestore } from 'firebase/firestore';
-import { type Pedido, type Produto, itemSubtotal, round2 } from '@delfrance/schemas';
-import { format, money } from '@delfrance/core/money';
+import { type Pedido, type Produto, itemSubtotal } from '@delfrance/schemas';
+import { formatReais, roundReais } from '@delfrance/core/money';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { ClientePicker } from '@/components/pickers/ClientePicker';
 import { ProdutoPicker } from '@/components/pickers/ProdutoPicker';
@@ -28,7 +28,7 @@ import type { PedidoFormState } from '../types';
 import { makeRowId } from '../flattenItens';
 
 function brl(value: number): string {
-  return format(money(Math.round(value * 100)));
+  return formatReais(value);
 }
 
 export interface PrincipalTabProps {
@@ -57,7 +57,7 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
   const subtotal = useMemo(() => itensFlat.reduce((n, i) => n + itemSubtotal(i), 0), [itensFlat]);
   // Mirror of the saved `valorCobrado` (legacy `Pedido.total` — see
   // `derivePedidoFreteTotals`): subtotal − desconto + frete, 2-decimal.
-  const total = round2(round2(round2(subtotal) - descontoTotal) + freteValor);
+  const total = roundReais(roundReais(roundReais(subtotal) - descontoTotal) + freteValor);
 
   const listaRef = useMemo(
     () => dereferenceOuterRef(db, listaDePrecosOuterRef),

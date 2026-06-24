@@ -16,7 +16,7 @@
  */
 import { z } from 'zod';
 
-import { fmtMoney, fmtMoneyOpt, fmtQuantity, fmtRate, fmtRateOpt } from './format';
+import { fmtMoney, fmtMoneyOpt, fmtQuantity, fmtRate, fmtRateOpt, roundReais } from './format';
 import {
   type ConfCOFINS,
   type ConfPIS,
@@ -327,7 +327,7 @@ function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto
         throw new NFeTributeError(`PIS CST=${cfg.CST} requires \`pPIS\``);
       }
       const vBC = item.vProd;
-      const vPIS = Math.round(vBC * cfg.pPIS) / 100;
+      const vPIS = roundReais((vBC * cfg.pPIS) / 100);
       return {
         PISAliq: {
           CST: cfg.CST,
@@ -411,7 +411,7 @@ function buildCOFINSByCST(cfg: ConfCOFINS, item: TributeItem): TNFe_infNFe_det_i
         throw new NFeTributeError(`COFINS CST=${cfg.CST} requires \`pCOFINS\``);
       }
       const vBC = item.vProd;
-      const vCOFINS = Math.round(vBC * cfg.pCOFINS) / 100;
+      const vCOFINS = roundReais((vBC * cfg.pCOFINS) / 100);
       return {
         COFINSAliq: {
           CST: cfg.CST,

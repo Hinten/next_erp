@@ -2,7 +2,7 @@
 
 import { Accordion, Alert, Badge, Code, Group, Stack, Text, TextInput } from '@mantine/core';
 import { ESTADO_FRETE_LABELS, INTEGRACAO_FRETE_LABELS } from '@delfrance/schemas';
-import { format, money } from '@delfrance/core/money';
+import { formatReais } from '@delfrance/core/money';
 import { epochToPickerString } from '@delfrance/ui';
 import type { FreteInicialFormState } from '../../types';
 
@@ -61,10 +61,7 @@ export function MarketplaceReadOnly({
 
       <Group gap="xs" grow align="end">
         {ro('Código de rastreio', frete.codRastreio)}
-        {ro(
-          'Valor cobrado',
-          frete.valorCobrado != null ? format(money(Math.round(frete.valorCobrado * 100))) : null,
-        )}
+        {ro('Valor cobrado', frete.valorCobrado != null ? formatReais(frete.valorCobrado) : null)}
         {ro('Previsão de entrega', epochToPickerString(frete.dataPrevisaoEntrega, 'us'))}
         {ro('Data de entrega', epochToPickerString(frete.dataEntrega, 'us'))}
       </Group>

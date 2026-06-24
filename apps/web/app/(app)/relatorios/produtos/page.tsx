@@ -5,12 +5,12 @@ import Link from 'next/link';
 import { Alert, Anchor, NumberInput, Skeleton, Stack, Table, Text } from '@mantine/core';
 import { BarChart } from '@mantine/charts';
 import { PageHeader } from '@delfrance/ui';
-import { format, money } from '@delfrance/core/money';
+import { formatReais } from '@delfrance/core/money';
 import { useRecentPedidos } from '../_components/useRecentPedidos';
 import { topProdutos } from '@/lib/reports/aggregations';
 
 function brl(value: number): string {
-  return format(money(Math.round(value * 100)));
+  return formatReais(value);
 }
 
 export default function ProdutosMaisVendidosPage() {

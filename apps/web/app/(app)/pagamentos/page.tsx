@@ -12,7 +12,7 @@ import {
   type Pagamento,
   pagamentoSchema,
 } from '@delfrance/schemas';
-import { format, money } from '@delfrance/core/money';
+import { formatReais } from '@delfrance/core/money';
 import { microsToMillis } from '@delfrance/core/datetime';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { PagamentoStatusBadge } from './_components/StatusBadge';
@@ -94,7 +94,7 @@ export default function PagamentosListPage() {
             )}
             {data.map(({ id, path, data: pgto }) => {
               const pedidoId = pedidoIdFromPath(path);
-              const formattedValor = format(money(Math.round(pgto.valor * 100)));
+              const formattedValor = formatReais(pgto.valor);
               const formaLabel = FORMA_PAGAMENTO_LABELS[pgto.forma_de_pagamento as FormaPagamento];
               return (
                 <Table.Tr key={path}>

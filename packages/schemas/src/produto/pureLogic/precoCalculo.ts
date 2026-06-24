@@ -1,3 +1,4 @@
+import { roundReais } from '@delfrance/core/money';
 import type { FormulaCalculoPreco, ListaDePrecos } from '../../listaDePrecos';
 import type { ComponentesKit } from '../collection/embedded/kit';
 import type { Preco } from '../collection/produto';
@@ -6,14 +7,10 @@ import type { Preco } from '../collection/produto';
  * Pure price-formula engine — port of the Flutter `ListaDePrecos.calcularPreco`
  * / `_calcularPrecoParaFormula` (`packages/produtos/lib/src/models.dart:144-212`)
  * and `FormulaCalculoPreco.getTaxaFixaPorPeso` (`:402-419`). Behavior mirrors
- * the Dart implementation exactly (selection by `limiar`, weight-banded
- * `taxaFixa`, 2-decimal rounding) so both apps price identically.
+ * the Dart implementation (selection by `limiar`, weight-banded `taxaFixa`),
+ * rounding money with the canonical `roundReais` (half-up at 2dp) from
+ * `@delfrance/core/money`.
  */
-
-/** Mirror of Dart `double.parse(toStringAsFixed(2))`. */
-function round2(value: number): number {
-  return Number(value.toFixed(2));
-}
 
 // ---------------------------------------------------------------------------
 // Expression evaluator
@@ -199,7 +196,7 @@ export function calcularPreco(
   for (const formula of sorted) {
     const valor = evaluateForFormula(custo, formula, pesoKg);
     if (valor === null || valor <= 0) continue;
-    if (valor <= formula.limiar) return { valor: round2(valor) };
+    if (valor <= formula.limiar) return { valor: roundReais(valor) };
   }
   return null;
 }
@@ -305,5 +302,5 @@ export function custoDoKit(
     total += custo * kit.quantidade;
   }
   if (faltando.length > 0) return { custo: null, faltando };
-  return { custo: round2(total), faltando: [] };
+  return { custo: roundReais(total), faltando: [] };
 }

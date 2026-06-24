@@ -37,7 +37,7 @@ export {
   fmtRateOpt,
   fmtUnitValue,
   fmtUnitValueOpt,
-  round2,
+  roundReais,
 } from './format';
 export {
   cstIpiSchema,
