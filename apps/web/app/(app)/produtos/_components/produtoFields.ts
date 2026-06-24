@@ -135,9 +135,17 @@ export const PRODUTO_EXCLUDED_FIELDS: string[] = [
 ];
 
 /**
- * Create-mode defaults matching the Flutter constructor. `buildEmptyDefaults`
- * in ObjectView zeroes booleans to `false`; `publicado` defaults to `true`.
+ * Create-mode defaults matching the Flutter constructor (`models.dart:1320-1333`).
+ * The dimensions/weight seed sensible shipping values (and `crossdocking` 0) so
+ * freight quoting works out of the box on a fresh produto. The boolean flags —
+ * including `publicado` — fall to `false` via ObjectView's `buildEmptyDefaults`,
+ * so a new produto starts as a DRAFT, matching Flutter (`this.publicado=false`).
  */
 export const PRODUTO_CREATE_DEFAULTS: Partial<Produto> = {
-  publicado: true,
+  pesoLiquidoKg: 0.9,
+  pesoBrutoKg: 1,
+  alturaCm: 5,
+  larguraCm: 10,
+  profundidadeCm: 10,
+  crossdocking: 0,
 };
