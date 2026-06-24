@@ -20,12 +20,15 @@
 // Allow-listed files (by path) — the ONE place each pattern legitimately lives:
 //   - packages/core/src/money/**          → the canonical `roundReais` /
 //                                            `formatReais` impls + their tests
-//   - the SEFAZ/ME wire-format string serializers, which must emit fixed-precision
-//     strings to the XML / API (not intermediate math):
+//   - the SEFAZ/ME wire-format (de)serializers, which convert between the
+//     fixed-precision XML / API money strings and integer cents (not intermediate
+//     reais math):
 //       packages/integrations/nfe/src/tribute/format.ts
 //       packages/integrations/nfe/src/generator/det.ts
 //       apps/nfe/lib/nfe/orchestrator/generator-input.ts
 //       packages/integrations/freight-br/src/melhor-envio/cart.ts
+//       apps/web/lib/nfe/export/csv.ts  (parses authoritative NF-e XML money
+//                                        strings → cents for the export sum)
 //
 // Error (not warn): re-introducing ad-hoc rounding is a real consistency bug
 // (it diverges from the NF-e total at x.xx5 edges). Distinct rule name, so it
@@ -38,6 +41,7 @@ const ALLOW_LIST = [
   '/packages/integrations/nfe/src/generator/det.ts',
   '/apps/nfe/lib/nfe/orchestrator/generator-input.ts',
   '/packages/integrations/freight-br/src/melhor-envio/cart.ts',
+  '/apps/web/lib/nfe/export/csv.ts',
 ];
 
 function isHundredLiteral(node) {
