@@ -5,8 +5,8 @@
  * `DOMParser` via `parseNfeReportRow`) and rows accumulate as text (~150 B/note).
  * Money is summed in integer cents (no float drift across tens of thousands of
  * notes). The report ends with the totals trailer — a truncated CSV is missing
- * that block, so an incomplete report is visibly detectable. As with the ZIP, an
- * `exact` source asserts `processed === preCount` before producing the file.
+ * that block, so an incomplete report is visibly detectable. As with the ZIP, it
+ * asserts `processed === preCount` before producing the file.
  */
 import { parseNfeReportRow } from './parseNfeReportRow';
 import { CSV_BOM, REPORT_HEADER, csvRow, reportRowCsv, reportTotalsTrailer, toCents } from './csv';
@@ -49,7 +49,7 @@ export async function buildCsvReport(
     ...reportTotalsTrailer({ entradasCents, saidasCents, count: processed }),
   ];
 
-  if (source.exact && processed !== source.preCount) {
+  if (processed !== source.preCount) {
     throw new ExportIncompleteError(processed, source.preCount);
   }
 

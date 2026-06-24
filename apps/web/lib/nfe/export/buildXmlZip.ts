@@ -7,9 +7,10 @@
  * compressed output accumulates.
  *
  * Completeness (the anti-truncation guarantee):
- *  - the complete Blob is built **before** any download, and when the source is
- *    `exact` we assert `processed === preCount` — a short page throws
- *    `ExportIncompleteError` and **no** file is produced;
+ *  - the complete Blob is built **before** any download, and we assert
+ *    `processed === preCount` (every filter is server-side, so the count and the
+ *    scan match) — a short page throws `ExportIncompleteError` and **no** file is
+ *    produced;
  *  - fflate writes the central directory on `zip.end()`, so a corrupt/truncated
  *    archive fails to open loudly (never a silent partial);
  *  - a `_MANIFEST.csv` lists every chave + `Total: N`, so the archive self-verifies.
@@ -88,7 +89,7 @@ export async function buildXmlZip(
   zip.end();
   if (zipError) throw zipError;
 
-  if (source.exact && processed !== source.preCount) {
+  if (processed !== source.preCount) {
     throw new ExportIncompleteError(processed, source.preCount);
   }
 

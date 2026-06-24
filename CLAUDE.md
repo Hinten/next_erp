@@ -141,6 +141,15 @@ pnpm --filter @delfrance/integrations-app dev
 ## Key fixed decisions
 
 - Firebase backend stays.
+- **Firestore Enterprise edition** — queries do **NOT require an index to run**: an
+  unindexed query degrades to a full collection scan, it never throws
+  `FAILED_PRECONDITION` (that error is Standard-edition only). Enterprise also
+  auto-creates **no** indexes. Indexes are therefore **optional but recommended for
+  cost/latency on the most-used queries** — declare them in `firestore.indexes.json`
+  (the `indexes` array; `queryScope: COLLECTION` or `COLLECTION_GROUP`, single- or
+  multi-field) and deploy with `firebase deploy --only firestore:indexes`. The
+  database is named `default` (NOT `(default)`). Do not add client-side filtering
+  just to avoid a composite index — filter server-side and index only if it's hot.
 - Mantine v9 for UI (bumped from v7).
 - Next.js 16 (baseline for Firebase App Hosting's stable Deployment Adapter API), React 19.2.
 - Firebase JS SDK v12, firebase-admin v13 — except **`apps/functions` on

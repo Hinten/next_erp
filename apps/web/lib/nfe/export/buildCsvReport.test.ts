@@ -8,10 +8,9 @@ async function* pagesOf(pages: NfeNote[][]): AsyncGenerator<NfeNote[]> {
   yield* pages;
 }
 
-function source(opts: { preCount: number; exact: boolean; pages: NfeNote[][] }): ExportSource {
+function source(opts: { preCount: number; pages: NfeNote[][] }): ExportSource {
   return {
     preCount: opts.preCount,
-    exact: opts.exact,
     stamp: '20260501-20260531',
     pages: pagesOf(opts.pages),
   };
@@ -52,7 +51,7 @@ describe('buildCsvReport', () => {
       },
     ];
 
-    const res = await buildCsvReport(source({ preCount: 3, exact: true, pages: [notes] }));
+    const res = await buildCsvReport(source({ preCount: 3, pages: [notes] }));
     expect(res.processed).toBe(3);
     expect(res.filename).toBe('nfe-relatorio-20260501-20260531.csv');
 
@@ -86,7 +85,6 @@ describe('buildCsvReport', () => {
     const res = await buildCsvReport(
       source({
         preCount: 3,
-        exact: false,
         pages: [[note(1, 8), note(2, 5)], [note(1, 7)]],
       }),
     );
@@ -94,12 +92,11 @@ describe('buildCsvReport', () => {
     expect(dataLines.map((l) => l.split(';').slice(0, 2).join('/'))).toEqual(['1/7', '1/8', '2/5']);
   });
 
-  it('throws ExportIncompleteError when an exact source scans fewer than preCount', async () => {
+  it('throws ExportIncompleteError when a source scans fewer than preCount', async () => {
     await expect(
       buildCsvReport(
         source({
           preCount: 9,
-          exact: true,
           pages: [
             [
               {

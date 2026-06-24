@@ -21,10 +21,9 @@ async function* pagesOf(pages: NfeNote[][]): AsyncGenerator<NfeNote[]> {
   yield* pages;
 }
 
-function source(opts: { preCount: number; exact: boolean; pages: NfeNote[][] }): ExportSource {
+function source(opts: { preCount: number; pages: NfeNote[][] }): ExportSource {
   return {
     preCount: opts.preCount,
-    exact: opts.exact,
     stamp: '20260501-20260531',
     pages: pagesOf(opts.pages),
   };
@@ -39,7 +38,6 @@ describe('buildXmlZip', () => {
     const res = await buildXmlZip(
       source({
         preCount: 3,
-        exact: true,
         pages: [
           [note({ id: 'aaa' }), note({ id: 'bbb', xmlNfeProc: null })],
           [note({ id: 'ccc' })],
@@ -70,7 +68,6 @@ describe('buildXmlZip', () => {
     const res = await buildXmlZip(
       source({
         preCount: 3,
-        exact: true,
         pages: [
           [
             note({ id: 'n8', numeracao: 8, serie: 1 }),
@@ -87,16 +84,9 @@ describe('buildXmlZip', () => {
     expect(dataRows.map((l) => l.split(';')[0])).toEqual(['n7', 'n8', 'n5s2']);
   });
 
-  it('throws ExportIncompleteError when an exact source scans fewer than preCount', async () => {
+  it('throws ExportIncompleteError when a source scans fewer than preCount', async () => {
     await expect(
-      buildXmlZip(source({ preCount: 5, exact: true, pages: [[note({ id: 'aaa' })]] })),
+      buildXmlZip(source({ preCount: 5, pages: [[note({ id: 'aaa' })]] })),
     ).rejects.toBeInstanceOf(ExportIncompleteError);
-  });
-
-  it('skips the completeness assert when the source is not exact', async () => {
-    const res = await buildXmlZip(
-      source({ preCount: 99, exact: false, pages: [[note({ id: 'aaa' })]] }),
-    );
-    expect(res.included).toBe(1);
   });
 });

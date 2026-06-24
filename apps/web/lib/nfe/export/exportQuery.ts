@@ -1,11 +1,12 @@
 /**
  * Mass-export Firestore reads (#11), all via the Firebase **client** SDK.
  *
- * Server-side query: `collectionGroup('nfev4')` filtered by `data_emissao` range
- * + optional `filialId` equality (the composite index lives in
- * `firestore.indexes.json`). Estado + operação are post-filtered client-side
- * (cheap; avoids index combinatorics). The page stream is consumed by the ZIP /
- * CSV builders so the raw XML is never all held in memory.
+ * Server-side query only: `collectionGroup('nfev4')` filtered by `data_emissao`
+ * range + optional `filialId` + optional `estado in [...]`. This Firestore
+ * Enterprise edition runs every filter index-free (an unindexed query scans, it
+ * never throws), so there is NO client-side filtering — each page streams straight
+ * into the ZIP / CSV builders and the raw XML is never all held in memory.
+ * (`data_emissao` and `[filialId, data_emissao]` are indexed for cost.)
  *
  * Rules already authorize this: `match /{path=**}/nfev4/{docId} { allow read: if
  * p('d_nfe', 1) }` is in the generated ruleset.
@@ -14,25 +15,19 @@ import {
   type Firestore,
   type Query,
   type QueryDocumentSnapshot,
-  documentId,
   getCountFromServer,
   getDocs,
   startAfter,
-  where,
 } from 'firebase/firestore';
 import { buildQuery, groupQuery, limit, orderByField, whereOp } from '@delfrance/data';
 import type { NotaFiscalEletronica } from '@delfrance/schemas';
 
 import { nfeCollection } from '@/lib/data/nfeCollection';
-import { pedidoCollection } from '@/lib/data/pedidoCollection';
-import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 
 import type { ExportFilter, ExportSource, NfeNote } from './types';
 
 const NFEV4_GROUP = 'nfev4';
 const PAGE = 500;
-/** Firestore caps `in` membership at 30 ids per query. */
-const OPERACAO_BATCH = 30;
 
 type NfeDoc = QueryDocumentSnapshot<NotaFiscalEletronica>;
 
@@ -48,17 +43,20 @@ export function rangeStamp(startMs: number, endMs: number): string {
 }
 
 /**
- * The server-side query shape: `data_emissao` ms-epoch range + optional `filial`,
- * ordered by emission only. Since #220 `data_emissao` is a number, so the range
- * compares ms directly. Output ordering by número is done entirely client-side
- * (the ZIP/CSV builders sort the buffered rows by `(série, número)`), so the query
- * carries no `numeracao` sort key. This Firestore Enterprise edition auto-creates
- * no indexes: the with-filial query is index-backed by the `[filialId, data_emissao]`
- * composite in `firestore.indexes.json`; the no-filial ("todas") query runs
- * index-free — a date-range scan over the nfev4 group, like the repo's other
- * collection-group admin queries (reconcile/sweep). `data_emissao` (plus the
- * implicit document-key tiebreak) orders the page cursor, so `startAfter(lastDoc)`
- * pages completely with no skipped or duplicated notes.
+ * The full server-side query: `data_emissao` ms-epoch range + optional `filialId`
+ * + optional `estado in [...]`, ordered by emission. Since #220 `data_emissao` is
+ * a number, so the range compares ms directly. Output número-ordering is done by
+ * the ZIP/CSV builders (they sort the buffered rows by `(série, número)`), so the
+ * query carries no `numeracao` sort key.
+ *
+ * Every filter runs server-side: this Firestore Enterprise edition executes a
+ * query with no matching index (it scans, it never throws), so `estado` rides
+ * along index-free instead of being post-filtered in the browser. `data_emissao`
+ * and `[filialId, data_emissao]` are indexed in `firestore.indexes.json` for cost
+ * on the common date / date+filial queries. An empty `estados` means "todos" → no
+ * `estado` constraint. `data_emissao` (plus the implicit document-key tiebreak)
+ * orders the page cursor, so `startAfter(lastDoc)` pages completely with no
+ * skipped or duplicated notes.
  */
 export function buildExportQuery(db: Firestore, filter: ExportFilter): Query<NotaFiscalEletronica> {
   const base = groupQuery(db, NFEV4_GROUP, nfeCollection.converter);
@@ -67,6 +65,7 @@ export function buildExportQuery(db: Firestore, filter: ExportFilter): Query<Not
     whereOp('data_emissao', '<=', filter.endMs),
   ];
   if (filter.filialId) constraints.push(whereOp('filialId', '==', filter.filialId));
+  if (filter.estados.length) constraints.push(whereOp('estado', 'in', filter.estados));
   constraints.push(orderByField('data_emissao'));
   return buildQuery(base, constraints);
 }
@@ -85,42 +84,10 @@ function toNote(d: NfeDoc): NfeNote {
   };
 }
 
-/** Keep only notes whose parent pedido points at `operacaoId`. Batched parent
- * reads (30/`in` query) — the one extra cost when the operação filter is on. */
-async function filterByOperacao(
-  db: Firestore,
-  docs: readonly NfeDoc[],
-  operacaoId: string,
-): Promise<NfeDoc[]> {
-  const pedidoIds = [
-    ...new Set(docs.map((d) => d.ref.parent.parent?.id).filter((x): x is string => !!x)),
-  ];
-  const matched = new Set<string>();
-  for (let i = 0; i < pedidoIds.length; i += OPERACAO_BATCH) {
-    const batch = pedidoIds.slice(i, i + OPERACAO_BATCH);
-    const snap = await getDocs(
-      buildQuery(pedidoCollection.ref(db, {}), [where(documentId(), 'in', batch)]),
-    );
-    for (const p of snap.docs) {
-      const ref = dereferenceOuterRef(
-        db,
-        (p.data() as { operacaoPedidoOuterRef?: unknown }).operacaoPedidoOuterRef,
-      );
-      if (ref?.id === operacaoId) matched.add(p.id);
-    }
-  }
-  return docs.filter((d) => {
-    const pid = d.ref.parent.parent?.id;
-    return pid != null && matched.has(pid);
-  });
-}
-
-/** Paginated note stream. Each page is fetched server-side then estado/operação
- * filtered client-side. Pagination advances on the **full** page's last doc so
- * client-side filtering never skips notes. */
+/** Paginated note stream — every filter is in the server query, so each page is
+ * yielded as-is (no client-side filtering). Cursor pagination on `data_emissao`. */
 export async function* pageNotes(db: Firestore, filter: ExportFilter): AsyncGenerator<NfeNote[]> {
   const baseQ = buildExportQuery(db, filter);
-  const estadoSet = filter.estados.length ? new Set(filter.estados) : null;
   let cursor: NfeDoc | undefined;
 
   for (;;) {
@@ -129,11 +96,7 @@ export async function* pageNotes(db: Firestore, filter: ExportFilter): AsyncGene
     if (snap.empty) break;
     const docs = snap.docs as NfeDoc[];
 
-    let kept: readonly NfeDoc[] = docs;
-    if (estadoSet) kept = kept.filter((d) => estadoSet.has(d.data().estado));
-    if (filter.operacaoId) kept = await filterByOperacao(db, kept, filter.operacaoId);
-
-    if (kept.length) yield kept.map(toNote);
+    yield docs.map(toNote);
 
     if (docs.length < PAGE) break;
     cursor = docs[docs.length - 1];
@@ -141,7 +104,7 @@ export async function* pageNotes(db: Firestore, filter: ExportFilter): AsyncGene
 }
 
 /** Lightweight preview for the screen: the server-side total + the first
- * `sampleSize` notes (post estado/operação filter). Stops paging early. */
+ * `sampleSize` notes. Stops paging early. */
 export async function previewExport(
   db: Firestore,
   filter: ExportFilter,
@@ -159,18 +122,16 @@ export async function previewExport(
   return { preCount: countSnap.data().count, sample };
 }
 
-/** Pre-flight count + paged stream + filename stamp. `exact` is true only when no
- * client-side filter narrows the set, so the builders can assert completeness. */
+/** Pre-flight count + paged stream + filename stamp. Every filter is server-side,
+ * so `preCount` (the count query) equals the scanned total — the builders assert
+ * `processed === preCount` to guarantee a complete, never-truncated export. */
 export async function buildExportSource(
   db: Firestore,
   filter: ExportFilter,
 ): Promise<ExportSource> {
   const countSnap = await getCountFromServer(buildExportQuery(db, filter));
-  const preCount = countSnap.data().count;
-  const exact = filter.estados.length === 0 && !filter.operacaoId;
   return {
-    preCount,
-    exact,
+    preCount: countSnap.data().count,
     stamp: rangeStamp(filter.startMs, filter.endMs),
     pages: pageNotes(db, filter),
   };

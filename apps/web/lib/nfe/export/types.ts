@@ -16,10 +16,8 @@ export interface ExportFilter {
   readonly endMs: number;
   /** Restrict to one filial (denormalized `nfev4.filialId`), or null for all. */
   readonly filialId: string | null;
-  /** Restrict to these estados (client-side post-filter); empty = all. */
+  /** Restrict to these estados (server-side `estado in [...]`); empty = all. */
   readonly estados: readonly EstadoNFe[];
-  /** Restrict to one operação (resolved via the parent pedido), or null. */
-  readonly operacaoId: string | null;
 }
 
 /** The few fields the builders need from each `nfev4` doc — kept minimal so the
@@ -42,22 +40,17 @@ export interface NfeNote {
 
 /** A ready-to-consume export source: the pre-flight count + the paged note stream. */
 export interface ExportSource {
-  /** `getCountFromServer` total for the date+filial query (the server-side shape). */
+  /** `getCountFromServer` total for the (fully server-side) query. Every filter is
+   * in the query, so the scanned total must equal this — the builders assert it. */
   readonly preCount: number;
-  /**
-   * `true` when no client-side post-filter (estado/operação) is active, so the
-   * number of scanned notes must equal `preCount` — lets the builders assert
-   * completeness. `false` when estado/operação narrow the set client-side.
-   */
-  readonly exact: boolean;
   /** `<YYYYMMDD>-<YYYYMMDD>` stamp for the artifact filename. */
   readonly stamp: string;
-  /** Paged note stream (each page already estado/operação-filtered). */
+  /** Paged note stream (server-filtered; no client-side narrowing). */
   readonly pages: AsyncIterable<NfeNote[]>;
 }
 
-/** Progress callback: `(scanned, expected)`. `expected` is `preCount` (an upper
- * bound when a client-side filter is active). */
+/** Progress callback: `(scanned, expected)`. `expected` is `preCount` (the exact
+ * total — every filter is server-side). */
 export type ProgressFn = (scanned: number, expected: number) => void;
 
 export interface ExportResult {
@@ -70,9 +63,9 @@ export interface ExportResult {
 }
 
 /**
- * Thrown when an `exact` export scanned fewer notes than the pre-flight count —
- * i.e. a page read came up short. The screen surfaces it and offers **no** file,
- * so a silently-truncated export can never be saved.
+ * Thrown when an export scanned fewer notes than the pre-flight count — i.e. a
+ * page read came up short. The screen surfaces it and offers **no** file, so a
+ * silently-truncated export can never be saved.
  */
 export class ExportIncompleteError extends Error {
   constructor(

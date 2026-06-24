@@ -3,7 +3,7 @@
 /**
  * Mass NF-e export (#11) — the port of the old Flutter `exportarNfeMass`.
  *
- * Pick a period (+ filial / operação / estado), preview the matched notes, then
+ * Pick a period (+ filial / estado), preview the matched notes, then
  * download a ZIP of every procNFe XML or a CSV report. Everything runs in the
  * browser (Firebase client SDK + fflate); see `@/lib/nfe/export/*`. The two
  * downloads stream with bounded memory and only produce a file once the complete
@@ -19,7 +19,6 @@ import {
   MultiSelect,
   Paper,
   Progress,
-  SegmentedControl,
   Skeleton,
   Stack,
   Table,
@@ -29,13 +28,11 @@ import { DatePickerInput } from '@mantine/dates';
 import { IconDownload, IconFileSpreadsheet, IconFileZip } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import type { DocumentReference } from 'firebase/firestore';
 import { PageHeader } from '@delfrance/ui';
-import { ESTADO_NFE_LABELS, type EstadoNFe, type Operacao } from '@delfrance/schemas';
+import { ESTADO_NFE_LABELS, type EstadoNFe } from '@delfrance/schemas';
 
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { FilialPicker } from '@/components/pickers/FilialPicker';
-import { OperacaoPicker } from '@/components/pickers/OperacaoPicker';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { saveBlob } from '@/lib/nfe/saveBlob';
 import {
@@ -84,8 +81,6 @@ export function ExportarNfeScreen() {
 
   const [range, setRange] = useState<[string | null, string | null]>(defaultRange);
   const [filialRef, setFilialRef] = useState<unknown>(null);
-  const [ehSaida, setEhSaida] = useState(true);
-  const [operacaoRef, setOperacaoRef] = useState<DocumentReference<Operacao> | null>(null);
   const [estados, setEstados] = useState<string[]>(['a']);
   const [applied, setApplied] = useState<ExportFilter | null>(null);
   const [running, setRunning] = useState<'zip' | 'csv' | null>(null);
@@ -104,9 +99,8 @@ export function ExportarNfeScreen() {
       endMs: dayEndMs(end),
       filialId: dereferenceOuterRef(db, filialRef)?.id ?? null,
       estados: estados as EstadoNFe[],
-      operacaoId: operacaoRef?.id ?? null,
     };
-  }, [range, filialRef, estados, operacaoRef, db]);
+  }, [range, filialRef, estados, db]);
 
   const preview = useQuery({
     queryKey: ['nfe-export-preview', applied],
@@ -196,47 +190,15 @@ export function ExportarNfeScreen() {
             />
           </Group>
 
-          <Group grow align="flex-start">
-            <Stack gap={4}>
-              <Text size="sm" fw={500}>
-                Operação (opcional)
-              </Text>
-              <SegmentedControl
-                value={ehSaida ? 'saida' : 'entrada'}
-                onChange={(v) => {
-                  setEhSaida(v === 'saida');
-                  setOperacaoRef(null);
-                }}
-                data={[
-                  { value: 'saida', label: 'Saída' },
-                  { value: 'entrada', label: 'Entrada' },
-                ]}
-              />
-              <OperacaoPicker
-                db={db}
-                ehSaida={ehSaida}
-                label=""
-                value={operacaoRef}
-                onChange={setOperacaoRef}
-              />
-            </Stack>
-            <MultiSelect
-              label="Estados (status)"
-              placeholder="Todos"
-              data={estadoOptions}
-              value={estados}
-              onChange={setEstados}
-              clearable
-              searchable
-            />
-          </Group>
-
-          {operacaoRef && (
-            <Alert color="yellow" variant="light">
-              O filtro por operação resolve o pedido de cada nota — pode ser mais lento em períodos
-              grandes.
-            </Alert>
-          )}
+          <MultiSelect
+            label="Estados (status)"
+            placeholder="Todos"
+            data={estadoOptions}
+            value={estados}
+            onChange={setEstados}
+            clearable
+            searchable
+          />
 
           <Group justify="flex-end">
             <Button variant="default" onClick={() => setApplied(buildFilter())} disabled={busy}>
@@ -262,10 +224,7 @@ export function ExportarNfeScreen() {
             {preview.data && (
               <>
                 <Group justify="space-between">
-                  <Text fw={600}>
-                    {preview.data.preCount} nota(s) no período
-                    {(estados.length > 0 || operacaoRef) && ' (antes do filtro de estado/operação)'}
-                  </Text>
+                  <Text fw={600}>{preview.data.preCount} nota(s) no período</Text>
                   <Text size="sm" c="dimmed">
                     pré-visualização: {preview.data.sample.length} primeira(s)
                   </Text>
