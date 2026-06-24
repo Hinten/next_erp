@@ -77,10 +77,13 @@ export function buildQuery<T>(base: Query<T>, constraints: QueryConstraint[]): Q
  * given name. The resulting `Query<T>` is typed by the supplied converter
  * (typically the one a `defineCollection` already created).
  *
- * Heads up: collection group queries usually require composite indexes;
- * Firestore prompts you with a one-click link the first time you run an
- * unindexed query. Permission rules for collection group reads must be
- * declared with `match /{path=**}/<id>` in firestore.rules.
+ * Heads up: this project's Firestore is **Enterprise edition** — an unindexed
+ * collection group query does NOT throw; it falls back to a full collection
+ * scan (no `FAILED_PRECONDITION`, no one-click index prompt). Declare a
+ * composite index in `firestore.indexes.json` only to bound cost/latency on a
+ * hot query (see CLAUDE.md "Key fixed decisions"). Permission rules for
+ * collection group reads must be declared with `match /{path=**}/<id>` in
+ * firestore.rules.
  */
 export function groupQuery<T>(
   db: Firestore,
