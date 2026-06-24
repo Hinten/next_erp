@@ -14,6 +14,16 @@ function form(overrides: Partial<PagamentoFormState> = {}): PagamentoFormState {
   return { ...EMPTY_PAGAMENTO_FORM, ...overrides };
 }
 
+describe('EMPTY_PAGAMENTO_FORM', () => {
+  it('defaults a new payment to status "aprovado"', () => {
+    expect(EMPTY_PAGAMENTO_FORM.status).toBe(String(STATUS_PAGAMENTO.aprovado));
+    // …and the converter carries that default through to the wire field.
+    expect(pagamentoDataFromForm(form({ valor: 10 }), null).status_pagamento).toBe(
+      STATUS_PAGAMENTO.aprovado,
+    );
+  });
+});
+
 describe('validatePagamentoForm', () => {
   it('requires a numeric valor ≥ 0', () => {
     expect(validatePagamentoForm(form({ valor: null }))).toMatch(/valor/i);

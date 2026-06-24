@@ -32,7 +32,10 @@ export interface PagamentoFormState {
 
 export const EMPTY_PAGAMENTO_FORM: PagamentoFormState = {
   forma: String(FORMA_PAGAMENTO.dinheiro),
-  status: '',
+  // New payments default to "aprovado" — most are entered after the fact,
+  // already settled (the page model's payment-vs-total check only counts
+  // aprovado payments). The user can still change it before saving.
+  status: String(STATUS_PAGAMENTO.aprovado),
   valor: null,
   parcelas: 1,
   descricao: '',
