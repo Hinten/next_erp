@@ -23,19 +23,25 @@ export type Bucket = 'sucesso' | 'processando' | 'falhas' | 'naoEmitidas';
 
 /**
  * Classify a single emit result into a counter bucket.
- * - `sucesso`: this run's autorizadas (`aprovada` and not reused).
  * - `processando`: async-pending — `enviando` ('1') or `aguardandoResposta`
  *   ('2', i.e. cStat 103). The lote was accepted; the protocol comes later.
+ *   Checked FIRST so an in-flight note still reads as pending even when the
+ *   server short-circuited it (`reused`): cStat 103 is itself a
+ *   `STATUS_BLOQUEADOR`, and an in-flight doc with a saved `nRec` also dedups.
  * - `naoEmitidas`: load/prepare failures (`NFeEmitError`) and dedup
- *   short-circuits (`aprovada` + `reused`, i.e. an NF-e already existed).
+ *   short-circuits (`reused: true` — the pedido already had an nfev4 doc in a
+ *   `STATUS_BLOQUEADORES` cStat: autorizada / cancelada / inutilizada / …). The
+ *   click was a no-op, never a fresh failure.
+ * - `sucesso`: this run's autorizadas (`aprovada` and not reused).
  * - `falhas`: terminal-non-autorizada — `rejeitada` ('n'), `error` ('e'), etc.
  */
 export function classifyEmitResult(r: NFeEmitResult | NFeEmitError): Bucket {
   if (isNFeEmitError(r)) return 'naoEmitidas';
-  if (r.estado === ESTADO_NFE.aprovada) return r.reused ? 'naoEmitidas' : 'sucesso';
   if (r.estado === ESTADO_NFE.enviando || r.estado === ESTADO_NFE.aguardandoResposta) {
     return 'processando';
   }
+  if (r.reused) return 'naoEmitidas';
+  if (r.estado === ESTADO_NFE.aprovada) return 'sucesso';
   return 'falhas';
 }
 

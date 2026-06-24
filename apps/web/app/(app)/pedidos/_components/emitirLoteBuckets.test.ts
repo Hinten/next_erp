@@ -50,6 +50,26 @@ describe('classifyEmitResult', () => {
     );
   });
 
+  it('buckets a reused non-aprovada (e.g. cancelada) as "naoEmitidas", not "falhas"', () => {
+    // The server short-circuited on an existing bloqueada doc (cStat 101 →
+    // estado cancelada). The click was a dedup no-op, never a fresh failure.
+    expect(
+      classifyEmitResult(
+        result({ estado: ESTADO_NFE.cancelada, reused: true, cStat: '101', xMotivo: 'cancelada' }),
+      ),
+    ).toBe('naoEmitidas');
+  });
+
+  it('keeps a reused in-flight note (cStat 103 is a STATUS_BLOQUEADOR) as "processando"', () => {
+    // Pending wins over the reused dedup: an already-sent lote is still
+    // processing, so it must not collapse into "naoEmitidas".
+    expect(
+      classifyEmitResult(
+        result({ estado: ESTADO_NFE.aguardandoResposta, reused: true, cStat: '103' }),
+      ),
+    ).toBe('processando');
+  });
+
   it('buckets a rejeitada as "falhas"', () => {
     expect(
       classifyEmitResult(result({ estado: ESTADO_NFE.rejeitada, cStat: '539', xMotivo: 'dup' })),
