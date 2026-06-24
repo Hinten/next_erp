@@ -8,7 +8,6 @@ export type {
   InvoiceProvider,
   PaymentGateway,
   MarketplaceChannel,
-  FreightProvider,
 } from '@delfrance/core/plugins';
 
 export interface PluginManifest {
@@ -19,7 +18,7 @@ export interface PluginManifest {
    * Which contract this plugin implements. A single plugin can implement more
    * than one (e.g. an NFe plugin that also exposes a TaxProvider).
    */
-  kinds: ReadonlyArray<'tax' | 'invoice' | 'payment' | 'marketplace' | 'freight'>;
+  kinds: ReadonlyArray<'tax' | 'invoice' | 'payment' | 'marketplace'>;
 }
 
 export interface DefinedIntegration {
