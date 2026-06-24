@@ -43,27 +43,6 @@ export interface MarketplaceChannel {
   };
 }
 
-/**
- * @deprecated Freight does **not** use the plugin registry. The freight domain
- * is integrated directly via `@delfrance/integrations-freight-br` (the
- * `FreightHttpClient` interface + the `comprarEtiqueta` pipeline) plus the
- * per-tipo `FREIGHT_TIPO_CAPS` capability table in `@delfrance/schemas`. This
- * 3-method contract can't express OAuth, cart→checkout→generate, drop-off agency
- * resolution, per-tipo UI, or the marketplace fetch / read-only category, and has
- * no consumers. Kept only for backward-compat of the public plugin SDK — do not
- * implement against it. See the `freight-integrations` skill.
- */
-export interface FreightProvider {
-  id: string;
-  quote(input: {
-    fromCep: string;
-    toCep: string;
-    weightG: number;
-  }): Promise<Array<{ carrier: string; service: string; price: number; etaDays: number }>>;
-  purchase(quoteId: string): Promise<{ trackingCode: string }>;
-  track(trackingCode: string): Promise<{ status: string; events: unknown[] }>;
-}
-
 export class PluginNotRegisteredError extends Error {
   readonly kind: string;
   readonly pluginId: string;
@@ -80,7 +59,6 @@ export class PluginRegistry {
   private invoices = new Map<string, InvoiceProvider>();
   private payments = new Map<string, PaymentGateway>();
   private marketplaces = new Map<string, MarketplaceChannel>();
-  private freight = new Map<string, FreightProvider>();
 
   registerTax(p: TaxProvider) {
     this.taxes.set(p.id, p);
@@ -94,10 +72,6 @@ export class PluginRegistry {
   registerMarketplace(p: MarketplaceChannel) {
     this.marketplaces.set(p.id, p);
   }
-  /** @deprecated See {@link FreightProvider} — freight bypasses the registry. */
-  registerFreight(p: FreightProvider) {
-    this.freight.set(p.id, p);
-  }
 
   tax(id: string) {
     return this.must(this.taxes, id, 'TaxProvider');
@@ -110,10 +84,6 @@ export class PluginRegistry {
   }
   marketplace(id: string) {
     return this.must(this.marketplaces, id, 'MarketplaceChannel');
-  }
-  /** @deprecated See {@link FreightProvider} — freight bypasses the registry. */
-  freightProvider(id: string) {
-    return this.must(this.freight, id, 'FreightProvider');
   }
 
   private must<T>(map: Map<string, T>, id: string, kind: string): T {

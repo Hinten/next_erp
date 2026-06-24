@@ -39,11 +39,11 @@ another aggregator) slot in by **category** — see *Provider categories* below.
 | **Web UI** (client-first) | `apps/web/app/(app)/pedidos/_components` + `…/logistica` | Frete tab (`tabs/FreteTab.tsx` + `tabs/frete/*`), the `/pedidos` etiqueta row action (`EtiquetaRowAction` → `EtiquetaComprarModal`), the object-view print/track panel (`EtiquetaMelhorEnvioPanel`), the `/logistica` `int_frete` CRUD. `useFreightClient()` targets the ME app via `NEXT_PUBLIC_MELHOR_ENVIO_URL`. |
 | **Schemas** | `packages/schemas/src/{integracao,frete}.ts` | `intFreteSchema` (the config doc, discriminated by `tipo`), `freteDoPedidoSchema` (`freteInicial`), `volumeSchema`, `PERM.frete`, and **`FREIGHT_TIPO_CAPS`** (the per-tipo capability table). Source of truth → `firestore.rules`. |
 
-Freight **bypasses** the `core/plugins` `FreightProvider` registry (now
-`@deprecated`): that 3-method contract can't express OAuth, cart→checkout→generate,
-agency resolution, per-tipo UI, or the fetch / read-only category. The real
-provider-neutral surface emerged bottom-up — `FreightHttpClient` +
-`FREIGHT_TIPO_CAPS` (see *Provider categories*).
+Freight does **not** use a `core/plugins` registry contract (the old
+`FreightProvider` was removed — #262): that 3-method shape couldn't express
+OAuth, cart→checkout→generate, agency resolution, per-tipo UI, or the fetch /
+read-only category. The real provider-neutral surface emerged bottom-up —
+`FreightHttpClient` + `FREIGHT_TIPO_CAPS` (see *Provider categories*).
 
 ## Provider categories
 

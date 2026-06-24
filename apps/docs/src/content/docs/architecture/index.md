@@ -21,7 +21,7 @@ The ERP is behind authentication. No SEO, no public crawling. RSC's main wins (i
 
 Brazilian features (NFe, Mercado Pago, marketplaces) are **opt-in** behind contracts in `packages/core/plugins/`:
 
-- `TaxProvider`, `InvoiceProvider`, `PaymentGateway`, `MarketplaceChannel`, `FreightProvider`, `DocumentProvider`.
+- `TaxProvider`, `InvoiceProvider`, `PaymentGateway`, `MarketplaceChannel`, `DocumentProvider`.
 
 The core is locale-agnostic. Plugins compose into a registry at app boot.
 

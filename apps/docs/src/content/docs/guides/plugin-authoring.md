@@ -7,7 +7,7 @@ Brazilian-specific features (NFe, Mercado Pago, marketplaces) ship as **opt-in p
 
 ## Plugin contracts
 
-`@delfrance/core/plugins` exports five interfaces, each with a small surface:
+`@delfrance/core/plugins` exports four interfaces, each with a small surface:
 
 ```ts
 interface TaxProvider       { id; calculate(input)            }
@@ -15,7 +15,6 @@ interface InvoiceProvider   { id; issue(orderId)              }
 interface PaymentGateway    { id; createCharge; refund; webhook }
 interface MarketplaceChannel{ id; syncProducts; pullOrders;
                               pushTracking; oauthFlow         }
-interface FreightProvider   { id; quote; purchase; track      }
 ```
 
 Implementations live under `packages/integrations/<channel>/`. The host app (`apps/web` or `apps/integrations`) imports them and calls `registry.registerXxx(impl)` at boot.
