@@ -119,9 +119,10 @@ export interface FiscalItem {
 
 /**
  * Resolve the full Pedido bundle from Firestore. Pedido's outer refs
- * (`filialPedidoOuterRef`, `clientePedidoOuterRef`, …) are `z.unknown()`
+ * (`integracaoPedidoOuterRef`, `clientePedidoOuterRef`, …) are `z.unknown()`
  * in the schema today — we interpret them as Firestore document paths
- * stamped by the Flutter app.
+ * stamped by the Flutter app. The issuing filial is resolved one hop
+ * further, via the integração's `filialIntegracaoPedidoOuterRef`.
  */
 /**
  * Request-scoped read cache for a single `emitirPedidosLote` invocation.
@@ -212,9 +213,21 @@ export async function loadPedidoBundle(
   if (!pedidoSnap.exists) throw new NFePedidoNotFoundError(pedidoId);
   const pedido = pedidoSnap.data() as PedidoBundle['pedido'];
 
-  const filialPath = refToPath(getField(pedido, 'filialPedidoOuterRef'));
+  // The issuing filial is NOT on the pedido — it lives on the pedido's
+  // integração (`integracao.filialIntegracaoPedidoOuterRef`). Resolve the
+  // integração first, then derive the filial path from it. This read is
+  // memoized against the batch context (pedidos in a lote routinely share one
+  // integração), so it costs at most one extra read per distinct integração.
+  const integracaoPath = refToPath(getField(pedido, 'integracaoPedidoOuterRef'));
+  if (!integracaoPath)
+    throw new NFeOrchestratorError(`pedido '${pedidoId}': integracaoPedidoOuterRef missing`);
+  const integracaoSnap = await getDoc(integracaoPath);
+  if (!integracaoSnap.exists)
+    throw new NFeOrchestratorError(`integracao '${integracaoPath}' not found`);
+  const filialPath = refToPath(getField(integracaoSnap.data(), 'filialIntegracaoPedidoOuterRef'));
   console.debug(
-    `[nfe/orchestrator] Resolved filialPath '${filialPath}' for pedidoId '${pedidoId}'`,
+    `[nfe/orchestrator] Resolved filialPath '${filialPath}' (via integracao ` +
+      `'${integracaoPath}') for pedidoId '${pedidoId}'`,
   );
   const clientePath = refToPath(getField(pedido, 'clientePedidoOuterRef'));
   console.debug(
@@ -230,7 +243,9 @@ export async function loadPedidoBundle(
   );
 
   if (!filialPath)
-    throw new NFeOrchestratorError(`pedido '${pedidoId}': filialPedidoOuterRef missing`);
+    throw new NFeOrchestratorError(
+      `integracao '${integracaoPath}': filialIntegracaoPedidoOuterRef missing`,
+    );
   if (!clientePath)
     throw new NFeOrchestratorError(`pedido '${pedidoId}': clientePedidoOuterRef missing`);
   if (!operacaoPath)

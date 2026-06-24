@@ -23,11 +23,18 @@ import {
 } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
-import { ESTADO_NFE, ESTADO_NFE_LABELS, type EstadoNFe, type Pedido } from '@delfrance/schemas';
+import {
+  ESTADO_NFE,
+  ESTADO_NFE_LABELS,
+  type EstadoNFe,
+  type Integracao,
+  type Pedido,
+} from '@delfrance/schemas';
 
 import { RequirePerm } from '@/lib/auth';
 import { DanfeMenu } from '@/components/DanfeMenu';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
+import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -58,12 +65,20 @@ function PedidoNfeContent() {
 
   const pedidoRef = useMemo(() => pedidoCollection.docRef(db, {}, pedidoId), [db, pedidoId]);
   const { data: pedidoDoc } = useDocSnapshot(pedidoRef);
-  const filialId = useMemo(() => {
+  // The issuing filial lives on the pedido's integração, not the pedido itself.
+  const integracaoRef = useMemo(() => {
     const ref = pedidoDoc
-      ? dereferenceOuterRef(db, (pedidoDoc.data as Pedido).filialPedidoOuterRef)
+      ? dereferenceOuterRef(db, (pedidoDoc.data as Pedido).integracaoPedidoOuterRef)
+      : null;
+    return ref ? integracaoCollection.docRef(db, {}, ref.id) : null;
+  }, [db, pedidoDoc]);
+  const { data: integracaoDoc } = useDocSnapshot(integracaoRef);
+  const filialId = useMemo(() => {
+    const ref = integracaoDoc
+      ? dereferenceOuterRef(db, (integracaoDoc.data as Integracao).filialIntegracaoPedidoOuterRef)
       : null;
     return ref?.id ?? null;
-  }, [db, pedidoDoc]);
+  }, [db, integracaoDoc]);
 
   const nfeQuery = useMemo(() => nfeCollection.ref(db, { pedidoId }), [db, pedidoId]);
   const { data: nfes, loading } = useSnapshot(nfeQuery);
