@@ -44,6 +44,36 @@ function isHundredLiteral(node) {
   return node && node.type === 'Literal' && node.value === 100;
 }
 
+/**
+ * Member name of a `MemberExpression`, normalized across dot AND bracket access:
+ * `x.toFixed` (Identifier) and `x['toFixed']` (computed string Literal) both
+ * return `'toFixed'`, so the rule can't be bypassed by bracket notation.
+ */
+function memberName(member) {
+  if (!member || member.type !== 'MemberExpression') return null;
+  const prop = member.property;
+  if (!member.computed && prop.type === 'Identifier') return prop.name;
+  if (member.computed && prop.type === 'Literal' && typeof prop.value === 'string') {
+    return prop.value;
+  }
+  return null;
+}
+
+/** Identifier name of the member's object (e.g. `Math` in `Math.round`). */
+function objectIdentifier(member) {
+  return member.object && member.object.type === 'Identifier' ? member.object.name : null;
+}
+
+/** `x * 100` / `100 * x` — the cents-scaling multiply (either operand order). */
+function isTimes100(node) {
+  return (
+    node &&
+    node.type === 'BinaryExpression' &&
+    node.operator === '*' &&
+    (isHundredLiteral(node.right) || isHundredLiteral(node.left))
+  );
+}
+
 const rule = {
   meta: {
     type: 'problem',
@@ -66,24 +96,24 @@ const rule = {
     if (ALLOW_LIST.some((p) => filename.includes(p))) {
       return {};
     }
+    // One visitor that normalizes the callee, so both `x.toFixed(2)` /
+    // `x['toFixed'](2)` and `Math.round(x*100)` / `Math['round'](x*100)` are
+    // caught (a selector keyed on `callee.property.name` would miss the bracket
+    // forms).
     return {
-      // `x.toFixed(2)`
-      "CallExpression[callee.property.name='toFixed']"(node) {
+      CallExpression(node) {
+        const callee = node.callee;
+        if (!callee || callee.type !== 'MemberExpression') return;
+        const method = memberName(callee);
         const arg = node.arguments[0];
-        if (arg && arg.type === 'Literal' && arg.value === 2) {
-          context.report({ node, messageId: 'banned' });
-        }
-      },
-      // `Math.round(x * 100)` (either operand order)
-      "CallExpression[callee.object.name='Math'][callee.property.name='round']"(node) {
-        const arg = node.arguments[0];
-        if (
-          arg &&
-          arg.type === 'BinaryExpression' &&
-          arg.operator === '*' &&
-          (isHundredLiteral(arg.right) || isHundredLiteral(arg.left))
-        ) {
-          context.report({ node, messageId: 'banned' });
+        if (method === 'toFixed') {
+          if (arg && arg.type === 'Literal' && arg.value === 2) {
+            context.report({ node, messageId: 'banned' });
+          }
+        } else if (method === 'round' && objectIdentifier(callee) === 'Math') {
+          if (isTimes100(arg)) {
+            context.report({ node, messageId: 'banned' });
+          }
         }
       },
     };
