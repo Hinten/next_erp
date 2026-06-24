@@ -21,6 +21,7 @@ import { notifications } from '@mantine/notifications';
 import { IconArrowBackUp, IconPlus, IconTrash } from '@tabler/icons-react';
 import { Controller, useFieldArray, type UseFormReturn } from 'react-hook-form';
 import { getDoc, type Firestore } from 'firebase/firestore';
+import { FirebaseError } from 'firebase/app';
 import { type Pedido, type Produto, itemSubtotal } from '@delfrance/schemas';
 import { formatReais, roundReais } from '@delfrance/core/money';
 import { useDocSnapshot } from '@delfrance/data/hooks';
@@ -133,9 +134,16 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
       const priceById = new Map<string, number | null>();
       await Promise.all(
         produtoIds.map(async (id) => {
-          const snap = await getDoc(produtoCollection.docRef(db, {}, id));
-          const data = snap.data();
-          priceById.set(id, data ? await precoFromProduto(db, data, listaId) : null);
+          // A per-produto Firestore failure must not reject the whole batch —
+          // treat it as "no price found" so the row keeps its current price.
+          try {
+            const snap = await getDoc(produtoCollection.docRef(db, {}, id));
+            const data = snap.data();
+            priceById.set(id, data ? await precoFromProduto(db, data, listaId) : null);
+          } catch (err) {
+            if (!(err instanceof FirebaseError)) throw err;
+            priceById.set(id, null);
+          }
         }),
       );
       if (cancelled) return;
@@ -405,13 +413,27 @@ function ItemRow({
     });
     form.setValue(`_itensFlat.${index}.descontoUnitario`, 0, { shouldDirty: true });
 
-    const found = await precoFromProduto(db, produtoPicked, listaId);
+    // The price lookup may read Firestore (variation parent) — a network/
+    // permission failure must not become an unhandled rejection. Surface it and
+    // leave the 0.01 placeholder for manual entry.
+    let found: number | null = null;
+    let lookupFailed = false;
+    try {
+      found = await precoFromProduto(db, produtoPicked, listaId);
+    } catch (err) {
+      if (!(err instanceof FirebaseError)) throw err;
+      lookupFailed = true;
+      notifications.show({
+        color: 'red',
+        message: `Falha ao buscar o preço de "${produtoPicked.nome}". Tente novamente.`,
+      });
+    }
     if (typeof found === 'number') {
       form.setValue(`_itensFlat.${index}.precoDeVenda`, found, {
         shouldDirty: true,
         shouldValidate: true,
       });
-    } else {
+    } else if (!lookupFailed) {
       notifications.show({
         color: 'yellow',
         message: `Preço não encontrado para "${produtoPicked.nome}" na tabela selecionada`,
@@ -481,6 +503,7 @@ function ItemRow({
                   component={Link}
                   href={`/produtos/${produtoUid}/editar`}
                   target="_blank"
+                  rel="noopener noreferrer"
                   size="xs"
                 >
                   Editar produto

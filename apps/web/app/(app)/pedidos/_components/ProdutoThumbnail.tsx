@@ -9,6 +9,11 @@ import { useDocSnapshot } from '@delfrance/data/hooks';
 
 const ARQUIVOS_PREFIX = 'arquivos/';
 
+// In-app placeholder (inline SVG data-URI) — no external network dependency
+// (avoids a third-party request + CSP/privacy concerns for missing thumbnails).
+const PLACEHOLDER_SRC =
+  'data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2040%2040%22%3E%3Crect%20width%3D%2240%22%20height%3D%2240%22%20fill%3D%22%23e9ecef%22%2F%3E%3C%2Fsvg%3E';
+
 /** Derive the arquivo doc id from a `Foto` ref string (`arquivos/<id>`). */
 function idFromRef(ref: string | null | undefined): string | null {
   if (!ref) return null;
@@ -45,7 +50,7 @@ export function ProdutoThumbnail({ db, produto, size = 40 }: ProdutoThumbnailPro
       radius="sm"
       fit="cover"
       src={url}
-      fallbackSrc={`https://placehold.co/${size}x${size}?text=%20`}
+      fallbackSrc={PLACEHOLDER_SRC}
       alt={produto?.nome ?? 'Produto'}
     />
   );
