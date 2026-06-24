@@ -255,4 +255,34 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     expect(kept.exists).toBe(true); // still referenced → kept
     expect(kept.data()?.markedForDeletionAt).toBeNull(); // mark cleared
   });
+
+  it('marked sweep clears (never deletes) a marked doc whose owner is not derivable', async () => {
+    const db = getDb();
+    // A marked arquivo NOT under produtos/<id>/originals|videos (legacy/console/bad
+    // data). parseProductMediaDir → null, so the owner can't be re-verified: the
+    // sweep must clear the mark, not delete it blind.
+    const oddId = `media-${randomUUID().replace(/-/g, '')}`;
+    const oPath = mediaPath(randomUUID().replace(/-/g, ''), 'png');
+    const slash = oPath.lastIndexOf('/');
+    await db
+      .collection('arquivos')
+      .doc(oddId)
+      .set({
+        filetype: 'image',
+        filepath: oPath.slice(0, slash),
+        filename: oPath.slice(slash + 1),
+        contentType: 'image/png',
+        url: null,
+        externalIds: [],
+        uploadState: 'finalized',
+        criadoEm: nowMicros() - DAY_MICROS,
+        markedForDeletionAt: nowMicros() - DAY_MICROS,
+      });
+
+    await sweepMarkedForDeletion(db);
+
+    const doc = await db.collection('arquivos').doc(oddId).get();
+    expect(doc.exists).toBe(true); // owner not derivable → NOT deleted
+    expect(doc.data()?.markedForDeletionAt).toBeNull(); // mark cleared
+  });
 });

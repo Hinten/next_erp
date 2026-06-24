@@ -137,9 +137,11 @@ flowchart TD
 ```
 
 The trigger writes **only** to `arquivos` docs (never `produtos`), so it can't re-fire
-itself. It reads + writes the affected docs in one batched `getAll` + `WriteBatch`,
-touching only docs that exist (a ref whose doc was already swept is a no-op — no
-resurrected phantom). `anexos` are intentionally out of scope (their files aren't under
+itself. It reads + writes the affected docs in one batched `getAll` + `WriteBatch`, and
+touches a doc only when it exists, is **genuine product media** (its `filepath` parses to
+`produtos/<id>/originals|videos` — a `fotos` ref pointing elsewhere is skipped, since the
+sweep couldn't owner-verify it), and the write actually changes the mark (no no-op
+writes). `anexos` are intentionally out of scope (their files aren't under
 `originals|videos`); they stay on the 48h backstop.
 
 ## 4 · Maintenance — scheduled reconciliation (every 48h)
@@ -184,8 +186,10 @@ Two independent scheduled functions:
   - **`sweepMarkedForDeletion`** — the back half of the eager reap: deletes arquivos
     `onProdutoMediaChanged` marked (`markedForDeletionAt < cutoff`) once they're past a
     **short** grace (`ARQUIVO_MARKED_GRACE_HOURS`, default 1h), **re-verifying** the owning
-    produto still doesn't reference them (a missed unmark clears the mark instead). A plain
-    indexed range query (no pipeline), so it's the cheapest pass and runs first.
+    produto still doesn't reference them (a missed unmark clears the mark instead). If the
+    owner can't be derived from the `filepath` (legacy/bad data), it clears the mark and
+    logs — it never deletes what it can't verify. A plain indexed range query (no
+    pipeline), so it's the cheapest pass and runs first.
   - **`sweepPhantomDocs`** — a `pending` doc past the grace window whose object never
     arrived is deleted; if the object *is* present (the finalize event was missed), the
     doc self-heals to `finalized`. The selection (pending + past grace + oldest first)

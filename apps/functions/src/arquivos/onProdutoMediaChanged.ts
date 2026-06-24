@@ -1,7 +1,12 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions';
 import { onDocumentUpdated } from 'firebase-functions/v2/firestore';
-import { ARQUIVOS_COLLECTION, nowMicros, produtoMeta } from '@delfrance/schemas';
+import {
+  ARQUIVOS_COLLECTION,
+  nowMicros,
+  parseProductMediaDir,
+  produtoMeta,
+} from '@delfrance/schemas';
 
 import { getDb } from '../lib/admin';
 
@@ -108,10 +113,23 @@ export async function reconcileProdutoMediaMarks(
   let unmarked = 0;
   snaps.forEach((snap, i) => {
     if (!snap.exists) return; // already swept / never created → nothing to mark
-    const value = targets[i]!.value;
-    batch.update(snap.ref, { markedForDeletionAt: value });
-    if (value === null) unmarked += 1;
-    else marked += 1;
+    const data = snap.data() ?? {};
+    // Only ever (un)mark a genuine product-media arquivo. `arquivoOuterRef` is just a
+    // non-empty string in the Produto schema, so a `fotos`/`videos` entry could point
+    // at a non-product doc (legacy / console / bad data) the marked sweep can't
+    // owner-verify — never mark what it couldn't safely delete.
+    if (!parseProductMediaDir(data.filepath as string | null | undefined)) return;
+    const desired = targets[i]!.value;
+    const current = (data.markedForDeletionAt ?? null) as number | null;
+    if (desired === null) {
+      if (current === null) return; // already unmarked → skip the no-op write
+      batch.update(snap.ref, { markedForDeletionAt: null });
+      unmarked += 1;
+    } else {
+      if (current !== null) return; // already marked → don't reset the grace clock
+      batch.update(snap.ref, { markedForDeletionAt: desired });
+      marked += 1;
+    }
   });
   if (marked + unmarked > 0) await batch.commit();
 

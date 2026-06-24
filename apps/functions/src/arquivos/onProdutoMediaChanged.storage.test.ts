@@ -3,6 +3,7 @@ import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { describe, expect, it } from 'vitest';
 import {
+  mediaPath,
   nowMicros,
   productArquivoId,
   productOriginalPath,
@@ -109,5 +110,35 @@ describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks
     // Doc never existed → nothing to mark, no NOT_FOUND, no resurrected phantom.
     expect(await reconcileProdutoMediaMarks(db, before, after)).toEqual({ marked: 0, unmarked: 0 });
     expect((await db.collection('arquivos').doc(missing).get()).exists).toBe(false);
+  });
+
+  it('does NOT mark a fotos ref that points at a non-product-media arquivo', async () => {
+    const db = getDb();
+    // A `fotos` entry whose arquivo lives in generic `media/` (not under
+    // produtos/<id>/originals|videos) — the sweep can't owner-verify it, so the
+    // trigger must not mark it.
+    const docId = `media-${id()}`;
+    await seedArquivo(db, mediaPath(id(), 'png'), docId, 'image');
+    const before = { fotos: [{ arquivoOuterRef: `arquivos/${docId}` }], videos: [] };
+    const after = { fotos: [], videos: [] };
+
+    expect(await reconcileProdutoMediaMarks(db, before, after)).toEqual({ marked: 0, unmarked: 0 });
+    expect(
+      (await db.collection('arquivos').doc(docId).get()).data()?.markedForDeletionAt,
+    ).toBeNull();
+  });
+
+  it('does not write a no-op unmark when a brand-new photo is added', async () => {
+    const db = getDb();
+    const produtoId = `p${id()}`;
+    const fotoHash = id();
+    const fotoId = productArquivoId(produtoId, fotoHash);
+    await seedArquivo(db, productOriginalPath(produtoId, fotoHash, 'png'), fotoId, 'image'); // unmarked
+
+    const before = { fotos: [], videos: [] };
+    const after = { fotos: [{ arquivoOuterRef: `arquivos/${fotoId}` }], videos: [] };
+
+    // Already null → no write, counts stay 0 (not an inflated unmarked: 1).
+    expect(await reconcileProdutoMediaMarks(db, before, after)).toEqual({ marked: 0, unmarked: 0 });
   });
 });

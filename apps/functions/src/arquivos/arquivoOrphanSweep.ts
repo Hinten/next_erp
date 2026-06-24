@@ -313,8 +313,20 @@ export async function sweepMarkedForDeletion(db: Firestore): Promise<number> {
   let failed = 0;
   for (const { ref, refPath, produtoId } of items) {
     try {
+      // Owner not derivable (filepath isn't `produtos/<id>/originals|videos` —
+      // legacy / console / bad data the trigger's product-media guard now blocks):
+      // we can't re-verify ownership, so NEVER delete it. Clear the mark + warn so it
+      // stops re-querying instead of being reaped blind.
+      if (!produtoId) {
+        await ref.update({ markedForDeletionAt: null });
+        cleared += 1;
+        logger.warn(
+          `sweepMarkedForDeletion: ${ref.id} marked but filepath is not product media — clearing, not deleting`,
+        );
+        continue;
+      }
       // Referenced again (a re-add whose unmark was missed) → clear + keep.
-      if (produtoId && referencedRefs.has(refPath)) {
+      if (referencedRefs.has(refPath)) {
         await ref.update({ markedForDeletionAt: null });
         cleared += 1;
         continue;
