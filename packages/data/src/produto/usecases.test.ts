@@ -4,6 +4,7 @@ import type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
 import {
   ProdutoReferencedError,
   applyPrecosChange,
+  buildChildrenComponentesKitOps,
   buildExtraDataWriteOps,
   buildImpostoWriteOps,
   buildLocalizacaoOp,
@@ -13,6 +14,7 @@ import {
   planMovimentacao,
   propagatePrecosToChildren,
   recordPrecoHistory,
+  saveChildrenComponentesKit,
   saveProdutoExtraData,
 } from './usecases';
 
@@ -217,6 +219,51 @@ describe('produto imposto (per-operação override)', () => {
       1000,
     );
     expect(ops[0]!.path).toBe('produtos/p2/imposto/opX');
+  });
+});
+
+describe('kit "Gerar Variações" child flush (buildChildrenComponentesKitOps)', () => {
+  it('updates each child produto doc with its map + sorted denorm keys', () => {
+    const ops = buildChildrenComponentesKitOps([
+      {
+        id: 'childP',
+        componentesKit: {
+          cZeta: { quantidade: 2, limitarEstoque: true, timestamp: null },
+          cAlpha: { quantidade: 1, limitarEstoque: false, timestamp: null },
+        },
+      },
+    ]);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({ type: 'update', path: 'produtos/childP' });
+    if (ops[0]!.type !== 'update') throw new Error('expected an update op');
+    // Keys are sorted (order-stable denorm for the array-contains delete guard).
+    expect(ops[0]!.data.componentesKitKeys).toEqual(['cAlpha', 'cZeta']);
+    expect(ops[0]!.data.componentesKit).toMatchObject({ cZeta: { quantidade: 2 } });
+  });
+
+  it('clears both fields for an empty/null map', () => {
+    const ops = buildChildrenComponentesKitOps([
+      { id: 'a', componentesKit: {} },
+      { id: 'b', componentesKit: null },
+    ]);
+    expect(ops).toEqual([
+      {
+        type: 'update',
+        path: 'produtos/a',
+        data: { componentesKit: null, componentesKitKeys: null },
+      },
+      {
+        type: 'update',
+        path: 'produtos/b',
+        data: { componentesKit: null, componentesKitKeys: null },
+      },
+    ]);
+  });
+
+  it('saveChildrenComponentesKit is a no-op for an empty children list', async () => {
+    const { port, committed } = memoryPort();
+    await saveChildrenComponentesKit(port, []);
+    expect(committed).toEqual([]);
   });
 });
 

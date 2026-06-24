@@ -80,6 +80,13 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
    * supports only the comparison ops (`eq`/`lt`/`lte`/`gt`/`gte`).
    */
   filters?: PipelineFieldFilter[];
+  /**
+   * Doc ids to hide from the option list AND the "Recentes" group (e.g. a kit's
+   * own produto + its variations, which can't be its own components). Filtered
+   * client-side after the query, so the visible list may show a few fewer than
+   * `limit` rows.
+   */
+  excludeIds?: string[];
 }
 
 /** Fallback-query operator for each comparison filter op (substring ops are pipeline-only). */
@@ -154,6 +161,7 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   orderBy,
   optionHintField,
   filters,
+  excludeIds,
 }: CollectionSelectProps<S>) {
   const db = getFirebaseFirestore();
 
@@ -176,6 +184,8 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   const searchFieldsKey = (searchFields ?? [labelField]).join('|');
   const orderByKey = JSON.stringify(orderBy ?? [{ field: labelField, direction: 'asc' }]);
   const filtersKey = JSON.stringify(filters ?? []);
+  const excludeKey = (excludeIds ?? []).join('|');
+  const excludeSet = useMemo(() => new Set(excludeKey ? excludeKey.split('|') : []), [excludeKey]);
 
   // Primary source: the Firestore Pipeline API — a typed term is matched
   // (case/accent-insensitive substring) against every `searchFields` entry,
@@ -235,11 +245,13 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
 
   const resultItems = useMemo(
     () =>
-      (listData ?? []).map((row) => ({
-        value: row.id,
-        label: readLabelField(row.data, labelField) ?? row.id,
-      })),
-    [listData, labelField],
+      (listData ?? [])
+        .filter((row) => !excludeSet.has(row.id))
+        .map((row) => ({
+          value: row.id,
+          label: readLabelField(row.data, labelField) ?? row.id,
+        })),
+    [listData, labelField, excludeSet],
   );
 
   // id → hint lookup for renderOption (recents entries carry no hint).
@@ -257,20 +269,22 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
     if (term !== '') {
       return resultItems;
     }
-    const recentIds = new Set(recents.map((r) => r.id));
+    // "Recentes" is a localStorage cache (not query-filtered) — apply excludeIds here.
+    const visibleRecents = recents.filter((r) => !excludeSet.has(r.id));
+    const recentIds = new Set(visibleRecents.map((r) => r.id));
     const todos = resultItems.filter((o) => !recentIds.has(o.value));
     return [
-      ...(recents.length > 0
+      ...(visibleRecents.length > 0
         ? [
             {
               group: 'Recentes',
-              items: recents.map((r) => ({ value: r.id, label: r.label })),
+              items: visibleRecents.map((r) => ({ value: r.id, label: r.label })),
             },
           ]
         : []),
       ...(todos.length > 0 ? [{ group: 'Todos', items: todos }] : []),
     ];
-  }, [term, resultItems, recents]);
+  }, [term, resultItems, recents, excludeSet]);
 
   const handleChange = useCallback(
     (id: string | null) => {

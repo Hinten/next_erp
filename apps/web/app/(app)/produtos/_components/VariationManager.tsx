@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   ActionIcon,
@@ -93,6 +93,21 @@ interface ChildRow {
   dirty: boolean;
 }
 
+/**
+ * The current variation set (saved + staged) published to the page so the Kit
+ * tab's "Gerar Variações" grid can target variations that aren't saved yet. New
+ * rows carry `id: null` (a fresh doc id is minted at flush); they're matched to
+ * their real child by `variacoesUid` afterward.
+ */
+export interface VariationRow {
+  key: string;
+  id: string | null;
+  nome: string;
+  sku: string;
+  variacoesUid: string[];
+  deleteMark: boolean;
+}
+
 /** Local staged patch over a persisted child (keyed by doc id). */
 interface ChildPatch {
   nome?: string;
@@ -114,6 +129,11 @@ export interface VariationManagerProps {
   onChange: (next: string[]) => void;
   /** Lifted group selection — the page's `deriveOnSave` persists it. */
   onGroupsChange: (groupIds: string[]) => void;
+  /**
+   * Publishes the current variation rows (saved + staged) so the Kit tab's
+   * "Gerar Variações" grid can render + target them. Pass a stable setter.
+   */
+  onRowsChange?: (rows: VariationRow[]) => void;
   /**
    * Receives the flush function so the page can wire it into the ObjectView's
    * `onAfterSave` (children are written only when the parent saves).
@@ -159,6 +179,7 @@ export function VariationManager({
   value,
   onChange,
   onGroupsChange,
+  onRowsChange,
   flushRef,
   disabled,
 }: VariationManagerProps) {
@@ -232,6 +253,25 @@ export function VariationManager({
     const pos = new Map(localOrder.map((k, i) => [k, i]));
     return all.sort((a, b) => (pos.get(a.key) ?? Infinity) - (pos.get(b.key) ?? Infinity));
   }, [childrenSnap.data, patches, newRows, localOrder]);
+
+  // Publish the variation rows to the page (for the Kit "Gerar Variações" grid),
+  // only when the relevant fields actually change — so the setter can't loop.
+  const publishedRowsKey = useRef<string>('');
+  useEffect(() => {
+    if (!onRowsChange) return;
+    const mapped: VariationRow[] = rows.map((r) => ({
+      key: r.key,
+      id: r.id,
+      nome: r.nome,
+      sku: r.sku,
+      variacoesUid: r.variacoesUid,
+      deleteMark: r.deleteMark,
+    }));
+    const key = JSON.stringify(mapped);
+    if (key === publishedRowsKey.current) return;
+    publishedRowsKey.current = key;
+    onRowsChange(mapped);
+  }, [rows, onRowsChange]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
@@ -40,9 +40,10 @@ import { EstoqueManager } from '../../_components/EstoqueManager';
 import { ExtraDataManager } from '../../_components/ExtraDataManager';
 import { ImpostoManager } from '../../_components/ImpostoManager';
 import { KitManager, stripKitForSave } from '../../_components/KitManager';
+import { KitVariacoesManager, type KitVariacoesFlush } from '../../_components/KitVariacoesManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
-import { VariationManager } from '../../_components/VariationManager';
+import { VariationManager, type VariationRow } from '../../_components/VariationManager';
 import {
   PRODUTO_EXCLUDED_FIELDS,
   PRODUTO_SECTIONS,
@@ -84,6 +85,17 @@ export default function EditarProdutoPage() {
   // touched) and the staged-children flush, committed after the parent saves.
   const groupsRef = useRef<string[] | null>(null);
   const flushChildrenRef = useRef<((parentId: string) => Promise<void>) | null>(null);
+  // Staged per-variation kit maps (the "Gerar Variações" grid), flushed AFTER
+  // the variation-children flush so the child docs exist.
+  const flushKitVariacoesRef = useRef<KitVariacoesFlush | null>(null);
+  // The live variation rows (saved + staged), published by VariationManager and
+  // consumed by the Kit tab (the per-variation grid + the component-picker
+  // exclusion: a kit can't contain itself or its variations).
+  const [variationRows, setVariationRows] = useState<VariationRow[]>([]);
+  const kitExcludeIds = useMemo(
+    () => [params.id, ...variationRows.map((r) => r.id).filter((id): id is string => id !== null)],
+    [params.id, variationRows],
+  );
 
   // Price-history bookkeeping (Flutter parity: `Produto.save()` records every
   // precos change). `lastSavedPrecos` pins the PERSISTED map once, from the
@@ -159,6 +171,7 @@ export default function EditarProdutoPage() {
             onGroupsChange={(ids) => {
               groupsRef.current = ids;
             }}
+            onRowsChange={setVariationRows}
             flushRef={flushChildrenRef}
             disabled={p.disabled}
           />
@@ -236,17 +249,38 @@ export default function EditarProdutoPage() {
         section: 'Kit',
         prepareForSave: stripKitForSave,
         renderInput: (p) => (
-          <KitManager
-            produtoId={params.id}
-            db={db}
-            value={(p.value as ComponentesKit | null) ?? null}
-            onChange={p.onChange}
-            disabled={p.disabled}
-          />
+          <Stack gap="md">
+            <KitManager
+              produtoId={params.id}
+              db={db}
+              value={(p.value as ComponentesKit | null) ?? null}
+              onChange={p.onChange}
+              disabled={p.disabled}
+              excludeIds={kitExcludeIds}
+            />
+            <KitVariacoesManager
+              produtoId={params.id}
+              db={db}
+              grupos={grupos}
+              rows={variationRows}
+              disabled={p.disabled}
+              flushRef={flushKitVariacoesRef}
+            />
+          </Stack>
         ),
       },
     }),
-    [params.id, db, storage, grupos, gruposSnap.error?.message, listas, listasSnap.error?.message],
+    [
+      params.id,
+      db,
+      storage,
+      grupos,
+      gruposSnap.error?.message,
+      listas,
+      listasSnap.error?.message,
+      variationRows,
+      kitExcludeIds,
+    ],
   );
 
   // The editor is the product screen now (the intermediate detail view was
@@ -372,9 +406,14 @@ export default function EditarProdutoPage() {
           // doc via `transactionWrites`, not here — so a flaky connection can't
           // leave the produto saved without its Descrição.)
 
-          // The flush runs last: it creates any new children already carrying
-          // the parent's precos (plus their initial history records).
+          // The children flush runs before the kit-variation flush: it creates
+          // any new children already carrying the parent's precos (plus their
+          // initial history records).
           await flushChildrenRef.current?.(id);
+
+          // Then persist each kit-variation child's generated `componentesKit`
+          // (from "Gerar Variações") — the child docs exist by now.
+          await flushKitVariacoesRef.current?.(id);
         }}
         saveLabel="Salvar alterações"
         canEdit={canWrite}

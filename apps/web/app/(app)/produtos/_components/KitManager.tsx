@@ -1,7 +1,17 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { ActionIcon, Badge, Group, NumberInput, Stack, Switch, Text, Tooltip } from '@mantine/core';
+import {
+  ActionIcon,
+  Badge,
+  Box,
+  Group,
+  NumberInput,
+  Stack,
+  Switch,
+  Text,
+  Tooltip,
+} from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
@@ -62,6 +72,24 @@ export interface KitManagerProps {
   value: ComponentesKit | null;
   onChange: (next: Record<string, KitDraft> | null) => void;
   disabled?: boolean;
+  /**
+   * Override the kit gating. Defaults to the form's `ehKit` (the parent kit on
+   * its own Kit tab); pass `true` when reusing the manager for a variation child
+   * (a kit-variation is implicitly a kit, with no `ehKit` of its own in the form).
+   */
+  ehKit?: boolean;
+  /**
+   * Push the computed kit cost into the form's `custo` field (default `true`).
+   * Pass `false` for variation-child instances — they have no `custo` field in
+   * the parent form; the cost is still shown, just not written.
+   */
+  syncCustoToForm?: boolean;
+  /**
+   * Extra produto ids to hide from the component picker (beyond `produtoId`
+   * itself, always excluded) — e.g. the kit's variation children. Mirrors the
+   * Flutter `optionsFilter` (excludes self + variations).
+   */
+  excludeIds?: string[];
 }
 
 /**
@@ -75,11 +103,28 @@ export interface KitManagerProps {
  * (read live via `useFormContext`). `componentesKit` is a produto DOC field — it
  * rides the normal ObjectView save.
  */
-export function KitManager({ produtoId, db, value, onChange, disabled }: KitManagerProps) {
+export function KitManager({
+  produtoId,
+  db,
+  value,
+  onChange,
+  disabled,
+  ehKit: ehKitProp,
+  syncCustoToForm = true,
+  excludeIds,
+}: KitManagerProps) {
   // RHF context is typed non-null but IS null outside a provider (ObjectView
   // mounts FormProvider) — guard with `?.`, mirroring PrecoCustoManager.
   const form = useFormContext();
-  const ehKit = form?.watch('ehKit') === true;
+  // Parent kit: gate on the form's `ehKit`. Variation child: caller forces it.
+  const ehKit = ehKitProp ?? form?.watch('ehKit') === true;
+
+  // The produto itself + its variations can't be its own components (Flutter
+  // `optionsFilter`). `produtoId` is always excluded; the caller adds variations.
+  const pickerExcludeIds = useMemo(
+    () => [...(produtoId ? [produtoId] : []), ...(excludeIds ?? [])],
+    [produtoId, excludeIds],
+  );
 
   const components = useMemo(() => (value ?? {}) as Record<string, KitDraft>, [value]);
   const [pickerValue, setPickerValue] = useState<unknown>(null);
@@ -141,11 +186,11 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
   // Push the computed cost into the read-only `custo` form field (writing to the
   // form = an external system, the legitimate use of an effect).
   useEffect(() => {
-    if (!ehKit || !custoResult || custoResult.custo === null) return;
+    if (!syncCustoToForm || !ehKit || !custoResult || custoResult.custo === null) return;
     if (form?.getValues('custo') !== custoResult.custo) {
       form?.setValue('custo', custoResult.custo, { shouldDirty: true });
     }
-  }, [ehKit, custoResult, form]);
+  }, [syncCustoToForm, ehKit, custoResult, form]);
 
   const setComponent = (id: string, patch: Partial<KitDraft>) => {
     onChange({ ...components, [id]: { ...components[id], ...patch } as KitDraft });
@@ -179,9 +224,21 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
       notifications.show({ color: 'yellow', message: 'Este componente já foi adicionado.' });
       return;
     }
-    // A kit cannot be a component of another kit. The picker can't filter this
-    // out (a query on `ehKit` would drop legacy docs where it is null), so we
-    // validate the picked produto on add — and reuse the read to seed its custo.
+    if (excludeIds?.includes(id)) {
+      // Excluded ids = the kit family (the produto itself + its variations). The
+      // picker hides these, but the "Recentes" group is unfiltered, so guard on
+      // add too. Generic message — the excluded id may be self, a variation, or
+      // (for a per-variation editor) the parent kit / a sibling.
+      notifications.show({
+        color: 'yellow',
+        message: 'Este produto não pode ser componente deste kit.',
+      });
+      return;
+    }
+    // A kit cannot be a component of another kit, nor can a variation of THIS
+    // produto. The picker hides both, but the unfiltered "Recentes" group + a
+    // race (a produto becoming a kit) can still slip through — so validate the
+    // picked produto on add, and reuse the read to seed its custo.
     try {
       const snap = await getDocFromServer(produtoCollection.docRef(db, {}, id));
       const data = snap.data();
@@ -189,6 +246,13 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
         notifications.show({
           color: 'yellow',
           message: 'Um kit não pode ser componente de outro kit.',
+        });
+        return;
+      }
+      if (produtoId && data?.paiId === produtoId) {
+        notifications.show({
+          color: 'yellow',
+          message: 'Uma variação do próprio produto não pode ser componente do kit.',
         });
         return;
       }
@@ -254,47 +318,53 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
         </Text>
       )}
 
-      {entries.map(([id, entry]) => {
+      {entries.map(([id, entry], index) => {
         const marked = !!entry._delete;
         return (
-          <Group key={id} wrap="nowrap" align="flex-end" gap="xs" opacity={marked ? 0.55 : 1}>
-            <ComponentLabel db={db} produtoId={id} />
-            <NumberInput
-              label="Qtd"
-              min={1}
-              step={1}
-              allowDecimal={false}
-              value={entry.quantidade}
-              onChange={(v) => setComponent(id, { quantidade: typeof v === 'number' ? v : 1 })}
-              disabled={disabled || marked}
-              w={90}
-            />
-            <Switch
-              label="Limita estoque"
-              checked={entry.limitarEstoque}
-              onChange={(e) => setComponent(id, { limitarEstoque: e.currentTarget.checked })}
-              disabled={disabled || marked}
-              mb={6}
-            />
-            {marked && (
-              <Badge color="red" variant="light" mb={8}>
-                Será removido
-              </Badge>
-            )}
-            {!disabled && (
-              <Tooltip label={marked ? 'Desfazer remoção' : 'Remover componente'}>
-                <ActionIcon
-                  variant="subtle"
-                  color={marked ? 'blue' : 'red'}
-                  mb={4}
-                  onClick={() => toggleDelete(id)}
-                  aria-label={marked ? `Desfazer remoção ${id}` : `Remover componente ${id}`}
-                >
-                  {marked ? <IconArrowBackUp size={16} /> : <IconTrash size={16} />}
-                </ActionIcon>
-              </Tooltip>
-            )}
-          </Group>
+          <Box
+            key={id}
+            bg={index % 2 === 1 ? 'gray.0' : undefined}
+            style={{ borderRadius: 4, padding: '4px 8px' }}
+          >
+            <Group wrap="nowrap" align="flex-end" gap="xs" opacity={marked ? 0.55 : 1}>
+              <ComponentLabel db={db} produtoId={id} />
+              <NumberInput
+                label="Qtd"
+                min={1}
+                step={1}
+                allowDecimal={false}
+                value={entry.quantidade}
+                onChange={(v) => setComponent(id, { quantidade: typeof v === 'number' ? v : 1 })}
+                disabled={disabled || marked}
+                w={90}
+              />
+              <Switch
+                label="Limita estoque"
+                checked={entry.limitarEstoque}
+                onChange={(e) => setComponent(id, { limitarEstoque: e.currentTarget.checked })}
+                disabled={disabled || marked}
+                mb={6}
+              />
+              {marked && (
+                <Badge color="red" variant="light" mb={8}>
+                  Será removido
+                </Badge>
+              )}
+              {!disabled && (
+                <Tooltip label={marked ? 'Desfazer remoção' : 'Remover componente'}>
+                  <ActionIcon
+                    variant="subtle"
+                    color={marked ? 'blue' : 'red'}
+                    mb={4}
+                    onClick={() => toggleDelete(id)}
+                    aria-label={marked ? `Desfazer remoção ${id}` : `Remover componente ${id}`}
+                  >
+                    {marked ? <IconArrowBackUp size={16} /> : <IconTrash size={16} />}
+                  </ActionIcon>
+                </Tooltip>
+              )}
+            </Group>
+          </Box>
         );
       })}
 
@@ -310,6 +380,8 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
           // A kit cannot contain another kit — the picker query excludes them
           // (re-checked on add for the unfiltered "Recentes" group + races).
           filters={[{ field: 'ehKit', op: 'eq', value: false }]}
+          // …nor the produto itself or its variations (Flutter `optionsFilter`).
+          excludeIds={pickerExcludeIds}
           value={pickerValue}
           onChange={(ref) => {
             void addComponent(refToId(ref));

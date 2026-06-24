@@ -14,6 +14,7 @@ import {
   samePrecos,
   PRODUTO_EXTRA_DATA_DOC_ID,
   PRODUTO_SUBCOLLECTION_NAMES,
+  type ComponentesKit,
   type ImpostoProduto,
   type PrecoChange,
   type PrecosMap,
@@ -310,6 +311,47 @@ export async function saveProdutoImpostos(
   const ops = buildImpostoWriteOps(produtoId, impostos, port.now());
   if (ops.length === 0) return;
   await port.commit(ops);
+}
+
+// ---------------------------------------------------------------------------
+// Kit "Gerar Variações" child flush (each kit-variation child's componentesKit)
+// ---------------------------------------------------------------------------
+
+/** One variation child's generated kit map, ready to flush onto its produto doc. */
+export interface ChildComponentesKit {
+  id: string;
+  componentesKit: ComponentesKit | null;
+}
+
+/**
+ * Build the per-child `componentesKit` updates produced by "Gerar Variações".
+ * Each kit-variation child is a separate produto doc, so this is an `update` on
+ * `produtos/<childId>` carrying the generated map plus the order-stable
+ * `componentesKitKeys` denorm (the same sorted-keys shape the parent uses, which
+ * the delete-guard queries via `array-contains`). An empty/null map clears both.
+ */
+export function buildChildrenComponentesKitOps(children: ChildComponentesKit[]): ProdutoWriteOp[] {
+  return children.map((c) => {
+    const map =
+      c.componentesKit && Object.keys(c.componentesKit).length > 0 ? c.componentesKit : null;
+    return {
+      type: 'update',
+      path: produtoDocPath(c.id),
+      data: {
+        componentesKit: map,
+        componentesKitKeys: map ? Object.keys(map).sort() : null,
+      },
+    };
+  });
+}
+
+/** Persist each kit-variation child's generated `componentesKit` (no-op when none). */
+export async function saveChildrenComponentesKit(
+  port: ProdutoDataPort,
+  children: ChildComponentesKit[],
+): Promise<void> {
+  if (children.length === 0) return;
+  await port.commit(buildChildrenComponentesKitOps(children));
 }
 
 // ---------------------------------------------------------------------------
