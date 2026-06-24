@@ -1,15 +1,21 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, Stack, Title } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
-import { enderecoMeta, enderecoSchema } from '@delfrance/schemas';
+import { type Endereco, enderecoMeta, enderecoSchema } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
 import { enderecoCollection } from '@/lib/data/enderecoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { usePermission } from '@/lib/auth';
 import { EnderecoFormModal } from '@/components/pickers/EnderecoFormModal';
 import { RecebedorNfeModal } from '@/components/pickers/RecebedorNfeModal';
+import type { ClienteCnpjEndereco } from '@/lib/clientes/consultaCnpj';
+
+/** The CNPJ-lookup address maps 1:1 onto enderecoSchema keys (estado is a UF). */
+function toEnderecoPrefill(e: ClienteCnpjEndereco): Partial<Endereco> {
+  return { ...e, estado: e.estado as Endereco['estado'] };
+}
 
 /**
  * "Endereços" sub-table on the cliente detail page over the
@@ -21,9 +27,24 @@ import { RecebedorNfeModal } from '@/components/pickers/RecebedorNfeModal';
  * The Pipelines row source is one-shot, so `refreshNonce` keys the TableView
  * and is bumped after every modal save/delete to remount it with fresh data.
  */
-export function EnderecosSection({ clienteId }: { clienteId: string }) {
+export interface EnderecosSectionProps {
+  clienteId: string;
+  /**
+   * Address resolved by a CNPJ lookup (or relayed from the create page). When it
+   * becomes non-null the create modal opens prefilled; `onPrefillConsumed` fires
+   * once the modal is saved or dismissed so the parent can clear it.
+   */
+  prefillEndereco?: ClienteCnpjEndereco | null;
+  onPrefillConsumed?: () => void;
+}
+
+export function EnderecosSection({
+  clienteId,
+  prefillEndereco,
+  onPrefillConsumed,
+}: EnderecosSectionProps) {
   const db = getFirebaseFirestore();
-  const { allowed: canWrite } = usePermission(PERM.endereco.write);
+  const { allowed: canWrite, loading: permLoading } = usePermission(PERM.endereco.write);
 
   // The data layer identity-tracks pathContext — keep the object stable.
   const pathContext = useMemo(() => ({ clienteId }), [clienteId]);
@@ -32,6 +53,22 @@ export function EnderecosSection({ clienteId }: { clienteId: string }) {
   const [editingId, setEditingId] = useState<string | undefined>(undefined);
   const [recebedorId, setRecebedorId] = useState<string | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
+
+  // A resolved CNPJ address opens the create modal prefilled for review — but
+  // only once the permission has RESOLVED. The relayed address arrives on mount,
+  // before `usePermission` settles, so we must wait for `!permLoading`; consuming
+  // during the loading window would drop the offer (this broke the e2e). Then:
+  // write allowed → open the prefilled modal; denied → consume it (no read-only
+  // "offer").
+  useEffect(() => {
+    if (!prefillEndereco || permLoading) return;
+    if (!canWrite) {
+      onPrefillConsumed?.();
+      return;
+    }
+    setEditingId(undefined);
+    setModalOpen(true);
+  }, [prefillEndereco, canWrite, permLoading, onPrefillConsumed]);
 
   function openCreate() {
     setEditingId(undefined);
@@ -43,10 +80,16 @@ export function EnderecosSection({ clienteId }: { clienteId: string }) {
     setModalOpen(true);
   }
 
+  function closeModal() {
+    setModalOpen(false);
+    onPrefillConsumed?.();
+  }
+
   function afterChange() {
     setModalOpen(false);
     setRecebedorId(null);
     setRefreshNonce((n) => n + 1);
+    onPrefillConsumed?.();
   }
 
   return (
@@ -90,9 +133,10 @@ export function EnderecosSection({ clienteId }: { clienteId: string }) {
 
       <EnderecoFormModal
         opened={modalOpen}
-        onClose={() => setModalOpen(false)}
+        onClose={closeModal}
         clienteId={clienteId}
         recordId={editingId}
+        prefill={!editingId && prefillEndereco ? toEnderecoPrefill(prefillEndereco) : undefined}
         onSaved={afterChange}
         allowDelete
         onDeleted={afterChange}

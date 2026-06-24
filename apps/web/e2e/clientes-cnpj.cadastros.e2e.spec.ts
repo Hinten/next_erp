@@ -1,0 +1,115 @@
+import { expect, test, type Page } from '@playwright/test';
+import { cleanupByNamePrefix, e2ePrefix } from './_helpers/seed-data';
+import { clickSave, fillField, selectField } from './helpers/object-view';
+import { warmRoutes } from './helpers/warmup';
+
+/**
+ * End-to-end coverage for the CNPJ "buscar dados" lookup on the cliente form
+ * (`CnpjLookupField`). The external calls are stubbed at the network layer
+ * (BrasilAPI for razão social + endereço; the apps/nfe Consulta Cadastro route,
+ * forced to `supported:false` so the IE is deterministic) — staging can't hit
+ * real SEFAZ / public APIs reliably. Asserts: the button is PJ-only, a lookup
+ * fills Nome + offers the address, and saving the relayed address writes an
+ * endereço under the new cliente.
+ */
+const CNPJ = '11222333000181'; // checksum-valid
+const RAZAO = 'EMPRESA EXEMPLO LTDA';
+const LOGRADOURO = 'AVENIDA PAULISTA';
+
+async function stubCnpjLookup(page: Page): Promise<void> {
+  await page.route('https://brasilapi.com.br/api/cnpj/v1/**', (route) =>
+    route.fulfill({
+      json: {
+        razao_social: RAZAO,
+        nome_fantasia: 'Exemplo',
+        descricao_tipo_de_logradouro: 'AVENIDA',
+        logradouro: 'PAULISTA',
+        numero: '1000',
+        complemento: 'SALA 1',
+        bairro: 'BELA VISTA',
+        cep: '01310100',
+        municipio: 'SAO PAULO',
+        uf: 'SP',
+        codigo_municipio_ibge: 3550308,
+      },
+    }),
+  );
+  // SEFAZ Consulta Cadastro is best-effort; force a deterministic "no IE".
+  await page.route('**/api/nfe/consulta-cadastro*', (route) =>
+    route.fulfill({
+      json: { supported: false, uf: 'SP', cStat: null, xMotivo: 'stub', infCad: [] },
+    }),
+  );
+}
+
+test.describe.serial('Clientes e2e — CNPJ lookup', () => {
+  const prefix = e2ePrefix('cli-cnpj');
+
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(240_000);
+    await warmRoutes(browser, ['/clientes/novo']);
+  });
+
+  test.afterAll(async () => {
+    await cleanupByNamePrefix('clientes', prefix);
+  });
+
+  test('shows the "buscar dados" button only for Pessoa Jurídica', async ({ page }) => {
+    const button = page.getByRole('button', { name: 'Buscar dados do CNPJ' });
+
+    await page.goto('/clientes/novo');
+    // No tipo selected yet → no lookup button.
+    await expect(button).toHaveCount(0);
+
+    await selectField(page, 'Tipo', 'Pessoa Física');
+    await expect(button).toHaveCount(0);
+
+    await selectField(page, 'Tipo', 'Pessoa Jurídica');
+    await expect(button).toBeVisible();
+    // Disabled until a valid 14-digit CNPJ is present.
+    await expect(button).toBeDisabled();
+    await fillField(page, 'CPF / CNPJ', CNPJ);
+    await expect(button).toBeEnabled();
+  });
+
+  test('fills razão social and offers the address on lookup', async ({ page }) => {
+    await stubCnpjLookup(page);
+    await page.goto('/clientes/novo');
+    await selectField(page, 'Tipo', 'Pessoa Jurídica');
+    await fillField(page, 'CPF / CNPJ', CNPJ);
+    await page.getByRole('button', { name: 'Buscar dados do CNPJ' }).click();
+
+    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(RAZAO);
+    await expect(page.getByText('Endereço encontrado')).toBeVisible();
+  });
+
+  test('registers the resolved address under the new cliente', async ({ page }) => {
+    await stubCnpjLookup(page);
+    await page.goto('/clientes/novo');
+    await selectField(page, 'Tipo', 'Pessoa Jurídica');
+    await fillField(page, 'CPF / CNPJ', CNPJ);
+    await page.getByRole('button', { name: 'Buscar dados do CNPJ' }).click();
+    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(RAZAO);
+
+    // Rename to a run-scoped prefix so afterAll cleanup catches the doc.
+    const nome = `${prefix}-pj`;
+    await fillField(page, 'Nome', nome);
+    await clickSave(page, 'Criar');
+
+    // Redirects to the detail page, which pops the relayed address and opens the
+    // prefilled "Novo endereço" modal.
+    await page.waitForURL(
+      (url) => /^\/clientes\/[^/]+$/.test(url.pathname) && url.pathname !== '/clientes/novo',
+      { timeout: 15_000 },
+    );
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByRole('heading', { name: 'Novo endereço' })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(dialog.getByLabel('Logradouro', { exact: true })).toHaveValue(LOGRADOURO);
+
+    // Save the endereço; it should land in the cliente's Endereços table.
+    await dialog.getByRole('button', { name: 'Criar' }).click();
+    await expect(page.getByRole('cell', { name: LOGRADOURO })).toBeVisible({ timeout: 15_000 });
+  });
+});
