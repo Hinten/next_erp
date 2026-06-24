@@ -233,8 +233,9 @@ export interface UploadProductAnexoArgs {
 }
 
 /**
- * Upload a product attachment (anexo) to `produtos/<produtoId>/anexos/<hash>.ext`
- * with the product-scoped doc id `<produtoId>_<hash>`. Accepts ANY content type
+ * Upload a product attachment (anexo) to `produtos/<produtoId>/anexos/<hash>[.<ext>]`
+ * (the extension is omitted for an unknown MIME, e.g. `application/zip`), with the
+ * product-scoped doc id `<produtoId>_<hash>`. Accepts ANY content type
  * (PDFs, datasheets, archives…); the `filetype` is derived from the MIME via
  * `filetypeFromMime` — fixing the Flutter port's hardcoded `image`. Like videos,
  * anexos live in their own subdir, are never resized, and are reaped by the same

@@ -37,6 +37,7 @@ import { arquivoCollection, StorageUploadError, uploadProductAnexo } from '@delf
 import { ARQUIVOS_COLLECTION, type Anexo, buildAnexo } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { DELETE_MARK } from '@delfrance/ui';
+import { buildSortableIds } from './PhotoManager';
 
 // Any file type (the uploader derives `filetype` from the MIME); 25 MB cap to
 // match the `produtos/<id>/anexos` storage rule.
@@ -106,6 +107,17 @@ export function AnexoManager({
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  // Stable dnd/React ids that disambiguate duplicate refs (legacy/buggy data) via
+  // an occurrence ordinal — reusing PhotoManager's helper. The bare arquivoOuterRef
+  // alone would collide on a repeated ref and break keys + drag-reorder. Anexos have
+  // no variante gallery, so variantePath is always null.
+  const sortableIds = useMemo(
+    () =>
+      buildSortableIds(
+        anexos.map((a) => ({ arquivoOuterRef: a.arquivoOuterRef, variantePath: null })),
+      ),
+    [anexos],
+  );
 
   // No product id yet (create mode): uploads can't be scoped, so prompt to save.
   if (!produtoId) {
@@ -168,8 +180,8 @@ export function AnexoManager({
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
-    const from = anexos.findIndex((a) => a.arquivoOuterRef === active.id);
-    const to = anexos.findIndex((a) => a.arquivoOuterRef === over.id);
+    const from = sortableIds.indexOf(String(active.id));
+    const to = sortableIds.indexOf(String(over.id));
     if (from < 0 || to < 0) return;
     onChange(arrayMove(anexos, from, to));
   }
@@ -198,14 +210,12 @@ export function AnexoManager({
         </Text>
       ) : (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <SortableContext
-            items={anexos.map((a) => a.arquivoOuterRef)}
-            strategy={verticalListSortingStrategy}
-          >
+          <SortableContext items={sortableIds} strategy={verticalListSortingStrategy}>
             <Stack gap="xs">
               {anexos.map((anexo, index) => (
                 <SortableAnexo
-                  key={anexo.arquivoOuterRef}
+                  key={sortableIds[index]!}
+                  sortableId={sortableIds[index]!}
                   anexo={anexo}
                   db={db}
                   marked={!!anexo[DELETE_MARK]}
@@ -222,6 +232,8 @@ export function AnexoManager({
 }
 
 interface SortableAnexoProps {
+  /** Unique dnd/React id (`ref|#occurrence`) — see PhotoManager's `buildSortableIds`. */
+  sortableId: string;
   anexo: Anexo;
   db: Firestore;
   /** Marked for deletion — rendered dimmed with an undo button. */
@@ -230,9 +242,16 @@ interface SortableAnexoProps {
   onToggleDelete: () => void;
 }
 
-function SortableAnexo({ anexo, db, marked, disabled, onToggleDelete }: SortableAnexoProps) {
+function SortableAnexo({
+  sortableId,
+  anexo,
+  db,
+  marked,
+  disabled,
+  onToggleDelete,
+}: SortableAnexoProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id: anexo.arquivoOuterRef,
+    id: sortableId,
     disabled,
   });
   const style = {
