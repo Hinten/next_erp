@@ -6,18 +6,9 @@ import { notifications } from '@mantine/notifications';
 import { IconSearch } from '@tabler/icons-react';
 import { useFormContext } from 'react-hook-form';
 import type { FieldRenderProps } from '@delfrance/ui';
-import {
-  NFeHttpError,
-  NFeNetworkError,
-  type NFeConsultaCadastroResult,
-} from '@delfrance/integrations-nfe/http-provider';
 import { CpfCnpjTextInput } from './CpfCnpjInput';
-import {
-  type ClienteCnpjData,
-  type ClienteCnpjEndereco,
-  buscarCnpj,
-  cleanCnpj,
-} from '@/lib/clientes/consultaCnpj';
+import { type ClienteCnpjEndereco, cleanCnpj } from '@/lib/clientes/consultaCnpj';
+import { resolveCnpj } from '@/lib/clientes/resolveCnpj';
 import { useNFeClient } from '@/lib/nfe/client';
 
 /**
@@ -42,19 +33,6 @@ const CnpjLookupContext = createContext<CnpjLookupConfig>({});
 export const CnpjLookupConfigProvider = CnpjLookupContext.Provider;
 
 const SET_OPTS = { shouldDirty: true, shouldValidate: true } as const;
-
-/**
- * Human-readable reason the SEFAZ Consulta Cadastro returned no usable IE, so the
- * operator can tell a genuine "no registration" (cStat 258/259) or a coverage gap
- * (UF unsupported / cross-UF / SEFAZ down) from an actual problem — and knows the
- * IE just needs manual entry.
- */
-function sefazIeNote(cad: NFeConsultaCadastroResult, uf: string): string {
-  if (!cad.supported) return cad.xMotivo ?? `Consulta Cadastro indisponível para a UF ${uf}`;
-  if (cad.degraded) return 'SEFAZ indisponível no momento';
-  if (cad.cStat) return `SEFAZ ${cad.cStat}${cad.xMotivo ? `: ${cad.xMotivo}` : ''}`;
-  return 'SEFAZ não retornou inscrição estadual';
-}
 
 /**
  * CPF/CNPJ input that adds a "buscar dados" action for **Pessoa Jurídica only**.
@@ -96,65 +74,35 @@ export function CnpjLookupField({
     setLoading(true);
     setLookupError(null);
     try {
-      let pub: ClienteCnpjData | null;
-      try {
-        pub = await buscarCnpj(doc);
-      } catch (err) {
-        if (err instanceof TypeError) {
-          setLookupError('Falha de rede ao consultar o CNPJ.');
-          return;
-        }
-        if (err instanceof SyntaxError) {
-          setLookupError('Resposta inválida da API de CNPJ.');
-          return;
-        }
-        throw err;
-      }
-      if (!pub) {
-        setLookupError('CNPJ não encontrado na base pública.');
+      const outcome = await resolveCnpj(doc, nfe, filialId);
+      if (!outcome.ok) {
+        setLookupError(
+          outcome.reason === 'network'
+            ? 'Falha de rede ao consultar o CNPJ.'
+            : outcome.reason === 'invalid-response'
+              ? 'Resposta inválida da API de CNPJ.'
+              : 'CNPJ não encontrado na base pública.',
+        );
         return;
       }
-
-      if (pub.nome) setValue('nome', pub.nome, SET_OPTS);
-
-      // Authoritative IE from SEFAZ Consulta Cadastro (best-effort). `sefazNote`
-      // captures WHY no IE came back so the notification can explain it.
-      let sefazIe: string | null = null;
-      let sefazNote: string | null = null;
-      if (nfe && filialId && pub.uf) {
-        try {
-          const cad = await nfe.consultaCadastro(cleanCnpj(doc), pub.uf, filialId);
-          const habilitada = cad.infCad.find((c) => c.situacao === '1') ?? cad.infCad[0];
-          sefazIe = habilitada?.ie ?? null;
-          if (!sefazIe) sefazNote = sefazIeNote(cad, pub.uf);
-        } catch (err) {
-          // Consulta Cadastro is advisory — a typed NFe failure just falls back
-          // to the public IE. Anything else is a real bug, so rethrow.
-          if (!(err instanceof NFeHttpError) && !(err instanceof NFeNetworkError)) throw err;
-          sefazNote = 'não foi possível consultar a SEFAZ';
-        }
-      }
-
-      const ie = sefazIe ?? pub.ie;
+      const { nome, ie, endereco, sefazNote } = outcome.data;
+      setValue('nome', nome, SET_OPTS);
       if (ie) setValue('ie', ie, SET_OPTS);
 
       // Hand the result up — null too, so a no-address lookup retracts any
       // address a previous lookup offered for this same field.
-      onAddressResolved?.(pub.endereco);
-      offeredRef.current = pub.endereco !== null;
+      onAddressResolved?.(endereco);
+      offeredRef.current = endereco !== null;
 
       if (ie) {
-        notifications.show({
-          color: 'green',
-          message: `Dados de ${pub.nome} preenchidos (IE ${ie})`,
-        });
+        notifications.show({ color: 'green', message: `Dados de ${nome} preenchidos (IE ${ie})` });
       } else {
         // No IE — surface the reason so the operator can distinguish a genuine
         // "no registration" from a coverage gap, and knows to type the IE.
         const why = sefazNote ?? 'IE não disponível';
         notifications.show({
           color: 'yellow',
-          message: `Dados de ${pub.nome} preenchidos. ${why} — preencha a IE manualmente.`,
+          message: `Dados de ${nome} preenchidos. ${why} — preencha a IE manualmente.`,
         });
       }
     } finally {

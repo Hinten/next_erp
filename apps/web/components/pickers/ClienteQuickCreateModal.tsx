@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import {
+  ActionIcon,
   Alert,
   Anchor,
   Button,
@@ -15,8 +16,11 @@ import {
   Stack,
   Text,
   TextInput,
+  Tooltip,
 } from '@mantine/core';
 import { useDebouncedCallback } from '@mantine/hooks';
+import { notifications } from '@mantine/notifications';
+import { IconSearch } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { z, ZodError } from 'zod';
 import {
@@ -37,8 +41,11 @@ import {
   type DedupCandidate,
   checkClienteDuplicates,
 } from '@/lib/clientes/dedup';
+import { resolveCnpj } from '@/lib/clientes/resolveCnpj';
+import { useDefaultFilialId } from '@/lib/clientes/useDefaultFilialId';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { useNFeClient } from '@/lib/nfe/client';
 import { useAuth } from '@/lib/auth';
 
 /**
@@ -62,7 +69,7 @@ export interface ClienteQuickCreateModalProps {
 // Validation rides the (tightened) clienteSchema field rules; `tipo` decides
 // whether cpf_cnpj or idEstrangeiro is collected, and nome becomes required.
 const quickCreateSchema = clienteSchema
-  .pick({ cpf_cnpj: true, idEstrangeiro: true, email: true, telefone: true })
+  .pick({ cpf_cnpj: true, idEstrangeiro: true, ie: true, email: true, telefone: true })
   .extend({
     tipo: tipoClienteSchema.default('0'),
     nome: z.string().min(1, 'Obrigatório').max(255),
@@ -124,10 +131,15 @@ function QuickCreateForm({
 }) {
   const db = getFirebaseFirestore();
   const { user } = useAuth();
+  const nfe = useNFeClient();
+  // Filial whose A1 cert signs the (best-effort) SEFAZ Consulta Cadastro leg of
+  // the CNPJ lookup — first filial, same default the cliente pages use.
+  const filialId = useDefaultFilialId();
 
   const [dedup, setDedup] = useState<ClienteDedupResult | null>(null);
   const [confirmRequired, setConfirmRequired] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [lookupLoading, setLookupLoading] = useState(false);
   // "Criar mesmo assim" — bypasses the NON-blocking findings on the next
   // submit. Blocking matches re-checked at submit can never be bypassed.
   const forceCreate = useRef(false);
@@ -141,6 +153,7 @@ function QuickCreateForm({
       nome: '',
       cpf_cnpj: null,
       idEstrangeiro: null,
+      ie: null,
       email: null,
       telefone: null,
     },
@@ -184,12 +197,56 @@ function QuickCreateForm({
       });
   }, 300);
 
+  // PJ-only CNPJ lookup (issue #250): fills nome + inscrição estadual from the
+  // public BrasilAPI + best-effort SEFAZ Consulta Cadastro (shared `resolveCnpj`,
+  // same as the cliente pages). No endereço — this modal has no endereço UI.
+  async function buscarDados() {
+    const cnpj = form.getValues('cpf_cnpj') ?? '';
+    setLookupLoading(true);
+    try {
+      const outcome = await resolveCnpj(cnpj, nfe, filialId);
+      if (!outcome.ok) {
+        form.setError('cpf_cnpj', {
+          message:
+            outcome.reason === 'network'
+              ? 'Falha de rede ao consultar o CNPJ.'
+              : outcome.reason === 'invalid-response'
+                ? 'Resposta inválida da API de CNPJ.'
+                : 'CNPJ não encontrado na base pública.',
+        });
+        return;
+      }
+      // A successful lookup means the CNPJ was valid — drop any inline error a
+      // prior failed lookup left on the field.
+      form.clearErrors('cpf_cnpj');
+      const { nome, ie, sefazNote } = outcome.data;
+      const SET_OPTS = { shouldDirty: true, shouldValidate: true } as const;
+      form.setValue('nome', nome, SET_OPTS);
+      if (ie) form.setValue('ie', ie, SET_OPTS);
+      // Nome changed — re-run the dedup check against the resolved razão social.
+      runLiveCheck();
+      if (ie) {
+        notifications.show({ color: 'green', message: `Dados de ${nome} preenchidos (IE ${ie})` });
+      } else {
+        const why = sefazNote ?? 'IE não disponível';
+        notifications.show({
+          color: 'yellow',
+          message: `Dados de ${nome} preenchidos. ${why} — preencha a IE manualmente.`,
+        });
+      }
+    } finally {
+      setLookupLoading(false);
+    }
+  }
+
   async function doCreate(values: QuickCreateOutput) {
     const doc = clienteSchema.parse({
       tipo: values.tipo,
       nome: values.nome.trim(),
       cpf_cnpj: values.tipo === '2' ? null : values.cpf_cnpj || null,
       idEstrangeiro: values.tipo === '2' ? values.idEstrangeiro || null : null,
+      // IE is a PJ concept — only persist it for Pessoa Jurídica (tipo '1').
+      ie: values.tipo === '1' ? values.ie || null : null,
       email: values.email || null,
       telefone: values.telefone ? normalizeTelefone(values.telefone) : null,
       timestamp: nowMillis(),
@@ -269,6 +326,8 @@ function QuickCreateForm({
                 field.onChange(next ?? '0');
                 // The hidden counterpart must not leak into dedup/create.
                 form.setValue(next === '2' ? 'cpf_cnpj' : 'idEstrangeiro', null);
+                // IE is PJ-only — drop it (and its field) when leaving Pessoa Jurídica.
+                if (next !== '1') form.setValue('ie', null);
               }}
               onBlur={field.onBlur}
               error={fieldState.error?.message}
@@ -301,18 +360,44 @@ function QuickCreateForm({
           <Controller
             control={form.control}
             name="cpf_cnpj"
-            render={({ field, fieldState }) => (
-              <CpfCnpjTextInput
-                value={field.value ?? ''}
-                onChange={(next) => field.onChange(next === '' ? null : next)}
-                onBlur={() => {
-                  field.onBlur();
-                  runLiveCheck();
-                }}
-                label="CPF / CNPJ"
-                error={fieldState.error?.message}
-              />
-            )}
+            render={({ field, fieldState }) => {
+              // BrasilAPI keys off the 14-digit numeric CNPJ; the value is
+              // already clean (CpfCnpjTextInput emits the wire format).
+              const isCnpj = /^\d{14}$/.test(field.value ?? '');
+              return (
+                <CpfCnpjTextInput
+                  value={field.value ?? ''}
+                  onChange={(next) => {
+                    // Editing the document clears a stale lookup error (mirrors
+                    // CnpjLookupField) so the user isn't stuck with it mid-edit.
+                    if (fieldState.error) form.clearErrors('cpf_cnpj');
+                    field.onChange(next === '' ? null : next);
+                  }}
+                  onBlur={() => {
+                    field.onBlur();
+                    runLiveCheck();
+                  }}
+                  label="CPF / CNPJ"
+                  error={fieldState.error?.message}
+                  // PJ-only "buscar dados" — mirrors the cliente pages' affordance.
+                  rightSection={
+                    tipo === '1' ? (
+                      <Tooltip label="Buscar dados do CNPJ (razão social, IE)" withArrow>
+                        <ActionIcon
+                          variant="subtle"
+                          onClick={buscarDados}
+                          loading={lookupLoading}
+                          disabled={!isCnpj}
+                          aria-label="Buscar dados do CNPJ"
+                        >
+                          <IconSearch size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                    ) : undefined
+                  }
+                />
+              );
+            }}
           />
         ) : (
           <Controller
@@ -332,6 +417,26 @@ function QuickCreateForm({
                 label="ID estrangeiro"
                 error={fieldState.error?.message}
                 maxLength={20}
+              />
+            )}
+          />
+        )}
+
+        {/* Inscrição estadual — PJ only; filled by "buscar dados", editable. */}
+        {tipo === '1' && (
+          <Controller
+            control={form.control}
+            name="ie"
+            render={({ field, fieldState }) => (
+              <TextInput
+                {...field}
+                value={field.value ?? ''}
+                onChange={(e) =>
+                  field.onChange(e.currentTarget.value === '' ? null : e.currentTarget.value)
+                }
+                label="Inscrição estadual"
+                error={fieldState.error?.message}
+                maxLength={16}
               />
             )}
           />
