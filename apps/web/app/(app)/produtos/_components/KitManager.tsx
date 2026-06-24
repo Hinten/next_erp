@@ -155,37 +155,50 @@ export function KitManager({
     const missing = activeIds.filter((id) => !(id in custoCache));
     if (missing.length === 0) return;
     let cancelled = false;
-    Promise.all(
-      missing.map(async (id) => {
-        const data = (await getDocFromServer(produtoCollection.docRef(db, {}, id))).data();
-        const own = (data?.custo as number | null | undefined) ?? null;
-        const paiId = (data?.paiId as string | null | undefined) ?? null;
-        // Flutter fallback (models.dart:1271-1287): a variation child with no own
-        // custo inherits its parent's — read the parent's custo so the pure
-        // `custoDoKit` resolver can fall back to it.
-        const custos: Array<readonly [string, number | null]> = [[id, own]];
-        if (own === null && paiId) {
-          const parent = (await getDocFromServer(produtoCollection.docRef(db, {}, paiId))).data();
-          custos.push([paiId, (parent?.custo as number | null | undefined) ?? null]);
-        }
-        return { custos, pai: [id, paiId] as const };
-      }),
-    )
-      .then((results) => {
-        if (cancelled) return;
-        setCustoCache((c) => ({ ...c, ...Object.fromEntries(results.flatMap((r) => r.custos)) }));
-        setPaiCache((p) => ({ ...p, ...Object.fromEntries(results.map((r) => r.pai)) }));
-      })
-      .catch((err: unknown) => {
-        if (err instanceof FirebaseError) {
-          notifications.show({
-            color: 'red',
-            message: `Falha ao ler o custo dos componentes: ${err.message}`,
-          });
-          return;
-        }
-        throw err;
-      });
+    const readCusto = async (id: string) =>
+      ((await getDocFromServer(produtoCollection.docRef(db, {}, id))).data()?.custo as
+        | number
+        | null
+        | undefined) ?? null;
+    (async () => {
+      // Phase 1: read each missing component's own custo + paiId.
+      const comps = await Promise.all(
+        missing.map(async (id) => {
+          const data = (await getDocFromServer(produtoCollection.docRef(db, {}, id))).data();
+          return {
+            id,
+            own: (data?.custo as number | null | undefined) ?? null,
+            paiId: (data?.paiId as string | null | undefined) ?? null,
+          };
+        }),
+      );
+      // Phase 2 — Flutter fallback (models.dart:1271-1287): a variation child with
+      // no own custo inherits its parent's. Read each parent ONCE — dedupe the
+      // paiIds and skip any already cached (sibling variations share a paiId), so
+      // a kit of N variations of the same product is one parent read, not N.
+      const neededPais = [
+        ...new Set(comps.filter((c) => c.own === null && c.paiId).map((c) => c.paiId as string)),
+      ].filter((pid) => !(pid in custoCache));
+      const pais = await Promise.all(
+        neededPais.map(async (pid) => [pid, await readCusto(pid)] as const),
+      );
+      if (cancelled) return;
+      setCustoCache((c) => ({
+        ...c,
+        ...Object.fromEntries(comps.map((cm) => [cm.id, cm.own])),
+        ...Object.fromEntries(pais),
+      }));
+      setPaiCache((p) => ({ ...p, ...Object.fromEntries(comps.map((cm) => [cm.id, cm.paiId])) }));
+    })().catch((err: unknown) => {
+      if (err instanceof FirebaseError) {
+        notifications.show({
+          color: 'red',
+          message: `Falha ao ler o custo dos componentes: ${err.message}`,
+        });
+        return;
+      }
+      throw err;
+    });
     return () => {
       cancelled = true;
     };
@@ -276,9 +289,10 @@ export function KitManager({
       const own = (data?.custo as number | null | undefined) ?? null;
       const paiId = (data?.paiId as string | null | undefined) ?? null;
       setPaiCache((p) => ({ ...p, [id]: paiId }));
-      if (own === null && paiId) {
-        // Variation child with no own custo — seed the parent's custo for the
-        // Flutter fallback (`models.dart:1271-1287`).
+      if (own === null && paiId && !(paiId in custoCache)) {
+        // Variation child with no own custo and an UNCACHED parent — read the
+        // parent's custo once for the Flutter fallback (`models.dart:1271-1287`).
+        // A parent already cached (e.g. by a sibling component) is reused.
         const parent = (await getDocFromServer(produtoCollection.docRef(db, {}, paiId))).data();
         setCustoCache((c) => ({
           ...c,
