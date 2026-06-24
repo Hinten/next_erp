@@ -1112,6 +1112,105 @@ export async function seedKitReferencing(
 }
 
 /**
+ * Seed the graph the "Gerar Variações" edit-flow e2e needs:
+ *  - a component produto `C` (ehKit:false, custo 10) with two variation children
+ *    `C-P` (size P) and `C-M` (size M);
+ *  - a kit `K` (ehKit:true) whose `componentesKit` references `C` (quantidade 2,
+ *    custo 20 = 10×2 so the parent KitManager's cost recompute leaves the form
+ *    pristine) with one variation child `K-P` (size P, no kit yet).
+ *
+ * No `grupoDeVariacoes` docs are written — the matcher only compares the trailing
+ * variant id of each `variacoesUid`, so a synthetic grupo id in the fake path is
+ * enough (the C1/overlap path used here never resolves a grupo). After Gerar +
+ * save, `K-P.componentesKit` should key `C-P` (overlap on size P).
+ */
+export async function seedKitParaGerar(prefix: string): Promise<{
+  kitId: string;
+  varKitPId: string;
+  varKitPNome: string;
+  componentId: string;
+  componentNome: string;
+  varCompPId: string;
+  varCompMId: string;
+}> {
+  const grupoTam = `${prefix}-tam`;
+  const fake = (v: string) => `documents/grupoDeVariacoes/${grupoTam}/variacoes/${v}`;
+  const sku = (s: string) => `${prefix.toUpperCase().replace(/-/g, '_')}_${s}`;
+  const base = {
+    publicado: true,
+    ehKitVirtual: false,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    fotos: null,
+    videos: null,
+    timestamp: new Date().toISOString(),
+  };
+
+  const componentId = `${prefix}-comp`;
+  const componentNome = `${prefix}-comp`;
+  const varCompPId = `${componentId}-p`;
+  const varCompMId = `${componentId}-m`;
+  const kitId = `${prefix}-kit`;
+  const varKitPId = `${kitId}-p`;
+  const varKitPNome = `${prefix}-kit P`;
+
+  const batch = db().batch();
+  // Component parent + its two variation children (size P / M).
+  batch.set(db().collection('produtos').doc(componentId), {
+    ...base,
+    nome: componentNome,
+    sku: sku('COMP'),
+    custo: 10,
+    paiId: null,
+    ordem: null,
+    ehKit: false,
+  });
+  batch.set(db().collection('produtos').doc(varCompPId), {
+    ...base,
+    nome: `${componentNome} P`,
+    sku: sku('COMP_P'),
+    custo: 10,
+    paiId: componentId,
+    ordem: 0,
+    ehKit: false,
+    variacoesUid: [fake('p')],
+  });
+  batch.set(db().collection('produtos').doc(varCompMId), {
+    ...base,
+    nome: `${componentNome} M`,
+    sku: sku('COMP_M'),
+    custo: 12,
+    paiId: componentId,
+    ordem: 1,
+    ehKit: false,
+    variacoesUid: [fake('m')],
+  });
+  // Kit parent referencing the component, + its variation child (size P).
+  batch.set(db().collection('produtos').doc(kitId), {
+    ...base,
+    nome: `${prefix}-kit`,
+    sku: sku('KIT'),
+    custo: 20,
+    paiId: null,
+    ordem: null,
+    ehKit: true,
+    componentesKit: { [componentId]: { quantidade: 2, limitarEstoque: true } },
+    componentesKitKeys: [componentId],
+  });
+  batch.set(db().collection('produtos').doc(varKitPId), {
+    ...base,
+    nome: varKitPNome,
+    sku: sku('KIT_P'),
+    paiId: kitId,
+    ordem: 0,
+    ehKit: false,
+    variacoesUid: [fake('p')],
+  });
+  await batch.commit();
+  return { kitId, varKitPId, varKitPNome, componentId, componentNome, varCompPId, varCompMId };
+}
+
+/**
  * Seed a Mercado Livre variation-link doc under the produto — the Flutter
  * shape: `produtos/<id>/variacoesml/<x>` with `produtoVariacaoOuterRef`
  * pointing back at the produto (`pathNoDocuments`, see
