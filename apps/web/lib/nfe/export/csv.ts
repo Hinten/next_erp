@@ -83,11 +83,11 @@ export function tipoLabel(tpNF: string): string {
   return '';
 }
 
-/** ISO `data_emissao` → `dd/MM/yyyy` (local). Falls back to the raw value. */
-export function formatDateBr(iso: string | null): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
+/** ms-epoch `data_emissao` → `dd/MM/yyyy` (local). Empty on null/invalid. */
+export function formatDateBr(ms: number | null): string {
+  if (ms == null) return '';
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return '';
   const dd = String(d.getDate()).padStart(2, '0');
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   return `${dd}/${mm}/${d.getFullYear()}`;

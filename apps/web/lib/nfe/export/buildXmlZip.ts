@@ -16,7 +16,7 @@
  */
 import { Zip, ZipDeflate, strToU8 } from 'fflate';
 
-import { CSV_BOM, csvRow } from './csv';
+import { CSV_BOM, csvRow, formatDateBr } from './csv';
 import {
   ExportIncompleteError,
   type ExportResult,
@@ -41,7 +41,10 @@ export async function buildXmlZip(
     if (data.length) chunks.push(data);
   });
 
-  const manifest: string[] = [csvRow(MANIFEST_HEADER)];
+  // The XML entries stream into the ZIP in query order (can't buffer hundreds of
+  // MB at 50k scale), but the manifest rows are light → buffered so we can sort
+  // them strictly by (série, número) for a número-ordered table of contents.
+  const manifestRows: { serie: number; numeracao: number; csv: string }[] = [];
   let processed = 0;
   let included = 0;
 
@@ -56,21 +59,29 @@ export async function buildXmlZip(
       zip.add(entry);
       entry.push(strToU8(note.xmlNfeProc), true);
       if (zipError) throw zipError;
-      manifest.push(
-        csvRow([
+      manifestRows.push({
+        serie: note.serie,
+        numeracao: note.numeracao,
+        csv: csvRow([
           note.chave ?? note.id,
           note.numeracao,
           note.serie,
           note.estado,
-          note.dataEmissao ?? '',
+          formatDateBr(note.dataEmissao),
         ]),
-      );
+      });
       included += 1;
     }
     onProgress?.(processed, source.preCount);
   }
 
-  manifest.push('', csvRow([`Total: ${included}`]));
+  manifestRows.sort((a, b) => a.serie - b.serie || a.numeracao - b.numeracao);
+  const manifest: string[] = [
+    csvRow(MANIFEST_HEADER),
+    ...manifestRows.map((r) => r.csv),
+    '',
+    csvRow([`Total: ${included}`]),
+  ];
   const manifestEntry = new ZipDeflate(MANIFEST_NAME, { level: 6 });
   zip.add(manifestEntry);
   manifestEntry.push(strToU8(CSV_BOM + manifest.join('\r\n') + '\r\n'), true);

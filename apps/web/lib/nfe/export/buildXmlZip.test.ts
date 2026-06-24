@@ -11,7 +11,7 @@ function note(over: Partial<NfeNote> & { id: string }): NfeNote {
     numeracao: 1,
     serie: 1,
     estado: 'a',
-    dataEmissao: '2026-05-26T18:25:00.000Z',
+    dataEmissao: new Date('2026-05-26T18:25:00.000Z').getTime(),
     xmlNfeProc: `<x>${over.id}</x>`,
     ...over,
   };
@@ -64,6 +64,27 @@ describe('buildXmlZip', () => {
     expect(manifest).toContain('ccc');
     expect(manifest).not.toContain('bbb'); // no xml → not in the zip nor the manifest
     expect(manifest).toContain('Total: 2');
+  });
+
+  it('sorts the manifest rows by (série, número), even across pages and out-of-order input', async () => {
+    const res = await buildXmlZip(
+      source({
+        preCount: 3,
+        exact: true,
+        pages: [
+          [
+            note({ id: 'n8', numeracao: 8, serie: 1 }),
+            note({ id: 'n5s2', numeracao: 5, serie: 2 }),
+          ],
+          [note({ id: 'n7', numeracao: 7, serie: 1 })],
+        ],
+      }),
+    );
+    const files = await unzip(res.blob);
+    const lines = strFromU8(files['_MANIFEST.csv']!).split('\r\n');
+    // Data rows: skip the header (line 0), the blank line, and the `Total:` line.
+    const dataRows = lines.slice(1).filter((l) => l && !l.startsWith('Total:'));
+    expect(dataRows.map((l) => l.split(';')[0])).toEqual(['n7', 'n8', 'n5s2']);
   });
 
   it('throws ExportIncompleteError when an exact source scans fewer than preCount', async () => {

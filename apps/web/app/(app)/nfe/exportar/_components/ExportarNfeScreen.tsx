@@ -43,6 +43,7 @@ import {
   showErrorNotification,
 } from '@/lib/notifications/showErrorNotification';
 import { buildExportSource, previewExport } from '@/lib/nfe/export/exportQuery';
+import { formatDateBr } from '@/lib/nfe/export/csv';
 import { buildXmlZip } from '@/lib/nfe/export/buildXmlZip';
 import { buildCsvReport } from '@/lib/nfe/export/buildCsvReport';
 import { ExportIncompleteError, type ExportFilter, type ProgressFn } from '@/lib/nfe/export/types';
@@ -297,7 +298,7 @@ export function ExportarNfeScreen() {
                               {ESTADO_NFE_LABELS[n.estado] ?? n.estado}
                             </Badge>
                           </Table.Td>
-                          <Table.Td>{n.dataEmissao?.slice(0, 10) ?? '—'}</Table.Td>
+                          <Table.Td>{formatDateBr(n.dataEmissao) || '—'}</Table.Td>
                           <Table.Td>
                             <Code fz={11}>{n.chave ?? n.id}</Code>
                           </Table.Td>

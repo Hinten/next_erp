@@ -27,7 +27,7 @@ describe('buildCsvReport', () => {
         numeracao: 7,
         serie: 1,
         estado: 'a',
-        dataEmissao: '2026-05-26T18:25:00.000Z',
+        dataEmissao: new Date('2026-05-26T18:25:00.000Z').getTime(),
         xmlNfeProc: FIXTURE_SAIDA,
       },
       {
@@ -37,7 +37,7 @@ describe('buildCsvReport', () => {
         numeracao: 8,
         serie: 1,
         estado: 'a',
-        dataEmissao: '2026-05-27T12:00:00.000Z',
+        dataEmissao: new Date('2026-05-27T12:00:00.000Z').getTime(),
         xmlNfeProc: FIXTURE_ENTRADA,
       },
       {
@@ -47,7 +47,7 @@ describe('buildCsvReport', () => {
         numeracao: 9,
         serie: 1,
         estado: 'n',
-        dataEmissao: '2026-05-27T12:00:00.000Z',
+        dataEmissao: new Date('2026-05-27T12:00:00.000Z').getTime(),
         xmlNfeProc: null,
       },
     ];
@@ -69,6 +69,29 @@ describe('buildCsvReport', () => {
     expect(text).toContain('Total de notas: 3'); // completeness marker
     // Faturamento = saídas(103,00) - entradas(50,00) = 53,00
     expect(text).toMatch(/Faturamento Total[^\n]*;53,00/);
+  });
+
+  it('sorts the report rows by (série, número), even across pages and out-of-order input', async () => {
+    const note = (serie: number, numeracao: number): NfeNote => ({
+      id: `${serie}-${numeracao}`,
+      path: `pedidos/p${serie}-${numeracao}/nfev4/s1`,
+      chave: `${serie}-${numeracao}`,
+      numeracao,
+      serie,
+      estado: 'a',
+      dataEmissao: null,
+      xmlNfeProc: null,
+    });
+    // Out of order, and split across pages: 1/8 + 2/5, then 1/7.
+    const res = await buildCsvReport(
+      source({
+        preCount: 3,
+        exact: false,
+        pages: [[note(1, 8), note(2, 5)], [note(1, 7)]],
+      }),
+    );
+    const dataLines = (await res.blob.text()).split('\r\n').slice(1, 4);
+    expect(dataLines.map((l) => l.split(';').slice(0, 2).join('/'))).toEqual(['1/7', '1/8', '2/5']);
   });
 
   it('throws ExportIncompleteError when an exact source scans fewer than preCount', async () => {

@@ -57,7 +57,12 @@ describe('csv helpers', () => {
     expect(tipoLabel('0')).toBe('Entrada');
     expect(tipoLabel('1')).toBe('Saída');
     expect(tipoLabel('')).toBe('');
-    expect(formatDateBr('2026-05-26T18:25:00.000Z')).toMatch(/^\d{2}\/\d{2}\/2026$/);
+    // local-constructed ms → deterministic dd/MM/yyyy in any tz
+    expect(formatDateBr(new Date(2026, 4, 26, 12, 0, 0).getTime())).toBe('26/05/2026');
+    // a UTC mid-day instant is still the 26th in any realistic tz
+    expect(formatDateBr(new Date('2026-05-26T18:25:00.000Z').getTime())).toMatch(
+      /^\d{2}\/\d{2}\/2026$/,
+    );
     expect(formatDateBr(null)).toBe('');
   });
 
@@ -69,7 +74,7 @@ describe('csv helpers', () => {
       numeracao: 9,
       serie: 1,
       estado: 'n',
-      dataEmissao: '2026-05-26T18:25:00.000Z',
+      dataEmissao: new Date('2026-05-26T18:25:00.000Z').getTime(),
       xmlNfeProc: null,
     };
     const cells = reportRowCsv(note, null).split(';');
@@ -88,7 +93,7 @@ describe('csv helpers', () => {
       numeracao: 7,
       serie: 1,
       estado: 'a',
-      dataEmissao: '2026-05-26T18:25:00.000Z',
+      dataEmissao: new Date('2026-05-26T18:25:00.000Z').getTime(),
       xmlNfeProc: FIXTURE_SAIDA,
     };
     const cells = reportRowCsv(note, parseNfeReportRow(FIXTURE_SAIDA)).split(';');

@@ -21,7 +21,9 @@ export async function buildCsvReport(
   source: ExportSource,
   onProgress?: ProgressFn,
 ): Promise<ExportResult> {
-  const lines: string[] = [csvRow(REPORT_HEADER)];
+  // Rows are light text (~150 B) → buffered so the report can be sorted strictly
+  // by (série, número) before writing. The cents sums below are order-independent.
+  const rows: { serie: number; numeracao: number; csv: string }[] = [];
   let processed = 0;
   let entradasCents = 0;
   let saidasCents = 0;
@@ -30,7 +32,7 @@ export async function buildCsvReport(
     for (const note of page) {
       processed += 1;
       const row = note.xmlNfeProc ? parseNfeReportRow(note.xmlNfeProc) : null;
-      lines.push(reportRowCsv(note, row));
+      rows.push({ serie: note.serie, numeracao: note.numeracao, csv: reportRowCsv(note, row) });
       if (row) {
         const cents = toCents(row.vNF);
         if (row.tpNF === '0') entradasCents += cents;
@@ -40,7 +42,12 @@ export async function buildCsvReport(
     onProgress?.(processed, source.preCount);
   }
 
-  lines.push(...reportTotalsTrailer({ entradasCents, saidasCents, count: processed }));
+  rows.sort((a, b) => a.serie - b.serie || a.numeracao - b.numeracao);
+  const lines: string[] = [
+    csvRow(REPORT_HEADER),
+    ...rows.map((r) => r.csv),
+    ...reportTotalsTrailer({ entradasCents, saidasCents, count: processed }),
+  ];
 
   if (source.exact && processed !== source.preCount) {
     throw new ExportIncompleteError(processed, source.preCount);

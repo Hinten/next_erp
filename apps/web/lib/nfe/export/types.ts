@@ -34,8 +34,8 @@ export interface NfeNote {
   readonly numeracao: number;
   readonly serie: number;
   readonly estado: EstadoNFe;
-  /** ISO `data_emissao` (dhEmi), or null. */
-  readonly dataEmissao: string | null;
+  /** `data_emissao` (dhEmi) as ms-since-epoch, or null. */
+  readonly dataEmissao: number | null;
   /** The procNFe XML — present only on authorized/cancelled notes. */
   readonly xmlNfeProc: string | null;
 }

@@ -36,13 +36,6 @@ const OPERACAO_BATCH = 30;
 
 type NfeDoc = QueryDocumentSnapshot<NotaFiscalEletronica>;
 
-/** ms-epoch bounds → ISO strings. `data_emissao` is stored UTC-normalized
- * (`z.string().datetime()` rejects offsets), matching `toISOString()`, so the
- * lexicographic range is correct. The caller passes local day bounds. */
-export function dayBoundsIso(startMs: number, endMs: number): { startIso: string; endIso: string } {
-  return { startIso: new Date(startMs).toISOString(), endIso: new Date(endMs).toISOString() };
-}
-
 /** `<YYYYMMDD>-<YYYYMMDD>` stamp for the artifact filename. */
 export function rangeStamp(startMs: number, endMs: number): string {
   const ymd = (ms: number): string => {
@@ -54,16 +47,21 @@ export function rangeStamp(startMs: number, endMs: number): string {
   return `${ymd(startMs)}-${ymd(endMs)}`;
 }
 
-/** The server-side query shape (date range + optional filial), ordered by emission. */
+/**
+ * The server-side query shape: `data_emissao` ms-epoch range + optional `filial`,
+ * ordered by emission then `numeracao`. Since #220 `data_emissao` is a number, so
+ * the range compares ms directly. Firestore requires the range field to be the
+ * first `orderBy`, so `numeracao` can only be the secondary sort key here — the
+ * ZIP/CSV builders sort the final (buffered) output strictly by número.
+ */
 export function buildExportQuery(db: Firestore, filter: ExportFilter): Query<NotaFiscalEletronica> {
-  const { startIso, endIso } = dayBoundsIso(filter.startMs, filter.endMs);
   const base = groupQuery(db, NFEV4_GROUP, nfeCollection.converter);
   const constraints = [
-    whereOp('data_emissao', '>=', startIso),
-    whereOp('data_emissao', '<=', endIso),
+    whereOp('data_emissao', '>=', filter.startMs),
+    whereOp('data_emissao', '<=', filter.endMs),
   ];
   if (filter.filialId) constraints.push(whereOp('filialId', '==', filter.filialId));
-  constraints.push(orderByField('data_emissao'));
+  constraints.push(orderByField('data_emissao'), orderByField('numeracao'));
   return buildQuery(base, constraints);
 }
 
