@@ -1,0 +1,181 @@
+name: CI — Freight
+
+# Dedicated freight (Melhor Envio) pipeline. Runs **only** when the ME app or
+# its freight workspace deps change, so non-freight PRs aren't gated by it. The
+# headline `ci.yml` still typechecks the whole graph (so a `core`/`data` change
+# that breaks freight is caught there); this adds a focused
+# lint/typecheck/unit/build lane for the freight packages, plus an **opt-in**
+# live Melhor Envio sandbox lane that's off by default.
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'apps/melhor-envio/**'
+      - 'packages/integrations/freight-br/**'
+      - 'packages/schemas/src/frete.ts'
+      - 'packages/schemas/src/integracao.ts'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/ci-freight.yml'
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'apps/melhor-envio/**'
+      - 'packages/integrations/freight-br/**'
+      - 'packages/schemas/src/frete.ts'
+      - 'packages/schemas/src/integracao.ts'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/ci-freight.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  freight-build-test:
+    name: Lint / typecheck / unit / build (offline)
+    runs-on: ubuntu-latest
+    env:
+      # Skip Next.js telemetry collection + its build-time notice (matches ci.yml).
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # On pull_request, pin the PR head; on push/dispatch the PR context is
+          # unset, so fall back to the triggering commit (same pattern as
+          # ci-nfe.yml / e2e-reusable.yml).
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.4 --activate
+          pnpm --version
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: |
+          pnpm turbo run lint \
+            --filter @delfrance/melhor-envio-app \
+            --filter @delfrance/integrations-freight-br
+
+      - name: Typecheck
+        run: |
+          pnpm turbo run typecheck \
+            --filter @delfrance/melhor-envio-app \
+            --filter @delfrance/integrations-freight-br
+
+      - name: Unit tests (offline)
+        # The live lane lives in `*.sandbox.test.ts` — it skips locally without
+        # a token but THROWS when collected in CI (CI=true), so it must NOT be
+        # collected here. Turbo forwards the args after `--` to each `vitest
+        # run`. The sandbox suite runs in `freight-live` below, invoked by name
+        # and gated by the live flag + secret.
+        run: |
+          pnpm turbo run test \
+            --filter @delfrance/melhor-envio-app \
+            --filter @delfrance/integrations-freight-br \
+            -- --exclude '**/*.sandbox.test.ts'
+
+      # Persist the ME app's incremental Next.js build cache across runs
+      # (matches ci.yml). Keyed on the head SHA actually built; restore the
+      # newest prior cache via restore-keys so iterative PR pushes aren't cold.
+      - name: Cache Next.js build
+        uses: actions/cache@v5
+        with:
+          path: apps/melhor-envio/.next/cache
+          key: nextjs-freight-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.event.pull_request.head.sha || github.sha }}
+          restore-keys: |
+            nextjs-freight-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+
+      - name: Build
+        run: pnpm --filter @delfrance/melhor-envio-app build
+
+  freight-live:
+    name: Live Melhor Envio sandbox tests
+    runs-on: ubuntu-latest
+    needs: freight-build-test
+    # Opt-in: skips on normal PRs (incl. fork PRs that can't read secrets)
+    # unless the repo variable is flipped on; always runs on manual dispatch.
+    # Default-off so a missing/expired sandbox token never reds a freight PR.
+    if: ${{ vars.FREIGHT_CI_LIVE_ENABLED == 'true' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.4 --activate
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify live-test secret is configured
+        # Fail loud + early when the token is missing instead of letting the
+        # suite's `describe.skip` silently drop every live test (a green CI that
+        # actually ran nothing).
+        env:
+          MELHOR_ENVIO_SANDBOX_TOKEN: ${{ secrets.MELHOR_ENVIO_SANDBOX_TOKEN }}
+        run: |
+          if [[ -z "${MELHOR_ENVIO_SANDBOX_TOKEN:-}" ]]; then
+            echo "::error::Missing required secret MELHOR_ENVIO_SANDBOX_TOKEN for freight-live."
+            echo "Mint a sandbox access token (OAuth connect on a sandbox ME account) and set it at https://github.com/${{ github.repository }}/settings/secrets/actions"
+            exit 1
+          fi
+          echo "MELHOR_ENVIO_SANDBOX_TOKEN is configured."
+
+      - name: Run live sandbox tests (read-only — /me, /me/balance, calculate)
+        env:
+          MELHOR_ENVIO_SANDBOX: 'true'
+          MELHOR_ENVIO_SANDBOX_TOKEN: ${{ secrets.MELHOR_ENVIO_SANDBOX_TOKEN }}
+          MELHOR_ENVIO_USER_AGENT: ${{ vars.MELHOR_ENVIO_USER_AGENT }}
+        run: |
+          pnpm --filter @delfrance/integrations-freight-br test calculate.sandbox
+
+  report-failure:
+    name: Post failure note on PR
+    needs: [freight-build-test, freight-live]
+    # Same-repo PRs only — fork runs get a read-only token and can't comment,
+    # which would 403 here and mask the original failure (same guard as ci.yml).
+    if: ${{ failure() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Comment failure summary
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const body =
+              `❌ \`ci-freight.yml\` failed on this PR.\n\n` +
+              `See the Actions tab for full logs: ` +
+              `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: prNumber, body,
+            });
