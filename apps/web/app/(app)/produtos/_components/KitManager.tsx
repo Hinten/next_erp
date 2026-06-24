@@ -225,11 +225,13 @@ export function KitManager({
       return;
     }
     if (excludeIds?.includes(id)) {
-      // A variation of the kit itself (the picker hides these; the "Recentes"
-      // group is unfiltered, so guard on add too).
+      // Excluded ids = the kit family (the produto itself + its variations). The
+      // picker hides these, but the "Recentes" group is unfiltered, so guard on
+      // add too. Generic message — the excluded id may be self, a variation, or
+      // (for a per-variation editor) the parent kit / a sibling.
       notifications.show({
         color: 'yellow',
-        message: 'Uma variação do próprio produto não pode ser componente do kit.',
+        message: 'Este produto não pode ser componente deste kit.',
       });
       return;
     }

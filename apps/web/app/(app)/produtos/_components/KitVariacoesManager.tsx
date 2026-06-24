@@ -90,15 +90,15 @@ export function KitVariacoesManager({
 
   // Register the flush; re-registers when staged/rows change so the closure is fresh.
   useEffect(() => {
-    flushRef.current = async () => {
+    flushRef.current = async (parentId) => {
       if (Object.keys(staged).length === 0) return;
       // Children now exist (created in the variation flush) — re-read to resolve
       // each staged row's key to the real child id (new rows match by combo).
-      const byParent = await getVariationChildrenByParent(db, [produtoId]);
+      const byParent = await getVariationChildrenByParent(db, [parentId]);
       const resolved = resolveStagedKitVariacoes({
         stagedByKey: staged,
         rows,
-        realChildren: byParent[produtoId] ?? [],
+        realChildren: byParent[parentId] ?? [],
       });
       await saveChildrenComponentesKit(
         createClientProdutoPort(db),
@@ -111,7 +111,7 @@ export function KitVariacoesManager({
     return () => {
       flushRef.current = null;
     };
-  }, [db, produtoId, staged, rows, flushRef]);
+  }, [db, staged, rows, flushRef]);
 
   const gerar = async () => {
     const parentKit = stripKitForSave(form?.watch('componentesKit')) ?? {};
