@@ -372,5 +372,11 @@ export {
   type ParsedProductMediaDir,
 } from './storage/storagePaths';
 
-export { buildFotoRefs, fotoSchema, type Foto, type FotoRefs } from './storage/foto';
+export {
+  buildFotoRefs,
+  deriveFotosArquivosIds,
+  fotoSchema,
+  type Foto,
+  type FotoRefs,
+} from './storage/foto';
 export { videoSchema, videoFormatoSchema, type Video, type VideoFormato } from './storage/video';

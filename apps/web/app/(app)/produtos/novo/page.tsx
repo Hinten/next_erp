@@ -13,6 +13,7 @@ import {
   type PrecosMap,
   type ProdutoExtraData,
   type Video,
+  deriveFotosArquivosIds,
   produtoPageBaseSchema,
   produtoPageIssues,
 } from '@delfrance/schemas';
@@ -247,6 +248,9 @@ export default function NovoProdutoPage() {
             // `array-contains` query (order-insensitive), and Firestore arrays
             // are order-sensitive, so an unsorted list churns dirty detection.
             componentesKitKeys: componentesKit ? Object.keys(componentesKit).sort() : null,
+            // Coexistence denorm for the legacy Flutter deletion guard — the bare
+            // arquivo ids of the produto's photos (`models.dart:2022-2026`).
+            fotosArquivosIds: deriveFotosArquivosIds(values.fotos as Foto[] | null),
           };
         }}
         validate={(values) =>
