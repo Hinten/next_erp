@@ -6,15 +6,21 @@ import { notifications } from '@mantine/notifications';
 import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import { useFormContext } from 'react-hook-form';
-import { generateKitForVariacoes, type ComponentesKit, type GrupoComId } from '@delfrance/schemas';
+import {
+  generateKitForVariacoes,
+  resolveStagedKitVariacoes,
+  type ComponentesKit,
+  type GrupoComId,
+} from '@delfrance/schemas';
 import { saveChildrenComponentesKit } from '@delfrance/data/produto';
 import { buildQuery, whereEqual } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { createClientProdutoPort, getVariationChildrenByParent } from '@/lib/produtos/clientPort';
 import { KitManager, stripKitForSave } from './KitManager';
+import type { VariationRow } from './VariationManager';
 
-/** Persists the staged per-child kit maps; called by the page after children flush. */
+/** Persists the staged per-variation kit maps; called by the page after children flush. */
 export type KitVariacoesFlush = (parentId: string) => Promise<void>;
 
 export interface KitVariacoesManagerProps {
@@ -23,6 +29,12 @@ export interface KitVariacoesManagerProps {
   db: Firestore;
   /** Variation groups (for the matcher's linked-variant resolution). */
   grupos: GrupoComId[];
+  /**
+   * The current variation set (saved + staged), published by `VariationManager`.
+   * Driving the grid off this lets "Gerar Variações" target variations that
+   * aren't saved yet (full parity with the Flutter app).
+   */
+  rows: VariationRow[];
   disabled?: boolean;
   /** Registered with the page; invoked in `onAfterSave` (after the children flush). */
   flushRef: RefObject<KitVariacoesFlush | null>;
@@ -32,60 +44,74 @@ export interface KitVariacoesManagerProps {
  * Per-variation kit grid + "Gerar Variações" — port of the Flutter
  * `gerarComponentesParaVariacoes` UX (`produtoCadastro.dart` `KitWidget` +
  * `produtoTableProvider.dart:979`). Rendered below the parent `KitManager` on the
- * Kit tab (edit mode). Each kit-variation child gets its own component editor
- * (the reused `KitManager`, forced to kit mode, not syncing cost to the parent
- * form); the "Gerar Variações" button runs the pure matcher
- * (`generateKitForVariacoes`) to auto-fill each child's components from the
- * parent's, then stages the maps for the parent save. The staged maps are flushed
- * onto each child produto doc in `onAfterSave` (after the variation-children flush
- * so the docs exist).
+ * Kit tab (edit mode). Each kit-variation gets its own component editor (the
+ * reused `KitManager`, forced to kit mode, not syncing cost to the parent form);
+ * "Gerar Variações" runs the pure matcher (`generateKitForVariacoes`) and
+ * **merges** the result into each variation's components (old `addChildrenMap`
+ * semantics). The maps are flushed onto each child produto doc in `onAfterSave`
+ * (after the variation-children flush) — staged-new variations are matched to
+ * their freshly-minted child by `variacoesUid` via `resolveStagedKitVariacoes`.
  */
 export function KitVariacoesManager({
   produtoId,
   db,
   grupos,
+  rows,
   disabled,
   flushRef,
 }: KitVariacoesManagerProps) {
   const form = useFormContext();
   const ehKit = form?.watch('ehKit') === true;
 
-  // Live variation children (paiId == produtoId), sorted client-side by `ordem`
-  // (Firestore's orderBy would silently drop docs missing the field).
+  // Saved children's persisted `componentesKit`, keyed by id — the initial value
+  // of each existing row (the grid SET comes from `rows`, incl. staged ones).
   const childrenQuery = useMemo(
     () => buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', produtoId)]),
     [db, produtoId],
   );
   const childrenSnap = useSnapshot(childrenQuery);
-  const children = useMemo(
-    () =>
-      [...(childrenSnap.data ?? [])].sort(
-        (a, b) => (a.data.ordem ?? Infinity) - (b.data.ordem ?? Infinity),
-      ),
-    [childrenSnap.data],
+  const savedKitById = useMemo(() => {
+    const map: Record<string, ComponentesKit | null> = {};
+    for (const c of childrenSnap.data ?? []) map[c.id] = c.data.componentesKit ?? null;
+    return map;
+  }, [childrenSnap.data]);
+
+  const visibleRows = useMemo(() => rows.filter((r) => !r.deleteMark), [rows]);
+
+  // A kit-variation can't include the kit family (parent + any variation).
+  const familyExcludeIds = useMemo(
+    () => [produtoId, ...rows.map((r) => r.id).filter((id): id is string => id !== null)],
+    [produtoId, rows],
   );
 
-  // Staged per-child maps (keyed by child id) — set by "Gerar Variações" and by
-  // manual per-child edits; only these are flushed. A child absent from `staged`
-  // keeps its persisted map untouched.
+  // Staged per-variation maps, keyed by `VariationRow.key` (stable across save).
   const [staged, setStaged] = useState<Record<string, ComponentesKit | null>>({});
   const [gerando, setGerando] = useState(false);
 
-  // Register the flush with the page; re-registers when `staged` changes so the
-  // closure always persists the latest per-child maps.
+  // Register the flush; re-registers when staged/rows change so the closure is fresh.
   useEffect(() => {
     flushRef.current = async () => {
-      const entries = Object.entries(staged);
-      if (entries.length === 0) return;
+      if (Object.keys(staged).length === 0) return;
+      // Children now exist (created in the variation flush) — re-read to resolve
+      // each staged row's key to the real child id (new rows match by combo).
+      const byParent = await getVariationChildrenByParent(db, [produtoId]);
+      const resolved = resolveStagedKitVariacoes({
+        stagedByKey: staged,
+        rows,
+        realChildren: byParent[produtoId] ?? [],
+      });
       await saveChildrenComponentesKit(
         createClientProdutoPort(db),
-        entries.map(([id, map]) => ({ id, componentesKit: stripKitForSave(map ?? {}) })),
+        resolved.map((r) => ({
+          id: r.id,
+          componentesKit: stripKitForSave(r.componentesKit ?? {}),
+        })),
       );
     };
     return () => {
       flushRef.current = null;
     };
-  }, [db, flushRef, staged]);
+  }, [db, produtoId, staged, rows, flushRef]);
 
   const gerar = async () => {
     const parentKit = stripKitForSave(form?.watch('componentesKit')) ?? {};
@@ -109,14 +135,22 @@ export function KitVariacoesManager({
       );
       const { porFilho, warnings, errors } = generateKitForVariacoes({
         componentes,
-        kitVariacoes: children.map((c) => ({
-          id: c.id,
-          variacoesUid: c.data.variacoesUid ?? [],
-        })),
+        kitVariacoes: visibleRows.map((r) => ({ id: r.key, variacoesUid: r.variacoesUid })),
         componentVariacoesByComponentId,
         grupos,
       });
-      setStaged((s) => ({ ...s, ...porFilho }));
+      // MERGE into each variation's existing map (old `addChildrenMap` — not a replace).
+      setStaged((s) => {
+        const next = { ...s };
+        for (const row of visibleRows) {
+          const generated = porFilho[row.key];
+          if (!generated) continue;
+          const existing =
+            row.key in s ? (s[row.key] ?? {}) : row.id ? (savedKitById[row.id] ?? {}) : {};
+          next[row.key] = { ...existing, ...generated };
+        }
+        return next;
+      });
       if (errors.length > 0) {
         notifications.show({
           color: 'red',
@@ -146,8 +180,8 @@ export function KitVariacoesManager({
     }
   };
 
-  // Hidden until the produto is a kit with variation children to generate for.
-  if (!ehKit || children.length === 0) return null;
+  // Hidden until the produto is a kit with variations to generate for.
+  if (!ehKit || visibleRows.length === 0) return null;
 
   return (
     <Stack gap="sm">
@@ -162,20 +196,22 @@ export function KitVariacoesManager({
         </Button>
       </Group>
 
-      {children.map((child) => {
-        const value = child.id in staged ? staged[child.id]! : (child.data.componentesKit ?? null);
+      {visibleRows.map((row) => {
+        const value =
+          row.key in staged ? staged[row.key]! : row.id ? (savedKitById[row.id] ?? null) : null;
         return (
-          <Paper key={child.id} withBorder p="sm" radius="sm">
+          <Paper key={row.key} withBorder p="sm" radius="sm">
             <Text fw={500} size="sm" mb="xs">
-              {(child.data.sku ?? 'Sem SKU') + ' - ' + (child.data.nome ?? 'Sem nome')}
+              {(row.sku || 'Sem SKU') + ' - ' + (row.nome || 'Sem nome')}
             </Text>
             <KitManager
-              produtoId={child.id}
+              produtoId={row.id}
               db={db}
               ehKit
               syncCustoToForm={false}
+              excludeIds={familyExcludeIds}
               value={value}
-              onChange={(next) => setStaged((s) => ({ ...s, [child.id]: next }))}
+              onChange={(next) => setStaged((s) => ({ ...s, [row.key]: next }))}
               disabled={disabled}
             />
           </Paper>

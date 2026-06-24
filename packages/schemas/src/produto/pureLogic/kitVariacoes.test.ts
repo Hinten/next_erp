@@ -5,6 +5,7 @@ import {
   type GenerateKitVariacoesInput,
   type KitComponente,
   generateKitForVariacoes,
+  resolveStagedKitVariacoes,
 } from './kitVariacoes';
 
 const fp = varianteFakePath;
@@ -228,5 +229,51 @@ describe('generateKitForVariacoes', () => {
     });
     expect(Object.keys(r.porFilho.kP!)).toEqual(['cA-P']);
     expect(Object.keys(r.porFilho.kM!)).toEqual(['cA-M']);
+  });
+});
+
+describe('resolveStagedKitVariacoes', () => {
+  const mapFor = (componentId: string) => ({
+    [componentId]: { quantidade: 1, limitarEstoque: true, timestamp: null },
+  });
+
+  it('maps a saved row directly by its real id', () => {
+    const out = resolveStagedKitVariacoes({
+      stagedByKey: { childP: mapFor('cA-P') },
+      rows: [{ key: 'childP', id: 'childP', variacoesUid: [fp('gT', 'P')] }],
+      realChildren: [{ id: 'childP', variacoesUid: [fp('gT', 'P')] }],
+    });
+    expect(out).toEqual([{ id: 'childP', componentesKit: mapFor('cA-P') }]);
+  });
+
+  it('matches a new (unsaved) row to its real child by variacoesUid (sameCombo)', () => {
+    // Staged under a temp key; the real child was minted with a fresh id at flush.
+    const out = resolveStagedKitVariacoes({
+      stagedByKey: { tmp1: mapFor('cA-P') },
+      rows: [{ key: 'tmp1', id: null, variacoesUid: [fp('gT', 'P')] }],
+      realChildren: [
+        { id: 'real-M', variacoesUid: [fp('gT', 'M')] },
+        { id: 'real-P', variacoesUid: [fp('gT', 'P')] },
+      ],
+    });
+    expect(out).toEqual([{ id: 'real-P', componentesKit: mapFor('cA-P') }]);
+  });
+
+  it('drops delete-marked, unknown and unmatched rows, and claims each child once', () => {
+    const out = resolveStagedKitVariacoes({
+      stagedByKey: {
+        gone: mapFor('x'), // delete-marked
+        ghost: mapFor('y'), // no matching row
+        tmpP: mapFor('cA-P'),
+        tmpP2: mapFor('cB-P'), // same combo as tmpP, but the only P child is already claimed
+      },
+      rows: [
+        { key: 'gone', id: 'g', variacoesUid: [fp('gT', 'G')], deleteMark: true },
+        { key: 'tmpP', id: null, variacoesUid: [fp('gT', 'P')] },
+        { key: 'tmpP2', id: null, variacoesUid: [fp('gT', 'P')] },
+      ],
+      realChildren: [{ id: 'real-P', variacoesUid: [fp('gT', 'P')] }],
+    });
+    expect(out).toEqual([{ id: 'real-P', componentesKit: mapFor('cA-P') }]);
   });
 });

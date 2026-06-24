@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
@@ -43,7 +43,7 @@ import { KitManager, stripKitForSave } from '../../_components/KitManager';
 import { KitVariacoesManager, type KitVariacoesFlush } from '../../_components/KitVariacoesManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
-import { VariationManager } from '../../_components/VariationManager';
+import { VariationManager, type VariationRow } from '../../_components/VariationManager';
 import {
   PRODUTO_EXCLUDED_FIELDS,
   PRODUTO_SECTIONS,
@@ -88,6 +88,14 @@ export default function EditarProdutoPage() {
   // Staged per-variation kit maps (the "Gerar Variações" grid), flushed AFTER
   // the variation-children flush so the child docs exist.
   const flushKitVariacoesRef = useRef<KitVariacoesFlush | null>(null);
+  // The live variation rows (saved + staged), published by VariationManager and
+  // consumed by the Kit tab (the per-variation grid + the component-picker
+  // exclusion: a kit can't contain itself or its variations).
+  const [variationRows, setVariationRows] = useState<VariationRow[]>([]);
+  const kitExcludeIds = useMemo(
+    () => [params.id, ...variationRows.map((r) => r.id).filter((id): id is string => id !== null)],
+    [params.id, variationRows],
+  );
 
   // Price-history bookkeeping (Flutter parity: `Produto.save()` records every
   // precos change). `lastSavedPrecos` pins the PERSISTED map once, from the
@@ -163,6 +171,7 @@ export default function EditarProdutoPage() {
             onGroupsChange={(ids) => {
               groupsRef.current = ids;
             }}
+            onRowsChange={setVariationRows}
             flushRef={flushChildrenRef}
             disabled={p.disabled}
           />
@@ -247,11 +256,13 @@ export default function EditarProdutoPage() {
               value={(p.value as ComponentesKit | null) ?? null}
               onChange={p.onChange}
               disabled={p.disabled}
+              excludeIds={kitExcludeIds}
             />
             <KitVariacoesManager
               produtoId={params.id}
               db={db}
               grupos={grupos}
+              rows={variationRows}
               disabled={p.disabled}
               flushRef={flushKitVariacoesRef}
             />
@@ -259,7 +270,17 @@ export default function EditarProdutoPage() {
         ),
       },
     }),
-    [params.id, db, storage, grupos, gruposSnap.error?.message, listas, listasSnap.error?.message],
+    [
+      params.id,
+      db,
+      storage,
+      grupos,
+      gruposSnap.error?.message,
+      listas,
+      listasSnap.error?.message,
+      variationRows,
+      kitExcludeIds,
+    ],
   );
 
   // The editor is the product screen now (the intermediate detail view was

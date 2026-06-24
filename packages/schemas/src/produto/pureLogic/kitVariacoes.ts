@@ -1,5 +1,5 @@
 import type { ComponentesKit } from '../collection/embedded/kit';
-import { type GrupoComId, parseFakePath } from './variacoes';
+import { type GrupoComId, parseFakePath, sameCombo } from './variacoes';
 
 /**
  * "Gerar Variações" for a kit — pure port of the Flutter
@@ -203,4 +203,60 @@ export function generateKitForVariacoes(
   }
 
   return { porFilho, warnings, errors };
+}
+
+/** A kit-variation row staged in the grid (saved children carry a real `id`). */
+export interface StagedKitRow {
+  /** Stable row key — a real produto id for saved rows, a temp id for new ones. */
+  key: string;
+  /** The real produto id if this variation is already saved, else `null`. */
+  id: string | null;
+  variacoesUid: string[];
+  deleteMark?: boolean;
+}
+
+/** A persisted variation child (after the parent + children flush). */
+export interface RealKitChild {
+  id: string;
+  variacoesUid: string[];
+}
+
+/**
+ * Resolve the grid's staged per-row kit maps (keyed by `StagedKitRow.key`) to
+ * concrete `{ id, componentesKit }` writes against the REAL variation children —
+ * the bridge that lets "Gerar Variações" target variations added in the Variações
+ * tab but not yet saved. New children are minted with fresh ids at flush
+ * (`VariationManager`), so a staged-new row is matched to its real child by an
+ * unordered `variacoesUid` match (`sameCombo`); a saved row maps by id directly.
+ * Each real child is claimed at most once; rows that are delete-marked, unknown,
+ * or unmatched are dropped.
+ */
+export function resolveStagedKitVariacoes(input: {
+  stagedByKey: Record<string, ComponentesKit | null>;
+  rows: StagedKitRow[];
+  realChildren: RealKitChild[];
+}): Array<{ id: string; componentesKit: ComponentesKit | null }> {
+  const rowByKey = new Map(input.rows.map((r) => [r.key, r]));
+  const realById = new Map(input.realChildren.map((c) => [c.id, c]));
+  const claimed = new Set<string>();
+  const out: Array<{ id: string; componentesKit: ComponentesKit | null }> = [];
+
+  for (const [key, map] of Object.entries(input.stagedByKey)) {
+    const row = rowByKey.get(key);
+    if (!row || row.deleteMark) continue;
+
+    let targetId: string | null = null;
+    if (row.id && realById.has(row.id) && !claimed.has(row.id)) {
+      targetId = row.id;
+    } else {
+      const match = input.realChildren.find(
+        (c) => !claimed.has(c.id) && sameCombo(c.variacoesUid, row.variacoesUid),
+      );
+      targetId = match ? match.id : null;
+    }
+    if (!targetId) continue;
+    claimed.add(targetId);
+    out.push({ id: targetId, componentesKit: map });
+  }
+  return out;
 }
