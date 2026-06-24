@@ -880,30 +880,25 @@ export async function seedPedidoWithNFe(
       enderecoFiscalOuterRef: null,
       listaDePrecosOuterRef: null,
     });
-  await db()
-    .collection('pedidos')
-    .doc(pedidoId)
-    .collection('nfev4')
-    .doc(nfeId)
-    .set({
-      numeracao: 1,
-      serie: 1,
-      tpEmis: 1,
-      estado,
-      chave: null,
-      idLote: null,
-      infNFe: null,
-      xml_nfe_proc: null,
-      xml_epec_proc: null,
-      xml_assinado: null,
-      nRec: null,
-      retries: null,
-      cStat: null,
-      xMotivo: null,
-      error: null,
-      timestamp: now,
-      ultima_modificacao: new Date(now).toISOString(),
-    });
+  await db().collection('pedidos').doc(pedidoId).collection('nfev4').doc(nfeId).set({
+    numeracao: 1,
+    serie: 1,
+    tpEmis: 1,
+    estado,
+    chave: null,
+    idLote: null,
+    infNFe: null,
+    xml_nfe_proc: null,
+    xml_epec_proc: null,
+    xml_assinado: null,
+    nRec: null,
+    retries: null,
+    cStat: null,
+    xMotivo: null,
+    error: null,
+    timestamp: now,
+    ultima_modificacao: now,
+  });
   return { pedidoId, nfeId };
 }
 
