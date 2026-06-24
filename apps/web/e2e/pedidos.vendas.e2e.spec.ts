@@ -232,8 +232,11 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
   }, testInfo) => {
     const RAZAO = 'EMPRESA QUICK CREATE LTDA';
     const IE = '111222333444';
-    // Run+retry-unique CNPJ so the modal's own dedup never blocks the create.
-    const cnpj = validTestCnpj(runDigits(12));
+    // Run+retry-unique CNPJ, DISTINCT from the seeded fixture cliente's
+    // `validTestCnpj(runDigits(12))` — reusing that value would make the fixture
+    // an exact cpf_cnpj match and block the create (dialog never closes).
+    // Mirrors the PF quick-create test's retry-scoped identity derivation.
+    const cnpj = validTestCnpj(String(Number(runDigits(11)) * 10 + testInfo.retry));
     const nome = `${prefix}-qc-pj-${testInfo.retry}`;
 
     // The lookup hits two external services unavailable from staging — stub
