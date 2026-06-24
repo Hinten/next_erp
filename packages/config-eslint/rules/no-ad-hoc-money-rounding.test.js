@@ -44,6 +44,11 @@ ruleTester.run('no-ad-hoc-money-rounding', rule, {
       code: `export const f = (n) => n.toFixed(2);`,
       filename: '/repo/apps/nfe/lib/nfe/orchestrator/generator-input.ts',
     },
+    {
+      name: 'nfe export csv.ts parses XML money strings to cents',
+      code: `export const toCents = (n) => Math.round(n * 100);`,
+      filename: '/repo/apps/web/lib/nfe/export/csv.ts',
+    },
   ],
   invalid: [
     {
