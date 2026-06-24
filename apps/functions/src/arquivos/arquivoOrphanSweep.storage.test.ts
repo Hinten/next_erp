@@ -113,6 +113,12 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     const doc = await db.collection('arquivos').doc(id).get();
     expect(doc.exists).toBe(true);
     expect(doc.data()?.uploadState).toBe('finalized');
+
+    // Clean up the `media/` object: the emulator bucket is shared across files
+    // and resizeProductImage's "ignores a non-product upload" asserts the WHOLE
+    // `media/` listing equals its own file, so a stray object here fails it
+    // depending on test order.
+    await bucket.file(oPath).delete({ ignoreNotFound: true });
   });
 
   it('unreferenced sweep deletes orphans (owner missing or no ref), keeps referenced', async () => {
