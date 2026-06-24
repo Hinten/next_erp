@@ -21,6 +21,7 @@ export const PRODUTO_SUBDIR = {
   originals: 'originals',
   derivatives: 'derivatives',
   videos: 'videos',
+  anexos: 'anexos',
 } as const;
 
 /**
@@ -63,6 +64,15 @@ export function productDerivativePath(produtoId: string, hash: string, variantKe
 /** `produtos/<produtoId>/videos/<hash>[.<ext>]` — NOT watched, NOT resized. */
 export function productVideoPath(produtoId: string, hash: string, ext?: string | null): string {
   return withExt(`${STORAGE_ROOT.produtos}/${produtoId}/${PRODUTO_SUBDIR.videos}/${hash}`, ext);
+}
+
+/**
+ * `produtos/<produtoId>/anexos/<hash>[.<ext>]` — generic product attachments
+ * (PDFs, datasheets, contracts…). Product-scoped like originals/videos so the
+ * orphan sweep can reclaim them; NOT watched, NOT resized (any content type).
+ */
+export function productAnexoPath(produtoId: string, hash: string, ext?: string | null): string {
+  return withExt(`${STORAGE_ROOT.produtos}/${produtoId}/${PRODUTO_SUBDIR.anexos}/${hash}`, ext);
 }
 
 /** `media/<hash>[.<ext>]` — generic, non-product files. */
@@ -117,7 +127,7 @@ export function isWatchedProductOriginal(name: string): boolean {
 }
 
 /** A product-media subdir the orphan sweep is allowed to reclaim. */
-export type ProductMediaKind = 'originals' | 'videos';
+export type ProductMediaKind = 'originals' | 'videos' | 'anexos';
 
 export interface ParsedProductMediaDir {
   produtoId: string;
@@ -126,9 +136,9 @@ export interface ParsedProductMediaDir {
 
 /**
  * Parse a product-media **directory** (`Arquivo.filepath`, no filename) into its
- * owner `produtoId` and kind — `produtos/<produtoId>/originals` (photos) or
- * `produtos/<produtoId>/videos`. Returns `null` for derivatives, generic
- * `media/`, or anything else.
+ * owner `produtoId` and kind — `produtos/<produtoId>/originals` (photos),
+ * `produtos/<produtoId>/videos`, or `produtos/<produtoId>/anexos` (attachments).
+ * Returns `null` for derivatives, generic `media/`, or anything else.
  *
  * Used by the unreferenced-arquivo sweep to (1) scope candidates to exactly the
  * product photo + video subfolders and (2) recover the owning `produtoId` so it
@@ -147,6 +157,7 @@ export function parseProductMediaDir(
   if (!produtoId) return null;
   if (sub === PRODUTO_SUBDIR.originals) return { produtoId, kind: 'originals' };
   if (sub === PRODUTO_SUBDIR.videos) return { produtoId, kind: 'videos' };
+  if (sub === PRODUTO_SUBDIR.anexos) return { produtoId, kind: 'anexos' };
   return null;
 }
 

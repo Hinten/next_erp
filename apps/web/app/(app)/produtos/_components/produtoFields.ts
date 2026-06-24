@@ -28,6 +28,7 @@ export const PRODUTO_SECTIONS: string[] = [
   'Variações',
   'Fotos',
   'Vídeos',
+  'Anexos',
 ];
 
 /**
@@ -110,13 +111,12 @@ export const PRODUTO_TRANSIENT_FIELDS: string[] = ['id', 'extraData', 'estoques'
  * Fields hidden from the Produto ObjectView for now. Kit components and
  * marketplace bindings get dedicated tabs in later PRs; embeddings, references
  * and internal ordering stay server-managed or pass-through. (`fotos`,
- * `videos` and `variacoesUid` have their own tabs — see `PRODUTO_SECTIONS` —
+ * `videos`, `anexos` and `variacoesUid` have their own tabs — see `PRODUTO_SECTIONS` —
  * so they're intentionally not listed. `grupoDeVariacoesUid` stays excluded:
  * the Variações tab manages it and the page's `deriveOnSave` persists it.)
  */
 export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   'nome_embedding',
-  'anexos',
   'grupoDeVariacoesUid',
   // `componentesKit` renders in the Kit tab; `componentesKitKeys` is the denorm
   // the delete-guard queries — derived in `deriveOnSave`, never rendered.

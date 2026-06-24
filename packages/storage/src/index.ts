@@ -6,10 +6,12 @@ export {
   uploadFile,
   uploadProductImage,
   uploadProductVideo,
+  uploadProductAnexo,
   uploadFromUrl,
   type UploadResult,
   type UploadFileArgs,
   type UploadProductImageArgs,
   type UploadProductVideoArgs,
+  type UploadProductAnexoArgs,
   type UploadFromUrlArgs,
 } from './upload';

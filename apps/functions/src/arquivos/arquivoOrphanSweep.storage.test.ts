@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   mediaPath,
   nowMicros,
+  productAnexoPath,
   productArquivoId,
   productOriginalPath,
   productVideoPath,
@@ -138,7 +139,12 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
           filetype,
           filepath,
           filename: storagePath.slice(slash + 1),
-          contentType: filetype === 'video' ? 'video/mp4' : 'image/png',
+          contentType:
+            filetype === 'video'
+              ? 'video/mp4'
+              : filetype === 'document'
+                ? 'application/pdf'
+                : 'image/png',
           url: null,
           externalIds: [],
           uploadState: 'finalized',
@@ -150,6 +156,7 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     const refHash = randomUUID().replace(/-/g, '');
     const unrefHash = randomUUID().replace(/-/g, '');
     const vidHash = randomUUID().replace(/-/g, '');
+    const anxHash = randomUUID().replace(/-/g, '');
     const missingHash = randomUUID().replace(/-/g, '');
 
     const ref = await seedAt(
@@ -167,6 +174,11 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
       productArquivoId(ownerId, vidHash),
       'video',
     ); // orphan video (owner has no videos)
+    const anx = await seedAt(
+      productAnexoPath(ownerId, anxHash, 'pdf'),
+      productArquivoId(ownerId, anxHash),
+      'document',
+    ); // orphan anexo (owner has no anexos) — the §9 backstop must reap it
     const missing = await seedAt(
       productOriginalPath(missingOwnerId, missingHash, 'png'),
       productArquivoId(missingOwnerId, missingHash),
@@ -182,7 +194,7 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     // Inject the candidate batch — the real fetch is a regex pipeline, which does
     // not run in the emulator. The owner lookup (`resolveReferenced`) is the REAL
     // getAll-based default, so this exercises the actual reference resolution.
-    const candidates = [ref, unref, vid, missing].map((c) => ({
+    const candidates = [ref, unref, vid, anx, missing].map((c) => ({
       ref: db.collection('arquivos').doc(c.id),
       id: c.id,
       filepath: c.filepath,
@@ -192,6 +204,7 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     expect((await db.collection('arquivos').doc(ref.id).get()).exists).toBe(true); // referenced → kept
     expect((await db.collection('arquivos').doc(unref.id).get()).exists).toBe(false); // no ref → deleted
     expect((await db.collection('arquivos').doc(vid.id).get()).exists).toBe(false); // orphan video → deleted
+    expect((await db.collection('arquivos').doc(anx.id).get()).exists).toBe(false); // orphan anexo → deleted
     expect((await db.collection('arquivos').doc(missing.id).get()).exists).toBe(false); // owner gone → deleted
   });
 

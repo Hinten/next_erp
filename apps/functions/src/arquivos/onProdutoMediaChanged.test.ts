@@ -5,14 +5,16 @@ import { collectMediaRefs } from './onProdutoMediaChanged';
 // Pure unit suite — the ref-collection logic the trigger diffs. The mark/unmark
 // I/O lives in onProdutoMediaChanged.storage.test.ts (emulator).
 describe('collectMediaRefs', () => {
-  it('collects fotos + videos arquivoOuterRefs and ignores anexos', () => {
+  it('collects fotos + videos + anexos arquivoOuterRefs', () => {
     const refs = collectMediaRefs({
       fotos: [{ arquivoOuterRef: 'arquivos/p_a' }, { arquivoOuterRef: 'arquivos/p_b' }],
       videos: [{ arquivoOuterRef: 'arquivos/p_v' }],
-      // anexos stay on the 48h backstop sweep — not part of the eager reap.
+      // anexos are now product-scoped (produtos/<id>/anexos) → eagerly reaped too.
       anexos: [{ arquivoOuterRef: 'arquivos/anx1' }],
     });
-    expect(refs).toEqual(new Set(['arquivos/p_a', 'arquivos/p_b', 'arquivos/p_v']));
+    expect(refs).toEqual(
+      new Set(['arquivos/p_a', 'arquivos/p_b', 'arquivos/p_v', 'arquivos/anx1']),
+    );
   });
 
   it('tolerates undefined data, missing/null arrays and malformed elements', () => {
