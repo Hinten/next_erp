@@ -7,11 +7,13 @@ import {
   buildChildrenComponentesKitOps,
   buildExtraDataWriteOps,
   buildImpostoWriteOps,
+  buildKitStatusChildOps,
   buildLocalizacaoOp,
   buildPrecoHistoryOps,
   deleteProdutoCascade,
   findProdutoReferences,
   planMovimentacao,
+  propagateKitStatusToChildren,
   propagatePrecosToChildren,
   recordPrecoHistory,
   saveChildrenComponentesKit,
@@ -263,6 +265,108 @@ describe('kit "Gerar Variações" child flush (buildChildrenComponentesKitOps)',
   it('saveChildrenComponentesKit is a no-op for an empty children list', async () => {
     const { port, committed } = memoryPort();
     await saveChildrenComponentesKit(port, []);
+    expect(committed).toEqual([]);
+  });
+});
+
+describe('kit-status child propagation (buildKitStatusChildOps)', () => {
+  const ids = [{ id: 'c1' }, { id: 'c2' }];
+
+  it('is empty when neither ehKit nor ehKitVirtual changed', () => {
+    expect(
+      buildKitStatusChildOps(
+        { ehKit: true, ehKitVirtual: false, oldEhKit: true, oldEhKitVirtual: false },
+        ids,
+      ),
+    ).toEqual([]);
+  });
+
+  it('clears each child componentesKit when the parent stops being a kit', () => {
+    const ops = buildKitStatusChildOps(
+      { ehKit: false, ehKitVirtual: false, oldEhKit: true, oldEhKitVirtual: false },
+      ids,
+    );
+    expect(ops).toEqual([
+      {
+        type: 'update',
+        path: 'produtos/c1',
+        data: { ehKit: false, ehKitVirtual: false, componentesKit: null, componentesKitKeys: null },
+      },
+      {
+        type: 'update',
+        path: 'produtos/c2',
+        data: { ehKit: false, ehKitVirtual: false, componentesKit: null, componentesKitKeys: null },
+      },
+    ]);
+  });
+
+  it('syncs ehKit true without clearing componentesKit (child keeps its generated map)', () => {
+    const ops = buildKitStatusChildOps(
+      { ehKit: true, ehKitVirtual: false, oldEhKit: false, oldEhKitVirtual: false },
+      [{ id: 'c1' }],
+    );
+    expect(ops).toEqual([
+      { type: 'update', path: 'produtos/c1', data: { ehKit: true, ehKitVirtual: false } },
+    ]);
+  });
+
+  it('propagates an ehKitVirtual flip while the parent stays a kit', () => {
+    const ops = buildKitStatusChildOps(
+      { ehKit: true, ehKitVirtual: true, oldEhKit: true, oldEhKitVirtual: false },
+      [{ id: 'c1' }],
+    );
+    expect(ops).toEqual([
+      { type: 'update', path: 'produtos/c1', data: { ehKit: true, ehKitVirtual: true } },
+    ]);
+  });
+
+  it('collapses ehKitVirtual to false when the parent is not a kit', () => {
+    const ops = buildKitStatusChildOps(
+      { ehKit: false, ehKitVirtual: true, oldEhKit: true, oldEhKitVirtual: true },
+      [{ id: 'c1' }],
+    );
+    if (ops[0]!.type !== 'update') throw new Error('expected an update op');
+    expect(ops[0]!.data).toMatchObject({ ehKit: false, ehKitVirtual: false });
+  });
+});
+
+describe('propagateKitStatusToChildren', () => {
+  it('commits the child updates when the kit status changed', async () => {
+    const { port, committed } = memoryPort({ children: [snap('c1', null), snap('c2', null)] });
+    const updated = await propagateKitStatusToChildren(port, 'p1', {
+      ehKit: false,
+      ehKitVirtual: false,
+      oldEhKit: true,
+      oldEhKitVirtual: false,
+    });
+    expect(updated).toEqual(['c1', 'c2']);
+    expect(committed).toHaveLength(1);
+    expect(committed[0]?.[0]).toMatchObject({ type: 'update', path: 'produtos/c1' });
+  });
+
+  it('is a no-op when nothing changed', async () => {
+    const { port, committed } = memoryPort({ children: [snap('c1', null)] });
+    expect(
+      await propagateKitStatusToChildren(port, 'p1', {
+        ehKit: true,
+        ehKitVirtual: true,
+        oldEhKit: true,
+        oldEhKitVirtual: true,
+      }),
+    ).toEqual([]);
+    expect(committed).toEqual([]);
+  });
+
+  it('is a no-op when the parent has no variation children', async () => {
+    const { port, committed } = memoryPort({ children: [] });
+    expect(
+      await propagateKitStatusToChildren(port, 'p1', {
+        ehKit: false,
+        ehKitVirtual: false,
+        oldEhKit: true,
+        oldEhKitVirtual: false,
+      }),
+    ).toEqual([]);
     expect(committed).toEqual([]);
   });
 });

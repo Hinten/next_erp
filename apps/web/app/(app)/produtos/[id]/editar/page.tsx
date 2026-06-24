@@ -26,6 +26,7 @@ import {
   ProdutoReferencedError,
   applyPrecosChange,
   deleteProdutoCascade,
+  propagateKitStatusToChildren,
   recordCustoHistory,
 } from '@delfrance/data/produto';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
@@ -146,10 +147,22 @@ export default function EditarProdutoPage() {
     ready: false,
     value: null,
   });
+  // Same bookkeeping for the kit status: when `ehKit`/`ehKitVirtual` flips, the
+  // existing variation children are synced on save (Flutter parity).
+  const lastSavedKitStatus = useRef<{ ready: boolean; ehKit: boolean; ehKitVirtual: boolean }>({
+    ready: false,
+    ehKit: false,
+    ehKitVirtual: false,
+  });
   useEffect(() => {
     if (!lastSavedPrecos.current.ready && produtoSnap.data) {
       lastSavedPrecos.current = { ready: true, value: produtoSnap.data.data.precos ?? null };
       lastSavedCusto.current = { ready: true, value: produtoSnap.data.data.custo ?? null };
+      lastSavedKitStatus.current = {
+        ready: true,
+        ehKit: produtoSnap.data.data.ehKit ?? false,
+        ehKitVirtual: produtoSnap.data.data.ehKitVirtual ?? false,
+      };
     }
   }, [produtoSnap.data]);
 
@@ -448,6 +461,32 @@ export default function EditarProdutoPage() {
             await recordCustoHistory(port, id, newCusto);
           }
           lastSavedCusto.current = { ready: true, value: newCusto };
+
+          // Kit-status propagation (Flutter parity,
+          // `produtoTableProvider.dart:556-589`): when the parent's
+          // `ehKit`/`ehKitVirtual` flips, sync the EXISTING variation children —
+          // a child of a non-kit can't stay a kit, so its `componentesKit` is
+          // cleared. "Old" value = the ref pinned at the first emit, else the
+          // live snapshot (so a save beating that emit still propagates).
+          const newEhKit = values.ehKit === true;
+          const newEhKitVirtual = values.ehKitVirtual === true;
+          const oldKit = lastSavedKitStatus.current.ready
+            ? lastSavedKitStatus.current
+            : {
+                ehKit: produtoSnap.data?.data.ehKit ?? false,
+                ehKitVirtual: produtoSnap.data?.data.ehKitVirtual ?? false,
+              };
+          await propagateKitStatusToChildren(port, id, {
+            ehKit: newEhKit,
+            ehKitVirtual: newEhKitVirtual,
+            oldEhKit: oldKit.ehKit,
+            oldEhKitVirtual: oldKit.ehKitVirtual,
+          });
+          lastSavedKitStatus.current = {
+            ready: true,
+            ehKit: newEhKit,
+            ehKitVirtual: newEhKitVirtual,
+          };
 
           // (The extraData singleton is now written atomically with the produto
           // doc via `transactionWrites`, not here — so a flaky connection can't
