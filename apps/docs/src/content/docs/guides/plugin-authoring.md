@@ -1,9 +1,9 @@
 ---
 title: Plugin authoring
-description: How to add a new domain plugin (tax, invoice, payment, marketplace, freight) to Delfrance.
+description: How to add a new domain plugin (tax, invoice, payment, marketplace) to Delfrance.
 ---
 
-Brazilian-specific features (NFe, Mercado Pago, marketplaces) ship as **opt-in plugins** in Delfrance. The core is locale-agnostic — anything tax, invoice, payment, marketplace, or freight related is authored against a contract in `@delfrance/core/plugins` and registered into a `PluginRegistry` at app boot. This guide shows how to add a new one.
+Brazilian-specific features (NFe, Mercado Pago, marketplaces) ship as **opt-in plugins** in Delfrance. The core is locale-agnostic — anything tax, invoice, payment, or marketplace related is authored against a contract in `@delfrance/core/plugins` and registered into a `PluginRegistry` at app boot. This guide shows how to add a new one. (Freight is the exception: it's integrated **directly** via `@delfrance/integrations-freight-br` + the `FREIGHT_TIPO_CAPS` table in `@delfrance/schemas`, not against a registry contract — see the `freight-integrations` skill.)
 
 ## Plugin contracts
 
@@ -29,7 +29,7 @@ defineIntegration({
     id: 'my-plugin',
     name: 'My Plugin',
     version: '0.1.0',
-    kinds: ['tax'],          // 'tax' | 'invoice' | 'payment' | 'marketplace' | 'freight'
+    kinds: ['tax'],          // 'tax' | 'invoice' | 'payment' | 'marketplace'
   },
   register({ register }) {
     register(myImplementation);
@@ -75,5 +75,5 @@ In `apps/web`, plugin registration lives at `lib/plugins/`. Each app boot reads 
 | `shopee` | Scaffold |
 | `amazon-sp-api` | Scaffold (will wrap `amazon-sp-api` npm) |
 | `magalu`, `loja-integrada`, `facebook` | Scaffold |
-| `freight-br` | Scaffold (Melhor Envio + Correios + motoboy + retirar-loja) |
+| `freight-br` | Built — Melhor Envio (OAuth + quote + buy/print/track). Direct integration, **not** a registry plugin (see the `freight-integrations` skill) |
 | `whatsapp-cloud-api` | Typed client + webhook envelope schemas (real impl) |
