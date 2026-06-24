@@ -112,7 +112,7 @@ export async function seedDevFiliais(): Promise<{ created: number }> {
     .doc(DEV_INTEGRACAO_ID)
     .set({
       nome: 'Dev Balcão',
-      tipo: 0,
+      tipo: 7, // balcao
       padrao: true,
       ativo: true,
       filialIntegracaoPedidoOuterRef: db().collection('filiais').doc(DEV_FILIAL_ID),
