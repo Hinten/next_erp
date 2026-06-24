@@ -1,6 +1,8 @@
 import {
   FORMA_PAGAMENTO,
   STATUS_PAGAMENTO,
+  cartaoSchema,
+  chequeSchema,
   round2,
   type FormaPagamento,
   type Pagamento,
@@ -28,6 +30,24 @@ export interface PagamentoFormState {
   aVista: boolean;
   duplicata: boolean;
   nFat: string;
+
+  // Card detail (cartão crédito/débito) → written to `pagamento.cartao`.
+  /** `Bandeira` code ('01'..'99'); `''` = none picked. */
+  bandeira: string;
+  numeroCartao: string;
+  cAut: string;
+
+  // Cheque detail → written to `pagamento.cheque`.
+  banco: string;
+  agencia: string;
+  conta: string;
+  /** Cheque number; kept as a string in the form, coerced to int on save. */
+  numeroCheque: string;
+  titular: string;
+  cpfCnpj: string;
+  telefone: string;
+  /** "Bom para" date, µs epoch. */
+  bomPara: number | null;
 }
 
 export const EMPTY_PAGAMENTO_FORM: PagamentoFormState = {
@@ -43,10 +63,25 @@ export const EMPTY_PAGAMENTO_FORM: PagamentoFormState = {
   aVista: true,
   duplicata: false,
   nFat: '',
+  bandeira: '',
+  numeroCartao: '',
+  cAut: '',
+  banco: '',
+  agencia: '',
+  conta: '',
+  numeroCheque: '',
+  titular: '',
+  cpfCnpj: '',
+  telefone: '',
+  bomPara: null,
 };
 
-/** Populate the form from an existing pagamento doc (edit mode). */
+/** Populate the form from an existing pagamento doc (edit mode). The embedded
+ * `cartao` / `cheque` maps are opaque (`z.unknown()`) on the doc, so parse them
+ * leniently — a missing or legacy-shaped object just yields empty fields. */
 export function formFromPagamento(p: Pagamento): PagamentoFormState {
+  const cartao = cartaoSchema.safeParse(p.cartao);
+  const cheque = chequeSchema.safeParse(p.cheque);
   return {
     forma: String(p.forma_de_pagamento),
     status: p.status_pagamento != null ? String(p.status_pagamento) : '',
@@ -57,6 +92,17 @@ export function formFromPagamento(p: Pagamento): PagamentoFormState {
     aVista: p.aVista,
     duplicata: p.duplicata,
     nFat: p.nFat ?? '',
+    bandeira: cartao.success ? (cartao.data.bandeira ?? '') : '',
+    numeroCartao: cartao.success ? (cartao.data.numeroCartao ?? '') : '',
+    cAut: cartao.success ? (cartao.data.cAut ?? '') : '',
+    banco: cheque.success ? (cheque.data.banco ?? '') : '',
+    agencia: cheque.success ? (cheque.data.agencia ?? '') : '',
+    conta: cheque.success ? (cheque.data.conta ?? '') : '',
+    numeroCheque: cheque.success && cheque.data.numero != null ? String(cheque.data.numero) : '',
+    titular: cheque.success ? (cheque.data.titular ?? '') : '',
+    cpfCnpj: cheque.success ? (cheque.data.cpf_cnpj ?? '') : '',
+    telefone: cheque.success ? (cheque.data.telefone ?? '') : '',
+    bomPara: cheque.success ? (cheque.data.bomPara ?? null) : null,
   };
 }
 
@@ -66,14 +112,17 @@ function trimToNull(s: string): string | null {
   return trimmed === '' ? null : trimmed;
 }
 
-/** Which optional fields the form shows for each forma. Always shown: forma,
- * status, valor, descrição. The cartão/cheque DETAIL fields stay deferred. */
+/** Which optional fields/sections the form shows for each forma. Always shown:
+ * forma, status, valor, descrição. `cartao` toggles the card-detail group
+ * (bandeira/número/autorização); `cheque` toggles the cheque-detail group. */
 export interface PagamentoFieldVisibility {
   parcelas: boolean;
   vencimento: boolean;
   nFat: boolean;
   duplicata: boolean;
   aVista: boolean;
+  cartao: boolean;
+  cheque: boolean;
 }
 
 export function pagamentoFieldVisibility(forma: string): PagamentoFieldVisibility {
@@ -87,9 +136,13 @@ export function pagamentoFieldVisibility(forma: string): PagamentoFieldVisibilit
   return {
     parcelas: cartaoCredito || creditoLoja,
     aVista: cartaoCredito || cartaoDebito || creditoLoja,
-    vencimento: cheque || boleto || deposito,
+    // Cheque has its own "Bom para" date in the cheque group, so it doesn't also
+    // show the generic vencimento.
+    vencimento: boleto || deposito,
     nFat: boleto,
     duplicata: boleto,
+    cartao: cartaoCredito || cartaoDebito,
+    cheque,
   };
 }
 
@@ -137,11 +190,53 @@ export function validatePagamentoForm(form: PagamentoFormState): string | null {
   return null;
 }
 
+/** Narrow an opaque (`z.unknown()`) value to a plain object for spreading; any
+ * non-object (null, array, primitive) yields `{}`. */
+function asRecord(v: unknown): Record<string, unknown> {
+  return v != null && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * Build the embedded `cartao` map from the form (card formas only). Spreads any
+ * existing card first so the catalog-derived fields (`tarifa`, `tarifaFixa`,
+ * `cnpj_instituicao`, `prazoRecebimento`) survive untouched, then overrides the
+ * editable fields. `tpIntegra` stays `'2'` (não integrado) unless the base set it.
+ */
+function buildCartao(form: PagamentoFormState, base: Pagamento | null): Record<string, unknown> {
+  return {
+    tpIntegra: '2',
+    ...asRecord(base?.cartao),
+    bandeira: form.bandeira === '' ? null : form.bandeira,
+    numeroCartao: trimToNull(form.numeroCartao),
+    cAut: trimToNull(form.cAut),
+  };
+}
+
+/** Build the embedded `cheque` map from the form (cheque forma only). */
+function buildCheque(form: PagamentoFormState, base: Pagamento | null): Record<string, unknown> {
+  const numeroStr = form.numeroCheque.trim();
+  const numero = Number(numeroStr);
+  return {
+    ...asRecord(base?.cheque),
+    banco: trimToNull(form.banco),
+    agencia: trimToNull(form.agencia),
+    conta: trimToNull(form.conta),
+    numero: numeroStr === '' || !Number.isFinite(numero) ? null : Math.trunc(numero),
+    titular: trimToNull(form.titular),
+    cpf_cnpj: trimToNull(form.cpfCnpj),
+    telefone: trimToNull(form.telefone),
+    bomPara: form.bomPara,
+  };
+}
+
 /**
  * Build the full pagamento record handed to `savePagamento`. Spreads the existing
- * doc first so the passthrough/out-of-band fields (`cartao`, `cheque`,
- * `metodoPagamentoOuterRef`, `dataCadastro`, `dataAprovacao`, …) survive, then
- * overrides the edited fields. Assumes the form passed {@link validatePagamentoForm}.
+ * doc first so the passthrough/out-of-band fields (`metodoPagamentoOuterRef`,
+ * `dataCadastro`, `dataAprovacao`, …) survive, then overrides the edited fields.
+ * The `cartao` / `cheque` maps are rebuilt for their forma (and reset to `null`
+ * otherwise). Assumes the form passed {@link validatePagamentoForm}.
  */
 export function pagamentoDataFromForm(
   form: PagamentoFormState,
@@ -161,5 +256,7 @@ export function pagamentoDataFromForm(
     aVista: vis.aVista ? form.aVista : true,
     duplicata: vis.duplicata ? form.duplicata : false,
     nFat: vis.nFat ? trimToNull(form.nFat) : null,
+    cartao: vis.cartao ? buildCartao(form, base) : null,
+    cheque: vis.cheque ? buildCheque(form, base) : null,
   };
 }

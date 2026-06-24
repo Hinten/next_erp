@@ -70,10 +70,10 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
 
     await page.getByRole('tab', { name: 'Pagamento' }).click();
     await page.getByRole('button', { name: /Adicionar pagamento/ }).click();
-    // forma defaults to "Dinheiro"; set the valor and save. Drive the masked
+    // forma defaults to "Dinheiro"; set the valor and add. Drive the masked
     // CurrencyInput via the shared `typeMoney` helper (the documented path).
     await typeMoney(page, 'Valor', '100');
-    await page.getByRole('button', { name: 'Salvar', exact: true }).click();
+    await page.getByRole('button', { name: 'Adicionar', exact: true }).click();
 
     // The list shows the new row (formatted value in a table cell, not the form input).
     await expect(page.getByRole('cell', { name: 'R$ 100,00' })).toBeVisible({ timeout: 15_000 });
@@ -102,17 +102,23 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
     await page.getByRole('tab', { name: 'Pagamento' }).click();
     await page.getByRole('button', { name: /Adicionar pagamento/ }).click();
 
-    // Dinheiro (default) hides Parcelas; Cartão de Crédito shows it.
+    // Dinheiro (default) hides Parcelas + the card group; Cartão de Crédito shows them.
     await expect(page.getByLabel('Parcelas')).toHaveCount(0);
+    await expect(page.getByLabel('Bandeira')).toHaveCount(0);
     await page.getByRole('combobox', { name: 'Forma de pagamento' }).click();
     await page.getByRole('option', { name: 'Cartão de Crédito', exact: true }).click();
     await expect(page.getByLabel('Parcelas')).toBeVisible();
 
+    // The card-detail group is now shown — pick a bandeira (Visa = '01').
+    await page.getByRole('combobox', { name: 'Bandeira' }).click();
+    await page.getByRole('option', { name: 'Visa', exact: true }).click();
+
     // Autofill the remaining valor (pedido total R$ 10,00, no other payments).
     await page.getByRole('button', { name: 'Preencher com o valor restante' }).click();
-    await page.getByRole('button', { name: 'Salvar', exact: true }).click();
+    await page.getByRole('button', { name: 'Adicionar', exact: true }).click();
 
-    // Persisted as Cartão de Crédito (forma 3) for the full remaining amount.
+    // Persisted as Cartão de Crédito (forma 3) for the full remaining amount, with
+    // the bandeira recorded on the embedded card map.
     await expect
       .poll(
         async () => {
@@ -122,10 +128,12 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
             .collection('pagamentos')
             .get();
           const p = snap.docs.map((d) => d.data())[0];
-          return p ? { forma: p.forma_de_pagamento, valor: p.valor } : null;
+          return p
+            ? { forma: p.forma_de_pagamento, valor: p.valor, bandeira: p.cartao?.bandeira ?? null }
+            : null;
         },
         { timeout: 15_000 },
       )
-      .toEqual({ forma: 3, valor: 10 });
+      .toEqual({ forma: 3, valor: 10, bandeira: '01' });
   });
 });

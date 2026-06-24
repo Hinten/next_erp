@@ -26,6 +26,7 @@ import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { deletePagamento, savePagamento } from '@delfrance/data/pedido';
 import {
+  BANDEIRA_LABELS,
   FORMA_PAGAMENTO_LABELS,
   STATUS_PAGAMENTO_LABELS,
   type FormaPagamento,
@@ -62,13 +63,21 @@ const statusOptions = [
     label,
   })),
 ];
+const bandeiraOptions = [
+  { value: '', label: '(nenhuma)' },
+  ...(Object.entries(BANDEIRA_LABELS) as [string, string][]).map(([value, label]) => ({
+    value,
+    label,
+  })),
+];
 
 /**
  * Editable list of pagamentos for a pedido — create / edit / delete plus the
  * inline status change. Immediate writes go through `savePagamento` /
- * `deletePagamento` (the use-case layer), mirroring the Incidentes tab. The
- * cartão / cheque details and the Mercado Pago link stay pass-through (preserved
- * on edit); refunds still resolve via the PaymentGateway plugin registry.
+ * `deletePagamento` (the use-case layer), mirroring the Incidentes tab. The card
+ * (bandeira/número/autorização) and cheque detail groups are editable per forma;
+ * the card catalog fields (tarifa/prazo/CNPJ) and the Mercado Pago link stay
+ * pass-through. Refunds still resolve via the PaymentGateway plugin registry.
  */
 export function PagamentosSection({
   pedidoId,
@@ -147,9 +156,6 @@ export function PagamentosSection({
       setDeleting(false);
     }
   }
-
-  const hasPassthrough =
-    editing?.base != null && (editing.base.cartao != null || editing.base.cheque != null);
 
   // Which optional fields to show for the chosen forma, and how much is still
   // owed (drives the Valor autofill — excludes the payment being edited).
@@ -235,6 +241,133 @@ export function PagamentosSection({
                 />
               )}
             </Group>
+            {vis.cartao && (
+              <>
+                <Group grow align="flex-start">
+                  <Select
+                    label="Bandeira"
+                    data={bandeiraOptions}
+                    value={form.bandeira}
+                    onChange={(v) => setForm((f) => ({ ...f, bandeira: v ?? '' }))}
+                    searchable
+                    nothingFoundMessage="Nenhuma bandeira encontrada"
+                    disabled={disabled}
+                  />
+                  <TextInput
+                    label="Número do cartão"
+                    maxLength={19}
+                    value={form.numeroCartao}
+                    onChange={(e) => {
+                      const value = e.currentTarget.value;
+                      setForm((f) => ({ ...f, numeroCartao: value }));
+                    }}
+                    disabled={disabled}
+                  />
+                  <TextInput
+                    label="Cód. de autorização"
+                    value={form.cAut}
+                    onChange={(e) => {
+                      const value = e.currentTarget.value;
+                      setForm((f) => ({ ...f, cAut: value }));
+                    }}
+                    disabled={disabled}
+                  />
+                </Group>
+                <Text size="xs" c="dimmed">
+                  Tarifa, prazo de recebimento e CNPJ da instituição vêm do cadastro de bandeiras e
+                  ainda não são editáveis aqui; os valores existentes são preservados.
+                </Text>
+              </>
+            )}
+            {vis.cheque && (
+              <Stack gap="sm">
+                <Group grow align="flex-start">
+                  <TextInput
+                    label="Banco"
+                    value={form.banco}
+                    onChange={(e) => {
+                      const value = e.currentTarget.value;
+                      setForm((f) => ({ ...f, banco: value }));
+                    }}
+                    disabled={disabled}
+                  />
+                  <TextInput
+                    label="Agência"
+                    value={form.agencia}
+                    onChange={(e) => {
+                      const value = e.currentTarget.value;
+                      setForm((f) => ({ ...f, agencia: value }));
+                    }}
+                    disabled={disabled}
+                  />
+                  <TextInput
+                    label="Conta"
+                    value={form.conta}
+                    onChange={(e) => {
+                      const value = e.currentTarget.value;
+                      setForm((f) => ({ ...f, conta: value }));
+                    }}
+                    disabled={disabled}
+                  />
+                </Group>
+                <Group grow align="flex-start">
+                  <NumberInput
+                    label="Número do cheque"
+                    value={form.numeroCheque === '' ? '' : Number(form.numeroCheque)}
+                    onChange={(v) => {
+                      const s = v === '' || v == null ? '' : String(v);
+                      setForm((f) => ({ ...f, numeroCheque: s }));
+                    }}
+                    allowDecimal={false}
+                    allowNegative={false}
+                    hideControls
+                    disabled={disabled}
+                  />
+                  <TextInput
+                    label="Titular"
+                    maxLength={255}
+                    value={form.titular}
+                    onChange={(e) => {
+                      const value = e.currentTarget.value;
+                      setForm((f) => ({ ...f, titular: value }));
+                    }}
+                    disabled={disabled}
+                  />
+                </Group>
+                <Group grow align="flex-start">
+                  <TextInput
+                    label="CPF/CNPJ"
+                    maxLength={18}
+                    value={form.cpfCnpj}
+                    onChange={(e) => {
+                      const value = e.currentTarget.value;
+                      setForm((f) => ({ ...f, cpfCnpj: value }));
+                    }}
+                    disabled={disabled}
+                  />
+                  <TextInput
+                    label="Telefone"
+                    maxLength={16}
+                    value={form.telefone}
+                    onChange={(e) => {
+                      const value = e.currentTarget.value;
+                      setForm((f) => ({ ...f, telefone: value }));
+                    }}
+                    disabled={disabled}
+                  />
+                </Group>
+                <DateTimePicker
+                  label="Bom para"
+                  value={epochToPickerString(form.bomPara, 'us')}
+                  onChange={(v) =>
+                    setForm((f) => ({ ...f, bomPara: pickerStringToEpoch(v, 'us') }))
+                  }
+                  valueFormat="DD/MM/YYYY HH:mm"
+                  clearable
+                  disabled={disabled}
+                />
+              </Stack>
+            )}
             {(vis.vencimento || vis.nFat) && (
               <Group grow align="flex-start">
                 {vis.vencimento && (
@@ -292,19 +425,13 @@ export function PagamentosSection({
                 )}
               </Group>
             )}
-            {hasPassthrough && (
-              <Text size="xs" c="dimmed">
-                Este pagamento possui dados de cartão/cheque. A edição desses campos ainda não foi
-                portada; o registro existente é preservado.
-              </Text>
-            )}
             {saveError && <Alert color="red">{saveError}</Alert>}
             <Group justify="flex-end">
               <Button variant="default" onClick={() => setEditing(null)} disabled={saving}>
                 Cancelar
               </Button>
-              <Button onClick={handleSave} loading={saving} disabled={disabled}>
-                Salvar
+              <Button onClick={handleSave} loading={saving} disabled={disabled} color="green">
+                {editing.id ? 'Salvar alterações' : 'Adicionar'}
               </Button>
             </Group>
           </Stack>

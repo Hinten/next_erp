@@ -79,6 +79,8 @@ describe('pagamentoDataFromForm', () => {
       nFat: null,
       duplicata: false,
       aVista: true,
+      cartao: null,
+      cheque: null,
     });
   });
 
@@ -86,19 +88,99 @@ describe('pagamentoDataFromForm', () => {
     expect(pagamentoDataFromForm(form({ valor: 1, status: '' }), null).status_pagamento).toBeNull();
   });
 
-  it('preserves the passthrough cartao/cheque/metodoPagamentoOuterRef + dataCadastro from base', () => {
+  it('preserves the passthrough metodoPagamentoOuterRef + dataCadastro from base, and nulls a stale card for a non-card forma', () => {
     const base = {
       cartao: { bandeira: 'visa' },
       cheque: null,
       metodoPagamentoOuterRef: 'documents/metodo_pgto/m1',
       dataCadastro: 42,
     } as unknown as Pagamento;
+    // forma defaults to Dinheiro → the card map is reset (forma-managed), but the
+    // out-of-band fields survive.
     const data = pagamentoDataFromForm(form({ valor: 5 }), base);
     expect(data).toMatchObject({
-      cartao: { bandeira: 'visa' },
+      cartao: null,
       metodoPagamentoOuterRef: 'documents/metodo_pgto/m1',
       dataCadastro: 42,
     });
+  });
+});
+
+describe('pagamentoDataFromForm — card / cheque detail', () => {
+  it('builds the embedded cartao map for a card forma and preserves catalog fields', () => {
+    const base = { cartao: { tarifa: 2.5, cnpj_instituicao: '123' } } as unknown as Pagamento;
+    const data = pagamentoDataFromForm(
+      form({
+        forma: String(FORMA_PAGAMENTO.cartao_credito),
+        valor: 10,
+        bandeira: '01',
+        numeroCartao: ' 4111 ',
+        cAut: 'AUT9',
+      }),
+      base,
+    );
+    expect(data.cartao).toEqual({
+      tpIntegra: '2',
+      tarifa: 2.5, // preserved from the bandeira catalog
+      cnpj_instituicao: '123',
+      bandeira: '01',
+      numeroCartao: '4111',
+      cAut: 'AUT9',
+    });
+    expect(data.cheque).toBeNull();
+  });
+
+  it('builds the embedded cheque map and coerces numero to an int', () => {
+    const data = pagamentoDataFromForm(
+      form({
+        forma: String(FORMA_PAGAMENTO.cheque),
+        valor: 10,
+        banco: 'BB',
+        agencia: '0001',
+        conta: '123-4',
+        numeroCheque: '789',
+        titular: 'Fulano',
+        cpfCnpj: '12345678900',
+        telefone: '11999999999',
+        bomPara: 1234,
+      }),
+      null,
+    );
+    expect(data.cheque).toEqual({
+      banco: 'BB',
+      agencia: '0001',
+      conta: '123-4',
+      numero: 789,
+      titular: 'Fulano',
+      cpf_cnpj: '12345678900',
+      telefone: '11999999999',
+      bomPara: 1234,
+    });
+    expect(data.cartao).toBeNull();
+  });
+
+  it('clears cartao/cheque when the forma is neither card nor cheque', () => {
+    const data = pagamentoDataFromForm(
+      form({ forma: String(FORMA_PAGAMENTO.pix), valor: 5 }),
+      null,
+    );
+    expect(data.cartao).toBeNull();
+    expect(data.cheque).toBeNull();
+  });
+});
+
+describe('pagamentoFieldVisibility — card / cheque groups', () => {
+  it('shows the card group for crédito and débito', () => {
+    expect(pagamentoFieldVisibility(String(FORMA_PAGAMENTO.cartao_credito)).cartao).toBe(true);
+    expect(pagamentoFieldVisibility(String(FORMA_PAGAMENTO.cartao_debito)).cartao).toBe(true);
+    expect(pagamentoFieldVisibility(String(FORMA_PAGAMENTO.dinheiro)).cartao).toBe(false);
+  });
+
+  it('shows the cheque group only for cheque (which has its own bom-para, not vencimento)', () => {
+    const cheque = pagamentoFieldVisibility(String(FORMA_PAGAMENTO.cheque));
+    expect(cheque.cheque).toBe(true);
+    expect(cheque.vencimento).toBe(false);
+    expect(pagamentoFieldVisibility(String(FORMA_PAGAMENTO.dinheiro)).cheque).toBe(false);
   });
 });
 
@@ -125,6 +207,49 @@ describe('formFromPagamento', () => {
       aVista: false,
       duplicata: true,
       nFat: 'NF-1',
+      // no embedded cartao/cheque on the doc → empty detail fields
+      bandeira: '',
+      numeroCartao: '',
+      cAut: '',
+      banco: '',
+      agencia: '',
+      conta: '',
+      numeroCheque: '',
+      titular: '',
+      cpfCnpj: '',
+      telefone: '',
+      bomPara: null,
+    });
+  });
+
+  it('parses the embedded cartao + cheque maps into form fields', () => {
+    const card = {
+      forma_de_pagamento: FORMA_PAGAMENTO.cartao_credito,
+      valor: 10,
+      parcelas: 1,
+      aVista: true,
+      duplicata: false,
+      cartao: { tpIntegra: '2', bandeira: '06', numeroCartao: '4111', cAut: 'AUT1', tarifa: 1.5 },
+    } as unknown as Pagamento;
+    expect(formFromPagamento(card)).toMatchObject({
+      bandeira: '06',
+      numeroCartao: '4111',
+      cAut: 'AUT1',
+    });
+
+    const cheque = {
+      forma_de_pagamento: FORMA_PAGAMENTO.cheque,
+      valor: 10,
+      parcelas: 1,
+      aVista: true,
+      duplicata: false,
+      cheque: { banco: 'BB', numero: 42, titular: 'Fulano', bomPara: 999 },
+    } as unknown as Pagamento;
+    expect(formFromPagamento(cheque)).toMatchObject({
+      banco: 'BB',
+      numeroCheque: '42',
+      titular: 'Fulano',
+      bomPara: 999,
     });
   });
 });
@@ -142,6 +267,8 @@ describe('pagamentoFieldVisibility', () => {
       vencimento: false,
       nFat: false,
       duplicata: false,
+      cartao: false,
+      cheque: false,
     });
   });
 
