@@ -187,25 +187,40 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await page.goto(`/pedidos/${pedidoId}/editar`);
     await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
 
-    // Mark the only item for deletion (staged — stays visible+dimmed with a
-    // "Será excluída" cue until save). The row is NOT removed from the DOM.
+    // Add a SECOND line of the same produto. A pedido needs at least one item, so
+    // we can't stage the only row down to zero (that save is correctly blocked) —
+    // instead keep one and prove the staged one is dropped. The lista de preços
+    // was saved on create, so the pick autofills the price (proof the row set).
+    await page.getByRole('button', { name: 'Adicionar produto' }).click();
+    await page.getByPlaceholder('Buscar produto…').last().fill(fixtures.produtoNome);
+    await page
+      .getByRole('option', { name: new RegExp(fixtures.produtoNome) })
+      .first()
+      .click();
+    await expect(page.getByLabel('Preço item 2', { exact: true })).toHaveValue(/33[.,]5/, {
+      timeout: 15_000,
+    });
+
+    // Stage-delete the FIRST row (stays visible+dimmed with a "Será excluída" cue
+    // until save). The row is NOT removed from the DOM.
     await page.getByRole('button', { name: 'Remover item' }).first().click();
     await expect(page.getByText('Será excluída').first()).toBeVisible();
 
     await page.getByRole('button', { name: 'Salvar alterações' }).click();
     await page.waitForURL((url) => /\/pedidos$/.test(url.pathname), { timeout: 30_000 });
 
-    // The saved doc has no items — the staged row was dropped by the resolver.
+    // The saved doc keeps exactly one item — the staged row was dropped by the
+    // resolver (both rows share the produto, so they collapse under one key).
     await expect
       .poll(
         async () => {
           const snap = await db().collection('pedidos').doc(pedidoId).get();
           const itens = (snap.data() as { itens?: Record<string, unknown[]> }).itens ?? {};
-          return Object.keys(itens).length;
+          return Object.values(itens).reduce((n, arr) => n + arr.length, 0);
         },
         { timeout: 15_000 },
       )
-      .toBe(0);
+      .toBe(1);
   });
 
   test('creates a cliente through the quick-create modal and emits it into the form', async ({
