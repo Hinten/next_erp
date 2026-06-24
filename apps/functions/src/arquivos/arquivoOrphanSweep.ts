@@ -36,6 +36,20 @@ function orphanGraceMicros(): number {
 }
 
 /**
+ * Grace window in **microseconds** for a MARKED arquivo (`markedForDeletionAt`,
+ * set by `onProdutoMediaChanged`). The mark is a deliberate signal — the trigger
+ * saw the ref removed in a produto save — so this is **short** by default (1h, a
+ * brief buffer for a quick undo/re-add) versus the 48h orphan grace. Read per
+ * call so the emulator suite can drop it to 0. `ARQUIVO_MARKED_GRACE_HOURS`
+ * overrides; non-numeric/negative falls back to 1h.
+ */
+function markedGraceMicros(): number {
+  const raw = Number(process.env.ARQUIVO_MARKED_GRACE_HOURS ?? '1');
+  const hours = Number.isFinite(raw) && raw >= 0 ? raw : 1;
+  return hours * 3_600_000 * 1000;
+}
+
+/**
  * Phantom-doc sweep: an `arquivos` doc stuck `uploadState: 'pending'` past the
  * grace window whose Storage object never arrived — a create-first upload the
  * client abandoned. Deletes the doc. If the object IS present (the trigger
@@ -250,20 +264,103 @@ export async function sweepUnreferencedArquivos(
 }
 
 /**
- * Scheduled (every 48h) arquivo orphan reconciliation. Two bounded passes, each
- * isolating per-item failures: the phantom-doc sweep, then the
- * unreferenced-arquivo sweep (which reads only the produtos owning the current
- * candidate batch).
+ * Marked-for-deletion sweep: delete `arquivos` docs `onProdutoMediaChanged`
+ * stamped with `markedForDeletionAt` (a photo/video removed from a produto in an
+ * edit) once they're past the short marked-grace window — but **re-verifying**
+ * the owning produto still doesn't reference the arquivo first (defence against a
+ * missed unmark when the photo was re-added). Deleting the doc lets
+ * `onArquivoDeleted` free the object + cascade the 3 derivatives; a still-
+ * referenced doc has its mark cleared instead.
+ *
+ * This is the **eager** cleanup path's back half — the trigger captures the
+ * removal cheaply at edit time, so this sweep is a plain admin range query
+ * (`where markedForDeletionAt < cutoff orderBy markedForDeletionAt asc`, **no**
+ * pipeline → emulator-runnable) over the single-field index
+ * `arquivos(markedForDeletionAt ASC)`. Unmarked docs (`null`) are excluded by the
+ * range predicate. The owner re-check reuses {@link resolveReferencedArquivoRefs}
+ * (one batched `getAll`). Bounded by `BATCH_LIMIT`; isolates per-doc failures.
+ */
+export async function sweepMarkedForDeletion(db: Firestore): Promise<number> {
+  const cutoff = nowMicros() - markedGraceMicros();
+  const marked = await arquivoCollection
+    .ref(db, {})
+    .where('markedForDeletionAt', '<', cutoff)
+    .orderBy('markedForDeletionAt', 'asc')
+    .limit(BATCH_LIMIT)
+    .get();
+
+  if (marked.empty) {
+    logger.info('sweepMarkedForDeletion: 0 candidates');
+    return 0;
+  }
+
+  // Re-verify against the owning produtos in one batched lookup: derive each
+  // candidate's produtoId from its filepath, resolve the refs those produtos
+  // still hold, then delete only the genuinely-unreferenced ones.
+  const items: { ref: DocumentReference; refPath: string; produtoId: string | null }[] = [];
+  const produtoIds = new Set<string>();
+  for (const doc of marked.docs) {
+    const filepath = (doc.data().filepath as string | null | undefined) ?? null;
+    const produtoId = parseProductMediaDir(filepath)?.produtoId ?? null;
+    if (produtoId) produtoIds.add(produtoId);
+    items.push({ ref: doc.ref, refPath: `${ARQUIVOS_COLLECTION}/${doc.id}`, produtoId });
+  }
+
+  const referencedRefs = await resolveReferencedArquivoRefs(db, [...produtoIds]);
+
+  let deleted = 0;
+  let cleared = 0;
+  let failed = 0;
+  for (const { ref, refPath, produtoId } of items) {
+    try {
+      // Owner not derivable (filepath isn't `produtos/<id>/originals|videos` —
+      // legacy / console / bad data the trigger's product-media guard now blocks):
+      // we can't re-verify ownership, so NEVER delete it. Clear the mark + warn so it
+      // stops re-querying instead of being reaped blind.
+      if (!produtoId) {
+        await ref.update({ markedForDeletionAt: null });
+        cleared += 1;
+        logger.warn(
+          `sweepMarkedForDeletion: ${ref.id} marked but filepath is not product media — clearing, not deleting`,
+        );
+        continue;
+      }
+      // Referenced again (a re-add whose unmark was missed) → clear + keep.
+      if (referencedRefs.has(refPath)) {
+        await ref.update({ markedForDeletionAt: null });
+        cleared += 1;
+        continue;
+      }
+      await ref.delete();
+      deleted += 1;
+    } catch (err) {
+      failed += 1;
+      logger.error(`sweepMarkedForDeletion: ${ref.id} failed`, err);
+    }
+  }
+  logger.info(
+    `sweepMarkedForDeletion: ${marked.size} candidates, ${deleted} deleted, ${cleared} cleared, ${failed} failed`,
+  );
+  return deleted;
+}
+
+/**
+ * Scheduled (every 48h) arquivo orphan reconciliation. Three bounded passes, each
+ * isolating per-item failures: the **marked** sweep first (cheapest — an indexed
+ * query over what `onProdutoMediaChanged` already flagged), then the phantom-doc
+ * sweep, then the unreferenced-arquivo backstop (which reads only the produtos
+ * owning the current candidate batch).
  */
 export const reconcileArquivoOrphans = onSchedule(
   { schedule: 'every 48 hours', memory: '512MiB' },
   async () => {
     const db = getDb();
     const bucket = getStorage(getAdminApp()).bucket();
+    const marked = await sweepMarkedForDeletion(db);
     const phantoms = await sweepPhantomDocs(db, bucket);
     const unreferenced = await sweepUnreferencedArquivos(db, bucket);
     logger.info(
-      `reconcileArquivoOrphans: ${phantoms} phantom docs + ${unreferenced} unreferenced arquivos cleaned`,
+      `reconcileArquivoOrphans: ${marked} marked + ${phantoms} phantom docs + ${unreferenced} unreferenced arquivos cleaned`,
     );
   },
 );

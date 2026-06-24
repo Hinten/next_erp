@@ -121,6 +121,11 @@
       "collectionGroup": "arquivos",
       "queryScope": "COLLECTION",
       "fields": [{ "fieldPath": "criadoEm", "order": "ASCENDING" }]
+    },
+    {
+      "collectionGroup": "arquivos",
+      "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "markedForDeletionAt", "order": "ASCENDING" }]
     }
   ],
   "fieldOverrides": []
