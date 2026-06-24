@@ -14,18 +14,20 @@ description: >-
   `packages/integrations/freight-br`, and on terms like intFrete, freteInicial,
   externalOptionId, externalOptionIntegracao, externalOptionData,
   comprarEtiqueta, addToCart, ensureCartAgency, calculate,
-  loadMelhorEnvioContext, tokenMelEnv, printLabelId, codRastreio.
+  loadMelhorEnvioContext, tokenMelEnv, printLabelId, codRastreio,
+  FREIGHT_TIPO_CAPS, marketplaceOwned, labelMode, and adding a new freight
+  provider / integradora (marketplace freight, emit vs fetch labels).
 ---
 
-# Freight integrations (Melhor Envio)
+# Freight integrations
 
 The freight domain ports the legacy Flutter ERP's despacho/frete flow with
 **byte-compatible Firestore wire shapes** (the Flutter app still runs on the
 same backend, so a field rename or shape drift corrupts live data). The only
-live carrier integration is **Melhor Envio** (ME) — a shipping aggregator with
-an OAuth API for quoting, buying and printing labels across many carriers
-(Correios, Jadlog, …). Other `tipo`s (retirada / motoboy / fob / marketplace)
-are config-only or deferred.
+**live** provider today is **Melhor Envio** (ME) — a shipping aggregator with an
+OAuth API for quoting, buying and printing labels across many carriers (Correios,
+Jadlog, …). The architecture is built so other providers (marketplace freight,
+another aggregator) slot in by **category** — see *Provider categories* below.
 
 ## Where it lives (architecture map)
 
@@ -35,11 +37,53 @@ are config-only or deferred.
 | ↳ browser-safe client | `freight-br/src/http-client` (subpath `…/http-client`) | The typed `FreightHttpClient` `apps/web` calls (`.conta()`/`.comprar()`/`.imprimir()`/`.rastrear()`/`.calculate()`) + pure builders (`buildCartItem`, `buildCalculatePayload`). |
 | **ME app** (API-only) | `apps/melhor-envio` (`@delfrance/melhor-envio-app`, `:3005`) | Thin route handlers under `app/api/freight/melhor-envio/{oauth/start,calculate,conta,comprar,imprimir,rastrear}`, the OAuth `callback`, the `webhooks/melhor-envio` receiver, and `lib/freight/*` (`loadMelhorEnvioContext`, the Firestore token store, signed-state HMAC, error→HTTP mapper). Has its **own** `CLAUDE.md`. |
 | **Web UI** (client-first) | `apps/web/app/(app)/pedidos/_components` + `…/logistica` | Frete tab (`tabs/FreteTab.tsx` + `tabs/frete/*`), the `/pedidos` etiqueta row action (`EtiquetaRowAction` → `EtiquetaComprarModal`), the object-view print/track panel (`EtiquetaMelhorEnvioPanel`), the `/logistica` `int_frete` CRUD. `useFreightClient()` targets the ME app via `NEXT_PUBLIC_MELHOR_ENVIO_URL`. |
-| **Schemas** | `packages/schemas/src/{integracao,frete}.ts` | `intFreteSchema` (the config doc, discriminated by `tipo`), `freteDoPedidoSchema` (`freteInicial`), `volumeSchema`, `PERM.frete`. Source of truth → `firestore.rules`. |
+| **Schemas** | `packages/schemas/src/{integracao,frete}.ts` | `intFreteSchema` (the config doc, discriminated by `tipo`), `freteDoPedidoSchema` (`freteInicial`), `volumeSchema`, `PERM.frete`, and **`FREIGHT_TIPO_CAPS`** (the per-tipo capability table). Source of truth → `firestore.rules`. |
 
-The package **bypasses** the `core/plugins` `FreightProvider` registry on
-purpose — that 3-method contract can't express OAuth + cart→checkout→generate +
-per-tipo UI (documented in `freight-br/src/index.ts`).
+Freight **bypasses** the `core/plugins` `FreightProvider` registry (now
+`@deprecated`): that 3-method contract can't express OAuth, cart→checkout→generate,
+agency resolution, per-tipo UI, or the fetch / read-only category. The real
+provider-neutral surface emerged bottom-up — `FreightHttpClient` +
+`FREIGHT_TIPO_CAPS` (see *Provider categories*).
+
+## Provider categories
+
+Every freight `tipo` is one of three categories. The per-tipo flags live in **one
+table** — `FREIGHT_TIPO_CAPS` in `packages/schemas/src/frete.ts`
+(`Record<IntegracaoFrete, FreightTipoCapabilities>`) — the single source of truth
+the etiqueta dispatch (`etiquetaRowState`) and the Frete tab read. Adding a `tipo`
+without a caps row is a **compile error**.
+
+| Category (`labelMode`) | Who makes the label | Status / tracking | Frete tab | Examples |
+| --- | --- | --- | --- | --- |
+| **emit** | the app buys + generates it (OAuth → quote → cart → checkout → generate → print) | a freight **webhook** (`webhooks/melhor-envio`) | editable | `melhorEnvios` |
+| **fetch** | the **marketplace** generated it; the app fetches + prints | the marketplace **order-sync** (its own webhook), NOT a freight webhook | **read-only** (`marketplaceOwned`); `lojaIntegrada` remaps via `int_frete.mapa` to a target carrier | `mercadoLivre` / `shopee` / `amz` / `magalu` / `lojaIntegrada` — Phase 5/6, stubs today |
+| **generic / none** | no carrier API — a generic PDF (`generic`) or nothing (`none`) | none (manual) | editable | `motoboy` / `outros`; `retiradaNaLoja` / `fob` |
+
+⚠️ **`labelMode` is descriptive; the `can*` flags drive behavior.** Every `can*`
+is false for every non-ME tipo today, so the row action resolves to `unsupported`
+— byte-identical to the old `tipo !== 'melhorEnvios'` reject. Don't flip a
+marketplace `canPrint` true until its fetch flow + client route exist, or a
+marketplace pedido carrying a `printLabelId` would route "Imprimir" to the ME
+backend.
+
+### The provider-neutral surface (what every category writes through)
+
+- `freteInicial.externalOption*` — `externalOptionId` (string), `externalOptionIntegracao` (the **tipo** enum), `externalOptionData` (opaque `Record<string,unknown>` — any provider's quote/option blob).
+- `freteInicial.printLabelId` / `codRastreio` — label id + tracking code; the webhook finds a pedido by `printLabelId`.
+- `freteInicial.estado` — `EstadoFrete` (27 states); `isFreteJaPostado` / `ESTADOS_FRETE_NAO_POSTADO` gate the re-emit/reprint risk confirm.
+- `int_frete.mapa` — the marketplace shipping-option → target `int_frete` + `targetTipoIntegracao` routing table (the fetch category's remap).
+- `FreightHttpClient` (6 methods) — already provider-neutral; only the route paths are ME-specific today.
+
+### Status-update pattern (estado + tracking)
+
+The ME webhook (`apps/melhor-envio/app/api/webhooks/melhor-envio/route.ts`) is the
+template every provider follows: **find** the pedido by its label/tracking key →
+**map** the provider status to `EstadoFrete` (`meStatusToEstadoFrete`) → **guard**
+terminal states (`entregue`/`cancelado` never regress; a late, out-of-order event
+can't downgrade) → **idempotent patch** of `freteInicial.estado`/`codRastreio`. A
+new provider supplies only its signature verification + status map; the
+find/guard/patch core is reusable — extract `applyFreightStatusUpdate` to
+`@delfrance/data/admin` when a 2nd caller (webhook OR order-sync poll) appears.
 
 ## The flow (happy path)
 
@@ -117,25 +161,43 @@ aprovada/EPEC chave) and passed as `invoiceKey` into the **pure**
 `buildPedidoCartPayload` (`melhorEnvioCart.ts`) — the mapper does no Firestore
 reads; `buildCartItem` tolerates a blank/null key.
 
-## Add a new freight `tipo`
+## Add a new freight provider
 
-1. **Schema** — add the `tipo` literal + its body to the `intFreteSchema`
-   discriminated union in `packages/schemas/src/integracao.ts`; register in
-   `registry.ts` if it's a new domain. Any `*Meta` perm/path change →
-   `pnpm --filter @delfrance/rules-gen gen:rules` + commit (rule 1).
-2. **Config CRUD** — extend the `/logistica` editors (schema-driven; see the
-   `schema-driven-crud` skill).
-3. **Frete tab body** — add a `tabs/frete/<Tipo>Fields.tsx` and a `case` in
-   `FreteTab.renderTipoFields()`. Marketplace tipos lock the whole header
-   (`MARKETPLACE_TIPOS`); the importer owns the block.
-4. **Etiqueta dispatch** — `etiquetaActions.ts:etiquetaRowState` decides
-   `imprimir | comprar | quote-first | unsupported | none`. Non-`melhorEnvios`
-   currently → `unsupported`. To support buying/printing for a new carrier, add
-   its branch (a generic etiqueta PDF for API-less carriers is a deferred
-   follow-up).
-5. **Server route** — only if it needs server compute (OAuth/secret/API). ME's
-   live routes live in `apps/melhor-envio`; a new carrier with its own OAuth
-   would get its own app or a sub-package under `packages/integrations`.
+1. **Enum + caps (compiler-gated).** Add the `tipo` to `integracoesFreteSchema` +
+   a label in `INTEGRACAO_FRETE_LABELS`, and a **`FREIGHT_TIPO_CAPS` row** — TS
+   won't compile without it. Pick the flags by category (emit / fetch / generic /
+   none); set `marketplaceOwned` for a marketplace-owned block, and `channel` only
+   if it has a server route.
+2. **`int_frete` body.** Add tipo-specific fields to `intFreteSchema`
+   (`packages/schemas/src/intFrete.ts`) — one passthrough object; add defaulted
+   extras. Register in `registry.ts` only for a new domain. Any `*Meta` perm /
+   path change → `pnpm --filter @delfrance/rules-gen gen:rules` + commit (rule 1).
+3. **Config CRUD.** Extend the `/logistica` editors (see the `schema-driven-crud`
+   skill).
+4. **Frete tab body.** Add `tabs/frete/<Tipo>Fields.tsx` + a `case` in
+   `FreteTab.renderTipoFields()` (the switch stays until ≥2 providers with
+   converged Fields props). `marketplaceOwned: true` auto-locks the header via the
+   caps read — no separate list to edit.
+5. **Etiqueta dispatch — automatic from caps.** `etiquetaRowState` routes off
+   the caps (via **`freightCapsFor(tipo)`** — the tolerant accessor; index
+   `FREIGHT_TIPO_CAPS` directly only with a parsed `tipo`, since UI `tipo` comes
+   unparsed from Firestore and an unknown value must degrade to "unsupported",
+   not crash). Set `canQuote` / `canBuy` / `canPrint` and the `/pedidos` row
+   action lights up (quote-first / comprar / imprimir). Add a branch in
+   `EtiquetaRowAction.tsx` only for a genuinely NEW action kind (e.g. a
+   fetch-label download).
+6. **Client route (emit / routed providers only).** If the provider needs server
+   compute (OAuth / secret / API), give it `channel: '<slug>'` in caps, add
+   `/api/freight/<slug>/*` handlers (its own app like `apps/melhor-envio`, or a
+   segment in a shared freight app — decide per provider), and thread `channel`
+   into `createFreightHttpClient` (a ~15-line change; the `FreightHttpClient`
+   interface is already neutral, so do it WITH this provider). Fetch / generic
+   providers skip this.
+7. **Status updates.** Copy `meStatusToEstadoFrete` + the find/guard/patch block
+   from the ME webhook; parameterize the status map + lookup key. **If this is the
+   2nd status caller**, extract `applyFreightStatusUpdate` to
+   `@delfrance/data/admin` and route both through it. Marketplace (fetch) status
+   arrives via the marketplace order-sync, not a freight webhook.
 
 ## Melhor Envio specifics
 

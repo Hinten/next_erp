@@ -189,6 +189,193 @@ export const integracoesFreteSchema = z
 export type IntegracaoFrete = z.infer<typeof integracoesFreteSchema>;
 
 /* -------------------------------------------------------------------------- */
+/*                    FREIGHT_TIPO_CAPS — provider capabilities                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How an etiqueta (label) is produced for a freight tipo:
+ *   - `'emit'`    — the app buys + generates the label itself (Melhor Envio):
+ *                   quote → cart → checkout → generate → print → webhook status.
+ *   - `'fetch'`   — the marketplace already generated it; the app only fetches +
+ *                   prints, and status arrives via the marketplace order-sync
+ *                   (NOT a freight webhook). Phase 5/6 — not implemented yet.
+ *   - `'generic'` — no carrier API; render a generic PDF on demand (a deferred
+ *                   follow-up for motoboy / outros).
+ *   - `'none'`    — nothing to print (retirada na loja / fob).
+ */
+export type FreightLabelMode = 'emit' | 'fetch' | 'generic' | 'none';
+
+/**
+ * Per-tipo freight capabilities — the single source of truth that replaces the
+ * scattered `tipo === 'melhorEnvios'` / `MARKETPLACE_TIPOS` checks the etiqueta
+ * dispatch (`etiquetaRowState`) and the Frete tab used to hard-code.
+ *
+ * ⚠️ The **`can*` flags are the behavioral truth**; they are ALL FALSE for every
+ * non-Melhor-Envio tipo today, so `etiquetaRowState` yields `'unsupported'` —
+ * byte-identical to the previous `tipo !== 'melhorEnvios'` reject. `labelMode` is
+ * **descriptive only** (documents intended Phase-5/6 behavior); it does NOT drive
+ * the dispatch. Do not flip a marketplace `canPrint` to true until the fetch
+ * flow + its client route exist, or a marketplace pedido carrying a
+ * `printLabelId` would wrongly route "Imprimir" to the Melhor Envio backend.
+ * `marketplaceOwned` is behavioral — it reproduces the old `MARKETPLACE_TIPOS`
+ * read-only lock on the Frete tab.
+ */
+export interface FreightTipoCapabilities {
+  /** The importing marketplace owns the whole freight block → Frete tab read-only. */
+  readonly marketplaceOwned: boolean;
+  /** The app can run a live freight quote (calculate) for this tipo. */
+  readonly canQuote: boolean;
+  /** The app can buy + generate a label for this tipo. */
+  readonly canBuy: boolean;
+  /** The app can print an existing label via the freight HTTP client. */
+  readonly canPrint: boolean;
+  /** The app receives status updates (webhook or order-sync) for this tipo. */
+  readonly canTrack: boolean;
+  /** Label semantics — DESCRIPTIVE (skill / future), does not drive dispatch. */
+  readonly labelMode: FreightLabelMode;
+  /**
+   * Backend channel segment for the freight HTTP client (`/api/freight/<channel>/*`),
+   * or `null` when the tipo has no server route (marketplace/manual/generic).
+   * Only `'melhor-envio'` is non-null today; the per-channel client router that
+   * consumes this lands with provider #2.
+   */
+  readonly channel: string | null;
+}
+
+/**
+ * Capability table keyed by every `IntegracaoFrete` tipo. Because it's a
+ * `Record<IntegracaoFrete, …>`, adding a tipo to `integracoesFreteSchema`
+ * without a caps row is a **compile error** — the structural guarantee the
+ * "add a freight provider" skill checklist relies on.
+ */
+export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities> = {
+  // Emit — the app buys + generates the label (the only live provider).
+  melhorEnvios: {
+    marketplaceOwned: false,
+    canQuote: true,
+    canBuy: true,
+    canPrint: true,
+    canTrack: true,
+    labelMode: 'emit',
+    channel: 'melhor-envio',
+  },
+  // Marketplace-managed (fetch-only, read-only tab). Phase 5/6 — all stubs today,
+  // so every `can*` stays false (→ `'unsupported'` in the row action).
+  mercadoLivre: {
+    marketplaceOwned: true,
+    canQuote: false,
+    canBuy: false,
+    canPrint: false,
+    canTrack: false,
+    labelMode: 'fetch',
+    channel: null,
+  },
+  lojaIntegrada: {
+    marketplaceOwned: true,
+    canQuote: false,
+    canBuy: false,
+    canPrint: false,
+    canTrack: false,
+    labelMode: 'fetch',
+    channel: null,
+  },
+  amz: {
+    marketplaceOwned: true,
+    canQuote: false,
+    canBuy: false,
+    canPrint: false,
+    canTrack: false,
+    labelMode: 'fetch',
+    channel: null,
+  },
+  magalu: {
+    marketplaceOwned: true,
+    canQuote: false,
+    canBuy: false,
+    canPrint: false,
+    canTrack: false,
+    labelMode: 'fetch',
+    channel: null,
+  },
+  shopee: {
+    marketplaceOwned: true,
+    canQuote: false,
+    canBuy: false,
+    canPrint: false,
+    canTrack: false,
+    labelMode: 'fetch',
+    channel: null,
+  },
+  // Manual / generic — no carrier API.
+  motoboy: {
+    marketplaceOwned: false,
+    canQuote: false,
+    canBuy: false,
+    canPrint: false,
+    canTrack: false,
+    labelMode: 'generic',
+    channel: null,
+  },
+  retiradaNaLoja: {
+    marketplaceOwned: false,
+    canQuote: false,
+    canBuy: false,
+    canPrint: false,
+    canTrack: false,
+    labelMode: 'none',
+    channel: null,
+  },
+  fob: {
+    marketplaceOwned: false,
+    canQuote: false,
+    canBuy: false,
+    canPrint: false,
+    canTrack: false,
+    labelMode: 'none',
+    channel: null,
+  },
+  outros: {
+    marketplaceOwned: false,
+    canQuote: false,
+    canBuy: false,
+    canPrint: false,
+    canTrack: false,
+    labelMode: 'generic',
+    channel: null,
+  },
+};
+
+/**
+ * Safe all-`false` capabilities for an unknown / legacy `tipo`. Firestore docs
+ * reach the UI **unparsed**, so a corrupt or legacy `tipo` can be a string
+ * outside the enum; returning this (instead of `undefined`) keeps the lookup
+ * from crashing the row action / Frete tab.
+ */
+const UNSUPPORTED_FREIGHT_CAPS: FreightTipoCapabilities = {
+  marketplaceOwned: false,
+  canQuote: false,
+  canBuy: false,
+  canPrint: false,
+  canTrack: false,
+  labelMode: 'none',
+  channel: null,
+};
+
+/**
+ * Capabilities for a freight `tipo`, **tolerant of an unknown / legacy value**.
+ * `tipo` reaches the UI straight from Firestore (no Zod parse), so it can be a
+ * string outside `IntegracaoFrete` (or `null` while a doc resolves); anything
+ * unrecognized → all-`false` `UNSUPPORTED_FREIGHT_CAPS`, matching the pre-table
+ * behavior where an unknown tipo was simply "unsupported" / non-marketplace —
+ * never a crash. Prefer this over indexing `FREIGHT_TIPO_CAPS` directly at any
+ * call site fed by unparsed data.
+ */
+export function freightCapsFor(tipo: string | null | undefined): FreightTipoCapabilities {
+  if (tipo == null) return UNSUPPORTED_FREIGHT_CAPS;
+  return FREIGHT_TIPO_CAPS[tipo as IntegracaoFrete] ?? UNSUPPORTED_FREIGHT_CAPS;
+}
+
+/* -------------------------------------------------------------------------- */
 /*           Nested entity schemas — Transportadora, Veiculo, etc.            */
 /*                                                                            */
 /*  Flutter wire shapes — lowercase field names, NOT the NFe XSD names        */
