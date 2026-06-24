@@ -114,16 +114,7 @@
       "queryScope": "COLLECTION_GROUP",
       "fields": [
         { "fieldPath": "filialId", "order": "ASCENDING" },
-        { "fieldPath": "data_emissao", "order": "ASCENDING" },
-        { "fieldPath": "numeracao", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "nfev4",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "data_emissao", "order": "ASCENDING" },
-        { "fieldPath": "numeracao", "order": "ASCENDING" }
+        { "fieldPath": "data_emissao", "order": "ASCENDING" }
       ]
     },
     {

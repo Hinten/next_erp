@@ -49,10 +49,16 @@ export function rangeStamp(startMs: number, endMs: number): string {
 
 /**
  * The server-side query shape: `data_emissao` ms-epoch range + optional `filial`,
- * ordered by emission then `numeracao`. Since #220 `data_emissao` is a number, so
- * the range compares ms directly. Firestore requires the range field to be the
- * first `orderBy`, so `numeracao` can only be the secondary sort key here — the
- * ZIP/CSV builders sort the final (buffered) output strictly by número.
+ * ordered by emission only. Since #220 `data_emissao` is a number, so the range
+ * compares ms directly. Output ordering by número is done entirely client-side
+ * (the ZIP/CSV builders sort the buffered rows by `(série, número)`), so the query
+ * carries no `numeracao` sort key. This Firestore Enterprise edition auto-creates
+ * no indexes: the with-filial query is index-backed by the `[filialId, data_emissao]`
+ * composite in `firestore.indexes.json`; the no-filial ("todas") query runs
+ * index-free — a date-range scan over the nfev4 group, like the repo's other
+ * collection-group admin queries (reconcile/sweep). `data_emissao` (plus the
+ * implicit document-key tiebreak) orders the page cursor, so `startAfter(lastDoc)`
+ * pages completely with no skipped or duplicated notes.
  */
 export function buildExportQuery(db: Firestore, filter: ExportFilter): Query<NotaFiscalEletronica> {
   const base = groupQuery(db, NFEV4_GROUP, nfeCollection.converter);
@@ -61,7 +67,7 @@ export function buildExportQuery(db: Firestore, filter: ExportFilter): Query<Not
     whereOp('data_emissao', '<=', filter.endMs),
   ];
   if (filter.filialId) constraints.push(whereOp('filialId', '==', filter.filialId));
-  constraints.push(orderByField('data_emissao'), orderByField('numeracao'));
+  constraints.push(orderByField('data_emissao'));
   return buildQuery(base, constraints);
 }
 
