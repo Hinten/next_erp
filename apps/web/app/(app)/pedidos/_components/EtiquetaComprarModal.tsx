@@ -9,6 +9,7 @@
 import { useState } from 'react';
 import { Alert, Button, Checkbox, Group, Modal, Stack, Text } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
+import { formatReais } from '@delfrance/core/money';
 import type { Pedido } from '@delfrance/schemas';
 
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -55,7 +56,7 @@ export function EtiquetaComprarModal({
   const saldoLabel = conta.isLoading
     ? 'Carregando…'
     : saldo != null
-      ? `R$ ${saldo.toFixed(2)}`
+      ? formatReais(saldo)
       : 'Desconhecido';
   const custoFrete = pedido.freteInicial?.custoFinal ?? pedido.freteInicial?.custoCalculado ?? null;
   const saldoInsuficiente = saldo != null && custoFrete != null && saldo < custoFrete;
@@ -133,7 +134,7 @@ export function EtiquetaComprarModal({
           {saldoInsuficiente && (
             <Alert color="orange" variant="light">
               Saldo insuficiente para o frete
-              {custoFrete != null ? ` (R$ ${custoFrete.toFixed(2)})` : ''}. A compra pode ser
+              {custoFrete != null ? ` (${formatReais(custoFrete)})` : ''}. A compra pode ser
               recusada pelo Melhor Envio.
             </Alert>
           )}

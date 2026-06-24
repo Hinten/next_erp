@@ -7,6 +7,7 @@
 // firestore.indexes.json — plus the Prettier compatibility layer.
 import tseslint from 'typescript-eslint';
 import defaultQueryNeedsIndex from '@delfrance/config-eslint/rules/default-query-needs-index.js';
+import noAdHocMoneyRounding from '@delfrance/config-eslint/rules/no-ad-hoc-money-rounding.js';
 import { prettier } from '@delfrance/config-eslint';
 
 const config = [
@@ -20,10 +21,16 @@ const config = [
       parserOptions: { ecmaVersion: 'latest', sourceType: 'module' },
     },
     plugins: {
-      delfrance: { rules: { 'default-query-needs-index': defaultQueryNeedsIndex } },
+      delfrance: {
+        rules: {
+          'default-query-needs-index': defaultQueryNeedsIndex,
+          'no-ad-hoc-money-rounding': noAdHocMoneyRounding,
+        },
+      },
     },
     rules: {
       'delfrance/default-query-needs-index': 'error',
+      'delfrance/no-ad-hoc-money-rounding': 'error',
     },
   },
   // eslint-config-prettier LAST — disables stylistic rules that conflict with

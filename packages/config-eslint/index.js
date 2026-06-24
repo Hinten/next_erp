@@ -2,6 +2,7 @@
 // rules (e.g., apps/web extends with eslint-config-next).
 import noInlineAdminCollection from './rules/no-inline-admin-collection.js';
 import defaultQueryNeedsIndex from './rules/default-query-needs-index.js';
+import noAdHocMoneyRounding from './rules/no-ad-hoc-money-rounding.js';
 import eslintConfigPrettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
@@ -72,6 +73,7 @@ const config = [
         rules: {
           'no-inline-admin-collection': noInlineAdminCollection,
           'default-query-needs-index': defaultQueryNeedsIndex,
+          'no-ad-hoc-money-rounding': noAdHocMoneyRounding,
         },
       },
     },
@@ -138,6 +140,12 @@ const config = [
       // CollectionMetadata literals (objects with a string collectionPath).
       // See rules/default-query-needs-index.js.
       'delfrance/default-query-needs-index': 'error',
+
+      // Money math + BRL display must funnel through roundReais() / formatReais()
+      // from @delfrance/core/money — ad-hoc `.toFixed(2)` / `Math.round(x * 100)`
+      // are forbidden (the canonical impls + wire-format serializers are
+      // allow-listed in the rule). See rules/no-ad-hoc-money-rounding.js.
+      'delfrance/no-ad-hoc-money-rounding': 'error',
     },
   },
 ];

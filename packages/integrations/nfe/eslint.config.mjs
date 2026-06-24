@@ -8,6 +8,7 @@
 // here; the catch rule remains enforced at the apps/* boundary.
 import tseslint from 'typescript-eslint';
 import eslintConfigPrettier from 'eslint-config-prettier';
+import noAdHocMoneyRounding from '@delfrance/config-eslint/rules/no-ad-hoc-money-rounding.js';
 
 // Rule A — no multi-arg `console.*` in NF-e code paths. See the
 // apps-side config for the rationale; the leak shape is the same and
@@ -102,6 +103,16 @@ const config = [
       ],
       '@typescript-eslint/await-thenable': 'error',
     },
+  },
+  // Money math must use roundReais() from @delfrance/core/money — ad-hoc
+  // `.toFixed(2)` / `Math.round(x * 100)` are forbidden. The XSD string
+  // serializers (`tribute/format.ts`, `generator/det.ts`) are allow-listed
+  // inside the rule. Distinct rule name, so it coexists with the
+  // `no-restricted-syntax` blocks above.
+  {
+    files: ['src/**/*.ts'],
+    plugins: { delfrance: { rules: { 'no-ad-hoc-money-rounding': noAdHocMoneyRounding } } },
+    rules: { 'delfrance/no-ad-hoc-money-rounding': 'error' },
   },
   // eslint-config-prettier LAST — disables stylistic rules that conflict with
   // Prettier (formatting is owned by `prettier.config.mjs` / `pnpm format`).
