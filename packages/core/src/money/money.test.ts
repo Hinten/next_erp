@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { add, format, money, subtract } from './index';
+import { add, format, formatReais, money, roundReais, subtract } from './index';
 
 describe('money', () => {
   it('rejects non-integer amounts', () => {
@@ -33,5 +33,53 @@ describe('format', () => {
     const out = format(money(12345));
     expect(out).toContain('123,45');
     expect(out).toMatch(/R\$/);
+  });
+});
+
+describe('roundReais', () => {
+  it('rounds HALF UP at the 2nd decimal (the 3rd decimal decides)', () => {
+    expect(roundReais(5.523)).toBe(5.52);
+    expect(roundReais(6.555)).toBe(6.56);
+    expect(roundReais(6.739)).toBe(6.74);
+    expect(roundReais(2.675)).toBe(2.68);
+  });
+
+  it('is float-robust where toFixed / Math.round are NOT', () => {
+    // The two naive impls disagree AND each is wrong on some input:
+    // toFixed sees the 6.55499… double for 6.555 and rounds DOWN to 6.55,
+    expect(Number((6.555).toFixed(2))).toBe(6.55); // naive #1 (wrong here)
+    // while Math.round(n*100) underflows on 1.005 (1.005*100 = 100.4999…) → 1.00.
+    expect(Math.round(1.005 * 100) / 100).toBe(1); // naive #2 (wrong here)
+    // The canonical helper rounds both half-up correctly.
+    expect(roundReais(6.555)).toBe(6.56);
+    expect(roundReais(1.005)).toBe(1.01);
+  });
+
+  it('rounds away from zero for negatives (symmetric)', () => {
+    expect(roundReais(-6.555)).toBe(-6.56);
+    expect(roundReais(-5.523)).toBe(-5.52);
+  });
+
+  it('leaves already-2-decimal and integer values unchanged', () => {
+    expect(roundReais(30)).toBe(30);
+    expect(roundReais(6.5)).toBe(6.5);
+    expect(roundReais(0)).toBe(0);
+  });
+
+  it('passes non-finite values through unchanged', () => {
+    expect(roundReais(Number.NaN)).toBeNaN();
+    expect(roundReais(Number.POSITIVE_INFINITY)).toBe(Number.POSITIVE_INFINITY);
+  });
+});
+
+describe('formatReais', () => {
+  it('formats a reais amount as BRL, rounding half-up first', () => {
+    const out = formatReais(6.555);
+    expect(out).toContain('6,56');
+    expect(out).toMatch(/R\$/);
+  });
+
+  it('pads to two decimals', () => {
+    expect(formatReais(6.5)).toContain('6,50');
   });
 });

@@ -1,9 +1,9 @@
 import { z } from 'zod';
+import { roundReais } from '@delfrance/core/money';
 import { pedidoSchema, type EstadoPedido } from '../collection/pedido';
 import { pagamentoSchema, STATUS_PAGAMENTO } from '../collection/pagamento';
 import { incidenteSchema } from '../collection/incidente';
 import { historicoEstadoPedidoSchema } from '../collection/historicoEstadoPedido';
-import { round2 } from '../pureLogic/totals';
 
 /**
  * # Pedido page model
@@ -106,7 +106,7 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
     const aprovado = data.pagamentos
       .filter((p) => p.status_pagamento === STATUS_PAGAMENTO.aprovado)
       .reduce((sum, p) => sum + (p.valor ?? 0), 0);
-    if (round2(aprovado) < round2(data.valorCobrado ?? 0)) {
+    if (roundReais(aprovado) < roundReais(data.valorCobrado ?? 0)) {
       issues.push({
         path: 'pagamentos',
         message: 'O valor pago aprovado é menor que o total do pedido.',

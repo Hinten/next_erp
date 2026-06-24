@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { Alert, Badge, Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useQuery } from '@tanstack/react-query';
+import { formatReais } from '@delfrance/core/money';
 import {
   FreightHttpError,
   FreightNetworkError,
@@ -97,7 +98,7 @@ export function ContaPanel({ intFreteId }: { intFreteId: string }) {
             )}
             {balance != null && (
               <Text size="sm" c="dimmed">
-                Saldo: R$ {balance.toFixed(2)}
+                Saldo: {formatReais(balance)}
               </Text>
             )}
           </Stack>

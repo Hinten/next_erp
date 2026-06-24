@@ -1,5 +1,5 @@
 import type { FaixaDeCep } from '@delfrance/schemas';
-import { format, money } from '@delfrance/core/money';
+import { formatReais } from '@delfrance/core/money';
 
 /**
  * Faixas whose CEP range contains `cepDestino`. Port of the motoboy
@@ -60,6 +60,6 @@ export function formatCep(cep: string): string {
  * `R$ 20,00 - 1 dias úteis (de 01000-000 a 01999-999)`.
  */
 export function faixaLabel(faixa: FaixaDeCep): string {
-  const valor = format(money(Math.round(faixa.valor * 100)));
+  const valor = formatReais(faixa.valor);
   return `${valor} - ${faixa.prazo} dias úteis (de ${formatCep(faixa.cepInicial)} a ${formatCep(faixa.cepFinal)})`;
 }

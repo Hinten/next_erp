@@ -33,7 +33,7 @@ import {
   type Pagamento,
   type StatusPagamento,
 } from '@delfrance/schemas';
-import { format, money } from '@delfrance/core/money';
+import { formatReais } from '@delfrance/core/money';
 import { epochToPickerString, pickerStringToEpoch } from '@delfrance/ui';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
 import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
@@ -51,7 +51,7 @@ import {
   type PagamentoFormState,
 } from './PagamentoForm';
 
-const brl = (n: number): string => format(money(Math.round(n * 100)));
+const brl = (n: number): string => formatReais(n);
 
 const formaOptions = (Object.entries(FORMA_PAGAMENTO_LABELS) as [string, string][]).map(
   ([value, label]) => ({ value, label }),
@@ -572,7 +572,7 @@ function PagamentoRow({
         <Table.Td>
           {FORMA_PAGAMENTO_LABELS[pagamento.forma_de_pagamento as FormaPagamento] ?? '—'}
         </Table.Td>
-        <Table.Td align="right">{format(money(Math.round(pagamento.valor * 100)))}</Table.Td>
+        <Table.Td align="right">{formatReais(pagamento.valor)}</Table.Td>
         <Table.Td align="right">{pagamento.parcelas}</Table.Td>
         <Table.Td>
           <Group gap="xs">

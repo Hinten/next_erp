@@ -1,9 +1,9 @@
+import { roundReais } from '@delfrance/core/money';
 import {
   FORMA_PAGAMENTO,
   STATUS_PAGAMENTO,
   cartaoSchema,
   chequeSchema,
-  round2,
   type FormaPagamento,
   type Pagamento,
   type StatusPagamento,
@@ -175,7 +175,7 @@ export function remainingToPay(
   const covered = pagamentos
     .filter((p) => p.id !== editingId && isPaying(p.status_pagamento))
     .reduce((sum, p) => sum + (p.valor ?? 0), 0);
-  return Math.max(0, round2(pedidoTotal - covered));
+  return Math.max(0, roundReais(pedidoTotal - covered));
 }
 
 /**

@@ -21,7 +21,7 @@ import {
 
 import type { NFeRuntime } from '../runtime';
 import { NFeOrchestratorError } from './errors';
-import { round2, type FiscalItem, type PedidoBundle } from './bundle';
+import type { FiscalItem, PedidoBundle } from './bundle';
 
 /**
  * Project the validated fiscal items + filial + cliente + operação +

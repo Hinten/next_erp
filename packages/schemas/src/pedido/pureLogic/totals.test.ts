@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ItemDoPedido } from '../collection/pedido';
-import { derivePedidoTotals, flattenItensDevolvidos, round2 } from './totals';
+import { derivePedidoTotals, flattenItensDevolvidos } from './totals';
 
 function item(precoDeVenda: number, descontoUnitario: number, quantidade: number, custo: number) {
   return { precoDeVenda, descontoUnitario, quantidade, custo } as unknown as ItemDoPedido;
@@ -60,10 +60,4 @@ describe('flattenItensDevolvidos', () => {
   });
 });
 
-describe('round2', () => {
-  it('matches duasCasasDecimais rounding', () => {
-    expect(round2(1.005)).toBe(1.0); // toFixed banker-ish parity with Dart
-    expect(round2(2.675)).toBe(2.67);
-    expect(round2(0.1 + 0.2)).toBe(0.3);
-  });
-});
+// The canonical rounding (`roundReais`) is tested in `@delfrance/core/money`.

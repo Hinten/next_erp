@@ -33,7 +33,7 @@ import {
   pedidoTotal,
 } from '@delfrance/schemas';
 import { microsToMillis } from '@delfrance/core/datetime';
-import { format, money } from '@delfrance/core/money';
+import { formatReais } from '@delfrance/core/money';
 import {
   ActionIcon,
   Anchor,
@@ -381,7 +381,7 @@ export function VlrCell({ pedido }: { pedido: Pedido }) {
   if (value === 0 && pedido.valorCobrado == null) {
     return <Text c="dimmed">{DASH}</Text>;
   }
-  return <Text fw={500}>{format(money(Math.round(value * 100)))}</Text>;
+  return <Text fw={500}>{formatReais(value)}</Text>;
 }
 
 /* -------------------------------------------------------------------------- */
