@@ -251,3 +251,49 @@ export async function deleteIncidente(
 ): Promise<void> {
   await port.commit([{ type: 'delete', path: INCIDENTE_PATH(args.pedidoId, args.incidenteId) }]);
 }
+
+// ---------------------------------------------------------------------------
+// Pagamentos (pedidos/{id}/pagamentos subcollection CRUD)
+// ---------------------------------------------------------------------------
+
+const PAGAMENTO_PATH = (pedidoId: string, docId: string): string =>
+  `pedidos/${pedidoId}/pagamentos/${docId}`;
+
+/**
+ * Build a set-op for a pagamento. Create (`pagamentoId` null → mint an id +
+ * stamp `dataCadastro`, the field the list sorts by) or update (id given →
+ * preserve the caller-supplied `dataCadastro` + the passthrough `cartao` /
+ * `cheque` / `metodoPagamentoOuterRef`, which the editor spreads from the
+ * existing doc). Always stamps `ultimaModificacao`. The adapter's `set` runs
+ * through the Zod converter (validates + fills defaults). No auto-`estado` side
+ * effect (legacy `statusToEstadoPedido` stays a TODO).
+ */
+export function buildPagamentoOp(
+  port: PedidoDataPort,
+  pedidoId: string,
+  pagamentoId: string | null,
+  pagamento: Record<string, unknown>,
+): PedidoWriteOp {
+  const id = pagamentoId ?? port.newId();
+  const data: Record<string, unknown> = { ...pagamento, ultimaModificacao: port.now() };
+  if (pagamentoId === null) data.dataCadastro = port.now();
+  return { type: 'set', path: PAGAMENTO_PATH(pedidoId, id), data };
+}
+
+/** Create (no `pagamentoId`) or update a pagamento. */
+export async function savePagamento(
+  port: PedidoDataPort,
+  args: { pedidoId: string; pagamentoId?: string | null; pagamento: Record<string, unknown> },
+): Promise<void> {
+  await port.commit([
+    buildPagamentoOp(port, args.pedidoId, args.pagamentoId ?? null, args.pagamento),
+  ]);
+}
+
+/** Delete a pagamento. */
+export async function deletePagamento(
+  port: PedidoDataPort,
+  args: { pedidoId: string; pagamentoId: string },
+): Promise<void> {
+  await port.commit([{ type: 'delete', path: PAGAMENTO_PATH(args.pedidoId, args.pagamentoId) }]);
+}

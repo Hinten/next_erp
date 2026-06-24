@@ -13,6 +13,9 @@ export {
   buildIncidenteOp,
   saveIncidente,
   deleteIncidente,
+  buildPagamentoOp,
+  savePagamento,
+  deletePagamento,
   PedidoConflictError,
   PedidoNothingChangedError,
 } from './usecases';

@@ -1,6 +1,6 @@
 'use client';
 
-import { type CSSProperties, useState } from 'react';
+import { type CSSProperties, type ReactNode, useState } from 'react';
 import { NumberInput } from '@mantine/core';
 
 /**
@@ -35,6 +35,8 @@ export interface CurrencyInputProps {
   /** Accessible name override (price rows target a specific lista by name). */
   ariaLabel?: string;
   style?: CSSProperties;
+  /** Optional content (e.g. an action icon) rendered inside the input's end. */
+  rightSection?: ReactNode;
 }
 
 /**
@@ -60,6 +62,7 @@ export function CurrencyInput({
   error,
   ariaLabel,
   style,
+  rightSection,
 }: CurrencyInputProps) {
   const [editing, setEditing] = useState(false);
   return (
@@ -70,6 +73,8 @@ export function CurrencyInput({
       error={error}
       aria-label={ariaLabel}
       style={style}
+      rightSection={rightSection}
+      rightSectionPointerEvents={rightSection ? 'all' : undefined}
       value={value ?? ''}
       onChange={(v) => onChange(parseBrl(v))}
       onFocus={() => setEditing(true)}

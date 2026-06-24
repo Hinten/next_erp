@@ -6,12 +6,15 @@ import {
   PedidoNothingChangedError,
   buildEstadoHistoryOp,
   buildIncidenteOp,
+  buildPagamentoOp,
   buildPedidoPatch,
   deleteIncidente,
+  deletePagamento,
   recordEstadoChange,
   remotelyChangedFields,
   savePedido,
   saveIncidente,
+  savePagamento,
 } from './usecases';
 
 const VALUES = {
@@ -248,5 +251,42 @@ describe('incidentes', () => {
     const { port, committed } = fakePort(null);
     await deleteIncidente(port, { pedidoId: 'ped1', incidenteId: 'inc1' });
     expect(committed()).toEqual([{ type: 'delete', path: 'pedidos/ped1/incidentes/inc1' }]);
+  });
+});
+
+describe('pagamentos', () => {
+  const pgto = { forma_de_pagamento: 1, status_pagamento: 0, valor: 100, parcelas: 1 };
+
+  it('buildPagamentoOp creates with a fresh id + dataCadastro + ultimaModificacao', () => {
+    const { port } = fakePort(null, 555);
+    const op = buildPagamentoOp(port, 'ped1', null, pgto);
+    expect(op).toEqual({
+      type: 'set',
+      path: 'pedidos/ped1/pagamentos/newid',
+      data: { ...pgto, ultimaModificacao: 555, dataCadastro: 555 },
+    });
+  });
+
+  it('buildPagamentoOp updates at the given id WITHOUT touching dataCadastro', () => {
+    const { port } = fakePort(null, 555);
+    const op = buildPagamentoOp(port, 'ped1', 'pg1', { ...pgto, dataCadastro: 1 });
+    expect(op.path).toBe('pedidos/ped1/pagamentos/pg1');
+    expect((op as { data: Record<string, unknown> }).data).toMatchObject({
+      dataCadastro: 1,
+      ultimaModificacao: 555,
+    });
+  });
+
+  it('savePagamento commits one set op', async () => {
+    const { port, committed } = fakePort(null);
+    await savePagamento(port, { pedidoId: 'ped1', pagamento: pgto });
+    expect(committed()).toHaveLength(1);
+    expect(committed()[0]?.type).toBe('set');
+  });
+
+  it('deletePagamento commits one delete op at the doc path', async () => {
+    const { port, committed } = fakePort(null);
+    await deletePagamento(port, { pedidoId: 'ped1', pagamentoId: 'pg1' });
+    expect(committed()).toEqual([{ type: 'delete', path: 'pedidos/ped1/pagamentos/pg1' }]);
   });
 });

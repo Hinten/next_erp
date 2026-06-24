@@ -310,7 +310,14 @@ export function PedidoForm({
 
           <Tabs.Panel value="pagamento" pt="md">
             {pedidoId ? (
-              <PagamentosSection pedidoId={pedidoId} />
+              <PagamentosSection
+                pedidoId={pedidoId}
+                disabled={disabled}
+                // `getValues` (not `watch`): the total is stable while the
+                // Pagamento tab is open (items are edited on Principal), so no
+                // subscription/re-render is needed.
+                pedidoTotal={form.getValues('valorCobrado') ?? 0}
+              />
             ) : (
               <PlaceholderTab name="Pagamento" />
             )}

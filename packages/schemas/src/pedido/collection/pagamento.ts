@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
 import { microsSinceEpoch } from '../../datetime';
+import { bandeiraSchema } from '../../bandeiraCartao';
 import type { EstadoPedido } from './pedido';
 
 const PERM_PAGAMENTO_READ = 1n << 24n;
@@ -189,6 +190,57 @@ export const pagamentoSchema = z
   .passthrough();
 
 export type Pagamento = z.infer<typeof pagamentoSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*                      Embedded card / cheque detail                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `pagamento.cartao` — embedded card detail (NOT a collection; stored as a nested
+ * map in the pagamento doc, where `pagamentoSchema` keeps it as opaque
+ * pass-through). Mirrors Flutter's `Cartao` (`models.dart:2205`). Only `bandeira`
+ * / `numeroCartao` / `cAut` are editable in the form today; `tpIntegra` is fixed
+ * to `'2'` (não integrado) and `cnpj_instituicao` / `tarifa` / `tarifaFixa` /
+ * `prazoRecebimento` come from the bandeira catalog (`bandeirasCartao`) — they are
+ * preserved on edit but not yet auto-filled here (follow-up). `.passthrough()`
+ * keeps any legacy field; `.catch` keeps a legacy-shaped value from failing the
+ * whole parse on load.
+ */
+export const cartaoSchema = z
+  .object({
+    tpIntegra: z.string().default('2'),
+    bandeira: bandeiraSchema.nullable().catch(null).default(null),
+    numeroCartao: z.string().nullable().catch(null).default(null),
+    cAut: z.string().nullable().catch(null).default(null),
+    cnpj_instituicao: z.string().nullable().catch(null).default(null),
+    tarifa: z.number().nullable().catch(null).default(null),
+    tarifaFixa: z.number().nullable().catch(null).default(null),
+    prazoRecebimento: z.number().nullable().catch(null).default(null),
+  })
+  .passthrough();
+export type Cartao = z.infer<typeof cartaoSchema>;
+
+/**
+ * `pagamento.cheque` — embedded cheque detail (NOT a collection; nested map,
+ * pass-through on `pagamentoSchema`). Mirrors Flutter's `Cheque`
+ * (`models.dart:2298`). `bomPara` uses `microsSinceEpoch()` so a legacy ISO-8601
+ * value is coerced to microseconds (the new-app standard) instead of being
+ * dropped; `.catch(null)` only catches a genuinely unparseable value. The
+ * multi-cheque parcela split (intervalo/quantidade) is not ported (follow-up).
+ */
+export const chequeSchema = z
+  .object({
+    banco: z.string().nullable().catch(null).default(null),
+    agencia: z.string().nullable().catch(null).default(null),
+    conta: z.string().nullable().catch(null).default(null),
+    numero: z.number().int().nullable().catch(null).default(null),
+    titular: z.string().max(255).nullable().catch(null).default(null),
+    cpf_cnpj: z.string().max(18).nullable().catch(null).default(null),
+    telefone: z.string().max(16).nullable().catch(null).default(null),
+    bomPara: microsSinceEpoch('Bom para').nullable().catch(null).default(null),
+  })
+  .passthrough();
+export type Cheque = z.infer<typeof chequeSchema>;
 
 export const pagamentoMeta: CollectionMetadata = {
   collectionPath: 'pedidos/{pedidoId}/pagamentos',
