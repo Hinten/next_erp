@@ -71,6 +71,7 @@ export type Foto = z.infer<typeof fotoSchema>;
  * to match the legacy wire shape — the cascade frees it via the original anyway.
  */
 export function deriveFotosArquivosIds(fotos: readonly Foto[] | null | undefined): string[] {
+  const prefix = `${ARQUIVOS_COLLECTION}/`;
   const ids = new Set<string>();
   for (const foto of fotos ?? []) {
     for (const ref of [
@@ -78,7 +79,9 @@ export function deriveFotosArquivosIds(fotos: readonly Foto[] | null | undefined
       foto.arquivo200pxOuterRef,
       foto.arquivo400pxOuterRef,
     ]) {
-      if (typeof ref === 'string' && ref !== '') ids.add(ref.replace(/^arquivos\//, ''));
+      if (typeof ref !== 'string') continue;
+      const id = ref.startsWith(prefix) ? ref.slice(prefix.length) : ref;
+      if (id !== '') ids.add(id); // skip a bare `arquivos/` (would yield an empty id)
     }
   }
   return [...ids];

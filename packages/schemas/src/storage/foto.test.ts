@@ -59,4 +59,12 @@ describe('deriveFotosArquivosIds', () => {
     expect(deriveFotosArquivosIds([])).toEqual([]);
     expect(deriveFotosArquivosIds(null)).toEqual([]);
   });
+
+  it('skips a bare `arquivos/` ref that would strip to an empty id', () => {
+    const foto = fotoSchema.parse({
+      arquivoOuterRef: 'arquivos/p1_h',
+      arquivo200pxOuterRef: 'arquivos/',
+    });
+    expect(deriveFotosArquivosIds([foto])).toEqual(['p1_h']);
+  });
 });
