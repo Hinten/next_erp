@@ -325,6 +325,11 @@ export default function EditarProdutoPage() {
         currentUserUid={user?.uid ?? ''}
         recordId={params.id}
         sections={PRODUTO_SECTIONS}
+        // Keep every tab's effects running (not React `<Activity>`, which
+        // unmounts hidden tabs' effects): the Kit tab's "Gerar Variações" grid +
+        // the component-picker exclusion read live rows the Variações tab
+        // publishes, so it must stay live even when another tab is active.
+        keepSectionsMounted
         fields={fields}
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
         transientFields={PRODUTO_TRANSIENT_FIELDS}

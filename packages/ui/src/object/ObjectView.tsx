@@ -90,6 +90,14 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
   fields?: Record<string, FieldConfig>;
   /** Section names → renders a Mantine tabs view. Omit for a flat layout. */
   sections?: string[];
+  /**
+   * Keep inactive section panels mounted with their effects RUNNING (Mantine
+   * `keepMountedMode="display-none"`) instead of the default React `<Activity>`
+   * mode, which unmounts a hidden tab's effects. Opt in when one tab's content
+   * depends on live data another tab publishes (e.g. the produto editor's Kit
+   * grid consumes rows from the Variações tab). Default off.
+   */
+  keepSectionsMounted?: boolean;
 
   /**
    * Derive additional top-level fields from the (already per-field
@@ -222,6 +230,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   excludedFields = [],
   fields: fieldOverrides = {},
   sections,
+  keepSectionsMounted = false,
   deriveOnSave,
   validate,
   transientFields = [],
@@ -787,6 +796,7 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
                 value={effectiveSection}
                 onChange={setActiveSection}
                 errorSections={errorSections}
+                keepMountedMode={keepSectionsMounted ? 'display-none' : undefined}
               />
             ) : (
               fieldsBlock(grouped['default'] ?? visibleDescriptors)
