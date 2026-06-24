@@ -131,7 +131,12 @@ export function KitManager({
   // Component costs read once per component (a component's `custo` doesn't change
   // while editing this kit) — the kit cost re-sums from this cache on any
   // quantidade change without re-reading. `faltando` = components with no custo.
+  // The cache also holds each component PARENT's cost (keyed by `paiId`) so the
+  // variation-child cost fallback can resolve from it.
   const [custoCache, setCustoCache] = useState<Record<string, number | null>>({});
+  // Each component id → its `paiId` (or null) — feeds the Flutter cost fallback:
+  // a variation child with no own custo uses its parent's.
+  const [paiCache, setPaiCache] = useState<Record<string, string | null>>({});
 
   const activeIds = useMemo(
     () =>
@@ -152,12 +157,24 @@ export function KitManager({
     let cancelled = false;
     Promise.all(
       missing.map(async (id) => {
-        const snap = await getDocFromServer(produtoCollection.docRef(db, {}, id));
-        return [id, (snap.data()?.custo as number | null | undefined) ?? null] as const;
+        const data = (await getDocFromServer(produtoCollection.docRef(db, {}, id))).data();
+        const own = (data?.custo as number | null | undefined) ?? null;
+        const paiId = (data?.paiId as string | null | undefined) ?? null;
+        // Flutter fallback (models.dart:1271-1287): a variation child with no own
+        // custo inherits its parent's — read the parent's custo so the pure
+        // `custoDoKit` resolver can fall back to it.
+        const custos: Array<readonly [string, number | null]> = [[id, own]];
+        if (own === null && paiId) {
+          const parent = (await getDocFromServer(produtoCollection.docRef(db, {}, paiId))).data();
+          custos.push([paiId, (parent?.custo as number | null | undefined) ?? null]);
+        }
+        return { custos, pai: [id, paiId] as const };
       }),
     )
-      .then((pairs) => {
-        if (!cancelled) setCustoCache((c) => ({ ...c, ...Object.fromEntries(pairs) }));
+      .then((results) => {
+        if (cancelled) return;
+        setCustoCache((c) => ({ ...c, ...Object.fromEntries(results.flatMap((r) => r.custos)) }));
+        setPaiCache((p) => ({ ...p, ...Object.fromEntries(results.map((r) => r.pai)) }));
       })
       .catch((err: unknown) => {
         if (err instanceof FirebaseError) {
@@ -180,8 +197,8 @@ export function KitManager({
   const custoResult = useMemo(() => {
     if (activeIds.length === 0) return { custo: null as number | null, faltando: [] as string[] };
     if (activeIds.some((id) => !(id in custoCache))) return null; // wait for reads
-    return custoDoKit(stripKitForSave(components) ?? {}, custoCache);
-  }, [activeIds, custoCache, components]);
+    return custoDoKit(stripKitForSave(components) ?? {}, custoCache, paiCache);
+  }, [activeIds, custoCache, paiCache, components]);
 
   // Push the computed cost into the read-only `custo` form field (writing to the
   // form = an external system, the legitimate use of an effect).
@@ -256,7 +273,21 @@ export function KitManager({
         });
         return;
       }
-      setCustoCache((c) => ({ ...c, [id]: (data?.custo as number | null | undefined) ?? null }));
+      const own = (data?.custo as number | null | undefined) ?? null;
+      const paiId = (data?.paiId as string | null | undefined) ?? null;
+      setPaiCache((p) => ({ ...p, [id]: paiId }));
+      if (own === null && paiId) {
+        // Variation child with no own custo — seed the parent's custo for the
+        // Flutter fallback (`models.dart:1271-1287`).
+        const parent = (await getDocFromServer(produtoCollection.docRef(db, {}, paiId))).data();
+        setCustoCache((c) => ({
+          ...c,
+          [id]: own,
+          [paiId]: (parent?.custo as number | null | undefined) ?? null,
+        }));
+      } else {
+        setCustoCache((c) => ({ ...c, [id]: own }));
+      }
     } catch (err) {
       if (err instanceof FirebaseError) {
         notifications.show({
