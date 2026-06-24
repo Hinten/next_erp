@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { describe, expect, it } from 'vitest';
-import { nowMicros, productArquivoId, productOriginalPath, productVideoPath } from '@delfrance/schemas';
+import {
+  nowMicros,
+  productArquivoId,
+  productOriginalPath,
+  productVideoPath,
+} from '@delfrance/schemas';
 
 import { reconcileProdutoMediaMarks } from './onProdutoMediaChanged';
 
@@ -65,10 +70,12 @@ describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks
     const res = await reconcileProdutoMediaMarks(db, before, after);
     expect(res).toEqual({ marked: 1, unmarked: 0 });
 
-    expect(typeof (await db.collection('arquivos').doc(fotoId).get()).data()?.markedForDeletionAt).toBe(
-      'number',
-    );
-    expect((await db.collection('arquivos').doc(vidId).get()).data()?.markedForDeletionAt).toBeNull();
+    expect(
+      typeof (await db.collection('arquivos').doc(fotoId).get()).data()?.markedForDeletionAt,
+    ).toBe('number');
+    expect(
+      (await db.collection('arquivos').doc(vidId).get()).data()?.markedForDeletionAt,
+    ).toBeNull();
   });
 
   it('clears the mark when a previously-removed photo is re-added', async () => {
@@ -83,7 +90,9 @@ describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks
 
     const res = await reconcileProdutoMediaMarks(db, before, after);
     expect(res).toEqual({ marked: 0, unmarked: 1 });
-    expect((await db.collection('arquivos').doc(fotoId).get()).data()?.markedForDeletionAt).toBeNull();
+    expect(
+      (await db.collection('arquivos').doc(fotoId).get()).data()?.markedForDeletionAt,
+    ).toBeNull();
   });
 
   it('is a no-op when the media set is unchanged', async () => {
