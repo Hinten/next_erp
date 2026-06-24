@@ -22,29 +22,12 @@ import {
 
 import { useNFeClient } from '@/lib/nfe/client';
 
+import { BUCKET_META, BUCKET_ORDER, classifyEmitResult } from './emitirLoteBuckets';
+
 export interface EmitirLoteDialogProps {
   readonly opened: boolean;
   readonly pedidoIds: ReadonlyArray<string>;
   readonly onClose: () => void;
-}
-
-type Bucket = 'sucesso' | 'falhas' | 'naoEmitidas';
-
-/**
- * Classify a single result into the three Flutter-parity buckets.
- * - Sucesso: this run's autorizadas (`estado='a'` and not reused).
- * - Falhas: this run's rejeitadas / denegadas / errored.
- * - Não emitidas: anything else — EmitError entries (load-fail,
- *   prepare-fail, bloqueada short-circuits returned as
- *   `reused: true`).
- */
-function classify(r: NFeEmitResult | NFeEmitError): Bucket {
-  if (isNFeEmitError(r)) return 'naoEmitidas';
-  if (r.estado === 'a' && r.reused === false) return 'sucesso';
-  if (r.estado === 'a' && r.reused === true) return 'naoEmitidas';
-  // 'r' (rejeitada), 'd' (denegada), 'e' (error), 'i' (numeracao inutilizada),
-  // 'c' (cancelada) — anything terminal-non-autorizada is a failure for this run.
-  return 'falhas';
 }
 
 type DialogState =
@@ -95,9 +78,15 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
 
   const total = pedidoIds.length;
   const results = state.kind === 'done' ? state.result.results : [];
-  const sucesso = results.filter((r) => classify(r) === 'sucesso').length;
-  const falhas = results.filter((r) => classify(r) === 'falhas').length;
-  const naoEmitidas = results.filter((r) => classify(r) === 'naoEmitidas').length;
+  // One counter per bucket, in display order — including the blue "Em
+  // processamento" bucket for async-pending notes (cStat 103), which used to be
+  // wrongly counted as Falhas (#259).
+  const counts = BUCKET_ORDER.map((bucket) => ({
+    bucket,
+    label: BUCKET_META[bucket].label,
+    color: BUCKET_META[bucket].color,
+    count: results.filter((r) => classifyEmitResult(r) === bucket).length,
+  }));
   const closable = state.kind !== 'pending';
 
   return (
@@ -113,30 +102,16 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
       size="lg"
     >
       <Stack>
-        <Group justify="space-between">
-          <Text fw={600} c="teal">
-            Sucesso:
-          </Text>
-          <Text fw={600} c="teal">
-            {sucesso}/{total}
-          </Text>
-        </Group>
-        <Group justify="space-between">
-          <Text fw={600} c="red">
-            Falhas:
-          </Text>
-          <Text fw={600} c="red">
-            {falhas}/{total}
-          </Text>
-        </Group>
-        <Group justify="space-between">
-          <Text fw={600} c="yellow">
-            Não emitidas:
-          </Text>
-          <Text fw={600} c="yellow">
-            {naoEmitidas}/{total}
-          </Text>
-        </Group>
+        {counts.map(({ bucket, label, color, count }) => (
+          <Group justify="space-between" key={bucket}>
+            <Text fw={600} c={color}>
+              {label}:
+            </Text>
+            <Text fw={600} c={color}>
+              {count}/{total}
+            </Text>
+          </Group>
+        ))}
 
         {state.kind === 'pending' && (
           <Group justify="center" mt="md">
@@ -171,8 +146,7 @@ export function EmitirLoteDialog({ opened, pedidoIds, onClose }: EmitirLoteDialo
 }
 
 function ResultRow({ result }: { readonly result: NFeEmitResult | NFeEmitError }) {
-  const bucket = classify(result);
-  const color = bucket === 'sucesso' ? 'teal' : bucket === 'falhas' ? 'red' : 'yellow';
+  const color = BUCKET_META[classifyEmitResult(result)].color;
   return (
     <Group justify="space-between" wrap="nowrap" gap="xs">
       <Text size="sm" fw={500} truncate maw={140}>
