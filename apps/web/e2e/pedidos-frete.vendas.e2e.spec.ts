@@ -53,7 +53,12 @@ test.describe.serial('Pedidos — aba Frete', () => {
     await page.getByRole('option', { name: fixtures.base.operacaoNome }).click();
     await page.getByRole('combobox', { name: 'Integração', exact: true }).click();
     await page.getByRole('option', { name: fixtures.base.integracaoNome }).click();
-    await page.getByPlaceholder('Adicionar item por busca…').fill(fixtures.base.produtoNome);
+    // Lista de preços is required before the inline item picker accepts a pick.
+    await page.getByRole('combobox', { name: 'Lista de preços', exact: true }).click();
+    await page.getByRole('option', { name: fixtures.base.listaNome }).click();
+    // Append an empty row, then pick the produto via its inline picker.
+    await page.getByRole('button', { name: 'Adicionar produto' }).click();
+    await page.getByPlaceholder('Buscar produto…').fill(fixtures.base.produtoNome);
     await page
       .getByRole('option', { name: new RegExp(fixtures.base.produtoNome) })
       .first()

@@ -3,9 +3,11 @@ import type { EstadoFrete, ItemDoPedido, ModalidadeFrete } from '@delfrance/sche
 /**
  * A flat item row used by the form's `useFieldArray`. Carries a
  * synthetic `_rowId` so RHF can key stable rows even when the user
- * reorders or removes them. Stripped on submit.
+ * reorders or removes them, plus a transient `_delete` flag for staged
+ * deletion (the row stays visible+dimmed until the pedido is saved). Both
+ * synthetic fields are stripped on submit by `pedidoResolver`.
  */
-export type FlatItem = ItemDoPedido & { _rowId: string };
+export type FlatItem = ItemDoPedido & { _rowId: string; _delete?: boolean };
 
 /**
  * RHF-friendly mirrors of the `freteDoPedidoSchema` nested shapes. Like

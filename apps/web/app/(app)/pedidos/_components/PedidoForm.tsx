@@ -121,10 +121,20 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
   options,
 ) => {
   const { _itensFlat, ...rest } = values;
-  const cleanItens = (_itensFlat ?? []).map((row) => {
-    const { _rowId, ...item } = row as FlatItem;
-    return item;
-  });
+  // Drop non-real rows before regrouping: staged-deleted rows (`_delete`) and
+  // in-progress empty rows (no produto and no marketplace id — the "Adicionar
+  // produto" button appends a blank row before a produto is picked). Strip both
+  // synthetic fields (`_rowId`, `_delete`) so neither reaches Firestore.
+  const cleanItens = (_itensFlat ?? [])
+    .filter((row) => {
+      const r = row as FlatItem;
+      if (r._delete) return false;
+      return !!r.produtoUid || !!r.mktplaceId;
+    })
+    .map((row) => {
+      const { _rowId, _delete, ...item } = row as FlatItem;
+      return item;
+    });
   const freteInicial = normalizeFreteInicial(rest.freteInicial);
   const itens = regroupItens(cleanItens);
   // `itensIds` mirrors the legacy denormalized produtoUid list (the `itens` map
@@ -165,6 +175,19 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
   })) {
     const field = issue.path === 'itens' ? '_itensFlat' : issue.path;
     extraErrors[field] = { type: 'pageModel', message: issue.message };
+  }
+  // Item-level cross-field rule (legacy `descontoUnitario` validator): a per-item
+  // discount may not exceed its unit price. Block the save and route it to the
+  // Principal tab — the offending row also shows an inline error on its desconto
+  // input. Don't clobber an existing `_itensFlat` issue (e.g. "no items").
+  if (
+    !extraErrors._itensFlat &&
+    cleanItens.some((it) => (it.descontoUnitario ?? 0) > it.precoDeVenda)
+  ) {
+    extraErrors._itensFlat = {
+      type: 'descontoMaiorQuePreco',
+      message: 'Há itens com desconto maior que o preço.',
+    };
   }
   if (Object.keys(extraErrors).length === 0) return result;
   return { values: {}, errors: { ...result.errors, ...extraErrors } } as unknown as ResolverResult;

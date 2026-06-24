@@ -549,11 +549,14 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
   integracaoNome: string;
   produtoNome: string;
   produtoSku: string;
+  listaNome: string;
+  listaPreco: number;
 }> {
   const clienteId = `${prefix}-cli-001`;
   const operacaoId = `${prefix}-op-001`;
   const integracaoId = `${prefix}-int-001`;
   const produtoId = `${prefix}-pro-001`;
+  const listaId = `${prefix}-lista-001`;
   const clienteNome = `${prefix}-cli-001`;
   // Run-unique valid CNPJ: the quick-create dedup spec fills it expecting
   // exactly ONE blocking candidate (this fixture) in the shared collection.
@@ -562,6 +565,10 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
   const integracaoNome = `${prefix}-int-001`;
   const produtoNome = `${prefix}-pro-001`;
   const produtoSku = `${prefix.toUpperCase().replace(/-/g, '_')}_SKU_001`;
+  const listaNome = `${prefix}-lista-001`;
+  // Seeded list price for the produto in this lista — the item-entry UI looks it
+  // up on pick and autofills `precoDeVenda` (instead of the 0.01 placeholder).
+  const listaPreco = 33.5;
 
   const batch = db().batch();
   batch.set(db().collection('clientes').doc(clienteId), {
@@ -627,6 +634,15 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     depositoOuterRef: null,
     dataCadastro: Date.now(),
   });
+  batch.set(db().collection('listaDePrecos').doc(listaId), {
+    nome: listaNome,
+    padrao: true,
+    ativo: true,
+    formulasCalculoPreco: null,
+    formulasPorCategoria: null,
+    timestamp: Date.now(),
+    ultimaModificacao: Date.now(),
+  });
   batch.set(db().collection('produtos').doc(produtoId), {
     nome: produtoNome,
     sku: produtoSku,
@@ -647,6 +663,9 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     ofereceFreteGratis: false,
     permiteVendaSemEstoque: false,
     crossdocking: null,
+    // Price in the seeded lista — keyed by the ListaDePrecos doc id. The
+    // item-entry UI reads `precos[listaId].valor` to autofill `precoDeVenda`.
+    precos: { [listaId]: { valor: listaPreco } },
     grupoDeVariacoesUid: null,
     variacoesUid: null,
     componentesKitKeys: null,
@@ -674,6 +693,8 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     integracaoNome,
     produtoNome,
     produtoSku,
+    listaNome,
+    listaPreco,
   };
 }
 
@@ -688,6 +709,7 @@ export async function cleanupPedidoFixtures(prefix: string): Promise<void> {
     cleanupByNamePrefix('operacao', prefix),
     cleanupByNamePrefix('integracao', prefix),
     cleanupByNamePrefix('produtos', prefix),
+    cleanupByNamePrefix('listaDePrecos', prefix),
   ]);
 }
 
