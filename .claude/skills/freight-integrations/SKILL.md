@@ -179,8 +179,11 @@ reads; `buildCartItem` tolerates a blank/null key.
    converged Fields props). `marketplaceOwned: true` auto-locks the header via the
    caps read — no separate list to edit.
 5. **Etiqueta dispatch — automatic from caps.** `etiquetaRowState` routes off
-   `FREIGHT_TIPO_CAPS`: set `canQuote` / `canBuy` / `canPrint` and the `/pedidos`
-   row action lights up (quote-first / comprar / imprimir). Add a branch in
+   the caps (via **`freightCapsFor(tipo)`** — the tolerant accessor; index
+   `FREIGHT_TIPO_CAPS` directly only with a parsed `tipo`, since UI `tipo` comes
+   unparsed from Firestore and an unknown value must degrade to "unsupported",
+   not crash). Set `canQuote` / `canBuy` / `canPrint` and the `/pedidos` row
+   action lights up (quote-first / comprar / imprimir). Add a branch in
    `EtiquetaRowAction.tsx` only for a genuinely NEW action kind (e.g. a
    fetch-label download).
 6. **Client route (emit / routed providers only).** If the provider needs server

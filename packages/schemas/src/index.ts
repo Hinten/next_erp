@@ -67,6 +67,7 @@ export {
   MODALIDADE_FRETE_LABELS,
   dimensoesSchema,
   estadoFreteSchema,
+  freightCapsFor,
   freteDoPedidoSchema,
   integracoesFreteSchema,
   isFreteJaPostado,

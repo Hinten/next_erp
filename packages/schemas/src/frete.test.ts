@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   FREIGHT_TIPO_CAPS,
+  freightCapsFor,
   freteDoPedidoSchema,
   integracoesFreteSchema,
   isFreteJaPostado,
@@ -205,6 +206,20 @@ describe('FREIGHT_TIPO_CAPS', () => {
     expect([...marketplaceOwned].sort()).toEqual(
       ['mercadoLivre', 'lojaIntegrada', 'amz', 'magalu', 'shopee'].sort(),
     );
+  });
+
+  it('freightCapsFor tolerates an unknown / null tipo (→ all-false, never throws)', () => {
+    // `tipo` reaches the UI unparsed from Firestore, so a legacy/corrupt value
+    // must degrade to "unsupported" — the pre-table `Set.has` / `!==` safety.
+    const unknown = freightCapsFor('bogus-legacy-tipo');
+    expect(unknown.canPrint).toBe(false);
+    expect(unknown.canBuy).toBe(false);
+    expect(unknown.canQuote).toBe(false);
+    expect(unknown.marketplaceOwned).toBe(false);
+    expect(freightCapsFor(null)).toEqual(unknown);
+    expect(freightCapsFor(undefined)).toEqual(unknown);
+    // a known tipo still returns its real row
+    expect(freightCapsFor('melhorEnvios').canBuy).toBe(true);
   });
 });
 

@@ -12,13 +12,13 @@
 import { type DocumentReference, type Firestore, getDoc, getDocs } from 'firebase/firestore';
 import {
   ESTADO_NFE,
-  FREIGHT_TIPO_CAPS,
   type Endereco,
   type EstadoFrete,
   type Filial,
   type IntFrete,
   type IntegracaoFrete,
   type Pedido,
+  freightCapsFor,
   isFreteJaPostado,
 } from '@delfrance/schemas';
 import type { CartInsertRequest } from '@delfrance/integrations-freight-br/http-client';
@@ -60,7 +60,9 @@ export function etiquetaRowState(input: EtiquetaRowStateInput): EtiquetaRowState
   const needsPostedConfirm = estado != null && isFreteJaPostado(estado);
 
   if (tipo == null) return { action: 'none', needsPostedConfirm };
-  const caps = FREIGHT_TIPO_CAPS[tipo];
+  // `tipo` is read unparsed from Firestore — `freightCapsFor` tolerates an
+  // unknown/legacy value (→ unsupported) instead of throwing on a missing row.
+  const caps = freightCapsFor(tipo);
   if (printLabelId != null && caps.canPrint) return { action: 'imprimir', needsPostedConfirm };
   if (caps.canBuy && externalOptionId != null) return { action: 'comprar', needsPostedConfirm };
   if (caps.canQuote) return { action: 'quote-first', needsPostedConfirm };

@@ -345,6 +345,36 @@ export const FREIGHT_TIPO_CAPS: Record<IntegracaoFrete, FreightTipoCapabilities>
   },
 };
 
+/**
+ * Safe all-`false` capabilities for an unknown / legacy `tipo`. Firestore docs
+ * reach the UI **unparsed**, so a corrupt or legacy `tipo` can be a string
+ * outside the enum; returning this (instead of `undefined`) keeps the lookup
+ * from crashing the row action / Frete tab.
+ */
+const UNSUPPORTED_FREIGHT_CAPS: FreightTipoCapabilities = {
+  marketplaceOwned: false,
+  canQuote: false,
+  canBuy: false,
+  canPrint: false,
+  canTrack: false,
+  labelMode: 'none',
+  channel: null,
+};
+
+/**
+ * Capabilities for a freight `tipo`, **tolerant of an unknown / legacy value**.
+ * `tipo` reaches the UI straight from Firestore (no Zod parse), so it can be a
+ * string outside `IntegracaoFrete` (or `null` while a doc resolves); anything
+ * unrecognized → all-`false` `UNSUPPORTED_FREIGHT_CAPS`, matching the pre-table
+ * behavior where an unknown tipo was simply "unsupported" / non-marketplace —
+ * never a crash. Prefer this over indexing `FREIGHT_TIPO_CAPS` directly at any
+ * call site fed by unparsed data.
+ */
+export function freightCapsFor(tipo: string | null | undefined): FreightTipoCapabilities {
+  if (tipo == null) return UNSUPPORTED_FREIGHT_CAPS;
+  return FREIGHT_TIPO_CAPS[tipo as IntegracaoFrete] ?? UNSUPPORTED_FREIGHT_CAPS;
+}
+
 /* -------------------------------------------------------------------------- */
 /*           Nested entity schemas — Transportadora, Veiculo, etc.            */
 /*                                                                            */

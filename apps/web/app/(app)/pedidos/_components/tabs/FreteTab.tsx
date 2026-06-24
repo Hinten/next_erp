@@ -8,9 +8,9 @@ import { Controller } from 'react-hook-form';
 import { type Firestore } from 'firebase/firestore';
 import {
   ESTADO_FRETE_LABELS,
-  FREIGHT_TIPO_CAPS,
   MODALIDADE_FRETE_LABELS,
   estadoFreteSchema,
+  freightCapsFor,
   freteDoPedidoSchema,
   modalidadeFreteSchema,
   type ModalidadeFrete,
@@ -148,7 +148,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   // by hand-editing the pedido. While the integração doc is still resolving
   // the header stays locked as well (tipo unknown = ownership unknown); a
   // resolved-but-missing doc unlocks it so a dangling ref can be fixed.
-  const marketplaceOwned = tipo != null && FREIGHT_TIPO_CAPS[tipo].marketplaceOwned;
+  const marketplaceOwned = freightCapsFor(tipo).marketplaceOwned;
   const headerDisabled =
     disabled || marketplaceOwned || (integracaoRef != null && loadingIntegracao);
 
