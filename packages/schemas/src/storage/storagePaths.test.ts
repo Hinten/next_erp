@@ -8,6 +8,7 @@ import {
   normalizeName,
   parseProductMediaDir,
   parseProductOriginalPath,
+  productAnexoPath,
   productArquivoId,
   productDerivativePath,
   productOriginalPath,
@@ -18,13 +19,15 @@ const PID = 'prod123';
 const HASH = 'a'.repeat(16);
 
 describe('path builders', () => {
-  it('builds product original / derivative / video and media paths', () => {
+  it('builds product original / derivative / video / anexo and media paths', () => {
     expect(productOriginalPath(PID, HASH, 'png')).toBe(`produtos/${PID}/originals/${HASH}.png`);
     expect(productOriginalPath(PID, HASH)).toBe(`produtos/${PID}/originals/${HASH}`);
     expect(productDerivativePath(PID, HASH, '200')).toBe(
       `produtos/${PID}/derivatives/${HASH}_200.jpeg`,
     );
     expect(productVideoPath(PID, HASH, 'mp4')).toBe(`produtos/${PID}/videos/${HASH}.mp4`);
+    expect(productAnexoPath(PID, HASH, 'pdf')).toBe(`produtos/${PID}/anexos/${HASH}.pdf`);
+    expect(productAnexoPath(PID, HASH)).toBe(`produtos/${PID}/anexos/${HASH}`);
     expect(mediaPath(HASH, '.PNG')).toBe(`media/${HASH}.png`);
   });
 });
@@ -60,7 +63,7 @@ describe('parseProductOriginalPath / isWatchedProductOriginal', () => {
 });
 
 describe('parseProductMediaDir', () => {
-  it('parses the originals and videos directories to {produtoId, kind}', () => {
+  it('parses the originals, videos and anexos directories to {produtoId, kind}', () => {
     // filepath is the directory portion (no filename) — what Arquivo.filepath holds.
     expect(parseProductMediaDir(`produtos/${PID}/originals`)).toEqual({
       produtoId: PID,
@@ -69,6 +72,10 @@ describe('parseProductMediaDir', () => {
     expect(parseProductMediaDir(`produtos/${PID}/videos`)).toEqual({
       produtoId: PID,
       kind: 'videos',
+    });
+    expect(parseProductMediaDir(`produtos/${PID}/anexos`)).toEqual({
+      produtoId: PID,
+      kind: 'anexos',
     });
   });
 

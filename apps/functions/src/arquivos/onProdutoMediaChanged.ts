@@ -18,17 +18,18 @@ import { getDb } from '../lib/admin';
 
 /**
  * The embedded media arrays whose `arquivoOuterRef`s this trigger reaps eagerly.
- * Scoped to `fotos` + `videos` — the product-scoped media the unreferenced sweep
- * already governs (`produtos/<id>/originals|videos`). `anexos` stay on the 48h
- * backstop sweep (their files are not under those subdirs).
+ * `fotos` + `videos` + `anexos` — all product-scoped media the unreferenced
+ * sweep also governs (`produtos/<id>/originals|videos|anexos`), so a ref dropped
+ * from any of them is marked here at edit time and `sweepMarkedForDeletion`
+ * deletes it after the short grace (re-verifying ownership first).
  */
-const MEDIA_FIELDS = ['fotos', 'videos'] as const;
+const MEDIA_FIELDS = ['fotos', 'videos', 'anexos'] as const;
 
 /**
- * Collect the set of `arquivos/<id>` refs a produto's `fotos` + `videos` arrays
- * point at — each element carries an `arquivoOuterRef` string. Pure (no I/O),
- * tolerant of a missing/`null` array or a malformed element. Mirrors the field
- * walk in `resolveReferencedArquivoRefs`, scoped to the eager-reap media.
+ * Collect the set of `arquivos/<id>` refs a produto's `fotos` + `videos` +
+ * `anexos` arrays point at — each element carries an `arquivoOuterRef` string.
+ * Pure (no I/O), tolerant of a missing/`null` array or a malformed element.
+ * Mirrors the field walk in `resolveReferencedArquivoRefs`.
  */
 export function collectMediaRefs(data: Record<string, unknown> | undefined): Set<string> {
   const refs = new Set<string>();

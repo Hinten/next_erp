@@ -12,6 +12,7 @@ import {
   filetypeFromMime,
   normalizeContentType,
   nowMicros,
+  productAnexoPath,
   productArquivoId,
   productOriginalPath,
   productVideoPath,
@@ -217,6 +218,40 @@ export async function uploadProductVideo(args: UploadProductVideoArgs): Promise<
     docId: productArquivoId(args.produtoId, hash),
     storagePath: productVideoPath(args.produtoId, hash, ext),
     filetype: 'video',
+    originalFilename: args.originalFilename,
+  });
+}
+
+export interface UploadProductAnexoArgs {
+  storage: FirebaseStorage;
+  db: Firestore;
+  /** Owning product id. For a NEW product, mint it first and pass it before saving. */
+  produtoId: string;
+  bytes: Uint8Array | ArrayBuffer | Blob;
+  contentType: string;
+  originalFilename?: string | null;
+}
+
+/**
+ * Upload a product attachment (anexo) to `produtos/<produtoId>/anexos/<hash>.ext`
+ * with the product-scoped doc id `<produtoId>_<hash>`. Accepts ANY content type
+ * (PDFs, datasheets, archives…); the `filetype` is derived from the MIME via
+ * `filetypeFromMime` — fixing the Flutter port's hardcoded `image`. Like videos,
+ * anexos live in their own subdir, are never resized, and are reaped by the same
+ * product-scoped orphan sweeps (`produtos/<id>/anexos`).
+ */
+export async function uploadProductAnexo(args: UploadProductAnexoArgs): Promise<UploadResult> {
+  const bytes = await toBytes(args.bytes);
+  const hash = await sha512Hex(bytes);
+  const ext = extensionForContentType(args.contentType);
+  return putArquivo({
+    storage: args.storage,
+    db: args.db,
+    bytes,
+    contentType: args.contentType,
+    docId: productArquivoId(args.produtoId, hash),
+    storagePath: productAnexoPath(args.produtoId, hash, ext),
+    filetype: filetypeFromMime(args.contentType),
     originalFilename: args.originalFilename,
   });
 }

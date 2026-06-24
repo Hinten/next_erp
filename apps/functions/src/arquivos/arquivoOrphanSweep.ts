@@ -17,10 +17,10 @@ type Bucket = ReturnType<Storage['bucket']>;
 // drains a backlog over several runs.
 const BATCH_LIMIT = 100;
 
-// Matches an `Arquivo.filepath` (a DIRECTORY, no filename) for a product photo or
-// video: `produtos/<produtoId>/originals` or `.../videos`. Excludes derivatives
-// (cascade-managed) and generic `media/`. Anchored → effectively a full match.
-const PRODUCT_MEDIA_DIR_REGEX = '^produtos/[^/]+/(originals|videos)$';
+// Matches an `Arquivo.filepath` (a DIRECTORY, no filename) for product media:
+// `produtos/<produtoId>/originals`, `.../videos` or `.../anexos`. Excludes
+// derivatives (cascade-managed) and generic `media/`. Anchored → full match.
+const PRODUCT_MEDIA_DIR_REGEX = '^produtos/[^/]+/(originals|videos|anexos)$';
 
 /**
  * Grace window in **microseconds** below which a doc is still considered "in
@@ -163,8 +163,8 @@ type ResolveReferenced = (produtoIds: string[]) => Promise<ReadonlySet<string>>;
 
 /**
  * Default candidate fetch: an admin **pipeline** that scopes server-side to
- * product photos + videos (regex on `filepath`) past the grace window, oldest
- * first. The regex filter (and `regexContains`) is a pipeline-only primitive, so
+ * product photos + videos + anexos (regex on `filepath`) past the grace window,
+ * oldest first. The regex filter (and `regexContains`) is a pipeline-only primitive, so
  * this is **not** emulator-runnable — it is validated live and {@link
  * sweepUnreferencedArquivos} takes it as a seam the emulator test overrides. The
  * `criadoEm` range + sort needs the `arquivos(criadoEm ASC)` index.
@@ -200,14 +200,14 @@ async function fetchUnreferencedCandidates(
 }
 
 /**
- * Unreferenced-arquivo sweep: delete product photos / videos older than the
- * grace window that **no produto references** — e.g. a photo removed from a
- * produto in an edit (the `fotos[]` entry goes away but nothing deletes the
- * arquivo doc), or a produto deleted entirely. Deleting the doc lets
- * `onArquivoDeleted` free the object + cascade the 3 derivatives.
+ * Unreferenced-arquivo sweep: delete product media (photos / videos / anexos)
+ * older than the grace window that **no produto references** — e.g. a photo
+ * removed from a produto in an edit (the `fotos[]` entry goes away but nothing
+ * deletes the arquivo doc), or a produto deleted entirely. Deleting the doc lets
+ * `onArquivoDeleted` free the object + cascade any derivatives.
  *
  * Candidates come from {@link fetchUnreferencedCandidates} (a regex pipeline,
- * server-side scoped to `produtos/<id>/originals|videos`); each owning produto is
+ * server-side scoped to `produtos/<id>/originals|videos|anexos`); each owning produto is
  * read directly (see {@link resolveReferencedArquivoRefs}) — no full-collection
  * scan. Both seams (`fetchCandidates`, `resolveReferenced`) default to the real
  * implementations and are overridden by the emulator suite, which can't run the
@@ -313,7 +313,7 @@ export async function sweepMarkedForDeletion(db: Firestore): Promise<number> {
   let failed = 0;
   for (const { ref, refPath, produtoId } of items) {
     try {
-      // Owner not derivable (filepath isn't `produtos/<id>/originals|videos` —
+      // Owner not derivable (filepath isn't `produtos/<id>/originals|videos|anexos` —
       // legacy / console / bad data the trigger's product-media guard now blocks):
       // we can't re-verify ownership, so NEVER delete it. Clear the mark + warn so it
       // stops re-querying instead of being reaped blind.

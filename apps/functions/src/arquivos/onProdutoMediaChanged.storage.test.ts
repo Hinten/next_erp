@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   mediaPath,
   nowMicros,
+  productAnexoPath,
   productArquivoId,
   productOriginalPath,
   productVideoPath,
@@ -32,7 +33,7 @@ describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks
     db: ReturnType<typeof getDb>,
     storagePath: string,
     docId: string,
-    filetype: 'image' | 'video',
+    filetype: 'image' | 'video' | 'document',
     marked = false,
   ) => {
     const slash = storagePath.lastIndexOf('/');
@@ -43,7 +44,12 @@ describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks
         filetype,
         filepath: storagePath.slice(0, slash),
         filename: storagePath.slice(slash + 1),
-        contentType: filetype === 'video' ? 'video/mp4' : 'image/png',
+        contentType:
+          filetype === 'video'
+            ? 'video/mp4'
+            : filetype === 'document'
+              ? 'application/pdf'
+              : 'image/png',
         url: null,
         externalIds: [],
         uploadState: 'finalized',
@@ -77,6 +83,23 @@ describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks
     expect(
       (await db.collection('arquivos').doc(vidId).get()).data()?.markedForDeletionAt,
     ).toBeNull();
+  });
+
+  it('marks a removed anexo (product-scoped) just like a photo/video', async () => {
+    const db = getDb();
+    const produtoId = `p${id()}`;
+    const anxHash = id();
+    const anxId = productArquivoId(produtoId, anxHash);
+    await seedArquivo(db, productAnexoPath(produtoId, anxHash, 'pdf'), anxId, 'document');
+
+    const before = { anexos: [{ arquivoOuterRef: `arquivos/${anxId}` }] };
+    const after = { anexos: [] };
+
+    const res = await reconcileProdutoMediaMarks(db, before, after);
+    expect(res).toEqual({ marked: 1, unmarked: 0 });
+    expect(
+      typeof (await db.collection('arquivos').doc(anxId).get()).data()?.markedForDeletionAt,
+    ).toBe('number');
   });
 
   it('clears the mark when a previously-removed photo is re-added', async () => {
