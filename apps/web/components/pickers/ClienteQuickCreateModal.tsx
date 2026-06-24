@@ -216,6 +216,9 @@ function QuickCreateForm({
         });
         return;
       }
+      // A successful lookup means the CNPJ was valid — drop any inline error a
+      // prior failed lookup left on the field.
+      form.clearErrors('cpf_cnpj');
       const { nome, ie, sefazNote } = outcome.data;
       const SET_OPTS = { shouldDirty: true, shouldValidate: true } as const;
       form.setValue('nome', nome, SET_OPTS);
@@ -364,7 +367,12 @@ function QuickCreateForm({
               return (
                 <CpfCnpjTextInput
                   value={field.value ?? ''}
-                  onChange={(next) => field.onChange(next === '' ? null : next)}
+                  onChange={(next) => {
+                    // Editing the document clears a stale lookup error (mirrors
+                    // CnpjLookupField) so the user isn't stuck with it mid-edit.
+                    if (fieldState.error) form.clearErrors('cpf_cnpj');
+                    field.onChange(next === '' ? null : next);
+                  }}
                   onBlur={() => {
                     field.onBlur();
                     runLiveCheck();

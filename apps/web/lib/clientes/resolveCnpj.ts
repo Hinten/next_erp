@@ -9,8 +9,9 @@
  * component; each caller writes the result into its own form.
  *
  * `nfe`/`filialId` are optional — without them the SEFAZ leg is skipped and the
- * IE falls back to the public value (or null). A SEFAZ failure never throws; it
- * is advisory and reported via `sefazNote`.
+ * IE falls back to the public value (or null). A *typed* SEFAZ failure
+ * (`NFeHttpError`/`NFeNetworkError`) is swallowed — advisory, reported via
+ * `sefazNote`; any unexpected (non-NFe) error propagates (CLAUDE.md rule 6).
  */
 
 import {
