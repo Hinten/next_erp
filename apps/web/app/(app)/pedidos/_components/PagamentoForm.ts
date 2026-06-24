@@ -146,15 +146,6 @@ export function pagamentoFieldVisibility(forma: string): PagamentoFieldVisibilit
   };
 }
 
-/** Payment statuses that do NOT count toward "paid" (refused/cancelled/refunded). */
-const NON_PAYING_STATUS: ReadonlySet<number> = new Set([
-  STATUS_PAGAMENTO.recusado,
-  STATUS_PAGAMENTO.cancelado,
-  STATUS_PAGAMENTO.estornado,
-  STATUS_PAGAMENTO.devolvido,
-  STATUS_PAGAMENTO.estornado_totalmente,
-]);
-
 export interface PagamentoSummary {
   id: string;
   valor: number;
@@ -162,9 +153,19 @@ export interface PagamentoSummary {
 }
 
 /**
+ * Whether a payment counts toward "paid": no status (`null`) OR `aprovado`. This
+ * is the canonical rule shared with the NFe bundle (`apps/nfe`'s `bundle.ts`,
+ * "matches Flutter") — every other status (pendente, em disputa, recusado,
+ * cancelado, estornado…) does NOT cover the total.
+ */
+function isPaying(status: number | null | undefined): boolean {
+  return status == null || status === STATUS_PAGAMENTO.aprovado;
+}
+
+/**
  * The amount still owed so the pedido becomes fully paid: the pedido total minus
- * the sum of the OTHER payments (excluding the one being edited and any
- * refused/cancelled/refunded status). Never negative. Drives the Valor autofill.
+ * the sum of the OTHER {@link isPaying} payments (excluding the one being edited).
+ * Never negative. Drives the Valor autofill.
  */
 export function remainingToPay(
   pedidoTotal: number,
@@ -172,7 +173,7 @@ export function remainingToPay(
   editingId: string | null,
 ): number {
   const covered = pagamentos
-    .filter((p) => p.id !== editingId && !NON_PAYING_STATUS.has(p.status_pagamento ?? -1))
+    .filter((p) => p.id !== editingId && isPaying(p.status_pagamento))
     .reduce((sum, p) => sum + (p.valor ?? 0), 0);
   return Math.max(0, round2(pedidoTotal - covered));
 }

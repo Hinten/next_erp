@@ -223,10 +223,10 @@ export type Cartao = z.infer<typeof cartaoSchema>;
 /**
  * `pagamento.cheque` — embedded cheque detail (NOT a collection; nested map,
  * pass-through on `pagamentoSchema`). Mirrors Flutter's `Cheque`
- * (`models.dart:2298`). `bomPara` is microseconds since epoch (the new-app
- * datetime standard; the legacy app stored an ISO-8601 string — a legacy value
- * falls back to `null` via `.catch`). The multi-cheque parcela split
- * (intervalo/quantidade) is not ported (follow-up).
+ * (`models.dart:2298`). `bomPara` uses `microsSinceEpoch()` so a legacy ISO-8601
+ * value is coerced to microseconds (the new-app standard) instead of being
+ * dropped; `.catch(null)` only catches a genuinely unparseable value. The
+ * multi-cheque parcela split (intervalo/quantidade) is not ported (follow-up).
  */
 export const chequeSchema = z
   .object({
@@ -237,7 +237,7 @@ export const chequeSchema = z
     titular: z.string().max(255).nullable().catch(null).default(null),
     cpf_cnpj: z.string().max(18).nullable().catch(null).default(null),
     telefone: z.string().max(16).nullable().catch(null).default(null),
-    bomPara: z.number().nullable().catch(null).default(null),
+    bomPara: microsSinceEpoch('Bom para').nullable().catch(null).default(null),
   })
   .passthrough();
 export type Cheque = z.infer<typeof chequeSchema>;

@@ -243,14 +243,29 @@ describe('formFromPagamento', () => {
       parcelas: 1,
       aVista: true,
       duplicata: false,
-      cheque: { banco: 'BB', numero: 42, titular: 'Fulano', bomPara: 999 },
+      // Realistic µs epoch — microsSinceEpoch passes a µs-magnitude value through.
+      cheque: { banco: 'BB', numero: 42, titular: 'Fulano', bomPara: 1_700_000_000_000_000 },
     } as unknown as Pagamento;
     expect(formFromPagamento(cheque)).toMatchObject({
       banco: 'BB',
       numeroCheque: '42',
       titular: 'Fulano',
-      bomPara: 999,
+      bomPara: 1_700_000_000_000_000,
     });
+  });
+
+  it('coerces a legacy ISO-8601 cheque.bomPara to µs instead of dropping it', () => {
+    const legacy = {
+      forma_de_pagamento: FORMA_PAGAMENTO.cheque,
+      valor: 10,
+      parcelas: 1,
+      aVista: true,
+      duplicata: false,
+      cheque: { bomPara: '2024-01-01T00:00:00.000Z' },
+    } as unknown as Pagamento;
+    const parsed = formFromPagamento(legacy);
+    expect(typeof parsed.bomPara).toBe('number');
+    expect(parsed.bomPara).toBe(Date.UTC(2024, 0, 1) * 1000);
   });
 });
 
@@ -296,5 +311,18 @@ describe('remainingToPay', () => {
 
   it('never goes negative', () => {
     expect(remainingToPay(50, [{ id: 'a', valor: 80, status_pagamento: 4 }], null)).toBe(0);
+  });
+
+  it('counts only null/aprovado toward coverage (pending does not count)', () => {
+    // pendente is NOT aprovado/null → does not reduce the remaining.
+    expect(
+      remainingToPay(
+        100,
+        [{ id: 'a', valor: 40, status_pagamento: STATUS_PAGAMENTO.pendente }],
+        null,
+      ),
+    ).toBe(100);
+    // null (no status set) DOES count, matching the NFe bundle rule.
+    expect(remainingToPay(100, [{ id: 'a', valor: 40, status_pagamento: null }], null)).toBe(60);
   });
 });
