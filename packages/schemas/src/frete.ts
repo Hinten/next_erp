@@ -96,6 +96,37 @@ export const estadoFreteSchema = z
   .meta({ labels: ESTADO_FRETE_LABELS });
 export type EstadoFrete = z.infer<typeof estadoFreteSchema>;
 
+/**
+ * Estados in which the frete has NOT yet been posted to the carrier — ported
+ * from the Dart `naoPostado` list (`integracao_frete_base.dart`).
+ */
+export const ESTADOS_FRETE_NAO_POSTADO: ReadonlySet<EstadoFrete> = new Set([
+  'iniciado',
+  'aguardandoAutorizacao',
+  'aguardandoNFe',
+  'aguardandoValidacaoTransporadora',
+  'despachoAutorizado',
+  'despachoNegado',
+  'emSeparacao',
+  'empacotado',
+  'desconhecido',
+  'aguardandoAgendamento',
+]);
+
+/**
+ * True when the frete has left the draft / pre-emission states — i.e. a label
+ * has likely been emitted (this INCLUDES `aguardandoPostagem`: bought but not
+ * yet physically posted). Re-emitting/reprinting from here should be
+ * risk-confirmed, since a duplicate paid label causes operational problems.
+ * Mirrors the Dart guard in `emitirOuImprimirFrete`:
+ * `estado != checkFinalizado && jaPostado.contains(estado)`, where `jaPostado`
+ * is every estado NOT in `naoPostado`. The name follows the Dart port —
+ * "jaPostado" here means "past the draft states", not strictly dispatched.
+ */
+export function isFreteJaPostado(estado: EstadoFrete): boolean {
+  return estado !== 'checkFinalizado' && !ESTADOS_FRETE_NAO_POSTADO.has(estado);
+}
+
 /* -------------------------------------------------------------------------- */
 /*                         modalidadeFrete enum (modFrete)                    */
 /* -------------------------------------------------------------------------- */

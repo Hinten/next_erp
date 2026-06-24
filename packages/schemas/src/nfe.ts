@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
-import { microsSinceEpoch } from './datetime';
+import { microsSinceEpoch, millisSinceEpoch } from './datetime';
 
 // Mirror `PERM.nfe` from @delfrance/auth.
 const PERM_NFE_READ = 1n << 32n;
@@ -118,13 +118,13 @@ export const nfeSchema = z.object({
   cMsg: z.string().nullable().optional(),
   xMsg: z.string().nullable().optional(),
 
-  data_emissao: z.string().datetime().nullable().optional(),
-  data_autorizacao: z.string().datetime().nullable().optional(),
-  dataContingencia: z.string().datetime().nullable().optional(),
+  data_emissao: millisSinceEpoch().nullable().default(null),
+  data_autorizacao: millisSinceEpoch().nullable().default(null),
+  dataContingencia: millisSinceEpoch().nullable().default(null),
   justificativaContingencia: z.string().min(15).max(255).nullable(),
 
   error: z.string().nullable(),
-  ultima_modificacao: z.string().datetime().nullable().optional(),
+  ultima_modificacao: millisSinceEpoch().nullable().default(null),
 });
 
 export type NotaFiscalEletronica = z.infer<typeof nfeSchema>;

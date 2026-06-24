@@ -302,6 +302,69 @@ describe('NFCell — Firestore snapshot-driven cell', () => {
     );
   });
 
+  describe('Baixar XML action — reads straight from the nfev4 doc', () => {
+    it.each<keyof NotaFiscalEletronica>(['xml_nfe_proc', 'xml_epec_proc', 'xml_assinado'])(
+      'offers "Baixar XML" when %s is present on the doc',
+      async (field) => {
+        setSnap({
+          data: [
+            rowFromNFe(makeNFe('a', { [field]: '<nfeProc/>' } as Partial<NotaFiscalEletronica>)),
+          ],
+        });
+        const { container } = wrap(<NFCell pedidoId="p1" />);
+        fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+        expect(await screen.findByRole('button', { name: /baixar xml/i })).toBeTruthy();
+      },
+    );
+
+    it('does NOT offer "Baixar XML" when no XML has been persisted', async () => {
+      // Aprovada but with every xml_* field null (the makeNFe default) — the
+      // button is gated on XML presence, not on estado.
+      setSnap({ data: [rowFromNFe(makeNFe('a', { chave: '3'.repeat(44) }))] });
+      const { container } = wrap(<NFCell pedidoId="p1" />);
+      fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+      await screen.findByText('Estado:');
+      expect(screen.queryByRole('button', { name: /baixar xml/i })).toBeNull();
+    });
+
+    it('downloads a .xml file named by the chave when clicked', async () => {
+      // jsdom implements neither the object-URL API nor anchor navigation;
+      // stub them and capture the anchor's download attribute at click time.
+      // Save the originals (absent in jsdom) and restore in `finally` so the
+      // global mutation never leaks into later tests.
+      const origCreate = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+      const origRevoke = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+      const createSpy = vi.fn(() => 'blob:fake');
+      const revokeSpy = vi.fn();
+      Object.defineProperty(URL, 'createObjectURL', { value: createSpy, configurable: true });
+      Object.defineProperty(URL, 'revokeObjectURL', { value: revokeSpy, configurable: true });
+      let downloadName = '';
+      const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+        this: HTMLAnchorElement,
+      ) {
+        downloadName = this.download;
+      });
+
+      try {
+        const chave = '3'.repeat(44);
+        setSnap({ data: [rowFromNFe(makeNFe('a', { chave, xml_nfe_proc: '<nfeProc/>' }))] });
+        const { container } = wrap(<NFCell pedidoId="p1" />);
+        fireEvent.mouseEnter(container.querySelector('[data-variant]')!);
+        fireEvent.click(await screen.findByRole('button', { name: /baixar xml/i }));
+
+        expect(createSpy).toHaveBeenCalledOnce();
+        expect(downloadName).toBe(`${chave}.xml`);
+        expect(revokeSpy).toHaveBeenCalledOnce();
+      } finally {
+        clickSpy.mockRestore();
+        if (origCreate) Object.defineProperty(URL, 'createObjectURL', origCreate);
+        else delete (URL as { createObjectURL?: unknown }).createObjectURL;
+        if (origRevoke) Object.defineProperty(URL, 'revokeObjectURL', origRevoke);
+        else delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL;
+      }
+    });
+  });
+
   describe('EPEC aprovado (estado p) action gating — issue #86', () => {
     it('offers the DANFE menu (plain-paper print) but neither Cancelar nor Carta de correção', async () => {
       setSnap({
@@ -358,12 +421,17 @@ describe('ClienteCell — static cached read', () => {
 
 describe('FreteCell — passthrough', () => {
   it('renders DASH when freteInicial is absent', () => {
-    wrap(<FreteCell pedido={{ freteInicial: null } as unknown as Pedido} />);
+    wrap(<FreteCell pedido={{ freteInicial: null } as unknown as Pedido} pedidoId="p1" />);
     expect(screen.getByText('—')).toBeTruthy();
   });
 
   it('renders the PT-BR label for the estado', () => {
-    wrap(<FreteCell pedido={{ freteInicial: { estado: 'entregue' } } as unknown as Pedido} />);
+    wrap(
+      <FreteCell
+        pedido={{ freteInicial: { estado: 'entregue' } } as unknown as Pedido}
+        pedidoId="p1"
+      />,
+    );
     expect(screen.getByText('Entregue')).toBeTruthy();
   });
 });

@@ -19,7 +19,8 @@ import { useSnapshot } from '@delfrance/data/hooks';
 
 /** The fields every persisted SEFAZ round-trip record shares. */
 export interface EventRoundtripRecord {
-  timestamp?: string | null;
+  /** ms since epoch (the project datetime wire format). */
+  timestamp?: number | null;
   xml_enviado?: string | null;
   xml_retorno?: string | null;
   xMotivo?: string | null;
@@ -54,10 +55,10 @@ export interface EventRoundtripHistoryProps<T extends EventRoundtripRecord> {
   maw?: number;
 }
 
-function formatTs(ts: string | null | undefined): string {
-  if (!ts) return '—';
+function formatTs(ts: number | string | null | undefined): string {
+  if (ts == null) return '—';
   const d = new Date(ts);
-  return Number.isNaN(d.getTime()) ? ts : d.toLocaleString('pt-BR');
+  return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleString('pt-BR');
 }
 
 function XmlBlock({ label, xml }: { label: string; xml: string }) {
@@ -87,11 +88,9 @@ export function EventRoundtripHistory<T extends EventRoundtripRecord>({
   const { data, loading, error } = useSnapshot(query);
 
   // Sort newest-first client-side (these per-entity lists are small → no index).
+  // `timestamp` is ms since epoch → numeric compare.
   const rows = useMemo(
-    () =>
-      [...(data ?? [])].sort((a, b) =>
-        String(b.data.timestamp ?? '').localeCompare(String(a.data.timestamp ?? '')),
-      ),
+    () => [...(data ?? [])].sort((a, b) => (b.data.timestamp ?? 0) - (a.data.timestamp ?? 0)),
     [data],
   );
 

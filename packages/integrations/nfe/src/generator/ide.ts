@@ -12,7 +12,7 @@ import { sanitizeNFeText } from '../sanitize';
 import type { Ambiente, GeneratorInput } from './types';
 
 /** UF letter → IBGE 2-digit code. */
-const UF_TO_IBGE: Record<UF, string> = {
+export const UF_TO_IBGE: Record<UF, string> = {
   AC: '12',
   AL: '27',
   AM: '13',

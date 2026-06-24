@@ -67,11 +67,20 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ error: `Pedido ${pedidoId} não encontrado.` }, { status: 404 });
   }
 
+  // The pedido doc is authoritative for the resume anchor — NOT the client body.
+  // A stale browser (the table row's `pedido` prop captured before a prior buy)
+  // can send `printLabelId: null` after a label was already bought; trusting it
+  // would make the pipeline fresh-buy a SECOND label and spend balance twice.
+  // Reading the persisted id here makes a repeat buy resume (reprint) instead.
+  const persistedLabelId =
+    (snap.data()?.freteInicial as { printLabelId?: string | null } | undefined)?.printLabelId ??
+    null;
+
   try {
     const ctx = await loadMelhorEnvioContext(db, intFreteId);
     const result = await comprarEtiqueta({
       api: ctx.api,
-      printLabelId: printLabelId ?? null,
+      printLabelId: persistedLabelId ?? printLabelId ?? null,
       buildCartPayload: () => cartPayload,
       // Anti-loss anchor: persist the label id before checkout spends balance.
       persistPrintLabelId: async (id) => {

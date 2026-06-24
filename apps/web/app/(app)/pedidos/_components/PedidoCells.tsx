@@ -48,12 +48,14 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { IconBan, IconCheck, IconCopy, IconFileText } from '@tabler/icons-react';
+import { IconBan, IconCheck, IconCopy, IconFileDownload, IconFileText } from '@tabler/icons-react';
 
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { downloadNfeXml, selectNfeXml } from '@/lib/nfe/downloadXml';
 import { DanfeMenu } from '@/components/DanfeMenu';
+import { EtiquetaRowAction } from './EtiquetaRowAction';
 
 const DASH = '—';
 
@@ -138,6 +140,10 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
     isAprovada ||
     latest.estado === ESTADO_NFE.cancelada ||
     latest.estado === ESTADO_NFE.epecAprovado;
+  // The XML download reads straight from the nfev4 doc (no HTTP round-trip),
+  // so it's available whenever any XML has been persisted — authorized,
+  // EPEC, or the signed pre-transmission anchor.
+  const hasXml = selectNfeXml(latest) != null;
   const color = NFE_STATE_COLOR[latest.estado] ?? 'gray';
   const label = ESTADO_NFE_LABELS[latest.estado] ?? latest.estado;
   // tpEmis === 1 is the normal (SEFAZ síncrono) path. Anything else
@@ -230,9 +236,25 @@ export function NFCell({ pedidoId }: { pedidoId: string }) {
             </Group>
           )}
 
-          {latestId && canPrintDanfe && (
+          {latestId && (canPrintDanfe || hasXml) && (
             <Group gap="xs" mt="xs">
-              <DanfeMenu pedidoId={pedidoId} nfeId={latestId} />
+              {canPrintDanfe && <DanfeMenu pedidoId={pedidoId} nfeId={latestId} />}
+              {hasXml && (
+                <Button
+                  color="gray"
+                  variant="light"
+                  size="xs"
+                  leftSection={<IconFileDownload size={14} />}
+                  onClick={(e) => {
+                    // Stop the row's navigate-onClick; download the XML
+                    // straight from the doc already in hand.
+                    e.stopPropagation();
+                    downloadNfeXml(latest);
+                  }}
+                >
+                  Baixar XML
+                </Button>
+              )}
               {isAprovada && (
                 <>
                   <Button
@@ -375,25 +397,70 @@ export function ExpedicaoCell({ pedido }: { pedido: Pedido }) {
 /* -------------------------------------------------------------------------- */
 /*                                 FreteCell                                  */
 /*                                                                            */
-/*  Reads pedido.freteInicial?.estado (typed enum). Shows the tracking code   */
-/*  in a tooltip when set. The click-for-history dialog from the legacy UX    */
-/*  waits on the historicoFrete subcollection — deferred per issue #52.       */
+/*  Reads pedido.freteInicial?.estado (typed enum). With no bought ME label   */
+/*  it stays a lightweight tracking tooltip; when `printLabelId` is set it     */
+/*  opens a HoverCard with an "Imprimir etiqueta" action (re-print, no spend)  */
+/*  via `client.imprimir`. The click-for-history dialog from the legacy UX     */
+/*  waits on the historicoFrete subcollection — deferred per issue #52.        */
 /* -------------------------------------------------------------------------- */
 
-export function FreteCell({ pedido }: { pedido: Pedido }) {
+export function FreteCell({ pedido, pedidoId }: { pedido: Pedido; pedidoId: string }) {
   const frete = pedido.freteInicial;
   const estado = frete?.estado;
   if (!estado) return <Text c="dimmed">{DASH}</Text>;
   const label = ESTADO_FRETE_LABELS[estado] ?? estado;
-  const tooltipParts: string[] = [];
-  if (frete?.codRastreio) tooltipParts.push(`Rastreio: ${frete.codRastreio}`);
-  if (frete?.prazoDespacho != null)
-    tooltipParts.push(`Prazo: ${formatMicros(frete.prazoDespacho)}`);
-  if (tooltipParts.length === 0) return <Text>{label}</Text>;
+
+  // Show the etiqueta HoverCard when there's something to act on — a bought
+  // label (reprint/track) or a selected quote (buy). Otherwise keep the
+  // lightweight tracking tooltip.
+  const hasEtiquetaAction = frete?.printLabelId != null || frete?.externalOptionId != null;
+  if (!hasEtiquetaAction) {
+    const tooltipParts: string[] = [];
+    if (frete?.codRastreio) tooltipParts.push(`Rastreio: ${frete.codRastreio}`);
+    if (frete?.prazoDespacho != null)
+      tooltipParts.push(`Prazo: ${formatMicros(frete.prazoDespacho)}`);
+    if (tooltipParts.length === 0) return <Text>{label}</Text>;
+    return (
+      <Tooltip label={tooltipParts.join(' • ')} withinPortal>
+        <Text style={{ cursor: 'help' }}>{label}</Text>
+      </Tooltip>
+    );
+  }
+
   return (
-    <Tooltip label={tooltipParts.join(' • ')} withinPortal>
-      <Text style={{ cursor: 'help' }}>{label}</Text>
-    </Tooltip>
+    <HoverCard withinPortal shadow="md" openDelay={150} closeDelay={100} position="bottom-start">
+      <HoverCard.Target>
+        <Badge variant="light" color="gray" style={{ cursor: 'help' }} tabIndex={0}>
+          {label}
+        </Badge>
+      </HoverCard.Target>
+      <HoverCard.Dropdown>
+        {/* Portaled but React-bubbles to the row onClick — stop it so the
+            controls don't navigate to the pedido detail. */}
+        <Stack gap="xs" onClick={(e) => e.stopPropagation()}>
+          {frete?.codRastreio && (
+            <Group gap="xs" wrap="nowrap" justify="space-between">
+              <Text size="sm">
+                <Text span fw={500}>
+                  Rastreio:
+                </Text>{' '}
+                {frete.codRastreio}
+              </Text>
+              <CopyIconButton value={frete.codRastreio} label="Copiar rastreio" />
+            </Group>
+          )}
+          {frete?.prazoDespacho != null && (
+            <Text size="sm">
+              <Text span fw={500}>
+                Prazo:
+              </Text>{' '}
+              {formatMicros(frete.prazoDespacho)}
+            </Text>
+          )}
+          <EtiquetaRowAction pedido={pedido} pedidoId={pedidoId} />
+        </Stack>
+      </HoverCard.Dropdown>
+    </HoverCard>
   );
 }
 

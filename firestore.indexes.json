@@ -114,8 +114,30 @@
       "queryScope": "COLLECTION_GROUP",
       "fields": [
         { "fieldPath": "filialId", "order": "ASCENDING" },
-        { "fieldPath": "data_emissao", "order": "ASCENDING" }
+        { "fieldPath": "data_emissao", "order": "ASCENDING" },
+        { "fieldPath": "numeracao", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "data_emissao", "order": "ASCENDING" },
+        { "fieldPath": "numeracao", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "arquivos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "uploadState", "order": "ASCENDING" },
+        { "fieldPath": "criadoEm", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "arquivos",
+      "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "criadoEm", "order": "ASCENDING" }]
     }
   ],
   "fieldOverrides": []

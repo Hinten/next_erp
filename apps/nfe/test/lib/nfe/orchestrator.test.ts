@@ -134,6 +134,7 @@ const SEED_NFE_CONFIG: NFeConfig = {
   contingencia_modo: 'none',
   contingencia_justificativa: null,
   contingencia_dataInicio: null,
+  timestamp: null,
 };
 
 interface FakeFirestoreOptions {
@@ -512,7 +513,7 @@ describe('emitirPedido — contingência SVC', () => {
     ...SEED_NFE_CONFIG,
     contingencia_modo: 'svc',
     contingencia_justificativa: SVC_JUST,
-    contingencia_dataInicio: '2026-06-10T08:00:00.000Z',
+    contingencia_dataInicio: new Date('2026-06-10T08:00:00.000Z').getTime(),
   };
 
   it('routes the lote to the SVC-AN endpoint and targets the s6 doc slot', async () => {
@@ -528,7 +529,7 @@ describe('emitirPedido — contingência SVC', () => {
     );
     const w = writes.find((x) => x.path === 'pedidos/PED-1/nfev4/s6');
     expect(w?.data.tpEmis).toBe(6);
-    expect(w?.data.dataContingencia).toBe('2026-06-10T08:00:00.000Z');
+    expect(w?.data.dataContingencia).toBe(new Date('2026-06-10T08:00:00.000Z').getTime());
     expect(w?.data.justificativaContingencia).toBe(SVC_JUST);
   });
 
@@ -557,7 +558,7 @@ describe('emitirPedido — contingência SVC', () => {
       nfeConfig: {
         ...SEED_NFE_CONFIG,
         contingencia_justificativa: SVC_JUST,
-        contingencia_dataInicio: '2026-06-10T08:00:00.000Z',
+        contingencia_dataInicio: new Date('2026-06-10T08:00:00.000Z').getTime(),
       },
     });
     vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
@@ -592,7 +593,7 @@ describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
     ...SEED_NFE_CONFIG,
     contingencia_modo: 'epec',
     contingencia_justificativa: EPEC_JUST,
-    contingencia_dataInicio: '2026-06-11T08:00:00.000Z',
+    contingencia_dataInicio: new Date('2026-06-11T08:00:00.000Z').getTime(),
   };
 
   /**

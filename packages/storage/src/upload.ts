@@ -54,7 +54,7 @@ interface PutArquivoArgs {
  * object — a phantom the orphan sweep reaps — rather than the old failure mode
  * (upload-then-`setDoc`) that orphaned the OBJECT with no doc. The object is
  * tagged with its owning doc id (`arquivoId` custom metadata) so the finalize
- * trigger and the storage-orphan sweep can map object → doc directly.
+ * trigger can map object → doc directly.
  *
  * All Firestore access goes through the schema-validated `arquivoCollection`
  * handle, never raw refs.

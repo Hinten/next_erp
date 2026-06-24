@@ -135,6 +135,52 @@ export function isErroredOption(o: CalculateOption): boolean {
   return o.error != null || (o.price == null && o.company == null);
 }
 
+/* -------------------------------------------------------------------------- */
+/*                     shipment/services  and  agencies                        */
+/* -------------------------------------------------------------------------- */
+
+/** Coerce ME list endpoints (bare array, `{ data: [...] }` envelope, or an
+ *  empty body) to a plain array before validating. */
+function toArray(v: unknown): unknown[] {
+  if (Array.isArray(v)) return v;
+  if (v != null && typeof v === 'object' && Array.isArray((v as { data?: unknown }).data)) {
+    return (v as { data: unknown[] }).data;
+  }
+  return [];
+}
+
+/**
+ * `GET /api/v2/me/shipment/services` — one carrier service and its company.
+ * Used to resolve which carrier a `service` id belongs to (so we can query
+ * that carrier's drop-off agencies).
+ */
+export const shipmentServiceSchema = z
+  .object({
+    id: z.number(),
+    name: z.string().nullable().optional(),
+    company: companySchema.nullable().optional(),
+  })
+  .passthrough();
+export type ShipmentService = z.infer<typeof shipmentServiceSchema>;
+
+export const shipmentServicesResponseSchema = z.preprocess(toArray, z.array(shipmentServiceSchema));
+
+/**
+ * `GET /api/v2/me/shipment/agencies` — a carrier drop-off agency. Only `id` is
+ * needed for the cart `agency`; the rest passes through. Drop-off carriers
+ * (Jadlog, etc.) require one — ME returns an opaque 500 without it.
+ */
+export const agencySchema = z
+  .object({
+    id: z.number(),
+    name: z.string().nullable().optional(),
+    company: companySchema.nullable().optional(),
+  })
+  .passthrough();
+export type Agency = z.infer<typeof agencySchema>;
+
+export const agenciesResponseSchema = z.preprocess(toArray, z.array(agencySchema));
+
 /** `422` validation body — `{ message, errors: { field: [msg, …] } }`. */
 export const validationErrorSchema = z
   .object({

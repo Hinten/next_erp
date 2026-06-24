@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import { Modal } from '@mantine/core';
 import { deleteDoc } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
-import { enderecoSchema } from '@delfrance/schemas';
+import { type Endereco, enderecoSchema } from '@delfrance/schemas';
 import { ObjectView } from '@delfrance/ui';
 import { CepField } from '@/components/inputs/CepInput';
 import { ENDERECO_HIDDEN_KEYS } from '@/components/inputs/enderecoFields';
@@ -40,6 +40,12 @@ export interface EnderecoFormModalProps {
   clienteId: string;
   /** undefined ⇒ create mode. */
   recordId?: string;
+  /**
+   * Seed values for **create** mode (merged over the Brazil defaults) — e.g. the
+   * address resolved from a CNPJ lookup so the operator just reviews and saves.
+   * Ignored when `recordId` is set (edit loads the stored doc).
+   */
+  prefill?: Partial<Endereco>;
   /** Called with the saved doc id (new or edited). */
   onSaved: (id: string) => void;
   /** Enable in-modal delete (the cliente detail screen). Default false. */
@@ -61,6 +67,7 @@ export function EnderecoFormModal({
   onClose,
   clienteId,
   recordId,
+  prefill,
   onSaved,
   allowDelete = false,
   onDeleted,
@@ -72,6 +79,8 @@ export function EnderecoFormModal({
 
   // The data layer identity-tracks pathContext — keep the object stable.
   const pathContext = useMemo(() => ({ clienteId }), [clienteId]);
+  // Stable defaults so ObjectView doesn't re-seed the form on every render.
+  const defaultValues = useMemo(() => ({ ...ADDRESS_DEFAULTS, ...prefill }), [prefill]);
 
   return (
     <Modal
@@ -93,7 +102,7 @@ export function EnderecoFormModal({
             pathContext={pathContext}
             currentUserUid={user?.uid ?? ''}
             recordId={recordId}
-            defaultValues={ADDRESS_DEFAULTS}
+            defaultValues={defaultValues}
             excludedFields={ADDRESS_HIDDEN_KEYS}
             fields={ADDRESS_FIELDS}
             saveLabel={recordId ? 'Salvar alterações' : 'Criar'}

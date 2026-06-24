@@ -1055,6 +1055,35 @@ export async function seedProdutoComFilho(prefix: string): Promise<{
 }
 
 /**
+ * Seed one simple produto to use as a kit COMPONENT (`ehKit: false`) with a known
+ * `custo`, so the Kit tab can add it and recompute the kit cost. Returns id/nome/sku.
+ */
+export async function seedComponenteKit(
+  prefix: string,
+  custo = 10,
+): Promise<{ id: string; nome: string; sku: string }> {
+  const id = `${prefix}-comp`;
+  const nome = `${prefix}-comp`;
+  const sku = `${prefix.toUpperCase().replace(/-/g, '_')}_COMP`;
+  await db().collection('produtos').doc(id).set({
+    nome,
+    sku,
+    custo,
+    paiId: null,
+    ordem: null,
+    publicado: true,
+    ehKit: false,
+    ehKitVirtual: false,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    fotos: null,
+    videos: null,
+    timestamp: new Date().toISOString(),
+  });
+  return { id, nome, sku };
+}
+
+/**
  * Seed a kit produto whose `componentesKit` references `componentId` — the
  * Flutter wire shape: a map keyed by the component's doc id plus the
  * denormalized `componentesKitKeys` id array the delete guard queries.

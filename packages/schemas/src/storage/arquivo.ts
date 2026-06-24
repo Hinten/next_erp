@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { nowMicros } from '@delfrance/core/datetime';
 import { microsSinceEpoch } from '../datetime';
 import type { CollectionMetadata } from '../types';
 
@@ -106,12 +107,12 @@ export const arquivoSchema = z
     url: z.string().nullable().default(null).describe('URL'),
     externalIds: z.array(externalIdSchema).default([]),
     // Creation time as **microseconds since epoch** (the repo's MicrosSinceEpoch
-    // convention), set on write by the upload helpers + the resize function via
-    // `nowMicros()`. A real number so the orphan sweep can range-query it
-    // (`where criadoEm < cutoff`) for the grace window. The `microsSinceEpoch()`
-    // builder tolerates the legacy ISO-string form on read. Optional because the
-    // Flutter app's docs predate it.
-    criadoEm: microsSinceEpoch().nullable().optional(),
+    // convention). Required, defaulting to `nowMicros()` so every doc is queryable
+    // by age — the orphan sweeps range-query it (`where criadoEm < cutoff`, ordered
+    // oldest-first) for the grace window. The upload helpers + resize function still
+    // set it explicitly; the default only covers an omitted write. The
+    // `microsSinceEpoch()` builder tolerates the legacy ISO-string form on read.
+    criadoEm: microsSinceEpoch().default(() => nowMicros()),
     // Resize lifecycle marker for product-image ORIGINALS only: 'pending' when
     // the client uploads (set by uploadProductImage), 'done' once the resize
     // Cloud Function has written all derivatives. `null` for everything else

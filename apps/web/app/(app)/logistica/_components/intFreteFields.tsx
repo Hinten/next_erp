@@ -19,6 +19,18 @@ function stripThenNullIfEmpty(value: unknown): unknown {
 }
 
 /**
+ * Freight origin reuses the shared embedded-endereço field config but
+ * **re-exposes** `telefone` + `email`: Melhor Envio requires `from.phone` for
+ * some carriers (e.g. Jadlog), so the origin address must let the operator set
+ * them (they stay hidden on the cliente + filial `sede` forms).
+ */
+const enderecoOrigemFields: Record<string, FieldConfig> = {
+  ...enderecoNestedFields,
+  telefone: { label: 'Telefone' },
+  email: { label: 'E-mail' },
+};
+
+/**
  * `fields` overrides shared by every `/logistica/*` create + edit ObjectView.
  *
  * - `filialIntegracaoFreteOuterRef` uses the shared optimized `FilialPicker`
@@ -57,6 +69,6 @@ export const intFreteFields: Record<string, FieldConfig> = {
     // required enum with no schema default — preselect SP so the Switch-on
     // form opens valid (the user can change it).
     defaultValue: { cPais: '1058', pais: 'Brasil', estado: 'SP' },
-    fields: enderecoNestedFields,
+    fields: enderecoOrigemFields,
   },
 };

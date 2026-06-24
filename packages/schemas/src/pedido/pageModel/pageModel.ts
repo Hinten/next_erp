@@ -46,10 +46,6 @@ export interface PedidoPageValidationInput {
   estado?: EstadoPedido | null;
   integracaoPedidoOuterRef?: unknown;
   itens?: Record<string, ReadonlyArray<{ quantidade?: number | null }>> | null;
-  itensDevolvidos?: Record<
-    string,
-    Record<string, ReadonlyArray<{ quantidade?: number | null }>>
-  > | null;
   valorCobrado?: number | null;
   pagamentos?: ReadonlyArray<{ status_pagamento?: number | null; valor?: number | null }> | null;
 }
@@ -58,10 +54,6 @@ export interface PedidoPageValidationInput {
 export interface PedidoPageIssue {
   path: string;
   message: string;
-}
-
-function sumQty(list: ReadonlyArray<{ quantidade?: number | null }> | undefined | null): number {
-  return (list ?? []).reduce((sum, item) => sum + (item.quantidade ?? 0), 0);
 }
 
 /**
@@ -100,28 +92,10 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
     });
   }
 
-  // The returned quantity of a product can never exceed the quantity sold.
-  if (data.itensDevolvidos) {
-    const soldByUid: Record<string, number> = {};
-    for (const [uid, list] of Object.entries(data.itens ?? {})) {
-      soldByUid[uid] = (soldByUid[uid] ?? 0) + sumQty(list);
-    }
-    const returnedByUid: Record<string, number> = {};
-    for (const porProduto of Object.values(data.itensDevolvidos)) {
-      for (const [uid, list] of Object.entries(porProduto)) {
-        returnedByUid[uid] = (returnedByUid[uid] ?? 0) + sumQty(list);
-      }
-    }
-    for (const [uid, qty] of Object.entries(returnedByUid)) {
-      if (round2(qty) > round2(soldByUid[uid] ?? 0)) {
-        issues.push({
-          path: 'itensDevolvidos',
-          message: 'A quantidade devolvida não pode ser maior que a vendida.',
-        });
-        break;
-      }
-    }
-  }
+  // Devolução qty is NOT cross-checked against this pedido's `itens`: returns are
+  // recorded against OTHER origin orders (or avulso items), so a returned produto
+  // need not appear in this order. The per-row cap (origin sold qty) is enforced
+  // in the Devolução tab UI. (See issue #235 for the return-order side effects.)
 
   // When the aggregate carries the payments AND the order is marked paid, the
   // approved payments must cover the charged total (legacy

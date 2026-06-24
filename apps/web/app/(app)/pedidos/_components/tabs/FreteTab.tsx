@@ -2,6 +2,8 @@
 
 import { useMemo } from 'react';
 import { Alert, Divider, Group, Select, Skeleton, Stack, Text } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
+import { IconExclamationCircle } from '@tabler/icons-react';
 import { Controller } from 'react-hook-form';
 import { type Firestore } from 'firebase/firestore';
 import {
@@ -18,6 +20,7 @@ import { EnderecoPicker, useEnderecoFromRef } from '@/components/pickers/Enderec
 import { intFreteCollection } from '@/lib/data/intFreteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import type { FreteInicialFormState } from '../types';
+import { collectFreteErrors } from '../freteErrors';
 import { fretePath, type PedidoFormHandle } from './frete/fields';
 import { IntegracaoFreteSelect } from './frete/IntegracaoFreteSelect';
 import { GenericFreteFields } from './frete/GenericFreteFields';
@@ -52,6 +55,11 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   const temFrete = freteInicial != null && modalidade !== '9';
 
   const clientePedidoOuterRef = form.watch('clientePedidoOuterRef');
+
+  // Surface every invalid `freteInicial` field — including derived/cache fields
+  // with no rendered input, which only mark the tab and never show inline
+  // (#218). Reading `formState.errors` here subscribes the tab to error changes.
+  const freteErrors = collectFreteErrors(form.formState.errors.freteInicial);
 
   const { endereco: enderecoFrete } = useEnderecoFromRef(
     db,
@@ -88,6 +96,49 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
       return;
     }
     form.setValue(fretePath('modalidade'), next.data, { shouldDirty: true, shouldValidate: true });
+  }
+
+  function onIntegracaoChange(id: string | null) {
+    const currentId = integracaoRef?.id ?? null;
+    form.setValue(fretePath('integracaoFreteOuterRef'), id ? `documents/int_frete/${id}` : null, {
+      shouldDirty: true,
+      shouldValidate: true,
+    });
+    if (id === currentId) return;
+
+    // The integração changed → its quote (calculated for the old origin/account)
+    // and any bought label (tied to the old ME account) are now stale. Clear
+    // them so a stale `printLabelId` can't be printed/tracked against the new
+    // integração. Only act when there is actually something to invalidate.
+    const hadQuote = (form.getValues(fretePath('externalOptionId')) as string | null) != null;
+    const hadLabel = (form.getValues(fretePath('printLabelId')) as string | null) != null;
+    if (!hadQuote && !hadLabel) return;
+
+    const dirty = { shouldDirty: true } as const;
+    form.setValue(fretePath('externalOptionId'), null, dirty);
+    form.setValue(fretePath('externalOptionIntegracao'), null, dirty);
+    form.setValue(fretePath('externalOptionData'), null, dirty);
+    form.setValue(fretePath('externalOptionSelectionDate'), null, dirty);
+    form.setValue(fretePath('valorCobrado'), 0, dirty);
+    form.setValue(fretePath('custoCalculado'), 0, dirty);
+    form.setValue(fretePath('custoFinal'), 0, dirty);
+    form.setValue(fretePath('dataPrevisaoEntrega'), null, dirty);
+    form.setValue(fretePath('printLabelId'), null, dirty);
+    form.setValue(fretePath('codRastreio'), null, dirty);
+    form.setValue(fretePath('estado'), 'iniciado', dirty);
+    // Drop any stale freteInicial validation errors from the previous quote —
+    // validation runs onBlur, so without this the error Alert (#218) can keep
+    // showing errors for fields we just reset.
+    form.clearErrors('freteInicial');
+
+    if (hadLabel) {
+      notifications.show({
+        color: 'yellow',
+        title: 'Etiqueta desvinculada',
+        message:
+          'A integração de frete foi alterada — a etiqueta e a cotação anteriores foram desvinculadas. Cote e compre novamente.',
+      });
+    }
   }
 
   const tipo = integracaoDoc?.data.tipo;
@@ -144,6 +195,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
             integracao={integracaoDoc.data}
             cepDestino={cepDestino}
             intFreteId={integracaoDoc.id}
+            pedidoId={pedidoId}
           />
         );
       default:
@@ -153,6 +205,25 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
 
   return (
     <Stack>
+      {freteErrors.length > 0 && (
+        <Alert
+          color="red"
+          title="Corrija os campos do frete"
+          icon={<IconExclamationCircle size={16} />}
+        >
+          <Stack gap={2}>
+            {freteErrors.map((e) => (
+              <Text key={e.path} size="sm">
+                <Text span fw={500}>
+                  {e.label}:
+                </Text>{' '}
+                {e.message}
+              </Text>
+            ))}
+          </Stack>
+        </Alert>
+      )}
+
       <Select
         label="Modalidade de frete"
         data={modalidadeFreteSchema.options.map((value) => ({
@@ -188,13 +259,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
                   }
                 : null
             }
-            onChange={(id) =>
-              form.setValue(
-                fretePath('integracaoFreteOuterRef'),
-                id ? `documents/int_frete/${id}` : null,
-                { shouldDirty: true, shouldValidate: true },
-              )
-            }
+            onChange={onIntegracaoChange}
             disabled={headerDisabled}
           />
           <Text size="xs" c="dimmed">

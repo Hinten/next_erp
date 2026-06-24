@@ -6,6 +6,7 @@ import {
   isWatchedProductOriginal,
   mediaPath,
   normalizeName,
+  parseProductMediaDir,
   parseProductOriginalPath,
   productArquivoId,
   productDerivativePath,
@@ -55,6 +56,30 @@ describe('parseProductOriginalPath / isWatchedProductOriginal', () => {
     expect(isWatchedProductOriginal(productDerivativePath(PID, HASH, '400'))).toBe(false);
     expect(isWatchedProductOriginal(productVideoPath(PID, HASH, 'mp4'))).toBe(false);
     expect(isWatchedProductOriginal(mediaPath(HASH, 'png'))).toBe(false);
+  });
+});
+
+describe('parseProductMediaDir', () => {
+  it('parses the originals and videos directories to {produtoId, kind}', () => {
+    // filepath is the directory portion (no filename) — what Arquivo.filepath holds.
+    expect(parseProductMediaDir(`produtos/${PID}/originals`)).toEqual({
+      produtoId: PID,
+      kind: 'originals',
+    });
+    expect(parseProductMediaDir(`produtos/${PID}/videos`)).toEqual({
+      produtoId: PID,
+      kind: 'videos',
+    });
+  });
+
+  it('returns null for derivatives, generic media, and malformed paths', () => {
+    expect(parseProductMediaDir(`produtos/${PID}/derivatives`)).toBeNull();
+    expect(parseProductMediaDir('media')).toBeNull();
+    expect(parseProductMediaDir(`produtos/${PID}`)).toBeNull(); // too shallow
+    expect(parseProductMediaDir(`produtos/${PID}/originals/extra`)).toBeNull(); // too deep
+    expect(parseProductMediaDir('produtos//originals')).toBeNull(); // empty produtoId
+    expect(parseProductMediaDir(null)).toBeNull();
+    expect(parseProductMediaDir(undefined)).toBeNull();
   });
 });
 

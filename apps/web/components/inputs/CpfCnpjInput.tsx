@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { TextInput } from '@mantine/core';
 import type { FieldRenderProps } from '@delfrance/ui';
 
@@ -14,6 +15,8 @@ export interface CpfCnpjTextInputProps {
   error?: string;
   disabled?: boolean;
   required?: boolean;
+  /** Optional trailing adornment (e.g. the CNPJ "buscar dados" action). */
+  rightSection?: ReactNode;
 }
 
 /** Strip a typed/pasted value down to the clean wire format (uppercase
@@ -60,6 +63,7 @@ export function CpfCnpjTextInput({
   error,
   disabled,
   required,
+  rightSection,
 }: CpfCnpjTextInputProps) {
   return (
     <TextInput
@@ -71,6 +75,7 @@ export function CpfCnpjTextInput({
       error={error}
       disabled={disabled}
       required={required}
+      rightSection={rightSection}
     />
   );
 }

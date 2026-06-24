@@ -13,7 +13,10 @@
  *      re-parsing in the SOAP layer would invalidate the digest.
  *
  * The body parameter inside the envelope is `<nfeDadosMsg>` (the SEFAZ v4.00
- * shape). `nfeCabecMsg` was retired in 4.00 and is not emitted here.
+ * shape). `nfeCabecMsg` was retired by the v4.00 services and is not emitted
+ * for them — EXCEPT **Consulta Cadastro**, whose message is still layout 2.00
+ * and REQUIRES the `<nfeCabecMsg>` SOAP Header (`cUF` + `versaoDados=2.00`).
+ * Omitting it is a `cStat=215` "Falha no schema XML" — see `buildEnvelope`.
  *
  * Ports `.old/packages/nfe_client/lib/src/client.dart` — call sites,
  * `https.Agent`, and the operation list match one-for-one.
@@ -41,9 +44,32 @@ const SOAP_NS = {
   // pattern as the others. Without the `NFe` prefix SEFAZ rejects the POST
   // with a SOAP Fault: "The action '…/RecepcaoEvento4' was not recognized."
   RecepcaoEvento: `${NFE_WSDL_BASE}/NFeRecepcaoEvento4`,
+  // Consulta Cadastro — SP's service is `CadConsultaCadastro4` (the endpoint is
+  // `cadconsultacadastro4.asmx`, NOT `nfeconsultacadastro4`). This value is the
+  // `nfeDadosMsg` xmlns (the service namespace). Unlike the other v4 services,
+  // its SOAPAction additionally carries the `/consultaCadastro` operation suffix
+  // — see SOAP_ACTION_SUFFIX. SP rejected the bare/`NFe…` action with a SOAP
+  // Fault "the action … was not recognized" (HTTP 500).
+  NFeConsultaCadastro: `${NFE_WSDL_BASE}/CadConsultaCadastro4`,
 } as const;
 
 export type SoapOperation = keyof typeof SOAP_NS;
+
+/**
+ * SOAPAction = the service namespace for every v4 service EXCEPT Consulta
+ * Cadastro. SP's `CadConsultaCadastro4` (a classic ASMX) expects the default
+ * `{namespace}/{method}` action `…/CadConsultaCadastro4/consultaCadastro`, while
+ * the `nfeDadosMsg` body wrapper stays in the bare `…/CadConsultaCadastro4`
+ * namespace. So the action and the body xmlns diverge only for this op.
+ */
+const SOAP_ACTION_SUFFIX: Partial<Record<SoapOperation, string>> = {
+  NFeConsultaCadastro: '/consultaCadastro',
+};
+
+/** The SOAPAction header / Content-Type `action` for an operation. */
+function soapActionFor(operation: SoapOperation): string {
+  return SOAP_NS[operation] + (SOAP_ACTION_SUFFIX[operation] ?? '');
+}
 
 export class NFeTransportError extends Error {
   constructor(
@@ -116,6 +142,11 @@ interface PostInput {
   readonly dadosMsg: string;
   readonly agent: https.Agent;
   readonly timeoutMs?: number;
+  /**
+   * `<nfeCabecMsg>` SOAP-Header fields. Only Consulta Cadastro needs it (its
+   * message is layout 2.00, which kept the header); the v4.00 services omit it.
+   */
+  readonly cabec?: { readonly cUF: string; readonly versaoDados: string };
 }
 
 export interface PostResult {
@@ -137,10 +168,25 @@ function stripXmlDeclaration(xml: string): string {
 }
 
 /** SOAP 1.2 envelope template. Whitespace inside is irrelevant — only namespaces matter. */
-function buildEnvelope(operation: SoapOperation, dadosMsg: string): string {
+function buildEnvelope(
+  operation: SoapOperation,
+  dadosMsg: string,
+  cabec?: { readonly cUF: string; readonly versaoDados: string },
+): string {
+  // Consulta Cadastro (message layout 2.00) requires a `<nfeCabecMsg>` SOAP
+  // Header with `cUF` + `versaoDados`, in the same service namespace as the body
+  // wrapper. The v4.00 services pass no `cabec` and emit no header.
+  const header = cabec
+    ? `<soap12:Header>` +
+      `<nfeCabecMsg xmlns="${SOAP_NS[operation]}">` +
+      `<cUF>${cabec.cUF}</cUF><versaoDados>${cabec.versaoDados}</versaoDados>` +
+      `</nfeCabecMsg>` +
+      `</soap12:Header>`
+    : '';
   return (
     `<?xml version="1.0" encoding="UTF-8"?>` +
     `<soap12:Envelope xmlns:soap12="http://www.w3.org/2003/05/soap-envelope">` +
+    header +
     `<soap12:Body>` +
     `<nfeDadosMsg xmlns="${SOAP_NS[operation]}">${stripXmlDeclaration(dadosMsg)}</nfeDadosMsg>` +
     `</soap12:Body>` +
@@ -191,9 +237,9 @@ function sanitizeTransportError(err: unknown): {
  * would risk losing CDATA boundaries and is unnecessary.
  */
 async function postSoap(input: PostInput): Promise<PostResult> {
-  const envelope = buildEnvelope(input.operation, input.dadosMsg);
+  const envelope = buildEnvelope(input.operation, input.dadosMsg, input.cabec);
   const client = new HttpClient();
-  const action = SOAP_NS[input.operation];
+  const action = soapActionFor(input.operation);
 
   const { statusCode, body } = await new Promise<{ statusCode: number; body: string }>(
     (resolve, reject) => {
@@ -419,5 +465,38 @@ export async function nfeInutilizacao(call: SefazCall, inutNFeXml: string): Prom
   return postSoapValidated(CONTRACTS.nfeInutilizacao!, call, inutNFeXml);
 }
 
+/** consCad / cabecMsg layout version for Consulta Cadastro (NOT 4.00). */
+export const CONSCAD_VERSAO = '2.00';
+
+/**
+ * `CadConsultaCadastro4 / consultaCadastro` — query a taxpayer's IE
+ * registry for a CNPJ in a UF.
+ *
+ * The request `consCad` is XSD-validated by the caller (`consultarCadastro` →
+ * `validateConsCad`) before this is invoked; the `consCad`/`retConsCad` v2.00
+ * XSDs aren't in the codegen (issue #251), so this wrapper doesn't go through
+ * the codegen-driven `postSoapValidated` — it builds the SOAP envelope +
+ * SOAPAction like the other operations, plus the **`<nfeCabecMsg>` SOAP Header**
+ * (`cUF` + `versaoDados=2.00`) that the layout-2.00 message requires (omitting
+ * it is a `cStat=215`). `assertSafeTpAmb` still guards produção before the POST.
+ *
+ * `cUF` is the IBGE 2-digit code of the queried UF (e.g. `35` for SP).
+ */
+export async function nfeConsultaCadastro(
+  call: SefazCall,
+  consCadXml: string,
+  cUF: string,
+): Promise<PostResult> {
+  assertSafeTpAmb(call.tpAmb);
+  return postSoap({
+    url: call.url,
+    operation: 'NFeConsultaCadastro',
+    dadosMsg: consCadXml,
+    agent: call.agent,
+    timeoutMs: call.timeoutMs,
+    cabec: { cUF, versaoDados: CONSCAD_VERSAO },
+  });
+}
+
 // Exposed for offline tests that exercise envelope shape / response unwrap.
-export const __internal = { buildEnvelope, RE_RESULT_MSG, RE_SOAP_FAULT };
+export const __internal = { buildEnvelope, soapActionFor, RE_RESULT_MSG, RE_SOAP_FAULT };
