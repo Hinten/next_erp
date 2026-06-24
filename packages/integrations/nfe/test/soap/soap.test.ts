@@ -34,11 +34,12 @@ describe('buildEnvelope', () => {
     expect(buildEnvelope('NFeConsultaCadastro', '<x/>')).not.toContain('/NFeConsultaCadastro4"');
   });
 
-  it('wraps a consCad payload with the required nfeCabecMsg header (layout 2.00)', () => {
+  it('wraps a ConsCad payload with the required nfeCabecMsg header (layout 2.00)', () => {
     const env = buildEnvelope(
       'NFeConsultaCadastro',
-      '<consCad xmlns="http://www.portalfiscal.inf.br/nfe" versao="2.00">' +
-        '<infCons><xServ>CONS-CAD</xServ><UF>SP</UF><CNPJ>14200166000187</CNPJ></infCons></consCad>',
+      // Request root is `ConsCad` with a capital C (SEFAZ quirk).
+      '<ConsCad xmlns="http://www.portalfiscal.inf.br/nfe" versao="2.00">' +
+        '<infCons><xServ>CONS-CAD</xServ><UF>SP</UF><CNPJ>14200166000187</CNPJ></infCons></ConsCad>',
       { cUF: '35', versaoDados: '2.00' },
     );
     expect(env).toContain(

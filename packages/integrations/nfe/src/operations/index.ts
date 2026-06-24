@@ -282,10 +282,14 @@ export async function consultarCadastro(
   // cUF (IBGE 2-digit) for the required `<nfeCabecMsg>` SOAP Header.
   const cUF = UF_TO_IBGE[uf as keyof typeof UF_TO_IBGE];
   if (!cUF) throw new NFeXmlError(`UF inválida para Consulta Cadastro: ${uf}`);
+  // The REQUEST root is `ConsCad` with a CAPITAL C (the schema FILE is named
+  // consCad_v2.00.xsd lowercase, but the element it declares is `ConsCad`). This
+  // case asymmetry is a SEFAZ quirk specific to Consulta Cadastro — sending
+  // lowercase `<consCad>` is a cStat 215 "Falha no schema XML".
   const xml =
-    `<consCad versao="2.00" xmlns="${NFE_NS}">` +
+    `<ConsCad versao="2.00" xmlns="${NFE_NS}">` +
     `<infCons><xServ>CONS-CAD</xServ><UF>${uf}</UF><CNPJ>${cnpj}</CNPJ></infCons>` +
-    `</consCad>`;
+    `</ConsCad>`;
   // Pre-send XSD gate — SEFAZ rule: never POST schema-invalid XML. Repeated
   // cStat 215/225 trips cStat 656 (Consumo Indevido) → throttling/ban.
   await validateConsCad(xml);

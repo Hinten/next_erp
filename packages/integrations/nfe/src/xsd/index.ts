@@ -163,7 +163,7 @@ export function supportedRoots(): ReadonlyArray<XsdRootKey> {
 // emission types' choiceGroups (see issue #251). Same `NFE_SCHEMA_DIR`-style
 // override for esbuild-bundled consumers.
 const CONSCAD_DIR = join(HERE, '..', '..', 'generated', 'conscad');
-const CONSCAD_ROOT_FILE = 'consCad-request_v2.00.xsd';
+const CONSCAD_ROOT_FILE = 'consCad_v2.00.xsd';
 
 let consCadPreloadCache: ReadonlyArray<XMLFileInfo> | null = null;
 function loadConsCadPreload(): ReadonlyArray<XMLFileInfo> {

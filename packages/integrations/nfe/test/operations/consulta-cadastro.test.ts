@@ -87,7 +87,9 @@ describe('consultarCadastro', () => {
 
     expect(mockedNfeConsultaCadastro).toHaveBeenCalledOnce();
     const sentXml = vi.mocked(mockedNfeConsultaCadastro).mock.calls[0]![1];
-    expect(sentXml).toContain('<consCad');
+    // Root element is `ConsCad` with a CAPITAL C (SEFAZ quirk) — lowercase is a 215.
+    expect(sentXml).toContain('<ConsCad');
+    expect(sentXml).not.toContain('<consCad');
     expect(sentXml).toContain('versao="2.00"');
     expect(sentXml).toContain('<xServ>CONS-CAD</xServ>');
     expect(sentXml).toContain('<UF>SP</UF>'); // uppercased

@@ -9,13 +9,23 @@ codegen (`gen:nfe-types`) scans `moc7.0/schemas/` and would renumber the v4.00
 issue #251). Keeping them in a separate dir lets `validateConsCad` mount them
 for validation without touching the codegen.
 
+## ⚠️ The request root element is `ConsCad` with a CAPITAL C
+
+A deliberate SEFAZ case asymmetry, specific to Consulta Cadastro, that trips
+everyone up: the schema **file** is `consCad_v2.00.xsd` (lowercase), but the
+root **element** it declares is `<xs:element name="ConsCad">` (capital C). So
+the request XML must be `<ConsCad versao="2.00" …>`, NOT `<consCad …>`. Sending
+lowercase is a `cStat 215 "Falha no schema XML"`. (Verified against the official
+XSD byte-for-byte and the sped-nfe production builder `Tools.php::sefazCadastro`,
+which emits `<ConsCad …>`. The response root, by contrast, is `retConsCad`.)
+
 ## Files
 
 | File | Source |
 |---|---|
+| `consCad_v2.00.xsd` | Vendored verbatim from nfephp `schemes/NFe/PL_006u/`. Declares the request root `<xs:element name="ConsCad" type="TConsCad">` (capital C — see warning above) + `xs:include`s the leiaute. |
 | `leiauteConsultaCadastro_v2.00.xsd` | Vendored verbatim from nfephp `schemes/NFe/PL_006u/`. Defines `TConsCad` / `infCons`. |
 | `tiposBasico_v1.03.xsd` | The base types `leiauteConsultaCadastro_v2.00.xsd` `xs:include`s (TUfCons, TCnpjVar, …). Same file already vendored under `moc7.0/schemas/`. |
-| `consCad-request_v2.00.xsd` | **Authored in-repo** (not a verbatim SEFAZ file). Declares the request root element `consCad` (lowercase) + includes the leiaute. The upstream nfephp `consCad_v2.00.xsd` declares the root as `ConsCad` (capital C) — a transcription error; SEFAZ's real request element is lowercase `consCad`. See the comment in the file. |
 
 The XSDs are read at runtime via `readFileSync`; for esbuild-bundled consumers
 that lose the dir layout, override with `NFE_CONSCAD_SCHEMA_DIR` (mirrors
