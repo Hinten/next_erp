@@ -20,7 +20,7 @@ import {
   produtoPageIssues,
   sortGrupoUids,
 } from '@delfrance/schemas';
-import { buildQuery, limit, orderByField } from '@delfrance/data';
+import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
 import {
   ProdutoReferencedError,
   applyPrecosChange,
@@ -88,13 +88,43 @@ export default function EditarProdutoPage() {
   // Staged per-variation kit maps (the "Gerar Variações" grid), flushed AFTER
   // the variation-children flush so the child docs exist.
   const flushKitVariacoesRef = useRef<KitVariacoesFlush | null>(null);
-  // The live variation rows (saved + staged), published by VariationManager and
-  // consumed by the Kit tab (the per-variation grid + the component-picker
-  // exclusion: a kit can't contain itself or its variations).
+  // The variation set the Kit tab consumes (the per-variation grid + the
+  // component-picker exclusion: a kit can't contain itself or its variations).
+  // VariationManager publishes the LIVE set (saved + staged) once its tab has
+  // mounted — but React `<Activity>` keeps an unvisited tab's effects unmounted,
+  // so until something is published we fall back to a page-level snapshot of the
+  // saved children (this page component is always mounted, unlike a hidden tab).
+  // Only the variation children are kept live here — not every tab's effects.
   const [variationRows, setVariationRows] = useState<VariationRow[]>([]);
+  const childrenQuery = useMemo(
+    () => buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', params.id)]),
+    [db, params.id],
+  );
+  const childrenSnap = useSnapshot(childrenQuery);
+  const savedVariationRows = useMemo<VariationRow[]>(
+    () =>
+      [...(childrenSnap.data ?? [])]
+        .sort((a, b) => (a.data.ordem ?? Infinity) - (b.data.ordem ?? Infinity))
+        .map((r) => ({
+          key: r.id,
+          id: r.id,
+          nome: r.data.nome,
+          sku: r.data.sku ?? '',
+          variacoesUid: r.data.variacoesUid ?? [],
+          deleteMark: false,
+        })),
+    [childrenSnap.data],
+  );
+  const effectiveVariationRows = useMemo(
+    () => (variationRows.length > 0 ? variationRows : savedVariationRows),
+    [variationRows, savedVariationRows],
+  );
   const kitExcludeIds = useMemo(
-    () => [params.id, ...variationRows.map((r) => r.id).filter((id): id is string => id !== null)],
-    [params.id, variationRows],
+    () => [
+      params.id,
+      ...effectiveVariationRows.map((r) => r.id).filter((id): id is string => id !== null),
+    ],
+    [params.id, effectiveVariationRows],
   );
 
   // Price-history bookkeeping (Flutter parity: `Produto.save()` records every
@@ -262,7 +292,7 @@ export default function EditarProdutoPage() {
               produtoId={params.id}
               db={db}
               grupos={grupos}
-              rows={variationRows}
+              rows={effectiveVariationRows}
               disabled={p.disabled}
               flushRef={flushKitVariacoesRef}
             />
@@ -278,7 +308,7 @@ export default function EditarProdutoPage() {
       gruposSnap.error?.message,
       listas,
       listasSnap.error?.message,
-      variationRows,
+      effectiveVariationRows,
       kitExcludeIds,
     ],
   );
@@ -325,11 +355,6 @@ export default function EditarProdutoPage() {
         currentUserUid={user?.uid ?? ''}
         recordId={params.id}
         sections={PRODUTO_SECTIONS}
-        // Keep every tab's effects running (not React `<Activity>`, which
-        // unmounts hidden tabs' effects): the Kit tab's "Gerar Variações" grid +
-        // the component-picker exclusion read live rows the Variações tab
-        // publishes, so it must stay live even when another tab is active.
-        keepSectionsMounted
         fields={fields}
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
         transientFields={PRODUTO_TRANSIENT_FIELDS}

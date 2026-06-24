@@ -21,14 +21,6 @@ export interface SectionTabsProps {
    * error icon so a validation failure on a non-active tab stays visible.
    */
   errorSections?: ReadonlySet<string>;
-  /**
-   * How inactive panels are kept mounted. Mantine's default (`"activity"`)
-   * wraps hidden panels in React `<Activity>`, which UNMOUNTS their effects
-   * while hidden. Pass `"display-none"` when a tab's content must keep running
-   * its effects even when another tab is active (e.g. the produto editor, where
-   * the Kit tab reads live data published by the Variações tab).
-   */
-  keepMountedMode?: 'activity' | 'display-none';
 }
 
 /**
@@ -43,7 +35,6 @@ export function SectionTabs({
   value,
   onChange,
   errorSections,
-  keepMountedMode,
 }: SectionTabsProps) {
   if (sections.length === 0) return null;
   return (
@@ -53,7 +44,6 @@ export function SectionTabs({
       {...(value !== undefined
         ? { value, onChange }
         : { defaultValue: defaultSection ?? sections[0] })}
-      {...(keepMountedMode ? { keepMountedMode } : {})}
     >
       <Tabs.List>
         {sections.map((s) => {
