@@ -50,6 +50,9 @@ const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
 const FIXTURE_CNPJ = '14200166000187';
 const XJUST_FIXTURE = 'SEFAZ-SP indisponivel - fixture de contingencia para o dashboard';
 const DH_CONT_FIXTURE = '2026-06-11T08:00:00-03:00';
+/** Same instant as DH_CONT_FIXTURE in ms — the `dataContingencia` denorm field
+ * is ms since epoch (#253); the `<dhCont>` XML lexical keeps the ISO+offset form. */
+const DH_CONT_MS = new Date(DH_CONT_FIXTURE).getTime();
 
 /**
  * Deterministic 44-digit chave for the pedido at index `i`:
@@ -161,7 +164,7 @@ interface NFeSeed {
   readonly xml_assinado?: string | null;
   readonly xml_epec_proc?: string | null;
   readonly xml_nfe_proc?: string | null;
-  readonly dataContingencia?: string | null;
+  readonly dataContingencia?: number | null;
   readonly justificativaContingencia?: string | null;
 }
 
@@ -176,7 +179,7 @@ function epecSeed(i: number): NFeSeed {
     xMotivo: 'Evento registrado, mas nao vinculado a NF-e',
     xml_assinado: nfeXml({ chave, nNF: 1000 + i, tpEmis: 4, contingencia: true }),
     xml_epec_proc: xmlEpecProc(chave),
-    dataContingencia: DH_CONT_FIXTURE,
+    dataContingencia: DH_CONT_MS,
     justificativaContingencia: XJUST_FIXTURE,
   };
 }
@@ -193,7 +196,7 @@ function aprovadaSeed(i: number, tpEmis: 1 | 6): NFeSeed {
     xMotivo: 'Autorizado o uso da NF-e',
     xml_nfe_proc: wrapNfeProc(nfeXml({ chave, nNF: 1000 + i, tpEmis, contingencia }), chave),
     ...(contingencia
-      ? { dataContingencia: DH_CONT_FIXTURE, justificativaContingencia: XJUST_FIXTURE }
+      ? { dataContingencia: DH_CONT_MS, justificativaContingencia: XJUST_FIXTURE }
       : {}),
   };
 }
@@ -271,7 +274,7 @@ async function writeNFe(pedidoId: string, index: number, spec: NFeSeed): Promise
       justificativaContingencia: spec.justificativaContingencia ?? null,
       error: spec.error ?? null,
       timestamp: now,
-      ultima_modificacao: new Date(now).toISOString(),
+      ultima_modificacao: now,
     });
 }
 
