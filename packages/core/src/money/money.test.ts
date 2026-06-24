@@ -70,6 +70,20 @@ describe('roundReais', () => {
     expect(roundReais(Number.NaN)).toBeNaN();
     expect(roundReais(Number.POSITIVE_INFINITY)).toBe(Number.POSITIVE_INFINITY);
   });
+
+  it('collapses tiny values that stringify in scientific notation to 0 (not NaN)', () => {
+    // `(1e-7).toString() === "1e-7"`, which the naive `${n}e2` shift would turn
+    // into the invalid literal "1e-7e2" → NaN.
+    expect(roundReais(1e-7)).toBe(0);
+    expect(roundReais(5.5e-17)).toBe(0);
+    // The textbook float residual must not poison a near-zero difference.
+    expect(roundReais(0.1 + 0.2 - 0.3)).toBe(0);
+  });
+
+  it('never returns -0 when a tiny negative rounds to zero', () => {
+    expect(Object.is(roundReais(-0.001), 0)).toBe(true);
+    expect(Object.is(roundReais(-1e-9), 0)).toBe(true);
+  });
 });
 
 describe('formatReais', () => {
