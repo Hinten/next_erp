@@ -62,6 +62,18 @@ export interface KitManagerProps {
   value: ComponentesKit | null;
   onChange: (next: Record<string, KitDraft> | null) => void;
   disabled?: boolean;
+  /**
+   * Override the kit gating. Defaults to the form's `ehKit` (the parent kit on
+   * its own Kit tab); pass `true` when reusing the manager for a variation child
+   * (a kit-variation is implicitly a kit, with no `ehKit` of its own in the form).
+   */
+  ehKit?: boolean;
+  /**
+   * Push the computed kit cost into the form's `custo` field (default `true`).
+   * Pass `false` for variation-child instances — they have no `custo` field in
+   * the parent form; the cost is still shown, just not written.
+   */
+  syncCustoToForm?: boolean;
 }
 
 /**
@@ -75,11 +87,20 @@ export interface KitManagerProps {
  * (read live via `useFormContext`). `componentesKit` is a produto DOC field — it
  * rides the normal ObjectView save.
  */
-export function KitManager({ produtoId, db, value, onChange, disabled }: KitManagerProps) {
+export function KitManager({
+  produtoId,
+  db,
+  value,
+  onChange,
+  disabled,
+  ehKit: ehKitProp,
+  syncCustoToForm = true,
+}: KitManagerProps) {
   // RHF context is typed non-null but IS null outside a provider (ObjectView
   // mounts FormProvider) — guard with `?.`, mirroring PrecoCustoManager.
   const form = useFormContext();
-  const ehKit = form?.watch('ehKit') === true;
+  // Parent kit: gate on the form's `ehKit`. Variation child: caller forces it.
+  const ehKit = ehKitProp ?? form?.watch('ehKit') === true;
 
   const components = useMemo(() => (value ?? {}) as Record<string, KitDraft>, [value]);
   const [pickerValue, setPickerValue] = useState<unknown>(null);
@@ -141,11 +162,11 @@ export function KitManager({ produtoId, db, value, onChange, disabled }: KitMana
   // Push the computed cost into the read-only `custo` form field (writing to the
   // form = an external system, the legitimate use of an effect).
   useEffect(() => {
-    if (!ehKit || !custoResult || custoResult.custo === null) return;
+    if (!syncCustoToForm || !ehKit || !custoResult || custoResult.custo === null) return;
     if (form?.getValues('custo') !== custoResult.custo) {
       form?.setValue('custo', custoResult.custo, { shouldDirty: true });
     }
-  }, [ehKit, custoResult, form]);
+  }, [syncCustoToForm, ehKit, custoResult, form]);
 
   const setComponent = (id: string, patch: Partial<KitDraft>) => {
     onChange({ ...components, [id]: { ...components[id], ...patch } as KitDraft });
