@@ -34,6 +34,7 @@ import { ESTADO_NFE, type NotaFiscalEletronica } from '@delfrance/schemas';
 
 import type { NFeRuntime } from '../runtime';
 import { sefazCallFor } from './sefaz-call';
+import { recover539IfNeeded } from './emitir';
 import {
   buildEnviNFeMsgFromConsulta,
   enviNfeCollection,
@@ -108,6 +109,25 @@ export async function reconcileByRecibo(params: {
     const outcome = outcomeFromConsReci(ret, chave);
     let patch = applyOutcome({ estado: data.estado, retries: data.retries }, outcome);
 
+    // cStat=539 (duplicidade com chave diferente) must NOT linger in
+    // aguardandoResposta: recover the SEFAZ-asserted chave if it is one we
+    // emitted, else flip to terminal `error` (#243). `recover539IfNeeded` is a
+    // no-op for every other outcome. pedidoId comes from the doc path
+    // `pedidos/{pedidoId}/nfev4/{nfeId}`.
+    const recovered539 = await recover539IfNeeded({
+      fs,
+      bundle: { pedidoId: doc.ref.parent?.parent?.id ?? '', filialId },
+      nfeRef: doc.ref,
+      rt,
+      tpEmis,
+      outcome,
+      patch,
+    });
+    patch = recovered539.patch;
+    // A 539 chave-swap leaves our local signed XML pointing at the old chave —
+    // skip the <nfeProc> build for it (mirrors the emit path).
+    const chaveSwapped = recovered539.chaveOverride != null;
+
     // Attempt cap: a lote still processing after MAX_RECONCILE_ATTEMPTS consults
     // stops auto-reconciling and surfaces for manual review (never re-queried
     // forever — #77).
@@ -125,7 +145,10 @@ export async function reconcileByRecibo(params: {
     // matching signed XML — same atomic anchor-clear as the emit path (#128).
     const ourProt = ret.protNFe?.find((p) => p.infProt.chNFe === chave) ?? null;
     const nfeProcXml =
-      classifyCStat(patch.cStat) === 'autorizada' && ourProt != null && data.xml_assinado != null
+      !chaveSwapped &&
+      classifyCStat(patch.cStat) === 'autorizada' &&
+      ourProt != null &&
+      data.xml_assinado != null
         ? buildNFeProc(data.xml_assinado, ourProt)
         : null;
 

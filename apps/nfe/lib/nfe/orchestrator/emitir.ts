@@ -580,7 +580,7 @@ export async function applyAutorizadoOutcome(args: {
   // Duplicidade / lote-not-found → query SEFAZ for the real status.
   if (patch.action === 'recover-via-consulta') {
     if (outcome.cStat === '539') {
-      const recovered = await recoverFrom539({
+      const recovered = await recover539IfNeeded({
         fs,
         bundle,
         nfeRef,
@@ -1218,4 +1218,31 @@ export async function recoverFrom539(params: {
   );
 
   return { patch: recoveredPatch, chaveOverride: recoveredChave };
+}
+
+/**
+ * Shared cStat=539 gate. Every path that turns a SEFAZ lote/consult outcome into
+ * a patch runs this so a 539 (duplicidade com chave diferente) is resolved
+ * uniformly: recovered when the SEFAZ-asserted chave is one we emitted, else
+ * flipped to terminal `error` (issue #243). Without it the async paths
+ * (`reconcileByRecibo`, `consultarPedido`, the `processar-pendentes` consSit
+ * branch) leave a 539 stuck in `aguardandoResposta` — `cStatToEstado('539')` is
+ * `null`, so `applyOutcome` keeps the estado and re-queues the doc forever.
+ *
+ * No-op for every non-539 outcome (returns the patch untouched), so callers can
+ * funnel every outcome through it right after `applyOutcome`.
+ */
+export async function recover539IfNeeded(params: {
+  fs: Firestore;
+  bundle: Pick<PedidoBundle, 'pedidoId' | 'filialId'>;
+  nfeRef: FirebaseFirestore.DocumentReference;
+  rt: NFeRuntime;
+  tpEmis: TpEmis;
+  outcome: SefazOutcome;
+  patch: NFeStatePatch;
+}): Promise<{ patch: NFeStatePatch; chaveOverride?: string }> {
+  if (params.patch.action === 'recover-via-consulta' && params.outcome.cStat === '539') {
+    return recoverFrom539(params);
+  }
+  return { patch: params.patch };
 }

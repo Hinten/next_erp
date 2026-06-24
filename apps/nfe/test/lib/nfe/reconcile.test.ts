@@ -30,6 +30,9 @@ vi.mock('../../../lib/nfe/orchestrator/audit', async (importOriginal) => {
     persistPatch: vi.fn(),
     enviNfeCollection: vi.fn(() => ({ add: vi.fn() })),
     buildEnviNFeMsgFromConsulta: vi.fn(() => ({})),
+    // recoverFrom539 (real) looks the SEFAZ-asserted chave up here; null = "not
+    // one we emitted" → markAsLost → terminal error, with no further SEFAZ call.
+    findLatestEnviNFeMsgWithNRec: vi.fn(async () => null),
   };
 });
 
@@ -95,6 +98,40 @@ function loteRet(cStat: string, protCStat?: string): unknown {
   };
 }
 
+/**
+ * 104 lote whose inner protNFe for our chave is a cStat=539 (duplicidade com
+ * chave diferente) — xMotivo asserts a DIFFERENT chave via the `[chNFe:...]`
+ * marker the recovery parser reads.
+ */
+function loteRet539(): unknown {
+  const OUTRA_CHAVE = '35260614200166000187550010000000099400000019';
+  return {
+    versao: '4.00',
+    tpAmb: '2',
+    verAplic: 'TEST',
+    nRec: 'REC-1',
+    cStat: '104',
+    xMotivo: 'Lote processado',
+    cUF: '35',
+    dhRecbto: new Date().toISOString(),
+    protNFe: [
+      {
+        versao: '4.00',
+        infProt: {
+          tpAmb: '2',
+          verAplic: 'TEST',
+          chNFe: CHAVE,
+          dhRecbto: new Date().toISOString(),
+          cStat: '539',
+          xMotivo: `Rejeicao: Duplicidade de NF-e com diferenca na Chave de Acesso [chNFe:${OUTRA_CHAVE}]`,
+          nProt: '135000000000000',
+          digVal: 'd',
+        },
+      },
+    ],
+  };
+}
+
 const baseArgs = {
   fs: {} as never,
   rt: {} as never,
@@ -147,6 +184,16 @@ describe('reconcileByRecibo', () => {
     const patch = lastPatch();
     expect(patch.estado).toBe(ESTADO_NFE.error);
     expect(patch.xMotivo).toMatch(/verificar manualmente/);
+  });
+
+  it('539 (duplicidade, chave not in our audit log) → terminal error, never left aguardandoResposta (#243)', async () => {
+    seedDoc();
+    vi.mocked(consultarLote).mockResolvedValue(loteRet539() as never);
+    const r = await reconcileByRecibo({ ...baseArgs, attempt: 0 });
+    expect(r.errored).toBe(1);
+    // The whole point of #243: a 539 must NOT keep re-queuing as still-pending.
+    expect(r.stillPending).toBe(0);
+    expect(lastPatch().estado).toBe(ESTADO_NFE.error);
   });
 
   it('no in-flight docs → noop (idempotent re-delivery)', async () => {
