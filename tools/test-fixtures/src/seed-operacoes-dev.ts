@@ -25,7 +25,7 @@ export const DEV_OPERACAO_ID = 'dev-operacao-01';
 /**
  * Stable id for the regraImposto rule seeded under
  * `operacao/{DEV_OPERACAO_ID}/regraimposto/`. Matches the dev produto
- * (`dev-prod-01`) so the resolver cascade resolves to CSOSN 102 +
+ * (`dev-camiseta-pai`) so the resolver cascade resolves to CSOSN 102 +
  * PIS/COFINS CST 49 for pedidos that omit item-stamped imposto.
  *
  * Used by PED-8 in `seed-pedidos-dev.ts` to exercise the full
@@ -91,7 +91,7 @@ export async function seedDevOperacoes(): Promise<{ created: number }> {
     .doc(DEV_REGRA_IMPOSTO_ID)
     .set({
       nome: 'Resolver cascade test (dev)',
-      produtos: ['dev-prod-01'],
+      produtos: ['dev-camiseta-pai'],
       categorias: [],
       ncms: [],
       dataCadastro: now,

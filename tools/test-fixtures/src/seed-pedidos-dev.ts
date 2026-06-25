@@ -297,7 +297,7 @@ const PEDIDOS: PedidoSeed[] = [
     // Resolver cascade exercise — items have NO `imposto` stamped, so
     // the orchestrator must resolve via the `regraImposto` doc seeded
     // under `operacao/{DEV_OPERACAO_ID}/regraimposto/{DEV_REGRA_IMPOSTO_ID}`
-    // (matches produtos:['dev-prod-01'] → CSOSN 102 + PIS/COFINS 49).
+    // (matches produtos:['dev-camiseta-pai'] → CSOSN 102 + PIS/COFINS 49).
     // Without that rule the emit would throw NFeMissingImpostoError.
     pagamentos: [{ forma_de_pagamento: 1, valor: 100.0, aVista: true }],
     omitImposto: true,
@@ -353,11 +353,16 @@ function devItensMap(
   itens: Record<string, unknown[]>;
   itensIds: string[];
 } {
-  const produtoUid = 'dev-prod-01';
+  // Point dev pedido items at the real seeded produto (`dev-camiseta-pai` from
+  // `seed:variacoes`, priced by `seed:precos` for `dev-lista-varejo`) so the item
+  // field resolves and the price autofill works. Run order:
+  // seed:variacoes → seed:precos → seed:pedidos.
+  const produtoUid = 'dev-camiseta-pai';
   const baseItem: Record<string, unknown> = {
-    sku: 'DEV-PROD-01',
+    produtoUid,
+    sku: null,
     gtin: null,
-    nomeDeVenda: 'Produto Dev',
+    nomeDeVenda: 'Camiseta Dev',
     precoDeVenda: valor,
     descontoUnitario: null,
     quantidade: 1,
@@ -474,7 +479,7 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
       operacaoPedidoOuterRef: operacaoRef,
       clientePedidoOuterRef: clienteRef,
       enderecoFiscalOuterRef: enderecoFiscalRef,
-      listaDePrecosOuterRef: null,
+      listaDePrecosOuterRef: db().collection('listaDePrecos').doc('dev-lista-varejo'),
       // Optional embedded frete block. UI cells read `estado` +
       // `codRastreio` + `prazoDespacho`; the NF-e orchestrator reads
       // `modalidade` + `valorCobrado` + `transportadora` + `veiculo` +
