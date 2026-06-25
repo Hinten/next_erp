@@ -113,6 +113,9 @@ export const integracaoMeta: CollectionMetadata = {
     write: PERM_INTEGRACAO_WRITE,
     delete: PERM_INTEGRACAO_DELETE,
   },
+  // Deleting a channel account frees its OAuth credential subcollection,
+  // mirroring `int_frete` → `tokenMelEnv`.
+  cascade: [{ path: 'integracao/{integracaoId}/credenciais', onDelete: 'cascade' }],
   // The `integracao` collection holds every channel type; each channel screen
   // (e.g. Balcão) lists a single `tipo` slice supplied via TableView's
   // `queryParams`.
@@ -124,3 +127,52 @@ export const integracaoMeta: CollectionMetadata = {
 };
 
 export const integracao = { schema: integracaoSchema, meta: integracaoMeta };
+
+/* -------------------------------------------------------------------------- */
+/*                    CredenciaisIntegracao (subcollection)                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Per-channel OAuth credential doc — `integracao/{integracaoId}/credenciais`.
+ * One generic store for every marketplace channel (Mercado Livre, Amazon,
+ * Shopee, Magalu). The OAuth-token dimension is uniform across channels; the
+ * extras each channel returns (`token_type`, `scope`, `user_id`, `revoked`,
+ * `created_at`, `isRefreshing`, …) ride along via `.passthrough()` with no
+ * bespoke fields. Single-token semantics: the writer deletes older docs so at
+ * most one lives. Server-side only — the browser never reads or writes these;
+ * reads require `integracao.write` because the doc carries live credentials.
+ *
+ * The legacy Flutter app split this per channel
+ * (`token6h`/`tokenDuravel`, `actokshopee`, `tokenoaut`, `tokenMagalu`); ML's
+ * two tokens collapse here into one doc (`access_token` = the 6h token,
+ * `refresh_token` = the durable one). The genuinely divergent per-channel
+ * identity/config (`shop_id`, `tenant_id`, `selling_partner_id`, `brand`, and
+ * Loja Integrada's static API key) is account-level data and lives on the
+ * `integracao` doc instead — see #289, not here.
+ */
+export const credenciaisIntegracaoSchema = z
+  .object({
+    access_token: z.string().min(1),
+    refresh_token: z.string().min(1),
+    /** Required ms since epoch (`now + expires_in`). Server-side only. */
+    expirationDate: millisSinceEpoch(),
+  })
+  .passthrough();
+export type CredenciaisIntegracao = z.infer<typeof credenciaisIntegracaoSchema>;
+
+export const credenciaisIntegracaoMeta: CollectionMetadata = {
+  collectionPath: 'integracao/{integracaoId}/credenciais',
+  // Tokens carry live credentials — reads require integracao.write (not mere
+  // read), mirroring how `tokenMelEnv` reuses `PERM_FRETE_WRITE`. The real
+  // consumers run through the Admin SDK in apps/integrations anyway.
+  permissions: {
+    read: PERM_INTEGRACAO_WRITE,
+    write: PERM_INTEGRACAO_WRITE,
+    delete: PERM_INTEGRACAO_DELETE,
+  },
+};
+
+export const credenciaisIntegracao = {
+  schema: credenciaisIntegracaoSchema,
+  meta: credenciaisIntegracaoMeta,
+};

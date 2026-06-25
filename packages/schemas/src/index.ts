@@ -150,8 +150,12 @@ export {
   INTEGRACAO_TIPO,
   INTEGRACAO_TIPO_LABELS,
   pluginIdForTipo,
+  credenciaisIntegracao,
+  credenciaisIntegracaoSchema,
+  credenciaisIntegracaoMeta,
   type Integracao,
   type IntegracaoTipo,
+  type CredenciaisIntegracao,
 } from './integracao';
 
 export {
