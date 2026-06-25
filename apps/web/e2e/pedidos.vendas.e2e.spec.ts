@@ -108,13 +108,13 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     const discountInput = page.getByLabel('Desconto item 1', { exact: true });
     await expect(priceInput).toHaveValue(/33[.,]5/, { timeout: 15_000 });
 
-    // Override the autofilled price + set quantidade/desconto. Mantine
-    // NumberInput's default decimal separator is '.', so type a period.
+    // Override the autofilled price + set quantidade/desconto. These inputs are
+    // localized (pt-BR), so the decimal separator is a comma.
     await priceInput.fill('10');
     await priceInput.blur();
     await qtyInput.fill('2');
     await qtyInput.blur();
-    await discountInput.fill('1.5');
+    await discountInput.fill('1,5');
     await discountInput.blur();
 
     await page.getByRole('button', { name: 'Criar' }).click();

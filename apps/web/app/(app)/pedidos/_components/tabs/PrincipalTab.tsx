@@ -228,18 +228,7 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
       </Group>
 
       <Stack gap="xs">
-        <Group justify="space-between" align="center">
-          <Title order={4}>Itens</Title>
-          <Button
-            type="button"
-            size="xs"
-            leftSection={<IconPlus size={14} />}
-            onClick={addItem}
-            disabled={disabled}
-          >
-            Adicionar produto
-          </Button>
-        </Group>
+        <Title order={4}>Itens</Title>
 
         {itensErrorMessage && (
           <Text c="red" size="sm">
@@ -247,7 +236,7 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
           </Text>
         )}
 
-        <Table>
+        <Table striped highlightOnHover>
           <Table.Thead>
             <Table.Tr>
               <Table.Th>#</Table.Th>
@@ -308,6 +297,8 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
                       onBlur={field.onBlur}
                       min={0}
                       decimalScale={2}
+                      decimalSeparator=","
+                      thousandSeparator="."
                       w={120}
                       disabled={disabled}
                     />
@@ -336,6 +327,18 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
             </Table.Tr>
           </Table.Tfoot>
         </Table>
+        <Group>
+          <Button
+            type="button"
+            size="xs"
+            variant="light"
+            leftSection={<IconPlus size={14} />}
+            onClick={addItem}
+            disabled={disabled}
+          >
+            Adicionar produto
+          </Button>
+        </Group>
         <Text size="xs" c="dimmed">
           Frete definido na aba Frete; devoluções não inclusas nesta visualização.
         </Text>
@@ -451,29 +454,28 @@ function ItemRow({
   return (
     <Table.Tr style={rowStyle}>
       <Table.Td>
-        <Controller
-          control={form.control}
-          name={`_itensFlat.${index}.ordem` as const}
-          render={({ field }) => (
-            <NumberInput
-              value={field.value ?? 1}
-              onChange={(v) => field.onChange(typeof v === 'number' ? v : 1)}
-              onBlur={field.onBlur}
-              min={1}
-              step={1}
-              w={70}
-              disabled={disabled || marked}
-            />
-          )}
-        />
+        {/* `#` (ordem) is an internal tracking field — read-only. */}
+        <Text size="sm" c="dimmed">
+          {item?.ordem ?? index + 1}
+        </Text>
       </Table.Td>
       <Table.Td>
         <Stack gap={4}>
           <ProdutoPicker
             db={db}
-            value={null}
+            value={produtoUid ? `produtos/${produtoUid}` : null}
             onChange={(r) => {
-              if (r) void handlePick(r.data, r.id);
+              if (r) {
+                void handlePick(r.data, r.id);
+              } else {
+                // Cleared via the picker's close button — drop the produto.
+                form.setValue(`_itensFlat.${index}.produtoUid`, null, {
+                  shouldDirty: true,
+                  shouldValidate: true,
+                });
+                form.setValue(`_itensFlat.${index}.sku`, null, { shouldDirty: true });
+                form.setValue(`_itensFlat.${index}.nomeDeVenda`, null, { shouldDirty: true });
+              }
             }}
             label=""
             placeholder="Buscar produto…"
@@ -483,10 +485,8 @@ function ItemRow({
             <Group gap="xs" wrap="nowrap" align="center">
               <ProdutoThumbnail db={db} produto={produto} />
               <Stack gap={0}>
+                {/* The picker above already shows the produto name. */}
                 <Group gap={6} align="center">
-                  <Text size="sm" fw={500} td={marked ? 'line-through' : undefined}>
-                    {item?.nomeDeVenda || produto?.nome || produtoUid}
-                  </Text>
                   {estoque !== null && (
                     <Badge size="xs" color={estoque > 0 ? 'green' : 'red'}>
                       {estoque} em estoque
@@ -539,6 +539,8 @@ function ItemRow({
               onBlur={field.onBlur}
               min={0}
               decimalScale={3}
+              decimalSeparator=","
+              thousandSeparator="."
               w={100}
               disabled={disabled || marked}
               aria-label={`Quantidade item ${index + 1}`}
@@ -557,6 +559,8 @@ function ItemRow({
               onBlur={field.onBlur}
               min={0.01}
               decimalScale={2}
+              decimalSeparator=","
+              thousandSeparator="."
               w={120}
               disabled={disabled || marked}
               aria-label={`Preço item ${index + 1}`}
@@ -575,6 +579,8 @@ function ItemRow({
               onBlur={field.onBlur}
               min={0}
               decimalScale={2}
+              decimalSeparator=","
+              thousandSeparator="."
               w={120}
               disabled={disabled || marked}
               error={descontoError}
