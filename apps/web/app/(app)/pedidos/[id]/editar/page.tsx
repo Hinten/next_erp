@@ -105,7 +105,11 @@ export default function EditarPedidoPage() {
     }
   }
 
-  async function handleSubmit(values: Pedido, dirtyFields: Readonly<Record<string, unknown>>) {
+  async function handleSubmit(
+    values: Pedido,
+    dirtyFields: Readonly<Record<string, unknown>>,
+    opts: { continueEditing: boolean },
+  ): Promise<boolean> {
     // Partial save: write only the touched fields, guarded against concurrent
     // edits by comparing the live doc to the snapshot loaded into the editor.
     const baseline = baselineRef.current ?? (values as unknown as Record<string, unknown>);
@@ -114,11 +118,21 @@ export default function EditarPedidoPage() {
     try {
       await savePedido(port, { pedidoId: params.id, patch, baseline });
       await recordEstadoIfChanged(port, patch, baseline.estado);
+      if (opts.continueEditing) {
+        // "Salvar e continuar editando": stay on this page (no navigation, so the
+        // unsaved-changes guard never prompts). Re-baseline the concurrency guard
+        // to the just-saved state; the live `useDocSnapshot` keeps the page data
+        // fresh and PedidoForm re-baselines the form to pristine.
+        baselineRef.current = { ...baseline, ...patch };
+        notifications.show({ color: 'green', message: 'Pedido salvo.' });
+        return true;
+      }
       router.replace('/pedidos');
+      return true;
     } catch (err) {
       if (err instanceof PedidoNothingChangedError) {
         notifications.show({ color: 'yellow', message: err.message });
-        return;
+        return false;
       }
       if (err instanceof PedidoConflictError) {
         // Doc changed remotely → let the user review + decide (modal). Doc deleted
@@ -128,7 +142,7 @@ export default function EditarPedidoPage() {
         } else {
           showErrorNotification({ title: 'Pedido alterado', message: err.message });
         }
-        return;
+        return false;
       }
       throw err;
     }
@@ -206,7 +220,9 @@ export default function EditarPedidoPage() {
   const p = data.data;
 
   return (
-    <Stack>
+    // Fill the AppShell main area so the form's flex layout can pin the sticky
+    // footer to the bottom regardless of how short a tab's content is.
+    <Stack mih="calc(100dvh - var(--app-shell-header-height, 56px) - var(--app-shell-padding, 1rem) * 2)">
       <PageHeader
         title={
           <Group align="center">
