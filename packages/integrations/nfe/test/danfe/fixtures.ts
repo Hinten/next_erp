@@ -179,3 +179,53 @@ export const PROCNFE_FIXTURE = `<?xml version="1.0" encoding="UTF-8"?>
     </infProt>
   </protNFe>
 </nfeProc>`;
+
+/**
+ * Worst-case simplificado label: maximal field presence + long values — a 64-char
+ * razão social, long emitente street/complemento, a **B2B destinatário with an IE**
+ * (the row that overflowed the 10×15 cm label before #93), a long destinatário
+ * address and a multi-hundred-char `infCpl`. Locks the shrink-to-fit behavior.
+ */
+export const PROCNFE_MAXFIELDS_FIXTURE = PROCNFE_FIXTURE.replace(
+  '<xNome>DELFRANCE COMERCIO LTDA</xNome>',
+  '<xNome>DELFRANCE COMERCIO E DISTRIBUICAO DE PRODUTOS ALIMENTICIOS LTDA ME</xNome>',
+)
+  .replace(
+    '<xLgr>RUA DAS FLORES</xLgr>',
+    '<xLgr>AVENIDA PROFESSOR DOUTOR FRANCISCO MORATO DE OLIVEIRA</xLgr>',
+  )
+  .replace(
+    '<xCpl>SALA 2</xCpl>',
+    '<xCpl>BLOCO C, ANDAR 12, CONJUNTO 1204, EDIFICIO EMPRESARIAL CENTRO</xCpl>',
+  )
+  .replace(
+    '<xLgr>AVENIDA PAULISTA</xLgr>',
+    '<xLgr>RUA CONSELHEIRO FURTADO DE MENDONCA SOBRINHO E SILVA</xLgr>',
+  )
+  .replace(
+    '<nro>2000</nro>',
+    '<nro>2000</nro><xCpl>CONJUNTO 1010 A 1018, DECIMO ANDAR, TORRE NORTE</xCpl>',
+  )
+  .replace('<indIEDest>9</indIEDest>', '<indIEDest>1</indIEDest><IE>111222333444</IE>')
+  .replace(
+    '<infCpl>Documento emitido por ME ou EPP optante pelo Simples Nacional. Nao gera direito a credito fiscal de IPI.</infCpl>',
+    '<infCpl>Documento emitido por ME ou EPP optante pelo Simples Nacional, conforme Lei Complementar 123/2006. ' +
+      'Nao gera direito a credito fiscal de IPI nem de ICMS. Mercadoria destinada a uso e consumo do adquirente. ' +
+      'Pedido numero 1234567 realizado em 26/05/2026 pelo canal de vendas online. Frete por conta do destinatario. ' +
+      'Observacoes adicionais de interesse do contribuinte registradas para fins de conferencia fiscal.</infCpl>',
+  );
+
+/**
+ * Minimal simplificado label: a **CPF emitente**, a destinatário with **no
+ * document and no address**, and **no `infCpl`** — exercises the missing-field
+ * separator hygiene and the smallest layout (no off-page / stray-separator glitch).
+ */
+export const PROCNFE_MINFIELDS_FIXTURE = PROCNFE_FIXTURE.replace(
+  '<CNPJ>14200166000187</CNPJ>',
+  '<CPF>12345678909</CPF>',
+)
+  .replace(
+    /<dest>[\s\S]*?<\/dest>/,
+    '<dest><xNome>CONSUMIDOR FINAL</xNome><indIEDest>9</indIEDest></dest>',
+  )
+  .replace(/<infAdic>[\s\S]*?<\/infAdic>/, '');
