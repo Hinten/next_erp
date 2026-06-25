@@ -1,4 +1,10 @@
-import { valuesEqual, type EstadoPedido, type Pedido } from '@delfrance/schemas';
+import {
+  isFreteJaPostado,
+  valuesEqual,
+  type EstadoFrete,
+  type EstadoPedido,
+  type Pedido,
+} from '@delfrance/schemas';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 
 /**
@@ -399,10 +405,13 @@ export async function reconcilePedidoEstadoFromPagamentos(
       current.freteInicial &&
       typeof current.freteInicial === 'object'
     ) {
-      patch.freteInicial = {
-        ...(current.freteInicial as Record<string, unknown>),
-        estado: 'despachoAutorizado',
-      };
+      const frete = current.freteInicial as Record<string, unknown>;
+      const freteEstado = frete.estado as EstadoFrete | undefined;
+      // Only authorize dispatch from a pre-shipment state — never regress an
+      // in-flight frete (postado / a caminho / entregue) back to authorized.
+      if (!freteEstado || !isFreteJaPostado(freteEstado)) {
+        patch.freteInicial = { ...frete, estado: 'despachoAutorizado' };
+      }
     }
     return patch;
   });

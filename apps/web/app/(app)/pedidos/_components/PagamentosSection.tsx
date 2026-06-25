@@ -135,9 +135,10 @@ export function PagamentosSection({
       });
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;
+      // Reached after save / delete / status change, so keep the message neutral.
       notifications.show({
         color: 'yellow',
-        message: 'Pagamento salvo, mas o estado do pedido não pôde ser atualizado automaticamente.',
+        message: 'O estado do pedido não pôde ser atualizado automaticamente.',
       });
     }
   }

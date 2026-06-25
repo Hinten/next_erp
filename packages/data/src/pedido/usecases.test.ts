@@ -393,6 +393,25 @@ describe('reconcilePedidoEstadoFromPagamentos', () => {
     expect(written()).not.toHaveProperty('freteInicial');
   });
 
+  it('does not regress an already-shipped frete when transitioning to pago', async () => {
+    const { port, written } = fakePort(
+      {
+        estado: 'iniciado',
+        valorCobrado: 100,
+        freteInicial: { valorCobrado: 7, estado: 'postado' },
+      },
+      777,
+    );
+    const result = await reconcilePedidoEstadoFromPagamentos(port, {
+      pedidoId: 'x',
+      valorPago: 100,
+    });
+    expect(result).toBe('pago');
+    // estado advances, but the in-flight 'postado' frete is left untouched.
+    expect(written()).toEqual({ estado: 'pago', ultimaModificacao: 777 });
+    expect(written()).not.toHaveProperty('freteInicial');
+  });
+
   it('does not transition (no história) a cancelado pedido that is still fully paid', async () => {
     const { port, written, committed } = fakePort({ estado: 'cancelado', valorCobrado: 100 }, 777);
     const result = await reconcilePedidoEstadoFromPagamentos(port, {
