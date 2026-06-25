@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
-import { microsSinceEpoch } from '../../datetime';
+import { microsSinceEpoch } from '../../shared/datetime';
 import { bandeiraSchema } from '../../bandeiraCartao';
-import { outerRefSchema } from '../../outerRef';
+import { outerRefSchema } from '../../shared/outerRef';
 import type { EstadoPedido } from './pedido';
 
 const PERM_PAGAMENTO_READ = 1n << 24n;

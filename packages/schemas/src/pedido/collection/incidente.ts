@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
-import { microsSinceEpoch } from '../../datetime';
-import { freteDoPedidoSchema } from '../../frete';
+import { microsSinceEpoch } from '../../shared/datetime';
+import { freteDoPedidoSchema } from '../../shared/frete';
 
 // Incidente belongs to the PEDIDO permission domain (`permCode: 'p4'` in the
 // legacy ODM); it shares the pedido bits, like `motivoIncidente`.

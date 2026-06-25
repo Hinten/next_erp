@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
-import { microsSinceEpoch, millisSinceEpoch } from './datetime';
+import { microsSinceEpoch, millisSinceEpoch } from './shared/datetime';
 import { estadoEnviNFeMsgSchema } from './enviNfeMsg';
 
 // Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth — same audit

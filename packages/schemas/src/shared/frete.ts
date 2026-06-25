@@ -22,7 +22,7 @@
  */
 import { z } from 'zod';
 import { microsSinceEpoch } from './datetime';
-import { ufSchema } from './endereco';
+import { ufSchema } from '../endereco';
 import { outerRefSchema } from './outerRef';
 
 /* -------------------------------------------------------------------------- */

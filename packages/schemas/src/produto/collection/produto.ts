@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
-import { outerRefSchema } from '../../outerRef';
+import { outerRefSchema } from '../../shared/outerRef';
 import { fotoSchema } from '../../storage/foto';
 import { videoSchema } from '../../storage/video';
 import { componentesKitSchema } from './embedded/kit';

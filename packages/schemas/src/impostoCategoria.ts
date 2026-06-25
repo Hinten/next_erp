@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { millisSinceEpoch } from './datetime';
-import { idRefSchema } from './outerRef';
+import { millisSinceEpoch } from './shared/datetime';
+import { idRefSchema } from './shared/outerRef';
 import type { CollectionMetadata } from './types';
 
 // Mirrors PERM.impostoCategoria in packages/auth/src/permissions.ts (byte 12;

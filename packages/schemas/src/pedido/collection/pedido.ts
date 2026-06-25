@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
-import { microsSinceEpoch } from '../../datetime';
-import { freteDoPedidoSchema } from '../../frete';
-import { outerRefSchema } from '../../outerRef';
+import { microsSinceEpoch } from '../../shared/datetime';
+import { freteDoPedidoSchema } from '../../shared/frete';
+import { outerRefSchema } from '../../shared/outerRef';
 
 const PERM_PEDIDO_READ = 1n << 16n;
 const PERM_PEDIDO_WRITE = 1n << 17n;

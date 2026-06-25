@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { millisSinceEpoch } from './datetime';
+import { millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 import { enderecoSchema } from './endereco';
 import { certificadoFilialInfoSchema } from './certificadoFilial';

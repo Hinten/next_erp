@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { outerRefSchema } from './outerRef';
+import { outerRefSchema } from './shared/outerRef';
 import type { CollectionMetadata } from './types';
 
 const PERM_CONVERSA_READ = 1n << 48n;
