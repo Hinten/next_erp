@@ -297,3 +297,84 @@ export async function deletePagamento(
 ): Promise<void> {
   await port.commit([{ type: 'delete', path: PAGAMENTO_PATH(args.pedidoId, args.pagamentoId) }]);
 }
+
+// ---------------------------------------------------------------------------
+// Auto-estado from pagamentos (legacy `cadastroPedidoProvider` transition)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure rule: the pedido `estado` implied by how much has been paid, or `null`
+ * when the current estado already matches (so a re-run is a no-op). Ports the
+ * legacy auto-transition that ran after each pagamento change:
+ *
+ *  - **fully paid** (`valorPago ≥ total`, `total > 0`) → `pago` and authorize
+ *    frete dispatch (`despachoAutorizado`);
+ *  - **partially paid** (`0 < valorPago < total`) → `aguardandoConfirmacaoDePagamento`;
+ *  - a **`pago`** pedido that drops below its total → downgraded back to
+ *    `aguardandoConfirmacaoDePagamento`.
+ *
+ * Otherwise (nothing paid and not currently `pago`) the estado is left alone —
+ * the transition only manages the payment-driven states. Inputs are expected
+ * already 2-decimal-rounded (`derivePedidoTotals` / `sumPagamentosPagos`).
+ */
+export function nextPedidoEstado(
+  estado: EstadoPedido,
+  total: number,
+  valorPago: number,
+): { estado: EstadoPedido; autorizarDespacho: boolean } | null {
+  const fullyPaid = total > 0 && valorPago >= total;
+  if (fullyPaid) {
+    return estado === 'pago' ? null : { estado: 'pago', autorizarDespacho: true };
+  }
+  if (valorPago > 0 && estado !== 'pago' && estado !== 'aguardandoConfirmacaoDePagamento') {
+    return { estado: 'aguardandoConfirmacaoDePagamento', autorizarDespacho: false };
+  }
+  if (estado === 'pago') {
+    // Was fully paid, no longer is → downgrade.
+    return { estado: 'aguardandoConfirmacaoDePagamento', autorizarDespacho: false };
+  }
+  return null;
+}
+
+/**
+ * Reconcile a pedido's `estado` from the total approved payments (`valorPago`),
+ * porting the legacy transition that ran after each pagamento save/delete/status
+ * change. Reads the pedido's own `valorCobrado` (total) transactionally, applies
+ * {@link nextPedidoEstado}, and — only on a transition — writes the new `estado`
+ * (flipping `freteInicial.estado` to `despachoAutorizado` when it becomes `pago`)
+ * and appends a `historicoEstadoPedido` audit row (best-effort, mirroring
+ * `recordEstadoChange`). A no-op when the estado already matches. Returns the new
+ * estado, or `null` when nothing changed.
+ */
+export async function reconcilePedidoEstadoFromPagamentos(
+  port: PedidoDataPort,
+  args: { pedidoId: string; valorPago: number; usuarioRef?: string | null },
+): Promise<EstadoPedido | null> {
+  let transitionedTo: EstadoPedido | null = null;
+  await port.updatePedido(args.pedidoId, (current) => {
+    if (current === null) return {};
+    const estado = current.estado as EstadoPedido;
+    const total = typeof current.valorCobrado === 'number' ? current.valorCobrado : 0;
+    const next = nextPedidoEstado(estado, total, args.valorPago);
+    if (next === null) return {};
+    transitionedTo = next.estado;
+    const patch: Record<string, unknown> = { estado: next.estado, ultimaModificacao: port.now() };
+    if (
+      next.autorizarDespacho &&
+      current.freteInicial &&
+      typeof current.freteInicial === 'object'
+    ) {
+      patch.freteInicial = {
+        ...(current.freteInicial as Record<string, unknown>),
+        estado: 'despachoAutorizado',
+      };
+    }
+    return patch;
+  });
+  if (transitionedTo !== null) {
+    await port.commit([
+      buildEstadoHistoryOp(port, args.pedidoId, transitionedTo, args.usuarioRef ?? null),
+    ]);
+  }
+  return transitionedTo;
+}

@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useForm, type FieldErrors, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
@@ -11,6 +11,7 @@ import { PERM } from '@delfrance/auth';
 import {
   derivePedidoTotals,
   pedidoPageIssues,
+  type EstadoPedido,
   type Pedido,
   pedidoSchema,
 } from '@delfrance/schemas';
@@ -44,6 +45,13 @@ export interface PedidoFormProps {
    */
   pedidoId?: string;
   submitLabel?: string;
+  /**
+   * The pedido's live `estado` from the page snapshot. When it changes
+   * externally (e.g. the pagamento auto-reconcile flips it to `pago`), the form
+   * syncs its own estado field so the Estado/Histórico tab stays in step —
+   * unless the user is editing estado manually.
+   */
+  liveEstado?: EstadoPedido;
   /**
    * Receives the resolved (validate-what-you-save) doc values plus RHF's
    * `dirtyFields` so the edit page can build a partial patch (`buildPedidoPatch`)
@@ -219,6 +227,7 @@ export function PedidoForm({
   defaultValues,
   pedidoId,
   submitLabel = 'Salvar',
+  liveEstado,
   onSubmit,
 }: PedidoFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -239,6 +248,17 @@ export function PedidoForm({
   // screens get this from ObjectView; PedidoForm is a custom form, so wire the
   // shared guard directly.
   useUnsavedChangesGuard(form.formState.isDirty);
+
+  // Keep the form's estado in step with an external change (the pagamento
+  // auto-reconcile flips it to pago/aguardando in Firestore). Skip when the user
+  // is editing estado manually so their unsaved change isn't clobbered.
+  useEffect(() => {
+    if (liveEstado === undefined) return;
+    if (form.getFieldState('estado').isDirty) return;
+    if (form.getValues('estado') !== liveEstado) {
+      form.setValue('estado', liveEstado, { shouldDirty: false });
+    }
+  }, [liveEstado, form]);
 
   // Two save paths share one handler: the primary submit ("Salvar"/"Criar")
   // navigates away; "Salvar e continuar editando" reloads in place. The footer's

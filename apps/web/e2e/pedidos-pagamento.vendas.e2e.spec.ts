@@ -52,10 +52,18 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
     await warmRoutes(browser, ['/pedidos']);
   });
 
-  // Clear the subcollection before each attempt so a retry starts clean.
+  // Reset estado + clear the pagamentos/history subcollections before each
+  // attempt so the auto-reconcile test starts from `iniciado` with no history.
   test.beforeEach(async () => {
+    await db().collection('pedidos').doc(pedidoId).update({ estado: 'iniciado' });
     const pg = await db().collection('pedidos').doc(pedidoId).collection('pagamentos').get();
     await Promise.all(pg.docs.map((d) => d.ref.delete()));
+    const hist = await db()
+      .collection('pedidos')
+      .doc(pedidoId)
+      .collection('historicoEstadoPedido')
+      .get();
+    await Promise.all(hist.docs.map((d) => d.ref.delete()));
   });
 
   test.afterAll(async () => {
@@ -93,6 +101,47 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
         { timeout: 15_000 },
       )
       .toEqual({ forma: 1, valor: 100 });
+  });
+
+  test('fully paying a pedido auto-transitions it to "pago" and logs the history', async ({
+    page,
+  }) => {
+    await page.goto(`/pedidos/${pedidoId}/editar`);
+    await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByRole('tab', { name: 'Pagamento' }).click();
+    await page.getByRole('button', { name: /Adicionar pagamento/ }).click();
+    // Pedido total is R$ 10,00; pay it in full (default forma Dinheiro, default
+    // status Aprovado → counts toward "paid").
+    await typeMoney(page, 'Valor', '10');
+    await page.getByRole('button', { name: 'Adicionar', exact: true }).click();
+    await expect(page.getByRole('cell', { name: 'R$ 10,00' })).toBeVisible({ timeout: 15_000 });
+
+    // The auto-reconcile flips the pedido estado to "pago"…
+    await expect
+      .poll(
+        async () => {
+          const snap = await db().collection('pedidos').doc(pedidoId).get();
+          return (snap.data()?.estado as string | undefined) ?? null;
+        },
+        { timeout: 15_000 },
+      )
+      .toBe('pago');
+
+    // …and appends a historicoEstadoPedido row recording it.
+    await expect
+      .poll(
+        async () => {
+          const snap = await db()
+            .collection('pedidos')
+            .doc(pedidoId)
+            .collection('historicoEstadoPedido')
+            .get();
+          return snap.docs.map((d) => d.data().estado as string);
+        },
+        { timeout: 15_000 },
+      )
+      .toContain('pago');
   });
 
   test('shows forma-specific fields and autofills the remaining valor', async ({ page }) => {
