@@ -30,7 +30,13 @@ import {
   whereEqual,
 } from '@delfrance/data';
 import type { CollectionMetadata } from '@delfrance/schemas';
-import { type SnapshotRow, type SnapshotState, useSnapshot } from '@delfrance/data/hooks';
+import {
+  type SnapshotRow,
+  type SnapshotState,
+  type SubcollectionLookupSpec,
+  useSnapshot,
+  useSubcollectionIdLookup,
+} from '@delfrance/data/hooks';
 import { usePipelineSnapshot } from '@delfrance/data/hooks/usePipelineSnapshot';
 import {
   type Pipeline,
@@ -40,12 +46,19 @@ import {
   isPipelineSupported,
 } from '@delfrance/data/pipeline-queries';
 import { extractFieldsFromSchema } from '../schema/derive';
-import type { ActionConfig, FieldConfig, FieldDescriptor, VirtualColumn } from '../schema/types';
+import type {
+  ActionConfig,
+  ColumnFilterValue,
+  FieldConfig,
+  FieldDescriptor,
+  FilterableField,
+  VirtualColumn,
+} from '../schema/types';
 import { ActionBar } from './ActionBar';
 import { ActionSidePanel } from './ActionSidePanel';
 import { useCollectionMonitor } from './useCollectionMonitor';
 import { IconArrowDown, IconArrowsSort, IconArrowUp, IconRefreshAlert } from '@tabler/icons-react';
-import { ColumnFilter } from './ColumnFilter';
+import { ColumnFilter, FilterPopover } from './ColumnFilter';
 import { ColumnPicker } from './ColumnPicker';
 import { applyColumnFilters } from './filterRows';
 import {
@@ -270,12 +283,109 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // The copy action needs row selection; enabling copy implies `selectable`.
   const selectionEnabled = selectable || !!copyHref;
 
+  // Synthetic filter fields for the virtual columns that declare a `filter`.
+  // They carry no Zod descriptor, so build the minimal shape the ColumnFilter
+  // UI + the URL value-coercion read (kind drives the input and the number/date
+  // coercion). Custom (renderFilter / subcollection-lookup) filters default to
+  // string coercion — fine for ref paths and the `"<subfield>:<term>"` NF value.
+  const virtualFilterFields = useMemo<FilterableField[]>(
+    () =>
+      virtualColumns
+        .filter((v) => v.filter)
+        .map((v) => {
+          const f = v.filter!;
+          return {
+            key: f.field,
+            kind: f.kind ?? 'string',
+            label: f.label ?? v.label,
+            enumValues: f.options,
+            dateUnit: f.dateUnit,
+          };
+        }),
+    [virtualColumns],
+  );
+  const filterableFields = useMemo<FilterableField[]>(
+    () => [...descriptors, ...virtualFilterFields],
+    [descriptors, virtualFilterFields],
+  );
+
   // URL-synced per-column filters + sort (hydrated from the query string,
   // mirrored back via history.replaceState). `orderBy` is the initial-sort
   // fallback when the URL carries none.
   const { filters, setFilters, filtersSerial, sort, setSort } = useTableUrlState(
-    descriptors,
+    filterableFields,
     orderBy,
+  );
+
+  // Apply/clear a single column filter (shared by schema + virtual columns).
+  function setColumnFilter(field: string, next: ColumnFilterValue | undefined) {
+    setFilters((cur) => {
+      const copy = { ...cur };
+      if (next === undefined) delete copy[field];
+      else copy[field] = next;
+      return copy;
+    });
+  }
+
+  // --- Subcollection-lookup filters (e.g. pedido NF by numero/chave) ---------
+  // A virtual column may resolve its filter through a sibling collection group
+  // instead of a direct where(): parse the active filter's `"<subfield>:<term>"`
+  // value, run a collection-group lookup, and constrain the main query to the
+  // matching parent ids. Only one such filter is supported at a time (the only
+  // consumer is NF); a second would need id-set intersection.
+  const subLookupFields = useMemo(
+    () => virtualColumns.filter((v) => v.filter?.subcollectionLookup),
+    [virtualColumns],
+  );
+  const subLookupKeys = useMemo(
+    () => new Set(subLookupFields.map((v) => v.filter!.field)),
+    [subLookupFields],
+  );
+  const subLookupSpec = useMemo<SubcollectionLookupSpec | null>(() => {
+    for (const v of subLookupFields) {
+      const f = v.filter!;
+      const active = filters[f.field];
+      if (!active) continue;
+      const raw = String(active.value ?? '');
+      const sep = raw.indexOf(':');
+      const subfield = sep >= 0 ? raw.slice(0, sep) : '';
+      const term = sep >= 0 ? raw.slice(sep + 1) : raw;
+      if (!subfield || term === '') continue;
+      const spec = f.subcollectionLookup!.fields.find((x) => x.value === subfield);
+      if (!spec) continue;
+      return {
+        subcollection: f.subcollectionLookup!.subcollection,
+        match: [{ field: subfield, value: spec.numeric ? Number(term) : term }],
+      };
+    }
+    return null;
+    // filtersSerial stands in for `filters`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subLookupFields, filtersSerial]);
+
+  const subLookup = useSubcollectionIdLookup(db, subLookupSpec);
+  const lookupActive = subLookupSpec !== null;
+  const lookupLoading = lookupActive && subLookup.loading;
+  // Resolved to zero matches → no rows; don't build a whole-collection query.
+  const lookupEmpty = lookupActive && Array.isArray(subLookup.ids) && subLookup.ids.length === 0;
+  const idIn = lookupActive ? (subLookup.ids ?? undefined) : undefined;
+  const idInSerial = idIn ? idIn.join(',') : '';
+
+  // Filters pushed to the server / applied client-side, EXCLUDING the
+  // subcollection-lookup keys (which are resolved via `idIn`, not a where()).
+  const serverFilters = useMemo<Record<string, ColumnFilterValue>>(() => {
+    if (subLookupKeys.size === 0) return filters;
+    return Object.fromEntries(Object.entries(filters).filter(([k]) => !subLookupKeys.has(k)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtersSerial, subLookupKeys]);
+  const serverFiltersSerial = useMemo(
+    () =>
+      JSON.stringify(
+        Object.keys(serverFilters)
+          .sort()
+          .map((k) => [k, serverFilters[k]]),
+      ),
+    [serverFilters],
   );
 
   // Stable serial for `queryParams` so the base-filter memo rebuilds only when
@@ -360,15 +470,22 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const pipeline: Pipeline | null = useMemo(() => {
     if (queryOverride) return null;
     if (!isPipelineSupported(db)) return null;
+    // A subcollection-lookup filter is active but still resolving, or it
+    // resolved to zero parent ids — either way don't query the collection.
+    if (lookupLoading || lookupEmpty) return null;
     try {
       return buildPipeline(db, {
         collection: collection.resolvePath(pathContext),
         // Base equality filters (from meta.defaultQuery) AND the user's
-        // per-column filters. Base first so it reads like the declared query.
+        // per-column filters (minus subcollection-lookup keys, applied via
+        // `idIn`). Base first so it reads like the declared query.
         filters: [
           ...baseFilters,
-          ...Object.entries(filters).map(([field, v]) => ({ field, ...v })),
+          ...Object.entries(serverFilters).map(([field, v]) => ({ field, ...v })),
         ],
+        // Constrain to the parent ids a subcollection lookup resolved (NF
+        // by numero/chave). Undefined when no such filter is active.
+        idIn,
         // Project the visible schema columns (+ any virtual-column
         // `dependsOn`) to cut data transfer; `undefined` reads the full doc.
         // See `selectFields` above. `buildPipeline` re-appends the document-id
@@ -393,7 +510,10 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     effectiveLimit,
     effectiveOrderBy,
     baseFiltersSerial,
-    filtersSerial,
+    serverFiltersSerial,
+    idInSerial,
+    lookupLoading,
+    lookupEmpty,
     selectFieldsSerial,
     refreshKey,
   ]);
@@ -401,6 +521,9 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const fallbackQuery: Query<z.infer<S>> | null = useMemo(() => {
     if (queryOverride) return queryOverride;
     if (pipeline) return null;
+    // A subcollection lookup resolves via `idIn` (pipeline-only). On the classic
+    // fallback we can't honor it, so render nothing rather than the whole list.
+    if (lookupActive) return null;
     const base = collection.ref(db, pathContext);
     const constraints = [];
     // Base equality filters first (same as the pipeline path) — these must
@@ -415,6 +538,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     collection,
     queryOverride,
     pipeline,
+    lookupActive,
     effectiveLimit,
     effectiveOrderBy,
     baseFiltersSerial,
@@ -431,10 +555,15 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // the override). Everything below — selection, counts, the table body —
   // reads `rows`, not `snap.data`, so it all stays consistent with the filter.
   const rows = useMemo<SnapshotRow<z.infer<S>>[] | undefined>(
-    () => (pipeline || !snap.data ? snap.data : applyColumnFilters(snap.data, filters)),
-    // filtersSerial stands in for the `filters` object content.
+    () => {
+      // A subcollection lookup that matched nothing → no rows (no query ran).
+      if (lookupEmpty) return [];
+      if (pipeline || !snap.data) return snap.data;
+      return applyColumnFilters(snap.data, serverFilters);
+    },
+    // serverFiltersSerial stands in for the `serverFilters` object content.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pipeline, snap.data, filtersSerial],
+    [pipeline, snap.data, serverFiltersSerial, lookupEmpty],
   );
 
   // Collapse "Carregar mais" back to one page whenever the query shape changes
@@ -618,13 +747,13 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Group>
           </Group>
 
-          {snap.error && (
+          {(snap.error || subLookup.error) && (
             <Alert color="red" title="Erro ao carregar">
-              {snap.error.message}
+              {(snap.error ?? subLookup.error)?.message}
             </Alert>
           )}
 
-          {snap.loading && (
+          {(snap.loading || lookupLoading) && (
             <Stack>
               <Skeleton height={36} />
               <Skeleton height={36} />
@@ -632,7 +761,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
             </Stack>
           )}
 
-          {!snap.loading && rows && (
+          {!snap.loading && !lookupLoading && rows && (
             <Table striped highlightOnHover>
               <Table.Thead>
                 <Table.Tr>
@@ -648,15 +777,57 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                   )}
                   {visibleColumns.map((col) => {
                     if (col.kind === 'virtual') {
+                      const vc = col.column;
+                      const sf = vc.sortField;
+                      const f = vc.filter;
                       return (
                         <Table.Th
-                          key={col.column.key}
-                          style={
-                            col.column.width !== undefined ? { width: col.column.width } : undefined
-                          }
-                          title={col.column.tooltip}
+                          key={vc.key}
+                          style={vc.width !== undefined ? { width: vc.width } : undefined}
                         >
-                          {col.column.label}
+                          <Group gap={4} wrap="nowrap" justify="space-between">
+                            <Group
+                              gap={2}
+                              wrap="nowrap"
+                              style={sf ? { cursor: 'pointer', userSelect: 'none' } : undefined}
+                              onClick={sf ? () => toggleSort(sf) : undefined}
+                              title={sf ? 'Ordenar por esta coluna' : vc.tooltip}
+                            >
+                              <span title={vc.tooltip}>{vc.label}</span>
+                              {sf && (
+                                <SortIndicator
+                                  active={displaySort?.field === sf}
+                                  direction={displaySort?.direction}
+                                />
+                              )}
+                            </Group>
+                            {f &&
+                              (f.renderFilter ? (
+                                <FilterPopover
+                                  active={filters[f.field] !== undefined}
+                                  label={f.label ?? vc.label}
+                                >
+                                  {() =>
+                                    f.renderFilter!({
+                                      value: filters[f.field],
+                                      onChange: (next) => setColumnFilter(f.field, next),
+                                    })
+                                  }
+                                </FilterPopover>
+                              ) : (
+                                <ColumnFilter
+                                  descriptor={{
+                                    key: f.field,
+                                    kind: f.kind ?? 'string',
+                                    label: f.label ?? vc.label,
+                                    enumValues: f.options,
+                                    dateUnit: f.dateUnit,
+                                  }}
+                                  value={filters[f.field]}
+                                  onChange={(next) => setColumnFilter(f.field, next)}
+                                />
+                              ))}
+                          </Group>
                         </Table.Th>
                       );
                     }
@@ -680,14 +851,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                           <ColumnFilter
                             descriptor={d}
                             value={filters[d.key]}
-                            onChange={(next) =>
-                              setFilters((cur) => {
-                                const copy = { ...cur };
-                                if (next === undefined) delete copy[d.key];
-                                else copy[d.key] = next;
-                                return copy;
-                              })
-                            }
+                            onChange={(next) => setColumnFilter(d.key, next)}
                           />
                         </Group>
                       </Table.Th>
