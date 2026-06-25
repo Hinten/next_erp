@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
-import { microsSinceEpoch } from '../../datetime';
-import { outerRefSchema } from '../../outerRef';
+import { microsSinceEpoch } from '../../shared/datetime';
+import { outerRefSchema } from '../../shared/outerRef';
 import { estadoPedidoSchema } from './pedido';
 
 // Shares the PEDIDO permission domain (audit trail of the parent order).

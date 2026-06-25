@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { idRefSchema, outerRefSchema } from '../outerRef';
+import { idRefSchema, outerRefSchema } from '../shared/outerRef';
 import { ARQUIVOS_COLLECTION } from './arquivo';
 import { derivativeArquivoId, productArquivoId } from './storagePaths';
 

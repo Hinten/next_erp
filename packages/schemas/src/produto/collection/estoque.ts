@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
-import { outerRefSchema } from '../../outerRef';
+import { outerRefSchema } from '../../shared/outerRef';
 
 // Stock is its own permission domain (`PERM.estoque`, bits 64–66 — same bits
 // the `deposito` schema mirrors), distinct from the produto bits even though

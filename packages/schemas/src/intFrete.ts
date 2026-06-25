@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
-import { millisSinceEpoch } from './datetime';
-import { outerRefSchema } from './outerRef';
+import { millisSinceEpoch } from './shared/datetime';
+import { outerRefSchema } from './shared/outerRef';
 import { enderecoSchema } from './endereco';
-import { integracoesFreteSchema } from './frete';
+import { integracoesFreteSchema } from './shared/frete';
 
 const PERM_FRETE_READ = 1n << 88n;
 const PERM_FRETE_WRITE = 1n << 89n;

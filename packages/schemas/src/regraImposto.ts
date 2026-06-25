@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { millisSinceEpoch } from './datetime';
+import { millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 
 // Mirrors PERM.regraImposto in packages/auth/src/permissions.ts (byte 12;

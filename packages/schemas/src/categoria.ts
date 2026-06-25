@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { millisSinceEpoch } from './datetime';
-import { outerRefSchema } from './outerRef';
+import { millisSinceEpoch } from './shared/datetime';
+import { outerRefSchema } from './shared/outerRef';
 import type { CollectionMetadata } from './types';
 
 const PERM_CATEGORIA_READ = 1n << 11n;
