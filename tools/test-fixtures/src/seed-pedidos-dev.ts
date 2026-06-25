@@ -472,11 +472,11 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
       // (`apps/nfe/lib/nfe/orchestrator.ts:146-154`).
       vendedorPedidoOuterRef: null,
       integracaoPedidoOuterRef: null,
-      operacaoPedidoOuterRef: operacaoRef,
-      clientePedidoOuterRef: clienteRef,
-      enderecoFiscalOuterRef: enderecoFiscalRef,
+      operacaoPedidoOuterRef: `documents/${operacaoRef.path}`,
+      clientePedidoOuterRef: clienteRef ? `documents/${clienteRef.path}` : null,
+      enderecoFiscalOuterRef: enderecoFiscalRef ? `documents/${enderecoFiscalRef.path}` : null,
       listaDePrecosOuterRef: null,
-      filialPedidoOuterRef: filialRef,
+      filialPedidoOuterRef: `documents/${filialRef.path}`,
       // Optional embedded frete block. UI cells read `estado` +
       // `codRastreio` + `prazoDespacho`; the NF-e orchestrator reads
       // `modalidade` + `valorCobrado` + `transportadora` + `veiculo` +

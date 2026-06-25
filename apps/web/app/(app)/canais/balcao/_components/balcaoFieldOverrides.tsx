@@ -59,9 +59,9 @@ function CorInput({ value, onChange, onBlur, label, hint, disabled, error }: Fie
 export const balcaoFields: Record<string, FieldConfig> = {
   filialIntegracaoPedidoOuterRef: {
     label: 'Filial',
-    // Shared optimized picker (5 most-recent + regex search). `integracao`
-    // refs stay native DocumentReferences — emitDocPath=false.
-    renderInput: filialRefRenderInput(true, false),
+    // Shared optimized picker (5 most-recent + regex search); emits the
+    // `documents/filiais/<id>` doc-path string like every other outer ref.
+    renderInput: filialRefRenderInput(true),
   },
   tabelaNormalOuterRef: {
     label: 'Tabela de preços',

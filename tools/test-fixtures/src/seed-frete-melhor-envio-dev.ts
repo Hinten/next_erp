@@ -293,7 +293,7 @@ async function writePedido(
       vendedorPedidoOuterRef: null,
       integracaoPedidoOuterRef: null,
       operacaoPedidoOuterRef: null,
-      clientePedidoOuterRef: clienteRef,
+      clientePedidoOuterRef: `documents/${clienteRef.path}`,
       enderecoFiscalOuterRef: null,
       listaDePrecosOuterRef: null,
       freteInicial: frete,

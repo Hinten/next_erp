@@ -165,6 +165,10 @@ export function statusToEstadoPedido(status: StatusPagamento): EstadoPedido {
 export const pagamentoSchema = z
   .object({
     id: z.string().nullable().default(null),
+    // Genuinely polymorphic pass-through: Flutter authors it as a
+    // `documents/metodo_pgto/<id>` string, but `PagamentosSection` also reads it
+    // as a `{ tipo }` gateway object. Never written by this app → kept `unknown`
+    // rather than forced to one shape (unlike the other doc-path outer refs).
     metodoPagamentoOuterRef: z.unknown().nullable().default(null),
     forma_de_pagamento: formaPagamentoSchema.default(FORMA_PAGAMENTO.dinheiro),
     status_pagamento: statusPagamentoSchema.nullable().default(null),
