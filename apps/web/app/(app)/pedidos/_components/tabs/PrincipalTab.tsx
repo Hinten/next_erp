@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useRef } from 'react';
+import Link from 'next/link';
 import {
   ActionIcon,
+  Anchor,
   Badge,
   Button,
   Group,
@@ -31,6 +33,7 @@ import { ListaDePrecosPicker } from '@/components/pickers/ListaDePrecosPicker';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
+import { parseBrl } from '@/app/(app)/produtos/_components/CurrencyInput';
 import type { PedidoFormState } from '../types';
 import { makeRowId } from '../flattenItens';
 import { precoFromProduto } from '../precoLookup';
@@ -290,12 +293,12 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
                   render={({ field }) => (
                     <NumberInput
                       value={field.value ?? 0}
-                      onChange={(v) => field.onChange(typeof v === 'number' ? v : 0)}
+                      onChange={(v) => field.onChange(parseBrl(v) ?? 0)}
                       onBlur={field.onBlur}
                       min={0}
                       decimalScale={2}
                       decimalSeparator=","
-                      thousandSeparator="."
+                      allowedDecimalSeparators={[',', '.']}
                       w={120}
                       disabled={disabled}
                     />
@@ -488,9 +491,16 @@ function ItemRow({
                 )}
               </Group>
               <ProdutoVariacaoLabel db={db} produto={produto} />
-              <Text size="xs" c="dimmed">
+              <Anchor
+                component={Link}
+                href={`/produtos/${produtoUid}/editar`}
+                target="_blank"
+                rel="noopener noreferrer"
+                size="xs"
+                c="dimmed"
+              >
                 {produto?.sku ? `SKU: ${produto.sku}` : 'Sem SKU'}
-              </Text>
+              </Anchor>
             </Stack>
             <Tooltip label="Trocar produto" withArrow>
               <ActionIcon
@@ -526,12 +536,12 @@ function ItemRow({
             <NumberInput
               ref={qtyRef}
               value={field.value ?? 0}
-              onChange={(v) => field.onChange(typeof v === 'number' ? v : 0)}
+              onChange={(v) => field.onChange(parseBrl(v) ?? 0)}
               onBlur={field.onBlur}
               min={0}
               decimalScale={3}
               decimalSeparator=","
-              thousandSeparator="."
+              allowedDecimalSeparators={[',', '.']}
               w={100}
               disabled={disabled || marked}
               aria-label={`Quantidade item ${index + 1}`}
@@ -546,12 +556,12 @@ function ItemRow({
           render={({ field }) => (
             <NumberInput
               value={field.value ?? 0.01}
-              onChange={(v) => field.onChange(typeof v === 'number' ? v : 0.01)}
+              onChange={(v) => field.onChange(parseBrl(v) ?? 0.01)}
               onBlur={field.onBlur}
               min={0.01}
               decimalScale={2}
               decimalSeparator=","
-              thousandSeparator="."
+              allowedDecimalSeparators={[',', '.']}
               w={120}
               disabled={disabled || marked}
               aria-label={`Preço item ${index + 1}`}
@@ -566,12 +576,12 @@ function ItemRow({
           render={({ field }) => (
             <NumberInput
               value={field.value ?? 0}
-              onChange={(v) => field.onChange(typeof v === 'number' ? v : 0)}
+              onChange={(v) => field.onChange(parseBrl(v) ?? 0)}
               onBlur={field.onBlur}
               min={0}
               decimalScale={2}
               decimalSeparator=","
-              thousandSeparator="."
+              allowedDecimalSeparators={[',', '.']}
               w={120}
               disabled={disabled || marked}
               error={descontoError}
