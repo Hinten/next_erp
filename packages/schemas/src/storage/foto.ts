@@ -57,3 +57,32 @@ export const fotoSchema = z
   .passthrough();
 
 export type Foto = z.infer<typeof fotoSchema>;
+
+/**
+ * Collect the bare `<id>` of every `arquivos/<id>` a produto's photos own, for
+ * the `produto.fotosArquivosIds` denorm — mirror of the Flutter `Produto.save()`
+ * derivation (`models.dart:2022-2026`): the original + the 200px/400px
+ * derivative refs, deduped, with the `arquivos/` prefix stripped to the bare id.
+ *
+ * This denorm is a **coexistence cache** for the legacy Flutter deletion guard;
+ * the new arquivo-orphan architecture tracks references via each foto's
+ * `arquivoOuterRef` directly (plus the `onArquivoDeleted` derivative cascade), so
+ * it does not read this field. The jpeg derivative is intentionally **excluded**
+ * to match the legacy wire shape — the cascade frees it via the original anyway.
+ */
+export function deriveFotosArquivosIds(fotos: readonly Foto[] | null | undefined): string[] {
+  const prefix = `${ARQUIVOS_COLLECTION}/`;
+  const ids = new Set<string>();
+  for (const foto of fotos ?? []) {
+    for (const ref of [
+      foto.arquivoOuterRef,
+      foto.arquivo200pxOuterRef,
+      foto.arquivo400pxOuterRef,
+    ]) {
+      if (typeof ref !== 'string') continue;
+      const id = ref.startsWith(prefix) ? ref.slice(prefix.length) : ref;
+      if (id !== '') ids.add(id); // skip a bare `arquivos/` (would yield an empty id)
+    }
+  }
+  return [...ids];
+}

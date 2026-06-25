@@ -15,6 +15,7 @@ import {
   type PrecosMap,
   type ProdutoExtraData,
   type Video,
+  deriveFotosArquivosIds,
   normalizeVariacoesUid,
   parseFakePath,
   produtoPageBaseSchema,
@@ -398,6 +399,11 @@ export default function EditarProdutoPage() {
           const componentesKit = ehKit
             ? ((values.componentesKit as ComponentesKit | null) ?? null)
             : null;
+          // Coexistence denorm for the legacy Flutter deletion guard — the bare
+          // arquivo ids of the produto's photos (`models.dart:2022-2026`). `null`
+          // (the schema default) when there are no fotos, so an untouched produto
+          // isn't churned from `null` to `[]` on an unrelated save.
+          const fotoIds = deriveFotosArquivosIds(values.fotos as Foto[] | null);
           return {
             grupoDeVariacoesUid: sortGrupoUids(groupsRef.current ?? implied, grupos),
             variacoesUid: normalizeVariacoesUid(uids, grupos),
@@ -406,6 +412,7 @@ export default function EditarProdutoPage() {
             // `array-contains` query (order-insensitive), and Firestore arrays
             // are order-sensitive, so an unsorted list churns dirty detection.
             componentesKitKeys: componentesKit ? Object.keys(componentesKit).sort() : null,
+            fotosArquivosIds: fotoIds.length > 0 ? fotoIds : null,
           };
         }}
         validate={(values) =>
