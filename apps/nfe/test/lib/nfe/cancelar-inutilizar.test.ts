@@ -134,7 +134,8 @@ function fakeFirestore(opts: FakeOpts) {
         },
       ],
     },
-    filialPedidoOuterRef: 'filiais/F-1',
+    // Filial is resolved via the pedido's integração (see bundle.ts).
+    integracaoPedidoOuterRef: 'integracao/I-1',
     clientePedidoOuterRef: 'clientes/C-1',
     operacaoPedidoOuterRef: 'operacao/O-1',
     enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
@@ -142,6 +143,13 @@ function fakeFirestore(opts: FakeOpts) {
 
   const docs: Record<string, Record<string, unknown> | null> = {
     'pedidos/PED-1': defaultPedido,
+    'integracao/I-1': {
+      nome: 'Canal Teste',
+      tipo: 0,
+      padrao: false,
+      ativo: true,
+      filialIntegracaoPedidoOuterRef: 'filiais/F-1',
+    },
     'filiais/F-1': {
       razaoSocial: 'ACME LTDA',
       cnpj: '14200166000187',

@@ -54,13 +54,12 @@ import {
   type PedidoBundle,
 } from './bundle';
 import { sefazCallFor } from './sefaz-call';
+import { recover539IfNeeded } from './recover539';
 import {
   buildEnviNFeMsgFromConsulta,
   buildEnviNFeMsgFromLote,
   enviNfeCollection,
   existingToEmitResult,
-  findLatestEnviNFeMsgWithNRec,
-  markAsLost,
   outcomeFromConsReci,
   persistPatch,
   procPersistExtras,
@@ -580,7 +579,7 @@ export async function applyAutorizadoOutcome(args: {
   // Duplicidade / lote-not-found → query SEFAZ for the real status.
   if (patch.action === 'recover-via-consulta') {
     if (outcome.cStat === '539') {
-      const recovered = await recoverFrom539({
+      const recovered = await recover539IfNeeded({
         fs,
         bundle,
         nfeRef,
@@ -1141,81 +1140,5 @@ export function toEmitError(pedidoId: string, reason: unknown): EmitError {
   throw reason;
 }
 
-/**
- * Handle a cStat=539 outcome: SEFAZ already has an NF-e with our
- * `nNF + serie + tpEmis + emit-CNPJ` but under a DIFFERENT chave (the
- * `[chNFe:...]` marker in xMotivo). Recovery strategy:
- *   1. Pull the previously-emitted chave from xMotivo markers.
- *   2. Look it up in our `EnviNFeMsg` audit log (the SEFAZ-roundtrip
- *      log written on every lote send / consult).
- *   3. If found, the previous lote's `nRec` is also in the audit log
- *      msg — call `consultarLote(prevNRec)` to fetch SEFAZ's
- *      authoritative protocol for that chave, swap the nfev4 doc's
- *      `chave` to the recovered one, and return the consult outcome.
- *   4. If not found (or no chNFe marker), the note is "lost" from our
- *      side — return a patch marking estado=error with the original
- *      cStat=539 + xMotivo preserved so the operator can fix manually
- *      (download from SEFAZ portal + upload).
- *
- * NB: this does NOT touch `xml_assinado` — it still holds the locally
- * signed XML for OUR chave. After a successful 539 recovery the doc
- * has a mismatch (recovered chave + local signed XML for the old
- * chave); the next step in production is to fetch the authorized XML
- * from SEFAZ DistDFe (a Phase D port).
- */
-export async function recoverFrom539(params: {
-  fs: Firestore;
-  bundle: Pick<PedidoBundle, 'pedidoId' | 'filialId'>;
-  nfeRef: FirebaseFirestore.DocumentReference;
-  rt: NFeRuntime;
-  tpEmis: TpEmis;
-  outcome: SefazOutcome;
-  patch: NFeStatePatch;
-}): Promise<{ patch: NFeStatePatch; chaveOverride?: string }> {
-  const { fs, bundle, nfeRef, rt, tpEmis, outcome, patch } = params;
-
-  const recoveredChave = outcome.chNFeFromXMotivo;
-  if (!recoveredChave) {
-    console.warn(
-      `[nfe/orchestrator] pedido '${bundle.pedidoId}': cStat=539 sem ` +
-        `marcador [chNFe:...] em xMotivo — marcando como error.`,
-    );
-    return { patch: markAsLost(patch, 'cStat=539 sem marcador [chNFe:...] em xMotivo') };
-  }
-
-  const prevMsg = await findLatestEnviNFeMsgWithNRec(fs, bundle.filialId, recoveredChave);
-  if (!prevMsg?.nRec) {
-    console.warn(
-      `[nfe/orchestrator] pedido '${bundle.pedidoId}': cStat=539 — chave ` +
-        `${recoveredChave} não encontrada no audit log com nRec; marcando como error.`,
-    );
-    return {
-      patch: markAsLost(patch, `cStat=539 — chave ${recoveredChave} não está no audit log local`),
-    };
-  }
-
-  const consReciCall: SefazCall = sefazCallFor(rt, tpEmis, 'NfeRetAutorizacao');
-  const retRec = await consultarLote(consReciCall, { nRec: prevMsg.nRec });
-  await enviNfeCollection(fs, bundle.filialId).add(
-    buildEnviNFeMsgFromConsulta({
-      chave: recoveredChave,
-      nRec: prevMsg.nRec,
-      ret: retRec,
-      tpEmis,
-    }),
-  );
-  const recoveredOutcome = outcomeFromConsReci(retRec, recoveredChave);
-  const recoveredPatch = applyOutcome({ estado: patch.estado, retries: 0 }, recoveredOutcome);
-
-  // Swap chave on the nfev4 doc — done outside persistPatch (which is
-  // generic) since this only happens on 539 recovery.
-  await nfeRef.set(
-    nfev4Collection.parseMerge({
-      chave: recoveredChave,
-      ultima_modificacao: new Date().toISOString(),
-    }),
-    { merge: true },
-  );
-
-  return { patch: recoveredPatch, chaveOverride: recoveredChave };
-}
+/* cStat=539 recovery moved to `./recover539` (keeps the heavy emit graph out of
+ * the reconcile / sweep Cloud Functions — review on #285). */

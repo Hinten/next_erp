@@ -30,6 +30,7 @@ import { resolveFilialRuntime, resolveFilialRuntimeByCnpj } from '../filial-cert
 import { persistPatch, procPersistExtras } from '../orchestrator/audit';
 import { loadNfeConfigForEmission } from '../orchestrator/bundle';
 import { transmitirPosEpec } from '../orchestrator/epec';
+import { recover539IfNeeded } from '../orchestrator/recover539';
 import { reconcileByRecibo } from '../orchestrator/reconcile';
 import { sefazCallFor } from '../orchestrator/sefaz-call';
 
@@ -196,12 +197,34 @@ export async function runProcessarPendentes(args: {
         { chave: data.chave },
       );
       const outcome = outcomeFromRetConsSit(retSit);
-      const patch = applyOutcome({ estado: data.estado, retries: data.retries }, outcome);
+      let patch = applyOutcome({ estado: data.estado, retries: data.retries }, outcome);
+
+      // cStat=539 (duplicidade com chave diferente) → recover the asserted chave
+      // or flip to terminal `error`, never left aguardandoResposta (#243). Needs
+      // the filial to look up our audit log; a legacy doc with no filialId can't,
+      // so it keeps the generic outcome (pre-existing behavior for that rare case).
+      let chaveSwapped = false;
+      if (data.filialId) {
+        const recovered539 = await recover539IfNeeded({
+          fs,
+          bundle: { pedidoId: doc.ref.parent?.parent?.id ?? doc.ref.path, filialId: data.filialId },
+          nfeRef: doc.ref,
+          rt: frt,
+          tpEmis: (data.tpEmis ?? 1) as TpEmis,
+          outcome,
+          patch,
+        });
+        patch = recovered539.patch;
+        chaveSwapped = recovered539.chaveOverride != null;
+      }
+
       // A consult that lands `autorizada` carries the authoritative protNFe —
       // persist the `nfeProc` here too (the emit path does it inside
       // `applyAutorizadoOutcome`), so a cron-recovered doc can render a DANFE
-      // and sheds the duplicate signed XML in the same atomic write (#128).
+      // and sheds the duplicate signed XML in the same atomic write (#128). A
+      // 539 chave-swap skips it (the local signed XML no longer matches).
       const nfeProcXml =
+        !chaveSwapped &&
         classifyCStat(patch.cStat) === 'autorizada' &&
         retSit.protNFe != null &&
         retSit.protNFe.infProt.chNFe === data.chave &&

@@ -5,6 +5,7 @@ import {
   custoDoKit,
   diffPrecos,
   evaluateFormula,
+  resolveComponentCusto,
   samePrecos,
   taxaFixaPorPeso,
   temFormulas,
@@ -199,5 +200,41 @@ describe('custoDoKit', () => {
   it('returns null for an empty/absent kit (Flutter parity)', () => {
     expect(custoDoKit({}, {})).toEqual({ custo: null, faltando: [] });
     expect(custoDoKit(null, {})).toEqual({ custo: null, faltando: [] });
+  });
+
+  it('falls back to the parent cost when a component variation has no own custo', () => {
+    // child `c` (no own custo) is a variation of parent `pai` (custo 7).
+    const out = custoDoKit({ c: kit(2) }, { c: null, pai: 7 }, { c: 'pai' });
+    expect(out).toEqual({ custo: 14, faltando: [] }); // 7 × 2
+  });
+
+  it('prefers the component own custo over the parent fallback', () => {
+    const out = custoDoKit({ c: kit(1) }, { c: 3, pai: 99 }, { c: 'pai' });
+    expect(out).toEqual({ custo: 3, faltando: [] });
+  });
+
+  it('reports faltando when neither the child nor its parent has a custo', () => {
+    const out = custoDoKit({ c: kit(1) }, { c: null, pai: null }, { c: 'pai' });
+    expect(out).toEqual({ custo: null, faltando: ['c'] });
+  });
+});
+
+describe('resolveComponentCusto', () => {
+  it('returns the component own custo when present', () => {
+    expect(resolveComponentCusto('c', { c: 5 }, { c: 'pai' })).toBe(5);
+  });
+
+  it('falls back to the parent custo when the child has none', () => {
+    expect(resolveComponentCusto('c', { c: null, pai: 8 }, { c: 'pai' })).toBe(8);
+  });
+
+  it('returns null when neither resolves (and 0 is a real cost, not "missing")', () => {
+    expect(resolveComponentCusto('c', { c: null }, { c: 'pai' })).toBeNull();
+    expect(resolveComponentCusto('c', { c: null, pai: null }, { c: 'pai' })).toBeNull();
+    expect(resolveComponentCusto('c', { c: 0 }, {})).toBe(0);
+  });
+
+  it('returns null for a parentless component with no own custo', () => {
+    expect(resolveComponentCusto('c', { c: null }, {})).toBeNull();
   });
 });

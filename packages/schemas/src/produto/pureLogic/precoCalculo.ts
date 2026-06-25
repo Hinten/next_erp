@@ -272,6 +272,30 @@ export interface CustoKitResult {
 }
 
 /**
+ * Resolve a kit component's effective cost — pure port of the Flutter fallback
+ * in `Produto.custoProdutoContabilizandoKit` (`models.dart:1271-1287`): use the
+ * component's own `custo`; when it has none but is a variation child (`paiId`
+ * set), fall back to the PARENT produto's `custo`. Returns `null` only when both
+ * are unresolved. `paiByProdutoId` maps a component id → its `paiId` (or null);
+ * `custoByProdutoId` must therefore also carry the parents' costs for the
+ * fallback to resolve.
+ */
+export function resolveComponentCusto(
+  produtoId: string,
+  custoByProdutoId: Record<string, number | null | undefined>,
+  paiByProdutoId: Record<string, string | null | undefined> = {},
+): number | null {
+  const own = custoByProdutoId[produtoId];
+  if (own !== null && own !== undefined) return own;
+  const paiId = paiByProdutoId[produtoId];
+  if (paiId) {
+    const parent = custoByProdutoId[paiId];
+    if (parent !== null && parent !== undefined) return parent;
+  }
+  return null;
+}
+
+/**
  * Sum a kit's component costs — pure port of the kit branch of Flutter's
  * `Produto.custoProdutoContabilizandoKit` (`models.dart:1265-1290`):
  * `Σ custo(component) × quantidade`, rounded to 2 decimals. Unlike the Flutter
@@ -281,12 +305,17 @@ export interface CustoKitResult {
  * resolvable cost is reported in `faltando` (cost stays null) instead of
  * throwing, so the page can surface it as a validation error.
  *
+ * A component variation with no own cost falls back to its parent's cost
+ * (`resolveComponentCusto`) when `paiByProdutoId` maps it to a parent whose cost
+ * is present in `custoByProdutoId`.
+ *
  * Empty/absent `componentes` → `{ custo: null, faltando: [] }` (Flutter returns
  * null for a kit with no components).
  */
 export function custoDoKit(
   componentes: ComponentesKit | null | undefined,
   custoByProdutoId: Record<string, number | null | undefined>,
+  paiByProdutoId: Record<string, string | null | undefined> = {},
 ): CustoKitResult {
   const entries = Object.entries(componentes ?? {});
   if (entries.length === 0) return { custo: null, faltando: [] };
@@ -294,8 +323,8 @@ export function custoDoKit(
   const faltando: string[] = [];
   let total = 0;
   for (const [produtoId, kit] of entries) {
-    const custo = custoByProdutoId[produtoId];
-    if (custo === null || custo === undefined) {
+    const custo = resolveComponentCusto(produtoId, custoByProdutoId, paiByProdutoId);
+    if (custo === null) {
       faltando.push(produtoId);
       continue;
     }

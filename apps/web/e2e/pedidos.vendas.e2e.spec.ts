@@ -7,9 +7,10 @@ import {
   getClienteByName,
   runDigits,
   seedPedidoFixtures,
+  validTestCnpj,
   validTestCpf,
 } from './_helpers/seed-data';
-import { fillField, selectFieldWithSearch } from './helpers/object-view';
+import { fillField, selectField, selectFieldWithSearch } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -85,27 +86,36 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await page.getByRole('combobox', { name: 'Integração', exact: true }).click();
     await page.getByRole('option', { name: fixtures.integracaoNome }).click();
 
-    // Add one item via the produto picker. Trigger search then pick.
-    await page.getByPlaceholder('Adicionar item por busca…').fill(fixtures.produtoNome);
+    // Lista de preços — REQUIRED before adding products: the inline item picker
+    // refuses a pick (red notification) without a lista, and uses it to look up
+    // the seeded list price.
+    await page.getByRole('combobox', { name: 'Lista de preços', exact: true }).click();
+    await page.getByRole('option', { name: fixtures.listaNome }).click();
+
+    // Add one item: click "Adicionar produto" to append an empty row, then use
+    // the inline per-row picker.
+    await page.getByRole('button', { name: 'Adicionar produto' }).click();
+    await page.getByPlaceholder('Buscar produto…').fill(fixtures.produtoNome);
     await page
       .getByRole('option', { name: new RegExp(fixtures.produtoNome) })
       .first()
       .click();
 
-    // The row appears in the items table — set quantidade=2,
-    // descontoUnitario=1.5, precoDeVenda=10. The row's NumberInputs
-    // carry per-row aria-labels so we can target them deterministically.
-    // Mantine NumberInput's default decimal separator is '.', so use a
-    // period in the typed text (the displayed value uses the locale's
-    // separator, but the input parser expects '.').
+    // The pick autofills `precoDeVenda` from the seeded lista (NOT the 0.01
+    // placeholder) — assert the displayed price reflects the list value before
+    // we override it. The row's NumberInputs carry per-row aria-labels.
     const priceInput = page.getByLabel('Preço item 1', { exact: true });
     const qtyInput = page.getByLabel('Quantidade item 1', { exact: true });
     const discountInput = page.getByLabel('Desconto item 1', { exact: true });
+    await expect(priceInput).toHaveValue(/33[.,]5/, { timeout: 15_000 });
+
+    // Override the autofilled price + set quantidade/desconto. These inputs are
+    // localized (pt-BR), so the decimal separator is a comma.
     await priceInput.fill('10');
     await priceInput.blur();
     await qtyInput.fill('2');
     await qtyInput.blur();
-    await discountInput.fill('1.5');
+    await discountInput.fill('1,5');
     await discountInput.blur();
 
     await page.getByRole('button', { name: 'Criar' }).click();
@@ -130,6 +140,20 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
         { timeout: 15_000 },
       )
       .toBe(true);
+
+    // Read back the saved item: the overridden price (10, not the 0.01
+    // placeholder) + qty + desconto landed under the produto's group key.
+    const snap = await db().collection('pedidos').doc(state.pedidoId!).get();
+    const itens = (snap.data() as { itens?: Record<string, unknown[]> }).itens ?? {};
+    const produtoId = fixtures.produtoPath.split('/').pop()!;
+    const saved = itens[produtoId]?.[0] as
+      | { precoDeVenda?: number; quantidade?: number; descontoUnitario?: number }
+      | undefined;
+    expect(saved?.precoDeVenda).toBe(10);
+    expect(saved?.quantidade).toBe(2);
+    expect(saved?.descontoUnitario).toBe(1.5);
+    // No bogus in-progress 'NONE' group leaked through the resolver.
+    expect(itens.NONE).toBeUndefined();
   });
 
   test('edit page reloads the just-created pedido and persists observações', async ({ page }) => {
@@ -155,6 +179,49 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
 
     await page.goto(`/pedidos/${pedidoId}/editar`);
     await expect(page.getByLabel('Observações internas', { exact: true })).toHaveValue(obs);
+  });
+
+  test('staged-deletes an item: the row is excluded from the saved pedido', async ({ page }) => {
+    test.skip(!state.pedidoId, 'Create step did not produce a pedido id.');
+    const pedidoId = state.pedidoId!;
+
+    await page.goto(`/pedidos/${pedidoId}/editar`);
+    await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
+
+    // Add a SECOND line of the same produto. A pedido needs at least one item, so
+    // we can't stage the only row down to zero (that save is correctly blocked) —
+    // instead keep one and prove the staged one is dropped. The lista de preços
+    // was saved on create, so the pick autofills the price (proof the row set).
+    await page.getByRole('button', { name: 'Adicionar produto' }).click();
+    await page.getByPlaceholder('Buscar produto…').last().fill(fixtures.produtoNome);
+    await page
+      .getByRole('option', { name: new RegExp(fixtures.produtoNome) })
+      .first()
+      .click();
+    await expect(page.getByLabel('Preço item 2', { exact: true })).toHaveValue(/33[.,]5/, {
+      timeout: 15_000,
+    });
+
+    // Stage-delete the FIRST row (stays visible+dimmed with a "Será excluída" cue
+    // until save). The row is NOT removed from the DOM.
+    await page.getByRole('button', { name: 'Remover item' }).first().click();
+    await expect(page.getByText('Será excluída').first()).toBeVisible();
+
+    await page.getByRole('button', { name: 'Salvar alterações' }).click();
+    await page.waitForURL((url) => /\/pedidos$/.test(url.pathname), { timeout: 30_000 });
+
+    // The saved doc keeps exactly one item — the staged row was dropped by the
+    // resolver (both rows share the produto, so they collapse under one key).
+    await expect
+      .poll(
+        async () => {
+          const snap = await db().collection('pedidos').doc(pedidoId).get();
+          const itens = (snap.data() as { itens?: Record<string, unknown[]> }).itens ?? {};
+          return Object.values(itens).reduce((n, arr) => n + arr.length, 0);
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(1);
   });
 
   test('creates a cliente through the quick-create modal and emits it into the form', async ({
@@ -224,5 +291,77 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await dialog.getByRole('button', { name: 'Usar cliente existente' }).first().click();
     await expect(dialog).toBeHidden({ timeout: 15_000 });
     await expect(page.getByText(fixtures.clienteNome).first()).toBeVisible({ timeout: 15_000 });
+  });
+
+  test('fills nome + inscrição estadual from the CNPJ lookup in the quick-create modal (#250)', async ({
+    page,
+  }, testInfo) => {
+    const RAZAO = 'EMPRESA QUICK CREATE LTDA';
+    const IE = '111222333444';
+    // Run+retry-unique CNPJ, DISTINCT from the seeded fixture cliente's
+    // `validTestCnpj(runDigits(12))` — reusing that value would make the fixture
+    // an exact cpf_cnpj match and block the create (dialog never closes).
+    // Mirrors the PF quick-create test's retry-scoped identity derivation.
+    const cnpj = validTestCnpj(String(Number(runDigits(11)) * 10 + testInfo.retry));
+    const nome = `${prefix}-qc-pj-${testInfo.retry}`;
+
+    // The lookup hits two external services unavailable from staging — stub
+    // both at the network layer. BrasilAPI fills razão social; the apps/nfe
+    // Consulta Cadastro route returns a habilitada inscrição so the PJ-only IE
+    // field fills deterministically.
+    await page.route('https://brasilapi.com.br/api/cnpj/v1/**', (route) =>
+      route.fulfill({ json: { razao_social: RAZAO, uf: 'SP' } }),
+    );
+    await page.route('**/api/nfe/consulta-cadastro*', (route) =>
+      route.fulfill({
+        json: {
+          supported: true,
+          uf: 'SP',
+          cStat: '111',
+          xMotivo: 'Consulta cadastro com uma ocorrência',
+          infCad: [
+            { ie: IE, cnpj, cpf: null, uf: 'SP', situacao: '1', razaoSocial: RAZAO, ender: null },
+          ],
+        },
+      }),
+    );
+
+    await page.goto('/pedidos/novo');
+    await page.getByRole('button', { name: '+ Novo cliente' }).first().click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+
+    // No lookup button / IE field for Pessoa Física (the default tipo).
+    const buscar = dialog.getByRole('button', { name: 'Buscar dados do CNPJ' });
+    await expect(buscar).toHaveCount(0);
+    await expect(dialog.getByLabel('Inscrição estadual', { exact: true })).toHaveCount(0);
+
+    // Switch to Pessoa Jurídica — the button appears (disabled until a valid
+    // 14-digit CNPJ) and the IE field is revealed.
+    await selectField(page, 'Tipo', 'Pessoa Jurídica');
+    await expect(buscar).toBeVisible();
+    await expect(buscar).toBeDisabled();
+    await expect(dialog.getByLabel('Inscrição estadual', { exact: true })).toBeVisible();
+
+    await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill(cnpj);
+    await expect(buscar).toBeEnabled();
+    await buscar.click();
+
+    // Lookup fills nome (BrasilAPI) and the authoritative IE (SEFAZ).
+    await expect(dialog.getByLabel('Nome')).toHaveValue(RAZAO);
+    await expect(dialog.getByLabel('Inscrição estadual', { exact: true })).toHaveValue(IE);
+
+    // Rename to a run-scoped prefix so afterAll cleanup catches the doc.
+    await dialog.getByLabel('Nome').fill(nome);
+    await dialog.getByRole('button', { name: 'Criar', exact: true }).click();
+
+    await expect(dialog).toBeHidden({ timeout: 15_000 });
+    await expect(page.getByText(nome).first()).toBeVisible({ timeout: 15_000 });
+
+    // Wire assertion (Admin SDK): the created PJ cliente carries the IE.
+    await expect.poll(() => docExistsByName('clientes', nome), { timeout: 15_000 }).toBe(true);
+    const doc = await getClienteByName(nome);
+    expect(doc?.tipo).toBe('1');
+    expect(doc?.ie).toBe(IE);
   });
 });
