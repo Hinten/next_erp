@@ -303,9 +303,30 @@ export async function deletePagamento(
 // ---------------------------------------------------------------------------
 
 /**
+ * Estados the payment auto-transition is allowed to act ON. An ALLOW-list (not a
+ * deny-list) so a newly-added `EstadoPedido` defaults to "not auto-driven": the
+ * transition must never revert a terminal / post-cancel / refund / fulfilled
+ * pedido just because its payments still sum to the total (e.g. a `cancelado`
+ * order whose approved payment wasn't refunded, or a `finalizado` sale). Only the
+ * open payment-pending states — plus `pago` itself, so a refund can downgrade it
+ * — participate.
+ */
+const AUTO_ESTADO_SOURCES = new Set<EstadoPedido>([
+  'iniciado',
+  'carrinho',
+  'escolhendoFormaDePagamento',
+  'aguardandoConfirmacaoDePagamento',
+  'pagamentoNaoRealizado',
+  'emAnalise',
+  'emProcessamento',
+  'pago',
+]);
+
+/**
  * Pure rule: the pedido `estado` implied by how much has been paid, or `null`
- * when the current estado already matches (so a re-run is a no-op). Ports the
- * legacy auto-transition that ran after each pagamento change:
+ * when there is no transition (current estado already matches, the estado isn't
+ * payment-driven, or the pedido has no total). Ports the legacy auto-transition
+ * that ran after each pagamento change:
  *
  *  - **fully paid** (`valorPago ≥ total`, `total > 0`) → `pago` and authorize
  *    frete dispatch (`despachoAutorizado`);
@@ -313,8 +334,9 @@ export async function deletePagamento(
  *  - a **`pago`** pedido that drops below its total → downgraded back to
  *    `aguardandoConfirmacaoDePagamento`.
  *
- * Otherwise (nothing paid and not currently `pago`) the estado is left alone —
- * the transition only manages the payment-driven states. Inputs are expected
+ * Only the {@link AUTO_ESTADO_SOURCES} states are touched, so a cancelado /
+ * finalizado / estornado* / fraude pedido is never reverted by a payment sum. A
+ * zero-total pedido is left alone (nothing to settle). Inputs are expected
  * already 2-decimal-rounded (`derivePedidoTotals` / `sumPagamentosPagos`).
  */
 export function nextPedidoEstado(
@@ -322,7 +344,9 @@ export function nextPedidoEstado(
   total: number,
   valorPago: number,
 ): { estado: EstadoPedido; autorizarDespacho: boolean } | null {
-  const fullyPaid = total > 0 && valorPago >= total;
+  if (!AUTO_ESTADO_SOURCES.has(estado)) return null;
+  if (total <= 0) return null;
+  const fullyPaid = valorPago >= total;
   if (fullyPaid) {
     return estado === 'pago' ? null : { estado: 'pago', autorizarDespacho: true };
   }
@@ -345,6 +369,14 @@ export function nextPedidoEstado(
  * and appends a `historicoEstadoPedido` audit row (best-effort, mirroring
  * `recordEstadoChange`). A no-op when the estado already matches. Returns the new
  * estado, or `null` when nothing changed.
+ *
+ * `valorPago` is summed by the caller from a read taken just before this call,
+ * not inside the transaction — the Firebase JS SDK can't read a query inside
+ * `runTransaction` (only documents), so the pagamentos total and the pedido's
+ * `valorCobrado` aren't one atomic snapshot. Two reconciles racing on the same
+ * pedido can therefore briefly settle on a stale estado; it self-heals on the
+ * next pagamento mutation. A fully consistent version would need a server-side
+ * (admin SDK) reconcile.
  */
 export async function reconcilePedidoEstadoFromPagamentos(
   port: PedidoDataPort,
@@ -352,6 +384,9 @@ export async function reconcilePedidoEstadoFromPagamentos(
 ): Promise<EstadoPedido | null> {
   let transitionedTo: EstadoPedido | null = null;
   await port.updatePedido(args.pedidoId, (current) => {
+    // Reset per attempt: the client adapter re-runs `apply` on transaction
+    // contention, so only the final (committed) attempt must set this.
+    transitionedTo = null;
     if (current === null) return {};
     const estado = current.estado as EstadoPedido;
     const total = typeof current.valorCobrado === 'number' ? current.valorCobrado : 0;

@@ -26,7 +26,7 @@ import {
   recordEstadoChange,
   savePedido,
 } from '@delfrance/data/pedido';
-import { valuesEqual, type Pedido } from '@delfrance/schemas';
+import type { Pedido } from '@delfrance/schemas';
 import { useAuth } from '@/lib/auth/useAuth';
 import { PedidoForm } from '../../_components/PedidoForm';
 import { PedidoConflictModal } from '../../_components/PedidoConflictModal';
@@ -56,20 +56,9 @@ export default function EditarPedidoPage() {
   // touched in effects/handlers, never during render.
   const baselineRef = useRef<Record<string, unknown> | null>(null);
   useEffect(() => {
-    const live = data?.data as Record<string, unknown> | undefined;
-    if (!live) return;
-    if (baselineRef.current === null) {
-      // Shallow copy so the fold below can't mutate the live snapshot object.
-      baselineRef.current = { ...live };
-      return;
+    if (baselineRef.current === null && data?.data) {
+      baselineRef.current = data.data as Record<string, unknown>;
     }
-    // The pagamento auto-reconcile (and any external write) can advance the
-    // pedido's `estado` / `freteInicial` while the editor is open. Fold those
-    // into the concurrency baseline so saving an unrelated field doesn't read
-    // them as a conflict. (The form's estado field is synced in PedidoForm.)
-    const b = baselineRef.current;
-    if (!valuesEqual(b.estado, live.estado)) b.estado = live.estado;
-    if (!valuesEqual(b.freteInicial, live.freteInicial)) b.freteInicial = live.freteInicial;
   }, [data]);
 
   const [emitConfirmOpen, setEmitConfirmOpen] = useState(false);
@@ -123,7 +112,16 @@ export default function EditarPedidoPage() {
   ): Promise<boolean> {
     // Partial save: write only the touched fields, guarded against concurrent
     // edits by comparing the live doc to the snapshot loaded into the editor.
-    const baseline = baselineRef.current ?? (values as unknown as Record<string, unknown>);
+    const loaded = baselineRef.current ?? (values as unknown as Record<string, unknown>);
+    // The pagamento auto-reconcile advances `estado` / `freteInicial` in Firestore
+    // while the editor is open. For a field the user is NOT saving, refresh the
+    // concurrency baseline to the live snapshot so that auto-change doesn't read
+    // as a conflict — while a real concurrent edit to a field the user IS saving
+    // still trips the F3 guard.
+    const live = (data?.data as Record<string, unknown> | undefined) ?? loaded;
+    const baseline: Record<string, unknown> = { ...loaded };
+    if (!dirtyFields.estado) baseline.estado = live.estado;
+    if (!dirtyFields.freteInicial) baseline.freteInicial = live.freteInicial;
     const patch = buildPedidoPatch(values, dirtyFields);
     const port = createClientPedidoPort(getFirebaseFirestore());
     try {

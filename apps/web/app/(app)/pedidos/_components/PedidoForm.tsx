@@ -254,6 +254,8 @@ export function PedidoForm({
   // is editing estado manually so their unsaved change isn't clobbered.
   useEffect(() => {
     if (liveEstado === undefined) return;
+    // Don't race an in-flight save or clobber a manual estado edit.
+    if (form.formState.isSubmitting) return;
     if (form.getFieldState('estado').isDirty) return;
     if (form.getValues('estado') !== liveEstado) {
       form.setValue('estado', liveEstado, { shouldDirty: false });

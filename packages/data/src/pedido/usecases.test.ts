@@ -335,8 +335,20 @@ describe('nextPedidoEstado (rule table)', () => {
     expect(nextPedidoEstado('iniciado', 100, 0)).toBeNull();
   });
 
-  it('never forces pago on a zero-total pedido', () => {
+  it('never forces a transition on a zero-total pedido (even with a payment)', () => {
     expect(nextPedidoEstado('iniciado', 0, 0)).toBeNull();
+    expect(nextPedidoEstado('iniciado', 0, 50)).toBeNull();
+  });
+
+  it('never auto-reverts a terminal / fulfilled / refunded estado', () => {
+    // Fully paid but cancelled/finalized → must NOT bounce back to pago.
+    expect(nextPedidoEstado('cancelado', 100, 100)).toBeNull();
+    expect(nextPedidoEstado('finalizado', 100, 100)).toBeNull();
+    expect(nextPedidoEstado('fraude', 100, 100)).toBeNull();
+    expect(nextPedidoEstado('processandoCancelamento', 100, 100)).toBeNull();
+    // Partially paid (refund) on a refund state → must NOT erase it.
+    expect(nextPedidoEstado('estornadoParcialmente', 100, 50)).toBeNull();
+    expect(nextPedidoEstado('estornadoIntegralmente', 100, 0)).toBeNull();
   });
 });
 
@@ -368,6 +380,28 @@ describe('reconcilePedidoEstadoFromPagamentos', () => {
         },
       },
     ]);
+  });
+
+  it('writes only estado (no freteInicial key) when the pedido has no frete', async () => {
+    const { port, written } = fakePort({ estado: 'iniciado', valorCobrado: 100 }, 777);
+    const result = await reconcilePedidoEstadoFromPagamentos(port, {
+      pedidoId: 'x',
+      valorPago: 100,
+    });
+    expect(result).toBe('pago');
+    expect(written()).toEqual({ estado: 'pago', ultimaModificacao: 777 });
+    expect(written()).not.toHaveProperty('freteInicial');
+  });
+
+  it('does not transition (no história) a cancelado pedido that is still fully paid', async () => {
+    const { port, written, committed } = fakePort({ estado: 'cancelado', valorCobrado: 100 }, 777);
+    const result = await reconcilePedidoEstadoFromPagamentos(port, {
+      pedidoId: 'x',
+      valorPago: 100,
+    });
+    expect(result).toBeNull();
+    expect(written()).toEqual({});
+    expect(committed()).toEqual([]);
   });
 
   it('advances to aguardando on a partial payment without touching frete', async () => {
