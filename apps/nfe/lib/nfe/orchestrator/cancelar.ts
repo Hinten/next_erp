@@ -89,8 +89,9 @@ export async function cancelarNFeService(
 
   // filialId for the audit log. Current NF-e docs carry a denormalized `filialId`
   // (set by buildPlaceholderNfeDoc), so no extra read is needed. Only legacy docs
-  // (pre-denormalization) fall back to the pedido's filial outer-ref — no full
-  // bundle: cancellation must not depend on cliente/operação/endereço loading.
+  // (pre-denormalization) fall back to resolving the filial via the pedido's
+  // integração (`integracao.filialIntegracaoPedidoOuterRef`) — no full bundle:
+  // cancellation must not depend on cliente/operação/endereço loading.
   let filialId = nota.filialId ?? null;
   if (!filialId) {
     // eslint-disable-next-line no-restricted-syntax -- read-only legacy fallback; pedido docs are written by apps/web / apps/integrations handles, not here
@@ -98,9 +99,20 @@ export async function cancelarNFeService(
     if (!pedidoSnap.exists) {
       throw new NFePedidoNotFoundError(pedidoId);
     }
-    const filialPath = refToPath(getField(pedidoSnap.data(), 'filialPedidoOuterRef'));
+    const integracaoPath = refToPath(getField(pedidoSnap.data(), 'integracaoPedidoOuterRef'));
+    if (!integracaoPath) {
+      throw new NFeOrchestratorError(`pedido '${pedidoId}': integracaoPedidoOuterRef missing.`);
+    }
+    // eslint-disable-next-line no-restricted-syntax -- read-only dynamic integracao outer-ref deref
+    const integracaoSnap = await fs.doc(integracaoPath).get();
+    if (!integracaoSnap.exists) {
+      throw new NFeOrchestratorError(`integracao '${integracaoPath}' not found.`);
+    }
+    const filialPath = refToPath(getField(integracaoSnap.data(), 'filialIntegracaoPedidoOuterRef'));
     if (!filialPath) {
-      throw new NFeOrchestratorError(`pedido '${pedidoId}': filialPedidoOuterRef missing.`);
+      throw new NFeOrchestratorError(
+        `integracao '${integracaoPath}': filialIntegracaoPedidoOuterRef missing.`,
+      );
     }
     filialId = filialPath.split('/').pop()!;
   }

@@ -119,9 +119,10 @@ export interface FiscalItem {
 
 /**
  * Resolve the full Pedido bundle from Firestore. Pedido's outer refs
- * (`filialPedidoOuterRef`, `clientePedidoOuterRef`, …) are `z.unknown()`
+ * (`integracaoPedidoOuterRef`, `clientePedidoOuterRef`, …) are `z.unknown()`
  * in the schema today — we interpret them as Firestore document paths
- * stamped by the Flutter app.
+ * stamped by the Flutter app. The issuing filial is resolved one hop
+ * further, via the integração's `filialIntegracaoPedidoOuterRef`.
  */
 /**
  * Request-scoped read cache for a single `emitirPedidosLote` invocation.
@@ -212,9 +213,21 @@ export async function loadPedidoBundle(
   if (!pedidoSnap.exists) throw new NFePedidoNotFoundError(pedidoId);
   const pedido = pedidoSnap.data() as PedidoBundle['pedido'];
 
-  const filialPath = refToPath(getField(pedido, 'filialPedidoOuterRef'));
+  // The issuing filial is NOT on the pedido — it lives on the pedido's
+  // integração (`integracao.filialIntegracaoPedidoOuterRef`). Resolve the
+  // integração first, then derive the filial path from it. This read is
+  // memoized against the batch context (pedidos in a lote routinely share one
+  // integração), so it costs at most one extra read per distinct integração.
+  const integracaoPath = refToPath(getField(pedido, 'integracaoPedidoOuterRef'));
+  if (!integracaoPath)
+    throw new NFeOrchestratorError(`pedido '${pedidoId}': integracaoPedidoOuterRef missing`);
+  const integracaoSnap = await getDoc(integracaoPath);
+  if (!integracaoSnap.exists)
+    throw new NFeOrchestratorError(`integracao '${integracaoPath}' not found`);
+  const filialPath = refToPath(getField(integracaoSnap.data(), 'filialIntegracaoPedidoOuterRef'));
   console.debug(
-    `[nfe/orchestrator] Resolved filialPath '${filialPath}' for pedidoId '${pedidoId}'`,
+    `[nfe/orchestrator] Resolved filialPath '${filialPath}' (via integracao ` +
+      `'${integracaoPath}') for pedidoId '${pedidoId}'`,
   );
   const clientePath = refToPath(getField(pedido, 'clientePedidoOuterRef'));
   console.debug(
@@ -230,7 +243,9 @@ export async function loadPedidoBundle(
   );
 
   if (!filialPath)
-    throw new NFeOrchestratorError(`pedido '${pedidoId}': filialPedidoOuterRef missing`);
+    throw new NFeOrchestratorError(
+      `integracao '${integracaoPath}': filialIntegracaoPedidoOuterRef missing`,
+    );
   if (!clientePath)
     throw new NFeOrchestratorError(`pedido '${pedidoId}': clientePedidoOuterRef missing`);
   if (!operacaoPath)
@@ -262,7 +277,7 @@ export async function loadPedidoBundle(
 
   const operacao = operacaoSnap.data() as Operacao;
   const frete = parseFreteFromPedido(pedidoId, pedido);
-  const integracao = await maybeLoadIntegracao(fs, pedidoId, pedido, operacao);
+  const integracao = intermediadorFromSnap(pedidoId, integracaoPath, integracaoSnap, operacao);
   const regrasImposto = parseRegraImpostoSnapshot(pedidoId, regraImpostoSnap);
 
   return {
@@ -337,35 +352,20 @@ export function parseFreteFromPedido(
 }
 
 /**
- * Load the Integracao doc the pedido points at, BUT only when the
- * operação flags `indIntermed='1'`. Skipping the read for the common
- * non-marketplace case keeps `loadPedidoBundle` cheap.
+ * The marketplace intermediator Integracao for `<infIntermed>`, parsed from the
+ * ALREADY-loaded integração snapshot — the doc is fetched up-front in
+ * `loadPedidoBundle` to resolve the issuing filial, so this adds no extra read.
+ * Returns null for non-marketplace operações (`indIntermed !== '1'`) or when the
+ * doc fails `integracaoSchema` (the `<infIntermed>` block is then simply omitted).
  */
-export async function maybeLoadIntegracao(
-  fs: Firestore,
+export function intermediadorFromSnap(
   pedidoId: string,
-  pedido: PedidoBundle['pedido'],
+  integracaoPath: string,
+  integracaoSnap: FirebaseFirestore.DocumentSnapshot,
   operacao: Operacao,
-): Promise<Integracao | null> {
+): Integracao | null {
   if (operacao.indIntermed !== '1') return null;
-  const integracaoPath = refToPath(getField(pedido, 'integracaoPedidoOuterRef'));
-  if (!integracaoPath) {
-    console.warn(
-      `[nfe/orchestrator] pedido '${pedidoId}': operacao.indIntermed='1' ` +
-        `but pedido.integracaoPedidoOuterRef is missing — SEFAZ will reject ` +
-        `with cStat related to missing <infIntermed>`,
-    );
-    return null;
-  }
-  // eslint-disable-next-line no-restricted-syntax -- read-only dynamic integracao outer-ref deref
-  const snap = await fs.doc(integracaoPath).get();
-  if (!snap.exists) {
-    console.warn(
-      `[nfe/orchestrator] pedido '${pedidoId}': integracao '${integracaoPath}' not found`,
-    );
-    return null;
-  }
-  const parsed = integracaoSchema.safeParse(snap.data());
+  const parsed = integracaoSchema.safeParse(integracaoSnap.data());
   if (!parsed.success) {
     console.warn(
       `[nfe/orchestrator] pedido '${pedidoId}': integracao '${integracaoPath}' failed parse — ` +

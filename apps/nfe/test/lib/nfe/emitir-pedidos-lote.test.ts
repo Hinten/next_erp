@@ -226,7 +226,8 @@ function pedidoDoc(spec: PedidoSpec): Record<string, unknown> {
         },
       ],
     },
-    filialPedidoOuterRef: `filiais/${spec.filialId}`,
+    // Filial resolved via the pedido's integração (see bundle.ts).
+    integracaoPedidoOuterRef: `integracao/I-${spec.filialId}`,
     clientePedidoOuterRef: 'clientes/C-1',
     operacaoPedidoOuterRef: 'operacao/O-1',
     enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
@@ -260,6 +261,13 @@ function fakeFirestore(opts: BatchHarnessOpts) {
     if (!seededFiliais.has(spec.filialId)) {
       seededFiliais.add(spec.filialId);
       docs[`filiais/${spec.filialId}`] = filialDoc();
+      docs[`integracao/I-${spec.filialId}`] = {
+        nome: 'Canal Teste',
+        tipo: 0,
+        padrao: false,
+        ativo: true,
+        filialIntegracaoPedidoOuterRef: `filiais/${spec.filialId}`,
+      };
       const cfg = opts.nfeConfigByFilial?.[spec.filialId];
       const seed = cfg !== undefined ? cfg : SEED_NFE_CONFIG;
       docs[`filiais/${spec.filialId}/nfeconfig/default`] =
