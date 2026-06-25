@@ -50,6 +50,30 @@ export function stripKitForSave(value: unknown): ComponentesKit | null {
   return Object.keys(out).length > 0 ? out : null;
 }
 
+/**
+ * Decide which weight fields to push to the form — pure, so the sync logic is
+ * unit-testable without a React render. Returns the `(field, value)` patches only
+ * when syncing is on, the produto is a kit, the weight has resolved, AND the
+ * form's current value differs (so a consistent kit isn't needlessly dirtied).
+ * A `null` computed weight (still waiting on component reads) is skipped.
+ */
+export function kitWeightFormPatches(
+  syncPesoToForm: boolean,
+  ehKit: boolean,
+  pesoResult: { bruto: number | null; liquido: number | null } | null,
+  current: { pesoBrutoKg: unknown; pesoLiquidoKg: unknown },
+): Array<{ field: 'pesoBrutoKg' | 'pesoLiquidoKg'; value: number }> {
+  if (!syncPesoToForm || !ehKit || !pesoResult) return [];
+  const patches: Array<{ field: 'pesoBrutoKg' | 'pesoLiquidoKg'; value: number }> = [];
+  if (pesoResult.bruto !== null && current.pesoBrutoKg !== pesoResult.bruto) {
+    patches.push({ field: 'pesoBrutoKg', value: pesoResult.bruto });
+  }
+  if (pesoResult.liquido !== null && current.pesoLiquidoKg !== pesoResult.liquido) {
+    patches.push({ field: 'pesoLiquidoKg', value: pesoResult.liquido });
+  }
+  return patches;
+}
+
 const fmtBRL = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const fmtKg = (n: number | null) =>
   n === null
@@ -274,12 +298,12 @@ export function KitManager({
   // fields (Dimensões tab). Only when they actually differ, so loading an
   // already-consistent kit doesn't mark the form dirty.
   useEffect(() => {
-    if (!syncPesoToForm || !ehKit || !pesoResult) return;
-    if (pesoResult.bruto !== null && form?.getValues('pesoBrutoKg') !== pesoResult.bruto) {
-      form?.setValue('pesoBrutoKg', pesoResult.bruto, { shouldDirty: true });
-    }
-    if (pesoResult.liquido !== null && form?.getValues('pesoLiquidoKg') !== pesoResult.liquido) {
-      form?.setValue('pesoLiquidoKg', pesoResult.liquido, { shouldDirty: true });
+    const patches = kitWeightFormPatches(syncPesoToForm, ehKit, pesoResult, {
+      pesoBrutoKg: form?.getValues('pesoBrutoKg'),
+      pesoLiquidoKg: form?.getValues('pesoLiquidoKg'),
+    });
+    for (const { field, value } of patches) {
+      form?.setValue(field, value, { shouldDirty: true });
     }
   }, [syncPesoToForm, ehKit, pesoResult, form]);
 

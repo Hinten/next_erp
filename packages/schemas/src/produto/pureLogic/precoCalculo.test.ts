@@ -246,9 +246,18 @@ describe('resolveComponentCusto', () => {
 describe('pesoDoKit', () => {
   const kit = (quantidade: number) => ({ quantidade, limitarEstoque: true, timestamp: null });
 
-  it('sums component weight × quantidade, rounded to 2 decimals (all components, no filter)', () => {
-    // c1 (0.5kg) ×2 + c2 (1.25kg) ×1 = 2.25 — note: NOT filtered by limitarEstoque.
-    const out = pesoDoKit({ c1: kit(2), c2: kit(1) }, { c1: 0.5, c2: 1.25 }, {}, 0.3);
+  it('sums ALL components × quantidade regardless of limitarEstoque (no filter)', () => {
+    // c2 has limitarEstoque:false — it must STILL be counted (the legacy getter
+    // has no limitarEstoque filter). 0.5×2 + 1.25×1 = 2.25.
+    const out = pesoDoKit(
+      {
+        c1: { quantidade: 2, limitarEstoque: true, timestamp: null },
+        c2: { quantidade: 1, limitarEstoque: false, timestamp: null },
+      },
+      { c1: 0.5, c2: 1.25 },
+      {},
+      0.3,
+    );
     expect(out).toBe(2.25);
   });
 
