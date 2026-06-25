@@ -16,7 +16,11 @@ import { renderPaisagem } from '../src/danfe/pdf/paisagem';
 import { renderRetrato } from '../src/danfe/pdf/retrato';
 import { renderSimplificado } from '../src/danfe/pdf/simplificado';
 import { renderSimplificadoZpl } from '../src/danfe/zpl2';
-import { PROCNFE_FIXTURE } from '../test/danfe/fixtures';
+import {
+  PROCNFE_FIXTURE,
+  PROCNFE_MAXFIELDS_FIXTURE,
+  PROCNFE_MINFIELDS_FIXTURE,
+} from '../test/danfe/fixtures';
 
 const OUT_DIR = join(process.cwd(), 'danfe-samples');
 const REF_CHAVE = '35260514200166000187550010000000061000000010';
@@ -47,6 +51,17 @@ async function main(): Promise<void> {
   write('paisagem-base.pdf', await renderPaisagem(base));
   write('simplificado-base.pdf', await renderSimplificado(base));
   write('etiqueta-base.zpl', renderSimplificadoZpl(base));
+
+  // Simplificado fit edge cases (#93): a maximal B2B label (dest with IE + long
+  // values) and a minimal one (CPF emitente, no dest doc/endereço, no infCpl).
+  write(
+    'simplificado-maxfields.pdf',
+    await renderSimplificado(parseProcNFe(PROCNFE_MAXFIELDS_FIXTURE)),
+  );
+  write(
+    'simplificado-minfields.pdf',
+    await renderSimplificado(parseProcNFe(PROCNFE_MINFIELDS_FIXTURE)),
+  );
 
   // 100 itens + infCpl + infAdFisco (multi-page; both footer boxes populated).
   const big: DanfeModel = {
