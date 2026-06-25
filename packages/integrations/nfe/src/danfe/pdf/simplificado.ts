@@ -224,7 +224,11 @@ function planFit(doc: Doc, sections: Section[]): FitPlan {
   doc.font(FONT).fontSize(BASE_SIZE);
   const oneLine = doc.heightOfString('X', { width: CONTENT_W });
   for (const w of wraps) {
-    const needed = Math.round(doc.heightOfString(w.text, { width: CONTENT_W }) / oneLine);
+    // Round UP to the next whole line so a block that spills a fraction past N
+    // lines reserves N+1 at the base font instead of being needlessly shrunk or
+    // clipped. The small epsilon absorbs pdfkit's sub-point line-height fuzz so
+    // an exact N-line block isn't bumped to N+1.
+    const needed = Math.ceil(doc.heightOfString(w.text, { width: CONTENT_W }) / oneLine - 0.15);
     w.lines = Math.max(1, Math.min(w.cap, needed));
   }
 

@@ -4,7 +4,7 @@ import { renderDanfe, renderDanfeZpl } from '../../src/danfe';
 import { cmToPt } from '../../src/danfe/format';
 import { parseProcNFe } from '../../src/danfe/model';
 import type { DanfeEndereco } from '../../src/danfe/model';
-import { clipToWidth, createPdf, FONT } from '../../src/danfe/pdf/primitives';
+import { clipToWidth, createPdf, fitFontSize, FONT } from '../../src/danfe/pdf/primitives';
 import {
   enderecoLinha,
   planSimplificadoFit,
@@ -155,5 +155,36 @@ describe('enderecoLinha — separator hygiene', () => {
     expect(line).toBe('RUA B - RIO DE JANEIRO - RJ');
     expect(line).not.toMatch(/ - -|, ,| {2}/); // no doubled/empty separators
     expect(line).not.toMatch(/^[\s,-]|[\s,-]$/); // no leading/trailing separator
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fitFontSize — the shrink-to-fit search must honour its [floor, base] contract:
+// it includes the floor itself and never returns below it, even when `step`
+// doesn't divide the range evenly (#93 review follow-up).
+// ---------------------------------------------------------------------------
+describe('fitFontSize — floor guarantee', () => {
+  it('returns the base size when the text already fits', () => {
+    const { doc } = createPdf([200, 200]);
+    doc.font(FONT);
+    expect(fitFontSize(doc, 'SHORT', 180, 1000, 7, 5.5)).toBe(7);
+  });
+
+  it('never returns below the floor, even when the floor is off the step grid', () => {
+    const { doc } = createPdf([200, 200]);
+    doc.font(FONT);
+    // Long text in a narrow box with a tiny height bound: nothing fits, so the
+    // last resort is the floor. base=7, floor=5.2, step=0.5 — the old `> floor`
+    // loop would have stepped to (and returned) 5.0.
+    const size = fitFontSize(doc, 'PALAVRA '.repeat(20), 60, 1, 7, 5.2);
+    expect(size).toBe(5.2);
+  });
+
+  it('stays within [floor, base] for an in-between fit', () => {
+    const { doc } = createPdf([200, 200]);
+    doc.font(FONT);
+    const size = fitFontSize(doc, 'ALGUM TEXTO DE TAMANHO MEDIO PARA CABER', 120, 14, 7, 5.5);
+    expect(size).toBeGreaterThanOrEqual(5.5);
+    expect(size).toBeLessThanOrEqual(7);
   });
 });

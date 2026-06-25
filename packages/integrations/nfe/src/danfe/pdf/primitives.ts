@@ -117,12 +117,18 @@ export function fitFontSize(
   floor: number,
   step = 0.5,
 ): number {
-  let fontSize = base;
-  for (; fontSize > floor; fontSize -= step) {
+  // Walk `base` → `floor` in `step` decrements, clamping each candidate so the
+  // search includes `floor` itself and never drops below it — even when `step`
+  // doesn't divide `base - floor` evenly. Returns the largest size that fits, or
+  // `floor` as the last resort (the draw path ellipsis-clips if even `floor`
+  // overflows).
+  const steps = Math.max(0, Math.ceil((base - floor) / step));
+  for (let i = 0; i <= steps; i += 1) {
+    const fontSize = Math.max(floor, base - i * step);
     doc.fontSize(fontSize);
     if (doc.heightOfString(str, { width: widthPt }) <= maxHeightPt) return fontSize;
   }
-  return fontSize;
+  return floor;
 }
 
 /**
