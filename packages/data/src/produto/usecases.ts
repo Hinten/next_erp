@@ -355,6 +355,70 @@ export async function saveChildrenComponentesKit(
 }
 
 // ---------------------------------------------------------------------------
+// Kit-status child propagation (Flutter `Produto.save()` variation loop)
+//
+// When a parent's `ehKit`/`ehKitVirtual` flips, every EXISTING variation child
+// must follow — a child of a non-kit can't stay a kit. Mirror of
+// `produtoTableProvider.dart:556-589`: set the child's `ehKit`/`ehKitVirtual`
+// (a non-kit can't be a virtual kit — Flutter `ehKit == false ? false :
+// ehKitVirtual`) and CLEAR its `componentesKit` (+ the denorm keys) only when
+// the parent stops being a kit. A kit parent leaves each child's own generated
+// map intact (it's populated by "Gerar Variações").
+// ---------------------------------------------------------------------------
+
+/** The parent kit-status transition observed across one save. */
+export interface KitStatusChange {
+  ehKit: boolean;
+  ehKitVirtual: boolean;
+  oldEhKit: boolean;
+  oldEhKitVirtual: boolean;
+}
+
+/** True when `ehKit` or `ehKitVirtual` actually changed across the save. */
+function kitStatusChanged(c: KitStatusChange): boolean {
+  return c.ehKit !== c.oldEhKit || c.ehKitVirtual !== c.oldEhKitVirtual;
+}
+
+/**
+ * Build the per-child updates that sync a kit-status change onto existing
+ * variation children. `ehKitVirtual` collapses to false when the parent is no
+ * longer a kit; `componentesKit` (+ keys) is cleared only when the parent stops
+ * being a kit. Empty when nothing changed.
+ */
+export function buildKitStatusChildOps(
+  change: KitStatusChange,
+  children: Array<{ id: string }>,
+): ProdutoWriteOp[] {
+  if (!kitStatusChanged(change)) return [];
+  const ehKitVirtual = change.ehKit ? change.ehKitVirtual : false;
+  return children.map((c) => {
+    const data: Record<string, unknown> = { ehKit: change.ehKit, ehKitVirtual };
+    if (!change.ehKit) {
+      data.componentesKit = null;
+      data.componentesKitKeys = null;
+    }
+    return { type: 'update', path: produtoDocPath(c.id), data };
+  });
+}
+
+/**
+ * Propagate a parent's kit-status change to its variation children (no-op when
+ * nothing changed or there are no children). Returns the ids that were updated.
+ * The editor's `onAfterSave` and a future agent both call this.
+ */
+export async function propagateKitStatusToChildren(
+  port: ProdutoDataPort,
+  parentId: string,
+  change: KitStatusChange,
+): Promise<string[]> {
+  if (!kitStatusChanged(change)) return [];
+  const children = await port.getChildren(parentId);
+  if (children.length === 0) return [];
+  await port.commit(buildKitStatusChildOps(change, children));
+  return children.map((c) => c.id);
+}
+
+// ---------------------------------------------------------------------------
 // Child precos propagation (Flutter per-child `updateOnly`, NO history)
 // ---------------------------------------------------------------------------
 
