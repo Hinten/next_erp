@@ -1,10 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useRef } from 'react';
-import Link from 'next/link';
 import {
   ActionIcon,
-  Anchor,
   Badge,
   Button,
   Group,
@@ -18,7 +16,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconArrowBackUp, IconPlus, IconTrash } from '@tabler/icons-react';
+import { IconArrowBackUp, IconPlus, IconTrash, IconX } from '@tabler/icons-react';
 import { Controller, useFieldArray, type UseFormReturn } from 'react-hook-form';
 import { getDoc, type Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
@@ -241,7 +239,6 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
             <Table.Tr>
               <Table.Th>#</Table.Th>
               <Table.Th>Produto</Table.Th>
-              <Table.Th>SKU</Table.Th>
               <Table.Th>Qtd</Table.Th>
               <Table.Th>Preço</Table.Th>
               <Table.Th>Desconto</Table.Th>
@@ -252,7 +249,7 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
           <Table.Tbody>
             {fieldArray.fields.length === 0 && (
               <Table.Tr>
-                <Table.Td colSpan={8} align="center">
+                <Table.Td colSpan={7} align="center">
                   <Text c="dimmed" size="sm">
                     Nenhum item. Clique em &quot;Adicionar produto&quot;.
                   </Text>
@@ -272,7 +269,7 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
           </Table.Tbody>
           <Table.Tfoot>
             <Table.Tr>
-              <Table.Td colSpan={6} align="right">
+              <Table.Td colSpan={5} align="right">
                 <Text size="sm" c="dimmed">
                   Subtotal
                 </Text>
@@ -281,7 +278,7 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
               <Table.Td />
             </Table.Tr>
             <Table.Tr>
-              <Table.Td colSpan={6} align="right">
+              <Table.Td colSpan={5} align="right">
                 <Text size="sm" c="dimmed">
                   Desconto total
                 </Text>
@@ -308,7 +305,7 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
               <Table.Td />
             </Table.Tr>
             <Table.Tr>
-              <Table.Td colSpan={6} align="right">
+              <Table.Td colSpan={5} align="right">
                 <Text size="sm" c="dimmed">
                   Frete
                 </Text>
@@ -317,7 +314,7 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
               <Table.Td />
             </Table.Tr>
             <Table.Tr>
-              <Table.Td colSpan={6} align="right">
+              <Table.Td colSpan={5} align="right">
                 <Text fw={700}>Total</Text>
               </Table.Td>
               <Table.Td align="right">
@@ -449,6 +446,15 @@ function ItemRow({
     form.setValue(`_itensFlat.${index}._delete`, !marked, { shouldDirty: true });
   }
 
+  function clearProduto() {
+    form.setValue(`_itensFlat.${index}.produtoUid`, null, {
+      shouldDirty: true,
+      shouldValidate: true,
+    });
+    form.setValue(`_itensFlat.${index}.sku`, null, { shouldDirty: true });
+    form.setValue(`_itensFlat.${index}.nomeDeVenda`, null, { shouldDirty: true });
+  }
+
   const rowStyle = marked ? { opacity: 0.5 } : undefined;
 
   return (
@@ -460,72 +466,57 @@ function ItemRow({
         </Text>
       </Table.Td>
       <Table.Td>
-        <Stack gap={4}>
+        {produtoUid ? (
+          // Selected: a compact produto display with a de-select button (the
+          // search picker collapses away). Shows name + SKU + stock + variation.
+          <Group gap="xs" wrap="nowrap" align="center">
+            <ProdutoThumbnail db={db} produto={produto} />
+            <Stack gap={0} style={{ flex: 1, minWidth: 0 }}>
+              <Group gap={6} align="center">
+                <Text size="sm" fw={500} td={marked ? 'line-through' : undefined} truncate>
+                  {produto?.nome || item?.nomeDeVenda || produtoUid}
+                </Text>
+                {estoque !== null && (
+                  <Badge size="xs" color={estoque > 0 ? 'green' : 'red'}>
+                    {estoque} em estoque
+                  </Badge>
+                )}
+                {marked && (
+                  <Badge size="xs" color="gray" variant="light">
+                    Será excluída
+                  </Badge>
+                )}
+              </Group>
+              <ProdutoVariacaoLabel db={db} produto={produto} />
+              <Text size="xs" c="dimmed">
+                {produto?.sku ? `SKU: ${produto.sku}` : 'Sem SKU'}
+              </Text>
+            </Stack>
+            <Tooltip label="Trocar produto" withArrow>
+              <ActionIcon
+                variant="subtle"
+                color="gray"
+                onClick={clearProduto}
+                disabled={disabled || marked}
+                aria-label="Remover produto"
+              >
+                <IconX size={16} />
+              </ActionIcon>
+            </Tooltip>
+          </Group>
+        ) : (
+          // Empty row: the search picker.
           <ProdutoPicker
             db={db}
-            value={produtoRef}
+            value={null}
             onChange={(r) => {
-              if (r) {
-                void handlePick(r.data, r.id);
-              } else {
-                // Cleared via the picker's close button — drop the produto.
-                form.setValue(`_itensFlat.${index}.produtoUid`, null, {
-                  shouldDirty: true,
-                  shouldValidate: true,
-                });
-                form.setValue(`_itensFlat.${index}.sku`, null, { shouldDirty: true });
-                form.setValue(`_itensFlat.${index}.nomeDeVenda`, null, { shouldDirty: true });
-              }
+              if (r) void handlePick(r.data, r.id);
             }}
             label=""
             placeholder="Buscar produto…"
             disabled={disabled || marked}
           />
-          {produtoUid && (
-            <Group gap="xs" wrap="nowrap" align="center">
-              <ProdutoThumbnail db={db} produto={produto} />
-              <Stack gap={0}>
-                {/* The picker above already shows the produto name. */}
-                <Group gap={6} align="center">
-                  {estoque !== null && (
-                    <Badge size="xs" color={estoque > 0 ? 'green' : 'red'}>
-                      {estoque} em estoque
-                    </Badge>
-                  )}
-                  {marked && (
-                    <Badge size="xs" color="gray" variant="light">
-                      Será excluída
-                    </Badge>
-                  )}
-                </Group>
-                <ProdutoVariacaoLabel db={db} produto={produto} />
-                <Anchor
-                  component={Link}
-                  href={`/produtos/${produtoUid}/editar`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  size="xs"
-                >
-                  Editar produto
-                </Anchor>
-              </Stack>
-            </Group>
-          )}
-        </Stack>
-      </Table.Td>
-      <Table.Td>
-        <Controller
-          control={form.control}
-          name={`_itensFlat.${index}.sku` as const}
-          render={({ field }) => (
-            <TextInput
-              value={field.value ?? ''}
-              onChange={(e) => field.onChange(e.currentTarget.value || null)}
-              onBlur={field.onBlur}
-              disabled={disabled || marked}
-            />
-          )}
-        />
+        )}
       </Table.Td>
       <Table.Td>
         <Controller
