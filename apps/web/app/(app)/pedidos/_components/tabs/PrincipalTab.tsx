@@ -327,7 +327,7 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
             </Table.Tr>
           </Table.Tfoot>
         </Table>
-        <Group>
+        <Group justify="center">
           <Button
             type="button"
             size="xs"
@@ -463,7 +463,7 @@ function ItemRow({
         <Stack gap={4}>
           <ProdutoPicker
             db={db}
-            value={produtoUid ? `produtos/${produtoUid}` : null}
+            value={produtoRef}
             onChange={(r) => {
               if (r) {
                 void handlePick(r.data, r.id);

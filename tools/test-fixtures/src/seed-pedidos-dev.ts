@@ -359,6 +359,7 @@ function devItensMap(
   // seed:variacoes → seed:precos → seed:pedidos.
   const produtoUid = 'dev-camiseta-pai';
   const baseItem: Record<string, unknown> = {
+    produtoUid,
     sku: null,
     gtin: null,
     nomeDeVenda: 'Camiseta Dev',

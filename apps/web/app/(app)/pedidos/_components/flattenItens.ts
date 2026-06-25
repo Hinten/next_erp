@@ -9,10 +9,15 @@ import type { FlatItem } from './types';
 export function flattenItens(grouped: Pedido['itens']): FlatItem[] {
   const out: FlatItem[] = [];
   let idx = 0;
-  for (const [, list] of Object.entries(grouped)) {
+  for (const [key, list] of Object.entries(grouped)) {
+    // The map key IS the produtoUid (legacy Flutter convention). Some docs (and
+    // the dev seed) store it only as the key, not on the item — derive it so the
+    // row's produto resolves and a re-save doesn't regroup the item under 'NONE'.
+    const keyUid = key && key !== 'NONE' ? key : null;
     for (const item of list) {
       out.push({
         ...item,
+        produtoUid: item.produtoUid ?? keyUid,
         _rowId: `row-${idx++}-${Math.random().toString(36).slice(2, 8)}`,
       });
     }
