@@ -223,18 +223,24 @@ function QuickCreateForm({
       const SET_OPTS = { shouldDirty: true, shouldValidate: true } as const;
       // A CNPJ belongs to a Pessoa Jurídica — switch the tipo so the form stays
       // valid (PF + CNPJ is rejected) and the PJ-only IE field is revealed.
-      if (form.getValues('tipo') !== '1') form.setValue('tipo', '1', SET_OPTS);
+      const switchedToPJ = form.getValues('tipo') !== '1';
+      if (switchedToPJ) form.setValue('tipo', '1', SET_OPTS);
       form.setValue('nome', nome, SET_OPTS);
       if (ie) form.setValue('ie', ie, SET_OPTS);
       // Nome changed — re-run the dedup check against the resolved razão social.
       runLiveCheck();
+      // Announce the silent tipo change so the operator notices it.
+      const tipoNote = switchedToPJ ? 'Tipo alterado para Pessoa Jurídica. ' : '';
       if (ie) {
-        notifications.show({ color: 'green', message: `Dados de ${nome} preenchidos (IE ${ie})` });
+        notifications.show({
+          color: 'green',
+          message: `${tipoNote}Dados de ${nome} preenchidos (IE ${ie})`,
+        });
       } else {
         const why = sefazNote ?? 'IE não disponível';
         notifications.show({
           color: 'yellow',
-          message: `Dados de ${nome} preenchidos. ${why} — preencha a IE manualmente.`,
+          message: `${tipoNote}Dados de ${nome} preenchidos. ${why} — preencha a IE manualmente.`,
         });
       }
     } finally {

@@ -91,7 +91,8 @@ export function CnpjLookupField({
       const { nome, ie, endereco, sefazNote } = outcome.data;
       // A CNPJ belongs to a Pessoa Jurídica — switch the tipo so the form stays
       // valid (the schema rejects PF + CNPJ) and the IE applies.
-      if (watch('tipo') !== '1') setValue('tipo', '1', SET_OPTS);
+      const switchedToPJ = watch('tipo') !== '1';
+      if (switchedToPJ) setValue('tipo', '1', SET_OPTS);
       setValue('nome', nome, SET_OPTS);
       if (ie) setValue('ie', ie, SET_OPTS);
 
@@ -100,15 +101,20 @@ export function CnpjLookupField({
       onAddressResolved?.(endereco);
       offeredRef.current = endereco !== null;
 
+      // Announce the silent tipo change so the operator notices it.
+      const tipoNote = switchedToPJ ? 'Tipo alterado para Pessoa Jurídica. ' : '';
       if (ie) {
-        notifications.show({ color: 'green', message: `Dados de ${nome} preenchidos (IE ${ie})` });
+        notifications.show({
+          color: 'green',
+          message: `${tipoNote}Dados de ${nome} preenchidos (IE ${ie})`,
+        });
       } else {
         // No IE — surface the reason so the operator can distinguish a genuine
         // "no registration" from a coverage gap, and knows to type the IE.
         const why = sefazNote ?? 'IE não disponível';
         notifications.show({
           color: 'yellow',
-          message: `Dados de ${nome} preenchidos. ${why} — preencha a IE manualmente.`,
+          message: `${tipoNote}Dados de ${nome} preenchidos. ${why} — preencha a IE manualmente.`,
         });
       }
     } finally {
