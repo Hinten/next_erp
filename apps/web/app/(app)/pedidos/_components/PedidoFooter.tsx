@@ -210,7 +210,9 @@ export function PedidoFooter({
               color={totals.valorCobrado < 0 ? 'red' : undefined}
               testId="footer-total"
             />
-            <FooterStat label="Vlr. Pago" value={brl(valorPago)} />
+            {/* Vlr. Pago is a payments figure — shown only in edit mode (a real
+                pedido), but there it stays visible even at R$ 0,00. */}
+            {pedidoId && <FooterStat label="Vlr. Pago" value={brl(valorPago)} />}
             {troco > 0 && <FooterStat label="Troco" value={brl(troco)} />}
           </Group>
           <Group gap="xs" wrap="nowrap" align="center">

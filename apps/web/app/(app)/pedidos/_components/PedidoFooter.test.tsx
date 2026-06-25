@@ -117,12 +117,22 @@ describe('PedidoFooter — live total reactivity', () => {
 });
 
 describe('PedidoFooter — fields and actions', () => {
-  it('always shows the Devoluções and Vlr. Pago fields, even at zero', () => {
+  it('always shows the Devoluções field, even at zero', () => {
     render(<Host />);
     expect(screen.getByText('Devoluções')).toBeTruthy();
-    expect(screen.getByText('Vlr. Pago')).toBeTruthy();
-    // Both render their R$ 0,00 value alongside the label.
+    // It renders its R$ 0,00 value alongside the label.
     expect(screen.getAllByText(/R\$\s*0,00/).length).toBeGreaterThan(0);
+  });
+
+  it('shows Vlr. Pago only in edit mode, but there even at zero', () => {
+    // Create mode (no pedidoId) → no payments concept → hidden.
+    const { unmount } = render(<Host />);
+    expect(screen.queryByText('Vlr. Pago')).toBeNull();
+    unmount();
+
+    // Edit mode → visible even at R$ 0,00.
+    render(<Host pedidoId="ped-1" />);
+    expect(screen.getByText('Vlr. Pago')).toBeTruthy();
   });
 
   it('renders the share-orçamento button', () => {
