@@ -28,6 +28,7 @@ export const PRODUTO_SECTIONS: string[] = [
   'Variações',
   'Fotos',
   'Vídeos',
+  'Anexos',
 ];
 
 /**
@@ -110,13 +111,12 @@ export const PRODUTO_TRANSIENT_FIELDS: string[] = ['id', 'extraData', 'estoques'
  * Fields hidden from the Produto ObjectView for now. Kit components and
  * marketplace bindings get dedicated tabs in later PRs; embeddings, references
  * and internal ordering stay server-managed or pass-through. (`fotos`,
- * `videos` and `variacoesUid` have their own tabs — see `PRODUTO_SECTIONS` —
+ * `videos`, `anexos` and `variacoesUid` have their own tabs — see `PRODUTO_SECTIONS` —
  * so they're intentionally not listed. `grupoDeVariacoesUid` stays excluded:
  * the Variações tab manages it and the page's `deriveOnSave` persists it.)
  */
 export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   'nome_embedding',
-  'anexos',
   'grupoDeVariacoesUid',
   // `componentesKit` renders in the Kit tab; `componentesKitKeys` is the denorm
   // the delete-guard queries — derived in `deriveOnSave`, never rendered.
@@ -135,9 +135,17 @@ export const PRODUTO_EXCLUDED_FIELDS: string[] = [
 ];
 
 /**
- * Create-mode defaults matching the Flutter constructor. `buildEmptyDefaults`
- * in ObjectView zeroes booleans to `false`; `publicado` defaults to `true`.
+ * Create-mode defaults matching the Flutter constructor (`models.dart:1320-1333`).
+ * The dimensions/weight seed sensible shipping values (and `crossdocking` 0) so
+ * freight quoting works out of the box on a fresh produto. The boolean flags —
+ * including `publicado` — fall to `false` via ObjectView's `buildEmptyDefaults`,
+ * so a new produto starts as a DRAFT, matching Flutter (`this.publicado=false`).
  */
 export const PRODUTO_CREATE_DEFAULTS: Partial<Produto> = {
-  publicado: true,
+  pesoLiquidoKg: 0.9,
+  pesoBrutoKg: 1,
+  alturaCm: 5,
+  larguraCm: 10,
+  profundidadeCm: 10,
+  crossdocking: 0,
 };

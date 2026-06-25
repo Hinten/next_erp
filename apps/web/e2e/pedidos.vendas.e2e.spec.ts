@@ -7,9 +7,10 @@ import {
   getClienteByName,
   runDigits,
   seedPedidoFixtures,
+  validTestCnpj,
   validTestCpf,
 } from './_helpers/seed-data';
-import { fillField, selectFieldWithSearch } from './helpers/object-view';
+import { fillField, selectField, selectFieldWithSearch } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -290,5 +291,77 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await dialog.getByRole('button', { name: 'Usar cliente existente' }).first().click();
     await expect(dialog).toBeHidden({ timeout: 15_000 });
     await expect(page.getByText(fixtures.clienteNome).first()).toBeVisible({ timeout: 15_000 });
+  });
+
+  test('fills nome + inscrição estadual from the CNPJ lookup in the quick-create modal (#250)', async ({
+    page,
+  }, testInfo) => {
+    const RAZAO = 'EMPRESA QUICK CREATE LTDA';
+    const IE = '111222333444';
+    // Run+retry-unique CNPJ, DISTINCT from the seeded fixture cliente's
+    // `validTestCnpj(runDigits(12))` — reusing that value would make the fixture
+    // an exact cpf_cnpj match and block the create (dialog never closes).
+    // Mirrors the PF quick-create test's retry-scoped identity derivation.
+    const cnpj = validTestCnpj(String(Number(runDigits(11)) * 10 + testInfo.retry));
+    const nome = `${prefix}-qc-pj-${testInfo.retry}`;
+
+    // The lookup hits two external services unavailable from staging — stub
+    // both at the network layer. BrasilAPI fills razão social; the apps/nfe
+    // Consulta Cadastro route returns a habilitada inscrição so the PJ-only IE
+    // field fills deterministically.
+    await page.route('https://brasilapi.com.br/api/cnpj/v1/**', (route) =>
+      route.fulfill({ json: { razao_social: RAZAO, uf: 'SP' } }),
+    );
+    await page.route('**/api/nfe/consulta-cadastro*', (route) =>
+      route.fulfill({
+        json: {
+          supported: true,
+          uf: 'SP',
+          cStat: '111',
+          xMotivo: 'Consulta cadastro com uma ocorrência',
+          infCad: [
+            { ie: IE, cnpj, cpf: null, uf: 'SP', situacao: '1', razaoSocial: RAZAO, ender: null },
+          ],
+        },
+      }),
+    );
+
+    await page.goto('/pedidos/novo');
+    await page.getByRole('button', { name: '+ Novo cliente' }).first().click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+
+    // No lookup button / IE field for Pessoa Física (the default tipo).
+    const buscar = dialog.getByRole('button', { name: 'Buscar dados do CNPJ' });
+    await expect(buscar).toHaveCount(0);
+    await expect(dialog.getByLabel('Inscrição estadual', { exact: true })).toHaveCount(0);
+
+    // Switch to Pessoa Jurídica — the button appears (disabled until a valid
+    // 14-digit CNPJ) and the IE field is revealed.
+    await selectField(page, 'Tipo', 'Pessoa Jurídica');
+    await expect(buscar).toBeVisible();
+    await expect(buscar).toBeDisabled();
+    await expect(dialog.getByLabel('Inscrição estadual', { exact: true })).toBeVisible();
+
+    await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill(cnpj);
+    await expect(buscar).toBeEnabled();
+    await buscar.click();
+
+    // Lookup fills nome (BrasilAPI) and the authoritative IE (SEFAZ).
+    await expect(dialog.getByLabel('Nome')).toHaveValue(RAZAO);
+    await expect(dialog.getByLabel('Inscrição estadual', { exact: true })).toHaveValue(IE);
+
+    // Rename to a run-scoped prefix so afterAll cleanup catches the doc.
+    await dialog.getByLabel('Nome').fill(nome);
+    await dialog.getByRole('button', { name: 'Criar', exact: true }).click();
+
+    await expect(dialog).toBeHidden({ timeout: 15_000 });
+    await expect(page.getByText(nome).first()).toBeVisible({ timeout: 15_000 });
+
+    // Wire assertion (Admin SDK): the created PJ cliente carries the IE.
+    await expect.poll(() => docExistsByName('clientes', nome), { timeout: 15_000 }).toBe(true);
+    const doc = await getClienteByName(nome);
+    expect(doc?.tipo).toBe('1');
+    expect(doc?.ie).toBe(IE);
   });
 });

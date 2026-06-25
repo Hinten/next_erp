@@ -3,6 +3,7 @@ import {
   cleanupByNamePrefix,
   docExistsByName,
   e2ePrefix,
+  getProdutoData,
   seedGruposDeVariacao,
 } from './_helpers/seed-data';
 import { clickSave, fillField } from './helpers/object-view';
@@ -79,6 +80,10 @@ test.describe.serial('Produtos variações e2e — Variações tab', () => {
     );
     await expect.poll(() => docExistsByName('produtos', nome), { timeout: 15_000 }).toBe(true);
     const id = new URL(page.url()).pathname.split('/')[2]!;
+
+    // Create-default parity: a fresh produto persists as a DRAFT
+    // (`publicado=false`), matching the Flutter constructor (`models.dart:1333`).
+    expect((await getProdutoData(id))?.publicado).toBe(false);
 
     await page.goto(`/produtos/${id}/editar`);
     // Type the SKU in the editor but do NOT save yet — Gerar must pick it up

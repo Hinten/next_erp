@@ -52,10 +52,11 @@ export const produtoSchema = z
     profundidadeCm: z.number().nullable().default(null),
 
     // Kit + visibility + freight flags. Defaults match the Flutter
-    // constructor defaults (false / false / true / false / false).
+    // constructor defaults (`models.dart:1320-1333`): all false — a new produto
+    // starts as a DRAFT (`publicado=false`), published explicitly by the user.
     ehKit: z.boolean().default(false),
     ehKitVirtual: z.boolean().default(false),
-    publicado: z.boolean().default(true),
+    publicado: z.boolean().default(false),
     ofereceFreteGratis: z.boolean().default(false),
     permiteVendaSemEstoque: z.boolean().default(false),
     // "Produto usado" — Flutter reads `as bool?`, but we default to false like

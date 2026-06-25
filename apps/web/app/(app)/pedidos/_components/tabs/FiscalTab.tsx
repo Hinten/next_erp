@@ -58,7 +58,7 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
           <Group justify="space-between" align="center">
             <Text fw={500}>Endereço fiscal</Text>
             <Tooltip label="Em breve">
-              <Button size="xs" variant="light" disabled>
+              <Button type="button" size="xs" variant="light" disabled>
                 Selecionar outro
               </Button>
             </Tooltip>
@@ -123,6 +123,7 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
         <Group justify="space-between" align="center">
           <Text fw={500}>NF-e referenciadas</Text>
           <Button
+            type="button"
             size="xs"
             variant="light"
             onClick={() => updateChNFe([...chNFeList, ''])}
@@ -155,6 +156,7 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
                 disabled={disabled}
               />
               <ActionIcon
+                type="button"
                 color="red"
                 variant="subtle"
                 onClick={() => updateChNFe(chNFeList.filter((_, i) => i !== index))}

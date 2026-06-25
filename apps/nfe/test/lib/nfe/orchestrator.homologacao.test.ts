@@ -92,6 +92,7 @@ const CLIENTE_ID = `${FIXTURE_PREFIX}-cliente`;
 const ENDERECO_ID = `${FIXTURE_PREFIX}-end`;
 const OPERACAO_ID = `${FIXTURE_PREFIX}-op`;
 const REGRA_ID = `${FIXTURE_PREFIX}-regra`;
+const INTEGRACAO_ID = `${FIXTURE_PREFIX}-int`;
 const PRODUTO_UID = 'P-1';
 const PED1 = `${FIXTURE_PREFIX}-PED-1`;
 const PED3 = `${FIXTURE_PREFIX}-PED-3`;
@@ -268,12 +269,12 @@ function pedidoDoc(
     ultimaModificacao: Date.now(),
     foiImpresso: false,
     dtImpressao: null,
-    filialPedidoOuterRef: `filiais/${FILIAL_ID}`,
     clientePedidoOuterRef: `clientes/${CLIENTE_ID}`,
     operacaoPedidoOuterRef: `operacao/${OPERACAO_ID}`,
     enderecoFiscalOuterRef: `clientes/${CLIENTE_ID}/enderecos/${ENDERECO_ID}`,
     vendedorPedidoOuterRef: null,
-    integracaoPedidoOuterRef: null,
+    // The issuing filial is resolved via this integração (see bundle.ts).
+    integracaoPedidoOuterRef: `integracao/${INTEGRACAO_ID}`,
     listaDePrecosOuterRef: null,
     freteInicial: null,
     infCpl: null,
@@ -318,6 +319,18 @@ async function seedFixtures(
     idLote: SEED_IDLOTE_START,
     ambiente: '2',
   });
+
+  // Integração — owns the issuing filial (the pedido no longer carries it).
+  await fs
+    .collection('integracao')
+    .doc(INTEGRACAO_ID)
+    .set({
+      nome: 'CI canal',
+      tipo: 0,
+      padrao: false,
+      ativo: true,
+      filialIntegracaoPedidoOuterRef: `filiais/${FILIAL_ID}`,
+    });
 
   // Cliente + endereço.
   await fs.collection('clientes').doc(CLIENTE_ID).set(clienteDoc());
@@ -388,6 +401,7 @@ async function cleanupFixtures(fs: FirebaseFirestore.Firestore): Promise<void> {
   await fs.doc(`clientes/${CLIENTE_ID}/enderecos/${ENDERECO_ID}`).delete();
   await fs.doc(`clientes/${CLIENTE_ID}`).delete();
   await deleteDocWithSubcoll(`filiais/${FILIAL_ID}`, ['nfeconfig', 'enviNfe']);
+  await fs.doc(`integracao/${INTEGRACAO_ID}`).delete();
 }
 
 // ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   PRODUCT_IMAGE_VARIANTS,
   derivativeArquivoId,
+  productAnexoPath,
   productArquivoId,
   productDerivativePath,
   productOriginalPath,
@@ -113,6 +114,45 @@ describe.skipIf(!EMULATED)('onArquivoDeleted (emulator)', () => {
       const dId = derivativeArquivoId(produtoId, hash, v.key);
       expect((await db.collection('arquivos').doc(dId).get()).exists).toBe(false);
     }
+  });
+
+  it('frees a product anexo object with no derivative cascade', async () => {
+    const db = getDb();
+    const bucket = getBucket();
+    const anxHash = randomUUID().replace(/-/g, '');
+    const aPath = productAnexoPath(produtoId, anxHash, 'pdf');
+    const aSlash = aPath.lastIndexOf('/');
+    const anxId = productArquivoId(produtoId, anxHash);
+
+    await bucket.file(aPath).save(Buffer.from('anexo-bytes'), {
+      contentType: 'application/pdf',
+      metadata: { metadata: { arquivoId: anxId } },
+    });
+    await db
+      .collection('arquivos')
+      .doc(anxId)
+      .set({
+        filetype: 'document',
+        filepath: aPath.slice(0, aSlash),
+        filename: aPath.slice(aSlash + 1),
+        contentType: 'application/pdf',
+        url: null,
+        externalIds: [],
+        uploadState: 'finalized',
+      });
+
+    await db.collection('arquivos').doc(anxId).delete();
+    await processArquivoDeletion(bucket, db, anxId, {
+      filepath: aPath.slice(0, aSlash),
+      filename: aPath.slice(aSlash + 1),
+    });
+
+    // The anexo object is freed; an anexo path is not an original, so the
+    // derivative cascade is skipped (there are no derivatives for an anexo).
+    expect((await bucket.file(aPath).exists())[0]).toBe(false);
+    expect((await bucket.file(productDerivativePath(produtoId, anxHash, '200')).exists())[0]).toBe(
+      false,
+    );
   });
 
   it('resurrection guard: keeps the object when the doc exists again', async () => {

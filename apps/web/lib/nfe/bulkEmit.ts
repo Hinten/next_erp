@@ -121,7 +121,11 @@ export function useEmitirNFeAction(): {
     label: 'Emitir NF-e',
     color: 'teal',
     requiresSelection: true,
-    refreshOnComplete: true,
+    // No `refreshOnComplete`: the NF column (`NFCell`) is a live `onSnapshot` on
+    // `pedidos/{id}/nfev4`, so it reflects the new estado on its own. A table-wide
+    // re-query here would only flash the list to skeletons and drop the selection
+    // — and for a lote it fires before emission even finishes (the dialog returns
+    // immediately). So leave the table alone (#259).
     confirm: {
       title: 'Emitir NF-e',
       message: 'Emitir NF-e para o(s) pedido(s) selecionado(s)?',

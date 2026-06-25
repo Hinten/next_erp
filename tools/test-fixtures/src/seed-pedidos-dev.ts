@@ -1,5 +1,5 @@
 import { db } from './admin';
-import { DEV_FILIAL_ID } from './seed-filiais-dev';
+import { DEV_INTEGRACAO_ID } from './seed-filiais-dev';
 import { DEV_OPERACAO_ID } from './seed-operacoes-dev';
 import { DEV_ENDERECO_ID } from './seed-enderecos-dev';
 
@@ -451,7 +451,7 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
   // first (or alongside) for emission to work. The endereço is a
   // subcollection of the seeded cliente, only meaningful when
   // `clienteRef` is non-null.
-  const filialRef = db().collection('filiais').doc(DEV_FILIAL_ID);
+  const integracaoRef = db().collection('integracao').doc(DEV_INTEGRACAO_ID);
   const operacaoRef = db().collection('operacao').doc(DEV_OPERACAO_ID);
   const enderecoFiscalRef = clienteRef
     ? clienteRef.collection('enderecos').doc(DEV_ENDERECO_ID)
@@ -472,16 +472,14 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
       foiImpresso: spec.dtImpressao != null,
       dtImpressao: spec.dtImpressao != null ? us(spec.dtImpressao) : null,
       // Outer refs the cells dereference. `clientePedidoOuterRef`
-      // matters for the UI walk; the other three (filial, operação,
-      // endereço fiscal) are required by the NFe orchestrator
-      // (`apps/nfe/lib/nfe/orchestrator.ts:146-154`).
+      // matters for the UI walk; integração (which owns the issuing filial),
+      // operação + endereço fiscal are required by the NF-e orchestrator.
       vendedorPedidoOuterRef: null,
-      integracaoPedidoOuterRef: null,
+      integracaoPedidoOuterRef: integracaoRef,
       operacaoPedidoOuterRef: operacaoRef,
       clientePedidoOuterRef: clienteRef,
       enderecoFiscalOuterRef: enderecoFiscalRef,
       listaDePrecosOuterRef: db().collection('listaDePrecos').doc('dev-lista-varejo'),
-      filialPedidoOuterRef: filialRef,
       // Optional embedded frete block. UI cells read `estado` +
       // `codRastreio` + `prazoDespacho`; the NF-e orchestrator reads
       // `modalidade` + `valorCobrado` + `transportadora` + `veiculo` +

@@ -8,6 +8,7 @@ import { notifications } from '@mantine/notifications';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import {
+  type Anexo,
   type ComponentesKit,
   type Foto,
   type ImpostoProduto,
@@ -34,6 +35,7 @@ import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { buildProdutoTransactionWrites, createClientProdutoPort } from '@/lib/produtos/clientPort';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
+import { AnexoManager } from '../../_components/AnexoManager';
 import { PhotoManager } from '../../_components/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
@@ -182,6 +184,21 @@ export default function EditarProdutoPage() {
             db={db}
             storage={storage}
             value={(p.value as Video[] | null) ?? null}
+            onChange={p.onChange}
+            disabled={p.disabled}
+          />
+        ),
+      },
+      anexos: {
+        label: 'Anexos',
+        section: 'Anexos',
+        prepareForSave: stripMarkedForDeletion,
+        renderInput: (p) => (
+          <AnexoManager
+            produtoId={params.id}
+            db={db}
+            storage={storage}
+            value={(p.value as Anexo[] | null) ?? null}
             onChange={p.onChange}
             disabled={p.disabled}
           />

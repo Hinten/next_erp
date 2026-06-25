@@ -131,7 +131,12 @@ export function KitManager({
   // Component costs read once per component (a component's `custo` doesn't change
   // while editing this kit) — the kit cost re-sums from this cache on any
   // quantidade change without re-reading. `faltando` = components with no custo.
+  // The cache also holds each component PARENT's cost (keyed by `paiId`) so the
+  // variation-child cost fallback can resolve from it.
   const [custoCache, setCustoCache] = useState<Record<string, number | null>>({});
+  // Each component id → its `paiId` (or null) — feeds the Flutter cost fallback:
+  // a variation child with no own custo uses its parent's.
+  const [paiCache, setPaiCache] = useState<Record<string, string | null>>({});
 
   const activeIds = useMemo(
     () =>
@@ -150,25 +155,50 @@ export function KitManager({
     const missing = activeIds.filter((id) => !(id in custoCache));
     if (missing.length === 0) return;
     let cancelled = false;
-    Promise.all(
-      missing.map(async (id) => {
-        const snap = await getDocFromServer(produtoCollection.docRef(db, {}, id));
-        return [id, (snap.data()?.custo as number | null | undefined) ?? null] as const;
-      }),
-    )
-      .then((pairs) => {
-        if (!cancelled) setCustoCache((c) => ({ ...c, ...Object.fromEntries(pairs) }));
-      })
-      .catch((err: unknown) => {
-        if (err instanceof FirebaseError) {
-          notifications.show({
-            color: 'red',
-            message: `Falha ao ler o custo dos componentes: ${err.message}`,
-          });
-          return;
-        }
-        throw err;
-      });
+    const readCusto = async (id: string) =>
+      ((await getDocFromServer(produtoCollection.docRef(db, {}, id))).data()?.custo as
+        | number
+        | null
+        | undefined) ?? null;
+    (async () => {
+      // Phase 1: read each missing component's own custo + paiId.
+      const comps = await Promise.all(
+        missing.map(async (id) => {
+          const data = (await getDocFromServer(produtoCollection.docRef(db, {}, id))).data();
+          return {
+            id,
+            own: (data?.custo as number | null | undefined) ?? null,
+            paiId: (data?.paiId as string | null | undefined) ?? null,
+          };
+        }),
+      );
+      // Phase 2 — Flutter fallback (models.dart:1271-1287): a variation child with
+      // no own custo inherits its parent's. Read each parent ONCE — dedupe the
+      // paiIds and skip any already cached (sibling variations share a paiId), so
+      // a kit of N variations of the same product is one parent read, not N.
+      const neededPais = [
+        ...new Set(comps.filter((c) => c.own === null && c.paiId).map((c) => c.paiId as string)),
+      ].filter((pid) => !(pid in custoCache));
+      const pais = await Promise.all(
+        neededPais.map(async (pid) => [pid, await readCusto(pid)] as const),
+      );
+      if (cancelled) return;
+      setCustoCache((c) => ({
+        ...c,
+        ...Object.fromEntries(comps.map((cm) => [cm.id, cm.own])),
+        ...Object.fromEntries(pais),
+      }));
+      setPaiCache((p) => ({ ...p, ...Object.fromEntries(comps.map((cm) => [cm.id, cm.paiId])) }));
+    })().catch((err: unknown) => {
+      if (err instanceof FirebaseError) {
+        notifications.show({
+          color: 'red',
+          message: `Falha ao ler o custo dos componentes: ${err.message}`,
+        });
+        return;
+      }
+      throw err;
+    });
     return () => {
       cancelled = true;
     };
@@ -180,8 +210,8 @@ export function KitManager({
   const custoResult = useMemo(() => {
     if (activeIds.length === 0) return { custo: null as number | null, faltando: [] as string[] };
     if (activeIds.some((id) => !(id in custoCache))) return null; // wait for reads
-    return custoDoKit(stripKitForSave(components) ?? {}, custoCache);
-  }, [activeIds, custoCache, components]);
+    return custoDoKit(stripKitForSave(components) ?? {}, custoCache, paiCache);
+  }, [activeIds, custoCache, paiCache, components]);
 
   // Push the computed cost into the read-only `custo` form field (writing to the
   // form = an external system, the legitimate use of an effect).
@@ -256,7 +286,22 @@ export function KitManager({
         });
         return;
       }
-      setCustoCache((c) => ({ ...c, [id]: (data?.custo as number | null | undefined) ?? null }));
+      const own = (data?.custo as number | null | undefined) ?? null;
+      const paiId = (data?.paiId as string | null | undefined) ?? null;
+      setPaiCache((p) => ({ ...p, [id]: paiId }));
+      if (own === null && paiId && !(paiId in custoCache)) {
+        // Variation child with no own custo and an UNCACHED parent — read the
+        // parent's custo once for the Flutter fallback (`models.dart:1271-1287`).
+        // A parent already cached (e.g. by a sibling component) is reused.
+        const parent = (await getDocFromServer(produtoCollection.docRef(db, {}, paiId))).data();
+        setCustoCache((c) => ({
+          ...c,
+          [id]: own,
+          [paiId]: (parent?.custo as number | null | undefined) ?? null,
+        }));
+      } else {
+        setCustoCache((c) => ({ ...c, [id]: own }));
+      }
     } catch (err) {
       if (err instanceof FirebaseError) {
         notifications.show({
