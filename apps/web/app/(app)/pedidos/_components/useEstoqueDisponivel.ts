@@ -19,5 +19,11 @@ export function useEstoqueDisponivel(db: Firestore, produtoId: string | null): n
   );
   const { data } = useSnapshot(query);
   if (!data) return null;
-  return data.reduce((sum, row) => sum + estoqueDisponivel(row.data), 0);
+  // Reads soft-parse (see `parseSoftRead`): a malformed estoque doc can return
+  // raw data with a non-numeric quantidade, making `estoqueDisponivel` NaN.
+  // Skip such rows so the badge never shows NaN.
+  return data.reduce((sum, row) => {
+    const disp = estoqueDisponivel(row.data);
+    return Number.isFinite(disp) ? sum + disp : sum;
+  }, 0);
 }

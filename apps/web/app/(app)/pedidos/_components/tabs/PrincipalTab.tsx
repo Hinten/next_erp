@@ -68,9 +68,17 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
   const descontoTotal = form.watch('descontoTotal') ?? 0;
   const freteValor = form.watch('freteInicial')?.valorCobrado ?? 0;
 
-  // Totals exclude staged-deleted rows (they are dropped on save).
+  // Totals mirror the resolver's row filter (see PedidoForm): rows dropped on
+  // save must not inflate the live total — staged-deleted rows (`_delete`) and
+  // in-progress blank rows (no produto and no marketplace id, e.g. a freshly
+  // added row still carrying the 0.01 placeholder preço).
   const subtotal = useMemo(
-    () => itensFlat.reduce((n, i) => (i._delete ? n : n + itemSubtotal(i)), 0),
+    () =>
+      itensFlat.reduce((n, i) => {
+        if (i._delete) return n;
+        if (!i.produtoUid && !i.mktplaceId) return n;
+        return n + itemSubtotal(i);
+      }, 0),
     [itensFlat],
   );
   // Mirror of the saved `valorCobrado` (legacy `Pedido.total` — see
@@ -410,6 +418,9 @@ function ItemRow({
       shouldValidate: true,
     });
     form.setValue(`_itensFlat.${index}.sku`, produtoPicked.sku ?? null, { shouldDirty: true });
+    // Carry the produto's GTIN too — NF-e needs at least one of sku/gtin, and a
+    // GTIN-only produto would otherwise leave the item with neither.
+    form.setValue(`_itensFlat.${index}.gtin`, produtoPicked.gtin ?? null, { shouldDirty: true });
     form.setValue(`_itensFlat.${index}.nomeDeVenda`, produtoPicked.nome ?? null, {
       shouldDirty: true,
       shouldValidate: true,
@@ -455,6 +466,7 @@ function ItemRow({
       shouldValidate: true,
     });
     form.setValue(`_itensFlat.${index}.sku`, null, { shouldDirty: true });
+    form.setValue(`_itensFlat.${index}.gtin`, null, { shouldDirty: true });
     form.setValue(`_itensFlat.${index}.nomeDeVenda`, null, { shouldDirty: true });
   }
 
