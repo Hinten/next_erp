@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { millisSinceEpoch } from './datetime';
+import { millisSinceEpoch } from './shared/datetime';
 import { fotoSchema } from './storage/foto';
 import type { CollectionMetadata } from './types';
 

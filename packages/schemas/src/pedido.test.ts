@@ -4,7 +4,7 @@ import type { ItemDoPedido } from './pedido';
 
 const baseInput = {
   estado: 'pago' as const,
-  integracaoPedidoOuterRef: { uid: 'integracao/x' },
+  integracaoPedidoOuterRef: 'documents/integracao/x',
 };
 
 // All nullable fields of itemDoPedidoSchema set to null — combine with the

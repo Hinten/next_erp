@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
-import { millisSinceEpoch } from './datetime';
+import { millisSinceEpoch } from './shared/datetime';
 
 // Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth, matching
 // the Flutter `EasyFirebase` declaration `perm: 'nf1'` on `EnviNFeMsg`

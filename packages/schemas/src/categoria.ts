@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { millisSinceEpoch } from './datetime';
+import { millisSinceEpoch } from './shared/datetime';
+import { outerRefSchema } from './shared/outerRef';
 import type { CollectionMetadata } from './types';
 
 const PERM_CATEGORIA_READ = 1n << 11n;
@@ -8,8 +9,8 @@ const PERM_CATEGORIA_DELETE = 1n << 13n;
 
 /**
  * Categoria de produto. Mirrors `packages/produtos/lib/src/models.dart`.
- * `categoriaPaiOuterRef` is the Flutter outer-reference object — kept as
- * pass-through `unknown` until we render category trees here.
+ * `categoriaPaiOuterRef` is a `documents/categorias/<id>` doc-path string
+ * (Flutter `OuterRefField.toJson`).
  *
  * `.describe()` labels feed the schema-driven UI primitives (TableView /
  * ObjectView) in `@delfrance/ui`.
@@ -19,7 +20,7 @@ export const categoriaSchema = z.object({
   nomeCompleto: z.string().max(2000).nullable().default(null).describe('Nome completo'),
   permiteCadastro: z.boolean().default(true).describe('Permite cadastro'),
   categoriaGoogleId: z.string().nullable().default(null).describe('Google Product Category ID'),
-  categoriaPaiOuterRef: z.unknown().nullable().default(null),
+  categoriaPaiOuterRef: outerRefSchema.nullable().default(null),
   // Milliseconds since epoch (numeric-epoch standard); reads tolerantly.
   timestamp: millisSinceEpoch().nullable().default(null),
   // System field — creation stays in `timestamp`; this is stamped by

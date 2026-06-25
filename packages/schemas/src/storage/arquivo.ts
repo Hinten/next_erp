@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { nowMicros } from '@delfrance/core/datetime';
-import { microsSinceEpoch } from '../datetime';
+import { microsSinceEpoch } from '../shared/datetime';
 import type { CollectionMetadata } from '../types';
 
 // Mirror `PERM.arquivo` from @delfrance/auth (byte 80); duplicated locally to

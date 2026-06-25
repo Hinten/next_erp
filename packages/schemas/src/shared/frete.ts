@@ -22,7 +22,8 @@
  */
 import { z } from 'zod';
 import { microsSinceEpoch } from './datetime';
-import { ufSchema } from './endereco';
+import { ufSchema } from '../endereco';
+import { outerRefSchema } from './outerRef';
 
 /* -------------------------------------------------------------------------- */
 /*                            ESTADOS_FRETE enum                              */
@@ -495,19 +496,23 @@ export const freteDoPedidoSchema = z
 
     // Status + routing ------------------------------------------------------
     estado: estadoFreteSchema.describe('Estado do frete'),
-    integracaoFreteOuterRef: z.unknown().nullable().default(null).describe('Integração do frete'),
-    integracaoTargetOuterRef: z.unknown().nullable().default(null).describe('Target da integração'),
+    integracaoFreteOuterRef: outerRefSchema
+      .nullable()
+      .default(null)
+      .describe('Integração do frete'),
+    integracaoTargetOuterRef: outerRefSchema
+      .nullable()
+      .default(null)
+      .describe('Target da integração'),
     /** Legacy path field; kept for parse compatibility, slated for removal. */
     integracao_path: z.string().nullable().default(null).describe('Path da integração'),
 
     // Recipients ------------------------------------------------------------
-    clienteRecebedorOuterReference: z
-      .unknown()
+    clienteRecebedorOuterReference: outerRefSchema
       .nullable()
       .default(null)
       .describe('Cliente recebedor'),
-    enderecoFreteOuterReference: z
-      .unknown()
+    enderecoFreteOuterReference: outerRefSchema
       .nullable()
       .default(null)
       .describe('Endereço de entrega'),

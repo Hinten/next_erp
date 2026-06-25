@@ -333,3 +333,63 @@ export function custoDoKit(
   if (faltando.length > 0) return { custo: null, faltando };
   return { custo: roundReais(total), faltando: [] };
 }
+
+// ---------------------------------------------------------------------------
+// Kit weight
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-component weight defaults the Flutter getters fall back to when a
+ * component has no resolvable weight (`models.dart:1505` / `:1535`): 0.3 kg
+ * bruto, 0.25 kg líquido. Unlike cost, a kit weight ALWAYS computes — a missing
+ * component weight uses these defaults rather than reporting "faltando".
+ */
+export const KIT_PESO_BRUTO_FALLBACK_KG = 0.3;
+export const KIT_PESO_LIQUIDO_FALLBACK_KG = 0.25;
+
+/**
+ * Resolve a kit component's effective weight — pure port of the Flutter
+ * `getPesoBrutoKg`/`getPesoLiquidoKg` component branch (`models.dart:1487-1541`):
+ * use the component's own weight; when it has none but is a variation child
+ * (`paiId` set), fall back to the PARENT produto's weight; otherwise the crude
+ * `fallback` default. Always returns a number. `pesoByProdutoId` must carry the
+ * parents' weights too for the parent fallback to resolve.
+ */
+export function resolveComponentPeso(
+  produtoId: string,
+  pesoByProdutoId: Record<string, number | null | undefined>,
+  paiByProdutoId: Record<string, string | null | undefined>,
+  fallback: number,
+): number {
+  const own = pesoByProdutoId[produtoId];
+  if (own !== null && own !== undefined) return own;
+  const paiId = paiByProdutoId[produtoId];
+  if (paiId) {
+    const parent = pesoByProdutoId[paiId];
+    if (parent !== null && parent !== undefined) return parent;
+  }
+  return fallback;
+}
+
+/**
+ * Sum a kit's component weights — pure port of the kit branch of Flutter's
+ * `getPesoBrutoKg`/`getPesoLiquidoKg` (`models.dart:1487-1541`):
+ * `Σ peso(component) × quantidade`, rounded to 2 decimals, with a per-component
+ * `fallback` for any unresolved weight (so it never returns "missing"). Empty/
+ * absent `componentes` → `null` (the caller leaves the produto's own weight as-is).
+ */
+export function pesoDoKit(
+  componentes: ComponentesKit | null | undefined,
+  pesoByProdutoId: Record<string, number | null | undefined>,
+  paiByProdutoId: Record<string, string | null | undefined>,
+  fallback: number,
+): number | null {
+  const entries = Object.entries(componentes ?? {});
+  if (entries.length === 0) return null;
+  let total = 0;
+  for (const [produtoId, kit] of entries) {
+    total +=
+      resolveComponentPeso(produtoId, pesoByProdutoId, paiByProdutoId, fallback) * kit.quantidade;
+  }
+  return roundReais(total);
+}

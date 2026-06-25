@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { impostoProdutoSchema, produtoExtraDataSchema } from '@delfrance/schemas';
+import {
+  impostoProdutoSchema,
+  operacaoIdFromImpostoRef,
+  produtoExtraDataSchema,
+} from '@delfrance/schemas';
 import type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
 import {
   ProdutoReferencedError,
@@ -214,13 +218,13 @@ describe('produto imposto (per-operação override)', () => {
     expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/p1/imposto/op1' });
   });
 
-  it('reads the operação id from a documents/operacao/<id> ref too', () => {
-    const ops = buildImpostoWriteOps(
-      'p2',
-      [imp({ impostoOpercaoOuterRef: 'documents/operacao/opX', cfop: '6102' })],
-      1000,
-    );
-    expect(ops[0]!.path).toBe('produtos/p2/imposto/opX');
+  it('extracts the operação id from a documents/operacao/<id> ref (resolver tolerance)', () => {
+    // The schema is now strict bare `operacao/<id>`, but the runtime resolver
+    // still tolerates a legacy `documents/operacao/<id>` value when reading docs.
+    expect(operacaoIdFromImpostoRef('documents/operacao/opX')).toBe('opX');
+    expect(
+      impostoProdutoSchema.safeParse({ impostoOpercaoOuterRef: 'documents/operacao/opX' }).success,
+    ).toBe(false);
   });
 });
 

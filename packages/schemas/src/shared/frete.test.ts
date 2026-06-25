@@ -9,7 +9,7 @@ import {
   transportadoraSchema,
   veiculoSchema,
 } from './frete';
-import { derivePedidoFreteTotals, itemDoPedidoSchema } from './pedido';
+import { derivePedidoFreteTotals, itemDoPedidoSchema } from '../pedido';
 
 /* -------------------------------------------------------------------------- */
 /*      Golden-doc round-trips — fixtures shaped exactly as Flutter writes    */

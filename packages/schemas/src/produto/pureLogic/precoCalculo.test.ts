@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { FormulaCalculoPreco } from '../../listaDePrecos';
 import {
+  KIT_PESO_BRUTO_FALLBACK_KG,
+  KIT_PESO_LIQUIDO_FALLBACK_KG,
   calcularPreco,
   custoDoKit,
   diffPrecos,
   evaluateFormula,
+  pesoDoKit,
   resolveComponentCusto,
+  resolveComponentPeso,
   samePrecos,
   taxaFixaPorPeso,
   temFormulas,
@@ -236,5 +240,51 @@ describe('resolveComponentCusto', () => {
 
   it('returns null for a parentless component with no own custo', () => {
     expect(resolveComponentCusto('c', { c: null }, {})).toBeNull();
+  });
+});
+
+describe('pesoDoKit', () => {
+  const kit = (quantidade: number) => ({ quantidade, limitarEstoque: true, timestamp: null });
+
+  it('sums ALL components × quantidade regardless of limitarEstoque (no filter)', () => {
+    // c2 has limitarEstoque:false — it must STILL be counted (the legacy getter
+    // has no limitarEstoque filter). 0.5×2 + 1.25×1 = 2.25.
+    const out = pesoDoKit(
+      {
+        c1: { quantidade: 2, limitarEstoque: true, timestamp: null },
+        c2: { quantidade: 1, limitarEstoque: false, timestamp: null },
+      },
+      { c1: 0.5, c2: 1.25 },
+      {},
+      0.3,
+    );
+    expect(out).toBe(2.25);
+  });
+
+  it('uses the per-component fallback for an unresolved weight (never "missing")', () => {
+    // c1 has no weight and no parent → fallback 0.3; ×3 = 0.9.
+    expect(pesoDoKit({ c1: kit(3) }, { c1: null }, {}, KIT_PESO_BRUTO_FALLBACK_KG)).toBe(0.9);
+  });
+
+  it('falls back to the parent weight for a variation child with none of its own', () => {
+    const out = pesoDoKit({ c: kit(2) }, { c: null, pai: 0.4 }, { c: 'pai' }, 0.3);
+    expect(out).toBe(0.8); // parent 0.4 × 2 (not the 0.3 default)
+  });
+
+  it('returns null for an empty/absent kit', () => {
+    expect(pesoDoKit({}, {}, {}, 0.3)).toBeNull();
+    expect(pesoDoKit(null, {}, {}, 0.3)).toBeNull();
+  });
+});
+
+describe('resolveComponentPeso', () => {
+  it('prefers own weight, then parent, then the fallback default', () => {
+    expect(resolveComponentPeso('c', { c: 0.7 }, { c: 'pai' }, 0.3)).toBe(0.7);
+    expect(resolveComponentPeso('c', { c: null, pai: 0.9 }, { c: 'pai' }, 0.3)).toBe(0.9);
+    expect(resolveComponentPeso('c', { c: null }, {}, KIT_PESO_LIQUIDO_FALLBACK_KG)).toBe(0.25);
+  });
+
+  it('treats 0 as a real weight, not "missing"', () => {
+    expect(resolveComponentPeso('c', { c: 0 }, {}, 0.3)).toBe(0);
   });
 });

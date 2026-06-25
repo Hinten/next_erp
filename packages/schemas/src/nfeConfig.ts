@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
-import { millisSinceEpoch } from './datetime';
+import { millisSinceEpoch } from './shared/datetime';
 
 // Mirror `PERM.fiscal` from @delfrance/auth.
 const PERM_FISCAL_READ = 1n << 72n;
