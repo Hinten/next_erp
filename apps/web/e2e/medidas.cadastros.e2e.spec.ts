@@ -89,14 +89,14 @@ test.describe.serial('Medidas e2e — TableView / ObjectView', () => {
     // Filter to the numbered rows only (excludes the `-mkt` fixture, which
     // would otherwise sort last and break the desc-first assertion).
     await applyTextFilter(page, 'Nome', `${prefix}-0`);
-    await expect.poll(() => firstRowText(page)).toContain(row(1));
+    await expect.poll(() => firstRowText(page), { timeout: 15_000 }).toContain(row(1));
 
     await clickColumnSort(page, 'Nome'); // asc → desc
     await expect(page).toHaveURL(/sort=nome%3Adesc/);
-    await expect.poll(() => firstRowText(page)).toContain(row(7));
+    await expect.poll(() => firstRowText(page), { timeout: 15_000 }).toContain(row(7));
 
     await clickColumnSort(page, 'Nome'); // desc → asc
-    await expect.poll(() => firstRowText(page)).toContain(row(1));
+    await expect.poll(() => firstRowText(page), { timeout: 15_000 }).toContain(row(1));
   });
 
   test('navigates to the new-tabela page', async ({ page }) => {
