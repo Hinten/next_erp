@@ -221,6 +221,9 @@ function QuickCreateForm({
       form.clearErrors('cpf_cnpj');
       const { nome, ie, sefazNote } = outcome.data;
       const SET_OPTS = { shouldDirty: true, shouldValidate: true } as const;
+      // A CNPJ belongs to a Pessoa Jurídica — switch the tipo so the form stays
+      // valid (PF + CNPJ is rejected) and the PJ-only IE field is revealed.
+      if (form.getValues('tipo') !== '1') form.setValue('tipo', '1', SET_OPTS);
       form.setValue('nome', nome, SET_OPTS);
       if (ie) form.setValue('ie', ie, SET_OPTS);
       // Nome changed — re-run the dedup check against the resolved razão social.
@@ -379,21 +382,20 @@ function QuickCreateForm({
                   }}
                   label="CPF / CNPJ"
                   error={fieldState.error?.message}
-                  // PJ-only "buscar dados" — mirrors the cliente pages' affordance.
+                  // "buscar dados" — shown for any tipo, enabled once the value
+                  // is a valid CNPJ; a successful lookup switches tipo to PJ.
                   rightSection={
-                    tipo === '1' ? (
-                      <Tooltip label="Buscar dados do CNPJ (razão social, IE)" withArrow>
-                        <ActionIcon
-                          variant="subtle"
-                          onClick={buscarDados}
-                          loading={lookupLoading}
-                          disabled={!isCnpj}
-                          aria-label="Buscar dados do CNPJ"
-                        >
-                          <IconSearch size={16} />
-                        </ActionIcon>
-                      </Tooltip>
-                    ) : undefined
+                    <Tooltip label="Buscar dados do CNPJ (razão social, IE)" withArrow>
+                      <ActionIcon
+                        variant="subtle"
+                        onClick={buscarDados}
+                        loading={lookupLoading}
+                        disabled={!isCnpj}
+                        aria-label="Buscar dados do CNPJ"
+                      >
+                        <IconSearch size={16} />
+                      </ActionIcon>
+                    </Tooltip>
                   }
                 />
               );

@@ -54,22 +54,37 @@ test.describe.serial('Clientes e2e — CNPJ lookup', () => {
     await cleanupByNamePrefix('clientes', prefix);
   });
 
-  test('shows the "buscar dados" button only for Pessoa Jurídica', async ({ page }) => {
+  test('shows the "buscar dados" button for any tipo, enabled only for a valid CNPJ', async ({
+    page,
+  }) => {
     const button = page.getByRole('button', { name: 'Buscar dados do CNPJ' });
 
     await page.goto('/clientes/novo');
-    // No tipo selected yet → no lookup button.
-    await expect(button).toHaveCount(0);
+    // #293: the button is present regardless of tipo, disabled until a valid CNPJ.
+    await expect(button).toBeVisible();
+    await expect(button).toBeDisabled();
 
     await selectField(page, 'Tipo', 'Pessoa Física');
-    await expect(button).toHaveCount(0);
-
-    await selectField(page, 'Tipo', 'Pessoa Jurídica');
     await expect(button).toBeVisible();
-    // Disabled until a valid 14-digit CNPJ is present.
     await expect(button).toBeDisabled();
+
     await fillField(page, 'CPF / CNPJ', CNPJ);
     await expect(button).toBeEnabled();
+  });
+
+  test('auto-switches Pessoa Física to PJ when a CNPJ is looked up', async ({ page }) => {
+    await stubCnpjLookup(page);
+    await page.goto('/clientes/novo');
+    await selectField(page, 'Tipo', 'Pessoa Física');
+    await fillField(page, 'CPF / CNPJ', CNPJ);
+    await page.getByRole('button', { name: 'Buscar dados do CNPJ' }).click();
+
+    // A CNPJ ⇒ PJ: the lookup flips the tipo (so PF + CNPJ never stays invalid)
+    // and fills nome. The stub forces supported:false, so IE is left blank.
+    await expect(page.getByRole('combobox', { name: 'Tipo', exact: true })).toHaveValue(
+      'Pessoa Jurídica',
+    );
+    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(RAZAO);
   });
 
   test('fills razão social and offers the address on lookup', async ({ page }) => {
