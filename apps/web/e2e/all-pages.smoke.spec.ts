@@ -28,6 +28,7 @@ const STATIC_ROUTES: string[] = [
   '/categorias',
   '/categorias/novo',
   '/medidas',
+  '/medidas/novo',
   '/listas-de-precos',
   '/depositos',
   '/etiquetas',
