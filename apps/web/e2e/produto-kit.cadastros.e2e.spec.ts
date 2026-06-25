@@ -135,4 +135,33 @@ test.describe.serial('Produtos kit e2e — Gerar Variações (per-variation grid
     });
     expect(child?.componentesKitKeys).toEqual([seed.varCompPId]);
   });
+
+  test('un-kitting the parent clears its variation children’s componentesKit', async ({ page }) => {
+    // Precondition: the previous test left the size-P child carrying a kit map.
+    await expect
+      .poll(async () => (await getProdutoData(seed.varKitPId))?.componentesKit != null, {
+        timeout: 15_000,
+      })
+      .toBe(true);
+
+    await page.goto(`/produtos/${seed.kitId}/editar`);
+    await page.getByRole('tab', { name: 'Kit' }).click();
+
+    // Toggle "É kit" OFF and save — the parent stops being a kit.
+    await page.getByRole('switch', { name: 'É kit', exact: true }).click();
+    await page.getByRole('button', { name: 'Salvar alterações', exact: true }).click();
+
+    // Kit-status propagation (Flutter parity): the variation child's kit map is
+    // cleared on the child doc. This can ONLY come from the propagation use-case
+    // — `deriveOnSave` clears the PARENT's map, never the child's.
+    await expect
+      .poll(
+        async () => {
+          const c = await getProdutoData(seed.varKitPId);
+          return { kit: c?.componentesKit ?? null, ehKit: c?.ehKit ?? null };
+        },
+        { timeout: 30_000 },
+      )
+      .toEqual({ kit: null, ehKit: false });
+  });
 });

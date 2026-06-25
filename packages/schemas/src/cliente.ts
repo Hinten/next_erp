@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { validateCNPJ, validateCPF, validateCpfCnpj } from '@delfrance/core/documents';
 import { isValidTelefone } from '@delfrance/core/phone';
-import { millisSinceEpoch } from './datetime';
+import { millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 
 // Permission bits live in @delfrance/auth. Duplicating the literal values

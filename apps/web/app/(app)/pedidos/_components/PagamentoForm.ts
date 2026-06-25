@@ -179,6 +179,18 @@ export function remainingToPay(
 }
 
 /**
+ * Total amount already paid on a pedido: the sum of every {@link isPaying}
+ * payment's `valor` (2-decimal). Drives the footer's "Vlr. Pago" / "Troco".
+ */
+export function sumPagamentosPagos(pagamentos: ReadonlyArray<PagamentoSummary>): number {
+  return roundReais(
+    pagamentos
+      .filter((p) => isPaying(p.status_pagamento))
+      .reduce((sum, p) => sum + (p.valor ?? 0), 0),
+  );
+}
+
+/**
  * Validate the form before `savePagamento` so the Zod converter never sees an
  * invalid pagamento (which would throw an uncaught `ZodError`). `valor` must be a
  * number ≥ 0 (`pagamentoSchema` is `min(0)`); `parcelas` ≥ 1. Returns a

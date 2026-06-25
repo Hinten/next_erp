@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { millisSinceEpoch } from './datetime';
+import { millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 
 // Mirror `PERM.produto` from @delfrance/auth; duplicated locally to avoid a

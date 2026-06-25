@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { outerRefSchema } from './shared/outerRef';
 import type { CollectionMetadata } from './types';
 
 const PERM_CONVERSA_READ = 1n << 48n;
@@ -98,12 +99,12 @@ export const conversaSchema = z
     estadoConversa: estadoConversaSchema.default(ESTADO_CONVERSA.naoRespondido),
     origem: origemConversaSchema.default('site'),
 
-    // Outer refs (pass-through; the Flutter app authors them with full paths).
-    usarioOuterRef: z.unknown().nullable().default(null),
-    integracaoOuterRef: z.unknown().nullable().default(null),
-    pedidoOuterRef: z.unknown().nullable().default(null),
-    incidenteOuterRef: z.unknown().nullable().default(null),
-    produtoOuterRef: z.unknown().nullable().default(null),
+    // Outer refs — `documents/<col>/<id>` doc-path strings (Flutter ODM format).
+    usarioOuterRef: outerRefSchema.nullable().default(null),
+    integracaoOuterRef: outerRefSchema.nullable().default(null),
+    pedidoOuterRef: outerRefSchema.nullable().default(null),
+    incidenteOuterRef: outerRefSchema.nullable().default(null),
+    produtoOuterRef: outerRefSchema.nullable().default(null),
 
     usuarios: z.array(z.string()).nullable().default(null),
 
@@ -211,7 +212,7 @@ export const mensagemSchema = z
     conteudo: z.string().nullable().default(null),
     resposta: z.string().nullable().default(null),
     canal: z.number().int().default(0),
-    usarioMensagemOuterRef: z.unknown().nullable().default(null),
+    usarioMensagemOuterRef: outerRefSchema.nullable().default(null),
     user_id: z.string().nullable().default(null),
     urlAvatar: z.string().nullable().default(null),
     mid: z.string().nullable().default(null),

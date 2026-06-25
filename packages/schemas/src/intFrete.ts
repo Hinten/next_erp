@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
-import { millisSinceEpoch } from './datetime';
+import { millisSinceEpoch } from './shared/datetime';
+import { outerRefSchema } from './shared/outerRef';
 import { enderecoSchema } from './endereco';
-import { integracoesFreteSchema } from './frete';
+import { integracoesFreteSchema } from './shared/frete';
 
 const PERM_FRETE_READ = 1n << 88n;
 const PERM_FRETE_WRITE = 1n << 89n;
@@ -177,7 +178,7 @@ export const intFreteSchema = z
     nome: z.string().min(1).max(255).describe('Nome'),
     ativo: z.boolean().default(true).describe('Ativo'),
     /** String doc path `documents/filiais/<id>` (Flutter ODM format). */
-    filialIntegracaoFreteOuterRef: z.string().min(1).describe('Filial'),
+    filialIntegracaoFreteOuterRef: outerRefSchema.describe('Filial'),
     enderecoDeOrigem: enderecoSchema
       .passthrough()
       .nullable()

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
-import { microsSinceEpoch, millisSinceEpoch } from './datetime';
+import { microsSinceEpoch, millisSinceEpoch } from './shared/datetime';
 
 // Mirror `PERM.nfe` from @delfrance/auth.
 const PERM_NFE_READ = 1n << 32n;

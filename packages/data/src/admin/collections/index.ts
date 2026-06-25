@@ -21,4 +21,5 @@ export { arquivoCollection } from './arquivoCollection';
 export { produtoCollection } from './produtoCollection';
 export { intFreteCollection } from './intFreteCollection';
 export { tokenMelEnvCollection } from './tokenMelEnvCollection';
+export { credenciaisIntegracaoCollection } from './credenciaisIntegracaoCollection';
 export { pedidoCollection } from './pedidoCollection';

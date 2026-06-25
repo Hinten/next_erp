@@ -49,7 +49,7 @@ const enderecoOrigemFields: Record<string, FieldConfig> = {
 export const intFreteFields: Record<string, FieldConfig> = {
   filialIntegracaoFreteOuterRef: {
     label: 'Filial',
-    renderInput: filialRefRenderInput(true, /* emitDocPath */ true),
+    renderInput: filialRefRenderInput(true),
   },
   faixaCep: {
     section: SECTION.faixasCep,

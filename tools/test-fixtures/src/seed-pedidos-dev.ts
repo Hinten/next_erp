@@ -475,11 +475,11 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
       // matters for the UI walk; integração (which owns the issuing filial),
       // operação + endereço fiscal are required by the NF-e orchestrator.
       vendedorPedidoOuterRef: null,
-      integracaoPedidoOuterRef: integracaoRef,
-      operacaoPedidoOuterRef: operacaoRef,
-      clientePedidoOuterRef: clienteRef,
-      enderecoFiscalOuterRef: enderecoFiscalRef,
-      listaDePrecosOuterRef: db().collection('listaDePrecos').doc('dev-lista-varejo'),
+      integracaoPedidoOuterRef: `documents/${integracaoRef.path}`,
+      operacaoPedidoOuterRef: `documents/${operacaoRef.path}`,
+      clientePedidoOuterRef: clienteRef ? `documents/${clienteRef.path}` : null,
+      enderecoFiscalOuterRef: enderecoFiscalRef ? `documents/${enderecoFiscalRef.path}` : null,
+      listaDePrecosOuterRef: `documents/listaDePrecos/dev-lista-varejo`,
       // Optional embedded frete block. UI cells read `estado` +
       // `codRastreio` + `prazoDespacho`; the NF-e orchestrator reads
       // `modalidade` + `valorCobrado` + `transportadora` + `veiculo` +

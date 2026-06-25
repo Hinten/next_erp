@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { millisSinceEpoch } from './datetime';
+import { millisSinceEpoch } from './shared/datetime';
+import { idRefSchema } from './shared/outerRef';
 import type { CollectionMetadata } from './types';
 
 // Mirrors PERM.impostoCategoria in packages/auth/src/permissions.ts (byte 12;
@@ -24,7 +25,7 @@ const PERM_IMPOSTO_CATEGORIA_DELETE = 1n << 98n;
 export const impostoCategoriaSchema = z
   .object({
     id: z.string().nullable().default(null),
-    impostoOperacaoOuterRef: z.string().nullable().default(null),
+    impostoOperacaoOuterRef: idRefSchema.nullable().default(null),
     dataCadastro: millisSinceEpoch().nullable().default(null),
   })
   .passthrough();

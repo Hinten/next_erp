@@ -18,7 +18,7 @@ export type {
 
 export { ALL_DOMAINS } from './registry';
 
-export { millisSinceEpoch, microsSinceEpoch } from './datetime';
+export { millisSinceEpoch, microsSinceEpoch } from './shared/datetime';
 // Re-export `nowMicros` so schema consumers (e.g. @delfrance/storage,
 // apps/functions) can stamp numeric-epoch fields without a direct @delfrance/core
 // dep. (The other epoch/coercion helpers are imported straight from
@@ -29,7 +29,21 @@ export { nowMicros } from '@delfrance/core/datetime';
 // data layer (which depends on schemas, not core directly) can detect changes.
 export { valuesEqual } from '@delfrance/core';
 
-export { auditEntrySchema, type AuditEntry } from './audit';
+export { auditEntrySchema, type AuditEntry } from './shared/audit';
+
+export {
+  outerRefSchema,
+  idRefSchema,
+  docIdSchema,
+  outerRefLooseSchema,
+  toOuterRef,
+  idFromRef,
+  parseRef,
+  type OuterRef,
+  type IdRef,
+  type DocId,
+  type OuterRefLoose,
+} from './shared/outerRef';
 
 export {
   cliente,
@@ -87,7 +101,7 @@ export {
   type Transportadora,
   type Veiculo,
   type Volume,
-} from './frete';
+} from './shared/frete';
 
 export {
   DIA_DA_SEMANA_LABELS,
@@ -150,8 +164,14 @@ export {
   INTEGRACAO_TIPO,
   INTEGRACAO_TIPO_LABELS,
   pluginIdForTipo,
+  // `credenciaisIntegracao` is intentionally NOT exported as a DomainSchema and
+  // NOT registered in ALL_DOMAINS — it is an admin-only, default-deny secret
+  // store (mirrors `certificadoSecreto`). Only its schema/meta/type are public.
+  credenciaisIntegracaoSchema,
+  credenciaisIntegracaoMeta,
   type Integracao,
   type IntegracaoTipo,
+  type CredenciaisIntegracao,
 } from './integracao';
 
 export {
