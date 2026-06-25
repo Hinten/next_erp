@@ -145,6 +145,74 @@ export async function seedDepositos(prefix: string, n: number): Promise<void> {
 }
 
 /**
+ * Seed `n` tabela-de-medidas (`tabMedi`) docs. `codigo`/`descricao` alternate
+ * null/string so the Nome/Código columns and filters have something to bite
+ * on. `dataCadastro` is ms-epoch (the Flutter wire format).
+ */
+export async function seedMedidas(prefix: string, n: number): Promise<void> {
+  const col = db().collection('tabMedi');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      nome: `${prefix}-${pad(i)}`,
+      codigo: i % 2 === 0 ? `COD-${pad(i)}` : null,
+      descricao: i % 3 === 0 ? `${prefix}-${pad(i)} descrição` : null,
+      fotosArquivosIds: null,
+      fotos: null,
+      tabelasDeMedidasMercadoLivre: null,
+      tabelasMedidasShopee: null,
+      dataCadastro: Date.now(),
+      ultimaModificacao: null,
+    });
+  }
+  await batch.commit();
+}
+
+/**
+ * Seed exactly one `tabMedi` doc (`<prefix>-mkt`) carrying NON-empty
+ * marketplace maps — a Mercado Livre chart (keyed by ML conta id) and a Shopee
+ * size-chart reference (keyed by Shopee conta id). These are authored by the
+ * marketplace integrations, excluded from the CRUD form, and must survive an
+ * edit untouched; the returned maps let the spec assert byte-equality.
+ */
+export async function seedMedidaComMarketplace(prefix: string): Promise<{
+  id: string;
+  nome: string;
+  mercadoLivre: Record<string, unknown>;
+  shopee: Record<string, unknown>;
+}> {
+  const id = `${prefix}-mkt`;
+  const nome = `${prefix}-mkt`;
+  const mercadoLivre = {
+    'conta-ml-1': {
+      tabelas: [{ id: '1594439', nome: 'Chart A', domain_id: 'MLB-PANTS', rows: [] }],
+    },
+  };
+  const shopee = {
+    'conta-shopee-1': [{ categoryId: 11012, size_chart_id: 700024639, name: 'Camisetas' }],
+  };
+  await db().collection('tabMedi').doc(id).set({
+    nome,
+    codigo: 'MKT-001',
+    descricao: null,
+    fotosArquivosIds: null,
+    fotos: null,
+    tabelasDeMedidasMercadoLivre: mercadoLivre,
+    tabelasMedidasShopee: shopee,
+    dataCadastro: Date.now(),
+    ultimaModificacao: null,
+  });
+  return { id, nome, mercadoLivre, shopee };
+}
+
+/** Full data of the first `tabMedi` doc named `nome`, or null. */
+export async function getTabMediByName(nome: string): Promise<Record<string, unknown> | null> {
+  const snap = await db().collection('tabMedi').where('nome', '==', nome).limit(1).get();
+  const data = snap.docs[0]?.data();
+  return data ? (data as Record<string, unknown>) : null;
+}
+
+/**
  * Seed exactly one ACTIVE deposito (`<prefix>-dep`, `ativo: true`) and return
  * its id + nome. The Estoque tab lists active depósitos ordered by `nome`
  * (bounded), so the seeded one shows as long as the shared collection stays
@@ -373,12 +441,12 @@ export async function seedBalcaoFixtures(
       ativo: i % 2 === 1,
       cor: null,
       modalidadeFreteImportacao: null,
-      filialIntegracaoPedidoOuterRef: filialRef,
-      tabelaNormalOuterRef: listaRef,
+      filialIntegracaoPedidoOuterRef: `documents/${filialRef.path}`,
+      tabelaNormalOuterRef: `documents/${listaRef.path}`,
       tabelaPromocionalOuterRef: null,
       operacaoOuterRef: null,
       operacaoDevolucaoOuterRef: null,
-      depositoOuterRef: depositoRef,
+      depositoOuterRef: `documents/${depositoRef.path}`,
       dataCadastro: now,
     });
   }

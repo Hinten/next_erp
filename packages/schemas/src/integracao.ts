@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './datetime';
+import { outerRefSchema } from './outerRef';
 import type { CollectionMetadata } from './types';
 
 const PERM_INTEGRACAO_READ = 1n << 56n;
@@ -92,13 +93,16 @@ export const integracaoSchema = z
     cor: z.number().int().nullable().default(null),
     modalidadeFreteImportacao: z.number().int().nullable().default(null),
 
-    // Outer references — opaque pass-through.
-    filialIntegracaoPedidoOuterRef: z.unknown(),
-    tabelaNormalOuterRef: z.unknown(),
-    tabelaPromocionalOuterRef: z.unknown().nullable().default(null),
-    operacaoOuterRef: z.unknown().nullable().default(null),
-    operacaoDevolucaoOuterRef: z.unknown().nullable().default(null),
-    depositoOuterRef: z.unknown(),
+    // Outer references — `documents/<col>/<id>` doc-path strings (Flutter ODM).
+    // Nullable so a legacy integração without a given ref (e.g. a marketplace
+    // channel with no filial) still reads/saves; the balcão form requires the
+    // ones it needs at the field level.
+    filialIntegracaoPedidoOuterRef: outerRefSchema.nullable().default(null),
+    tabelaNormalOuterRef: outerRefSchema.nullable().default(null),
+    tabelaPromocionalOuterRef: outerRefSchema.nullable().default(null),
+    operacaoOuterRef: outerRefSchema.nullable().default(null),
+    operacaoDevolucaoOuterRef: outerRefSchema.nullable().default(null),
+    depositoOuterRef: outerRefSchema.nullable().default(null),
 
     dataCadastro: millisSinceEpoch().nullable().default(null),
   })

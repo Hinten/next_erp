@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
 import { microsSinceEpoch } from '../../datetime';
+import { outerRefSchema } from '../../outerRef';
 import { estadoPedidoSchema } from './pedido';
 
 // Shares the PEDIDO permission domain (audit trail of the parent order).
@@ -19,7 +20,10 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
 export const historicoEstadoPedidoSchema = z
   .object({
     estado: estadoPedidoSchema.describe('Estado'),
-    usuarioHistoricoEstadosPedidoOuterRef: z.unknown().nullable().default(null).describe('Usuário'),
+    usuarioHistoricoEstadosPedidoOuterRef: outerRefSchema
+      .nullable()
+      .default(null)
+      .describe('Usuário'),
     data: microsSinceEpoch('Data').nullable().default(null),
   })
   .passthrough();

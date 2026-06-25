@@ -12,8 +12,11 @@ import { getDb } from './lib/admin';
  * America/São_Paulo). Catches lost reconcile tasks, pre-existing stuck docs, and
  * transmits approved EPECs once the filial leaves contingency (`transmitirPosEpec`
  * — which signs + emits, so this function needs `NFE_CERT_ENC_KEY` and, in prod,
- * `NFE_ALLOW_PRODUCAO`). Gated per-doc by `proximaConsultaEm`, so it never
- * consults ahead of a task's schedule. Per-doc errors are reported, not thrown.
+ * `NFE_ALLOW_PRODUCAO`). It covers BOTH the `nfev4` lotes and the `cartacorrecao`
+ * (CC-e `aguardandoVinculo`) records (#241) — the `scanned/recovered/stillPending`
+ * counters below are the combined tally of both. Gated per-doc by
+ * `proximaConsultaEm`, so it never consults ahead of a task's schedule. Per-doc
+ * errors are reported, not thrown.
  */
 export const nfeReconcileSweep = onSchedule(
   { schedule: '0,30 8-19 * * 1-5', timeZone: 'America/Sao_Paulo' },

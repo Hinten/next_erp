@@ -12,7 +12,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 
-import { nfev4Collection } from '@delfrance/data/admin/collections';
+import { cartaCorrecaoCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
   buildNFeProc,
@@ -23,12 +23,19 @@ import {
   outcomeFromRetConsSit,
   type TpEmis,
 } from '@delfrance/integrations-nfe';
-import { ESTADO_NFE, type EstadoNFe, type NotaFiscalEletronica } from '@delfrance/schemas';
+import {
+  type CartaCorrecao,
+  ESTADO_ENVI_NFE_MSG,
+  ESTADO_NFE,
+  type EstadoNFe,
+  type NotaFiscalEletronica,
+} from '@delfrance/schemas';
 
 import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime, resolveFilialRuntimeByCnpj } from '../filial-cert';
 import { persistPatch, procPersistExtras } from '../orchestrator/audit';
 import { loadNfeConfigForEmission } from '../orchestrator/bundle';
+import { reconcileCartaCorrecaoVinculo } from '../orchestrator/carta-correcao';
 import { transmitirPosEpec } from '../orchestrator/epec';
 import { recover539IfNeeded } from '../orchestrator/recover539';
 import { reconcileByRecibo } from '../orchestrator/reconcile';
@@ -78,6 +85,93 @@ function isDue(data: PendingDoc, now: Date, timeoutMs: number): boolean {
     now,
     timeoutMs,
   );
+}
+
+/**
+ * CC-e backstop sweep — the `cartacorrecao` analogue of the lote sweep (#241).
+ *
+ * A cStat-136 CC-e (`aguardandoVinculo`) is normally resolved by its `cce-vinculo`
+ * Cloud Task; if that task is ever lost (enqueue failure, function down at
+ * dispatch, dead-lettered past `maxAttempts`), the record would sit pending
+ * forever. This collection-group scan re-checks each due record via the same
+ * idempotent `reconcileCartaCorrecaoVinculo` the task uses — restoring the
+ * dual-mechanism (task + sweep) symmetry the lote path already has.
+ *
+ * Like the lote path, it does NOT re-enqueue a task: the cron's own cadence,
+ * gated by each record's refreshed `proximaConsultaEm`, is the recovery. The
+ * estado filter is server-side (a single-field group query — no index needed on
+ * Firestore Enterprise); the due-gate is applied in code so the sweep never
+ * preempts a healthy task.
+ */
+export async function sweepCartasCorrecaoPendentes(args: {
+  fs: Firestore;
+  baseRt: NFeBaseRuntime;
+  batchSize: number;
+  now: Date;
+}): Promise<ProcessarPendentesResult> {
+  const { fs, baseRt, batchSize, now } = args;
+  const nowMicros = now.getTime() * 1000;
+
+  const snap = await cartaCorrecaoCollection
+    .groupQuery(fs)
+    .where('estado', '==', ESTADO_ENVI_NFE_MSG.aguardandoVinculo)
+    .limit(batchSize)
+    .get();
+
+  let scanned = 0;
+  let recovered = 0;
+  let stillPending = 0;
+  const errors: { chave: string | null; error: string }[] = [];
+
+  for (const doc of snap.docs) {
+    scanned++;
+    const data = doc.data() as CartaCorrecao;
+
+    // Due-gate: respect a future `proximaConsultaEm` (the task's pacing) so the
+    // backstop never re-checks ahead of schedule. A null pacing (a stranded
+    // record whose schedule was lost) is treated as due so it still recovers.
+    if (data.proximaConsultaEm != null && data.proximaConsultaEm > nowMicros) {
+      stillPending++;
+      continue;
+    }
+
+    // Reconstruct the task payload from the doc path
+    // (pedidos/{pedidoId}/nfev4/{nfeId}/cartacorrecao/{cceId}). The filial is
+    // resolved inside reconcileCartaCorrecaoVinculo from the NF-e doc, so no
+    // filialId is needed here.
+    const cceId = doc.ref.id;
+    const nfeId = doc.ref.parent.parent?.id;
+    const pedidoId = doc.ref.parent.parent?.parent.parent?.id;
+    if (!nfeId || !pedidoId) {
+      errors.push({ chave: null, error: `${doc.ref.path}: malformed cartacorrecao path` });
+      continue;
+    }
+
+    try {
+      const result = await reconcileCartaCorrecaoVinculo(fs, baseRt, {
+        kind: 'cce-vinculo',
+        pedidoId,
+        nfeId,
+        cceId,
+        nSeqEvento: data.nSeqEvento,
+        attempt: data.retries ?? 0,
+      });
+      if (result.disposition === 'pending') {
+        stillPending++;
+      } else {
+        // resolved / capped / rejected / gone / already-resolved → terminal for
+        // this record (or an idempotent no-op); count as handled.
+        recovered++;
+      }
+    } catch (e) {
+      errors.push({
+        chave: null,
+        error: `${doc.ref.path}: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  }
+
+  return { scanned, recovered, stillPending, errors };
 }
 
 export async function runProcessarPendentes(args: {
@@ -274,5 +368,15 @@ export async function runProcessarPendentes(args: {
     }
   }
 
-  return { scanned, recovered, stillPending, errors };
+  // CC-e backstop sweep (#241) — the cartacorrecao analogue of the lote sweep
+  // above. Folded into the same tallies; its per-doc errors carry a
+  // cartacorrecao path (chave: null) in the message.
+  const cce = await sweepCartasCorrecaoPendentes({ fs, baseRt, batchSize, now });
+
+  return {
+    scanned: scanned + cce.scanned,
+    recovered: recovered + cce.recovered,
+    stillPending: stillPending + cce.stillPending,
+    errors: [...errors, ...cce.errors],
+  };
 }

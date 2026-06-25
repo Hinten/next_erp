@@ -4,16 +4,15 @@ import { useMemo } from 'react';
 import { Select } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import { type DocumentReference, type Firestore, getDocs } from 'firebase/firestore';
+import { type Firestore, getDocs } from 'firebase/firestore';
 import { buildQuery, orderByField } from '@delfrance/data';
-import type { ListaDePrecos } from '@delfrance/schemas';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 
 export interface ListaDePrecosPickerProps {
   db: Firestore;
   value: unknown;
-  onChange: (next: DocumentReference<ListaDePrecos> | null) => void;
+  onChange: (next: string | null) => void;
   label?: string;
   disabled?: boolean;
   error?: string;
@@ -70,12 +69,7 @@ export function ListaDePrecosPicker({
       data={options}
       value={currentId}
       onChange={(id) => {
-        if (!id) {
-          onChange(null);
-          return;
-        }
-        const row = rows.find((r) => r.id === id);
-        if (row) onChange(row.ref as DocumentReference<ListaDePrecos>);
+        onChange(id ? `documents/${listaDePrecosCollection.resolvePath({})}/${id}` : null);
       }}
       disabled={disabled || query.isLoading}
       error={error ?? (query.error instanceof FirebaseError ? query.error.message : undefined)}

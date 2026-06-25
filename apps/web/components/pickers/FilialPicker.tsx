@@ -16,9 +16,8 @@ import { CollectionSelect } from '@/components/collection-select/CollectionSelec
  *   `regexContains` — see `buildSimilarityPattern` in @delfrance/data)
  *   across razão social, fantasia and CNPJ — so any filial is reachable
  *   regardless of the 5-doc initial window.
- * - `emitDocPath` picks the emitted wire shape: `true` → Flutter-ODM doc-path
- *   string `documents/filiais/<id>` (e.g. `int_frete` refs typed
- *   `z.string()`); `false` → native `DocumentReference` (e.g. `integracao`).
+ * - Emits the Flutter-ODM doc-path string `documents/filiais/<id>` for every
+ *   filial ref (`int_frete`, `integracao`, the NF-e export filter, …).
  */
 
 const INITIAL_LIMIT = 5;
@@ -38,7 +37,6 @@ export interface FilialPickerProps {
   required?: boolean;
   disabled?: boolean;
   error?: string;
-  emitDocPath?: boolean;
 }
 
 export function FilialPicker({
@@ -51,7 +49,6 @@ export function FilialPicker({
   required,
   disabled,
   error,
-  emitDocPath = false,
 }: FilialPickerProps) {
   return (
     <CollectionSelect
@@ -69,7 +66,6 @@ export function FilialPicker({
       required={required}
       limit={INITIAL_LIMIT}
       orderBy={RECENCY_ORDER}
-      emitDocPath={emitDocPath}
     />
   );
 }
@@ -77,10 +73,7 @@ export function FilialPicker({
 /**
  * `FieldConfig.renderInput` wiring for schema-driven ObjectViews.
  */
-export function filialRefRenderInput(
-  required: boolean,
-  emitDocPath: boolean,
-): FieldConfig['renderInput'] {
+export function filialRefRenderInput(required: boolean): FieldConfig['renderInput'] {
   function FilialRefInput(props: FieldRenderProps) {
     return (
       <FilialPicker
@@ -93,7 +86,6 @@ export function filialRefRenderInput(
         disabled={props.disabled}
         error={props.error}
         required={required}
-        emitDocPath={emitDocPath}
       />
     );
   }

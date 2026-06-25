@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
+import { outerRefSchema } from '../../outerRef';
 
 // Stock is its own permission domain (`PERM.estoque`, bits 64–66 — same bits
 // the `deposito` schema mirrors), distinct from the produto bits even though
@@ -27,7 +28,7 @@ const PERM_ESTOQUE_DELETE = 1n << 66n;
 export const estoqueProdutoSchema = z
   .object({
     parentId: z.string().nullable().default(null),
-    depositoOuterRef: z.string().min(1),
+    depositoOuterRef: outerRefSchema,
     quantidade: z.number().default(0),
     quantidadeReservada: z.number().min(0).default(0),
     localizacao: z.string().max(50).nullable().default(null),

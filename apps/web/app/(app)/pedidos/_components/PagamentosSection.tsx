@@ -22,8 +22,9 @@ import {
 import { DateTimePicker } from '@mantine/dates';
 import { notifications } from '@mantine/notifications';
 import { IconCash } from '@tabler/icons-react';
+import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import { getDocs } from 'firebase/firestore';
+import { getDoc, getDocs } from 'firebase/firestore';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import {
@@ -42,6 +43,7 @@ import {
 import { formatReais } from '@delfrance/core/money';
 import { epochToPickerString, pickerStringToEpoch } from '@delfrance/ui';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
+import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { CurrencyInput } from '@/app/(app)/produtos/_components/CurrencyInput';
@@ -555,11 +557,24 @@ function PagamentoRow({
   const [refunding, setRefunding] = useState(false);
   const [refundError, setRefundError] = useState<string | null>(null);
 
-  // Resolve a configured gateway for this pagamento (if its
-  // metodoPagamentoOuterRef points at a known TIPO_INTEGRACAO_PGTO). Today the
-  // registry has no implementations, so the refund button stays disabled.
-  const ref = pagamento.metodoPagamentoOuterRef as { tipo?: number } | null | undefined;
-  const gatewayId = ref?.tipo ? gatewayIdFromTipo(ref.tipo) : null;
+  // Resolve a configured gateway for this pagamento: dereference its
+  // `metodoPagamentoOuterRef` (a `documents/metodo_pgto/<id>` doc-path string) to
+  // the integration doc and read its `tipo`. Only runs when set (most are null).
+  // Today the registry has no implementations, so the refund button stays disabled.
+  const db = getFirebaseFirestore();
+  const metodoRef = useMemo(
+    () => dereferenceOuterRef(db, pagamento.metodoPagamentoOuterRef),
+    [db, pagamento.metodoPagamentoOuterRef],
+  );
+  const { data: metodo } = useQuery({
+    queryKey: ['metodoPgto', metodoRef?.path ?? null],
+    enabled: metodoRef != null,
+    queryFn: async () => {
+      const snap = await getDoc(metodoRef!);
+      return snap.exists() ? (snap.data() as { tipo?: number }) : null;
+    },
+  });
+  const gatewayId = metodo?.tipo != null ? gatewayIdFromTipo(metodo.tipo) : null;
   const gateway = gatewayId ? getGateway(gatewayId) : null;
 
   async function handleStatusChange(next: string | null) {

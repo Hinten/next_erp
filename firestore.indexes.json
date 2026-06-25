@@ -69,6 +69,16 @@
       "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
     },
     {
+      "collectionGroup": "tabMedi",
+      "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]
+    },
+    {
+      "collectionGroup": "tabMedi",
+      "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
+    },
+    {
       "collectionGroup": "filiais",
       "queryScope": "COLLECTION",
       "fields": [{ "fieldPath": "razaoSocial", "order": "ASCENDING" }]
@@ -87,6 +97,14 @@
       "collectionGroup": "pedidos",
       "queryScope": "COLLECTION",
       "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "chNFeReferenciadas", "order": "ASCENDING" },
+        { "fieldPath": "numero", "order": "DESCENDING" }
+      ]
     },
     {
       "collectionGroup": "enderecos",
@@ -120,6 +138,29 @@
       "fields": [
         { "fieldPath": "filialId", "order": "ASCENDING" },
         { "fieldPath": "data_emissao", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [{ "fieldPath": "nRec", "order": "ASCENDING" }]
+    },
+    {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [{ "fieldPath": "estado", "order": "ASCENDING" }]
+    },
+    {
+      "collectionGroup": "cartacorrecao",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [{ "fieldPath": "estado", "order": "ASCENDING" }]
+    },
+    {
+      "collectionGroup": "enviNfe",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "targetsChnfe", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" }
       ]
     },
     {
