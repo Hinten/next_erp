@@ -8,11 +8,18 @@ import type { Pedido } from '@delfrance/schemas';
 import { PedidoFooter } from './PedidoFooter';
 import type { FlatItem, PedidoFormState } from './types';
 
-// The footer reads pagamentos via useSnapshot only in edit mode (pedidoId set).
-// These tests run in create mode (no pedidoId → null query), but mock the hook
-// so the import graph never touches Firestore.
+// The footer reads pagamentos via useSnapshot. Mock the hook (no data) plus the
+// query builders / collection handle so building the query with a fake db never
+// touches Firestore — even in the edit-mode case where pedidoId is set.
 vi.mock('@delfrance/data/hooks', () => ({
   useSnapshot: () => ({ data: undefined, loading: false, error: undefined }),
+}));
+vi.mock('@delfrance/data', () => ({
+  buildQuery: () => ({}),
+  orderByField: () => ({}),
+}));
+vi.mock('@/lib/data/pagamentoCollection', () => ({
+  pagamentoCollection: { ref: () => ({}) },
 }));
 
 function item(overrides: Partial<FlatItem> = {}): FlatItem {
@@ -37,7 +44,13 @@ function item(overrides: Partial<FlatItem> = {}): FlatItem {
 
 let formRef: UseFormReturn<PedidoFormState, unknown, Pedido>;
 
-function Host() {
+function Host({
+  pedidoId,
+  onSaveAndContinue,
+}: {
+  pedidoId?: string;
+  onSaveAndContinue?: () => void;
+} = {}) {
   const form = useForm<PedidoFormState, unknown, Pedido>({
     defaultValues: { _itensFlat: [], descontoTotal: 0, freteInicial: null, itensDevolvidos: null },
   });
@@ -50,11 +63,13 @@ function Host() {
       <PedidoFooter
         form={form}
         db={{} as Firestore}
+        pedidoId={pedidoId}
         canWrite
         disabled={false}
         submitLabel="Salvar"
         isSubmitting={false}
         submitError={null}
+        onSaveAndContinue={onSaveAndContinue}
       />
     </MantineProvider>
   );
@@ -98,5 +113,29 @@ describe('PedidoFooter — live total reactivity', () => {
     });
     // Only the first row counts → R$ 10,00.
     expect(screen.getByTestId('footer-total').textContent).toContain('10,00');
+  });
+});
+
+describe('PedidoFooter — fields and actions', () => {
+  it('always shows the Devoluções and Vlr. Pago fields, even at zero', () => {
+    render(<Host />);
+    expect(screen.getByText('Devoluções')).toBeTruthy();
+    expect(screen.getByText('Vlr. Pago')).toBeTruthy();
+    // Both render their R$ 0,00 value alongside the label.
+    expect(screen.getAllByText(/R\$\s*0,00/).length).toBeGreaterThan(0);
+  });
+
+  it('renders the share-orçamento button', () => {
+    render(<Host />);
+    expect(screen.getByLabelText('Compartilhar orçamento')).toBeTruthy();
+  });
+
+  it('shows "Salvar e continuar editando" only in edit mode (pedidoId + handler)', () => {
+    const { unmount } = render(<Host />);
+    expect(screen.queryByRole('button', { name: 'Salvar e continuar editando' })).toBeNull();
+    unmount();
+
+    render(<Host pedidoId="ped-1" onSaveAndContinue={() => {}} />);
+    expect(screen.getByRole('button', { name: 'Salvar e continuar editando' })).toBeTruthy();
   });
 });

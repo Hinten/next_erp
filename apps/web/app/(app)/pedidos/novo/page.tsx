@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { addDoc } from 'firebase/firestore';
-import { Anchor, Button, Stack } from '@mantine/core';
+import { Button, Stack } from '@mantine/core';
 import { PageHeader } from '@delfrance/ui';
 import type { Pedido } from '@delfrance/schemas';
 import { PedidoForm } from '../_components/PedidoForm';
@@ -19,7 +19,9 @@ export default function NovoPedidoPage() {
   }
 
   return (
-    <Stack>
+    // Fill the AppShell main area so the form's flex layout can pin the sticky
+    // footer to the bottom regardless of how short a tab's content is.
+    <Stack mih="calc(100dvh - var(--app-shell-header-height, 56px) - var(--app-shell-padding, 1rem) * 2)">
       <PageHeader
         title="Novo pedido"
         actions={
@@ -29,9 +31,6 @@ export default function NovoPedidoPage() {
         }
       />
       <PedidoForm submitLabel="Criar" onSubmit={handleSubmit} />
-      <Anchor component={Link} href="/pedidos" size="sm">
-        ← Voltar ao quadro
-      </Anchor>
     </Stack>
   );
 }

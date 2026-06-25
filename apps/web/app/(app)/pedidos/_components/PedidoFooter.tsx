@@ -3,7 +3,19 @@
 import { useMemo } from 'react';
 import { Controller, useWatch, type UseFormReturn } from 'react-hook-form';
 import { type Firestore } from 'firebase/firestore';
-import { Alert, Button, Group, NumberInput, Paper, Stack, Text, Tooltip } from '@mantine/core';
+import {
+  ActionIcon,
+  Alert,
+  Button,
+  Group,
+  NumberInput,
+  Paper,
+  Stack,
+  Text,
+  Tooltip,
+} from '@mantine/core';
+import { notifications } from '@mantine/notifications';
+import { IconShare } from '@tabler/icons-react';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { derivePedidoTotals, type Pedido, type Pagamento } from '@delfrance/schemas';
@@ -25,6 +37,11 @@ export interface PedidoFooterProps {
   submitLabel: string;
   isSubmitting: boolean;
   submitError: string | null;
+  /**
+   * Programmatic "save and stay" submit. When provided (edit mode), a second
+   * "Salvar e continuar editando" button runs this instead of navigating away.
+   */
+  onSaveAndContinue?: () => void;
 }
 
 /** A label-over-value money stat for the footer bar. */
@@ -69,6 +86,7 @@ export function PedidoFooter({
   submitLabel,
   isSubmitting,
   submitError,
+  onSaveAndContinue,
 }: PedidoFooterProps) {
   // `useWatch` (not `form.watch`): this is a child component that receives `form`
   // as a prop, so it must subscribe to the control itself — `form.watch()` only
@@ -125,6 +143,16 @@ export function PedidoFooter({
   );
   const troco = Math.max(0, roundReais(valorPago - totals.valorCobrado));
 
+  // Placeholder until the Orçamento PDF generator lands (issue #302). The button
+  // slot is here so the UX matches the legacy footer; clicking it just signals
+  // that the feature is in progress.
+  function handleShareOrcamento() {
+    notifications.show({
+      color: 'blue',
+      message: 'Compartilhar / imprimir orçamento ainda está em desenvolvimento.',
+    });
+  }
+
   return (
     <Paper
       withBorder
@@ -145,9 +173,11 @@ export function PedidoFooter({
         <Group justify="space-between" align="flex-end" wrap="wrap">
           <Group gap="lg" align="flex-end" wrap="wrap">
             <FooterStat label="Subtotal" value={brl(totals.subtotal)} />
-            {totals.valorDevolucao > 0 && (
-              <FooterStat label="Devoluções" value={brl(totals.valorDevolucao)} color="red" />
-            )}
+            <FooterStat
+              label="Devoluções"
+              value={brl(totals.valorDevolucao)}
+              color={totals.valorDevolucao > 0 ? 'red' : undefined}
+            />
             <FooterStat label="Frete" value={brl(totals.valorFreteInicial)} />
             <Stack gap={0} align="flex-end">
               <Text size="xs" c="dimmed">
@@ -180,14 +210,39 @@ export function PedidoFooter({
               color={totals.valorCobrado < 0 ? 'red' : undefined}
               testId="footer-total"
             />
-            {valorPago > 0 && <FooterStat label="Vlr. Pago" value={brl(valorPago)} />}
+            <FooterStat label="Vlr. Pago" value={brl(valorPago)} />
             {troco > 0 && <FooterStat label="Troco" value={brl(troco)} />}
           </Group>
-          <Tooltip label="Sem permissão de escrita" disabled={canWrite} withArrow>
-            <Button type="submit" loading={isSubmitting} disabled={disabled}>
-              {submitLabel}
-            </Button>
-          </Tooltip>
+          <Group gap="xs" wrap="nowrap" align="center">
+            <Tooltip label="Compartilhar / imprimir orçamento" withArrow>
+              <ActionIcon
+                variant="default"
+                size="lg"
+                aria-label="Compartilhar orçamento"
+                onClick={handleShareOrcamento}
+              >
+                <IconShare size={18} />
+              </ActionIcon>
+            </Tooltip>
+            {pedidoId && onSaveAndContinue && (
+              <Tooltip label="Sem permissão de escrita" disabled={canWrite} withArrow>
+                <Button
+                  type="button"
+                  variant="default"
+                  loading={isSubmitting}
+                  disabled={disabled}
+                  onClick={onSaveAndContinue}
+                >
+                  Salvar e continuar editando
+                </Button>
+              </Tooltip>
+            )}
+            <Tooltip label="Sem permissão de escrita" disabled={canWrite} withArrow>
+              <Button type="submit" loading={isSubmitting} disabled={disabled}>
+                {submitLabel}
+              </Button>
+            </Tooltip>
+          </Group>
         </Group>
       </Stack>
     </Paper>

@@ -105,7 +105,11 @@ export default function EditarPedidoPage() {
     }
   }
 
-  async function handleSubmit(values: Pedido, dirtyFields: Readonly<Record<string, unknown>>) {
+  async function handleSubmit(
+    values: Pedido,
+    dirtyFields: Readonly<Record<string, unknown>>,
+    opts: { continueEditing: boolean },
+  ) {
     // Partial save: write only the touched fields, guarded against concurrent
     // edits by comparing the live doc to the snapshot loaded into the editor.
     const baseline = baselineRef.current ?? (values as unknown as Record<string, unknown>);
@@ -114,7 +118,13 @@ export default function EditarPedidoPage() {
     try {
       await savePedido(port, { pedidoId: params.id, patch, baseline });
       await recordEstadoIfChanged(port, patch, baseline.estado);
-      router.replace('/pedidos');
+      if (opts.continueEditing) {
+        // "Salvar e continuar editando": stay on this page with fresh data — a
+        // reload re-fetches the doc and resets the form baseline/dirty state.
+        window.location.reload();
+      } else {
+        router.replace('/pedidos');
+      }
     } catch (err) {
       if (err instanceof PedidoNothingChangedError) {
         notifications.show({ color: 'yellow', message: err.message });
@@ -206,7 +216,9 @@ export default function EditarPedidoPage() {
   const p = data.data;
 
   return (
-    <Stack>
+    // Fill the AppShell main area so the form's flex layout can pin the sticky
+    // footer to the bottom regardless of how short a tab's content is.
+    <Stack mih="calc(100dvh - var(--app-shell-header-height, 56px) - var(--app-shell-padding, 1rem) * 2)">
       <PageHeader
         title={
           <Group align="center">

@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { useForm, type FieldErrors, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
-import { Stack, Tabs } from '@mantine/core';
+import { Tabs } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconExclamationCircle } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
@@ -49,7 +49,11 @@ export interface PedidoFormProps {
    * `dirtyFields` so the edit page can build a partial patch (`buildPedidoPatch`)
    * and write only the touched fields. Create-mode callers ignore `dirtyFields`.
    */
-  onSubmit: (values: Pedido, dirtyFields: Readonly<Record<string, unknown>>) => Promise<void>;
+  onSubmit: (
+    values: Pedido,
+    dirtyFields: Readonly<Record<string, unknown>>,
+    opts: { continueEditing: boolean },
+  ) => Promise<void>;
 }
 
 const EMPTY_DEFAULTS: PedidoFormState = {
@@ -232,10 +236,16 @@ export function PedidoForm({
   // shared guard directly.
   useUnsavedChangesGuard(form.formState.isDirty);
 
-  async function handleSubmit(values: Pedido) {
+  // Two save paths share one handler: the primary submit ("Salvar"/"Criar")
+  // navigates away; "Salvar e continuar editando" reloads in place. The footer's
+  // continue button runs the second RHF submit programmatically, so the page's
+  // onSubmit gets `continueEditing` without a shared ref.
+  async function handleSubmit(values: Pedido, continueEditing: boolean) {
     setSubmitError(null);
     try {
-      await onSubmit(values, form.formState.dirtyFields as Readonly<Record<string, unknown>>);
+      await onSubmit(values, form.formState.dirtyFields as Readonly<Record<string, unknown>>, {
+        continueEditing,
+      });
     } catch (err) {
       if (err instanceof FirebaseError) {
         setSubmitError(err.message);
@@ -285,8 +295,21 @@ export function PedidoForm({
     // noValidate: Zod owns validation — native constraint validation would
     // silently block the submit when a `required` control is empty inside a
     // hidden tab (see ObjectView's form for the full story).
-    <form noValidate onSubmit={form.handleSubmit(handleSubmit, onInvalid)}>
-      <Stack>
+    <form
+      noValidate
+      onSubmit={form.handleSubmit((values) => handleSubmit(values, false), onInvalid)}
+      // Flex column that fills the page (the page Stack sets a viewport-tall
+      // min-height): the tab area grows so the sticky footer is pushed to the
+      // bottom even when a tab's content is short — it no longer floats up.
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        flexGrow: 1,
+        minHeight: 0,
+        gap: 'var(--mantine-spacing-md)',
+      }}
+    >
+      <div style={{ flex: '1 0 auto', minHeight: 0 }}>
         <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
           <Tabs.List>
             <Tabs.Tab value="principal" {...tabErrorProps('principal')}>
@@ -363,18 +386,23 @@ export function PedidoForm({
             <EstadoHistoricoTab form={form} disabled={disabled} pedidoId={pedidoId} />
           </Tabs.Panel>
         </Tabs>
+      </div>
 
-        <PedidoFooter
-          form={form}
-          db={db}
-          pedidoId={pedidoId}
-          canWrite={canWrite}
-          disabled={disabled}
-          submitLabel={submitLabel}
-          isSubmitting={form.formState.isSubmitting}
-          submitError={submitError}
-        />
-      </Stack>
+      <PedidoFooter
+        form={form}
+        db={db}
+        pedidoId={pedidoId}
+        canWrite={canWrite}
+        disabled={disabled}
+        submitLabel={submitLabel}
+        isSubmitting={form.formState.isSubmitting}
+        submitError={submitError}
+        onSaveAndContinue={
+          pedidoId
+            ? form.handleSubmit((values) => handleSubmit(values, true), onInvalid)
+            : undefined
+        }
+      />
     </form>
   );
 }
