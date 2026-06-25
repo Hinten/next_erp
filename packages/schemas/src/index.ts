@@ -32,6 +32,20 @@ export { valuesEqual } from '@delfrance/core';
 export { auditEntrySchema, type AuditEntry } from './audit';
 
 export {
+  outerRefSchema,
+  idRefSchema,
+  docIdSchema,
+  outerRefLooseSchema,
+  toOuterRef,
+  idFromRef,
+  parseRef,
+  type OuterRef,
+  type IdRef,
+  type DocId,
+  type OuterRefLoose,
+} from './outerRef';
+
+export {
   cliente,
   clienteSchema,
   clienteFormSchema,

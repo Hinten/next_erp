@@ -36,7 +36,7 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
   fieldName: string;
   /** Current form value — DocumentReference, `{path}` object, doc-path/id string, or null. */
   value: unknown;
-  /** Emits a DocumentReference (or doc-path string with `emitDocPath`), or null when cleared. */
+  /** Emits a `documents/<col>/<id>` doc-path string, or null when cleared. */
   onChange: (next: unknown) => void;
   onBlur?: () => void;
   label: string;
@@ -46,13 +46,6 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
   error?: string;
   /** Firestore query cap. Default 15. */
   limit?: number;
-  /**
-   * Emit the picked doc as a Flutter-ODM doc-path string
-   * (`documents/<collection>/<id>`) instead of a native `DocumentReference`.
-   * Use for collections whose schema types the ref as `z.string()` — the
-   * wire format the legacy app reads and writes (`OuterRefField.toJson`).
-   */
-  emitDocPath?: boolean;
   /**
    * Ordering for the option list (initial AND searched), pipeline path only.
    * Defaults to `[{ field: labelField, direction: 'asc' }]`. Multi-key sorts
@@ -140,8 +133,9 @@ function readLabelField(data: unknown, labelField: string): string | undefined {
  *  - Remembers the last 5 picks per instance in localStorage (24h TTL) and
  *    surfaces them in a "Recentes" group.
  *
- * On change it emits a `DocumentReference`; on load it normalises a stored
- * `DocumentReference` / `{path}` / id-string back to the doc id.
+ * On change it emits a `documents/<col>/<id>` doc-path string; on load it
+ * normalises a stored `DocumentReference` / `{path}` / id-string back to the
+ * doc id (legacy reads stay tolerant).
  */
 export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   collection,
@@ -157,7 +151,6 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   disabled,
   error,
   limit = DEFAULT_LIMIT,
-  emitDocPath = false,
   orderBy,
   optionHintField,
   filters,
@@ -295,13 +288,9 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
       }
       const picked = resultItems.find((o) => o.value === id) ?? recents.find((r) => r.id === id);
       record(id, picked?.label ?? id);
-      onChange(
-        emitDocPath
-          ? `documents/${collection.resolvePath({})}/${id}`
-          : collection.docRef(db, {}, id),
-      );
+      onChange(`documents/${collection.resolvePath({})}/${id}`);
     },
-    [onChange, resultItems, recents, record, collection, db, emitDocPath],
+    [onChange, resultItems, recents, record, collection],
   );
 
   // Locked: the value renders as a removable chip inside a field-shaped

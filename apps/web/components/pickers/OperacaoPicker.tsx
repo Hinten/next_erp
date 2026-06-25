@@ -4,9 +4,8 @@ import { useMemo } from 'react';
 import { Select } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import { type DocumentReference, type Firestore, getDocs } from 'firebase/firestore';
+import { type Firestore, getDocs } from 'firebase/firestore';
 import { buildQuery, orderByField, whereOp } from '@delfrance/data';
-import type { Operacao } from '@delfrance/schemas';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 
@@ -18,7 +17,7 @@ export interface OperacaoPickerProps {
    */
   ehSaida: boolean;
   value: unknown;
-  onChange: (next: DocumentReference<Operacao> | null) => void;
+  onChange: (next: string | null) => void;
   label?: string;
   required?: boolean;
   disabled?: boolean;
@@ -79,12 +78,7 @@ export function OperacaoPicker({
       data={options}
       value={currentId}
       onChange={(id) => {
-        if (!id) {
-          onChange(null);
-          return;
-        }
-        const row = rows.find((r) => r.id === id);
-        if (row) onChange(row.ref as DocumentReference<Operacao>);
+        onChange(id ? `documents/${operacaoCollection.resolvePath({})}/${id}` : null);
       }}
       required={required}
       disabled={disabled || query.isLoading}

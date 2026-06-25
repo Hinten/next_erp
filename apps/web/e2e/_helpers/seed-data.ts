@@ -441,12 +441,12 @@ export async function seedBalcaoFixtures(
       ativo: i % 2 === 1,
       cor: null,
       modalidadeFreteImportacao: null,
-      filialIntegracaoPedidoOuterRef: filialRef,
-      tabelaNormalOuterRef: listaRef,
+      filialIntegracaoPedidoOuterRef: `documents/${filialRef.path}`,
+      tabelaNormalOuterRef: `documents/${listaRef.path}`,
       tabelaPromocionalOuterRef: null,
       operacaoOuterRef: null,
       operacaoDevolucaoOuterRef: null,
-      depositoOuterRef: depositoRef,
+      depositoOuterRef: `documents/${depositoRef.path}`,
       dataCadastro: now,
     });
   }

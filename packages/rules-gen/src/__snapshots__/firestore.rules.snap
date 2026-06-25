@@ -55,6 +55,7 @@ service cloud.firestore {
     function v_pedidos(d, c) {
       return (!c.hasAny(['bloquearEmissaoNFe']) || (d.get('bloquearEmissaoNFe', null) == null || d.get('bloquearEmissaoNFe', null) is bool))
         && (!c.hasAny(['chNFeReferenciadas']) || (d.get('chNFeReferenciadas', null) == null || d.get('chNFeReferenciadas', null) is list))
+        && (!c.hasAny(['clientePedidoOuterRef']) || (d.get('clientePedidoOuterRef', null) == null || d.get('clientePedidoOuterRef', null) is string))
         && (!c.hasAny(['custoFreteInicial']) || (d.get('custoFreteInicial', null) == null || d.get('custoFreteInicial', null) is number))
         && (!c.hasAny(['dataFinalExpedicao']) || (d.get('dataFinalExpedicao', null) == null || d.get('dataFinalExpedicao', null) is int))
         && (!c.hasAny(['dataIndisponivelEstoque']) || (d.get('dataIndisponivelEstoque', null) == null || d.get('dataIndisponivelEstoque', null) is int))
@@ -62,6 +63,7 @@ service cloud.firestore {
         && (!c.hasAny(['descontoTotal']) || d.get('descontoTotal', null) is number)
         && (!c.hasAny(['dtImpressao']) || (d.get('dtImpressao', null) == null || d.get('dtImpressao', null) is int))
         && (!c.hasAny(['ehSaida']) || d.get('ehSaida', null) is bool)
+        && (!c.hasAny(['enderecoFiscalOuterRef']) || (d.get('enderecoFiscalOuterRef', null) == null || d.get('enderecoFiscalOuterRef', null) is string))
         && (!c.hasAny(['entradasRelacionadas']) || (d.get('entradasRelacionadas', null) == null || d.get('entradasRelacionadas', null) is list))
         && (!c.hasAny(['error']) || (d.get('error', null) == null || d.get('error', null) is string))
         && (!c.hasAny(['estado']) || d.get('estado', null) in ['iniciado', 'carrinho', 'carrinhoAbandonado', 'escolhendoFormaDePagamento', 'aguardandoConfirmacaoDePagamento', 'pagamentoNaoRealizado', 'emAnalise', 'emProcessamento', 'pago', 'estornadoParcialmente', 'estornadoIntegralmente', 'processandoCancelamento', 'cancelado', 'fraude', 'finalizado', 'error'])
@@ -70,12 +72,15 @@ service cloud.firestore {
         && (!c.hasAny(['hasUserInteraction']) || (d.get('hasUserInteraction', null) == null || d.get('hasUserInteraction', null) is bool))
         && (!c.hasAny(['impostos']) || (d.get('impostos', null) == null || d.get('impostos', null) is number))
         && (!c.hasAny(['infCpl']) || (d.get('infCpl', null) == null || d.get('infCpl', null) is string))
+        && (!c.hasAny(['integracaoPedidoOuterRef']) || (d.get('integracaoPedidoOuterRef', null) == null || d.get('integracaoPedidoOuterRef', null) is string))
         && (!c.hasAny(['itens']) || d.get('itens', null) is map)
         && (!c.hasAny(['itensDevolvidos']) || (d.get('itensDevolvidos', null) == null || d.get('itensDevolvidos', null) is map))
         && (!c.hasAny(['itensIds']) || d.get('itensIds', null) is list)
         && (!c.hasAny(['lastMarketplaceUpdate']) || (d.get('lastMarketplaceUpdate', null) == null || d.get('lastMarketplaceUpdate', null) is int))
+        && (!c.hasAny(['listaDePrecosOuterRef']) || (d.get('listaDePrecosOuterRef', null) == null || d.get('listaDePrecosOuterRef', null) is string))
         && (!c.hasAny(['numero']) || (d.get('numero', null) == null || d.get('numero', null) is string))
         && (!c.hasAny(['observacoesInternas']) || (d.get('observacoesInternas', null) == null || d.get('observacoesInternas', null) is string))
+        && (!c.hasAny(['operacaoPedidoOuterRef']) || (d.get('operacaoPedidoOuterRef', null) == null || d.get('operacaoPedidoOuterRef', null) is string))
         && (!c.hasAny(['saidasRelacionadas']) || (d.get('saidasRelacionadas', null) == null || d.get('saidasRelacionadas', null) is list))
         && (!c.hasAny(['timestamp']) || (d.get('timestamp', null) == null || d.get('timestamp', null) is int))
         && (!c.hasAny(['ultimaModificacao']) || (d.get('ultimaModificacao', null) == null || d.get('ultimaModificacao', null) is int))
@@ -86,7 +91,8 @@ service cloud.firestore {
         && (!c.hasAny(['valorDespesasIncidentes']) || (d.get('valorDespesasIncidentes', null) == null || d.get('valorDespesasIncidentes', null) is number))
         && (!c.hasAny(['valorDevolucao']) || (d.get('valorDevolucao', null) == null || d.get('valorDevolucao', null) is number))
         && (!c.hasAny(['valorFreteInicial']) || (d.get('valorFreteInicial', null) == null || d.get('valorFreteInicial', null) is number))
-        && (!c.hasAny(['valorFretesIncidentes']) || (d.get('valorFretesIncidentes', null) == null || d.get('valorFretesIncidentes', null) is number));
+        && (!c.hasAny(['valorFretesIncidentes']) || (d.get('valorFretesIncidentes', null) == null || d.get('valorFretesIncidentes', null) is number))
+        && (!c.hasAny(['vendedorPedidoOuterRef']) || (d.get('vendedorPedidoOuterRef', null) == null || d.get('vendedorPedidoOuterRef', null) is string));
     }
 
     // d = incoming document, c = touched keys (keys() on create,
@@ -100,6 +106,7 @@ service cloud.firestore {
         && (!c.hasAny(['duplicata']) || d.get('duplicata', null) is bool)
         && (!c.hasAny(['id']) || (d.get('id', null) == null || d.get('id', null) is string))
         && (!c.hasAny(['juros']) || (d.get('juros', null) == null || (d.get('juros', null) is number && d.get('juros', null) >= 0)))
+        && (!c.hasAny(['metodoPagamentoOuterRef']) || (d.get('metodoPagamentoOuterRef', null) == null || d.get('metodoPagamentoOuterRef', null) is string))
         && (!c.hasAny(['nFat']) || (d.get('nFat', null) == null || d.get('nFat', null) is string && d.get('nFat', null).size() <= 60))
         && (!c.hasAny(['parcelas']) || (d.get('parcelas', null) is int && d.get('parcelas', null) >= 1))
         && (!c.hasAny(['tarifas']) || (d.get('tarifas', null) == null || (d.get('tarifas', null) is number && d.get('tarifas', null) >= 0)))

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './datetime';
+import { idRefSchema } from './outerRef';
 import type { CollectionMetadata } from './types';
 
 const PERM_IMPOSTO_PRODUTO_READ = 1n << 75n;
@@ -49,7 +50,7 @@ export const ORIGEM_PRODUTO_LABELS: Record<string, string> = {
 export const impostoProdutoSchema = z
   .object({
     id: z.string().nullable().default(null),
-    impostoOpercaoOuterRef: z.string().nullable().default(null),
+    impostoOpercaoOuterRef: idRefSchema.nullable().default(null),
     origem: z.string().nullable().default(null),
     cfop: z.string().nullable().default(null),
     cfopInterestadual: z.string().nullable().default(null),

@@ -60,7 +60,7 @@ export default function WebchatPage() {
         await setDoc(
           conversaRef,
           {
-            usarioOuterRef: `users/${userId}`,
+            usarioOuterRef: `documents/users/${userId}`,
             usuarios: [userId],
             estadoConversa: 0,
             origem: 'site',
