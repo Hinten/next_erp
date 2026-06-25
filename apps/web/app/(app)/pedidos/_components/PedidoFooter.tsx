@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo } from 'react';
-import { Controller, type UseFormReturn } from 'react-hook-form';
+import { Controller, useWatch, type UseFormReturn } from 'react-hook-form';
 import { type Firestore } from 'firebase/firestore';
 import { Alert, Button, Group, NumberInput, Paper, Stack, Text, Tooltip } from '@mantine/core';
 import { buildQuery, orderByField } from '@delfrance/data';
@@ -70,10 +70,14 @@ export function PedidoFooter({
   isSubmitting,
   submitError,
 }: PedidoFooterProps) {
-  const itensFlatRaw = form.watch('_itensFlat');
-  const descontoTotal = form.watch('descontoTotal') ?? 0;
-  const freteInicial = form.watch('freteInicial') ?? null;
-  const itensDevolvidos = form.watch('itensDevolvidos') ?? null;
+  // `useWatch` (not `form.watch`): this is a child component that receives `form`
+  // as a prop, so it must subscribe to the control itself — `form.watch()` only
+  // re-renders the component that called `useForm()`, leaving the footer frozen
+  // on the initial values.
+  const itensFlatRaw = useWatch({ control: form.control, name: '_itensFlat' });
+  const descontoTotal = useWatch({ control: form.control, name: 'descontoTotal' }) ?? 0;
+  const freteInicial = useWatch({ control: form.control, name: 'freteInicial' }) ?? null;
+  const itensDevolvidos = useWatch({ control: form.control, name: 'itensDevolvidos' }) ?? null;
 
   // Mirror the resolver's row filter (PedidoForm): staged-deleted and in-progress
   // blank rows are dropped on save, so they must not affect the live totals.
