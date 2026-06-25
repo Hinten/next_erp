@@ -35,14 +35,14 @@ export const CnpjLookupConfigProvider = CnpjLookupContext.Provider;
 const SET_OPTS = { shouldDirty: true, shouldValidate: true } as const;
 
 /**
- * CPF/CNPJ input that adds a "buscar dados" action whenever the typed document
- * is a valid 14-digit CNPJ — **regardless of the selected tipo** (#293). Hybrid
- * lookup: a public CNPJ API fills razão social (`nome`) + endereço, and SEFAZ
- * Consulta Cadastro confirms the authoritative inscrição estadual (`ie`).
- * Mirrors the ViaCEP "Buscar CEP" affordance on `CepField` — the button is a
- * `rightSection` icon, disabled until the value is a valid CNPJ. A successful
- * lookup switches `tipo` to Pessoa Jurídica (a CNPJ ⇒ PJ; PF + CNPJ is rejected
- * by the schema).
+ * CPF/CNPJ input that adds a "buscar dados" action — **regardless of the
+ * selected tipo** (#293). Hybrid lookup: a public CNPJ API fills razão social
+ * (`nome`) + endereço, and SEFAZ Consulta Cadastro confirms the authoritative
+ * inscrição estadual (`ie`). Mirrors the ViaCEP "Buscar CEP" affordance on
+ * `CepField` — the button is a `rightSection` icon, **always shown and
+ * clickable**; it validates on click (an invalid/empty CNPJ shows the error
+ * message instead of calling the API). A successful lookup switches `tipo` to
+ * Pessoa Jurídica (a CNPJ ⇒ PJ; PF + CNPJ is rejected by the schema).
  *
  * The SEFAZ leg is best-effort: a missing filial, an unsupported UF or a SEFAZ
  * outage just falls back to the public IE (or leaves `ie` untouched) — it never
@@ -74,6 +74,12 @@ export function CnpjLookupField({
   const isCnpj = /^\d{14}$/.test(cleanCnpj(doc));
 
   async function buscarDados() {
+    // Validate on click (the button is always enabled): an invalid/empty CNPJ
+    // surfaces the message and never hits the API.
+    if (!isCnpj) {
+      setLookupError('Informe um CNPJ válido (14 dígitos) para buscar os dados.');
+      return;
+    }
     setLoading(true);
     setLookupError(null);
     try {
@@ -145,7 +151,7 @@ export function CnpjLookupField({
             variant="subtle"
             onClick={buscarDados}
             loading={loading}
-            disabled={disabled || !isCnpj}
+            disabled={disabled}
             aria-label="Buscar dados do CNPJ"
           >
             <IconSearch size={16} />

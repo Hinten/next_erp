@@ -8,9 +8,10 @@ import { warmRoutes } from './helpers/warmup';
  * (`CnpjLookupField`). The external calls are stubbed at the network layer
  * (BrasilAPI for razão social + endereço; the apps/nfe Consulta Cadastro route,
  * forced to `supported:false` so the IE is deterministic) — staging can't hit
- * real SEFAZ / public APIs reliably. Asserts: the button is PJ-only, a lookup
- * fills Nome + offers the address, and saving the relayed address writes an
- * endereço under the new cliente.
+ * real SEFAZ / public APIs reliably. Asserts: the button shows for any tipo and
+ * is always clickable (validating on click — an invalid CNPJ shows an error and
+ * skips the API), a CNPJ lookup auto-switches the tipo to PJ and fills Nome +
+ * offers the address, and saving the relayed address writes an endereço.
  */
 const CNPJ = '11222333000181'; // checksum-valid
 const RAZAO = 'EMPRESA EXEMPLO LTDA';
@@ -54,22 +55,32 @@ test.describe.serial('Clientes e2e — CNPJ lookup', () => {
     await cleanupByNamePrefix('clientes', prefix);
   });
 
-  test('shows the "buscar dados" button for any tipo, enabled only for a valid CNPJ', async ({
-    page,
-  }) => {
+  test('shows the "buscar dados" button for any tipo and validates on click', async ({ page }) => {
     const button = page.getByRole('button', { name: 'Buscar dados do CNPJ' });
+    // A valid CNPJ would call BrasilAPI; track that an INVALID click never does.
+    let apiCalled = false;
+    await page.route('https://brasilapi.com.br/api/cnpj/v1/**', (route) => {
+      apiCalled = true;
+      return route.fulfill({ json: {} });
+    });
 
     await page.goto('/clientes/novo');
-    // #293: the button is present regardless of tipo, disabled until a valid CNPJ.
+    // #293: the button is present AND clickable regardless of tipo (no disabled
+    // state) — it validates on click instead.
     await expect(button).toBeVisible();
-    await expect(button).toBeDisabled();
+    await expect(button).toBeEnabled();
 
     await selectField(page, 'Tipo', 'Pessoa Física');
     await expect(button).toBeVisible();
-    await expect(button).toBeDisabled();
-
-    await fillField(page, 'CPF / CNPJ', CNPJ);
     await expect(button).toBeEnabled();
+
+    // Clicking with no/invalid CNPJ surfaces the validation message and never
+    // hits the API.
+    await button.click();
+    await expect(
+      page.getByText('Informe um CNPJ válido (14 dígitos) para buscar os dados.'),
+    ).toBeVisible();
+    expect(apiCalled).toBe(false);
   });
 
   test('auto-switches Pessoa Física to PJ when a CNPJ is looked up', async ({ page }) => {

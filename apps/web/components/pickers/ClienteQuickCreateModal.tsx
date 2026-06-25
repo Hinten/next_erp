@@ -202,6 +202,14 @@ function QuickCreateForm({
   // same as the cliente pages). No endereço — this modal has no endereço UI.
   async function buscarDados() {
     const cnpj = form.getValues('cpf_cnpj') ?? '';
+    // Validate on click (the button is always enabled): an invalid/empty CNPJ
+    // surfaces the message and never hits the API.
+    if (!/^\d{14}$/.test(cnpj)) {
+      form.setError('cpf_cnpj', {
+        message: 'Informe um CNPJ válido (14 dígitos) para buscar os dados.',
+      });
+      return;
+    }
     setLookupLoading(true);
     try {
       const outcome = await resolveCnpj(cnpj, nfe, filialId);
@@ -369,43 +377,38 @@ function QuickCreateForm({
           <Controller
             control={form.control}
             name="cpf_cnpj"
-            render={({ field, fieldState }) => {
-              // BrasilAPI keys off the 14-digit numeric CNPJ; the value is
-              // already clean (CpfCnpjTextInput emits the wire format).
-              const isCnpj = /^\d{14}$/.test(field.value ?? '');
-              return (
-                <CpfCnpjTextInput
-                  value={field.value ?? ''}
-                  onChange={(next) => {
-                    // Editing the document clears a stale lookup error (mirrors
-                    // CnpjLookupField) so the user isn't stuck with it mid-edit.
-                    if (fieldState.error) form.clearErrors('cpf_cnpj');
-                    field.onChange(next === '' ? null : next);
-                  }}
-                  onBlur={() => {
-                    field.onBlur();
-                    runLiveCheck();
-                  }}
-                  label="CPF / CNPJ"
-                  error={fieldState.error?.message}
-                  // "buscar dados" — shown for any tipo, enabled once the value
-                  // is a valid CNPJ; a successful lookup switches tipo to PJ.
-                  rightSection={
-                    <Tooltip label="Buscar dados do CNPJ (razão social, IE)" withArrow>
-                      <ActionIcon
-                        variant="subtle"
-                        onClick={buscarDados}
-                        loading={lookupLoading}
-                        disabled={!isCnpj}
-                        aria-label="Buscar dados do CNPJ"
-                      >
-                        <IconSearch size={16} />
-                      </ActionIcon>
-                    </Tooltip>
-                  }
-                />
-              );
-            }}
+            render={({ field, fieldState }) => (
+              <CpfCnpjTextInput
+                value={field.value ?? ''}
+                onChange={(next) => {
+                  // Editing the document clears a stale lookup error (mirrors
+                  // CnpjLookupField) so the user isn't stuck with it mid-edit.
+                  if (fieldState.error) form.clearErrors('cpf_cnpj');
+                  field.onChange(next === '' ? null : next);
+                }}
+                onBlur={() => {
+                  field.onBlur();
+                  runLiveCheck();
+                }}
+                label="CPF / CNPJ"
+                error={fieldState.error?.message}
+                // "buscar dados" — shown for any tipo and always clickable; it
+                // validates on click (invalid CNPJ → error, no API call) and a
+                // successful lookup switches tipo to PJ.
+                rightSection={
+                  <Tooltip label="Buscar dados do CNPJ (razão social, IE)" withArrow>
+                    <ActionIcon
+                      variant="subtle"
+                      onClick={buscarDados}
+                      loading={lookupLoading}
+                      aria-label="Buscar dados do CNPJ"
+                    >
+                      <IconSearch size={16} />
+                    </ActionIcon>
+                  </Tooltip>
+                }
+              />
+            )}
           />
         ) : (
           <Controller
