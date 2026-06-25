@@ -256,12 +256,6 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_integracao', 4);
     }
 
-    match /integracao/{integracaoId}/credenciais/{docId} {
-      allow read: if isSuperUser() || p('d_integracao', 2);
-      allow create, update: if isSuperUser() || p('d_integracao', 2);
-      allow delete: if isSuperUser() || p('d_integracao', 4);
-    }
-
     match /listaDePrecos/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
@@ -435,9 +429,6 @@ service cloud.firestore {
     // Collection-group reads (client groupQuery / collectionGroup).
     match /{path=**}/cartacorrecao/{docId} {
       allow read: if isSuperUser() || p('d_fiscal', 1);
-    }
-    match /{path=**}/credenciais/{docId} {
-      allow read: if isSuperUser() || p('d_integracao', 2);
     }
     match /{path=**}/enderecos/{docId} {
       allow read: if isSuperUser() || p('d_endereco', 1);

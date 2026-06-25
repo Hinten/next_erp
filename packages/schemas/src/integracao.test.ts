@@ -4,6 +4,7 @@ import {
   credenciaisIntegracaoSchema,
   integracaoMeta,
 } from './integracao';
+import { ALL_DOMAINS } from './registry';
 
 /* -------------------------------------------------------------------------- */
 /*                          CredenciaisIntegracao                             */
@@ -88,18 +89,27 @@ describe('integracao metas', () => {
     expect(credenciaisIntegracaoMeta.collectionPath).toBe('integracao/{integracaoId}/credenciais');
   });
 
-  it('reuses the PERM.integracao byte (56–58); token reads require write', () => {
+  it('keeps the integracao parent on its own byte (56–58)', () => {
     expect(integracaoMeta.permissions).toEqual({
       read: 1n << 56n,
       write: 1n << 57n,
       delete: 1n << 58n,
     });
-    // Reads deliberately require integracao.write (live credentials); delete
-    // uses the dedicated delete bit. No new PERM byte allocated.
+  });
+
+  it('is admin-only / default-deny: zero perms (mirrors certificadoSecreto)', () => {
+    // The credential doc holds live refresh tokens. No client domain grants
+    // these bits; the domain is left out of ALL_DOMAINS so rules-gen emits no
+    // block and Firestore default-denies every client. Only the Admin SDK reaches it.
     expect(credenciaisIntegracaoMeta.permissions).toEqual({
-      read: 1n << 57n,
-      write: 1n << 57n,
-      delete: 1n << 58n,
+      read: 0n,
+      write: 0n,
+      delete: 0n,
     });
+  });
+
+  it('is NOT registered in ALL_DOMAINS (server-only secret store)', () => {
+    const paths = ALL_DOMAINS.map((d) => d.meta.collectionPath);
+    expect(paths).not.toContain('integracao/{integracaoId}/credenciais');
   });
 });

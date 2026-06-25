@@ -150,7 +150,9 @@ export {
   INTEGRACAO_TIPO,
   INTEGRACAO_TIPO_LABELS,
   pluginIdForTipo,
-  credenciaisIntegracao,
+  // `credenciaisIntegracao` is intentionally NOT exported as a DomainSchema and
+  // NOT registered in ALL_DOMAINS — it is an admin-only, default-deny secret
+  // store (mirrors `certificadoSecreto`). Only its schema/meta/type are public.
   credenciaisIntegracaoSchema,
   credenciaisIntegracaoMeta,
   type Integracao,

@@ -139,8 +139,16 @@ export const integracao = { schema: integracaoSchema, meta: integracaoMeta };
  * extras each channel returns (`token_type`, `scope`, `user_id`, `revoked`,
  * `created_at`, `isRefreshing`, …) ride along via `.passthrough()` with no
  * bespoke fields. Single-token semantics: the writer deletes older docs so at
- * most one lives. Server-side only — the browser never reads or writes these;
- * reads require `integracao.write` because the doc carries live credentials.
+ * most one lives.
+ *
+ * **Admin-only / default-deny** — these docs hold live `refresh_token`s, so
+ * they follow the `certificadoSecreto` secret pattern, NOT the registered
+ * `tokenMelEnv` one: this domain is deliberately left OUT of `ALL_DOMAINS`
+ * (see the NOTE below), so rules-gen emits no match block and Firestore
+ * default-denies every client read/write. Only the Admin SDK (apps/integrations
+ * OAuth callback + refresh flow), which bypasses rules, reaches them — there is
+ * no client consumer. The cascade from `integracao` runs server-side
+ * (firebase-admin) and so still frees these on delete.
  *
  * The legacy Flutter app split this per channel
  * (`token6h`/`tokenDuravel`, `actokshopee`, `tokenoaut`, `tokenMagalu`); ML's
@@ -162,17 +170,21 @@ export type CredenciaisIntegracao = z.infer<typeof credenciaisIntegracaoSchema>;
 
 export const credenciaisIntegracaoMeta: CollectionMetadata = {
   collectionPath: 'integracao/{integracaoId}/credenciais',
-  // Tokens carry live credentials — reads require integracao.write (not mere
-  // read), mirroring how `tokenMelEnv` reuses `PERM_FRETE_WRITE`. The real
-  // consumers run through the Admin SDK in apps/integrations anyway.
+  // No client domain grants these bits — placeholder values. This collection is
+  // deliberately NOT registered in `ALL_DOMAINS`, so the rules generator emits
+  // no match block for it and Firestore default-denies every client read/write.
+  // Only the Admin SDK (apps/integrations), which bypasses rules, reaches the
+  // OAuth tokens. Mirrors `certificadoSecretoMeta`.
   permissions: {
-    read: PERM_INTEGRACAO_WRITE,
-    write: PERM_INTEGRACAO_WRITE,
-    delete: PERM_INTEGRACAO_DELETE,
+    read: 0n,
+    write: 0n,
+    delete: 0n,
   },
 };
 
-export const credenciaisIntegracao = {
-  schema: credenciaisIntegracaoSchema,
-  meta: credenciaisIntegracaoMeta,
-};
+// NOTE: intentionally NOT exported as a `{ schema, meta }` DomainSchema and NOT
+// added to `ALL_DOMAINS` — that would make the rules generator grant clients
+// access to live refresh tokens. Admin-only = default-deny (see
+// `credenciaisIntegracaoMeta`, mirroring `certificadoSecreto`). The admin
+// collection handle consumes the path + schema directly; the server-side
+// cascade on `integracao` delete frees the subcollection without a rules block.
