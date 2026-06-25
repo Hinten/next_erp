@@ -10,7 +10,7 @@ import {
   validTestCnpj,
   validTestCpf,
 } from './_helpers/seed-data';
-import { fillField, selectField, selectFieldWithSearch } from './helpers/object-view';
+import { fillField, selectFieldWithSearch } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -310,7 +310,7 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await expect(page.getByText(fixtures.clienteNome).first()).toBeVisible({ timeout: 15_000 });
   });
 
-  test('fills nome + inscrição estadual from the CNPJ lookup in the quick-create modal (#250)', async ({
+  test('auto-switches PF to PJ and fills nome + IE from the CNPJ lookup in the quick-create modal (#250, #293)', async ({
     page,
   }, testInfo) => {
     const RAZAO = 'EMPRESA QUICK CREATE LTDA';
@@ -348,23 +348,23 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible();
 
-    // No lookup button / IE field for Pessoa Física (the default tipo).
+    // #293: the lookup button shows for the DEFAULT Pessoa Física tipo too and
+    // is always clickable. The PJ-only IE field stays hidden until the lookup
+    // flips the tipo to PJ. (The validate-on-click feedback for an invalid CNPJ
+    // is covered by clientes-cnpj.cadastros — the modal surfaces it as a toast.)
     const buscar = dialog.getByRole('button', { name: 'Buscar dados do CNPJ' });
-    await expect(buscar).toHaveCount(0);
+    await expect(buscar).toBeVisible();
+    await expect(buscar).toBeEnabled();
     await expect(dialog.getByLabel('Inscrição estadual', { exact: true })).toHaveCount(0);
 
-    // Switch to Pessoa Jurídica — the button appears (disabled until a valid
-    // 14-digit CNPJ) and the IE field is revealed.
-    await selectField(page, 'Tipo', 'Pessoa Jurídica');
-    await expect(buscar).toBeVisible();
-    await expect(buscar).toBeDisabled();
-    await expect(dialog.getByLabel('Inscrição estadual', { exact: true })).toBeVisible();
-
     await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill(cnpj);
-    await expect(buscar).toBeEnabled();
     await buscar.click();
 
-    // Lookup fills nome (BrasilAPI) and the authoritative IE (SEFAZ).
+    // The lookup switches the tipo to Pessoa Jurídica (a CNPJ ⇒ PJ) and fills
+    // nome (BrasilAPI) + the authoritative IE (SEFAZ); the revealed IE shows it.
+    await expect(dialog.getByRole('combobox', { name: 'Tipo', exact: true })).toHaveValue(
+      'Pessoa Jurídica',
+    );
     await expect(dialog.getByLabel('Nome')).toHaveValue(RAZAO);
     await expect(dialog.getByLabel('Inscrição estadual', { exact: true })).toHaveValue(IE);
 

@@ -202,11 +202,23 @@ function QuickCreateForm({
   // same as the cliente pages). No endereço — this modal has no endereço UI.
   async function buscarDados() {
     const cnpj = form.getValues('cpf_cnpj') ?? '';
+    // Validate on click (the button is always enabled): an invalid/empty CNPJ
+    // surfaces a red notification and never hits the API. The modal feeds back
+    // via notifications (not an inline field error, which renders unreliably
+    // inside the Mantine Modal portal) — matching the green/yellow success ones.
+    if (!/^\d{14}$/.test(cnpj)) {
+      notifications.show({
+        color: 'red',
+        message: 'Informe um CNPJ válido (14 dígitos) para buscar os dados.',
+      });
+      return;
+    }
     setLookupLoading(true);
     try {
       const outcome = await resolveCnpj(cnpj, nfe, filialId);
       if (!outcome.ok) {
-        form.setError('cpf_cnpj', {
+        notifications.show({
+          color: 'red',
           message:
             outcome.reason === 'network'
               ? 'Falha de rede ao consultar o CNPJ.'
@@ -216,22 +228,28 @@ function QuickCreateForm({
         });
         return;
       }
-      // A successful lookup means the CNPJ was valid — drop any inline error a
-      // prior failed lookup left on the field.
-      form.clearErrors('cpf_cnpj');
       const { nome, ie, sefazNote } = outcome.data;
       const SET_OPTS = { shouldDirty: true, shouldValidate: true } as const;
+      // A CNPJ belongs to a Pessoa Jurídica — switch the tipo so the form stays
+      // valid (PF + CNPJ is rejected) and the PJ-only IE field is revealed.
+      const switchedToPJ = form.getValues('tipo') !== '1';
+      if (switchedToPJ) form.setValue('tipo', '1', SET_OPTS);
       form.setValue('nome', nome, SET_OPTS);
       if (ie) form.setValue('ie', ie, SET_OPTS);
       // Nome changed — re-run the dedup check against the resolved razão social.
       runLiveCheck();
+      // Announce the silent tipo change so the operator notices it.
+      const tipoNote = switchedToPJ ? 'Tipo alterado para Pessoa Jurídica. ' : '';
       if (ie) {
-        notifications.show({ color: 'green', message: `Dados de ${nome} preenchidos (IE ${ie})` });
+        notifications.show({
+          color: 'green',
+          message: `${tipoNote}Dados de ${nome} preenchidos (IE ${ie})`,
+        });
       } else {
         const why = sefazNote ?? 'IE não disponível';
         notifications.show({
           color: 'yellow',
-          message: `Dados de ${nome} preenchidos. ${why} — preencha a IE manualmente.`,
+          message: `${tipoNote}Dados de ${nome} preenchidos. ${why} — preencha a IE manualmente.`,
         });
       }
     } finally {
@@ -360,44 +378,38 @@ function QuickCreateForm({
           <Controller
             control={form.control}
             name="cpf_cnpj"
-            render={({ field, fieldState }) => {
-              // BrasilAPI keys off the 14-digit numeric CNPJ; the value is
-              // already clean (CpfCnpjTextInput emits the wire format).
-              const isCnpj = /^\d{14}$/.test(field.value ?? '');
-              return (
-                <CpfCnpjTextInput
-                  value={field.value ?? ''}
-                  onChange={(next) => {
-                    // Editing the document clears a stale lookup error (mirrors
-                    // CnpjLookupField) so the user isn't stuck with it mid-edit.
-                    if (fieldState.error) form.clearErrors('cpf_cnpj');
-                    field.onChange(next === '' ? null : next);
-                  }}
-                  onBlur={() => {
-                    field.onBlur();
-                    runLiveCheck();
-                  }}
-                  label="CPF / CNPJ"
-                  error={fieldState.error?.message}
-                  // PJ-only "buscar dados" — mirrors the cliente pages' affordance.
-                  rightSection={
-                    tipo === '1' ? (
-                      <Tooltip label="Buscar dados do CNPJ (razão social, IE)" withArrow>
-                        <ActionIcon
-                          variant="subtle"
-                          onClick={buscarDados}
-                          loading={lookupLoading}
-                          disabled={!isCnpj}
-                          aria-label="Buscar dados do CNPJ"
-                        >
-                          <IconSearch size={16} />
-                        </ActionIcon>
-                      </Tooltip>
-                    ) : undefined
-                  }
-                />
-              );
-            }}
+            render={({ field, fieldState }) => (
+              <CpfCnpjTextInput
+                value={field.value ?? ''}
+                onChange={(next) => {
+                  // Editing clears a stale zod validation error mid-edit.
+                  if (fieldState.error) form.clearErrors('cpf_cnpj');
+                  field.onChange(next === '' ? null : next);
+                }}
+                onBlur={() => {
+                  field.onBlur();
+                  runLiveCheck();
+                }}
+                label="CPF / CNPJ"
+                error={fieldState.error?.message}
+                // "buscar dados" — shown for any tipo and always clickable; it
+                // validates on click (invalid CNPJ → error, no API call) and a
+                // successful lookup switches tipo to PJ.
+                rightSection={
+                  <Tooltip label="Buscar dados do CNPJ (razão social, IE)" withArrow>
+                    <ActionIcon
+                      type="button"
+                      variant="subtle"
+                      onClick={buscarDados}
+                      loading={lookupLoading}
+                      aria-label="Buscar dados do CNPJ"
+                    >
+                      <IconSearch size={16} />
+                    </ActionIcon>
+                  </Tooltip>
+                }
+              />
+            )}
           />
         ) : (
           <Controller
