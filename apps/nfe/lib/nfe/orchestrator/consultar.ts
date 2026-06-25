@@ -16,7 +16,7 @@ import { resolveFilialRuntime } from '../filial-cert';
 import { NFeOrchestratorError } from './errors';
 import { loadPedidoBundle, type EmitResult } from './bundle';
 import { sefazCallFor } from './sefaz-call';
-import { recover539IfNeeded } from './emitir';
+import { recover539IfNeeded } from './recover539';
 import {
   buildEnviNFeMsgFromConsulta,
   enviNfeCollection,

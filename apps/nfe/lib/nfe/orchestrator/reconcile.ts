@@ -34,7 +34,7 @@ import { ESTADO_NFE, type NotaFiscalEletronica } from '@delfrance/schemas';
 
 import type { NFeRuntime } from '../runtime';
 import { sefazCallFor } from './sefaz-call';
-import { recover539IfNeeded } from './emitir';
+import { recover539IfNeeded } from './recover539';
 import {
   buildEnviNFeMsgFromConsulta,
   enviNfeCollection,
@@ -116,7 +116,7 @@ export async function reconcileByRecibo(params: {
     // `pedidos/{pedidoId}/nfev4/{nfeId}`.
     const recovered539 = await recover539IfNeeded({
       fs,
-      bundle: { pedidoId: doc.ref.parent?.parent?.id ?? '', filialId },
+      bundle: { pedidoId: doc.ref.parent?.parent?.id ?? doc.ref.path, filialId },
       nfeRef: doc.ref,
       rt,
       tpEmis,

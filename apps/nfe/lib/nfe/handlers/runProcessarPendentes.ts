@@ -30,7 +30,7 @@ import { resolveFilialRuntime, resolveFilialRuntimeByCnpj } from '../filial-cert
 import { persistPatch, procPersistExtras } from '../orchestrator/audit';
 import { loadNfeConfigForEmission } from '../orchestrator/bundle';
 import { transmitirPosEpec } from '../orchestrator/epec';
-import { recover539IfNeeded } from '../orchestrator/emitir';
+import { recover539IfNeeded } from '../orchestrator/recover539';
 import { reconcileByRecibo } from '../orchestrator/reconcile';
 import { sefazCallFor } from '../orchestrator/sefaz-call';
 
@@ -207,7 +207,7 @@ export async function runProcessarPendentes(args: {
       if (data.filialId) {
         const recovered539 = await recover539IfNeeded({
           fs,
-          bundle: { pedidoId: doc.ref.parent?.parent?.id ?? '', filialId: data.filialId },
+          bundle: { pedidoId: doc.ref.parent?.parent?.id ?? doc.ref.path, filialId: data.filialId },
           nfeRef: doc.ref,
           rt: frt,
           tpEmis: (data.tpEmis ?? 1) as TpEmis,
