@@ -16,6 +16,8 @@ import {
   productArquivoId,
   productOriginalPath,
   productVideoPath,
+  tabMediArquivoId,
+  tabMediOriginalPath,
 } from '@delfrance/schemas';
 
 import { arquivoCollection } from './collection';
@@ -181,6 +183,48 @@ export async function uploadProductImage(args: UploadProductImageArgs): Promise<
     // (Docs created before this marker existed — legacy / Flutter-written — have
     // no marker and would need a one-off migration; there is no such backlog yet.)
     resizeState: 'pending',
+  });
+}
+
+export interface UploadTabMediImageArgs {
+  storage: FirebaseStorage;
+  db: Firestore;
+  /** Owning tabela-de-medidas id. Save the tabela first (save-first UX). */
+  tabMediId: string;
+  bytes: Uint8Array | ArrayBuffer | Blob;
+  contentType: string;
+  originalFilename?: string | null;
+}
+
+/**
+ * Upload a tabela-de-medidas photo original to
+ * `tabMedi/<tabMediId>/originals/<hash>.ext` with the owner-scoped doc id
+ * `<tabMediId>_<hash>`. Unlike product images this is **original-only**:
+ * `resizeState` is left null so the resize Cloud Function (which watches only
+ * `produtos/<id>/originals`) never picks it up — there are no derivatives, and the
+ * gallery thumbnail falls back to the original. The owner-scoped `tabMedi/` path
+ * keeps these out of the produto namespace, so the produto orphan-sweep never
+ * reaps them; the `tabMedi`-aware reaper/sweep handle their lifecycle instead.
+ */
+export async function uploadTabMediImage(args: UploadTabMediImageArgs): Promise<UploadResult> {
+  if (!args.contentType.startsWith('image/')) {
+    throw new StorageUploadError(
+      `uploadTabMediImage expects an image/* content type, got "${args.contentType}".`,
+    );
+  }
+  const bytes = await toBytes(args.bytes);
+  const hash = await sha512Hex(bytes);
+  const ext = extensionForContentType(args.contentType);
+  return putArquivo({
+    storage: args.storage,
+    db: args.db,
+    bytes,
+    contentType: args.contentType,
+    docId: tabMediArquivoId(args.tabMediId, hash),
+    storagePath: tabMediOriginalPath(args.tabMediId, hash, ext),
+    filetype: 'image',
+    originalFilename: args.originalFilename,
+    // resizeState omitted (→ null): tabMedi photos are not resized.
   });
 }
 

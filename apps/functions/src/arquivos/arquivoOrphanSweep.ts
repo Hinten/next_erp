@@ -6,8 +6,17 @@ import { getStorage } from 'firebase-admin/storage';
 import * as pipelines from '@google-cloud/firestore/pipelines';
 import { logger } from 'firebase-functions';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
-import { arquivoCollection, produtoCollection } from '@delfrance/data/admin/collections';
-import { ARQUIVOS_COLLECTION, nowMicros, parseProductMediaDir } from '@delfrance/schemas';
+import {
+  arquivoCollection,
+  produtoCollection,
+  tabelaDeMedidasCollection,
+} from '@delfrance/data/admin/collections';
+import {
+  ARQUIVOS_COLLECTION,
+  type MediaOwnerCollection,
+  nowMicros,
+  parseOwnedMediaDir,
+} from '@delfrance/schemas';
 
 import { getAdminApp, getDb } from '../lib/admin';
 
@@ -17,10 +26,18 @@ type Bucket = ReturnType<Storage['bucket']>;
 // drains a backlog over several runs.
 const BATCH_LIMIT = 100;
 
-// Matches an `Arquivo.filepath` (a DIRECTORY, no filename) for product media:
-// `produtos/<produtoId>/originals`, `.../videos` or `.../anexos`. Excludes
-// derivatives (cascade-managed) and generic `media/`. Anchored → full match.
-const PRODUCT_MEDIA_DIR_REGEX = '^produtos/[^/]+/(originals|videos|anexos)$';
+// Matches an `Arquivo.filepath` (a DIRECTORY, no filename) for OWNER media —
+// `produtos/<id>/originals|videos|anexos` AND `tabMedi/<id>/originals|…`.
+// Excludes derivatives (cascade-managed) and generic `media/`. Anchored → full
+// match.
+const OWNED_MEDIA_DIR_REGEX = '^(produtos|tabMedi)/[^/]+/(originals|videos|anexos)$';
+
+// Admin handles keyed by media-owner collection — the sweep/reaper read a
+// candidate's owner doc to see which arquivos it still references.
+const OWNER_HANDLES = {
+  produtos: produtoCollection,
+  tabMedi: tabelaDeMedidasCollection,
+} as const;
 
 /**
  * Grace window in **microseconds** below which a doc is still considered "in
@@ -108,33 +125,36 @@ export async function sweepPhantomDocs(db: Firestore, bucket: Bucket): Promise<n
 }
 
 /**
- * Collect every `arquivos/<id>` ref the given produtos currently use — across
- * their embedded `fotos` / `videos` / `anexos` arrays. Reads **only** the named
- * produtos (one batched `getAll`, projected to the three media arrays), NOT the
- * whole collection: a product arquivo encodes its owner `produtoId` in its
- * storage path, so the sweep already knows which produto to ask about.
+ * Collect every `arquivos/<id>` ref the given OWNER docs (`produtos` or
+ * `tabMedi`) currently use — across their embedded `fotos` / `videos` / `anexos`
+ * arrays. Reads **only** the named owner docs (one batched `getAll`, projected to
+ * the three media arrays), NOT the whole collection: an owner arquivo encodes its
+ * owner id in its storage path, so the sweep already knows which doc to ask about
+ * (tabMedi has only `fotos`; the other masks return nothing — harmless).
  *
- * A produto that doesn't exist contributes nothing — its arquivos are orphans.
+ * An owner that doesn't exist contributes nothing — its arquivos are orphans.
  * Plain admin SDK reads (no pipeline), so this is fully emulator-testable.
  */
-export async function resolveReferencedArquivoRefs(
+export async function resolveReferencedRefs(
   db: Firestore,
-  produtoIds: string[],
+  ownerCollection: MediaOwnerCollection,
+  ownerIds: string[],
 ): Promise<Set<string>> {
   const refs = new Set<string>();
-  // De-dup — this is exported/public and callers may pass repeats; one getAll per
-  // DISTINCT produto (avoids redundant reads + keeps the getAll arg list bounded).
-  const uniqueIds = [...new Set(produtoIds)];
+  // De-dup — callers may pass repeats; one getAll per DISTINCT owner (avoids
+  // redundant reads + keeps the getAll arg list bounded).
+  const uniqueIds = [...new Set(ownerIds)];
   if (uniqueIds.length === 0) return refs;
 
-  // produtoCollection.docRef returns a RAW ref (no converter — see
+  // The admin handle's docRef returns a RAW ref (no converter — see
   // defineAdminCollection), so the field-masked partial read below is safe; the
-  // handle just sources the 'produtos' path from schemas.
-  const docRefs = uniqueIds.map((id) => produtoCollection.docRef(db, {}, id));
-  // Field mask → transfer only the three media arrays, still one read per produto.
+  // handle just sources the collection path from schemas.
+  const handle = OWNER_HANDLES[ownerCollection];
+  const docRefs = uniqueIds.map((id) => handle.docRef(db, {}, id));
+  // Field mask → transfer only the three media arrays, still one read per owner.
   const snaps = await db.getAll(...docRefs, { fieldMask: ['fotos', 'videos', 'anexos'] });
   for (const snap of snaps) {
-    if (!snap.exists) continue; // produto deleted → leave its arquivos orphaned
+    if (!snap.exists) continue; // owner deleted → leave its arquivos orphaned
     const data = (snap.data() ?? {}) as Record<string, unknown>;
     for (const key of ['fotos', 'videos', 'anexos'] as const) {
       const arr = data[key];
@@ -148,6 +168,14 @@ export async function resolveReferencedArquivoRefs(
   return refs;
 }
 
+/** Produto-only view of {@link resolveReferencedRefs}, kept for its callers + test. */
+export function resolveReferencedArquivoRefs(
+  db: Firestore,
+  produtoIds: string[],
+): Promise<Set<string>> {
+  return resolveReferencedRefs(db, 'produtos', produtoIds);
+}
+
 /** A product photo/video arquivo old enough to sweep, with its deletable ref. */
 interface UnreferencedCandidate {
   ref: DocumentReference;
@@ -158,8 +186,11 @@ interface UnreferencedCandidate {
 /** Fetches the candidate batch (oldest product photos/videos past the grace window). */
 type FetchCandidates = (db: Firestore, cutoffMicros: number) => Promise<UnreferencedCandidate[]>;
 
-/** Resolves the `arquivos/<id>` refs a set of produtos currently uses. */
-type ResolveReferenced = (produtoIds: string[]) => Promise<ReadonlySet<string>>;
+/** Resolves the `arquivos/<id>` refs a set of owner docs currently uses. */
+type ResolveReferenced = (
+  ownerCollection: MediaOwnerCollection,
+  ownerIds: string[],
+) => Promise<ReadonlySet<string>>;
 
 /**
  * Default candidate fetch: an admin **pipeline** that scopes server-side to
@@ -179,7 +210,7 @@ async function fetchUnreferencedCandidates(
     .where(
       pipelines.and(
         pipelines.lessThan(pipelines.field('criadoEm'), cutoffMicros),
-        pipelines.regexContains('filepath', PRODUCT_MEDIA_DIR_REGEX),
+        pipelines.regexContains('filepath', OWNED_MEDIA_DIR_REGEX),
       ),
     )
     .sort(pipelines.ascending(pipelines.field('criadoEm')))
@@ -220,23 +251,32 @@ export async function sweepUnreferencedArquivos(
   // `bucket` is unused (object cleanup is onArquivoDeleted's job) but kept for
   // signature parity with sweepPhantomDocs and the reconcile call site.
   fetchCandidates: FetchCandidates = fetchUnreferencedCandidates,
-  resolveReferenced: ResolveReferenced = (ids) => resolveReferencedArquivoRefs(db, ids),
+  resolveReferenced: ResolveReferenced = (coll, ids) => resolveReferencedRefs(db, coll, ids),
 ): Promise<number> {
   const cutoff = nowMicros() - orphanGraceMicros();
   const candidates = await fetchCandidates(db, cutoff);
 
-  // Derive each candidate's owner produtoId from its filepath (already scoped to
-  // originals|videos by the fetch); collect distinct ids for one batched lookup.
+  // Derive each candidate's owner from its filepath (already scoped to
+  // originals|videos|anexos by the fetch); group distinct ids per owner
+  // collection for one batched lookup each.
   const items: { ref: DocumentReference; refPath: string }[] = [];
-  const produtoIds = new Set<string>();
+  const idsByOwner = new Map<MediaOwnerCollection, Set<string>>();
   for (const c of candidates) {
-    const parsed = parseProductMediaDir(c.filepath);
-    if (!parsed) continue; // defensive — the fetch already scopes to product media
+    const parsed = parseOwnedMediaDir(c.filepath);
+    if (!parsed) continue; // defensive — the fetch already scopes to owner media
     items.push({ ref: c.ref, refPath: `${ARQUIVOS_COLLECTION}/${c.id}` });
-    produtoIds.add(parsed.produtoId);
+    let set = idsByOwner.get(parsed.ownerCollection);
+    if (!set) {
+      set = new Set();
+      idsByOwner.set(parsed.ownerCollection, set);
+    }
+    set.add(parsed.ownerId);
   }
 
-  const referencedRefs = await resolveReferenced([...produtoIds]);
+  const referencedRefs = new Set<string>();
+  for (const [coll, ids] of idsByOwner) {
+    for (const r of await resolveReferenced(coll, [...ids])) referencedRefs.add(r);
+  }
 
   let deleted = 0;
   let kept = 0;
@@ -294,30 +334,44 @@ export async function sweepMarkedForDeletion(db: Firestore): Promise<number> {
     return 0;
   }
 
-  // Re-verify against the owning produtos in one batched lookup: derive each
-  // candidate's produtoId from its filepath, resolve the refs those produtos
+  // Re-verify against the owning docs in one batched lookup per owner collection:
+  // derive each candidate's owner from its filepath, resolve the refs those owners
   // still hold, then delete only the genuinely-unreferenced ones.
-  const items: { ref: DocumentReference; refPath: string; produtoId: string | null }[] = [];
-  const produtoIds = new Set<string>();
+  const items: { ref: DocumentReference; refPath: string; owned: boolean }[] = [];
+  const idsByOwner = new Map<MediaOwnerCollection, Set<string>>();
   for (const doc of marked.docs) {
     const filepath = (doc.data().filepath as string | null | undefined) ?? null;
-    const produtoId = parseProductMediaDir(filepath)?.produtoId ?? null;
-    if (produtoId) produtoIds.add(produtoId);
-    items.push({ ref: doc.ref, refPath: `${ARQUIVOS_COLLECTION}/${doc.id}`, produtoId });
+    const parsed = parseOwnedMediaDir(filepath);
+    if (parsed) {
+      let set = idsByOwner.get(parsed.ownerCollection);
+      if (!set) {
+        set = new Set();
+        idsByOwner.set(parsed.ownerCollection, set);
+      }
+      set.add(parsed.ownerId);
+    }
+    items.push({
+      ref: doc.ref,
+      refPath: `${ARQUIVOS_COLLECTION}/${doc.id}`,
+      owned: parsed !== null,
+    });
   }
 
-  const referencedRefs = await resolveReferencedArquivoRefs(db, [...produtoIds]);
+  const referencedRefs = new Set<string>();
+  for (const [coll, ids] of idsByOwner) {
+    for (const r of await resolveReferencedRefs(db, coll, [...ids])) referencedRefs.add(r);
+  }
 
   let deleted = 0;
   let cleared = 0;
   let failed = 0;
-  for (const { ref, refPath, produtoId } of items) {
+  for (const { ref, refPath, owned } of items) {
     try {
-      // Owner not derivable (filepath isn't `produtos/<id>/originals|videos|anexos` —
-      // legacy / console / bad data the trigger's product-media guard now blocks):
+      // Owner not derivable (filepath isn't `produtos/<id>/…` or `tabMedi/<id>/…`
+      // — legacy / console / bad data the trigger's owner-media guard now blocks):
       // we can't re-verify ownership, so NEVER delete it. Clear the mark + warn so it
       // stops re-querying instead of being reaped blind.
-      if (!produtoId) {
+      if (!owned) {
         await ref.update({ markedForDeletionAt: null });
         cleared += 1;
         logger.warn(

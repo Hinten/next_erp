@@ -358,11 +358,14 @@ export {
   productVideoPath,
   productAnexoPath,
   mediaPath,
+  tabMediOriginalPath,
   productArquivoId,
+  tabMediArquivoId,
   derivativeArquivoId,
   parseProductOriginalPath,
   isWatchedProductOriginal,
   parseProductMediaDir,
+  parseOwnedMediaDir,
   isDerivativeName,
   firebaseDownloadUrl,
   normalizeName,
@@ -370,10 +373,13 @@ export {
   type ParsedOriginalPath,
   type ProductMediaKind,
   type ParsedProductMediaDir,
+  type MediaOwnerCollection,
+  type ParsedOwnedMediaDir,
 } from './storage/storagePaths';
 
 export {
   buildFotoRefs,
+  buildOriginalFotoRef,
   deriveFotosArquivosIds,
   fotoSchema,
   type Foto,

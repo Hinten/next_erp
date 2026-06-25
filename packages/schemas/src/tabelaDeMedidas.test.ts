@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { buildFotoRefs } from './storage/foto';
 import { tabelaDeMedidasMeta, tabelaDeMedidasSchema } from './tabelaDeMedidas';
 
 describe('tabelaDeMedidasSchema', () => {
@@ -56,6 +57,16 @@ describe('tabelaDeMedidasSchema', () => {
     });
     expect(out.tabelasDeMedidasMercadoLivre).toBeDefined();
     expect(out.tabelasMedidasShopee).toBeDefined();
+  });
+
+  it('parses a fotos array of Foto wire shapes', () => {
+    const out = tabelaDeMedidasSchema.parse({
+      nome: 'Tabela X',
+      codigo: null,
+      descricao: null,
+      fotos: [buildFotoRefs('tm1', 'h1')],
+    });
+    expect(out.fotos?.[0]?.arquivoOuterRef).toBe('arquivos/tm1_h1');
   });
 });
 

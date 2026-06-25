@@ -15,9 +15,11 @@ import { derivativeArquivoId, productArquivoId } from './storagePaths';
  */
 export interface FotoRefs {
   arquivoOuterRef: string;
-  arquivo200pxOuterRef: string;
-  arquivo400pxOuterRef: string;
-  arquivoJpegOuterRef: string;
+  // Nullable: an owner without a resize function (e.g. tabela de medidas) has no
+  // derivatives — see `buildOriginalFotoRef`. Product refs are non-null strings.
+  arquivo200pxOuterRef: string | null;
+  arquivo400pxOuterRef: string | null;
+  arquivoJpegOuterRef: string | null;
 }
 
 /** Build the optimistic `Foto` ref strings for a product's original `hash`. */
@@ -28,6 +30,22 @@ export function buildFotoRefs(produtoId: string, hash: string): FotoRefs {
     arquivo200pxOuterRef: ref(derivativeArquivoId(produtoId, hash, '200')),
     arquivo400pxOuterRef: ref(derivativeArquivoId(produtoId, hash, '400')),
     arquivoJpegOuterRef: ref(derivativeArquivoId(produtoId, hash, 'jpeg')),
+  };
+}
+
+/**
+ * Build `Foto` refs for an owner-scoped original whose derivatives are NOT
+ * generated (e.g. a tabela-de-medidas photo — no resize function watches its
+ * path). Only `arquivoOuterRef` points at a real doc; the derivative refs are
+ * `null`, so a gallery thumbnail falls back to the original. `arquivoId` is the
+ * full owner-scoped doc id (`<ownerId>_<hash>`) the upload helper returns.
+ */
+export function buildOriginalFotoRef(arquivoId: string): FotoRefs {
+  return {
+    arquivoOuterRef: `${ARQUIVOS_COLLECTION}/${arquivoId}`,
+    arquivo200pxOuterRef: null,
+    arquivo400pxOuterRef: null,
+    arquivoJpegOuterRef: null,
   };
 }
 

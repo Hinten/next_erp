@@ -37,7 +37,7 @@ import { arquivoCollection, StorageUploadError, uploadProductAnexo } from '@delf
 import { ARQUIVOS_COLLECTION, type Anexo, buildAnexo } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { DELETE_MARK } from '@delfrance/ui';
-import { buildSortableIds } from './PhotoManager';
+import { buildSortableIds } from '@/components/photo-manager/PhotoManager';
 
 // Any file type (the uploader derives `filetype` from the MIME); 25 MB cap to
 // match the `produtos/<id>/anexos` storage rule.

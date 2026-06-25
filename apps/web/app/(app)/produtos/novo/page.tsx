@@ -26,7 +26,7 @@ import { buildProdutoTransactionWrites, createClientProdutoPort } from '@/lib/pr
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
 import { AnexoManager } from '../_components/AnexoManager';
-import { PhotoManager } from '../_components/PhotoManager';
+import { PhotoManager } from '@/components/photo-manager/PhotoManager';
 import { CustoField } from '../_components/CustoField';
 import { EstoqueManager } from '../_components/EstoqueManager';
 import { ExtraDataManager } from '../_components/ExtraDataManager';
@@ -71,9 +71,8 @@ export default function NovoProdutoPage() {
         prepareForSave: stripMarkedForDeletion,
         renderInput: (p) => (
           <PhotoManager
-            produtoId={null}
             db={db}
-            storage={storage}
+            emptyOwnerMessage="Salve o produto para poder enviar fotos."
             value={(p.value as Foto[] | null) ?? null}
             onChange={p.onChange}
             disabled={p.disabled}
