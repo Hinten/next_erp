@@ -35,8 +35,7 @@ export default function MedidasPage() {
           refreshOnComplete: true,
           confirm: {
             title: 'Excluir tabelas de medidas',
-            message:
-              'Tabelas de medidas excluídas não podem ser restauradas. Confirmar exclusão?',
+            message: 'Tabelas de medidas excluídas não podem ser restauradas. Confirmar exclusão?',
           },
           run: async (rows) => {
             const db = getFirebaseFirestore();

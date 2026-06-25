@@ -39,6 +39,10 @@ export const tabelaDeMedidasMeta: CollectionMetadata = {
     write: PERM_PRODUTO_WRITE,
     delete: PERM_PRODUTO_DELETE,
   },
+  defaultQuery: {
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
+  },
 };
 
 export const tabelaDeMedidas = {
