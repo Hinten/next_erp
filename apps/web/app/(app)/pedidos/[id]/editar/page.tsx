@@ -112,7 +112,16 @@ export default function EditarPedidoPage() {
   ): Promise<boolean> {
     // Partial save: write only the touched fields, guarded against concurrent
     // edits by comparing the live doc to the snapshot loaded into the editor.
-    const baseline = baselineRef.current ?? (values as unknown as Record<string, unknown>);
+    const loaded = baselineRef.current ?? (values as unknown as Record<string, unknown>);
+    // The pagamento auto-reconcile advances `estado` / `freteInicial` in Firestore
+    // while the editor is open. For a field the user is NOT saving, refresh the
+    // concurrency baseline to the live snapshot so that auto-change doesn't read
+    // as a conflict — while a real concurrent edit to a field the user IS saving
+    // still trips the F3 guard.
+    const live = (data?.data as Record<string, unknown> | undefined) ?? loaded;
+    const baseline: Record<string, unknown> = { ...loaded };
+    if (!dirtyFields.estado) baseline.estado = live.estado;
+    if (!dirtyFields.freteInicial) baseline.freteInicial = live.freteInicial;
     const patch = buildPedidoPatch(values, dirtyFields);
     const port = createClientPedidoPort(getFirebaseFirestore());
     try {
@@ -285,6 +294,7 @@ export default function EditarPedidoPage() {
         defaultValues={p}
         pedidoId={data.id}
         submitLabel="Salvar alterações"
+        liveEstado={p.estado}
         onSubmit={handleSubmit}
       />
     </Stack>

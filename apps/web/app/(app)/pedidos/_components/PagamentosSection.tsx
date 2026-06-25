@@ -20,13 +20,18 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
+import { notifications } from '@mantine/notifications';
 import { IconCash } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import { getDoc } from 'firebase/firestore';
+import { getDoc, getDocs } from 'firebase/firestore';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import { deletePagamento, savePagamento } from '@delfrance/data/pedido';
+import {
+  deletePagamento,
+  reconcilePedidoEstadoFromPagamentos,
+  savePagamento,
+} from '@delfrance/data/pedido';
 import {
   BANDEIRA_LABELS,
   FORMA_PAGAMENTO_LABELS,
@@ -50,9 +55,11 @@ import {
   pagamentoDataFromForm,
   pagamentoFieldVisibility,
   remainingToPay,
+  sumPagamentosPagos,
   validatePagamentoForm,
   type PagamentoFormState,
 } from './PagamentoForm';
+import { useAuth } from '@/lib/auth/useAuth';
 
 const brl = (n: number): string => formatReais(n);
 
@@ -107,6 +114,36 @@ export function PagamentosSection({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const { user } = useAuth();
+
+  // Auto-estado transition (legacy `cadastroPedidoProvider`): after every
+  // pagamento mutation, re-read the payments, sum the approved ones, and let the
+  // use-case advance/downgrade the pedido `estado` (→ pago / aguardando) plus
+  // append a history row. Best-effort — the pagamento itself is already saved, so
+  // a failed reconcile must not surface as a save error.
+  async function reconcileEstado() {
+    try {
+      const snap = await getDocs(pagamentoCollection.ref(getFirebaseFirestore(), { pedidoId }));
+      const valorPago = sumPagamentosPagos(
+        snap.docs.map((d) => {
+          const p = d.data();
+          return { id: d.id, valor: p.valor, status_pagamento: p.status_pagamento };
+        }),
+      );
+      await reconcilePedidoEstadoFromPagamentos(createClientPedidoPort(getFirebaseFirestore()), {
+        pedidoId,
+        valorPago,
+        usuarioRef: user ? `documents/usuarios/${user.uid}` : null,
+      });
+    } catch (err) {
+      if (!(err instanceof FirebaseError)) throw err;
+      // Reached after save / delete / status change, so keep the message neutral.
+      notifications.show({
+        color: 'yellow',
+        message: 'O estado do pedido não pôde ser atualizado automaticamente.',
+      });
+    }
+  }
 
   function openAdd() {
     setForm(EMPTY_PAGAMENTO_FORM);
@@ -135,6 +172,7 @@ export function PagamentosSection({
         pagamento: pagamentoDataFromForm(form, editing.base),
       });
       setEditing(null);
+      await reconcileEstado();
     } catch (err) {
       if (err instanceof FirebaseError) {
         setSaveError(err.message);
@@ -155,6 +193,7 @@ export function PagamentosSection({
         pagamentoId: deleteTarget,
       });
       setDeleteTarget(null);
+      await reconcileEstado();
     } finally {
       setDeleting(false);
     }
@@ -467,6 +506,7 @@ export function PagamentosSection({
                 disabled={disabled}
                 onEdit={() => openEdit(id, pgto)}
                 onDelete={() => setDeleteTarget(id)}
+                onAfterChange={reconcileEstado}
               />
             ))}
           </Table.Tbody>
@@ -502,6 +542,7 @@ function PagamentoRow({
   disabled,
   onEdit,
   onDelete,
+  onAfterChange,
 }: {
   pedidoId: string;
   id: string;
@@ -509,6 +550,8 @@ function PagamentoRow({
   disabled?: boolean;
   onEdit: () => void;
   onDelete: () => void;
+  /** Re-run the pedido estado reconcile after an inline status change. */
+  onAfterChange: () => Promise<void>;
 }) {
   const [savingStatus, setSavingStatus] = useState(false);
   const [refunding, setRefunding] = useState(false);
@@ -545,6 +588,7 @@ function PagamentoRow({
         pagamentoId: id,
         pagamento: { ...pagamento, status_pagamento: nextStatus },
       });
+      await onAfterChange();
     } finally {
       setSavingStatus(false);
     }

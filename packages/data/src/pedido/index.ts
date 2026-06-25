@@ -16,6 +16,8 @@ export {
   buildPagamentoOp,
   savePagamento,
   deletePagamento,
+  nextPedidoEstado,
+  reconcilePedidoEstadoFromPagamentos,
   PedidoConflictError,
   PedidoNothingChangedError,
 } from './usecases';

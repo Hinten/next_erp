@@ -1,4 +1,10 @@
-import { valuesEqual, type EstadoPedido, type Pedido } from '@delfrance/schemas';
+import {
+  isFreteJaPostado,
+  valuesEqual,
+  type EstadoFrete,
+  type EstadoPedido,
+  type Pedido,
+} from '@delfrance/schemas';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 
 /**
@@ -296,4 +302,123 @@ export async function deletePagamento(
   args: { pedidoId: string; pagamentoId: string },
 ): Promise<void> {
   await port.commit([{ type: 'delete', path: PAGAMENTO_PATH(args.pedidoId, args.pagamentoId) }]);
+}
+
+// ---------------------------------------------------------------------------
+// Auto-estado from pagamentos (legacy `cadastroPedidoProvider` transition)
+// ---------------------------------------------------------------------------
+
+/**
+ * Estados the payment auto-transition is allowed to act ON. An ALLOW-list (not a
+ * deny-list) so a newly-added `EstadoPedido` defaults to "not auto-driven": the
+ * transition must never revert a terminal / post-cancel / refund / fulfilled
+ * pedido just because its payments still sum to the total (e.g. a `cancelado`
+ * order whose approved payment wasn't refunded, or a `finalizado` sale). Only the
+ * open payment-pending states — plus `pago` itself, so a refund can downgrade it
+ * — participate.
+ */
+const AUTO_ESTADO_SOURCES = new Set<EstadoPedido>([
+  'iniciado',
+  'carrinho',
+  'escolhendoFormaDePagamento',
+  'aguardandoConfirmacaoDePagamento',
+  'pagamentoNaoRealizado',
+  'emAnalise',
+  'emProcessamento',
+  'pago',
+]);
+
+/**
+ * Pure rule: the pedido `estado` implied by how much has been paid, or `null`
+ * when there is no transition (current estado already matches, the estado isn't
+ * payment-driven, or the pedido has no total). Ports the legacy auto-transition
+ * that ran after each pagamento change:
+ *
+ *  - **fully paid** (`valorPago ≥ total`, `total > 0`) → `pago` and authorize
+ *    frete dispatch (`despachoAutorizado`);
+ *  - **partially paid** (`0 < valorPago < total`) → `aguardandoConfirmacaoDePagamento`;
+ *  - a **`pago`** pedido that drops below its total → downgraded back to
+ *    `aguardandoConfirmacaoDePagamento`.
+ *
+ * Only the {@link AUTO_ESTADO_SOURCES} states are touched, so a cancelado /
+ * finalizado / estornado* / fraude pedido is never reverted by a payment sum. A
+ * zero-total pedido is left alone (nothing to settle). Inputs are expected
+ * already 2-decimal-rounded (`derivePedidoTotals` / `sumPagamentosPagos`).
+ */
+export function nextPedidoEstado(
+  estado: EstadoPedido,
+  total: number,
+  valorPago: number,
+): { estado: EstadoPedido; autorizarDespacho: boolean } | null {
+  if (!AUTO_ESTADO_SOURCES.has(estado)) return null;
+  if (total <= 0) return null;
+  const fullyPaid = valorPago >= total;
+  if (fullyPaid) {
+    return estado === 'pago' ? null : { estado: 'pago', autorizarDespacho: true };
+  }
+  if (valorPago > 0 && estado !== 'pago' && estado !== 'aguardandoConfirmacaoDePagamento') {
+    return { estado: 'aguardandoConfirmacaoDePagamento', autorizarDespacho: false };
+  }
+  if (estado === 'pago') {
+    // Was fully paid, no longer is → downgrade.
+    return { estado: 'aguardandoConfirmacaoDePagamento', autorizarDespacho: false };
+  }
+  return null;
+}
+
+/**
+ * Reconcile a pedido's `estado` from the total approved payments (`valorPago`),
+ * porting the legacy transition that ran after each pagamento save/delete/status
+ * change. Reads the pedido's own `valorCobrado` (total) transactionally, applies
+ * {@link nextPedidoEstado}, and — only on a transition — writes the new `estado`
+ * (flipping `freteInicial.estado` to `despachoAutorizado` when it becomes `pago`)
+ * and appends a `historicoEstadoPedido` audit row (best-effort, mirroring
+ * `recordEstadoChange`). A no-op when the estado already matches. Returns the new
+ * estado, or `null` when nothing changed.
+ *
+ * `valorPago` is summed by the caller from a read taken just before this call,
+ * not inside the transaction — the Firebase JS SDK can't read a query inside
+ * `runTransaction` (only documents), so the pagamentos total and the pedido's
+ * `valorCobrado` aren't one atomic snapshot. Two reconciles racing on the same
+ * pedido can therefore briefly settle on a stale estado; it self-heals on the
+ * next pagamento mutation. A fully consistent version would need a server-side
+ * (admin SDK) reconcile.
+ */
+export async function reconcilePedidoEstadoFromPagamentos(
+  port: PedidoDataPort,
+  args: { pedidoId: string; valorPago: number; usuarioRef?: string | null },
+): Promise<EstadoPedido | null> {
+  let transitionedTo: EstadoPedido | null = null;
+  await port.updatePedido(args.pedidoId, (current) => {
+    // Reset per attempt: the client adapter re-runs `apply` on transaction
+    // contention, so only the final (committed) attempt must set this.
+    transitionedTo = null;
+    if (current === null) return {};
+    const estado = current.estado as EstadoPedido;
+    const total = typeof current.valorCobrado === 'number' ? current.valorCobrado : 0;
+    const next = nextPedidoEstado(estado, total, args.valorPago);
+    if (next === null) return {};
+    transitionedTo = next.estado;
+    const patch: Record<string, unknown> = { estado: next.estado, ultimaModificacao: port.now() };
+    if (
+      next.autorizarDespacho &&
+      current.freteInicial &&
+      typeof current.freteInicial === 'object'
+    ) {
+      const frete = current.freteInicial as Record<string, unknown>;
+      const freteEstado = frete.estado as EstadoFrete | undefined;
+      // Only authorize dispatch from a pre-shipment state — never regress an
+      // in-flight frete (postado / a caminho / entregue) back to authorized.
+      if (!freteEstado || !isFreteJaPostado(freteEstado)) {
+        patch.freteInicial = { ...frete, estado: 'despachoAutorizado' };
+      }
+    }
+    return patch;
+  });
+  if (transitionedTo !== null) {
+    await port.commit([
+      buildEstadoHistoryOp(port, args.pedidoId, transitionedTo, args.usuarioRef ?? null),
+    ]);
+  }
+  return transitionedTo;
 }
