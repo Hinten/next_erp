@@ -273,11 +273,11 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await expect(buscar).toBeEnabled();
     await expect(dialog.getByLabel('Inscrição estadual', { exact: true })).toHaveCount(0);
 
-    // Clicking with an empty/invalid CNPJ validates first — shows the message,
-    // no API call, no tipo switch.
+    // Clicking with an empty/invalid CNPJ validates first — shows a red
+    // notification (portaled, role=alert), no API call, no tipo switch.
     await buscar.click();
     await expect(
-      dialog.getByText('Informe um CNPJ válido (14 dígitos) para buscar os dados.'),
+      page.getByRole('alert').filter({ hasText: 'Informe um CNPJ válido' }).first(),
     ).toBeVisible();
 
     await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill(cnpj);

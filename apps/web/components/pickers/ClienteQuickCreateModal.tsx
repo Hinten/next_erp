@@ -140,10 +140,6 @@ function QuickCreateForm({
   const [confirmRequired, setConfirmRequired] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [lookupLoading, setLookupLoading] = useState(false);
-  // Local lookup error (mirrors CnpjLookupField). A manual `form.setError` is
-  // wiped by the zod resolver's next validation pass and renders unreliably, so
-  // keep the CNPJ-lookup message in component state instead.
-  const [lookupError, setLookupError] = useState<string | null>(null);
   // "Criar mesmo assim" — bypasses the NON-blocking findings on the next
   // submit. Blocking matches re-checked at submit can never be bypassed.
   const forceCreate = useRef(false);
@@ -207,23 +203,29 @@ function QuickCreateForm({
   async function buscarDados() {
     const cnpj = form.getValues('cpf_cnpj') ?? '';
     // Validate on click (the button is always enabled): an invalid/empty CNPJ
-    // surfaces the message and never hits the API.
+    // surfaces a red notification and never hits the API. The modal feeds back
+    // via notifications (not an inline field error, which renders unreliably
+    // inside the Mantine Modal portal) — matching the green/yellow success ones.
     if (!/^\d{14}$/.test(cnpj)) {
-      setLookupError('Informe um CNPJ válido (14 dígitos) para buscar os dados.');
+      notifications.show({
+        color: 'red',
+        message: 'Informe um CNPJ válido (14 dígitos) para buscar os dados.',
+      });
       return;
     }
-    setLookupError(null);
     setLookupLoading(true);
     try {
       const outcome = await resolveCnpj(cnpj, nfe, filialId);
       if (!outcome.ok) {
-        setLookupError(
-          outcome.reason === 'network'
-            ? 'Falha de rede ao consultar o CNPJ.'
-            : outcome.reason === 'invalid-response'
-              ? 'Resposta inválida da API de CNPJ.'
-              : 'CNPJ não encontrado na base pública.',
-        );
+        notifications.show({
+          color: 'red',
+          message:
+            outcome.reason === 'network'
+              ? 'Falha de rede ao consultar o CNPJ.'
+              : outcome.reason === 'invalid-response'
+                ? 'Resposta inválida da API de CNPJ.'
+                : 'CNPJ não encontrado na base pública.',
+        });
         return;
       }
       const { nome, ie, sefazNote } = outcome.data;
@@ -380,9 +382,8 @@ function QuickCreateForm({
               <CpfCnpjTextInput
                 value={field.value ?? ''}
                 onChange={(next) => {
-                  // Editing the document clears a stale lookup error (mirrors
-                  // CnpjLookupField) so the user isn't stuck with it mid-edit.
-                  if (lookupError) setLookupError(null);
+                  // Editing clears a stale zod validation error mid-edit.
+                  if (fieldState.error) form.clearErrors('cpf_cnpj');
                   field.onChange(next === '' ? null : next);
                 }}
                 onBlur={() => {
@@ -390,13 +391,14 @@ function QuickCreateForm({
                   runLiveCheck();
                 }}
                 label="CPF / CNPJ"
-                error={lookupError ?? fieldState.error?.message}
+                error={fieldState.error?.message}
                 // "buscar dados" — shown for any tipo and always clickable; it
                 // validates on click (invalid CNPJ → error, no API call) and a
                 // successful lookup switches tipo to PJ.
                 rightSection={
                   <Tooltip label="Buscar dados do CNPJ (razão social, IE)" withArrow>
                     <ActionIcon
+                      type="button"
                       variant="subtle"
                       onClick={buscarDados}
                       loading={lookupLoading}

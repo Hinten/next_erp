@@ -148,6 +148,7 @@ export function CnpjLookupField({
       rightSection={
         <Tooltip label="Buscar dados do CNPJ (razão social, IE, endereço)" withArrow>
           <ActionIcon
+            type="button"
             variant="subtle"
             onClick={buscarDados}
             loading={loading}
