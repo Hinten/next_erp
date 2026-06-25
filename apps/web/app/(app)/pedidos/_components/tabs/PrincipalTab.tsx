@@ -23,7 +23,7 @@ import { Controller, useFieldArray, type UseFormReturn } from 'react-hook-form';
 import { getDoc, type Firestore } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import { type Pedido, type Produto, itemSubtotal } from '@delfrance/schemas';
-import { formatReais, roundReais } from '@delfrance/core/money';
+import { formatReais } from '@delfrance/core/money';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { ClientePicker } from '@/components/pickers/ClientePicker';
 import { ProdutoPicker } from '@/components/pickers/ProdutoPicker';
@@ -65,25 +65,9 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
 
   const itensFlatRaw = form.watch('_itensFlat');
   const itensFlat = useMemo(() => itensFlatRaw ?? [], [itensFlatRaw]);
-  const descontoTotal = form.watch('descontoTotal') ?? 0;
-  const freteValor = form.watch('freteInicial')?.valorCobrado ?? 0;
-
-  // Totals mirror the resolver's row filter (see PedidoForm): rows dropped on
-  // save must not inflate the live total — staged-deleted rows (`_delete`) and
-  // in-progress blank rows (no produto and no marketplace id, e.g. a freshly
-  // added row still carrying the 0.01 placeholder preço).
-  const subtotal = useMemo(
-    () =>
-      itensFlat.reduce((n, i) => {
-        if (i._delete) return n;
-        if (!i.produtoUid && !i.mktplaceId) return n;
-        return n + itemSubtotal(i);
-      }, 0),
-    [itensFlat],
-  );
-  // Mirror of the saved `valorCobrado` (legacy `Pedido.total` — see
-  // `derivePedidoFreteTotals`): subtotal − desconto + frete, 2-decimal.
-  const total = roundReais(roundReais(roundReais(subtotal) - descontoTotal) + freteValor);
+  // The pedido totals (subtotal/desconto/frete/total) now live in the sticky
+  // PedidoFooter so they stay visible across tabs; this tab only shows the
+  // per-row Subtotal column.
 
   const listaRef = useMemo(
     () => dereferenceOuterRef(db, listaDePrecosOuterRef),
@@ -278,62 +262,6 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
               />
             ))}
           </Table.Tbody>
-          <Table.Tfoot>
-            <Table.Tr>
-              <Table.Td colSpan={5} align="right">
-                <Text size="sm" c="dimmed">
-                  Subtotal
-                </Text>
-              </Table.Td>
-              <Table.Td align="right">{brl(subtotal)}</Table.Td>
-              <Table.Td />
-            </Table.Tr>
-            <Table.Tr>
-              <Table.Td colSpan={5} align="right">
-                <Text size="sm" c="dimmed">
-                  Desconto total
-                </Text>
-              </Table.Td>
-              <Table.Td align="right">
-                <Controller
-                  control={form.control}
-                  name="descontoTotal"
-                  render={({ field }) => (
-                    <NumberInput
-                      value={field.value ?? 0}
-                      onChange={(v) => field.onChange(parseBrl(v) ?? 0)}
-                      onBlur={field.onBlur}
-                      min={0}
-                      decimalScale={2}
-                      decimalSeparator=","
-                      allowedDecimalSeparators={[',', '.']}
-                      w={120}
-                      disabled={disabled}
-                    />
-                  )}
-                />
-              </Table.Td>
-              <Table.Td />
-            </Table.Tr>
-            <Table.Tr>
-              <Table.Td colSpan={5} align="right">
-                <Text size="sm" c="dimmed">
-                  Frete
-                </Text>
-              </Table.Td>
-              <Table.Td align="right">{brl(freteValor)}</Table.Td>
-              <Table.Td />
-            </Table.Tr>
-            <Table.Tr>
-              <Table.Td colSpan={5} align="right">
-                <Text fw={700}>Total</Text>
-              </Table.Td>
-              <Table.Td align="right">
-                <Text fw={700}>{brl(total)}</Text>
-              </Table.Td>
-              <Table.Td />
-            </Table.Tr>
-          </Table.Tfoot>
         </Table>
         <Group justify="center">
           <Button
@@ -348,7 +276,7 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
           </Button>
         </Group>
         <Text size="xs" c="dimmed">
-          Frete definido na aba Frete; devoluções não inclusas nesta visualização.
+          Subtotal, desconto, frete e total do pedido ficam no rodapé fixo abaixo.
         </Text>
       </Stack>
 

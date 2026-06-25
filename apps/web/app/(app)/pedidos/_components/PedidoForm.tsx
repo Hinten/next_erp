@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { useForm, type FieldErrors, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
-import { Alert, Button, Group, Stack, Tabs, Tooltip } from '@mantine/core';
+import { Stack, Tabs } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconExclamationCircle } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
@@ -28,6 +28,7 @@ import {
   PrincipalTab,
 } from './tabs';
 import { PagamentosSection } from './PagamentosSection';
+import { PedidoFooter } from './PedidoFooter';
 import { regroupItens } from './regroupItens';
 import { flattenItens } from './flattenItens';
 import { normalizeFreteInicial } from './freteDerivation';
@@ -363,15 +364,16 @@ export function PedidoForm({
           </Tabs.Panel>
         </Tabs>
 
-        {submitError && <Alert color="red">{submitError}</Alert>}
-
-        <Group justify="flex-end">
-          <Tooltip label="Sem permissão de escrita" disabled={canWrite} withArrow>
-            <Button type="submit" loading={form.formState.isSubmitting} disabled={disabled}>
-              {submitLabel}
-            </Button>
-          </Tooltip>
-        </Group>
+        <PedidoFooter
+          form={form}
+          db={db}
+          pedidoId={pedidoId}
+          canWrite={canWrite}
+          disabled={disabled}
+          submitLabel={submitLabel}
+          isSubmitting={form.formState.isSubmitting}
+          submitError={submitError}
+        />
       </Stack>
     </form>
   );

@@ -6,6 +6,7 @@ import {
   pagamentoDataFromForm,
   pagamentoFieldVisibility,
   remainingToPay,
+  sumPagamentosPagos,
   validatePagamentoForm,
   type PagamentoFormState,
 } from './PagamentoForm';
@@ -324,5 +325,27 @@ describe('remainingToPay', () => {
     ).toBe(100);
     // null (no status set) DOES count, matching the NFe bundle rule.
     expect(remainingToPay(100, [{ id: 'a', valor: 40, status_pagamento: null }], null)).toBe(60);
+  });
+});
+
+describe('sumPagamentosPagos (footer Vlr. Pago / Troco)', () => {
+  it('sums only the null/aprovado payments', () => {
+    const pagamentos = [
+      { id: 'a', valor: 30, status_pagamento: STATUS_PAGAMENTO.aprovado },
+      { id: 'b', valor: 20, status_pagamento: null }, // null counts (NFe bundle rule)
+      { id: 'c', valor: 99, status_pagamento: STATUS_PAGAMENTO.pendente }, // ignored
+      { id: 'd', valor: 5, status_pagamento: STATUS_PAGAMENTO.cancelado }, // ignored
+    ];
+    expect(sumPagamentosPagos(pagamentos)).toBe(50);
+  });
+
+  it('is 0 for no (paying) payments and rounds to 2 decimals', () => {
+    expect(sumPagamentosPagos([])).toBe(0);
+    expect(
+      sumPagamentosPagos([
+        { id: 'a', valor: 10.005, status_pagamento: STATUS_PAGAMENTO.aprovado },
+        { id: 'b', valor: 0.005, status_pagamento: null },
+      ]),
+    ).toBe(10.01);
   });
 });

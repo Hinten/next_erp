@@ -109,6 +109,15 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     const discountInput = page.getByLabel('Desconto item 1', { exact: true });
     await expect(priceInput).toHaveValue(/33[.,]5/, { timeout: 15_000 });
 
+    // Slice B: the pedido totals live in a sticky footer that stays visible on
+    // every tab. With qty 1 and the autofilled 33,50 price (no desconto/frete),
+    // the footer Total reads R$ 33,50 — and it survives a tab switch.
+    const footerTotal = page.getByTestId('footer-total');
+    await expect(footerTotal).toHaveText(/33[.,]50/);
+    await page.getByRole('tab', { name: 'Fiscal' }).click();
+    await expect(footerTotal).toHaveText(/33[.,]50/);
+    await page.getByRole('tab', { name: 'Principal', exact: true }).click();
+
     // Override the autofilled price + set quantidade/desconto. These inputs are
     // localized (pt-BR), so the decimal separator is a comma.
     await priceInput.fill('10');
@@ -117,6 +126,11 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await qtyInput.blur();
     await discountInput.fill('1,5');
     await discountInput.blur();
+
+    // The footer re-derives the total live from the watched item values:
+    // (10 − 1,50) × 2 = R$ 17,00. This proves the bar reflects edits, not just
+    // the initial autofill.
+    await expect(footerTotal).toHaveText(/17[.,]00/);
 
     await page.getByRole('button', { name: 'Criar' }).click();
 
