@@ -117,6 +117,9 @@ export const integracaoMeta: CollectionMetadata = {
     write: PERM_INTEGRACAO_WRITE,
     delete: PERM_INTEGRACAO_DELETE,
   },
+  // Deleting a channel account frees its OAuth credential subcollection,
+  // mirroring `int_frete` → `tokenMelEnv`.
+  cascade: [{ path: 'integracao/{integracaoId}/credenciais', onDelete: 'cascade' }],
   // The `integracao` collection holds every channel type; each channel screen
   // (e.g. Balcão) lists a single `tipo` slice supplied via TableView's
   // `queryParams`.
@@ -128,3 +131,64 @@ export const integracaoMeta: CollectionMetadata = {
 };
 
 export const integracao = { schema: integracaoSchema, meta: integracaoMeta };
+
+/* -------------------------------------------------------------------------- */
+/*                    CredenciaisIntegracao (subcollection)                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Per-channel OAuth credential doc — `integracao/{integracaoId}/credenciais`.
+ * One generic store for every marketplace channel (Mercado Livre, Amazon,
+ * Shopee, Magalu). The OAuth-token dimension is uniform across channels; the
+ * extras each channel returns (`token_type`, `scope`, `user_id`, `revoked`,
+ * `created_at`, `isRefreshing`, …) ride along via `.passthrough()` with no
+ * bespoke fields. Single-token semantics: the writer deletes older docs so at
+ * most one lives.
+ *
+ * **Admin-only / default-deny** — these docs hold live `refresh_token`s, so
+ * they follow the `certificadoSecreto` secret pattern, NOT the registered
+ * `tokenMelEnv` one: this domain is deliberately left OUT of `ALL_DOMAINS`
+ * (see the NOTE below), so rules-gen emits no match block and Firestore
+ * default-denies every client read/write. Only the Admin SDK (apps/integrations
+ * OAuth callback + refresh flow), which bypasses rules, reaches them — there is
+ * no client consumer. The cascade from `integracao` runs server-side
+ * (firebase-admin) and so still frees these on delete.
+ *
+ * The legacy Flutter app split this per channel
+ * (`token6h`/`tokenDuravel`, `actokshopee`, `tokenoaut`, `tokenMagalu`); ML's
+ * two tokens collapse here into one doc (`access_token` = the 6h token,
+ * `refresh_token` = the durable one). The genuinely divergent per-channel
+ * identity/config (`shop_id`, `tenant_id`, `selling_partner_id`, `brand`, and
+ * Loja Integrada's static API key) is account-level data and lives on the
+ * `integracao` doc instead — see #289, not here.
+ */
+export const credenciaisIntegracaoSchema = z
+  .object({
+    access_token: z.string().min(1),
+    refresh_token: z.string().min(1),
+    /** Required ms since epoch (`now + expires_in`). Server-side only. */
+    expirationDate: millisSinceEpoch(),
+  })
+  .passthrough();
+export type CredenciaisIntegracao = z.infer<typeof credenciaisIntegracaoSchema>;
+
+export const credenciaisIntegracaoMeta: CollectionMetadata = {
+  collectionPath: 'integracao/{integracaoId}/credenciais',
+  // No client domain grants these bits — placeholder values. This collection is
+  // deliberately NOT registered in `ALL_DOMAINS`, so the rules generator emits
+  // no match block for it and Firestore default-denies every client read/write.
+  // Only the Admin SDK (apps/integrations), which bypasses rules, reaches the
+  // OAuth tokens. Mirrors `certificadoSecretoMeta`.
+  permissions: {
+    read: 0n,
+    write: 0n,
+    delete: 0n,
+  },
+};
+
+// NOTE: intentionally NOT exported as a `{ schema, meta }` DomainSchema and NOT
+// added to `ALL_DOMAINS` — that would make the rules generator grant clients
+// access to live refresh tokens. Admin-only = default-deny (see
+// `credenciaisIntegracaoMeta`, mirroring `certificadoSecreto`). The admin
+// collection handle consumes the path + schema directly; the server-side
+// cascade on `integracao` delete frees the subcollection without a rules block.
