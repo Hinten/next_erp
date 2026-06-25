@@ -21,8 +21,14 @@ import { z } from 'zod';
  * Normalization between formats is the helpers' job ({@link toOuterRef}).
  */
 
-/** Canonical ref: `documents/<col>/<id>` (subcollection paths allowed via `.+`). */
-export const outerRefSchema = z.string().regex(/^documents\/[^/]+\/.+/);
+/**
+ * Canonical ref: `documents/<col>/<id>`. Requires an even number of segments
+ * (collection/doc pairs, subcollections allowed) so a value that passes
+ * validation is always a dereferenceable document path — `documents/col/id`,
+ * `documents/col/id/sub/subid`, but never `documents/col/id/sub` (ends on a
+ * collection, which `doc()` rejects).
+ */
+export const outerRefSchema = z.string().regex(/^documents(\/[^/]+\/[^/]+)+$/);
 export type OuterRef = z.infer<typeof outerRefSchema>;
 
 /**
@@ -57,9 +63,13 @@ function segments(raw: string): string[] {
   return segs;
 }
 
-/** Normalize any accepted ref form to canonical `documents/<col>/<id>`. */
+/**
+ * Normalize any accepted ref form to canonical `documents/<col>/<id>`. Throws if
+ * `raw` can't form a valid (even-segment) document path — so the `OuterRef`
+ * return is always a value `outerRefSchema` accepts.
+ */
 export function toOuterRef(raw: string): OuterRef {
-  return `documents/${segments(raw).join('/')}`;
+  return outerRefSchema.parse(`documents/${segments(raw).join('/')}`);
 }
 
 /** The document id (last path segment) of any ref form. */

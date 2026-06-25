@@ -33,6 +33,12 @@ describe('outerRef schemas', () => {
     expect(idRefSchema.safeParse('documents/col').success).toBe(false);
   });
 
+  it('outerRefSchema rejects an odd-segment path that ends on a collection', () => {
+    // `documents/clientes/C1/enderecos` is not a dereferenceable document path.
+    expect(outerRefSchema.safeParse('documents/clientes/C1/enderecos').success).toBe(false);
+    expect(outerRefSchema.safeParse('documents/clientes/C1/enderecos/E1').success).toBe(true);
+  });
+
   it('stays .pick()-able when embedded as a field (no Zod 4 refinement crash)', () => {
     const obj = z.object({ ref: outerRefSchema, other: z.string() });
     expect(() => obj.pick({ ref: true })).not.toThrow();
@@ -44,6 +50,10 @@ describe('outerRef helpers', () => {
     expect(toOuterRef('documents/col/id')).toBe('documents/col/id');
     expect(toOuterRef('col/id')).toBe('documents/col/id');
     expect(toOuterRef('documents/col/id/sub/subid')).toBe('documents/col/id/sub/subid');
+  });
+
+  it('toOuterRef throws when the input cannot form a valid document path', () => {
+    expect(() => toOuterRef('bareId')).toThrow();
   });
 
   it('idFromRef returns the last path segment', () => {
