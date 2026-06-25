@@ -17,7 +17,7 @@ import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { type DocumentReference, type Firestore, getDocFromServer } from 'firebase/firestore';
 import { useFormContext } from 'react-hook-form';
-import { custoDoKit, type ComponentesKit, type Kit } from '@delfrance/schemas';
+import { custoDoKit, idFromRef, type ComponentesKit, type Kit } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
 import { produtoCollection } from '@/lib/data/produtoCollection';
@@ -45,8 +45,13 @@ export function stripKitForSave(value: unknown): ComponentesKit | null {
 
 const fmtBRL = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
-/** Produto id picked by the component `CollectionSelect` (emits a DocumentReference). */
+/**
+ * Produto id from the component `CollectionSelect` value — a
+ * `documents/produtos/<id>` doc-path string; the object branch stays for any
+ * legacy native-ref value still in flight.
+ */
 function refToId(ref: unknown): string | null {
+  if (typeof ref === 'string' && ref.length > 0) return idFromRef(ref) || null;
   if (ref && typeof ref === 'object' && 'id' in ref) return (ref as DocumentReference).id;
   return null;
 }
