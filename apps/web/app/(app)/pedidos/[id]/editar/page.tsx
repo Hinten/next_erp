@@ -109,7 +109,7 @@ export default function EditarPedidoPage() {
     values: Pedido,
     dirtyFields: Readonly<Record<string, unknown>>,
     opts: { continueEditing: boolean },
-  ) {
+  ): Promise<boolean> {
     // Partial save: write only the touched fields, guarded against concurrent
     // edits by comparing the live doc to the snapshot loaded into the editor.
     const baseline = baselineRef.current ?? (values as unknown as Record<string, unknown>);
@@ -119,16 +119,20 @@ export default function EditarPedidoPage() {
       await savePedido(port, { pedidoId: params.id, patch, baseline });
       await recordEstadoIfChanged(port, patch, baseline.estado);
       if (opts.continueEditing) {
-        // "Salvar e continuar editando": stay on this page with fresh data — a
-        // reload re-fetches the doc and resets the form baseline/dirty state.
-        window.location.reload();
-      } else {
-        router.replace('/pedidos');
+        // "Salvar e continuar editando": stay on this page (no navigation, so the
+        // unsaved-changes guard never prompts). Re-baseline the concurrency guard
+        // to the just-saved state; the live `useDocSnapshot` keeps the page data
+        // fresh and PedidoForm re-baselines the form to pristine.
+        baselineRef.current = { ...baseline, ...patch };
+        notifications.show({ color: 'green', message: 'Pedido salvo.' });
+        return true;
       }
+      router.replace('/pedidos');
+      return true;
     } catch (err) {
       if (err instanceof PedidoNothingChangedError) {
         notifications.show({ color: 'yellow', message: err.message });
-        return;
+        return false;
       }
       if (err instanceof PedidoConflictError) {
         // Doc changed remotely → let the user review + decide (modal). Doc deleted
@@ -138,7 +142,7 @@ export default function EditarPedidoPage() {
         } else {
           showErrorNotification({ title: 'Pedido alterado', message: err.message });
         }
-        return;
+        return false;
       }
       throw err;
     }

@@ -48,12 +48,16 @@ export interface PedidoFormProps {
    * Receives the resolved (validate-what-you-save) doc values plus RHF's
    * `dirtyFields` so the edit page can build a partial patch (`buildPedidoPatch`)
    * and write only the touched fields. Create-mode callers ignore `dirtyFields`.
+   *
+   * Return `false` when the save did NOT commit (e.g. a concurrency conflict or
+   * nothing-changed) so "Salvar e continuar editando" keeps the edits dirty
+   * instead of marking the form pristine.
    */
   onSubmit: (
     values: Pedido,
     dirtyFields: Readonly<Record<string, unknown>>,
     opts: { continueEditing: boolean },
-  ) => Promise<void>;
+  ) => Promise<void | boolean>;
 }
 
 const EMPTY_DEFAULTS: PedidoFormState = {
@@ -243,9 +247,19 @@ export function PedidoForm({
   async function handleSubmit(values: Pedido, continueEditing: boolean) {
     setSubmitError(null);
     try {
-      await onSubmit(values, form.formState.dirtyFields as Readonly<Record<string, unknown>>, {
-        continueEditing,
-      });
+      const saved = await onSubmit(
+        values,
+        form.formState.dirtyFields as Readonly<Record<string, unknown>>,
+        { continueEditing },
+      );
+      // "Salvar e continuar editando" stays on the page; re-baseline the form to
+      // the just-saved values so it's no longer dirty — otherwise the unsaved-
+      // changes guard would prompt on the next navigation (and a hard reload here
+      // would trip its `beforeunload` confirmation). Skip when the save did not
+      // commit (`false`: conflict / nothing changed) so edits stay dirty.
+      if (continueEditing && saved !== false) {
+        form.reset(form.getValues());
+      }
     } catch (err) {
       if (err instanceof FirebaseError) {
         setSubmitError(err.message);
