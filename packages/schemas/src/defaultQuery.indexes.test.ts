@@ -9,6 +9,7 @@ import {
   indexSatisfies,
 } from '@delfrance/config-eslint/rules/lib/required-index.js';
 import * as registry from './index';
+import { RECENCY_SORT } from './types';
 import type { CollectionMetadata } from './types';
 
 // End-to-end backstop for the delfrance/default-query-needs-index lint rule:
@@ -96,6 +97,20 @@ describe('firestore.indexes.json coverage', () => {
     if (missing.length > 0) failWithPasteable(missing, 'declared defaultQuery entries');
   });
 
+  it('covers every picker recency sort', () => {
+    // Collections exposed through a schema-driven picker (CollectionSelect)
+    // order their option list by RECENCY_SORT — see CollectionMetadata
+    // .pickerRecencySort. Firestore Enterprise creates no indexes, so the
+    // two-key recency composite needs an explicit entry or the picker scans.
+    const missing: RequiredIndex[] = [];
+    for (const { meta } of bundles) {
+      if (!meta.pickerRecencySort) continue;
+      const required = deriveRequiredIndex(meta.collectionPath, { orderBy: RECENCY_SORT });
+      if (!indexes.some((idx) => indexSatisfies(idx, required))) missing.push(required);
+    }
+    if (missing.length > 0) failWithPasteable(missing, 'picker recency sorts');
+  });
+
   it('covers every TableView update-monitor query', () => {
     const missing: RequiredIndex[] = [];
     for (const { schema, meta } of bundles) {
@@ -118,6 +133,9 @@ describe('firestore.indexes.json coverage', () => {
   it('reports unused index entries (warning only — never fails)', () => {
     const required: RequiredIndex[] = [];
     for (const { schema, meta } of bundles) {
+      if (meta.pickerRecencySort) {
+        required.push(deriveRequiredIndex(meta.collectionPath, { orderBy: RECENCY_SORT }));
+      }
       if (!meta.defaultQuery) continue;
       required.push(deriveRequiredIndex(meta.collectionPath, meta.defaultQuery));
       const field = monitorField(schema);

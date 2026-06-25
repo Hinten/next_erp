@@ -1,6 +1,7 @@
 'use client';
 
 import type { FieldConfig, FieldRenderProps } from '@delfrance/ui';
+import { RECENCY_SORT } from '@delfrance/schemas';
 import { filialCollection } from '@/lib/data/filialCollection';
 import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
 
@@ -21,10 +22,6 @@ import { CollectionSelect } from '@/components/collection-select/CollectionSelec
  */
 
 const INITIAL_LIMIT = 5;
-const RECENCY_ORDER: Array<{ field: string; direction: 'desc' }> = [
-  { field: 'ultimaModificacao', direction: 'desc' },
-  { field: 'timestamp', direction: 'desc' },
-];
 const SEARCH_FIELDS = ['razaoSocial', 'fantasia', 'cnpj'];
 
 export interface FilialPickerProps {
@@ -65,7 +62,7 @@ export function FilialPicker({
       error={error}
       required={required}
       limit={INITIAL_LIMIT}
-      orderBy={RECENCY_ORDER}
+      orderBy={RECENCY_SORT}
     />
   );
 }
