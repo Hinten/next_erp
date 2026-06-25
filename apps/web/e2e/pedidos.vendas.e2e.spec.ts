@@ -266,19 +266,13 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await expect(dialog).toBeVisible();
 
     // #293: the lookup button shows for the DEFAULT Pessoa Física tipo too and
-    // is always clickable (it validates on click). The PJ-only IE field stays
-    // hidden until the lookup flips the tipo to PJ.
+    // is always clickable. The PJ-only IE field stays hidden until the lookup
+    // flips the tipo to PJ. (The validate-on-click feedback for an invalid CNPJ
+    // is covered by clientes-cnpj.cadastros — the modal surfaces it as a toast.)
     const buscar = dialog.getByRole('button', { name: 'Buscar dados do CNPJ' });
     await expect(buscar).toBeVisible();
     await expect(buscar).toBeEnabled();
     await expect(dialog.getByLabel('Inscrição estadual', { exact: true })).toHaveCount(0);
-
-    // Clicking with an empty/invalid CNPJ validates first — shows a red
-    // notification (portaled, role=alert), no API call, no tipo switch.
-    await buscar.click();
-    await expect(
-      page.getByRole('alert').filter({ hasText: 'Informe um CNPJ válido' }).first(),
-    ).toBeVisible();
 
     await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill(cnpj);
     await buscar.click();
