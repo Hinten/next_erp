@@ -1,7 +1,16 @@
 'use client';
 
 import { useEffect, useMemo } from 'react';
-import { Fieldset, Select, Stack, Switch, TagsInput, Textarea, TextInput } from '@mantine/core';
+import {
+  Fieldset,
+  NumberInput,
+  Select,
+  Stack,
+  Switch,
+  TagsInput,
+  Textarea,
+  TextInput,
+} from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
 import {
   CONDICAO_PRODUTO_LABELS,
@@ -169,9 +178,27 @@ export function ExtraDataManager({
         onChange={(e) => setField({ coteudoAdulto: e.currentTarget.checked })}
         disabled={disabled}
       />
+      <NumberInput
+        label="Itens no kit"
+        description="Quantidade de itens que compõem o kit."
+        min={0}
+        step={1}
+        allowDecimal={false}
+        value={v.itensNoKit ?? ''}
+        onChange={(val) => setField({ itensNoKit: typeof val === 'number' ? val : null })}
+        disabled={disabled}
+      />
 
       <Fieldset legend="Google Merchant">
         <Stack>
+          <TextInput
+            label="ID do Google Merchant"
+            description="Identificador do produto no Google Merchant Center."
+            value={(gmd.id as string | null) ?? ''}
+            onChange={(e) => setGmd({ id: e.currentTarget.value || null })}
+            disabled={disabled}
+            error={gErr('id')}
+          />
           <TextInput
             label="Título"
             value={(gmd.title as string | null) ?? ''}
