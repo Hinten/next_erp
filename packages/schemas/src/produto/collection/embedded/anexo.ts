@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { idRefSchema } from '../../../outerRef';
 
 import { ARQUIVOS_COLLECTION } from '../../../storage/arquivo';
 
@@ -14,7 +15,7 @@ import { ARQUIVOS_COLLECTION } from '../../../storage/arquivo';
  */
 export const anexoSchema = z
   .object({
-    arquivoOuterRef: z.string().min(1),
+    arquivoOuterRef: idRefSchema,
   })
   .passthrough();
 

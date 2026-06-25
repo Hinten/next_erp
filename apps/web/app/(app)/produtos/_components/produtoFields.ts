@@ -46,7 +46,7 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
     label: 'Categoria',
     section: 'Dados gerais',
     // Emits the Flutter `documents/categorias/<id>` doc-path string.
-    renderInput: refRenderInput(categoriaCollection, false, 'nome', undefined, true),
+    renderInput: refRenderInput(categoriaCollection, false, 'nome'),
   },
   publicado: { label: 'Publicado', section: 'Dados gerais' },
 

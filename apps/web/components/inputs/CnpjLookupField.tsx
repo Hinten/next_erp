@@ -35,11 +35,14 @@ export const CnpjLookupConfigProvider = CnpjLookupContext.Provider;
 const SET_OPTS = { shouldDirty: true, shouldValidate: true } as const;
 
 /**
- * CPF/CNPJ input that adds a "buscar dados" action for **Pessoa Jurídica only**.
- * Hybrid lookup: a public CNPJ API fills razão social (`nome`) + endereço, and
- * SEFAZ Consulta Cadastro confirms the authoritative inscrição estadual (`ie`).
- * Mirrors the ViaCEP "Buscar CEP" affordance on `CepField` — the button is a
- * `rightSection` icon, hidden entirely for PF (`tipo !== '1'`).
+ * CPF/CNPJ input that adds a "buscar dados" action — **regardless of the
+ * selected tipo** (#293). Hybrid lookup: a public CNPJ API fills razão social
+ * (`nome`) + endereço, and SEFAZ Consulta Cadastro confirms the authoritative
+ * inscrição estadual (`ie`). Mirrors the ViaCEP "Buscar CEP" affordance on
+ * `CepField` — the button is a `rightSection` icon, **always shown and
+ * clickable**; it validates on click (an invalid/empty CNPJ shows the error
+ * message instead of calling the API). A successful lookup switches `tipo` to
+ * Pessoa Jurídica (a CNPJ ⇒ PJ; PF + CNPJ is rejected by the schema).
  *
  * The SEFAZ leg is best-effort: a missing filial, an unsupported UF or a SEFAZ
  * outage just falls back to the public IE (or leaves `ie` untouched) — it never
@@ -66,11 +69,17 @@ export function CnpjLookupField({
   const offeredRef = useRef(false);
 
   const doc = (value as string | null | undefined) ?? '';
-  const isPJ = watch('tipo') === '1';
-  // BrasilAPI keys off the 14-digit numeric CNPJ; gate the button on that.
+  // BrasilAPI keys off the 14-digit numeric CNPJ; gate the button on that —
+  // regardless of the selected tipo (a valid CNPJ is lookable from any tipo).
   const isCnpj = /^\d{14}$/.test(cleanCnpj(doc));
 
   async function buscarDados() {
+    // Validate on click (the button is always enabled): an invalid/empty CNPJ
+    // surfaces the message and never hits the API.
+    if (!isCnpj) {
+      setLookupError('Informe um CNPJ válido (14 dígitos) para buscar os dados.');
+      return;
+    }
     setLoading(true);
     setLookupError(null);
     try {
@@ -86,6 +95,10 @@ export function CnpjLookupField({
         return;
       }
       const { nome, ie, endereco, sefazNote } = outcome.data;
+      // A CNPJ belongs to a Pessoa Jurídica — switch the tipo so the form stays
+      // valid (the schema rejects PF + CNPJ) and the IE applies.
+      const switchedToPJ = watch('tipo') !== '1';
+      if (switchedToPJ) setValue('tipo', '1', SET_OPTS);
       setValue('nome', nome, SET_OPTS);
       if (ie) setValue('ie', ie, SET_OPTS);
 
@@ -94,15 +107,20 @@ export function CnpjLookupField({
       onAddressResolved?.(endereco);
       offeredRef.current = endereco !== null;
 
+      // Announce the silent tipo change so the operator notices it.
+      const tipoNote = switchedToPJ ? 'Tipo alterado para Pessoa Jurídica. ' : '';
       if (ie) {
-        notifications.show({ color: 'green', message: `Dados de ${nome} preenchidos (IE ${ie})` });
+        notifications.show({
+          color: 'green',
+          message: `${tipoNote}Dados de ${nome} preenchidos (IE ${ie})`,
+        });
       } else {
         // No IE — surface the reason so the operator can distinguish a genuine
         // "no registration" from a coverage gap, and knows to type the IE.
         const why = sefazNote ?? 'IE não disponível';
         notifications.show({
           color: 'yellow',
-          message: `Dados de ${nome} preenchidos. ${why} — preencha a IE manualmente.`,
+          message: `${tipoNote}Dados de ${nome} preenchidos. ${why} — preencha a IE manualmente.`,
         });
       }
     } finally {
@@ -128,19 +146,18 @@ export function CnpjLookupField({
       error={lookupError ?? error}
       disabled={disabled}
       rightSection={
-        isPJ ? (
-          <Tooltip label="Buscar dados do CNPJ (razão social, IE, endereço)" withArrow>
-            <ActionIcon
-              variant="subtle"
-              onClick={buscarDados}
-              loading={loading}
-              disabled={disabled || !isCnpj}
-              aria-label="Buscar dados do CNPJ"
-            >
-              <IconSearch size={16} />
-            </ActionIcon>
-          </Tooltip>
-        ) : undefined
+        <Tooltip label="Buscar dados do CNPJ (razão social, IE, endereço)" withArrow>
+          <ActionIcon
+            type="button"
+            variant="subtle"
+            onClick={buscarDados}
+            loading={loading}
+            disabled={disabled}
+            aria-label="Buscar dados do CNPJ"
+          >
+            <IconSearch size={16} />
+          </ActionIcon>
+        </Tooltip>
       }
     />
   );

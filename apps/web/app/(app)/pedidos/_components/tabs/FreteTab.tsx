@@ -292,7 +292,6 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
                 onBlur={field.onBlur}
                 disabled={headerDisabled}
                 error={fieldState.error?.message}
-                emitDocPath
               />
             )}
           />
