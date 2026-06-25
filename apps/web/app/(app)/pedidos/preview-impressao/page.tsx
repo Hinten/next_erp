@@ -34,7 +34,7 @@ export default function PreviewImpressaoPage() {
   const entry = PREVIEW_MODELS[idx] ?? PREVIEW_MODELS[0]!;
   const model = entry.model;
 
-  const { ref: orcRef, exporting, error, run } = useOrcamentoExport(model);
+  const { ref: orcRef, exporting, error, exportAs } = useOrcamentoExport(model);
   const comumRef = useRef<HTMLDivElement>(null);
   const printComum = useReactToPrint({
     contentRef: comumRef,
@@ -50,8 +50,8 @@ export default function PreviewImpressaoPage() {
     <Stack>
       <Title order={2}>Pré-visualização de impressão</Title>
       <Text c="dimmed" size="sm">
-        Cenários de exemplo para conferir layout e paginação. O orçamento baixa imagem + PDF; o
-        comum abre a janela de impressão do navegador.
+        Cenários de exemplo para conferir layout e paginação. O orçamento baixa imagem ou PDF
+        separadamente; o comum abre a janela de impressão do navegador.
       </Text>
 
       <SegmentedControl
@@ -68,8 +68,11 @@ export default function PreviewImpressaoPage() {
 
         <Tabs.Panel value="orcamento" pt="md">
           <Group mb="sm">
-            <Button onClick={() => void run()} loading={exporting}>
-              Baixar orçamento (JPEG + PDF)
+            <Button onClick={() => void exportAs('image')} loading={exporting}>
+              Baixar imagem (JPEG)
+            </Button>
+            <Button variant="default" onClick={() => void exportAs('pdf')} loading={exporting}>
+              Baixar PDF
             </Button>
           </Group>
           {error && (

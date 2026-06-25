@@ -132,6 +132,7 @@ export default function PedidosPage() {
       <PrintComumDialog
         opened={printModal.opened}
         pedidoIds={printModal.pedidoIds}
+        alreadyPrintedCount={printModal.alreadyPrintedCount}
         onClose={printModal.close}
       />
     </>

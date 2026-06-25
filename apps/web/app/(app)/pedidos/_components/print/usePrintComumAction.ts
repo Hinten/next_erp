@@ -12,6 +12,8 @@ import type { ActionConfig } from '@delfrance/ui';
 export interface PrintComumModalState {
   readonly opened: boolean;
   readonly pedidoIds: ReadonlyArray<string>;
+  /** How many of the selected pedidos were already printed (`foiImpresso`). */
+  readonly alreadyPrintedCount: number;
   readonly close: () => void;
 }
 
@@ -19,10 +21,11 @@ export function usePrintComumAction(): {
   readonly action: ActionConfig<Pedido>;
   readonly printModal: PrintComumModalState;
 } {
-  const [state, setState] = useState<{ opened: boolean; pedidoIds: ReadonlyArray<string> }>({
-    opened: false,
-    pedidoIds: [],
-  });
+  const [state, setState] = useState<{
+    opened: boolean;
+    pedidoIds: ReadonlyArray<string>;
+    alreadyPrintedCount: number;
+  }>({ opened: false, pedidoIds: [], alreadyPrintedCount: 0 });
 
   const action: ActionConfig<Pedido> = {
     id: 'print-comum',
@@ -30,7 +33,12 @@ export function usePrintComumAction(): {
     color: 'blue',
     requiresSelection: true,
     run: (rows) => {
-      setState({ opened: true, pedidoIds: rows.map((r) => r.id) });
+      setState({
+        opened: true,
+        pedidoIds: rows.map((r) => r.id),
+        // The Flutter guard: warn before re-printing already-printed pedidos.
+        alreadyPrintedCount: rows.filter((r) => r.data.foiImpresso === true).length,
+      });
       return Promise.resolve();
     },
   };
@@ -38,6 +46,7 @@ export function usePrintComumAction(): {
   const printModal: PrintComumModalState = {
     opened: state.opened,
     pedidoIds: state.pedidoIds,
+    alreadyPrintedCount: state.alreadyPrintedCount,
     close: () => setState((s) => ({ ...s, opened: false })),
   };
 

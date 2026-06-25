@@ -26,15 +26,30 @@ import { ComumSheet } from './ComumSheet';
 export interface PrintComumDialogProps {
   readonly opened: boolean;
   readonly pedidoIds: ReadonlyArray<string>;
+  /** How many of the selected pedidos were already printed (`foiImpresso`). */
+  readonly alreadyPrintedCount: number;
   readonly onClose: () => void;
 }
 
-type Phase = 'building' | 'preparing' | 'ready' | 'printing' | 'done' | 'error';
+type Phase =
+  | 'idle'
+  | 'confirm'
+  | 'building'
+  | 'preparing'
+  | 'ready'
+  | 'printing'
+  | 'done'
+  | 'error';
 
-export function PrintComumDialog({ opened, pedidoIds, onClose }: PrintComumDialogProps) {
+export function PrintComumDialog({
+  opened,
+  pedidoIds,
+  alreadyPrintedCount,
+  onClose,
+}: PrintComumDialogProps) {
   const contentRef = useRef<HTMLDivElement>(null);
   const modelsRef = useRef<PedidoPrintModel[]>([]);
-  const [phase, setPhase] = useState<Phase>('building');
+  const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [models, setModels] = useState<PedidoPrintModel[]>([]);
   const [failures, setFailures] = useState<ReadonlyArray<{ pedidoId: string; message: string }>>(
@@ -57,23 +72,30 @@ export function PrintComumDialog({ opened, pedidoIds, onClose }: PrintComumDialo
     },
   });
 
-  // Phase 1 — build models when the dialog opens.
+  // On open — reset, then either ask to confirm reprinting (some pedidos were
+  // already printed) or go straight to building.
   useEffect(() => {
     if (!opened) return;
-    let cancelled = false;
-    // Reset + kick off the async build on open — the established open-a-modal
-    // effect pattern (cf. EmitirLoteDialog). The advisory set-state-in-effect
-    // rule is kept at 'warn' in eslint.config for exactly this; disabled locally
-    // so the --max-warnings 0 pre-commit lint passes.
+    // Synchronous reset on open — the established open-a-modal effect pattern
+    // (cf. EmitirLoteDialog); the advisory set-state-in-effect rule is kept at
+    // 'warn' in eslint.config for exactly this, disabled locally so the
+    // --max-warnings 0 pre-commit lint passes.
     /* eslint-disable react-hooks/set-state-in-effect */
-    setPhase('building');
     setProgress({ done: 0, total: pedidoIds.length });
     setModels([]);
     setFailures([]);
     setMessage(null);
+    setPhase(alreadyPrintedCount > 0 ? 'confirm' : 'building');
     /* eslint-enable react-hooks/set-state-in-effect */
     modelsRef.current = [];
+  }, [opened, pedidoIds, alreadyPrintedCount]);
 
+  // Build models once the 'building' phase is entered — directly, or after the
+  // user confirms reprinting the already-printed pedidos. Gated on `opened` so
+  // the initial 'idle' mount never kicks off a build with empty ids.
+  useEffect(() => {
+    if (!opened || phase !== 'building') return;
+    let cancelled = false;
     buildModelsInWaves(
       getFirebaseFirestore(),
       pedidoIds,
@@ -104,7 +126,7 @@ export function PrintComumDialog({ opened, pedidoIds, onClose }: PrintComumDialo
     return () => {
       cancelled = true;
     };
-  }, [opened, pedidoIds]);
+  }, [opened, phase, pedidoIds]);
 
   // Phase 2 — once the sheets are mounted, preload their images.
   useEffect(() => {
@@ -136,6 +158,25 @@ export function PrintComumDialog({ opened, pedidoIds, onClose }: PrintComumDialo
         centered
       >
         <Stack>
+          {phase === 'confirm' && (
+            <>
+              <Alert color="yellow" variant="light">
+                {alreadyPrintedCount} de {total} pedido{total === 1 ? '' : 's'} selecionado
+                {total === 1 ? '' : 's'} já{' '}
+                {alreadyPrintedCount === 1 ? 'foi impresso' : 'foram impressos'}. Deseja imprimir
+                mesmo assim?
+              </Alert>
+              <Group justify="flex-end">
+                <Button variant="subtle" onClick={onClose}>
+                  Cancelar
+                </Button>
+                <Button color="yellow" onClick={() => setPhase('building')}>
+                  Imprimir mesmo assim
+                </Button>
+              </Group>
+            </>
+          )}
+
           {phase === 'building' && (
             <>
               <Text size="sm">
