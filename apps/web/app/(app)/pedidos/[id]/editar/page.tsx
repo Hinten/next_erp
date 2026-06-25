@@ -33,6 +33,7 @@ import { PedidoConflictModal } from '../../_components/PedidoConflictModal';
 import { conflictFields } from '../../_components/conflictFields';
 import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { StatusBadge } from '../../_components/StatusBadge';
+import { OrcamentoExportButton } from '../../_components/print/OrcamentoExportButton';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useNFeClient } from '@/lib/nfe/client';
@@ -217,6 +218,7 @@ export default function EditarPedidoPage() {
         description={p.ehSaida ? 'Saída' : 'Entrada'}
         actions={
           <Group gap="xs">
+            <OrcamentoExportButton pedidoId={data.id} />
             <Tooltip
               label="Emissão de NF-e bloqueada para este pedido"
               disabled={!p.bloquearEmissaoNFe}
