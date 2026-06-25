@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { idRefSchema, outerRefSchema } from '../outerRef';
 import { ARQUIVOS_COLLECTION } from './arquivo';
 import { derivativeArquivoId, productArquivoId } from './storagePaths';
 
@@ -47,11 +48,11 @@ export function buildFotoRefs(produtoId: string, hash: string): FotoRefs {
  */
 export const fotoSchema = z
   .object({
-    arquivoOuterRef: z.string().min(1),
-    arquivo200pxOuterRef: z.string().nullable().default(null),
-    arquivo400pxOuterRef: z.string().nullable().default(null),
-    arquivoJpegOuterRef: z.string().nullable().default(null),
-    grupoDeVariacoesOuterRef: z.string().nullable().default(null),
+    arquivoOuterRef: idRefSchema,
+    arquivo200pxOuterRef: idRefSchema.nullable().default(null),
+    arquivo400pxOuterRef: idRefSchema.nullable().default(null),
+    arquivoJpegOuterRef: idRefSchema.nullable().default(null),
+    grupoDeVariacoesOuterRef: outerRefSchema.nullable().default(null),
     variantePath: z.string().nullable().default(null),
   })
   .passthrough();

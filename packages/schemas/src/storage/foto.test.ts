@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildFotoRefs, deriveFotosArquivosIds, fotoSchema } from './foto';
+import { buildFotoRefs, deriveFotosArquivosIds, fotoSchema, type Foto } from './foto';
 
 describe('buildFotoRefs', () => {
   it('builds the optimistic arquivos/<id> ref strings (Flutter Foto wire shape)', () => {
@@ -60,11 +60,18 @@ describe('deriveFotosArquivosIds', () => {
     expect(deriveFotosArquivosIds(null)).toEqual([]);
   });
 
-  it('skips a bare `arquivos/` ref that would strip to an empty id', () => {
-    const foto = fotoSchema.parse({
+  it('rejects a derivative ref that strips to an empty id (strict idRefSchema)', () => {
+    expect(
+      fotoSchema.safeParse({ arquivoOuterRef: 'arquivos/p1_h', arquivo200pxOuterRef: 'arquivos/' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('skips a malformed derivative ref at runtime (defensive, non-schema data)', () => {
+    const foto = {
       arquivoOuterRef: 'arquivos/p1_h',
       arquivo200pxOuterRef: 'arquivos/',
-    });
+    } as unknown as Foto;
     expect(deriveFotosArquivosIds([foto])).toEqual(['p1_h']);
   });
 });

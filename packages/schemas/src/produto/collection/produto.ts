@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
+import { outerRefSchema } from '../../outerRef';
 import { fotoSchema } from '../../storage/foto';
 import { videoSchema } from '../../storage/video';
 import { componentesKitSchema } from './embedded/kit';
@@ -41,8 +42,8 @@ export const produtoSchema = z
 
     // Categoria reference — the Flutter `OuterReference<Categoria>` serializes
     // to a `documents/categorias/<id>` doc-path string (read `as String?`). The
-    // Categoria picker emits that exact shape (refRenderInput `emitDocPath`).
-    categoriaProdutoOuterRef: z.string().nullable().default(null),
+    // Categoria picker emits that exact shape.
+    categoriaProdutoOuterRef: outerRefSchema.nullable().default(null),
 
     // Dimensions / weights — all optional doubles.
     pesoLiquidoKg: z.number().nullable().default(null),
