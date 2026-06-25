@@ -191,7 +191,9 @@ export async function cartaCorrecaoService(
   // event IS registered at SEFAZ under its nSeqEvento, so a fresh CC-e must take
   // the next number, while the pending one is re-sent with its OWN (unchanged)
   // sequence by the re-check task. A rejected (error) attempt holds no sequence,
-  // so it's excluded. Single-field `in` rides Firestore's automatic index.
+  // so it's excluded. Left index-free: this scans one NF-e's tiny `cartacorrecao`
+  // subcollection (a few CC-e), so the unindexed scan is cheap (Firestore
+  // Enterprise auto-creates no indexes; an undeclared query just scans) (#108).
   const sequencedSnap = await cartaCorrecaoCollection
     .ref(fs, { pedidoId, nfeId })
     .where('estado', 'in', [ESTADO_ENVI_NFE_MSG.concluido, ESTADO_ENVI_NFE_MSG.aguardandoVinculo])

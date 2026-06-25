@@ -96,10 +96,10 @@ export async function inutilizarNumeracao(
   const ano = String(new Date().getFullYear() % 100).padStart(2, '0');
 
   // 1. Pre-check: every nfev4 doc whose número is in the range, then narrow to
-  // this filial + série in memory. The collection-group query constrains a
-  // SINGLE field (`numeracao`) so it rides Firestore's automatic single-field
-  // index (same pattern as the `processar-pendentes` poller) — no manually
-  // deployed composite index, and the range is tiny so the scan is cheap.
+  // this filial + série in memory. Deliberately left index-free: inutilização is
+  // a rare admin op, so the unindexed collection-group scan (Firestore Enterprise
+  // auto-creates NO indexes — an undeclared query degrades to a full group scan,
+  // it never throws) carries a negligible recurring cost. Not worth an index (#108).
   // Attribution: the denormalized `filialId`, or (legacy docs) the emitter
   // CNPJ embedded in the chave (positions 6-20). An authorized doc always
   // carries a chave, so the CNPJ path keeps the guard correct for docs written
