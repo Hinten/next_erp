@@ -209,6 +209,7 @@ export function KitVariacoesManager({
               db={db}
               ehKit
               syncCustoToForm={false}
+              syncPesoToForm={false}
               excludeIds={familyExcludeIds}
               value={value}
               onChange={(next) => setStaged((s) => ({ ...s, [row.key]: next }))}

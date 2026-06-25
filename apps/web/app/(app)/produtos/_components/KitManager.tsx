@@ -17,7 +17,14 @@ import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { type DocumentReference, type Firestore, getDocFromServer } from 'firebase/firestore';
 import { useFormContext } from 'react-hook-form';
-import { custoDoKit, type ComponentesKit, type Kit } from '@delfrance/schemas';
+import {
+  KIT_PESO_BRUTO_FALLBACK_KG,
+  KIT_PESO_LIQUIDO_FALLBACK_KG,
+  custoDoKit,
+  pesoDoKit,
+  type ComponentesKit,
+  type Kit,
+} from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
 import { produtoCollection } from '@/lib/data/produtoCollection';
@@ -44,6 +51,10 @@ export function stripKitForSave(value: unknown): ComponentesKit | null {
 }
 
 const fmtBRL = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const fmtKg = (n: number | null) =>
+  n === null
+    ? '—'
+    : `${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kg`;
 
 /** Produto id picked by the component `CollectionSelect` (emits a DocumentReference). */
 function refToId(ref: unknown): string | null {
@@ -85,6 +96,12 @@ export interface KitManagerProps {
    */
   syncCustoToForm?: boolean;
   /**
+   * Push the computed kit weight into the form's `pesoBrutoKg`/`pesoLiquidoKg`
+   * fields (default `true`). Pass `false` for variation-child instances — they
+   * have no weight fields in the parent form; the weight is still shown.
+   */
+  syncPesoToForm?: boolean;
+  /**
    * Extra produto ids to hide from the component picker (beyond `produtoId`
    * itself, always excluded) — e.g. the kit's variation children. Mirrors the
    * Flutter `optionsFilter` (excludes self + variations).
@@ -111,6 +128,7 @@ export function KitManager({
   disabled,
   ehKit: ehKitProp,
   syncCustoToForm = true,
+  syncPesoToForm = true,
   excludeIds,
 }: KitManagerProps) {
   // RHF context is typed non-null but IS null outside a provider (ObjectView
@@ -134,8 +152,13 @@ export function KitManager({
   // The cache also holds each component PARENT's cost (keyed by `paiId`) so the
   // variation-child cost fallback can resolve from it.
   const [custoCache, setCustoCache] = useState<Record<string, number | null>>({});
-  // Each component id → its `paiId` (or null) — feeds the Flutter cost fallback:
-  // a variation child with no own custo uses its parent's.
+  // Component (+ parent) weights, filled from the SAME doc reads as the cost —
+  // feeds the dynamic kit weight (Flutter `getPesoBrutoKg`/`getPesoLiquidoKg`).
+  const [pesoCache, setPesoCache] = useState<
+    Record<string, { bruto: number | null; liquido: number | null }>
+  >({});
+  // Each component id → its `paiId` (or null) — feeds the Flutter cost/weight
+  // fallback: a variation child with no own value uses its parent's.
   const [paiCache, setPaiCache] = useState<Record<string, string | null>>({});
 
   const activeIds = useMemo(
@@ -146,54 +169,63 @@ export function KitManager({
     [components],
   );
 
-  // Read the custo of any newly-added component (batched); cached ones are reused.
-  // Deps are honest (incl. `custoCache`): on a successful read this re-runs once
-  // and no-ops (nothing missing); on a transient read failure it surfaces a
-  // notification and self-heals when the components change or the tab remounts.
+  // Read each newly-added component's custo + weights (batched); cached ones are
+  // reused. ONE doc read feeds BOTH the kit cost and the kit weight — no extra
+  // reads. Deps are honest (incl. `custoCache`): on success this re-runs once and
+  // no-ops; a transient failure surfaces a notification and self-heals when the
+  // components change or the tab remounts.
   useEffect(() => {
     if (!ehKit) return;
     const missing = activeIds.filter((id) => !(id in custoCache));
     if (missing.length === 0) return;
     let cancelled = false;
-    const readCusto = async (id: string) =>
-      ((await getDocFromServer(produtoCollection.docRef(db, {}, id))).data()?.custo as
-        | number
-        | null
-        | undefined) ?? null;
+    const readEntry = async (id: string) => {
+      const d = (await getDocFromServer(produtoCollection.docRef(db, {}, id))).data();
+      return {
+        custo: (d?.custo as number | null | undefined) ?? null,
+        bruto: (d?.pesoBrutoKg as number | null | undefined) ?? null,
+        liquido: (d?.pesoLiquidoKg as number | null | undefined) ?? null,
+        paiId: (d?.paiId as string | null | undefined) ?? null,
+      };
+    };
     (async () => {
-      // Phase 1: read each missing component's own custo + paiId.
+      // Phase 1: read each missing component (custo + weights + paiId) — one read each.
       const comps = await Promise.all(
-        missing.map(async (id) => {
-          const data = (await getDocFromServer(produtoCollection.docRef(db, {}, id))).data();
-          return {
-            id,
-            own: (data?.custo as number | null | undefined) ?? null,
-            paiId: (data?.paiId as string | null | undefined) ?? null,
-          };
-        }),
+        missing.map(async (id) => ({ id, ...(await readEntry(id)) })),
       );
-      // Phase 2 — Flutter fallback (models.dart:1271-1287): a variation child with
-      // no own custo inherits its parent's. Read each parent ONCE — dedupe the
-      // paiIds and skip any already cached (sibling variations share a paiId), so
-      // a kit of N variations of the same product is one parent read, not N.
+      // Phase 2 — Flutter fallback (models.dart:1271-1287 / :1487-1541): a
+      // variation child with no own custo/weight inherits its parent's. Read each
+      // parent ONCE — dedupe paiIds, skip any already cached (sibling variations
+      // share a paiId), and only when some field is actually missing.
       const neededPais = [
-        ...new Set(comps.filter((c) => c.own === null && c.paiId).map((c) => c.paiId as string)),
+        ...new Set(
+          comps
+            .filter((c) => c.paiId && (c.custo === null || c.bruto === null || c.liquido === null))
+            .map((c) => c.paiId as string),
+        ),
       ].filter((pid) => !(pid in custoCache));
       const pais = await Promise.all(
-        neededPais.map(async (pid) => [pid, await readCusto(pid)] as const),
+        neededPais.map(async (pid) => [pid, await readEntry(pid)] as const),
       );
       if (cancelled) return;
       setCustoCache((c) => ({
         ...c,
-        ...Object.fromEntries(comps.map((cm) => [cm.id, cm.own])),
-        ...Object.fromEntries(pais),
+        ...Object.fromEntries(comps.map((cm) => [cm.id, cm.custo])),
+        ...Object.fromEntries(pais.map(([pid, e]) => [pid, e.custo])),
+      }));
+      setPesoCache((p) => ({
+        ...p,
+        ...Object.fromEntries(comps.map((cm) => [cm.id, { bruto: cm.bruto, liquido: cm.liquido }])),
+        ...Object.fromEntries(
+          pais.map(([pid, e]) => [pid, { bruto: e.bruto, liquido: e.liquido }]),
+        ),
       }));
       setPaiCache((p) => ({ ...p, ...Object.fromEntries(comps.map((cm) => [cm.id, cm.paiId])) }));
     })().catch((err: unknown) => {
       if (err instanceof FirebaseError) {
         notifications.show({
           color: 'red',
-          message: `Falha ao ler o custo dos componentes: ${err.message}`,
+          message: `Falha ao ler os dados dos componentes: ${err.message}`,
         });
         return;
       }
@@ -213,6 +245,22 @@ export function KitManager({
     return custoDoKit(stripKitForSave(components) ?? {}, custoCache, paiCache);
   }, [activeIds, custoCache, paiCache, components]);
 
+  // Kit weight is DYNAMIC too (Flutter `getPesoBrutoKg`/`getPesoLiquidoKg`):
+  // Σ(component peso × quantidade), with a per-component default for any missing
+  // weight (so it always computes); `null` until every component is cached.
+  const pesoResult = useMemo(() => {
+    const empty = { bruto: null as number | null, liquido: null as number | null };
+    if (activeIds.length === 0) return empty;
+    if (activeIds.some((id) => !(id in pesoCache))) return null; // wait for reads
+    const comp = stripKitForSave(components) ?? {};
+    const brutoBy = Object.fromEntries(Object.entries(pesoCache).map(([k, v]) => [k, v.bruto]));
+    const liquidoBy = Object.fromEntries(Object.entries(pesoCache).map(([k, v]) => [k, v.liquido]));
+    return {
+      bruto: pesoDoKit(comp, brutoBy, paiCache, KIT_PESO_BRUTO_FALLBACK_KG),
+      liquido: pesoDoKit(comp, liquidoBy, paiCache, KIT_PESO_LIQUIDO_FALLBACK_KG),
+    };
+  }, [activeIds, pesoCache, paiCache, components]);
+
   // Push the computed cost into the read-only `custo` form field (writing to the
   // form = an external system, the legitimate use of an effect).
   useEffect(() => {
@@ -221,6 +269,19 @@ export function KitManager({
       form?.setValue('custo', custoResult.custo, { shouldDirty: true });
     }
   }, [syncCustoToForm, ehKit, custoResult, form]);
+
+  // Push the computed weights into the form's `pesoBrutoKg`/`pesoLiquidoKg`
+  // fields (Dimensões tab). Only when they actually differ, so loading an
+  // already-consistent kit doesn't mark the form dirty.
+  useEffect(() => {
+    if (!syncPesoToForm || !ehKit || !pesoResult) return;
+    if (pesoResult.bruto !== null && form?.getValues('pesoBrutoKg') !== pesoResult.bruto) {
+      form?.setValue('pesoBrutoKg', pesoResult.bruto, { shouldDirty: true });
+    }
+    if (pesoResult.liquido !== null && form?.getValues('pesoLiquidoKg') !== pesoResult.liquido) {
+      form?.setValue('pesoLiquidoKg', pesoResult.liquido, { shouldDirty: true });
+    }
+  }, [syncPesoToForm, ehKit, pesoResult, form]);
 
   const setComponent = (id: string, patch: Partial<KitDraft>) => {
     onChange({ ...components, [id]: { ...components[id], ...patch } as KitDraft });
@@ -287,20 +348,32 @@ export function KitManager({
         return;
       }
       const own = (data?.custo as number | null | undefined) ?? null;
+      const ownBruto = (data?.pesoBrutoKg as number | null | undefined) ?? null;
+      const ownLiquido = (data?.pesoLiquidoKg as number | null | undefined) ?? null;
       const paiId = (data?.paiId as string | null | undefined) ?? null;
       setPaiCache((p) => ({ ...p, [id]: paiId }));
-      if (own === null && paiId && !(paiId in custoCache)) {
-        // Variation child with no own custo and an UNCACHED parent — read the
-        // parent's custo once for the Flutter fallback (`models.dart:1271-1287`).
+      const missingField = own === null || ownBruto === null || ownLiquido === null;
+      if (missingField && paiId && !(paiId in custoCache)) {
+        // Variation child missing custo/weight with an UNCACHED parent — read the
+        // parent once for the Flutter fallback (`models.dart:1271-1287` / :1487-1541).
         // A parent already cached (e.g. by a sibling component) is reused.
-        const parent = (await getDocFromServer(produtoCollection.docRef(db, {}, paiId))).data();
+        const pd = (await getDocFromServer(produtoCollection.docRef(db, {}, paiId))).data();
         setCustoCache((c) => ({
           ...c,
           [id]: own,
-          [paiId]: (parent?.custo as number | null | undefined) ?? null,
+          [paiId]: (pd?.custo as number | null | undefined) ?? null,
+        }));
+        setPesoCache((p) => ({
+          ...p,
+          [id]: { bruto: ownBruto, liquido: ownLiquido },
+          [paiId]: {
+            bruto: (pd?.pesoBrutoKg as number | null | undefined) ?? null,
+            liquido: (pd?.pesoLiquidoKg as number | null | undefined) ?? null,
+          },
         }));
       } else {
         setCustoCache((c) => ({ ...c, [id]: own }));
+        setPesoCache((p) => ({ ...p, [id]: { bruto: ownBruto, liquido: ownLiquido } }));
       }
     } catch (err) {
       if (err instanceof FirebaseError) {
@@ -326,6 +399,8 @@ export function KitManager({
 
   const custoKit = custoResult?.custo ?? null;
   const faltando = custoResult?.faltando ?? [];
+  const pesoBrutoKit = pesoResult?.bruto ?? null;
+  const pesoLiquidoKit = pesoResult?.liquido ?? null;
 
   if (!ehKit) {
     return (
@@ -339,16 +414,23 @@ export function KitManager({
 
   return (
     <Stack gap="xs">
-      <Group justify="space-between" align="center">
+      <Group justify="space-between" align="flex-start" wrap="nowrap">
         <Text size="sm" c="dimmed">
-          Produtos que compõem o kit. O custo do kit é calculado automaticamente (soma dos
-          componentes × quantidade) e preenche o campo Custo.
+          Produtos que compõem o kit. O custo e o peso do kit são calculados automaticamente (soma
+          dos componentes × quantidade) e preenchem os campos Custo e Dimensões.
         </Text>
-        {custoKit !== null && (
-          <Text size="sm" fw={600}>
-            Custo do kit: {fmtBRL(custoKit)}
-          </Text>
-        )}
+        <Stack gap={2} align="flex-end" style={{ flexShrink: 0 }}>
+          {custoKit !== null && (
+            <Text size="sm" fw={600}>
+              Custo do kit: {fmtBRL(custoKit)}
+            </Text>
+          )}
+          {(pesoBrutoKit !== null || pesoLiquidoKit !== null) && (
+            <Text size="xs" c="dimmed">
+              Peso: {fmtKg(pesoBrutoKit)} bruto · {fmtKg(pesoLiquidoKit)} líq.
+            </Text>
+          )}
+        </Stack>
       </Group>
       {faltando.length > 0 && (
         <Text size="sm" c="orange">
