@@ -105,6 +105,7 @@ service cloud.firestore {
         && (!c.hasAny(['duplicata']) || d.get('duplicata', null) is bool)
         && (!c.hasAny(['id']) || (d.get('id', null) == null || d.get('id', null) is string))
         && (!c.hasAny(['juros']) || (d.get('juros', null) == null || (d.get('juros', null) is number && d.get('juros', null) >= 0)))
+        && (!c.hasAny(['metodoPagamentoOuterRef']) || (d.get('metodoPagamentoOuterRef', null) == null || d.get('metodoPagamentoOuterRef', null) is string))
         && (!c.hasAny(['nFat']) || (d.get('nFat', null) == null || d.get('nFat', null) is string && d.get('nFat', null).size() <= 60))
         && (!c.hasAny(['parcelas']) || (d.get('parcelas', null) is int && d.get('parcelas', null) >= 1))
         && (!c.hasAny(['tarifas']) || (d.get('tarifas', null) == null || (d.get('tarifas', null) is number && d.get('tarifas', null) >= 0)))

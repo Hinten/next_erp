@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
 import { microsSinceEpoch } from '../../datetime';
 import { bandeiraSchema } from '../../bandeiraCartao';
+import { outerRefSchema } from '../../outerRef';
 import type { EstadoPedido } from './pedido';
 
 const PERM_PAGAMENTO_READ = 1n << 24n;
@@ -165,11 +166,11 @@ export function statusToEstadoPedido(status: StatusPagamento): EstadoPedido {
 export const pagamentoSchema = z
   .object({
     id: z.string().nullable().default(null),
-    // Genuinely polymorphic pass-through: Flutter authors it as a
-    // `documents/metodo_pgto/<id>` string, but `PagamentosSection` also reads it
-    // as a `{ tipo }` gateway object. Never written by this app → kept `unknown`
-    // rather than forced to one shape (unlike the other doc-path outer refs).
-    metodoPagamentoOuterRef: z.unknown().nullable().default(null),
+    // Reference to the payment-integration doc (`metodo_pgto`, e.g. Mercado
+    // Pago): a `documents/metodo_pgto/<id>` doc-path string. Pass-through (the
+    // editor spreads it from the existing doc); a gateway's `tipo` is read by
+    // dereferencing it, not off the ref value.
+    metodoPagamentoOuterRef: outerRefSchema.nullable().default(null),
     forma_de_pagamento: formaPagamentoSchema.default(FORMA_PAGAMENTO.dinheiro),
     status_pagamento: statusPagamentoSchema.nullable().default(null),
     cartao: z.unknown().nullable().default(null),
