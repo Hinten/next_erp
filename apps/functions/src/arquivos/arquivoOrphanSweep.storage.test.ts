@@ -10,6 +10,8 @@ import {
   productArquivoId,
   productOriginalPath,
   productVideoPath,
+  tabMediArquivoId,
+  tabMediOriginalPath,
 } from '@delfrance/schemas';
 
 import {
@@ -303,5 +305,49 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     const doc = await db.collection('arquivos').doc(oddId).get();
     expect(doc.exists).toBe(true); // owner not derivable → NOT deleted
     expect(doc.data()?.markedForDeletionAt).toBeNull(); // mark cleared
+  });
+
+  it('marked sweep handles tabMedi owners — deletes an unreferenced, clears a referenced', async () => {
+    const db = getDb();
+    const tabMediId = `tm${randomUUID().replace(/-/g, '')}`;
+    const goneHash = randomUUID().replace(/-/g, '');
+    const keptHash = randomUUID().replace(/-/g, '');
+    const goneId = tabMediArquivoId(tabMediId, goneHash);
+    const keptId = tabMediArquivoId(tabMediId, keptHash);
+    const past = nowMicros() - DAY_MICROS;
+
+    const seedMarked = async (storagePath: string, docId: string) => {
+      const slash = storagePath.lastIndexOf('/');
+      await db
+        .collection('arquivos')
+        .doc(docId)
+        .set({
+          filetype: 'image',
+          filepath: storagePath.slice(0, slash),
+          filename: storagePath.slice(slash + 1),
+          contentType: 'image/png',
+          url: null,
+          externalIds: [],
+          uploadState: 'finalized',
+          criadoEm: past,
+          markedForDeletionAt: past,
+        });
+    };
+
+    await seedMarked(tabMediOriginalPath(tabMediId, goneHash, 'png'), goneId);
+    await seedMarked(tabMediOriginalPath(tabMediId, keptHash, 'png'), keptId);
+
+    // The tabela references ONLY keptId — exercises resolveReferencedRefs('tabMedi').
+    await db
+      .collection('tabMedi')
+      .doc(tabMediId)
+      .set({ nome: 'Tabela X', fotos: [{ arquivoOuterRef: `arquivos/${keptId}` }] });
+
+    await sweepMarkedForDeletion(db);
+
+    expect((await db.collection('arquivos').doc(goneId).get()).exists).toBe(false); // unreferenced → deleted
+    const kept = await db.collection('arquivos').doc(keptId).get();
+    expect(kept.exists).toBe(true); // referenced → kept
+    expect(kept.data()?.markedForDeletionAt).toBeNull(); // mark cleared
   });
 });

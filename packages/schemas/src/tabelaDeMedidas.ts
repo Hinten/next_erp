@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
+import { fotoSchema } from './storage/foto';
 import type { CollectionMetadata } from './types';
 
 // Mirror `PERM.produto` from @delfrance/auth; duplicated locally to avoid a
@@ -19,7 +20,9 @@ export const tabelaDeMedidasSchema = z.object({
   codigo: z.string().max(255).nullable().describe('Código interno'),
   descricao: z.string().max(1000).nullable().describe('Descrição'),
   fotosArquivosIds: z.array(z.string()).nullable().optional(),
-  fotos: z.array(z.unknown()).nullable().optional(),
+  // Mirrors `Produto.fotos` — the Flutter `Foto2` wire shape. `fotoSchema` is
+  // `.passthrough()`, so any extra fields legacy `tabMedi` docs carry survive.
+  fotos: z.array(fotoSchema).nullable().optional(),
 
   // Tabelas por integração — chave = integracao_id. Pass-through (cada
   // marketplace tem sua estrutura interna específica).

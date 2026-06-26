@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildFotoRefs, deriveFotosArquivosIds, fotoSchema, type Foto } from './foto';
+import {
+  buildFotoRefs,
+  buildOriginalFotoRef,
+  deriveFotosArquivosIds,
+  fotoSchema,
+  type Foto,
+} from './foto';
 
 describe('buildFotoRefs', () => {
   it('builds the optimistic arquivos/<id> ref strings (Flutter Foto wire shape)', () => {
@@ -9,6 +15,23 @@ describe('buildFotoRefs', () => {
       arquivo400pxOuterRef: 'arquivos/p1_h_400',
       arquivoJpegOuterRef: 'arquivos/p1_h_jpeg',
     });
+  });
+});
+
+describe('buildOriginalFotoRef', () => {
+  it('builds an original-only ref with null derivatives (a no-resize owner)', () => {
+    expect(buildOriginalFotoRef('tm1_h')).toEqual({
+      arquivoOuterRef: 'arquivos/tm1_h',
+      arquivo200pxOuterRef: null,
+      arquivo400pxOuterRef: null,
+      arquivoJpegOuterRef: null,
+    });
+  });
+
+  it('parses as a valid Foto and derives only the original id', () => {
+    const foto = fotoSchema.parse(buildOriginalFotoRef('tm1_h'));
+    expect(foto.arquivoOuterRef).toBe('arquivos/tm1_h');
+    expect(deriveFotosArquivosIds([foto])).toEqual(['tm1_h']);
   });
 });
 

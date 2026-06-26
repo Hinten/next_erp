@@ -42,14 +42,13 @@ import { arrayMove, rectSortingStrategy, SortableContext, useSortable } from '@d
 import { CSS } from '@dnd-kit/utilities';
 import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
-import type { FirebaseStorage } from 'firebase/storage';
 import { useFormContext } from 'react-hook-form';
-import { arquivoCollection, StorageUploadError, uploadProductImage } from '@delfrance/storage';
+import { arquivoCollection, StorageUploadError } from '@delfrance/storage';
 import {
   type Foto,
+  type FotoRefs,
   type FotoVariantSection,
   type GrupoComId,
-  buildFotoRefs,
   grupoOuterRef,
   remakeFakePath,
   splitFotoSections,
@@ -130,13 +129,17 @@ function idFromRef(ref: string | null | undefined): string | null {
 
 export interface PhotoManagerProps {
   /**
-   * Owning product id — uploads are scoped to `produtos/<produtoId>/…`. `null`
-   * in create mode (the product isn't saved yet): the manager then renders a
-   * "save first" message instead of a dead dropzone.
+   * Upload adapter: takes the dropped file's bytes and resolves to the new
+   * foto's refs (`arquivoOuterRef` + nullable derivative refs). The owner, the
+   * storage path and resize behaviour all live INSIDE the adapter, so this
+   * gallery is owner-agnostic (produto, tabela de medidas, …). `undefined` in
+   * create mode (nothing saved yet) → the manager renders `emptyOwnerMessage`
+   * instead of a dead dropzone.
    */
-  produtoId: string | null;
+  uploadFoto?: (file: FileWithPath) => Promise<FotoRefs>;
+  /** Save-first message shown when `uploadFoto` is absent. */
+  emptyOwnerMessage?: string;
   db: Firestore;
-  storage: FirebaseStorage;
   /**
    * Variation groups (live), for the per-variant gallery sections. Optional —
    * without it every foto renders in the single parent-level gallery.
@@ -150,24 +153,28 @@ export interface PhotoManagerProps {
 }
 
 /**
- * Product photo gallery wired into the Produto ObjectView's "Fotos" tab.
+ * Owner-agnostic photo gallery for an ObjectView "Fotos" tab (produto, tabela de
+ * medidas, …).
  *
- * Uploads go straight to Storage via `uploadProductImage` (which writes the
- * original `Arquivo` doc and triggers the resize Cloud Function); the matching
- * `Foto` ref strings are appended to the form's `fotos` array and persisted on
- * the product save. Order is the array position (first = capa) — reorder with
+ * Uploads go through the injected `uploadFoto` adapter — the owner, the Storage
+ * path and resize behaviour all live inside it (e.g. a produto adapter wraps
+ * `uploadProductImage`; a tabela-de-medidas adapter `uploadTabMediImage`). The
+ * resulting `Foto` ref strings are appended to the form's `fotos` array and
+ * persisted on save. Order is the array position (first = capa) — reorder with
  * drag-and-drop. Each thumbnail prefers the 200px derivative and falls back to
- * the original while the resize function is still running (or not yet deployed).
+ * the original (so an owner without derivatives, e.g. tabela de medidas, renders
+ * the original directly).
  *
- * Per-variant galleries (port of the Flutter `Fotos2ProdutoWidget`): the
- * parent's selected variants whose group has `permiteFotos` each get their own
- * section — uploads there tag the foto with `grupoDeVariacoesOuterRef` +
- * `variantePath`; untagged/orphaned fotos stay in the parent-level section.
+ * Per-variant galleries (port of the Flutter `Fotos2ProdutoWidget`): when
+ * `grupos` is supplied, the selected variants whose group has `permiteFotos` each
+ * get their own section — uploads there tag the foto with
+ * `grupoDeVariacoesOuterRef` + `variantePath`; untagged/orphaned fotos stay in the
+ * parent-level section. Without `grupos` it's a single gallery.
  */
 export function PhotoManager({
-  produtoId,
+  uploadFoto,
+  emptyOwnerMessage,
   db,
-  storage,
   grupos = [],
   value,
   onChange,
@@ -217,17 +224,17 @@ export function PhotoManager({
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
-  if (!produtoId) {
+  if (!uploadFoto) {
     return (
       <Alert color="blue" variant="light">
-        Salve o produto para poder enviar fotos.
+        {emptyOwnerMessage ?? 'Salve o registro para enviar fotos.'}
       </Alert>
     );
   }
 
-  // produtoId is non-null past the guard; capture it as a string so the upload
-  // closure below keeps the narrowing (TS doesn't carry it into nested fns).
-  const ownerId: string = produtoId;
+  // uploadFoto is non-null past the guard; capture it so the upload closure below
+  // keeps the narrowing (TS doesn't carry it into nested fns).
+  const upload = uploadFoto;
 
   /** Upload dropped files; `section` tags them to a variant gallery. */
   async function handleDrop(files: FileWithPath[], section?: FotoVariantSection) {
@@ -242,17 +249,7 @@ export function PhotoManager({
       const seen = new Set(fotos.map((f) => dedupKey(f.arquivoOuterRef, f.variantePath)));
       const added: Foto[] = [];
       for (const file of files) {
-        const { id } = await uploadProductImage({
-          storage,
-          db,
-          produtoId: ownerId,
-          bytes: file,
-          contentType: file.type,
-          originalFilename: file.name,
-        });
-        // `id` is `<produtoId>_<hash>`; recover the hash to build the refs.
-        const hash = id.startsWith(`${ownerId}_`) ? id.slice(ownerId.length + 1) : id;
-        const refs = buildFotoRefs(ownerId, hash);
+        const refs = await upload(file);
         const key = dedupKey(refs.arquivoOuterRef, section?.uid ?? null);
         if (seen.has(key)) continue; // dedup identical uploads in the same gallery
         seen.add(key);

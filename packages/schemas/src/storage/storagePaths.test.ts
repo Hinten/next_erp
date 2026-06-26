@@ -6,6 +6,7 @@ import {
   isWatchedProductOriginal,
   mediaPath,
   normalizeName,
+  parseOwnedMediaDir,
   parseProductMediaDir,
   parseProductOriginalPath,
   productAnexoPath,
@@ -13,6 +14,8 @@ import {
   productDerivativePath,
   productOriginalPath,
   productVideoPath,
+  tabMediArquivoId,
+  tabMediOriginalPath,
 } from './storagePaths';
 
 const PID = 'prod123';
@@ -29,6 +32,8 @@ describe('path builders', () => {
     expect(productAnexoPath(PID, HASH, 'pdf')).toBe(`produtos/${PID}/anexos/${HASH}.pdf`);
     expect(productAnexoPath(PID, HASH)).toBe(`produtos/${PID}/anexos/${HASH}`);
     expect(mediaPath(HASH, '.PNG')).toBe(`media/${HASH}.png`);
+    expect(tabMediOriginalPath('tm1', HASH, 'jpg')).toBe(`tabMedi/tm1/originals/${HASH}.jpg`);
+    expect(tabMediOriginalPath('tm1', HASH)).toBe(`tabMedi/tm1/originals/${HASH}`);
   });
 });
 
@@ -90,6 +95,39 @@ describe('parseProductMediaDir', () => {
   });
 });
 
+describe('parseOwnedMediaDir', () => {
+  it('parses produtos and tabMedi media dirs to {ownerCollection, ownerId, kind}', () => {
+    expect(parseOwnedMediaDir(`produtos/${PID}/originals`)).toEqual({
+      ownerCollection: 'produtos',
+      ownerId: PID,
+      kind: 'originals',
+    });
+    expect(parseOwnedMediaDir('tabMedi/tm1/originals')).toEqual({
+      ownerCollection: 'tabMedi',
+      ownerId: 'tm1',
+      kind: 'originals',
+    });
+    expect(parseOwnedMediaDir('tabMedi/tm1/videos')).toEqual({
+      ownerCollection: 'tabMedi',
+      ownerId: 'tm1',
+      kind: 'videos',
+    });
+  });
+
+  it('returns null for derivatives, media, unknown roots and malformed paths', () => {
+    expect(parseOwnedMediaDir(`produtos/${PID}/derivatives`)).toBeNull();
+    expect(parseOwnedMediaDir('media')).toBeNull();
+    expect(parseOwnedMediaDir('outra/tm1/originals')).toBeNull(); // unknown root
+    expect(parseOwnedMediaDir('tabMedi/tm1')).toBeNull(); // too shallow
+    expect(parseOwnedMediaDir('tabMedi//originals')).toBeNull(); // empty id
+    expect(parseOwnedMediaDir(null)).toBeNull();
+  });
+
+  it('parseProductMediaDir rejects tabMedi paths (produto-only view)', () => {
+    expect(parseProductMediaDir('tabMedi/tm1/originals')).toBeNull();
+  });
+});
+
 describe('isDerivativeName', () => {
   it('flags derivative suffixes only', () => {
     expect(isDerivativeName(`${HASH}_200.jpeg`)).toBe(true);
@@ -103,6 +141,7 @@ describe('arquivo ids', () => {
   it('builds product-scoped original and derivative ids', () => {
     expect(productArquivoId(PID, HASH)).toBe(`${PID}_${HASH}`);
     expect(derivativeArquivoId(PID, HASH, '200')).toBe(`${PID}_${HASH}_200`);
+    expect(tabMediArquivoId('tm1', HASH)).toBe(`tm1_${HASH}`);
   });
 });
 

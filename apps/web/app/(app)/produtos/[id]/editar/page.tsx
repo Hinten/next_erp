@@ -15,6 +15,7 @@ import {
   type PrecosMap,
   type ProdutoExtraData,
   type Video,
+  buildFotoRefs,
   deriveFotosArquivosIds,
   normalizeVariacoesUid,
   parseFakePath,
@@ -31,6 +32,7 @@ import {
   recordCustoHistory,
 } from '@delfrance/data/produto';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
+import { uploadProductImage } from '@delfrance/storage';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
@@ -38,7 +40,7 @@ import { buildProdutoTransactionWrites, createClientProdutoPort } from '@/lib/pr
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { AnexoManager } from '../../_components/AnexoManager';
-import { PhotoManager } from '../../_components/PhotoManager';
+import { PhotoManager } from '@/components/photo-manager/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
 import { ExtraDataManager } from '../../_components/ExtraDataManager';
@@ -178,10 +180,25 @@ export default function EditarProdutoPage() {
         prepareForSave: stripMarkedForDeletion,
         renderInput: (p) => (
           <PhotoManager
-            produtoId={params.id}
             db={db}
-            storage={storage}
             grupos={grupos}
+            uploadFoto={(file) =>
+              uploadProductImage({
+                storage,
+                db,
+                produtoId: params.id,
+                bytes: file,
+                contentType: file.type,
+                originalFilename: file.name,
+              }).then(({ id }) =>
+                // Defensive: uploadProductImage returns `<produtoId>_<hash>`;
+                // recover the hash, falling back to the raw id if the contract ever changes.
+                buildFotoRefs(
+                  params.id,
+                  id.startsWith(`${params.id}_`) ? id.slice(params.id.length + 1) : id,
+                ),
+              )
+            }
             value={(p.value as Foto[] | null) ?? null}
             onChange={p.onChange}
             disabled={p.disabled}

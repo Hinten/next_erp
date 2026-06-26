@@ -9,4 +9,5 @@ export { resizeProductImage } from './product-images/resizeProductImage';
 export { reconcileProductImages } from './product-images/reconcileSweep';
 export { onArquivoDeleted } from './arquivos/onArquivoDeleted';
 export { onProdutoMediaChanged } from './arquivos/onProdutoMediaChanged';
+export { onTabMediMediaChanged } from './arquivos/onTabMediMediaChanged';
 export { reconcileArquivoOrphans } from './arquivos/arquivoOrphanSweep';

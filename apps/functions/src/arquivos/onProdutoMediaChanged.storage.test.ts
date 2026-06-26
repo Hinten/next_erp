@@ -11,10 +11,10 @@ import {
   productVideoPath,
 } from '@delfrance/schemas';
 
-import { reconcileProdutoMediaMarks } from './onProdutoMediaChanged';
+import { reconcileMediaMarks } from './mediaMarks';
 
 // Integration test — requires the firestore emulator. Drives the trigger CORE
-// (reconcileProdutoMediaMarks) directly, not the onDocumentUpdated trigger.
+// (reconcileMediaMarks) directly, not the onDocumentUpdated trigger.
 const EMULATED = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 const projectId = process.env.GCLOUD_PROJECT ?? 'demo-erp';
 const bucketName = `${projectId}.appspot.com`;
@@ -27,7 +27,7 @@ function getDb() {
 
 const id = () => randomUUID().replace(/-/g, '');
 
-describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks (emulator)', () => {
+describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileMediaMarks (emulator)', () => {
   /** Seed a finalized arquivo doc; `marked` stamps an existing past mark. */
   const seedArquivo = async (
     db: ReturnType<typeof getDb>,
@@ -74,7 +74,7 @@ describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks
     };
     const after = { fotos: [], videos: [{ arquivoOuterRef: `arquivos/${vidId}` }] };
 
-    const res = await reconcileProdutoMediaMarks(db, before, after);
+    const res = await reconcileMediaMarks(db, before, after);
     expect(res).toEqual({ marked: 1, unmarked: 0 });
 
     expect(
@@ -95,7 +95,7 @@ describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks
     const before = { anexos: [{ arquivoOuterRef: `arquivos/${anxId}` }] };
     const after = { anexos: [] };
 
-    const res = await reconcileProdutoMediaMarks(db, before, after);
+    const res = await reconcileMediaMarks(db, before, after);
     expect(res).toEqual({ marked: 1, unmarked: 0 });
     expect(
       typeof (await db.collection('arquivos').doc(anxId).get()).data()?.markedForDeletionAt,
@@ -112,7 +112,7 @@ describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks
     const before = { fotos: [], videos: [] };
     const after = { fotos: [{ arquivoOuterRef: `arquivos/${fotoId}` }], videos: [] };
 
-    const res = await reconcileProdutoMediaMarks(db, before, after);
+    const res = await reconcileMediaMarks(db, before, after);
     expect(res).toEqual({ marked: 0, unmarked: 1 });
     expect(
       (await db.collection('arquivos').doc(fotoId).get()).data()?.markedForDeletionAt,
@@ -122,7 +122,7 @@ describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks
   it('is a no-op when the media set is unchanged', async () => {
     const db = getDb();
     const same = { fotos: [{ arquivoOuterRef: `arquivos/${id()}` }], videos: [] };
-    expect(await reconcileProdutoMediaMarks(db, same, same)).toEqual({ marked: 0, unmarked: 0 });
+    expect(await reconcileMediaMarks(db, same, same)).toEqual({ marked: 0, unmarked: 0 });
   });
 
   it('tolerates a removed ref whose arquivo doc no longer exists', async () => {
@@ -131,7 +131,7 @@ describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks
     const before = { fotos: [{ arquivoOuterRef: `arquivos/${missing}` }], videos: [] };
     const after = { fotos: [], videos: [] };
     // Doc never existed → nothing to mark, no NOT_FOUND, no resurrected phantom.
-    expect(await reconcileProdutoMediaMarks(db, before, after)).toEqual({ marked: 0, unmarked: 0 });
+    expect(await reconcileMediaMarks(db, before, after)).toEqual({ marked: 0, unmarked: 0 });
     expect((await db.collection('arquivos').doc(missing).get()).exists).toBe(false);
   });
 
@@ -145,7 +145,7 @@ describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks
     const before = { fotos: [{ arquivoOuterRef: `arquivos/${docId}` }], videos: [] };
     const after = { fotos: [], videos: [] };
 
-    expect(await reconcileProdutoMediaMarks(db, before, after)).toEqual({ marked: 0, unmarked: 0 });
+    expect(await reconcileMediaMarks(db, before, after)).toEqual({ marked: 0, unmarked: 0 });
     expect(
       (await db.collection('arquivos').doc(docId).get()).data()?.markedForDeletionAt,
     ).toBeNull();
@@ -162,6 +162,6 @@ describe.skipIf(!EMULATED)('onProdutoMediaChanged — reconcileProdutoMediaMarks
     const after = { fotos: [{ arquivoOuterRef: `arquivos/${fotoId}` }], videos: [] };
 
     // Already null → no write, counts stay 0 (not an inflated unmarked: 1).
-    expect(await reconcileProdutoMediaMarks(db, before, after)).toEqual({ marked: 0, unmarked: 0 });
+    expect(await reconcileMediaMarks(db, before, after)).toEqual({ marked: 0, unmarked: 0 });
   });
 });

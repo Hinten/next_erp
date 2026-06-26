@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { collectMediaRefs } from './onProdutoMediaChanged';
+import { collectMediaRefs } from './mediaMarks';
 
 // Pure unit suite — the ref-collection logic the trigger diffs. The mark/unmark
 // I/O lives in onProdutoMediaChanged.storage.test.ts (emulator).
