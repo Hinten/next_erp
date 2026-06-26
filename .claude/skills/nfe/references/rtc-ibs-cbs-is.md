@@ -126,16 +126,35 @@ adds `cClassTrib` (6 dígitos)** — Código de Classificação Tributária — 
 links the CST to **specific articles of LC 214/2025** and drives RV
 behavior dynamically.
 
-- CST tables (IBS/CBS, IS) live in the Portal Nacional NF-e, aba
-  Documentos → Diversos. Not in this skill.
-- cClassTrib table (Anexo III of the NT) also lives na aba Diversos.
+- **The vendored NT PDF does NOT contain these tables.**
+  `references/sources/nt/2025/NT_2025.002_*.pdf` is the **layout + RV spec
+  only**; its own **page 82** lists Anexo I/II as *"Tabela a ser publicada"* and
+  Anexo III (`cClassTrib`) / IV (`cCredPres`) as published **na aba Documentos →
+  Diversos** do Portal Nacional NF-e (`www.nfe.fazenda.gov.br`). The actual
+  6-digit codes, the CST table, and the alíquotas live in those **separate
+  spreadsheets** — and the agent sandbox can't reach `*.fazenda.gov.br`, so they
+  are **not re-readable in-repo**.
+- The first 3 digits of `cClassTrib` mirror the `CST`; the last 3 identify the
+  specific legal hypothesis under LC 214/2025.
 - Dynamic indicators per cClassTrib row determine if each subgroup (`gDif`,
   `gRed`, `gTribRegular`, `gCredPresOper`, `gTransfCred`, `gIBSCBSMono`,
   etc.) is **vedado** (forbidden), **permitido** (optional), or
   **exigido** (required). Reading the table is mandatory before emitting
   the corresponding subgroup; sending a forbidden subgroup → rejection.
 
-Common cClassTrib examples (from validation tables):
+**Regra geral (venda tributada normal):** `CST=000` ("Tributação integral") +
+`cClassTrib=000001` — official description **"Situações tributadas integralmente
+pelo IBS e CBS"**. This is the standard taxable-sale pair the repo's RTC fixture
+uses (`impostoCsosn102ComRtc`). ✅ **Confirmed against the official SVRS table**
+(`dfe-portal.svrs.rs.gov.br/Cff/ClassificacaoTributaria`), which lists `000001`
+as the CST-000 entry — see `references/sources/nt/2025/cClassTrib-CST-tables-SOURCE.md`.
+(An earlier run with the non-existent `000000` returned **cStat=1023**
+"Classificação Tributária inexistente".) **Simples Nacional** uses the general
+codes — there is **no Simples-specific cClassTrib**, and the IBS/CBS fields são
+**facultativos para CRT=1 até 04/01/2027**. The live homologação test (#313)
+validates the full NF-e end-to-end.
+
+Other cClassTrib examples (special cases, from validation tables):
 - `410030` — Estorno de crédito por perda (tpNFDebito=07)
 - `800001` — Transferência de crédito do associado (cooperativa)
 - `800002` — Fusão/cisão/incorporação
@@ -355,13 +374,67 @@ Quando este projeto regenerar tipos TypeScript a partir dos XSDs (vide
 
 ## Anexos do NT 2025.002
 
-- **Anexo I** — NCM do Imposto Seletivo (lista de NCMs sujeitos a IS).
-  Tabela publicada separadamente no Portal Nacional NF-e.
-- **Anexo II** — Tabela cClassTribIS (códigos de classificação do IS).
-- **Anexo III** — Tabela cClassTrib (códigos de classificação do IBS/CBS).
-  Publicada em `aba Documentos → Diversos` do Portal NF-e.
-- **Anexo IV** — Tabela cCredPres (códigos de crédito presumido). Idem.
+Per the NT's own **page 82**, **none of these annex tables are embedded in the
+PDF** (verified — the vendored `NT_2025.002_v1.40_*.pdf` carries the layout, RVs
+and events, but no code lists):
 
-Estas tabelas **não são versionadas neste skill** — são dados operacionais
-que mudam fora do ciclo de NT. Consultar o Portal antes de implementar
-mapeamento.
+- **Anexo I** — NCM do Imposto Seletivo (NCMs sujeitos a IS). *"Tabela a ser publicada."*
+- **Anexo II** — Tabela `cClassTribIS` (classificação do IS). *"Tabela a ser publicada."*
+- **Anexo III** — Tabela `cClassTrib` (classificação do IBS/CBS).
+  Publicada **na aba Documentos → Diversos** do Portal Nacional NF-e.
+- **Anexo IV** — Tabela `cCredPres` (crédito presumido). Idem (Documentos → Diversos).
+
+Estas tabelas **não são versionadas neste skill** — são dados operacionais que
+mudam fora do ciclo de NT (e o sandbox não acessa `*.fazenda.gov.br`). Consultar
+o Portal antes de implementar mapeamento. O par regra-geral
+(`CST=000` + `cClassTrib=000001`) está em "CST + cClassTrib model" acima.
+
+**Onde obter + status de publicação + mirror acessível (SVRS):** veja
+`sources/nt/2025/cClassTrib-CST-tables-SOURCE.md` — a `cClassTrib` está
+**publicada desde 06/05/2025** (`.xlsx`, Portal NF-e → Documentos → Diversos).
+
+## Implementation status in this repo (#313)
+
+The RTC **infrastructure** is built for **Simples Nacional**, gated **off by
+default** (PR #313). What exists:
+
+- **Wire types already in codegen.** `generated/moc7.0/types/nfe-schema.ts`
+  carries `TTribNFe` (item `IBSCBS`), `TCIBS`, `TIS`, `TIBSCBSMonoTot`
+  (`IBSCBSTot`), and the `total` slots. The serializer is META-driven —
+  **no XSD regen** was needed for the core layout.
+- **Builders** in `packages/integrations/nfe/src/tribute/rtc.ts`:
+  `buildIBSCBS` (item Grupo UB), `buildIS` (item IS), `computeRtcItemValues`
+  (shared item↔total math), `parseRtcConfig` (strict build-time validation).
+  Only the **"tributação integral"** shape is modelled (CST + cClassTrib +
+  IBS-UF/Mun + CBS); diferimento / redução / monofásica / crédito presumido
+  are follow-ups.
+- **Input schema** `configuracaoIBSCBSSchema` in `tribute/schemas.ts`. On
+  `impostoSchema` it is stored **leniently** (`z.unknown`) so a half-filled
+  registration never breaks the resolver (which falls through on parse
+  failure); the strict shape is enforced only at emit time by `parseRtcConfig`.
+- **The 2025–2026 transition rule is honored**: `ICMSTot.vNF` is **never**
+  changed; the RTC tributes ride "por fora" in `IBSCBSTot` / `ISTot` /
+  `vNFTot` (RV VB01-10 Exceção 1).
+- **Gate**: per-filial `nfeConfig.emitirReformaTributaria` (default `false`),
+  toggled in the filial NF-e config screen, threaded as `{ emitRtc }` from the
+  orchestrator into `buildImpostoXml` / `aggregateTotals`. Flag **off ⇒ emitted
+  XML byte-identical to pre-RTC**.
+- **Registration UI**: produto `ImpostoManager` has a "Reforma Tributária"
+  section (CST, cClassTrib, IBS-UF/Mun + CBS alíquotas). The **categoria**
+  registration view is a follow-up (#318).
+- **Codes are registerable free-text** — the Anexo III/IV `cClassTrib` / CST
+  tables are Portal-published and **not vendored**; the operator (or a future
+  NT-driven table import) supplies them.
+- **Live homologação proof**: `test/operations/rtc.homologacao.test.ts` (serie
+  4) emits a CRT=1 NF-e with the RTC groups against SEFAZ-SP homologação and
+  asserts `cStat=100` — advisory in `ci-nfe.yml`'s `nfe-live` job, fatal on
+  `workflow_dispatch`. The fixture codes are best-guess; refine
+  `impostoCsosn102ComRtc` from the logged `cStat`+`xMotivo` on a first-run
+  rejection.
+
+**Deferred (tracked follow-ups):** the categoria RTC view; 4-digit `cStat` /
+15-17-digit `nProt` response parsing; `finNFe` 5/6 (nota de crédito/débito);
+Grupo BB/BC + the Grupo B additions; the new RTC events (112110…412130);
+importing the Anexo III/IV code tables; and RTC activation for CRT=3 (Phase D,
+#312). **Simples Nacional RTC stays off in produção** until SEFAZ publishes the
+Simples rules (mandatory only 2027-01-04).

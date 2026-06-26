@@ -26,6 +26,8 @@ import {
 } from './_components/PedidoCells';
 import { ContingenciaBanner } from './_components/ContingenciaBanner';
 import { EmitirLoteDialog } from './_components/EmitirLoteDialog';
+import { PrintComumDialog } from './_components/print/PrintComumDialog';
+import { usePrintComumAction } from './_components/print/usePrintComumAction';
 
 // `dependsOn` lists the schema fields each cell reads from `row.data`, so
 // TableView can keep Pipeline projection enabled on this heavy collection
@@ -82,6 +84,7 @@ const virtualColumns: ReadonlyArray<VirtualColumn<Pedido>> = [
 
 export default function PedidosPage() {
   const { action: emitNFeAction, loteModal } = useEmitirNFeAction();
+  const { action: printAction, printModal } = usePrintComumAction();
   return (
     <>
       <ContingenciaBanner />
@@ -119,12 +122,18 @@ export default function PedidosPage() {
           </Button>
         )}
         selectable
-        actions={[emitNFeAction]}
+        actions={[emitNFeAction, printAction]}
       />
       <EmitirLoteDialog
         opened={loteModal.opened}
         pedidoIds={loteModal.pedidoIds}
         onClose={loteModal.close}
+      />
+      <PrintComumDialog
+        opened={printModal.opened}
+        pedidoIds={printModal.pedidoIds}
+        alreadyPrintedCount={printModal.alreadyPrintedCount}
+        onClose={printModal.close}
       />
     </>
   );

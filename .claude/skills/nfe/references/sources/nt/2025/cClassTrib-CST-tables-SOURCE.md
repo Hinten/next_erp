@@ -1,0 +1,57 @@
+# RTC IBS/CBS code tables — source pointer (cClassTrib / CST / cCredPres / alíquotas)
+
+**This is a SOURCE POINTER, not the table itself.** The IBS/CBS code tables are
+published by SEFAZ as **`.xlsx` spreadsheets**, updated *outside* the NT cycle,
+and the agent sandbox cannot reach `*.fazenda.gov.br` — so the binary files are
+**not vendored** in this skill (matching the skill's "operational data isn't
+versioned" convention). This file records *where* they are, *that they're
+published*, and the *confirmed key codes*, so the update-watch routine knows
+exactly where to refresh them.
+
+## What's published, and where
+
+Per **NT 2025.002 v1.40, page 82**, these annex tables are **NOT in the NT PDF**:
+
+| Tabela | Anexo | Status | Onde |
+|---|---|---|---|
+| `cClassTrib` (IBS/CBS) | III | **Publicada** | Portal NF-e → Documentos → **Diversos** |
+| `CST` IBS/CBS (indicadores) | — | **Publicada** (junto da IT 2025.002) | idem |
+| `cCredPres` (crédito presumido) | IV | **Publicada** | idem |
+| Alíquotas-padrão IBS/CBS 2026–2028 | — | **Publicada** | idem |
+| NCM do Imposto Seletivo | I | *"A ser publicada"* (p.82) | idem (quando sair) |
+| `cClassTribIS` (Imposto Seletivo) | II | *"A ser publicada"* (p.82) | idem (quando sair) |
+
+- **Official portal (sandbox-BLOCKED):** `https://www.nfe.fazenda.gov.br` →
+  aba **Documentos** → opção **Diversos**. The `cClassTrib` table is the
+  `.xlsx` published there (transform to `.csv` for most importers).
+- **Accessible official MIRROR (state SEFAZ — reachable):**
+  - SVRS Conformidade Fácil: `https://dfe-portal.svrs.rs.gov.br/Cff/ClassificacaoTributaria`
+  - (also seen as `…/DFE/TabelaClassificacaoTributaria`)
+- **First published:** 06/05/2025 (with IT/RT 2025.002 v1.00); revised across
+  the NT's versions (cCredPres added in v1.10; layout consolidated by v1.40).
+  The spreadsheet is updated periodically — always re-check the version/date.
+
+## Confirmed key code (regra geral)
+
+Verified against the **SVRS** table (2026-06):
+
+- **`cClassTrib = 000001`** → *"Situações tributadas integralmente pelo IBS e
+  CBS"*, under **`CST = 000` (Tributação integral)**. SVRS lists `000001` as the
+  CST-000 entry. This is the standard taxable-sale code the repo fixture
+  (`impostoCsosn102ComRtc`) uses.
+- The first 3 digits of `cClassTrib` mirror the `CST`; the last 3 select the
+  specific legal hypothesis under LC 214/2025.
+
+## How to refresh (update-watch routine)
+
+1. Download the latest `cClassTrib` (and CST / cCredPres / alíquotas) `.xlsx`
+   from Portal NF-e → Documentos → Diversos (or the SVRS mirror).
+2. Note the new version/date here.
+3. If the repo gains a code-validation layer (issue **#333**), regenerate its
+   mapping from the fresh table; otherwise the codes stay registerable free-text.
+
+## References
+
+- NT 2025.002 v1.40 PDF (this folder) — layout + RVs; page 82 points here.
+- `../../rtc-ibs-cbs-is.md` §"CST + cClassTrib model" — the in-skill summary.
+- Tecnospeed / NFE.io / Taxcel / SVRS — secondary guides used to corroborate.

@@ -18,7 +18,8 @@
  * - `serie` separation is the inter-test isolation contract. Registry:
  *   serie 1 = orchestrator (apps/nfe orchestrator.homologacao), serie 2 =
  *   library emission (emission.homologacao), serie 3 = SVC contingency
- *   (svc.homologacao, `SEFAZ_HOM_SVC_SERIE`), serie 9 = inutilização
+ *   (svc.homologacao, `SEFAZ_HOM_SVC_SERIE`), serie 4 = Reforma Tributária
+ *   (rtc.homologacao, `SEFAZ_HOM_RTC_SERIE`), serie 9 = inutilização
  *   (`SEFAZ_HOM_INUT_SERIE`). See the companion comment in each test file.
  * - `nNF` seeding has to dodge collisions across CI runs of the *same*
  *   test, in the same serie. SEFAZ exposes **no** "query last nNF used"
@@ -83,6 +84,14 @@ export const SEFAZ_HOM_INUT_SERIE = 9;
  * lane registry uniform and the failure triage unambiguous.
  */
 export const SEFAZ_HOM_SVC_SERIE = 3;
+
+/**
+ * Série reserved exclusively for the Reforma Tributária (IBS/CBS/IS) live test
+ * (`rtc.homologacao.test.ts`). It emits real tpEmis=1 NF-e carrying the RTC
+ * item/total groups, so it needs its own série to stay 539-disjoint from the
+ * library emission lane (serie 2) and the orchestrator lane (serie 1).
+ */
+export const SEFAZ_HOM_RTC_SERIE = 4;
 
 /** High base for the homologação test nNF zone. See file header. */
 export const SEFAZ_HOM_TEST_NNF_BASE = 500_000_000;
