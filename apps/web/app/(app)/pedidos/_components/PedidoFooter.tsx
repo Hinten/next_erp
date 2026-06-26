@@ -144,7 +144,8 @@ export function PedidoFooter({
   const troco = Math.max(0, roundReais(valorPago - totals.valorCobrado));
 
   // Soft check (legacy `cadastroPedidoProvider.dart:1169`): a pedido marked
-  // `pago` whose approved payments don't cover the total. Slice C's auto-reconcile
+  // `pago` whose paid total (`valorPago` = the null|aprovado payments counted by
+  // `sumPagamentosPagos`) doesn't cover the order total. Slice C's auto-reconcile
   // keeps these consistent, so this only surfaces a manual estado→pago that isn't
   // fully paid — a warning, not a save block.
   const estado = useWatch({ control: form.control, name: 'estado' });
@@ -226,11 +227,7 @@ export function PedidoFooter({
                 tint it red with an explanatory tooltip (soft warning). */}
             {pedidoId &&
               (underpaid ? (
-                <Tooltip
-                  label="Pagamento aprovado menor que o total do pedido"
-                  withArrow
-                  color="red"
-                >
+                <Tooltip label="Valor pago menor que o total do pedido" withArrow color="red">
                   <div>
                     <FooterStat label="Vlr. Pago" value={brl(valorPago)} color="red" />
                   </div>
