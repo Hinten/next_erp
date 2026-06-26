@@ -405,7 +405,7 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
       .docs[0]?.id;
     expect(cliId).toBeTruthy();
     const stashed = await page.evaluate(
-      (id) => window.sessionStorage.getItem(`cliente-cnpj-endereco:${id}`),
+      (id) => window.localStorage.getItem(`cliente-cnpj-endereco:${id}`),
       cliId,
     );
     expect(stashed).toContain('AVENIDA PAULISTA');

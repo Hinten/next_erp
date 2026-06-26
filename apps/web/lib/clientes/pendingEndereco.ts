@@ -1,31 +1,48 @@
 'use client';
 
 /**
- * One-shot relay for an address resolved by the CNPJ lookup on the **create**
- * page, where the enderecos subcollection can't be written yet (no cliente id).
- * The create page stashes it keyed by the new cliente id and redirects; the
- * detail page pops it on mount and opens the prefilled `EnderecoFormModal`.
- * sessionStorage survives the client-side `router.replace` and is scoped to the
- * tab, so a stale relay never leaks across sessions.
+ * One-shot relay for an address resolved by the CNPJ lookup, used where the
+ * enderecos subcollection can't be written yet — the **create** page (no cliente
+ * id before save) and the **quick-create modal** (no endereço UI). It stashes the
+ * address keyed by the new cliente id; the detail page pops it on mount and opens
+ * the prefilled `EnderecoFormModal`.
+ *
+ * Uses **localStorage**, not sessionStorage: the quick-create modal links to the
+ * cadastro with `target="_blank"`, and a `noopener` new tab starts with an empty
+ * sessionStorage (so the relay would be lost) but shares localStorage with the
+ * opener. Consume-once removal + a short TTL keep a relay that was never consumed
+ * from resurfacing the modal on a much-later visit.
  */
 
 import type { ClienteCnpjEndereco } from './consultaCnpj';
 
 const key = (clienteId: string): string => `cliente-cnpj-endereco:${clienteId}`;
 
-export function stashEnderecoForCliente(clienteId: string, endereco: ClienteCnpjEndereco): void {
-  if (typeof window === 'undefined') return;
-  window.sessionStorage.setItem(key(clienteId), JSON.stringify(endereco));
+/** A stash older than this is ignored (and discarded) — guards against a relay
+ *  that was never consumed lingering in localStorage and resurfacing later. */
+const TTL_MS = 30 * 60 * 1000;
+
+interface StashedEndereco {
+  endereco: ClienteCnpjEndereco;
+  savedAt: number;
 }
 
-/** Reads and removes the stashed address (consume-once). */
+export function stashEnderecoForCliente(clienteId: string, endereco: ClienteCnpjEndereco): void {
+  if (typeof window === 'undefined') return;
+  const payload: StashedEndereco = { endereco, savedAt: Date.now() };
+  window.localStorage.setItem(key(clienteId), JSON.stringify(payload));
+}
+
+/** Reads and removes the stashed address (consume-once); null if absent or stale. */
 export function popEnderecoForCliente(clienteId: string): ClienteCnpjEndereco | null {
   if (typeof window === 'undefined') return null;
-  const raw = window.sessionStorage.getItem(key(clienteId));
+  const raw = window.localStorage.getItem(key(clienteId));
   if (!raw) return null;
-  window.sessionStorage.removeItem(key(clienteId));
+  window.localStorage.removeItem(key(clienteId));
   try {
-    return JSON.parse(raw) as ClienteCnpjEndereco;
+    const parsed = JSON.parse(raw) as StashedEndereco;
+    if (typeof parsed?.savedAt !== 'number' || Date.now() - parsed.savedAt > TTL_MS) return null;
+    return parsed.endereco;
   } catch (err) {
     // Corrupt relay payload → treat as "nothing stashed" (no generic catch).
     if (err instanceof SyntaxError) return null;

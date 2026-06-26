@@ -35,10 +35,11 @@ export default function ClientePage() {
 
   const [pendingEndereco, setPendingEndereco] = useState<ClienteCnpjEndereco | null>(null);
 
-  // Pick up an address relayed from the create page (CNPJ lookup before save).
-  // Reading the one-shot sessionStorage relay on mount is exactly the "sync from
-  // an external system" case effects exist for; StrictMode's setup/cleanup/setup
-  // pops twice but the first value sticks (state persists across the re-run).
+  // Pick up an address relayed from the CNPJ lookup before this cliente existed
+  // (the create page, or the quick-create modal's new-tab link). Reading the
+  // one-shot localStorage relay on mount is exactly the "sync from an external
+  // system" case effects exist for; StrictMode's setup/cleanup/setup pops twice
+  // but the first value sticks (state persists across the re-run).
   useEffect(() => {
     const relayed = popEnderecoForCliente(params.id);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot external read
