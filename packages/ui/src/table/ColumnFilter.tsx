@@ -147,6 +147,7 @@ function FilterBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
           onChange={(v) => v !== null && onApply({ op: 'eq', value: v })}
           searchable
           clearable
+          comboboxProps={{ withinPortal: false }}
         />
       </FilterShell>
     );
@@ -164,6 +165,7 @@ function FilterBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
           value={value === undefined ? null : value.value ? 'true' : 'false'}
           onChange={(v) => v !== null && onApply({ op: 'eq', value: v === 'true' })}
           clearable
+          comboboxProps={{ withinPortal: false }}
         />
       </FilterShell>
     );
@@ -240,6 +242,9 @@ function NumericBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
           ]}
           value={op}
           onChange={(v) => v && setOp(v as PipelineFilterOp)}
+          // Render inline: a portaled dropdown's option click reads as a
+          // click-outside and closes the surrounding FilterPopover.
+          comboboxProps={{ withinPortal: false }}
         />
         <NumberInput
           label={descriptor.label}
@@ -300,6 +305,8 @@ function DateBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
           ]}
           value={op}
           onChange={(v) => v && setOp(v as PipelineFilterOp)}
+          // Render inline (see NumericBody): keep the FilterPopover open.
+          comboboxProps={{ withinPortal: false }}
         />
         <DatePickerInput
           label={descriptor.label}
@@ -307,6 +314,9 @@ function DateBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
           onChange={setDay}
           valueFormat="DD/MM/YYYY"
           clearable
+          // Render inline (see the operator Select): a portaled calendar's day
+          // click would read as a click-outside and close the FilterPopover.
+          popoverProps={{ withinPortal: false }}
         />
       </Stack>
     </FilterShell>
