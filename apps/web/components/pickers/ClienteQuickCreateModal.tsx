@@ -300,7 +300,12 @@ function QuickCreateForm({
         color: 'blue',
         autoClose: 10000,
         message: (
-          <Anchor component={Link} href={`/clientes/${id}`} target="_blank">
+          <Anchor
+            component={Link}
+            href={`/clientes/${id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
             Endereço de {doc.nome ?? 'cliente'} encontrado — abrir o cadastro para registrá-lo
           </Anchor>
         ),

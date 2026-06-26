@@ -398,9 +398,10 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     expect(doc?.ie).toBe(IE);
 
     // #294: the resolved address is stashed under the new cliente id — the same
-    // sessionStorage relay the create page uses. The cliente detail page pops it
-    // into the prefilled "Novo endereço" modal (end-to-end consumption is covered
-    // by clientes-cnpj.cadastros); here we assert the modal performed the relay.
+    // localStorage relay the create page uses (localStorage so the toaster's
+    // target="_blank" new tab can read it). The cliente detail page pops it into
+    // the prefilled "Novo endereço" modal (end-to-end consumption is covered by
+    // clientes-cnpj.cadastros); here we assert the modal performed the relay.
     const cliId = (await db().collection('clientes').where('nome', '==', nome).limit(1).get())
       .docs[0]?.id;
     expect(cliId).toBeTruthy();

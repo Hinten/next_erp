@@ -30,7 +30,15 @@ interface StashedEndereco {
 export function stashEnderecoForCliente(clienteId: string, endereco: ClienteCnpjEndereco): void {
   if (typeof window === 'undefined') return;
   const payload: StashedEndereco = { endereco, savedAt: Date.now() };
-  window.localStorage.setItem(key(clienteId), JSON.stringify(payload));
+  try {
+    window.localStorage.setItem(key(clienteId), JSON.stringify(payload));
+  } catch (err) {
+    // The relay is best-effort — a disabled/over-quota localStorage (private
+    // mode, etc.) must never crash the just-completed cadastro. The spec error
+    // for both quota + access-denied is a DOMException; rethrow anything else.
+    if (err instanceof DOMException) return;
+    throw err;
+  }
 }
 
 /** Reads and removes the stashed address (consume-once); null if absent or stale. */
