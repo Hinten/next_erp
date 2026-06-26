@@ -34,6 +34,7 @@ import {
 } from '@delfrance/data/pedido';
 import {
   BANDEIRA_LABELS,
+  FORMA_PAGAMENTO,
   FORMA_PAGAMENTO_LABELS,
   STATUS_PAGAMENTO_LABELS,
   type FormaPagamento,
@@ -446,6 +447,13 @@ export function PagamentosSection({
                 setForm((f) => ({ ...f, descricao: value }));
               }}
               disabled={disabled}
+              // Required for forma "Outros" (tPag=99) — SEFAZ cStat 441.
+              withAsterisk={form.forma === String(FORMA_PAGAMENTO.outros)}
+              error={
+                form.forma === String(FORMA_PAGAMENTO.outros) && !form.descricao.trim()
+                  ? 'Obrigatória para a forma "Outros".'
+                  : undefined
+              }
             />
             {(vis.aVista || vis.duplicata) && (
               <Group>

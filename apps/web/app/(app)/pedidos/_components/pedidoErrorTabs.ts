@@ -34,6 +34,7 @@ export const PEDIDO_TABS: ReadonlyArray<{ value: string; label: string }> = [
  */
 export const TAB_OF_FIELD: Readonly<Record<string, string>> = {
   // Principal
+  ehSaida: 'principal',
   clientePedidoOuterRef: 'principal',
   operacaoPedidoOuterRef: 'principal',
   integracaoPedidoOuterRef: 'principal',

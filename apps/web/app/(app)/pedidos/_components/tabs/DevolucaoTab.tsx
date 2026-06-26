@@ -90,7 +90,7 @@ export function DevolucaoTab({ form, db, disabled, pedidoId }: DevolucaoTabProps
     const next = buildItensDevolvidos(rows);
     const current = (form.getValues('itensDevolvidos') as unknown) ?? null;
     if (!valuesEqual(next, current)) {
-      form.setValue('itensDevolvidos', next, { shouldDirty: true });
+      form.setValue('itensDevolvidos', next, { shouldDirty: true, shouldValidate: true });
     }
   }, [rows, form]);
 

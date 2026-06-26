@@ -127,8 +127,10 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
     form.setValue(fretePath('estado'), 'iniciado', dirty);
     // Drop any stale freteInicial validation errors from the previous quote —
     // validation runs onBlur, so without this the error Alert (#218) can keep
-    // showing errors for fields we just reset.
+    // showing errors for fields we just reset. Re-run validation against the
+    // reset values so a still-invalid field re-surfaces immediately.
     form.clearErrors('freteInicial');
+    void form.trigger('freteInicial');
 
     if (hadLabel) {
       notifications.show({

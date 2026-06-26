@@ -69,6 +69,8 @@ export interface PedidoFormProps {
 }
 
 const EMPTY_DEFAULTS: PedidoFormState = {
+  id: null,
+  ehSaidaOriginal: null,
   ehSaida: true,
   hasUserInteraction: null,
   estado: 'iniciado',
@@ -181,14 +183,19 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
   const result = (await baseResolver(merged, context, options)) as ResolverResult;
 
   // Cross-document / UI-required rules live in the page model (single source);
-  // the resolver runs the subset that applies to the doc form — at-least-one-item
-  // and integração required — and routes each issue to its tab. Keeping these out
-  // of the plain `pedidoSchema` avoids breaking parse/read-back of legacy docs.
-  // ('itens' is held by the form as the synthetic `_itensFlat` field.)
+  // the resolver runs the subset that applies to the doc form and routes each
+  // issue to its tab. Keeping these out of the plain `pedidoSchema` avoids
+  // breaking parse/read-back of legacy docs. ('itens' is held by the form as the
+  // synthetic `_itensFlat` field.) Payment-coverage is intentionally omitted —
+  // the page model only enforces it for an integrated save (pagamentos supplied).
   const extraErrors: Record<string, { type: string; message: string }> = {};
   for (const issue of pedidoPageIssues({
+    id: merged.id,
+    ehSaida: merged.ehSaida,
+    ehSaidaOriginal: merged.ehSaidaOriginal,
     itens: merged.itens,
     integracaoPedidoOuterRef: merged.integracaoPedidoOuterRef,
+    chNFeReferenciadas: merged.chNFeReferenciadas,
   })) {
     const field = issue.path === 'itens' ? '_itensFlat' : issue.path;
     extraErrors[field] = { type: 'pageModel', message: issue.message };
@@ -210,11 +217,15 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
   return { values: {}, errors: { ...result.errors, ...extraErrors } } as unknown as ResolverResult;
 };
 
-function buildDefaults(existing?: Pedido): PedidoFormState {
+function buildDefaults(existing?: Pedido, pedidoId?: string): PedidoFormState {
   if (!existing) return EMPTY_DEFAULTS;
   return {
     ...EMPTY_DEFAULTS,
     ...existing,
+    // Transient page-model context (edit mode): the doc id + the loaded `ehSaida`
+    // so the resolver can enforce the direction-flag immutability rule.
+    id: pedidoId ?? null,
+    ehSaidaOriginal: existing.ehSaida ?? null,
     // `freteDoPedidoSchema` is `.passthrough()`, so its inferred type has an
     // index signature `PedidoFormState` deliberately avoids (RHF path
     // inference) — structurally the same wire shape.
@@ -236,7 +247,7 @@ export function PedidoForm({
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.pedido.write);
 
-  const initial = useMemo(() => buildDefaults(defaultValues), [defaultValues]);
+  const initial = useMemo(() => buildDefaults(defaultValues, pedidoId), [defaultValues, pedidoId]);
 
   const form = useForm<PedidoFormState, unknown, Pedido>({
     resolver: pedidoResolver,

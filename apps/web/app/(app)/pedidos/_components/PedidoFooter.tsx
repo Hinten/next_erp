@@ -132,6 +132,17 @@ export function PedidoFooter({
   );
   const troco = Math.max(0, roundReais(valorPago - totals.valorCobrado));
 
+  // Soft check (legacy `cadastroPedidoProvider.dart:1169`): a pedido marked
+  // `pago` whose paid total (`valorPago` = the null|aprovado payments counted by
+  // `sumPagamentosPagos`) doesn't cover the order total. Slice C's auto-reconcile
+  // keeps these consistent, so this only surfaces a manual estado→pago that isn't
+  // fully paid — a warning, not a save block.
+  const estado = useWatch({ control: form.control, name: 'estado' });
+  const underpaid =
+    pedidoId != null &&
+    estado === 'pago' &&
+    roundReais(valorPago) < roundReais(totals.valorCobrado);
+
   return (
     <Paper
       withBorder
@@ -190,8 +201,19 @@ export function PedidoFooter({
               testId="footer-total"
             />
             {/* Vlr. Pago is a payments figure — shown only in edit mode (a real
-                pedido), but there it stays visible even at R$ 0,00. */}
-            {pedidoId && <FooterStat label="Vlr. Pago" value={brl(valorPago)} />}
+                pedido), but there it stays visible even at R$ 0,00. When the
+                order is "pago" yet the approved payments don't cover the total,
+                tint it red with an explanatory tooltip (soft warning). */}
+            {pedidoId &&
+              (underpaid ? (
+                <Tooltip label="Valor pago menor que o total do pedido" withArrow color="red">
+                  <div>
+                    <FooterStat label="Vlr. Pago" value={brl(valorPago)} color="red" />
+                  </div>
+                </Tooltip>
+              ) : (
+                <FooterStat label="Vlr. Pago" value={brl(valorPago)} />
+              ))}
             {troco > 0 && <FooterStat label="Troco" value={brl(troco)} />}
           </Group>
           <Group gap="xs" wrap="nowrap" align="center">
