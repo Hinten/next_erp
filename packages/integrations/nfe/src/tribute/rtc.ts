@@ -17,7 +17,11 @@
  * independently.
  */
 import { fmtMoney, fmtQuantity, fmtRate, roundReais } from './format';
-import { configuracaoIBSCBSSchema, type ConfiguracaoIBSCBS, type ConfiguracaoISRtc } from './schemas';
+import {
+  configuracaoIBSCBSSchema,
+  type ConfiguracaoIBSCBS,
+  type ConfiguracaoISRtc,
+} from './schemas';
 import type { TIS, TTribNFe } from '../types/nfe-schema';
 
 /**
