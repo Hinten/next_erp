@@ -185,4 +185,19 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
       )
       .toEqual({ forma: 3, valor: 10, bandeira: '01' });
   });
+
+  test('locks the Principal tab once the pedido leaves the cart phase (estado "pago")', async ({
+    page,
+  }) => {
+    // beforeEach reset estado to "iniciado"; move it to "pago" so the edit lock
+    // (legacy `travar_inclusao_produto`) engages.
+    await db().collection('pedidos').doc(pedidoId).update({ estado: 'pago' });
+
+    await page.goto(`/pedidos/${pedidoId}/editar`);
+    await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
+
+    // The lock notice is shown and item editing is disabled.
+    await expect(page.getByText(/Itens bloqueados/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Adicionar produto' })).toBeDisabled();
+  });
 });

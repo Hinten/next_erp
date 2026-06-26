@@ -4,18 +4,24 @@ import { useEffect, useMemo, useState } from 'react';
 import { useForm, type FieldErrors, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
-import { Tabs } from '@mantine/core';
+import { Alert, Tabs } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconExclamationCircle } from '@tabler/icons-react';
+import { IconExclamationCircle, IconLock } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
 import {
   derivePedidoTotals,
+  ESTADO_NFE,
+  ESTADO_PEDIDO_LABELS,
   pedidoPageIssues,
+  travarInclusaoProduto,
   type EstadoPedido,
   type Pedido,
   pedidoSchema,
 } from '@delfrance/schemas';
+import { buildQuery, limit, orderByField } from '@delfrance/data';
+import { useSnapshot } from '@delfrance/data/hooks';
 import { useUnsavedChangesGuard } from '@delfrance/ui';
+import { nfeCollection } from '@/lib/data/nfeCollection';
 import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -338,6 +344,38 @@ export function PedidoForm({
 
   const disabled = !canWrite;
 
+  // Edit-capability locking (port of legacy `travar_pedido` / `travar_fiscal`,
+  // `cadastroPedidoProvider.dart:134-145` + `pedidoCadastro.dart:396-609`):
+  //  - items + general data (Principal tab) lock once the estado leaves the
+  //    cart/checkout phase (`travarInclusaoProduto`);
+  //  - the Fiscal tab locks once any NF-e is aprovada.
+  // The `canWrite` permission gate applies on top. The legacy read the NF-e once
+  // (async, racy); the reactive `useSnapshot` here keeps the lock in step live.
+  // `liveEstado` (the persisted snapshot estado) is the right source — matching
+  // the legacy "loaded estado" — and avoids subscribing the whole form to a watch.
+  const estadoNow: EstadoPedido = liveEstado ?? 'iniciado';
+  const nfeQuery = useMemo(
+    () =>
+      pedidoId
+        ? buildQuery(nfeCollection.ref(db, { pedidoId }), [
+            orderByField('ultima_modificacao', 'desc'),
+            limit(1),
+          ])
+        : null,
+    [db, pedidoId],
+  );
+  const { data: nfeData } = useSnapshot(nfeQuery);
+  const nfeAprovada = nfeData?.[0]?.data?.estado === ESTADO_NFE.aprovada;
+  const itensTravados = travarInclusaoProduto(estadoNow);
+  const principalDisabled = disabled || itensTravados;
+  const fiscalDisabled = disabled || nfeAprovada;
+  const itensLockNotice = itensTravados
+    ? `Itens bloqueados — pedido no estado "${ESTADO_PEDIDO_LABELS[estadoNow]}". A edição de itens só é permitida na fase de carrinho/checkout.`
+    : null;
+  const fiscalLockNotice = nfeAprovada
+    ? 'Dados fiscais bloqueados — este pedido já tem uma NF-e aprovada.'
+    : null;
+
   return (
     // noValidate: Zod owns validation — native constraint validation would
     // silently block the submit when a `required` control is empty inside a
@@ -386,16 +424,26 @@ export function PedidoForm({
           </Tabs.List>
 
           <Tabs.Panel value="principal" pt="md">
+            {itensLockNotice && (
+              <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+                {itensLockNotice}
+              </Alert>
+            )}
             <PrincipalTab
               form={form}
               db={db}
-              disabled={disabled}
+              disabled={principalDisabled}
               vendedorLabel={user?.email ?? user?.uid ?? undefined}
             />
           </Tabs.Panel>
 
           <Tabs.Panel value="fiscal" pt="md">
-            <FiscalTab form={form} db={db} disabled={disabled} />
+            {fiscalLockNotice && (
+              <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+                {fiscalLockNotice}
+              </Alert>
+            )}
+            <FiscalTab form={form} db={db} disabled={fiscalDisabled} />
           </Tabs.Panel>
 
           <Tabs.Panel value="frete" pt="md">
