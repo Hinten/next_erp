@@ -756,7 +756,7 @@ function impostoForRtc(): Imposto {
     configuracaoICMS: { crt: '1', csosn: '102' },
     configuracaoIBSCBS: {
       CST: '000',
-      cClassTrib: '000000',
+      cClassTrib: '000001',
       pIBSUF: 0.1,
       pIBSMun: 0,
       pCBS: 0.9,
@@ -784,7 +784,7 @@ describe('buildImpostoXml — Reforma Tributária (IBS/CBS/IS)', () => {
     const xml = buildImpostoXml(imposto, item1500, { emitRtc: true });
     expect(xml).toContain('<IBSCBS>');
     expect(xml).toContain('<CST>000</CST>');
-    expect(xml).toContain('<cClassTrib>000000</cClassTrib>');
+    expect(xml).toContain('<cClassTrib>000001</cClassTrib>');
     expect(xml).toContain('<gIBSCBS>');
     expect(xml).toContain('<pIBSUF>0.1000</pIBSUF>');
     expect(xml).toContain('<vIBSUF>1.50</vIBSUF>'); // 1500 × 0.1%
@@ -811,7 +811,7 @@ describe('buildImpostoXml — Reforma Tributária (IBS/CBS/IS)', () => {
       configuracaoICMS: { crt: '1', csosn: '102' },
       configuracaoIBSCBS: {
         CST: '000',
-        cClassTrib: '000000',
+        cClassTrib: '000001',
         pIBSUF: 0.1,
         pIBSMun: 0,
         pCBS: 0.9,
@@ -834,6 +834,22 @@ describe('buildImpostoXml — Reforma Tributária (IBS/CBS/IS)', () => {
     expect(() => buildImpostoXml(imposto, item1500, { emitRtc: true })).toThrow(
       /configuracaoIBSCBS/,
     );
+  });
+
+  it('throws when an IS sub-config is configured without a rate', () => {
+    const imposto = {
+      origem: '0',
+      configuracaoICMS: { crt: '1', csosn: '102' },
+      configuracaoIBSCBS: {
+        CST: '000',
+        cClassTrib: '000001',
+        pIBSUF: 0.1,
+        pIBSMun: 0,
+        pCBS: 0.9,
+        is: { CSTIS: '000', cClassTribIS: '000001' }, // no pIS / pISEspec+qTrib
+      },
+    } as unknown as Imposto;
+    expect(() => buildImpostoXml(imposto, item1500, { emitRtc: true })).toThrow(/IS requires/);
   });
 });
 

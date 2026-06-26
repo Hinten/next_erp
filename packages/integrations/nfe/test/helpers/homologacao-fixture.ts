@@ -46,19 +46,23 @@ export function impostoCsosn102(): Imposto {
 
 /**
  * CSOSN 102 + a **Reforma Tributária (IBS/CBS/IS)** "tributação integral"
- * config (NT 2025.002) for the live RTC homologação test. The CST /
- * cClassTrib codes are **best-guess placeholders** — the Anexo III tables
- * aren't vendored, so the first live run is exploratory: if SEFAZ rejects
- * with 1020/1023/1024 (CST/cClassTrib) or 1026/1037 (alíquota), refine these
- * from the returned `xMotivo`. The alíquotas are the documented 2025–2026
- * test rates (IBS 0,1% / CBS 0,9%).
+ * config (NT 2025.002) for the live RTC homologação test.
+ *
+ * **CST `000` + cClassTrib `000001` = "tributação integral"** (IBS/CBS apply
+ * normally, no benefit; the first 3 digits of cClassTrib mirror the CST). This
+ * is the generic full-taxation code — Simples Nacional has no specific code yet
+ * (the fields are facultativos for CRT=1 until 2027-01-04). An earlier run with
+ * the non-existent `000000` returned cStat=1023 ("Classificação Tributária do
+ * IBS/CBS inexistente"); `000001` is the real Anexo III code. The alíquotas are
+ * the documented 2025–2026 test rates (IBS 0,1% / CBS 0,9%). If SEFAZ still
+ * rejects (1024 incompatible / 1026 alíquota), refine from the `xMotivo`.
  */
 export function impostoCsosn102ComRtc(): Imposto {
   return {
     ...impostoCsosn102(),
     configuracaoIBSCBS: {
       CST: '000',
-      cClassTrib: '000000',
+      cClassTrib: '000001',
       pIBSUF: 0.1,
       pIBSMun: 0,
       pCBS: 0.9,

@@ -274,9 +274,20 @@ function impostoCarriesInfo(imp: ImpostoProduto): boolean {
  * otherwise drop it. A toggled-on-but-empty blob (all null) counts as empty.
  */
 function rtcConfigHasValue(imp: ImpostoProduto): boolean {
-  const rtc = (imp as { configuracaoIBSCBS?: unknown }).configuracaoIBSCBS;
-  if (rtc == null || typeof rtc !== 'object') return false;
-  return Object.values(rtc as Record<string, unknown>).some((v) => v != null);
+  return hasNonNullLeaf((imp as { configuracaoIBSCBS?: unknown }).configuracaoIBSCBS);
+}
+
+/**
+ * True when `v` is, or recursively contains, a non-null leaf. A nested all-null
+ * object (e.g. an empty `is` sub-config) correctly reads as empty — a plain
+ * top-level non-null check would treat the non-null nested object as a value.
+ */
+function hasNonNullLeaf(v: unknown): boolean {
+  if (v == null) return false;
+  if (typeof v === 'object') {
+    return Object.values(v as Record<string, unknown>).some(hasNonNullLeaf);
+  }
+  return true;
 }
 
 /**

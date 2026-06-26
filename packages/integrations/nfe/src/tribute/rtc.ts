@@ -128,6 +128,10 @@ export function buildIS(cfg: ConfiguracaoISRtc, vProd: number): TIS {
     if (cfg.uTrib != null) out.uTrib = cfg.uTrib;
     out.qTrib = fmtQuantity('qTrib', cfg.qTrib);
     out.vIS = fmtMoney('vIS', roundReais(cfg.pISEspec * cfg.qTrib));
+  } else {
+    // `configuracaoISRtcSchema`'s refine guarantees one mode is present; this
+    // is a defensive backstop so `buildIS` can never emit a valueless `<IS>`.
+    throw new Error('buildIS: IS requires pIS (ad valorem) or pISEspec + qTrib (per unit)');
   }
   return out;
 }

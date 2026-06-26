@@ -328,15 +328,30 @@ export type Retencao = z.infer<typeof retencaoSchema>;
  * the Anexo I NCM list. `pIS` (ad valorem over a base) OR `pISEspec` (per
  * unit, with `qTrib`) drives the value; the builder computes `vIS`.
  */
-export const configuracaoISRtcSchema = z.object({
-  CSTIS: z.string().regex(/^\d{3}$/),
-  cClassTribIS: z.string().regex(/^\d{6}$/),
-  vBCIS: z.number().nonnegative().optional().nullable(),
-  pIS: z.number().nonnegative().optional().nullable(),
-  pISEspec: z.number().nonnegative().optional().nullable(),
-  uTrib: z.string().min(1).max(6).optional().nullable(),
-  qTrib: z.number().nonnegative().optional().nullable(),
-});
+export const configuracaoISRtcSchema = z
+  .object({
+    CSTIS: z.string().regex(/^\d{3}$/),
+    cClassTribIS: z.string().regex(/^\d{6}$/),
+    vBCIS: z.number().nonnegative().optional().nullable(),
+    pIS: z.number().nonnegative().optional().nullable(),
+    pISEspec: z.number().nonnegative().optional().nullable(),
+    uTrib: z.string().min(1).max(6).optional().nullable(),
+    qTrib: z.number().nonnegative().optional().nullable(),
+  })
+  // An IS group needs a value: either ad valorem (`pIS`) or per-unit
+  // (`pISEspec` + `qTrib`). Reject a config with CSTIS/cClassTribIS but no
+  // rate — otherwise `buildIS` would emit a valueless `<IS>` (fail loud at
+  // emit time, never silently emit a broken group).
+  .superRefine((cfg, ctx) => {
+    const adValorem = cfg.pIS != null;
+    const perUnit = cfg.pISEspec != null && cfg.qTrib != null;
+    if (!adValorem && !perUnit) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'IS requires either pIS (ad valorem) or pISEspec + qTrib (per unit)',
+      });
+    }
+  });
 export type ConfiguracaoISRtc = z.infer<typeof configuracaoISRtcSchema>;
 
 /**
