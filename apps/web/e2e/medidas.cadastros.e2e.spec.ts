@@ -86,17 +86,19 @@ test.describe.serial('Medidas e2e — TableView / ObjectView', () => {
 
   test('sorts rows by clicking the Nome column header', async ({ page }) => {
     await page.goto('/medidas');
-    // Filter to the numbered rows only (excludes the `-mkt` fixture, which
-    // would otherwise sort last and break the desc-first assertion).
+    // Filter to the numbered rows only (excludes the `-mkt` fixture).
     await applyTextFilter(page, 'Nome', `${prefix}-0`);
+
+    // The default sort is `ultimaModificacao DESC` (seeds carry null), so the
+    // pre-click order isn't name-based — drive the Nome sort explicitly. A first
+    // click on an unsorted column is ascending, the second descending.
+    await clickColumnSort(page, 'Nome'); // unsorted → asc
+    await expect(page).toHaveURL(/sort=nome%3Aasc/);
     await expect.poll(() => firstRowText(page), { timeout: 15_000 }).toContain(row(1));
 
     await clickColumnSort(page, 'Nome'); // asc → desc
     await expect(page).toHaveURL(/sort=nome%3Adesc/);
     await expect.poll(() => firstRowText(page), { timeout: 15_000 }).toContain(row(7));
-
-    await clickColumnSort(page, 'Nome'); // desc → asc
-    await expect.poll(() => firstRowText(page), { timeout: 15_000 }).toContain(row(1));
   });
 
   test('navigates to the new-tabela page', async ({ page }) => {

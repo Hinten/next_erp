@@ -29,8 +29,8 @@ export const tabelaDeMedidasSchema = z.object({
   tabelasDeMedidasMercadoLivre: z.record(z.string(), z.unknown()).nullable().optional(),
   tabelasMedidasShopee: z.record(z.string(), z.array(z.unknown())).nullable().optional(),
 
-  dataCadastro: millisSinceEpoch().nullable().optional(),
-  ultimaModificacao: millisSinceEpoch().nullable().optional(),
+  dataCadastro: millisSinceEpoch().nullable().optional().describe('Data de cadastro'),
+  ultimaModificacao: millisSinceEpoch().nullable().optional().describe('Última modificação'),
 });
 
 export type TabelaDeMedidas = z.infer<typeof tabelaDeMedidasSchema>;
@@ -42,8 +42,12 @@ export const tabelaDeMedidasMeta: CollectionMetadata = {
     write: PERM_PRODUTO_WRITE,
     delete: PERM_PRODUTO_DELETE,
   },
+  // Default the list to most-recently-modified first (reuses the existing
+  // `ultimaModificacao DESC` index, which is also the TableView update-monitor
+  // index). The `nome ASC` index stays declared for the Nome-column sort + the
+  // produto picker.
   defaultQuery: {
-    orderBy: [{ field: 'nome', direction: 'asc' }],
+    orderBy: [{ field: 'ultimaModificacao', direction: 'desc' }],
     limit: 50,
   },
 };
