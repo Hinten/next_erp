@@ -45,6 +45,12 @@ export const produtoSchema = z
     // Categoria picker emits that exact shape.
     categoriaProdutoOuterRef: outerRefSchema.nullable().default(null),
 
+    // Tabela de medidas (moda) reference. The Flutter `Produto.tabelaDeMedidasModaUid`
+    // is a plain `documents/tabMedi/<id>` doc-path String (not an OuterReference),
+    // so we keep that exact wire name to stay byte-compatible with existing docs.
+    // The "Tabela de Medidas (Moda)" picker emits that shape.
+    tabelaDeMedidasModaUid: outerRefSchema.nullable().default(null),
+
     // Dimensions / weights — all optional doubles.
     pesoLiquidoKg: z.number().nullable().default(null),
     pesoBrutoKg: z.number().nullable().default(null),
