@@ -113,9 +113,13 @@ function buildSvcCall(url: string, cert: NFeCertificate, chainPath: string): Sef
 /**
  * Fast TCP reachability probe. SERPRO's SVC hosts intermittently TCP-hang from
  * CI runners — when one is unreachable, skip its SOAP tests in ~5s instead of
- * letting each call sit out the 60s `timeoutMs` (#337). Consistent with the
- * posture that "SERPRO reachability is never a required gate" (advisory on PR;
- * applies on workflow_dispatch too).
+ * letting each call sit out the 60s `timeoutMs` (#337).
+ *
+ * **Posture-aware** (review on #345): on **advisory** runs (pull_request/push)
+ * an unreachable host SKIPS its tests (keeps PRs fast). On **fatal** runs
+ * (workflow_dispatch / schedule — the "verify SVC" runs) it must NOT skip-green:
+ * the SVC-AN fatal-run gate (below) FAILS FAST in ~5s instead, so a dispatch run
+ * can't pass without actually proving SVC-AN transport.
  */
 function tcpReachable(url: string, timeoutMs = 5_000): Promise<boolean> {
   return new Promise((resolveProbe) => {
@@ -144,13 +148,19 @@ const svcAnReachable = probeSvc
 const svcRsReachable = probeSvc
   ? await tcpReachable(getSvcEndpoints('svc-rs', 'homologacao').NfeStatusServico)
   : true;
-if (probeSvc && !svcAnReachable) {
+// The SVC lane is FATAL on workflow_dispatch/schedule and ADVISORY on
+// pull_request/push (mirrors ci-nfe.yml's `continue-on-error`). On a fatal run
+// an unreachable SVC-AN must fail fast (the gate test below), not skip-green.
+const isFatalRun =
+  process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' ||
+  process.env.GITHUB_EVENT_NAME === 'schedule';
+if (probeSvc && !svcAnReachable && !isFatalRun) {
   // eslint-disable-next-line no-console
   console.warn(
     '::warning::SVC-AN host unreachable from this runner — skipping SVC-AN SOAP tests (advisory, #337).',
   );
 }
-if (probeSvc && !svcRsReachable) {
+if (probeSvc && !svcRsReachable && !isFatalRun) {
   // eslint-disable-next-line no-console
   console.warn(
     '::warning::SVC-RS host unreachable from this runner — skipping the SVC-RS test (advisory, #337).',
@@ -168,6 +178,18 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
           'Refusing to skip a fiscal live lane silently.',
       );
     }
+  });
+
+  // Fatal-run gate (#345 review): on workflow_dispatch/schedule the SVC lane is
+  // fatal, so an unreachable SVC-AN must FAIL here (in ~5s, from the probe)
+  // rather than silently skip — otherwise a "verify SVC" dispatch run could go
+  // green without proving SVC-AN transport. Skipped on advisory PR/push runs.
+  it.skipIf(!isFatalRun)('SVC-AN is reachable from the runner (fatal-run gate)', () => {
+    expect(
+      svcAnReachable,
+      'SVC-AN host unreachable from this runner on a FATAL run (workflow_dispatch/schedule) — ' +
+        'cannot prove SVC-AN transport. Re-run when SERPRO is reachable.',
+    ).toBe(true);
   });
 
   it.skipIf(!svcAnReachable)(
