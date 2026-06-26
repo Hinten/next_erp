@@ -192,15 +192,27 @@ describe('produto imposto (per-operação override)', () => {
     });
   });
 
-  it('preserves a passthrough ICMS config on re-save', () => {
+  it('preserves a typed ICMS config on re-save', () => {
     const ops = buildImpostoWriteOps(
       'p1',
-      [imp({ cfop: '5102', configuracaoICMS: { csosn: '102' } })],
+      [imp({ cfop: '5102', configuracaoICMS: { crt: '1', csosn: '102' } })],
       1000,
     );
     const op = ops[0]!;
     if (op.type !== 'set') throw new Error('expected a set op');
-    expect(op.data.configuracaoICMS).toEqual({ csosn: '102' });
+    expect(op.data.configuracaoICMS).toEqual({ crt: '1', csosn: '102' });
+  });
+
+  it('persists an entry whose only value is a deep tax config (no Dados Gerais)', () => {
+    // A config-only entry (e.g. just ICMS) must still be saved — the
+    // carries-info check now considers the typed `configuracao*` fields.
+    const ops = buildImpostoWriteOps(
+      'p1',
+      [imp({ configuracaoPIS: { CST: '01', pPIS: 1.65 } })],
+      1000,
+    );
+    expect(ops).toHaveLength(1);
+    expect(ops[0]).toMatchObject({ type: 'set', path: 'produtos/p1/imposto/op1' });
   });
 
   it('deletes a previously-saved imposto that was fully cleared', () => {

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
 import { idRefSchema } from './shared/outerRef';
+import { taxConfigFields } from './imposto/tribute';
 import type { CollectionMetadata } from './types';
 
 // Mirrors PERM.impostoCategoria in packages/auth/src/permissions.ts (byte 12;
@@ -19,16 +20,29 @@ const PERM_IMPOSTO_CATEGORIA_DELETE = 1n << 98n;
  * Same `impostoOperacaoOuterRef` scope pointer as `impostoProduto`: null
  * = any operação; otherwise only matches the specified operação.
  *
- * Imposto blob fields are pass-through and validated downstream by the
- * tribute engine — see `impostoProduto` for the rationale.
+ * Imposto blob fields are **typed** (`taxConfigFields`, shared with the tribute
+ * engine via `@delfrance/schemas`) — see `impostoProduto` for the rationale.
  */
-export const impostoCategoriaSchema = z
-  .object({
-    id: z.string().nullable().default(null),
-    impostoOperacaoOuterRef: idRefSchema.nullable().default(null),
-    dataCadastro: millisSinceEpoch().nullable().default(null),
-  })
-  .passthrough();
+export const impostoCategoriaSchema = z.object({
+  id: z.string().nullable().default(null),
+  impostoOperacaoOuterRef: idRefSchema.nullable().default(null),
+  // Dados Gerais (lenient strings, optional — a categoria override may omit
+  // them; the resolver re-validates via the engine `impostoSchema`).
+  origem: z.string().nullable().optional(),
+  cfop: z.string().nullable().optional(),
+  cfopInterestadual: z.string().nullable().optional(),
+  NCM: z.string().nullable().optional(),
+  NVE: z.string().nullable().optional(),
+  CEST: z.string().nullable().optional(),
+  indEscala: z.string().nullable().optional(),
+  CNPJFab: z.string().nullable().optional(),
+  cBenef: z.string().nullable().optional(),
+  extipi: z.string().nullable().optional(),
+  unidade: z.string().nullable().optional(),
+  compoeValorTotalDaNFe: z.boolean().nullable().optional(),
+  ...taxConfigFields,
+  dataCadastro: millisSinceEpoch().nullable().default(null),
+});
 
 export type ImpostoCategoria = z.infer<typeof impostoCategoriaSchema>;
 
