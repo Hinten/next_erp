@@ -296,7 +296,7 @@ export function ImpostoManager({
         primeiro em homologação. Os códigos (CST / cClassTrib) vêm das tabelas do Portal Nacional.
       </Text>
       <Switch
-        label="Configurar IBS/CBS/IS para esta operação"
+        label="Configurar IBS/CBS/IS"
         checked={rtcEnabled}
         onChange={(e) => toggleRtc(e.currentTarget.checked)}
         disabled={disabled}
