@@ -27,8 +27,8 @@ export function IssqnSection({ value, onChange, disabled }: IssqnSectionProps) {
   return (
     <Stack gap="sm">
       <Switch
-        label="Esta operação tem ISSQN (serviço)"
-        description="Quando ligado, a NF-e emite ISSQN no lugar do ICMS para os itens desta operação."
+        label="Tributar como serviço (ISSQN)"
+        description="Quando ligado, a NF-e emite ISSQN no lugar do ICMS para os itens."
         checked={enabled}
         onChange={(e) =>
           onChange({
