@@ -116,6 +116,7 @@ const SEED_NFE_CONFIG: NFeConfig = {
   serie: 1,
   idLote: 0,
   ambiente: '2',
+  emitirReformaTributaria: false,
   contingencia_modo: 'none',
   contingencia_justificativa: null,
   contingencia_dataInicio: null,

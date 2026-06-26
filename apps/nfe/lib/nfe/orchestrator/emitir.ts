@@ -88,6 +88,12 @@ export interface EmissionPrep {
     readonly dhCont: Date | null;
     readonly xJust: string | null;
   };
+  /**
+   * Snapshot of the filial's Reforma Tributária switch
+   * (`nfeConfig.emitirReformaTributaria`) at prep time. When true, the
+   * generator emits the IBS/CBS/IS groups; off by default.
+   */
+  readonly emitRtc: boolean;
   readonly nfeRef: FirebaseFirestore.DocumentReference;
   readonly nfeConfigRef: FirebaseFirestore.DocumentReference;
 }
@@ -151,7 +157,15 @@ export async function prepareEmission(
     { filialId: bundle.filialId },
     DEFAULT_NFE_CONFIG_DOC_ID,
   );
-  return { bundle, items, tpEmis, contingencia, nfeRef, nfeConfigRef };
+  return {
+    bundle,
+    items,
+    tpEmis,
+    contingencia,
+    emitRtc: cfg.emitirReformaTributaria === true,
+    nfeRef,
+    nfeConfigRef,
+  };
 }
 
 /**
@@ -177,6 +191,7 @@ export function buildNfeDocWrite(
   tpEmis: TpEmis,
   cNF?: string,
   contingencia?: EmissionPrep['contingencia'],
+  emitRtc?: boolean,
 ): { chave: string; signedXml: string; docData: Record<string, unknown> } {
   const input = buildGeneratorInput(
     bundle,
@@ -187,6 +202,7 @@ export function buildNfeDocWrite(
     tpEmis,
     cNF,
     contingencia,
+    emitRtc,
   );
   const generated = generateNFe(input);
   const signedXml = signNFe(generated.nfeXml, rt.cert);
@@ -311,6 +327,7 @@ export async function runAllocateGenerateSignTx(
       tpEmis,
       reuseCNF,
       prep.contingencia,
+      prep.emitRtc,
     );
 
     // Writes — counter doc first, then NFe doc. Both commit or neither.
@@ -937,6 +954,7 @@ export async function processChunk(
         f.prep.tpEmis,
         reuseCNF,
         f.prep.contingencia,
+        f.prep.emitRtc,
       );
       await f.prep.nfeRef.set(docData);
       return { prep: f.prep, pedidoId: f.pedidoId, chave, signedXml };

@@ -13,12 +13,15 @@
  */
 import { serializeFragment, type XmlValue } from '../xml';
 import type {
+  TIBSCBSMonoTot,
+  TISTot,
   TNFe_infNFe_total,
   TNFe_infNFe_total_ICMSTot,
   TNFe_infNFe_total_ISSQNtot,
   TNFe_infNFe_total_retTrib,
 } from '../types/nfe-schema';
 import { fmtMoney, fmtMoneyOpt, roundReais } from './format';
+import { computeRtcItemValues, parseRtcConfig } from './rtc';
 
 /**
  * Whole-NF-e values needed by aggregateISSQN that aren't derivable
@@ -63,6 +66,23 @@ export interface TotalAggregation {
   readonly vFCPUFDest?: number;
   readonly vICMSUFDest?: number;
   readonly vICMSUFRemet?: number;
+  /**
+   * Reforma Tributária (IBS/CBS/IS) totals — present only when
+   * `aggregateTotals` ran with `{ emitRtc: true }` AND at least one item
+   * carried `configuracaoIBSCBS`. Drives the `IBSCBSTot` / `ISTot` /
+   * `vNFTot` groups in `buildTotalObject`. `vNF` (ICMSTot) is never affected.
+   */
+  readonly rtc?: RtcTotalSummary;
+}
+
+/** Summed per-item RTC values for the total-level `IBSCBSTot` / `ISTot`. */
+export interface RtcTotalSummary {
+  readonly vBCIBSCBS: number;
+  readonly vIBSUF: number;
+  readonly vIBSMun: number;
+  readonly vIBS: number;
+  readonly vCBS: number;
+  readonly vIS: number;
 }
 
 /**
@@ -90,6 +110,7 @@ export interface TotalExtras {
 export function aggregateTotals(
   items: ReadonlyArray<PerItem>,
   extras: TotalExtras = {},
+  opts: { emitRtc?: boolean } = {},
 ): TotalAggregation {
   let vProd = 0;
   let vBC = 0;
@@ -99,9 +120,28 @@ export function aggregateTotals(
   let vFCPST = 0;
   let vFCPSTRet = 0;
   let vIPI = 0;
+  // RTC (IBS/CBS/IS) accumulators — populated only with `{ emitRtc: true }`.
+  let rtcBC = 0;
+  let rtcIBSUF = 0;
+  let rtcIBSMun = 0;
+  let rtcIBS = 0;
+  let rtcCBS = 0;
+  let rtcIS = 0;
+  let rtcCount = 0;
 
   for (const { item, imposto } of items) {
     vProd += item.vProd;
+    // RTC runs for every item (incl. ISSQN-only) before the ICMS `continue`.
+    if (opts.emitRtc && imposto.configuracaoIBSCBS != null) {
+      const r = computeRtcItemValues(parseRtcConfig(imposto.configuracaoIBSCBS), item.vProd);
+      rtcBC += r.vBC;
+      rtcIBSUF += r.vIBSUF;
+      rtcIBSMun += r.vIBSMun;
+      rtcIBS += r.vIBS;
+      rtcCBS += r.vCBS;
+      rtcIS += r.vIS;
+      rtcCount += 1;
+    }
     if (imposto.configuracaoIPI?.vIPI != null) {
       vIPI += imposto.configuracaoIPI.vIPI;
     }
@@ -155,6 +195,18 @@ export function aggregateTotals(
     vCOFINS: 0,
     vOutro: roundReais(vOutro),
     vNF,
+    ...(opts.emitRtc && rtcCount > 0
+      ? {
+          rtc: {
+            vBCIBSCBS: roundReais(rtcBC),
+            vIBSUF: roundReais(rtcIBSUF),
+            vIBSMun: roundReais(rtcIBSMun),
+            vIBS: roundReais(rtcIBS),
+            vCBS: roundReais(rtcCBS),
+            vIS: roundReais(rtcIS),
+          },
+        }
+      : {}),
   };
 }
 
@@ -308,6 +360,36 @@ export function buildTotalObject(
   const out: TNFe_infNFe_total = { ICMSTot };
   if (optional.issqnTot != null) out.ISSQNtot = optional.issqnTot;
   if (optional.retTrib != null) out.retTrib = optional.retTrib;
+  // Reforma Tributária totals (NT 2025.002, Grupo W03). `vNFTot` = `vNF` plus
+  // the RTC tributes ("por fora"); `ICMSTot.vNF` stays untouched (the 2025–2026
+  // transition rule — RV VB01-10 Exceção 1). The diferimento / crédito-presumido
+  // sub-fields are zero in the tributação-integral shape we emit.
+  if (totals.rtc != null) {
+    const r = totals.rtc;
+    const ibsCbsTot: TIBSCBSMonoTot = {
+      vBCIBSCBS: fmtMoney('vBCIBSCBS', r.vBCIBSCBS),
+      gIBS: {
+        gIBSUF: { vDif: '0.00', vDevTrib: '0.00', vIBSUF: fmtMoney('vIBSUF', r.vIBSUF) },
+        gIBSMun: { vDif: '0.00', vDevTrib: '0.00', vIBSMun: fmtMoney('vIBSMun', r.vIBSMun) },
+        vIBS: fmtMoney('vIBS', r.vIBS),
+        vCredPres: '0.00',
+        vCredPresCondSus: '0.00',
+      },
+      gCBS: {
+        vDif: '0.00',
+        vDevTrib: '0.00',
+        vCBS: fmtMoney('vCBS', r.vCBS),
+        vCredPres: '0.00',
+        vCredPresCondSus: '0.00',
+      },
+    };
+    out.IBSCBSTot = ibsCbsTot;
+    if (r.vIS > 0) {
+      const isTot: TISTot = { vIS: fmtMoney('vIS', r.vIS) };
+      out.ISTot = isTot;
+    }
+    out.vNFTot = fmtMoney('vNFTot', roundReais(totals.vNF + r.vIBS + r.vCBS + r.vIS));
+  }
   return out;
 }
 
