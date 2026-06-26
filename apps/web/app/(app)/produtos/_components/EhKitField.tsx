@@ -19,8 +19,16 @@ export interface EhKitFieldProps {
    * Other kits that currently use THIS produto as a component (#246). Turning
    * this produto INTO a kit while it's still a component creates a kit-of-kit,
    * which can corrupt stock math — so the promotion is gated behind a warning.
+   * This is a capped preview (see {@link hasMore}).
    */
   referencedByKits: ReferencingKit[];
+  /** True when more kits reference this produto than the capped `referencedByKits` shows. */
+  hasMore?: boolean;
+  /**
+   * The referenced-by query is still loading. The toggle is disabled until it
+   * resolves so a promotion can't slip past the warning during the initial read.
+   */
+  loading?: boolean;
 }
 
 /**
@@ -39,10 +47,14 @@ export function EhKitField({
   onChange,
   disabled,
   referencedByKits,
+  hasMore,
+  loading,
 }: EhKitFieldProps) {
   const [confirming, setConfirming] = useState(false);
   const referenced = referencedByKits.length > 0;
   const isKit = value === true;
+  // "5+" when the capped list under-reports the true number of referencing kits.
+  const countLabel = `${referencedByKits.length}${hasMore ? '+' : ''}`;
 
   const handleSwitch = (checked: boolean) => {
     // Only the promotion (off→on) while referenced needs confirmation; turning a
@@ -60,7 +72,9 @@ export function EhKitField({
         label={label}
         checked={isKit}
         onChange={(e) => handleSwitch(e.currentTarget.checked)}
-        disabled={disabled}
+        // Disabled while the referenced-by query loads, so a promotion can't slip
+        // past the warning before we know whether this produto is a component.
+        disabled={disabled || loading}
       />
 
       {isKit && referenced && (
@@ -71,13 +85,14 @@ export function EhKitField({
           title="Este produto é componente de outros kits"
         >
           <Text size="sm">
-            Mantê-lo como kit cria um <b>kit dentro de kit</b>, o que pode bugar o cálculo de
-            estoque. Kits que usam este produto como componente:
+            Mantê-lo como kit cria um <b>kit dentro de kit</b>, o que pode causar inconsistências no
+            cálculo de estoque. Kits que usam este produto como componente:
           </Text>
           <List size="sm" mt={4}>
             {referencedByKits.map((k) => (
               <List.Item key={k.id}>{k.nome}</List.Item>
             ))}
+            {hasMore && <List.Item c="dimmed">… e outros kits</List.Item>}
           </List>
         </Alert>
       )}
@@ -90,16 +105,17 @@ export function EhKitField({
       >
         <Stack>
           <Text size="sm">
-            Este produto é usado como componente em <b>{referencedByKits.length}</b> kit(s):
+            Este produto é usado como componente em <b>{countLabel}</b> kit(s):
           </Text>
           <List size="sm">
             {referencedByKits.map((k) => (
               <List.Item key={k.id}>{k.nome}</List.Item>
             ))}
+            {hasMore && <List.Item c="dimmed">… e outros kits</List.Item>}
           </List>
           <Text size="sm" c="red">
-            Transformá-lo em kit cria um <b>kit dentro de kit</b>, o que pode bugar o estoque.
-            Prossiga apenas se tiver certeza do que está fazendo.
+            Transformá-lo em kit cria um <b>kit dentro de kit</b>, o que pode causar inconsistências
+            no estoque. Prossiga apenas se tiver certeza do que está fazendo.
           </Text>
           <Group justify="flex-end">
             <Button type="button" variant="default" onClick={() => setConfirming(false)}>

@@ -56,6 +56,9 @@ import {
   produtoFieldOverrides,
 } from '../../_components/produtoFields';
 
+/** Max referencing kits listed in the #246 promotion warning (a capped preview). */
+const REFERENCED_BY_DISPLAY = 5;
+
 export default function EditarProdutoPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -159,18 +162,26 @@ export default function EditarProdutoPage() {
     () =>
       buildQuery(produtoCollection.ref(db, {}), [
         whereArrayContains('componentesKitKeys', params.id),
-        limit(5),
+        // Fetch one past the display cap so we can flag "+ outros" without an
+        // unbounded read — this is a best-effort warning, not an exhaustive list.
+        limit(REFERENCED_BY_DISPLAY + 1),
       ]),
     [db, params.id],
   );
   const referencedBySnap = useSnapshot(referencedByQuery);
-  const referencedByKits = useMemo(
+  const referencedByAll = useMemo(
     () =>
       (referencedBySnap.data ?? [])
         .filter((r) => r.id !== params.id)
         .map((r) => ({ id: r.id, nome: r.data.nome ?? r.id })),
     [referencedBySnap.data, params.id],
   );
+  const referencedByKits = useMemo(
+    () => referencedByAll.slice(0, REFERENCED_BY_DISPLAY),
+    [referencedByAll],
+  );
+  // True when more kits reference this produto than we display (capped query).
+  const referencedByMore = referencedByAll.length > REFERENCED_BY_DISPLAY;
   const lastSavedPrecos = useRef<{ ready: boolean; value: PrecosMap }>({
     ready: false,
     value: null,
@@ -216,6 +227,8 @@ export default function EditarProdutoPage() {
             onChange={p.onChange}
             disabled={p.disabled}
             referencedByKits={referencedByKits}
+            hasMore={referencedByMore}
+            loading={referencedBySnap.loading}
           />
         ),
       },
@@ -389,6 +402,8 @@ export default function EditarProdutoPage() {
       effectiveVariationRows,
       kitExcludeIds,
       referencedByKits,
+      referencedByMore,
+      referencedBySnap.loading,
     ],
   );
 

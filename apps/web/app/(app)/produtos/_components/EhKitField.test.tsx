@@ -44,4 +44,17 @@ describe('EhKitField (#246 kit promotion warning)', () => {
     renderField({ value: true, referencedByKits: kits });
     expect(screen.getByText('Este produto é componente de outros kits')).toBeTruthy();
   });
+
+  it('disables the toggle while the referenced-by query is still loading', () => {
+    // A disabled input can't be clicked in a real browser, so it can't bypass the
+    // warning during the initial load (jsdom still dispatches synthetic events on
+    // disabled inputs, so we assert the disabled state rather than the click).
+    renderField({ referencedByKits: [], loading: true });
+    expect((screen.getByRole('switch') as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it('flags overflow (+ outros kits) when more kits reference it than are shown', () => {
+    renderField({ value: true, referencedByKits: kits, hasMore: true });
+    expect(screen.getByText('… e outros kits')).toBeTruthy();
+  });
 });
