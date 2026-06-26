@@ -149,4 +149,81 @@ test.describe.serial('Clientes e2e — CNPJ lookup', () => {
     await dialog.getByRole('button', { name: 'Criar' }).click();
     await expect(page.getByRole('cell', { name: LOGRADOURO })).toBeVisible({ timeout: 15_000 });
   });
+
+  test('confirms before overwriting an existing cliente on lookup (#341)', async ({ page }) => {
+    // No-address stub: only nome comes back, so the endereço modal stays out of
+    // the way and we exercise the nome diff in isolation.
+    await page.route('https://brasilapi.com.br/api/cnpj/v1/**', (route) =>
+      route.fulfill({ json: { razao_social: RAZAO } }),
+    );
+    await page.route('**/api/nfe/consulta-cadastro*', (route) =>
+      route.fulfill({
+        json: { supported: false, uf: 'SP', cStat: null, xMotivo: 'stub', infCad: [] },
+      }),
+    );
+
+    // Create an existing cliente whose nome differs from the registry razão social.
+    await page.goto('/clientes/novo');
+    await selectField(page, 'Tipo', 'Pessoa Jurídica');
+    await fillField(page, 'CPF / CNPJ', CNPJ);
+    const nome = `${prefix}-update`;
+    await fillField(page, 'Nome', nome);
+    await clickSave(page, 'Criar');
+    await page.waitForURL(
+      (url) => /^\/clientes\/[^/]+$/.test(url.pathname) && url.pathname !== '/clientes/novo',
+      { timeout: 15_000 },
+    );
+
+    // The lookup on the existing cadastro must NOT clobber the nome silently — it
+    // opens a diff modal listing old → new and waits for an explicit "Atualizar".
+    const buscar = page.getByRole('button', { name: 'Buscar dados do CNPJ' });
+    const diff = page.getByRole('dialog', { name: 'Atualizar dados do cadastro?' });
+    await expect(async () => {
+      await buscar.click();
+      await expect(diff).toBeVisible({ timeout: 2_000 });
+    }).toPass({ timeout: 15_000 });
+    await expect(diff.getByText(`${nome} → ${RAZAO}`)).toBeVisible();
+
+    await diff.getByRole('button', { name: 'Atualizar', exact: true }).click();
+    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(RAZAO);
+  });
+
+  test('skips a duplicate address and opens the existing one for review (#341)', async ({
+    page,
+  }) => {
+    await stubCnpjLookup(page);
+
+    // Create a cliente and register its resolved address (via the relay modal).
+    await page.goto('/clientes/novo');
+    await selectField(page, 'Tipo', 'Pessoa Jurídica');
+    await fillField(page, 'CPF / CNPJ', CNPJ);
+    await lookupUntilNome(page, RAZAO);
+    await fillField(page, 'Nome', `${prefix}-dedup`);
+    await clickSave(page, 'Criar');
+    await page.waitForURL(
+      (url) => /^\/clientes\/[^/]+$/.test(url.pathname) && url.pathname !== '/clientes/novo',
+      { timeout: 15_000 },
+    );
+    const novo = page.getByRole('dialog');
+    await expect(novo.getByRole('heading', { name: 'Novo endereço' })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(novo.getByLabel('Logradouro', { exact: true })).toHaveValue(LOGRADOURO);
+    await novo.getByRole('button', { name: 'Criar', exact: true }).click();
+    await expect(page.getByRole('cell', { name: LOGRADOURO })).toHaveCount(1, { timeout: 15_000 });
+
+    // Re-running the lookup resolves the SAME address: dedup must skip the
+    // duplicate, notify, and open the existing endereço for review instead.
+    await page.getByRole('button', { name: 'Buscar dados do CNPJ' }).click();
+    await expect(page.getByRole('alert').filter({ hasText: 'Endereço já cadastrado' })).toBeVisible(
+      {
+        timeout: 15_000,
+      },
+    );
+    await expect(page.getByRole('dialog', { name: 'Editar endereço' })).toBeVisible({
+      timeout: 15_000,
+    });
+    // No second row was created for the same address.
+    await expect(page.getByRole('cell', { name: LOGRADOURO })).toHaveCount(1);
+  });
 });
