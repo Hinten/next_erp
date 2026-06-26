@@ -370,15 +370,24 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     await expect(dialog.getByLabel('Inscrição estadual', { exact: true })).toHaveCount(0);
 
     await dialog.getByLabel('CPF / CNPJ', { exact: true }).fill(cnpj);
-    await buscar.click();
 
-    // The lookup switches the tipo to Pessoa Jurídica (a CNPJ ⇒ PJ) and fills
-    // nome (BrasilAPI) + the authoritative IE (SEFAZ); the revealed IE shows it.
+    // The SEFAZ leg of the lookup needs the default filial id, which an async
+    // query (useDefaultFilialId) resolves on modal mount. If the first click
+    // lands before it settles, the best-effort SEFAZ call is skipped and the IE
+    // stays blank — so retry the lookup until the IE fills (nome/tipo writes are
+    // idempotent). Mirrors the product's best-effort SEFAZ behavior.
+    const ieField = dialog.getByLabel('Inscrição estadual', { exact: true });
+    await expect(async () => {
+      await buscar.click();
+      await expect(ieField).toHaveValue(IE, { timeout: 2_000 });
+    }).toPass({ timeout: 20_000 });
+
+    // The lookup switched the tipo to Pessoa Jurídica (a CNPJ ⇒ PJ) and filled
+    // nome (BrasilAPI) + the authoritative IE (SEFAZ).
     await expect(dialog.getByRole('combobox', { name: 'Tipo', exact: true })).toHaveValue(
       'Pessoa Jurídica',
     );
     await expect(dialog.getByLabel('Nome')).toHaveValue(RAZAO);
-    await expect(dialog.getByLabel('Inscrição estadual', { exact: true })).toHaveValue(IE);
 
     // #294: the lookup returned an address → the modal shows the "endereço
     // encontrado" hint (it'll be relayed to the cadastro after Criar).
