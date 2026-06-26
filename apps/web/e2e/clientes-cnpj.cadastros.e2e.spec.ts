@@ -43,6 +43,20 @@ async function stubCnpjLookup(page: Page): Promise<void> {
   );
 }
 
+/**
+ * Click "buscar dados" and retry until Nome fills. A click that lands before the
+ * lookup wiring settles can silently no-op (e.g. the async default-filial query
+ * the SEFAZ leg depends on); the lookup is idempotent, so retrying is safe. Same
+ * robustness pattern as the pedidos quick-create spec.
+ */
+async function lookupUntilNome(page: Page, razao: string): Promise<void> {
+  const buscar = page.getByRole('button', { name: 'Buscar dados do CNPJ' });
+  await expect(async () => {
+    await buscar.click();
+    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(razao, { timeout: 2_000 });
+  }).toPass({ timeout: 15_000 });
+}
+
 test.describe.serial('Clientes e2e — CNPJ lookup', () => {
   const prefix = e2ePrefix('cli-cnpj');
 
@@ -88,14 +102,13 @@ test.describe.serial('Clientes e2e — CNPJ lookup', () => {
     await page.goto('/clientes/novo');
     await selectField(page, 'Tipo', 'Pessoa Física');
     await fillField(page, 'CPF / CNPJ', CNPJ);
-    await page.getByRole('button', { name: 'Buscar dados do CNPJ' }).click();
 
     // A CNPJ ⇒ PJ: the lookup flips the tipo (so PF + CNPJ never stays invalid)
     // and fills nome. The stub forces supported:false, so IE is left blank.
+    await lookupUntilNome(page, RAZAO);
     await expect(page.getByRole('combobox', { name: 'Tipo', exact: true })).toHaveValue(
       'Pessoa Jurídica',
     );
-    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(RAZAO);
   });
 
   test('fills razão social and offers the address on lookup', async ({ page }) => {
@@ -103,9 +116,8 @@ test.describe.serial('Clientes e2e — CNPJ lookup', () => {
     await page.goto('/clientes/novo');
     await selectField(page, 'Tipo', 'Pessoa Jurídica');
     await fillField(page, 'CPF / CNPJ', CNPJ);
-    await page.getByRole('button', { name: 'Buscar dados do CNPJ' }).click();
+    await lookupUntilNome(page, RAZAO);
 
-    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(RAZAO);
     await expect(page.getByText('Endereço encontrado')).toBeVisible();
   });
 
@@ -114,8 +126,7 @@ test.describe.serial('Clientes e2e — CNPJ lookup', () => {
     await page.goto('/clientes/novo');
     await selectField(page, 'Tipo', 'Pessoa Jurídica');
     await fillField(page, 'CPF / CNPJ', CNPJ);
-    await page.getByRole('button', { name: 'Buscar dados do CNPJ' }).click();
-    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(RAZAO);
+    await lookupUntilNome(page, RAZAO);
 
     // Rename to a run-scoped prefix so afterAll cleanup catches the doc.
     const nome = `${prefix}-pj`;
