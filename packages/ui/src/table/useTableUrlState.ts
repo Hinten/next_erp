@@ -46,8 +46,8 @@ export function parseFiltersFromParams(
       descriptor.kind === 'integer' ||
       descriptor.kind === 'currency' ||
       // Numeric-epoch (`datetime`) filters carry their bound as micros/millis.
-      descriptor.kind === 'datetime' ||
-      descriptor.kind === 'date'
+      // (`date` is an ISO string and non-filterable, so it stays a string.)
+      descriptor.kind === 'datetime'
     ) {
       const n = Number(rawValue);
       if (Number.isNaN(n)) continue;

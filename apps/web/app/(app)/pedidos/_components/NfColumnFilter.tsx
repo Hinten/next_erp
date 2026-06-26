@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { Button, Group, SegmentedControl, Stack, TextInput } from '@mantine/core';
+import { type KeyboardEvent, useState } from 'react';
+import { Button, Group, NumberInput, SegmentedControl, Stack, TextInput } from '@mantine/core';
 import type { ColumnFilterValue } from '@delfrance/ui';
 
 /**
@@ -35,29 +35,50 @@ export function NfColumnFilter({ value, onChange }: NfColumnFilterProps) {
     if (disabled) return;
     onChange({ op: 'eq', value: `${mode}:${term.trim()}` });
   };
+  const onEnter = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !disabled) {
+      e.preventDefault();
+      apply();
+    }
+  };
   return (
     <Stack gap="xs" miw={260}>
       <SegmentedControl
         value={mode}
-        onChange={setMode}
+        // Reset the term on toggle: número and chave are different value types
+        // (an integer vs a 44-digit string), so carrying one into the other
+        // would be invalid.
+        onChange={(m) => {
+          setMode(m);
+          setTerm('');
+        }}
         data={[
           { value: 'numeracao', label: 'Número' },
           { value: 'chave', label: 'Chave' },
         ]}
         fullWidth
       />
-      <TextInput
-        label={mode === 'chave' ? 'Chave de acesso' : 'Número da NF'}
-        value={term}
-        onChange={(e) => setTerm(e.currentTarget.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !disabled) {
-            e.preventDefault();
-            apply();
-          }
-        }}
-        autoFocus
-      />
+      {mode === 'chave' ? (
+        <TextInput
+          label="Chave de acesso"
+          value={term}
+          onChange={(e) => setTerm(e.currentTarget.value)}
+          onKeyDown={onEnter}
+          autoFocus
+        />
+      ) : (
+        // Numeric-only so the lookup never builds a NaN equality match.
+        <NumberInput
+          label="Número da NF"
+          value={term}
+          onChange={(v) => setTerm(v === '' || v == null ? '' : String(v))}
+          allowDecimal={false}
+          allowNegative={false}
+          hideControls
+          onKeyDown={onEnter}
+          autoFocus
+        />
+      )}
       <Group justify="flex-end" gap="xs">
         <Button
           size="xs"

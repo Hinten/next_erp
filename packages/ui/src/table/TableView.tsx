@@ -353,9 +353,13 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       if (!subfield || term === '') continue;
       const spec = f.subcollectionLookup!.fields.find((x) => x.value === subfield);
       if (!spec) continue;
+      // A numeric child field (e.g. nfev4.numeracao) must parse cleanly — skip
+      // the lookup on a non-numeric term rather than push NaN into the query.
+      const value = spec.numeric ? Number(term) : term;
+      if (spec.numeric && !Number.isFinite(value as number)) continue;
       return {
         subcollection: f.subcollectionLookup!.subcollection,
-        match: [{ field: subfield, value: spec.numeric ? Number(term) : term }],
+        match: [{ field: subfield, value }],
       };
     }
     return null;
@@ -369,7 +373,9 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // Resolved to zero matches → no rows; don't build a whole-collection query.
   const lookupEmpty = lookupActive && Array.isArray(subLookup.ids) && subLookup.ids.length === 0;
   const idIn = lookupActive ? (subLookup.ids ?? undefined) : undefined;
-  const idInSerial = idIn ? idIn.join(',') : '';
+  // JSON (not join) so an id containing the separator can't collide and strand
+  // the pipeline memo on a stale value.
+  const idInSerial = idIn ? JSON.stringify(idIn) : '';
 
   // Filters pushed to the server / applied client-side, EXCLUDING the
   // subcollection-lookup keys (which are resolved via `idIn`, not a where()).

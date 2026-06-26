@@ -76,9 +76,9 @@ export function FilterPopover({ active, label, children }: FilterPopoverProps) {
  *  - enum                                    →  Select (eq)
  *  - boolean                                 →  Select Sim/Não (eq)
  *  - number / integer / currency             →  NumberInput + op picker
- *  - datetime                                →  DatePickerInput + ≥/≤ op
- *    (numeric-epoch fields; emits start-of-day for ≥, end-of-day for ≤,
- *    converted to the field's `dateUnit`)
+ *  - datetime                                →  DateTimePicker + ≥/≤ op
+ *    (numeric-epoch fields; the exact chosen instant is converted to the
+ *    field's `dateUnit` via `pickerStringToEpoch`)
  *
  * Text/number inputs submit on Enter.
  *
