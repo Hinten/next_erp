@@ -23,7 +23,7 @@ import {
   produtoPageIssues,
   sortGrupoUids,
 } from '@delfrance/schemas';
-import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
+import { buildQuery, limit, orderByField, whereArrayContains, whereEqual } from '@delfrance/data';
 import {
   ProdutoReferencedError,
   applyPrecosChange,
@@ -42,6 +42,7 @@ import { useAuth, usePermission } from '@/lib/auth';
 import { AnexoManager } from '../../_components/AnexoManager';
 import { PhotoManager } from '@/components/photo-manager/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
+import { EhKitField } from '../../_components/EhKitField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
 import { ExtraDataManager } from '../../_components/ExtraDataManager';
 import { ImpostoManager } from '../../_components/ImpostoManager';
@@ -56,6 +57,9 @@ import {
   PRODUTO_TRANSIENT_FIELDS,
   produtoFieldOverrides,
 } from '../../_components/produtoFields';
+
+/** Max referencing kits listed in the #246 promotion warning (a capped preview). */
+const REFERENCED_BY_DISPLAY = 5;
 
 export default function EditarProdutoPage() {
   const params = useParams<{ id: string }>();
@@ -151,6 +155,35 @@ export default function EditarProdutoPage() {
   );
   const paiSnap = useDocSnapshot(paiDocRef);
   const parentIsKit = paiSnap.data?.data.ehKit === true;
+
+  // Kits that use THIS produto as a component (#246). Promoting this produto into
+  // a kit while it's still a component creates a kit-of-kit (can corrupt stock),
+  // so the "É kit" toggle warns + confirms when this list is non-empty. Same
+  // denorm the delete guard queries (`componentesKitKeys` array-contains).
+  const referencedByQuery = useMemo(
+    () =>
+      buildQuery(produtoCollection.ref(db, {}), [
+        whereArrayContains('componentesKitKeys', params.id),
+        // Fetch one past the display cap so we can flag "+ outros" without an
+        // unbounded read — this is a best-effort warning, not an exhaustive list.
+        limit(REFERENCED_BY_DISPLAY + 1),
+      ]),
+    [db, params.id],
+  );
+  const referencedBySnap = useSnapshot(referencedByQuery);
+  const referencedByAll = useMemo(
+    () =>
+      (referencedBySnap.data ?? [])
+        .filter((r) => r.id !== params.id)
+        .map((r) => ({ id: r.id, nome: r.data.nome ?? r.id })),
+    [referencedBySnap.data, params.id],
+  );
+  const referencedByKits = useMemo(
+    () => referencedByAll.slice(0, REFERENCED_BY_DISPLAY),
+    [referencedByAll],
+  );
+  // True when more kits reference this produto than we display (capped query).
+  const referencedByMore = referencedByAll.length > REFERENCED_BY_DISPLAY;
   const lastSavedPrecos = useRef<{ ready: boolean; value: PrecosMap }>({
     ready: false,
     value: null,
@@ -185,6 +218,22 @@ export default function EditarProdutoPage() {
   const fields = useMemo<Record<string, FieldConfig>>(
     () => ({
       ...produtoFieldOverrides,
+      // "É kit" with the kit-of-kit promotion warning (#246) — editar-only, since
+      // it needs the referenced-by snapshot (a new produto can't be referenced).
+      ehKit: {
+        ...produtoFieldOverrides.ehKit,
+        renderInput: (p) => (
+          <EhKitField
+            label={p.label}
+            value={p.value === true}
+            onChange={p.onChange}
+            disabled={p.disabled}
+            referencedByKits={referencedByKits}
+            hasMore={referencedByMore}
+            loading={referencedBySnap.loading}
+          />
+        ),
+      },
       fotos: {
         label: 'Fotos',
         section: 'Fotos',
@@ -369,6 +418,9 @@ export default function EditarProdutoPage() {
       listasSnap.error?.message,
       effectiveVariationRows,
       kitExcludeIds,
+      referencedByKits,
+      referencedByMore,
+      referencedBySnap.loading,
     ],
   );
 
