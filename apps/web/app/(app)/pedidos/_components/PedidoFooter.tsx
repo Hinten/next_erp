@@ -3,19 +3,7 @@
 import { useMemo } from 'react';
 import { Controller, useWatch, type UseFormReturn } from 'react-hook-form';
 import { type Firestore } from 'firebase/firestore';
-import {
-  ActionIcon,
-  Alert,
-  Button,
-  Group,
-  NumberInput,
-  Paper,
-  Stack,
-  Text,
-  Tooltip,
-} from '@mantine/core';
-import { notifications } from '@mantine/notifications';
-import { IconShare } from '@tabler/icons-react';
+import { Alert, Button, Group, NumberInput, Paper, Stack, Text, Tooltip } from '@mantine/core';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { derivePedidoTotals, type Pedido, type Pagamento } from '@delfrance/schemas';
@@ -23,6 +11,7 @@ import { formatReais, roundReais } from '@delfrance/core/money';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
 import { parseBrl } from '@/app/(app)/produtos/_components/CurrencyInput';
 import { sumPagamentosPagos } from './PagamentoForm';
+import { OrcamentoShareMenu } from './print/OrcamentoShareMenu';
 import type { FlatItem, PedidoFormState } from './types';
 
 const brl = (n: number): string => formatReais(n);
@@ -143,16 +132,6 @@ export function PedidoFooter({
   );
   const troco = Math.max(0, roundReais(valorPago - totals.valorCobrado));
 
-  // Placeholder until the Orçamento PDF generator lands (issue #302). The button
-  // slot is here so the UX matches the legacy footer; clicking it just signals
-  // that the feature is in progress.
-  function handleShareOrcamento() {
-    notifications.show({
-      color: 'blue',
-      message: 'Compartilhar / imprimir orçamento ainda está em desenvolvimento.',
-    });
-  }
-
   return (
     <Paper
       withBorder
@@ -216,16 +195,7 @@ export function PedidoFooter({
             {troco > 0 && <FooterStat label="Troco" value={brl(troco)} />}
           </Group>
           <Group gap="xs" wrap="nowrap" align="center">
-            <Tooltip label="Compartilhar / imprimir orçamento" withArrow>
-              <ActionIcon
-                variant="default"
-                size="lg"
-                aria-label="Compartilhar orçamento"
-                onClick={handleShareOrcamento}
-              >
-                <IconShare size={18} />
-              </ActionIcon>
-            </Tooltip>
+            <OrcamentoShareMenu db={db} pedidoId={pedidoId} />
             {pedidoId && onSaveAndContinue && (
               <Tooltip label="Sem permissão de escrita" disabled={canWrite} withArrow>
                 <Button
