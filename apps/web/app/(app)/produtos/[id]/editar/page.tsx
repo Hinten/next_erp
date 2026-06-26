@@ -190,7 +190,14 @@ export default function EditarProdutoPage() {
                 bytes: file,
                 contentType: file.type,
                 originalFilename: file.name,
-              }).then(({ id }) => buildFotoRefs(params.id, id.slice(params.id.length + 1)))
+              }).then(({ id }) =>
+                // Defensive: uploadProductImage returns `<produtoId>_<hash>`;
+                // recover the hash, falling back to the raw id if the contract ever changes.
+                buildFotoRefs(
+                  params.id,
+                  id.startsWith(`${params.id}_`) ? id.slice(params.id.length + 1) : id,
+                ),
+              )
             }
             value={(p.value as Foto[] | null) ?? null}
             onChange={p.onChange}

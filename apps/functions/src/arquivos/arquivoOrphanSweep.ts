@@ -375,7 +375,7 @@ export async function sweepMarkedForDeletion(db: Firestore): Promise<number> {
         await ref.update({ markedForDeletionAt: null });
         cleared += 1;
         logger.warn(
-          `sweepMarkedForDeletion: ${ref.id} marked but filepath is not product media — clearing, not deleting`,
+          `sweepMarkedForDeletion: ${ref.id} marked but filepath is not owner media (produtos/tabMedi) — clearing, not deleting`,
         );
         continue;
       }

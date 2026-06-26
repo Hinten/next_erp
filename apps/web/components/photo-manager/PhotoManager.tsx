@@ -153,19 +153,23 @@ export interface PhotoManagerProps {
 }
 
 /**
- * Product photo gallery wired into the Produto ObjectView's "Fotos" tab.
+ * Owner-agnostic photo gallery for an ObjectView "Fotos" tab (produto, tabela de
+ * medidas, …).
  *
- * Uploads go straight to Storage via `uploadProductImage` (which writes the
- * original `Arquivo` doc and triggers the resize Cloud Function); the matching
- * `Foto` ref strings are appended to the form's `fotos` array and persisted on
- * the product save. Order is the array position (first = capa) — reorder with
+ * Uploads go through the injected `uploadFoto` adapter — the owner, the Storage
+ * path and resize behaviour all live inside it (e.g. a produto adapter wraps
+ * `uploadProductImage`; a tabela-de-medidas adapter `uploadTabMediImage`). The
+ * resulting `Foto` ref strings are appended to the form's `fotos` array and
+ * persisted on save. Order is the array position (first = capa) — reorder with
  * drag-and-drop. Each thumbnail prefers the 200px derivative and falls back to
- * the original while the resize function is still running (or not yet deployed).
+ * the original (so an owner without derivatives, e.g. tabela de medidas, renders
+ * the original directly).
  *
- * Per-variant galleries (port of the Flutter `Fotos2ProdutoWidget`): the
- * parent's selected variants whose group has `permiteFotos` each get their own
- * section — uploads there tag the foto with `grupoDeVariacoesOuterRef` +
- * `variantePath`; untagged/orphaned fotos stay in the parent-level section.
+ * Per-variant galleries (port of the Flutter `Fotos2ProdutoWidget`): when
+ * `grupos` is supplied, the selected variants whose group has `permiteFotos` each
+ * get their own section — uploads there tag the foto with
+ * `grupoDeVariacoesOuterRef` + `variantePath`; untagged/orphaned fotos stay in the
+ * parent-level section. Without `grupos` it's a single gallery.
  */
 export function PhotoManager({
   uploadFoto,
