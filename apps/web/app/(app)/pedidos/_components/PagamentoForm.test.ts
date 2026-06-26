@@ -36,6 +36,21 @@ describe('validatePagamentoForm', () => {
     expect(validatePagamentoForm(form({ valor: 10, parcelas: 0 }))).toMatch(/parcela/i);
     expect(validatePagamentoForm(form({ valor: 10, parcelas: 3 }))).toBeNull();
   });
+
+  it('requires a descrição for forma "Outros" (tPag=99 / cStat 441)', () => {
+    const outros = String(FORMA_PAGAMENTO.outros);
+    expect(validatePagamentoForm(form({ valor: 10, forma: outros, descricao: '' }))).toMatch(
+      /descri/i,
+    );
+    expect(validatePagamentoForm(form({ valor: 10, forma: outros, descricao: '   ' }))).toMatch(
+      /descri/i,
+    );
+    expect(
+      validatePagamentoForm(form({ valor: 10, forma: outros, descricao: 'Permuta' })),
+    ).toBeNull();
+    // Other formas don't need a descrição.
+    expect(validatePagamentoForm(form({ valor: 10, descricao: '' }))).toBeNull();
+  });
 });
 
 describe('pagamentoDataFromForm', () => {

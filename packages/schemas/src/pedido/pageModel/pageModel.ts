@@ -46,6 +46,7 @@ export interface PedidoPageValidationInput {
   estado?: EstadoPedido | null;
   integracaoPedidoOuterRef?: unknown;
   itens?: Record<string, ReadonlyArray<{ quantidade?: number | null }>> | null;
+  chNFeReferenciadas?: ReadonlyArray<string | null> | null;
   valorCobrado?: number | null;
   pagamentos?: ReadonlyArray<{ status_pagamento?: number | null; valor?: number | null }> | null;
 }
@@ -89,6 +90,16 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
     issues.push({
       path: 'ehSaida',
       message: 'Um pedido não pode mudar de Saída para Entrada (ou vice-versa).',
+    });
+  }
+
+  // Every referenced NF-e access key (`chNFeReferenciadas`) must be a 44-digit
+  // chave — an invalid one is accepted by the form today and only fails at NF-e
+  // emission. Block the save here (the Fiscal tab also shows a per-input hint).
+  if ((data.chNFeReferenciadas ?? []).some((c) => c != null && c !== '' && !/^\d{44}$/.test(c))) {
+    issues.push({
+      path: 'chNFeReferenciadas',
+      message: 'Chave de acesso referenciada deve ter 44 dígitos.',
     });
   }
 

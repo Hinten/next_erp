@@ -253,6 +253,9 @@ function IncidentesManager({ pedidoId, disabled }: { pedidoId: string; disabled?
                     onChange={(v) => setForm((f) => ({ ...f, resTipo: v ?? '' }))}
                     disabled={resFieldsDisabled}
                     withAsterisk
+                    // Surface the requirement as soon as "Registrar resolução" is on,
+                    // not only at Save (validateIncidenteForm still blocks the save).
+                    error={form.resTipo === '' ? 'Selecione o tipo de resolução.' : undefined}
                   />
                   <DateTimePicker
                     label="Data da resolução"

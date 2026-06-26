@@ -91,6 +91,14 @@ export interface FreteInicialFormState {
  * signature that defeats RHF's path inference for `_itensFlat`.
  */
 export interface PedidoFormState {
+  /**
+   * Transient page-model context (NOT written to the doc — both are in the data
+   * layer's `NON_DOC_KEYS`). `id` is the pedido doc id (null on create);
+   * `ehSaidaOriginal` is `ehSaida` as loaded, so the resolver can enforce that
+   * the direction flag can't flip on an existing order.
+   */
+  id: string | null;
+  ehSaidaOriginal: boolean | null;
   ehSaida: boolean;
   hasUserInteraction: boolean | null;
   estado:

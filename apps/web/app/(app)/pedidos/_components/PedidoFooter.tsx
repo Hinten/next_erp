@@ -143,6 +143,16 @@ export function PedidoFooter({
   );
   const troco = Math.max(0, roundReais(valorPago - totals.valorCobrado));
 
+  // Soft check (legacy `cadastroPedidoProvider.dart:1169`): a pedido marked
+  // `pago` whose approved payments don't cover the total. Slice C's auto-reconcile
+  // keeps these consistent, so this only surfaces a manual estado→pago that isn't
+  // fully paid — a warning, not a save block.
+  const estado = useWatch({ control: form.control, name: 'estado' });
+  const underpaid =
+    pedidoId != null &&
+    estado === 'pago' &&
+    roundReais(valorPago) < roundReais(totals.valorCobrado);
+
   // Placeholder until the Orçamento PDF generator lands (issue #302). The button
   // slot is here so the UX matches the legacy footer; clicking it just signals
   // that the feature is in progress.
@@ -211,8 +221,23 @@ export function PedidoFooter({
               testId="footer-total"
             />
             {/* Vlr. Pago is a payments figure — shown only in edit mode (a real
-                pedido), but there it stays visible even at R$ 0,00. */}
-            {pedidoId && <FooterStat label="Vlr. Pago" value={brl(valorPago)} />}
+                pedido), but there it stays visible even at R$ 0,00. When the
+                order is "pago" yet the approved payments don't cover the total,
+                tint it red with an explanatory tooltip (soft warning). */}
+            {pedidoId &&
+              (underpaid ? (
+                <Tooltip
+                  label="Pagamento aprovado menor que o total do pedido"
+                  withArrow
+                  color="red"
+                >
+                  <div>
+                    <FooterStat label="Vlr. Pago" value={brl(valorPago)} color="red" />
+                  </div>
+                </Tooltip>
+              ) : (
+                <FooterStat label="Vlr. Pago" value={brl(valorPago)} />
+              ))}
             {troco > 0 && <FooterStat label="Troco" value={brl(troco)} />}
           </Group>
           <Group gap="xs" wrap="nowrap" align="center">

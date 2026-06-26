@@ -200,6 +200,10 @@ export function validatePagamentoForm(form: PagamentoFormState): string | null {
   if (form.valor == null || form.valor < 0) return 'Informe um valor válido.';
   if (!Number.isInteger(form.parcelas) || form.parcelas < 1)
     return 'As parcelas devem ser ao menos 1.';
+  // Forma "Outros" (tPag=99) requires a description — SEFAZ rejects an NF-e
+  // without `<xPag>` (cStat 441).
+  if (form.forma === String(FORMA_PAGAMENTO.outros) && !form.descricao.trim())
+    return 'Descrição é obrigatória para a forma "Outros".';
   return null;
 }
 
