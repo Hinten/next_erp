@@ -182,7 +182,10 @@ export function PrintComumDialog({
               <Text size="sm">
                 Carregando pedidos… {progress.done}/{progress.total}
               </Text>
-              <Progress value={total ? (progress.done / total) * 100 : 0} animated />
+              <Progress
+                value={progress.total ? (progress.done / progress.total) * 100 : 0}
+                animated
+              />
             </>
           )}
 

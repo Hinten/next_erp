@@ -180,14 +180,17 @@ describe('itemsSubtotal', () => {
 
 describe('isDispatchOverdue', () => {
   const now = new Date(2026, 5, 25, 10, 0); // 2026-06-25 10:00 local
+  // `isDispatchOverdue` compares days in the LOCAL timezone, so build the
+  // deadlines with local `new Date(...)` too (not `Date.UTC`) to stay TZ-stable.
+  const micros = (d: Date) => d.getTime() * 1000;
   it('is true when the deadline day is before today', () => {
-    expect(isDispatchOverdue(Date.UTC(2026, 5, 24) * 1000, now)).toBe(true);
+    expect(isDispatchOverdue(micros(new Date(2026, 5, 24)), now)).toBe(true);
   });
   it('is false on the deadline day itself', () => {
-    expect(isDispatchOverdue(new Date(2026, 5, 25, 23, 0).getTime() * 1000, now)).toBe(false);
+    expect(isDispatchOverdue(micros(new Date(2026, 5, 25, 23, 0)), now)).toBe(false);
   });
   it('is false for a future deadline', () => {
-    expect(isDispatchOverdue(Date.UTC(2026, 5, 28) * 1000, now)).toBe(false);
+    expect(isDispatchOverdue(micros(new Date(2026, 5, 28)), now)).toBe(false);
   });
   it('is false when there is no deadline', () => {
     expect(isDispatchOverdue(null, now)).toBe(false);

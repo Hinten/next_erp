@@ -46,7 +46,10 @@ async function captureOrcamento(
 
   if (format === 'image') {
     const blob = await canvasToBlob(canvas, 'image/jpeg', JPEG_QUALITY);
-    if (blob) saveBlob(blob, `${baseName}.jpg`);
+    // `toBlob` can yield null (browser limits / oversized canvas) — surface it
+    // as an error so the caller shows a notification instead of failing silently.
+    if (!blob) throw new Error('Não foi possível gerar a imagem do orçamento.');
+    saveBlob(blob, `${baseName}.jpg`);
     return;
   }
 

@@ -120,12 +120,10 @@ export interface PedidoPrintModel {
 /*                               Pure helpers                                  */
 /* -------------------------------------------------------------------------- */
 
-const ARQUIVOS_PREFIX = 'arquivos/';
-
 /**
  * Bare `<id>` from a `Foto` ref string (`arquivos/<id>` or
- * `documents/arquivos/<id>`), or `null`. Mirrors the `idFromRef` in
- * `ProdutoThumbnail.tsx`.
+ * `documents/arquivos/<id>`), or `null` — the last non-empty path segment.
+ * Mirrors the `idFromRef` in `ProdutoThumbnail.tsx`.
  */
 export function arquivoIdFromRef(ref: string | null | undefined): string | null {
   if (!ref) return null;
