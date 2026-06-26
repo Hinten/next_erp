@@ -22,7 +22,7 @@ import {
   produtoPageIssues,
   sortGrupoUids,
 } from '@delfrance/schemas';
-import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
+import { buildQuery, limit, orderByField, whereArrayContains, whereEqual } from '@delfrance/data';
 import {
   ProdutoReferencedError,
   applyPrecosChange,
@@ -40,6 +40,7 @@ import { useAuth, usePermission } from '@/lib/auth';
 import { AnexoManager } from '../../_components/AnexoManager';
 import { PhotoManager } from '../../_components/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
+import { EhKitField } from '../../_components/EhKitField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
 import { ExtraDataManager } from '../../_components/ExtraDataManager';
 import { ImpostoManager } from '../../_components/ImpostoManager';
@@ -149,6 +150,27 @@ export default function EditarProdutoPage() {
   );
   const paiSnap = useDocSnapshot(paiDocRef);
   const parentIsKit = paiSnap.data?.data.ehKit === true;
+
+  // Kits that use THIS produto as a component (#246). Promoting this produto into
+  // a kit while it's still a component creates a kit-of-kit (can corrupt stock),
+  // so the "É kit" toggle warns + confirms when this list is non-empty. Same
+  // denorm the delete guard queries (`componentesKitKeys` array-contains).
+  const referencedByQuery = useMemo(
+    () =>
+      buildQuery(produtoCollection.ref(db, {}), [
+        whereArrayContains('componentesKitKeys', params.id),
+        limit(5),
+      ]),
+    [db, params.id],
+  );
+  const referencedBySnap = useSnapshot(referencedByQuery);
+  const referencedByKits = useMemo(
+    () =>
+      (referencedBySnap.data ?? [])
+        .filter((r) => r.id !== params.id)
+        .map((r) => ({ id: r.id, nome: r.data.nome ?? r.id })),
+    [referencedBySnap.data, params.id],
+  );
   const lastSavedPrecos = useRef<{ ready: boolean; value: PrecosMap }>({
     ready: false,
     value: null,
@@ -183,6 +205,20 @@ export default function EditarProdutoPage() {
   const fields = useMemo<Record<string, FieldConfig>>(
     () => ({
       ...produtoFieldOverrides,
+      // "É kit" with the kit-of-kit promotion warning (#246) — editar-only, since
+      // it needs the referenced-by snapshot (a new produto can't be referenced).
+      ehKit: {
+        ...produtoFieldOverrides.ehKit,
+        renderInput: (p) => (
+          <EhKitField
+            label={p.label}
+            value={p.value === true}
+            onChange={p.onChange}
+            disabled={p.disabled}
+            referencedByKits={referencedByKits}
+          />
+        ),
+      },
       fotos: {
         label: 'Fotos',
         section: 'Fotos',
@@ -352,6 +388,7 @@ export default function EditarProdutoPage() {
       listasSnap.error?.message,
       effectiveVariationRows,
       kitExcludeIds,
+      referencedByKits,
     ],
   );
 
