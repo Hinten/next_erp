@@ -44,9 +44,10 @@ export function buildGeneratorInput(
   tpEmis: GeneratorInput['tpEmis'] = 1,
   cNF?: string,
   contingencia?: { readonly dhCont: Date | null; readonly xJust: string | null } | null,
+  emitRtc?: boolean,
 ): GeneratorInput {
   const isInterstate = bundle.enderecoDest.estado !== bundle.filial.sede.estado;
-  const genItems = buildGenItems(items, bundle, isInterstate);
+  const genItems = buildGenItems(items, bundle, isInterstate, emitRtc === true);
 
   // Compute frete value upfront so it can ride into both the totals
   // aggregator (NF-e level) and onto det[0].prod.vFrete (item level)
@@ -64,6 +65,7 @@ export function buildGeneratorInput(
   const totals = aggregateTotals(
     items.map((it) => ({ item: { vProd: it.vProd }, imposto: it.imposto })),
     { vFrete },
+    { emitRtc: emitRtc === true },
   );
   const payments = buildPaymentsFromPagamentos(bundle.pagamentos, {
     vNF: totals.vNF,
@@ -118,6 +120,7 @@ export function buildGenItems(
   items: ReadonlyArray<FiscalItem>,
   bundle: PedidoBundle,
   isInterstate: boolean,
+  emitRtc = false,
 ): GeneratorItem[] {
   const cfopField = isInterstate ? 'cfopInterestadual' : 'cfop';
   return items.map((it, i) => {
@@ -163,7 +166,7 @@ export function buildGenItems(
       qTrib: it.quantidade,
       vUnTrib: it.precoDeVenda,
       indTot: '1',
-      impostoXml: buildImpostoXml(it.imposto, { vProd: it.vProd }),
+      impostoXml: buildImpostoXml(it.imposto, { vProd: it.vProd }, { emitRtc }),
     };
   });
 }

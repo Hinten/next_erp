@@ -320,6 +320,53 @@ export const retencaoSchema = z.object({
 export type Retencao = z.infer<typeof retencaoSchema>;
 
 // ---------------------------------------------------------------------------
+// configuracaoIBSCBS — Reforma Tributária do Consumo (RTC) item-level input
+// ---------------------------------------------------------------------------
+
+/**
+ * RTC `IS` (Imposto Seletivo) per-item sub-config. Optional — only goods in
+ * the Anexo I NCM list. `pIS` (ad valorem over a base) OR `pISEspec` (per
+ * unit, with `qTrib`) drives the value; the builder computes `vIS`.
+ */
+export const configuracaoISRtcSchema = z.object({
+  CSTIS: z.string().regex(/^\d{3}$/),
+  cClassTribIS: z.string().regex(/^\d{6}$/),
+  vBCIS: z.number().nonnegative().optional().nullable(),
+  pIS: z.number().nonnegative().optional().nullable(),
+  pISEspec: z.number().nonnegative().optional().nullable(),
+  uTrib: z.string().min(1).max(6).optional().nullable(),
+  qTrib: z.number().nonnegative().optional().nullable(),
+});
+export type ConfiguracaoISRtc = z.infer<typeof configuracaoISRtcSchema>;
+
+/**
+ * `configuracaoIBSCBS` — the per-item **Reforma Tributária (IBS/CBS/IS)**
+ * input (NT 2025.002). Mirrors the wire `TTribNFe` / `TCIBS` (codegen
+ * `nfe-schema.ts`) in the Flutter-number convention: numbers in, SEFAZ
+ * strings out via the dispatcher (`tribute/rtc.ts`).
+ *
+ * Only the **"tributação integral"** shape is modelled (CST + cClassTrib +
+ * the three alíquotas); diferimento / redução / monofásica / crédito
+ * presumido subgroups are deliberately out of scope (future NT-driven
+ * follow-up). The CST/cClassTrib codes are validated **by pattern only** —
+ * the Anexo III/IV tables are Portal-published, not vendored.
+ *
+ * `vBC` defaults to the item `vProd` when null (the Simples Nacional posture,
+ * mirroring PIS/COFINS in `imposto.ts`). The IBS portion is split UF +
+ * Município; `vIBS` is computed as their sum.
+ */
+export const configuracaoIBSCBSSchema = z.object({
+  CST: z.string().regex(/^\d{3}$/),
+  cClassTrib: z.string().regex(/^\d{6}$/),
+  vBC: z.number().nonnegative().optional().nullable(),
+  pIBSUF: z.number().nonnegative(),
+  pIBSMun: z.number().nonnegative(),
+  pCBS: z.number().nonnegative(),
+  is: configuracaoISRtcSchema.optional().nullable(),
+});
+export type ConfiguracaoIBSCBS = z.infer<typeof configuracaoIBSCBSSchema>;
+
+// ---------------------------------------------------------------------------
 // Top-level Imposto — what `pedido.itens[i].imposto` should be
 // ---------------------------------------------------------------------------
 
@@ -367,6 +414,17 @@ export const impostoSchema = z.object({
   configuracaoCOFINS: confCOFINSSchema.optional().nullable(),
   configuracaoIPI: configuracaoIPISchema.optional().nullable(),
   retencao: retencaoSchema.optional().nullable(),
+  /**
+   * Reforma Tributária (IBS/CBS/IS) per-item config — NT 2025.002. Stored
+   * **leniently** (`z.unknown`) so the resolver's `impostoSchema.safeParse`
+   * never fails on a half-filled blob — a partial RTC registration must not
+   * silently disable the item's whole imposto (the resolver falls through to
+   * the next tier on any parse failure). The strict shape is
+   * `configuracaoIBSCBSSchema`, enforced at build time by `parseRtcConfig`, and
+   * only when the orchestrator opts in (`{ emitRtc: true }`, per-filial
+   * `nfeConfig.emitirReformaTributaria`, off by default).
+   */
+  configuracaoIBSCBS: z.unknown().optional(),
 });
 export type Imposto = z.infer<typeof impostoSchema>;
 

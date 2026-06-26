@@ -261,8 +261,22 @@ function impostoCarriesInfo(imp: ImpostoProduto): boolean {
   // keeping; only a pristine `null` counts as empty.
   return (
     strings.some((v) => typeof v === 'string' && v.trim() !== '') ||
-    imp.compoeValorTotalDaNFe != null
+    imp.compoeValorTotalDaNFe != null ||
+    rtcConfigHasValue(imp)
   );
+}
+
+/**
+ * True when the passthrough Reforma Tributária blob (`configuracaoIBSCBS`)
+ * carries at least one non-null value. The RTC config rides on the imposto row
+ * via `.passthrough()` (not typed on `ImpostoProduto`), so a row whose ONLY
+ * content is RTC config must still persist — `impostoCarriesInfo` would
+ * otherwise drop it. A toggled-on-but-empty blob (all null) counts as empty.
+ */
+function rtcConfigHasValue(imp: ImpostoProduto): boolean {
+  const rtc = (imp as { configuracaoIBSCBS?: unknown }).configuracaoIBSCBS;
+  if (rtc == null || typeof rtc !== 'object') return false;
+  return Object.values(rtc as Record<string, unknown>).some((v) => v != null);
 }
 
 /**

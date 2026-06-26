@@ -365,3 +365,49 @@ Quando este projeto regenerar tipos TypeScript a partir dos XSDs (vide
 Estas tabelas **não são versionadas neste skill** — são dados operacionais
 que mudam fora do ciclo de NT. Consultar o Portal antes de implementar
 mapeamento.
+
+## Implementation status in this repo (#313)
+
+The RTC **infrastructure** is built for **Simples Nacional**, gated **off by
+default** (PR #313). What exists:
+
+- **Wire types already in codegen.** `generated/moc7.0/types/nfe-schema.ts`
+  carries `TTribNFe` (item `IBSCBS`), `TCIBS`, `TIS`, `TIBSCBSMonoTot`
+  (`IBSCBSTot`), and the `total` slots. The serializer is META-driven —
+  **no XSD regen** was needed for the core layout.
+- **Builders** in `packages/integrations/nfe/src/tribute/rtc.ts`:
+  `buildIBSCBS` (item Grupo UB), `buildIS` (item IS), `computeRtcItemValues`
+  (shared item↔total math), `parseRtcConfig` (strict build-time validation).
+  Only the **"tributação integral"** shape is modelled (CST + cClassTrib +
+  IBS-UF/Mun + CBS); diferimento / redução / monofásica / crédito presumido
+  are follow-ups.
+- **Input schema** `configuracaoIBSCBSSchema` in `tribute/schemas.ts`. On
+  `impostoSchema` it is stored **leniently** (`z.unknown`) so a half-filled
+  registration never breaks the resolver (which falls through on parse
+  failure); the strict shape is enforced only at emit time by `parseRtcConfig`.
+- **The 2025–2026 transition rule is honored**: `ICMSTot.vNF` is **never**
+  changed; the RTC tributes ride "por fora" in `IBSCBSTot` / `ISTot` /
+  `vNFTot` (RV VB01-10 Exceção 1).
+- **Gate**: per-filial `nfeConfig.emitirReformaTributaria` (default `false`),
+  toggled in the filial NF-e config screen, threaded as `{ emitRtc }` from the
+  orchestrator into `buildImpostoXml` / `aggregateTotals`. Flag **off ⇒ emitted
+  XML byte-identical to pre-RTC**.
+- **Registration UI**: produto `ImpostoManager` has a "Reforma Tributária"
+  section (CST, cClassTrib, IBS-UF/Mun + CBS alíquotas). The **categoria**
+  registration view is a follow-up (#318).
+- **Codes are registerable free-text** — the Anexo III/IV `cClassTrib` / CST
+  tables are Portal-published and **not vendored**; the operator (or a future
+  NT-driven table import) supplies them.
+- **Live homologação proof**: `test/operations/rtc.homologacao.test.ts` (serie
+  4) emits a CRT=1 NF-e with the RTC groups against SEFAZ-SP homologação and
+  asserts `cStat=100` — advisory in `ci-nfe.yml`'s `nfe-live` job, fatal on
+  `workflow_dispatch`. The fixture codes are best-guess; refine
+  `impostoCsosn102ComRtc` from the logged `cStat`+`xMotivo` on a first-run
+  rejection.
+
+**Deferred (tracked follow-ups):** the categoria RTC view; 4-digit `cStat` /
+15-17-digit `nProt` response parsing; `finNFe` 5/6 (nota de crédito/débito);
+Grupo BB/BC + the Grupo B additions; the new RTC events (112110…412130);
+importing the Anexo III/IV code tables; and RTC activation for CRT=3 (Phase D,
+#312). **Simples Nacional RTC stays off in produção** until SEFAZ publishes the
+Simples rules (mandatory only 2027-01-04).

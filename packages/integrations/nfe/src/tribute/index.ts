@@ -24,8 +24,16 @@ export {
   aggregateTotals,
   buildTotalXml,
   type ISSQNExtras,
+  type RtcTotalSummary,
   type TotalAggregation,
 } from './total';
+export {
+  buildIBSCBS,
+  buildIS,
+  computeRtcItemValues,
+  rtcTestRatesForYear,
+  type RtcItemValues,
+} from './rtc';
 export { buildTranspXml, modFreteSchema, type ModFrete } from './transp';
 export { buildPagXml, paymentSchema, tPagSchema, type Payment, type TPag } from './pag';
 export {
@@ -40,6 +48,8 @@ export {
   roundReais,
 } from './format';
 export {
+  configuracaoIBSCBSSchema,
+  configuracaoISRtcSchema,
   cstIpiSchema,
   cstPisCofinsSchema,
   configuracaoICMSSchema,
@@ -60,8 +70,10 @@ export {
   tributeItemSchema,
   type ConfCOFINS,
   type ConfPIS,
+  type ConfiguracaoIBSCBS,
   type ConfiguracaoICMS,
   type ConfiguracaoIPI,
+  type ConfiguracaoISRtc,
   type ConfiguracaoISSQN,
   type Crt,
   type Csosn,

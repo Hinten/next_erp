@@ -44,6 +44,28 @@ export function impostoCsosn102(): Imposto {
   };
 }
 
+/**
+ * CSOSN 102 + a **Reforma Tributária (IBS/CBS/IS)** "tributação integral"
+ * config (NT 2025.002) for the live RTC homologação test. The CST /
+ * cClassTrib codes are **best-guess placeholders** — the Anexo III tables
+ * aren't vendored, so the first live run is exploratory: if SEFAZ rejects
+ * with 1020/1023/1024 (CST/cClassTrib) or 1026/1037 (alíquota), refine these
+ * from the returned `xMotivo`. The alíquotas are the documented 2025–2026
+ * test rates (IBS 0,1% / CBS 0,9%).
+ */
+export function impostoCsosn102ComRtc(): Imposto {
+  return {
+    ...impostoCsosn102(),
+    configuracaoIBSCBS: {
+      CST: '000',
+      cClassTrib: '000000',
+      pIBSUF: 0.1,
+      pIBSMun: 0,
+      pCBS: 0.9,
+    },
+  };
+}
+
 /** `YYYY-MM-DD` for now + `days` — keeps date-bearing fixture fields evergreen. */
 function isoDatePlusDays(days: number): string {
   return new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
@@ -73,11 +95,16 @@ export interface HomologacaoFixtureOpts {
     readonly dhCont: Date;
     readonly xJust: string;
   };
+  /** Override the default CSOSN-102 imposto (e.g. the RTC variant). */
+  readonly imposto?: Imposto;
+  /** Emit the Reforma Tributária (IBS/CBS/IS) item + total groups. */
+  readonly emitRtc?: boolean;
 }
 
 /** Build a complete single-item `GeneratorInput` against homologação. */
 export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): GeneratorInput {
-  const imposto = impostoCsosn102();
+  const imposto = opts.imposto ?? impostoCsosn102();
+  const emitRtc = opts.emitRtc === true;
   const item = {
     nItem: 1,
     // xProd flows through sanitizeNFeText — accents + restricted chars
@@ -95,10 +122,10 @@ export function buildHomologacaoFixture(opts: HomologacaoFixtureOpts): Generator
     uTrib: 'UN',
     qTrib: 1,
     vUnTrib: 1500,
-    impostoXml: buildImpostoXml(imposto, { vProd: 1500 }),
+    impostoXml: buildImpostoXml(imposto, { vProd: 1500 }, { emitRtc }),
   } as const;
 
-  const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto }]);
+  const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto }], {}, { emitRtc });
 
   return {
     ambiente: 'homologacao',
