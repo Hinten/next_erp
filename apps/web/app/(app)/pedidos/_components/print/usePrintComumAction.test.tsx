@@ -28,4 +28,17 @@ describe('usePrintComumAction', () => {
     });
     expect(result.current.printModal.alreadyPrintedCount).toBe(0);
   });
+
+  it('counts pedidos printed via dtImpressao when foiImpresso is not projected', () => {
+    // The /pedidos TableView projects only column fields, so `foiImpresso` is
+    // often absent; `dtImpressao` (the "Imp." column) is the reliable signal.
+    const { result } = renderHook(() => usePrintComumAction());
+    act(() => {
+      void result.current.action.run([
+        { id: 'a', path: 'pedidos/a', data: { dtImpressao: 1_700_000_000_000_000 } as Pedido },
+        { id: 'b', path: 'pedidos/b', data: {} as Pedido },
+      ]);
+    });
+    expect(result.current.printModal.alreadyPrintedCount).toBe(1);
+  });
 });

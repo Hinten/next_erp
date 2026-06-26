@@ -37,7 +37,12 @@ export function usePrintComumAction(): {
         opened: true,
         pedidoIds: rows.map((r) => r.id),
         // The Flutter guard: warn before re-printing already-printed pedidos.
-        alreadyPrintedCount: rows.filter((r) => r.data.foiImpresso === true).length,
+        // The /pedidos TableView projects only the columns' fields, so
+        // `foiImpresso` may be absent — `dtImpressao` (the "Imp." column, set
+        // together with `foiImpresso` on every print) is the reliable signal.
+        alreadyPrintedCount: rows.filter(
+          (r) => r.data.foiImpresso === true || r.data.dtImpressao != null,
+        ).length,
       });
       return Promise.resolve();
     },

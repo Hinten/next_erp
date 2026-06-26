@@ -3,7 +3,7 @@
 /**
  * The warehouse separation sheet — one A4 page (or more) per pedido, printed in
  * batches via `window.print()` (react-to-print, iframe-isolated). Port of
- * `pdf_formato.dart`: Code128 barcode of the número, vendedor, cliente (NOT
+ * `pdf_formato.dart`: Code128 barcode of the número, vendedor, cliente (CPF/CNPJ
  * masked) + internal notes, frete + delivery address, the dispatch-deadline
  * marker, and the items table with stock, localização, photos and kit
  * component sub-rows.
@@ -23,6 +23,7 @@ import {
   formatDateTime,
   formatReais,
   formatTelefone,
+  obscure,
 } from '@/lib/pedido-print/format';
 
 export const COMUM_CSS = `
@@ -39,6 +40,7 @@ export const COMUM_CSS = `
 .po-com .card .line { font-size: 10.5px; margin: 1px 0; }
 .po-com .foot { border: 1px solid #000; padding: 5px 7px; margin-top: 8px; display: flex;
   flex-wrap: wrap; gap: 4px 24px; font-size: 10.5px; }
+.po-com .foot .prazo { font-weight: 700; }
 .po-com .foot .overdue { color: #c92a2a; font-weight: 700; }
 .po-com .foot b { font-weight: 700; }
 .po-com .obs { margin-top: 8px; font-weight: 700; font-size: 10.5px; }
@@ -180,7 +182,7 @@ export function ComumSheet({ model }: ComumSheetProps) {
             <>
               {cliente.nome && <div className="line">{cliente.nome}</div>}
               {cliente.cpfCnpj && (
-                <div className="line">CNPJ/CPF: {formatCpfCnpj(cliente.cpfCnpj)}</div>
+                <div className="line">CNPJ/CPF: {obscure(formatCpfCnpj(cliente.cpfCnpj))}</div>
               )}
               {cliente.idEstrangeiro && (
                 <div className="line">ID estrangeiro: {cliente.idEstrangeiro}</div>
@@ -252,7 +254,7 @@ export function ComumSheet({ model }: ComumSheetProps) {
       </div>
 
       <div className="foot">
-        <span className={overdue ? 'overdue' : ''}>
+        <span className={overdue ? 'prazo overdue' : 'prazo'}>
           {model.prazoDespachoMicros != null
             ? `${overdue ? '! ' : ''}Prazo de despacho: ${formatDate(model.prazoDespachoMicros)}`
             : 'Prazo de despacho não informado'}

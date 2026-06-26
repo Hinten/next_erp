@@ -157,6 +157,11 @@ export const OrcamentoSheet = forwardRef<HTMLDivElement, OrcamentoSheetProps>(
                     {frete.servicoMelhorEnvio ? ` — ${frete.servicoMelhorEnvio}` : ''}
                   </div>
                 )}
+                {frete?.dataPrevisaoEntregaMicros != null && (
+                  <div className="line">
+                    <b>Previsão de entrega:</b> {formatDate(frete.dataPrevisaoEntregaMicros)}
+                  </div>
+                )}
               </div>
             )}
           </div>

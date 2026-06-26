@@ -10,12 +10,13 @@ import { ComumSheet } from './ComumSheet';
 vi.mock('jsbarcode', () => ({ default: vi.fn() }));
 
 describe('ComumSheet', () => {
-  it('renders the warehouse sheet with vendedor, unmasked cliente and stock columns', () => {
+  it('renders the warehouse sheet with vendedor, masked cliente CPF and stock columns', () => {
     const { container } = render(<ComumSheet model={KIT_MODEL} />);
     const text = container.textContent ?? '';
     expect(text).toContain('Pedido 100247');
     expect(text).toContain('Vendedor(a): João Vendedor');
-    expect(text).toContain('123.456.789-00'); // CPF shown in full (NOT masked)
+    expect(text).toContain('***********-00'); // CPF masked (last 3 chars only)
+    expect(text).not.toContain('123.456.789-00'); // never the raw doc
     expect(text).toContain('Estoque'); // table header
     expect(text).toContain('Localização'); // table header
     expect(text).toMatch(/\bitens?\b/); // footer item count

@@ -15,6 +15,7 @@ describe('OrcamentoSheet', () => {
     expect(text).toContain('Total'); // total label
     expect(text).toContain('R$'); // money rendered
     expect(text).toMatch(/válido até/i); // validity pitch
+    expect(text).toMatch(/Previsão de entrega/i); // delivery estimate in the entrega card
   });
 
   it('masks the customer CPF (shows only the last 3 chars)', () => {
