@@ -41,7 +41,15 @@ describe('configuracaoICMSSchema — Regime Normal (lossless storage, #312 defer
       crt: '3',
       csosn: null,
       cst: '20',
-      icms20: { modBC: '0', pRedBC: 30, vBC: 70, pICMS: 18, vICMS: 12.6, vICMSDeson: 5, motDesICMS: 9 },
+      icms20: {
+        modBC: '0',
+        pRedBC: 30,
+        vBC: 70,
+        pICMS: 18,
+        vICMS: 12.6,
+        vICMSDeson: 5,
+        motDesICMS: 9,
+      },
     };
     expect(configuracaoICMSSchema.parse(cfg)).toEqual(cfg);
   });

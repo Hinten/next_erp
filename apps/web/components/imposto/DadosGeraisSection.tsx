@@ -13,7 +13,12 @@ export interface DadosGeraisSectionProps {
 }
 
 /** Dados Gerais fiscais (origem, CFOP, NCM, CEST, …) — the per-item overrides. */
-export function DadosGeraisSection({ value, onChange, disabled, errorNode }: DadosGeraisSectionProps) {
+export function DadosGeraisSection({
+  value,
+  onChange,
+  disabled,
+  errorNode,
+}: DadosGeraisSectionProps) {
   function set(key: keyof ImpostoConfigValue, v: unknown) {
     onChange({ ...value, [key]: v });
   }

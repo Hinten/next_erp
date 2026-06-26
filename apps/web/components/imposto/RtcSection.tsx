@@ -87,7 +87,9 @@ export function RtcSection({ value, onChange, disabled, emitRtc }: RtcSectionPro
       <Switch
         label="Tem Imposto Seletivo (IS)"
         checked={hasIS}
-        onChange={(e) => patch({ is: e.currentTarget.checked ? ((is as never) ?? ({} as never)) : null })}
+        onChange={(e) =>
+          patch({ is: e.currentTarget.checked ? ((is as never) ?? ({} as never)) : null })
+        }
         disabled={disabled}
       />
       {hasIS && (

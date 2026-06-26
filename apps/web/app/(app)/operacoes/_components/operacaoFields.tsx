@@ -14,9 +14,17 @@ import {
 } from '@delfrance/schemas';
 import { valuesEqual } from '@delfrance/core';
 import type { FieldConfig } from '@delfrance/ui';
-import { ImpostoConfigEditor, IMPOSTO_CONFIG_KEYS, type ImpostoConfigValue } from '@/components/imposto';
+import {
+  ImpostoConfigEditor,
+  IMPOSTO_CONFIG_KEYS,
+  type ImpostoConfigValue,
+} from '@/components/imposto';
 
-export const OPERACAO_SECTIONS = ['Dados gerais', 'Impostos (padrão)', 'Regras de imposto'] as const;
+export const OPERACAO_SECTIONS = [
+  'Dados gerais',
+  'Impostos (padrão)',
+  'Regras de imposto',
+] as const;
 
 /** `estados` is a legacy duplicate of `estadosDestino`; `timestamp` is stamped. */
 export const OPERACAO_EXCLUDED_FIELDS = ['timestamp', 'estados'];

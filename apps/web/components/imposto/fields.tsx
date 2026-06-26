@@ -19,7 +19,14 @@ export interface NumberFieldProps {
 }
 
 /** A non-negative numeric input for a fiscal value/rate/quantity (`null` when empty). */
-export function NumberField({ label, value, onChange, disabled, description, error }: NumberFieldProps) {
+export function NumberField({
+  label,
+  value,
+  onChange,
+  disabled,
+  description,
+  error,
+}: NumberFieldProps) {
   return (
     <NumberInput
       label={label}

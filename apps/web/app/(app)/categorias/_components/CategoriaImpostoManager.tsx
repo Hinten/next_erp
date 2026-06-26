@@ -146,7 +146,12 @@ export function CategoriaImpostoManager({
         allowDeselect={false}
         disabled={disabled}
       />
-      <ImpostoConfigEditor value={v} onChange={handleChange} disabled={disabled} errorTree={errNode} />
+      <ImpostoConfigEditor
+        value={v}
+        onChange={handleChange}
+        disabled={disabled}
+        errorTree={errNode}
+      />
     </Stack>
   );
 }

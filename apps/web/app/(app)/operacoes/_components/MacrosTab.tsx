@@ -91,7 +91,8 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
   // All categorias for the matching MultiSelect (categorias are few).
   const categoriasSnap = useSnapshot(
     useMemo(
-      () => buildQuery(categoriaCollection.ref(db, {}), [orderByField('nome'), limit(CATEGORIA_LIMIT)]),
+      () =>
+        buildQuery(categoriaCollection.ref(db, {}), [orderByField('nome'), limit(CATEGORIA_LIMIT)]),
       [db],
     ),
   );
@@ -135,7 +136,10 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
     };
     try {
       if (editing.id) {
-        await setDoc(regraImpostoCollection.docRef(db, { operacaoId }, editing.id), docData as never);
+        await setDoc(
+          regraImpostoCollection.docRef(db, { operacaoId }, editing.id),
+          docData as never,
+        );
       } else {
         await addDoc(regraImpostoCollection.ref(db, { operacaoId }), docData as never);
       }
@@ -285,7 +289,12 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
                 </Text>
               </Stack>
               <Group gap="xs">
-                <Button size="xs" variant="light" onClick={() => openEdit(id, regra)} disabled={disabled}>
+                <Button
+                  size="xs"
+                  variant="light"
+                  onClick={() => openEdit(id, regra)}
+                  disabled={disabled}
+                >
                   Editar
                 </Button>
                 <Button

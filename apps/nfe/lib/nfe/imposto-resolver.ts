@@ -192,7 +192,12 @@ function pickByOperacao<T>(
   const exact = docs.find((d) => {
     const ref = scopeOf(d);
     if (ref == null) return false;
-    return ref.replace(/^\/+|\/+$/g, '').split('/').pop() === operacaoId;
+    return (
+      ref
+        .replace(/^\/+|\/+$/g, '')
+        .split('/')
+        .pop() === operacaoId
+    );
   });
   return exact ?? docs.find((d) => scopeOf(d) == null);
 }

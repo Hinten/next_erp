@@ -17,7 +17,11 @@ export function PisCofinsSection({ value, onChange, disabled }: PisCofinsSection
   const cofins = (value.configuracaoCOFINS ?? {}) as Record<string, unknown>;
   const pisst = (value.configuracaoPISST ?? {}) as Record<string, unknown>;
 
-  function patch(key: keyof ImpostoConfigValue, sub: Record<string, unknown>, fieldPatch: Record<string, unknown>) {
+  function patch(
+    key: keyof ImpostoConfigValue,
+    sub: Record<string, unknown>,
+    fieldPatch: Record<string, unknown>,
+  ) {
     onChange({ ...value, [key]: { ...sub, ...fieldPatch } as never });
   }
   function clear(key: keyof ImpostoConfigValue) {
@@ -34,7 +38,9 @@ export function PisCofinsSection({ value, onChange, disabled }: PisCofinsSection
           label="CST do PIS"
           labels={CST_PIS_COFINS_LABELS}
           value={(pis.CST as string | null) ?? null}
-          onChange={(v) => (v ? patch('configuracaoPIS', pis, { CST: v }) : clear('configuracaoPIS'))}
+          onChange={(v) =>
+            v ? patch('configuracaoPIS', pis, { CST: v }) : clear('configuracaoPIS')
+          }
           disabled={disabled}
         />
         {pis.CST != null && (
