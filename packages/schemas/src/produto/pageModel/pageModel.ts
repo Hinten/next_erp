@@ -112,9 +112,11 @@ export function produtoPageIssues(data: ProdutoPageValidationInput): ProdutoPage
   // A kit cannot contain another kit as a component (no kit-of-kit). The UI
   // enforces this at the picker; this rule covers the agent/MCP save path and
   // documents the invariant. `componentKitIds` is empty in the UI (the picker
-  // already guards add-time), so the rule only fires on the agent path.
+  // already guards add-time), so the rule only fires on the agent path. Gated on
+  // `ehKit` like the other component rules: a non-kit's `componentesKit` is
+  // cleared on save, so its (stale) components are not validated here.
   const componentKitIds = data.componentKitIds ?? [];
-  if (componentKitIds.length > 0) {
+  if (data.ehKit && componentKitIds.length > 0) {
     issues.push({
       path: 'componentesKit',
       message: `Um kit não pode conter outro kit como componente: ${componentKitIds.join(', ')}.`,

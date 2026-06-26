@@ -77,6 +77,18 @@ describe('produtoPageIssues (cross-document rules)', () => {
     ).toEqual([]);
   });
 
+  it('does not flag kit-of-kit for a NON-kit with stale componentKitIds (gated on ehKit)', () => {
+    // A non-kit's componentesKit is cleared on save, so its (stale) components
+    // are not validated — mirror of the kit-needs-component rule's ehKit gate.
+    expect(
+      produtoPageIssues({
+        ehKit: false,
+        componentesKit: { p1: { quantidade: 1 }, p2: { quantidade: 1 } },
+        componentKitIds: ['p2'],
+      }),
+    ).toEqual([]);
+  });
+
   it('flags reserved stock greater than the quantity on hand, keyed by row index', () => {
     const issues = produtoPageIssues({
       estoques: [
