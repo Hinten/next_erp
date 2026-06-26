@@ -3,6 +3,7 @@ import type { Produto } from '@delfrance/schemas';
 import { refRenderInput } from '@/components/collection-select/refRenderInput';
 import { categoriaCollection } from '@/lib/data/categoriaCollection';
 import { skuRenderInput } from './SkuField';
+import { pesoRenderInput } from './PesoField';
 
 /**
  * Shared Produto ObjectView configuration, used by both the create (`novo`)
@@ -50,8 +51,17 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
   },
   publicado: { label: 'Publicado', section: 'Dados gerais' },
 
-  pesoLiquidoKg: { label: 'Peso líquido (kg)', section: 'Dimensões e peso' },
-  pesoBrutoKg: { label: 'Peso bruto (kg)', section: 'Dimensões e peso' },
+  // For kits, peso is computed from the components (read-only) — mirrors `custo`.
+  pesoLiquidoKg: {
+    label: 'Peso líquido (kg)',
+    section: 'Dimensões e peso',
+    renderInput: pesoRenderInput,
+  },
+  pesoBrutoKg: {
+    label: 'Peso bruto (kg)',
+    section: 'Dimensões e peso',
+    renderInput: pesoRenderInput,
+  },
   alturaCm: { label: 'Altura (cm)', section: 'Dimensões e peso' },
   larguraCm: { label: 'Largura (cm)', section: 'Dimensões e peso' },
   profundidadeCm: { label: 'Profundidade (cm)', section: 'Dimensões e peso' },

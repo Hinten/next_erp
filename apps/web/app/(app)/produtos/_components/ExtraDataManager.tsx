@@ -178,17 +178,6 @@ export function ExtraDataManager({
         onChange={(e) => setField({ coteudoAdulto: e.currentTarget.checked })}
         disabled={disabled}
       />
-      <NumberInput
-        label="Itens no kit"
-        description="Quantidade de itens que compõem o kit."
-        min={0}
-        step={1}
-        allowDecimal={false}
-        value={v.itensNoKit ?? ''}
-        onChange={(val) => setField({ itensNoKit: typeof val === 'number' ? val : null })}
-        disabled={disabled}
-      />
-
       <Fieldset legend="Google Merchant">
         <Stack>
           <TextInput
@@ -247,6 +236,21 @@ export function ExtraDataManager({
             description="Ex.: bolinhas, listrado, xadrez."
             value={(gmd.pattern as string | null) ?? ''}
             onChange={(e) => setGmd({ pattern: e.currentTarget.value || null })}
+            disabled={disabled}
+          />
+          {/* `itensNoKit` is a top-level extraData field (not inside
+              googleMerchantData), but it's Google Merchant feed metadata — the
+              multipack item count — so it's grouped here. Filled manually for
+              now; auto-fill + feed wiring land with the Google Merchant
+              integration. */}
+          <NumberInput
+            label="Itens no kit (multipack)"
+            description="Metadado do Google Merchant: quantidade de itens idênticos que compõem o kit/multipack. Preencha manualmente — o preenchimento automático virá com a integração do Google Merchant."
+            min={0}
+            step={1}
+            allowDecimal={false}
+            value={v.itensNoKit ?? ''}
+            onChange={(val) => setField({ itensNoKit: typeof val === 'number' ? val : null })}
             disabled={disabled}
           />
         </Stack>
