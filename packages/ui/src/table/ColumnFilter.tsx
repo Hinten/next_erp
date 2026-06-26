@@ -11,12 +11,11 @@ import {
   Stack,
   TextInput,
 } from '@mantine/core';
-import { DatePickerInput } from '@mantine/dates';
+import { DateTimePicker } from '@mantine/dates';
 import { IconFilter, IconFilterFilled } from '@tabler/icons-react';
 import type { PipelineFilterOp } from '@delfrance/data';
-import { millisToMicros } from '@delfrance/core/datetime';
 import type { ColumnFilterValue, FilterableField } from '../schema/types';
-import { type EpochUnit, epochToPickerString } from '../object/datetimeField';
+import { type EpochUnit, epochToPickerString, pickerStringToEpoch } from '../object/datetimeField';
 
 // `ColumnFilterValue` now lives in ../schema/types (so `VirtualColumn.filter`
 // can reference it without a circular import). Re-exported here for the
@@ -264,33 +263,30 @@ function NumericBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
 }
 
 /**
- * Date filter for numeric-epoch (`kind: 'datetime'`) columns. A day + operator
- * (≥ "a partir de" / ≤ "até") maps to a numeric bound in the field's
- * `dateUnit`: ≥ uses the start of the chosen day, ≤ uses the end of it, so a
- * day-granular pick brackets the whole day. The Pipeline already supports
- * numeric `gte`/`lte`, so this needs no data-layer change.
+ * Date+time filter for numeric-epoch (`kind: 'datetime'`) columns. A datetime +
+ * operator (≥ "a partir de" / ≤ "até") maps to a numeric bound in the field's
+ * `dateUnit` via `pickerStringToEpoch` — the same epoch⇄picker conversion the
+ * ObjectView's datetime field uses. The bound is the exact chosen instant. The
+ * Pipeline already supports numeric `gte`/`lte`, so this needs no data-layer
+ * change.
  */
 function DateBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
   const unit: EpochUnit = descriptor.dateUnit ?? 'us';
   const [op, setOp] = useState<PipelineFilterOp>(value?.op === 'lte' ? 'lte' : 'gte');
-  const initialDay =
-    value && typeof value.value === 'number'
-      ? (epochToPickerString(value.value, unit)?.slice(0, 10) ?? null)
-      : null;
-  const [day, setDay] = useState<string | null>(initialDay);
-  const disabled = !day;
+  const initial =
+    value && typeof value.value === 'number' ? epochToPickerString(value.value, unit) : null;
+  // Full picker string: 'YYYY-MM-DD HH:mm:ss' (local wall-clock).
+  const [dt, setDt] = useState<string | null>(initial);
+  const disabled = !dt;
   const apply = () => {
-    if (!day) return;
-    // ≥ brackets from 00:00:00 of the day; ≤ through the last ms of the day.
-    const iso = op === 'lte' ? `${day}T23:59:59.999` : `${day}T00:00:00`;
-    const ms = new Date(iso).getTime();
-    if (Number.isNaN(ms)) return;
-    onApply({ op, value: unit === 'us' ? millisToMicros(ms) : ms });
+    const micros = pickerStringToEpoch(dt, unit);
+    if (micros == null) return;
+    onApply({ op, value: micros });
   };
   return (
     <FilterShell
       onClear={() => {
-        setDay(null);
+        setDt(null);
         onClear();
       }}
       onApply={apply}
@@ -308,13 +304,13 @@ function DateBody({ descriptor, value, onApply, onClear }: FilterBodyProps) {
           // Render inline (see NumericBody): keep the FilterPopover open.
           comboboxProps={{ withinPortal: false }}
         />
-        <DatePickerInput
+        <DateTimePicker
           label={descriptor.label}
-          value={day}
-          onChange={setDay}
-          valueFormat="DD/MM/YYYY"
+          value={dt}
+          onChange={setDt}
+          valueFormat="DD/MM/YYYY HH:mm"
           clearable
-          // Render inline (see the operator Select): a portaled calendar's day
+          // Render inline (see the operator Select): a portaled calendar/time
           // click would read as a click-outside and close the FilterPopover.
           popoverProps={{ withinPortal: false }}
         />
