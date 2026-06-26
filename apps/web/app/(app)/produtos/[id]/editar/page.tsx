@@ -138,6 +138,17 @@ export default function EditarProdutoPage() {
   // live snapshot can't be trusted to have re-emitted yet).
   const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, params.id), [db, params.id]);
   const produtoSnap = useDocSnapshot(produtoDocRef);
+  // Parent kit-status (#298): when this produto is a variation child (`paiId`
+  // set), read its parent once so the page model can enforce "a kit parent ⟹
+  // its children are kits" on the CHILD-edit direction. Null ref (a parent
+  // produto) → no read.
+  const paiId = produtoSnap.data?.data.paiId ?? null;
+  const paiDocRef = useMemo(
+    () => (paiId ? produtoCollection.docRef(db, {}, paiId) : null),
+    [db, paiId],
+  );
+  const paiSnap = useDocSnapshot(paiDocRef);
+  const parentIsKit = paiSnap.data?.data.ehKit === true;
   const lastSavedPrecos = useRef<{ ready: boolean; value: PrecosMap }>({
     ready: false,
     value: null,
@@ -435,6 +446,8 @@ export default function EditarProdutoPage() {
           produtoPageIssues({
             id: params.id,
             ehKit: values.ehKit as boolean | null,
+            // #298: a kit parent's variation children must also be kits.
+            parentIsKit,
             componentesKit: values.componentesKit as Record<string, { quantidade: number }> | null,
             impostos: (values.impostos as ImpostoProduto[] | null) ?? null,
           })
