@@ -7,12 +7,15 @@ export { extractFieldsFromSchema } from './schema/derive';
 export { parseZodDescription, type ParsedDescription } from './schema/describe';
 export type {
   ActionConfig,
+  ColumnFilterValue,
   FieldConfig,
   FieldDescriptor,
   FieldKind,
   FieldRenderProps,
+  FilterableField,
   InferRow,
   VirtualColumn,
+  VirtualColumnFilter,
 } from './schema/types';
 
 // Table primitives

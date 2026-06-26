@@ -92,6 +92,16 @@ export interface PipelineSpec {
    * is preserved; callers just pass the fields they want.
    */
   select?: string[];
+  /**
+   * Restrict the source to a specific set of document ids (within
+   * `collection`). When present and non-empty the pipeline sources from
+   * `documents([...])` instead of the whole `collection(...)`, then applies the
+   * same filters/sort/select/limit. Used by subcollection-lookup filters (e.g.
+   * the pedido NF column) that resolve a sibling collection-group query to a
+   * handful of parent ids. An empty array yields no rows — callers should skip
+   * building the pipeline entirely in that case (the source would be empty).
+   */
+  idIn?: string[];
   limit?: number;
 }
 
@@ -192,7 +202,14 @@ function filterExpr(f: PipelineFieldFilter): BooleanExpression {
 export function buildPipeline(db: Firestore, spec: PipelineSpec): Pipeline {
   if (!isPipelineSupported(db)) throw new PipelineUnsupportedError();
 
-  let pipe: Pipeline = db.pipeline().collection(spec.collection);
+  // `idIn` (when non-empty) sources from the specific parent documents a
+  // subcollection lookup resolved to; otherwise scan the whole collection.
+  // `eqAny`/`in` over `__name__` isn't in the Pipelines API of this SDK, so the
+  // `documents([...])` source stage is how we constrain to an id set.
+  let pipe: Pipeline =
+    spec.idIn && spec.idIn.length > 0
+      ? db.pipeline().documents(spec.idIn.map((id) => `${spec.collection}/${id}`))
+      : db.pipeline().collection(spec.collection);
 
   if (spec.search && spec.search.fields.length > 0) {
     const pattern = buildSimilarityPattern(spec.search.term);
