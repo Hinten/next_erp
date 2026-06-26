@@ -20,7 +20,7 @@ import {
 } from '@mantine/core';
 import { useDebouncedCallback } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
-import { IconSearch } from '@tabler/icons-react';
+import { IconMapPin, IconSearch } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { z, ZodError } from 'zod';
 import {
@@ -41,6 +41,8 @@ import {
   type DedupCandidate,
   checkClienteDuplicates,
 } from '@/lib/clientes/dedup';
+import type { ClienteCnpjEndereco } from '@/lib/clientes/consultaCnpj';
+import { stashEnderecoForCliente } from '@/lib/clientes/pendingEndereco';
 import { resolveCnpj } from '@/lib/clientes/resolveCnpj';
 import { useDefaultFilialId } from '@/lib/clientes/useDefaultFilialId';
 import { clienteCollection } from '@/lib/data/clienteCollection';
@@ -140,6 +142,11 @@ function QuickCreateForm({
   const [confirmRequired, setConfirmRequired] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [lookupLoading, setLookupLoading] = useState(false);
+  // Address resolved by the CNPJ lookup, held until create then relayed to the
+  // cliente's cadastro (the modal has no endereço UI). `enderecoFound` drives the
+  // pre-create hint; the ref carries the value (mirrors the create page).
+  const pendingEnderecoRef = useRef<ClienteCnpjEndereco | null>(null);
+  const [enderecoFound, setEnderecoFound] = useState(false);
   // "Criar mesmo assim" — bypasses the NON-blocking findings on the next
   // submit. Blocking matches re-checked at submit can never be bypassed.
   const forceCreate = useRef(false);
@@ -228,7 +235,7 @@ function QuickCreateForm({
         });
         return;
       }
-      const { nome, ie, sefazNote } = outcome.data;
+      const { nome, ie, endereco, sefazNote } = outcome.data;
       const SET_OPTS = { shouldDirty: true, shouldValidate: true } as const;
       // A CNPJ belongs to a Pessoa Jurídica — switch the tipo so the form stays
       // valid (PF + CNPJ is rejected) and the PJ-only IE field is revealed.
@@ -236,6 +243,10 @@ function QuickCreateForm({
       if (switchedToPJ) form.setValue('tipo', '1', SET_OPTS);
       form.setValue('nome', nome, SET_OPTS);
       if (ie) form.setValue('ie', ie, SET_OPTS);
+      // Hold the resolved address (null too — a no-address lookup retracts a
+      // previously captured one); it's offered after the cliente is created.
+      pendingEnderecoRef.current = endereco;
+      setEnderecoFound(endereco !== null);
       // Nome changed — re-run the dedup check against the resolved razão social.
       runLiveCheck();
       // Announce the silent tipo change so the operator notices it.
@@ -279,6 +290,27 @@ function QuickCreateForm({
       dirtyFields: {},
       currentUserUid: user?.uid ?? '',
     });
+    // Offer the looked-up address (if any): stash it under the new cliente and
+    // point the operator to the cadastro, where the prefilled "Novo endereço"
+    // modal lets them review + save it. Reuses the create-page relay; the modal
+    // has no endereço UI, and target="_blank" keeps the pedido intact.
+    if (pendingEnderecoRef.current) {
+      stashEnderecoForCliente(id, pendingEnderecoRef.current);
+      notifications.show({
+        color: 'blue',
+        autoClose: 10000,
+        message: (
+          <Anchor
+            component={Link}
+            href={`/clientes/${id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Endereço de {doc.nome ?? 'cliente'} encontrado — abrir o cadastro para registrá-lo
+          </Anchor>
+        ),
+      });
+    }
     onResolve({ id, nome: doc.nome ?? '' });
   }
 
@@ -384,6 +416,11 @@ function QuickCreateForm({
                 onChange={(next) => {
                   // Editing clears a stale zod validation error mid-edit.
                   if (fieldState.error) form.clearErrors('cpf_cnpj');
+                  // Editing the CNPJ invalidates any address a prior lookup held.
+                  if (pendingEnderecoRef.current) {
+                    pendingEnderecoRef.current = null;
+                    setEnderecoFound(false);
+                  }
                   field.onChange(next === '' ? null : next);
                 }}
                 onBlur={() => {
@@ -452,6 +489,12 @@ function QuickCreateForm({
               />
             )}
           />
+        )}
+
+        {enderecoFound && (
+          <Alert color="blue" icon={<IconMapPin size={16} />} title="Endereço encontrado">
+            O endereço deste CNPJ será oferecido para cadastro após criar o cliente.
+          </Alert>
         )}
 
         <Controller
