@@ -24,6 +24,9 @@ export const medidaFieldOverrides: Record<string, FieldConfig> = {
   descricao: {
     label: 'Descrição',
     section: 'Dados gerais',
+    // A description can be a long block of text — render an autosizing textarea
+    // (grows as you type) instead of a single-line input.
+    kind: 'longText',
     hint: 'Se suportado pelo marketplace, é enviada junto à descrição do produto.',
   },
 };
