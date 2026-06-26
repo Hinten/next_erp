@@ -126,16 +126,35 @@ adds `cClassTrib` (6 dígitos)** — Código de Classificação Tributária — 
 links the CST to **specific articles of LC 214/2025** and drives RV
 behavior dynamically.
 
-- CST tables (IBS/CBS, IS) live in the Portal Nacional NF-e, aba
-  Documentos → Diversos. Not in this skill.
-- cClassTrib table (Anexo III of the NT) also lives na aba Diversos.
+- **The vendored NT PDF does NOT contain these tables.**
+  `references/sources/nt/2025/NT_2025.002_*.pdf` is the **layout + RV spec
+  only**; its own **page 82** lists Anexo I/II as *"Tabela a ser publicada"* and
+  Anexo III (`cClassTrib`) / IV (`cCredPres`) as published **na aba Documentos →
+  Diversos** do Portal Nacional NF-e (`www.nfe.fazenda.gov.br`). The actual
+  6-digit codes, the CST table, and the alíquotas live in those **separate
+  spreadsheets** — and the agent sandbox can't reach `*.fazenda.gov.br`, so they
+  are **not re-readable in-repo**.
+- The first 3 digits of `cClassTrib` mirror the `CST`; the last 3 identify the
+  specific legal hypothesis under LC 214/2025.
 - Dynamic indicators per cClassTrib row determine if each subgroup (`gDif`,
   `gRed`, `gTribRegular`, `gCredPresOper`, `gTransfCred`, `gIBSCBSMono`,
   etc.) is **vedado** (forbidden), **permitido** (optional), or
   **exigido** (required). Reading the table is mandatory before emitting
   the corresponding subgroup; sending a forbidden subgroup → rejection.
 
-Common cClassTrib examples (from validation tables):
+**Regra geral (venda tributada normal):** `CST=000` ("Tributação integral") +
+`cClassTrib=000001` — official description **"Situações tributadas integralmente
+pelo IBS e CBS"**. This is the standard taxable-sale pair the repo's RTC fixture
+uses (`impostoCsosn102ComRtc`). ✅ **Confirmed against the official SVRS table**
+(`dfe-portal.svrs.rs.gov.br/Cff/ClassificacaoTributaria`), which lists `000001`
+as the CST-000 entry — see `references/sources/nt/2025/cClassTrib-CST-tables-SOURCE.md`.
+(An earlier run with the non-existent `000000` returned **cStat=1023**
+"Classificação Tributária inexistente".) **Simples Nacional** uses the general
+codes — there is **no Simples-specific cClassTrib**, and the IBS/CBS fields são
+**facultativos para CRT=1 até 04/01/2027**. The live homologação test (#313)
+validates the full NF-e end-to-end.
+
+Other cClassTrib examples (special cases, from validation tables):
 - `410030` — Estorno de crédito por perda (tpNFDebito=07)
 - `800001` — Transferência de crédito do associado (cooperativa)
 - `800002` — Fusão/cisão/incorporação
@@ -355,16 +374,24 @@ Quando este projeto regenerar tipos TypeScript a partir dos XSDs (vide
 
 ## Anexos do NT 2025.002
 
-- **Anexo I** — NCM do Imposto Seletivo (lista de NCMs sujeitos a IS).
-  Tabela publicada separadamente no Portal Nacional NF-e.
-- **Anexo II** — Tabela cClassTribIS (códigos de classificação do IS).
-- **Anexo III** — Tabela cClassTrib (códigos de classificação do IBS/CBS).
-  Publicada em `aba Documentos → Diversos` do Portal NF-e.
-- **Anexo IV** — Tabela cCredPres (códigos de crédito presumido). Idem.
+Per the NT's own **page 82**, **none of these annex tables are embedded in the
+PDF** (verified — the vendored `NT_2025.002_v1.40_*.pdf` carries the layout, RVs
+and events, but no code lists):
 
-Estas tabelas **não são versionadas neste skill** — são dados operacionais
-que mudam fora do ciclo de NT. Consultar o Portal antes de implementar
-mapeamento.
+- **Anexo I** — NCM do Imposto Seletivo (NCMs sujeitos a IS). *"Tabela a ser publicada."*
+- **Anexo II** — Tabela `cClassTribIS` (classificação do IS). *"Tabela a ser publicada."*
+- **Anexo III** — Tabela `cClassTrib` (classificação do IBS/CBS).
+  Publicada **na aba Documentos → Diversos** do Portal Nacional NF-e.
+- **Anexo IV** — Tabela `cCredPres` (crédito presumido). Idem (Documentos → Diversos).
+
+Estas tabelas **não são versionadas neste skill** — são dados operacionais que
+mudam fora do ciclo de NT (e o sandbox não acessa `*.fazenda.gov.br`). Consultar
+o Portal antes de implementar mapeamento. O par regra-geral
+(`CST=000` + `cClassTrib=000001`) está em "CST + cClassTrib model" acima.
+
+**Onde obter + status de publicação + mirror acessível (SVRS):** veja
+`sources/nt/2025/cClassTrib-CST-tables-SOURCE.md` — a `cClassTrib` está
+**publicada desde 06/05/2025** (`.xlsx`, Portal NF-e → Documentos → Diversos).
 
 ## Implementation status in this repo (#313)
 
