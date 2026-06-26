@@ -16,6 +16,8 @@ export type {
   DomainSchema,
 } from './types';
 
+export { RECENCY_SORT } from './types';
+
 export { ALL_DOMAINS } from './registry';
 
 export { millisSinceEpoch, microsSinceEpoch } from './shared/datetime';

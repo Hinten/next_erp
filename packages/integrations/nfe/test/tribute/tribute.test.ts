@@ -744,3 +744,144 @@ describe('format helpers', () => {
     expect(() => fmtMoney('x', -1)).toThrow(TributeFormatError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Reforma Tributária (IBS/CBS/IS) — NT 2025.002
+// ---------------------------------------------------------------------------
+
+/** CSOSN 102 (Simples) + a "tributação integral" RTC config (2026 test rates). */
+function impostoForRtc(): Imposto {
+  return {
+    origem: '0',
+    configuracaoICMS: { crt: '1', csosn: '102' },
+    configuracaoIBSCBS: {
+      CST: '000',
+      cClassTrib: '000001',
+      pIBSUF: 0.1,
+      pIBSMun: 0,
+      pCBS: 0.9,
+    },
+  };
+}
+
+/** Build totals + wrap + sign + XSD-validate the full NF-e with RTC ON. */
+async function assertRtcXsdValid(impostoXml: string, imposto: Imposto): Promise<void> {
+  const cert = fixtureCert();
+  const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto }], {}, { emitRtc: true });
+  const xml = wrap(
+    impostoXml,
+    buildTotalXml(totals),
+    buildTranspXml(),
+    buildPagXml([{ tPag: '17', vPag: 1500 }]),
+  );
+  const signed = signNFe(xml, cert);
+  await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+}
+
+describe('buildImpostoXml — Reforma Tributária (IBS/CBS/IS)', () => {
+  it('emits the IBSCBS group (item) when emitRtc is on, and XSD-validates', async () => {
+    const imposto = impostoForRtc();
+    const xml = buildImpostoXml(imposto, item1500, { emitRtc: true });
+    expect(xml).toContain('<IBSCBS>');
+    expect(xml).toContain('<CST>000</CST>');
+    expect(xml).toContain('<cClassTrib>000001</cClassTrib>');
+    expect(xml).toContain('<gIBSCBS>');
+    expect(xml).toContain('<pIBSUF>0.1000</pIBSUF>');
+    expect(xml).toContain('<vIBSUF>1.50</vIBSUF>'); // 1500 × 0.1%
+    expect(xml).toContain('<pCBS>0.9000</pCBS>');
+    expect(xml).toContain('<vCBS>13.50</vCBS>'); // 1500 × 0.9%
+    expect(xml).toContain('<vIBS>1.50</vIBS>'); // vIBSUF + vIBSMun
+    await assertRtcXsdValid(xml, imposto);
+  });
+
+  it('is a no-op when emitRtc is off (default) — XML identical to the non-RTC item', () => {
+    const imposto = impostoForRtc();
+    const off = buildImpostoXml(imposto, item1500); // default emitRtc=false
+    const offExplicit = buildImpostoXml(imposto, item1500, { emitRtc: false });
+    const plain = buildImpostoXml(impostoFor102(), item1500); // same item sans RTC config
+    expect(off).toBe(offExplicit);
+    expect(off).not.toContain('IBSCBS');
+    expect(off).not.toContain('<IS>');
+    expect(off).toBe(plain); // byte-identical to the pre-RTC output
+  });
+
+  it('emits the optional IS group when configured', async () => {
+    const imposto: Imposto = {
+      origem: '0',
+      configuracaoICMS: { crt: '1', csosn: '102' },
+      configuracaoIBSCBS: {
+        CST: '000',
+        cClassTrib: '000001',
+        pIBSUF: 0.1,
+        pIBSMun: 0,
+        pCBS: 0.9,
+        is: { CSTIS: '000', cClassTribIS: '000000', pIS: 2 },
+      },
+    };
+    const xml = buildImpostoXml(imposto, item1500, { emitRtc: true });
+    expect(xml).toContain('<IS>');
+    expect(xml).toContain('<CSTIS>000</CSTIS>');
+    expect(xml).toContain('<vIS>30.00</vIS>'); // 1500 × 2%
+    await assertRtcXsdValid(xml, imposto);
+  });
+
+  it('throws when emitRtc is on but the registered config is incomplete', () => {
+    const imposto = {
+      origem: '0',
+      configuracaoICMS: { crt: '1', csosn: '102' },
+      configuracaoIBSCBS: { CST: '000' }, // missing cClassTrib + rates
+    } as unknown as Imposto;
+    expect(() => buildImpostoXml(imposto, item1500, { emitRtc: true })).toThrow(
+      /configuracaoIBSCBS/,
+    );
+  });
+
+  it('throws when an IS sub-config is configured without a rate', () => {
+    const imposto = {
+      origem: '0',
+      configuracaoICMS: { crt: '1', csosn: '102' },
+      configuracaoIBSCBS: {
+        CST: '000',
+        cClassTrib: '000001',
+        pIBSUF: 0.1,
+        pIBSMun: 0,
+        pCBS: 0.9,
+        is: { CSTIS: '000', cClassTribIS: '000001' }, // no pIS / pISEspec+qTrib
+      },
+    } as unknown as Imposto;
+    expect(() => buildImpostoXml(imposto, item1500, { emitRtc: true })).toThrow(/IS requires/);
+  });
+});
+
+describe('aggregateTotals + buildTotalXml — RTC totals', () => {
+  it('sums IBSCBSTot / vNFTot without touching ICMSTot.vNF', () => {
+    const imposto = impostoForRtc();
+    const items = [{ item: { vProd: 1500 }, imposto }];
+    const off = aggregateTotals(items);
+    const on = aggregateTotals(items, {}, { emitRtc: true });
+    // vNF (ICMSTot) is identical regardless of RTC — the 2025–2026 transition rule.
+    expect(on.vNF).toBe(off.vNF);
+    expect(off.rtc).toBeUndefined();
+    expect(on.rtc).toEqual({
+      vBCIBSCBS: 1500,
+      vIBSUF: 1.5,
+      vIBSMun: 0,
+      vIBS: 1.5,
+      vCBS: 13.5,
+      vIS: 0,
+    });
+    const totalXml = buildTotalXml(on);
+    expect(totalXml).toContain('<IBSCBSTot>');
+    expect(totalXml).toContain('<vBCIBSCBS>1500.00</vBCIBSCBS>');
+    expect(totalXml).toContain('<vNFTot>1515.00</vNFTot>'); // 1500 + 1.50 + 13.50
+    // The off path emits no RTC totals at all.
+    expect(buildTotalXml(off)).not.toContain('IBSCBSTot');
+  });
+
+  it('omits IBSCBSTot when emitRtc is on but no item carries RTC config', () => {
+    const items = [{ item: { vProd: 1500 }, imposto: impostoFor102() }];
+    const totals = aggregateTotals(items, {}, { emitRtc: true });
+    expect(totals.rtc).toBeUndefined();
+    expect(buildTotalXml(totals)).not.toContain('IBSCBSTot');
+  });
+});

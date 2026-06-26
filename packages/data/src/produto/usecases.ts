@@ -261,8 +261,33 @@ function impostoCarriesInfo(imp: ImpostoProduto): boolean {
   // keeping; only a pristine `null` counts as empty.
   return (
     strings.some((v) => typeof v === 'string' && v.trim() !== '') ||
-    imp.compoeValorTotalDaNFe != null
+    imp.compoeValorTotalDaNFe != null ||
+    rtcConfigHasValue(imp)
   );
+}
+
+/**
+ * True when the passthrough Reforma Tributária blob (`configuracaoIBSCBS`)
+ * carries at least one non-null value. The RTC config rides on the imposto row
+ * via `.passthrough()` (not typed on `ImpostoProduto`), so a row whose ONLY
+ * content is RTC config must still persist — `impostoCarriesInfo` would
+ * otherwise drop it. A toggled-on-but-empty blob (all null) counts as empty.
+ */
+function rtcConfigHasValue(imp: ImpostoProduto): boolean {
+  return hasNonNullLeaf((imp as { configuracaoIBSCBS?: unknown }).configuracaoIBSCBS);
+}
+
+/**
+ * True when `v` is, or recursively contains, a non-null leaf. A nested all-null
+ * object (e.g. an empty `is` sub-config) correctly reads as empty — a plain
+ * top-level non-null check would treat the non-null nested object as a value.
+ */
+function hasNonNullLeaf(v: unknown): boolean {
+  if (v == null) return false;
+  if (typeof v === 'object') {
+    return Object.values(v as Record<string, unknown>).some(hasNonNullLeaf);
+  }
+  return true;
 }
 
 /**

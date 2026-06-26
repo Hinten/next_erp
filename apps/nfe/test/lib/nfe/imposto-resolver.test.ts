@@ -88,6 +88,30 @@ describe('resolveItemImposto — cascade priority', () => {
     expect(out?.configuracaoICMS?.csosn).toBe('102');
   });
 
+  it('carries a configuracaoIBSCBS (RTC) blob through the impostoProduto tier', async () => {
+    const rtc = { CST: '000', cClassTrib: '000000', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 };
+    const withRtc = impostoProdutoDoc({ configuracaoIBSCBS: rtc });
+    const deps = makeDeps({
+      readImpostoProdutoSubcoll: vi.fn().mockResolvedValue([withRtc]),
+    });
+    const resolver = createImpostoResolver(deps);
+    const out = await resolver.resolve('p1', null);
+    // Stored leniently (z.unknown) and preserved verbatim through resolution.
+    expect(out?.configuracaoIBSCBS).toEqual(rtc);
+  });
+
+  it('tolerates a PARTIAL configuracaoIBSCBS blob — resolution still succeeds', async () => {
+    // A half-filled RTC registration must NOT disable the item's whole imposto
+    // (the resolver falls through on any parse failure). Lenient storage keeps
+    // it parseable; the strict check happens only at emit time.
+    const out = await createImpostoResolver(makeDeps()).resolve('p1', {
+      ...VALID_IMPOSTO_BLOB,
+      configuracaoIBSCBS: { CST: '000' }, // missing cClassTrib + rates
+    });
+    expect(out?.configuracaoICMS?.csosn).toBe('102');
+    expect(out?.configuracaoIBSCBS).toEqual({ CST: '000' });
+  });
+
   it('falls through to impostoCategoria when produto has a categoriaProdutoOuterRef', async () => {
     const impostoCategoria: ImpostoCategoria = {
       id: 'cat-doc',

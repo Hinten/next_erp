@@ -29,6 +29,8 @@ import { ContingenciaBanner } from './_components/ContingenciaBanner';
 import { ClienteColumnFilter } from './_components/ClienteColumnFilter';
 import { EmitirLoteDialog } from './_components/EmitirLoteDialog';
 import { NfColumnFilter } from './_components/NfColumnFilter';
+import { PrintComumDialog } from './_components/print/PrintComumDialog';
+import { usePrintComumAction } from './_components/print/usePrintComumAction';
 
 // Frete-state enum options for the Frete column's `eq` filter.
 const FRETE_ESTADO_OPTIONS = Object.entries(ESTADO_FRETE_LABELS).map(([value, label]) => ({
@@ -136,6 +138,7 @@ const virtualColumns: ReadonlyArray<VirtualColumn<Pedido>> = [
 
 export default function PedidosPage() {
   const { action: emitNFeAction, loteModal } = useEmitirNFeAction();
+  const { action: printAction, printModal } = usePrintComumAction();
   return (
     <>
       <ContingenciaBanner />
@@ -173,12 +176,18 @@ export default function PedidosPage() {
           </Button>
         )}
         selectable
-        actions={[emitNFeAction]}
+        actions={[emitNFeAction, printAction]}
       />
       <EmitirLoteDialog
         opened={loteModal.opened}
         pedidoIds={loteModal.pedidoIds}
         onClose={loteModal.close}
+      />
+      <PrintComumDialog
+        opened={printModal.opened}
+        pedidoIds={printModal.pedidoIds}
+        alreadyPrintedCount={printModal.alreadyPrintedCount}
+        onClose={printModal.close}
       />
     </>
   );

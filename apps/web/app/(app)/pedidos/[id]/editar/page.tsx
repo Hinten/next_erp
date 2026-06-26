@@ -235,7 +235,7 @@ export default function EditarPedidoPage() {
       <PageHeader
         title={
           <Group align="center">
-            <Title order={2}>{p.numero || `#${data.id.slice(0, 6)}`}</Title>
+            <Title order={2}>{p.numero || 'Sem número'}</Title>
             <StatusBadge estado={p.estado} />
           </Group>
         }

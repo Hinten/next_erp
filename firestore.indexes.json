@@ -89,6 +89,14 @@
       "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
     },
     {
+      "collectionGroup": "filiais",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "ultimaModificacao", "order": "DESCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "pedidos",
       "queryScope": "COLLECTION",
       "fields": [{ "fieldPath": "numero", "order": "DESCENDING" }]

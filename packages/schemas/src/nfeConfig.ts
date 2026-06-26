@@ -73,6 +73,19 @@ export const nfeConfigSchema = z
      * offset-aware `dhCont` printed on the DANFE is rebuilt from this ms instant
      * + the issuer timezone at emission time, matching the Flutter wire shape. */
     contingencia_dataInicio: millisSinceEpoch('Início da contingência').nullable().default(null),
+    /**
+     * Reforma Tributária (IBS/CBS/IS) emission switch — NT 2025.002. When
+     * `true`, emitted NF-e carry the RTC item/total groups (built from each
+     * item's `configuracaoIBSCBS`). **Off by default**: the Simples Nacional
+     * RTC rules are pending a future NT (mandatory only 2027-01-04), so this
+     * stays a deliberate per-filial opt-in (homologação first). `.default(false)`
+     * keeps pre-RTC docs (and Flutter writes that never knew the field)
+     * parseable.
+     */
+    emitirReformaTributaria: z
+      .boolean()
+      .default(false)
+      .describe('Emitir Reforma Tributária (IBS/CBS/IS)'),
     timestamp: millisSinceEpoch().nullable().default(null),
   })
   .superRefine((cfg, ctx) => {

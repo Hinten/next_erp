@@ -56,7 +56,7 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
    * legacy docs, and pipelines are the supported path on Firestore
    * Enterprise anyway.
    */
-  orderBy?: Array<{ field: string; direction?: 'asc' | 'desc' }>;
+  orderBy?: ReadonlyArray<{ field: string; direction?: 'asc' | 'desc' }>;
   /**
    * Doc field rendered as a dimmed second line under each option label
    * (e.g. `cpf_cnpj` on a cliente). Query-result options only — "Recentes"

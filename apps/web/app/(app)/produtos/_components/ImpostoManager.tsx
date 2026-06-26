@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Select, Stack, Switch, Text, TextInput } from '@mantine/core';
+import { Divider, NumberInput, Select, Stack, Switch, Text, TextInput } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
 import {
   ORIGEM_PRODUTO_LABELS,
@@ -39,6 +39,23 @@ interface ImpostoErrorNode {
   NCM?: { message?: string };
   CEST?: { message?: string };
 }
+
+/**
+ * Reforma Tributária (IBS/CBS/IS) per-operação config. Stored nested on the
+ * imposto row via the schema's `.passthrough()` (the deep tribute configs
+ * aren't typed on `ImpostoProduto`), and strict-validated server-side by the
+ * tribute engine at emission. Only the "tributação integral" shape is
+ * registerable here (CST + cClassTrib + the three alíquotas); the Anexo III
+ * code tables live in the Portal, not in the app.
+ */
+interface RtcConfigForm {
+  CST?: string | null;
+  cClassTrib?: string | null;
+  pIBSUF?: number | null;
+  pIBSMun?: number | null;
+  pCBS?: number | null;
+}
+type ImpostoProdutoWithRtc = ImpostoProduto & { configuracaoIBSCBS?: RtcConfigForm | null };
 
 export interface ImpostoManagerProps {
   produtoId: string | null;
@@ -167,6 +184,18 @@ export function ImpostoManager({
   const v = active ?? emptyImposto(activeId ?? '');
   const str = (k: keyof ImpostoProduto) => (v[k] as string | null) ?? '';
 
+  // RTC (IBS/CBS/IS) — nested under the active row via passthrough.
+  const rtc = (v as ImpostoProdutoWithRtc).configuracaoIBSCBS ?? null;
+  const rtcEnabled = rtc != null;
+  const patchRtc = (patch: Partial<RtcConfigForm>) =>
+    patchActive({ configuracaoIBSCBS: { ...(rtc ?? {}), ...patch } } as Partial<ImpostoProduto>);
+  const toggleRtc = (on: boolean) =>
+    patchActive({
+      configuracaoIBSCBS: on
+        ? (rtc ?? { CST: null, cClassTrib: null, pIBSUF: null, pIBSMun: null, pCBS: null })
+        : null,
+    } as Partial<ImpostoProduto>);
+
   return (
     <Stack>
       <Select
@@ -259,6 +288,65 @@ export function ImpostoManager({
         onChange={(e) => patchActive({ compoeValorTotalDaNFe: e.currentTarget.checked })}
         disabled={disabled}
       />
+
+      <Divider my="xs" label="Reforma Tributária (IBS/CBS/IS)" labelPosition="left" />
+      <Text size="xs" c="dimmed">
+        NT 2025.002. Só é emitida quando a filial tem a Reforma Tributária ativada (Configurações →
+        NF-e). Para o Simples Nacional ainda é facultativa (obrigatória só em 04/01/2027) — teste
+        primeiro em homologação. Os códigos (CST / cClassTrib) vêm das tabelas do Portal Nacional.
+      </Text>
+      <Switch
+        label="Configurar IBS/CBS/IS"
+        checked={rtcEnabled}
+        onChange={(e) => toggleRtc(e.currentTarget.checked)}
+        disabled={disabled}
+      />
+      {rtcEnabled && (
+        <>
+          <TextInput
+            label="CST IBS/CBS"
+            description="3 dígitos."
+            maxLength={3}
+            value={rtc?.CST ?? ''}
+            onChange={(e) => patchRtc({ CST: e.currentTarget.value || null })}
+            disabled={disabled}
+          />
+          <TextInput
+            label="cClassTrib"
+            description="6 dígitos (tabela Anexo III)."
+            maxLength={6}
+            value={rtc?.cClassTrib ?? ''}
+            onChange={(e) => patchRtc({ cClassTrib: e.currentTarget.value || null })}
+            disabled={disabled}
+          />
+          <NumberInput
+            label="Alíquota IBS UF (%)"
+            description="0,1% na fase de teste 2025–2026."
+            value={rtc?.pIBSUF ?? ''}
+            onChange={(val) => patchRtc({ pIBSUF: typeof val === 'number' ? val : null })}
+            min={0}
+            decimalScale={4}
+            disabled={disabled}
+          />
+          <NumberInput
+            label="Alíquota IBS Município (%)"
+            value={rtc?.pIBSMun ?? ''}
+            onChange={(val) => patchRtc({ pIBSMun: typeof val === 'number' ? val : null })}
+            min={0}
+            decimalScale={4}
+            disabled={disabled}
+          />
+          <NumberInput
+            label="Alíquota CBS (%)"
+            description="0,9% na fase de teste 2025–2026."
+            value={rtc?.pCBS ?? ''}
+            onChange={(val) => patchRtc({ pCBS: typeof val === 'number' ? val : null })}
+            min={0}
+            decimalScale={4}
+            disabled={disabled}
+          />
+        </>
+      )}
     </Stack>
   );
 }
