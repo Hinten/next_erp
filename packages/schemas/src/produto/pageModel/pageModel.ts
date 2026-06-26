@@ -43,7 +43,22 @@ export const produtoPageBaseSchema = produtoSchema
 export interface ProdutoPageValidationInput {
   id?: string | null;
   ehKit?: boolean | null;
+  /**
+   * Kit-status of this produto's PARENT, when it's a variation child (resolved
+   * from `paiId`). Drives the child-edit guard "a kit parent ⟹ its children are
+   * kits" — the direction the parent-save auto-sync (`propagateKitStatusToChildren`)
+   * doesn't cover. Absent/null for a parent produto (no `paiId`).
+   */
+  parentIsKit?: boolean | null;
   componentesKit?: Record<string, { quantidade: number }> | null;
+  /**
+   * Ids among `componentesKit` whose produto is itself a kit (`ehKit === true`) —
+   * a kit-of-kit, which is forbidden. Resolving these needs the component docs,
+   * which the React UI does NOT fetch at validate time (the KitManager picker
+   * already excludes kits and re-checks on add), so this stays empty in the UI;
+   * it's populated by the agent/MCP save path, which has no picker.
+   */
+  componentKitIds?: string[] | null;
   estoques?: Array<{ quantidade?: number | null; quantidadeReservada?: number | null }> | null;
   impostos?: Array<{ NCM?: string | null; CEST?: string | null }> | null;
 }
@@ -81,6 +96,30 @@ export function produtoPageIssues(data: ProdutoPageValidationInput): ProdutoPage
     issues.push({
       path: 'componentesKit',
       message: 'Um produto não pode ser componente de si mesmo.',
+    });
+  }
+
+  // A variation child of a kit must itself be a kit. The parent-save auto-sync
+  // (`propagateKitStatusToChildren`) covers the parent-edit direction; this
+  // guards the CHILD-edit direction (editing a child directly, or the agent path).
+  if (data.parentIsKit && data.ehKit !== true) {
+    issues.push({
+      path: 'ehKit',
+      message: 'Esta variação pertence a um kit; ela também precisa ser um kit.',
+    });
+  }
+
+  // A kit cannot contain another kit as a component (no kit-of-kit). The UI
+  // enforces this at the picker; this rule covers the agent/MCP save path and
+  // documents the invariant. `componentKitIds` is empty in the UI (the picker
+  // already guards add-time), so the rule only fires on the agent path. Gated on
+  // `ehKit` like the other component rules: a non-kit's `componentesKit` is
+  // cleared on save, so its (stale) components are not validated here.
+  const componentKitIds = data.componentKitIds ?? [];
+  if (data.ehKit && componentKitIds.length > 0) {
+    issues.push({
+      path: 'componentesKit',
+      message: `Um kit não pode conter outro kit como componente: ${componentKitIds.join(', ')}.`,
     });
   }
 
