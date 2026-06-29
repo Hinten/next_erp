@@ -29,8 +29,11 @@ export const tabelaDeMedidasSchema = z.object({
   tabelasDeMedidasMercadoLivre: z.record(z.string(), z.unknown()).nullable().optional(),
   tabelasMedidasShopee: z.record(z.string(), z.array(z.unknown())).nullable().optional(),
 
-  dataCadastro: millisSinceEpoch().nullable().optional().describe('Data de cadastro'),
-  ultimaModificacao: millisSinceEpoch().nullable().optional().describe('Última modificação'),
+  // Pass the label through the builder (folded into its describe JSON) — a
+  // chained `.describe('…')` would clobber the `{ kind:'datetime', unit:'ms' }`
+  // metadata that TableView/ObjectView need to render these as date columns.
+  dataCadastro: millisSinceEpoch('Data de cadastro').nullable().optional(),
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
 });
 
 export type TabelaDeMedidas = z.infer<typeof tabelaDeMedidasSchema>;
