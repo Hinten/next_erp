@@ -49,11 +49,24 @@ export interface PrincipalTabProps {
   form: UseFormReturn<PedidoFormState, unknown, Pedido>;
   db: Firestore;
   disabled?: boolean;
+  /**
+   * Lock for "Observações internas" only. Unlike every other Principal field the
+   * internal notes stay editable even when the pedido is estado-locked (legacy
+   * `pedidoCadastro.dart:532` leaves it uncommented as read-only), so it gets the
+   * bare write-permission gate instead of `disabled`.
+   */
+  observacoesDisabled?: boolean;
   /** The current user's uid; surfaced as the read-only "Vendedor" line. */
   vendedorLabel?: string;
 }
 
-export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTabProps) {
+export function PrincipalTab({
+  form,
+  db,
+  disabled,
+  observacoesDisabled,
+  vendedorLabel,
+}: PrincipalTabProps) {
   const ehSaida = form.watch('ehSaida') ?? true;
   const listaDePrecosOuterRef = form.watch('listaDePrecosOuterRef');
 
@@ -290,7 +303,7 @@ export function PrincipalTab({ form, db, disabled, vendedorLabel }: PrincipalTab
             onChange={(e) => field.onChange(e.currentTarget.value || null)}
             onBlur={field.onBlur}
             rows={5}
-            disabled={disabled}
+            disabled={observacoesDisabled}
           />
         )}
       />

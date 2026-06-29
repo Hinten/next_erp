@@ -367,12 +367,17 @@ export function PedidoForm({
   const { data: nfeData, loading: nfeLoading } = useSnapshot(nfeQuery);
   const nfeAprovada = nfeData?.[0]?.data?.estado === ESTADO_NFE.aprovada;
   const itensTravados = travarInclusaoProduto(estadoNow);
-  const principalDisabled = disabled || itensTravados;
+  // Estado lock (legacy `travar_pedido`): items + general data, the Frete tab,
+  // the Devolução tab and the footer desconto all lock once the pedido leaves the
+  // cart/checkout phase. Observações internas is the sole exception — always
+  // editable (legacy `pedidoCadastro.dart:532`), so it stays on the bare
+  // write-permission `disabled`.
+  const dadosGeraisDisabled = disabled || itensTravados;
   // Default-deny: while the NF-e snapshot is still resolving (edit mode), keep
   // Fiscal locked so an aprovada NF-e can't be bypassed in the load window.
   const fiscalDisabled = disabled || nfeAprovada || (pedidoId != null && nfeLoading);
-  const itensLockNotice = itensTravados
-    ? `Itens bloqueados — pedido no estado "${ESTADO_PEDIDO_LABELS[estadoNow]}". A edição de itens só é permitida na fase de carrinho/checkout.`
+  const dadosGeraisLockNotice = itensTravados
+    ? `Edição bloqueada — pedido no estado "${ESTADO_PEDIDO_LABELS[estadoNow]}". Dados gerais, itens, frete e devolução só podem ser editados na fase de carrinho/checkout.`
     : null;
   const fiscalLockNotice = nfeAprovada
     ? 'Dados fiscais bloqueados — este pedido já tem uma NF-e aprovada.'
@@ -426,15 +431,16 @@ export function PedidoForm({
           </Tabs.List>
 
           <Tabs.Panel value="principal" pt="md">
-            {itensLockNotice && (
+            {dadosGeraisLockNotice && (
               <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
-                {itensLockNotice}
+                {dadosGeraisLockNotice}
               </Alert>
             )}
             <PrincipalTab
               form={form}
               db={db}
-              disabled={principalDisabled}
+              disabled={dadosGeraisDisabled}
+              observacoesDisabled={disabled}
               vendedorLabel={user?.email ?? user?.uid ?? undefined}
             />
           </Tabs.Panel>
@@ -449,7 +455,12 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="frete" pt="md">
-            <FreteTab form={form} db={db} disabled={disabled} pedidoId={pedidoId} />
+            {dadosGeraisLockNotice && (
+              <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+                {dadosGeraisLockNotice}
+              </Alert>
+            )}
+            <FreteTab form={form} db={db} disabled={dadosGeraisDisabled} pedidoId={pedidoId} />
           </Tabs.Panel>
 
           <Tabs.Panel value="pagamento" pt="md">
@@ -476,7 +487,12 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="devolucao" pt="md">
-            <DevolucaoTab form={form} db={db} disabled={disabled} pedidoId={pedidoId} />
+            {dadosGeraisLockNotice && (
+              <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+                {dadosGeraisLockNotice}
+              </Alert>
+            )}
+            <DevolucaoTab form={form} db={db} disabled={dadosGeraisDisabled} pedidoId={pedidoId} />
           </Tabs.Panel>
 
           <Tabs.Panel value="estado" pt="md">
@@ -491,6 +507,7 @@ export function PedidoForm({
         pedidoId={pedidoId}
         canWrite={canWrite}
         disabled={disabled}
+        descontoDisabled={dadosGeraisDisabled}
         submitLabel={submitLabel}
         isSubmitting={form.formState.isSubmitting}
         submitError={submitError}

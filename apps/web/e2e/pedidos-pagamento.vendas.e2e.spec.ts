@@ -186,18 +186,34 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
       .toEqual({ forma: 3, valor: 10, bandeira: '01' });
   });
 
-  test('locks the Principal tab once the pedido leaves the cart phase (estado "pago")', async ({
+  test('locks dados gerais / itens / frete / devolução once the pedido leaves the cart phase (estado "pago") — but keeps observações editable', async ({
     page,
   }) => {
     // beforeEach reset estado to "iniciado"; move it to "pago" so the edit lock
-    // (legacy `travar_inclusao_produto`) engages.
+    // (legacy `travar_inclusao_produto` / `travar_pedido`) engages.
     await db().collection('pedidos').doc(pedidoId).update({ estado: 'pago' });
 
     await page.goto(`/pedidos/${pedidoId}/editar`);
     await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
 
-    // The lock notice is shown and item editing is disabled.
-    await expect(page.getByText(/Itens bloqueados/)).toBeVisible({ timeout: 15_000 });
+    // Principal: the lock notice shows and item editing is disabled…
+    await expect(page.getByText(/Edição bloqueada/)).toBeVisible({ timeout: 15_000 });
     await expect(page.getByRole('button', { name: 'Adicionar produto' })).toBeDisabled();
+    // …but "Observações internas" stays editable (legacy leaves it unlocked).
+    await expect(page.getByLabel('Observações internas')).toBeEnabled();
+
+    // Footer: the editable "Desconto" follows the estado lock (legacy
+    // `pedidoCadastro.dart:1719`), while the Salvar button stays enabled.
+    await expect(page.getByLabel('Desconto total')).toBeDisabled();
+
+    // Frete tab: the whole tab locks (legacy passes `travarPedido` to the widget).
+    await page.getByRole('tab', { name: 'Frete' }).click();
+    await expect(page.getByRole('tabpanel').getByText(/Edição bloqueada/)).toBeVisible();
+
+    // Devolução tab: a return is a NEW order returning this one, so the original's
+    // rows lock once it leaves the cart phase (legacy `!travar_pedido`).
+    await page.getByRole('tab', { name: 'Devolução' }).click();
+    await expect(page.getByRole('tabpanel').getByText(/Edição bloqueada/)).toBeVisible();
+    await expect(page.getByRole('button', { name: /Adicionar pedido/ })).toBeDisabled();
   });
 });
