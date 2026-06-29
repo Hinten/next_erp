@@ -364,11 +364,13 @@ export function PedidoForm({
         : null,
     [db, pedidoId],
   );
-  const { data: nfeData } = useSnapshot(nfeQuery);
+  const { data: nfeData, loading: nfeLoading } = useSnapshot(nfeQuery);
   const nfeAprovada = nfeData?.[0]?.data?.estado === ESTADO_NFE.aprovada;
   const itensTravados = travarInclusaoProduto(estadoNow);
   const principalDisabled = disabled || itensTravados;
-  const fiscalDisabled = disabled || nfeAprovada;
+  // Default-deny: while the NF-e snapshot is still resolving (edit mode), keep
+  // Fiscal locked so an aprovada NF-e can't be bypassed in the load window.
+  const fiscalDisabled = disabled || nfeAprovada || (pedidoId != null && nfeLoading);
   const itensLockNotice = itensTravados
     ? `Itens bloqueados — pedido no estado "${ESTADO_PEDIDO_LABELS[estadoNow]}". A edição de itens só é permitida na fase de carrinho/checkout.`
     : null;

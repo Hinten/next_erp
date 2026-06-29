@@ -63,29 +63,23 @@ export function podeTrocar(estado: EstadoPedido): boolean {
 /* -------------------------------------------------------------------------- */
 
 /**
- * States in which a pedido's items + general data are LOCKED for editing —
- * ported verbatim from the legacy `ESTADOS_PEDIDO._travar_inclusao_produto`
- * (`.old/packages/pedido/lib/src/models.dart:2394`). The legacy editor sets
- * `travar_pedido = estado.travar_inclusao_produto` and renders the cliente /
+ * States in which a pedido's items + general data stay EDITABLE — the cart /
+ * checkout phase, plus `error` (so a broken pedido can be repaired, matching the
+ * legacy `_travar_inclusao_produto` list, whose complement is exactly these).
+ * The legacy editor used the inverse "locked" list
+ * (`.old/packages/pedido/lib/src/models.dart:2394`) and set
+ * `travar_pedido = estado.travar_inclusao_produto`, rendering the cliente /
  * operação / item fields read-only (`pedidoCadastro.dart:396-492`).
  *
- * The complement — `iniciado`, `carrinho`, `carrinhoAbandonado`,
- * `escolhendoFormaDePagamento` (and `error`) — stays editable: items can only be
- * changed while the order is still in the cart/checkout phase. `error` is left
- * editable, matching the legacy list, so a broken pedido can be repaired.
+ * We model it as an ALLOW-list (like `podeTrocar`) so a newly-added
+ * `EstadoPedido` defaults to LOCKED — the safe default.
  */
-const TRAVAR_INCLUSAO_PRODUTO: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
-  'aguardandoConfirmacaoDePagamento',
-  'pagamentoNaoRealizado',
-  'emAnalise',
-  'emProcessamento',
-  'pago',
-  'estornadoParcialmente',
-  'estornadoIntegralmente',
-  'processandoCancelamento',
-  'cancelado',
-  'fraude',
-  'finalizado',
+const ITENS_EDITAVEIS: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  'iniciado',
+  'carrinho',
+  'carrinhoAbandonado',
+  'escolhendoFormaDePagamento',
+  'error',
 ]);
 
 /**
@@ -94,5 +88,5 @@ const TRAVAR_INCLUSAO_PRODUTO: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>
  * locks the Fiscal tab separately (legacy `travar_fiscal`), regardless of estado.
  */
 export function travarInclusaoProduto(estado: EstadoPedido): boolean {
-  return TRAVAR_INCLUSAO_PRODUTO.has(estado);
+  return !ITENS_EDITAVEIS.has(estado);
 }
