@@ -79,6 +79,11 @@
       "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
     },
     {
+      "collectionGroup": "tabMedi",
+      "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "dataCadastro", "order": "DESCENDING" }]
+    },
+    {
       "collectionGroup": "filiais",
       "queryScope": "COLLECTION",
       "fields": [{ "fieldPath": "razaoSocial", "order": "ASCENDING" }]

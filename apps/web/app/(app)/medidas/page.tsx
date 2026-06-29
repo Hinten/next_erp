@@ -17,7 +17,7 @@ export default function MedidasPage() {
       collection={tabelaDeMedidasCollection}
       db={getFirebaseFirestore()}
       meta={tabelaDeMedidasMeta}
-      defaultColumns={['nome', 'codigo', 'descricao']}
+      defaultColumns={['nome', 'codigo', 'dataCadastro', 'ultimaModificacao']}
       rowHref={(id) => `/medidas/${id}`}
       renderNewButton={() => (
         <Button component={Link} href="/medidas/novo">
