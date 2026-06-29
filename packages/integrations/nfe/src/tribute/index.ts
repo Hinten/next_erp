@@ -34,6 +34,18 @@ export {
   rtcTestRatesForYear,
   type RtcItemValues,
 } from './rtc';
+export {
+  CCLASSTRIB_SEED,
+  CST_IBSCBS_CODES,
+  CST_IBSCBS_LABELS,
+  cClassTribCodesForCst,
+  cClassTribDescricao,
+  cClassTribEntriesForCst,
+  cstClassTribStructurallyValid,
+  validateCstClassTrib,
+  type CClassTribEntry,
+  type CstClassTribValidation,
+} from './cclasstrib';
 export { buildTranspXml, modFreteSchema, type ModFrete } from './transp';
 export { buildPagXml, paymentSchema, tPagSchema, type Payment, type TPag } from './pag';
 export {

@@ -40,3 +40,19 @@ export {
   NFeRuntimeNotReadyError,
   NFeServerError,
 } from './errors';
+
+// RTC IBS/CBS code tables + validator — a **pure, zero-dep** module
+// (`../tribute/cclasstrib`), safe to surface in the browser bundle so the
+// produto Impostos picker shares the emit-time engine's source of truth.
+export {
+  CCLASSTRIB_SEED,
+  CST_IBSCBS_CODES,
+  CST_IBSCBS_LABELS,
+  cClassTribCodesForCst,
+  cClassTribDescricao,
+  cClassTribEntriesForCst,
+  cstClassTribStructurallyValid,
+  validateCstClassTrib,
+  type CClassTribEntry,
+  type CstClassTribValidation,
+} from '../tribute/cclasstrib';

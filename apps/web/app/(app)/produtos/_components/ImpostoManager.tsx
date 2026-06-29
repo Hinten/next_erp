@@ -1,7 +1,23 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Divider, NumberInput, Select, Stack, Switch, Text, TextInput } from '@mantine/core';
+import {
+  Autocomplete,
+  Divider,
+  NumberInput,
+  Select,
+  Stack,
+  Switch,
+  Text,
+  TextInput,
+} from '@mantine/core';
+import {
+  CST_IBSCBS_CODES,
+  CST_IBSCBS_LABELS,
+  cClassTribCodesForCst,
+  cClassTribDescricao,
+  validateCstClassTrib,
+} from '@delfrance/integrations-nfe/http-provider';
 import type { Firestore } from 'firebase/firestore';
 import {
   ORIGEM_PRODUTO_LABELS,
@@ -196,6 +212,22 @@ export function ImpostoManager({
         : null,
     } as Partial<ImpostoProduto>);
 
+  // Non-blocking CST↔cClassTrib check — only once both codes are fully typed
+  // (so it doesn't nag mid-entry). Mirrors the emit-time structural rule plus a
+  // soft "not in our vendored seed" hint.
+  const rtcCst = rtc?.CST ?? '';
+  const rtcCode = rtc?.cClassTrib ?? '';
+  const rtcCodeWarning =
+    rtcEnabled && /^\d{3}$/.test(rtcCst) && /^\d{6}$/.test(rtcCode)
+      ? (() => {
+          const res = validateCstClassTrib(rtcCst, rtcCode);
+          if (res.ok) return null;
+          return res.reason === 'cst-mismatch'
+            ? 'Os 3 primeiros dígitos do cClassTrib devem ser iguais ao CST — o SEFAZ irá rejeitar.'
+            : 'cClassTrib não consta na tabela vendorizada — confira no Portal Nacional. A emissão não é bloqueada.';
+        })()
+      : null;
+
   return (
     <Stack>
       <Select
@@ -303,22 +335,35 @@ export function ImpostoManager({
       />
       {rtcEnabled && (
         <>
-          <TextInput
+          <Autocomplete
             label="CST IBS/CBS"
-            description="3 dígitos."
+            description={(rtcCst && CST_IBSCBS_LABELS[rtcCst]) || '3 dígitos (NT 2025.002).'}
+            data={[...CST_IBSCBS_CODES]}
+            renderOption={({ option }) =>
+              `${option.value} — ${CST_IBSCBS_LABELS[option.value] ?? ''}`
+            }
             maxLength={3}
-            value={rtc?.CST ?? ''}
-            onChange={(e) => patchRtc({ CST: e.currentTarget.value || null })}
+            value={rtcCst}
+            onChange={(val) => patchRtc({ CST: val || null })}
             disabled={disabled}
           />
-          <TextInput
+          <Autocomplete
             label="cClassTrib"
-            description="6 dígitos (tabela Anexo III)."
+            description={cClassTribDescricao(rtcCode) ?? '6 dígitos (tabela Anexo III).'}
+            data={cClassTribCodesForCst(rtcCst)}
+            renderOption={({ option }) =>
+              `${option.value} — ${cClassTribDescricao(option.value) ?? ''}`
+            }
             maxLength={6}
-            value={rtc?.cClassTrib ?? ''}
-            onChange={(e) => patchRtc({ cClassTrib: e.currentTarget.value || null })}
+            value={rtcCode}
+            onChange={(val) => patchRtc({ cClassTrib: val || null })}
             disabled={disabled}
           />
+          {rtcCodeWarning && (
+            <Text c="orange" size="xs">
+              {rtcCodeWarning}
+            </Text>
+          )}
           <NumberInput
             label="Alíquota IBS UF (%)"
             description="0,1% na fase de teste 2025–2026."

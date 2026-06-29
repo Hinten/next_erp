@@ -15,6 +15,7 @@
  * implemented" error if a Regime Normal CST shows up here.
  */
 import { z } from 'zod';
+import { cstClassTribStructurallyValid } from './cclasstrib';
 
 // ---------------------------------------------------------------------------
 // Shared enums (mirror Flutter enums one-to-one)
@@ -351,6 +352,20 @@ export const configuracaoISRtcSchema = z
         message: 'IS requires either pIS (ad valorem) or pISEspec + qTrib (per unit)',
       });
     }
+    // Structural rule (NT 2025.002): cClassTribIS's first 3 digits == CSTIS.
+    // Only fire once both fields are well-formed (their /^\d{N}$/ regexes
+    // already cover format), so we never double-report a malformed code.
+    if (
+      /^\d{3}$/.test(cfg.CSTIS) &&
+      /^\d{6}$/.test(cfg.cClassTribIS) &&
+      !cstClassTribStructurallyValid(cfg.CSTIS, cfg.cClassTribIS)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['cClassTribIS'],
+        message: 'Os 3 primeiros dígitos do cClassTribIS devem ser iguais ao CSTIS.',
+      });
+    }
   });
 export type ConfiguracaoISRtc = z.infer<typeof configuracaoISRtcSchema>;
 
@@ -370,15 +385,34 @@ export type ConfiguracaoISRtc = z.infer<typeof configuracaoISRtcSchema>;
  * mirroring PIS/COFINS in `imposto.ts`). The IBS portion is split UF +
  * Município; `vIBS` is computed as their sum.
  */
-export const configuracaoIBSCBSSchema = z.object({
-  CST: z.string().regex(/^\d{3}$/),
-  cClassTrib: z.string().regex(/^\d{6}$/),
-  vBC: z.number().nonnegative().optional().nullable(),
-  pIBSUF: z.number().nonnegative(),
-  pIBSMun: z.number().nonnegative(),
-  pCBS: z.number().nonnegative(),
-  is: configuracaoISRtcSchema.optional().nullable(),
-});
+export const configuracaoIBSCBSSchema = z
+  .object({
+    CST: z.string().regex(/^\d{3}$/),
+    cClassTrib: z.string().regex(/^\d{6}$/),
+    vBC: z.number().nonnegative().optional().nullable(),
+    pIBSUF: z.number().nonnegative(),
+    pIBSMun: z.number().nonnegative(),
+    pCBS: z.number().nonnegative(),
+    is: configuracaoISRtcSchema.optional().nullable(),
+  })
+  // Structural rule only (NT 2025.002, RV UB13/UB14): cClassTrib's first 3
+  // digits == CST. Always correct, independent of any vendored table — so it
+  // is the one cross-field check enforced at emit time (`parseRtcConfig`).
+  // Table *membership* is a UI-only warning (the vendored seed is a subset),
+  // never an emit-time block. Guard on format so we don't double-report.
+  .superRefine((cfg, ctx) => {
+    if (
+      /^\d{3}$/.test(cfg.CST) &&
+      /^\d{6}$/.test(cfg.cClassTrib) &&
+      !cstClassTribStructurallyValid(cfg.CST, cfg.cClassTrib)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['cClassTrib'],
+        message: 'Os 3 primeiros dígitos do cClassTrib devem ser iguais ao CST.',
+      });
+    }
+  });
 export type ConfiguracaoIBSCBS = z.infer<typeof configuracaoIBSCBSSchema>;
 
 // ---------------------------------------------------------------------------
