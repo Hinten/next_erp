@@ -150,6 +150,7 @@ service cloud.firestore {
         && (!c.hasAny(['publicado']) || d.get('publicado', null) is bool)
         && (!c.hasAny(['sku']) || (d.get('sku', null) == null || d.get('sku', null) is string && d.get('sku', null).size() <= 255))
         && (!c.hasAny(['statusProdutosMarketplace']) || (d.get('statusProdutosMarketplace', null) == null || d.get('statusProdutosMarketplace', null) is map))
+        && (!c.hasAny(['tabelaDeMedidasModaUid']) || (d.get('tabelaDeMedidasModaUid', null) == null || d.get('tabelaDeMedidasModaUid', null) is string))
         && (!c.hasAny(['variacoesUid']) || (d.get('variacoesUid', null) == null || d.get('variacoesUid', null) is list))
         && (!c.hasAny(['videos']) || (d.get('videos', null) == null || d.get('videos', null) is list));
     }
