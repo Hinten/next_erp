@@ -97,6 +97,21 @@ test.describe.serial('Operações e2e — TableView / ObjectView', () => {
     await expect(page.getByText(/Salve a operação para cadastrar regras/)).toBeVisible();
   });
 
+  test('"Selecionar todos" / "Limpar" toggle the Estados de destino selection', async ({
+    page,
+  }) => {
+    await page.goto('/operacoes/novo');
+    const selectAll = page.getByRole('button', { name: 'Selecionar todos' });
+    const clear = page.getByRole('button', { name: 'Limpar' });
+    await expect(clear).toBeDisabled(); // nothing selected initially
+    await selectAll.click();
+    await expect(selectAll).toBeDisabled(); // all states selected → select-all off
+    await expect(clear).toBeEnabled();
+    await clear.click();
+    await expect(clear).toBeDisabled(); // cleared → clear off, select-all back on
+    await expect(selectAll).toBeEnabled();
+  });
+
   test('creates a new operação', async ({ page }) => {
     const nome = `${prefix}-novo`;
     await page.goto('/operacoes/novo');

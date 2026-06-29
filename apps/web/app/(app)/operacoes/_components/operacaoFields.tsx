@@ -1,7 +1,7 @@
 'use client';
 
 import { useFormContext } from 'react-hook-form';
-import { MultiSelect, Select } from '@mantine/core';
+import { Button, Group, MultiSelect, Select, Stack } from '@mantine/core';
 import { z } from 'zod';
 import {
   FIN_NFE_OPERACAO_LABELS,
@@ -46,6 +46,7 @@ function toOptions(labels: Record<string, string>) {
 }
 
 const UF_OPTIONS = ufSchema.options.map((uf) => ({ value: uf, label: uf }));
+const ALL_UFS: string[] = [...ufSchema.options];
 
 /**
  * Bridges the operação form (RHF context) to the {@link ImpostoConfigEditor}:
@@ -169,21 +170,46 @@ export const operacaoStaticFields: Record<string, FieldConfig> = {
   estadosDestino: {
     section: 'Dados gerais',
     label: 'Estados de destino',
-    hint: 'Deixe vazio para todos os estados.',
-    renderInput: (p) => (
-      <MultiSelect
-        label={p.label}
-        description={p.hint}
-        error={p.error}
-        disabled={p.disabled}
-        data={UF_OPTIONS}
-        value={(p.value as string[] | null) ?? []}
-        onChange={(arr) => p.onChange(arr.length > 0 ? arr : null)}
-        searchable
-        clearable
-        comboboxProps={{ withinPortal: true }}
-      />
-    ),
+    hint: 'Vazio aplica a todos os estados.',
+    renderInput: (p) => {
+      const selected = (p.value as string[] | null) ?? [];
+      const allSelected = selected.length === ALL_UFS.length;
+      return (
+        <Stack gap={6}>
+          <MultiSelect
+            label={p.label}
+            description={p.hint}
+            error={p.error}
+            disabled={p.disabled}
+            data={UF_OPTIONS}
+            value={selected}
+            onChange={(arr) => p.onChange(arr.length > 0 ? arr : null)}
+            searchable
+            clearable
+            comboboxProps={{ withinPortal: true }}
+          />
+          <Group gap="xs">
+            <Button
+              size="compact-xs"
+              variant="light"
+              onClick={() => p.onChange([...ALL_UFS])}
+              disabled={p.disabled || allSelected}
+            >
+              Selecionar todos
+            </Button>
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              color="gray"
+              onClick={() => p.onChange(null)}
+              disabled={p.disabled || selected.length === 0}
+            >
+              Limpar
+            </Button>
+          </Group>
+        </Stack>
+      );
+    },
   },
   infCpl: {
     section: 'Dados gerais',
