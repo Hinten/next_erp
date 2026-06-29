@@ -4,11 +4,10 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
-import { deleteDoc, getDocs } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
 import { type FieldConfig, ObjectView } from '@delfrance/ui';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
-import { regraImpostoCollection } from '@/lib/data/regraImpostoCollection';
+import { deleteOperacaoCascade } from '@/lib/operacoes/clientPort';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { MacrosTab } from '../_components/MacrosTab';
@@ -40,9 +39,7 @@ export default function OperacaoPage() {
   );
 
   async function handleDelete(id: string) {
-    const regras = await getDocs(regraImpostoCollection.ref(db, { operacaoId: id }));
-    await Promise.all(regras.docs.map((d) => deleteDoc(d.ref)));
-    await deleteDoc(operacaoCollection.docRef(db, {}, id));
+    await deleteOperacaoCascade(db, id);
     router.replace('/operacoes');
   }
 

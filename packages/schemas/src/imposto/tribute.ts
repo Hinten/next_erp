@@ -740,7 +740,7 @@ export const impostoSchema = z.object({
   configuracaoCOFINS: confCOFINSSchema.optional().nullable(),
   configuracaoIPI: configuracaoIPISchema.optional().nullable(),
   retencao: retencaoSchema.optional().nullable(),
-  configuracaoIBSCBS: z.unknown().optional(),
+  configuracaoIBSCBS: z.unknown().nullable().optional(),
 });
 export type Imposto = z.infer<typeof impostoSchema>;
 
@@ -767,5 +767,5 @@ export const taxConfigFields = {
   configuracaoPISST: configuracaoPISSTSchema.nullable().optional(),
   configuracaoISSQN: configuracaoISSQNSchema.nullable().optional(),
   retencao: retencaoSchema.nullable().optional(),
-  configuracaoIBSCBS: z.unknown().optional(),
+  configuracaoIBSCBS: z.unknown().nullable().optional(),
 } as const;

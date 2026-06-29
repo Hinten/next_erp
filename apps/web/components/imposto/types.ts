@@ -44,7 +44,10 @@ export interface ImpostoConfigValue {
   retencao?: Retencao | null;
   // RTC (IBS/CBS/IS) — held leniently in storage; the editor parses/writes the
   // typed shape but tolerates a partial blob.
-  configuracaoIBSCBS?: ConfiguracaoIBSCBS | null;
+  // Lenient/partial: the RTC blob is held as `z.unknown` in storage and edited
+  // with null leaves while in progress, so a strict `ConfiguracaoIBSCBS` here
+  // would be misleading. The strict shape is enforced only at emit.
+  configuracaoIBSCBS?: Partial<ConfiguracaoIBSCBS> | null;
   // Tolerate any extra legacy keys (never dropped on patch).
   [key: string]: unknown;
 }

@@ -101,8 +101,12 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
     [categoriasSnap.data],
   );
 
-  // null = closed; { id: null } = adding; { id } = editing.
-  const [editing, setEditing] = useState<{ id: string | null } | null>(null);
+  // null = closed; { id: null } = adding; { id } = editing. `dataCadastro` holds
+  // the existing rule's creation stamp so an edit preserves it (it's the UI sort
+  // key — re-stamping it would reorder the rule).
+  const [editing, setEditing] = useState<{ id: string | null; dataCadastro: number | null } | null>(
+    null,
+  );
   const [form, setForm] = useState<MacroForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -112,12 +116,12 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
 
   function openAdd() {
     setForm(EMPTY_FORM);
-    setEditing({ id: null });
+    setEditing({ id: null, dataCadastro: null });
     setSaveError(null);
   }
   function openEdit(id: string, regra: RegraImposto) {
     setForm(formFromRegra(regra));
-    setEditing({ id });
+    setEditing({ id, dataCadastro: regra.dataCadastro ?? null });
     setSaveError(null);
   }
 
@@ -132,7 +136,8 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
       categorias: form.categorias,
       ncms: form.ncms.map((n) => n.trim()),
       ...form.imposto,
-      dataCadastro: nowMillis(),
+      // Preserve the creation stamp on edit; only mint a new one on create.
+      dataCadastro: editing.id ? (editing.dataCadastro ?? nowMillis()) : nowMillis(),
     };
     try {
       if (editing.id) {

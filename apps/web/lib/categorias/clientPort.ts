@@ -8,6 +8,20 @@ import { nowMillis } from '@delfrance/core/datetime';
 import type { TransactionWrite } from '@delfrance/ui';
 import { impostoCategoriaCollection } from '@/lib/data/impostoCategoriaCollection';
 
+/**
+ * True when `v` is, or recursively contains, a non-null leaf. A nested all-null
+ * object (e.g. a toggled-then-cleared RTC blob `{ CST: null, is: {…null} }`)
+ * correctly reads as empty — mirrors `hasNonNullLeaf` in
+ * `packages/data/src/produto/usecases.ts` so categoria + produto agree.
+ */
+function hasNonNullLeaf(v: unknown): boolean {
+  if (v == null) return false;
+  if (typeof v === 'object') {
+    return Object.values(v as Record<string, unknown>).some(hasNonNullLeaf);
+  }
+  return true;
+}
+
 /** True when a categoria imposto entry has any value worth persisting. */
 export function categoriaImpostoCarriesInfo(imp: ImpostoCategoria): boolean {
   const strings = [
@@ -36,7 +50,7 @@ export function categoriaImpostoCarriesInfo(imp: ImpostoCategoria): boolean {
     strings.some((v) => typeof v === 'string' && v.trim() !== '') ||
     imp.compoeValorTotalDaNFe != null ||
     configs.some((c) => c != null) ||
-    imp.configuracaoIBSCBS != null
+    hasNonNullLeaf(imp.configuracaoIBSCBS)
   );
 }
 
