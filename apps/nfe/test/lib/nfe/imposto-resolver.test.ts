@@ -18,7 +18,12 @@ const ACTIVE_OPERACAO = 'op-active';
 const VALID_IMPOSTO_BLOB = {
   origem: '0',
   configuracaoICMS: { crt: '1', csosn: '102' },
-};
+} as const;
+
+const BLOB_400 = {
+  origem: '0',
+  configuracaoICMS: { crt: '1', csosn: '400' },
+} as const;
 
 /**
  * Build an `impostoProduto` fixture via the schema (fills the Dados Gerais
@@ -86,6 +91,52 @@ describe('resolveItemImposto — cascade priority', () => {
     const resolver = createImpostoResolver(deps);
     const out = await resolver.resolve('p1', null);
     expect(out?.configuracaoICMS?.csosn).toBe('102');
+  });
+
+  it('prefers an exact operação match over a null-scoped default (#222)', async () => {
+    // The null-scoped default comes FIRST in the array; a plain `.find()` that
+    // accepts both would wrongly return it. The per-operação override must win
+    // so fiscal data respects the SELECTED operação.
+    const defaultDoc = impostoProdutoDoc({ id: 'def', impostoOpercaoOuterRef: null, ...BLOB_400 });
+    const exactDoc = impostoProdutoDoc({
+      id: 'exact',
+      impostoOpercaoOuterRef: `operacao/${ACTIVE_OPERACAO}`,
+    });
+    const deps = makeDeps({
+      readImpostoProdutoSubcoll: vi.fn().mockResolvedValue([defaultDoc, exactDoc]),
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.configuracaoICMS?.csosn).toBe('102'); // exact (102), not default (400)
+  });
+
+  it('uses the null-scoped default when no exact operação match exists (#222)', async () => {
+    const defaultDoc = impostoProdutoDoc({ id: 'def', impostoOpercaoOuterRef: null });
+    const deps = makeDeps({
+      readImpostoProdutoSubcoll: vi.fn().mockResolvedValue([defaultDoc]),
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.configuracaoICMS?.csosn).toBe('102');
+  });
+
+  it('prefers an exact categoria operação match over its null-scoped default (#222)', async () => {
+    const defaultCat: ImpostoCategoria = {
+      id: 'cat-def',
+      impostoOperacaoOuterRef: null,
+      dataCadastro: null,
+      ...BLOB_400,
+    };
+    const exactCat: ImpostoCategoria = {
+      id: 'cat-exact',
+      impostoOperacaoOuterRef: `operacao/${ACTIVE_OPERACAO}`,
+      dataCadastro: null,
+      ...VALID_IMPOSTO_BLOB,
+    };
+    const deps = makeDeps({
+      readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef: 'categorias/cat-7' }),
+      readImpostoCategoriaSubcoll: vi.fn().mockResolvedValue([defaultCat, exactCat]),
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.configuracaoICMS?.csosn).toBe('102'); // exact, not default 400
   });
 
   it('carries a configuracaoIBSCBS (RTC) blob through the impostoProduto tier', async () => {
@@ -201,6 +252,48 @@ describe('resolveItemImposto — cascade priority', () => {
     expect(out).toBeNull();
   });
 
+  it('falls through to the operação default config when nothing else matches', async () => {
+    // Tier 5 (Flutter parity): the operação doc's own tax config is the
+    // last-resort default — an item matching no produto/categoria/regra still
+    // emits instead of failing with NFeMissingImpostoError.
+    const deps = makeDeps({
+      bundle: {
+        operacaoId: ACTIVE_OPERACAO,
+        regrasImposto: [],
+        operacao: { ...VALID_IMPOSTO_BLOB },
+      },
+    });
+    const out = await createImpostoResolver(deps).resolve('p-orphan', null);
+    expect(out?.configuracaoICMS?.csosn).toBe('102');
+  });
+
+  it('operação default does NOT fire when the operação carries no usable Imposto', async () => {
+    // An operação with no `origem` is not a valid Imposto — the tier is skipped
+    // and resolution falls through to null (emission fails loudly downstream).
+    const deps = makeDeps({
+      bundle: {
+        operacaoId: ACTIVE_OPERACAO,
+        regrasImposto: [],
+        operacao: { nome: 'Venda', tipo: 1 },
+      },
+    });
+    const out = await createImpostoResolver(deps).resolve('p-orphan', null);
+    expect(out).toBeNull();
+  });
+
+  it('produto/categoria/regra still win over the operação default', async () => {
+    const deps = makeDeps({
+      readImpostoProdutoSubcoll: vi.fn().mockResolvedValue([impostoProdutoDoc()]),
+      bundle: {
+        operacaoId: ACTIVE_OPERACAO,
+        regrasImposto: [],
+        operacao: { ...BLOB_400 },
+      },
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.configuracaoICMS?.csosn).toBe('102'); // produto tier, not 400
+  });
+
   it('first-wins among multiple regraImposto matches (Flutter parity)', async () => {
     const first: RegraImposto = {
       id: 'r1',
@@ -209,8 +302,7 @@ describe('resolveItemImposto — cascade priority', () => {
       categorias: [],
       ncms: [],
       dataCadastro: null,
-      origem: '0',
-      configuracaoICMS: { crt: '1', csosn: '102' },
+      ...VALID_IMPOSTO_BLOB,
     };
     const second: RegraImposto = {
       id: 'r2',
@@ -219,8 +311,7 @@ describe('resolveItemImposto — cascade priority', () => {
       categorias: [],
       ncms: [],
       dataCadastro: null,
-      origem: '0',
-      configuracaoICMS: { crt: '1', csosn: '400' },
+      ...BLOB_400,
     };
     const deps = makeDeps({
       bundle: { operacaoId: ACTIVE_OPERACAO, regrasImposto: [first, second] },

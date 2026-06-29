@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 import { ufSchema } from './endereco';
+import { taxConfigFields } from './imposto/tribute';
 
 // Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth.
 const PERM_FISCAL_READ = 1n << 72n;
@@ -75,10 +76,12 @@ export type OrigemProdutoImposto = z.infer<typeof origemProdutoImpostoSchema>;
 /**
  * Operacao — operação fiscal (CFOPs, configurações tributárias). Mirrors
  * `Operacao` em `.old/packages/operacao_fiscal/lib/src/models.dart`.
- * As configurações tributárias (ICMS/IPI/PIS/PISST) ficam pass-through —
- * a serialização tem dezenas de variantes (CST/CSOSN, modBC, etc) e o
- * Flutter ainda autora esses sub-objetos; a UI Next surface-as-opaque
- * até o vertical fiscal aterrissar.
+ *
+ * As configurações tributárias agora são **tipadas** (`taxConfigFields`,
+ * compartilhadas com a engine NF-e via `@delfrance/schemas`): ICMS (Simples
+ * Nacional + Regime Normal, lossless), IPI, PIS/COFINS, PIS-ST, ISSQN, retenção
+ * e a Reforma Tributária (`configuracaoIBSCBS`, lenient). Servem de **default
+ * tier** do resolver de imposto (item → produto → categoria → regra → operação).
  */
 export const operacaoSchema = z.object({
   nome: z.string().min(1),
@@ -108,11 +111,8 @@ export const operacaoSchema = z.object({
   estadosDestino: z.array(ufSchema).nullable().optional(),
   estados: z.array(ufSchema).nullable().optional(),
 
-  // Sub-objetos fiscais — pass-through.
-  configuracaoICMS: z.unknown().nullable().optional(),
-  configuracaoIPI: z.unknown().nullable().optional(),
-  configuracaoPIS: z.unknown().nullable().optional(),
-  configuracaoPISST: z.unknown().nullable().optional(),
+  // Sub-objetos fiscais — tipados (default tier do resolver de imposto).
+  ...taxConfigFields,
 
   infCpl: z.string().max(5000).nullable(),
 
@@ -127,6 +127,10 @@ export const operacaoMeta: CollectionMetadata = {
     read: PERM_FISCAL_READ,
     write: PERM_FISCAL_WRITE,
     delete: PERM_FISCAL_DELETE,
+  },
+  defaultQuery: {
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
   },
 };
 

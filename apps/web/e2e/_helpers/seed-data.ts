@@ -268,6 +268,74 @@ export async function seedOperacaoAtiva(prefix: string): Promise<{ id: string; n
 }
 
 /**
+ * Seed `n` operação docs for the `/operacoes` CRUD suite. `tipo` alternates
+ * entrada/saída and `movimentaEstoque`/`padrao` vary so the columns + sort have
+ * something to bite on. Tax configs are omitted (now optional — the converter
+ * parses without them).
+ */
+export async function seedOperacoes(prefix: string, n: number): Promise<void> {
+  const col = db().collection('operacao');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      nome: `${prefix}-${pad(i)}`,
+      naturezaDaOperacao: `Venda ${pad(i)}`,
+      tipo: i % 2 === 0 ? 1 : 0,
+      ehServico: false,
+      ehExterior: false,
+      ehConsumidorFinal: true,
+      padrao: i === 1,
+      ativo: true,
+      movimentaEstoque: i % 2 === 0,
+      movimentaIndisponivelEstoque: true,
+      ehFiscal: true,
+      finNFe: 1,
+      indPres: '2',
+      indIntermed: '1',
+      cfop: `510${i % 10}`,
+      cfopInterestadual: `610${i % 10}`,
+      origem: '0',
+      NCM: null,
+      CEST: null,
+      unidade: 'UN',
+      estadosDestino: null,
+      estados: null,
+      infCpl: null,
+      timestamp: Date.now(),
+    });
+  }
+  await batch.commit();
+}
+
+/** Full data of the first `operacao` doc named `nome`, or null. */
+export async function getOperacaoByName(nome: string): Promise<Record<string, unknown> | null> {
+  const snap = await db().collection('operacao').where('nome', '==', nome).limit(1).get();
+  const data = snap.docs[0]?.data();
+  return data ? (data as Record<string, unknown>) : null;
+}
+
+/**
+ * Delete an operação and its `regraimposto` subcollection (Firestore never
+ * cascades). Sweeps every operação on the prefix + their macros.
+ */
+export async function cleanupOperacoes(prefix: string): Promise<void> {
+  const snap = await db()
+    .collection('operacao')
+    .where('nome', '>=', prefix)
+    .where('nome', '<', `${prefix}${PREFIX_MAX}`)
+    .get();
+  for (const opDoc of snap.docs) {
+    const regras = await opDoc.ref.collection('regraimposto').get();
+    if (!regras.empty) {
+      const b = db().batch();
+      regras.docs.forEach((r) => b.delete(r.ref));
+      await b.commit();
+    }
+  }
+  await cleanupByNamePrefix('operacao', prefix);
+}
+
+/**
  * Seed `n` motivoIncidente docs. `ativo` alternates for the boolean filter.
  */
 export async function seedMotivosIncidente(prefix: string, n: number): Promise<void> {

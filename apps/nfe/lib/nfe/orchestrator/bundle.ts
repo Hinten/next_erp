@@ -456,13 +456,15 @@ export async function preResolveImpostos(
   // Share one resolver per operacaoId across the batch: its
   // produtoUid→Imposto memo (and the produto/imposto-subcoll reads behind
   // it) then span every pedido on the same operação instead of resetting
-  // per pedido. The cascade inputs (operacaoId + regrasImposto) are
-  // identical for a given operacaoId, so the shared instance is correct.
+  // per pedido. The cascade inputs (operacaoId + regrasImposto + the operação's
+  // own default config) are identical for a given operacaoId, so the shared
+  // instance is correct.
   let resolver = ctx?.resolverByOperacaoId.get(bundle.operacaoId);
   if (!resolver) {
     resolver = createFirestoreImpostoResolver(fs, {
       operacaoId: bundle.operacaoId,
       regrasImposto: bundle.regrasImposto,
+      operacao: bundle.operacao as unknown as Record<string, unknown>,
     });
     ctx?.resolverByOperacaoId.set(bundle.operacaoId, resolver);
   }

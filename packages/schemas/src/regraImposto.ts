@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
+import { taxConfigFields } from './imposto/tribute';
 import type { CollectionMetadata } from './types';
 
 // Mirrors PERM.regraImposto in packages/auth/src/permissions.ts (byte 12;
@@ -23,19 +24,32 @@ const PERM_REGRA_IMPOSTO_DELETE = 1n << 101n;
  *
  * `nome` is optional but recommended for UI / audit.
  *
- * Imposto blob fields are pass-through and validated downstream by the
- * tribute engine.
+ * Imposto blob fields are **typed** (`taxConfigFields`, shared with the tribute
+ * engine via `@delfrance/schemas`) rather than pass-through.
  */
-export const regraImpostoSchema = z
-  .object({
-    id: z.string().nullable().default(null),
-    nome: z.string().min(1).max(255).nullable().default(null),
-    produtos: z.array(z.string()).default([]),
-    categorias: z.array(z.string()).default([]),
-    ncms: z.array(z.string().regex(/^\d{8}$/)).default([]),
-    dataCadastro: millisSinceEpoch().nullable().default(null),
-  })
-  .passthrough();
+export const regraImpostoSchema = z.object({
+  id: z.string().nullable().default(null),
+  nome: z.string().min(1).max(255).nullable().default(null),
+  produtos: z.array(z.string()).default([]),
+  categorias: z.array(z.string()).default([]),
+  ncms: z.array(z.string().regex(/^\d{8}$/)).default([]),
+  // Dados Gerais (lenient strings, optional — a rule may omit them; the
+  // resolver re-validates via the engine `impostoSchema`).
+  origem: z.string().nullable().optional(),
+  cfop: z.string().nullable().optional(),
+  cfopInterestadual: z.string().nullable().optional(),
+  NCM: z.string().nullable().optional(),
+  NVE: z.string().nullable().optional(),
+  CEST: z.string().nullable().optional(),
+  indEscala: z.string().nullable().optional(),
+  CNPJFab: z.string().nullable().optional(),
+  cBenef: z.string().nullable().optional(),
+  extipi: z.string().nullable().optional(),
+  unidade: z.string().nullable().optional(),
+  compoeValorTotalDaNFe: z.boolean().nullable().optional(),
+  ...taxConfigFields,
+  dataCadastro: millisSinceEpoch().nullable().default(null),
+});
 
 export type RegraImposto = z.infer<typeof regraImpostoSchema>;
 

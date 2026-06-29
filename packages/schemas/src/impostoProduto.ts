@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from './shared/datetime';
 import { idRefSchema } from './shared/outerRef';
+import { taxConfigFields } from './imposto/tribute';
 import type { CollectionMetadata } from './types';
 
 const PERM_IMPOSTO_PRODUTO_READ = 1n << 75n;
@@ -43,29 +44,31 @@ export const ORIGEM_PRODUTO_LABELS: Record<string, string> = {
  *   - `timestamp` is a ms-epoch int (`dateTimeToJson`).
  *
  * The deep tribute configs (`configuracaoICMS`, `configuracaoIPI`,
- * `configuracaoPIS`, `configuracaoPISST`) stay **pass-through** — owned and
- * validated by integrations-nfe's tribute engine (NF-e Regime Normal), keeping
- * packages/schemas free of a circular dep.
+ * `configuracaoPIS`, `configuracaoCOFINS`, `configuracaoPISST`,
+ * `configuracaoISSQN`, `retencao`, `configuracaoIBSCBS`) are **typed**
+ * (`taxConfigFields`, shared with the tribute engine via `@delfrance/schemas`)
+ * rather than pass-through — there is no circular dep (schemas is a leaf, the
+ * NF-e package depends on it). `configuracaoIBSCBS` (RTC) stays lenient so a
+ * half-filled blob never fails the parse.
  */
-export const impostoProdutoSchema = z
-  .object({
-    id: z.string().nullable().default(null),
-    impostoOpercaoOuterRef: idRefSchema.nullable().default(null),
-    origem: z.string().nullable().default(null),
-    cfop: z.string().nullable().default(null),
-    cfopInterestadual: z.string().nullable().default(null),
-    NCM: z.string().nullable().default(null),
-    NVE: z.string().nullable().default(null),
-    CEST: z.string().nullable().default(null),
-    indEscala: z.string().nullable().default(null),
-    CNPJFab: z.string().nullable().default(null),
-    cBenef: z.string().nullable().default(null),
-    extipi: z.string().nullable().default(null),
-    unidade: z.string().nullable().default(null),
-    compoeValorTotalDaNFe: z.boolean().nullable().default(null),
-    timestamp: millisSinceEpoch().nullable().default(null),
-  })
-  .passthrough();
+export const impostoProdutoSchema = z.object({
+  id: z.string().nullable().default(null),
+  impostoOpercaoOuterRef: idRefSchema.nullable().default(null),
+  origem: z.string().nullable().default(null),
+  cfop: z.string().nullable().default(null),
+  cfopInterestadual: z.string().nullable().default(null),
+  NCM: z.string().nullable().default(null),
+  NVE: z.string().nullable().default(null),
+  CEST: z.string().nullable().default(null),
+  indEscala: z.string().nullable().default(null),
+  CNPJFab: z.string().nullable().default(null),
+  cBenef: z.string().nullable().default(null),
+  extipi: z.string().nullable().default(null),
+  unidade: z.string().nullable().default(null),
+  compoeValorTotalDaNFe: z.boolean().nullable().default(null),
+  ...taxConfigFields,
+  timestamp: millisSinceEpoch().nullable().default(null),
+});
 
 export type ImpostoProduto = z.infer<typeof impostoProdutoSchema>;
 

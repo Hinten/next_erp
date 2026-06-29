@@ -257,11 +257,24 @@ function impostoCarriesInfo(imp: ImpostoProduto): boolean {
     imp.extipi,
     imp.unidade,
   ];
+  // The deep tribute configs (now typed) each count as a real override — an
+  // entry that sets only ICMS/IPI/PIS/COFINS/ISSQN/retenção (no Dados Gerais)
+  // must still persist.
+  const configs = [
+    imp.configuracaoICMS,
+    imp.configuracaoIPI,
+    imp.configuracaoPIS,
+    imp.configuracaoCOFINS,
+    imp.configuracaoPISST,
+    imp.configuracaoISSQN,
+    imp.retencao,
+  ];
   // An explicit `compoeValorTotalDaNFe` (true OR false) is a real override worth
   // keeping; only a pristine `null` counts as empty.
   return (
     strings.some((v) => typeof v === 'string' && v.trim() !== '') ||
     imp.compoeValorTotalDaNFe != null ||
+    configs.some((c) => c != null) ||
     rtcConfigHasValue(imp)
   );
 }
