@@ -97,12 +97,14 @@ test.describe.serial('Operações e2e — TableView / ObjectView', () => {
     await expect(page.getByText(/Salve a operação para cadastrar regras/)).toBeVisible();
   });
 
-  test('"Selecionar todos" / "Limpar" toggle the Estados de destino selection', async ({
+  test('"Selecionar todos" / "Limpar estados" toggle the Estados de destino selection', async ({
     page,
   }) => {
     await page.goto('/operacoes/novo');
+    // "Limpar estados" (not "Limpar") so the locator can't match Mantine's
+    // clearable clear-X buttons (aria-label "Limpar" in pt-BR).
     const selectAll = page.getByRole('button', { name: 'Selecionar todos' });
-    const clear = page.getByRole('button', { name: 'Limpar' });
+    const clear = page.getByRole('button', { name: 'Limpar estados' });
     await expect(clear).toBeDisabled(); // nothing selected initially
     await selectAll.click();
     await expect(selectAll).toBeDisabled(); // all states selected → select-all off

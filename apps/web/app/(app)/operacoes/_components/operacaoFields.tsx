@@ -204,7 +204,7 @@ export const operacaoStaticFields: Record<string, FieldConfig> = {
               onClick={() => p.onChange(null)}
               disabled={p.disabled || selected.length === 0}
             >
-              Limpar
+              Limpar estados
             </Button>
           </Group>
         </Stack>
