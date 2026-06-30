@@ -173,12 +173,14 @@ export interface ImportedAddress {
  * post-invoice unmask).
  */
 export interface ImportedFiscalIdentity {
-  taxId?: string | null; // CPF/CNPJ digits, or foreign id
+  taxId?: string | null; // opaque tax-id digits (e.g. CPF/CNPJ in BR, or a foreign id)
   taxIdMasked?: boolean; // channel returned a masked value
-  taxIdType?: 'cpf' | 'cnpj' | 'foreign' | 'unknown';
-  legalName?: string | null; // razão social / nome completo
-  stateRegistration?: string | null; // inscrição estadual (when PJ)
-  ieIndicator?: string | null; // contribuinte / isento / não-contribuinte (raw)
+  /** Generic classification — provider-agnostic. The local mapper applies the
+   *  jurisdiction semantics (in BR: personal→CPF, business→CNPJ). */
+  taxIdType?: 'personal' | 'business' | 'foreign' | 'unknown';
+  legalName?: string | null; // legal/full name (razão social / nome completo)
+  stateRegistration?: string | null; // sub-national tax registration (BR: inscrição estadual)
+  ieIndicator?: string | null; // tax-status indicator, raw (BR: contribuinte / isento / não-contribuinte)
   email?: string | null;
   phone?: string | null;
 }
@@ -311,7 +313,8 @@ export interface IncidentActionResult {
 
 /**
  * A sales-channel plugin (Mercado Livre, Shopee, Amazon, Magalu, Loja
- * Integrada). The four core members are REQUIRED; every other capability is
+ * Integrada). The core members (`id`, `syncProducts`, `pullOrders`,
+ * `pushTracking`, `oauthFlow`) are REQUIRED; every other capability is
  * OPTIONAL — a channel implements only what its API supports and callers
  * feature-detect (`typeof channel.pushPrice === 'function'`).
  *

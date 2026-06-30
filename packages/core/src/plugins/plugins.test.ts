@@ -5,7 +5,7 @@ import type { MarketplaceChannel, ChannelContext, IncidentAction, ImportedOrder 
 const ctx: ChannelContext = { integracaoId: 'i1', accessToken: 'live-token', account: {} };
 
 /**
- * A channel implementing ONLY the four required members. That this `satisfies
+ * A channel implementing ONLY the required members. That this `satisfies
  * MarketplaceChannel` is the compile-time proof (enforced by `tsc --noEmit`, the
  * typecheck gate) that every other capability is genuinely optional — exactly
  * what keeps the 6 NotConfigured scaffolds green without implementing them.
