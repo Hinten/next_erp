@@ -25,8 +25,9 @@ describe('POST /api/webhooks/mercado-livre', () => {
     expect(await res.json()).toMatchObject({ ok: true, accepted: false });
   });
 
-  it('returns 400 on invalid JSON', async () => {
+  it('acks 200 (accepted: false) on invalid JSON — never 4xx, so ML stops retrying', async () => {
     const res = await POST(post('{not json'));
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, accepted: false });
   });
 });

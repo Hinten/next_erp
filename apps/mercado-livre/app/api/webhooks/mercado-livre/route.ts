@@ -36,7 +36,10 @@ export async function POST(req: Request): Promise<NextResponse> {
     body = raw ? (JSON.parse(raw) as MlNotification) : {};
   } catch (err) {
     if (err instanceof SyntaxError) {
-      return NextResponse.json({ error: 'Body JSON inválido.' }, { status: 400 });
+      // Ack 200 (not 4xx) so ML stops retrying — ML retries every non-2xx and a
+      // malformed body won't parse on a retry either. Log it for observability.
+      console.warn('[mercado-livre/webhook] ignoring unparseable body');
+      return NextResponse.json({ ok: true, accepted: false });
     }
     throw err;
   }
