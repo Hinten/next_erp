@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { ESTADO_NFE } from '../../nfe';
 import {
+  nfeFiscalEncerrada,
   pagamentoInesperado,
   podeTrocar,
   travarInclusaoProduto,
@@ -120,6 +122,20 @@ describe('pagamentoInesperado', () => {
       'error',
     ] as const) {
       expect(pagamentoInesperado(estado)).toBe(false);
+    }
+  });
+});
+
+describe('nfeFiscalEncerrada', () => {
+  it('flags cancelada and numeração-inutilizada', () => {
+    expect(nfeFiscalEncerrada(ESTADO_NFE.cancelada)).toBe(true);
+    expect(nfeFiscalEncerrada(ESTADO_NFE.numeracaoInutilizada)).toBe(true);
+  });
+
+  it('does not flag aprovada or any in-flight / rejected estado', () => {
+    for (const value of Object.values(ESTADO_NFE)) {
+      if (value === ESTADO_NFE.cancelada || value === ESTADO_NFE.numeracaoInutilizada) continue;
+      expect(nfeFiscalEncerrada(value)).toBe(false);
     }
   });
 });

@@ -1,3 +1,4 @@
+import { ESTADO_NFE, type EstadoNFe } from '../../nfe';
 import type { EstadoPedido } from '../collection/pedido';
 
 /* -------------------------------------------------------------------------- */
@@ -136,4 +137,17 @@ const PAGAMENTO_INESPERADO: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
 
 export function pagamentoInesperado(estado: EstadoPedido): boolean {
   return PAGAMENTO_INESPERADO.has(estado);
+}
+
+/**
+ * NF-e states that have closed this pedido's fiscal lifecycle at SEFAZ —
+ * `cancelada` and `numeracaoInutilizada`. Like an `aprovada` NF-e they lock the
+ * pedido's Fiscal tab and pagamentos, but **hard**: unlike `aprovada` (which the
+ * legacy save flow re-allows in a few pedido estados via `travarPagamentoComNFe`),
+ * a cancelada/inutilizada NF-e blocks fiscal + payment edits outright — there is
+ * nothing left to change. Lives here (not in `nfe.ts`) with the other pedido-lock
+ * predicates so a UI-only edit does not re-trigger the live SEFAZ CI pipeline.
+ */
+export function nfeFiscalEncerrada(estado: EstadoNFe): boolean {
+  return estado === ESTADO_NFE.cancelada || estado === ESTADO_NFE.numeracaoInutilizada;
 }

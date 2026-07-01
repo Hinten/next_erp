@@ -1,12 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  ESTADO_NFE,
-  ESTADO_NFE_LABELS,
-  estadoNFeSchema,
-  nfeFiscalEncerrada,
-  nfeMeta,
-  nfeSchema,
-} from './nfe';
+import { ESTADO_NFE, ESTADO_NFE_LABELS, estadoNFeSchema, nfeMeta, nfeSchema } from './nfe';
 import { pedidoMeta } from './pedido';
 
 const MINIMAL = {
@@ -114,20 +107,6 @@ describe('estado labels', () => {
     for (const value of Object.values(ESTADO_NFE)) {
       expect(ESTADO_NFE_LABELS[value]).toBeDefined();
       expect(estadoNFeSchema.safeParse(value).success).toBe(true);
-    }
-  });
-});
-
-describe('nfeFiscalEncerrada', () => {
-  it('flags cancelada and numeração-inutilizada', () => {
-    expect(nfeFiscalEncerrada(ESTADO_NFE.cancelada)).toBe(true);
-    expect(nfeFiscalEncerrada(ESTADO_NFE.numeracaoInutilizada)).toBe(true);
-  });
-
-  it('does not flag aprovada or any in-flight / rejected estado', () => {
-    for (const value of Object.values(ESTADO_NFE)) {
-      if (value === ESTADO_NFE.cancelada || value === ESTADO_NFE.numeracaoInutilizada) continue;
-      expect(nfeFiscalEncerrada(value)).toBe(false);
     }
   });
 });
