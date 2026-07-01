@@ -216,4 +216,24 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
     await expect(page.getByRole('tabpanel').getByText(/Edição bloqueada/)).toBeVisible();
     await expect(page.getByRole('button', { name: /Adicionar pedido/ })).toBeDisabled();
   });
+
+  test('warns (without blocking) when adding a payment to an already-paid pedido', async ({
+    page,
+  }) => {
+    // "pago" but no approved NF-e → the legacy save guard does NOT lock payments,
+    // so adding stays enabled; we only surface a soft warning.
+    await db().collection('pedidos').doc(pedidoId).update({ estado: 'pago' });
+
+    await page.goto(`/pedidos/${pedidoId}/editar`);
+    await page.getByRole('tab', { name: 'Pagamento' }).click();
+
+    const addBtn = page.getByRole('button', { name: /Adicionar pagamento/ });
+    await expect(addBtn).toBeEnabled();
+    await addBtn.click();
+
+    // The "Novo pagamento" form shows the unexpected-payment warning, but the
+    // "Adicionar" confirm button stays enabled (non-blocking).
+    await expect(page.getByText(/novo\s+pagamento é incomum/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Adicionar', exact: true })).toBeEnabled();
+  });
 });

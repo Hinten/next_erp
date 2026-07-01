@@ -14,6 +14,7 @@ import {
   ESTADO_PEDIDO_LABELS,
   pedidoPageIssues,
   travarInclusaoProduto,
+  travarPagamentoComNFe,
   type EstadoPedido,
   type Pedido,
   pedidoSchema,
@@ -376,11 +377,19 @@ export function PedidoForm({
   // Default-deny: while the NF-e snapshot is still resolving (edit mode), keep
   // Fiscal locked so an aprovada NF-e can't be bypassed in the load window.
   const fiscalDisabled = disabled || nfeAprovada || (pedidoId != null && nfeLoading);
+  // Pagamento lock (legacy `canSavePagamentos`): an aprovada NF-e blocks payment
+  // edits, except in the carve-out estados (`travarPagamentoComNFe`). No aprovada
+  // NF-e → pagamentos stay editable regardless of estado — a soft "unexpected
+  // payment" warning (PagamentosSection) covers the already-paid case instead.
+  const pagamentosTravados = nfeAprovada && travarPagamentoComNFe(estadoNow);
   const dadosGeraisLockNotice = itensTravados
     ? `Edição bloqueada — pedido no estado "${ESTADO_PEDIDO_LABELS[estadoNow]}". Dados gerais, itens, frete e devolução só podem ser editados na fase de carrinho/checkout.`
     : null;
   const fiscalLockNotice = nfeAprovada
     ? 'Dados fiscais bloqueados — este pedido já tem uma NF-e aprovada.'
+    : null;
+  const pagamentoLockNotice = pagamentosTravados
+    ? 'Pagamentos bloqueados — este pedido já tem uma NF-e aprovada.'
     : null;
 
   return (
@@ -465,14 +474,22 @@ export function PedidoForm({
 
           <Tabs.Panel value="pagamento" pt="md">
             {pedidoId ? (
-              <PagamentosSection
-                pedidoId={pedidoId}
-                disabled={disabled}
-                // `getValues` (not `watch`): the total is stable while the
-                // Pagamento tab is open (items are edited on Principal), so no
-                // subscription/re-render is needed.
-                pedidoTotal={form.getValues('valorCobrado') ?? 0}
-              />
+              <>
+                {pagamentoLockNotice && (
+                  <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+                    {pagamentoLockNotice}
+                  </Alert>
+                )}
+                <PagamentosSection
+                  pedidoId={pedidoId}
+                  disabled={disabled || pagamentosTravados}
+                  estado={estadoNow}
+                  // `getValues` (not `watch`): the total is stable while the
+                  // Pagamento tab is open (items are edited on Principal), so no
+                  // subscription/re-render is needed.
+                  pedidoTotal={form.getValues('valorCobrado') ?? 0}
+                />
+              </>
             ) : (
               <PlaceholderTab name="Pagamento" />
             )}

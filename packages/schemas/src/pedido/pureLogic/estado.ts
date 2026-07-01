@@ -90,3 +90,50 @@ const ITENS_EDITAVEIS: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
 export function travarInclusaoProduto(estado: EstadoPedido): boolean {
   return !ITENS_EDITAVEIS.has(estado);
 }
+
+/* -------------------------------------------------------------------------- */
+/*                          Pagamento edit-capability                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Estados that keep pagamentos editable **even when an aprovada NF-e exists**.
+ * The legacy save guard (`cadastroPedidoProvider.dart:749`) blocks pagamentos
+ * when `estado != iniciado && has aprovada NF-e`, but the save flow
+ * (`:1058-1062`) re-allows the write when the old estado is
+ * `aguardandoConfirmacaoDePagamento` or the pedido is being `cancelado`. This
+ * ALLOW-list captures those carve-outs so a newly-added `EstadoPedido` defaults
+ * to LOCKED-once-NF-e-aprovada — the safe default.
+ */
+const PAGAMENTO_EDITAVEL_COM_NFE: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  'iniciado',
+  'aguardandoConfirmacaoDePagamento',
+  'cancelado',
+]);
+
+/**
+ * Whether pagamentos must be locked for this estado **given that the pedido has
+ * an aprovada NF-e** (legacy `travar_fiscal` extends to `canSavePagamentos`).
+ * The caller ANDs this with "an NF-e is aprovada" — with no aprovada NF-e,
+ * pagamentos stay editable regardless of estado (faithful to the legacy guard).
+ */
+export function travarPagamentoComNFe(estado: EstadoPedido): boolean {
+  return !PAGAMENTO_EDITAVEL_COM_NFE.has(estado);
+}
+
+/**
+ * Estados in which the pedido is already considered paid / settled, so
+ * registering a NEW pagamento is unusual (it would create troco/excedente, or
+ * touch an already-refunded order). Drives a soft, non-blocking warning when the
+ * user opens the "add pagamento" form — it is NOT a lock.
+ */
+const PAGAMENTO_INESPERADO: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  'pago',
+  'emProcessamento',
+  'finalizado',
+  'estornadoParcialmente',
+  'estornadoIntegralmente',
+]);
+
+export function pagamentoInesperado(estado: EstadoPedido): boolean {
+  return PAGAMENTO_INESPERADO.has(estado);
+}

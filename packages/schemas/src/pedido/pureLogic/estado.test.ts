@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { podeTrocar, travarInclusaoProduto } from './estado';
+import {
+  pagamentoInesperado,
+  podeTrocar,
+  travarInclusaoProduto,
+  travarPagamentoComNFe,
+} from './estado';
 
 describe('podeTrocar', () => {
   it('allows returns only from paid/settled orders', () => {
@@ -54,6 +59,67 @@ describe('travarInclusaoProduto', () => {
       'finalizado',
     ] as const) {
       expect(travarInclusaoProduto(estado)).toBe(true);
+    }
+  });
+});
+
+describe('travarPagamentoComNFe', () => {
+  it('keeps pagamentos editable in the legacy carve-out estados (even with an aprovada NF-e)', () => {
+    // Legacy `cadastroPedidoProvider.dart:1058-1062` re-allows the write.
+    for (const estado of ['iniciado', 'aguardandoConfirmacaoDePagamento', 'cancelado'] as const) {
+      expect(travarPagamentoComNFe(estado)).toBe(false);
+    }
+  });
+
+  it('locks pagamentos for every other estado (paired with an aprovada NF-e)', () => {
+    for (const estado of [
+      'carrinho',
+      'carrinhoAbandonado',
+      'escolhendoFormaDePagamento',
+      'pagamentoNaoRealizado',
+      'emAnalise',
+      'emProcessamento',
+      'pago',
+      'estornadoParcialmente',
+      'estornadoIntegralmente',
+      'processandoCancelamento',
+      'fraude',
+      'finalizado',
+      'error',
+    ] as const) {
+      expect(travarPagamentoComNFe(estado)).toBe(true);
+    }
+  });
+});
+
+describe('pagamentoInesperado', () => {
+  it('flags the already-paid / settled estados', () => {
+    for (const estado of [
+      'pago',
+      'emProcessamento',
+      'finalizado',
+      'estornadoParcialmente',
+      'estornadoIntegralmente',
+    ] as const) {
+      expect(pagamentoInesperado(estado)).toBe(true);
+    }
+  });
+
+  it('does not flag the still-collecting / cancelled estados', () => {
+    for (const estado of [
+      'iniciado',
+      'carrinho',
+      'carrinhoAbandonado',
+      'escolhendoFormaDePagamento',
+      'aguardandoConfirmacaoDePagamento',
+      'pagamentoNaoRealizado',
+      'emAnalise',
+      'processandoCancelamento',
+      'cancelado',
+      'fraude',
+      'error',
+    ] as const) {
+      expect(pagamentoInesperado(estado)).toBe(false);
     }
   });
 });
