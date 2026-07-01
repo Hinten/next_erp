@@ -4,18 +4,27 @@ import { useEffect, useMemo, useState } from 'react';
 import { useForm, type FieldErrors, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
-import { Tabs } from '@mantine/core';
+import { Alert, Tabs } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconExclamationCircle } from '@tabler/icons-react';
+import { IconExclamationCircle, IconLock } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
 import {
   derivePedidoTotals,
+  ESTADO_NFE,
+  ESTADO_NFE_LABELS,
+  ESTADO_PEDIDO_LABELS,
+  nfeFiscalEncerrada,
   pedidoPageIssues,
+  travarInclusaoProduto,
+  travarPagamentoComNFe,
   type EstadoPedido,
   type Pedido,
   pedidoSchema,
 } from '@delfrance/schemas';
+import { buildQuery, limit, orderByField } from '@delfrance/data';
+import { useSnapshot } from '@delfrance/data/hooks';
 import { useUnsavedChangesGuard } from '@delfrance/ui';
+import { nfeCollection } from '@/lib/data/nfeCollection';
 import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -217,6 +226,29 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
   return { values: {}, errors: { ...result.errors, ...extraErrors } } as unknown as ResolverResult;
 };
 
+/**
+ * Notice atop the NF-e-gated tabs (Fiscal / Pagamento). While the NF-e snapshot
+ * is still loading the tab is default-denied, so explain the temporary lock;
+ * once resolved, show the state-specific lock reason (or nothing).
+ */
+function NfeLockNotice({ loading, lockText }: { loading: boolean; lockText: string | null }) {
+  if (loading) {
+    return (
+      <Alert color="gray" mb="md">
+        Carregando dados da NF-e…
+      </Alert>
+    );
+  }
+  if (lockText) {
+    return (
+      <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+        {lockText}
+      </Alert>
+    );
+  }
+  return null;
+}
+
 function buildDefaults(existing?: Pedido, pedidoId?: string): PedidoFormState {
   if (!existing) return EMPTY_DEFAULTS;
   return {
@@ -338,6 +370,66 @@ export function PedidoForm({
 
   const disabled = !canWrite;
 
+  // Edit-capability locking (port of legacy `travar_pedido` / `travar_fiscal`,
+  // `cadastroPedidoProvider.dart:134-145` + `pedidoCadastro.dart:396-609`):
+  //  - items + general data (Principal tab) lock once the estado leaves the
+  //    cart/checkout phase (`travarInclusaoProduto`);
+  //  - the Fiscal tab locks once any NF-e is aprovada.
+  // The `canWrite` permission gate applies on top. The legacy read the NF-e once
+  // (async, racy); the reactive `useSnapshot` here keeps the lock in step live.
+  // `liveEstado` (the persisted snapshot estado) is the right source — matching
+  // the legacy "loaded estado" — and avoids subscribing the whole form to a watch.
+  const estadoNow: EstadoPedido = liveEstado ?? 'iniciado';
+  const nfeQuery = useMemo(
+    () =>
+      pedidoId
+        ? buildQuery(nfeCollection.ref(db, { pedidoId }), [
+            orderByField('ultima_modificacao', 'desc'),
+            limit(1),
+          ])
+        : null,
+    [db, pedidoId],
+  );
+  const { data: nfeData, loading: nfeLoading } = useSnapshot(nfeQuery);
+  const nfeEstado = nfeData?.[0]?.data?.estado ?? null;
+  const nfeAprovada = nfeEstado === ESTADO_NFE.aprovada;
+  // A cancelada / numeração-inutilizada NF-e also locks the Fiscal tab and
+  // pagamentos — and hard, without the aprovada-only pedido-estado carve-outs.
+  const nfeEncerrada = nfeEstado != null && nfeFiscalEncerrada(nfeEstado);
+  const nfeBloqueiaFiscal = nfeAprovada || nfeEncerrada;
+  // Default-deny both NF-e-gated tabs (Fiscal + Pagamento) while the snapshot is
+  // still resolving (edit mode): an aprovada/cancelada/inutilizada NF-e must not
+  // be editable in the load window before the subscription lands.
+  const nfeCarregando = pedidoId != null && nfeLoading;
+  const itensTravados = travarInclusaoProduto(estadoNow);
+  // Estado lock (legacy `travar_pedido`): items + general data, the Frete tab,
+  // the Devolução tab and the footer desconto all lock once the pedido leaves the
+  // cart/checkout phase. Observações internas is the sole exception — always
+  // editable (legacy `pedidoCadastro.dart:532`), so it stays on the bare
+  // write-permission `disabled`.
+  const dadosGeraisDisabled = disabled || itensTravados;
+  // Default-deny: while the NF-e snapshot is still resolving (edit mode), keep
+  // Fiscal locked so an aprovada NF-e can't be bypassed in the load window.
+  const fiscalDisabled = disabled || nfeBloqueiaFiscal || nfeCarregando;
+  // Pagamento lock (legacy `canSavePagamentos`): an aprovada NF-e blocks payment
+  // edits except in the carve-out estados (`travarPagamentoComNFe`); a cancelada /
+  // inutilizada NF-e blocks them outright. No blocking NF-e → pagamentos stay
+  // editable regardless of estado — a soft "unexpected payment" warning
+  // (PagamentosSection) covers the already-paid case instead.
+  const pagamentosBloqueadosPorNFe =
+    nfeEncerrada || (nfeAprovada && travarPagamentoComNFe(estadoNow));
+  const pagamentosTravados = nfeCarregando || pagamentosBloqueadosPorNFe;
+  const dadosGeraisLockNotice = itensTravados
+    ? `Edição bloqueada — pedido no estado "${ESTADO_PEDIDO_LABELS[estadoNow]}". Dados gerais, itens, frete e devolução só podem ser editados na fase de carrinho/checkout.`
+    : null;
+  const nfeEstadoLabel = nfeEstado ? ESTADO_NFE_LABELS[nfeEstado] : null;
+  const fiscalLockNotice = nfeBloqueiaFiscal
+    ? `Dados fiscais bloqueados — a NF-e deste pedido está "${nfeEstadoLabel}".`
+    : null;
+  const pagamentoLockNotice = pagamentosBloqueadosPorNFe
+    ? `Pagamentos bloqueados — a NF-e deste pedido está "${nfeEstadoLabel}".`
+    : null;
+
   return (
     // noValidate: Zod owns validation — native constraint validation would
     // silently block the submit when a `required` control is empty inside a
@@ -386,32 +478,48 @@ export function PedidoForm({
           </Tabs.List>
 
           <Tabs.Panel value="principal" pt="md">
+            {dadosGeraisLockNotice && (
+              <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+                {dadosGeraisLockNotice}
+              </Alert>
+            )}
             <PrincipalTab
               form={form}
               db={db}
-              disabled={disabled}
+              disabled={dadosGeraisDisabled}
+              observacoesDisabled={disabled}
               vendedorLabel={user?.email ?? user?.uid ?? undefined}
             />
           </Tabs.Panel>
 
           <Tabs.Panel value="fiscal" pt="md">
-            <FiscalTab form={form} db={db} disabled={disabled} />
+            <NfeLockNotice loading={nfeCarregando} lockText={fiscalLockNotice} />
+            <FiscalTab form={form} db={db} disabled={fiscalDisabled} />
           </Tabs.Panel>
 
           <Tabs.Panel value="frete" pt="md">
-            <FreteTab form={form} db={db} disabled={disabled} pedidoId={pedidoId} />
+            {dadosGeraisLockNotice && (
+              <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+                {dadosGeraisLockNotice}
+              </Alert>
+            )}
+            <FreteTab form={form} db={db} disabled={dadosGeraisDisabled} pedidoId={pedidoId} />
           </Tabs.Panel>
 
           <Tabs.Panel value="pagamento" pt="md">
             {pedidoId ? (
-              <PagamentosSection
-                pedidoId={pedidoId}
-                disabled={disabled}
-                // `getValues` (not `watch`): the total is stable while the
-                // Pagamento tab is open (items are edited on Principal), so no
-                // subscription/re-render is needed.
-                pedidoTotal={form.getValues('valorCobrado') ?? 0}
-              />
+              <>
+                <NfeLockNotice loading={nfeCarregando} lockText={pagamentoLockNotice} />
+                <PagamentosSection
+                  pedidoId={pedidoId}
+                  disabled={disabled || pagamentosTravados}
+                  estado={estadoNow}
+                  // `getValues` (not `watch`): the total is stable while the
+                  // Pagamento tab is open (items are edited on Principal), so no
+                  // subscription/re-render is needed.
+                  pedidoTotal={form.getValues('valorCobrado') ?? 0}
+                />
+              </>
             ) : (
               <PlaceholderTab name="Pagamento" />
             )}
@@ -426,7 +534,12 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="devolucao" pt="md">
-            <DevolucaoTab form={form} db={db} disabled={disabled} pedidoId={pedidoId} />
+            {dadosGeraisLockNotice && (
+              <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+                {dadosGeraisLockNotice}
+              </Alert>
+            )}
+            <DevolucaoTab form={form} db={db} disabled={dadosGeraisDisabled} pedidoId={pedidoId} />
           </Tabs.Panel>
 
           <Tabs.Panel value="estado" pt="md">
@@ -441,6 +554,7 @@ export function PedidoForm({
         pedidoId={pedidoId}
         canWrite={canWrite}
         disabled={disabled}
+        descontoDisabled={dadosGeraisDisabled}
         submitLabel={submitLabel}
         isSubmitting={form.formState.isSubmitting}
         submitError={submitError}

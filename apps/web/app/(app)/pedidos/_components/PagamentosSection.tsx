@@ -34,9 +34,12 @@ import {
 } from '@delfrance/data/pedido';
 import {
   BANDEIRA_LABELS,
+  ESTADO_PEDIDO_LABELS,
   FORMA_PAGAMENTO,
   FORMA_PAGAMENTO_LABELS,
   STATUS_PAGAMENTO_LABELS,
+  pagamentoInesperado,
+  type EstadoPedido,
   type FormaPagamento,
   type Pagamento,
   type StatusPagamento,
@@ -93,10 +96,13 @@ const bandeiraOptions = [
 export function PagamentosSection({
   pedidoId,
   disabled,
+  estado,
   pedidoTotal = 0,
 }: {
   pedidoId: string;
   disabled?: boolean;
+  /** Live pedido estado — drives the soft "unexpected payment" warning. */
+  estado?: EstadoPedido;
   /** Pedido charged total (`valorCobrado`) — drives the "valor restante" autofill. */
   pedidoTotal?: number;
 }) {
@@ -228,6 +234,13 @@ export function PagamentosSection({
         <Card withBorder>
           <Stack gap="sm">
             <Text fw={500}>{editing.id ? 'Editar pagamento' : 'Novo pagamento'}</Text>
+            {editing.id === null && estado && pagamentoInesperado(estado) && (
+              <Alert color="yellow">
+                Este pedido já está &quot;{ESTADO_PEDIDO_LABELS[estado]}&quot; — registrar um novo
+                pagamento é incomum e pode gerar excedente/troco. Prossiga apenas se for
+                intencional.
+              </Alert>
+            )}
             <Group grow align="flex-start">
               <Select
                 label="Forma de pagamento"

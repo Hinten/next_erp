@@ -23,6 +23,13 @@ export interface PedidoFooterProps {
   pedidoId?: string;
   canWrite: boolean;
   disabled: boolean;
+  /**
+   * Lock for the editable "Desconto" input. The footer's Save buttons stay on the
+   * write-permission `disabled`, but the desconto is part of the pedido's general
+   * data, so it follows the estado lock (legacy `pedidoCadastro.dart:1719`,
+   * `travar_pedido`). Falls back to `disabled` when omitted.
+   */
+  descontoDisabled?: boolean;
   submitLabel: string;
   isSubmitting: boolean;
   submitError: string | null;
@@ -72,6 +79,7 @@ export function PedidoFooter({
   pedidoId,
   canWrite,
   disabled,
+  descontoDisabled,
   submitLabel,
   isSubmitting,
   submitError,
@@ -188,7 +196,7 @@ export function PedidoFooter({
                     allowedDecimalSeparators={[',', '.']}
                     w={110}
                     size="xs"
-                    disabled={disabled}
+                    disabled={descontoDisabled ?? disabled}
                   />
                 )}
               />

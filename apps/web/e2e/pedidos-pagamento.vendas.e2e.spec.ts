@@ -185,4 +185,55 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
       )
       .toEqual({ forma: 3, valor: 10, bandeira: '01' });
   });
+
+  test('locks dados gerais / itens / frete / devolução once the pedido leaves the cart phase (estado "pago") — but keeps observações editable', async ({
+    page,
+  }) => {
+    // beforeEach reset estado to "iniciado"; move it to "pago" so the edit lock
+    // (legacy `travar_inclusao_produto` / `travar_pedido`) engages.
+    await db().collection('pedidos').doc(pedidoId).update({ estado: 'pago' });
+
+    await page.goto(`/pedidos/${pedidoId}/editar`);
+    await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
+
+    // Principal: the lock notice shows and item editing is disabled…
+    await expect(page.getByText(/Edição bloqueada/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Adicionar produto' })).toBeDisabled();
+    // …but "Observações internas" stays editable (legacy leaves it unlocked).
+    await expect(page.getByLabel('Observações internas')).toBeEnabled();
+
+    // Footer: the editable "Desconto" follows the estado lock (legacy
+    // `pedidoCadastro.dart:1719`), while the Salvar button stays enabled.
+    await expect(page.getByLabel('Desconto total')).toBeDisabled();
+
+    // Frete tab: the whole tab locks (legacy passes `travarPedido` to the widget).
+    await page.getByRole('tab', { name: 'Frete' }).click();
+    await expect(page.getByRole('tabpanel').getByText(/Edição bloqueada/)).toBeVisible();
+
+    // Devolução tab: a return is a NEW order returning this one, so the original's
+    // rows lock once it leaves the cart phase (legacy `!travar_pedido`).
+    await page.getByRole('tab', { name: 'Devolução' }).click();
+    await expect(page.getByRole('tabpanel').getByText(/Edição bloqueada/)).toBeVisible();
+    await expect(page.getByRole('button', { name: /Adicionar pedido/ })).toBeDisabled();
+  });
+
+  test('warns (without blocking) when adding a payment to an already-paid pedido', async ({
+    page,
+  }) => {
+    // "pago" but no approved NF-e → the legacy save guard does NOT lock payments,
+    // so adding stays enabled; we only surface a soft warning.
+    await db().collection('pedidos').doc(pedidoId).update({ estado: 'pago' });
+
+    await page.goto(`/pedidos/${pedidoId}/editar`);
+    await page.getByRole('tab', { name: 'Pagamento' }).click();
+
+    const addBtn = page.getByRole('button', { name: /Adicionar pagamento/ });
+    await expect(addBtn).toBeEnabled();
+    await addBtn.click();
+
+    // The "Novo pagamento" form shows the unexpected-payment warning, but the
+    // "Adicionar" confirm button stays enabled (non-blocking).
+    await expect(page.getByText(/novo\s+pagamento é incomum/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Adicionar', exact: true })).toBeEnabled();
+  });
 });

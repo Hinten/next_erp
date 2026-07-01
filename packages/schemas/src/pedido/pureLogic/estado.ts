@@ -1,3 +1,4 @@
+import { ESTADO_NFE, type EstadoNFe } from '../../nfe';
 import type { EstadoPedido } from '../collection/pedido';
 
 /* -------------------------------------------------------------------------- */
@@ -56,4 +57,97 @@ const PODE_TROCAR: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
 
 export function podeTrocar(estado: EstadoPedido): boolean {
   return PODE_TROCAR.has(estado);
+}
+
+/* -------------------------------------------------------------------------- */
+/*                        Edit-capability locking                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * States in which a pedido's items + general data stay EDITABLE — the cart /
+ * checkout phase, plus `error` (so a broken pedido can be repaired, matching the
+ * legacy `_travar_inclusao_produto` list, whose complement is exactly these).
+ * The legacy editor used the inverse "locked" list
+ * (`.old/packages/pedido/lib/src/models.dart:2394`) and set
+ * `travar_pedido = estado.travar_inclusao_produto`, rendering the cliente /
+ * operação / item fields read-only (`pedidoCadastro.dart:396-492`).
+ *
+ * We model it as an ALLOW-list (like `podeTrocar`) so a newly-added
+ * `EstadoPedido` defaults to LOCKED — the safe default.
+ */
+const ITENS_EDITAVEIS: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  'iniciado',
+  'carrinho',
+  'carrinhoAbandonado',
+  'escolhendoFormaDePagamento',
+  'error',
+]);
+
+/**
+ * Whether the pedido editor must lock item / general-data editing for this
+ * estado (legacy `travar_inclusao_produto` → `travar_pedido`). An aprovada NF-e
+ * locks the Fiscal tab separately (legacy `travar_fiscal`), regardless of estado.
+ */
+export function travarInclusaoProduto(estado: EstadoPedido): boolean {
+  return !ITENS_EDITAVEIS.has(estado);
+}
+
+/* -------------------------------------------------------------------------- */
+/*                          Pagamento edit-capability                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Estados that keep pagamentos editable **even when an aprovada NF-e exists**.
+ * The legacy save guard (`cadastroPedidoProvider.dart:749`) blocks pagamentos
+ * when `estado != iniciado && has aprovada NF-e`, but the save flow
+ * (`:1058-1062`) re-allows the write when the old estado is
+ * `aguardandoConfirmacaoDePagamento` or the pedido is being `cancelado`. This
+ * ALLOW-list captures those carve-outs so a newly-added `EstadoPedido` defaults
+ * to LOCKED-once-NF-e-aprovada — the safe default.
+ */
+const PAGAMENTO_EDITAVEL_COM_NFE: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  'iniciado',
+  'aguardandoConfirmacaoDePagamento',
+  'cancelado',
+]);
+
+/**
+ * Whether pagamentos must be locked for this estado **given that the pedido has
+ * an aprovada NF-e** (legacy `travar_fiscal` extends to `canSavePagamentos`).
+ * The caller ANDs this with "an NF-e is aprovada" — with no aprovada NF-e,
+ * pagamentos stay editable regardless of estado (faithful to the legacy guard).
+ */
+export function travarPagamentoComNFe(estado: EstadoPedido): boolean {
+  return !PAGAMENTO_EDITAVEL_COM_NFE.has(estado);
+}
+
+/**
+ * Estados in which the pedido is already considered paid / settled, so
+ * registering a NEW pagamento is unusual (it would create troco/excedente, or
+ * touch an already-refunded order). Drives a soft, non-blocking warning when the
+ * user opens the "add pagamento" form — it is NOT a lock.
+ */
+const PAGAMENTO_INESPERADO: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  'pago',
+  'emProcessamento',
+  'finalizado',
+  'estornadoParcialmente',
+  'estornadoIntegralmente',
+]);
+
+export function pagamentoInesperado(estado: EstadoPedido): boolean {
+  return PAGAMENTO_INESPERADO.has(estado);
+}
+
+/**
+ * NF-e states that have closed this pedido's fiscal lifecycle at SEFAZ —
+ * `cancelada` and `numeracaoInutilizada`. Like an `aprovada` NF-e they lock the
+ * pedido's Fiscal tab and pagamentos, but **hard**: unlike `aprovada` (which the
+ * legacy save flow re-allows in a few pedido estados via `travarPagamentoComNFe`),
+ * a cancelada/inutilizada NF-e blocks fiscal + payment edits outright — there is
+ * nothing left to change. Lives here (not in `nfe.ts`) with the other pedido-lock
+ * predicates so a UI-only edit does not re-trigger the live SEFAZ CI pipeline.
+ */
+export function nfeFiscalEncerrada(estado: EstadoNFe): boolean {
+  return estado === ESTADO_NFE.cancelada || estado === ESTADO_NFE.numeracaoInutilizada;
 }
