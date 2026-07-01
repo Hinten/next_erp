@@ -293,6 +293,7 @@ export {
   estadoNFeSchema,
   ESTADO_NFE,
   ESTADO_NFE_LABELS,
+  nfeFiscalEncerrada,
   type NotaFiscalEletronica,
   type EstadoNFe,
 } from './nfe';

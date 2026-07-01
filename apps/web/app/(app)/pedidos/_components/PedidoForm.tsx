@@ -11,7 +11,9 @@ import { PERM } from '@delfrance/auth';
 import {
   derivePedidoTotals,
   ESTADO_NFE,
+  ESTADO_NFE_LABELS,
   ESTADO_PEDIDO_LABELS,
+  nfeFiscalEncerrada,
   pedidoPageIssues,
   travarInclusaoProduto,
   travarPagamentoComNFe,
@@ -366,7 +368,12 @@ export function PedidoForm({
     [db, pedidoId],
   );
   const { data: nfeData, loading: nfeLoading } = useSnapshot(nfeQuery);
-  const nfeAprovada = nfeData?.[0]?.data?.estado === ESTADO_NFE.aprovada;
+  const nfeEstado = nfeData?.[0]?.data?.estado ?? null;
+  const nfeAprovada = nfeEstado === ESTADO_NFE.aprovada;
+  // A cancelada / numeração-inutilizada NF-e also locks the Fiscal tab and
+  // pagamentos — and hard, without the aprovada-only pedido-estado carve-outs.
+  const nfeEncerrada = nfeEstado != null && nfeFiscalEncerrada(nfeEstado);
+  const nfeBloqueiaFiscal = nfeAprovada || nfeEncerrada;
   const itensTravados = travarInclusaoProduto(estadoNow);
   // Estado lock (legacy `travar_pedido`): items + general data, the Frete tab,
   // the Devolução tab and the footer desconto all lock once the pedido leaves the
@@ -376,20 +383,22 @@ export function PedidoForm({
   const dadosGeraisDisabled = disabled || itensTravados;
   // Default-deny: while the NF-e snapshot is still resolving (edit mode), keep
   // Fiscal locked so an aprovada NF-e can't be bypassed in the load window.
-  const fiscalDisabled = disabled || nfeAprovada || (pedidoId != null && nfeLoading);
+  const fiscalDisabled = disabled || nfeBloqueiaFiscal || (pedidoId != null && nfeLoading);
   // Pagamento lock (legacy `canSavePagamentos`): an aprovada NF-e blocks payment
-  // edits, except in the carve-out estados (`travarPagamentoComNFe`). No aprovada
-  // NF-e → pagamentos stay editable regardless of estado — a soft "unexpected
-  // payment" warning (PagamentosSection) covers the already-paid case instead.
-  const pagamentosTravados = nfeAprovada && travarPagamentoComNFe(estadoNow);
+  // edits except in the carve-out estados (`travarPagamentoComNFe`); a cancelada /
+  // inutilizada NF-e blocks them outright. No blocking NF-e → pagamentos stay
+  // editable regardless of estado — a soft "unexpected payment" warning
+  // (PagamentosSection) covers the already-paid case instead.
+  const pagamentosTravados = nfeEncerrada || (nfeAprovada && travarPagamentoComNFe(estadoNow));
   const dadosGeraisLockNotice = itensTravados
     ? `Edição bloqueada — pedido no estado "${ESTADO_PEDIDO_LABELS[estadoNow]}". Dados gerais, itens, frete e devolução só podem ser editados na fase de carrinho/checkout.`
     : null;
-  const fiscalLockNotice = nfeAprovada
-    ? 'Dados fiscais bloqueados — este pedido já tem uma NF-e aprovada.'
+  const nfeEstadoLabel = nfeEstado ? ESTADO_NFE_LABELS[nfeEstado] : null;
+  const fiscalLockNotice = nfeBloqueiaFiscal
+    ? `Dados fiscais bloqueados — a NF-e deste pedido está "${nfeEstadoLabel}".`
     : null;
   const pagamentoLockNotice = pagamentosTravados
-    ? 'Pagamentos bloqueados — este pedido já tem uma NF-e aprovada.'
+    ? `Pagamentos bloqueados — a NF-e deste pedido está "${nfeEstadoLabel}".`
     : null;
 
   return (

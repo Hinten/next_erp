@@ -55,6 +55,17 @@ export const ESTADO_NFE_LABELS: Record<EstadoNFe, string> = {
 };
 
 /**
+ * NF-e states that have closed this pedido's fiscal lifecycle at SEFAZ —
+ * `cancelada` and `numeracaoInutilizada`. Like an `aprovada` NF-e they lock the
+ * pedido's Fiscal tab and pagamentos, but **hard**: unlike `aprovada` (which the
+ * legacy save flow re-allows in a few pedido estados), a cancelada/inutilizada
+ * NF-e blocks fiscal + payment edits outright — there is nothing left to change.
+ */
+export function nfeFiscalEncerrada(estado: EstadoNFe): boolean {
+  return estado === ESTADO_NFE.cancelada || estado === ESTADO_NFE.numeracaoInutilizada;
+}
+
+/**
  * NotaFiscalEletronica — documento fiscal eletrônico. Subcoleção de Pedido
  * (`pedidos/{pedidoId}/nfev4` — wire name original do Flutter). Read-only na
  * UI Next; emissão fica no `apps/integrations`/Cloud Functions (Phase 5).
