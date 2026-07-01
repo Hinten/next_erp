@@ -88,15 +88,16 @@ test.describe.serial('Clientes e2e — TableView / ObjectView', () => {
     await page.goto('/clientes');
     await applyTextFilter(page, 'Nome', prefix);
     await expectRowVisible(page, row(1));
-    // Default load is nome:asc — first row is -001.
+
+    // The default order is ultimaModificacao:desc, so Nome isn't the active
+    // sort yet — the first header click establishes nome:asc (first row -001).
+    await clickColumnSort(page, 'Nome'); // (unsorted) → asc
+    await expect(page).toHaveURL(/sort=nome%3Aasc/);
     await expect.poll(() => firstRowText(page)).toContain(row(1));
 
     await clickColumnSort(page, 'Nome'); // asc → desc
     await expect(page).toHaveURL(/sort=nome%3Adesc/);
     await expect.poll(() => firstRowText(page)).toContain(row(7));
-
-    await clickColumnSort(page, 'Nome'); // desc → asc
-    await expect.poll(() => firstRowText(page)).toContain(row(1));
   });
 
   test('navigates to the new-cliente page', async ({ page }) => {
