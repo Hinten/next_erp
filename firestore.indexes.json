@@ -59,6 +59,16 @@
       "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
     },
     {
+      "collectionGroup": "operacao",
+      "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]
+    },
+    {
+      "collectionGroup": "operacao",
+      "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "timestamp", "order": "DESCENDING" }]
+    },
+    {
       "collectionGroup": "depositos",
       "queryScope": "COLLECTION",
       "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]
@@ -77,6 +87,11 @@
       "collectionGroup": "tabMedi",
       "queryScope": "COLLECTION",
       "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
+    },
+    {
+      "collectionGroup": "tabMedi",
+      "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "dataCadastro", "order": "DESCENDING" }]
     },
     {
       "collectionGroup": "filiais",

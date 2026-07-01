@@ -2,6 +2,7 @@ import type { FieldConfig } from '@delfrance/ui';
 import type { Produto } from '@delfrance/schemas';
 import { refRenderInput } from '@/components/collection-select/refRenderInput';
 import { categoriaCollection } from '@/lib/data/categoriaCollection';
+import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
 import { skuRenderInput } from './SkuField';
 import { pesoRenderInput } from './PesoField';
 
@@ -48,6 +49,12 @@ export const produtoFieldOverrides: Record<string, FieldConfig> = {
     section: 'Dados gerais',
     // Emits the Flutter `documents/categorias/<id>` doc-path string.
     renderInput: refRenderInput(categoriaCollection, false, 'nome'),
+  },
+  tabelaDeMedidasModaUid: {
+    label: 'Tabela de Medidas (Moda)',
+    section: 'Dados gerais',
+    // Emits the Flutter `documents/tabMedi/<id>` doc-path string.
+    renderInput: refRenderInput(tabelaDeMedidasCollection, false, 'nome'),
   },
   publicado: { label: 'Publicado', section: 'Dados gerais' },
 

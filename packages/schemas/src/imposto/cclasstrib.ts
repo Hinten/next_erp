@@ -3,10 +3,10 @@
  * the CST IBS/CBS indicators, plus the structural CST↔cClassTrib validator
  * (NT 2025.002).
  *
- * **Pure module: no zod, no node deps.** It is re-exported from the
- * browser-safe `./http-provider` subpath so the produto Impostos UI and the
- * emit-time tribute engine (`tribute/schemas.ts` → `parseRtcConfig`) share one
- * source of truth.
+ * **Pure module: no zod, no node deps.** It lives in `@delfrance/schemas`
+ * alongside the tribute schemas + the other fiscal `*_LABELS`, so the shared
+ * imposto editor (apps/web `RtcSection`) and the emit-time tribute schema
+ * (`imposto/tribute.ts` → `parseRtcConfig`) validate against one source of truth.
  *
  * **This is a verified SEED, not the full table.** The complete ~250-code
  * Anexo III is Portal-published (SVRS "Conformidade Fácil" mirror, since

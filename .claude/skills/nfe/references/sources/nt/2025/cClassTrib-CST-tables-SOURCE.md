@@ -61,10 +61,11 @@ Verified against the **SVRS** table (2026-06):
 ## Vendored seed in this repo (#333)
 
 A **verified seed** (not the full table) lives in
-`packages/integrations/nfe/src/tribute/cclasstrib.ts` — currently the CST-000
+`packages/schemas/src/imposto/cclasstrib.ts` — currently the CST-000
 "tributação integral" family (`000001`–`000005`) plus the CST IBS/CBS indicator
-labels. It powers the produto picker + the structural CST↔cClassTrib validator
-and is re-exported browser-safe via `./http-provider`. Codes outside the seed
+labels. It powers the shared imposto picker (`components/imposto/RtcSection`) +
+the structural CST↔cClassTrib validator, and is exported from `@delfrance/schemas`
+(consumed by both the UI and the emit-time tribute schema). Codes outside the seed
 are still **free-typeable** (the UI warns but never blocks), and emission only
 enforces the structural `cClassTrib[0:3] === CST` rule — so a stale seed cannot
 block a valid NF-e. `cClassTribIS` (Anexo II) and `cCredPres` (Anexo IV) are

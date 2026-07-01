@@ -14,7 +14,7 @@ import {
   cClassTribEntriesForCst,
   cstClassTribStructurallyValid,
   validateCstClassTrib,
-} from '../../src/tribute/cclasstrib';
+} from './cclasstrib';
 
 describe('cstClassTribStructurallyValid', () => {
   it('accepts a well-formed pair whose cClassTrib starts with the CST', () => {

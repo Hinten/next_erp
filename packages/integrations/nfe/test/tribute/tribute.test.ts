@@ -19,7 +19,6 @@ import {
   buildPagXml,
   buildTotalXml,
   buildTranspXml,
-  configuracaoIBSCBSSchema,
   fmtMoney,
   fmtRate,
   NFeTributeError,
@@ -884,29 +883,5 @@ describe('aggregateTotals + buildTotalXml — RTC totals', () => {
     const totals = aggregateTotals(items, {}, { emitRtc: true });
     expect(totals.rtc).toBeUndefined();
     expect(buildTotalXml(totals)).not.toContain('IBSCBSTot');
-  });
-});
-
-describe('configuracaoIBSCBSSchema — CST↔cClassTrib structural rule (#333)', () => {
-  const base = { CST: '000', cClassTrib: '000001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 };
-
-  it('accepts the confirmed tributação-integral pair (000 / 000001)', () => {
-    expect(configuracaoIBSCBSSchema.safeParse(base).success).toBe(true);
-  });
-
-  it('accepts a structurally valid code not in the vendored seed (lenient membership)', () => {
-    // 200099 is structurally valid for CST 200 but isn't in our seed — must NOT
-    // be rejected (membership is a UI warning only, never an emit-time block).
-    const ok = configuracaoIBSCBSSchema.safeParse({ ...base, CST: '200', cClassTrib: '200099' });
-    expect(ok.success).toBe(true);
-  });
-
-  it('rejects when cClassTrib first 3 digits ≠ CST', () => {
-    const res = configuracaoIBSCBSSchema.safeParse({ ...base, CST: '000', cClassTrib: '410001' });
-    expect(res.success).toBe(false);
-    if (!res.success) {
-      const issue = res.error.issues.find((i) => i.path.join('.') === 'cClassTrib');
-      expect(issue?.message).toMatch(/3 primeiros dígitos/);
-    }
   });
 });
