@@ -1,0 +1,188 @@
+name: E2E — Emulator (estoque)
+
+# Runs the estoque Playwright spec (produto-estoque.emulator.e2e.spec.ts) against
+# the Firebase Emulator Suite (Auth + Firestore + Functions), where the
+# `aplicarEstoque` callable is served LOCALLY — so the estoque
+# UI → callable → Firestore flow is validated in CI without a staging deploy.
+#
+# Deliberately scoped: only this one spec runs on the emulator, because it depends
+# on a Cloud Function that isn't deployed to staging. Every other e2e spec still
+# runs against staging (CLAUDE.md's "app/e2e on staging" decision holds). This lane
+# is OFFLINE — it needs no Firebase secrets, so it also runs on fork PRs.
+#
+# Machinery mirrors ci-storage.yml (JDK + firebase-tools + emulators:exec) and
+# e2e-reusable.yml (production build + Playwright webServer + failure comment).
+
+on:
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-emulator:
+    name: Emulator e2e (auth + firestore + functions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      # Inlined into the functions bundle at build time (build.mjs) AND used as the
+      # functions emulator's region — must match the client's NEXT_PUBLIC_FUNCTIONS_REGION.
+      FUNCTIONS_REGION: us-east1
+      # Demo/emulator project — no real credentials, nothing touches staging. The
+      # named `default` database is used everywhere (gotcha #8), incl. the emulator.
+      FIREBASE_PROJECT_ID: demo-erp
+      FIREBASE_DATABASE_ID: default
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      # The Firebase Emulator Suite runs on the JVM; firebase-tools >= 15 needs JDK 21+.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup pnpm via corepack
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.4 --activate
+
+      - name: Get pnpm store path
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install firebase-tools (pinned)
+        run: npm i -g firebase-tools@15.15.0
+
+      # Not the Playwright container here (that image lacks the JVM); ubuntu-latest
+      # + `--with-deps` installs Chromium and its apt system libraries.
+      - name: Ensure Chromium + system deps
+        run: pnpm --filter @delfrance/web exec playwright install --with-deps chromium
+
+      - name: Build functions bundle
+        run: pnpm --filter @delfrance/functions build
+
+      # Distinct from the staging e2e build cache (`-emulator-`): this build inlines
+      # the emulator flag, so its output must never be reused by the staging lanes.
+      - name: Cache Next.js build (web, emulator)
+        uses: actions/cache@v5
+        with:
+          path: apps/web/.next/cache
+          key: nextjs-web-emulator-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.event.pull_request.head.sha || github.sha }}
+          restore-keys: |
+            nextjs-web-emulator-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+
+      - name: Build web (emulator mode)
+        # NEXT_PUBLIC_* are inlined at build time. The emulator flag + host make the
+        # client connect Auth/Firestore/Functions to the local emulators; the rest is
+        # dummy Firebase config the emulators ignore (no real key/bucket needed). The
+        # estoque spec touches no Storage, so no storage-emulator client wiring.
+        env:
+          NEXT_PUBLIC_USE_FIREBASE_EMULATOR: 'true'
+          NEXT_PUBLIC_FIREBASE_EMULATOR_HOST: 127.0.0.1
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: demo-erp
+          NEXT_PUBLIC_FIREBASE_DATABASE_ID: default
+          NEXT_PUBLIC_FUNCTIONS_REGION: us-east1
+          NEXT_PUBLIC_FIREBASE_API_KEY: demo-key
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: demo-erp.firebaseapp.com
+          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: demo-erp.appspot.com
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: '000000000000'
+          NEXT_PUBLIC_FIREBASE_APP_ID: '1:000000000000:web:demo'
+          E2E_SOURCEMAPS: 'true'
+        run: pnpm --filter @delfrance/web exec next build
+
+      - name: e2e (estoque) on the emulators
+        # emulators:exec boots the suite and exports FIRESTORE_EMULATOR_HOST /
+        # FIREBASE_AUTH_EMULATOR_HOST to the child, so globalSetup's Admin-SDK
+        # fixtures (seed / ephemeral user / claims) target the emulator with no
+        # service account. Playwright's webServer runs `next start` (prod build,
+        # already wired to the emulators via the build-time flag); the `emulator`
+        # project runs only the estoque spec. GITHUB_RUN_ID (auto) keeps the
+        # fixture namespace consistent, matching firestore.e2e.rules.
+        run: |
+          firebase emulators:exec \
+            --config firebase.e2e.json \
+            --project demo-erp \
+            --only auth,firestore,storage,functions \
+            "PLAYWRIGHT_WEB_CMD='pnpm exec next start --port 3000' pnpm --filter @delfrance/web exec playwright test --project=emulator"
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-emulator
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Downstream job (not a step) so it starts AFTER e2e-emulator concludes and can
+  # fetch its logs. Mirrors e2e-reusable.yml's report-failure.
+  report-failure:
+    needs: [e2e-emulator]
+    if: ${{ always() && needs.e2e-emulator.result == 'failure' && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Comment failure log on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SLUG: emulator
+        run: |
+          set -uo pipefail
+          gh api "repos/$REPO/actions/runs/$GITHUB_RUN_ID/jobs" --paginate \
+            --jq '.jobs[] | select(.conclusion == "failure") | [.id, .name] | @tsv' > /tmp/failed-jobs.tsv || true
+          {
+            echo "## E2E falhou — e2e ($SLUG)"
+            echo
+            echo "Commit <code>${HEAD_SHA:0:7}</code> · [ver run completo]($RUN_URL)"
+            echo
+          } > /tmp/body.md
+          if [ -s /tmp/failed-jobs.tsv ]; then
+            while IFS=$'\t' read -r job_id job_name; do
+              gh api "repos/$REPO/actions/jobs/$job_id/logs" > "/tmp/job-$job_id.log" 2>/dev/null \
+                || echo "(log indisponível — abra o run no GitHub)" > "/tmp/job-$job_id.log"
+              {
+                echo "<details>"
+                echo "<summary>Job <code>$job_name</code> — últimos 12KB do log</summary>"
+                echo
+                echo '```'
+                tail -c 12000 "/tmp/job-$job_id.log"
+                echo
+                echo '```'
+                echo
+                echo "</details>"
+                echo
+              } >> /tmp/body.md
+            done < /tmp/failed-jobs.tsv
+          fi
+          gh pr comment "$PR" --repo "$REPO" --body-file /tmp/body.md || true

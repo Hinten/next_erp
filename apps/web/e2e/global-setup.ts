@@ -50,14 +50,24 @@ export default async function globalSetup(_config: FullConfig) {
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const serviceAccount =
     process.env.FIREBASE_SERVICE_ACCOUNT ?? process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+  // Emulator mode: `firebase emulators:exec` exports these hosts to the child
+  // process (see .github/workflows/e2e-emulator.yml), so the Admin SDK
+  // auto-targets the local emulator and NO service account is needed — the
+  // seed / ephemeral-user / claim fixtures all talk to the emulator instead of
+  // the staging project.
+  const emulatorMode = Boolean(
+    process.env.FIREBASE_AUTH_EMULATOR_HOST ?? process.env.FIRESTORE_EMULATOR_HOST,
+  );
 
   const storageStatePath = STORAGE_STATE_PATH;
   await mkdir(dirname(storageStatePath), { recursive: true });
 
   // --- Graceful degradation ----------------------------------------------
+  // In emulator mode a service account is intentionally absent (the emulator
+  // ignores real credentials); only the project id is still required.
   const missing: string[] = [];
   if (!projectId) missing.push('FIREBASE_PROJECT_ID');
-  if (!serviceAccount) missing.push('FIREBASE_SERVICE_ACCOUNT(_PATH)');
+  if (!serviceAccount && !emulatorMode) missing.push('FIREBASE_SERVICE_ACCOUNT(_PATH)');
 
   if (missing.length > 0) {
     console.warn(
