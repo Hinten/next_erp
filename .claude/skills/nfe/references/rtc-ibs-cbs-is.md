@@ -165,6 +165,30 @@ Other cClassTrib examples (special cases, from validation tables):
 - `620004` — Monofasia com pBio inferior ao obrigatório (finNFe=5)
 - `620005` — Monofasia com pBio superior ao obrigatório
 
+### In-repo validation + picker (#333)
+
+The codes are no longer pure free-text. `@delfrance/schemas`
+(`imposto/cclasstrib.ts`, a **pure, zero-dep** module next to the tribute
+schemas) vendors a **verified seed** of Anexo III + the CST IBS/CBS indicators,
+plus the validator. Two layers:
+
+- **Emit-time (`configuracaoIBSCBSSchema` superRefine → `parseRtcConfig`)**
+  enforces **only the structural rule**: `cClassTrib[0:3] === CST` (RV
+  UB13/UB14). It is always correct regardless of table staleness, so a bad pair
+  fails loud at emission. The same first-3 refine guards `cClassTribIS`/`CSTIS`.
+- **UI (the shared `components/imposto/RtcSection`, behind produto + operação +
+  categoria)** swaps the two free-text inputs for searchable `Autocomplete`s
+  (CST + cClassTrib, filtered by the chosen CST) showing the seed descriptions.
+  **Free-entry is preserved** — any code not yet seeded can be typed;
+  `validateCstClassTrib` shows a non-blocking warning (`cst-mismatch` vs
+  `not-in-table`). Table *membership* is **never** an emit-time block.
+
+The seed currently covers the **CST-000 "tributação integral" family**
+(`000001`–`000005`); the long tail comes via the refresh routine in
+`sources/nt/2025/cClassTrib-CST-tables-SOURCE.md`. Deferred: `cClassTribIS`
+(Anexo II, *a ser publicada*) and `cCredPres` (Anexo IV, crédito-presumido
+subgroup out of scope).
+
 ## Notas de Débito and Notas de Crédito (new finalities)
 
 NT 2025.002 cria **finalidades** novas em `finNFe` (B25):
@@ -419,12 +443,18 @@ default** (PR #313). What exists:
   toggled in the filial NF-e config screen, threaded as `{ emitRtc }` from the
   orchestrator into `buildImpostoXml` / `aggregateTotals`. Flag **off ⇒ emitted
   XML byte-identical to pre-RTC**.
-- **Registration UI**: produto `ImpostoManager` has a "Reforma Tributária"
-  section (CST, cClassTrib, IBS-UF/Mun + CBS alíquotas). The **categoria**
-  registration view is a follow-up (#318).
-- **Codes are registerable free-text** — the Anexo III/IV `cClassTrib` / CST
-  tables are Portal-published and **not vendored**; the operator (or a future
-  NT-driven table import) supplies them.
+- **Registration UI**: the RTC editor is the shared `components/imposto/RtcSection`
+  (CST, cClassTrib, IBS-UF/Mun + CBS alíquotas + optional IS), rendered behind the
+  produto, operação and categoria screens via `ImpostoConfigEditor` (#352). CST +
+  cClassTrib are searchable `Autocomplete`s driven by the vendored seed (#333),
+  with free-entry + a non-blocking compatibility warning.
+- **Codes are validated, not pure free-text (#333)** — a **verified seed** of
+  Anexo III + CST IBS/CBS lives in `@delfrance/schemas` (`imposto/cclasstrib.ts`);
+  the emit-time schema enforces the structural `cClassTrib[0:3] === CST` rule, and
+  the UI warns on unknown/mismatched codes while still allowing free-entry of
+  unseeded codes. The full table + `cClassTribIS` (Anexo II) / `cCredPres`
+  (Anexo IV) remain deferred. See "CST + cClassTrib model" → "In-repo validation
+  + picker (#333)".
 - **Live homologação proof**: `test/operations/rtc.homologacao.test.ts` (serie
   4) emits a CRT=1 NF-e with the RTC groups against SEFAZ-SP homologação and
   asserts `cStat=100` — advisory in `ci-nfe.yml`'s `nfe-live` job, fatal on

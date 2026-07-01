@@ -449,6 +449,20 @@ export {
 } from './imposto/tribute';
 
 export {
+  // RTC cClassTrib/CST seed + validator (#333)
+  CCLASSTRIB_SEED,
+  CST_IBSCBS_CODES,
+  CST_IBSCBS_LABELS,
+  cClassTribCodesForCst,
+  cClassTribDescricao,
+  cClassTribEntriesForCst,
+  cstClassTribStructurallyValid,
+  validateCstClassTrib,
+  type CClassTribEntry,
+  type CstClassTribValidation,
+} from './imposto/cclasstrib';
+
+export {
   arquivo,
   arquivoSchema,
   arquivoMeta,

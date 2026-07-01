@@ -1,6 +1,22 @@
 'use client';
 
-import { Alert, Divider, SimpleGrid, Stack, Switch, Text, TextInput } from '@mantine/core';
+import {
+  Alert,
+  Autocomplete,
+  Divider,
+  SimpleGrid,
+  Stack,
+  Switch,
+  Text,
+  TextInput,
+} from '@mantine/core';
+import {
+  CST_IBSCBS_CODES,
+  CST_IBSCBS_LABELS,
+  cClassTribCodesForCst,
+  cClassTribDescricao,
+  validateCstClassTrib,
+} from '@delfrance/schemas';
 import { NumberField } from './fields';
 import type { ImpostoConfigValue } from './types';
 
@@ -22,6 +38,22 @@ export function RtcSection({ value, onChange, disabled, emitRtc }: RtcSectionPro
   const is = (rtc.is ?? {}) as Record<string, unknown>;
   const hasIS = rtc.is != null;
 
+  const rtcCst = (rtc.CST as string | null) ?? '';
+  const rtcCode = (rtc.cClassTrib as string | null) ?? '';
+  // Non-blocking CST↔cClassTrib check — only once both codes are fully typed
+  // (so it doesn't nag mid-entry). Mirrors the emit-time structural rule plus a
+  // soft "not in our vendored seed" hint.
+  const rtcCodeWarning =
+    /^\d{3}$/.test(rtcCst) && /^\d{6}$/.test(rtcCode)
+      ? (() => {
+          const res = validateCstClassTrib(rtcCst, rtcCode);
+          if (res.ok) return null;
+          return res.reason === 'cst-mismatch'
+            ? 'Os 3 primeiros dígitos do cClassTrib devem ser iguais ao CST — o SEFAZ irá rejeitar.'
+            : 'cClassTrib não consta na tabela vendorizada — confira no Portal Nacional. A emissão não é bloqueada.';
+        })()
+      : null;
+
   function patch(fieldPatch: Record<string, unknown>) {
     onChange({ ...value, configuracaoIBSCBS: { ...rtc, ...fieldPatch } as never });
   }
@@ -39,20 +71,28 @@ export function RtcSection({ value, onChange, disabled, emitRtc }: RtcSectionPro
       )}
 
       <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
-        <TextInput
+        <Autocomplete
           label="CST (IBS/CBS)"
-          description="3 dígitos."
+          description={(rtcCst && CST_IBSCBS_LABELS[rtcCst]) || '3 dígitos (NT 2025.002).'}
+          data={[...CST_IBSCBS_CODES]}
+          renderOption={({ option }) =>
+            `${option.value} — ${CST_IBSCBS_LABELS[option.value] ?? ''}`
+          }
           maxLength={3}
-          value={(rtc.CST as string | null) ?? ''}
-          onChange={(e) => patch({ CST: e.currentTarget.value || null })}
+          value={rtcCst}
+          onChange={(val) => patch({ CST: val || null })}
           disabled={disabled}
         />
-        <TextInput
+        <Autocomplete
           label="cClassTrib"
-          description="6 dígitos (Anexo III/IV)."
+          description={cClassTribDescricao(rtcCode) ?? '6 dígitos (tabela Anexo III).'}
+          data={cClassTribCodesForCst(rtcCst)}
+          renderOption={({ option }) =>
+            `${option.value} — ${cClassTribDescricao(option.value) ?? ''}`
+          }
           maxLength={6}
-          value={(rtc.cClassTrib as string | null) ?? ''}
-          onChange={(e) => patch({ cClassTrib: e.currentTarget.value || null })}
+          value={rtcCode}
+          onChange={(val) => patch({ cClassTrib: val || null })}
           disabled={disabled}
         />
         <NumberField
@@ -81,6 +121,12 @@ export function RtcSection({ value, onChange, disabled, emitRtc }: RtcSectionPro
           disabled={disabled}
         />
       </SimpleGrid>
+
+      {rtcCodeWarning && (
+        <Text c="orange" size="xs">
+          {rtcCodeWarning}
+        </Text>
+      )}
 
       <Divider />
 

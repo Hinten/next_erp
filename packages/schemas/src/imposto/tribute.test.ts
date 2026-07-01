@@ -98,6 +98,29 @@ describe('configuracaoIBSCBSSchema — Reforma Tributária', () => {
     };
     expect(configuracaoIBSCBSSchema.safeParse(rtc).success).toBe(false);
   });
+
+  // CST↔cClassTrib structural rule (#333)
+  it('accepts the confirmed tributação-integral pair (000 / 000001)', () => {
+    const rtc = { CST: '000', cClassTrib: '000001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 };
+    expect(configuracaoIBSCBSSchema.safeParse(rtc).success).toBe(true);
+  });
+
+  it('accepts a structurally valid code not in the vendored seed (lenient membership)', () => {
+    // 200099 is structurally valid for CST 200 but isn't seeded — must NOT be
+    // rejected (membership is a UI warning only, never an emit-time block).
+    const rtc = { CST: '200', cClassTrib: '200099', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 };
+    expect(configuracaoIBSCBSSchema.safeParse(rtc).success).toBe(true);
+  });
+
+  it('rejects when cClassTrib first 3 digits ≠ CST', () => {
+    const rtc = { CST: '000', cClassTrib: '410001', pIBSUF: 0.1, pIBSMun: 0, pCBS: 0.9 };
+    const res = configuracaoIBSCBSSchema.safeParse(rtc);
+    expect(res.success).toBe(false);
+    if (!res.success) {
+      const issue = res.error.issues.find((i) => i.path.join('.') === 'cClassTrib');
+      expect(issue?.message).toMatch(/3 primeiros dígitos/);
+    }
+  });
 });
 
 describe('taxConfigFields — shared storage fragment', () => {
