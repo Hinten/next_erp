@@ -9,8 +9,10 @@ import {
   Alert,
   Anchor,
   Button,
+  Center,
   Divider,
   Group,
+  Loader,
   Modal,
   Select,
   Stack,
@@ -23,7 +25,9 @@ import { notifications } from '@mantine/notifications';
 import { IconMapPin, IconSearch } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { z, ZodError } from 'zod';
+import { PERM } from '@delfrance/auth';
 import {
+  type Endereco,
   TIPO_CLIENTE_LABELS,
   clienteSchema,
   refineClienteTipoDocumento,
@@ -35,6 +39,7 @@ import { nowMillis } from '@delfrance/core/datetime';
 import { normalizeTelefone } from '@delfrance/core/phone';
 import { CpfCnpjTextInput } from '@/components/inputs/CpfCnpjInput';
 import { TelefoneTextInput } from '@/components/inputs/TelefoneInput';
+import { EnderecoFormModal } from '@/components/pickers/EnderecoFormModal';
 import {
   type ClienteDedupInput,
   type ClienteDedupResult,
@@ -42,13 +47,13 @@ import {
   checkClienteDuplicates,
 } from '@/lib/clientes/dedup';
 import type { ClienteCnpjEndereco } from '@/lib/clientes/consultaCnpj';
-import { stashEnderecoForCliente } from '@/lib/clientes/pendingEndereco';
+import { findExistingEndereco } from '@/lib/clientes/enderecoDedup';
 import { resolveCnpj } from '@/lib/clientes/resolveCnpj';
 import { useDefaultFilialId } from '@/lib/clientes/useDefaultFilialId';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useNFeClient } from '@/lib/nfe/client';
-import { useAuth } from '@/lib/auth';
+import { useAuth, usePermission } from '@/lib/auth';
 
 /**
  * Quick-create modal opened from the ClientePicker (issue #143). Minimal
@@ -124,11 +129,18 @@ function CandidateRow({ candidate, onUse }: { candidate: DedupCandidate; onUse: 
   );
 }
 
+/** Cliente resolved by the modal form, with the CNPJ-resolved address to review. */
+interface QuickCreateResolved {
+  id: string;
+  nome: string;
+  endereco: ClienteCnpjEndereco | null;
+}
+
 function QuickCreateForm({
-  onResolve,
+  onResolved,
   onCancel,
 }: {
-  onResolve: ClienteQuickCreateModalProps['onResolve'];
+  onResolved: (picked: QuickCreateResolved) => void;
   onCancel: () => void;
 }) {
   const db = getFirebaseFirestore();
@@ -290,28 +302,9 @@ function QuickCreateForm({
       dirtyFields: {},
       currentUserUid: user?.uid ?? '',
     });
-    // Offer the looked-up address (if any): stash it under the new cliente and
-    // point the operator to the cadastro, where the prefilled "Novo endereço"
-    // modal lets them review + save it. Reuses the create-page relay; the modal
-    // has no endereço UI, and target="_blank" keeps the pedido intact.
-    if (pendingEnderecoRef.current) {
-      stashEnderecoForCliente(id, pendingEnderecoRef.current);
-      notifications.show({
-        color: 'blue',
-        autoClose: 10000,
-        message: (
-          <Anchor
-            component={Link}
-            href={`/clientes/${id}`}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Endereço de {doc.nome ?? 'cliente'} encontrado — abrir o cadastro para registrá-lo
-          </Anchor>
-        ),
-      });
-    }
-    onResolve({ id, nome: doc.nome ?? '' });
+    // Hand the created cliente + its resolved address up; the modal opens the
+    // endereço review in place (no more new-tab relay).
+    onResolved({ id, nome: doc.nome ?? '', endereco: pendingEnderecoRef.current });
   }
 
   async function onSubmit(values: QuickCreateOutput) {
@@ -547,7 +540,14 @@ function QuickCreateForm({
                 <CandidateRow
                   key={c.id}
                   candidate={c}
-                  onUse={() => onResolve({ id: c.id, nome: c.nome ?? '' })}
+                  onUse={() =>
+                    // Exact CNPJ match ⇒ the picked cliente owns this address; offer it.
+                    onResolved({
+                      id: c.id,
+                      nome: c.nome ?? '',
+                      endereco: pendingEnderecoRef.current,
+                    })
+                  }
                 />
               ))}
             </Stack>
@@ -573,7 +573,9 @@ function QuickCreateForm({
               <CandidateRow
                 key={c.id}
                 candidate={c}
-                onUse={() => onResolve({ id: c.id, nome: c.nome ?? '' })}
+                // A fuzzy name match is a different identity — don't apply this
+                // CNPJ's address to it.
+                onUse={() => onResolved({ id: c.id, nome: c.nome ?? '', endereco: null })}
               />
             ))}
           </Stack>
@@ -612,24 +614,122 @@ function QuickCreateForm({
   );
 }
 
+/** The CNPJ-resolved address maps 1:1 onto enderecoSchema keys (estado is a UF). */
+function toEnderecoPrefill(e: ClienteCnpjEndereco): Partial<Endereco> {
+  return { ...e, estado: e.estado as Endereco['estado'] };
+}
+
+/**
+ * Modal flow: `form` (the quick-create form) → `checking` (the endereço dedup
+ * query, a Loader in the same Modal) → `endereco` (the `EnderecoFormModal` review,
+ * a separate sibling Modal). Only one Modal is ever open — the repo has no
+ * modal-in-modal pattern.
+ */
+type QuickCreatePhase =
+  | { step: 'form' }
+  | { step: 'checking' }
+  | {
+      step: 'endereco';
+      clienteId: string;
+      nome: string;
+      recordId?: string;
+      prefill?: Partial<Endereco>;
+    };
+
 export function ClienteQuickCreateModal({
   opened,
   onClose,
   onResolve,
 }: ClienteQuickCreateModalProps) {
+  const db = getFirebaseFirestore();
+  const { allowed: canWriteEndereco } = usePermission(PERM.endereco.write);
+  const [phase, setPhase] = useState<QuickCreatePhase>({ step: 'form' });
+  // Remember the resolved cliente so the endereço step (save OR skip) can emit it.
+  const resolvedRef = useRef<{ id: string; nome: string } | null>(null);
+
+  // Every fresh open starts at the form (resetting the wizard when the parent
+  // reopens the modal is exactly the prop-driven reset effects exist for).
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset on reopen
+    if (opened) setPhase({ step: 'form' });
+  }, [opened]);
+
+  async function handleClienteResolved(picked: QuickCreateResolved) {
+    resolvedRef.current = { id: picked.id, nome: picked.nome };
+    // Nothing to review (no address, or no permission to write one) → emit now.
+    if (!picked.endereco || !canWriteEndereco) {
+      onResolve({ id: picked.id, nome: picked.nome });
+      return;
+    }
+    setPhase({ step: 'checking' });
+    // Already on file (same CEP + número) → review the existing one; else prefill new.
+    const existing = await findExistingEndereco(db, picked.id, picked.endereco);
+    if (existing) {
+      notifications.show({
+        color: 'yellow',
+        message: 'Endereço já cadastrado para este cliente — abrindo para revisão.',
+      });
+      setPhase({
+        step: 'endereco',
+        clienteId: picked.id,
+        nome: picked.nome,
+        recordId: existing.id,
+      });
+    } else {
+      setPhase({
+        step: 'endereco',
+        clienteId: picked.id,
+        nome: picked.nome,
+        prefill: toEnderecoPrefill(picked.endereco),
+      });
+    }
+  }
+
+  // Endereço saved or skipped — the cliente is already resolved, so emit it once.
+  function finishEndereco() {
+    const resolved = resolvedRef.current;
+    resolvedRef.current = null;
+    if (resolved) onResolve(resolved);
+  }
+
   return (
-    <Modal opened={opened} onClose={onClose} title="Novo cliente" size="lg">
-      {/* Conditional mount so every open starts with fresh form/dedup state.
-          The `onSubmit` guard stops the inner form's submit from bubbling up the
-          React tree (the portaled Modal is still a React-tree descendant) into
-          an ancestor <form> — e.g. the pedido form when this modal is opened
-          from the Principal/Frete ClientePicker — which would otherwise submit
-          (and `addDoc`) the pedido on every "Criar". */}
-      {opened && (
-        <div onSubmit={(e) => e.stopPropagation()}>
-          <QuickCreateForm onResolve={onResolve} onCancel={onClose} />
-        </div>
+    <>
+      <Modal
+        opened={opened && phase.step !== 'endereco'}
+        onClose={onClose}
+        title="Novo cliente"
+        size="lg"
+      >
+        {/* Conditional mount so every open starts with fresh form/dedup state.
+            The `onSubmit` guard stops the inner form's submit from bubbling up the
+            React tree (the portaled Modal is still a React-tree descendant) into
+            an ancestor <form> — e.g. the pedido form when this modal is opened
+            from the Principal/Frete ClientePicker — which would otherwise submit
+            (and `addDoc`) the pedido on every "Criar". */}
+        {opened && phase.step === 'checking' && (
+          <Center py="xl">
+            <Loader />
+          </Center>
+        )}
+        {opened && phase.step === 'form' && (
+          <div onSubmit={(e) => e.stopPropagation()}>
+            <QuickCreateForm onResolved={handleClienteResolved} onCancel={onClose} />
+          </div>
+        )}
+      </Modal>
+
+      {/* Endereço review — a sibling Modal, open only while the quick-create one
+          is closed (phase 'endereco'), so the two never stack. */}
+      {phase.step === 'endereco' && (
+        <EnderecoFormModal
+          opened={opened}
+          onClose={finishEndereco}
+          clienteId={phase.clienteId}
+          recordId={phase.recordId}
+          prefill={phase.prefill}
+          onSaved={finishEndereco}
+        />
       )}
-    </Modal>
+    </>
   );
 }
