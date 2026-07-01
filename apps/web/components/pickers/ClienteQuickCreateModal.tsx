@@ -486,7 +486,7 @@ function QuickCreateForm({
 
         {enderecoFound && (
           <Alert color="blue" icon={<IconMapPin size={16} />} title="Endereço encontrado">
-            O endereço deste CNPJ será oferecido para cadastro após criar o cliente.
+            O endereço deste CNPJ será oferecido para revisão ao criar ou usar o cliente.
           </Alert>
         )}
 
@@ -550,6 +550,14 @@ function QuickCreateForm({
                   }
                 />
               ))}
+              {/* The endereço review on "Usar cliente existente" needs a resolved
+                  address; without a lookup there's nothing to review, so nudge the
+                  operator to run one (CNPJ tipo only). */}
+              {tipo !== '2' && !enderecoFound && (
+                <Text size="xs" c="dimmed">
+                  Clique em &quot;Buscar dados&quot; para revisar o endereço deste cliente.
+                </Text>
+              )}
             </Stack>
           </Alert>
         )}

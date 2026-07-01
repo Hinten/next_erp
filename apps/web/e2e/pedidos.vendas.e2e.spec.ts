@@ -303,6 +303,9 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
 
     await expect(dialog.getByText('Cliente já cadastrado')).toBeVisible({ timeout: 15_000 });
     await expect(dialog.getByRole('button', { name: 'Criar', exact: true })).toBeDisabled();
+    // #341: no lookup ran (block came from the live dedup), so the block nudges
+    // the operator to "Buscar dados" to review/register the endereço.
+    await expect(dialog.getByText('para revisar o endereço deste cliente')).toBeVisible();
 
     // Resolve with the existing cliente instead — the picker locks onto it.
     await dialog.getByRole('button', { name: 'Usar cliente existente' }).first().click();
