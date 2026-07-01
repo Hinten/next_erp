@@ -22,5 +22,6 @@ export { produtoCollection } from './produtoCollection';
 export { tabelaDeMedidasCollection } from './tabelaDeMedidasCollection';
 export { intFreteCollection } from './intFreteCollection';
 export { tokenMelEnvCollection } from './tokenMelEnvCollection';
+export { integracaoCollection } from './integracaoCollection';
 export { credenciaisIntegracaoCollection } from './credenciaisIntegracaoCollection';
 export { pedidoCollection } from './pedidoCollection';
