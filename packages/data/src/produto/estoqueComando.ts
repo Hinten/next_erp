@@ -8,8 +8,12 @@ import { z } from 'zod';
  */
 export const movimentacaoInputSchema = z.object({
   tipo: z.enum(['entrada', 'saida', 'balanco']),
-  quantidade: z.number(),
-  quantidadeReservada: z.number(),
+  // Magnitudes: `planMovimentacao` applies the tipo's sign, so the input must be
+  // non-negative AND finite. Enforced here because this validates UNTRUSTED
+  // callable input — a negative would invert entrada/saída, and a NaN/±Infinity
+  // would corrupt the stored count.
+  quantidade: z.number().min(0).finite(),
+  quantidadeReservada: z.number().min(0).finite(),
   motivo: z.string().nullable(),
 });
 
@@ -25,7 +29,10 @@ export const estoqueComandoSchema = z.discriminatedUnion('op', [
     op: z.literal('localizacao'),
     produtoId: z.string().min(1),
     depositoId: z.string().min(1),
-    localizacao: z.string().nullable(),
+    // Mirror the 50-char cap on `estoqueProdutoSchema.localizacao`: the callable's
+    // update path writes this straight through (buildLocalizacaoOp doesn't
+    // re-parse the stored schema), so the cap must be enforced at this boundary.
+    localizacao: z.string().max(50).nullable(),
   }),
   z.object({
     op: z.literal('movimento'),
