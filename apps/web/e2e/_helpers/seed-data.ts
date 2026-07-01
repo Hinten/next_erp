@@ -726,6 +726,9 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     telefone: null,
     observacoesInternas: null,
     timestamp: Date.now(),
+    // Stamped so the fixture cliente shows in `/clientes` (default sort is
+    // `ultimaModificacao desc`; Firestore skips docs missing the field).
+    ultimaModificacao: Date.now(),
     nome_embedding: null,
     telefone_embedding: null,
     userCliente: null,
