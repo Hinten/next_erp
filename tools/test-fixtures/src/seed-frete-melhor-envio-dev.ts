@@ -98,6 +98,7 @@ function resolveIntegracao(): { intFreteId: string; created: boolean } {
 }
 
 async function writeCliente(): Promise<void> {
+  const now = Date.now();
   await db().collection('clientes').doc(FRETE_CLIENTE_ID).set({
     tipo: '0', // Pessoa Física
     nome: 'Cliente Frete Dev',
@@ -109,10 +110,10 @@ async function writeCliente(): Promise<void> {
     email: 'frete-dev@example.com',
     telefone: '21999998888',
     observacoesInternas: null,
-    timestamp: Date.now(),
+    timestamp: now,
     // Stamped so the dev cliente shows in `/clientes` (default sort is
     // `ultimaModificacao desc`; Firestore skips docs missing the field).
-    ultimaModificacao: Date.now(),
+    ultimaModificacao: now,
     nome_embedding: null,
     telefone_embedding: null,
     userCliente: null,

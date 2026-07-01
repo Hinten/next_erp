@@ -310,6 +310,7 @@ export function devPedidoIds(): string[] {
 }
 
 async function writeCliente(): Promise<void> {
+  const now = Date.now();
   await db().collection('clientes').doc(CLIENTE_ID).set({
     tipo: '0', // Pessoa Física
     nome: 'Cliente Dev Pessoa Fisica',
@@ -328,10 +329,10 @@ async function writeCliente(): Promise<void> {
     email: 'dev-pedidos@example.com',
     telefone: '11999990000',
     observacoesInternas: null,
-    timestamp: Date.now(),
+    timestamp: now,
     // Stamped so the dev cliente shows in `/clientes` (default sort is
     // `ultimaModificacao desc`; Firestore skips docs missing the field).
-    ultimaModificacao: Date.now(),
+    ultimaModificacao: now,
     nome_embedding: null,
     telefone_embedding: null,
     userCliente: null,
