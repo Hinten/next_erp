@@ -38,6 +38,9 @@ export default function NovoClientePage() {
   // A cliente already registered under the looked-up CNPJ, if any — offered as a
   // link to its cadastro so the operator can go there instead of duplicating it.
   const [existingCliente, setExistingCliente] = useState<DedupCandidate | null>(null);
+  // Monotonic lookup id: only the latest async dedup may update state, so a slow
+  // in-flight check can't overwrite a newer lookup or a CNPJ edit with a stale hit.
+  const lookupSeq = useRef(0);
 
   function handleAddressResolved(endereco: ClienteCnpjEndereco | null) {
     // Track the latest lookup result — null retracts a previously found address
@@ -47,6 +50,8 @@ export default function NovoClientePage() {
   }
 
   async function handleCnpjLookedUp(cnpj: string | null) {
+    // Bump first — a CNPJ edit (null) also invalidates any in-flight lookup.
+    const seq = ++lookupSeq.current;
     if (!cnpj) {
       setExistingCliente(null);
       return;
@@ -61,11 +66,13 @@ export default function NovoClientePage() {
         email: '',
         telefone: '',
       });
+      // Drop the result if a newer lookup/edit superseded this one.
+      if (seq !== lookupSeq.current) return;
       setExistingCliente(blocking[0] ?? null);
     } catch (err) {
       // Best-effort: a transient read failure just skips the warning.
       if (err instanceof FirebaseError) {
-        setExistingCliente(null);
+        if (seq === lookupSeq.current) setExistingCliente(null);
         return;
       }
       throw err;

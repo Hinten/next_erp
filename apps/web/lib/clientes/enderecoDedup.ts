@@ -14,9 +14,15 @@ import type { Endereco } from '@delfrance/schemas';
 import { enderecoCollection } from '@/lib/data/enderecoCollection';
 import type { ClienteCnpjEndereco } from './consultaCnpj';
 
-/** Keep only digits — CEP is stored as 8 digits but may arrive formatted. */
-function digits(value: string | null | undefined): string {
-  return (value ?? '').replace(/\D/g, '');
+/** Keep only digits — CEP is stored as 8 digits but may arrive formatted. A
+ *  non-string (legacy/soft-parsed doc) normalizes to '' rather than throwing. */
+function digits(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\D/g, '') : '';
+}
+
+/** Trim a número; a non-string (legacy/soft-parsed doc) normalizes to ''. */
+function numero(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 /**
@@ -25,15 +31,20 @@ function digits(value: string | null | undefined): string {
  * span a whole street), while logradouro/bairro/cidade are derived from the CEP
  * and add nothing. Both sides are normalized (CEP to digits, número trimmed) so
  * formatting differences don't cause a false miss.
+ *
+ * Reads are soft-parsed (a schema mismatch returns raw data), so a legacy/invalid
+ * doc may carry a missing or non-string CEP/número. Normalization treats those as
+ * '' and a blank CEP or número on the stored side never matches — the dedup stays
+ * best-effort and never throws.
  */
 export function enderecoMatchesResolved(
   existing: Pick<Endereco, 'cep' | 'numero'>,
   resolved: Pick<ClienteCnpjEndereco, 'cep' | 'numero'>,
 ): boolean {
-  return (
-    digits(existing.cep) === digits(resolved.cep) &&
-    existing.numero.trim() === resolved.numero.trim()
-  );
+  const cep = digits(existing.cep);
+  const num = numero(existing.numero);
+  if (cep === '' || num === '') return false;
+  return cep === digits(resolved.cep) && num === numero(resolved.numero);
 }
 
 /**
