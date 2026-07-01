@@ -55,8 +55,9 @@ export const CST_IBSCBS_LABELS: Readonly<Record<string, string>> = {
   '830': 'Exclusão da base de cálculo',
 };
 
-/** Sorted CST codes (the picker's suggestion list). */
-export const CST_IBSCBS_CODES: readonly string[] = Object.keys(CST_IBSCBS_LABELS);
+/** CST codes, sorted ascending (the picker's suggestion list; stable regardless
+ * of the order the labels object is authored/edited in). */
+export const CST_IBSCBS_CODES: readonly string[] = Object.keys(CST_IBSCBS_LABELS).sort();
 
 /**
  * Verified cClassTrib seed. Only codes confirmed against the SVRS mirror (with

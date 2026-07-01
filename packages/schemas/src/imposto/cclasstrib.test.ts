@@ -48,9 +48,10 @@ describe('validateCstClassTrib', () => {
 });
 
 describe('picker helpers', () => {
-  it('lists every CST label code and keeps codes/labels in sync', () => {
+  it('lists every CST label code, sorted, and keeps codes/labels in sync', () => {
     expect(CST_IBSCBS_CODES).toContain('000');
-    expect(CST_IBSCBS_CODES).toEqual(Object.keys(CST_IBSCBS_LABELS));
+    // Same set as the labels, explicitly sorted (robust to label reordering).
+    expect([...CST_IBSCBS_CODES]).toEqual([...Object.keys(CST_IBSCBS_LABELS)].sort());
     expect(CST_IBSCBS_LABELS['000']).toBe('Tributação integral');
   });
 
