@@ -226,6 +226,29 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
   return { values: {}, errors: { ...result.errors, ...extraErrors } } as unknown as ResolverResult;
 };
 
+/**
+ * Notice atop the NF-e-gated tabs (Fiscal / Pagamento). While the NF-e snapshot
+ * is still loading the tab is default-denied, so explain the temporary lock;
+ * once resolved, show the state-specific lock reason (or nothing).
+ */
+function NfeLockNotice({ loading, lockText }: { loading: boolean; lockText: string | null }) {
+  if (loading) {
+    return (
+      <Alert color="gray" mb="md">
+        Carregando dados da NF-e…
+      </Alert>
+    );
+  }
+  if (lockText) {
+    return (
+      <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+        {lockText}
+      </Alert>
+    );
+  }
+  return null;
+}
+
 function buildDefaults(existing?: Pedido, pedidoId?: string): PedidoFormState {
   if (!existing) return EMPTY_DEFAULTS;
   return {
@@ -374,6 +397,10 @@ export function PedidoForm({
   // pagamentos — and hard, without the aprovada-only pedido-estado carve-outs.
   const nfeEncerrada = nfeEstado != null && nfeFiscalEncerrada(nfeEstado);
   const nfeBloqueiaFiscal = nfeAprovada || nfeEncerrada;
+  // Default-deny both NF-e-gated tabs (Fiscal + Pagamento) while the snapshot is
+  // still resolving (edit mode): an aprovada/cancelada/inutilizada NF-e must not
+  // be editable in the load window before the subscription lands.
+  const nfeCarregando = pedidoId != null && nfeLoading;
   const itensTravados = travarInclusaoProduto(estadoNow);
   // Estado lock (legacy `travar_pedido`): items + general data, the Frete tab,
   // the Devolução tab and the footer desconto all lock once the pedido leaves the
@@ -383,13 +410,15 @@ export function PedidoForm({
   const dadosGeraisDisabled = disabled || itensTravados;
   // Default-deny: while the NF-e snapshot is still resolving (edit mode), keep
   // Fiscal locked so an aprovada NF-e can't be bypassed in the load window.
-  const fiscalDisabled = disabled || nfeBloqueiaFiscal || (pedidoId != null && nfeLoading);
+  const fiscalDisabled = disabled || nfeBloqueiaFiscal || nfeCarregando;
   // Pagamento lock (legacy `canSavePagamentos`): an aprovada NF-e blocks payment
   // edits except in the carve-out estados (`travarPagamentoComNFe`); a cancelada /
   // inutilizada NF-e blocks them outright. No blocking NF-e → pagamentos stay
   // editable regardless of estado — a soft "unexpected payment" warning
   // (PagamentosSection) covers the already-paid case instead.
-  const pagamentosTravados = nfeEncerrada || (nfeAprovada && travarPagamentoComNFe(estadoNow));
+  const pagamentosBloqueadosPorNFe =
+    nfeEncerrada || (nfeAprovada && travarPagamentoComNFe(estadoNow));
+  const pagamentosTravados = nfeCarregando || pagamentosBloqueadosPorNFe;
   const dadosGeraisLockNotice = itensTravados
     ? `Edição bloqueada — pedido no estado "${ESTADO_PEDIDO_LABELS[estadoNow]}". Dados gerais, itens, frete e devolução só podem ser editados na fase de carrinho/checkout.`
     : null;
@@ -397,7 +426,7 @@ export function PedidoForm({
   const fiscalLockNotice = nfeBloqueiaFiscal
     ? `Dados fiscais bloqueados — a NF-e deste pedido está "${nfeEstadoLabel}".`
     : null;
-  const pagamentoLockNotice = pagamentosTravados
+  const pagamentoLockNotice = pagamentosBloqueadosPorNFe
     ? `Pagamentos bloqueados — a NF-e deste pedido está "${nfeEstadoLabel}".`
     : null;
 
@@ -464,11 +493,7 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="fiscal" pt="md">
-            {fiscalLockNotice && (
-              <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
-                {fiscalLockNotice}
-              </Alert>
-            )}
+            <NfeLockNotice loading={nfeCarregando} lockText={fiscalLockNotice} />
             <FiscalTab form={form} db={db} disabled={fiscalDisabled} />
           </Tabs.Panel>
 
@@ -484,11 +509,7 @@ export function PedidoForm({
           <Tabs.Panel value="pagamento" pt="md">
             {pedidoId ? (
               <>
-                {pagamentoLockNotice && (
-                  <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
-                    {pagamentoLockNotice}
-                  </Alert>
-                )}
+                <NfeLockNotice loading={nfeCarregando} lockText={pagamentoLockNotice} />
                 <PagamentosSection
                   pedidoId={pedidoId}
                   disabled={disabled || pagamentosTravados}
