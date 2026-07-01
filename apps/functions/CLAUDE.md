@@ -89,12 +89,13 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   produto's `estoques` docs and each one's nested `historicoEstoque` (Firestore
   never cascades subcollections; #136). The client `deleteProdutoCascade` (#199)
   only deletes the produto docs — this reclaims the subcollections server-side,
-  with no dependency on the client/e2e cleanup. Core `sweepProdutoEstoques`
-  (`src/estoques/estoqueCascade.ts`, exported for the emulator suite); scoped to
-  estoque now but the natural home for the broader #136 sweep later.
+  with no dependency on the client/e2e cleanup. One `recursiveDelete` over the
+  `estoques` subcollection (the Admin SDK walks the whole subtree via a
+  BulkWriter); scoped to estoque now — a produto-wide `recursiveDelete(produtoRef)`
+  would be the broader #136 sweep.
 - **`onEstoqueDeleted`** (`onDocumentDeleted('produtos/{produtoId}/estoques/{estoqueId}')`)
-  — sweeps a single estoque's `historicoEstoque` (core `deleteHistoricoEstoque`).
-  Covers a standalone estoque delete; the produto-wide cascade already sweeps
+  — sweeps a single estoque's `historicoEstoque` via one `recursiveDelete`.
+  Covers a standalone estoque delete; the produto-wide cascade already deletes
   history directly, so its re-fires of this trigger are idempotent no-ops.
 - **`aplicarEstoque`** (`onCall` — the repo's FIRST HTTPS callable) — server-owned
   estoque write path for the web client (replaces the direct client `writeBatch`
@@ -106,8 +107,9 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   Admin SDK bypasses Firestore rules; rules stay OPEN for Flutter coexistence
   (ADR 0010). Reuses the framework-agnostic `planMovimentacao` /
   `buildLocalizacaoOp` use-cases (`@delfrance/data/produto`) so client and server
-  never fork. Core `applyEstoqueComando` is exported (no auth) for the emulator
-  suite. ⚠️ On the app's critical path: the staging estoque tab + the estoque
+  never fork. Split per op into the exported (no-auth) `aplicarLocalizacao` /
+  `aplicarMovimento` cores the emulator suite drives directly. ⚠️ On the app's
+  critical path: the staging estoque tab + the estoque
   Playwright e2e only work once this is DEPLOYED (deploy is manual — root rule #1).
 - ⚠️ All three target the NAMED `default` database (gotcha #8). `@delfrance/auth`
   is a new build-time dep (esbuild-bundled, like data/schemas) for `hasPerm`/`PERM`.

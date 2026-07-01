@@ -8,8 +8,9 @@ import {
   estoqueComandoSchema,
   planMovimentacao,
   type EstoqueComando,
+  type MovimentacaoPlan,
 } from '@delfrance/data/produto';
-import { makeEstoqueUid } from '@delfrance/schemas';
+import { type EstoqueProduto, makeEstoqueUid } from '@delfrance/schemas';
 
 import { getDb } from '../lib/admin';
 
@@ -17,18 +18,97 @@ export interface AplicarEstoqueResult {
   estoqueId: string;
 }
 
+type LocalizacaoComando = Extract<EstoqueComando, { op: 'localizacao' }>;
+type MovimentoComando = Extract<EstoqueComando, { op: 'movimento' }>;
+
 /**
- * Server-owned estoque write CORE (exported so the emulator suite drives it
- * without minting auth tokens). ONE Firestore transaction does getOrCreate + the
- * movement / localização + the audit record — which is what makes the
- * first-movement create race impossible (the doc is read and created-or-updated
- * atomically) and keeps the clamping policy in a single trusted place. Reuses the
- * exact framework-agnostic use-cases the client used (`planMovimentacao`,
- * `buildLocalizacaoOp`) so server and client never fork.
+ * Set a depósito's `localização` for a produto (getOrCreate — the quantities, owned
+ * by movements, are never touched). ONE transaction reads the estoque then applies
+ * `buildLocalizacaoOp`, which returns a `set` for a fresh doc or a `localizacao`-only
+ * `update`. Exported so the emulator suite drives it without minting auth tokens.
  */
-export async function applyEstoqueComando(
+export async function aplicarLocalizacao(
   db: Firestore,
-  comando: EstoqueComando,
+  comando: LocalizacaoComando,
+  now: number,
+): Promise<AplicarEstoqueResult> {
+  const { produtoId, depositoId } = comando;
+  const estoqueId = makeEstoqueUid(produtoId, depositoId);
+  const estoqueRef = estoqueCollection.docRef(db, { produtoId }, estoqueId);
+
+  await db.runTransaction(async (tx) => {
+    const exists = (await tx.get(estoqueRef)).exists;
+    const op = buildLocalizacaoOp(produtoId, depositoId, comando.localizacao, exists, now);
+    // buildLocalizacaoOp only ever returns set|update (never delete).
+    if (op.type === 'update') tx.update(estoqueRef, op.data);
+    else if (op.type === 'set') tx.set(estoqueRef, op.data);
+  });
+
+  return { estoqueId };
+}
+
+type EstoqueMovimentoWrite =
+  | { set: EstoqueProduto }
+  | { update: { quantidade: number; quantidadeReservada: number; ultimaModificacao: number } };
+
+/**
+ * Resolve the estoque mutation for a movement (pure — no I/O). First movement
+ * (`current == null`) → the full doc to `set` (increment-from-zero == the delta;
+ * reservada floored at 0 for the schema). Balanço → the absolute counted values.
+ * Entrada/saída → the signed delta applied to the value read this transaction. Kept
+ * separate so {@link aplicarMovimento}'s transaction body reads linearly.
+ */
+function movimentoEstoqueWrite(
+  produtoId: string,
+  depositoId: string,
+  current: { quantidade?: number; quantidadeReservada?: number } | null,
+  plan: MovimentacaoPlan,
+  now: number,
+): EstoqueMovimentoWrite {
+  if (current === null) {
+    return {
+      set: estoqueCollection.parse({
+        parentId: produtoId,
+        depositoOuterRef: `documents/depositos/${depositoId}`,
+        quantidade: plan.quantidade,
+        quantidadeReservada: Math.max(0, plan.quantidadeReservada),
+        dataCriacao: now,
+        ultimaModificacao: now,
+      }),
+    };
+  }
+  if (plan.ehBalanco) {
+    return {
+      update: {
+        quantidade: plan.quantidade,
+        quantidadeReservada: plan.quantidadeReservada,
+        ultimaModificacao: now,
+      },
+    };
+  }
+  return {
+    update: {
+      quantidade: (current.quantidade ?? 0) + plan.quantidade,
+      quantidadeReservada: Math.max(
+        0,
+        (current.quantidadeReservada ?? 0) + plan.quantidadeReservada,
+      ),
+      ultimaModificacao: now,
+    },
+  };
+}
+
+/**
+ * Apply a stock movement (entrada/saída delta or balanço absolute set) + append the
+ * `historicoEstoque` audit record. ONE transaction does getOrCreate + the mutation +
+ * the audit — which makes the first-movement create race impossible (the read and
+ * write are atomic) and keeps the clamping policy in a single trusted place. Reuses
+ * `planMovimentacao` (the exact use-case the client used) so server and client never
+ * fork. Exported for the emulator suite.
+ */
+export async function aplicarMovimento(
+  db: Firestore,
+  comando: MovimentoComando,
   now: number,
 ): Promise<AplicarEstoqueResult> {
   const { produtoId, depositoId } = comando;
@@ -37,50 +117,14 @@ export async function applyEstoqueComando(
 
   await db.runTransaction(async (tx) => {
     const snap = await tx.get(estoqueRef);
-    const exists = snap.exists;
-
-    if (comando.op === 'localizacao') {
-      // getOrCreate + set localização (quantities, owned by movements, untouched).
-      const op = buildLocalizacaoOp(produtoId, depositoId, comando.localizacao, exists, now);
-      // buildLocalizacaoOp only ever returns set|update (never delete).
-      if (op.type === 'update') tx.update(estoqueRef, op.data);
-      else if (op.type === 'set') tx.set(estoqueRef, op.data);
-      return;
-    }
-
-    // op === 'movimento'
     const plan = planMovimentacao(comando.input, now);
-    if (!exists) {
-      // First movement: create with the resulting quantities (increment-from-zero
-      // == the delta; reservada floored at 0 to satisfy the schema).
-      tx.set(
-        estoqueRef,
-        estoqueCollection.parse({
-          parentId: produtoId,
-          depositoOuterRef: `documents/depositos/${depositoId}`,
-          quantidade: plan.quantidade,
-          quantidadeReservada: Math.max(0, plan.quantidadeReservada),
-          dataCriacao: now,
-          ultimaModificacao: now,
-        }),
-      );
-    } else if (plan.ehBalanco) {
-      // Balanço — set the absolute counted value (a deliberate override).
-      tx.update(estoqueRef, {
-        quantidade: plan.quantidade,
-        quantidadeReservada: plan.quantidadeReservada,
-        ultimaModificacao: now,
-      });
-    } else {
-      // Entrada/saída — apply the delta to the value read in THIS transaction
-      // (the read+write is atomic, so concurrent movements can't clobber).
-      const cur = snap.data() as { quantidade?: number; quantidadeReservada?: number };
-      tx.update(estoqueRef, {
-        quantidade: (cur.quantidade ?? 0) + plan.quantidade,
-        quantidadeReservada: Math.max(0, (cur.quantidadeReservada ?? 0) + plan.quantidadeReservada),
-        ultimaModificacao: now,
-      });
-    }
+    const current = snap.exists
+      ? (snap.data() as { quantidade?: number; quantidadeReservada?: number })
+      : null;
+
+    const write = movimentoEstoqueWrite(produtoId, depositoId, current, plan, now);
+    if ('set' in write) tx.set(estoqueRef, write.set);
+    else tx.update(estoqueRef, write.update);
 
     const historicoRef = historicoEstoqueCollection.ref(db, { produtoId, estoqueId }).doc();
     tx.set(historicoRef, historicoEstoqueCollection.parse(plan.historico));
@@ -93,7 +137,7 @@ export async function applyEstoqueComando(
  * `aplicarEstoque` callable — the web client's estoque write path (replaces the
  * direct client `writeBatch` from PR #217). Enforces auth + `PERM.estoque.write`
  * itself (the Admin SDK bypasses Firestore rules), validates the payload, then
- * runs {@link applyEstoqueComando}. Firestore rules stay open for Flutter
+ * dispatches to the per-op transaction. Firestore rules stay open for Flutter
  * coexistence (ADR 0010); this is the trusted write path for the OSS app.
  */
 export const aplicarEstoque = onCall(async (request) => {
@@ -110,8 +154,12 @@ export const aplicarEstoque = onCall(async (request) => {
   if (!parsed.success) {
     throw new HttpsError('invalid-argument', 'Comando de estoque inválido.');
   }
+  const comando = parsed.data;
 
-  const result = await applyEstoqueComando(getDb(), parsed.data, Date.now());
-  logger.info(`aplicarEstoque: ${parsed.data.op} ${parsed.data.produtoId} → ${result.estoqueId}`);
+  const result =
+    comando.op === 'localizacao'
+      ? await aplicarLocalizacao(getDb(), comando, Date.now())
+      : await aplicarMovimento(getDb(), comando, Date.now());
+  logger.info(`aplicarEstoque: ${comando.op} ${comando.produtoId} → ${result.estoqueId}`);
   return result;
 });

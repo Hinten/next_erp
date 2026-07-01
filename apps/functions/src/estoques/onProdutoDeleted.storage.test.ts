@@ -3,12 +3,11 @@ import { getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { sweepProdutoEstoques } from './estoqueCascade';
-
-// Integration test — requires the firestore emulator. Skipped when run bare so
-// the offline suite stays green. Drives the cascade CORE directly (not the
-// onDocumentDeleted trigger) so it doesn't depend on Firestore-trigger delivery
-// for the named `default` database — same split as the arquivo suite.
+// Integration test — requires the firestore emulator. Skipped when run bare so the
+// offline suite stays green. Exercises the same `recursiveDelete` over the
+// `estoques` subcollection that `onProdutoDeleted` runs (driven directly, not via
+// Firestore-trigger delivery for the named `default` database — same split as the
+// arquivo suite). Also proves `recursiveDelete` cascades in the emulator.
 const EMULATED = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 const projectId = process.env.GCLOUD_PROJECT ?? 'demo-erp';
 
@@ -46,8 +45,7 @@ describe.skipIf(!EMULATED)('onProdutoDeleted cascade (emulator)', () => {
 
   it('deletes every estoque doc and its nested historicoEstoque', async () => {
     const db = getDb();
-    const swept = await sweepProdutoEstoques(db, produtoId);
-    expect(swept).toEqual({ estoques: 2, historico: 4 });
+    await db.recursiveDelete(db.collection('produtos').doc(produtoId).collection('estoques'));
 
     const estoques = await db.collection('produtos').doc(produtoId).collection('estoques').get();
     expect(estoques.empty).toBe(true);
@@ -67,7 +65,9 @@ describe.skipIf(!EMULATED)('onProdutoDeleted cascade (emulator)', () => {
 
   it('is idempotent on an empty/absent subtree', async () => {
     const db = getDb();
-    const swept = await sweepProdutoEstoques(db, `p${randomUUID().replace(/-/g, '')}`);
-    expect(swept).toEqual({ estoques: 0, historico: 0 });
+    const absent = `p${randomUUID().replace(/-/g, '')}`;
+    await expect(
+      db.recursiveDelete(db.collection('produtos').doc(absent).collection('estoques')),
+    ).resolves.toBeUndefined();
   });
 });

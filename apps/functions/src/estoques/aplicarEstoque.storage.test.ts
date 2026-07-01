@@ -4,10 +4,11 @@ import { type Firestore, getFirestore } from 'firebase-admin/firestore';
 import { describe, expect, it } from 'vitest';
 import { makeEstoqueUid } from '@delfrance/schemas';
 
-import { applyEstoqueComando } from './aplicarEstoque';
+import { aplicarLocalizacao, aplicarMovimento } from './aplicarEstoque';
 
-// Integration test — requires the firestore emulator. Drives the transaction
-// CORE directly (the onCall wrapper's auth needn't be mocked). Skipped bare.
+// Integration test — requires the firestore emulator. Drives the per-op
+// transaction functions directly (the onCall wrapper's auth needn't be mocked).
+// Skipped bare.
 const EMULATED = Boolean(process.env.FIRESTORE_EMULATOR_HOST);
 const projectId = process.env.GCLOUD_PROJECT ?? 'demo-erp';
 
@@ -37,7 +38,7 @@ describe.skipIf(!EMULATED)('aplicarEstoque core (emulator)', () => {
     const depositoId = 'dep1';
     const ref = estoqueRef(db, produtoId, depositoId);
 
-    await applyEstoqueComando(
+    await aplicarMovimento(
       db,
       {
         op: 'movimento',
@@ -53,7 +54,7 @@ describe.skipIf(!EMULATED)('aplicarEstoque core (emulator)', () => {
     expect((await ref.collection('historicoEstoque').get()).size).toBe(1);
 
     // Second entrada applies the delta to the value read in-transaction.
-    await applyEstoqueComando(
+    await aplicarMovimento(
       db,
       {
         op: 'movimento',
@@ -74,7 +75,7 @@ describe.skipIf(!EMULATED)('aplicarEstoque core (emulator)', () => {
     const depositoId = 'dep1';
     const ref = estoqueRef(db, produtoId, depositoId);
 
-    await applyEstoqueComando(
+    await aplicarMovimento(
       db,
       {
         op: 'movimento',
@@ -84,7 +85,7 @@ describe.skipIf(!EMULATED)('aplicarEstoque core (emulator)', () => {
       },
       1,
     );
-    await applyEstoqueComando(
+    await aplicarMovimento(
       db,
       {
         op: 'movimento',
@@ -96,7 +97,7 @@ describe.skipIf(!EMULATED)('aplicarEstoque core (emulator)', () => {
     );
     expect(((await ref.get()).data() as EstoqueDoc).quantidade).toBe(7);
 
-    await applyEstoqueComando(
+    await aplicarMovimento(
       db,
       {
         op: 'movimento',
@@ -115,7 +116,7 @@ describe.skipIf(!EMULATED)('aplicarEstoque core (emulator)', () => {
     const depositoId = 'dep1';
     const ref = estoqueRef(db, produtoId, depositoId);
 
-    await applyEstoqueComando(
+    await aplicarLocalizacao(
       db,
       { op: 'localizacao', produtoId, depositoId, localizacao: 'A1' },
       1,
