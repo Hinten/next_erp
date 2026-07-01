@@ -1370,7 +1370,7 @@ export async function seedKitParaGerar(prefix: string): Promise<{
 
 /**
  * Seed a Mercado Livre variation-link doc under the produto — the Flutter
- * shape: `produtos/<id>/variacoesml/<x>` with `produtoVariacaoOuterRef`
+ * shape: `produtos/<id>/variacaoMercadoLivre/<x>` with `produtoVariacaoOuterRef`
  * pointing back at the produto (`pathNoDocuments`, see
  * `produtoTableProvider.dart:1557`). Makes the produto "marketplace-linked"
  * for the delete guard.
@@ -1379,12 +1379,12 @@ export async function seedVariacaoMlLink(produtoId: string): Promise<void> {
   await db()
     .collection('produtos')
     .doc(produtoId)
-    .collection('variacoesml')
+    .collection('variacaoMercadoLivre')
     .doc('mlb-test')
     .set({
       id: 123456789,
       produtoVariacaoOuterRef: `produtos/${produtoId}`,
-      produtoMercadoLivreOuterRef: `produtos/${produtoId}/produtomercadolivre/mlb-item`,
+      produtoMercadoLivreOuterRef: `produtos/${produtoId}/produtoMercadoLivre/mlb-item`,
       sku: null,
     });
 }

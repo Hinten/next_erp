@@ -37,7 +37,7 @@ test.describe.serial('Produtos — deletion integrity (#117)', () => {
   });
 
   test.afterAll(async () => {
-    await cleanupProdutoSubcollection(childId, 'variacoesml');
+    await cleanupProdutoSubcollection(childId, 'variacaoMercadoLivre');
     await cleanupByNamePrefix('produtos', prefix);
   });
 
@@ -116,7 +116,7 @@ test.describe.serial('Produtos — deletion integrity (#117)', () => {
     await expectToast(page, /Mercado Livre/);
     await expect(page.getByText('Será excluída')).toHaveCount(0);
 
-    await cleanupProdutoSubcollection(childId, 'variacoesml');
+    await cleanupProdutoSubcollection(childId, 'variacaoMercadoLivre');
   });
 
   test('parent delete is blocked while a child is referenced, then cascades children', async ({

@@ -512,8 +512,8 @@ const GUARD_PROBE_CONCURRENCY = 4;
 
 /** Human channel label per marketplace subcollection, for guard messages. */
 export const MARKETPLACE_CHANNEL_LABELS: Record<string, string> = {
-  produtomercadolivre: 'Mercado Livre',
-  variacoesml: 'Mercado Livre',
+  produtoMercadoLivre: 'Mercado Livre',
+  variacaoMercadoLivre: 'Mercado Livre',
   produtoshopee: 'Shopee',
   variacaoshopee: 'Shopee',
   produtomagalu: 'Magalu',

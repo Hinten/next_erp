@@ -6,10 +6,17 @@ import { produtoMeta } from './produto';
  * Marketplace-link + variation subcollections every `produtos/<id>` doc can
  * carry — one listing/variation doc per channel, written by the Flutter app
  * (see `Produto.deleteCascade` / `models.deletecascade.g.dart`). Variation
- * children hold their own link docs too (`variacoesml` lives UNDER the child
- * produto), so "is this produto on a marketplace?" is answerable from the
+ * children hold their own link docs too (`variacaoMercadoLivre` lives UNDER the
+ * child produto), so "is this produto on a marketplace?" is answerable from the
  * doc's OWN subcollections — which is what the Next delete guard
  * (`apps/web/lib/produtos/references.ts`) probes.
+ *
+ * The Mercado Livre leaf names are **camelCase** — `produtoMercadoLivre` and
+ * `variacaoMercadoLivre` — matching the deployed Flutter `PRODUTO_ML_COLLECTION`
+ * / `VARIACAO_ML_COLLECTION` constants (the Dart class `VariacoesML` and its
+ * lowercased ORM getter do NOT reflect the real path). Earlier lowercase
+ * spellings (`produtomercadolivre`/`variacoesml`) never matched production, so
+ * the delete-guard probes silently saw no listings.
  *
  * These were defined only in `apps/web` and so were invisible to the rules
  * generator: the generated ruleset emitted no match block, Firestore
@@ -30,8 +37,8 @@ function produtoSubcollection(name: string): DomainSchema<typeof subcollectionSc
   return { schema: subcollectionSchema, meta };
 }
 
-export const produtoMercadoLivre = produtoSubcollection('produtomercadolivre');
-export const variacaoMercadoLivre = produtoSubcollection('variacoesml');
+export const produtoMercadoLivre = produtoSubcollection('produtoMercadoLivre');
+export const variacaoMercadoLivre = produtoSubcollection('variacaoMercadoLivre');
 export const produtoShopee = produtoSubcollection('produtoshopee');
 export const variacaoShopee = produtoSubcollection('variacaoshopee');
 export const produtoMagalu = produtoSubcollection('produtomagalu');
