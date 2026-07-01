@@ -38,7 +38,9 @@ import { db } from './admin';
 const SECRET = process.env.MELHOR_ENVIO_CLIENT_SECRET?.trim();
 const PEDIDO_ID = process.env.ME_WEBHOOK_PEDIDO_ID?.trim() || 'dev-frete-me-01';
 const STATUS = process.env.ME_WEBHOOK_STATUS?.trim() || 'posted';
-const TRACKING = process.env.ME_WEBHOOK_TRACKING?.trim() || `SMOKE${Date.now()}BR`;
+// Stable by default (derived from the pedido) so repeated runs are predictable;
+// pass ME_WEBHOOK_TRACKING when you want a unique code.
+const TRACKING = process.env.ME_WEBHOOK_TRACKING?.trim() || `SMOKE-${PEDIDO_ID}`;
 const EXPLICIT_LABEL = process.env.ME_WEBHOOK_LABEL_ID?.trim() || null;
 
 function webhookUrl(): string {
@@ -74,7 +76,8 @@ async function readByLabel(labelId: string): Promise<{ id: string; frete: FreteS
 }
 
 /** Resolve the printLabelId to fire against — an explicit one, the pedido's
- *  existing one, or a freshly stamped synthetic one (so the lookup matches). */
+ *  existing one, or a **stable** synthetic one derived from the pedido id (so
+ *  re-runs target the same label instead of a new one each time). */
 async function resolveLabelId(): Promise<string> {
   if (EXPLICIT_LABEL) return EXPLICIT_LABEL;
 
@@ -93,7 +96,7 @@ async function resolveLabelId(): Promise<string> {
     return frete.printLabelId;
   }
 
-  const labelId = `smoke-webhook-${Date.now()}`;
+  const labelId = `smoke-webhook-${PEDIDO_ID}`;
   await ref.update({
     'freteInicial.printLabelId': labelId,
     'freteInicial.estado': 'aguardandoPostagem',
