@@ -25,6 +25,13 @@ export interface CnpjLookupConfig {
    * edit to the CNPJ after a successful lookup).
    */
   onAddressResolved?: (endereco: ClienteCnpjEndereco | null) => void;
+  /**
+   * Called with the cleaned 14-digit CNPJ when a lookup starts (so the create
+   * page can warn if a cliente with that CNPJ already exists), or `null` to
+   * retract when the CNPJ is edited. Independent of the BrasilAPI result, so a
+   * duplicate still warns even when the public API is down.
+   */
+  onCnpjLookedUp?: (cnpj: string | null) => void;
 }
 
 const CnpjLookupContext = createContext<CnpjLookupConfig>({});
@@ -73,7 +80,7 @@ export function CnpjLookupField({
   hint,
   disabled,
 }: FieldRenderProps) {
-  const { filialId, onAddressResolved } = useContext(CnpjLookupContext);
+  const { filialId, onAddressResolved, onCnpjLookedUp } = useContext(CnpjLookupContext);
   const { setValue, watch, getValues } = useFormContext();
   const nfe = useNFeClient();
   const [loading, setLoading] = useState(false);
@@ -98,6 +105,9 @@ export function CnpjLookupField({
       setLookupError('Informe um CNPJ válido (14 dígitos) para buscar os dados.');
       return;
     }
+    // Let the page check whether a cliente with this CNPJ already exists — done
+    // up front so the warning shows even if the public API lookup then fails.
+    onCnpjLookedUp?.(cleanCnpj(doc));
     setLoading(true);
     setLookupError(null);
     try {
@@ -174,11 +184,13 @@ export function CnpjLookupField({
         value={doc}
         onChange={(next) => {
           setLookupError(null);
-          // Editing the CNPJ invalidates any address a prior lookup offered.
+          // Editing the CNPJ invalidates any address a prior lookup offered and
+          // clears any "cliente já cadastrado" warning tied to the old CNPJ.
           if (offeredRef.current) {
             offeredRef.current = false;
             onAddressResolved?.(null);
           }
+          onCnpjLookedUp?.(null);
           onChange(next);
         }}
         onBlur={onBlur}

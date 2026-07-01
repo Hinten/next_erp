@@ -226,4 +226,37 @@ test.describe.serial('Clientes e2e — CNPJ lookup', () => {
     // No second row was created for the same address.
     await expect(page.getByRole('cell', { name: LOGRADOURO })).toHaveCount(1);
   });
+
+  test('warns with a link to the existing cadastro when the CNPJ is already taken (#341)', async ({
+    page,
+  }) => {
+    await stubCnpjLookup(page);
+
+    // Register a cliente under the CNPJ first.
+    await page.goto('/clientes/novo');
+    await selectField(page, 'Tipo', 'Pessoa Jurídica');
+    await fillField(page, 'CPF / CNPJ', CNPJ);
+    await lookupUntilNome(page, RAZAO);
+    await fillField(page, 'Nome', `${prefix}-existing`);
+    await clickSave(page, 'Criar');
+    await page.waitForURL(
+      (url) => /^\/clientes\/[^/]+$/.test(url.pathname) && url.pathname !== '/clientes/novo',
+      { timeout: 15_000 },
+    );
+
+    // Start a NEW cadastro with the same CNPJ: the lookup must warn that a cliente
+    // already exists and link to its cadastro (instead of only offering the address).
+    await page.goto('/clientes/novo');
+    await selectField(page, 'Tipo', 'Pessoa Jurídica');
+    await fillField(page, 'CPF / CNPJ', CNPJ);
+    const buscar = page.getByRole('button', { name: 'Buscar dados do CNPJ' });
+    const warning = page.getByRole('alert').filter({ hasText: 'Cliente já cadastrado' });
+    await expect(async () => {
+      await buscar.click();
+      await expect(warning).toBeVisible({ timeout: 2_000 });
+    }).toPass({ timeout: 15_000 });
+
+    const link = warning.getByRole('link', { name: 'Abrir cadastro existente' });
+    await expect(link).toHaveAttribute('href', /^\/clientes\/.+/);
+  });
 });
