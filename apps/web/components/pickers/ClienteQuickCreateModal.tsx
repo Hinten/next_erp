@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -627,7 +627,7 @@ function toEnderecoPrefill(e: ClienteCnpjEndereco): Partial<Endereco> {
  */
 type QuickCreatePhase =
   | { step: 'form' }
-  | { step: 'checking' }
+  | { step: 'checking'; id: string; nome: string; endereco: ClienteCnpjEndereco }
   | {
       step: 'endereco';
       clienteId: string;
@@ -642,10 +642,16 @@ export function ClienteQuickCreateModal({
   onResolve,
 }: ClienteQuickCreateModalProps) {
   const db = getFirebaseFirestore();
-  const { allowed: canWriteEndereco } = usePermission(PERM.endereco.write);
+  const { allowed: canWriteEndereco, loading: permLoading } = usePermission(PERM.endereco.write);
   const [phase, setPhase] = useState<QuickCreatePhase>({ step: 'form' });
   // Remember the resolved cliente so the endereço step (save OR skip) can emit it.
   const resolvedRef = useRef<{ id: string; nome: string } | null>(null);
+  // `onResolve` is a fresh closure each parent render — keep the latest in a ref
+  // so the decision effect can call it without re-running on every render.
+  const onResolveRef = useRef(onResolve);
+  useEffect(() => {
+    onResolveRef.current = onResolve;
+  }, [onResolve]);
 
   // Every fresh open starts at the form (resetting the wizard when the parent
   // reopens the modal is exactly the prop-driven reset effects exist for).
@@ -654,43 +660,65 @@ export function ClienteQuickCreateModal({
     if (opened) setPhase({ step: 'form' });
   }, [opened]);
 
-  async function handleClienteResolved(picked: QuickCreateResolved) {
-    resolvedRef.current = { id: picked.id, nome: picked.nome };
-    // Nothing to review (no address, or no permission to write one) → emit now.
-    if (!picked.endereco || !canWriteEndereco) {
-      onResolve({ id: picked.id, nome: picked.nome });
-      return;
-    }
-    setPhase({ step: 'checking' });
-    // Already on file (same CEP + número) → review the existing one; else prefill new.
-    const existing = await findExistingEndereco(db, picked.id, picked.endereco);
-    if (existing) {
-      notifications.show({
-        color: 'yellow',
-        message: 'Endereço já cadastrado para este cliente — abrindo para revisão.',
-      });
-      setPhase({
-        step: 'endereco',
-        clienteId: picked.id,
-        nome: picked.nome,
-        recordId: existing.id,
-      });
-    } else {
-      setPhase({
-        step: 'endereco',
-        clienteId: picked.id,
-        nome: picked.nome,
-        prefill: toEnderecoPrefill(picked.endereco),
-      });
-    }
-  }
-
-  // Endereço saved or skipped — the cliente is already resolved, so emit it once.
-  function finishEndereco() {
+  // Emit the resolved cliente exactly once — from the endereço step (save OR
+  // skip) or the no-address / no-permission short-circuits. Clearing the ref
+  // makes a stray second call a no-op. Stable (ref-only) so the effect below can
+  // depend on it without re-running each render.
+  const finishEndereco = useCallback(() => {
     const resolved = resolvedRef.current;
     resolvedRef.current = null;
-    if (resolved) onResolve(resolved);
+    if (resolved) onResolveRef.current(resolved);
+  }, []);
+
+  function handleClienteResolved(picked: QuickCreateResolved) {
+    resolvedRef.current = { id: picked.id, nome: picked.nome };
+    // No address to review → emit the cliente now. A missing endereço-write
+    // permission is handled by the effect (which waits for it to resolve first).
+    if (!picked.endereco) {
+      finishEndereco();
+      return;
+    }
+    setPhase({ step: 'checking', id: picked.id, nome: picked.nome, endereco: picked.endereco });
   }
+
+  // Decide register-new vs review-existing once the endereço permission has
+  // RESOLVED (usePermission is `allowed:false` while loading — deciding early
+  // would wrongly skip the review). Cancellable so a late response can't reopen
+  // the step after the modal moved on (mirrors EnderecosSection).
+  useEffect(() => {
+    if (phase.step !== 'checking' || permLoading) return;
+    if (!canWriteEndereco) {
+      finishEndereco();
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const existing = await findExistingEndereco(db, phase.id, phase.endereco);
+      if (cancelled) return;
+      if (existing) {
+        notifications.show({
+          color: 'yellow',
+          message: 'Endereço já cadastrado para este cliente — abrindo para revisão.',
+        });
+        setPhase({
+          step: 'endereco',
+          clienteId: phase.id,
+          nome: phase.nome,
+          recordId: existing.id,
+        });
+      } else {
+        setPhase({
+          step: 'endereco',
+          clienteId: phase.id,
+          nome: phase.nome,
+          prefill: toEnderecoPrefill(phase.endereco),
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [phase, permLoading, canWriteEndereco, db, finishEndereco]);
 
   return (
     <>
