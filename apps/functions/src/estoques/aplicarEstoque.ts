@@ -4,7 +4,6 @@ import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { PERM, hasPerm } from '@delfrance/auth';
 import { estoqueCollection, historicoEstoqueCollection } from '@delfrance/data/admin/collections';
 import {
-  buildLocalizacaoOp,
   estoqueComandoSchema,
   planMovimentacao,
   type EstoqueComando,
@@ -22,10 +21,12 @@ type LocalizacaoComando = Extract<EstoqueComando, { op: 'localizacao' }>;
 type MovimentoComando = Extract<EstoqueComando, { op: 'movimento' }>;
 
 /**
- * Set a depósito's `localização` for a produto (getOrCreate — the quantities, owned
- * by movements, are never touched). ONE transaction reads the estoque then applies
- * `buildLocalizacaoOp`, which returns a `set` for a fresh doc or a `localizacao`-only
- * `update`. Exported so the emulator suite drives it without minting auth tokens.
+ * Set a depósito's `localização` for a produto (getOrCreate). On an EXISTING estoque
+ * it updates ONLY `localizacao` — quantities are movement-owned and never touched,
+ * and a localização change doesn't bump `ultimaModificacao`. On first touch it creates
+ * a valid estoque (`quantidade: 0`) carrying the localização. One transaction, so the
+ * getOrCreate is race-safe. Exported so the emulator suite drives it without minting
+ * auth tokens.
  */
 export async function aplicarLocalizacao(
   db: Firestore,
@@ -35,13 +36,26 @@ export async function aplicarLocalizacao(
   const { produtoId, depositoId } = comando;
   const estoqueId = makeEstoqueUid(produtoId, depositoId);
   const estoqueRef = estoqueCollection.docRef(db, { produtoId }, estoqueId);
+  // Empty/whitespace clears the field (Flutter `editarLocalizacao` parity).
+  const loc = comando.localizacao?.trim() ? comando.localizacao : null;
 
   await db.runTransaction(async (tx) => {
-    const exists = (await tx.get(estoqueRef)).exists;
-    const op = buildLocalizacaoOp(produtoId, depositoId, comando.localizacao, exists, now);
-    // buildLocalizacaoOp only ever returns set|update (never delete).
-    if (op.type === 'update') tx.update(estoqueRef, op.data);
-    else if (op.type === 'set') tx.set(estoqueRef, op.data);
+    const snap = await tx.get(estoqueRef);
+    if (snap.exists) {
+      tx.update(estoqueRef, { localizacao: loc });
+    } else {
+      tx.set(
+        estoqueRef,
+        estoqueCollection.parse({
+          parentId: produtoId,
+          depositoOuterRef: `documents/depositos/${depositoId}`,
+          localizacao: loc,
+          quantidade: 0,
+          quantidadeReservada: 0,
+          dataCriacao: now,
+        }),
+      );
+    }
   });
 
   return { estoqueId };

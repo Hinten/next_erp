@@ -126,4 +126,32 @@ describe.skipIf(!EMULATED)('aplicarEstoque core (emulator)', () => {
     expect(data.localizacao).toBe('A1');
     expect((await ref.collection('historicoEstoque').get()).empty).toBe(true);
   });
+
+  it('localizacao on a stocked estoque leaves quantities untouched', async () => {
+    const db = getDb();
+    const produtoId = `p${randomUUID().replace(/-/g, '')}`;
+    const depositoId = 'dep1';
+    const ref = estoqueRef(db, produtoId, depositoId);
+
+    // Stock it first via a movement, then set the localização.
+    await aplicarMovimento(
+      db,
+      {
+        op: 'movimento',
+        produtoId,
+        depositoId,
+        input: { tipo: 'entrada', quantidade: 5, quantidadeReservada: 0, motivo: null },
+      },
+      1,
+    );
+    await aplicarLocalizacao(
+      db,
+      { op: 'localizacao', produtoId, depositoId, localizacao: 'B2' },
+      2,
+    );
+
+    const data = (await ref.get()).data() as EstoqueDoc;
+    expect(data.quantidade).toBe(5); // untouched by the localização write
+    expect(data.localizacao).toBe('B2');
+  });
 });

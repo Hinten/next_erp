@@ -105,10 +105,12 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   clamping policy live in one trusted place. Enforces auth + `PERM.estoque.write`
   itself (the `su` super-user claim short-circuits, like the rules) since the
   Admin SDK bypasses Firestore rules; rules stay OPEN for Flutter coexistence
-  (ADR 0010). Reuses the framework-agnostic `planMovimentacao` /
-  `buildLocalizacaoOp` use-cases (`@delfrance/data/produto`) so client and server
-  never fork. Split per op into the exported (no-auth) `aplicarLocalizacao` /
-  `aplicarMovimento` cores the emulator suite drives directly. ⚠️ On the app's
+  (ADR 0010). Split per op into the exported (no-auth) `aplicarLocalizacao` /
+  `aplicarMovimento` cores the emulator suite drives directly: `aplicarMovimento`
+  reuses `planMovimentacao` (`@delfrance/data/produto`); `aplicarLocalizacao` updates
+  ONLY `localizacao` on an existing estoque (quantities are movement-owned).
+  Follow-up: `quantidadeReservada ≥ 0` on every movement path + monotonic
+  `ultimaModificacao` (blocked — the Node SDK has no `FieldValue.maximum`). ⚠️ On the app's
   critical path: the staging estoque tab + the estoque
   Playwright e2e only work once this is DEPLOYED (deploy is manual — root rule #1).
 - ⚠️ All three target the NAMED `default` database (gotcha #8). `@delfrance/auth`
