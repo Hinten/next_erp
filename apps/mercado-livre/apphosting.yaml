@@ -1,0 +1,23 @@
+# Firebase App Hosting backend config for apps/mercado-livre.
+# API-only service for the Mercado Livre sales-channel integration: OAuth
+# connect, and the ML notification webhook receiver. Heavy/async work (order
+# import, stock sync, notification processing) is dispatched to the nested
+# Cloud Functions codebase (apps/mercado-livre/functions).
+runConfig:
+  cpu: 1
+  memoryMiB: 512
+  maxInstances: 20
+  minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
+  concurrency: 80
+# Required env (set per-environment in the Firebase console → App Hosting →
+# Environment variables, or via Cloud Secret Manager for secrets):
+#   FIREBASE_PROJECT_ID          the GCP / Firebase project id
+#   FIREBASE_DATABASE_ID         Firestore database id (default: "default")
+#   MERCADO_LIVRE_CLIENT_ID      ML application id             (Secret Manager)
+#   MERCADO_LIVRE_CLIENT_SECRET  ML application secret         (Secret Manager)
+#   MERCADO_LIVRE_STATE_SECRET   HMAC key for the OAuth state  (Secret Manager)
+#   MERCADO_LIVRE_PUBLIC_URL     this backend's public origin — used to build the
+#                                OAuth redirect_uri (must match the URI registered
+#                                in the Mercado Livre application dashboard)
+#   WEB_APP_URL                  apps/web origin (the callback redirects back here)
+#   ALLOWED_ADMIN_ORIGINS        CSV of apps/web origins for CORS (no localhost in prod)

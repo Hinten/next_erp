@@ -58,7 +58,7 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
           <Group justify="space-between" align="center">
             <Text fw={500}>Endereço fiscal</Text>
             <Tooltip label="Em breve">
-              <Button size="xs" variant="light" disabled>
+              <Button type="button" size="xs" variant="light" disabled>
                 Selecionar outro
               </Button>
             </Tooltip>
@@ -123,6 +123,7 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
         <Group justify="space-between" align="center">
           <Text fw={500}>NF-e referenciadas</Text>
           <Button
+            type="button"
             size="xs"
             variant="light"
             onClick={() => updateChNFe([...chNFeList, ''])}
@@ -137,24 +138,28 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
           </Text>
         )}
         {chNFeList.map((value, index) => {
-          const trimmed = value ?? '';
-          const tooShort = trimmed !== '' && trimmed.length !== 44;
+          const current = value ?? '';
+          // Same rule the save-blocking page-model check uses (`^\d{44}$`), so the
+          // per-input hint and the submit guard agree — a 44-char non-numeric value
+          // is flagged here, not only at save.
+          const invalid = current !== '' && !/^\d{44}$/.test(current);
           return (
             <Group key={index} align="end">
               <TextInput
                 style={{ flex: 1 }}
                 label={index === 0 ? 'Chave de acesso (44 dígitos)' : undefined}
-                value={trimmed}
+                value={current}
                 onChange={(e) => {
                   const next = [...chNFeList];
                   next[index] = e.currentTarget.value;
                   updateChNFe(next);
                 }}
                 maxLength={44}
-                error={tooShort ? 'Deve ter 44 dígitos' : undefined}
+                error={invalid ? 'Deve ter 44 dígitos numéricos' : undefined}
                 disabled={disabled}
               />
               <ActionIcon
+                type="button"
                 color="red"
                 variant="subtle"
                 onClick={() => updateChNFe(chNFeList.filter((_, i) => i !== index))}

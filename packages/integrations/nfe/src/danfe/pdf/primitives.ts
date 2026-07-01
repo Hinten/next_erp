@@ -78,7 +78,13 @@ export function text(doc: Doc, str: string, x: number, y: number, opts: TextOpts
     .text(upper ? str.toUpperCase() : str, x, y, { width, align, lineBreak, height, ellipsis });
 }
 
-/** Clip an (already-cased) string to `maxWidth` points, appending `…`. */
+/**
+ * Clip an (already-cased) string to `maxWidth` points, appending `…`. When the
+ * char-level cut lands past 60 % of the fitting prefix, back up to the last word
+ * boundary so the ellipsis falls between words instead of mid-word (mirrors the
+ * `measureSplit` heuristic in `a4-common.ts`). A single long token with no space
+ * past the threshold (e.g. a digit run) keeps the hard mid-token cut.
+ */
 export function clipToWidth(
   doc: Doc,
   str: string,
@@ -90,7 +96,39 @@ export function clipToWidth(
   if (doc.widthOfString(str) <= maxWidth) return str;
   let s = str;
   while (s.length > 1 && doc.widthOfString(`${s}…`) > maxWidth) s = s.slice(0, -1);
-  return `${s}…`;
+  const sp = s.lastIndexOf(' ');
+  if (sp > s.length * 0.6) s = s.slice(0, sp);
+  return `${s.trimEnd()}…`;
+}
+
+/**
+ * Largest font size in `[floor, base]` (stepping down by `step`) whose
+ * word-wrapped height fits `maxHeightPt` at `widthPt`, so text is shrunk to fit a
+ * fixed box instead of being clipped. The caller must set `doc.font(...)` first
+ * (height depends on the active font); returns `floor` when nothing fits. Shared
+ * by `textRotated` and the simplificado wrap rows.
+ */
+export function fitFontSize(
+  doc: Doc,
+  str: string,
+  widthPt: number,
+  maxHeightPt: number,
+  base: number,
+  floor: number,
+  step = 0.5,
+): number {
+  // Walk `base` → `floor` in `step` decrements, clamping each candidate so the
+  // search includes `floor` itself and never drops below it — even when `step`
+  // doesn't divide `base - floor` evenly. Returns the largest size that fits, or
+  // `floor` as the last resort (the draw path ellipsis-clips if even `floor`
+  // overflows).
+  const steps = Math.max(0, Math.ceil((base - floor) / step));
+  for (let i = 0; i <= steps; i += 1) {
+    const fontSize = Math.max(floor, base - i * step);
+    doc.fontSize(fontSize);
+    if (doc.heightOfString(str, { width: widthPt }) <= maxHeightPt) return fontSize;
+  }
+  return floor;
 }
 
 /**
@@ -198,11 +236,7 @@ export function textRotated(
   // Auto-fit: largest size (down to a 4 pt floor) whose wrapped height fits the
   // thickness, so the label is shown in full instead of being ellipsized.
   doc.font(font);
-  let fontSize = size;
-  for (; fontSize > 4; fontSize -= 0.5) {
-    doc.fontSize(fontSize);
-    if (doc.heightOfString(s, { width: runLen }) <= crossAvail) break;
-  }
+  const fontSize = fitFontSize(doc, s, runLen, crossAvail, size, 4);
   doc.fontSize(fontSize);
   const blockH = Math.min(doc.heightOfString(s, { width: runLen }), crossAvail);
 

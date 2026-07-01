@@ -14,6 +14,7 @@
 
 export const STORAGE_ROOT = {
   produtos: 'produtos',
+  tabMedi: 'tabMedi',
   media: 'media',
 } as const;
 
@@ -21,6 +22,7 @@ export const PRODUTO_SUBDIR = {
   originals: 'originals',
   derivatives: 'derivatives',
   videos: 'videos',
+  anexos: 'anexos',
 } as const;
 
 /**
@@ -65,9 +67,34 @@ export function productVideoPath(produtoId: string, hash: string, ext?: string |
   return withExt(`${STORAGE_ROOT.produtos}/${produtoId}/${PRODUTO_SUBDIR.videos}/${hash}`, ext);
 }
 
+/**
+ * `produtos/<produtoId>/anexos/<hash>[.<ext>]` — generic product attachments
+ * (PDFs, datasheets, contracts…). Product-scoped like originals/videos so the
+ * orphan sweep can reclaim them; NOT watched, NOT resized (any content type).
+ */
+export function productAnexoPath(produtoId: string, hash: string, ext?: string | null): string {
+  return withExt(`${STORAGE_ROOT.produtos}/${produtoId}/${PRODUTO_SUBDIR.anexos}/${hash}`, ext);
+}
+
 /** `media/<hash>[.<ext>]` — generic, non-product files. */
 export function mediaPath(hash: string, ext?: string | null): string {
   return withExt(`${STORAGE_ROOT.media}/${hash}`, ext);
+}
+
+// ── Tabela de medidas media (owner-scoped like produtos, but NOT resized) ──
+
+/**
+ * `tabMedi/<tabMediId>/originals/<hash>[.<ext>]` — a tabela-de-medidas photo.
+ * Owner-scoped like product originals, but NO resize function watches this
+ * prefix, so it stays original-only (no derivatives).
+ */
+export function tabMediOriginalPath(tabMediId: string, hash: string, ext?: string | null): string {
+  return withExt(`${STORAGE_ROOT.tabMedi}/${tabMediId}/${PRODUTO_SUBDIR.originals}/${hash}`, ext);
+}
+
+/** Owner-scoped `Arquivo` doc id for a tabela-de-medidas original. */
+export function tabMediArquivoId(tabMediId: string, hash: string): string {
+  return `${tabMediId}_${hash}`;
 }
 
 /** Product-scoped `Arquivo` doc id for an original. */
@@ -117,37 +144,63 @@ export function isWatchedProductOriginal(name: string): boolean {
 }
 
 /** A product-media subdir the orphan sweep is allowed to reclaim. */
-export type ProductMediaKind = 'originals' | 'videos';
+export type ProductMediaKind = 'originals' | 'videos' | 'anexos';
 
 export interface ParsedProductMediaDir {
   produtoId: string;
   kind: ProductMediaKind;
 }
 
+/** A media-owning collection whose files live at `<collection>/<id>/<kind>`. */
+export type MediaOwnerCollection = 'produtos' | 'tabMedi';
+
+export interface ParsedOwnedMediaDir {
+  ownerCollection: MediaOwnerCollection;
+  ownerId: string;
+  kind: ProductMediaKind;
+}
+
 /**
- * Parse a product-media **directory** (`Arquivo.filepath`, no filename) into its
- * owner `produtoId` and kind — `produtos/<produtoId>/originals` (photos) or
- * `produtos/<produtoId>/videos`. Returns `null` for derivatives, generic
- * `media/`, or anything else.
+ * Parse an owner-media **directory** (`Arquivo.filepath`, no filename) into its
+ * owning collection, owner id and kind — `<produtos|tabMedi>/<ownerId>/<originals
+ * |videos|anexos>`. Returns `null` for derivatives, generic `media/`, an unknown
+ * root, wrong depth, or empty id.
  *
- * Used by the unreferenced-arquivo sweep to (1) scope candidates to exactly the
- * product photo + video subfolders and (2) recover the owning `produtoId` so it
- * can check that one produto's references directly — no full-collection scan.
- * Derivatives are excluded on purpose: they are cascade-managed by
- * `onArquivoDeleted`, never swept independently.
+ * The generalized core of {@link parseProductMediaDir}: the arquivo orphan-sweep
+ * and the media reaper use it to scope candidates AND recover the right owner
+ * collection, so they verify references against the correct owning doc
+ * (`produtos` vs `tabMedi`) — never deleting a tabMedi photo as a phantom produto.
+ */
+export function parseOwnedMediaDir(
+  filepath: string | null | undefined,
+): ParsedOwnedMediaDir | null {
+  if (typeof filepath !== 'string') return null;
+  const parts = filepath.split('/');
+  if (parts.length !== 3) return null;
+  const [root, ownerId, sub] = parts;
+  if (!ownerId) return null;
+  const ownerCollection: MediaOwnerCollection | null =
+    root === STORAGE_ROOT.produtos ? 'produtos' : root === STORAGE_ROOT.tabMedi ? 'tabMedi' : null;
+  if (!ownerCollection) return null;
+  if (sub === PRODUTO_SUBDIR.originals) return { ownerCollection, ownerId, kind: 'originals' };
+  if (sub === PRODUTO_SUBDIR.videos) return { ownerCollection, ownerId, kind: 'videos' };
+  if (sub === PRODUTO_SUBDIR.anexos) return { ownerCollection, ownerId, kind: 'anexos' };
+  return null;
+}
+
+/**
+ * Produto-only view of {@link parseOwnedMediaDir} — `produtos/<produtoId>/<kind>`
+ * → `{produtoId, kind}`, else `null` (including for any `tabMedi/…` path). Kept
+ * for the produto-scoped callers (the resize cascade and the produto media
+ * reaper/sweep) and their existing tests, which must stay byte-identical.
  */
 export function parseProductMediaDir(
   filepath: string | null | undefined,
 ): ParsedProductMediaDir | null {
-  if (typeof filepath !== 'string') return null;
-  const parts = filepath.split('/');
-  if (parts.length !== 3 || parts[0] !== STORAGE_ROOT.produtos) return null;
-  const produtoId = parts[1];
-  const sub = parts[2];
-  if (!produtoId) return null;
-  if (sub === PRODUTO_SUBDIR.originals) return { produtoId, kind: 'originals' };
-  if (sub === PRODUTO_SUBDIR.videos) return { produtoId, kind: 'videos' };
-  return null;
+  const parsed = parseOwnedMediaDir(filepath);
+  return parsed && parsed.ownerCollection === 'produtos'
+    ? { produtoId: parsed.ownerId, kind: parsed.kind }
+    : null;
 }
 
 /**

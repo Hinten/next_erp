@@ -6,13 +6,13 @@ import { IconHistory } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { type Firestore, getDocs } from 'firebase/firestore';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
-import { format, money } from '@delfrance/core';
+import { formatReais } from '@delfrance/core';
 import {
   historicoCustoCollection,
   historicoPrecoCollection,
 } from '@/lib/data/historicoCollections';
 
-const brl = (value: number) => format(money(Math.round(value * 100)));
+const brl = (value: number) => formatReais(value);
 const dateFmt = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
 
 interface HistoryRow {

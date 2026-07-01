@@ -4,10 +4,11 @@ import { getFirestore } from 'firebase-admin/firestore';
 // Live diagnostic: prove the orphan-sweep queries are index-backed (NOT a
 // collection scan). This Firestore Enterprise edition creates NO indexes
 // automatically, so both queries rely on declared entries in
-// firestore.indexes.json: the phantom sweep on `arquivos(uploadState, criadoEm)`
-// and the unreferenced candidate scan on `arquivos(criadoEm)`. (The real
-// candidate scan is a regex pipeline on top of that `criadoEm` index; this script
-// explains the equivalent classic range query to confirm the index is used.)
+// firestore.indexes.json: the phantom sweep on `arquivos(uploadState, criadoEm)`,
+// the unreferenced candidate scan on `arquivos(criadoEm)`, and the marked sweep on
+// `arquivos(markedForDeletionAt)`. (The real candidate scan is a regex pipeline on
+// top of that `criadoEm` index; this script explains the equivalent classic range
+// query to confirm the index is used.)
 // This script confirms `indexesUsed` is non-empty and the reads are bounded.
 //
 // Query Explain needs a real Firestore (Enterprise) — the emulator does not
@@ -62,6 +63,14 @@ await explain(
 await explain(
   'candidate criadoEm index — arquivos where criadoEm<cutoff orderBy criadoEm limit 100 (the index the regex pipeline rides)',
   db.collection('arquivos').where('criadoEm', '<', cutoff).orderBy('criadoEm', 'asc').limit(100),
+);
+await explain(
+  'marked sweep — arquivos where markedForDeletionAt<cutoff orderBy markedForDeletionAt limit 100',
+  db
+    .collection('arquivos')
+    .where('markedForDeletionAt', '<', cutoff)
+    .orderBy('markedForDeletionAt', 'asc')
+    .limit(100),
 );
 
 process.exit(0);

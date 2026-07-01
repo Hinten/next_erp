@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
-import { microsSinceEpoch } from '../../datetime';
-import { freteDoPedidoSchema } from '../../frete';
+import { microsSinceEpoch } from '../../shared/datetime';
+import { freteDoPedidoSchema } from '../../shared/frete';
+import { outerRefSchema } from '../../shared/outerRef';
 
 const PERM_PEDIDO_READ = 1n << 16n;
 const PERM_PEDIDO_WRITE = 1n << 17n;
@@ -109,17 +110,16 @@ export const pedidoSchema = z
     estado: estadoPedidoSchema.describe('Pagamento'),
     numero: z.string().nullable().default(null).describe('Número'),
 
-    // Outer references — opaque (resolved by Flutter today; UI dereferences
-    // them through Firestore .get() when needed). `filialPedidoOuterRef` is
-    // read by the NFe orchestrator (`apps/nfe/lib/nfe/orchestrator.ts:146`)
-    // to load the issuing Filial — must be present on the doc when emitting.
-    vendedorPedidoOuterRef: z.unknown().nullable().default(null).describe('Vendedor'),
-    integracaoPedidoOuterRef: z.unknown().describe('Integração'),
-    operacaoPedidoOuterRef: z.unknown().nullable().default(null).describe('Operação'),
-    clientePedidoOuterRef: z.unknown().nullable().default(null).describe('Cliente'),
-    enderecoFiscalOuterRef: z.unknown().nullable().default(null).describe('Endereço fiscal'),
-    filialPedidoOuterRef: z.unknown().nullable().default(null).describe('Filial'),
-    listaDePrecosOuterRef: z.unknown().nullable().default(null).describe('Lista de preços'),
+    // Outer references — `documents/<col>/<id>` doc-path strings (Flutter ODM);
+    // the UI dereferences them through Firestore .get() when needed. The issuing
+    // Filial is NOT a pedido field: the NFe orchestrator resolves it from the
+    // pedido's integração (`integracao.filialIntegracaoPedidoOuterRef`).
+    vendedorPedidoOuterRef: outerRefSchema.nullable().default(null).describe('Vendedor'),
+    integracaoPedidoOuterRef: outerRefSchema.nullable().default(null).describe('Integração'),
+    operacaoPedidoOuterRef: outerRefSchema.nullable().default(null).describe('Operação'),
+    clientePedidoOuterRef: outerRefSchema.nullable().default(null).describe('Cliente'),
+    enderecoFiscalOuterRef: outerRefSchema.nullable().default(null).describe('Endereço fiscal'),
+    listaDePrecosOuterRef: outerRefSchema.nullable().default(null).describe('Lista de preços'),
 
     // Related orders --------------------------------------------------------
     entradasRelacionadas: z

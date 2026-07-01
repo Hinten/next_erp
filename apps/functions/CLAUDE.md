@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Seven exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -34,17 +34,35 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Seven exports:
   metadata. ⚠️ Like every Firestore access here, the trigger targets the **named
   `default`** database (`database: FIREBASE_DATABASE_ID ?? 'default'`) — see
   gotcha #8; a trigger that omits `database` binds to `(default)` and never fires.
-- **`reconcileArquivoOrphans`** (`onSchedule`, every 48h) — orphan cleanup, two
-  bounded passes (ADR 0010 Phase 2), both **oldest-first** and excluding the grace
-  window **in the query**. **Phantom-doc sweep** (`sweepPhantomDocs`):
+- **`onProdutoMediaChanged`** (`onDocumentUpdated('produtos/{id}')`) — the eager
+  produto-**edit** reaper (sibling of the planned produto-**delete** #136). Diffs the
+  edit's `before`/`after` `fotos` + `videos` + `anexos` arrays by `arquivoOuterRef`; a ref
+  that disappeared → stamp `markedForDeletionAt: now` on that `arquivos` doc; a re-added ref
+  → clear it (`null`). The mark is a **signal only** — `sweepMarkedForDeletion` does the
+  delete after a short grace + owner re-verify, so a buggy/bulk save that drops `fotos`
+  can only mark (reversibly), never instantly destroy photos. Core
+  `reconcileProdutoMediaMarks` (exported for the emulator suite); one batched `getAll` +
+  `WriteBatch`, touching only existing `arquivos` docs (already-swept ref → no-op, no
+  resurrected phantom). Writes never touch `produtos` → no self-retrigger. Plain admin
+  writes (no pipeline) → fully emulator-testable. All three media kinds are product-scoped
+  (`produtos/<id>/originals|videos|anexos`). Targets the named `default` database (gotcha #8).
+- **`reconcileArquivoOrphans`** (`onSchedule`, every 48h) — orphan cleanup, **three**
+  bounded passes (ADR 0010 Phase 2), all **oldest-first** and excluding the grace
+  window **in the query**. **Marked sweep** (`sweepMarkedForDeletion`, runs first —
+  cheapest): `arquivos where markedForDeletionAt<cutoff orderBy markedForDeletionAt asc`
+  (single-field index `arquivos(markedForDeletionAt)`, short grace
+  `ARQUIVO_MARKED_GRACE_HOURS` default 1h) — deletes what `onProdutoMediaChanged`
+  flagged, re-verifying via `resolveReferencedArquivoRefs` that the owner produto still
+  doesn't reference it (a missed unmark clears the mark instead). Plain query, no
+  pipeline → emulator-testable. **Phantom-doc sweep** (`sweepPhantomDocs`):
   `arquivos where uploadState=='pending' AND criadoEm<cutoff orderBy criadoEm asc`
   (composite index `arquivos(uploadState, criadoEm)`) whose object never arrived →
   delete the doc (or self-heal to `'finalized'` if the object IS present).
-  **Unreferenced sweep** (`sweepUnreferencedArquivos`): product photos + videos
-  (`produtos/<id>/originals|videos`) past the grace window that **no produto
-  references** → delete (then `onArquivoDeleted` frees the object + cascades
-  derivatives) — e.g. a photo removed from a produto in an edit, or a produto
-  deleted entirely. Candidates come from a **regex pipeline**
+  **Unreferenced sweep** (`sweepUnreferencedArquivos`, the **backstop** for what the
+  eager mark missed): product media (`produtos/<id>/originals|videos|anexos`) past
+  the grace window that **no produto references** → delete (then `onArquivoDeleted` frees
+  the object + cascades any derivatives) — a produto deleted entirely (until #136), a console
+  edit, or a dropped trigger delivery. Candidates come from a **regex pipeline**
   (`fetchUnreferencedCandidates`: `regexContains('filepath', …) AND criadoEm<cutoff`,
   sorted, on the `arquivos(criadoEm)` index) so non-product docs are never loaded;
   the reference check is an **owner-document lookup**, NOT a collection scan: a
@@ -58,9 +76,9 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Seven exports:
   pipeline is live-validated. Grace is `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests);
   `criadoEm` is microseconds-since-epoch (schema default `nowMicros()`).
   ⚠️ **Index requirement**: this Enterprise edition creates NO index automatically
-  — both sweep indexes (`arquivos(uploadState, criadoEm)` + `arquivos(criadoEm)`)
-  are declared in `firestore.indexes.json` and must be deployed
-  (`firebase deploy --only firestore:indexes`); verify usage live with
+  — the three sweep indexes (`arquivos(uploadState, criadoEm)`, `arquivos(criadoEm)`
+  + `arquivos(markedForDeletionAt)`) are declared in `firestore.indexes.json` and must
+  be deployed (`firebase deploy --only firestore:indexes`); verify usage live with
   `scripts/check-sweep-indexes.mjs` (`explain({ analyze: true })`).
   ⚠️ **Coverage caveat**: the candidate scan still re-reads the OLDEST docs, so a
   large head of long-lived referenced photos can starve newer orphans — a persisted

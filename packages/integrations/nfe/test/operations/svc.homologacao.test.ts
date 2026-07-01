@@ -49,6 +49,7 @@
  * `../helpers/homologacao-seed.ts`); `numeracao` comes from `seedNNF()`.
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { connect as netConnect } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -109,6 +110,63 @@ function buildSvcCall(url: string, cert: NFeCertificate, chainPath: string): Sef
   return { url, cert, agent, tpAmb: '2', timeoutMs: 60_000 };
 }
 
+/**
+ * Fast TCP reachability probe. SERPRO's SVC hosts intermittently TCP-hang from
+ * CI runners — when one is unreachable, skip its SOAP tests in ~5s instead of
+ * letting each call sit out the 60s `timeoutMs` (#337).
+ *
+ * **Posture-aware** (review on #345): on **advisory** runs (pull_request/push)
+ * an unreachable host SKIPS its tests (keeps PRs fast). On **fatal** runs
+ * (workflow_dispatch / schedule — the "verify SVC" runs) it must NOT skip-green:
+ * the SVC-AN fatal-run gate (below) FAILS FAST in ~5s instead, so a dispatch run
+ * can't pass without actually proving SVC-AN transport.
+ */
+function tcpReachable(url: string, timeoutMs = 5_000): Promise<boolean> {
+  return new Promise((resolveProbe) => {
+    let settled = false;
+    const { hostname, port } = new URL(url);
+    const sock = netConnect({ host: hostname, port: Number(port) || 443 });
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      resolveProbe(ok);
+    };
+    sock.setTimeout(timeoutMs);
+    sock.once('connect', () => finish(true));
+    sock.once('timeout', () => finish(false));
+    sock.once('error', () => finish(false));
+  });
+}
+
+// Probe only in CI with creds — locally the suite already skips via
+// describeOrSkip, so don't pay the probe (and keep local behaviour unchanged).
+const probeSvc = hasFullCreds && Boolean(process.env.CI);
+const svcAnReachable = probeSvc
+  ? await tcpReachable(getSvcEndpoints('svc-an', 'homologacao').NfeStatusServico)
+  : true;
+const svcRsReachable = probeSvc
+  ? await tcpReachable(getSvcEndpoints('svc-rs', 'homologacao').NfeStatusServico)
+  : true;
+// The SVC lane is FATAL on workflow_dispatch/schedule and ADVISORY on
+// pull_request/push (mirrors ci-nfe.yml's `continue-on-error`). On a fatal run
+// an unreachable SVC-AN must fail fast (the gate test below), not skip-green.
+const isFatalRun =
+  process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' ||
+  process.env.GITHUB_EVENT_NAME === 'schedule';
+if (probeSvc && !svcAnReachable && !isFatalRun) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    '::warning::SVC-AN host unreachable from this runner — skipping SVC-AN SOAP tests (advisory, #337).',
+  );
+}
+if (probeSvc && !svcRsReachable && !isFatalRun) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    '::warning::SVC-RS host unreachable from this runner — skipping the SVC-RS test (advisory, #337).',
+  );
+}
+
 describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC-RS)', () => {
   // Only reachable in CI (locally the suite skips via describeOrSkip):
   // fail loud on missing secrets — never report green with zero coverage.
@@ -122,80 +180,102 @@ describeOrSkip('SVC contingency — live homologação round-trips (SVC-AN + SVC
     }
   });
 
-  it('SVC-AN status answers for the issuer cUF (pre-flight)', async () => {
-    const call = buildSvcCall(
-      getSvcEndpoints('svc-an', 'homologacao').NfeStatusServico,
-      TEST_CERT!,
-      SVC_AN_CHAIN,
-    );
-    const ret = await consultarStatusServico(call, { cUF: '35' });
-    assertNotConsumoIndevido(ret, 'svc-an/statusServico');
-    // eslint-disable-next-line no-console
-    console.log(`[SVC-AN status] cStat=${ret.cStat} xMotivo="${ret.xMotivo}"`);
-    expect(ret.tpAmb).toBe('2');
-    // 107 = operating (the permanent homologação posture); 108/109 =
-    // paralisado, 113/114 = SVC em desativação — non-failure outcomes
-    // that still prove the transport + typed pipeline.
-    expect(['107', '108', '109', '113', '114']).toContain(ret.cStat);
-  }, 45_000);
+  // Fatal-run gate (#345 review): on workflow_dispatch/schedule the SVC lane is
+  // fatal, so an unreachable SVC-AN must FAIL here (in ~5s, from the probe)
+  // rather than silently skip — otherwise a "verify SVC" dispatch run could go
+  // green without proving SVC-AN transport. Skipped on advisory PR/push runs.
+  it.skipIf(!isFatalRun)('SVC-AN is reachable from the runner (fatal-run gate)', () => {
+    expect(
+      svcAnReachable,
+      'SVC-AN host unreachable from this runner on a FATAL run (workflow_dispatch/schedule) — ' +
+        'cannot prove SVC-AN transport. Re-run when SERPRO is reachable.',
+    ).toBe(true);
+  });
 
-  it('native SVC-AN emission — tpEmis=6 NF-e is AUTHORIZED (cStat=100)', async () => {
-    const numeracao = seedNNF();
-    const fixture = buildHomologacaoFixture({
-      numeracao,
-      serie: SEFAZ_HOM_SVC_SERIE,
-      cnpj: TEST_CERT!.cnpj,
-      ie: TEST_IE!,
-      contingencia: {
-        tpEmis: 6,
-        // dhCont must precede dhEmi (the fixture stamps dhEmi = now).
-        dhCont: new Date(Date.now() - 60_000),
-        xJust: 'Teste automatizado de contingencia SVC em ambiente de homologacao',
-      },
-    });
-    const out = generateNFe(fixture);
-    // tpEmis is baked into the chave at index 34 — digit '6' = SVC-AN.
-    expect(out.chave[34]).toBe('6');
+  it.skipIf(!svcAnReachable)(
+    'SVC-AN status answers for the issuer cUF (pre-flight)',
+    async () => {
+      const call = buildSvcCall(
+        getSvcEndpoints('svc-an', 'homologacao').NfeStatusServico,
+        TEST_CERT!,
+        SVC_AN_CHAIN,
+      );
+      const ret = await consultarStatusServico(call, { cUF: '35' });
+      assertNotConsumoIndevido(ret, 'svc-an/statusServico');
+      // eslint-disable-next-line no-console
+      console.log(`[SVC-AN status] cStat=${ret.cStat} xMotivo="${ret.xMotivo}"`);
+      expect(ret.tpAmb).toBe('2');
+      // 107 = operating (the permanent homologação posture); 108/109 =
+      // paralisado, 113/114 = SVC em desativação — non-failure outcomes
+      // that still prove the transport + typed pipeline.
+      expect(['107', '108', '109', '113', '114']).toContain(ret.cStat);
+    },
+    45_000,
+  );
 
-    const endpoints = getSvcEndpoints('svc-an', 'homologacao');
-    const autorizacaoCall = buildSvcCall(endpoints.NfeAutorizacao, TEST_CERT!, SVC_AN_CHAIN);
-    const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
+  it.skipIf(!svcAnReachable)(
+    'native SVC-AN emission — tpEmis=6 NF-e is AUTHORIZED (cStat=100)',
+    async () => {
+      const numeracao = seedNNF();
+      const fixture = buildHomologacaoFixture({
+        numeracao,
+        serie: SEFAZ_HOM_SVC_SERIE,
+        cnpj: TEST_CERT!.cnpj,
+        ie: TEST_IE!,
+        contingencia: {
+          tpEmis: 6,
+          // dhCont must precede dhEmi (the fixture stamps dhEmi = now).
+          dhCont: new Date(Date.now() - 60_000),
+          xJust: 'Teste automatizado de contingencia SVC em ambiente de homologacao',
+        },
+      });
+      const out = generateNFe(fixture);
+      // tpEmis is baked into the chave at index 34 — digit '6' = SVC-AN.
+      expect(out.chave[34]).toBe('6');
 
-    const ret = await autorizarLote(autorizacaoCall, {
-      idLote: out.chave.slice(-15),
-      NFe: [signedXml],
-      indSinc: '1',
-    });
-    assertNotConsumoIndevido(ret, 'svc-an/autorizarLote');
-    // eslint-disable-next-line no-console
-    console.log(`[SVC-AN lote] cStat=${ret.cStat} xMotivo="${ret.xMotivo}"`);
+      const endpoints = getSvcEndpoints('svc-an', 'homologacao');
+      const autorizacaoCall = buildSvcCall(endpoints.NfeAutorizacao, TEST_CERT!, SVC_AN_CHAIN);
+      const signedXml = signNFe(out.nfeXml, autorizacaoCall.cert);
 
-    // SVC-AN answered sync (104 + inline protNFe) in the 2026-06-11 live
-    // validation; resolveProtocol also covers a 103 → consReci fallback,
-    // polled at the SVC's own RetAutorizacao.
-    const retCall = buildSvcCall(endpoints.NfeRetAutorizacao, TEST_CERT!, SVC_AN_CHAIN);
-    const prot = await resolveProtocol(ret, retCall);
-    if (prot) assertNotConsumoIndevido(prot.infProt, 'svc-an/protNFe');
-    expect(prot?.infProt.cStat).toBe('100');
-    expect(prot?.infProt.chNFe).toBe(out.chave);
-    expect(prot?.infProt.tpAmb).toBe('2');
-    // The authorizer must be the SVC-AN itself, not a relay to SEFAZ-SP.
-    expect(prot?.infProt.verAplic).toMatch(/^SVC_AN/);
+      const ret = await autorizarLote(autorizacaoCall, {
+        idLote: out.chave.slice(-15),
+        NFe: [signedXml],
+        indSinc: '1',
+      });
+      assertNotConsumoIndevido(ret, 'svc-an/autorizarLote');
+      // eslint-disable-next-line no-console
+      console.log(`[SVC-AN lote] cStat=${ret.cStat} xMotivo="${ret.xMotivo}"`);
 
-    // Recovery lane: consSitNFe AT THE SVC resolves the authorization —
-    // the exact path processar-pendentes uses for stuck tpEmis-6 docs.
-    await new Promise((r) => setTimeout(r, 1000));
-    const consultaCall = buildSvcCall(endpoints.NfeConsultaProtocolo, TEST_CERT!, SVC_AN_CHAIN);
-    const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
-    assertNotConsumoIndevido(sit, 'svc-an/consSitNFe');
-    // eslint-disable-next-line no-console
-    console.log(`[SVC-AN consSitNFe] cStat=${sit.cStat} prot.cStat=${sit.protNFe?.infProt.cStat}`);
-    expect(sit.chNFe).toBe(out.chave);
-    expect(sit.protNFe?.infProt.cStat).toBe('100');
-    expect(sit.protNFe?.infProt.nProt).toBe(prot!.infProt.nProt);
-  }, 180_000);
+      // SVC-AN answered sync (104 + inline protNFe) in the 2026-06-11 live
+      // validation; resolveProtocol also covers a 103 → consReci fallback,
+      // polled at the SVC's own RetAutorizacao.
+      const retCall = buildSvcCall(endpoints.NfeRetAutorizacao, TEST_CERT!, SVC_AN_CHAIN);
+      const prot = await resolveProtocol(ret, retCall);
+      if (prot) assertNotConsumoIndevido(prot.infProt, 'svc-an/protNFe');
+      expect(prot?.infProt.cStat).toBe('100');
+      expect(prot?.infProt.chNFe).toBe(out.chave);
+      expect(prot?.infProt.tpAmb).toBe('2');
+      // The authorizer must be the SVC-AN itself, not a relay to SEFAZ-SP.
+      expect(prot?.infProt.verAplic).toMatch(/^SVC_AN/);
 
-  it.skipIf(!hasSvcRsChain)(
+      // Recovery lane: consSitNFe AT THE SVC resolves the authorization —
+      // the exact path processar-pendentes uses for stuck tpEmis-6 docs.
+      await new Promise((r) => setTimeout(r, 1000));
+      const consultaCall = buildSvcCall(endpoints.NfeConsultaProtocolo, TEST_CERT!, SVC_AN_CHAIN);
+      const sit = await consultarSituacaoNFe(consultaCall, { chave: out.chave });
+      assertNotConsumoIndevido(sit, 'svc-an/consSitNFe');
+      // eslint-disable-next-line no-console
+      console.log(
+        `[SVC-AN consSitNFe] cStat=${sit.cStat} prot.cStat=${sit.protNFe?.infProt.cStat}`,
+      );
+      expect(sit.chNFe).toBe(out.chave);
+      expect(sit.protNFe?.infProt.cStat).toBe('100');
+      expect(sit.protNFe?.infProt.nProt).toBe(prot!.infProt.nProt);
+    },
+    180_000,
+  );
+
+  it.skipIf(!hasSvcRsChain || !svcRsReachable)(
     'SVC-RS off-binding status for SP → cStat=410 (transport proven, no numeração burned)',
     // retry once — a single mid-run SVRS reset shouldn't redden the lane.
     { timeout: 45_000, retry: 1 },

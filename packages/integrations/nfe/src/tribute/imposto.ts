@@ -16,7 +16,7 @@
  */
 import { z } from 'zod';
 
-import { fmtMoney, fmtMoneyOpt, fmtQuantity, fmtRate, fmtRateOpt } from './format';
+import { fmtMoney, fmtMoneyOpt, fmtQuantity, fmtRate, fmtRateOpt, roundReais } from './format';
 import {
   type ConfCOFINS,
   type ConfPIS,
@@ -39,6 +39,7 @@ import type {
   TNFe_infNFe_det_imposto_PIS,
 } from '../types/nfe-schema';
 import { serializeFragment, type XmlValue } from '../xml';
+import { buildIBSCBS, buildIS, parseRtcConfig } from './rtc';
 
 export class NFeTributeError extends Error {
   constructor(message: string) {
@@ -47,8 +48,19 @@ export class NFeTributeError extends Error {
   }
 }
 
-/** Public entry — validates inputs, dispatches, and emits the `<imposto>` XML. */
-export function buildImpostoXml(rawImposto: unknown, rawItem: unknown): string {
+/**
+ * Public entry — validates inputs, dispatches, and emits the `<imposto>` XML.
+ *
+ * `opts.emitRtc` gates the Reforma Tributária groups (NT 2025.002): when
+ * false (the default), the emitted XML is byte-identical to the pre-RTC
+ * output — the `IS` / `IBSCBS` keys are simply never set, so the META walker
+ * omits them. The orchestrator flips it on per-filial.
+ */
+export function buildImpostoXml(
+  rawImposto: unknown,
+  rawItem: unknown,
+  opts: { emitRtc?: boolean } = {},
+): string {
   const imposto = parseInput(impostoSchema, rawImposto, 'imposto');
   const item = parseInput(tributeItemSchema, rawItem, 'item');
 
@@ -67,6 +79,16 @@ export function buildImpostoXml(rawImposto: unknown, rawItem: unknown): string {
         };
   if (imposto.configuracaoIPI != null) {
     impostoValue.IPI = buildIPI(imposto.configuracaoIPI);
+  }
+  // Reforma Tributária (NT 2025.002) — attached only when the orchestrator
+  // opts in. `IS` and `IBSCBS` are sibling slots under <imposto> per the
+  // codegen; the META walker emits them in XSD order.
+  if (opts.emitRtc && imposto.configuracaoIBSCBS != null) {
+    const rtc = parseRtcConfig(imposto.configuracaoIBSCBS);
+    if (rtc.is != null) {
+      impostoValue.IS = buildIS(rtc.is, item.vProd);
+    }
+    impostoValue.IBSCBS = buildIBSCBS(rtc, item.vProd);
   }
   return serializeFragment(
     'TNFe_infNFe_det_imposto',
@@ -327,7 +349,7 @@ function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto
         throw new NFeTributeError(`PIS CST=${cfg.CST} requires \`pPIS\``);
       }
       const vBC = item.vProd;
-      const vPIS = Math.round(vBC * cfg.pPIS) / 100;
+      const vPIS = roundReais((vBC * cfg.pPIS) / 100);
       return {
         PISAliq: {
           CST: cfg.CST,
@@ -411,7 +433,7 @@ function buildCOFINSByCST(cfg: ConfCOFINS, item: TributeItem): TNFe_infNFe_det_i
         throw new NFeTributeError(`COFINS CST=${cfg.CST} requires \`pCOFINS\``);
       }
       const vBC = item.vProd;
-      const vCOFINS = Math.round(vBC * cfg.pCOFINS) / 100;
+      const vCOFINS = roundReais((vBC * cfg.pCOFINS) / 100);
       return {
         COFINSAliq: {
           CST: cfg.CST,

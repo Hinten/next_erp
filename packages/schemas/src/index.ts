@@ -16,9 +16,11 @@ export type {
   DomainSchema,
 } from './types';
 
+export { RECENCY_SORT } from './types';
+
 export { ALL_DOMAINS } from './registry';
 
-export { millisSinceEpoch, microsSinceEpoch } from './datetime';
+export { millisSinceEpoch, microsSinceEpoch } from './shared/datetime';
 // Re-export `nowMicros` so schema consumers (e.g. @delfrance/storage,
 // apps/functions) can stamp numeric-epoch fields without a direct @delfrance/core
 // dep. (The other epoch/coercion helpers are imported straight from
@@ -29,7 +31,21 @@ export { nowMicros } from '@delfrance/core/datetime';
 // data layer (which depends on schemas, not core directly) can detect changes.
 export { valuesEqual } from '@delfrance/core';
 
-export { auditEntrySchema, type AuditEntry } from './audit';
+export { auditEntrySchema, type AuditEntry } from './shared/audit';
+
+export {
+  outerRefSchema,
+  idRefSchema,
+  docIdSchema,
+  outerRefLooseSchema,
+  toOuterRef,
+  idFromRef,
+  parseRef,
+  type OuterRef,
+  type IdRef,
+  type DocId,
+  type OuterRefLoose,
+} from './shared/outerRef';
 
 export {
   cliente,
@@ -62,10 +78,12 @@ export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './cat
 export {
   ESTADO_FRETE_LABELS,
   ESTADOS_FRETE_NAO_POSTADO,
+  FREIGHT_TIPO_CAPS,
   INTEGRACAO_FRETE_LABELS,
   MODALIDADE_FRETE_LABELS,
   dimensoesSchema,
   estadoFreteSchema,
+  freightCapsFor,
   freteDoPedidoSchema,
   integracoesFreteSchema,
   isFreteJaPostado,
@@ -76,6 +94,8 @@ export {
   volumeSchema,
   type Dimensoes,
   type EstadoFrete,
+  type FreightLabelMode,
+  type FreightTipoCapabilities,
   type FreteDoPedido,
   type IntegracaoFrete,
   type ModalidadeFrete,
@@ -83,7 +103,7 @@ export {
   type Transportadora,
   type Veiculo,
   type Volume,
-} from './frete';
+} from './shared/frete';
 
 export {
   DIA_DA_SEMANA_LABELS,
@@ -146,8 +166,14 @@ export {
   INTEGRACAO_TIPO,
   INTEGRACAO_TIPO_LABELS,
   pluginIdForTipo,
+  // `credenciaisIntegracao` is intentionally NOT exported as a DomainSchema and
+  // NOT registered in ALL_DOMAINS — it is an admin-only, default-deny secret
+  // store (mirrors `certificadoSecreto`). Only its schema/meta/type are public.
+  credenciaisIntegracaoSchema,
+  credenciaisIntegracaoMeta,
   type Integracao,
   type IntegracaoTipo,
+  type CredenciaisIntegracao,
 } from './integracao';
 
 export {
@@ -329,6 +355,113 @@ export {
   type RegraImposto,
 } from './regraImposto';
 
+// Tributary config schemas (ICMS/IPI/PIS/COFINS/ISSQN/retenção + RTC IBS/CBS/IS).
+// Single source of truth, browser-safe; the NF-e tribute engine re-exports them.
+export {
+  // enums
+  crtSchema,
+  csosnSchema,
+  cstSchema,
+  modBCSchema,
+  modBCSTSchema,
+  motDesICMSSchema,
+  origemSchema,
+  cstPisCofinsSchema,
+  cstIpiSchema,
+  indISSSchema,
+  indIncentivoSchema,
+  IPI_TRIB_CSTS,
+  // ICMS sub-configs (SN + Regime Normal)
+  confICMSSN101Schema,
+  confICMSSN201Schema,
+  confICMSSN202ou203Schema,
+  confICMSSN500Schema,
+  confICMSSN900Schema,
+  confICMS00Schema,
+  confICMS10Schema,
+  confICMS20Schema,
+  confICMS30Schema,
+  confICMS404150Schema,
+  confICMS51Schema,
+  confICMS60Schema,
+  confICMS70Schema,
+  confICMS90Schema,
+  configuracaoICMSSchema,
+  // PIS / COFINS / IPI / ISSQN / retenção
+  confPISSchema,
+  confCOFINSSchema,
+  configuracaoPISSTSchema,
+  configuracaoIPISchema,
+  configuracaoISSQNSchema,
+  retencaoSchema,
+  // RTC (IBS/CBS/IS)
+  configuracaoISRtcSchema,
+  configuracaoIBSCBSSchema,
+  // canonical per-item Imposto
+  impostoSchema,
+  // label maps
+  CRT_LABELS,
+  CSOSN_LABELS,
+  CST_ICMS_LABELS,
+  MOD_BC_LABELS,
+  MOD_BCST_LABELS,
+  MOT_DES_ICMS_LABELS,
+  CST_PIS_COFINS_LABELS,
+  CST_IPI_LABELS,
+  IND_ISS_LABELS,
+  IND_INCENTIVO_LABELS,
+  // types
+  type Crt,
+  type Csosn,
+  type Cst,
+  type ModBC,
+  type ModBCST,
+  type MotDesICMS,
+  type Origem,
+  type CstPisCofins,
+  type CstIpi,
+  type IndISS,
+  type IndIncentivo,
+  type ConfICMSSN101,
+  type ConfICMSSN201,
+  type ConfICMSSN202ou203,
+  type ConfICMSSN500,
+  type ConfICMSSN900,
+  type ConfICMS00,
+  type ConfICMS10,
+  type ConfICMS20,
+  type ConfICMS30,
+  type ConfICMS404150,
+  type ConfICMS51,
+  type ConfICMS60,
+  type ConfICMS70,
+  type ConfICMS90,
+  type ConfiguracaoICMS,
+  type ConfPIS,
+  type ConfCOFINS,
+  type ConfiguracaoPISST,
+  type ConfiguracaoIPI,
+  type ConfiguracaoISSQN,
+  type Retencao,
+  type ConfiguracaoISRtc,
+  type ConfiguracaoIBSCBS,
+  type Imposto,
+} from './imposto/tribute';
+
+export {
+  // RTC cClassTrib/CST seed + validator (#333)
+  CCLASSTRIB_SEED,
+  CST_IBSCBS_CODES,
+  CST_IBSCBS_LABELS,
+  cClassTribCodesForCst,
+  cClassTribDescricao,
+  cClassTribEntriesForCst,
+  cstClassTribStructurallyValid,
+  validateCstClassTrib,
+  type CClassTribEntry,
+  type CstClassTribValidation,
+} from './imposto/cclasstrib';
+
 export {
   arquivo,
   arquivoSchema,
@@ -352,12 +485,16 @@ export {
   productOriginalPath,
   productDerivativePath,
   productVideoPath,
+  productAnexoPath,
   mediaPath,
+  tabMediOriginalPath,
   productArquivoId,
+  tabMediArquivoId,
   derivativeArquivoId,
   parseProductOriginalPath,
   isWatchedProductOriginal,
   parseProductMediaDir,
+  parseOwnedMediaDir,
   isDerivativeName,
   firebaseDownloadUrl,
   normalizeName,
@@ -365,7 +502,16 @@ export {
   type ParsedOriginalPath,
   type ProductMediaKind,
   type ParsedProductMediaDir,
+  type MediaOwnerCollection,
+  type ParsedOwnedMediaDir,
 } from './storage/storagePaths';
 
-export { buildFotoRefs, fotoSchema, type Foto, type FotoRefs } from './storage/foto';
+export {
+  buildFotoRefs,
+  buildOriginalFotoRef,
+  deriveFotosArquivosIds,
+  fotoSchema,
+  type Foto,
+  type FotoRefs,
+} from './storage/foto';
 export { videoSchema, videoFormatoSchema, type Video, type VideoFormato } from './storage/video';

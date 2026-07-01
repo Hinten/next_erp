@@ -148,6 +148,33 @@ export async function movimentarEstoque(args: {
   await callAplicarEstoque({ op: 'movimento', ...args });
 }
 
+/**
+ * Read each parent produto's variation children (`paiId == parent`) as
+ * `{ id, variacoesUid }` — the input the "Gerar Variações" matcher needs for
+ * every kit component. Forced to the server (a cold cache would silently drop
+ * children and mis-generate). One `paiId ==` query per component, in parallel
+ * (component counts are small); returns a map keyed by parent id.
+ */
+export async function getVariationChildrenByParent(
+  db: Firestore,
+  parentIds: string[],
+): Promise<Record<string, Array<{ id: string; variacoesUid: string[] }>>> {
+  const unique = [...new Set(parentIds)];
+  const entries = await Promise.all(
+    unique.map(async (parentId) => {
+      const snap = await getDocsFromServer(
+        buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', parentId)]),
+      );
+      const children = snap.docs.map((d) => ({
+        id: d.id,
+        variacoesUid: (d.data().variacoesUid as string[] | null) ?? [],
+      }));
+      return [parentId, children] as const;
+    }),
+  );
+  return Object.fromEntries(entries);
+}
+
 const toSnapshot = (
   id: string,
   data: { nome?: string | null; precos?: unknown },

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
@@ -8,47 +8,58 @@ import { notifications } from '@mantine/notifications';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import {
+  type Anexo,
   type ComponentesKit,
   type Foto,
   type ImpostoProduto,
   type PrecosMap,
   type ProdutoExtraData,
   type Video,
+  buildFotoRefs,
+  deriveFotosArquivosIds,
   normalizeVariacoesUid,
   parseFakePath,
   produtoPageBaseSchema,
   produtoPageIssues,
   sortGrupoUids,
 } from '@delfrance/schemas';
-import { buildQuery, limit, orderByField } from '@delfrance/data';
+import { buildQuery, limit, orderByField, whereArrayContains, whereEqual } from '@delfrance/data';
 import {
   ProdutoReferencedError,
   applyPrecosChange,
   deleteProdutoCascade,
+  propagateKitStatusToChildren,
   recordCustoHistory,
 } from '@delfrance/data/produto';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
+import { uploadProductImage } from '@delfrance/storage';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { buildProdutoTransactionWrites, createClientProdutoPort } from '@/lib/produtos/clientPort';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
-import { PhotoManager } from '../../_components/PhotoManager';
+import { AnexoManager } from '../../_components/AnexoManager';
+import { PhotoManager } from '@/components/photo-manager/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
+import { EhKitField } from '../../_components/EhKitField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
 import { ExtraDataManager } from '../../_components/ExtraDataManager';
 import { ImpostoManager } from '../../_components/ImpostoManager';
 import { KitManager, stripKitForSave } from '../../_components/KitManager';
+import { KitVariacoesManager, type KitVariacoesFlush } from '../../_components/KitVariacoesManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
-import { VariationManager } from '../../_components/VariationManager';
+import { VariationManager, type VariationRow } from '../../_components/VariationManager';
 import {
   PRODUTO_EXCLUDED_FIELDS,
   PRODUTO_SECTIONS,
   PRODUTO_TRANSIENT_FIELDS,
   produtoFieldOverrides,
 } from '../../_components/produtoFields';
+
+/** Max referencing kits listed in the #246 promotion warning (a capped preview). */
+const REFERENCED_BY_DISPLAY = 5;
 
 export default function EditarProdutoPage() {
   const params = useParams<{ id: string }>();
@@ -84,6 +95,47 @@ export default function EditarProdutoPage() {
   // touched) and the staged-children flush, committed after the parent saves.
   const groupsRef = useRef<string[] | null>(null);
   const flushChildrenRef = useRef<((parentId: string) => Promise<void>) | null>(null);
+  // Staged per-variation kit maps (the "Gerar Variações" grid), flushed AFTER
+  // the variation-children flush so the child docs exist.
+  const flushKitVariacoesRef = useRef<KitVariacoesFlush | null>(null);
+  // The variation set the Kit tab consumes (the per-variation grid + the
+  // component-picker exclusion: a kit can't contain itself or its variations).
+  // VariationManager publishes the LIVE set (saved + staged) once its tab has
+  // mounted — but React `<Activity>` keeps an unvisited tab's effects unmounted,
+  // so until something is published we fall back to a page-level snapshot of the
+  // saved children (this page component is always mounted, unlike a hidden tab).
+  // Only the variation children are kept live here — not every tab's effects.
+  const [variationRows, setVariationRows] = useState<VariationRow[]>([]);
+  const childrenQuery = useMemo(
+    () => buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', params.id)]),
+    [db, params.id],
+  );
+  const childrenSnap = useSnapshot(childrenQuery);
+  const savedVariationRows = useMemo<VariationRow[]>(
+    () =>
+      [...(childrenSnap.data ?? [])]
+        .sort((a, b) => (a.data.ordem ?? Infinity) - (b.data.ordem ?? Infinity))
+        .map((r) => ({
+          key: r.id,
+          id: r.id,
+          nome: r.data.nome,
+          sku: r.data.sku ?? '',
+          variacoesUid: r.data.variacoesUid ?? [],
+          deleteMark: false,
+        })),
+    [childrenSnap.data],
+  );
+  const effectiveVariationRows = useMemo(
+    () => (variationRows.length > 0 ? variationRows : savedVariationRows),
+    [variationRows, savedVariationRows],
+  );
+  const kitExcludeIds = useMemo(
+    () => [
+      params.id,
+      ...effectiveVariationRows.map((r) => r.id).filter((id): id is string => id !== null),
+    ],
+    [params.id, effectiveVariationRows],
+  );
 
   // Price-history bookkeeping (Flutter parity: `Produto.save()` records every
   // precos change). `lastSavedPrecos` pins the PERSISTED map once, from the
@@ -92,6 +144,46 @@ export default function EditarProdutoPage() {
   // live snapshot can't be trusted to have re-emitted yet).
   const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, params.id), [db, params.id]);
   const produtoSnap = useDocSnapshot(produtoDocRef);
+  // Parent kit-status (#298): when this produto is a variation child (`paiId`
+  // set), read its parent once so the page model can enforce "a kit parent ⟹
+  // its children are kits" on the CHILD-edit direction. Null ref (a parent
+  // produto) → no read.
+  const paiId = produtoSnap.data?.data.paiId ?? null;
+  const paiDocRef = useMemo(
+    () => (paiId ? produtoCollection.docRef(db, {}, paiId) : null),
+    [db, paiId],
+  );
+  const paiSnap = useDocSnapshot(paiDocRef);
+  const parentIsKit = paiSnap.data?.data.ehKit === true;
+
+  // Kits that use THIS produto as a component (#246). Promoting this produto into
+  // a kit while it's still a component creates a kit-of-kit (can corrupt stock),
+  // so the "É kit" toggle warns + confirms when this list is non-empty. Same
+  // denorm the delete guard queries (`componentesKitKeys` array-contains).
+  const referencedByQuery = useMemo(
+    () =>
+      buildQuery(produtoCollection.ref(db, {}), [
+        whereArrayContains('componentesKitKeys', params.id),
+        // Fetch one past the display cap so we can flag "+ outros" without an
+        // unbounded read — this is a best-effort warning, not an exhaustive list.
+        limit(REFERENCED_BY_DISPLAY + 1),
+      ]),
+    [db, params.id],
+  );
+  const referencedBySnap = useSnapshot(referencedByQuery);
+  const referencedByAll = useMemo(
+    () =>
+      (referencedBySnap.data ?? [])
+        .filter((r) => r.id !== params.id)
+        .map((r) => ({ id: r.id, nome: r.data.nome ?? r.id })),
+    [referencedBySnap.data, params.id],
+  );
+  const referencedByKits = useMemo(
+    () => referencedByAll.slice(0, REFERENCED_BY_DISPLAY),
+    [referencedByAll],
+  );
+  // True when more kits reference this produto than we display (capped query).
+  const referencedByMore = referencedByAll.length > REFERENCED_BY_DISPLAY;
   const lastSavedPrecos = useRef<{ ready: boolean; value: PrecosMap }>({
     ready: false,
     value: null,
@@ -102,10 +194,22 @@ export default function EditarProdutoPage() {
     ready: false,
     value: null,
   });
+  // Same bookkeeping for the kit status: when `ehKit`/`ehKitVirtual` flips, the
+  // existing variation children are synced on save (Flutter parity).
+  const lastSavedKitStatus = useRef<{ ready: boolean; ehKit: boolean; ehKitVirtual: boolean }>({
+    ready: false,
+    ehKit: false,
+    ehKitVirtual: false,
+  });
   useEffect(() => {
     if (!lastSavedPrecos.current.ready && produtoSnap.data) {
       lastSavedPrecos.current = { ready: true, value: produtoSnap.data.data.precos ?? null };
       lastSavedCusto.current = { ready: true, value: produtoSnap.data.data.custo ?? null };
+      lastSavedKitStatus.current = {
+        ready: true,
+        ehKit: produtoSnap.data.data.ehKit ?? false,
+        ehKitVirtual: produtoSnap.data.data.ehKitVirtual ?? false,
+      };
     }
   }, [produtoSnap.data]);
 
@@ -114,16 +218,47 @@ export default function EditarProdutoPage() {
   const fields = useMemo<Record<string, FieldConfig>>(
     () => ({
       ...produtoFieldOverrides,
+      // "É kit" with the kit-of-kit promotion warning (#246) — editar-only, since
+      // it needs the referenced-by snapshot (a new produto can't be referenced).
+      ehKit: {
+        ...produtoFieldOverrides.ehKit,
+        renderInput: (p) => (
+          <EhKitField
+            label={p.label}
+            value={p.value === true}
+            onChange={p.onChange}
+            disabled={p.disabled}
+            referencedByKits={referencedByKits}
+            hasMore={referencedByMore}
+            loading={referencedBySnap.loading}
+          />
+        ),
+      },
       fotos: {
         label: 'Fotos',
         section: 'Fotos',
         prepareForSave: stripMarkedForDeletion,
         renderInput: (p) => (
           <PhotoManager
-            produtoId={params.id}
             db={db}
-            storage={storage}
             grupos={grupos}
+            uploadFoto={(file) =>
+              uploadProductImage({
+                storage,
+                db,
+                produtoId: params.id,
+                bytes: file,
+                contentType: file.type,
+                originalFilename: file.name,
+              }).then(({ id }) =>
+                // Defensive: uploadProductImage returns `<produtoId>_<hash>`;
+                // recover the hash, falling back to the raw id if the contract ever changes.
+                buildFotoRefs(
+                  params.id,
+                  id.startsWith(`${params.id}_`) ? id.slice(params.id.length + 1) : id,
+                ),
+              )
+            }
             value={(p.value as Foto[] | null) ?? null}
             onChange={p.onChange}
             disabled={p.disabled}
@@ -145,6 +280,21 @@ export default function EditarProdutoPage() {
           />
         ),
       },
+      anexos: {
+        label: 'Anexos',
+        section: 'Anexos',
+        prepareForSave: stripMarkedForDeletion,
+        renderInput: (p) => (
+          <AnexoManager
+            produtoId={params.id}
+            db={db}
+            storage={storage}
+            value={(p.value as Anexo[] | null) ?? null}
+            onChange={p.onChange}
+            disabled={p.disabled}
+          />
+        ),
+      },
       variacoesUid: {
         label: 'Variações',
         section: 'Variações',
@@ -159,6 +309,7 @@ export default function EditarProdutoPage() {
             onGroupsChange={(ids) => {
               groupsRef.current = ids;
             }}
+            onRowsChange={setVariationRows}
             flushRef={flushChildrenRef}
             disabled={p.disabled}
           />
@@ -236,17 +387,41 @@ export default function EditarProdutoPage() {
         section: 'Kit',
         prepareForSave: stripKitForSave,
         renderInput: (p) => (
-          <KitManager
-            produtoId={params.id}
-            db={db}
-            value={(p.value as ComponentesKit | null) ?? null}
-            onChange={p.onChange}
-            disabled={p.disabled}
-          />
+          <Stack gap="md">
+            <KitManager
+              produtoId={params.id}
+              db={db}
+              value={(p.value as ComponentesKit | null) ?? null}
+              onChange={p.onChange}
+              disabled={p.disabled}
+              excludeIds={kitExcludeIds}
+            />
+            <KitVariacoesManager
+              produtoId={params.id}
+              db={db}
+              grupos={grupos}
+              rows={effectiveVariationRows}
+              disabled={p.disabled}
+              flushRef={flushKitVariacoesRef}
+            />
+          </Stack>
         ),
       },
     }),
-    [params.id, db, storage, grupos, gruposSnap.error?.message, listas, listasSnap.error?.message],
+    [
+      params.id,
+      db,
+      storage,
+      grupos,
+      gruposSnap.error?.message,
+      listas,
+      listasSnap.error?.message,
+      effectiveVariationRows,
+      kitExcludeIds,
+      referencedByKits,
+      referencedByMore,
+      referencedBySnap.loading,
+    ],
   );
 
   // The editor is the product screen now (the intermediate detail view was
@@ -317,6 +492,11 @@ export default function EditarProdutoPage() {
           const componentesKit = ehKit
             ? ((values.componentesKit as ComponentesKit | null) ?? null)
             : null;
+          // Coexistence denorm for the legacy Flutter deletion guard — the bare
+          // arquivo ids of the produto's photos (`models.dart:2022-2026`). `null`
+          // (the schema default) when there are no fotos, so an untouched produto
+          // isn't churned from `null` to `[]` on an unrelated save.
+          const fotoIds = deriveFotosArquivosIds(values.fotos as Foto[] | null);
           return {
             grupoDeVariacoesUid: sortGrupoUids(groupsRef.current ?? implied, grupos),
             variacoesUid: normalizeVariacoesUid(uids, grupos),
@@ -325,19 +505,37 @@ export default function EditarProdutoPage() {
             // `array-contains` query (order-insensitive), and Firestore arrays
             // are order-sensitive, so an unsorted list churns dirty detection.
             componentesKitKeys: componentesKit ? Object.keys(componentesKit).sort() : null,
+            fotosArquivosIds: fotoIds.length > 0 ? fotoIds : null,
           };
         }}
-        validate={(values) =>
+        validate={(values) => {
           // Cross-document rules, concentrated in the page model
           // (`produtoPageIssues`). Estoque is edited directly in its tab (not on
           // this save), so it's not part of the form value here.
-          produtoPageIssues({
-            id: params.id,
-            ehKit: values.ehKit as boolean | null,
-            componentesKit: values.componentesKit as Record<string, { quantidade: number }> | null,
-            impostos: (values.impostos as ImpostoProduto[] | null) ?? null,
-          })
-        }
+          const issues = [
+            ...produtoPageIssues({
+              id: params.id,
+              ehKit: values.ehKit as boolean | null,
+              // #298: a kit parent's variation children must also be kits.
+              parentIsKit,
+              componentesKit: values.componentesKit as Record<
+                string,
+                { quantidade: number }
+              > | null,
+              impostos: (values.impostos as ImpostoProduto[] | null) ?? null,
+            }),
+          ];
+          // Guard the #298 race: a child whose parent doc hasn't loaded yet would
+          // see `parentIsKit = false` and slip past the child-edit guard. Block
+          // the save until the parent snapshot resolves.
+          if (paiId && paiSnap.loading) {
+            issues.push({
+              path: 'ehKit',
+              message: 'Aguarde o carregamento do produto pai para validar o kit.',
+            });
+          }
+          return issues;
+        }}
         onAfterSave={async (id, values) => {
           // `values.precos`/`values.custo` are exactly what this save persisted
           // (ObjectView hands us the transformed values) — no captured-state
@@ -368,13 +566,44 @@ export default function EditarProdutoPage() {
           }
           lastSavedCusto.current = { ready: true, value: newCusto };
 
+          // Kit-status propagation (Flutter parity,
+          // `produtoTableProvider.dart:556-589`): when the parent's
+          // `ehKit`/`ehKitVirtual` flips, sync the EXISTING variation children —
+          // a child of a non-kit can't stay a kit, so its `componentesKit` is
+          // cleared. "Old" value = the ref pinned at the first emit, else the
+          // live snapshot (so a save beating that emit still propagates).
+          const newEhKit = values.ehKit === true;
+          const newEhKitVirtual = values.ehKitVirtual === true;
+          const oldKit = lastSavedKitStatus.current.ready
+            ? lastSavedKitStatus.current
+            : {
+                ehKit: produtoSnap.data?.data.ehKit ?? false,
+                ehKitVirtual: produtoSnap.data?.data.ehKitVirtual ?? false,
+              };
+          await propagateKitStatusToChildren(port, id, {
+            ehKit: newEhKit,
+            ehKitVirtual: newEhKitVirtual,
+            oldEhKit: oldKit.ehKit,
+            oldEhKitVirtual: oldKit.ehKitVirtual,
+          });
+          lastSavedKitStatus.current = {
+            ready: true,
+            ehKit: newEhKit,
+            ehKitVirtual: newEhKitVirtual,
+          };
+
           // (The extraData singleton is now written atomically with the produto
           // doc via `transactionWrites`, not here — so a flaky connection can't
           // leave the produto saved without its Descrição.)
 
-          // The flush runs last: it creates any new children already carrying
-          // the parent's precos (plus their initial history records).
+          // The children flush runs before the kit-variation flush: it creates
+          // any new children already carrying the parent's precos (plus their
+          // initial history records).
           await flushChildrenRef.current?.(id);
+
+          // Then persist each kit-variation child's generated `componentesKit`
+          // (from "Gerar Variações") — the child docs exist by now.
+          await flushKitVariacoesRef.current?.(id);
         }}
         saveLabel="Salvar alterações"
         canEdit={canWrite}

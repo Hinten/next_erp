@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import type { MantineColor } from '@mantine/core';
 import type { z, ZodTypeAny } from 'zod';
+import type { PipelineFilterOp } from '@delfrance/data';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 
 /**
@@ -46,6 +47,29 @@ export interface FieldDescriptor {
   referenceCollection?: string;
   /** Original Zod type (unwrapped — not the optional/nullable wrapper). */
   zodType: ZodTypeAny;
+}
+
+/**
+ * The subset of a `FieldDescriptor` the per-column filter UI + URL parser
+ * actually read. A full `FieldDescriptor` satisfies it structurally, and a
+ * virtual column can synthesize one (e.g. for a nested path like
+ * `freteInicial.estado`) without a real Zod descriptor.
+ */
+export type FilterableField = Pick<
+  FieldDescriptor,
+  'key' | 'kind' | 'label' | 'enumValues' | 'dateUnit'
+>;
+
+/**
+ * A single column filter — the value emitted by a ColumnFilter / virtual
+ * filter and pushed to the Pipeline `where` (or applied client-side on the
+ * fallback path). Subcollection-lookup filters (e.g. the pedido NF column)
+ * encode their chosen child field inside `value` as `"<subfield>:<term>"` so
+ * the whole filter round-trips through the URL sync unchanged.
+ */
+export interface ColumnFilterValue {
+  op: PipelineFilterOp;
+  value: string | number | boolean | null;
 }
 
 /**
@@ -138,15 +162,57 @@ export interface ActionConfig<T> {
 export type InferRow<T extends ZodTypeAny> = z.infer<T>;
 
 /**
+ * Filter backing for a virtual column. A virtual column has no Zod descriptor,
+ * so it declares here the (possibly nested) document field it filters on plus
+ * how to render the input. Provide EITHER `kind` (the generic ColumnFilter
+ * input) OR `renderFilter` (a fully custom popover body, e.g. a picker).
+ */
+export interface VirtualColumnFilter {
+  /** (Possibly nested) document path used in the server-side `where()`. */
+  readonly field: string;
+  /** Popover/affordance label (defaults to the column label). */
+  readonly label?: string;
+  /** Declarative input kind — drives the generic ColumnFilter + URL coercion. */
+  readonly kind?: FieldKind;
+  /** Enum choices when `kind === 'enum'`. */
+  readonly options?: Array<{ value: string; label: string }>;
+  /** Epoch unit when `kind === 'datetime'` (drives the date picker conversion). */
+  readonly dateUnit?: 'ms' | 'us';
+  /** Custom popover body — owns the filter UI and emits a `ColumnFilterValue`. */
+  readonly renderFilter?: (props: {
+    value: ColumnFilterValue | undefined;
+    onChange: (next: ColumnFilterValue | undefined) => void;
+  }) => ReactNode;
+  /**
+   * Resolve this filter via a sibling subcollection (collection-group) lookup
+   * rather than a direct `where()` on the listed collection: the emitted value's
+   * `subfield` + `value` select which child field to match, the matching child
+   * docs are mapped to their parent ids, and those ids constrain the main query.
+   * Used by the pedido NF column (the `nfev4` subcollection holds `numeracao` /
+   * `chave`, which are not on the pedido doc).
+   */
+  readonly subcollectionLookup?: {
+    readonly subcollection: string;
+    /**
+     * Selectable child fields. `numeric: true` coerces the term to a number for
+     * the equality match (e.g. `numeracao`); leave it off for string fields
+     * like a 44-digit `chave`, which must NOT be parsed as a number.
+     */
+    readonly fields: ReadonlyArray<{ value: string; label: string; numeric?: boolean }>;
+  };
+}
+
+/**
  * A column declared OUTSIDE the Zod schema — for cells whose value
  * is derived (computed from the row), async (subscribes to a sibling
  * subcollection), or dereferenced (follows an outer reference).
  *
  * Virtual columns interleave with schema-derived columns via the
  * TableView's `defaultColumns` prop: each key is resolved against
- * the schema first, then against `virtualColumns`. They render no
- * ColumnFilter (no descriptor → nothing to filter on) but DO appear
- * in the ColumnPicker so users can toggle visibility.
+ * the schema first, then against `virtualColumns`. They appear in the
+ * ColumnPicker so users can toggle visibility, and — when they declare
+ * `sortField` / `filter` — render a sort handle and/or filter affordance
+ * backed by a (possibly nested) document field.
  */
 export interface VirtualColumn<T> {
   /** Stable identifier, used in `defaultColumns` ordering + ColumnPicker. */
@@ -167,4 +233,12 @@ export interface VirtualColumn<T> {
    * `row.id`).
    */
   readonly dependsOn?: ReadonlyArray<string>;
+  /**
+   * (Possibly nested) document field path to order by server-side. When set,
+   * the header renders a sort toggle that issues `orderBy(sortField)` through
+   * the Pipeline. Omit for a non-sortable column.
+   */
+  readonly sortField?: string;
+  /** Per-column filter backing (see {@link VirtualColumnFilter}). */
+  readonly filter?: VirtualColumnFilter;
 }

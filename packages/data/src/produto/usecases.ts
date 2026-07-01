@@ -14,6 +14,7 @@ import {
   samePrecos,
   PRODUTO_EXTRA_DATA_DOC_ID,
   PRODUTO_SUBCOLLECTION_NAMES,
+  type ComponentesKit,
   type ImpostoProduto,
   type PrecoChange,
   type PrecosMap,
@@ -256,12 +257,50 @@ function impostoCarriesInfo(imp: ImpostoProduto): boolean {
     imp.extipi,
     imp.unidade,
   ];
+  // The deep tribute configs (now typed) each count as a real override — an
+  // entry that sets only ICMS/IPI/PIS/COFINS/ISSQN/retenção (no Dados Gerais)
+  // must still persist.
+  const configs = [
+    imp.configuracaoICMS,
+    imp.configuracaoIPI,
+    imp.configuracaoPIS,
+    imp.configuracaoCOFINS,
+    imp.configuracaoPISST,
+    imp.configuracaoISSQN,
+    imp.retencao,
+  ];
   // An explicit `compoeValorTotalDaNFe` (true OR false) is a real override worth
   // keeping; only a pristine `null` counts as empty.
   return (
     strings.some((v) => typeof v === 'string' && v.trim() !== '') ||
-    imp.compoeValorTotalDaNFe != null
+    imp.compoeValorTotalDaNFe != null ||
+    configs.some((c) => c != null) ||
+    rtcConfigHasValue(imp)
   );
+}
+
+/**
+ * True when the passthrough Reforma Tributária blob (`configuracaoIBSCBS`)
+ * carries at least one non-null value. The RTC config rides on the imposto row
+ * via `.passthrough()` (not typed on `ImpostoProduto`), so a row whose ONLY
+ * content is RTC config must still persist — `impostoCarriesInfo` would
+ * otherwise drop it. A toggled-on-but-empty blob (all null) counts as empty.
+ */
+function rtcConfigHasValue(imp: ImpostoProduto): boolean {
+  return hasNonNullLeaf((imp as { configuracaoIBSCBS?: unknown }).configuracaoIBSCBS);
+}
+
+/**
+ * True when `v` is, or recursively contains, a non-null leaf. A nested all-null
+ * object (e.g. an empty `is` sub-config) correctly reads as empty — a plain
+ * top-level non-null check would treat the non-null nested object as a value.
+ */
+function hasNonNullLeaf(v: unknown): boolean {
+  if (v == null) return false;
+  if (typeof v === 'object') {
+    return Object.values(v as Record<string, unknown>).some(hasNonNullLeaf);
+  }
+  return true;
 }
 
 /**
@@ -310,6 +349,111 @@ export async function saveProdutoImpostos(
   const ops = buildImpostoWriteOps(produtoId, impostos, port.now());
   if (ops.length === 0) return;
   await port.commit(ops);
+}
+
+// ---------------------------------------------------------------------------
+// Kit "Gerar Variações" child flush (each kit-variation child's componentesKit)
+// ---------------------------------------------------------------------------
+
+/** One variation child's generated kit map, ready to flush onto its produto doc. */
+export interface ChildComponentesKit {
+  id: string;
+  componentesKit: ComponentesKit | null;
+}
+
+/**
+ * Build the per-child `componentesKit` updates produced by "Gerar Variações".
+ * Each kit-variation child is a separate produto doc, so this is an `update` on
+ * `produtos/<childId>` carrying the generated map plus the order-stable
+ * `componentesKitKeys` denorm (the same sorted-keys shape the parent uses, which
+ * the delete-guard queries via `array-contains`). An empty/null map clears both.
+ */
+export function buildChildrenComponentesKitOps(children: ChildComponentesKit[]): ProdutoWriteOp[] {
+  return children.map((c) => {
+    const map =
+      c.componentesKit && Object.keys(c.componentesKit).length > 0 ? c.componentesKit : null;
+    return {
+      type: 'update',
+      path: produtoDocPath(c.id),
+      data: {
+        componentesKit: map,
+        componentesKitKeys: map ? Object.keys(map).sort() : null,
+      },
+    };
+  });
+}
+
+/** Persist each kit-variation child's generated `componentesKit` (no-op when none). */
+export async function saveChildrenComponentesKit(
+  port: ProdutoDataPort,
+  children: ChildComponentesKit[],
+): Promise<void> {
+  if (children.length === 0) return;
+  await port.commit(buildChildrenComponentesKitOps(children));
+}
+
+// ---------------------------------------------------------------------------
+// Kit-status child propagation (Flutter `Produto.save()` variation loop)
+//
+// When a parent's `ehKit`/`ehKitVirtual` flips, every EXISTING variation child
+// must follow — a child of a non-kit can't stay a kit. Mirror of
+// `produtoTableProvider.dart:556-589`: set the child's `ehKit`/`ehKitVirtual`
+// (a non-kit can't be a virtual kit — Flutter `ehKit == false ? false :
+// ehKitVirtual`) and CLEAR its `componentesKit` (+ the denorm keys) only when
+// the parent stops being a kit. A kit parent leaves each child's own generated
+// map intact (it's populated by "Gerar Variações").
+// ---------------------------------------------------------------------------
+
+/** The parent kit-status transition observed across one save. */
+export interface KitStatusChange {
+  ehKit: boolean;
+  ehKitVirtual: boolean;
+  oldEhKit: boolean;
+  oldEhKitVirtual: boolean;
+}
+
+/** True when `ehKit` or `ehKitVirtual` actually changed across the save. */
+function kitStatusChanged(c: KitStatusChange): boolean {
+  return c.ehKit !== c.oldEhKit || c.ehKitVirtual !== c.oldEhKitVirtual;
+}
+
+/**
+ * Build the per-child updates that sync a kit-status change onto existing
+ * variation children. `ehKitVirtual` collapses to false when the parent is no
+ * longer a kit; `componentesKit` (+ keys) is cleared only when the parent stops
+ * being a kit. Empty when nothing changed.
+ */
+export function buildKitStatusChildOps(
+  change: KitStatusChange,
+  children: Array<{ id: string }>,
+): ProdutoWriteOp[] {
+  if (!kitStatusChanged(change)) return [];
+  const ehKitVirtual = change.ehKit ? change.ehKitVirtual : false;
+  return children.map((c) => {
+    const data: Record<string, unknown> = { ehKit: change.ehKit, ehKitVirtual };
+    if (!change.ehKit) {
+      data.componentesKit = null;
+      data.componentesKitKeys = null;
+    }
+    return { type: 'update', path: produtoDocPath(c.id), data };
+  });
+}
+
+/**
+ * Propagate a parent's kit-status change to its variation children (no-op when
+ * nothing changed or there are no children). Returns the ids that were updated.
+ * The editor's `onAfterSave` and a future agent both call this.
+ */
+export async function propagateKitStatusToChildren(
+  port: ProdutoDataPort,
+  parentId: string,
+  change: KitStatusChange,
+): Promise<string[]> {
+  if (!kitStatusChanged(change)) return [];
+  const children = await port.getChildren(parentId);
+  if (children.length === 0) return [];
+  await port.commit(buildKitStatusChildOps(change, children));
+  return children.map((c) => c.id);
 }
 
 // ---------------------------------------------------------------------------

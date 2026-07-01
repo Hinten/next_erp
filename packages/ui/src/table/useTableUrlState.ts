@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { usePathname, useSearchParams } from 'next/navigation';
 import type { PipelineFilterOp } from '@delfrance/data';
-import type { FieldDescriptor } from '../schema/types';
+import type { FilterableField } from '../schema/types';
 import type { ColumnFilterValue } from './ColumnFilter';
 
 export type SortState = { field: string; direction: 'asc' | 'desc' };
@@ -25,9 +25,9 @@ const FILTER_OPS = new Set<PipelineFilterOp>([
  */
 export function parseFiltersFromParams(
   params: URLSearchParams,
-  descriptors: FieldDescriptor[],
+  fields: FilterableField[],
 ): Record<string, ColumnFilterValue> {
-  const byKey = new Map(descriptors.map((d) => [d.key, d]));
+  const byKey = new Map(fields.map((d) => [d.key, d]));
   const out: Record<string, ColumnFilterValue> = {};
   for (const [key, raw] of params.entries()) {
     if (key === 'sort') continue;
@@ -44,7 +44,10 @@ export function parseFiltersFromParams(
     } else if (
       descriptor.kind === 'number' ||
       descriptor.kind === 'integer' ||
-      descriptor.kind === 'currency'
+      descriptor.kind === 'currency' ||
+      // Numeric-epoch (`datetime`) filters carry their bound as micros/millis.
+      // (`date` is an ISO string and non-filterable, so it stays a string.)
+      descriptor.kind === 'datetime'
     ) {
       const n = Number(rawValue);
       if (Number.isNaN(n)) continue;
@@ -92,19 +95,20 @@ export interface TableUrlState {
  * keeps `useSearchParams()` in sync. Hydration is one-shot, so no read-back
  * loop.
  *
- * @param descriptors  schema field descriptors (to coerce filter values)
+ * @param fields       filterable fields (schema descriptors + synthetic
+ *                     virtual-column filter fields) used to coerce filter values
  * @param initialSort  fallback initial sort (the `orderBy` prop) when the URL
  *                     carries none
  */
 export function useTableUrlState(
-  descriptors: FieldDescriptor[],
+  fields: FilterableField[],
   initialSort?: { field: string; direction?: 'asc' | 'desc' },
 ): TableUrlState {
   const searchParams = useSearchParams();
   const pathname = usePathname();
 
   const [filters, setFilters] = useState<Record<string, ColumnFilterValue>>(() =>
-    parseFiltersFromParams(searchParams, descriptors),
+    parseFiltersFromParams(searchParams, fields),
   );
   const [sort, setSort] = useState<SortState | undefined>(
     () =>

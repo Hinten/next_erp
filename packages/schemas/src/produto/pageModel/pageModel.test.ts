@@ -33,6 +33,62 @@ describe('produtoPageIssues (cross-document rules)', () => {
     });
   });
 
+  it('flags a non-kit child whose parent is a kit (child-edit guard, #298)', () => {
+    const issues = produtoPageIssues({ parentIsKit: true, ehKit: false });
+    expect(issues).toContainEqual({
+      path: 'ehKit',
+      message: 'Esta variação pertence a um kit; ela também precisa ser um kit.',
+    });
+  });
+
+  it('accepts a kit child whose parent is a kit', () => {
+    expect(
+      produtoPageIssues({
+        parentIsKit: true,
+        ehKit: true,
+        componentesKit: { p1: { quantidade: 1 } },
+      }),
+    ).toEqual([]);
+  });
+
+  it('does not flag ehKit when the parent is not a kit', () => {
+    expect(produtoPageIssues({ parentIsKit: false, ehKit: false })).toEqual([]);
+  });
+
+  it('flags a kit-of-kit when a component is itself a kit (#239, agent path)', () => {
+    const issues = produtoPageIssues({
+      ehKit: true,
+      componentesKit: { p1: { quantidade: 1 }, p2: { quantidade: 1 } },
+      componentKitIds: ['p2'],
+    });
+    expect(issues).toContainEqual({
+      path: 'componentesKit',
+      message: 'Um kit não pode conter outro kit como componente: p2.',
+    });
+  });
+
+  it('does not flag kit-of-kit when no component is a kit (empty/absent componentKitIds)', () => {
+    expect(
+      produtoPageIssues({
+        ehKit: true,
+        componentesKit: { p1: { quantidade: 1 } },
+        componentKitIds: [],
+      }),
+    ).toEqual([]);
+  });
+
+  it('does not flag kit-of-kit for a NON-kit with stale componentKitIds (gated on ehKit)', () => {
+    // A non-kit's componentesKit is cleared on save, so its (stale) components
+    // are not validated — mirror of the kit-needs-component rule's ehKit gate.
+    expect(
+      produtoPageIssues({
+        ehKit: false,
+        componentesKit: { p1: { quantidade: 1 }, p2: { quantidade: 1 } },
+        componentKitIds: ['p2'],
+      }),
+    ).toEqual([]);
+  });
+
   it('flags reserved stock greater than the quantity on hand, keyed by row index', () => {
     const issues = produtoPageIssues({
       estoques: [

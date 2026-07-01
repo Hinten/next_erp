@@ -33,8 +33,12 @@ export async function resolveProtocol(
       `resolveProtocol: consReciCall must target NfeRetAutorizacao, got ${consReciCall.url}`,
     );
   }
-  // Bounded poll: 8 × 5s = 40s ceiling. SEFAZ's SLA: 95% within 3 min;
-  // homologação typically replies in 1–3 polls.
+  // Bounded poll: up to 8 attempts, each = 5s sleep + a consultarLote SOAP call
+  // (the call's own `timeoutMs`, default 60s). So the real ceiling is
+  // ~8 × (5s + up to 60s), capped in practice by the caller's per-test timeout —
+  // NOT 40s. SEFAZ's SLA: 95% within 3 min; homologação typically replies in
+  // 1–3 polls. (An unreachable SVC host is short-circuited earlier by the
+  // reachability probe in svc.homologacao.test.ts, #337.)
   for (let attempt = 0; attempt < 8; attempt++) {
     await new Promise((r) => setTimeout(r, 5_000));
     const poll = await consultarLote(consReciCall, { nRec: ret.infRec.nRec });

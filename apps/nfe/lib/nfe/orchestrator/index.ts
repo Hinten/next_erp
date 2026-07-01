@@ -16,6 +16,7 @@
  *   - `audit.ts`           — `enviNfe` audit log + state-persist helpers
  *   - `generator-input.ts` — `GeneratorInput` builders
  *   - `emitir.ts`          — emit (single + lote)
+ *   - `recover539.ts`      — cStat=539 recovery gate (shared by emit + async paths)
  *   - `consultar.ts`       — standalone SEFAZ consulta
  *   - `cancelar.ts`        — cancelamento (RecepcaoEvento 110111)
  *   - `carta-correcao.ts`  — carta de correção / CC-e (RecepcaoEvento 110110)
@@ -29,6 +30,7 @@ export * from './bundle';
 export * from './audit';
 export * from './generator-input';
 export * from './emitir';
+export * from './recover539';
 export * from './consultar';
 export * from './cancelar';
 export * from './carta-correcao';

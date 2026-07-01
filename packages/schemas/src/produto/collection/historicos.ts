@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
+import { outerRefSchema } from '../../shared/outerRef';
 
 // Price/cost history is produto-scoped: it reuses the produto permission bits
 // (byte 8 — see `produto.ts`), so reading/writing a produto's history requires
@@ -25,7 +26,7 @@ const PERM_PRODUTO_DELETE = 1n << 10n;
 /** `produtos/{id}/historicoDePrecos` doc. */
 export const historicoPrecoSchema = z
   .object({
-    listaDePrecoHistoricoOuterRef: z.string().min(1),
+    listaDePrecoHistoricoOuterRef: outerRefSchema,
     valorOriginal: z.number().nullable().default(null),
     valorFinal: z.number().nullable().default(null),
     timestamp: z.number().int().nullable().default(null),

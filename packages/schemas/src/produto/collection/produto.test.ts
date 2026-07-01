@@ -8,7 +8,8 @@ describe('produtoSchema', () => {
       nome: 'Camiseta básica',
       ehKit: false,
       ehKitVirtual: false,
-      publicado: true,
+      // Flutter constructor default (`models.dart:1333`): a new produto is a DRAFT.
+      publicado: false,
       ofereceFreteGratis: false,
       permiteVendaSemEstoque: false,
       integracoesComProduto: [],

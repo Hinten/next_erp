@@ -8,10 +8,13 @@ import { db } from './admin';
  * needs both docs to resolve `<emit>` data and allocate the next `nNF`
  * + `idLote`.
  *
- * The pedido seed (`seed-pedidos-dev.ts`) stamps every dev pedido's
- * `filialPedidoOuterRef` at `filiais/dev-filial-01`, so running this
- * script first wires the whole emission chain (modulo
- * `operacaoPedidoOuterRef` + `enderecoFiscalOuterRef`, still TODO).
+ * This script also seeds a dev integração (`dev-integracao-01`) that owns
+ * the filial via `filialIntegracaoPedidoOuterRef`. The pedido seed
+ * (`seed-pedidos-dev.ts`) points each dev pedido's `integracaoPedidoOuterRef`
+ * there, and the NF-e orchestrator resolves the issuing filial through it
+ * (the pedido no longer carries a filial ref). Running this script first
+ * wires the whole emission chain (modulo `operacaoPedidoOuterRef` +
+ * `enderecoFiscalOuterRef`, still TODO).
  *
  * CNPJ / IE: read from env so the seed matches the user's A1 cert.
  *   - `NFE_TEST_CNPJ` — the 14-digit CNPJ from the cert's Subject CN.
@@ -33,6 +36,7 @@ import { db } from './admin';
  */
 
 export const DEV_FILIAL_ID = 'dev-filial-01';
+export const DEV_INTEGRACAO_ID = 'dev-integracao-01';
 const NFE_CONFIG_ID = 'default';
 
 function requireEnv(name: string): string {
@@ -49,9 +53,9 @@ function requireEnv(name: string): string {
 export async function seedDevFiliais(): Promise<{ created: number }> {
   const cnpj = requireEnv('NFE_TEST_CNPJ');
   const ie = requireEnv('NFE_TEST_IE');
-  // nfeconfig.timestamp is still ISO (that collection isn't converted yet);
-  // filial.timestamp (below) is milliseconds since epoch.
-  const now = new Date().toISOString();
+  // Both filial.timestamp and nfeconfig.timestamp are milliseconds since epoch
+  // (nfeconfig was converted in #253; the "still ISO" note no longer applies).
+  const now = Date.now();
 
   await db()
     .collection('filiais')
@@ -100,6 +104,23 @@ export async function seedDevFiliais(): Promise<{ created: number }> {
       timestamp: now,
     });
 
+  // Dev integração that owns this filial — the pedido seed points
+  // `integracaoPedidoOuterRef` here and the NF-e orchestrator resolves the
+  // issuing filial via `integracao.filialIntegracaoPedidoOuterRef`.
+  await db()
+    .collection('integracao')
+    .doc(DEV_INTEGRACAO_ID)
+    .set({
+      nome: 'Dev Balcão',
+      tipo: 7, // balcao
+      padrao: true,
+      ativo: true,
+      filialIntegracaoPedidoOuterRef: db().collection('filiais').doc(DEV_FILIAL_ID),
+      tabelaNormalOuterRef: null,
+      depositoOuterRef: null,
+      dataCadastro: now,
+    });
+
   return { created: 1 };
 }
 
@@ -114,6 +135,7 @@ export async function cleanupDevFiliais(): Promise<{ deleted: number }> {
     await batch.commit();
   }
   await filialRef.delete();
+  await db().collection('integracao').doc(DEV_INTEGRACAO_ID).delete();
   return { deleted: 1 };
 }
 

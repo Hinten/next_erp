@@ -1,5 +1,5 @@
 import { db } from './admin';
-import { DEV_FILIAL_ID } from './seed-filiais-dev';
+import { DEV_INTEGRACAO_ID } from './seed-filiais-dev';
 import { DEV_OPERACAO_ID } from './seed-operacoes-dev';
 import { DEV_ENDERECO_ID } from './seed-enderecos-dev';
 
@@ -297,7 +297,7 @@ const PEDIDOS: PedidoSeed[] = [
     // Resolver cascade exercise — items have NO `imposto` stamped, so
     // the orchestrator must resolve via the `regraImposto` doc seeded
     // under `operacao/{DEV_OPERACAO_ID}/regraimposto/{DEV_REGRA_IMPOSTO_ID}`
-    // (matches produtos:['dev-prod-01'] → CSOSN 102 + PIS/COFINS 49).
+    // (matches produtos:['dev-camiseta-pai'] → CSOSN 102 + PIS/COFINS 49).
     // Without that rule the emit would throw NFeMissingImpostoError.
     pagamentos: [{ forma_de_pagamento: 1, valor: 100.0, aVista: true }],
     omitImposto: true,
@@ -353,11 +353,16 @@ function devItensMap(
   itens: Record<string, unknown[]>;
   itensIds: string[];
 } {
-  const produtoUid = 'dev-prod-01';
+  // Point dev pedido items at the real seeded produto (`dev-camiseta-pai` from
+  // `seed:variacoes`, priced by `seed:precos` for `dev-lista-varejo`) so the item
+  // field resolves and the price autofill works. Run order:
+  // seed:variacoes → seed:precos → seed:pedidos.
+  const produtoUid = 'dev-camiseta-pai';
   const baseItem: Record<string, unknown> = {
-    sku: 'DEV-PROD-01',
+    produtoUid,
+    sku: null,
     gtin: null,
-    nomeDeVenda: 'Produto Dev',
+    nomeDeVenda: 'Camiseta Dev',
     precoDeVenda: valor,
     descontoUnitario: null,
     quantidade: 1,
@@ -446,7 +451,7 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
   // first (or alongside) for emission to work. The endereço is a
   // subcollection of the seeded cliente, only meaningful when
   // `clienteRef` is non-null.
-  const filialRef = db().collection('filiais').doc(DEV_FILIAL_ID);
+  const integracaoRef = db().collection('integracao').doc(DEV_INTEGRACAO_ID);
   const operacaoRef = db().collection('operacao').doc(DEV_OPERACAO_ID);
   const enderecoFiscalRef = clienteRef
     ? clienteRef.collection('enderecos').doc(DEV_ENDERECO_ID)
@@ -467,16 +472,14 @@ async function writePedido(i: number, spec: PedidoSeed): Promise<void> {
       foiImpresso: spec.dtImpressao != null,
       dtImpressao: spec.dtImpressao != null ? us(spec.dtImpressao) : null,
       // Outer refs the cells dereference. `clientePedidoOuterRef`
-      // matters for the UI walk; the other three (filial, operação,
-      // endereço fiscal) are required by the NFe orchestrator
-      // (`apps/nfe/lib/nfe/orchestrator.ts:146-154`).
+      // matters for the UI walk; integração (which owns the issuing filial),
+      // operação + endereço fiscal are required by the NF-e orchestrator.
       vendedorPedidoOuterRef: null,
-      integracaoPedidoOuterRef: null,
-      operacaoPedidoOuterRef: operacaoRef,
-      clientePedidoOuterRef: clienteRef,
-      enderecoFiscalOuterRef: enderecoFiscalRef,
-      listaDePrecosOuterRef: null,
-      filialPedidoOuterRef: filialRef,
+      integracaoPedidoOuterRef: `documents/${integracaoRef.path}`,
+      operacaoPedidoOuterRef: `documents/${operacaoRef.path}`,
+      clientePedidoOuterRef: clienteRef ? `documents/${clienteRef.path}` : null,
+      enderecoFiscalOuterRef: enderecoFiscalRef ? `documents/${enderecoFiscalRef.path}` : null,
+      listaDePrecosOuterRef: `documents/listaDePrecos/dev-lista-varejo`,
       // Optional embedded frete block. UI cells read `estado` +
       // `codRastreio` + `prazoDespacho`; the NF-e orchestrator reads
       // `modalidade` + `valorCobrado` + `transportadora` + `veiculo` +

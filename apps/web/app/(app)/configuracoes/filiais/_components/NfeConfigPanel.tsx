@@ -25,6 +25,7 @@ import {
   Loader,
   Select,
   Stack,
+  Switch,
   Text,
   Textarea,
   Title,
@@ -36,6 +37,7 @@ import { getDoc, runTransaction } from 'firebase/firestore';
 import { z } from 'zod';
 
 import { PERM } from '@delfrance/auth';
+import { nowMillis } from '@delfrance/core/datetime';
 import {
   NFeHttpError,
   NFeNetworkError,
@@ -133,21 +135,24 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
 
   const [modo, setModo] = useState<ContingenciaModo | null>(null);
   const [justificativa, setJustificativa] = useState<string | null>(null);
+  const [rtc, setRtc] = useState<boolean | null>(null);
 
   const cfg = cfgQuery.data ?? null;
   // Local edits win; otherwise mirror the persisted doc.
   const modoValue = modo ?? cfg?.contingencia_modo ?? 'none';
   const justValue = justificativa ?? cfg?.contingencia_justificativa ?? '';
+  const rtcValue = rtc ?? cfg?.emitirReformaTributaria ?? false;
   const dirty =
     cfg != null &&
     (modoValue !== cfg.contingencia_modo ||
-      (modoValue !== 'none' && justValue !== (cfg.contingencia_justificativa ?? '')));
+      (modoValue !== 'none' && justValue !== (cfg.contingencia_justificativa ?? '')) ||
+      rtcValue !== (cfg.emitirReformaTributaria ?? false));
   const justInvalid = modoValue !== 'none' && (justValue.length < 15 || justValue.length > 255);
 
   const save = useMutation({
     mutationFn: async () => {
       if (!cfg) return;
-      const now = new Date().toISOString();
+      const now = nowMillis();
       const ref = nfeConfigCollection.docRef(db, { filialId }, NFE_CONFIG_DOC_ID);
       // Transactional read-modify-write: the counters (numeracao_atual /
       // idLote) advance server-side on every emission, so building the write
@@ -165,15 +170,17 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
           // clear it on the way back to normal.
           contingencia_dataInicio:
             modoValue === 'none' ? null : (fresh.contingencia_dataInicio ?? now),
+          emitirReformaTributaria: rtcValue,
           timestamp: now,
         };
         tx.set(ref, next);
       });
     },
     onSuccess: () => {
-      notifications.show({ color: 'green', message: 'Configuração de contingência salva.' });
+      notifications.show({ color: 'green', message: 'Configuração de NF-e salva.' });
       setModo(null);
       setJustificativa(null);
+      setRtc(null);
       void queryClient.invalidateQueries({ queryKey: ['nfeconfig', filialId] });
     },
     onError: (err) => {
@@ -270,13 +277,22 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
             </Text>
           )}
 
+          <Switch
+            mt="sm"
+            label="Emitir Reforma Tributária (IBS/CBS/IS)"
+            description="Inclui os grupos IBS/CBS/IS (NT 2025.002) na NF-e. Mantenha DESLIGADO em produção até a SEFAZ publicar as regras do Simples Nacional (obrigatório só em 04/01/2027). Teste primeiro em homologação."
+            checked={rtcValue}
+            onChange={(e) => setRtc(e.currentTarget.checked)}
+            disabled={!canWrite}
+          />
+
           <Group>
             <Button
               onClick={() => save.mutate()}
               loading={save.isPending}
               disabled={!canWrite || !dirty || justInvalid}
             >
-              Salvar contingência
+              Salvar configuração
             </Button>
           </Group>
         </Stack>

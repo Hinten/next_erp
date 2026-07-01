@@ -259,7 +259,23 @@ console.log(`Connecting to ${host}:443 (rejectUnauthorized=false — TOFU mode)�
 const socket = connect({ host, port: 443, servername: host, rejectUnauthorized: false });
 let captured = false;
 
+// Bound the TLS handshake. Without this, an unreachable host blocks for the OS
+// default (~120s) — SERPRO's SVC hosts intermittently TCP-hang from CI runners,
+// which (×3 retries ×2 chains) dragged the live SVC step to ~18 min (#337). The
+// idle timer is cleared on `secureConnect` so the post-handshake AIA walk isn't
+// affected. Override via SEFAZ_CHAIN_CONNECT_TIMEOUT_MS.
+const CONNECT_TIMEOUT_MS = Number(process.env.SEFAZ_CHAIN_CONNECT_TIMEOUT_MS) || 20_000;
+socket.setTimeout(CONNECT_TIMEOUT_MS, () => {
+  if (captured) return;
+  console.error(
+    `TLS connect to ${host}:443 timed out after ${CONNECT_TIMEOUT_MS}ms (host unreachable?).`,
+  );
+  socket.destroy();
+  process.exit(2);
+});
+
 socket.once('secureConnect', async () => {
+  socket.setTimeout(0); // handshake done — clear the idle timer
   // 1. Capture whatever chain SEFAZ serves us.
   const chain = [];
   const seen = new Set();

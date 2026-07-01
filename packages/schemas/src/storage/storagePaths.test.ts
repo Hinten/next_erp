@@ -6,26 +6,34 @@ import {
   isWatchedProductOriginal,
   mediaPath,
   normalizeName,
+  parseOwnedMediaDir,
   parseProductMediaDir,
   parseProductOriginalPath,
+  productAnexoPath,
   productArquivoId,
   productDerivativePath,
   productOriginalPath,
   productVideoPath,
+  tabMediArquivoId,
+  tabMediOriginalPath,
 } from './storagePaths';
 
 const PID = 'prod123';
 const HASH = 'a'.repeat(16);
 
 describe('path builders', () => {
-  it('builds product original / derivative / video and media paths', () => {
+  it('builds product original / derivative / video / anexo and media paths', () => {
     expect(productOriginalPath(PID, HASH, 'png')).toBe(`produtos/${PID}/originals/${HASH}.png`);
     expect(productOriginalPath(PID, HASH)).toBe(`produtos/${PID}/originals/${HASH}`);
     expect(productDerivativePath(PID, HASH, '200')).toBe(
       `produtos/${PID}/derivatives/${HASH}_200.jpeg`,
     );
     expect(productVideoPath(PID, HASH, 'mp4')).toBe(`produtos/${PID}/videos/${HASH}.mp4`);
+    expect(productAnexoPath(PID, HASH, 'pdf')).toBe(`produtos/${PID}/anexos/${HASH}.pdf`);
+    expect(productAnexoPath(PID, HASH)).toBe(`produtos/${PID}/anexos/${HASH}`);
     expect(mediaPath(HASH, '.PNG')).toBe(`media/${HASH}.png`);
+    expect(tabMediOriginalPath('tm1', HASH, 'jpg')).toBe(`tabMedi/tm1/originals/${HASH}.jpg`);
+    expect(tabMediOriginalPath('tm1', HASH)).toBe(`tabMedi/tm1/originals/${HASH}`);
   });
 });
 
@@ -60,7 +68,7 @@ describe('parseProductOriginalPath / isWatchedProductOriginal', () => {
 });
 
 describe('parseProductMediaDir', () => {
-  it('parses the originals and videos directories to {produtoId, kind}', () => {
+  it('parses the originals, videos and anexos directories to {produtoId, kind}', () => {
     // filepath is the directory portion (no filename) — what Arquivo.filepath holds.
     expect(parseProductMediaDir(`produtos/${PID}/originals`)).toEqual({
       produtoId: PID,
@@ -69,6 +77,10 @@ describe('parseProductMediaDir', () => {
     expect(parseProductMediaDir(`produtos/${PID}/videos`)).toEqual({
       produtoId: PID,
       kind: 'videos',
+    });
+    expect(parseProductMediaDir(`produtos/${PID}/anexos`)).toEqual({
+      produtoId: PID,
+      kind: 'anexos',
     });
   });
 
@@ -80,6 +92,39 @@ describe('parseProductMediaDir', () => {
     expect(parseProductMediaDir('produtos//originals')).toBeNull(); // empty produtoId
     expect(parseProductMediaDir(null)).toBeNull();
     expect(parseProductMediaDir(undefined)).toBeNull();
+  });
+});
+
+describe('parseOwnedMediaDir', () => {
+  it('parses produtos and tabMedi media dirs to {ownerCollection, ownerId, kind}', () => {
+    expect(parseOwnedMediaDir(`produtos/${PID}/originals`)).toEqual({
+      ownerCollection: 'produtos',
+      ownerId: PID,
+      kind: 'originals',
+    });
+    expect(parseOwnedMediaDir('tabMedi/tm1/originals')).toEqual({
+      ownerCollection: 'tabMedi',
+      ownerId: 'tm1',
+      kind: 'originals',
+    });
+    expect(parseOwnedMediaDir('tabMedi/tm1/videos')).toEqual({
+      ownerCollection: 'tabMedi',
+      ownerId: 'tm1',
+      kind: 'videos',
+    });
+  });
+
+  it('returns null for derivatives, media, unknown roots and malformed paths', () => {
+    expect(parseOwnedMediaDir(`produtos/${PID}/derivatives`)).toBeNull();
+    expect(parseOwnedMediaDir('media')).toBeNull();
+    expect(parseOwnedMediaDir('outra/tm1/originals')).toBeNull(); // unknown root
+    expect(parseOwnedMediaDir('tabMedi/tm1')).toBeNull(); // too shallow
+    expect(parseOwnedMediaDir('tabMedi//originals')).toBeNull(); // empty id
+    expect(parseOwnedMediaDir(null)).toBeNull();
+  });
+
+  it('parseProductMediaDir rejects tabMedi paths (produto-only view)', () => {
+    expect(parseProductMediaDir('tabMedi/tm1/originals')).toBeNull();
   });
 });
 
@@ -96,6 +141,7 @@ describe('arquivo ids', () => {
   it('builds product-scoped original and derivative ids', () => {
     expect(productArquivoId(PID, HASH)).toBe(`${PID}_${HASH}`);
     expect(derivativeArquivoId(PID, HASH, '200')).toBe(`${PID}_${HASH}_200`);
+    expect(tabMediArquivoId('tm1', HASH)).toBe(`tm1_${HASH}`);
   });
 });
 

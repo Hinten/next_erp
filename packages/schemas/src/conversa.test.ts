@@ -32,10 +32,12 @@ describe('conversaSchema', () => {
     expect(conversaSchema.safeParse({ origem: 'tiktok' }).success).toBe(false);
   });
 
-  it('preserves outer-ref objects unchanged', () => {
-    const usario = { docId: { id: 'u1', collectionId: 'usuarios' } };
-    const out = conversaSchema.parse({ usarioOuterRef: usario });
-    expect(out.usarioOuterRef).toEqual(usario);
+  it('keeps a documents/<col>/<id> outer-ref string and rejects a non-string ref', () => {
+    const out = conversaSchema.parse({ usarioOuterRef: 'documents/usuarios/u1' });
+    expect(out.usarioOuterRef).toBe('documents/usuarios/u1');
+    expect(conversaSchema.safeParse({ usarioOuterRef: { docId: { id: 'u1' } } }).success).toBe(
+      false,
+    );
   });
 });
 

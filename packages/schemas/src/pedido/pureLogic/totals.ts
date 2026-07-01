@@ -1,3 +1,4 @@
+import { roundReais } from '@delfrance/core/money';
 import type { ItemDoPedido } from '../collection/pedido';
 
 /**
@@ -27,15 +28,6 @@ export function pedidoTotal(p: { itens: Record<string, ItemDoPedido[]> }): numbe
   return sum;
 }
 
-/**
- * Legacy `duasCasasDecimais` (`.old/packages/global/lib/src/mathExtensions.dart:4`):
- * `double.parse(toStringAsFixed(2))` — JS `toFixed` rounds the same way for
- * the 2-decimal money values this is applied to.
- */
-export function round2(n: number): number {
-  return Number(n.toFixed(2));
-}
-
 /** Loose view of a frete block — only the money caches the totals read. */
 type FreteTotals = {
   valorCobrado?: number | null;
@@ -49,13 +41,13 @@ type FreteTotals = {
  *
  *   - `valorCobrado` — port of `Pedido.total`
  *     (`.old/packages/pedido/lib/src/models.dart:3316-3320`):
- *     `round2(round2(round2(Σ itemSubtotal) − descontoTotal) + (frete?.valorCobrado ?? 0))`.
+ *     `roundReais(roundReais(roundReais(Σ itemSubtotal) − descontoTotal) + (frete?.valorCobrado ?? 0))`.
  *     The legacy form assigns `pedidoSave.valorCobrado = pedidoSave.total` on
  *     every integral save (`cadastroPedidoProvider.dart:1186`).
  *   - `valorFreteInicial` / `custoFreteInicial` — port of the `Pedido.factory`
  *     reporting caches (`models.dart:3601-3602`):
- *     `round2(frete?.valorCobrado ?? 0)` and
- *     `round2(frete?.custoCalculado ?? frete?.custoFinal ?? 0)` — note
+ *     `roundReais(frete?.valorCobrado ?? 0)` and
+ *     `roundReais(frete?.custoCalculado ?? frete?.custoFinal ?? 0)` — note
  *     `custoCalculado` wins over `custoFinal`, matching the factory.
  *
  * `freteInicial.valorCobrado` participates regardless of `modalidade` — the
@@ -68,12 +60,12 @@ export function derivePedidoFreteTotals(args: {
   freteInicial: FreteTotals;
 }): { valorCobrado: number; valorFreteInicial: number; custoFreteInicial: number } {
   const { itens, descontoTotal, freteInicial } = args;
-  const subtotal = round2(itens.reduce((sum, item) => sum + itemSubtotal(item), 0));
-  const subtotalComDesconto = round2(subtotal - descontoTotal);
+  const subtotal = roundReais(itens.reduce((sum, item) => sum + itemSubtotal(item), 0));
+  const subtotalComDesconto = roundReais(subtotal - descontoTotal);
   return {
-    valorCobrado: round2(subtotalComDesconto + (freteInicial?.valorCobrado ?? 0)),
-    valorFreteInicial: round2(freteInicial?.valorCobrado ?? 0),
-    custoFreteInicial: round2(freteInicial?.custoCalculado ?? freteInicial?.custoFinal ?? 0),
+    valorCobrado: roundReais(subtotalComDesconto + (freteInicial?.valorCobrado ?? 0)),
+    valorFreteInicial: roundReais(freteInicial?.valorCobrado ?? 0),
+    custoFreteInicial: roundReais(freteInicial?.custoCalculado ?? freteInicial?.custoFinal ?? 0),
   };
 }
 
@@ -111,7 +103,9 @@ export interface PedidoDerivedTotals {
  * to the caller; this owns only the item/frete/devolução-derived caches so the
  * web resolver and a future MCP agent share one implementation.
  *
- * Every value is rounded with `round2` to match `.duasCasasDecimais`.
+ * Every value is rounded with the canonical `roundReais` (half-up at 2dp). This
+ * intentionally diverges from Flutter's `.duasCasasDecimais` (`toFixed`) at the
+ * x.xx5 edge, where the legacy app rounds down — see `@delfrance/core/money`.
  */
 export function derivePedidoTotals(args: {
   itens: ReadonlyArray<ItemDoPedido>;
@@ -121,16 +115,20 @@ export function derivePedidoTotals(args: {
 }): PedidoDerivedTotals {
   const { itens, descontoTotal, freteInicial, itensDevolvidos } = args;
 
-  const subtotal = round2(itens.reduce((sum, item) => sum + itemSubtotal(item), 0));
-  const valorCusto = round2(itens.reduce((sum, item) => sum + itemCusto(item), 0));
-  const valorFreteInicial = round2(freteInicial?.valorCobrado ?? 0);
-  const custoFreteInicial = round2(freteInicial?.custoCalculado ?? freteInicial?.custoFinal ?? 0);
+  const subtotal = roundReais(itens.reduce((sum, item) => sum + itemSubtotal(item), 0));
+  const valorCusto = roundReais(itens.reduce((sum, item) => sum + itemCusto(item), 0));
+  const valorFreteInicial = roundReais(freteInicial?.valorCobrado ?? 0);
+  const custoFreteInicial = roundReais(
+    freteInicial?.custoCalculado ?? freteInicial?.custoFinal ?? 0,
+  );
 
   const devolvidos = flattenItensDevolvidos(itensDevolvidos);
-  const valorDevolucao = round2(devolvidos.reduce((sum, item) => sum + itemSubtotal(item), 0));
-  const valorCustoDevolvidos = round2(devolvidos.reduce((sum, item) => sum + itemCusto(item), 0));
+  const valorDevolucao = roundReais(devolvidos.reduce((sum, item) => sum + itemSubtotal(item), 0));
+  const valorCustoDevolvidos = roundReais(
+    devolvidos.reduce((sum, item) => sum + itemCusto(item), 0),
+  );
 
-  const valorCobrado = round2(round2(subtotal - descontoTotal) + valorFreteInicial);
+  const valorCobrado = roundReais(roundReais(subtotal - descontoTotal) + valorFreteInicial);
 
   return {
     subtotal,

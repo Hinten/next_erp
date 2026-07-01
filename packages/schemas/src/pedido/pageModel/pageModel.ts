@@ -1,9 +1,9 @@
 import { z } from 'zod';
+import { roundReais } from '@delfrance/core/money';
 import { pedidoSchema, type EstadoPedido } from '../collection/pedido';
 import { pagamentoSchema, STATUS_PAGAMENTO } from '../collection/pagamento';
 import { incidenteSchema } from '../collection/incidente';
 import { historicoEstadoPedidoSchema } from '../collection/historicoEstadoPedido';
-import { round2 } from '../pureLogic/totals';
 
 /**
  * # Pedido page model
@@ -46,6 +46,7 @@ export interface PedidoPageValidationInput {
   estado?: EstadoPedido | null;
   integracaoPedidoOuterRef?: unknown;
   itens?: Record<string, ReadonlyArray<{ quantidade?: number | null }>> | null;
+  chNFeReferenciadas?: ReadonlyArray<string | null> | null;
   valorCobrado?: number | null;
   pagamentos?: ReadonlyArray<{ status_pagamento?: number | null; valor?: number | null }> | null;
 }
@@ -92,6 +93,16 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
     });
   }
 
+  // Every referenced NF-e access key (`chNFeReferenciadas`) must be a 44-digit
+  // chave — an invalid one is accepted by the form today and only fails at NF-e
+  // emission. Block the save here (the Fiscal tab also shows a per-input hint).
+  if ((data.chNFeReferenciadas ?? []).some((c) => c != null && c !== '' && !/^\d{44}$/.test(c))) {
+    issues.push({
+      path: 'chNFeReferenciadas',
+      message: 'Chave de acesso referenciada deve ter 44 dígitos.',
+    });
+  }
+
   // Devolução qty is NOT cross-checked against this pedido's `itens`: returns are
   // recorded against OTHER origin orders (or avulso items), so a returned produto
   // need not appear in this order. The per-row cap (origin sold qty) is enforced
@@ -106,7 +117,7 @@ export function pedidoPageIssues(data: PedidoPageValidationInput): PedidoPageIss
     const aprovado = data.pagamentos
       .filter((p) => p.status_pagamento === STATUS_PAGAMENTO.aprovado)
       .reduce((sum, p) => sum + (p.valor ?? 0), 0);
-    if (round2(aprovado) < round2(data.valorCobrado ?? 0)) {
+    if (roundReais(aprovado) < roundReais(data.valorCobrado ?? 0)) {
       issues.push({
         path: 'pagamentos',
         message: 'O valor pago aprovado é menor que o total do pedido.',

@@ -37,12 +37,12 @@ describe('nfeConfigSchema', () => {
     expect(nfeConfigSchema.safeParse({ ...MINIMAL, ambiente: '3' }).success).toBe(false);
   });
 
-  it('accepts an optional ISO timestamp', () => {
+  it('coerces a legacy ISO timestamp to ms since epoch', () => {
     const out = nfeConfigSchema.parse({
       ...MINIMAL,
       timestamp: '2026-05-20T10:30:00Z',
     });
-    expect(out.timestamp).toBe('2026-05-20T10:30:00Z');
+    expect(out.timestamp).toBe(new Date('2026-05-20T10:30:00Z').getTime());
   });
 });
 

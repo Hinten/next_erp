@@ -272,6 +272,24 @@ jobs:
           # against real SEFAZ-SP HOM + staging Firestore fixtures.
           pnpm --filter @delfrance/nfe-app test orchestrator.homologacao
 
+      - name: Live Reforma Tributária (IBS/CBS/IS) suite (advisory on PRs, fatal on dispatch)
+        # RTC (NT 2025.002) emission carrying the IBS/CBS item + total groups
+        # on a CRT=1 NF-e. The cClassTrib/CST codes are best-guess placeholders
+        # (the Anexo III tables aren't vendored), so a first-run SEFAZ rejection
+        # (1020/1023/1024/1026/...) is expected until the codes are confirmed —
+        # the test logs the exact cStat+xMotivo so the rejection names what to
+        # refine. Posture: ADVISORY on pull_request/push (continue-on-error →
+        # warning), FATAL on workflow_dispatch (deliberate validation runs).
+        # Library-level — no Firestore; reuses the vendored SP HOM chain. #313.
+        id: rtc-live
+        continue-on-error: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
+        env:
+          NFE_CERT_BASE64:   ${{ secrets.NFE_CERT_BASE64 }}
+          NFE_CERT_PASSWORD: ${{ secrets.NFE_CERT_PASSWORD }}
+          NFE_TEST_IE:       ${{ secrets.NFE_TEST_IE }}
+        run: |
+          pnpm --filter @delfrance/integrations-nfe test rtc.homologacao
+
       - name: Live SVC contingency suite (advisory on PRs, fatal on dispatch)
         # SERPRO's hosts are intermittently unreachable from GitHub-hosted
         # runners (SVRS RSTs certless handshakes; SVC-AN observed in a
@@ -292,24 +310,31 @@ jobs:
           FIREBASE_PROJECT_ID:      ${{ secrets.FIREBASE_PROJECT_ID_STAGING }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_STAGING }}
         run: |
-          # SVC chains are fetched here (not in the SP chain step) so
-          # SERPRO reachability shares this step's advisory semantics.
-          # A failed fetch falls back to the cached last-known-good chain
-          # (restored above) — SVRS in particular RSTs CERTLESS handshakes
-          # while still accepting the mTLS SOAP calls, so a cached chain
-          # lets the tests run even when the TOFU fetch is blocked. With
-          # neither fetch nor cache, SVC-AN fails the step (it gates the
-          # whole suite); SVC-RS degrades — the 410 transport test
-          # self-skips when its chain file is absent.
+          # CACHE-FIRST (#337): the SVC chains were restored from the Actions
+          # cache above. Re-fetch ONLY when the cached .pem is missing, stale
+          # (>7 days old = last fetched >7d ago — the cache preserves mtimes),
+          # or this is a force-fresh run (schedule / workflow_dispatch, to catch
+          # SEFAZ intermediate rotations promptly). On a normal PR with a fresh
+          # cached chain we DON'T fetch at all, so SERPRO's TCP hangs never touch
+          # the PR path. Each fetch that DOES run is bounded by the script's
+          # connect timeout (SEFAZ_CHAIN_CONNECT_TIMEOUT_MS). SVRS RSTs certless
+          # handshakes but accepts the mTLS SOAP calls, so a cached chain lets
+          # the tests run even when a TOFU fetch is blocked; with neither fetch
+          # nor cache, SVC-RS's 410 transport test self-skips.
+          FORCE_FRESH="${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}"
           ensure_chain() {
             local file="packages/integrations/nfe/ca/$1"; shift
-            for i in 1 2 3; do
+            if [[ "$FORCE_FRESH" != "true" && -f "$file" && -z "$(find "$file" -mtime +7 2>/dev/null)" ]]; then
+              echo "Using cached SVC chain $file (fresh <7d) — skipping fetch."
+              return 0
+            fi
+            for i in 1 2; do
               pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca "$@" && return 0
-              echo "fetch:sefaz-ca $* — attempt $i failed; retrying in 15s"
-              sleep 15
+              echo "fetch:sefaz-ca $* — attempt $i failed; retrying in 5s"
+              sleep 5
             done
             if [[ -f "$file" ]]; then
-              echo "::warning::fetch:sefaz-ca $* failed after 3 attempts — using the last-known-good cached chain"
+              echo "::warning::fetch:sefaz-ca $* failed after 2 attempts — using the last-known-good cached chain"
               return 0
             fi
             return 1
@@ -323,6 +348,11 @@ jobs:
         if: steps.svc-live.outcome == 'failure'
         run: |
           echo "::warning::SVC live suite failed — ADVISORY on PR/push runs (SERPRO hosts are intermittently unreachable from hosted runners). Re-run via workflow_dispatch (fatal there) to verify; a scheduled fatal run arrives with the EPEC workflow."
+
+      - name: Surface advisory RTC failure
+        if: steps.rtc-live.outcome == 'failure'
+        run: |
+          echo "::warning::RTC (Reforma Tributária) live suite failed — ADVISORY on PR/push runs. Expected while the IBS/CBS cClassTrib/CST codes are best-guess (Anexo III not vendored). Check the step log for the SEFAZ cStat+xMotivo, refine the codes in test/helpers/homologacao-fixture.ts (impostoCsosn102ComRtc), then re-run via workflow_dispatch (fatal there) to confirm. #313."
 
       - name: Save SEFAZ chains to cache (last-known-good)
         # Refresh the fallback with whatever this run ended up with —

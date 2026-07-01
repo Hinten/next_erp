@@ -1,7 +1,16 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { CloseButton, Combobox, InputBase, Loader, Stack, Text, useCombobox } from '@mantine/core';
+import {
+  CloseButton,
+  Combobox,
+  InputBase,
+  Loader,
+  ScrollArea,
+  Stack,
+  Text,
+  useCombobox,
+} from '@mantine/core';
 import { useDebouncedValue } from '@mantine/hooks';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
@@ -135,7 +144,11 @@ export function ProdutoPicker({
           disabled={disabled}
           error={error}
           rightSection={
-            loadingCurrent || query.isFetching ? (
+            // Gate the fetch-loader on THIS picker being open. The query key is
+            // shared across all picker instances (same search), so TanStack's
+            // `isFetching` is shared too — without this, opening one picker shows
+            // the Loader on every other picker on the screen.
+            loadingCurrent || (query.isFetching && combobox.dropdownOpened) ? (
               <Loader size={16} />
             ) : currentRef ? (
               <CloseButton
@@ -166,24 +179,27 @@ export function ProdutoPicker({
       </Combobox.Target>
 
       <Combobox.Dropdown>
-        <Combobox.Options>
-          {query.isLoading && <Combobox.Empty>Carregando…</Combobox.Empty>}
-          {!query.isLoading && rows.length === 0 && (
-            <Combobox.Empty>Nenhum produto encontrado.</Combobox.Empty>
-          )}
-          {rows.map((row) => (
-            <Combobox.Option key={row.id} value={row.id}>
-              <Stack gap={0}>
-                <Text size="sm">{row.data.nome}</Text>
-                {row.data.sku && (
-                  <Text size="xs" c="dimmed">
-                    SKU: {row.data.sku}
-                  </Text>
-                )}
-              </Stack>
-            </Combobox.Option>
-          ))}
-        </Combobox.Options>
+        {/* Scroll the options so a full page of results isn't clipped. */}
+        <ScrollArea.Autosize mah={280} type="scroll">
+          <Combobox.Options>
+            {query.isLoading && <Combobox.Empty>Carregando…</Combobox.Empty>}
+            {!query.isLoading && rows.length === 0 && (
+              <Combobox.Empty>Nenhum produto encontrado.</Combobox.Empty>
+            )}
+            {rows.map((row) => (
+              <Combobox.Option key={row.id} value={row.id}>
+                <Stack gap={0}>
+                  <Text size="sm">{row.data.nome}</Text>
+                  {row.data.sku && (
+                    <Text size="xs" c="dimmed">
+                      SKU: {row.data.sku}
+                    </Text>
+                  )}
+                </Stack>
+              </Combobox.Option>
+            ))}
+          </Combobox.Options>
+        </ScrollArea.Autosize>
       </Combobox.Dropdown>
     </Combobox>
   );

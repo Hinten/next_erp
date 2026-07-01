@@ -36,7 +36,7 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
   fieldName: string;
   /** Current form value — DocumentReference, `{path}` object, doc-path/id string, or null. */
   value: unknown;
-  /** Emits a DocumentReference (or doc-path string with `emitDocPath`), or null when cleared. */
+  /** Emits a `documents/<col>/<id>` doc-path string, or null when cleared. */
   onChange: (next: unknown) => void;
   onBlur?: () => void;
   label: string;
@@ -47,13 +47,6 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
   /** Firestore query cap. Default 15. */
   limit?: number;
   /**
-   * Emit the picked doc as a Flutter-ODM doc-path string
-   * (`documents/<collection>/<id>`) instead of a native `DocumentReference`.
-   * Use for collections whose schema types the ref as `z.string()` — the
-   * wire format the legacy app reads and writes (`OuterRefField.toJson`).
-   */
-  emitDocPath?: boolean;
-  /**
    * Ordering for the option list (initial AND searched), pipeline path only.
    * Defaults to `[{ field: labelField, direction: 'asc' }]`. Multi-key sorts
    * are supported (e.g. recency: `ultimaModificacao desc, timestamp desc` —
@@ -63,7 +56,7 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
    * legacy docs, and pipelines are the supported path on Firestore
    * Enterprise anyway.
    */
-  orderBy?: Array<{ field: string; direction?: 'asc' | 'desc' }>;
+  orderBy?: ReadonlyArray<{ field: string; direction?: 'asc' | 'desc' }>;
   /**
    * Doc field rendered as a dimmed second line under each option label
    * (e.g. `cpf_cnpj` on a cliente). Query-result options only — "Recentes"
@@ -80,6 +73,13 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
    * supports only the comparison ops (`eq`/`lt`/`lte`/`gt`/`gte`).
    */
   filters?: PipelineFieldFilter[];
+  /**
+   * Doc ids to hide from the option list AND the "Recentes" group (e.g. a kit's
+   * own produto + its variations, which can't be its own components). Filtered
+   * client-side after the query, so the visible list may show a few fewer than
+   * `limit` rows.
+   */
+  excludeIds?: string[];
 }
 
 /** Fallback-query operator for each comparison filter op (substring ops are pipeline-only). */
@@ -133,8 +133,9 @@ function readLabelField(data: unknown, labelField: string): string | undefined {
  *  - Remembers the last 5 picks per instance in localStorage (24h TTL) and
  *    surfaces them in a "Recentes" group.
  *
- * On change it emits a `DocumentReference`; on load it normalises a stored
- * `DocumentReference` / `{path}` / id-string back to the doc id.
+ * On change it emits a `documents/<col>/<id>` doc-path string; on load it
+ * normalises a stored `DocumentReference` / `{path}` / id-string back to the
+ * doc id (legacy reads stay tolerant).
  */
 export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   collection,
@@ -150,10 +151,10 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   disabled,
   error,
   limit = DEFAULT_LIMIT,
-  emitDocPath = false,
   orderBy,
   optionHintField,
   filters,
+  excludeIds,
 }: CollectionSelectProps<S>) {
   const db = getFirebaseFirestore();
 
@@ -176,6 +177,8 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
   const searchFieldsKey = (searchFields ?? [labelField]).join('|');
   const orderByKey = JSON.stringify(orderBy ?? [{ field: labelField, direction: 'asc' }]);
   const filtersKey = JSON.stringify(filters ?? []);
+  const excludeKey = (excludeIds ?? []).join('|');
+  const excludeSet = useMemo(() => new Set(excludeKey ? excludeKey.split('|') : []), [excludeKey]);
 
   // Primary source: the Firestore Pipeline API — a typed term is matched
   // (case/accent-insensitive substring) against every `searchFields` entry,
@@ -235,11 +238,13 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
 
   const resultItems = useMemo(
     () =>
-      (listData ?? []).map((row) => ({
-        value: row.id,
-        label: readLabelField(row.data, labelField) ?? row.id,
-      })),
-    [listData, labelField],
+      (listData ?? [])
+        .filter((row) => !excludeSet.has(row.id))
+        .map((row) => ({
+          value: row.id,
+          label: readLabelField(row.data, labelField) ?? row.id,
+        })),
+    [listData, labelField, excludeSet],
   );
 
   // id → hint lookup for renderOption (recents entries carry no hint).
@@ -257,20 +262,22 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
     if (term !== '') {
       return resultItems;
     }
-    const recentIds = new Set(recents.map((r) => r.id));
+    // "Recentes" is a localStorage cache (not query-filtered) — apply excludeIds here.
+    const visibleRecents = recents.filter((r) => !excludeSet.has(r.id));
+    const recentIds = new Set(visibleRecents.map((r) => r.id));
     const todos = resultItems.filter((o) => !recentIds.has(o.value));
     return [
-      ...(recents.length > 0
+      ...(visibleRecents.length > 0
         ? [
             {
               group: 'Recentes',
-              items: recents.map((r) => ({ value: r.id, label: r.label })),
+              items: visibleRecents.map((r) => ({ value: r.id, label: r.label })),
             },
           ]
         : []),
       ...(todos.length > 0 ? [{ group: 'Todos', items: todos }] : []),
     ];
-  }, [term, resultItems, recents]);
+  }, [term, resultItems, recents, excludeSet]);
 
   const handleChange = useCallback(
     (id: string | null) => {
@@ -281,13 +288,9 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
       }
       const picked = resultItems.find((o) => o.value === id) ?? recents.find((r) => r.id === id);
       record(id, picked?.label ?? id);
-      onChange(
-        emitDocPath
-          ? `documents/${collection.resolvePath({})}/${id}`
-          : collection.docRef(db, {}, id),
-      );
+      onChange(`documents/${collection.resolvePath({})}/${id}`);
     },
-    [onChange, resultItems, recents, record, collection, db, emitDocPath],
+    [onChange, resultItems, recents, record, collection],
   );
 
   // Locked: the value renders as a removable chip inside a field-shaped

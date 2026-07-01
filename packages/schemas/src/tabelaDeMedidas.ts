@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { millisSinceEpoch } from './datetime';
+import { millisSinceEpoch } from './shared/datetime';
+import { fotoSchema } from './storage/foto';
 import type { CollectionMetadata } from './types';
 
 // Mirror `PERM.produto` from @delfrance/auth; duplicated locally to avoid a
@@ -15,19 +16,24 @@ const PERM_PRODUTO_DELETE = 1n << 10n;
  * pass-through; Flutter ainda autora esses sub-objetos.
  */
 export const tabelaDeMedidasSchema = z.object({
-  nome: z.string().min(1).max(255),
-  codigo: z.string().max(255).nullable(),
-  descricao: z.string().max(1000).nullable(),
+  nome: z.string().min(1).max(255).describe('Nome'),
+  codigo: z.string().max(255).nullable().describe('Código interno'),
+  descricao: z.string().max(1000).nullable().describe('Descrição'),
   fotosArquivosIds: z.array(z.string()).nullable().optional(),
-  fotos: z.array(z.unknown()).nullable().optional(),
+  // Mirrors `Produto.fotos` — the Flutter `Foto2` wire shape. `fotoSchema` is
+  // `.passthrough()`, so any extra fields legacy `tabMedi` docs carry survive.
+  fotos: z.array(fotoSchema).nullable().optional(),
 
   // Tabelas por integração — chave = integracao_id. Pass-through (cada
   // marketplace tem sua estrutura interna específica).
   tabelasDeMedidasMercadoLivre: z.record(z.string(), z.unknown()).nullable().optional(),
   tabelasMedidasShopee: z.record(z.string(), z.array(z.unknown())).nullable().optional(),
 
-  dataCadastro: millisSinceEpoch().nullable().optional(),
-  ultimaModificacao: millisSinceEpoch().nullable().optional(),
+  // Pass the label through the builder (folded into its describe JSON) — a
+  // chained `.describe('…')` would clobber the `{ kind:'datetime', unit:'ms' }`
+  // metadata that TableView/ObjectView need to render these as date columns.
+  dataCadastro: millisSinceEpoch('Data de cadastro').nullable().optional(),
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
 });
 
 export type TabelaDeMedidas = z.infer<typeof tabelaDeMedidasSchema>;
@@ -38,6 +44,14 @@ export const tabelaDeMedidasMeta: CollectionMetadata = {
     read: PERM_PRODUTO_READ,
     write: PERM_PRODUTO_WRITE,
     delete: PERM_PRODUTO_DELETE,
+  },
+  // Default the list to most-recently-modified first (reuses the existing
+  // `ultimaModificacao DESC` index, which is also the TableView update-monitor
+  // index). The `nome ASC` index stays declared for the Nome-column sort + the
+  // produto picker.
+  defaultQuery: {
+    orderBy: [{ field: 'ultimaModificacao', direction: 'desc' }],
+    limit: 50,
   },
 };
 

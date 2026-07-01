@@ -145,6 +145,74 @@ export async function seedDepositos(prefix: string, n: number): Promise<void> {
 }
 
 /**
+ * Seed `n` tabela-de-medidas (`tabMedi`) docs. `codigo`/`descricao` alternate
+ * null/string so the Nome/Código columns and filters have something to bite
+ * on. `dataCadastro` is ms-epoch (the Flutter wire format).
+ */
+export async function seedMedidas(prefix: string, n: number): Promise<void> {
+  const col = db().collection('tabMedi');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      nome: `${prefix}-${pad(i)}`,
+      codigo: i % 2 === 0 ? `COD-${pad(i)}` : null,
+      descricao: i % 3 === 0 ? `${prefix}-${pad(i)} descrição` : null,
+      fotosArquivosIds: null,
+      fotos: null,
+      tabelasDeMedidasMercadoLivre: null,
+      tabelasMedidasShopee: null,
+      dataCadastro: Date.now(),
+      ultimaModificacao: null,
+    });
+  }
+  await batch.commit();
+}
+
+/**
+ * Seed exactly one `tabMedi` doc (`<prefix>-mkt`) carrying NON-empty
+ * marketplace maps — a Mercado Livre chart (keyed by ML conta id) and a Shopee
+ * size-chart reference (keyed by Shopee conta id). These are authored by the
+ * marketplace integrations, excluded from the CRUD form, and must survive an
+ * edit untouched; the returned maps let the spec assert byte-equality.
+ */
+export async function seedMedidaComMarketplace(prefix: string): Promise<{
+  id: string;
+  nome: string;
+  mercadoLivre: Record<string, unknown>;
+  shopee: Record<string, unknown>;
+}> {
+  const id = `${prefix}-mkt`;
+  const nome = `${prefix}-mkt`;
+  const mercadoLivre = {
+    'conta-ml-1': {
+      tabelas: [{ id: '1594439', nome: 'Chart A', domain_id: 'MLB-PANTS', rows: [] }],
+    },
+  };
+  const shopee = {
+    'conta-shopee-1': [{ categoryId: 11012, size_chart_id: 700024639, name: 'Camisetas' }],
+  };
+  await db().collection('tabMedi').doc(id).set({
+    nome,
+    codigo: 'MKT-001',
+    descricao: null,
+    fotosArquivosIds: null,
+    fotos: null,
+    tabelasDeMedidasMercadoLivre: mercadoLivre,
+    tabelasMedidasShopee: shopee,
+    dataCadastro: Date.now(),
+    ultimaModificacao: null,
+  });
+  return { id, nome, mercadoLivre, shopee };
+}
+
+/** Full data of the first `tabMedi` doc named `nome`, or null. */
+export async function getTabMediByName(nome: string): Promise<Record<string, unknown> | null> {
+  const snap = await db().collection('tabMedi').where('nome', '==', nome).limit(1).get();
+  const data = snap.docs[0]?.data();
+  return data ? (data as Record<string, unknown>) : null;
+}
+
+/**
  * Seed exactly one ACTIVE deposito (`<prefix>-dep`, `ativo: true`) and return
  * its id + nome. The Estoque tab lists active depósitos ordered by `nome`
  * (bounded), so the seeded one shows as long as the shared collection stays
@@ -197,6 +265,74 @@ export async function seedOperacaoAtiva(prefix: string): Promise<{ id: string; n
     timestamp: Date.now(),
   });
   return { id, nome };
+}
+
+/**
+ * Seed `n` operação docs for the `/operacoes` CRUD suite. `tipo` alternates
+ * entrada/saída and `movimentaEstoque`/`padrao` vary so the columns + sort have
+ * something to bite on. Tax configs are omitted (now optional — the converter
+ * parses without them).
+ */
+export async function seedOperacoes(prefix: string, n: number): Promise<void> {
+  const col = db().collection('operacao');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      nome: `${prefix}-${pad(i)}`,
+      naturezaDaOperacao: `Venda ${pad(i)}`,
+      tipo: i % 2 === 0 ? 1 : 0,
+      ehServico: false,
+      ehExterior: false,
+      ehConsumidorFinal: true,
+      padrao: i === 1,
+      ativo: true,
+      movimentaEstoque: i % 2 === 0,
+      movimentaIndisponivelEstoque: true,
+      ehFiscal: true,
+      finNFe: 1,
+      indPres: '2',
+      indIntermed: '1',
+      cfop: `510${i % 10}`,
+      cfopInterestadual: `610${i % 10}`,
+      origem: '0',
+      NCM: null,
+      CEST: null,
+      unidade: 'UN',
+      estadosDestino: null,
+      estados: null,
+      infCpl: null,
+      timestamp: Date.now(),
+    });
+  }
+  await batch.commit();
+}
+
+/** Full data of the first `operacao` doc named `nome`, or null. */
+export async function getOperacaoByName(nome: string): Promise<Record<string, unknown> | null> {
+  const snap = await db().collection('operacao').where('nome', '==', nome).limit(1).get();
+  const data = snap.docs[0]?.data();
+  return data ? (data as Record<string, unknown>) : null;
+}
+
+/**
+ * Delete an operação and its `regraimposto` subcollection (Firestore never
+ * cascades). Sweeps every operação on the prefix + their macros.
+ */
+export async function cleanupOperacoes(prefix: string): Promise<void> {
+  const snap = await db()
+    .collection('operacao')
+    .where('nome', '>=', prefix)
+    .where('nome', '<', `${prefix}${PREFIX_MAX}`)
+    .get();
+  for (const opDoc of snap.docs) {
+    const regras = await opDoc.ref.collection('regraimposto').get();
+    if (!regras.empty) {
+      const b = db().batch();
+      regras.docs.forEach((r) => b.delete(r.ref));
+      await b.commit();
+    }
+  }
+  await cleanupByNamePrefix('operacao', prefix);
 }
 
 /**
@@ -373,12 +509,12 @@ export async function seedBalcaoFixtures(
       ativo: i % 2 === 1,
       cor: null,
       modalidadeFreteImportacao: null,
-      filialIntegracaoPedidoOuterRef: filialRef,
-      tabelaNormalOuterRef: listaRef,
+      filialIntegracaoPedidoOuterRef: `documents/${filialRef.path}`,
+      tabelaNormalOuterRef: `documents/${listaRef.path}`,
       tabelaPromocionalOuterRef: null,
       operacaoOuterRef: null,
       operacaoDevolucaoOuterRef: null,
-      depositoOuterRef: depositoRef,
+      depositoOuterRef: `documents/${depositoRef.path}`,
       dataCadastro: now,
     });
   }
@@ -549,11 +685,14 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
   integracaoNome: string;
   produtoNome: string;
   produtoSku: string;
+  listaNome: string;
+  listaPreco: number;
 }> {
   const clienteId = `${prefix}-cli-001`;
   const operacaoId = `${prefix}-op-001`;
   const integracaoId = `${prefix}-int-001`;
   const produtoId = `${prefix}-pro-001`;
+  const listaId = `${prefix}-lista-001`;
   const clienteNome = `${prefix}-cli-001`;
   // Run-unique valid CNPJ: the quick-create dedup spec fills it expecting
   // exactly ONE blocking candidate (this fixture) in the shared collection.
@@ -562,6 +701,10 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
   const integracaoNome = `${prefix}-int-001`;
   const produtoNome = `${prefix}-pro-001`;
   const produtoSku = `${prefix.toUpperCase().replace(/-/g, '_')}_SKU_001`;
+  const listaNome = `${prefix}-lista-001`;
+  // Seeded list price for the produto in this lista — the item-entry UI looks it
+  // up on pick and autofills `precoDeVenda` (instead of the 0.01 placeholder).
+  const listaPreco = 33.5;
 
   const batch = db().batch();
   batch.set(db().collection('clientes').doc(clienteId), {
@@ -627,6 +770,15 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     depositoOuterRef: null,
     dataCadastro: Date.now(),
   });
+  batch.set(db().collection('listaDePrecos').doc(listaId), {
+    nome: listaNome,
+    padrao: true,
+    ativo: true,
+    formulasCalculoPreco: null,
+    formulasPorCategoria: null,
+    timestamp: Date.now(),
+    ultimaModificacao: Date.now(),
+  });
   batch.set(db().collection('produtos').doc(produtoId), {
     nome: produtoNome,
     sku: produtoSku,
@@ -647,6 +799,9 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     ofereceFreteGratis: false,
     permiteVendaSemEstoque: false,
     crossdocking: null,
+    // Price in the seeded lista — keyed by the ListaDePrecos doc id. The
+    // item-entry UI reads `precos[listaId].valor` to autofill `precoDeVenda`.
+    precos: { [listaId]: { valor: listaPreco } },
     grupoDeVariacoesUid: null,
     variacoesUid: null,
     componentesKitKeys: null,
@@ -674,6 +829,8 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     integracaoNome,
     produtoNome,
     produtoSku,
+    listaNome,
+    listaPreco,
   };
 }
 
@@ -688,6 +845,7 @@ export async function cleanupPedidoFixtures(prefix: string): Promise<void> {
     cleanupByNamePrefix('operacao', prefix),
     cleanupByNamePrefix('integracao', prefix),
     cleanupByNamePrefix('produtos', prefix),
+    cleanupByNamePrefix('listaDePrecos', prefix),
   ]);
 }
 
@@ -880,30 +1038,25 @@ export async function seedPedidoWithNFe(
       enderecoFiscalOuterRef: null,
       listaDePrecosOuterRef: null,
     });
-  await db()
-    .collection('pedidos')
-    .doc(pedidoId)
-    .collection('nfev4')
-    .doc(nfeId)
-    .set({
-      numeracao: 1,
-      serie: 1,
-      tpEmis: 1,
-      estado,
-      chave: null,
-      idLote: null,
-      infNFe: null,
-      xml_nfe_proc: null,
-      xml_epec_proc: null,
-      xml_assinado: null,
-      nRec: null,
-      retries: null,
-      cStat: null,
-      xMotivo: null,
-      error: null,
-      timestamp: now,
-      ultima_modificacao: new Date(now).toISOString(),
-    });
+  await db().collection('pedidos').doc(pedidoId).collection('nfev4').doc(nfeId).set({
+    numeracao: 1,
+    serie: 1,
+    tpEmis: 1,
+    estado,
+    chave: null,
+    idLote: null,
+    infNFe: null,
+    xml_nfe_proc: null,
+    xml_epec_proc: null,
+    xml_assinado: null,
+    nRec: null,
+    retries: null,
+    cStat: null,
+    xMotivo: null,
+    error: null,
+    timestamp: now,
+    ultima_modificacao: now,
+  });
   return { pedidoId, nfeId };
 }
 
@@ -1114,6 +1267,105 @@ export async function seedKitReferencing(
       timestamp: new Date().toISOString(),
     });
   return { kitId, kitNome };
+}
+
+/**
+ * Seed the graph the "Gerar Variações" edit-flow e2e needs:
+ *  - a component produto `C` (ehKit:false, custo 10) with two variation children
+ *    `C-P` (size P) and `C-M` (size M);
+ *  - a kit `K` (ehKit:true) whose `componentesKit` references `C` (quantidade 2,
+ *    custo 20 = 10×2 so the parent KitManager's cost recompute leaves the form
+ *    pristine) with one variation child `K-P` (size P, no kit yet).
+ *
+ * No `grupoDeVariacoes` docs are written — the matcher only compares the trailing
+ * variant id of each `variacoesUid`, so a synthetic grupo id in the fake path is
+ * enough (the C1/overlap path used here never resolves a grupo). After Gerar +
+ * save, `K-P.componentesKit` should key `C-P` (overlap on size P).
+ */
+export async function seedKitParaGerar(prefix: string): Promise<{
+  kitId: string;
+  varKitPId: string;
+  varKitPNome: string;
+  componentId: string;
+  componentNome: string;
+  varCompPId: string;
+  varCompMId: string;
+}> {
+  const grupoTam = `${prefix}-tam`;
+  const fake = (v: string) => `documents/grupoDeVariacoes/${grupoTam}/variacoes/${v}`;
+  const sku = (s: string) => `${prefix.toUpperCase().replace(/-/g, '_')}_${s}`;
+  const base = {
+    publicado: true,
+    ehKitVirtual: false,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    fotos: null,
+    videos: null,
+    timestamp: new Date().toISOString(),
+  };
+
+  const componentId = `${prefix}-comp`;
+  const componentNome = `${prefix}-comp`;
+  const varCompPId = `${componentId}-p`;
+  const varCompMId = `${componentId}-m`;
+  const kitId = `${prefix}-kit`;
+  const varKitPId = `${kitId}-p`;
+  const varKitPNome = `${prefix}-kit P`;
+
+  const batch = db().batch();
+  // Component parent + its two variation children (size P / M).
+  batch.set(db().collection('produtos').doc(componentId), {
+    ...base,
+    nome: componentNome,
+    sku: sku('COMP'),
+    custo: 10,
+    paiId: null,
+    ordem: null,
+    ehKit: false,
+  });
+  batch.set(db().collection('produtos').doc(varCompPId), {
+    ...base,
+    nome: `${componentNome} P`,
+    sku: sku('COMP_P'),
+    custo: 10,
+    paiId: componentId,
+    ordem: 0,
+    ehKit: false,
+    variacoesUid: [fake('p')],
+  });
+  batch.set(db().collection('produtos').doc(varCompMId), {
+    ...base,
+    nome: `${componentNome} M`,
+    sku: sku('COMP_M'),
+    custo: 12,
+    paiId: componentId,
+    ordem: 1,
+    ehKit: false,
+    variacoesUid: [fake('m')],
+  });
+  // Kit parent referencing the component, + its variation child (size P).
+  batch.set(db().collection('produtos').doc(kitId), {
+    ...base,
+    nome: `${prefix}-kit`,
+    sku: sku('KIT'),
+    custo: 20,
+    paiId: null,
+    ordem: null,
+    ehKit: true,
+    componentesKit: { [componentId]: { quantidade: 2, limitarEstoque: true } },
+    componentesKitKeys: [componentId],
+  });
+  batch.set(db().collection('produtos').doc(varKitPId), {
+    ...base,
+    nome: varKitPNome,
+    sku: sku('KIT_P'),
+    paiId: kitId,
+    ordem: 0,
+    ehKit: false,
+    variacoesUid: [fake('p')],
+  });
+  await batch.commit();
+  return { kitId, varKitPId, varKitPNome, componentId, componentNome, varCompPId, varCompMId };
 }
 
 /**

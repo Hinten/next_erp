@@ -9,6 +9,7 @@ import type { PedidoDataPort, PedidoWriteOp } from '@delfrance/data/pedido';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { historicoEstadoCollection } from '@/lib/data/historicoEstadoCollection';
 import { incidenteCollection } from '@/lib/data/incidenteCollection';
+import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
 import { newDocId } from '@/lib/data/newDocId';
 
 // A writeBatch caps at 500 operations.
@@ -30,6 +31,9 @@ function refForPath(db: Firestore, path: string): DocumentReference {
     }
     if (sub === 'incidentes') {
       return incidenteCollection.docRef(db, { pedidoId }, id) as DocumentReference;
+    }
+    if (sub === 'pagamentos') {
+      return pagamentoCollection.docRef(db, { pedidoId }, id) as DocumentReference;
     }
   }
   throw new Error(`clientPedidoPort: unmapped write path "${path}"`);
@@ -53,6 +57,9 @@ export function createClientPedidoPort(db: Firestore): PedidoDataPort {
         const snap = await tx.get(ref);
         const current = snap.exists() ? (snap.data() as Record<string, unknown>) : null;
         const patch = apply(current);
+        // An empty patch means `apply` decided there's nothing to write (e.g. the
+        // estado reconcile found no transition) — skip the no-op update.
+        if (Object.keys(patch).length === 0) return;
         // tx.update bypasses the converter (only set/add invoke it); the patch
         // already passed the per-field resolver client-side.
         tx.update(ref, patch as never);

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
+import { millisSinceEpoch } from './shared/datetime';
 
 // Mirror `PERM.fiscal` from @delfrance/auth.
 const PERM_FISCAL_READ = 1n << 72n;
@@ -68,14 +69,24 @@ export const nfeConfigSchema = z
       .nullable()
       .default(null)
       .describe('Justificativa da contingência'),
-    /** SEFAZ `dhCont` (B28) — stamped when the operator activates the mode. */
-    contingencia_dataInicio: z
-      .string()
-      .datetime({ offset: true })
-      .nullable()
-      .default(null)
-      .describe('Início da contingência'),
-    timestamp: z.string().datetime().nullable().optional(),
+    /** SEFAZ `dhCont` (B28) — stamped when the operator activates the mode. The
+     * offset-aware `dhCont` printed on the DANFE is rebuilt from this ms instant
+     * + the issuer timezone at emission time, matching the Flutter wire shape. */
+    contingencia_dataInicio: millisSinceEpoch('Início da contingência').nullable().default(null),
+    /**
+     * Reforma Tributária (IBS/CBS/IS) emission switch — NT 2025.002. When
+     * `true`, emitted NF-e carry the RTC item/total groups (built from each
+     * item's `configuracaoIBSCBS`). **Off by default**: the Simples Nacional
+     * RTC rules are pending a future NT (mandatory only 2027-01-04), so this
+     * stays a deliberate per-filial opt-in (homologação first). `.default(false)`
+     * keeps pre-RTC docs (and Flutter writes that never knew the field)
+     * parseable.
+     */
+    emitirReformaTributaria: z
+      .boolean()
+      .default(false)
+      .describe('Emitir Reforma Tributária (IBS/CBS/IS)'),
+    timestamp: millisSinceEpoch().nullable().default(null),
   })
   .superRefine((cfg, ctx) => {
     if (cfg.contingencia_modo !== 'none') {

@@ -1,10 +1,9 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Select, Stack, Switch, Text, TextInput } from '@mantine/core';
+import { Select, Stack, Text } from '@mantine/core';
 import type { Firestore } from 'firebase/firestore';
 import {
-  ORIGEM_PRODUTO_LABELS,
   impostoProdutoSchema,
   operacaoIdFromImpostoRef,
   type ImpostoProduto,
@@ -13,15 +12,11 @@ import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { impostoProdutoCollection } from '@/lib/data/impostoProdutoCollection';
+import { ImpostoConfigEditor, type ImpostoConfigValue } from '@/components/imposto';
 
 // Operações are few (fiscal operations); a bounded, name-ordered query suffices.
 const OPERACAO_LIMIT = 200;
 const IMPOSTO_LIMIT = 200;
-
-const ORIGEM_OPTIONS = Object.entries(ORIGEM_PRODUTO_LABELS).map(([value, label]) => ({
-  value,
-  label,
-}));
 
 interface OperacaoRow {
   id: string;
@@ -32,12 +27,6 @@ interface OperacaoRow {
 /** A blank imposto entry scoped to one operação (Flutter typo wire key). */
 function emptyImposto(operacaoId: string): ImpostoProduto {
   return impostoProdutoSchema.parse({ impostoOpercaoOuterRef: `operacao/${operacaoId}` });
-}
-
-/** Raw RHF error node for one imposto entry. */
-interface ImpostoErrorNode {
-  NCM?: { message?: string };
-  CEST?: { message?: string };
 }
 
 export interface ImpostoManagerProps {
@@ -54,10 +43,12 @@ export interface ImpostoManagerProps {
  * Impostos tab (Flutter `ImpostoManager`). One imposto override per active
  * operação, scoped by `impostoOpercaoOuterRef` and saved at
  * `produtos/<id>/imposto/<operacaoId>` ATOMICALLY with the produto doc (the
- * page's `transactionWrites`). This slice edits the **Dados Gerais** fields only;
- * the deep ICMS/IPI/PIS config stays pass-through (NF-e Regime Normal).
+ * page's `transactionWrites`). The deep tax config (ICMS/IPI/PIS/COFINS/ISSQN/
+ * retenção + Reforma Tributária) is edited via the shared
+ * {@link ImpostoConfigEditor} — the same editor behind the operação, Macros and
+ * categoria screens.
  *
- * The user picks an operação, then edits its fiscal fields; the value is held in
+ * The user picks an operação, then edits its fiscal config; the value is held in
  * the form and persisted on save. Seeds the transient field from the loaded
  * imposto subcollection merged with the active operações, re-seeding if
  * ObjectView's produto-doc reset wipes it back to null.
@@ -147,25 +138,21 @@ export function ImpostoManager({
     (r) => operacaoIdFromImpostoRef(r.impostoOpercaoOuterRef) === activeId,
   );
   const active = activeIndex >= 0 ? rows[activeIndex] : null;
-  const errNode =
-    (Array.isArray(errorTree)
-      ? (errorTree[activeIndex] as ImpostoErrorNode | undefined)
-      : undefined) ?? {};
+  const errNode = Array.isArray(errorTree) ? errorTree[activeIndex] : undefined;
 
-  const patchActive = (patch: Partial<ImpostoProduto>) => {
+  const v = (active ?? emptyImposto(activeId ?? '')) as ImpostoConfigValue;
+
+  const handleChange = (next: ImpostoConfigValue) => {
     if (!activeId) return;
-    const next = [...rows];
+    const nextRows = [...rows];
     if (activeIndex >= 0 && active) {
-      next[activeIndex] = { ...active, ...patch };
+      nextRows[activeIndex] = { ...active, ...next } as ImpostoProduto;
     } else {
       // Operação not yet in the array (e.g. added after the seed) — append it.
-      next.push({ ...emptyImposto(activeId), ...patch });
+      nextRows.push({ ...emptyImposto(activeId), ...next } as ImpostoProduto);
     }
-    onChange(next);
+    onChange(nextRows);
   };
-
-  const v = active ?? emptyImposto(activeId ?? '');
-  const str = (k: keyof ImpostoProduto) => (v[k] as string | null) ?? '';
 
   return (
     <Stack>
@@ -179,85 +166,11 @@ export function ImpostoManager({
         disabled={disabled}
       />
 
-      <Select
-        label="Origem"
-        data={ORIGEM_OPTIONS}
-        value={str('origem') || null}
-        onChange={(val) => patchActive({ origem: val })}
-        clearable
+      <ImpostoConfigEditor
+        value={v}
+        onChange={handleChange}
         disabled={disabled}
-      />
-      <TextInput
-        label="CFOP"
-        value={str('cfop')}
-        onChange={(e) => patchActive({ cfop: e.currentTarget.value || null })}
-        disabled={disabled}
-      />
-      <TextInput
-        label="CFOP interestadual"
-        value={str('cfopInterestadual')}
-        onChange={(e) => patchActive({ cfopInterestadual: e.currentTarget.value || null })}
-        disabled={disabled}
-      />
-      <TextInput
-        label="NCM"
-        description="8 dígitos."
-        maxLength={8}
-        value={str('NCM')}
-        onChange={(e) => patchActive({ NCM: e.currentTarget.value || null })}
-        error={errNode.NCM?.message}
-        disabled={disabled}
-      />
-      <TextInput
-        label="NVE"
-        value={str('NVE')}
-        onChange={(e) => patchActive({ NVE: e.currentTarget.value || null })}
-        disabled={disabled}
-      />
-      <TextInput
-        label="CEST"
-        description="7 dígitos."
-        maxLength={7}
-        value={str('CEST')}
-        onChange={(e) => patchActive({ CEST: e.currentTarget.value || null })}
-        error={errNode.CEST?.message}
-        disabled={disabled}
-      />
-      <TextInput
-        label="Indicador de escala"
-        value={str('indEscala')}
-        onChange={(e) => patchActive({ indEscala: e.currentTarget.value || null })}
-        disabled={disabled}
-      />
-      <TextInput
-        label="CNPJ do fabricante"
-        value={str('CNPJFab')}
-        onChange={(e) => patchActive({ CNPJFab: e.currentTarget.value || null })}
-        disabled={disabled}
-      />
-      <TextInput
-        label="Código de benefício fiscal (cBenef)"
-        value={str('cBenef')}
-        onChange={(e) => patchActive({ cBenef: e.currentTarget.value || null })}
-        disabled={disabled}
-      />
-      <TextInput
-        label="EX TIPI"
-        value={str('extipi')}
-        onChange={(e) => patchActive({ extipi: e.currentTarget.value || null })}
-        disabled={disabled}
-      />
-      <TextInput
-        label="Unidade tributável"
-        value={str('unidade')}
-        onChange={(e) => patchActive({ unidade: e.currentTarget.value || null })}
-        disabled={disabled}
-      />
-      <Switch
-        label="Compõe o valor total da NF-e"
-        checked={v.compoeValorTotalDaNFe === true}
-        onChange={(e) => patchActive({ compoeValorTotalDaNFe: e.currentTarget.checked })}
-        disabled={disabled}
+        errorTree={errNode}
       />
     </Stack>
   );

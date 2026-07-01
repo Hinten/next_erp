@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  FREIGHT_TIPO_CAPS,
+  freightCapsFor,
   freteDoPedidoSchema,
+  integracoesFreteSchema,
   isFreteJaPostado,
   reboqueSchema,
   transportadoraSchema,
   veiculoSchema,
 } from './frete';
-import { derivePedidoFreteTotals, itemDoPedidoSchema, round2 } from './pedido';
+import { derivePedidoFreteTotals, itemDoPedidoSchema } from '../pedido';
 
 /* -------------------------------------------------------------------------- */
 /*      Golden-doc round-trips — fixtures shaped exactly as Flutter writes    */
@@ -161,12 +164,62 @@ describe('derivePedidoFreteTotals', () => {
   });
 });
 
-describe('round2', () => {
-  it('matches Dart duasCasasDecimais on the money vectors', () => {
-    expect(round2(7.777)).toBe(7.78);
-    expect(round2(3.333)).toBe(3.33);
-    expect(round2(99.999)).toBe(100);
-    expect(round2(0)).toBe(0);
+describe('FREIGHT_TIPO_CAPS', () => {
+  it('has exactly one row per integração tipo (no missing / extra keys)', () => {
+    const tipos = [...integracoesFreteSchema.options].sort();
+    const capsKeys = Object.keys(FREIGHT_TIPO_CAPS).sort();
+    expect(capsKeys).toEqual(tipos);
+  });
+
+  it('Melhor Envio is the only emit provider and the only routed channel', () => {
+    expect(FREIGHT_TIPO_CAPS.melhorEnvios).toMatchObject({
+      labelMode: 'emit',
+      canQuote: true,
+      canBuy: true,
+      canPrint: true,
+      channel: 'melhor-envio',
+      marketplaceOwned: false,
+    });
+    const routed = integracoesFreteSchema.options.filter(
+      (t) => FREIGHT_TIPO_CAPS[t].channel != null,
+    );
+    expect(routed).toEqual(['melhorEnvios']);
+  });
+
+  it('every non-ME tipo is non-buyable today (→ etiquetaRowState "unsupported")', () => {
+    // Behavioral guarantee: the caps swap is byte-identical to the old
+    // `tipo !== 'melhorEnvios'` reject until a provider implements its flow.
+    for (const tipo of integracoesFreteSchema.options) {
+      if (tipo === 'melhorEnvios') continue;
+      const caps = FREIGHT_TIPO_CAPS[tipo];
+      expect(caps.canQuote).toBe(false);
+      expect(caps.canBuy).toBe(false);
+      expect(caps.canPrint).toBe(false);
+      expect(caps.canTrack).toBe(false);
+    }
+  });
+
+  it('the marketplace tipos are the read-only-tab ones', () => {
+    const marketplaceOwned = integracoesFreteSchema.options.filter(
+      (t) => FREIGHT_TIPO_CAPS[t].marketplaceOwned,
+    );
+    expect([...marketplaceOwned].sort()).toEqual(
+      ['mercadoLivre', 'lojaIntegrada', 'amz', 'magalu', 'shopee'].sort(),
+    );
+  });
+
+  it('freightCapsFor tolerates an unknown / null tipo (→ all-false, never throws)', () => {
+    // `tipo` reaches the UI unparsed from Firestore, so a legacy/corrupt value
+    // must degrade to "unsupported" — the pre-table `Set.has` / `!==` safety.
+    const unknown = freightCapsFor('bogus-legacy-tipo');
+    expect(unknown.canPrint).toBe(false);
+    expect(unknown.canBuy).toBe(false);
+    expect(unknown.canQuote).toBe(false);
+    expect(unknown.marketplaceOwned).toBe(false);
+    expect(freightCapsFor(null)).toEqual(unknown);
+    expect(freightCapsFor(undefined)).toEqual(unknown);
+    // a known tipo still returns its real row
+    expect(freightCapsFor('melhorEnvios').canBuy).toBe(true);
   });
 });
 

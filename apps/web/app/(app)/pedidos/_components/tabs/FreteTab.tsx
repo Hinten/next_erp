@@ -10,6 +10,7 @@ import {
   ESTADO_FRETE_LABELS,
   MODALIDADE_FRETE_LABELS,
   estadoFreteSchema,
+  freightCapsFor,
   freteDoPedidoSchema,
   modalidadeFreteSchema,
   type ModalidadeFrete,
@@ -29,8 +30,6 @@ import { MotoboyFields } from './frete/MotoboyFields';
 import { FobFields } from './frete/FobFields';
 import { MelhorEnvioFields } from './frete/MelhorEnvioFields';
 import { MarketplaceReadOnly } from './frete/MarketplaceReadOnly';
-
-const MARKETPLACE_TIPOS = new Set(['mercadoLivre', 'lojaIntegrada', 'amz', 'magalu', 'shopee']);
 
 export interface FreteTabProps {
   form: PedidoFormHandle;
@@ -128,8 +127,10 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
     form.setValue(fretePath('estado'), 'iniciado', dirty);
     // Drop any stale freteInicial validation errors from the previous quote —
     // validation runs onBlur, so without this the error Alert (#218) can keep
-    // showing errors for fields we just reset.
+    // showing errors for fields we just reset. Re-run validation against the
+    // reset values so a still-invalid field re-surfaces immediately.
     form.clearErrors('freteInicial');
+    void form.trigger('freteInicial');
 
     if (hadLabel) {
       notifications.show({
@@ -149,7 +150,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   // by hand-editing the pedido. While the integração doc is still resolving
   // the header stays locked as well (tipo unknown = ownership unknown); a
   // resolved-but-missing doc unlocks it so a dangling ref can be fixed.
-  const marketplaceOwned = tipo != null && MARKETPLACE_TIPOS.has(tipo);
+  const marketplaceOwned = freightCapsFor(tipo).marketplaceOwned;
   const headerDisabled =
     disabled || marketplaceOwned || (integracaoRef != null && loadingIntegracao);
 
@@ -293,7 +294,6 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
                 onBlur={field.onBlur}
                 disabled={headerDisabled}
                 error={fieldState.error?.message}
-                emitDocPath
               />
             )}
           />

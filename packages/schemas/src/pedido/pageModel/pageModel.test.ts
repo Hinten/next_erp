@@ -44,6 +44,26 @@ describe('pedidoPageIssues', () => {
     ).not.toContain('ehSaida');
   });
 
+  it('flags a referenced NF-e key that is not 44 digits', () => {
+    const base = { itens: { p1: [{ quantidade: 1 }] }, integracaoPedidoOuterRef: 'x' };
+    const valid = '1'.repeat(44);
+    // 43 / 45 digits and a non-digit value all fail.
+    expect(paths({ ...base, chNFeReferenciadas: ['1'.repeat(43)] })).toContain(
+      'chNFeReferenciadas',
+    );
+    expect(paths({ ...base, chNFeReferenciadas: ['1'.repeat(45)] })).toContain(
+      'chNFeReferenciadas',
+    );
+    expect(paths({ ...base, chNFeReferenciadas: [`${'1'.repeat(43)}A`] })).toContain(
+      'chNFeReferenciadas',
+    );
+    // A valid 44-digit chave, plus empty/null entries, raise no issue.
+    expect(paths({ ...base, chNFeReferenciadas: [valid, '', null] })).not.toContain(
+      'chNFeReferenciadas',
+    );
+    expect(paths({ ...base, chNFeReferenciadas: null })).not.toContain('chNFeReferenciadas');
+  });
+
   it('warns when a paid order is underpaid (only when pagamentos supplied)', () => {
     const base = {
       itens: { p1: [{ quantidade: 1 }] },

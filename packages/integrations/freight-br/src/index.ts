@@ -10,9 +10,10 @@
  * routes lives at the `./http-client` subpath (imported by `apps/web`),
  * mirroring the nfe package's `./http-provider` split.
  *
- * Decision: this package **bypasses** the `core/plugins` `FreightProvider`
- * registry — that 3-method contract can't express OAuth +
- * cart→checkout→generate + per-tipo UI, and has no consumers. See the
- * freight-integrations skill (F5) for the rationale.
+ * Decision: freight is integrated directly — this typed HTTP client + the
+ * `comprarEtiqueta` pipeline + the per-tipo `FREIGHT_TIPO_CAPS` table in
+ * `@delfrance/schemas` — NOT via a `core/plugins` registry contract. That
+ * 3-method shape couldn't express OAuth + cart→checkout→generate + per-tipo UI.
+ * See the freight-integrations skill for the rationale.
  */
 export * from './melhor-envio';

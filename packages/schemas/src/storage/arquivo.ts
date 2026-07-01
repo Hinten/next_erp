@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { nowMicros } from '@delfrance/core/datetime';
-import { microsSinceEpoch } from '../datetime';
+import { microsSinceEpoch } from '../shared/datetime';
 import type { CollectionMetadata } from '../types';
 
 // Mirror `PERM.arquivo` from @delfrance/auth (byte 80); duplicated locally to
@@ -132,6 +132,17 @@ export const arquivoSchema = z
       .nullable()
       .default(null)
       .describe('Estado do upload'),
+    // Soft-delete marker (microseconds-since-epoch). Set by the
+    // `onProdutoMediaChanged` Cloud Function when a produto edit removes this
+    // arquivo's `arquivoOuterRef` from `fotos`/`videos`; cleared (back to null)
+    // if the ref is re-added in a later edit. The `sweepMarkedForDeletion` pass
+    // deletes marked docs past a short grace, re-verifying the owning produto
+    // still doesn't reference it (so a missed unmark never loses a live photo).
+    // `null` = not marked — the default for every freshly uploaded arquivo.
+    markedForDeletionAt: microsSinceEpoch()
+      .nullable()
+      .default(null)
+      .describe('Marcado para exclusão em'),
   })
   .passthrough();
 

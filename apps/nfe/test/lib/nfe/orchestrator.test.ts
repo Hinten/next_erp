@@ -131,9 +131,11 @@ const SEED_NFE_CONFIG: NFeConfig = {
   serie: 1,
   idLote: 0,
   ambiente: '2',
+  emitirReformaTributaria: false,
   contingencia_modo: 'none',
   contingencia_justificativa: null,
   contingencia_dataInicio: null,
+  timestamp: null,
 };
 
 interface FakeFirestoreOptions {
@@ -168,7 +170,9 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
         },
       ],
     },
-    filialPedidoOuterRef: 'filiais/F-1',
+    // The issuing filial is resolved via the pedido's integração, not a
+    // pedido field (see bundle.ts → integracao.filialIntegracaoPedidoOuterRef).
+    integracaoPedidoOuterRef: 'integracao/I-1',
     clientePedidoOuterRef: 'clientes/C-1',
     operacaoPedidoOuterRef: 'operacao/O-1',
     enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
@@ -176,6 +180,13 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
 
   const docs: Record<string, Record<string, unknown> | null> = {
     'pedidos/PED-1': opts.pedido !== undefined ? opts.pedido : defaultPedido,
+    'integracao/I-1': {
+      nome: 'Canal Teste',
+      tipo: 0,
+      padrao: false,
+      ativo: true,
+      filialIntegracaoPedidoOuterRef: 'filiais/F-1',
+    },
     'filiais/F-1': {
       razaoSocial: 'ACME LTDA',
       cnpj: '14200166000187',
@@ -512,7 +523,7 @@ describe('emitirPedido — contingência SVC', () => {
     ...SEED_NFE_CONFIG,
     contingencia_modo: 'svc',
     contingencia_justificativa: SVC_JUST,
-    contingencia_dataInicio: '2026-06-10T08:00:00.000Z',
+    contingencia_dataInicio: new Date('2026-06-10T08:00:00.000Z').getTime(),
   };
 
   it('routes the lote to the SVC-AN endpoint and targets the s6 doc slot', async () => {
@@ -528,7 +539,7 @@ describe('emitirPedido — contingência SVC', () => {
     );
     const w = writes.find((x) => x.path === 'pedidos/PED-1/nfev4/s6');
     expect(w?.data.tpEmis).toBe(6);
-    expect(w?.data.dataContingencia).toBe('2026-06-10T08:00:00.000Z');
+    expect(w?.data.dataContingencia).toBe(new Date('2026-06-10T08:00:00.000Z').getTime());
     expect(w?.data.justificativaContingencia).toBe(SVC_JUST);
   });
 
@@ -557,7 +568,7 @@ describe('emitirPedido — contingência SVC', () => {
       nfeConfig: {
         ...SEED_NFE_CONFIG,
         contingencia_justificativa: SVC_JUST,
-        contingencia_dataInicio: '2026-06-10T08:00:00.000Z',
+        contingencia_dataInicio: new Date('2026-06-10T08:00:00.000Z').getTime(),
       },
     });
     vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
@@ -592,7 +603,7 @@ describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
     ...SEED_NFE_CONFIG,
     contingencia_modo: 'epec',
     contingencia_justificativa: EPEC_JUST,
-    contingencia_dataInicio: '2026-06-11T08:00:00.000Z',
+    contingencia_dataInicio: new Date('2026-06-11T08:00:00.000Z').getTime(),
   };
 
   /**
@@ -1086,7 +1097,7 @@ describe('emitirPedido — guards', () => {
           },
         ],
       },
-      filialPedidoOuterRef: 'filiais/F-1',
+      integracaoPedidoOuterRef: 'integracao/I-1',
       clientePedidoOuterRef: 'clientes/C-1',
       operacaoPedidoOuterRef: 'operacao/O-1',
       enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
@@ -1116,7 +1127,7 @@ describe('emitirPedido — magic-string fallbacks removed', () => {
           },
         ],
       },
-      filialPedidoOuterRef: 'filiais/F-1',
+      integracaoPedidoOuterRef: 'integracao/I-1',
       clientePedidoOuterRef: 'clientes/C-1',
       operacaoPedidoOuterRef: 'operacao/O-1',
       enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
@@ -1190,7 +1201,7 @@ describe('emitirPedido — operação fallback for fiscal codes', () => {
           },
         ],
       },
-      filialPedidoOuterRef: 'filiais/F-1',
+      integracaoPedidoOuterRef: 'integracao/I-1',
       clientePedidoOuterRef: 'clientes/C-1',
       operacaoPedidoOuterRef: 'operacao/O-1',
       enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
@@ -1348,7 +1359,7 @@ describe('emitirPedido — CFOP selection by emitente/destinatário UF', () => {
           },
         ],
       },
-      filialPedidoOuterRef: 'filiais/F-1',
+      integracaoPedidoOuterRef: 'integracao/I-1',
       clientePedidoOuterRef: 'clientes/C-1',
       operacaoPedidoOuterRef: 'operacao/O-1',
       enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
@@ -1376,7 +1387,7 @@ describe('emitirPedido — CFOP selection by emitente/destinatário UF', () => {
           },
         ],
       },
-      filialPedidoOuterRef: 'filiais/F-1',
+      integracaoPedidoOuterRef: 'integracao/I-1',
       clientePedidoOuterRef: 'clientes/C-1',
       operacaoPedidoOuterRef: 'operacao/O-1',
       enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
@@ -1876,6 +1887,63 @@ describe('consultarPedido — consReci(nRec) preferred over consSit(chave)', () 
     }
     // The in-memory doc still has the original nRec after merge.
     expect((docs['pedidos/PED-1/nfev4/s1'] as { nRec?: unknown }).nRec).toBe('351000000000123');
+  });
+
+  it('cStat 539 (duplicidade, asserted chave not in our audit log) → terminal error, not aguardandoResposta (#243)', async () => {
+    const OUTRA_CHAVE = '35260614200166000187550010000000099400000019';
+    const events: string[] = [];
+    const { fs, docs } = fakeFirestore({ events });
+    docs['pedidos/PED-1/nfev4/s1'] = {
+      numeracao: 7,
+      serie: 1,
+      tpEmis: 1,
+      estado: ESTADO_NFE.aguardandoResposta,
+      chave: CHAVE,
+      cStat: '103',
+      xMotivo: 'Lote recebido',
+      nRec: '351000000000123',
+      retries: 0,
+    };
+    docs['filiais/F-1/enviNfe/seed-1'] = {
+      targetsChnfe: [CHAVE], // our audit log knows CHAVE, NOT the 539-asserted OUTRA_CHAVE
+      idLote: 1,
+      indSinc: '1',
+      xml_enviado: '<NFe>…</NFe>',
+      xml_retorno: JSON.stringify(RET_ENVI_103),
+      nRec: '351000000000123',
+      cStat: '103',
+      xMotivo: 'Lote recebido',
+      error: null,
+      tpEmis: 1,
+      estado: '2',
+      timestamp: '2026-05-20T10:30:00.000Z',
+      ultima_modificacao: '2026-05-20T10:30:00.000Z',
+    };
+    // consReci returns our chave as a 539 asserting a DIFFERENT chave.
+    vi.mocked(consultarLote).mockResolvedValue({
+      ...RET_CONS_REC_104,
+      protNFe: [
+        {
+          versao: '4.00' as const,
+          infProt: {
+            tpAmb: '2' as const,
+            verAplic: 'SP',
+            chNFe: CHAVE,
+            dhRecbto: '2026-05-20T10:30:00-03:00',
+            nProt: '135200000000123',
+            cStat: '539',
+            xMotivo: `Rejeicao: Duplicidade de NF-e com diferenca na Chave de Acesso [chNFe:${OUTRA_CHAVE}]`,
+          },
+        },
+      ],
+    });
+
+    const result = await consultarPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.cStat).toBe('539');
+    expect(result.estado).toBe(ESTADO_NFE.error);
+    // The persisted doc must NOT remain aguardandoResposta (the #243 bug).
+    expect((docs['pedidos/PED-1/nfev4/s1'] as { estado?: unknown }).estado).toBe(ESTADO_NFE.error);
   });
 });
 

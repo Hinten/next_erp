@@ -116,9 +116,11 @@ const SEED_NFE_CONFIG: NFeConfig = {
   serie: 1,
   idLote: 0,
   ambiente: '2',
+  emitirReformaTributaria: false,
   contingencia_modo: 'none',
   contingencia_justificativa: null,
   contingencia_dataInicio: null,
+  timestamp: null,
 };
 
 function filialDoc(): Record<string, unknown> {
@@ -225,7 +227,8 @@ function pedidoDoc(spec: PedidoSpec): Record<string, unknown> {
         },
       ],
     },
-    filialPedidoOuterRef: `filiais/${spec.filialId}`,
+    // Filial resolved via the pedido's integração (see bundle.ts).
+    integracaoPedidoOuterRef: `integracao/I-${spec.filialId}`,
     clientePedidoOuterRef: 'clientes/C-1',
     operacaoPedidoOuterRef: 'operacao/O-1',
     enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
@@ -259,6 +262,13 @@ function fakeFirestore(opts: BatchHarnessOpts) {
     if (!seededFiliais.has(spec.filialId)) {
       seededFiliais.add(spec.filialId);
       docs[`filiais/${spec.filialId}`] = filialDoc();
+      docs[`integracao/I-${spec.filialId}`] = {
+        nome: 'Canal Teste',
+        tipo: 0,
+        padrao: false,
+        ativo: true,
+        filialIntegracaoPedidoOuterRef: `filiais/${spec.filialId}`,
+      };
       const cfg = opts.nfeConfigByFilial?.[spec.filialId];
       const seed = cfg !== undefined ? cfg : SEED_NFE_CONFIG;
       docs[`filiais/${spec.filialId}/nfeconfig/default`] =
@@ -974,7 +984,7 @@ describe('emitirPedidosLote — contingência EPEC', () => {
     ...SEED_NFE_CONFIG,
     contingencia_modo: 'epec',
     contingencia_justificativa: 'SEFAZ-SP indisponível desde as 08h',
-    contingencia_dataInicio: '2026-06-11T08:00:00.000Z',
+    contingencia_dataInicio: new Date('2026-06-11T08:00:00.000Z').getTime(),
   };
 
   const EPEC_CHAVE = '35260614200166000187550010000000091400000010';

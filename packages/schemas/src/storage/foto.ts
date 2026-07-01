@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { idRefSchema, outerRefSchema } from '../shared/outerRef';
 import { ARQUIVOS_COLLECTION } from './arquivo';
 import { derivativeArquivoId, productArquivoId } from './storagePaths';
 
@@ -15,9 +16,11 @@ import { derivativeArquivoId, productArquivoId } from './storagePaths';
  */
 export interface FotoRefs {
   arquivoOuterRef: string;
-  arquivo200pxOuterRef: string;
-  arquivo400pxOuterRef: string;
-  arquivoJpegOuterRef: string;
+  // Nullable: an owner without a resize function (e.g. tabela de medidas) has no
+  // derivatives — see `buildOriginalFotoRef`. Product refs are non-null strings.
+  arquivo200pxOuterRef: string | null;
+  arquivo400pxOuterRef: string | null;
+  arquivoJpegOuterRef: string | null;
 }
 
 /** Build the optimistic `Foto` ref strings for a product's original `hash`. */
@@ -28,6 +31,22 @@ export function buildFotoRefs(produtoId: string, hash: string): FotoRefs {
     arquivo200pxOuterRef: ref(derivativeArquivoId(produtoId, hash, '200')),
     arquivo400pxOuterRef: ref(derivativeArquivoId(produtoId, hash, '400')),
     arquivoJpegOuterRef: ref(derivativeArquivoId(produtoId, hash, 'jpeg')),
+  };
+}
+
+/**
+ * Build `Foto` refs for an owner-scoped original whose derivatives are NOT
+ * generated (e.g. a tabela-de-medidas photo — no resize function watches its
+ * path). Only `arquivoOuterRef` points at a real doc; the derivative refs are
+ * `null`, so a gallery thumbnail falls back to the original. `arquivoId` is the
+ * full owner-scoped doc id (`<ownerId>_<hash>`) the upload helper returns.
+ */
+export function buildOriginalFotoRef(arquivoId: string): FotoRefs {
+  return {
+    arquivoOuterRef: `${ARQUIVOS_COLLECTION}/${arquivoId}`,
+    arquivo200pxOuterRef: null,
+    arquivo400pxOuterRef: null,
+    arquivoJpegOuterRef: null,
   };
 }
 
@@ -47,13 +66,42 @@ export function buildFotoRefs(produtoId: string, hash: string): FotoRefs {
  */
 export const fotoSchema = z
   .object({
-    arquivoOuterRef: z.string().min(1),
-    arquivo200pxOuterRef: z.string().nullable().default(null),
-    arquivo400pxOuterRef: z.string().nullable().default(null),
-    arquivoJpegOuterRef: z.string().nullable().default(null),
-    grupoDeVariacoesOuterRef: z.string().nullable().default(null),
+    arquivoOuterRef: idRefSchema,
+    arquivo200pxOuterRef: idRefSchema.nullable().default(null),
+    arquivo400pxOuterRef: idRefSchema.nullable().default(null),
+    arquivoJpegOuterRef: idRefSchema.nullable().default(null),
+    grupoDeVariacoesOuterRef: outerRefSchema.nullable().default(null),
     variantePath: z.string().nullable().default(null),
   })
   .passthrough();
 
 export type Foto = z.infer<typeof fotoSchema>;
+
+/**
+ * Collect the bare `<id>` of every `arquivos/<id>` a produto's photos own, for
+ * the `produto.fotosArquivosIds` denorm — mirror of the Flutter `Produto.save()`
+ * derivation (`models.dart:2022-2026`): the original + the 200px/400px
+ * derivative refs, deduped, with the `arquivos/` prefix stripped to the bare id.
+ *
+ * This denorm is a **coexistence cache** for the legacy Flutter deletion guard;
+ * the new arquivo-orphan architecture tracks references via each foto's
+ * `arquivoOuterRef` directly (plus the `onArquivoDeleted` derivative cascade), so
+ * it does not read this field. The jpeg derivative is intentionally **excluded**
+ * to match the legacy wire shape — the cascade frees it via the original anyway.
+ */
+export function deriveFotosArquivosIds(fotos: readonly Foto[] | null | undefined): string[] {
+  const prefix = `${ARQUIVOS_COLLECTION}/`;
+  const ids = new Set<string>();
+  for (const foto of fotos ?? []) {
+    for (const ref of [
+      foto.arquivoOuterRef,
+      foto.arquivo200pxOuterRef,
+      foto.arquivo400pxOuterRef,
+    ]) {
+      if (typeof ref !== 'string') continue;
+      const id = ref.startsWith(prefix) ? ref.slice(prefix.length) : ref;
+      if (id !== '') ids.add(id); // skip a bare `arquivos/` (would yield an empty id)
+    }
+  }
+  return [...ids];
+}

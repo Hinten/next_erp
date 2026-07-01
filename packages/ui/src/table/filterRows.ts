@@ -24,8 +24,23 @@ export function applyColumnFilters<T>(
   // row, so compiling it per row (over a whole page) is wasted work.
   const predicates = entries.map(([field, f]) => [field, compileFilter(f)] as const);
   return rows.filter((row) =>
-    predicates.every(([field, test]) => test((row.data as Record<string, unknown>)[field])),
+    predicates.every(([field, test]) => test(getByPath(row.data, field))),
   );
+}
+
+/**
+ * Read a (possibly nested) dotted field path off a row — `'freteInicial.estado'`
+ * resolves the nested map value, matching the server-side `field('a.b')`
+ * semantics. A flat key (no dot) is a plain lookup.
+ */
+function getByPath(data: unknown, path: string): unknown {
+  if (!path.includes('.')) return (data as Record<string, unknown>)?.[path];
+  let cur: unknown = data;
+  for (const seg of path.split('.')) {
+    if (cur == null || typeof cur !== 'object') return undefined;
+    cur = (cur as Record<string, unknown>)[seg];
+  }
+  return cur;
 }
 
 /**

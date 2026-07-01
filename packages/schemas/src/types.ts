@@ -23,6 +23,24 @@ export interface DefaultQueryOrderBy {
 }
 
 /**
+ * Canonical "recency" sort shared by every schema-driven picker built on
+ * `CollectionSelect` (FilialPicker today; future entity pickers tomorrow):
+ * most-recently-touched first, falling back to creation order. Pipeline sorts
+ * treat a missing field as null (legacy Flutter-written docs sort last) instead
+ * of excluding the doc the way a classic `orderBy` would.
+ *
+ * Single-sourced here so the picker's `orderBy` prop and the
+ * `defaultQuery.indexes` meta-test derive the SAME composite index
+ * (`[ultimaModificacao desc, timestamp desc]`) — see
+ * {@link CollectionMetadata.pickerRecencySort}. Use this constant instead of
+ * re-declaring the two-key order at each picker call site.
+ */
+export const RECENCY_SORT: ReadonlyArray<DefaultQueryOrderBy> = [
+  { field: 'ultimaModificacao', direction: 'desc' },
+  { field: 'timestamp', direction: 'desc' },
+];
+
+/**
  * The default list query a collection's `TableView` issues before the user
  * sorts or filters. Declared here so it is the single source of truth: the
  * UI consumes it, and the `delfrance/default-query-needs-index` ESLint rule
@@ -85,6 +103,18 @@ export interface CollectionMetadata {
    * plain literal so its Firestore index can be derived statically.
    */
   defaultQuery?: CollectionDefaultQuery;
+  /**
+   * Set when this collection is exposed through a schema-driven picker
+   * (`CollectionSelect`) whose option list is ordered by {@link RECENCY_SORT}
+   * (`[ultimaModificacao desc, timestamp desc]`) — e.g. `FilialPicker`.
+   *
+   * The `defaultQuery.indexes` meta-test derives the matching composite index
+   * from this flag and asserts it exists in `firestore.indexes.json`, so picker
+   * recency sorts are indexed by convention rather than one-off hand-tracking.
+   * Independent of `defaultQuery` (the picker query is separate from the
+   * collection's `TableView` list query, and may be set without one).
+   */
+  pickerRecencySort?: boolean;
 }
 
 export interface DomainSchema<T extends z.ZodTypeAny> {

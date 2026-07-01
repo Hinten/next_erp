@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { idRefSchema } from '../shared/outerRef';
 
 /** Aspect-ratio bucket. `quadrado` ≈ 1:1 (0.8–1.2), else `retangular`. */
 export const videoFormatoSchema = z.enum(['quadrado', 'retangular']);
@@ -18,7 +19,7 @@ export type VideoFormato = z.infer<typeof videoFormatoSchema>;
  */
 export const videoSchema = z
   .object({
-    arquivoOuterRef: z.string().min(1),
+    arquivoOuterRef: idRefSchema,
     formato: videoFormatoSchema.nullable().default(null),
     duracaoSegundos: z.number().int().nullable().default(null),
     larguraPx: z.number().int().nullable().default(null),

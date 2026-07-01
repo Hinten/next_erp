@@ -1,20 +1,30 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useForm, type FieldErrors, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
-import { Alert, Button, Group, Stack, Tabs, Tooltip } from '@mantine/core';
+import { Alert, Tabs } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconExclamationCircle } from '@tabler/icons-react';
+import { IconExclamationCircle, IconLock } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
 import {
   derivePedidoTotals,
+  ESTADO_NFE,
+  ESTADO_NFE_LABELS,
+  ESTADO_PEDIDO_LABELS,
+  nfeFiscalEncerrada,
   pedidoPageIssues,
+  travarInclusaoProduto,
+  travarPagamentoComNFe,
+  type EstadoPedido,
   type Pedido,
   pedidoSchema,
 } from '@delfrance/schemas';
+import { buildQuery, limit, orderByField } from '@delfrance/data';
+import { useSnapshot } from '@delfrance/data/hooks';
 import { useUnsavedChangesGuard } from '@delfrance/ui';
+import { nfeCollection } from '@/lib/data/nfeCollection';
 import { usePermission } from '@/lib/auth';
 import { useAuth } from '@/lib/auth/useAuth';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -28,6 +38,7 @@ import {
   PrincipalTab,
 } from './tabs';
 import { PagamentosSection } from './PagamentosSection';
+import { PedidoFooter } from './PedidoFooter';
 import { regroupItens } from './regroupItens';
 import { flattenItens } from './flattenItens';
 import { normalizeFreteInicial } from './freteDerivation';
@@ -44,14 +55,31 @@ export interface PedidoFormProps {
   pedidoId?: string;
   submitLabel?: string;
   /**
+   * The pedido's live `estado` from the page snapshot. When it changes
+   * externally (e.g. the pagamento auto-reconcile flips it to `pago`), the form
+   * syncs its own estado field so the Estado/Histórico tab stays in step —
+   * unless the user is editing estado manually.
+   */
+  liveEstado?: EstadoPedido;
+  /**
    * Receives the resolved (validate-what-you-save) doc values plus RHF's
    * `dirtyFields` so the edit page can build a partial patch (`buildPedidoPatch`)
    * and write only the touched fields. Create-mode callers ignore `dirtyFields`.
+   *
+   * Return `false` when the save did NOT commit (e.g. a concurrency conflict or
+   * nothing-changed) so "Salvar e continuar editando" keeps the edits dirty
+   * instead of marking the form pristine.
    */
-  onSubmit: (values: Pedido, dirtyFields: Readonly<Record<string, unknown>>) => Promise<void>;
+  onSubmit: (
+    values: Pedido,
+    dirtyFields: Readonly<Record<string, unknown>>,
+    opts: { continueEditing: boolean },
+  ) => Promise<void | boolean>;
 }
 
 const EMPTY_DEFAULTS: PedidoFormState = {
+  id: null,
+  ehSaidaOriginal: null,
   ehSaida: true,
   hasUserInteraction: null,
   estado: 'iniciado',
@@ -121,10 +149,20 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
   options,
 ) => {
   const { _itensFlat, ...rest } = values;
-  const cleanItens = (_itensFlat ?? []).map((row) => {
-    const { _rowId, ...item } = row as FlatItem;
-    return item;
-  });
+  // Drop non-real rows before regrouping: staged-deleted rows (`_delete`) and
+  // in-progress empty rows (no produto and no marketplace id — the "Adicionar
+  // produto" button appends a blank row before a produto is picked). Strip both
+  // synthetic fields (`_rowId`, `_delete`) so neither reaches Firestore.
+  const cleanItens = (_itensFlat ?? [])
+    .filter((row) => {
+      const r = row as FlatItem;
+      if (r._delete) return false;
+      return !!r.produtoUid || !!r.mktplaceId;
+    })
+    .map((row) => {
+      const { _rowId, _delete, ...item } = row as FlatItem;
+      return item;
+    });
   const freteInicial = normalizeFreteInicial(rest.freteInicial);
   const itens = regroupItens(cleanItens);
   // `itensIds` mirrors the legacy denormalized produtoUid list (the `itens` map
@@ -154,27 +192,72 @@ const pedidoResolver: Resolver<PedidoFormState, unknown, Pedido> = async (
   const result = (await baseResolver(merged, context, options)) as ResolverResult;
 
   // Cross-document / UI-required rules live in the page model (single source);
-  // the resolver runs the subset that applies to the doc form — at-least-one-item
-  // and integração required — and routes each issue to its tab. Keeping these out
-  // of the plain `pedidoSchema` avoids breaking parse/read-back of legacy docs.
-  // ('itens' is held by the form as the synthetic `_itensFlat` field.)
+  // the resolver runs the subset that applies to the doc form and routes each
+  // issue to its tab. Keeping these out of the plain `pedidoSchema` avoids
+  // breaking parse/read-back of legacy docs. ('itens' is held by the form as the
+  // synthetic `_itensFlat` field.) Payment-coverage is intentionally omitted —
+  // the page model only enforces it for an integrated save (pagamentos supplied).
   const extraErrors: Record<string, { type: string; message: string }> = {};
   for (const issue of pedidoPageIssues({
+    id: merged.id,
+    ehSaida: merged.ehSaida,
+    ehSaidaOriginal: merged.ehSaidaOriginal,
     itens: merged.itens,
     integracaoPedidoOuterRef: merged.integracaoPedidoOuterRef,
+    chNFeReferenciadas: merged.chNFeReferenciadas,
   })) {
     const field = issue.path === 'itens' ? '_itensFlat' : issue.path;
     extraErrors[field] = { type: 'pageModel', message: issue.message };
+  }
+  // Item-level cross-field rule (legacy `descontoUnitario` validator): a per-item
+  // discount may not exceed its unit price. Block the save and route it to the
+  // Principal tab — the offending row also shows an inline error on its desconto
+  // input. Don't clobber an existing `_itensFlat` issue (e.g. "no items").
+  if (
+    !extraErrors._itensFlat &&
+    cleanItens.some((it) => (it.descontoUnitario ?? 0) > it.precoDeVenda)
+  ) {
+    extraErrors._itensFlat = {
+      type: 'descontoMaiorQuePreco',
+      message: 'Há itens com desconto maior que o preço.',
+    };
   }
   if (Object.keys(extraErrors).length === 0) return result;
   return { values: {}, errors: { ...result.errors, ...extraErrors } } as unknown as ResolverResult;
 };
 
-function buildDefaults(existing?: Pedido): PedidoFormState {
+/**
+ * Notice atop the NF-e-gated tabs (Fiscal / Pagamento). While the NF-e snapshot
+ * is still loading the tab is default-denied, so explain the temporary lock;
+ * once resolved, show the state-specific lock reason (or nothing).
+ */
+function NfeLockNotice({ loading, lockText }: { loading: boolean; lockText: string | null }) {
+  if (loading) {
+    return (
+      <Alert color="gray" mb="md">
+        Carregando dados da NF-e…
+      </Alert>
+    );
+  }
+  if (lockText) {
+    return (
+      <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+        {lockText}
+      </Alert>
+    );
+  }
+  return null;
+}
+
+function buildDefaults(existing?: Pedido, pedidoId?: string): PedidoFormState {
   if (!existing) return EMPTY_DEFAULTS;
   return {
     ...EMPTY_DEFAULTS,
     ...existing,
+    // Transient page-model context (edit mode): the doc id + the loaded `ehSaida`
+    // so the resolver can enforce the direction-flag immutability rule.
+    id: pedidoId ?? null,
+    ehSaidaOriginal: existing.ehSaida ?? null,
     // `freteDoPedidoSchema` is `.passthrough()`, so its inferred type has an
     // index signature `PedidoFormState` deliberately avoids (RHF path
     // inference) — structurally the same wire shape.
@@ -187,6 +270,7 @@ export function PedidoForm({
   defaultValues,
   pedidoId,
   submitLabel = 'Salvar',
+  liveEstado,
   onSubmit,
 }: PedidoFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -195,7 +279,7 @@ export function PedidoForm({
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.pedido.write);
 
-  const initial = useMemo(() => buildDefaults(defaultValues), [defaultValues]);
+  const initial = useMemo(() => buildDefaults(defaultValues, pedidoId), [defaultValues, pedidoId]);
 
   const form = useForm<PedidoFormState, unknown, Pedido>({
     resolver: pedidoResolver,
@@ -208,10 +292,39 @@ export function PedidoForm({
   // shared guard directly.
   useUnsavedChangesGuard(form.formState.isDirty);
 
-  async function handleSubmit(values: Pedido) {
+  // Keep the form's estado in step with an external change (the pagamento
+  // auto-reconcile flips it to pago/aguardando in Firestore). Skip when the user
+  // is editing estado manually so their unsaved change isn't clobbered.
+  useEffect(() => {
+    if (liveEstado === undefined) return;
+    // Don't race an in-flight save or clobber a manual estado edit.
+    if (form.formState.isSubmitting) return;
+    if (form.getFieldState('estado').isDirty) return;
+    if (form.getValues('estado') !== liveEstado) {
+      form.setValue('estado', liveEstado, { shouldDirty: false });
+    }
+  }, [liveEstado, form]);
+
+  // Two save paths share one handler: the primary submit ("Salvar"/"Criar")
+  // navigates away; "Salvar e continuar editando" reloads in place. The footer's
+  // continue button runs the second RHF submit programmatically, so the page's
+  // onSubmit gets `continueEditing` without a shared ref.
+  async function handleSubmit(values: Pedido, continueEditing: boolean) {
     setSubmitError(null);
     try {
-      await onSubmit(values, form.formState.dirtyFields as Readonly<Record<string, unknown>>);
+      const saved = await onSubmit(
+        values,
+        form.formState.dirtyFields as Readonly<Record<string, unknown>>,
+        { continueEditing },
+      );
+      // "Salvar e continuar editando" stays on the page; re-baseline the form to
+      // the just-saved values so it's no longer dirty — otherwise the unsaved-
+      // changes guard would prompt on the next navigation (and a hard reload here
+      // would trip its `beforeunload` confirmation). Skip when the save did not
+      // commit (`false`: conflict / nothing changed) so edits stay dirty.
+      if (continueEditing && saved !== false) {
+        form.reset(form.getValues());
+      }
     } catch (err) {
       if (err instanceof FirebaseError) {
         setSubmitError(err.message);
@@ -257,12 +370,85 @@ export function PedidoForm({
 
   const disabled = !canWrite;
 
+  // Edit-capability locking (port of legacy `travar_pedido` / `travar_fiscal`,
+  // `cadastroPedidoProvider.dart:134-145` + `pedidoCadastro.dart:396-609`):
+  //  - items + general data (Principal tab) lock once the estado leaves the
+  //    cart/checkout phase (`travarInclusaoProduto`);
+  //  - the Fiscal tab locks once any NF-e is aprovada.
+  // The `canWrite` permission gate applies on top. The legacy read the NF-e once
+  // (async, racy); the reactive `useSnapshot` here keeps the lock in step live.
+  // `liveEstado` (the persisted snapshot estado) is the right source — matching
+  // the legacy "loaded estado" — and avoids subscribing the whole form to a watch.
+  const estadoNow: EstadoPedido = liveEstado ?? 'iniciado';
+  const nfeQuery = useMemo(
+    () =>
+      pedidoId
+        ? buildQuery(nfeCollection.ref(db, { pedidoId }), [
+            orderByField('ultima_modificacao', 'desc'),
+            limit(1),
+          ])
+        : null,
+    [db, pedidoId],
+  );
+  const { data: nfeData, loading: nfeLoading } = useSnapshot(nfeQuery);
+  const nfeEstado = nfeData?.[0]?.data?.estado ?? null;
+  const nfeAprovada = nfeEstado === ESTADO_NFE.aprovada;
+  // A cancelada / numeração-inutilizada NF-e also locks the Fiscal tab and
+  // pagamentos — and hard, without the aprovada-only pedido-estado carve-outs.
+  const nfeEncerrada = nfeEstado != null && nfeFiscalEncerrada(nfeEstado);
+  const nfeBloqueiaFiscal = nfeAprovada || nfeEncerrada;
+  // Default-deny both NF-e-gated tabs (Fiscal + Pagamento) while the snapshot is
+  // still resolving (edit mode): an aprovada/cancelada/inutilizada NF-e must not
+  // be editable in the load window before the subscription lands.
+  const nfeCarregando = pedidoId != null && nfeLoading;
+  const itensTravados = travarInclusaoProduto(estadoNow);
+  // Estado lock (legacy `travar_pedido`): items + general data, the Frete tab,
+  // the Devolução tab and the footer desconto all lock once the pedido leaves the
+  // cart/checkout phase. Observações internas is the sole exception — always
+  // editable (legacy `pedidoCadastro.dart:532`), so it stays on the bare
+  // write-permission `disabled`.
+  const dadosGeraisDisabled = disabled || itensTravados;
+  // Default-deny: while the NF-e snapshot is still resolving (edit mode), keep
+  // Fiscal locked so an aprovada NF-e can't be bypassed in the load window.
+  const fiscalDisabled = disabled || nfeBloqueiaFiscal || nfeCarregando;
+  // Pagamento lock (legacy `canSavePagamentos`): an aprovada NF-e blocks payment
+  // edits except in the carve-out estados (`travarPagamentoComNFe`); a cancelada /
+  // inutilizada NF-e blocks them outright. No blocking NF-e → pagamentos stay
+  // editable regardless of estado — a soft "unexpected payment" warning
+  // (PagamentosSection) covers the already-paid case instead.
+  const pagamentosBloqueadosPorNFe =
+    nfeEncerrada || (nfeAprovada && travarPagamentoComNFe(estadoNow));
+  const pagamentosTravados = nfeCarregando || pagamentosBloqueadosPorNFe;
+  const dadosGeraisLockNotice = itensTravados
+    ? `Edição bloqueada — pedido no estado "${ESTADO_PEDIDO_LABELS[estadoNow]}". Dados gerais, itens, frete e devolução só podem ser editados na fase de carrinho/checkout.`
+    : null;
+  const nfeEstadoLabel = nfeEstado ? ESTADO_NFE_LABELS[nfeEstado] : null;
+  const fiscalLockNotice = nfeBloqueiaFiscal
+    ? `Dados fiscais bloqueados — a NF-e deste pedido está "${nfeEstadoLabel}".`
+    : null;
+  const pagamentoLockNotice = pagamentosBloqueadosPorNFe
+    ? `Pagamentos bloqueados — a NF-e deste pedido está "${nfeEstadoLabel}".`
+    : null;
+
   return (
     // noValidate: Zod owns validation — native constraint validation would
     // silently block the submit when a `required` control is empty inside a
     // hidden tab (see ObjectView's form for the full story).
-    <form noValidate onSubmit={form.handleSubmit(handleSubmit, onInvalid)}>
-      <Stack>
+    <form
+      noValidate
+      onSubmit={form.handleSubmit((values) => handleSubmit(values, false), onInvalid)}
+      // Flex column that fills the page (the page Stack sets a viewport-tall
+      // min-height): the tab area grows so the sticky footer is pushed to the
+      // bottom even when a tab's content is short — it no longer floats up.
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        flexGrow: 1,
+        minHeight: 0,
+        gap: 'var(--mantine-spacing-md)',
+      }}
+    >
+      <div style={{ flex: '1 0 auto', minHeight: 0 }}>
         <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
           <Tabs.List>
             <Tabs.Tab value="principal" {...tabErrorProps('principal')}>
@@ -292,25 +478,48 @@ export function PedidoForm({
           </Tabs.List>
 
           <Tabs.Panel value="principal" pt="md">
+            {dadosGeraisLockNotice && (
+              <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+                {dadosGeraisLockNotice}
+              </Alert>
+            )}
             <PrincipalTab
               form={form}
               db={db}
-              disabled={disabled}
+              disabled={dadosGeraisDisabled}
+              observacoesDisabled={disabled}
               vendedorLabel={user?.email ?? user?.uid ?? undefined}
             />
           </Tabs.Panel>
 
           <Tabs.Panel value="fiscal" pt="md">
-            <FiscalTab form={form} db={db} disabled={disabled} />
+            <NfeLockNotice loading={nfeCarregando} lockText={fiscalLockNotice} />
+            <FiscalTab form={form} db={db} disabled={fiscalDisabled} />
           </Tabs.Panel>
 
           <Tabs.Panel value="frete" pt="md">
-            <FreteTab form={form} db={db} disabled={disabled} pedidoId={pedidoId} />
+            {dadosGeraisLockNotice && (
+              <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+                {dadosGeraisLockNotice}
+              </Alert>
+            )}
+            <FreteTab form={form} db={db} disabled={dadosGeraisDisabled} pedidoId={pedidoId} />
           </Tabs.Panel>
 
           <Tabs.Panel value="pagamento" pt="md">
             {pedidoId ? (
-              <PagamentosSection pedidoId={pedidoId} />
+              <>
+                <NfeLockNotice loading={nfeCarregando} lockText={pagamentoLockNotice} />
+                <PagamentosSection
+                  pedidoId={pedidoId}
+                  disabled={disabled || pagamentosTravados}
+                  estado={estadoNow}
+                  // `getValues` (not `watch`): the total is stable while the
+                  // Pagamento tab is open (items are edited on Principal), so no
+                  // subscription/re-render is needed.
+                  pedidoTotal={form.getValues('valorCobrado') ?? 0}
+                />
+              </>
             ) : (
               <PlaceholderTab name="Pagamento" />
             )}
@@ -325,24 +534,36 @@ export function PedidoForm({
           </Tabs.Panel>
 
           <Tabs.Panel value="devolucao" pt="md">
-            <DevolucaoTab form={form} db={db} disabled={disabled} pedidoId={pedidoId} />
+            {dadosGeraisLockNotice && (
+              <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+                {dadosGeraisLockNotice}
+              </Alert>
+            )}
+            <DevolucaoTab form={form} db={db} disabled={dadosGeraisDisabled} pedidoId={pedidoId} />
           </Tabs.Panel>
 
           <Tabs.Panel value="estado" pt="md">
             <EstadoHistoricoTab form={form} disabled={disabled} pedidoId={pedidoId} />
           </Tabs.Panel>
         </Tabs>
+      </div>
 
-        {submitError && <Alert color="red">{submitError}</Alert>}
-
-        <Group justify="flex-end">
-          <Tooltip label="Sem permissão de escrita" disabled={canWrite} withArrow>
-            <Button type="submit" loading={form.formState.isSubmitting} disabled={disabled}>
-              {submitLabel}
-            </Button>
-          </Tooltip>
-        </Group>
-      </Stack>
+      <PedidoFooter
+        form={form}
+        db={db}
+        pedidoId={pedidoId}
+        canWrite={canWrite}
+        disabled={disabled}
+        descontoDisabled={dadosGeraisDisabled}
+        submitLabel={submitLabel}
+        isSubmitting={form.formState.isSubmitting}
+        submitError={submitError}
+        onSaveAndContinue={
+          pedidoId
+            ? form.handleSubmit((values) => handleSubmit(values, true), onInvalid)
+            : undefined
+        }
+      />
     </form>
   );
 }

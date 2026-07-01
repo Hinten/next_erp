@@ -4,6 +4,7 @@ import {
   NFeContingencyEndpointError,
   NFeEndpointError,
   getAnEndpoints,
+  getConsultaCadastroEndpoint,
   getEndpoints,
   getSvcEndpoints,
   svcAuthorizerForUF,
@@ -115,6 +116,22 @@ describe('getSvcEndpoints', () => {
       'https://nfe-homologacao.svrs.rs.gov.br/ws/NfeConsulta/NfeConsulta4.asmx',
     );
     expect('NfeInutilizacao' in hom).toBe(false);
+  });
+});
+
+describe('getConsultaCadastroEndpoint', () => {
+  it('resolves SP at the cadconsultacadastro4.asmx path for both ambientes', () => {
+    expect(getConsultaCadastroEndpoint('SP', 'producao')).toBe(
+      'https://nfe.fazenda.sp.gov.br/ws/cadconsultacadastro4.asmx',
+    );
+    expect(getConsultaCadastroEndpoint('sp', 'homologacao')).toBe(
+      'https://homologacao.nfe.fazenda.sp.gov.br/ws/cadconsultacadastro4.asmx',
+    );
+  });
+
+  it('returns null (never throws) for an unwired UF', () => {
+    expect(getConsultaCadastroEndpoint('MG', 'producao')).toBeNull();
+    expect(getConsultaCadastroEndpoint('EX', 'homologacao')).toBeNull();
   });
 });
 

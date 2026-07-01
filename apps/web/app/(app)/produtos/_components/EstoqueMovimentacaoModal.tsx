@@ -34,6 +34,10 @@ const TIPO_OPTIONS: { value: TipoMovimentacao; label: string }[] = [
 const fmt = (n: number) =>
   n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+/** Format a ms-epoch timestamp as a pt-BR date+time, or `—` when absent. */
+const fmtDate = (ts: number | null | undefined) =>
+  typeof ts === 'number' ? new Date(ts).toLocaleString('pt-BR') : '—';
+
 export interface EstoqueMovimentacaoModalProps {
   opened: boolean;
   onClose: () => void;
@@ -229,6 +233,7 @@ export function EstoqueMovimentacaoModal({
               <Table striped highlightOnHover stickyHeader>
                 <Table.Thead>
                   <Table.Tr>
+                    <Table.Th>Data</Table.Th>
                     <Table.Th>Quantidade</Table.Th>
                     <Table.Th>Reservado</Table.Th>
                     <Table.Th>Tipo</Table.Th>
@@ -238,6 +243,7 @@ export function EstoqueMovimentacaoModal({
                 <Table.Tbody>
                   {historico.map((h, i) => (
                     <Table.Tr key={i}>
+                      <Table.Td>{fmtDate(h.timestamp)}</Table.Td>
                       <Table.Td>{fmt(h.quantidade)}</Table.Td>
                       <Table.Td>{fmt(h.quantidadeReservada)}</Table.Td>
                       <Table.Td>{h.ehBalanco ? 'Balanço' : 'Movimentação'}</Table.Td>

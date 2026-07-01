@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
+import { outerRefSchema } from '../../shared/outerRef';
 import { fotoSchema } from '../../storage/foto';
 import { videoSchema } from '../../storage/video';
 import { componentesKitSchema } from './embedded/kit';
@@ -41,8 +42,14 @@ export const produtoSchema = z
 
     // Categoria reference — the Flutter `OuterReference<Categoria>` serializes
     // to a `documents/categorias/<id>` doc-path string (read `as String?`). The
-    // Categoria picker emits that exact shape (refRenderInput `emitDocPath`).
-    categoriaProdutoOuterRef: z.string().nullable().default(null),
+    // Categoria picker emits that exact shape.
+    categoriaProdutoOuterRef: outerRefSchema.nullable().default(null),
+
+    // Tabela de medidas (moda) reference. The Flutter `Produto.tabelaDeMedidasModaUid`
+    // is a plain `documents/tabMedi/<id>` doc-path String (not an OuterReference),
+    // so we keep that exact wire name to stay byte-compatible with existing docs.
+    // The "Tabela de Medidas (Moda)" picker emits that shape.
+    tabelaDeMedidasModaUid: outerRefSchema.nullable().default(null),
 
     // Dimensions / weights — all optional doubles.
     pesoLiquidoKg: z.number().nullable().default(null),
@@ -52,10 +59,11 @@ export const produtoSchema = z
     profundidadeCm: z.number().nullable().default(null),
 
     // Kit + visibility + freight flags. Defaults match the Flutter
-    // constructor defaults (false / false / true / false / false).
+    // constructor defaults (`models.dart:1320-1333`): all false — a new produto
+    // starts as a DRAFT (`publicado=false`), published explicitly by the user.
     ehKit: z.boolean().default(false),
     ehKitVirtual: z.boolean().default(false),
-    publicado: z.boolean().default(true),
+    publicado: z.boolean().default(false),
     ofereceFreteGratis: z.boolean().default(false),
     permiteVendaSemEstoque: z.boolean().default(false),
     // "Produto usado" — Flutter reads `as bool?`, but we default to false like

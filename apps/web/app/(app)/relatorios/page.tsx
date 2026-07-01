@@ -4,13 +4,13 @@ import { useMemo } from 'react';
 import Link from 'next/link';
 import { Alert, Anchor, Card, Group, Skeleton, Stack, Text } from '@mantine/core';
 import { PageHeader } from '@delfrance/ui';
-import { format, money } from '@delfrance/core/money';
+import { formatReais } from '@delfrance/core/money';
 import { ESTADO_BUCKET_LABELS } from '@delfrance/schemas';
 import { useRecentPedidos } from './_components/useRecentPedidos';
 import { overview, porBucket } from '@/lib/reports/aggregations';
 
 function brl(value: number): string {
-  return format(money(Math.round(value * 100)));
+  return formatReais(value);
 }
 
 export default function RelatoriosIndexPage() {

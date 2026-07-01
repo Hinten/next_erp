@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
+import { millisSinceEpoch } from './shared/datetime';
 
 // Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth, matching
 // the Flutter `EasyFirebase` declaration `perm: 'nf1'` on `EnviNFeMsg`
@@ -87,8 +88,8 @@ export const enviNfeMsgSchema = z.object({
   /** Mirrors `EnviNFeMsg.codEmissao` — SEFAZ `tpEmis` for this msg. */
   tpEmis: z.number().int().nullable(),
   estado: estadoEnviNFeMsgSchema.default('2'),
-  timestamp: z.string().datetime().nullable().optional(),
-  ultima_modificacao: z.string().datetime().nullable().optional(),
+  timestamp: millisSinceEpoch().nullable().default(null),
+  ultima_modificacao: millisSinceEpoch().nullable().default(null),
 });
 
 export type EnviNFeMsg = z.infer<typeof enviNfeMsgSchema>;

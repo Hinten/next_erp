@@ -12,19 +12,11 @@ import type {
   NFeHttpClient,
 } from '@delfrance/integrations-nfe/http-provider';
 
+import { saveBlob } from './saveBlob';
+
 /** Trigger a browser download of an already-fetched artifact via a transient object URL. */
 function saveArtifact(artifact: NFeDanfeArtifact): void {
-  const url = URL.createObjectURL(artifact.blob);
-  try {
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = artifact.filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+  saveBlob(artifact.blob, artifact.filename);
 }
 
 /** Fetch + save the DANFE for an NF-e. Throws the client's typed HTTP errors. */

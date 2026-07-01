@@ -69,6 +69,23 @@ describe('applyColumnFilters', () => {
     ).toEqual([20, 30]);
   });
 
+  it('resolves nested dotted field paths', () => {
+    type Nested = { freteInicial?: { estado?: string } | null };
+    const nestedRows = (...data: Nested[]): SnapshotRow<Nested>[] =>
+      data.map((d, i) => ({ id: String(i), path: `x/${i}`, data: d }));
+    const result = applyColumnFilters(
+      nestedRows(
+        { freteInicial: { estado: 'entregue' } },
+        { freteInicial: { estado: 'postado' } },
+        { freteInicial: null },
+        {},
+      ),
+      { 'freteInicial.estado': { op: 'eq', value: 'entregue' } },
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]!.data.freteInicial?.estado).toBe('entregue');
+  });
+
   it('AND-combines multiple column filters', () => {
     const result = applyColumnFilters(
       rows(

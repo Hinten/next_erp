@@ -3,9 +3,11 @@ import type { EstadoFrete, ItemDoPedido, ModalidadeFrete } from '@delfrance/sche
 /**
  * A flat item row used by the form's `useFieldArray`. Carries a
  * synthetic `_rowId` so RHF can key stable rows even when the user
- * reorders or removes them. Stripped on submit.
+ * reorders or removes them, plus a transient `_delete` flag for staged
+ * deletion (the row stays visible+dimmed until the pedido is saved). Both
+ * synthetic fields are stripped on submit by `pedidoResolver`.
  */
-export type FlatItem = ItemDoPedido & { _rowId: string };
+export type FlatItem = ItemDoPedido & { _rowId: string; _delete?: boolean };
 
 /**
  * RHF-friendly mirrors of the `freteDoPedidoSchema` nested shapes. Like
@@ -89,6 +91,14 @@ export interface FreteInicialFormState {
  * signature that defeats RHF's path inference for `_itensFlat`.
  */
 export interface PedidoFormState {
+  /**
+   * Transient page-model context (NOT written to the doc — both are in the data
+   * layer's `NON_DOC_KEYS`). `id` is the pedido doc id (null on create);
+   * `ehSaidaOriginal` is `ehSaida` as loaded, so the resolver can enforce that
+   * the direction flag can't flip on an existing order.
+   */
+  id: string | null;
+  ehSaidaOriginal: boolean | null;
   ehSaida: boolean;
   hasUserInteraction: boolean | null;
   estado:

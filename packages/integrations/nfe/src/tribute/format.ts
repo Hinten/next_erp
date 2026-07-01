@@ -68,7 +68,8 @@ export function fmtUnitValueOpt(name: string, n: number | null | undefined): str
   return fmtUnitValue(name, n);
 }
 
-/** Round a number to 2 decimal places (for aggregation totals). */
-export function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
+/**
+ * Canonical money rounding (half-up at 2dp), re-exported so the tribute module
+ * keeps a single rounding import surface. See `@delfrance/core/money`.
+ */
+export { roundReais } from '@delfrance/core/money';

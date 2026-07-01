@@ -10,13 +10,13 @@ import {
   type SefazOutcome,
   type TpEmis,
 } from '@delfrance/integrations-nfe';
-import type { NotaFiscalEletronica } from '@delfrance/schemas';
 
 import type { NFeBaseRuntime } from '../runtime';
 import { resolveFilialRuntime } from '../filial-cert';
 import { NFeOrchestratorError } from './errors';
 import { loadPedidoBundle, type EmitResult } from './bundle';
 import { sefazCallFor } from './sefaz-call';
+import { recover539IfNeeded } from './recover539';
 import {
   buildEnviNFeMsgFromConsulta,
   enviNfeCollection,
@@ -56,13 +56,12 @@ export async function consultarPedido(
   // the operator means.
   const slotsSnap = await nfev4Collection.ref(fs, { pedidoId }).get();
   const chosen = slotsSnap.docs
-    .map((d) => ({ id: d.id, nota: d.data() as NotaFiscalEletronica }))
+    // Admin reads bypass the converter — parse each doc so a legacy ISO
+    // `ultima_modificacao` is coerced to ms (else the numeric sort below → NaN).
+    .map((d) => ({ id: d.id, nota: nfev4Collection.parseRead(d.data(), d.ref.path) }))
     .filter((c) => c.nota.chave)
-    .sort((a, b) =>
-      String(b.nota.ultima_modificacao ?? '').localeCompare(
-        String(a.nota.ultima_modificacao ?? ''),
-      ),
-    )[0];
+    // `ultima_modificacao` is ms since epoch → numeric compare (newest first).
+    .sort((a, b) => (b.nota.ultima_modificacao ?? 0) - (a.nota.ultima_modificacao ?? 0))[0];
   if (!chosen) {
     throw new NFeOrchestratorError(
       `pedido '${pedidoId}': no nfev4 doc with a chave under pedidos/${pedidoId}/nfev4 — ` +
@@ -113,14 +112,30 @@ export async function consultarPedido(
     outcome = outcomeFromRetConsSit(retSit);
   }
 
-  const patch = applyOutcome({ estado: nota.estado, retries: nota.retries ?? 0 }, outcome);
+  let patch = applyOutcome({ estado: nota.estado, retries: nota.retries ?? 0 }, outcome);
+
+  // cStat=539 (duplicidade com chave diferente): recover the SEFAZ-asserted
+  // chave if it is one we emitted, else flip to terminal `error` — never leave
+  // the doc stuck aguardandoResposta (#243). No-op for every other outcome.
+  const recovered539 = await recover539IfNeeded({
+    fs,
+    bundle,
+    nfeRef,
+    rt,
+    tpEmis: notaTpEmis,
+    outcome,
+    patch,
+  });
+  patch = recovered539.patch;
+  const finalChave = recovered539.chaveOverride ?? chave;
+
   await persistPatch(nfeRef, patch);
 
   return {
     nfeId: nfeRef.id,
     pedidoId,
     estado: patch.estado,
-    chave,
+    chave: finalChave,
     nRec: patch.nRec ?? msgWithNRec?.nRec ?? nota.nRec,
     cStat: patch.cStat,
     xMotivo: patch.xMotivo,

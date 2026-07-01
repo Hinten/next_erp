@@ -41,6 +41,16 @@ import { impostoSchema, type Imposto } from '@delfrance/integrations-nfe';
 export interface ResolverBundle {
   readonly operacaoId: string;
   readonly regrasImposto: readonly RegraImposto[];
+  /**
+   * The operação doc's own tax config — the **last-resort default tier**. When
+   * no item-stamp / produto / categoria / regra matches, the resolver builds an
+   * Imposto from the operação's `origem` + `cfop` + `configuracao*` fields. This
+   * restores the full Flutter resolver chain (item → produto → categoria →
+   * regra → operação): without it, an item that matches no rule fails emission
+   * with `NFeMissingImpostoError`. Optional + parsed leniently (an operação
+   * without a usable default — e.g. no `origem` — simply doesn't fire the tier).
+   */
+  readonly operacao?: Record<string, unknown> | null;
 }
 
 export interface ImpostoResolverDeps {
@@ -91,11 +101,13 @@ export function createImpostoResolver(deps: ImpostoResolverDeps): ImpostoResolve
     const cached = cache.get(produtoUid);
     if (cached) return cached.value === NO_MATCH ? null : cached.value;
 
-    // 2. impostoProduto match (scoped to active operacao).
+    // 2. impostoProduto match (scoped to active operacao). impostoProduto uses
+    // Flutter's typo wire key `impostoOpercaoOuterRef`.
     const impostoProdutos = await deps.readImpostoProdutoSubcoll(produtoUid);
-    const produtoMatch = impostoProdutos.find((d) =>
-      // impostoProduto uses Flutter's typo wire key `impostoOpercaoOuterRef`.
-      operacaoMatches(d.impostoOpercaoOuterRef, deps.bundle.operacaoId),
+    const produtoMatch = pickByOperacao(
+      impostoProdutos,
+      (d) => d.impostoOpercaoOuterRef,
+      deps.bundle.operacaoId,
     );
     if (produtoMatch) {
       const parsed = impostoSchema.safeParse(produtoMatch);
@@ -110,8 +122,10 @@ export function createImpostoResolver(deps: ImpostoResolverDeps): ImpostoResolve
     const categoriaUid = parseCategoriaUid(produto);
     if (categoriaUid) {
       const impostoCategorias = await deps.readImpostoCategoriaSubcoll(categoriaUid);
-      const categoriaMatch = impostoCategorias.find((d) =>
-        operacaoMatches(d.impostoOperacaoOuterRef, deps.bundle.operacaoId),
+      const categoriaMatch = pickByOperacao(
+        impostoCategorias,
+        (d) => d.impostoOperacaoOuterRef,
+        deps.bundle.operacaoId,
       );
       if (categoriaMatch) {
         const parsed = impostoSchema.safeParse(categoriaMatch);
@@ -137,6 +151,19 @@ export function createImpostoResolver(deps: ImpostoResolverDeps): ImpostoResolve
       }
     }
 
+    // 5. operação default — the operação doc's own tax config (Flutter parity:
+    // the last tier of the resolver chain). Strips the non-Imposto operação
+    // fields (nome, tipo, …) via `impostoSchema`; falls through when the
+    // operação carries no usable default (e.g. missing `origem`).
+    const operacao = deps.bundle.operacao;
+    if (operacao) {
+      const parsed = impostoSchema.safeParse(operacao);
+      if (parsed.success) {
+        cache.set(produtoUid, { value: parsed.data });
+        return parsed.data;
+      }
+    }
+
     cache.set(produtoUid, { value: NO_MATCH });
     return null;
   }
@@ -145,16 +172,34 @@ export function createImpostoResolver(deps: ImpostoResolverDeps): ImpostoResolve
 }
 
 /**
- * `impostoOperacaoOuterRef === null` → applies to every operação (default
- * fallback). Otherwise the trailing segment of the doc path must match
- * `bundle.operacaoId` (Flutter parity — the Dart side stores these as
+ * Pick the imposto whose scope matches the active operação.
+ *
+ * Scope semantics: a `null` scope ref applies to **every** operação (the default
+ * fallback); otherwise the trailing segment of the doc path must equal the
+ * active `operacaoId` (Flutter parity — the Dart side stores these as
  * DocumentReferences that serialise to paths).
+ *
+ * An **exact** per-operação match always wins over a null-scoped default. Without
+ * that preference, a default entry appearing earlier in the array would shadow a
+ * per-operação override — #222, "fiscal data not respecting the selected
+ * operação" (a `.find()` that accepts both would return whichever comes first).
  */
-function operacaoMatches(ref: string | null, activeOperacaoId: string): boolean {
-  if (ref == null) return true;
-  const trimmed = ref.replace(/^\/+|\/+$/g, '');
-  const last = trimmed.split('/').pop();
-  return last === activeOperacaoId;
+function pickByOperacao<T>(
+  docs: readonly T[],
+  scopeOf: (d: T) => string | null,
+  operacaoId: string,
+): T | undefined {
+  const exact = docs.find((d) => {
+    const ref = scopeOf(d);
+    if (ref == null) return false;
+    return (
+      ref
+        .replace(/^\/+|\/+$/g, '')
+        .split('/')
+        .pop() === operacaoId
+    );
+  });
+  return exact ?? docs.find((d) => scopeOf(d) == null);
 }
 
 function parseCategoriaUid(produto: Record<string, unknown> | null): string | null {

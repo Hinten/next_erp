@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from './types';
-import { microsSinceEpoch } from './datetime';
+import { microsSinceEpoch, millisSinceEpoch } from './shared/datetime';
 import { estadoEnviNFeMsgSchema } from './enviNfeMsg';
 
 // Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth — same audit
@@ -65,8 +65,8 @@ export const cartaCorrecaoSchema = z.object({
   retries: z.number().int().nullable().default(null),
 
   estado: estadoEnviNFeMsgSchema.default('0'),
-  timestamp: z.string().datetime().nullable().optional(),
-  ultima_modificacao: z.string().datetime().nullable().optional(),
+  timestamp: millisSinceEpoch().nullable().default(null),
+  ultima_modificacao: millisSinceEpoch().nullable().default(null),
 });
 
 export type CartaCorrecao = z.infer<typeof cartaCorrecaoSchema>;

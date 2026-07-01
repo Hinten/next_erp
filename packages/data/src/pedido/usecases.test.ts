@@ -6,12 +6,17 @@ import {
   PedidoNothingChangedError,
   buildEstadoHistoryOp,
   buildIncidenteOp,
+  buildPagamentoOp,
   buildPedidoPatch,
   deleteIncidente,
+  deletePagamento,
+  nextPedidoEstado,
+  reconcilePedidoEstadoFromPagamentos,
   recordEstadoChange,
   remotelyChangedFields,
   savePedido,
   saveIncidente,
+  savePagamento,
 } from './usecases';
 
 const VALUES = {
@@ -248,5 +253,210 @@ describe('incidentes', () => {
     const { port, committed } = fakePort(null);
     await deleteIncidente(port, { pedidoId: 'ped1', incidenteId: 'inc1' });
     expect(committed()).toEqual([{ type: 'delete', path: 'pedidos/ped1/incidentes/inc1' }]);
+  });
+});
+
+describe('pagamentos', () => {
+  const pgto = { forma_de_pagamento: 1, status_pagamento: 0, valor: 100, parcelas: 1 };
+
+  it('buildPagamentoOp creates with a fresh id + dataCadastro + ultimaModificacao', () => {
+    const { port } = fakePort(null, 555);
+    const op = buildPagamentoOp(port, 'ped1', null, pgto);
+    expect(op).toEqual({
+      type: 'set',
+      path: 'pedidos/ped1/pagamentos/newid',
+      data: { ...pgto, ultimaModificacao: 555, dataCadastro: 555 },
+    });
+  });
+
+  it('buildPagamentoOp updates at the given id WITHOUT touching dataCadastro', () => {
+    const { port } = fakePort(null, 555);
+    const op = buildPagamentoOp(port, 'ped1', 'pg1', { ...pgto, dataCadastro: 1 });
+    expect(op.path).toBe('pedidos/ped1/pagamentos/pg1');
+    expect((op as { data: Record<string, unknown> }).data).toMatchObject({
+      dataCadastro: 1,
+      ultimaModificacao: 555,
+    });
+  });
+
+  it('savePagamento commits one set op', async () => {
+    const { port, committed } = fakePort(null);
+    await savePagamento(port, { pedidoId: 'ped1', pagamento: pgto });
+    expect(committed()).toHaveLength(1);
+    expect(committed()[0]?.type).toBe('set');
+  });
+
+  it('deletePagamento commits one delete op at the doc path', async () => {
+    const { port, committed } = fakePort(null);
+    await deletePagamento(port, { pedidoId: 'ped1', pagamentoId: 'pg1' });
+    expect(committed()).toEqual([{ type: 'delete', path: 'pedidos/ped1/pagamentos/pg1' }]);
+  });
+});
+
+describe('nextPedidoEstado (rule table)', () => {
+  it('fully paid → pago + authorize despacho', () => {
+    expect(nextPedidoEstado('iniciado', 100, 100)).toEqual({
+      estado: 'pago',
+      autorizarDespacho: true,
+    });
+    expect(nextPedidoEstado('iniciado', 100, 120)).toEqual({
+      estado: 'pago',
+      autorizarDespacho: true,
+    });
+  });
+
+  it('is idempotent once pago', () => {
+    expect(nextPedidoEstado('pago', 100, 100)).toBeNull();
+  });
+
+  it('partially paid → aguardando (no despacho)', () => {
+    expect(nextPedidoEstado('iniciado', 100, 50)).toEqual({
+      estado: 'aguardandoConfirmacaoDePagamento',
+      autorizarDespacho: false,
+    });
+  });
+
+  it('is idempotent once aguardando while still partial', () => {
+    expect(nextPedidoEstado('aguardandoConfirmacaoDePagamento', 100, 50)).toBeNull();
+  });
+
+  it('downgrades a pago pedido that drops below its total', () => {
+    expect(nextPedidoEstado('pago', 100, 50)).toEqual({
+      estado: 'aguardandoConfirmacaoDePagamento',
+      autorizarDespacho: false,
+    });
+    expect(nextPedidoEstado('pago', 100, 0)).toEqual({
+      estado: 'aguardandoConfirmacaoDePagamento',
+      autorizarDespacho: false,
+    });
+  });
+
+  it('leaves estado alone when nothing is paid and it is not pago', () => {
+    expect(nextPedidoEstado('iniciado', 100, 0)).toBeNull();
+  });
+
+  it('never forces a transition on a zero-total pedido (even with a payment)', () => {
+    expect(nextPedidoEstado('iniciado', 0, 0)).toBeNull();
+    expect(nextPedidoEstado('iniciado', 0, 50)).toBeNull();
+  });
+
+  it('never auto-reverts a terminal / fulfilled / refunded estado', () => {
+    // Fully paid but cancelled/finalized → must NOT bounce back to pago.
+    expect(nextPedidoEstado('cancelado', 100, 100)).toBeNull();
+    expect(nextPedidoEstado('finalizado', 100, 100)).toBeNull();
+    expect(nextPedidoEstado('fraude', 100, 100)).toBeNull();
+    expect(nextPedidoEstado('processandoCancelamento', 100, 100)).toBeNull();
+    // Partially paid (refund) on a refund state → must NOT erase it.
+    expect(nextPedidoEstado('estornadoParcialmente', 100, 50)).toBeNull();
+    expect(nextPedidoEstado('estornadoIntegralmente', 100, 0)).toBeNull();
+  });
+});
+
+describe('reconcilePedidoEstadoFromPagamentos', () => {
+  it('writes pago + frete despachoAutorizado + a história row on full payment', async () => {
+    const { port, written, committed } = fakePort(
+      { estado: 'iniciado', valorCobrado: 100, freteInicial: { valorCobrado: 7 } },
+      777,
+    );
+    const result = await reconcilePedidoEstadoFromPagamentos(port, {
+      pedidoId: 'x',
+      valorPago: 100,
+      usuarioRef: 'documents/usuarios/u1',
+    });
+    expect(result).toBe('pago');
+    expect(written()).toEqual({
+      estado: 'pago',
+      ultimaModificacao: 777,
+      freteInicial: { valorCobrado: 7, estado: 'despachoAutorizado' },
+    });
+    expect(committed()).toEqual([
+      {
+        type: 'set',
+        path: 'pedidos/x/historicoEstadoPedido/newid',
+        data: {
+          estado: 'pago',
+          usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
+          data: 777,
+        },
+      },
+    ]);
+  });
+
+  it('writes only estado (no freteInicial key) when the pedido has no frete', async () => {
+    const { port, written } = fakePort({ estado: 'iniciado', valorCobrado: 100 }, 777);
+    const result = await reconcilePedidoEstadoFromPagamentos(port, {
+      pedidoId: 'x',
+      valorPago: 100,
+    });
+    expect(result).toBe('pago');
+    expect(written()).toEqual({ estado: 'pago', ultimaModificacao: 777 });
+    expect(written()).not.toHaveProperty('freteInicial');
+  });
+
+  it('does not regress an already-shipped frete when transitioning to pago', async () => {
+    const { port, written } = fakePort(
+      {
+        estado: 'iniciado',
+        valorCobrado: 100,
+        freteInicial: { valorCobrado: 7, estado: 'postado' },
+      },
+      777,
+    );
+    const result = await reconcilePedidoEstadoFromPagamentos(port, {
+      pedidoId: 'x',
+      valorPago: 100,
+    });
+    expect(result).toBe('pago');
+    // estado advances, but the in-flight 'postado' frete is left untouched.
+    expect(written()).toEqual({ estado: 'pago', ultimaModificacao: 777 });
+    expect(written()).not.toHaveProperty('freteInicial');
+  });
+
+  it('does not transition (no história) a cancelado pedido that is still fully paid', async () => {
+    const { port, written, committed } = fakePort({ estado: 'cancelado', valorCobrado: 100 }, 777);
+    const result = await reconcilePedidoEstadoFromPagamentos(port, {
+      pedidoId: 'x',
+      valorPago: 100,
+    });
+    expect(result).toBeNull();
+    expect(written()).toEqual({});
+    expect(committed()).toEqual([]);
+  });
+
+  it('advances to aguardando on a partial payment without touching frete', async () => {
+    const { port, written } = fakePort(
+      { estado: 'iniciado', valorCobrado: 100, freteInicial: { valorCobrado: 7 } },
+      777,
+    );
+    const result = await reconcilePedidoEstadoFromPagamentos(port, {
+      pedidoId: 'x',
+      valorPago: 40,
+    });
+    expect(result).toBe('aguardandoConfirmacaoDePagamento');
+    expect(written()).toEqual({
+      estado: 'aguardandoConfirmacaoDePagamento',
+      ultimaModificacao: 777,
+    });
+  });
+
+  it('is a no-op (empty patch, no história) when the estado already matches', async () => {
+    const { port, written, committed } = fakePort({ estado: 'pago', valorCobrado: 100 }, 777);
+    const result = await reconcilePedidoEstadoFromPagamentos(port, {
+      pedidoId: 'x',
+      valorPago: 100,
+    });
+    expect(result).toBeNull();
+    expect(written()).toEqual({});
+    expect(committed()).toEqual([]);
+  });
+
+  it('skips everything when the doc is gone', async () => {
+    const { port, committed } = fakePort(null, 777);
+    const result = await reconcilePedidoEstadoFromPagamentos(port, {
+      pedidoId: 'x',
+      valorPago: 100,
+    });
+    expect(result).toBeNull();
+    expect(committed()).toEqual([]);
   });
 });

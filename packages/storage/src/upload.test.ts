@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase/firestore';
 import type { FirebaseStorage } from 'firebase/storage';
-import { productArquivoId, productOriginalPath, productVideoPath } from '@delfrance/schemas';
+import {
+  productAnexoPath,
+  productArquivoId,
+  productOriginalPath,
+  productVideoPath,
+  tabMediArquivoId,
+  tabMediOriginalPath,
+} from '@delfrance/schemas';
 
 import { sha512Hex } from './hash';
 
@@ -32,7 +39,13 @@ vi.mock('./collection', () => ({
 }));
 
 // Imported after the mocks are registered (vi.mock is hoisted).
-const { uploadProductImage, uploadProductVideo, uploadFile } = await import('./upload');
+const {
+  uploadProductImage,
+  uploadTabMediImage,
+  uploadProductVideo,
+  uploadProductAnexo,
+  uploadFile,
+} = await import('./upload');
 
 const db = {} as unknown as Firestore;
 const storage = {} as unknown as FirebaseStorage;
@@ -125,6 +138,64 @@ describe('uploadProductImage', () => {
   });
 });
 
+describe('uploadTabMediImage', () => {
+  it('uploads to the tabMedi-scoped path + id with NO resize marker', async () => {
+    const hash = await sha512Hex(bytes);
+    const result = await uploadTabMediImage({
+      storage,
+      db,
+      tabMediId: 'tm1',
+      bytes,
+      contentType: 'image/png',
+      originalFilename: 'tabela.png',
+    });
+
+    expect(result.id).toBe(tabMediArquivoId('tm1', hash));
+    expect(result.arquivo.filepath).toBe('tabMedi/tm1/originals');
+    expect(result.arquivo.filename).toBe(`${hash}.png`);
+    expect(result.arquivo.filetype).toBe('image');
+    expect(result.arquivo.url).toBe(`https://dl/${tabMediOriginalPath('tm1', hash, 'png')}`);
+    // Headline diff vs uploadProductImage: tabMedi photos are NOT resized.
+    expect(result.arquivo.resizeState).toBeNull();
+    // Still create-first + tracked for the phantom-doc sweep + finalize trigger.
+    expect(result.arquivo.uploadState).toBe('pending');
+
+    expect(mocks.uploadBytes).toHaveBeenCalledTimes(1);
+    expect(mocks.setDoc).toHaveBeenCalledTimes(1);
+    expect(mocks.setDoc.mock.invocationCallOrder[0]!).toBeLessThan(
+      mocks.uploadBytes.mock.invocationCallOrder[0]!,
+    );
+    const uploadOpts = mocks.uploadBytes.mock.calls[0]![2] as {
+      customMetadata?: { arquivoId?: string };
+    };
+    expect(uploadOpts.customMetadata?.arquivoId).toBe(tabMediArquivoId('tm1', hash));
+  });
+
+  it('rejects a non-image content type', async () => {
+    await expect(
+      uploadTabMediImage({ storage, db, tabMediId: 'tm1', bytes, contentType: 'application/pdf' }),
+    ).rejects.toThrow(/image\/\*/);
+    expect(mocks.uploadBytes).not.toHaveBeenCalled();
+  });
+
+  it('dedups: reuses an existing Arquivo and skips the upload', async () => {
+    const existing = { filetype: 'image', filepath: 'tabMedi/tm1/originals', filename: 'x.png' };
+    mocks.getDoc.mockResolvedValue({ exists: () => true, data: () => existing });
+
+    const result = await uploadTabMediImage({
+      storage,
+      db,
+      tabMediId: 'tm1',
+      bytes,
+      contentType: 'image/png',
+    });
+
+    expect(result.arquivo).toEqual(existing);
+    expect(mocks.uploadBytes).not.toHaveBeenCalled();
+    expect(mocks.setDoc).not.toHaveBeenCalled();
+  });
+});
+
 describe('uploadProductVideo', () => {
   it('uploads to the product-scoped video path + id and writes the Arquivo', async () => {
     const hash = await sha512Hex(bytes);
@@ -181,6 +252,60 @@ describe('uploadProductVideo', () => {
     expect(mocks.uploadBytes).not.toHaveBeenCalled();
     expect(mocks.setDoc).not.toHaveBeenCalled();
     expect(mocks.updateDoc).not.toHaveBeenCalled();
+  });
+});
+
+describe('uploadProductAnexo', () => {
+  it('uploads any content type to the product-scoped anexo path + id, filetype from MIME', async () => {
+    const hash = await sha512Hex(bytes);
+    const result = await uploadProductAnexo({
+      storage,
+      db,
+      produtoId: 'p1',
+      bytes,
+      contentType: 'application/pdf',
+      originalFilename: 'manual.pdf',
+    });
+
+    expect(result.id).toBe(productArquivoId('p1', hash));
+    expect(result.arquivo.filepath).toBe('produtos/p1/anexos');
+    expect(result.arquivo.filename).toBe(`${hash}.pdf`);
+    // The Flutter port hardcoded 'image'; we derive the filetype from the MIME.
+    expect(result.arquivo.filetype).toBe('document');
+    expect(result.arquivo.url).toBe(`https://dl/${productAnexoPath('p1', hash, 'pdf')}`);
+    // Anexos are not resized → no resize marker...
+    expect(result.arquivo.resizeState).toBeNull();
+    // ...but ARE tracked for the phantom-doc sweep + finalize trigger.
+    expect(result.arquivo.uploadState).toBe('pending');
+    expect(mocks.uploadBytes).toHaveBeenCalledTimes(1);
+    const uploadOpts = mocks.uploadBytes.mock.calls[0]![2] as {
+      customMetadata?: { arquivoId?: string };
+    };
+    expect(uploadOpts.customMetadata?.arquivoId).toBe(productArquivoId('p1', hash));
+  });
+
+  it('accepts a content type that is neither image nor video (no guard)', async () => {
+    await expect(
+      uploadProductAnexo({ storage, db, produtoId: 'p1', bytes, contentType: 'application/zip' }),
+    ).resolves.toMatchObject({ arquivo: { filetype: 'application' } });
+    expect(mocks.uploadBytes).toHaveBeenCalledTimes(1);
+  });
+
+  it('dedups: reuses an existing Arquivo and skips the upload', async () => {
+    const existing = { filetype: 'document', filepath: 'produtos/p1/anexos', filename: 'x.pdf' };
+    mocks.getDoc.mockResolvedValue({ exists: () => true, data: () => existing });
+
+    const result = await uploadProductAnexo({
+      storage,
+      db,
+      produtoId: 'p1',
+      bytes,
+      contentType: 'application/pdf',
+    });
+
+    expect(result.arquivo).toEqual(existing);
+    expect(mocks.uploadBytes).not.toHaveBeenCalled();
+    expect(mocks.setDoc).not.toHaveBeenCalled();
   });
 });
 

@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { idRefSchema } from '../../../shared/outerRef';
+
+import { ARQUIVOS_COLLECTION } from '../../../storage/arquivo';
 
 /**
  * One element of `produto.anexos` — a generic file attachment (manuals, certs,
@@ -12,8 +15,17 @@ import { z } from 'zod';
  */
 export const anexoSchema = z
   .object({
-    arquivoOuterRef: z.string().min(1),
+    arquivoOuterRef: idRefSchema,
   })
   .passthrough();
 
 export type Anexo = z.infer<typeof anexoSchema>;
+
+/**
+ * Build an `Anexo` from an uploaded arquivo doc id — the attachment counterpart
+ * of `buildFotoRefs`. Centralizes the bare `arquivos/<id>` ref shape so callers
+ * (the AnexoManager) never hand-build it.
+ */
+export function buildAnexo(arquivoId: string): Anexo {
+  return { arquivoOuterRef: `${ARQUIVOS_COLLECTION}/${arquivoId}` };
+}

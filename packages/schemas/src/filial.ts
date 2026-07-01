@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { millisSinceEpoch } from './datetime';
+import { millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 import { enderecoSchema } from './endereco';
 import { certificadoFilialInfoSchema } from './certificadoFilial';
@@ -64,6 +64,10 @@ export const filialMeta: CollectionMetadata = {
     orderBy: [{ field: 'razaoSocial', direction: 'asc' }],
     limit: 50,
   },
+  // FilialPicker (CollectionSelect) orders its option list by RECENCY_SORT
+  // (`ultimaModificacao desc, timestamp desc`) — see the composite index in
+  // firestore.indexes.json, asserted by the defaultQuery.indexes meta-test.
+  pickerRecencySort: true,
 };
 
 export const filial = { schema: filialSchema, meta: filialMeta };

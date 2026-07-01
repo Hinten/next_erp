@@ -5,8 +5,9 @@ import {
   getProdutoData,
   getProdutoIdByNome,
   seedComponenteKit,
+  seedKitParaGerar,
 } from './_helpers/seed-data';
-import { fillField, selectFieldWithSearch } from './helpers/object-view';
+import { expectToast, fillField, selectFieldWithSearch } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -72,5 +73,95 @@ test.describe.serial('Produtos kit e2e — Kit (componentesKit doc field)', () =
     // The denorm the delete-guard queries mirrors the component ids.
     expect(produto?.componentesKitKeys).toEqual([componenteId]);
     expect(produto?.custo).toBe(30);
+  });
+});
+
+/**
+ * Edit-flow coverage for "Gerar Variações" (4b — the per-variation grid). Proves:
+ *  - the per-variation grid renders when the Kit tab is opened DIRECTLY (the
+ *    cross-tab fix: the grid's rows are published by the Variações tab, which
+ *    must stay live — `keepSectionsMounted` on the produto editor's ObjectView);
+ *  - "Gerar Variações" matches each kit-variation to the right component-variation
+ *    (Case C1 overlap on size P) and persists `componentesKit` +
+ *    `componentesKitKeys` on the variation child after save (the flush runs on the
+ *    pristine `NothingChangedError → onAfterSave` path).
+ */
+test.describe.serial('Produtos kit e2e — Gerar Variações (per-variation grid)', () => {
+  const prefix = e2ePrefix('prod-kit-gv');
+  let seed: Awaited<ReturnType<typeof seedKitParaGerar>>;
+
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(120_000);
+    seed = await seedKitParaGerar(prefix);
+    await warmRoutes(browser, [`/produtos/${seed.kitId}/editar`]);
+  });
+
+  test.afterAll(async () => {
+    await cleanupByNamePrefix('produtos', prefix);
+  });
+
+  test('generates each variation’s components from the parent kit and persists them', async ({
+    page,
+  }) => {
+    await page.goto(`/produtos/${seed.kitId}/editar`);
+    await page.getByRole('tab', { name: 'Kit' }).click();
+
+    // The grid renders only when the Variações tab published its rows — proving
+    // the cross-tab fix (the Kit tab was opened without visiting Variações).
+    await expect(page.getByRole('button', { name: 'Gerar Variações' })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.getByRole('button', { name: 'Gerar Variações' }).click();
+    await expectToast(page, 'Componentes gerados para as variações.');
+
+    await page.getByRole('button', { name: 'Salvar alterações', exact: true }).click();
+
+    // The kit-variation child (size P) now keys the component's size-P variation.
+    await expect
+      .poll(
+        async () => {
+          const child = await getProdutoData(seed.varKitPId);
+          const kit = child?.componentesKit as Record<string, unknown> | null | undefined;
+          return kit ? Object.keys(kit) : null;
+        },
+        { timeout: 30_000 },
+      )
+      .toEqual([seed.varCompPId]);
+
+    const child = await getProdutoData(seed.varKitPId);
+    expect(child?.componentesKit).toMatchObject({
+      [seed.varCompPId]: { quantidade: 2, limitarEstoque: true },
+    });
+    expect(child?.componentesKitKeys).toEqual([seed.varCompPId]);
+  });
+
+  test('un-kitting the parent clears its variation children’s componentesKit', async ({ page }) => {
+    // Precondition: the previous test left the size-P child carrying a kit map.
+    await expect
+      .poll(async () => (await getProdutoData(seed.varKitPId))?.componentesKit != null, {
+        timeout: 15_000,
+      })
+      .toBe(true);
+
+    await page.goto(`/produtos/${seed.kitId}/editar`);
+    await page.getByRole('tab', { name: 'Kit' }).click();
+
+    // Toggle "É kit" OFF and save — the parent stops being a kit.
+    await page.getByRole('switch', { name: 'É kit', exact: true }).click();
+    await page.getByRole('button', { name: 'Salvar alterações', exact: true }).click();
+
+    // Kit-status propagation (Flutter parity): the variation child's kit map is
+    // cleared on the child doc. This can ONLY come from the propagation use-case
+    // — `deriveOnSave` clears the PARENT's map, never the child's.
+    await expect
+      .poll(
+        async () => {
+          const c = await getProdutoData(seed.varKitPId);
+          return { kit: c?.componentesKit ?? null, ehKit: c?.ehKit ?? null };
+        },
+        { timeout: 30_000 },
+      )
+      .toEqual({ kit: null, ehKit: false });
   });
 });

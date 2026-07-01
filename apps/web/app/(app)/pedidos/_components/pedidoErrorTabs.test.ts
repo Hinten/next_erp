@@ -46,21 +46,21 @@ describe('summarizePedidoErrors', () => {
   });
 
   it('reports out-of-form keys when nothing maps to a tab', () => {
-    // `filialPedidoOuterRef` is a real schema field with no tab UI.
-    const s = summarizePedidoErrors(['filialPedidoOuterRef']);
+    // `numero` is a real schema field with no tab UI.
+    const s = summarizePedidoErrors(['numero']);
     expect(s.firstTab).toBeUndefined();
-    expect(s.outsideKeys).toEqual(['filialPedidoOuterRef']);
+    expect(s.outsideKeys).toEqual(['numero']);
     expect(s.message).toBe(
-      'Não foi possível salvar: campos inválidos fora do formulário (filialPedidoOuterRef).',
+      'Não foi possível salvar: campos inválidos fora do formulário (numero).',
     );
   });
 
   it('names tab errors and out-of-form keys together', () => {
-    const s = summarizePedidoErrors(['infCpl', 'filialPedidoOuterRef']);
+    const s = summarizePedidoErrors(['infCpl', 'numero']);
     expect(s.firstTab).toBe('fiscal');
-    expect(s.outsideKeys).toEqual(['filialPedidoOuterRef']);
+    expect(s.outsideKeys).toEqual(['numero']);
     expect(s.message).toBe(
-      'Corrija os campos inválidos na aba "Fiscal". Há também campos inválidos fora do formulário (filialPedidoOuterRef).',
+      'Corrija os campos inválidos na aba "Fiscal". Há também campos inválidos fora do formulário (numero).',
     );
   });
 });

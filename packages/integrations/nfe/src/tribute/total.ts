@@ -13,12 +13,15 @@
  */
 import { serializeFragment, type XmlValue } from '../xml';
 import type {
+  TIBSCBSMonoTot,
+  TISTot,
   TNFe_infNFe_total,
   TNFe_infNFe_total_ICMSTot,
   TNFe_infNFe_total_ISSQNtot,
   TNFe_infNFe_total_retTrib,
 } from '../types/nfe-schema';
-import { fmtMoney, fmtMoneyOpt, round2 } from './format';
+import { fmtMoney, fmtMoneyOpt, roundReais } from './format';
+import { computeRtcItemValues, parseRtcConfig } from './rtc';
 
 /**
  * Whole-NF-e values needed by aggregateISSQN that aren't derivable
@@ -63,6 +66,23 @@ export interface TotalAggregation {
   readonly vFCPUFDest?: number;
   readonly vICMSUFDest?: number;
   readonly vICMSUFRemet?: number;
+  /**
+   * Reforma Tributária (IBS/CBS/IS) totals — present only when
+   * `aggregateTotals` ran with `{ emitRtc: true }` AND at least one item
+   * carried `configuracaoIBSCBS`. Drives the `IBSCBSTot` / `ISTot` /
+   * `vNFTot` groups in `buildTotalObject`. `vNF` (ICMSTot) is never affected.
+   */
+  readonly rtc?: RtcTotalSummary;
+}
+
+/** Summed per-item RTC values for the total-level `IBSCBSTot` / `ISTot`. */
+export interface RtcTotalSummary {
+  readonly vBCIBSCBS: number;
+  readonly vIBSUF: number;
+  readonly vIBSMun: number;
+  readonly vIBS: number;
+  readonly vCBS: number;
+  readonly vIS: number;
 }
 
 /**
@@ -90,6 +110,7 @@ export interface TotalExtras {
 export function aggregateTotals(
   items: ReadonlyArray<PerItem>,
   extras: TotalExtras = {},
+  opts: { emitRtc?: boolean } = {},
 ): TotalAggregation {
   let vProd = 0;
   let vBC = 0;
@@ -99,9 +120,28 @@ export function aggregateTotals(
   let vFCPST = 0;
   let vFCPSTRet = 0;
   let vIPI = 0;
+  // RTC (IBS/CBS/IS) accumulators — populated only with `{ emitRtc: true }`.
+  let rtcBC = 0;
+  let rtcIBSUF = 0;
+  let rtcIBSMun = 0;
+  let rtcIBS = 0;
+  let rtcCBS = 0;
+  let rtcIS = 0;
+  let rtcCount = 0;
 
   for (const { item, imposto } of items) {
     vProd += item.vProd;
+    // RTC runs for every item (incl. ISSQN-only) before the ICMS `continue`.
+    if (opts.emitRtc && imposto.configuracaoIBSCBS != null) {
+      const r = computeRtcItemValues(parseRtcConfig(imposto.configuracaoIBSCBS), item.vProd);
+      rtcBC += r.vBC;
+      rtcIBSUF += r.vIBSUF;
+      rtcIBSMun += r.vIBSMun;
+      rtcIBS += r.vIBS;
+      rtcCBS += r.vCBS;
+      rtcIS += r.vIS;
+      rtcCount += 1;
+    }
     if (imposto.configuracaoIPI?.vIPI != null) {
       vIPI += imposto.configuracaoIPI.vIPI;
     }
@@ -134,27 +174,39 @@ export function aggregateTotals(
   const vSeg = extras.vSeg ?? 0;
   const vDesc = extras.vDesc ?? 0;
   const vOutro = extras.vOutro ?? 0;
-  const vNF = round2(vProd + vST + vFCPST + vFrete + vSeg + vOutro + vIPI - vDesc);
+  const vNF = roundReais(vProd + vST + vFCPST + vFrete + vSeg + vOutro + vIPI - vDesc);
   return {
-    vBC: round2(vBC),
-    vICMS: round2(vICMS),
+    vBC: roundReais(vBC),
+    vICMS: roundReais(vICMS),
     vICMSDeson: 0,
     vFCP: 0,
-    vBCST: round2(vBCST),
-    vST: round2(vST),
-    vFCPST: round2(vFCPST),
-    vFCPSTRet: round2(vFCPSTRet),
-    vProd: round2(vProd),
-    vFrete: round2(vFrete),
-    vSeg: round2(vSeg),
-    vDesc: round2(vDesc),
+    vBCST: roundReais(vBCST),
+    vST: roundReais(vST),
+    vFCPST: roundReais(vFCPST),
+    vFCPSTRet: roundReais(vFCPSTRet),
+    vProd: roundReais(vProd),
+    vFrete: roundReais(vFrete),
+    vSeg: roundReais(vSeg),
+    vDesc: roundReais(vDesc),
     vII: 0,
-    vIPI: round2(vIPI),
+    vIPI: roundReais(vIPI),
     vIPIDevol: 0,
     vPIS: 0,
     vCOFINS: 0,
-    vOutro: round2(vOutro),
+    vOutro: roundReais(vOutro),
     vNF,
+    ...(opts.emitRtc && rtcCount > 0
+      ? {
+          rtc: {
+            vBCIBSCBS: roundReais(rtcBC),
+            vIBSUF: roundReais(rtcIBSUF),
+            vIBSMun: roundReais(rtcIBSMun),
+            vIBS: roundReais(rtcIBS),
+            vCBS: roundReais(rtcCBS),
+            vIS: roundReais(rtcIS),
+          },
+        }
+      : {}),
   };
 }
 
@@ -202,16 +254,16 @@ export function aggregateISSQN(
   }
 
   const out: TNFe_infNFe_total_ISSQNtot = {
-    vServ: fmtMoney('vServ', round2(vServ)),
-    vBC: fmtMoney('vBC', round2(vBC)),
-    vISS: fmtMoney('vISS', round2(vISS)),
+    vServ: fmtMoney('vServ', roundReais(vServ)),
+    vBC: fmtMoney('vBC', roundReais(vBC)),
+    vISS: fmtMoney('vISS', roundReais(vISS)),
     dCompet: extras.dCompet,
   };
-  if (vDeducao > 0) out.vDeducao = fmtMoney('vDeducao', round2(vDeducao));
-  if (vDescIncond > 0) out.vDescIncond = fmtMoney('vDescIncond', round2(vDescIncond));
-  if (vDescCond > 0) out.vDescCond = fmtMoney('vDescCond', round2(vDescCond));
-  if (vISSRet > 0) out.vISSRet = fmtMoney('vISSRet', round2(vISSRet));
-  if (vOutro > 0) out.vOutro = fmtMoney('vOutro', round2(vOutro));
+  if (vDeducao > 0) out.vDeducao = fmtMoney('vDeducao', roundReais(vDeducao));
+  if (vDescIncond > 0) out.vDescIncond = fmtMoney('vDescIncond', roundReais(vDescIncond));
+  if (vDescCond > 0) out.vDescCond = fmtMoney('vDescCond', roundReais(vDescCond));
+  if (vISSRet > 0) out.vISSRet = fmtMoney('vISSRet', roundReais(vISSRet));
+  if (vOutro > 0) out.vOutro = fmtMoney('vOutro', roundReais(vOutro));
   if (extras.cRegTrib != null) out.cRegTrib = extras.cRegTrib;
   return out;
 }
@@ -253,13 +305,13 @@ export function aggregateRetTrib(
   if (!any) return undefined;
 
   const out: TNFe_infNFe_total_retTrib = {};
-  if (vRetPIS > 0) out.vRetPIS = fmtMoney('vRetPIS', round2(vRetPIS));
-  if (vRetCOFINS > 0) out.vRetCOFINS = fmtMoney('vRetCOFINS', round2(vRetCOFINS));
-  if (vRetCSLL > 0) out.vRetCSLL = fmtMoney('vRetCSLL', round2(vRetCSLL));
-  if (vBCIRRF > 0) out.vBCIRRF = fmtMoney('vBCIRRF', round2(vBCIRRF));
-  if (vIRRF > 0) out.vIRRF = fmtMoney('vIRRF', round2(vIRRF));
-  if (vBCRetPrev > 0) out.vBCRetPrev = fmtMoney('vBCRetPrev', round2(vBCRetPrev));
-  if (vRetPrev > 0) out.vRetPrev = fmtMoney('vRetPrev', round2(vRetPrev));
+  if (vRetPIS > 0) out.vRetPIS = fmtMoney('vRetPIS', roundReais(vRetPIS));
+  if (vRetCOFINS > 0) out.vRetCOFINS = fmtMoney('vRetCOFINS', roundReais(vRetCOFINS));
+  if (vRetCSLL > 0) out.vRetCSLL = fmtMoney('vRetCSLL', roundReais(vRetCSLL));
+  if (vBCIRRF > 0) out.vBCIRRF = fmtMoney('vBCIRRF', roundReais(vBCIRRF));
+  if (vIRRF > 0) out.vIRRF = fmtMoney('vIRRF', roundReais(vIRRF));
+  if (vBCRetPrev > 0) out.vBCRetPrev = fmtMoney('vBCRetPrev', roundReais(vBCRetPrev));
+  if (vRetPrev > 0) out.vRetPrev = fmtMoney('vRetPrev', roundReais(vRetPrev));
   return out;
 }
 
@@ -308,6 +360,36 @@ export function buildTotalObject(
   const out: TNFe_infNFe_total = { ICMSTot };
   if (optional.issqnTot != null) out.ISSQNtot = optional.issqnTot;
   if (optional.retTrib != null) out.retTrib = optional.retTrib;
+  // Reforma Tributária totals (NT 2025.002, Grupo W03). `vNFTot` = `vNF` plus
+  // the RTC tributes ("por fora"); `ICMSTot.vNF` stays untouched (the 2025–2026
+  // transition rule — RV VB01-10 Exceção 1). The diferimento / crédito-presumido
+  // sub-fields are zero in the tributação-integral shape we emit.
+  if (totals.rtc != null) {
+    const r = totals.rtc;
+    const ibsCbsTot: TIBSCBSMonoTot = {
+      vBCIBSCBS: fmtMoney('vBCIBSCBS', r.vBCIBSCBS),
+      gIBS: {
+        gIBSUF: { vDif: '0.00', vDevTrib: '0.00', vIBSUF: fmtMoney('vIBSUF', r.vIBSUF) },
+        gIBSMun: { vDif: '0.00', vDevTrib: '0.00', vIBSMun: fmtMoney('vIBSMun', r.vIBSMun) },
+        vIBS: fmtMoney('vIBS', r.vIBS),
+        vCredPres: '0.00',
+        vCredPresCondSus: '0.00',
+      },
+      gCBS: {
+        vDif: '0.00',
+        vDevTrib: '0.00',
+        vCBS: fmtMoney('vCBS', r.vCBS),
+        vCredPres: '0.00',
+        vCredPresCondSus: '0.00',
+      },
+    };
+    out.IBSCBSTot = ibsCbsTot;
+    if (r.vIS > 0) {
+      const isTot: TISTot = { vIS: fmtMoney('vIS', r.vIS) };
+      out.ISTot = isTot;
+    }
+    out.vNFTot = fmtMoney('vNFTot', roundReais(totals.vNF + r.vIBS + r.vCBS + r.vIS));
+  }
   return out;
 }
 

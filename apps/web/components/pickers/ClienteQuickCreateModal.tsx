@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import {
+  ActionIcon,
   Alert,
   Anchor,
   Button,
@@ -15,8 +16,11 @@ import {
   Stack,
   Text,
   TextInput,
+  Tooltip,
 } from '@mantine/core';
 import { useDebouncedCallback } from '@mantine/hooks';
+import { notifications } from '@mantine/notifications';
+import { IconMapPin, IconSearch } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
 import { z, ZodError } from 'zod';
 import {
@@ -37,8 +41,13 @@ import {
   type DedupCandidate,
   checkClienteDuplicates,
 } from '@/lib/clientes/dedup';
+import type { ClienteCnpjEndereco } from '@/lib/clientes/consultaCnpj';
+import { stashEnderecoForCliente } from '@/lib/clientes/pendingEndereco';
+import { resolveCnpj } from '@/lib/clientes/resolveCnpj';
+import { useDefaultFilialId } from '@/lib/clientes/useDefaultFilialId';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { useNFeClient } from '@/lib/nfe/client';
 import { useAuth } from '@/lib/auth';
 
 /**
@@ -62,7 +71,7 @@ export interface ClienteQuickCreateModalProps {
 // Validation rides the (tightened) clienteSchema field rules; `tipo` decides
 // whether cpf_cnpj or idEstrangeiro is collected, and nome becomes required.
 const quickCreateSchema = clienteSchema
-  .pick({ cpf_cnpj: true, idEstrangeiro: true, email: true, telefone: true })
+  .pick({ cpf_cnpj: true, idEstrangeiro: true, ie: true, email: true, telefone: true })
   .extend({
     tipo: tipoClienteSchema.default('0'),
     nome: z.string().min(1, 'Obrigatório').max(255),
@@ -124,10 +133,20 @@ function QuickCreateForm({
 }) {
   const db = getFirebaseFirestore();
   const { user } = useAuth();
+  const nfe = useNFeClient();
+  // Filial whose A1 cert signs the (best-effort) SEFAZ Consulta Cadastro leg of
+  // the CNPJ lookup — first filial, same default the cliente pages use.
+  const filialId = useDefaultFilialId();
 
   const [dedup, setDedup] = useState<ClienteDedupResult | null>(null);
   const [confirmRequired, setConfirmRequired] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [lookupLoading, setLookupLoading] = useState(false);
+  // Address resolved by the CNPJ lookup, held until create then relayed to the
+  // cliente's cadastro (the modal has no endereço UI). `enderecoFound` drives the
+  // pre-create hint; the ref carries the value (mirrors the create page).
+  const pendingEnderecoRef = useRef<ClienteCnpjEndereco | null>(null);
+  const [enderecoFound, setEnderecoFound] = useState(false);
   // "Criar mesmo assim" — bypasses the NON-blocking findings on the next
   // submit. Blocking matches re-checked at submit can never be bypassed.
   const forceCreate = useRef(false);
@@ -141,6 +160,7 @@ function QuickCreateForm({
       nome: '',
       cpf_cnpj: null,
       idEstrangeiro: null,
+      ie: null,
       email: null,
       telefone: null,
     },
@@ -184,12 +204,78 @@ function QuickCreateForm({
       });
   }, 300);
 
+  // PJ-only CNPJ lookup (issue #250): fills nome + inscrição estadual from the
+  // public BrasilAPI + best-effort SEFAZ Consulta Cadastro (shared `resolveCnpj`,
+  // same as the cliente pages). No endereço — this modal has no endereço UI.
+  async function buscarDados() {
+    const cnpj = form.getValues('cpf_cnpj') ?? '';
+    // Validate on click (the button is always enabled): an invalid/empty CNPJ
+    // surfaces a red notification and never hits the API. The modal feeds back
+    // via notifications (not an inline field error, which renders unreliably
+    // inside the Mantine Modal portal) — matching the green/yellow success ones.
+    if (!/^\d{14}$/.test(cnpj)) {
+      notifications.show({
+        color: 'red',
+        message: 'Informe um CNPJ válido (14 dígitos) para buscar os dados.',
+      });
+      return;
+    }
+    setLookupLoading(true);
+    try {
+      const outcome = await resolveCnpj(cnpj, nfe, filialId);
+      if (!outcome.ok) {
+        notifications.show({
+          color: 'red',
+          message:
+            outcome.reason === 'network'
+              ? 'Falha de rede ao consultar o CNPJ.'
+              : outcome.reason === 'invalid-response'
+                ? 'Resposta inválida da API de CNPJ.'
+                : 'CNPJ não encontrado na base pública.',
+        });
+        return;
+      }
+      const { nome, ie, endereco, sefazNote } = outcome.data;
+      const SET_OPTS = { shouldDirty: true, shouldValidate: true } as const;
+      // A CNPJ belongs to a Pessoa Jurídica — switch the tipo so the form stays
+      // valid (PF + CNPJ is rejected) and the PJ-only IE field is revealed.
+      const switchedToPJ = form.getValues('tipo') !== '1';
+      if (switchedToPJ) form.setValue('tipo', '1', SET_OPTS);
+      form.setValue('nome', nome, SET_OPTS);
+      if (ie) form.setValue('ie', ie, SET_OPTS);
+      // Hold the resolved address (null too — a no-address lookup retracts a
+      // previously captured one); it's offered after the cliente is created.
+      pendingEnderecoRef.current = endereco;
+      setEnderecoFound(endereco !== null);
+      // Nome changed — re-run the dedup check against the resolved razão social.
+      runLiveCheck();
+      // Announce the silent tipo change so the operator notices it.
+      const tipoNote = switchedToPJ ? 'Tipo alterado para Pessoa Jurídica. ' : '';
+      if (ie) {
+        notifications.show({
+          color: 'green',
+          message: `${tipoNote}Dados de ${nome} preenchidos (IE ${ie})`,
+        });
+      } else {
+        const why = sefazNote ?? 'IE não disponível';
+        notifications.show({
+          color: 'yellow',
+          message: `${tipoNote}Dados de ${nome} preenchidos. ${why} — preencha a IE manualmente.`,
+        });
+      }
+    } finally {
+      setLookupLoading(false);
+    }
+  }
+
   async function doCreate(values: QuickCreateOutput) {
     const doc = clienteSchema.parse({
       tipo: values.tipo,
       nome: values.nome.trim(),
       cpf_cnpj: values.tipo === '2' ? null : values.cpf_cnpj || null,
       idEstrangeiro: values.tipo === '2' ? values.idEstrangeiro || null : null,
+      // IE is a PJ concept — only persist it for Pessoa Jurídica (tipo '1').
+      ie: values.tipo === '1' ? values.ie || null : null,
       email: values.email || null,
       telefone: values.telefone ? normalizeTelefone(values.telefone) : null,
       timestamp: nowMillis(),
@@ -204,6 +290,27 @@ function QuickCreateForm({
       dirtyFields: {},
       currentUserUid: user?.uid ?? '',
     });
+    // Offer the looked-up address (if any): stash it under the new cliente and
+    // point the operator to the cadastro, where the prefilled "Novo endereço"
+    // modal lets them review + save it. Reuses the create-page relay; the modal
+    // has no endereço UI, and target="_blank" keeps the pedido intact.
+    if (pendingEnderecoRef.current) {
+      stashEnderecoForCliente(id, pendingEnderecoRef.current);
+      notifications.show({
+        color: 'blue',
+        autoClose: 10000,
+        message: (
+          <Anchor
+            component={Link}
+            href={`/clientes/${id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Endereço de {doc.nome ?? 'cliente'} encontrado — abrir o cadastro para registrá-lo
+          </Anchor>
+        ),
+      });
+    }
     onResolve({ id, nome: doc.nome ?? '' });
   }
 
@@ -269,6 +376,8 @@ function QuickCreateForm({
                 field.onChange(next ?? '0');
                 // The hidden counterpart must not leak into dedup/create.
                 form.setValue(next === '2' ? 'cpf_cnpj' : 'idEstrangeiro', null);
+                // IE is PJ-only — drop it (and its field) when leaving Pessoa Jurídica.
+                if (next !== '1') form.setValue('ie', null);
               }}
               onBlur={field.onBlur}
               error={fieldState.error?.message}
@@ -304,13 +413,38 @@ function QuickCreateForm({
             render={({ field, fieldState }) => (
               <CpfCnpjTextInput
                 value={field.value ?? ''}
-                onChange={(next) => field.onChange(next === '' ? null : next)}
+                onChange={(next) => {
+                  // Editing clears a stale zod validation error mid-edit.
+                  if (fieldState.error) form.clearErrors('cpf_cnpj');
+                  // Editing the CNPJ invalidates any address a prior lookup held.
+                  if (pendingEnderecoRef.current) {
+                    pendingEnderecoRef.current = null;
+                    setEnderecoFound(false);
+                  }
+                  field.onChange(next === '' ? null : next);
+                }}
                 onBlur={() => {
                   field.onBlur();
                   runLiveCheck();
                 }}
                 label="CPF / CNPJ"
                 error={fieldState.error?.message}
+                // "buscar dados" — shown for any tipo and always clickable; it
+                // validates on click (invalid CNPJ → error, no API call) and a
+                // successful lookup switches tipo to PJ.
+                rightSection={
+                  <Tooltip label="Buscar dados do CNPJ (razão social, IE)" withArrow>
+                    <ActionIcon
+                      type="button"
+                      variant="subtle"
+                      onClick={buscarDados}
+                      loading={lookupLoading}
+                      aria-label="Buscar dados do CNPJ"
+                    >
+                      <IconSearch size={16} />
+                    </ActionIcon>
+                  </Tooltip>
+                }
               />
             )}
           />
@@ -335,6 +469,32 @@ function QuickCreateForm({
               />
             )}
           />
+        )}
+
+        {/* Inscrição estadual — PJ only; filled by "buscar dados", editable. */}
+        {tipo === '1' && (
+          <Controller
+            control={form.control}
+            name="ie"
+            render={({ field, fieldState }) => (
+              <TextInput
+                {...field}
+                value={field.value ?? ''}
+                onChange={(e) =>
+                  field.onChange(e.currentTarget.value === '' ? null : e.currentTarget.value)
+                }
+                label="Inscrição estadual"
+                error={fieldState.error?.message}
+                maxLength={16}
+              />
+            )}
+          />
+        )}
+
+        {enderecoFound && (
+          <Alert color="blue" icon={<IconMapPin size={16} />} title="Endereço encontrado">
+            O endereço deste CNPJ será oferecido para cadastro após criar o cliente.
+          </Alert>
         )}
 
         <Controller
