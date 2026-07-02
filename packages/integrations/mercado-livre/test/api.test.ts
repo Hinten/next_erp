@@ -101,18 +101,16 @@ describe('createMercadoLivreApi — happy paths', () => {
 });
 
 describe('createMercadoLivreApi — retries + errors', () => {
-  it('retries on 429 then succeeds', async () => {
+  it('does NOT retry a 429 — throws an HTTP error immediately', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
-      jsonResponse(USER),
+      jsonResponse({ error: 'local_rate_limited' }, 429),
     );
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({ error: 'local_rate_limited' }, 429))
-      .mockResolvedValueOnce(jsonResponse({ error: 'local_rate_limited' }, 429))
-      .mockResolvedValueOnce(jsonResponse(USER));
     const api = createMercadoLivreApi(cfg(fetchMock));
-    const me = await api.getMe();
-    expect(me.id).toBe(123);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await expect(api.getMe()).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 429,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('retries a network failure then succeeds', async () => {
@@ -126,16 +124,16 @@ describe('createMercadoLivreApi — retries + errors', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('gives up after maxRetries on a persistent 5xx and throws an HTTP error', async () => {
+  it('does NOT retry a 5xx — throws an HTTP error immediately', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({ message: 'boom' }, 500),
     );
-    const api = createMercadoLivreApi(cfg(fetchMock, { maxRetries: 2 }));
+    const api = createMercadoLivreApi(cfg(fetchMock));
     await expect(api.getMe()).rejects.toMatchObject({
       constructor: MercadoLivreHttpError,
       status: 500,
     });
-    expect(fetchMock).toHaveBeenCalledTimes(3); // initial + 2 retries
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('does NOT retry a 404 and throws an HTTP error carrying the status', async () => {

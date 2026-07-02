@@ -23,11 +23,6 @@ import {
 const DEFAULT_USER_AGENT = '@delfrance/erp-next';
 const DEFAULT_MAX_RETRIES = 3;
 
-/** Retry only genuinely transient statuses — never 4xx client errors. */
-function isRetryable(status: number): boolean {
-  return status === 429 || status >= 500;
-}
-
 export interface MercadoLivreApiConfig {
   /**
    * Returns a live (non-expired) access token. Token refresh is the caller's
@@ -37,9 +32,9 @@ export interface MercadoLivreApiConfig {
   readonly baseUrl?: string;
   readonly userAgent?: string;
   readonly fetch?: typeof globalThis.fetch;
-  /** Extra attempts on 429/5xx/network. Default 3. */
+  /** Extra attempts on a **network** failure (fetch throw). Default 3. */
   readonly maxRetries?: number;
-  /** Backoff (ms) before retry attempt N (1-based). Default 2^N·250ms; tests pass `() => 0`. */
+  /** Backoff (ms) before a network retry (attempt N, 1-based). Default 2^N·250ms; tests pass `() => 0`. */
   readonly retryDelayMs?: (attempt: number) => number;
 }
 
@@ -119,11 +114,9 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       // 2xx (incl. 206 Partial Content, valid for orders) → parse + validate.
       if (res.ok) return parseOk(res, schema);
 
-      if (isRetryable(res.status) && attempt < maxRetries) {
-        attempt += 1;
-        await sleep(backoff(attempt));
-        continue;
-      }
+      // A response arrived, so the server saw the request — do NOT retry HTTP
+      // errors (429/5xx included): retrying a non-idempotent write could
+      // double-execute. Only genuine network failures (the catch above) retry.
       throw await toHttpError(res);
     }
   }
