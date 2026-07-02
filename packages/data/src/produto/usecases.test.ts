@@ -437,7 +437,10 @@ describe('findProdutoReferences', () => {
   it('reports kit membership and deduped marketplace labels', async () => {
     const { port } = memoryPort({
       refs: {
-        p1: { kits: [snap('k1', null, 'Kit A')], subcols: ['variacoesml', 'produtoshopee'] },
+        p1: {
+          kits: [snap('k1', null, 'Kit A')],
+          subcols: ['variacaoMercadoLivre', 'produtoshopee'],
+        },
       },
     });
     const refs = await findProdutoReferences(port, 'p1');
@@ -461,7 +464,7 @@ describe('deleteProdutoCascade', () => {
   it('throws ProdutoReferencedError and writes nothing when a target is referenced', async () => {
     const { port, committed } = memoryPort({
       children: [snap('c1', null)],
-      refs: { c1: { subcols: ['produtomercadolivre'] } },
+      refs: { c1: { subcols: ['produtoMercadoLivre'] } },
     });
     await expect(deleteProdutoCascade(port, 'p1')).rejects.toBeInstanceOf(ProdutoReferencedError);
     expect(committed).toEqual([]);
