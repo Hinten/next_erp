@@ -12,12 +12,17 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `app/api/health` — uptime check (no auth).
 - `app/api/marketplace/mercado-livre/oauth/start` — **#291**: `PERM.integracao.write`-gated;
   mints a signed `state` and returns the ML consent URL (`channel.oauthFlow.start`).
+- `app/api/marketplace/mercado-livre/conta` — `PERM.integracao.read`-gated connection
+  status (`/users/me` identity, or `connected: false` when the credential is dead).
 - `app/api/oauth/mercado-livre/callback` — **#291**: public browser redirect target;
   the signed `state` is the only trust anchor → verify → exchange code → persist.
 - `app/api/webhooks/mercado-livre` — **#290**: ML notification receiver (unauthenticated
   `topic`+`resource` callbacks — ML does NOT HMAC-sign; contrast Shopee); acks 200 fast.
 - `lib/marketplace/mercadoLivre.ts` — resolves an `integracao` account into a
-  `ChannelContext` (reads the admin-only `credenciais` store, #287) + the plugin channel.
+  `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
+- `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only
+  `integracao/{id}/tokenDuravel` subcollection (the OLD Flutter wire shape, shared with
+  the still-running Flutter app during the dual-run migration; "one wins" refresh).
 - `lib/{auth,firebase,signatures}` — per-app copies of the shared helpers (each backend
   keeps its own so they deploy + log independently).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
@@ -25,17 +30,20 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 
 ## Status
 
-This is the **template scaffold** (Phase 5 skeleton). The OAuth token exchange +
-refresh and the webhook/functions processing are stubs (`MercadoLivreNotImplementedError`
-/ TODOs) wired to the extended `MarketplaceChannel` contract (#288). The real ML
-REST calls land with the per-channel port.
+OAuth connect is **live**: code exchange + persistence (tokenDuravel) + the
+concurrency-safe refresh + the conta status route all work; apps/web's
+`/canais/mercado-livre` UI drives them. The webhook receiver acks but does not
+process yet, and the nested functions are skeletons — those land with the
+import/order milestones of the ML port plan.
 
 ## Env
 
 See `.env.example` + `apphosting.yaml`. App-wide ML app credentials
 (`MERCADO_LIVRE_CLIENT_ID/SECRET`, `..._STATE_SECRET`) live in env / Secret
 Manager — one registered ML app serves every connected account; the per-account
-OAuth token lives in the admin-only `integracao/{id}/credenciais` subcollection.
+OAuth token lives in the admin-only `integracao/{id}/tokenDuravel` subcollection
+(shared with the Flutter app during the dual-run migration; the move to the
+encrypted `credenciais` store is a tracked post-migration follow-up).
 
 Deploy of the App Hosting backend + the functions codebase is **manual and
 coordinated** (CLAUDE.md critical rule #1). Functions deploy: `functions/DEPLOY.md`.

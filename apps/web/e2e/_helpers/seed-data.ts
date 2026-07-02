@@ -427,15 +427,17 @@ export async function seedFiliais(prefix: string, n: number): Promise<void> {
 }
 
 /**
- * Seed a small fixture set for the Balcão (canais/balcao) suite: one filial,
- * one listaDePrecos, one deposito (each named `<prefix>-ref`), then `n`
- * Integracao docs with `tipo = 7` (balcao) referencing them via real
- * `DocumentReference`s. The returned ids let tests pick the same docs in the
- * `<CollectionSelect>` dropdowns during the create flow.
+ * Seed a small fixture set for a canais/<canal> suite: one filial, one
+ * listaDePrecos, one deposito (each named `<prefix>-ref`), then `n`
+ * Integracao docs with the given `tipo` referencing them. The returned ids
+ * let tests pick the same docs in the `<CollectionSelect>` dropdowns during
+ * the create flow. Shared by the Balcão (tipo 7) and Mercado Livre (tipo 1)
+ * suites.
  */
-export async function seedBalcaoFixtures(
+async function seedIntegracaoFixtures(
   prefix: string,
   n: number,
+  tipo: number,
 ): Promise<{ filialId: string; listaId: string; depositoId: string }> {
   const filialId = `${prefix}-ref-filial`;
   const listaId = `${prefix}-ref-lista`;
@@ -508,7 +510,7 @@ export async function seedBalcaoFixtures(
   const col = db().collection('integracao');
   for (let i = 1; i <= n; i += 1) {
     batch.set(col.doc(`${prefix}-${pad(i)}`), {
-      tipo: 7,
+      tipo,
       padrao: i === 1,
       nome: `${prefix}-${pad(i)}`,
       cpf_cnpj: null,
@@ -530,18 +532,44 @@ export async function seedBalcaoFixtures(
   return { filialId, listaId, depositoId };
 }
 
+/** Balcão (tipo 7) fixture set — see `seedIntegracaoFixtures`. */
+export async function seedBalcaoFixtures(
+  prefix: string,
+  n: number,
+): Promise<{ filialId: string; listaId: string; depositoId: string }> {
+  return seedIntegracaoFixtures(prefix, n, 7);
+}
+
+/** Mercado Livre (tipo 1) fixture set — see `seedIntegracaoFixtures`. */
+export async function seedMercadoLivreFixtures(
+  prefix: string,
+  n: number,
+): Promise<{ filialId: string; listaId: string; depositoId: string }> {
+  return seedIntegracaoFixtures(prefix, n, 1);
+}
+
 /**
- * Teardown for `seedBalcaoFixtures`: sweeps the seeded Integracao + fixture
- * filial/listaDePrecos/deposito docs, including any UI-created Integracao
- * row sharing the run-scoped prefix.
+ * Teardown for `seedIntegracaoFixtures`: sweeps the seeded Integracao +
+ * fixture filial/listaDePrecos/deposito docs, including any UI-created
+ * Integracao row sharing the run-scoped prefix.
  */
-export async function cleanupBalcaoFixtures(prefix: string): Promise<void> {
+async function cleanupIntegracaoFixtures(prefix: string): Promise<void> {
   await Promise.all([
     cleanupByNamePrefix('integracao', prefix),
     cleanupByFieldPrefix('filiais', 'razaoSocial', prefix),
     cleanupByNamePrefix('listaDePrecos', prefix),
     cleanupByNamePrefix('depositos', prefix),
   ]);
+}
+
+/** Teardown for `seedBalcaoFixtures`. */
+export async function cleanupBalcaoFixtures(prefix: string): Promise<void> {
+  await cleanupIntegracaoFixtures(prefix);
+}
+
+/** Teardown for `seedMercadoLivreFixtures`. */
+export async function cleanupMercadoLivreFixtures(prefix: string): Promise<void> {
+  await cleanupIntegracaoFixtures(prefix);
 }
 
 /**
