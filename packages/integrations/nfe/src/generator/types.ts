@@ -221,6 +221,13 @@ export interface GeneratorInput {
    * randomness via `randomCNF`.
    */
   readonly cNF?: string;
+  /**
+   * Chaves de acesso (44 digits each) of the NF-es this document references,
+   * emitted as `ide.NFref[].refNFe`. Required for devolução (finNFe=4) and
+   * complementar (finNFe=2) notes so SEFAZ links them to the original. Sourced
+   * from `pedido.chNFeReferenciadas`; omit/empty for a standalone NF-e.
+   */
+  readonly chNFeReferenciadas?: readonly string[];
 }
 
 export interface GeneratorOutput {

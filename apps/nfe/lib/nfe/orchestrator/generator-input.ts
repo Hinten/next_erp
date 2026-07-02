@@ -82,6 +82,14 @@ export function buildGeneratorInput(
     frete: bundle.frete,
   });
 
+  // Referenced NF-es (devolução/complementar) → ide.NFref[].refNFe. The pedido
+  // stores chaves in `chNFeReferenciadas` (44-digit validated on the FiscalTab);
+  // buildIde re-validates each and throws on a malformed one.
+  const rawRefs = (bundle.pedido as { chNFeReferenciadas?: unknown }).chNFeReferenciadas;
+  const chNFeReferenciadas = Array.isArray(rawRefs)
+    ? rawRefs.filter((c): c is string => typeof c === 'string' && c.length > 0)
+    : [];
+
   const transpOpts = buildTranspFromFrete(bundle.frete);
   const cobr = buildCobrFromPagamentos(bundle.pagamentos);
   const infAdic = buildInfAdic(bundle.pedido, bundle.operacao);
@@ -107,6 +115,7 @@ export function buildGeneratorInput(
     ...(exporta ? { exporta } : {}),
     ...(infIntermed ? { infIntermed } : {}),
     ...(cNF ? { cNF } : {}),
+    ...(chNFeReferenciadas.length > 0 ? { chNFeReferenciadas } : {}),
     // B28/B29 — the generator's validateInput enforces presence (tpEmis≠1)
     // and absence (tpEmis=1); here we only thread the values through.
     ...(contingencia?.dhCont ? { dhCont: contingencia.dhCont } : {}),

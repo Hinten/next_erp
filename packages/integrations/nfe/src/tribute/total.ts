@@ -2,10 +2,11 @@
  * `<total>` builder — real ICMSTot aggregation.
  *
  * Sums per-item values from the validated tribute inputs. For Simples
- * Nacional under CSOSN 102/103/300/400/500, the ICMS values are zero
- * (the operation isn't an ICMS-debit transaction); for CSOSN 101/201
- * we accumulate vBC + vICMS from the inputs. ICMS-ST values come from
- * the relevant SN201/202/203/500/900 sub-configs.
+ * Nacional the ICMS-debit total (vBC/vICMS) is zero for every CSOSN except
+ * 900 (the only SN code that carries a real vICMS); CSOSN 101/201's
+ * `vCredICMSSN` is the buyer's transferable credit, NOT emitter ICMS, so it
+ * never rolls into ICMSTot. ICMS-ST values come from the SN201/202/203/500/900
+ * sub-configs.
  *
  * Mirrors the Flutter aggregation in
  * `.old/packages/pedido_nfe/lib/src/pedido_nfe_base.dart:276-296`
