@@ -192,3 +192,44 @@ export const credenciaisIntegracaoMeta: CollectionMetadata = {
 // `credenciaisIntegracaoMeta`, mirroring `certificadoSecreto`). The admin
 // collection handle consumes the path + schema directly; the server-side
 // cascade on `integracao` delete frees the subcollection without a rules block.
+
+/* -------------------------------------------------------------------------- */
+/*        TokenDuravel (subcollection) — Mercado Livre dual-run parity         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Mercado Livre durable OAuth credential — `integracao/{integracaoId}/tokenDuravel`.
+ * This is the OLD Flutter `TokenDuravel` wire shape, used during the migration so
+ * the new app and the still-running Flutter app share the same credential (same
+ * ML application). A tracked follow-up moves ML onto the encrypted `credenciais`
+ * store above and drops this once the Flutter app is retired.
+ *
+ * Wire notes: `expires_in` is the **absolute** expiry as **int millis since
+ * epoch** (Flutter's `dateTimeToJson`), NOT a seconds-duration. `expired` is a
+ * rotation flag Flutter writes with `includeIfNull:false`, so it may be absent.
+ *
+ * Admin-only / default-deny, exactly like `credenciais` — it holds a live
+ * `refresh_token`, so it is NOT registered in `ALL_DOMAINS` and rules-gen emits
+ * no block for it. Only the Admin SDK (apps/mercado-livre) reaches it; the
+ * Flutter client uses its own production ruleset.
+ */
+export const tokenDuravelSchema = z
+  .object({
+    access_token: z.string().min(1),
+    refresh_token: z.string().min(1),
+    token_type: z.string().default('bearer'),
+    scope: z.string().default(''),
+    /** Absolute expiry, ms since epoch (Flutter `dateTimeToJson`). */
+    expires_in: millisSinceEpoch(),
+    user_id: z.number().int().nullable().default(null),
+    /** `true` once Flutter/the app rotates this token; may be absent. */
+    expired: z.boolean().nullable().optional(),
+  })
+  .passthrough();
+export type TokenDuravel = z.infer<typeof tokenDuravelSchema>;
+
+export const tokenDuravelMeta: CollectionMetadata = {
+  collectionPath: 'integracao/{integracaoId}/tokenDuravel',
+  // Admin-only / default-deny — placeholder bits; NOT in `ALL_DOMAINS`.
+  permissions: { read: 0n, write: 0n, delete: 0n },
+};
