@@ -566,9 +566,13 @@ describe('aggregateTotals', () => {
     expect(totals.vNF).toBe(1750.5); // CSOSN 102 → no ST contribution
   });
 
-  it('CSOSN 101 adds vCredICMSSN to the vICMS bucket', () => {
+  it('CSOSN 101 contributes nothing to ICMSTot.vICMS (vCredICMSSN is the SN credit, not ICMS due)', () => {
+    // vCredICMSSN is the buyer-appropriable Simples Nacional credit; ICMSSN101
+    // emits no <vICMS>, so Σ item vICMS = 0 and ICMSTot.vICMS must stay 0 —
+    // otherwise SEFAZ rejects the note with cStat 532 (totals mismatch).
     const totals = aggregateTotals([{ item: { vProd: 1500 }, imposto: impostoFor101() }]);
-    expect(totals.vICMS).toBe(18.75);
+    expect(totals.vICMS).toBe(0);
+    expect(totals.vBC).toBe(0);
   });
 
   it('CSOSN 500 adds vFCPSTRet but leaves vNF = vProd (no ST in this op)', () => {
@@ -591,6 +595,43 @@ describe('aggregateTotals', () => {
     });
     expect(totals.vDesc).toBe(10);
     expect(totals.vNF).toBe(90);
+  });
+
+  it('ICMSTot.vProd sums the GROSS item vProd and vNF nets extras.vDesc', () => {
+    // vProd is the gross wire value (Σ <prod><vProd>); the discount rides in
+    // extras.vDesc (Σ <prod><vDesc>). vNF = Σ vProd − vDesc.
+    const totals = aggregateTotals(
+      [
+        { item: { vProd: 100 }, imposto: impostoFor102() },
+        { item: { vProd: 50 }, imposto: impostoFor102() },
+      ],
+      { vDesc: 15 },
+    );
+    expect(totals.vProd).toBe(150);
+    expect(totals.vDesc).toBe(15);
+    expect(totals.vNF).toBe(135);
+  });
+
+  it('RTC total uses vBaseTributavel (net) not the gross vProd when they differ', async () => {
+    // Gross vProd = 100, but the tribute base is 90 (a R$10 discount). The RTC
+    // IBS/CBS total must be computed on 90 so it matches the per-item <IBSCBS>.
+    const rtc: Imposto = {
+      ...impostoFor102(),
+      configuracaoIBSCBS: { CST: '000', cClassTrib: '000000', pIBSUF: 10, pIBSMun: 0, pCBS: 0 },
+    };
+    const grossOnly = aggregateTotals(
+      [{ item: { vProd: 100 }, imposto: rtc }],
+      {},
+      { emitRtc: true },
+    );
+    const withBase = aggregateTotals(
+      [{ item: { vProd: 100, vBaseTributavel: 90 }, imposto: rtc }],
+      {},
+      { emitRtc: true },
+    );
+    // 10% IBS-UF on 100 = 10.00; on the net base 90 = 9.00.
+    expect(grossOnly.rtc?.vIBSUF).toBe(10);
+    expect(withBase.rtc?.vIBSUF).toBe(9);
   });
 
   it('sums vIPI from configuracaoIPI (IPITrib) and adds it to vNF', () => {

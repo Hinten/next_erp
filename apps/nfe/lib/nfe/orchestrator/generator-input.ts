@@ -10,6 +10,7 @@ import {
   type Payment,
 } from '@delfrance/integrations-nfe';
 import { microsToMillis } from '@delfrance/core/datetime';
+import { roundReais } from '@delfrance/core/money';
 import {
   FORMA_PAGAMENTO,
   type Filial,
@@ -62,9 +63,18 @@ export function buildGeneratorInput(
     genItems[0] = { ...first, vFrete };
   }
 
+  // Total discount = Σ per-item <vDesc> (unit discount + apportioned
+  // descontoTotal), computed once in buildGenItems and carried on each genItem.
+  const vDesc = roundReais(genItems.reduce((sum, gi) => sum + (gi.vDesc ?? 0), 0));
   const totals = aggregateTotals(
-    items.map((it) => ({ item: { vProd: it.vProd }, imposto: it.imposto })),
-    { vFrete },
+    // `vProd` = GROSS (rolls into ICMSTot.vProd = Σ wire <vProd>); `vBaseTributavel`
+    // = net-of-unit-discount base for the RTC total (matches the per-item base
+    // buildGenItems passes to buildImpostoXml). vNF subtracts `vDesc` below.
+    items.map((it) => ({
+      item: { vProd: it.vProdBruto, vBaseTributavel: it.vProd },
+      imposto: it.imposto,
+    })),
+    { vFrete, vDesc },
     { emitRtc: emitRtc === true },
   );
   const payments = buildPaymentsFromPagamentos(bundle.pagamentos, {
@@ -123,6 +133,7 @@ export function buildGenItems(
   emitRtc = false,
 ): GeneratorItem[] {
   const cfopField = isInterstate ? 'cfopInterestadual' : 'cfop';
+  const vDescByIndex = apportionDescontos(items, bundle);
   return items.map((it, i) => {
     const where = `pedido '${bundle.pedidoId}' item ${it.itemIndex} (produto '${it.produtoUid}')`;
     const cfop = it.imposto[cfopField] ?? bundle.operacao[cfopField];
@@ -149,6 +160,13 @@ export function buildGenItems(
 
     const cProd = it.sku ?? it.gtin!; // guarded in flattenAndValidate
     const cEAN = it.gtin && /^\d{8,14}$/.test(it.gtin) ? it.gtin : 'SEM GTIN';
+    const vDesc = vDescByIndex[i]!;
+    if (vDesc > it.vProdBruto) {
+      throw new NFeOrchestratorError(
+        `${where}: desconto (R$ ${vDesc.toFixed(2)}) exceeds the gross item value ` +
+          `(R$ ${it.vProdBruto.toFixed(2)}) — check descontoUnitario/descontoTotal`,
+      );
+    }
     return {
       nItem: i + 1,
       cProd,
@@ -160,14 +178,53 @@ export function buildGenItems(
       uCom: unidade,
       qCom: it.quantidade,
       vUnCom: it.precoDeVenda,
-      vProd: it.vProd,
+      // `<prod><vProd>` is GROSS (qCom × vUnCom) so SEFAZ rule 629 holds; the
+      // discount rides in `<vDesc>` and `vNF = Σ(vProd − vDesc)`.
+      vProd: it.vProdBruto,
+      ...(vDesc > 0 ? { vDesc } : {}),
       cEANTrib: cEAN,
       uTrib: unidade,
       qTrib: it.quantidade,
       vUnTrib: it.precoDeVenda,
       indTot: '1',
+      // Tribute base stays net-of-unit-discount (`it.vProd`, matches the legacy
+      // Flutter `item.subtotal`), unaffected by the gross wire value above.
       impostoXml: buildImpostoXml(it.imposto, { vProd: it.vProd }, { emitRtc }),
     };
+  });
+}
+
+/**
+ * Apportion the pedido-level `descontoTotal` across items, returning each item's
+ * total `<vDesc>` (its unit discount `descontoUnitário × qtd` PLUS its share of
+ * the order-level discount). The order discount is split proportional to each
+ * item's net subtotal (`it.vProd`), with the LAST item absorbing the rounding
+ * remainder so `Σ vDesc` exactly equals `Σ(descUnit×qtd) + descontoTotal`.
+ *
+ * Mirrors the legacy Flutter generator
+ * (`.old/packages/pedido_nfe/lib/src/pedido_nfe_base.dart:907-921`).
+ */
+export function apportionDescontos(
+  items: ReadonlyArray<FiscalItem>,
+  bundle: PedidoBundle,
+): number[] {
+  const rawTotal = Number((bundle.pedido as { descontoTotal?: unknown }).descontoTotal ?? 0);
+  const descontoTotal = Number.isFinite(rawTotal) && rawTotal > 0 ? roundReais(rawTotal) : 0;
+  const vTotNet = roundReais(items.reduce((sum, it) => sum + it.vProd, 0));
+  let orderUsed = 0;
+  return items.map((it, i) => {
+    const unitDesc = roundReais((it.descontoUnitario ?? 0) * it.quantidade);
+    let orderShare = 0;
+    if (descontoTotal > 0 && vTotNet > 0) {
+      if (i < items.length - 1) {
+        orderShare = roundReais((it.vProd / vTotNet) * descontoTotal);
+        orderUsed = roundReais(orderUsed + orderShare);
+      } else {
+        // Last item takes the remainder to avoid rounding leakage.
+        orderShare = roundReais(descontoTotal - orderUsed);
+      }
+    }
+    return roundReais(unitDesc + orderShare);
   });
 }
 
