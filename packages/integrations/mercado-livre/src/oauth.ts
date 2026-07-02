@@ -1,3 +1,10 @@
+/**
+ * Mercado Livre OAuth core — **SERVER-SIDE ONLY**. Every token request sends the
+ * app `clientSecret` to `POST /oauth/token`, so this module must never be
+ * imported into client/browser code (doing so would bundle + leak the secret).
+ * It stays platform-neutral (fetch-only) but is consumed exclusively by the
+ * App-Hosting backend (`apps/mercado-livre`). Mirrors the Melhor Envio OAuth core.
+ */
 import {
   MercadoLivreHttpError,
   MercadoLivreNetworkError,

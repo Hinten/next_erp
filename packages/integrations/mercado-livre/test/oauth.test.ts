@@ -94,6 +94,18 @@ describe('exchangeCode', () => {
     const body = new URLSearchParams(fetchMock.mock.calls[0]![1]!.body as string);
     expect(body.get('code_verifier')).toBe('verifier-1');
   });
+
+  it('maps invalid_grant on the code exchange to a re-auth-required error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(
+        { error: 'invalid_grant', error_description: 'expired authorization code', status: 400 },
+        400,
+      ),
+    );
+    await expect(exchangeCode({ ...config, fetch: fetchMock }, 'DEAD-CODE')).rejects.toBeInstanceOf(
+      MercadoLivreReauthRequiredError,
+    );
+  });
 });
 
 describe('refreshAccessToken', () => {

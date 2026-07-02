@@ -38,9 +38,10 @@ export class MercadoLivreValidationError extends MercadoLivreError {
 }
 
 /**
- * The stored grant is dead — `invalid_grant` on refresh (refresh token expired,
- * revoked, or already used), or no credential at all. The account must complete
- * the OAuth consent flow again; a plain retry will not fix it.
+ * The stored grant is dead — `invalid_grant` on either the code exchange (the
+ * authorization code is expired or already used) or a refresh (the refresh
+ * token is expired, revoked, or already used), or no credential at all. The
+ * account must complete the OAuth consent flow again; a plain retry won't fix it.
  */
 export class MercadoLivreReauthRequiredError extends MercadoLivreError {
   constructor(

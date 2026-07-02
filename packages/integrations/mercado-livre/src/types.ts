@@ -25,9 +25,10 @@ export const tokenResponseSchema = z
 export type TokenResponse = z.infer<typeof tokenResponseSchema>;
 
 /**
- * OAuth error body (`400`/`401`): `{ error, error_description, status, cause }`.
- * `invalid_grant` means the authorization code / refresh token is expired,
- * revoked, or already used → re-consent required.
+ * OAuth error body (`400`/`401`). We surface `error` / `error_description` /
+ * `message` / `status`; any other keys ML sends (e.g. a `cause` array) ride
+ * through `.passthrough()` untyped. `invalid_grant` means the authorization
+ * code / refresh token is expired, revoked, or already used → re-consent needed.
  */
 export const tokenErrorSchema = z
   .object({
