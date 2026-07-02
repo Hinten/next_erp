@@ -62,10 +62,18 @@ phase the work so the debris-producing deletes are covered first.
 
 ### Phase 1 — event-triggered cleanup (ship first)
 
-- **`onDocumentDeleted('produtos/{id}')` (#136)** — sweep the 13 known
-  subcollections in batched deletes. Idempotent; tolerant of partially-cleaned
-  docs (Flutter may have already swept some). Fully exercisable on the Firestore
-  emulator in `ci-storage.yml`.
+- **`onDocumentDeleted('produtos/{id}')` (#136 + #199)** — the authoritative
+  produto delete cascade, core `cascadeProdutoDeletion`. **Shipped.** Rather than
+  enumerate the 13 known subcollections, one `recursiveDelete` over the produto's
+  **own document ref** walks its entire descendant subtree (the Admin SDK
+  BulkWriter deletes every subcollection Firestore would orphan, including new
+  ones, whether or not the parent doc still exists) — closing **#136**. It also
+  cascades **variation children** (sibling top-level `produtos where paiId == id`,
+  not descendants) with a per-child `recursiveDelete`, closing **#199** and
+  retiring the client-side children cascade (`deleteProdutoCascade` now deletes
+  only the parent doc; the inbound-reference guard stays client-side). Idempotent;
+  tolerant of partially-cleaned docs (Flutter may have already swept some). Fully
+  exercisable on the Firestore emulator in `ci-storage.yml`.
 - **`onArquivoDeleted` (#95)** — on `arquivos/{id}` delete, delete the Storage
   object the doc owned (and, for a product-image original, cascade to its 3
   derivative objects + docs). Product media is **product-scoped** (paths are
@@ -225,8 +233,11 @@ not this one). No automated deploy workflow yet.
 Proposed (2026-06). Phasing: Phase 1 **arquivo side** done — `onArquivoDeleted`
 + the create-first upload contract (#95/#202) — plus `onProdutoMediaChanged`, the
 produto-**edit** eager-reap trigger (marks an arquivo when a photo/video is edited out,
-clears it on re-add); the produto-**delete** `onDocumentDeleted('produtos/{id}')`
-subcollection sweep (#136) still follows. Phase 2 **implemented** as
+clears it on re-add). The produto-**delete** `onDocumentDeleted('produtos/{id}')`
+cascade (`cascadeProdutoDeletion`) is now **shipped** — a whole-subtree
+`recursiveDelete` on the produto doc ref reclaims every subcollection (#136) and a
+per-child `recursiveDelete` cascades variation children (#199), retiring the client
+children cascade. Phase 2 **implemented** as
 `reconcileArquivoOrphans` (every 48h): the marked-for-deletion sweep (the eager reap's
 back half — re-verifies the owner before deleting), the phantom-doc sweep, and the
 unreferenced-arquivo sweep (now the backstop), all oldest-first with the grace window

@@ -11,6 +11,6 @@ export { onArquivoDeleted } from './arquivos/onArquivoDeleted';
 export { onProdutoMediaChanged } from './arquivos/onProdutoMediaChanged';
 export { onTabMediMediaChanged } from './arquivos/onTabMediMediaChanged';
 export { reconcileArquivoOrphans } from './arquivos/arquivoOrphanSweep';
-export { onProdutoDeleted } from './estoques/onProdutoDeleted';
+export { onProdutoDeleted } from './produtos/onProdutoDeleted';
 export { onEstoqueDeleted } from './estoques/onEstoqueDeleted';
 export { aplicarEstoque } from './estoques/aplicarEstoque';
