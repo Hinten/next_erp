@@ -128,6 +128,41 @@ export function isFreteJaPostado(estado: EstadoFrete): boolean {
   return estado !== 'checkFinalizado' && !ESTADOS_FRETE_NAO_POSTADO.has(estado);
 }
 
+/**
+ * Estados from which the physical stock of a saída pedido leaves the depósito —
+ * ported 1:1 from the Dart `ESTADOS_FRETE.removeEstoque` list
+ * (`integracao_frete_base.dart:279`): everything from "packed" onward, including
+ * the failure/return tail (the goods are out of the warehouse either way).
+ * Consumed by the pedido→estoque sync (`efeitoEstoquePedido`).
+ */
+export const ESTADOS_FRETE_REMOVE_ESTOQUE: ReadonlySet<EstadoFrete> = new Set([
+  'empacotado',
+  'aguardandoPostagem',
+  'checkFinalizado',
+  'postado',
+  'recebidoPelaTransportadora',
+  'aCaminho',
+  'tentandoRealizarEntrega',
+  'entregue',
+  'falhaNaEntrega',
+  'suspenso',
+  'enderecoNaoEncontrado',
+  'aCaminhoDoRemetente',
+  'devolvido',
+  'objetoExtraviado',
+  'aguardandoRetirada',
+]);
+
+/**
+ * Estados whose frete signal must NOT drive stock movement — the Dart
+ * `ignorarRemocaoDeEstoque` pair (`integracao_frete_base.dart:201`): an unknown
+ * or errored freight status is noise, not a shipping event.
+ */
+export const ESTADOS_FRETE_IGNORAR_REMOCAO: ReadonlySet<EstadoFrete> = new Set([
+  'desconhecido',
+  'error',
+]);
+
 /* -------------------------------------------------------------------------- */
 /*                         modalidadeFrete enum (modFrete)                    */
 /* -------------------------------------------------------------------------- */

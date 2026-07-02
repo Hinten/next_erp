@@ -14,3 +14,7 @@ export { reconcileArquivoOrphans } from './arquivos/arquivoOrphanSweep';
 export { onProdutoDeleted } from './estoques/onProdutoDeleted';
 export { onEstoqueDeleted } from './estoques/onEstoqueDeleted';
 export { aplicarEstoque } from './estoques/aplicarEstoque';
+export {
+  onPedidoEstoqueSync,
+  resincronizarEstoquePedido,
+} from './estoques/sincronizarEstoquePedido';

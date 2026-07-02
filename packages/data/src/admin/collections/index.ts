@@ -27,3 +27,4 @@ export { tokenMelEnvCollection } from './tokenMelEnvCollection';
 export { integracaoCollection } from './integracaoCollection';
 export { credenciaisIntegracaoCollection } from './credenciaisIntegracaoCollection';
 export { pedidoCollection } from './pedidoCollection';
+export { operacaoCollection } from './operacaoCollection';
