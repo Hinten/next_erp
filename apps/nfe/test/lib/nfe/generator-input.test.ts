@@ -124,4 +124,25 @@ describe('apportionDescontos — pedido-level descontoTotal', () => {
     const sum = vDescs.reduce((s, v) => s + v, 0);
     expect(roundReais(sum)).toBe(10);
   });
+
+  it('does not overshoot when equal shares land on a half-cent (Σ stays exact, no negative)', () => {
+    // 4 × R$1,00 with a R$0,02 order discount: naïve per-item rounding gives
+    // 0,01+0,01+0,01 = 0,03 > 0,02 and a negative last share. The cumulative
+    // method must keep Σ = 0,02 with every share ≥ 0.
+    const items = Array.from({ length: 4 }, (_, i) =>
+      item({ produtoUid: `p${i}`, precoDeVenda: 1, quantidade: 1 }),
+    );
+    const vDescs = apportionDescontos(items, bundleWith(OP, { descontoTotal: 0.02 }));
+    expect(vDescs.every((v) => v >= 0)).toBe(true);
+    expect(roundReais(vDescs.reduce((s, v) => s + v, 0))).toBe(0.02);
+  });
+
+  it('does not overshoot on the classic 20-item × R$0,50 case (would be R$0,57 naïvely)', () => {
+    const items = Array.from({ length: 20 }, (_, i) =>
+      item({ produtoUid: `p${i}`, precoDeVenda: 10, quantidade: 1 }),
+    );
+    const vDescs = apportionDescontos(items, bundleWith(OP, { descontoTotal: 0.5 }));
+    expect(vDescs.every((v) => v >= 0)).toBe(true);
+    expect(roundReais(vDescs.reduce((s, v) => s + v, 0))).toBe(0.5);
+  });
 });

@@ -207,11 +207,21 @@ export function buildGenItems(
  * Apportion the pedido-level `descontoTotal` across items, returning each item's
  * total `<vDesc>` (its unit discount `descontoUnitário × qtd` PLUS its share of
  * the order-level discount). The order discount is split proportional to each
- * item's net subtotal (`it.vProd`), with the LAST item absorbing the rounding
- * remainder so `Σ vDesc` exactly equals `Σ(descUnit×qtd) + descontoTotal`.
+ * item's net subtotal (`it.vProd`) so `Σ vDesc` exactly equals
+ * `Σ(descUnit×qtd) + descontoTotal`.
  *
- * Mirrors the legacy Flutter generator
- * (`.old/packages/pedido_nfe/lib/src/pedido_nfe_base.dart:907-921`).
+ * Uses the **rounded-running-cumulative** method: each item's order share is
+ * `round(cumulativeWeightThroughItem / vTotNet × descontoTotal) − alreadyAllocated`.
+ * Because the rounded cumulative target is monotonic non-decreasing and capped at
+ * `descontoTotal` on the last item, every share is `≥ 0` and the sum lands exactly
+ * on `descontoTotal` — no over-allocation and no negative remainder.
+ *
+ * The naïve "round each share independently, last item takes the remainder"
+ * approach (like the legacy Flutter generator, `.old/…/pedido_nfe_base.dart:907`)
+ * overshoots when several proportional shares land on a half-cent: e.g. a R$0,50
+ * discount over 20 equal items rounds each 0,025 share up to 0,03, summing to
+ * R$0,57 > R$0,50 and forcing a negative last share. Flutter threw on that; we
+ * avoid it entirely so no valid order fails to emit.
  */
 export function apportionDescontos(
   items: ReadonlyArray<FiscalItem>,
@@ -220,18 +230,22 @@ export function apportionDescontos(
   const rawTotal = Number((bundle.pedido as { descontoTotal?: unknown }).descontoTotal ?? 0);
   const descontoTotal = Number.isFinite(rawTotal) && rawTotal > 0 ? roundReais(rawTotal) : 0;
   const vTotNet = roundReais(items.reduce((sum, it) => sum + it.vProd, 0));
-  let orderUsed = 0;
+  const apportion = descontoTotal > 0 && vTotNet > 0;
+  let weightSoFar = 0;
+  let allocated = 0;
   return items.map((it, i) => {
     const unitDesc = roundReais((it.descontoUnitario ?? 0) * it.quantidade);
     let orderShare = 0;
-    if (descontoTotal > 0 && vTotNet > 0) {
-      if (i < items.length - 1) {
-        orderShare = roundReais((it.vProd / vTotNet) * descontoTotal);
-        orderUsed = roundReais(orderUsed + orderShare);
-      } else {
-        // Last item takes the remainder to avoid rounding leakage.
-        orderShare = roundReais(descontoTotal - orderUsed);
-      }
+    if (apportion) {
+      weightSoFar = roundReais(weightSoFar + it.vProd);
+      // Cumulative discount that should be allocated through this item; the last
+      // item is pinned to the full descontoTotal so rounding never leaks a cent.
+      const cumTarget =
+        i === items.length - 1
+          ? descontoTotal
+          : roundReais((weightSoFar / vTotNet) * descontoTotal);
+      orderShare = roundReais(cumTarget - allocated);
+      allocated = roundReais(allocated + orderShare); // == cumTarget
     }
     return roundReais(unitDesc + orderShare);
   });
