@@ -66,7 +66,7 @@ describe.skipIf(!EMULATED)('CRUD coverage matrix — every domain is governed (#
 
   it('the matrix actually covered the produto subcollections', () => {
     const paths = ALL_DOMAINS.map((d) => d.meta.collectionPath);
-    expect(paths).toContain('produtos/{produtoId}/produtomercadolivre');
-    expect(paths).toContain('produtos/{produtoId}/variacoesml');
+    expect(paths).toContain('produtos/{produtoId}/produtoMercadoLivre');
+    expect(paths).toContain('produtos/{produtoId}/variacaoMercadoLivre');
   });
 });
