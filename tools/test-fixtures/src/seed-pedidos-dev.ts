@@ -17,8 +17,10 @@ import { DEV_ENDERECO_ID } from './seed-enderecos-dev';
  *
  * Idempotent: every seeded doc uses a stable `dev-pedidos-...` id, so
  * re-running this script just overwrites the previous run. Pass `--clean`
- * to delete everything the seed wrote (pedidos, their `nfev4`
- * subcollections, and the cliente) without re-creating it.
+ * to delete everything the seed wrote — each pedido plus its full subtree
+ * (every subcollection: `itens`, `pagamentos`, `historicoEstadoPedido`,
+ * `incidentes`, `frete`, `nfev4` and its `cartacorrecao` grandchild) and
+ * the cliente — without re-creating it.
  *
  * Usage (from the repo root):
  *   pnpm --filter @delfrance/test-fixtures seed:pedidos          # create + overwrite
@@ -527,22 +529,21 @@ export async function seedDevPedidos(): Promise<{ created: number }> {
 export async function cleanupDevPedidos(): Promise<{ deleted: number }> {
   let deleted = 0;
   for (const id of devPedidoIds()) {
-    // Subcollections must be deleted explicitly — the Admin SDK doesn't
-    // cascade them with the parent doc. Sweeps the two subcollections
-    // we own: `nfev4` (the NF-e generator's output) and `pagamentos`
-    // (this seed's own writes).
-    for (const sub of ['nfev4', 'pagamentos']) {
-      const subSnap = await db().collection('pedidos').doc(id).collection(sub).get();
-      if (!subSnap.empty) {
-        const batch = db().batch();
-        subSnap.docs.forEach((d) => batch.delete(d.ref));
-        await batch.commit();
-      }
-    }
-    await db().collection('pedidos').doc(id).delete();
+    // Delete the pedido and its ENTIRE subtree in one BulkWriter walk.
+    // Firestore doesn't cascade subcollections when the parent doc is
+    // deleted, and the pedido schema declares six (`itens`, `pagamentos`,
+    // `historicoEstadoPedido`, `incidentes`, `frete`, `nfev4`) plus a
+    // `nfev4/{nfeId}/cartacorrecao` grandchild — a hardcoded list orphaned
+    // everything not in it (#257). `recursiveDelete` sweeps the whole
+    // subtree with no name enumeration, so new subcollections are covered
+    // automatically. Mirrors `cascadeProdutoDeletion` in
+    // apps/functions/src/produtos/onProdutoDeleted.ts.
+    await db().recursiveDelete(db().collection('pedidos').doc(id));
     deleted += 1;
   }
-  await db().collection('clientes').doc(CLIENTE_ID).delete();
+  // The cliente can own an `enderecos` subcollection (the endereço fiscal
+  // stamped on withCliente pedidos) — recursiveDelete sweeps it too.
+  await db().recursiveDelete(db().collection('clientes').doc(CLIENTE_ID));
   return { deleted };
 }
 
