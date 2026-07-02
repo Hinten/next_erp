@@ -99,22 +99,26 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   history directly, so its re-fires of this trigger are idempotent no-ops.
 - **`aplicarEstoque`** (`onCall` — the repo's FIRST HTTPS callable) — server-owned
   estoque write path for the web client (replaces the direct client `writeBatch`
-  from PR #217). ONE Firestore transaction does getOrCreate + the movement
-  (entrada/saída delta or balanço absolute set) / localização + the
-  `historicoEstoque` audit record — so the first-movement create race and the
-  clamping policy live in one trusted place. Enforces auth + `PERM.estoque.write`
-  itself (the `su` super-user claim short-circuits, like the rules) since the
-  Admin SDK bypasses Firestore rules; rules stay OPEN for Flutter coexistence
-  (ADR 0010). Split per op into the exported (no-auth) `aplicarLocalizacao` /
-  `aplicarMovimento` cores the emulator suite drives directly: `aplicarMovimento`
-  reuses `planMovimentacao` (`@delfrance/data/produto`); `aplicarLocalizacao` updates
-  ONLY `localizacao` on an existing estoque (quantities are movement-owned; no
-  `ultimaModificacao` bump on an existing doc — but the first-touch create still
-  initializes `ultimaModificacao: now` like every other create path).
-  Follow-up (issue #387): `quantidadeReservada ≥ 0` on every movement path + monotonic
-  `ultimaModificacao` + normalizing untrusted stored reads before arithmetic (blocked on
-  the clean path — the Node SDK has no `FieldValue.maximum`). ⚠️ On the app's
-  critical path: the staging estoque tab + the estoque
+  from PR #217). Enforces auth + `PERM.estoque.write` itself (the `su` super-user
+  claim short-circuits, like the rules) since the Admin SDK bypasses Firestore
+  rules; rules stay OPEN for Flutter coexistence (ADR 0010). Split per op into
+  the exported (no-auth) `aplicarLocalizacao` / `aplicarMovimento` cores the
+  emulator suite drives directly. **Movements** (#387, the old Flutter backend's
+  transform design): ONE atomic **read-free WriteBatch** — the merge-set is the
+  getOrCreate, entrada/saída deltas are server-side `FieldValue.increment`s,
+  `quantidadeReservada` is floored at 0 by a follow-up `FieldValue.maximum(0)`
+  write on the SAME doc (a batch's writes apply in order), `ultimaModificacao` is
+  monotonic via `maximum(now)`, and `dataCriacao` uses `minimum(now)` (set-if-
+  missing); balanço writes the absolute counted values with the reservada clamped
+  in code. Server-owned arithmetic also self-heals stored non-numbers (transforms
+  SET the operand). ⚠️ `FieldValue.maximum`/`minimum` exist only on firebase-admin
+  14 / `@google-cloud/firestore` ≥ 8.6.0 (absent in v7) — one more reason this
+  package stays on admin 14. `aplicarMovimento` reuses `planMovimentacao`
+  (`@delfrance/data/produto`); `aplicarLocalizacao` keeps its small read-transaction
+  and updates ONLY `localizacao` on an existing estoque (quantities are
+  movement-owned; no `ultimaModificacao` bump on an existing doc — but the
+  first-touch create still initializes `ultimaModificacao: now` like every other
+  create path). ⚠️ On the app's critical path: the staging estoque tab + the estoque
   Playwright e2e only work once this is DEPLOYED (deploy is manual — root rule #1).
 - ⚠️ All three target the NAMED `default` database (gotcha #8). `@delfrance/auth`
   is a new build-time dep (esbuild-bundled, like data/schemas) for `hasPerm`/`PERM`.

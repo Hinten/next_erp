@@ -22,6 +22,7 @@ interface EstoqueDoc {
   quantidadeReservada?: number;
   localizacao?: string | null;
   ultimaModificacao?: number | null;
+  dataCriacao?: number | null;
 }
 
 function estoqueRef(db: Firestore, produtoId: string, depositoId: string) {
@@ -109,6 +110,144 @@ describe.skipIf(!EMULATED)('aplicarEstoque core (emulator)', () => {
       3,
     );
     expect(((await ref.get()).data() as EstoqueDoc).quantidade).toBe(4);
+  });
+
+  it('quantidadeReservada floors at 0 — first-movement saída and overshoot (#387)', async () => {
+    const db = getDb();
+    const produtoId = `p${randomUUID().replace(/-/g, '')}`;
+    const depositoId = 'dep1';
+    const ref = estoqueRef(db, produtoId, depositoId);
+
+    // First movement is a saída: quantidade may go negative, reservada must not.
+    await aplicarMovimento(
+      db,
+      {
+        op: 'movimento',
+        produtoId,
+        depositoId,
+        input: { tipo: 'saida', quantidade: 2, quantidadeReservada: 1, motivo: null },
+      },
+      1,
+    );
+    let data = (await ref.get()).data() as EstoqueDoc;
+    expect(data.quantidade).toBe(-2);
+    expect(data.quantidadeReservada).toBe(0);
+
+    // Reserve 3, then a saída releasing 5 overshoots → floored at 0, not -2.
+    await aplicarMovimento(
+      db,
+      {
+        op: 'movimento',
+        produtoId,
+        depositoId,
+        input: { tipo: 'entrada', quantidade: 10, quantidadeReservada: 3, motivo: null },
+      },
+      2,
+    );
+    await aplicarMovimento(
+      db,
+      {
+        op: 'movimento',
+        produtoId,
+        depositoId,
+        input: { tipo: 'saida', quantidade: 4, quantidadeReservada: 5, motivo: null },
+      },
+      3,
+    );
+    data = (await ref.get()).data() as EstoqueDoc;
+    expect(data.quantidade).toBe(4); // -2 + 10 - 4
+    expect(data.quantidadeReservada).toBe(0); // max(0 + 3 - 5, 0)
+  });
+
+  it('a stale now cannot move ultimaModificacao backwards (#387)', async () => {
+    const db = getDb();
+    const produtoId = `p${randomUUID().replace(/-/g, '')}`;
+    const depositoId = 'dep1';
+    const ref = estoqueRef(db, produtoId, depositoId);
+
+    await aplicarMovimento(
+      db,
+      {
+        op: 'movimento',
+        produtoId,
+        depositoId,
+        input: { tipo: 'entrada', quantidade: 5, quantidadeReservada: 0, motivo: null },
+      },
+      100,
+    );
+    // Out-of-order timestamp: the movement still applies, the clock stays put.
+    await aplicarMovimento(
+      db,
+      {
+        op: 'movimento',
+        produtoId,
+        depositoId,
+        input: { tipo: 'entrada', quantidade: 3, quantidadeReservada: 0, motivo: null },
+      },
+      50,
+    );
+    const data = (await ref.get()).data() as EstoqueDoc;
+    expect(data.quantidade).toBe(8);
+    expect(data.ultimaModificacao).toBe(100);
+  });
+
+  it('balanço clamps reservada at 0 and keeps dataCriacao (#387)', async () => {
+    const db = getDb();
+    const produtoId = `p${randomUUID().replace(/-/g, '')}`;
+    const depositoId = 'dep1';
+    const ref = estoqueRef(db, produtoId, depositoId);
+
+    await aplicarMovimento(
+      db,
+      {
+        op: 'movimento',
+        produtoId,
+        depositoId,
+        input: { tipo: 'entrada', quantidade: 10, quantidadeReservada: 2, motivo: null },
+      },
+      1,
+    );
+    // The callable's schema rejects negative magnitudes; drive the exported core
+    // directly to prove the balanço clamp is not schema-dependent.
+    await aplicarMovimento(
+      db,
+      {
+        op: 'movimento',
+        produtoId,
+        depositoId,
+        input: { tipo: 'balanco', quantidade: 4, quantidadeReservada: -3, motivo: 'contagem' },
+      },
+      5,
+    );
+    const data = (await ref.get()).data() as EstoqueDoc;
+    expect(data.quantidade).toBe(4);
+    expect(data.quantidadeReservada).toBe(0);
+    expect(data.dataCriacao).toBe(1); // minimum(now) keeps the older creation time
+    expect(data.ultimaModificacao).toBe(5);
+  });
+
+  it('heals stored non-number quantities instead of corrupting them (#387)', async () => {
+    const db = getDb();
+    const produtoId = `p${randomUUID().replace(/-/g, '')}`;
+    const depositoId = 'dep1';
+    const ref = estoqueRef(db, produtoId, depositoId);
+
+    // Rules stay open for Flutter coexistence — a legacy writer can leave garbage.
+    await ref.set({ quantidade: 'muito', quantidadeReservada: 'abc', ultimaModificacao: 'nunca' });
+    await aplicarMovimento(
+      db,
+      {
+        op: 'movimento',
+        produtoId,
+        depositoId,
+        input: { tipo: 'entrada', quantidade: 5, quantidadeReservada: 0, motivo: null },
+      },
+      7,
+    );
+    const data = (await ref.get()).data() as EstoqueDoc;
+    expect(data.quantidade).toBe(5); // increment on a non-number SETS the operand
+    expect(data.quantidadeReservada).toBe(0);
+    expect(data.ultimaModificacao).toBe(7);
   });
 
   it('localizacao getOrCreates with quantidade 0 and writes no historico', async () => {

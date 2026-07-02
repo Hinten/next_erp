@@ -1,4 +1,4 @@
-import type { Firestore } from 'firebase-admin/firestore';
+import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { PERM, hasPerm } from '@delfrance/auth';
@@ -9,7 +9,7 @@ import {
   type EstoqueComando,
   type MovimentacaoPlan,
 } from '@delfrance/data/produto';
-import { type EstoqueProduto, makeEstoqueUid } from '@delfrance/schemas';
+import { makeEstoqueUid } from '@delfrance/schemas';
 
 import { getDb } from '../lib/admin';
 
@@ -63,62 +63,59 @@ export async function aplicarLocalizacao(
   return { estoqueId };
 }
 
-type EstoqueMovimentoWrite =
-  | { set: EstoqueProduto }
-  | { update: { quantidade: number; quantidadeReservada: number; ultimaModificacao: number } };
-
 /**
- * Resolve the estoque mutation for a movement (pure — no I/O). First movement
- * (`current == null`) → the full doc to `set` (increment-from-zero == the delta;
- * reservada floored at 0 for the schema). Balanço → the absolute counted values.
- * Entrada/saída → the signed delta applied to the value read this transaction. Kept
- * separate so {@link aplicarMovimento}'s transaction body reads linearly.
+ * Merge-set payload for a movement (pure — no I/O). Every path carries the doc
+ * constants — the merge-set on first touch IS the getOrCreate — plus two invariant
+ * transforms: `ultimaModificacao: maximum(now)` (monotonic — a stale `now` can't
+ * move it backwards, #387) and `dataCriacao: minimum(now)` (set-if-missing; an
+ * existing, older creation time always wins). Entrada/saída apply the signed
+ * deltas as `increment` transforms; balanço writes the absolute counted values
+ * with the reservada clamped ≥ 0 in code. `floorReservada` tells the caller to
+ * append the follow-up `maximum(0)` write that floors the incremented reservada.
  */
 function movimentoEstoqueWrite(
   produtoId: string,
   depositoId: string,
-  current: { quantidade?: number; quantidadeReservada?: number } | null,
   plan: MovimentacaoPlan,
   now: number,
-): EstoqueMovimentoWrite {
-  if (current === null) {
-    return {
-      set: estoqueCollection.parse({
-        parentId: produtoId,
-        depositoOuterRef: `documents/depositos/${depositoId}`,
-        quantidade: plan.quantidade,
-        quantidadeReservada: Math.max(0, plan.quantidadeReservada),
-        dataCriacao: now,
-        ultimaModificacao: now,
-      }),
-    };
-  }
+): { base: Record<string, unknown>; floorReservada: boolean } {
+  const shared = {
+    parentId: produtoId,
+    depositoOuterRef: `documents/depositos/${depositoId}`,
+    ultimaModificacao: FieldValue.maximum(now),
+    dataCriacao: FieldValue.minimum(now),
+  };
   if (plan.ehBalanco) {
     return {
-      update: {
+      base: {
+        ...shared,
         quantidade: plan.quantidade,
-        quantidadeReservada: plan.quantidadeReservada,
-        ultimaModificacao: now,
+        quantidadeReservada: Math.max(0, plan.quantidadeReservada),
       },
+      floorReservada: false,
     };
   }
   return {
-    update: {
-      quantidade: (current.quantidade ?? 0) + plan.quantidade,
-      quantidadeReservada: Math.max(
-        0,
-        (current.quantidadeReservada ?? 0) + plan.quantidadeReservada,
-      ),
-      ultimaModificacao: now,
+    base: {
+      ...shared,
+      quantidade: FieldValue.increment(plan.quantidade),
+      quantidadeReservada: FieldValue.increment(plan.quantidadeReservada),
     },
+    floorReservada: true,
   };
 }
 
 /**
  * Apply a stock movement (entrada/saída delta or balanço absolute set) + append the
- * `historicoEstoque` audit record. ONE transaction does getOrCreate + the mutation +
- * the audit — which makes the first-movement create race impossible (the read and
- * write are atomic) and keeps the clamping policy in a single trusted place. Reuses
+ * `historicoEstoque` audit record. ONE atomic WriteBatch, ZERO reads (#387 — the old
+ * Flutter backend's transform design): the merge-set is the getOrCreate, the deltas
+ * are server-side `increment`s, `quantidadeReservada` is floored at 0 by a follow-up
+ * `maximum(0)` write on the same doc (a batch's writes apply in order — the legacy
+ * update+transform pairing), and `ultimaModificacao` is monotonic via `maximum(now)`.
+ * Because the server owns the arithmetic, a stored non-number self-heals to the
+ * operand instead of corrupting the doc, and concurrent movements never conflict.
+ * `FieldValue.maximum`/`minimum` need firebase-admin 14 (`@google-cloud/firestore`
+ * ≥ 8.6.0) — one more reason this package stays on admin 14. Reuses
  * `planMovimentacao` (the exact use-case the client used) so server and client never
  * fork. Exported for the emulator suite.
  */
@@ -131,20 +128,17 @@ export async function aplicarMovimento(
   const estoqueId = makeEstoqueUid(produtoId, depositoId);
   const estoqueRef = estoqueCollection.docRef(db, { produtoId }, estoqueId);
 
-  await db.runTransaction(async (tx) => {
-    const snap = await tx.get(estoqueRef);
-    const plan = planMovimentacao(comando.input, now);
-    const current = snap.exists
-      ? (snap.data() as { quantidade?: number; quantidadeReservada?: number })
-      : null;
+  const plan = planMovimentacao(comando.input, now);
+  const write = movimentoEstoqueWrite(produtoId, depositoId, plan, now);
 
-    const write = movimentoEstoqueWrite(produtoId, depositoId, current, plan, now);
-    if ('set' in write) tx.set(estoqueRef, write.set);
-    else tx.update(estoqueRef, write.update);
-
-    const historicoRef = historicoEstoqueCollection.ref(db, { produtoId, estoqueId }).doc();
-    tx.set(historicoRef, historicoEstoqueCollection.parse(plan.historico));
-  });
+  const batch = db.batch();
+  batch.set(estoqueRef, write.base, { merge: true });
+  if (write.floorReservada) {
+    batch.set(estoqueRef, { quantidadeReservada: FieldValue.maximum(0) }, { merge: true });
+  }
+  const historicoRef = historicoEstoqueCollection.ref(db, { produtoId, estoqueId }).doc();
+  batch.set(historicoRef, historicoEstoqueCollection.parse(plan.historico));
+  await batch.commit();
 
   return { estoqueId };
 }
@@ -153,7 +147,7 @@ export async function aplicarMovimento(
  * `aplicarEstoque` callable — the web client's estoque write path (replaces the
  * direct client `writeBatch` from PR #217). Enforces auth + `PERM.estoque.write`
  * itself (the Admin SDK bypasses Firestore rules), validates the payload, then
- * dispatches to the per-op transaction. Firestore rules stay open for Flutter
+ * dispatches to the per-op write path. Firestore rules stay open for Flutter
  * coexistence (ADR 0010); this is the trusted write path for the OSS app.
  */
 export const aplicarEstoque = onCall(async (request) => {

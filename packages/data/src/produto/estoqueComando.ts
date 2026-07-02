@@ -19,7 +19,7 @@ export const movimentacaoInputSchema = z.object({
 
 /**
  * Payload for the `aplicarEstoque` callable — the server-owned estoque write
- * (getOrCreate + movement/localização + audit, in one transaction). A
+ * (getOrCreate + movement/localização + audit, atomically). A
  * discriminated union over `op`: a `localizacao` set, or a stock `movimento`.
  * Shared by the web client (typed input) and the Cloud Function (validation), so
  * both sides agree on the contract.
