@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { roundReais } from '@delfrance/core/money';
+
 import { apportionDescontos, buildGenItems } from '../../../lib/nfe/orchestrator/generator-input';
 import type { FiscalItem, PedidoBundle } from '../../../lib/nfe/orchestrator/bundle';
 
@@ -46,8 +48,8 @@ function item(partial: Partial<FiscalItem>): FiscalItem {
       cfop: '5102',
       configuracaoICMS: { crt: '1', csosn: '102' },
     },
-    vProd: Math.round((precoDeVenda - (descontoUnitario ?? 0)) * quantidade * 100) / 100,
-    vProdBruto: Math.round(precoDeVenda * quantidade * 100) / 100,
+    vProd: roundReais((precoDeVenda - (descontoUnitario ?? 0)) * quantidade),
+    vProdBruto: roundReais(precoDeVenda * quantidade),
     ...partial,
   } as FiscalItem;
 }
@@ -120,6 +122,6 @@ describe('apportionDescontos — pedido-level descontoTotal', () => {
     ];
     const vDescs = apportionDescontos(items, bundleWith(OP, { descontoTotal: 10 }));
     const sum = vDescs.reduce((s, v) => s + v, 0);
-    expect(Math.round(sum * 100) / 100).toBe(10);
+    expect(roundReais(sum)).toBe(10);
   });
 });
