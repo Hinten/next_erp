@@ -84,15 +84,23 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   large head of long-lived referenced photos can starve newer orphans — a persisted
   round-robin cursor is the planned fix (issue #234).
 
-- **`onProdutoDeleted`** (`onDocumentDeleted('produtos/{produtoId}')`) — estoque
-  cascade (#226). On a produto delete (parent OR variation child) it sweeps the
-  produto's `estoques` docs and each one's nested `historicoEstoque` (Firestore
-  never cascades subcollections; #136). The client `deleteProdutoCascade` (#199)
-  only deletes the produto docs — this reclaims the subcollections server-side,
-  with no dependency on the client/e2e cleanup. One `recursiveDelete` over the
-  `estoques` subcollection (the Admin SDK walks the whole subtree via a
-  BulkWriter); scoped to estoque now — a produto-wide `recursiveDelete(produtoRef)`
-  would be the broader #136 sweep.
+- **`onProdutoDeleted`** (`onDocumentDeleted('produtos/{produtoId}')`) — the
+  authoritative produto delete cascade (#226/#136/#199), core
+  `cascadeProdutoDeletion(db, produtoId)` (exported for the emulator suite). On a
+  produto delete (parent OR variation child) it does two things: **(1) #136** —
+  one `recursiveDelete` over the produto's OWN document ref, which the Admin SDK
+  BulkWriter walks to delete the (already-gone) doc **plus its entire descendant
+  subtree** — every subcollection Firestore would orphan (`estoques` +
+  `historicoEstoque`, `imposto`, `historicoDePrecos`, `historicoDeCusto`,
+  `extraData`, and the marketplace links `produtoMercadoLivre`/`variacoesml`/…),
+  no name enumeration, new subcollections swept automatically; **(2) #199** —
+  variation children are SIBLING top-level docs (`produtos where paiId == id`),
+  not descendants, so a per-child `recursiveDelete(childRef)` deletes each child +
+  its subtree directly (the re-fired trigger on the child is an idempotent no-op —
+  variations are one level deep). The client `deleteProdutoCascade` now deletes
+  ONLY the parent doc (the inbound-reference guard stays client-side); this trigger
+  is the sole cascade, with no dependency on the client/e2e cleanup. Idempotent
+  (Flutter still cascades on its own deletes).
 - **`onEstoqueDeleted`** (`onDocumentDeleted('produtos/{produtoId}/estoques/{estoqueId}')`)
   — sweeps a single estoque's `historicoEstoque` via one `recursiveDelete`.
   Covers a standalone estoque delete; the produto-wide cascade already deletes
