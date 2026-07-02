@@ -22,11 +22,12 @@ type MovimentoComando = Extract<EstoqueComando, { op: 'movimento' }>;
 
 /**
  * Set a depósito's `localização` for a produto (getOrCreate). On an EXISTING estoque
- * it updates ONLY `localizacao` — quantities are movement-owned and never touched,
- * and a localização change doesn't bump `ultimaModificacao`. On first touch it creates
- * a valid estoque (`quantidade: 0`) carrying the localização. One transaction, so the
- * getOrCreate is race-safe. Exported so the emulator suite drives it without minting
- * auth tokens.
+ * it updates ONLY `localizacao` — quantities are movement-owned and never touched, and
+ * a localização change on an existing doc doesn't bump `ultimaModificacao`. On first
+ * touch it creates a valid estoque (`quantidade: 0`, `ultimaModificacao: now` like every
+ * other create path — this is document initialization, not a localização edit) carrying
+ * the localização. One transaction, so the getOrCreate is race-safe. Exported so the
+ * emulator suite drives it without minting auth tokens.
  */
 export async function aplicarLocalizacao(
   db: Firestore,
@@ -53,6 +54,7 @@ export async function aplicarLocalizacao(
           quantidade: 0,
           quantidadeReservada: 0,
           dataCriacao: now,
+          ultimaModificacao: now,
         }),
       );
     }

@@ -21,6 +21,7 @@ interface EstoqueDoc {
   quantidade?: number;
   quantidadeReservada?: number;
   localizacao?: string | null;
+  ultimaModificacao?: number | null;
 }
 
 function estoqueRef(db: Firestore, produtoId: string, depositoId: string) {
@@ -124,6 +125,8 @@ describe.skipIf(!EMULATED)('aplicarEstoque core (emulator)', () => {
     const data = (await ref.get()).data() as EstoqueDoc;
     expect(data.quantidade).toBe(0);
     expect(data.localizacao).toBe('A1');
+    // Create path initializes ultimaModificacao like every other create path.
+    expect(data.ultimaModificacao).toBe(1);
     expect((await ref.collection('historicoEstoque').get()).empty).toBe(true);
   });
 
@@ -153,5 +156,8 @@ describe.skipIf(!EMULATED)('aplicarEstoque core (emulator)', () => {
     const data = (await ref.get()).data() as EstoqueDoc;
     expect(data.quantidade).toBe(5); // untouched by the localização write
     expect(data.localizacao).toBe('B2');
+    // Updating an existing doc touches ONLY localizacao — no ultimaModificacao bump
+    // (the movement at now=1 set it; the localização write at now=2 must not move it).
+    expect(data.ultimaModificacao).toBe(1);
   });
 });

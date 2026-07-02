@@ -108,9 +108,12 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   (ADR 0010). Split per op into the exported (no-auth) `aplicarLocalizacao` /
   `aplicarMovimento` cores the emulator suite drives directly: `aplicarMovimento`
   reuses `planMovimentacao` (`@delfrance/data/produto`); `aplicarLocalizacao` updates
-  ONLY `localizacao` on an existing estoque (quantities are movement-owned).
-  Follow-up: `quantidadeReservada ≥ 0` on every movement path + monotonic
-  `ultimaModificacao` (blocked — the Node SDK has no `FieldValue.maximum`). ⚠️ On the app's
+  ONLY `localizacao` on an existing estoque (quantities are movement-owned; no
+  `ultimaModificacao` bump on an existing doc — but the first-touch create still
+  initializes `ultimaModificacao: now` like every other create path).
+  Follow-up (issue #387): `quantidadeReservada ≥ 0` on every movement path + monotonic
+  `ultimaModificacao` + normalizing untrusted stored reads before arithmetic (blocked on
+  the clean path — the Node SDK has no `FieldValue.maximum`). ⚠️ On the app's
   critical path: the staging estoque tab + the estoque
   Playwright e2e only work once this is DEPLOYED (deploy is manual — root rule #1).
 - ⚠️ All three target the NAMED `default` database (gotcha #8). `@delfrance/auth`
