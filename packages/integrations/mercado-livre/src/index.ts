@@ -4,6 +4,7 @@ import { buildAuthorizeUrl } from './oauth';
 export * from './errors';
 export * from './types';
 export * from './oauth';
+export * from './api';
 
 /**
  * Mercado Livre plugin (MarketplaceChannel).
