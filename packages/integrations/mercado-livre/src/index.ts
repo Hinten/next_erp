@@ -1,11 +1,18 @@
 import type { MarketplaceChannel } from '@delfrance/core/plugins';
+import { buildAuthorizeUrl } from './oauth';
+
+export * from './errors';
+export * from './types';
+export * from './oauth';
 
 /**
- * Mercado Livre plugin scaffold (MarketplaceChannel).
+ * Mercado Livre plugin (MarketplaceChannel).
  *
- * OAuth + REST client lands in Phase 5. Webhook receivers live in
- * `apps/integrations/app/api/webhooks/mercado-livre/route.ts` and
- * dispatch heavy work (catalog sync, order pull) to Cloud Functions.
+ * The OAuth core (`oauth.ts`) + typed error taxonomy (`errors.ts`) + payload
+ * schemas (`types.ts`) ship here. Token persistence + refresh and the ML REST
+ * operations are driven by the App-Hosting backend (`apps/mercado-livre`), which
+ * holds the Firestore/Admin-SDK dependency; this library stays platform-neutral
+ * (fetch-only). Webhook receivers live in `apps/mercado-livre/app/api/webhooks`.
  */
 export interface MercadoLivreConfig {
   clientId: string;
@@ -34,17 +41,17 @@ export function createMercadoLivreChannel(config: MercadoLivreConfig): Marketpla
     },
     oauthFlow: {
       start(state: string): string {
-        // Exposed today so the UI in /canais can render the "Conectar"
-        // button against a deterministic redirect target. The actual
-        // token exchange happens in apps/integrations on callback.
-        const u = new URL('https://auth.mercadolivre.com.br/authorization');
-        u.searchParams.set('response_type', 'code');
-        u.searchParams.set('client_id', config.clientId);
-        u.searchParams.set('redirect_uri', config.redirectUri);
-        u.searchParams.set('state', state);
-        return u.toString();
+        // The consent URL the /canais "Conectar" button redirects to. The token
+        // exchange runs on the OAuth callback route in apps/mercado-livre.
+        return buildAuthorizeUrl({
+          clientId: config.clientId,
+          redirectUri: config.redirectUri,
+          state,
+        });
       },
       callback: async () => {
+        // Persistence lives in apps/mercado-livre (needs Firestore); the callback
+        // route calls `exchangeCode` + the credential store directly.
         throw new MercadoLivreNotConfiguredError();
       },
     },
