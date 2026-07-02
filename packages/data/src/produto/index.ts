@@ -1,6 +1,12 @@
 export type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
 
 export {
+  movimentacaoInputSchema,
+  estoqueComandoSchema,
+  type EstoqueComando,
+} from './estoqueComando';
+
+export {
   buildPrecoHistoryOps,
   buildCustoHistoryOp,
   recordPrecoHistory,

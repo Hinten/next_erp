@@ -87,6 +87,16 @@ export default defineConfig({
       testMatch: /\.vendas\.e2e\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
+    {
+      // Estoque server-owned write path (the `aplicarEstoque` callable). Runs
+      // ONLY against the Firebase Emulator Suite (→ e2e-emulator.yml), where the
+      // callable is served locally — no staging deploy needed. Its filename ends
+      // in `.emulator.e2e.spec.ts`, so the staging `crud-cadastros` project no
+      // longer collects it; a plain local `playwright test` still runs it.
+      name: 'emulator',
+      testMatch: /\.emulator\.e2e\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
   ],
   webServer: process.env.PLAYWRIGHT_BASE_URL
     ? undefined

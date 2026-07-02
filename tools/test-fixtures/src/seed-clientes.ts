@@ -193,6 +193,9 @@ export async function seedClientesComEnderecos(): Promise<SeedClientesResult> {
       telefone: null,
       observacoesInternas: SEED_MARKER,
       timestamp: now,
+      // Stamped so the seeded clientes appear in `/clientes`, whose default
+      // query orders by `ultimaModificacao desc` (docs missing it are skipped).
+      ultimaModificacao: now,
       nome_embedding: null,
       telefone_embedding: null,
       userCliente: null,

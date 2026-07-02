@@ -51,6 +51,18 @@ function getServiceAccount(serviceAccountPath?: string): string {
 
 export function getApp(serviceAccountPath?: string): App {
   if (app) return app;
+
+  // Emulator mode: `firebase emulators:exec` exports FIRESTORE_EMULATOR_HOST /
+  // FIREBASE_AUTH_EMULATOR_HOST, and the Admin SDK auto-routes to the emulators
+  // and ignores real credentials — so skip the service-account requirement and
+  // init a bare app with the (demo) project id. Used by the estoque emulator e2e
+  // lane (.github/workflows/e2e-emulator.yml); the staging path below is unchanged.
+  if (process.env.FIRESTORE_EMULATOR_HOST || process.env.FIREBASE_AUTH_EMULATOR_HOST) {
+    const emulatorProjectId = process.env.FIREBASE_PROJECT_ID?.trim() || 'demo-erp';
+    app = getApps()[0] ?? initializeApp({ projectId: emulatorProjectId });
+    return app;
+  }
+
   const sa = getServiceAccount(serviceAccountPath);
   const rawCredentials = JSON.parse(sa) as RawServiceAccount;
   const credentials: ServiceAccount = {

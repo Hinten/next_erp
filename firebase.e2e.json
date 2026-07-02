@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json.schemastore.org/firebase",
+  "//": "Emulator-ONLY config for the estoque e2e lane (.github/workflows/e2e-emulator.yml runs `firebase emulators:exec --config firebase.e2e.json --only auth,firestore,functions`). Serves the `storage`-codebase functions so the browser test drives the real `aplicarEstoque` callable locally — no staging deploy needed. Loads `firestore.e2e.rules` (the SAME namespaced ruleset staging uses for e2e) so the `e2e_<runId>_*` fixtures aren't default-denied for the client's reads/writes. Deploy-isolated: never point `firebase deploy` at this file (CLAUDE.md critical rule #1).",
+  "functions": [
+    {
+      "source": "apps/functions",
+      "codebase": "storage",
+      "runtime": "nodejs20",
+      "ignore": [
+        "node_modules",
+        ".turbo",
+        "src/**/*.test.ts",
+        "src/**/*.storage.test.ts",
+        "vitest*.ts"
+      ]
+    }
+  ],
+  "firestore": {
+    "rules": "firestore.e2e.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "emulators": {
+    "auth": { "port": 9099 },
+    "firestore": { "port": 8080 },
+    "storage": { "port": 9199 },
+    "functions": { "port": 5001 },
+    "ui": { "enabled": false },
+    "singleProjectMode": true
+  }
+}

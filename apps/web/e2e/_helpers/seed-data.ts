@@ -714,6 +714,7 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
   const listaPreco = 33.5;
 
   const batch = db().batch();
+  const clienteNow = Date.now();
   batch.set(db().collection('clientes').doc(clienteId), {
     tipo: '1',
     nome: clienteNome,
@@ -725,7 +726,10 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
     email: null,
     telefone: null,
     observacoesInternas: null,
-    timestamp: Date.now(),
+    timestamp: clienteNow,
+    // Stamped so the fixture cliente shows in `/clientes` (default sort is
+    // `ultimaModificacao desc`; Firestore skips docs missing the field).
+    ultimaModificacao: clienteNow,
     nome_embedding: null,
     telefone_embedding: null,
     userCliente: null,

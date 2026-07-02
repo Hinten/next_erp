@@ -303,6 +303,9 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
 
     await expect(dialog.getByText('Cliente já cadastrado')).toBeVisible({ timeout: 15_000 });
     await expect(dialog.getByRole('button', { name: 'Criar', exact: true })).toBeDisabled();
+    // #341: no lookup ran (block came from the live dedup), so the block nudges
+    // the operator to "Buscar dados" to review/register the endereço.
+    await expect(dialog.getByText('para revisar o endereço deste cliente')).toBeVisible();
 
     // Resolve with the existing cliente instead — the picker locks onto it.
     await dialog.getByRole('button', { name: 'Usar cliente existente' }).first().click();
@@ -389,35 +392,48 @@ test.describe.serial('Pedidos e2e — novo + editar', () => {
     );
     await expect(dialog.getByLabel('Nome')).toHaveValue(RAZAO);
 
-    // #294: the lookup returned an address → the modal shows the "endereço
-    // encontrado" hint (it'll be relayed to the cadastro after Criar).
+    // #294/#341: the lookup returned an address → the modal shows the "endereço
+    // encontrado" hint; after Criar it opens the endereço review IN PLACE.
     await expect(dialog.getByText('Endereço encontrado')).toBeVisible();
 
     // Rename to a run-scoped prefix so afterAll cleanup catches the doc.
     await dialog.getByLabel('Nome').fill(nome);
     await dialog.getByRole('button', { name: 'Criar', exact: true }).click();
 
-    await expect(dialog).toBeHidden({ timeout: 15_000 });
+    // #341: the resolved address is reviewed in place — the prefilled "Novo
+    // endereço" modal opens (no new-tab relay). Save it, then the cliente is
+    // emitted into the pedido.
+    const endereco = page.getByRole('dialog', { name: 'Novo endereço' });
+    await expect(endereco.getByLabel('Logradouro', { exact: true })).toHaveValue(
+      'AVENIDA PAULISTA',
+      { timeout: 15_000 },
+    );
+    await endereco.getByRole('button', { name: 'Criar', exact: true }).click();
+    await expect(endereco).toBeHidden({ timeout: 15_000 });
+
+    // The cliente is now selected in the pedido form.
     await expect(page.getByText(nome).first()).toBeVisible({ timeout: 15_000 });
 
-    // Wire assertion (Admin SDK): the created PJ cliente carries the IE.
+    // Wire assertion (Admin SDK): the created PJ cliente carries the IE...
     await expect.poll(() => docExistsByName('clientes', nome), { timeout: 15_000 }).toBe(true);
     const doc = await getClienteByName(nome);
     expect(doc?.tipo).toBe('1');
     expect(doc?.ie).toBe(IE);
 
-    // #294: the resolved address is stashed under the new cliente id — the same
-    // localStorage relay the create page uses (localStorage so the toaster's
-    // target="_blank" new tab can read it). The cliente detail page pops it into
-    // the prefilled "Novo endereço" modal (end-to-end consumption is covered by
-    // clientes-cnpj.cadastros); here we assert the modal performed the relay.
+    // ...and the reviewed endereço was written to the cliente's subcollection.
     const cliId = (await db().collection('clientes').where('nome', '==', nome).limit(1).get())
       .docs[0]?.id;
-    expect(cliId).toBeTruthy();
-    const stashed = await page.evaluate(
-      (id) => window.localStorage.getItem(`cliente-cnpj-endereco:${id}`),
-      cliId,
-    );
-    expect(stashed).toContain('AVENIDA PAULISTA');
+    if (!cliId) throw new Error('created cliente not found for endereço assertion');
+    await expect
+      .poll(
+        async () => {
+          const snap = await db().collection('clientes').doc(cliId).collection('enderecos').get();
+          return snap.docs.some((d) =>
+            String(d.data().logradouro ?? '').includes('AVENIDA PAULISTA'),
+          );
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(true);
   });
 });

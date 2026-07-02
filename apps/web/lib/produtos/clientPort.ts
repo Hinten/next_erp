@@ -2,28 +2,22 @@ import {
   type DocumentReference,
   type Firestore,
   getDocsFromServer,
-  increment,
   writeBatch,
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import { buildQuery, limit, whereArrayContains, whereEqual } from '@delfrance/data';
 import {
   buildExtraDataWriteOps,
   buildImpostoWriteOps,
-  buildLocalizacaoOp,
-  planMovimentacao,
+  type EstoqueComando,
   type MovimentacaoInput,
   type ProdutoDataPort,
   type ProdutoSnapshot,
   type ProdutoWriteOp,
 } from '@delfrance/data/produto';
 import type { TransactionWrite } from '@delfrance/ui';
-import {
-  estoqueProdutoSchema,
-  historicoEstoqueSchema,
-  makeEstoqueUid,
-  type ImpostoProduto,
-  type ProdutoExtraData,
-} from '@delfrance/schemas';
+import { type ImpostoProduto, type ProdutoExtraData } from '@delfrance/schemas';
+import { getFirebaseFunctions } from '@/lib/firebase/client';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import {
   historicoCustoCollection,
@@ -31,7 +25,6 @@ import {
 } from '@/lib/data/historicoCollections';
 import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
 import { estoqueProdutoCollection } from '@/lib/data/estoqueProdutoCollection';
-import { historicoEstoqueCollection } from '@/lib/data/historicoEstoqueCollection';
 import { impostoProdutoCollection } from '@/lib/data/impostoProdutoCollection';
 import { PRODUTO_MARKETPLACE_SUBCOLLECTIONS } from '@/lib/data/produtoMarketplaceSubcollections';
 import { newDocId } from './docId';
@@ -113,84 +106,46 @@ export function buildProdutoTransactionWrites(
 }
 
 /**
- * Set a depósito's `localizacao` for a produto — an immediate write decoupled
- * from the parent form save (estoque spans the parent + each variation child).
- * On an existing estoque it is a `localizacao`-only `update`; otherwise it
- * creates a fresh estoque (`quantidade: 0`). Mirrors the Flutter
- * `editarLocalizacao` — quantities are never touched here.
+ * Invoke the server-owned `aplicarEstoque` callable (apps/functions). The Cloud
+ * Function performs getOrCreate + the movement/localização + the audit record in
+ * ONE Firestore transaction — the first-movement create race and the clamping
+ * policy live there, not in each client (issue #226). Failures arrive as a
+ * `FirebaseError` (FunctionsError) the callers narrow on.
  */
-export async function setEstoqueLocalizacao(
-  db: Firestore,
-  args: { produtoId: string; depositoId: string; localizacao: string | null; hasExisting: boolean },
-): Promise<void> {
-  const op = buildLocalizacaoOp(
-    args.produtoId,
-    args.depositoId,
-    args.localizacao,
-    args.hasExisting,
-    Date.now(),
+function callAplicarEstoque(comando: EstoqueComando): Promise<void> {
+  const fn = httpsCallable<EstoqueComando, { estoqueId: string }>(
+    getFirebaseFunctions(),
+    'aplicarEstoque',
   );
-  const ref = refForPath(db, op.path);
-  const batch = writeBatch(db);
-  if (op.type === 'update') batch.update(ref, op.data as never);
-  else if (op.type === 'set') batch.set(ref, op.data as never);
-  await batch.commit();
+  return fn(comando).then(() => undefined);
 }
 
 /**
- * Apply a stock movement (entrada / saída / balanço) for one (produto, depósito),
- * conflict-safe: entrada/saída use an atomic `increment` on the estoque doc — it
- * NEVER overwrites the server count — while balanço sets the absolute counted
- * value; a `HistoricoEstoque` audit record is appended in the SAME `writeBatch`.
- * When no estoque doc exists yet it is created with the movement's resulting
- * quantities (increment-from-zero == the delta). Mirrors Flutter `movimentar`.
+ * Set a depósito's `localizacao` for a produto — an immediate write decoupled
+ * from the parent form save (estoque spans the parent + each variation child).
+ * The server getOrCreates the estoque (`quantidade: 0` on first touch) and sets
+ * `localizacao` only; quantities (movement-owned) are never touched here.
  */
-export async function movimentarEstoque(
-  db: Firestore,
-  args: { produtoId: string; depositoId: string; hasExisting: boolean; input: MovimentacaoInput },
-): Promise<void> {
-  const now = Date.now();
-  const plan = planMovimentacao(args.input, now);
-  const estoqueId = makeEstoqueUid(args.produtoId, args.depositoId);
-  const estoqueRef = estoqueProdutoCollection.docRef(db, { produtoId: args.produtoId }, estoqueId);
-  const historicoRef = historicoEstoqueCollection.docRef(
-    db,
-    { produtoId: args.produtoId, estoqueId },
-    newDocId(),
-  );
+export async function setEstoqueLocalizacao(args: {
+  produtoId: string;
+  depositoId: string;
+  localizacao: string | null;
+}): Promise<void> {
+  await callAplicarEstoque({ op: 'localizacao', ...args });
+}
 
-  const batch = writeBatch(db);
-  if (!args.hasExisting) {
-    // First movement on this (produto, depósito): create the doc with the
-    // resulting quantities (reservada floored at 0 to satisfy the schema).
-    batch.set(
-      estoqueRef,
-      estoqueProdutoSchema.parse({
-        parentId: args.produtoId,
-        depositoOuterRef: `documents/depositos/${args.depositoId}`,
-        quantidade: plan.quantidade,
-        quantidadeReservada: Math.max(0, plan.quantidadeReservada),
-        dataCriacao: now,
-        ultimaModificacao: now,
-      }) as never,
-    );
-  } else if (plan.ehBalanco) {
-    // Balanço — set the absolute counted value (a deliberate override).
-    batch.update(estoqueRef, {
-      quantidade: plan.quantidade,
-      quantidadeReservada: plan.quantidadeReservada,
-      ultimaModificacao: now,
-    } as never);
-  } else {
-    // Entrada/saída — atomic increment, never clobbering a concurrent movement.
-    batch.update(estoqueRef, {
-      quantidade: increment(plan.quantidade),
-      quantidadeReservada: increment(plan.quantidadeReservada),
-      ultimaModificacao: now,
-    } as never);
-  }
-  batch.set(historicoRef, historicoEstoqueSchema.parse(plan.historico) as never);
-  await batch.commit();
+/**
+ * Apply a stock movement (entrada / saída / balanço) for one (produto, depósito).
+ * The server resolves it conflict-safely inside a transaction (delta for
+ * entrada/saída, absolute set for balanço), getOrCreates the estoque doc on first
+ * touch, and appends the `HistoricoEstoque` audit record — all atomically.
+ */
+export async function movimentarEstoque(args: {
+  produtoId: string;
+  depositoId: string;
+  input: MovimentacaoInput;
+}): Promise<void> {
+  await callAplicarEstoque({ op: 'movimento', ...args });
 }
 
 /**
