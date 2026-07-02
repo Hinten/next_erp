@@ -77,8 +77,10 @@ test.describe.serial('Canais Mercado Livre e2e — TableView / ObjectView', () =
     await expect.poll(() => docExistsByName('integracao', nome), { timeout: 15_000 }).toBe(true);
 
     // The account panel renders even with the mercado-livre backend offline —
-    // a disconnected badge + the Conectar button (it must degrade, not break).
-    await expect(page.getByText('Conta Mercado Livre')).toBeVisible();
+    // a disconnected state + the Conectar button (it must degrade, not break).
+    // Role-scoped locators: the page <h2> and the panel label share the text
+    // "Conta Mercado Livre", so a bare getByText is a strict-mode violation.
+    await expect(page.getByRole('heading', { name: 'Conta Mercado Livre' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Conectar conta' })).toBeVisible({
       timeout: 15_000,
     });
