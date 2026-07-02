@@ -202,7 +202,7 @@ export function planSincronizacaoEstoque(
 
   const porChave = new Map<string, Contribuicao>();
   const contrib = (produtoId: string, depositoId: string): Contribuicao => {
-    const chave = `${produtoId} ${depositoId}`;
+    const chave = `${produtoId}/${depositoId}`;
     let c = porChave.get(chave);
     if (!c) {
       c = {

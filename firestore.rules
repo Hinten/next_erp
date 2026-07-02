@@ -298,8 +298,8 @@ service cloud.firestore {
 
     match /pedidos/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
-      allow create: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.keys());
-      allow update: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.diff(resource.data).affectedKeys());
+      allow create: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.keys()) && (!request.resource.data.keys().hasAny(['estoqueAplicado']) || request.resource.data.get('estoqueAplicado', null) == null);
+      allow update: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['estoqueAplicado']);
       allow delete: if isSuperUser() || p('d_pedido', 4);
     }
 

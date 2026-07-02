@@ -249,6 +249,13 @@ export const pedidoMeta: CollectionMetadata = {
     orderBy: [{ field: 'numero', direction: 'desc' }],
     limit: 50,
   },
+  // `estoqueAplicado` is written ONLY by the sincronizarEstoquePedido Cloud
+  // Function: a client forging (or clearing) the snapshot could make the
+  // admin-privileged sync mint or leak stock. The legacy markers
+  // (`dataIndisponivelEstoque`/`dataRemocaoEstoque`) stay client-writable on
+  // purpose — the Flutter app writes them back on every full-doc save, and
+  // forging them only makes the sync SKIP a pedido, never move stock.
+  serverOwnedFields: ['estoqueAplicado'],
 };
 
 export const pedido = { schema: pedidoSchema, meta: pedidoMeta };
