@@ -104,6 +104,9 @@ importers:
         specifier: ^0.34.0
         version: 0.34.5
     devDependencies:
+      '@delfrance/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig

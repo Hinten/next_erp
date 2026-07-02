@@ -18,7 +18,9 @@ CI is **active** — see `.github/workflows/`: `ci.yml` (offline:
 lint/typecheck/format/test/build), the domain pipelines `ci-nfe.yml` and
 `ci-storage.yml`, and **two** Playwright e2e workflows split by domain —
 `e2e-cadastros.yml` and `e2e-vendas.yml` (sharing the `e2e-reusable.yml`
-engine) — each running concurrently with `ci.yml`. See "When making changes".
+engine) — plus the scoped `e2e-emulator.yml` (the estoque spec against the
+Firebase emulators) — each running concurrently with `ci.yml`. See "When
+making changes".
 
 ## Critical rules
 
@@ -45,13 +47,17 @@ engine) — each running concurrently with `ci.yml`. See "When making changes".
    (`packages/rules-gen`, custom — ADR 0003 found no npm package that fits).
    Form widgets, query builders, cascade, JSON converters — all manual TS, no
    codegen.
-3. **No Firebase emulators** — except the two dedicated CI suites. App/e2e
+3. **No Firebase emulators** — except the dedicated CI suites. App/e2e
    tests run against the staging Firebase project (set via
    `FIREBASE_PROJECT_ID`); fixture seed/teardown lives in `tools/test-fixtures`
    (see the `schema-driven-crud` skill). The carve-outs: `ci-storage.yml`
    (`firebase.functions.json`, ports 8080/9199) and `ci-rules.yml`
    (`firebase.rules.json`, port 8081) run emulator suites against offline demo
-   projects.
+   projects. A third, **scoped** carve-out is `e2e-emulator.yml`: it runs the
+   single estoque Playwright spec (`produto-estoque.emulator.e2e.spec.ts`)
+   against the Auth+Firestore+Functions emulators (`firebase.e2e.json`) so its
+   `aplicarEstoque` callable is served locally — no staging deploy needed. This
+   is the ONLY e2e spec on the emulator; every other spec still hits staging.
 4. **`apps/web` is client-first**. Default to `'use client'`. Server
    Components, Server Actions, route handlers, and middleware are exceptions
    that need explicit justification in PRs (cost + simplicity reasons). The

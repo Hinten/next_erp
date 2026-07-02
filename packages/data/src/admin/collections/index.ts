@@ -19,6 +19,8 @@ export { cargoCollection } from './cargoCollection';
 export { usuarioCollection } from './usuarioCollection';
 export { arquivoCollection } from './arquivoCollection';
 export { produtoCollection } from './produtoCollection';
+export { estoqueCollection } from './estoqueCollection';
+export { historicoEstoqueCollection } from './historicoEstoqueCollection';
 export { tabelaDeMedidasCollection } from './tabelaDeMedidasCollection';
 export { intFreteCollection } from './intFreteCollection';
 export { tokenMelEnvCollection } from './tokenMelEnvCollection';
