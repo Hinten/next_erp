@@ -171,9 +171,15 @@ export {
   // store (mirrors `certificadoSecreto`). Only its schema/meta/type are public.
   credenciaisIntegracaoSchema,
   credenciaisIntegracaoMeta,
+  // `tokenDuravel` is likewise admin-only / default-deny (Mercado Livre durable
+  // credential in the old Flutter wire shape, shared during dual-run) — not a
+  // DomainSchema, not in ALL_DOMAINS; only its schema/meta/type are public.
+  tokenDuravelSchema,
+  tokenDuravelMeta,
   type Integracao,
   type IntegracaoTipo,
   type CredenciaisIntegracao,
+  type TokenDuravel,
 } from './integracao';
 
 export {
