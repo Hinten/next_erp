@@ -17,7 +17,10 @@ import { warmRoutes } from './helpers/warmup';
  *  - recreating a deleted child with the same SKU keeps the original doc id;
  *  - sibling variations must not share a non-empty SKU (inline + save gate);
  *  - a child referenced by a kit or a marketplace link cannot be deleted;
- *  - deleting the parent cascades the children (after the same guard).
+ *  - deleting the parent is blocked by the same guard, then removes the parent
+ *    (the variation-children cascade now runs server-side in the
+ *    `onProdutoDeleted` trigger — asserted in the functions emulator suite, not
+ *    here against staging where the trigger is async and deploy-gated).
  */
 test.describe.serial('Produtos — deletion integrity (#117)', () => {
   const prefix = e2ePrefix('prod-int');
@@ -119,7 +122,7 @@ test.describe.serial('Produtos — deletion integrity (#117)', () => {
     await cleanupProdutoSubcollection(childId, 'variacaoMercadoLivre');
   });
 
-  test('parent delete is blocked while a child is referenced, then cascades children', async ({
+  test('parent delete is blocked while a child is referenced, then removes the parent', async ({
     page,
   }) => {
     // Phase 1 — a kit referencing the child blocks the WHOLE parent delete.
@@ -130,7 +133,12 @@ test.describe.serial('Produtos — deletion integrity (#117)', () => {
     await expectToast(page, new RegExp(kitNome));
     await expect.poll(() => docExistsByName('produtos', parentNome)).toBe(true);
 
-    // Phase 2 — without references, the parent AND its children go in one batch.
+    // Phase 2 — without references, the client deletes the parent doc. The
+    // variation children (`paiId == parentId`) are cascaded server-side by the
+    // `onProdutoDeleted` trigger (#199), which is async and only runs on a
+    // deployed function — so we assert the PARENT is gone here and leave the
+    // children-cascade assertion to the functions emulator suite. `afterAll`
+    // sweeps any child left orphaned by an undeployed/lagging trigger.
     await cleanupByNamePrefix('produtos', `${prefix}-kit`);
     await page.goto(`/produtos/${parentId}/editar`);
     await confirmDelete(page);
@@ -138,6 +146,5 @@ test.describe.serial('Produtos — deletion integrity (#117)', () => {
     await expect
       .poll(() => docExistsByName('produtos', parentNome), { timeout: 15_000 })
       .toBe(false);
-    await expect.poll(() => docExistsByName('produtos', recreatedNome)).toBe(false);
   });
 });

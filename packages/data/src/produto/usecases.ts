@@ -578,12 +578,18 @@ export class ProdutoReferencedError extends Error {
 }
 
 /**
- * Delete a produto and cascade its variation children — but only after every
- * target passes the inbound-reference guard (a produto still in a kit or linked
- * to a marketplace listing blocks the whole operation; the old Flutter app
- * deletes blindly). The parent goes LAST so a partial failure leaves it (and
- * the delete affordance) in place. Throws {@link ProdutoReferencedError} when
- * blocked; subcollection orphans are swept server-side (#136).
+ * Delete a produto — but only after every target (the parent AND each of its
+ * variation children) passes the inbound-reference guard (a produto still in a
+ * kit or linked to a marketplace listing blocks the whole operation; the old
+ * Flutter app deletes blindly). Throws {@link ProdutoReferencedError} when
+ * blocked.
+ *
+ * The client deletes ONLY the parent doc. The `onProdutoDeleted` Cloud Function
+ * trigger is the authoritative cascade: it deletes the variation children
+ * (`paiId == id`, #199) and sweeps every subcollection Firestore would orphan
+ * (#136). We still fetch + probe the children here so a still-referenced child
+ * blocks the parent delete before the server ever cascades it (the guard stays
+ * client-side — ADR 0010; the allow-then-cleanup model of #135 is deferred).
  */
 export async function deleteProdutoCascade(
   port: ProdutoDataPort,
@@ -618,9 +624,6 @@ export async function deleteProdutoCascade(
     throw new ProdutoReferencedError(message, blocked);
   }
 
-  // Children first, parent last (the adapter preserves order while chunking).
-  await port.commit([
-    ...children.map((c) => ({ type: 'delete' as const, path: produtoDocPath(c.id) })),
-    { type: 'delete', path: produtoDocPath(produtoId) },
-  ]);
+  // Delete only the parent; `onProdutoDeleted` cascades children + subcollections.
+  await port.commit([{ type: 'delete', path: produtoDocPath(produtoId) }]);
 }

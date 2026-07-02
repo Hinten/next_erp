@@ -450,15 +450,13 @@ describe('findProdutoReferences', () => {
 });
 
 describe('deleteProdutoCascade', () => {
-  it('deletes children first and the parent last when nothing references them', async () => {
+  it('deletes only the parent when nothing references it (children cascade server-side)', async () => {
+    // Children are still fetched + probed for the guard, but the client no longer
+    // deletes them — the `onProdutoDeleted` trigger cascades children (#199) and
+    // subcollections (#136). Only the parent doc is committed here.
     const { port, committed } = memoryPort({ children: [snap('c1', null, 'Variação P')] });
     await deleteProdutoCascade(port, 'p1');
-    expect(committed).toEqual([
-      [
-        { type: 'delete', path: 'produtos/c1' },
-        { type: 'delete', path: 'produtos/p1' },
-      ],
-    ]);
+    expect(committed).toEqual([[{ type: 'delete', path: 'produtos/p1' }]]);
   });
 
   it('throws ProdutoReferencedError and writes nothing when a target is referenced', async () => {
