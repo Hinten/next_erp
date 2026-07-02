@@ -47,6 +47,11 @@ export const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   'xml_assinado',
   'xml_nfe_proc',
   'xml_epec_proc',
+  // The enviNfe audit doc + inutilização record store the full signed NF-e XML
+  // sent to SEFAZ and its reply — each embeds the destinatário's name, CPF/CNPJ
+  // and address (LGPD personal data). Redact them the same as the nfev4 XML.
+  'xml_enviado',
+  'xml_retorno',
   // Raw env-var-style secret names (caller may stash them in a config object)
   'NFE_CERT_BASE64',
   'NFE_CERT_PASSWORD',

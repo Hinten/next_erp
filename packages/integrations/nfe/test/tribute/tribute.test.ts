@@ -656,6 +656,34 @@ describe('aggregateTotals', () => {
     expect(totals.vIPI).toBe(0);
     expect(totals.vNF).toBe(1000);
   });
+
+  it('IPINT item with a STORED vIPI still contributes 0 (item emits <IPINT>, no vIPI)', () => {
+    // CST 01 is IPINT — buildIPI emits <IPINT> with no <vIPI>. A stray stored vIPI
+    // must NOT roll into ICMSTot.vIPI, else the total exceeds Σ item vIPI (= 0).
+    const ipiNTWithValue: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: { cEnq: '999', CST: '01', vIPI: 999 },
+    };
+    const totals = aggregateTotals([{ item: { vProd: 1000 }, imposto: ipiNTWithValue }]);
+    expect(totals.vIPI).toBe(0);
+    expect(totals.vNF).toBe(1000);
+  });
+
+  it('an item with BOTH ISSQN and ICMS configs contributes NO ICMS to the totals', () => {
+    // buildImpostoXml emits <ISSQN> and drops the ICMS config (xs:choice). The
+    // totals must match: no vICMS/vBCST/vST from an item that emitted none.
+    const issqnPlusIcms: Imposto = {
+      origem: '0',
+      configuracaoISSQN: { vBC: 1000, vAliq: 5, vISSQN: 50, cMunFG: '3550308', cListServ: '01.01' },
+      // A CSOSN 900 config with real ICMS values that must be IGNORED here.
+      configuracaoICMS: { crt: '1', csosn: '900', csosn900: { vBC: 1000, pICMS: 18, vICMS: 180 } },
+    } as Imposto;
+    const totals = aggregateTotals([{ item: { vProd: 1000 }, imposto: issqnPlusIcms }]);
+    expect(totals.vICMS).toBe(0);
+    expect(totals.vBC).toBe(0);
+    // The item's value still composes vProd/vNF (ISSQN items carry a <prod><vProd>).
+    expect(totals.vProd).toBe(1000);
+  });
 });
 
 // ---------------------------------------------------------------------------

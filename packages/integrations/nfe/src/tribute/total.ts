@@ -21,6 +21,7 @@ import type {
   TNFe_infNFe_total_retTrib,
 } from '../types/nfe-schema';
 import { fmtMoney, fmtMoneyOpt, roundReais } from './format';
+import { IPI_TRIB_CSTS } from './schemas';
 import { computeRtcItemValues, parseRtcConfig } from './rtc';
 
 /**
@@ -153,11 +154,18 @@ export function aggregateTotals(
       rtcIS += r.vIS;
       rtcCount += 1;
     }
-    if (imposto.configuracaoIPI?.vIPI != null) {
+    // Only IPITrib CSTs (00/49/50/99) actually emit <vIPI> per item; IPINT CSTs
+    // carry a stored vIPI in some legacy configs but emit nothing, so counting it
+    // would make ICMSTot.vIPI > Σ item vIPI. Mirror buildIPI's IPI_TRIB_CSTS gate.
+    if (imposto.configuracaoIPI?.vIPI != null && IPI_TRIB_CSTS.has(imposto.configuracaoIPI.CST)) {
       vIPI += imposto.configuracaoIPI.vIPI;
     }
     const icms = imposto.configuracaoICMS;
-    if (icms == null) continue; // ISSQN-only item — no ICMS contribution
+    // ISSQN-only item — no ICMS contribution. An item carrying <ISSQN> emits NO
+    // <ICMS> (xs:choice; buildImpostoXml drops the ICMS config when ISSQN is set),
+    // so its ICMS/ST config must NOT roll into the totals — otherwise ICMSTot
+    // carries vICMS/vBCST/vST no item ever emitted (a totals mismatch SEFAZ rejects).
+    if (icms == null || imposto.configuracaoISSQN != null) continue;
     // CSOSN 101/201 contribute NOTHING to ICMSTot.vBC/vICMS. `vCredICMSSN` is
     // the Simples Nacional transferable credit (LC 123/2006 art. 23) that the
     // buyer may appropriate — it is not ICMS debited by the emitter, and the
