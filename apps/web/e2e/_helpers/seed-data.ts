@@ -81,6 +81,12 @@ export function validTestCnpj(seedDigits: string): string {
 /**
  * Seed `n` cliente docs. `nome` = `<prefix>-NNN`; `tipo`, `cpf_cnpj` and
  * `email` are varied so filter/sort tests have something to bite on.
+ *
+ * `ultimaModificacao` is stamped with a distinct, increasing value per row
+ * (`Date.now() + i`): the `/clientes` default query orders by it descending, so
+ * without it these docs would be skipped entirely (Firestore drops docs missing
+ * the orderBy field). The increment also makes the default order deterministic —
+ * the highest `i` sorts first.
  */
 export async function seedClientes(prefix: string, n: number): Promise<void> {
   const tipos = ['0', '1', '2'] as const;
@@ -99,6 +105,7 @@ export async function seedClientes(prefix: string, n: number): Promise<void> {
       telefone: null,
       observacoesInternas: null,
       timestamp: Date.now(),
+      ultimaModificacao: Date.now() + i,
       nome_embedding: null,
       telefone_embedding: null,
       userCliente: null,
@@ -1370,7 +1377,7 @@ export async function seedKitParaGerar(prefix: string): Promise<{
 
 /**
  * Seed a Mercado Livre variation-link doc under the produto — the Flutter
- * shape: `produtos/<id>/variacoesml/<x>` with `produtoVariacaoOuterRef`
+ * shape: `produtos/<id>/variacaoMercadoLivre/<x>` with `produtoVariacaoOuterRef`
  * pointing back at the produto (`pathNoDocuments`, see
  * `produtoTableProvider.dart:1557`). Makes the produto "marketplace-linked"
  * for the delete guard.
@@ -1379,12 +1386,12 @@ export async function seedVariacaoMlLink(produtoId: string): Promise<void> {
   await db()
     .collection('produtos')
     .doc(produtoId)
-    .collection('variacoesml')
+    .collection('variacaoMercadoLivre')
     .doc('mlb-test')
     .set({
       id: 123456789,
       produtoVariacaoOuterRef: `produtos/${produtoId}`,
-      produtoMercadoLivreOuterRef: `produtos/${produtoId}/produtomercadolivre/mlb-item`,
+      produtoMercadoLivreOuterRef: `produtos/${produtoId}/produtoMercadoLivre/mlb-item`,
       sku: null,
     });
 }

@@ -7,7 +7,7 @@ import { PRODUTO_SUBCOLLECTION_NAMES } from '@delfrance/schemas';
  * written by the Flutter app (one listing/variation doc per channel — see the
  * generated `Produto.deleteCascade`, `models.deletecascade.g.dart`). Variation
  * children hold their own link docs too: e.g. a Mercado Livre variation is a
- * `variacoesml` doc saved UNDER the child produto
+ * `variacaoMercadoLivre` doc saved UNDER the child produto
  * (`produtoTableProvider.dart:1570`), so "is this produto on a marketplace?"
  * is always answerable from the doc's OWN subcollections.
  *
@@ -30,8 +30,8 @@ function subcollection(name: string) {
 
 /** Channel label per subcollection name, shown in deletion-guard messages. */
 const CHANNEL_LABELS: Record<string, string> = {
-  produtomercadolivre: 'Mercado Livre',
-  variacoesml: 'Mercado Livre',
+  produtoMercadoLivre: 'Mercado Livre',
+  variacaoMercadoLivre: 'Mercado Livre',
   produtoshopee: 'Shopee',
   variacaoshopee: 'Shopee',
   produtomagalu: 'Magalu',

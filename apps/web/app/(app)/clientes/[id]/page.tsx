@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
@@ -34,6 +34,9 @@ export default function ClientePage() {
   const filialId = useDefaultFilialId();
 
   const [pendingEndereco, setPendingEndereco] = useState<ClienteCnpjEndereco | null>(null);
+  // Stable so EnderecosSection's async prefill effect (which runs a Firestore
+  // dedup read) keys only off the address value, not a fresh closure per render.
+  const clearPendingEndereco = useCallback(() => setPendingEndereco(null), []);
 
   // Pick up an address relayed from the CNPJ lookup before this cliente existed
   // (the create page, or the quick-create modal's new-tab link). Reading the
@@ -89,7 +92,7 @@ export default function ClientePage() {
       <EnderecosSection
         clienteId={params.id}
         prefillEndereco={pendingEndereco}
-        onPrefillConsumed={() => setPendingEndereco(null)}
+        onPrefillConsumed={clearPendingEndereco}
       />
     </Stack>
   );

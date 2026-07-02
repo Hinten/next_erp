@@ -122,7 +122,9 @@ export const clienteSchema = z.object({
   timestamp: millisSinceEpoch().nullable().default(null),
   // System field — creation stays in `timestamp`; this is stamped by
   // `saveRecord` on every write so the TableView update-monitor sees edits.
-  ultimaModificacao: millisSinceEpoch().nullable().optional(),
+  // Labelled so it renders as "Última modificação" in the list (the builder
+  // already carries the datetime/ms hint that formats the epoch as a date).
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
   // Embeddings are server-managed; treat as opaque on the client.
   nome_embedding: z.unknown().nullable().default(null),
   telefone_embedding: z.unknown().nullable().default(null),
@@ -151,8 +153,11 @@ export const clienteMeta: CollectionMetadata = {
     delete: PERM_CLIENTE_DELETE,
   },
   cascade: [{ path: 'clientes/{clienteId}/enderecos', onDelete: 'cascade' }],
+  // Surface the most-recently-modified clients first. The matching
+  // `clientes → ultimaModificacao DESCENDING` index already exists in
+  // firestore.indexes.json (it also serves the TableView update-monitor).
   defaultQuery: {
-    orderBy: [{ field: 'nome', direction: 'asc' }],
+    orderBy: [{ field: 'ultimaModificacao', direction: 'desc' }],
     limit: 50,
   },
 };

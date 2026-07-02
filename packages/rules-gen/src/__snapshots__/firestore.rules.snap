@@ -394,7 +394,7 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
-    match /produtos/{produtoId}/produtomercadolivre/{docId} {
+    match /produtos/{produtoId}/produtoMercadoLivre/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
@@ -406,13 +406,13 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
-    match /produtos/{produtoId}/variacaoshopee/{docId} {
+    match /produtos/{produtoId}/variacaoMercadoLivre/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
-    match /produtos/{produtoId}/variacoesml/{docId} {
+    match /produtos/{produtoId}/variacaoshopee/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
@@ -486,6 +486,9 @@ service cloud.firestore {
     match /{path=**}/pagamentos/{docId} {
       allow read: if isSuperUser() || p('d_pagamento', 1);
     }
+    match /{path=**}/produtoMercadoLivre/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+    }
     match /{path=**}/produtoamazon/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
@@ -493,9 +496,6 @@ service cloud.firestore {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
     match /{path=**}/produtomagalu/{docId} {
-      allow read: if isSuperUser() || p('d_produto', 1);
-    }
-    match /{path=**}/produtomercadolivre/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
     match /{path=**}/produtoshopee/{docId} {
@@ -507,10 +507,10 @@ service cloud.firestore {
     match /{path=**}/tokenMelEnv/{docId} {
       allow read: if isSuperUser() || p('d_frete', 2);
     }
-    match /{path=**}/variacaoshopee/{docId} {
+    match /{path=**}/variacaoMercadoLivre/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
-    match /{path=**}/variacoesml/{docId} {
+    match /{path=**}/variacaoshopee/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
   }

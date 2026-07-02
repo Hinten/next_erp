@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Stack, Title } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import { PERM } from '@delfrance/auth';
 import { type Endereco, enderecoMeta, enderecoSchema } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
@@ -11,6 +12,7 @@ import { usePermission } from '@/lib/auth';
 import { EnderecoFormModal } from '@/components/pickers/EnderecoFormModal';
 import { RecebedorNfeModal } from '@/components/pickers/RecebedorNfeModal';
 import type { ClienteCnpjEndereco } from '@/lib/clientes/consultaCnpj';
+import { findExistingEndereco } from '@/lib/clientes/enderecoDedup';
 
 /** The CNPJ-lookup address maps 1:1 onto enderecoSchema keys (estado is a UF). */
 function toEnderecoPrefill(e: ClienteCnpjEndereco): Partial<Endereco> {
@@ -58,17 +60,35 @@ export function EnderecosSection({
   // only once the permission has RESOLVED. The relayed address arrives on mount,
   // before `usePermission` settles, so we must wait for `!permLoading`; consuming
   // during the loading window would drop the offer (this broke the e2e). Then:
-  // write allowed → open the prefilled modal; denied → consume it (no read-only
-  // "offer").
+  // write allowed → check whether the cliente already has this address (#341):
+  //   already on file (same CEP + número) → open the EXISTING row for review,
+  //   never a duplicate; otherwise → open the prefilled create modal.
+  // Denied → consume it (no read-only "offer").
   useEffect(() => {
     if (!prefillEndereco || permLoading) return;
     if (!canWrite) {
       onPrefillConsumed?.();
       return;
     }
-    setEditingId(undefined);
-    setModalOpen(true);
-  }, [prefillEndereco, canWrite, permLoading, onPrefillConsumed]);
+    let cancelled = false;
+    void (async () => {
+      const existing = await findExistingEndereco(db, clienteId, prefillEndereco);
+      if (cancelled) return;
+      if (existing) {
+        notifications.show({
+          color: 'yellow',
+          message: 'Endereço já cadastrado para este cliente — abrindo para revisão.',
+        });
+        setEditingId(existing.id);
+      } else {
+        setEditingId(undefined);
+      }
+      setModalOpen(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [prefillEndereco, canWrite, permLoading, onPrefillConsumed, db, clienteId]);
 
   function openCreate() {
     setEditingId(undefined);
