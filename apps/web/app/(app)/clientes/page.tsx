@@ -23,6 +23,7 @@ import {
   clienteSchema,
 } from '@delfrance/schemas';
 import { TableView } from '@delfrance/ui';
+import { formatCpfCnpj, formatTelefone, obscure } from '@/lib/pedido-print/format';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { ENDERECO_SEARCH_LIMIT, searchClienteIdsByEndereco } from './_lib/buscaPorEndereco';
@@ -30,6 +31,16 @@ import { ENDERECO_SEARCH_LIMIT, searchClienteIdsByEndereco } from './_lib/buscaP
 // Stable empty reference so the `queryOverride` memo doesn't churn while no
 // search results exist.
 const NO_IDS: string[] = [];
+
+// Telefone is stored as digits-only E.164 (no '+'), so BR numbers carry a
+// leading `55` country code. Strip it before formatting so `formatTelefone`
+// (which masks 10/11-digit BR numbers) sees the local number; legacy raw
+// 10/11-digit numbers and foreign numbers pass through untouched.
+function renderTelefone(value: string): string {
+  const digits = value.replace(/\D/g, '');
+  const local = digits.length >= 12 && digits.startsWith('55') ? digits.slice(2) : digits;
+  return formatTelefone(local);
+}
 
 export default function ClientesPage() {
   const db = getFirebaseFirestore();
@@ -135,7 +146,7 @@ export default function ClientesPage() {
           collection={clienteCollection}
           db={db}
           meta={clienteMeta}
-          defaultColumns={['nome', 'tipo', 'cpf_cnpj', 'email']}
+          defaultColumns={['nome', 'tipo', 'cpf_cnpj', 'email', 'telefone', 'ultimaModificacao']}
           rowHref={(id) => `/clientes/${id}`}
           queryOverride={queryOverride}
           renderNewButton={() => (
@@ -154,6 +165,13 @@ export default function ClientesPage() {
                 ) : (
                   '—'
                 ),
+            },
+            // LGPD: mask the document, hiding all but the trailing digits.
+            cpf_cnpj: {
+              renderCell: (value) => (value ? obscure(formatCpfCnpj(String(value))) : '—'),
+            },
+            telefone: {
+              renderCell: (value) => (value ? renderTelefone(String(value)) : '—'),
             },
           }}
           selectable
