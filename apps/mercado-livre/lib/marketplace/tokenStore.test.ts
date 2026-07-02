@@ -45,7 +45,8 @@ const RESP: TokenResponse = {
 
 /**
  * Configurable in-memory store. `validSeq` feeds successive `loadValid` calls
- * (fast path, then the loser re-read); `latest` is what the transaction sees.
+ * (fast path, then the loser re-read); `latest` is what `loadLatest` returns
+ * (the token whose refresh_token drives a refresh).
  */
 function fakeStore(opts: {
   valid?: TokenDuravel | null;
@@ -60,8 +61,8 @@ function fakeStore(opts: {
       if (opts.validSeq) return opts.validSeq[i++] ?? null;
       return opts.valid ?? null;
     },
-    async refreshAtomic(decide) {
-      return decide(opts.latest ?? null, (fresh) => persisted.push(fresh));
+    async loadLatest() {
+      return opts.latest ?? null;
     },
     async save(fresh) {
       persisted.push(fresh);
