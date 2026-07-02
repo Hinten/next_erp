@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MercadoLivreHttpError } from '@delfrance/integrations-mercado-livre';
 
 import { signState } from '@/lib/marketplace/state';
 
@@ -21,7 +22,6 @@ vi.mock('@/lib/marketplace/mercadoLivre', async (importActual) => {
 });
 
 const { GET } = await import('./route');
-const { MercadoLivreNotImplementedError } = await import('@/lib/marketplace/mercadoLivre');
 
 const STATE_SECRET = 'callback-state-secret';
 
@@ -86,9 +86,9 @@ describe('GET /api/oauth/mercado-livre/callback', () => {
     expect(h.loadCtx).not.toHaveBeenCalled();
   });
 
-  it('redirects with reason=exchange when the token exchange fails (not-implemented stub)', async () => {
+  it('redirects with reason=exchange when the token exchange fails', async () => {
     h.exchangeAndPersist.mockRejectedValue(
-      new MercadoLivreNotImplementedError('troca de código OAuth'),
+      new MercadoLivreHttpError('ML /oauth/token: upstream error', 502, {}),
     );
     const state = signState('int-1', STATE_SECRET);
     const res = await GET(req({ code: 'auth-code', state }));

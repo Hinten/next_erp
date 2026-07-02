@@ -1,16 +1,12 @@
 /**
  * Resolve an `integracao` Mercado Livre account into a ready-to-use server
  * context: the plugin `MarketplaceChannel` (from `@delfrance/integrations-
- * mercado-livre`), the credential store (over the admin-only `credenciais`
- * subcollection, #287), and a `resolveChannelContext()` that builds the
- * `ChannelContext` every contract method consumes. Mirrors
- * apps/melhor-envio/lib/freight/melhorEnvio.ts, adapted to the marketplace
- * contract.
- *
- * NOTE (Phase 5): the actual ML token exchange + refresh are not implemented
- * yet — `exchangeAndPersist` and the refresh branch throw
- * `MercadoLivreNotImplementedError`. This scaffold wires the structure; the ML
- * REST calls land with the per-channel port.
+ * mercado-livre`), the durable-token store (over the admin-only `tokenDuravel`
+ * subcollection — the old Flutter wire shape, shared with the still-running
+ * Flutter app during the dual-run migration), and a `resolveChannelContext()`
+ * that builds the `ChannelContext` every contract method consumes, refreshing
+ * the token (concurrency-safe) when it is near expiry. Mirrors
+ * apps/melhor-envio/lib/freight/melhorEnvio.ts, adapted to the marketplace contract.
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import type { ChannelContext, MarketplaceChannel } from '@delfrance/core/plugins';
@@ -18,10 +14,17 @@ import { INTEGRACAO_TIPO } from '@delfrance/schemas';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
 import {
   type MercadoLivreConfig,
+  type MercadoLivreOAuthConfig,
   createMercadoLivreChannel,
+  exchangeCode,
 } from '@delfrance/integrations-mercado-livre';
 
-import { type CredentialStore, createCredentialStore } from './tokenStore';
+import {
+  type TokenDuravelStore,
+  createTokenDuravelStore,
+  getOrRefreshAccessToken,
+  tokenDuravelFromResponse,
+} from './tokenStore';
 
 /** The account doc is missing, not a Mercado Livre tipo, or has no credentials. */
 export class MercadoLivreContaNotConfiguredError extends Error {
@@ -44,17 +47,15 @@ export class MercadoLivreConfigError extends Error {
   }
 }
 
-/** A Phase-5 ML REST operation that this scaffold does not implement yet. */
+/** A ML operation still stubbed (webhook/functions processing, later steps). */
 export class MercadoLivreNotImplementedError extends Error {
   constructor(operation: string) {
-    super(`Mercado Livre "${operation}" ainda não implementado (Phase 5).`);
+    super(`Mercado Livre "${operation}" ainda não implementado.`);
     this.name = 'MercadoLivreNotImplementedError';
   }
 }
 
 const CLIENT_SECRET_ENV_VAR = 'MERCADO_LIVRE_CLIENT_SECRET';
-/** Refresh the token when it is within this window of expiring. */
-const REFRESH_SKEW_MS = 60 * 1000;
 
 /** The OAuth redirect URI — must match what's registered in the ML app. */
 export function mercadoLivreRedirectUri(): string {
@@ -78,15 +79,30 @@ export function mercadoLivreConfig(): MercadoLivreConfig {
   };
 }
 
+/**
+ * App-wide OAuth config carrying the resolved `clientSecret`, for the token
+ * exchange + refresh flow. Same env source as `mercadoLivreConfig()`.
+ */
+export function mercadoLivreOAuthConfig(): MercadoLivreOAuthConfig {
+  const clientId = process.env.MERCADO_LIVRE_CLIENT_ID;
+  const clientSecret = process.env[CLIENT_SECRET_ENV_VAR];
+  if (!clientId || !clientSecret) {
+    throw new MercadoLivreConfigError(
+      'MERCADO_LIVRE_CLIENT_ID / MERCADO_LIVRE_CLIENT_SECRET não configurados no ambiente.',
+    );
+  }
+  return { clientId, clientSecret, redirectUri: mercadoLivreRedirectUri() };
+}
+
 export interface MercadoLivreContext {
   readonly integracaoId: string;
   readonly channel: MarketplaceChannel;
-  readonly store: CredentialStore;
+  readonly store: TokenDuravelStore;
   /**
    * Build the live `ChannelContext` the contract methods consume: reads the
-   * stored credential, refreshes it if near expiry, and packs the per-account
-   * `account` bag. Throws `MercadoLivreContaNotConfiguredError` if the account
-   * was never connected.
+   * newest valid token (or refreshes it, concurrency-safe) and packs the
+   * per-account `account` bag. Throws `MercadoLivreReauthRequiredError` when the
+   * account must reconnect via OAuth.
    */
   resolveChannelContext(now?: number): Promise<ChannelContext>;
   /** Exchange an authorization code and persist the resulting credential. */
@@ -112,7 +128,8 @@ export async function loadMercadoLivreContext(
   }
 
   const channel = createMercadoLivreChannel(mercadoLivreConfig());
-  const store = createCredentialStore(db, integracaoId);
+  const oauthConfig = mercadoLivreOAuthConfig();
+  const store = createTokenDuravelStore(db, integracaoId);
 
   // The per-account singularities (ML `user_id`, price tables, …) live on the
   // integracao doc (#289) and ride through `.passthrough()`. Pass them opaquely
@@ -124,24 +141,12 @@ export async function loadMercadoLivreContext(
     channel,
     store,
     async resolveChannelContext(now: number = Date.now()): Promise<ChannelContext> {
-      const cred = await store.load();
-      if (!cred) {
-        throw new MercadoLivreContaNotConfiguredError(
-          `Integração ${integracaoId} não conectada (sem credencial). Conecte via OAuth primeiro.`,
-        );
-      }
-      if (cred.expirationDate - now <= REFRESH_SKEW_MS) {
-        // Phase 5: POST the ML token endpoint with the refresh_token, persist via
-        // store.save (single-token), and continue with the new access_token.
-        throw new MercadoLivreNotImplementedError('refresh de token');
-      }
-      return { integracaoId, accessToken: cred.access_token, account };
+      const accessToken = await getOrRefreshAccessToken(store, oauthConfig, { now });
+      return { integracaoId, accessToken, account };
     },
-    async exchangeAndPersist(_code: string): Promise<void> {
-      // Phase 5: POST the ML token endpoint with the authorization code +
-      // client_id/secret + redirect_uri, then store.save({ access_token,
-      // refresh_token, expirationDate: now + expires_in * 1000 }).
-      throw new MercadoLivreNotImplementedError('troca de código OAuth');
+    async exchangeAndPersist(code: string): Promise<void> {
+      const resp = await exchangeCode(oauthConfig, code);
+      await store.save(tokenDuravelFromResponse(resp, Date.now()));
     },
   };
 }
