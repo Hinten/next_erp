@@ -132,6 +132,8 @@ export {
 // in ./pedido, grouped by kind like ./produto.
 export * from './pedido';
 
+export { counter, counterSchema, counterMeta, type Counter } from './counter';
+
 export {
   conversa,
   conversaSchema,

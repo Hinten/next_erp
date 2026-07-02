@@ -157,7 +157,7 @@ interface PedidoSeed {
 
 const PEDIDOS: PedidoSeed[] = [
   {
-    numero: '0001',
+    numero: '000001',
     estadoPedido: 'pago',
     withCliente: true,
     dtImpressao: Date.now() - 86_400_000,
@@ -210,7 +210,7 @@ const PEDIDOS: PedidoSeed[] = [
     ],
   },
   {
-    numero: '0002',
+    numero: '000002',
     estadoPedido: 'emProcessamento',
     withCliente: true,
     frete: { estado: 'aCaminho', codRastreio: 'BR987654321', modalidade: '1' },
@@ -229,7 +229,7 @@ const PEDIDOS: PedidoSeed[] = [
     ],
   },
   {
-    numero: '0003',
+    numero: '000003',
     estadoPedido: 'aguardandoConfirmacaoDePagamento',
     withCliente: true,
     frete: { estado: 'aguardandoNFe', modalidade: '9' },
@@ -251,14 +251,14 @@ const PEDIDOS: PedidoSeed[] = [
     infCpl: 'Pedido dev de teste — exercita o bloco <infAdic>.',
   },
   {
-    numero: '0004',
+    numero: '000004',
     estadoPedido: 'emAnalise',
     frete: { estado: 'iniciado' },
     valorCobrado: 320.0,
     // No pagamentos — exercises the `tPag='90'` (sem pagamento) fallback.
   },
   {
-    numero: '0005',
+    numero: '000005',
     estadoPedido: 'pago',
     withCliente: true,
     valorCobrado: 980.0,
@@ -274,7 +274,7 @@ const PEDIDOS: PedidoSeed[] = [
     ],
   },
   {
-    numero: '0006',
+    numero: '000006',
     estadoPedido: 'finalizado',
     withCliente: true,
     dtImpressao: Date.now() - 3_600_000,
@@ -284,13 +284,13 @@ const PEDIDOS: PedidoSeed[] = [
     pagamentos: [{ forma_de_pagamento: 1, valor: 49.9, aVista: true }],
   },
   {
-    numero: '0007',
+    numero: '000007',
     estadoPedido: 'cancelado',
     valorCobrado: 199.0,
     // No pagamentos either — second sample of the sem-pagamento fallback.
   },
   {
-    numero: '0008',
+    numero: '000008',
     estadoPedido: 'pago',
     withCliente: true,
     valorCobrado: 100.0,

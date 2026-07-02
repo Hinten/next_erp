@@ -209,6 +209,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_endereco', 4);
     }
 
+    match /counters/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+      allow create, update: if isSuperUser() || p('d_pedido', 2);
+      allow delete: if isSuperUser() || p('d_pedido', 4);
+    }
+
     match /depositos/{docId} {
       allow read: if isSuperUser() || p('d_estoque', 1);
       allow create, update: if isSuperUser() || p('d_estoque', 2);
