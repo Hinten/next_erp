@@ -45,11 +45,17 @@ describe.skipIf(!EMULATED)('cascadeProdutoDeletion — full subtree sweep (#136)
     }
   });
 
-  it('deletes the produto doc and every subcollection (including nested)', async () => {
+  it('reclaims every subcollection when the parent doc is already gone (including nested)', async () => {
     const db = getDb();
+    const produtoRef = db.collection('produtos').doc(produtoId);
+    // The onDocumentDeleted trigger fires AFTER the produto doc is deleted, so its
+    // subcollections are already orphaned when the cascade runs. Delete the parent
+    // first to exercise exactly that: recursiveDelete reclaims subcollections whose
+    // owning doc no longer exists.
+    await produtoRef.delete();
+
     await cascadeProdutoDeletion(db, produtoId);
 
-    const produtoRef = db.collection('produtos').doc(produtoId);
     expect((await produtoRef.get()).exists).toBe(false);
 
     // estoques + the nested historicoEstoque are gone.
@@ -98,6 +104,10 @@ describe.skipIf(!EMULATED)('cascadeProdutoDeletion — variation children cascad
 
   it('deletes the variation children and their subtrees, leaving non-children intact', async () => {
     const db = getDb();
+    // Match the trigger: the parent doc is already deleted when the cascade runs
+    // (children are found by their `paiId`, which survives the parent's deletion).
+    await db.collection('produtos').doc(parentId).delete();
+
     await cascadeProdutoDeletion(db, parentId);
 
     for (const cid of childIds) {
