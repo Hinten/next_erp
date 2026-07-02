@@ -59,6 +59,38 @@ export function podeTrocar(estado: EstadoPedido): boolean {
   return PODE_TROCAR.has(estado);
 }
 
+/**
+ * Estados from which issuing an NF-e is forbidden: a pedido that was cancelled,
+ * had its payment refused, was integrally reversed, or was flagged as fraud is
+ * not a live sale — emitting a fiscal document for it creates an undue tax
+ * liability that can only be undone via SEFAZ cancelamento within 24h. Mirrors
+ * the legacy skip in `.old/packages/pedido_nfe/lib/src/tasks.dart`
+ * (`skipPorDiversosMotivos`).
+ *
+ * Deliberately EXCLUDED so they stay emittable: `error` (a broken pedido is
+ * repairable, then emittable) and `estornadoParcialmente` (a real, partly
+ * refunded sale that still needs its NF-e). Cart / pre-sale states ('carrinho',
+ * 'iniciado', …) are left to the caller/UI — this guard only blocks the states
+ * that unambiguously represent a voided sale.
+ */
+const EMISSAO_NFE_BLOQUEADA: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  'carrinhoAbandonado',
+  'pagamentoNaoRealizado',
+  'estornadoIntegralmente',
+  'processandoCancelamento',
+  'cancelado',
+  'fraude',
+]);
+
+/**
+ * Whether a pedido in this estado must NOT be emitted as an NF-e. Used
+ * server-side in `prepareEmission` and reusable client-side to pre-filter a
+ * bulk-emit selection. See {@link EMISSAO_NFE_BLOQUEADA} for the rationale.
+ */
+export function emissaoNFeBloqueadaPorEstado(estado: EstadoPedido): boolean {
+  return EMISSAO_NFE_BLOQUEADA.has(estado);
+}
+
 /* -------------------------------------------------------------------------- */
 /*                        Edit-capability locking                             */
 /* -------------------------------------------------------------------------- */

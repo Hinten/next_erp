@@ -5,8 +5,12 @@ export class NFePedidoNotFoundError extends Error {
   }
 }
 export class NFeBlockedError extends Error {
-  constructor(pedidoId: string) {
-    super(`Pedido '${pedidoId}' has bloquearEmissaoNFe set.`);
+  constructor(pedidoId: string, reason?: string) {
+    super(
+      reason
+        ? `Pedido '${pedidoId}': ${reason}`
+        : `Pedido '${pedidoId}' has bloquearEmissaoNFe set.`,
+    );
     this.name = 'NFeBlockedError';
   }
 }
