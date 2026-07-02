@@ -12,7 +12,6 @@ import {
   Text,
   Textarea,
   TextInput,
-  Tooltip,
 } from '@mantine/core';
 import { Controller, type UseFormReturn } from 'react-hook-form';
 import { type Firestore } from 'firebase/firestore';
@@ -20,6 +19,7 @@ import type { Pedido } from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { clienteCollection } from '@/lib/data/clienteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
+import { EnderecoPicker } from '@/components/pickers/EnderecoPicker';
 import type { PedidoFormState } from '../types';
 
 export interface FiscalTabProps {
@@ -55,35 +55,34 @@ export function FiscalTab({ form, db, disabled }: FiscalTabProps) {
     <Stack>
       <Card withBorder>
         <Stack gap="xs">
-          <Group justify="space-between" align="center">
-            <Text fw={500}>Endereço fiscal</Text>
-            <Tooltip label="Em breve">
-              <Button type="button" size="xs" variant="light" disabled>
-                Selecionar outro
-              </Button>
-            </Tooltip>
-          </Group>
-          {enderecoFiscalRef ? (
-            <Text size="sm" c="dimmed">
-              Endereço atual:{' '}
-              <Text component="span" inherit>
-                {enderecoFiscalRef.path}
+          <EnderecoPicker
+            db={db}
+            clienteOuterRef={clientePedidoOuterRef}
+            value={enderecoFiscalOuterRef}
+            onChange={(docPath) =>
+              form.setValue('enderecoFiscalOuterRef', docPath, {
+                shouldDirty: true,
+                shouldValidate: true,
+              })
+            }
+            label="Endereço fiscal"
+            disabled={disabled}
+          />
+          {!enderecoFiscalRef &&
+            (clienteDoc ? (
+              <Text size="sm" c="dimmed">
+                Sem endereço fiscal definido. Será inferido a partir do cliente
+                <Text component="span" inherit fw={500}>
+                  {' '}
+                  {clienteDoc.data.nome ?? '(sem nome)'}
+                </Text>{' '}
+                na emissão fiscal.
               </Text>
-            </Text>
-          ) : clienteDoc ? (
-            <Text size="sm" c="dimmed">
-              Sem endereço fiscal definido. Será inferido a partir do cliente
-              <Text component="span" inherit fw={500}>
-                {' '}
-                {clienteDoc.data.nome ?? '(sem nome)'}
-              </Text>{' '}
-              na emissão fiscal.
-            </Text>
-          ) : (
-            <Text size="sm" c="dimmed">
-              Selecione um cliente na aba Principal para herdar o endereço fiscal.
-            </Text>
-          )}
+            ) : (
+              <Text size="sm" c="dimmed">
+                Selecione um cliente na aba Principal para herdar o endereço fiscal.
+              </Text>
+            ))}
         </Stack>
       </Card>
 
