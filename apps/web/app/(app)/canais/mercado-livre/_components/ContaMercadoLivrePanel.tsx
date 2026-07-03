@@ -5,7 +5,9 @@ import { useSearchParams } from 'next/navigation';
 import { Alert, Badge, Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useQuery } from '@tanstack/react-query';
+import { PERM } from '@delfrance/auth';
 
+import { usePermission } from '@/lib/auth';
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
@@ -21,6 +23,9 @@ import {
  */
 export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string }) {
   const client = useMercadoLivreClient();
+  // The backend oauth/start route is PERM.integracao.write-gated — gate the
+  // button by the same bit so a viewer isn't offered an action that will 403.
+  const { allowed: canWrite } = usePermission(PERM.integracao.write);
   const [connecting, setConnecting] = useState(false);
   const searchParams = useSearchParams();
 
@@ -93,16 +98,21 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
           </Text>
         )}
 
-        <Group>
+        <Group align="center" gap="sm">
           <Button
             type="button"
             variant={connected ? 'light' : 'filled'}
             onClick={handleConnect}
             loading={connecting}
-            disabled={!client}
+            disabled={!client || !canWrite}
           >
             {connected ? 'Reautenticar' : 'Conectar conta'}
           </Button>
+          {!canWrite && (
+            <Text size="xs" c="dimmed">
+              Requer permissão de escrita em integrações.
+            </Text>
+          )}
         </Group>
       </Stack>
     </Card>
