@@ -12,6 +12,7 @@ import { PERM, hasPerm } from '@delfrance/auth';
 import {
   estoqueCollection,
   historicoEstoqueCollection,
+  incidenteCollection,
   integracaoCollection,
   operacaoCollection,
   pedidoCollection,
@@ -28,6 +29,7 @@ import {
 } from '@delfrance/data/pedido';
 import {
   ESTADOS_PEDIDO_MOVIMENTACAO,
+  TIPO_INCIDENTE,
   TIPO_NFE,
   efeitoEstoquePedido,
   estadoFreteSchema,
@@ -232,6 +234,39 @@ function contadorOuZero(valor: unknown): number {
   return typeof valor === 'number' && Number.isFinite(valor) ? valor : 0;
 }
 
+/**
+ * Incidente payload for a drift event — the `quantidadeReservada` clamp
+ * absorbing a release means something outside the sync mutated the counters
+ * (#408). `tipo` stays `'o'` (Outros): the wire enum is legacy/Flutter-shared,
+ * so a new value could break the Dart parser; the passthrough `subtipo` marker
+ * is the structured identifier the UI filters on. Exported for the unit tests.
+ */
+export function incidenteDrift(args: {
+  estoqueId: string;
+  reservadaAntes: number;
+  deltaReservada: number;
+  pedidoNumero: string | null;
+  agoraMs: number;
+}): Record<string, unknown> {
+  const agoraUs = args.agoraMs * 1000;
+  return {
+    origem: null,
+    tipo: TIPO_INCIDENTE.outros,
+    subtipo: 'estoque-drift',
+    motivoDoIncidente:
+      `[Estoque] Divergência de reserva em ${args.estoqueId}: liberação de ` +
+      `${args.deltaReservada} sobre ${args.reservadaAntes} reservado(s) foi limitada em 0 — ` +
+      `os contadores foram alterados fora da sincronização` +
+      (args.pedidoNumero ? ` (pedido ${args.pedidoNumero})` : '') +
+      `. Confira o estoque físico e ajuste via balanço.`,
+    comentarios: null,
+    timestamp: agoraUs,
+    ultimaModificacao: agoraUs,
+    externalId: null,
+    resolucao: null,
+  };
+}
+
 async function aplicarPlano(
   db: Firestore,
   tx: Transaction,
@@ -242,6 +277,9 @@ async function aplicarPlano(
     eventId: string | null;
     usuarioOuterRef: string | null;
     agoraMs: number;
+    /** Record an `estoque-drift` incidente when the reservada clamp fires
+     *  (#408). False on the pedido-deletion reversal — the parent doc is gone. */
+    registrarDrift: boolean;
     /** Deterministic historico ids (idempotent pedido-deletion reversal). */
     historicoIdPorDelta?: (produtoId: string, depositoId: string) => string;
   },
@@ -287,11 +325,27 @@ async function aplicarPlano(
     if (reservadaCrua < 0) {
       // The floor absorbing a release is exactly the drift the snapshot design
       // prevents — if it ever fires, something outside the sync mutated the
-      // counters. Loud on purpose.
+      // counters. Loud on purpose, and persisted as an incidente on the pedido
+      // (#408) so it surfaces in the UI — a SUBcollection write, so it cannot
+      // touch CAMPOS_OBSERVADOS (no loop-guard interaction).
       logger.warn(
         `sincronizarEstoquePedido: clamp de quantidadeReservada em ${estoqueId} ` +
           `(${reservadaAntes} + ${delta.deltaReservada} → 0) — pedido ${contexto.pedidoId}`,
       );
+      if (contexto.registrarDrift) {
+        tx.set(
+          incidenteCollection.ref(db, { pedidoId: contexto.pedidoId }).doc(),
+          incidenteCollection.parse(
+            incidenteDrift({
+              estoqueId,
+              reservadaAntes,
+              deltaReservada: delta.deltaReservada,
+              pedidoNumero: contexto.pedidoNumero,
+              agoraMs: contexto.agoraMs,
+            }),
+          ),
+        );
+      }
     }
 
     if (snap.exists) {
@@ -486,6 +540,7 @@ export async function sincronizarEstoquePedido(
       eventId: opts.eventId ?? null,
       usuarioOuterRef: opts.usuarioOuterRef ?? null,
       agoraMs,
+      registrarDrift: true,
     });
 
     // ⚠️ Only CAMPOS_ESCRITOS — never a field the trigger observes (loop guard 1).
@@ -552,6 +607,7 @@ export async function reverterEstoquePedidoExcluido(
       eventId,
       usuarioOuterRef: null,
       agoraMs,
+      registrarDrift: false,
       historicoIdPorDelta: () => `exclusao-${pedidoId}`,
     });
   });
