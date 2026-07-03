@@ -56,7 +56,9 @@ export function emitRules(
       );
     }
 
-    flatBlocks.push(matchBlock(collectionPath, perms, validatorName));
+    flatBlocks.push(
+      matchBlock(collectionPath, perms, validatorName, domain.meta.serverOwnedFields ?? []),
+    );
 
     if (collectionPath.includes('/')) {
       const leaf = collectionPath.split('/').at(-1)!;
@@ -147,6 +149,7 @@ function matchBlock(
   collectionPath: string,
   perms: { read: ClaimCheck; write: ClaimCheck; delete: ClaimCheck },
   validatorName: string | null,
+  serverOwnedFields: ReadonlyArray<string>,
 ): string[] {
   const lines: string[] = [];
   lines.push(`    match /${collectionPath}/{docId} {`);
@@ -154,13 +157,36 @@ function matchBlock(
   // Super user bypasses the write-permission check; the field validator (when
   // present) is ANDed OUTSIDE the bypass, so even a super user writes valid data.
   const w = `(isSuperUser() || p('${perms.write.claim}', ${perms.write.k}))`;
+
+  // Server-owned fields (meta.serverOwnedFields): clients may CREATE them only
+  // as null (the client parse fills `.default(null)`) and may never touch them
+  // on UPDATE — only the Admin SDK (rules-bypassing) writes real values. Like
+  // the validators, ANDed OUTSIDE the su bypass.
+  const owned = [...serverOwnedFields].sort();
+  const ownedList = owned.map((f) => `'${f}'`).join(', ');
+  const createGuard = owned
+    .map(
+      (f) =>
+        `(!request.resource.data.keys().hasAny(['${f}']) || request.resource.data.get('${f}', null) == null)`,
+    )
+    .join(' && ');
+  const updateGuard =
+    owned.length > 0
+      ? `!request.resource.data.diff(resource.data).affectedKeys().hasAny([${ownedList}])`
+      : '';
+
   if (validatorName) {
+    const createExtra = createGuard ? ` && ${createGuard}` : '';
+    const updateExtra = updateGuard ? ` && ${updateGuard}` : '';
     lines.push(
-      `      allow create: if ${w} && ${validatorName}(request.resource.data, request.resource.data.keys());`,
+      `      allow create: if ${w} && ${validatorName}(request.resource.data, request.resource.data.keys())${createExtra};`,
     );
     lines.push(
-      `      allow update: if ${w} && ${validatorName}(request.resource.data, request.resource.data.diff(resource.data).affectedKeys());`,
+      `      allow update: if ${w} && ${validatorName}(request.resource.data, request.resource.data.diff(resource.data).affectedKeys())${updateExtra};`,
     );
+  } else if (owned.length > 0) {
+    lines.push(`      allow create: if ${w} && ${createGuard};`);
+    lines.push(`      allow update: if ${w} && ${updateGuard};`);
   } else {
     lines.push(
       `      allow create, update: if isSuperUser() || p('${perms.write.claim}', ${perms.write.k});`,

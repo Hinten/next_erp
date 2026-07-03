@@ -115,6 +115,15 @@ export interface CollectionMetadata {
    * collection's `TableView` list query, and may be set without one).
    */
   pickerRecencySort?: boolean;
+  /**
+   * Fields the CLIENT may never write — server-owned state maintained through
+   * the Admin SDK (which bypasses rules). The rules generator denies any client
+   * UPDATE touching them, and allows a CREATE only when the value is `null`
+   * (what the client-side Zod parse fills in via `.default(null)`), so a forged
+   * value can never enter through a client write. Like the field validators,
+   * the `su` super-user claim does NOT bypass this.
+   */
+  serverOwnedFields?: ReadonlyArray<string>;
 }
 
 export interface DomainSchema<T extends z.ZodTypeAny> {

@@ -28,3 +28,4 @@ export { integracaoCollection } from './integracaoCollection';
 export { credenciaisIntegracaoCollection } from './credenciaisIntegracaoCollection';
 export { tokenDuravelCollection } from './tokenDuravelCollection';
 export { pedidoCollection } from './pedidoCollection';
+export { operacaoCollection } from './operacaoCollection';

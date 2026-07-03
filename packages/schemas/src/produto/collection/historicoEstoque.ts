@@ -1,11 +1,34 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
+import { outerRefSchema } from '../../shared/outerRef';
 
 // Stock history rides the same `PERM.estoque` domain (bits 64–66) as `estoque`
 // and `deposito` — duplicated locally to avoid a circular dep on @delfrance/auth.
 const PERM_ESTOQUE_READ = 1n << 64n;
 const PERM_ESTOQUE_WRITE = 1n << 65n;
 const PERM_ESTOQUE_DELETE = 1n << 66n;
+
+/**
+ * Movement types — the business event behind a `historicoEstoque` record.
+ * Pedido-driven types are written by the `sincronizarEstoquePedido` sync;
+ * `manual`/`balanco` by the `aplicarEstoque` callable. Legacy (Flutter-era)
+ * records carry `null` and are distinguishable only by their `motivo` text.
+ */
+export const TIPO_MOVIMENTO_ESTOQUE = [
+  'reserva', // reservation applied (checkout/payment phase)
+  'ajusteReserva', // held reservation adjusted after an item edit
+  'liberacaoReserva', // reservation released without a physical movement
+  'saida', // physical stock out (shipped / finalizado) — may release the reserva too
+  'devolucao', // saída reverted (cancellation after removal)
+  'entrada', // physical stock in (entrada pedido: purchase / return)
+  'estorno', // entrada reverted
+  'exclusaoPedido', // pedido deleted while holding stock — snapshot reverted
+  'manual', // aplicarEstoque callable, entrada/saída
+  'balanco', // aplicarEstoque callable, absolute recount
+] as const;
+
+export const tipoMovimentoEstoqueSchema = z.enum(TIPO_MOVIMENTO_ESTOQUE);
+export type TipoMovimentoEstoque = z.infer<typeof tipoMovimentoEstoqueSchema>;
 
 /**
  * HistoricoEstoque — one stock-movement record under an estoque doc
@@ -20,6 +43,14 @@ const PERM_ESTOQUE_DELETE = 1n << 66n;
  * the movement (saída negates) — for a balanço they are the absolute counted
  * values; `ehBalanco` flags a balanço (`true`) vs a regular movement (null);
  * `motivo` is free text; `timestamp` is a ms-epoch int (`dateTimeToJson`).
+ *
+ * The structured audit block (all nullable — legacy docs parse unchanged) fixes
+ * the legacy trail's unqueryability (movements were findable only by
+ * string-matching `motivo`): `tipo` names the business event, `pedidoOuterRef` /
+ * `pedidoNumero` link the pedido, `*Antes`/`*Depois` snapshot the counters
+ * around the movement (exact — written inside the sync transaction; null on the
+ * read-free manual path), `usuarioOuterRef` records who moved (manual only),
+ * and `eventId` traces the triggering Firestore event for dedup forensics.
  */
 export const historicoEstoqueSchema = z
   .object({
@@ -28,6 +59,17 @@ export const historicoEstoqueSchema = z
     quantidadeReservada: z.number().default(0),
     motivo: z.string().nullable().default(null),
     timestamp: z.number().int().nullable().default(null),
+
+    // Structured audit (all nullable — absent on legacy/Flutter records) ------
+    tipo: tipoMovimentoEstoqueSchema.nullable().default(null),
+    pedidoOuterRef: outerRefSchema.nullable().default(null),
+    pedidoNumero: z.string().nullable().default(null),
+    quantidadeAntes: z.number().nullable().default(null),
+    quantidadeDepois: z.number().nullable().default(null),
+    quantidadeReservadaAntes: z.number().nullable().default(null),
+    quantidadeReservadaDepois: z.number().nullable().default(null),
+    usuarioOuterRef: outerRefSchema.nullable().default(null),
+    eventId: z.string().nullable().default(null),
   })
   .passthrough();
 

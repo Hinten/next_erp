@@ -21,3 +21,14 @@ export {
   PedidoConflictError,
   PedidoNothingChangedError,
 } from './usecases';
+export {
+  calcularAlteracoesEstoque,
+  planSincronizacaoEstoque,
+  temEfeitoAplicado,
+  temMovimentoAplicado,
+  type EstoqueDelta,
+  type ItemParaEstoque,
+  type PlanoSincronizacaoEstoque,
+  type ProdutoParaEstoque,
+  type SincronizacaoEstoqueInput,
+} from './estoquePlan';

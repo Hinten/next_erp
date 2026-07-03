@@ -79,6 +79,37 @@ export const itemDoPedidoSchema = z
 export type ItemDoPedido = z.infer<typeof itemDoPedidoSchema>;
 
 /**
+ * `pedido.estoqueAplicado` — the stock-sync applied-state snapshot, written ONLY
+ * by the `sincronizarEstoquePedido` Cloud Function (apps/functions). Records
+ * exactly what the sync holds per produto (post kit-expansion), so releases /
+ * returns / adjustments reverse what was REALLY applied — never a recomputation
+ * from the current items (the legacy drift bug the `recalcularIndisponivel.dart`
+ * repair script existed for). `null` on a pedido with no stock effect applied.
+ *
+ * A legacy-era pedido with `dataIndisponivelEstoque`/`dataRemocaoEstoque` set but
+ * NO snapshot is Flutter-owned: the sync skips it (quantities unknown) instead of
+ * guessing.
+ */
+export const estoqueAplicadoSchema = z.object({
+  /** Depósito that received the applied movements (id, not a path). */
+  depositoId: z.string(),
+  /** Operação that authorized them (audit — reversal uses the maps, not config). */
+  operacaoId: z.string().nullable().default(null),
+  /** Direction the movements were applied under. */
+  ehSaida: z.boolean(),
+  /** produtoId → reserved qty currently held (`quantidadeReservada`). */
+  reservado: z.record(z.string(), z.number()).nullable().default(null),
+  /** produtoId → qty currently removed from physical stock (saída). */
+  removido: z.record(z.string(), z.number()).nullable().default(null),
+  /** produtoId → qty currently added to physical stock (entrada). */
+  adicionado: z.record(z.string(), z.number()).nullable().default(null),
+  /** µs since epoch of the last sync that changed this snapshot. */
+  atualizadoEm: microsSinceEpoch('Atualização do estoque aplicado').nullable().default(null),
+});
+
+export type EstoqueAplicado = z.infer<typeof estoqueAplicadoSchema>;
+
+/**
  * Pedido schema — aligned with the legacy Flutter `Pedido` class
  * (`.old/packages/pedido/lib/src/models.dart:2537–3498`). Every field
  * Flutter writes is enumerated below with the same nullability +
@@ -151,6 +182,9 @@ export const pedidoSchema = z
     // Shipping --------------------------------------------------------------
     freteInicial: freteDoPedidoSchema.nullable().default(null).describe('Frete inicial'),
 
+    // Stock sync (server-owned — see estoqueAplicadoSchema) ------------------
+    estoqueAplicado: estoqueAplicadoSchema.nullable().default(null).describe('Estoque aplicado'),
+
     // Totals (Flutter caches derived totals on the doc; the orchestrator
     // recomputes via itens but the table UI prefers the cached field).
     valorCobrado: z.number().nullable().default(null).describe('Valor cobrado'),
@@ -215,6 +249,13 @@ export const pedidoMeta: CollectionMetadata = {
     orderBy: [{ field: 'numero', direction: 'desc' }],
     limit: 50,
   },
+  // `estoqueAplicado` is written ONLY by the sincronizarEstoquePedido Cloud
+  // Function: a client forging (or clearing) the snapshot could make the
+  // admin-privileged sync mint or leak stock. The legacy markers
+  // (`dataIndisponivelEstoque`/`dataRemocaoEstoque`) stay client-writable on
+  // purpose — the Flutter app writes them back on every full-doc save, and
+  // forging them only makes the sync SKIP a pedido, never move stock.
+  serverOwnedFields: ['estoqueAplicado'],
 };
 
 export const pedido = { schema: pedidoSchema, meta: pedidoMeta };

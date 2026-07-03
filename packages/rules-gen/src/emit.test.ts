@@ -32,6 +32,51 @@ describe('emitRules', () => {
     expect(out).not.toContain('v_bar');
   });
 
+  it('gates serverOwnedFields: create allows only null, update denies any touch', () => {
+    const withOwned: DomainSchema<z.ZodTypeAny> = {
+      schema: z.object({ nome: z.string(), snap: z.object({ a: z.number() }).nullable() }),
+      meta: {
+        collectionPath: 'foo',
+        permissions: {
+          read: PERM.cliente.read,
+          write: PERM.cliente.write,
+          delete: PERM.cliente.delete,
+        },
+        serverOwnedFields: ['snap'],
+      },
+    };
+    const out = emitRules([withOwned], [], new Set(['foo']));
+    expect(out).toContain(
+      "v_foo(request.resource.data, request.resource.data.keys()) && (!request.resource.data.keys().hasAny(['snap']) || request.resource.data.get('snap', null) == null);",
+    );
+    expect(out).toContain(
+      "v_foo(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['snap']);",
+    );
+  });
+
+  it('gates serverOwnedFields on non-whitelisted collections by splitting create/update', () => {
+    const withOwned: DomainSchema<z.ZodTypeAny> = {
+      schema: z.object({ nome: z.string() }),
+      meta: {
+        collectionPath: 'bar',
+        permissions: {
+          read: PERM.cliente.read,
+          write: PERM.cliente.write,
+          delete: PERM.cliente.delete,
+        },
+        serverOwnedFields: ['snap'],
+      },
+    };
+    const out = emitRules([withOwned], [], new Set());
+    expect(out).toContain(
+      "allow create: if (isSuperUser() || p('d_cliente', 2)) && (!request.resource.data.keys().hasAny(['snap']) || request.resource.data.get('snap', null) == null);",
+    );
+    expect(out).toContain(
+      "allow update: if (isSuperUser() || p('d_cliente', 2)) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['snap']);",
+    );
+    expect(out).not.toContain('allow create, update:');
+  });
+
   it('reuses meta placeholders as wildcards and appends {docId}', () => {
     const out = emitRules([domain('clientes/{clienteId}/enderecos')], [], new Set());
     expect(out).toContain('match /clientes/{clienteId}/enderecos/{docId} {');
