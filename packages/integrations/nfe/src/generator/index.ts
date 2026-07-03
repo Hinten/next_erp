@@ -10,6 +10,7 @@
 import { aammFromDate, composeChave, randomCNF, NFeChaveError } from './chave';
 import { buildDetXml } from './det';
 import { buildIde, cUFFromUF, NFeIdeError } from './ide';
+import { offsetForUF } from './tz';
 import { buildDest, buildEmit } from './parties';
 import { serializeFragment, type XmlValue } from '../xml';
 import { sanitizeNFeEmail, sanitizeNFeText } from '../sanitize';
@@ -35,7 +36,9 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
   }
   const tpEmis: TpEmis = input.tpEmis ?? 1;
   const cUF = cUFFromUF(input.filial.sede.estado as UF);
-  const aamm = aammFromDate(input.dhEmi);
+  // Same issuer offset buildIde uses for <dhEmi> — the chave AAMM and the
+  // dhEmi string must never disagree (SEFAZ cross-checks them).
+  const aamm = aammFromDate(input.dhEmi, offsetForUF(input.filial.sede.estado as UF));
   const nNF = input.numeracao.toString().padStart(9, '0');
   const cNF = input.cNF ?? randomCNF(nNF);
 
@@ -177,3 +180,4 @@ export type { GeneratorInput, GeneratorItem, GeneratorOutput, TpEmis } from './t
 export { NFeChaveError, NFeIdeError };
 export { cUFFromUF } from './ide';
 export { extractCNFFromChave } from './chave';
+export { datePartsInOffset, NFeTzError, offsetForCUF, offsetForUF } from './tz';

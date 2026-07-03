@@ -3,8 +3,10 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { inutNumeracaoCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   cUFFromUF,
+  datePartsInOffset,
   inutilizarNumeracao as inutilizarNumeracaoSefaz,
   NFeInutilizacaoError,
+  offsetForUF,
   type SefazCall,
 } from '@delfrance/integrations-nfe';
 import {
@@ -93,7 +95,12 @@ export async function inutilizarNumeracao(
   // Inutilização is sent + signed with the filial's own cert (or env fallback).
   const rt = await resolveFilialRuntime(fs, baseRt, args.filialId);
   const cUF = cUFFromUF(filial.sede.estado);
-  const ano = String(new Date().getFullYear() % 100).padStart(2, '0');
+  // Fiscal year in the FILIAL's legal time, not the process TZ (#395): on a
+  // UTC deploy a Dec 31 21:00+ BRT inutilização would otherwise target the
+  // next year's numeração range.
+  const ano = String(
+    datePartsInOffset(new Date(), offsetForUF(filial.sede.estado)).year % 100,
+  ).padStart(2, '0');
 
   // 1. Pre-check: every nfev4 doc whose número is in the range, then narrow to
   // this filial + série in memory. Deliberately left index-free: inutilização is

@@ -19,6 +19,7 @@
  * Mirrors Flutter `nfe_client/lib/src/schemas/envEventoCancNFe.dart`.
  */
 import { formatDhEmi } from '../generator/ide';
+import { offsetForCUF } from '../generator/tz';
 import { sanitizeNFeText } from '../sanitize';
 import type { TpAmb } from '../safety';
 import type { TNFe } from '../types/nfe-schema';
@@ -100,7 +101,7 @@ export function buildCancelamentoEvento(input: CancelamentoEventoInput): string 
     tpAmb: input.tpAmb,
     CNPJ: input.cnpj,
     chNFe: input.chNFe,
-    dhEvento: formatDhEmi(input.dhEvento ?? new Date()),
+    dhEvento: formatDhEmi(input.dhEvento ?? new Date(), offsetForCUF(input.chNFe.slice(0, 2))),
     tpEvento: TP_EVENTO_CANCELAMENTO,
     nSeqEvento: String(nSeq),
     verEvento: EVENTO_VERSAO,
@@ -186,7 +187,7 @@ export function buildCCeEvento(input: CCeEventoInput): string {
     tpAmb: input.tpAmb,
     CNPJ: input.cnpj,
     chNFe: input.chNFe,
-    dhEvento: formatDhEmi(input.dhEvento ?? new Date()),
+    dhEvento: formatDhEmi(input.dhEvento ?? new Date(), offsetForCUF(input.chNFe.slice(0, 2))),
     tpEvento: TP_EVENTO_CCE,
     nSeqEvento: String(nSeq),
     verEvento: EVENTO_VERSAO,
@@ -287,7 +288,7 @@ export function buildEpecEvento(input: EpecEventoInput): string {
     tpAmb: input.tpAmb,
     CNPJ: input.cnpj,
     chNFe: input.chNFe,
-    dhEvento: formatDhEmi(input.dhEvento ?? new Date()),
+    dhEvento: formatDhEmi(input.dhEvento ?? new Date(), offsetForCUF(input.chNFe.slice(0, 2))),
     tpEvento: TP_EVENTO_EPEC,
     nSeqEvento: String(nSeq),
     verEvento: EVENTO_VERSAO,

@@ -8,6 +8,8 @@
  */
 import { randomInt } from 'node:crypto';
 
+import { datePartsInOffset } from './tz';
+
 export class NFeChaveError extends Error {
   constructor(message: string) {
     super(message);
@@ -92,13 +94,16 @@ export function composeChave(parts: ChaveParts): { chave: string; cDV: number } 
 }
 
 /**
- * Build the `AAMM` slice of the chave from a Date. `AA` is the last 2 digits
- * of the year; `MM` is 01–12 zero-padded. UTC is **not** used — SEFAZ wants
- * the issuer's local time, which the caller has already encoded in `dhEmi`.
+ * Build the `AAMM` slice of the chave from an instant, in the ISSUER's fixed
+ * UTC offset (`offsetForUF(filial.sede.estado)`). `AA` is the last 2 digits of
+ * the year; `MM` is 01–12 zero-padded. SEFAZ cross-checks the chave AAMM
+ * against the `dhEmi` string, so this MUST use the same offset `buildIde` uses
+ * to format `dhEmi` — never the process timezone (#395).
  */
-export function aammFromDate(dhEmi: Date): string {
-  const aa = (dhEmi.getFullYear() % 100).toString().padStart(2, '0');
-  const mm = (dhEmi.getMonth() + 1).toString().padStart(2, '0');
+export function aammFromDate(dhEmi: Date, offsetMinutes: number): string {
+  const { year, month } = datePartsInOffset(dhEmi, offsetMinutes);
+  const aa = (year % 100).toString().padStart(2, '0');
+  const mm = month.toString().padStart(2, '0');
   return aa + mm;
 }
 

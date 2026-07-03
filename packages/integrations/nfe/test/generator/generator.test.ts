@@ -131,7 +131,9 @@ const BASE_INPUT: GeneratorInput = {
   numeracao: 7,
   serie: 1,
   tpEmis: 1,
-  dhEmi: new Date(2026, 4, 20, 10, 30, 0),
+  // Explicit instant (not local-time components) so the suite is deterministic
+  // on any runner TZ — the generator formats in the FILIAL's offset (#395).
+  dhEmi: new Date('2026-05-20T10:30:00-03:00'),
   filial: FILIAL,
   operacao: OPERACAO,
   cliente: CLIENTE,
@@ -156,6 +158,22 @@ describe('generateNFe', () => {
   it('stamps the infNFe Id with `NFe` + chave', () => {
     const out = generateNFe(BASE_INPUT);
     expect(out.nfeXml).toContain(`<infNFe Id="NFe${out.chave}" versao="4.00">`);
+  });
+
+  it('formats dhEmi in the FILIAL UF offset regardless of the process TZ (#395)', () => {
+    // The instant is 13:30Z; the filial is SP (-03:00) → the wire wall-clock
+    // must be 10:30-03:00 on ANY runner (UTC CI included), and the chave AAMM
+    // must agree with the dhEmi string.
+    const out = generateNFe(BASE_INPUT);
+    expect(out.nfeXml).toContain('<dhEmi>2026-05-20T10:30:00-03:00</dhEmi>');
+    expect(out.chave.slice(2, 6)).toBe('2605');
+  });
+
+  it('month boundary: an instant that is next-month in UTC stays in the SP month (#395)', () => {
+    // 2026-07-01T01:30Z = 2026-06-30 22:30 BRT → dhEmi + chave AAMM say JUNE.
+    const out = generateNFe({ ...BASE_INPUT, dhEmi: new Date('2026-07-01T01:30:00Z') });
+    expect(out.nfeXml).toContain('<dhEmi>2026-06-30T22:30:00-03:00</dhEmi>');
+    expect(out.chave.slice(2, 6)).toBe('2606');
   });
 
   it('wraps in <NFe xmlns="…/nfe"> with no formatting whitespace', () => {
