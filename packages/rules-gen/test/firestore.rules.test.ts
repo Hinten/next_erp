@@ -183,6 +183,72 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     });
   });
 
+  describe('server-owned pedido.estoqueAplicado (meta.serverOwnedFields)', () => {
+    // A client with pedido-write forging (or clearing) the applied-stock
+    // snapshot could make the admin-privileged estoque sync mint or leak stock;
+    // only the Admin SDK (rules-bypassing) may write real values.
+    const writer = () => db({ d_pedido: 2 });
+    const snapshotForjado = {
+      depositoId: 'dep1',
+      ehSaida: true,
+      removido: { p1: 1000 },
+      atualizadoEm: 1,
+    };
+
+    it('allows a create carrying the field only as null (client parse default)', async () => {
+      await assertSucceeds(
+        setDoc(doc(writer(), 'pedidos/so-null'), {
+          estado: 'iniciado',
+          ehSaida: true,
+          estoqueAplicado: null,
+        }),
+      );
+      await assertSucceeds(
+        setDoc(doc(writer(), 'pedidos/so-absent'), { estado: 'iniciado', ehSaida: true }),
+      );
+    });
+
+    it('denies a create forging a snapshot', async () => {
+      await assertFails(
+        setDoc(doc(writer(), 'pedidos/so-forge'), {
+          estado: 'cancelado',
+          ehSaida: true,
+          estoqueAplicado: snapshotForjado,
+        }),
+      );
+    });
+
+    it('denies any update touching the field — set, clear, or delete', async () => {
+      await seed('pedidos/so-upd', {
+        estado: 'pago',
+        ehSaida: true,
+        estoqueAplicado: { depositoId: 'dep1', ehSaida: true, reservado: { p1: 5 } },
+      });
+      await assertFails(
+        updateDoc(doc(writer(), 'pedidos/so-upd'), { estoqueAplicado: snapshotForjado }),
+      );
+      await assertFails(updateDoc(doc(writer(), 'pedidos/so-upd'), { estoqueAplicado: null }));
+      await assertFails(
+        updateDoc(doc(writer(), 'pedidos/so-upd'), { estoqueAplicado: deleteField() }),
+      );
+    });
+
+    it('allows updates that leave the field untouched', async () => {
+      await seed('pedidos/so-other', {
+        estado: 'pago',
+        ehSaida: true,
+        estoqueAplicado: { depositoId: 'dep1', ehSaida: true, reservado: { p1: 5 } },
+      });
+      await assertSucceeds(updateDoc(doc(writer(), 'pedidos/so-other'), { foiImpresso: true }));
+    });
+
+    it('does not yield to the super-user claim (server-owned beats su)', async () => {
+      await seed('pedidos/so-su', { estado: 'pago', ehSaida: true });
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(updateDoc(doc(su, 'pedidos/so-su'), { estoqueAplicado: snapshotForjado }));
+    });
+  });
+
   describe('grupoEconomico tenant registry', () => {
     it('signed-in users read exactly their own grupo doc', async () => {
       await seed('grupoEconomico/g1', { nome: 'Grupo 1' });

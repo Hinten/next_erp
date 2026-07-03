@@ -123,6 +123,7 @@ export async function aplicarMovimento(
   db: Firestore,
   comando: MovimentoComando,
   now: number,
+  audit: { usuarioOuterRef?: string | null } = {},
 ): Promise<AplicarEstoqueResult> {
   const { produtoId, depositoId } = comando;
   const estoqueId = makeEstoqueUid(produtoId, depositoId);
@@ -137,7 +138,17 @@ export async function aplicarMovimento(
     batch.set(estoqueRef, { quantidadeReservada: FieldValue.maximum(0) }, { merge: true });
   }
   const historicoRef = historicoEstoqueCollection.ref(db, { produtoId, estoqueId }).doc();
-  batch.set(historicoRef, historicoEstoqueCollection.parse(plan.historico));
+  // Structured audit: manual movements name their tipo + author. Before/after
+  // stay null here — this path is deliberately read-free (the pedido sync's
+  // transactional records carry them).
+  batch.set(
+    historicoRef,
+    historicoEstoqueCollection.parse({
+      ...plan.historico,
+      tipo: plan.ehBalanco ? 'balanco' : 'manual',
+      usuarioOuterRef: audit.usuarioOuterRef ?? null,
+    }),
+  );
   await batch.commit();
 
   return { estoqueId };
@@ -169,7 +180,9 @@ export const aplicarEstoque = onCall(async (request) => {
   const result =
     comando.op === 'localizacao'
       ? await aplicarLocalizacao(getDb(), comando, Date.now())
-      : await aplicarMovimento(getDb(), comando, Date.now());
+      : await aplicarMovimento(getDb(), comando, Date.now(), {
+          usuarioOuterRef: `documents/usuarios/${request.auth.uid}`,
+        });
   logger.info(`aplicarEstoque: ${comando.op} ${comando.produtoId} → ${result.estoqueId}`);
   return result;
 });

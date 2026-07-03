@@ -66,6 +66,7 @@ service cloud.firestore {
         && (!c.hasAny(['entradasRelacionadas']) || (d.get('entradasRelacionadas', null) == null || d.get('entradasRelacionadas', null) is list))
         && (!c.hasAny(['error']) || (d.get('error', null) == null || d.get('error', null) is string))
         && (!c.hasAny(['estado']) || d.get('estado', null) in ['iniciado', 'carrinho', 'carrinhoAbandonado', 'escolhendoFormaDePagamento', 'aguardandoConfirmacaoDePagamento', 'pagamentoNaoRealizado', 'emAnalise', 'emProcessamento', 'pago', 'estornadoParcialmente', 'estornadoIntegralmente', 'processandoCancelamento', 'cancelado', 'fraude', 'finalizado', 'error'])
+        && (!c.hasAny(['estoqueAplicado']) || (d.get('estoqueAplicado', null) == null || d.get('estoqueAplicado', null) is map))
         && (!c.hasAny(['foiImpresso']) || d.get('foiImpresso', null) is bool)
         && (!c.hasAny(['freteInicial']) || (d.get('freteInicial', null) == null || d.get('freteInicial', null) is map))
         && (!c.hasAny(['hasUserInteraction']) || (d.get('hasUserInteraction', null) == null || d.get('hasUserInteraction', null) is bool))
@@ -296,8 +297,8 @@ service cloud.firestore {
 
     match /pedidos/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
-      allow create: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.keys());
-      allow update: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.diff(resource.data).affectedKeys());
+      allow create: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.keys()) && (!request.resource.data.keys().hasAny(['estoqueAplicado']) || request.resource.data.get('estoqueAplicado', null) == null);
+      allow update: if (isSuperUser() || p('d_pedido', 2)) && v_pedidos(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['estoqueAplicado']);
       allow delete: if isSuperUser() || p('d_pedido', 4);
     }
 
