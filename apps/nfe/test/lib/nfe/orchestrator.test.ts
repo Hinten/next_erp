@@ -2084,7 +2084,11 @@ describe('buildPaymentsFromPagamentos', () => {
     expect(out[0]?.card).toBeUndefined();
   });
 
-  it('juros: valor=100 + juros=5 → vPag=105 (Flutter Pagamento.vPag getter)', () => {
+  it('juros: valor=100 + juros=5 → vPag=100 (juros EXCLUDED from the wire)', () => {
+    // Deliberate divergence from Flutter (which pre-dated NT 2025.001): juros
+    // is gateway/marketplace financing, absent from vNF and from the app's
+    // paid-reconcile, so including it makes Σ vPag > vNF with no <vTroco> →
+    // SEFAZ rejection 866 (YA03-20). See buildPaymentsFromPagamentos docs.
     const out = __internal.buildPaymentsFromPagamentos([
       pagamento({
         valor: 100,
@@ -2092,7 +2096,31 @@ describe('buildPaymentsFromPagamentos', () => {
         forma_de_pagamento: FORMA_PAGAMENTO.dinheiro,
       }),
     ]);
-    expect(out[0]?.vPag).toBe(105);
+    expect(out[0]?.vPag).toBe(100);
+  });
+
+  it("duplicata=true with stale aVista=true default → indPag='1' (a prazo)", () => {
+    // A duplicata is by definition a prazo; trusting the aVista schema default
+    // would emit indPag='0' alongside a <cobr> block → SEFAZ rejection 853
+    // (Y09-40, "cobrança não deve ser informada para pagamento à vista").
+    const out = __internal.buildPaymentsFromPagamentos([
+      pagamento({
+        valor: 100,
+        duplicata: true,
+        aVista: true,
+        forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+      }),
+    ]);
+    expect(out[0]?.indPag).toBe('1');
+  });
+
+  it("non-duplicata keeps indPag from aVista ('0' à vista / '1' a prazo)", () => {
+    const out = __internal.buildPaymentsFromPagamentos([
+      pagamento({ valor: 10, aVista: true, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }),
+      pagamento({ valor: 20, aVista: false, forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario }),
+    ]);
+    expect(out[0]?.indPag).toBe('0');
+    expect(out[1]?.indPag).toBe('1');
   });
 
   it('cartao with missing tpIntegra → card block omitted (avoids cStat=391)', () => {
@@ -2441,7 +2469,7 @@ describe('buildCobrFromPagamentos', () => {
     expect(out?.dup?.[0]?.dVenc).toBe('2026-06-30');
   });
 
-  it('multiple duplicatas → fat sums all vDup', () => {
+  it('multiple duplicatas → fat sums all vDup; juros EXCLUDED (consistent with vPag/vNF)', () => {
     const out = __internal.buildCobrFromPagamentos([
       pagamento({
         valor: 100,
@@ -2455,9 +2483,24 @@ describe('buildCobrFromPagamentos', () => {
         duplicata: true,
       }),
     ]);
-    expect(out?.fat?.vOrig).toBe('155.00');
+    expect(out?.fat?.vOrig).toBe('150.00');
     expect(out?.dup).toHaveLength(2);
-    expect(out?.dup?.[1]?.vDup).toBe('55.00'); // valor + juros
+    expect(out?.dup?.[1]?.vDup).toBe('50.00'); // valor only — juros never reaches the wire
+  });
+
+  it('dVenc more than 10 years out → throws (SEFAZ rejection 797, Y09-50)', () => {
+    const farFuture = new Date();
+    farFuture.setFullYear(farFuture.getFullYear() + 11);
+    expect(() =>
+      __internal.buildCobrFromPagamentos([
+        pagamento({
+          valor: 100,
+          forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+          duplicata: true,
+          vencimento: dateToMicros(farFuture),
+        }),
+      ]),
+    ).toThrow(/10 years|797/);
   });
 });
 

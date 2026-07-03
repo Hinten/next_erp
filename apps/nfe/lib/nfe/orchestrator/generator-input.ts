@@ -82,6 +82,24 @@ export function buildGeneratorInput(
     frete: bundle.frete,
   });
 
+  // Σ vPag ↔ vNF pre-send guard (NT 2025.001 YA03-10/-20 → rejections 865/866).
+  // A mismatch (duplicated/partial/over-recorded pagamentos) would only surface
+  // as a SEFAZ rejection after numeração was allocated — fail loudly here
+  // instead, naming the values so the operator fixes the pagamentos. Skipped
+  // when every entry is tPag='90' (sem pagamento — the empty-list default and
+  // explicit no-payment records legitimately carry vPag=0 ≠ vNF).
+  const allSemPagamento = payments.every((pay) => pay.tPag === '90');
+  if (!allSemPagamento) {
+    const somaVPag = roundReais(payments.reduce((sum, pay) => sum + pay.vPag, 0));
+    if (somaVPag !== totals.vNF) {
+      throw new NFeOrchestratorError(
+        `pedido '${bundle.pedidoId}': soma dos pagamentos (R$ ${somaVPag.toFixed(2)}) difere ` +
+          `do total da NF-e (R$ ${totals.vNF.toFixed(2)}) — SEFAZ rejeitaria com cStat ` +
+          `${somaVPag < totals.vNF ? '865' : '866'}. Ajuste os pagamentos do pedido antes de emitir.`,
+      );
+    }
+  }
+
   // Referenced NF-es (devolução/complementar) → ide.NFref[].refNFe. The pedido
   // stores chaves in `chNFeReferenciadas` (44-digit validated on the FiscalTab);
   // buildIde re-validates each and throws on a malformed one.
@@ -258,8 +276,20 @@ export function apportionDescontos(
  *   - empty list → single `tPag='90'` (sem pagamento), `vPag=0` (Flutter's
  *     `1768–1776` default — SEFAZ-safe, no `<xPag>` needed).
  *   - per Pagamento: `tPag` = `forma_de_pagamento` padded to 2 digits;
- *     `vPag` = `valor + juros` (or 0 when `forma=90`); `indPag` from
- *     `aVista` (0=à vista, 1=a prazo).
+ *     `vPag` = `valor` ONLY (or 0 when `forma=90`). **`juros` is deliberately
+ *     excluded** (diverging from Flutter, which pre-dated NT 2025.001):
+ *     interest is gateway/marketplace financing cost, not part of the
+ *     operation value — it is absent from `vNF` and from the app's own
+ *     paid-reconcile (`pageModel` compares `valor` vs `valorCobrado`), so
+ *     including it makes Σ vPag > vNF with no `<vTroco>` → SEFAZ rejection
+ *     866 (YA03-20). If the company ever charges its own financing, the
+ *     correct path is folding it into `vNF` via `extras.vOutro` (+ det[0]
+ *     stamping, mirroring `vFrete`) — NOT re-adding it here.
+ *   - `indPag`: `'1'` (a prazo) whenever `duplicata === true` — a duplicata
+ *     is by definition a prazo, and `aVista` defaults to true on the schema,
+ *     so trusting it would emit `indPag='0'` alongside a `<cobr>` block →
+ *     SEFAZ rejection 853 (Y09-40). Otherwise from `aVista` (0=à vista,
+ *     1=a prazo).
  *   - `xPag` is stamped ONLY when `forma=99` (outros) — the absence of it
  *     on `tPag='99'` is exactly what triggers SEFAZ cStat=441. Falls back
  *     to `'Outro'` when `descricaoPagamento` is blank (Flutter line 1801).
@@ -299,9 +329,10 @@ export function buildPaymentsFromPagamentos(
     } else if (freteEmitenteOverride) {
       vPag = ctx.vNF;
     } else {
-      vPag = p.valor + (p.juros ?? 0);
+      vPag = p.valor;
     }
-    const indPag: NonNullable<Payment['indPag']> = p.aVista ? '0' : '1';
+    const indPag: NonNullable<Payment['indPag']> =
+      p.duplicata === true ? '1' : p.aVista ? '0' : '1';
 
     let xPag: string | undefined;
     if (isOutros) {
@@ -466,10 +497,10 @@ export function buildTranspFromFrete(frete: FreteDoPedido | null): {
  *   - Otherwise: fat = { vOrig, vLiq } summing all duplicata vPag;
  *     dup[] one per duplicata with vDup + optional nDup + dVenc.
  *
- * SEFAZ cross-validates `fat.vLiq + Σ dup.vDup === Σ pag.vPag` on the
- * NF-e (catalog rule). We don't try to be clever — if math drifts we
- * surface a clear NFeOrchestratorError so the operator sees it before
- * SEFAZ does. Phase A doesn't apply `vDesc` at the fatura level.
+ * `vDup`/`vOrig` use `valor` ONLY — `juros` is excluded for the same reason
+ * as `vPag` (see `buildPaymentsFromPagamentos`): the duplicatas must stay
+ * consistent with `<pag>` and `vNF`, or the NT 2025.001 payment-total rules
+ * reject the note. Phase A doesn't apply `vDesc` at the fatura level.
  */
 export function buildCobrFromPagamentos(pagamentos: ReadonlyArray<Pagamento>):
   | {
@@ -481,9 +512,8 @@ export function buildCobrFromPagamentos(pagamentos: ReadonlyArray<Pagamento>):
   if (dups.length === 0) return undefined;
 
   const dup = dups.map((p, i) => {
-    const valor = p.valor + (p.juros ?? 0);
     const out: { nDup?: string; dVenc?: string; vDup: string } = {
-      vDup: valor.toFixed(2),
+      vDup: p.valor.toFixed(2),
     };
     out.nDup = String(i + 1).padStart(3, '0');
     if (p.vencimento != null) {
@@ -491,13 +521,24 @@ export function buildCobrFromPagamentos(pagamentos: ReadonlyArray<Pagamento>):
       // check, not truthy — 0 (Unix epoch) is a valid timestamp.
       const parsed = new Date(microsToMillis(p.vencimento));
       if (!Number.isNaN(parsed.getTime())) {
+        // SEFAZ rejects dVenc more than 10 years out (rejection 797, Y09-50,
+        // NT 2025.001) — a vencimento that far ahead is corrupt data; fail
+        // loudly before allocation instead of burning the SEFAZ round-trip.
+        const tenYearsOut = new Date();
+        tenYearsOut.setFullYear(tenYearsOut.getFullYear() + 10);
+        if (parsed.getTime() > tenYearsOut.getTime()) {
+          throw new NFeOrchestratorError(
+            `duplicata ${i + 1}: vencimento '${parsed.toISOString().slice(0, 10)}' is more ` +
+              `than 10 years out (SEFAZ rejection 797) — check pagamento.vencimento`,
+          );
+        }
         out.dVenc = parsed.toISOString().slice(0, 10); // YYYY-MM-DD
       }
     }
     return out;
   });
 
-  const vOrig = dups.reduce((acc, p) => acc + p.valor + (p.juros ?? 0), 0);
+  const vOrig = dups.reduce((acc, p) => acc + p.valor, 0);
   const nFat = (dups[0]?.nFat ?? '').trim() || dup[0]?.nDup || undefined;
   const fat: { nFat?: string; vOrig?: string; vDesc?: string; vLiq?: string } = {
     vOrig: vOrig.toFixed(2),
