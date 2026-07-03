@@ -23,16 +23,20 @@ import { getFirestore } from 'firebase-admin/firestore';
 //   FIREBASE_PROJECT_ID=<project-id> \
 //   node apps/functions/scripts/check-estoque-indexes.mjs
 //
-// `analyze: true` EXECUTES each query (billed as a normal read). Targets the
-// named `default` database (deploy gotcha #8), overridable via
-// FIREBASE_DATABASE_ID. Probe documents are auto-discovered; override with
-// CHECK_PRODUTO_ID / CHECK_ESTOQUE_ID to point at a specific estoque.
+// Exits NON-ZERO if any query reports no index (a scan) — the script is a
+// verification gate, not a log. `analyze: true` EXECUTES each query (billed as
+// a normal read). Targets the named `default` database (deploy gotcha #8),
+// overridable via FIREBASE_DATABASE_ID. Probe documents are auto-discovered
+// with bounded reads; override with CHECK_PRODUTO_ID / CHECK_ESTOQUE_ID to
+// point at a specific estoque.
 
 const projectId = process.env.FIREBASE_PROJECT_ID ?? 'veste-france-debug';
 const databaseId = process.env.FIREBASE_DATABASE_ID ?? 'default';
 
 const app = initializeApp({ projectId });
 const db = getFirestore(app, databaseId);
+
+let semIndice = 0;
 
 async function explain(label, query) {
   const { metrics } = await query.explain({ analyze: true });
@@ -44,28 +48,40 @@ async function explain(label, query) {
   console.log('readOperations:', stats.readOperations);
   console.log('executionDuration:', stats.executionDuration);
   if (indexesUsed.length === 0) {
-    console.warn('  ⚠️  no index reported — query may be scanning the collection');
+    semIndice += 1;
+    console.warn('  ⚠️  no index reported — query is scanning the collection');
   }
 }
 
-// --- Probe discovery -------------------------------------------------------
+// --- Probe discovery (bounded) ---------------------------------------------
 // The history query is subcollection-scoped, so it needs a REAL
-// produtos/<id>/estoques/<id> path. One-doc discovery reads are cheap
-// diagnostics (the collection-group probe itself is unindexed by design — it
-// is not a production query shape).
+// produtos/<id>/estoques/<id> path. Discovery must itself be cheap on a big
+// database: a bare collection-group probe could scan arbitrarily far on this
+// Enterprise edition (no group index), so instead walk up to PROBE_PRODUTOS
+// produtos (a bare limit query — no predicate/sort, bounded by definition) and
+// peek at each one's `estoques` subcollection (limit 1). Worst case:
+// PROBE_PRODUTOS + PROBE_PRODUTOS reads.
+const PROBE_PRODUTOS = 25;
+
 let produtoId = process.env.CHECK_PRODUTO_ID ?? null;
 let estoqueId = process.env.CHECK_ESTOQUE_ID ?? null;
 if (!produtoId || !estoqueId) {
-  const probe = await db.collectionGroup('estoques').limit(1).get();
-  if (probe.empty) {
+  const produtos = await db.collection('produtos').limit(PROBE_PRODUTOS).get();
+  for (const produtoDoc of produtos.docs) {
+    const estoques = await produtoDoc.ref.collection('estoques').limit(1).get();
+    if (!estoques.empty) {
+      produtoId = produtoDoc.id;
+      estoqueId = estoques.docs[0].id;
+      break;
+    }
+  }
+  if (!produtoId || !estoqueId) {
     console.error(
-      'no estoque documents found — seed one or pass CHECK_PRODUTO_ID/CHECK_ESTOQUE_ID',
+      `no estoque found under the first ${PROBE_PRODUTOS} produtos — ` +
+        'pass CHECK_PRODUTO_ID/CHECK_ESTOQUE_ID to point at one explicitly',
     );
     process.exit(1);
   }
-  const ref = probe.docs[0].ref;
-  estoqueId = ref.id;
-  produtoId = ref.parent.parent.id;
 }
 console.log(`probe estoque: produtos/${produtoId}/estoques/${estoqueId}`);
 
@@ -86,4 +102,11 @@ await explain(
   db.collection('produtos').where('paiId', '==', produtoId).limit(500),
 );
 
+if (semIndice > 0) {
+  console.error(
+    `\n❌ ${semIndice} query(ies) ran without an index — deploy firestore.indexes.json`,
+  );
+  process.exit(1);
+}
+console.log('\n✅ all queries index-backed');
 process.exit(0);

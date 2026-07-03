@@ -37,6 +37,8 @@ const db = getFirestore(app, databaseId);
 const nowMicros = Date.now() * 1000;
 const cutoff = nowMicros - graceHours * 3_600_000 * 1000;
 
+let semIndice = 0;
+
 async function explain(label, query) {
   const { metrics } = await query.explain({ analyze: true });
   const indexesUsed = metrics.planSummary?.indexesUsed ?? [];
@@ -47,7 +49,8 @@ async function explain(label, query) {
   console.log('readOperations:', stats.readOperations);
   console.log('executionDuration:', stats.executionDuration);
   if (indexesUsed.length === 0) {
-    console.warn('  ⚠️  no index reported — query may be scanning the collection');
+    semIndice += 1;
+    console.warn('  ⚠️  no index reported — query is scanning the collection');
   }
 }
 
@@ -73,4 +76,13 @@ await explain(
     .limit(100),
 );
 
+// Verification gate, not a log: a scan must fail the run (same contract as
+// check-estoque-indexes.mjs).
+if (semIndice > 0) {
+  console.error(
+    `\n❌ ${semIndice} query(ies) ran without an index — deploy firestore.indexes.json`,
+  );
+  process.exit(1);
+}
+console.log('\n✅ all queries index-backed');
 process.exit(0);
