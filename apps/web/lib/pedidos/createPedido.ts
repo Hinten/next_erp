@@ -9,7 +9,11 @@ import { newDocId } from '@/lib/data/newDocId';
  * Fixed width of the zero-padded numeric part of a pedido `numero`
  * (e.g. `42` → `"000042"`). `numero` is stored as a string and is the default
  * list sort key (`pedidoMeta.defaultQuery` orders by `numero` desc, a lexical
- * sort), so a fixed width keeps newly created pedidos ordered correctly.
+ * sort). Because the operação prefix leads the string, that lexical sort groups
+ * the `/pedidos` list by prefix and then orders by sequence *within* each
+ * prefix — a fixed width keeps that within-prefix ordering correct. (Grouping
+ * by operação is intentional; it is not a global-recency order across
+ * operações.)
  */
 export const PEDIDO_NUMERO_WIDTH = 6;
 
@@ -32,7 +36,13 @@ export function operacaoNumeroPrefix(nome: string | null | undefined): string {
   return cleaned.slice(0, 3).toUpperCase();
 }
 
-/** Compose a pedido `numero` from its operação prefix and sequence value. */
+/**
+ * Compose a pedido `numero` from its operação prefix and sequence value, as
+ * `<PREFIX>-<seq>` (e.g. `VEN-000042`). The prefix leads deliberately (human
+ * readability + namespacing vs. marketplace numbers), so the default
+ * `numero`-desc list sort groups by operação then orders by sequence within
+ * each prefix — not a single global sequence order. See `PEDIDO_NUMERO_WIDTH`.
+ */
 export function formatPedidoNumero(prefix: string, value: number): string {
   return `${prefix}-${String(value).padStart(PEDIDO_NUMERO_WIDTH, '0')}`;
 }
