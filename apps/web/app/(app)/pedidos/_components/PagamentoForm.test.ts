@@ -104,6 +104,26 @@ describe('pagamentoDataFromForm', () => {
     expect(pagamentoDataFromForm(form({ valor: 1, status: '' }), null).status_pagamento).toBeNull();
   });
 
+  it('boleto duplicata → aVista=false even though the aVista switch is hidden', () => {
+    // The aVista switch is only shown for card formas, so boleto falls back to
+    // the default — but a duplicata is by definition a prazo. Persisting
+    // `aVista: true, duplicata: true` would force every consumer (NF-e indPag,
+    // financeiro) to re-derive the correction.
+    const data = pagamentoDataFromForm(
+      form({ forma: String(FORMA_PAGAMENTO.boleto_bancario), duplicata: true, valor: 10 }),
+      null,
+    );
+    expect(data).toMatchObject({ duplicata: true, aVista: false });
+  });
+
+  it('boleto WITHOUT duplicata keeps the aVista=true default', () => {
+    const data = pagamentoDataFromForm(
+      form({ forma: String(FORMA_PAGAMENTO.boleto_bancario), duplicata: false, valor: 10 }),
+      null,
+    );
+    expect(data).toMatchObject({ duplicata: false, aVista: true });
+  });
+
   it('preserves the passthrough metodoPagamentoOuterRef + dataCadastro from base, and nulls a stale card for a non-card forma', () => {
     const base = {
       cartao: { bandeira: 'visa' },
