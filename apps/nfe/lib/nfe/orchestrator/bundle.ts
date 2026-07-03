@@ -114,7 +114,20 @@ export interface FiscalItem {
   readonly descontoUnitario: number | null;
   readonly quantidade: number;
   readonly imposto: Imposto;
+  /**
+   * Net-of-unit-discount line value: `roundReais((preço − descontoUnitário) × qtd)`.
+   * This is the tribute base (ICMS/PIS/COFINS/RTC `vBC`) — matching the legacy
+   * Flutter `item.subtotal` — and the weight used to apportion the pedido-level
+   * `descontoTotal` across items. It is NOT the wire `<vProd>` (see `vProdBruto`).
+   */
   readonly vProd: number;
+  /**
+   * Gross line value: `roundReais(preço × qtd)`. This is the wire `<prod><vProd>`
+   * SEFAZ validates against `vUnCom × qCom` (rejection 629). The discount lives in
+   * a separate `<prod><vDesc>` (unit discount + apportioned `descontoTotal`),
+   * mirroring the legacy Flutter generator.
+   */
+  readonly vProdBruto: number;
 }
 
 /**
@@ -533,6 +546,7 @@ export function flattenAndValidate(bundle: PedidoBundle): FiscalItem[] {
         quantidade,
         imposto,
         vProd: roundReais((precoDeVenda - (descontoUnitario ?? 0)) * quantidade),
+        vProdBruto: roundReais(precoDeVenda * quantidade),
       });
     });
   }

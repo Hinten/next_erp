@@ -281,6 +281,42 @@ describe('generateNFe', () => {
     expect(signed).toContain(`URI="#NFe${out.chave}"`);
     expect(signed).toMatch(/<\/infNFe><Signature[\s>]/);
   });
+
+  describe('NFref — referenced NF-es (devolução / complementar)', () => {
+    const REF_A = '35260514200166000187550010000000011000000010';
+    const REF_B = '35260514200166000187550010000000021000000027';
+
+    it('emits ide.NFref[].refNFe for each chave', () => {
+      const out = generateNFe({ ...BASE_INPUT, chNFeReferenciadas: [REF_A, REF_B] });
+      expect(out.nfeXml).toContain(`<NFref><refNFe>${REF_A}</refNFe></NFref>`);
+      expect(out.nfeXml).toContain(`<NFref><refNFe>${REF_B}</refNFe></NFref>`);
+    });
+
+    it('the NFref ide group is XSD-valid (positioned correctly at the end of ide)', async () => {
+      // `cnae: null` avoids the unrelated FILIAL-fixture emit-sequence quirk (see
+      // the contingência block); NFref rides at the end of <ide>.
+      const out = generateNFe({
+        ...BASE_INPUT,
+        filial: { ...FILIAL, cnae: null },
+        chNFeReferenciadas: [REF_A],
+      });
+      expect(out.nfeXml).toContain(`<NFref><refNFe>${REF_A}</refNFe></NFref>`);
+      const signed = signNFe(out.nfeXml, fixtureCertificate());
+      await expect(validateXsd('NFe', signed)).resolves.toBeUndefined();
+    });
+
+    it('emits no NFref when the list is empty or absent (byte-identical ide)', () => {
+      const withEmpty = generateNFe({ ...BASE_INPUT, chNFeReferenciadas: [] });
+      expect(withEmpty.nfeXml).not.toContain('<NFref>');
+      expect(generateNFe(BASE_INPUT).nfeXml).not.toContain('<NFref>');
+    });
+
+    it('throws on a malformed chave (not 44 digits) before contacting SEFAZ', () => {
+      expect(() => generateNFe({ ...BASE_INPUT, chNFeReferenciadas: ['123'] })).toThrow(
+        /44 dígitos/,
+      );
+    });
+  });
 });
 
 /** Self-signed cert for the offline signer round-trip. */

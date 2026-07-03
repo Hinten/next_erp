@@ -36,6 +36,14 @@ export interface GeneratorItem {
   readonly vUnCom: number;
   /** Valor total do produto — 2 decimals, must equal `qCom × vUnCom` rounded. */
   readonly vProd: number;
+  /**
+   * Desconto do item (`<prod><vDesc>`, 2 decimals) — the per-unit discount
+   * (`descontoUnitário × qtd`) plus this item's apportioned share of the
+   * pedido-level `descontoTotal`. Emitted only when `> 0`. `vProd` stays gross
+   * (`vUnCom × qCom`); the discount rides here so SEFAZ rule 629 holds and
+   * `vNF = Σ(vProd − vDesc)`.
+   */
+  readonly vDesc?: number;
   /** GTIN / EAN tributário. */
   readonly cEANTrib: string;
   /** Unidade tributária. */
@@ -213,6 +221,13 @@ export interface GeneratorInput {
    * randomness via `randomCNF`.
    */
   readonly cNF?: string;
+  /**
+   * Chaves de acesso (44 digits each) of the NF-es this document references,
+   * emitted as `ide.NFref[].refNFe`. Required for devolução (finNFe=4) and
+   * complementar (finNFe=2) notes so SEFAZ links them to the original. Sourced
+   * from `pedido.chNFeReferenciadas`; omit/empty for a standalone NF-e.
+   */
+  readonly chNFeReferenciadas?: readonly string[];
 }
 
 export interface GeneratorOutput {

@@ -64,6 +64,23 @@ describe('redactSensitive', () => {
     });
   });
 
+  it('redacts the enviNfe / inutilização signed-XML fields (xml_enviado/xml_retorno)', () => {
+    // These carry the full signed NF-e XML (destinatário name + CPF/CNPJ +
+    // address — LGPD personal data), so they must be redacted like xml_assinado.
+    const out = redactSensitive({
+      xml_enviado: '<enviNFe>…CPF…</enviNFe>',
+      xml_retorno: '<retEnviNFe>…</retEnviNFe>',
+      cStat: '100',
+    });
+    expect(out).toEqual({
+      xml_enviado: '[REDACTED]',
+      xml_retorno: '[REDACTED]',
+      cStat: '100',
+    });
+    expect(SENSITIVE_KEYS.has('xml_enviado')).toBe(true);
+    expect(SENSITIVE_KEYS.has('xml_retorno')).toBe(true);
+  });
+
   it('recurses into nested objects', () => {
     const out = redactSensitive({
       rt: { cert: { password: 'p', cnpj: 'c' } },

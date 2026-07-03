@@ -1105,6 +1105,38 @@ describe('emitirPedido — guards', () => {
     const { fs } = fakeFirestore({ events, pedido: blockedPedido });
     await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(NFeBlockedError);
   });
+
+  it('throws NFeBlockedError when the pedido estado is a voided sale (cancelado)', async () => {
+    const events: string[] = [];
+    const canceladoPedido = {
+      ehSaida: true,
+      estado: 'cancelado', // voided sale — must NOT emit even without bloquearEmissaoNFe
+      itens: {
+        'P-1': [
+          {
+            sku: 'SKU-1',
+            nomeDeVenda: 'Bicicleta',
+            precoDeVenda: 1500,
+            quantidade: 1,
+            descontoUnitario: 0,
+            imposto: impostoCsosn102(),
+          },
+        ],
+      },
+      integracaoPedidoOuterRef: 'integracao/I-1',
+      clientePedidoOuterRef: 'clientes/C-1',
+      operacaoPedidoOuterRef: 'operacao/O-1',
+      enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
+    };
+    const { fs } = fakeFirestore({ events, pedido: canceladoPedido });
+    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(NFeBlockedError);
+  });
+
+  it('throws NFeBlockedError when the operação is não-fiscal (ehFiscal=false)', async () => {
+    const events: string[] = [];
+    const { fs } = fakeFirestore({ events, operacao: { ehFiscal: false } });
+    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(NFeBlockedError);
+  });
 });
 
 describe('emitirPedido — magic-string fallbacks removed', () => {

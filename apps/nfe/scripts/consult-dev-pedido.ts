@@ -20,6 +20,7 @@
 import { NFeCertError } from '@delfrance/integrations-nfe';
 
 import { getAdminFirestore } from '../lib/firebase/admin';
+import { safeErrorShape } from '../lib/nfe/log';
 import { consultarPedido } from '../lib/nfe/orchestrator';
 import { getNFeRuntime, type NFeRuntime } from '../lib/nfe/runtime';
 
@@ -59,6 +60,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  console.error('[consult-dev-pedido] FAILED:', err);
+  // safeErrorShape strips NFeTransportError.responseBody (raw SEFAZ SOAP body,
+  // can echo the signed XML + X509 cert on cStat 215/225) before printing.
+  console.error('[consult-dev-pedido] FAILED:', safeErrorShape(err));
   process.exit(1);
 });

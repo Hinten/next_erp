@@ -67,6 +67,11 @@ export function buildProd(item: GeneratorItem): TNFe_infNFe_det_prod {
   // when frete.modalidade='0' (contratação por conta do emitente).
   // Mirrors Flutter `pedido_nfe_base.dart:932`.
   if (item.vFrete != null) prod.vFrete = fmtMoney(item.vFrete);
+  // Optional per-item discount (`<vDesc>`) — the unit discount plus this item's
+  // apportioned share of the pedido-level descontoTotal. `vProd` stays gross
+  // (`vUnCom × qCom`); the discount lives here so SEFAZ rule 629 holds. The META
+  // serializer places `vDesc` in XSD order (after vFrete/vSeg, before vOutro).
+  if (item.vDesc != null && item.vDesc > 0) prod.vDesc = fmtMoney(item.vDesc);
   return prod;
 }
 

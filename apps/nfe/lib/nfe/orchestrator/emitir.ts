@@ -25,9 +25,11 @@ import {
   type TRetEnviNFe,
 } from '@delfrance/integrations-nfe';
 import {
+  emissaoNFeBloqueadaPorEstado,
   ESTADO_NFE,
   nfeConfigSchema,
   type ContingenciaModo,
+  type EstadoPedido,
   type NFeConfig,
   type NotaFiscalEletronica,
 } from '@delfrance/schemas';
@@ -123,6 +125,24 @@ export async function prepareEmission(
   const bundle = await loadPedidoBundle(fs, pedidoId, ctx);
   if (bundle.pedido.bloquearEmissaoNFe) {
     throw new NFeBlockedError(pedidoId);
+  }
+  // A voided sale (cancelada/estornada/fraude/…) must not get a fiscal document
+  // — issuing one creates an undue tax liability. Blocks both the single-emit
+  // route (→ 409) and the batch (→ "não emitidas" bucket).
+  const estado = (bundle.pedido as { estado?: EstadoPedido }).estado;
+  if (estado != null && emissaoNFeBloqueadaPorEstado(estado)) {
+    throw new NFeBlockedError(
+      pedidoId,
+      `estado '${estado}' não permite emissão de NF-e (venda cancelada/estornada/fraude)`,
+    );
+  }
+  // Operações marcadas "não fiscal" (transferência interna, orçamento, …) don't
+  // emit — mirrors the legacy `operacoesNaoFiscais` skip in tasks.dart.
+  if (bundle.operacao.ehFiscal === false) {
+    throw new NFeBlockedError(
+      pedidoId,
+      `a operação vinculada não é fiscal (ehFiscal=false) — não emite NF-e`,
+    );
   }
   await preResolveImpostos(bundle, fs, ctx);
   const items = flattenAndValidate(bundle);

@@ -108,6 +108,16 @@ export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_id
   const tpAmb: TNFe_infNFe_ide['tpAmb'] = parts.ambiente === 'producao' ? '1' : '2';
   const finNFe = (input.operacao.finNFe ?? 1).toString() as TNFe_infNFe_ide['finNFe'];
 
+  // NFref (BA) — referenced NF-es (devolução finNFe=4 / complementar finNFe=2).
+  // Each must be a 44-digit chave; a malformed one is an upstream data error we
+  // surface here rather than letting SEFAZ reject the whole lote (rejection 269).
+  const nfRefs = (input.chNFeReferenciadas ?? []).filter((c): c is string => !!c);
+  for (const chave of nfRefs) {
+    if (!/^\d{44}$/.test(chave)) {
+      throw new NFeIdeError(`chNFeReferenciada inválida (esperado 44 dígitos): '${chave}'`);
+    }
+  }
+
   return {
     cUF,
     cNF: parts.cNF,
@@ -129,6 +139,8 @@ export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_id
     indIntermed: input.operacao.indIntermed,
     procEmi: PROC_EMI as TNFe_infNFe_ide['procEmi'],
     verProc: VER_PROC,
+    // BA — referenced NF-es (empty ⇒ omit; META serializer places it last in ide).
+    ...(nfRefs.length > 0 ? { NFref: nfRefs.map((refNFe) => ({ refNFe })) } : {}),
     // B28/B29 — only emitted in contingency. validateInput already enforced
     // presence/length (so the sanitized value can't be null here), and the
     // bare spread keeps the normal-emission ide byte-identical to

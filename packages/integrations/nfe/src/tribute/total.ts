@@ -2,10 +2,11 @@
  * `<total>` builder — real ICMSTot aggregation.
  *
  * Sums per-item values from the validated tribute inputs. For Simples
- * Nacional under CSOSN 102/103/300/400/500, the ICMS values are zero
- * (the operation isn't an ICMS-debit transaction); for CSOSN 101/201
- * we accumulate vBC + vICMS from the inputs. ICMS-ST values come from
- * the relevant SN201/202/203/500/900 sub-configs.
+ * Nacional the ICMS-debit total (vBC/vICMS) is zero for every CSOSN except
+ * 900 (the only SN code that carries a real vICMS); CSOSN 101/201's
+ * `vCredICMSSN` is the buyer's transferable credit, NOT emitter ICMS, so it
+ * never rolls into ICMSTot. ICMS-ST values come from the SN201/202/203/500/900
+ * sub-configs.
  *
  * Mirrors the Flutter aggregation in
  * `.old/packages/pedido_nfe/lib/src/pedido_nfe_base.dart:276-296`
@@ -21,6 +22,7 @@ import type {
   TNFe_infNFe_total_retTrib,
 } from '../types/nfe-schema';
 import { fmtMoney, fmtMoneyOpt, roundReais } from './format';
+import { IPI_TRIB_CSTS } from './schemas';
 import { computeRtcItemValues, parseRtcConfig } from './rtc';
 
 /**
@@ -35,7 +37,15 @@ export interface ISSQNExtras {
 import type { Imposto, TributeItem } from './schemas';
 
 interface PerItem {
-  readonly item: TributeItem;
+  /**
+   * `item.vProd` is the GROSS product value (summed into `ICMSTot.vProd`, which
+   * must equal Σ wire `<prod><vProd>`). `item.vBaseTributavel`, when present, is
+   * the net-of-discount tribute base used for the RTC (IBS/CBS/IS) computation —
+   * it must match the base the per-item `buildImpostoXml` used, so item and total
+   * RTC values agree. Defaults to `vProd` (no discount). The pedido-level and
+   * per-item discounts flow into the total via `TotalExtras.vDesc`.
+   */
+  readonly item: TributeItem & { readonly vBaseTributavel?: number };
   readonly imposto: Imposto;
 }
 
@@ -132,8 +142,11 @@ export function aggregateTotals(
   for (const { item, imposto } of items) {
     vProd += item.vProd;
     // RTC runs for every item (incl. ISSQN-only) before the ICMS `continue`.
+    // Base = the net-of-discount tribute value (matches the per-item
+    // `buildImpostoXml` base), NOT the gross `vProd` accumulated above.
     if (opts.emitRtc && imposto.configuracaoIBSCBS != null) {
-      const r = computeRtcItemValues(parseRtcConfig(imposto.configuracaoIBSCBS), item.vProd);
+      const rtcBase = item.vBaseTributavel ?? item.vProd;
+      const r = computeRtcItemValues(parseRtcConfig(imposto.configuracaoIBSCBS), rtcBase);
       rtcBC += r.vBC;
       rtcIBSUF += r.vIBSUF;
       rtcIBSMun += r.vIBSMun;
@@ -142,15 +155,27 @@ export function aggregateTotals(
       rtcIS += r.vIS;
       rtcCount += 1;
     }
-    if (imposto.configuracaoIPI?.vIPI != null) {
+    // Only IPITrib CSTs (00/49/50/99) actually emit <vIPI> per item; IPINT CSTs
+    // carry a stored vIPI in some legacy configs but emit nothing, so counting it
+    // would make ICMSTot.vIPI > Σ item vIPI. Mirror buildIPI's IPI_TRIB_CSTS gate.
+    if (imposto.configuracaoIPI?.vIPI != null && IPI_TRIB_CSTS.has(imposto.configuracaoIPI.CST)) {
       vIPI += imposto.configuracaoIPI.vIPI;
     }
     const icms = imposto.configuracaoICMS;
-    if (icms == null) continue; // ISSQN-only item — no ICMS contribution
-    if (icms.csosn === '101' && icms.csosn101) {
-      vICMS += icms.csosn101.vCredICMSSN;
-    } else if (icms.csosn === '201' && icms.csosn201) {
-      vICMS += icms.csosn201.vCredICMSSN;
+    // ISSQN-only item — no ICMS contribution. An item carrying <ISSQN> emits NO
+    // <ICMS> (xs:choice; buildImpostoXml drops the ICMS config when ISSQN is set),
+    // so its ICMS/ST config must NOT roll into the totals — otherwise ICMSTot
+    // carries vICMS/vBCST/vST no item ever emitted (a totals mismatch SEFAZ rejects).
+    if (icms == null || imposto.configuracaoISSQN != null) continue;
+    // CSOSN 101/201 contribute NOTHING to ICMSTot.vBC/vICMS. `vCredICMSSN` is
+    // the Simples Nacional transferable credit (LC 123/2006 art. 23) that the
+    // buyer may appropriate — it is not ICMS debited by the emitter, and the
+    // ICMSSN101/ICMSSN201 item groups carry no <vICMS> element. Adding it here
+    // makes ICMSTot.vICMS > Σ item vICMS (which is 0), which SEFAZ rejects with
+    // cStat 532 ("Total do ICMS difere do somatório dos itens", MOC 7.0 Anexo I
+    // W04). Only CSOSN 900's real <vICMS> rolls up (below). Matches the legacy
+    // Flutter engine, whose vICMS_ICMSTot stays 0 for SN-credit notes.
+    if (icms.csosn === '201' && icms.csosn201) {
       vBCST += icms.csosn201.vBCST;
       vST += icms.csosn201.vICMSST;
       vFCPST += icms.csosn201.vFCPST ?? 0;
