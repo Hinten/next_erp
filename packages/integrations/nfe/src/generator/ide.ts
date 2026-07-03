@@ -9,7 +9,7 @@ import type { UF } from '@delfrance/schemas';
 
 import type { TNFe_infNFe_ide } from '../types/nfe-schema';
 import { sanitizeNFeText } from '../sanitize';
-import { formatSefazDateTime, offsetForUF, UF_TO_IBGE } from './tz';
+import { formatSefazDateTime, UF_TO_IBGE } from './tz';
 import type { Ambiente, GeneratorInput } from './types';
 
 // UF ↔ IBGE mapping lives in ./tz (shared with the offset helpers); re-exported
@@ -30,17 +30,6 @@ export function cUFFromUF(uf: UF): string {
   return code;
 }
 
-/**
- * Format an instant as the SEFAZ `dhEmi` lexical (e.g.
- * `2026-05-20T10:30:00-03:00`) in the ISSUER's fixed UTC offset — NOT the
- * process timezone (#395: a UTC deploy would otherwise shift the fiscal date).
- * `offsetMinutes` comes from `offsetForUF(filial.sede.estado)` /
- * `offsetForCUF(chave.slice(0, 2))`.
- */
-export function formatDhEmi(dhEmi: Date, offsetMinutes: number): string {
-  return formatSefazDateTime(dhEmi, offsetMinutes);
-}
-
 /** `procEmi` value identifying our tooling. */
 const PROC_EMI = '0';
 // SEFAZ caps verProc at maxLength=20. Keep it short so future minor/patch
@@ -52,14 +41,17 @@ interface IdeParts {
   readonly cDV: string;
   readonly tpEmis: string;
   readonly ambiente: Ambiente;
+  /**
+   * Issuer's legal-time UTC offset — computed ONCE by `generateNFe`
+   * (`offsetForUF(filial.sede.estado)`) and shared with the chave `AAMM`
+   * derivation, so the SEFAZ chave↔dhEmi cross-check holds structurally.
+   */
+  readonly utcOffsetMinutes: number;
 }
 
 export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_ide {
   const filialUF = input.filial.sede.estado;
-  // Issuer's legal-time offset — every wall-clock field in <ide> (dhEmi,
-  // dhCont) uses it, and generateNFe derives the chave AAMM from the SAME
-  // offset so SEFAZ's chave↔dhEmi cross-check always holds.
-  const utcOffset = offsetForUF(filialUF as UF);
+  const utcOffset = parts.utcOffsetMinutes;
   const destUF = input.enderecoDest.estado;
   if (!input.filial.sede.codigoMunicipio) {
     throw new NFeIdeError('filial.sede.codigoMunicipio (IBGE) is required for cMunFG');
@@ -92,7 +84,7 @@ export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_id
     mod: '55',
     serie: input.serie.toString(),
     nNF: input.numeracao.toString(),
-    dhEmi: formatDhEmi(input.dhEmi, utcOffset),
+    dhEmi: formatSefazDateTime(input.dhEmi, utcOffset),
     tpNF: input.operacao.tipo === 1 ? '1' : '0',
     idDest,
     cMunFG: input.filial.sede.codigoMunicipio,
@@ -113,7 +105,10 @@ export function buildIde(input: GeneratorInput, parts: IdeParts): TNFe_infNFe_id
     // bare spread keeps the normal-emission ide byte-identical to
     // pre-contingency builds.
     ...(parts.tpEmis !== '1' && input.dhCont && input.xJust
-      ? { dhCont: formatDhEmi(input.dhCont, utcOffset), xJust: sanitizeNFeText(input.xJust) ?? '' }
+      ? {
+          dhCont: formatSefazDateTime(input.dhCont, utcOffset),
+          xJust: sanitizeNFeText(input.xJust) ?? '',
+        }
       : {}),
   };
 }

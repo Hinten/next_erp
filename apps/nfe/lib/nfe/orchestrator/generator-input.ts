@@ -4,6 +4,8 @@ import {
   buildPagXml,
   buildTotalXml,
   buildTranspXml,
+  datePartsInOffset,
+  offsetForUF,
   sanitizeNFeText,
   type GeneratorInput,
   type GeneratorItem,
@@ -112,6 +114,8 @@ export function buildGeneratorInput(
   const cobr = buildCobrFromPagamentos(bundle.pagamentos, {
     vNF: totals.vNF,
     frete: bundle.frete,
+    // dVenc is a calendar date — read it in the issuer's legal time (#395).
+    utcOffsetMinutes: offsetForUF(bundle.filial.sede.estado),
   });
   const infAdic = buildInfAdic(bundle.pedido, bundle.operacao);
   const exporta = buildExporta(bundle.operacao, bundle.filial);
@@ -513,11 +517,17 @@ export function buildTranspFromFrete(frete: FreteDoPedido | null): {
  * `ctx` mirrors `buildPaymentsFromPagamentos`: when the frete-emitente
  * single-payment override rewrites that payment's `vPag` to `vNF`, the same
  * value must flow into its `vDup`/`vOrig` — otherwise `<pag>` and `<cobr>`
- * disagree by the freight amount on the wire.
+ * disagree by the freight amount on the wire. `utcOffsetMinutes` is the
+ * issuer's legal-time offset (`offsetForUF(filial.sede.estado)`) — `dVenc`
+ * is a calendar DATE and must be read in the issuer's offset, not UTC
+ * (#395: an evening-BRT vencimento instant is the NEXT day in UTC).
  */
 export function buildCobrFromPagamentos(
   pagamentos: ReadonlyArray<Pagamento>,
-  ctx: { vNF: number; frete: FreteDoPedido | null } = { vNF: 0, frete: null },
+  ctx: { vNF: number; frete: FreteDoPedido | null; utcOffsetMinutes?: number } = {
+    vNF: 0,
+    frete: null,
+  },
 ):
   | {
       fat?: { nFat?: string; vOrig?: string; vDesc?: string; vLiq?: string };
@@ -535,12 +545,21 @@ export function buildCobrFromPagamentos(
   const freteEmitenteOverride =
     pagamentos.length === 1 && ctx.frete?.modalidade === '0' && (ctx.frete.valorCobrado ?? 0) > 0;
 
+  // Issuer-offset calendar date (default: Brasília, for direct/test callers).
+  const utcOffset = ctx.utcOffsetMinutes ?? -180;
+  const dateInIssuerOffset = (instant: Date): string => {
+    const { year, month, day } = datePartsInOffset(instant, utcOffset);
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  };
+
   // SEFAZ rejects dVenc more than 10 years out (rejection 797, Y09-50,
-  // NT 2025.001). Compare DATES (the wire carries YYYY-MM-DD), not instants —
-  // an end-of-day vencimento exactly on the +10y date must not false-throw.
-  const limitDate = new Date();
-  limitDate.setFullYear(limitDate.getFullYear() + 10);
-  const dVencLimit = limitDate.toISOString().slice(0, 10);
+  // NT 2025.001). Compare DATES (the wire carries YYYY-MM-DD) on the same
+  // issuer-offset basis — an end-of-day vencimento exactly on the +10y date
+  // must not false-throw.
+  const nowParts = datePartsInOffset(new Date(), utcOffset);
+  const dVencLimit = `${nowParts.year + 10}-${String(nowParts.month).padStart(2, '0')}-${String(
+    nowParts.day,
+  ).padStart(2, '0')}`;
 
   const dup = dups.map((p, i) => {
     // Same rounding + override rules as the payment's vPag (see above).
@@ -554,7 +573,7 @@ export function buildCobrFromPagamentos(
       // check, not truthy — 0 (Unix epoch) is a valid timestamp.
       const parsed = new Date(microsToMillis(p.vencimento));
       if (!Number.isNaN(parsed.getTime())) {
-        const dVenc = parsed.toISOString().slice(0, 10); // YYYY-MM-DD
+        const dVenc = dateInIssuerOffset(parsed); // YYYY-MM-DD, issuer offset
         if (dVenc > dVencLimit) {
           throw new NFeOrchestratorError(
             `duplicata ${i + 1}: vencimento '${dVenc}' is more than 10 years out ` +

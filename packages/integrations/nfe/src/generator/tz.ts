@@ -101,8 +101,10 @@ export function offsetForUF(uf: UF): number {
   return offset;
 }
 
-/** Lazily-built IBGE code → UF lookup (inverse of {@link UF_TO_IBGE}). */
-let ibgeToUf: Map<string, UF> | null = null;
+/** IBGE code → UF lookup (inverse of {@link UF_TO_IBGE}). */
+const IBGE_TO_UF: ReadonlyMap<string, UF> = new Map(
+  Object.entries(UF_TO_IBGE).map(([uf, code]) => [code, uf as UF]),
+);
 
 /**
  * UTC offset (minutes) for an IBGE `cUF` code — e.g. the first 2 digits of a
@@ -110,10 +112,7 @@ let ibgeToUf: Map<string, UF> | null = null;
  * (cancelamento / CC-e / EPEC), whose only issuer datum is the chave.
  */
 export function offsetForCUF(cUF: string): number {
-  if (ibgeToUf === null) {
-    ibgeToUf = new Map(Object.entries(UF_TO_IBGE).map(([uf, code]) => [code, uf as UF]));
-  }
-  const uf = ibgeToUf.get(cUF);
+  const uf = IBGE_TO_UF.get(cUF);
   if (uf === undefined) {
     throw new NFeTzError(`No UF known for IBGE cUF code '${cUF}'`);
   }

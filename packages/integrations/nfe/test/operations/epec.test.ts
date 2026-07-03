@@ -77,7 +77,7 @@ function epecArgs(dest?: EpecEventoInput['dest']): Omit<EpecEventoInput, 'tpAmb'
       vICMS: '0.00',
       vST: '0.00',
     },
-    dhEvento: new Date('2026-06-11T08:35:00'),
+    dhEvento: new Date('2026-06-11T08:35:00-03:00'),
   };
 }
 

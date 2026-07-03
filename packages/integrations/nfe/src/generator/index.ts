@@ -36,9 +36,11 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
   }
   const tpEmis: TpEmis = input.tpEmis ?? 1;
   const cUF = cUFFromUF(input.filial.sede.estado as UF);
-  // Same issuer offset buildIde uses for <dhEmi> — the chave AAMM and the
-  // dhEmi string must never disagree (SEFAZ cross-checks them).
-  const aamm = aammFromDate(input.dhEmi, offsetForUF(input.filial.sede.estado as UF));
+  // Computed ONCE and shared by the chave AAMM and buildIde's <dhEmi>/<dhCont>
+  // (via IdeParts) — the chave and the dhEmi string must never disagree
+  // (SEFAZ cross-checks them).
+  const utcOffsetMinutes = offsetForUF(input.filial.sede.estado as UF);
+  const aamm = aammFromDate(input.dhEmi, utcOffsetMinutes);
   const nNF = input.numeracao.toString().padStart(9, '0');
   const cNF = input.cNF ?? randomCNF(nNF);
 
@@ -58,6 +60,7 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
     cDV: cDV.toString(),
     tpEmis: tpEmis.toString(),
     ambiente: input.ambiente,
+    utcOffsetMinutes,
   });
   const emit = buildEmit(input.filial);
   const dest = buildDest(input.cliente, input.enderecoDest, input.ambiente);

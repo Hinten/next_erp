@@ -121,7 +121,7 @@ NFE_CERT_ENC_KEY=...                 # base64 32 bytes (openssl rand -base64 32)
 # NFE_TASKS_DISABLED=1               # deliberate sweep-only / local dev (no Cloud Tasks)
 
 ALLOWED_ADMIN_ORIGINS=https://app.example.com  # CSV; localhost allowed by default
-TZ=America/Sao_Paulo                 # SEFAZ wants the issuer's local time
+TZ=America/Sao_Paulo                 # log hygiene only — fiscal dates use explicit per-UF offsets (tz.ts, #395)
 ```
 
 See the master plan's "Cert lifecycle (operations)" section at
