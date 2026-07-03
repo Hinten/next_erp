@@ -2502,6 +2502,76 @@ describe('buildCobrFromPagamentos', () => {
       ]),
     ).toThrow(/10 years|797/);
   });
+
+  it('dVenc EXACTLY on the +10y date passes (797 is "more than 10 years"; dates, not instants)', () => {
+    // End-of-day on the boundary date: the wire dVenc equals emission date +10y,
+    // which SEFAZ accepts — an instant comparison would false-throw here.
+    const boundary = new Date();
+    boundary.setFullYear(boundary.getFullYear() + 10);
+    boundary.setUTCHours(23, 59, 0, 0);
+    const out = __internal.buildCobrFromPagamentos([
+      pagamento({
+        valor: 100,
+        forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+        duplicata: true,
+        vencimento: dateToMicros(boundary),
+      }),
+    ]);
+    expect(out?.dup?.[0]?.dVenc).toBe(boundary.toISOString().slice(0, 10));
+  });
+
+  it('forma=90 (sem pagamento) with a stray duplicata flag → NO <cobr> block', () => {
+    // A sem-pagamento entry emits vPag=0; letting it produce a cobrança block
+    // would make <cobr> contradict <pag> (fat/dup > 0 vs Σ vPag = 0).
+    const out = __internal.buildCobrFromPagamentos([
+      pagamento({
+        valor: 250,
+        forma_de_pagamento: FORMA_PAGAMENTO.sem_pagamento,
+        duplicata: true,
+      }),
+    ]);
+    expect(out).toBeUndefined();
+  });
+
+  it('sub-cent valores: fat.vOrig equals Σ of the individually-rounded vDup', () => {
+    // 33.335 rounds half-up to 33.34 per dup; vOrig must sum the ROUNDED
+    // values (66.68), not round the raw sum (66.67) — a one-cent fat↔dup
+    // mismatch is a SEFAZ cross-validation rejection.
+    const out = __internal.buildCobrFromPagamentos([
+      pagamento({
+        valor: 33.335,
+        forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+        duplicata: true,
+      }),
+      pagamento({
+        valor: 33.335,
+        forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+        duplicata: true,
+      }),
+    ]);
+    expect(out?.dup?.[0]?.vDup).toBe('33.34');
+    expect(out?.dup?.[1]?.vDup).toBe('33.34');
+    expect(out?.fat?.vOrig).toBe('66.68');
+    expect(out?.fat?.vLiq).toBe('66.68');
+  });
+
+  it('frete-emitente single-duplicata: vDup follows the vPag override (= vNF)', () => {
+    // When the single payment's vPag is overridden to vNF (issuer-contracted
+    // freight), the cobrança must carry the same value or <pag> and <cobr>
+    // disagree by the freight amount on the wire.
+    const out = __internal.buildCobrFromPagamentos(
+      [
+        pagamento({
+          valor: 100,
+          forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+          duplicata: true,
+        }),
+      ],
+      { vNF: 120, frete: { modalidade: '0', valorCobrado: 20 } as never },
+    );
+    expect(out?.dup?.[0]?.vDup).toBe('120.00');
+    expect(out?.fat?.vOrig).toBe('120.00');
+  });
 });
 
 describe('buildInfAdic', () => {

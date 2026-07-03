@@ -262,6 +262,7 @@ export function pagamentoDataFromForm(
   // Fields hidden for the chosen forma are reset to their defaults so a forma
   // switch never persists a stale value (e.g. parcelas left from a card payment).
   const vis = pagamentoFieldVisibility(form.forma);
+  const duplicata = vis.duplicata ? form.duplicata : false;
   return {
     ...((base as unknown as Record<string, unknown>) ?? {}),
     forma_de_pagamento: Number(form.forma) as FormaPagamento,
@@ -270,8 +271,12 @@ export function pagamentoDataFromForm(
     parcelas: vis.parcelas ? form.parcelas : 1,
     descricaoPagamento: trimToNull(form.descricao),
     vencimento: vis.vencimento ? form.vencimento : null,
-    aVista: vis.aVista ? form.aVista : true,
-    duplicata: vis.duplicata ? form.duplicata : false,
+    // A duplicata is by definition a prazo. The aVista switch is hidden for
+    // boleto (the only forma where duplicata is settable), so falling back to
+    // `true` here would store the contradiction `aVista: true, duplicata: true`
+    // — which every consumer (NF-e indPag, financeiro) would have to re-correct.
+    aVista: vis.aVista ? form.aVista : !duplicata,
+    duplicata,
     nFat: vis.nFat ? trimToNull(form.nFat) : null,
     cartao: vis.cartao ? buildCartao(form, base) : null,
     cheque: vis.cheque ? buildCheque(form, base) : null,

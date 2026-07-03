@@ -237,3 +237,31 @@ describe('buildGeneratorInput — Σ vPag ↔ vNF guard', () => {
     expect(out.pagXml).toContain('<vPag>120.00</vPag>');
   });
 });
+
+describe('buildGeneratorInput — guard uses the WIRE (rounded) vPag values', () => {
+  it('sub-cent valor is rounded before the comparison, matching what SEFAZ sums', () => {
+    // 10.005 → wire <vPag>10.01</vPag> (roundReais at source). vNF = 10.00 →
+    // the guard must throw 866 exactly like SEFAZ would; comparing the RAW sum
+    // (10.005 → roundReais 10.01) happens to agree here, but the invariant we
+    // pin is: guard verdict == wire verdict, judged on the rounded values.
+    const bundle = fullBundle({
+      pagamentos: [{ valor: 10.005, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }],
+    });
+    const items = [item({ precoDeVenda: 10, quantidade: 1 })];
+    expect(() => buildGeneratorInput(bundle, items, 7, 1, 'homologacao')).toThrow(/866/);
+  });
+
+  it('two sub-cent valores that round to the exact vNF pass and emit rounded vPag', () => {
+    // 33.334999… rounds to 33.33 each → Σ 66.66 == vNF (item 66.66) → passes,
+    // and the emitted XML carries the same rounded values the guard summed.
+    const bundle = fullBundle({
+      pagamentos: [
+        { valor: 33.331, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro },
+        { valor: 33.329, forma_de_pagamento: FORMA_PAGAMENTO.pix },
+      ],
+    });
+    const items = [item({ precoDeVenda: 66.66, quantidade: 1 })];
+    const out = buildGeneratorInput(bundle, items, 7, 1, 'homologacao');
+    expect(out.pagXml).toContain('<vPag>33.33</vPag>');
+  });
+});
