@@ -187,6 +187,8 @@ function EstoqueProdutoSection({
   highlight,
   dimmed,
 }: SectionProps) {
+  // Limit-only full fetch of one produto's estoques — no predicate/sort, so no
+  // Firestore index applies; bounded by the number of depósitos (#407 audit).
   const estoquesQuery = useMemo(
     () =>
       buildQuery(estoqueProdutoCollection.ref(db, { produtoId: produto.id }), [
