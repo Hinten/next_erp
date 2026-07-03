@@ -16,17 +16,14 @@ import {
 import { notifications } from '@mantine/notifications';
 import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
-import {
-  estoqueDisponivel,
-  historicoEstoqueMeta,
-  historicoEstoqueSchema,
-  makeEstoqueUid,
-} from '@delfrance/schemas';
-import { buildQuery, defaultQueryConstraints } from '@delfrance/data';
+import { estoqueDisponivel, historicoEstoqueSchema, makeEstoqueUid } from '@delfrance/schemas';
+import { buildQuery, limit, orderByField } from '@delfrance/data';
 import type { TipoMovimentacao } from '@delfrance/data/produto';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { historicoEstoqueCollection } from '@/lib/data/historicoEstoqueCollection';
 import { movimentarEstoque } from '@/lib/produtos/clientPort';
+
+const HISTORICO_LIMIT = 50;
 
 const TIPO_OPTIONS: { value: TipoMovimentacao; label: string }[] = [
   { value: 'entrada', label: 'Entrada' },
@@ -84,16 +81,14 @@ export function EstoqueMovimentacaoModal({
 
   const estoqueId = makeEstoqueUid(produtoId, depositoId);
 
-  // The movement history (newest first). Only loads once the estoque doc
-  // exists. Built from the meta's defaultQuery so the query shape and its
-  // declared index (`historicoEstoque(timestamp desc)`, #407) can never drift.
+  // The movement history (newest first). Only loads once the estoque doc exists.
   const historicoQuery = useMemo(
     () =>
       hasExisting && opened
-        ? buildQuery(
-            historicoEstoqueCollection.ref(db, { produtoId, estoqueId }),
-            defaultQueryConstraints(historicoEstoqueMeta.defaultQuery!),
-          )
+        ? buildQuery(historicoEstoqueCollection.ref(db, { produtoId, estoqueId }), [
+            orderByField('timestamp', 'desc'),
+            limit(HISTORICO_LIMIT),
+          ])
         : null,
     [hasExisting, opened, db, produtoId, estoqueId],
   );
