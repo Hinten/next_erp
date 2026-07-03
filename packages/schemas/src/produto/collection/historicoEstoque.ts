@@ -82,6 +82,15 @@ export const historicoEstoqueMeta: CollectionMetadata = {
     write: PERM_ESTOQUE_WRITE,
     delete: PERM_ESTOQUE_DELETE,
   },
+  // The movement-history read (EstoqueMovimentacaoModal): newest-first, one
+  // page. Declared here so the defaultQuery.indexes meta-test REQUIRES the
+  // matching `historicoEstoque(timestamp desc)` entry in firestore.indexes.json
+  // — on this Enterprise edition an undeclared index means a per-estoque scan +
+  // in-memory sort on every modal open (#407).
+  defaultQuery: {
+    orderBy: [{ field: 'timestamp', direction: 'desc' }],
+    limit: 50,
+  },
 };
 
 export const historicoEstoque = {
