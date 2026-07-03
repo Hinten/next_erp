@@ -247,7 +247,8 @@ describe('generateNFe', () => {
       // signed-XSD check below. Not a contingency concern; drop cnae here.
       filial: { ...FILIAL, cnae: null },
       tpEmis: 6,
-      dhCont: new Date(2026, 5, 10, 8, 0, 0),
+      // Explicit instant — 08:00 in the filial's (SP) offset on ANY runner TZ.
+      dhCont: new Date('2026-06-10T08:00:00-03:00'),
       xJust: XJUST,
     };
 
