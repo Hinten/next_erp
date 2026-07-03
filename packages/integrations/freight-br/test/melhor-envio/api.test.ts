@@ -125,6 +125,33 @@ describe('createMelhorEnvioApi.calculate', () => {
   });
 });
 
+describe('createMelhorEnvioApi.listAgencies', () => {
+  it('GETs with the company + location filters in the query string', async () => {
+    const fetchMock = mockFetch(() => new Response(JSON.stringify([{ id: 195 }]), { status: 200 }));
+    const out = await api(fetchMock).listAgencies({
+      company: 2,
+      country: 'BR',
+      state: 'RS',
+      city: 'Caxias do Sul',
+    });
+    expect(out).toEqual([{ id: 195 }]);
+    const u = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(u.pathname).toBe('/api/v2/me/shipment/agencies');
+    expect(u.searchParams.get('country')).toBe('BR');
+    expect(u.searchParams.get('state')).toBe('RS');
+    expect(u.searchParams.get('city')).toBe('Caxias do Sul');
+    expect(u.searchParams.get('company')).toBe('2');
+  });
+
+  it('omits city for a state-wide list (the picker fallback)', async () => {
+    const fetchMock = mockFetch(() => new Response(JSON.stringify([]), { status: 200 }));
+    await api(fetchMock).listAgencies({ company: 2, country: 'BR', state: 'RS' });
+    const u = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(u.searchParams.has('city')).toBe(false);
+    expect(u.searchParams.get('state')).toBe('RS');
+  });
+});
+
 describe('createMelhorEnvioApi account', () => {
   it('parses /me (GET, no body) and /me/balance', async () => {
     const meBody = {

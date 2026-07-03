@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createMelhorEnvioApi } from '../../src/melhor-envio/api';
 import {
+  companyForService,
   ensureCartAgency,
   pickAgency,
   type AgencyResolverApi,
@@ -26,6 +27,14 @@ describe('pickAgency', () => {
   it('returns the first (nearest) agency, or null when empty', () => {
     expect(pickAgency([{ id: 195 }, { id: 196 }] as Agency[])?.id).toBe(195);
     expect(pickAgency([])).toBeNull();
+  });
+});
+
+describe('companyForService', () => {
+  it('resolves the carrier id behind a service, or null when unknown', async () => {
+    const api = resolver();
+    expect(await companyForService(api, 3)).toBe(2);
+    expect(await companyForService(api, 99)).toBeNull();
   });
 });
 
