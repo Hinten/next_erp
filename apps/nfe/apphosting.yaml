@@ -9,7 +9,9 @@ runConfig:
   concurrency: 40
 # Required env (set per-environment in the Firebase console → App Hosting →
 # Environment variables, or via Cloud Secret Manager for secrets):
-#   FIREBASE_PROJECT_ID         the GCP / Firebase project id
+#   FIREBASE_PROJECT_ID         OPTIONAL — auto-detected on App Hosting/Cloud Run
+#                               (GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG); set only to
+#                               override, or in local dev without a service account
 #   FIREBASE_DATABASE_ID        Firestore database id (default: "default")
 #   NFE_AMBIENTE                "homologacao" (default) or "producao"
 #   NFE_UF                      issuer UF (default: "SP")
