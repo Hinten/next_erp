@@ -386,11 +386,14 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
       runTransaction: async <T>(fn: (tx: unknown) => Promise<T>) => {
         const tx = {
           get: (ref: ReturnType<typeof makeRef>) => ref.get(),
-          set: (ref: ReturnType<typeof makeRef>, data: Record<string, unknown>) => {
-            assertSignedXmlNeverLost(ref.path, data, undefined);
-            writes.push({ path: ref.path, data });
-            docs[ref.path] = data;
-            opts.events.push(`set:${ref.path}`);
+          // Identical write semantics to a direct ref.set (incl. the #128
+          // anchor assert + merge handling) — delegate, don't re-implement.
+          set: (
+            ref: ReturnType<typeof makeRef>,
+            data: Record<string, unknown>,
+            setOpts?: { merge?: boolean },
+          ) => {
+            void ref.set(data, setOpts);
           },
         };
         return fn(tx);
@@ -1578,7 +1581,9 @@ describe('emitirPedido — dedup (stable s${tpEmis} doc id)', () => {
     expect(genCall?.cNF).toBeUndefined();
   });
 
-  it('reuses numeração when existing nfev4 was enviando but crashed (cStat=null)', async () => {
+  it('reuses numeração when existing nfev4 was enviando but crashed WITHOUT a stored anchor', async () => {
+    // No xml_assinado on the crashed doc (pre-anchor crash) → the stored-bytes
+    // shortcut (#396) cannot apply, so the retry regenerates with the same cNF.
     const events: string[] = [];
     const { fs, writes, docs } = fakeFirestore({
       events,
@@ -2713,5 +2718,170 @@ describe('buildPaymentsFromPagamentos — frete-emitente single-payment override
       { vNF: 149.9, frete: { modalidade: '1', valorCobrado: 49.9 } as never },
     );
     expect(out[0]?.vPag).toBe(100);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #396 — crash-window stored-bytes retransmit + digest guard
+// ---------------------------------------------------------------------------
+
+describe('emitirPedido — #396 crash-window stored bytes + digest guard', () => {
+  const STORED_XML =
+    `<NFe xmlns="${NFE_NS}"><infNFe Id="NFe${CHAVE}">…original…</infNFe>` +
+    '<Signature xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo>' +
+    '<Reference><DigestValue>StoredDigest==</DigestValue></Reference>' +
+    '</SignedInfo></Signature></NFe>';
+
+  /** Crash-window doc: anchor committed (chave + xml_assinado), no nRec. */
+  function seedCrashWindowDoc(
+    docs: Record<string, Record<string, unknown> | null>,
+    estado: string = ESTADO_NFE.enviando,
+  ): void {
+    docs['pedidos/PED-1/nfev4/s1'] = {
+      numeracao: 12,
+      serie: 1,
+      tpEmis: 1,
+      estado,
+      chave: CHAVE,
+      xml_assinado: STORED_XML,
+      nRec: null,
+      cStat: null,
+      xMotivo: null,
+    };
+  }
+
+  /** 204 without an [nRec:…] marker → recovery routes through consSit. */
+  const RET_ENVI_204_NO_MARKER = {
+    tpAmb: '2',
+    verAplic: 'SP',
+    cStat: '204',
+    xMotivo: 'Rejeicao: Duplicidade de NF-e',
+    cUF: '35',
+    dhRecbto: '2026-05-20T10:30:00-03:00',
+    versao: '4.00',
+  } as const;
+
+  function retSit100WithDigVal(digVal: string) {
+    return {
+      ...RET_SIT_100,
+      protNFe: {
+        ...RET_SIT_100.protNFe,
+        infProt: { ...RET_SIT_100.protNFe.infProt, digVal },
+      },
+    };
+  }
+
+  it('retransmits the STORED signed XML — no regenerate/re-sign, idLote-only merge', async () => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 50, serie: 1, idLote: 7, ambiente: '2' },
+    });
+    seedCrashWindowDoc(docs);
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    // The stored bytes rode the lote unchanged; nothing was regenerated.
+    expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(signNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ NFe: [STORED_XML] }),
+    );
+    // Counter: idLote advanced, numeração untouched.
+    const cfgWrite = writes.find((w) => w.path === 'filiais/F-1/nfeconfig/default');
+    expect(cfgWrite?.data.idLote).toBe(8);
+    expect(cfgWrite?.data.numeracao_atual).toBe(50);
+    // The nfev4 tx write is a MERGE carrying lote bookkeeping only — the
+    // stored anchor is never rewritten.
+    const nfeTxWrite = writes.find((w) => w.path === 'pedidos/PED-1/nfev4/s1' && w.merge === true);
+    expect(nfeTxWrite).toBeDefined();
+    expect(nfeTxWrite?.data.idLote).toBe('8');
+    expect('xml_assinado' in (nfeTxWrite?.data ?? {})).toBe(false);
+  });
+
+  it('aguardandoResposta WITHOUT nRec (degraded-async 103, receipt lost) also retransmits the STORED bytes', async () => {
+    // A single-pedido 103 that arrived without infRec persists
+    // aguardandoResposta with nRec=null — the reconciler has nothing to
+    // consult by, so a retry must ride the crash-window path, not regenerate.
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 50, serie: 1, idLote: 7, ambiente: '2' },
+    });
+    seedCrashWindowDoc(docs, ESTADO_NFE.aguardandoResposta);
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(signNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ NFe: [STORED_XML] }),
+    );
+    const cfgWrite = writes.find((w) => w.path === 'filiais/F-1/nfeconfig/default');
+    expect(cfgWrite?.data.numeracao_atual).toBe(50);
+  });
+
+  it('204 → consSit recovery with MATCHING digest self-builds the proc from the stored bytes', async () => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({ events });
+    seedCrashWindowDoc(docs);
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_204_NO_MARKER);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(retSit100WithDigVal('StoredDigest=='));
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.estado).toBe(ESTADO_NFE.aprovada);
+    const procWrite = writes.find(
+      (w) => w.path === 'pedidos/PED-1/nfev4/s1' && typeof w.data.xml_nfe_proc === 'string',
+    );
+    expect(procWrite).toBeDefined();
+    // The proc embeds the ORIGINAL stored bytes (the ones SEFAZ authorized).
+    expect(procWrite?.data.xml_nfe_proc).toContain('…original…');
+    expect(procWrite?.data.xml_assinado).toBeNull(); // anchor swapped for the proc (#128)
+  });
+
+  it('204 → recovery with digest MISMATCH persists aprovada WITHOUT proc, keeping xml_assinado', async () => {
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({ events });
+    seedCrashWindowDoc(docs);
+    // Simulate a pre-fix corrupted doc: the stored bytes differ from what the
+    // protocol authorized (digVal points at other bytes).
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_204_NO_MARKER);
+    vi.mocked(consultarSituacaoNFe).mockResolvedValue(retSit100WithDigVal('OtherDigest=='));
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.estado).toBe(ESTADO_NFE.aprovada);
+    const procWrites = writes.filter(
+      (w) => w.path === 'pedidos/PED-1/nfev4/s1' && typeof w.data.xml_nfe_proc === 'string',
+    );
+    expect(procWrites).toHaveLength(0);
+    // No write may clear the anchor without a proc in the same payload (#128
+    // invariant is also asserted globally by the fake).
+    const clearing = writes.filter(
+      (w) => w.path === 'pedidos/PED-1/nfev4/s1' && w.data.xml_assinado === null,
+    );
+    expect(clearing).toHaveLength(0);
+  });
+
+  it('direct sync 100 with digVal present but NO local DigestValue still builds the proc (unknown never blocks)', async () => {
+    // The default signNFe mock output carries no <DigestValue> — extraction
+    // yields null → 'unknown' → the normal path is unaffected even though
+    // RET_ENVI_100_SYNC's protNFe carries a digVal.
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({ events });
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_100_SYNC);
+
+    const result = await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(result.estado).toBe(ESTADO_NFE.aprovada);
+    const procWrite = writes.find(
+      (w) => w.path === 'pedidos/PED-1/nfev4/s1' && typeof w.data.xml_nfe_proc === 'string',
+    );
+    expect(procWrite).toBeDefined();
   });
 });

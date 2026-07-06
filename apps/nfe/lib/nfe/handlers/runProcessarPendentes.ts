@@ -15,7 +15,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { cartaCorrecaoCollection, nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
-  buildNFeProc,
+  buildNFeProcSafe,
   classifyCStat,
   consultarSituacaoNFe,
   DEFAULT_STUCK_TIMEOUT_MS,
@@ -316,15 +316,27 @@ export async function runProcessarPendentes(args: {
       // persist the `nfeProc` here too (the emit path does it inside
       // `applyAutorizadoOutcome`), so a cron-recovered doc can render a DANFE
       // and sheds the duplicate signed XML in the same atomic write (#128). A
-      // 539 chave-swap skips it (the local signed XML no longer matches).
-      const nfeProcXml =
+      // 539 chave-swap skips it (the local signed XML no longer matches), and
+      // the digest-safe stitch (#396) skips it when the stored bytes are not
+      // the ones this protocol authorized (pre-fix regenerated retries) — the
+      // doc stays aprovada WITHOUT proc for a DistDFe/manual fetch.
+      const proc =
         !chaveSwapped &&
         classifyCStat(patch.cStat) === 'autorizada' &&
         retSit.protNFe != null &&
         retSit.protNFe.infProt.chNFe === data.chave &&
         data.xml_assinado != null
-          ? buildNFeProc(data.xml_assinado, retSit.protNFe)
+          ? buildNFeProcSafe(data.xml_assinado, retSit.protNFe)
           : null;
+      const nfeProcXml = proc?.xml ?? null;
+      if (proc?.digest === 'mismatch') {
+        console.warn(
+          `[nfe/processar-pendentes] chave ${data.chave}: local DigestValue differs ` +
+            `from the consulted protNFe digVal — skipping the <nfeProc> build; the doc ` +
+            `stays aprovada WITHOUT xml_nfe_proc (xml_assinado kept; fetch the ` +
+            `authorized XML via DistDFe/manual import)`,
+        );
+      }
       // persistPatch (not an inline merge) so its nRec preservation applies
       // here too: a consSit outcome carries no receipt, and overwriting the
       // nRec saved on cStat=103 with null would orphan the lote-poll trail.
