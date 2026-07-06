@@ -361,4 +361,26 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
       reservada: 0,
     });
   });
+
+  it('records an estoque-drift incidente when the reservada clamp fires (#408)', async () => {
+    const db = getDb();
+    const { produtoId, depositoId, pedidoId } = await seed(db, { estado: 'pago' });
+    await sincronizarEstoquePedido(db, pedidoId); // reserva 5
+    const incidentesRef = db.collection('pedidos').doc(pedidoId).collection('incidentes');
+    expect((await incidentesRef.get()).size).toBe(0); // clean sync ⇒ no incidente
+
+    // Something OUTSIDE the sync mutates the counter (the drift scenario).
+    await estoqueRef(db, produtoId, depositoId).update({ quantidadeReservada: 2 });
+
+    // Cancellation releases the snapshot's 5 over the mutated 2 → clamp at 0.
+    await mudarPedido(db, pedidoId, { estado: 'cancelado' });
+    const r = await sincronizarEstoquePedido(db, pedidoId);
+    expect(r).toEqual({ status: 'aplicado', deltas: 1 });
+    expect((await lerEstoque(db, produtoId, depositoId)).reservada).toBe(0);
+
+    const incidentes = (await incidentesRef.get()).docs.map((d) => d.data());
+    expect(incidentes).toHaveLength(1);
+    expect(incidentes[0]).toMatchObject({ tipo: 'o', subtipo: 'estoque-drift' });
+    expect(incidentes[0]!.motivoDoIncidente).toContain(makeEstoqueUid(produtoId, depositoId));
+  });
 });

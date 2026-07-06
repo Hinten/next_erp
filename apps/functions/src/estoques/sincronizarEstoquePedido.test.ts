@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CAMPOS_ESCRITOS,
   CAMPOS_OBSERVADOS,
+  incidenteDrift,
   mudouCampoObservado,
 } from './sincronizarEstoquePedido';
 
@@ -90,5 +91,53 @@ describe('loop guard 2 — mudouCampoObservado fast-path', () => {
 
   it('treats a create (before=null) as changed', () => {
     expect(mudouCampoObservado(null, base)).toBe(true);
+  });
+});
+
+describe('incidenteDrift (#408)', () => {
+  it('builds a Flutter-safe payload with the structured subtipo marker', () => {
+    const payload = incidenteDrift({
+      estoqueId: 'est-p1-dep1',
+      reservadaAntes: 2,
+      deltaReservada: -5,
+      pedidoNumero: '123',
+      agoraMs: 1_700_000_000_000,
+    });
+    // tipo stays inside the legacy wire enum ('o' = Outros); the marker is the
+    // passthrough field the UI filters on.
+    expect(payload.tipo).toBe('o');
+    expect(payload.subtipo).toBe('estoque-drift');
+    expect(payload.timestamp).toBe(1_700_000_000_000_000); // µs
+    expect(payload.ultimaModificacao).toBe(1_700_000_000_000_000);
+    const motivo = payload.motivoDoIncidente as string;
+    expect(motivo).toContain('est-p1-dep1');
+    expect(motivo).toContain('liberação de 5 unidade(s)'); // absolute amount in prose
+    expect(motivo).toContain('(delta -5)'); // signed delta kept for debugging
+    expect(motivo).toContain('pedido 123');
+    expect(motivo.length).toBeLessThanOrEqual(2000);
+  });
+
+  it('truncates the motivo to the schema cap instead of aborting the sync', () => {
+    const payload = incidenteDrift({
+      estoqueId: `est-${'p'.repeat(1500)}-${'d'.repeat(1500)}`,
+      reservadaAntes: 2,
+      deltaReservada: -5,
+      pedidoNumero: '123',
+      agoraMs: 1,
+    });
+    const motivo = payload.motivoDoIncidente as string;
+    expect(motivo.length).toBeLessThanOrEqual(2000);
+    expect(motivo.endsWith('…')).toBe(true);
+  });
+
+  it('omits the pedido reference when there is no número', () => {
+    const payload = incidenteDrift({
+      estoqueId: 'est-p1-dep1',
+      reservadaAntes: 0,
+      deltaReservada: -1,
+      pedidoNumero: null,
+      agoraMs: 1,
+    });
+    expect(payload.motivoDoIncidente as string).not.toContain('(pedido');
   });
 });

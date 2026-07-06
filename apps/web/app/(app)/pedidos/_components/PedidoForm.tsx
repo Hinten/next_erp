@@ -31,6 +31,7 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import {
   DevolucaoTab,
   EstadoHistoricoTab,
+  EstoqueSyncTab,
   FiscalTab,
   FreteTab,
   IncidentesTab,
@@ -475,6 +476,8 @@ export function PedidoForm({
             <Tabs.Tab value="estado" {...tabErrorProps('estado')}>
               Estado/Histórico
             </Tabs.Tab>
+            {/* Read-only (#408): no tabErrorProps — nothing here validates. */}
+            <Tabs.Tab value="estoque">Estoque</Tabs.Tab>
           </Tabs.List>
 
           <Tabs.Panel value="principal" pt="md">
@@ -544,6 +547,10 @@ export function PedidoForm({
 
           <Tabs.Panel value="estado" pt="md">
             <EstadoHistoricoTab form={form} disabled={disabled} pedidoId={pedidoId} />
+          </Tabs.Panel>
+
+          <Tabs.Panel value="estoque" pt="md">
+            <EstoqueSyncTab pedidoId={pedidoId} />
           </Tabs.Panel>
         </Tabs>
       </div>

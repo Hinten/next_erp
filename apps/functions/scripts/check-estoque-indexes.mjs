@@ -102,6 +102,19 @@ await explain(
   db.collection('produtos').where('paiId', '==', produtoId).limit(500),
 );
 
+// The pedido editor's Estoque tab (#408): all movements of one pedido, across
+// every produto — requires the COLLECTION_GROUP index
+// historicoEstoque(pedidoOuterRef ASC, timestamp DESC). The probe value needs
+// no matching docs: the plan (indexesUsed) is what we assert.
+await explain(
+  'pedido movements — collectionGroup(historicoEstoque) where pedidoOuterRef == <probe> orderBy timestamp desc limit 50',
+  db
+    .collectionGroup('historicoEstoque')
+    .where('pedidoOuterRef', '==', 'documents/pedidos/__probe__')
+    .orderBy('timestamp', 'desc')
+    .limit(50),
+);
+
 if (semIndice > 0) {
   console.error(
     `\n❌ ${semIndice} query(ies) ran without an index — deploy firestore.indexes.json`,
