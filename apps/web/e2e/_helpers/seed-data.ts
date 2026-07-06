@@ -1706,7 +1706,7 @@ export async function seedVariacaoMlLink(produtoId: string): Promise<void> {
 /**
  * Seed one plain produto plus a PUBLISHED `produtoMercadoLivre` link doc bound
  * to the given integração (the old Flutter wire shape: `contaOuterRef` bare
- * doc-path string, single-char `estado`), so the produto editor's Mercado
+ * doc-path string, short-code `estado`), so the produto editor's Mercado
  * Livre tab has a published row to render without any live ML backend.
  */
 export async function seedProdutoMlPublicado(

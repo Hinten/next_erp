@@ -16,7 +16,7 @@ import { millisSinceEpoch } from '../../shared/datetime';
  * which bypasses rules but must not drift from the Flutter wire format.
  *
  * Wire notes (from the generated Dart serializers):
- *  - `estado` is a single-char code (`ESTADO_PUBLICACAO` @JsonValue);
+ *  - `estado` is a short string code, 1–2 chars (`ESTADO_PUBLICACAO` @JsonValue);
  *  - `channels` is a plain string array (`['marketplace']`, `['mshops']`, or both);
  *  - `contaOuterRef` is a doc-path STRING to the integracao;
  *  - `attributes` are EMBEDDED arrays (the legacy nested `attributesML`
@@ -27,7 +27,7 @@ import { millisSinceEpoch } from '../../shared/datetime';
  *    null until the first successful publish).
  */
 
-/** Old `ESTADO_PUBLICACAO` single-char codes (models.dart 605–695). */
+/** Old `ESTADO_PUBLICACAO` short string codes, 1–2 chars (models.dart 605–695). */
 export const estadoPublicacaoMlSchema = z.enum(['r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E', 'am']);
 export type EstadoPublicacaoMl = z.infer<typeof estadoPublicacaoMlSchema>;
 

@@ -120,7 +120,10 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   const variations: PublishVariationChild[] = [];
   for (const child of children) {
     const childAvailable = await loadDisponivel(db, child.id, depositoId);
-    const existingVar = await findVariacaoLink(db, child.id, integracaoId, linkDoc?.docId ?? null);
+    // No parent link for THIS integração yet ⇒ the child cannot have a
+    // legitimate existing variation on this listing (any variacao docs it
+    // holds belong to other accounts).
+    const existingVar = linkDoc ? await findVariacaoLink(db, child.id, linkDoc.docId) : null;
     variations.push({
       produto: toPublishProduto(child.id, child.data),
       variacoesUid: child.data.variacoesUid ?? [],
@@ -238,7 +241,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     if (!childId) continue;
     const child = variations.find((v) => v.produto.id === childId);
     if (!child) continue;
-    const existing = await findVariacaoLink(db, childId, integracaoId, linkDocId);
+    const existing = await findVariacaoLink(db, childId, linkDocId);
     const varDocId =
       existing?.docId ??
       variacaoMercadoLivreLinkCollection.ref(db, { produtoId: childId }).doc().id;
@@ -327,19 +330,23 @@ async function loadDisponivel(
   return Math.max(0, total);
 }
 
-/** The child's variacaoMercadoLivre link for this integração's parent link. */
+/**
+ * The child's variacaoMercadoLivre link belonging to the given parent link doc
+ * (matched via `produtoMercadoLivreOuterRef`). Strict on purpose: with
+ * multi-conta support a child can hold variation links from OTHER accounts'
+ * listings, so "no parent link yet" must mean "no variation link" — never a
+ * fallback to whichever doc happens to come first.
+ */
 async function findVariacaoLink(
   db: Firestore,
   childId: string,
-  integracaoId: string,
-  parentLinkDocId: string | null,
+  parentLinkDocId: string,
 ): Promise<{ docId: string; mlId: number | null } | null> {
   const snap = await variacaoMercadoLivreLinkCollection.ref(db, { produtoId: childId }).get();
   for (const d of snap.docs) {
     const data = d.data() as { id?: number | null; produtoMercadoLivreOuterRef?: string };
     const parentRef = data.produtoMercadoLivreOuterRef ?? '';
-    // Match by the parent link doc when known; else by any ML link (single-conta accounts).
-    if (parentLinkDocId ? parentRef.endsWith(`/produtoMercadoLivre/${parentLinkDocId}`) : true) {
+    if (parentRef.endsWith(`/produtoMercadoLivre/${parentLinkDocId}`)) {
       return { docId: d.id, mlId: typeof data.id === 'number' ? data.id : null };
     }
   }

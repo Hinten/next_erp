@@ -52,7 +52,7 @@ export interface MercadoLivreConta {
 
 export interface MercadoLivrePublicarResult {
   itemId: string;
-  /** Old-shape single-char estado ('p' publicado, 'pa' pausado, 'E' erro, …). */
+  /** Old-shape estado code, 1–2 chars ('p' publicado, 'pa' pausado, 'E' erro, …). */
   estado: string;
   permalink: string | null;
 }

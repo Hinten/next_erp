@@ -70,6 +70,12 @@ const LISTING_TYPES = [
   { value: 'gold_pro', label: 'Premium' },
 ];
 
+/**
+ * Bound for BOTH queries (accounts and link docs) — they must match, or an
+ * account past the link-doc cap would falsely render as "Não publicado".
+ */
+const MAX_CONTAS = 50;
+
 export function MercadoLivreManager({
   produtoId,
   db,
@@ -88,7 +94,7 @@ export function MercadoLivreManager({
     () =>
       buildQuery(integracaoCollection.ref(db, {}), [
         whereEqual('tipo', INTEGRACAO_TIPO.mercadoLivre),
-        limit(50),
+        limit(MAX_CONTAS),
       ]),
     [db],
   );
@@ -96,7 +102,7 @@ export function MercadoLivreManager({
   const contas = contasSnap.data ?? [];
 
   const linksQuery = useMemo(
-    () => buildQuery(produtoMercadoLivreLinkCollection.ref(db, { produtoId }), [limit(20)]),
+    () => buildQuery(produtoMercadoLivreLinkCollection.ref(db, { produtoId }), [limit(MAX_CONTAS)]),
     [db, produtoId],
   );
   const linksSnap = useSnapshot(linksQuery);
@@ -287,7 +293,7 @@ function refMatchesIntegracao(ref: string | null | undefined, integracaoId: stri
   return ref === `integracao/${integracaoId}` || ref.endsWith(`/integracao/${integracaoId}`);
 }
 
-/** Soft-parse the single-char estado code (Flutter may hold unknown values). */
+/** Soft-parse the short estado code (Flutter may hold unknown values). */
 function parseEstado(value: string | null | undefined): EstadoPublicacaoMl | null {
   const parsed = estadoPublicacaoMlSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
