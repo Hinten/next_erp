@@ -111,8 +111,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         video_id: linkDoc.data.video_id ?? null,
       }
     : null;
-  const linkDocId =
-    linkDoc?.docId ?? produtoMercadoLivreLinkCollection.ref(db, { produtoId }).doc().id;
+  const linkDocId = linkDoc?.docId ?? produtoMercadoLivreLinkCollection.newDocId(db, { produtoId });
 
   // ---- Stock (integração's depósito when set; else every depósito) -------
   const depositoId = deps.depositoOuterRef ? idFromRef(deps.depositoOuterRef) : null;
@@ -243,8 +242,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     if (!child) continue;
     const existing = await findVariacaoLink(db, childId, linkDocId);
     const varDocId =
-      existing?.docId ??
-      variacaoMercadoLivreLinkCollection.ref(db, { produtoId: childId }).doc().id;
+      existing?.docId ?? variacaoMercadoLivreLinkCollection.newDocId(db, { produtoId: childId });
     await variacaoMercadoLivreLinkCollection.docRef(db, { produtoId: childId }, varDocId).set(
       variacaoMercadoLivreLinkCollection.parse({
         id: typeof respVar.id === 'number' ? respVar.id : null,
