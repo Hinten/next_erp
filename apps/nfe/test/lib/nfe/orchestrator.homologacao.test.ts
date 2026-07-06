@@ -338,7 +338,7 @@ async function seedFixtures(
 
   // Operação + regraImposto (the latter exercises the cascade for PED8).
   await fs.collection('operacao').doc(OPERACAO_ID).set(operacaoDoc());
-  await fs.doc(`operacao/${OPERACAO_ID}/regraimposto/${REGRA_ID}`).set(regraImpostoDoc());
+  await fs.doc(`operacao/${OPERACAO_ID}/regras/${REGRA_ID}`).set(regraImpostoDoc());
 
   // Pedidos + one approved pagamento each (otherwise tPag='90' is the
   // default and we want to exercise the real <pag>/<detPag>/forma=01 path).
@@ -375,7 +375,7 @@ async function seedFixtures(
 
 async function cleanupFixtures(fs: FirebaseFirestore.Firestore): Promise<void> {
   // Recursive cleanup: nfev4 subcollections + pagamento subcollections
-  // + the pedido docs themselves. Then operacao + regraimposto. Then
+  // + the pedido docs themselves. Then operacao + regras. Then
   // cliente + endereço. Then filial + nfeconfig.
   async function deleteDocWithSubcoll(path: string, subcollections: string[]): Promise<void> {
     for (const sub of subcollections) {
@@ -397,7 +397,7 @@ async function cleanupFixtures(fs: FirebaseFirestore.Firestore): Promise<void> {
   for (const pedidoId of [PED1, PED3, PED8, PEDCANCEL, PEDCCE, ...PARALLEL_PEDIDO_IDS]) {
     await deleteDocWithSubcoll(`pedidos/${pedidoId}`, ['nfev4', 'pagamentos']);
   }
-  await deleteDocWithSubcoll(`operacao/${OPERACAO_ID}`, ['regraimposto']);
+  await deleteDocWithSubcoll(`operacao/${OPERACAO_ID}`, ['regras']);
   await fs.doc(`clientes/${CLIENTE_ID}/enderecos/${ENDERECO_ID}`).delete();
   await fs.doc(`clientes/${CLIENTE_ID}`).delete();
   await deleteDocWithSubcoll(`filiais/${FILIAL_ID}`, ['nfeconfig', 'enviNfe']);

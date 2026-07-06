@@ -29,7 +29,7 @@ export function emitRules(
 
   const validators = new Map<string, string[]>(); // name -> clause exprs
   const flatBlocks: string[][] = [];
-  const groupReads = new Map<string, ClaimCheck>(); // leaf -> read check
+  const groupReads = new Map<string, ClaimCheck[]>(); // leaf -> read checks (union)
   const topLevel = new Set<string>(); // single-segment collection names
 
   // Extra blocks are hand-written top-level collections (e.g. grupoEconomico);
@@ -62,14 +62,19 @@ export function emitRules(
 
     if (collectionPath.includes('/')) {
       const leaf = collectionPath.split('/').at(-1)!;
-      const existing = groupReads.get(leaf);
-      if (existing && (existing.claim !== perms.read.claim || existing.k !== perms.read.k)) {
-        throw new Error(
-          `collection-group leaf '${leaf}' has conflicting read permissions ` +
-            `(${existing.claim}/${existing.k} vs ${perms.read.claim}/${perms.read.k})`,
-        );
+      // Distinct collections may share a subcollection leaf name — the
+      // legacy-aligned `produtos/{id}/imposto` + `categorias/{id}/imposto`
+      // both end in `imposto`. A `{path=**}/<leaf>` group block cannot tell
+      // the parents apart, so its read check is the UNION of every owning
+      // collection's read claim: holding ANY of them group-reads ALL docs
+      // under that leaf name. Deliberate, read-only widening (writes only
+      // exist on the flat per-parent blocks above); claims are deduped here
+      // and sorted at emission for deterministic output.
+      const checks = groupReads.get(leaf) ?? [];
+      if (!checks.some((c) => c.claim === perms.read.claim && c.k === perms.read.k)) {
+        checks.push(perms.read);
       }
-      groupReads.set(leaf, perms.read);
+      groupReads.set(leaf, checks);
     } else {
       topLevel.add(collectionPath);
     }
@@ -132,10 +137,15 @@ export function emitRules(
   if (groupReads.size > 0) {
     lines.push('');
     lines.push('    // Collection-group reads (client groupQuery / collectionGroup).');
+    lines.push('    // A leaf shared by several collections carries the UNION of their');
+    lines.push('    // read claims (see the dedupe note in emitRules).');
     for (const leaf of [...groupReads.keys()].sort()) {
-      const check = groupReads.get(leaf)!;
+      const checks = [...groupReads.get(leaf)!].sort(
+        (a, b) => a.claim.localeCompare(b.claim) || a.k - b.k,
+      );
+      const ors = checks.map((c) => `p('${c.claim}', ${c.k})`).join(' || ');
       lines.push(`    match /{path=**}/${leaf}/{docId} {`);
-      lines.push(`      allow read: if isSuperUser() || p('${check.claim}', ${check.k});`);
+      lines.push(`      allow read: if isSuperUser() || ${ors};`);
       lines.push('    }');
     }
   }

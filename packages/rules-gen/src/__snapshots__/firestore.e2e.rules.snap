@@ -179,7 +179,7 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_categoria', 4);
     }
 
-    match /categorias/{categoriaId}/impostocategoria/{docId} {
+    match /categorias/{categoriaId}/imposto/{docId} {
       allow read: if isSuperUser() || p('d_impostoCategoria', 1);
       allow create, update: if isSuperUser() || p('d_impostoCategoria', 2);
       allow delete: if isSuperUser() || p('d_impostoCategoria', 4);
@@ -295,7 +295,7 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_fiscal', 4);
     }
 
-    match /operacao/{operacaoId}/regraimposto/{docId} {
+    match /operacao/{operacaoId}/regras/{docId} {
       allow read: if isSuperUser() || p('d_regraImposto', 1);
       allow create, update: if isSuperUser() || p('d_regraImposto', 2);
       allow delete: if isSuperUser() || p('d_regraImposto', 4);
@@ -445,6 +445,8 @@ service cloud.firestore {
     }
 
     // Collection-group reads (client groupQuery / collectionGroup).
+    // A leaf shared by several collections carries the UNION of their
+    // read claims (see the dedupe note in emitRules).
     match /{path=**}/cartacorrecao/{docId} {
       allow read: if isSuperUser() || p('d_fiscal', 1);
     }
@@ -473,10 +475,7 @@ service cloud.firestore {
       allow read: if isSuperUser() || p('d_estoque', 1);
     }
     match /{path=**}/imposto/{docId} {
-      allow read: if isSuperUser() || p('d_impostoProduto', 1);
-    }
-    match /{path=**}/impostocategoria/{docId} {
-      allow read: if isSuperUser() || p('d_impostoCategoria', 1);
+      allow read: if isSuperUser() || p('d_impostoCategoria', 1) || p('d_impostoProduto', 1);
     }
     match /{path=**}/incidentes/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
@@ -511,7 +510,7 @@ service cloud.firestore {
     match /{path=**}/produtoshopee/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
-    match /{path=**}/regraimposto/{docId} {
+    match /{path=**}/regras/{docId} {
       allow read: if isSuperUser() || p('d_regraImposto', 1);
     }
     match /{path=**}/tokenMelEnv/{docId} {

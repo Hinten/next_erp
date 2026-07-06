@@ -54,15 +54,20 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
    Upload/remove via `POST`/`DELETE /api/nfe/certificado` (`PERM.configuracoes.write`).
    **Losing `NFE_CERT_ENC_KEY` = all stored filial certs become undecryptable**
    (re-upload required) — treat it as a secret.
-5. **Per-item `imposto` must be stamped on every Pedido item.** The
-   orchestrator reads `pedido.itens[i].imposto` and validates it via
-   the library's `impostoSchema` (`@delfrance/integrations-nfe`
-   exports it). Missing or invalid `imposto` is `NFeMissingImpostoError`
-   (or `NFeOrchestratorError` for sub-field issues) — no fallback.
-   The Flutter resolver chain (item → product → category → operação)
-   that auto-stamps this at pedido-authoring time is a Phase D port.
-   For now, every pedido item that will become an NF-e arrives with
-   `imposto` already populated.
+5. **Every Pedido item needs a resolvable `imposto`.** At emission,
+   `preResolveImpostos` runs the Flutter-parity resolver cascade
+   (`lib/nfe/imposto-resolver.ts`: item-stamped → `produtos/{id}/imposto`
+   → `categorias/{id}/imposto` → `operacao/{id}/regras` → operação
+   default) for every item whose `imposto` is missing **or fails the
+   engine `impostoSchema`** (an invalid stamp is re-resolved and
+   replaced — #398). When nothing resolves, emission fails loudly:
+   `NFeMissingImpostoError` (absent) or `NFeOrchestratorError` naming the
+   bad sub-field (invalid stamp) — no silent fallback. The subcollection
+   names are the LEGACY Flutter wire names on purpose (#423) — both apps
+   share the database, so legacy tax config resolves natively (scope keys:
+   produto = typo `impostoOpercaoOuterRef`, categoria =
+   `impostoCategoriaOperacaoOuterRef`; regra docs may carry UPPERCASE
+   `CFOP`, path-shaped arrays and free-form NCMs — readers normalize).
 6. **Per-Filial `NFeConfig` doc must be seeded before emitting.** The
    `serie`, `numeracao_atual`, and `idLote` counters live at
    `filiais/{filialId}/nfeconfig/default`. The orchestrator allocates

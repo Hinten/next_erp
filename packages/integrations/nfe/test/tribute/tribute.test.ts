@@ -954,3 +954,48 @@ describe('aggregateTotals + buildTotalXml — RTC totals', () => {
     expect(buildTotalXml(totals)).not.toContain('IBSCBSTot');
   });
 });
+
+describe('aggregateTotals — indTot=0 (não compõe o total, #398)', () => {
+  const IMPOSTO_201 = impostoFor('201', {
+    csosn201: {
+      pCredSN: 1.25,
+      vCredICMSSN: 18.75,
+      modBCST: '4',
+      vBCST: 1800,
+      pICMSST: 18,
+      vICMSST: 324,
+    },
+  });
+
+  it('excludes the item from vProd/vNF but keeps its tribute values in the buckets', () => {
+    // Deliberate deviation from the legacy Flutter engine, which emitted
+    // indTot='0' but still summed the item (a latent totals-mismatch
+    // rejection — MOC 7.0 W16: ICMSTot.vProd = Σ vProd dos itens com indTot=1).
+    const totals = aggregateTotals([
+      { item: { vProd: 1500 }, imposto: impostoFor102() },
+      { item: { vProd: 500, indTot: '0' }, imposto: IMPOSTO_201 },
+    ]);
+    expect(totals.vProd).toBe(1500); // 500 excluded
+    expect(totals.vBCST).toBe(1800); // ST bucket still sums the excluded item
+    expect(totals.vST).toBe(324);
+    // vNF = vProd + vST + vFCPST = 1500 + 324 + 0.
+    expect(totals.vNF).toBe(1824);
+  });
+
+  it('vProd collapses to 0 when every item is indTot=0', () => {
+    const totals = aggregateTotals([
+      { item: { vProd: 500, indTot: '0' }, imposto: impostoFor102() },
+    ]);
+    expect(totals.vProd).toBe(0);
+    expect(totals.vNF).toBe(0);
+  });
+
+  it("indTot='1' and absent behave identically (regression: default composes)", () => {
+    const explicit = aggregateTotals([
+      { item: { vProd: 1500, indTot: '1' }, imposto: impostoFor102() },
+    ]);
+    const absent = aggregateTotals([{ item: { vProd: 1500 }, imposto: impostoFor102() }]);
+    expect(explicit).toEqual(absent);
+    expect(explicit.vProd).toBe(1500);
+  });
+});

@@ -25,7 +25,9 @@ interface OperacaoRow {
 
 /** A blank imposto entry scoped to one operação (correct-spelling wire key). */
 function emptyImposto(operacaoId: string): ImpostoCategoria {
-  return impostoCategoriaSchema.parse({ impostoOperacaoOuterRef: `operacao/${operacaoId}` });
+  return impostoCategoriaSchema.parse({
+    impostoCategoriaOperacaoOuterRef: `operacao/${operacaoId}`,
+  });
 }
 
 export interface CategoriaImpostoManagerProps {
@@ -40,8 +42,8 @@ export interface CategoriaImpostoManagerProps {
 
 /**
  * Categoria impostos tab (#318) — one imposto override per active operação,
- * scoped by `impostoOperacaoOuterRef` and saved at
- * `categorias/<id>/impostocategoria/<operacaoId>` ATOMICALLY with the categoria
+ * scoped by `impostoCategoriaOperacaoOuterRef` and saved at
+ * `categorias/<id>/imposto/<operacaoId>` ATOMICALLY with the categoria
  * doc (the page's `transactionWrites`). Mirrors the produto `ImpostoManager`,
  * reusing the shared {@link ImpostoConfigEditor} for the deep tax config.
  */
@@ -82,9 +84,13 @@ export function CategoriaImpostoManager({
     if (operacoes.length === 0) return;
     const byOperacao = new Map<string, ImpostoCategoria>();
     for (const d of impostosSnap.data ?? []) {
-      const opId = operacaoIdFromImpostoRef(d.data.impostoOperacaoOuterRef);
+      const opId = operacaoIdFromImpostoRef(d.data.impostoCategoriaOperacaoOuterRef);
       if (!opId) continue;
-      byOperacao.set(opId, { ...d.data, id: d.id, impostoOperacaoOuterRef: `operacao/${opId}` });
+      byOperacao.set(opId, {
+        ...d.data,
+        id: d.id,
+        impostoCategoriaOperacaoOuterRef: `operacao/${opId}`,
+      });
     }
     onChange(operacoes.map((op) => byOperacao.get(op.id) ?? emptyImposto(op.id)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -117,7 +123,7 @@ export function CategoriaImpostoManager({
   }
 
   const activeIndex = rows.findIndex(
-    (r) => operacaoIdFromImpostoRef(r.impostoOperacaoOuterRef) === activeId,
+    (r) => operacaoIdFromImpostoRef(r.impostoCategoriaOperacaoOuterRef) === activeId,
   );
   const active = activeIndex >= 0 ? rows[activeIndex] : null;
   const errNode = Array.isArray(errorTree) ? errorTree[activeIndex] : undefined;

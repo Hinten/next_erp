@@ -30,8 +30,8 @@ describe('impostoProdutoSchema', () => {
 });
 
 describe('impostoCategoriaSchema', () => {
-  it('targets the categorias impostocategoria subcollection', () => {
-    expect(impostoCategoriaMeta.collectionPath).toBe('categorias/{categoriaId}/impostocategoria');
+  it('targets the categorias imposto subcollection (legacy Flutter wire name)', () => {
+    expect(impostoCategoriaMeta.collectionPath).toBe('categorias/{categoriaId}/imposto');
   });
 
   it('accepts an empty doc with passthrough fields', () => {
@@ -62,13 +62,21 @@ describe('regraImpostoSchema', () => {
     expect(out.configuracaoICMS).toEqual({ crt: '1', csosn: '102' });
   });
 
-  it('rejects NCM entries that are not 8 digits', () => {
-    expect(regraImpostoSchema.safeParse({ ncms: ['abc'] }).success).toBe(false);
-    expect(regraImpostoSchema.safeParse({ ncms: ['12345'] }).success).toBe(false);
+  it('accepts free-form NCM entries (legacy docs; matching normalizes digits-only)', () => {
+    // A legacy `regras` doc with a formatted NCM must not fail the WHOLE doc
+    // parse — the resolver compares digits-only, the form enforces 8 digits.
+    const out = regraImpostoSchema.parse({ ncms: ['6109.10.00', '61091000'] });
+    expect(out.ncms).toEqual(['6109.10.00', '61091000']);
   });
 
-  it('targets the operacao regraimposto subcollection', () => {
-    expect(regraImpostoMeta.collectionPath).toBe('operacao/{operacaoId}/regraimposto');
+  it('keeps the legacy UPPERCASE CFOP as a read fallback alongside cfop', () => {
+    const out = regraImpostoSchema.parse({ CFOP: '5405' });
+    expect(out.CFOP).toBe('5405');
+    expect(out.cfop ?? null).toBeNull();
+  });
+
+  it('targets the operacao regras subcollection (legacy Flutter wire name)', () => {
+    expect(regraImpostoMeta.collectionPath).toBe('operacao/{operacaoId}/regras');
   });
 
   it('uses fresh permission bits, not aliased to existing ones', () => {

@@ -71,7 +71,7 @@ describe('resolveItemImposto — cascade priority', () => {
     expect(deps.readImpostoProdutoSubcoll).toHaveBeenCalledWith('p1');
   });
 
-  it('honours impostoOperacaoOuterRef scope on impostoProduto', async () => {
+  it('honours the impostoOpercaoOuterRef (typo key) scope on impostoProduto', async () => {
     const wrongScope = impostoProdutoDoc({ impostoOpercaoOuterRef: 'operacao/op-other' });
     const deps = makeDeps({
       readImpostoProdutoSubcoll: vi.fn().mockResolvedValue([wrongScope]),
@@ -121,13 +121,13 @@ describe('resolveItemImposto — cascade priority', () => {
   it('prefers an exact categoria operação match over its null-scoped default (#222)', async () => {
     const defaultCat: ImpostoCategoria = {
       id: 'cat-def',
-      impostoOperacaoOuterRef: null,
+      impostoCategoriaOperacaoOuterRef: null,
       dataCadastro: null,
       ...BLOB_400,
     };
     const exactCat: ImpostoCategoria = {
       id: 'cat-exact',
-      impostoOperacaoOuterRef: `operacao/${ACTIVE_OPERACAO}`,
+      impostoCategoriaOperacaoOuterRef: `operacao/${ACTIVE_OPERACAO}`,
       dataCadastro: null,
       ...VALID_IMPOSTO_BLOB,
     };
@@ -166,7 +166,7 @@ describe('resolveItemImposto — cascade priority', () => {
   it('falls through to impostoCategoria when produto has a categoriaProdutoOuterRef', async () => {
     const impostoCategoria: ImpostoCategoria = {
       id: 'cat-doc',
-      impostoOperacaoOuterRef: null,
+      impostoCategoriaOperacaoOuterRef: null,
       dataCadastro: null,
       ...VALID_IMPOSTO_BLOB,
     };
@@ -322,6 +322,144 @@ describe('resolveItemImposto — cascade priority', () => {
   });
 });
 
+describe('resolveItemImposto — NCM + entry-shape normalization (#398)', () => {
+  function ncmRegra(ncms: string[], blob: Record<string, unknown> = VALID_IMPOSTO_BLOB) {
+    return {
+      id: `r-${ncms.join('-')}`,
+      nome: null,
+      produtos: [],
+      categorias: [],
+      ncms,
+      dataCadastro: null,
+      ...blob,
+    } as RegraImposto;
+  }
+
+  it('matches an NCM rule when produto.NCM is human-formatted (6109.10.00)', async () => {
+    const deps = makeDeps({
+      bundle: { operacaoId: ACTIVE_OPERACAO, regrasImposto: [ncmRegra(['61091000'])] },
+      readProduto: vi.fn().mockResolvedValue({ NCM: '6109.10.00' }),
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.configuracaoICMS?.csosn).toBe('102');
+  });
+
+  it('matches when the RULE entry is formatted and produto.NCM is 8-digit', async () => {
+    // A regra doc can carry a formatted NCM (hand-copied legacy data slips
+    // past nothing here — the resolver normalizes both sides).
+    const deps = makeDeps({
+      bundle: { operacaoId: ACTIVE_OPERACAO, regrasImposto: [ncmRegra(['6109.10.00'])] },
+      readProduto: vi.fn().mockResolvedValue({ NCM: '61091000' }),
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.configuracaoICMS?.csosn).toBe('102');
+  });
+
+  it('matches regra.produtos entries stored as paths (legacy shapes)', async () => {
+    for (const entry of ['produtos/p1', 'documents/produtos/p1', 'p1']) {
+      const regra: RegraImposto = {
+        id: 'r1',
+        nome: null,
+        produtos: [entry],
+        categorias: [],
+        ncms: [],
+        dataCadastro: null,
+        ...VALID_IMPOSTO_BLOB,
+      };
+      const deps = makeDeps({
+        bundle: { operacaoId: ACTIVE_OPERACAO, regrasImposto: [regra] },
+      });
+      const out = await createImpostoResolver(deps).resolve('p1', null);
+      expect(out?.configuracaoICMS?.csosn).toBe('102');
+    }
+  });
+
+  it('matches regra.categorias entries stored as documents/ paths', async () => {
+    const regra: RegraImposto = {
+      id: 'r1',
+      nome: null,
+      produtos: [],
+      categorias: ['documents/categorias/cat-7'],
+      ncms: [],
+      dataCadastro: null,
+      ...VALID_IMPOSTO_BLOB,
+    };
+    const deps = makeDeps({
+      bundle: { operacaoId: ACTIVE_OPERACAO, regrasImposto: [regra] },
+      readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef: 'categorias/cat-7' }),
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.configuracaoICMS?.csosn).toBe('102');
+  });
+
+  it('prefers the NCM of a matched-but-invalid closer tier over produto.NCM (Flutter parity)', async () => {
+    // The produto-tier doc matches the operação but fails the engine schema
+    // (origem null). Its NCM — not the produto doc's — must key the NCM
+    // rules, mirroring Flutter (which matched the RESOLVED imposto's NCM).
+    const invalidProdutoTier = impostoProdutoDoc({ origem: null, NCM: '11111111' });
+    const deps = makeDeps({
+      readImpostoProdutoSubcoll: vi.fn().mockResolvedValue([invalidProdutoTier]),
+      readProduto: vi.fn().mockResolvedValue({ NCM: '22222222' }),
+      bundle: {
+        operacaoId: ACTIVE_OPERACAO,
+        regrasImposto: [ncmRegra(['11111111']), ncmRegra(['22222222'], BLOB_400)],
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const out = await createImpostoResolver(deps).resolve('p1', null);
+      expect(out?.configuracaoICMS?.csosn).toBe('102'); // via the 11111111 rule
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("uses the invalid item-stamp's NCM as the closest candidate", async () => {
+    const deps = makeDeps({
+      bundle: { operacaoId: ACTIVE_OPERACAO, regrasImposto: [ncmRegra(['33049900'])] },
+      readProduto: vi.fn().mockResolvedValue({ NCM: '22222222' }),
+    });
+    // Invalid stamp (no origem) carrying a formatted NCM.
+    const out = await createImpostoResolver(deps).resolve('p1', { NCM: '3304.99.00' });
+    expect(out?.configuracaoICMS?.csosn).toBe('102');
+  });
+
+  it('items of the same produto with different stamped NCMs do not share a cached result', async () => {
+    const deps = makeDeps({
+      bundle: {
+        operacaoId: ACTIVE_OPERACAO,
+        regrasImposto: [ncmRegra(['11111111']), ncmRegra(['22222222'], BLOB_400)],
+      },
+      readProduto: vi.fn().mockResolvedValue(null),
+    });
+    const resolver = createImpostoResolver(deps);
+    const a = await resolver.resolve('p1', { NCM: '1111.11.11' });
+    const b = await resolver.resolve('p1', { NCM: '2222.22.22' });
+    expect(a?.configuracaoICMS?.csosn).toBe('102');
+    expect(b?.configuracaoICMS?.csosn).toBe('400');
+  });
+
+  it('warns when a scoped match fails the engine schema and falls through (#398 observability)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const invalid = impostoProdutoDoc({
+        id: 'bad-doc',
+        origem: null,
+        impostoOpercaoOuterRef: `operacao/${ACTIVE_OPERACAO}`,
+      });
+      const deps = makeDeps({
+        readImpostoProdutoSubcoll: vi.fn().mockResolvedValue([invalid]),
+      });
+      const out = await createImpostoResolver(deps).resolve('p1', null);
+      expect(out).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toMatch(/impostoProduto 'bad-doc'.*falling through/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe('resolveItemImposto — caching', () => {
   it('memoises by produtoUid across resolve() calls', async () => {
     const impostoProduto = impostoProdutoDoc({ id: 'd1' });
@@ -364,5 +502,69 @@ describe('resolveItemImposto — caching', () => {
     const second = await resolver.resolve('p1', null);
     expect(first?.configuracaoICMS?.csosn).toBe('400');
     expect(second?.configuracaoICMS?.csosn).toBe('102');
+  });
+});
+
+describe('resolveItemImposto — verbatim legacy Flutter wire (#423)', () => {
+  it('scopes a legacy categoria doc whose ref is a BARE operação uid', async () => {
+    // The legacy app stored the scope as a bare uid (or `operacao/<id>` —
+    // both shapes verified in .old). Exact-beats-null (#222) must hold on
+    // the legacy shape too.
+    const legacyDefault: ImpostoCategoria = {
+      id: 'leg-def',
+      impostoCategoriaOperacaoOuterRef: null,
+      dataCadastro: null,
+      ...BLOB_400,
+    };
+    const legacyExact: ImpostoCategoria = {
+      id: 'leg-exact',
+      impostoCategoriaOperacaoOuterRef: ACTIVE_OPERACAO, // bare uid, no prefix
+      dataCadastro: null,
+      ...VALID_IMPOSTO_BLOB,
+    };
+    const deps = makeDeps({
+      readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef: 'categorias/cat-7' }),
+      readImpostoCategoriaSubcoll: vi.fn().mockResolvedValue([legacyDefault, legacyExact]),
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.configuracaoICMS?.csosn).toBe('102'); // exact legacy scope wins
+  });
+
+  it("folds a legacy regra's UPPERCASE CFOP into the resolved imposto's cfop", async () => {
+    const legacyRegra: RegraImposto = {
+      id: 'leg-r1',
+      nome: null,
+      produtos: ['produtos/p1'], // legacy path-shaped entry
+      categorias: [],
+      ncms: [],
+      dataCadastro: null,
+      CFOP: '5405',
+      ...VALID_IMPOSTO_BLOB,
+    };
+    const deps = makeDeps({
+      bundle: { operacaoId: ACTIVE_OPERACAO, regrasImposto: [legacyRegra] },
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.configuracaoICMS?.csosn).toBe('102');
+    expect(out?.cfop).toBe('5405'); // CFOP (legacy key) survived into the engine blob
+  });
+
+  it('a lowercase cfop wins over the legacy CFOP when both are present', async () => {
+    const mixedRegra: RegraImposto = {
+      id: 'mix-r1',
+      nome: null,
+      produtos: ['p1'],
+      categorias: [],
+      ncms: [],
+      dataCadastro: null,
+      cfop: '5102',
+      CFOP: '5405',
+      ...VALID_IMPOSTO_BLOB,
+    };
+    const deps = makeDeps({
+      bundle: { operacaoId: ACTIVE_OPERACAO, regrasImposto: [mixedRegra] },
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.cfop).toBe('5102');
   });
 });

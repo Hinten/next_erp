@@ -1140,6 +1140,46 @@ describe('emitirPedido — guards', () => {
     const { fs } = fakeFirestore({ events, operacao: { ehFiscal: false } });
     await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(NFeBlockedError);
   });
+
+  it('throws NFeOrchestratorError naming the field when the operação fails operacaoSchema (#398)', async () => {
+    // A cast used to let a corrupt `tipo` silently emit tpNF='0' (entrada)
+    // for a sale — the parse now fails loudly, naming doc + field.
+    const events: string[] = [];
+    const { fs } = fakeFirestore({ events, operacao: { tipo: null } });
+    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toThrow(
+      /operacao 'operacao\/O-1' failed operacaoSchema — tipo/,
+    );
+  });
+
+  it('throws NFeBlockedError when pedido.ehSaida contradicts operacao.tipo (#398)', async () => {
+    const events: string[] = [];
+    const entradaPedido = {
+      ehSaida: false, // entrada pedido…
+      estado: 'pago',
+      itens: {
+        'P-1': [
+          {
+            sku: 'SKU-1',
+            nomeDeVenda: 'Bicicleta',
+            precoDeVenda: 1500,
+            quantidade: 1,
+            descontoUnitario: 0,
+            imposto: impostoCsosn102(),
+          },
+        ],
+      },
+      integracaoPedidoOuterRef: 'integracao/I-1',
+      clientePedidoOuterRef: 'clientes/C-1',
+      operacaoPedidoOuterRef: 'operacao/O-1',
+      enderecoFiscalOuterRef: 'clientes/C-1/enderecos/E-1',
+    };
+    // …bound to the default operação (tipo=1, saída) → tpNF would diverge.
+    const { fs } = fakeFirestore({ events, pedido: entradaPedido });
+    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(NFeBlockedError);
+    await expect(
+      emitirPedido(fakeFirestore({ events, pedido: entradaPedido }).fs, fakeRuntime(), 'PED-1'),
+    ).rejects.toThrow(/tpNF divergiria/);
+  });
 });
 
 describe('emitirPedido — magic-string fallbacks removed', () => {
