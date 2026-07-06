@@ -298,7 +298,7 @@ const PEDIDOS: PedidoSeed[] = [
     valorCobrado: 100.0,
     // Resolver cascade exercise — items have NO `imposto` stamped, so
     // the orchestrator must resolve via the `regraImposto` doc seeded
-    // under `operacao/{DEV_OPERACAO_ID}/regraimposto/{DEV_REGRA_IMPOSTO_ID}`
+    // under `operacao/{DEV_OPERACAO_ID}/regras/{DEV_REGRA_IMPOSTO_ID}`
     // (matches produtos:['dev-camiseta-pai'] → CSOSN 102 + PIS/COFINS 49).
     // Without that rule the emit would throw NFeMissingImpostoError.
     pagamentos: [{ forma_de_pagamento: 1, valor: 100.0, aVista: true }],

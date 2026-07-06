@@ -24,7 +24,7 @@ import { db } from './admin';
 export const DEV_OPERACAO_ID = 'dev-operacao-01';
 /**
  * Stable id for the regraImposto rule seeded under
- * `operacao/{DEV_OPERACAO_ID}/regraimposto/`. Matches the dev produto
+ * `operacao/{DEV_OPERACAO_ID}/regras/`. Matches the dev produto
  * (`dev-camiseta-pai`) so the resolver cascade resolves to CSOSN 102 +
  * PIS/COFINS CST 49 for pedidos that omit item-stamped imposto.
  *
@@ -87,7 +87,7 @@ export async function seedDevOperacoes(): Promise<{ created: number }> {
   await db()
     .collection('operacao')
     .doc(DEV_OPERACAO_ID)
-    .collection('regraimposto')
+    .collection('regras')
     .doc(DEV_REGRA_IMPOSTO_ID)
     .set({
       nome: 'Resolver cascade test (dev)',
@@ -109,7 +109,7 @@ export async function seedDevOperacoes(): Promise<{ created: number }> {
 
 export async function cleanupDevOperacoes(): Promise<{ deleted: number }> {
   // Remove the regraImposto subcoll before the parent doc.
-  const regraRef = db().collection('operacao').doc(DEV_OPERACAO_ID).collection('regraimposto');
+  const regraRef = db().collection('operacao').doc(DEV_OPERACAO_ID).collection('regras');
   const regraSnap = await regraRef.get();
   for (const doc of regraSnap.docs) {
     await doc.ref.delete();
