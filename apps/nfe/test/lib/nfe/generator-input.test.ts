@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { roundReais } from '@delfrance/core/money';
+import { FORMA_PAGAMENTO, pagamentoSchema, type FreteDoPedido } from '@delfrance/schemas';
 
-import { apportionDescontos, buildGenItems } from '../../../lib/nfe/orchestrator/generator-input';
+import {
+  apportionDescontos,
+  buildGeneratorInput,
+  buildGenItems,
+} from '../../../lib/nfe/orchestrator/generator-input';
 import type { FiscalItem, PedidoBundle } from '../../../lib/nfe/orchestrator/bundle';
 
 /**
@@ -144,5 +149,119 @@ describe('apportionDescontos — pedido-level descontoTotal', () => {
     const vDescs = apportionDescontos(items, bundleWith(OP, { descontoTotal: 0.5 }));
     expect(vDescs.every((v) => v >= 0)).toBe(true);
     expect(roundReais(vDescs.reduce((s, v) => s + v, 0))).toBe(0.5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Σ vPag ↔ vNF pre-send guard (#394 — NT 2025.001 YA03-10/-20, cStat 865/866)
+// ---------------------------------------------------------------------------
+
+/** Bundle full enough for buildGeneratorInput (single SP→SP item, no frete). */
+function fullBundle(opts: {
+  pagamentos?: unknown[];
+  frete?: FreteDoPedido | null;
+  pedido?: Record<string, unknown>;
+}): PedidoBundle {
+  return {
+    pedidoId: 'PED-GUARD',
+    pedido: opts.pedido ?? {},
+    operacao: { ...OP, ehExterior: false, indIntermed: '0', infCpl: null },
+    filial: { sede: { estado: 'SP' } },
+    cliente: {},
+    enderecoDest: { estado: 'SP' },
+    integracao: null,
+    frete: opts.frete ?? null,
+    pagamentos: (opts.pagamentos ?? []).map((p) => pagamentoSchema.parse(p)),
+    regrasImposto: [],
+  } as unknown as PedidoBundle;
+}
+
+/** One 100-reais item → vNF = 100 (no frete, no discount). */
+const ITEM_100 = [item({ precoDeVenda: 100, quantidade: 1 })];
+
+function build(bundle: PedidoBundle) {
+  return buildGeneratorInput(bundle, ITEM_100, 7, 1, 'homologacao');
+}
+
+describe('buildGeneratorInput — Σ vPag ↔ vNF guard', () => {
+  it('Σ vPag < vNF → throws naming both values (would be SEFAZ 865)', () => {
+    const bundle = fullBundle({
+      pagamentos: [{ valor: 90, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }],
+    });
+    expect(() => build(bundle)).toThrow(/90\.00.*100\.00.*865/s);
+  });
+
+  it('Σ vPag > vNF → throws (would be SEFAZ 866)', () => {
+    const bundle = fullBundle({
+      pagamentos: [
+        { valor: 60, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro },
+        { valor: 60, forma_de_pagamento: FORMA_PAGAMENTO.pix },
+      ],
+    });
+    expect(() => build(bundle)).toThrow(/866/);
+  });
+
+  it('Σ vPag == vNF → passes and emits the payments', () => {
+    const bundle = fullBundle({
+      pagamentos: [
+        { valor: 40, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro },
+        { valor: 60, forma_de_pagamento: FORMA_PAGAMENTO.pix },
+      ],
+    });
+    const out = build(bundle);
+    expect(out.pagXml).toContain('<vPag>40.00</vPag>');
+    expect(out.pagXml).toContain('<vPag>60.00</vPag>');
+  });
+
+  it('empty pagamentos (default tPag=90) → guard skipped', () => {
+    const out = build(fullBundle({ pagamentos: [] }));
+    expect(out.pagXml).toContain('<tPag>90</tPag>');
+  });
+
+  it('explicit sem-pagamento record (forma=90, valor>0) → guard skipped, vPag=0', () => {
+    const bundle = fullBundle({
+      pagamentos: [{ valor: 50, forma_de_pagamento: FORMA_PAGAMENTO.sem_pagamento }],
+    });
+    const out = build(bundle);
+    expect(out.pagXml).toContain('<vPag>0.00</vPag>');
+  });
+
+  it('frete-emitente single-payment override (vPag := vNF) → guard passes', () => {
+    // vNF = 100 (item) + 20 (frete emitente) = 120; the single payment's valor
+    // (55) is overridden to vNF by the documented Flutter-parity rule.
+    const bundle = fullBundle({
+      pagamentos: [{ valor: 55, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }],
+      frete: { modalidade: '0', valorCobrado: 20 } as FreteDoPedido,
+    });
+    const out = build(bundle);
+    expect(out.pagXml).toContain('<vPag>120.00</vPag>');
+  });
+});
+
+describe('buildGeneratorInput — guard uses the WIRE (rounded) vPag values', () => {
+  it('sub-cent valor is rounded before the comparison, matching what SEFAZ sums', () => {
+    // 10.005 → wire <vPag>10.01</vPag> (roundReais at source). vNF = 10.00 →
+    // the guard must throw 866 exactly like SEFAZ would; comparing the RAW sum
+    // (10.005 → roundReais 10.01) happens to agree here, but the invariant we
+    // pin is: guard verdict == wire verdict, judged on the rounded values.
+    const bundle = fullBundle({
+      pagamentos: [{ valor: 10.005, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }],
+    });
+    const items = [item({ precoDeVenda: 10, quantidade: 1 })];
+    expect(() => buildGeneratorInput(bundle, items, 7, 1, 'homologacao')).toThrow(/866/);
+  });
+
+  it('two sub-cent valores that round to the exact vNF pass and emit rounded vPag', () => {
+    // 33.334999… rounds to 33.33 each → Σ 66.66 == vNF (item 66.66) → passes,
+    // and the emitted XML carries the same rounded values the guard summed.
+    const bundle = fullBundle({
+      pagamentos: [
+        { valor: 33.331, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro },
+        { valor: 33.329, forma_de_pagamento: FORMA_PAGAMENTO.pix },
+      ],
+    });
+    const items = [item({ precoDeVenda: 66.66, quantidade: 1 })];
+    const out = buildGeneratorInput(bundle, items, 7, 1, 'homologacao');
+    expect(out.pagXml).toContain('<vPag>33.33</vPag>');
   });
 });

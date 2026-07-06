@@ -171,6 +171,9 @@ export const pedidoSchema = z
 
     // Items (record keyed by produtoUid; 'NONE' / '' when no produto bound).
     itens: z.record(z.string(), z.array(itemDoPedidoSchema)).default({}).describe('Itens'),
+    // Queryable produto-id projection of `itens`. No code queries it today —
+    // if a screen adds `array-contains` on it, declare the
+    // `pedidos(itensIds CONTAINS)` index first (Enterprise scans otherwise; #407).
     itensIds: z.array(z.string()).default([]).describe('IDs dos itens'),
     /** Returned items, nested by produto / volta. Heavy passthrough payload. */
     itensDevolvidos: z

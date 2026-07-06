@@ -79,6 +79,19 @@
       "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
     },
     {
+      "collectionGroup": "historicoEstoque",
+      "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "timestamp", "order": "DESCENDING" }]
+    },
+    {
+      "collectionGroup": "historicoEstoque",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "pedidoOuterRef", "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "tabMedi",
       "queryScope": "COLLECTION",
       "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]

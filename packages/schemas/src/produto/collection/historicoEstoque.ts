@@ -30,6 +30,19 @@ export const TIPO_MOVIMENTO_ESTOQUE = [
 export const tipoMovimentoEstoqueSchema = z.enum(TIPO_MOVIMENTO_ESTOQUE);
 export type TipoMovimentoEstoque = z.infer<typeof tipoMovimentoEstoqueSchema>;
 
+export const TIPO_MOVIMENTO_ESTOQUE_LABELS: Record<TipoMovimentoEstoque, string> = {
+  reserva: 'Reserva',
+  ajusteReserva: 'Ajuste de reserva',
+  liberacaoReserva: 'Liberação de reserva',
+  saida: 'Saída',
+  devolucao: 'Devolução',
+  entrada: 'Entrada',
+  estorno: 'Estorno',
+  exclusaoPedido: 'Exclusão do pedido',
+  manual: 'Manual',
+  balanco: 'Balanço',
+};
+
 /**
  * HistoricoEstoque — one stock-movement record under an estoque doc
  * (`produtos/{id}/estoques/{estId}/historicoEstoque/{x}`). Mirrors the Flutter
@@ -81,6 +94,15 @@ export const historicoEstoqueMeta: CollectionMetadata = {
     read: PERM_ESTOQUE_READ,
     write: PERM_ESTOQUE_WRITE,
     delete: PERM_ESTOQUE_DELETE,
+  },
+  // The movement-history read (EstoqueMovimentacaoModal): newest-first, one
+  // page. Declared here so the defaultQuery.indexes meta-test REQUIRES the
+  // matching `historicoEstoque(timestamp desc)` entry in firestore.indexes.json
+  // — on this Enterprise edition an undeclared index means a per-estoque scan +
+  // in-memory sort on every modal open (#407).
+  defaultQuery: {
+    orderBy: [{ field: 'timestamp', direction: 'desc' }],
+    limit: 50,
   },
 };
 

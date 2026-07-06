@@ -206,7 +206,8 @@ function buildInput(overrides: Partial<GeneratorInput> = {}): GeneratorInput {
     numeracao: SENT_NUMERACAO,
     serie: SENT_SERIE,
     tpEmis: 1,
-    dhEmi: new Date(2026, 4, 20, 10, 30, 0),
+    // Explicit instant — deterministic on any runner TZ (#395).
+    dhEmi: new Date('2026-05-20T10:30:00-03:00'),
     filial: SENT_FILIAL,
     operacao: SENT_OPERACAO,
     cliente: SENT_CLIENTE,

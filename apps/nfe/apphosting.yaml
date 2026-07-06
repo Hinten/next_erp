@@ -7,17 +7,26 @@ runConfig:
   maxInstances: 10
   minInstances: 0
   concurrency: 40
-# Required env (set per-environment in the Firebase console → App Hosting →
-# Environment variables, or via Cloud Secret Manager for secrets):
-#   FIREBASE_PROJECT_ID         the GCP / Firebase project id
+env:
+  # Log/readability hygiene only — fiscal dates (dhEmi, chave AAMM, dhEvento,
+  # inutilização ano) are computed with explicit per-UF offsets and do NOT
+  # depend on the process TZ (see packages/integrations/nfe/src/generator/tz.ts, #395).
+  - variable: TZ
+    value: America/Sao_Paulo
+    availability:
+      - RUNTIME
+# Env (set per-environment in the Firebase console → App Hosting → Environment
+# variables, or via Cloud Secret Manager for secrets; required unless marked
+# OPTIONAL):
+#   FIREBASE_PROJECT_ID         OPTIONAL — auto-detected on App Hosting/Cloud Run
+#                               (GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG); set only to
+#                               override, or in local dev without a service account
 #   FIREBASE_DATABASE_ID        Firestore database id (default: "default")
 #   NFE_AMBIENTE                "homologacao" (default) or "producao"
 #   NFE_UF                      issuer UF (default: "SP")
 #   NFE_CERT_BASE64             A1 PFX base-64 (Secret Manager)
 #   NFE_CERT_PASSWORD           A1 PFX passphrase (Secret Manager)
 #   ALLOWED_ADMIN_ORIGINS       CSV of apps/web origins for CORS (no localhost in prod)
-#   TZ=America/Sao_Paulo        ensures `dhEmi` carries -03:00 offset; SEFAZ wants
-#                               the issuer's local time.
 #
 # Producao only: requires NFE_ALLOW_PRODUCAO=true to clear the safety guard
 # (see src/safety/assertSafeTpAmb).

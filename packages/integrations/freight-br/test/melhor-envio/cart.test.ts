@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { type BuildCartItemParams, buildCartItem } from '../../src/melhor-envio/cart';
+import {
+  type BuildCartItemParams,
+  buildCartItem,
+  withCartAgency,
+} from '../../src/melhor-envio/cart';
 
 const STORE = {
   name: 'Loja Delfrance LTDA',
@@ -156,5 +160,20 @@ describe('buildCartItem', () => {
     // Required fields stay present.
     expect(payload.to.note).toBe('');
     expect(payload.to.country_id).toBe('BR');
+  });
+});
+
+describe('withCartAgency', () => {
+  it('sets (or overrides) the picked agency on a built payload', () => {
+    const payload = buildCartItem(params());
+    const out = withCartAgency(payload, 195);
+    expect((out as Record<string, any>).agency).toBe(195);
+    // Overrides a previously stored choice.
+    expect((withCartAgency(out, 200) as Record<string, any>).agency).toBe(200);
+  });
+
+  it('returns the payload unchanged when no agency was picked', () => {
+    const payload = buildCartItem(params({ agency: 195 }));
+    expect(withCartAgency(payload, null)).toBe(payload);
   });
 });

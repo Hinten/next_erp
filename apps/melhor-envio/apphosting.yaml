@@ -7,9 +7,12 @@ runConfig:
   maxInstances: 20
   minInstances: 0
   concurrency: 80
-# Required env (set per-environment in the Firebase console → App Hosting →
-# Environment variables, or via Cloud Secret Manager for secrets):
-#   FIREBASE_PROJECT_ID         the GCP / Firebase project id
+# Env (set per-environment in the Firebase console → App Hosting → Environment
+# variables, or via Cloud Secret Manager for secrets; required unless marked
+# OPTIONAL):
+#   FIREBASE_PROJECT_ID         OPTIONAL — auto-detected on App Hosting/Cloud Run
+#                               (GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG); set only to
+#                               override, or in local dev without a service account
 #   FIREBASE_DATABASE_ID        Firestore database id (default: "default")
 #   MELHOR_ENVIO_CLIENT_ID      ME application id            (Secret Manager)
 #   MELHOR_ENVIO_CLIENT_SECRET  ME application secret        (Secret Manager)

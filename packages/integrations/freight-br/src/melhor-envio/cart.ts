@@ -103,6 +103,16 @@ function addressBlock(a: CartAddressInput): Record<string, unknown> {
   return block;
 }
 
+/**
+ * Return the cart with the operator-picked drop-off `agency` set (unchanged
+ * when `agency` is null). Keeps the passthrough-field cast in one place — the
+ * buy modal injects the picker's choice into an already-built payload with
+ * this, which short-circuits the server-side auto-resolve (`ensureCartAgency`).
+ */
+export function withCartAgency(cart: CartInsertRequest, agency: number | null): CartInsertRequest {
+  return agency == null ? cart : ({ ...cart, agency } as CartInsertRequest);
+}
+
 export function buildCartItem(p: BuildCartItemParams): CartInsertRequest {
   const reverse = p.reverse ?? false;
   const origin = addressBlock(p.from);

@@ -29,3 +29,4 @@ export { credenciaisIntegracaoCollection } from './credenciaisIntegracaoCollecti
 export { tokenDuravelCollection } from './tokenDuravelCollection';
 export { pedidoCollection } from './pedidoCollection';
 export { operacaoCollection } from './operacaoCollection';
+export { incidenteCollection } from './incidenteCollection';

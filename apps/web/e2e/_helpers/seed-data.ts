@@ -874,6 +874,194 @@ export async function seedPedidoFixtures(prefix: string): Promise<{
 }
 
 /**
+ * Fixtures for the pedido→estoque TRIGGER e2e (#409, emulator lane): depósito +
+ * saída operação (both stock flags) + an integração wiring them together + one
+ * produto + the pedido itself. Unlike `seedPedidoFixtures` (which predates the
+ * sync), the integração carries `depositoOuterRef`/`operacaoOuterRef` — the
+ * config `sincronizarEstoquePedido` resolves.
+ *
+ * The pedido is seeded at `estado: 'iniciado'` ON PURPOSE: in the emulator,
+ * Admin SDK writes ALSO fire `onPedidoEstoqueSync`, and `iniciado` has no stock
+ * effect — the seed write just warms the function. `operacaoPedidoOuterRef`
+ * stays null so the sync exercises the integração-default resolution path. The
+ * item carries every field the pedido editor's Zod converter requires
+ * (`precoDeVenda` has no default), since the spec opens the real editor.
+ */
+export async function seedPedidoEstoqueFixtures(prefix: string): Promise<{
+  depositoId: string;
+  produtoId: string;
+  pedidoId: string;
+  quantidade: number;
+}> {
+  const dep = await seedDepositoAtivo(prefix);
+  const operacaoId = `${prefix}-op-001`;
+  const integracaoId = `${prefix}-int-001`;
+  const produtoId = `${prefix}-pro-001`;
+  const pedidoId = `${prefix}-ped-001`;
+  const quantidade = 5;
+  const precoDeVenda = 33.5;
+  const now = Date.now();
+
+  const batch = db().batch();
+  batch.set(db().collection('operacao').doc(operacaoId), {
+    nome: operacaoId,
+    naturezaDaOperacao: 'Venda',
+    tipo: 1,
+    ehServico: false,
+    ehExterior: false,
+    ehConsumidorFinal: true,
+    padrao: false,
+    ativo: true,
+    movimentaEstoque: true,
+    movimentaIndisponivelEstoque: true,
+    ehFiscal: true,
+    finNFe: 1,
+    indPres: '2',
+    indIntermed: '1',
+    cfop: '5102',
+    cfopInterestadual: '6102',
+    origem: '0',
+    NCM: null,
+    CEST: null,
+    unidade: 'UN',
+    estadosDestino: null,
+    estados: null,
+    configuracaoICMS: null,
+    configuracaoIPI: null,
+    configuracaoPIS: null,
+    configuracaoPISST: null,
+    infCpl: null,
+    timestamp: now,
+  });
+  batch.set(db().collection('integracao').doc(integracaoId), {
+    tipo: 7, // balcao
+    padrao: false,
+    nome: integracaoId,
+    cpf_cnpj: null,
+    idCadIntTran: null,
+    ativo: true,
+    cor: null,
+    modalidadeFreteImportacao: null,
+    filialIntegracaoPedidoOuterRef: null,
+    tabelaNormalOuterRef: null,
+    tabelaPromocionalOuterRef: null,
+    operacaoOuterRef: `documents/operacao/${operacaoId}`,
+    operacaoDevolucaoOuterRef: `documents/operacao/${operacaoId}`,
+    depositoOuterRef: `documents/depositos/${dep.id}`,
+    dataCadastro: now,
+  });
+  batch.set(db().collection('produtos').doc(produtoId), {
+    nome: produtoId,
+    sku: `${prefix.toUpperCase().replace(/-/g, '_')}_EST_001`,
+    codPai: null,
+    paiId: null,
+    ordem: null,
+    gtin: null,
+    codFornecedor: null,
+    categoriaProdutoOuterRef: null,
+    pesoLiquidoKg: null,
+    pesoBrutoKg: null,
+    alturaCm: null,
+    larguraCm: null,
+    profundidadeCm: null,
+    ehKit: false,
+    ehKitVirtual: false,
+    publicado: true,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    crossdocking: null,
+    precos: null,
+    grupoDeVariacoesUid: null,
+    variacoesUid: null,
+    componentesKitKeys: null,
+    componentesKit: null,
+    integracoesComProduto: [],
+    marketplaceIds: null,
+    marketplace: [],
+    statusProdutosMarketplace: null,
+    fotos: null,
+    videos: null,
+    anexos: null,
+    fotosArquivosIds: null,
+    nome_embedding: null,
+  });
+  batch.set(db().collection('pedidos').doc(pedidoId), {
+    ehSaida: true,
+    estado: 'iniciado',
+    numero: pedidoId,
+    itens: {
+      [produtoId]: [
+        {
+          produtoUid: produtoId,
+          ordem: 1,
+          ensureUniqueId: null,
+          mktplaceId: null,
+          sku: `${prefix.toUpperCase().replace(/-/g, '_')}_EST_001`,
+          gtin: null,
+          nomeDeVenda: produtoId,
+          precoDeVenda,
+          descontoUnitario: 0,
+          quantidade,
+          custo: null,
+          timestamp: null,
+          imposto: null,
+        },
+      ],
+    },
+    itensIds: [produtoId],
+    descontoTotal: 0,
+    valorCobrado: precoDeVenda * quantidade,
+    timestamp: millisToMicros(now),
+    ultimaModificacao: millisToMicros(now),
+    foiImpresso: false,
+    freteInicial: null,
+    estoqueAplicado: null,
+    dataIndisponivelEstoque: null,
+    dataRemocaoEstoque: null,
+    vendedorPedidoOuterRef: null,
+    integracaoPedidoOuterRef: `documents/integracao/${integracaoId}`,
+    operacaoPedidoOuterRef: null,
+    clientePedidoOuterRef: null,
+    enderecoFiscalOuterRef: null,
+    listaDePrecosOuterRef: null,
+  });
+  await batch.commit();
+
+  return { depositoId: dep.id, produtoId, pedidoId, quantidade };
+}
+
+/** Pedido doc + Admin `updateTime` (the no-retrigger stabilization proof, #409). */
+export async function getPedidoDoc(pedidoId: string): Promise<{
+  data: Record<string, unknown> | null;
+  updateTimeMs: number | null;
+}> {
+  const snap = await db().collection('pedidos').doc(pedidoId).get();
+  return {
+    data: (snap.data() as Record<string, unknown> | undefined) ?? null,
+    updateTimeMs: snap.updateTime?.toMillis() ?? null,
+  };
+}
+
+/**
+ * Teardown for `seedPedidoEstoqueFixtures`. Order matters in the emulator: the
+ * pedido is deleted first (its snapshot is null by then, so the deletion-
+ * reversal trigger no-ops), then estoques + fixture docs.
+ */
+export async function cleanupPedidoEstoqueFixtures(
+  prefix: string,
+  produtoId: string,
+): Promise<void> {
+  await db().collection('pedidos').doc(`${prefix}-ped-001`).delete();
+  await cleanupProdutoEstoque(produtoId);
+  await Promise.all([
+    cleanupByNamePrefix('operacao', prefix),
+    cleanupByNamePrefix('integracao', prefix),
+    cleanupByNamePrefix('produtos', prefix),
+    cleanupByNamePrefix('depositos', prefix),
+  ]);
+}
+
+/**
  * Clean up every test pedido whose `numero` starts with `prefix` and
  * every fixture document whose `nome` starts with `prefix`.
  */

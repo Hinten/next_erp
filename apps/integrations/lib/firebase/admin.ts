@@ -40,6 +40,39 @@ function loadServiceAccount(): Record<string, unknown> | null {
   return null;
 }
 
+/**
+ * Resolve the Firebase project id without demanding per-backend config.
+ * Order: explicit `FIREBASE_PROJECT_ID` (dev / override) → the env Cloud Run /
+ * App Hosting inject for free (`GOOGLE_CLOUD_PROJECT`, `FIREBASE_CONFIG`) → the
+ * service-account JSON's own `project_id`. Exported for unit tests.
+ */
+export function resolveProjectId(serviceAccount: Record<string, unknown> | null): string | null {
+  const explicit = process.env.FIREBASE_PROJECT_ID;
+  if (explicit) return explicit;
+
+  // Cloud Run (and therefore Firebase App Hosting) sets this on every service.
+  const gcp = process.env.GOOGLE_CLOUD_PROJECT;
+  if (gcp) return gcp;
+
+  // Firebase-managed runtimes (App Hosting, Functions) inject FIREBASE_CONFIG
+  // as a JSON string carrying the projectId.
+  const firebaseConfig = process.env.FIREBASE_CONFIG;
+  if (firebaseConfig) {
+    try {
+      const parsed = JSON.parse(firebaseConfig) as { projectId?: unknown };
+      if (typeof parsed.projectId === 'string' && parsed.projectId) return parsed.projectId;
+    } catch (err) {
+      // Malformed FIREBASE_CONFIG — treat as absent and keep falling back.
+      if (!(err instanceof SyntaxError)) throw err;
+    }
+  }
+
+  const saProject = serviceAccount?.project_id;
+  if (typeof saProject === 'string' && saProject) return saProject;
+
+  return null;
+}
+
 export function getAdminApp(): App {
   if (app) return app;
   const existing = getApps()[0];
@@ -47,14 +80,18 @@ export function getAdminApp(): App {
     app = existing;
     return app;
   }
-  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const serviceAccount = loadServiceAccount();
+  const projectId = resolveProjectId(serviceAccount);
   if (!projectId) {
-    throw new Error('FIREBASE_PROJECT_ID is required.');
+    throw new Error(
+      'Firebase project id not found. Set FIREBASE_PROJECT_ID (or provide a service ' +
+        'account) in local dev; on App Hosting / Cloud Run it is auto-detected via ' +
+        'GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG.',
+    );
   }
   // In Firebase App Hosting / Cloud Run, application default credentials are
   // injected automatically. Locally, set FIREBASE_SERVICE_ACCOUNT (inline JSON)
   // or FIREBASE_SERVICE_ACCOUNT_PATH (path to the JSON file).
-  const serviceAccount = loadServiceAccount();
   app = serviceAccount
     ? initializeApp({ credential: cert(serviceAccount), projectId })
     : initializeApp({ projectId });

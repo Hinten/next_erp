@@ -10,6 +10,7 @@
 import { aammFromDate, composeChave, randomCNF, NFeChaveError } from './chave';
 import { buildDetXml } from './det';
 import { buildIde, cUFFromUF, NFeIdeError } from './ide';
+import { offsetForUF } from './tz';
 import { buildDest, buildEmit } from './parties';
 import { serializeFragment, type XmlValue } from '../xml';
 import { sanitizeNFeEmail, sanitizeNFeText } from '../sanitize';
@@ -35,7 +36,11 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
   }
   const tpEmis: TpEmis = input.tpEmis ?? 1;
   const cUF = cUFFromUF(input.filial.sede.estado as UF);
-  const aamm = aammFromDate(input.dhEmi);
+  // Computed ONCE and shared by the chave AAMM and buildIde's <dhEmi>/<dhCont>
+  // (via IdeParts) — the chave and the dhEmi string must never disagree
+  // (SEFAZ cross-checks them).
+  const utcOffsetMinutes = offsetForUF(input.filial.sede.estado as UF);
+  const aamm = aammFromDate(input.dhEmi, utcOffsetMinutes);
   const nNF = input.numeracao.toString().padStart(9, '0');
   const cNF = input.cNF ?? randomCNF(nNF);
 
@@ -55,6 +60,7 @@ export function generateNFe(input: GeneratorInput): GeneratorOutput {
     cDV: cDV.toString(),
     tpEmis: tpEmis.toString(),
     ambiente: input.ambiente,
+    utcOffsetMinutes,
   });
   const emit = buildEmit(input.filial);
   const dest = buildDest(input.cliente, input.enderecoDest, input.ambiente);
@@ -177,3 +183,4 @@ export type { GeneratorInput, GeneratorItem, GeneratorOutput, TpEmis } from './t
 export { NFeChaveError, NFeIdeError };
 export { cUFFromUF } from './ide';
 export { extractCNFFromChave } from './chave';
+export { datePartsInOffset, NFeTzError, offsetForCUF, offsetForUF } from './tz';

@@ -9,6 +9,7 @@
  * client, so there is no method for it.
  */
 import type {
+  Agency,
   Balance,
   CalculateRequest,
   CalculateResponse,
@@ -38,6 +39,11 @@ export interface FreightContaResult {
   readonly connected: boolean;
   readonly me: Me | null;
   readonly balance: Balance | null;
+}
+
+/** `agencias` result — the drop-off agencies of the carrier behind a service. */
+export interface FreightAgenciasResult {
+  readonly agencies: Agency[];
 }
 
 /** `comprar` result — the bought label, its print URL and tracking code. */
@@ -72,6 +78,15 @@ export interface FreightHttpClient {
   calculate(intFreteId: string, req: CalculateRequest): Promise<CalculateResponse>;
   /** Account connection status + `/me` + `/balance`. */
   conta(intFreteId: string): Promise<FreightContaResult>;
+  /**
+   * Drop-off agencies of the carrier behind `service`, near the sender —
+   * feeds the buy modal's agency picker (#377). The server lists the sender's
+   * city first and falls back to a state-wide list when the city has none.
+   */
+  agencias(
+    intFreteId: string,
+    params: { service: number; state: string; city: string },
+  ): Promise<FreightAgenciasResult>;
   /** Buy + generate + print a label for `pedidoId` (idempotent on resume). */
   comprar(
     intFreteId: string,
@@ -172,6 +187,18 @@ export function createFreightHttpClient(config: FreightHttpClientConfig): Freigh
         'GET',
         `/api/freight/melhor-envio/conta?intFreteId=${encodeURIComponent(intFreteId)}`,
       ),
+    agencias: (intFreteId, params) => {
+      const q = new URLSearchParams({
+        intFreteId,
+        service: String(params.service),
+        state: params.state,
+        city: params.city,
+      });
+      return call<FreightAgenciasResult>(
+        'GET',
+        `/api/freight/melhor-envio/agencias?${q.toString()}`,
+      );
+    },
     comprar: (intFreteId, pedidoId, cartPayload, printLabelId) =>
       call<FreightComprarResult>('POST', '/api/freight/melhor-envio/comprar', {
         intFreteId,
