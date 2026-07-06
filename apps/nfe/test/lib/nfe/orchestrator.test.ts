@@ -2503,6 +2503,24 @@ describe('buildCobrFromPagamentos', () => {
     ).toThrow(/10 years|797/);
   });
 
+  it('dVenc uses the ISSUER-offset calendar date, not UTC (#395 class)', () => {
+    // 22:00 BRT on Aug 15 = 01:00Z on Aug 16 — the legally agreed due date is
+    // Aug 15; a UTC slice would emit Aug 16 (one day late, and a fiscal-year
+    // shift at New Year's Eve).
+    const out = __internal.buildCobrFromPagamentos(
+      [
+        pagamento({
+          valor: 100,
+          forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+          duplicata: true,
+          vencimento: dateToMicros(new Date('2026-08-16T01:00:00Z')),
+        }),
+      ],
+      { vNF: 100, frete: null, utcOffsetMinutes: -180 },
+    );
+    expect(out?.dup?.[0]?.dVenc).toBe('2026-08-15');
+  });
+
   it('dVenc EXACTLY on the +10y date passes (797 is "more than 10 years"; dates, not instants)', () => {
     // End-of-day on the boundary date: the wire dVenc equals emission date +10y,
     // which SEFAZ accepts — an instant comparison would false-throw here.

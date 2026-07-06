@@ -90,16 +90,32 @@ describe('composeChave', () => {
 });
 
 describe('aammFromDate', () => {
-  it('extracts AA and MM from a Date', () => {
-    expect(aammFromDate(new Date(2026, 4, 20))).toBe('2605');
+  // Explicit instants + explicit offset: the result must be identical on any
+  // runner TZ (the whole point of #395). -180 = Brasília/SP legal time.
+  const SP = -180;
+
+  it('extracts AA and MM from an instant in the issuer offset', () => {
+    expect(aammFromDate(new Date('2026-05-20T10:30:00-03:00'), SP)).toBe('2605');
   });
 
   it('zero-pads single-digit months', () => {
-    expect(aammFromDate(new Date(2026, 0, 1))).toBe('2601');
+    expect(aammFromDate(new Date('2026-01-01T00:00:00-03:00'), SP)).toBe('2601');
   });
 
   it('wraps year on the century boundary', () => {
-    expect(aammFromDate(new Date(2100, 11, 31))).toBe('0012');
+    expect(aammFromDate(new Date('2100-12-31T12:00:00-03:00'), SP)).toBe('0012');
+  });
+
+  it('uses the ISSUER-offset date, not UTC: 00:30Z on Jan 1 is still December in Brazil', () => {
+    // The #395 bug: on a UTC deploy, a sale at 21:30 BRT on Dec 31 got the
+    // NEXT year/month in the chave. The instant below IS Jan 1 in UTC but
+    // Dec 31 21:30 in SP legal time — AAMM must say 2512.
+    expect(aammFromDate(new Date('2026-01-01T00:30:00Z'), SP)).toBe('2512');
+  });
+
+  it('respects the per-UF offset: 03:30Z is still the previous day in Acre (-05:00)', () => {
+    expect(aammFromDate(new Date('2026-06-01T03:30:00Z'), -300)).toBe('2605');
+    expect(aammFromDate(new Date('2026-06-01T03:30:00Z'), SP)).toBe('2606');
   });
 });
 
