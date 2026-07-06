@@ -19,7 +19,7 @@ import {
 import { FirebaseError } from 'firebase/app';
 import { addDoc, deleteDoc, setDoc } from 'firebase/firestore';
 import { ZodError } from 'zod';
-import { type RegraImposto } from '@delfrance/schemas';
+import { normalizeNCM, type RegraImposto } from '@delfrance/schemas';
 import { buildQuery, limit, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 import { nowMillis } from '@delfrance/core/datetime';
@@ -127,6 +127,19 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
 
   async function handleSave() {
     if (!editing) return;
+    // NCMs are stored digits-only, 8 digits (the schema is deliberately
+    // lenient so legacy free-form docs still READ — the write-side guarantee
+    // lives here). `6109.10.00` normalizes to `61091000`; anything else is a
+    // field error before any write happens.
+    const ncms: string[] = [];
+    for (const raw of form.ncms) {
+      const normalized = normalizeNCM(raw);
+      if (normalized == null || !/^\d{8}$/.test(normalized)) {
+        setSaveError(`NCM inválido: "${raw}" — informe 8 dígitos (ex.: 61091000).`);
+        return;
+      }
+      if (!ncms.includes(normalized)) ncms.push(normalized);
+    }
     setSaving(true);
     setSaveError(null);
     // The regra doc = matching criteria + the imposto blob (origem/CFOP/configs).
@@ -134,7 +147,7 @@ function MacrosManager({ operacaoId, disabled }: { operacaoId: string; disabled?
       nome: form.nome.trim() || null,
       produtos: form.produtos,
       categorias: form.categorias,
-      ncms: form.ncms.map((n) => n.trim()),
+      ncms,
       ...form.imposto,
       // Preserve the creation stamp on edit; only mint a new one on create.
       dataCadastro: editing.id ? (editing.dataCadastro ?? nowMillis()) : nowMillis(),

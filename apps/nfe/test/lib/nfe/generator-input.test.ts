@@ -375,3 +375,25 @@ describe('indTot — compoeValorTotalDaNFe (#398)', () => {
     expect(out.pagXml).toContain('<vPag>120.00</vPag>');
   });
 });
+
+describe('frete-emitente with no composing item (review fix)', () => {
+  it('throws instead of stamping vFrete on an indTot=0 det', () => {
+    const bundle = fullBundle({
+      pagamentos: [],
+      frete: { modalidade: '0', valorCobrado: 20 } as FreteDoPedido,
+    });
+    const items = [
+      item({
+        produtoUid: 'a',
+        precoDeVenda: 50,
+        quantidade: 1,
+        imposto: IMPOSTO_FORA_DO_TOTAL as never,
+      }),
+    ];
+    // A det-level vFrete on an excluded item breaks the indTot-conditioned
+    // Σ rule; with EVERY item excluded there is no coherent NF-e to emit.
+    expect(() => buildGeneratorInput(bundle, items, 7, 1, 'homologacao')).toThrow(
+      /nenhum item compõe o total/,
+    );
+  });
+});

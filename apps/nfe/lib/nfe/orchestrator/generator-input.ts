@@ -63,10 +63,17 @@ export function buildGeneratorInput(
     // proportionally across items; Flutter doesn't. The target must be the
     // first COMPOSING item — a det-level vFrete on an indTot='0' item would
     // fall out of the indTot-conditioned ICMSTot.vFrete Σ-rule (#398).
-    const at = Math.max(
-      0,
-      genItems.findIndex((g) => g.indTot !== '0'),
-    );
+    const at = genItems.findIndex((g) => g.indTot !== '0');
+    if (at === -1) {
+      // Every item is fora do total: no composing det can carry the frete, so
+      // ICMSTot.vFrete could never equal the indTot-gated Σ det vFrete and
+      // SEFAZ would reject. Fail loudly instead of stamping an excluded det.
+      throw new NFeOrchestratorError(
+        `pedido '${bundle.pedidoId}': frete por conta do emitente (R$ ${vFrete.toFixed(2)}) ` +
+          `mas nenhum item compõe o total da NF-e (indTot='0' em todos) — ` +
+          `não há det para receber o vFrete`,
+      );
+    }
     const target = genItems[at]!;
     genItems[at] = { ...target, vFrete };
   }

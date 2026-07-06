@@ -736,11 +736,11 @@ export type ConfiguracaoIBSCBS = z.infer<typeof configuracaoIBSCBSSchema>;
 
 /**
  * Digits-only NCM normalizer — `'6109.10.00'` → `'61091000'`; `null` when the
- * input carries no digits. NCM rule matching (imposto resolver) and the
- * `imposto-legacy-names` migration compare normalized forms, so a
- * human-formatted produto NCM still matches an 8-digit rule entry (#398 —
- * the exact-string comparison silently missed and fell to the operação
- * default).
+ * input carries no digits. The imposto resolver compares BOTH sides of an NCM
+ * rule match through it (a human-formatted produto NCM still matches an
+ * 8-digit rule entry — #398, the exact-string comparison silently missed and
+ * fell to the operação default), and the MacrosTab regra editor normalizes
+ * NCM entries through it before writing.
  */
 export function normalizeNCM(value: string | null | undefined): string | null {
   if (value == null) return null;
