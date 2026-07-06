@@ -26,6 +26,8 @@ export class MercadoLivreClientHttpError extends Error {
     readonly status: number,
     /** Optional machine code from the backend (e.g. ML_REAUTH_REQUIRED). */
     readonly code: string | null,
+    /** Per-field validation issues (422 ML_PUBLISH_BLOCKED carries them). */
+    readonly issues: string[] | null = null,
   ) {
     super(message);
     this.name = 'MercadoLivreClientHttpError';
@@ -48,11 +50,28 @@ export interface MercadoLivreConta {
   me: { id: number; nickname: string | null; email: string | null } | null;
 }
 
+export interface MercadoLivrePublicarResult {
+  itemId: string;
+  /** Old-shape single-char estado ('p' publicado, 'pa' pausado, 'E' erro, …). */
+  estado: string;
+  permalink: string | null;
+}
+
 export interface MercadoLivreClient {
   /** Mint the ML consent URL for an account (PERM.integracao.write). */
   oauthStart(integracaoId: string): Promise<{ authorizeUrl: string }>;
   /** Connection status: `/users/me` identity or `connected: false`. */
   conta(integracaoId: string): Promise<MercadoLivreConta>;
+  /**
+   * Publish (or re-publish) a produto as an ML listing
+   * (PERM.integracao.write). Blocking validation problems surface as a 422
+   * `MercadoLivreClientHttpError` with `code: 'ML_PUBLISH_BLOCKED'` + `issues`.
+   */
+  publicar(input: {
+    integracaoId: string;
+    produtoId: string;
+    listingTypeId?: string;
+  }): Promise<MercadoLivrePublicarResult>;
 }
 
 export function createMercadoLivreClient(config: {
@@ -63,12 +82,18 @@ export function createMercadoLivreClient(config: {
   const baseUrl = config.baseUrl.replace(/\/$/, '');
   const doFetch = config.fetch ?? globalThis.fetch;
 
-  async function call<T>(path: string): Promise<T> {
+  async function call<T>(path: string, body?: unknown): Promise<T> {
     const token = await config.getAuthToken();
     let res: Response;
     try {
       res = await doFetch(`${baseUrl}${path}`, {
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        method: body === undefined ? 'GET' : 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json',
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch (err) {
       throw new MercadoLivreClientNetworkError(
@@ -89,11 +114,12 @@ export function createMercadoLivreClient(config: {
     }
 
     if (!res.ok) {
-      const body = parsed as { error?: string; code?: string } | null;
+      const errBody = parsed as { error?: string; code?: string; issues?: string[] } | null;
       throw new MercadoLivreClientHttpError(
-        body?.error ?? `HTTP ${res.status}`,
+        errBody?.error ?? `HTTP ${res.status}`,
         res.status,
-        body?.code ?? null,
+        errBody?.code ?? null,
+        Array.isArray(errBody?.issues) ? errBody.issues : null,
       );
     }
     return parsed as T;
@@ -108,6 +134,8 @@ export function createMercadoLivreClient(config: {
       call<MercadoLivreConta>(
         `/api/marketplace/mercado-livre/conta?integracaoId=${encodeURIComponent(integracaoId)}`,
       ),
+    publicar: (input) =>
+      call<MercadoLivrePublicarResult>('/api/marketplace/mercado-livre/publicar', input),
   };
 }
 
