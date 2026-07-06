@@ -77,7 +77,9 @@ test('the trigger reserves, removes and returns stock across the pedido lifecycl
     reservado?: Record<string, number>;
   } | null;
   expect(snapshotReserva?.reservado?.[produtoId]).toBe(quantidade);
-  expect(aposReserva.data?.dataIndisponivelEstoque).not.toBeNull();
+  // `typeof … === 'number'` (not `not.toBeNull()`): a never-written field is
+  // undefined, which `not.toBeNull()` would vacuously accept.
+  expect(typeof aposReserva.data?.dataIndisponivelEstoque).toBe('number');
 
   // 2. The #408 read-only Estoque tab renders the applied effect end-to-end.
   await page.goto(`/pedidos/${pedidoId}/editar`);
@@ -105,7 +107,7 @@ test('the trigger reserves, removes and returns stock across the pedido lifecycl
   } | null;
   expect(snapshotRemocao?.removido?.[produtoId]).toBe(quantidade);
   expect(snapshotRemocao?.reservado ?? null).toBeNull();
-  expect(aposRemocao.data?.dataRemocaoEstoque).not.toBeNull();
+  expect(typeof aposRemocao.data?.dataRemocaoEstoque).toBe('number');
 
   // 4. finalizado → cancelado: stock returns, snapshot + markers cleared.
   await mudarEstadoViaUI(page, 'Cancelado');
@@ -120,8 +122,11 @@ test('the trigger reserves, removes and returns stock across the pedido lifecycl
     })
     .toBeNull();
   const aposCancelamento = await getPedidoDoc(pedidoId);
-  expect(aposCancelamento.data?.dataIndisponivelEstoque ?? null).toBeNull();
-  expect(aposCancelamento.data?.dataRemocaoEstoque ?? null).toBeNull();
+  // Doc-existence first: `?.` + `?? null` would collapse a MISSING pedido into
+  // "markers cleared".
+  expect(aposCancelamento.data).not.toBeNull();
+  expect(aposCancelamento.data!.dataIndisponivelEstoque ?? null).toBeNull();
+  expect(aposCancelamento.data!.dataRemocaoEstoque ?? null).toBeNull();
 
   // 5. No-runaway proof: the poll above confirmed the sync's write-back landed
   // (snapshot cleared IS the write-back), so any further pedido write would be
@@ -131,6 +136,9 @@ test('the trigger reserves, removes and returns stock across the pedido lifecycl
   expect(trail).toHaveLength(3);
   expect(trail.map((h) => h.tipo).sort()).toEqual(['devolucao', 'reserva', 'saida']);
   const antesDaJanela = await getPedidoDoc(pedidoId);
+  // Non-null before comparing — two null updateTimes (missing doc) would make
+  // the stabilization check pass vacuously.
+  expect(antesDaJanela.updateTimeMs).not.toBeNull();
   await page.waitForTimeout(4_000);
   const depoisDaJanela = await getPedidoDoc(pedidoId);
   expect(depoisDaJanela.updateTimeMs).toBe(antesDaJanela.updateTimeMs);
