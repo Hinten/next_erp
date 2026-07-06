@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ComponentesKit } from '../collection/embedded/kit';
-import { estoqueDisponivelComKit, kitEstoqueDisponivel } from './kitEstoque';
+import { componentesKitEntries, estoqueDisponivelComKit, kitEstoqueDisponivel } from './kitEstoque';
 
 function comp(quantidade: number, limitarEstoque = true): ComponentesKit[string] {
   return { quantidade, limitarEstoque, timestamp: null };
@@ -64,6 +64,28 @@ describe('kitEstoqueDisponivel', () => {
     expect(kitEstoqueDisponivel({ a: comp(0), b: comp(2) }, { a: 1, b: 10 })).toBe(5);
     expect(kitEstoqueDisponivel({ a: comp(-1) }, { a: 1 })).toBeNull();
     expect(kitEstoqueDisponivel({ a: comp(Number.NaN) }, { a: 1 })).toBeNull();
+  });
+
+  it('ignores non-object entries and non-record maps (soft-parsed junk) instead of throwing', () => {
+    const withNullEntry = { a: null, b: comp(2) } as unknown as ComponentesKit;
+    expect(kitEstoqueDisponivel(withNullEntry, { b: 10 })).toBe(5);
+    expect(kitEstoqueDisponivel({ a: null } as unknown as ComponentesKit, {})).toBeNull();
+    expect(kitEstoqueDisponivel('junk' as unknown as ComponentesKit, {})).toBeNull();
+    expect(kitEstoqueDisponivel([comp(1)] as unknown as ComponentesKit, { 0: 4 })).toBeNull();
+  });
+});
+
+describe('componentesKitEntries', () => {
+  it('returns the well-formed entries and drops junk', () => {
+    const map = { a: comp(1), b: null, c: 7 } as unknown as ComponentesKit;
+    expect(componentesKitEntries(map).map(([id]) => id)).toEqual(['a']);
+  });
+
+  it('returns [] for null/undefined and non-record values', () => {
+    expect(componentesKitEntries(null)).toEqual([]);
+    expect(componentesKitEntries(undefined)).toEqual([]);
+    expect(componentesKitEntries('junk' as unknown as ComponentesKit)).toEqual([]);
+    expect(componentesKitEntries([comp(1)] as unknown as ComponentesKit)).toEqual([]);
   });
 });
 

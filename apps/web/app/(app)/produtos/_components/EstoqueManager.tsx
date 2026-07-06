@@ -8,6 +8,7 @@ import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
 import { getDocsFromServer, type Firestore } from 'firebase/firestore';
 import {
+  componentesKitEntries,
   estoqueDisponivel,
   estoqueDisponivelComKit,
   makeEstoqueUid,
@@ -229,7 +230,7 @@ function EstoqueProdutoSection({
   const countableIds = useMemo(
     () =>
       produto.ehKit
-        ? Object.entries(produto.componentesKit ?? {})
+        ? componentesKitEntries(produto.componentesKit)
             .filter(([, kit]) => kit.limitarEstoque !== false)
             .map(([id]) => id)
             .sort()
@@ -437,7 +438,7 @@ function DisponivelCell({ ownDisponivel, kit, depositoId, ariaSuffix }: Disponiv
     else if (kit.state === 'error') kitSuffix = ' (Erro)';
     else {
       const disponivelByProdutoId: Record<string, number | undefined> = {};
-      for (const compId of Object.keys(kit.componentesKit ?? {})) {
+      for (const [compId] of componentesKitEntries(kit.componentesKit)) {
         disponivelByProdutoId[compId] = kit.estoquesByComponentId
           ?.get(compId)
           ?.get(makeEstoqueUid(compId, depositoId));

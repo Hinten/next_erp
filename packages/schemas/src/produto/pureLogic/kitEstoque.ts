@@ -1,4 +1,4 @@
-import type { ComponentesKit } from '../collection/embedded/kit';
+import type { ComponentesKit, Kit } from '../collection/embedded/kit';
 
 /**
  * Kit available-stock computation — pure port of the kit branch of Flutter's
@@ -7,6 +7,23 @@ import type { ComponentesKit } from '../collection/embedded/kit';
  * estoque reads for ONE depósito into `disponivelByProdutoId` (component
  * produto id → its `disponivel` there, i.e. `estoqueDisponivel(doc)`).
  */
+
+/**
+ * The well-formed entries of a possibly-malformed `componentesKit`. Reads
+ * soft-parse (`parseSoftRead`), so the map itself or any entry can be raw junk
+ * at runtime — a non-record map or a non-object entry yields no entries instead
+ * of throwing mid-render.
+ */
+export function componentesKitEntries(
+  componentes: ComponentesKit | null | undefined,
+): Array<[string, Kit]> {
+  if (typeof componentes !== 'object' || componentes === null || Array.isArray(componentes)) {
+    return [];
+  }
+  return Object.entries(componentes).filter(
+    (entry): entry is [string, Kit] => typeof entry[1] === 'object' && entry[1] !== null,
+  );
+}
 
 /**
  * How many kits the components allow building: the **min** over components with
@@ -23,16 +40,17 @@ import type { ComponentesKit } from '../collection/embedded/kit';
  * that depósito. Treating it as 0 matches the pedido→estoque sync, which
  * decrements every `limitarEstoque` component on sale.
  *
- * Defensive (also divergent): an entry whose `quantidade` is not a finite
- * number > 0 is ignored — the schema enforces int ≥ 1, but soft-parsed raw
- * docs can carry junk that would otherwise yield `Infinity`/`NaN`.
+ * Defensive (also divergent): a non-object entry, or one whose `quantidade` is
+ * not a finite number > 0, is ignored — the schema enforces the shape, but
+ * soft-parsed raw docs can carry junk that would otherwise throw or yield
+ * `Infinity`/`NaN` (`componentesKitEntries` does the shape filtering).
  */
 export function kitEstoqueDisponivel(
   componentes: ComponentesKit | null | undefined,
   disponivelByProdutoId: Record<string, number | null | undefined>,
 ): number | null {
   let min: number | null = null;
-  for (const [produtoId, kit] of Object.entries(componentes ?? {})) {
+  for (const [produtoId, kit] of componentesKitEntries(componentes)) {
     if (kit.limitarEstoque === false) continue;
     if (!Number.isFinite(kit.quantidade) || kit.quantidade <= 0) continue;
     const raw = disponivelByProdutoId[produtoId];
