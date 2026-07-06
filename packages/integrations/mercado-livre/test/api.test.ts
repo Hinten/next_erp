@@ -270,6 +270,21 @@ describe('createMercadoLivreApi — write endpoints', () => {
     expect((init!.headers as Record<string, string>).Authorization).toBe('Bearer live-token');
   });
 
+  it('uploadPicture retries a network failure then succeeds (same policy as request)', async () => {
+    const fetchMock = vi.fn();
+    fetchMock
+      .mockRejectedValueOnce(new TypeError('ECONNRESET'))
+      .mockResolvedValueOnce(jsonResponse({ id: 'ML-IMG-2' }));
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const upload = await api.uploadPicture({
+      filename: 'foto.jpg',
+      contentType: 'image/jpeg',
+      data: new Uint8Array([1]),
+    });
+    expect(upload.id).toBe('ML-IMG-2');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('uploadPicture maps a 400 to an HTTP error', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
       jsonResponse({ message: 'invalid image' }, 400),

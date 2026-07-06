@@ -10,7 +10,7 @@
  *    import/notification flows use).
  *  - Update: `status: 'active'` (reactivates a paused listing on edit).
  *  - Legacy variations move `available_quantity`/`price` down to each
- *    variation ( parent `available_quantity` removed; parent `price` removed
+ *    variation (parent `available_quantity` removed; parent `price` removed
  *    on update), carry `seller_custom_field` = the variation produto doc id,
  *    inherit the parent pictures when they have none, and any attribute id
  *    used in a combination is dropped from the parent `attributes`.
