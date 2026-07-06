@@ -173,3 +173,110 @@ describe('createMercadoLivreApi — retries + errors', () => {
     await expect(api.getMe()).rejects.toBeInstanceOf(MercadoLivreValidationError);
   });
 });
+
+describe('createMercadoLivreApi — write endpoints', () => {
+  const ITEM_RESPONSE = {
+    id: 'MLB999',
+    title: 'Camiseta',
+    status: 'active',
+    price: 79.9,
+    permalink: 'https://produto.mercadolivre.com.br/MLB999',
+    shipping: { free_shipping: false },
+    variations: [{ id: 173000001, seller_custom_field: 'prod-var-1' }],
+  };
+
+  it('createItem POSTs the JSON payload to /items and parses the listing', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(ITEM_RESPONSE, 201),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const item = await api.createItem({ title: 'Camiseta', price: 79.9 });
+
+    expect(item.id).toBe('MLB999');
+    expect(item.shipping?.free_shipping).toBe(false);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.mercadolibre.com/items');
+    expect(init!.method).toBe('POST');
+    expect((init!.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+    expect(JSON.parse(init!.body as string)).toEqual({ title: 'Camiseta', price: 79.9 });
+  });
+
+  it('updateItem PUTs to /items/{id}', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ ...ITEM_RESPONSE, status: 'paused' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const item = await api.updateItem('MLB999', { status: 'paused' });
+    expect(item.status).toBe('paused');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.mercadolibre.com/items/MLB999');
+    expect(init!.method).toBe('PUT');
+  });
+
+  it('setItemDescription POSTs plain_text on create and PUTs ?api_version=2 on replace', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ plain_text: 'Desc' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+
+    await api.setItemDescription('MLB999', 'Desc');
+    let [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.mercadolibre.com/items/MLB999/description');
+    expect(init!.method).toBe('POST');
+    expect(JSON.parse(init!.body as string)).toEqual({ plain_text: 'Desc' });
+
+    await api.setItemDescription('MLB999', 'Desc2', { replace: true });
+    [url, init] = fetchMock.mock.calls[1]!;
+    expect(String(url)).toBe('https://api.mercadolibre.com/items/MLB999/description?api_version=2');
+    expect(init!.method).toBe('PUT');
+  });
+
+  it('suggestCategories queries domain_discovery and parses the suggestions', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([
+        { domain_id: 'MLB-T_SHIRTS', category_id: 'MLB31447', category_name: 'Camisetas' },
+      ]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const suggestions = await api.suggestCategories('camiseta basica', 1);
+    expect(suggestions[0]!.category_id).toBe('MLB31447');
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toContain('/sites/MLB/domain_discovery/search');
+    expect(url).toContain('q=camiseta+basica');
+    expect(url).toContain('limit=1');
+  });
+
+  it('uploadPicture sends multipart form data (no JSON content-type) and parses the id', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ id: 'ML-IMG-1' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const upload = await api.uploadPicture({
+      filename: 'foto.jpg',
+      contentType: 'image/jpeg',
+      data: new Uint8Array([1, 2, 3]),
+    });
+
+    expect(upload.id).toBe('ML-IMG-1');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.mercadolibre.com/pictures/items/upload');
+    expect(init!.method).toBe('POST');
+    expect(init!.body).toBeInstanceOf(FormData);
+    const file = (init!.body as FormData).get('file');
+    expect(file).toBeInstanceOf(Blob);
+    expect((file as Blob).type).toBe('image/jpeg');
+    // fetch must set the multipart boundary itself.
+    expect((init!.headers as Record<string, string>)['Content-Type']).toBeUndefined();
+    expect((init!.headers as Record<string, string>).Authorization).toBe('Bearer live-token');
+  });
+
+  it('uploadPicture maps a 400 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'invalid image' }, 400),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(
+      api.uploadPicture({ filename: 'x.png', contentType: 'image/png', data: new Uint8Array(1) }),
+    ).rejects.toMatchObject({ constructor: MercadoLivreHttpError, status: 400 });
+  });
+});

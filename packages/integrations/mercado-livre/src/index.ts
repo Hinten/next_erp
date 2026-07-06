@@ -5,6 +5,8 @@ export * from './errors';
 export * from './types';
 export * from './oauth';
 export * from './api';
+export * from './mapping/attributes';
+export * from './mapping/itemPayload';
 
 /**
  * Mercado Livre plugin (MarketplaceChannel).
