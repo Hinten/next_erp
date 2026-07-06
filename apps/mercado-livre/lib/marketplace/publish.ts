@@ -20,7 +20,13 @@ import {
   estadoFromMlStatus,
 } from '@delfrance/integrations-mercado-livre';
 import type { Arquivo, Foto, ProdutoMercadoLivreLink } from '@delfrance/schemas';
-import { estoqueDisponivel, idFromRef, parseFakePath, toOuterRef } from '@delfrance/schemas';
+import {
+  estoqueDisponivel,
+  idFromRef,
+  mlSizeChartsForConta,
+  parseFakePath,
+  toOuterRef,
+} from '@delfrance/schemas';
 import {
   arquivoCollection,
   estoqueCollection,
@@ -28,6 +34,7 @@ import {
   produtoCollection,
   produtoExtraDataCollection,
   produtoMercadoLivreLinkCollection,
+  tabelaDeMedidasCollection,
   variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
 
@@ -39,6 +46,12 @@ import {
   type PublishVariationChild,
   assemblePublishInput,
 } from './publishCore';
+import {
+  type ResolvedSizeChart,
+  type SizeChartRowBinding,
+  findChartRow,
+  resolveSizeChart,
+} from './sizeChart';
 
 /** ML caps listings at 10 pictures (the old app enforced the same). */
 const MAX_PICTURES = 10;
@@ -155,15 +168,25 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     });
   }
 
-  // ---- Pictures (upload once per integração; cached on the Arquivo) ------
-  const { pictures, pictureSources } = await resolvePictures(deps, produto.fotos ?? []);
-
   // ---- Category (existing link wins; else suggest from the title) --------
   let categoryId = link?.category_id ?? null;
   if (!categoryId && link?.id == null) {
     const suggestions = await api.suggestCategories(produto.nome, 1);
     categoryId = suggestions[0]?.category_id ?? null;
   }
+
+  // ---- Size chart (tabela de medidas) binding -----------------------------
+  const tabela = await loadTabelaBinding(deps, produto, link, categoryId, variations);
+
+  // ---- Pictures (upload once per integração; cached on the Arquivo) ------
+  // The tabela's chart photo rides as an EXTRA listing picture (legacy
+  // `getTabelaDeMedidasPicture`): appended, or replacing the last slot when
+  // the produto already fills ML's 10-picture cap.
+  const { pictures, pictureSources } = await resolvePictures(
+    deps,
+    produto.fotos ?? [],
+    tabela.foto,
+  );
 
   // ---- Assemble + call ML -------------------------------------------------
   const input = assemblePublishInput({
@@ -179,6 +202,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     categoryId,
     listingTypeId: link?.listing_type_id ?? deps.listingTypeId ?? null,
     isUserProductSeller: link?.isUserProductModel ?? false,
+    sizeChart: tabela.resolved,
   });
   const payload = buildItemPayload(input);
 
@@ -289,7 +313,13 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   }
 
   // ---- Description (link's own text wins; else the produto's extraData) ---
-  const descricao = linkDoc?.data.descricao ?? extra?.descricao ?? null;
+  // The tabela de medidas text is APPENDED after the base description (legacy
+  // `getDescription(tabelaDeMedidas?.descricao)` — '\n\n' separator).
+  const baseDescricao = linkDoc?.data.descricao ?? extra?.descricao ?? null;
+  const descricao =
+    baseDescricao && tabela.descricao
+      ? `${baseDescricao}\n\n${tabela.descricao}`
+      : (baseDescricao ?? tabela.descricao ?? null);
   if (descricao) {
     try {
       try {
@@ -351,6 +381,66 @@ function toPublishProduto(
     precos: p.precos ?? null,
     ordem: p.ordem ?? null,
   };
+}
+
+/** What the produto's tabela de medidas contributes to this publish. */
+interface TabelaBinding {
+  /** Chart + per-child row ids for SIZE_GRID_* injection (null = no chart). */
+  resolved: ResolvedSizeChart | null;
+  /** Tabela text appended to the listing description. */
+  descricao: string | null;
+  /** The chart photo, appended as an extra listing picture. */
+  foto: Foto | null;
+}
+
+/**
+ * Load the produto's tabela de medidas and resolve its ML chart binding for
+ * this integração (legacy `_findTabelaDeMedidas` + `getTabelaDeMedidasMercadoLivre`):
+ * the tabMedi doc's `tabelasDeMedidasMercadoLivre[<integracaoId>].tabelas` are
+ * matched against the category's `settings.catalog_domain` and the link doc's
+ * attributes; each variation child is bound to a chart row via `varianteUid`.
+ * The tabela `descricao` and photo apply even when no chart resolves (legacy
+ * appended both regardless of the chart match).
+ */
+async function loadTabelaBinding(
+  deps: PublishDeps,
+  produto: { tabelaDeMedidasModaUid?: string | null },
+  link: PublishLink | null,
+  categoryId: string | null,
+  variations: readonly PublishVariationChild[],
+): Promise<TabelaBinding> {
+  const { db, api, integracaoId } = deps;
+  const none: TabelaBinding = { resolved: null, descricao: null, foto: null };
+
+  const ref = produto.tabelaDeMedidasModaUid;
+  if (!ref) return none;
+  const tabMediId = idFromRef(ref);
+  const snap = await tabelaDeMedidasCollection.docRef(db, {}, tabMediId).get();
+  if (!snap.exists) return none;
+  const tabela = tabelaDeMedidasCollection.parseRead(
+    snap.data(),
+    tabelaDeMedidasCollection.docPath({}, tabMediId),
+  );
+  const descricao = tabela.descricao ?? null;
+  const foto = tabela.fotos?.[0] ?? null;
+
+  const charts = mlSizeChartsForConta(tabela.tabelasDeMedidasMercadoLivre ?? null, integracaoId);
+  if (charts.length === 0 || !categoryId) return { resolved: null, descricao, foto };
+
+  // The chart's domain_id is the FULL form ('MLB-PANTS') — matched against
+  // the category's catalog domain, same source as the legacy flow.
+  const category = await api.getCategory(categoryId);
+  const catalogDomain =
+    typeof category.settings?.catalog_domain === 'string' ? category.settings.catalog_domain : null;
+  const chart = resolveSizeChart(charts, catalogDomain, link?.attributes ?? null);
+  if (!chart?.id) return { resolved: null, descricao, foto };
+
+  const rowByChildId: Record<string, SizeChartRowBinding> = {};
+  for (const v of variations) {
+    const row = findChartRow(chart, v.variacoesUid);
+    if (row) rowByChildId[v.produto.id] = row;
+  }
+  return { resolved: { chartId: chart.id, rowByChildId }, descricao, foto };
 }
 
 /**
@@ -454,66 +544,87 @@ async function findVariacaoLink(
 /**
  * Resolve the produto's fotos to ML picture ids, uploading at most once per
  * integração: each Arquivo caches `externalIds: [{externalId, integracaoPath}]`
- * (the old app's shape), so a re-publish reuses the cached id.
+ * (the old app's shape), so a re-publish reuses the cached id. When the
+ * produto's tabela de medidas carries a chart photo (`tabelaFoto`), it rides
+ * as one EXTRA picture — appended, or replacing the LAST slot when the
+ * produto already fills ML's cap (legacy `_getFotosMercadoLivre`).
  */
 async function resolvePictures(
   deps: PublishDeps,
   fotos: ReadonlyArray<Foto>,
+  tabelaFoto: Foto | null = null,
 ): Promise<{ pictures: Array<{ id: string }>; pictureSources: Map<string, string> }> {
-  const { db, api, integracaoId } = deps;
-  const doFetch = deps.fetchImpl ?? globalThis.fetch;
   const pictures: Array<{ id: string }> = [];
   /** ML picture id → owning arquivo doc id (feeds the dead-picture self-heal). */
   const pictureSources = new Map<string, string>();
 
   for (const foto of fotos.slice(0, MAX_PICTURES)) {
-    const arquivoId = foto.arquivoOuterRef.replace(/^arquivos\//, '');
-    const snap = await arquivoCollection.docRef(db, {}, arquivoId).get();
-    if (!snap.exists) continue; // a broken foto ref must not block the publish
-    const arquivo = arquivoCollection.parseRead(
-      snap.data(),
-      arquivoCollection.docPath({}, arquivoId),
-    ) as Arquivo;
-
-    const cached = (arquivo.externalIds ?? []).find((e) =>
-      refMatchesIntegracao(e.integracaoPath, integracaoId),
-    );
-    if (cached) {
-      pictures.push({ id: cached.externalId });
-      pictureSources.set(cached.externalId, arquivoId);
-      continue;
-    }
-
-    if (!arquivo.url) continue;
-    const res = await doFetch(arquivo.url);
-    if (!res.ok) {
-      throw new MercadoLivrePublishError([
-        `falha ao baixar a foto ${arquivoId} do Storage (HTTP ${res.status})`,
-      ]);
-    }
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    const uploaded = await api.uploadPicture({
-      filename: arquivo.filename,
-      contentType: arquivo.contentType ?? 'image/jpeg',
-      data: bytes,
-    });
-
-    // arrayUnion, not a whole-array overwrite: the Flutter app (and a
-    // concurrent publish to another conta) appends to the SAME shared array —
-    // a read-modify-write here would drop entries written during the upload
-    // window (the old app used `appendMissingElements` for exactly this).
-    // `integracaoPath` is stored `documents/`-prefixed: Flutter's cache lookup
-    // (`getExternalId`) compares against `pathWithDocuments` by EXACT equality.
-    await arquivoCollection.docRef(db, {}, arquivoId).update({
-      externalIds: FieldValue.arrayUnion({
-        externalId: uploaded.id,
-        integracaoPath: toOuterRef(`integracao/${integracaoId}`),
-      }),
-    });
-    pictures.push({ id: uploaded.id });
-    pictureSources.set(uploaded.id, arquivoId);
+    const resolved = await resolveOnePicture(deps, foto);
+    if (!resolved) continue;
+    pictures.push({ id: resolved.id });
+    pictureSources.set(resolved.id, resolved.arquivoId);
   }
+
+  if (tabelaFoto) {
+    const chartPic = await resolveOnePicture(deps, tabelaFoto);
+    if (chartPic) {
+      if (pictures.length >= MAX_PICTURES) pictures[MAX_PICTURES - 1] = { id: chartPic.id };
+      else pictures.push({ id: chartPic.id });
+      pictureSources.set(chartPic.id, chartPic.arquivoId);
+    }
+  }
+
   return { pictures, pictureSources };
+}
+
+/** Resolve ONE foto to its ML picture id (per-integração cache, else upload). */
+async function resolveOnePicture(
+  deps: PublishDeps,
+  foto: Foto,
+): Promise<{ id: string; arquivoId: string } | null> {
+  const { db, api, integracaoId } = deps;
+  const doFetch = deps.fetchImpl ?? globalThis.fetch;
+
+  const arquivoId = foto.arquivoOuterRef.replace(/^arquivos\//, '');
+  const snap = await arquivoCollection.docRef(db, {}, arquivoId).get();
+  if (!snap.exists) return null; // a broken foto ref must not block the publish
+  const arquivo = arquivoCollection.parseRead(
+    snap.data(),
+    arquivoCollection.docPath({}, arquivoId),
+  ) as Arquivo;
+
+  const cached = (arquivo.externalIds ?? []).find((e) =>
+    refMatchesIntegracao(e.integracaoPath, integracaoId),
+  );
+  if (cached) return { id: cached.externalId, arquivoId };
+
+  if (!arquivo.url) return null;
+  const res = await doFetch(arquivo.url);
+  if (!res.ok) {
+    throw new MercadoLivrePublishError([
+      `falha ao baixar a foto ${arquivoId} do Storage (HTTP ${res.status})`,
+    ]);
+  }
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  const uploaded = await api.uploadPicture({
+    filename: arquivo.filename,
+    contentType: arquivo.contentType ?? 'image/jpeg',
+    data: bytes,
+  });
+
+  // arrayUnion, not a whole-array overwrite: the Flutter app (and a
+  // concurrent publish to another conta) appends to the SAME shared array —
+  // a read-modify-write here would drop entries written during the upload
+  // window (the old app used `appendMissingElements` for exactly this).
+  // `integracaoPath` is stored `documents/`-prefixed: Flutter's cache lookup
+  // (`getExternalId`) compares against `pathWithDocuments` by EXACT equality.
+  await arquivoCollection.docRef(db, {}, arquivoId).update({
+    externalIds: FieldValue.arrayUnion({
+      externalId: uploaded.id,
+      integracaoPath: toOuterRef(`integracao/${integracaoId}`),
+    }),
+  });
+  return { id: uploaded.id, arquivoId };
 }
 
 /**

@@ -92,6 +92,7 @@ function makeApi(overrides: Partial<Record<keyof MercadoLivreApi, unknown>> = {}
     createItem: vi.fn(async () => ITEM_RESPONSE),
     updateItem: vi.fn(async () => ITEM_RESPONSE),
     suggestCategories: vi.fn(async () => [{ category_id: 'MLB31447' }]),
+    getCategory: vi.fn(async () => ({ id: 'MLB31447', settings: null })),
     uploadPicture: vi.fn(async () => ({ id: 'PIC-NEW' })),
     setItemDescription: vi.fn(async () => ({ plain_text: 'ok' })),
     ...overrides,
@@ -449,6 +450,139 @@ describe('publishProduto — dual-run wire shape', () => {
 
     expect(db.updates.find((u) => u.path === `produtos/${PROD}`)).toBeUndefined();
     expect(db.docs('produtos').get(PROD)!.marketplace).toBeUndefined();
+  });
+
+  it('binds the tabela de medidas chart end-to-end (SIZE_GRID_*, SIZE swap, descrição, foto)', async () => {
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    db.docs('produtos').get(PROD)!.tabelaDeMedidasModaUid = 'documents/tabMedi/tm-1';
+    db.seed('tabMedi', 'tm-1', {
+      nome: 'Tabela camisetas',
+      codigo: null,
+      descricao: 'Confira as medidas na tabela.',
+      fotos: [{ arquivoOuterRef: 'arquivos/arq-chart' }],
+      tabelasDeMedidasMercadoLivre: {
+        [CONTA]: {
+          tabelas: [
+            {
+              id: '1594439',
+              nome: 'Camisetas ML',
+              domain_id: 'MLB-T_SHIRTS',
+              attributes: [],
+              rows: [
+                {
+                  varianteUid: 'documents/grupoDeVariacoes/g-tam/variacoes/v-m',
+                  id: '1594439:1',
+                  attributes: [{ id: 'SIZE', value_name: 'M (38-40)' }],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    db.seed('arquivos', 'arq-chart', {
+      filename: 'chart.jpg',
+      contentType: 'image/jpeg',
+      url: 'https://storage/chart.jpg',
+      externalIds: [{ externalId: 'PIC-CHART', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    db.seed('produtos', 'child-1', {
+      nome: 'Camiseta M',
+      sku: 'SKU-1-M',
+      paiId: PROD,
+      ordem: 0,
+      precos: { 'lista-1': { valor: 79.9 } },
+      variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+    });
+    db.seed('produtos/child-1/estoques', 'est-c', {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 4,
+      quantidadeReservada: 0,
+    });
+    db.seed('grupoDeVariacoes', 'g-tam', {
+      nome: 'Tamanho',
+      tipo: 1,
+      variacoes: [{ id: 'v-m', nome: 'M' }],
+    });
+    const { api, mocks } = makeApi({
+      getCategory: vi.fn(async () => ({
+        id: 'MLB31447',
+        settings: { catalog_domain: 'MLB-T_SHIRTS' },
+      })),
+      createItem: vi.fn(async () => ({
+        ...ITEM_RESPONSE,
+        variations: [{ id: 555, seller_custom_field: 'child-1' }],
+      })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.getCategory).toHaveBeenCalledWith('MLB31447');
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    const attrs = payload.attributes as Array<Record<string, unknown>>;
+    expect(attrs).toContainEqual({ id: 'SIZE_GRID_ID', value_name: '1594439' });
+    const variation = (payload.variations as Array<Record<string, unknown>>)[0]!;
+    expect(variation.attributes).toContainEqual({
+      id: 'SIZE_GRID_ROW_ID',
+      value_name: '1594439:1',
+    });
+    // The chart row's SIZE replaces the variante's nome ('M').
+    expect(variation.attribute_combinations).toContainEqual({
+      id: 'SIZE',
+      value_name: 'M (38-40)',
+    });
+    // Chart photo appended after the produto pictures (cached — no upload).
+    expect(payload.pictures).toEqual([{ id: 'PIC-CACHED' }, { id: 'PIC-CHART' }]);
+    // No extraData/link description → the tabela text is the whole description.
+    expect(mocks.setItemDescription).toHaveBeenCalledWith(
+      'MLB777',
+      'Confira as medidas na tabela.',
+      { replace: false },
+    );
+  });
+
+  it('domain mismatch → no SIZE_GRID_* attributes, but descrição/foto still apply', async () => {
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    db.docs('produtos').get(PROD)!.tabelaDeMedidasModaUid = 'documents/tabMedi/tm-1';
+    db.seed('tabMedi', 'tm-1', {
+      nome: 'Tabela camisetas',
+      codigo: null,
+      descricao: 'Confira as medidas na tabela.',
+      fotos: [{ arquivoOuterRef: 'arquivos/arq-chart' }],
+      tabelasDeMedidasMercadoLivre: {
+        [CONTA]: { tabelas: [{ id: '1594439', domain_id: 'MLB-SNEAKERS', rows: [] }] },
+      },
+    });
+    db.seed('arquivos', 'arq-chart', {
+      filename: 'chart.jpg',
+      contentType: 'image/jpeg',
+      url: 'https://storage/chart.jpg',
+      externalIds: [{ externalId: 'PIC-CHART', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    const { api, mocks } = makeApi({
+      getCategory: vi.fn(async () => ({
+        id: 'MLB31447',
+        settings: { catalog_domain: 'MLB-T_SHIRTS' },
+      })),
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const payload = mocks.createItem!.mock.calls[0]![0] as Record<string, unknown>;
+    const attrs = payload.attributes as Array<Record<string, unknown>>;
+    expect(attrs.find((a) => a.id === 'SIZE_GRID_ID')).toBeUndefined();
+    expect(payload.pictures).toEqual([{ id: 'PIC-CACHED' }, { id: 'PIC-CHART' }]);
+    expect(mocks.setItemDescription).toHaveBeenCalledWith(
+      'MLB777',
+      'Confira as medidas na tabela.',
+      { replace: false },
+    );
   });
 
   it('prunes a purged ML picture id from the arquivo cache (picture_not_found)', async () => {
