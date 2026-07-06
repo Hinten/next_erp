@@ -24,6 +24,7 @@ export * from './collection/estoque'; // produtos/{id}/estoques
 export * from './collection/historicoEstoque'; // produtos/{id}/estoques/{estId}/historicoEstoque
 export * from './collection/historicos'; // produtos/{id}/historicoDePrecos | historicoDeCusto
 export * from './collection/subcollections'; // produtos/{id}/<marketplace link docs>
+export * from './collection/mercadoLivreLink'; // typed ML link-doc write shapes (not DomainSchemas)
 
 // === EMBEDDED value objects (nested in a collection doc; NOT collections) ===
 export * from './collection/embedded/kit'; // produto.componentesKit[*]
