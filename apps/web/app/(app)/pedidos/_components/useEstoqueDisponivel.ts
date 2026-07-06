@@ -1,10 +1,10 @@
 'use client';
 
 import { useMemo } from 'react';
-import { getDocsFromServer, type Firestore } from 'firebase/firestore';
+import { getDocFromServer, type Firestore } from 'firebase/firestore';
 import { useQuery } from '@tanstack/react-query';
-import { buildQuery, limit } from '@delfrance/data';
-import { useSnapshot } from '@delfrance/data/hooks';
+import { buildQuery } from '@delfrance/data';
+import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import {
   componentesKitEntries,
   estoqueDisponivel,
@@ -14,8 +14,6 @@ import {
   type EstoqueProduto,
 } from '@delfrance/schemas';
 import { estoqueProdutoCollection } from '@/lib/data/estoqueProdutoCollection';
-
-const ESTOQUE_LIMIT = 500;
 
 /** The produto fields the badge needs — id always, kit fields for kits. */
 export interface ProdutoParaEstoqueBadge {
@@ -75,9 +73,12 @@ export function combineEstoqueDisponivel(input: {
  * Σ own `disponivel` across all depósitos (the pre-#427 fallback). `null` while
  * loading or when no produto is picked.
  *
- * Own estoques stay real-time (`useSnapshot`); the kit component reads are
- * one-shot (`getDocsFromServer` via `useQuery`, mirroring `EstoqueManager`) —
- * the query's staleTime plays the legacy 1-minute cache's role.
+ * With a depósito, own stock is a single-doc real-time read (`useDocSnapshot`
+ * on the deterministic `est-<produtoId>-<depositoId>` id); the all-depósito
+ * fallback subscribes to the whole subcollection only when no depósito is set.
+ * Kit component reads are one-shot, one deterministic doc per component
+ * (`getDocFromServer` via `useQuery`) — the query's staleTime plays the legacy
+ * 1-minute cache's role.
  */
 export function useEstoqueDisponivel(
   db: Firestore,
@@ -88,11 +89,39 @@ export function useEstoqueDisponivel(
   const ehKit = produto?.ehKit ?? false;
   const componentesKit = produto?.componentesKit ?? null;
 
-  const ownQuery = useMemo(
-    () => (produtoId ? buildQuery(estoqueProdutoCollection.ref(db, { produtoId }), []) : null),
-    [db, produtoId],
+  // Single-depósito own stock: the one deterministic estoque doc (real-time).
+  const ownDocRef = useMemo(
+    () =>
+      produtoId && depositoId
+        ? estoqueProdutoCollection.docRef(db, { produtoId }, makeEstoqueUid(produtoId, depositoId))
+        : null,
+    [db, produtoId, depositoId],
   );
-  const { data: ownRows } = useSnapshot(ownQuery);
+  const ownDocSnap = useDocSnapshot(ownDocRef);
+
+  // Fallback (no depósito): subscribe to the whole subcollection for the Σ.
+  const ownCollQuery = useMemo(
+    () =>
+      produtoId && !depositoId
+        ? buildQuery(estoqueProdutoCollection.ref(db, { produtoId }), [])
+        : null,
+    [db, produtoId, depositoId],
+  );
+  const ownCollSnap = useSnapshot(ownCollQuery);
+
+  // Normalize both sources to the `ownRows` the pure combiner expects (a
+  // 0-or-1 element list in single-depósito mode). `undefined` = still loading.
+  const ownDocData = ownDocSnap.data;
+  const ownDocLoading = ownDocSnap.loading;
+  const ownCollData = ownCollSnap.data;
+  const ownRows = useMemo<readonly OwnRow[] | undefined>(() => {
+    if (!produtoId) return undefined;
+    if (depositoId) {
+      if (ownDocLoading) return undefined;
+      return ownDocData ? [{ id: ownDocData.id, data: ownDocData.data }] : [];
+    }
+    return ownCollData;
+  }, [produtoId, depositoId, ownDocLoading, ownDocData, ownCollData]);
 
   // Countable kit components — only meaningful once a target depósito exists.
   const countableIds = useMemo(
@@ -107,7 +136,7 @@ export function useEstoqueDisponivel(
   );
 
   const kitQuery = useQuery({
-    queryKey: ['pedidoKitEstoque', produtoId, depositoId, countableIds],
+    queryKey: ['pedidoKitEstoque', depositoId, countableIds],
     enabled: countableIds.length > 0,
     queryFn: async () => {
       const dep = depositoId;
@@ -115,13 +144,12 @@ export function useEstoqueDisponivel(
       const disponivel: Record<string, number> = {};
       await Promise.all(
         countableIds.map(async (compId) => {
-          const snap = await getDocsFromServer(
-            buildQuery(estoqueProdutoCollection.ref(db, { produtoId: compId }), [
-              limit(ESTOQUE_LIMIT),
-            ]),
+          // One deterministic doc, not a subcollection scan (a target beyond a
+          // page limit would wrongly read as missing).
+          const snap = await getDocFromServer(
+            estoqueProdutoCollection.docRef(db, { produtoId: compId }, makeEstoqueUid(compId, dep)),
           );
-          const doc = snap.docs.find((d) => d.id === makeEstoqueUid(compId, dep));
-          const disp = doc ? estoqueDisponivel(doc.data()) : NaN;
+          const disp = snap.exists() ? estoqueDisponivel(snap.data()) : NaN;
           // Non-finite (missing doc / soft-parsed junk) → leave absent so the
           // pure helper counts the component as 0 (#238).
           if (Number.isFinite(disp)) disponivel[compId] = disp;
