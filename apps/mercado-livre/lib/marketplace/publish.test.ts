@@ -313,6 +313,100 @@ describe('publishProduto — dual-run wire shape', () => {
     expect(link.errors).toEqual(['description rate limited']);
   });
 
+  it('stamps the parent deprecated arrays in the legacy order-import shape (#431)', async () => {
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    const { api } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const update = db.updates.find((u) => u.path === `produtos/${PROD}`);
+    expect(update).toBeDefined();
+    // Exact probe shape: {integracaoUid, externalId} — NO relevantData, or the
+    // legacy array-contains (exact map equality) would miss it.
+    expect(
+      (update!.patch.marketplace as FieldValue).isEqual(
+        FieldValue.arrayUnion({ integracaoUid: CONTA, externalId: 'MLB777' }),
+      ),
+    ).toBe(true);
+    expect(
+      (update!.patch.marketplaceIds as FieldValue).isEqual(FieldValue.arrayUnion('MLB777')),
+    ).toBe(true);
+    expect(
+      (update!.patch.integracoesComProduto as FieldValue).isEqual(FieldValue.arrayUnion(CONTA)),
+    ).toBe(true);
+  });
+
+  it('stamps each variation child with the legacy cleanup semantics (#431)', async () => {
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    const { api } = makeApi({
+      createItem: vi.fn(async () => ({
+        ...ITEM_RESPONSE,
+        variations: [{ id: 555, seller_custom_field: 'child-1' }],
+      })),
+    });
+    db.seed('produtos', 'child-1', {
+      nome: 'Camiseta M',
+      sku: 'SKU-1-M',
+      paiId: PROD,
+      ordem: 0,
+      precos: { 'lista-1': { valor: 79.9 } },
+      variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+      marketplace: [
+        // Stale: same conta + same listing, but an old variation id.
+        { integracaoUid: CONTA, externalParentId: 'MLB777', externalId: '111' },
+        // Parent-shaped entry wrongly on a child — legacy removes it.
+        { integracaoUid: CONTA, externalId: 'MLB777' },
+        // Another conta's entry must survive untouched.
+        { integracaoUid: 'outra-conta', externalParentId: 'MLB999', externalId: '42' },
+      ],
+      marketplaceIds: ['111'],
+      integracoesComProduto: ['outra-conta'],
+    });
+    db.seed('produtos/child-1/estoques', 'est-c', {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 4,
+      quantidadeReservada: 0,
+    });
+    db.seed('grupoDeVariacoes', 'g-tam', {
+      nome: 'Tamanho',
+      tipo: 1,
+      variacoes: [{ id: 'v-m', nome: 'M' }],
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const child = db.docs('produtos').get('child-1')!;
+    expect(child.marketplace).toEqual([
+      { integracaoUid: 'outra-conta', externalParentId: 'MLB999', externalId: '42' },
+      { integracaoUid: CONTA, externalParentId: 'MLB777', externalId: '555' },
+    ]);
+    expect(child.marketplaceIds).toEqual(['111', '555']);
+    expect(child.integracoesComProduto).toEqual(['outra-conta', CONTA]);
+  });
+
+  it('does NOT stamp the deprecated arrays when the ML call fails', async () => {
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    const { api } = makeApi({
+      createItem: vi.fn(async () => {
+        throw new MercadoLivreHttpError('rejected', 400, {});
+      }),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow('rejected');
+
+    expect(db.updates.find((u) => u.path === `produtos/${PROD}`)).toBeUndefined();
+    expect(db.docs('produtos').get(PROD)!.marketplace).toBeUndefined();
+  });
+
   it('prunes a purged ML picture id from the arquivo cache (picture_not_found)', async () => {
     const db = new FakeDb();
     seedBase(db, {

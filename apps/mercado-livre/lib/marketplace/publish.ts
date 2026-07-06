@@ -240,6 +240,20 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     }),
   );
 
+  // ---- Dual-run denorm stamps (DEPRECATED arrays — legacy consumers only) --
+  // The deployed Flutter backend resolves an incoming ML order item via
+  // `marketplace array-contains {integracaoUid, externalId}` (EXACT map match
+  // — hence no `relevantData`, the shape its own webhook repair writes) and
+  // gates its stock sender on `integracoesComProduto`. The new app never READS
+  // these fields (linkage is Firestore Pipelines); the stamps exist only so
+  // listings published here stay visible to the legacy flows during
+  // coexistence. Success-only, like the old app. Tracked removal: #431.
+  await produtoCollection.docRef(db, {}, produtoId).update({
+    marketplace: FieldValue.arrayUnion({ integracaoUid: integracaoId, externalId: item.id }),
+    marketplaceIds: FieldValue.arrayUnion(item.id),
+    integracoesComProduto: FieldValue.arrayUnion(integracaoId),
+  });
+
   // Variation links live under each CHILD produto, keyed back to the parent
   // link doc — matched by seller_custom_field (= the child produto id).
   for (const respVar of item.variations ?? []) {
@@ -266,6 +280,9 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
         sku: child.produto.sku ?? null,
       }),
     );
+    if (respVar.id != null) {
+      await stampChildMarketplace(db, integracaoId, item.id, childId, String(respVar.id));
+    }
   }
 
   // ---- Description (link's own text wins; else the produto's extraData) ---
@@ -331,6 +348,51 @@ function toPublishProduto(
     precos: p.precos ?? null,
     ordem: p.ordem ?? null,
   };
+}
+
+/**
+ * Dual-run stamp for a VARIATION CHILD's deprecated `marketplace` arrays —
+ * legacy read-clean-write semantics (`exportarProdutos.dart` variation loop):
+ * drop stale same-conta entries for this listing (a recreated variation gets a
+ * new ML id) and parent-shaped entries wrongly sitting on a child, then append
+ * the fresh `{integracaoUid, externalParentId, externalId}` entry (no
+ * `relevantData` — the legacy order-import probe matches the map EXACTLY and
+ * carries none). arrayUnion can't express the cleanup, so this mirrors the old
+ * `transform(newValues:)` full-field write. Tracked removal: #431.
+ */
+async function stampChildMarketplace(
+  db: Firestore,
+  integracaoId: string,
+  itemId: string,
+  childId: string,
+  variationId: string,
+): Promise<void> {
+  const snap = await produtoCollection.docRef(db, {}, childId).get();
+  if (!snap.exists) return;
+  const raw = (snap.data() ?? {}) as Record<string, unknown>;
+
+  const current = Array.isArray(raw.marketplace)
+    ? (raw.marketplace as Array<Record<string, unknown>>)
+    : [];
+  const cleaned = current.filter((e) => {
+    if (e?.integracaoUid !== integracaoId) return true; // other conta — keep
+    if (e.externalParentId == null) return false; // parent-shaped on a child
+    return !(e.externalParentId === itemId && e.externalId !== variationId); // stale id
+  });
+  cleaned.push({ integracaoUid: integracaoId, externalParentId: itemId, externalId: variationId });
+
+  const ids = new Set(Array.isArray(raw.marketplaceIds) ? (raw.marketplaceIds as string[]) : []);
+  ids.add(variationId);
+  const contas = new Set(
+    Array.isArray(raw.integracoesComProduto) ? (raw.integracoesComProduto as string[]) : [],
+  );
+  contas.add(integracaoId);
+
+  await produtoCollection.merge(db, {}, childId, {
+    marketplace: cleaned,
+    marketplaceIds: [...ids],
+    integracoesComProduto: [...contas],
+  });
 }
 
 /**
