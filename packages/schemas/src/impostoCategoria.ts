@@ -17,8 +17,17 @@ const PERM_IMPOSTO_CATEGORIA_DELETE = 1n << 98n;
  * `resolveItemImposto` cascade falls through to it after `impostoProduto`
  * misses.
  *
- * Same `impostoOperacaoOuterRef` scope pointer as `impostoProduto`: null
- * = any operação; otherwise only matches the specified operação.
+ * Scope pointer `impostoOperacaoOuterRef`: null = any operação; otherwise
+ * only matches the specified operação (`operacao/<id>`). Same ROLE as the
+ * produto-level pointer, but the wire keys differ — beware:
+ *   - `impostoProduto` keeps Flutter's typo key `impostoOpercaoOuterRef`
+ *     (no second "a") because the produto tier reads legacy docs in place;
+ *   - the legacy Flutter categoria docs used a THIRD name,
+ *     `impostoCategoriaOperacaoOuterRef`, on subcollection
+ *     `categorias/{id}/imposto` (not `impostocategoria`). This schema is the
+ *     NEW canonical shape only; legacy categoria docs are translated by the
+ *     `imposto-legacy-names` migration (`tools/migrations`) — the resolver
+ *     does NOT dual-read them (#398).
  *
  * Imposto blob fields are **typed** (`taxConfigFields`, shared with the tribute
  * engine via `@delfrance/schemas`) — see `impostoProduto` for the rationale.

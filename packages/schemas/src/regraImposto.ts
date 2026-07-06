@@ -20,7 +20,16 @@ const PERM_REGRA_IMPOSTO_DELETE = 1n << 101n;
  * its produtoUid / categoriaUid / NCM appears in the rule's respective
  * array. Empty arrays do not match (so an empty rule never fires).
  * When multiple rules match, the first one in the loaded order wins
- * (Flutter parity — Firestore order, no priority field).
+ * (Flutter parity — Firestore order, no priority field). NCM entries are
+ * matched digits-only (`normalizeNCM`) so formatted produto NCMs still hit.
+ *
+ * Legacy wire (#398): the Flutter ERP wrote these rules to
+ * `operacao/{id}/regras` with UPPERCASE `CFOP`, path-shaped `produtos` /
+ * `categorias` entries (`produtos/<uid>`, sometimes `documents/...`-prefixed
+ * or bare uids — the legacy writers were inconsistent), and free-form NCMs.
+ * This schema is the NEW canonical shape only; the `imposto-legacy-names`
+ * migration (`tools/migrations`) translates legacy docs (lowercase `cfop`,
+ * bare-uid arrays, 8-digit `ncms`) — the resolver does NOT dual-read them.
  *
  * `nome` is optional but recommended for UI / audit.
  *

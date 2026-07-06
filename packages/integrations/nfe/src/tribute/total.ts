@@ -39,13 +39,19 @@ import type { Imposto, TributeItem } from './schemas';
 interface PerItem {
   /**
    * `item.vProd` is the GROSS product value (summed into `ICMSTot.vProd`, which
-   * must equal Σ wire `<prod><vProd>`). `item.vBaseTributavel`, when present, is
-   * the net-of-discount tribute base used for the RTC (IBS/CBS/IS) computation —
-   * it must match the base the per-item `buildImpostoXml` used, so item and total
-   * RTC values agree. Defaults to `vProd` (no discount). The pedido-level and
-   * per-item discounts flow into the total via `TotalExtras.vDesc`.
+   * must equal Σ wire `<prod><vProd>` **of the items with `indTot='1'`**).
+   * `item.indTot` mirrors the det projection — `'0'` = não compõe o total
+   * (MOC 7.0 W16 / rejection 610 family): the item's vProd stays OUT of
+   * `vProd`/`vNF` while its tribute values still roll into the tax buckets
+   * (rejections 531/532/533 compare against Σ of item-EMITTED values, which
+   * an `indTot='0'` det still emits). Absent = composes.
+   * `item.vBaseTributavel`, when present, is the net-of-discount tribute base
+   * used for the RTC (IBS/CBS/IS) computation — it must match the base the
+   * per-item `buildImpostoXml` used, so item and total RTC values agree.
+   * Defaults to `vProd` (no discount). The pedido-level and per-item discounts
+   * flow into the total via `TotalExtras.vDesc`.
    */
-  readonly item: TributeItem & { readonly vBaseTributavel?: number };
+  readonly item: TributeItem & { readonly vBaseTributavel?: number; readonly indTot?: '0' | '1' };
   readonly imposto: Imposto;
 }
 
@@ -140,7 +146,12 @@ export function aggregateTotals(
   let rtcCount = 0;
 
   for (const { item, imposto } of items) {
-    vProd += item.vProd;
+    // `indTot='0'` (não compõe o total, #398): vProd stays out of the goods
+    // total — SEFAZ validates ICMSTot.vProd against Σ vProd of indTot=1 items
+    // only. Deliberate deviation from the legacy Flutter engine, which emitted
+    // indTot='0' but summed unconditionally (a latent totals-mismatch
+    // rejection); tribute buckets below still sum EVERY item.
+    if (item.indTot !== '0') vProd += item.vProd;
     // RTC runs for every item (incl. ISSQN-only) before the ICMS `continue`.
     // Base = the net-of-discount tribute value (matches the per-item
     // `buildImpostoXml` base), NOT the gross `vProd` accumulated above.

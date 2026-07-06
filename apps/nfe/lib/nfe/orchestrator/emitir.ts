@@ -28,6 +28,7 @@ import {
   emissaoNFeBloqueadaPorEstado,
   ESTADO_NFE,
   nfeConfigSchema,
+  TIPO_NFE,
   type ContingenciaModo,
   type EstadoPedido,
   type NFeConfig,
@@ -142,6 +143,19 @@ export async function prepareEmission(
     throw new NFeBlockedError(
       pedidoId,
       `a operação vinculada não é fiscal (ehFiscal=false) — não emite NF-e`,
+    );
+  }
+  // tpNF derives from operacao.tipo — a direction mismatch between the pedido
+  // and its operação would emit an entrada NF-e for a sale (or the inverse).
+  // Legacy filtered the operação query by tipo and Dart-asserted (debug-only);
+  // here it hard-blocks: batch → "não emitidas" bucket, single route → 409 (#398).
+  const ehSaidaRaw = (bundle.pedido as { ehSaida?: unknown }).ehSaida;
+  const ehSaida = typeof ehSaidaRaw === 'boolean' ? ehSaidaRaw : true; // pedidoSchema default
+  if (ehSaida !== (bundle.operacao.tipo === TIPO_NFE.saida)) {
+    throw new NFeBlockedError(
+      pedidoId,
+      `pedido.ehSaida=${String(ehSaida)} mas operacao.tipo=${String(bundle.operacao.tipo)} — ` +
+        `tpNF divergiria da direção do pedido; corrija a operação vinculada`,
     );
   }
   await preResolveImpostos(bundle, fs, ctx);

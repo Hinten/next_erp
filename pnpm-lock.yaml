@@ -1083,9 +1083,15 @@ importers:
       '@delfrance/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@delfrance/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
       firebase-admin:
         specifier: ^13.9.0
         version: 13.9.0
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*

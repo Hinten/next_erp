@@ -407,6 +407,7 @@ export {
   configuracaoIBSCBSSchema,
   // canonical per-item Imposto
   impostoSchema,
+  normalizeNCM,
   // label maps
   CRT_LABELS,
   CSOSN_LABELS,

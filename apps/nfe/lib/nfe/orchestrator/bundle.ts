@@ -13,6 +13,7 @@ import {
   freteDoPedidoSchema,
   integracaoSchema,
   nfeConfigSchema,
+  operacaoSchema,
   pagamentoSchema,
   regraImpostoSchema,
   type Cliente,
@@ -197,7 +198,7 @@ export async function loadPedidoBundle(
   // so pedidos sharing a filial / operação don't re-fetch identical docs.
   // `getDoc` / `getRegra` dereference dynamic "outer ref" paths (the target
   // collection is only known at runtime, e.g. filial / cliente / operação /
-  // endereço and the operação's legacy `regraimposto` subcollection), so they
+  // endereço and the operação's `regraimposto` subcollection), so they
   // legitimately use raw refs. All WRITES go through the validated handles in
   // `lib/data`; these are read-only.
   /* eslint-disable no-restricted-syntax -- read-only dynamic outer-ref derefs */
@@ -288,7 +289,20 @@ export async function loadPedidoBundle(
       `(of ${pagamentoSnap.size} in subcollection)`,
   );
 
-  const operacao = operacaoSnap.data() as Operacao;
+  // Schema-parse the operação — it drives tpNF (`tipo`), natOp, CFOP fallbacks
+  // and the resolver's default tier. A cast here let a missing/corrupt `tipo`
+  // silently emit tpNF='0' (entrada) for a sale (#398); a malformed doc now
+  // fails loudly, naming the exact field. NB: `consultarPedido` shares this
+  // loader, so a broken operação blocks consultas too — same operator fix.
+  const operacaoParse = operacaoSchema.safeParse(operacaoSnap.data());
+  if (!operacaoParse.success) {
+    const first = operacaoParse.error.issues[0];
+    throw new NFeOrchestratorError(
+      `operacao '${operacaoPath}' failed operacaoSchema — ` +
+        `${first?.path.map(String).join('.') || '(root)'} ${first?.message ?? 'parse failed'}`,
+    );
+  }
+  const operacao: Operacao = operacaoParse.data;
   const frete = parseFreteFromPedido(pedidoId, pedido);
   const integracao = intermediadorFromSnap(pedidoId, integracaoPath, integracaoSnap, operacao);
   const regrasImposto = parseRegraImpostoSnapshot(pedidoId, regraImpostoSnap);
@@ -435,11 +449,22 @@ export function refToPath(ref: unknown): string | null {
 }
 
 /**
- * For every pedido item whose `imposto` is missing, run the resolver
- * cascade (item → impostoProduto → impostoCategoria → regraImposto)
- * and stamp the resolved Imposto back onto the item. Items whose
- * imposto can't be resolved are left untouched — flattenAndValidate
- * will throw `NFeMissingImpostoError` with the precise location.
+ * For every pedido item whose `imposto` is missing **or fails the engine
+ * `impostoSchema`**, run the resolver cascade (item → impostoProduto →
+ * impostoCategoria → regraImposto → operação default) and stamp the
+ * resolved Imposto back onto the item. Items whose imposto can't be
+ * resolved are left untouched — flattenAndValidate will throw
+ * `NFeMissingImpostoError` (absent) or `NFeOrchestratorError` naming the
+ * bad sub-field (invalid stamp, nothing resolvable).
+ *
+ * A stamped-but-invalid imposto used to abort emission without ever
+ * consulting the cascade (#398) — contradicting both the resolver
+ * contract and Flutter, which re-resolved partial stamps. Deliberate
+ * deviation from Flutter: Flutter MERGED (kept the stamped blob and
+ * filled only the missing `configuracaoICMS` from the cascade); we
+ * replace the whole invalid blob with the cascade result — the resolver
+ * contract is whole-Imposto, and partial merges of tribute configs
+ * produce untestable hybrids.
  *
  * Items already carrying a valid imposto skip the resolver entirely
  * (no Firestore reads for those) — preserves Phase A retail fixtures
@@ -457,7 +482,18 @@ export async function preResolveImpostos(
     for (const entry of list) {
       if (entry == null || typeof entry !== 'object') continue;
       const e = entry as Record<string, unknown>;
-      if (e.imposto == null) missing.push({ produtoUid, entry: e });
+      if (e.imposto == null) {
+        missing.push({ produtoUid, entry: e });
+        continue;
+      }
+      const stamped = impostoSchema.safeParse(e.imposto);
+      if (!stamped.success) {
+        const first = stamped.error.issues[0];
+        console.warn(
+          `[nfe/orchestrator] pedido '${bundle.pedidoId}': item (produto '${produtoUid}') carries an invalid imposto stamp — ${first?.path.map(String).join('.') || '(root)'} ${first?.message ?? 'parse failed'} — running the resolver cascade`,
+        );
+        missing.push({ produtoUid, entry: e });
+      }
     }
   }
   if (missing.length === 0) return;
@@ -482,7 +518,11 @@ export async function preResolveImpostos(
     ctx?.resolverByOperacaoId.set(bundle.operacaoId, resolver);
   }
   for (const { produtoUid, entry } of missing) {
-    const resolved = await resolver.resolve(produtoUid, null);
+    // Pass the (possibly invalid) stamp through — the resolver's tier 1
+    // falls through on an invalid blob and its NCM can still key the
+    // regra tier. When the cascade also misses, the original blob stays
+    // for flattenAndValidate to report precisely.
+    const resolved = await resolver.resolve(produtoUid, entry.imposto ?? null);
     if (resolved != null) entry.imposto = resolved;
   }
 }

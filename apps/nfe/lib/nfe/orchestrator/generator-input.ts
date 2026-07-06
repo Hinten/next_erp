@@ -53,27 +53,40 @@ export function buildGeneratorInput(
   const genItems = buildGenItems(items, bundle, isInterstate, emitRtc === true);
 
   // Compute frete value upfront so it can ride into both the totals
-  // aggregator (NF-e level) and onto det[0].prod.vFrete (item level)
+  // aggregator (NF-e level) and onto a det's prod.vFrete (item level)
   // when the issuer contracts the carrier (modalidade='0').
   const freteEmitente = bundle.frete?.modalidade === '0' && (bundle.frete.valorCobrado ?? 0) > 0;
   const vFrete = freteEmitente ? (bundle.frete!.valorCobrado as number) : 0;
   if (vFrete > 0 && genItems.length > 0) {
     // Mirror of Flutter `pedido_nfe_base.dart:932`: stamp the full frete
     // value onto the first <det>'s <prod>. Phase D could split this
-    // proportionally across items; Flutter doesn't.
-    const first = genItems[0]!;
-    genItems[0] = { ...first, vFrete };
+    // proportionally across items; Flutter doesn't. The target must be the
+    // first COMPOSING item — a det-level vFrete on an indTot='0' item would
+    // fall out of the indTot-conditioned ICMSTot.vFrete Σ-rule (#398).
+    const at = Math.max(
+      0,
+      genItems.findIndex((g) => g.indTot !== '0'),
+    );
+    const target = genItems[at]!;
+    genItems[at] = { ...target, vFrete };
   }
 
   // Total discount = Σ per-item <vDesc> (unit discount + apportioned
   // descontoTotal), computed once in buildGenItems and carried on each genItem.
-  const vDesc = roundReais(genItems.reduce((sum, gi) => sum + (gi.vDesc ?? 0), 0));
+  // Only COMPOSING items count — an indTot='0' item keeps its det-level vDesc
+  // but its value never entered ICMSTot.vProd, so subtracting its discount
+  // from the totals would understate vNF (#398).
+  const vDesc = roundReais(
+    genItems.reduce((sum, gi) => sum + (gi.indTot !== '0' ? (gi.vDesc ?? 0) : 0), 0),
+  );
   const totals = aggregateTotals(
     // `vProd` = GROSS (rolls into ICMSTot.vProd = Σ wire <vProd>); `vBaseTributavel`
     // = net-of-unit-discount base for the RTC total (matches the per-item base
     // buildGenItems passes to buildImpostoXml). vNF subtracts `vDesc` below.
+    // `indTot` mirrors the det projection (same `indTotFor`) so the wire flag
+    // and the ICMSTot gating can never diverge.
     items.map((it) => ({
-      item: { vProd: it.vProdBruto, vBaseTributavel: it.vProd },
+      item: { vProd: it.vProdBruto, vBaseTributavel: it.vProd, indTot: indTotFor(it) },
       imposto: it.imposto,
     })),
     { vFrete, vDesc },
@@ -220,7 +233,7 @@ export function buildGenItems(
       uTrib: unidade,
       qTrib: it.quantidade,
       vUnTrib: it.precoDeVenda,
-      indTot: '1',
+      indTot: indTotFor(it),
       // Tribute base stays net-of-unit-discount (`it.vProd`, matches the legacy
       // Flutter `item.subtotal`), unaffected by the gross wire value above.
       impostoXml: buildImpostoXml(it.imposto, { vProd: it.vProd }, { emitRtc }),
@@ -229,11 +242,29 @@ export function buildGenItems(
 }
 
 /**
+ * `det.prod.indTot` for a fiscal item — `'0'` only when the resolved imposto
+ * explicitly opts the item out of the NF-e totals (`compoeValorTotalDaNFe ===
+ * false`; absent/null = composes, the legacy Flutter default). Computed ONCE
+ * and consumed by the det projection, the discount apportionment AND the
+ * totals aggregation, so the wire flag and the ICMSTot gating can never
+ * diverge (#398 — `compoeValorTotalDaNFe` used to never reach emission).
+ */
+export function indTotFor(it: FiscalItem): '0' | '1' {
+  return it.imposto.compoeValorTotalDaNFe === false ? '0' : '1';
+}
+
+/**
  * Apportion the pedido-level `descontoTotal` across items, returning each item's
  * total `<vDesc>` (its unit discount `descontoUnitário × qtd` PLUS its share of
  * the order-level discount). The order discount is split proportional to each
  * item's net subtotal (`it.vProd`) so `Σ vDesc` exactly equals
  * `Σ(descUnit×qtd) + descontoTotal`.
+ *
+ * Items with `indTot='0'` (não compõem o total, #398) take NO share of the
+ * order-level discount — their value never enters ICMSTot.vProd, so a share
+ * allocated to them would silently vanish from the totals `vDesc`/`vNF`.
+ * They keep their own unit discount on the det. The running-cumulative pin
+ * lands on the last COMPOSING item for the same reason.
  *
  * Uses the **rounded-running-cumulative** method: each item's order share is
  * `round(cumulativeWeightThroughItem / vTotNet × descontoTotal) − alreadyAllocated`.
@@ -254,21 +285,22 @@ export function apportionDescontos(
 ): number[] {
   const rawTotal = Number((bundle.pedido as { descontoTotal?: unknown }).descontoTotal ?? 0);
   const descontoTotal = Number.isFinite(rawTotal) && rawTotal > 0 ? roundReais(rawTotal) : 0;
-  const vTotNet = roundReais(items.reduce((sum, it) => sum + it.vProd, 0));
+  const composes = items.map((it) => indTotFor(it) !== '0');
+  const vTotNet = roundReais(items.reduce((sum, it, i) => sum + (composes[i] ? it.vProd : 0), 0));
   const apportion = descontoTotal > 0 && vTotNet > 0;
+  const lastComposing = composes.lastIndexOf(true);
   let weightSoFar = 0;
   let allocated = 0;
   return items.map((it, i) => {
     const unitDesc = roundReais((it.descontoUnitario ?? 0) * it.quantidade);
     let orderShare = 0;
-    if (apportion) {
+    if (apportion && composes[i]) {
       weightSoFar = roundReais(weightSoFar + it.vProd);
       // Cumulative discount that should be allocated through this item; the last
-      // item is pinned to the full descontoTotal so rounding never leaks a cent.
+      // composing item is pinned to the full descontoTotal so rounding never
+      // leaks a cent.
       const cumTarget =
-        i === items.length - 1
-          ? descontoTotal
-          : roundReais((weightSoFar / vTotNet) * descontoTotal);
+        i === lastComposing ? descontoTotal : roundReais((weightSoFar / vTotNet) * descontoTotal);
       orderShare = roundReais(cumTarget - allocated);
       allocated = roundReais(allocated + orderShare); // == cumTarget
     }
