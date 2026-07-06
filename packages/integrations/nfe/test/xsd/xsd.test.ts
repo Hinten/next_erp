@@ -131,7 +131,7 @@ describe('validateXsd — envEvento (cancelamento, signed)', () => {
       nProt: '135200000012345',
       xJust: 'Cancelamento por erro de digitacao no pedido',
       tpAmb: '2',
-      dhEvento: new Date('2026-05-29T10:00:00'),
+      dhEvento: new Date('2026-05-29T10:00:00-03:00'),
     });
     return buildEnvEvento(signEvento(evento, cert));
   }

@@ -106,7 +106,7 @@ describe('cancelarNFe', () => {
       cnpj: CNPJ,
       nProt: NPROT,
       xJust: 'Cancelamento por erro de digitacao no pedido',
-      dhEvento: new Date('2026-05-29T10:00:00'),
+      dhEvento: new Date('2026-05-29T10:00:00-03:00'),
     };
   }
 
@@ -161,7 +161,7 @@ describe('cartaCorrecaoNFe', () => {
       cnpj: CNPJ,
       xCorrecao: 'Correcao do peso bruto informado no campo de transporte da nota',
       nSeqEvento,
-      dhEvento: new Date('2026-05-29T10:00:00'),
+      dhEvento: new Date('2026-05-29T10:00:00-03:00'),
     };
   }
 

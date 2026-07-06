@@ -101,6 +101,19 @@ describe('buildCancelamentoEvento', () => {
     const xml = buildCancelamentoEvento(baseInput());
     const dh = /<dhEvento>([^<]+)<\/dhEvento>/.exec(xml)![1]!;
     expect(dh).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+    // The chave fixture is SP (cUF 35) → the offset must be -03:00 on ANY
+    // runner TZ — dhEvento derives from the chave's issuer UF, not the
+    // process clock (#395).
+    expect(dh.endsWith('-03:00')).toBe(true);
+  });
+
+  it('converts an explicit dhEvento instant to the issuer offset (#395)', () => {
+    // 01:30Z on Jul 1 = 22:30 BRT on Jun 30 for an SP chave.
+    const xml = buildCancelamentoEvento({
+      ...baseInput(),
+      dhEvento: new Date('2026-07-01T01:30:00Z'),
+    });
+    expect(xml).toContain('<dhEvento>2026-06-30T22:30:00-03:00</dhEvento>');
   });
 
   it('wraps the evento in the NFe namespace + versao 1.00', () => {

@@ -30,6 +30,19 @@ export const TIPO_MOVIMENTO_ESTOQUE = [
 export const tipoMovimentoEstoqueSchema = z.enum(TIPO_MOVIMENTO_ESTOQUE);
 export type TipoMovimentoEstoque = z.infer<typeof tipoMovimentoEstoqueSchema>;
 
+export const TIPO_MOVIMENTO_ESTOQUE_LABELS: Record<TipoMovimentoEstoque, string> = {
+  reserva: 'Reserva',
+  ajusteReserva: 'Ajuste de reserva',
+  liberacaoReserva: 'Liberação de reserva',
+  saida: 'Saída',
+  devolucao: 'Devolução',
+  entrada: 'Entrada',
+  estorno: 'Estorno',
+  exclusaoPedido: 'Exclusão do pedido',
+  manual: 'Manual',
+  balanco: 'Balanço',
+};
+
 /**
  * HistoricoEstoque — one stock-movement record under an estoque doc
  * (`produtos/{id}/estoques/{estId}/historicoEstoque/{x}`). Mirrors the Flutter

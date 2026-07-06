@@ -5,3 +5,4 @@ export { EstadoHistoricoTab } from './EstadoHistoricoTab';
 export { IncidentesTab } from './IncidentesTab';
 export { DevolucaoTab } from './DevolucaoTab';
 export { PlaceholderTab } from './PlaceholderTab';
+export { EstoqueSyncTab } from './EstoqueSyncTab';

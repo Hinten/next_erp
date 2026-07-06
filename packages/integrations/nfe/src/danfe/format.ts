@@ -5,9 +5,11 @@
  * the same helpers feed the pdfkit, ZPL and (future) retrato/paisagem outputs
  * and are cheap to unit-test.
  *
- * All money/quantity formatting is pt-BR (`1.234,56`); dates are rendered in
- * `America/Sao_Paulo` (the issuer's local time SEFAZ stamps), pinned via a
- * fixed `timeZone` so output is deterministic regardless of host TZ.
+ * All money/quantity formatting is pt-BR (`1.234,56`). Dates/times are sliced
+ * from the SEFAZ lexical and rendered exactly AS STAMPED (#418) — the string
+ * already carries the right wall-clock (issuer offset on dhEmi/dhSaiEnt/dhCont/
+ * dhEvento, authorizer offset on dhRecbto/dhRegEvento) — never re-rendered
+ * through a timezone. Deterministic regardless of host TZ by construction.
  */
 
 /** Points per centimetre (PDF user space is 72 dpi → 72/2.54). */
@@ -114,41 +116,70 @@ export function formatQty(value: string | number): string {
   return qtyFmt.format(n);
 }
 
-const SAO_PAULO_TZ = 'America/Sao_Paulo';
+export class NFeDanfeFormatError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NFeDanfeFormatError';
+  }
+}
 
-const dateFmt = new Intl.DateTimeFormat('pt-BR', {
-  timeZone: SAO_PAULO_TZ,
-  day: 'numeric',
-  month: 'numeric',
-  year: 'numeric',
-});
-const timeFmt = new Intl.DateTimeFormat('pt-BR', {
-  timeZone: SAO_PAULO_TZ,
-  hour: '2-digit',
-  minute: '2-digit',
-  hourCycle: 'h23',
-});
-const timeSecFmt = new Intl.DateTimeFormat('pt-BR', {
-  timeZone: SAO_PAULO_TZ,
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-  hourCycle: 'h23',
-});
+/**
+ * SEFAZ date/date-time lexical: `AAAA-MM-DD` (TData — e.g. `dVenc`) or
+ * `AAAA-MM-DDThh:mm:ss±hh:mm` (TDateTimeUTC — the XSD requires the `±hh:mm`
+ * offset on the wire; it is optional-but-anchored here so a hypothetical
+ * offset-less legacy value still renders). Anchored + range-checked so junk
+ * suffixes and impossible dates ('2026-13-45') FAIL LOUD instead of printing
+ * nonsense on a fiscal document. Groups: 1=year 2=month 3=day 4=hour 5=min 6=sec.
+ */
+const SEFAZ_DATE_RE =
+  /^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?:T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:[+-](?:0\d|1[0-4]):\d{2})?)?$/;
 
-/** `d/M/yyyy` in São Paulo time. Mirrors `formatDateTimeFromNFe` (`D`). */
+/**
+ * DANFE date/time rendering — the wall-clock AS STAMPED in the SEFAZ lexical
+ * (#418). The string already embeds the right clock: the ISSUER's offset on
+ * dhEmi / dhSaiEnt / dhCont / dhEvento (per-UF, see `generator/tz.ts`), the
+ * AUTHORIZER's on dhRecbto / dhRegEvento. Re-rendering the instant through a
+ * pinned zone distorted every non−03:00 filial's document, and — because JS
+ * parses date-only ISO as UTC midnight — printed the duplicata `dVenc` one day
+ * EARLY even for São Paulo. So: slice the lexical, never parse to a Date.
+ */
+function sefazDateParts(value: string): RegExpExecArray {
+  const m = SEFAZ_DATE_RE.exec(value);
+  if (!m) {
+    throw new NFeDanfeFormatError(
+      `not a SEFAZ date/date-time lexical (AAAA-MM-DD[Thh:mm:ss±hh:mm]): '${value}'`,
+    );
+  }
+  return m;
+}
+
+/** Time components of a date-TIME lexical; throws when the time part is absent. */
+function sefazTimeParts(value: string): { hh: string; min: string; ss: string } {
+  const [, , , , hh, min, ss] = sefazDateParts(value);
+  if (hh === undefined || min === undefined || ss === undefined) {
+    throw new NFeDanfeFormatError(
+      `no time part in '${value}' (expected AAAA-MM-DDThh:mm:ss±hh:mm)`,
+    );
+  }
+  return { hh, min, ss };
+}
+
+/** `dd/MM/yyyy`, exactly as stamped on the wire (date-only or date-time input). */
 export function formatDate(iso: string): string {
-  return dateFmt.format(new Date(iso));
+  const [, yyyy, mm, dd] = sefazDateParts(iso);
+  return `${dd}/${mm}/${yyyy}`;
 }
 
-/** `HH:mm` in São Paulo time. Mirrors `formatHoraFromNFe` (`H`). */
+/** `HH:mm`, exactly as stamped on the wire. Requires a date-TIME input. */
 export function formatTime(iso: string): string {
-  return timeFmt.format(new Date(iso));
+  const { hh, min } = sefazTimeParts(iso);
+  return `${hh}:${min}`;
 }
 
-/** `HH:mm:ss` in São Paulo time. Mirrors `formatHoraMinutoSegundoFromNFe`. */
+/** `HH:mm:ss`, exactly as stamped on the wire. Requires a date-TIME input. */
 export function formatTimeSeconds(iso: string): string {
-  return timeSecFmt.format(new Date(iso));
+  const { hh, min, ss } = sefazTimeParts(iso);
+  return `${hh}:${min}:${ss}`;
 }
 
 /**
