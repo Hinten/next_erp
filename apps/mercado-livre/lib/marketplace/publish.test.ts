@@ -585,6 +585,62 @@ describe('publishProduto — dual-run wire shape', () => {
     );
   });
 
+  it('a getCategory failure during the chart binding stamps estado E (legacy MLError catch)', async () => {
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    db.docs('produtos').get(PROD)!.tabelaDeMedidasModaUid = 'documents/tabMedi/tm-1';
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK });
+    db.seed('tabMedi', 'tm-1', {
+      nome: 'Tabela camisetas',
+      codigo: null,
+      descricao: null,
+      fotos: null,
+      tabelasDeMedidasMercadoLivre: {
+        [CONTA]: { tabelas: [{ id: '1594439', domain_id: 'MLB-T_SHIRTS', rows: [] }] },
+      },
+    });
+    const { api } = makeApi({
+      getCategory: vi.fn(async () => {
+        throw new MercadoLivreHttpError('category not found', 404, {});
+      }),
+    });
+
+    await expect(publishProduto(makeDeps(db, api), PROD)).rejects.toThrow('category not found');
+
+    const link = db.docs(LINKS_PATH).get('ML-DOC-1')!;
+    expect(link.estado).toBe('E');
+    expect(link.errors).toEqual(['category not found']);
+    // Field preservation holds on this stamp path too.
+    expect(link.descricao).toBe('Descrição custom do vendedor');
+  });
+
+  it("a link doc holding descricao '' falls through — the tabela text still ships", async () => {
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    db.docs('produtos').get(PROD)!.tabelaDeMedidasModaUid = 'documents/tabMedi/tm-1';
+    db.seed(LINKS_PATH, 'ML-DOC-1', { ...FLUTTER_LINK, descricao: '' });
+    db.seed('tabMedi', 'tm-1', {
+      nome: 'Tabela camisetas',
+      codigo: null,
+      descricao: 'Confira as medidas na tabela.',
+      fotos: null,
+      tabelasDeMedidasMercadoLivre: null,
+    });
+    const { api, mocks } = makeApi();
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    expect(mocks.setItemDescription).toHaveBeenCalledWith(
+      'MLB777',
+      'Confira as medidas na tabela.',
+      { replace: true },
+    );
+  });
+
   it('prunes a purged ML picture id from the arquivo cache (picture_not_found)', async () => {
     const db = new FakeDb();
     seedBase(db, {

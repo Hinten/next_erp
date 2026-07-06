@@ -32,9 +32,16 @@ describe('resolveSizeChart', () => {
     expect(resolveSizeChart(tabelas, null, null)).toBeNull();
   });
 
-  it('no valued link attributes → first domain candidate (legacy)', () => {
+  it('null/EMPTY link attributes → first domain candidate (legacy boundary)', () => {
     expect(resolveSizeChart(tabelas, 'MLB-PANTS', null)?.id).toBe('100');
-    expect(resolveSizeChart(tabelas, 'MLB-PANTS', [{ id: 'GENDER' }])?.id).toBe('100');
+    expect(resolveSizeChart(tabelas, 'MLB-PANTS', [])?.id).toBe('100');
+  });
+
+  it('NON-EMPTY but all-unvalued attributes → scoring → zero hits → NO chart (legacy)', () => {
+    // ML-imported stub attributes carry neither value_id nor value_name; the
+    // legacy scorer returns null here — falling back would bind a blind chart
+    // (possibly the wrong gender) that legacy never bound.
+    expect(resolveSizeChart(tabelas, 'MLB-PANTS', [{ id: 'GENDER' }])).toBeNull();
   });
 
   it('attribute-hit scoring picks the best match (value_id or value_name)', () => {

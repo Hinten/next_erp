@@ -225,6 +225,36 @@ describe('assemblePublishInput', () => {
     expect(input.variations![1]!.attributeCombinations).toEqual([{ id: 'SIZE', value_name: 'G' }]);
   });
 
+  it('chart SIZE replacement drops EVERY SIZE combo (two tamanho groups → one SIZE)', () => {
+    const doisTamanhos: PublishGrupoVariacao[] = [
+      ...grupos,
+      { grupoId: 'g-tam2', nome: 'Tamanho BR', tipo: 1, variacoes: [{ id: 'v-40', nome: '40' }] },
+    ];
+    const input = assemblePublishInput({
+      ...baseArgs,
+      grupos: doisTamanhos,
+      variations: [
+        {
+          produto: { ...produto, id: 'child-1', nome: 'Camiseta M', sku: 'SKU-1-M' },
+          variacoesUid: [
+            'documents/grupoDeVariacoes/g-tam/variacoes/v-m',
+            'documents/grupoDeVariacoes/g-tam2/variacoes/v-40',
+          ],
+          availableQuantity: 4,
+          mlVariationId: null,
+        },
+      ],
+      sizeChart: {
+        chartId: '1594439',
+        rowByChildId: {
+          'child-1': { rowId: '1594439:1', size: { id: 'SIZE', value_name: 'M (38-40)' } },
+        },
+      },
+    });
+    const sizes = input.variations![0]!.attributeCombinations.filter((c) => c.id === 'SIZE');
+    expect(sizes).toEqual([{ id: 'SIZE', value_name: 'M (38-40)' }]);
+  });
+
   it('no size chart → link attributes untouched (a persisted SIZE_GRID_ID survives)', () => {
     const input = assemblePublishInput({
       ...baseArgs,

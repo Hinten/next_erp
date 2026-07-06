@@ -45,6 +45,7 @@ import {
   type PublishProduto,
   type PublishVariationChild,
   assemblePublishInput,
+  resolveCondition,
 } from './publishCore';
 import {
   type ResolvedSizeChart,
@@ -175,13 +176,50 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
     categoryId = suggestions[0]?.category_id ?? null;
   }
 
+  const pubProduto = toPublishProduto(produtoId, produto);
+  const condicao = typeof extra?.condicao === 'number' ? extra.condicao : null;
+
+  // Every ML API failure from here on stamps `estado: 'E'` + `errors` on the
+  // link doc (the module's header contract; legacy's `on MLError` catch
+  // covered the category-detail call of the chart binding too). SPREADS the
+  // existing raw doc first — the old app persisted via `copyWith(...).save()`,
+  // so a re-publish must preserve every Flutter-authored field it doesn't own
+  // (descricao, channels, video_id, crossdocking, tarifaFrete, comissao +
+  // unknown legacy keys via `.passthrough()`).
+  const stampErrorLinkDoc = async (message: string): Promise<void> => {
+    const now = Date.now();
+    await produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId).set(
+      produtoMercadoLivreLinkCollection.parse({
+        ...(linkDoc?.data ?? {}),
+        contaOuterRef: linkDoc?.data.contaOuterRef ?? toOuterRef(`integracao/${integracaoId}`),
+        title: produto.nome,
+        sku: produto.sku ?? null,
+        condition: resolveCondition(link, pubProduto, condicao),
+        category_id: linkDoc?.data.category_id ?? categoryId,
+        listing_type_id: linkDoc?.data.listing_type_id ?? deps.listingTypeId ?? null,
+        estado: 'E',
+        isUserProductModel: link?.isUserProductModel ?? false,
+        errors: [message],
+        ultimaModificacao: now,
+        dataCadastro: linkDoc?.data.dataCadastro ?? now,
+      }),
+    );
+  };
+
   // ---- Size chart (tabela de medidas) binding -----------------------------
-  const tabela = await loadTabelaBinding(deps, produto, link, categoryId, variations);
+  let tabela: TabelaBinding;
+  try {
+    tabela = await loadTabelaBinding(deps, produto, link, categoryId, variations);
+  } catch (err) {
+    // The binding's category-detail call is an ML API call — a failure (stale
+    // category_id → 404, transient 5xx) must land on the doc like any other.
+    if (err instanceof MercadoLivreError) await stampErrorLinkDoc(err.message);
+    throw err;
+  }
 
   // ---- Pictures (upload once per integração; cached on the Arquivo) ------
-  // The tabela's chart photo rides as an EXTRA listing picture (legacy
-  // `getTabelaDeMedidasPicture`): appended, or replacing the last slot when
-  // the produto already fills ML's 10-picture cap.
+  // The tabela's chart photo rides as one EXTRA listing picture appended
+  // after the produto fotos (legacy `getTabelaDeMedidasPicture`).
   const { pictures, pictureSources } = await resolvePictures(
     deps,
     produto.fotos ?? [],
@@ -190,8 +228,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
 
   // ---- Assemble + call ML -------------------------------------------------
   const input = assemblePublishInput({
-    produto: toPublishProduto(produtoId, produto),
-    condicao: typeof extra?.condicao === 'number' ? extra.condicao : null,
+    produto: pubProduto,
+    condicao,
     priceListId: deps.tabelaNormalOuterRef ? idFromRef(deps.tabelaNormalOuterRef) : null,
     availableQuantity,
     pictures,
@@ -206,11 +244,6 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   });
   const payload = buildItemPayload(input);
 
-  // Both link-doc writes below SPREAD the existing raw doc first — the old
-  // app persisted via `copyWith(...).save()`, so a re-publish must preserve
-  // every Flutter-authored field it doesn't own (descricao, channels,
-  // video_id, crossdocking, tarifaFrete, comissao + unknown legacy keys via
-  // `.passthrough()`), never reset them to the schema defaults.
   const now = Date.now();
   let item;
   try {
@@ -222,22 +255,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       // Old-app parity: a purged ML picture id in the cache would otherwise
       // fail every retry identically — strip it so the next publish re-uploads.
       await pruneDeadPictures(db, err, pictureSources);
-      await produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId).set(
-        produtoMercadoLivreLinkCollection.parse({
-          ...(linkDoc?.data ?? {}),
-          contaOuterRef: linkDoc?.data.contaOuterRef ?? toOuterRef(`integracao/${integracaoId}`),
-          title: produto.nome,
-          sku: produto.sku ?? null,
-          condition: input.condition,
-          category_id: linkDoc?.data.category_id ?? categoryId,
-          listing_type_id: linkDoc?.data.listing_type_id ?? input.listingTypeId ?? null,
-          estado: 'E',
-          isUserProductModel: input.isUserProductSeller,
-          errors: [err.message],
-          ultimaModificacao: now,
-          dataCadastro: linkDoc?.data.dataCadastro ?? now,
-        }),
-      );
+      await stampErrorLinkDoc(err.message);
     }
     throw err;
   }
@@ -314,12 +332,15 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
 
   // ---- Description (link's own text wins; else the produto's extraData) ---
   // The tabela de medidas text is APPENDED after the base description (legacy
-  // `getDescription(tabelaDeMedidas?.descricao)` — '\n\n' separator).
-  const baseDescricao = linkDoc?.data.descricao ?? extra?.descricao ?? null;
+  // `getDescription(tabelaDeMedidas?.descricao)` — '\n\n' separator). Legacy
+  // trims each part and treats blank as ABSENT: a link doc holding `''` must
+  // fall through to extraData (and never swallow the tabela text).
+  const baseDescricao = trimToNull(linkDoc?.data.descricao) ?? trimToNull(extra?.descricao);
+  const tabelaDescricao = trimToNull(tabela.descricao);
   const descricao =
-    baseDescricao && tabela.descricao
-      ? `${baseDescricao}\n\n${tabela.descricao}`
-      : (baseDescricao ?? tabela.descricao ?? null);
+    baseDescricao && tabelaDescricao
+      ? `${baseDescricao}\n\n${tabelaDescricao}`
+      : (baseDescricao ?? tabelaDescricao);
   if (descricao) {
     try {
       try {
@@ -381,6 +402,12 @@ function toPublishProduto(
     precos: p.precos ?? null,
     ordem: p.ordem ?? null,
   };
+}
+
+/** Trimmed string, or null when absent/blank (legacy `trim().isNotEmpty`). */
+function trimToNull(s: string | null | undefined): string | null {
+  const t = s?.trim();
+  return t ? t : null;
 }
 
 /** What the produto's tabela de medidas contributes to this publish. */
@@ -546,8 +573,9 @@ async function findVariacaoLink(
  * integração: each Arquivo caches `externalIds: [{externalId, integracaoPath}]`
  * (the old app's shape), so a re-publish reuses the cached id. When the
  * produto's tabela de medidas carries a chart photo (`tabelaFoto`), it rides
- * as one EXTRA picture — appended, or replacing the LAST slot when the
- * produto already fills ML's cap (legacy `_getFotosMercadoLivre`).
+ * as one EXTRA picture APPENDED after the produto fotos — the legacy parent
+ * flow appended it even at 10 produto fotos (an 11th picture; ML accepts 12
+ * — only the legacy VARIATION lists replaced their last slot).
  */
 async function resolvePictures(
   deps: PublishDeps,
@@ -568,8 +596,7 @@ async function resolvePictures(
   if (tabelaFoto) {
     const chartPic = await resolveOnePicture(deps, tabelaFoto);
     if (chartPic) {
-      if (pictures.length >= MAX_PICTURES) pictures[MAX_PICTURES - 1] = { id: chartPic.id };
-      else pictures.push({ id: chartPic.id });
+      pictures.push({ id: chartPic.id });
       pictureSources.set(chartPic.id, chartPic.arquivoId);
     }
   }

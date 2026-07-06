@@ -246,21 +246,22 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
     // Size-chart row binding: SIZE_GRID_ROW_ID rides the variation ATTRIBUTES
     // (never the combinations), and the chart row's SIZE label REPLACES the
     // variante's nome in the combinations — ML flags a SIZE/row mismatch
-    // (cause 2615) and the legacy `get_attribute_combinations` did the same
-    // replacement (chart SIZE wins; variante nome only when no row matched).
+    // (cause 2615). Legacy `get_attribute_combinations` did a removeWhere on
+    // EVERY SIZE entry before adding the chart's, so a child spanning two
+    // tamanho groups still sends exactly ONE SIZE (a duplicated combination
+    // id is an ML rejection).
+    let finalCombos = combos;
     const rowBinding = args.sizeChart?.rowByChildId[child.produto.id] ?? null;
     if (rowBinding) {
       attrs.push(attrSizeGridRowId(rowBinding.rowId));
       const rowSize = rowBinding.size;
       if (rowSize && (rowSize.value_id != null || rowSize.value_name != null)) {
-        const replacement: MlAttribute = {
+        finalCombos = combos.filter((c) => c.id !== 'SIZE');
+        finalCombos.push({
           id: 'SIZE',
           ...(rowSize.value_id != null ? { value_id: rowSize.value_id } : {}),
           ...(rowSize.value_name != null ? { value_name: rowSize.value_name } : {}),
-        };
-        const sizeIdx = combos.findIndex((c) => c.id === 'SIZE');
-        if (sizeIdx >= 0) combos[sizeIdx] = replacement;
-        else combos.push(replacement);
+        });
       }
     }
     return {
@@ -269,7 +270,7 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
       order: child.produto.ordem ?? null,
       availableQuantity: child.availableQuantity,
       pictureIds: child.pictureIds,
-      attributeCombinations: combos,
+      attributeCombinations: finalCombos,
       attributes: attrs,
     };
   });

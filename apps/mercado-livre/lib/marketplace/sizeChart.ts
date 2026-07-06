@@ -63,12 +63,16 @@ export function resolveSizeChart(
   );
   if (candidates.length === 0) return null;
 
-  // Only VALUED produto attributes participate in the scoring — an attribute
-  // with neither value_id nor value_name can't meaningfully "hit" a chart.
-  const produtoAttrs = (linkAttributes ?? []).filter(
-    (a) => a.value_id != null || a.value_name != null,
-  );
-  if (produtoAttrs.length === 0) return candidates[0]!;
+  // Legacy boundary (models.dart:91): the first-candidate fallback fires ONLY
+  // when the RAW attribute list is null/empty. A non-empty list whose entries
+  // are all unvalued (real stored data — ML-imported stubs, valueList-only
+  // attrs) goes through the scoring loop, hits nothing, and binds NO chart —
+  // falling back blindly there could bind the wrong gender's chart.
+  const raw = linkAttributes ?? [];
+  if (raw.length === 0) return candidates[0]!;
+
+  // Only VALUED produto attributes can "hit" a chart in the scoring.
+  const produtoAttrs = raw.filter((a) => a.value_id != null || a.value_name != null);
 
   let best: MlSizeChart | null = null;
   let bestHits = 0;
