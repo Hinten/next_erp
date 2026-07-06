@@ -7,8 +7,9 @@ runConfig:
   maxInstances: 10
   minInstances: 0
   concurrency: 40
-# Required env (set per-environment in the Firebase console → App Hosting →
-# Environment variables, or via Cloud Secret Manager for secrets):
+# Env (set per-environment in the Firebase console → App Hosting → Environment
+# variables, or via Cloud Secret Manager for secrets; required unless marked
+# OPTIONAL):
 #   FIREBASE_PROJECT_ID         OPTIONAL — auto-detected on App Hosting/Cloud Run
 #                               (GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG); set only to
 #                               override, or in local dev without a service account
