@@ -111,6 +111,37 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     return url.toString();
   }
 
+  /**
+   * Fetch with the network-retry policy shared by EVERY endpoint (JSON and
+   * multipart alike): only a fetch throw (no response — genuine network
+   * failure) retries, with backoff; any HTTP response, 429/5xx included, is
+   * returned as-is — retrying a non-idempotent write could double-execute.
+   * Re-sending the same body object across attempts is safe for both string
+   * and FormData bodies (fetch serializes per request).
+   */
+  async function fetchWithNetworkRetry(
+    url: string,
+    init: RequestInit,
+    networkMessage: string,
+  ): Promise<Response> {
+    let attempt = 0;
+    for (;;) {
+      try {
+        return await fetchImpl(url, init);
+      } catch (err) {
+        if (attempt < maxRetries) {
+          attempt += 1;
+          await sleep(backoff(attempt));
+          continue;
+        }
+        throw new MercadoLivreNetworkError(
+          `${networkMessage}: ${err instanceof Error ? err.message : 'fetch falhou'}`,
+          err,
+        );
+      }
+    }
+  }
+
   async function request<T>(
     method: 'GET' | 'POST' | 'PUT',
     path: string,
@@ -120,46 +151,29 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     const url = buildUrl(path, opts.query);
     // Fetch the token once; it stays valid across the (few, quick) retries.
     const token = await config.getAccessToken();
-    let attempt = 0;
 
-    for (;;) {
-      let res: Response;
-      try {
-        res = await fetchImpl(url, {
-          method,
-          headers: {
-            Accept: 'application/json',
-            Authorization: `Bearer ${token}`,
-            'User-Agent': userAgent,
-            ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-            ...opts.headers,
-          },
-          body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-        });
-      } catch (err) {
-        // fetch rejects only on a network-level failure — retry, then wrap.
-        if (attempt < maxRetries) {
-          attempt += 1;
-          await sleep(backoff(attempt));
-          continue;
-        }
-        throw new MercadoLivreNetworkError(
-          `Falha de rede ao contatar o Mercado Livre: ${err instanceof Error ? err.message : 'fetch falhou'}`,
-          err,
-        );
-      }
+    const res = await fetchWithNetworkRetry(
+      url,
+      {
+        method,
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+          'User-Agent': userAgent,
+          ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          ...opts.headers,
+        },
+        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      },
+      'Falha de rede ao contatar o Mercado Livre',
+    );
 
-      // 2xx (incl. 206 Partial Content, valid for orders) → parse + validate.
-      if (res.ok) return parseOk(res, schema);
-
-      // A response arrived, so the server saw the request — do NOT retry HTTP
-      // errors (429/5xx included): retrying a non-idempotent write could
-      // double-execute. Only genuine network failures (the catch above) retry.
-      throw await toHttpError(res);
-    }
+    // 2xx (incl. 206 Partial Content, valid for orders) → parse + validate.
+    if (res.ok) return parseOk(res, schema);
+    throw await toHttpError(res);
   }
 
-  /** Multipart upload — same auth/error mapping as `request`, no JSON body. */
+  /** Multipart upload — same auth/retry/error mapping as `request`, no JSON body. */
   async function uploadPicture(file: PictureFile): Promise<MlPictureUpload> {
     const token = await config.getAccessToken();
     const form = new FormData();
@@ -170,9 +184,9 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     ) as ArrayBuffer;
     form.append('file', new Blob([bytes], { type: file.contentType }), file.filename);
 
-    let res: Response;
-    try {
-      res = await fetchImpl(buildUrl('/pictures/items/upload'), {
+    const res = await fetchWithNetworkRetry(
+      buildUrl('/pictures/items/upload'),
+      {
         method: 'POST',
         headers: {
           Accept: 'application/json',
@@ -181,13 +195,9 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
           // NOTE: no Content-Type — fetch sets the multipart boundary itself.
         },
         body: form,
-      });
-    } catch (err) {
-      throw new MercadoLivreNetworkError(
-        `Falha de rede ao enviar imagem ao Mercado Livre: ${err instanceof Error ? err.message : 'fetch falhou'}`,
-        err,
-      );
-    }
+      },
+      'Falha de rede ao enviar imagem ao Mercado Livre',
+    );
     if (res.ok) return parseOk(res, pictureUploadSchema);
     throw await toHttpError(res);
   }
