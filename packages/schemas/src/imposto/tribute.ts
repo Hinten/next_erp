@@ -735,6 +735,20 @@ export type ConfiguracaoIBSCBS = z.infer<typeof configuracaoIBSCBSSchema>;
 // ---------------------------------------------------------------------------
 
 /**
+ * Digits-only NCM normalizer — `'6109.10.00'` → `'61091000'`; `null` when the
+ * input carries no digits. The imposto resolver compares BOTH sides of an NCM
+ * rule match through it (a human-formatted produto NCM still matches an
+ * 8-digit rule entry — #398, the exact-string comparison silently missed and
+ * fell to the operação default), and the MacrosTab regra editor normalizes
+ * NCM entries through it before writing.
+ */
+export function normalizeNCM(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const digits = value.replace(/\D/g, '');
+  return digits.length > 0 ? digits : null;
+}
+
+/**
  * The per-item `Imposto` blob (Flutter `Imposto`,
  * `.old/packages/produtos/lib/src/models.dart`). The tribute engine uses
  * `origem` + `configuracao*`; the other fields (`cfop`, `NCM`, …) are stamped so
@@ -768,6 +782,15 @@ export const impostoSchema = z.object({
     .optional()
     .nullable(),
   unidade: z.string().min(1).max(6).optional().nullable(),
+  /**
+   * `det.prod.indTot` source — `false` = the item does NOT compose the NF-e
+   * totals (`indTot='0'`; excluded from ICMSTot `vProd`/`vDesc`/`vNF`).
+   * `null`/absent = composes (`'1'`, the legacy Flutter default). Stored on
+   * every imposto-bearing config doc; carried here so the RESOLVED blob keeps
+   * the flag through emission (#398 — Zod used to strip it, so the generator
+   * hardcoded `indTot='1'`).
+   */
+  compoeValorTotalDaNFe: z.boolean().optional().nullable(),
   configuracaoICMS: configuracaoICMSSchema.optional().nullable(),
   configuracaoISSQN: configuracaoISSQNSchema.optional().nullable(),
   configuracaoPIS: confPISSchema.optional().nullable(),

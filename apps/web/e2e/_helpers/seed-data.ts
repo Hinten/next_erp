@@ -322,7 +322,7 @@ export async function getOperacaoByName(nome: string): Promise<Record<string, un
 }
 
 /**
- * Delete an operação and its `regraimposto` subcollection (Firestore never
+ * Delete an operação and its `regras` subcollection (Firestore never
  * cascades). Sweeps every operação on the prefix + their macros.
  */
 export async function cleanupOperacoes(prefix: string): Promise<void> {
@@ -332,7 +332,7 @@ export async function cleanupOperacoes(prefix: string): Promise<void> {
     .where('nome', '<', `${prefix}${PREFIX_MAX}`)
     .get();
   for (const opDoc of snap.docs) {
-    const regras = await opDoc.ref.collection('regraimposto').get();
+    const regras = await opDoc.ref.collection('regras').get();
     if (!regras.empty) {
       const b = db().batch();
       regras.docs.forEach((r) => b.delete(r.ref));

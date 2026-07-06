@@ -16,7 +16,7 @@ import { buildCategoriaImpostoTransactionWrites } from '@/lib/categorias/clientP
 import { CategoriaImpostoManager } from '../_components/CategoriaImpostoManager';
 
 // Wider page schema: the categoria doc + a transient `impostos` host field
-// (per-operação impostocategoria docs, persisted via transactionWrites, never
+// (per-operação imposto docs, persisted via transactionWrites, never
 // written to the categoria doc). categoriaSchema has no refine, so `.extend` is safe.
 const categoriaPageSchema = categoriaSchema.extend({
   impostos: z.unknown().nullable().default(null),
