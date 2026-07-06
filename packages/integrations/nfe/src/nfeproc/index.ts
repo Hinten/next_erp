@@ -56,8 +56,8 @@ function stripXmlDeclaration(xml: string): string {
 // authorized. If the local signed XML was regenerated after the original send
 // (crash-window retry: same chave, fresh dhEmi → different bytes), stitching
 // the ORIGINAL protocol onto the NEW bytes persists a legal document that
-// fails digest verification. Callers gate `buildNFeProc` on
-// `compareDigest(...) !== 'mismatch'`.
+// fails digest verification. Stitch via `buildNFeProcSafe` — it refuses the
+// pairing on a digest mismatch, so no call site can forget the guard.
 // ---------------------------------------------------------------------------
 
 /** Result of comparing the local signed XML's DigestValue with SEFAZ's digVal. */
@@ -90,7 +90,12 @@ export function normalizeDigVal(digVal: string | null | undefined): string | nul
   if (digVal == null) return null;
   const unwrapped = DIGVAL_OUTER_RE.exec(digVal)?.[1] ?? digVal;
   const value = unwrapped.replace(/\s+/g, '');
-  return value.length > 0 ? value : null;
+  if (value.length === 0) return null;
+  // A wire shape the unwrap didn't recognize (tags survive) must degrade to
+  // 'unknown' (null) — NEVER to a tag-bearing string that can only ever
+  // 'mismatch' and would wrongly block a legitimate proc build.
+  if (value.includes('<') || value.includes('>')) return null;
+  return value;
 }
 
 /**
@@ -107,4 +112,24 @@ export function compareDigest(
   const remote = normalizeDigVal(digVal);
   if (local == null || remote == null) return 'unknown';
   return local === remote ? 'match' : 'mismatch';
+}
+
+/**
+ * Digest-safe `<nfeProc>` stitch (#396): builds the envelope UNLESS
+ * `compareDigest` proves the protocol was issued for different bytes.
+ * `xml` is `null` exactly when `digest === 'mismatch'`; the tri-state is
+ * returned alongside so callers can log the degraded outcome. Every
+ * stored/recovered-protocol stitch MUST go through this — call the raw
+ * `buildNFeProc` only where the bytes and the protocol come from the same
+ * round trip by construction (tests, fixtures).
+ */
+export function buildNFeProcSafe(
+  signedNfeXml: string,
+  protNFe: TProtNFe,
+): { xml: string | null; digest: DigestComparison } {
+  const digest = compareDigest(signedNfeXml, protNFe.infProt.digVal);
+  return {
+    xml: digest === 'mismatch' ? null : buildNFeProc(signedNfeXml, protNFe),
+    digest,
+  };
 }

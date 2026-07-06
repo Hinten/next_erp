@@ -3,10 +3,12 @@ import forge from 'node-forge';
 
 import {
   buildNFeProc,
+  buildNFeProcSafe,
   compareDigest,
   extractDigestValue,
   normalizeDigVal,
 } from '../../src/nfeproc';
+import type { TProtNFe } from '../../src/types/nfe-schema';
 import { signNFe, type NFeCertificate } from '../../src/index';
 import { parse } from '../../src/xml';
 import type { TRetConsSitNFe } from '../../src/types/nfe-schema';
@@ -157,6 +159,19 @@ describe('normalizeDigVal', () => {
     expect(normalizeDigVal('<digVal>AbCdEf12==</digVal>')).toBe('AbCdEf12==');
   });
 
+  it('unwraps prefixed and attributed digVal shapes (namespace variants)', () => {
+    expect(normalizeDigVal('<nfe:digVal>AbCdEf12==</nfe:digVal>')).toBe('AbCdEf12==');
+    expect(normalizeDigVal(`<digVal xmlns="${NFE_NS}">AbCdEf12==</digVal>`)).toBe('AbCdEf12==');
+  });
+
+  it('degrades an UNRECOGNIZED XML-ish shape to null (→ unknown), never to a guaranteed mismatch', () => {
+    // If the unwrap misses, leftover tags must not survive into the
+    // comparison — a tag-bearing string can only ever 'mismatch' and would
+    // wrongly BLOCK a legitimate proc build. Fail open to 'unknown'.
+    expect(normalizeDigVal('<weird><digVal>AbCdEf12==</digVal></weird>')).toBeNull();
+    expect(normalizeDigVal('<digVal>AbCdEf12==</digVal><extra/>')).toBeNull();
+  });
+
   it('round-trips a WIRE-parsed retConsSitNFe digVal (#raw shape pin against codegen drift)', () => {
     // The codegen META marks digVal as #raw, so parse() returns the OUTER XML.
     // If a codegen change ever flips it to a text field, this test still passes
@@ -203,5 +218,40 @@ describe('compareDigest', () => {
   it('is whitespace-insensitive on both sides (XMLDSig permits wrapped base64)', () => {
     const wrapped = SIGNED_WITH_DIGEST.replace('GOOD=', 'GO\nOD=');
     expect(compareDigest(wrapped, ' GO OD= ')).toBe('match');
+  });
+});
+
+describe('buildNFeProcSafe', () => {
+  const SIGNED_WITH_DIGEST =
+    `<NFe xmlns="${NFE_NS}"><infNFe Id="NFe${CHAVE}">…</infNFe>` +
+    '<Signature xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo>' +
+    '<Reference><DigestValue>GOOD=</DigestValue></Reference>' +
+    '</SignedInfo></Signature></NFe>';
+
+  function protWithDigVal(digVal: string | undefined): TProtNFe {
+    const prot = protOK();
+    return {
+      ...prot,
+      infProt: { ...prot.infProt, digVal },
+    } as unknown as TProtNFe;
+  }
+
+  it('builds on match and the xml equals the raw buildNFeProc output', () => {
+    const prot = protWithDigVal('GOOD=');
+    const { xml, digest } = buildNFeProcSafe(SIGNED_WITH_DIGEST, prot);
+    expect(digest).toBe('match');
+    expect(xml).toBe(buildNFeProc(SIGNED_WITH_DIGEST, prot));
+  });
+
+  it('refuses the stitch on mismatch (xml null)', () => {
+    const { xml, digest } = buildNFeProcSafe(SIGNED_WITH_DIGEST, protWithDigVal('EVIL='));
+    expect(digest).toBe('mismatch');
+    expect(xml).toBeNull();
+  });
+
+  it("builds on 'unknown' (absent digVal) — never blocks the normal path", () => {
+    const { xml, digest } = buildNFeProcSafe(SIGNED_WITH_DIGEST, protWithDigVal(undefined));
+    expect(digest).toBe('unknown');
+    expect(xml).toContain('<nfeProc ');
   });
 });

@@ -23,8 +23,7 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
-  buildNFeProc,
-  compareDigest,
+  buildNFeProcSafe,
   classifyCStat,
   consultarLote,
   MAX_RECONCILE_ATTEMPTS,
@@ -144,19 +143,27 @@ export async function reconcileByRecibo(params: {
 
     // Build <nfeProc> when SEFAZ authorized this chave and we still hold the
     // matching signed XML — same atomic anchor-clear as the emit path (#128).
-    // The digest guard (#396) refuses to pair the protocol with bytes it did
-    // not authorize (e.g. a pre-fix retry overwrote the anchor with a
+    // The digest-safe stitch (#396) refuses to pair the protocol with bytes
+    // it did not authorize (e.g. a pre-fix retry overwrote the anchor with a
     // regenerated XML); the doc then stays aprovada WITHOUT proc for a
     // DistDFe/manual fetch.
     const ourProt = ret.protNFe?.find((p) => p.infProt.chNFe === chave) ?? null;
-    const nfeProcXml =
+    const proc =
       !chaveSwapped &&
       classifyCStat(patch.cStat) === 'autorizada' &&
       ourProt != null &&
-      data.xml_assinado != null &&
-      compareDigest(data.xml_assinado, ourProt.infProt.digVal) !== 'mismatch'
-        ? buildNFeProc(data.xml_assinado, ourProt)
+      data.xml_assinado != null
+        ? buildNFeProcSafe(data.xml_assinado, ourProt)
         : null;
+    const nfeProcXml = proc?.xml ?? null;
+    if (proc?.digest === 'mismatch') {
+      console.warn(
+        `[nfe/reconcile] chave ${chave}: local DigestValue differs from the lote's ` +
+          `protNFe digVal — skipping the <nfeProc> build; the doc stays aprovada ` +
+          `WITHOUT xml_nfe_proc (xml_assinado kept; fetch the authorized XML via ` +
+          `DistDFe/manual import)`,
+      );
+    }
 
     await persistPatch(
       doc.ref,

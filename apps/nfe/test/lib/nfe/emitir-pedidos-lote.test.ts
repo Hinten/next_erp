@@ -412,15 +412,14 @@ function fakeFirestore(opts: BatchHarnessOpts) {
       runTransaction: async <T>(fn: (tx: unknown) => Promise<T>) => {
         const tx = {
           get: (ref: ReturnType<typeof makeRef>) => ref.get(),
+          // Identical write semantics to a direct ref.set (incl. the #128
+          // anchor assert + merge handling) — delegate, don't re-implement.
           set: (
             ref: ReturnType<typeof makeRef>,
             data: Record<string, unknown>,
             setOpts?: { merge?: boolean },
           ) => {
-            assertSignedXmlNeverLost(ref.path, data, setOpts?.merge);
-            writes.push({ path: ref.path, data, ...(setOpts?.merge ? { merge: true } : {}) });
-            docs[ref.path] = setOpts?.merge ? { ...(docs[ref.path] ?? {}), ...data } : data;
-            opts.events.push(`set:${ref.path}`);
+            void ref.set(data, setOpts);
           },
         };
         return fn(tx);

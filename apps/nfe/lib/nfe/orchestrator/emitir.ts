@@ -4,8 +4,7 @@ import { nfeConfigCollection, nfev4Collection } from '@delfrance/data/admin/coll
 import {
   applyOutcome,
   autorizarLote,
-  buildNFeProc,
-  compareDigest,
+  buildNFeProcSafe,
   classifyCStat,
   consultarLote,
   consultarSituacaoNFe,
@@ -258,6 +257,43 @@ export function buildNfeDocWrite(
 }
 
 /**
+ * Crash-window doc (#396): the anti-loss anchor is committed (chave + signed
+ * XML persisted) but SEFAZ never confirmed *receipt* — either the send/outcome
+ * was lost entirely (`enviando`, no nRec) or a degraded-async 103 arrived
+ * WITHOUT a receipt (`aguardandoResposta`, no nRec — the reconciler has
+ * nothing to consult by). Those exact bytes MAY already be authorized at
+ * SEFAZ, so a retry must retransmit them UNCHANGED (fresh idLote only):
+ * regenerating would overwrite the anchor with different bytes (fresh dhEmi)
+ * and corrupt any later proc stitch. Both emit paths (single + chunk) share
+ * this predicate so they can never disagree on what counts as a crash window.
+ * Docs WITH an nRec never reach it (the in-flight gates skip them first);
+ * the `!nRec` clause keeps the predicate order-independent anyway.
+ */
+function isCrashWindowAnchor(
+  existing: NotaFiscalEletronica | null,
+): existing is NotaFiscalEletronica & { chave: string; xml_assinado: string } {
+  return (
+    existing != null &&
+    (existing.estado === ESTADO_NFE.enviando ||
+      existing.estado === ESTADO_NFE.aguardandoResposta) &&
+    !existing.nRec &&
+    existing.chave != null &&
+    existing.xml_assinado != null
+  );
+}
+
+/**
+ * The ONLY fields a crash-window retransmit merges onto the doc: lote
+ * bookkeeping — never XML/chave fields, so the #128 anchor survives verbatim.
+ */
+function loteStampMerge(idLote: number) {
+  return nfev4Collection.parseMerge({
+    idLote: String(idLote),
+    ultima_modificacao: new Date().toISOString(),
+  });
+}
+
+/**
  * Phase 2 of the SINGLE-pedido emit cycle: atomic dedup pre-check +
  * allocate (nNF + idLote) + generate + sign + persist `estado='enviando'`.
  * All counter advances and XML persistence happen in ONE Firestore
@@ -324,40 +360,24 @@ export async function runAllocateGenerateSignTx(
     if (!cfgSnap.exists) throw new NFeConfigNotFoundError(bundle.filialId);
     const cfg = nfeConfigSchema.parse(cfgSnap.data()) as NFeConfig;
 
-    // Crash-window doc (#396): the anti-loss anchor committed (chave + signed
-    // XML persisted) but the send/outcome never landed (estado still enviando,
-    // no nRec). Those exact bytes MAY already be authorized at SEFAZ —
-    // retransmit them UNCHANGED (fresh idLote only) so a duplicidade recovery
+    // Crash-window doc (#396) — see isCrashWindowAnchor. Retransmit the
+    // STORED bytes unchanged (fresh idLote only) so a duplicidade recovery
     // pairs the original protNFe with the original bytes (digest match), or a
-    // never-received lote authorizes them normally. Regenerating here would
-    // overwrite the anchor with different bytes (fresh dhEmi) and corrupt any
-    // later proc stitch. Mirrors the pós-EPEC stored-bytes transmit; rejeitada/
-    // error docs below keep regenerating (their content may have been fixed).
-    if (
-      existing != null &&
-      existing.estado === ESTADO_NFE.enviando &&
-      !existing.nRec &&
-      existing.chave != null &&
-      existing.xml_assinado != null
-    ) {
+    // never-received lote authorizes them normally. Mirrors the pós-EPEC
+    // stored-bytes transmit; rejeitada/error docs below keep regenerating
+    // (their content may have been fixed).
+    if (isCrashWindowAnchor(existing)) {
       const idLote = cfg.idLote + 1;
       console.debug(
-        `[nfe/orchestrator] pedido '${pedidoId}' crash-window doc (enviando, no nRec) — ` +
-          `retransmitting the STORED signed XML for chave ${existing.chave} (idLote ${idLote})`,
+        `[nfe/orchestrator] pedido '${pedidoId}' crash-window doc (${existing.estado}, ` +
+          `no nRec) — retransmitting the STORED signed XML for chave ${existing.chave} ` +
+          `(idLote ${idLote})`,
       );
       tx.set(
         nfeConfigRef,
         nfeConfigCollection.parse({ ...cfg, idLote, timestamp: new Date().toISOString() }),
       );
-      // Merge only the lote bookkeeping — never rewrite xml_assinado/chave.
-      tx.set(
-        nfeRef,
-        nfev4Collection.parseMerge({
-          idLote: String(idLote),
-          ultima_modificacao: new Date().toISOString(),
-        }),
-        { merge: true },
-      );
+      tx.set(nfeRef, loteStampMerge(idLote), { merge: true });
       return { skip: false, chave: existing.chave, signedXml: existing.xml_assinado, idLote };
     }
 
@@ -520,6 +540,9 @@ export async function runChunkAllocateTx(
       ref: FirebaseFirestore.DocumentReference;
       data: Record<string, unknown>;
     }> = [];
+    // Crash-window (#396) docs get the shared idLote stamped in THIS tx —
+    // atomic with the counter advance, mirroring the single-pedido path.
+    const storedStamps: FirebaseFirestore.DocumentReference[] = [];
     // Fresh pedidos take contiguous nNFs off `numeracao_atual`; skip/reuse
     // pedidos consume none (Flutter `pedidosSemNota` parity).
     let freshCount = 0;
@@ -552,16 +575,9 @@ export async function runChunkAllocateTx(
         members.push({ skip: true, pedidoId: sp.pedidoId, prep: sp.prep, existing });
         continue;
       }
-      // Crash-window doc (#396) — anchor persisted, send/outcome lost: ride
-      // this chunk with the STORED signed bytes (no regenerate/re-sign; no
-      // nNF consumed). See runAllocateGenerateSignTx for the full rationale.
-      if (
-        existing &&
-        existing.estado === ESTADO_NFE.enviando &&
-        !existing.nRec &&
-        existing.chave != null &&
-        existing.xml_assinado != null
-      ) {
+      // Crash-window doc (#396) — see isCrashWindowAnchor: ride this chunk
+      // with the STORED signed bytes (no regenerate/re-sign; no nNF consumed).
+      if (isCrashWindowAnchor(existing)) {
         members.push({
           skip: false,
           reuseStored: true,
@@ -570,6 +586,7 @@ export async function runChunkAllocateTx(
           chave: existing.chave,
           signedXml: existing.xml_assinado,
         });
+        storedStamps.push(sp.prep.nfeRef);
         continue;
       }
 
@@ -616,6 +633,7 @@ export async function runChunkAllocateTx(
       }),
     );
     for (const p of placeholders) tx.set(p.ref, p.data);
+    for (const ref of storedStamps) tx.set(ref, loteStampMerge(idLote), { merge: true });
 
     return { members, idLote };
   });
@@ -722,25 +740,26 @@ export async function applyAutorizadoOutcome(args: {
     }
   }
 
-  // Build the `<nfeProc>` envelope when SEFAZ authorized the NF-e and
-  // we still have the matching local signedXml (no chave swap, and the
-  // protocol's digVal matches our DigestValue — #396: a duplicidade recovery
-  // must never pair the ORIGINAL protocol with REGENERATED bytes). 'unknown'
-  // (absent digVal / unextractable digest) never blocks the normal path.
-  const digest =
-    protNFeRaw != null ? compareDigest(signedXml, protNFeRaw.infProt.digVal) : 'unknown';
-  const nfeProcXml =
-    classifyCStat(patch.cStat) === 'autorizada' &&
-    protNFeRaw != null &&
-    finalChave === chave &&
-    digest !== 'mismatch'
-      ? buildNFeProc(signedXml, protNFeRaw)
+  // Build the `<nfeProc>` envelope when SEFAZ authorized the NF-e and we
+  // still have the matching local signedXml (no chave swap). The digest-safe
+  // stitch (#396) refuses to pair the protocol with bytes it did not
+  // authorize (e.g. a duplicidade recovery after a pre-fix retry regenerated
+  // the anchor); 'unknown' (absent digVal / unextractable digest) never
+  // blocks the normal path.
+  const proc =
+    classifyCStat(patch.cStat) === 'autorizada' && protNFeRaw != null && finalChave === chave
+      ? buildNFeProcSafe(signedXml, protNFeRaw)
       : null;
-  if (digest === 'mismatch') {
-    console.debug(
+  const nfeProcXml = proc?.xml ?? null;
+  // Warn only when the digest was the deciding blocker — a non-authorized
+  // outcome or a 539 chave swap skips the proc build for its own reason and
+  // must not be attributed to the digest.
+  if (proc?.digest === 'mismatch') {
+    console.warn(
       `[nfe/orchestrator] pedido '${bundle.pedidoId}' chave ${chave}: local DigestValue ` +
-        `differs from the protNFe digVal — persisting aprovada WITHOUT xml_nfe_proc ` +
-        `(xml_assinado kept; fetch the authorized XML via DistDFe/manual import)`,
+        `differs from the protNFe digVal — skipping the <nfeProc> build; the doc stays ` +
+        `aprovada WITHOUT xml_nfe_proc (xml_assinado kept; fetch the authorized XML via ` +
+        `DistDFe/manual import)`,
     );
   }
 
@@ -1017,12 +1036,7 @@ export async function processChunk(
     serie: number;
     existingChave: string | null;
   }> = [];
-  const storedMembers: Array<{
-    prep: EmissionPrep;
-    pedidoId: string;
-    chave: string;
-    signedXml: string;
-  }> = [];
+  const storedMembers: Array<Extract<ChunkMember, { reuseStored: true }>> = [];
   for (const m of members) {
     if (m.skip) {
       // Mirrors Flutter's `jaAprovadas` short-circuit (tasks.dart:159) —
@@ -1030,12 +1044,7 @@ export async function processChunk(
       // bucket instead of riding the lote.
       txResults.push(existingToEmitResult(m.pedidoId, m.prep.nfeRef.id, m.existing));
     } else if (m.reuseStored) {
-      storedMembers.push({
-        prep: m.prep,
-        pedidoId: m.pedidoId,
-        chave: m.chave,
-        signedXml: m.signedXml,
-      });
+      storedMembers.push(m);
     } else {
       fresh.push({
         prep: m.prep,
@@ -1089,17 +1098,9 @@ export async function processChunk(
   });
 
   // Crash-window members (#396) ride the same lote with their STORED bytes —
-  // no regenerate/re-sign, no doc overwrite; just stamp the shared idLote.
-  for (const sm of storedMembers) {
-    await sm.prep.nfeRef.set(
-      nfev4Collection.parseMerge({
-        idLote: String(sharedIdLote),
-        ultima_modificacao: new Date().toISOString(),
-      }),
-      { merge: true },
-    );
-    toSend.push(sm);
-  }
+  // no regenerate/re-sign, no doc overwrite (runChunkAllocateTx already
+  // stamped the shared idLote inside the allocation tx).
+  toSend.push(...storedMembers);
   if (toSend.length === 0) return txResults;
 
   // EPEC mode: no lote — each NF-e gets its own EPEC evento at the Ambiente

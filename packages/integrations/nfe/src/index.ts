@@ -138,6 +138,7 @@ export {
 // `<nfeProc>` envelope — post-emission stitching of signed NFe + protNFe.
 export {
   buildNFeProc,
+  buildNFeProcSafe,
   compareDigest,
   extractDigestValue,
   normalizeDigVal,

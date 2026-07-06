@@ -386,15 +386,14 @@ function fakeFirestore(opts: FakeFirestoreOptions) {
       runTransaction: async <T>(fn: (tx: unknown) => Promise<T>) => {
         const tx = {
           get: (ref: ReturnType<typeof makeRef>) => ref.get(),
+          // Identical write semantics to a direct ref.set (incl. the #128
+          // anchor assert + merge handling) — delegate, don't re-implement.
           set: (
             ref: ReturnType<typeof makeRef>,
             data: Record<string, unknown>,
             setOpts?: { merge?: boolean },
           ) => {
-            assertSignedXmlNeverLost(ref.path, data, setOpts?.merge);
-            writes.push({ path: ref.path, data, ...(setOpts?.merge ? { merge: true } : {}) });
-            docs[ref.path] = setOpts?.merge ? { ...(docs[ref.path] ?? {}), ...data } : data;
-            opts.events.push(`set:${ref.path}`);
+            void ref.set(data, setOpts);
           },
         };
         return fn(tx);
@@ -2734,12 +2733,15 @@ describe('emitirPedido — #396 crash-window stored bytes + digest guard', () =>
     '</SignedInfo></Signature></NFe>';
 
   /** Crash-window doc: anchor committed (chave + xml_assinado), no nRec. */
-  function seedCrashWindowDoc(docs: Record<string, Record<string, unknown> | null>): void {
+  function seedCrashWindowDoc(
+    docs: Record<string, Record<string, unknown> | null>,
+    estado: string = ESTADO_NFE.enviando,
+  ): void {
     docs['pedidos/PED-1/nfev4/s1'] = {
       numeracao: 12,
       serie: 1,
       tpEmis: 1,
-      estado: ESTADO_NFE.enviando,
+      estado,
       chave: CHAVE,
       xml_assinado: STORED_XML,
       nRec: null,
@@ -2797,6 +2799,30 @@ describe('emitirPedido — #396 crash-window stored bytes + digest guard', () =>
     expect(nfeTxWrite).toBeDefined();
     expect(nfeTxWrite?.data.idLote).toBe('8');
     expect('xml_assinado' in (nfeTxWrite?.data ?? {})).toBe(false);
+  });
+
+  it('aguardandoResposta WITHOUT nRec (degraded-async 103, receipt lost) also retransmits the STORED bytes', async () => {
+    // A single-pedido 103 that arrived without infRec persists
+    // aguardandoResposta with nRec=null — the reconciler has nothing to
+    // consult by, so a retry must ride the crash-window path, not regenerate.
+    const events: string[] = [];
+    const { fs, writes, docs } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 50, serie: 1, idLote: 7, ambiente: '2' },
+    });
+    seedCrashWindowDoc(docs, ESTADO_NFE.aguardandoResposta);
+    vi.mocked(autorizarLote).mockResolvedValue(RET_ENVI_103);
+
+    await emitirPedido(fs, fakeRuntime(), 'PED-1');
+
+    expect(vi.mocked(generateNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(signNFe)).not.toHaveBeenCalled();
+    expect(vi.mocked(autorizarLote)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ NFe: [STORED_XML] }),
+    );
+    const cfgWrite = writes.find((w) => w.path === 'filiais/F-1/nfeconfig/default');
+    expect(cfgWrite?.data.numeracao_atual).toBe(50);
   });
 
   it('204 → consSit recovery with MATCHING digest self-builds the proc from the stored bytes', async () => {
