@@ -68,7 +68,7 @@ export const itemVariationSchema = z
   })
   .passthrough();
 
-/** `GET /items/{id}` — the listing (anúncio). */
+/** `GET /items/{id}` (and the `POST/PUT /items` response) — the listing. */
 export const itemSchema = z
   .object({
     id: z.string(),
@@ -80,6 +80,12 @@ export const itemSchema = z
     listing_type_id: z.string().nullable().optional(),
     seller_id: z.number().int().nullable().optional(),
     seller_custom_field: z.string().nullable().optional(),
+    permalink: z.string().nullable().optional(),
+    shipping: z
+      .object({ free_shipping: z.boolean().nullable().optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
     variations: z.array(itemVariationSchema).nullable().optional(),
   })
   .passthrough();
@@ -153,6 +159,73 @@ export const orderSearchSchema = z
   })
   .passthrough();
 export type MlOrderSearch = z.infer<typeof orderSearchSchema>;
+
+/** `GET /categories/{id}` — one category node. */
+export const categorySchema = z
+  .object({
+    id: z.string(),
+    name: z.string().nullable().optional(),
+    path_from_root: z
+      .array(z.object({ id: z.string(), name: z.string().nullable().optional() }).passthrough())
+      .nullable()
+      .optional(),
+    settings: z.record(z.string(), z.unknown()).nullable().optional(),
+  })
+  .passthrough();
+export type MlCategory = z.infer<typeof categorySchema>;
+
+/** One entry of `GET /categories/{id}/attributes`. */
+export const categoryAttributeSchema = z
+  .object({
+    id: z.string(),
+    name: z.string().nullable().optional(),
+    value_type: z.string().nullable().optional(),
+    values: z
+      .array(
+        z
+          .object({ id: z.string().nullable().optional(), name: z.string().nullable().optional() })
+          .passthrough(),
+      )
+      .nullable()
+      .optional(),
+    tags: z.record(z.string(), z.unknown()).nullable().optional(),
+  })
+  .passthrough();
+export const categoryAttributesSchema = z.array(categoryAttributeSchema);
+export type MlCategoryAttribute = z.infer<typeof categoryAttributeSchema>;
+
+/** One entry of `GET /sites/MLB/domain_discovery/search?q=` (category suggestion). */
+export const domainDiscoverySchema = z.array(
+  z
+    .object({
+      domain_id: z.string().nullable().optional(),
+      domain_name: z.string().nullable().optional(),
+      category_id: z.string(),
+      category_name: z.string().nullable().optional(),
+      attributes: z.array(z.unknown()).nullable().optional(),
+    })
+    .passthrough(),
+);
+export type MlDomainDiscovery = z.infer<typeof domainDiscoverySchema>;
+
+/** `POST /pictures/items/upload` — the uploaded picture's ML id. */
+export const pictureUploadSchema = z
+  .object({
+    id: z.string(),
+    variations: z.array(z.unknown()).nullable().optional(),
+  })
+  .passthrough();
+export type MlPictureUpload = z.infer<typeof pictureUploadSchema>;
+
+/** `GET/POST/PUT /items/{id}/description` — plain-text description. */
+export const itemDescriptionSchema = z
+  .object({
+    plain_text: z.string().nullable().optional(),
+    text: z.string().nullable().optional(),
+    last_updated: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlItemDescription = z.infer<typeof itemDescriptionSchema>;
 
 /** `GET /packs/{id}` — a cart grouping N orders (1 item-variation each). */
 export const packSchema = z

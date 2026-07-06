@@ -41,6 +41,14 @@ export interface AdminCollectionHandle<T extends z.ZodTypeAny> {
   docRef(db: Firestore, ctx: PathContext, id: string): DocumentReference;
   /** Raw admin collection-group `Query` over the path's last segment. */
   groupQuery(db: Firestore): Query;
+  /**
+   * Mint a fresh auto-generated doc id WITHOUT writing anything. For flows
+   * that need the id before the document exists (e.g. the Mercado Livre
+   * publish sends the link-doc id as `seller_custom_field` before persisting
+   * the doc). Pair with `set(db, ctx, id, data)`; prefer `add()` when the id
+   * isn't needed up front.
+   */
+  newDocId(db: Firestore, ctx: PathContext): string;
 
   /** Validate a full document (throws on invalid/missing). For full writes / `.add`. */
   parse(data: unknown): z.infer<T>;
@@ -95,6 +103,7 @@ export function defineAdminCollection<T extends z.ZodTypeAny>(
     ref,
     docRef,
     groupQuery: (db) => db.collectionGroup(groupId),
+    newDocId: (db, ctx) => ref(db, ctx).doc().id,
     parse,
     parseMerge,
     parseRead: (raw, path) => parseSoftRead(options.schema, raw, path ?? options.path),

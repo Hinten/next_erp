@@ -1685,9 +1685,10 @@ export async function seedKitParaGerar(prefix: string): Promise<{
 /**
  * Seed a Mercado Livre variation-link doc under the produto — the Flutter
  * shape: `produtos/<id>/variacaoMercadoLivre/<x>` with `produtoVariacaoOuterRef`
- * pointing back at the produto (`pathNoDocuments`, see
- * `produtoTableProvider.dart:1557`). Makes the produto "marketplace-linked"
- * for the delete guard.
+ * pointing back at the produto. The STORED form is `documents/`-prefixed
+ * (`pathWithDocuments` — `OuterRefField.toJson`; the provider feeds
+ * `pathNoDocuments` into the constructor, but `fromJson` re-prefixes before
+ * persisting). Makes the produto "marketplace-linked" for the delete guard.
  */
 export async function seedVariacaoMlLink(produtoId: string): Promise<void> {
   await db()
@@ -1697,10 +1698,71 @@ export async function seedVariacaoMlLink(produtoId: string): Promise<void> {
     .doc('mlb-test')
     .set({
       id: 123456789,
-      produtoVariacaoOuterRef: `produtos/${produtoId}`,
-      produtoMercadoLivreOuterRef: `produtos/${produtoId}/produtoMercadoLivre/mlb-item`,
+      produtoVariacaoOuterRef: `documents/produtos/${produtoId}`,
+      produtoMercadoLivreOuterRef: `documents/produtos/${produtoId}/produtoMercadoLivre/mlb-item`,
       sku: null,
     });
+}
+
+/**
+ * Seed one plain produto plus a PUBLISHED `produtoMercadoLivre` link doc bound
+ * to the given integração (the old Flutter wire shape: `contaOuterRef` as the
+ * `documents/`-prefixed doc-path string, short-code `estado`), so the produto
+ * editor's Mercado Livre tab has a published row to render without any live
+ * ML backend.
+ */
+export async function seedProdutoMlPublicado(
+  prefix: string,
+  integracaoId: string,
+): Promise<{ produtoId: string; nome: string; mlItemId: string }> {
+  const produtoId = `${prefix}-prod`;
+  const nome = `${prefix}-prod`;
+  const mlItemId = 'MLB3609679155';
+  const now = Date.now();
+  const batch = db().batch();
+  batch.set(db().collection('produtos').doc(produtoId), {
+    nome,
+    sku: `${prefix.toUpperCase().replace(/-/g, '_')}_ML`,
+    publicado: true,
+    ehKit: false,
+    ehKitVirtual: false,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    fotos: null,
+    videos: null,
+    paiId: null,
+    ordem: null,
+    timestamp: new Date().toISOString(),
+  });
+  batch.set(
+    db().collection('produtos').doc(produtoId).collection('produtoMercadoLivre').doc(mlItemId),
+    {
+      contaOuterRef: `documents/integracao/${integracaoId}`,
+      channels: ['marketplace'],
+      estado: 'p',
+      id: mlItemId,
+      sku: null,
+      descricao: null,
+      site_id: 'MLB',
+      title: nome,
+      category_id: 'MLB31447',
+      condition: 'new',
+      listing_type_id: 'gold_special',
+      crossdocking: 0,
+      freteGratis: false,
+      precoPublicado: 79.9,
+      tarifaFrete: null,
+      comissao: null,
+      isUserProductModel: false,
+      video_id: null,
+      attributes: null,
+      errors: null,
+      ultimaModificacao: now,
+      dataCadastro: now,
+    },
+  );
+  await batch.commit();
+  return { produtoId, nome, mlItemId };
 }
 
 /**

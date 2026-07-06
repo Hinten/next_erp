@@ -7,15 +7,25 @@ import {
 } from './errors';
 import { DEFAULT_API_BASE_URL } from './oauth';
 import {
+  type MlCategory,
+  type MlCategoryAttribute,
+  type MlDomainDiscovery,
   type MlItem,
+  type MlItemDescription,
   type MlOrder,
   type MlOrderSearch,
   type MlPack,
+  type MlPictureUpload,
   type MlUser,
+  categoryAttributesSchema,
+  categorySchema,
+  domainDiscoverySchema,
+  itemDescriptionSchema,
   itemSchema,
   orderSchema,
   orderSearchSchema,
   packSchema,
+  pictureUploadSchema,
   tokenErrorSchema,
   userSchema,
 } from './types';
@@ -44,6 +54,13 @@ interface RequestOpts {
   readonly body?: unknown;
 }
 
+/** Image bytes for `uploadPicture` (the server fetches them from Storage). */
+export interface PictureFile {
+  readonly filename: string;
+  readonly contentType: string;
+  readonly data: Uint8Array;
+}
+
 export interface MercadoLivreApi {
   getMe(): Promise<MlUser>;
   getUser(id: number | string): Promise<MlUser>;
@@ -54,6 +71,27 @@ export interface MercadoLivreApi {
     seller: number | string;
     [key: string]: string | number | undefined;
   }): Promise<MlOrderSearch>;
+
+  /** `POST /items` — first publish. Build the body with `buildItemPayload`. */
+  createItem(payload: Record<string, unknown>): Promise<MlItem>;
+  /** `PUT /items/{id}` — update / status transitions (`{ status: 'paused' }`…). */
+  updateItem(id: string, payload: Record<string, unknown>): Promise<MlItem>;
+  getItemDescription(id: string): Promise<MlItemDescription>;
+  /**
+   * `POST /items/{id}/description` (create) or, with `replace`, the
+   * `PUT …/description?api_version=2` variant that swaps an existing one.
+   */
+  setItemDescription(
+    id: string,
+    plainText: string,
+    opts?: { replace?: boolean },
+  ): Promise<MlItemDescription>;
+  /** `GET /sites/MLB/domain_discovery/search?q=` — category suggestion. */
+  suggestCategories(query: string, limit?: number): Promise<MlDomainDiscovery>;
+  getCategory(id: string): Promise<MlCategory>;
+  getCategoryAttributes(id: string): Promise<MlCategoryAttribute[]>;
+  /** `POST /pictures/items/upload` (multipart) — returns the ML picture id. */
+  uploadPicture(file: PictureFile): Promise<MlPictureUpload>;
 }
 
 export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLivreApi {
@@ -73,6 +111,37 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     return url.toString();
   }
 
+  /**
+   * Fetch with the network-retry policy shared by EVERY endpoint (JSON and
+   * multipart alike): only a fetch throw (no response — genuine network
+   * failure) retries, with backoff; any HTTP response, 429/5xx included, is
+   * returned as-is — retrying a non-idempotent write could double-execute.
+   * Re-sending the same body object across attempts is safe for both string
+   * and FormData bodies (fetch serializes per request).
+   */
+  async function fetchWithNetworkRetry(
+    url: string,
+    init: RequestInit,
+    networkMessage: string,
+  ): Promise<Response> {
+    let attempt = 0;
+    for (;;) {
+      try {
+        return await fetchImpl(url, init);
+      } catch (err) {
+        if (attempt < maxRetries) {
+          attempt += 1;
+          await sleep(backoff(attempt));
+          continue;
+        }
+        throw new MercadoLivreNetworkError(
+          `${networkMessage}: ${err instanceof Error ? err.message : 'fetch falhou'}`,
+          err,
+        );
+      }
+    }
+  }
+
   async function request<T>(
     method: 'GET' | 'POST' | 'PUT',
     path: string,
@@ -82,43 +151,55 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     const url = buildUrl(path, opts.query);
     // Fetch the token once; it stays valid across the (few, quick) retries.
     const token = await config.getAccessToken();
-    let attempt = 0;
 
-    for (;;) {
-      let res: Response;
-      try {
-        res = await fetchImpl(url, {
-          method,
-          headers: {
-            Accept: 'application/json',
-            Authorization: `Bearer ${token}`,
-            'User-Agent': userAgent,
-            ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-            ...opts.headers,
-          },
-          body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-        });
-      } catch (err) {
-        // fetch rejects only on a network-level failure — retry, then wrap.
-        if (attempt < maxRetries) {
-          attempt += 1;
-          await sleep(backoff(attempt));
-          continue;
-        }
-        throw new MercadoLivreNetworkError(
-          `Falha de rede ao contatar o Mercado Livre: ${err instanceof Error ? err.message : 'fetch falhou'}`,
-          err,
-        );
-      }
+    const res = await fetchWithNetworkRetry(
+      url,
+      {
+        method,
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+          'User-Agent': userAgent,
+          ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          ...opts.headers,
+        },
+        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+      },
+      'Falha de rede ao contatar o Mercado Livre',
+    );
 
-      // 2xx (incl. 206 Partial Content, valid for orders) → parse + validate.
-      if (res.ok) return parseOk(res, schema);
+    // 2xx (incl. 206 Partial Content, valid for orders) → parse + validate.
+    if (res.ok) return parseOk(res, schema);
+    throw await toHttpError(res);
+  }
 
-      // A response arrived, so the server saw the request — do NOT retry HTTP
-      // errors (429/5xx included): retrying a non-idempotent write could
-      // double-execute. Only genuine network failures (the catch above) retry.
-      throw await toHttpError(res);
-    }
+  /** Multipart upload — same auth/retry/error mapping as `request`, no JSON body. */
+  async function uploadPicture(file: PictureFile): Promise<MlPictureUpload> {
+    const token = await config.getAccessToken();
+    const form = new FormData();
+    // Uint8Array → ArrayBuffer slice so the Blob owns plain bytes.
+    const bytes = file.data.buffer.slice(
+      file.data.byteOffset,
+      file.data.byteOffset + file.data.byteLength,
+    ) as ArrayBuffer;
+    form.append('file', new Blob([bytes], { type: file.contentType }), file.filename);
+
+    const res = await fetchWithNetworkRetry(
+      buildUrl('/pictures/items/upload'),
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+          'User-Agent': userAgent,
+          // NOTE: no Content-Type — fetch sets the multipart boundary itself.
+        },
+        body: form,
+      },
+      'Falha de rede ao enviar imagem ao Mercado Livre',
+    );
+    if (res.ok) return parseOk(res, pictureUploadSchema);
+    throw await toHttpError(res);
   }
 
   return {
@@ -130,6 +211,27 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getPack: (id) => request('GET', `/packs/${id}`, packSchema),
     searchOrders: (params) =>
       request('GET', '/orders/search', orderSearchSchema, { query: params }),
+
+    createItem: (payload) => request('POST', '/items', itemSchema, { body: payload }),
+    updateItem: (id, payload) => request('PUT', `/items/${id}`, itemSchema, { body: payload }),
+    getItemDescription: (id) => request('GET', `/items/${id}/description`, itemDescriptionSchema),
+    setItemDescription: (id, plainText, opts) =>
+      opts?.replace
+        ? request('PUT', `/items/${id}/description`, itemDescriptionSchema, {
+            body: { plain_text: plainText },
+            query: { api_version: 2 },
+          })
+        : request('POST', `/items/${id}/description`, itemDescriptionSchema, {
+            body: { plain_text: plainText },
+          }),
+    suggestCategories: (query, limit) =>
+      request('GET', '/sites/MLB/domain_discovery/search', domainDiscoverySchema, {
+        query: { q: query, limit },
+      }),
+    getCategory: (id) => request('GET', `/categories/${id}`, categorySchema),
+    getCategoryAttributes: (id) =>
+      request('GET', `/categories/${id}/attributes`, categoryAttributesSchema),
+    uploadPicture,
   };
 }
 

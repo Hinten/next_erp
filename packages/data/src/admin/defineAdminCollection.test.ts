@@ -101,6 +101,17 @@ describe('defineAdminCollection', () => {
     });
   });
 
+  describe('newDocId', () => {
+    it('mints an id from the resolved collection ref without writing', () => {
+      const doc = vi.fn(() => ({ id: 'minted-id' }));
+      const collection = vi.fn(() => ({ doc }));
+      const db = { collection } as unknown as Parameters<typeof handle.newDocId>[0];
+      expect(handle.newDocId(db, { thingId: 'abc' })).toBe('minted-id');
+      expect(collection).toHaveBeenCalledWith('things/abc/sub');
+      expect(doc).toHaveBeenCalledWith(); // no args → Firestore auto-id
+    });
+  });
+
   describe('resolvePath', () => {
     it('fills placeholders from context', () => {
       expect(handle.resolvePath({ thingId: 'abc' })).toBe('things/abc/sub');
