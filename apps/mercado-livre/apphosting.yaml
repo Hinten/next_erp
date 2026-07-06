@@ -26,7 +26,6 @@ runConfig:
 #   ALLOWED_ADMIN_ORIGINS        CSV of apps/web origins for CORS (no localhost in prod)
 
 env:
-  # Access token do servidor — usado em GET /v1/orders/{id} pelo webhook.
   - variable: MERCADO_LIVRE_CLIENT_ID
     secret: mercado-livre-client-id
     availability:
