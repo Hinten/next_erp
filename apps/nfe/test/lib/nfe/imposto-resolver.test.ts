@@ -71,7 +71,7 @@ describe('resolveItemImposto — cascade priority', () => {
     expect(deps.readImpostoProdutoSubcoll).toHaveBeenCalledWith('p1');
   });
 
-  it('honours impostoOperacaoOuterRef scope on impostoProduto', async () => {
+  it('honours the impostoOpercaoOuterRef (typo key) scope on impostoProduto', async () => {
     const wrongScope = impostoProdutoDoc({ impostoOpercaoOuterRef: 'operacao/op-other' });
     const deps = makeDeps({
       readImpostoProdutoSubcoll: vi.fn().mockResolvedValue([wrongScope]),
@@ -121,13 +121,13 @@ describe('resolveItemImposto — cascade priority', () => {
   it('prefers an exact categoria operação match over its null-scoped default (#222)', async () => {
     const defaultCat: ImpostoCategoria = {
       id: 'cat-def',
-      impostoOperacaoOuterRef: null,
+      impostoCategoriaOperacaoOuterRef: null,
       dataCadastro: null,
       ...BLOB_400,
     };
     const exactCat: ImpostoCategoria = {
       id: 'cat-exact',
-      impostoOperacaoOuterRef: `operacao/${ACTIVE_OPERACAO}`,
+      impostoCategoriaOperacaoOuterRef: `operacao/${ACTIVE_OPERACAO}`,
       dataCadastro: null,
       ...VALID_IMPOSTO_BLOB,
     };
@@ -166,7 +166,7 @@ describe('resolveItemImposto — cascade priority', () => {
   it('falls through to impostoCategoria when produto has a categoriaProdutoOuterRef', async () => {
     const impostoCategoria: ImpostoCategoria = {
       id: 'cat-doc',
-      impostoOperacaoOuterRef: null,
+      impostoCategoriaOperacaoOuterRef: null,
       dataCadastro: null,
       ...VALID_IMPOSTO_BLOB,
     };
@@ -502,5 +502,69 @@ describe('resolveItemImposto — caching', () => {
     const second = await resolver.resolve('p1', null);
     expect(first?.configuracaoICMS?.csosn).toBe('400');
     expect(second?.configuracaoICMS?.csosn).toBe('102');
+  });
+});
+
+describe('resolveItemImposto — verbatim legacy Flutter wire (#423)', () => {
+  it('scopes a legacy categoria doc whose ref is a BARE operação uid', async () => {
+    // The legacy app stored the scope as a bare uid (or `operacao/<id>` —
+    // both shapes verified in .old). Exact-beats-null (#222) must hold on
+    // the legacy shape too.
+    const legacyDefault: ImpostoCategoria = {
+      id: 'leg-def',
+      impostoCategoriaOperacaoOuterRef: null,
+      dataCadastro: null,
+      ...BLOB_400,
+    };
+    const legacyExact: ImpostoCategoria = {
+      id: 'leg-exact',
+      impostoCategoriaOperacaoOuterRef: ACTIVE_OPERACAO, // bare uid, no prefix
+      dataCadastro: null,
+      ...VALID_IMPOSTO_BLOB,
+    };
+    const deps = makeDeps({
+      readProduto: vi.fn().mockResolvedValue({ categoriaProdutoOuterRef: 'categorias/cat-7' }),
+      readImpostoCategoriaSubcoll: vi.fn().mockResolvedValue([legacyDefault, legacyExact]),
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.configuracaoICMS?.csosn).toBe('102'); // exact legacy scope wins
+  });
+
+  it("folds a legacy regra's UPPERCASE CFOP into the resolved imposto's cfop", async () => {
+    const legacyRegra: RegraImposto = {
+      id: 'leg-r1',
+      nome: null,
+      produtos: ['produtos/p1'], // legacy path-shaped entry
+      categorias: [],
+      ncms: [],
+      dataCadastro: null,
+      CFOP: '5405',
+      ...VALID_IMPOSTO_BLOB,
+    };
+    const deps = makeDeps({
+      bundle: { operacaoId: ACTIVE_OPERACAO, regrasImposto: [legacyRegra] },
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.configuracaoICMS?.csosn).toBe('102');
+    expect(out?.cfop).toBe('5405'); // CFOP (legacy key) survived into the engine blob
+  });
+
+  it('a lowercase cfop wins over the legacy CFOP when both are present', async () => {
+    const mixedRegra: RegraImposto = {
+      id: 'mix-r1',
+      nome: null,
+      produtos: ['p1'],
+      categorias: [],
+      ncms: [],
+      dataCadastro: null,
+      cfop: '5102',
+      CFOP: '5405',
+      ...VALID_IMPOSTO_BLOB,
+    };
+    const deps = makeDeps({
+      bundle: { operacaoId: ACTIVE_OPERACAO, regrasImposto: [mixedRegra] },
+    });
+    const out = await createImpostoResolver(deps).resolve('p1', null);
+    expect(out?.cfop).toBe('5102');
   });
 });

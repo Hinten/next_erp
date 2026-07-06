@@ -639,7 +639,7 @@ describe('emitirPedidosLote — single filial happy path', () => {
 });
 
 describe('emitirPedidosLote — batch read dedup (PR-δ)', () => {
-  it('reads a shared filial + operação (+ regraimposto) once across the batch', async () => {
+  it('reads a shared filial + operação (+ regras) once across the batch', async () => {
     const events: string[] = [];
     const { fs } = fakeFirestore({
       events,
@@ -684,7 +684,7 @@ describe('emitirPedidosLote — batch read dedup (PR-δ)', () => {
     // pedido doc is still read three times (one per id).
     expect(events.filter((e) => e === 'get:filiais/F-1')).toHaveLength(1);
     expect(events.filter((e) => e === 'get:operacao/O-1')).toHaveLength(1);
-    expect(events.filter((e) => e === 'get:operacao/O-1/regraimposto')).toHaveLength(1);
+    expect(events.filter((e) => e === 'get:operacao/O-1/regras')).toHaveLength(1);
     expect(events.filter((e) => e === 'get:pedidos/PED-1')).toHaveLength(1);
     expect(events.filter((e) => e === 'get:pedidos/PED-2')).toHaveLength(1);
   });

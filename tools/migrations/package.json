@@ -7,7 +7,6 @@
   "types": "./src/index.ts",
   "scripts": {
     "migrate:pedido-pagamento-micros": "dotenv -e ../../.env.local -- tsx src/2026-06-pedido-pagamento-micros/migrate.ts",
-    "migrate:imposto-legacy-names": "dotenv -e ../../.env.local -- tsx src/2026-07-imposto-legacy-names/migrate.ts",
     "lint": "echo 'no lint configured for this package yet'",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -15,9 +14,7 @@
   },
   "dependencies": {
     "@delfrance/core": "workspace:*",
-    "@delfrance/schemas": "workspace:*",
-    "firebase-admin": "^13.9.0",
-    "zod": "^4.4.3"
+    "firebase-admin": "^13.9.0"
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",

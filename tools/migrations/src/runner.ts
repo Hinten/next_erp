@@ -119,15 +119,6 @@ export class BatchWriter {
     if (this.ops >= this.maxOps) await this.flush();
   }
 
-  /** Full-doc write for copy-style migrations (creates the target doc). */
-  async set(ref: DocumentReference, data: Record<string, unknown>): Promise<void> {
-    if (!this.apply) return;
-    this.batch ??= this.db.batch();
-    this.batch.set(ref, data);
-    this.ops += 1;
-    if (this.ops >= this.maxOps) await this.flush();
-  }
-
   async flush(): Promise<void> {
     if (!this.batch || this.ops === 0) return;
     await this.batch.commit();

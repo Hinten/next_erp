@@ -57,15 +57,17 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
 5. **Every Pedido item needs a resolvable `imposto`.** At emission,
    `preResolveImpostos` runs the Flutter-parity resolver cascade
    (`lib/nfe/imposto-resolver.ts`: item-stamped → `produtos/{id}/imposto`
-   → `categorias/{id}/impostocategoria` → `operacao/{id}/regraimposto` →
-   operação default) for every item whose `imposto` is missing **or fails
-   the engine `impostoSchema`** (an invalid stamp is re-resolved and
+   → `categorias/{id}/imposto` → `operacao/{id}/regras` → operação
+   default) for every item whose `imposto` is missing **or fails the
+   engine `impostoSchema`** (an invalid stamp is re-resolved and
    replaced — #398). When nothing resolves, emission fails loudly:
    `NFeMissingImpostoError` (absent) or `NFeOrchestratorError` naming the
-   bad sub-field (invalid stamp) — no silent fallback. Legacy-shaped
-   categoria/regras docs are NOT dual-read; run the
-   `imposto-legacy-names` migration (`tools/migrations`) to translate
-   them.
+   bad sub-field (invalid stamp) — no silent fallback. The subcollection
+   names are the LEGACY Flutter wire names on purpose (#423) — both apps
+   share the database, so legacy tax config resolves natively (scope keys:
+   produto = typo `impostoOpercaoOuterRef`, categoria =
+   `impostoCategoriaOperacaoOuterRef`; regra docs may carry UPPERCASE
+   `CFOP`, path-shaped arrays and free-form NCMs — readers normalize).
 6. **Per-Filial `NFeConfig` doc must be seeded before emitting.** The
    `serie`, `numeracao_atual`, and `idLote` counters live at
    `filiais/{filialId}/nfeconfig/default`. The orchestrator allocates

@@ -92,15 +92,22 @@ describe('emitRules', () => {
     expect(out).not.toContain('/{path=**}/top/');
   });
 
-  it('rejects leaves whose metas disagree on the read permission', () => {
+  it('unions the read claims when metas share a subcollection leaf', () => {
+    // The legacy-aligned tax paths made this real: `produtos/{id}/imposto`
+    // and `categorias/{id}/imposto` both end in `imposto`. The group block
+    // cannot tell the parents apart, so EITHER owning collection's read
+    // claim grants the group read (deduped, sorted). Flat blocks keep
+    // their own per-collection permissions.
     const other = {
       read: PERM.produto.read,
       write: PERM.produto.write,
       delete: PERM.produto.delete,
     };
-    expect(() =>
-      emitRules([domain('a/{aId}/leaf'), domain('b/{bId}/leaf', other)], [], new Set()),
-    ).toThrow(/conflicting read permissions/);
+    const out = emitRules([domain('a/{aId}/leaf'), domain('b/{bId}/leaf', other)], [], new Set());
+    expect(out.match(/match \/\{path=\*\*\}\/leaf\/\{docId\}/g)).toHaveLength(1);
+    expect(out).toContain(
+      "allow read: if isSuperUser() || p('d_cliente', 1) || p('d_produto', 1);",
+    );
   });
 
   it('rejects a group leaf that collides with a top-level collection name', () => {

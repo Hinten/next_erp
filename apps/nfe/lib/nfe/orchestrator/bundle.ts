@@ -95,7 +95,7 @@ export interface PedidoBundle {
    */
   readonly integracao: Integracao | null;
   /**
-   * Imposto rules under `operacao/{operacaoId}/regraimposto`. Pre-loaded
+   * Imposto rules under `operacao/{operacaoId}/regras`. Pre-loaded
    * in the bundle fan-out so the per-item resolver (`resolveItemImposto`)
    * can OR-match against produtoUid / categoriaUid / NCM without any
    * additional Firestore reads. May be empty (common in setups where
@@ -141,7 +141,7 @@ export interface FiscalItem {
 /**
  * Request-scoped read cache for a single `emitirPedidosLote` invocation.
  * Pedidos in one batch routinely share a filial, an operação (+ its
- * `regraimposto` subcollection) and an imposto resolver — without this,
+ * `regras` subcollection) and an imposto resolver — without this,
  * `loadPedidoBundle` + `preResolveImpostos` re-read identical docs once
  * per pedido. Keyed by stable identifiers (doc path, operacaoId) and
  * discarded when the batch returns, so there is no staleness window. The
@@ -150,7 +150,7 @@ export interface FiscalItem {
 export interface BatchReadContext {
   /** Memoized `fs.doc(path).get()` keyed by doc path. */
   readonly docByPath: Map<string, Promise<FirebaseFirestore.DocumentSnapshot>>;
-  /** Memoized `operacao/{id}/regraimposto` query keyed by operação path. */
+  /** Memoized `operacao/{id}/regras` query keyed by operação path. */
   readonly regraByOperacaoPath: Map<string, Promise<FirebaseFirestore.QuerySnapshot>>;
   /** Imposto resolver shared across pedidos with the same operacaoId. */
   readonly resolverByOperacaoId: Map<string, ImpostoResolver>;
@@ -198,7 +198,7 @@ export async function loadPedidoBundle(
   // so pedidos sharing a filial / operação don't re-fetch identical docs.
   // `getDoc` / `getRegra` dereference dynamic "outer ref" paths (the target
   // collection is only known at runtime, e.g. filial / cliente / operação /
-  // endereço and the operação's `regraimposto` subcollection), so they
+  // endereço and the operação's `regras` subcollection), so they
   // legitimately use raw refs. All WRITES go through the validated handles in
   // `lib/data`; these are read-only.
   /* eslint-disable no-restricted-syntax -- read-only dynamic outer-ref derefs */
@@ -212,10 +212,10 @@ export async function loadPedidoBundle(
     return p;
   };
   const getRegra = (opPath: string): Promise<FirebaseFirestore.QuerySnapshot> => {
-    if (!ctx) return fs.doc(opPath).collection('regraimposto').get();
+    if (!ctx) return fs.doc(opPath).collection('regras').get();
     let p = ctx.regraByOperacaoPath.get(opPath);
     if (!p) {
-      p = fs.doc(opPath).collection('regraimposto').get();
+      p = fs.doc(opPath).collection('regras').get();
       ctx.regraByOperacaoPath.set(opPath, p);
     }
     return p;
@@ -325,7 +325,7 @@ export async function loadPedidoBundle(
 }
 
 /**
- * Parse the `regraimposto` subcollection snapshot, dropping (with a
+ * Parse the `regras` subcollection snapshot, dropping (with a
  * warning) any doc that fails `regraImpostoSchema` validation. The
  * resolver tolerates an empty array — the cascade will fall through to
  * the per-item `pedido.itens[i].imposto` (or fail loudly when nothing

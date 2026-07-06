@@ -55,11 +55,11 @@ export function categoriaImpostoCarriesInfo(imp: ImpostoCategoria): boolean {
 }
 
 /**
- * The categoria's transient per-operação `impostocategoria` docs to write
+ * The categoria's transient per-operação `imposto` docs to write
  * ATOMICALLY with the categoria doc (ObjectView `transactionWrites`). One doc
  * per active operação keyed by the operação id; an emptied entry that was
  * previously saved is deleted. Mirrors `buildProdutoTransactionWrites`'s imposto
- * leg, but with the correct-spelling `impostoOperacaoOuterRef` scope key.
+ * leg, but with the correct-spelling `impostoCategoriaOperacaoOuterRef` scope key.
  */
 export function buildCategoriaImpostoTransactionWrites(
   db: Firestore,
@@ -70,7 +70,7 @@ export function buildCategoriaImpostoTransactionWrites(
   if (!impostos || impostos.length === 0) return [];
   const writes: TransactionWrite[] = [];
   for (const imp of impostos) {
-    const operacaoId = operacaoIdFromImpostoRef(imp.impostoOperacaoOuterRef);
+    const operacaoId = operacaoIdFromImpostoRef(imp.impostoCategoriaOperacaoOuterRef);
     if (!operacaoId) continue; // the UI only edits per-operação entries
     const ref = impostoCategoriaCollection.docRef(
       db,
@@ -84,7 +84,7 @@ export function buildCategoriaImpostoTransactionWrites(
         data: impostoCategoriaSchema.parse({
           ...imp,
           id: operacaoId,
-          impostoOperacaoOuterRef: `operacao/${operacaoId}`,
+          impostoCategoriaOperacaoOuterRef: `operacao/${operacaoId}`,
           dataCadastro: imp.dataCadastro ?? nowMillis(),
         }) as Record<string, unknown>,
       });

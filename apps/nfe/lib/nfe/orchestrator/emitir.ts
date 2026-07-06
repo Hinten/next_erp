@@ -854,7 +854,7 @@ export async function emitirPedidosLote(
   //    NFeOrchestratorError) become per-pedido EmitError entries — the
   //    pedido never reaches a lote.
   // One read context for the whole batch — dedups the shared filial /
-  // operação / regraimposto reads and shares one imposto resolver per
+  // operação / regras reads and shares one imposto resolver per
   // operacaoId across all pedidos (PR-δ).
   const ctx = createBatchReadContext();
   const preps = await Promise.allSettled(pedidoIds.map((id) => prepareEmission(fs, rt, id, ctx)));

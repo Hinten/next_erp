@@ -11,30 +11,27 @@ const PERM_IMPOSTO_CATEGORIA_WRITE = 1n << 97n;
 const PERM_IMPOSTO_CATEGORIA_DELETE = 1n << 98n;
 
 /**
- * ImpostoCategoria — subcoleção
- * `categorias/{categoriaId}/impostocategoria/{auto-id}`.
+ * ImpostoCategoria — subcoleção `categorias/{categoriaId}/imposto/{doc-id}`.
  * Per-categoria Imposto override; the orchestrator's
  * `resolveItemImposto` cascade falls through to it after `impostoProduto`
  * misses.
  *
- * Scope pointer `impostoOperacaoOuterRef`: null = any operação; otherwise
- * only matches the specified operação (`operacao/<id>`). Same ROLE as the
- * produto-level pointer, but the wire keys differ — beware:
- *   - `impostoProduto` keeps Flutter's typo key `impostoOpercaoOuterRef`
- *     (no second "a") because the produto tier reads legacy docs in place;
- *   - the legacy Flutter categoria docs used a THIRD name,
- *     `impostoCategoriaOperacaoOuterRef`, on subcollection
- *     `categorias/{id}/imposto` (not `impostocategoria`). This schema is the
- *     NEW canonical shape only; legacy categoria docs are translated by the
- *     `imposto-legacy-names` migration (`tools/migrations`) — the resolver
- *     does NOT dual-read them (#398).
+ * **Wire = the legacy Flutter shape, verbatim (#398/#423).** The Firestore
+ * collection ID is `imposto` (the legacy Dart getter was NAMED
+ * `impostocategoria`, but its collectionId was `'imposto'`), and the scope
+ * pointer keeps the legacy key `impostoCategoriaOperacaoOuterRef`: null =
+ * any operação; otherwise only matches the specified operação
+ * (`operacao/<id>`). Same ROLE as the produto-level pointer, different key —
+ * `impostoProduto` keeps Flutter's typo key `impostoOpercaoOuterRef` (no
+ * second "a"). Both apps share the database, so legacy-written docs resolve
+ * natively — no migration, no dual-read.
  *
  * Imposto blob fields are **typed** (`taxConfigFields`, shared with the tribute
  * engine via `@delfrance/schemas`) — see `impostoProduto` for the rationale.
  */
 export const impostoCategoriaSchema = z.object({
   id: z.string().nullable().default(null),
-  impostoOperacaoOuterRef: idRefSchema.nullable().default(null),
+  impostoCategoriaOperacaoOuterRef: idRefSchema.nullable().default(null),
   // Dados Gerais (lenient strings, optional — a categoria override may omit
   // them; the resolver re-validates via the engine `impostoSchema`).
   origem: z.string().nullable().optional(),
@@ -56,7 +53,7 @@ export const impostoCategoriaSchema = z.object({
 export type ImpostoCategoria = z.infer<typeof impostoCategoriaSchema>;
 
 export const impostoCategoriaMeta: CollectionMetadata = {
-  collectionPath: 'categorias/{categoriaId}/impostocategoria',
+  collectionPath: 'categorias/{categoriaId}/imposto',
   permissions: {
     read: PERM_IMPOSTO_CATEGORIA_READ,
     write: PERM_IMPOSTO_CATEGORIA_WRITE,

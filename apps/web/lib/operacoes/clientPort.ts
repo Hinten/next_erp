@@ -6,7 +6,7 @@ import { regraImpostoCollection } from '@/lib/data/regraImpostoCollection';
 const BATCH_LIMIT = 500;
 
 /**
- * Delete an operação and its `regraimposto` subcollection (Firestore never
+ * Delete an operação and its `regras` subcollection (Firestore never
  * cascades). Uses `writeBatch` chunked at the 500-op cap rather than one request
  * per delete — reliable + fast even for an operação with many macros. The
  * operação doc rides the final chunk, so it is removed last.

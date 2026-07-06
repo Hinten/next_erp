@@ -12,8 +12,8 @@ import type {
 /**
  * The per-item Imposto blob the {@link ImpostoConfigEditor} edits — the
  * Flutter-shape config carried (typed) by every Imposto-bearing doc: the
- * operação default, `produtos/{}/imposto`, `categorias/{}/impostocategoria` and
- * `operacao/{}/regraimposto`.
+ * operação default, `produtos/{}/imposto`, `categorias/{}/imposto` and
+ * `operacao/{}/regras`.
  *
  * All fields optional/nullable: a doc may carry only a subset, and the editor
  * **patches** what it touches (never rebuilds), so config sections it doesn't
