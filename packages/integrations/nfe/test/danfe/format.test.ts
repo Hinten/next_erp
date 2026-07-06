@@ -88,6 +88,25 @@ describe('danfe/format', () => {
     expect(() => formatTimeSeconds('2026-08-15')).toThrow(/no time part/);
   });
 
+  it('fails LOUD on impossible dates and junk suffixes (never prints nonsense)', () => {
+    // The old Intl path threw on these too — a fiscal document must fail to
+    // render rather than print a garbage month/day from a corrupted doc.
+    expect(() => formatDate('2026-13-45')).toThrow(NFeDanfeFormatError);
+    expect(() => formatDate('2026-00-10')).toThrow(NFeDanfeFormatError);
+    expect(() => formatDate('2026-08-15junk')).toThrow(NFeDanfeFormatError);
+    expect(() => formatDate('2026-08-15T15:30:12.000Z')).toThrow(NFeDanfeFormatError);
+    expect(() => formatTime('2026-08-15T25:00:00-03:00')).toThrow(NFeDanfeFormatError);
+  });
+
+  it('stays lenient where harmless: +00:00 legacy stamps and offset-less datetimes render', () => {
+    // Pre-#415 UTC deploys stamped dhEmi with +00:00 — render that wall-clock
+    // as written. An offset-less datetime never legally occurs on the wire,
+    // but slicing it is unambiguous, so it renders rather than throwing.
+    expect(formatDate('2026-05-20T10:30:00+00:00')).toBe('20/05/2026');
+    expect(formatTimeSeconds('2026-05-20T10:30:00+00:00')).toBe('10:30:00');
+    expect(formatTime('2026-05-26T15:25:00')).toBe('15:25');
+  });
+
   it('labels modalidade do frete and truncates strings', () => {
     expect(freteLabel('0')).toBe('0 - REM. (CIF)');
     expect(freteLabel('9')).toBe('9 - SEM FRETE');

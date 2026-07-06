@@ -23,6 +23,8 @@ import { z } from 'zod';
 import { authError, PERM, verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { safeLog } from '@/lib/nfe/log';
+import { NFeDanfeFormatError } from '@delfrance/integrations-nfe/danfe';
+
 import {
   cartaCorrecaoArtifactService,
   NFeDanfeError,
@@ -74,6 +76,11 @@ export async function GET(req: Request): Promise<NextResponse> {
       return authError(404, { error: e.message });
     }
     if (e instanceof NFeDanfeError) {
+      return authError(422, { error: e.message });
+    }
+    // Corrupted persisted XML (malformed date lexical) — deterministic
+    // "not renderable", same 422 semantics as NFeDanfeError, not a 500.
+    if (e instanceof NFeDanfeFormatError) {
       return authError(422, { error: e.message });
     }
     safeLog('error', '[nfe/carta-correcao/danfe]', e);

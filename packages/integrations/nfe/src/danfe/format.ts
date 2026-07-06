@@ -5,9 +5,11 @@
  * the same helpers feed the pdfkit, ZPL and (future) retrato/paisagem outputs
  * and are cheap to unit-test.
  *
- * All money/quantity formatting is pt-BR (`1.234,56`); dates are rendered in
- * `America/Sao_Paulo` (the issuer's local time SEFAZ stamps), pinned via a
- * fixed `timeZone` so output is deterministic regardless of host TZ.
+ * All money/quantity formatting is pt-BR (`1.234,56`). Dates/times are sliced
+ * from the SEFAZ lexical and rendered exactly AS STAMPED (#418) — the string
+ * already carries the right wall-clock (issuer offset on dhEmi/dhSaiEnt/dhCont/
+ * dhEvento, authorizer offset on dhRecbto/dhRegEvento) — never re-rendered
+ * through a timezone. Deterministic regardless of host TZ by construction.
  */
 
 /** Points per centimetre (PDF user space is 72 dpi → 72/2.54). */
@@ -123,10 +125,14 @@ export class NFeDanfeFormatError extends Error {
 
 /**
  * SEFAZ date/date-time lexical: `AAAA-MM-DD` (TData — e.g. `dVenc`) or
- * `AAAA-MM-DDThh:mm:ss±hh:mm` (TDateTimeUTC — the XSD REQUIRES the offset,
- * never `Z` / offset-less). Groups: 1=year 2=month 3=day 4=hour 5=min 6=sec.
+ * `AAAA-MM-DDThh:mm:ss±hh:mm` (TDateTimeUTC — the XSD requires the `±hh:mm`
+ * offset on the wire; it is optional-but-anchored here so a hypothetical
+ * offset-less legacy value still renders). Anchored + range-checked so junk
+ * suffixes and impossible dates ('2026-13-45') FAIL LOUD instead of printing
+ * nonsense on a fiscal document. Groups: 1=year 2=month 3=day 4=hour 5=min 6=sec.
  */
-const SEFAZ_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2}))?/;
+const SEFAZ_DATE_RE =
+  /^(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?:T([01]\d|2[0-3]):([0-5]\d):([0-5]\d)(?:[+-](?:0\d|1[0-4]):\d{2})?)?$/;
 
 /**
  * DANFE date/time rendering — the wall-clock AS STAMPED in the SEFAZ lexical
@@ -147,6 +153,17 @@ function sefazDateParts(value: string): RegExpExecArray {
   return m;
 }
 
+/** Time components of a date-TIME lexical; throws when the time part is absent. */
+function sefazTimeParts(value: string): { hh: string; min: string; ss: string } {
+  const [, , , , hh, min, ss] = sefazDateParts(value);
+  if (hh === undefined || min === undefined || ss === undefined) {
+    throw new NFeDanfeFormatError(
+      `no time part in '${value}' (expected AAAA-MM-DDThh:mm:ss±hh:mm)`,
+    );
+  }
+  return { hh, min, ss };
+}
+
 /** `dd/MM/yyyy`, exactly as stamped on the wire (date-only or date-time input). */
 export function formatDate(iso: string): string {
   const [, yyyy, mm, dd] = sefazDateParts(iso);
@@ -155,19 +172,13 @@ export function formatDate(iso: string): string {
 
 /** `HH:mm`, exactly as stamped on the wire. Requires a date-TIME input. */
 export function formatTime(iso: string): string {
-  const [, , , , hh, min] = sefazDateParts(iso);
-  if (hh === undefined) {
-    throw new NFeDanfeFormatError(`no time part in '${iso}' (expected AAAA-MM-DDThh:mm:ss±hh:mm)`);
-  }
+  const { hh, min } = sefazTimeParts(iso);
   return `${hh}:${min}`;
 }
 
 /** `HH:mm:ss`, exactly as stamped on the wire. Requires a date-TIME input. */
 export function formatTimeSeconds(iso: string): string {
-  const [, , , , hh, min, ss] = sefazDateParts(iso);
-  if (hh === undefined) {
-    throw new NFeDanfeFormatError(`no time part in '${iso}' (expected AAAA-MM-DDThh:mm:ss±hh:mm)`);
-  }
+  const { hh, min, ss } = sefazTimeParts(iso);
   return `${hh}:${min}:${ss}`;
 }
 
