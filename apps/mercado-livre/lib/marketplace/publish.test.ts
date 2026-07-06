@@ -390,6 +390,50 @@ describe('publishProduto — dual-run wire shape', () => {
     expect(child.integracoesComProduto).toEqual(['outra-conta', CONTA]);
   });
 
+  it('re-publish with an already-correct child entry does not duplicate it (#432 review)', async () => {
+    const db = new FakeDb();
+    seedBase(db, {
+      externalIds: [{ externalId: 'PIC-CACHED', integracaoPath: `documents/integracao/${CONTA}` }],
+    });
+    const { api } = makeApi({
+      createItem: vi.fn(async () => ({
+        ...ITEM_RESPONSE,
+        variations: [{ id: 555, seller_custom_field: 'child-1' }],
+      })),
+    });
+    db.seed('produtos', 'child-1', {
+      nome: 'Camiseta M',
+      sku: 'SKU-1-M',
+      paiId: PROD,
+      ordem: 0,
+      precos: { 'lista-1': { valor: 79.9 } },
+      variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+      // Already exactly what this publish will produce.
+      marketplace: [{ integracaoUid: CONTA, externalParentId: 'MLB777', externalId: '555' }],
+      marketplaceIds: ['555'],
+      integracoesComProduto: [CONTA],
+    });
+    db.seed('produtos/child-1/estoques', 'est-c', {
+      depositoOuterRef: 'documents/depositos/dep-1',
+      quantidade: 4,
+      quantidadeReservada: 0,
+    });
+    db.seed('grupoDeVariacoes', 'g-tam', {
+      nome: 'Tamanho',
+      tipo: 1,
+      variacoes: [{ id: 'v-m', nome: 'M' }],
+    });
+
+    await publishProduto(makeDeps(db, api), PROD);
+
+    const child = db.docs('produtos').get('child-1')!;
+    expect(child.marketplace).toEqual([
+      { integracaoUid: CONTA, externalParentId: 'MLB777', externalId: '555' },
+    ]);
+    expect(child.marketplaceIds).toEqual(['555']);
+    expect(child.integracoesComProduto).toEqual([CONTA]);
+  });
+
   it('does NOT stamp the deprecated arrays when the ML call fails', async () => {
     const db = new FakeDb();
     seedBase(db, {

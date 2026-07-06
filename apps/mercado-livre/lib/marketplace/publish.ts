@@ -247,7 +247,10 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   // gates its stock sender on `integracoesComProduto`. The new app never READS
   // these fields (linkage is Firestore Pipelines); the stamps exist only so
   // listings published here stay visible to the legacy flows during
-  // coexistence. Success-only, like the old app. Tracked removal: #431.
+  // coexistence. They run once the ML item write has SUCCEEDED (the error
+  // path above never stamps) — a later failure (e.g. the description step)
+  // leaves them in place, same as the old app, which committed this batch
+  // before sending the description. Tracked removal: #431.
   await produtoCollection.docRef(db, {}, produtoId).update({
     marketplace: FieldValue.arrayUnion({ integracaoUid: integracaoId, externalId: item.id }),
     marketplaceIds: FieldValue.arrayUnion(item.id),
@@ -377,7 +380,10 @@ async function stampChildMarketplace(
   const cleaned = current.filter((e) => {
     if (e?.integracaoUid !== integracaoId) return true; // other conta — keep
     if (e.externalParentId == null) return false; // parent-shaped on a child
-    return !(e.externalParentId === itemId && e.externalId !== variationId); // stale id
+    // Drop EVERY entry for this conta+listing (stale id or already-correct):
+    // the fresh push below is the single source of truth, so an up-to-date
+    // entry can't be duplicated on re-publish.
+    return e.externalParentId !== itemId;
   });
   cleaned.push({ integracaoUid: integracaoId, externalParentId: itemId, externalId: variationId });
 
