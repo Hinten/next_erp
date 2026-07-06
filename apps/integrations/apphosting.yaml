@@ -6,6 +6,7 @@ runConfig:
   maxInstances: 20
   minInstances: 0
   concurrency: 80
-# FIREBASE_PROJECT_ID is set per-environment in the Firebase console
-# (App Hosting → Environment variables) or via .env.local for local dev.
+# FIREBASE_PROJECT_ID is OPTIONAL — auto-detected on App Hosting/Cloud Run
+# (GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG); set it only to override, or via
+# .env.local for local dev without a service account.
 # Webhook signing secrets and Admin SDK service account live in Cloud Secret Manager.
