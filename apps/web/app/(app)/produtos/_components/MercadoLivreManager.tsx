@@ -284,9 +284,10 @@ export function MercadoLivreManager({
 }
 
 /**
- * The old wire shape stores the account pointer as a bare `integracao/<id>`
- * path string (sometimes prefixed, e.g. `documents/integracao/<id>`) — same
- * matcher as the server-side `publishProduto`.
+ * The old wire shape stores the account pointer as `documents/integracao/<id>`
+ * (`pathWithDocuments` — the form the new publish flow writes too); the bare
+ * `integracao/<id>` form is tolerated on read only, defensively. Same matcher
+ * as the server-side `publishProduto`.
  */
 function refMatchesIntegracao(ref: string | null | undefined, integracaoId: string): boolean {
   if (!ref) return false;

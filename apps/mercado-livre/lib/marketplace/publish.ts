@@ -11,7 +11,7 @@
  * stamps `estado: 'E'` + `errors: [message]` on the link doc and rethrows, so
  * the UI shows the reason and a later retry overwrites it.
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import {
   type MercadoLivreApi,
   MercadoLivreError,
@@ -20,7 +20,7 @@ import {
   estadoFromMlStatus,
 } from '@delfrance/integrations-mercado-livre';
 import type { Arquivo, Foto, ProdutoMercadoLivreLink } from '@delfrance/schemas';
-import { estoqueDisponivel, idFromRef, parseFakePath } from '@delfrance/schemas';
+import { estoqueDisponivel, idFromRef, parseFakePath, toOuterRef } from '@delfrance/schemas';
 import {
   arquivoCollection,
   estoqueCollection,
@@ -156,7 +156,7 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   }
 
   // ---- Pictures (upload once per integração; cached on the Arquivo) ------
-  const pictures = await resolvePictures(deps, produto.fotos ?? []);
+  const { pictures, pictureSources } = await resolvePictures(deps, produto.fotos ?? []);
 
   // ---- Category (existing link wins; else suggest from the title) --------
   let categoryId = link?.category_id ?? null;
@@ -182,6 +182,11 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   });
   const payload = buildItemPayload(input);
 
+  // Both link-doc writes below SPREAD the existing raw doc first — the old
+  // app persisted via `copyWith(...).save()`, so a re-publish must preserve
+  // every Flutter-authored field it doesn't own (descricao, channels,
+  // video_id, crossdocking, tarifaFrete, comissao + unknown legacy keys via
+  // `.passthrough()`), never reset them to the schema defaults.
   const now = Date.now();
   let item;
   try {
@@ -190,18 +195,20 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       : await api.createItem(payload);
   } catch (err) {
     if (err instanceof MercadoLivreError) {
+      // Old-app parity: a purged ML picture id in the cache would otherwise
+      // fail every retry identically — strip it so the next publish re-uploads.
+      await pruneDeadPictures(db, err, pictureSources);
       await produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId).set(
         produtoMercadoLivreLinkCollection.parse({
-          contaOuterRef: linkDoc?.data.contaOuterRef ?? `integracao/${integracaoId}`,
+          ...(linkDoc?.data ?? {}),
+          contaOuterRef: linkDoc?.data.contaOuterRef ?? toOuterRef(`integracao/${integracaoId}`),
           title: produto.nome,
           sku: produto.sku ?? null,
           condition: input.condition,
-          category_id: categoryId,
-          listing_type_id: input.listingTypeId ?? null,
+          category_id: linkDoc?.data.category_id ?? categoryId,
+          listing_type_id: linkDoc?.data.listing_type_id ?? input.listingTypeId ?? null,
           estado: 'E',
-          id: link?.id ?? null,
           isUserProductModel: input.isUserProductSeller,
-          attributes: link?.attributes ?? null,
           errors: [err.message],
           ultimaModificacao: now,
           dataCadastro: linkDoc?.data.dataCadastro ?? now,
@@ -215,7 +222,8 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   const estado = estadoFromMlStatus(item.status);
   await produtoMercadoLivreLinkCollection.docRef(db, { produtoId }, linkDocId).set(
     produtoMercadoLivreLinkCollection.parse({
-      contaOuterRef: linkDoc?.data.contaOuterRef ?? `integracao/${integracaoId}`,
+      ...(linkDoc?.data ?? {}),
+      contaOuterRef: linkDoc?.data.contaOuterRef ?? toOuterRef(`integracao/${integracaoId}`),
       title: produto.nome,
       sku: produto.sku ?? null,
       condition: input.condition,
@@ -226,7 +234,6 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       precoPublicado: item.price ?? null,
       freteGratis: item.shipping?.free_shipping ?? false,
       isUserProductModel: input.isUserProductSeller,
-      attributes: link?.attributes ?? null,
       errors: [],
       ultimaModificacao: now,
       dataCadastro: linkDoc?.data.dataCadastro ?? now,
@@ -245,12 +252,18 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
       existing?.docId ?? variacaoMercadoLivreLinkCollection.newDocId(db, { produtoId: childId });
     await variacaoMercadoLivreLinkCollection.docRef(db, { produtoId: childId }, varDocId).set(
       variacaoMercadoLivreLinkCollection.parse({
-        id: typeof respVar.id === 'number' ? respVar.id : null,
-        itemId: null,
-        produtoVariacaoOuterRef: `produtos/${childId}`,
-        produtoMercadoLivreOuterRef: `produtos/${produtoId}/produtoMercadoLivre/${linkDocId}`,
+        // Spread first: Flutter regenerates the NEXT publish's non-SIZE/COLOR
+        // attribute_combinations from the stored `attributes` — wiping them
+        // (or `itemId`) would corrupt its republish.
+        ...(existing?.raw ?? {}),
+        id: typeof respVar.id === 'number' ? respVar.id : (existing?.mlId ?? null),
+        produtoVariacaoOuterRef:
+          (existing?.raw.produtoVariacaoOuterRef as string | undefined) ??
+          toOuterRef(`produtos/${childId}`),
+        produtoMercadoLivreOuterRef:
+          (existing?.raw.produtoMercadoLivreOuterRef as string | undefined) ??
+          toOuterRef(`produtos/${produtoId}/produtoMercadoLivre/${linkDocId}`),
         sku: child.produto.sku ?? null,
-        attributes: null,
       }),
     );
   }
@@ -259,15 +272,29 @@ export async function publishProduto(deps: PublishDeps, produtoId: string): Prom
   const descricao = linkDoc?.data.descricao ?? extra?.descricao ?? null;
   if (descricao) {
     try {
-      await api.setItemDescription(item.id, descricao, { replace: input.isUpdate });
-    } catch (err) {
-      // A fresh item can already carry a description (ML auto-creates one for
-      // some categories) — POST then 400s; the PUT replace variant fixes it.
-      if (err instanceof MercadoLivreHttpError && err.status === 400 && !input.isUpdate) {
-        await api.setItemDescription(item.id, descricao, { replace: true });
-      } else {
-        throw err;
+      try {
+        await api.setItemDescription(item.id, descricao, { replace: input.isUpdate });
+      } catch (err) {
+        // A fresh item can already carry a description (ML auto-creates one for
+        // some categories) — POST then 400s; the PUT replace variant fixes it.
+        if (err instanceof MercadoLivreHttpError && err.status === 400 && !input.isUpdate) {
+          await api.setItemDescription(item.id, descricao, { replace: true });
+        } else {
+          throw err;
+        }
       }
+    } catch (err) {
+      // The item itself published, but the header contract still holds: any ML
+      // failure must leave its reason on the doc (the old app stamped these
+      // from the same catch), not just a transient HTTP error to the UI.
+      if (err instanceof MercadoLivreError) {
+        await produtoMercadoLivreLinkCollection.merge(db, { produtoId }, linkDocId, {
+          estado: 'E',
+          errors: [err.message],
+          ultimaModificacao: Date.now(),
+        });
+      }
+      throw err;
     }
   }
 
@@ -306,7 +333,11 @@ function toPublishProduto(
   };
 }
 
-/** `contaOuterRef` appears as `integracao/<id>` or `documents/integracao/<id>`. */
+/**
+ * The old app always STORES `documents/integracao/<id>` (`pathWithDocuments`,
+ * `OuterRefField.toJson`) — that's also what this module writes. The bare
+ * `integracao/<id>` form is tolerated on READ only, defensively.
+ */
 function refMatchesIntegracao(ref: string | undefined, integracaoId: string): boolean {
   if (!ref) return false;
   return ref === `integracao/${integracaoId}` || ref.endsWith(`/integracao/${integracaoId}`);
@@ -339,13 +370,14 @@ async function findVariacaoLink(
   db: Firestore,
   childId: string,
   parentLinkDocId: string,
-): Promise<{ docId: string; mlId: number | null } | null> {
+): Promise<{ docId: string; mlId: number | null; raw: Record<string, unknown> } | null> {
   const snap = await variacaoMercadoLivreLinkCollection.ref(db, { produtoId: childId }).get();
   for (const d of snap.docs) {
-    const data = d.data() as { id?: number | null; produtoMercadoLivreOuterRef?: string };
-    const parentRef = data.produtoMercadoLivreOuterRef ?? '';
+    const data = d.data() as Record<string, unknown>;
+    const parentRef =
+      typeof data.produtoMercadoLivreOuterRef === 'string' ? data.produtoMercadoLivreOuterRef : '';
     if (parentRef.endsWith(`/produtoMercadoLivre/${parentLinkDocId}`)) {
-      return { docId: d.id, mlId: typeof data.id === 'number' ? data.id : null };
+      return { docId: d.id, mlId: typeof data.id === 'number' ? data.id : null, raw: data };
     }
   }
   return null;
@@ -359,10 +391,12 @@ async function findVariacaoLink(
 async function resolvePictures(
   deps: PublishDeps,
   fotos: ReadonlyArray<Foto>,
-): Promise<Array<{ id: string }>> {
+): Promise<{ pictures: Array<{ id: string }>; pictureSources: Map<string, string> }> {
   const { db, api, integracaoId } = deps;
   const doFetch = deps.fetchImpl ?? globalThis.fetch;
-  const out: Array<{ id: string }> = [];
+  const pictures: Array<{ id: string }> = [];
+  /** ML picture id → owning arquivo doc id (feeds the dead-picture self-heal). */
+  const pictureSources = new Map<string, string>();
 
   for (const foto of fotos.slice(0, MAX_PICTURES)) {
     const arquivoId = foto.arquivoOuterRef.replace(/^arquivos\//, '');
@@ -377,7 +411,8 @@ async function resolvePictures(
       refMatchesIntegracao(e.integracaoPath, integracaoId),
     );
     if (cached) {
-      out.push({ id: cached.externalId });
+      pictures.push({ id: cached.externalId });
+      pictureSources.set(cached.externalId, arquivoId);
       continue;
     }
 
@@ -395,13 +430,56 @@ async function resolvePictures(
       data: bytes,
     });
 
-    await arquivoCollection.merge(db, {}, arquivoId, {
-      externalIds: [
-        ...(arquivo.externalIds ?? []),
-        { externalId: uploaded.id, integracaoPath: `integracao/${integracaoId}` },
-      ],
+    // arrayUnion, not a whole-array overwrite: the Flutter app (and a
+    // concurrent publish to another conta) appends to the SAME shared array —
+    // a read-modify-write here would drop entries written during the upload
+    // window (the old app used `appendMissingElements` for exactly this).
+    // `integracaoPath` is stored `documents/`-prefixed: Flutter's cache lookup
+    // (`getExternalId`) compares against `pathWithDocuments` by EXACT equality.
+    await arquivoCollection.docRef(db, {}, arquivoId).update({
+      externalIds: FieldValue.arrayUnion({
+        externalId: uploaded.id,
+        integracaoPath: toOuterRef(`integracao/${integracaoId}`),
+      }),
     });
-    out.push({ id: uploaded.id });
+    pictures.push({ id: uploaded.id });
+    pictureSources.set(uploaded.id, arquivoId);
   }
-  return out;
+  return { pictures, pictureSources };
+}
+
+/**
+ * Old-app parity self-heal (`exportarProdutos.dart` picture_not_found branch):
+ * when ML rejects the publish because a cached picture id no longer exists
+ * (ML purges uploads), strip that entry from the owning Arquivo's
+ * `externalIds` so the NEXT publish re-uploads instead of failing forever on
+ * the same dead id.
+ */
+async function pruneDeadPictures(
+  db: Firestore,
+  err: MercadoLivreError,
+  pictureSources: ReadonlyMap<string, string>,
+): Promise<void> {
+  if (!(err instanceof MercadoLivreHttpError)) return;
+  const body = JSON.stringify(err.body ?? '');
+  if (!body.includes('item.pictures.picture_not_found')) return;
+
+  // ML's cause message: "Picture id <id> does not exist." (the old app parsed
+  // the same string). Only ids we actually sent this publish are pruned.
+  const deadIds = [...body.matchAll(/Picture id (\S+?) does not exist/g)]
+    .map((m) => m[1]!)
+    .filter((id) => pictureSources.has(id));
+
+  for (const dead of deadIds) {
+    const arquivoId = pictureSources.get(dead)!;
+    const snap = await arquivoCollection.docRef(db, {}, arquivoId).get();
+    if (!snap.exists) continue;
+    const arquivo = arquivoCollection.parseRead(
+      snap.data(),
+      arquivoCollection.docPath({}, arquivoId),
+    ) as Arquivo;
+    const kept = (arquivo.externalIds ?? []).filter((e) => e.externalId !== dead);
+    if (kept.length === (arquivo.externalIds ?? []).length) continue;
+    await arquivoCollection.merge(db, {}, arquivoId, { externalIds: kept });
+  }
 }

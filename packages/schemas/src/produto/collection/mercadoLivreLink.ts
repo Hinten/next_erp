@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { millisSinceEpoch } from '../../shared/datetime';
+import { outerRefSchema } from '../../shared/outerRef';
 
 /**
  * Typed write-side schemas for the Mercado Livre listing link docs —
@@ -18,7 +19,9 @@ import { millisSinceEpoch } from '../../shared/datetime';
  * Wire notes (from the generated Dart serializers):
  *  - `estado` is a short string code, 1–2 chars (`ESTADO_PUBLICACAO` @JsonValue);
  *  - `channels` is a plain string array (`['marketplace']`, `['mshops']`, or both);
- *  - `contaOuterRef` is a doc-path STRING to the integracao;
+ *  - every `*OuterRef` is a doc-path STRING in the `documents/<col>/<id>`
+ *    form (`pathWithDocuments` — what `OuterRefField.toJson` stores AND what
+ *    the deployed Flutter backend compares by exact equality in its queries);
  *  - `attributes` are EMBEDDED arrays (the legacy nested `attributesML`
  *    subcollection was dead code — never written);
  *  - dates serialize as int millis; `errors` is written even when null
@@ -60,8 +63,8 @@ export type MlAttributeWire = z.infer<typeof mlAttributeWireSchema>;
 /** `produtos/{id}/produtoMercadoLivre/{docId}` — the listing link doc. */
 export const produtoMercadoLivreLinkSchema = z
   .object({
-    /** Doc-path string to the owning integracao (old `contaOuterRef`). */
-    contaOuterRef: z.string().min(1),
+    /** Canonical `documents/integracao/<id>` path to the owning integracao. */
+    contaOuterRef: outerRefSchema,
     channels: z.array(z.string()).default(['marketplace']),
     estado: estadoPublicacaoMlSchema.default('r'),
 
@@ -105,10 +108,10 @@ export const variacaoMercadoLivreLinkSchema = z
     id: z.number().int().nullable().default(null),
     /** ML item id (User-Products model) — each variation is its own item. */
     itemId: z.string().nullable().default(null),
-    /** Doc-path string to the variation child produto. */
-    produtoVariacaoOuterRef: z.string().min(1),
-    /** Doc-path string to the parent's produtoMercadoLivre link doc. */
-    produtoMercadoLivreOuterRef: z.string().min(1),
+    /** Canonical `documents/produtos/<childId>` path to the variation child. */
+    produtoVariacaoOuterRef: outerRefSchema,
+    /** Canonical `documents/produtos/<id>/produtoMercadoLivre/<docId>` path. */
+    produtoMercadoLivreOuterRef: outerRefSchema,
     sku: z.string().nullable().default(null),
     attributes: z.array(mlAttributeWireSchema).nullable().default(null),
   })

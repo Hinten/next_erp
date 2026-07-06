@@ -23,21 +23,23 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
   const prefix = e2ePrefix('mlpub');
   const contaLinked = `${prefix}-001`;
   const contaUnlinked = `${prefix}-002`;
-  let produtoId = '';
-  let mlItemId = '';
+  // Deterministic (mirrors seedProdutoMlPublicado) so afterAll can always
+  // sweep the link SUBCOLLECTION even when beforeAll dies mid-way — the
+  // nome-prefix sweep only reaches the parent doc, and Firestore never
+  // cascades, so a guard on a beforeAll-assigned id would leak an orphan.
+  const produtoId = `${prefix}-prod`;
+  const mlItemId = 'MLB3609679155';
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
-    const [seeded] = await Promise.all([
+    await Promise.all([
       seedMercadoLivreFixtures(prefix, 2).then(() => seedProdutoMlPublicado(prefix, contaLinked)),
       warmRoutes(browser, ['/produtos/__aquecimento__/editar']),
     ]);
-    produtoId = seeded.produtoId;
-    mlItemId = seeded.mlItemId;
   });
 
   test.afterAll(async () => {
-    if (produtoId) await cleanupProdutoSubcollection(produtoId, 'produtoMercadoLivre');
+    await cleanupProdutoSubcollection(produtoId, 'produtoMercadoLivre');
     await cleanupByNamePrefix('produtos', prefix);
     await cleanupMercadoLivreFixtures(prefix);
   });
@@ -68,7 +70,12 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await expect(card.getByRole('button', { name: 'Publicar no Mercado Livre' })).toBeEnabled();
   });
 
-  test('degrades gracefully when the mercado-livre backend is offline', async ({ page }) => {
+  test('degrades gracefully when the mercado-livre backend is unreachable', async ({ page }) => {
+    // Abort the publish request at the browser level: deterministic in every
+    // environment. (Relying on "nothing listens on :3006" breaks locally,
+    // where `pnpm dev` runs the real backend and the click would surface a
+    // 409/500 toast instead of the network-error mapping under test.)
+    await page.route('**/api/marketplace/mercado-livre/publicar', (route) => route.abort());
     await page.goto(`/produtos/${produtoId}/editar`);
     await page.getByRole('tab', { name: 'Mercado Livre' }).click();
 
@@ -76,7 +83,6 @@ test.describe.serial('Produto Mercado Livre tab e2e — status + publish action'
     await expect(card).toBeVisible({ timeout: 30_000 });
     await card.getByRole('button', { name: 'Publicar no Mercado Livre' }).click();
 
-    // No backend on :3006 in this suite → the client's network-error mapping.
     await expect(
       page.getByText('Não foi possível contatar o serviço do Mercado Livre.'),
     ).toBeVisible({ timeout: 15_000 });
