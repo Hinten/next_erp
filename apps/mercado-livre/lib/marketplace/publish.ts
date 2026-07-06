@@ -405,8 +405,9 @@ function toPublishProduto(
 }
 
 /** Trimmed string, or null when absent/blank (legacy `trim().isNotEmpty`). */
-function trimToNull(s: string | null | undefined): string | null {
-  const t = s?.trim();
+function trimToNull(s: unknown): string | null {
+  if (typeof s !== 'string') return null;
+  const t = s.trim();
   return t ? t : null;
 }
 
