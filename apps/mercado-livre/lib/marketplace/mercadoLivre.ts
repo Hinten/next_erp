@@ -96,6 +96,8 @@ export function mercadoLivreOAuthConfig(): MercadoLivreOAuthConfig {
 
 export interface MercadoLivreContext {
   readonly integracaoId: string;
+  /** The parsed integração doc (tabelas/depósito refs ride through). */
+  readonly conta: Readonly<Record<string, unknown>>;
   readonly channel: MarketplaceChannel;
   readonly store: TokenDuravelStore;
   /**
@@ -138,6 +140,7 @@ export async function loadMercadoLivreContext(
 
   return {
     integracaoId,
+    conta,
     channel,
     store,
     async resolveChannelContext(now: number = Date.now()): Promise<ChannelContext> {
