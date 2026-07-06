@@ -165,6 +165,33 @@ describe('reconcileByRecibo', () => {
     expect(lastPatch().estado).toBe(ESTADO_NFE.aprovada);
   });
 
+  it('autorizada + stored bytes with MATCHING digest → proc extras persisted (#396)', async () => {
+    seedDoc({
+      xml_assinado:
+        '<NFe><infNFe>…</infNFe><Signature><SignedInfo><Reference>' +
+        '<DigestValue>d</DigestValue></Reference></SignedInfo></Signature></NFe>',
+    });
+    // loteRet's protNFe carries digVal 'd' — matches the stored DigestValue.
+    vi.mocked(consultarLote).mockResolvedValue(loteRet('104', '100') as never);
+    await reconcileByRecibo({ ...baseArgs, attempt: 0 });
+    const call = vi.mocked(persistPatch).mock.calls.at(-1)!;
+    expect(call[2]).toBeDefined(); // procPersistExtras present → xml_nfe_proc written
+  });
+
+  it('autorizada + stored bytes with digest MISMATCH → NO proc extras, doc stays aprovada (#396)', async () => {
+    seedDoc({
+      xml_assinado:
+        '<NFe><infNFe>…</infNFe><Signature><SignedInfo><Reference>' +
+        '<DigestValue>OTHER</DigestValue></Reference></SignedInfo></Signature></NFe>',
+    });
+    vi.mocked(consultarLote).mockResolvedValue(loteRet('104', '100') as never);
+    const r = await reconcileByRecibo({ ...baseArgs, attempt: 0 });
+    expect(r.recovered).toBe(1);
+    const call = vi.mocked(persistPatch).mock.calls.at(-1)!;
+    expect(call[1].estado).toBe(ESTADO_NFE.aprovada);
+    expect(call[2]).toBeUndefined(); // no proc — anchor kept for DistDFe/manual fetch
+  });
+
   it('656 (consumo indevido) → terminal error, NEVER retried', async () => {
     seedDoc({ retries: 0 });
     vi.mocked(consultarLote).mockResolvedValue(loteRet('656') as never);

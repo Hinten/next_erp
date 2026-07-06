@@ -136,7 +136,14 @@ export {
 } from './generator';
 
 // `<nfeProc>` envelope — post-emission stitching of signed NFe + protNFe.
-export { buildNFeProc } from './nfeproc';
+export {
+  buildNFeProc,
+  buildNFeProcSafe,
+  compareDigest,
+  extractDigestValue,
+  normalizeDigVal,
+  type DigestComparison,
+} from './nfeproc';
 
 // Eventos (cancelamento + CC-e + EPEC) — builders for the RecepcaoEvento lote.
 export {
