@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
+import forge from 'node-forge';
 
-import { buildNFeProc } from '../../src/nfeproc';
+import {
+  buildNFeProc,
+  compareDigest,
+  extractDigestValue,
+  normalizeDigVal,
+} from '../../src/nfeproc';
+import { signNFe, type NFeCertificate } from '../../src/index';
+import { parse } from '../../src/xml';
+import type { TRetConsSitNFe } from '../../src/types/nfe-schema';
 
 const CHAVE = '35260514200166000187550010000000071000000018';
 const NFE_NS = 'http://www.portalfiscal.inf.br/nfe';
@@ -85,5 +94,114 @@ describe('buildNFeProc', () => {
     const protIdx = xml.indexOf('<protNFe');
     expect(nfeIdx).toBeGreaterThan(0);
     expect(protIdx).toBeGreaterThan(nfeIdx);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Digest guard helpers (#396)
+// ---------------------------------------------------------------------------
+
+/** Self-signed throwaway cert (same pattern as sign.test.ts / tribute tests). */
+function fixtureCertificate(): NFeCertificate {
+  const keys = forge.pki.rsa.generateKeyPair(1024);
+  const cert = forge.pki.createCertificate();
+  cert.publicKey = keys.publicKey;
+  cert.serialNumber = '01';
+  cert.validity.notBefore = new Date();
+  cert.validity.notAfter = new Date(Date.now() + 365 * 24 * 3600 * 1000);
+  const attrs = [{ name: 'commonName', value: 'DIGEST TEST' }];
+  cert.setSubject(attrs);
+  cert.setIssuer(attrs);
+  cert.sign(keys.privateKey, forge.md.sha256.create());
+  return {
+    privateKeyPem: forge.pki.privateKeyToPem(keys.privateKey),
+    certificatePem: forge.pki.certificateToPem(cert),
+    certificateDerBase64: forge.util.encode64(
+      forge.asn1.toDer(forge.pki.certificateToAsn1(cert)).getBytes(),
+    ),
+    subjectCommonName: 'DIGEST TEST:99999999000191',
+    cnpj: '99999999000191',
+    notAfter: cert.validity.notAfter,
+    pfxBuffer: Buffer.from(''),
+    password: '',
+  };
+}
+
+describe('extractDigestValue', () => {
+  it('finds the single DigestValue in REAL xml-crypto output', () => {
+    // Pin the regex against the actual signer output, not a hand-built string.
+    const unsigned = `<NFe xmlns="${NFE_NS}"><infNFe Id="NFe${CHAVE}" versao="4.00"><ide><cUF>35</cUF></ide></infNFe></NFe>`;
+    const signed = signNFe(unsigned, fixtureCertificate());
+    const digest = extractDigestValue(signed);
+    expect(digest).toMatch(/^[A-Za-z0-9+/]+=*$/); // base64, whitespace-free
+    expect(signed).toContain(`<DigestValue>`);
+  });
+
+  it('returns null on zero and on multiple occurrences (ambiguity never blocks)', () => {
+    expect(extractDigestValue('<NFe>no signature</NFe>')).toBeNull();
+    const two = '<x><DigestValue>AAA=</DigestValue><DigestValue>BBB=</DigestValue></x>';
+    expect(extractDigestValue(two)).toBeNull();
+  });
+});
+
+describe('normalizeDigVal', () => {
+  it('accepts bare base64 and strips whitespace', () => {
+    expect(normalizeDigVal('AbCdEf12==')).toBe('AbCdEf12==');
+    expect(normalizeDigVal(' AbCd\nEf12== ')).toBe('AbCdEf12==');
+    expect(normalizeDigVal('')).toBeNull();
+    expect(normalizeDigVal(null)).toBeNull();
+    expect(normalizeDigVal(undefined)).toBeNull();
+  });
+
+  it('unwraps the #raw outer-XML form the wire parser produces', () => {
+    expect(normalizeDigVal('<digVal>AbCdEf12==</digVal>')).toBe('AbCdEf12==');
+  });
+
+  it('round-trips a WIRE-parsed retConsSitNFe digVal (#raw shape pin against codegen drift)', () => {
+    // The codegen META marks digVal as #raw, so parse() returns the OUTER XML.
+    // If a codegen change ever flips it to a text field, this test still passes
+    // (normalizeDigVal accepts both) but documents the current wire shape.
+    const xml =
+      `<retConsSitNFe xmlns="${NFE_NS}" versao="4.00">` +
+      '<tpAmb>2</tpAmb><verAplic>SP_NFE_PL009_V4</verAplic>' +
+      '<cStat>100</cStat><xMotivo>Autorizado o uso da NF-e</xMotivo>' +
+      `<cUF>35</cUF><chNFe>${CHAVE}</chNFe>` +
+      `<protNFe versao="4.00"><infProt><tpAmb>2</tpAmb><verAplic>SP_NFE_PL009_V4</verAplic>` +
+      `<chNFe>${CHAVE}</chNFe><dhRecbto>2026-05-26T15:30:00-03:00</dhRecbto>` +
+      '<nProt>135200000000456</nProt><digVal>AbCdEf12==</digVal>' +
+      '<cStat>100</cStat><xMotivo>Autorizado o uso da NF-e</xMotivo></infProt></protNFe>' +
+      '</retConsSitNFe>';
+    const ret = parse<TRetConsSitNFe>('retConsSitNFe', xml);
+    const rawDigVal = ret.protNFe?.infProt.digVal;
+    expect(rawDigVal).toBeDefined();
+    expect(normalizeDigVal(rawDigVal)).toBe('AbCdEf12==');
+  });
+});
+
+describe('compareDigest', () => {
+  const SIGNED_WITH_DIGEST =
+    `<NFe xmlns="${NFE_NS}"><infNFe Id="NFe${CHAVE}">…</infNFe>` +
+    '<Signature xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo>' +
+    '<Reference><DigestValue>GOOD=</DigestValue></Reference>' +
+    '</SignedInfo></Signature></NFe>';
+
+  it("'match' when both sides carry the same digest (bare and outer-XML forms)", () => {
+    expect(compareDigest(SIGNED_WITH_DIGEST, 'GOOD=')).toBe('match');
+    expect(compareDigest(SIGNED_WITH_DIGEST, '<digVal>GOOD=</digVal>')).toBe('match');
+  });
+
+  it("'mismatch' ONLY when both sides are present and differ", () => {
+    expect(compareDigest(SIGNED_WITH_DIGEST, 'EVIL=')).toBe('mismatch');
+  });
+
+  it("'unknown' when either side is absent — never blocks the normal path", () => {
+    expect(compareDigest(SIGNED_WITH_DIGEST, undefined)).toBe('unknown');
+    expect(compareDigest(SIGNED_WITH_DIGEST, null)).toBe('unknown');
+    expect(compareDigest('<NFe>no signature</NFe>', 'GOOD=')).toBe('unknown');
+  });
+
+  it('is whitespace-insensitive on both sides (XMLDSig permits wrapped base64)', () => {
+    const wrapped = SIGNED_WITH_DIGEST.replace('GOOD=', 'GO\nOD=');
+    expect(compareDigest(wrapped, ' GO OD= ')).toBe('match');
   });
 });

@@ -24,6 +24,7 @@ import { nfev4Collection } from '@delfrance/data/admin/collections';
 import {
   applyOutcome,
   buildNFeProc,
+  compareDigest,
   classifyCStat,
   consultarLote,
   MAX_RECONCILE_ATTEMPTS,
@@ -143,12 +144,17 @@ export async function reconcileByRecibo(params: {
 
     // Build <nfeProc> when SEFAZ authorized this chave and we still hold the
     // matching signed XML — same atomic anchor-clear as the emit path (#128).
+    // The digest guard (#396) refuses to pair the protocol with bytes it did
+    // not authorize (e.g. a pre-fix retry overwrote the anchor with a
+    // regenerated XML); the doc then stays aprovada WITHOUT proc for a
+    // DistDFe/manual fetch.
     const ourProt = ret.protNFe?.find((p) => p.infProt.chNFe === chave) ?? null;
     const nfeProcXml =
       !chaveSwapped &&
       classifyCStat(patch.cStat) === 'autorizada' &&
       ourProt != null &&
-      data.xml_assinado != null
+      data.xml_assinado != null &&
+      compareDigest(data.xml_assinado, ourProt.infProt.digVal) !== 'mismatch'
         ? buildNFeProc(data.xml_assinado, ourProt)
         : null;
 

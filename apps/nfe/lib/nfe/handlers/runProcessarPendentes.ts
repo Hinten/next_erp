@@ -16,6 +16,7 @@ import { cartaCorrecaoCollection, nfev4Collection } from '@delfrance/data/admin/
 import {
   applyOutcome,
   buildNFeProc,
+  compareDigest,
   classifyCStat,
   consultarSituacaoNFe,
   DEFAULT_STUCK_TIMEOUT_MS,
@@ -316,13 +317,17 @@ export async function runProcessarPendentes(args: {
       // persist the `nfeProc` here too (the emit path does it inside
       // `applyAutorizadoOutcome`), so a cron-recovered doc can render a DANFE
       // and sheds the duplicate signed XML in the same atomic write (#128). A
-      // 539 chave-swap skips it (the local signed XML no longer matches).
+      // 539 chave-swap skips it (the local signed XML no longer matches), and
+      // the digest guard (#396) skips it when the stored bytes are not the ones
+      // this protocol authorized (pre-fix regenerated retries) — the doc stays
+      // aprovada WITHOUT proc for a DistDFe/manual fetch.
       const nfeProcXml =
         !chaveSwapped &&
         classifyCStat(patch.cStat) === 'autorizada' &&
         retSit.protNFe != null &&
         retSit.protNFe.infProt.chNFe === data.chave &&
-        data.xml_assinado != null
+        data.xml_assinado != null &&
+        compareDigest(data.xml_assinado, retSit.protNFe.infProt.digVal) !== 'mismatch'
           ? buildNFeProc(data.xml_assinado, retSit.protNFe)
           : null;
       // persistPatch (not an inline merge) so its nRec preservation applies

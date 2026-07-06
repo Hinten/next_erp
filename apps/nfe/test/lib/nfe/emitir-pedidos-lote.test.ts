@@ -412,10 +412,14 @@ function fakeFirestore(opts: BatchHarnessOpts) {
       runTransaction: async <T>(fn: (tx: unknown) => Promise<T>) => {
         const tx = {
           get: (ref: ReturnType<typeof makeRef>) => ref.get(),
-          set: (ref: ReturnType<typeof makeRef>, data: Record<string, unknown>) => {
-            assertSignedXmlNeverLost(ref.path, data, undefined);
-            writes.push({ path: ref.path, data });
-            docs[ref.path] = data;
+          set: (
+            ref: ReturnType<typeof makeRef>,
+            data: Record<string, unknown>,
+            setOpts?: { merge?: boolean },
+          ) => {
+            assertSignedXmlNeverLost(ref.path, data, setOpts?.merge);
+            writes.push({ path: ref.path, data, ...(setOpts?.merge ? { merge: true } : {}) });
+            docs[ref.path] = setOpts?.merge ? { ...(docs[ref.path] ?? {}), ...data } : data;
             opts.events.push(`set:${ref.path}`);
           },
         };
@@ -839,6 +843,52 @@ describe('emitirPedidosLote — bulk numeração (PR-δ win #5)', () => {
     // generator draws a fresh random one.
     const freshGenCall = vi.mocked(generateNFe).mock.calls.find((c) => c[0]?.numeracao === 1);
     expect(freshGenCall?.[0].cNF).toBeUndefined();
+  });
+
+  it('#396: a crash-window member rides the lote with its STORED bytes — no regenerate', async () => {
+    const events: string[] = [];
+    const STORED_XML =
+      '<NFe><infNFe Id="NFe35260514200166000187550010000000007100000009">…stored…</infNFe>' +
+      '<Signature><SignedInfo><Reference><DigestValue>D==</DigestValue></Reference></SignedInfo></Signature></NFe>';
+    const crashExisting = {
+      numeracao: 7,
+      serie: 1,
+      tpEmis: '1',
+      estado: ESTADO_NFE.enviando, // anchor committed, send/outcome lost
+      chave: '35260514200166000187550010000000007100000009',
+      idLote: '3',
+      cStat: null,
+      xMotivo: null,
+      nRec: null,
+      retries: 0,
+      data_emissao: new Date().toISOString(),
+      xml_assinado: STORED_XML,
+    };
+    const { fs, docs } = fakeFirestore({
+      events,
+      pedidos: [
+        { pedidoId: 'PED-FRESH', filialId: 'F-1' },
+        { pedidoId: 'PED-CRASH', filialId: 'F-1', existingNFe: crashExisting },
+      ],
+    });
+    autorizarLoteAsync('RECIBO-1');
+    consultarLoteResolvesGenerated();
+
+    await emitirPedidosLote(fs as never, fakeRuntime(), ['PED-FRESH', 'PED-CRASH']);
+
+    // The stored bytes rode the lote verbatim; only the fresh member was generated.
+    const loteArg = vi.mocked(autorizarLote).mock.calls[0]![1] as { NFe: readonly string[] };
+    expect(loteArg.NFe).toContain(STORED_XML);
+    expect(vi.mocked(generateNFe).mock.calls.some((call) => call[0]?.numeracao === 7)).toBe(false);
+    expect(vi.mocked(generateNFe).mock.calls.some((call) => call[0]?.numeracao === 1)).toBe(true);
+    // Counter advanced by the fresh count only; crash member consumed no nNF.
+    expect(
+      (docs['filiais/F-1/nfeconfig/default'] as { numeracao_atual: number }).numeracao_atual,
+    ).toBe(1);
+    // The crash member's doc kept its anchor and got the shared idLote stamped.
+    const crashDoc = docs['pedidos/PED-CRASH/nfev4/s1'] as Record<string, unknown>;
+    expect(crashDoc.xml_assinado).toBe(STORED_XML);
+    expect(typeof crashDoc.idLote).toBe('string');
   });
 
   it('allocates contiguous fresh nNFs for an all-fresh chunk', async () => {
