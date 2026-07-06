@@ -241,6 +241,10 @@ function contadorOuZero(valor: unknown): number {
  * so a new value could break the Dart parser; the passthrough `subtipo` marker
  * is the structured identifier the UI filters on. Exported for the unit tests.
  */
+/** `incidenteSchema.motivoDoIncidente` caps at 2000 chars — a parse throw here
+ *  would abort the SYNC transaction over an audit nicety, so truncate instead. */
+const MOTIVO_MAX = 2000;
+
 export function incidenteDrift(args: {
   estoqueId: string;
   reservadaAntes: number;
@@ -249,16 +253,18 @@ export function incidenteDrift(args: {
   agoraMs: number;
 }): Record<string, unknown> {
   const agoraUs = args.agoraMs * 1000;
+  const liberado = Math.abs(args.deltaReservada);
+  const motivo =
+    `[Estoque] Divergência de reserva em ${args.estoqueId}: liberação de ` +
+    `${liberado} unidade(s) (delta ${args.deltaReservada}) sobre ${args.reservadaAntes} ` +
+    `reservada(s) foi limitada em 0 — os contadores foram alterados fora da sincronização` +
+    (args.pedidoNumero ? ` (pedido ${args.pedidoNumero})` : '') +
+    `. Confira o estoque físico e ajuste via balanço.`;
   return {
     origem: null,
     tipo: TIPO_INCIDENTE.outros,
     subtipo: 'estoque-drift',
-    motivoDoIncidente:
-      `[Estoque] Divergência de reserva em ${args.estoqueId}: liberação de ` +
-      `${args.deltaReservada} sobre ${args.reservadaAntes} reservado(s) foi limitada em 0 — ` +
-      `os contadores foram alterados fora da sincronização` +
-      (args.pedidoNumero ? ` (pedido ${args.pedidoNumero})` : '') +
-      `. Confira o estoque físico e ajuste via balanço.`,
+    motivoDoIncidente: motivo.length > MOTIVO_MAX ? `${motivo.slice(0, MOTIVO_MAX - 1)}…` : motivo,
     comentarios: null,
     timestamp: agoraUs,
     ultimaModificacao: agoraUs,

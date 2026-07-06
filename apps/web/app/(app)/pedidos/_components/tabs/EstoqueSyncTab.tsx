@@ -116,9 +116,14 @@ function EstoqueSyncView({ pedidoId }: { pedidoId: string }) {
     return nomes;
   }, [pedido?.itens]);
 
+  // `depositos` reads ride the estoque claim (schema perms) — gate like the
+  // movements query; without the claim the raw id is the honest display.
   const depositoRef = useMemo(
-    () => (aplicado?.depositoId ? depositoCollection.docRef(db, {}, aplicado.depositoId) : null),
-    [db, aplicado?.depositoId],
+    () =>
+      podeLerEstoque.allowed && aplicado?.depositoId
+        ? depositoCollection.docRef(db, {}, aplicado.depositoId)
+        : null,
+    [db, aplicado?.depositoId, podeLerEstoque.allowed],
   );
   const depositoSnap = useDocSnapshot(depositoRef);
   const depositoNome = depositoSnap.data?.data.nome ?? aplicado?.depositoId ?? '—';
@@ -141,10 +146,14 @@ function EstoqueSyncView({ pedidoId }: { pedidoId: string }) {
   const movimentosSnap = useSnapshot<HistoricoEstoque>(movimentosQuery);
 
   // Drift incidents (written by the sync when its reservada clamp fires) —
-  // bounded subcollection read, filtered by the structured passthrough marker.
+  // filtered client-side by the structured passthrough marker. Incidentes per
+  // pedido are naturally few; the limit is a defensive bound.
   const incidentesQuery = useMemo(
     () =>
-      buildQuery(incidenteCollection.ref(db, { pedidoId }), [orderByField('timestamp', 'desc')]),
+      buildQuery(incidenteCollection.ref(db, { pedidoId }), [
+        orderByField('timestamp', 'desc'),
+        limit(MOVIMENTOS_LIMIT),
+      ]),
     [db, pedidoId],
   );
   const incidentesSnap = useSnapshot(incidentesQuery);
