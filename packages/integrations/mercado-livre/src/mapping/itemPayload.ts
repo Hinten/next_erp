@@ -133,7 +133,7 @@ function buildVariationPayload(
 }
 
 /**
- * ML listing `status` → the link doc's `estado` single-char code (the old
+ * ML listing `status` → the link doc's `estado` short code, 1–2 chars (the old
  * `ESTADO_PUBLICACAO.fromMercadoLivre`, models.dart 676–694).
  */
 export const ESTADO_PUBLICACAO = {

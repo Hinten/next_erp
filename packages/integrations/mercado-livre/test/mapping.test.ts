@@ -192,7 +192,7 @@ describe('buildItemPayload — User Products seller', () => {
 });
 
 describe('estadoFromMlStatus', () => {
-  it('maps the ML statuses to the old single-char estado codes', () => {
+  it('maps the ML statuses to the old short-code estados', () => {
     expect(estadoFromMlStatus('active')).toBe(ESTADO_PUBLICACAO.publicado);
     expect(estadoFromMlStatus('paused')).toBe(ESTADO_PUBLICACAO.pausado);
     expect(estadoFromMlStatus('closed')).toBe(ESTADO_PUBLICACAO.cancelado);

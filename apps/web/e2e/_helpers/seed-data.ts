@@ -1437,14 +1437,17 @@ export async function seedProdutoComFilho(prefix: string): Promise<{
 /**
  * Seed one simple produto to use as a kit COMPONENT (`ehKit: false`) with a known
  * `custo`, so the Kit tab can add it and recompute the kit cost. Returns id/nome/sku.
+ * `suffix` distinguishes multiple components under one prefix (default keeps the
+ * historical `<prefix>-comp` id).
  */
 export async function seedComponenteKit(
   prefix: string,
   custo = 10,
+  suffix = 'comp',
 ): Promise<{ id: string; nome: string; sku: string }> {
-  const id = `${prefix}-comp`;
-  const nome = `${prefix}-comp`;
-  const sku = `${prefix.toUpperCase().replace(/-/g, '_')}_COMP`;
+  const id = `${prefix}-${suffix}`;
+  const nome = `${prefix}-${suffix}`;
+  const sku = `${prefix.toUpperCase().replace(/-/g, '_')}_${suffix.toUpperCase()}`;
   await db().collection('produtos').doc(id).set({
     nome,
     sku,
@@ -1494,6 +1497,90 @@ export async function seedKitReferencing(
       timestamp: new Date().toISOString(),
     });
   return { kitId, kitNome };
+}
+
+/**
+ * Seed a per-depósito estoque doc `produtos/<id>/estoques/est-<produtoId>-<depositoId>`
+ * with the full wire shape the app's converter parses (see the shape asserted in
+ * `produto-estoque.emulator.e2e.spec.ts`). Quantities are Admin-seeded — display
+ * tests don't go through the `aplicarEstoque` callable.
+ */
+export async function seedEstoqueDoc(
+  produtoId: string,
+  depositoId: string,
+  quantidade: number,
+  quantidadeReservada = 0,
+): Promise<void> {
+  await db()
+    .collection('produtos')
+    .doc(produtoId)
+    .collection('estoques')
+    .doc(`est-${produtoId}-${depositoId}`)
+    .set({
+      parentId: produtoId,
+      depositoOuterRef: `documents/depositos/${depositoId}`,
+      quantidade,
+      quantidadeReservada,
+      localizacao: null,
+      variacoes: null,
+      ultimaModificacao: Date.now(),
+      dataCriacao: Date.now(),
+    });
+}
+
+/**
+ * Seed the graph the kit available-stock e2e needs (#238): one active depósito,
+ * two `limitarEstoque` components with stock there (c1: 10−1 res → 9/2 = 4.5
+ * buildable; c2: 11 → 11/3 ≈ 3.67 buildable = the min) and a kit produto
+ * (quantidades 2 and 3) holding 1 pre-assembled unit of its own — so the
+ * Estoque tab's Disponível cell must read `1,00 (4,67)`.
+ */
+export async function seedKitEstoqueFixtures(prefix: string): Promise<{
+  kitId: string;
+  comp1Id: string;
+  comp2Id: string;
+  depositoId: string;
+  depositoNome: string;
+}> {
+  const dep = await seedDepositoAtivo(prefix);
+  const comp1 = await seedComponenteKit(prefix, 10, 'comp1');
+  const comp2 = await seedComponenteKit(prefix, 10, 'comp2');
+
+  const kitId = `${prefix}-kit`;
+  await db()
+    .collection('produtos')
+    .doc(kitId)
+    .set({
+      nome: `${prefix}-kit`,
+      sku: `${prefix.toUpperCase().replace(/-/g, '_')}_KIT`,
+      paiId: null,
+      ordem: null,
+      publicado: true,
+      ehKit: true,
+      ehKitVirtual: false,
+      ofereceFreteGratis: false,
+      permiteVendaSemEstoque: false,
+      componentesKitKeys: [comp1.id, comp2.id],
+      componentesKit: {
+        [comp1.id]: { quantidade: 2, limitarEstoque: true },
+        [comp2.id]: { quantidade: 3, limitarEstoque: true },
+      },
+      fotos: null,
+      videos: null,
+      timestamp: new Date().toISOString(),
+    });
+
+  await seedEstoqueDoc(kitId, dep.id, 1, 0);
+  await seedEstoqueDoc(comp1.id, dep.id, 10, 1);
+  await seedEstoqueDoc(comp2.id, dep.id, 11, 0);
+
+  return {
+    kitId,
+    comp1Id: comp1.id,
+    comp2Id: comp2.id,
+    depositoId: dep.id,
+    depositoNome: dep.nome,
+  };
 }
 
 /**
@@ -1614,6 +1701,66 @@ export async function seedVariacaoMlLink(produtoId: string): Promise<void> {
       produtoMercadoLivreOuterRef: `produtos/${produtoId}/produtoMercadoLivre/mlb-item`,
       sku: null,
     });
+}
+
+/**
+ * Seed one plain produto plus a PUBLISHED `produtoMercadoLivre` link doc bound
+ * to the given integração (the old Flutter wire shape: `contaOuterRef` bare
+ * doc-path string, short-code `estado`), so the produto editor's Mercado
+ * Livre tab has a published row to render without any live ML backend.
+ */
+export async function seedProdutoMlPublicado(
+  prefix: string,
+  integracaoId: string,
+): Promise<{ produtoId: string; nome: string; mlItemId: string }> {
+  const produtoId = `${prefix}-prod`;
+  const nome = `${prefix}-prod`;
+  const mlItemId = 'MLB3609679155';
+  const now = Date.now();
+  const batch = db().batch();
+  batch.set(db().collection('produtos').doc(produtoId), {
+    nome,
+    sku: `${prefix.toUpperCase().replace(/-/g, '_')}_ML`,
+    publicado: true,
+    ehKit: false,
+    ehKitVirtual: false,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    fotos: null,
+    videos: null,
+    paiId: null,
+    ordem: null,
+    timestamp: new Date().toISOString(),
+  });
+  batch.set(
+    db().collection('produtos').doc(produtoId).collection('produtoMercadoLivre').doc(mlItemId),
+    {
+      contaOuterRef: `integracao/${integracaoId}`,
+      channels: ['marketplace'],
+      estado: 'p',
+      id: mlItemId,
+      sku: null,
+      descricao: null,
+      site_id: 'MLB',
+      title: nome,
+      category_id: 'MLB31447',
+      condition: 'new',
+      listing_type_id: 'gold_special',
+      crossdocking: 0,
+      freteGratis: false,
+      precoPublicado: 79.9,
+      tarifaFrete: null,
+      comissao: null,
+      isUserProductModel: false,
+      video_id: null,
+      attributes: null,
+      errors: null,
+      ultimaModificacao: now,
+      dataCadastro: now,
+    },
+  );
+  await batch.commit();
+  return { produtoId, nome, mlItemId };
 }
 
 /**

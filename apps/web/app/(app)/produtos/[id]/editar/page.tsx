@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Anchor, Stack } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { z } from 'zod';
 import { type FieldConfig, ObjectView, PageHeader, stripMarkedForDeletion } from '@delfrance/ui';
 import { PERM } from '@delfrance/auth';
 import {
@@ -42,6 +43,7 @@ import { useAuth, usePermission } from '@/lib/auth';
 import { AnexoManager } from '../../_components/AnexoManager';
 import { PhotoManager } from '@/components/photo-manager/PhotoManager';
 import { CustoField } from '../../_components/CustoField';
+import { MercadoLivreManager } from '../../_components/MercadoLivreManager';
 import { EhKitField } from '../../_components/EhKitField';
 import { EstoqueManager } from '../../_components/EstoqueManager';
 import { ExtraDataManager } from '../../_components/ExtraDataManager';
@@ -60,6 +62,23 @@ import {
 
 /** Max referencing kits listed in the #246 promotion warning (a capped preview). */
 const REFERENCED_BY_DISPLAY = 5;
+
+/**
+ * Edit-only page schema: the aggregate model plus the `mercadoLivre` UI anchor
+ * — a transient key whose only job is giving the Mercado Livre tab a field
+ * descriptor (the tab is self-contained; nothing is read from or written to
+ * the form value). Edit-only because publishing needs a SAVED produto, so the
+ * create page keeps the plain aggregate.
+ */
+const produtoEditarSchema = produtoPageBaseSchema.extend({
+  mercadoLivre: z.null().default(null),
+});
+
+/** Tab order for the edit page — the shared sections plus Mercado Livre. */
+const PRODUTO_SECTIONS_EDITAR = [...PRODUTO_SECTIONS, 'Mercado Livre'];
+
+/** The shared transient keys plus the Mercado Livre tab anchor. */
+const PRODUTO_TRANSIENT_FIELDS_EDITAR = [...PRODUTO_TRANSIENT_FIELDS, 'mercadoLivre'];
 
 export default function EditarProdutoPage() {
   const params = useParams<{ id: string }>();
@@ -382,6 +401,16 @@ export default function EditarProdutoPage() {
           />
         ),
       },
+      mercadoLivre: {
+        label: 'Mercado Livre',
+        section: 'Mercado Livre',
+        // Self-contained tab (like Estoque): live link-doc status + the publish
+        // action against the apps/mercado-livre backend, decoupled from this
+        // form's save.
+        renderInput: (p) => (
+          <MercadoLivreManager produtoId={params.id} db={db} disabled={p.disabled} />
+        ),
+      },
       componentesKit: {
         label: 'Componentes do kit',
         section: 'Kit',
@@ -460,15 +489,15 @@ export default function EditarProdutoPage() {
         }
       />
       <ObjectView
-        schema={produtoPageBaseSchema}
+        schema={produtoEditarSchema}
         collection={produtoCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}
         recordId={params.id}
-        sections={PRODUTO_SECTIONS}
+        sections={PRODUTO_SECTIONS_EDITAR}
         fields={fields}
         excludedFields={PRODUTO_EXCLUDED_FIELDS}
-        transientFields={PRODUTO_TRANSIENT_FIELDS}
+        transientFields={PRODUTO_TRANSIENT_FIELDS_EDITAR}
         transactionWrites={(id, values) => buildProdutoTransactionWrites(db, id, values)}
         deriveOnSave={(values) => {
           // Keep the Flutter wire shapes on every save: bare group ids sorted

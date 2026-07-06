@@ -27,6 +27,12 @@ export { tokenMelEnvCollection } from './tokenMelEnvCollection';
 export { integracaoCollection } from './integracaoCollection';
 export { credenciaisIntegracaoCollection } from './credenciaisIntegracaoCollection';
 export { tokenDuravelCollection } from './tokenDuravelCollection';
+export {
+  produtoMercadoLivreLinkCollection,
+  variacaoMercadoLivreLinkCollection,
+} from './produtoMercadoLivreLinkCollection';
+export { grupoDeVariacoesCollection } from './grupoDeVariacoesCollection';
+export { produtoExtraDataCollection } from './produtoExtraDataCollection';
 export { pedidoCollection } from './pedidoCollection';
 export { operacaoCollection } from './operacaoCollection';
 export { incidenteCollection } from './incidenteCollection';
