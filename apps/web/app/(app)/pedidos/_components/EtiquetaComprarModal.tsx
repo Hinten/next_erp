@@ -130,6 +130,14 @@ export function EtiquetaComprarModal({
       }),
   });
   const agencies = useMemo(() => agencias.data?.agencies ?? [], [agencias.data]);
+  // Block the buy until the agency lookup settles (review): cached data keeps
+  // the modal rendered through a refetch (`isLoading` false), and buying
+  // mid-flight could send the payload without an `agency` — in the
+  // no-agency-in-city case the server auto-resolve finds nothing either and the
+  // cart insert dies with ME's opaque 500. `isPending` covers the enable-gap
+  // render before the fetch starts; an errored lookup releases the buy (the
+  // auto-resolve degrade stays available).
+  const agenciasSettling = agenciasEnabled && (agencias.isPending || agencias.isFetching);
 
   // Prefill: the persisted choice (`externalOptionData.agency`) when it is
   // still in the list, else the first agency — ME orders by proximity, so
@@ -154,7 +162,7 @@ export function EtiquetaComprarModal({
   }
 
   async function handleBuy() {
-    if (!client || !resolved) return;
+    if (!client || !resolved || cartInput.isFetching || agenciasSettling) return;
     setBuying(true);
     try {
       const picked = agencyValue != null ? Number(agencyValue) : Number.NaN;
@@ -258,7 +266,9 @@ export function EtiquetaComprarModal({
             </Button>
             <Button
               onClick={handleBuy}
-              loading={buying || cartInput.isLoading}
+              // `isFetching` (not `isLoading`) also spins through a cached
+              // reopen's refetch — the resolved payload must be fresh at buy.
+              loading={buying || cartInput.isFetching || agenciasSettling}
               disabled={!client || !resolved || (needsPostedConfirm && !ack)}
               color={needsPostedConfirm ? 'orange' : undefined}
             >
