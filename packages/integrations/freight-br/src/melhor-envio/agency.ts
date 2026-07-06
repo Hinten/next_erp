@@ -9,10 +9,10 @@
  * and are left untouched.
  *
  * The legacy app never sent `agency`; ME made it mandatory for these carriers
- * since. This resolves it automatically (port "auto-select" — a UI picker is a
- * planned follow-up): find the carrier behind the selected `service`, list its
- * agencies near the sender, and inject the first one. A caller that already
- * chose an `agency` (the future picker) short-circuits this.
+ * since. This resolves it automatically (port "auto-select"): find the carrier
+ * behind the selected `service`, list its agencies near the sender, and inject
+ * the first one. A caller that already chose an `agency` (the buy modal's
+ * picker, #377) short-circuits this.
  */
 import type { Agency, CartInsertRequest, ShipmentService } from './types';
 
@@ -36,14 +36,17 @@ type CartWithAgency = CartInsertRequest & {
 /**
  * Pick the drop-off agency to use. ME returns agencies ordered by proximity to
  * the queried location, so the first is the nearest — good enough for
- * auto-select. (The future picker will let the user choose.)
+ * auto-select. (The buy modal's picker prefills this same choice, visibly.)
  */
 export function pickAgency(agencies: readonly Agency[]): Agency | null {
   return agencies[0] ?? null;
 }
 
 /** The company (carrier) id behind a `service` id, or null if unknown. */
-async function companyForService(api: AgencyResolverApi, service: number): Promise<number | null> {
+export async function companyForService(
+  api: AgencyResolverApi,
+  service: number,
+): Promise<number | null> {
   const services = await api.listServices();
   return services.find((s) => s.id === service)?.company?.id ?? null;
 }

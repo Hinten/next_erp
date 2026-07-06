@@ -4,6 +4,7 @@
  */
 export {
   createFreightHttpClient,
+  type FreightAgenciasResult,
   type FreightComprarResult,
   type FreightContaResult,
   type FreightHttpClient,
@@ -28,6 +29,7 @@ export {
 // Re-export the ME wire types apps/web needs to build calculate requests
 // and render quote responses (type-only — erased from the bundle).
 export type {
+  Agency,
   Balance,
   CalculateOption,
   CalculateRequest,
@@ -51,6 +53,7 @@ export {
 // request before calling `client.comprar`. Domain-neutral, no server deps.
 export {
   buildCartItem,
+  withCartAgency,
   type BuildCartItemParams,
   type CartAddressInput,
   type CartOptionsInput,

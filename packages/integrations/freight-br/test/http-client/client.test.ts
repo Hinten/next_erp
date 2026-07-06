@@ -57,6 +57,23 @@ describe('FreightHttpClient happy paths', () => {
     expect(out.me?.firstname).toBe('Magno');
     expect(out.balance?.balance).toBe(10);
   });
+
+  it('agencias GETs the service + sender location and returns the agencies', async () => {
+    const body = { agencies: [{ id: 195, name: 'JADLOG CAXIAS DO SUL' }] };
+    const fetchMock = mockFetch(async () => new Response(JSON.stringify(body), { status: 200 }));
+    const out = await client(fetchMock).agencias('int-1', {
+      service: 3,
+      state: 'RS',
+      city: 'Caxias do Sul',
+    });
+    expect(out.agencies[0]!.id).toBe(195);
+    const u = new URL(String(fetchMock.mock.calls[0]![0]));
+    expect(u.pathname).toBe('/api/freight/melhor-envio/agencias');
+    expect(u.searchParams.get('intFreteId')).toBe('int-1');
+    expect(u.searchParams.get('service')).toBe('3');
+    expect(u.searchParams.get('state')).toBe('RS');
+    expect(u.searchParams.get('city')).toBe('Caxias do Sul');
+  });
 });
 
 describe('FreightHttpClient error mapping', () => {

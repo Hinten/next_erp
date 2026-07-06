@@ -88,9 +88,15 @@ export async function POST(req: Request): Promise<NextResponse> {
       },
     });
 
+    // Persist the drop-off agency the buy carried (#377) so the operator's
+    // picker choice survives onto the doc (`externalOptionData.agency`) and a
+    // later re-buy/reprint sees it. Auto-resolved agencies (payload without
+    // one) don't reach here — only an explicit client-set value is recorded.
+    const agency = (cartPayload as { agency?: unknown }).agency;
     await pedidoRef.update({
       'freteInicial.estado': 'aguardandoPostagem',
       'freteInicial.codRastreio': result.tracking,
+      ...(typeof agency === 'number' ? { 'freteInicial.externalOptionData.agency': agency } : {}),
     });
 
     return NextResponse.json({

@@ -70,7 +70,17 @@ export function etiquetaRowState(input: EtiquetaRowStateInput): EtiquetaRowState
 }
 
 export type ResolveEtiquetaCartResult =
-  | { readonly ok: true; readonly payload: CartInsertRequest; readonly intFreteId: string }
+  | {
+      readonly ok: true;
+      readonly payload: CartInsertRequest;
+      readonly intFreteId: string;
+      /**
+       * The shipment's sender location (`payload.from` — post reverse-swap, so
+       * it matches where `ensureCartAgency` would look) — feeds the buy modal's
+       * agency picker query. Empty address parts come through as null.
+       */
+      readonly remetente: { readonly estado: string | null; readonly cidade: string | null };
+    }
   | { readonly ok: false; readonly error: string };
 
 async function readDoc<T>(db: Firestore, ref: unknown): Promise<T | null> {
@@ -145,5 +155,14 @@ export async function resolveEtiquetaCartInput(
     invoiceKey,
   });
 
-  return { ok: true, payload, intFreteId: integracaoRef.id };
+  // `from` is passthrough on `CartInsertRequest`; read it back off the built
+  // payload (not the integração) so a reverse shipment reports the recipient
+  // side — the same address `ensureCartAgency` queries agencies against.
+  const from = (payload as { from?: { state_abbr?: string; city?: string } }).from;
+  const remetente = {
+    estado: from?.state_abbr?.trim() || null,
+    cidade: from?.city?.trim() || null,
+  };
+
+  return { ok: true, payload, intFreteId: integracaoRef.id, remetente };
 }

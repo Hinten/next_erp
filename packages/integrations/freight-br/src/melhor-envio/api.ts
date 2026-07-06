@@ -60,7 +60,8 @@ export interface MelhorEnvioApi {
     company: number | null;
     country: string;
     state: string;
-    city: string;
+    /** Omit for a state-wide list (the picker's no-agency-in-city fallback). */
+    city?: string;
   }): Promise<Agency[]>;
   /**
    * `POST /api/v2/me/cart` — insert a freight item, returns the label/order.
@@ -165,13 +166,13 @@ export function createMelhorEnvioApi(config: MelhorEnvioApiConfig): MelhorEnvioA
     company: number | null;
     country: string;
     state: string;
-    city: string;
+    city?: string;
   }): Promise<Agency[]> => {
     const q = new URLSearchParams({
       country: params.country,
       state: params.state,
-      city: params.city,
     });
+    if (params.city != null) q.set('city', params.city);
     if (params.company != null) q.set('company', String(params.company));
     return request<Agency[]>(
       'GET',

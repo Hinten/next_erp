@@ -122,6 +122,22 @@ describe('POST /api/freight/melhor-envio/comprar', () => {
     });
   });
 
+  it('persists the client-picked drop-off agency onto externalOptionData (#377)', async () => {
+    h.verifyIdToken.mockResolvedValue(WRITER);
+    const res = await POST(
+      req(
+        { ...VALID_BODY, cartPayload: { service: 3, agency: 195 } },
+        { authorization: 'Bearer t' },
+      ),
+    );
+    expect(res.status).toBe(200);
+    expect(h.pedidoUpdate).toHaveBeenNthCalledWith(2, {
+      'freteInicial.estado': 'aguardandoPostagem',
+      'freteInicial.codRastreio': 'ME123BR',
+      'freteInicial.externalOptionData.agency': 195,
+    });
+  });
+
   it('resumes from the doc printLabelId (ignoring a stale null in the body) — no double-buy', async () => {
     h.verifyIdToken.mockResolvedValue(WRITER);
     // The pedido already has a bought + paid label persisted on its doc...
