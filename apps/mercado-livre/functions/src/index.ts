@@ -5,8 +5,12 @@ import './options';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { logger } from 'firebase-functions/v2';
 
-import { reprocessNotifications } from '../../lib/marketplace/notificacao';
+import {
+  MERCADO_LIVRE_NOTIFICATION_QUEUE,
+  reprocessNotifications,
+} from '../../lib/marketplace/notificacao';
 import { getDb } from './lib/admin';
+import * as notificationHandlers from './processNotification';
 
 /**
  * Mercado Livre Cloud Functions (gen2), codebase `mercado-livre`. Deployed as a
@@ -18,6 +22,21 @@ import { getDb } from './lib/admin';
  * reprocess sweep; `importMercadoLivreOrders` stays a skeleton until the
  * order-import milestone (#362).
  */
+
+// Rename-safety: the DEPLOYED function name is the export KEY of the handler
+// below, and the receiver enqueues against `MERCADO_LIVRE_NOTIFICATION_QUEUE`.
+// ESM export names must be static literals (you can't compute an `export const`
+// name), so instead of deriving one from the other we assert — at module load,
+// i.e. during Firebase's deploy codebase-analysis — that they never drifted. A
+// rename that updates only one side fails the deploy loudly here instead of
+// silently enqueuing onto a queue that doesn't exist.
+if (!(MERCADO_LIVRE_NOTIFICATION_QUEUE in notificationHandlers)) {
+  throw new Error(
+    `[mercado-livre] function-name drift: functions/src/processNotification.ts must export a ` +
+      `handler named '${MERCADO_LIVRE_NOTIFICATION_QUEUE}' (the enqueue target). ` +
+      `Rename the export and the MERCADO_LIVRE_NOTIFICATION_QUEUE constant together.`,
+  );
+}
 
 /** The queue-based notification processor (rate-limited, retry-with-backoff). */
 export { processMercadoLivreNotification } from './processNotification';
