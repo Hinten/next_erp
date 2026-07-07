@@ -17,7 +17,9 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 - `app/api/oauth/mercado-livre/callback` — **#291**: public browser redirect target;
   the signed `state` is the only trust anchor → verify → exchange code → persist.
 - `app/api/webhooks/mercado-livre` — **#290**: ML notification receiver (unauthenticated
-  `topic`+`resource` callbacks — ML does NOT HMAC-sign; contrast Shopee); acks 200 fast.
+  `topic`+`resource` callbacks — ML does NOT HMAC-sign; contrast Shopee); validates + enqueues
+  onto the `processMercadoLivreNotification` Cloud Tasks queue and acks 200 fast (no Firestore
+  write on the happy path — see `lib/marketplace/mlTasks.ts` + `functions/DEPLOY.md`).
 - `lib/marketplace/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
 - `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only
@@ -32,9 +34,11 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
 
 OAuth connect is **live**: code exchange + persistence (tokenDuravel) + the
 concurrency-safe refresh + the conta status route all work; apps/web's
-`/canais/mercado-livre` UI drives them. The webhook receiver acks but does not
-process yet, and the nested functions are skeletons — those land with the
-import/order milestones of the ML port plan.
+`/canais/mercado-livre` UI drives them. The webhook receiver enqueues onto the
+`processMercadoLivreNotification` Cloud Tasks queue (Step 6 resilience
+foundation) + an `onSchedule` reprocess sweep; the per-topic handlers (order /
+payment / shipment / stock / price / claim) are no-ops until their import/order
+milestones of the ML port plan.
 
 ## Env
 

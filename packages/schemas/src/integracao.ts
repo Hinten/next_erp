@@ -93,6 +93,16 @@ export const integracaoSchema = z
     cor: z.number().int().nullable().default(null),
     modalidadeFreteImportacao: z.number().int().nullable().default(null),
 
+    /**
+     * The marketplace seller id this account maps to (Mercado Livre's numeric
+     * `user_id`), denormalized onto the doc so an inbound webhook can resolve
+     * its owning integração with a single equality query — the old
+     * `ContaMercadoLivre.user_id` (int?, models.dart:199). Null for channels
+     * that don't carry one. Stamped at OAuth exchange; the Flutter app already
+     * writes it for accounts it connected (dual-run parity).
+     */
+    user_id: z.number().int().nullable().default(null),
+
     // Outer references — `documents/<col>/<id>` doc-path strings (Flutter ODM).
     // Nullable so a legacy integração without a given ref (e.g. a marketplace
     // channel with no filial) still reads/saves; the balcão form requires the
