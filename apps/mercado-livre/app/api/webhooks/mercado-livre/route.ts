@@ -10,9 +10,11 @@
  *
  * The receiver must answer `200` FAST so ML stops retrying, and do the heavy
  * work asynchronously. Step 6 (#290/#360): persist the raw notification BLIND
- * (no account lookup in the hot path) at a fixed doc id = the ML `_id` (natural
- * cross-delivery dedup — a retry upserts the same doc) in the TOP-LEVEL
- * `notificacoesMercadoLivre` collection, then ack. The nested Cloud Functions
+ * (no account lookup in the hot path) via `create` at a fixed doc id = the ML
+ * `_id` in the TOP-LEVEL `notificacoesMercadoLivre` collection, then ack. The
+ * `create` is the cross-delivery dedup: a redelivery of the same `_id` throws
+ * ALREADY_EXISTS and is acked WITHOUT rewriting the doc (its processed state is
+ * preserved — never reset to `pending`). The nested Cloud Functions
  * (`onDocumentCreated` + an `onSchedule` sweep) resolve the account and apply
  * the resource. If the persist itself fails we throw → 5xx so ML redelivers.
  *

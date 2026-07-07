@@ -31,7 +31,11 @@ export type NotificacaoStatus = z.infer<typeof notificacaoStatusSchema>;
 
 export const notificacaoMercadoLivreSchema = z
   .object({
-    /** The ML notification id (`_id`/`id`) — also the Firestore doc id. */
+    /**
+     * The ML notification id (`_id`/`id`) — normally also the Firestore doc
+     * id (the receiver keys the doc by it for dedup). Null on the rare body
+     * with no id, where the receiver mints an auto doc id instead.
+     */
     id: z.string().nullable().default(null),
     /** ML resource pointer, e.g. `/orders/2000...` or `/items/MLB123`. */
     resource: z.string().min(1),

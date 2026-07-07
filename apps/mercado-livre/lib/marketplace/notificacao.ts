@@ -20,7 +20,7 @@
  *                 retry it. `processNotification` itself never wraps these.
  */
 import type { Firestore } from 'firebase-admin/firestore';
-import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, type NotificacaoStatus } from '@delfrance/schemas';
 import {
   integracaoCollection,
   notificacaoMercadoLivreCollection,
@@ -137,10 +137,21 @@ export interface ProcessResult {
 }
 
 /**
- * Process one persisted notification idempotently. Safe to call from both the
- * create trigger and the sweep: a terminal doc (`done`/`parked`) is skipped,
- * and every path is a content-only status write, so an at-least-once replay
- * never double-applies.
+ * Process one persisted notification. Safe to call from both the create
+ * trigger and the sweep: a terminal doc (`done`/`parked`) is skipped, and
+ * every foundation path is a content-only status write, so an at-least-once
+ * replay of THIS function never double-applies.
+ *
+ * Concurrency contract for the per-topic handlers (Steps 9–14): the trigger's
+ * `{ retry: true }` and the sweep are at-least-once, and their windows can
+ * (rarely) overlap — the sweep only selects docs older than 1h, by which time
+ * a healthy trigger has finished, but a still-retrying trigger could coincide.
+ * So a handler must NOT rely on the pre-work status guard for exactly-once —
+ * it must be **idempotent keyed by the ML resource id** (e.g. upsert the
+ * pedido/produto by ML order/item id, the plan's all-or-throw reconciliation),
+ * which makes a double-fetch harmless. A transactional lease was considered and
+ * deferred: it adds a stuck-`processing` failure mode for no correctness gain
+ * over handler-level idempotency, which the plan already mandates.
  */
 export async function processNotification(db: Firestore, docId: string): Promise<ProcessResult> {
   const ref = notificacaoMercadoLivreCollection.docRef(db, {}, docId);
@@ -202,7 +213,12 @@ export async function processNotification(db: Firestore, docId: string): Promise
 async function mark(
   db: Firestore,
   docId: string,
-  patch: { status: string; tentativas: number; erro: string | null; processedAt: number },
+  patch: {
+    status: NotificacaoStatus;
+    tentativas: number;
+    erro: string | null;
+    processedAt: number;
+  },
 ): Promise<void> {
   await notificacaoMercadoLivreCollection.merge(db, {}, docId, patch);
 }
