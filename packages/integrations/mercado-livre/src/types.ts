@@ -241,3 +241,60 @@ export const packSchema = z
   })
   .passthrough();
 export type MlPack = z.infer<typeof packSchema>;
+
+/* ------------------------------ Size charts ------------------------------ */
+
+/**
+ * `GET /domains/{id}/technical_specs` and the `?section=grids` POST variant —
+ * the spec tree the chart-cadastro UI renders (groups → components →
+ * attributes with tags like `grid_template_required` / `grid_filter` /
+ * `main_attribute_candidate`). Deliberately near-opaque: the shape is deep,
+ * ML-owned and consumed by the UI, so every level is passthrough.
+ */
+export const technicalSpecsSchema = z
+  .object({
+    attributes: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+    groups: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  })
+  .passthrough();
+export type MlTechnicalSpecs = z.infer<typeof technicalSpecsSchema>;
+
+/** One row of a chart API response (`rows[].id` = `'<chartId>:<n>'`). */
+export const sizeChartApiRowSchema = z
+  .object({
+    id: z.union([z.string(), z.number()]).nullable().optional(),
+    attributes: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  })
+  .passthrough();
+
+/**
+ * `POST /catalog/charts` / `PUT /catalog/charts/{id}` / row endpoints — the
+ * full chart the API echoes back (create AND row calls return the whole
+ * chart; the legacy write-back reads `id`, `main_attribute_id` and the
+ * per-index `rows[].id`).
+ */
+export const sizeChartApiSchema = z
+  .object({
+    id: z.union([z.string(), z.number()]),
+    main_attribute_id: z.string().nullable().optional(),
+    rows: z.array(sizeChartApiRowSchema).nullable().optional(),
+  })
+  .passthrough();
+export type MlSizeChartApi = z.infer<typeof sizeChartApiSchema>;
+
+/** `GET /catalog/charts/{site}/configurations/active_domains`. */
+export const activeChartDomainsSchema = z
+  .object({
+    domains: z.array(z.object({ domain_id: z.string() }).passthrough()).default([]),
+  })
+  .passthrough();
+export type MlActiveChartDomains = z.infer<typeof activeChartDomainsSchema>;
+
+/** `GET /catalog_domains/{id}` — human label for the domain picker. */
+export const catalogDomainSchema = z
+  .object({
+    id: z.string().nullable().optional(),
+    name: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlCatalogDomain = z.infer<typeof catalogDomainSchema>;

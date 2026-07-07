@@ -1,23 +1,22 @@
 /**
- * `POST /api/marketplace/mercado-livre/publicar` — publish (or re-publish) a
- * produto as a Mercado Livre listing. Body:
- * `{ integracaoId, produtoId, listingTypeId? }` — `listingTypeId` applies only
- * to FIRST publishes (the link doc's persisted value wins on re-publish).
- * Requires `PERM.integracao.write`.
- *
- * Responses: 200 `{ itemId, estado, permalink }`; 422 `ML_PUBLISH_BLOCKED`
- * with the validation issues (missing price/category/photos…); ML/API errors
- * map through `mercadoLivreErrorResponse` (reauth → 409, upstream → 502…).
+ * `POST /api/marketplace/mercado-livre/size-charts/sync` — send one
+ * integração's edited size charts to ML and persist the resulting ids on the
+ * tabMedi doc. Body `{ integracaoId, tabMediId, tabelas: [...] }` (the
+ * DESIRED chart list; the stored doc is the diff baseline). Response 200
+ * `{ tabelas, validationErrors, updated }` — ML chart-validation problems are
+ * DATA (partial success is normal, legacy parity), not an HTTP error; only
+ * infrastructure failures map to error statuses. Requires
+ * `PERM.integracao.write`.
  */
 import { NextResponse } from 'next/server';
+import { ZodError } from 'zod';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
 import { getAdminFirestore } from '@/lib/firebase/admin';
 import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
-import { publishProduto } from '@/lib/marketplace/publish';
-import { MercadoLivrePublishError } from '@/lib/marketplace/publishCore';
+import { TabelaDeMedidasNotFoundError, syncSizeCharts } from '@/lib/marketplace/sizeChartSync';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -39,10 +38,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return NextResponse.json({ error: 'Body JSON inválido.' }, { status: 400 });
   }
-  const body = parsed as { integracaoId?: string; produtoId?: string; listingTypeId?: string };
-  if (!body.integracaoId || !body.produtoId) {
+  const body = parsed as { integracaoId?: string; tabMediId?: string; tabelas?: unknown };
+  if (!body.integracaoId || !body.tabMediId || !Array.isArray(body.tabelas)) {
     return NextResponse.json(
-      { error: 'integracaoId e produtoId são obrigatórios.' },
+      { error: 'integracaoId, tabMediId e tabelas são obrigatórios.' },
       { status: 400 },
     );
   }
@@ -53,30 +52,23 @@ export async function POST(req: Request): Promise<NextResponse> {
     const channelCtx = await ctx.resolveChannelContext();
     const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
 
-    const result = await publishProduto(
-      {
-        db,
-        api,
-        integracaoId: body.integracaoId,
-        tabelaNormalOuterRef: asStringOrNull(ctx.conta.tabelaNormalOuterRef),
-        depositoOuterRef: asStringOrNull(ctx.conta.depositoOuterRef),
-        listingTypeId: body.listingTypeId ?? null,
-      },
-      body.produtoId,
+    const result = await syncSizeCharts(
+      { db, api, integracaoId: body.integracaoId },
+      body.tabMediId,
+      body.tabelas,
     );
     return NextResponse.json(result);
   } catch (err) {
-    if (err instanceof MercadoLivrePublishError) {
+    if (err instanceof ZodError) {
       return NextResponse.json(
-        { error: err.message, issues: err.issues, code: 'ML_PUBLISH_BLOCKED' },
-        { status: 422 },
+        { error: 'Formato inválido de tabelas.', issues: err.issues },
+        { status: 400 },
       );
+    }
+    if (err instanceof TabelaDeMedidasNotFoundError) {
+      return NextResponse.json({ error: err.message }, { status: 404 });
     }
     if (isMercadoLivreError(err)) return mercadoLivreErrorResponse(err);
     throw err;
   }
-}
-
-function asStringOrNull(v: unknown): string | null {
-  return typeof v === 'string' && v.length > 0 ? v : null;
 }

@@ -75,9 +75,12 @@ describe('POST /api/marketplace/mercado-livre/publicar', () => {
     });
   });
 
-  it('400s on a missing produtoId and on invalid JSON', async () => {
+  it('400s on a missing produtoId, invalid JSON and non-object bodies', async () => {
     expect((await POST(req({ integracaoId: 'int-1' }))).status).toBe(400);
     expect((await POST(req('{not json'))).status).toBe(400);
+    // Legal JSON that isn't an object must 400, not crash to a 500.
+    expect((await POST(req('null'))).status).toBe(400);
+    expect((await POST(req('[]'))).status).toBe(400);
     expect(h.publishProduto).not.toHaveBeenCalled();
   });
 

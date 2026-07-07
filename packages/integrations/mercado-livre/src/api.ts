@@ -7,6 +7,8 @@ import {
 } from './errors';
 import { DEFAULT_API_BASE_URL } from './oauth';
 import {
+  type MlActiveChartDomains,
+  type MlCatalogDomain,
   type MlCategory,
   type MlCategoryAttribute,
   type MlDomainDiscovery,
@@ -16,7 +18,11 @@ import {
   type MlOrderSearch,
   type MlPack,
   type MlPictureUpload,
+  type MlSizeChartApi,
+  type MlTechnicalSpecs,
   type MlUser,
+  activeChartDomainsSchema,
+  catalogDomainSchema,
   categoryAttributesSchema,
   categorySchema,
   domainDiscoverySchema,
@@ -26,6 +32,8 @@ import {
   orderSearchSchema,
   packSchema,
   pictureUploadSchema,
+  sizeChartApiSchema,
+  technicalSpecsSchema,
   tokenErrorSchema,
   userSchema,
 } from './types';
@@ -92,6 +100,34 @@ export interface MercadoLivreApi {
   getCategoryAttributes(id: string): Promise<MlCategoryAttribute[]>;
   /** `POST /pictures/items/upload` (multipart) — returns the ML picture id. */
   uploadPicture(file: PictureFile): Promise<MlPictureUpload>;
+
+  /** `GET /domains/{id}/technical_specs` — full domain spec (grids incluídas). */
+  getDomainTechnicalSpecs(domainId: string): Promise<MlTechnicalSpecs>;
+  /**
+   * `POST /domains/{id}/technical_specs?section=grids` — the concrete grid
+   * columns for the chosen template attributes (GENDER/BRAND/filters). The
+   * body mirrors the old app: `{ attributes: [...] }`.
+   */
+  getGridTechnicalSpecs(
+    domainId: string,
+    attributes: Array<Record<string, unknown>>,
+  ): Promise<MlTechnicalSpecs>;
+  /** `POST /catalog/charts` — create a seller size chart (full chart back). */
+  createSizeChart(payload: Record<string, unknown>): Promise<MlSizeChartApi>;
+  /** `PUT /catalog/charts/{id}` — rename (`{names: {MLB: nome}}`). */
+  updateSizeChartName(chartId: string, names: Record<string, string>): Promise<MlSizeChartApi>;
+  /** `POST /catalog/charts/{id}/rows` — add a row (full chart back). */
+  addSizeChartRow(chartId: string, row: Record<string, unknown>): Promise<MlSizeChartApi>;
+  /** `PUT /catalog/charts/{id}/rows/{rowId}` — update a row (FULL row id `'<chart>:<n>'`). */
+  updateSizeChartRow(
+    chartId: string,
+    rowId: string,
+    row: Record<string, unknown>,
+  ): Promise<MlSizeChartApi>;
+  /** `GET /catalog/charts/{site}/configurations/active_domains` — server-side only. */
+  getActiveChartDomains(): Promise<MlActiveChartDomains>;
+  /** `GET /catalog_domains/{id}` — domain label for pickers. */
+  getCatalogDomain(domainId: string): Promise<MlCatalogDomain>;
 }
 
 export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLivreApi {
@@ -232,6 +268,28 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getCategoryAttributes: (id) =>
       request('GET', `/categories/${id}/attributes`, categoryAttributesSchema),
     uploadPicture,
+
+    getDomainTechnicalSpecs: (domainId) =>
+      request('GET', `/domains/${domainId}/technical_specs`, technicalSpecsSchema),
+    getGridTechnicalSpecs: (domainId, attributes) =>
+      request('POST', `/domains/${domainId}/technical_specs`, technicalSpecsSchema, {
+        query: { section: 'grids' },
+        body: { attributes },
+      }),
+    createSizeChart: (payload) =>
+      request('POST', '/catalog/charts', sizeChartApiSchema, { body: payload }),
+    updateSizeChartName: (chartId, names) =>
+      request('PUT', `/catalog/charts/${chartId}`, sizeChartApiSchema, { body: { names } }),
+    addSizeChartRow: (chartId, row) =>
+      request('POST', `/catalog/charts/${chartId}/rows`, sizeChartApiSchema, { body: row }),
+    updateSizeChartRow: (chartId, rowId, row) =>
+      request('PUT', `/catalog/charts/${chartId}/rows/${rowId}`, sizeChartApiSchema, {
+        body: row,
+      }),
+    getActiveChartDomains: () =>
+      request('GET', '/catalog/charts/MLB/configurations/active_domains', activeChartDomainsSchema),
+    getCatalogDomain: (domainId) =>
+      request('GET', `/catalog_domains/${domainId}`, catalogDomainSchema),
   };
 }
 
