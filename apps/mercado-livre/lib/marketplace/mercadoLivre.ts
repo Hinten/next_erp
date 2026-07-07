@@ -150,6 +150,12 @@ export async function loadMercadoLivreContext(
     async exchangeAndPersist(code: string): Promise<void> {
       const resp = await exchangeCode(oauthConfig, code);
       await store.save(tokenDuravelFromResponse(resp, Date.now()));
+      // Denormalize the ML seller id onto the integração doc so an inbound
+      // webhook resolves this account with a single equality query (the old
+      // `ContaMercadoLivre.user_id`). Merge-only: never touches other fields.
+      if (resp.user_id != null) {
+        await integracaoCollection.merge(db, {}, integracaoId, { user_id: resp.user_id });
+      }
     },
   };
 }

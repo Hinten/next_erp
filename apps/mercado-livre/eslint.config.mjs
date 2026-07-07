@@ -61,8 +61,9 @@ const config = [
     },
   },
   {
-    // The admin singleton legitimately calls getFirestore.
-    files: ['lib/firebase/admin.ts'],
+    // The admin singletons legitimately call getFirestore — the app's own and
+    // the nested Cloud Functions codebase's (deployed separately).
+    files: ['lib/firebase/admin.ts', 'functions/src/lib/admin.ts'],
     rules: {
       'no-restricted-imports': 'off',
       'no-restricted-syntax': ['error', ...baseRestrictedSyntax],
