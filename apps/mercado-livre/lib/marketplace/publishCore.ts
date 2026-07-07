@@ -22,10 +22,14 @@ import {
   type ItemVariationInput,
   type MlAttribute,
   attrPackageDimensions,
+  attrSizeGridId,
+  attrSizeGridRowId,
   attrSku,
   attrWeightKg,
 } from '@delfrance/integrations-mercado-livre';
 import { parseFakePath } from '@delfrance/schemas';
+
+import type { ResolvedSizeChart } from './sizeChart';
 
 /** Publish blocked by missing/invalid produto data — maps to HTTP 422. */
 export class MercadoLivrePublishError extends Error {
@@ -100,6 +104,11 @@ export interface AssemblePublishArgs {
   categoryId: string | null;
   listingTypeId: string | null;
   isUserProductSeller: boolean;
+  /**
+   * Resolved size-chart binding (null = no chart; SIZE_GRID_* omitted, legacy
+   * parity — ML itself rejects chart-required domains).
+   */
+  sizeChart?: ResolvedSizeChart | null;
 }
 
 /** Resolve the selling price from the integração's tabela normal — or fail. */
@@ -137,8 +146,16 @@ export function resolveCondition(
 export function buildParentAttributes(
   produto: PublishProduto,
   link: PublishLink | null,
+  sizeChartId?: string | null,
 ): MlAttribute[] {
-  const attrs: MlAttribute[] = [...(link?.attributes ?? [])];
+  // A freshly resolved chart REPLACES any stale SIZE_GRID_ID the link doc
+  // carries (legacy toMercadoLivre: remove-then-add); with no resolution the
+  // link's existing binding is left untouched.
+  const attrs: MlAttribute[] =
+    sizeChartId != null
+      ? (link?.attributes ?? []).filter((a) => a.id !== 'SIZE_GRID_ID')
+      : [...(link?.attributes ?? [])];
+  if (sizeChartId != null) attrs.push(attrSizeGridId(sizeChartId));
   if (produto.sku) attrs.push(attrSku(produto.sku));
   if (produto.pesoLiquidoKg != null) attrs.push(attrWeightKg(produto.pesoLiquidoKg));
   const pesoKg = produto.pesoBrutoKg ?? produto.pesoLiquidoKg;
@@ -226,13 +243,34 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
     }
     const attrs: MlAttribute[] = [];
     if (child.produto.sku) attrs.push(attrSku(child.produto.sku));
+    // Size-chart row binding: SIZE_GRID_ROW_ID rides the variation ATTRIBUTES
+    // (never the combinations), and the chart row's SIZE label REPLACES the
+    // variante's nome in the combinations — ML flags a SIZE/row mismatch
+    // (cause 2615). Legacy `get_attribute_combinations` did a removeWhere on
+    // EVERY SIZE entry before adding the chart's, so a child spanning two
+    // tamanho groups still sends exactly ONE SIZE (a duplicated combination
+    // id is an ML rejection).
+    let finalCombos = combos;
+    const rowBinding = args.sizeChart?.rowByChildId[child.produto.id] ?? null;
+    if (rowBinding) {
+      attrs.push(attrSizeGridRowId(rowBinding.rowId));
+      const rowSize = rowBinding.size;
+      if (rowSize && (rowSize.value_id != null || rowSize.value_name != null)) {
+        finalCombos = combos.filter((c) => c.id !== 'SIZE');
+        finalCombos.push({
+          id: 'SIZE',
+          ...(rowSize.value_id != null ? { value_id: rowSize.value_id } : {}),
+          ...(rowSize.value_name != null ? { value_name: rowSize.value_name } : {}),
+        });
+      }
+    }
     return {
       mlVariationId: child.mlVariationId,
       produtoId: child.produto.id,
       order: child.produto.ordem ?? null,
       availableQuantity: child.availableQuantity,
       pictureIds: child.pictureIds,
-      attributeCombinations: combos,
+      attributeCombinations: finalCombos,
       attributes: attrs,
     };
   });
@@ -251,7 +289,7 @@ export function assemblePublishInput(args: AssemblePublishArgs): BuildItemPayloa
     availableQuantity: args.availableQuantity,
     pictures: args.pictures,
     videoId: args.link?.video_id ?? null,
-    attributes: buildParentAttributes(args.produto, args.link),
+    attributes: buildParentAttributes(args.produto, args.link, args.sizeChart?.chartId ?? null),
     variations,
   };
 }

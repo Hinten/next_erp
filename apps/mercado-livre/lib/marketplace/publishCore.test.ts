@@ -169,6 +169,107 @@ describe('assemblePublishInput', () => {
     });
   });
 
+  it('binds the size chart: SIZE_GRID_ID on the parent, SIZE_GRID_ROW_ID + SIZE replacement per variation', () => {
+    const input = assemblePublishInput({
+      ...baseArgs,
+      // A stale binding on the link doc must be REPLACED by the fresh chart.
+      link: {
+        docId: 'link-doc-1',
+        id: null,
+        attributes: [
+          { id: 'SIZE_GRID_ID', value_name: 'STALE' },
+          { id: 'BRAND', value_name: 'Acme' },
+        ],
+      },
+      variations: [
+        {
+          produto: { ...produto, id: 'child-1', nome: 'Camiseta M', sku: 'SKU-1-M' },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-m'],
+          availableQuantity: 4,
+          mlVariationId: null,
+        },
+        {
+          produto: { ...produto, id: 'child-2', nome: 'Camiseta G', sku: 'SKU-1-G' },
+          variacoesUid: ['documents/grupoDeVariacoes/g-tam/variacoes/v-g'],
+          availableQuantity: 2,
+          mlVariationId: null,
+        },
+      ],
+      sizeChart: {
+        chartId: '1594439',
+        rowByChildId: {
+          'child-1': { rowId: '1594439:1', size: { id: 'SIZE', value_name: 'M (38-40)' } },
+          // child-2 unmatched — keeps its own variante nome, no ROW_ID.
+        },
+      },
+    });
+
+    const parentIds = input.attributes!.map((a) => a.id);
+    expect(parentIds.filter((id) => id === 'SIZE_GRID_ID')).toHaveLength(1);
+    expect(input.attributes!.find((a) => a.id === 'SIZE_GRID_ID')).toEqual({
+      id: 'SIZE_GRID_ID',
+      value_name: '1594439',
+    });
+    expect(input.attributes!.find((a) => a.id === 'BRAND')).toBeDefined();
+
+    // Matched child: ROW_ID in attributes, chart SIZE replaces the combo.
+    expect(input.variations![0]!.attributes).toContainEqual({
+      id: 'SIZE_GRID_ROW_ID',
+      value_name: '1594439:1',
+    });
+    expect(input.variations![0]!.attributeCombinations).toEqual([
+      { id: 'SIZE', value_name: 'M (38-40)' },
+    ]);
+    // Unmatched child: untouched.
+    expect(input.variations![1]!.attributes).toEqual([{ id: 'SELLER_SKU', value_name: 'SKU-1-G' }]);
+    expect(input.variations![1]!.attributeCombinations).toEqual([{ id: 'SIZE', value_name: 'G' }]);
+  });
+
+  it('chart SIZE replacement drops EVERY SIZE combo (two tamanho groups → one SIZE)', () => {
+    const doisTamanhos: PublishGrupoVariacao[] = [
+      ...grupos,
+      { grupoId: 'g-tam2', nome: 'Tamanho BR', tipo: 1, variacoes: [{ id: 'v-40', nome: '40' }] },
+    ];
+    const input = assemblePublishInput({
+      ...baseArgs,
+      grupos: doisTamanhos,
+      variations: [
+        {
+          produto: { ...produto, id: 'child-1', nome: 'Camiseta M', sku: 'SKU-1-M' },
+          variacoesUid: [
+            'documents/grupoDeVariacoes/g-tam/variacoes/v-m',
+            'documents/grupoDeVariacoes/g-tam2/variacoes/v-40',
+          ],
+          availableQuantity: 4,
+          mlVariationId: null,
+        },
+      ],
+      sizeChart: {
+        chartId: '1594439',
+        rowByChildId: {
+          'child-1': { rowId: '1594439:1', size: { id: 'SIZE', value_name: 'M (38-40)' } },
+        },
+      },
+    });
+    const sizes = input.variations![0]!.attributeCombinations.filter((c) => c.id === 'SIZE');
+    expect(sizes).toEqual([{ id: 'SIZE', value_name: 'M (38-40)' }]);
+  });
+
+  it('no size chart → link attributes untouched (a persisted SIZE_GRID_ID survives)', () => {
+    const input = assemblePublishInput({
+      ...baseArgs,
+      link: {
+        docId: 'link-doc-1',
+        id: null,
+        attributes: [{ id: 'SIZE_GRID_ID', value_name: 'KEEP-ME' }],
+      },
+    });
+    expect(input.attributes!.find((a) => a.id === 'SIZE_GRID_ID')).toEqual({
+      id: 'SIZE_GRID_ID',
+      value_name: 'KEEP-ME',
+    });
+  });
+
   it('update mode (link has an ML id) does not require category/listing type', () => {
     const input = assemblePublishInput({
       ...baseArgs,

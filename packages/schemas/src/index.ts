@@ -228,6 +228,15 @@ export {
 } from './tabelaDeMedidas';
 
 export {
+  mlSizeChartRowSchema,
+  mlSizeChartSchema,
+  mlSizeChartsForContaSchema,
+  mlSizeChartsForConta,
+  type MlSizeChart,
+  type MlSizeChartRow,
+} from './tabelaDeMedidasMercadoLivre';
+
+export {
   listaDePrecos,
   listaDePrecosSchema,
   listaDePrecosMeta,
