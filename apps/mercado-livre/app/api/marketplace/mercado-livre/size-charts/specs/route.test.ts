@@ -67,8 +67,11 @@ describe('POST /api/marketplace/mercado-livre/size-charts/specs', () => {
     expect(h.getGridTechnicalSpecs).toHaveBeenCalledWith('MLB-PANTS', attributes);
   });
 
-  it('400s on missing fields', async () => {
+  it('400s on missing fields and non-object bodies', async () => {
     expect((await POST(req({ domainId: 'MLB-PANTS' }))).status).toBe(400);
     expect((await POST(req({ integracaoId: 'int-1' }))).status).toBe(400);
+    // Legal JSON that isn't an object must 400, not crash to a 500.
+    expect((await POST(req(null))).status).toBe(400);
+    expect((await POST(req([1]))).status).toBe(400);
   });
 });

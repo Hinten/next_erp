@@ -77,10 +77,13 @@ describe('POST /api/marketplace/mercado-livre/size-charts/sync', () => {
     expect(tabelas).toEqual([]);
   });
 
-  it('400s on missing fields and invalid JSON', async () => {
+  it('400s on missing fields, invalid JSON and non-object bodies', async () => {
     expect((await POST(req({ integracaoId: 'int-1' }))).status).toBe(400);
     expect((await POST(req({ ...VALID, tabelas: 'not-an-array' }))).status).toBe(400);
     expect((await POST(req('{nope'))).status).toBe(400);
+    // Legal JSON that isn't an object must 400, not crash to a 500.
+    expect((await POST(req('null'))).status).toBe(400);
+    expect((await POST(req('[1,2]'))).status).toBe(400);
     expect(h.syncSizeCharts).not.toHaveBeenCalled();
   });
 

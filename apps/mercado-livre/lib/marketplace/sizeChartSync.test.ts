@@ -172,16 +172,14 @@ describe('chartCreatePayload', () => {
       measure_type: 'CLOTHING_MEASURE',
       attributes: [{ id: 'GENDER', values: [{ id: '339665', name: 'Feminino' }] }],
     });
-    // No valued main_attribute → synthetic SIZE from the rows.
+    // No valued main_attribute → synthetic SIZE from the rows, every value
+    // normalized through the shared mapper (flat {id?, name?} entries).
     expect(payload.main_attribute).toEqual({
       attributes: [
         {
           site_id: 'MLB',
           id: 'SIZE',
-          values: [
-            { id: null, name: 'M' },
-            { id: null, name: 'G' },
-          ],
+          values: [{ name: 'M' }, { name: 'G' }],
         },
       ],
     });
@@ -195,6 +193,32 @@ describe('chartCreatePayload', () => {
 
   it('omits measure_type when tipo is absent', () => {
     expect(chartCreatePayload({ ...novaChart, tipo: null })).not.toHaveProperty('measure_type');
+  });
+
+  it('strips ONLY the site prefix from a multi-dash domain id', () => {
+    const payload = chartCreatePayload({ ...novaChart, domain_id: 'MLB-BABY-CAR' });
+    expect(payload.domain_id).toBe('BABY-CAR');
+    expect(payload.site_id).toBe('MLB');
+  });
+
+  it('SIZE fallback flattens valueList entries into normalized {id, name} values', () => {
+    const payload = chartCreatePayload({
+      ...novaChart,
+      rows: [
+        {
+          varianteUid: null,
+          id: null,
+          attributes: [
+            {
+              id: 'SIZE',
+              valueList: [{ value_id: 's1', value_name: '38' }, { value_name: '40' }],
+            } as never,
+          ],
+        },
+      ],
+    });
+    const main = payload.main_attribute as { attributes: Array<Record<string, unknown>> };
+    expect(main.attributes[0]!.values).toEqual([{ id: 's1', name: '38' }, { name: '40' }]);
   });
 });
 
@@ -438,6 +462,24 @@ describe('syncSizeCharts', () => {
         novaChart,
       ]),
     ).rejects.toThrow('boom');
+  });
+
+  it('a 429 carrying an errors array is NOT read as chart validation — it aborts', async () => {
+    const db = new FakeDb();
+    seedDoc(db, []);
+    const { api } = makeApi({
+      createSizeChart: vi.fn(async () => {
+        throw new MercadoLivreHttpError('rate limited', 429, {
+          errors: [{ code: 'too_many_requests', message: 'slow down' }],
+        });
+      }),
+    });
+
+    await expect(
+      syncSizeCharts({ db: db as unknown as Firestore, api, integracaoId: CONTA }, TAB, [
+        novaChart,
+      ]),
+    ).rejects.toThrow('rate limited');
   });
 
   it('missing tabMedi doc → TabelaDeMedidasNotFoundError', async () => {

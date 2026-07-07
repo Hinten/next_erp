@@ -106,7 +106,10 @@ export function chartSiteId(chart: MlSizeChart): string {
  */
 export function chartCreatePayload(chart: MlSizeChart): Record<string, unknown> {
   const siteId = chartSiteId(chart);
-  const domain = (chart.domain_id ?? '').split('-').pop() ?? '';
+  // Strip ONLY the leading site prefix ('MLB-BABY_CAR' → 'BABY_CAR'). The
+  // legacy `split('-').last` would mangle a domain containing extra dashes;
+  // for every single-dash domain (all known real ones) both are identical.
+  const domain = (chart.domain_id ?? '').split('-').slice(1).join('-');
   const rows = chart.rows ?? [];
 
   const principal = (chart.main_attribute ?? [])
@@ -119,16 +122,17 @@ export function chartCreatePayload(chart: MlSizeChart): Record<string, unknown> 
       .map((r) => (r.attributes ?? []).find((a) => a.id === 'SIZE') ?? null)
       .filter((a): a is MlAttributeWire => a != null);
     if (rowSizes.length > 0) {
+      // Every value normalized through the shared attribute mapper (flat
+      // `{id?, name?}` entries). The legacy fallback pushed the RAW
+      // `valueList` here — nested arrays with `value_id`/`value_name` keys ML
+      // can't read; a legacy bug not worth porting.
       mainAttributes = [
         {
           site_id: siteId,
           id: 'SIZE',
-          values: rowSizes.map((a) => {
-            const valueList = (a as Record<string, unknown>).valueList;
-            return Array.isArray(valueList) && valueList.length > 0
-              ? valueList
-              : { id: a.value_id ?? null, name: a.value_name ?? null };
-          }),
+          values: rowSizes.flatMap(
+            (a) => chartAttributeToMercadoLivre(a).values as Array<Record<string, unknown>>,
+          ),
         },
       ];
     } else {
@@ -255,12 +259,16 @@ const chartValidationBodySchema = z
   .passthrough();
 
 /**
- * Extract the per-chart validation list from an ML 4xx body — or null when
- * the error isn't a chart-validation response (those keep propagating).
+ * Extract the per-chart validation list from an ML chart-validation response
+ * — or null when the error is anything else (those keep propagating). Only a
+ * **400** with an `errors` array qualifies (ML's `chart_validation_error`
+ * shape): a 429/403/404 that happens to carry an `errors` field is an
+ * infrastructure failure and must abort the sync, not read as "your chart is
+ * invalid".
  */
 function chartValidationErrors(err: unknown, chartIndex: number): ChartValidationError[] | null {
   if (!(err instanceof MercadoLivreHttpError)) return null;
-  if (err.status >= 500) return null;
+  if (err.status !== 400) return null;
   const parsed = chartValidationBodySchema.safeParse(err.body);
   if (!parsed.success) return null;
   return parsed.data.errors.map((e) => ({

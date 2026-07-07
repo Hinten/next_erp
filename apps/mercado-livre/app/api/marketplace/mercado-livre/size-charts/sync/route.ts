@@ -25,15 +25,20 @@ export async function POST(req: Request): Promise<NextResponse> {
   const auth = await verifyCaller(req, PERM.integracao.write);
   if ('error' in auth) return auth.error;
 
-  let body: { integracaoId?: string; tabMediId?: string; tabelas?: unknown };
+  let parsed: unknown;
   try {
-    body = (await req.json()) as typeof body;
+    parsed = await req.json();
   } catch (err) {
     if (err instanceof SyntaxError) {
       return NextResponse.json({ error: 'Body JSON inválido.' }, { status: 400 });
     }
     throw err;
   }
+  // `req.json()` legally yields null/arrays/scalars — those are 400s, not 500s.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return NextResponse.json({ error: 'Body JSON inválido.' }, { status: 400 });
+  }
+  const body = parsed as { integracaoId?: string; tabMediId?: string; tabelas?: unknown };
   if (!body.integracaoId || !body.tabMediId || !Array.isArray(body.tabelas)) {
     return NextResponse.json(
       { error: 'integracaoId, tabMediId e tabelas são obrigatórios.' },
