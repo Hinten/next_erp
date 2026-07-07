@@ -57,6 +57,33 @@ export interface MercadoLivrePublicarResult {
   permalink: string | null;
 }
 
+/** One chart-enabled ML domain (`GET size-charts/domains`). */
+export interface MercadoLivreChartDomain {
+  domain_id: string;
+  name: string | null;
+}
+
+/**
+ * The domain technical-specs tree (`POST size-charts/specs`) — deeply nested,
+ * ML-owned and consumed only by the chart editor's walk, so it stays opaque
+ * here (`unknown`); `chartForm.ts` reads it defensively.
+ */
+export type MercadoLivreChartSpecs = Record<string, unknown>;
+
+/** One ML chart-validation problem (`POST size-charts/sync` → 200 data). */
+export interface MercadoLivreChartValidationError {
+  chartIndex: number;
+  code: string | null;
+  message: string | null;
+}
+
+export interface MercadoLivreSyncChartsResult {
+  /** The charts after the sync (ML ids written back where accepted). */
+  tabelas: unknown[];
+  validationErrors: MercadoLivreChartValidationError[];
+  updated: boolean;
+}
+
 export interface MercadoLivreClient {
   /** Mint the ML consent URL for an account (PERM.integracao.write). */
   oauthStart(integracaoId: string): Promise<{ authorizeUrl: string }>;
@@ -72,6 +99,29 @@ export interface MercadoLivreClient {
     produtoId: string;
     listingTypeId?: string;
   }): Promise<MercadoLivrePublicarResult>;
+  /** Chart-enabled ML domains for the chart-editor picker (PERM.integracao.read). */
+  sizeChartDomains(integracaoId: string): Promise<{ domains: MercadoLivreChartDomain[] }>;
+  /**
+   * The domain's technical specs (PERM.integracao.read). Without `attributes`
+   * → the full domain spec (where the chart editor finds the grid template);
+   * with `attributes` → the `?section=grids` column spec.
+   */
+  sizeChartSpecs(input: {
+    integracaoId: string;
+    domainId: string;
+    attributes?: Array<Record<string, unknown>>;
+  }): Promise<MercadoLivreChartSpecs>;
+  /**
+   * Send the tabMedi's edited chart list for one account to ML and persist
+   * the ids (PERM.integracao.write). ML chart-validation problems come back
+   * as `validationErrors` on the 200 body (partial success is DATA); only
+   * infrastructure failures throw.
+   */
+  sizeChartSync(input: {
+    integracaoId: string;
+    tabMediId: string;
+    tabelas: unknown[];
+  }): Promise<MercadoLivreSyncChartsResult>;
 }
 
 export function createMercadoLivreClient(config: {
@@ -136,6 +186,14 @@ export function createMercadoLivreClient(config: {
       ),
     publicar: (input) =>
       call<MercadoLivrePublicarResult>('/api/marketplace/mercado-livre/publicar', input),
+    sizeChartDomains: (integracaoId) =>
+      call<{ domains: MercadoLivreChartDomain[] }>(
+        `/api/marketplace/mercado-livre/size-charts/domains?integracaoId=${encodeURIComponent(integracaoId)}`,
+      ),
+    sizeChartSpecs: (input) =>
+      call<MercadoLivreChartSpecs>('/api/marketplace/mercado-livre/size-charts/specs', input),
+    sizeChartSync: (input) =>
+      call<MercadoLivreSyncChartsResult>('/api/marketplace/mercado-livre/size-charts/sync', input),
   };
 }
 
