@@ -197,7 +197,7 @@ export function MedidasMercadoLivreManager({
   if (snapshotError) {
     return (
       <Alert color="red" variant="light">
-        Erro ao carregar as contas Mercado Livre: {snapshotError.message}
+        Erro ao carregar os dados do Mercado Livre: {snapshotError.message}
       </Alert>
     );
   }
@@ -280,7 +280,12 @@ export function MedidasMercadoLivreManager({
                   size="xs"
                   variant="light"
                   onClick={() => setModalConta(conta.id)}
-                  disabled={disabled || !client || !canRead || grupos.length === 0}
+                  // Also blocked while a sync runs: the completion handler
+                  // rebuilds this conta's pending list from the pre-sync count,
+                  // so a chart added mid-sync would be dropped.
+                  disabled={
+                    disabled || !client || !canRead || grupos.length === 0 || syncing !== null
+                  }
                 >
                   Nova guia
                 </Button>
