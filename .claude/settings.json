@@ -3,6 +3,8 @@
   "language": "english",
   "permissions": {
     "allow": [
+      "mcp__mercadolibre-mcp-server",
+      "mcp__playwright",
       "Bash(pnpm turbo run typecheck)",
       "Bash(pnpm turbo run typecheck *)",
       "Bash(hash -r)",
