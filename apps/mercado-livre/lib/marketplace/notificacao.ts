@@ -37,6 +37,17 @@ import {
   notificacaoMercadoLivreCollection,
 } from '@delfrance/data/admin/collections';
 
+/**
+ * The deployed `onTaskDispatched` function name — which is ALSO its
+ * auto-provisioned Cloud Tasks queue name. Single source of truth, shared by the
+ * producer (`mlTasks.ts` builds the region-qualified queue path from it) and the
+ * consumer (`functions/src/processNotification.ts` — the `export const` there
+ * MUST be named exactly this). Lives in this neutral shared module because the
+ * app cannot import the functions-trigger file (that would pull the Functions SDK
+ * into the Next bundle and run `onTaskDispatched` at load). Rename in BOTH places.
+ */
+export const MERCADO_LIVRE_NOTIFICATION_QUEUE = 'processMercadoLivreNotification';
+
 /** In-task retry cap — the Cloud Tasks `retryConfig.maxAttempts` (kept in sync). */
 export const TASK_MAX_ATTEMPTS = 3;
 

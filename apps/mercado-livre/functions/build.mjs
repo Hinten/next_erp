@@ -12,7 +12,10 @@ import { dirname, join } from 'node:path';
 const pkgDir = dirname(fileURLToPath(import.meta.url));
 
 export async function bundle(outfile) {
-  const region = process.env.FUNCTIONS_REGION || 'us-east1';
+  // Default to us-east5 — the ML backend's deploy region. Must match the
+  // enqueuer's MERCADO_LIVRE_TASKS_REGION default (mlTasks.ts) or tasks target a
+  // queue that doesn't exist in this region and silently drop.
+  const region = process.env.FUNCTIONS_REGION || 'us-east5';
   await build({
     entryPoints: [join(pkgDir, 'src/index.ts')],
     bundle: true,

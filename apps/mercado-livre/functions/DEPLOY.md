@@ -22,10 +22,13 @@ analysis. `firebase.mercado-livre.deploy.json` points `source` at the generated
   `src/options.ts`).
 - **Region match**: the App Hosting backend must enqueue onto the queue in the
   function's region. The enqueuer resolves the region from
-  `MERCADO_LIVRE_TASKS_REGION ?? FUNCTIONS_REGION ?? us-east1` — set
-  `MERCADO_LIVRE_TASKS_REGION` (or `FUNCTIONS_REGION`) on the App Hosting env to
-  the region these functions deploy to. A wrong/absent region makes the Admin SDK
-  target `us-central1` and the task **silently drops**.
+  `MERCADO_LIVRE_TASKS_REGION ?? FUNCTIONS_REGION ?? us-east5` (App Hosting / Cloud
+  Run does NOT expose its own region as an env var — only the metadata server
+  does — so it must be configured). Both the functions (build.mjs) and the
+  enqueuer default to **us-east5**; if you deploy the functions to another region,
+  set `MERCADO_LIVRE_TASKS_REGION` (or `FUNCTIONS_REGION`) on the App Hosting env
+  to match. A wrong/absent region makes the Admin SDK target `us-central1` and the
+  task **silently drops**.
 - **One-time IAM** (see the dedicated section below) — required before the callback
   cutover so the receiver can enqueue.
 

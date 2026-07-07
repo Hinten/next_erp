@@ -21,22 +21,21 @@
  *   - `MERCADO_LIVRE_TASKS_DISABLED=1` → `enqueue()` throws `MlTasksDisabledError`;
  *     the receiver falls back to persisting the notification as `failed` so the
  *     reprocess sweep drains it (sweep-only mode — never a silent drop).
- *   - `MERCADO_LIVRE_TASKS_REGION` (default `FUNCTIONS_REGION` → `us-east1`) → the
+ *   - `MERCADO_LIVRE_TASKS_REGION` (default `FUNCTIONS_REGION` → `us-east5`) → the
  *     region the function + its queue are deployed to. The region-qualified name
  *     is mandatory: without it the Admin SDK targets `us-central1` and the task
- *     silently drops.
+ *     silently drops. App Hosting / Cloud Run does NOT expose its own region as an
+ *     env var (only the metadata server does), so it must be configured; the
+ *     default matches the ML backend's deploy region (`us-east5`).
  */
 import { getFunctions } from 'firebase-admin/functions';
 
 import { getAdminApp } from '../firebase/admin';
-import type { MlNotificationPayload } from './notificacao';
-
-/** The `onTaskDispatched` function (and its auto-created queue) in functions/src. */
-const NOTIFICATION_FUNCTION = 'processMercadoLivreNotification';
+import { MERCADO_LIVRE_NOTIFICATION_QUEUE, type MlNotificationPayload } from './notificacao';
 
 /** Region the notification function/queue live in (must match FUNCTIONS_REGION). */
 function mlTasksRegion(): string {
-  return process.env.MERCADO_LIVRE_TASKS_REGION ?? process.env.FUNCTIONS_REGION ?? 'us-east1';
+  return process.env.MERCADO_LIVRE_TASKS_REGION ?? process.env.FUNCTIONS_REGION ?? 'us-east5';
 }
 
 /**
@@ -64,7 +63,7 @@ class FirebaseMlTaskScheduler implements MlTaskScheduler {
   // (the Admin SDK otherwise defaults to us-central1). Binds the default admin app.
   private queue() {
     return getFunctions(getAdminApp()).taskQueue<MlNotificationPayload>(
-      `locations/${mlTasksRegion()}/functions/${NOTIFICATION_FUNCTION}`,
+      `locations/${mlTasksRegion()}/functions/${MERCADO_LIVRE_NOTIFICATION_QUEUE}`,
     );
   }
 

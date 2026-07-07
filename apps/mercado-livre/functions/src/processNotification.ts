@@ -1,7 +1,11 @@
 import { logger } from 'firebase-functions';
 import { onTaskDispatched } from 'firebase-functions/v2/tasks';
 
-import { TASK_MAX_ATTEMPTS, handleNotificationTask } from '../../lib/marketplace/notificacao';
+import {
+  MERCADO_LIVRE_NOTIFICATION_QUEUE,
+  TASK_MAX_ATTEMPTS,
+  handleNotificationTask,
+} from '../../lib/marketplace/notificacao';
 import { getDb } from './lib/admin';
 
 /**
@@ -15,6 +19,10 @@ import { getDb } from './lib/admin';
  * `failed` (so the `onSchedule` sweep re-drives it) instead of throwing — the
  * throw/persist disposition lives in `handleNotificationTask` so it stays
  * unit-testable. The happy path persists NOTHING (the cost win).
+ *
+ * ⚠️ The export name below IS the deployed function + queue name — it MUST equal
+ * `MERCADO_LIVRE_NOTIFICATION_QUEUE` (the receiver enqueues against that string).
+ * Rename both together, or the enqueue targets a non-existent queue (silent drop).
  */
 export const processMercadoLivreNotification = onTaskDispatched(
   {
@@ -29,6 +37,7 @@ export const processMercadoLivreNotification = onTaskDispatched(
   async (req) => {
     const result = await handleNotificationTask(getDb(), req.data, req.retryCount ?? 0);
     logger.info('[mercado-livre] processed notification task', {
+      queue: MERCADO_LIVRE_NOTIFICATION_QUEUE,
       outcome: result.outcome,
       topic: result.topic,
       retryCount: req.retryCount ?? 0,
