@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // The receiver persists blind via the admin handle; mock the handle + admin so
 // the route's own logic (parse, dedup doc id, ack) runs real.
 const h = vi.hoisted(() => ({
-  set: vi.fn(),
+  create: vi.fn(),
   docRef: vi.fn(),
   parse: vi.fn((f: unknown) => f),
   newDocId: vi.fn(() => 'auto-id'),
@@ -15,7 +15,7 @@ vi.mock('@delfrance/data/admin/collections', () => ({
   notificacaoMercadoLivreCollection: {
     docRef: (...args: unknown[]) => {
       h.docRef(...args);
-      return { set: h.set };
+      return { create: h.create };
     },
     parse: h.parse,
     newDocId: h.newDocId,
@@ -44,9 +44,9 @@ describe('POST /api/webhooks/mercado-livre', () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, accepted: true });
-    // doc id = ML _id (natural dedup); the persisted body carries status pending
+    // doc id = ML _id (natural dedup); create-only, carrying status pending
     expect(h.docRef).toHaveBeenCalledWith(expect.anything(), {}, 'N1');
-    expect(h.set).toHaveBeenCalledOnce();
+    expect(h.create).toHaveBeenCalledOnce();
     expect(h.parse.mock.calls[0]![0]).toMatchObject({
       id: 'N1',
       resource: '/orders/123',
@@ -55,6 +55,16 @@ describe('POST /api/webhooks/mercado-livre', () => {
       status: 'pending',
     });
     expect(h.newDocId).not.toHaveBeenCalled();
+  });
+
+  it('a redelivery (ALREADY_EXISTS) acks without rewriting the processed doc', async () => {
+    const err = Object.assign(new Error('already exists'), { code: 6 });
+    h.create.mockRejectedValueOnce(err);
+    const res = await POST(
+      req({ _id: 'N1', resource: '/orders/123', topic: 'orders_v2', user_id: 55 }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, accepted: true, duplicate: true });
   });
 
   it('mints an auto id when the notification carries no id', async () => {
@@ -68,11 +78,11 @@ describe('POST /api/webhooks/mercado-livre', () => {
     expect(noise.status).toBe(200);
     expect(await noise.json()).toMatchObject({ accepted: false });
     expect((await POST(req('{not json'))).status).toBe(200);
-    expect(h.set).not.toHaveBeenCalled();
+    expect(h.create).not.toHaveBeenCalled();
   });
 
   it('propagates a persist failure (→ 5xx) so ML redelivers', async () => {
-    h.set.mockRejectedValueOnce(new Error('firestore down'));
+    h.create.mockRejectedValueOnce(new Error('firestore down'));
     await expect(
       POST(req({ _id: 'N2', resource: '/orders/9', topic: 'orders_v2', user_id: 1 })),
     ).rejects.toThrow('firestore down');

@@ -36,10 +36,26 @@ locally without deploying: `node apps/mercado-livre/functions/build.mjs` (writes
 
 ## Functions in this codebase
 
-| Export                            | Trigger                                                                   | Purpose (Phase 5)                                    |
-| --------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `importMercadoLivreOrders`        | `onSchedule('every 15 minutes')`                                          | Incremental order pull per connected account (#362). |
-| `processMercadoLivreNotification` | `onDocumentCreated('integracao/{id}/notificacoesMercadoLivre/{notifId}')` | Process a persisted ML notification (#290/#360).     |
+| Export                               | Trigger                                                                    | Purpose                                                                                                     |
+| ------------------------------------ | -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `importMercadoLivreOrders`           | `onSchedule('every 15 minutes')`                                           | Incremental order pull per connected account (#362) — **skeleton no-op** until that milestone.              |
+| `processMercadoLivreNotification`    | `onDocumentCreated('notificacoesMercadoLivre/{notifId}', { retry: true })` | Step 6 — process a persisted ML notification (resolve account by `user_id`, dispatch by topic; idempotent). |
+| `reprocessMercadoLivreNotifications` | `onSchedule('every 30 minutes')`                                           | Step 6 — reprocess backstop for `pending`/`failed` notifications older than 1h.                             |
 
-Both are **skeleton no-ops** today — they log and return. The real behavior lands
-with the per-channel port.
+## ⚠️ Callback-URL cutover — coordinate with the legacy Flutter functions
+
+The Step-6 pipeline persists **every** notification to the **top-level**
+`notificacoesMercadoLivre` collection, which the still-running Flutter app also
+watches with its own `onCreate` trigger (`notificationMercadoLivreRealTime`) +
+periodic sweep (`manageNotificationsMercadoLivre`). The legacy app persisted a
+doc **only on a processing error**, so its trigger fired rarely; the new app
+inverts that.
+
+**When you switch a seller's ML notifications callback URL to this backend's
+`/api/webhooks/mercado-livre`, you MUST disable the legacy Flutter notification
+functions in the same window.** Otherwise both apps' triggers fire on every
+new-app write and **double-process** each notification (the legacy handler
+fetches the resource and mutates `pedidos`/`produtos`). Same cutover discipline
+as the estoque functions. Until the cutover, the callback URL still points at
+Flutter and this backend's trigger never fires — so there is no overlap either
+side of a _correctly sequenced_ cutover.

@@ -18,6 +18,12 @@
  *
  * No Bearer token and OUT of the `proxy.ts` CORS matcher — it's a server→server
  * call from ML, not a browser request.
+ *
+ * ⚠️ DUAL-RUN: this writes EVERY notification to the top-level
+ * `notificacoesMercadoLivre` collection the still-running Flutter app also
+ * triggers on. Switching a seller's ML callback URL here MUST be paired with
+ * disabling the legacy Flutter notification functions (see functions/DEPLOY.md)
+ * or every notification is double-processed.
  */
 import { NextResponse } from 'next/server';
 import { notificacaoMercadoLivreCollection } from '@delfrance/data/admin/collections';
@@ -50,15 +56,27 @@ export async function POST(req: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: true, accepted: false });
   }
 
-  // Persist blind, keyed by the ML notification id (natural dedup). No account
-  // lookup in the hot path — the processor resolves it. A redelivery re-stamps
-  // the same doc back to `pending`, which the idempotent processor handles. If
-  // the write throws, it propagates → 5xx so ML redelivers (never ack-lost).
+  // Persist keyed by the ML notification id, CREATE-ONLY (no account lookup in
+  // the hot path — the processor resolves it). `create` is the true dedup: the
+  // FIRST delivery creates the doc (firing `onDocumentCreated`), and a
+  // redelivery of the same `_id` throws ALREADY_EXISTS → we ack without
+  // touching the doc, so an already-processed notification's terminal state
+  // (`done`/`parked`/`tentativas`) is never reset back to `pending`. Any other
+  // write failure propagates → 5xx so ML redelivers (never ack-lost).
   const db = getAdminFirestore();
   const docId = parsed.id ?? notificacaoMercadoLivreCollection.newDocId(db, {});
-  await notificacaoMercadoLivreCollection
-    .docRef(db, {}, docId)
-    .set(notificacaoMercadoLivreCollection.parse(parsed.fields));
+  try {
+    await notificacaoMercadoLivreCollection
+      .docRef(db, {}, docId)
+      .create(notificacaoMercadoLivreCollection.parse(parsed.fields));
+  } catch (err) {
+    // gRPC ALREADY_EXISTS (code 6) — a duplicate delivery; the doc is already
+    // persisted (and possibly processed). Ack; never rewrite it.
+    if (err instanceof Error && (err as { code?: unknown }).code === 6) {
+      return NextResponse.json({ ok: true, accepted: true, duplicate: true });
+    }
+    throw err;
+  }
 
   return NextResponse.json({ ok: true, accepted: true });
 }

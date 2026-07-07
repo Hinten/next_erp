@@ -188,7 +188,17 @@ export async function processNotification(db: Firestore, docId: string): Promise
   return { outcome: 'done', integracaoId, topic: doc.topic };
 }
 
-/** Content-only status write (merge — never clobbers the ML wire fields). */
+/**
+ * Content-only status write (merge — never clobbers the ML wire fields).
+ *
+ * Dual-run note: the legacy Flutter trigger DELETES a notification on success.
+ * A `set(…, { merge: true })` after a concurrent delete re-creates a
+ * status-only "ghost" — but it is inert (a `done` ghost isn't re-swept, and a
+ * `failed` ghost has no `received` so the sweep's `orderBy('received')` skips
+ * it). The correct cutover (disable the legacy functions when the callback URL
+ * moves here — see functions/DEPLOY.md) means only ONE app ever processes, so
+ * this race cannot arise in a correctly-sequenced deploy.
+ */
 async function mark(
   db: Firestore,
   docId: string,
