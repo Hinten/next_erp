@@ -220,6 +220,62 @@ export async function getTabMediByName(nome: string): Promise<Record<string, unk
 }
 
 /**
+ * Seed one tabMedi carrying a SENT Mercado Livre chart keyed by the given
+ * integração id, so the medidas editor's Mercado Livre tab renders a conta
+ * card with an existing "Enviada" guia (no live ML backend needed). The chart
+ * has two size rows so the "2 tamanhos" summary is assertable.
+ */
+export async function seedMedidaMlChart(
+  prefix: string,
+  integracaoId: string,
+): Promise<{ id: string; nome: string; chartNome: string }> {
+  const id = `${prefix}-mlchart`;
+  const nome = `${prefix}-mlchart`;
+  const chartNome = `${prefix}-guia`;
+  await db()
+    .collection('tabMedi')
+    .doc(id)
+    .set({
+      nome,
+      codigo: null,
+      descricao: null,
+      fotosArquivosIds: null,
+      fotos: null,
+      tabelasDeMedidasMercadoLivre: {
+        [integracaoId]: {
+          tabelas: [
+            {
+              id: '1594439',
+              nome: chartNome,
+              domain_id: 'MLB-T_SHIRTS',
+              tipo: 'CLOTHING_MEASURE',
+              main_attribute_id: 'SIZE',
+              attributes: [{ id: 'GENDER', value_id: '339665', value_name: 'Feminino' }],
+              main_attribute: [],
+              rows: [
+                {
+                  varianteUid: 'documents/grupoDeVariacoes/g/variacoes/v-m',
+                  id: '1594439:1',
+                  attributes: [{ id: 'SIZE', value_name: 'M' }],
+                },
+                {
+                  varianteUid: 'documents/grupoDeVariacoes/g/variacoes/v-g',
+                  id: '1594439:2',
+                  attributes: [{ id: 'SIZE', value_name: 'G' }],
+                },
+              ],
+            },
+          ],
+        },
+      },
+      tabelasMedidasShopee: null,
+      dataCadastro: Date.now(),
+      ultimaModificacao: null,
+    });
+  return { id, nome, chartNome };
+}
+
+/**
  * Seed exactly one ACTIVE deposito (`<prefix>-dep`, `ativo: true`) and return
  * its id + nome. The Estoque tab lists active depósitos ordered by `nome`
  * (bounded), so the seeded one shows as long as the shared collection stays
