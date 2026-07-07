@@ -14,7 +14,7 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "received", "order": "ASCENDING" }
+        { "fieldPath": "processedAt", "order": "ASCENDING" }
       ]
     },
     {
