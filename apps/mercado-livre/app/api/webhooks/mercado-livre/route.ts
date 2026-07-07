@@ -9,54 +9,56 @@
  * (contrast Shopee, which does — see lib/signatures/hmac.ts for that path).
  *
  * The receiver must answer `200` FAST so ML stops retrying, and do the heavy
- * work asynchronously. Phase 5 (#290 + #360): persist the raw notification keyed
- * on its `_id` (natural dedup) and dispatch a Cloud Function/Task
- * (apps/mercado-livre/functions) to pull + reconcile the resource.
+ * work asynchronously. Step 6 (#290/#360): persist the raw notification BLIND
+ * (no account lookup in the hot path) at a fixed doc id = the ML `_id` (natural
+ * cross-delivery dedup — a retry upserts the same doc) in the TOP-LEVEL
+ * `notificacoesMercadoLivre` collection, then ack. The nested Cloud Functions
+ * (`onDocumentCreated` + an `onSchedule` sweep) resolve the account and apply
+ * the resource. If the persist itself fails we throw → 5xx so ML redelivers.
  *
  * No Bearer token and OUT of the `proxy.ts` CORS matcher — it's a server→server
  * call from ML, not a browser request.
  */
 import { NextResponse } from 'next/server';
+import { notificacaoMercadoLivreCollection } from '@delfrance/data/admin/collections';
+
+import { getAdminFirestore } from '@/lib/firebase/admin';
+import { parseNotificationBody } from '@/lib/marketplace/notificacao';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-interface MlNotification {
-  _id?: unknown;
-  resource?: unknown;
-  topic?: unknown;
-  user_id?: unknown;
-}
-
 export async function POST(req: Request): Promise<NextResponse> {
   const raw = await req.text();
 
-  let body: MlNotification;
+  let body: unknown;
   try {
-    body = raw ? (JSON.parse(raw) as MlNotification) : {};
+    body = raw ? JSON.parse(raw) : {};
   } catch (err) {
     if (err instanceof SyntaxError) {
-      // Ack 200 (not 4xx) so ML stops retrying — ML retries every non-2xx and a
-      // malformed body won't parse on a retry either. Log it for observability.
+      // Ack 200 (not 4xx) so ML stops retrying — a malformed body won't parse
+      // on a retry either. Logged for observability.
       console.warn('[mercado-livre/webhook] ignoring unparseable body');
       return NextResponse.json({ ok: true, accepted: false });
     }
     throw err;
   }
 
-  const notificationId = typeof body._id === 'string' ? body._id : null;
-  const resource = typeof body.resource === 'string' ? body.resource : null;
-  const topic = typeof body.topic === 'string' ? body.topic : null;
-
-  // A well-formed ML notification always carries a topic + resource. Anything
-  // else is noise (or a health ping) — ack so ML doesn't retry.
-  if (!resource || !topic) {
+  // Noise (health ping / missing topic+resource) → ack without persisting.
+  const parsed = parseNotificationBody(body);
+  if (!parsed) {
     return NextResponse.json({ ok: true, accepted: false });
   }
 
-  // TODO(#290/#360): persist the raw notification at a fixed doc id derived from
-  // `notificationId` (natural dedup — a retry upserts the same doc), then
-  // dispatch the per-account order/resource pull to the nested Cloud Functions
-  // codebase. Ack fast in the meantime so ML stops retrying.
-  return NextResponse.json({ ok: true, accepted: true, topic, notificationId });
+  // Persist blind, keyed by the ML notification id (natural dedup). No account
+  // lookup in the hot path — the processor resolves it. A redelivery re-stamps
+  // the same doc back to `pending`, which the idempotent processor handles. If
+  // the write throws, it propagates → 5xx so ML redelivers (never ack-lost).
+  const db = getAdminFirestore();
+  const docId = parsed.id ?? notificacaoMercadoLivreCollection.newDocId(db, {});
+  await notificacaoMercadoLivreCollection
+    .docRef(db, {}, docId)
+    .set(notificacaoMercadoLivreCollection.parse(parsed.fields));
+
+  return NextResponse.json({ ok: true, accepted: true });
 }

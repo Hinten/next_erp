@@ -185,6 +185,15 @@ export {
 } from './integracao';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log.
+  notificacaoStatusSchema,
+  notificacaoMercadoLivreSchema,
+  notificacaoResourceId,
+  type NotificacaoStatus,
+  type NotificacaoMercadoLivre,
+} from './notificacaoMercadoLivre';
+
+export {
   cargo,
   cargoSchema,
   cargoMeta,
