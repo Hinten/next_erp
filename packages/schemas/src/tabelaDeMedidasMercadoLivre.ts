@@ -58,6 +58,21 @@ export const mlSizeChartsForContaSchema = z
   .passthrough();
 
 /**
+ * WRITE-side chart schema — what the sync flow accepts and persists into the
+ * SHARED `tabelasDeMedidasMercadoLivre` map. Stricter than the read slice on
+ * the fields the live Flutter app parses strictly (`json['nome'] as String`,
+ * `json['domain_id'] as String`, `TipoTabelaDeMedidasML.fromJson` throwing on
+ * unknown values): persisting a chart without them would crash the Flutter
+ * reader during dual-run. `nome` ≤ 60 = the ML chart-name limit the legacy
+ * form enforced; `domain_id` must be the FULL `SITE-DOMAIN` form.
+ */
+export const mlSizeChartWriteSchema = mlSizeChartSchema.extend({
+  nome: z.string().min(1).max(60),
+  domain_id: z.string().regex(/^[^-]+-.+$/),
+  tipo: z.enum(['BODY_MEASURE', 'CLOTHING_MEASURE']).nullable().optional(),
+});
+
+/**
  * Soft-read the conta's chart list off `tabMedi.tabelasDeMedidasMercadoLivre`.
  * Any shape mismatch (or a missing conta key) yields `[]` — a malformed legacy
  * entry must degrade to "no chart", never block a publish.

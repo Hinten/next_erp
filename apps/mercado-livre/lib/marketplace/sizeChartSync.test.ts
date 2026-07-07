@@ -275,7 +275,14 @@ describe('syncSizeCharts', () => {
   });
 
   it('name change → PUT name; unchanged charts make no ML calls and no write', async () => {
-    const stored = { ...novaChart, id: '1594439', main_attribute_id: 'SIZE' };
+    // Fully in-sync fixture: the chart AND every row already carry ML ids —
+    // an id-less row would (correctly) always re-send.
+    const stored: MlSizeChart = {
+      ...novaChart,
+      id: '1594439',
+      main_attribute_id: 'SIZE',
+      rows: novaChart.rows!.map((r, i) => ({ ...r, id: `1594439:${i + 1}` })),
+    };
     const db = new FakeDb();
     seedDoc(db, [stored]);
     const { api, mocks } = makeApi();
@@ -439,5 +446,106 @@ describe('syncSizeCharts', () => {
     await expect(
       syncSizeCharts({ db: db as unknown as Firestore, api, integracaoId: CONTA }, 'nope', []),
     ).rejects.toThrow(TabelaDeMedidasNotFoundError);
+  });
+
+  it('a hard mid-sync error still persists the ids already obtained (no ML orphans)', async () => {
+    const db = new FakeDb();
+    seedDoc(db, []);
+    const { api } = makeApi({
+      createSizeChart: vi
+        .fn()
+        .mockResolvedValueOnce(CHART_RESPONSE) // chart A created
+        .mockRejectedValueOnce(new MercadoLivreHttpError('rate limited', 429, 'slow down')),
+    });
+
+    await expect(
+      syncSizeCharts({ db: db as unknown as Firestore, api, integracaoId: CONTA }, TAB, [
+        novaChart,
+        { ...novaChart, nome: 'Segunda' },
+      ]),
+    ).rejects.toThrow('rate limited');
+
+    // Chart A's id landed on the doc despite the abort — a retry updates it
+    // instead of re-creating an orphan that owns the name forever.
+    const doc = db.docs('tabMedi').get(TAB)!;
+    const map = doc.tabelasDeMedidasMercadoLivre as Record<string, { tabelas: MlSizeChart[] }>;
+    expect(map[CONTA]!.tabelas[0]!.id).toBe('1594439');
+    expect(map[CONTA]!.tabelas[1]!.id).toBeNull(); // the failed one, as submitted
+  });
+
+  it('an id-less row is ALWAYS re-sent, even when it deep-equals the stored copy', async () => {
+    // The once-failed-row state: the doc holds the row id-less (a previous
+    // partial sync persisted it); the user retries with the identical payload.
+    const stored: MlSizeChart = {
+      ...novaChart,
+      id: '1594439',
+      main_attribute_id: 'SIZE',
+      rows: [{ varianteUid: null, id: null, attributes: [{ id: 'SIZE', value_name: 'XG' }] }],
+    };
+    const db = new FakeDb();
+    seedDoc(db, [stored]);
+    const { api, mocks } = makeApi();
+
+    const result = await syncSizeCharts(
+      { db: db as unknown as Firestore, api, integracaoId: CONTA },
+      TAB,
+      [stored],
+    );
+
+    expect(mocks.addSizeChartRow!).toHaveBeenCalledOnce();
+    expect(result.tabelas[0]!.rows![0]!.id).toBe('1594439:1');
+  });
+
+  it('explicit-null attribute keys do not count as a row change (legacy includeIfNull)', async () => {
+    const stored: MlSizeChart = {
+      ...novaChart,
+      id: '1594439',
+      main_attribute_id: 'SIZE',
+      // Flutter-authored: null keys ABSENT.
+      rows: [{ varianteUid: null, id: '1594439:1', attributes: [{ id: 'SIZE', value_name: 'M' }] }],
+    };
+    const db = new FakeDb();
+    seedDoc(db, [stored]);
+    const { api, mocks } = makeApi();
+
+    // UI-submitted: same row, but with explicit nulls (this repo's form shape).
+    const edited: MlSizeChart = {
+      ...stored,
+      rows: [
+        {
+          varianteUid: null,
+          id: '1594439:1',
+          attributes: [{ id: 'SIZE', value_id: null, value_name: 'M', unit_id: null }],
+        },
+      ],
+    };
+    const result = await syncSizeCharts(
+      { db: db as unknown as Firestore, api, integracaoId: CONTA },
+      TAB,
+      [edited],
+    );
+
+    expect(mocks.updateSizeChartRow!).not.toHaveBeenCalled();
+    expect(result.updated).toBe(false);
+  });
+
+  it('rejects charts the live Flutter reader would crash on (write schema)', async () => {
+    const db = new FakeDb();
+    seedDoc(db, []);
+    const { api } = makeApi();
+
+    // No nome/domain_id — tolerated on READ, but persisting it would throw in
+    // the Flutter fromJson (`json['nome'] as String`).
+    await expect(
+      syncSizeCharts({ db: db as unknown as Firestore, api, integracaoId: CONTA }, TAB, [
+        { id: '123', rows: [] },
+      ]),
+    ).rejects.toThrow();
+
+    await expect(
+      syncSizeCharts({ db: db as unknown as Firestore, api, integracaoId: CONTA }, TAB, [
+        { ...novaChart, tipo: 'WEIRD_MEASURE' },
+      ]),
+    ).rejects.toThrow();
   });
 });

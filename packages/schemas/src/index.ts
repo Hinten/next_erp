@@ -230,6 +230,7 @@ export {
 export {
   mlSizeChartRowSchema,
   mlSizeChartSchema,
+  mlSizeChartWriteSchema,
   mlSizeChartsForContaSchema,
   mlSizeChartsForConta,
   type MlSizeChart,

@@ -27,7 +27,7 @@ import {
   type MlSizeChartApi,
 } from '@delfrance/integrations-mercado-livre';
 import type { MlAttributeWire, MlSizeChart, MlSizeChartRow } from '@delfrance/schemas';
-import { mlSizeChartSchema, mlSizeChartsForConta } from '@delfrance/schemas';
+import { mlSizeChartWriteSchema, mlSizeChartsForConta } from '@delfrance/schemas';
 import { z } from 'zod';
 import { tabelaDeMedidasCollection } from '@delfrance/data/admin/collections';
 
@@ -155,11 +155,14 @@ export function chartCreatePayload(chart: MlSizeChart): Record<string, unknown> 
  * attribute (immutable on ML); NEW rows include it.
  */
 export function chartRowPayload(chart: MlSizeChart, row: MlSizeChartRow): Record<string, unknown> {
+  // '' counts as "no ML id" everywhere in this module — a NEW row (POST) must
+  // INCLUDE the main attribute (ML requires it), only updates exclude it.
+  const isNewRow = row.id == null || row.id === '';
   return {
     sites: [chartSiteId(chart)],
     attributes: (row.attributes ?? [])
       .filter(isValued)
-      .filter((a) => row.id == null || a.id !== chart.main_attribute_id)
+      .filter((a) => isNewRow || a.id !== chart.main_attribute_id)
       .map(chartAttributeToMercadoLivre),
   };
 }
@@ -207,6 +210,34 @@ export function deepEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
+/**
+ * Drop null/undefined object keys recursively — the legacy diff compared
+ * `toJson()` on BOTH sides, and every optional attribute key is
+ * `includeIfNull: false`, so `{value_id: null}` and an absent `value_id` are
+ * the SAME row. Without this, a UI that emits explicit nulls (this repo's
+ * form convention) would see every Flutter-stored row as "changed" and
+ * re-PUT the whole chart on every sync.
+ */
+export function stripNullsDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripNullsDeep);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v == null) continue;
+      out[k] = stripNullsDeep(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** Legacy row diff: id-less rows are ALWAYS "changed" (never yet on ML). */
+function rowNeedsSend(row: MlSizeChartRow, storedRow: MlSizeChartRow | null): boolean {
+  if (row.id == null || row.id === '') return true;
+  if (storedRow == null) return true;
+  return !deepEqual(stripNullsDeep(row), stripNullsDeep(storedRow));
+}
+
 /* ------------------------------ orchestrator ----------------------------- */
 
 /** ML chart-validation body: `{error, errors: [{code, message}]}`. */
@@ -245,7 +276,7 @@ export interface SizeChartSyncDeps {
   integracaoId: string;
 }
 
-const editedTabelasSchema = z.array(mlSizeChartSchema);
+const editedTabelasSchema = z.array(mlSizeChartWriteSchema);
 
 /**
  * Sync the EDITED chart list of one integração against ML and persist the
@@ -270,85 +301,101 @@ export async function syncSizeCharts(
   const stored = mlSizeChartsForConta(doc.tabelasDeMedidasMercadoLivre ?? null, integracaoId);
 
   const validationErrors: ChartValidationError[] = [];
-  const resultTabelas: MlSizeChart[] = [];
+  // `working` starts as the submitted list and is updated IN PLACE after every
+  // successful ML call — so a hard mid-sync error (429/5xx/network) can still
+  // persist every chart/row id obtained so far. Losing a created chart's id
+  // orphans it on ML and every retry then dies on `chart_name_unavailable`
+  // (the orphan owns the name) — a hole the legacy flow shared, closed here.
+  const working: MlSizeChart[] = [...editedTabelas];
   let updated = false;
 
-  for (let chartIndex = 0; chartIndex < editedTabelas.length; chartIndex += 1) {
-    let chart = editedTabelas[chartIndex]!;
+  // Deep merge writes ONLY this integração's key — other contas' charts and
+  // `tabelasMedidasShopee` (Flutter-authored) survive untouched.
+  const persistProgress = async (): Promise<void> => {
+    if (!updated) return;
+    await tabelaDeMedidasCollection.merge(db, {}, tabMediId, {
+      tabelasDeMedidasMercadoLivre: { [integracaoId]: { tabelas: working } },
+      ultimaModificacao: Date.now(),
+    });
+  };
 
-    if (chart.id == null || chart.id === '') {
-      // ---- Create --------------------------------------------------------
-      try {
-        const response = await api.createSizeChart(chartCreatePayload(chart));
-        chart = applyChartResponse(chart, response);
-        updated = true;
-      } catch (err) {
-        const errors = chartValidationErrors(err, chartIndex);
-        if (errors === null) throw err;
-        validationErrors.push(...errors);
-      }
-      resultTabelas.push(chart);
-      continue;
-    }
+  try {
+    for (let chartIndex = 0; chartIndex < working.length; chartIndex += 1) {
+      let chart = working[chartIndex]!;
 
-    // ---- Update: name first, then per-row diffs (legacy order) -----------
-    const chartId = chart.id;
-    const storedChart = stored.find((c) => c.id === chartId) ?? null;
-    let chartFailed = false;
-
-    if (storedChart == null || storedChart.nome !== chart.nome) {
-      try {
-        const response = await api.updateSizeChartName(chartId, {
-          [chartSiteId(chart)]: chart.nome ?? '',
-        });
-        chart = applyChartResponse(chart, response);
-        updated = true;
-      } catch (err) {
-        const errors = chartValidationErrors(err, chartIndex);
-        if (errors === null) throw err;
-        validationErrors.push(...errors);
-        // Legacy: a rejected rename reverts to the stored nome and the
-        // chart's remaining changes are skipped this round.
-        if (storedChart?.nome != null) chart = { ...chart, nome: storedChart.nome };
-        chartFailed = true;
-      }
-    }
-
-    if (!chartFailed) {
-      const rows = chart.rows ?? [];
-      const storedRows = storedChart?.rows ?? [];
-      for (let index = 0; index < rows.length; index += 1) {
-        const row = rows[index]!;
-        const storedRow = storedRows[index] ?? null;
-        if (storedRow != null && deepEqual(row, storedRow)) continue;
-
+      if (chart.id == null || chart.id === '') {
+        // ---- Create ------------------------------------------------------
         try {
-          const response =
-            row.id != null && row.id !== ''
-              ? await api.updateSizeChartRow(chartId, row.id, chartRowPayload(chart, row))
-              : await api.addSizeChartRow(chartId, chartRowPayload(chart, row));
+          const response = await api.createSizeChart(chartCreatePayload(chart));
           chart = applyChartResponse(chart, response);
+          working[chartIndex] = chart;
           updated = true;
         } catch (err) {
           const errors = chartValidationErrors(err, chartIndex);
           if (errors === null) throw err;
           validationErrors.push(...errors);
-          break; // legacy: stop this chart's rows, continue with the next chart
+        }
+        continue;
+      }
+
+      // ---- Update: name first, then per-row diffs (legacy order) ---------
+      const chartId = chart.id;
+      const storedChart = stored.find((c) => c.id === chartId) ?? null;
+      let chartFailed = false;
+
+      if (storedChart == null || storedChart.nome !== chart.nome) {
+        try {
+          const response = await api.updateSizeChartName(chartId, {
+            [chartSiteId(chart)]: chart.nome ?? '',
+          });
+          chart = applyChartResponse(chart, response);
+          working[chartIndex] = chart;
+          updated = true;
+        } catch (err) {
+          const errors = chartValidationErrors(err, chartIndex);
+          if (errors === null) throw err;
+          validationErrors.push(...errors);
+          // Legacy: a rejected rename reverts to the stored nome and the
+          // chart's remaining changes are skipped this round.
+          if (storedChart?.nome != null) chart = { ...chart, nome: storedChart.nome };
+          working[chartIndex] = chart;
+          chartFailed = true;
+        }
+      }
+
+      if (!chartFailed) {
+        const rows = chart.rows ?? [];
+        const storedRows = storedChart?.rows ?? [];
+        for (let index = 0; index < rows.length; index += 1) {
+          const row = chart.rows![index]!;
+          const storedRow = storedRows[index] ?? null;
+          if (!rowNeedsSend(row, storedRow)) continue;
+
+          try {
+            const response =
+              row.id != null && row.id !== ''
+                ? await api.updateSizeChartRow(chartId, row.id, chartRowPayload(chart, row))
+                : await api.addSizeChartRow(chartId, chartRowPayload(chart, row));
+            chart = applyChartResponse(chart, response);
+            working[chartIndex] = chart;
+            updated = true;
+          } catch (err) {
+            const errors = chartValidationErrors(err, chartIndex);
+            if (errors === null) throw err;
+            validationErrors.push(...errors);
+            break; // legacy: stop this chart's rows, continue with the next chart
+          }
         }
       }
     }
-
-    resultTabelas.push(chart);
+  } catch (err) {
+    // A hard error (429/5xx/network) aborts the sync, but the ids already
+    // obtained MUST land on the doc first — otherwise a created chart is
+    // orphaned on ML and every retry dies on `chart_name_unavailable`.
+    await persistProgress();
+    throw err;
   }
 
-  if (updated) {
-    // Deep merge writes ONLY this integração's key — other contas' charts and
-    // `tabelasMedidasShopee` (Flutter-authored) survive untouched.
-    await tabelaDeMedidasCollection.merge(db, {}, tabMediId, {
-      tabelasDeMedidasMercadoLivre: { [integracaoId]: { tabelas: resultTabelas } },
-      ultimaModificacao: Date.now(),
-    });
-  }
-
-  return { tabelas: resultTabelas, validationErrors, updated };
+  await persistProgress();
+  return { tabelas: working, validationErrors, updated };
 }
