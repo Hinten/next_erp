@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { Variante } from '@delfrance/schemas';
 
-import { buildNewChart, extractGridTemplate, rowsFromVariantes } from './chartForm';
+import {
+  buildNewChart,
+  extractGridTemplate,
+  pendingAfterSync,
+  rowsFromVariantes,
+} from './chartForm';
 
 /**
  * Mirrors the real ML `technical_specs` shape (verified against the legacy
@@ -148,6 +153,38 @@ describe('rowsFromVariantes', () => {
         attributes: [{ id: 'SIZE', value_name: 'G' }],
       },
     ]);
+  });
+});
+
+describe('pendingAfterSync', () => {
+  it('keeps a fully-rejected chart so it is not lost (data-loss fix)', () => {
+    // Sent [pendingA]; ML rejected it → still id-less in the result.
+    const result = [{ id: null, nome: 'A', domain_id: 'MLB-T_SHIRTS' }];
+    expect(pendingAfterSync(1, result)).toEqual([
+      { id: null, nome: 'A', domain_id: 'MLB-T_SHIRTS' },
+    ]);
+  });
+
+  it('drops accepted charts (they now live on the doc)', () => {
+    // Sent [storedX, pendingA]; A accepted → id assigned.
+    const result = [
+      { id: '999', nome: 'X' },
+      { id: '1594439', nome: 'A' },
+    ];
+    expect(pendingAfterSync(1, result)).toEqual([]);
+  });
+
+  it('keeps only the rejected tail when accepted + rejected are mixed', () => {
+    const result = [
+      { id: '999', nome: 'stored' }, // stored, not pending
+      { id: '111', nome: 'A' }, // pending, accepted
+      { id: null, nome: 'B' }, // pending, rejected
+    ];
+    expect(pendingAfterSync(2, result)).toEqual([{ id: null, nome: 'B' }]);
+  });
+
+  it('returns [] when nothing was pending (only stored re-sent)', () => {
+    expect(pendingAfterSync(0, [{ id: '1' }, { id: '2' }])).toEqual([]);
   });
 });
 

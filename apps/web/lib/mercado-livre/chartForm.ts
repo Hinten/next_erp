@@ -145,6 +145,34 @@ export interface BuildChartInput {
   variantes: readonly Variante[];
 }
 
+/** A chart that ML accepted carries an id; a rejected one stays id-less. */
+function isSentChart(chart: unknown): chart is MlSizeChart {
+  if (chart == null || typeof chart !== 'object') return false;
+  const id = (chart as { id?: unknown }).id;
+  return typeof id === 'string' && id !== '';
+}
+
+/**
+ * The pending (session-created) charts to KEEP after a sync. `sync` submits
+ * `[...stored, ...pending]` and echoes them back index-aligned with ML ids
+ * written back where accepted; the pending charts are the tail. A chart the
+ * server accepted (now has an id) is persisted on the doc — drop it from
+ * pending; a REJECTED chart (still id-less) was not persisted (the server
+ * only writes when something succeeds) — keep it so the user doesn't lose it
+ * and can retry. Prevents the data-loss where a fully-rejected sync cleared
+ * the pending list and the just-built guia vanished.
+ */
+export function pendingAfterSync(
+  sentPendingCount: number,
+  resultTabelas: readonly unknown[],
+): MlSizeChart[] {
+  if (sentPendingCount <= 0) return [];
+  const tail = resultTabelas.slice(resultTabelas.length - sentPendingCount);
+  return tail.filter(
+    (c): c is MlSizeChart => c != null && typeof c === 'object' && !isSentChart(c),
+  );
+}
+
 /**
  * Assemble a `mlSizeChartWriteSchema`-shaped NEW chart (id null → the server
  * creates it on ML). `main_attribute` is left empty on purpose — the server

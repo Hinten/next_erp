@@ -30,6 +30,7 @@ import { usePermission } from '@/lib/auth';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { grupoDeVariacoesCollection } from '@/lib/data/grupoDeVariacoesCollection';
 import { tabelaDeMedidasCollection } from '@/lib/data/tabelaDeMedidasCollection';
+import { pendingAfterSync } from '@/lib/mercado-livre/chartForm';
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
@@ -65,13 +66,20 @@ export function MedidasMercadoLivreManager({
   const { allowed: canRead } = usePermission(PERM.integracao.read);
   const { allowed: canWrite } = usePermission(PERM.integracao.write);
 
+  // Gate the integração read on `canRead`: the collection is
+  // PERM.integracao.read-protected, so a produto-only editor (tabMedi uses
+  // produto perms) without that bit would otherwise hit a raw Firestore
+  // permission-denied. Null query → the snapshot stays idle, and we render a
+  // clear message below instead.
   const contasQuery = useMemo(
     () =>
-      buildQuery(integracaoCollection.ref(db, {}), [
-        whereEqual('tipo', INTEGRACAO_TIPO.mercadoLivre),
-        limit(MAX_CONTAS),
-      ]),
-    [db],
+      canRead
+        ? buildQuery(integracaoCollection.ref(db, {}), [
+            whereEqual('tipo', INTEGRACAO_TIPO.mercadoLivre),
+            limit(MAX_CONTAS),
+          ])
+        : null,
+    [db, canRead],
   );
   const contasSnap = useSnapshot(contasQuery);
   const contas = contasSnap.data ?? [];
@@ -119,6 +127,7 @@ export function MedidasMercadoLivreManager({
     setSyncing(integracaoId);
     setValidationByConta((prev) => ({ ...prev, [integracaoId]: [] }));
     try {
+      const sentPendingCount = (pendingByConta[integracaoId] ?? []).length;
       const result = await client.sizeChartSync({ integracaoId, tabMediId, tabelas });
       if (result.validationErrors.length > 0) {
         setValidationByConta((prev) => ({
@@ -129,10 +138,14 @@ export function MedidasMercadoLivreManager({
           })),
         }));
       }
-      // The server persisted the accepted ids → the live doc refreshes; drop
-      // the pending list (accepted charts now come from the doc, rejected ones
-      // are surfaced via validationErrors and can be re-added).
-      setPendingByConta((prev) => ({ ...prev, [integracaoId]: [] }));
+      // Keep only the pending charts ML REJECTED (still id-less) — the accepted
+      // ones were persisted server-side and reappear via the live doc snapshot.
+      // Clearing unconditionally would lose a just-built guia on a fully-
+      // rejected sync (the server writes nothing when nothing succeeds).
+      setPendingByConta((prev) => ({
+        ...prev,
+        [integracaoId]: pendingAfterSync(sentPendingCount, result.tabelas),
+      }));
       notifications.show({
         color: result.validationErrors.length > 0 ? 'yellow' : 'green',
         message:
@@ -160,6 +173,16 @@ export function MedidasMercadoLivreManager({
     } finally {
       setSyncing(null);
     }
+  }
+
+  // No integração.read → the contas query is idle (never issued). Say so
+  // instead of falling through to the misleading "no account" empty state.
+  if (!canRead) {
+    return (
+      <Text size="sm" c="dimmed">
+        Requer permissão de leitura em integrações para gerenciar as guias de tamanho.
+      </Text>
+    );
   }
 
   if (contasSnap.loading || docSnap.loading || gruposSnap.loading) {
