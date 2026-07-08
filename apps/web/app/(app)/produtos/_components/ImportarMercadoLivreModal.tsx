@@ -64,6 +64,7 @@ export function ImportarMercadoLivreModal({
   const [sobrescreverEstoque, setSobrescreverEstoque] = useState(false);
   const [importarPreco, setImportarPreco] = useState(true);
   const [sobrescreverPreco, setSobrescreverPreco] = useState(true);
+  const [importarFotos, setImportarFotos] = useState(true);
   const [busy, setBusy] = useState(false);
   const [issues, setIssues] = useState<string[] | null>(null);
 
@@ -78,7 +79,13 @@ export function ImportarMercadoLivreModal({
       const result = await client.importar({
         integracaoId,
         itemId: trimmedItem,
-        options: { importarEstoque, sobrescreverEstoque, importarPreco, sobrescreverPreco },
+        options: {
+          importarEstoque,
+          sobrescreverEstoque,
+          importarPreco,
+          sobrescreverPreco,
+          importarFotos,
+        },
       });
       notifications.show({
         color: 'green',
@@ -155,6 +162,12 @@ export function ImportarMercadoLivreModal({
           checked={sobrescreverPreco}
           onChange={(e) => setSobrescreverPreco(e.currentTarget.checked)}
           disabled={!canImport || !importarPreco}
+        />
+        <Checkbox
+          label="Importar fotos"
+          checked={importarFotos}
+          onChange={(e) => setImportarFotos(e.currentTarget.checked)}
+          disabled={!canImport}
         />
 
         {issues && (

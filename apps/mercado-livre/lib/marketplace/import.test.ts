@@ -4,6 +4,7 @@ import type { MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import { type ImportDeps, importProduto } from './import';
 import { MercadoLivreImportError } from './importCore';
+import { type Bucket } from './arquivoUpload';
 
 /* ------------------------------ fake Firestore ---------------------------- */
 // Supports doc get/set/update, chained where/limit/get, a collectionGroup query
@@ -108,6 +109,20 @@ function parentDocId(colPath: string): string {
 }
 
 const asDb = (db: FakeDb) => db as unknown as Firestore;
+
+/** Minimal Storage bucket for the photo-import step. */
+class FakeBucket {
+  readonly saved: string[] = [];
+  readonly name = 'demo-erp.appspot.com';
+  file(path: string) {
+    const self = this;
+    return {
+      save: async () => {
+        self.saved.push(path);
+      },
+    };
+  }
+}
 
 /* --------------------------------- fixtures ------------------------------- */
 
@@ -234,5 +249,58 @@ describe('importProduto — dedup to an existing produto', () => {
     const api = makeApi(SIMPLE_ITEM);
     const res = await importProduto(deps(db, api), 'MLB123');
     expect(res).toMatchObject({ produtoId: 'by-sku', created: false });
+  });
+});
+
+describe('importProduto — photos (#439)', () => {
+  const PIC_ITEM: DocData = {
+    ...SIMPLE_ITEM,
+    pictures: [{ id: 'PIC1', secure_url: 'https://http2.mlstatic.com/PIC1-O.jpg' }],
+  };
+  const asBucket = (b: FakeBucket) => b as unknown as Bucket;
+  const photoFetch = () =>
+    vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: (h: string) => (h.toLowerCase() === 'content-type' ? 'image/jpeg' : null) },
+      arrayBuffer: async () => new TextEncoder().encode('imgbytes').buffer,
+    })) as unknown as typeof globalThis.fetch;
+
+  it('imports the listing photos when a bucket is provided (importarFotos default)', async () => {
+    const db = new FakeDb();
+    const bucket = new FakeBucket();
+    const fetch = photoFetch();
+    const res = await importProduto(
+      deps(db, makeApi(PIC_ITEM), { bucket: asBucket(bucket), fetchImpl: fetch }),
+      'MLB123',
+    );
+    expect(db.docs('arquivos').size).toBe(1);
+    expect(bucket.saved).toHaveLength(1);
+    const fotoUpdate = db.updates
+      .filter((u) => u.path === `produtos/${res.produtoId}`)
+      .find((u) => 'fotos' in u.patch);
+    expect(fotoUpdate).toBeDefined();
+  });
+
+  it('does NOT import photos when importarFotos is false', async () => {
+    const db = new FakeDb();
+    const fetch = photoFetch();
+    await importProduto(
+      deps(db, makeApi(PIC_ITEM), {
+        bucket: asBucket(new FakeBucket()),
+        fetchImpl: fetch,
+        options: { importarFotos: false },
+      }),
+      'MLB123',
+    );
+    expect(fetch).not.toHaveBeenCalled();
+    expect(db.docs('arquivos').size).toBe(0);
+  });
+
+  it('imports no photos when no bucket is provided', async () => {
+    const db = new FakeDb();
+    const res = await importProduto(deps(db, makeApi(PIC_ITEM)), 'MLB123');
+    expect(res.created).toBe(true);
+    expect(db.docs('arquivos').size).toBe(0); // gated on deps.bucket
   });
 });

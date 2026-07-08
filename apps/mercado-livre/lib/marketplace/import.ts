@@ -38,6 +38,8 @@ import {
   assembleImportPlan,
 } from './importCore';
 import { lastSegment, refMatchesIntegracao } from './linkRefs';
+import { type Bucket } from './arquivoUpload';
+import { importProdutoPhotos } from './importPhotos';
 
 export interface ImportDeps {
   db: Firestore;
@@ -48,6 +50,10 @@ export interface ImportDeps {
   tabelaNormalOuterRef: string | null;
   tabelaPromocionalOuterRef: string | null;
   depositoOuterRef: string | null;
+  /** Storage bucket for photo import (#439); omit to skip photos (e.g. tests). */
+  bucket?: Bucket;
+  /** Injectable fetch for the photo download (tests); defaults to global fetch. */
+  fetchImpl?: typeof globalThis.fetch;
   options?: Partial<ImportOptions>;
 }
 
@@ -210,6 +216,17 @@ export async function importProduto(
     marketplaceIds: FieldValue.arrayUnion(plan.denormItemId),
     integracoesComProduto: FieldValue.arrayUnion(integracaoId),
   });
+
+  // Photos (#439) — additive, high-quality, best-effort. After the produto exists;
+  // skips already-imported pictures; per-picture failures are logged, not fatal.
+  // Requires a Storage bucket (omitted in tests that don't exercise photos).
+  if (options.importarFotos && deps.bucket && (item.pictures?.length ?? 0) > 0) {
+    await importProdutoPhotos(
+      { db, bucket: deps.bucket, integracaoId, fetchImpl: deps.fetchImpl },
+      produtoId,
+      item.pictures ?? [],
+    );
+  }
 
   return { produtoId, estado: mapped.estado, nome: mapped.nome, created: isCreate };
 }

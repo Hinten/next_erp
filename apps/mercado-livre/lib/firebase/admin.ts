@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { type App, cert, getApps, initializeApp } from 'firebase-admin/app';
 import { type Auth, getAuth } from 'firebase-admin/auth';
 import { type Firestore, getFirestore } from 'firebase-admin/firestore';
+import { type Storage, getStorage } from 'firebase-admin/storage';
 
 let app: App | undefined;
 
@@ -105,4 +106,29 @@ export function getAdminAuth(): Auth {
 export function getAdminFirestore(): Firestore {
   const databaseId = process.env.FIREBASE_DATABASE_ID ?? 'default';
   return getFirestore(getAdminApp(), databaseId);
+}
+
+/**
+ * Resolve the Cloud Storage bucket name. `getAdminApp()` does NOT set
+ * `storageBucket`, so a no-arg `.bucket()` would throw — resolve it explicitly:
+ * `FIREBASE_STORAGE_BUCKET` (set it on the backend if the derived name is wrong,
+ * e.g. a newer `<project>.firebasestorage.app` bucket), else the classic default
+ * `<projectId>.appspot.com`. Exported for unit tests.
+ */
+export function resolveStorageBucketName(): string {
+  const explicit = process.env.FIREBASE_STORAGE_BUCKET;
+  if (explicit) return explicit;
+  const projectId = resolveProjectId(loadServiceAccount());
+  if (!projectId) {
+    throw new Error(
+      'Storage bucket not found. Set FIREBASE_STORAGE_BUCKET (or FIREBASE_PROJECT_ID / ' +
+        'a service account so it can be derived as <projectId>.appspot.com).',
+    );
+  }
+  return `${projectId}.appspot.com`;
+}
+
+/** The default Cloud Storage bucket for server-side uploads (ML photo import). */
+export function getAdminBucket(): ReturnType<Storage['bucket']> {
+  return getStorage(getAdminApp()).bucket(resolveStorageBucketName());
 }
