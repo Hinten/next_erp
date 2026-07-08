@@ -53,8 +53,21 @@ export type ItemTelaEtiqueta = z.infer<typeof itemTelaEtiquetaSchema>;
  * `TelaEtiqueta` (`.old/packages/etiquetas/lib/src/models.dart`). `itens` is
  * an embedded array, not a subcollection.
  *
+ * NOT to be confused with the unrelated "etiqueta" used elsewhere in this
+ * package for a **freight shipping label** (Melhor Envio `printLabelId`, see
+ * `packages/schemas/src/shared/frete.ts`) — this is an in-store printed
+ * product/price tag.
+ *
  * `.describe()` labels feed the schema-driven UI primitives (TableView /
  * ObjectView) in `@delfrance/ui`.
+ *
+ * `dataCriacao`/`dataAtualizacao` intentionally mirror the legacy field names
+ * (per the issue spec) instead of this repo's usual `timestamp`/
+ * `ultimaModificacao` pair — `saveRecord` and `TableView`'s update-monitor
+ * only auto-stamp a field literally named `ultimaModificacao`/`timestamp`
+ * (see the `schema-driven-crud` skill), so the future `/etiquetas` CRUD page
+ * (#456) must stamp `dataAtualizacao` explicitly rather than relying on that
+ * default behavior.
  */
 export const etiquetaSchema = z.object({
   nome: z.string().min(1).max(255).describe('Nome'),
