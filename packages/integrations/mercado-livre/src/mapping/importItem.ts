@@ -161,10 +161,15 @@ export function attributesFromItem(
  * import (#438); unused by the simple path.
  */
 export function skuGuessFromVariations(item: MlItem): string | null {
+  const variations = item.variations ?? [];
+  if (variations.length === 0) return null;
   const prefixes = new Set<string>();
-  for (const v of item.variations ?? []) {
+  for (const v of variations) {
     const sku = skuFromAttributes(v.attributes);
-    if (sku && sku.length > 6) prefixes.add(sku.slice(0, sku.length - 6));
+    // "only when ALL variations collapse to one": a variation without a usable
+    // (>6-char) SKU means we can't guess — bail rather than infer from a subset.
+    if (!sku || sku.length <= 6) return null;
+    prefixes.add(sku.slice(0, sku.length - 6));
   }
   return prefixes.size === 1 ? [...prefixes][0]! : null;
 }

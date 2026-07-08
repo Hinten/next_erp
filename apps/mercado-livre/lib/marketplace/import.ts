@@ -11,8 +11,10 @@
  *
  * Dedup / dual-run convergence: the produto is resolved by the link doc's `id`
  * (== ML item id, a collectionGroup query — the same key the Flutter app matches
- * on), then by `sku`; a fresh produto's id reuses an alphanumeric
- * `seller_custom_field`, else a deterministic `sha256(sellerUserId|itemId)`.
+ * on), then by `sku`. A FRESH produto's id is always a deterministic per-item
+ * `sha256(sellerUserId|itemId)` — NOT the seller_custom_field, which ML does not
+ * keep unique across a seller's items (reusing it as the id would collide two
+ * distinct listings onto one produto).
  */
 import { createHash } from 'node:crypto';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';

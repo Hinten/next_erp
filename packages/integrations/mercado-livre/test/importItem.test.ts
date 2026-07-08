@@ -169,4 +169,15 @@ describe('skuGuessFromVariations (#438 dedup helper)', () => {
     });
     expect(skuGuessFromVariations(item)).toBeNull();
   });
+
+  it('returns null when ANY variation lacks a usable SKU (never guess from a subset)', () => {
+    const item = itemSchema.parse({
+      id: 'MLB9',
+      variations: [
+        { id: 1, attributes: [{ id: 'SELLER_SKU', value_name: 'BASE01-AAAAAA' }] },
+        { id: 2, attributes: [{ id: 'COLOR', value_name: 'Azul' }] }, // no SELLER_SKU
+      ],
+    });
+    expect(skuGuessFromVariations(item)).toBeNull();
+  });
 });

@@ -40,13 +40,17 @@ export function ImportarMercadoLivreModal({
   const client = useMercadoLivreClient();
   const { allowed: canImport } = usePermission(PERM.integracao.write);
 
+  // Only subscribe while the modal is open AND the user can import — no realtime
+  // listener/reads on every /produtos visit (useSnapshot(null) = no subscription).
   const contasQuery = useMemo(
     () =>
-      buildQuery(integracaoCollection.ref(db, {}), [
-        whereEqual('tipo', INTEGRACAO_TIPO.mercadoLivre),
-        limit(MAX_CONTAS),
-      ]),
-    [db],
+      opened && canImport
+        ? buildQuery(integracaoCollection.ref(db, {}), [
+            whereEqual('tipo', INTEGRACAO_TIPO.mercadoLivre),
+            limit(MAX_CONTAS),
+          ])
+        : null,
+    [db, opened, canImport],
   );
   const contasSnap = useSnapshot(contasQuery);
   const contaOptions = (contasSnap.data ?? []).map((c) => ({
