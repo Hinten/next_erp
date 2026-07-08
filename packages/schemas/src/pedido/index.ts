@@ -15,6 +15,7 @@
 export * from './collection/pedido'; // pedidos
 export * from './collection/pagamento'; // pedidos/{id}/pagamentos + metodo_pgto
 export * from './collection/incidente'; // pedidos/{id}/incidentes
+export * from './collection/checkout'; // pedidos/{id}/checkout (dispatch audit doc)
 export * from './collection/historicoEstadoPedido'; // pedidos/{id}/historicoEstadoPedido
 
 // === PURE LOGIC (no database) ===

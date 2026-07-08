@@ -309,6 +309,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_pedido', 4);
     }
 
+    match /pedidos/{pedidoId}/checkout/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+      allow create, update: if isSuperUser() || p('d_pedido', 2);
+      allow delete: if isSuperUser() || p('d_pedido', 4);
+    }
+
     match /pedidos/{pedidoId}/historicoEstadoPedido/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
       allow create, update: if isSuperUser() || p('d_pedido', 2);
@@ -446,6 +452,9 @@ service cloud.firestore {
     // read claims (see the dedupe note in emitRules).
     match /{path=**}/cartacorrecao/{docId} {
       allow read: if isSuperUser() || p('d_fiscal', 1);
+    }
+    match /{path=**}/checkout/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
     }
     match /{path=**}/enderecos/{docId} {
       allow read: if isSuperUser() || p('d_endereco', 1);
