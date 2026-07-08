@@ -219,10 +219,9 @@ export async function processNotificationPayload(
   // item id. A malformed resource (no id segment) is deterministic → ack it.
   if (payload.topic === 'items') {
     const itemId = parseItemIdFromResource(payload.resource);
-    if (itemId) {
-      const api = await resolveItemsApi(db, integracaoId);
-      await syncItemStatus(db, api, integracaoId, itemId);
-    }
+    // The resolver is threaded (not a pre-built API) so syncItemStatus can go
+    // link-first and skip the ML call entirely for an unlinked item.
+    if (itemId) await syncItemStatus(db, integracaoId, itemId, resolveItemsApi);
     return { kind: 'done', integracaoId };
   }
 

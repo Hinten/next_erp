@@ -23,9 +23,12 @@ export function lastSegment(ref: string): string {
 
 /**
  * The ML item id from an `items`-topic notification `resource`
- * (`/items/MLB123` → `MLB123`). Null when the resource has no id segment.
+ * (`/items/MLB123` → `MLB123`). ML resources are `<collection>/<id>`, so a bare
+ * `/items` (no id segment) returns null rather than the collection word `items`.
  */
 export function parseItemIdFromResource(resource: string): string | null {
-  const seg = resource.split('/').filter(Boolean).pop();
-  return seg && seg.length > 0 ? seg : null;
+  const parts = resource.split('/').filter(Boolean);
+  if (parts.length < 2) return null; // collection only, no id
+  const id = parts[parts.length - 1];
+  return id && id.length > 0 ? id : null;
 }

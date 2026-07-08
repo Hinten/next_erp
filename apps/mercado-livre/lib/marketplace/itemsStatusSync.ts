@@ -77,13 +77,32 @@ export type ItemsSyncOutcome =
 /**
  * Sync one ML item's lifecycle status onto its linked `produtoMercadoLivre` doc.
  * Returns a deterministic outcome; a transient failure THROWS (pipeline retries).
+ *
+ * LINK-FIRST: the ML API (and its token refresh) is resolved LAZILY, only once a
+ * syncable link is confirmed. `items` fires for every change to ANY of the
+ * seller's listings, most of which this ERP hasn't linked — resolving the link
+ * from Firestore first skips the external call entirely for `no-link` and the
+ * UP/`am` deferrals, so a `no-link` notification never depends on ML availability
+ * or burns a quota/token refresh.
  */
 export async function syncItemStatus(
   db: Firestore,
-  api: ItemsSyncApi,
   integracaoId: string,
   itemId: string,
+  resolveApi: ItemsApiResolver,
 ): Promise<ItemsSyncOutcome> {
+  const link = await resolveLink(db, itemId, integracaoId);
+  if (!link) return 'no-link';
+
+  // Cheap (link-only) User-Products / migration guard → #441: a UP link or a
+  // listing still awaiting migration (`estado === 'am'`) is driven by the Flutter
+  // app during dual-run; touching `estado` here would fight it. Skipped BEFORE any
+  // ML call — the migration-TAG case (which needs the fetched item) is checked below.
+  if (link.data.isUserProductModel === true || link.data.estado === 'am') {
+    return 'deferred-up';
+  }
+
+  const api = await resolveApi(db, integracaoId);
   let item: MlItem;
   try {
     item = await api.getItem(itemId);
@@ -93,15 +112,8 @@ export async function syncItemStatus(
     throw err; // transient (5xx/429/network) or reauth → the queue/sweep retry
   }
 
-  const link = await resolveLink(db, itemId, integracaoId);
-  if (!link) return 'no-link';
-
-  // User-Products / migration edge → #441. A UP link, a listing still awaiting
-  // migration (`estado === 'am'`), or a migration-tagged item is driven by the
-  // Flutter app during dual-run; touching `estado` here would fight the migration.
-  const tags = item.tags ?? [];
-  const isMigration = tags.some((t) => MIGRATION_TAGS.has(t));
-  if (link.data.isUserProductModel === true || link.data.estado === 'am' || isMigration) {
+  // Migration-tagged item → #441 (needs the fetched item's `tags`).
+  if ((item.tags ?? []).some((t) => MIGRATION_TAGS.has(t))) {
     return 'deferred-up';
   }
 

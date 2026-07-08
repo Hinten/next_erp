@@ -5,7 +5,8 @@ import {
   MercadoLivreNetworkError,
 } from '@delfrance/integrations-mercado-livre';
 
-import { type ItemsSyncApi, syncItemStatus } from './itemsStatusSync';
+import { type ItemsApiResolver, type ItemsSyncApi, syncItemStatus } from './itemsStatusSync';
+import { parseItemIdFromResource } from './linkRefs';
 
 /* ------------------------------ fake Firestore ---------------------------- */
 // Doc get/set(merge)/update, chained where/get, a collectionGroup query (docs
@@ -113,6 +114,13 @@ function failingApi(err: Error): ItemsSyncApi {
     }),
   } as unknown as ItemsSyncApi;
 }
+/** A lazy resolver that yields a fake API returning `item` (link-first contract). */
+function resolverFor(item: DocData): ItemsApiResolver {
+  return vi.fn(async () => api(item));
+}
+function failingResolver(err: Error): ItemsApiResolver {
+  return vi.fn(async () => failingApi(err));
+}
 
 /** Seed a linked produto + its `produtoMercadoLivre` link doc. */
 function seedLink(db: FakeDb, link: DocData = {}, produto: DocData = {}): void {
@@ -139,19 +147,36 @@ beforeEach(() => vi.restoreAllMocks());
 
 /* ----------------------------------- tests -------------------------------- */
 
-describe('syncItemStatus — resolution', () => {
-  it('no linked produto → no-op', async () => {
+describe('parseItemIdFromResource', () => {
+  it('extracts the id from a well-formed items resource', () => {
+    expect(parseItemIdFromResource('/items/MLB123')).toBe('MLB123');
+    expect(parseItemIdFromResource('/items/MLB123/')).toBe('MLB123'); // trailing slash
+  });
+  it('returns null for a bare collection resource (no id)', () => {
+    expect(parseItemIdFromResource('/items')).toBeNull();
+    expect(parseItemIdFromResource('items')).toBeNull();
+    expect(parseItemIdFromResource('/')).toBeNull();
+    expect(parseItemIdFromResource('')).toBeNull();
+  });
+});
+
+describe('syncItemStatus — resolution (link-first)', () => {
+  it('no linked produto → no-op WITHOUT an ML call', async () => {
     const db = new FakeDb();
-    const out = await syncItemStatus(asDb(db), api({ status: 'paused' }), CONTA, ITEM);
+    const resolve = resolverFor({ status: 'paused' });
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
     expect(out).toBe('no-link');
     expect(db.updates).toEqual([]);
+    expect(resolve).not.toHaveBeenCalled(); // link-first: no external call for an unlinked item
   });
 
-  it('ignores a link owned by another account', async () => {
+  it('ignores a link owned by another account (no ML call)', async () => {
     const db = new FakeDb();
     seedLink(db, { contaOuterRef: 'documents/integracao/outra-conta' });
-    const out = await syncItemStatus(asDb(db), api({ status: 'paused' }), CONTA, ITEM);
+    const resolve = resolverFor({ status: 'paused' });
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
     expect(out).toBe('no-link');
+    expect(resolve).not.toHaveBeenCalled();
   });
 });
 
@@ -161,9 +186,9 @@ describe('syncItemStatus — link sync', () => {
     seedLink(db);
     const out = await syncItemStatus(
       asDb(db),
-      api({ status: 'paused', sub_status: ['out_of_stock'] }),
       CONTA,
       ITEM,
+      resolverFor({ status: 'paused', sub_status: ['out_of_stock'] }),
     );
     expect(out).toBe('synced');
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({
@@ -187,9 +212,9 @@ describe('syncItemStatus — link sync', () => {
     seedLink(db, { status: 'active', sub_status: null });
     const out = await syncItemStatus(
       asDb(db),
-      api({ status: 'active', sub_status: ['catalog_boost_opportunity'] }),
       CONTA,
       ITEM,
+      resolverFor({ status: 'active', sub_status: ['catalog_boost_opportunity'] }),
     );
     expect(out).toBe('synced');
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({
@@ -205,9 +230,9 @@ describe('syncItemStatus — link sync', () => {
     seedLink(db, { status: 'active', sub_status: ['x'] });
     const out = await syncItemStatus(
       asDb(db),
-      api({ status: 'active', sub_status: ['x'] }),
       CONTA,
       ITEM,
+      resolverFor({ status: 'active', sub_status: ['x'] }),
     );
     expect(out).toBe('unchanged');
     expect(db.updates).toEqual([]);
@@ -220,7 +245,7 @@ describe('syncItemStatus — cancel (closed)', () => {
   it('closed → estado cancelado + key-based denorm removal', async () => {
     const db = new FakeDb();
     seedLink(db);
-    const out = await syncItemStatus(asDb(db), api({ status: 'closed' }), CONTA, ITEM);
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'closed' }));
     expect(out).toBe('synced');
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c', status: 'closed' });
     // Parent denorm entry for this listing removed (plain arrays, not arrayRemove).
@@ -245,7 +270,7 @@ describe('syncItemStatus — cancel (closed)', () => {
         integracoesComProduto: [CONTA],
       },
     );
-    await syncItemStatus(asDb(db), api({ status: 'closed' }), CONTA, ITEM);
+    await syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'closed' }));
     expect(db.docData('produtos', PRODUTO)).toMatchObject({
       marketplace: [{ integracaoUid: CONTA, externalId: 'MLB999' }],
       marketplaceIds: ['MLB999'],
@@ -262,16 +287,16 @@ describe('syncItemStatus — partial-failure recovery (denorm-first ordering)', 
 
     // Attempt 1: denorm runs FIRST and throws → the whole sync throws and, crucially,
     // the link estado is NOT advanced (so a retry still sees a change to reconcile).
-    await expect(syncItemStatus(asDb(db), api({ status: 'closed' }), CONTA, ITEM)).rejects.toThrow(
-      /unavailable/,
-    );
+    await expect(
+      syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'closed' })),
+    ).rejects.toThrow(/unavailable/);
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p' }); // NOT 'c'
     expect(db.docData('produtos', PRODUTO)).toMatchObject({
       marketplace: [{ integracaoUid: CONTA, externalId: ITEM }], // entry still present
     });
 
     // Retry: the denorm update succeeds → both the parent and the link reconcile.
-    const out = await syncItemStatus(asDb(db), api({ status: 'closed' }), CONTA, ITEM);
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'closed' }));
     expect(out).toBe('synced');
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c' });
     expect(db.docData('produtos', PRODUTO)).toMatchObject({
@@ -286,12 +311,12 @@ describe('syncItemStatus — partial-failure recovery (denorm-first ordering)', 
     seedLink(db, { estado: 'pa', status: 'paused' });
     db.failUpdates.set(`produtos/${PRODUTO}`, 1);
 
-    await expect(syncItemStatus(asDb(db), api({ status: 'active' }), CONTA, ITEM)).rejects.toThrow(
-      /unavailable/,
-    );
+    await expect(
+      syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'active' })),
+    ).rejects.toThrow(/unavailable/);
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa' }); // not advanced to 'p'
 
-    const out = await syncItemStatus(asDb(db), api({ status: 'active' }), CONTA, ITEM);
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'active' }));
     expect(out).toBe('synced');
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p' });
   });
@@ -308,7 +333,7 @@ describe('syncItemStatus — partial-failure recovery (denorm-first ordering)', 
       sub_status: null,
       isUserProductModel: false,
     });
-    const out = await syncItemStatus(asDb(db), api({ status: 'paused' }), CONTA, ITEM);
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolverFor({ status: 'paused' }));
     expect(out).toBe('synced'); // guarded — no NOT_FOUND throw on the missing parent
     expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa' });
     expect(db.docData('produtos', PRODUTO)).toBeUndefined(); // never resurrected
@@ -316,31 +341,32 @@ describe('syncItemStatus — partial-failure recovery (denorm-first ordering)', 
 });
 
 describe('syncItemStatus — deferred UP / migration (#441)', () => {
-  it('User-Products link → deferred, no write', async () => {
+  it('User-Products link → deferred WITHOUT an ML call (cheap link-only guard)', async () => {
     const db = new FakeDb();
     seedLink(db, { isUserProductModel: true });
-    const out = await syncItemStatus(asDb(db), api({ status: 'paused' }), CONTA, ITEM);
+    const resolve = resolverFor({ status: 'paused' });
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
     expect(out).toBe('deferred-up');
     expect(db.updates).toEqual([]);
+    expect(resolve).not.toHaveBeenCalled(); // skipped before any ML fetch
   });
 
-  it('link awaiting migration (estado "am") → deferred', async () => {
+  it('link awaiting migration (estado "am") → deferred without an ML call', async () => {
     const db = new FakeDb();
     seedLink(db, { estado: 'am' });
-    const out = await syncItemStatus(asDb(db), api({ status: 'active' }), CONTA, ITEM);
+    const resolve = resolverFor({ status: 'active' });
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
     expect(out).toBe('deferred-up');
+    expect(resolve).not.toHaveBeenCalled();
   });
 
-  it('migration-tagged item → deferred', async () => {
+  it('migration-tagged item → deferred (needs the fetched item, so the ML call DOES run)', async () => {
     const db = new FakeDb();
     seedLink(db);
-    const out = await syncItemStatus(
-      asDb(db),
-      api({ status: 'closed', tags: ['variations_migration_source'] }),
-      CONTA,
-      ITEM,
-    );
+    const resolve = resolverFor({ status: 'closed', tags: ['variations_migration_source'] });
+    const out = await syncItemStatus(asDb(db), CONTA, ITEM, resolve);
     expect(out).toBe('deferred-up');
+    expect(resolve).toHaveBeenCalled(); // the tag is only visible after fetching
     expect(db.updates).toEqual([]);
   });
 });
@@ -351,9 +377,9 @@ describe('syncItemStatus — transport errors', () => {
     seedLink(db);
     const out = await syncItemStatus(
       asDb(db),
-      failingApi(new MercadoLivreHttpError('ML 404', 404, null)),
       CONTA,
       ITEM,
+      failingResolver(new MercadoLivreHttpError('ML 404', 404, null)),
     );
     expect(out).toBe('item-gone');
     expect(db.updates).toEqual([]);
@@ -365,9 +391,9 @@ describe('syncItemStatus — transport errors', () => {
     await expect(
       syncItemStatus(
         asDb(db),
-        failingApi(new MercadoLivreHttpError('ML 500', 500, null)),
         CONTA,
         ITEM,
+        failingResolver(new MercadoLivreHttpError('ML 500', 500, null)),
       ),
     ).rejects.toThrow(MercadoLivreHttpError);
   });
@@ -376,7 +402,12 @@ describe('syncItemStatus — transport errors', () => {
     const db = new FakeDb();
     seedLink(db);
     await expect(
-      syncItemStatus(asDb(db), failingApi(new MercadoLivreNetworkError('offline')), CONTA, ITEM),
+      syncItemStatus(
+        asDb(db),
+        CONTA,
+        ITEM,
+        failingResolver(new MercadoLivreNetworkError('offline')),
+      ),
     ).rejects.toThrow(MercadoLivreNetworkError);
   });
 });
