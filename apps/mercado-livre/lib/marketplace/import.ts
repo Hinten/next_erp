@@ -37,6 +37,7 @@ import {
   MercadoLivreImportError,
   assembleImportPlan,
 } from './importCore';
+import { lastSegment, refMatchesIntegracao } from './linkRefs';
 
 export interface ImportDeps {
   db: Firestore;
@@ -311,15 +312,4 @@ async function readEstoque(
     }
   }
   return null;
-}
-
-/** Tolerates the stored `documents/integracao/<id>` form + the bare form. */
-function refMatchesIntegracao(ref: unknown, integracaoId: string): boolean {
-  if (typeof ref !== 'string') return false;
-  return ref === `integracao/${integracaoId}` || ref.endsWith(`/integracao/${integracaoId}`);
-}
-
-function lastSegment(ref: string): string {
-  const parts = ref.split('/').filter(Boolean);
-  return parts[parts.length - 1] ?? ref;
 }

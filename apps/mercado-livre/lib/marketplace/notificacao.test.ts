@@ -108,6 +108,13 @@ class FakeDb {
       }),
     };
   }
+
+  /** Minimal collectionGroup (empty result) — the `items` status-sync's link
+   * lookup goes through it; its full behavior is covered in itemsStatusSync.test. */
+  collectionGroup(_groupId: string) {
+    const q = { where: () => q, get: async () => ({ docs: [] as never[], empty: true }) };
+    return q;
+  }
 }
 
 const NOTIF = 'notificacoesMercadoLivre';
@@ -306,6 +313,23 @@ describe('handleNotificationTask', () => {
     const r = await handleNotificationTask(asDb(db), { topic: 'orders_v2' }, 0); // missing resource
     expect(r.outcome).toBe('dropped');
     expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('items topic → dispatches the status-sync (resolver built, item fetched), acks done', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const getItem = vi.fn(async () => ({ id: 'MLB1', status: 'paused' }));
+    const resolveItemsApi = vi.fn(async () => ({ getItem }) as never);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N9', resource: '/items/MLB1', topic: 'items' }),
+      0,
+      resolveItemsApi,
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
+    expect(resolveItemsApi).toHaveBeenCalledWith(asDb(db), 'conta-A');
+    expect(getItem).toHaveBeenCalledWith('MLB1');
+    expect(db.docs(NOTIF).size).toBe(0); // status-sync persists nothing
   });
 });
 
