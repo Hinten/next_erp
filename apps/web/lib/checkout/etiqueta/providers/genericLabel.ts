@@ -30,13 +30,27 @@ export const genericLabelProvider: CheckoutEtiquetaProvider = {
       });
     }
 
-    const model = await buildEtiquetaGenericaModel(db, pedido, pedidoId, frete, intFrete);
-    const blob = await renderAndExportEtiquetaGenericaPdf(model);
-    const fileName = `etiqueta-${pedido.numero ?? pedidoId}.pdf`;
+    try {
+      const model = await buildEtiquetaGenericaModel(db, pedido, pedidoId, frete, intFrete);
+      const blob = await renderAndExportEtiquetaGenericaPdf(model);
+      const fileName = `etiqueta-${pedido.numero ?? pedidoId}.pdf`;
 
-    // A print (agent up) or a download (agent down) both DELIVER the label to
-    // the operator, so either way the action succeeded — map both to 'printed'.
-    await deps.printJob(blob, { fileName, contentType: 'application/pdf', tamanho: 'etq' });
-    return { status: 'printed' };
+      // A print (agent up) or a download (agent down) both DELIVER the label to
+      // the operator, so either way the action succeeded — map both to 'printed'.
+      await deps.printJob(blob, { fileName, contentType: 'application/pdf', tamanho: 'etq' });
+      return { status: 'printed' };
+    } catch (err) {
+      // The Firestore derefs and the html-to-image / jsPDF render throw plain
+      // Errors; keep the post-save contract best-effort — surface a toast and
+      // return an `error` outcome instead of rejecting the caller (the checkout
+      // is already committed). A genuinely non-Error still propagates.
+      if (!(err instanceof Error)) throw err;
+      ui.notify({
+        title: 'Etiqueta genérica',
+        message: `Falha ao gerar a etiqueta: ${err.message}`,
+        color: 'red',
+      });
+      return { status: 'error', message: err.message };
+    }
   },
 };

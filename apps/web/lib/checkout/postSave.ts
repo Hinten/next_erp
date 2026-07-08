@@ -17,9 +17,11 @@ import { printJob } from '../print-agent/printJob';
 
 /**
  * Post-save orchestration: after the checkout doc is committed, ensure/print the
- * NF-e DANFE and dispatch the shipping label. Each step is best-effort — a DANFE
- * or etiqueta failure surfaces a notification but NEVER un-saves the checkout
- * (legacy parity). The caller (PR 5's Salvar handler) resets the screen + focuses
+ * NF-e DANFE and dispatch the shipping label. Each step is best-effort: the DANFE
+ * step catches the typed NF-e errors, and the etiqueta providers return an
+ * `error` outcome (with a toast) for their expected failures (network / render)
+ * rather than rejecting — the checkout is already committed, so nothing here can
+ * un-save it (legacy parity). The caller (PR 5's Salvar handler) resets the screen + focuses
  * the finder after this resolves. Every step's client + the UI callbacks are
  * injected, so the sequence is exercised end-to-end by the PR 8 e2e; the risky
  * per-step logic lives in the unit-tested `nfeFlow` / `etiqueta` modules.

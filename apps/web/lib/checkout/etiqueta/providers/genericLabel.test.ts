@@ -73,4 +73,12 @@ describe('genericLabelProvider', () => {
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Etiqueta genérica' }));
     expect(renderMock).toHaveBeenCalledTimes(1);
   });
+
+  it('returns an error outcome + red toast when rendering fails (best-effort)', async () => {
+    renderMock.mockRejectedValue(new Error('canvas boom'));
+    const notify = vi.fn();
+    const out = await genericLabelProvider.emitirOuImprimir(makeInput({ notify }));
+    expect(out).toEqual({ status: 'error', message: 'canvas boom' });
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ color: 'red' }));
+  });
 });

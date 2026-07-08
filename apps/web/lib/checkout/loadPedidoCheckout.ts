@@ -1,5 +1,5 @@
 import { getDoc, getDocs, type Firestore } from 'firebase/firestore';
-import { buildQuery, limit, whereEqual } from '@delfrance/data';
+import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
 import {
   flattenPedidoItens,
   type EngineProduto,
@@ -133,7 +133,14 @@ export async function loadCheckoutData(db: Firestore, pedidoId: string): Promise
 
   // Existing-checkout warning + incidentes (parallel).
   const [existingSnap, incidentesSnap] = await Promise.all([
-    getDocs(buildQuery(checkoutCollection.ref(db, { pedidoId }), [limit(1)])),
+    // Order by timestamp desc so the warning refers to the NEWEST checkout,
+    // not an arbitrary one (the warning shows its timestamp).
+    getDocs(
+      buildQuery(checkoutCollection.ref(db, { pedidoId }), [
+        orderByField('timestamp', 'desc'),
+        limit(1),
+      ]),
+    ),
     getDocs(incidenteCollection.ref(db, { pedidoId })),
   ]);
   const firstCheckout = existingSnap.docs[0];
