@@ -12,7 +12,10 @@ const h = vi.hoisted(() => ({
   importProduto: vi.fn(),
 }));
 
-vi.mock('@/lib/firebase/admin', () => ({ getAdminFirestore: () => ({}) }));
+vi.mock('@/lib/firebase/admin', () => ({
+  getAdminFirestore: () => ({}),
+  getAdminBucket: () => ({ name: 'demo-erp.appspot.com' }),
+}));
 
 vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/auth/verifyCaller')>();
@@ -84,16 +87,27 @@ describe('POST /api/marketplace/mercado-livre/importar', () => {
     });
   });
 
-  it('forwards only the known boolean option flags', async () => {
+  it('forwards only the known boolean option flags (incl. importarFotos)', async () => {
     await POST(
       req({
         integracaoId: 'int-1',
         itemId: 'MLB123',
-        options: { sobrescreverEstoque: true, importarPreco: false, bogus: 'x' },
+        options: {
+          sobrescreverEstoque: true,
+          importarPreco: false,
+          importarFotos: false,
+          bogus: 'x',
+        },
       }),
     );
     const [deps] = h.importProduto.mock.calls[0]!;
-    expect(deps.options).toEqual({ sobrescreverEstoque: true, importarPreco: false });
+    expect(deps.options).toEqual({
+      sobrescreverEstoque: true,
+      importarPreco: false,
+      importarFotos: false,
+    });
+    // the Storage bucket is wired into the deps for photo import
+    expect(deps.bucket).toBeDefined();
   });
 
   it('400s on a missing itemId, invalid JSON and non-object bodies', async () => {

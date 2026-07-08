@@ -122,6 +122,7 @@ export interface MercadoLivreClient {
       sobrescreverEstoque?: boolean;
       importarPreco?: boolean;
       sobrescreverPreco?: boolean;
+      importarFotos?: boolean;
     };
   }): Promise<MercadoLivreImportarResult>;
   /** Chart-enabled ML domains for the chart-editor picker (PERM.integracao.read). */

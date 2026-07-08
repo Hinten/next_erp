@@ -12,7 +12,7 @@ import { NextResponse } from 'next/server';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import { PERM, verifyCaller } from '@/lib/auth/verifyCaller';
-import { getAdminFirestore } from '@/lib/firebase/admin';
+import { getAdminBucket, getAdminFirestore } from '@/lib/firebase/admin';
 import { loadMercadoLivreContext } from '@/lib/marketplace/mercadoLivre';
 import { isMercadoLivreError, mercadoLivreErrorResponse } from '@/lib/marketplace/respond';
 import { importProduto } from '@/lib/marketplace/import';
@@ -52,6 +52,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       {
         db,
         api,
+        bucket: getAdminBucket(),
         integracaoId: body.integracaoId,
         sellerUserId: asNumberOrNull(ctx.conta.user_id),
         tabelaNormalOuterRef: asStringOrNull(ctx.conta.tabelaNormalOuterRef),
@@ -85,7 +86,13 @@ function asNumberOrNull(v: unknown): number | null {
 function sanitizeOptions(v: unknown): Record<string, boolean> | undefined {
   if (v == null || typeof v !== 'object' || Array.isArray(v)) return undefined;
   const src = v as Record<string, unknown>;
-  const keys = ['importarEstoque', 'sobrescreverEstoque', 'importarPreco', 'sobrescreverPreco'];
+  const keys = [
+    'importarEstoque',
+    'sobrescreverEstoque',
+    'importarPreco',
+    'sobrescreverPreco',
+    'importarFotos',
+  ];
   const out: Record<string, boolean> = {};
   for (const k of keys) if (typeof src[k] === 'boolean') out[k] = src[k] as boolean;
   return Object.keys(out).length > 0 ? out : undefined;
