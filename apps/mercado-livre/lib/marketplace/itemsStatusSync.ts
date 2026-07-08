@@ -121,22 +121,30 @@ export async function syncItemStatus(
 
   if (!linkChanged) return 'unchanged';
 
-  const now = Date.now();
+  // Parent marketplace denorm FIRST — only on a COARSE estado transition (legacy
+  // gate). These arrays are DEPRECATED (Pipelines resolve linkage now, #431) but
+  // kept in the exact shape publish/import stamp during dual-run. The legacy
+  // `statusProdutosMarketplace` inactive-map is intentionally NOT written (neither
+  // publish nor import writes it). Variation-children sweep on cancel → #438.
+  //
+  // ORDER MATTERS: the two writes are not atomic and idempotency is keyed on the
+  // link doc's estado/status/sub_status, so the link merge MUST be the LAST write.
+  // If it ran first, a transient failure of the denorm write would leave the link
+  // already at the new estado — a retry would then see `unchanged` and never
+  // reconcile the parent, permanently stranding a cancelled listing in the arrays.
+  // Denorm-first keeps both writes idempotent on replay (arrayUnion no-ops;
+  // removeMarketplaceEntry returns null once the entry is gone), and the link only
+  // advances once the denorm has succeeded.
+  if (estadoChanged) {
+    await updateParentDenorm(db, link.produtoId, integracaoId, itemId, estado);
+  }
+
   await produtoMercadoLivreLinkCollection.merge(db, { produtoId: link.produtoId }, link.docId, {
     estado,
     status,
     sub_status: subStatus,
-    ultimaModificacao: now,
+    ultimaModificacao: Date.now(),
   });
-
-  // Parent marketplace denorm — only on a COARSE estado transition (legacy gate).
-  // These arrays are DEPRECATED (Pipelines resolve linkage now, #431) but kept in
-  // the exact shape publish/import stamp during dual-run. The legacy
-  // `statusProdutosMarketplace` inactive-map is intentionally NOT written (neither
-  // publish nor import writes it). Variation-children sweep on cancel → #438.
-  if (estadoChanged) {
-    await updateParentDenorm(db, link.produtoId, integracaoId, itemId, estado);
-  }
 
   return 'synced';
 }
@@ -175,7 +183,11 @@ async function resolveLink(
 /**
  * Maintain the parent produto's dual-run marketplace arrays on an estado change:
  * ensure-present on a live transition (idempotent arrayUnion), key-based removal
- * on a cancel (a dead listing must stop being advertised).
+ * on a cancel (a dead listing must stop being advertised). A missing parent doc
+ * is a no-op for BOTH branches (legacy `if (produtoPai == null) return`,
+ * tasks.dart:1056-1059) — a link can outlive its produto during the delete
+ * cascade window, and admin `update()` would otherwise throw NOT_FOUND (never
+ * resurrect a deleted produto via a denorm write).
  */
 async function updateParentDenorm(
   db: Firestore,
@@ -185,9 +197,9 @@ async function updateParentDenorm(
   estado: string,
 ): Promise<void> {
   const ref = produtoCollection.docRef(db, {}, produtoId);
+  const snap = await ref.get();
+  if (!snap.exists) return;
   if (estado === 'c') {
-    const snap = await ref.get();
-    if (!snap.exists) return;
     const patch = removeMarketplaceEntry(
       (snap.data() ?? {}) as Record<string, unknown>,
       integracaoId,

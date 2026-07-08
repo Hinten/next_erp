@@ -16,6 +16,8 @@ type DocData = Record<string, unknown>;
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
   readonly updates: Array<{ path: string; patch: DocData }> = [];
+  /** Fault injection: `${path}/${id}` → remaining `update()` throws (transient). */
+  readonly failUpdates = new Map<string, number>();
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
@@ -63,7 +65,15 @@ class FakeDb {
           col.set(id, opts?.merge ? { ...(col.get(id) ?? {}), ...data } : { ...data });
         },
         update: async (patch: DocData) => {
-          self.updates.push({ path: `${path}/${id}`, patch });
+          const full = `${path}/${id}`;
+          const fails = self.failUpdates.get(full) ?? 0;
+          if (fails > 0) {
+            self.failUpdates.set(full, fails - 1);
+            throw Object.assign(new Error('firestore unavailable'), { code: 14 });
+          }
+          // Admin `update()` rejects NOT_FOUND on a missing doc (never creates it).
+          if (!col.has(id)) throw Object.assign(new Error('NOT_FOUND'), { code: 5 });
+          self.updates.push({ path: full, patch });
           col.set(id, { ...(col.get(id) ?? {}), ...patch });
         },
       }),
@@ -241,6 +251,67 @@ describe('syncItemStatus — cancel (closed)', () => {
       marketplaceIds: ['MLB999'],
       integracoesComProduto: [CONTA], // still has MLB999
     });
+  });
+});
+
+describe('syncItemStatus — partial-failure recovery (denorm-first ordering)', () => {
+  it('cancel: denorm write fails, then a retry reconciles — the link never advances ahead of the denorm', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    db.failUpdates.set(`produtos/${PRODUTO}`, 1); // parent denorm update throws once
+
+    // Attempt 1: denorm runs FIRST and throws → the whole sync throws and, crucially,
+    // the link estado is NOT advanced (so a retry still sees a change to reconcile).
+    await expect(syncItemStatus(asDb(db), api({ status: 'closed' }), CONTA, ITEM)).rejects.toThrow(
+      /unavailable/,
+    );
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p' }); // NOT 'c'
+    expect(db.docData('produtos', PRODUTO)).toMatchObject({
+      marketplace: [{ integracaoUid: CONTA, externalId: ITEM }], // entry still present
+    });
+
+    // Retry: the denorm update succeeds → both the parent and the link reconcile.
+    const out = await syncItemStatus(asDb(db), api({ status: 'closed' }), CONTA, ITEM);
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'c' });
+    expect(db.docData('produtos', PRODUTO)).toMatchObject({
+      marketplace: [],
+      marketplaceIds: [],
+      integracoesComProduto: [],
+    });
+  });
+
+  it('non-cancel reactivation: denorm write fails, then a retry reconciles (link not advanced)', async () => {
+    const db = new FakeDb();
+    seedLink(db, { estado: 'pa', status: 'paused' });
+    db.failUpdates.set(`produtos/${PRODUTO}`, 1);
+
+    await expect(syncItemStatus(asDb(db), api({ status: 'active' }), CONTA, ITEM)).rejects.toThrow(
+      /unavailable/,
+    );
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa' }); // not advanced to 'p'
+
+    const out = await syncItemStatus(asDb(db), api({ status: 'active' }), CONTA, ITEM);
+    expect(out).toBe('synced');
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p' });
+  });
+
+  it('orphan link (parent produto missing) → link still synced, no throw, no parent write', async () => {
+    const db = new FakeDb();
+    // Seed ONLY the link doc — the parent produto is gone (delete-cascade window).
+    db.seed(LINK_PATH, 'link1', {
+      id: ITEM,
+      contaOuterRef: `documents/integracao/${CONTA}`,
+      title: 'Camiseta',
+      estado: 'p',
+      status: 'active',
+      sub_status: null,
+      isUserProductModel: false,
+    });
+    const out = await syncItemStatus(asDb(db), api({ status: 'paused' }), CONTA, ITEM);
+    expect(out).toBe('synced'); // guarded — no NOT_FOUND throw on the missing parent
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'pa' });
+    expect(db.docData('produtos', PRODUTO)).toBeUndefined(); // never resurrected
   });
 });
 
