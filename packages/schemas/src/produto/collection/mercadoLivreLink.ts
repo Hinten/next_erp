@@ -68,10 +68,24 @@ export const produtoMercadoLivreLinkSchema = z
     channels: z.array(z.string()).default(['marketplace']),
     estado: estadoPublicacaoMlSchema.default('r'),
 
+    /**
+     * Raw ML listing `status` (`active`/`paused`/`closed`/…) and `sub_status`
+     * (`deleted`/`suspended`/`freezed`/`out_of_stock`/…), stamped on import +
+     * the `items` status-sync (#440). `estado` is the derived short code; these
+     * keep the raw values so a product-maintenance bot can filter by ML status.
+     * Additive/nullable — the Flutter reader ignores them (no rules change).
+     */
+    status: z.string().nullable().default(null),
+    sub_status: z.array(z.string()).nullable().default(null),
+
     /** ML item id — null until the first successful publish. */
     id: z.string().nullable().default(null),
     sku: z.string().nullable().default(null),
-    descricao: z.string().max(10000).nullable().default(null),
+    // ML plain-text descriptions run to ~50k; the old 10000 cap was a Flutter
+    // FORM validator the deployed backend never enforced, so a re-import/re-publish
+    // that spreads an existing Flutter link must not fail strict-write validation
+    // on a long stored descricao (dual-run). Match the real ML limit.
+    descricao: z.string().max(50000).nullable().default(null),
 
     site_id: z.string().default('MLB'),
     title: z.string().min(1),

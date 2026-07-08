@@ -9,6 +9,7 @@ import {
   Anchor,
   Badge,
   Button,
+  Group,
   Skeleton,
   Stack,
   Table,
@@ -20,6 +21,7 @@ import { useSnapshot } from '@delfrance/data/hooks';
 import { produtoMeta } from '@delfrance/schemas';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { ImportarMercadoLivreModal } from './_components/ImportarMercadoLivreModal';
 
 // U+F8FF: a very high private-use code point. Appended to the search term it
 // bounds a nome prefix range (nome >= term && nome <= term + sentinel).
@@ -28,6 +30,7 @@ const PREFIX_SENTINEL = '\uf8ff';
 export default function ProdutosPage() {
   const router = useRouter();
   const [search, setSearch] = useState('');
+  const [importOpen, setImportOpen] = useState(false);
   const trimmed = search.trim();
 
   const q = useMemo(() => {
@@ -53,10 +56,21 @@ export default function ProdutosPage() {
         title="Produtos"
         description="Catálogo, variações e marketplaces"
         actions={
-          <Button component={Link} href="/produtos/novo">
-            Novo produto
-          </Button>
+          <Group>
+            <Button variant="default" onClick={() => setImportOpen(true)}>
+              Importar do Mercado Livre
+            </Button>
+            <Button component={Link} href="/produtos/novo">
+              Novo produto
+            </Button>
+          </Group>
         }
+      />
+
+      <ImportarMercadoLivreModal
+        db={getFirebaseFirestore()}
+        opened={importOpen}
+        onClose={() => setImportOpen(false)}
       />
 
       <TextInput

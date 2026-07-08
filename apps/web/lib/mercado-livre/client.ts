@@ -57,6 +57,16 @@ export interface MercadoLivrePublicarResult {
   permalink: string | null;
 }
 
+export interface MercadoLivreImportarResult {
+  /** The created/updated ERP produto id. */
+  produtoId: string;
+  /** Old-shape estado code derived from the ML listing status. */
+  estado: string;
+  nome: string;
+  /** True when a new produto was created (false = an existing one was re-synced). */
+  created: boolean;
+}
+
 /** One chart-enabled ML domain (`GET size-charts/domains`). */
 export interface MercadoLivreChartDomain {
   domain_id: string;
@@ -99,6 +109,21 @@ export interface MercadoLivreClient {
     produtoId: string;
     listingTypeId?: string;
   }): Promise<MercadoLivrePublicarResult>;
+  /**
+   * Import (or re-sync) an ML listing into an ERP produto (PERM.integracao.write).
+   * A listing with variations / User-Products returns a 422 `MercadoLivreClientHttpError`
+   * with `code: 'ML_IMPORT_BLOCKED'` + `issues` (tracked in #438).
+   */
+  importar(input: {
+    integracaoId: string;
+    itemId: string;
+    options?: {
+      importarEstoque?: boolean;
+      sobrescreverEstoque?: boolean;
+      importarPreco?: boolean;
+      sobrescreverPreco?: boolean;
+    };
+  }): Promise<MercadoLivreImportarResult>;
   /** Chart-enabled ML domains for the chart-editor picker (PERM.integracao.read). */
   sizeChartDomains(integracaoId: string): Promise<{ domains: MercadoLivreChartDomain[] }>;
   /**
@@ -186,6 +211,8 @@ export function createMercadoLivreClient(config: {
       ),
     publicar: (input) =>
       call<MercadoLivrePublicarResult>('/api/marketplace/mercado-livre/publicar', input),
+    importar: (input) =>
+      call<MercadoLivreImportarResult>('/api/marketplace/mercado-livre/importar', input),
     sizeChartDomains: (integracaoId) =>
       call<{ domains: MercadoLivreChartDomain[] }>(
         `/api/marketplace/mercado-livre/size-charts/domains?integracaoId=${encodeURIComponent(integracaoId)}`,
