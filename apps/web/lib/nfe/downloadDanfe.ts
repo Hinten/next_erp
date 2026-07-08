@@ -13,6 +13,7 @@ import type {
 } from '@delfrance/integrations-nfe/http-provider';
 
 import { saveBlob } from './saveBlob';
+import { printJob as defaultPrintJob, type TamanhoFolha } from '../print-agent/printJob';
 
 /** Trigger a browser download of an already-fetched artifact via a transient object URL. */
 function saveArtifact(artifact: NFeDanfeArtifact): void {
@@ -27,6 +28,28 @@ export async function downloadDanfe(
   format: NFeDanfeFormat,
 ): Promise<void> {
   saveArtifact(await client.danfe(pedidoId, nfeId, format));
+}
+
+/**
+ * Fetch a DANFE and send it to the local print agent (checkout station), with a
+ * browser-download fallback baked into `printJob`. Same `client.danfe` fetch as
+ * `downloadDanfe`; returns which delivery path ran. `printJobFn` is injectable
+ * for tests. (Existing `downloadDanfe` / callers are untouched.)
+ */
+export async function printDanfe(
+  client: NFeHttpClient,
+  pedidoId: string,
+  nfeId: string,
+  format: NFeDanfeFormat,
+  tamanho: TamanhoFolha,
+  printJobFn: typeof defaultPrintJob = defaultPrintJob,
+): Promise<'printed' | 'downloaded'> {
+  const artifact = await client.danfe(pedidoId, nfeId, format);
+  return printJobFn(artifact.blob, {
+    fileName: artifact.filename,
+    contentType: artifact.contentType,
+    tamanho,
+  });
 }
 
 /** Fetch + save the Carta de Correção PDF for a registrada CC-e. */
