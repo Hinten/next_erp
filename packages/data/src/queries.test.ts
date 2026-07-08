@@ -8,6 +8,7 @@ const { whereMock } = vi.hoisted(() => ({
 
 vi.mock('firebase/firestore', () => ({
   where: whereMock,
+  documentId: vi.fn(() => '__name__'),
   orderBy: vi.fn(),
   limit: vi.fn(),
   query: vi.fn(),
@@ -16,7 +17,7 @@ vi.mock('firebase/firestore', () => ({
   collectionGroup: vi.fn(),
 }));
 
-import { whereArrayContains, whereEqual, whereOp } from './queries';
+import { whereArrayContains, whereDocIdIn, whereEqual, whereOp } from './queries';
 
 describe('where helpers', () => {
   it('whereEqual forwards the == operator', () => {
@@ -33,5 +34,9 @@ describe('where helpers', () => {
       op: 'array-contains',
       value: 'prod1',
     });
+  });
+
+  it('whereDocIdIn forwards documentId() with the in operator', () => {
+    expect(whereDocIdIn(['a', 'b'])).toEqual({ field: '__name__', op: 'in', value: ['a', 'b'] });
   });
 });

@@ -9,6 +9,7 @@ export {
   whereEqual,
   whereOp,
   whereArrayContains,
+  whereDocIdIn,
   orderByField,
   limit,
   paginate,

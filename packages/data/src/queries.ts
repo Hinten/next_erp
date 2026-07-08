@@ -6,6 +6,7 @@ import {
   type QueryConstraint,
   type WhereFilterOp,
   collectionGroup as fsCollectionGroup,
+  documentId,
   endBefore,
   limit as fsLimit,
   orderBy as fsOrderBy,
@@ -36,6 +37,17 @@ export function whereOp(field: string, op: WhereFilterOp, value: unknown): Query
  */
 export function whereArrayContains(field: string, value: unknown): QueryConstraint {
   return where(field, 'array-contains', value);
+}
+
+/**
+ * Membership test on the document id: `where(documentId(), 'in', ids)`. The
+ * Firebase JS SDK v12 caps an `in` filter at **30** values, so a caller whose
+ * id list may exceed that must chunk (see `getDocsByIds` in apps/web). Keeping
+ * the raw `documentId()` import fenced inside `@delfrance/data` lets app code
+ * compose bulk-by-id fetches without importing `firebase/firestore` field paths.
+ */
+export function whereDocIdIn(ids: ReadonlyArray<string>): QueryConstraint {
+  return where(documentId(), 'in', ids);
 }
 
 export function orderByField(field: string, direction: 'asc' | 'desc' = 'asc'): QueryConstraint {
