@@ -27,6 +27,7 @@ import { integracao } from './integracao';
 import { cargo } from './cargo';
 import { usuario } from './usuario';
 import { deposito } from './deposito';
+import { etiqueta } from './etiqueta';
 import { grupoDeVariacoes } from './grupoDeVariacoes';
 import { tabelaDeMedidas } from './tabelaDeMedidas';
 import { listaDePrecos } from './listaDePrecos';
@@ -75,6 +76,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   cargo,
   usuario,
   deposito,
+  etiqueta,
   grupoDeVariacoes,
   tabelaDeMedidas,
   listaDePrecos,

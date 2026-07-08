@@ -42,6 +42,18 @@ service cloud.firestore {
 
     // d = incoming document, c = touched keys (keys() on create,
     // diff().affectedKeys() on update — legacy docs stay updatable).
+    function v_etiquetas(d, c) {
+      return (!c.hasAny(['data']) || d.get('data', null) is bool)
+        && (!c.hasAny(['dataAtualizacao']) || (d.get('dataAtualizacao', null) == null || d.get('dataAtualizacao', null) is int))
+        && (!c.hasAny(['dataCriacao']) || (d.get('dataCriacao', null) == null || d.get('dataCriacao', null) is int))
+        && (!c.hasAny(['itens']) || d.get('itens', null) is list)
+        && (!c.hasAny(['localizacao']) || d.get('localizacao', null) is bool)
+        && (!c.hasAny(['nome']) || d.get('nome', null) is string && d.get('nome', null).size() <= 255)
+        && (!c.hasAny(['preco']) || d.get('preco', null) is bool);
+    }
+
+    // d = incoming document, c = touched keys (keys() on create,
+    // diff().affectedKeys() on update — legacy docs stay updatable).
     function v_metodo_pgto(d, c) {
       return (!c.hasAny(['dataCadastro']) || (d.get('dataCadastro', null) == null || d.get('dataCadastro', null) is int))
         && (!c.hasAny(['hasLinkPagamento']) || d.get('hasLinkPagamento', null) is bool)
@@ -219,6 +231,13 @@ service cloud.firestore {
     match /depositos/{docId} {
       allow read: if isSuperUser() || p('d_estoque', 1);
       allow create, update: if isSuperUser() || p('d_estoque', 2);
+      allow delete: if isSuperUser() || p('d_estoque', 4);
+    }
+
+    match /etiquetas/{docId} {
+      allow read: if isSuperUser() || p('d_estoque', 1);
+      allow create: if (isSuperUser() || p('d_estoque', 2)) && v_etiquetas(request.resource.data, request.resource.data.keys());
+      allow update: if (isSuperUser() || p('d_estoque', 2)) && v_etiquetas(request.resource.data, request.resource.data.diff(resource.data).affectedKeys());
       allow delete: if isSuperUser() || p('d_estoque', 4);
     }
 

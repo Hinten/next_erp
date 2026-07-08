@@ -96,6 +96,11 @@
       "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]
     },
     {
+      "collectionGroup": "etiquetas",
+      "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]
+    },
+    {
       "collectionGroup": "depositos",
       "queryScope": "COLLECTION",
       "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]

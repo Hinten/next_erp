@@ -215,6 +215,21 @@ export {
 export { deposito, depositoSchema, depositoMeta, type Deposito } from './deposito';
 
 export {
+  etiqueta,
+  etiquetaSchema,
+  etiquetaMeta,
+  itemTelaEtiquetaSchema,
+  formatoEtiquetaSchema,
+  tamanhoEtiquetaSchema,
+  resolucaoEtiquetaSchema,
+  type Etiqueta,
+  type ItemTelaEtiqueta,
+  type FormatoEtiqueta,
+  type TamanhoEtiqueta,
+  type ResolucaoEtiqueta,
+} from './etiqueta';
+
+export {
   grupoDeVariacoes,
   grupoDeVariacoesSchema,
   grupoDeVariacoesMeta,
