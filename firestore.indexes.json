@@ -18,6 +18,11 @@
       ]
     },
     {
+      "collectionGroup": "produtoMercadoLivre",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [{ "fieldPath": "id", "order": "ASCENDING" }]
+    },
+    {
       "collectionGroup": "clientes",
       "queryScope": "COLLECTION",
       "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]

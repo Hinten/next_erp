@@ -57,35 +57,84 @@ export const userSchema = z
   .passthrough();
 export type MlUser = z.infer<typeof userSchema>;
 
+/**
+ * One embedded item/variation attribute (`attributes[]` /
+ * `attribute_combinations[]`). Every field is optional so a single odd entry
+ * (or ML drift) never fails the whole item parse; the import mapper filters by
+ * `id` (`SELLER_SKU`, `WEIGHT`, `SELLER_PACKAGE_*`, `SIZE`, `COLOR`…).
+ */
+export const itemAttributeSchema = z
+  .object({
+    id: z.string().nullable().optional(),
+    name: z.string().nullable().optional(),
+    value_id: z.string().nullable().optional(),
+    value_name: z.string().nullable().optional(),
+    attribute_group_id: z.string().nullable().optional(),
+    attribute_group_name: z.string().nullable().optional(),
+    unit_id: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlItemAttribute = z.infer<typeof itemAttributeSchema>;
+
+/** One item picture (`pictures[]`). `secure_url` carries a size-code suffix. */
+export const itemPictureSchema = z
+  .object({
+    id: z.string().nullable().optional(),
+    url: z.string().nullable().optional(),
+    secure_url: z.string().nullable().optional(),
+    size: z.string().nullable().optional(),
+    max_size: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlItemPicture = z.infer<typeof itemPictureSchema>;
+
 /** A variation inside an item (`variations[]`). */
 export const itemVariationSchema = z
   .object({
     // ML has sent numeric and (rarely) string ids over time — accept both.
     id: z.union([z.number(), z.string()]).nullable().optional(),
     available_quantity: z.number().nullable().optional(),
+    price: z.number().nullable().optional(),
     seller_custom_field: z.string().nullable().optional(),
-    attribute_combinations: z.array(z.unknown()).nullable().optional(),
+    /** User-Products model: each variation is its own item. */
+    item_relations: z.array(z.unknown()).nullable().optional(),
+    attribute_combinations: z.array(itemAttributeSchema).nullable().optional(),
+    attributes: z.array(itemAttributeSchema).nullable().optional(),
+    picture_ids: z.array(z.string()).nullable().optional(),
   })
   .passthrough();
+export type MlItemVariation = z.infer<typeof itemVariationSchema>;
 
 /** `GET /items/{id}` (and the `POST/PUT /items` response) — the listing. */
 export const itemSchema = z
   .object({
     id: z.string(),
     title: z.string().nullable().optional(),
+    /** User-Products model — ML titles the listing from the family. */
+    family_name: z.string().nullable().optional(),
     category_id: z.string().nullable().optional(),
     price: z.number().nullable().optional(),
+    /** Normal price (promo/`price` may be lower); import uses `base_price ?? price`. */
+    base_price: z.number().nullable().optional(),
     available_quantity: z.number().nullable().optional(),
+    condition: z.string().nullable().optional(),
     status: z.string().nullable().optional(),
+    /** ML sub-status (`deleted`/`suspended`/`freezed`/`out_of_stock`…) — bot filtering. */
+    sub_status: z.array(z.string()).nullable().optional(),
     listing_type_id: z.string().nullable().optional(),
     seller_id: z.number().int().nullable().optional(),
     seller_custom_field: z.string().nullable().optional(),
     permalink: z.string().nullable().optional(),
+    date_created: z.string().nullable().optional(),
+    video_id: z.string().nullable().optional(),
+    tags: z.array(z.string()).nullable().optional(),
     shipping: z
       .object({ free_shipping: z.boolean().nullable().optional() })
       .passthrough()
       .nullable()
       .optional(),
+    attributes: z.array(itemAttributeSchema).nullable().optional(),
+    pictures: z.array(itemPictureSchema).nullable().optional(),
     variations: z.array(itemVariationSchema).nullable().optional(),
   })
   .passthrough();
