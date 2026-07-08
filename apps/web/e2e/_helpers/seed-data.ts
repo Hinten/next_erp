@@ -2194,6 +2194,40 @@ export async function seedHistoricoCusto(produtoId: string, valor: number): Prom
 }
 
 /**
+ * Seed `n` listaDePrecos docs for the `/listas-de-precos` CRUD suite. `padrao`
+ * is true only on the first row and `ativo` alternates, so the boolean column
+ * filters have both states to bite on. The composite fields
+ * (`formulasCalculoPreco` / `formulasPorCategoria`) start null — the create
+ * flow exercises their editors through the UI.
+ */
+export async function seedListasDePrecos(prefix: string, n: number): Promise<void> {
+  const col = db().collection('listaDePrecos');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    const now = Date.now();
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      nome: `${prefix}-${pad(i)}`,
+      padrao: i === 1,
+      ativo: i % 2 === 0,
+      formulasCalculoPreco: null,
+      formulasPorCategoria: null,
+      timestamp: now,
+      ultimaModificacao: now + i,
+    });
+  }
+  await batch.commit();
+}
+
+/** Full data of the first `listaDePrecos` doc named `nome`, or null. */
+export async function getListaDePrecosByName(
+  nome: string,
+): Promise<Record<string, unknown> | null> {
+  const snap = await db().collection('listaDePrecos').where('nome', '==', nome).limit(1).get();
+  const data = snap.docs[0]?.data();
+  return data ? (data as Record<string, unknown>) : null;
+}
+
+/**
  * Delete every doc in `collection` whose `field` starts with `prefix`. Picks
  * up both seeded docs and UI-created ones (which get Firestore auto-ids).
  */
