@@ -42,7 +42,14 @@ making changes".
    permission + tenancy check via `isSuperUser()`, though field validators still
    apply. Mint one with `pnpm --filter @delfrance/test-fixtures create-super-user
    <email>` (durable: also sets `usuarios/<uid>.isSuperUser`); `grant-all-perms`
-   grants all *defined* bits but is NOT a super user.
+   grants all *defined* bits but is NOT a super user. The pre-commit hook
+   (`prettier --write --ignore-unknown` + scoped ESLint) **cannot** touch the
+   generated rulesets or their `.snap` snapshots — Prettier has no `.rules`/`.snap`
+   parser, they're listed in `.prettierignore`, and ESLint only matches
+   `.ts`-family files. So **committing never introduces rules drift**; drift comes
+   *only* from a schema/PERM/validator change, which `gen:rules` handles. Do
+   **not** run a post-commit "did the hook cause drift?" check — it is always a
+   no-op.
 2. **Codegen is deliberately minimal**. The only generator is `firestore.rules`
    (`packages/rules-gen`, custom — ADR 0003 found no npm package that fits).
    Form widgets, query builders, cascade, JSON converters — all manual TS, no

@@ -16,6 +16,15 @@ pnpm-lock.yaml
 # Codegen output (regenerated, never hand-formatted)
 **/generated/
 
+# Generated Firestore rulesets + their byte-for-byte snapshots.
+# Emitted RAW by @delfrance/rules-gen (packages/rules-gen) and drift-checked
+# byte-for-byte by ci-rules.yml — Prettier must never reflow them.
+# (Today they're only spared because Prettier has no .rules/.snap parser;
+# this makes the guarantee explicit so a future parser/plugin can't break CI.)
+firestore.rules
+firestore.e2e.rules
+packages/rules-gen/src/__snapshots__/
+
 # Prose docs & agent instructions — excluded to avoid markdown reflow churn.
 # (Code, config, JSON/YAML and the root README are still formatted.)
 **/CLAUDE.md
