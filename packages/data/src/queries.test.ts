@@ -39,4 +39,9 @@ describe('where helpers', () => {
   it('whereDocIdIn forwards documentId() with the in operator', () => {
     expect(whereDocIdIn(['a', 'b'])).toEqual({ field: '__name__', op: 'in', value: ['a', 'b'] });
   });
+
+  it('whereDocIdIn rejects an empty or oversized id list', () => {
+    expect(() => whereDocIdIn([])).toThrow(RangeError);
+    expect(() => whereDocIdIn(Array.from({ length: 31 }, (_, i) => `id${i}`))).toThrow(RangeError);
+  });
 });

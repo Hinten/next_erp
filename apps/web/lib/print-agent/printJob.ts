@@ -33,8 +33,10 @@ export interface PrintJobOptions {
 }
 
 /**
- * POST a document to the local print agent; on any failure fall back to a
- * browser download. Returns which path ran so the UI can toast accordingly.
+ * POST a document to the local print agent. Falls back to a browser download
+ * when the agent is unreachable (fetch rejects with a `TypeError`) or returns a
+ * non-OK status; any other error (e.g. a base64-encoding failure) propagates.
+ * Returns which path ran so the UI can toast accordingly.
  *
  * The POST is a CORS **simple request** (`text/plain` body, no custom headers →
  * no preflight), mirroring the Flutter `http.post(uri, body: <string>)` default
