@@ -108,6 +108,38 @@ class FakeDb {
       }),
     };
   }
+
+  /** collectionGroup over cols whose leaf name matches — the `items` status-sync's
+   * link lookup goes through it; the deep sync behavior is in itemsStatusSync.test. */
+  collectionGroup(groupId: string) {
+    const entries: Array<[string, DocData, string]> = [];
+    for (const [path, col] of this.cols) {
+      if (path.split('/').pop() === groupId) {
+        for (const [id, d] of col) entries.push([id, d, path]);
+      }
+    }
+    const clauses: Clause[] = [];
+    const q = {
+      where: (field: string, op: string, value: unknown) => {
+        clauses.push({ field, op, value });
+        return q;
+      },
+      get: async () => ({
+        docs: entries
+          .filter(([, d]) => matches(d, clauses))
+          .map(([id, d, colPath]) => {
+            const segs = colPath.split('/').filter(Boolean);
+            return {
+              id,
+              data: () => d,
+              exists: true,
+              ref: { parent: { parent: { id: segs[segs.length - 2] ?? '' } } },
+            };
+          }),
+      }),
+    };
+    return q;
+  }
 }
 
 const NOTIF = 'notificacoesMercadoLivre';
@@ -305,6 +337,49 @@ describe('handleNotificationTask', () => {
     const db = new FakeDb();
     const r = await handleNotificationTask(asDb(db), { topic: 'orders_v2' }, 0); // missing resource
     expect(r.outcome).toBe('dropped');
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('items topic + a linked produto → dispatches the status-sync (resolver built, item fetched), acks done', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    // A linked listing already at the item's status → the sync resolves 'unchanged'
+    // after fetching, which still proves the link-first resolver + fetch ran.
+    db.seed('produtos/prod1/produtoMercadoLivre', 'link1', {
+      id: 'MLB1',
+      contaOuterRef: 'documents/integracao/conta-A',
+      title: 'x',
+      estado: 'pa',
+      status: 'paused',
+      sub_status: null,
+      isUserProductModel: false,
+    });
+    const getItem = vi.fn(async () => ({ id: 'MLB1', status: 'paused' }));
+    const resolveItemsApi = vi.fn(async () => ({ getItem }) as never);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N9', resource: '/items/MLB1', topic: 'items' }),
+      0,
+      resolveItemsApi,
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
+    expect(resolveItemsApi).toHaveBeenCalledWith(asDb(db), 'conta-A');
+    expect(getItem).toHaveBeenCalledWith('MLB1');
+    expect(db.docs(NOTIF).size).toBe(0); // status-sync persists nothing
+  });
+
+  it('items topic + NO linked produto → link-first short-circuits (no ML call), acks done', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const resolveItemsApi = vi.fn(async () => ({ getItem: vi.fn() }) as never);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N10', resource: '/items/MLB404', topic: 'items' }),
+      0,
+      resolveItemsApi,
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
+    expect(resolveItemsApi).not.toHaveBeenCalled(); // no link → no external call
     expect(db.docs(NOTIF).size).toBe(0);
   });
 });

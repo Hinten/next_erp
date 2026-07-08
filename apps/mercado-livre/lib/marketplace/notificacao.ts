@@ -17,8 +17,9 @@
  *      deletes them on success.
  *
  * Disposition (`handleNotificationTask`):
- *  - `done`     — a known topic was processed (no-op in this foundation until the
- *                 per-topic handlers land in Steps 9–14): NOTHING is persisted;
+ *  - `done`     — a known topic was processed: NOTHING is persisted. The `items`
+ *                 topic runs the status-sync (#440); the remaining topics are
+ *                 no-ops until their per-topic handlers land in Steps 9–14;
  *  - transient  — a transient infra failure (Firestore/ML API/network) THROWS so
  *                 the queue retries with backoff; on the FINAL attempt it persists
  *                 `failed` (so the sweep re-drives it) instead of throwing;
@@ -36,6 +37,13 @@ import {
   integracaoCollection,
   notificacaoMercadoLivreCollection,
 } from '@delfrance/data/admin/collections';
+
+import {
+  type ItemsApiResolver,
+  resolveItemsApiFromContext,
+  syncItemStatus,
+} from './itemsStatusSync';
+import { parseItemIdFromResource } from './linkRefs';
 
 /**
  * The deployed `onTaskDispatched` function name — which is ALSO its
@@ -200,16 +208,28 @@ export type ProcessOutcome =
 export async function processNotificationPayload(
   db: Firestore,
   payload: MlNotificationPayload,
+  resolveItemsApi: ItemsApiResolver = resolveItemsApiFromContext,
 ): Promise<ProcessOutcome> {
   const integracaoId = await resolveIntegracaoByUserId(db, payload.user_id ?? null);
   if (!integracaoId) return { kind: 'no-account' };
   if (!isKnownTopic(payload.topic)) return { kind: 'unknown-topic', integracaoId };
 
-  // A known topic. The per-topic handlers land in later steps; here the
-  // foundation acks it so the pipeline is exercisable end-to-end. A future
-  // handler MUST THROW on a transient failure (so the queue/sweep retry) and be
-  // idempotent keyed by the ML resource id — it must never fall through to a
-  // silent success.
+  // `items` — status-sync of an already-linked listing (#440). THROWS on a
+  // transient failure (so the queue/sweep retry) and is idempotent, keyed by the
+  // item id. A malformed resource (no id segment) is deterministic → ack it.
+  if (payload.topic === 'items') {
+    const itemId = parseItemIdFromResource(payload.resource);
+    // The resolver is threaded (not a pre-built API) so syncItemStatus can go
+    // link-first and skip the ML call entirely for an unlinked item.
+    if (itemId) await syncItemStatus(db, integracaoId, itemId, resolveItemsApi);
+    return { kind: 'done', integracaoId };
+  }
+
+  // Other known topics: the per-topic handlers (order / payment / shipment /
+  // price / claim) land in later steps; here the foundation acks them so the
+  // pipeline is exercisable end-to-end. A future handler MUST THROW on a
+  // transient failure (so the queue/sweep retry) and be idempotent keyed by the
+  // ML resource id — it must never fall through to a silent success.
   return { kind: 'done', integracaoId };
 }
 
@@ -229,6 +249,7 @@ export async function handleNotificationTask(
   db: Firestore,
   data: unknown,
   retryCount: number,
+  resolveItemsApi: ItemsApiResolver = resolveItemsApiFromContext,
 ): Promise<TaskResult> {
   let payload: MlNotificationPayload;
   try {
@@ -240,7 +261,7 @@ export async function handleNotificationTask(
 
   let result: ProcessOutcome;
   try {
-    result = await processNotificationPayload(db, payload);
+    result = await processNotificationPayload(db, payload, resolveItemsApi);
   } catch (err) {
     // Transient (Firestore / ML API / network). Retry in-task until the final
     // attempt; then persist `failed` so the sweep re-drives it (a throw on the
@@ -384,6 +405,7 @@ export interface ReprocessResult {
 export async function reprocessNotifications(
   db: Firestore,
   opts: ReprocessOptions = {},
+  resolveItemsApi: ItemsApiResolver = resolveItemsApiFromContext,
 ): Promise<ReprocessResult> {
   const now = opts.now ?? Date.now();
   const cutoff = now - (opts.olderThanMs ?? ONE_HOUR_MS);
@@ -425,7 +447,7 @@ export async function reprocessNotifications(
     const tentativas = (doc.tentativas ?? 0) + 1;
 
     try {
-      const result = await processNotificationPayload(db, payload);
+      const result = await processNotificationPayload(db, payload, resolveItemsApi);
       if (result.kind === 'done') {
         await deleteNotification(db, d.id); // resolved → leave the failures store
         outcomes.done = (outcomes.done ?? 0) + 1;
