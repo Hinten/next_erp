@@ -289,6 +289,22 @@
       "collectionGroup": "arquivos",
       "queryScope": "COLLECTION",
       "fields": [{ "fieldPath": "markedForDeletionAt", "order": "ASCENDING" }]
+    },
+    {
+      "collectionGroup": "checkout",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "usuarioCheckoutFretePedidoOuterRef", "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "numero", "order": "ASCENDING" },
+        { "fieldPath": "ehSaida", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

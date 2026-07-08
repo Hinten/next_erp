@@ -181,6 +181,17 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
       await assertSucceeds(getDocs(collectionGroup(db({ d_endereco: 1 }), 'enderecos')));
       await assertFails(getDocs(collectionGroup(db({ d_cliente: 7 }), 'enderecos')));
     });
+
+    it('checkout group queries follow the pedido read bit', async () => {
+      await seed('pedidos/p-chk/checkout/c1', {
+        freteNoMomentoDoCheckout: { estado: 'checkFinalizado' },
+        usuarioCheckoutFretePedidoOuterRef: 'documents/usuarios/u1',
+        itensCheckout: [],
+        timestamp: 1_700_000_000_000,
+      });
+      await assertSucceeds(getDocs(collectionGroup(db({ d_pedido: 1 }), 'checkout')));
+      await assertFails(getDocs(collectionGroup(db({ d_nfe: 7 }), 'checkout')));
+    });
   });
 
   describe('server-owned pedido.estoqueAplicado (meta.serverOwnedFields)', () => {
