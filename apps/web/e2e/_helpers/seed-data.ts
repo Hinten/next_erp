@@ -1133,6 +1133,179 @@ export async function cleanupPedidoFixtures(prefix: string): Promise<void> {
 }
 
 /**
+ * Fixtures for the pedido print e2e (#342 / PR #319): one cliente, one produto,
+ * one integração, and TWO saved pedidos sharing the run prefix — one NOT yet
+ * printed (`foiImpresso: false`, `dtImpressao: null`) and one ALREADY printed
+ * (`foiImpresso: true`, `dtImpressao` set). Each pedido carries one
+ * fully-shaped item so:
+ *  - the orçamento capture and the comum batch build assemble a real sheet, and
+ *  - the pedido editor's Zod converter parses when the orçamento test opens
+ *    `/pedidos/<id>/editar` (`precoDeVenda` has no default — mirrors
+ *    `seedPedidoEstoqueFixtures`).
+ *
+ * The already-printed pedido drives the comum "reprint?" confirm guard: the
+ * `/pedidos` TableView projects only the columns' fields, so `foiImpresso` may
+ * be absent — `dtImpressao` (the "Imp." column) is the reliable signal the
+ * action reads, so it is set alongside `foiImpresso`.
+ */
+export async function seedPedidoImpressaoFixtures(prefix: string): Promise<{
+  clienteId: string;
+  produtoId: string;
+  integracaoId: string;
+  naoImpressoId: string;
+  naoImpressoNumero: string;
+  impressoId: string;
+  impressoNumero: string;
+}> {
+  const clienteId = `${prefix}-cli-001`;
+  const produtoId = `${prefix}-pro-001`;
+  const integracaoId = `${prefix}-int-001`;
+  const naoImpressoId = `${prefix}-001`;
+  const impressoId = `${prefix}-002`;
+  const sku = `${prefix.toUpperCase().replace(/-/g, '_')}_IMP_001`;
+  const now = Date.now();
+  const nowMicros = millisToMicros(now);
+
+  const item = {
+    produtoUid: produtoId,
+    ordem: 1,
+    ensureUniqueId: null,
+    mktplaceId: null,
+    sku,
+    gtin: null,
+    nomeDeVenda: produtoId,
+    precoDeVenda: 33.5,
+    descontoUnitario: 0,
+    quantidade: 2,
+    custo: null,
+    timestamp: null,
+    imposto: null,
+  };
+
+  // Shared pedido body — the two docs differ only in `numero` + the print flags.
+  const pedidoBase = {
+    ehSaida: true,
+    estado: 'iniciado',
+    itens: { [produtoId]: [item] },
+    itensIds: [produtoId],
+    descontoTotal: 0,
+    valorCobrado: 67,
+    timestamp: nowMicros,
+    ultimaModificacao: nowMicros,
+    freteInicial: null,
+    estoqueAplicado: null,
+    dataIndisponivelEstoque: null,
+    dataRemocaoEstoque: null,
+    vendedorPedidoOuterRef: null,
+    integracaoPedidoOuterRef: `documents/integracao/${integracaoId}`,
+    operacaoPedidoOuterRef: null,
+    clientePedidoOuterRef: `documents/clientes/${clienteId}`,
+    enderecoFiscalOuterRef: null,
+    listaDePrecosOuterRef: null,
+    observacoesInternas: null,
+  };
+
+  const batch = db().batch();
+  batch.set(db().collection('clientes').doc(clienteId), {
+    tipo: '1',
+    nome: clienteId,
+    cpf_cnpj: validTestCnpj(runDigits(12)),
+    idEstrangeiro: null,
+    ie: null,
+    imun: null,
+    isUF: null,
+    email: null,
+    telefone: null,
+    observacoesInternas: null,
+    timestamp: now,
+    ultimaModificacao: now,
+    nome_embedding: null,
+    telefone_embedding: null,
+    userCliente: null,
+  });
+  batch.set(db().collection('integracao').doc(integracaoId), {
+    tipo: 7, // balcao
+    padrao: false,
+    nome: integracaoId,
+    cpf_cnpj: null,
+    idCadIntTran: null,
+    ativo: true,
+    cor: null,
+    modalidadeFreteImportacao: null,
+    filialIntegracaoPedidoOuterRef: null,
+    tabelaNormalOuterRef: null,
+    tabelaPromocionalOuterRef: null,
+    operacaoOuterRef: null,
+    operacaoDevolucaoOuterRef: null,
+    depositoOuterRef: null,
+    dataCadastro: now,
+  });
+  batch.set(db().collection('produtos').doc(produtoId), {
+    nome: produtoId,
+    sku,
+    codPai: null,
+    paiId: null,
+    ordem: null,
+    gtin: null,
+    codFornecedor: null,
+    categoriaProdutoOuterRef: null,
+    pesoLiquidoKg: null,
+    pesoBrutoKg: null,
+    alturaCm: null,
+    larguraCm: null,
+    profundidadeCm: null,
+    ehKit: false,
+    ehKitVirtual: false,
+    publicado: true,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    crossdocking: null,
+    precos: null,
+    grupoDeVariacoesUid: null,
+    variacoesUid: null,
+    componentesKitKeys: null,
+    componentesKit: null,
+    integracoesComProduto: [],
+    marketplaceIds: null,
+    marketplace: [],
+    statusProdutosMarketplace: null,
+    fotos: null,
+    videos: null,
+    anexos: null,
+    fotosArquivosIds: null,
+    nome_embedding: null,
+  });
+  batch.set(db().collection('pedidos').doc(naoImpressoId), {
+    ...pedidoBase,
+    numero: naoImpressoId,
+    foiImpresso: false,
+    dtImpressao: null,
+  });
+  batch.set(db().collection('pedidos').doc(impressoId), {
+    ...pedidoBase,
+    numero: impressoId,
+    foiImpresso: true,
+    dtImpressao: nowMicros,
+  });
+  await batch.commit();
+
+  return {
+    clienteId,
+    produtoId,
+    integracaoId,
+    naoImpressoId,
+    naoImpressoNumero: naoImpressoId,
+    impressoId,
+    impressoNumero: impressoId,
+  };
+}
+
+/** Teardown for `seedPedidoImpressaoFixtures` (sweeps by the run prefix). */
+export async function cleanupPedidoImpressaoFixtures(prefix: string): Promise<void> {
+  await cleanupPedidoFixtures(prefix);
+}
+
+/**
  * Fixtures for the pedido **Frete tab** suite: everything
  * `seedPedidoFixtures` provides plus
  *   - one endereço under the cliente (CEP inside the motoboy faixa below);
