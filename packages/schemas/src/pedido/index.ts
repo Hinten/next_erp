@@ -22,6 +22,9 @@ export * from './collection/historicoEstadoPedido'; // pedidos/{id}/historicoEst
 export * from './pureLogic/totals'; // money caches factory (derivePedidoTotals)
 export * from './pureLogic/estado'; // kanban buckets
 export * from './pureLogic/estoque'; // pedido → estoque desired-state predicates
+export * from './pureLogic/itens'; // flattenPedidoItens (grouped → ordem-sorted list)
+export * from './pureLogic/checkoutEngine'; // kit-aware scan engine (checkout screen)
+export * from './pureLogic/checkoutCompleteness'; // save-time completeness check
 
 // === PAGE MODEL (aggregate for the screen; NOT a collection) ===
 export * from './pageModel/pageModel';
