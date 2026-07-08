@@ -11,9 +11,10 @@ import type { Produto } from '../../produto/collection/produto';
  * The pure kit-matching checkout engine — the heart of the dispatch/checkout
  * screen. A behavioral port of the legacy Flutter engine
  * (`.old/lib/despacho/pages/checkout.dart` — `lancarProduto` 1449-1619,
- * `deleteItem` 713-742, models 26-163), restructured to be O(1)-amortized per
- * scan (prebuilt position indexes, zero async in the hot path) and fully
- * immutable (React can `memo` rows on reference identity).
+ * `deleteItem` 713-742, models 26-163). Scan MATCHING is O(1) — prebuilt
+ * position indexes, zero async in the hot path; the immutable state update then
+ * copies the item array (O(n) references) but structurally shares every
+ * untouched item object, so React can `memo` rows on reference identity.
  *
  * Shared by BOTH the scanning UI (PR 5) and the save-side completeness check
  * (`checkoutCompleteness.ts`, consumed by the save flow), so the types below are
@@ -273,9 +274,29 @@ function mergePositions(a: readonly number[], b: readonly number[]): number[] {
 }
 
 /**
+ * Immutable single-index replace: copies the array natively (`slice`) and swaps
+ * one slot — cheaper than `.map` (no per-element callback) and it preserves every
+ * untouched element's reference identity (React.memo depends on that).
+ */
+function replaceAt<T>(arr: readonly T[], index: number, value: T): T[] {
+  const next = arr.slice();
+  next[index] = value;
+  return next;
+}
+
+/** Parse the stable position out of an `exp-${pos}` ExpectedItem key; -1 if malformed. */
+function posFromKey(key: string): number {
+  if (!key.startsWith('exp-')) return -1;
+  const n = Number(key.slice(4));
+  return Number.isInteger(n) && n >= 0 ? n : -1;
+}
+
+/**
  * Apply one scan of `produto` (a single physical unit). Returns the new state
- * plus the appended log entry. O(1) amortized: walks the 1–3-element candidate
- * merge, no async. Behavioral port of `lancarProduto` (`checkout.dart:1449-1619`).
+ * plus the appended log entry. Candidate MATCHING is O(1) — walks the
+ * 1–3-element candidate merge, no async; the immutable update then copies the
+ * item array (O(n) refs, untouched items keep identity). Behavioral port of
+ * `lancarProduto` (`checkout.dart:1449-1619`).
  */
 export function applyScan(
   state: CheckoutEngineState,
@@ -317,7 +338,7 @@ export function applyScan(
     componentProdutoId: string | null,
   ): ScanOutcome => {
     const becameConcluido = newItem.concluido && !state.expected[pos]!.concluido;
-    const expected = state.expected.map((it, i) => (i === pos ? newItem : it));
+    const expected = replaceAt(state.expected, pos, newItem);
     const entry: ScanLogEntry = {
       uid: meta.uid,
       produtoId: produto.id,
@@ -426,8 +447,10 @@ export function applyDelete(
   // Error rows credited nothing.
   if (entry.kind === 'error' || entry.targetKey === null) return { ...state, log };
 
-  const pos = state.expected.findIndex((it) => it.key === entry.targetKey);
-  if (pos < 0) return { ...state, log }; // defensive: target vanished
+  // targetKey is `exp-${pos}` and positions never move, so parse it (O(1))
+  // instead of scanning `expected` — matters on large pedidos.
+  const pos = posFromKey(entry.targetKey);
+  if (pos < 0 || pos >= state.expected.length) return { ...state, log }; // defensive
   const item = state.expected[pos]!;
 
   let newItem: ExpectedItem;
@@ -449,7 +472,7 @@ export function applyDelete(
     };
   }
 
-  const expected = state.expected.map((it, i) => (i === pos ? newItem : it));
+  const expected = replaceAt(state.expected, pos, newItem);
   const remainingCount =
     item.concluido && !newItem.concluido ? state.remainingCount + 1 : state.remainingCount;
   return { ...state, expected, log, remainingCount };
