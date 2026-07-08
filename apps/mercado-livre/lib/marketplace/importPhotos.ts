@@ -65,6 +65,35 @@ export class PictureDownloadError extends Error {
 
 const ARQUIVOS_PREFIX = 'arquivos/';
 
+/** ML serves listing images from `*.mlstatic.com` (e.g. `http2.mlstatic.com`). */
+const MLSTATIC_HOST = /(^|\.)mlstatic\.com$/i;
+
+/**
+ * Guard the picture URL before the server-side fetch (defense-in-depth vs SSRF):
+ * only the ML CDN host is allowed, and the scheme is forced to `https`
+ * (`.url` may be `http`; `.secure_url` is preferred but this covers the fallback).
+ * Throws `PictureDownloadError` (→ skipped) for anything else.
+ */
+function safeMlstaticUrl(rawUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch (err) {
+    if (err instanceof TypeError)
+      throw new PictureDownloadError(`URL de imagem inválida: ${rawUrl}`);
+    throw err;
+  }
+  if (!MLSTATIC_HOST.test(parsed.hostname)) {
+    throw new PictureDownloadError(`host de imagem não permitido: ${parsed.host}`);
+  }
+  if (parsed.protocol === 'http:') {
+    parsed.protocol = 'https:'; // mlstatic serves both — force TLS
+  } else if (parsed.protocol !== 'https:') {
+    throw new PictureDownloadError(`esquema de URL não permitido: ${parsed.protocol}`);
+  }
+  return parsed.toString();
+}
+
 /** mlstatic photos are JPEG/PNG/WEBP/GIF — enough to name the content-addressed object. */
 const IMAGE_EXT: Record<string, string> = {
   'image/jpeg': 'jpeg',
@@ -141,8 +170,9 @@ async function importOnePicture(
   url: string,
   picId: string | null,
 ): Promise<Foto> {
-  const res = await doFetch(url);
-  if (!res.ok) throw new PictureDownloadError(`HTTP ${res.status} baixando ${url}`);
+  const safeUrl = safeMlstaticUrl(url); // SSRF guard: mlstatic host + https only
+  const res = await doFetch(safeUrl);
+  if (!res.ok) throw new PictureDownloadError(`HTTP ${res.status} baixando ${safeUrl}`);
   const contentType = normalizeContentType(res.headers.get('content-type') ?? '');
   if (!contentType.startsWith('image/')) {
     throw new PictureDownloadError(`content-type inesperado "${contentType}" em ${url}`);

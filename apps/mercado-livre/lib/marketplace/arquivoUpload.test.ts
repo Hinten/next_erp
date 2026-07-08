@@ -107,12 +107,13 @@ describe('putArquivoAdmin — create-first', () => {
 });
 
 describe('putArquivoAdmin — content-addressed dedup', () => {
-  it('existing doc → no re-upload; arrayUnions the new externalIds', async () => {
+  it('HEALTHY existing doc (has a url) → no re-upload; arrayUnions the new externalIds', async () => {
     const db = new FakeDb();
     const bucket = new FakeBucket();
     db.seed('arquivos', DOC, {
       filetype: 'image',
       filename: 'HASH.jpeg',
+      url: 'https://firebasestorage.googleapis.com/v0/b/demo-erp.appspot.com/o/x?alt=media&token=t',
       externalIds: [{ externalId: 'OLD', integracaoPath: 'documents/integracao/other' }],
     });
     const r = await putArquivoAdmin({
@@ -133,10 +134,10 @@ describe('putArquivoAdmin — content-addressed dedup', () => {
     expect((upd!.patch.externalIds as FieldValue).isEqual(FieldValue.arrayUnion(EXT))).toBe(true);
   });
 
-  it('existing doc + no new externalIds → no write at all', async () => {
+  it('healthy existing doc + no new externalIds → no write at all', async () => {
     const db = new FakeDb();
     const bucket = new FakeBucket();
-    db.seed('arquivos', DOC, { filetype: 'image', filename: 'HASH.jpeg' });
+    db.seed('arquivos', DOC, { filetype: 'image', filename: 'HASH.jpeg', url: 'https://x/y.jpg' });
     const r = await putArquivoAdmin({
       db: asDb(db),
       bucket: asBucket(bucket),
@@ -149,5 +150,36 @@ describe('putArquivoAdmin — content-addressed dedup', () => {
     expect(r.created).toBe(false);
     expect(bucket.saved).toHaveLength(0);
     expect(db.updates).toHaveLength(0);
+  });
+
+  it('HEALS a stale anchor (url:null from a failed prior upload) → re-uploads + patches the url', async () => {
+    const db = new FakeDb();
+    const bucket = new FakeBucket();
+    // create-first left an anchor whose object never landed (url still null).
+    db.seed('arquivos', DOC, {
+      filetype: 'image',
+      filename: 'HASH.jpeg',
+      url: null,
+      uploadState: 'pending',
+    });
+    const r = await putArquivoAdmin({
+      db: asDb(db),
+      bucket: asBucket(bucket),
+      docId: DOC,
+      storagePath: PATH,
+      bytes: Buffer.from('img'),
+      contentType: 'image/jpeg',
+      filetype: 'image',
+      externalIds: [EXT],
+    });
+    expect(r).toEqual({ id: DOC, created: false }); // the doc pre-existed…
+    expect(bucket.saved).toHaveLength(1); // …but the object was (re-)uploaded (healed)
+    const doc = db.docData('arquivos', DOC)!;
+    expect(typeof doc.url).toBe('string'); // url now patched
+    // externalIds recorded via arrayUnion during the heal
+    const upd = db.updates.find(
+      (u) => u.path === `arquivos/${DOC}` && u.patch.externalIds !== undefined,
+    );
+    expect((upd!.patch.externalIds as FieldValue).isEqual(FieldValue.arrayUnion(EXT))).toBe(true);
   });
 });

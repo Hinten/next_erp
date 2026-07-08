@@ -209,4 +209,34 @@ describe('importProdutoPhotos', () => {
     expect(res).toEqual({ imported: 0, skipped: 0, failed: 0 });
     expect(db.updates).toHaveLength(0);
   });
+
+  it('SSRF guard: refuses a non-mlstatic host WITHOUT fetching it', async () => {
+    const db = new FakeDb();
+    const bucket = new FakeBucket();
+    db.seed('produtos', 'prod1', { nome: 'x' });
+    const fetch = fakeFetch({}); // any call throws → proves we never fetched
+
+    const res = await importProdutoPhotos(deps(db, bucket, fetch), 'prod1', [
+      { id: 'EVIL', secure_url: 'https://evil.example.com/x-O.jpg' },
+    ]);
+    expect(res).toEqual({ imported: 0, skipped: 0, failed: 1 });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(bucket.saved).toHaveLength(0);
+  });
+
+  it('SSRF guard: upgrades an http mlstatic fallback url to https before fetching', async () => {
+    const db = new FakeDb();
+    const bucket = new FakeBucket();
+    db.seed('produtos', 'prod1', { nome: 'x' });
+    // no secure_url → falls back to the http `url`; the guard forces https.
+    const fetch = fakeFetch({
+      'https://http2.mlstatic.com/Z-F.jpg': { contentType: 'image/jpeg', body: 'z' },
+    });
+
+    const res = await importProdutoPhotos(deps(db, bucket, fetch), 'prod1', [
+      { id: 'Z', url: 'http://http2.mlstatic.com/Z-O.jpg' },
+    ]);
+    expect(res).toEqual({ imported: 1, skipped: 0, failed: 0 });
+    expect(fetch).toHaveBeenCalledWith('https://http2.mlstatic.com/Z-F.jpg');
+  });
 });

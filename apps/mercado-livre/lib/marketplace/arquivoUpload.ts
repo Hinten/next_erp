@@ -58,36 +58,50 @@ export interface PutArquivoAdminResult {
 export async function putArquivoAdmin(args: PutArquivoAdminArgs): Promise<PutArquivoAdminResult> {
   const ref = arquivoCollection.docRef(args.db, {}, args.docId);
   const existing = await ref.get();
-  if (existing.exists) {
-    // Bytes already in Storage. Never overwrite — just record any new externalIds
-    // (a re-import, or a byte-identical picture from another listing/account).
+  const existingData = existing.exists
+    ? ((existing.data() ?? {}) as Record<string, unknown>)
+    : null;
+  const alreadyUploaded =
+    existingData != null && typeof existingData.url === 'string' && existingData.url.length > 0;
+
+  // Healthy dedup hit: the object is already in Storage (the doc carries a `url`).
+  // Never re-upload — just record any new externalIds (a re-import, or a
+  // byte-identical picture from another listing/account).
+  if (alreadyUploaded) {
     if (args.externalIds && args.externalIds.length > 0) {
       await ref.update({ externalIds: FieldValue.arrayUnion(...args.externalIds) });
     }
     return { id: args.docId, created: false };
   }
 
+  // No doc, OR a STALE anchor a prior attempt left with `url: null` (create-first
+  // wrote the doc but the upload then threw). HEAL it: create the anchor if missing,
+  // (re-)upload the bytes, and patch the url — so a retry actually lands the object
+  // instead of skipping forever (which would strand a broken foto on the produto
+  // until the phantom-doc orphan sweep).
   const slash = args.storagePath.lastIndexOf('/');
   const filepath = slash >= 0 ? args.storagePath.slice(0, slash) : null;
   const filename = slash >= 0 ? args.storagePath.slice(slash + 1) : args.storagePath;
 
-  // 1. Create-first anchor (`uploadState: 'pending'`; the onObjectFinalized trigger
-  //    flips it to 'finalized' once the object lands).
-  await arquivoCollection.set(args.db, {}, args.docId, {
-    filetype: args.filetype,
-    filepath,
-    filename,
-    originalFilename: null,
-    contentType: normalizeContentType(args.contentType),
-    url: null,
-    externalIds: [...(args.externalIds ?? [])],
-    criadoEm: nowMicros(),
-    resizeState: args.resizeState ?? null,
-    uploadState: 'pending',
-    markedForDeletionAt: null,
-  });
+  if (existingData == null) {
+    // Create-first anchor (`uploadState: 'pending'`; the onObjectFinalized trigger
+    // flips it to 'finalized' once the object lands).
+    await arquivoCollection.set(args.db, {}, args.docId, {
+      filetype: args.filetype,
+      filepath,
+      filename,
+      originalFilename: null,
+      contentType: normalizeContentType(args.contentType),
+      url: null,
+      externalIds: [...(args.externalIds ?? [])],
+      criadoEm: nowMicros(),
+      resizeState: args.resizeState ?? null,
+      uploadState: 'pending',
+      markedForDeletionAt: null,
+    });
+  }
 
-  // 2. Upload the bytes, tagging the object with its owning doc id + a download token.
+  // Upload the bytes, tagging the object with its owning doc id + a download token.
   const token = randomUUID();
   const buffer = Buffer.isBuffer(args.bytes) ? args.bytes : Buffer.from(args.bytes);
   await args.bucket.file(args.storagePath).save(buffer, {
@@ -97,9 +111,15 @@ export async function putArquivoAdmin(args: PutArquivoAdminArgs): Promise<PutArq
     },
   });
 
-  // 3. Patch the public URL (the Admin SDK builds the tokened URL itself).
+  // Patch the public URL (the Admin SDK builds the tokened URL itself). When healing
+  // a pre-existing anchor, also arrayUnion the externalIds (the create branch above
+  // already seeded them for a fresh doc).
   const url = firebaseDownloadUrl(args.bucket.name, args.storagePath, token);
-  await arquivoCollection.merge(args.db, {}, args.docId, { url });
+  const patch: Record<string, unknown> = { url };
+  if (existingData != null && args.externalIds && args.externalIds.length > 0) {
+    patch.externalIds = FieldValue.arrayUnion(...args.externalIds);
+  }
+  await ref.update(patch);
 
-  return { id: args.docId, created: true };
+  return { id: args.docId, created: existingData == null };
 }
