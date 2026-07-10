@@ -68,7 +68,12 @@ export function ProdutoThumbnail({
 }: ProdutoThumbnailProps) {
   const foto = produto?.fotos?.[0] ?? null;
   const alt = produto?.nome ?? 'Produto';
-  const [errored, setErrored] = useState(false);
+  // Track failed loads BY url, not a single boolean: the component instance is
+  // reused across produto swaps (pedido item rows), so a boolean would leave a
+  // stale broken state on the next produto. Keying by url auto-clears when the
+  // resolved url changes and covers the modal's original image too.
+  const [erroredUrls, setErroredUrls] = useState<ReadonlySet<string>>(() => new Set());
+  const markErrored = (u: string) => setErroredUrls((prev) => new Set(prev).add(u));
   const [opened, setOpened] = useState(false);
 
   // Thumbnail source: the 400px derivative, falling back to the original ref.
@@ -95,9 +100,10 @@ export function ProdutoThumbnail({
   // `thumb.data === null` means the arquivo doc does not exist (a missing photo);
   // `undefined` means it is still loading.
   const missing = foto === null || thumb.data === null;
+  const thumbErrored = url !== null && erroredUrls.has(url);
 
   let content: React.ReactNode;
-  if (missing || errored) {
+  if (missing || thumbErrored) {
     content = <BrokenImage size={size} />;
   } else if (url === null) {
     content = <Skeleton w={size} h={size} radius="sm" data-testid="produto-thumbnail-loading" />;
@@ -110,7 +116,7 @@ export function ProdutoThumbnail({
         fit="cover"
         src={url}
         alt={alt}
-        onError={() => setErrored(true)}
+        onError={() => markErrored(url)}
       />
     );
   }
@@ -129,8 +135,14 @@ export function ProdutoThumbnail({
         {content}
       </UnstyledButton>
       <Modal opened={opened} onClose={() => setOpened(false)} title={alt} size="lg" centered>
-        {originalUrl !== null ? (
-          <Image src={originalUrl} alt={alt} fit="contain" mah="70vh" />
+        {originalUrl !== null && !erroredUrls.has(originalUrl) ? (
+          <Image
+            src={originalUrl}
+            alt={alt}
+            fit="contain"
+            mah="70vh"
+            onError={() => markErrored(originalUrl)}
+          />
         ) : original.loading ? (
           <Center h={200}>
             <Loader />

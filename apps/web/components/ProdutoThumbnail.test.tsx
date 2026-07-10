@@ -110,6 +110,42 @@ describe('ProdutoThumbnail', () => {
     expect(screen.queryByRole('img', { name: 'Camiseta' })).toBeNull();
   });
 
+  it('clears the failed-load state when the produto (url) changes', () => {
+    // The instance is reused across produto swaps (pedido item rows): a prior
+    // produto's failed image must not leave the next produto broken.
+    setSnaps({
+      deriv1: loaded('https://cdn/deriv1.jpg'),
+      deriv2: loaded('https://cdn/deriv2.jpg'),
+    });
+    const { rerender } = wrap(
+      <ProdutoThumbnail db={db} produto={produtoWithFoto()} zoomable={false} />,
+    );
+    fireEvent.error(screen.getByRole('img', { name: 'Camiseta' }));
+    expect(screen.getByLabelText('Foto indisponível')).toBeTruthy();
+
+    const other = {
+      nome: 'Boné',
+      fotos: [
+        {
+          arquivoOuterRef: 'arquivos/orig2',
+          arquivo400pxOuterRef: 'arquivos/deriv2',
+          arquivo200pxOuterRef: null,
+          arquivoJpegOuterRef: null,
+          grupoDeVariacoesOuterRef: null,
+          variantePath: null,
+        },
+      ],
+    } as unknown as Produto;
+    rerender(
+      <MantineProvider env="test">
+        <ProdutoThumbnail db={db} produto={other} zoomable={false} />
+      </MantineProvider>,
+    );
+    const img = screen.getByRole('img', { name: 'Boné' });
+    expect(img.getAttribute('src')).toBe('https://cdn/deriv2.jpg');
+    expect(screen.queryByLabelText('Foto indisponível')).toBeNull();
+  });
+
   it('opens the original photo in a zoom modal when zoomable and clicked', () => {
     setSnaps({
       deriv1: loaded('https://cdn/deriv1.jpg'),
