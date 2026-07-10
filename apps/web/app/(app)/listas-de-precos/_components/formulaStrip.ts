@@ -45,13 +45,20 @@ export function stripFormulasCalculoPreco(value: unknown): unknown {
  * `prepareForSave` for a `formulasPorCategoria` record: drop category entries
  * marked for deletion, strip the marker from survivors, and recursively strip
  * each bucket's nested `formulasCalculoPreco`. Empty → null; a non-record
- * (e.g. `null`) passes through untouched.
+ * (e.g. `null`) passes through untouched. An unexpected (null / non-object)
+ * bucket value is preserved untouched — a corrupt entry must fail Zod
+ * validation loudly, not be silently erased on save (mirrors
+ * `stripMarkedForDeletion`'s pass-through for non-object array items).
  */
 export function stripFormulasPorCategoria(value: unknown): unknown {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) return value;
   const out: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (entry == null || typeof entry !== 'object') continue;
+    if (entry == null || typeof entry !== 'object') {
+      // Preserve as-is so validation catches it instead of erasing it.
+      out[key] = entry;
+      continue;
+    }
     const rec = entry as Record<string, unknown>;
     if (rec[DELETE_MARK]) continue;
     const { [DELETE_MARK]: _omit, ...clean } = rec;

@@ -67,6 +67,20 @@ describe('stripFormulasPorCategoria', () => {
     expect(DELETE_MARK in out.catB!).toBe(false);
   });
 
+  it('preserves an unexpected (null / non-object) entry so validation blocks the save', () => {
+    const value = {
+      good: { name: 'A', formulasCalculoPreco: null },
+      bad: null,
+      alsoBad: 'oops',
+    };
+    const out = stripFormulasPorCategoria(value) as Record<string, unknown>;
+    // Malformed entries pass through untouched (not silently dropped) so Zod
+    // fails the save loudly.
+    expect(out.bad).toBeNull();
+    expect(out.alsoBad).toBe('oops');
+    expect(out.good).toEqual({ name: 'A', formulasCalculoPreco: null });
+  });
+
   it('recursively strips a surviving category’s marked formulas', () => {
     const value = {
       catA: {

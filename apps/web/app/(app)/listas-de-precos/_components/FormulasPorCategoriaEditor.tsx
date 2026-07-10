@@ -3,10 +3,33 @@
 import { useState } from 'react';
 import { ActionIcon, Fieldset, Group, Stack, Text, TextInput } from '@mantine/core';
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
+import { useQuery } from '@tanstack/react-query';
+import { getDoc } from 'firebase/firestore';
 import { DELETE_MARK } from '@delfrance/ui';
 import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
 import { categoriaCollection } from '@/lib/data/categoriaCollection';
+import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { FormulaListEditor } from './FormulaListEditor';
+
+/**
+ * Read-only categoria name for a bucket header. The key is fixed for the life
+ * of the card, so a one-shot `getDoc` (cached by TanStack Query) is enough — a
+ * full `CollectionSelect` would mount a live `useDocSnapshot` listener, the
+ * option-list query and the recents cache per entry, all wasted on a label
+ * that never changes. Falls back to the raw id while loading or if the doc is
+ * gone.
+ */
+function CategoriaNomeLabel({ categoriaId }: { categoriaId: string }) {
+  const db = getFirebaseFirestore();
+  const { data: nome } = useQuery({
+    queryKey: ['categoria-nome', categoriaId],
+    queryFn: async () => {
+      const snap = await getDoc(categoriaCollection.docRef(db, {}, categoriaId));
+      return snap.data()?.nome ?? null;
+    },
+  });
+  return <TextInput label="Categoria" value={nome ?? categoriaId} readOnly variant="filled" />;
+}
 
 /**
  * One category bucket of pricing formulas (`FormulasPorCategoria`). Entries
@@ -105,15 +128,7 @@ export function FormulasPorCategoriaEditor({
                 <Group justify="space-between" align="flex-start" wrap="nowrap">
                   <div style={{ flex: 1 }}>
                     {/* Resolves the category id to its name (read-only display). */}
-                    <CollectionSelect
-                      collection={categoriaCollection}
-                      labelField="nome"
-                      fieldName={`formulasPorCategoria.${key}.categoria`}
-                      label="Categoria"
-                      value={`documents/${categoriaCollection.resolvePath({})}/${key}`}
-                      onChange={() => undefined}
-                      disabled
-                    />
+                    <CategoriaNomeLabel categoriaId={key} />
                   </div>
                   {marked ? (
                     <Group gap={4} wrap="nowrap" pt={28}>
