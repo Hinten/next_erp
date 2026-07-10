@@ -46,7 +46,12 @@ const dataDir = dirname(fileURLToPath(import.meta.url));
 // `apps/web/lib/data`, so its parent is `apps/web/lib`.
 const libDir = dirname(dataDir);
 
-/** Recursively list every non-test `.ts` file under `root`. */
+/**
+ * Recursively list every non-test `.ts`/`.tsx` file under `root`. `.tsx` is
+ * included so the scan matches its documented scope — a `defineCollection`
+ * handle in a `.tsx` module (page/component-adjacent code does host them, e.g.
+ * `app/pagamentos/page.tsx`) must not bypass the guard.
+ */
 function walkTsFiles(root: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(root, { withFileTypes: true })) {
@@ -55,7 +60,11 @@ function walkTsFiles(root: string): string[] {
       // a source-level collection handle.
       if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
       out.push(...walkTsFiles(join(root, entry.name)));
-    } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) {
+    } else if (
+      (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx')) &&
+      !entry.name.endsWith('.test.ts') &&
+      !entry.name.endsWith('.test.tsx')
+    ) {
       out.push(join(root, entry.name));
     }
   }
