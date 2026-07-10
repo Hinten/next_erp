@@ -146,6 +146,28 @@ describe('ProdutoThumbnail', () => {
     expect(screen.queryByLabelText('Foto indisponível')).toBeNull();
   });
 
+  it('resolves the canonical Flutter `documents/arquivos/<id>` outer-ref form', () => {
+    setSnaps({ deriv1: loaded('https://cdn/deriv1.jpg') });
+    const produto = {
+      nome: 'Camiseta',
+      fotos: [
+        {
+          arquivoOuterRef: 'documents/arquivos/orig1',
+          arquivo400pxOuterRef: 'documents/arquivos/deriv1',
+          arquivo200pxOuterRef: null,
+          arquivoJpegOuterRef: null,
+          grupoDeVariacoesOuterRef: null,
+          variantePath: null,
+        },
+      ],
+    } as unknown as Produto;
+    wrap(<ProdutoThumbnail db={db} produto={produto} zoomable={false} />);
+    // idFromRef must take the last path segment (`deriv1`), not the whole string.
+    expect(screen.getByRole('img', { name: 'Camiseta' }).getAttribute('src')).toBe(
+      'https://cdn/deriv1.jpg',
+    );
+  });
+
   it('opens the original photo in a zoom modal when zoomable and clicked', () => {
     setSnaps({
       deriv1: loaded('https://cdn/deriv1.jpg'),

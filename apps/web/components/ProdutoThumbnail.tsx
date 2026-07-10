@@ -8,16 +8,19 @@ import type { Produto } from '@delfrance/schemas';
 import { arquivoCollection } from '@delfrance/storage';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 
-const ARQUIVOS_PREFIX = 'arquivos/';
-
 /** Accessible label for the broken-image placeholder (missing or failed load). */
 const BROKEN_LABEL = 'Foto indisponível';
 
-/** Derive the arquivo doc id from a `Foto` ref string (`arquivos/<id>`). */
+/**
+ * Bare `<id>` from a `Foto` ref string — the last non-empty path segment, so it
+ * handles both `arquivos/<id>` and the canonical Flutter outer-ref form
+ * `documents/arquivos/<id>`, or a bare id. Mirrors `arquivoIdFromRef` in
+ * `lib/pedido-print/model.ts`.
+ */
 function idFromRef(ref: string | null | undefined): string | null {
   if (!ref) return null;
-  const id = ref.startsWith(ARQUIVOS_PREFIX) ? ref.slice(ARQUIVOS_PREFIX.length) : ref;
-  return id || null;
+  const segs = ref.split('/').filter(Boolean);
+  return segs[segs.length - 1] ?? null;
 }
 
 /** A centered broken-image icon shown when a photo is missing or fails to load. */
@@ -128,6 +131,7 @@ export function ProdutoThumbnail({
   return (
     <>
       <UnstyledButton
+        type="button"
         onClick={() => setOpened(true)}
         aria-label={`Ampliar foto de ${alt}`}
         style={{ display: 'inline-flex', lineHeight: 0 }}
