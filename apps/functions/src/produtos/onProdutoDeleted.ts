@@ -26,6 +26,13 @@ import { getDb } from '../lib/admin';
  *     `recursiveDelete`s run in BOUNDED-concurrency batches so a parent with many
  *     variations doesn't serialize into a long-running (timeout-prone) call nor
  *     fan out unboundedly (each `recursiveDelete` is itself a BulkWriter).
+ *  3. **Inbound kit references (#135/#475).** Other produtos may list the deleted
+ *     produto as a KIT COMPONENT (`componentesKit[deletedId]`, denormalized into
+ *     the `componentesKitKeys` array-contains index). Neither sweep above touches
+ *     those OTHER documents, so remove the deleted id from every referencing kit,
+ *     keeping the map and its index array in sync. A kit left with no components
+ *     is no longer a kit — null both fields and clear `ehKit` (legacy empty-kit
+ *     rule, `.old` `produtoTableProvider.dart`).
  *
  * The client `deleteProdutoCascade` now only deletes the parent doc — this trigger
  * is the authoritative cascade, with no dependency on the client/e2e cleanup.
@@ -35,6 +42,49 @@ import { getDb } from '../lib/admin';
 
 /** How many child-subtree `recursiveDelete`s run at once (bounded fan-out). */
 const CHILD_DELETE_CONCURRENCY = 5;
+
+/** Max writes per Firestore `WriteBatch` is 500; stay under it for the kit sweep. */
+const KIT_CLEANUP_BATCH_SIZE = 400;
+
+/**
+ * Remove `produtoId` from every OTHER produto's `componentesKit` map (and the
+ * `componentesKitKeys` denorm array) that references it as a kit component (#475).
+ *
+ * `componentesKitKeys` is the array-contains index of the map's keys, so the
+ * `array-contains` query finds exactly the referencing kits. For each, both fields
+ * are rewritten together (never one without the other): `componentesKitKeys` is
+ * re-derived from the surviving map keys — self-healing any prior drift, mirroring
+ * the legacy `clean()`. If no component remains, the kit is emptied: `componentesKit`
+ * and `componentesKitKeys` are nulled and `ehKit` cleared to `false`.
+ */
+async function cleanupInboundKitReferences(db: Firestore, produtoId: string): Promise<void> {
+  // `produtoCollection.ref` is a raw (converter-free) ref, so reads/writes here
+  // touch stored fields directly without a full-schema parse of unrelated produtos.
+  const referencing = await produtoCollection
+    .ref(db, {})
+    .where('componentesKitKeys', 'array-contains', produtoId)
+    .get();
+
+  // Never rewrite the doc being deleted (a kit can't list itself, but be defensive).
+  const docs = referencing.docs.filter((snap) => snap.id !== produtoId);
+
+  for (let i = 0; i < docs.length; i += KIT_CLEANUP_BATCH_SIZE) {
+    const batch = db.batch();
+    for (const snap of docs.slice(i, i + KIT_CLEANUP_BATCH_SIZE)) {
+      const componentes = { ...((snap.get('componentesKit') as Record<string, unknown>) ?? {}) };
+      delete componentes[produtoId];
+      const remainingKeys = Object.keys(componentes);
+
+      if (remainingKeys.length === 0) {
+        // Legacy empty-kit rule: an emptied kit stops being a kit.
+        batch.update(snap.ref, { componentesKit: null, componentesKitKeys: null, ehKit: false });
+      } else {
+        batch.update(snap.ref, { componentesKit: componentes, componentesKitKeys: remainingKeys });
+      }
+    }
+    await batch.commit();
+  }
+}
 
 export async function cascadeProdutoDeletion(db: Firestore, produtoId: string): Promise<void> {
   // #136 — the produto's own subtree (all subcollections) in one BulkWriter walk.
@@ -51,6 +101,9 @@ export async function cascadeProdutoDeletion(db: Firestore, produtoId: string): 
     const slice = childRefs.slice(i, i + CHILD_DELETE_CONCURRENCY);
     await Promise.all(slice.map((ref) => db.recursiveDelete(ref)));
   }
+
+  // #475 — inbound kit references on OTHER produtos.
+  await cleanupInboundKitReferences(db, produtoId);
 }
 
 export const onProdutoDeleted = onDocumentDeleted(
@@ -61,6 +114,8 @@ export const onProdutoDeleted = onDocumentDeleted(
   async (event) => {
     const { produtoId } = event.params;
     await cascadeProdutoDeletion(getDb(), produtoId);
-    logger.info(`onProdutoDeleted: ${produtoId} → subtree + variation children cascaded`);
+    logger.info(
+      `onProdutoDeleted: ${produtoId} → subtree + variation children + inbound kit refs cascaded`,
+    );
   },
 );
