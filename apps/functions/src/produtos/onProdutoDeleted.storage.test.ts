@@ -152,6 +152,8 @@ describe.skipIf(!EMULATED)('cascadeProdutoDeletion — inbound kit references (#
       });
 
     // A kit whose ONLY component is the deleted one → emptied (stops being a kit).
+    // Seeded as a VIRTUAL kit so the collapse of `ehKitVirtual` is exercised too
+    // (invariant: `ehKit === false ⇒ ehKitVirtual === false`).
     await db
       .collection('produtos')
       .doc(soleKitId)
@@ -159,6 +161,7 @@ describe.skipIf(!EMULATED)('cascadeProdutoDeletion — inbound kit references (#
         nome: 'Kit com um componente',
         paiId: null,
         ehKit: true,
+        ehKitVirtual: true,
         componentesKit: {
           [componentId]: { quantidade: 5, limitarEstoque: false, timestamp: null },
         },
@@ -196,11 +199,12 @@ describe.skipIf(!EMULATED)('cascadeProdutoDeletion — inbound kit references (#
     expect(multi.componentesKitKeys).toEqual([otherComponentId]);
     expect(multi.ehKit).toBe(true);
 
-    // Sole-component kit is emptied: both fields nulled, ehKit cleared.
+    // Sole-component kit is emptied: both fields nulled, ehKit + ehKitVirtual cleared.
     const sole = (await db.collection('produtos').doc(soleKitId).get()).data()!;
     expect(sole.componentesKit).toBeNull();
     expect(sole.componentesKitKeys).toBeNull();
     expect(sole.ehKit).toBe(false);
+    expect(sole.ehKitVirtual).toBe(false);
 
     // The unrelated kit is untouched.
     const unrelated = (await db.collection('produtos').doc(unrelatedId).get()).data()!;

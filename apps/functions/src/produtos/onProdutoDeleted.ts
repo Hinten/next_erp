@@ -31,8 +31,10 @@ import { getDb } from '../lib/admin';
  *     the `componentesKitKeys` array-contains index). Neither sweep above touches
  *     those OTHER documents, so remove the deleted id from every referencing kit,
  *     keeping the map and its index array in sync. A kit left with no components
- *     is no longer a kit — null both fields and clear `ehKit` (legacy empty-kit
- *     rule, `.old` `produtoTableProvider.dart`).
+ *     is no longer a kit — null both fields and clear `ehKit` AND `ehKitVirtual`
+ *     (legacy empty-kit rule, `.old` `produtoTableProvider.dart`; the
+ *     `ehKit === false ⇒ ehKitVirtual === false` invariant is the same one
+ *     `buildKitStatusChildOps` enforces).
  *
  * The client `deleteProdutoCascade` now only deletes the parent doc — this trigger
  * is the authoritative cascade, with no dependency on the client/e2e cleanup.
@@ -55,7 +57,7 @@ const KIT_CLEANUP_BATCH_SIZE = 400;
  * are rewritten together (never one without the other): `componentesKitKeys` is
  * re-derived from the surviving map keys — self-healing any prior drift, mirroring
  * the legacy `clean()`. If no component remains, the kit is emptied: `componentesKit`
- * and `componentesKitKeys` are nulled and `ehKit` cleared to `false`.
+ * and `componentesKitKeys` are nulled and `ehKit`/`ehKitVirtual` cleared to `false`.
  */
 async function cleanupInboundKitReferences(db: Firestore, produtoId: string): Promise<void> {
   // `produtoCollection.ref` is a raw (converter-free) ref, so reads/writes here
@@ -76,8 +78,14 @@ async function cleanupInboundKitReferences(db: Firestore, produtoId: string): Pr
       const remainingKeys = Object.keys(componentes);
 
       if (remainingKeys.length === 0) {
-        // Legacy empty-kit rule: an emptied kit stops being a kit.
-        batch.update(snap.ref, { componentesKit: null, componentesKitKeys: null, ehKit: false });
+        // Legacy empty-kit rule: an emptied kit stops being a kit. `ehKitVirtual`
+        // collapses with `ehKit` (invariant: a non-kit can't be a virtual kit).
+        batch.update(snap.ref, {
+          componentesKit: null,
+          componentesKitKeys: null,
+          ehKit: false,
+          ehKitVirtual: false,
+        });
       } else {
         batch.update(snap.ref, { componentesKit: componentes, componentesKitKeys: remainingKeys });
       }
