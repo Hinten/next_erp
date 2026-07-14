@@ -75,7 +75,10 @@ async function cleanupInboundKitReferences(db: Firestore, produtoId: string): Pr
     for (const snap of docs.slice(i, i + KIT_CLEANUP_BATCH_SIZE)) {
       const componentes = { ...((snap.get('componentesKit') as Record<string, unknown>) ?? {}) };
       delete componentes[produtoId];
-      const remainingKeys = Object.keys(componentes);
+      // Sorted to match the denorm convention the write paths use
+      // (`editar`/`novo` pages, `usecases.ts`) — keeps the array order-stable so a
+      // later web edit doesn't see spurious churn / dirty-detection noise.
+      const remainingKeys = Object.keys(componentes).sort();
 
       if (remainingKeys.length === 0) {
         // Legacy empty-kit rule: an emptied kit stops being a kit. `ehKitVirtual`
