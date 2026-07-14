@@ -23,10 +23,23 @@ vi.mock('@/lib/data/clienteCollection', () => ({
 }));
 // EnderecoPicker brings its own Firestore-backed picker; its selection is stored
 // on the form via onChange (form-backed like everything else here). Stub it to a
-// minimal control so this test stays focused on FiscalTab's own fields.
+// minimal control that both renders the current value AND can trigger onChange,
+// so the test also exercises the enderecoFiscalOuterRef update path.
+const FISCAL_ENDERECO_REF = 'documents/enderecos/end-1';
 vi.mock('@/components/pickers/EnderecoPicker', () => ({
-  EnderecoPicker: ({ value }: { value: unknown }) => (
-    <div data-testid="endereco-picker">{String(value ?? '')}</div>
+  EnderecoPicker: ({
+    value,
+    onChange,
+  }: {
+    value: unknown;
+    onChange: (docPath: string | null) => void;
+  }) => (
+    <div>
+      <div data-testid="endereco-picker">{String(value ?? '')}</div>
+      <button type="button" onClick={() => onChange(FISCAL_ENDERECO_REF)}>
+        Definir endereço fiscal
+      </button>
+    </div>
   ),
 }));
 
@@ -79,13 +92,15 @@ describe('FiscalTab — state survives a tab switch (#471)', () => {
   it('keeps infCpl, bloquearEmissaoNFe and chNFeReferenciadas after unmount/remount', () => {
     render(<Host />);
 
-    // Edit each field the operator can touch in this tab.
+    // Edit every field the operator can touch in this tab, including the fiscal
+    // address ref (set through EnderecoPicker's onChange).
     fireEvent.change(infCplField(), { target: { value: 'Nota de teste' } });
     fireEvent.click(screen.getByRole('checkbox', { name: /Bloquear emissão de NF-e/ }));
     fireEvent.click(screen.getByRole('button', { name: '+ Adicionar' }));
     fireEvent.change(chaveField(), {
       target: { value: '12345678901234567890123456789012345678901234' },
     });
+    fireEvent.click(screen.getByRole('button', { name: 'Definir endereço fiscal' }));
 
     // The values are reflected in the form (source of truth).
     expect(formRef.getValues('infCpl')).toBe('Nota de teste');
@@ -93,6 +108,7 @@ describe('FiscalTab — state survives a tab switch (#471)', () => {
     expect(formRef.getValues('chNFeReferenciadas')).toEqual([
       '12345678901234567890123456789012345678901234',
     ]);
+    expect(formRef.getValues('enderecoFiscalOuterRef')).toBe(FISCAL_ENDERECO_REF);
 
     // Switch away — keepMounted={false} unmounts FiscalTab entirely. If any of
     // these fields were local useState, the value would be lost right here.
@@ -107,6 +123,9 @@ describe('FiscalTab — state survives a tab switch (#471)', () => {
         .checked,
     ).toBe(true);
     expect(chaveField().value).toBe('12345678901234567890123456789012345678901234');
+    // EnderecoPicker is remounted with value={enderecoFiscalOuterRef} from the
+    // form, so the previously-selected ref is still shown.
+    expect(screen.getByTestId('endereco-picker').textContent).toBe(FISCAL_ENDERECO_REF);
   });
 
   it('re-hydrates a chNFe key set on the form while the tab was unmounted', () => {
