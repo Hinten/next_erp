@@ -2567,17 +2567,17 @@ describe('buildCobrFromPagamentos', () => {
   });
 
   it('dVenc EXACTLY on the +10y date passes (797 is "more than 10 years"; dates, not instants)', () => {
-    // End-of-day on the boundary date: the wire dVenc equals emission date +10y,
-    // which SEFAZ accepts — an instant comparison would false-throw here.
-    // Clock pinned inside 00:00–03:00Z, where the UTC calendar date is one day
-    // ahead of the issuer-offset (BRT) date: the +10y limit must come from the
-    // BRT date (2026-07-14 → 2036-07-14), not the UTC one — deriving the
-    // boundary from the UTC date made this test false-fail in that window.
+    // Pin the clock to 23:00 BRT — already the NEXT day in UTC — so the test
+    // covers the window where a UTC-derived boundary would land one day past
+    // the issuer-offset limit and false-throw (the old flake). The limit and
+    // the vencimento must both be read in the ISSUER's offset (default −03:00).
     vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-07-15T02:12:00Z'));
+    vi.setSystemTime(new Date('2026-07-14T23:00:00-03:00'));
     try {
-      // 23:59 BRT on the boundary date — 02:59Z on the NEXT UTC day.
-      const boundary = new Date('2036-07-15T02:59:00Z');
+      // End-of-day (issuer offset) on the boundary date: the wire dVenc equals
+      // emission date +10y, which SEFAZ accepts — an instant comparison would
+      // false-throw here.
+      const boundary = new Date('2036-07-14T23:59:00-03:00');
       const out = __internal.buildCobrFromPagamentos([
         pagamento({
           valor: 100,
