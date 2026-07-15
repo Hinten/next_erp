@@ -4,10 +4,18 @@ import {
   STATUS_PAGAMENTO,
   cartaoSchema,
   chequeSchema,
+  isPagamentoPagante,
+  sumPagamentosPagos,
   type FormaPagamento,
   type Pagamento,
   type StatusPagamento,
 } from '@delfrance/schemas';
+
+// Re-exported so the existing pagamento consumers (PagamentosSection, the
+// footer, this file's test) keep importing it from here; the rule itself now
+// lives in @delfrance/schemas so the client + admin estado reconciles share one
+// definition of "how much is paid".
+export { sumPagamentosPagos };
 
 /**
  * Flat form state for the Pagamento editor. Enum-coded fields are kept as the
@@ -153,19 +161,9 @@ export interface PagamentoSummary {
 }
 
 /**
- * Whether a payment counts toward "paid": no status (`null`) OR `aprovado`. This
- * is the canonical rule shared with the NFe bundle (`apps/nfe`'s `bundle.ts`,
- * "matches Flutter") — every other status (pendente, em disputa, recusado,
- * cancelado, estornado…) does NOT cover the total.
- */
-function isPaying(status: number | null | undefined): boolean {
-  return status == null || status === STATUS_PAGAMENTO.aprovado;
-}
-
-/**
  * The amount still owed so the pedido becomes fully paid: the pedido total minus
- * the sum of the OTHER {@link isPaying} payments (excluding the one being edited).
- * Never negative. Drives the Valor autofill.
+ * the sum of the OTHER {@link isPagamentoPagante} payments (excluding the one
+ * being edited). Never negative. Drives the Valor autofill.
  */
 export function remainingToPay(
   pedidoTotal: number,
@@ -173,21 +171,9 @@ export function remainingToPay(
   editingId: string | null,
 ): number {
   const covered = pagamentos
-    .filter((p) => p.id !== editingId && isPaying(p.status_pagamento))
+    .filter((p) => p.id !== editingId && isPagamentoPagante(p.status_pagamento))
     .reduce((sum, p) => sum + (p.valor ?? 0), 0);
   return Math.max(0, roundReais(pedidoTotal - covered));
-}
-
-/**
- * Total amount already paid on a pedido: the sum of every {@link isPaying}
- * payment's `valor` (2-decimal). Drives the footer's "Vlr. Pago" / "Troco".
- */
-export function sumPagamentosPagos(pagamentos: ReadonlyArray<PagamentoSummary>): number {
-  return roundReais(
-    pagamentos
-      .filter((p) => isPaying(p.status_pagamento))
-      .reduce((sum, p) => sum + (p.valor ?? 0), 0),
-  );
 }
 
 /**

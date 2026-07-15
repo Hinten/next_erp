@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { roundReais } from '@delfrance/core/money';
 import type { CollectionMetadata } from '../../types';
 import { microsSinceEpoch } from '../../shared/datetime';
 import { bandeiraSchema } from '../../bandeiraCartao';
@@ -154,6 +155,37 @@ export function statusToEstadoPedido(status: StatusPagamento): EstadoPedido {
     default:
       return 'error';
   }
+}
+
+/**
+ * Whether a payment counts toward "paid": no status (`null`/`undefined`) OR
+ * `aprovado`. This is the canonical rule shared by every "how much is paid?"
+ * consumer — the web footer's Vlr. Pago, the NFe bundle (`apps/nfe`'s
+ * `bundle.ts`, "matches Flutter"), and the client + server-side estado
+ * reconciles — so the payment total is computed identically everywhere. Every
+ * other status (pendente, em disputa, recusado, cancelado, estornado…) does
+ * NOT cover the total.
+ */
+export function isPagamentoPagante(status: number | null | undefined): boolean {
+  return status == null || status === STATUS_PAGAMENTO.aprovado;
+}
+
+/**
+ * Total amount already paid on a pedido: the sum of every {@link isPagamentoPagante}
+ * payment's `valor`, 2-decimal-rounded. The one summing rule behind `valorPago`
+ * for the estado auto-transition (`reconcilePedidoEstadoFromPagamentos` and the
+ * admin `reconcilePedidoFromPagamento`) as well as the footer's Vlr. Pago /
+ * Troco. Accepts any row carrying `valor` + `status_pagamento` (a full
+ * `Pagamento` doc or a lighter summary).
+ */
+export function sumPagamentosPagos(
+  pagamentos: ReadonlyArray<{ valor: number; status_pagamento?: number | null }>,
+): number {
+  return roundReais(
+    pagamentos
+      .filter((p) => isPagamentoPagante(p.status_pagamento))
+      .reduce((sum, p) => sum + (p.valor ?? 0), 0),
+  );
 }
 
 /**
