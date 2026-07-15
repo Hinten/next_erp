@@ -232,6 +232,11 @@
       ]
     },
     {
+      "collectionGroup": "metodo_pgto",
+      "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]
+    },
+    {
       "collectionGroup": "nfev4",
       "queryScope": "COLLECTION_GROUP",
       "fields": [{ "fieldPath": "data_emissao", "order": "ASCENDING" }]

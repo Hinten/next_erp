@@ -152,6 +152,32 @@ export async function seedDepositos(prefix: string, n: number): Promise<void> {
 }
 
 /**
+ * Seed `n` `metodo_pgto` (Mercado Pago account) docs. `hasLinkPagamento` and
+ * `user_id` alternate so the boolean/connection-hint columns have both
+ * states — a null `user_id` is the "Não conectada" state the panel and the
+ * list column render for an account that hasn't completed OAuth yet.
+ */
+export async function seedMetodoPagamento(prefix: string, n: number): Promise<void> {
+  const col = db().collection('metodo_pgto');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      tipo: 1,
+      nome: `${prefix}-${pad(i)}`,
+      hasLinkPagamento: i % 2 === 0,
+      user_id: i % 2 === 0 ? 900_000_000 + i : null,
+      dataCadastro: Date.now() * 1000,
+    });
+  }
+  await batch.commit();
+}
+
+/** Teardown for `seedMetodoPagamento`. */
+export async function cleanupMetodoPagamento(prefix: string): Promise<void> {
+  await cleanupByNamePrefix('metodo_pgto', prefix);
+}
+
+/**
  * Seed `n` tabela-de-medidas (`tabMedi`) docs. `codigo`/`descricao` alternate
  * null/string so the Nome/Código columns and filters have something to bite
  * on. `dataCadastro` is ms-epoch (the Flutter wire format).

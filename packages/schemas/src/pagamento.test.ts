@@ -75,4 +75,12 @@ describe('metodoPagamentoSchema', () => {
   it('rejects empty nome', () => {
     expect(metodoPagamentoSchema.safeParse({ tipo: 1, nome: '' }).success).toBe(false);
   });
+  it('defaults user_id to null when not OAuth-connected yet', () => {
+    const out = metodoPagamentoSchema.parse({ tipo: 1, nome: 'MP Loja' });
+    expect(out.user_id).toBeNull();
+  });
+  it('accepts a denormalized Mercado Pago collector user_id', () => {
+    const out = metodoPagamentoSchema.parse({ tipo: 1, nome: 'MP Loja', user_id: 123456789 });
+    expect(out.user_id).toBe(123456789);
+  });
 });

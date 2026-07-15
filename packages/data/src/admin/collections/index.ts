@@ -37,3 +37,5 @@ export { notificacaoMercadoLivreCollection } from './notificacaoMercadoLivreColl
 export { pedidoCollection } from './pedidoCollection';
 export { operacaoCollection } from './operacaoCollection';
 export { incidenteCollection } from './incidenteCollection';
+export { metodoPagamentoCollection } from './metodoPagamentoCollection';
+export { credenciaisMetodoPgtoCollection } from './credenciaisMetodoPgtoCollection';
