@@ -178,6 +178,11 @@ export {
   INTEGRACAO_TIPO,
   INTEGRACAO_TIPO_LABELS,
   pluginIdForTipo,
+  // Shopee brand cache subcollection — a real DomainSchema, registered in
+  // ALL_DOMAINS, reusing the parent `integracao` permission bits.
+  brandShopee,
+  brandShopeeSchema,
+  brandShopeeMeta,
   // `credenciaisIntegracao` is intentionally NOT exported as a DomainSchema and
   // NOT registered in ALL_DOMAINS — it is an admin-only, default-deny secret
   // store (mirrors `certificadoSecreto`). Only its schema/meta/type are public.
@@ -190,6 +195,7 @@ export {
   tokenDuravelMeta,
   type Integracao,
   type IntegracaoTipo,
+  type BrandShopee,
   type CredenciaisIntegracao,
   type TokenDuravel,
 } from './integracao';

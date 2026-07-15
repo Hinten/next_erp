@@ -51,6 +51,10 @@ export const mercadoLivreFields: Record<string, FieldConfig> = {
  *  - `cpf_cnpj`, `idCadIntTran`, `modalidadeFreteImportacao`, `cor` stay out of
  *    this first slice (surfaced later by the milestone that consumes them).
  *  - `dataCadastro` is stamped automatically on create.
+ *  - the per-channel account fields below (#289) are irrelevant here too —
+ *    even `user_id`/`tabelaMercadoShops*OuterRef`, which ARE this channel's
+ *    own fields, are stamped by the OAuth connect flow, not hand-edited —
+ *    see each field's own comment.
  */
 export const mercadoLivreExcludedFields = [
   'tipo',
@@ -59,4 +63,12 @@ export const mercadoLivreExcludedFields = [
   'modalidadeFreteImportacao',
   'cor',
   'dataCadastro',
+  'user_id', // latent leak (rendered as a raw number input) — per-channel field, hidden here, surfaced by their own channel screens/flows
+  'tabelaMercadoShopsOuterRef', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'tabelaMercadoShopsPromocionalOuterRef', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'shop_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'main_account_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'tabelasAtacado', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'selling_partner_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'tenant_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
 ];

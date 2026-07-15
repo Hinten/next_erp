@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  brandShopeeMeta,
+  brandShopeeSchema,
   credenciaisIntegracaoMeta,
   credenciaisIntegracaoSchema,
   integracaoMeta,
+  integracaoSchema,
 } from './integracao';
 import { ALL_DOMAINS } from './registry';
 
@@ -70,6 +73,155 @@ describe('credenciaisIntegracaoSchema', () => {
         expirationDate: 'not-a-date',
       }).success,
     ).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                    integracaoSchema — per-channel account fields           */
+/* -------------------------------------------------------------------------- */
+
+describe('integracaoSchema per-channel fields', () => {
+  const base = { nome: 'Conta teste' };
+
+  it('parses Shopee shop_id and main_account_id', () => {
+    const doc = { ...base, shop_id: 123456, main_account_id: 789 };
+    const parsed = integracaoSchema.parse(doc);
+    expect(parsed.shop_id).toBe(123456);
+    expect(parsed.main_account_id).toBe(789);
+  });
+
+  it('defaults shop_id/main_account_id to null when absent', () => {
+    const parsed = integracaoSchema.parse(base);
+    expect(parsed.shop_id).toBeNull();
+    expect(parsed.main_account_id).toBeNull();
+  });
+
+  it('parses Shopee tabelasAtacado wholesale tiers', () => {
+    const doc = {
+      ...base,
+      tabelasAtacado: [
+        {
+          listaDePrecoAtacadoOuterRef: 'documents/listaDePrecos/lp1',
+          min_count: 10,
+          max_count: 49,
+        },
+        {
+          listaDePrecoAtacadoOuterRef: 'documents/listaDePrecos/lp2',
+          min_count: 50,
+          max_count: 999,
+        },
+      ],
+    };
+    const parsed = integracaoSchema.parse(doc);
+    expect(parsed.tabelasAtacado).toHaveLength(2);
+    expect(parsed.tabelasAtacado?.[0]).toEqual({
+      listaDePrecoAtacadoOuterRef: 'documents/listaDePrecos/lp1',
+      min_count: 10,
+      max_count: 49,
+    });
+  });
+
+  it('rejects a tabelasAtacado entry with an invalid inner object', () => {
+    expect(
+      integracaoSchema.safeParse({
+        ...base,
+        tabelasAtacado: [
+          { listaDePrecoAtacadoOuterRef: 'not-a-ref', min_count: 10, max_count: 49 },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      integracaoSchema.safeParse({
+        ...base,
+        // min_count must be an int, not a string
+        tabelasAtacado: [
+          {
+            listaDePrecoAtacadoOuterRef: 'documents/listaDePrecos/lp1',
+            min_count: '10',
+            max_count: 49,
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('parses Amazon selling_partner_id and Magalu tenant_id', () => {
+    const doc = { ...base, selling_partner_id: 'A1B2C3D4E5', tenant_id: 'tenant-xyz' };
+    const parsed = integracaoSchema.parse(doc);
+    expect(parsed.selling_partner_id).toBe('A1B2C3D4E5');
+    expect(parsed.tenant_id).toBe('tenant-xyz');
+  });
+
+  it('parses Mercado Livre Mercado-Shops price table outer refs', () => {
+    const doc = {
+      ...base,
+      tabelaMercadoShopsOuterRef: 'documents/listaDePrecos/ms1',
+      tabelaMercadoShopsPromocionalOuterRef: 'documents/listaDePrecos/ms2',
+    };
+    const parsed = integracaoSchema.parse(doc);
+    expect(parsed.tabelaMercadoShopsOuterRef).toBe('documents/listaDePrecos/ms1');
+    expect(parsed.tabelaMercadoShopsPromocionalOuterRef).toBe('documents/listaDePrecos/ms2');
+  });
+
+  it('parses modalidadeFreteImportacao as a string enum, including null', () => {
+    expect(
+      integracaoSchema.parse({ ...base, modalidadeFreteImportacao: '0' }).modalidadeFreteImportacao,
+    ).toBe('0');
+    expect(
+      integracaoSchema.parse({ ...base, modalidadeFreteImportacao: '4' }).modalidadeFreteImportacao,
+    ).toBe('4');
+    expect(
+      integracaoSchema.parse({ ...base, modalidadeFreteImportacao: '9' }).modalidadeFreteImportacao,
+    ).toBe('9');
+    expect(
+      integracaoSchema.parse({ ...base, modalidadeFreteImportacao: null })
+        .modalidadeFreteImportacao,
+    ).toBeNull();
+    expect(integracaoSchema.parse(base).modalidadeFreteImportacao).toBeNull();
+  });
+
+  it('rejects a numeric modalidadeFreteImportacao (legacy serializes it as a string)', () => {
+    expect(integracaoSchema.safeParse({ ...base, modalidadeFreteImportacao: 3 }).success).toBe(
+      false,
+    );
+  });
+
+  it('passes a legacy Loja Integrada doc with token_id through untouched (not modeled)', () => {
+    const doc = {
+      ...base,
+      tipo: 3,
+      token_id: 'li-static-api-key-abc123',
+    };
+    const parsed = integracaoSchema.parse(doc) as Record<string, unknown>;
+    expect(parsed.token_id).toBe('li-static-api-key-abc123');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                          BrandShopee (subcollection)                       */
+/* -------------------------------------------------------------------------- */
+
+describe('brandShopee', () => {
+  it('passes a Shopee brand cache doc through untouched (loose passthrough)', () => {
+    const doc = {
+      brand_id: 12345,
+      original_brand_name: 'Acme',
+      display_brand_name: 'Acme Brasil',
+    };
+    expect(brandShopeeSchema.parse(doc)).toEqual(doc);
+  });
+
+  it('targets the brandshopee subcollection path', () => {
+    expect(brandShopeeMeta.collectionPath).toBe('integracao/{integracaoId}/brandshopee');
+  });
+
+  it('reuses the parent integracao permission bits exactly', () => {
+    expect(brandShopeeMeta.permissions).toEqual(integracaoMeta.permissions);
+  });
+
+  it('is registered in ALL_DOMAINS', () => {
+    const paths = ALL_DOMAINS.map((d) => d.meta.collectionPath);
+    expect(paths).toContain('integracao/{integracaoId}/brandshopee');
   });
 });
 

@@ -91,7 +91,15 @@ export const integracaoSchema = z
     idCadIntTran: z.string().max(60).nullable().default(null),
     ativo: z.boolean().default(true),
     cor: z.number().int().nullable().default(null),
-    modalidadeFreteImportacao: z.number().int().nullable().default(null),
+
+    /**
+     * Shipping-modality code for imports, legacy `INTEGRACAO_FRETE` enum
+     * (`packages/global/lib/src/constantes.dart`). Legacy serializes this enum
+     * as a STRING (`'0'`–`'4'`, `'9'`), never a number — the previous
+     * `z.number().int()` typing failed `parseRead` on real legacy docs (#465
+     * finding).
+     */
+    modalidadeFreteImportacao: z.enum(['0', '1', '2', '3', '4', '9']).nullable().default(null),
 
     /**
      * The marketplace seller id this account maps to (Mercado Livre's numeric
@@ -103,6 +111,58 @@ export const integracaoSchema = z
      */
     user_id: z.number().int().nullable().default(null),
 
+    // NOTE: `ContaMercadoLivre.preferenciasProdutoMercadoLivre` (an embedded
+    // object of 10 boolean import/overwrite toggles — importarCategorias,
+    // importarNovosProdutos, importarEstoque, importarFotos, importarPreco,
+    // atualizarProdutoMl, atualizarProdutoPai, sobrescreverEstoque,
+    // sobrescreverFotos, sobrescreverPreco) is NEVER USED in the legacy
+    // Flutter app per owner decision 2026-07-15. It is not modeled here and
+    // will NOT be ported; any legacy doc that happens to carry it rides
+    // `.passthrough()` untouched.
+
+    // Per-channel flat account fields (parity audit #289) — one per
+    // marketplace, nullable so every OTHER channel's docs still parse.
+    /**
+     * Shopee — `ContaShopee.shop_id` (int?), the connected shop's numeric id.
+     */
+    shop_id: z.number().int().nullable().default(null),
+    /**
+     * Shopee — `ContaShopee.main_account_id` (int?), the parent Shopee
+     * account id a shop belongs to (multi-shop merchants).
+     */
+    main_account_id: z.number().int().nullable().default(null),
+    /**
+     * Shopee — `ContaShopee.tabelasAtacado` (`AtacadoShopee[]?`), wholesale
+     * price-tier rules: each entry maps a `[min_count, max_count]` quantity
+     * band to its own price table.
+     */
+    tabelasAtacado: z
+      .array(
+        z.object({
+          listaDePrecoAtacadoOuterRef: outerRefSchema,
+          min_count: z.number().int(),
+          max_count: z.number().int(),
+        }),
+      )
+      .nullable()
+      .default(null),
+    /**
+     * Amazon — `ContaAmazon.selling_partner_id` (string?), the SP-API seller
+     * id.
+     */
+    selling_partner_id: z.string().nullable().default(null),
+    /**
+     * Magalu — `ContaMagalu.tenant_id` (string?), the Magalu Open API tenant
+     * id.
+     */
+    tenant_id: z.string().nullable().default(null),
+
+    // NOTE: Loja Integrada's `ContaLojaIntegrada.token_id` (the per-account
+    // static `chave_api`) is deliberately NOT modeled as a typed field here —
+    // #356 tracks moving it into the admin-only `credenciais` store below
+    // instead of a client-readable account field. A legacy doc that already
+    // carries it rides `.passthrough()` untouched in the meantime.
+
     // Outer references — `documents/<col>/<id>` doc-path strings (Flutter ODM).
     // Nullable so a legacy integração without a given ref (e.g. a marketplace
     // channel with no filial) still reads/saves; the balcão form requires the
@@ -110,6 +170,16 @@ export const integracaoSchema = z
     filialIntegracaoPedidoOuterRef: outerRefSchema.nullable().default(null),
     tabelaNormalOuterRef: outerRefSchema.nullable().default(null),
     tabelaPromocionalOuterRef: outerRefSchema.nullable().default(null),
+    /**
+     * Mercado Livre — Mercado-Shops-only price table refs
+     * (`ContaMercadoLivre.tabelaMercadoShopsOuterRef` /
+     * `.tabelaMercadoShopsPromocionalOuterRef`, models.dart). A SECOND price-
+     * table pair distinct from `tabelaNormalOuterRef` / `tabelaPromocionalOuterRef`
+     * above — these two apply only to the Mercado Shops storefront, not the
+     * marketplace listing.
+     */
+    tabelaMercadoShopsOuterRef: outerRefSchema.nullable().default(null),
+    tabelaMercadoShopsPromocionalOuterRef: outerRefSchema.nullable().default(null),
     operacaoOuterRef: outerRefSchema.nullable().default(null),
     operacaoDevolucaoOuterRef: outerRefSchema.nullable().default(null),
     depositoOuterRef: outerRefSchema.nullable().default(null),
@@ -143,6 +213,38 @@ export const integracaoMeta: CollectionMetadata = {
 export const integracao = { schema: integracaoSchema, meta: integracaoMeta };
 
 /* -------------------------------------------------------------------------- */
+/*                      BrandShopee (subcollection)                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Shopee brand cache — `integracao/{integracaoId}/brandshopee`. Mirrors the
+ * legacy `BrandShopee` (`packages/canais_de_venda/shopee/lib/src/models.dart`:
+ * `brand_id: int, original_brand_name: string, display_brand_name?: string`),
+ * written client-side by the legacy Flutter app during dual-run. Loose
+ * pass-through like the produto marketplace-link subcollections
+ * (`produtoSubcollection` in `./produto/collection/subcollections.ts`) — the
+ * Flutter wire shape is the source of truth and this is not validated field
+ * by field here.
+ */
+export const brandShopeeSchema = z.object({}).passthrough();
+export type BrandShopee = z.infer<typeof brandShopeeSchema>;
+
+export const brandShopeeMeta: CollectionMetadata = {
+  collectionPath: 'integracao/{integracaoId}/brandshopee',
+  // MUST reuse these exact bits (not fresh ones): the rules claims map
+  // derives the claim name from the permission bit, and Flutter Shopee users
+  // already hold the `integracao` claim — a bespoke bit here would leave
+  // them default-denied on their own brand cache.
+  permissions: {
+    read: PERM_INTEGRACAO_READ,
+    write: PERM_INTEGRACAO_WRITE,
+    delete: PERM_INTEGRACAO_DELETE,
+  },
+};
+
+export const brandShopee = { schema: brandShopeeSchema, meta: brandShopeeMeta };
+
+/* -------------------------------------------------------------------------- */
 /*                    CredenciaisIntegracao (subcollection)                   */
 /* -------------------------------------------------------------------------- */
 
@@ -168,9 +270,14 @@ export const integracao = { schema: integracaoSchema, meta: integracaoMeta };
  * (`token6h`/`tokenDuravel`, `actokshopee`, `tokenoaut`, `tokenMagalu`); ML's
  * two tokens collapse here into one doc (`access_token` = the 6h token,
  * `refresh_token` = the durable one). The genuinely divergent per-channel
- * identity/config (`shop_id`, `tenant_id`, `selling_partner_id`, `brand`, and
- * Loja Integrada's static API key) is account-level data and lives on the
- * `integracao` doc instead — see #289, not here.
+ * identity/config (`shop_id`, `tenant_id`, `selling_partner_id`) is
+ * account-level data and lives as flat fields on the `integracao` doc
+ * instead, not here; the Shopee brand cache lives in the
+ * `integracao/{integracaoId}/brandshopee` subcollection (`brandShopeeSchema`
+ * below). Loja Integrada's static API key (`token_id`) is the one
+ * exception left to do: it is not yet ported to a typed field anywhere, and
+ * #356 tracks moving it into THIS admin-only store rather than the
+ * client-readable `integracao` doc.
  */
 export const credenciaisIntegracaoSchema = z
   .object({

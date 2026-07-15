@@ -514,11 +514,11 @@ const GUARD_PROBE_CONCURRENCY = 4;
 export const MARKETPLACE_CHANNEL_LABELS: Record<string, string> = {
   produtoMercadoLivre: 'Mercado Livre',
   variacaoMercadoLivre: 'Mercado Livre',
-  produtoshopee: 'Shopee',
-  variacaoshopee: 'Shopee',
-  produtomagalu: 'Magalu',
-  produtoamazon: 'Amazon',
-  produtointegrada: 'Loja Integrada',
+  prodshopee: 'Shopee',
+  variashopee: 'Shopee',
+  produtoMagalu2: 'Magalu',
+  prodAmazon: 'Amazon',
+  produtolojaintegrada: 'Loja Integrada',
 };
 
 /** Inbound references that make a produto unsafe to delete. */

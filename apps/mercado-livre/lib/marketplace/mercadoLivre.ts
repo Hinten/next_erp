@@ -10,7 +10,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import type { ChannelContext, MarketplaceChannel } from '@delfrance/core/plugins';
-import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { INTEGRACAO_TIPO, type Integracao } from '@delfrance/schemas';
 import { integracaoCollection } from '@delfrance/data/admin/collections';
 import {
   type MercadoLivreConfig,
@@ -133,10 +133,11 @@ export async function loadMercadoLivreContext(
   const oauthConfig = mercadoLivreOAuthConfig();
   const store = createTokenDuravelStore(db, integracaoId);
 
-  // The per-account singularities (ML `user_id`, price tables, …) live on the
-  // integracao doc (#289) and ride through `.passthrough()`. Pass them opaquely
-  // in `account`; the plugin reads what it needs.
-  const account: Readonly<Record<string, unknown>> = { user_id: extractUserId(conta) };
+  // The per-account singularities (ML `user_id`, the Mercado-Shops-only price
+  // table refs) are now typed fields on `integracaoSchema` (#289) rather than
+  // opaque passthrough. Pass the parsed values through; the plugin reads what
+  // it needs.
+  const account: Readonly<Record<string, unknown>> = mercadoLivreAccountBag(conta);
 
   return {
     integracaoId,
@@ -160,6 +161,16 @@ export async function loadMercadoLivreContext(
   };
 }
 
-function extractUserId(conta: Record<string, unknown>): unknown {
-  return conta.user_id ?? null;
+/**
+ * The ML-relevant slice of an `integracao` account, typed off
+ * `integracaoSchema` (#289) rather than an ad-hoc `Record<string, unknown>`
+ * read: `user_id` (the ML seller id) plus the Mercado-Shops-only price table
+ * refs, distinct from the shared `tabelaNormal/PromocionalOuterRef`.
+ */
+export function mercadoLivreAccountBag(conta: Integracao): Readonly<Record<string, unknown>> {
+  return {
+    user_id: conta.user_id,
+    tabelaMercadoShopsOuterRef: conta.tabelaMercadoShopsOuterRef,
+    tabelaMercadoShopsPromocionalOuterRef: conta.tabelaMercadoShopsPromocionalOuterRef,
+  };
 }
