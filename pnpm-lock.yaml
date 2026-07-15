@@ -293,6 +293,9 @@ importers:
       '@types/react':
         specifier: ^19.2.0
         version: 19.2.14
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
       eslint:
         specifier: ^9.39.4
         version: 9.39.4
