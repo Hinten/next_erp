@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 
-import { type Bucket, putArquivoAdmin } from './arquivoUpload';
+import { type Bucket, putArquivoAdmin } from './upload';
 
 /* ------------------------------ fakes ------------------------------------- */
 

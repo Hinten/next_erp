@@ -5,7 +5,10 @@ export default defineConfig({
   test: {
     name: '@delfrance/whatsapp-app',
     environment: 'node',
-    include: ['{app,lib}/**/*.test.ts'],
+    // `functions/` holds the deploy-artifact-only Cloud Functions codebase (not a
+    // pnpm workspace package). The parent app's tasks (tsconfig `**/*.ts`, `eslint .`,
+    // this vitest config) cover it, so include its tests here too.
+    include: ['{app,lib,functions}/**/*.test.ts'],
   },
   resolve: {
     alias: {

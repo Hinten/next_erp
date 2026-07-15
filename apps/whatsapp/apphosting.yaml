@@ -1,8 +1,9 @@
 # Firebase App Hosting backend config for apps/whatsapp.
 # API-only service for the WhatsApp Business Cloud API channel: per-account
-# permanent-token storage (POST/DELETE /api/whatsapp/token) + the connected-number
-# status route (GET /api/whatsapp/conta, a live Graph phone-number lookup). The
-# inbound webhook receiver (#527) and the outbound sender (#529) land in later PRs.
+# permanent-token storage (POST/DELETE /api/whatsapp/token), the connected-number
+# status route (GET /api/whatsapp/conta), and the inbound webhook receiver +
+# pipeline (GET|POST /api/webhooks/whatsapp, #527). The outbound sender (#529) and
+# the nested Cloud Functions consumer (processWhatsappNotification) land in later PRs.
 runConfig:
   cpu: 1
   memoryMiB: 512
@@ -16,20 +17,25 @@ runConfig:
 #                                (GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG); set only to
 #                                override, or in local dev without a service account
 #   FIREBASE_DATABASE_ID         Firestore database id (default: "default")
-#   WHATSAPP_VERIFY_TOKEN        OPTIONAL (#527) — the hub.verify_token echoed on the
-#                                webhook GET handshake; consumed by the webhook that
-#                                lands in a later PR, not by any route here yet.
-#                                                                (Secret Manager)
-#   WHATSAPP_APP_SECRET          OPTIONAL (#527) — Meta app secret used to verify the
-#                                X-Hub-Signature-256 HMAC on inbound webhook POSTs;
-#                                consumed by the later webhook PR.  (Secret Manager)
+#   WHATSAPP_VERIFY_TOKEN        REQUIRED (#527) — the hub.verify_token echoed on the
+#                                webhook GET handshake.               (Secret Manager)
+#   WHATSAPP_APP_SECRET          REQUIRED (#527) — Meta app secret verifying the
+#                                X-Hub-Signature-256 HMAC on inbound POSTs. Unset ⇒
+#                                POST returns 503 (mandatory).         (Secret Manager)
+#   WHATSAPP_TASKS_DISABLED      OPTIONAL — set to "1" to force the persist-for-the-
+#                                sweep fallback (no enqueue).
+#   WHATSAPP_TASKS_REGION        OPTIONAL — region of the processWhatsappNotification
+#                                function/queue (default us-east5); MUST match its
+#                                deploy region or the enqueue silently drops.
+#   FIREBASE_STORAGE_BUCKET      OPTIONAL — bucket for cached inbound media
+#                                (default <projectId>.appspot.com)
 #   WEB_APP_URL                  apps/web origin (the panel that drives the routes)
 #   ALLOWED_ADMIN_ORIGINS        CSV of apps/web origins for CORS (no localhost in prod)
 
 env:
-  # OPTIONAL (#527): consumed by the inbound webhook that lands in a later PR;
-  # no route in this app reads them yet. Declared here so the secret bindings
-  # are ready when the webhook ships.
+  # Consumed by the inbound webhook (#527): the GET verify handshake reads
+  # WHATSAPP_VERIFY_TOKEN; the POST signature check reads WHATSAPP_APP_SECRET
+  # (mandatory — unset ⇒ 503).
   - variable: WHATSAPP_VERIFY_TOKEN
     secret: whatsapp-verify-token
     availability:

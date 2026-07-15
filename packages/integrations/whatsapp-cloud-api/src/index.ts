@@ -5,6 +5,7 @@ export {
   type WhatsAppClientConfig,
   type SendTextInput,
   type SendResult,
+  type MediaDownload,
 } from './client';
 export {
   WEBHOOK_FIELD_MESSAGES,
@@ -19,6 +20,7 @@ export {
   locationSchema,
   orderSchema,
   messageErrorSchema,
+  mediaMetadataSchema,
   type IncomingMessage,
   type StatusUpdate,
   type WebhookEnvelope,
@@ -29,4 +31,5 @@ export {
   type Location,
   type Order,
   type MessageError,
+  type MediaMetadata,
 } from './types';
