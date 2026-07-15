@@ -16,15 +16,32 @@ hosts the channel's HTTP routes. Modeled on `apps/mercado-livre` +
   status (`/users/me` identity, or `connected: false` when the credential is dead).
 - `app/api/oauth/mercado-pago/callback` — public browser redirect target; the signed
   `state` is the only trust anchor → verify → exchange code → persist.
+- `app/api/webhooks/mercado-pago` — **#531**: MP payment-notification receiver
+  (`x-signature` verified only when `MERCADO_PAGO_WEBHOOK_SECRET` is set; the real
+  anchor is the handler's payment refetch). Validates + enqueues onto the
+  `processMercadoPagoNotification` Cloud Tasks queue and acks 200 fast (no Firestore
+  write on the happy path).
 - `lib/payments/mercadoPago.ts` — resolves a `metodo_pgto` account into a context
   (the consent URL, a refresh-on-expiry `resolveAccessToken`, and `exchangeAndPersist`).
 - `lib/payments/credentialStore.ts` — the single-token store over the admin-only
   `metodo_pgto/{id}/credenciais` subcollection (fixed `current` doc; strays deleted
   on save). Mirrors apps/melhor-envio's `tokenStore`.
+- `lib/payments/notificacao.ts` — **#531**: the webhook ingestion core shared by the
+  receiver, the `onTaskDispatched` task handler and the `onSchedule` reprocess sweep —
+  parse → resolve collector → RE-FETCH the payment (never trust the body) → map
+  (`mpPaymentToPagamento`) → `reconcilePedidoFromPagamento`. Failures-only persistence
+  to `notificacoesMercadoPago`. Mirrors apps/mercado-livre's `marketplace/notificacao.ts`.
+- `lib/payments/mpTasks.ts` — the `processMercadoPagoNotification` task-queue scheduler
+  (`MERCADO_PAGO_TASKS_DISABLED` valve → persist-for-the-sweep). Mirrors `mlTasks.ts`.
 - `lib/payments/state.ts` — the signed-state HMAC (`MERCADO_PAGO_STATE_SECRET`, 10-min TTL).
 - `lib/payments/respond.ts` — the error → HTTP mapper.
+- `lib/signatures/hmac.ts` — constant-time `verifyHmac` + `verifyMpSignature` (MP's
+  `ts=…,v1=…` manifest HMAC over `id;request-id;ts`).
 - `lib/{auth,firebase}` — per-app copies of the shared helpers (each backend keeps
   its own so they deploy + log independently).
+- `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
+  `functions/DEPLOY.md`). Covered by this app's typecheck/lint/test tasks. Mirrors
+  `apps/mercado-livre/functions`.
 
 ## Rules specific to this app
 
@@ -46,9 +63,14 @@ hosts the channel's HTTP routes. Modeled on `apps/mercado-livre` +
 
 OAuth connect is **live**: code exchange + persistence (single-token
 `credenciais`) + the refresh-on-expiry + the conta status route all work. The
-MP payment-link tab (#367) and the webhook reconciler (#531) build on top of
-this account/token foundation in later PRs; a nested Cloud Functions codebase
-lands with them (not here yet).
+webhook reconciler (#531) is now present: the receiver validates + enqueues onto
+the `processMercadoPagoNotification` Cloud Tasks queue, the task handler
+verifies-by-refetch → maps → reconciles the pedido estado, and an `onSchedule`
+sweep re-drives persisted `failed` docs — the resilience foundation mirrors the
+ML pipeline. The nested Cloud Functions codebase (`functions/`) that hosts the
+`onTaskDispatched` handler + the sweep is now in place; deploy + the legacy
+Flutter cutover are tracked in **#564**. The MP payment-link tab (#367) builds
+on top of this foundation in a later PR.
 
 ## Env
 

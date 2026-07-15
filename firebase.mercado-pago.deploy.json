@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/firebase",
+  "//": "Deploy-ISOLATED config for the apps/mercado-pago/functions (codebase `mercado-pago`) Cloud Functions — the MP notification processor + reprocess sweep (#531). Contains ONLY a functions block — deliberately NO firestore/storage/emulators keys — so a deploy with this config can never push the Flutter-owned rules (CLAUDE.md critical rule #1). Separate per-channel codebase so each payment channel deploys and scales independently. The predeploy hook runs apps/mercado-pago/functions/scripts/prepare-deploy.mjs, which esbuild-bundles the function + writes a MINIMAL workspace-free package.json. The function needs FIREBASE_PROJECT_ID + admin creds in its env. Deploy: firebase deploy --only functions:mercado-pago --config firebase.mercado-pago.deploy.json --project <id>. See apps/mercado-pago/functions/DEPLOY.md.",
+  "functions": [
+    {
+      "source": ".deploy/mercado-pago-functions",
+      "codebase": "mercado-pago",
+      "runtime": "nodejs22",
+      "predeploy": ["node apps/mercado-pago/functions/scripts/prepare-deploy.mjs"],
+      "ignore": ["node_modules"]
+    }
+  ]
+}

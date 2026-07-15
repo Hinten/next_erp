@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@delfrance/core": "workspace:*",
+    "@delfrance/schemas": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

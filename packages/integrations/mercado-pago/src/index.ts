@@ -4,6 +4,7 @@ export * from './errors';
 export * from './types';
 export * from './oauth';
 export * from './api';
+export * from './mapping/payment';
 
 /**
  * Mercado Pago plugin scaffold (PaymentGateway).

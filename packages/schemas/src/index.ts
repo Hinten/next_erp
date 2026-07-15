@@ -204,6 +204,15 @@ export {
 } from './notificacaoMercadoLivre';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log,
+  // mirrors notificacaoMercadoLivre above (#531).
+  notificacaoMercadoPagoStatusSchema,
+  notificacaoMercadoPagoSchema,
+  type NotificacaoMercadoPagoStatus,
+  type NotificacaoMercadoPago,
+} from './notificacaoMercadoPago';
+
+export {
   cargo,
   cargoSchema,
   cargoMeta,

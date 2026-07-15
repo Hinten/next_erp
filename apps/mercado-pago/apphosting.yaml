@@ -1,8 +1,9 @@
 # Firebase App Hosting backend config for apps/mercado-pago.
 # API-only service for the Mercado Pago payments integration: OAuth connect
-# (account linking) + the connected-account status route. Heavy/async work
-# (payment-link generation, webhook reconciliation) lands in later PRs on a
-# nested Cloud Functions codebase — NOT here yet.
+# (account linking) + the connected-account status route + the payment-notification
+# webhook receiver (#531; enqueues onto the processMercadoPagoNotification queue).
+# The queued task handler + reprocess sweep run in the nested Cloud Functions
+# codebase; payment-link generation (#367) lands in a later PR.
 runConfig:
   cpu: 1
   memoryMiB: 512
@@ -19,9 +20,18 @@ runConfig:
 #   MERCADO_PAGO_CLIENT_ID       MP application id              (Secret Manager)
 #   MERCADO_PAGO_CLIENT_SECRET   MP application secret          (Secret Manager)
 #   MERCADO_PAGO_STATE_SECRET    HMAC key for the OAuth state   (Secret Manager)
+#   MERCADO_PAGO_WEBHOOK_SECRET  OPTIONAL — the MP webhook signing secret; when set
+#                                the receiver verifies the x-signature header (401 on
+#                                mismatch). Unset ⇒ skip (the payment refetch is the
+#                                security anchor).                (Secret Manager)
 #   MERCADO_PAGO_PUBLIC_URL      this backend's public origin — used to build the
 #                                OAuth redirect_uri (must match the URI registered
 #                                in the Mercado Pago application dashboard)
+#   MERCADO_PAGO_TASKS_DISABLED  OPTIONAL — set to "1" to disable the Cloud Tasks
+#                                enqueue (persist-for-the-sweep fallback); use before
+#                                the notification-function IAM is granted
+#   MERCADO_PAGO_TASKS_REGION    OPTIONAL — region of the notification function/queue
+#                                (default: FUNCTIONS_REGION → us-east5)
 #   WEB_APP_URL                  apps/web origin (the callback redirects back here)
 #   ALLOWED_ADMIN_ORIGINS        CSV of apps/web origins for CORS (no localhost in prod)
 
@@ -38,5 +48,13 @@ env:
 
   - variable: MERCADO_PAGO_STATE_SECRET
     secret: mercado-pago-state-secret
+    availability:
+      - RUNTIME
+
+  # OPTIONAL (#531): the MP webhook signing secret. When present the receiver
+  # verifies the x-signature header; absent ⇒ the check is skipped and the
+  # payment refetch is the security anchor.
+  - variable: MERCADO_PAGO_WEBHOOK_SECRET
+    secret: mercado-pago-webhook-secret
     availability:
       - RUNTIME

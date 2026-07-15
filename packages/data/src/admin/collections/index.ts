@@ -38,4 +38,7 @@ export { pedidoCollection } from './pedidoCollection';
 export { operacaoCollection } from './operacaoCollection';
 export { incidenteCollection } from './incidenteCollection';
 export { metodoPagamentoCollection } from './metodoPagamentoCollection';
+export { pagamentoCollection } from './pagamentoCollection';
+export { historicoEstadoPedidoCollection } from './historicoEstadoPedidoCollection';
 export { credenciaisMetodoPgtoCollection } from './credenciaisMetodoPgtoCollection';
+export { notificacaoMercadoPagoCollection } from './notificacaoMercadoPagoCollection';
