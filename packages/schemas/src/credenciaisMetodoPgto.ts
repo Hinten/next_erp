@@ -18,10 +18,12 @@ import type { CollectionMetadata } from './types';
  * they follow the `certificadoSecreto` / `credenciaisIntegracao` secret
  * pattern: this domain is deliberately left OUT of `ALL_DOMAINS` (see the
  * NOTE below), so rules-gen emits no match block and Firestore default-denies
- * every client read/write. Only the Admin SDK (apps/integrations OAuth
+ * every client read/write. Only the Admin SDK (the `apps/mercado-pago` OAuth
  * callback + refresh flow), which bypasses rules, reaches them — there is no
- * client consumer. The cascade from `metodo_pgto` runs server-side
- * (firebase-admin) and so still frees these on delete.
+ * client consumer. The `metodo_pgto` → `credenciais` cascade is declared on
+ * `metodoPagamentoMeta` but not yet enforced server-side (tracked with the
+ * generic cascade triggers, #401/#516/#517) — until that lands, deleting a
+ * `metodo_pgto` doc orphans this subcollection.
  */
 export const credenciaisMetodoPgtoSchema = z
   .object({
@@ -38,7 +40,7 @@ export const credenciaisMetodoPgtoMeta: CollectionMetadata = {
   // No client domain grants these bits — placeholder values. This collection is
   // deliberately NOT registered in `ALL_DOMAINS`, so the rules generator emits
   // no match block for it and Firestore default-denies every client read/write.
-  // Only the Admin SDK (apps/integrations), which bypasses rules, reaches the
+  // Only the Admin SDK (apps/mercado-pago), which bypasses rules, reaches the
   // OAuth tokens. Mirrors `credenciaisIntegracaoMeta`.
   permissions: {
     read: 0n,
@@ -52,5 +54,6 @@ export const credenciaisMetodoPgtoMeta: CollectionMetadata = {
 // access to live refresh tokens. Admin-only = default-deny (see
 // `credenciaisMetodoPgtoMeta`, mirroring `credenciaisIntegracaoMeta` /
 // `certificadoSecreto`). The admin collection handle consumes the path +
-// schema directly; the server-side cascade on `metodo_pgto` delete frees the
-// subcollection without a rules block.
+// schema directly. The `metodo_pgto` cascade that would free this
+// subcollection on delete is declarative metadata for now — server-side
+// enforcement is tracked by the generic cascade triggers (#401/#516/#517).
