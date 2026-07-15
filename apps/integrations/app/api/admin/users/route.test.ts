@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { AppErrorCodes, FirebaseAppError } from 'firebase-admin/app';
+import { AuthClientErrorCode, FirebaseAuthError } from 'firebase-admin/auth';
 import { rulesClaimsFromBits } from '@delfrance/auth';
 import { SUPERUSER_MASK } from '@delfrance/schemas';
 
@@ -33,6 +35,19 @@ vi.mock('@/lib/firebase/admin', () => ({
 }));
 
 const { POST } = await import('./route');
+
+// The firebase-admin .d.ts only surfaces the constructor inherited from Error,
+// but at runtime FirebaseAuthError takes an ErrorInfo and FirebaseAppError
+// takes (code, message) — cast so the tests can build the real classes the
+// catch narrows on.
+const AuthErrorCtor = FirebaseAuthError as unknown as new (info: {
+  code: string;
+  message: string;
+}) => FirebaseAuthError;
+const AppErrorCtor = FirebaseAppError as unknown as new (
+  code: string,
+  message: string,
+) => FirebaseAppError;
 
 function req(body: unknown, headers: Record<string, string> = {}): Request {
   return new Request('http://localhost:3001/api/admin/users', {
@@ -175,14 +190,52 @@ describe('POST /api/admin/users', () => {
   it('maps email-already-exists to 409', async () => {
     mocks.verifyIdToken.mockResolvedValue(CALLER_CLAIM);
     mocks.cargoGet.mockResolvedValue({ data: () => undefined });
-    // firebase-admin throws an Error subclass (FirebaseAuthError) with a
-    // string `code` — mirror that shape so the route's narrowing catches it.
-    const fbErr = Object.assign(new Error('Email exists'), {
-      code: 'auth/email-already-exists',
-    });
-    mocks.createUser.mockRejectedValue(fbErr);
+    mocks.createUser.mockRejectedValue(new AuthErrorCtor(AuthClientErrorCode.EMAIL_ALREADY_EXISTS));
 
     const res = await POST(req(VALID_BODY, { authorization: 'Bearer t' }));
     expect(res.status).toBe(409);
+    expect((await res.json()) as { code?: string }).toMatchObject({
+      code: 'auth/email-already-exists',
+    });
+  });
+
+  it('maps unmapped FirebaseAuthError codes to 500 with the error message', async () => {
+    mocks.verifyIdToken.mockResolvedValue(CALLER_CLAIM);
+    mocks.cargoGet.mockResolvedValue({ data: () => undefined });
+    const fbErr = new AuthErrorCtor(AuthClientErrorCode.INTERNAL_ERROR);
+    mocks.createUser.mockRejectedValue(fbErr);
+
+    const res = await POST(req(VALID_BODY, { authorization: 'Bearer t' }));
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: fbErr.message, code: 'auth/internal-error' });
+  });
+
+  it('maps FirebaseAppError (admin init failure) to 500 with the app/ code', async () => {
+    mocks.verifyIdToken.mockResolvedValue(CALLER_CLAIM);
+    mocks.cargoGet.mockResolvedValue({ data: () => undefined });
+    mocks.createUser.mockRejectedValue(
+      new AppErrorCtor(AppErrorCodes.INVALID_CREDENTIAL, 'bad credential'),
+    );
+
+    const res = await POST(req(VALID_BODY, { authorization: 'Bearer t' }));
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: 'bad credential', code: 'app/invalid-credential' });
+  });
+
+  it('rethrows createUser errors that are not firebase-admin classes', async () => {
+    mocks.verifyIdToken.mockResolvedValue(CALLER_CLAIM);
+    mocks.cargoGet.mockResolvedValue({ data: () => undefined });
+    mocks.createUser.mockRejectedValue(new TypeError('boom'));
+
+    await expect(POST(req(VALID_BODY, { authorization: 'Bearer t' }))).rejects.toThrow('boom');
+  });
+
+  it('rethrows duck-typed errors carrying an auth/ code that are not FirebaseAuthError', async () => {
+    mocks.verifyIdToken.mockResolvedValue(CALLER_CLAIM);
+    mocks.cargoGet.mockResolvedValue({ data: () => undefined });
+    const impostor = Object.assign(new Error('impostor'), { code: 'auth/email-already-exists' });
+    mocks.createUser.mockRejectedValue(impostor);
+
+    await expect(POST(req(VALID_BODY, { authorization: 'Bearer t' }))).rejects.toThrow('impostor');
   });
 });

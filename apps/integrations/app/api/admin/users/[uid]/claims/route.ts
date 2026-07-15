@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { FirebaseAppError } from 'firebase-admin/app';
+import { FirebaseAuthError } from 'firebase-admin/auth';
 import { PERM, hasPerm, rulesClaimsFromBits } from '@delfrance/auth';
 import { cargoCollection, usuarioCollection } from '@delfrance/data/admin/collections';
 import { aggregatePermissoes, type Cargo, isSuperUserBits } from '@delfrance/schemas';
@@ -48,11 +50,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ uid: st
     }
     callerBits = decodeCallerBits(decoded.permissions as string | undefined);
   } catch (e) {
-    // firebase-admin throws `FirebaseAuthError` (Error + string `code`).
-    // The class isn't part of the public runtime API, so duck-type on
-    // `Error + code` rather than depend on internal imports.
-    if (e instanceof Error && typeof (e as { code?: unknown }).code === 'string') {
+    // FirebaseAuthError (`code` always 'auth/'-prefixed) is a
+    // token-validation failure → 401. FirebaseAppError (e.g.
+    // 'app/invalid-credential') means getAdminAuth() failed to initialize
+    // the Admin SDK — an operational failure, not the caller's fault → 500.
+    // Anything else is unexpected: rethrow.
+    if (e instanceof FirebaseAuthError) {
       return err(401, { error: 'Token inválido ou expirado.' });
+    }
+    if (e instanceof FirebaseAppError) {
+      return err(500, { error: `Falha ao inicializar Firebase Admin (${e.code}).` });
     }
     throw e;
   }
