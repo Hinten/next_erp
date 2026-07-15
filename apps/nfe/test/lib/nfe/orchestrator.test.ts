@@ -2567,11 +2567,21 @@ describe('buildCobrFromPagamentos', () => {
   });
 
   it('dVenc EXACTLY on the +10y date passes (797 is "more than 10 years"; dates, not instants)', () => {
-    // End-of-day on the boundary date: the wire dVenc equals emission date +10y,
-    // which SEFAZ accepts — an instant comparison would false-throw here.
-    const boundary = new Date();
-    boundary.setFullYear(boundary.getFullYear() + 10);
-    boundary.setUTCHours(23, 59, 0, 0);
+    // End-of-day on the boundary date IN THE ISSUER OFFSET: the wire dVenc
+    // equals emission date +10y, which SEFAZ accepts — an instant comparison
+    // would false-throw here. The boundary must be built on the same
+    // issuer-offset basis the production code uses; the previous version mixed
+    // local (`setFullYear`) and UTC (`setUTCHours`/`toISOString`) bases and
+    // false-failed whenever the UTC date was ahead of the issuer date
+    // (00:00–03:00 UTC — a daily time bomb).
+    const OFFSET_MIN = -180; // buildCobrFromPagamentos' default issuer offset
+    const issuerNow = new Date(Date.now() + OFFSET_MIN * 60 * 1000);
+    const y = issuerNow.getUTCFullYear() + 10;
+    const m = issuerNow.getUTCMonth();
+    const d = issuerNow.getUTCDate();
+    // 23:59 issuer time on the boundary date, expressed as a UTC instant.
+    const boundary = new Date(Date.UTC(y, m, d, 23, 59) - OFFSET_MIN * 60 * 1000);
+    const expected = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
     const out = __internal.buildCobrFromPagamentos([
       pagamento({
         valor: 100,
@@ -2580,7 +2590,7 @@ describe('buildCobrFromPagamentos', () => {
         vencimento: dateToMicros(boundary),
       }),
     ]);
-    expect(out?.dup?.[0]?.dVenc).toBe(boundary.toISOString().slice(0, 10));
+    expect(out?.dup?.[0]?.dVenc).toBe(expected);
   });
 
   it('forma=90 (sem pagamento) with a stray duplicata flag → NO <cobr> block', () => {
