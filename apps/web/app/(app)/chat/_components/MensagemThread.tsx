@@ -103,7 +103,7 @@ export function MensagemThread({ conversaId }: { conversaId: string }) {
       visualizado: null,
       transcription: null,
       anexo: null,
-      anexoUrl: null,
+      anexo_url: null,
     };
     setOptimistic((prev) => [...prev, pending]);
     setDraft('');
@@ -125,7 +125,7 @@ export function MensagemThread({ conversaId }: { conversaId: string }) {
         visualizado: null,
         transcription: null,
         anexo: null,
-        anexoUrl: null,
+        anexo_url: null,
       });
       // Server snapshot will include this mid on the next tick; the
       // memoized merge above drops the optimistic copy automatically.
