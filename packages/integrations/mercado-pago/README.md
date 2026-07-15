@@ -4,6 +4,16 @@ Mercado Pago plugin. Implements `PaymentGateway` from `@delfrance/core/plugins`.
 
 ## Status
 
-**Scaffold only.** Phase 5 wires this on top of the official `mercadopago` npm SDK; webhook signature verification + idempotency reuse the helpers from `apps/integrations/lib/signatures/`.
+**OAuth + REST client landed (#530).** `oauth.ts` (authorize URL, code exchange,
+refresh — server-side only, mirrors `@delfrance/integrations-mercado-livre`)
+and `api.ts` (`getMe`, `getPayment`) are real. Token persistence + refresh
+scheduling live in the App-Hosting backend that owns the Firestore/Admin-SDK
+dependency; this library stays platform-neutral (fetch-only).
 
-`createMercadoPagoGateway()` returns a stub; every method throws `MercadoPagoNotConfiguredError`. The pagamentos UI in `apps/web` already calls into the registry (`getGateway('mercado-pago')`) and degrades gracefully when the lookup misses — enabling the Estornar button is a one-line change once this package lands its real implementation.
+`createMercadoPagoGateway()` still returns a stub for `createCharge` / `refund`
+/ `webhook`; every one of those throws `MercadoPagoNotConfiguredError` until
+#367 (Link de pagamento) and #531 (webhook reconciler) land on top of the
+OAuth-connected account. The pagamentos UI in `apps/web` already calls into
+the registry (`getGateway('mercado-pago')`) and degrades gracefully when the
+lookup misses — enabling the Estornar button is a one-line change once those
+land.

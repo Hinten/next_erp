@@ -132,6 +132,16 @@ export {
 // in ./pedido, grouped by kind like ./produto.
 export * from './pedido';
 
+export {
+  // `credenciaisMetodoPgto` is intentionally NOT exported as a DomainSchema and
+  // NOT registered in ALL_DOMAINS — it is an admin-only, default-deny secret
+  // store (mirrors `credenciaisIntegracao` / `certificadoSecreto`). Only its
+  // schema/meta/type are public.
+  credenciaisMetodoPgtoSchema,
+  credenciaisMetodoPgtoMeta,
+  type CredenciaisMetodoPgto,
+} from './credenciaisMetodoPgto';
+
 export { counter, counterSchema, counterMeta, type Counter } from './counter';
 
 export {

@@ -282,6 +282,14 @@ export const metodoPagamentoSchema = z.object({
   tipo: tipoIntegracaoPgtoSchema,
   hasLinkPagamento: z.boolean().default(false),
   nome: z.string().min(1).max(255),
+  /**
+   * The Mercado Pago collector id this account maps to (MP's numeric
+   * `user_id`), denormalized onto the doc so an inbound webhook can resolve
+   * its owning `metodo_pgto` account with a single equality query — mirrors
+   * `integracaoSchema.user_id`. Null for an account not yet OAuth-connected.
+   * Stamped at OAuth exchange.
+   */
+  user_id: z.number().int().nullable().default(null),
   dataCadastro: microsSinceEpoch('Data de cadastro').nullable().default(null),
 });
 export type MetodoPagamento = z.infer<typeof metodoPagamentoSchema>;
@@ -292,6 +300,17 @@ export const metodoPagamentoMeta: CollectionMetadata = {
     read: PERM_METODO_PGTO_READ,
     write: PERM_METODO_PGTO_WRITE,
     delete: PERM_METODO_PGTO_DELETE,
+  },
+  // Declares that deleting a Mercado Pago account frees its OAuth credential
+  // subcollection, mirroring `integracao` → `credenciais`. NOTE: like the
+  // `integracao` cascade, this is declarative metadata only — server-side
+  // enforcement (a delete trigger) is tracked by the generic cascade work
+  // (#401/#516/#517); until it lands, a deleted account orphans its
+  // admin-only `credenciais` doc.
+  cascade: [{ path: 'metodo_pgto/{metodoId}/credenciais', onDelete: 'cascade' }],
+  defaultQuery: {
+    orderBy: [{ field: 'nome', direction: 'asc' }],
+    limit: 50,
   },
 };
 

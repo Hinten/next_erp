@@ -46,7 +46,8 @@ service cloud.firestore {
       return (!c.hasAny(['dataCadastro']) || (d.get('dataCadastro', null) == null || d.get('dataCadastro', null) is int))
         && (!c.hasAny(['hasLinkPagamento']) || d.get('hasLinkPagamento', null) is bool)
         && (!c.hasAny(['nome']) || d.get('nome', null) is string && d.get('nome', null).size() <= 255)
-        && (!c.hasAny(['tipo']) || d.get('tipo', null) == 1);
+        && (!c.hasAny(['tipo']) || d.get('tipo', null) == 1)
+        && (!c.hasAny(['user_id']) || (d.get('user_id', null) == null || d.get('user_id', null) is int));
     }
 
     // d = incoming document, c = touched keys (keys() on create,
