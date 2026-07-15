@@ -2567,30 +2567,29 @@ describe('buildCobrFromPagamentos', () => {
   });
 
   it('dVenc EXACTLY on the +10y date passes (797 is "more than 10 years"; dates, not instants)', () => {
-    // End-of-day on the boundary date IN THE ISSUER OFFSET: the wire dVenc
-    // equals emission date +10y, which SEFAZ accepts — an instant comparison
-    // would false-throw here. The boundary must be built on the same
-    // issuer-offset basis the production code uses; the previous version mixed
-    // local (`setFullYear`) and UTC (`setUTCHours`/`toISOString`) bases and
-    // false-failed whenever the UTC date was ahead of the issuer date
-    // (00:00–03:00 UTC — a daily time bomb).
-    const OFFSET_MIN = -180; // buildCobrFromPagamentos' default issuer offset
-    const issuerNow = new Date(Date.now() + OFFSET_MIN * 60 * 1000);
-    const y = issuerNow.getUTCFullYear() + 10;
-    const m = issuerNow.getUTCMonth();
-    const d = issuerNow.getUTCDate();
-    // 23:59 issuer time on the boundary date, expressed as a UTC instant.
-    const boundary = new Date(Date.UTC(y, m, d, 23, 59) - OFFSET_MIN * 60 * 1000);
-    const expected = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    const out = __internal.buildCobrFromPagamentos([
-      pagamento({
-        valor: 100,
-        forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
-        duplicata: true,
-        vencimento: dateToMicros(boundary),
-      }),
-    ]);
-    expect(out?.dup?.[0]?.dVenc).toBe(expected);
+    // Pin the clock to 23:00 BRT — already the NEXT day in UTC — so the test
+    // covers the window where a UTC-derived boundary would land one day past
+    // the issuer-offset limit and false-throw (the old flake). The limit and
+    // the vencimento must both be read in the ISSUER's offset (default −03:00).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-14T23:00:00-03:00'));
+    try {
+      // End-of-day (issuer offset) on the boundary date: the wire dVenc equals
+      // emission date +10y, which SEFAZ accepts — an instant comparison would
+      // false-throw here.
+      const boundary = new Date('2036-07-14T23:59:00-03:00');
+      const out = __internal.buildCobrFromPagamentos([
+        pagamento({
+          valor: 100,
+          forma_de_pagamento: FORMA_PAGAMENTO.boleto_bancario,
+          duplicata: true,
+          vencimento: dateToMicros(boundary),
+        }),
+      ]);
+      expect(out?.dup?.[0]?.dVenc).toBe('2036-07-14');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('forma=90 (sem pagamento) with a stray duplicata flag → NO <cobr> block', () => {
