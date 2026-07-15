@@ -27,6 +27,10 @@ consent URL / code exchange / refresh here (no `oauth` routes, no `state.ts`).
   and acks `200` fast. Server→server (no Bearer, OUT of the `proxy.ts` CORS matcher).
 - `lib/whatsapp/{notificacao,processMessages,processStatus,waTasks}.ts` — the queue
   pipeline (see the "Inbound webhook + pipeline" section below).
+- `lib/whatsapp/outbound.ts` — the **outbound** send disposition (#529, pure +
+  trigger-agnostic): `dispatchOutbound` sends an operator/auto-reply `mensagem`
+  via the Cloud API and re-anchors it to the wamid; `sweepStaleOutbound` is the
+  stuck-`salva` backstop core. See the "Outbound sender + trigger" section below.
 - `lib/signatures/hmac.ts` — `verifyMetaSignature(rawBody, header)` + `verifyHmac`.
 - `lib/whatsapp/whatsapp.ts` — `loadWhatsappContext(db, integracaoId)`: validates the
   `integracao` doc exists and `tipo === INTEGRACAO_TIPO.whatsapp`, exposes `conta`,
@@ -117,27 +121,32 @@ ported from the legacy Flutter handler (`.old/.../whatsapp_cloud_api`). Flow:
 
 `processStatus` reads the DETERMINISTIC doc directly rather than a collection-group
 `mid` query: `conversaId = conversaDocId(contaId, senderId(displayPhone,
-status.recipient_id))`, `msgId = mensagemDocId(contaId, status.id)`. So **PR-3's
-outbound sender MUST store each sent message at
+status.recipient_id))`, `msgId = mensagemDocId(contaId, status.id)`. So the
+**outbound sender stores each sent message at
 `chat/{conversaId}/mensagem/{mensagemDocId(contaId, sendWamid)}` with
-`mid = sendWamid`** (re-anchoring the doc id to the wamid the Graph API returns). A
+`mid = sendWamid`** (re-anchoring the doc id to the wamid the Graph API returns) —
+this is exactly what `dispatchOutbound` does on a successful send (#529, live). A
 status whose message isn't found is logged + skipped (a soft miss, never a throw).
 
-### Auto-reply outbound contract for PR-3 (#529 sender trigger)
+### Auto-reply outbound contract (#529 sender trigger)
 
 Legacy SENT the daily auto-reply inline via the Graph API. This pipeline instead
-WRITES it as an OUTBOUND `mensagem` doc and lets PR-3's `onCreate` trigger send it.
-**PR-3's trigger sends any freshly-created message where**
+WRITES it as an OUTBOUND `mensagem` doc and lets the `sendOutbound` `onCreate`
+trigger send it. **The trigger sends any freshly-created message where**
 
 ```
-estadoEnvio === ESTADO_ENVIO.salva (1)  AND  tipo !== 'e' (evento)  AND  mid == null
+estadoEnvio === ESTADO_ENVIO.salva (1)  AND  tipo not in {'e','!'}  AND  mid == null
+  AND  parent conversa origem === 'whatsapp'
 ```
 
 (an operator's manual reply qualifies identically). Auto-replies are written as
 `{ estadoEnvio: salva, tipo: 'c', mid: null }`. The lifecycle EVENTS this pipeline
-writes (`nova conversa`, `reaberto`) are also `salva` but carry `tipo: 'e'`, so the
-`tipo !== 'e'` clause keeps PR-3 from sending them; inbound customer messages are
-`estadoEnvio: recebido (7)` and never match.
+writes (`nova conversa`, `reaberto`) are also `salva` but carry `tipo: 'e'` (and
+error messages `tipo: '!'`), so the `tipo` clause keeps them from being sent;
+inbound customer messages are `estadoEnvio: recebido (7)` and never match. The
+`origem === 'whatsapp'` clause is the AUTHORITATIVE channel gate: `apps/webchat`
+('site' conversas) writes its own NON-null local `mid`, but a 'site' conversa is
+excluded by the origem gate regardless of its `mid` convention.
 
 ### The `estaAberto` UTC-hour quirk (models.dart:288-308)
 
@@ -151,6 +160,56 @@ to now — a quirk that skews the comparison by the operator's timezone offset (
 `Date.UTC(...)` — reproducing the legacy decision, quirk included. Never re-derive
 the ms by hand.
 
+## Outbound sender + trigger (#529)
+
+The complement to the inbound pipeline — delivers operator replies + the daily
+auto-reply through the Cloud API. Port of `_enviarMensagensWhatsapp` +
+`markAnyMessageAsRead` (`.old/lib/chat/providers/conversaProvider.dart`).
+
+1. **`sendOutbound`** (`functions/src/sendOutbound.ts`, `onDocumentCreated` on
+   `chat/{conversaId}/mensagem/{mensagemId}`, **named `default` DB**, `retry: true`)
+   → the pure `dispatchOutbound` (`lib/whatsapp/outbound.ts`).
+2. **Disposition** (`dispatchOutbound`): cheap fast-path exits on the delivered
+   snapshot (per the send discriminator above), then loads the conversa, derives
+   `to = fromNumberFromSenderId(conversa.sender_id)` and `contaId =
+   idFromRef(conversa.integracaoOuterRef)`, builds the account's `WhatsAppClient`
+   (via `loadWhatsappContext`), sends **text** (`conteudo`) or **media**
+   (`anexoStorage` → the `Arquivo` doc's public `url` as the Cloud API `link`;
+   type from the arquivo `filetype`), then TRANSACTIONALLY re-anchors (create the
+   `mensagemDocId(contaId, wamid)` doc with the full content + `mid = wamid` +
+   `estadoEnvio = enviando` + `lastExternalUpdateDateTime = null`, delete the
+   original) so `processStatus` can locate it, and `markRead`s the newest inbound
+   (best-effort, non-fatal — one call marks the whole conversa read).
+3. **Error vs retry**: missing token / misconfigured conta / unresolvable
+   recipient / empty content / a Cloud API HTTP failure (`WhatsAppHttpError` — bad
+   request / auth / permanent) → patch the ORIGINAL doc `estadoEnvio = erro (4)` +
+   the `error` text (**terminal**, no retry — an operator resends). A **transient**
+   failure **throws** so Eventarc (`retry: true`) redelivers: a Cloud API transport
+   failure (`WhatsAppNetworkError`), a still-uploading media arquivo (create-first
+   `url == null` → `OutboundTransientError`, NOT `erro`), or a transient Firestore
+   read/write.
+4. **Idempotency + at-least-once**: the `mid != null` fast-path skips the
+   re-anchored doc when ITS create re-fires the trigger, and a **transactional
+   CLAIM** right before sending flips `estadoEnvio` salva→enviando ONLY while it is
+   still (`salva` && `mid == null`). Concurrent dispatchers (a still-retrying
+   trigger + the sweep) serialize on it: exactly ONE wins and sends; every loser
+   sees a non-`salva`/deleted doc and exits. The ONLY remaining double-**send**
+   window is a CRASH between the claim and the re-anchor — the original is left
+   `enviando`/`mid == null`, so the sweep re-drives it and that re-driven send can
+   rarely duplicate (same at-least-once tail as legacy).
+5. **`reprocessStaleOutbound`** (`functions/src/index.ts`, `onSchedule` every 15
+   min) → `sweepStaleOutbound`: **two** collection-group queries on `mensagem`
+   (`estadoEnvio == salva` and `estadoEnvio == enviando`, both `timestamp <
+   now-10min`, snapshotted up front), each re-run through the disposition
+   (non-WhatsApp conversas + already-anchored `enviando`/`mid != null` docs drop on
+   the fast-path; only `enviando`/`mid == null` crashed claims are re-driven). The
+   composite collection-group index `mensagem(estadoEnvio, timestamp)` is declared
+   in `firestore.indexes.json` (Enterprise runs it unindexed as a scan otherwise —
+   the index is a cost/latency guard).
+6. **Client**: `WhatsAppClient.sendMedia({ to, type, link, caption?, replyTo? })`
+   (`packages/integrations/whatsapp-cloud-api`) posts the media object by LINK,
+   mirroring `sendText`. Caption is omitted for audio (Graph API ignores it there).
+
 ## Status
 
 The account/token surface is **live** (`/api/whatsapp/token`, `/api/whatsapp/conta`).
@@ -159,8 +218,11 @@ including the nested Cloud Functions codebase (`functions/`) that hosts the
 `processWhatsappNotification` `onTaskDispatched` consumer + the `reprocessWhatsappNotifications`
 `onSchedule` sweep — deploy + the legacy Flutter cutover (`distribuidorWhastappCloudApi` /
 `processarNotificacoesWhatsapp`) are documented in `functions/DEPLOY.md`. The
-**outbound** sender (#529) and its `onCreate` trigger (the auto-reply/manual-reply
-contract above) follow.
+**outbound** sender (#529) is now **live**: the `sendOutbound` `onDocumentCreated`
+trigger + the `reprocessStaleOutbound` `onSchedule` backstop (both in `functions/`,
+delegating to `lib/whatsapp/outbound.ts`) — see "Outbound sender + trigger" above.
+Deploy of the new functions + the `mensagem(estadoEnvio, timestamp)` index is
+manual/coordinated (root rule #1).
 
 ## Env
 

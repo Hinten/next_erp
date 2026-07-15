@@ -17,6 +17,12 @@ export async function bundle(outfile) {
   // match or the enqueuer targets a queue that doesn't exist in this region and
   // silently drops.
   const region = process.env.FUNCTIONS_REGION || 'us-east5';
+  // Default to `default` — the repo's NAMED Firestore database. Firebase reads no
+  // env during codebase analysis, so `sendOutbound`'s `database:` binding
+  // (sendOutbound.ts) and `getDb()` (lib/admin.ts) would see `undefined` and bind
+  // to the non-existent `(default)` — the trigger then NEVER fires. Inline it like
+  // FUNCTIONS_REGION so the analyzed endpoint carries the real database id.
+  const databaseId = process.env.FIREBASE_DATABASE_ID || 'default';
   await build({
     entryPoints: [join(pkgDir, 'src/index.ts')],
     bundle: true,
@@ -27,6 +33,7 @@ export async function bundle(outfile) {
     external: ['firebase-admin', 'firebase-admin/*', 'firebase-functions', 'firebase-functions/*'],
     define: {
       'process.env.FUNCTIONS_REGION': JSON.stringify(region),
+      'process.env.FIREBASE_DATABASE_ID': JSON.stringify(databaseId),
     },
     // ESM output has no `require`, but bundled CommonJS deps may call it
     // dynamically → inject a real `require` via createRequire so those resolve.

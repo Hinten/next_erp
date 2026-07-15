@@ -43,12 +43,28 @@ The `predeploy` hook builds the artifact automatically. To inspect the bundle
 locally without deploying: `node apps/whatsapp/functions/build.mjs` (writes
 `dist/index.js`).
 
+### Firestore index for the #529 outbound sweep
+
+`reprocessStaleOutbound` runs two collection-group queries over `mensagem`
+(`estadoEnvio == salva|enviando AND timestamp < cutoff`). The composite
+collection-group index `mensagem(estadoEnvio, timestamp)` in
+`firestore.indexes.json` keeps both cost/latency-bounded (Enterprise otherwise
+full-scans). Deploy it once, coordinated (root critical rule #1 — never let a
+stray deploy push rules; use an indexes-only config or the flag below):
+
+```bash
+# from the repo root
+firebase deploy --only firestore:indexes --project <project-id>
+```
+
 ## Functions in this codebase
 
-| Export                           | Trigger                                | Purpose                                                                                                                                                                                                                                                                                                                                                                       |
-| -------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `processWhatsappNotification`    | `onTaskDispatched` (Cloud Tasks queue) | #527 — process one queued WhatsApp webhook change (resolve `Conta_Whatsapp` by `phone_number_id`, discover/create the contact, create-or-reopen the chat, attach the mensagem, auto-reply, advance status). Rate-limited + retry-with-backoff; the receiver enqueues, this runs in-process. Persists to `notificacoesWhatsapp` ONLY on retry-exhaustion / unresolved account. |
-| `reprocessWhatsappNotifications` | `onSchedule('every 30 minutes')`       | #527 — reprocess backstop for persisted `failed` notifications older than 1h (deletes on success, parks at the cap).                                                                                                                                                                                                                                                          |
+| Export                           | Trigger                                                                                            | Purpose                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------------------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `processWhatsappNotification`    | `onTaskDispatched` (Cloud Tasks queue)                                                             | #527 — process one queued WhatsApp webhook change (resolve `Conta_Whatsapp` by `phone_number_id`, discover/create the contact, create-or-reopen the chat, attach the mensagem, auto-reply, advance status). Rate-limited + retry-with-backoff; the receiver enqueues, this runs in-process. Persists to `notificacoesWhatsapp` ONLY on retry-exhaustion / unresolved account. |
+| `reprocessWhatsappNotifications` | `onSchedule('every 30 minutes')`                                                                   | #527 — reprocess backstop for persisted `failed` notifications older than 1h (deletes on success, parks at the cap).                                                                                                                                                                                                                                                          |
+| `sendOutbound`                   | `onDocumentCreated` (`chat/{conversaId}/mensagem/{mensagemId}`, named `default` DB, `retry: true`) | #529 — send one outbound `mensagem` (operator reply / daily auto-reply) via the Cloud API and re-anchor it to the wamid. Delegates to `dispatchOutbound`; a TRANSACTIONAL claim (salva→enviando) makes concurrent redelivery send exactly once. Binds the **named `default`** DB (gotcha #8) — needs `FIREBASE_DATABASE_ID` inlined at build (see build.mjs).                 |
+| `reprocessStaleOutbound`         | `onSchedule('every 15 minutes')`                                                                   | #529 — stuck-outbound backstop (`sweepStaleOutbound`): re-drives `mensagem` docs stuck in `salva` OR `enviando` (with `mid == null`, a claim that crashed pre-re-anchor) past the 10-min window, via two collection-group queries on the `mensagem(estadoEnvio, timestamp)` index.                                                                                            |
 
 ### Durability & the residual loss window
 
