@@ -113,8 +113,11 @@ export function mpPaymentToPagamento(
   // refunds — Σ refunds[].amount.
   const refunds = round2(sumAmounts((payment.refunds ?? []).map((r) => r.amount)));
 
-  // valor — the net amount retained (gross − refunds).
-  const valor = round2(valorSemJuros - refunds);
+  // valor — the net amount retained (gross − refunds), clamped at 0:
+  // over-refunds (chargeback fees, rounding across multiple partial refunds)
+  // can push Σrefunds past the gross, and `pagamentoSchema.valor` is min(0) —
+  // a negative value would fail the parse and park the whole delivery.
+  const valor = Math.max(0, round2(valorSemJuros - refunds));
 
   // tarifas — MP's take: marketplace fee + itemized fee_details + the
   // collector→mp charges (original − refunded); other account pairs are ignored.
@@ -143,8 +146,15 @@ export function mpPaymentToPagamento(
 
   const forma = MP_PAYMENT_TYPE_TO_FORMA[payment.payment_type_id ?? ''] ?? FORMA_PAGAMENTO.outros;
 
-  const parcelas = payment.installments ?? 1;
-  const aVista = !(payment.installments != null && payment.installments > 1);
+  // parcelas — MP sends `installments` as an unvalidated number; normalize to
+  // an int ≥ 1 (`pagamentoSchema.parcelas` is int().min(1)) and derive aVista
+  // from the NORMALIZED value so the two can never disagree.
+  const rawInstallments = payment.installments;
+  const parcelas =
+    typeof rawInstallments === 'number' && Number.isFinite(rawInstallments)
+      ? Math.max(1, Math.trunc(rawInstallments))
+      : 1;
+  const aVista = parcelas <= 1;
 
   // Cartao block for card payments. `bandeira` / `cnpj_instituicao` are left
   // null (no new-repo equivalent of the legacy bandeira/CPF-CNPJ mapping);

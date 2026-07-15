@@ -123,6 +123,20 @@ describe('mpPaymentToPagamento — approved + refund post-adjust', () => {
     expect(pagamento.valor).toBe(0);
   });
 
+  // Copilot review (#567): over-refunds (chargeback fees / rounding across
+  // partial refunds) can push Σrefunds past the gross — valor must clamp at 0,
+  // never go negative (pagamentoSchema.valor is min(0)).
+  it('over-refund (Σrefunds > valorSemJuros) → valor clamps to 0, still estornado', () => {
+    const { pagamento } = map({
+      status: 'approved',
+      transaction_amount: 100,
+      refunds: [{ amount: 60 }, { amount: 55 }],
+    });
+    expect(pagamento.valor).toBe(0);
+    expect(pagamento.status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
+    expect(() => pagamentoSchema.parse(pagamento)).not.toThrow();
+  });
+
   it('refund includes shipping in valorSemJuros', () => {
     // gross = 100 + 20 = 120; refund 120 → full → estornado.
     const { pagamento } = map({
@@ -219,6 +233,24 @@ describe('mpPaymentToPagamento — parcelas / aVista', () => {
     const { pagamento } = map({});
     expect(pagamento.parcelas).toBe(1);
     expect(pagamento.aVista).toBe(true);
+  });
+
+  // Copilot review (#567): installments arrives unvalidated from the wire —
+  // pagamentoSchema.parcelas is int().min(1), so the mapper must normalize.
+  it('installments 0 / negative → parcelas clamps to 1, aVista true', () => {
+    for (const bad of [0, -2]) {
+      const { pagamento } = map({ installments: bad });
+      expect(pagamento.parcelas).toBe(1);
+      expect(pagamento.aVista).toBe(true);
+      expect(() => pagamentoSchema.parse(pagamento)).not.toThrow();
+    }
+  });
+
+  it('fractional installments → truncated int, aVista from the normalized value', () => {
+    const { pagamento } = map({ installments: 2.5 });
+    expect(pagamento.parcelas).toBe(2);
+    expect(pagamento.aVista).toBe(false);
+    expect(() => pagamentoSchema.parse(pagamento)).not.toThrow();
   });
 });
 
