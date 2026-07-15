@@ -135,9 +135,10 @@ export interface WhatsappContext {
   /**
    * The Graph phone number id to send from — `conta.phoneNumberId` ONLY. Throws
    * `WhatsappContaNotConfiguredError` when it is null (the número was never
-   * filled in). Does NOT fall back to `wa_id`: despite the two fields sharing a
-   * value in practice, `wa_id` is a WhatsApp Business Account id (a different
-   * Graph node), and legacy `getPhoneNumberId()` never falls back either.
+   * filled in). Does NOT fall back to `wa_id`: per the `integracaoSchema`
+   * contract, legacy `wa_id` carries the webhook `metadata.phone_number_id`
+   * (inbound account RESOLUTION only) — it is never the id legacy hands to
+   * Graph API calls, and legacy `getPhoneNumberId()` never falls back either.
    */
   phoneNumberId(): string;
   /** Whether a permanent token is stored for this account. */
@@ -172,9 +173,10 @@ export async function loadWhatsappContext(
   // The sending number is `conta.phoneNumberId` ONLY — never a `wa_id` fallback.
   // Legacy `getPhoneNumberId()` throws when `phoneNumberId` is null and does NOT
   // fall back to `wa_id` (`.old/packages/canais_de_venda/whatsapp_cloud_api/lib/
-  // src/api_v23/api.dart:86-102`); `wa_id` is a WhatsApp Business Account id (a
-  // distinct Graph node), not the phone number id, so falling back would send
-  // to the wrong node.
+  // src/api_v23/api.dart:86-102`). `wa_id` exists for inbound webhook account
+  // RESOLUTION (it carries `metadata.phone_number_id` per the integracaoSchema
+  // contract) — it is not the id legacy passes to Graph calls, so a fallback
+  // here would encode the wrong semantics.
   const phoneNumberId = (): string => {
     const id = conta.phoneNumberId;
     if (!id) {

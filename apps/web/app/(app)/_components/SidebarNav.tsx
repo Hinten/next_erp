@@ -81,7 +81,7 @@ const NAV: NavEntry[] = [
       // NOTE: `/whatsapp` below is the chat INBOX (#528 keeps it as-is) — a
       // different screen from the config page above, gated by chat.read
       // instead of the group's configuracoes.read.
-      { href: '/whatsapp', label: 'Whatsapp', perm: PERM.chat.read },
+      { href: '/whatsapp', label: 'WhatsApp', perm: PERM.chat.read },
     ],
   },
   {

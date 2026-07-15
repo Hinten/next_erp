@@ -109,9 +109,10 @@ function HorarioFuncionamentoInput({ value, onChange, disabled, label, hint }: F
       )}
       {extraPeriodos > 0 && (
         <Text size="xs" c="dimmed" fs="italic">
-          +{extraPeriodos} período{extraPeriodos > 1 ? 's' : ''} adicion
-          {extraPeriodos > 1 ? 'ais' : 'al'} preservado{extraPeriodos > 1 ? 's' : ''} — edição
-          múltipla em breve
+          {extraPeriodos > 1
+            ? `+${extraPeriodos} períodos adicionais preservados`
+            : '+1 período adicional preservado'}{' '}
+          — edição múltipla em breve
         </Text>
       )}
       {WEEKDAYS.map(({ key, label: dayLabel }) => {
