@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { outerRefSchema } from './shared/outerRef';
+import { outerRefLooseSchema, outerRefSchema } from './shared/outerRef';
 import type { CollectionMetadata } from './types';
 
 const PERM_CONVERSA_READ = 1n << 48n;
@@ -92,42 +92,44 @@ export function podeReabrirConversa(estado: EstadoConversa): boolean {
  * shape so Flutter and Next coexist on the same docs. Outer references
  * stay opaque pass-through; UI surfaces the IDs and resolves names lazily.
  */
-export const conversaSchema = z
-  .object({
-    id: z.string().nullable().default(null),
-    sender_id: z.string().nullable().default(null),
-    estadoConversa: estadoConversaSchema.default(ESTADO_CONVERSA.naoRespondido),
-    origem: origemConversaSchema.default('site'),
+export const conversaSchema = z.object({
+  id: z.string().nullable().default(null),
+  sender_id: z.string().nullable().default(null),
+  estadoConversa: estadoConversaSchema.default(ESTADO_CONVERSA.naoRespondido),
+  origem: origemConversaSchema.default('site'),
 
-    // Outer refs — `documents/<col>/<id>` doc-path strings (Flutter ODM format).
-    usarioOuterRef: outerRefSchema.nullable().default(null),
-    integracaoOuterRef: outerRefSchema.nullable().default(null),
-    pedidoOuterRef: outerRefSchema.nullable().default(null),
-    incidenteOuterRef: outerRefSchema.nullable().default(null),
-    produtoOuterRef: outerRefSchema.nullable().default(null),
+  // Outer refs — `documents/<col>/<id>` doc-path strings (Flutter ODM format).
+  usarioOuterRef: outerRefSchema.nullable().default(null),
+  integracaoOuterRef: outerRefSchema.nullable().default(null),
+  pedidoOuterRef: outerRefSchema.nullable().default(null),
+  incidenteOuterRef: outerRefSchema.nullable().default(null),
+  produtoOuterRef: outerRefSchema.nullable().default(null),
 
-    usuarios: z.array(z.string()).nullable().default(null),
+  usuarios: z.array(z.string()).nullable().default(null),
 
-    data_cadastro: z.string().datetime().nullable().default(null),
-    ultima_modificacao: z.string().datetime().nullable().default(null),
-    ultimaModificacaoIntegracao: z.string().datetime().nullable().default(null),
-    prazo_resposta: z.string().datetime().nullable().default(null),
-    recebido_fora_atendimento: z.string().datetime().nullable().default(null),
-    recebido_durante_atendimento: z.string().datetime().nullable().default(null),
+  data_cadastro: z.string().datetime().nullable().default(null),
+  ultima_modificacao: z.string().datetime().nullable().default(null),
+  ultimaModificacaoIntegracao: z.string().datetime().nullable().default(null),
+  prazo_resposta: z.string().datetime().nullable().default(null),
+  recebido_fora_atendimento: z.string().datetime().nullable().default(null),
+  recebido_durante_atendimento: z.string().datetime().nullable().default(null),
 
-    nome: z.string().default('Conversa sem título'),
-    urlAvatar: z.string().default(''),
-    cor_etiqueta: z.number().int().nullable().default(null),
-    atendido: z.boolean().default(false),
+  nome: z.string().default('Conversa sem título'),
+  urlAvatar: z.string().default(''),
+  cor_etiqueta: z.number().int().nullable().default(null),
+  atendido: z.boolean().default(false),
 
-    externalLink: z.string().nullable().default(null),
-    internalLink: z.string().nullable().default(null),
+  externalLink: z.string().nullable().default(null),
+  internalLink: z.string().nullable().default(null),
 
-    versao: z.number().int().nullable().default(null),
-    mensagensIdMap: z.record(z.string(), z.unknown()).nullable().default(null),
-    mensagensId: z.array(z.string()).nullable().default(null),
-  })
-  .passthrough();
+  versao: z.number().int().nullable().default(null),
+  mensagensIdMap: z.record(z.string(), z.unknown()).nullable().default(null),
+  mensagensId: z.array(z.string()).nullable().default(null),
+});
+// No `.passthrough()`: every field the legacy Flutter app and the webchat
+// widget write to `chat/*` is modeled above, so unknown top-level keys are
+// stripped and — on a write through `defineCollection` — rejected (#464).
+// Reads stay tolerant regardless (`parseSoftRead` logs, never throws).
 
 export type Conversa = z.infer<typeof conversaSchema>;
 
@@ -205,29 +207,137 @@ export type TipoMensagem = z.infer<typeof tipoMensagemSchema>;
  * Mensagem — subcollection `chat/{conversaId}/mensagem`. Mirrors
  * `Mensagem extends _MensagemModel` from the Flutter atendimento package.
  */
-export const mensagemSchema = z
-  .object({
-    estadoEnvio: estadoEnvioMensagemSchema.default(ESTADO_ENVIO.salva),
-    tipo: tipoMensagemSchema.default('c'),
-    conteudo: z.string().nullable().default(null),
-    resposta: z.string().nullable().default(null),
-    canal: z.number().int().default(0),
-    usarioMensagemOuterRef: outerRefSchema.nullable().default(null),
-    user_id: z.string().nullable().default(null),
-    urlAvatar: z.string().nullable().default(null),
-    mid: z.string().nullable().default(null),
-    midGroup: z.string().nullable().default(null),
-    error: z.string().nullable().default(null),
-    visualizado: z.string().datetime().nullable().default(null),
-    transcription: z.string().nullable().default(null),
-    anexo: z.string().nullable().default(null),
-    anexoUrl: z.string().nullable().default(null),
-    // Mensagem timestamp ordering field. Flutter writes either createTime
-    // (Firestore metadata) or an explicit `timestamp` — we expect the
-    // latter when authoring from this app.
-    timestamp: z.string().datetime().nullable().default(null),
-  })
-  .passthrough();
+export const mensagemSchema = z.object({
+  estadoEnvio: estadoEnvioMensagemSchema.default(ESTADO_ENVIO.salva),
+  tipo: tipoMensagemSchema.default('c'),
+  conteudo: z.string().nullable().default(null),
+  resposta: z.string().nullable().default(null),
+  canal: z.number().int().default(0),
+  usarioMensagemOuterRef: outerRefSchema.nullable().default(null),
+  user_id: z.string().nullable().default(null),
+  urlAvatar: z.string().nullable().default(null),
+  mid: z.string().nullable().default(null),
+  midGroup: z.string().nullable().default(null),
+  error: z.string().nullable().default(null),
+  visualizado: z.string().datetime().nullable().default(null),
+  transcription: z.string().nullable().default(null),
+  anexo: z.string().nullable().default(null),
+  // Real Firestore/Flutter key is snake_case `anexo_url` (`models.g.dart`),
+  // not the camelCase `anexoUrl` this schema used before #464 — that silent
+  // mismatch meant the field was read/written under the wrong key.
+  anexo_url: z.string().nullable().default(null),
+  // Mensagem timestamp ordering field. Flutter writes either createTime
+  // (Firestore metadata) or an explicit `timestamp` — we expect the
+  // latter when authoring from this app.
+  timestamp: z.string().datetime().nullable().default(null),
+
+  /*
+   * Legacy WhatsApp/webchat-pipeline fields (`.old` atendimento models,
+   * populated by the WhatsApp Cloud API webhook pipeline). The new UI only
+   * *reads* these, never authors them, so they are modeled as `.nullish()`
+   * (wire-optional; the Flutter `toJson` omits null values) rather than the
+   * `.nullable().default(null)` convention used by the app-authored fields
+   * above. That keeps soft-reads tolerant across the WhatsApp/ML/Facebook
+   * channels and never leaks `undefined` into the app's own writes (which
+   * omit these keys entirely). Media/`Arquivo` refs use `outerRefLooseSchema`
+   * because their exact wire form (`documents/<col>/<id>` vs bare `<col>/<id>`)
+   * is not verifiable off-staging; reads stay soft regardless.
+   */
+
+  // Storage attachment (single `Arquivo` outer ref) + its caption.
+  anexoStorage: outerRefLooseSchema.nullish(),
+  anexoDescription: z.string().nullish(),
+
+  // Media sub-objects — each wraps a downloaded WhatsApp media `Arquivo`.
+  audio: z.object({ audio: outerRefLooseSchema, transcription: z.string().nullish() }).nullish(),
+  image: z
+    .object({
+      image: outerRefLooseSchema,
+      caption: z.string().nullish(),
+      ai_description: z.string().nullish(),
+    })
+    .nullish(),
+  video: z
+    .object({
+      video: outerRefLooseSchema,
+      caption: z.string().nullish(),
+      ai_description: z.string().nullish(),
+    })
+    .nullish(),
+  sticker: z
+    .object({
+      sticker: outerRefLooseSchema,
+      caption: z.string().nullish(),
+      ai_description: z.string().nullish(),
+      animated: z.boolean().nullish(),
+    })
+    .nullish(),
+  genericDocument: z
+    .object({
+      genericDocument: outerRefLooseSchema,
+      caption: z.string().nullish(),
+      ai_description: z.string().nullish(),
+    })
+    .nullish(),
+
+  // Interactive / contextual sub-objects.
+  button: z.object({ text: z.string(), payload: z.string() }).nullish(),
+  context: z
+    .object({
+      mensagemOuterRef: outerRefSchema.nullish(),
+      produto_uid: z.string().nullish(),
+      observacao: z.string().nullish(),
+      forwarded: z.boolean().nullish(),
+      frequently_forwarded: z.boolean().nullish(),
+    })
+    .nullish(),
+  reaction: z
+    .object({
+      mensagemOuterRef: outerRefSchema.nullish(),
+      emoji: z.string(),
+      observacao: z.string().nullish(),
+    })
+    .nullish(),
+  referral: z
+    .object({
+      source_url: z.string().nullish(),
+      source_type: z.string().nullish(),
+      source_id: z.string().nullish(),
+      headline: z.string().nullish(),
+      body: z.string().nullish(),
+      media_type: z.string().nullish(),
+      image_url: z.string().nullish(),
+      video_url: z.string().nullish(),
+      thumbnail_url: z.string().nullish(),
+      ctwa_clid: z.string().nullish(),
+    })
+    .nullish(),
+
+  // WhatsApp delivery errors (`errors[]`, distinct from the legacy single
+  // `error` string above).
+  errors: z
+    .array(
+      z.object({
+        code: z.number().int(),
+        title: z.string(),
+        details: z.string().nullish(),
+        error_data: z.record(z.string(), z.unknown()).nullish(),
+      }),
+    )
+    .nullish(),
+
+  // Lifecycle timestamps: `data_cadastro` set once on create;
+  // `lastExternalUpdateDateTime` tracks the last WhatsApp status webhook and
+  // guards against stale/out-of-order `estadoEnvio` transitions.
+  data_cadastro: z.string().datetime().nullish(),
+  lastExternalUpdateDateTime: z.string().datetime().nullish(),
+});
+// No `.passthrough()` (see the `conversaSchema` note): unknown top-level keys
+// are stripped, and rejected on writes through `defineCollection`. `createdAt`
+// (a raw Firestore `Timestamp` written by `apps/webchat` alongside the ISO
+// `timestamp`) is intentionally NOT modeled — it is a redundant server-write
+// companion the new UI never reads; it is soft-stripped on read and is never
+// sent through the converter, so it never trips the strict-write check.
 
 export type Mensagem = z.infer<typeof mensagemSchema>;
 
