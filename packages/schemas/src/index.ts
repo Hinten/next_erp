@@ -183,6 +183,15 @@ export {
   brandShopee,
   brandShopeeSchema,
   brandShopeeMeta,
+  // WhatsApp weekly business-hours building blocks, used by `integracaoSchema`'s
+  // `horario_funcionamento` field.
+  horarioWhatsappSchema,
+  periodoWhatsappSchema,
+  // Legacy-exact codec for `Horario_Whatsapp.abertura`/`.fechamento` — the
+  // business-hours editor (#528) and the #529 `estaAberto` port MUST use these
+  // (never re-derive the ms by hand); byte-compatible with the Flutter wire.
+  encodeHorarioMs,
+  decodeHorarioMs,
   // `credenciaisIntegracao` is intentionally NOT exported as a DomainSchema and
   // NOT registered in ALL_DOMAINS — it is an admin-only, default-deny secret
   // store (mirrors `certificadoSecreto`). Only its schema/meta/type are public.
@@ -193,11 +202,19 @@ export {
   // DomainSchema, not in ALL_DOMAINS; only its schema/meta/type are public.
   tokenDuravelSchema,
   tokenDuravelMeta,
+  // `credenciaisWhatsapp` mirrors `credenciaisIntegracao`: admin-only,
+  // default-deny WhatsApp permanent-token store — not a DomainSchema, not in
+  // ALL_DOMAINS; only its schema/meta/type are public.
+  credenciaisWhatsappSchema,
+  credenciaisWhatsappMeta,
   type Integracao,
   type IntegracaoTipo,
   type BrandShopee,
+  type HorarioWhatsapp,
+  type PeriodoWhatsapp,
   type CredenciaisIntegracao,
   type TokenDuravel,
+  type CredenciaisWhatsapp,
 } from './integracao';
 
 export {

@@ -7,9 +7,16 @@
  * a Python Cloud Function pushes them to WhatsApp. This client exists
  * for the Next-side equivalent path (e.g. the inbox replying directly
  * via the API) and remains optional during the migration.
+ *
+ * Media send/download helpers (image/video/audio/document/sticker,
+ * `markRead` for media messages, media URL resolution) land with #527;
+ * this PR only broadens the webhook parsing types (`types.ts`) and does
+ * not add behavior here.
  */
 
-const GRAPH_BASE = 'https://graph.facebook.com';
+export const GRAPH_BASE = 'https://graph.facebook.com';
+/** Default Graph API version, overridable via `WhatsAppClientConfig.graphApiVersion`. */
+export const DEFAULT_GRAPH_API_VERSION = 'v21.0';
 
 export interface WhatsAppClientConfig {
   /**
@@ -54,7 +61,7 @@ export class WhatsAppClient {
   }
 
   private get version(): string {
-    return this.cfg.graphApiVersion ?? 'v21.0';
+    return this.cfg.graphApiVersion ?? DEFAULT_GRAPH_API_VERSION;
   }
 
   async sendText(input: SendTextInput): Promise<SendResult> {

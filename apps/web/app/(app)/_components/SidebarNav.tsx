@@ -77,6 +77,10 @@ const NAV: NavEntry[] = [
       { href: '/canais/mercado-livre', label: 'Mercado Livre' },
       { href: '/canais/shopee', label: 'Shopee' },
       { href: '/canais/webchat', label: 'Webchat' },
+      { href: '/canais/whatsapp', label: 'WhatsApp' },
+      // NOTE: `/whatsapp` below is the chat INBOX (#528 keeps it as-is) — a
+      // different screen from the config page above, gated by chat.read
+      // instead of the group's configuracoes.read.
       { href: '/whatsapp', label: 'Whatsapp', perm: PERM.chat.read },
     ],
   },

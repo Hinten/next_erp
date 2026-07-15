@@ -77,6 +77,113 @@ export function pluginIdForTipo(tipo: IntegracaoTipo): string | null {
 }
 
 /**
+ * WhatsApp business-hours entry — legacy `Horario_Whatsapp`
+ * (`packages/canais_de_venda/whatsapp/lib/src/models.dart`): a single
+ * open/close pair. Both are `DateTime`, required (never null) in the Dart
+ * model — modeled here with the numeric-epoch standard (`millisSinceEpoch`).
+ */
+export const horarioWhatsappSchema = z.object({
+  abertura: millisSinceEpoch(),
+  fechamento: millisSinceEpoch(),
+});
+export type HorarioWhatsapp = z.infer<typeof horarioWhatsappSchema>;
+
+/* -------------------------------------------------------------------------- */
+/*        Horario_Whatsapp abertura/fechamento wire codec (LEGACY-EXACT)       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `Horario_Whatsapp.abertura` / `.fechamento` are NOT calendar instants — they
+ * encode a **wall-clock time of day** (hour + minute), and the exact wire value
+ * has to stay byte-compatible with the still-running legacy Flutter app that
+ * shares these `integracao` docs. Read/write it ONLY through this codec.
+ *
+ * ── Legacy contract (source of truth) ──────────────────────────────────────
+ * The legacy app anchors the time at **year 0, January 1, in the operator's
+ * LOCAL timezone**, then flattens it to `millisecondsSinceEpoch` — a huge
+ * NEGATIVE int, since year 0 precedes the Unix epoch by ~1970 years.
+ *
+ *   WRITE  (`.old/lib/whatsapp/pages/conta.dart:1011,1048`):
+ *     `DateTime(0, 1, 1, hour, minute).millisecondsSinceEpoch`
+ *     — `DateTime(...)` is Dart's LOCAL-timezone constructor; month/day are
+ *       1-based (month 1 = January).
+ *
+ *   READ, UI display  (`.old/lib/whatsapp/pages/conta.dart:1009,1014`):
+ *     `TimeOfDay.fromDateTime(DateTime.fromMillisecondsSinceEpoch(ms))`
+ *     — `.fromMillisecondsSinceEpoch` defaults to LOCAL, so `.hour`/`.minute`
+ *       hand back the SAME wall clock that was typed. The editor round-trip is
+ *       therefore **local → local**: what the operator enters is what the
+ *       legacy screen shows.
+ *
+ *   READ, business-hours check  (`.old/packages/canais_de_venda/whatsapp/lib/
+ *     src/models.dart:288-308`, `Periodo_Whatsapp.compareHoje`):
+ *     `aberturaLocalDateTime.toUtc().hour` / `.toUtc().minute`
+ *     — this SECOND reader converts to UTC first, so for an operator at UTC-3
+ *       an 08:00 stored time is compared as 11:00. That is a **legacy quirk**
+ *       (the open/close comparison is skewed by the UTC offset, and even by the
+ *       year-0 LMT sub-minute offset). We reproduce the WRITE + UI-READ contract
+ *       exactly; the wire value is the invariant. The #529 `estaAberto` port
+ *       decides how to treat compareHoje — and MUST decode via this codec, then
+ *       apply whatever UTC/local interpretation it settles on, never re-derive
+ *       the ms by hand.
+ *
+ * ── Worked example (America/Sao_Paulo, LMT −03:06:28 at year 0) ─────────────
+ *   encodeHorarioMs(8, 0)  → year0-Jan1-08:00 LOCAL → ms = −62_167_179_212_000
+ *   decodeHorarioMs(−62_167_179_212_000) → { hour: 8, minute: 0 }   (UI shows 08:00)
+ *   the same instant via Dart's compareHoje `.toUtc().hour` → 11 (:06 — the quirk)
+ * Under a UTC clock the anchor is exactly year0-Jan1-00:00Z = −62_167_219_200_000,
+ * so encodeHorarioMs(8, 0) === −62_167_190_400_000 (see the golden-vector test).
+ *
+ * ── JS pitfalls these helpers deliberately avoid ───────────────────────────
+ *  - `new Date(year, …)` maps a 0–99 year to `1900 + year`. We build at a safe
+ *    year first, then `setFullYear(0, 0, 1)` to force the TRUE year 0 / January
+ *    (JS month 0) / day 1 while keeping the local time-of-day. This reproduces
+ *    Dart's `DateTime(0, 1, 1, …)` byte-for-byte.
+ *  - Decoding MUST use the LOCAL accessors (`getHours`/`getMinutes`) to match
+ *    the legacy UI — NEVER `getUTCHours`/`getUTCMinutes`. Reading it back in UTC
+ *    (as an earlier revision did, pairing `Date.UTC(1970, …)` with a UTC read)
+ *    stores a wholly different value than legacy and is unreadable in BOTH
+ *    directions — the wire-corruption bug this codec fixes.
+ */
+export function encodeHorarioMs(hour: number, minute: number): number {
+  const d = new Date(2000, 0, 1, hour, minute, 0, 0);
+  // Force the true year 0 (Jan/1), dodging the `new Date` 0–99 → 1900+year
+  // quirk; keeps the local time-of-day set above.
+  d.setFullYear(0, 0, 1);
+  return d.getTime();
+}
+
+/**
+ * Inverse of {@link encodeHorarioMs}: read the stored ms back as a LOCAL
+ * wall-clock `{ hour, minute }` (the legacy UI's interpretation). See that
+ * function's doc comment for the full contract and the year-0/local anchoring.
+ */
+export function decodeHorarioMs(ms: number): { hour: number; minute: number } {
+  const d = new Date(ms);
+  return { hour: d.getHours(), minute: d.getMinutes() };
+}
+
+/**
+ * WhatsApp weekly business-hours period — legacy `Periodo_Whatsapp` (same
+ * file, lines ~209-337): one optional `Horario_Whatsapp` per weekday. Every
+ * key is `.nullish()` — none of the seven `@JsonKey` weekday fields set
+ * `includeIfNull: false` (unlike the top-level `horario_funcionamento` /
+ * `mensagem_*` fields on `Conta_Whatsapp`), so a day may be absent OR
+ * explicit `null` on the wire; `toJson` (`_toJsonHorario`) only emits the
+ * populated days.
+ */
+export const periodoWhatsappSchema = z.object({
+  domingo: horarioWhatsappSchema.nullish(),
+  segunda: horarioWhatsappSchema.nullish(),
+  terca: horarioWhatsappSchema.nullish(),
+  quarta: horarioWhatsappSchema.nullish(),
+  quinta: horarioWhatsappSchema.nullish(),
+  sexta: horarioWhatsappSchema.nullish(),
+  sabado: horarioWhatsappSchema.nullish(),
+});
+export type PeriodoWhatsapp = z.infer<typeof periodoWhatsappSchema>;
+
+/**
  * Integracao — collection `integracao`. Mirrors
  * `packages/canal_de_vendas/lib/src/models.dart`. Outer references
  * remain pass-through; the UI surfaces them as ids and resolves
@@ -157,6 +264,62 @@ export const integracaoSchema = z
      */
     tenant_id: z.string().nullable().default(null),
 
+    /**
+     * WhatsApp — `Conta_Whatsapp.wa_id` (string?), legacy source
+     * `packages/canais_de_venda/whatsapp/lib/src/models.dart`. NOTE: despite
+     * the name, the legacy inbound webhook pipeline resolves an account by
+     * `wa_id == metadata.phone_number_id` (the WhatsApp Cloud API webhook
+     * payload field) — so this carries the PHONE NUMBER ID, not the
+     * WhatsApp Business Account ID. Do not "fix" this; #527's inbound
+     * resolution depends on matching legacy exactly.
+     */
+    wa_id: z.string().nullable().default(null),
+    /**
+     * WhatsApp — `Conta_Whatsapp.phoneNumberId` (string?), the phone number
+     * id from the WhatsApp Business Cloud API (Meta Graph). Distinct field
+     * from `wa_id` above only in name — legacy populates both with the same
+     * value; kept as two separate fields for wire parity.
+     */
+    phoneNumberId: z.string().nullable().default(null),
+    /**
+     * WhatsApp — `Conta_Whatsapp.numero` (string, required in legacy), the
+     * connected phone number. Nullable here like every other per-channel
+     * field so non-WhatsApp `integracao` docs still parse.
+     */
+    numero: z.string().nullable().default(null),
+    /**
+     * WhatsApp — `Conta_Whatsapp.verificado` (bool?, legacy default
+     * `false`): whether the number completed the Cloud API verification
+     * flow.
+     */
+    verificado: z.boolean().nullable().default(false),
+    /**
+     * WhatsApp — `Conta_Whatsapp.mensagem_automatica` (string?, max 255):
+     * daily auto-reply sent during business hours (`horario_funcionamento`).
+     */
+    mensagem_automatica: z.string().max(255).nullable().default(null),
+    /**
+     * WhatsApp — `Conta_Whatsapp.mensagem_inatividade` (string?, max 255):
+     * daily auto-reply sent OUTSIDE business hours.
+     */
+    mensagem_inatividade: z.string().max(255).nullable().default(null),
+    /**
+     * WhatsApp — `Conta_Whatsapp.horario_funcionamento`
+     * (`List<Periodo_Whatsapp>?`): the weekly business-hours schedule.
+     * Legacy (de)serializes it as a JSON array via
+     * `_fromJsonListPeriodo`/`_toJsonListPeriodo`, one `Periodo_Whatsapp`
+     * entry per array item.
+     */
+    horario_funcionamento: z.array(periodoWhatsappSchema).nullable().default(null),
+
+    // NOTE: `Conta_Whatsapp.permanent_token` is deliberately NOT modeled here
+    // (this is a client-readable doc) — it lives in the admin-only
+    // `credenciaisWhatsapp` subcollection defined below (mirrors the
+    // `credenciais` OAuth-token pattern). The legacy PIN/SMS
+    // number-registration sub-flow (`pin` field,
+    // `RegistrarPinDialog`/`VerificarCodigoDialog` against the deprecated
+    // Graph provider) is deferred — see #528.
+
     // NOTE: Loja Integrada's `ContaLojaIntegrada.token_id` (the per-account
     // static `chave_api`) is deliberately NOT modeled as a typed field here —
     // #356 tracks moving it into the admin-only `credenciais` store below
@@ -198,8 +361,13 @@ export const integracaoMeta: CollectionMetadata = {
     delete: PERM_INTEGRACAO_DELETE,
   },
   // Deleting a channel account frees its OAuth credential subcollection,
-  // mirroring `int_frete` → `tokenMelEnv`.
-  cascade: [{ path: 'integracao/{integracaoId}/credenciais', onDelete: 'cascade' }],
+  // mirroring `int_frete` → `tokenMelEnv`. WhatsApp's permanent-token store
+  // (`credenciaisWhatsapp`) is a separate subcollection (distinct schema —
+  // not an OAuth token) and cascades the same way.
+  cascade: [
+    { path: 'integracao/{integracaoId}/credenciais', onDelete: 'cascade' },
+    { path: 'integracao/{integracaoId}/credenciaisWhatsapp', onDelete: 'cascade' },
+  ],
   // The `integracao` collection holds every channel type; each channel screen
   // (e.g. Balcão) lists a single `tipo` slice supplied via TableView's
   // `queryParams`.
@@ -352,3 +520,59 @@ export const tokenDuravelMeta: CollectionMetadata = {
   // Admin-only / default-deny — placeholder bits; NOT in `ALL_DOMAINS`.
   permissions: { read: 0n, write: 0n, delete: 0n },
 };
+
+/* -------------------------------------------------------------------------- */
+/*                  CredenciaisWhatsapp (subcollection)                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * WhatsApp permanent-token store — `integracao/{integracaoId}/credenciaisWhatsapp`.
+ * Legacy `Conta_Whatsapp.permanent_token` (a long-lived Meta Graph API token —
+ * WhatsApp Cloud API has no OAuth refresh flow, unlike the marketplace
+ * channels) is secret and must never live on the client-readable `integracao`
+ * doc, so it is split out here, mirroring the `credenciais` OAuth store above.
+ *
+ * **Admin-only / default-deny** — same rationale as `credenciaisIntegracao`:
+ * deliberately left OUT of `ALL_DOMAINS` (see the NOTE below) so rules-gen
+ * emits no match block and Firestore default-denies every client read/write.
+ * Only the Admin SDK (the inbound webhook pipeline resolving accounts by
+ * `wa_id`, #527; the outbound sender, #529) reaches it. The cascade from
+ * `integracao` runs server-side (firebase-admin) and so still frees this
+ * subcollection on delete.
+ *
+ * `phoneNumberId`/`wa_id` are denormalized here too (redundant with the flat
+ * `integracao` fields) so server-side code resolving a credential doc never
+ * needs a second, client-readable read to know which number it belongs to.
+ * The legacy PIN/SMS number-registration sub-flow (`pin` field) is deferred —
+ * see #528.
+ */
+export const credenciaisWhatsappSchema = z
+  .object({
+    permanent_token: z.string().min(1),
+    phoneNumberId: z.string().nullable().default(null),
+    wa_id: z.string().nullable().default(null),
+    createdAt: millisSinceEpoch().nullable().default(null),
+  })
+  .passthrough();
+export type CredenciaisWhatsapp = z.infer<typeof credenciaisWhatsappSchema>;
+
+export const credenciaisWhatsappMeta: CollectionMetadata = {
+  collectionPath: 'integracao/{integracaoId}/credenciaisWhatsapp',
+  // No client domain grants these bits — placeholder values. This collection
+  // is deliberately NOT registered in `ALL_DOMAINS`, so the rules generator
+  // emits no match block for it and Firestore default-denies every client
+  // read/write. Only the Admin SDK reaches the permanent token. Mirrors
+  // `credenciaisIntegracaoMeta`.
+  permissions: {
+    read: 0n,
+    write: 0n,
+    delete: 0n,
+  },
+};
+
+// NOTE: intentionally NOT exported as a `{ schema, meta }` DomainSchema and NOT
+// added to `ALL_DOMAINS` — that would make the rules generator grant clients
+// access to a live permanent token. Admin-only = default-deny (see
+// `credenciaisWhatsappMeta`, mirroring `credenciaisIntegracaoMeta`). The admin
+// collection handle consumes the path + schema directly; the server-side
+// cascade on `integracao` delete frees the subcollection without a rules block.

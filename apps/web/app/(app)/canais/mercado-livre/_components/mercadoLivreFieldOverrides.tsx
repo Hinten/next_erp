@@ -71,4 +71,11 @@ export const mercadoLivreExcludedFields = [
   'tabelasAtacado', // per-channel fields — hidden here, surfaced by their own channel screens/flows
   'selling_partner_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
   'tenant_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'wa_id', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
+  'phoneNumberId', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
+  'numero', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
+  'verificado', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
+  'mensagem_automatica', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
+  'mensagem_inatividade', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
+  'horario_funcionamento', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
 ];
