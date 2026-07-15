@@ -270,11 +270,13 @@ export const brandShopee = { schema: brandShopeeSchema, meta: brandShopeeMeta };
  * (`token6h`/`tokenDuravel`, `actokshopee`, `tokenoaut`, `tokenMagalu`); ML's
  * two tokens collapse here into one doc (`access_token` = the 6h token,
  * `refresh_token` = the durable one). The genuinely divergent per-channel
- * identity/config (`shop_id`, `tenant_id`, `selling_partner_id`) is
+ * identity/config (`shop_id` / `main_account_id` / `tabelasAtacado`,
+ * `selling_partner_id`, `tenant_id`, the Mercado Shops table refs) is
  * account-level data and lives as flat fields on the `integracao` doc
- * instead, not here; the Shopee brand cache lives in the
- * `integracao/{integracaoId}/brandshopee` subcollection (`brandShopeeSchema`
- * below). Loja Integrada's static API key (`token_id`) is the one
+ * instead, not here — see `integracaoSchema`; the Shopee brand cache lives in
+ * the `integracao/{integracaoId}/brandshopee` subcollection
+ * (`brandShopeeSchema`, defined earlier in this file). Loja Integrada's
+ * static API key (`token_id`) is the one
  * exception left to do: it is not yet ported to a typed field anywhere, and
  * #356 tracks moving it into THIS admin-only store rather than the
  * client-readable `integracao` doc.
