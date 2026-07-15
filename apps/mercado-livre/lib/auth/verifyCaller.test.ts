@@ -78,7 +78,7 @@ describe('verifyCaller', () => {
     });
   });
 
-  it('maps FirebaseAppError (admin init failure) to 500 with the app/ code', async () => {
+  it('maps FirebaseAppError to 500 with the app/ code', async () => {
     h.verifyIdToken.mockRejectedValue(
       new AppErrorCtor(AppErrorCodes.INVALID_CREDENTIAL, 'bad credential'),
     );

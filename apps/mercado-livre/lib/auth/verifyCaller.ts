@@ -51,7 +51,9 @@ export async function verifyCaller(
     // 'auth/id-token-expired') is a token-validation failure → 401.
     // FirebaseAppError (e.g. 'app/invalid-credential') means getAdminAuth()
     // failed to initialize the Admin SDK — an operational failure, not the
-    // caller's fault → 500. Anything else is unexpected: rethrow.
+    // caller's fault → 500. Everything else rethrows and surfaces as Next's
+    // unstructured 500 — including the plain Errors admin.ts throws for a
+    // missing project id or credential file.
     if (e instanceof FirebaseAuthError) {
       const code = e.code;
       console.warn(`[mercado-livre/auth] verifyIdToken rejected: ${code}`);
