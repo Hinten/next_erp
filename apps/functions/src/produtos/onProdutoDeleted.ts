@@ -13,8 +13,8 @@ import { getDb } from '../lib/admin';
  *     document ref deletes the (already-gone) doc plus its ENTIRE descendant
  *     subtree — every subcollection Firestore would otherwise orphan (`estoques`
  *     + `historicoEstoque`, `imposto`, `historicoDePrecos`, `historicoDeCusto`,
- *     `extraData`, and the marketplace links `produtomercadolivre` / `variacoesml`
- *     / `produtoshopee` / …). No name enumeration; new subcollections are swept
+ *     `extraData`, and the marketplace links `produtoMercadoLivre` / `variacaoMercadoLivre`
+ *     / `prodshopee` / …). No name enumeration; new subcollections are swept
  *     automatically. `recursiveDelete` walks subcollections regardless of whether
  *     the parent doc still exists, so it reclaims the orphans.
  *  2. **Variation children (#199).** Children are SIBLING top-level docs

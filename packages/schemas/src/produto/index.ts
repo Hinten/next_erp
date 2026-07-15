@@ -25,6 +25,10 @@ export * from './collection/historicoEstoque'; // produtos/{id}/estoques/{estId}
 export * from './collection/historicos'; // produtos/{id}/historicoDePrecos | historicoDeCusto
 export * from './collection/subcollections'; // produtos/{id}/<marketplace link docs>
 export * from './collection/mercadoLivreLink'; // typed ML link-doc write shapes (not DomainSchemas)
+export * from './collection/shopeeLink'; // typed Shopee link-doc write shapes (not DomainSchemas)
+export * from './collection/amazonLink'; // typed Amazon link-doc write shapes (not DomainSchemas)
+export * from './collection/magaluLink'; // typed Magalu link-doc write shapes (not DomainSchemas)
+export * from './collection/lojaIntegradaLink'; // typed Loja Integrada link-doc write shapes (not DomainSchemas)
 
 // === EMBEDDED value objects (nested in a collection doc; NOT collections) ===
 export * from './collection/embedded/kit'; // produto.componentesKit[*]

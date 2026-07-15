@@ -439,7 +439,7 @@ describe('findProdutoReferences', () => {
       refs: {
         p1: {
           kits: [snap('k1', null, 'Kit A')],
-          subcols: ['variacaoMercadoLivre', 'produtoshopee'],
+          subcols: ['variacaoMercadoLivre', 'prodshopee'],
         },
       },
     });

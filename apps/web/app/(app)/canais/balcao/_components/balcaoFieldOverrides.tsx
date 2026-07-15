@@ -95,6 +95,8 @@ export const balcaoFields: Record<string, FieldConfig> = {
  *  - `cpf_cnpj`, `idCadIntTran`, `modalidadeFreteImportacao` are marketplace-
  *    oriented and irrelevant for a counter register.
  *  - `dataCadastro` is stamped automatically on create.
+ *  - the per-channel account fields below (#289) are irrelevant to a counter
+ *    register — see each field's own comment.
  */
 export const balcaoExcludedFields = [
   'tipo',
@@ -102,4 +104,12 @@ export const balcaoExcludedFields = [
   'idCadIntTran',
   'modalidadeFreteImportacao',
   'dataCadastro',
+  'user_id', // latent leak (rendered as a raw number input) — per-channel field, hidden here, surfaced by their own channel screens/flows
+  'tabelaMercadoShopsOuterRef', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'tabelaMercadoShopsPromocionalOuterRef', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'shop_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'main_account_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'tabelasAtacado', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'selling_partner_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
+  'tenant_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
 ];

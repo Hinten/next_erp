@@ -13,8 +13,8 @@ each tracked by its own issue:
 
 1. **Subcollection orphans (#136).** The Flutter app's generated
    `Produto.deleteCascade` sweeps the doc's 13 known subcollections:
-   `produtoshopee`, `variacaoshopee`, `produtoamazon`, `produtoMercadoLivre`,
-   `variacaoMercadoLivre`, `produtomagalu`, `produtointegrada`, `historicopreco`,
+   `prodshopee`, `variashopee`, `prodAmazon`, `produtoMercadoLivre`,
+   `variacaoMercadoLivre`, `produtoMagalu2`, `produtolojaintegrada`, `historicopreco`,
    `historicocusto`, `produtoextradata`, `imposto`, `foto`, `estoque`. Next's
    plain delete leaves all of these as invisible orphans under
    `produtos/<deletedId>/…`.
@@ -32,7 +32,7 @@ each tracked by its own issue:
    **block** today: a produto cannot be deleted while inbound references exist —
    kit entries (`componentesKit` map keys, queryable via the
    `componentesKitKeys` array) and marketplace variation links (the parent's
-   `variacaoMercadoLivre.produtoVariacaoOuterRef`, `variacaoshopee`, Magalu/Amazon/
+   `variacaoMercadoLivre.produtoVariacaoOuterRef`, `variashopee`, Magalu/Amazon/
    Integrada equivalents). The block is correct but blunt; a proper cascade would
    let the user delete in one confirmed operation.
 
@@ -176,7 +176,7 @@ Replace the delete-block with a confirmed cascade:
    `componentesKit` map and `componentesKitKeys` array (and decide the
    empty-kit semantics).
 2. **Local marketplace variation links** — delete/unlink the parent's
-   `variacaoMercadoLivre`/`variacaoshopee`/… docs that point at the deleted child.
+   `variacaoMercadoLivre`/`variashopee`/… docs that point at the deleted child.
 3. **Remote marketplace state** — unlinking locally is not enough: the listing
    variation still exists on the channel. A real cascade needs a delist/update
    call per channel, which belongs in `apps/integrations` / Cloud Functions, not
