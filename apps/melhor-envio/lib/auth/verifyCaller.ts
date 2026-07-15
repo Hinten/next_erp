@@ -11,6 +11,8 @@
  * they deploy and log independently.
  */
 import { NextResponse } from 'next/server';
+import { FirebaseAppError } from 'firebase-admin/app';
+import { FirebaseAuthError } from 'firebase-admin/auth';
 import { PERM, hasPerm } from '@delfrance/auth';
 
 import { getAdminAuth } from '@/lib/firebase/admin';
@@ -46,18 +48,20 @@ export async function verifyCaller(
     }
     return { caller: { uid: decoded.uid, permissions: perms } };
   } catch (e) {
-    // firebase-admin throws FirebaseAuthError (an Error subclass with a
-    // string `code` like 'auth/id-token-expired'). The class isn't part of
-    // the public runtime API, so we duck-type on { code: string }. Only
-    // `auth/` codes are token-validation failures — anything else (e.g.
-    // ENOENT loading the service-account file) is an admin-init failure and
-    // must surface as 500, not 401.
-    if (e instanceof Error && typeof (e as { code?: unknown }).code === 'string') {
-      const code = (e as Error & { code: string }).code;
-      if (code.startsWith('auth/')) {
-        console.warn(`[melhor-envio/auth] verifyIdToken rejected: ${code}`);
-        return { error: authError(401, { error: `Token inválido ou expirado (${code}).`, code }) };
-      }
+    // FirebaseAuthError (`code` always 'auth/'-prefixed, e.g.
+    // 'auth/id-token-expired') is a token-validation failure → 401.
+    // FirebaseAppError (e.g. 'app/invalid-credential') means getAdminAuth()
+    // failed to initialize the Admin SDK — an operational failure, not the
+    // caller's fault → 500. Everything else rethrows and surfaces as Next's
+    // unstructured 500 — including the plain Errors admin.ts throws for a
+    // missing project id or credential file.
+    if (e instanceof FirebaseAuthError) {
+      const code = e.code;
+      console.warn(`[melhor-envio/auth] verifyIdToken rejected: ${code}`);
+      return { error: authError(401, { error: `Token inválido ou expirado (${code}).`, code }) };
+    }
+    if (e instanceof FirebaseAppError) {
+      const code = e.code;
       console.error(`[melhor-envio/auth] admin init failed: ${code} - ${e.message}`);
       return {
         error: authError(500, {
