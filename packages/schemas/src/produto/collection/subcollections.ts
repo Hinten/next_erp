@@ -64,6 +64,34 @@ export const PRODUTO_SUBCOLLECTION_DOMAINS: ReadonlyArray<DomainSchema<z.ZodType
   produtoLojaIntegrada,
 ];
 
+/*
+ * TRANSITION ONLY — expand/contract for the #289 leaf-name fix. The five
+ * guessed names below never matched anything Flutter writes, but the
+ * currently-DEPLOYED staging/production rulesets were generated with their
+ * match blocks, and the e2e suites run against the deployed staging ruleset.
+ * Keeping them registered makes the regenerated ruleset ADDITIVE (guessed +
+ * real names), so one coordinated rules deploy can land without breaking
+ * branches still generated from the old set. They are deliberately EXCLUDED
+ * from `PRODUTO_SUBCOLLECTION_DOMAINS` / `PRODUTO_SUBCOLLECTION_NAMES` so no
+ * app code ever probes them — they exist purely for the rules generator.
+ * Remove once the staging + production rulesets are deployed from this
+ * version (contract step — tracked as a follow-up on #289's PR).
+ */
+export const legacyGuessedProdutoShopee = produtoSubcollection('produtoshopee');
+export const legacyGuessedVariacaoShopee = produtoSubcollection('variacaoshopee');
+export const legacyGuessedProdutoMagalu = produtoSubcollection('produtomagalu');
+export const legacyGuessedProdutoAmazon = produtoSubcollection('produtoamazon');
+export const legacyGuessedProdutoLojaIntegrada = produtoSubcollection('produtointegrada');
+
+/** Transition-only domains (see above), spread into `ALL_DOMAINS` for rules coverage. */
+export const LEGACY_GUESSED_SUBCOLLECTION_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
+  legacyGuessedProdutoShopee,
+  legacyGuessedVariacaoShopee,
+  legacyGuessedProdutoMagalu,
+  legacyGuessedProdutoAmazon,
+  legacyGuessedProdutoLojaIntegrada,
+];
+
 /**
  * Leaf names (the segment after `produtos/{produtoId}/`). The single source
  * `apps/web` builds its `defineCollection` handles + channel labels from, so

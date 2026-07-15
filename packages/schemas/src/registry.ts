@@ -9,6 +9,7 @@ import {
   historicoEstoque,
   historicoPreco,
   historicoCusto,
+  LEGACY_GUESSED_SUBCOLLECTION_DOMAINS,
   PRODUTO_SUBCOLLECTION_DOMAINS,
 } from './produto';
 import { categoria } from './categoria';
@@ -59,6 +60,10 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   endereco,
   produto,
   ...PRODUTO_SUBCOLLECTION_DOMAINS,
+  // TRANSITION ONLY (#289 expand/contract): rules coverage for the previously
+  // deployed guessed leaf names — remove after the rules deploys (see
+  // subcollections.ts).
+  ...LEGACY_GUESSED_SUBCOLLECTION_DOMAINS,
   categoria,
   intFrete,
   tokenMelEnv,

@@ -408,7 +408,25 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
+    match /produtos/{produtoId}/produtoamazon/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+      allow create, update: if isSuperUser() || p('d_produto', 2);
+      allow delete: if isSuperUser() || p('d_produto', 4);
+    }
+
+    match /produtos/{produtoId}/produtointegrada/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+      allow create, update: if isSuperUser() || p('d_produto', 2);
+      allow delete: if isSuperUser() || p('d_produto', 4);
+    }
+
     match /produtos/{produtoId}/produtolojaintegrada/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+      allow create, update: if isSuperUser() || p('d_produto', 2);
+      allow delete: if isSuperUser() || p('d_produto', 4);
+    }
+
+    match /produtos/{produtoId}/produtomagalu/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
@@ -426,7 +444,19 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
+    match /produtos/{produtoId}/produtoshopee/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+      allow create, update: if isSuperUser() || p('d_produto', 2);
+      allow delete: if isSuperUser() || p('d_produto', 4);
+    }
+
     match /produtos/{produtoId}/variacaoMercadoLivre/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+      allow create, update: if isSuperUser() || p('d_produto', 2);
+      allow delete: if isSuperUser() || p('d_produto', 4);
+    }
+
+    match /produtos/{produtoId}/variacaoshopee/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
@@ -523,7 +553,19 @@ service cloud.firestore {
     match /{path=**}/produtoMercadoLivre/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
+    match /{path=**}/produtoamazon/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+    }
+    match /{path=**}/produtointegrada/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+    }
     match /{path=**}/produtolojaintegrada/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+    }
+    match /{path=**}/produtomagalu/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+    }
+    match /{path=**}/produtoshopee/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
     match /{path=**}/regras/{docId} {
@@ -533,6 +575,9 @@ service cloud.firestore {
       allow read: if isSuperUser() || p('d_frete', 2);
     }
     match /{path=**}/variacaoMercadoLivre/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+    }
+    match /{path=**}/variacaoshopee/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
     match /{path=**}/variashopee/{docId} {
