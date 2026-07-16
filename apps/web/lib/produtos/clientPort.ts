@@ -1,6 +1,7 @@
 import {
   type DocumentReference,
   type Firestore,
+  getDocFromServer,
   getDocsFromServer,
   writeBatch,
 } from 'firebase/firestore';
@@ -216,6 +217,26 @@ export function createClientProdutoPort(db: Firestore): ProdutoDataPort {
         ]),
       );
       return snap.docs.map((d) => toSnapshot(d.id, d.data()));
+    },
+
+    async getKitFlags(ids) {
+      // One deterministic doc read per id, in parallel (component/parent counts
+      // are small). Forced to the server for the same fail-closed reason as the
+      // guard reads: this feeds the kit-of-kit / child-of-kit validators, so a
+      // stale cache must not misclassify a kit as a non-kit. Missing docs are
+      // dropped (treated as non-kit by the resolver).
+      const unique = [...new Set(ids)];
+      const snaps = await Promise.all(
+        unique.map((id) =>
+          getDocFromServer(produtoCollection.docRef(db, {}, id) as DocumentReference),
+        ),
+      );
+      return snaps
+        .filter((s) => s.exists())
+        .map((s) => ({
+          id: s.id,
+          ehKit: (s.data() as { ehKit?: boolean } | undefined)?.ehKit === true,
+        }));
     },
 
     async subcollectionHasDocs(produtoId, subcollection) {

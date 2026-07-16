@@ -20,6 +20,7 @@ import {
   propagateKitStatusToChildren,
   propagatePrecosToChildren,
   recordPrecoHistory,
+  resolveKitGuardInputs,
   saveChildrenComponentesKit,
   saveProdutoExtraData,
 } from './usecases';
@@ -28,23 +29,35 @@ interface MemoryOpts {
   children?: ProdutoSnapshot[];
   /** Per-produto-id inbound references. */
   refs?: Record<string, { kits?: ProdutoSnapshot[]; subcols?: string[] }>;
+  /** Per-produto-id `ehKit` flag; an id absent here does not resolve to a doc. */
+  kitFlags?: Record<string, boolean>;
 }
 
 function memoryPort(opts: MemoryOpts = {}) {
   const committed: ProdutoWriteOp[][] = [];
+  const kitFlagCalls: string[][] = [];
   let n = 0;
   const port: ProdutoDataPort = {
     newId: () => `id${++n}`,
     now: () => 1000,
     getChildren: async () => opts.children ?? [],
     getKitReferences: async (id) => opts.refs?.[id]?.kits ?? [],
+    getKitFlags: async (ids) => {
+      kitFlagCalls.push(ids);
+      return ids
+        .filter((id) => opts.kitFlags?.[id] !== undefined)
+        .map((id) => ({ id, ehKit: opts.kitFlags![id]! }));
+    },
     subcollectionHasDocs: async (id, name) => (opts.refs?.[id]?.subcols ?? []).includes(name),
     commit: async (ops) => {
       committed.push(ops);
     },
   };
-  return { port, committed };
+  return { port, committed, kitFlagCalls };
 }
+
+/** A `componentesKit` entry (only the key matters to the guard resolver). */
+const kitEntry = () => ({ quantidade: 1, limitarEstoque: true, timestamp: null });
 
 const snap = (id: string, precos: ProdutoSnapshot['precos'], nome = id): ProdutoSnapshot => ({
   id,
@@ -384,6 +397,60 @@ describe('propagateKitStatusToChildren', () => {
       }),
     ).toEqual([]);
     expect(committed).toEqual([]);
+  });
+});
+
+describe('resolveKitGuardInputs (agent/MCP kit-guard resolution #479)', () => {
+  it('resolves componentKitIds to the components whose produto is itself a kit', async () => {
+    const { port } = memoryPort({ kitFlags: { compKit: true, compPlain: false } });
+    const out = await resolveKitGuardInputs(port, {
+      componentesKit: { compKit: kitEntry(), compPlain: kitEntry() },
+      paiId: null,
+    });
+    expect(out.componentKitIds).toEqual(['compKit']);
+    expect(out.parentIsKit).toBeNull();
+  });
+
+  it('resolves parentIsKit=true when the paiId parent is a kit', async () => {
+    const { port } = memoryPort({ kitFlags: { pai1: true } });
+    const out = await resolveKitGuardInputs(port, { componentesKit: null, paiId: 'pai1' });
+    expect(out.parentIsKit).toBe(true);
+    expect(out.componentKitIds).toEqual([]);
+  });
+
+  it('resolves parentIsKit=false when the paiId parent is not a kit', async () => {
+    const { port } = memoryPort({ kitFlags: { pai1: false } });
+    const out = await resolveKitGuardInputs(port, { componentesKit: null, paiId: 'pai1' });
+    expect(out.parentIsKit).toBe(false);
+  });
+
+  it('resolves parentIsKit as null (absent, not false) for a produto with no paiId', async () => {
+    const { port, kitFlagCalls } = memoryPort();
+    const out = await resolveKitGuardInputs(port, { componentesKit: null, paiId: null });
+    expect(out).toEqual({ componentKitIds: [], parentIsKit: null });
+    // No components and no parent → no doc read at all.
+    expect(kitFlagCalls).toEqual([]);
+  });
+
+  it('treats a component/parent id that resolves to no produto as a non-kit', async () => {
+    // compGone / paiGone are absent from kitFlags → not returned by getKitFlags.
+    const { port } = memoryPort({ kitFlags: { compKit: true } });
+    const out = await resolveKitGuardInputs(port, {
+      componentesKit: { compKit: kitEntry(), compGone: kitEntry() },
+      paiId: 'paiGone',
+    });
+    expect(out.componentKitIds).toEqual(['compKit']);
+    expect(out.parentIsKit).toBe(false);
+  });
+
+  it('batches all component ids + the paiId into a single getKitFlags call (deduped)', async () => {
+    const { port, kitFlagCalls } = memoryPort({ kitFlags: { a: true, b: false, pai: true } });
+    await resolveKitGuardInputs(port, {
+      componentesKit: { a: kitEntry(), b: kitEntry() },
+      paiId: 'pai',
+    });
+    expect(kitFlagCalls).toHaveLength(1);
+    expect([...kitFlagCalls[0]!].sort()).toEqual(['a', 'b', 'pai']);
   });
 });
 
