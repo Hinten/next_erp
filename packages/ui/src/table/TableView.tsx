@@ -172,10 +172,12 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
    * base filters and the user's column filters (applied in that order: base,
    * extra, column). Unlike column filters they carry no filter UI and never
    * round-trip through the URL — the page computes them (e.g. a resolved
-   * chave list for an `array-contains-any`). An entry whose value is an
-   * EMPTY array short-circuits to an empty result set WITHOUT querying (an
-   * empty candidate list means "no rows"). Ignored under `queryOverride` —
-   * that query is caller-owned.
+   * chave list for an `array-contains-any`). An `array-contains-any` entry
+   * whose value is an EMPTY array short-circuits to an empty result set
+   * WITHOUT querying (an empty candidate list means "no rows"). An array
+   * value on any OTHER op is a programmer error and throws (same guard as
+   * `buildPipeline`) rather than silently rendering an empty table. Ignored
+   * under `queryOverride` — that query is caller-owned.
    */
   extraFilters?: ReadonlyArray<PipelineFieldFilter>;
 
@@ -439,15 +441,19 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const baseFiltersSerial = useMemo(() => JSON.stringify(baseFilters), [baseFilters]);
 
   // Page-owned extra filters (see the prop jsdoc). Serialized for memo deps
-  // so callers needn't memoize the array. An entry whose value is an EMPTY
-  // array (e.g. an `array-contains-any` whose candidate list resolved to
-  // nothing) means "no rows" — short-circuit instead of querying, mirroring
-  // `lookupEmpty`. Under `queryOverride` the extras (and the short-circuit)
+  // so callers needn't memoize the array. An `array-contains-any` entry whose
+  // candidate list resolved to nothing means "no rows" — short-circuit instead
+  // of querying, mirroring `lookupEmpty`. Scoped to that op on purpose: an
+  // empty array on any other op is a programmer error that must reach the
+  // `buildPipeline` guard (or the fallback guard below) and throw, not render
+  // an empty table. Under `queryOverride` the extras (and the short-circuit)
   // don't apply: that query is caller-owned.
   const extraFiltersSerial = useMemo(() => JSON.stringify(extraFilters ?? null), [extraFilters]);
   const extraEmpty =
     !queryOverride &&
-    (extraFilters ?? []).some((f) => Array.isArray(f.value) && f.value.length === 0);
+    (extraFilters ?? []).some(
+      (f) => f.op === 'array-contains-any' && Array.isArray(f.value) && f.value.length === 0,
+    );
 
   // Sort actually issued to Firestore: an explicit user/prop sort wins;
   // otherwise the declared default `orderBy` (full array — supports multi-key
@@ -577,6 +583,14 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // callers must truncate); `contains`/`startsWith` have no classic
     // equivalent, so extra filters using them are pipeline-only by contract.
     for (const f of extraFilters ?? []) {
+      // Mirror `buildPipeline`'s guard: only `array-contains-any` takes a
+      // list. Surfacing the error beats silently querying nonsense.
+      if (f.op !== 'array-contains-any' && Array.isArray(f.value)) {
+        throw new Error(
+          `TableView: extraFilters op "${f.op}" on "${f.field}" received an array ` +
+            `value; only "array-contains-any" accepts a list.`,
+        );
+      }
       switch (f.op) {
         case 'eq':
           constraints.push(whereEqual(f.field, f.value));

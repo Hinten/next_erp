@@ -432,6 +432,49 @@ describe('TableView', () => {
       expect(whereArrayContainsSpy).toHaveBeenCalledWith('targetsChnfe', 'X');
       expect(whereOpSpy).toHaveBeenCalledWith('targetsChnfe', 'array-contains-any', ['a', 'b']);
     });
+
+    it('an empty array on a non-array-contains-any op does NOT short-circuit', () => {
+      // The "no rows" shortcut is scoped to array-contains-any candidate
+      // lists; an empty array on eq must reach buildPipeline so its runtime
+      // guard surfaces the programmer error instead of an empty table.
+      buildPipelineSpy.mockClear();
+      wrap(
+        <TableView
+          schema={testSchema}
+          collection={fakeCollection()}
+          db={{} as never}
+          extraFilters={[{ field: 'nome', op: 'eq', value: [] }]}
+        />,
+      );
+      expect(buildPipelineSpy).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          filters: expect.arrayContaining([{ field: 'nome', op: 'eq', value: [] }]),
+        }),
+      );
+      expect(screen.queryByText('Nenhum resultado.')).toBeNull();
+    });
+
+    it('classic fallback throws on an array value for a scalar op', () => {
+      pipelineSupportedRef.current = false;
+      // React re-logs render-phase throws via console.error — silence it so
+      // the expected failure doesn't pollute the test output.
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        expect(() =>
+          wrap(
+            <TableView
+              schema={testSchema}
+              collection={fakeCollection()}
+              db={{} as never}
+              extraFilters={[{ field: 'nome', op: 'eq', value: ['a'] }]}
+            />,
+          ),
+        ).toThrow(/received an array value/);
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
   });
 
   describe('meta.defaultQuery', () => {
