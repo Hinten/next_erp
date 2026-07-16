@@ -545,7 +545,10 @@ export async function resolveKitGuardInputs(
   args: { componentesKit?: ComponentesKit | null; paiId?: string | null },
 ): Promise<ResolvedKitGuards> {
   const componentIds = Object.keys(args.componentesKit ?? {});
-  const paiId = args.paiId ?? null;
+  // `|| null` (not `?? null`): a top-level produto's "no parent" may arrive as
+  // null OR an empty string; both must resolve `parentIsKit` to null (absent),
+  // never false — the guard (#298) must not misfire on a parent produto.
+  const paiId = args.paiId || null;
   if (componentIds.length === 0 && paiId === null) {
     return { componentKitIds: [], parentIsKit: null };
   }

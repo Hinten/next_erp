@@ -432,6 +432,13 @@ describe('resolveKitGuardInputs (agent/MCP kit-guard resolution #479)', () => {
     expect(kitFlagCalls).toEqual([]);
   });
 
+  it('treats an empty-string paiId as "no parent" (parentIsKit null, no read)', async () => {
+    const { port, kitFlagCalls } = memoryPort();
+    const out = await resolveKitGuardInputs(port, { componentesKit: null, paiId: '' });
+    expect(out.parentIsKit).toBeNull();
+    expect(kitFlagCalls).toEqual([]);
+  });
+
   it('treats a component/parent id that resolves to no produto as a non-kit', async () => {
     // compGone / paiGone are absent from kitFlags → not returned by getKitFlags.
     const { port } = memoryPort({ kitFlags: { compKit: true } });
