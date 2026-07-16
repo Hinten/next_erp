@@ -33,10 +33,14 @@ import type { CollectionMetadata } from './types';
  * about, when applicable — absent on changes with no single message subject
  * (e.g. account review / template status updates).
  *
- * SECURITY: same posture as the MP log — this schema only stores the
- * webhook's own pointer fields for dead-lettering / reprocessing, not a
- * verified payload. Signature verification (`X-Hub-Signature-256`) happens
- * at the receiver before enqueueing.
+ * SECURITY: unlike the MP log (pointer fields only — MP content is re-FETCHED
+ * from the API on reprocess), WhatsApp has no re-fetch anchor: the message
+ * content exists only in the webhook body, so a failure doc also CARRIES the
+ * raw change `value` (rides the `.passthrough()`) for the sweep to replay.
+ * That value was signature-verified (`X-Hub-Signature-256`) by the receiver
+ * before enqueueing/persisting, and the sweep re-parses it against
+ * `valuePayloadSchema` before processing. The collection is admin-only /
+ * default-deny (below), so no client can ever read the replayed payload.
  *
  * Admin-only / default-deny: bare `{ schema, meta }` (perms `0n`), NOT
  * registered in `ALL_DOMAINS` (like `credenciaisWhatsapp` /

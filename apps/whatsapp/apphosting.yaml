@@ -2,8 +2,11 @@
 # API-only service for the WhatsApp Business Cloud API channel: per-account
 # permanent-token storage (POST/DELETE /api/whatsapp/token), the connected-number
 # status route (GET /api/whatsapp/conta), and the inbound webhook receiver +
-# pipeline (GET|POST /api/webhooks/whatsapp, #527). The outbound sender (#529) and
-# the nested Cloud Functions consumer (processWhatsappNotification) land in later PRs.
+# pipeline (GET|POST /api/webhooks/whatsapp, #527). Heavy work runs in the NESTED
+# Cloud Functions codebase (`functions/` — the processWhatsappNotification queue
+# consumer + the scheduled reprocess sweeps), deployed separately from this
+# backend — see functions/DEPLOY.md. The outbound sender (#529) lands in the next
+# PR of the stack.
 runConfig:
   cpu: 1
   memoryMiB: 512
