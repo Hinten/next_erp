@@ -249,6 +249,9 @@ export const pedidoMeta: CollectionMetadata = {
     { path: 'pedidos/{pedidoId}/nfev4', onDelete: 'cascade' },
   ],
   defaultQuery: {
+    // Direction slice: one collection serves both /pedidos (saídas) and
+    // /pedidos/entradas — each list binds `ehSaida` via TableView queryParams.
+    where: [{ field: 'ehSaida', param: true }],
     orderBy: [{ field: 'numero', direction: 'desc' }],
     limit: 50,
   },
