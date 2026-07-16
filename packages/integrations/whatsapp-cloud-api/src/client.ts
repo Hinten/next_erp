@@ -126,6 +126,24 @@ export interface SendMediaInput {
   replyTo?: string;
 }
 
+/**
+ * Outbound TEMPLATE message — a pre-approved Meta message template, the only
+ * shape allowed to RE-OPEN a conversation outside the 24-hour customer-service
+ * window. Ported from legacy `WhatsAppMessage.createTemplateMessage`
+ * (`.old/.../api_v23/message.dart:125`) + `enviarMensagemPadraoWhatsapp`
+ * (`.old/lib/whatsapp/providers/provider.dart:150-161`).
+ */
+export interface SendTemplateInput {
+  to: string;
+  /** The approved template's name (e.g. `reabertura_conversa`). */
+  templateName: string;
+  /**
+   * The template's language/locale code (Graph `language.code`). Defaults to
+   * `pt_BR` — the only locale the legacy `reabertura_conversa` template uses.
+   */
+  languageCode?: string;
+}
+
 export interface SendResult {
   messageId: string;
 }
@@ -257,6 +275,52 @@ export class WhatsAppClient {
     const id = json.messages?.[0]?.id;
     if (!id) {
       throw new WhatsAppHttpError('sendMedia', res.status, 'response missing messages[0].id');
+    }
+    return { messageId: id };
+  }
+
+  /**
+   * Send an outbound TEMPLATE message — the only message shape allowed to
+   * re-open a conversation past the 24h customer-service window. Mirrors
+   * {@link sendText}'s POST + error handling; the body carries `recipient_type:
+   * 'individual'` and a `template: { name, language: { code } }` block. Ported
+   * byte-for-byte from legacy `enviarMensagemPadraoWhatsapp`
+   * (`.old/lib/whatsapp/providers/provider.dart:150-161`) and
+   * `WhatsAppMessage.createTemplateMessage`
+   * (`.old/.../api_v23/message.dart:125`). Returns the wamid Meta assigns so the
+   * caller can re-anchor the mensagem doc for the #527 status pipeline.
+   */
+  async sendTemplate(input: SendTemplateInput): Promise<SendResult> {
+    const body: Record<string, unknown> = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: input.to,
+      type: 'template',
+      template: {
+        name: input.templateName,
+        language: { code: input.languageCode ?? 'pt_BR' },
+      },
+    };
+    const res = await this.doFetch(
+      'sendTemplate',
+      `${GRAPH_BASE}/${this.version}/${this.cfg.phoneNumberId}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${this.cfg.accessToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new WhatsAppHttpError('sendTemplate', res.status, text);
+    }
+    const json = (await res.json()) as { messages?: Array<{ id: string }> };
+    const id = json.messages?.[0]?.id;
+    if (!id) {
+      throw new WhatsAppHttpError('sendTemplate', res.status, 'response missing messages[0].id');
     }
     return { messageId: id };
   }

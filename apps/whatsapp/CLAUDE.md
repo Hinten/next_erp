@@ -35,6 +35,10 @@ consent URL / code exchange / refresh here (no `oauth` routes, no `state.ts`).
 - `app/api/whatsapp/health` — `PERM.integracao.read`. **GET** `?integracaoId=` →
   the account-health aggregation (`lib/whatsapp/health.ts`) behind the "Saúde da
   conta" card. See the "PIN registration + account health" section below.
+- `app/api/whatsapp/template-message` — `PERM.chat.write` (bit 49). **POST**
+  `{ conversaId }` sends the standard "reabertura de conversa" template
+  (`reabertura_conversa`) to a WhatsApp conversa and records it as an outbound
+  `mensagem`. See the "Template message (mensagem padrão)" section below.
 - `app/api/webhooks/whatsapp` — the inbound webhook receiver (#527). **GET** is
   Meta's verify handshake (`hub.mode`/`hub.verify_token`/`hub.challenge`); **POST**
   verifies the `X-Hub-Signature-256` HMAC over the raw body, then enqueues one lean
@@ -243,6 +247,37 @@ auto-reply through the Cloud API. Port of `_enviarMensagensWhatsapp` +
    (`packages/integrations/whatsapp-cloud-api`) posts the media object by LINK,
    mirroring `sendText`. Caption is omitted for audio (Graph API ignores it there).
 
+## Template message (mensagem padrão) (#PR-C4)
+
+`app/api/whatsapp/template-message` ports legacy `addMensagemPadraoWhatsapp`
+(`.old/lib/chat/providers/conversaProvider.dart:1015-1042`): the inbox's "Enviar
+mensagem padrão" action. A **template** is the only message shape Meta allows
+OUTSIDE the 24h customer-service window, so this is a separate route rather than
+a plain outbound text (the composer's `salva`/`mid: null` write would be rejected
+by the 24h rule when the window has closed). It gates on `PERM.chat.write` (bit
+49); the `mensagem` doc is written server-side with the Admin SDK, so
+`PERM.mensagem.write` (bit 52) would ALSO be defensible — `chat.write` is chosen
+because the action is a conversa-level operation surfaced from the conversa
+header. The client method is `WhatsAppClient.sendTemplate({ to, templateName,
+languageCode='pt_BR' })` (`packages/integrations/whatsapp-cloud-api`), mirroring
+`sendText`; the wire body carries `recipient_type: 'individual'` + `template: {
+name, language: { code } }` (byte-for-byte legacy parity).
+
+**Send-then-write (PRE-ANCHORED).** The template is sent FIRST, THEN the mensagem
+is written directly at `mensagemDocId(contaId, wamid)` carrying `mid = wamid` +
+`estadoEnvio = enviando` — the SAME re-anchored shape `dispatchOutbound` produces,
+written up front. Writing the mensagem FIRST (as a plain `salva`/`mid: null`
+text) would race the #529 `sendOutbound` trigger into a SECOND, duplicate send
+(the trigger sends any `salva` + `tipo` not in `{e,!}` + `mid == null` +
+whatsapp-origem doc). Anchoring to the wamid excludes it from that discriminator,
+and lets the #527 status pipeline (`processStatus`, keyed on `mensagemDocId(contaId,
+status.id)`) locate the delivery callback. `ALREADY_EXISTS` (gRPC 6) on the
+`create` = a redelivery already wrote the doc → treated as ok (idempotent). A
+Graph-OK but write-FAIL is logged loudly and returns **502** `WA_TEMPLATE_WRITE_FAILED`
+(the template WAS delivered — not the caller's fault). The trailing
+converter-stripped conversa bump (`ultima_modificacao`) is best-effort (a failed
+ordering bump doesn't fail the request, since the message already landed).
+
 ## PIN registration + account health
 
 Ports the legacy PIN/SMS number-registration sub-flow
@@ -294,7 +329,9 @@ including the nested Cloud Functions codebase (`functions/`) that hosts the
 trigger + the `reprocessStaleOutbound` `onSchedule` backstop (both in `functions/`,
 delegating to `lib/whatsapp/outbound.ts`) — see "Outbound sender + trigger" above.
 Deploy of the new functions + the `mensagem(estadoEnvio, timestamp)` index is
-manual/coordinated (root rule #1).
+manual/coordinated (root rule #1). The **template message** route
+(`/api/whatsapp/template-message`, #PR-C4) is now **live** — see the "Template
+message (mensagem padrão)" section.
 
 ## Env
 

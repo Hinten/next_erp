@@ -185,6 +185,85 @@ describe('WhatsAppClient.sendMedia', () => {
   });
 });
 
+describe('WhatsAppClient.sendTemplate', () => {
+  it('POSTs the legacy template wire shape and returns the message id', async () => {
+    const fetcher = fakeFetch([{ status: 200, body: { messages: [{ id: 'wamid.tpl' }] } }]);
+    const client = new WhatsAppClient({
+      phoneNumberId: '111',
+      accessToken: 'tk',
+      fetch: fetcher as unknown as typeof fetch,
+    });
+    const out = await client.sendTemplate({
+      to: '5511999990000',
+      templateName: 'reabertura_conversa',
+    });
+    expect(out.messageId).toBe('wamid.tpl');
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const [url, init] = fetcher.mock.calls[0]!;
+    expect(String(url)).toMatch(/\/v\d+\.\d+\/111\/messages$/);
+    expect(init?.method).toBe('POST');
+    const body = JSON.parse(String(init?.body));
+    // Byte-for-byte the legacy `enviarMensagemPadraoWhatsapp` body: default pt_BR.
+    expect(body).toEqual({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: '5511999990000',
+      type: 'template',
+      template: { name: 'reabertura_conversa', language: { code: 'pt_BR' } },
+    });
+  });
+
+  it('honors an explicit languageCode', async () => {
+    const fetcher = fakeFetch([{ status: 200, body: { messages: [{ id: 'wamid.en' }] } }]);
+    const client = new WhatsAppClient({
+      phoneNumberId: '111',
+      accessToken: 'tk',
+      fetch: fetcher as unknown as typeof fetch,
+    });
+    await client.sendTemplate({ to: '55', templateName: 'hello_world', languageCode: 'en_US' });
+    const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body));
+    expect(body.template).toEqual({ name: 'hello_world', language: { code: 'en_US' } });
+  });
+
+  it('throws WhatsAppHttpError on a non-2xx response', async () => {
+    const fetcher = fakeFetch([{ status: 400, body: { error: { message: 'template paused' } } }]);
+    const client = new WhatsAppClient({
+      phoneNumberId: '111',
+      accessToken: 'tk',
+      fetch: fetcher as unknown as typeof fetch,
+    });
+    await expect(
+      client.sendTemplate({ to: '55', templateName: 'reabertura_conversa' }),
+    ).rejects.toBeInstanceOf(WhatsAppHttpError);
+  });
+
+  it('throws when the response is missing messages[0].id', async () => {
+    const fetcher = fakeFetch([{ status: 200, body: {} }]);
+    const client = new WhatsAppClient({
+      phoneNumberId: '111',
+      accessToken: 'tk',
+      fetch: fetcher as unknown as typeof fetch,
+    });
+    await expect(
+      client.sendTemplate({ to: '55', templateName: 'reabertura_conversa' }),
+    ).rejects.toThrow(/messages\[0\]\.id/);
+  });
+
+  it('wraps a transport failure in WhatsAppNetworkError', async () => {
+    const fetcher = vi.fn(async () => {
+      throw new Error('ECONNRESET');
+    });
+    const client = new WhatsAppClient({
+      phoneNumberId: '111',
+      accessToken: 'tk',
+      fetch: fetcher as unknown as typeof fetch,
+    });
+    await expect(
+      client.sendTemplate({ to: '55', templateName: 'reabertura_conversa' }),
+    ).rejects.toBeInstanceOf(WhatsAppNetworkError);
+  });
+});
+
 describe('WhatsAppClient.getMediaData', () => {
   it('GETs /{mediaId} with the Bearer header and parses the metadata', async () => {
     const fetcher = fakeFetch([
