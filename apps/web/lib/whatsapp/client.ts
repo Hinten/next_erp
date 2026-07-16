@@ -68,6 +68,27 @@ export interface WhatsappConta {
   phone: { display_phone_number: string | null; verified_name: string | null } | null;
 }
 
+/** One check row of the account-health response (`GET /api/whatsapp/health`). */
+export interface WhatsappHealthCheck {
+  id: string;
+  status: 'ok' | 'warn' | 'fail' | 'skip';
+  label: string;
+  detail: string | null;
+  hint: string | null;
+}
+
+/**
+ * The account-health aggregation as returned by `GET /api/whatsapp/health`
+ * (`apps/whatsapp/lib/whatsapp/health.ts`). `canReceive` is tri-state: `null`
+ * when it can't be determined (e.g. no WABA id to check the subscription).
+ */
+export interface WhatsappHealth {
+  generatedAt: number;
+  canSend: boolean;
+  canReceive: boolean | null;
+  checks: WhatsappHealthCheck[];
+}
+
 export interface WhatsappClient {
   /** Connection status: the Cloud API phone-number identity or `connected: false`. */
   conta(integracaoId: string): Promise<WhatsappConta>;
@@ -79,6 +100,16 @@ export interface WhatsappClient {
   setToken(integracaoId: string, token: string): Promise<void>;
   /** Revoke the stored permanent token (PERM.integracao.write). */
   revokeToken(integracaoId: string): Promise<void>;
+  /** Request a 6-digit verification code via SMS/VOICE (PERM.integracao.write). */
+  requestCode(integracaoId: string, metodo: 'SMS' | 'VOICE'): Promise<void>;
+  /** Confirm the 6-digit code; flags the account verified (PERM.integracao.write). */
+  verifyCode(integracaoId: string, codigo: string): Promise<void>;
+  /** Register the number with its 6-digit PIN (PERM.integracao.write). */
+  registerNumber(integracaoId: string, pin: string): Promise<void>;
+  /** Deregister the number, keeping the stored PIN (PERM.integracao.write). */
+  deregisterNumber(integracaoId: string): Promise<void>;
+  /** Account-health aggregation for the "Saúde da conta" card (PERM.integracao.read). */
+  health(integracaoId: string): Promise<WhatsappHealth>;
 }
 
 export function createWhatsappClient(config: {
@@ -150,6 +181,32 @@ export function createWhatsappClient(config: {
         `/api/whatsapp/token?integracaoId=${encodeURIComponent(integracaoId)}`,
       );
     },
+    requestCode: async (integracaoId, metodo) => {
+      await call<{ ok: boolean }>('POST', '/api/whatsapp/verificacao/solicitar', {
+        integracaoId,
+        metodo,
+      });
+    },
+    verifyCode: async (integracaoId, codigo) => {
+      await call<{ ok: boolean }>('POST', '/api/whatsapp/verificacao/confirmar', {
+        integracaoId,
+        codigo,
+      });
+    },
+    registerNumber: async (integracaoId, pin) => {
+      await call<{ ok: boolean }>('POST', '/api/whatsapp/registro', { integracaoId, pin });
+    },
+    deregisterNumber: async (integracaoId) => {
+      await call<{ ok: boolean }>(
+        'DELETE',
+        `/api/whatsapp/registro?integracaoId=${encodeURIComponent(integracaoId)}`,
+      );
+    },
+    health: (integracaoId) =>
+      call<WhatsappHealth>(
+        'GET',
+        `/api/whatsapp/health?integracaoId=${encodeURIComponent(integracaoId)}`,
+      ),
   };
 }
 

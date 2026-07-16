@@ -10,6 +10,7 @@ import { ObjectView } from '@delfrance/ui';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
+import { ContaWhatsappHealth } from '../_components/ContaWhatsappHealth';
 import { ContaWhatsappPanel } from '../_components/ContaWhatsappPanel';
 import { whatsappExcludedFields, whatsappFields } from '../_components/whatsappFieldOverrides';
 
@@ -35,6 +36,8 @@ export default function ContaWhatsappPage() {
       </Group>
 
       <ContaWhatsappPanel integracaoId={params.id} />
+
+      <ContaWhatsappHealth integracaoId={params.id} />
 
       <ObjectView
         schema={integracaoSchema}

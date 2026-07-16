@@ -20,6 +20,21 @@ consent URL / code exchange / refresh here (no `oauth` routes, no `state.ts`).
   Graph phone-number lookup (`display_phone_number` / `verified_name`) when a token
   is stored; `{ connected: false }` when there is no token or Graph rejects it
   (401 / error code 190). The token is never returned.
+- `app/api/whatsapp/verificacao/solicitar` — `PERM.integracao.write`. **POST**
+  `{ integracaoId, metodo: 'SMS' | 'VOICE' }` → requests a 6-digit verification
+  code for the number (`request_code`). `{ ok: true }`.
+- `app/api/whatsapp/verificacao/confirmar` — `PERM.integracao.write`. **POST**
+  `{ integracaoId, codigo }` → verifies the code (`verify_code`); on success flags
+  the account `verificado: true` (Admin SDK merge). `{ ok: true, verificado: true }`.
+- `app/api/whatsapp/registro` — `PERM.integracao.write`. **POST** `{ integracaoId,
+  pin? }` registers the number (`register`); an explicit 6-digit `pin` wins,
+  otherwise the stored pin is reused (re-register). The pin is persisted into the
+  admin-only `credenciaisWhatsapp` doc and **never echoed/logged/in a URL**.
+  **DELETE** `?integracaoId=` deregisters (`deregister`), keeping the stored pin.
+  `{ ok: true }`.
+- `app/api/whatsapp/health` — `PERM.integracao.read`. **GET** `?integracaoId=` →
+  the account-health aggregation (`lib/whatsapp/health.ts`) behind the "Saúde da
+  conta" card. See the "PIN registration + account health" section below.
 - `app/api/webhooks/whatsapp` — the inbound webhook receiver (#527). **GET** is
   Meta's verify handshake (`hub.mode`/`hub.verify_token`/`hub.challenge`); **POST**
   verifies the `X-Hub-Signature-256` HMAC over the raw body, then enqueues one lean
@@ -40,8 +55,22 @@ consent URL / code exchange / refresh here (no `oauth` routes, no `state.ts`).
 - `lib/whatsapp/credentialStore.ts` — the single-token store over the admin-only
   `integracao/{id}/credenciaisWhatsapp` subcollection (fixed `current` doc; strays
   deleted on save; `revoke()` clears it). Mirrors apps/mercado-pago's `credentialStore`.
+  `save()` **carries a previously-stored `pin` forward** when the incoming cred
+  has none (`pin == null`) — so a bare token replacement (the `token` POST route)
+  never wipes the two-step registration PIN; an explicit pin (the `registro`
+  route) always wins.
+- `lib/whatsapp/health.ts` — the account-health aggregator (`buildWhatsappHealth`):
+  a single phone-node probe (`getPhoneNumberStatus` → token / phone_status /
+  quality / code_verification) plus webhook, inbound, and failed-notification
+  checks, folded into check rows + `canSend` / `canReceive` verdicts. Every probe
+  failure is a check row, never a route throw.
 - `lib/whatsapp/respond.ts` — the error → HTTP mapper (`TokenMissing` /
-  `TokenInvalid` → 409 reauth; `ContaNotConfigured` → 404; `Graph` → 502).
+  `TokenInvalid` → 409 reauth; `ContaNotConfigured` → 404; app-local `Graph` → 502).
+  It also maps the client's `WhatsAppHttpError` / `WhatsAppNetworkError` (from the
+  PIN/verify/register/status calls): upstream 401 or Graph code 190 → 409
+  `WA_REAUTH_REQUIRED`; code 133016 (register cap) → 429 `WA_RATE_LIMIT`; upstream
+  400 → 400 with `error_user_msg ?? message`; other HTTP → 502 `WA_GRAPH_ERROR`;
+  network → 502.
 - `lib/{auth,firebase}` — per-app copies of the shared helpers (each backend keeps
   its own so they deploy + log independently).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
@@ -56,12 +85,16 @@ consent URL / code exchange / refresh here (no `oauth` routes, no `state.ts`).
 3. **All Firestore access via `@delfrance/data/admin/collections` handles** —
    raw `.collection()`/`.doc()`/`.collectionGroup()` is lint-banned (except the
    `lib/firebase/admin.ts` singleton).
-4. **The permanent token never reaches the browser.** It lives only in the
-   admin-only `integracao/{id}/credenciaisWhatsapp` subcollection (default-deny;
-   only the Admin SDK reaches it). Do **not** log it, echo it in a response, or
-   put it in a URL/query string — the POST body is the only place it appears, and
-   only inbound. Never copy the hardcoded legacy `access_token`/`phone_id` from
-   `.old/lib/whatsapp/providers/provider.dart`.
+4. **The permanent token AND the two-step PIN never reach the browser.** Both live
+   only in the admin-only `integracao/{id}/credenciaisWhatsapp` subcollection
+   (default-deny; only the Admin SDK reaches it) — the PIN as `credenciaisWhatsapp.pin`,
+   NEVER on the client-readable `integracao` doc (legacy stored it there in
+   plaintext; we do not — the old `integracao.pin` field is gone). Do **not** log
+   either secret, echo it in a response, or put it in a URL/query string — the POST
+   body is the only place they appear, and only inbound. The `register` client
+   call keeps the pin out of any error (its `WhatsAppHttpError` carries the
+   RESPONSE body only). Never copy the hardcoded legacy `access_token`/`phone_id`
+   from `.old/lib/whatsapp/providers/provider.dart`.
 5. **CORS** is handled by `proxy.ts` (Next 16 middleware) for `/api/whatsapp/*`
    only.
 
@@ -210,9 +243,48 @@ auto-reply through the Cloud API. Port of `_enviarMensagensWhatsapp` +
    (`packages/integrations/whatsapp-cloud-api`) posts the media object by LINK,
    mirroring `sendText`. Caption is omitted for audio (Graph API ignores it there).
 
+## PIN registration + account health
+
+Ports the legacy PIN/SMS number-registration sub-flow
+(`RegistrarPinDialog`/`VerificarCodigoDialog`, `.old/lib/whatsapp/pages/conta.dart`)
+plus a new health surface. The six new client methods
+(`requestVerificationCode` / `verifyCode` / `register` / `deregister` /
+`getPhoneNumberStatus` / `getSubscribedApps`) live in
+`packages/integrations/whatsapp-cloud-api` on Graph **v23.0**; this app's routes
+stay thin and map errors through `respond.ts`.
+
+**Registration flow (operator, from the panel):**
+
+1. `verificacao/solicitar` → Graph `request_code` sends a 6-digit code (SMS/VOICE).
+2. `verificacao/confirmar` → Graph `verify_code`; on success the account is flagged
+   `verificado: true` (Admin SDK).
+3. `registro` (POST) → Graph `register` with the 6-digit `pin`. Meta requires the
+   **SAME pin** to re-register once 2FA is set, so the pin is persisted in
+   `credenciaisWhatsapp.pin` and reused when the POST body omits it. `registro`
+   (DELETE) → Graph `deregister`, keeping the stored pin.
+
+**Account health (`lib/whatsapp/health.ts`, `GET /api/whatsapp/health`):** a
+best-effort aggregation — EVERY probe failure is a check ROW, never a route throw
+(only a missing / non-WhatsApp account 404s). Checks: `token`, `phone_status`,
+`quality`, `code_verification` (self-heals `verificado` when Graph says VERIFIED
+but the doc lags), `webhook_subscription` (needs `integracao.waba_id` — the TRUE
+WABA id, distinct from `wa_id`, which is the `phone_number_id`), `webhook_secret`
+(env PRESENCE of `WHATSAPP_APP_SECRET` + `WHATSAPP_VERIFY_TOKEN`, never the
+values), `inbound_recent` (newest `chat` conversa by `ultimaModificacaoIntegracao`,
+now an ms int), `notificacoes_failed` (`count()` of `failed` notifications —
+keyed by **`wa_id`**, not `phoneNumberId`: the failure docs carry the webhook's
+`metadata.phone_number_id`, which inbound resolution matches against `wa_id`).
+Verdicts: `canSend` = token ok && phone_status ok; `canReceive` = webhook_secret
+ok && (subscription ok→true / fail→false / skip→null). The
+`chat(integracaoOuterRef, ultimaModificacaoIntegracao desc)` composite index is
+declared in `firestore.indexes.json` (Enterprise runs it unindexed otherwise —
+the index is a cost/latency guard).
+
 ## Status
 
-The account/token surface is **live** (`/api/whatsapp/token`, `/api/whatsapp/conta`).
+The account/token surface is **live** (`/api/whatsapp/token`, `/api/whatsapp/conta`),
+as is the **PIN registration + verification + account-health** surface
+(`/api/whatsapp/verificacao/*`, `/api/whatsapp/registro`, `/api/whatsapp/health`).
 The inbound **webhook** receiver + pipeline (#527) are now **live** in this app,
 including the nested Cloud Functions codebase (`functions/`) that hosts the
 `processWhatsappNotification` `onTaskDispatched` consumer + the `reprocessWhatsappNotifications`

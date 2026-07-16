@@ -9,6 +9,9 @@ export {
   type SendMediaInput,
   type SendResult,
   type MediaDownload,
+  type RequestVerificationCodeInput,
+  type VerifyCodeInput,
+  type RegisterInput,
 } from './client';
 export {
   WEBHOOK_FIELD_MESSAGES,
@@ -24,6 +27,12 @@ export {
   orderSchema,
   messageErrorSchema,
   mediaMetadataSchema,
+  phoneNumberStatusSchema,
+  subscribedAppSchema,
+  subscribedAppsResponseSchema,
+  type PhoneNumberStatus,
+  type SubscribedApp,
+  type SubscribedAppsResponse,
   type IncomingMessage,
   type StatusUpdate,
   type WebhookEnvelope,

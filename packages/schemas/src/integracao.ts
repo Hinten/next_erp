@@ -282,6 +282,16 @@ export const integracaoSchema = z
      */
     phoneNumberId: z.string().nullable().default(null),
     /**
+     * WhatsApp — the true WhatsApp Business Account id (WABA id). Distinct from
+     * `wa_id` above: despite its name, `wa_id` carries the webhook payload's
+     * `metadata.phone_number_id` (used ONLY for inbound account resolution) and
+     * is NEVER a WABA id. `waba_id` is the account-level Graph node id, used
+     * ONLY for account-level Graph calls — e.g. `GET /{waba_id}/subscribed_apps`
+     * (the webhook-subscription health check). Null until an operator fills it
+     * in; nullable like every other per-channel field so non-WhatsApp docs parse.
+     */
+    waba_id: z.string().nullable().default(null),
+    /**
      * WhatsApp — `Conta_Whatsapp.numero` (string, required in legacy), the
      * connected phone number. Nullable here like every other per-channel
      * field so non-WhatsApp `integracao` docs still parse.
@@ -315,10 +325,13 @@ export const integracaoSchema = z
     // NOTE: `Conta_Whatsapp.permanent_token` is deliberately NOT modeled here
     // (this is a client-readable doc) — it lives in the admin-only
     // `credenciaisWhatsapp` subcollection defined below (mirrors the
-    // `credenciais` OAuth-token pattern). The legacy PIN/SMS
-    // number-registration sub-flow (`pin` field,
-    // `RegistrarPinDialog`/`VerificarCodigoDialog` against the deprecated
-    // Graph provider) is deferred — see #528.
+    // `credenciais` OAuth-token pattern). Legacy stored the two-step
+    // registration `pin` in plaintext ON this client-readable account doc; we
+    // deliberately do NOT — the 6-digit `pin` lives ONLY in the admin-only
+    // `credenciaisWhatsapp.pin` field (below), alongside the permanent token.
+    // The PIN/SMS number-registration sub-flow
+    // (`RegistrarPinDialog`/`VerificarCodigoDialog`) is now ported — see the
+    // apps/whatsapp verificacao/registro routes.
 
     // NOTE: Loja Integrada's `ContaLojaIntegrada.token_id` (the per-account
     // static `chave_api`) is deliberately NOT modeled as a typed field here —
@@ -543,14 +556,29 @@ export const tokenDuravelMeta: CollectionMetadata = {
  * `phoneNumberId`/`wa_id` are denormalized here too (redundant with the flat
  * `integracao` fields) so server-side code resolving a credential doc never
  * needs a second, client-readable read to know which number it belongs to.
- * The legacy PIN/SMS number-registration sub-flow (`pin` field) is deferred —
- * see #528.
+ *
+ * SECURITY: the 6-digit two-step `pin` lives here ONLY — never on the
+ * client-readable `integracao` doc (legacy stored it there in plaintext; we do
+ * not). It is admin-only (this whole subcollection is default-deny) and is used
+ * to RE-REGISTER the number: once two-step verification is enabled on a number,
+ * Meta requires the SAME pin to register it again, so it must be persisted
+ * alongside the permanent token that authorizes the call.
  */
 export const credenciaisWhatsappSchema = z
   .object({
     permanent_token: z.string().min(1),
     phoneNumberId: z.string().nullable().default(null),
     wa_id: z.string().nullable().default(null),
+    /**
+     * The 6-digit two-step registration PIN (re-register capability): Meta
+     * requires the SAME pin to re-register a number once 2FA is set. Stored
+     * here (admin-only) alongside `permanent_token`, never on the account doc.
+     */
+    pin: z
+      .string()
+      .regex(/^\d{6}$/)
+      .nullable()
+      .default(null),
     createdAt: millisSinceEpoch().nullable().default(null),
   })
   .passthrough();

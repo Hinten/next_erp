@@ -22,7 +22,10 @@ export interface CredentialStore {
   load(): Promise<CredenciaisWhatsapp | null>;
   /**
    * Persist `cred` at the fixed `current` doc and delete every other doc in the
-   * same transaction (single-token — at most one lives). Returns the saved value.
+   * same transaction (single-token — at most one lives). Returns the saved
+   * value. When `cred` carries no `pin`, a previously-stored pin is carried
+   * forward (see the implementation) — so a bare token replacement never wipes
+   * the two-step registration PIN.
    */
   save(cred: CredenciaisWhatsapp): Promise<CredenciaisWhatsapp>;
   /** Delete every credential doc for this account (revoke / disconnect). */
@@ -49,16 +52,35 @@ export function createCredentialStore(db: Firestore, integracaoId: string): Cred
     async save(cred: CredenciaisWhatsapp): Promise<CredenciaisWhatsapp> {
       const collRef = credenciaisWhatsappCollection.ref(db, ctx);
       const currentRef = credenciaisWhatsappCollection.docRef(db, ctx, CREDENTIAL_DOC_ID);
-      const data = credenciaisWhatsappCollection.parse(cred);
+      // Firestore retries the transaction closure on contention, so it must be
+      // RE-ENTRANT: derive `effective` from the immutable `cred` inside each
+      // attempt (never mutate captured state across attempts) and hoist only
+      // the committed value out.
+      let committed: CredenciaisWhatsapp = cred;
       await db.runTransaction(async (tx) => {
         // Reads before writes (transaction contract).
         const existing = await tx.get(collRef);
+        // `save` replaces the WHOLE `current` doc, so a plain token replacement
+        // (POST /api/whatsapp/token, which never carries a pin) would otherwise
+        // drop the two-step registration PIN the re-register flow needs. Carry
+        // the stored pin forward when this write doesn't set one; an explicit
+        // pin on `cred` always wins (the registro route passes it).
+        let effective = cred;
+        if (effective.pin == null) {
+          const current = existing.docs.find((d) => d.id === CREDENTIAL_DOC_ID);
+          const prevPin = (current?.data?.() as { pin?: unknown } | undefined)?.pin;
+          if (typeof prevPin === 'string') {
+            effective = { ...effective, pin: prevPin };
+          }
+        }
+        const data = credenciaisWhatsappCollection.parse(effective);
         tx.set(currentRef, data);
         for (const d of existing.docs) {
           if (d.id !== CREDENTIAL_DOC_ID) tx.delete(d.ref);
         }
+        committed = effective;
       });
-      return cred;
+      return committed;
     },
 
     async revoke(): Promise<void> {
