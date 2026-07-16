@@ -687,6 +687,52 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "chat",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "usuarios",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "estadoConversa",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultima_modificacao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "chat",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estadoConversa",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "prazo_resposta",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "chat",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estadoConversa",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultima_modificacao",
+          "order": "DESCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []

@@ -16,6 +16,17 @@
  *  - the daily auto-reply is keyed to the UTC day (`autoreply_<kind>_<yyyy-mm-dd>`).
  * A create that loses a race hits ALREADY_EXISTS (gRPC 6) and is ignored.
  *
+ * ── `ultima_modificacao` recency bump ──────────────────────────────────────────
+ * A real inbound message stamps the conversa's `ultima_modificacao` so it
+ * resurfaces in an `ultima_modificacao desc` list — the recency behavior legacy
+ * Flutter got by stamping the field on every `.save()`, and apps/webchat gets
+ * per visitor message. The create/reopen paths stamp it inside their txn; every
+ * other real-inbound path (in-order-non-reopenable, out-of-order) uses a
+ * separate MONOTONIC guarded merge (`bumpUltimaModificacao`) that never moves it
+ * backwards on an out-of-order redelivery. The daily auto-reply bumps it with
+ * its own timestamp. `ultimaModificacaoIntegracao` and `processStatus` are left
+ * untouched — a status tick does not resurface a conversa (legacy parity).
+ *
  * ── Auto-reply outbound contract for PR-3 (#529 sender trigger) ────────────────
  * Legacy SENT the daily auto-reply inline via the Graph API and recorded an
  * event. This pipeline does NOT call the API; instead it WRITES the auto-reply as
@@ -234,7 +245,7 @@ async function processInboundMessage(
   const sender = senderId(displayPhone, from);
   const conversaId = conversaDocId(contaId, sender);
 
-  const { skipMensagem, conversaNome } = await upsertConversa(db, {
+  const { skipMensagem, conversaNome, bumpedUltimaModificacao } = await upsertConversa(db, {
     contaId,
     conta,
     conversaId,
@@ -251,13 +262,22 @@ async function processInboundMessage(
   // Outbound echo (statuses present) or a spam conversa → no mensagem, no reply.
   if (!incoming || skipMensagem) return;
 
-  await createOrUpdateMensagem(db, deps, {
+  const wrote = await createOrUpdateMensagem(db, deps, {
     contaId,
     conversaId,
     userId: user.id,
     message,
     timestampMs,
   });
+
+  // Resurface the conversa on a real inbound message. The create/reopen paths
+  // already stamped `ultima_modificacao` inside the upsert txn; the other paths
+  // (in-order-non-reopenable, out-of-order) need this separate guarded merge.
+  // Skipped on a redelivery (`wrote === false`) — the conversa was already
+  // surfaced when the message first landed.
+  if (wrote && !bumpedUltimaModificacao) {
+    await bumpUltimaModificacao(db, conversaId, timestampMs);
+  }
 
   await enviarMsgAutomatica(db, conta, conversaId, from);
 
@@ -294,11 +314,15 @@ interface UpsertArgs {
  *  - out-of-order (timestamp ≤ ultimaModificacaoIntegracao) → no conversa update,
  *    but the mensagem is still written (return `skipMensagem: false`);
  *  - reopenable state → naoRespondido + fresh 24h prazo + a `reaberto` event.
+ *
+ * `bumpedUltimaModificacao` reports whether the create/reopen txn already
+ * stamped `ultima_modificacao = timestampMs`, so `processInboundMessage` can
+ * skip the separate guarded merge on those paths (they wrote it inline).
  */
 async function upsertConversa(
   db: Firestore,
   args: UpsertArgs,
-): Promise<{ skipMensagem: boolean; conversaNome: string }> {
+): Promise<{ skipMensagem: boolean; conversaNome: string; bumpedUltimaModificacao: boolean }> {
   const convRef = conversaCollection.docRef(db, {}, args.conversaId);
 
   return db.runTransaction(async (txn: Transaction) => {
@@ -308,6 +332,9 @@ async function upsertConversa(
       const data = conversaCollection.parse({
         atendido: false,
         data_cadastro: args.timestampMs,
+        // Recency field carried from creation (legacy stamped it on every save);
+        // ultimaModificacaoIntegracao is the separate inbound out-of-order guard.
+        ultima_modificacao: args.timestampMs,
         ultimaModificacaoIntegracao: args.timestampMs,
         origem: 'whatsapp',
         sender_id: args.sender,
@@ -325,7 +352,7 @@ async function upsertConversa(
         conteudo: `Nova conversa iniciada por ${args.userName}.`,
         timestampMs: args.timestampMs,
       });
-      return { skipMensagem: false, conversaNome: args.userName };
+      return { skipMensagem: false, conversaNome: args.userName, bumpedUltimaModificacao: true };
     }
 
     const existing = conversaCollection.parseRead(
@@ -334,18 +361,22 @@ async function upsertConversa(
     );
 
     if (existing.estadoConversa === ESTADO_CONVERSA.spam) {
-      return { skipMensagem: true, conversaNome: existing.nome };
+      return { skipMensagem: true, conversaNome: existing.nome, bumpedUltimaModificacao: false };
     }
 
     const lastMod = toEpochMs(existing.ultimaModificacaoIntegracao);
     const shouldUpdate = lastMod == null || args.timestampMs > lastMod;
     if (!shouldUpdate) {
-      // Stale/out-of-order: leave the conversa untouched, still write the mensagem.
-      return { skipMensagem: false, conversaNome: existing.nome };
+      // Stale/out-of-order: leave the conversa untouched, still write the
+      // mensagem. `ultima_modificacao` is left to the separate guarded merge,
+      // which never moves it backwards.
+      return { skipMensagem: false, conversaNome: existing.nome, bumpedUltimaModificacao: false };
     }
 
     if (podeReabrirConversa(existing.estadoConversa)) {
       const patch = conversaCollection.parseMerge({
+        // Bump the recency field alongside the reopen (see the header note).
+        ultima_modificacao: args.timestampMs,
         ultimaModificacaoIntegracao: args.timestampMs,
         estadoConversa: ESTADO_CONVERSA.naoRespondido,
         prazo_resposta: args.prazoMs,
@@ -355,6 +386,7 @@ async function upsertConversa(
         conteudo: `Atendimento do ${args.userName} reaberto automaticamente após nova mensagem do cliente.`,
         timestampMs: args.timestampMs,
       });
+      return { skipMensagem: false, conversaNome: existing.nome, bumpedUltimaModificacao: true };
     }
     // In-order + NOT reopenable (e.g. emResposta): legacy assigns
     // ultimaModificacaoIntegracao in memory but never `.save()`s on this branch
@@ -362,9 +394,43 @@ async function upsertConversa(
     // create/reopen write. That no-save quirk is load-bearing: it is what lets
     // a late out-of-order customer message still reopen a since-finalized
     // ticket. Persisting the guard here would silently change the reopen
-    // semantics, so we deliberately write NOTHING (parity over tidiness).
+    // semantics, so we deliberately write NOTHING to it (parity over tidiness).
+    // The recency `ultima_modificacao` bump is orthogonal and handled by the
+    // separate guarded merge — a new customer message on an in-progress ticket
+    // SHOULD resurface it.
+    return { skipMensagem: false, conversaNome: existing.nome, bumpedUltimaModificacao: false };
+  });
+}
 
-    return { skipMensagem: false, conversaNome: existing.nome };
+/**
+ * Bump the conversa's `ultima_modificacao` so a fresh inbound message
+ * resurfaces it in an `ultima_modificacao desc` list (see the header note). The
+ * create/reopen paths stamp it inline; this covers the in-order-non-reopenable
+ * and out-of-order paths. Guarded to be MONOTONIC: a single-doc transaction
+ * reads the current value and writes only when the message is newer, so an
+ * out-of-order redelivery never moves it backwards. A transaction (not a bare
+ * read-then-merge) is the cheapest shape that stays correct when the task queue
+ * redelivers concurrently. `ultimaModificacaoIntegracao` is deliberately NOT
+ * touched here — its freeze quirk is load-bearing (see `upsertConversa`).
+ */
+async function bumpUltimaModificacao(
+  db: Firestore,
+  conversaId: string,
+  timestampMs: number,
+): Promise<void> {
+  const convRef = conversaCollection.docRef(db, {}, conversaId);
+  await db.runTransaction(async (txn: Transaction) => {
+    const snap = await txn.get(convRef);
+    if (!snap.exists) return;
+    const existing = conversaCollection.parseRead(
+      snap.data(),
+      conversaCollection.docPath({}, conversaId),
+    );
+    const current = toEpochMs(existing.ultima_modificacao);
+    if (current != null && current >= timestampMs) return; // never move backwards
+    txn.set(convRef, conversaCollection.parseMerge({ ultima_modificacao: timestampMs }), {
+      merge: true,
+    });
   });
 }
 
@@ -401,12 +467,14 @@ interface MensagemArgs {
  * deterministic doc id + timestamp: an existing doc at/after this timestamp is a
  * redelivery → skip. Media is downloaded + cached into the typed schema
  * sub-objects; context/reaction/referral are mapped to the mensagem fields.
+ * Returns `true` when a mensagem was written/updated, `false` on the idempotent
+ * redelivery skip — so the caller only bumps `ultima_modificacao` on a real write.
  */
 async function createOrUpdateMensagem(
   db: Firestore,
   deps: WhatsappProcessDeps,
   { contaId, conversaId, userId, message, timestampMs }: MensagemArgs,
-): Promise<void> {
+): Promise<boolean> {
   const msgId = mensagemDocId(contaId, message.id);
   const msgRef = mensagemCollection.docRef(db, { conversaId }, msgId);
 
@@ -418,7 +486,7 @@ async function createOrUpdateMensagem(
       mensagemCollection.docPath({ conversaId }, msgId),
     );
     const oldTs = toEpochMs(old.timestamp);
-    if (oldTs != null && oldTs >= timestampMs) return; // same or newer → idempotent skip
+    if (oldTs != null && oldTs >= timestampMs) return false; // same or newer → idempotent skip
     // Preserve the original create time across an update (keep-old-value); the
     // codec tolerates a stray ISO value on the stored field via `toEpochMs`.
     const oldCadastro = toEpochMs(old.data_cadastro);
@@ -480,6 +548,7 @@ async function createOrUpdateMensagem(
   if (referral) fields.referral = referral;
 
   await msgRef.set(mensagemCollection.parse(fields));
+  return true;
 }
 
 /** The `documents/chat/<c>/mensagem/<m>` outer ref of a prior message doc. */
@@ -597,8 +666,12 @@ async function enviarMsgAutomatica(
     const last = toEpochMs(conversa.recebido_fora_atendimento);
     if (last == null || now.getTime() - last >= DAY_MS) {
       await writeAutoReply(db, conversaId, conta.mensagem_inatividade, now, 'fora');
+      // The auto-reply is fresh activity → also bump the recency field (its own
+      // timestamp, always ≥ the inbound message ts, so no backward-move guard
+      // is needed here).
       await conversaCollection.merge(db, {}, conversaId, {
         recebido_fora_atendimento: now.getTime(),
+        ultima_modificacao: now.getTime(),
       });
     }
   } else if (conta.mensagem_automatica && aberto) {
@@ -607,6 +680,7 @@ async function enviarMsgAutomatica(
       await writeAutoReply(db, conversaId, conta.mensagem_automatica, now, 'dentro');
       await conversaCollection.merge(db, {}, conversaId, {
         recebido_durante_atendimento: now.getTime(),
+        ultima_modificacao: now.getTime(),
       });
     }
   }

@@ -355,8 +355,95 @@ describe('conversa create / reopen / spam', () => {
     // Guard NOT advanced, estado untouched…
     expect(conv.ultimaModificacaoIntegracao).toBe('2020-01-01T00:00:00.000Z');
     expect(conv.estadoConversa).toBe(1);
-    // …but the mensagem is written normally.
+    // …the recency field IS bumped (the separate guarded merge — orthogonal to
+    // the ultimaModificacaoIntegracao freeze; a new message resurfaces the ticket)…
+    expect(conv.ultima_modificacao).toBe(1700000000000);
+    // …and the mensagem is written normally.
     expect(db.docs(CONV_PATH).has(mensagemDocId(CONTA, 'wamid.A'))).toBe(true);
+  });
+});
+
+/* -------------------------- ultima_modificacao bump ---------------------- */
+
+describe('ultima_modificacao recency bump', () => {
+  const MSG_MS = 1700000000000; // the inbound message ts ('1700000000' s × 1000)
+
+  it('create carries ultima_modificacao = the message timestamp', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    expect(db.docs('chat').get(CONV_ID)!.ultima_modificacao).toBe(MSG_MS);
+  });
+
+  it('reopen bumps ultima_modificacao alongside the reopen', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('chat', CONV_ID, {
+      estadoConversa: 2, // atendimentoFinalizado (reopenable)
+      sender_id: SENDER,
+      nome: 'Fulano',
+      ultimaModificacaoIntegracao: '2020-01-01T00:00:00.000Z',
+      ultima_modificacao: 1000, // stale recency
+    });
+    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    expect(db.docs('chat').get(CONV_ID)!.ultima_modificacao).toBe(MSG_MS);
+  });
+
+  it('resurfaces an in-progress (emResposta) conversa on a new inbound message', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('chat', CONV_ID, {
+      estadoConversa: 1, // emResposta — in-order, not reopenable (the no-save quirk branch)
+      sender_id: SENDER,
+      nome: 'Fulano',
+      ultimaModificacaoIntegracao: '2020-01-01T00:00:00.000Z', // older than the message
+      ultima_modificacao: 1000, // stale recency
+    });
+    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    // The separate guarded merge bumps the recency field forward…
+    expect(db.docs('chat').get(CONV_ID)!.ultima_modificacao).toBe(MSG_MS);
+    // …while the ultimaModificacaoIntegracao freeze (quirk) stays untouched.
+    expect(db.docs('chat').get(CONV_ID)!.ultimaModificacaoIntegracao).toBe(
+      '2020-01-01T00:00:00.000Z',
+    );
+  });
+
+  it('out-of-order redelivery does NOT move ultima_modificacao backwards', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    db.seed('chat', CONV_ID, {
+      estadoConversa: 1, // emResposta → mensagem written, the guarded merge is attempted
+      sender_id: SENDER,
+      nome: 'Fulano',
+      ultimaModificacaoIntegracao: '2020-01-01T00:00:00.000Z',
+      ultima_modificacao: MSG_MS + 100_000, // already NEWER than the incoming message
+    });
+    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    // Monotonic guard: the older message never moves it back.
+    expect(db.docs('chat').get(CONV_ID)!.ultima_modificacao).toBe(MSG_MS + 100_000);
+    // The mensagem is still written (out-of-order path parity).
+    expect(db.docs(CONV_PATH).has(mensagemDocId(CONTA, 'wamid.A'))).toBe(true);
+  });
+
+  it('a redelivery (no mensagem write) does not touch ultima_modificacao', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const msgId = mensagemDocId(CONTA, 'wamid.A');
+    db.seed('chat', CONV_ID, {
+      estadoConversa: 1,
+      sender_id: SENDER,
+      nome: 'Fulano',
+      ultimaModificacaoIntegracao: '2020-01-01T00:00:00.000Z',
+      ultima_modificacao: 555, // a sentinel the redelivery must not overwrite
+    });
+    // Prior mensagem already at/after the incoming ts → createOrUpdateMensagem skips.
+    db.seed(CONV_PATH, msgId, {
+      conteudo: 'ORIGINAL',
+      mid: 'wamid.A',
+      timestamp: new Date(MSG_MS).toISOString(),
+    });
+    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    expect(db.docs('chat').get(CONV_ID)!.ultima_modificacao).toBe(555); // untouched
   });
 });
 
@@ -441,6 +528,8 @@ describe('auto-reply in/out of hours + daily dedupe', () => {
     expect(reply.tipo).toBe('c');
     // Written as millisecondsSinceEpoch INT (#484/#486).
     expect(db.docs('chat').get(CONV_ID)!.recebido_durante_atendimento).toBe(NOW.getTime());
+    // The auto-reply is fresh activity → recency bumped to its own (now) timestamp.
+    expect(db.docs('chat').get(CONV_ID)!.ultima_modificacao).toBe(NOW.getTime());
   });
 
   it('out-of-hours (20:00Z) → writes mensagem_inatividade', async () => {

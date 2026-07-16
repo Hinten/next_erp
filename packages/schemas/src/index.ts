@@ -171,6 +171,13 @@ export {
 } from './conversa';
 
 export {
+  ORIGEM_RULES,
+  WHATSAPP_ANEXO_LIMITS,
+  type OrigemRule,
+  type WhatsappAnexoTipo,
+} from './conversaOrigem';
+
+export {
   integracao,
   integracaoSchema,
   integracaoMeta,
