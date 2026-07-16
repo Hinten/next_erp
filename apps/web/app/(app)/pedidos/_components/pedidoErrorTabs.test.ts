@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PEDIDO_TABS, TAB_OF_FIELD, summarizePedidoErrors } from './pedidoErrorTabs';
+import { PEDIDO_TABS, TAB_OF_FIELD, pedidoTabs, summarizePedidoErrors } from './pedidoErrorTabs';
 
 describe('summarizePedidoErrors', () => {
   it('names a single erroring tab', () => {
@@ -62,6 +62,36 @@ describe('summarizePedidoErrors', () => {
     expect(s.message).toBe(
       'Corrija os campos inválidos na aba "Fiscal". Há também campos inválidos fora do formulário (numero).',
     );
+  });
+});
+
+describe('pedidoTabs', () => {
+  it('saída shows every tab in display order (plus the read-only estoque)', () => {
+    expect(pedidoTabs(false)).toEqual([...PEDIDO_TABS.map((t) => t.value), 'estoque']);
+  });
+
+  it('entrada excludes exactly the three saída-only tabs, preserving order', () => {
+    const saida = pedidoTabs(false);
+    const entrada = pedidoTabs(true);
+    expect(saida.filter((v) => !entrada.includes(v))).toEqual([
+      'link-pgto',
+      'incidentes',
+      'devolucao',
+    ]);
+    // Entrada is a strict, order-preserving subset of saída.
+    expect(entrada).toEqual(saida.filter((v) => entrada.includes(v)));
+  });
+
+  it('no entrada-reachable validation error routes to a hidden tab', () => {
+    // Fields mapped to tabs hidden on an entrada could produce an invisible
+    // error marker. The only mapped field on a hidden tab is `itensDevolvidos`
+    // (Devolução) — and it is always null on an entrada (returns are a
+    // saída-only flow), so it can never carry a validation error there.
+    const hidden = new Set(pedidoTabs(false).filter((v) => !pedidoTabs(true).includes(v)));
+    const fieldsOnHiddenTabs = Object.entries(TAB_OF_FIELD)
+      .filter(([, tab]) => hidden.has(tab))
+      .map(([field]) => field);
+    expect(fieldsOnHiddenTabs).toEqual(['itensDevolvidos']);
   });
 });
 

@@ -21,8 +21,9 @@ import {
   showCopyableNotification,
   showErrorNotification,
 } from '@/lib/notifications/showErrorNotification';
-import { etiquetaRowState } from './etiquetaActions';
+import { etiquetaMismatch, etiquetaRowState } from './etiquetaActions';
 import { EtiquetaComprarModal } from './EtiquetaComprarModal';
+import { useConfirmDialog } from './ConfirmDialog';
 
 export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedidoId: string }) {
   const db = getFirebaseFirestore();
@@ -46,6 +47,7 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
 
   const [busy, setBusy] = useState<null | 'imprimir' | 'rastrear'>(null);
   const [comprarOpen, setComprarOpen] = useState(false);
+  const { confirm, element: confirmElement } = useConfirmDialog();
   const printLabelId = frete?.printLabelId ?? null;
 
   const { action, needsPostedConfirm } = etiquetaRowState({
@@ -54,6 +56,10 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
     externalOptionId: frete?.externalOptionId ?? null,
     estado: frete?.estado,
   });
+
+  // Legacy pre-print confirm: a reverse label on a saída (or a non-reverse one
+  // on an entrada) is usually a mistake — ask before printing.
+  const mismatch = etiquetaMismatch(frete?.ehReverso, pedido.ehSaida);
 
   async function run(kind: 'imprimir' | 'rastrear') {
     if (!client || !intFreteId || !printLabelId) return;
@@ -121,6 +127,23 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
     );
   }
 
+  // Gate the print behind the direction-mismatch confirm when needed.
+  async function onImprimir() {
+    if (mismatch) {
+      const proceed = await confirm({
+        title: 'Confirmação',
+        message:
+          mismatch === 'saida-reversa'
+            ? 'Este pedido é uma Saída, porém o frete prestes a ser impresso é de devolução. Deseja imprimir mesmo assim?'
+            : 'Isto é uma Entrada, porém o frete prestes a ser impresso é de saída. Deseja imprimir mesmo assim?',
+        confirmLabel: 'Confirmar',
+        cancelLabel: 'Cancelar',
+      });
+      if (!proceed) return;
+    }
+    await run('imprimir');
+  }
+
   // action === 'imprimir' — a bought label: reprint + track.
   return (
     <Stack gap="xs">
@@ -129,11 +152,12 @@ export function EtiquetaRowAction({ pedido, pedidoId }: { pedido: Pedido; pedido
           Etiqueta já emitida — reimprimir pode duplicar a etiqueta.
         </Text>
       )}
+      {confirmElement}
       <Button
         size="xs"
         variant="light"
         leftSection={<IconPrinter size={14} />}
-        onClick={() => run('imprimir')}
+        onClick={() => void onImprimir()}
         loading={busy === 'imprimir'}
         disabled={!client || busy !== null}
       >

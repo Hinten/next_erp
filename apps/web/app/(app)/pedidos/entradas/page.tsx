@@ -1,12 +1,7 @@
 'use client';
 
-import { PlaceholderPage } from '@delfrance/ui';
+import { PedidosListView } from '../_components/PedidosListView';
 
 export default function EntradasPage() {
-  return (
-    <PlaceholderPage
-      title="Entradas"
-      description="Lançamento de entradas de mercadoria (compras e devoluções)."
-    />
-  );
+  return <PedidosListView direcao="entrada" />;
 }

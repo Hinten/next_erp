@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { etiquetaRowState } from './etiquetaActions';
+import { etiquetaMismatch, etiquetaRowState } from './etiquetaActions';
 
 describe('etiquetaRowState', () => {
   const base = { tipo: 'melhorEnvios' as const, printLabelId: null, externalOptionId: null };
@@ -44,5 +44,37 @@ describe('etiquetaRowState', () => {
     expect(
       etiquetaRowState({ ...base, printLabelId: 'ME-1', estado: 'entregue' }).needsPostedConfirm,
     ).toBe(true);
+  });
+});
+
+describe('etiquetaMismatch', () => {
+  // Full truth table over (ehReverso, ehSaida) including the nullish wire
+  // defaults: ehReverso null/undefined → false, ehSaida null/undefined → true.
+  const cases: Array<
+    [boolean | null | undefined, boolean | null | undefined, ReturnType<typeof etiquetaMismatch>]
+  > = [
+    // Agreeing directions → no confirm.
+    [false, true, null], // saída, frete normal
+    [true, false, null], // entrada, frete reverso
+    // Mismatches.
+    [true, true, 'saida-reversa'], // saída with a reverse label
+    [false, false, 'entrada-nao-reversa'], // entrada with a normal label
+    // Nullish ehReverso resolves to false.
+    [null, true, null],
+    [undefined, true, null],
+    [null, false, 'entrada-nao-reversa'],
+    [undefined, false, 'entrada-nao-reversa'],
+    // Nullish ehSaida resolves to true (saída).
+    [false, null, null],
+    [false, undefined, null],
+    [true, null, 'saida-reversa'],
+    [true, undefined, 'saida-reversa'],
+    // Both nullish → saída + não reverso → agree.
+    [null, null, null],
+    [undefined, undefined, null],
+  ];
+
+  it.each(cases)('etiquetaMismatch(%s, %s) → %s', (ehReverso, ehSaida, expected) => {
+    expect(etiquetaMismatch(ehReverso, ehSaida)).toBe(expected);
   });
 });

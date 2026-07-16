@@ -25,6 +25,25 @@ export const PEDIDO_TABS: ReadonlyArray<{ value: string; label: string }> = [
 ];
 
 /**
+ * Saída-only tabs — hidden on an entrada (inbound order): payment links,
+ * incidents and returns are sale-side flows the legacy app never showed for
+ * an entrada.
+ */
+const SAIDA_ONLY_TABS: ReadonlyArray<string> = ['link-pgto', 'incidentes', 'devolucao'];
+
+/**
+ * Visible pedido-form tab values in display order for the given direction.
+ * `estoque` (read-only, outside the error routing in PEDIDO_TABS) renders
+ * last for both directions. PedidoForm drives both `Tabs.Tab` and
+ * `Tabs.Panel` rendering from this list.
+ */
+export function pedidoTabs(isEntrada: boolean): string[] {
+  const all = [...PEDIDO_TABS.map((t) => t.value), 'estoque'];
+  if (!isEntrada) return all;
+  return all.filter((value) => !SAIDA_ONLY_TABS.includes(value));
+}
+
+/**
  * Top-level RHF error key → tab value. RHF nests sub-field errors under the
  * top-level key, so this granularity is enough to route a tab marker.
  *

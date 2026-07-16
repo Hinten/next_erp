@@ -43,7 +43,7 @@ import { PedidoFooter } from './PedidoFooter';
 import { regroupItens } from './regroupItens';
 import { flattenItens } from './flattenItens';
 import { normalizeFreteInicial } from './freteDerivation';
-import { summarizePedidoErrors, TAB_OF_FIELD } from './pedidoErrorTabs';
+import { pedidoTabs, summarizePedidoErrors, TAB_OF_FIELD } from './pedidoErrorTabs';
 import type { FlatItem, PedidoFormState } from './types';
 
 export interface PedidoFormProps {
@@ -62,6 +62,12 @@ export interface PedidoFormProps {
    * unless the user is editing estado manually.
    */
   liveEstado?: EstadoPedido;
+  /**
+   * Direction seed, consumed ONLY in create mode (`buildDefaults` starts the
+   * form at `{ ...EMPTY_DEFAULTS, ehSaida }`). In edit mode the loaded doc's
+   * spread always wins and this prop is ignored. Defaults to true (saída).
+   */
+  ehSaida?: boolean;
   /**
    * Receives the resolved (validate-what-you-save) doc values plus RHF's
    * `dirtyFields` so the edit page can build a partial patch (`buildPedidoPatch`)
@@ -250,8 +256,8 @@ function NfeLockNotice({ loading, lockText }: { loading: boolean; lockText: stri
   return null;
 }
 
-function buildDefaults(existing?: Pedido, pedidoId?: string): PedidoFormState {
-  if (!existing) return EMPTY_DEFAULTS;
+function buildDefaults(existing?: Pedido, pedidoId?: string, ehSaida = true): PedidoFormState {
+  if (!existing) return { ...EMPTY_DEFAULTS, ehSaida };
   return {
     ...EMPTY_DEFAULTS,
     ...existing,
@@ -272,6 +278,7 @@ export function PedidoForm({
   pedidoId,
   submitLabel = 'Salvar',
   liveEstado,
+  ehSaida = true,
   onSubmit,
 }: PedidoFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -280,7 +287,15 @@ export function PedidoForm({
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.pedido.write);
 
-  const initial = useMemo(() => buildDefaults(defaultValues, pedidoId), [defaultValues, pedidoId]);
+  const initial = useMemo(
+    () => buildDefaults(defaultValues, pedidoId, ehSaida),
+    [defaultValues, pedidoId, ehSaida],
+  );
+
+  // Direction is immutable (enforced by the page model via `ehSaidaOriginal`),
+  // so the initial values — not a watch — are the source of truth.
+  const isEntrada = initial.ehSaida === false;
+  const visibleTabs = new Set(pedidoTabs(isEntrada));
 
   const form = useForm<PedidoFormState, unknown, Pedido>({
     resolver: pedidoResolver,
@@ -464,15 +479,21 @@ export function PedidoForm({
             <Tabs.Tab value="pagamento" {...tabErrorProps('pagamento')}>
               Pagamento
             </Tabs.Tab>
-            <Tabs.Tab value="link-pgto" {...tabErrorProps('link-pgto')}>
-              Link Pgto
-            </Tabs.Tab>
-            <Tabs.Tab value="incidentes" {...tabErrorProps('incidentes')}>
-              Incidentes
-            </Tabs.Tab>
-            <Tabs.Tab value="devolucao" {...tabErrorProps('devolucao')}>
-              Devolução
-            </Tabs.Tab>
+            {visibleTabs.has('link-pgto') && (
+              <Tabs.Tab value="link-pgto" {...tabErrorProps('link-pgto')}>
+                Link Pgto
+              </Tabs.Tab>
+            )}
+            {visibleTabs.has('incidentes') && (
+              <Tabs.Tab value="incidentes" {...tabErrorProps('incidentes')}>
+                Incidentes
+              </Tabs.Tab>
+            )}
+            {visibleTabs.has('devolucao') && (
+              <Tabs.Tab value="devolucao" {...tabErrorProps('devolucao')}>
+                Devolução
+              </Tabs.Tab>
+            )}
             <Tabs.Tab value="estado" {...tabErrorProps('estado')}>
               Estado/Histórico
             </Tabs.Tab>
@@ -528,22 +549,33 @@ export function PedidoForm({
             )}
           </Tabs.Panel>
 
-          <Tabs.Panel value="link-pgto" pt="md">
-            <PlaceholderTab name="Link de pagamento" />
-          </Tabs.Panel>
+          {visibleTabs.has('link-pgto') && (
+            <Tabs.Panel value="link-pgto" pt="md">
+              <PlaceholderTab name="Link de pagamento" />
+            </Tabs.Panel>
+          )}
 
-          <Tabs.Panel value="incidentes" pt="md">
-            <IncidentesTab pedidoId={pedidoId} disabled={disabled} />
-          </Tabs.Panel>
+          {visibleTabs.has('incidentes') && (
+            <Tabs.Panel value="incidentes" pt="md">
+              <IncidentesTab pedidoId={pedidoId} disabled={disabled} />
+            </Tabs.Panel>
+          )}
 
-          <Tabs.Panel value="devolucao" pt="md">
-            {dadosGeraisLockNotice && (
-              <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
-                {dadosGeraisLockNotice}
-              </Alert>
-            )}
-            <DevolucaoTab form={form} db={db} disabled={dadosGeraisDisabled} pedidoId={pedidoId} />
-          </Tabs.Panel>
+          {visibleTabs.has('devolucao') && (
+            <Tabs.Panel value="devolucao" pt="md">
+              {dadosGeraisLockNotice && (
+                <Alert color="yellow" icon={<IconLock size={16} />} mb="md">
+                  {dadosGeraisLockNotice}
+                </Alert>
+              )}
+              <DevolucaoTab
+                form={form}
+                db={db}
+                disabled={dadosGeraisDisabled}
+                pedidoId={pedidoId}
+              />
+            </Tabs.Panel>
+          )}
 
           <Tabs.Panel value="estado" pt="md">
             <EstadoHistoricoTab form={form} disabled={disabled} pedidoId={pedidoId} />

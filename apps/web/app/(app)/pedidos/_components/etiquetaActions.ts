@@ -69,6 +69,30 @@ export function etiquetaRowState(input: EtiquetaRowStateInput): EtiquetaRowState
   return { action: 'unsupported', needsPostedConfirm };
 }
 
+/**
+ * Direction mismatch between the pedido and its frete — legacy port of the
+ * `emitirOuImprimirFrete` pre-print confirm: printing a reverse label on a
+ * saída (or a non-reverse one on an entrada) is usually a mistake, so the row
+ * action asks before printing. `null` = directions agree, print freely.
+ */
+export type EtiquetaMismatch = 'saida-reversa' | 'entrada-nao-reversa' | null;
+
+/**
+ * Pure predicate. Nullish tolerant with the wire defaults (`ehReverso` → false,
+ * `ehSaida` → true): a mismatch is exactly when the resolved flags are EQUAL —
+ * a saída ships loja → cliente (não reverso), an entrada cliente → loja
+ * (reverso), so agreement means `ehReverso === !ehSaida`.
+ */
+export function etiquetaMismatch(
+  ehReverso: boolean | null | undefined,
+  ehSaida: boolean | null | undefined,
+): EtiquetaMismatch {
+  const reverso = ehReverso ?? false;
+  const saida = ehSaida ?? true;
+  if (reverso !== saida) return null;
+  return saida ? 'saida-reversa' : 'entrada-nao-reversa';
+}
+
 export type ResolveEtiquetaCartResult =
   | {
       readonly ok: true;
