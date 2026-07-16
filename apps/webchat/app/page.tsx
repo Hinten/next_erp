@@ -25,7 +25,8 @@ interface Mensagem {
   estadoEnvio: number;
   tipo: 'c';
   canal: number;
-  timestamp: string;
+  // millisecondsSinceEpoch INT wire format (#484/#486).
+  timestamp: number;
   _localId?: string;
 }
 
@@ -67,8 +68,8 @@ export default function WebchatPage() {
             atendido: false,
             nome: 'Visitante do site',
             urlAvatar: '',
-            data_cadastro: new Date().toISOString(),
-            ultima_modificacao: new Date().toISOString(),
+            data_cadastro: Date.now(),
+            ultima_modificacao: Date.now(),
             versao: 1,
           },
           { merge: true },
@@ -125,7 +126,7 @@ export default function WebchatPage() {
       const text = draft.trim();
       if (!text || !conversaId || !uid) return;
       const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const now = new Date().toISOString();
+      const now = Date.now();
       setPending((p) => [
         ...p,
         {

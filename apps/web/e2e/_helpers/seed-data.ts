@@ -1604,7 +1604,8 @@ export async function seedGruposDeVariacao(prefix: string): Promise<{
 }> {
   const col = db().collection('grupoDeVariacoes');
   const batch = db().batch();
-  const now = new Date().toISOString();
+  // grupoDeVariacoes datetimes are millisecondsSinceEpoch INT (#484/#486).
+  const now = Date.now();
   const tamanhosId = `${prefix}-tam`;
   const coresId = `${prefix}-cor`;
   batch.set(col.doc(tamanhosId), {

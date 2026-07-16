@@ -439,7 +439,8 @@ describe('auto-reply in/out of hours + daily dedupe', () => {
     expect(reply.conteudo).toBe('Olá! (dentro)');
     expect(reply.estadoEnvio).toBe(1); // salva → PR-3 sends it (tipo 'c' ≠ 'e')
     expect(reply.tipo).toBe('c');
-    expect(db.docs('chat').get(CONV_ID)!.recebido_durante_atendimento).toBe(NOW.toISOString());
+    // Written as millisecondsSinceEpoch INT (#484/#486).
+    expect(db.docs('chat').get(CONV_ID)!.recebido_durante_atendimento).toBe(NOW.getTime());
   });
 
   it('out-of-hours (20:00Z) → writes mensagem_inatividade', async () => {
@@ -498,7 +499,8 @@ describe('status transition matrix', () => {
     );
     const msg = db.docs(CONV_PATH).get(OUT_MSG_ID)!;
     expect(msg.estadoEnvio).toBe(3); // enviado
-    expect(msg.lastExternalUpdateDateTime).toBe(new Date(1700000100000).toISOString());
+    // millisecondsSinceEpoch INT (#484/#486): the WA unix-second ts × 1000.
+    expect(msg.lastExternalUpdateDateTime).toBe(1700000100000);
   });
 
   it('read sets recebido + visualizado', async () => {
@@ -513,7 +515,8 @@ describe('status transition matrix', () => {
     );
     const msg = db.docs(CONV_PATH).get(OUT_MSG_ID)!;
     expect(msg.estadoEnvio).toBe(7); // recebido
-    expect(msg.visualizado).toBe(new Date(1700000200000).toISOString());
+    // millisecondsSinceEpoch INT (#484/#486).
+    expect(msg.visualizado).toBe(1700000200000);
   });
 
   it('failed appends an error entry and sets erro', async () => {

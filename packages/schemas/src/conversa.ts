@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './shared/datetime';
 import { outerRefLooseSchema, outerRefSchema } from './shared/outerRef';
 import type { CollectionMetadata } from './types';
 
@@ -107,12 +108,17 @@ export const conversaSchema = z.object({
 
   usuarios: z.array(z.string()).nullable().default(null),
 
-  data_cadastro: z.string().datetime().nullable().default(null),
-  ultima_modificacao: z.string().datetime().nullable().default(null),
-  ultimaModificacaoIntegracao: z.string().datetime().nullable().default(null),
-  prazo_resposta: z.string().datetime().nullable().default(null),
-  recebido_fora_atendimento: z.string().datetime().nullable().default(null),
-  recebido_durante_atendimento: z.string().datetime().nullable().default(null),
+  // Datetime fields — millisecondsSinceEpoch INT wire format (#484/#486), the
+  // legacy Flutter `maybeDateTimeToJson` shape (`DateTime.millisecondsSinceEpoch`).
+  // Written as a plain ms int; reads stay tolerant of a stray ISO string / µs int
+  // via the `millisSinceEpoch()` codec (the migration shim), so pre-backfill docs
+  // still render correctly instead of as 1970.
+  data_cadastro: millisSinceEpoch().nullable().default(null),
+  ultima_modificacao: millisSinceEpoch().nullable().default(null),
+  ultimaModificacaoIntegracao: millisSinceEpoch().nullable().default(null),
+  prazo_resposta: millisSinceEpoch().nullable().default(null),
+  recebido_fora_atendimento: millisSinceEpoch().nullable().default(null),
+  recebido_durante_atendimento: millisSinceEpoch().nullable().default(null),
 
   nome: z.string().default('Conversa sem título'),
   urlAvatar: z.string().default(''),
@@ -219,7 +225,9 @@ export const mensagemSchema = z.object({
   mid: z.string().nullable().default(null),
   midGroup: z.string().nullable().default(null),
   error: z.string().nullable().default(null),
-  visualizado: z.string().datetime().nullable().default(null),
+  // Read-receipt timestamp — millisecondsSinceEpoch INT (#484/#486); tolerant
+  // read of a stray ISO/µs value via the codec.
+  visualizado: millisSinceEpoch().nullable().default(null),
   transcription: z.string().nullable().default(null),
   anexo: z.string().nullable().default(null),
   // Real Firestore/Flutter key is snake_case `anexo_url` (`models.g.dart`),
@@ -228,8 +236,10 @@ export const mensagemSchema = z.object({
   anexo_url: z.string().nullable().default(null),
   // Mensagem timestamp ordering field. Flutter writes either createTime
   // (Firestore metadata) or an explicit `timestamp` — we expect the
-  // latter when authoring from this app.
-  timestamp: z.string().datetime().nullable().default(null),
+  // latter when authoring from this app. millisecondsSinceEpoch INT wire
+  // format (#484/#486, legacy `maybeDateTimeToJson` parity); the codec
+  // tolerates a stray ISO/µs value on read.
+  timestamp: millisSinceEpoch().nullable().default(null),
 
   /*
    * Legacy WhatsApp/webchat-pipeline fields (`.old` atendimento models,
@@ -329,12 +339,17 @@ export const mensagemSchema = z.object({
   // Lifecycle timestamps: `data_cadastro` set once on create;
   // `lastExternalUpdateDateTime` tracks the last WhatsApp status webhook and
   // guards against stale/out-of-order `estadoEnvio` transitions.
-  data_cadastro: z.string().datetime().nullish(),
-  lastExternalUpdateDateTime: z.string().datetime().nullish(),
+  // millisecondsSinceEpoch INT wire format (#484/#486); kept `.nullish()`
+  // (wire-optional — pre-existing docs from other writers may omit the keys
+  // entirely; legacy Flutter writes them present-with-null) rather than the
+  // `.nullable().default(null)` convention above. Reads tolerate a stray
+  // ISO/µs value via the codec.
+  data_cadastro: millisSinceEpoch().nullish(),
+  lastExternalUpdateDateTime: millisSinceEpoch().nullish(),
 });
 // No `.passthrough()` (see the `conversaSchema` note): unknown top-level keys
 // are stripped, and rejected on writes through `defineCollection`. `createdAt`
-// (a raw Firestore `Timestamp` written by `apps/webchat` alongside the ISO
+// (a raw Firestore `Timestamp` written by `apps/webchat` alongside the ms-int
 // `timestamp`) is intentionally NOT modeled — it is a redundant server-write
 // companion the new UI never reads; it is soft-stripped on read and is never
 // sent through the converter, so it never trips the strict-write check.

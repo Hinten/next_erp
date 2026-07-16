@@ -104,7 +104,7 @@ function waTimestampToMs(ts: string): number {
   return Number.isFinite(secs) ? secs * 1000 : Date.now();
 }
 
-/** Coerce a conversa date field (ISO string, or a legacy ms number) to epoch ms. */
+/** Coerce a conversa date field (epoch ms int, or a stray legacy ISO string) to epoch ms. */
 function toEpochMs(v: unknown): number | null {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
   if (typeof v === 'string') {
@@ -226,8 +226,7 @@ async function processInboundMessage(
   const displayPhone = value.metadata.display_phone_number;
   const from = message.from;
   const timestampMs = waTimestampToMs(message.timestamp);
-  const timestampIso = new Date(timestampMs).toISOString();
-  const prazoIso = new Date(timestampMs + DAY_MS).toISOString();
+  const prazoMs = timestampMs + DAY_MS;
 
   const fromName = value.contacts?.find((c) => c.wa_id === from)?.profile?.name ?? null;
   const user = await discoverUserByPhoneNumber(db, from, fromName);
@@ -245,8 +244,7 @@ async function processInboundMessage(
     userName: user.usuario.nome,
     userId: user.id,
     timestampMs,
-    timestampIso,
-    prazoIso,
+    prazoMs,
     wamid: message.id,
   });
 
@@ -259,7 +257,6 @@ async function processInboundMessage(
     userId: user.id,
     message,
     timestampMs,
-    timestampIso,
   });
 
   await enviarMsgAutomatica(db, conta, conversaId, from);
@@ -286,8 +283,7 @@ interface UpsertArgs {
   userName: string;
   userId: string;
   timestampMs: number;
-  timestampIso: string;
-  prazoIso: string;
+  prazoMs: number;
   wamid: string;
 }
 
@@ -311,15 +307,15 @@ async function upsertConversa(
     if (!snap.exists) {
       const data = conversaCollection.parse({
         atendido: false,
-        data_cadastro: args.timestampIso,
-        ultimaModificacaoIntegracao: args.timestampIso,
+        data_cadastro: args.timestampMs,
+        ultimaModificacaoIntegracao: args.timestampMs,
         origem: 'whatsapp',
         sender_id: args.sender,
         nome: args.userName,
         usarioOuterRef: usuarioOuterRef(args.userId),
         integracaoOuterRef: `documents/integracao/${args.contaId}`,
         id: args.phoneNumberId,
-        prazo_resposta: args.prazoIso,
+        prazo_resposta: args.prazoMs,
         cor_etiqueta: args.conta.cor ?? 0,
         externalLink: `https://api.whatsapp.com/send?phone=${args.from}`,
         estadoConversa: ESTADO_CONVERSA.naoRespondido,
@@ -327,7 +323,7 @@ async function upsertConversa(
       txn.set(convRef, data);
       writeEvent(db, txn, args.conversaId, 'evento_nova', {
         conteudo: `Nova conversa iniciada por ${args.userName}.`,
-        timestampIso: args.timestampIso,
+        timestampMs: args.timestampMs,
       });
       return { skipMensagem: false, conversaNome: args.userName };
     }
@@ -350,14 +346,14 @@ async function upsertConversa(
 
     if (podeReabrirConversa(existing.estadoConversa)) {
       const patch = conversaCollection.parseMerge({
-        ultimaModificacaoIntegracao: args.timestampIso,
+        ultimaModificacaoIntegracao: args.timestampMs,
         estadoConversa: ESTADO_CONVERSA.naoRespondido,
-        prazo_resposta: args.prazoIso,
+        prazo_resposta: args.prazoMs,
       });
       txn.set(convRef, patch, { merge: true });
       writeEvent(db, txn, args.conversaId, `evento_reaberto_${args.wamid}`, {
         conteudo: `Atendimento do ${args.userName} reaberto automaticamente após nova mensagem do cliente.`,
-        timestampIso: args.timestampIso,
+        timestampMs: args.timestampMs,
       });
     }
     // In-order + NOT reopenable (e.g. emResposta): legacy assigns
@@ -378,14 +374,14 @@ function writeEvent(
   txn: Transaction,
   conversaId: string,
   eventoId: string,
-  { conteudo, timestampIso }: { conteudo: string; timestampIso: string },
+  { conteudo, timestampMs }: { conteudo: string; timestampMs: number },
 ): void {
   const data = mensagemCollection.parse({
     estadoEnvio: ESTADO_ENVIO.salva, // salva, but tipo 'e' keeps PR-3 from sending it
     tipo: 'e',
     conteudo,
-    data_cadastro: timestampIso,
-    timestamp: timestampIso,
+    data_cadastro: timestampMs,
+    timestamp: timestampMs,
   });
   txn.set(mensagemCollection.docRef(db, { conversaId }, eventoId), data);
 }
@@ -398,7 +394,6 @@ interface MensagemArgs {
   userId: string;
   message: IncomingMessage;
   timestampMs: number;
-  timestampIso: string;
 }
 
 /**
@@ -410,13 +405,13 @@ interface MensagemArgs {
 async function createOrUpdateMensagem(
   db: Firestore,
   deps: WhatsappProcessDeps,
-  { contaId, conversaId, userId, message, timestampMs, timestampIso }: MensagemArgs,
+  { contaId, conversaId, userId, message, timestampMs }: MensagemArgs,
 ): Promise<void> {
   const msgId = mensagemDocId(contaId, message.id);
   const msgRef = mensagemCollection.docRef(db, { conversaId }, msgId);
 
   const oldSnap = await msgRef.get();
-  let dataCadastroIso = timestampIso;
+  let dataCadastroMs = timestampMs;
   if (oldSnap.exists) {
     const old = mensagemCollection.parseRead(
       oldSnap.data(),
@@ -424,7 +419,10 @@ async function createOrUpdateMensagem(
     );
     const oldTs = toEpochMs(old.timestamp);
     if (oldTs != null && oldTs >= timestampMs) return; // same or newer → idempotent skip
-    if (old.data_cadastro) dataCadastroIso = String(old.data_cadastro);
+    // Preserve the original create time across an update (keep-old-value); the
+    // codec tolerates a stray ISO value on the stored field via `toEpochMs`.
+    const oldCadastro = toEpochMs(old.data_cadastro);
+    if (oldCadastro != null) dataCadastroMs = oldCadastro;
   }
 
   // Media — resolve the account's Graph client + bucket only when needed.
@@ -440,8 +438,8 @@ async function createOrUpdateMensagem(
     usarioMensagemOuterRef: usuarioOuterRef(userId),
     mid: message.id,
     midGroup: msgId,
-    data_cadastro: dataCadastroIso,
-    timestamp: timestampIso,
+    data_cadastro: dataCadastroMs,
+    timestamp: timestampMs,
   };
 
   if (message.image) {
@@ -600,7 +598,7 @@ async function enviarMsgAutomatica(
     if (last == null || now.getTime() - last >= DAY_MS) {
       await writeAutoReply(db, conversaId, conta.mensagem_inatividade, now, 'fora');
       await conversaCollection.merge(db, {}, conversaId, {
-        recebido_fora_atendimento: now.toISOString(),
+        recebido_fora_atendimento: now.getTime(),
       });
     }
   } else if (conta.mensagem_automatica && aberto) {
@@ -608,7 +606,7 @@ async function enviarMsgAutomatica(
     if (last == null || now.getTime() - last >= DAY_MS) {
       await writeAutoReply(db, conversaId, conta.mensagem_automatica, now, 'dentro');
       await conversaCollection.merge(db, {}, conversaId, {
-        recebido_durante_atendimento: now.toISOString(),
+        recebido_durante_atendimento: now.getTime(),
       });
     }
   }
@@ -622,14 +620,14 @@ async function writeAutoReply(
   now: Date,
   kind: 'dentro' | 'fora',
 ): Promise<void> {
-  const dayKey = now.toISOString().slice(0, 10); // yyyy-mm-dd (UTC)
+  const dayKey = now.toISOString().slice(0, 10); // yyyy-mm-dd (UTC) — a doc-id key, not a datetime field
   const id = `autoreply_${kind}_${dayKey}`;
   const data = mensagemCollection.parse({
     estadoEnvio: ESTADO_ENVIO.salva, // salva + tipo 'c' → PR-3 sends it
     tipo: 'c',
     conteudo: texto,
-    data_cadastro: now.toISOString(),
-    timestamp: now.toISOString(),
+    data_cadastro: now.getTime(),
+    timestamp: now.getTime(),
   });
   try {
     await mensagemCollection.docRef(db, { conversaId }, id).create(data);

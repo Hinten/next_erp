@@ -90,7 +90,7 @@ const baseMensagem: Mensagem = {
   transcription: null,
   anexo: null,
   anexo_url: null,
-  timestamp: '2026-07-15T12:00:00.000Z',
+  timestamp: Date.parse('2026-07-15T12:00:00.000Z'),
 };
 
 afterEach(() => {

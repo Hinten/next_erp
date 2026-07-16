@@ -18,9 +18,20 @@ function matches(data: DocData, clauses: Clause[]): boolean {
   return clauses.every((c) => {
     const v = data[c.field];
     if (c.op === '==') return v === c.value;
-    if (c.op === '<') return typeof v === 'string' && typeof c.value === 'string' && v < c.value;
+    if (c.op === '<') {
+      // `timestamp` is millisecondsSinceEpoch INT now (#484/#486), so the sweep
+      // cutoff is numeric; keep the string branch for any legacy string range.
+      if (typeof v === 'number' && typeof c.value === 'number') return v < c.value;
+      return typeof v === 'string' && typeof c.value === 'string' && v < c.value;
+    }
     return false;
   });
+}
+
+/** Order comparator that handles numeric (ms-int) and string fields alike. */
+function compareField(a: unknown, b: unknown): number {
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  return String(a ?? '').localeCompare(String(b ?? ''));
 }
 
 interface Op {
@@ -90,9 +101,8 @@ class FakeDb {
         let rows = [...col.entries()].filter(([, d]) => matches(d, clauses));
         if (order) {
           rows.sort(([, a], [, b]) => {
-            const av = String(a[order.field] ?? '');
-            const bv = String(b[order.field] ?? '');
-            return order.dir === 'desc' ? bv.localeCompare(av) : av.localeCompare(bv);
+            const cmp = compareField(a[order.field], b[order.field]);
+            return order.dir === 'desc' ? -cmp : cmp;
           });
         }
         if (lim != null) rows = rows.slice(0, lim);
@@ -130,9 +140,8 @@ class FakeDb {
         }
         if (order) {
           rows.sort((a, b) => {
-            const av = String(a.data[order.field] ?? '');
-            const bv = String(b.data[order.field] ?? '');
-            return order.dir === 'desc' ? bv.localeCompare(av) : av.localeCompare(bv);
+            const cmp = compareField(a.data[order.field], b.data[order.field]);
+            return order.dir === 'desc' ? -cmp : cmp;
           });
         }
         const sliced = lim != null ? rows.slice(0, lim) : rows;
@@ -226,13 +235,16 @@ function seedWhatsappConversa(db: FakeDb, conversaId = CONV_ID): void {
   });
 }
 
+// `timestamp` is millisecondsSinceEpoch INT now (#484/#486).
+const TS_NOON = Date.parse('2026-07-15T12:00:00.000Z');
+
 function outboundDoc(extra: DocData = {}): DocData {
   return {
     estadoEnvio: 1, // salva
     tipo: 'c',
     conteudo: 'Olá cliente',
     mid: null,
-    timestamp: '2026-07-15T12:00:00.000Z',
+    timestamp: TS_NOON,
     ...extra,
   };
 }
@@ -576,22 +588,23 @@ describe('dispatchOutbound — markRead best-effort', () => {
     db.seed(MSG_COL, 'in-old', {
       estadoEnvio: 7,
       mid: 'wamid.old',
-      timestamp: '2026-07-15T11:00:00.000Z',
+      timestamp: Date.parse('2026-07-15T11:00:00.000Z'),
     });
     db.seed(MSG_COL, 'in-new', {
       estadoEnvio: 7,
       mid: 'wamid.new',
-      timestamp: '2026-07-15T11:59:00.000Z',
+      timestamp: Date.parse('2026-07-15T11:59:00.000Z'),
     });
     const client = fakeClient();
 
     await dispatchOutbound(asDb(db), CONV_ID, 'orig-1', outboundDoc(), fakeDeps(client));
     expect(client.markRead).toHaveBeenCalledWith('wamid.new');
     expect(client.markRead).toHaveBeenCalledTimes(1);
-    // Legacy parity: the marked inbound doc gets `visualizado` stamped (ISO).
+    // Legacy parity: the marked inbound doc gets `visualizado` stamped as a
+    // millisecondsSinceEpoch INT (#484/#486).
     const inbound = db.docs(MSG_COL).get('in-new');
-    expect(typeof inbound?.visualizado).toBe('string');
-    expect(() => new Date(inbound?.visualizado as string).toISOString()).not.toThrow();
+    expect(typeof inbound?.visualizado).toBe('number');
+    expect(inbound?.visualizado).toBeGreaterThan(0);
   });
 
   it('a Graph markRead failure is non-fatal (send still counts as sent)', async () => {
@@ -601,7 +614,7 @@ describe('dispatchOutbound — markRead best-effort', () => {
     db.seed(MSG_COL, 'in-new', {
       estadoEnvio: 7,
       mid: 'wamid.new',
-      timestamp: '2026-07-15T11:59:00.000Z',
+      timestamp: Date.parse('2026-07-15T11:59:00.000Z'),
     });
     const client = fakeClient({
       markRead: vi.fn(async () => {
@@ -630,7 +643,7 @@ describe('dispatchOutbound — markRead best-effort', () => {
     db.seed(MSG_COL, 'in-new', {
       estadoEnvio: 7,
       mid: 'wamid.new',
-      timestamp: '2026-07-15T11:59:00.000Z',
+      timestamp: Date.parse('2026-07-15T11:59:00.000Z'),
     });
     const client = fakeClient({
       markRead: vi.fn(async () => {
@@ -652,21 +665,21 @@ describe('sweepStaleOutbound', () => {
     db.seed(
       'chat/conv-wa/mensagem',
       'm-wa',
-      outboundDoc({ timestamp: '2026-07-15T11:40:00.000Z' }),
+      outboundDoc({ timestamp: Date.parse('2026-07-15T11:40:00.000Z') }),
     );
     // site conversa with a stale salva message → fast-path skip inside dispatch.
     db.seed(CHAT, 'conv-site', { origem: 'site', sender_id: SENDER });
     db.seed(
       'chat/conv-site/mensagem',
       'm-site',
-      outboundDoc({ timestamp: '2026-07-15T11:40:00.000Z' }),
+      outboundDoc({ timestamp: Date.parse('2026-07-15T11:40:00.000Z') }),
     );
     // fresh salva message (inside the window) → excluded by the timestamp filter.
     seedWhatsappConversa(db, 'conv-fresh');
     db.seed(
       'chat/conv-fresh/mensagem',
       'm-fresh',
-      outboundDoc({ timestamp: '2026-07-15T11:59:30.000Z' }),
+      outboundDoc({ timestamp: Date.parse('2026-07-15T11:59:30.000Z') }),
     );
 
     // integracaoOuterRef on conv-wa points at CONTA (contaPath derives 'conv-wa'
@@ -682,6 +695,46 @@ describe('sweepStaleOutbound', () => {
     expect(result.outcomes.skipped).toBe(1);
   });
 
+  it('passes a NUMERIC timestamp cutoff to the group query (a string bound matches zero docs)', async () => {
+    // Regression guard for #484/#486: `mensagem.timestamp` is millisecondsSinceEpoch
+    // INT now, so the sweep's range bound MUST be a number. A stray ISO-string
+    // cutoff would silently match zero docs and kill the sweep.
+    const db = new FakeDb();
+    seedWhatsappConversa(db, 'conv-wa');
+    db.seed(
+      'chat/conv-wa/mensagem',
+      'm-wa',
+      outboundDoc({ timestamp: Date.parse('2026-07-15T11:40:00.000Z') }),
+    );
+
+    // Capture the `timestamp <` bound the sweep passes to the group query.
+    interface QueryLike {
+      where(field: string, op: string, value: unknown): QueryLike;
+      orderBy(field: string, dir?: 'asc' | 'desc'): QueryLike;
+      limit(n: number): QueryLike;
+      get(): Promise<unknown>;
+    }
+    const cutoffs: unknown[] = [];
+    const realGroup = db.collectionGroup.bind(db);
+    const wrapQuery = (q: QueryLike): QueryLike => ({
+      where: (field, op, value) => {
+        if (field === 'timestamp' && op === '<') cutoffs.push(value);
+        return wrapQuery(q.where(field, op, value));
+      },
+      orderBy: (field, dir) => wrapQuery(q.orderBy(field, dir)),
+      limit: (n) => wrapQuery(q.limit(n)),
+      get: () => q.get(),
+    });
+    (db as unknown as { collectionGroup: (g: string) => QueryLike }).collectionGroup = (g) =>
+      wrapQuery(realGroup(g) as unknown as QueryLike);
+
+    const now = Date.parse('2026-07-15T12:00:00.000Z');
+    await sweepStaleOutbound(asDb(db), { now }, fakeDeps(fakeClient()));
+
+    expect(cutoffs.length).toBeGreaterThan(0);
+    for (const c of cutoffs) expect(typeof c).toBe('number');
+  });
+
   it('re-drives a crashed claim (stale enviando + mid==null), re-anchoring it', async () => {
     const db = new FakeDb();
     // A claim that crashed between flip and re-anchor: stuck `enviando`, mid still null.
@@ -689,7 +742,7 @@ describe('sweepStaleOutbound', () => {
     db.seed(
       'chat/conv-crash/mensagem',
       'm-crash',
-      outboundDoc({ estadoEnvio: 2, mid: null, timestamp: '2026-07-15T11:40:00.000Z' }),
+      outboundDoc({ estadoEnvio: 2, mid: null, timestamp: Date.parse('2026-07-15T11:40:00.000Z') }),
     );
     const client = fakeClient();
     const now = Date.parse('2026-07-15T12:00:00.000Z');
@@ -714,7 +767,7 @@ describe('sweepStaleOutbound', () => {
       tipo: 'c',
       conteudo: 'já enviado',
       mid: 'wamid.LIVE',
-      timestamp: '2026-07-15T11:40:00.000Z',
+      timestamp: Date.parse('2026-07-15T11:40:00.000Z'),
     });
     const client = fakeClient();
     const now = Date.parse('2026-07-15T12:00:00.000Z');

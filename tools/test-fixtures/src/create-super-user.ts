@@ -50,7 +50,7 @@ export async function createSuperUser(
       email,
       isSuperUser: true,
       jaFoiSuperUser: true,
-      timestamp: new Date().toISOString(),
+      timestamp: Date.now(),
     });
     await ref.set(doc);
   }
