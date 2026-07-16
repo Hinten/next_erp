@@ -1,10 +1,9 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import { Alert, Badge, Box, Group, Select, Skeleton, Stack, Text, Title } from '@mantine/core';
 import { setDoc } from 'firebase/firestore';
-import { PageHeader } from '@delfrance/ui';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import {
   ESTADO_CONVERSA,
@@ -14,7 +13,7 @@ import {
 } from '@delfrance/schemas';
 import { conversaCollection } from '@/lib/data/conversaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
-import { ConversaList } from '../_components/ConversaList';
+import { ChatInboxShell } from '../_components/ChatInboxShell';
 import { MensagemThread } from '../_components/MensagemThread';
 
 const estadoOptions = (Object.values(ESTADO_CONVERSA) as EstadoConversa[])
@@ -26,7 +25,6 @@ const estadoOptions = (Object.values(ESTADO_CONVERSA) as EstadoConversa[])
 
 export default function ConversaDetailPage() {
   const params = useParams<{ id: string }>();
-  const [search, setSearch] = useState('');
 
   const docRef = useMemo(
     () => conversaCollection.docRef(getFirebaseFirestore(), {}, params.id),
@@ -39,8 +37,12 @@ export default function ConversaDetailPage() {
     if (next === null || !data) return;
     const nextEstado = Number(next) as EstadoConversa;
     if (nextEstado === data.data.estadoConversa) return;
+    // Strip the converter for this PATCH: the converter's toFirestore runs a
+    // full schema.parse, which fills every defaulted field — a converted
+    // merge would clobber nome/origem/refs/etiqueta with schema defaults
+    // (same rationale as BulkActionsBar's raw patch).
     await setDoc(
-      docRef,
+      docRef.withConverter(null),
       {
         estadoConversa: nextEstado,
         ultima_modificacao: Date.now(),
@@ -50,67 +52,55 @@ export default function ConversaDetailPage() {
   }
 
   return (
-    <Stack h="calc(100vh - 96px)" gap="md">
-      <PageHeader title="Chat" description="Atendimentos em tempo real" />
-      <Group align="stretch" gap="md" style={{ flex: 1, minHeight: 0 }}>
-        <Box
-          w={320}
-          style={{
-            borderRight: '1px solid var(--mantine-color-gray-2)',
-            paddingRight: 12,
-          }}
-        >
-          <ConversaList activeId={params.id} search={search} onSearchChange={setSearch} />
-        </Box>
-        <Stack style={{ flex: 1, minHeight: 0 }} gap={0}>
-          {error && <Alert color="red">{error.message}</Alert>}
-          {loading && <Skeleton height={64} m="md" />}
-          {!loading && !data && (
-            <Alert color="yellow" m="md">
-              Conversa não encontrada.
-            </Alert>
-          )}
-          {!loading && data && (
-            <>
-              <Box
-                p="md"
-                style={{
-                  borderBottom: '1px solid var(--mantine-color-gray-2)',
-                }}
-              >
-                <Group justify="space-between" wrap="nowrap">
-                  <Stack gap={2}>
-                    <Title order={4}>{data.data.nome}</Title>
-                    <Group gap="xs">
-                      <Badge variant="light">{ORIGEM_LABELS[data.data.origem]}</Badge>
-                      {data.data.atendido && (
-                        <Badge variant="light" color="green">
-                          Atendido
-                        </Badge>
-                      )}
-                      {data.data.prazo_resposta && (
-                        <Text size="xs" c="dimmed">
-                          Prazo: {new Date(data.data.prazo_resposta).toLocaleString('pt-BR')}
-                        </Text>
-                      )}
-                    </Group>
-                  </Stack>
-                  <Select
-                    data={estadoOptions}
-                    value={String(data.data.estadoConversa)}
-                    onChange={handleEstadoChange}
-                    w={240}
-                    size="xs"
-                  />
-                </Group>
-              </Box>
-              <Box style={{ flex: 1, minHeight: 0 }}>
-                <MensagemThread conversaId={data.id} />
-              </Box>
-            </>
-          )}
-        </Stack>
-      </Group>
-    </Stack>
+    <ChatInboxShell activeId={params.id}>
+      <Stack style={{ flex: 1, minHeight: 0 }} gap={0}>
+        {error && <Alert color="red">{error.message}</Alert>}
+        {loading && <Skeleton height={64} m="md" />}
+        {!loading && !data && (
+          <Alert color="yellow" m="md">
+            Conversa não encontrada.
+          </Alert>
+        )}
+        {!loading && data && (
+          <>
+            <Box
+              p="md"
+              style={{
+                borderBottom: '1px solid var(--mantine-color-gray-2)',
+              }}
+            >
+              <Group justify="space-between" wrap="nowrap">
+                <Stack gap={2}>
+                  <Title order={4}>{data.data.nome}</Title>
+                  <Group gap="xs">
+                    <Badge variant="light">{ORIGEM_LABELS[data.data.origem]}</Badge>
+                    {data.data.atendido && (
+                      <Badge variant="light" color="green">
+                        Atendido
+                      </Badge>
+                    )}
+                    {data.data.prazo_resposta && (
+                      <Text size="xs" c="dimmed">
+                        Prazo: {new Date(data.data.prazo_resposta).toLocaleString('pt-BR')}
+                      </Text>
+                    )}
+                  </Group>
+                </Stack>
+                <Select
+                  data={estadoOptions}
+                  value={String(data.data.estadoConversa)}
+                  onChange={handleEstadoChange}
+                  w={240}
+                  size="xs"
+                />
+              </Group>
+            </Box>
+            <Box style={{ flex: 1, minHeight: 0 }}>
+              <MensagemThread conversaId={data.id} />
+            </Box>
+          </>
+        )}
+      </Stack>
+    </ChatInboxShell>
   );
 }

@@ -29,8 +29,8 @@ app/
     pedidos/              Phase 3
     pagamentos/           Phase 3
     nfe/                  Phase 5 (UI; emission server-side in apps/integrations)
-    chat/                 Phase 4
-    whatsapp/             Phase 4
+    chat/                 Phase 4 — THE unified inbox (all channels)
+    whatsapp/             redirect stubs → /chat (inbox unified there)
     canais/               Phase 5
     relatorios/           Phase 3
     configuracoes/        Phase 2+

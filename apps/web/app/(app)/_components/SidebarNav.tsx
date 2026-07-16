@@ -78,10 +78,9 @@ const NAV: NavEntry[] = [
       { href: '/canais/shopee', label: 'Shopee' },
       { href: '/canais/webchat', label: 'Webchat' },
       { href: '/canais/whatsapp', label: 'WhatsApp' },
-      // NOTE: `/whatsapp` below is the chat INBOX (#528 keeps it as-is) — a
-      // different screen from the config page above, gated by chat.read
-      // instead of the group's configuracoes.read.
-      { href: '/whatsapp', label: 'WhatsApp', perm: PERM.chat.read },
+      // The WhatsApp chat INBOX moved into the unified `/chat` inbox (PR-C2,
+      // supersedes #528's separate `/whatsapp` entry); `/canais/whatsapp` above
+      // stays as the account-config screen.
     ],
   },
   {

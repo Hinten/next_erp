@@ -6,6 +6,7 @@ import {
   type DocumentSnapshot,
   type FirestoreError,
   type Query,
+  type QueryDocumentSnapshot,
   type QuerySnapshot,
   onSnapshot,
 } from 'firebase/firestore';
@@ -20,11 +21,30 @@ export interface SnapshotState<T> {
  * One row in a collection snapshot. `path` is the full Firestore document
  * path (`pedidos/abc/pagamentos/xyz`) — handy for collection-group queries
  * where the parent id needs to be recovered for deep-linking.
+ *
+ * `snap` (the raw `QueryDocumentSnapshot`) is populated ONLY by the opt-in
+ * {@link useSnapshotWithDocs}; it is a cursor for `paginate({ after })`. Plain
+ * {@link useSnapshot} leaves it `undefined` (no behavioural change to existing
+ * callers).
  */
 export interface SnapshotRow<T> {
   id: string;
   path: string;
   data: T;
+  snap?: QueryDocumentSnapshot<T>;
+}
+
+/**
+ * Map a `QuerySnapshot` to `SnapshotRow`s. Pure (no React/Firestore side
+ * effects) so it can be unit-tested with a plain fake snapshot. `includeDocs`
+ * attaches the raw `QueryDocumentSnapshot` as `row.snap` for cursor pagination.
+ */
+export function mapSnapshotRows<T>(snap: QuerySnapshot<T>, includeDocs: boolean): SnapshotRow<T>[] {
+  return snap.docs.map((d) => {
+    const row: SnapshotRow<T> = { id: d.id, path: d.ref.path, data: d.data() };
+    if (includeDocs) row.snap = d;
+    return row;
+  });
 }
 
 /**
@@ -35,6 +55,24 @@ export interface SnapshotRow<T> {
  * tears down the subscription on unmount and on query identity change.
  */
 export function useSnapshot<T>(q: Query<T> | null): SnapshotState<SnapshotRow<T>[]> {
+  return useSnapshotRows(q, false);
+}
+
+/**
+ * Like {@link useSnapshot}, but each row also carries its raw
+ * `QueryDocumentSnapshot` as `row.snap` — the cursor `paginate({ after })`
+ * needs to fetch the next page one-shot (e.g. the chat inbox's "Carregar
+ * mais"). Additive: the shape is identical to `useSnapshot` plus the optional
+ * `snap` field, so callers that don't need the cursor keep using `useSnapshot`.
+ */
+export function useSnapshotWithDocs<T>(q: Query<T> | null): SnapshotState<SnapshotRow<T>[]> {
+  return useSnapshotRows(q, true);
+}
+
+function useSnapshotRows<T>(
+  q: Query<T> | null,
+  includeDocs: boolean,
+): SnapshotState<SnapshotRow<T>[]> {
   const [state, setState] = useState<SnapshotState<SnapshotRow<T>[]>>({
     data: undefined,
     loading: true,
@@ -51,11 +89,7 @@ export function useSnapshot<T>(q: Query<T> | null): SnapshotState<SnapshotRow<T>
       q,
       (snap: QuerySnapshot<T>) => {
         setState({
-          data: snap.docs.map((d) => ({
-            id: d.id,
-            path: d.ref.path,
-            data: d.data(),
-          })),
+          data: mapSnapshotRows(snap, includeDocs),
           loading: false,
           error: undefined,
         });
@@ -63,7 +97,7 @@ export function useSnapshot<T>(q: Query<T> | null): SnapshotState<SnapshotRow<T>
       (error) => setState({ data: undefined, loading: false, error }),
     );
     return unsub;
-  }, [q]);
+  }, [q, includeDocs]);
 
   return state;
 }
