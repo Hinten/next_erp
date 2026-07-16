@@ -200,6 +200,7 @@ Add a leaf (or a child of a group) to the `NAV` array, with `perm`:
 | `monitorField` | Field the update-monitor orders by (`limit(1)`, desc) to flag a stale page. `false` disables; omitted auto-resolves `ultimaModificacao` → `timestamp` → disabled. |
 | `pageSize` | Rows per page (default 50). |
 | `pathContext` | For sub-collections (`{ parentId }`). |
+| `extraFilters` | `ReadonlyArray<PipelineFieldFilter>` — page-owned server-side filters (no filter UI, never in the URL), AND-combined with `meta.defaultQuery` base filters and the user's column filters. An entry whose value is an EMPTY array short-circuits to an empty result set without querying (e.g. an `array-contains-any` whose resolved candidate list is empty). Ignored under `queryOverride`. On the classic fallback path `array-contains-any` is capped at 30 values and `contains`/`startsWith` throw (pipeline-only). |
 | `queryOverride` | Escape hatch: pass a ready-made Firestore `Query`. |
 
 ## 5. Reference — `ObjectView` (`packages/ui/src/object/ObjectView.tsx`)

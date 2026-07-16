@@ -7,6 +7,8 @@ import {
   type BooleanExpression,
   type Pipeline,
   and,
+  arrayContains,
+  arrayContainsAny,
   ascending,
   descending,
   documentId,
@@ -59,12 +61,28 @@ export interface PipelineOrderSpec {
   direction?: 'asc' | 'desc';
 }
 
-export type PipelineFilterOp = 'contains' | 'startsWith' | 'eq' | 'lt' | 'lte' | 'gt' | 'gte';
+export type PipelineFilterOp =
+  | 'contains'
+  | 'startsWith'
+  | 'eq'
+  | 'lt'
+  | 'lte'
+  | 'gt'
+  | 'gte'
+  | 'array-contains'
+  | 'array-contains-any';
 
 export interface PipelineFieldFilter {
   field: string;
   op: PipelineFilterOp;
-  value: string | number | boolean | null;
+  /**
+   * The array form is ONLY for `array-contains-any` (membership against a
+   * list of candidates) — `buildPipeline` throws if any other op receives an
+   * array. `array-contains-any` with an EMPTY list also throws — an empty
+   * candidate set means "no rows", and callers must short-circuit to an
+   * empty result set instead of querying.
+   */
+  value: string | number | boolean | null | ReadonlyArray<string | number | boolean | null>;
 }
 
 export interface PipelineSpec {
@@ -166,6 +184,17 @@ export function buildSimilarityRegExp(term: string): RegExp | null {
 }
 
 function filterExpr(f: PipelineFieldFilter): BooleanExpression {
+  // Only `array-contains-any` takes a candidate LIST; every other op compares
+  // against a single scalar. The type on `PipelineFieldFilter.value` admits
+  // the array form for all ops, so guard at runtime — otherwise an array
+  // would be passed silently into equal()/lessThan()/arrayContains()/… and
+  // produce a nonsense server-side comparison instead of a clear failure.
+  if (f.op !== 'array-contains-any' && Array.isArray(f.value)) {
+    throw new Error(
+      `buildPipeline: op "${f.op}" on "${f.field}" received an array value. ` +
+        `Only "array-contains-any" accepts a list; pass a scalar instead.`,
+    );
+  }
   const fld = field(f.field);
   switch (f.op) {
     case 'contains': {
@@ -187,6 +216,20 @@ function filterExpr(f: PipelineFieldFilter): BooleanExpression {
       return greaterThan(fld, f.value);
     case 'gte':
       return greaterThanOrEqual(fld, f.value);
+    case 'array-contains':
+      return arrayContains(f.field, f.value);
+    case 'array-contains-any': {
+      const values = Array.isArray(f.value) ? f.value : [f.value];
+      // Empty candidate list means "no rows" — callers must short-circuit to
+      // an empty result set instead of querying (mirrors the `idIn: []` rule).
+      if (values.length === 0) {
+        throw new Error(
+          `buildPipeline: array-contains-any on "${f.field}" received an empty ` +
+            `value list. Skip the query and render an empty result set instead.`,
+        );
+      }
+      return arrayContainsAny(f.field, [...values]);
+    }
   }
 }
 

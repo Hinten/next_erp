@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { ESTADO_NFE, ESTADO_NFE_LABELS, estadoNFeSchema, nfeMeta, nfeSchema } from './nfe';
+import {
+  CHAVE_NFE_REGEX,
+  ESTADO_NFE,
+  ESTADO_NFE_LABELS,
+  estadoNFeSchema,
+  nfeMeta,
+  nfeSchema,
+} from './nfe';
 import { pedidoMeta } from './pedido';
 
 const MINIMAL = {
@@ -99,6 +106,25 @@ describe('nfeSchema', () => {
   it('rejects empty xml_assinado / nRec (must be null or non-empty)', () => {
     expect(nfeSchema.safeParse({ ...MINIMAL, xml_assinado: '' }).success).toBe(false);
     expect(nfeSchema.safeParse({ ...MINIMAL, nRec: '' }).success).toBe(false);
+  });
+});
+
+describe('CHAVE_NFE_REGEX', () => {
+  it('matches exactly 44 digits and nothing else', () => {
+    expect(CHAVE_NFE_REGEX.test('1'.repeat(44))).toBe(true);
+    expect(CHAVE_NFE_REGEX.test('35260514200166000187550010000000071000000018')).toBe(true);
+    expect(CHAVE_NFE_REGEX.test('1'.repeat(43))).toBe(false);
+    expect(CHAVE_NFE_REGEX.test('1'.repeat(45))).toBe(false);
+    expect(CHAVE_NFE_REGEX.test(`${'1'.repeat(43)}A`)).toBe(false);
+    expect(CHAVE_NFE_REGEX.test('')).toBe(false);
+  });
+
+  it('stays byte-identical to the historical inline pattern', () => {
+    // Several call sites (pedido pageModel, UI inputs) replaced an inline
+    // /^\d{44}$/ with this constant — keep the source stable so behavior
+    // (and any future rules-gen consumption) never drifts.
+    expect(CHAVE_NFE_REGEX.source).toBe('^\\d{44}$');
+    expect(CHAVE_NFE_REGEX.flags).toBe('');
   });
 });
 

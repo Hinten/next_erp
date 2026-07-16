@@ -5,6 +5,7 @@ import {
   autorizarLote,
   consultarLote,
   consultarSituacaoNFe,
+  isEstadoFinalNFe,
   nextConsultaDelayMs,
   outcomeFromInfProt,
   outcomeFromRetConsRec,
@@ -18,6 +19,7 @@ import {
   ESTADO_ENVI_NFE_MSG,
   ESTADO_NFE,
   type EnviNFeMsg,
+  type EstadoNFe,
   type NotaFiscalEletronica,
 } from '@delfrance/schemas';
 
@@ -197,31 +199,35 @@ export function procPersistExtras(nfeProcXml: string): {
   return { xml_nfe_proc: nfeProcXml, xml_assinado: null };
 }
 
-export async function persistPatch(
-  nfeRef: FirebaseFirestore.DocumentReference,
+/**
+ * Shared patch → Firestore merge-data mapping used by BOTH `persistPatch` and
+ * `persistPatchUnlessFinal` — the two must always write the same shape.
+ *
+ * Preserve `nRec`: omit it from the merge when the new patch lacks
+ * one (e.g. consSit responses don't carry an nRec), so we don't
+ * overwrite the value the lote-receipt response (cStat=103) saved.
+ * The authoritative receipt always lives in the enviNfe audit log
+ * anyway; this copy is just for the NFCell.
+ *
+ * `extras` lets the caller stamp other fields in the same write —
+ * currently used for `xml_nfe_proc` on cStat=100 (autorizada). Kept
+ * generic so future fields (e.g. `data_autorizacao`, `nProt`) can
+ * ride along without another method.
+ *
+ * `proximaConsultaEm` (µs epoch) is the BACKSTOP sweep's due-gate: when the
+ * patch leaves the doc still awaiting SEFAZ (`aguardandoResposta`), stamp the
+ * task delay (deterministic — same value the Cloud Task is scheduled with)
+ * PLUS `RECONCILE_SWEEP_GRACE_MS`, so the sweep only steps in once the task is
+ * overdue (lost). Without the grace + determinism the sweep could drift ahead
+ * of a healthy task and double-consult the same `nRec` — and with 656 now
+ * terminal that risks a wrongful terminal error (#77 review). Any
+ * terminal/other estado clears it to `null` so the doc stops being scanned.
+ * An explicit `extras.proximaConsultaEm` override (rare) wins.
+ */
+function buildPersistData(
   patch: NFeStatePatch,
   extras?: Record<string, unknown>,
-): Promise<void> {
-  // Preserve `nRec`: omit it from the merge when the new patch lacks
-  // one (e.g. consSit responses don't carry an nRec), so we don't
-  // overwrite the value the lote-receipt response (cStat=103) saved.
-  // The authoritative receipt always lives in the enviNfe audit log
-  // anyway; this copy is just for the NFCell.
-  //
-  // `extras` lets the caller stamp other fields in the same write —
-  // currently used for `xml_nfe_proc` on cStat=100 (autorizada). Kept
-  // generic so future fields (e.g. `data_autorizacao`, `nProt`) can
-  // ride along without another method.
-  //
-  // `proximaConsultaEm` (µs epoch) is the BACKSTOP sweep's due-gate: when the
-  // patch leaves the doc still awaiting SEFAZ (`aguardandoResposta`), stamp the
-  // task delay (deterministic — same value the Cloud Task is scheduled with)
-  // PLUS `RECONCILE_SWEEP_GRACE_MS`, so the sweep only steps in once the task is
-  // overdue (lost). Without the grace + determinism the sweep could drift ahead
-  // of a healthy task and double-consult the same `nRec` — and with 656 now
-  // terminal that risks a wrongful terminal error (#77 review). Any
-  // terminal/other estado clears it to `null` so the doc stops being scanned.
-  // An explicit `extras.proximaConsultaEm` override (rare) wins.
+): Record<string, unknown> {
   const stampProxima =
     extras != null && Object.prototype.hasOwnProperty.call(extras, 'proximaConsultaEm');
   const proximaConsultaEm =
@@ -229,17 +235,73 @@ export async function persistPatch(
       ? nowMicros() +
         (nextConsultaDelayMs(patch.retries, patch.tMed) + RECONCILE_SWEEP_GRACE_MS) * 1000
       : null;
-  await nfeRef.set(
-    nfev4Collection.parseMerge({
-      estado: patch.estado,
-      cStat: patch.cStat,
-      xMotivo: patch.xMotivo,
-      retries: patch.retries,
-      ...(patch.nRec != null ? { nRec: patch.nRec } : {}),
-      ...(stampProxima ? {} : { proximaConsultaEm }),
-      ...(extras ?? {}),
-      ultima_modificacao: new Date().toISOString(),
-    }),
-    { merge: true },
-  );
+  return nfev4Collection.parseMerge({
+    estado: patch.estado,
+    cStat: patch.cStat,
+    xMotivo: patch.xMotivo,
+    retries: patch.retries,
+    ...(patch.nRec != null ? { nRec: patch.nRec } : {}),
+    ...(stampProxima ? {} : { proximaConsultaEm }),
+    ...(extras ?? {}),
+    ultima_modificacao: new Date().toISOString(),
+  });
+}
+
+export async function persistPatch(
+  nfeRef: FirebaseFirestore.DocumentReference,
+  patch: NFeStatePatch,
+  extras?: Record<string, unknown>,
+): Promise<void> {
+  await nfeRef.set(buildPersistData(patch, extras), { merge: true });
+}
+
+/** Outcome of `persistPatchUnlessFinal` — either written, or skipped with the doc's live truth. */
+export type GuardedPersistResult =
+  | { readonly written: true }
+  | {
+      readonly written: false;
+      /** The doc's CURRENT terminal estado that blocked the write. */
+      readonly estadoAtual: EstadoNFe;
+      readonly cStatAtual: string | null;
+      readonly xMotivoAtual: string | null;
+    };
+
+/**
+ * TOCTOU-guarded variant of `persistPatch` for flows whose anti-regression
+ * defense (`applyOutcome`'s cancelada/inutilizada check) runs against an
+ * estado read BEFORE the SEFAZ round-trip: a doc that reaches a final estado
+ * mid-flight (e.g. a concurrent cancelamento) must not be blindly overwritten.
+ *
+ * Runs a transaction that re-reads the doc; if its CURRENT estado is final
+ * (`isEstadoFinalNFe`) and differs from `patch.estado`, the write is skipped
+ * and `{ written: false, estadoAtual, ... }` returned so the caller can report
+ * the doc's real state. Otherwise it writes exactly what `persistPatch` writes
+ * (shared `buildPersistData` mapping).
+ *
+ * `reconcileByRecibo` / `runProcessarPendentes` deliberately stay on the plain
+ * `persistPatch`: their in-flight queries already filter to non-final docs and
+ * their write cadence is task/sweep-paced, so the plain merge is enough there.
+ */
+export async function persistPatchUnlessFinal(
+  fs: Firestore,
+  nfeRef: FirebaseFirestore.DocumentReference,
+  patch: NFeStatePatch,
+  extras?: Record<string, unknown>,
+): Promise<GuardedPersistResult> {
+  return await fs.runTransaction(async (tx): Promise<GuardedPersistResult> => {
+    const snap = await tx.get(nfeRef);
+    if (snap.exists) {
+      const current = nfev4Collection.parseRead(snap.data(), nfeRef.path);
+      if (isEstadoFinalNFe(current.estado) && current.estado !== patch.estado) {
+        return {
+          written: false,
+          estadoAtual: current.estado,
+          cStatAtual: current.cStat ?? null,
+          xMotivoAtual: current.xMotivo ?? null,
+        };
+      }
+    }
+    tx.set(nfeRef, buildPersistData(patch, extras), { merge: true });
+    return { written: true };
+  });
 }
