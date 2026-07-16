@@ -236,6 +236,17 @@ export {
 } from './notificacaoMercadoPago';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log,
+  // mirrors notificacaoMercadoPago above (#527). Bare schema+meta (perms 0n),
+  // not a DomainSchema — see the NOTE at the bottom of notificacoesWhatsapp.ts.
+  notificacoesWhatsappStatusSchema,
+  notificacoesWhatsappSchema,
+  notificacoesWhatsappMeta,
+  type NotificacoesWhatsappStatus,
+  type NotificacoesWhatsapp,
+} from './notificacoesWhatsapp';
+
+export {
   cargo,
   cargoSchema,
   cargoMeta,

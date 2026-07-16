@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/firebase",
+  "//": "Deploy-ISOLATED config for the apps/whatsapp/functions (codebase `whatsapp`) Cloud Functions — the WhatsApp Cloud API inbound webhook queue consumer + reprocess sweep (#527). Contains ONLY a functions block — deliberately NO firestore/storage/emulators keys — so a deploy with this config can never push the Flutter-owned rules (CLAUDE.md critical rule #1). Separate per-channel codebase so each payment/messaging channel deploys and scales independently. The predeploy hook runs apps/whatsapp/functions/scripts/prepare-deploy.mjs, which esbuild-bundles the function + writes a MINIMAL workspace-free package.json. The function needs FIREBASE_PROJECT_ID + admin creds in its env. Deploy: firebase deploy --only functions:whatsapp --config firebase.whatsapp.deploy.json --project <id>. See apps/whatsapp/functions/DEPLOY.md.",
+  "functions": [
+    {
+      "source": ".deploy/whatsapp-functions",
+      "codebase": "whatsapp",
+      "runtime": "nodejs22",
+      "predeploy": ["node apps/whatsapp/functions/scripts/prepare-deploy.mjs"],
+      "ignore": ["node_modules"]
+    }
+  ]
+}

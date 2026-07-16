@@ -201,6 +201,28 @@ export const webhookEnvelopeSchema = z.object({
   ),
 });
 
+/**
+ * Response body of `GET /{media-id}` — resolves a media id to a short-lived
+ * download URL. Reference:
+ * https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media#retrieve-media-url
+ *
+ * Mirrors legacy `GetMedia` (`.old/packages/canais_de_venda/whatsapp_cloud_api/lib/src/api_v23/media.dart`).
+ * `sha256`/`file_size` are marked optional here even though the documented
+ * payload always includes them — tolerant parsing so an API change that
+ * drops a field degrades to `undefined` instead of throwing.
+ */
+export const mediaMetadataSchema = z
+  .object({
+    id: z.string(),
+    url: z.string(),
+    mime_type: z.string(),
+    sha256: z.string().optional(),
+    file_size: z.number().optional(),
+  })
+  .passthrough();
+
+export type MediaMetadata = z.infer<typeof mediaMetadataSchema>;
+
 export type IncomingMessage = z.infer<typeof incomingMessageSchema>;
 export type StatusUpdate = z.infer<typeof statusUpdateSchema>;
 export type WebhookEnvelope = z.infer<typeof webhookEnvelopeSchema>;
