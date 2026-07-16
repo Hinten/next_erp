@@ -631,6 +631,36 @@ export async function seedMercadoLivreFixtures(
 }
 
 /**
+ * WhatsApp (tipo 6) fixture set — see `seedIntegracaoFixtures`, then patches
+ * each doc with the flat WhatsApp fields (#528) the `/canais/whatsapp`
+ * screen reads: `numero` (the TableView column) and `wa_id`/`phoneNumberId`
+ * (the account identity). Messaging/business-hours fields are left null — the
+ * "business-hours field smoke" test edits them via the UI instead of asserting
+ * on seeded values. (`verificado` is intentionally NOT seeded: the list no
+ * longer renders a "Conexão" column — live status lives on the [id] panel.)
+ */
+export async function seedWhatsappFixtures(
+  prefix: string,
+  n: number,
+): Promise<{ filialId: string; listaId: string; depositoId: string }> {
+  const refs = await seedIntegracaoFixtures(prefix, n, 6);
+  const batch = db().batch();
+  const col = db().collection('integracao');
+  for (let i = 1; i <= n; i += 1) {
+    batch.update(col.doc(`${prefix}-${pad(i)}`), {
+      wa_id: `${prefix}-wa-${pad(i)}`,
+      phoneNumberId: `${prefix}-wa-${pad(i)}`,
+      numero: `5511999${pad(i)}`,
+      mensagem_automatica: null,
+      mensagem_inatividade: null,
+      horario_funcionamento: null,
+    });
+  }
+  await batch.commit();
+  return refs;
+}
+
+/**
  * Teardown for `seedIntegracaoFixtures`: sweeps the seeded Integracao +
  * fixture filial/listaDePrecos/deposito docs, including any UI-created
  * Integracao row sharing the run-scoped prefix.
@@ -651,6 +681,11 @@ export async function cleanupBalcaoFixtures(prefix: string): Promise<void> {
 
 /** Teardown for `seedMercadoLivreFixtures`. */
 export async function cleanupMercadoLivreFixtures(prefix: string): Promise<void> {
+  await cleanupIntegracaoFixtures(prefix);
+}
+
+/** Teardown for `seedWhatsappFixtures`. */
+export async function cleanupWhatsappFixtures(prefix: string): Promise<void> {
   await cleanupIntegracaoFixtures(prefix);
 }
 

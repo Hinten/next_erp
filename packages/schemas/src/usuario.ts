@@ -15,7 +15,13 @@ const PERM_CONFIG_WRITE = 1n << 41n;
  */
 export const usuarioSchema = z.object({
   nome: z.string().min(1).max(255),
-  email: z.string().email().max(255),
+  // Nullable: sem-auth external-channel contacts (see `externalId` below) are
+  // never real Firebase Auth accounts, so they carry no email at all — only
+  // a `usuarios` doc identified by `externalId`. Every collaborator/admin
+  // account created through `/api/admin/users` still requires a real email
+  // at the Firebase Auth layer; this field just stops rejecting the docs
+  // that legitimately have none.
+  email: z.string().email().max(255).nullable().default(null),
   cargos: z.array(z.string()).default([]),
   colaborador: z.boolean().default(false),
   ativo: z.boolean().default(true),
@@ -24,6 +30,16 @@ export const usuarioSchema = z.object({
   jaFoiSuperUser: z.boolean().default(false),
   ultimoAcesso: z.string().datetime().nullable().default(null),
   timestamp: z.string().datetime().nullable().default(null),
+  /**
+   * Sem-auth external-channel contact key — legacy `generateExternalId`:
+   * `sha256('<canal>-<externalId>')` (e.g. `'whatsapp-5511999999999'`),
+   * used to identify a chat participant that never signs into Firebase Auth
+   * (a WhatsApp/Facebook end customer). Used by the WhatsApp
+   * `discover_user`/contact-resolution port (#527) to find-or-create a
+   * `usuarios` doc for an inbound message's sender without an Auth account.
+   * Null for every real (authenticated) user.
+   */
+  externalId: z.string().nullable().default(null),
 });
 
 export type Usuario = z.infer<typeof usuarioSchema>;

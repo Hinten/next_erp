@@ -1,0 +1,41 @@
+# Firebase App Hosting backend config for apps/whatsapp.
+# API-only service for the WhatsApp Business Cloud API channel: per-account
+# permanent-token storage (POST/DELETE /api/whatsapp/token) + the connected-number
+# status route (GET /api/whatsapp/conta, a live Graph phone-number lookup). The
+# inbound webhook receiver (#527) and the outbound sender (#529) land in later PRs.
+runConfig:
+  cpu: 1
+  memoryMiB: 512
+  maxInstances: 20
+  minInstances: 0 # scale-to-zero: a per-channel backend costs only per request
+  concurrency: 80
+# Env (set per-environment in the Firebase console → App Hosting → Environment
+# variables, or via Cloud Secret Manager for secrets; required unless marked
+# OPTIONAL):
+#   FIREBASE_PROJECT_ID          OPTIONAL — auto-detected on App Hosting/Cloud Run
+#                                (GOOGLE_CLOUD_PROJECT / FIREBASE_CONFIG); set only to
+#                                override, or in local dev without a service account
+#   FIREBASE_DATABASE_ID         Firestore database id (default: "default")
+#   WHATSAPP_VERIFY_TOKEN        OPTIONAL (#527) — the hub.verify_token echoed on the
+#                                webhook GET handshake; consumed by the webhook that
+#                                lands in a later PR, not by any route here yet.
+#                                                                (Secret Manager)
+#   WHATSAPP_APP_SECRET          OPTIONAL (#527) — Meta app secret used to verify the
+#                                X-Hub-Signature-256 HMAC on inbound webhook POSTs;
+#                                consumed by the later webhook PR.  (Secret Manager)
+#   WEB_APP_URL                  apps/web origin (the panel that drives the routes)
+#   ALLOWED_ADMIN_ORIGINS        CSV of apps/web origins for CORS (no localhost in prod)
+
+env:
+  # OPTIONAL (#527): consumed by the inbound webhook that lands in a later PR;
+  # no route in this app reads them yet. Declared here so the secret bindings
+  # are ready when the webhook ships.
+  - variable: WHATSAPP_VERIFY_TOKEN
+    secret: whatsapp-verify-token
+    availability:
+      - RUNTIME
+
+  - variable: WHATSAPP_APP_SECRET
+    secret: whatsapp-app-secret
+    availability:
+      - RUNTIME

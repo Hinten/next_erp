@@ -42,3 +42,7 @@ export { pagamentoCollection } from './pagamentoCollection';
 export { historicoEstadoPedidoCollection } from './historicoEstadoPedidoCollection';
 export { credenciaisMetodoPgtoCollection } from './credenciaisMetodoPgtoCollection';
 export { notificacaoMercadoPagoCollection } from './notificacaoMercadoPagoCollection';
+export { clienteCollection } from './clienteCollection';
+export { conversaCollection } from './conversaCollection';
+export { mensagemCollection } from './mensagemCollection';
+export { credenciaisWhatsappCollection } from './credenciaisWhatsappCollection';
