@@ -5,15 +5,10 @@ import { Button, Checkbox, Group, Modal, Paper, Select, Stack, Text } from '@man
 import { notifications } from '@mantine/notifications';
 import { FirebaseError } from 'firebase/app';
 import { writeBatch } from 'firebase/firestore';
-import {
-  ESTADO_CONVERSA,
-  ESTADO_CONVERSA_LABELS,
-  ESTADO_ENVIO,
-  type EstadoConversa,
-} from '@delfrance/schemas';
-import { conversaCollection, mensagemCollection } from '@/lib/data/conversaCollection';
-import { newDocId } from '@/lib/data/newDocId';
+import { ESTADO_CONVERSA, ESTADO_CONVERSA_LABELS, type EstadoConversa } from '@delfrance/schemas';
+import { conversaCollection } from '@/lib/data/conversaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { writeEvent } from '@/lib/chat/writeEvent';
 import { useAuth } from '@/lib/auth';
 import { EtiquetaPicker } from './EtiquetaPicker';
 
@@ -173,34 +168,4 @@ export function BulkActionsBar({
       </Modal>
     </Paper>
   );
-}
-
-/** Append an event mensagem (`tipo: 'e'`) for a conversa to the batch. */
-function writeEvent(
-  batch: ReturnType<typeof writeBatch>,
-  db: ReturnType<typeof getFirebaseFirestore>,
-  conversaId: string,
-  conteudo: string,
-  now: number,
-): void {
-  const eventId = newDocId();
-  batch.set(mensagemCollection.docRef(db, { conversaId }, eventId), {
-    tipo: 'e',
-    estadoEnvio: ESTADO_ENVIO.salva,
-    conteudo,
-    mid: null,
-    canal: 0,
-    user_id: null,
-    resposta: null,
-    usarioMensagemOuterRef: null,
-    urlAvatar: null,
-    midGroup: null,
-    error: null,
-    visualizado: null,
-    transcription: null,
-    anexo: null,
-    anexo_url: null,
-    timestamp: now,
-    data_cadastro: now,
-  });
 }
