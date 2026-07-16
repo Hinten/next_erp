@@ -20,6 +20,8 @@ import { isWhatsappError, whatsappErrorResponse } from '@/lib/whatsapp/respond';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+const CODIGO_RE = /^\d{6}$/;
+
 interface ConfirmarBody {
   integracaoId?: unknown;
   codigo?: unknown;
@@ -43,6 +45,12 @@ export async function POST(req: Request): Promise<NextResponse> {
   const codigo = typeof body.codigo === 'string' ? body.codigo : '';
   if (!integracaoId || !codigo) {
     return NextResponse.json({ error: 'integracaoId e codigo são obrigatórios.' }, { status: 400 });
+  }
+  // Validate the shape before touching Graph — a malformed code can never be
+  // the right one, so fail fast with a clear 400 instead of a wasted upstream
+  // call (mirrors the registro route's pin validation).
+  if (!CODIGO_RE.test(codigo)) {
+    return NextResponse.json({ error: 'Código inválido — informe 6 dígitos.' }, { status: 400 });
   }
 
   const db = getAdminFirestore();
