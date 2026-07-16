@@ -292,8 +292,9 @@ async function reanchor(
  * Zod parses, and the `visualizado` merge below are NOT swallowed — they rethrow so
  * a genuine backend failure surfaces (and the trigger safely retries the no-op).
  * Legacy parity (conversaProvider.dart:1401-1417): on a successful mark-read the
- * inbound doc gets `visualizado` stamped (ISO, like the status pipeline's other
- * datetimes) so the operator UI reflects the read receipt.
+ * inbound doc gets `visualizado` stamped (millisecondsSinceEpoch INT — #484/#486,
+ * like the status pipeline's other datetimes) so the operator UI reflects the
+ * read receipt.
  */
 async function markReadNewestInbound(
   db: Firestore,
@@ -325,7 +326,7 @@ async function markReadNewestInbound(
   }
 
   await mensagemCollection.merge(db, { conversaId }, first.id, {
-    visualizado: new Date().toISOString(),
+    visualizado: Date.now(),
   });
 }
 
@@ -564,7 +565,10 @@ export async function sweepStaleOutbound(
   deps: OutboundDeps = defaultOutboundDeps,
 ): Promise<SweepResult> {
   const now = opts.now ?? Date.now();
-  const cutoffIso = new Date(now - (opts.olderThanMs ?? STALE_OUTBOUND_MS)).toISOString();
+  // NUMERIC cutoff — `mensagem.timestamp` is now millisecondsSinceEpoch INT
+  // (#484/#486). A string (ISO) range bound against a numeric field matches ZERO
+  // docs in Firestore, silently killing the sweep, so the cutoff MUST be a number.
+  const cutoff = now - (opts.olderThanMs ?? STALE_OUTBOUND_MS);
   const max = opts.limit ?? 50;
 
   const outcomes: Record<string, number> = {};
@@ -590,7 +594,7 @@ export async function sweepStaleOutbound(
     const snap = await mensagemCollection
       .groupQuery(db)
       .where('estadoEnvio', '==', pass.estado)
-      .where('timestamp', '<', cutoffIso)
+      .where('timestamp', '<', cutoff)
       .orderBy('timestamp')
       .limit(max)
       .get();

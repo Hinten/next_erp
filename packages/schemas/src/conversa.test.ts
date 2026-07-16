@@ -115,12 +115,105 @@ describe('mensagemSchema', () => {
     });
     expect(out.errors?.[0]?.code).toBe(131051);
     expect(out.anexoStorage).toBe('documents/arquivos/a9');
-    expect(out.data_cadastro).toBe('2026-01-01T00:00:00.000Z');
-    expect(out.lastExternalUpdateDateTime).toBe('2026-01-02T00:00:00.000Z');
+    // Lifecycle datetimes are ms-int now (#484/#486): the ISO inputs coerce.
+    expect(out.data_cadastro).toBe(Date.parse('2026-01-01T00:00:00.000Z'));
+    expect(out.lastExternalUpdateDateTime).toBe(Date.parse('2026-01-02T00:00:00.000Z'));
   });
 
   it('rejects a malformed errors[] entry (missing required code/title)', () => {
     expect(mensagemSchema.safeParse({ errors: [{ title: 'no code' }] }).success).toBe(false);
+  });
+});
+
+describe('datetime ms-int wire format (#484/#486)', () => {
+  // The six conversa + four mensagem datetime fields moved from ISO-string to a
+  // millisecondsSinceEpoch INT wire (legacy Flutter `maybeDateTimeToJson`
+  // parity), read through the tolerant `millisSinceEpoch()` codec.
+  const CONVERSA_DT_FIELDS = [
+    'data_cadastro',
+    'ultima_modificacao',
+    'ultimaModificacaoIntegracao',
+    'prazo_resposta',
+    'recebido_fora_atendimento',
+    'recebido_durante_atendimento',
+  ] as const;
+  const MENSAGEM_DT_FIELDS = [
+    'visualizado',
+    'timestamp',
+    'data_cadastro',
+    'lastExternalUpdateDateTime',
+  ] as const;
+
+  // 2024-06-10T06:13:20.000Z === 1_718_000_000_000 ms === 1_718_000_000_000_000 µs.
+  const MS = 1_718_000_000_000;
+  const ISO = '2024-06-10T06:13:20.000Z';
+  const US = 1_718_000_000_000_000;
+
+  it('golden vectors: ms int passes through unchanged', () => {
+    expect(conversaSchema.parse({ data_cadastro: MS }).data_cadastro).toBe(MS);
+    expect(mensagemSchema.parse({ timestamp: MS }).timestamp).toBe(MS);
+  });
+
+  it('golden vectors: an ISO string is coerced to the equivalent ms int', () => {
+    expect(conversaSchema.parse({ data_cadastro: ISO }).data_cadastro).toBe(MS);
+    expect(mensagemSchema.parse({ timestamp: ISO }).timestamp).toBe(MS);
+    // The wire-optional mensagem lifecycle fields coerce identically.
+    expect(mensagemSchema.parse({ data_cadastro: ISO }).data_cadastro).toBe(MS);
+    expect(
+      mensagemSchema.parse({ lastExternalUpdateDateTime: ISO }).lastExternalUpdateDateTime,
+    ).toBe(MS);
+  });
+
+  it('golden vectors: a stray µs int is scaled down to ms', () => {
+    expect(conversaSchema.parse({ ultima_modificacao: US }).ultima_modificacao).toBe(MS);
+    expect(mensagemSchema.parse({ visualizado: US }).visualizado).toBe(MS);
+  });
+
+  it('golden vectors: null passes through', () => {
+    expect(conversaSchema.parse({ data_cadastro: null }).data_cadastro).toBeNull();
+    expect(mensagemSchema.parse({ timestamp: null }).timestamp).toBeNull();
+    // The default is also null when the field is absent.
+    expect(conversaSchema.parse({}).prazo_resposta).toBeNull();
+  });
+
+  it('legacy-reader parity: every parsed datetime is an as-num-castable ms int', () => {
+    // Mirrors the legacy Dart reader `maybeDateTimeFromJson((json[k] as num?)?.toInt())`
+    // — a raw as-num cast. After the codec runs, EVERY datetime field must be a
+    // plain number so the legacy Flutter app (still reading these docs) never
+    // throws on the cast. A `< 9e12` magnitude proves it is milliseconds, not a
+    // µs value that leaked through unscaled.
+    const legacyRead = (v: unknown): number => {
+      if (typeof v !== 'number') throw new TypeError('legacy as-num cast');
+      return Math.trunc(v);
+    };
+
+    const conversa = conversaSchema.parse({
+      data_cadastro: MS,
+      ultima_modificacao: ISO,
+      ultimaModificacaoIntegracao: US,
+      prazo_resposta: MS + 86_400_000,
+      recebido_fora_atendimento: ISO,
+      recebido_durante_atendimento: MS,
+    });
+    for (const field of CONVERSA_DT_FIELDS) {
+      const n = legacyRead(conversa[field]);
+      expect(Number.isInteger(n)).toBe(true);
+      expect(n).toBeGreaterThan(0);
+      expect(n).toBeLessThan(9e12);
+    }
+
+    const mensagem = mensagemSchema.parse({
+      visualizado: US,
+      timestamp: MS,
+      data_cadastro: ISO,
+      lastExternalUpdateDateTime: MS,
+    });
+    for (const field of MENSAGEM_DT_FIELDS) {
+      const n = legacyRead(mensagem[field]);
+      expect(Number.isInteger(n)).toBe(true);
+      expect(n).toBeGreaterThan(0);
+      expect(n).toBeLessThan(9e12);
+    }
   });
 });
 

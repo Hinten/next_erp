@@ -160,7 +160,7 @@ export async function POST(req: Request) {
     jaFoiColaborador: body.colaborador,
     jaFoiSuperUser: body.isSuperUser,
     ultimoAcesso: null,
-    timestamp: new Date().toISOString(),
+    timestamp: Date.now(),
     // This admin-created account is always a real Firebase Auth user (with
     // an email), never a sem-auth external-channel contact — see
     // `usuarioSchema`'s `externalId` doc comment.

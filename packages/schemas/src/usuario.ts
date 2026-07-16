@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 import { type Cargo, decodePermissoes } from './cargo';
 
@@ -28,8 +29,10 @@ export const usuarioSchema = z.object({
   isSuperUser: z.boolean().default(false),
   jaFoiColaborador: z.boolean().default(false),
   jaFoiSuperUser: z.boolean().default(false),
-  ultimoAcesso: z.string().datetime().nullable().default(null),
-  timestamp: z.string().datetime().nullable().default(null),
+  // Datetime fields — millisecondsSinceEpoch INT wire format (#484/#486, legacy
+  // `maybeDateTimeToJson` parity); reads tolerate a stray ISO/µs value via the codec.
+  ultimoAcesso: millisSinceEpoch().nullable().default(null),
+  timestamp: millisSinceEpoch().nullable().default(null),
   /**
    * Sem-auth external-channel contact key — legacy `generateExternalId`:
    * `sha256('<canal>-<externalId>')` (e.g. `'whatsapp-5511999999999'`),

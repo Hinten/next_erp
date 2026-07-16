@@ -120,7 +120,7 @@ export function MensagemThread({ conversaId }: { conversaId: string }) {
     // created mensagem whose `mid` is `null`; a client-only placeholder
     // value there would make the trigger skip every manual reply.
     const docId = newDocId();
-    const now = new Date().toISOString();
+    const now = Date.now();
     const pending: OptimisticMensagem = {
       _optimistic: true,
       _docId: docId,

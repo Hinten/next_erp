@@ -38,7 +38,7 @@ export default function WhatsAppDetailPage() {
       docRef,
       {
         estadoConversa: nextEstado,
-        ultima_modificacao: new Date().toISOString(),
+        ultima_modificacao: Date.now(),
       },
       { merge: true },
     );

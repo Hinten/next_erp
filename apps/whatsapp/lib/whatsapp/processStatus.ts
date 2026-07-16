@@ -32,7 +32,7 @@ function waTimestampToMs(ts: string): number {
   return Number.isFinite(secs) ? secs * 1000 : Date.now();
 }
 
-/** Coerce an ISO string (or legacy ms number) to epoch ms. */
+/** Coerce an epoch ms int (or a stray legacy ISO string) to epoch ms. */
 function toEpochMs(v: unknown): number | null {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
   if (typeof v === 'string') {
@@ -132,8 +132,8 @@ export async function processStatuses(
       continue;
     }
 
-    const statusIso = new Date(statusTs).toISOString();
-    const patch: Record<string, unknown> = { lastExternalUpdateDateTime: statusIso };
+    // millisecondsSinceEpoch INT wire format (#484/#486); `statusTs` is already ms.
+    const patch: Record<string, unknown> = { lastExternalUpdateDateTime: statusTs };
     switch (status.status) {
       case 'sent':
         patch.estadoEnvio = ESTADO_ENVIO.enviando;
@@ -143,7 +143,7 @@ export async function processStatuses(
         break;
       case 'read':
         patch.estadoEnvio = ESTADO_ENVIO.recebido;
-        patch.visualizado = statusIso;
+        patch.visualizado = statusTs;
         break;
       case 'failed':
         patch.estadoEnvio = ESTADO_ENVIO.erro;

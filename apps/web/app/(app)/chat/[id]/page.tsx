@@ -43,7 +43,7 @@ export default function ConversaDetailPage() {
       docRef,
       {
         estadoConversa: nextEstado,
-        ultima_modificacao: new Date().toISOString(),
+        ultima_modificacao: Date.now(),
       },
       { merge: true },
     );
