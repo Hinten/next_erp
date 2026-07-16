@@ -1,9 +1,12 @@
 export {
   WhatsAppClient,
+  WhatsAppHttpError,
+  WhatsAppNetworkError,
   GRAPH_BASE,
   DEFAULT_GRAPH_API_VERSION,
   type WhatsAppClientConfig,
   type SendTextInput,
+  type SendMediaInput,
   type SendResult,
   type MediaDownload,
 } from './client';

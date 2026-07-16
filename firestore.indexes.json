@@ -61,6 +61,20 @@
       ]
     },
     {
+      "collectionGroup": "mensagem",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "estadoEnvio",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "notificacoesMercadoPago",
       "queryScope": "COLLECTION",
       "fields": [
