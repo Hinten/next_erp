@@ -3,7 +3,13 @@
  * The web app and a future MCP/admin agent share this orchestration; each
  * supplies its own {@link PedidoDataPort} adapter.
  */
-export type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
+export type {
+  PedidoDataPort,
+  PedidoDevolucaoDataPort,
+  PedidoDocData,
+  PedidoTransactArgs,
+  PedidoWriteOp,
+} from './port';
 export {
   buildPedidoPatch,
   savePedido,
@@ -21,6 +27,31 @@ export {
   PedidoConflictError,
   PedidoNothingChangedError,
 } from './usecases';
+export {
+  PEDIDO_COUNTER_DOC_ID,
+  PEDIDO_COUNTER_PATH,
+  PEDIDO_NUMERO_NO_OPERACAO_PREFIX,
+  PEDIDO_NUMERO_WIDTH,
+  formatPedidoNumero,
+  mintNumeros,
+  operacaoNumeroPrefix,
+} from './numero';
+export {
+  DEVOLUCAO_INTEGRAL_STRIP_KEYS,
+  PEDIDO_PATH,
+  buildDevolucaoIntegralSeed,
+  buildDevolucaoPedido,
+  collectChNFeReferenciadas,
+  criarEntradaDevolucaoIntegral,
+  criarSaidaComDevolucao,
+  novosOriginsDeTroca,
+  prepareDevolucaoSave,
+  registrarIncidenteDeDevolucaoIntegral,
+  registrarIncidentesDeTroca,
+  resolveDevolucaoOperacao,
+  type DevolucaoOperacaoInfo,
+  type DevolucaoSavePrepared,
+} from './devolucao';
 export {
   calcularAlteracoesEstoque,
   planSincronizacaoEstoque,

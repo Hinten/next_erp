@@ -1,14 +1,22 @@
 import {
-  type DocumentReference,
-  type Firestore,
+  getDoc,
+  getDocs,
   runTransaction,
   writeBatch,
+  type DocumentReference,
+  type Firestore,
 } from 'firebase/firestore';
 import { nowMicros } from '@delfrance/core/datetime';
-import type { PedidoDataPort, PedidoWriteOp } from '@delfrance/data/pedido';
+import { buildQuery, limit, whereEqual } from '@delfrance/data';
+import type { PedidoDevolucaoDataPort, PedidoDocData, PedidoWriteOp } from '@delfrance/data/pedido';
+import { ESTADO_NFE, TIPO_NFE } from '@delfrance/schemas';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
+import { counterCollection } from '@/lib/data/counterCollection';
 import { historicoEstadoCollection } from '@/lib/data/historicoEstadoCollection';
 import { incidenteCollection } from '@/lib/data/incidenteCollection';
+import { integracaoCollection } from '@/lib/data/integracaoCollection';
+import { nfeCollection } from '@/lib/data/nfeCollection';
+import { operacaoCollection } from '@/lib/data/operacaoCollection';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
 import { newDocId } from '@/lib/data/newDocId';
 
@@ -24,6 +32,15 @@ const BATCH_LIMIT = 499;
  */
 function refForPath(db: Firestore, path: string): DocumentReference {
   const parts = path.split('/');
+  if (parts.length === 2) {
+    const [col, id] = parts as [string, string];
+    if (col === 'pedidos') {
+      return pedidoCollection.docRef(db, {}, id) as DocumentReference;
+    }
+    if (col === 'counters') {
+      return counterCollection.docRef(db, {}, id) as DocumentReference;
+    }
+  }
   if (parts.length === 4 && parts[0] === 'pedidos') {
     const [, pedidoId, sub, id] = parts as [string, string, string, string];
     if (sub === 'historicoEstadoPedido') {
@@ -40,12 +57,13 @@ function refForPath(db: Firestore, path: string): DocumentReference {
 }
 
 /**
- * The client-SDK adapter for the pedido {@link PedidoDataPort}
- * (`@delfrance/data/pedido`). All partial-save + concurrency-guard logic lives in
- * the framework-agnostic use-cases; this only bridges them to the Firebase JS SDK
- * through the converter-bound collection handles. Mirrors `lib/produtos/clientPort.ts`.
+ * The client-SDK adapter for the pedido {@link PedidoDevolucaoDataPort}
+ * (`@delfrance/data/pedido`). All partial-save + concurrency-guard + devolução
+ * logic lives in the framework-agnostic use-cases; this only bridges them to the
+ * Firebase JS SDK through the converter-bound collection handles. Mirrors
+ * `lib/produtos/clientPort.ts`.
  */
-export function createClientPedidoPort(db: Firestore): PedidoDataPort {
+export function createClientPedidoPort(db: Firestore): PedidoDevolucaoDataPort {
   return {
     // datetime fields (`ultimaModificacao`, history `data`) are µs epoch.
     now: () => nowMicros(),
@@ -77,6 +95,71 @@ export function createClientPedidoPort(db: Firestore): PedidoDataPort {
         }
         await batch.commit();
       }
+    },
+
+    async transact({ reads, apply }) {
+      await runTransaction(db, async (tx) => {
+        // Every tx.get must precede the first write (Firestore JS SDK rule), so
+        // all reads happen up front — concurrently, building the path-keyed map.
+        const paths = [...new Set(reads)];
+        const snaps = await Promise.all(paths.map((path) => tx.get(refForPath(db, path))));
+        const docs = new Map<string, PedidoDocData>();
+        paths.forEach((path, i) => {
+          const snap = snaps[i]!;
+          docs.set(path, snap.exists() ? (snap.data() as Record<string, unknown>) : null);
+        });
+        for (const op of apply(docs)) {
+          const ref = refForPath(db, op.path);
+          // tx.set goes through the converter (validates + fills defaults);
+          // tx.update bypasses it — the patch is already resolved wire shape.
+          if (op.type === 'set') tx.set(ref, op.data as never);
+          else if (op.type === 'update') tx.update(ref, op.data as never);
+          else tx.delete(ref);
+        }
+      });
+    },
+
+    async getPedido(pedidoId) {
+      const snap = await getDoc(pedidoCollection.docRef(db, {}, pedidoId));
+      return snap.exists() ? (snap.data() as Record<string, unknown>) : null;
+    },
+
+    async getIntegracao(integracaoId) {
+      const snap = await getDoc(integracaoCollection.docRef(db, {}, integracaoId));
+      return snap.exists() ? (snap.data() as Record<string, unknown>) : null;
+    },
+
+    async getOperacao(operacaoId) {
+      const snap = await getDoc(operacaoCollection.docRef(db, {}, operacaoId));
+      return snap.exists() ? (snap.data() as Record<string, unknown>) : null;
+    },
+
+    async findOperacaoEntradaPadrao() {
+      const snap = await getDocs(
+        buildQuery(operacaoCollection.ref(db, {}), [
+          whereEqual('tipo', TIPO_NFE.entrada),
+          whereEqual('ativo', true),
+        ]),
+      );
+      const rows = snap.docs.map((d) => ({
+        id: d.id,
+        data: d.data() as unknown as Record<string, unknown>,
+      }));
+      return rows.find((r) => r.data.padrao === true) ?? rows[0] ?? null;
+    },
+
+    async listNFesAprovadas(pedidoId) {
+      const snap = await getDocs(
+        buildQuery(nfeCollection.ref(db, { pedidoId }), [
+          whereEqual('estado', ESTADO_NFE.aprovada),
+        ]),
+      );
+      return snap.docs.map((d) => d.data() as unknown as Record<string, unknown>);
+    },
+
+    async hasNFe(pedidoId) {
+      const snap = await getDocs(buildQuery(nfeCollection.ref(db, { pedidoId }), [limit(1)]));
+      return !snap.empty;
     },
   };
 }
