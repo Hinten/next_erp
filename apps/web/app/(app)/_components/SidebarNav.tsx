@@ -49,6 +49,7 @@ const NAV: NavEntry[] = [
         perm: PERM.pagamento.read,
       },
       { href: '/nfe/exportar', label: 'Exportar NF-e', perm: PERM.nfe.read },
+      { href: '/nfe/comunicacoes', label: 'Comunicações NF-e', perm: PERM.fiscal.read },
     ],
   },
   {

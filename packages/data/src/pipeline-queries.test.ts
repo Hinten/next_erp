@@ -16,6 +16,8 @@ const { mockPipelinesExports } = vi.hoisted(() => ({
     lessThanOrEqual: (l: unknown, r: unknown) => ({ kind: 'lte', l, r }),
     greaterThan: (l: unknown, r: unknown) => ({ kind: 'gt', l, r }),
     greaterThanOrEqual: (l: unknown, r: unknown) => ({ kind: 'gte', l, r }),
+    arrayContains: (f: unknown, v: unknown) => ({ kind: 'arrayContains', f, v }),
+    arrayContainsAny: (f: unknown, vs: unknown) => ({ kind: 'arrayContainsAny', f, vs }),
     documentId: (expr: unknown) => ({
       expr,
       as: (alias: string) => ({ kind: 'aliased', alias, expr }),
@@ -174,6 +176,98 @@ describe('buildPipeline', () => {
         kind: 'regexContains',
         f: 'nome',
         p: '(?i)[aàáâãäå][cç][aàáâãäå][iìíîï]',
+      }),
+    );
+  });
+
+  it('array-contains filter builds arrayContains(field, value)', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'enviNfe',
+      filters: [{ field: 'targetsChnfe', op: 'array-contains', value: '1'.repeat(44) }],
+    });
+    expect(stage.where).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'arrayContains',
+        f: 'targetsChnfe',
+        v: '1'.repeat(44),
+      }),
+    );
+  });
+
+  it('array-contains-any filter passes the whole candidate list', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'enviNfe',
+      filters: [{ field: 'targetsChnfe', op: 'array-contains-any', value: ['a', 'b', 'c'] }],
+    });
+    expect(stage.where).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'arrayContainsAny',
+        f: 'targetsChnfe',
+        vs: ['a', 'b', 'c'],
+      }),
+    );
+  });
+
+  it('array-contains-any wraps a scalar value into a single-element list', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'enviNfe',
+      filters: [{ field: 'targetsChnfe', op: 'array-contains-any', value: 'solo' }],
+    });
+    expect(stage.where).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'arrayContainsAny', vs: ['solo'] }),
+    );
+  });
+
+  it('array-contains-any with an empty list throws (callers must short-circuit)', () => {
+    const { db } = makeDb(true);
+    expect(() =>
+      buildPipeline(db, {
+        collection: 'enviNfe',
+        filters: [{ field: 'targetsChnfe', op: 'array-contains-any', value: [] }],
+      }),
+    ).toThrow(/empty/);
+  });
+
+  it('eq with an array value throws (only array-contains-any takes a list)', () => {
+    const { db } = makeDb(true);
+    expect(() =>
+      buildPipeline(db, {
+        collection: 'x',
+        filters: [{ field: 'tipo', op: 'eq', value: ['1', '2'] }],
+      }),
+    ).toThrow(/received an array value/);
+  });
+
+  it('array-contains with an array value throws (single-element membership only)', () => {
+    const { db } = makeDb(true);
+    expect(() =>
+      buildPipeline(db, {
+        collection: 'enviNfe',
+        filters: [{ field: 'targetsChnfe', op: 'array-contains', value: ['a', 'b'] }],
+      }),
+    ).toThrow(/received an array value/);
+  });
+
+  it('AND-combines array ops with other column filters in one where(and(...))', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'enviNfe',
+      filters: [
+        { field: 'targetsChnfe', op: 'array-contains-any', value: ['a', 'b'] },
+        { field: 'estado', op: 'eq', value: 'e' },
+      ],
+    });
+    expect(stage.where).toHaveBeenCalledTimes(1);
+    expect(stage.where).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'and',
+        xs: [
+          expect.objectContaining({ kind: 'arrayContainsAny', f: 'targetsChnfe', vs: ['a', 'b'] }),
+          expect.objectContaining({ kind: 'equal' }),
+        ],
       }),
     );
   });
