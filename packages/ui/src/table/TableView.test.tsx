@@ -86,6 +86,7 @@ function fakeCollection(): CollectionHandle<typeof testSchema> {
     ref: () => ({}) as never,
     docRef: () => ({}) as never,
     converter: {} as never,
+    merge: () => Promise.resolve(),
   };
 }
 
