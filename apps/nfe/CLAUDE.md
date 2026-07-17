@@ -21,7 +21,8 @@ app. Deploys to Firebase App Hosting. Talks to SEFAZ.
 3. **Auth is Bearer `idToken` from Firebase Auth.** Pattern in
    `lib/nfe/auth.ts:verifyCaller`. Required perm:
    - `PERM.fiscal.read`  → `/api/nfe/consultar`
-   - `PERM.fiscal.write` → `/api/nfe/emitir` and `/api/nfe/processar-pendentes`
+   - `PERM.fiscal.write` → `/api/nfe/emitir`, `/api/nfe/processar-pendentes`
+     and `/api/nfe/verificar`
    - **`/api/nfe/reconciliar` is NOT a Firebase-user route** — it is the Cloud
      Tasks target and authenticates a **Google OIDC token** from the
      `nfe-task-runner` service account via `verifyServiceCaller` (audience =
@@ -147,6 +148,7 @@ app/
       consultar/route.ts           GET  — consSitNFe by chave
       reconciliar/route.ts         POST — Cloud Task target: reconcile a lote by recibo (OIDC)
       processar-pendentes/route.ts POST — backstop sweep (slow cron, Firebase token)
+      verificar/route.ts           POST — re-verify enviNfe audit msgs against SEFAZ
       certificado/route.ts         POST/DELETE — per-filial A1 upload/remove
 lib/
   firebase/admin.ts                Admin SDK singletons (same as apps/integrations)

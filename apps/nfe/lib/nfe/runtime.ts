@@ -37,6 +37,20 @@ import {
 export type Ambiente = 'producao' | 'homologacao';
 export type TpAmb = '1' | '2';
 
+/**
+ * NF-e runtime configuration/boot failure — a bad `NFE_AMBIENTE` or a missing
+ * / unreadable vendored SEFAZ TLS chain. Thrown by `getNFeRuntime` (eagerly)
+ * and by the lazy chain loads (`svc()` / `an()` / `envRuntime()`), so routes
+ * can narrow "the runtime is misconfigured" (→ 503) without a bare
+ * `instanceof Error` check.
+ */
+export class NFeRuntimeConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NFeRuntimeConfigError';
+  }
+}
+
 /** A contingency authorizer's resolved transport: its URLs + an mTLS agent pinned to ITS chain. */
 export interface ContingencyTarget {
   readonly endpoints: SvcServiceUrls;
@@ -134,7 +148,7 @@ function loadChain(uf: string, ambiente: Ambiente): { ca: string; source: string
     return { ca: readFileSync(path, 'utf8'), source: path };
   } catch (err) {
     if (err instanceof Error) {
-      throw new Error(
+      throw new NFeRuntimeConfigError(
         `Could not read the SEFAZ TLS chain at ${path}: ${err.message}. ` +
           'Run `pnpm --filter @delfrance/integrations-nfe fetch:sefaz-ca` ' +
           'to vendor it for this (UF, ambiente).',
@@ -233,7 +247,9 @@ export function getNFeRuntime(env: NodeJS.ProcessEnv = process.env): NFeBaseRunt
 
   const ambienteRaw = (env.NFE_AMBIENTE ?? 'homologacao').toLowerCase();
   if (ambienteRaw !== 'producao' && ambienteRaw !== 'homologacao') {
-    throw new Error(`NFE_AMBIENTE must be 'producao' or 'homologacao', got '${ambienteRaw}'`);
+    throw new NFeRuntimeConfigError(
+      `NFE_AMBIENTE must be 'producao' or 'homologacao', got '${ambienteRaw}'`,
+    );
   }
   const ambiente = ambienteRaw as Ambiente;
   const uf = (env.NFE_UF ?? 'SP').toUpperCase();

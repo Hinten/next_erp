@@ -61,6 +61,17 @@ describe('POST /api/whatsapp/verificacao/confirmar', () => {
     expect(h.merge).not.toHaveBeenCalled();
   });
 
+  it('400s on a malformed codigo without calling Graph', async () => {
+    for (const codigo of ['12ab56', '12345', '1234567', ' 123456']) {
+      const res = await POST(postReq({ integracaoId: 'i1', codigo }));
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBe('Código inválido — informe 6 dígitos.');
+    }
+    expect(h.loadCtx).not.toHaveBeenCalled();
+    expect(h.verifyCode).not.toHaveBeenCalled();
+    expect(h.merge).not.toHaveBeenCalled();
+  });
+
   it('does NOT flag verified when the code is rejected (2xx without success)', async () => {
     h.verifyCode.mockRejectedValue(new WhatsAppHttpError('verifyCode', 200, '{"success":false}'));
     const res = await POST(postReq({ integracaoId: 'i1', codigo: '000000' }));

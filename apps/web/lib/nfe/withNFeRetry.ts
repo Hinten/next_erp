@@ -20,6 +20,12 @@
  *     which `inutilizar.ts` surfaces as a rejection (unlike `cancelar`'s 573).
  *     So a post-send network/5xx must never auto-retry these — only
  *     `NFeRuntimeNotReadyError`, provably raised before any SEFAZ contact.
+ *   - **`verificar` → NO retry at all** (direct passthrough). The server runs
+ *     the batch **sequentially** against SEFAZ precisely to avoid a
+ *     consumo-indevido (cStat 656) burst; a client re-POST on a network/5xx
+ *     failure could start a second run while the first is still consulting
+ *     SEFAZ — the exact concurrency the server design exists to prevent. The
+ *     operator can simply re-click once the first run settles.
  */
 import { retryAsync } from '@delfrance/data/hooks';
 import {
@@ -40,6 +46,10 @@ export function withNFeRetry(client: NFeHttpClient): NFeHttpClient {
     emitir: (pedidoId) => retryTransient(() => client.emitir(pedidoId)),
     emitirLote: (pedidoIds) => retryTransient(() => client.emitirLote(pedidoIds)),
     consultar: (chave) => retryTransient(() => client.consultar(chave)),
+    // NO retry: a re-POST on a post-send network/5xx may overlap the first
+    // server run (still consulting SEFAZ sequentially) and provoke the
+    // consumo-indevido 656 burst it guards against. The operator re-clicks.
+    verificar: (filialId, enviNfeMsgIds) => client.verificar(filialId, enviNfeMsgIds),
     processarPendentes: () => retryTransient(() => client.processarPendentes()),
     cancelar: (pedidoId, nfeId, xJust) =>
       retryTransient(() => client.cancelar(pedidoId, nfeId, xJust)),
