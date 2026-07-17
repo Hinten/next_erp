@@ -63,6 +63,17 @@ describe('defineCollection.merge', () => {
     expect(rawRef.path).toBe('things/abc/sub/doc1');
   });
 
+  it('an explicitly-undefined defaulted key is treated as not supplied — its default never enters the payload', async () => {
+    // Patches built by diffing/optional spreads often carry `key: undefined`.
+    // Zod's `.partial()` still runs `.default()` on those, so without the
+    // undefined-strip in parseMergePatch the payload would carry
+    // `nome: 'sem título'` and the merge would reset the stored nome.
+    await handle.merge(db, { thingId: 'abc' }, 'doc1', { nome: undefined, estado: 2 });
+
+    const [, payload] = setDocMock.mock.calls[0]!;
+    expect(payload).toEqual({ estado: 2 });
+  });
+
   it('validates supplied keys: wrong type and unknown key both throw', async () => {
     await expect(handle.merge(db, { thingId: 'abc' }, 'doc1', { estado: 'x' })).rejects.toThrow(
       z.ZodError,
