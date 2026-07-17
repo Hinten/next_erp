@@ -106,6 +106,25 @@ describe('ChatComposer — attachment upload + audio caption hint', () => {
     await waitFor(() => expect(screen.getByText('Falha no upload do arquivo')).toBeTruthy());
   });
 
+  it('disables sending when a restored draft exceeds the origem character limit', () => {
+    // The Textarea's maxLength blocks typing past the limit, but a restored
+    // draft can exceed it — canSend must gate on overLimit too (Copilot #584).
+    window.localStorage.setItem('chat:draft:c-over', 'x'.repeat(2001)); // whatsapp cap: 2000
+    try {
+      wrap(
+        <ChatComposer
+          conversaId="c-over"
+          conversa={conversaFull}
+          addOptimistic={vi.fn()}
+          markOptimisticError={vi.fn()}
+        />,
+      );
+      expect(screen.getByLabelText('Enviar')).toHaveProperty('disabled', true);
+    } finally {
+      window.localStorage.removeItem('chat:draft:c-over');
+    }
+  });
+
   it('hints that an audio caption is dropped once audio + text coexist', async () => {
     uploadFileMock.mockResolvedValueOnce({ id: 'a1', arquivo: { filetype: 'audio' } });
     const { container } = wrap(
