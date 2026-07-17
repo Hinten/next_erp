@@ -48,32 +48,40 @@ export default function WebchatPage() {
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Boot: anonymous auth + create-or-resume Conversa keyed by uid.
+  // Boot: anonymous auth + create-or-resume Conversa keyed by uid. The
+  // payload below is CREATE-TIME ONLY (a brand-new anonymous account is the
+  // only case where `chat/<uid>` can't exist yet — see ensureAnonAuth): a
+  // returning visitor's mount must not clobber operator-managed fields
+  // (nome, estadoConversa, atendido, data_cadastro…) nor bump
+  // ultima_modificacao, the ERP inbox sort key — handleSend bumps it per
+  // actual message. Resume therefore writes nothing.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
-        const userId = await ensureAnonAuth();
+        const { uid: userId, isNewUser } = await ensureAnonAuth();
         if (cancelled) return;
         setUid(userId);
-        const db = getFirebaseFirestore();
-        const conversaRef = doc(db, `chat/${userId}`);
-        await setDoc(
-          conversaRef,
-          {
-            usarioOuterRef: `documents/users/${userId}`,
-            usuarios: [userId],
-            estadoConversa: 0,
-            origem: 'site',
-            atendido: false,
-            nome: 'Visitante do site',
-            urlAvatar: '',
-            data_cadastro: Date.now(),
-            ultima_modificacao: Date.now(),
-            versao: 1,
-          },
-          { merge: true },
-        );
+        if (isNewUser) {
+          const db = getFirebaseFirestore();
+          const conversaRef = doc(db, `chat/${userId}`);
+          await setDoc(
+            conversaRef,
+            {
+              usarioOuterRef: `documents/users/${userId}`,
+              usuarios: [userId],
+              estadoConversa: 0,
+              origem: 'site',
+              atendido: false,
+              nome: 'Visitante do site',
+              urlAvatar: '',
+              data_cadastro: Date.now(),
+              ultima_modificacao: Date.now(),
+              versao: 1,
+            },
+            { merge: true },
+          );
+        }
         setConversaId(userId);
       } catch (err) {
         if (err instanceof FirebaseError) {
