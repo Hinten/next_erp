@@ -7,9 +7,16 @@ import {
   type QueryDocumentSnapshot,
   collection,
   doc,
+  setDoc,
 } from 'firebase/firestore';
 import type { z } from 'zod';
-import { type PathContext, parseForWrite, parseSoftRead, resolvePath } from './zodParse';
+import {
+  type PathContext,
+  parseForWrite,
+  parseMergePatch,
+  parseSoftRead,
+  resolvePath,
+} from './zodParse';
 
 export type { PathContext };
 
@@ -29,6 +36,14 @@ export interface CollectionHandle<T extends z.ZodTypeAny> {
   ref(db: Firestore, ctx: PathContext): CollectionReference<z.infer<T>>;
   docRef(db: Firestore, ctx: PathContext, id: string): DocumentReference<z.infer<T>>;
   converter: FirestoreDataConverter<z.infer<T>>;
+  /**
+   * Validate (partial) + merge-write at `id` — the only safe way to write a
+   * partial patch. Never `setDoc(docRef(...), patch, { merge: true })`: the
+   * converter's `toFirestore` runs a full `schema.parse`, which fills every
+   * `.default()`, and Firestore computes the merge field-mask from the
+   * converter OUTPUT — so the defaults silently overwrite stored siblings.
+   */
+  merge(db: Firestore, ctx: PathContext, id: string, patch: Record<string, unknown>): Promise<void>;
 }
 
 /**
@@ -62,6 +77,16 @@ export function defineCollection<T extends z.ZodTypeAny>(
     },
     docRef(db, ctx, id) {
       return doc(db, resolvePath(options.path, ctx), id).withConverter(converter);
+    },
+    async merge(db, ctx, id, patch) {
+      // Raw (unconverted) ref on purpose — see the interface doc comment.
+      await setDoc(
+        doc(db, resolvePath(options.path, ctx), id),
+        parseMergePatch(options.schema, patch),
+        {
+          merge: true,
+        },
+      );
     },
   };
 }
