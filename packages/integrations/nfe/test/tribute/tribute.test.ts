@@ -633,6 +633,36 @@ describe('buildImpostoXml — FCP-ST trio all-or-nothing (#507)', () => {
     await assertXsdValid(xml);
   });
 
+  // Zero is a legitimate FCP-ST value (schema is nonnegative), so a full trio
+  // with a 0 member counts as complete — it must emit, not be misread as a
+  // partial trio. Pins the guard's `== null` semantics against a `!value`
+  // regression.
+  it.each(CASES)(
+    'CSOSN %s → full trio with a 0 member emits (0 is present)',
+    async (csosn, key, base, trio) => {
+      const sub = { ...base } as Record<string, number>;
+      for (const f of trio) sub[f] = 0;
+      const imposto = impostoFor(csosn, { [key]: sub });
+      let xml = '';
+      expect(() => {
+        xml = buildImpostoXml(imposto, item1500);
+      }).not.toThrow();
+      for (const f of trio) expect(xml).toContain(`<${f}>`);
+      await assertXsdValid(xml);
+    },
+  );
+
+  /** Capture the message of the NFeTributeError buildImpostoXml throws. */
+  function tributeErrorMessage(imposto: Imposto): string {
+    try {
+      buildImpostoXml(imposto, item1500);
+    } catch (err) {
+      if (err instanceof NFeTributeError) return err.message;
+      throw err;
+    }
+    throw new Error('expected buildImpostoXml to throw NFeTributeError');
+  }
+
   // Each single-field-present and each two-fields-present combination rejects.
   it.each(CASES)('CSOSN %s → partial trio (1 or 2 of 3) throws', (csosn, key, base, trio) => {
     const partials = [
@@ -648,12 +678,15 @@ describe('buildImpostoXml — FCP-ST trio all-or-nothing (#507)', () => {
       for (const f of present) sub[f] = trioValues[f];
       const imposto = impostoFor(csosn, { [key]: sub });
       expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
-      // The error names the CSOSN and the missing member(s).
+      const message = tributeErrorMessage(imposto);
+      expect(message).toContain(`CSOSN '${csosn}'`);
+      // Assert against the `missing:` clause specifically (not the always-
+      // present "complete trio (…)" enumeration): it must list exactly the
+      // absent members and none of the present ones.
+      const missingClause = message.slice(message.indexOf('missing:'));
       const missing = trio.filter((f) => !present.includes(f));
-      expect(() => buildImpostoXml(imposto, item1500)).toThrow(new RegExp(`CSOSN '${csosn}'`));
-      for (const m of missing) {
-        expect(() => buildImpostoXml(imposto, item1500)).toThrow(new RegExp(m));
-      }
+      for (const m of missing) expect(missingClause).toContain(m);
+      for (const p of present) expect(missingClause).not.toContain(p);
     }
   });
 });
