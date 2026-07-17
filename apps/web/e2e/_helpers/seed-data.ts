@@ -851,18 +851,21 @@ export async function cleanupConversas(prefix: string): Promise<void> {
     .where('nome', '>=', prefix)
     .where('nome', '<', `${prefix}${PREFIX_MAX}`)
     .get();
-  for (const convDoc of snap.docs) {
-    const msgs = await convDoc.ref.collection('mensagem').get();
-    if (!msgs.empty) {
+  // Firestore batches cap at 500 ops — chunk every delete pass so a message-
+  // heavy conversa (bulk-action events, retries) can never blow the teardown.
+  const BATCH_CAP = 450;
+  const deleteChunked = async (refs: FirebaseFirestore.DocumentReference[]) => {
+    for (let i = 0; i < refs.length; i += BATCH_CAP) {
       const b = db().batch();
-      msgs.docs.forEach((m) => b.delete(m.ref));
+      refs.slice(i, i + BATCH_CAP).forEach((r) => b.delete(r));
       await b.commit();
     }
+  };
+  for (const convDoc of snap.docs) {
+    const msgs = await convDoc.ref.collection('mensagem').get();
+    await deleteChunked(msgs.docs.map((m) => m.ref));
   }
-  if (snap.empty) return;
-  const batch = db().batch();
-  snap.docs.forEach((d) => batch.delete(d.ref));
-  await batch.commit();
+  await deleteChunked(snap.docs.map((d) => d.ref));
 }
 
 /**
