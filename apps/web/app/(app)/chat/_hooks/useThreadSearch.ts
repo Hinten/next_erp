@@ -1,37 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { escapeRegExp } from '@/lib/chat/highlight';
+import { buildSearchRegex, searchableText, testRegex } from '@/lib/chat/searchRegex';
 import { type AnyMensagem, mensagemKey } from './useMensagensWindow';
-
-/**
- * Hard cap on the search term length. A user-authored regex runs against every
- * loaded message, so an unbounded term is a catastrophic-backtracking blast
- * radius — capping the input bounds the worst-case per-message match cost.
- */
-const MAX_TERM_LENGTH = 200;
-
-/**
- * The searchable haystack for one message: text first, then a transcription,
- * then a media caption (legacy searched `conteudo`/`transcription`; captions are
- * added so media replies are findable). Event bubbles (`tipo 'e'`) are never
- * searched (legacy `searchMensagem` skips them).
- */
-function searchableText(m: AnyMensagem): string | null {
-  if (m.tipo === 'e') return null;
-  if (typeof m.conteudo === 'string' && m.conteudo.trim() !== '') return m.conteudo;
-  if (typeof m.transcription === 'string' && m.transcription.trim() !== '') return m.transcription;
-  const caption =
-    m.image?.caption ??
-    m.video?.caption ??
-    m.sticker?.caption ??
-    m.genericDocument?.caption ??
-    null;
-  if (typeof caption === 'string' && caption.trim() !== '') return caption;
-  if (typeof m.anexoDescription === 'string' && m.anexoDescription.trim() !== '')
-    return m.anexoDescription;
-  return null;
-}
 
 export interface ThreadSearch {
   /** The effective regex (user pattern or literal fallback), or null when idle. */
@@ -69,13 +40,13 @@ export function useThreadSearch(term: string, messages: AnyMensagem[]): ThreadSe
   // jumping back to the top. State (not a ref) so it is read cleanly in render.
   const [nearestIndex, setNearestIndex] = useState(0);
 
-  const { regex, isLiteral } = useMemo(() => buildRegex(term), [term]);
+  const { regex, isLiteral } = useMemo(() => buildSearchRegex(term), [term]);
 
   const matches = useMemo(() => {
     if (!regex) return [];
     // A fresh, non-global copy for `.test()` — a global regex's stateful
     // `lastIndex` would make repeated tests skip messages.
-    const test = new RegExp(regex.source, regex.flags.replace('g', ''));
+    const test = testRegex(regex);
     const ids: string[] = [];
     for (const m of messages) {
       const text = searchableText(m);
@@ -128,31 +99,4 @@ export function useThreadSearch(term: string, messages: AnyMensagem[]): ThreadSe
       if (total > 0) setActiveKey(matches[(currentIndex - 1 + total) % total] ?? null);
     },
   };
-}
-
-/**
- * Build the effective search regex. Empty term → null. A valid pattern that
- * would match the empty string (`.*`, `x?`, …) is treated like an invalid one:
- * we fall back to a literal search so highlighting never marks empty spans.
- */
-function buildRegex(term: string): { regex: RegExp | null; isLiteral: boolean } {
-  // Cap the term length before compiling — bounds catastrophic-backtracking
-  // blast radius from a pathological user pattern (see MAX_TERM_LENGTH).
-  const trimmed = term.trim().slice(0, MAX_TERM_LENGTH);
-  if (trimmed === '') return { regex: null, isLiteral: false };
-  try {
-    const re = new RegExp(trimmed, 'iu');
-    // Zero-width guard: a pattern that matches '' would highlight nothing useful
-    // and can stall the splitter — fall back to literal.
-    if (re.test('')) return { regex: literalRegex(trimmed), isLiteral: true };
-    return { regex: re, isLiteral: false };
-  } catch (err) {
-    // Only an invalid pattern (SyntaxError) falls back; anything else is a bug.
-    if (!(err instanceof SyntaxError)) throw err;
-    return { regex: literalRegex(trimmed), isLiteral: true };
-  }
-}
-
-function literalRegex(term: string): RegExp {
-  return new RegExp(escapeRegExp(term), 'iu');
 }

@@ -840,10 +840,64 @@ export async function seedConversas(prefix: string): Promise<SeededChat> {
   };
 }
 
+export interface SeededSearchMessages {
+  /** Run-scoped token both seeded messages contain (the global-search query). */
+  token: string;
+  /** Conversa + message id + ordering ts of the OLD (jump-to) match. */
+  oldConversaId: string;
+  oldMsgId: string;
+  oldTs: number;
+  /** Conversa + message id of the RECENT match (a different conversa). */
+  recentConversaId: string;
+  recentMsgId: string;
+}
+
+/**
+ * Seed two `mensagem` docs carrying a run-scoped TOKEN — an OLD one in the BLUE
+ * conversa and a RECENT one in the RED conversa — for the cross-conversation
+ * search e2e (PR-C5). Both are timestamped in the near FUTURE (`now + offset`)
+ * so they always land in the global search's newest 300-doc page regardless of
+ * the shared staging collection's volume (the same trick as the conversa seed's
+ * `ultima_modificacao: now + order`); the OLD one sorts BELOW the recent one
+ * within the pair, so both conversas surface grouped, recent-first.
+ */
+export async function seedSearchMessages(
+  prefix: string,
+  seeded: SeededChat,
+): Promise<SeededSearchMessages> {
+  const token = `${prefix}-tokenbusca`;
+  const now = Date.now();
+  const oldTs = now + 1_000;
+  const recentTs = now + 500_000;
+  const oldMsgId = `${prefix}-msg-antiga`;
+  const recentMsgId = `${prefix}-msg-recente`;
+
+  await seedMensagem(seeded.azul.id, oldMsgId, {
+    conteudo: `mensagem antiga com ${token}`,
+    timestampMs: oldTs,
+    estadoEnvio: 7,
+  });
+  await seedMensagem(seeded.vermelha.id, recentMsgId, {
+    conteudo: `mensagem recente com ${token}`,
+    timestampMs: recentTs,
+    estadoEnvio: 7,
+  });
+
+  return {
+    token,
+    oldConversaId: seeded.azul.id,
+    oldMsgId,
+    oldTs,
+    recentConversaId: seeded.vermelha.id,
+    recentMsgId,
+  };
+}
+
 /**
  * Teardown for `seedConversas`: delete each seeded conversa's `mensagem`
  * subcollection (Firestore never cascades) then the conversa docs — swept by
  * the run-scoped `nome` prefix, so UI-created rows on the prefix go too.
+ * (`seedSearchMessages`' extra docs live under the same conversas → swept here.)
  */
 export async function cleanupConversas(prefix: string): Promise<void> {
   const snap = await db()

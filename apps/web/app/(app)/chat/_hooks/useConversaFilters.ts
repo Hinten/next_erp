@@ -13,8 +13,11 @@ import {
 /**
  * The inbox list state, mirrored in the URL query so it survives navigation
  * to `/chat/[id]` and back and is shareable/deep-linkable. Params:
- *   `tab` · `ordem` · `integracao` · `etiqueta` · `cliente`
- * (`cliente` holds the resolved `usarioOuterRef`, i.e. `documents/usuarios/<uid>`).
+ *   `tab` · `ordem` · `integracao` · `etiqueta` · `cliente` · `busca`
+ * (`cliente` holds the resolved `usarioOuterRef`, i.e. `documents/usuarios/<uid>`;
+ * `busca` holds the cross-conversation search term — its PRESENCE, even empty,
+ * puts the list pane in global-search mode so the state survives navigation into
+ * a thread and back).
  */
 export interface ConversaFiltersState {
   tab: ConversaTab;
@@ -23,12 +26,16 @@ export interface ConversaFiltersState {
   etiqueta: number | null;
   /** Resolved `usarioOuterRef` of the cliente filter (or null). */
   clienteRef: string | null;
+  /** Cross-conversation search term, or null when not in search mode. */
+  busca: string | null;
 
   setTab: (tab: ConversaTab) => void;
   setOrdem: (ordem: ConversaOrdem) => void;
   setIntegracao: (id: string | null) => void;
   setEtiqueta: (cor: number | null) => void;
   setCliente: (ref: string | null) => void;
+  /** Set the search term (empty string = search mode, blank input); null exits. */
+  setBusca: (term: string | null) => void;
 
   /** Current query string (no leading `?`), e.g. to preserve on tile links. */
   queryString: string;
@@ -62,6 +69,9 @@ export function useConversaFilters(): ConversaFiltersState {
   const integracaoId = searchParams.get('integracao') || null;
   const etiqueta = parseEtiqueta(searchParams.get('etiqueta'));
   const clienteRef = searchParams.get('cliente') || null;
+  // NOT `|| null`: an empty `?busca=` means "search mode on, blank input" and
+  // must stay distinct from an absent param (search mode off).
+  const busca = searchParams.get('busca');
 
   // Push a mutated copy of the current params, replacing history so the
   // back button doesn't accumulate every filter tweak.
@@ -112,6 +122,14 @@ export function useConversaFilters(): ConversaFiltersState {
     [commit],
   );
 
+  const setBusca = useCallback(
+    // `term === ''` keeps the param present (search mode, blank input); `null`
+    // removes it (exit search mode). Any non-null string is set verbatim.
+    (term: string | null) =>
+      commit((p) => (term == null ? p.delete('busca') : p.set('busca', term))),
+    [commit],
+  );
+
   const queryString = searchParams.toString();
   const buildHref = useCallback(
     (conversaId: string) =>
@@ -126,11 +144,13 @@ export function useConversaFilters(): ConversaFiltersState {
       integracaoId,
       etiqueta,
       clienteRef,
+      busca,
       setTab,
       setOrdem,
       setIntegracao,
       setEtiqueta,
       setCliente,
+      setBusca,
       queryString,
       buildHref,
     }),
@@ -140,11 +160,13 @@ export function useConversaFilters(): ConversaFiltersState {
       integracaoId,
       etiqueta,
       clienteRef,
+      busca,
       setTab,
       setOrdem,
       setIntegracao,
       setEtiqueta,
       setCliente,
+      setBusca,
       queryString,
       buildHref,
     ],
