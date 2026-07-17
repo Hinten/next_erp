@@ -68,7 +68,11 @@ export default function WebchatPage() {
           await setDoc(
             conversaRef,
             {
-              usarioOuterRef: `documents/users/${userId}`,
+              // `documents/usuarios/<id>` is the canonical usuario outer-ref
+              // wire format (see usuarioOuterRef() in apps/whatsapp). The
+              // anonymous uid may not have a usuarios doc yet — reads resolve
+              // outer refs lazily and tolerate a dangling ref.
+              usarioOuterRef: `documents/usuarios/${userId}`,
               usuarios: [userId],
               estadoConversa: 0,
               origem: 'site',
