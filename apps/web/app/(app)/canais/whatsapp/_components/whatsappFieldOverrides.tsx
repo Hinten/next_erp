@@ -212,6 +212,13 @@ export const whatsappFields: Record<string, FieldConfig> = {
       'de entrada resolve a conta comparando este campo com o phone_number_id recebido do ' +
       'WhatsApp Cloud API (não é o WhatsApp Business Account ID). Preencha com o mesmo valor.',
   },
+  waba_id: {
+    label: 'WABA ID (conta comercial)',
+    hint:
+      'ID real da WhatsApp Business Account (diferente do "WA ID" acima, que é o phone_number_id). ' +
+      'Usado nas chamadas de nível de conta do Graph — por ex. a verificação de inscrição do ' +
+      'webhook (subscribed_apps) na checagem de saúde da conta.',
+  },
   mensagem_automatica: {
     label: 'Mensagem automática (dentro do horário de atendimento)',
     kind: 'longText',

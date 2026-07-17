@@ -27,7 +27,9 @@ import {
   buildQuery,
   limit as fsLimit,
   orderByField,
+  whereArrayContains,
   whereEqual,
+  whereOp,
 } from '@delfrance/data';
 import type { CollectionMetadata } from '@delfrance/schemas';
 import {
@@ -166,6 +168,20 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   orderBy?: { field: string; direction?: 'asc' | 'desc' };
 
   /**
+   * Page-owned server-side filters, AND-combined with the `meta.defaultQuery`
+   * base filters and the user's column filters (applied in that order: base,
+   * extra, column). Unlike column filters they carry no filter UI and never
+   * round-trip through the URL — the page computes them (e.g. a resolved
+   * chave list for an `array-contains-any`). An `array-contains-any` entry
+   * whose value is an EMPTY array short-circuits to an empty result set
+   * WITHOUT querying (an empty candidate list means "no rows"). An array
+   * value on any OTHER op is a programmer error and throws (same guard as
+   * `buildPipeline`) rather than silently rendering an empty table. Ignored
+   * under `queryOverride` — that query is caller-owned.
+   */
+  extraFilters?: ReadonlyArray<PipelineFieldFilter>;
+
+  /**
    * Escape hatch: pass a custom `Query` (e.g. with composite filters the
    * Pipelines wrapper doesn't cover). When set, search/orderBy/pageSize and
    * `meta.defaultQuery` are ignored — the caller owns the query lifecycle.
@@ -212,6 +228,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   queryParams,
   pageSize,
   orderBy,
+  extraFilters,
   queryOverride,
   actionsPanel,
 }: TableViewProps<S>) {
@@ -423,6 +440,21 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   }, [defaultQuery, queryParamsSerial]);
   const baseFiltersSerial = useMemo(() => JSON.stringify(baseFilters), [baseFilters]);
 
+  // Page-owned extra filters (see the prop jsdoc). Serialized for memo deps
+  // so callers needn't memoize the array. An `array-contains-any` entry whose
+  // candidate list resolved to nothing means "no rows" — short-circuit instead
+  // of querying, mirroring `lookupEmpty`. Scoped to that op on purpose: an
+  // empty array on any other op is a programmer error that must reach the
+  // `buildPipeline` guard (or the fallback guard below) and throw, not render
+  // an empty table. Under `queryOverride` the extras (and the short-circuit)
+  // don't apply: that query is caller-owned.
+  const extraFiltersSerial = useMemo(() => JSON.stringify(extraFilters ?? null), [extraFilters]);
+  const extraEmpty =
+    !queryOverride &&
+    (extraFilters ?? []).some(
+      (f) => f.op === 'array-contains-any' && Array.isArray(f.value) && f.value.length === 0,
+    );
+
   // Sort actually issued to Firestore: an explicit user/prop sort wins;
   // otherwise the declared default `orderBy` (full array — supports multi-key
   // defaults and matches the declared composite index).
@@ -479,14 +511,19 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // A subcollection-lookup filter is active but still resolving, or it
     // resolved to zero parent ids — either way don't query the collection.
     if (lookupLoading || lookupEmpty) return null;
+    // An extraFilters entry carries an empty candidate list → no rows; don't
+    // query at all (buildPipeline would throw on the empty list).
+    if (extraEmpty) return null;
     try {
       return buildPipeline(db, {
         collection: collection.resolvePath(pathContext),
-        // Base equality filters (from meta.defaultQuery) AND the user's
-        // per-column filters (minus subcollection-lookup keys, applied via
-        // `idIn`). Base first so it reads like the declared query.
+        // Base equality filters (from meta.defaultQuery), the page-owned
+        // extraFilters, AND the user's per-column filters (minus
+        // subcollection-lookup keys, applied via `idIn`). Base first so it
+        // reads like the declared query.
         filters: [
           ...baseFilters,
+          ...(extraFilters ?? []),
           ...Object.entries(serverFilters).map(([field, v]) => ({ field, ...v })),
         ],
         // Constrain to the parent ids a subcollection lookup resolved (NF
@@ -516,6 +553,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     effectiveLimit,
     effectiveOrderBy,
     baseFiltersSerial,
+    extraFiltersSerial,
+    extraEmpty,
     serverFiltersSerial,
     idInSerial,
     lookupLoading,
@@ -530,11 +569,58 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     // A subcollection lookup resolves via `idIn` (pipeline-only). On the classic
     // fallback we can't honor it, so render nothing rather than the whole list.
     if (lookupActive) return null;
+    // Same short-circuit as the pipeline path: an empty extra-filter
+    // candidate list means "no rows" — don't build a query.
+    if (extraEmpty) return null;
     const base = collection.ref(db, pathContext);
     const constraints = [];
     // Base equality filters first (same as the pipeline path) — these must
     // never be dropped. equality + orderBy is a legal classic query.
     for (const f of baseFilters) constraints.push(whereEqual(f.field, f.value));
+    // Page-owned extraFilters stay server-side on the classic path too. The
+    // pipeline-only ops degrade: `array-contains-any` maps to the classic
+    // operator, which caps the candidate list at 30 values (Firestore limit —
+    // callers must truncate); `contains`/`startsWith` have no classic
+    // equivalent, so extra filters using them are pipeline-only by contract.
+    for (const f of extraFilters ?? []) {
+      // Mirror `buildPipeline`'s guard: only `array-contains-any` takes a
+      // list. Surfacing the error beats silently querying nonsense.
+      if (f.op !== 'array-contains-any' && Array.isArray(f.value)) {
+        throw new Error(
+          `TableView: extraFilters op "${f.op}" on "${f.field}" received an array ` +
+            `value; only "array-contains-any" accepts a list.`,
+        );
+      }
+      switch (f.op) {
+        case 'eq':
+          constraints.push(whereEqual(f.field, f.value));
+          break;
+        case 'lt':
+          constraints.push(whereOp(f.field, '<', f.value));
+          break;
+        case 'lte':
+          constraints.push(whereOp(f.field, '<=', f.value));
+          break;
+        case 'gt':
+          constraints.push(whereOp(f.field, '>', f.value));
+          break;
+        case 'gte':
+          constraints.push(whereOp(f.field, '>=', f.value));
+          break;
+        case 'array-contains':
+          constraints.push(whereArrayContains(f.field, f.value));
+          break;
+        case 'array-contains-any':
+          constraints.push(whereOp(f.field, 'array-contains-any', f.value));
+          break;
+        case 'contains':
+        case 'startsWith':
+          throw new Error(
+            `TableView: extraFilters op "${f.op}" on "${f.field}" is pipeline-only ` +
+              `and has no classic-query fallback.`,
+          );
+      }
+    }
     for (const o of effectiveOrderBy ?? []) constraints.push(orderByField(o.field, o.direction));
     constraints.push(fsLimit(effectiveLimit));
     return buildQuery(base, constraints);
@@ -548,6 +634,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     effectiveLimit,
     effectiveOrderBy,
     baseFiltersSerial,
+    extraFiltersSerial,
+    extraEmpty,
     refreshKey,
   ]);
 
@@ -562,14 +650,15 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // reads `rows`, not `snap.data`, so it all stays consistent with the filter.
   const rows = useMemo<SnapshotRow<z.infer<S>>[] | undefined>(
     () => {
-      // A subcollection lookup that matched nothing → no rows (no query ran).
-      if (lookupEmpty) return [];
+      // A subcollection lookup that matched nothing, or an extra filter with
+      // an empty candidate list → no rows (no query ran).
+      if (lookupEmpty || extraEmpty) return [];
       if (pipeline || !snap.data) return snap.data;
       return applyColumnFilters(snap.data, serverFilters);
     },
     // serverFiltersSerial stands in for the `serverFilters` object content.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pipeline, snap.data, serverFiltersSerial, lookupEmpty],
+    [pipeline, snap.data, serverFiltersSerial, lookupEmpty, extraEmpty],
   );
 
   // Collapse "Carregar mais" back to one page whenever the query shape changes
@@ -578,7 +667,14 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   useEffect(() => {
     setPages(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtersSerial, baseFiltersSerial, queryParamsSerial, sort?.field, sort?.direction]);
+  }, [
+    filtersSerial,
+    baseFiltersSerial,
+    extraFiltersSerial,
+    queryParamsSerial,
+    sort?.field,
+    sort?.direction,
+  ]);
 
   // Drop selected ids that left the current row set (filter change, refresh,
   // delete in another tab) so bulk actions and the header checkbox never act

@@ -373,6 +373,9 @@ export {
   estadoNFeSchema,
   ESTADO_NFE,
   ESTADO_NFE_LABELS,
+  ESTADOS_FINAIS_NFE,
+  isEstadoFinalNFe,
+  CHAVE_NFE_REGEX,
   type NotaFiscalEletronica,
   type EstadoNFe,
 } from './nfe';

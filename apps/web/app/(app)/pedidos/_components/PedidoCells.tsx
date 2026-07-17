@@ -35,11 +35,9 @@ import {
 import { microsToMillis } from '@delfrance/core/datetime';
 import { formatReais } from '@delfrance/core/money';
 import {
-  ActionIcon,
   Anchor,
   Badge,
   Button,
-  CopyButton,
   Group,
   HoverCard,
   type MantineColor,
@@ -48,8 +46,9 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { IconBan, IconCheck, IconCopy, IconFileDownload, IconFileText } from '@tabler/icons-react';
+import { IconBan, IconCheck, IconFileDownload, IconFileText } from '@tabler/icons-react';
 
+import { CopyIconButton } from '@/components/CopyIconButton';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import { nfeCollection } from '@/lib/data/nfeCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -96,20 +95,6 @@ const NFE_STATE_COLOR: Record<EstadoNFe, MantineColor> = {
   [ESTADO_NFE.numeracaoInutilizada]: 'gray',
   [ESTADO_NFE.error]: 'red',
 };
-
-function CopyIconButton({ value, label }: { value: string; label: string }) {
-  return (
-    <CopyButton value={value} timeout={1500}>
-      {({ copied, copy }) => (
-        <Tooltip label={copied ? 'Copiado!' : label} withArrow withinPortal position="top">
-          <ActionIcon variant="subtle" color="gray" size="sm" onClick={copy} aria-label={label}>
-            {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
-          </ActionIcon>
-        </Tooltip>
-      )}
-    </CopyButton>
-  );
-}
 
 export function NFCell({ pedidoId }: { pedidoId: string }) {
   const db = getFirebaseFirestore();

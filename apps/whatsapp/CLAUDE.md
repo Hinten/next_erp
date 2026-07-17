@@ -20,6 +20,21 @@ consent URL / code exchange / refresh here (no `oauth` routes, no `state.ts`).
   Graph phone-number lookup (`display_phone_number` / `verified_name`) when a token
   is stored; `{ connected: false }` when there is no token or Graph rejects it
   (401 / error code 190). The token is never returned.
+- `app/api/whatsapp/verificacao/solicitar` — `PERM.integracao.write`. **POST**
+  `{ integracaoId, metodo: 'SMS' | 'VOICE' }` → requests a 6-digit verification
+  code for the number (`request_code`). `{ ok: true }`.
+- `app/api/whatsapp/verificacao/confirmar` — `PERM.integracao.write`. **POST**
+  `{ integracaoId, codigo }` → verifies the code (`verify_code`); on success flags
+  the account `verificado: true` (Admin SDK merge). `{ ok: true, verificado: true }`.
+- `app/api/whatsapp/registro` — `PERM.integracao.write`. **POST** `{ integracaoId,
+  pin? }` registers the number (`register`); an explicit 6-digit `pin` wins,
+  otherwise the stored pin is reused (re-register). The pin is persisted into the
+  admin-only `credenciaisWhatsapp` doc and **never echoed/logged/in a URL**.
+  **DELETE** `?integracaoId=` deregisters (`deregister`), keeping the stored pin.
+  `{ ok: true }`.
+- `app/api/whatsapp/health` — `PERM.integracao.read`. **GET** `?integracaoId=` →
+  the account-health aggregation (`lib/whatsapp/health.ts`) behind the "Saúde da
+  conta" card. See the "PIN registration + account health" section below.
 - `app/api/webhooks/whatsapp` — the inbound webhook receiver (#527). **GET** is
   Meta's verify handshake (`hub.mode`/`hub.verify_token`/`hub.challenge`); **POST**
   verifies the `X-Hub-Signature-256` HMAC over the raw body, then enqueues one lean
@@ -27,6 +42,10 @@ consent URL / code exchange / refresh here (no `oauth` routes, no `state.ts`).
   and acks `200` fast. Server→server (no Bearer, OUT of the `proxy.ts` CORS matcher).
 - `lib/whatsapp/{notificacao,processMessages,processStatus,waTasks}.ts` — the queue
   pipeline (see the "Inbound webhook + pipeline" section below).
+- `lib/whatsapp/outbound.ts` — the **outbound** send disposition (#529, pure +
+  trigger-agnostic): `dispatchOutbound` sends an operator/auto-reply `mensagem`
+  via the Cloud API and re-anchors it to the wamid; `sweepStaleOutbound` is the
+  stuck-`salva` backstop core. See the "Outbound sender + trigger" section below.
 - `lib/signatures/hmac.ts` — `verifyMetaSignature(rawBody, header)` + `verifyHmac`.
 - `lib/whatsapp/whatsapp.ts` — `loadWhatsappContext(db, integracaoId)`: validates the
   `integracao` doc exists and `tipo === INTEGRACAO_TIPO.whatsapp`, exposes `conta`,
@@ -36,8 +55,22 @@ consent URL / code exchange / refresh here (no `oauth` routes, no `state.ts`).
 - `lib/whatsapp/credentialStore.ts` — the single-token store over the admin-only
   `integracao/{id}/credenciaisWhatsapp` subcollection (fixed `current` doc; strays
   deleted on save; `revoke()` clears it). Mirrors apps/mercado-pago's `credentialStore`.
+  `save()` **carries a previously-stored `pin` forward** when the incoming cred
+  has none (`pin == null`) — so a bare token replacement (the `token` POST route)
+  never wipes the two-step registration PIN; an explicit pin (the `registro`
+  route) always wins.
+- `lib/whatsapp/health.ts` — the account-health aggregator (`buildWhatsappHealth`):
+  a single phone-node probe (`getPhoneNumberStatus` → token / phone_status /
+  quality / code_verification) plus webhook, inbound, and failed-notification
+  checks, folded into check rows + `canSend` / `canReceive` verdicts. Every probe
+  failure is a check row, never a route throw.
 - `lib/whatsapp/respond.ts` — the error → HTTP mapper (`TokenMissing` /
-  `TokenInvalid` → 409 reauth; `ContaNotConfigured` → 404; `Graph` → 502).
+  `TokenInvalid` → 409 reauth; `ContaNotConfigured` → 404; app-local `Graph` → 502).
+  It also maps the client's `WhatsAppHttpError` / `WhatsAppNetworkError` (from the
+  PIN/verify/register/status calls): upstream 401 or Graph code 190 → 409
+  `WA_REAUTH_REQUIRED`; code 133016 (register cap) → 429 `WA_RATE_LIMIT`; upstream
+  400 → 400 with `error_user_msg ?? message`; other HTTP → 502 `WA_GRAPH_ERROR`;
+  network → 502.
 - `lib/{auth,firebase}` — per-app copies of the shared helpers (each backend keeps
   its own so they deploy + log independently).
 - `functions/` — the nested Cloud Functions codebase (deploy-artifact sub-build; see
@@ -52,12 +85,16 @@ consent URL / code exchange / refresh here (no `oauth` routes, no `state.ts`).
 3. **All Firestore access via `@delfrance/data/admin/collections` handles** —
    raw `.collection()`/`.doc()`/`.collectionGroup()` is lint-banned (except the
    `lib/firebase/admin.ts` singleton).
-4. **The permanent token never reaches the browser.** It lives only in the
-   admin-only `integracao/{id}/credenciaisWhatsapp` subcollection (default-deny;
-   only the Admin SDK reaches it). Do **not** log it, echo it in a response, or
-   put it in a URL/query string — the POST body is the only place it appears, and
-   only inbound. Never copy the hardcoded legacy `access_token`/`phone_id` from
-   `.old/lib/whatsapp/providers/provider.dart`.
+4. **The permanent token AND the two-step PIN never reach the browser.** Both live
+   only in the admin-only `integracao/{id}/credenciaisWhatsapp` subcollection
+   (default-deny; only the Admin SDK reaches it) — the PIN as `credenciaisWhatsapp.pin`,
+   NEVER on the client-readable `integracao` doc (legacy stored it there in
+   plaintext; we do not — the old `integracao.pin` field is gone). Do **not** log
+   either secret, echo it in a response, or put it in a URL/query string — the POST
+   body is the only place they appear, and only inbound. The `register` client
+   call keeps the pin out of any error (its `WhatsAppHttpError` carries the
+   RESPONSE body only). Never copy the hardcoded legacy `access_token`/`phone_id`
+   from `.old/lib/whatsapp/providers/provider.dart`.
 5. **CORS** is handled by `proxy.ts` (Next 16 middleware) for `/api/whatsapp/*`
    only.
 
@@ -117,27 +154,32 @@ ported from the legacy Flutter handler (`.old/.../whatsapp_cloud_api`). Flow:
 
 `processStatus` reads the DETERMINISTIC doc directly rather than a collection-group
 `mid` query: `conversaId = conversaDocId(contaId, senderId(displayPhone,
-status.recipient_id))`, `msgId = mensagemDocId(contaId, status.id)`. So **PR-3's
-outbound sender MUST store each sent message at
+status.recipient_id))`, `msgId = mensagemDocId(contaId, status.id)`. So the
+**outbound sender stores each sent message at
 `chat/{conversaId}/mensagem/{mensagemDocId(contaId, sendWamid)}` with
-`mid = sendWamid`** (re-anchoring the doc id to the wamid the Graph API returns). A
+`mid = sendWamid`** (re-anchoring the doc id to the wamid the Graph API returns) —
+this is exactly what `dispatchOutbound` does on a successful send (#529, live). A
 status whose message isn't found is logged + skipped (a soft miss, never a throw).
 
-### Auto-reply outbound contract for PR-3 (#529 sender trigger)
+### Auto-reply outbound contract (#529 sender trigger)
 
 Legacy SENT the daily auto-reply inline via the Graph API. This pipeline instead
-WRITES it as an OUTBOUND `mensagem` doc and lets PR-3's `onCreate` trigger send it.
-**PR-3's trigger sends any freshly-created message where**
+WRITES it as an OUTBOUND `mensagem` doc and lets the `sendOutbound` `onCreate`
+trigger send it. **The trigger sends any freshly-created message where**
 
 ```
-estadoEnvio === ESTADO_ENVIO.salva (1)  AND  tipo !== 'e' (evento)  AND  mid == null
+estadoEnvio === ESTADO_ENVIO.salva (1)  AND  tipo not in {'e','!'}  AND  mid == null
+  AND  parent conversa origem === 'whatsapp'
 ```
 
 (an operator's manual reply qualifies identically). Auto-replies are written as
 `{ estadoEnvio: salva, tipo: 'c', mid: null }`. The lifecycle EVENTS this pipeline
-writes (`nova conversa`, `reaberto`) are also `salva` but carry `tipo: 'e'`, so the
-`tipo !== 'e'` clause keeps PR-3 from sending them; inbound customer messages are
-`estadoEnvio: recebido (7)` and never match.
+writes (`nova conversa`, `reaberto`) are also `salva` but carry `tipo: 'e'` (and
+error messages `tipo: '!'`), so the `tipo` clause keeps them from being sent;
+inbound customer messages are `estadoEnvio: recebido (7)` and never match. The
+`origem === 'whatsapp'` clause is the AUTHORITATIVE channel gate: `apps/webchat`
+('site' conversas) writes its own NON-null local `mid`, but a 'site' conversa is
+excluded by the origem gate regardless of its `mid` convention.
 
 ### The `estaAberto` UTC-hour quirk (models.dart:288-308)
 
@@ -151,16 +193,108 @@ to now — a quirk that skews the comparison by the operator's timezone offset (
 `Date.UTC(...)` — reproducing the legacy decision, quirk included. Never re-derive
 the ms by hand.
 
+## Outbound sender + trigger (#529)
+
+The complement to the inbound pipeline — delivers operator replies + the daily
+auto-reply through the Cloud API. Port of `_enviarMensagensWhatsapp` +
+`markAnyMessageAsRead` (`.old/lib/chat/providers/conversaProvider.dart`).
+
+1. **`sendOutbound`** (`functions/src/sendOutbound.ts`, `onDocumentCreated` on
+   `chat/{conversaId}/mensagem/{mensagemId}`, **named `default` DB**, `retry: true`)
+   → the pure `dispatchOutbound` (`lib/whatsapp/outbound.ts`).
+2. **Disposition** (`dispatchOutbound`): cheap fast-path exits on the delivered
+   snapshot (per the send discriminator above), then loads the conversa, derives
+   `to = fromNumberFromSenderId(conversa.sender_id)` and `contaId =
+   idFromRef(conversa.integracaoOuterRef)`, builds the account's `WhatsAppClient`
+   (via `loadWhatsappContext`), sends **text** (`conteudo`) or **media**
+   (`anexoStorage` → the `Arquivo` doc's public `url` as the Cloud API `link`;
+   type from the arquivo `filetype`), then TRANSACTIONALLY re-anchors (create the
+   `mensagemDocId(contaId, wamid)` doc with the full content + `mid = wamid` +
+   `estadoEnvio = enviando` + `lastExternalUpdateDateTime = null`, delete the
+   original) so `processStatus` can locate it, and `markRead`s the newest inbound
+   (best-effort, non-fatal — one call marks the whole conversa read).
+3. **Error vs retry**: missing token / misconfigured conta / unresolvable
+   recipient / empty content / a Cloud API HTTP failure (`WhatsAppHttpError` — bad
+   request / auth / permanent) → patch the ORIGINAL doc `estadoEnvio = erro (4)` +
+   the `error` text (**terminal**, no retry — an operator resends). A **transient**
+   failure **throws** so Eventarc (`retry: true`) redelivers: a Cloud API transport
+   failure (`WhatsAppNetworkError`), a still-uploading media arquivo (create-first
+   `url == null` → `OutboundTransientError`, NOT `erro`), or a transient Firestore
+   read/write.
+4. **Idempotency + at-least-once**: the `mid != null` fast-path skips the
+   re-anchored doc when ITS create re-fires the trigger, and a **transactional
+   CLAIM** right before sending flips `estadoEnvio` salva→enviando ONLY while it is
+   still (`salva` && `mid == null`). Concurrent dispatchers (a still-retrying
+   trigger + the sweep) serialize on it: exactly ONE wins and sends; every loser
+   sees a non-`salva`/deleted doc and exits. The ONLY remaining double-**send**
+   window is a CRASH between the claim and the re-anchor — the original is left
+   `enviando`/`mid == null`, so the sweep re-drives it and that re-driven send can
+   rarely duplicate (same at-least-once tail as legacy).
+5. **`reprocessStaleOutbound`** (`functions/src/index.ts`, `onSchedule` every 15
+   min) → `sweepStaleOutbound`: **two** collection-group queries on `mensagem`
+   (`estadoEnvio == salva` and `estadoEnvio == enviando`, both `timestamp <
+   now-10min`, snapshotted up front), each re-run through the disposition
+   (non-WhatsApp conversas + already-anchored `enviando`/`mid != null` docs drop on
+   the fast-path; only `enviando`/`mid == null` crashed claims are re-driven). The
+   composite collection-group index `mensagem(estadoEnvio, timestamp)` is declared
+   in `firestore.indexes.json` (Enterprise runs it unindexed as a scan otherwise —
+   the index is a cost/latency guard).
+6. **Client**: `WhatsAppClient.sendMedia({ to, type, link, caption?, replyTo? })`
+   (`packages/integrations/whatsapp-cloud-api`) posts the media object by LINK,
+   mirroring `sendText`. Caption is omitted for audio (Graph API ignores it there).
+
+## PIN registration + account health
+
+Ports the legacy PIN/SMS number-registration sub-flow
+(`RegistrarPinDialog`/`VerificarCodigoDialog`, `.old/lib/whatsapp/pages/conta.dart`)
+plus a new health surface. The six new client methods
+(`requestVerificationCode` / `verifyCode` / `register` / `deregister` /
+`getPhoneNumberStatus` / `getSubscribedApps`) live in
+`packages/integrations/whatsapp-cloud-api` on Graph **v23.0**; this app's routes
+stay thin and map errors through `respond.ts`.
+
+**Registration flow (operator, from the panel):**
+
+1. `verificacao/solicitar` → Graph `request_code` sends a 6-digit code (SMS/VOICE).
+2. `verificacao/confirmar` → Graph `verify_code`; on success the account is flagged
+   `verificado: true` (Admin SDK).
+3. `registro` (POST) → Graph `register` with the 6-digit `pin`. Meta requires the
+   **SAME pin** to re-register once 2FA is set, so the pin is persisted in
+   `credenciaisWhatsapp.pin` and reused when the POST body omits it. `registro`
+   (DELETE) → Graph `deregister`, keeping the stored pin.
+
+**Account health (`lib/whatsapp/health.ts`, `GET /api/whatsapp/health`):** a
+best-effort aggregation — EVERY probe failure is a check ROW, never a route throw
+(only a missing / non-WhatsApp account 404s). Checks: `token`, `phone_status`,
+`quality`, `code_verification` (self-heals `verificado` when Graph says VERIFIED
+but the doc lags), `webhook_subscription` (needs `integracao.waba_id` — the TRUE
+WABA id, distinct from `wa_id`, which is the `phone_number_id`), `webhook_secret`
+(env PRESENCE of `WHATSAPP_APP_SECRET` + `WHATSAPP_VERIFY_TOKEN`, never the
+values), `inbound_recent` (newest `chat` conversa by `ultimaModificacaoIntegracao`,
+now an ms int), `notificacoes_failed` (`count()` of `failed` notifications —
+keyed by **`wa_id`**, not `phoneNumberId`: the failure docs carry the webhook's
+`metadata.phone_number_id`, which inbound resolution matches against `wa_id`).
+Verdicts: `canSend` = token ok && phone_status ok; `canReceive` = webhook_secret
+ok && (subscription ok→true / fail→false / skip→null). The
+`chat(integracaoOuterRef, ultimaModificacaoIntegracao desc)` composite index is
+declared in `firestore.indexes.json` (Enterprise runs it unindexed otherwise —
+the index is a cost/latency guard).
+
 ## Status
 
-The account/token surface is **live** (`/api/whatsapp/token`, `/api/whatsapp/conta`).
+The account/token surface is **live** (`/api/whatsapp/token`, `/api/whatsapp/conta`),
+as is the **PIN registration + verification + account-health** surface
+(`/api/whatsapp/verificacao/*`, `/api/whatsapp/registro`, `/api/whatsapp/health`).
 The inbound **webhook** receiver + pipeline (#527) are now **live** in this app,
 including the nested Cloud Functions codebase (`functions/`) that hosts the
 `processWhatsappNotification` `onTaskDispatched` consumer + the `reprocessWhatsappNotifications`
 `onSchedule` sweep — deploy + the legacy Flutter cutover (`distribuidorWhastappCloudApi` /
 `processarNotificacoesWhatsapp`) are documented in `functions/DEPLOY.md`. The
-**outbound** sender (#529) and its `onCreate` trigger (the auto-reply/manual-reply
-contract above) follow.
+**outbound** sender (#529) is now **live**: the `sendOutbound` `onDocumentCreated`
+trigger + the `reprocessStaleOutbound` `onSchedule` backstop (both in `functions/`,
+delegating to `lib/whatsapp/outbound.ts`) — see "Outbound sender + trigger" above.
+Deploy of the new functions + the `mensagem(estadoEnvio, timestamp)` index is
+manual/coordinated (root rule #1).
 
 ## Env
 

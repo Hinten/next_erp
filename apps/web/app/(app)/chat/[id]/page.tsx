@@ -3,7 +3,6 @@
 import { useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Alert, Badge, Box, Group, Select, Skeleton, Stack, Text, Title } from '@mantine/core';
-import { setDoc } from 'firebase/firestore';
 import { PageHeader } from '@delfrance/ui';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import {
@@ -39,14 +38,10 @@ export default function ConversaDetailPage() {
     if (next === null || !data) return;
     const nextEstado = Number(next) as EstadoConversa;
     if (nextEstado === data.data.estadoConversa) return;
-    await setDoc(
-      docRef,
-      {
-        estadoConversa: nextEstado,
-        ultima_modificacao: new Date().toISOString(),
-      },
-      { merge: true },
-    );
+    await conversaCollection.merge(getFirebaseFirestore(), {}, params.id, {
+      estadoConversa: nextEstado,
+      ultima_modificacao: Date.now(),
+    });
   }
 
   return (

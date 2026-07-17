@@ -61,6 +61,34 @@
       ]
     },
     {
+      "collectionGroup": "mensagem",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "estadoEnvio",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "chat",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "integracaoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultimaModificacaoIntegracao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "notificacoesMercadoPago",
       "queryScope": "COLLECTION",
       "fields": [
@@ -677,6 +705,20 @@
       "queryScope": "COLLECTION_GROUP",
       "fields": [
         {
+          "fieldPath": "filialId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "numeracao",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
           "fieldPath": "nRec",
           "order": "ASCENDING"
         }
@@ -730,6 +772,16 @@
           "fieldPath": "targetsChnfe",
           "arrayConfig": "CONTAINS"
         },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "enviNfe",
+      "queryScope": "COLLECTION",
+      "fields": [
         {
           "fieldPath": "timestamp",
           "order": "DESCENDING"

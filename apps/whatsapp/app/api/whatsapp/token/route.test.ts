@@ -64,6 +64,8 @@ describe('POST /api/whatsapp/token', () => {
       permanent_token: 'SECRET-TKN',
       phoneNumberId: 'PID',
       wa_id: 'PID',
+      // Passed as null so store.save carries any stored pin forward.
+      pin: null,
       createdAt: expect.any(Number),
     });
   });

@@ -1710,6 +1710,180 @@ export async function cleanupPedidoSubcollection(
 }
 
 /**
+ * Fixture set for the /nfe/comunicacoes suite: one filial (the page's
+ * FilialPicker target), one pedido carrying a single emitted nfev4 doc
+ * (deterministic 44-digit chave, denormalized `filialId`, distinctive
+ * `numeracao` — the fields the nNF / pedido filter modes resolve through),
+ * and three `filiais/{filialId}/enviNfe` audit docs:
+ *
+ *  - lote send  — estado '3' (Concluído),  cStat '100', targets `chave`
+ *  - consulta   — estado '2' (Respondido), targets `chave`
+ *  - transporte — estado 'e' (Erro) + error text, targets `chaveErro`
+ *                 (a second chave, so filters can prove they exclude it)
+ *
+ * Timestamps are staggered so the list's `orderBy timestamp desc` is
+ * deterministic — the erro doc is the newest and renders first.
+ */
+export async function seedEnviNfeFixtures(prefix: string): Promise<{
+  filialId: string;
+  pedidoId: string;
+  pedidoNumero: string;
+  nfeId: string;
+  numeracao: number;
+  chave: string;
+  chaveErro: string;
+  msgConcluidoId: string;
+  msgRespondidoId: string;
+  msgErroId: string;
+}> {
+  const filialId = `${prefix}-filial`;
+  const pedidoId = `${prefix}-ped-001`;
+  const nfeId = `${pedidoId}-nfe`;
+  const msgConcluidoId = `${prefix}-msg-1`;
+  const msgRespondidoId = `${prefix}-msg-2`;
+  const msgErroId = `${prefix}-msg-3`;
+  const numeracao = 777001;
+  // 44 digits — the schema validates length only, not the check digit. Cross-
+  // run isolation comes from the filial-scoped subcollection + the run-scoped
+  // `filialId` equality on the nfev4 collection-group lookup.
+  const chave = `${'1'.repeat(38)}777001`;
+  const chaveErro = `${'2'.repeat(38)}777002`;
+  const now = Date.now();
+
+  // Filial — shape from `seedFiliais`.
+  await db()
+    .collection('filiais')
+    .doc(filialId)
+    .set({
+      razaoSocial: filialId,
+      fantasia: null,
+      cnae: null,
+      cnpj: '77000000000101',
+      ie: '770000001',
+      iest: null,
+      imun: null,
+      sede: {
+        idExterno: null,
+        logradouro: 'Av. Teste',
+        numero: '1',
+        bairro: 'Centro',
+        complemento: null,
+        cep: '01310100',
+        codigoMunicipio: null,
+        cidade: 'São Paulo',
+        estado: 'SP',
+        cPais: null,
+        pais: null,
+        nome: null,
+        cpf_cnpj: null,
+        rg: null,
+        ie: null,
+        imun: null,
+        email: null,
+        telefone: null,
+      },
+      timestamp: now,
+    });
+
+  // Pedido + nfev4 child — reuse `seedPedidoWithNFe` (passing `<prefix>-ped`
+  // yields the same `<prefix>-ped-001` / `-nfe` ids), then patch the nfev4 doc
+  // with the emitted-NFe fields the enviNfe filter resolution reads (`chave`,
+  // denormalized `filialId`, `numeracao` for the nNF collection-group lookup).
+  await seedPedidoWithNFe(`${prefix}-ped`, 1, 'a');
+  await db().collection('pedidos').doc(pedidoId).collection('nfev4').doc(nfeId).update({
+    numeracao,
+    chave,
+    filialId,
+    cStat: '100',
+    xMotivo: 'Autorizado o uso da NF-e',
+  });
+
+  const enviNfe = db().collection('filiais').doc(filialId).collection('enviNfe');
+  const batch = db().batch();
+  batch.set(enviNfe.doc(msgConcluidoId), {
+    targetsChnfe: [chave],
+    idLote: 1,
+    indSinc: '1',
+    xml_enviado: '<enviNFe versao="4.00"><idLote>1</idLote></enviNFe>',
+    xml_retorno: JSON.stringify({
+      retEnviNFe: { cStat: '104', protNFe: { infProt: { cStat: '100', chNFe: chave } } },
+    }),
+    nRec: null,
+    cStat: '100',
+    xMotivo: 'Autorizado o uso da NF-e',
+    error: null,
+    tpEmis: 1,
+    estado: '3',
+    timestamp: now,
+    ultima_modificacao: now,
+  });
+  batch.set(enviNfe.doc(msgRespondidoId), {
+    targetsChnfe: [chave],
+    idLote: null,
+    indSinc: null,
+    xml_enviado: null,
+    xml_retorno: JSON.stringify({
+      retConsReciNFe: { cStat: '105', xMotivo: 'Lote em processamento' },
+    }),
+    nRec: '351000000777001',
+    cStat: '105',
+    xMotivo: 'Lote em processamento',
+    error: null,
+    tpEmis: 1,
+    estado: '2',
+    timestamp: now + 1_000,
+    ultima_modificacao: now + 1_000,
+  });
+  batch.set(enviNfe.doc(msgErroId), {
+    targetsChnfe: [chaveErro],
+    idLote: 2,
+    indSinc: '0',
+    xml_enviado: '<enviNFe versao="4.00"><idLote>2</idLote></enviNFe>',
+    xml_retorno: null,
+    nRec: null,
+    cStat: null,
+    xMotivo: null,
+    error: 'ECONNRESET: falha de transporte ao enviar o lote',
+    tpEmis: 1,
+    estado: 'e',
+    timestamp: now + 2_000,
+    ultima_modificacao: now + 2_000,
+  });
+  await batch.commit();
+
+  return {
+    filialId,
+    pedidoId,
+    pedidoNumero: pedidoId,
+    nfeId,
+    numeracao,
+    chave,
+    chaveErro,
+    msgConcluidoId,
+    msgRespondidoId,
+    msgErroId,
+  };
+}
+
+/**
+ * Clean up everything `seedEnviNfeFixtures` wrote. Subcollections are not
+ * cascaded by the Firestore SDK (same caveat as `cleanupPedidoWithNFe`):
+ * sweep the filial's `enviNfe` docs explicitly, then reuse
+ * `cleanupPedidoWithNFe` for the pedido + its `nfev4` docs.
+ */
+export async function cleanupEnviNfeFixtures(prefix: string): Promise<void> {
+  const filialId = `${prefix}-filial`;
+  const enviSnap = await db().collection('filiais').doc(filialId).collection('enviNfe').get();
+  if (!enviSnap.empty) {
+    const batch = db().batch();
+    enviSnap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+  await db().collection('filiais').doc(filialId).delete();
+  await cleanupPedidoWithNFe(`${prefix}-ped-001`);
+}
+
+/**
  * Seed two variation groups for the produto-variações suite — Tamanhos
  * (P/M/G, ordem 1) and Cores (Azul/Verde, ordem 2, `permiteFotos`). Names are
  * prefix-scoped for the sweep; variant ids are fixed so the spec can assert
@@ -1721,7 +1895,8 @@ export async function seedGruposDeVariacao(prefix: string): Promise<{
 }> {
   const col = db().collection('grupoDeVariacoes');
   const batch = db().batch();
-  const now = new Date().toISOString();
+  // grupoDeVariacoes datetimes are millisecondsSinceEpoch INT (#484/#486).
+  const now = Date.now();
   const tamanhosId = `${prefix}-tam`;
   const coresId = `${prefix}-cor`;
   batch.set(col.doc(tamanhosId), {

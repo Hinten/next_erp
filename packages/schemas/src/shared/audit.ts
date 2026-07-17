@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './datetime';
 
 /**
  * One mutation record under `audit/{collectionName}/{docId}/changes/{auditId}`.
@@ -18,7 +19,8 @@ export const auditEntrySchema = z.object({
   kind: z.enum(['create', 'update', 'delete']),
   // Partial document — for updates, only the dirty fields the user touched.
   patch: z.record(z.string(), z.unknown()),
-  timestamp: z.string().datetime(),
+  // millisecondsSinceEpoch INT wire format (#484/#486); tolerant read via the codec.
+  timestamp: millisSinceEpoch(),
 });
 
 export type AuditEntry = z.infer<typeof auditEntrySchema>;

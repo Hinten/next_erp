@@ -212,12 +212,24 @@ describe('integracaoSchema WhatsApp fields', () => {
   it('parses a marketplace doc with no WhatsApp fields (all default to null)', () => {
     const parsed = integracaoSchema.parse(base);
     expect(parsed.wa_id).toBeNull();
+    expect(parsed.waba_id).toBeNull();
     expect(parsed.phoneNumberId).toBeNull();
     expect(parsed.numero).toBeNull();
     expect(parsed.verificado).toBe(false);
     expect(parsed.mensagem_automatica).toBeNull();
     expect(parsed.mensagem_inatividade).toBeNull();
     expect(parsed.horario_funcionamento).toBeNull();
+  });
+
+  it('carries waba_id (the true WABA id, distinct from wa_id) as a flat field', () => {
+    const parsed = integracaoSchema.parse({
+      ...base,
+      tipo: 6,
+      wa_id: '109876543210', // phone_number_id, per the legacy quirk
+      waba_id: '208877665544', // the actual WhatsApp Business Account id
+    });
+    expect(parsed.wa_id).toBe('109876543210');
+    expect(parsed.waba_id).toBe('208877665544');
   });
 
   it('parses a WhatsApp account doc with wa_id carrying the phone_number_id', () => {
@@ -376,11 +388,23 @@ describe('credenciaisWhatsappSchema', () => {
     ).toBe(false);
   });
 
-  it('defaults phoneNumberId/wa_id/createdAt to null when absent', () => {
+  it('defaults phoneNumberId/wa_id/pin/createdAt to null when absent', () => {
     const parsed = credenciaisWhatsappSchema.parse({ permanent_token: 'tok' });
     expect(parsed.phoneNumberId).toBeNull();
     expect(parsed.wa_id).toBeNull();
+    expect(parsed.pin).toBeNull();
     expect(parsed.createdAt).toBeNull();
+  });
+
+  it('accepts a 6-digit two-step pin and rejects any other shape', () => {
+    expect(credenciaisWhatsappSchema.parse({ permanent_token: 'tok', pin: '123456' }).pin).toBe(
+      '123456',
+    );
+    for (const bad of ['12345', '1234567', 'abcdef', '12 45 6', '']) {
+      expect(
+        credenciaisWhatsappSchema.safeParse({ permanent_token: 'tok', pin: bad }).success,
+      ).toBe(false);
+    }
   });
 
   it('targets the credenciaisWhatsapp subcollection path', () => {

@@ -113,6 +113,7 @@ export const balcaoExcludedFields = [
   'selling_partner_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
   'tenant_id', // per-channel fields — hidden here, surfaced by their own channel screens/flows
   'wa_id', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
+  'waba_id', // WhatsApp field — hidden here, surfaced by its own channel screen
   'phoneNumberId', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
   'numero', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
   'verificado', // WhatsApp field (#528) — hidden here, surfaced by its own channel screen
