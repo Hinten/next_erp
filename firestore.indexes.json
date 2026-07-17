@@ -75,6 +75,20 @@
       ]
     },
     {
+      "collectionGroup": "chat",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "integracaoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultimaModificacaoIntegracao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "notificacoesMercadoPago",
       "queryScope": "COLLECTION",
       "fields": [

@@ -14,11 +14,18 @@
  * lands with #529 for the operator-reply pipeline.
  */
 
-import { mediaMetadataSchema, type MediaMetadata } from './types';
+import {
+  mediaMetadataSchema,
+  phoneNumberStatusSchema,
+  subscribedAppsResponseSchema,
+  type MediaMetadata,
+  type PhoneNumberStatus,
+  type SubscribedApp,
+} from './types';
 
 export const GRAPH_BASE = 'https://graph.facebook.com';
 /** Default Graph API version, overridable via `WhatsAppClientConfig.graphApiVersion`. */
-export const DEFAULT_GRAPH_API_VERSION = 'v21.0';
+export const DEFAULT_GRAPH_API_VERSION = 'v23.0';
 
 /** Cap the Graph error payload carried on a {@link WhatsAppHttpError} (snippet only). */
 const ERROR_BODY_MAX = 500;
@@ -121,6 +128,26 @@ export interface SendMediaInput {
 
 export interface SendResult {
   messageId: string;
+}
+
+/** {@link WhatsAppClient.requestVerificationCode} input. */
+export interface RequestVerificationCodeInput {
+  /** How Meta delivers the 6-digit code to the number. */
+  codeMethod: 'SMS' | 'VOICE';
+  /** BCP-47-ish language for the delivered message. Defaults to `pt_BR`. */
+  language?: string;
+}
+
+/** {@link WhatsAppClient.verifyCode} input. */
+export interface VerifyCodeInput {
+  /** The 6-digit code the operator received via SMS/VOICE. */
+  code: string;
+}
+
+/** {@link WhatsAppClient.register} input. */
+export interface RegisterInput {
+  /** The 6-digit two-step registration PIN. NEVER surfaced in error text. */
+  pin: string;
 }
 
 /** Result of {@link WhatsAppClient.downloadMedia}. */
@@ -308,5 +335,177 @@ export class WhatsAppClient {
       const text = await res.text();
       throw new WhatsAppHttpError('markRead', res.status, text);
     }
+  }
+
+  private authJsonHeaders(): Record<string, string> {
+    return {
+      authorization: `Bearer ${this.cfg.accessToken}`,
+      'content-type': 'application/json',
+    };
+  }
+
+  /**
+   * Request a 6-digit verification code for the number (PIN/SMS registration,
+   * step 1). `POST /{phoneNumberId}/request_code { code_method, language }`.
+   * Ported from legacy `requestCodeForNumber`
+   * (`.old/.../api_v23/api.dart:188`). Reference:
+   * https://developers.facebook.com/docs/whatsapp/cloud-api/reference/phone-numbers#verify
+   */
+  async requestVerificationCode(input: RequestVerificationCodeInput): Promise<void> {
+    const res = await this.doFetch(
+      'requestVerificationCode',
+      `${GRAPH_BASE}/${this.version}/${this.cfg.phoneNumberId}/request_code`,
+      {
+        method: 'POST',
+        headers: this.authJsonHeaders(),
+        body: JSON.stringify({
+          code_method: input.codeMethod,
+          language: input.language ?? 'pt_BR',
+        }),
+      },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new WhatsAppHttpError('requestVerificationCode', res.status, text);
+    }
+  }
+
+  /**
+   * Verify the 6-digit code (step 2). `POST /{phoneNumberId}/verify_code
+   * { code }`. Ported from legacy `verifyCodeForNumber`
+   * (`.old/.../api_v23/api.dart:207`), which treats `success == true` as the
+   * pass signal — a 2xx body lacking it is still a failure (throws).
+   */
+  async verifyCode(input: VerifyCodeInput): Promise<void> {
+    const res = await this.doFetch(
+      'verifyCode',
+      `${GRAPH_BASE}/${this.version}/${this.cfg.phoneNumberId}/verify_code`,
+      {
+        method: 'POST',
+        headers: this.authJsonHeaders(),
+        body: JSON.stringify({ code: input.code }),
+      },
+    );
+    const text = await res.text();
+    if (!res.ok) {
+      throw new WhatsAppHttpError('verifyCode', res.status, text);
+    }
+    if (!isSuccessBody(text)) {
+      throw new WhatsAppHttpError('verifyCode', res.status, text);
+    }
+  }
+
+  /**
+   * Register the number with its two-step PIN. `POST /{phoneNumberId}/register
+   * { messaging_product: 'whatsapp', pin }`. Ported from legacy `register` /
+   * `registrarPin` (`.old/.../api_v23/api.dart:222`,
+   * `.old/lib/whatsapp/providers/provider.dart:322`), which treats
+   * `success == true` as the pass signal.
+   *
+   * SECURITY: {@link WhatsAppHttpError} carries ONLY the RESPONSE body (never
+   * the request), so the `pin` — a request field — is never exposed in an error
+   * message or snippet, and {@link WhatsAppNetworkError} carries only the
+   * transport-failure cause. The pin is never logged here either.
+   */
+  async register(input: RegisterInput): Promise<void> {
+    const res = await this.doFetch(
+      'register',
+      `${GRAPH_BASE}/${this.version}/${this.cfg.phoneNumberId}/register`,
+      {
+        method: 'POST',
+        headers: this.authJsonHeaders(),
+        body: JSON.stringify({ messaging_product: 'whatsapp', pin: input.pin }),
+      },
+    );
+    const text = await res.text();
+    if (!res.ok) {
+      throw new WhatsAppHttpError('register', res.status, text);
+    }
+    if (!isSuccessBody(text)) {
+      throw new WhatsAppHttpError('register', res.status, text);
+    }
+  }
+
+  /**
+   * Deregister the number (undo {@link register}). `POST
+   * /{phoneNumberId}/deregister` (no body). Ported from legacy `deregister`
+   * (`.old/.../api_v23/api.dart:244`).
+   */
+  async deregister(): Promise<void> {
+    const res = await this.doFetch(
+      'deregister',
+      `${GRAPH_BASE}/${this.version}/${this.cfg.phoneNumberId}/deregister`,
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.cfg.accessToken}` },
+      },
+    );
+    const text = await res.text();
+    if (!res.ok) {
+      throw new WhatsAppHttpError('deregister', res.status, text);
+    }
+    // Same pass signal as verifyCode/register (and legacy): a 2xx body must
+    // carry `success: true`.
+    if (!isSuccessBody(text)) {
+      throw new WhatsAppHttpError('deregister', res.status, text);
+    }
+  }
+
+  /**
+   * Read the phone-number node's health fields (status / quality_rating /
+   * code_verification_status / display_phone_number / verified_name /
+   * throughput) for the account-health surface. `GET /{phoneNumberId}?fields=…`.
+   * Ported from legacy `getPhoneStatus` (`.old/.../api_v23/api.dart:439`),
+   * widened to the full field set. Tolerant parse: unknown enum values pass
+   * through as plain strings.
+   */
+  async getPhoneNumberStatus(): Promise<PhoneNumberStatus> {
+    const fields =
+      'status,quality_rating,code_verification_status,display_phone_number,verified_name,throughput';
+    const res = await this.doFetch(
+      'getPhoneNumberStatus',
+      `${GRAPH_BASE}/${this.version}/${this.cfg.phoneNumberId}?fields=${fields}`,
+      { headers: { authorization: `Bearer ${this.cfg.accessToken}` } },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new WhatsAppHttpError('getPhoneNumberStatus', res.status, text);
+    }
+    return phoneNumberStatusSchema.parse(await res.json());
+  }
+
+  /**
+   * List the apps subscribed to the WhatsApp Business Account's webhooks —
+   * the "is the webhook wired up?" health probe. `GET
+   * /{wabaId}/subscribed_apps`. Ported from legacy `verifySubscription`
+   * (`.old/.../api_v23/api.dart:397`). Note the arg is the WABA id (NOT the
+   * phone number id). Tolerant parse of `{ data: [...] }` — a missing `data`
+   * degrades to `[]`.
+   */
+  async getSubscribedApps(wabaId: string): Promise<SubscribedApp[]> {
+    const res = await this.doFetch(
+      'getSubscribedApps',
+      `${GRAPH_BASE}/${this.version}/${wabaId}/subscribed_apps`,
+      { headers: { authorization: `Bearer ${this.cfg.accessToken}` } },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new WhatsAppHttpError('getSubscribedApps', res.status, text);
+    }
+    const parsed = subscribedAppsResponseSchema.parse(await res.json());
+    return parsed.data ?? [];
+  }
+}
+
+/**
+ * Whether a Graph response body carries `success: true` (the pass signal for
+ * verify_code / register). A non-JSON body counts as failure, not a throw.
+ */
+function isSuccessBody(text: string): boolean {
+  try {
+    return (JSON.parse(text) as { success?: unknown }).success === true;
+  } catch (err) {
+    if (err instanceof SyntaxError) return false;
+    throw err;
   }
 }

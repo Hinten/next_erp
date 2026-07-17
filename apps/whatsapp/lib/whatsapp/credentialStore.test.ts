@@ -70,7 +70,7 @@ describe('createCredentialStore', () => {
     const tx = {
       get: vi.fn(async () => ({
         docs: [
-          { id: 'current', ref: currentRef },
+          { id: 'current', ref: currentRef, data: () => ({ permanent_token: 'TKN1' }) },
           { id: 'legacy-auto-id', ref: strayRef },
         ],
       })),
@@ -83,6 +83,7 @@ describe('createCredentialStore', () => {
       permanent_token: 'TKN2',
       phoneNumberId: 'PID',
       wa_id: 'PID',
+      pin: null,
       createdAt: NOW,
     };
     const store = createCredentialStore(db as never, 'i1');
@@ -94,6 +95,118 @@ describe('createCredentialStore', () => {
     expect(tx.delete).toHaveBeenCalledTimes(1);
     expect(tx.delete).toHaveBeenCalledWith(strayRef);
     expect(saved).toBe(cred);
+  });
+
+  it('save() carries a previously-stored pin forward when the new cred has none', async () => {
+    // A token replacement (POST /api/whatsapp/token) saves a cred with no pin —
+    // the stored two-step registration pin must survive it.
+    const collRef = {};
+    h.ref.mockReturnValue(collRef);
+    const currentRef = { id: 'current' };
+    h.docRef.mockReturnValue(currentRef);
+
+    const tx = {
+      get: vi.fn(async () => ({
+        docs: [
+          {
+            id: 'current',
+            ref: currentRef,
+            data: () => ({ permanent_token: 'OLD', pin: '123456' }),
+          },
+        ],
+      })),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+    const db = { runTransaction: vi.fn(async (fn: (t: typeof tx) => Promise<void>) => fn(tx)) };
+
+    const store = createCredentialStore(db as never, 'i1');
+    const saved = await store.save({
+      permanent_token: 'NEW',
+      phoneNumberId: 'PID',
+      wa_id: 'PID',
+      pin: null,
+      createdAt: NOW,
+    });
+
+    // The pin from the previous doc is merged into the write + the return value.
+    expect(saved.pin).toBe('123456');
+    expect(tx.set).toHaveBeenCalledWith(currentRef, expect.objectContaining({ pin: '123456' }));
+    const written = tx.set.mock.calls[0]![1] as { permanent_token: string };
+    expect(written.permanent_token).toBe('NEW');
+  });
+
+  it('save() drops an invalid stored pin instead of carrying it forward', async () => {
+    // A corrupted / manually-edited pin that violates the schema's 6-digit
+    // constraint must not be propagated — otherwise the parse would throw and
+    // a plain token replacement could never succeed again.
+    const collRef = {};
+    h.ref.mockReturnValue(collRef);
+    const currentRef = { id: 'current' };
+    h.docRef.mockReturnValue(currentRef);
+
+    const tx = {
+      get: vi.fn(async () => ({
+        docs: [
+          {
+            id: 'current',
+            ref: currentRef,
+            data: () => ({ permanent_token: 'OLD', pin: '12ab56' }),
+          },
+        ],
+      })),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+    const db = { runTransaction: vi.fn(async (fn: (t: typeof tx) => Promise<void>) => fn(tx)) };
+
+    const store = createCredentialStore(db as never, 'i1');
+    const saved = await store.save({
+      permanent_token: 'NEW',
+      phoneNumberId: 'PID',
+      wa_id: 'PID',
+      pin: null,
+      createdAt: NOW,
+    });
+
+    // The token replacement succeeds and the corrupt pin is gone.
+    expect(saved.pin).toBeNull();
+    expect(tx.set).toHaveBeenCalledWith(currentRef, expect.objectContaining({ pin: null }));
+    const written = tx.set.mock.calls[0]![1] as { permanent_token: string };
+    expect(written.permanent_token).toBe('NEW');
+  });
+
+  it('save() keeps an explicit pin (does not overwrite it with the stored one)', async () => {
+    const collRef = {};
+    h.ref.mockReturnValue(collRef);
+    const currentRef = { id: 'current' };
+    h.docRef.mockReturnValue(currentRef);
+
+    const tx = {
+      get: vi.fn(async () => ({
+        docs: [
+          {
+            id: 'current',
+            ref: currentRef,
+            data: () => ({ permanent_token: 'OLD', pin: '111111' }),
+          },
+        ],
+      })),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+    const db = { runTransaction: vi.fn(async (fn: (t: typeof tx) => Promise<void>) => fn(tx)) };
+
+    const store = createCredentialStore(db as never, 'i1');
+    const saved = await store.save({
+      permanent_token: 'NEW',
+      phoneNumberId: 'PID',
+      wa_id: 'PID',
+      pin: '999999',
+      createdAt: NOW,
+    });
+
+    expect(saved.pin).toBe('999999');
   });
 
   it('revoke() deletes every credential doc in one transaction', async () => {

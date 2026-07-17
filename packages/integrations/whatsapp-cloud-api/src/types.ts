@@ -223,6 +223,65 @@ export const mediaMetadataSchema = z
 
 export type MediaMetadata = z.infer<typeof mediaMetadataSchema>;
 
+/**
+ * Response body of `GET /{phoneNumberId}?fields=status,quality_rating,
+ * code_verification_status,display_phone_number,verified_name,throughput` —
+ * the phone-number node used by the account-health surface. Reference:
+ * https://developers.facebook.com/docs/graph-api/reference/whats-app-business-phone-number
+ *
+ * Every field is nullable-tolerant and the enum-ish fields (`status`,
+ * `quality_rating`, `code_verification_status`) are typed as plain strings so
+ * an unknown/new Graph enum value passes through verbatim instead of throwing.
+ * Documented values today: `status` ∈ CONNECTED / PENDING / MIGRATED / BANNED /
+ * RESTRICTED / RATE_LIMITED / FLAGGED / DISCONNECTED / DELETED / ...;
+ * `quality_rating` ∈ GREEN / YELLOW / RED / UNKNOWN / NA;
+ * `code_verification_status` ∈ VERIFIED / NOT_VERIFIED / EXPIRED.
+ */
+export const phoneNumberStatusSchema = z
+  .object({
+    id: z.string().nullish(),
+    status: z.string().nullish(),
+    quality_rating: z.string().nullish(),
+    code_verification_status: z.string().nullish(),
+    display_phone_number: z.string().nullish(),
+    verified_name: z.string().nullish(),
+    throughput: z.object({ level: z.string().nullish() }).passthrough().nullish(),
+  })
+  .passthrough();
+
+export type PhoneNumberStatus = z.infer<typeof phoneNumberStatusSchema>;
+
+/**
+ * One entry of `GET /{wabaId}/subscribed_apps` — the app subscribed to the
+ * WhatsApp Business Account's webhooks. Reference:
+ * https://developers.facebook.com/docs/graph-api/reference/whats-app-business-account/subscribed_apps
+ * Tolerant: only `whatsapp_business_api_data.name` is consumed (for the health
+ * check's "which app" detail); everything else rides `.passthrough()`.
+ */
+export const subscribedAppSchema = z
+  .object({
+    whatsapp_business_api_data: z
+      .object({
+        id: z.string().nullish(),
+        name: z.string().nullish(),
+        link: z.string().nullish(),
+      })
+      .passthrough()
+      .nullish(),
+  })
+  .passthrough();
+
+export type SubscribedApp = z.infer<typeof subscribedAppSchema>;
+
+/** Envelope of `GET /{wabaId}/subscribed_apps` — `{ data: SubscribedApp[] }`. */
+export const subscribedAppsResponseSchema = z
+  .object({
+    data: z.array(subscribedAppSchema).nullish(),
+  })
+  .passthrough();
+
+export type SubscribedAppsResponse = z.infer<typeof subscribedAppsResponseSchema>;
+
 export type IncomingMessage = z.infer<typeof incomingMessageSchema>;
 export type StatusUpdate = z.infer<typeof statusUpdateSchema>;
 export type WebhookEnvelope = z.infer<typeof webhookEnvelopeSchema>;

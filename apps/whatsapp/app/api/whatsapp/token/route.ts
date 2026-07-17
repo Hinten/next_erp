@@ -53,6 +53,10 @@ export async function POST(req: Request): Promise<NextResponse> {
       permanent_token: token,
       phoneNumberId: ctx.conta.phoneNumberId,
       wa_id: ctx.conta.wa_id,
+      // `pin: null` here means "no explicit pin" — `store.save` carries any
+      // previously-registered two-step PIN forward so a token replacement never
+      // wipes it (the re-register flow needs the SAME pin).
+      pin: null,
       createdAt: Date.now(),
     });
     // Never log or echo the token back.
