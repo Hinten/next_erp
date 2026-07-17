@@ -262,7 +262,7 @@ async function processInboundMessage(
   // Outbound echo (statuses present) or a spam conversa → no mensagem, no reply.
   if (!incoming || skipMensagem) return;
 
-  const wrote = await createOrUpdateMensagem(db, deps, {
+  await createOrUpdateMensagem(db, deps, {
     contaId,
     conversaId,
     userId: user.id,
@@ -273,9 +273,13 @@ async function processInboundMessage(
   // Resurface the conversa on a real inbound message. The create/reopen paths
   // already stamped `ultima_modificacao` inside the upsert txn; the other paths
   // (in-order-non-reopenable, out-of-order) need this separate guarded merge.
-  // Skipped on a redelivery (`wrote === false`) — the conversa was already
-  // surfaced when the message first landed.
-  if (wrote && !bumpedUltimaModificacao) {
+  // Deliberately NOT gated on the mensagem write being fresh: if this bump
+  // throws transiently AFTER the mensagem landed, the task retry arrives as an
+  // idempotent redelivery — gating on "wrote" would then skip the bump forever
+  // and the conversa would never resurface. The bump is monotonic (no-op when
+  // the stored value is already >= timestampMs), so re-running it on a true
+  // redelivery costs one transactional read and changes nothing.
+  if (!bumpedUltimaModificacao) {
     await bumpUltimaModificacao(db, conversaId, timestampMs);
   }
 

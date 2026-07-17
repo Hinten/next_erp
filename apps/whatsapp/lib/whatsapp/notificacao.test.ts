@@ -425,7 +425,11 @@ describe('ultima_modificacao recency bump', () => {
     expect(db.docs(CONV_PATH).has(mensagemDocId(CONTA, 'wamid.A'))).toBe(true);
   });
 
-  it('a redelivery (no mensagem write) does not touch ultima_modificacao', async () => {
+  it('a redelivery after a CRASHED bump self-heals ultima_modificacao (not gated on the mensagem write)', async () => {
+    // Scenario (Copilot review, PR #582): the mensagem landed but the bump
+    // threw transiently → the retry arrives as an idempotent redelivery
+    // (createOrUpdateMensagem skips). The bump must still run — it is
+    // monotonic, so re-running is safe — or the conversa never resurfaces.
     const db = new FakeDb();
     seedConta(db);
     const msgId = mensagemDocId(CONTA, 'wamid.A');
@@ -434,7 +438,7 @@ describe('ultima_modificacao recency bump', () => {
       sender_id: SENDER,
       nome: 'Fulano',
       ultimaModificacaoIntegracao: '2020-01-01T00:00:00.000Z',
-      ultima_modificacao: 555, // a sentinel the redelivery must not overwrite
+      ultima_modificacao: 555, // stale — the crashed first attempt never bumped
     });
     // Prior mensagem already at/after the incoming ts → createOrUpdateMensagem skips.
     db.seed(CONV_PATH, msgId, {
@@ -443,7 +447,28 @@ describe('ultima_modificacao recency bump', () => {
       timestamp: new Date(MSG_MS).toISOString(),
     });
     await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
-    expect(db.docs('chat').get(CONV_ID)!.ultima_modificacao).toBe(555); // untouched
+    expect(db.docs('chat').get(CONV_ID)!.ultima_modificacao).toBe(MSG_MS); // self-healed
+  });
+
+  it('a true redelivery (conversa already bumped) leaves ultima_modificacao untouched', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const msgId = mensagemDocId(CONTA, 'wamid.A');
+    db.seed('chat', CONV_ID, {
+      estadoConversa: 1,
+      sender_id: SENDER,
+      nome: 'Fulano',
+      ultimaModificacaoIntegracao: '2020-01-01T00:00:00.000Z',
+      ultima_modificacao: MSG_MS + 100_000, // already >= the incoming ts
+    });
+    db.seed(CONV_PATH, msgId, {
+      conteudo: 'ORIGINAL',
+      mid: 'wamid.A',
+      timestamp: new Date(MSG_MS).toISOString(),
+    });
+    await handleNotificationTask(asDb(db), messagesPayload(inboundValue()), 0, deps);
+    // The bump runs but the monotonic guard no-ops.
+    expect(db.docs('chat').get(CONV_ID)!.ultima_modificacao).toBe(MSG_MS + 100_000);
   });
 });
 
