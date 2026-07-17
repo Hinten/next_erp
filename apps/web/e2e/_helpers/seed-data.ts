@@ -689,6 +689,185 @@ export async function cleanupWhatsappFixtures(prefix: string): Promise<void> {
   await cleanupIntegracaoFixtures(prefix);
 }
 
+/* -------------------------------------------------------------------------- */
+/*                       Chat inbox fixtures (PR-C2)                           */
+/* -------------------------------------------------------------------------- */
+
+/** The two etiqueta ARGB ints the chat inbox spec filters on. */
+export const CHAT_ETIQUETA_RED = 0xfff44336; // 4294198070
+export const CHAT_ETIQUETA_BLUE = 0xff2196f3;
+
+export interface SeededConversa {
+  id: string;
+  nome: string;
+  estadoConversa: number;
+  corEtiqueta: number | null;
+  previewText: string;
+}
+
+export interface SeededChat {
+  /** Em-resposta conversa tagged RED, with a recent inbound message. */
+  vermelha: SeededConversa;
+  /** Não-respondido (pendente) conversa, no etiqueta. */
+  pendente: SeededConversa;
+  /** Em-resposta conversa tagged BLUE. */
+  azul: SeededConversa;
+}
+
+/**
+ * Seed one `mensagem` doc (ms-epoch `timestamp`) under a chat conversa. Wire
+ * shape mirrors `mensagemSchema`; a customer inbound is `estadoEnvio: 7`.
+ */
+export async function seedMensagem(
+  conversaId: string,
+  id: string,
+  data: {
+    conteudo: string;
+    timestampMs: number;
+    tipo?: string;
+    estadoEnvio?: number;
+    userId?: string | null;
+  },
+): Promise<void> {
+  await db()
+    .collection('chat')
+    .doc(conversaId)
+    .collection('mensagem')
+    .doc(id)
+    .set({
+      tipo: data.tipo ?? 'c',
+      estadoEnvio: data.estadoEnvio ?? 7,
+      conteudo: data.conteudo,
+      canal: 0,
+      user_id: data.userId ?? null,
+      mid: null,
+      midGroup: null,
+      resposta: null,
+      usarioMensagemOuterRef: null,
+      urlAvatar: null,
+      error: null,
+      visualizado: null,
+      transcription: null,
+      anexo: null,
+      anexo_url: null,
+      timestamp: data.timestampMs,
+      data_cadastro: data.timestampMs,
+    });
+}
+
+/**
+ * Seed the chat inbox suite fixture: three run-scoped `chat` conversas (one
+ * em-resposta RED with a recent inbound message, one pendente, one em-resposta
+ * BLUE), each ordered deterministically by `ultima_modificacao`. The RED
+ * conversa carries a `mensagem` so its tile preview + the thread render seeded
+ * text. `origem` is `whatsapp` (drives no query here — the spec browses "Todas").
+ */
+export async function seedConversas(prefix: string): Promise<SeededChat> {
+  const now = Date.now();
+  const vermelhaId = `${prefix}-conv-vermelha`;
+  const pendenteId = `${prefix}-conv-pendente`;
+  const azulId = `${prefix}-conv-azul`;
+  const previewText = `${prefix} ultima mensagem`;
+
+  const base = (id: string, estadoConversa: number, corEtiqueta: number | null, order: number) => ({
+    id,
+    doc: {
+      id: null,
+      sender_id: null,
+      estadoConversa,
+      origem: 'whatsapp',
+      usarioOuterRef: null,
+      integracaoOuterRef: null,
+      pedidoOuterRef: null,
+      incidenteOuterRef: null,
+      produtoOuterRef: null,
+      usuarios: null,
+      data_cadastro: now,
+      ultima_modificacao: now + order,
+      ultimaModificacaoIntegracao: now + order,
+      prazo_resposta: now + order,
+      recebido_fora_atendimento: null,
+      recebido_durante_atendimento: null,
+      nome: id,
+      urlAvatar: '',
+      cor_etiqueta: corEtiqueta,
+      atendido: false,
+      externalLink: null,
+      internalLink: null,
+      versao: null,
+      mensagensIdMap: null,
+      mensagensId: null,
+    },
+  });
+
+  const rows = [
+    base(vermelhaId, 1, CHAT_ETIQUETA_RED, 3),
+    base(pendenteId, 0, null, 2),
+    base(azulId, 1, CHAT_ETIQUETA_BLUE, 1),
+  ];
+  const batch = db().batch();
+  for (const r of rows) batch.set(db().collection('chat').doc(r.id), r.doc);
+  await batch.commit();
+
+  await seedMensagem(vermelhaId, `${prefix}-msg-001`, {
+    conteudo: previewText,
+    timestampMs: now,
+    estadoEnvio: 7,
+  });
+
+  return {
+    vermelha: {
+      id: vermelhaId,
+      nome: vermelhaId,
+      estadoConversa: 1,
+      corEtiqueta: CHAT_ETIQUETA_RED,
+      previewText,
+    },
+    pendente: {
+      id: pendenteId,
+      nome: pendenteId,
+      estadoConversa: 0,
+      corEtiqueta: null,
+      previewText,
+    },
+    azul: {
+      id: azulId,
+      nome: azulId,
+      estadoConversa: 1,
+      corEtiqueta: CHAT_ETIQUETA_BLUE,
+      previewText,
+    },
+  };
+}
+
+/**
+ * Teardown for `seedConversas`: delete each seeded conversa's `mensagem`
+ * subcollection (Firestore never cascades) then the conversa docs — swept by
+ * the run-scoped `nome` prefix, so UI-created rows on the prefix go too.
+ */
+export async function cleanupConversas(prefix: string): Promise<void> {
+  const snap = await db()
+    .collection('chat')
+    .where('nome', '>=', prefix)
+    .where('nome', '<', `${prefix}${PREFIX_MAX}`)
+    .get();
+  // Firestore batches cap at 500 ops — chunk every delete pass so a message-
+  // heavy conversa (bulk-action events, retries) can never blow the teardown.
+  const BATCH_CAP = 450;
+  const deleteChunked = async (refs: FirebaseFirestore.DocumentReference[]) => {
+    for (let i = 0; i < refs.length; i += BATCH_CAP) {
+      const b = db().batch();
+      refs.slice(i, i + BATCH_CAP).forEach((r) => b.delete(r));
+      await b.commit();
+    }
+  };
+  for (const convDoc of snap.docs) {
+    const msgs = await convDoc.ref.collection('mensagem').get();
+    await deleteChunked(msgs.docs.map((m) => m.ref));
+  }
+  await deleteChunked(snap.docs.map((d) => d.ref));
+}
+
 /**
  * Seed fixtures for the `/logistica/*` suite: one filial (named
  * `<prefix>-ref-filial`) plus `n` Motoboy docs and one Retirada doc in the

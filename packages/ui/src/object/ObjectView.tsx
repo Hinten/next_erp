@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   Alert,
@@ -347,14 +347,38 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // loaded values. RHF needs `reset()` to also zero out `dirtyFields`.
   // Merge with emptyDefaults so docs missing nullable fields still get null
   // (instead of undefined leaking back through the patch on the next save).
+  //
+  // The IndexedDB persistent cache makes `useDocSnapshot` emit a `fromCache:
+  // true` snapshot FIRST, and a transactional `saveRecord` has NO latency
+  // compensation — so right after editing THIS record (and a reload) the cached
+  // doc can still hold the pre-save value while the server has the new one. We
+  // paint the first emission for instant feedback, then RE-SEED once the
+  // authoritative `fromCache: false` snapshot arrives — but only while the form
+  // is pristine, so an in-progress edit is never clobbered. `seededId` tracks
+  // the last id painted from any source; `serverSeededId` the last id corrected
+  // from server truth, so the correction happens at most once per record.
+  const seededId = useRef<string | undefined>(undefined);
+  const serverSeededId = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (docSnap.data) {
-      form.reset({ ...emptyDefaults, ...(docSnap.data.data as FieldValues) });
+      const { id, data } = docSnap.data;
+      const serverTruth = docSnap.fromCache === false;
+      const firstPaint = seededId.current !== id;
+      // A pristine cache paint gets corrected to server truth once; a dirty
+      // form keeps the user's edits (the server snapshot is ignored until the
+      // next fresh mount / id change).
+      const correctCachePaint =
+        serverTruth && serverSeededId.current !== id && !form.formState.isDirty;
+      if (firstPaint || correctCachePaint) {
+        form.reset({ ...emptyDefaults, ...(data as FieldValues) });
+        seededId.current = id;
+        if (serverTruth) serverSeededId.current = id;
+      }
     } else if (!internalId) {
       form.reset({ ...emptyDefaults, ...(defaultValues ?? {}) } as FieldValues);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [docSnap.data?.id]);
+  }, [docSnap.data?.id, docSnap.fromCache]);
 
   // Copy mode: once the source doc loads, seed the form with its values. The
   // document id never lives in the schema data, so it's already excluded;
