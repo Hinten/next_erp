@@ -64,6 +64,13 @@ export function parseForWrite<T extends z.ZodTypeAny>(schema: T, data: unknown):
  * `undefined` (Firestore rejects `undefined`); a schema default can never leak
  * into a merge patch (which would silently overwrite a stored field — e.g.
  * NFe's `tpEmis`/`estado`).
+ *
+ * Keys whose VALUE is `undefined` are treated as not supplied at all (matching
+ * `JSON.stringify` and what a merge means): they are stripped before parsing —
+ * necessary because Zod's `.partial()` does NOT suppress `.default()`, so a
+ * defaulted key that is present-but-`undefined` would otherwise validate to
+ * its default and overwrite the stored value. A consequence: an unknown key
+ * only throws when its value is defined.
  */
 export function parseMergePatch<T extends z.ZodTypeAny>(
   schema: T,
@@ -71,6 +78,10 @@ export function parseMergePatch<T extends z.ZodTypeAny>(
 ): Record<string, unknown> {
   if (!(schema instanceof z.ZodObject)) {
     throw new TypeError('parseMergePatch requires a ZodObject schema.');
+  }
+  const supplied: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value !== undefined) supplied[key] = value;
   }
   // Cast through a minimal structural type to avoid fighting Zod's generic
   // signatures; the runtime `instanceof` guard above proves it's a ZodObject.
@@ -82,17 +93,17 @@ export function parseMergePatch<T extends z.ZodTypeAny>(
       };
     }
   ).partial();
-  const validated = partialSchema.parse(patch) as Record<string, unknown>;
+  const validated = partialSchema.parse(supplied) as Record<string, unknown>;
   // If the (strip-policy) schema dropped a supplied key, re-parse strictly so
   // the caller gets a ZodError naming the unknown key(s). Passthrough schemas
   // keep unknown keys, so nothing is dropped and this never fires. Use
   // `Object.hasOwn` (not `in`) so prototype keys can't bypass the check.
-  const dropped = Object.keys(patch).filter((k) => !Object.hasOwn(validated, k));
+  const dropped = Object.keys(supplied).filter((k) => !Object.hasOwn(validated, k));
   if (dropped.length > 0) {
-    partialSchema.strict().parse(patch);
+    partialSchema.strict().parse(supplied);
   }
   const out: Record<string, unknown> = {};
-  for (const key of Object.keys(patch)) {
+  for (const key of Object.keys(supplied)) {
     // Drop keys that validated to `undefined`: Firestore rejects `undefined`
     // in write payloads (unless `ignoreUndefinedProperties` is set), and a
     // merge patch never means to write one. `null` is kept — it stores fine.
