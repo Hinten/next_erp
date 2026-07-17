@@ -69,6 +69,29 @@ export interface NFeConsultaResult {
   readonly raw: unknown;
 }
 
+/** Mirrors `apps/nfe/lib/nfe/orchestrator/verificar.ts:VerificarChaveStatus`. */
+export type NFeVerificarChaveStatus = 'skipped-final' | 'atualizada' | 'sem-mudanca' | 'erro';
+
+/** Mirrors `apps/nfe/lib/nfe/orchestrator/verificar.ts:VerificarChaveResult`. */
+export interface NFeVerificarChaveResult {
+  readonly chave: string;
+  readonly status: NFeVerificarChaveStatus;
+  readonly estadoAnterior: EstadoNFe | null;
+  readonly estadoNovo: EstadoNFe | null;
+  readonly cStat: string | null;
+  readonly xMotivo: string | null;
+  /** `name: message` of a per-chave failure — never the raw SEFAZ body. */
+  readonly error: string | null;
+}
+
+/** Mirrors `apps/nfe/app/api/nfe/verificar/route.ts` response. */
+export interface NFeVerificarResult {
+  readonly filialId: string;
+  readonly results: ReadonlyArray<NFeVerificarChaveResult>;
+  /** Requested enviNfe msg ids that had no doc under the filial. */
+  readonly msgsNaoEncontradas: ReadonlyArray<string>;
+}
+
 /** Mirrors `apps/nfe/app/api/nfe/processar-pendentes/route.ts` response. */
 export interface NFeProcessarPendentesResult {
   readonly scanned: number;
@@ -218,6 +241,13 @@ export interface NFeHttpClient {
   emitir(pedidoId: string): Promise<NFeEmitResult>;
   emitirLote(pedidoIds: ReadonlyArray<string>): Promise<NFeBatchEmitResult>;
   consultar(chave: string): Promise<NFeConsultaResult>;
+  /**
+   * Re-verify the NF-es referenced by up to 10 `enviNfe` audit msgs against
+   * SEFAZ (the "Verificar novamente" action). Always resolves with per-chave
+   * statuses for an authorized request — per-chave failures live in
+   * `results[]`, never as a thrown error.
+   */
+  verificar(filialId: string, enviNfeMsgIds: ReadonlyArray<string>): Promise<NFeVerificarResult>;
   processarPendentes(): Promise<NFeProcessarPendentesResult>;
   /** Cancel a specific authorized NF-e (RecepcaoEvento, tpEvento=110111). */
   cancelar(pedidoId: string, nfeId: string, xJust: string): Promise<NFeEmitResult>;
@@ -481,6 +511,10 @@ export function createNFeHttpClient(config: NFeHttpClientConfig): NFeHttpClient 
       }),
     consultar: (chave) =>
       call<NFeConsultaResult>('GET', `/api/nfe/consultar?chave=${encodeURIComponent(chave)}`),
+    verificar: (filialId, enviNfeMsgIds) =>
+      call<NFeVerificarResult>('POST', '/api/nfe/verificar', {
+        body: { filialId, enviNfeMsgIds: [...enviNfeMsgIds] },
+      }),
     processarPendentes: () =>
       call<NFeProcessarPendentesResult>('POST', '/api/nfe/processar-pendentes', {
         body: {},

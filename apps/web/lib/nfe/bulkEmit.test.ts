@@ -45,6 +45,7 @@ function fakeClient(impl: NFeHttpClient['emitir']): NFeHttpClient {
     emitir: impl,
     emitirLote: vi.fn(),
     consultar: vi.fn(),
+    verificar: vi.fn(),
     consultaCadastro: vi.fn(),
     processarPendentes: vi.fn(),
     cancelar: vi.fn(),

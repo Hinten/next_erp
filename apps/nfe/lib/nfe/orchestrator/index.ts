@@ -18,6 +18,7 @@
  *   - `emitir.ts`          — emit (single + lote)
  *   - `recover539.ts`      — cStat=539 recovery gate (shared by emit + async paths)
  *   - `consultar.ts`       — standalone SEFAZ consulta
+ *   - `verificar.ts`       — manual re-verification of enviNfe audit msgs
  *   - `cancelar.ts`        — cancelamento (RecepcaoEvento 110111)
  *   - `carta-correcao.ts`  — carta de correção / CC-e (RecepcaoEvento 110110)
  *   - `inutilizar.ts`      — inutilização de numeração (NfeInutilizacao4)
@@ -32,6 +33,7 @@ export * from './generator-input';
 export * from './emitir';
 export * from './recover539';
 export * from './consultar';
+export * from './verificar';
 export * from './cancelar';
 export * from './carta-correcao';
 export * from './inutilizar';

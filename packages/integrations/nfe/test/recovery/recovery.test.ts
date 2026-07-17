@@ -212,6 +212,44 @@ describe('outcomeFromRetConsSit', () => {
     expect(out.cStat).toBe('217');
     expect(out.nRec).toBeNull();
   });
+
+  // The cancelada trap: a consSitNFe for a cancelled NF-e returns the
+  // cancelamento at the TOP level while `protNFe` still carries the ORIGINAL
+  // authorization (cStat 100). Preferring the inner protocol there flipped
+  // cancelada docs back to aprovada — the top-level outcome must win.
+  it.each([
+    ['101', 'Cancelamento de NF-e homologado'],
+    ['151', 'Cancelamento de NF-e homologado fora de prazo'],
+    ['102', 'Inutilização de número homologado'],
+  ] as const)(
+    'top-level %s + inner protNFe 100 → the top-level cancelamento wins',
+    (topCStat, topXMotivo) => {
+      const out = outcomeFromRetConsSit({
+        tpAmb: '2',
+        verAplic: 'SP',
+        cStat: topCStat,
+        xMotivo: topXMotivo,
+        cUF: '35',
+        dhRecbto: '2026-05-20T10:30:00-03:00',
+        chNFe: CHAVE,
+        versao: '4.00',
+        protNFe: {
+          versao: '4.00',
+          infProt: {
+            tpAmb: '2',
+            verAplic: 'SP',
+            chNFe: CHAVE,
+            dhRecbto: '2026-05-20T10:30:00-03:00',
+            nProt: '135200000000123',
+            cStat: '100', // the ORIGINAL authorization — must NOT win
+            xMotivo: 'Autorizado o uso da NF-e',
+          },
+        },
+      });
+      expect(out.cStat).toBe(topCStat);
+      expect(out.xMotivo).toBe(topXMotivo);
+    },
+  );
 });
 
 describe('outcomeFromInfProt', () => {
