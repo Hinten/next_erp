@@ -216,6 +216,27 @@ describe('collectChNFeReferenciadas', () => {
       'CH3',
     ]);
   });
+
+  it("'first' means the LATEST approved NF-e — sorted by ultima_modificacao desc, not query order", async () => {
+    // The query carries no orderBy, so the raw list order is undefined: the
+    // older doc arrives first here, but the newer chave must win. Docs without
+    // the field sort last.
+    const { port } = createFakeDevolucaoPort({
+      nfesAprovadasByPedido: {
+        o1: [
+          { chave: 'OLD', ultima_modificacao: 1_000 },
+          { chave: 'NEW', ultima_modificacao: 2_000 },
+          { chave: 'NO-STAMP' },
+        ],
+      },
+    });
+    expect(await collectChNFeReferenciadas(port, ['o1'], 'first')).toEqual(['NEW']);
+    expect(await collectChNFeReferenciadas(port, ['o1'], 'all')).toEqual([
+      'NEW',
+      'OLD',
+      'NO-STAMP',
+    ]);
+  });
 });
 
 describe('fake port hasNFe', () => {

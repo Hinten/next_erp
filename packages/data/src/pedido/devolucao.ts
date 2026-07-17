@@ -108,16 +108,24 @@ export async function resolveDevolucaoOperacao(
  * approved chave (the legacy #551 integral pre-seed). Null/empty chaves are
  * skipped; an origin with no approved NF-e contributes nothing. The per-origin
  * reads run concurrently; the result preserves the `originIds` order.
+ *
+ * `listNFesAprovadas` carries no orderBy (Firestore result order is undefined),
+ * so the docs are sorted here by `ultima_modificacao` desc — "first" then
+ * deterministically means the LATEST approved NF-e, matching the app's other
+ * latest-NF-e pickers.
  */
 export async function collectChNFeReferenciadas(
   port: PedidoDevolucaoDataPort,
   originIds: ReadonlyArray<string>,
   perOrigin: 'first' | 'all',
 ): Promise<string[]> {
+  const modificacaoDe = (nfe: Record<string, unknown>): number =>
+    typeof nfe.ultima_modificacao === 'number' ? nfe.ultima_modificacao : Number.NEGATIVE_INFINITY;
   const perOriginChaves = await Promise.all(
     originIds.map(async (originId) => {
       const nfes = await port.listNFesAprovadas(originId);
-      const chaves = nfes
+      const chaves = [...nfes]
+        .sort((a, b) => modificacaoDe(b) - modificacaoDe(a))
         .map((nfe) => nfe.chave)
         .filter((chave): chave is string => typeof chave === 'string' && chave !== '');
       return perOrigin === 'first' ? chaves.slice(0, 1) : chaves;
