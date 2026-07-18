@@ -44,6 +44,13 @@ export function GlobalSearchPane({
     [],
   );
 
+  // Closing must also CANCEL the pending mirror — a timer firing after close
+  // would re-set `?busca=` and unexpectedly reopen search mode.
+  const close = () => {
+    if (mirrorTimer.current) clearTimeout(mirrorTimer.current);
+    onClose();
+  };
+
   return (
     <Stack gap="xs" h="100%" style={{ minHeight: 0 }}>
       <Group gap="xs" wrap="nowrap">
@@ -57,7 +64,7 @@ export function GlobalSearchPane({
           onKeyDown={(e) => {
             if (e.key === 'Escape') {
               e.preventDefault();
-              onClose();
+              close();
             }
           }}
           placeholder="Buscar em todas as conversas (regex)…"
@@ -69,7 +76,7 @@ export function GlobalSearchPane({
           <ActionIcon
             variant="subtle"
             color="gray"
-            onClick={onClose}
+            onClick={close}
             aria-label="Fechar busca global"
           >
             <IconX size={18} />

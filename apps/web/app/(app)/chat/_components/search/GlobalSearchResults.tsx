@@ -142,10 +142,16 @@ function MatchRow({ match, regex, term }: { match: GlobalMatchRow; regex: RegExp
   const time = formatMensagemTime(match.timestamp);
 
   const params = new URLSearchParams();
-  params.set('msg', match.mensagemId);
-  if (match.timestamp != null) params.set('ts', String(match.timestamp));
+  // Target-window mode needs BOTH msg and a finite ts (MensagemThread ignores a
+  // lone msg param) — a null-timestamp match links to the plain conversa
+  // instead of minting a dead-end deep link.
+  if (match.timestamp != null) {
+    params.set('msg', match.mensagemId);
+    params.set('ts', String(match.timestamp));
+  }
   if (term.trim() !== '') params.set('busca', term);
-  const href = `/chat/${match.conversaId}?${params.toString()}`;
+  const qs = params.toString();
+  const href = qs ? `/chat/${match.conversaId}?${qs}` : `/chat/${match.conversaId}`;
 
   return (
     <Box

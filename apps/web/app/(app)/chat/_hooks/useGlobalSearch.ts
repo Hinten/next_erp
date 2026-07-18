@@ -89,6 +89,16 @@ export function useGlobalSearch(term: string): GlobalSearch {
   // on a term tweak. A ref (not state) so it doesn't force a render.
   const startedRef = useRef(false);
   const inFlightRef = useRef(false);
+  // Unmount guard: the pane can close while a page fetch is in flight — the
+  // resolved getDocs must not update state afterwards (a no-op in React 19,
+  // but skipping keeps the hook hygienic and avoids pointless work).
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const fetchPage = useCallback(async (after: QueryDocumentSnapshot<Mensagem> | null) => {
     if (inFlightRef.current) return;
@@ -105,6 +115,7 @@ export function useGlobalSearch(term: string): GlobalSearch {
         ...paginate(after ? { after, pageSize: PAGE_SIZE } : { pageSize: PAGE_SIZE }),
       ]);
       const snap = await getDocs(q);
+      if (!mountedRef.current) return;
       const page: FetchedMensagem[] = snap.docs.map((d) => ({
         // `d.ref.parent` is the `mensagem` collection; its `.parent` is the
         // `chat/{conversaId}` doc — its id is the conversa the message lives in.
@@ -121,14 +132,14 @@ export function useGlobalSearch(term: string): GlobalSearch {
       // A `getDocs` failure otherwise becomes an unhandled rejection with no UI
       // feedback (mirrors useMensagensWindow.loadOlder): expose it as `error`;
       // rethrow anything that is not a FirebaseError.
-      if (err instanceof FirebaseError) {
-        setError(err);
-      } else {
-        throw err;
-      }
+      if (!(err instanceof FirebaseError)) throw err;
+      if (mountedRef.current) setError(err);
     } finally {
-      if (first) setLoading(false);
-      else setLoadingMore(false);
+      if (mountedRef.current) {
+        if (first) setLoading(false);
+        else setLoadingMore(false);
+      }
+      // The in-flight latch resets unconditionally — a remount reuses the ref.
       inFlightRef.current = false;
     }
   }, []);
