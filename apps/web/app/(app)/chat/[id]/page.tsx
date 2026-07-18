@@ -96,7 +96,9 @@ export default function ConversaDetailPage() {
               </Group>
             </Box>
             <Box style={{ flex: 1, minHeight: 0 }}>
-              <MensagemThread conversaId={data.id} />
+              {/* key by conversa id: switching conversa remounts the thread so
+                  its paged/optimistic window state resets cleanly. */}
+              <MensagemThread key={data.id} conversaId={data.id} conversa={data.data} />
             </Box>
           </>
         )}

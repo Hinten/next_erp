@@ -1,9 +1,11 @@
 /**
  * Per-conversa unsent-draft store, backed by `localStorage` under the key
- * `chat:draft:<conversaId>`. The composer rework (a later PR) will read/write
- * these; this PR only needs the tile's "has a draft" indicator (legacy
- * `getRascunhoMensagem(...).isNotEmpty` → a `textsms` icon,
- * `.old/lib/chat/menu_lateral.dart:763-768`).
+ * `chat:draft:<conversaId>`. The tile reads the "has a draft" indicator
+ * (legacy `getRascunhoMensagem(...).isNotEmpty` → a `textsms` icon,
+ * `.old/lib/chat/menu_lateral.dart:763-768`); the composer (PR-C3) restores the
+ * draft on mount, saves it debounced while typing, and clears it on a
+ * successful send (legacy `setRascunhoMensagem`/`clearRascunhoMensagem`,
+ * `.old/lib/chat/providers/conversaProvider.dart:992-1013`).
  */
 
 const PREFIX = 'chat:draft:';
@@ -29,4 +31,30 @@ export function getDraft(conversaId: string): string {
 /** Whether the conversa has a non-empty saved draft. */
 export function hasDraft(conversaId: string): boolean {
   return getDraft(conversaId).trim() !== '';
+}
+
+/**
+ * Persist (or, for empty text, clear) the conversa's draft. A no-op on the
+ * server / when storage is unavailable — a lost draft is never worth throwing.
+ */
+export function setDraft(conversaId: string, text: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (text === '') {
+      window.localStorage.removeItem(draftKey(conversaId));
+    } else {
+      window.localStorage.setItem(draftKey(conversaId), text);
+    }
+  } catch (err) {
+    // Same rationale as `getDraft`: a DOMException (private mode / disabled
+    // storage) means "can't persist the draft" — swallow it, rethrow anything
+    // else (repo rule: no generic catch).
+    if (err instanceof DOMException) return;
+    throw err;
+  }
+}
+
+/** Remove the conversa's saved draft (post-send). */
+export function clearDraft(conversaId: string): void {
+  setDraft(conversaId, '');
 }

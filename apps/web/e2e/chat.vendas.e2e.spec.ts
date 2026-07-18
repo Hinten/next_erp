@@ -83,4 +83,73 @@ test.describe.serial('Chat inbox — list pane', () => {
     await expect(page).toHaveURL(/\/chat(\?|$)/, { timeout: 15_000 });
     await expect(page.getByRole('heading', { name: 'Chat' })).toBeVisible();
   });
+
+  test('opening a conversa renders the thread messages', async ({ page }) => {
+    await page.goto(`/chat/${seeded.vermelha.id}`);
+    // The thread (PR-C3) renders the seeded inbound message as a bubble.
+    await expect(page.getByText(seeded.vermelha.previewText).last()).toBeVisible({
+      timeout: 20_000,
+    });
+  });
+
+  test('entering the conversa reveals the composer and a typed reply renders optimistically', async ({
+    page,
+  }) => {
+    await page.goto(`/chat/${seeded.vermelha.id}`);
+    await expect(page.getByText(seeded.vermelha.previewText).last()).toBeVisible({
+      timeout: 20_000,
+    });
+
+    // The seeded conversa has `usuarios: null` → the gate shows "Entrar na
+    // conversa" on the first run, and joining reveals the full composer (the e2e
+    // user holds all perms). This test runs in a `describe.serial` block, so on a
+    // retry the operator may ALREADY have joined a prior attempt — then the button
+    // is absent and the composer is shown directly. `count()` is a non-throwing
+    // deterministic probe (unlike `isVisible()`, which needs the element to
+    // exist): click the join button only when it is actually present.
+    const entrar = page.getByRole('button', { name: 'Entrar na conversa' });
+    if ((await entrar.count()) > 0) {
+      await entrar.click();
+    }
+
+    const composer = page.getByPlaceholder(/Digite uma mensagem/);
+    await expect(composer).toBeVisible({ timeout: 15_000 });
+
+    const replyText = `${prefix}-reply-e2e`;
+    await composer.fill(replyText);
+    await page.getByLabel('Enviar').click();
+
+    // The optimistic bubble shows the reply immediately (client-side), before
+    // any server round-trip; a delivery-status icon confirms it's an outbound.
+    await expect(page.getByText(replyText).last()).toBeVisible({ timeout: 15_000 });
+    // Degraded-tolerant: any of the outbound status icons may show depending on
+    // whether the #529 sender trigger is deployed to staging (salva / enviando /
+    // erro), so this is a soft check.
+    await expect
+      .soft(
+        page
+          .getByLabel('Salva')
+          .or(page.getByLabel('Enviando'))
+          .or(page.getByLabel('Erro no envio'))
+          .first(),
+      )
+      .toBeVisible({ timeout: 15_000 });
+  });
+
+  test('search mode highlights matches and shows a counter', async ({ page }) => {
+    await page.goto(`/chat/${seeded.vermelha.id}`);
+    await expect(page.getByText(seeded.vermelha.previewText).last()).toBeVisible({
+      timeout: 20_000,
+    });
+
+    // Toggle the in-thread search and query a substring of the seeded message.
+    await page.getByLabel('Buscar na conversa').click();
+    const searchInput = page.getByLabel('Buscar mensagens');
+    await expect(searchInput).toBeVisible();
+    await searchInput.fill('ultima');
+
+    // The matched substring is wrapped in a <mark>, and the counter shows ≥ 1/N.
+    await expect(page.locator('mark').first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/\d+\/\d+/).first()).toBeVisible();
+  });
 });

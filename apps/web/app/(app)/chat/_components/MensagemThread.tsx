@@ -1,297 +1,307 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ActionIcon,
   Alert,
-  Badge,
   Box,
+  Button,
   Group,
   ScrollArea,
   Skeleton,
   Stack,
   Text,
-  Textarea,
   Tooltip,
 } from '@mantine/core';
-import { FirebaseError } from 'firebase/app';
-import { setDoc } from 'firebase/firestore';
-import { buildQuery, limit, orderByField } from '@delfrance/data';
-import { useSnapshot } from '@delfrance/data/hooks';
-import {
-  ESTADO_ENVIO,
-  ESTADO_ENVIO_LABELS,
-  type EstadoEnvioMensagem,
-  type Mensagem,
-} from '@delfrance/schemas';
-import { mensagemCollection } from '@/lib/data/conversaCollection';
-import { newDocId } from '@/lib/data/newDocId';
-import { getFirebaseFirestore } from '@/lib/firebase/client';
+import { IconArrowDown, IconSearch } from '@tabler/icons-react';
+import { ORIGEM_RULES, idFromRef, type Conversa } from '@delfrance/schemas';
 import { useAuth } from '@/lib/auth';
+import { mensagemKey, useMensagensWindow } from '../_hooks/useMensagensWindow';
+import { useThreadSearch } from '../_hooks/useThreadSearch';
+import { MensagemBubble } from './thread/MensagemBubble';
+import { ChatComposer } from './composer/ChatComposer';
+import { ThreadSearchBar } from './search/ThreadSearchBar';
 
-const PAGE_SIZE = 200;
+/** Distance (px) from the bottom under which we consider the view "stuck". */
+const BOTTOM_THRESHOLD = 80;
 
-interface OptimisticMensagem extends Mensagem {
-  _optimistic: true;
-  /**
-   * The Firestore doc id pre-minted for this send (see `handleSend`) — NOT a
-   * throwaway local token. The write uses this exact id, so the optimistic
-   * entry and its eventual server snapshot share one identity and can be
-   * reconciled/keyed by doc id. `mid` stays `null`: the #529 outbound sender
-   * contract requires `mid == null` on a fresh operator reply so its
-   * `sendOutbound` trigger picks the message up (see
-   * apps/whatsapp/lib/whatsapp/outbound.ts header).
-   */
-  _docId: string;
+/** jsdom-safe `scrollIntoView` (not implemented in the test DOM). */
+function scrollIntoView(el: HTMLElement | undefined) {
+  if (el && typeof el.scrollIntoView === 'function') {
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
 }
-
-interface ServerMensagem extends Mensagem {
-  _id: string;
-}
-
-type AnyMensagem = OptimisticMensagem | ServerMensagem;
 
 /**
- * Real-time thread for one conversa. New messages stream in via
- * onSnapshot; outgoing messages render immediately (optimistic UI),
- * then are reconciled by the pre-minted Firestore doc id once the
- * server snapshot picks up the write (see `handleSend`).
+ * Real-time thread for one conversa. New messages stream in via a live window
+ * (`useMensagensWindow` — orderBy timestamp desc, limit 60); outgoing messages
+ * render optimistically then reconcile by the pre-minted doc id (#529). Below
+ * the messages sits either the composer or the in-thread search bar (toggled
+ * from the header search icon). Rendered with `key={conversaId}` by the page so
+ * switching conversa resets the window's paged/optimistic state.
  */
-export function MensagemThread({ conversaId }: { conversaId: string }) {
+export function MensagemThread({
+  conversaId,
+  conversa,
+}: {
+  conversaId: string;
+  conversa: Conversa;
+}) {
   const { user } = useAuth();
-  const [draft, setDraft] = useState('');
-  const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
-  const [optimistic, setOptimistic] = useState<OptimisticMensagem[]>([]);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const {
+    messages,
+    loading,
+    error,
+    exhausted,
+    loadingOlder,
+    olderError,
+    loadOlder,
+    addOptimistic,
+    markOptimisticError,
+  } = useMensagensWindow(conversaId);
 
-  const q = useMemo(() => {
-    const base = mensagemCollection.ref(getFirebaseFirestore(), { conversaId });
-    return buildQuery(base, [orderByField('timestamp', 'desc'), limit(PAGE_SIZE)]);
-  }, [conversaId]);
+  const [searchMode, setSearchMode] = useState(false);
+  const [term, setTerm] = useState('');
+  const search = useThreadSearch(searchMode ? term : '', messages);
 
-  const { data, loading, error } = useSnapshot<Mensagem>(q);
+  const customerUid = conversa.usarioOuterRef ? idFromRef(conversa.usarioOuterRef) : null;
+  const isHtml = ORIGEM_RULES[conversa.origem].isHtml;
 
-  const messages: AnyMensagem[] = useMemo(() => {
-    const server: ServerMensagem[] = (data ?? [])
-      .map(({ id, data: m }) => ({ ...m, _id: id }))
-      // we ordered desc to limit server-side; reverse for chronological view.
-      .reverse();
-    // Drop optimistic entries whose pre-minted doc id now appears in server
-    // data (the write lands under that exact id — see `handleSend`).
-    const seenIds = new Set(server.map((m) => m._id));
-    const pending = optimistic.filter((m) => !seenIds.has(m._docId));
-    return [...server, ...pending];
-  }, [data, optimistic]);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(true);
+  const [showFab, setShowFab] = useState(false);
 
-  // PRUNE reconciled optimistic entries from state once the server snapshot
-  // includes their pre-minted doc id. The memo above only HIDES a lingering
-  // optimistic copy while its server row is in the 200-doc window; without this
-  // prune the ghost RESURRECTS out-of-order the moment that row ages out. An
-  // effect (not setState-in-render) watching `data` is the idiomatic sync point;
-  // the length guard keeps the reference stable when nothing was pruned (no loop),
-  // so this is a one-shot converge, not a cascade.
-  useEffect(() => {
-    if (!data) return;
-    const seenIds = new Set(data.map((d) => d.id));
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing optimistic state to the Firestore snapshot; guarded, converges
-    setOptimistic((prev) => {
-      const next = prev.filter((m) => !seenIds.has(m._docId));
-      return next.length === prev.length ? prev : next;
-    });
-  }, [data]);
+  // Bubble DOM nodes by message key — for scroll-into-view (search + quotes).
+  const bubbleRefs = useRef(new Map<string, HTMLDivElement>());
+  const registerRef = useCallback((key: string, el: HTMLDivElement | null) => {
+    if (el) bubbleRefs.current.set(key, el);
+    else bubbleRefs.current.delete(key);
+  }, []);
 
-  // Scroll to the bottom whenever the message list grows.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [messages.length]);
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    const v = viewportRef.current;
+    if (v && typeof v.scrollTo === 'function') v.scrollTo({ top: v.scrollHeight, behavior });
+    else if (v) v.scrollTop = v.scrollHeight;
+  }, []);
 
-  async function handleSend() {
-    const text = draft.trim();
-    if (!text || sending) return;
-    setSendError(null);
-    const db = getFirebaseFirestore();
-    // Pre-mint the doc id so the optimistic entry and the eventual write
-    // share one identity (reconciled by doc id above), and so the write can
-    // go through `setDoc` with `mid: null` — the #529 outbound sender
-    // (apps/whatsapp/lib/whatsapp/outbound.ts) only picks up a freshly
-    // created mensagem whose `mid` is `null`; a client-only placeholder
-    // value there would make the trigger skip every manual reply.
-    const docId = newDocId();
-    const now = Date.now();
-    const pending: OptimisticMensagem = {
-      _optimistic: true,
-      _docId: docId,
-      mid: null,
-      conteudo: text,
-      tipo: 'c',
-      canal: 0,
-      estadoEnvio: ESTADO_ENVIO.enviando,
-      user_id: user?.uid ?? null,
-      timestamp: now,
-      resposta: null,
-      usarioMensagemOuterRef: null,
-      urlAvatar: null,
-      midGroup: null,
-      error: null,
-      visualizado: null,
-      transcription: null,
-      anexo: null,
-      anexo_url: null,
-    };
-    setOptimistic((prev) => [...prev, pending]);
-    setDraft('');
-    setSending(true);
-    try {
-      await setDoc(mensagemCollection.docRef(db, { conversaId }, docId), {
-        mid: null,
-        conteudo: text,
-        tipo: 'c',
-        canal: 0,
-        estadoEnvio: ESTADO_ENVIO.salva,
-        user_id: user?.uid ?? null,
-        timestamp: now,
-        resposta: null,
-        usarioMensagemOuterRef: null,
-        urlAvatar: null,
-        midGroup: null,
-        error: null,
-        visualizado: null,
-        transcription: null,
-        anexo: null,
-        anexo_url: null,
-      });
-      // Server snapshot will include this doc id on the next tick; the
-      // memoized merge above drops the optimistic copy automatically.
-    } catch (err) {
-      if (err instanceof FirebaseError) {
-        setSendError(err.message);
-        setOptimistic((prev) =>
-          prev.map((m) => (m._docId === docId ? { ...m, estadoEnvio: ESTADO_ENVIO.erro } : m)),
-        );
-      } else {
-        throw err;
-      }
-    } finally {
-      setSending(false);
+  // Scroll bookkeeping: prepend anchor (maintain position on load-older),
+  // initial stick-to-bottom, and stick-to-bottom on a new newest message.
+  const prependAnchor = useRef<{ height: number; top: number } | null>(null);
+  const initializedRef = useRef(false);
+  const lastKeyRef = useRef<string | null>(null);
+
+  const newestKey = messages.length ? mensagemKey(messages[messages.length - 1]!) : null;
+
+  useLayoutEffect(() => {
+    const v = viewportRef.current;
+    if (!v) return;
+    if (prependAnchor.current) {
+      // Older page prepended → keep the same rows in view (no jump).
+      const delta = v.scrollHeight - prependAnchor.current.height;
+      v.scrollTop = prependAnchor.current.top + delta;
+      prependAnchor.current = null;
+      lastKeyRef.current = newestKey;
+      return;
     }
+    if (!initializedRef.current && messages.length > 0) {
+      v.scrollTop = v.scrollHeight;
+      initializedRef.current = true;
+      lastKeyRef.current = newestKey;
+      return;
+    }
+    if (newestKey !== lastKeyRef.current) {
+      lastKeyRef.current = newestKey;
+      if (atBottomRef.current) v.scrollTop = v.scrollHeight;
+    }
+  }, [messages, newestKey]);
+
+  // Scroll the active search hit into view as navigation moves.
+  useEffect(() => {
+    if (!searchMode || !search.currentId) return;
+    scrollIntoView(bubbleRefs.current.get(search.currentId));
+  }, [searchMode, search.currentId]);
+
+  const navigateTo = useCallback((id: string) => {
+    scrollIntoView(bubbleRefs.current.get(id));
+  }, []);
+
+  function onScrollPositionChange() {
+    const v = viewportRef.current;
+    if (!v) return;
+    const dist = v.scrollHeight - v.scrollTop - v.clientHeight;
+    const bottom = dist < BOTTOM_THRESHOLD;
+    atBottomRef.current = bottom;
+    setShowFab(!bottom);
+    // Auto-load an older page when the operator scrolls to the very top. The
+    // ref guard is SYNCHRONOUS: `loadingOlder` is async React state, so rapid
+    // scroll events in one frame would otherwise all pass the check and fire
+    // overlapping page loads (Copilot, PR #584).
+    if (v.scrollTop < 24 && !exhausted && !loadingOlderRef.current) void handleLoadOlder();
   }
+
+  const loadingOlderRef = useRef(false);
+  const handleLoadOlder = useCallback(async () => {
+    if (loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
+    try {
+      const v = viewportRef.current;
+      if (v) prependAnchor.current = { height: v.scrollHeight, top: v.scrollTop };
+      await loadOlder();
+    } finally {
+      loadingOlderRef.current = false;
+    }
+  }, [loadOlder]);
+
+  const closeSearch = useCallback(() => {
+    setSearchMode(false);
+    setTerm('');
+  }, []);
+
+  const currentId = searchMode ? search.currentId : null;
+  const activeSet = useMemo(() => new Set(currentId ? [currentId] : []), [currentId]);
 
   return (
     <Stack h="100%" gap={0}>
-      {error && <Alert color="red">{error.message}</Alert>}
-      <ScrollArea viewportRef={scrollRef} style={{ flex: 1, minHeight: 0 }} offsetScrollbars>
-        <Stack p="md" gap="sm">
-          {loading && (
-            <Stack>
-              <Skeleton height={48} />
-              <Skeleton height={48} />
-              <Skeleton height={48} />
-            </Stack>
-          )}
-          {!loading && messages.length === 0 && (
-            <Text c="dimmed" ta="center" py="xl">
-              Sem mensagens nesta conversa.
-            </Text>
-          )}
-          {messages.map((m) => (
-            <MensagemBubble
-              key={'_id' in m ? (m as ServerMensagem)._id : (m as OptimisticMensagem)._docId}
-              mensagem={m}
-              isLocal={'_optimistic' in m}
-            />
-          ))}
-        </Stack>
-      </ScrollArea>
+      <Group
+        justify="flex-end"
+        px="sm"
+        py={4}
+        style={{ borderBottom: '1px solid var(--mantine-color-gray-1)' }}
+      >
+        <Tooltip label={searchMode ? 'Fechar busca' : 'Buscar na conversa'}>
+          <ActionIcon
+            variant={searchMode ? 'filled' : 'subtle'}
+            color={searchMode ? 'blue' : 'gray'}
+            onClick={() => (searchMode ? closeSearch() : setSearchMode(true))}
+            aria-label="Buscar na conversa"
+          >
+            <IconSearch size={18} />
+          </ActionIcon>
+        </Tooltip>
+      </Group>
 
-      {sendError && (
-        <Alert color="red" m="md">
-          {sendError}
+      {error && (
+        <Alert color="red" m="sm">
+          {error.message}
         </Alert>
       )}
 
-      <Box p="sm" style={{ borderTop: '1px solid var(--mantine-color-gray-2)' }}>
-        <Group align="flex-end" gap="xs">
-          <Textarea
-            value={draft}
-            onChange={(e) => setDraft(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                e.preventDefault();
-                void handleSend();
-              }
-            }}
-            placeholder="Digite uma mensagem (⌘/Ctrl + Enter envia)…"
-            autosize
-            minRows={1}
-            maxRows={6}
-            style={{ flex: 1 }}
-            disabled={sending}
-          />
-          <Tooltip label="Enviar (⌘/Ctrl + Enter)">
-            <ActionIcon
-              size="lg"
-              variant="filled"
-              color="blue"
-              disabled={sending || draft.trim().length === 0}
-              onClick={handleSend}
-              aria-label="Enviar"
-            >
-              ➤
-            </ActionIcon>
-          </Tooltip>
-        </Group>
-      </Box>
-    </Stack>
-  );
-}
+      <Box style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        <ScrollArea
+          viewportRef={viewportRef}
+          h="100%"
+          onScrollPositionChange={onScrollPositionChange}
+          offsetScrollbars
+        >
+          <Stack p="md" gap="sm">
+            {loading && (
+              <Stack>
+                <Skeleton height={48} />
+                <Skeleton height={48} />
+                <Skeleton height={48} />
+              </Stack>
+            )}
 
-function MensagemBubble({ mensagem, isLocal }: { mensagem: AnyMensagem; isLocal: boolean }) {
-  const { user } = useAuth();
-  const isOwn = isLocal || (mensagem.user_id && mensagem.user_id === user?.uid);
-  return (
-    <Group justify={isOwn ? 'flex-end' : 'flex-start'} align="flex-end">
-      <Box
-        p="xs"
-        style={(theme) => ({
-          maxWidth: 480,
-          background: isOwn ? theme.colors.blue[0] : theme.colors.gray[1],
-          border: `1px solid ${isOwn ? theme.colors.blue[2] : theme.colors.gray[3]}`,
-          borderRadius: theme.radius.md,
-        })}
-      >
-        <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
-          {mensagem.conteudo ?? '(sem conteúdo)'}
-        </Text>
-        <Group gap={4} mt={4} justify="flex-end">
-          {mensagem.timestamp && (
-            <Text size="xs" c="dimmed">
-              {new Date(mensagem.timestamp).toLocaleTimeString('pt-BR', {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
-            </Text>
-          )}
-          {isOwn && (
-            <Badge
-              size="xs"
-              variant="light"
-              color={
-                mensagem.estadoEnvio === ESTADO_ENVIO.erro
-                  ? 'red'
-                  : mensagem.estadoEnvio === ESTADO_ENVIO.enviado ||
-                      mensagem.estadoEnvio === ESTADO_ENVIO.recebido
-                    ? 'green'
-                    : 'gray'
-              }
-            >
-              {ESTADO_ENVIO_LABELS[mensagem.estadoEnvio as EstadoEnvioMensagem]}
-            </Badge>
-          )}
-        </Group>
+            {!loading && (
+              <Box ta="center">
+                {olderError ? (
+                  <Alert color="red" variant="light" py={6} ta="left">
+                    <Group justify="space-between" gap="xs" wrap="nowrap">
+                      <Text size="xs">Falha ao carregar mensagens anteriores.</Text>
+                      <Button
+                        size="compact-xs"
+                        variant="subtle"
+                        color="red"
+                        loading={loadingOlder}
+                        onClick={handleLoadOlder}
+                      >
+                        Tentar novamente
+                      </Button>
+                    </Group>
+                  </Alert>
+                ) : exhausted ? (
+                  messages.length > 0 && (
+                    <Text size="xs" c="dimmed" py={4}>
+                      Não existem mais mensagens
+                    </Text>
+                  )
+                ) : (
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    color="gray"
+                    loading={loadingOlder}
+                    onClick={handleLoadOlder}
+                  >
+                    Carregar mensagens anteriores
+                  </Button>
+                )}
+              </Box>
+            )}
+
+            {!loading && messages.length === 0 && (
+              <Text c="dimmed" ta="center" py="xl">
+                Sem mensagens nesta conversa.
+              </Text>
+            )}
+
+            {messages.map((m) => {
+              const key = mensagemKey(m);
+              return (
+                <MensagemBubble
+                  key={key}
+                  mensagem={m}
+                  myUid={user?.uid}
+                  customerUid={customerUid}
+                  isHtml={isHtml}
+                  searchRegex={searchMode ? search.regex : null}
+                  searchActive={activeSet.has(key)}
+                  onNavigate={navigateTo}
+                  registerRef={registerRef}
+                />
+              );
+            })}
+          </Stack>
+        </ScrollArea>
+
+        {showFab && (
+          <ActionIcon
+            variant="filled"
+            color="blue"
+            radius="xl"
+            size="lg"
+            onClick={() => scrollToBottom()}
+            aria-label="Ir para o fim"
+            style={{
+              position: 'absolute',
+              right: 16,
+              bottom: 12,
+              boxShadow: 'var(--mantine-shadow-md)',
+            }}
+          >
+            <IconArrowDown size={18} />
+          </ActionIcon>
+        )}
       </Box>
-    </Group>
+
+      {searchMode ? (
+        <ThreadSearchBar
+          term={term}
+          onTermChange={setTerm}
+          search={search}
+          onClose={closeSearch}
+          onLoadOlder={handleLoadOlder}
+          loadingOlder={loadingOlder}
+          exhausted={exhausted}
+        />
+      ) : (
+        <ChatComposer
+          conversaId={conversaId}
+          conversa={conversa}
+          addOptimistic={addOptimistic}
+          markOptimisticError={markOptimisticError}
+        />
+      )}
+    </Stack>
   );
 }
