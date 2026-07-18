@@ -69,6 +69,8 @@ export {
   RECONCILE_SWEEP_GRACE_MS,
   NFeConsumoIndevidoError,
   STATUS_BLOQUEADORES,
+  ESTADOS_FINAIS_NFE,
+  isEstadoFinalNFe,
   applyOutcome,
   assertNotConsumoIndevido,
   classifyCStat,

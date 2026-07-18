@@ -81,13 +81,24 @@ export function useConversaQuery(input: UseConversaQueryInput): UseConversaQuery
     };
   }, [input.tab, input.ordem, input.uid, input.integracaoId, input.etiqueta, input.usarioOuterRef]);
 
-  const liveQuery = useMemo<Query<Conversa>>(
+  // The Atendimento tab filters `usuarios array-contains <uid>` — while auth is
+  // still resolving there is no uid, and a query built with `''` would attach a
+  // pointless listener (and could even match a doc whose `usuarios` carries an
+  // empty string). Hold the query `null` until the uid exists (Copilot review,
+  // PR #583; same pattern as useChatBadges' ativasQuery).
+  const needsUid = input.tab === 'atendimento';
+  const liveQuery = useMemo<Query<Conversa> | null>(
     () =>
-      buildQuery(conversaCollection.ref(db, {}), [...baseConstraints, fsLimit(CONVERSA_PAGE_SIZE)]),
+      needsUid && !input.uid
+        ? null
+        : buildQuery(conversaCollection.ref(db, {}), [
+            ...baseConstraints,
+            fsLimit(CONVERSA_PAGE_SIZE),
+          ]),
     // `resetKey` captures the constraint identity (buildQuery/constraints are
     // fresh objects each render); depend on it plus `db`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [db, resetKey],
+    [db, resetKey, needsUid, input.uid],
   );
 
   const live = useSnapshotWithDocs<Conversa>(liveQuery);

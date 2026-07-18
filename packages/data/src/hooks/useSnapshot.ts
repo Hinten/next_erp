@@ -15,6 +15,19 @@ export interface SnapshotState<T> {
   data: T | undefined;
   loading: boolean;
   error: FirestoreError | undefined;
+  /**
+   * Firestore metadata from the LATEST emission. With the IndexedDB persistent
+   * cache (`persistentLocalCache`), `onSnapshot` emits a `fromCache: true`
+   * snapshot FIRST — served from the local cache, which a just-committed
+   * transaction may not have updated yet (transactions have no latency
+   * compensation) — then a `fromCache: false` snapshot once the server
+   * responds. Consumers that must seed from SERVER truth (e.g. an edit form)
+   * gate on `fromCache === false`. Left `undefined` by non-Firestore sources
+   * (the one-shot Pipelines hook), which are always authoritative.
+   */
+  fromCache?: boolean;
+  /** Latest emission carries local writes not yet acknowledged by the server. */
+  hasPendingWrites?: boolean;
 }
 
 /**
@@ -92,6 +105,8 @@ function useSnapshotRows<T>(
           data: mapSnapshotRows(snap, includeDocs),
           loading: false,
           error: undefined,
+          fromCache: snap.metadata.fromCache,
+          hasPendingWrites: snap.metadata.hasPendingWrites,
         });
       },
       (error) => setState({ data: undefined, loading: false, error }),
@@ -129,6 +144,8 @@ export function useDocSnapshot<T>(
           data: data === undefined ? null : { id: snap.id, data },
           loading: false,
           error: undefined,
+          fromCache: snap.metadata.fromCache,
+          hasPendingWrites: snap.metadata.hasPendingWrites,
         });
       },
       (error) => setState({ data: undefined, loading: false, error }),

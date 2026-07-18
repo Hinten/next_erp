@@ -307,7 +307,24 @@ export function ConversaActionsMenu({
             <Button
               color={confirm?.color ?? 'blue'}
               loading={busy}
-              onClick={() => void confirm?.run()}
+              onClick={() => {
+                // Last-resort UI boundary: the action runners already narrow
+                // Firebase/WhatsApp errors into notifications; anything else
+                // reaching here would otherwise become an unhandled rejection.
+                // Notify for Error instances, rethrow non-Error throwables.
+                void (async () => {
+                  try {
+                    await confirm?.run();
+                  } catch (err) {
+                    if (!(err instanceof Error)) throw err;
+                    notifications.show({
+                      color: 'red',
+                      title: 'Falha na ação',
+                      message: err.message,
+                    });
+                  }
+                })();
+              }}
             >
               {confirm?.confirmLabel}
             </Button>

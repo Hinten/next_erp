@@ -69,7 +69,11 @@ export function createCredentialStore(db: Firestore, integracaoId: string): Cred
         if (effective.pin == null) {
           const current = existing.docs.find((d) => d.id === CREDENTIAL_DOC_ID);
           const prevPin = (current?.data?.() as { pin?: unknown } | undefined)?.pin;
-          if (typeof prevPin === 'string') {
+          // Only carry forward a pin that satisfies the schema's 6-digit
+          // constraint — an invalid stored pin (legacy/corrupt/manually-edited
+          // data) is dropped rather than propagated, so a token save never
+          // fails on it.
+          if (typeof prevPin === 'string' && /^\d{6}$/.test(prevPin)) {
             effective = { ...effective, pin: prevPin };
           }
         }

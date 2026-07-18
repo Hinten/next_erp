@@ -23,6 +23,7 @@ function fakeClient(overrides: Partial<NFeHttpClient>): NFeHttpClient {
     emitir: notImpl as never,
     emitirLote: notImpl as never,
     consultar: notImpl as never,
+    verificar: notImpl as never,
     consultaCadastro: notImpl as never,
     processarPendentes: notImpl as never,
     cancelar: notImpl as never,
@@ -70,6 +71,30 @@ describe('withNFeRetry', () => {
     const client = withNFeRetry(fakeClient({ consultar }));
     await expect(client.consultar('chave')).resolves.toMatchObject({ cStat: '100' });
     expect(consultar).toHaveBeenCalledTimes(2);
+  });
+
+  it('verificar passes args through and resolves on success (single attempt)', async () => {
+    const verificar = vi.fn(() =>
+      Promise.resolve({ filialId: 'F-1', results: [], msgsNaoEncontradas: [] } as never),
+    );
+    const client = withNFeRetry(fakeClient({ verificar }));
+    await expect(client.verificar('F-1', ['msg-1'])).resolves.toMatchObject({ filialId: 'F-1' });
+    expect(verificar).toHaveBeenCalledTimes(1);
+    expect(verificar).toHaveBeenCalledWith('F-1', ['msg-1']);
+  });
+
+  it('verificar does NOT retry a transient 5xx — a re-POST could overlap the in-flight server run', async () => {
+    const verificar = vi.fn(() => Promise.reject(new NFeServerError('boom', 500, null)));
+    const client = withNFeRetry(fakeClient({ verificar }));
+    await expect(client.verificar('F-1', ['msg-1'])).rejects.toBeInstanceOf(NFeServerError);
+    expect(verificar).toHaveBeenCalledTimes(1);
+  });
+
+  it('verificar does NOT retry a network error either (no retry at all)', async () => {
+    const verificar = vi.fn(() => Promise.reject(new NFeNetworkError('reset')));
+    const client = withNFeRetry(fakeClient({ verificar }));
+    await expect(client.verificar('F-1', ['msg-1'])).rejects.toBeInstanceOf(NFeNetworkError);
+    expect(verificar).toHaveBeenCalledTimes(1);
   });
 
   it('consultaCadastro retries a transient NFeNetworkError (read-only POST)', async () => {

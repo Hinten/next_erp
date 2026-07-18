@@ -23,6 +23,9 @@ export {
   type NFeInutilizarResult,
   type NFeProcessarPendentesResult,
   type NFeStatusServicoResult,
+  type NFeVerificarChaveResult,
+  type NFeVerificarChaveStatus,
+  type NFeVerificarResult,
 } from './client';
 
 export {

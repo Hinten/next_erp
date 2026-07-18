@@ -232,7 +232,11 @@ test.describe.serial('Chat inbox — list pane', () => {
     await dialog.getByLabel('Novo nome').fill(novoNome);
     await dialog.getByRole('button', { name: 'Renomear' }).click();
 
-    // The live doc snapshot re-renders the header <Title> with the new name.
-    await expect(page.getByRole('heading', { name: novoNome })).toBeVisible({ timeout: 20_000 });
+    // The live doc snapshot re-renders the new name — in BOTH the thread
+    // header <Title> and the side panel (PR-C4), so the role query matches two
+    // headings; assert on the first (strict mode would reject the bare query).
+    await expect(page.getByRole('heading', { name: novoNome }).first()).toBeVisible({
+      timeout: 20_000,
+    });
   });
 });
