@@ -132,14 +132,24 @@ export function MensagemThread({
     const bottom = dist < BOTTOM_THRESHOLD;
     atBottomRef.current = bottom;
     setShowFab(!bottom);
-    // Auto-load an older page when the operator scrolls to the very top.
-    if (v.scrollTop < 24 && !exhausted && !loadingOlder) void handleLoadOlder();
+    // Auto-load an older page when the operator scrolls to the very top. The
+    // ref guard is SYNCHRONOUS: `loadingOlder` is async React state, so rapid
+    // scroll events in one frame would otherwise all pass the check and fire
+    // overlapping page loads (Copilot, PR #584).
+    if (v.scrollTop < 24 && !exhausted && !loadingOlderRef.current) void handleLoadOlder();
   }
 
+  const loadingOlderRef = useRef(false);
   const handleLoadOlder = useCallback(async () => {
-    const v = viewportRef.current;
-    if (v) prependAnchor.current = { height: v.scrollHeight, top: v.scrollTop };
-    await loadOlder();
+    if (loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
+    try {
+      const v = viewportRef.current;
+      if (v) prependAnchor.current = { height: v.scrollHeight, top: v.scrollTop };
+      await loadOlder();
+    } finally {
+      loadingOlderRef.current = false;
+    }
   }, [loadOlder]);
 
   const closeSearch = useCallback(() => {

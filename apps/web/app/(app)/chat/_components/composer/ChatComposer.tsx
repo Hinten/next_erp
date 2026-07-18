@@ -173,7 +173,12 @@ function ComposerInput({
   const doneAttachments = attachments.filter(
     (a) => a.status === 'done' && a.arquivoRef && a.filetype,
   );
-  const canSend = !sending && !uploading && (text.trim() !== '' || doneAttachments.length > 0);
+  // The Textarea's maxLength blocks TYPING past the origem limit, but a
+  // restored draft (or programmatic state) can exceed it — gate sending too
+  // so an over-limit body never reaches the outbound write (Copilot, PR #584).
+  const overLimit = text.length > rules.limiteCaracteres;
+  const canSend =
+    !sending && !uploading && !overLimit && (text.trim() !== '' || doneAttachments.length > 0);
   // The Graph API drops audio captions (outbound.ts `performSend`), so a typed
   // caption alongside an audio attachment won't reach WhatsApp — only the thread.
   const audioCaptionDropped = attachments.some((a) => a.filetype === 'audio') && text.trim() !== '';
@@ -340,7 +345,6 @@ function ComposerInput({
     // 'newline' / 'ignore' → default textarea behaviour.
   }
 
-  const overLimit = text.length > rules.limiteCaracteres;
   const acceptAttr = rules.formatosAnexo
     ? rules.formatosAnexo.map((e) => `.${e}`).join(',')
     : undefined;

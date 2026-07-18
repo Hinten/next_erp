@@ -68,6 +68,7 @@ function fakeCollection(): CollectionHandle<typeof intFreteSchema> {
     ref: () => ({}) as never,
     docRef: () => ({}) as never,
     converter: {} as never,
+    merge: () => Promise.resolve(),
   };
 }
 

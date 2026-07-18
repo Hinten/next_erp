@@ -71,6 +71,14 @@ describe('defineAdminCollection', () => {
       expect(handle.parseMerge({ cStat: undefined })).toEqual({});
     });
 
+    it('an explicitly-undefined DEFAULTED key never leaks its default', () => {
+      // Zod's `.partial()` does not suppress `.default()`: parsed naively,
+      // `{ estado: undefined }` validates to `{ estado: '0' }` and the merge
+      // would overwrite the stored estado. The undefined-strip prevents that.
+      expect(handle.parseMerge({ estado: undefined })).toEqual({});
+      expect(handle.parseMerge({ estado: undefined, cStat: '100' })).toEqual({ cStat: '100' });
+    });
+
     it('throws on an unknown patch key (strip-policy schema)', () => {
       expect(() => handle.parseMerge({ bogus: 'nope' })).toThrow(z.ZodError);
     });

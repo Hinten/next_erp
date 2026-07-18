@@ -111,23 +111,29 @@ export function outcomeFromRetConsRec(ret: TRetConsReciNFe): SefazOutcome {
  * Build a `SefazOutcome` from a `retConsSitNFe` response — the recovery
  * query result.
  *
- * The protocol, when present, is the **server-truth status** of the
- * NF-e. The orchestrator should:
- *   - If `ret.protNFe` is present, use `outcomeFromInfProt(ret.protNFe.infProt)`
- *     (the inner protocol is the authoritative answer).
- *   - Otherwise use the top-level `cStat` (e.g. `cStat=217` "NF-e não
- *     consta na base de dados" = the NF-e was never authorized).
+ * The inner `protNFe`, when present, is normally the server-truth status of
+ * the NF-e — EXCEPT for the cancelada/inutilizada trap: `consSitNFe` for a
+ * **cancelled** NF-e returns the top-level cancelamento cStat (101/151, or
+ * 102 for inutilizada) while `ret.protNFe` still carries the ORIGINAL
+ * authorization protocol (cStat 100). Preferring the inner protocol there
+ * would flip a cancelada doc back to aprovada. So:
+ *   - Top-level cStat classifies `cancelada`/`inutilizada`, or `ret.protNFe`
+ *     is absent (e.g. `cStat=217` "NF-e não consta na base de dados") → the
+ *     **top-level** outcome wins.
+ *   - Otherwise → `outcomeFromInfProt(ret.protNFe.infProt)` (the inner
+ *     protocol is the authoritative answer).
  */
 export function outcomeFromRetConsSit(ret: TRetConsSitNFe): SefazOutcome {
-  if (ret.protNFe) {
-    return outcomeFromInfProt(ret.protNFe.infProt);
+  const topCategory = classifyCStat(ret.cStat);
+  if (topCategory === 'cancelada' || topCategory === 'inutilizada' || !ret.protNFe) {
+    return {
+      cStat: ret.cStat,
+      xMotivo: ret.xMotivo,
+      nRec: null,
+      chNFeFromXMotivo: extractMarkers(ret.xMotivo).chNFe,
+    };
   }
-  return {
-    cStat: ret.cStat,
-    xMotivo: ret.xMotivo,
-    nRec: null,
-    chNFeFromXMotivo: extractMarkers(ret.xMotivo).chNFe,
-  };
+  return outcomeFromInfProt(ret.protNFe.infProt);
 }
 
 /**

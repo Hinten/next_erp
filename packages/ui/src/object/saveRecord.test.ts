@@ -43,6 +43,7 @@ function fakeCollection(): CollectionHandle<typeof schema> {
     ref: () => 'COLLECTION_REF' as never,
     docRef: () => ({ id: 'EXISTING_ID' }) as never,
     converter: {} as never,
+    merge: () => Promise.resolve(),
   };
 }
 

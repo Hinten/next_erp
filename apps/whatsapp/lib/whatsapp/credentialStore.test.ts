@@ -136,6 +136,46 @@ describe('createCredentialStore', () => {
     expect(written.permanent_token).toBe('NEW');
   });
 
+  it('save() drops an invalid stored pin instead of carrying it forward', async () => {
+    // A corrupted / manually-edited pin that violates the schema's 6-digit
+    // constraint must not be propagated — otherwise the parse would throw and
+    // a plain token replacement could never succeed again.
+    const collRef = {};
+    h.ref.mockReturnValue(collRef);
+    const currentRef = { id: 'current' };
+    h.docRef.mockReturnValue(currentRef);
+
+    const tx = {
+      get: vi.fn(async () => ({
+        docs: [
+          {
+            id: 'current',
+            ref: currentRef,
+            data: () => ({ permanent_token: 'OLD', pin: '12ab56' }),
+          },
+        ],
+      })),
+      set: vi.fn(),
+      delete: vi.fn(),
+    };
+    const db = { runTransaction: vi.fn(async (fn: (t: typeof tx) => Promise<void>) => fn(tx)) };
+
+    const store = createCredentialStore(db as never, 'i1');
+    const saved = await store.save({
+      permanent_token: 'NEW',
+      phoneNumberId: 'PID',
+      wa_id: 'PID',
+      pin: null,
+      createdAt: NOW,
+    });
+
+    // The token replacement succeeds and the corrupt pin is gone.
+    expect(saved.pin).toBeNull();
+    expect(tx.set).toHaveBeenCalledWith(currentRef, expect.objectContaining({ pin: null }));
+    const written = tx.set.mock.calls[0]![1] as { permanent_token: string };
+    expect(written.permanent_token).toBe('NEW');
+  });
+
   it('save() keeps an explicit pin (does not overwrite it with the stored one)', async () => {
     const collRef = {};
     h.ref.mockReturnValue(collRef);

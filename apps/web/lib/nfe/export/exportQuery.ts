@@ -22,11 +22,10 @@ import {
 import { buildQuery, groupQuery, limit, orderByField, whereOp } from '@delfrance/data';
 import type { NotaFiscalEletronica } from '@delfrance/schemas';
 
-import { nfeCollection } from '@/lib/data/nfeCollection';
+import { NFEV4_COLLECTION_GROUP, nfeCollection } from '@/lib/data/nfeCollection';
 
 import type { ExportFilter, ExportSource, NfeNote } from './types';
 
-const NFEV4_GROUP = 'nfev4';
 const PAGE = 500;
 
 type NfeDoc = QueryDocumentSnapshot<NotaFiscalEletronica>;
@@ -59,7 +58,7 @@ export function rangeStamp(startMs: number, endMs: number): string {
  * skipped or duplicated notes.
  */
 export function buildExportQuery(db: Firestore, filter: ExportFilter): Query<NotaFiscalEletronica> {
-  const base = groupQuery(db, NFEV4_GROUP, nfeCollection.converter);
+  const base = groupQuery(db, NFEV4_COLLECTION_GROUP, nfeCollection.converter);
   const constraints = [
     whereOp('data_emissao', '>=', filter.startMs),
     whereOp('data_emissao', '<=', filter.endMs),
