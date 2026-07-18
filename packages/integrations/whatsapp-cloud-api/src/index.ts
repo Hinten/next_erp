@@ -7,6 +7,7 @@ export {
   type WhatsAppClientConfig,
   type SendTextInput,
   type SendMediaInput,
+  type SendTemplateInput,
   type SendResult,
   type MediaDownload,
   type RequestVerificationCodeInput,

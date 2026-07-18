@@ -87,6 +87,9 @@ describe('BulkActionsBar', () => {
       expect(e.estadoEnvio).toBe(1);
       expect(e.mid).toBeNull();
       expect(String(e.conteudo)).toContain('definiu a etiqueta');
+      // Legacy `alterarEstadoEmMassa` attached the operator to the bulk events.
+      expect(e.user_id).toBe('op1');
+      expect(e.usarioMensagemOuterRef).toBe('documents/usuarios/op1');
     }
 
     expect(notifShow).toHaveBeenCalledWith(

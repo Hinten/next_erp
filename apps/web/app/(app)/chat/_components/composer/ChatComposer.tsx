@@ -16,9 +16,8 @@ import {
 import { notifications } from '@mantine/notifications';
 import { IconLogin2, IconPaperclip, IconSend } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
-import { arrayUnion, setDoc, writeBatch } from 'firebase/firestore';
+import { setDoc, writeBatch } from 'firebase/firestore';
 import {
-  ESTADO_CONVERSA,
   ORIGEM_RULES,
   WHATSAPP_ANEXO_LIMITS,
   type Conversa,
@@ -26,14 +25,14 @@ import {
   toOuterRef,
 } from '@delfrance/schemas';
 import { StorageUploadError, uploadFile } from '@delfrance/storage';
-import { conversaCollection, mensagemCollection } from '@/lib/data/conversaCollection';
+import { mensagemCollection } from '@/lib/data/conversaCollection';
 import { newDocId } from '@/lib/data/newDocId';
 import { getFirebaseFirestore, getFirebaseStorage } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
 import { composerGate } from '@/lib/chat/composerGate';
+import { enterConversa, resolveActor } from '@/lib/chat/conversaActions';
 import { clearDraft, getDraft, setDraft } from '@/lib/chat/draft';
 import { getSendKey, sendKeyAction, setSendKey, type SendKey } from '@/lib/chat/sendKey';
-import { writeEvent } from '@/lib/chat/writeEvent';
 import { buildMediaMensagem, buildTextMensagem, makeOptimistic } from '@/lib/chat/mensagemWrite';
 import type { OptimisticMensagem } from '@/lib/chat/mensagemWrite';
 import { EmojiButton } from './EmojiButton';
@@ -94,29 +93,19 @@ export function ChatComposer({
 function EntrarNaConversa({ conversaId }: { conversaId: string }) {
   const { user } = useAuth();
   const [entering, setEntering] = useState(false);
-  const displayName = user?.displayName ?? user?.email ?? 'Operador';
 
   async function handleEnter() {
-    if (!user?.uid) return;
+    const actor = resolveActor(user);
+    if (!actor) return;
     setEntering(true);
     const db = getFirebaseFirestore();
     const now = Date.now();
     const batch = writeBatch(db);
-    // Converter-stripped raw patch: the schema fills every field on parse, so a
-    // converted merge would clobber nome/origem/refs/etiqueta with defaults
-    // (same rationale as the [id]/page estado patch). `arrayUnion` inside a raw
-    // patch is a legitimate FieldValue.
-    batch.set(
-      conversaCollection.docRef(db, {}, conversaId).withConverter(null),
-      {
-        usuarios: arrayUnion(user.uid),
-        estadoConversa: ESTADO_CONVERSA.emResposta,
-        ultima_modificacao: now,
-      },
-      { merge: true },
-    );
-    // Entry event — writeEvent shape (tipo 'e', excluded from the #529 sender).
-    writeEvent(batch, db, conversaId, `${displayName} entrou na conversa.`, now);
+    // The shared `enterConversa` writer: a converter-stripped conversa patch
+    // (usuarios arrayUnion + estado emResposta + bumped ultima_modificacao) plus
+    // the entry event (tipo 'e', excluded from the #529 sender). Same impl the
+    // ConversaActionsMenu drives, so both surfaces write identical events.
+    enterConversa({ batch, db, conversaId, actor, now });
     try {
       await batch.commit();
     } catch (err) {

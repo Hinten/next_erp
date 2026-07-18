@@ -152,4 +152,47 @@ test.describe.serial('Chat inbox — list pane', () => {
     await expect(page.locator('mark').first()).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText(/\d+\/\d+/).first()).toBeVisible();
   });
+
+  test('the conversa actions menu opens with its gated items (PR-C4)', async ({ page }) => {
+    await page.goto(`/chat/${seeded.vermelha.id}`);
+    await expect(page.getByText(seeded.vermelha.previewText).last()).toBeVisible({
+      timeout: 20_000,
+    });
+
+    await page.getByRole('button', { name: 'Ações da conversa' }).click();
+    // Always-present items + the whatsapp-only "Enviar mensagem padrão" (the
+    // seeded conversa is origem `whatsapp`).
+    await expect(page.getByRole('menuitem', { name: 'Renomear' })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole('menuitem', { name: 'Definir etiqueta' })).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: 'Enviar mensagem padrão' })).toBeVisible();
+  });
+
+  // Runs LAST (serial): it renames the RED conversa, so later name-keyed
+  // assertions must not follow. The new name keeps the run prefix, so
+  // `cleanupConversas` (which sweeps by the `nome` prefix range) still reaps it.
+  // The target name folds in `testInfo.retry` so a retry picks a name the
+  // conversa doesn't already carry — otherwise the "Renomear" submit stays
+  // disabled (new === current) and the retry can't proceed.
+  test('renomear round-trip updates the conversa header (PR-C4)', async ({ page }, testInfo) => {
+    const novoNome = `${prefix}-renomeada-r${testInfo.retry}`;
+    await page.goto(`/chat/${seeded.vermelha.id}`);
+    await expect(page.getByText(seeded.vermelha.previewText).last()).toBeVisible({
+      timeout: 20_000,
+    });
+
+    await page.getByRole('button', { name: 'Ações da conversa' }).click();
+    await page.getByRole('menuitem', { name: 'Renomear' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 10_000 });
+    await dialog.getByLabel('Novo nome').fill(novoNome);
+    await dialog.getByRole('button', { name: 'Renomear' }).click();
+
+    // The live doc snapshot re-renders the new name — in BOTH the thread
+    // header <Title> and the side panel (PR-C4), so the role query matches two
+    // headings; assert on the first (strict mode would reject the bare query).
+    await expect(page.getByRole('heading', { name: novoNome }).first()).toBeVisible({
+      timeout: 20_000,
+    });
+  });
 });

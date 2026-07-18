@@ -11,11 +11,20 @@ const LIST_PANE_WIDTH = 340;
 /**
  * Three-pane inbox shell shared by `/chat` (empty state) and `/chat/[id]`
  * (thread): a fixed-width list pane, the main area (`children` — thread or
- * empty state), and a reserved right-hand column for a later PR (client
- * context / details). The list pane consumes `useSearchParams`, so it sits
- * behind a Suspense boundary (Next 16 requirement).
+ * empty state), and an optional right-hand column (`rightPane` — the conversa
+ * side panel, `/chat/[id]` only; it owns its own width/border/collapse). The
+ * list pane consumes `useSearchParams`, so it sits behind a Suspense boundary
+ * (Next 16 requirement).
  */
-export function ChatInboxShell({ activeId, children }: { activeId?: string; children: ReactNode }) {
+export function ChatInboxShell({
+  activeId,
+  children,
+  rightPane,
+}: {
+  activeId?: string;
+  children: ReactNode;
+  rightPane?: ReactNode;
+}) {
   return (
     <Stack h="calc(100vh - 96px)" gap="md">
       <PageHeader title="Chat" description="Atendimentos em tempo real" />
@@ -34,6 +43,7 @@ export function ChatInboxShell({ activeId, children }: { activeId?: string; chil
           </Suspense>
         </Box>
         <Box style={{ flex: 1, minWidth: 0, display: 'flex', minHeight: 0 }}>{children}</Box>
+        {rightPane}
       </Group>
     </Stack>
   );

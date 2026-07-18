@@ -43,6 +43,9 @@ export function BulkActionsBar({
   const count = selectedIds.length;
   const hasAction = estado !== null || alterarCor;
   const displayName = user?.displayName ?? user?.email ?? 'Operador';
+  // Legacy `alterarEstadoEmMassa` passed `user: authProvider.usuario` to BOTH
+  // event constructors, so each bulk event carries the operator's ref too.
+  const actor = user?.uid ? { uid: user.uid } : null;
 
   async function apply() {
     const db = getFirebaseFirestore();
@@ -78,10 +81,11 @@ export function BulkActionsBar({
             conversaId,
             `${displayName} alterou o estado da conversa para ${ESTADO_CONVERSA_LABELS[estadoNum]}.`,
             now,
+            actor,
           );
         }
         if (alterarCor) {
-          writeEvent(batch, db, conversaId, `${displayName} definiu a etiqueta.`, now);
+          writeEvent(batch, db, conversaId, `${displayName} definiu a etiqueta.`, now, actor);
         }
       }
       batches.push(batch);
