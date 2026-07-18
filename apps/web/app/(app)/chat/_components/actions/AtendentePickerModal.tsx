@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Alert, Button, Group, Loader, Modal, Select, Stack, Text } from '@mantine/core';
 import { FirebaseError } from 'firebase/app';
@@ -69,6 +69,12 @@ export function AtendentePickerModal({
   onConfirm: (target: ActionActor) => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
+
+  // A selection must not survive close/reopen — a stale pick would leave the
+  // confirm button armed and invite an accidental transfer/include.
+  useEffect(() => {
+    if (!opened) setSelected(null);
+  }, [opened]);
 
   const { data, isFetching, error } = useQuery({
     queryKey: ['atendentes'],
