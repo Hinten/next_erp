@@ -28,6 +28,13 @@ vi.mock('@/lib/auth', () => ({
   useAuth: () => ({ user: { uid: 'operator-1', displayName: 'Operador 1' } }),
 }));
 
+// No `?msg=&ts=` params → the thread stays in live mode (not target-window mode).
+vi.mock('next/navigation', () => ({
+  useSearchParams: () => new URLSearchParams(),
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  usePathname: () => '/chat/conversa-1',
+}));
+
 // Doc id is minted client-side (#529 contract: the write must land under this
 // exact id so the optimistic entry + server snapshot reconcile by doc id).
 vi.mock('@/lib/data/newDocId', () => ({

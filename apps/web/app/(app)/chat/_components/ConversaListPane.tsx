@@ -16,7 +16,7 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { IconChecklist } from '@tabler/icons-react';
+import { IconChecklist, IconSearch } from '@tabler/icons-react';
 import { type Conversa } from '@delfrance/schemas';
 import { CONVERSA_TABS, TAB_LABELS, type ConversaTab } from '@/lib/chat/conversaConstraints';
 import { useAuth } from '@/lib/auth';
@@ -26,6 +26,7 @@ import { useChatBadges } from '../_hooks/useChatBadges';
 import { ConversaTile } from './ConversaTile';
 import { FiltersBar } from './FiltersBar';
 import { BulkActionsBar } from './BulkActionsBar';
+import { GlobalSearchPane } from './search/GlobalSearchPane';
 
 /**
  * The inbox list pane: tabs (with live badges), filters, bulk selection, and
@@ -77,6 +78,19 @@ export function ConversaListPane({ activeId }: { activeId?: string }) {
   const badgeFor = (tab: ConversaTab): string | null =>
     tab === 'atendimento' ? badges.atendimento : tab === 'pendentes' ? badges.pendentes : null;
 
+  // Search mode is driven by the PRESENCE of the `busca` param (even empty), so
+  // the cross-conversation search survives navigating into a thread and back.
+  if (filters.busca !== null) {
+    return (
+      <GlobalSearchPane
+        initialTerm={filters.busca}
+        onTermChange={(v) => filters.setBusca(v)}
+        onClose={() => filters.setBusca(null)}
+        activeConversaId={activeId}
+      />
+    );
+  }
+
   return (
     <Stack gap="xs" h="100%" style={{ minHeight: 0 }}>
       <Tabs value={filters.tab} onChange={(v) => v && filters.setTab(v as ConversaTab)}>
@@ -105,15 +119,27 @@ export function ConversaListPane({ activeId }: { activeId?: string }) {
       <FiltersBar filters={filters} />
 
       <Group justify="space-between" gap="xs">
-        <Tooltip label={selectionMode ? 'Sair da seleção' : 'Selecionar em massa'} withArrow>
-          <ActionIcon
-            variant={selectionMode ? 'filled' : 'subtle'}
-            aria-label="Selecionar em massa"
-            onClick={() => (selectionMode ? exitSelection() : setSelectionMode(true))}
-          >
-            <IconChecklist size={18} />
-          </ActionIcon>
-        </Tooltip>
+        <Group gap="xs">
+          <Tooltip label={selectionMode ? 'Sair da seleção' : 'Selecionar em massa'} withArrow>
+            <ActionIcon
+              variant={selectionMode ? 'filled' : 'subtle'}
+              aria-label="Selecionar em massa"
+              onClick={() => (selectionMode ? exitSelection() : setSelectionMode(true))}
+            >
+              <IconChecklist size={18} />
+            </ActionIcon>
+          </Tooltip>
+          <Tooltip label="Buscar em todas as conversas" withArrow>
+            <ActionIcon
+              variant="subtle"
+              color="gray"
+              aria-label="Buscar em todas as conversas"
+              onClick={() => filters.setBusca('')}
+            >
+              <IconSearch size={18} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
         {selectionMode && (
           <Checkbox
             size="xs"

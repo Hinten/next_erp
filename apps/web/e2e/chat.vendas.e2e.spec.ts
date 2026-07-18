@@ -4,7 +4,9 @@ import {
   cleanupConversas,
   e2ePrefix,
   seedConversas,
+  seedSearchMessages,
   type SeededChat,
+  type SeededSearchMessages,
 } from './_helpers/seed-data';
 import { warmRoutes } from './helpers/warmup';
 
@@ -21,10 +23,13 @@ import { warmRoutes } from './helpers/warmup';
 test.describe.serial('Chat inbox — list pane', () => {
   const prefix = e2ePrefix('chat');
   let seeded: SeededChat;
+  let searchSeed: SeededSearchMessages;
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
     seeded = await seedConversas(prefix);
+    // Two token-bearing messages (old in BLUE, recent in RED) for global search.
+    searchSeed = await seedSearchMessages(prefix, seeded);
     await warmRoutes(browser, ['/chat', '/chat/__aquecimento__', '/whatsapp']);
   });
 
@@ -165,6 +170,45 @@ test.describe.serial('Chat inbox — list pane', () => {
     await expect(page.getByRole('menuitem', { name: 'Renomear' })).toBeVisible({ timeout: 10_000 });
     await expect(page.getByRole('menuitem', { name: 'Definir etiqueta' })).toBeVisible();
     await expect(page.getByRole('menuitem', { name: 'Enviar mensagem padrão' })).toBeVisible();
+  });
+
+  // Cross-conversation search (PR-C5): the token hits BOTH seeded conversas;
+  // clicking the OLD match opens the thread in target-window mode; "Voltar ao
+  // presente" restores the live window. Runs BEFORE renomear (which mutates the
+  // RED conversa's name — this test keys on message snippets, not names).
+  test('global search finds the token across conversas and jumps into target mode', async ({
+    page,
+  }) => {
+    await page.goto('/chat');
+
+    // Enter global search mode from the list-pane header, then query the token.
+    await page.getByRole('button', { name: 'Buscar em todas as conversas' }).click();
+    const input = page.getByRole('textbox', { name: 'Buscar em todas as conversas' });
+    await expect(input).toBeVisible({ timeout: 15_000 });
+    await input.fill(searchSeed.token);
+
+    // Both conversas surface as grouped results (recent RED first, old BLUE next).
+    await expect(page.getByText(/mensagem recente com/).first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/mensagem antiga com/).first()).toBeVisible({ timeout: 20_000 });
+
+    // Click the OLD match → the BLUE thread opens in TARGET mode (?msg=&ts=).
+    await page
+      .getByText(/mensagem antiga com/)
+      .first()
+      .click();
+    await expect(page).toHaveURL(new RegExp(`/chat/${searchSeed.oldConversaId}\\?.*msg=`), {
+      timeout: 15_000,
+    });
+
+    // The target message is visible and "Voltar ao presente" is offered.
+    await expect(page.getByText(/mensagem antiga com/).last()).toBeVisible({ timeout: 20_000 });
+    const voltar = page.getByRole('button', { name: 'Voltar ao presente' });
+    await expect(voltar).toBeVisible({ timeout: 15_000 });
+
+    // Returning to the present clears the target and hides the button.
+    await voltar.click();
+    await expect(voltar).toHaveCount(0, { timeout: 10_000 });
+    await expect(page).not.toHaveURL(/msg=/);
   });
 
   // Runs LAST (serial): it renames the RED conversa, so later name-keyed

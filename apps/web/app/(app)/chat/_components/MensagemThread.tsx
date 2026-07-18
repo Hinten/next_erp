@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   ActionIcon,
   Alert,
@@ -13,10 +14,10 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { IconArrowDown, IconSearch } from '@tabler/icons-react';
+import { IconArrowDown, IconHistory, IconSearch } from '@tabler/icons-react';
 import { ORIGEM_RULES, idFromRef, type Conversa } from '@delfrance/schemas';
 import { useAuth } from '@/lib/auth';
-import { mensagemKey, useMensagensWindow } from '../_hooks/useMensagensWindow';
+import { mensagemKey, useMensagensWindow, type TargetSpec } from '../_hooks/useMensagensWindow';
 import { useThreadSearch } from '../_hooks/useThreadSearch';
 import { MensagemBubble } from './thread/MensagemBubble';
 import { ChatComposer } from './composer/ChatComposer';
@@ -48,6 +49,21 @@ export function MensagemThread({
   conversa: Conversa;
 }) {
   const { user } = useAuth();
+
+  // Deep-link TARGET (from a global-search match): `?msg=<id>&ts=<epoch>` centres
+  // the thread on that message in a one-shot window (no live listener). Parsed
+  // here so the window hook can suspend the live query and load around it.
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const targetMsgId = searchParams.get('msg');
+  const targetTsRaw = searchParams.get('ts');
+  const target = useMemo<TargetSpec | null>(() => {
+    if (!targetMsgId) return null;
+    const ts = targetTsRaw != null ? Number(targetTsRaw) : NaN;
+    return Number.isFinite(ts) ? { msgId: targetMsgId, ts } : null;
+  }, [targetMsgId, targetTsRaw]);
+
   const {
     messages,
     loading,
@@ -58,11 +74,22 @@ export function MensagemThread({
     loadOlder,
     addOptimistic,
     markOptimisticError,
-  } = useMensagensWindow(conversaId);
+    targetMode,
+    targetMissing,
+  } = useMensagensWindow(conversaId, target);
 
   const [searchMode, setSearchMode] = useState(false);
   const [term, setTerm] = useState('');
   const search = useThreadSearch(searchMode ? term : '', messages);
+
+  // Clear the deep-link target from the URL → the hook restores the live window.
+  const voltarAoPresente = useCallback(() => {
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete('msg');
+    next.delete('ts');
+    const qs = next.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [searchParams, router, pathname]);
 
   const customerUid = conversa.usarioOuterRef ? idFromRef(conversa.usarioOuterRef) : null;
   const isHtml = ORIGEM_RULES[conversa.origem].isHtml;
@@ -104,7 +131,8 @@ export function MensagemThread({
       return;
     }
     if (!initializedRef.current && messages.length > 0) {
-      v.scrollTop = v.scrollHeight;
+      // Target mode positions on the deep-linked message (below), NOT the bottom.
+      if (!(targetMode && target)) v.scrollTop = v.scrollHeight;
       initializedRef.current = true;
       lastKeyRef.current = newestKey;
       return;
@@ -113,13 +141,36 @@ export function MensagemThread({
       lastKeyRef.current = newestKey;
       if (atBottomRef.current) v.scrollTop = v.scrollHeight;
     }
-  }, [messages, newestKey]);
+  }, [messages, newestKey, targetMode, target]);
 
   // Scroll the active search hit into view as navigation moves.
   useEffect(() => {
     if (!searchMode || !search.currentId) return;
     scrollIntoView(bubbleRefs.current.get(search.currentId));
   }, [searchMode, search.currentId]);
+
+  // Scroll the deep-link target into view ONCE its bubble has rendered.
+  const scrolledTargetRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!targetMode || !target) return;
+    if (scrolledTargetRef.current === target.msgId) return;
+    const el = bubbleRefs.current.get(target.msgId);
+    if (el) {
+      scrolledTargetRef.current = target.msgId;
+      scrollIntoView(el);
+    }
+  }, [targetMode, target, messages]);
+
+  // Leaving target mode ("Voltar ao presente") → let the restored live window
+  // re-anchor at the bottom instead of holding the historical scroll position.
+  const prevTargetModeRef = useRef(targetMode);
+  useEffect(() => {
+    if (prevTargetModeRef.current && !targetMode) {
+      initializedRef.current = false;
+      scrolledTargetRef.current = null;
+    }
+    prevTargetModeRef.current = targetMode;
+  }, [targetMode]);
 
   const navigateTo = useCallback((id: string) => {
     scrollIntoView(bubbleRefs.current.get(id));
@@ -157,8 +208,15 @@ export function MensagemThread({
     setTerm('');
   }, []);
 
+  // The "active" (outlined) bubbles: the in-thread search's current hit AND the
+  // deep-link target both reuse the search-active outline.
   const currentId = searchMode ? search.currentId : null;
-  const activeSet = useMemo(() => new Set(currentId ? [currentId] : []), [currentId]);
+  const activeSet = useMemo(() => {
+    const s = new Set<string>();
+    if (currentId) s.add(currentId);
+    if (targetMode && target) s.add(target.msgId);
+    return s;
+  }, [currentId, targetMode, target]);
 
   return (
     <Stack h="100%" gap={0}>
@@ -183,6 +241,15 @@ export function MensagemThread({
       {error && (
         <Alert color="red" m="sm">
           {error.message}
+        </Alert>
+      )}
+
+      {targetMissing && (
+        <Alert color="yellow" variant="light" m="sm" py={6}>
+          <Text size="xs">
+            A mensagem buscada não foi encontrada (pode ter sido excluída). Exibindo as mensagens
+            recentes.
+          </Text>
         </Alert>
       )}
 
@@ -263,6 +330,26 @@ export function MensagemThread({
             })}
           </Stack>
         </ScrollArea>
+
+        {targetMode && (
+          <Button
+            variant="filled"
+            color="blue"
+            radius="xl"
+            size="compact-sm"
+            leftSection={<IconHistory size={16} />}
+            onClick={voltarAoPresente}
+            style={{
+              position: 'absolute',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              top: 12,
+              boxShadow: 'var(--mantine-shadow-md)',
+            }}
+          >
+            Voltar ao presente
+          </Button>
+        )}
 
         {showFab && (
           <ActionIcon
