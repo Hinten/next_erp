@@ -254,24 +254,56 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
  * has `<IPI>` carrying `<cEnq>` then exactly one of `<IPITrib>` (CSTs
  * 00/49/50/99 — tributado, requires `vIPI`) or `<IPINT>` (every other
  * CST — não tributado, only CST). `vIPI` is required for the tributado
- * variant; the other numeric fields are optional and emitted only when
- * provided.
+ * variant, and the XSD `<xs:choice>` after `<CST>` mandates exactly one
+ * complete pair — `(vBC + pIPI)` (por valor) or `(qUnid + vUnid)` (por
+ * quantidade) — never both and never a half pair, enforced here.
  */
 function buildIPI(cfg: ConfiguracaoIPI): TIpi {
   if (IPI_TRIB_CSTS.has(cfg.CST)) {
     if (cfg.vIPI == null) {
       throw new NFeTributeError(`IPI CST=${cfg.CST} (IPITrib) requires \`vIPI\``);
     }
+    // XSD `<IPITrib>` mandates an `<xs:choice>` after `<CST>`: exactly one of
+    // the `(vBC + pIPI)` sequence (por valor) or the `(qUnid + vUnid)` sequence
+    // (por quantidade) — never both, never a half pair. Enforce it here so a
+    // doomed shape fails at build time rather than being rejected by SEFAZ.
+    const hasVBC = cfg.vBC != null;
+    const hasPIPI = cfg.pIPI != null;
+    const hasQUnid = cfg.qUnid != null;
+    const hasVUnid = cfg.vUnid != null;
+    const byValue = hasVBC || hasPIPI;
+    const byQuantity = hasQUnid || hasVUnid;
+    if (byValue && byQuantity) {
+      throw new NFeTributeError(
+        `IPI CST=${cfg.CST} (IPITrib) must carry exactly one of \`(vBC + pIPI)\` or \`(qUnid + vUnid)\`, not both`,
+      );
+    }
+    if (!byValue && !byQuantity) {
+      throw new NFeTributeError(
+        `IPI CST=${cfg.CST} (IPITrib) requires exactly one complete pair: \`(vBC + pIPI)\` or \`(qUnid + vUnid)\``,
+      );
+    }
+    if (byValue && !(hasVBC && hasPIPI)) {
+      throw new NFeTributeError(
+        `IPI CST=${cfg.CST} (IPITrib) por valor requires both \`vBC\` and \`pIPI\` (missing \`${hasVBC ? 'pIPI' : 'vBC'}\`)`,
+      );
+    }
+    if (byQuantity && !(hasQUnid && hasVUnid)) {
+      throw new NFeTributeError(
+        `IPI CST=${cfg.CST} (IPITrib) por quantidade requires both \`qUnid\` and \`vUnid\` (missing \`${hasQUnid ? 'vUnid' : 'qUnid'}\`)`,
+      );
+    }
     const ipiTrib: TIpi['IPITrib'] = {
       CST: cfg.CST as '00' | '49' | '50' | '99',
       vIPI: fmtMoneyOpt('vIPI', cfg.vIPI)!,
     };
-    const vBC = fmtMoneyOpt('vBC', cfg.vBC);
-    if (vBC != null) ipiTrib.vBC = vBC;
-    const pIPI = fmtRateOpt('pIPI', cfg.pIPI);
-    if (pIPI != null) ipiTrib.pIPI = pIPI;
-    if (cfg.qUnid != null) ipiTrib.qUnid = fmtQuantity('qUnid', cfg.qUnid);
-    if (cfg.vUnid != null) ipiTrib.vUnid = fmtQuantity('vUnid', cfg.vUnid);
+    if (byValue) {
+      ipiTrib.vBC = fmtMoneyOpt('vBC', cfg.vBC)!;
+      ipiTrib.pIPI = fmtRateOpt('pIPI', cfg.pIPI)!;
+    } else {
+      ipiTrib.qUnid = fmtQuantity('qUnid', cfg.qUnid!);
+      ipiTrib.vUnid = fmtQuantity('vUnid', cfg.vUnid!);
+    }
     return { cEnq: cfg.cEnq, IPITrib: ipiTrib };
   }
   return {

@@ -330,6 +330,48 @@ describe('buildImpostoXml — IPI', () => {
     };
     expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
   });
+
+  // --- XSD (vBC + pIPI) XOR (qUnid + vUnid) choice enforcement (#508) ---
+
+  it('IPITrib with both pairs present throws naming the conflict', () => {
+    const imposto: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: {
+        cEnq: '999',
+        CST: '00',
+        vBC: 1500,
+        pIPI: 5,
+        qUnid: 10,
+        vUnid: 2.5,
+        vIPI: 75,
+      },
+    };
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(/not both/);
+  });
+
+  it('IPITrib with neither pair present throws naming the required choice', () => {
+    const imposto: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: { cEnq: '999', CST: '00', vIPI: 75 },
+    };
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(/exactly one complete pair/);
+  });
+
+  it.each([
+    ['vBC', { vBC: 1500 }, /por valor.*missing `pIPI`/],
+    ['pIPI', { pIPI: 5 }, /por valor.*missing `vBC`/],
+    ['qUnid', { qUnid: 10 }, /por quantidade.*missing `vUnid`/],
+    ['vUnid', { vUnid: 2.5 }, /por quantidade.*missing `qUnid`/],
+  ])('IPITrib half pair (only %s) throws naming the missing field', (_label, half, re) => {
+    const imposto: Imposto = {
+      ...impostoFor102(),
+      configuracaoIPI: { cEnq: '999', CST: '00', vIPI: 75, ...half },
+    };
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+    expect(() => buildImpostoXml(imposto, item1500)).toThrow(re);
+  });
 });
 
 // ---------------------------------------------------------------------------
