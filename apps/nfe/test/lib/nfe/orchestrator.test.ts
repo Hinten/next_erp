@@ -1151,6 +1151,39 @@ describe('emitirPedido — guards', () => {
     );
   });
 
+  it('throws NFeOrchestratorError BEFORE allocation when natOp sanitizes to empty (#515)', async () => {
+    // '@#%' is all SEFAZ-restricted chars: it passes operacaoSchema's
+    // `naturezaDaOperacao: z.string().min(1)` (length 3) but sanitizeNFeText
+    // strips it to '' — so <natOp> would serialize empty and the XSD reject.
+    // The guard must fire in prepareEmission, before any numeração is consumed.
+    const events: string[] = [];
+    const { fs, writes } = fakeFirestore({
+      events,
+      nfeConfig: { numeracao_atual: 41, serie: 3, idLote: 6, ambiente: '2' },
+      operacao: { naturezaDaOperacao: '@#%' },
+    });
+
+    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(
+      NFeOrchestratorError,
+    );
+    await expect(
+      emitirPedido(
+        fakeFirestore({
+          events: [],
+          nfeConfig: { numeracao_atual: 41, serie: 3, idLote: 6, ambiente: '2' },
+          operacao: { naturezaDaOperacao: '@#%' },
+        }).fs,
+        fakeRuntime(),
+        'PED-1',
+      ),
+    ).rejects.toThrow(/naturezaDaOperacao after sanitization/);
+
+    // No numeração allocated and no nfev4 anchor written — the counter is
+    // untouched, so the número is not burned on the doomed emission.
+    expect(writes.some((w) => w.path.startsWith('pedidos/PED-1/nfev4/'))).toBe(false);
+    expect(writes.some((w) => w.path === 'filiais/F-1/nfeconfig/default')).toBe(false);
+  });
+
   it('throws NFeBlockedError when pedido.ehSaida contradicts operacao.tipo (#398)', async () => {
     const events: string[] = [];
     const entradaPedido = {
