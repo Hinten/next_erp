@@ -130,9 +130,34 @@ const isDev = process.env.NODE_ENV === 'development';
 
 const matches = (haystack: string, needle: string) => haystack.toLocaleLowerCase().includes(needle);
 
+/** Every leaf href in NAV (groups flattened) — the candidates for active matching. */
+const ALL_LEAF_HREFS: string[] = NAV.flatMap((entry) =>
+  isGroup(entry) ? entry.children.map((c) => c.href) : [entry.href],
+);
+
+/**
+ * The single active nav href for a pathname: the LONGEST leaf href the pathname
+ * matches exactly or as a `${href}/` prefix. Returning only the most-specific
+ * match stops a parent route (`/pedidos`) from lighting up alongside a nested
+ * sibling whose href is a sub-path of it (`/pedidos/entradas`) — a plain
+ * `startsWith` test lights both. Detail routes with no sibling nav entry
+ * (`/pedidos/123/editar`) still resolve to their parent (`/pedidos`).
+ */
+export function activeHrefFor(pathname: string | null): string | null {
+  if (!pathname) return null;
+  let best: string | null = null;
+  for (const href of ALL_LEAF_HREFS) {
+    if (pathname === href || pathname.startsWith(`${href}/`)) {
+      if (best === null || href.length > best.length) best = href;
+    }
+  }
+  return best;
+}
+
 export function SidebarNav() {
   const { claims, loading } = useTenant();
   const pathname = usePathname();
+  const activeHref = activeHrefFor(pathname);
   const [search, setSearch] = useState('');
 
   const permitted = useMemo(() => {
@@ -195,10 +220,10 @@ export function SidebarNav() {
               group={entry}
               defaultOpened={expand}
               permitted={permitted}
-              pathname={pathname}
+              activeHref={activeHref}
             />
           ) : (
-            <LeafNode key={entry.href} leaf={entry} permitted={permitted} pathname={pathname} />
+            <LeafNode key={entry.href} leaf={entry} permitted={permitted} activeHref={activeHref} />
           ),
         )}
       </Stack>
@@ -210,19 +235,17 @@ function GroupNode({
   group,
   defaultOpened,
   permitted,
-  pathname,
+  activeHref,
 }: {
   group: NavGroup;
   defaultOpened: boolean;
   permitted: (perm?: bigint) => boolean;
-  pathname: string | null;
+  activeHref: string | null;
 }) {
   const groupAllowed = permitted(group.perm);
   if (!groupAllowed && !isDev) return null;
 
-  const childActive = group.children.some(
-    (c) => pathname === c.href || pathname?.startsWith(`${c.href}/`),
-  );
+  const childActive = group.children.some((c) => c.href === activeHref);
 
   return (
     <NavLink
@@ -232,7 +255,7 @@ function GroupNode({
       childrenOffset={28}
     >
       {group.children.map((leaf) => (
-        <LeafNode key={leaf.href} leaf={leaf} permitted={permitted} pathname={pathname} />
+        <LeafNode key={leaf.href} leaf={leaf} permitted={permitted} activeHref={activeHref} />
       ))}
     </NavLink>
   );
@@ -241,14 +264,14 @@ function GroupNode({
 function LeafNode({
   leaf,
   permitted,
-  pathname,
+  activeHref,
 }: {
   leaf: NavLeaf;
   permitted: (perm?: bigint) => boolean;
-  pathname: string | null;
+  activeHref: string | null;
 }) {
   const allowed = permitted(leaf.perm);
-  const active = pathname === leaf.href || pathname?.startsWith(`${leaf.href}/`);
+  const active = leaf.href === activeHref;
 
   if (!allowed) {
     if (!isDev) return null;

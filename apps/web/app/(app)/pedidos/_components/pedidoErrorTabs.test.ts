@@ -70,6 +70,13 @@ describe('pedidoTabs', () => {
     expect(pedidoTabs(false)).toEqual([...PEDIDO_TABS.map((t) => t.value), 'estoque']);
   });
 
+  it('entrada keeps the Pagamento tab (the pedido payment component is reused)', () => {
+    // Payment is direction-agnostic: an entrada (purchase / return) records
+    // payments through the same `PagamentosSection` the saída uses, so the
+    // `pagamento` tab must never be treated as saída-only.
+    expect(pedidoTabs(true)).toContain('pagamento');
+  });
+
   it('entrada excludes exactly the three saída-only tabs, preserving order', () => {
     const saida = pedidoTabs(false);
     const entrada = pedidoTabs(true);
