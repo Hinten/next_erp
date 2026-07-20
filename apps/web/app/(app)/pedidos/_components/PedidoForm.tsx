@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useForm, type FieldErrors, type Resolver } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { FirebaseError } from 'firebase/app';
-import { Alert, Tabs } from '@mantine/core';
+import { Alert, Tabs, Text } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconExclamationCircle, IconLock } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
@@ -545,7 +545,14 @@ export function PedidoForm({
                 />
               </>
             ) : (
-              <PlaceholderTab name="Pagamento" />
+              // Payment is fully ported (PagamentosSection below); it's just
+              // unavailable until the doc exists, since pagamentos are a
+              // subcollection keyed by pedidoId. Match the sibling create-mode
+              // empty states (Estoque / Estado / Incidentes) — NOT PlaceholderTab,
+              // which wrongly reads "em breve, use o app antigo".
+              <Text c="dimmed" size="sm">
+                Salve o pedido para registrar pagamentos.
+              </Text>
             )}
           </Tabs.Panel>
 
