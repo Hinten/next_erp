@@ -1,4 +1,4 @@
-export { theme } from './theme';
+export { cssVariablesResolver, theme } from './theme';
 export { PageHeader, type PageHeaderProps } from './PageHeader';
 export { PlaceholderPage, type PlaceholderPageProps } from './PlaceholderPage';
 

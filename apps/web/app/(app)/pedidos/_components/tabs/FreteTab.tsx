@@ -11,7 +11,6 @@ import {
   MODALIDADE_FRETE_LABELS,
   estadoFreteSchema,
   freightCapsFor,
-  freteDoPedidoSchema,
   modalidadeFreteSchema,
   type ModalidadeFrete,
 } from '@delfrance/schemas';
@@ -22,7 +21,8 @@ import { intFreteCollection } from '@/lib/data/intFreteCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
 import type { FreteInicialFormState } from '../types';
 import { collectFreteErrors } from '../freteErrors';
-import { fretePath, type PedidoFormHandle } from './frete/fields';
+import { FreteSwitchField, fretePath, type PedidoFormHandle } from './frete/fields';
+import { seedFreteInicial } from './frete/seedFreteInicial';
 import { IntegracaoFreteSelect } from './frete/IntegracaoFreteSelect';
 import { GenericFreteFields } from './frete/GenericFreteFields';
 import { RetiradaFields } from './frete/RetiradaFields';
@@ -52,6 +52,9 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   const freteInicial = form.watch('freteInicial');
   const modalidade: ModalidadeFrete = freteInicial?.modalidade ?? '9';
   const temFrete = freteInicial != null && modalidade !== '9';
+  // Direction of the pedido — seeds `ehReverso` on a fresh freteInicial
+  // (entrada → reverse by default).
+  const ehSaida = form.watch('ehSaida') ?? true;
 
   const clientePedidoOuterRef = form.watch('clientePedidoOuterRef');
 
@@ -87,7 +90,7 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
       return;
     }
     if (!freteInicial) {
-      const seeded = freteDoPedidoSchema.parse({ estado: 'iniciado', modalidade: next.data });
+      const seeded = seedFreteInicial(next.data, ehSaida);
       form.setValue('freteInicial', seeded as unknown as FreteInicialFormState, {
         shouldDirty: true,
         shouldValidate: true,
@@ -316,6 +319,14 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
                 error={fieldState.error?.message}
               />
             )}
+          />
+
+          <FreteSwitchField
+            form={form}
+            name="ehReverso"
+            label="Frete reverso"
+            description="Transporte no sentido cliente → loja (padrão em entradas)."
+            disabled={headerDisabled}
           />
 
           <Divider />

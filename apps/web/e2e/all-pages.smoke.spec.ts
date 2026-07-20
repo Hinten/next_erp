@@ -17,6 +17,7 @@ const STATIC_ROUTES: string[] = [
   '/chat',
   '/pedidos',
   '/pedidos/entradas',
+  '/pedidos/entradas/novo',
   '/operacoes',
   '/motivos-incidente',
   '/bandeiras-cartao',

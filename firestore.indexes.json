@@ -379,6 +379,20 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "numero",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
           "fieldPath": "ultimaModificacao",
           "order": "DESCENDING"
         }
@@ -478,6 +492,130 @@
       "fields": [
         {
           "fieldPath": "clientePedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "numero",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "numero",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "clientePedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "numero",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "valorCobrado",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "freteInicial.prazoDespacho",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "freteInicial.estado",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dtImpressao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "chNFeReferenciadas",
           "order": "ASCENDING"
         },
         {
@@ -705,20 +843,6 @@
         {
           "fieldPath": "timestamp",
           "order": "DESCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "pedidos",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "numero",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "ehSaida",
-          "order": "ASCENDING"
         }
       ]
     },

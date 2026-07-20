@@ -316,14 +316,12 @@ export async function seedDepositoAtivo(prefix: string): Promise<{ id: string; n
 }
 
 /**
- * Seed one ACTIVE + padrão Operação (`<prefix>-op`) — the Impostos tab lists
- * active operações and the produto imposto is scoped per operação. Full wire
- * shape so `operacaoCollection`'s converter parses it on read.
+ * Full operação wire body (so `operacaoCollection`'s converter parses it on
+ * read) with `seedOperacaoAtiva`'s saída defaults; `over` states a seed's
+ * deltas from that baseline.
  */
-export async function seedOperacaoAtiva(prefix: string): Promise<{ id: string; nome: string }> {
-  const id = `${prefix}-op`;
-  const nome = `${prefix}-op`;
-  await db().collection('operacao').doc(id).set({
+function operacaoBody(nome: string, over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
     nome,
     naturezaDaOperacao: 'Venda',
     tipo: 1,
@@ -352,7 +350,50 @@ export async function seedOperacaoAtiva(prefix: string): Promise<{ id: string; n
     configuracaoPISST: null,
     infCpl: null,
     timestamp: Date.now(),
-  });
+    ...over,
+  };
+}
+
+/**
+ * Seed one ACTIVE + padrão Operação (`<prefix>-op`) — the Impostos tab lists
+ * active operações and the produto imposto is scoped per operação. Full wire
+ * shape so `operacaoCollection`'s converter parses it on read.
+ */
+export async function seedOperacaoAtiva(prefix: string): Promise<{ id: string; nome: string }> {
+  const id = `${prefix}-op`;
+  const nome = `${prefix}-op`;
+  await db().collection('operacao').doc(id).set(operacaoBody(nome));
+  return { id, nome };
+}
+
+/**
+ * Seed one ACTIVE **entrada** operação (`tipo: 0`) able to emit a devolução
+ * NF-e (`ehFiscal: true`, `finNFe: 4`) — the operação the devolução flows
+ * resolve via the integração's `operacaoDevolucaoOuterRef` (or the entrada
+ * default), and the only kind the entrada form's OperacaoPicker lists.
+ * Mirrors `seedOperacaoAtiva`'s wire shape with entrada CFOPs. `padrao` stays
+ * false so the shared staging `findOperacaoEntradaPadrao` fallback is not
+ * hijacked from concurrent suites.
+ */
+export async function seedOperacaoEntrada(
+  prefix: string,
+  suffix = 'opdev',
+): Promise<{ id: string; nome: string }> {
+  const id = `${prefix}-${suffix}`;
+  const nome = `${prefix}-${suffix}`;
+  await db()
+    .collection('operacao')
+    .doc(id)
+    .set(
+      operacaoBody(nome, {
+        naturezaDaOperacao: 'Devolução de venda',
+        tipo: 0,
+        padrao: false,
+        finNFe: 4,
+        cfop: '1202',
+        cfopInterestadual: '2202',
+      }),
+    );
   return { id, nome };
 }
 
@@ -1828,25 +1869,7 @@ export async function seedPedidoWithNFe(
       enderecoFiscalOuterRef: null,
       listaDePrecosOuterRef: null,
     });
-  await db().collection('pedidos').doc(pedidoId).collection('nfev4').doc(nfeId).set({
-    numeracao: 1,
-    serie: 1,
-    tpEmis: 1,
-    estado,
-    chave: null,
-    idLote: null,
-    infNFe: null,
-    xml_nfe_proc: null,
-    xml_epec_proc: null,
-    xml_assinado: null,
-    nRec: null,
-    retries: null,
-    cStat: null,
-    xMotivo: null,
-    error: null,
-    timestamp: now,
-    ultima_modificacao: now,
-  });
+  await seedNfeForPedido(pedidoId, nfeId, { estado });
   return { pedidoId, nfeId };
 }
 
@@ -1863,6 +1886,100 @@ export async function cleanupPedidoWithNFe(pedidoId: string): Promise<void> {
     await batch.commit();
   }
   await db().collection('pedidos').doc(pedidoId).delete();
+}
+
+/**
+ * Seed one `nfev4` doc under an EXISTING pedido — the same wire body
+ * `seedPedidoWithNFe` writes (that helper couples the NF-e to its own pedido
+ * seed), so a spec can attach an NF-e at any estado/chave/numeração to an
+ * already-seeded pedido (e.g. an APROVADA NF-e whose chave the devolução flows
+ * must carry into `chNFeReferenciadas`).
+ */
+export async function seedNfeForPedido(
+  pedidoId: string,
+  nfeId: string,
+  opts: { estado: string; chave?: string | null; numeracao?: number },
+): Promise<void> {
+  const now = Date.now();
+  await db()
+    .collection('pedidos')
+    .doc(pedidoId)
+    .collection('nfev4')
+    .doc(nfeId)
+    .set({
+      numeracao: opts.numeracao ?? 1,
+      serie: 1,
+      tpEmis: 1,
+      estado: opts.estado,
+      chave: opts.chave ?? null,
+      idLote: null,
+      infNFe: null,
+      xml_nfe_proc: null,
+      xml_epec_proc: null,
+      xml_assinado: null,
+      nRec: null,
+      retries: null,
+      cStat: null,
+      xMotivo: null,
+      error: null,
+      timestamp: now,
+      ultima_modificacao: now,
+    });
+}
+
+/**
+ * Sweep the devolução graph linked to an origin pedido: every devolução whose
+ * `saidasRelacionadas` contains `originId`, and every troca saída linked to
+ * each of those devoluções (skipping the origin itself). Query-based on the
+ * link fields — these docs mint counter numeros (no run prefix in `numero`),
+ * so a prefix sweep can't find them. Covers every retry attempt of a spec.
+ */
+export async function cleanupDevolucoesLinkedTo(originId: string): Promise<void> {
+  const devolucoes = await db()
+    .collection('pedidos')
+    .where('saidasRelacionadas', 'array-contains', originId)
+    .get();
+  for (const dev of devolucoes.docs) {
+    const saidas = await db()
+      .collection('pedidos')
+      .where('entradasRelacionadas', 'array-contains', dev.id)
+      .get();
+    for (const saida of saidas.docs) {
+      if (saida.id !== originId) await saida.ref.delete();
+    }
+    await dev.ref.delete();
+  }
+}
+
+/**
+ * Point an integração's `operacaoDevolucaoOuterRef` at an operação (the
+ * Flutter-ODM `documents/…` doc-path string), so the devolução flows resolve
+ * a deterministic operação instead of the shared-staging entrada default.
+ */
+export async function linkIntegracaoOperacaoDevolucao(
+  integracaoId: string,
+  operacaoId: string,
+): Promise<void> {
+  await db()
+    .collection('integracao')
+    .doc(integracaoId)
+    .update({ operacaoDevolucaoOuterRef: `documents/operacao/${operacaoId}` });
+}
+
+/**
+ * Delete every doc of one pedido subcollection (Firestore never cascades) —
+ * the pedido counterpart of `cleanupProdutoSubcollection`, for the `nfev4` /
+ * `incidentes` docs the devolução flows seed or write on an origin pedido.
+ */
+export async function cleanupPedidoSubcollection(
+  pedidoId: string,
+  subcollection: string,
+): Promise<void> {
+  const snap = await db().collection('pedidos').doc(pedidoId).collection(subcollection).get();
+  if (snap.empty) return;
+  const batch = db().batch();
+  snap.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
 }
 
 /**

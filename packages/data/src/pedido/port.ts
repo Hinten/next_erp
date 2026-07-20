@@ -59,3 +59,63 @@ export interface PedidoDataPort {
    */
   commit(ops: PedidoWriteOp[]): Promise<void>;
 }
+
+/**
+ * One multi-document transaction: read `reads`, then let `apply` decide the
+ * writes. Generalizes `updatePedido` (one doc, one patch) to the devolução
+ * save-time side effects (counter + N origin pedidos + 2 new pedidos in ONE
+ * atomic commit).
+ */
+export interface PedidoTransactArgs {
+  /**
+   * Full doc paths to read (e.g. `counters/pedido`, `pedidos/<id>`). All reads
+   * happen INSIDE the transaction and BEFORE any write — the Firestore JS SDK
+   * requires every `tx.get` to precede the first write. The adapter dedupes.
+   */
+  reads: ReadonlyArray<string>;
+  /**
+   * Compute the writes from the tx-read docs (keyed by the requested path;
+   * `null` when a doc is missing). Doc data is in the converter-parsed wire
+   * shape (see {@link PedidoDocData}). The transaction may re-run `apply` on
+   * contention, so it MUST be pure/re-entrant — derive everything from `docs`,
+   * never from external mutable state. Throwing aborts with no write.
+   */
+  apply: (docs: ReadonlyMap<string, PedidoDocData>) => PedidoWriteOp[];
+}
+
+/**
+ * The extended port the devolução (returns) use-cases need on top of
+ * {@link PedidoDataPort}: a multi-doc transaction plus the one-shot reads that
+ * resolve the devolução operação and the origin NF-e chaves. All read results
+ * are converter-parsed wire shape (admin adapters must normalize `Timestamp` →
+ * µs epoch, as with {@link PedidoDocData}).
+ */
+export interface PedidoDevolucaoDataPort extends PedidoDataPort {
+  /** Run one atomic read-then-write transaction. See {@link PedidoTransactArgs}. */
+  transact(args: PedidoTransactArgs): Promise<void>;
+
+  /** One-shot read of a pedido doc (null when missing). */
+  getPedido(pedidoId: string): Promise<PedidoDocData>;
+
+  /** One-shot read of an `integracao` doc (null when missing). */
+  getIntegracao(integracaoId: string): Promise<Record<string, unknown> | null>;
+
+  /** One-shot read of an `operacao` doc (null when missing). */
+  getOperacao(operacaoId: string): Promise<Record<string, unknown> | null>;
+
+  /**
+   * The default entrada operação: operações with `tipo === 0` (entrada) and
+   * `ativo === true`, picking `find(padrao) ?? first` client-side (the repo's
+   * existing default-operação pattern). Null when none exists.
+   */
+  findOperacaoEntradaPadrao(): Promise<{ id: string; data: Record<string, unknown> } | null>;
+
+  /** The pedido's `nfev4` subcollection docs with `estado === 'a'` (aprovada). */
+  listNFesAprovadas(pedidoId: string): Promise<ReadonlyArray<Record<string, unknown>>>;
+
+  /**
+   * Whether the pedido has ANY `nfev4` doc, regardless of estado (a limit-1
+   * probe — cheaper than listing when only existence matters).
+   */
+  hasNFe(pedidoId: string): Promise<boolean>;
+}
