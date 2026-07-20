@@ -65,6 +65,12 @@ describe("OutroCheckoutModal — reprints target the row's OWN pedido", () => {
     expect(h.reprintCheckoutEtiqueta).toHaveBeenCalledWith(
       expect.objectContaining({ pedidoId: 'PEDA', formato: 'pdf' }),
     );
+    // An 'opened' outcome (label URL in a new tab) must not read as "sent to print".
+    await waitFor(() =>
+      expect(h.showCopyableNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Etiqueta aberta em nova aba.' }),
+      ),
+    );
   });
 
   it('reprints the DANFE for exactly row.pedidoId (a different row → a different id)', async () => {
