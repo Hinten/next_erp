@@ -7,7 +7,7 @@ import { NFeCertError } from '@delfrance/integrations-nfe';
 import { runReconcile } from '../../lib/nfe/handlers/runReconcile';
 import { runReconcileCce } from '../../lib/nfe/handlers/runReconcileCce';
 import { getNFeRuntime } from '../../lib/nfe/runtime';
-import { createTaskScheduler, taskPayloadSchema } from '../../lib/nfe/tasks';
+import { RECONCILE_FUNCTION, createTaskScheduler, taskPayloadSchema } from '../../lib/nfe/tasks';
 import { safeErrorShape } from '../../lib/nfe/log';
 import { getDb } from './lib/admin';
 
@@ -34,7 +34,7 @@ export async function handleReconciliarTask(data: unknown): Promise<void> {
     payload = taskPayloadSchema.parse(data);
   } catch (e) {
     if (e instanceof z.ZodError) {
-      logger.error('reconciliarNfe: malformed task payload — dropping', {
+      logger.error(`${RECONCILE_FUNCTION}: malformed task payload — dropping`, {
         issue: e.issues[0]?.message ?? 'invalid',
       });
       return; // deterministic — no retry
@@ -53,7 +53,7 @@ export async function handleReconciliarTask(data: unknown): Promise<void> {
   try {
     baseRt = getNFeRuntime();
   } catch (e) {
-    logger.error('reconciliarNfe: runtime not ready', safeErrorShape(e));
+    logger.error(`${RECONCILE_FUNCTION}: runtime not ready`, safeErrorShape(e));
     throw e; // transient/config — let the queue retry (bounded)
   }
 
@@ -62,7 +62,7 @@ export async function handleReconciliarTask(data: unknown): Promise<void> {
     if (payload.kind === 'cce-vinculo') {
       const result = await runReconcileCce({ fs, baseRt, scheduler, payload });
       logger.info(
-        `reconciliarNfe ${label} cStat=${result.cStat} ` +
+        `${RECONCILE_FUNCTION} ${label} cStat=${result.cStat} ` +
           `disposition=${result.disposition} reEnqueued=${result.reEnqueued}`,
       );
       // handled — terminal dispositions leave reEnqueued=false; no retry.
@@ -70,23 +70,29 @@ export async function handleReconciliarTask(data: unknown): Promise<void> {
     }
     const result = await runReconcile({ fs, baseRt, scheduler, payload });
     logger.info(
-      `reconciliarNfe ${label} cStat=${result.cStat} ` +
+      `${RECONCILE_FUNCTION} ${label} cStat=${result.cStat} ` +
         `recovered=${result.recovered} errored=${result.errored} ` +
         `stillPending=${result.stillPending} reEnqueued=${result.reEnqueued}`,
     );
     // handled — including 656 / cap (stillPending=0) → no re-enqueue, no retry.
   } catch (e) {
     if (e instanceof NFeCertError) {
-      logger.error(`reconciliarNfe ${label}: cert unavailable — backstop will retry`, {
+      logger.error(`${RECONCILE_FUNCTION} ${label}: cert unavailable — backstop will retry`, {
         name: e.name,
       });
       return; // deterministic — no retry
     }
-    logger.error(`reconciliarNfe ${label}: transport/unexpected`, safeErrorShape(e));
+    logger.error(`${RECONCILE_FUNCTION} ${label}: transport/unexpected`, safeErrorShape(e));
     throw e; // transient — bounded queue retry
   }
 }
 
+/**
+ * ⚠️ The export name below IS the deployed function + auto-provisioned queue name —
+ * it MUST equal `RECONCILE_FUNCTION` (apps/nfe/lib/nfe/tasks.ts), which the producer
+ * uses to build the enqueue path. Rename both together, or the enqueue targets a
+ * non-existent queue (silent drop). Pinned by the coupling test in reconciliar.test.ts.
+ */
 export const reconciliarNfe = onTaskDispatched(
   {
     retryConfig: { maxAttempts: 5, minBackoffSeconds: 30, maxBackoffSeconds: 300, maxDoublings: 3 },

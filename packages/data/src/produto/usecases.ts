@@ -504,6 +504,67 @@ export async function applyPrecosChange(
 }
 
 // ---------------------------------------------------------------------------
+// Cross-document kit-guard input resolution (agent/MCP save path — #479)
+//
+// `produtoPageIssues` (packages/schemas pageModel) guards two cross-document kit
+// invariants via inputs the React editar page fills from the UI: `componentKitIds`
+// (kit-of-kit, #239 — the KitManager picker excludes kits) and `parentIsKit`
+// (child-of-kit-parent, #298 — a page-level `paiId` lookup). A non-UI save path
+// (agent/MCP) has neither, so it resolves the same two inputs itself by reading
+// each component's `ehKit` and the parent's `ehKit`.
+// ---------------------------------------------------------------------------
+
+/** The cross-document kit inputs the PageModel guards need, resolved from docs. */
+export interface ResolvedKitGuards {
+  /**
+   * Ids among `componentesKit` whose produto is itself a kit (`ehKit === true`) —
+   * a forbidden kit-of-kit (#239). Empty when no component is a kit.
+   */
+  componentKitIds: string[];
+  /**
+   * The parent's `ehKit` when this produto is a variation child (has a `paiId`).
+   * `null` when it has no `paiId` — a top-level produto resolves as absent, never
+   * `false`, so the child-of-kit-parent guard (#298) doesn't misfire on a parent.
+   */
+  parentIsKit: boolean | null;
+}
+
+/**
+ * Resolve the two cross-document kit inputs (`componentKitIds`, `parentIsKit`)
+ * that {@link ProdutoPageValidationInput} carries, for a picker-less save path
+ * (agent/MCP). Reads each `componentesKit` key's `ehKit` and — when `paiId` is
+ * set — the parent doc's `ehKit`, in one batched {@link ProdutoDataPort.getKitFlags}.
+ *
+ * A component or parent id that doesn't resolve to a produto is treated as a
+ * non-kit (absent from `componentKitIds`; a set-but-missing `paiId` resolves
+ * `parentIsKit` false). A produto with no `paiId` resolves `parentIsKit` as
+ * `null`. No fetch happens when there are no components and no `paiId`.
+ */
+export async function resolveKitGuardInputs(
+  port: ProdutoDataPort,
+  args: { componentesKit?: ComponentesKit | null; paiId?: string | null },
+): Promise<ResolvedKitGuards> {
+  // A component id / paiId is a produto doc id, so drop any empty string: it's
+  // never a real produto, and it would be an invalid Firestore doc reference
+  // (`doc(db, 'produtos', '')` throws) — treat it as a non-kit, not a crash.
+  const componentIds = Object.keys(args.componentesKit ?? {}).filter((id) => id !== '');
+  // `|| null` (not `?? null`): a top-level produto's "no parent" may arrive as
+  // null OR an empty string; both must resolve `parentIsKit` to null (absent),
+  // never false — the guard (#298) must not misfire on a parent produto.
+  const paiId = args.paiId || null;
+  if (componentIds.length === 0 && paiId === null) {
+    return { componentKitIds: [], parentIsKit: null };
+  }
+  const ids = [...new Set([...componentIds, ...(paiId !== null ? [paiId] : [])])];
+  const flags = await port.getKitFlags(ids);
+  const ehKitById = new Map(flags.map((f) => [f.id, f.ehKit] as const));
+  return {
+    componentKitIds: componentIds.filter((id) => ehKitById.get(id) === true),
+    parentIsKit: paiId === null ? null : ehKitById.get(paiId) === true,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Inbound-reference guard + cascade delete (#117 / #135)
 // ---------------------------------------------------------------------------
 

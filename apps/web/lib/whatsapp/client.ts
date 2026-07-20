@@ -110,6 +110,14 @@ export interface WhatsappClient {
   deregisterNumber(integracaoId: string): Promise<void>;
   /** Account-health aggregation for the "Saúde da conta" card (PERM.integracao.read). */
   health(integracaoId: string): Promise<WhatsappHealth>;
+  /**
+   * Send the standard "reabertura de conversa" template message for a WhatsApp
+   * conversa (PERM.chat.write). The backend sends the approved template via the
+   * Cloud API, then writes the outbound `mensagem` doc (send-then-write). The
+   * thread picks up the new message via its live snapshot; the resolved `wamid`
+   * is returned for reference.
+   */
+  templateMessage(conversaId: string): Promise<{ ok: boolean; messageId?: string }>;
 }
 
 export function createWhatsappClient(config: {
@@ -207,6 +215,10 @@ export function createWhatsappClient(config: {
         'GET',
         `/api/whatsapp/health?integracaoId=${encodeURIComponent(integracaoId)}`,
       ),
+    templateMessage: (conversaId) =>
+      call<{ ok: boolean; messageId?: string }>('POST', '/api/whatsapp/template-message', {
+        conversaId,
+      }),
   };
 }
 

@@ -121,6 +121,105 @@ describe.skipIf(!EMULATED)('cascadeProdutoDeletion — variation children cascad
   });
 });
 
+describe.skipIf(!EMULATED)('cascadeProdutoDeletion — inbound kit references (#475)', () => {
+  let componentId: string;
+  let otherComponentId: string;
+  let multiKitId: string;
+  let soleKitId: string;
+  let unrelatedId: string;
+
+  beforeAll(async () => {
+    componentId = freshId('comp');
+    otherComponentId = freshId('other');
+    multiKitId = freshId('multikit');
+    soleKitId = freshId('solekit');
+    unrelatedId = freshId('unrelated');
+    const db = getDb();
+
+    // A kit that lists the deleted component alongside another → keeps the other.
+    await db
+      .collection('produtos')
+      .doc(multiKitId)
+      .set({
+        nome: 'Kit com dois componentes',
+        paiId: null,
+        ehKit: true,
+        componentesKit: {
+          [componentId]: { quantidade: 2, limitarEstoque: true, timestamp: null },
+          [otherComponentId]: { quantidade: 1, limitarEstoque: true, timestamp: null },
+        },
+        componentesKitKeys: [componentId, otherComponentId],
+      });
+
+    // A kit whose ONLY component is the deleted one → emptied (stops being a kit).
+    // Seeded as a VIRTUAL kit so the collapse of `ehKitVirtual` is exercised too
+    // (invariant: `ehKit === false ⇒ ehKitVirtual === false`).
+    await db
+      .collection('produtos')
+      .doc(soleKitId)
+      .set({
+        nome: 'Kit com um componente',
+        paiId: null,
+        ehKit: true,
+        ehKitVirtual: true,
+        componentesKit: {
+          [componentId]: { quantidade: 5, limitarEstoque: false, timestamp: null },
+        },
+        componentesKitKeys: [componentId],
+      });
+
+    // A produto that does NOT reference the deleted component → untouched.
+    await db
+      .collection('produtos')
+      .doc(unrelatedId)
+      .set({
+        nome: 'Kit alheio',
+        paiId: null,
+        ehKit: true,
+        componentesKit: { [otherComponentId]: { quantidade: 1 } },
+        componentesKitKeys: [otherComponentId],
+      });
+
+    // The component being deleted.
+    await db.collection('produtos').doc(componentId).set({ nome: 'Componente', paiId: null });
+  });
+
+  it('removes the deleted id from referencing kits, empties sole-component kits, leaves others intact', async () => {
+    const db = getDb();
+    // Match the trigger: the component doc is already gone when the cascade runs.
+    await db.collection('produtos').doc(componentId).delete();
+
+    await cascadeProdutoDeletion(db, componentId);
+
+    // Multi-component kit keeps the other component; the two fields stay in sync.
+    const multi = (await db.collection('produtos').doc(multiKitId).get()).data()!;
+    expect(multi.componentesKit).toEqual({
+      [otherComponentId]: { quantidade: 1, limitarEstoque: true, timestamp: null },
+    });
+    expect(multi.componentesKitKeys).toEqual([otherComponentId]);
+    expect(multi.ehKit).toBe(true);
+
+    // Sole-component kit is emptied: both fields nulled, ehKit + ehKitVirtual cleared.
+    const sole = (await db.collection('produtos').doc(soleKitId).get()).data()!;
+    expect(sole.componentesKit).toBeNull();
+    expect(sole.componentesKitKeys).toBeNull();
+    expect(sole.ehKit).toBe(false);
+    expect(sole.ehKitVirtual).toBe(false);
+
+    // The unrelated kit is untouched.
+    const unrelated = (await db.collection('produtos').doc(unrelatedId).get()).data()!;
+    expect(unrelated.componentesKit).toEqual({ [otherComponentId]: { quantidade: 1 } });
+    expect(unrelated.componentesKitKeys).toEqual([otherComponentId]);
+  });
+
+  it('is idempotent — a second cascade finds no more references', async () => {
+    const db = getDb();
+    await expect(cascadeProdutoDeletion(db, componentId)).resolves.toBeUndefined();
+    const multi = (await db.collection('produtos').doc(multiKitId).get()).data()!;
+    expect(multi.componentesKitKeys).toEqual([otherComponentId]);
+  });
+});
+
 describe.skipIf(!EMULATED)('cascadeProdutoDeletion — idempotence', () => {
   it('is a no-op on an absent produto with no subtree or children', async () => {
     const db = getDb();
