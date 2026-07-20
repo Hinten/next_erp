@@ -1163,20 +1163,13 @@ describe('emitirPedido — guards', () => {
       operacao: { naturezaDaOperacao: '@#%' },
     });
 
-    await expect(emitirPedido(fs, fakeRuntime(), 'PED-1')).rejects.toBeInstanceOf(
-      NFeOrchestratorError,
+    // Capture the single thrown error and assert both its type and message on
+    // it — one emitirPedido call, no doubled bundle load.
+    const error = await emitirPedido(fs, fakeRuntime(), 'PED-1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(NFeOrchestratorError);
+    expect((error as NFeOrchestratorError).message).toMatch(
+      /naturezaDaOperacao after sanitization/,
     );
-    await expect(
-      emitirPedido(
-        fakeFirestore({
-          events: [],
-          nfeConfig: { numeracao_atual: 41, serie: 3, idLote: 6, ambiente: '2' },
-          operacao: { naturezaDaOperacao: '@#%' },
-        }).fs,
-        fakeRuntime(),
-        'PED-1',
-      ),
-    ).rejects.toThrow(/naturezaDaOperacao after sanitization/);
 
     // No numeração allocated and no nfev4 anchor written — the counter is
     // untouched, so the número is not burned on the doomed emission.
