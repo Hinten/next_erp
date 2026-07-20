@@ -553,6 +553,148 @@ describe('buildImpostoXml — failure modes', () => {
 });
 
 // ---------------------------------------------------------------------------
+// FCP-ST all-or-nothing trio (#507)
+//
+// The FCP-ST base/rate/value trio must be emitted together or not at all;
+// a partial trio is rejected at build time. CSOSN 500 carries the `…Ret`
+// variant of the trio.
+// ---------------------------------------------------------------------------
+
+describe('buildImpostoXml — FCP-ST trio all-or-nothing (#507)', () => {
+  // [csosn, sub-config key, base fields, trio field names] per CSOSN case.
+  const CASES = [
+    [
+      '201',
+      'csosn201',
+      { pCredSN: 1.25, vCredICMSSN: 18.75, modBCST: '4', vBCST: 1800, pICMSST: 18, vICMSST: 324 },
+      ['vBCFCPST', 'pFCPST', 'vFCPST'],
+    ],
+    [
+      '202',
+      'csosn202ou203',
+      { modBCST: '4', vBCST: 1800, pICMSST: 18, vICMSST: 324 },
+      ['vBCFCPST', 'pFCPST', 'vFCPST'],
+    ],
+    [
+      '203',
+      'csosn202ou203',
+      { modBCST: '4', vBCST: 1800, pICMSST: 18, vICMSST: 324 },
+      ['vBCFCPST', 'pFCPST', 'vFCPST'],
+    ],
+    [
+      '500',
+      'csosn500',
+      { vBCSTRet: 1500, pST: 18, vICMSSTRet: 270 },
+      ['vBCFCPSTRet', 'pFCPSTRet', 'vFCPSTRet'],
+    ],
+    [
+      '900',
+      'csosn900',
+      // FCP-ST rides after the ST group in the XSD sequence, so the ST fields
+      // must be present for the full-trio emission to validate.
+      {
+        modBC: '3',
+        vBC: 1500,
+        pICMS: 18,
+        vICMS: 270,
+        modBCST: '4',
+        vBCST: 1800,
+        pICMSST: 18,
+        vICMSST: 324,
+      },
+      ['vBCFCPST', 'pFCPST', 'vFCPST'],
+    ],
+  ] as const;
+
+  // Wire values for the trio, keyed by field name (base + value = money 2dp,
+  // rate = 4dp).
+  const trioValues: Record<string, number> = {
+    vBCFCPST: 1800,
+    pFCPST: 2,
+    vFCPST: 36,
+    vBCFCPSTRet: 1500,
+    pFCPSTRet: 2,
+    vFCPSTRet: 30,
+  };
+
+  it.each(CASES)('CSOSN %s → full trio emits all three', async (csosn, key, base, trio) => {
+    const sub = { ...base } as Record<string, number>;
+    for (const f of trio) sub[f] = trioValues[f];
+    const imposto = impostoFor(csosn, { [key]: sub });
+    const xml = buildImpostoXml(imposto, item1500);
+    for (const f of trio) expect(xml).toContain(`<${f}>`);
+    await assertXsdValid(xml);
+  });
+
+  it.each(CASES)('CSOSN %s → absent trio emits none', async (csosn, key, base, trio) => {
+    const imposto = impostoFor(csosn, { [key]: { ...base } });
+    const xml = buildImpostoXml(imposto, item1500);
+    for (const f of trio) expect(xml).not.toContain(`<${f}>`);
+    await assertXsdValid(xml);
+  });
+
+  // Zero is a legitimate FCP-ST value (schema is nonnegative), so a full trio
+  // with a 0 member counts as complete — it must emit, not be misread as a
+  // partial trio. Pins the guard's `== null` semantics against a `!value`
+  // regression.
+  it.each(CASES)(
+    'CSOSN %s → full trio with a 0 member emits (0 is present)',
+    async (csosn, key, base, trio) => {
+      const sub = { ...base } as Record<string, number>;
+      for (const f of trio) sub[f] = 0;
+      const imposto = impostoFor(csosn, { [key]: sub });
+      let xml = '';
+      expect(() => {
+        xml = buildImpostoXml(imposto, item1500);
+      }).not.toThrow();
+      for (const f of trio) expect(xml).toContain(`<${f}>`);
+      await assertXsdValid(xml);
+    },
+  );
+
+  /** Capture the message of the NFeTributeError buildImpostoXml throws. */
+  function tributeErrorMessage(imposto: Imposto): string {
+    try {
+      buildImpostoXml(imposto, item1500);
+    } catch (err) {
+      if (err instanceof NFeTributeError) return err.message;
+      throw err;
+    }
+    throw new Error('expected buildImpostoXml to throw NFeTributeError');
+  }
+
+  // Each single-field-present and each two-fields-present combination rejects.
+  it.each(CASES)('CSOSN %s → partial trio (1 or 2 of 3) throws', (csosn, key, base, trio) => {
+    const partials = [
+      [trio[0]],
+      [trio[1]],
+      [trio[2]],
+      [trio[0], trio[1]],
+      [trio[0], trio[2]],
+      [trio[1], trio[2]],
+    ];
+    for (const present of partials) {
+      const sub = { ...base } as Record<string, number>;
+      for (const f of present) sub[f] = trioValues[f];
+      const imposto = impostoFor(csosn, { [key]: sub });
+      expect(() => buildImpostoXml(imposto, item1500)).toThrow(NFeTributeError);
+      const message = tributeErrorMessage(imposto);
+      expect(message).toContain(`CSOSN '${csosn}'`);
+      // Assert against the `missing:` clause specifically (not the always-
+      // present "complete trio (…)" enumeration): it must list exactly the
+      // absent members and none of the present ones. Assert the marker is
+      // present first, so a future message-format change fails loudly here
+      // instead of silently slicing the last character (indexOf → -1).
+      expect(message).toContain('missing:');
+      const missingClause = message.slice(message.indexOf('missing:'));
+      const missing = trio.filter((f) => !present.includes(f));
+      for (const m of missing) expect(missingClause).toContain(m);
+      for (const p of present) expect(missingClause).not.toContain(p);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Total aggregation
 // ---------------------------------------------------------------------------
 

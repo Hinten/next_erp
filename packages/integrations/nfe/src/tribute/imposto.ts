@@ -108,6 +108,31 @@ function requireICMSConfig(cfg: ConfiguracaoICMS | null | undefined): Configurac
   return cfg;
 }
 
+/**
+ * FCP-ST (Fundo de Combate à Pobreza retido por ST) is an all-or-nothing
+ * wire group: the XSD models the base/rate/value trio as a set that must be
+ * emitted together or omitted entirely. The individual `fmtMoneyOpt` /
+ * `fmtRateOpt` calls would happily emit a partial trio (only the non-null
+ * members), which SEFAZ rejects (cStat 215). Fail fast at build time on a
+ * partial trio, naming the CSOSN and the missing member(s). `fields` carries
+ * the wire names so CSOSN 500's `…Ret` variant reports its own field names.
+ */
+function assertFcpStTrio(
+  csosn: string,
+  fields: ReadonlyArray<readonly [string, number | null | undefined]>,
+): void {
+  const missing = fields.filter(([, value]) => value == null).map(([name]) => name);
+  // 0 missing (full trio) and all missing (no trio) are both valid; a
+  // partial trio — 1 or 2 present — is the only rejected shape.
+  if (missing.length !== 0 && missing.length !== fields.length) {
+    throw new NFeTributeError(
+      `CSOSN '${csosn}' FCP-ST fields are all-or-nothing per the XSD — emit the ` +
+        `complete trio (${fields.map(([name]) => name).join(', ')}) or none; ` +
+        `missing: ${missing.join(', ')}`,
+    );
+  }
+}
+
 function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_imposto_ICMS {
   if (config.crt === '3') {
     throw new NFeTributeError(
@@ -151,6 +176,11 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
       if (c == null) {
         throw new NFeTributeError("CSOSN '201' requires `configuracaoICMS.csosn201`");
       }
+      assertFcpStTrio('201', [
+        ['vBCFCPST', c.vBCFCPST],
+        ['pFCPST', c.pFCPST],
+        ['vFCPST', c.vFCPST],
+      ]);
       return {
         ICMSSN201: {
           orig: origem,
@@ -175,6 +205,11 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
       if (c == null) {
         throw new NFeTributeError(`CSOSN '${csosn}' requires \`configuracaoICMS.csosn202ou203\``);
       }
+      assertFcpStTrio(csosn, [
+        ['vBCFCPST', c.vBCFCPST],
+        ['pFCPST', c.pFCPST],
+        ['vFCPST', c.vFCPST],
+      ]);
       return {
         ICMSSN202: {
           orig: origem,
@@ -196,6 +231,11 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
       if (c == null) {
         throw new NFeTributeError("CSOSN '500' requires `configuracaoICMS.csosn500`");
       }
+      assertFcpStTrio('500', [
+        ['vBCFCPSTRet', c.vBCFCPSTRet],
+        ['pFCPSTRet', c.pFCPSTRet],
+        ['vFCPSTRet', c.vFCPSTRet],
+      ]);
       return {
         ICMSSN500: {
           orig: origem,
@@ -219,6 +259,11 @@ function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_im
       if (c == null) {
         throw new NFeTributeError("CSOSN '900' requires `configuracaoICMS.csosn900`");
       }
+      assertFcpStTrio('900', [
+        ['vBCFCPST', c.vBCFCPST],
+        ['pFCPST', c.pFCPST],
+        ['vFCPST', c.vFCPST],
+      ]);
       return {
         ICMSSN900: {
           orig: origem,
