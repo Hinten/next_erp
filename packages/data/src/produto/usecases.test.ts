@@ -450,6 +450,18 @@ describe('resolveKitGuardInputs (agent/MCP kit-guard resolution #479)', () => {
     expect(out.parentIsKit).toBe(false);
   });
 
+  it('drops an empty-string component key (invalid doc id) instead of reading it', async () => {
+    const { port, kitFlagCalls } = memoryPort({ kitFlags: { compKit: true } });
+    const out = await resolveKitGuardInputs(port, {
+      componentesKit: { compKit: kitEntry(), '': kitEntry() },
+      paiId: null,
+    });
+    expect(out.componentKitIds).toEqual(['compKit']);
+    // The '' key never reaches the port (it would be an invalid Firestore ref).
+    expect(kitFlagCalls[0]).not.toContain('');
+    expect(kitFlagCalls[0]).toEqual(['compKit']);
+  });
+
   it('batches all component ids + the paiId into a single getKitFlags call (deduped)', async () => {
     const { port, kitFlagCalls } = memoryPort({ kitFlags: { a: true, b: false, pai: true } });
     await resolveKitGuardInputs(port, {

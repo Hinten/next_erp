@@ -224,8 +224,9 @@ export function createClientProdutoPort(db: Firestore): ProdutoDataPort {
       // are small). Forced to the server for the same fail-closed reason as the
       // guard reads: this feeds the kit-of-kit / child-of-kit validators, so a
       // stale cache must not misclassify a kit as a non-kit. Missing docs are
-      // dropped (treated as non-kit by the resolver).
-      const unique = [...new Set(ids)];
+      // dropped (treated as non-kit by the resolver). Empty ids are filtered
+      // out too — `docRef(db, {}, '')` is an invalid reference that throws.
+      const unique = [...new Set(ids)].filter((id) => id !== '');
       const snaps = await Promise.all(
         unique.map((id) =>
           getDocFromServer(produtoCollection.docRef(db, {}, id) as DocumentReference),

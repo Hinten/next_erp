@@ -544,7 +544,10 @@ export async function resolveKitGuardInputs(
   port: ProdutoDataPort,
   args: { componentesKit?: ComponentesKit | null; paiId?: string | null },
 ): Promise<ResolvedKitGuards> {
-  const componentIds = Object.keys(args.componentesKit ?? {});
+  // A component id / paiId is a produto doc id, so drop any empty string: it's
+  // never a real produto, and it would be an invalid Firestore doc reference
+  // (`doc(db, 'produtos', '')` throws) — treat it as a non-kit, not a crash.
+  const componentIds = Object.keys(args.componentesKit ?? {}).filter((id) => id !== '');
   // `|| null` (not `?? null`): a top-level produto's "no parent" may arrive as
   // null OR an empty string; both must resolve `parentIsKit` to null (absent),
   // never false — the guard (#298) must not misfire on a parent produto.
