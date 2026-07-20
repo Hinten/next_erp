@@ -1,4 +1,4 @@
-export type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
+export type { ProdutoDataPort, ProdutoSnapshot, ProdutoKitFlag, ProdutoWriteOp } from './port';
 
 export {
   movimentacaoInputSchema,
@@ -26,6 +26,8 @@ export {
   buildKitStatusChildOps,
   propagateKitStatusToChildren,
   type KitStatusChange,
+  resolveKitGuardInputs,
+  type ResolvedKitGuards,
   propagatePrecosToChildren,
   applyPrecosChange,
   findProdutoReferences,
