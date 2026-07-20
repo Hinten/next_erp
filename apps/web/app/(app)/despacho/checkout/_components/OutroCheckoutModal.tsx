@@ -58,10 +58,18 @@ function reportDanfe(r: ReprintDanfeResult): void {
 function reportEtiqueta(r: ReprintEtiquetaResult): void {
   switch (r.status) {
     case 'printed':
-    case 'opened':
       showCopyableNotification({
         title: 'Etiqueta',
         message: 'Etiqueta enviada para impressão.',
+        color: 'green',
+      });
+      break;
+    case 'opened':
+      // The label URL opened in a new tab (Melhor Envio) — it did NOT go to the
+      // local print agent; say so, or an operator chasing a missing print is misled.
+      showCopyableNotification({
+        title: 'Etiqueta',
+        message: 'Etiqueta aberta em nova aba.',
         color: 'green',
       });
       break;
@@ -147,7 +155,7 @@ export function OutroCheckoutModal({
         showCopyableNotification({
           title: n.title,
           message: n.message,
-          color: (n.color as never) ?? 'blue',
+          color: n.color ?? 'blue',
         }),
       openUrl: (url) => window.open(url, '_blank', 'noopener,noreferrer'),
       // A reprint surface doesn't buy: if the pedido never bought a label, send
