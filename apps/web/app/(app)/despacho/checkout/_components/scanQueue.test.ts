@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { createScanQueue } from './scanQueue';
 
-/** A manually-resolvable promise, for controlling task timing. */
+/** A manually-settleable promise, for controlling task timing. */
 function deferred<T>() {
   let resolve!: (v: T) => void;
-  const promise = new Promise<T>((r) => (resolve = r));
-  return { promise, resolve };
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -83,6 +87,57 @@ describe('createScanQueue', () => {
     await tick();
 
     expect(seen).toEqual([]);
+  });
+
+  it('keeps processing later tasks after one task rejects, and surfaces the error', async () => {
+    const q = createScanQueue(1);
+    const done: string[] = [];
+    const errors: unknown[] = [];
+    const boom = new Error('firestore down');
+
+    // Task 1 rejects (a transient fallback failure); task 2 is queued behind it.
+    q.enqueue(
+      1,
+      () => Promise.reject(boom),
+      (r) => done.push(`done:${r}`),
+      (err) => errors.push(err),
+    );
+    q.enqueue(
+      1,
+      () => Promise.resolve('after'),
+      (r) => done.push(`done:${r}`),
+      (err) => errors.push(err),
+    );
+
+    await tick();
+    await tick();
+
+    // The rejection went to onError (not onDone) and did NOT poison the chain —
+    // the next task still ran. A rejected chain would have dropped 'after'.
+    expect(errors).toEqual([boom]);
+    expect(done).toEqual(['done:after']);
+  });
+
+  it('drops the error of a task whose epoch went stale mid-flight', async () => {
+    const q = createScanQueue(1);
+    const errors: unknown[] = [];
+    const d1 = deferred<string>();
+
+    q.enqueue(
+      1,
+      () => d1.promise,
+      () => {},
+      (err) => errors.push(err),
+    );
+    // Let the task actually START (enter `await task()`) so the rejection is
+    // handled by the in-flight await — then swap the pedido, then fail the read.
+    await tick();
+    q.reset(2);
+    d1.reject(new Error('too late'));
+    await tick();
+
+    // Stale error is dropped, exactly like a stale success — no onError.
+    expect(errors).toEqual([]);
   });
 
   it('runs tasks enqueued under the new epoch after a reset', async () => {

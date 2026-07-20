@@ -15,8 +15,6 @@ import { arquivoCollection } from '@delfrance/storage';
  * Mirrors `pedidos/_components/ProdutoThumbnail`, but read-once + on-demand.
  */
 
-const ARQUIVOS_PREFIX = 'arquivos/';
-
 /** Bare `<id>` from a `Foto` ref string (`arquivos/<id>` or `documents/arquivos/<id>`). */
 function arquivoIdFromRef(ref: string | null | undefined): string | null {
   if (!ref) return null;

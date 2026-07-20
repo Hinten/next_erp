@@ -6,8 +6,9 @@ import { getDoc } from 'firebase/firestore';
 import { FirebaseError } from 'firebase/app';
 import { useSearchParams } from 'next/navigation';
 import { flattenPedidoItens, type EstadoFrete, type ScanLogEntry } from '@delfrance/schemas';
+import { PERM } from '@delfrance/auth';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
-import { useAuth } from '@/lib/auth';
+import { useAuth, usePermission } from '@/lib/auth';
 import { useNFeClient } from '@/lib/nfe/client';
 import { useFreightClient } from '@/lib/freight/client';
 import {
@@ -58,6 +59,10 @@ export interface CheckoutScreenProps {
 export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
   const db = getFirebaseFirestore();
   const { user } = useAuth();
+  // Saving a checkout writes pedidos/{id}/checkout + advances the pedido — a
+  // pedido.write action. The route only gates read (an operator must load/view
+  // a pedido); the write action gates here, mirroring PedidoForm's Save button.
+  const { allowed: canWrite } = usePermission(PERM.pedido.write);
   const nfeClient = useNFeClient();
   const freightClient = useFreightClient();
 
@@ -402,7 +407,7 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
               onReload={handleReload}
               onSave={handleSave}
               saving={state.saving}
-              canSave={user !== null}
+              canSave={user !== null && canWrite}
             />
           </Stack>
           <CheckoutSidebar

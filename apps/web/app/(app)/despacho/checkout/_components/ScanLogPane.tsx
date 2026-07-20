@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useMemo, useRef } from 'react';
+import { memo, useRef } from 'react';
 import { ActionIcon, Badge, Group, Stack, Text, Tooltip } from '@mantine/core';
 import { IconTrash, IconTrashOff, IconAlertCircle } from '@tabler/icons-react';
 import type { ScanKind, ScanLogEntry } from '@delfrance/schemas';
@@ -88,9 +88,11 @@ const LogRow = memo(function LogRow({
  */
 export function ScanLogPane({ log, onDelete }: ScanLogPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Newest at top — reverse a shallow copy (memoed on the log reference).
-  const rows = useMemo(() => [...log].reverse(), [log]);
-  const { rows: virtualRows, totalSize } = useVirtualRows(rows.length, scrollRef, ROW_HEIGHT);
+  // Newest at top WITHOUT materializing a reversed copy: virtualize over the
+  // live log and map each visible index to its mirror from the end. `log` grows
+  // by one every scan, so a per-scan [...log].reverse() would be O(n) → O(n²)
+  // over a ~1000-scan session and defeat the "1–2 row re-render" goal.
+  const { rows: virtualRows, totalSize } = useVirtualRows(log.length, scrollRef, ROW_HEIGHT);
 
   return (
     <Stack gap={4} h="100%" style={{ minHeight: 0 }}>
@@ -107,14 +109,15 @@ export function ScanLogPane({ log, onDelete }: ScanLogPaneProps) {
           borderRadius: 8,
         }}
       >
-        {rows.length === 0 ? (
+        {log.length === 0 ? (
           <Text size="sm" c="dimmed" p="md">
             Nenhum produto lançado ainda.
           </Text>
         ) : (
           <div style={{ height: totalSize, position: 'relative' }}>
             {virtualRows.map((vr) => {
-              const entry = rows[vr.index]!;
+              // Newest-first: virtual index 0 is the last log entry.
+              const entry = log[log.length - 1 - vr.index]!;
               return (
                 <div
                   key={entry.uid}

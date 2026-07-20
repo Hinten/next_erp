@@ -20,11 +20,17 @@ export interface ScanQueue {
    * task runs only after every earlier task settles, and both BEFORE running and
    * AFTER resolving it re-checks the queue's live epoch — a stale task (its
    * pedido was replaced) is dropped without invoking `onDone`.
+   *
+   * If the task REJECTS, the queue stays alive: the failure is routed to the
+   * optional `onError` (epoch-guarded, exactly like a successful result) instead
+   * of rejecting the internal chain — a rejected chain would skip every later
+   * task and silently kill the fallback pipeline for the rest of the session.
    */
   enqueue<T>(
     epoch: number,
     task: () => Promise<T>,
     onDone: (result: T, epoch: number) => void,
+    onError?: (err: unknown, epoch: number) => void,
   ): void;
   /**
    * Adopt a new epoch and detach the pending chain. In-flight/queued tasks from
@@ -44,11 +50,25 @@ export function createScanQueue(initialEpoch = 0): ScanQueue {
   let chain: Promise<unknown> = Promise.resolve();
 
   return {
-    enqueue(epoch, task, onDone) {
+    enqueue(epoch, task, onDone, onError) {
       chain = chain.then(async () => {
         // Stale before we even start (a newer pedido loaded while we waited).
         if (epoch !== currentEpoch) return;
-        const result = await task();
+        let result: Awaited<ReturnType<typeof task>>;
+        try {
+          result = await task();
+        } catch (err) {
+          // A transient fallback failure (e.g. a Firestore read error) must NOT
+          // reject `chain`: `.then` on a rejected promise skips its callback, so
+          // one failed scan would deadlock every later scan for the session.
+          // Swallow it HERE (chain resolves, next task runs) and surface it via
+          // `onError`, epoch-guarded like a successful result. Rethrow a
+          // non-Error throw — that is a programming fault, not a recoverable
+          // transient failure (and FirebaseError et al. all extend Error).
+          if (!(err instanceof Error)) throw err;
+          if (epoch === currentEpoch) onError?.(err, epoch);
+          return;
+        }
         // Stale after the read resolved (the pedido swapped during the round-trip).
         if (epoch !== currentEpoch) return;
         onDone(result, epoch);

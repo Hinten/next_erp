@@ -2,6 +2,7 @@
 
 import { useCallback, useRef } from 'react';
 import type { Firestore } from 'firebase/firestore';
+import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
 import type { CheckoutAction, ScanMeta } from './checkoutReducer';
 import { resolveFromIndex, resolveScanText, type ScanIndex } from './resolveScan';
 import { createScanQueue, type ScanQueue } from './scanQueue';
@@ -55,6 +56,14 @@ export function useScanPipeline(args: {
           } else {
             dispatch({ type: 'scan/not-found', epoch: ep, code: resolved.code, meta });
           }
+        },
+        () => {
+          // The fallback read failed transiently (the queue kept processing).
+          // A silently dropped scan would look "pending" — prompt a rescan.
+          showErrorNotification({
+            title: 'Falha ao buscar o produto',
+            message: `Não foi possível resolver o código "${text}". Escaneie novamente.`,
+          });
         },
       );
     },
