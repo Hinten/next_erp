@@ -37,6 +37,7 @@ import {
   MercadoLivreImportError,
   assembleImportPlan,
 } from './importCore';
+import { importCategoriaChain } from './importCategoria';
 import { lastSegment, refMatchesIntegracao } from './linkRefs';
 import { type Bucket } from './arquivoUpload';
 import { importProdutoPhotos } from './importPhotos';
@@ -101,6 +102,13 @@ export async function importProduto(
     if (!(err instanceof MercadoLivreError)) throw err;
   }
 
+  // ERP Categoria chain (#442) — best-effort: an ML category-API failure yields
+  // null (produto imports without a category); Firestore failures propagate.
+  let categoriaOuterRef: string | null = null;
+  if (options.importarCategorias && mapped.categoryId) {
+    categoriaOuterRef = await importCategoriaChain({ db, api }, mapped.categoryId, Date.now());
+  }
+
   // ---- Resolve the ERP produto (link → sku → deterministic id) ----------
   const resolved = await resolveExistingProduto(db, itemId, mapped.sku, integracaoId);
   // A fresh produto id is a per-item hash — NOT the seller_custom_field, which ML
@@ -139,6 +147,7 @@ export async function importProduto(
       : null,
     depositoOuterRef: deps.depositoOuterRef,
     descricao,
+    categoriaOuterRef,
     existingProduto,
     existingLinkRaw,
     existingExtra,

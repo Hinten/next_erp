@@ -92,6 +92,7 @@ function sanitizeOptions(v: unknown): Record<string, boolean> | undefined {
     'importarPreco',
     'sobrescreverPreco',
     'importarFotos',
+    'importarCategorias',
   ];
   const out: Record<string, boolean> = {};
   for (const k of keys) if (typeof src[k] === 'boolean') out[k] = src[k] as boolean;

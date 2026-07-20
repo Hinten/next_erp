@@ -40,9 +40,9 @@ export interface ImportOptions {
   sobrescreverPreco: boolean;
   /** `completarDadosProdutoPai` — fill the produto's null fields on re-import. */
   atualizarProdutoPai: boolean;
-  /** Ported but inert until the photo-import slice (#439). */
+  /** Import the listing's photos (additive, high-quality — #439). */
   importarFotos: boolean;
-  /** Ported but inert until the category-creation slice (#442). */
+  /** Create/link the ERP Categoria chain from the ML category (#442). */
   importarCategorias: boolean;
 }
 
@@ -70,6 +70,8 @@ export interface ImportAssembleArgs {
   depositoOuterRef: string | null;
   /** ML plain-text description (best-effort; truncated to the schema limit). */
   descricao: string | null;
+  /** Leaf ERP Categoria outer-ref resolved from the ML category chain (#442); null = skip. */
+  categoriaOuterRef: string | null;
   /** Existing raw docs (spread/fill-nulls). Null on create. */
   existingProduto: Record<string, unknown> | null;
   existingLinkRaw: Record<string, unknown> | null;
@@ -165,7 +167,7 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
         profundidadeCm: mapped.profundidadeCm,
         // On create there's nothing to clear — fold the price writes into the doc.
         precos: precosOps ? precosOps.set : null,
-        // categoriaProdutoOuterRef deferred to #442 (ML category → ERP Categoria).
+        categoriaProdutoOuterRef: args.categoriaOuterRef,
         timestamp: now,
       },
     };
@@ -186,6 +188,14 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
       fillNull('profundidadeCm', mapped.profundidadeCm);
       // publicado is fill-null too — never re-expose a produto the user hid.
       if ((existingProduto?.publicado ?? null) == null) patch.publicado = true;
+    }
+    // Category fill-null: its own gate is importarCategorias upstream (import.ts only
+    // resolves categoriaOuterRef when the option is on), NOT atualizarProdutoPai — so
+    // this runs even when the produto-field update above is skipped. Never clobbers a
+    // manually-set ERP category.
+    const categoriaJaDefinida = (existingProduto?.categoriaProdutoOuterRef ?? null) != null;
+    if (!categoriaJaDefinida && args.categoriaOuterRef != null) {
+      patch.categoriaProdutoOuterRef = args.categoriaOuterRef;
     }
     produto = Object.keys(patch).length > 0 ? { data: patch, full: false } : null;
   }

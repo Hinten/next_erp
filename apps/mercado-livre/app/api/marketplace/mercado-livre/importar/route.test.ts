@@ -87,7 +87,7 @@ describe('POST /api/marketplace/mercado-livre/importar', () => {
     });
   });
 
-  it('forwards only the known boolean option flags (incl. importarFotos)', async () => {
+  it('forwards only the known boolean option flags (incl. importarFotos, importarCategorias)', async () => {
     await POST(
       req({
         integracaoId: 'int-1',
@@ -96,6 +96,7 @@ describe('POST /api/marketplace/mercado-livre/importar', () => {
           sobrescreverEstoque: true,
           importarPreco: false,
           importarFotos: false,
+          importarCategorias: true,
           bogus: 'x',
         },
       }),
@@ -105,6 +106,7 @@ describe('POST /api/marketplace/mercado-livre/importar', () => {
       sobrescreverEstoque: true,
       importarPreco: false,
       importarFotos: false,
+      importarCategorias: true,
     });
     // the Storage bucket is wired into the deps for photo import
     expect(deps.bucket).toBeDefined();
