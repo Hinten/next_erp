@@ -13,6 +13,7 @@ export { onTabMediMediaChanged } from './arquivos/onTabMediMediaChanged';
 export { reconcileArquivoOrphans } from './arquivos/arquivoOrphanSweep';
 export { onProdutoDeleted } from './produtos/onProdutoDeleted';
 export { onEstoqueDeleted } from './estoques/onEstoqueDeleted';
+export { onNfeDeleted } from './nfe/onNfeDeleted';
 export { aplicarEstoque } from './estoques/aplicarEstoque';
 export {
   onPedidoEstoqueSync,
