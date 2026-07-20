@@ -411,11 +411,17 @@ export function CheckoutScreen({ fixture }: CheckoutScreenProps) {
             />
           </Stack>
           <CheckoutSidebar
+            db={db}
+            pedido={state.pedido}
+            pedidoId={state.pedidoId}
+            uid={user?.uid ?? null}
+            nfeClient={nfeClient}
+            freightClient={freightClient}
             formatoDanfe={state.formatoDanfe}
             onFormatoDanfe={(v) => dispatch({ type: 'format/danfe', value: v })}
             formatoEtiqueta={state.formatoEtiqueta}
             onFormatoEtiqueta={(v) => dispatch({ type: 'format/etiqueta', value: v })}
-            hasPedido={loaded}
+            onReload={handleReload}
           />
         </Group>
       )}
