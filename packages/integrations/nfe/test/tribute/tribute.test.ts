@@ -682,7 +682,10 @@ describe('buildImpostoXml — FCP-ST trio all-or-nothing (#507)', () => {
       expect(message).toContain(`CSOSN '${csosn}'`);
       // Assert against the `missing:` clause specifically (not the always-
       // present "complete trio (…)" enumeration): it must list exactly the
-      // absent members and none of the present ones.
+      // absent members and none of the present ones. Assert the marker is
+      // present first, so a future message-format change fails loudly here
+      // instead of silently slicing the last character (indexOf → -1).
+      expect(message).toContain('missing:');
       const missingClause = message.slice(message.indexOf('missing:'));
       const missing = trio.filter((f) => !present.includes(f));
       for (const m of missing) expect(missingClause).toContain(m);
