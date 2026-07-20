@@ -91,6 +91,11 @@ const NAV: NavEntry[] = [
     ],
   },
   {
+    label: 'Despacho',
+    perm: PERM.pedido.write,
+    children: [{ href: '/despacho/checkout', label: 'Checkout', perm: PERM.pedido.write }],
+  },
+  {
     label: 'Meios de Pagamento',
     perm: PERM.pagamento.read,
     children: [
