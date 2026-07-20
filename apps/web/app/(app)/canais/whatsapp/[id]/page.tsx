@@ -12,7 +12,11 @@ import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import { ContaWhatsappHealth } from '../_components/ContaWhatsappHealth';
 import { ContaWhatsappPanel } from '../_components/ContaWhatsappPanel';
-import { whatsappExcludedFields, whatsappFields } from '../_components/whatsappFieldOverrides';
+import {
+  WHATSAPP_SECTIONS,
+  whatsappExcludedFields,
+  whatsappFields,
+} from '../_components/whatsappFieldOverrides';
 
 export default function ContaWhatsappPage() {
   const params = useParams<{ id: string }>();
@@ -47,6 +51,7 @@ export default function ContaWhatsappPage() {
         recordId={params.id}
         excludedFields={whatsappExcludedFields}
         fields={whatsappFields}
+        sections={WHATSAPP_SECTIONS}
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}
