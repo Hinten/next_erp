@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { MappedMlItem } from '@delfrance/integrations-mercado-livre';
+import type { MappedMlItem, MappedMlVariation } from '@delfrance/integrations-mercado-livre';
+import type { TaxonomiaResolution } from './taxonomiaCore';
 
 import {
   DEFAULT_IMPORT_OPTIONS,
   type ImportAssembleArgs,
+  type VariationChildAssembleArgs,
   MercadoLivreImportError,
   assembleImportPlan,
+  assembleVariationChildPlan,
 } from './importCore';
 
 function mapped(over: Partial<MappedMlItem> = {}): MappedMlItem {
@@ -52,6 +55,9 @@ function args(over: Partial<ImportAssembleArgs> = {}): ImportAssembleArgs {
     depositoOuterRef: 'documents/depositos/dep1',
     descricao: 'Uma camiseta',
     categoriaOuterRef: null,
+    hasVariations: false,
+    parentGrupoUids: null,
+    parentVariacoesUid: null,
     existingProduto: null,
     existingLinkRaw: null,
     existingExtra: null,
@@ -271,5 +277,479 @@ describe('assembleImportPlan — stock options', () => {
   it('no depósito configured → no stock write', () => {
     const plan = assembleImportPlan(args({ depositoOuterRef: null }));
     expect(plan.estoque).toBeNull();
+  });
+});
+
+describe('assembleImportPlan — parent taxonomy links (#520)', () => {
+  it('hasVariations=true → NEVER writes parent estoque, even with sobrescreverEstoque + existing stock', () => {
+    const plan = assembleImportPlan(
+      args({
+        hasVariations: true,
+        isCreate: false,
+        existingEstoqueQty: 3,
+        existingEstoqueReservada: 4,
+        options: {
+          ...DEFAULT_IMPORT_OPTIONS,
+          importarEstoque: true,
+          sobrescreverEstoque: true,
+        },
+      }),
+    );
+    expect(plan.estoque).toBeNull();
+  });
+
+  it('hasVariations=true → no parent estoque write on create either', () => {
+    const plan = assembleImportPlan(args({ hasVariations: true }));
+    expect(plan.estoque).toBeNull();
+  });
+
+  it('create: sets parentGrupoUids/parentVariacoesUid on the parent doc', () => {
+    const plan = assembleImportPlan(
+      args({
+        hasVariations: true,
+        parentGrupoUids: ['g-cor', 'g-tam'],
+        parentVariacoesUid: [
+          'documents/grupoDeVariacoes/g-cor/variacoes/v-azul',
+          'documents/grupoDeVariacoes/g-tam/variacoes/v-m',
+        ],
+      }),
+    );
+    expect(plan.produto?.data.grupoDeVariacoesUid).toEqual(['g-cor', 'g-tam']);
+    expect(plan.produto?.data.variacoesUid).toEqual([
+      'documents/grupoDeVariacoes/g-cor/variacoes/v-azul',
+      'documents/grupoDeVariacoes/g-tam/variacoes/v-m',
+    ]);
+  });
+
+  it('create: no variations → both fields null (schema default)', () => {
+    const plan = assembleImportPlan(args());
+    expect(plan.produto?.data.grupoDeVariacoesUid).toBeNull();
+    expect(plan.produto?.data.variacoesUid).toBeNull();
+  });
+
+  it('update: fills grupoDeVariacoesUid when currently ABSENT (null)', () => {
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        hasVariations: true,
+        existingProduto: { nome: 'X' },
+        parentGrupoUids: ['g-cor'],
+        parentVariacoesUid: ['documents/grupoDeVariacoes/g-cor/variacoes/v-azul'],
+      }),
+    );
+    expect(plan.produto?.data.grupoDeVariacoesUid).toEqual(['g-cor']);
+    expect(plan.produto?.data.variacoesUid).toEqual([
+      'documents/grupoDeVariacoes/g-cor/variacoes/v-azul',
+    ]);
+  });
+
+  it('update: fills grupoDeVariacoesUid when currently an EMPTY array — D2 fill-or-empty', () => {
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        hasVariations: true,
+        existingProduto: { nome: 'X', grupoDeVariacoesUid: [], variacoesUid: [] },
+        parentGrupoUids: ['g-cor'],
+        parentVariacoesUid: ['documents/grupoDeVariacoes/g-cor/variacoes/v-azul'],
+      }),
+    );
+    expect(plan.produto?.data.grupoDeVariacoesUid).toEqual(['g-cor']);
+    expect(plan.produto?.data.variacoesUid).toEqual([
+      'documents/grupoDeVariacoes/g-cor/variacoes/v-azul',
+    ]);
+  });
+
+  it('update: NEVER overwrites a non-empty existing taxonomy array', () => {
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        hasVariations: true,
+        existingProduto: {
+          nome: 'X',
+          grupoDeVariacoesUid: ['manual-grupo'],
+          variacoesUid: ['documents/grupoDeVariacoes/manual-grupo/variacoes/manual-v'],
+        },
+        parentGrupoUids: ['g-cor'],
+        parentVariacoesUid: ['documents/grupoDeVariacoes/g-cor/variacoes/v-azul'],
+      }),
+    );
+    expect(plan.produto?.data ?? {}).not.toHaveProperty('grupoDeVariacoesUid');
+    expect(plan.produto?.data ?? {}).not.toHaveProperty('variacoesUid');
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*                     assembleVariationChildPlan (#520)                      */
+/* -------------------------------------------------------------------------- */
+
+function mappedVariation(over: Partial<MappedMlVariation> = {}): MappedMlVariation {
+  return {
+    variationId: '999',
+    sku: 'SKU1-AZ',
+    nome: 'Camiseta Azul',
+    availableQuantity: 5,
+    combos: [{ id: 'COLOR', value_id: '123', value_name: 'Azul', name: 'Cor' }],
+    sellerCustomField: null,
+    ...over,
+  };
+}
+
+function taxonomiaResolution(over: Partial<TaxonomiaResolution> = {}): TaxonomiaResolution {
+  return {
+    attrKey: 'COLOR|123',
+    grupoId: 'g-cor',
+    varianteId: 'v-azul',
+    grupoUid: 'g-cor',
+    varianteFake: 'documents/grupoDeVariacoes/g-cor/variacoes/v-azul',
+    ...over,
+  };
+}
+
+function childArgs(over: Partial<VariationChildAssembleArgs> = {}): VariationChildAssembleArgs {
+  return {
+    mappedVariation: mappedVariation(),
+    taxonomia: [taxonomiaResolution()],
+    parent: {
+      produtoId: 'parent1',
+      precos: { tabNormal: { valor: 79.9 } },
+      linkOuterRef: 'documents/produtos/parent1/produtoMercadoLivre/link1',
+      mlItemId: 'MLB123',
+      ehKit: false,
+      ehUsado: false,
+      categoriaOuterRef: 'documents/categorias/MLB1430',
+      dims: {
+        pesoLiquidoKg: 0.5,
+        pesoBrutoKg: 0.6,
+        alturaCm: 5,
+        larguraCm: 30,
+        profundidadeCm: 20,
+      },
+    },
+    options: { ...DEFAULT_IMPORT_OPTIONS },
+    produtoId: 'child1',
+    isCreate: true,
+    linkDocId: 'ml-child-link1',
+    integracaoId: 'conta-A',
+    depositoOuterRef: 'documents/depositos/dep1',
+    existingProduto: null,
+    existingLinkRaw: null,
+    existingEstoqueQty: null,
+    existingEstoqueReservada: null,
+    now: 1_700_000_000_000,
+    ...over,
+  };
+}
+
+describe('assembleVariationChildPlan — create', () => {
+  it('writes a full child doc: paiId/nome/sku/publicado/kit flags mirror the parent', () => {
+    const plan = assembleVariationChildPlan(childArgs());
+    expect(plan.produto?.full).toBe(true);
+    expect(plan.produto?.data).toMatchObject({
+      nome: 'Camiseta Azul',
+      sku: 'SKU1-AZ',
+      paiId: 'parent1',
+      publicado: true,
+      ehKit: false,
+      ehUsado: false,
+      timestamp: 1_700_000_000_000,
+    });
+  });
+
+  it('caps the composed child nome at the produtoSchema 100-char limit', () => {
+    const longNome = `Camiseta ${'Estampada '.repeat(15)}Azul GG`; // > 100 chars
+    const plan = assembleVariationChildPlan(
+      childArgs({ mappedVariation: mappedVariation({ nome: longNome }) }),
+    );
+    expect((plan.produto?.data.nome as string).length).toBe(100);
+    expect(plan.produto?.data.nome).toBe(longNome.slice(0, 100));
+  });
+
+  it('copies the parent WHOLE precos map under importarPreco', () => {
+    const plan = assembleVariationChildPlan(childArgs());
+    expect(plan.produto?.data.precos).toEqual({ tabNormal: { valor: 79.9 } });
+  });
+
+  it('importarPreco=false → precos stays null on create', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({ options: { ...DEFAULT_IMPORT_OPTIONS, importarPreco: false } }),
+    );
+    expect(plan.produto?.data.precos).toBeNull();
+  });
+
+  it('resolves grupoDeVariacoesUid/variacoesUid from the matching taxonomia entries only', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        taxonomia: [
+          taxonomiaResolution(), // matches the variation's only combo (COLOR|123)
+          taxonomiaResolution({
+            attrKey: 'SIZE|9',
+            grupoId: 'g-tam',
+            varianteId: 'v-m',
+            grupoUid: 'g-tam',
+            varianteFake: 'documents/grupoDeVariacoes/g-tam/variacoes/v-m',
+          }), // a DIFFERENT variation's combo — must NOT leak onto this child
+        ],
+      }),
+    );
+    expect(plan.produto?.data.grupoDeVariacoesUid).toEqual(['g-cor']);
+    expect(plan.produto?.data.variacoesUid).toEqual([
+      'documents/grupoDeVariacoes/g-cor/variacoes/v-azul',
+    ]);
+  });
+
+  it('no matching taxonomia entries → both uid fields null', () => {
+    const plan = assembleVariationChildPlan(childArgs({ taxonomia: [] }));
+    expect(plan.produto?.data.grupoDeVariacoesUid).toBeNull();
+    expect(plan.produto?.data.variacoesUid).toBeNull();
+  });
+
+  it('atualizarProdutoPai=true → copies dims + categoria from the parent', () => {
+    const plan = assembleVariationChildPlan(childArgs());
+    expect(plan.produto?.data).toMatchObject({
+      pesoLiquidoKg: 0.5,
+      pesoBrutoKg: 0.6,
+      alturaCm: 5,
+      larguraCm: 30,
+      profundidadeCm: 20,
+      categoriaProdutoOuterRef: 'documents/categorias/MLB1430',
+    });
+  });
+
+  it('atualizarProdutoPai=false → dims/categoria are NOT on the create doc', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({ options: { ...DEFAULT_IMPORT_OPTIONS, atualizarProdutoPai: false } }),
+    );
+    expect(plan.produto?.data ?? {}).not.toHaveProperty('pesoLiquidoKg');
+    expect(plan.produto?.data ?? {}).not.toHaveProperty('categoriaProdutoOuterRef');
+    // sku/publicado/taxonomy are NOT gated by atualizarProdutoPai — still present.
+    expect(plan.produto?.data.sku).toBe('SKU1-AZ');
+    expect(plan.produto?.data.publicado).toBe(true);
+    expect(plan.produto?.data.grupoDeVariacoesUid).toEqual(['g-cor']);
+  });
+});
+
+describe('assembleVariationChildPlan — update (existing child)', () => {
+  it('fill-null: keeps existing nome untouched (never in the patch), fills a null sku', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        isCreate: false,
+        existingProduto: { nome: 'Nome Editado', sku: null },
+      }),
+    );
+    expect(plan.produto?.full).toBe(false);
+    expect(plan.produto?.data).not.toHaveProperty('nome');
+    expect(plan.produto?.data.sku).toBe('SKU1-AZ');
+  });
+
+  it('never re-exposes a hidden child (publicado=false preserved)', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({ isCreate: false, existingProduto: { nome: 'X', publicado: false } }),
+    );
+    expect(plan.produto?.data ?? {}).not.toHaveProperty('publicado');
+  });
+
+  it('fills taxonomy uids when currently null/empty, never when already populated', () => {
+    const filled = assembleVariationChildPlan(
+      childArgs({
+        isCreate: false,
+        existingProduto: { nome: 'X', grupoDeVariacoesUid: [], variacoesUid: null },
+      }),
+    );
+    expect(filled.produto?.data.grupoDeVariacoesUid).toEqual(['g-cor']);
+    expect(filled.produto?.data.variacoesUid).toEqual([
+      'documents/grupoDeVariacoes/g-cor/variacoes/v-azul',
+    ]);
+
+    const preserved = assembleVariationChildPlan(
+      childArgs({
+        isCreate: false,
+        existingProduto: {
+          nome: 'X',
+          grupoDeVariacoesUid: ['manual-grupo'],
+          variacoesUid: ['documents/grupoDeVariacoes/manual-grupo/variacoes/manual-v'],
+        },
+      }),
+    );
+    expect(preserved.produto?.data ?? {}).not.toHaveProperty('grupoDeVariacoesUid');
+    expect(preserved.produto?.data ?? {}).not.toHaveProperty('variacoesUid');
+  });
+
+  it('atualizarProdutoPai gates dims/categoria fill on update too', () => {
+    const on = assembleVariationChildPlan(
+      childArgs({ isCreate: false, existingProduto: { nome: 'X', pesoLiquidoKg: null } }),
+    );
+    expect(on.produto?.data.pesoLiquidoKg).toBe(0.5);
+    expect(on.produto?.data.categoriaProdutoOuterRef).toBe('documents/categorias/MLB1430');
+
+    const off = assembleVariationChildPlan(
+      childArgs({
+        isCreate: false,
+        options: {
+          ...DEFAULT_IMPORT_OPTIONS,
+          atualizarProdutoPai: false,
+          sobrescreverPreco: false,
+        },
+        existingProduto: { nome: 'X', sku: 'KEEP', pesoLiquidoKg: null },
+      }),
+    );
+    expect(off.produto?.data ?? {}).not.toHaveProperty('pesoLiquidoKg');
+    expect(off.produto?.data ?? {}).not.toHaveProperty('categoriaProdutoOuterRef');
+  });
+
+  it('does NOT fill an already-non-null dims/categoria field', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        isCreate: false,
+        existingProduto: {
+          nome: 'X',
+          pesoLiquidoKg: 9.9,
+          categoriaProdutoOuterRef: 'documents/categorias/MANUAL',
+        },
+      }),
+    );
+    expect(plan.produto?.data ?? {}).not.toHaveProperty('pesoLiquidoKg');
+    expect(plan.produto?.data ?? {}).not.toHaveProperty('categoriaProdutoOuterRef');
+  });
+
+  it('sobrescreverPreco=true SETS the WHOLE parent precos map, even over a different existing map', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        isCreate: false,
+        existingProduto: { nome: 'X', precos: { tabOld: { valor: 1 } } },
+        options: { ...DEFAULT_IMPORT_OPTIONS, sobrescreverPreco: true },
+      }),
+    );
+    expect(plan.produto?.data.precos).toEqual({ tabNormal: { valor: 79.9 } });
+  });
+
+  it('sobrescreverPreco=false → precos absent from the patch', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        isCreate: false,
+        existingProduto: { nome: 'X' },
+        options: { ...DEFAULT_IMPORT_OPTIONS, sobrescreverPreco: false },
+      }),
+    );
+    expect(plan.produto?.data ?? {}).not.toHaveProperty('precos');
+  });
+
+  it('no fill-able field + no price change → produto write skipped entirely', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        isCreate: false,
+        options: {
+          ...DEFAULT_IMPORT_OPTIONS,
+          atualizarProdutoPai: false,
+          sobrescreverPreco: false,
+        },
+        existingProduto: {
+          nome: 'X',
+          sku: 'KEEP',
+          publicado: true,
+          grupoDeVariacoesUid: ['manual'],
+          variacoesUid: ['documents/grupoDeVariacoes/manual/variacoes/v'],
+        },
+      }),
+    );
+    expect(plan.produto).toBeNull();
+  });
+});
+
+describe('assembleVariationChildPlan — estoque', () => {
+  it('creates child stock at the depósito from availableQuantity', () => {
+    const plan = assembleVariationChildPlan(childArgs());
+    expect(plan.estoque?.docId).toBe('est-child1-dep1');
+    expect(plan.estoque?.data).toMatchObject({
+      quantidade: 5,
+      parentId: 'child1',
+      depositoOuterRef: 'documents/depositos/dep1',
+    });
+  });
+
+  it('sobrescreverEstoque=false (default) + existing stock → no write', () => {
+    const plan = assembleVariationChildPlan(childArgs({ isCreate: false, existingEstoqueQty: 2 }));
+    expect(plan.estoque).toBeNull();
+  });
+
+  it('sobrescreverEstoque=true adds back reserved so disponivel matches ML', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        isCreate: false,
+        existingEstoqueQty: 2,
+        existingEstoqueReservada: 3,
+        options: { ...DEFAULT_IMPORT_OPTIONS, sobrescreverEstoque: true },
+      }),
+    );
+    // availableQuantity=5, 3 reserved → quantidade=8 so disponivel(8-3)=5
+    expect(plan.estoque?.data.quantidade).toBe(8);
+  });
+
+  it('importarEstoque=false → no stock write on create', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({ options: { ...DEFAULT_IMPORT_OPTIONS, importarEstoque: false } }),
+    );
+    expect(plan.estoque).toBeNull();
+  });
+});
+
+describe('assembleVariationChildPlan — variacaoMercadoLivre link', () => {
+  it('stamps the exact legacy wire on a fresh link (numeric id, itemId null, outer-refs)', () => {
+    const plan = assembleVariationChildPlan(childArgs());
+    expect(plan.link).toMatchObject({
+      id: 999,
+      itemId: null,
+      produtoVariacaoOuterRef: 'documents/produtos/child1',
+      produtoMercadoLivreOuterRef: 'documents/produtos/parent1/produtoMercadoLivre/link1',
+      sku: 'SKU1-AZ',
+    });
+    // Null-valued keys are OMITTED (legacy `includeIfNull: false` parity) — the
+    // entry carries only the fields the combo actually had.
+    expect(plan.link.attributes).toEqual([
+      {
+        id: 'COLOR',
+        name: 'Cor',
+        value_id: '123',
+        value_name: 'Azul',
+      },
+    ]);
+  });
+
+  it('non-numeric variation id → id: null', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({ mappedVariation: mappedVariation({ variationId: 'abc' }) }),
+    );
+    expect(plan.link.id).toBeNull();
+  });
+
+  it('spreads an existing link, preserves unknown keys, and preserves a stamped itemId', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        existingLinkRaw: { legacyOnlyKey: 'kept', itemId: 'MLB999-user-product' },
+      }),
+    );
+    expect(plan.link.legacyOnlyKey).toBe('kept');
+    expect(plan.link.itemId).toBe('MLB999-user-product');
+  });
+
+  it('filters attribute_combinations entries without an id', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        mappedVariation: mappedVariation({
+          combos: [
+            { id: 'COLOR', value_id: '123', value_name: 'Azul', name: 'Cor' },
+            { value_name: 'sem id' },
+          ],
+        }),
+      }),
+    );
+    expect(plan.link.attributes).toHaveLength(1);
+    expect((plan.link.attributes as Array<{ id: string }>)[0]!.id).toBe('COLOR');
+  });
+});
+
+describe('assembleVariationChildPlan — denorm', () => {
+  it('denorm carries the variation id + the parent ML item id', () => {
+    const plan = assembleVariationChildPlan(childArgs());
+    expect(plan.denorm).toEqual({ externalId: '999', externalParentId: 'MLB123' });
   });
 });
