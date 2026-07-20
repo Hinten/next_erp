@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
-import type { MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+import { MercadoLivreError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import { type ImportDeps, importProduto } from './import';
 import { MercadoLivreImportError } from './importCore';
@@ -126,10 +126,20 @@ class FakeBucket {
 
 /* --------------------------------- fixtures ------------------------------- */
 
-function makeApi(item: DocData, description = 'Uma camiseta'): MercadoLivreApi {
+function makeApi(
+  item: DocData,
+  description = 'Uma camiseta',
+  // Default: a single-node chain (the item's own category, no ancestors) — enough
+  // for tests that don't care about the category-import specifics (#442).
+  category: DocData | Error = { id: (item.category_id as string) ?? 'MLB0000', name: 'Categoria' },
+): MercadoLivreApi {
   return {
     getItem: vi.fn(async () => item),
     getItemDescription: vi.fn(async () => ({ plain_text: description })),
+    getCategory: vi.fn(async () => {
+      if (category instanceof Error) throw category;
+      return category;
+    }),
   } as unknown as MercadoLivreApi;
 }
 
@@ -302,5 +312,55 @@ describe('importProduto — photos (#439)', () => {
     const res = await importProduto(deps(db, makeApi(PIC_ITEM)), 'MLB123');
     expect(res.created).toBe(true);
     expect(db.docs('arquivos').size).toBe(0); // gated on deps.bucket
+  });
+});
+
+describe('importProduto — ERP Categoria chain (#442)', () => {
+  const CATEGORY_CHAIN: DocData = {
+    id: 'MLB1430',
+    name: 'Roupas',
+    path_from_root: [
+      { id: 'MLB1071', name: 'Vestuário e Acessórios' },
+      { id: 'MLB1430', name: 'Roupas' },
+    ],
+  };
+
+  it('importarCategorias=true + a category on the item → the produto create carries the leaf outer-ref', async () => {
+    const db = new FakeDb();
+    const api = makeApi(SIMPLE_ITEM, undefined, CATEGORY_CHAIN);
+    const res = await importProduto(deps(db, api), 'MLB123');
+
+    expect(api.getCategory).toHaveBeenCalledWith('MLB1430');
+    expect(db.docs('produtos').get(res.produtoId)).toMatchObject({
+      categoriaProdutoOuterRef: 'documents/categorias/MLB1430',
+    });
+    // the full ancestor chain got created, not just the leaf
+    expect(db.docs('categorias').get('MLB1071')).toMatchObject({
+      nome: 'Vestuário e Acessórios',
+    });
+    expect(db.docs('categorias').get('MLB1430')).toMatchObject({ nome: 'Roupas' });
+  });
+
+  it('importarCategorias=false → no getCategory call, no category link', async () => {
+    const db = new FakeDb();
+    const api = makeApi(SIMPLE_ITEM, undefined, CATEGORY_CHAIN);
+    const res = await importProduto(
+      deps(db, api, { options: { importarCategorias: false } }),
+      'MLB123',
+    );
+
+    expect(api.getCategory).not.toHaveBeenCalled();
+    expect(db.docs('produtos').get(res.produtoId)!.categoriaProdutoOuterRef).toBeNull();
+    expect(db.docs('categorias').size).toBe(0);
+  });
+
+  it('a MercadoLivreError from getCategory is best-effort — the produto still imports, with a null ref', async () => {
+    const db = new FakeDb();
+    const api = makeApi(SIMPLE_ITEM, undefined, new MercadoLivreError('categoria indisponível'));
+    const res = await importProduto(deps(db, api), 'MLB123');
+
+    expect(res.created).toBe(true);
+    expect(db.docs('produtos').get(res.produtoId)!.categoriaProdutoOuterRef).toBeNull();
+    expect(db.docs('categorias').size).toBe(0);
   });
 });

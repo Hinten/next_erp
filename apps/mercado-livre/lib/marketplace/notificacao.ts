@@ -38,6 +38,7 @@ import {
   notificacaoMercadoLivreCollection,
 } from '@delfrance/data/admin/collections';
 
+import { isAlreadyExists } from './grpcErrors';
 import {
   type ItemsApiResolver,
   resolveItemsApiFromContext,
@@ -347,7 +348,7 @@ async function persistNotification(
   try {
     await notificacaoMercadoLivreCollection.docRef(db, {}, docId).create(data);
   } catch (err) {
-    if (err instanceof Error && (err as { code?: unknown }).code === 6) return; // dup — already recorded
+    if (isAlreadyExists(err)) return; // dup — already recorded
     throw err;
   }
 }

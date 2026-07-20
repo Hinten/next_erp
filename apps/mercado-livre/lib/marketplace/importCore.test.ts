@@ -51,6 +51,7 @@ function args(over: Partial<ImportAssembleArgs> = {}): ImportAssembleArgs {
     tabelaPromoId: 'tabPromo',
     depositoOuterRef: 'documents/depositos/dep1',
     descricao: 'Uma camiseta',
+    categoriaOuterRef: null,
     existingProduto: null,
     existingLinkRaw: null,
     existingExtra: null,
@@ -109,6 +110,16 @@ describe('assembleImportPlan — create', () => {
     expect(() => assembleImportPlan(args({ mapped: mapped({ nome: '' }) }))).toThrow(
       MercadoLivreImportError,
     );
+  });
+
+  it('sets categoriaProdutoOuterRef from args (#442)', () => {
+    const p = assembleImportPlan(args({ categoriaOuterRef: 'documents/categorias/MLB1430' }));
+    expect(p.produto?.data.categoriaProdutoOuterRef).toBe('documents/categorias/MLB1430');
+  });
+
+  it('categoriaOuterRef null (category-API failure) stays null', () => {
+    const p = assembleImportPlan(args({ categoriaOuterRef: null }));
+    expect(p.produto?.data.categoriaProdutoOuterRef).toBeNull();
   });
 });
 
@@ -187,6 +198,47 @@ describe('assembleImportPlan — update (existing produto)', () => {
     );
     expect(plan.produto).toBeNull();
     expect(plan.precosOps).toBeNull();
+  });
+
+  it('fills categoriaProdutoOuterRef when currently null/absent (#442)', () => {
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        existingProduto: { nome: 'X', categoriaProdutoOuterRef: null },
+        categoriaOuterRef: 'documents/categorias/MLB1430',
+      }),
+    );
+    expect(plan.produto?.data.categoriaProdutoOuterRef).toBe('documents/categorias/MLB1430');
+  });
+
+  it('NEVER overwrites an existing non-null categoriaProdutoOuterRef, even with a new ref supplied', () => {
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        existingProduto: { nome: 'X', categoriaProdutoOuterRef: 'documents/categorias/MANUAL' },
+        categoriaOuterRef: 'documents/categorias/MLB1430',
+      }),
+    );
+    expect(plan.produto?.data ?? {}).not.toHaveProperty('categoriaProdutoOuterRef');
+  });
+
+  it('fills categoriaProdutoOuterRef even when atualizarProdutoPai is false (gated upstream by importarCategorias, not this option)', () => {
+    const plan = assembleImportPlan(
+      args({
+        isCreate: false,
+        options: {
+          ...DEFAULT_IMPORT_OPTIONS,
+          atualizarProdutoPai: false,
+          sobrescreverPreco: false,
+        },
+        existingProduto: { nome: 'X', precos: { tabNormal: { valor: 10 } } },
+        categoriaOuterRef: 'documents/categorias/MLB1430',
+      }),
+    );
+    expect(plan.produto?.full).toBe(false);
+    expect(plan.produto?.data).toEqual({
+      categoriaProdutoOuterRef: 'documents/categorias/MLB1430',
+    });
   });
 });
 
