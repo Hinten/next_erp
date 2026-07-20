@@ -17,6 +17,7 @@ import {
   outcomeFromRetConsSit,
   outcomeFromRetEnviNFe,
   resolveTpEmis,
+  sanitizeNFeText,
   signNFe,
   type NFeStatePatch,
   type SefazCall,
@@ -156,6 +157,23 @@ export async function prepareEmission(
       pedidoId,
       `pedido.ehSaida=${String(ehSaida)} mas operacao.tipo=${String(bundle.operacao.tipo)} — ` +
         `tpNF divergiria da direção do pedido; corrija a operação vinculada`,
+    );
+  }
+  // natOp (`naturezaDaOperacao`) is a REQUIRED XSD field (grupo B, A04, 1..60).
+  // The operação schema enforces `min(1)` on the RAW string, but a value made
+  // up entirely of SEFAZ-restricted chars (e.g. '@#%') survives that check yet
+  // `sanitizeNFeText` — the exact transform the generator applies at
+  // `ide.ts` (`natOp: sanitizeNFeText(operacao.naturezaDaOperacao) ?? ''`) —
+  // reduces it to '', so `<natOp>` serializes empty and SEFAZ/XSD rejects the
+  // NF-e. That rejection today only surfaces AFTER numeração was allocated,
+  // burning a número on a doomed emission. Guard here — inside the write-free
+  // prep phase, before either allocation transaction — so the counter is never
+  // consumed for an operação that can't produce a valid natOp.
+  if (sanitizeNFeText(bundle.operacao.naturezaDaOperacao) == null) {
+    throw new NFeOrchestratorError(
+      `pedido '${pedidoId}': operação '${bundle.operacaoId}' has an empty ` +
+        `naturezaDaOperacao after sanitization (natOp='') — the NF-e would be ` +
+        `rejected by the XSD; fix the operação's natureza da operação before emitting`,
     );
   }
   await preResolveImpostos(bundle, fs, ctx);
