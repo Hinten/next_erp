@@ -597,6 +597,7 @@ export function PedidoForm({
         submitLabel={submitLabel}
         isSubmitting={form.formState.isSubmitting}
         submitError={submitError}
+        ehSaida={!isEntrada}
         onSaveAndContinue={
           pedidoId
             ? form.handleSubmit((values) => handleSubmit(values, true), onInvalid)

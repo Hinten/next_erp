@@ -47,9 +47,11 @@ let formRef: UseFormReturn<PedidoFormState, unknown, Pedido>;
 function Host({
   pedidoId,
   onSaveAndContinue,
+  ehSaida,
 }: {
   pedidoId?: string;
   onSaveAndContinue?: () => void;
+  ehSaida?: boolean;
 } = {}) {
   const form = useForm<PedidoFormState, unknown, Pedido>({
     defaultValues: { _itensFlat: [], descontoTotal: 0, freteInicial: null, itensDevolvidos: null },
@@ -69,6 +71,7 @@ function Host({
         submitLabel="Salvar"
         isSubmitting={false}
         submitError={null}
+        ehSaida={ehSaida}
         onSaveAndContinue={onSaveAndContinue}
       />
     </MantineProvider>
@@ -135,9 +138,16 @@ describe('PedidoFooter — fields and actions', () => {
     expect(screen.getByText('Vlr. Pago')).toBeTruthy();
   });
 
-  it('renders the share-orçamento button', () => {
+  it('renders the share-orçamento button on a saída (default)', () => {
     render(<Host />);
     expect(screen.getByLabelText('Compartilhar orçamento')).toBeTruthy();
+  });
+
+  it('hides the share-orçamento button on an entrada', () => {
+    // An orçamento (quote) is a sale-side artifact — it has no meaning for an
+    // inbound entrada (purchase / return), so the menu must not render.
+    render(<Host ehSaida={false} />);
+    expect(screen.queryByLabelText('Compartilhar orçamento')).toBeNull();
   });
 
   it('shows "Salvar e continuar editando" only in edit mode (pedidoId + handler)', () => {
