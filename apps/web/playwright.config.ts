@@ -97,6 +97,18 @@ export default defineConfig({
       testMatch: /\.emulator\.e2e\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
+    {
+      // LOCAL-ONLY perf/leak project (the PR 7 checkout 1000-item harness spec,
+      // `*.local.spec.ts`). No CI workflow passes `--project=local-perf`, so CI
+      // never runs it — wall-time + DOM-node budgets are machine-dependent. CI
+      // gates the scan ALGORITHM instead via the op-count test in
+      // `@delfrance/schemas` (`checkoutEngine.perf.test.ts`). Run it locally with
+      // `playwright test --project=local-perf` (needs the dev server: the
+      // harness route is dev-only). No other project matches `.local.spec.ts`.
+      name: 'local-perf',
+      testMatch: /\.local\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
   ],
   webServer: process.env.PLAYWRIGHT_BASE_URL
     ? undefined
