@@ -262,6 +262,9 @@ importers:
       '@delfrance/schemas':
         specifier: workspace:*
         version: link:../../packages/schemas
+      '@delfrance/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       firebase-admin:
         specifier: ^13.9.0
         version: 13.9.0
@@ -293,6 +296,73 @@ importers:
       '@types/react':
         specifier: ^19.2.0
         version: 19.2.14
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
+      eslint:
+        specifier: ^9.39.4
+        version: 9.39.4
+      eslint-config-next:
+        specifier: ^16.2.6
+        version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.6
+        version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
+
+  apps/mercado-pago:
+    dependencies:
+      '@delfrance/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
+      '@delfrance/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@delfrance/data':
+        specifier: workspace:*
+        version: link:../../packages/data
+      '@delfrance/integrations-mercado-pago':
+        specifier: workspace:*
+        version: link:../../packages/integrations/mercado-pago
+      '@delfrance/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
+      firebase-admin:
+        specifier: ^13.9.0
+        version: 13.9.0
+      firebase-functions:
+        specifier: ^7.0.0
+        version: 7.2.5(firebase-admin@13.9.0)
+      next:
+        specifier: 16.2.6
+        version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      react:
+        specifier: ^19.2.0
+        version: 19.2.6
+      react-dom:
+        specifier: ^19.2.0
+        version: 19.2.6(react@19.2.6)
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../packages/config-eslint
+      '@delfrance/config-tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/config-tsconfig
+      '@types/node':
+        specifier: ^24.10.0
+        version: 24.12.4
+      '@types/react':
+        specifier: ^19.2.0
+        version: 19.2.14
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
       eslint:
         specifier: ^9.39.4
         version: 9.39.4
@@ -420,6 +490,12 @@ importers:
       '@dnd-kit/utilities':
         specifier: ^3.2.2
         version: 3.2.2(react@19.2.6)
+      '@emoji-mart/data':
+        specifier: ^1.2.1
+        version: 1.2.1
+      '@emoji-mart/react':
+        specifier: ^1.1.1
+        version: 1.1.1(emoji-mart@5.6.0)(react@19.2.6)
       '@hookform/resolvers':
         specifier: ^5.2.2
         version: 5.2.2(react-hook-form@7.75.0(react@19.2.6))
@@ -452,7 +528,13 @@ importers:
         version: 5.100.10(react@19.2.6)
       '@tanstack/react-virtual':
         specifier: ^3.14.5
-        version: 3.14.5(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+        version: 3.14.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      dompurify:
+        specifier: ^3.4.12
+        version: 3.4.12
+      emoji-mart:
+        specifier: ^5.6.0
+        version: 5.6.0
       fflate:
         specifier: ^0.8.2
         version: 0.8.3
@@ -473,7 +555,7 @@ importers:
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       next-intl:
         specifier: ^4.12.0
-        version: 4.12.0(next@16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(typescript@6.0.3)
+        version: 4.12.0(next@16.2.6(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(typescript@6.0.3)
       react:
         specifier: ^19.2.0
         version: 19.2.6
@@ -566,6 +648,73 @@ importers:
       '@types/react':
         specifier: ^19.2.0
         version: 19.2.14
+      eslint:
+        specifier: ^9.39.4
+        version: 9.39.4
+      eslint-config-next:
+        specifier: ^16.2.6
+        version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.6
+        version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
+
+  apps/whatsapp:
+    dependencies:
+      '@delfrance/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
+      '@delfrance/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@delfrance/data':
+        specifier: workspace:*
+        version: link:../../packages/data
+      '@delfrance/integrations-whatsapp-cloud-api':
+        specifier: workspace:*
+        version: link:../../packages/integrations/whatsapp-cloud-api
+      '@delfrance/schemas':
+        specifier: workspace:*
+        version: link:../../packages/schemas
+      '@delfrance/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
+      firebase-admin:
+        specifier: ^13.9.0
+        version: 13.9.0
+      firebase-functions:
+        specifier: ^7.0.0
+        version: 7.2.5(firebase-admin@13.9.0)
+      next:
+        specifier: 16.2.6
+        version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      react:
+        specifier: ^19.2.0
+        version: 19.2.6
+      react-dom:
+        specifier: ^19.2.0
+        version: 19.2.6(react@19.2.6)
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../packages/config-eslint
+      '@delfrance/config-tsconfig':
+        specifier: workspace:*
+        version: link:../../packages/config-tsconfig
+      '@types/node':
+        specifier: ^24.10.0
+        version: 24.12.4
+      '@types/react':
+        specifier: ^19.2.0
+        version: 19.2.14
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
       eslint:
         specifier: ^9.39.4
         version: 9.39.4
@@ -774,6 +923,9 @@ importers:
       '@delfrance/core':
         specifier: workspace:*
         version: link:../../core
+      '@delfrance/schemas':
+        specifier: workspace:*
+        version: link:../../schemas
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -1001,6 +1153,9 @@ importers:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../config-tsconfig
+      firebase-admin:
+        specifier: ^13.9.0
+        version: 13.9.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -1451,6 +1606,15 @@ packages:
 
   '@emnapi/wasi-threads@1.2.1':
     resolution: {integrity: sha512-uTII7OYF+/Mes/MrcIOYp5yOtSMLBWSIoLPpcgwipoiKbli6k322tcoFsxoIIxPDqW01SQGAgko4EzZi2BNv2w==}
+
+  '@emoji-mart/data@1.2.1':
+    resolution: {integrity: sha512-no2pQMWiBy6gpBEiqGeU77/bFejDqUTRY7KX+0+iur13op3bqUsXdnwoZs6Xb1zbv0gAj5VvS1PWoUUckSr5Dw==}
+
+  '@emoji-mart/react@1.1.1':
+    resolution: {integrity: sha512-NMlFNeWgv1//uPsvLxvGQoIerPuVdXwK/EUek8OOkJ6wVOWPUizRBJU0hDqWZCOROVpfBgCemaC3m6jDOXi03g==}
+    peerDependencies:
+      emoji-mart: ^5.2
+      react: ^16.8 || ^17 || ^18
 
   '@esbuild/aix-ppc64@0.25.12':
     resolution: {integrity: sha512-Hhmwd6CInZ3dwpuGTF8fJG6yoWmsToE+vYgD4nytZVxcu1ulHpUQRAB1UJ8+N1Am3Mz4+xOByoQoSZf4D+CpkA==}
@@ -2977,14 +3141,14 @@ packages:
     peerDependencies:
       react: ^18 || ^19
 
-  '@tanstack/react-virtual@3.14.5':
-    resolution: {integrity: sha512-4EKRXh7zBLkbKbFmG3AUVkircuHd+7OdT1pocJSepxtfBd3qnrJgJ5rtPkRYyo9fmyVb2+pI2xPy5oYvMLQy6A==}
+  '@tanstack/react-virtual@3.14.6':
+    resolution: {integrity: sha512-4+Uq8m0/gzO4kMCHUEpTtGX1RnONK0C+g88b2ltwPMWUBiaVarBuWKoPJaz7gj1cKCVRAdyu+U8GcKhwCc2beA==}
     peerDependencies:
       react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
       react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
-  '@tanstack/virtual-core@3.17.3':
-    resolution: {integrity: sha512-8Np/TFELpI0ySuJoVmjvOrQYXH/8sTX0Biv9szhFhY39xOdAAY+smrMxjxOum/ux3eM8MUJQsEJ0/R0UpvC8dw==}
+  '@tanstack/virtual-core@3.17.4':
+    resolution: {integrity: sha512-nGm5KteqxasUdThLc2izl6dHUqLv0LQj7Nuyo5gYalTPf/U8a9ermvsl7reT+6ioBW1l8WfpP/mcU338nLXpqw==}
 
   '@testing-library/dom@10.4.1':
     resolution: {integrity: sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg==}
@@ -4319,6 +4483,9 @@ packages:
   dompurify@3.4.11:
     resolution: {integrity: sha512-zhlUV12GsaRzMsf9q5M254YhA4+VuF0fG+QFqu6aYpoGlKtz+w8//jBcGVYBgQkR5GHjUomejY84AV+/uPbWdw==}
 
+  dompurify@3.4.12:
+    resolution: {integrity: sha512-zQvGet8Z2sWbQhCmfFz/T5QWH2oBmjnqK3qvOjaqaNLrLEF912WamU+ohnTp0TCep/MFVHpdJuCZEdFOdTnEFg==}
+
   domutils@3.2.2:
     resolution: {integrity: sha512-6kZKyUajlDuqlHKVX1w7gyslj9MPIXzIFiz/rGu35uC1wMi+kMhQwGhl4lt9unC9Vb9INnY9Z3/ZA3+FhASLaw==}
 
@@ -4363,6 +4530,9 @@ packages:
 
   emmet@2.4.11:
     resolution: {integrity: sha512-23QPJB3moh/U9sT4rQzGgeyyGIrcM+GH5uVYg2C6wZIxAIJq7Ng3QLT79tl8FUwDXhyq9SusfknOrofAKqvgyQ==}
+
+  emoji-mart@5.6.0:
+    resolution: {integrity: sha512-eJp3QRe79pjwa+duv+n7+5YsNhRcMl812EcFVwrnRvYKoNPoQb5qxU8DG6Bgwji0akHdp6D4Ln6tYLG58MFSow==}
 
   emoji-regex@10.6.0:
     resolution: {integrity: sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A==}
@@ -8177,6 +8347,13 @@ snapshots:
       tslib: 2.8.1
     optional: true
 
+  '@emoji-mart/data@1.2.1': {}
+
+  '@emoji-mart/react@1.1.1(emoji-mart@5.6.0)(react@19.2.6)':
+    dependencies:
+      emoji-mart: 5.6.0
+      react: 19.2.6
+
   '@esbuild/aix-ppc64@0.25.12':
     optional: true
 
@@ -9525,13 +9702,13 @@ snapshots:
       '@tanstack/query-core': 5.100.10
       react: 19.2.6
 
-  '@tanstack/react-virtual@3.14.5(react-dom@19.2.6(react@19.2.6))(react@19.2.6)':
+  '@tanstack/react-virtual@3.14.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)':
     dependencies:
-      '@tanstack/virtual-core': 3.17.3
+      '@tanstack/virtual-core': 3.17.4
       react: 19.2.6
       react-dom: 19.2.6(react@19.2.6)
 
-  '@tanstack/virtual-core@3.17.3': {}
+  '@tanstack/virtual-core@3.17.4': {}
 
   '@testing-library/dom@10.4.1':
     dependencies:
@@ -11025,6 +11202,10 @@ snapshots:
     optionalDependencies:
       '@types/trusted-types': 2.0.7
 
+  dompurify@3.4.12:
+    optionalDependencies:
+      '@types/trusted-types': 2.0.7
+
   domutils@3.2.2:
     dependencies:
       dom-serializer: 2.0.0
@@ -11075,6 +11256,8 @@ snapshots:
     dependencies:
       '@emmetio/abbreviation': 2.3.3
       '@emmetio/css-abbreviation': 2.1.8
+
+  emoji-mart@5.6.0: {}
 
   emoji-regex@10.6.0: {}
 
@@ -13476,7 +13659,7 @@ snapshots:
 
   next-intl-swc-plugin-extractor@4.12.0: {}
 
-  next-intl@4.12.0(next@16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(typescript@6.0.3):
+  next-intl@4.12.0(next@16.2.6(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(typescript@6.0.3):
     dependencies:
       '@formatjs/intl-localematcher': 0.8.7
       '@parcel/watcher': 2.5.6

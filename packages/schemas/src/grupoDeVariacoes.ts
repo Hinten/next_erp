@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 import { integracaoTipoSchema } from './integracao';
 
@@ -40,7 +41,8 @@ export const externalVariacaoLinkSchema = z.object({
   integracaoId: z.string().min(1),
   externalId: z.string().min(1),
   externalName: z.string().nullable().optional(),
-  timestamp: z.string().datetime().nullable().optional(),
+  // millisecondsSinceEpoch INT (#484/#486, legacy `maybeDateTimeToJson` parity).
+  timestamp: millisSinceEpoch().nullable().optional(),
 });
 export type ExternalVariacaoLink = z.infer<typeof externalVariacaoLinkSchema>;
 
@@ -54,7 +56,8 @@ export const varianteSchema = z.object({
   codigo: z.string().nullable().optional(),
   variantesVinculadasIds: z.array(z.string()).nullable().optional(),
   externalVariacaoLinks: z.array(externalVariacaoLinkSchema).nullable().optional(),
-  timestamp: z.string().datetime().nullable().optional(),
+  // millisecondsSinceEpoch INT (#484/#486, legacy `maybeDateTimeToJson` parity).
+  timestamp: millisSinceEpoch().nullable().optional(),
 });
 export type Variante = z.infer<typeof varianteSchema>;
 
@@ -71,8 +74,10 @@ export const grupoDeVariacoesSchema = z.object({
   ordem: z.number().int().default(1),
   tipo: tipoVariacaoSchema.nullable().optional(),
   permiteFotos: z.boolean().default(false),
-  ultimaModificacao: z.string().datetime().nullable().optional(),
-  timestamp: z.string().datetime().nullable().optional(),
+  // millisecondsSinceEpoch INT (#484/#486, legacy `maybeDateTimeToJson` parity);
+  // reads tolerate a stray ISO/µs value via the codec.
+  ultimaModificacao: millisSinceEpoch().nullable().optional(),
+  timestamp: millisSinceEpoch().nullable().optional(),
   variacoesIds: z.array(z.string()).default([]),
   variacoes: z.array(varianteSchema).nullable().optional(),
 

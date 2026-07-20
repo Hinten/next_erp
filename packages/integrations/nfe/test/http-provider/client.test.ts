@@ -18,6 +18,7 @@ import {
   NFeRuntimeNotReadyError,
   NFeServerError,
   type NFeEmitResult,
+  type NFeVerificarResult,
 } from '../../src/http-provider';
 
 const TOKEN = 'fake-firebase-id-token';
@@ -216,6 +217,72 @@ describe('createNFeHttpClient — consultar', () => {
     );
     expect(init.method).toBe('GET');
     expect(init.body).toBeUndefined();
+  });
+});
+
+describe('createNFeHttpClient — verificar', () => {
+  const RESULT: NFeVerificarResult = {
+    filialId: 'F-1',
+    results: [
+      {
+        chave: '35260514200166000187550010000000071000000018',
+        status: 'atualizada',
+        estadoAnterior: 'e',
+        estadoNovo: 'a',
+        cStat: '100',
+        xMotivo: 'Autorizado o uso da NF-e',
+        error: null,
+      },
+      {
+        chave: '35260514200166000187550010000000081000000019',
+        status: 'skipped-final',
+        estadoAnterior: 'c',
+        estadoNovo: 'c',
+        cStat: '101',
+        xMotivo: 'Cancelamento de NF-e homologado',
+        error: null,
+      },
+    ],
+    msgsNaoEncontradas: ['msg-missing'],
+  };
+
+  it('POSTs to /api/nfe/verificar with Bearer token + {filialId, enviNfeMsgIds} body and parses the result', async () => {
+    const fetch = mockFetch({ status: 200, body: RESULT });
+    const got = await makeClient(fetch).verificar('F-1', ['msg-1', 'msg-2']);
+
+    expect(got).toEqual(RESULT);
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:3004/api/nfe/verificar');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      filialId: 'F-1',
+      enviNfeMsgIds: ['msg-1', 'msg-2'],
+    });
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe(`Bearer ${TOKEN}`);
+    expect(headers['Content-Type']).toBe('application/json');
+  });
+
+  it('maps 401 → NFeAuthError', async () => {
+    const fetch = mockFetch({ status: 401, body: { error: 'no token' } });
+    await expect(makeClient(fetch).verificar('F-1', ['msg-1'])).rejects.toBeInstanceOf(
+      NFeAuthError,
+    );
+  });
+
+  it('maps a cert-coded 422 → NFeCertificateError (no SEFAZ contact happened)', async () => {
+    const fetch = mockFetch({
+      status: 422,
+      body: {
+        error: "Filial 'F-1' não possui certificado digital cadastrado.",
+        code: 'NFeCertError',
+      },
+    });
+    const err = await makeClient(fetch)
+      .verificar('F-1', ['msg-1'])
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NFeCertificateError);
+    expect(err).not.toBeInstanceOf(NFeRejectedError);
   });
 });
 

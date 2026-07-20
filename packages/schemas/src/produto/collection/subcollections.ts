@@ -18,6 +18,14 @@ import { produtoMeta } from './produto';
  * spellings (`produtomercadolivre`/`variacoesml`) never matched production, so
  * the delete-guard probes silently saw no listings.
  *
+ * The remaining leaf names below are the **verified real ids** (#289),
+ * cross-checked against each channel package's compiled `models.odm.g.dart`
+ * `collectionId` constant. The previous guessed names
+ * (`produtoshopee`/`variacaoshopee`/`produtoamazon`/`produtomagalu`/
+ * `produtointegrada`) never matched — they covered collections Flutter never
+ * writes to, so the same silent-miss failure mode as the ML rename above
+ * applied to every non-ML channel.
+ *
  * These were defined only in `apps/web` and so were invisible to the rules
  * generator: the generated ruleset emitted no match block, Firestore
  * default-denied them, and the produto delete guard's existence-probe reads
@@ -39,11 +47,11 @@ function produtoSubcollection(name: string): DomainSchema<typeof subcollectionSc
 
 export const produtoMercadoLivre = produtoSubcollection('produtoMercadoLivre');
 export const variacaoMercadoLivre = produtoSubcollection('variacaoMercadoLivre');
-export const produtoShopee = produtoSubcollection('produtoshopee');
-export const variacaoShopee = produtoSubcollection('variacaoshopee');
-export const produtoMagalu = produtoSubcollection('produtomagalu');
-export const produtoAmazon = produtoSubcollection('produtoamazon');
-export const produtoLojaIntegrada = produtoSubcollection('produtointegrada');
+export const produtoShopee = produtoSubcollection('prodshopee');
+export const variacaoShopee = produtoSubcollection('variashopee');
+export const produtoMagalu = produtoSubcollection('produtoMagalu2');
+export const produtoAmazon = produtoSubcollection('prodAmazon');
+export const produtoLojaIntegrada = produtoSubcollection('produtolojaintegrada');
 
 /** Every produto subcollection domain, spread into `ALL_DOMAINS`. */
 export const PRODUTO_SUBCOLLECTION_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [

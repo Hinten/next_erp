@@ -41,6 +41,11 @@ const fakePath = (grupoId: string, varianteId: string): string =>
   `documents/grupoDeVariacoes/${grupoId}/variacoes/${varianteId}`;
 
 export async function seedDevVariacoes(): Promise<{ children: number }> {
+  // grupoDeVariacoes datetimes are millisecondsSinceEpoch INT (#484/#486). The
+  // produto `timestamp`/`ultimaModificacao` ISO writes below are UNMODELED
+  // legacy-wire fields — `produtoSchema` doesn't declare them, so they're
+  // soft-stripped on read; dev-seed color only, not a wire contract.
+  const nowMs = Date.now();
   const now = new Date().toISOString();
   const batch = db().batch();
   const grupos = db().collection('grupoDeVariacoes');
@@ -53,8 +58,8 @@ export async function seedDevVariacoes(): Promise<{ children: number }> {
     tipo: 1,
     permiteFotos: false,
     variacoesIds: TAMANHOS.map((v) => v.id),
-    variacoes: TAMANHOS.map((v) => ({ ...v, timestamp: now })),
-    timestamp: now,
+    variacoes: TAMANHOS.map((v) => ({ ...v, timestamp: nowMs })),
+    timestamp: nowMs,
   });
   batch.set(grupos.doc(CORES_ID), {
     nome: 'Cores Dev',
@@ -63,8 +68,8 @@ export async function seedDevVariacoes(): Promise<{ children: number }> {
     tipo: 2,
     permiteFotos: true,
     variacoesIds: CORES.map((v) => v.id),
-    variacoes: CORES.map((v) => ({ ...v, timestamp: now })),
-    timestamp: now,
+    variacoes: CORES.map((v) => ({ ...v, timestamp: nowMs })),
+    timestamp: nowMs,
   });
 
   const parentNome = 'Camiseta Dev';

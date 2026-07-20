@@ -13,9 +13,11 @@
  * all fold onto this (issue #84).
  */
 import { useMemo, type ReactNode } from 'react';
-import { Accordion, Code, Group, Stack, Text, Title } from '@mantine/core';
+import { Accordion, Group, Stack, Text, Title } from '@mantine/core';
 import type { Query } from 'firebase/firestore';
 import { useSnapshot } from '@delfrance/data/hooks';
+
+import { XmlBlock } from './XmlBlock';
 
 /** The fields every persisted SEFAZ round-trip record shares. */
 export interface EventRoundtripRecord {
@@ -59,19 +61,6 @@ function formatTs(ts: number | string | null | undefined): string {
   if (ts == null) return '—';
   const d = new Date(ts);
   return Number.isNaN(d.getTime()) ? String(ts) : d.toLocaleString('pt-BR');
-}
-
-function XmlBlock({ label, xml }: { label: string; xml: string }) {
-  return (
-    <>
-      <Text size="xs" fw={500}>
-        {label}
-      </Text>
-      <Code block style={{ maxHeight: 240, overflow: 'auto' }}>
-        {xml}
-      </Code>
-    </>
-  );
 }
 
 export function EventRoundtripHistory<T extends EventRoundtripRecord>({
@@ -149,8 +138,8 @@ export function EventRoundtripHistory<T extends EventRoundtripRecord>({
                       </Text>
                     </Text>
                   )}
-                  {m.xml_enviado && <XmlBlock label="Enviado" xml={m.xml_enviado} />}
-                  {m.xml_retorno && <XmlBlock label="Retorno" xml={m.xml_retorno} />}
+                  {m.xml_enviado && <XmlBlock label="Enviado" value={m.xml_enviado} />}
+                  {m.xml_retorno && <XmlBlock label="Retorno" value={m.xml_retorno} />}
                   {renderActions && <Group gap="xs">{renderActions(m, row.id)}</Group>}
                 </Stack>
               </Accordion.Panel>

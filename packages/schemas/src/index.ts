@@ -132,6 +132,16 @@ export {
 // in ./pedido, grouped by kind like ./produto.
 export * from './pedido';
 
+export {
+  // `credenciaisMetodoPgto` is intentionally NOT exported as a DomainSchema and
+  // NOT registered in ALL_DOMAINS — it is an admin-only, default-deny secret
+  // store (mirrors `credenciaisIntegracao` / `certificadoSecreto`). Only its
+  // schema/meta/type are public.
+  credenciaisMetodoPgtoSchema,
+  credenciaisMetodoPgtoMeta,
+  type CredenciaisMetodoPgto,
+} from './credenciaisMetodoPgto';
+
 export { counter, counterSchema, counterMeta, type Counter } from './counter';
 
 export {
@@ -161,6 +171,13 @@ export {
 } from './conversa';
 
 export {
+  ORIGEM_RULES,
+  WHATSAPP_ANEXO_LIMITS,
+  type OrigemRule,
+  type WhatsappAnexoTipo,
+} from './conversaOrigem';
+
+export {
   integracao,
   integracaoSchema,
   integracaoMeta,
@@ -168,6 +185,20 @@ export {
   INTEGRACAO_TIPO,
   INTEGRACAO_TIPO_LABELS,
   pluginIdForTipo,
+  // Shopee brand cache subcollection — a real DomainSchema, registered in
+  // ALL_DOMAINS, reusing the parent `integracao` permission bits.
+  brandShopee,
+  brandShopeeSchema,
+  brandShopeeMeta,
+  // WhatsApp weekly business-hours building blocks, used by `integracaoSchema`'s
+  // `horario_funcionamento` field.
+  horarioWhatsappSchema,
+  periodoWhatsappSchema,
+  // Legacy-exact codec for `Horario_Whatsapp.abertura`/`.fechamento` — the
+  // business-hours editor (#528) and the #529 `estaAberto` port MUST use these
+  // (never re-derive the ms by hand); byte-compatible with the Flutter wire.
+  encodeHorarioMs,
+  decodeHorarioMs,
   // `credenciaisIntegracao` is intentionally NOT exported as a DomainSchema and
   // NOT registered in ALL_DOMAINS — it is an admin-only, default-deny secret
   // store (mirrors `certificadoSecreto`). Only its schema/meta/type are public.
@@ -178,10 +209,19 @@ export {
   // DomainSchema, not in ALL_DOMAINS; only its schema/meta/type are public.
   tokenDuravelSchema,
   tokenDuravelMeta,
+  // `credenciaisWhatsapp` mirrors `credenciaisIntegracao`: admin-only,
+  // default-deny WhatsApp permanent-token store — not a DomainSchema, not in
+  // ALL_DOMAINS; only its schema/meta/type are public.
+  credenciaisWhatsappSchema,
+  credenciaisWhatsappMeta,
   type Integracao,
   type IntegracaoTipo,
+  type BrandShopee,
+  type HorarioWhatsapp,
+  type PeriodoWhatsapp,
   type CredenciaisIntegracao,
   type TokenDuravel,
+  type CredenciaisWhatsapp,
 } from './integracao';
 
 export {
@@ -192,6 +232,26 @@ export {
   type NotificacaoStatus,
   type NotificacaoMercadoLivre,
 } from './notificacaoMercadoLivre';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log,
+  // mirrors notificacaoMercadoLivre above (#531).
+  notificacaoMercadoPagoStatusSchema,
+  notificacaoMercadoPagoSchema,
+  type NotificacaoMercadoPagoStatus,
+  type NotificacaoMercadoPago,
+} from './notificacaoMercadoPago';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log,
+  // mirrors notificacaoMercadoPago above (#527). Bare schema+meta (perms 0n),
+  // not a DomainSchema — see the NOTE at the bottom of notificacoesWhatsapp.ts.
+  notificacoesWhatsappStatusSchema,
+  notificacoesWhatsappSchema,
+  notificacoesWhatsappMeta,
+  type NotificacoesWhatsappStatus,
+  type NotificacoesWhatsapp,
+} from './notificacoesWhatsapp';
 
 export {
   cargo,
@@ -320,6 +380,9 @@ export {
   estadoNFeSchema,
   ESTADO_NFE,
   ESTADO_NFE_LABELS,
+  ESTADOS_FINAIS_NFE,
+  isEstadoFinalNFe,
+  CHAVE_NFE_REGEX,
   type NotaFiscalEletronica,
   type EstadoNFe,
 } from './nfe';

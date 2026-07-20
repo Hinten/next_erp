@@ -4,311 +4,768 @@
       "collectionGroup": "integracao",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "tipo", "order": "ASCENDING" },
-        { "fieldPath": "user_id", "order": "ASCENDING" },
-        { "fieldPath": "ativo", "order": "ASCENDING" }
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "wa_id",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "integracao",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "user_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ativo",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "notificacoesMercadoLivre",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "processedAt", "order": "ASCENDING" }
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "notificacoesWhatsapp",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "mensagem",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "estadoEnvio",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "mensagem",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "chat",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "integracaoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultimaModificacaoIntegracao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "notificacoesMercadoPago",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "processedAt",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "produtoMercadoLivre",
       "queryScope": "COLLECTION_GROUP",
-      "fields": [{ "fieldPath": "id", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "id",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "clientes",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "nome",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "clientes",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "categorias",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "nome",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "categorias",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "produtos",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "paiId", "order": "ASCENDING" },
-        { "fieldPath": "nome", "order": "ASCENDING" }
+        {
+          "fieldPath": "paiId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "nome",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "grupoDeVariacoes",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "ordem", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "ordem",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "grupoDeVariacoes",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "bandeirasCartao",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "nome",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "bandeirasCartao",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "motivosincidentes",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "nome",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "motivosincidentes",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "operacao",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "nome",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "operacao",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "timestamp", "order": "DESCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "depositos",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "nome",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "depositos",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "historicoEstoque",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "timestamp", "order": "DESCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "historicoEstoque",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
-        { "fieldPath": "pedidoOuterRef", "order": "ASCENDING" },
-        { "fieldPath": "timestamp", "order": "DESCENDING" }
+        {
+          "fieldPath": "pedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "tabMedi",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "nome", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "nome",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "tabMedi",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "tabMedi",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "dataCadastro", "order": "DESCENDING" }]
-    },
-    {
-      "collectionGroup": "filiais",
-      "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "razaoSocial", "order": "ASCENDING" }]
-    },
-    {
-      "collectionGroup": "filiais",
-      "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
-    },
-    {
-      "collectionGroup": "filiais",
-      "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "ultimaModificacao", "order": "DESCENDING" },
-        { "fieldPath": "timestamp", "order": "DESCENDING" }
+        {
+          "fieldPath": "dataCadastro",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
-      "collectionGroup": "pedidos",
-      "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "numero", "order": "DESCENDING" }]
-    },
-    {
-      "collectionGroup": "pedidos",
-      "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "ultimaModificacao", "order": "DESCENDING" }]
-    },
-    {
-      "collectionGroup": "pedidos",
+      "collectionGroup": "filiais",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "chNFeReferenciadas", "order": "ASCENDING" },
-        { "fieldPath": "numero", "order": "DESCENDING" }
+        {
+          "fieldPath": "razaoSocial",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "collectionGroup": "pedidos",
-      "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "estado", "order": "ASCENDING" }]
-    },
-    {
-      "collectionGroup": "pedidos",
-      "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "valorCobrado", "order": "DESCENDING" }]
-    },
-    {
-      "collectionGroup": "pedidos",
-      "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "freteInicial.prazoDespacho", "order": "DESCENDING" }]
-    },
-    {
-      "collectionGroup": "pedidos",
-      "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "freteInicial.estado", "order": "ASCENDING" }]
-    },
-    {
-      "collectionGroup": "pedidos",
-      "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "timestamp", "order": "DESCENDING" }]
-    },
-    {
-      "collectionGroup": "pedidos",
-      "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "dtImpressao", "order": "DESCENDING" }]
-    },
-    {
-      "collectionGroup": "pedidos",
+      "collectionGroup": "filiais",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "estado", "order": "ASCENDING" },
-        { "fieldPath": "numero", "order": "DESCENDING" }
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "filiais",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "pedidos",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "clientePedidoOuterRef", "order": "ASCENDING" },
-        { "fieldPath": "numero", "order": "DESCENDING" }
+        {
+          "fieldPath": "numero",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "chNFeReferenciadas",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "numero",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "valorCobrado",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "freteInicial.prazoDespacho",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "freteInicial.estado",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "dtImpressao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "numero",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "clientePedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "numero",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "enderecos",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "logradouro", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "logradouro",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "integracao",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "tipo", "order": "ASCENDING" },
-        { "fieldPath": "nome", "order": "ASCENDING" }
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "nome",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "int_frete",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "tipo", "order": "ASCENDING" },
-        { "fieldPath": "nome", "order": "ASCENDING" }
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "nome",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
-      "collectionGroup": "nfev4",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [{ "fieldPath": "data_emissao", "order": "ASCENDING" }]
+      "collectionGroup": "metodo_pgto",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "tipo",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "user_id",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "metodo_pgto",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "nome",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "nfev4",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
-        { "fieldPath": "filialId", "order": "ASCENDING" },
-        { "fieldPath": "data_emissao", "order": "ASCENDING" }
+        {
+          "fieldPath": "data_emissao",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "nfev4",
       "queryScope": "COLLECTION_GROUP",
-      "fields": [{ "fieldPath": "nRec", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "filialId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "data_emissao",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "nfev4",
       "queryScope": "COLLECTION_GROUP",
-      "fields": [{ "fieldPath": "estado", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "filialId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "numeracao",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "nfev4",
       "queryScope": "COLLECTION_GROUP",
-      "fields": [{ "fieldPath": "numeracao", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "nRec",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "nfev4",
       "queryScope": "COLLECTION_GROUP",
-      "fields": [{ "fieldPath": "chave", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "numeracao",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "nfev4",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "chave",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "cartacorrecao",
       "queryScope": "COLLECTION_GROUP",
-      "fields": [{ "fieldPath": "estado", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "enviNfe",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "targetsChnfe", "arrayConfig": "CONTAINS" },
-        { "fieldPath": "timestamp", "order": "DESCENDING" }
+        {
+          "fieldPath": "targetsChnfe",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "enviNfe",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "arquivos",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "uploadState", "order": "ASCENDING" },
-        { "fieldPath": "criadoEm", "order": "ASCENDING" }
+        {
+          "fieldPath": "uploadState",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "criadoEm",
+          "order": "ASCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "arquivos",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "criadoEm", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "criadoEm",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "arquivos",
       "queryScope": "COLLECTION",
-      "fields": [{ "fieldPath": "markedForDeletionAt", "order": "ASCENDING" }]
+      "fields": [
+        {
+          "fieldPath": "markedForDeletionAt",
+          "order": "ASCENDING"
+        }
+      ]
     },
     {
       "collectionGroup": "checkout",
       "queryScope": "COLLECTION_GROUP",
       "fields": [
-        { "fieldPath": "usuarioCheckoutFretePedidoOuterRef", "order": "ASCENDING" },
-        { "fieldPath": "timestamp", "order": "DESCENDING" }
+        {
+          "fieldPath": "usuarioCheckoutFretePedidoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
       "collectionGroup": "pedidos",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "numero", "order": "ASCENDING" },
-        { "fieldPath": "ehSaida", "order": "ASCENDING" }
+        {
+          "fieldPath": "numero",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "chat",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "usuarios",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "estadoConversa",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultima_modificacao",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "chat",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estadoConversa",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "prazo_resposta",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "chat",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "estadoConversa",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultima_modificacao",
+          "order": "DESCENDING"
+        }
       ]
     }
   ],

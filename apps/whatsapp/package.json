@@ -1,0 +1,40 @@
+{
+  "name": "@delfrance/whatsapp-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "dotenv -e ../../.env.local -- next dev --port 3008",
+    "build": "dotenv -e ../../.env.local -- next build",
+    "start": "dotenv -e ../../.env.local -- next start --port 3008",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "rm -rf .next .turbo dist coverage"
+  },
+  "dependencies": {
+    "@delfrance/auth": "workspace:*",
+    "@delfrance/core": "workspace:*",
+    "@delfrance/data": "workspace:*",
+    "@delfrance/integrations-whatsapp-cloud-api": "workspace:*",
+    "@delfrance/schemas": "workspace:*",
+    "@delfrance/storage": "workspace:*",
+    "firebase-admin": "^13.9.0",
+    "firebase-functions": "^7.0.0",
+    "next": "16.2.6",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
+    "@delfrance/config-tsconfig": "workspace:*",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.0",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.6",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
+  }
+}

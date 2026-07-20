@@ -38,7 +38,7 @@ import { parseBrl } from '@/app/(app)/produtos/_components/CurrencyInput';
 import type { PedidoFormState } from '../types';
 import { makeRowId } from '../flattenItens';
 import { precoFromProduto } from '../precoLookup';
-import { ProdutoThumbnail } from '../ProdutoThumbnail';
+import { ProdutoThumbnail } from '@/components/ProdutoThumbnail';
 import { ProdutoVariacaoLabel } from '../ProdutoVariacaoLabel';
 import { useEstoqueDisponivel } from '../useEstoqueDisponivel';
 

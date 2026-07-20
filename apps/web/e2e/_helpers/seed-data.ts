@@ -152,6 +152,32 @@ export async function seedDepositos(prefix: string, n: number): Promise<void> {
 }
 
 /**
+ * Seed `n` `metodo_pgto` (Mercado Pago account) docs. `hasLinkPagamento` and
+ * `user_id` alternate so the boolean/connection-hint columns have both
+ * states — a null `user_id` is the "Não conectada" state the panel and the
+ * list column render for an account that hasn't completed OAuth yet.
+ */
+export async function seedMetodoPagamento(prefix: string, n: number): Promise<void> {
+  const col = db().collection('metodo_pgto');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      tipo: 1,
+      nome: `${prefix}-${pad(i)}`,
+      hasLinkPagamento: i % 2 === 0,
+      user_id: i % 2 === 0 ? 900_000_000 + i : null,
+      dataCadastro: Date.now() * 1000,
+    });
+  }
+  await batch.commit();
+}
+
+/** Teardown for `seedMetodoPagamento`. */
+export async function cleanupMetodoPagamento(prefix: string): Promise<void> {
+  await cleanupByNamePrefix('metodo_pgto', prefix);
+}
+
+/**
  * Seed `n` tabela-de-medidas (`tabMedi`) docs. `codigo`/`descricao` alternate
  * null/string so the Nome/Código columns and filters have something to bite
  * on. `dataCadastro` is ms-epoch (the Flutter wire format).
@@ -605,6 +631,36 @@ export async function seedMercadoLivreFixtures(
 }
 
 /**
+ * WhatsApp (tipo 6) fixture set — see `seedIntegracaoFixtures`, then patches
+ * each doc with the flat WhatsApp fields (#528) the `/canais/whatsapp`
+ * screen reads: `numero` (the TableView column) and `wa_id`/`phoneNumberId`
+ * (the account identity). Messaging/business-hours fields are left null — the
+ * "business-hours field smoke" test edits them via the UI instead of asserting
+ * on seeded values. (`verificado` is intentionally NOT seeded: the list no
+ * longer renders a "Conexão" column — live status lives on the [id] panel.)
+ */
+export async function seedWhatsappFixtures(
+  prefix: string,
+  n: number,
+): Promise<{ filialId: string; listaId: string; depositoId: string }> {
+  const refs = await seedIntegracaoFixtures(prefix, n, 6);
+  const batch = db().batch();
+  const col = db().collection('integracao');
+  for (let i = 1; i <= n; i += 1) {
+    batch.update(col.doc(`${prefix}-${pad(i)}`), {
+      wa_id: `${prefix}-wa-${pad(i)}`,
+      phoneNumberId: `${prefix}-wa-${pad(i)}`,
+      numero: `5511999${pad(i)}`,
+      mensagem_automatica: null,
+      mensagem_inatividade: null,
+      horario_funcionamento: null,
+    });
+  }
+  await batch.commit();
+  return refs;
+}
+
+/**
  * Teardown for `seedIntegracaoFixtures`: sweeps the seeded Integracao +
  * fixture filial/listaDePrecos/deposito docs, including any UI-created
  * Integracao row sharing the run-scoped prefix.
@@ -626,6 +682,284 @@ export async function cleanupBalcaoFixtures(prefix: string): Promise<void> {
 /** Teardown for `seedMercadoLivreFixtures`. */
 export async function cleanupMercadoLivreFixtures(prefix: string): Promise<void> {
   await cleanupIntegracaoFixtures(prefix);
+}
+
+/** Teardown for `seedWhatsappFixtures`. */
+export async function cleanupWhatsappFixtures(prefix: string): Promise<void> {
+  await cleanupIntegracaoFixtures(prefix);
+}
+
+/* -------------------------------------------------------------------------- */
+/*                       Chat inbox fixtures (PR-C2)                           */
+/* -------------------------------------------------------------------------- */
+
+/** The two etiqueta ARGB ints the chat inbox spec filters on. */
+export const CHAT_ETIQUETA_RED = 0xfff44336; // 4294198070
+export const CHAT_ETIQUETA_BLUE = 0xff2196f3;
+
+export interface SeededConversa {
+  id: string;
+  nome: string;
+  estadoConversa: number;
+  corEtiqueta: number | null;
+  previewText: string;
+}
+
+export interface SeededChat {
+  /** Em-resposta conversa tagged RED, with a recent inbound message. */
+  vermelha: SeededConversa;
+  /** Não-respondido (pendente) conversa, no etiqueta. */
+  pendente: SeededConversa;
+  /** Em-resposta conversa tagged BLUE. */
+  azul: SeededConversa;
+}
+
+/**
+ * Seed one `mensagem` doc (ms-epoch `timestamp`) under a chat conversa. Wire
+ * shape mirrors `mensagemSchema`; a customer inbound is `estadoEnvio: 7`.
+ */
+export async function seedMensagem(
+  conversaId: string,
+  id: string,
+  data: {
+    conteudo: string;
+    timestampMs: number;
+    tipo?: string;
+    estadoEnvio?: number;
+    userId?: string | null;
+  },
+): Promise<void> {
+  await db()
+    .collection('chat')
+    .doc(conversaId)
+    .collection('mensagem')
+    .doc(id)
+    .set({
+      tipo: data.tipo ?? 'c',
+      estadoEnvio: data.estadoEnvio ?? 7,
+      conteudo: data.conteudo,
+      canal: 0,
+      user_id: data.userId ?? null,
+      mid: null,
+      midGroup: null,
+      resposta: null,
+      usarioMensagemOuterRef: null,
+      urlAvatar: null,
+      error: null,
+      visualizado: null,
+      transcription: null,
+      anexo: null,
+      anexo_url: null,
+      timestamp: data.timestampMs,
+      data_cadastro: data.timestampMs,
+    });
+}
+
+/**
+ * Seed the chat inbox suite fixture: three run-scoped `chat` conversas (one
+ * em-resposta RED with a recent inbound message, one pendente, one em-resposta
+ * BLUE), each ordered deterministically by `ultima_modificacao`. The RED
+ * conversa carries a `mensagem` so its tile preview + the thread render seeded
+ * text. `origem` is `whatsapp` (drives no query here — the spec browses "Todas").
+ */
+export async function seedConversas(prefix: string): Promise<SeededChat> {
+  const now = Date.now();
+  const vermelhaId = `${prefix}-conv-vermelha`;
+  const pendenteId = `${prefix}-conv-pendente`;
+  const azulId = `${prefix}-conv-azul`;
+  const previewText = `${prefix} ultima mensagem`;
+
+  const base = (id: string, estadoConversa: number, corEtiqueta: number | null, order: number) => ({
+    id,
+    doc: {
+      id: null,
+      sender_id: null,
+      estadoConversa,
+      origem: 'whatsapp',
+      usarioOuterRef: null,
+      integracaoOuterRef: null,
+      pedidoOuterRef: null,
+      incidenteOuterRef: null,
+      produtoOuterRef: null,
+      usuarios: null,
+      data_cadastro: now,
+      ultima_modificacao: now + order,
+      ultimaModificacaoIntegracao: now + order,
+      prazo_resposta: now + order,
+      recebido_fora_atendimento: null,
+      recebido_durante_atendimento: null,
+      nome: id,
+      urlAvatar: '',
+      cor_etiqueta: corEtiqueta,
+      atendido: false,
+      externalLink: null,
+      internalLink: null,
+      versao: null,
+      mensagensIdMap: null,
+      mensagensId: null,
+    },
+  });
+
+  const rows = [
+    base(vermelhaId, 1, CHAT_ETIQUETA_RED, 3),
+    base(pendenteId, 0, null, 2),
+    base(azulId, 1, CHAT_ETIQUETA_BLUE, 1),
+  ];
+  const batch = db().batch();
+  for (const r of rows) batch.set(db().collection('chat').doc(r.id), r.doc);
+  await batch.commit();
+
+  await seedMensagem(vermelhaId, `${prefix}-msg-001`, {
+    conteudo: previewText,
+    timestampMs: now,
+    estadoEnvio: 7,
+  });
+
+  return {
+    vermelha: {
+      id: vermelhaId,
+      nome: vermelhaId,
+      estadoConversa: 1,
+      corEtiqueta: CHAT_ETIQUETA_RED,
+      previewText,
+    },
+    pendente: {
+      id: pendenteId,
+      nome: pendenteId,
+      estadoConversa: 0,
+      corEtiqueta: null,
+      previewText,
+    },
+    azul: {
+      id: azulId,
+      nome: azulId,
+      estadoConversa: 1,
+      corEtiqueta: CHAT_ETIQUETA_BLUE,
+      previewText,
+    },
+  };
+}
+
+export interface SeededSearchMessages {
+  /** Run-scoped token both seeded messages contain (the global-search query). */
+  token: string;
+  /** Conversa + message id + ordering ts of the OLD (jump-to) match. */
+  oldConversaId: string;
+  oldMsgId: string;
+  oldTs: number;
+  /** Conversa + message id of the RECENT match (a different conversa). */
+  recentConversaId: string;
+  recentMsgId: string;
+}
+
+/**
+ * Seed two `mensagem` docs carrying a run-scoped TOKEN — an OLD one in the BLUE
+ * conversa and a RECENT one in the RED conversa — for the cross-conversation
+ * search e2e (PR-C5). Both are timestamped in the near FUTURE (`now + offset`)
+ * so they always land in the global search's newest 300-doc page regardless of
+ * the shared staging collection's volume (the same trick as the conversa seed's
+ * `ultima_modificacao: now + order`); the OLD one sorts BELOW the recent one
+ * within the pair, so both conversas surface grouped, recent-first.
+ */
+export async function seedSearchMessages(
+  prefix: string,
+  _seeded: SeededChat,
+): Promise<SeededSearchMessages> {
+  const token = `${prefix}-tokenbusca`;
+  const now = Date.now();
+  // Future-dated so both land in the newest-300 global collection-group page
+  // regardless of the shared staging collection's volume.
+  const oldTs = now + 1_000;
+  const recentTs = now + 500_000;
+  const oldMsgId = `${prefix}-msg-antiga`;
+  const recentMsgId = `${prefix}-msg-recente`;
+  // DEDICATED conversas: injecting the token messages into the main seeded
+  // conversas displaced their newest message and broke the tile-preview
+  // assertion (the preview is the newest doc). Prefix-scoped names keep them
+  // inside cleanupConversas' sweep range.
+  const oldConversaId = `${prefix}-conv-busca-antiga`;
+  const recentConversaId = `${prefix}-conv-busca-recente`;
+
+  const convDoc = (id: string) => ({
+    id: null,
+    sender_id: null,
+    estadoConversa: 1,
+    origem: 'whatsapp',
+    usarioOuterRef: null,
+    integracaoOuterRef: null,
+    pedidoOuterRef: null,
+    incidenteOuterRef: null,
+    produtoOuterRef: null,
+    usuarios: null,
+    data_cadastro: now,
+    ultima_modificacao: now,
+    ultimaModificacaoIntegracao: now,
+    prazo_resposta: now,
+    recebido_fora_atendimento: null,
+    recebido_durante_atendimento: null,
+    nome: id,
+    urlAvatar: '',
+    cor_etiqueta: null,
+    atendido: false,
+    externalLink: null,
+    internalLink: null,
+    versao: null,
+    mensagensIdMap: null,
+    mensagensId: null,
+  });
+  const batch = db().batch();
+  batch.set(db().collection('chat').doc(oldConversaId), convDoc(oldConversaId));
+  batch.set(db().collection('chat').doc(recentConversaId), convDoc(recentConversaId));
+  await batch.commit();
+
+  await seedMensagem(oldConversaId, oldMsgId, {
+    conteudo: `mensagem antiga com ${token}`,
+    timestampMs: oldTs,
+    estadoEnvio: 7,
+  });
+  await seedMensagem(recentConversaId, recentMsgId, {
+    conteudo: `mensagem recente com ${token}`,
+    timestampMs: recentTs,
+    estadoEnvio: 7,
+  });
+
+  return {
+    token,
+    oldConversaId,
+    oldMsgId,
+    oldTs,
+    recentConversaId,
+    recentMsgId,
+  };
+}
+
+/**
+ * Teardown for `seedConversas`: delete each seeded conversa's `mensagem`
+ * subcollection (Firestore never cascades) then the conversa docs — swept by
+ * the run-scoped `nome` prefix, so UI-created rows on the prefix go too.
+ * (`seedSearchMessages`' extra docs live under the same conversas → swept here.)
+ */
+export async function cleanupConversas(prefix: string): Promise<void> {
+  const snap = await db()
+    .collection('chat')
+    .where('nome', '>=', prefix)
+    .where('nome', '<', `${prefix}${PREFIX_MAX}`)
+    .get();
+  // Firestore batches cap at 500 ops — chunk every delete pass so a message-
+  // heavy conversa (bulk-action events, retries) can never blow the teardown.
+  const BATCH_CAP = 450;
+  const deleteChunked = async (refs: FirebaseFirestore.DocumentReference[]) => {
+    for (let i = 0; i < refs.length; i += BATCH_CAP) {
+      const b = db().batch();
+      refs.slice(i, i + BATCH_CAP).forEach((r) => b.delete(r));
+      await b.commit();
+    }
+  };
+  for (const convDoc of snap.docs) {
+    const msgs = await convDoc.ref.collection('mensagem').get();
+    await deleteChunked(msgs.docs.map((m) => m.ref));
+  }
+  await deleteChunked(snap.docs.map((d) => d.ref));
 }
 
 /**
@@ -1532,6 +1866,180 @@ export async function cleanupPedidoWithNFe(pedidoId: string): Promise<void> {
 }
 
 /**
+ * Fixture set for the /nfe/comunicacoes suite: one filial (the page's
+ * FilialPicker target), one pedido carrying a single emitted nfev4 doc
+ * (deterministic 44-digit chave, denormalized `filialId`, distinctive
+ * `numeracao` — the fields the nNF / pedido filter modes resolve through),
+ * and three `filiais/{filialId}/enviNfe` audit docs:
+ *
+ *  - lote send  — estado '3' (Concluído),  cStat '100', targets `chave`
+ *  - consulta   — estado '2' (Respondido), targets `chave`
+ *  - transporte — estado 'e' (Erro) + error text, targets `chaveErro`
+ *                 (a second chave, so filters can prove they exclude it)
+ *
+ * Timestamps are staggered so the list's `orderBy timestamp desc` is
+ * deterministic — the erro doc is the newest and renders first.
+ */
+export async function seedEnviNfeFixtures(prefix: string): Promise<{
+  filialId: string;
+  pedidoId: string;
+  pedidoNumero: string;
+  nfeId: string;
+  numeracao: number;
+  chave: string;
+  chaveErro: string;
+  msgConcluidoId: string;
+  msgRespondidoId: string;
+  msgErroId: string;
+}> {
+  const filialId = `${prefix}-filial`;
+  const pedidoId = `${prefix}-ped-001`;
+  const nfeId = `${pedidoId}-nfe`;
+  const msgConcluidoId = `${prefix}-msg-1`;
+  const msgRespondidoId = `${prefix}-msg-2`;
+  const msgErroId = `${prefix}-msg-3`;
+  const numeracao = 777001;
+  // 44 digits — the schema validates length only, not the check digit. Cross-
+  // run isolation comes from the filial-scoped subcollection + the run-scoped
+  // `filialId` equality on the nfev4 collection-group lookup.
+  const chave = `${'1'.repeat(38)}777001`;
+  const chaveErro = `${'2'.repeat(38)}777002`;
+  const now = Date.now();
+
+  // Filial — shape from `seedFiliais`.
+  await db()
+    .collection('filiais')
+    .doc(filialId)
+    .set({
+      razaoSocial: filialId,
+      fantasia: null,
+      cnae: null,
+      cnpj: '77000000000101',
+      ie: '770000001',
+      iest: null,
+      imun: null,
+      sede: {
+        idExterno: null,
+        logradouro: 'Av. Teste',
+        numero: '1',
+        bairro: 'Centro',
+        complemento: null,
+        cep: '01310100',
+        codigoMunicipio: null,
+        cidade: 'São Paulo',
+        estado: 'SP',
+        cPais: null,
+        pais: null,
+        nome: null,
+        cpf_cnpj: null,
+        rg: null,
+        ie: null,
+        imun: null,
+        email: null,
+        telefone: null,
+      },
+      timestamp: now,
+    });
+
+  // Pedido + nfev4 child — reuse `seedPedidoWithNFe` (passing `<prefix>-ped`
+  // yields the same `<prefix>-ped-001` / `-nfe` ids), then patch the nfev4 doc
+  // with the emitted-NFe fields the enviNfe filter resolution reads (`chave`,
+  // denormalized `filialId`, `numeracao` for the nNF collection-group lookup).
+  await seedPedidoWithNFe(`${prefix}-ped`, 1, 'a');
+  await db().collection('pedidos').doc(pedidoId).collection('nfev4').doc(nfeId).update({
+    numeracao,
+    chave,
+    filialId,
+    cStat: '100',
+    xMotivo: 'Autorizado o uso da NF-e',
+  });
+
+  const enviNfe = db().collection('filiais').doc(filialId).collection('enviNfe');
+  const batch = db().batch();
+  batch.set(enviNfe.doc(msgConcluidoId), {
+    targetsChnfe: [chave],
+    idLote: 1,
+    indSinc: '1',
+    xml_enviado: '<enviNFe versao="4.00"><idLote>1</idLote></enviNFe>',
+    xml_retorno: JSON.stringify({
+      retEnviNFe: { cStat: '104', protNFe: { infProt: { cStat: '100', chNFe: chave } } },
+    }),
+    nRec: null,
+    cStat: '100',
+    xMotivo: 'Autorizado o uso da NF-e',
+    error: null,
+    tpEmis: 1,
+    estado: '3',
+    timestamp: now,
+    ultima_modificacao: now,
+  });
+  batch.set(enviNfe.doc(msgRespondidoId), {
+    targetsChnfe: [chave],
+    idLote: null,
+    indSinc: null,
+    xml_enviado: null,
+    xml_retorno: JSON.stringify({
+      retConsReciNFe: { cStat: '105', xMotivo: 'Lote em processamento' },
+    }),
+    nRec: '351000000777001',
+    cStat: '105',
+    xMotivo: 'Lote em processamento',
+    error: null,
+    tpEmis: 1,
+    estado: '2',
+    timestamp: now + 1_000,
+    ultima_modificacao: now + 1_000,
+  });
+  batch.set(enviNfe.doc(msgErroId), {
+    targetsChnfe: [chaveErro],
+    idLote: 2,
+    indSinc: '0',
+    xml_enviado: '<enviNFe versao="4.00"><idLote>2</idLote></enviNFe>',
+    xml_retorno: null,
+    nRec: null,
+    cStat: null,
+    xMotivo: null,
+    error: 'ECONNRESET: falha de transporte ao enviar o lote',
+    tpEmis: 1,
+    estado: 'e',
+    timestamp: now + 2_000,
+    ultima_modificacao: now + 2_000,
+  });
+  await batch.commit();
+
+  return {
+    filialId,
+    pedidoId,
+    pedidoNumero: pedidoId,
+    nfeId,
+    numeracao,
+    chave,
+    chaveErro,
+    msgConcluidoId,
+    msgRespondidoId,
+    msgErroId,
+  };
+}
+
+/**
+ * Clean up everything `seedEnviNfeFixtures` wrote. Subcollections are not
+ * cascaded by the Firestore SDK (same caveat as `cleanupPedidoWithNFe`):
+ * sweep the filial's `enviNfe` docs explicitly, then reuse
+ * `cleanupPedidoWithNFe` for the pedido + its `nfev4` docs.
+ */
+export async function cleanupEnviNfeFixtures(prefix: string): Promise<void> {
+  const filialId = `${prefix}-filial`;
+  const enviSnap = await db().collection('filiais').doc(filialId).collection('enviNfe').get();
+  if (!enviSnap.empty) {
+    const batch = db().batch();
+    enviSnap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+  await db().collection('filiais').doc(filialId).delete();
+  await cleanupPedidoWithNFe(`${prefix}-ped-001`);
+}
+
+/**
  * Seed two variation groups for the produto-variações suite — Tamanhos
  * (P/M/G, ordem 1) and Cores (Azul/Verde, ordem 2, `permiteFotos`). Names are
  * prefix-scoped for the sweep; variant ids are fixed so the spec can assert
@@ -1543,7 +2051,8 @@ export async function seedGruposDeVariacao(prefix: string): Promise<{
 }> {
   const col = db().collection('grupoDeVariacoes');
   const batch = db().batch();
-  const now = new Date().toISOString();
+  // grupoDeVariacoes datetimes are millisecondsSinceEpoch INT (#484/#486).
+  const now = Date.now();
   const tamanhosId = `${prefix}-tam`;
   const coresId = `${prefix}-cor`;
   batch.set(col.doc(tamanhosId), {
@@ -2191,6 +2700,40 @@ export async function seedHistoricoCusto(produtoId: string, valor: number): Prom
     .collection('historicoDeCusto')
     .doc('custo-test')
     .set({ valor, timestamp: Date.now() });
+}
+
+/**
+ * Seed `n` listaDePrecos docs for the `/listas-de-precos` CRUD suite. `padrao`
+ * is true only on the first row and `ativo` alternates, so the boolean column
+ * filters have both states to bite on. The composite fields
+ * (`formulasCalculoPreco` / `formulasPorCategoria`) start null — the create
+ * flow exercises their editors through the UI.
+ */
+export async function seedListasDePrecos(prefix: string, n: number): Promise<void> {
+  const col = db().collection('listaDePrecos');
+  const batch = db().batch();
+  for (let i = 1; i <= n; i += 1) {
+    const now = Date.now();
+    batch.set(col.doc(`${prefix}-${pad(i)}`), {
+      nome: `${prefix}-${pad(i)}`,
+      padrao: i === 1,
+      ativo: i % 2 === 0,
+      formulasCalculoPreco: null,
+      formulasPorCategoria: null,
+      timestamp: now,
+      ultimaModificacao: now + i,
+    });
+  }
+  await batch.commit();
+}
+
+/** Full data of the first `listaDePrecos` doc named `nome`, or null. */
+export async function getListaDePrecosByName(
+  nome: string,
+): Promise<Record<string, unknown> | null> {
+  const snap = await db().collection('listaDePrecos').where('nome', '==', nome).limit(1).get();
+  const data = snap.docs[0]?.data();
+  return data ? (data as Record<string, unknown>) : null;
 }
 
 /**

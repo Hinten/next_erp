@@ -1,13 +1,21 @@
 import type { PaymentGateway } from '@delfrance/core/plugins';
 
+export * from './errors';
+export * from './types';
+export * from './oauth';
+export * from './api';
+export * from './mapping/payment';
+
 /**
  * Mercado Pago plugin scaffold (PaymentGateway).
  *
- * Concrete implementation will wrap the official `mercadopago` SDK
- * once Phase 5 lands. Until then, every method throws — apps register
- * the stub knowing the gateway is "configured but not implemented",
- * and the UI surfaces this via the empty PluginRegistry lookup
- * (Estornar button stays disabled, etc.).
+ * The OAuth core (`oauth.ts`) + REST client (`api.ts`) + typed error taxonomy
+ * (`errors.ts`) + payload schemas (`types.ts`) ship here (#530) — an account
+ * can now be connected (OAuth) and its identity/payments fetched. `createCharge`
+ * / `refund` / `webhook` are a separate scope (#367, #531) and still throw:
+ * apps register the stub knowing the gateway is "configured but not
+ * implemented" for those, and the UI surfaces this via the empty
+ * PluginRegistry lookup (Estornar button stays disabled, etc.).
  */
 export interface MercadoPagoConfig {
   /** Long-lived access token (kept in Cloud Secret Manager). */

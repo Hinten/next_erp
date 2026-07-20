@@ -378,8 +378,8 @@ describe('sumPagamentosPagos (footer Vlr. Pago / Troco)', () => {
     expect(sumPagamentosPagos([])).toBe(0);
     expect(
       sumPagamentosPagos([
-        { id: 'a', valor: 10.005, status_pagamento: STATUS_PAGAMENTO.aprovado },
-        { id: 'b', valor: 0.005, status_pagamento: null },
+        { valor: 10.005, status_pagamento: STATUS_PAGAMENTO.aprovado },
+        { valor: 0.005, status_pagamento: null },
       ]),
     ).toBe(10.01);
   });

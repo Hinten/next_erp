@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { ESTADO_NFE } from '@delfrance/schemas';
+import { ESTADO_NFE, type EstadoNFe } from '@delfrance/schemas';
 import {
+  ESTADOS_FINAIS_NFE,
   applyOutcome,
   classifyCStat,
   cStatToEstado,
+  isEstadoFinalNFe,
   CSTAT_EPEC_DUPLICIDADE,
   CSTAT_EPEC_NAO_SINCRONIZADO,
   EPEC_EVENT_REGISTRADO,
@@ -21,6 +23,7 @@ describe('classifyCStat', () => {
     ['100', 'autorizada'],
     ['150', 'autorizada'],
     ['101', 'cancelada'],
+    ['151', 'cancelada'], // cancelamento homologado fora de prazo
     ['102', 'inutilizada'],
     ['103', 'lote-recebido'],
     ['104', 'lote-processado'],
@@ -70,6 +73,33 @@ describe('cStatToEstado', () => {
   });
   it('204 (duplicidade) carries no terminal estado on its own', () => {
     expect(cStatToEstado('204')).toBe(null);
+  });
+  it('151 (cancelamento fora de prazo) → cancelada', () => {
+    expect(cStatToEstado('151')).toBe(ESTADO_NFE.cancelada);
+  });
+});
+
+describe('isEstadoFinalNFe', () => {
+  it.each([
+    ['0', false], // gerado
+    ['1', false], // enviando
+    ['2', false], // aguardandoResposta
+    ['3', false], // processamentoCompleto
+    ['4', false], // processamentoCancelado
+    ['a', true], // aprovada
+    ['p', false], // epecAprovado — the pós-EPEC transmit still pends
+    ['n', false], // rejeitada — re-verifying is the feature's purpose
+    ['c', true], // cancelada
+    ['i', true], // numeracaoInutilizada
+    ['e', false], // error — re-verifying is the feature's purpose
+  ] as ReadonlyArray<[EstadoNFe, boolean]>)('%s → %s', (estado, expected) => {
+    expect(isEstadoFinalNFe(estado)).toBe(expected);
+    expect(ESTADOS_FINAIS_NFE.has(estado)).toBe(expected);
+  });
+
+  it('null / undefined are not final', () => {
+    expect(isEstadoFinalNFe(null)).toBe(false);
+    expect(isEstadoFinalNFe(undefined)).toBe(false);
   });
 });
 
@@ -154,6 +184,127 @@ describe('applyOutcome', () => {
       { cStat: '105', xMotivo: 'Lote em processamento' },
     );
     expect(patch.retries).toBe(1);
+  });
+
+  // Anti-regression defense: consSitNFe for a cancelada/inutilizada NF-e
+  // still returns the ORIGINAL authorization protNFe (cStat 100) — an
+  // autorizada outcome must never downgrade a final estado back to aprovada.
+  describe('cancelada/inutilizada anti-regression defense', () => {
+    it("cancelada + outcome 100 → stays 'c' done-terminal, keeping the provided cStat/xMotivo", () => {
+      const patch = applyOutcome(
+        {
+          estado: ESTADO_NFE.cancelada,
+          retries: 3,
+          cStat: '101',
+          xMotivo: 'Cancelamento de NF-e homologado',
+        },
+        { cStat: '100', xMotivo: 'Autorizado o uso da NF-e' },
+      );
+      expect(patch).toEqual({
+        estado: ESTADO_NFE.cancelada,
+        cStat: '101',
+        xMotivo: 'Cancelamento de NF-e homologado',
+        retries: 0,
+        nRec: null,
+        action: 'done-terminal',
+        tMed: null,
+      });
+    });
+
+    it("cancelada + outcome 100 WITHOUT current cStat/xMotivo → stays 'c' with the outcome's", () => {
+      const patch = applyOutcome(
+        { estado: ESTADO_NFE.cancelada, retries: 0 },
+        { cStat: '100', xMotivo: 'Autorizado o uso da NF-e' },
+      );
+      expect(patch.estado).toBe(ESTADO_NFE.cancelada);
+      expect(patch.action).toBe('done-terminal');
+      expect(patch.cStat).toBe('100');
+    });
+
+    it("inutilizada + outcome 100 → stays 'i' done-terminal", () => {
+      const patch = applyOutcome(
+        { estado: ESTADO_NFE.numeracaoInutilizada, retries: 0, cStat: '102', xMotivo: 'Inut' },
+        { cStat: '100', xMotivo: 'Autorizado o uso da NF-e' },
+      );
+      expect(patch.estado).toBe(ESTADO_NFE.numeracaoInutilizada);
+      expect(patch.cStat).toBe('102');
+      expect(patch.action).toBe('done-terminal');
+    });
+
+    it("cancelada + outcome 105 (lote-pendente) → stays 'c' done-terminal, no retry scheduled", () => {
+      const patch = applyOutcome(
+        { estado: ESTADO_NFE.cancelada, retries: 2, cStat: '101', xMotivo: 'Cancelamento' },
+        { cStat: '105', xMotivo: 'Lote em processamento', tMed: '5' },
+      );
+      expect(patch).toEqual({
+        estado: ESTADO_NFE.cancelada,
+        cStat: '101',
+        xMotivo: 'Cancelamento',
+        retries: 0,
+        nRec: null,
+        action: 'done-terminal',
+        tMed: null,
+      });
+    });
+
+    it("cancelada + a business rejection → stays 'c' done-terminal", () => {
+      const patch = applyOutcome(
+        { estado: ESTADO_NFE.cancelada, retries: 0, cStat: '101', xMotivo: 'Cancelamento' },
+        { cStat: '999', xMotivo: 'Rejeição: Erro não catalogado' },
+      );
+      expect(patch.estado).toBe(ESTADO_NFE.cancelada);
+      expect(patch.cStat).toBe('101');
+      expect(patch.action).toBe('done-terminal');
+    });
+
+    it("inutilizada + outcome 656 (consumo indevido) → stays 'i' done-terminal", () => {
+      const patch = applyOutcome(
+        { estado: ESTADO_NFE.numeracaoInutilizada, retries: 0, cStat: '102', xMotivo: 'Inut' },
+        { cStat: '656', xMotivo: 'Rejeição: Consumo Indevido' },
+      );
+      expect(patch.estado).toBe(ESTADO_NFE.numeracaoInutilizada);
+      expect(patch.cStat).toBe('102');
+      expect(patch.action).toBe('done-terminal');
+    });
+
+    it("cancelada + outcome 204 (duplicidade, mapped-null) → stays 'c' done-terminal, never recover-via-consulta", () => {
+      const patch = applyOutcome(
+        { estado: ESTADO_NFE.cancelada, retries: 0, cStat: '101', xMotivo: 'Cancelamento' },
+        { cStat: '204', xMotivo: 'Rejeição: Duplicidade de NF-e [nRec:351000000000123]' },
+      );
+      expect(patch.estado).toBe(ESTADO_NFE.cancelada);
+      expect(patch.action).toBe('done-terminal');
+    });
+
+    it("same-estado outcome flows through normally: cancelada + outcome 101 → 'c' with the outcome's cStat", () => {
+      const patch = applyOutcome(
+        { estado: ESTADO_NFE.cancelada, retries: 0, cStat: '999', xMotivo: 'stale' },
+        { cStat: '101', xMotivo: 'Cancelamento de NF-e homologado' },
+      );
+      expect(patch.estado).toBe(ESTADO_NFE.cancelada);
+      expect(patch.cStat).toBe('101');
+      expect(patch.xMotivo).toBe('Cancelamento de NF-e homologado');
+      expect(patch.action).toBe('done-terminal');
+    });
+
+    it("forward transition stays allowed: aprovada + outcome 101 → 'c'", () => {
+      const patch = applyOutcome(
+        { estado: ESTADO_NFE.aprovada, retries: 0, cStat: '100', xMotivo: 'Autorizado' },
+        { cStat: '101', xMotivo: 'Cancelamento de NF-e homologado' },
+      );
+      expect(patch.estado).toBe(ESTADO_NFE.cancelada);
+      expect(patch.cStat).toBe('101');
+      expect(patch.action).toBe('done-terminal');
+    });
+
+    it("aprovada + outcome 204 (duplicidade, no estado of its own) → stays 'a'", () => {
+      const patch = applyOutcome(
+        { estado: ESTADO_NFE.aprovada, retries: 0, cStat: '100', xMotivo: 'Autorizado' },
+        { cStat: '204', xMotivo: 'Rejeição: Duplicidade de NF-e [nRec:351000000000123]' },
+      );
+      expect(patch.estado).toBe(ESTADO_NFE.aprovada);
+      expect(patch.cStat).toBe('204');
+    });
   });
 });
 

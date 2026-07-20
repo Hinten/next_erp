@@ -22,6 +22,7 @@ describe('usuarioSchema', () => {
       isSuperUser: false,
       jaFoiColaborador: false,
       jaFoiSuperUser: false,
+      externalId: null,
     });
   });
 
@@ -41,6 +42,24 @@ describe('usuarioSchema', () => {
         email: 'ana@example.com',
       }).success,
     ).toBe(false);
+  });
+
+  it('defaults email to null when absent', () => {
+    const out = usuarioSchema.parse({ nome: 'Sem Email' });
+    expect(out.email).toBeNull();
+  });
+
+  it('parses a sem-auth external-channel contact: externalId set, email null', () => {
+    // Mirrors the WhatsApp discover_user port (#527): a chat participant that
+    // never authenticates via Firebase Auth, identified only by the
+    // sha256('<canal>-<externalId>') hash.
+    const out = usuarioSchema.parse({
+      nome: 'Cliente WhatsApp',
+      email: null,
+      externalId: 'a3f8...deadbeef',
+    });
+    expect(out.email).toBeNull();
+    expect(out.externalId).toBe('a3f8...deadbeef');
   });
 });
 

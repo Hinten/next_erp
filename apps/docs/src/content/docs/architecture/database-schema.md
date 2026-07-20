@@ -408,8 +408,10 @@ with messages in a subcollection. `integracao` (a sales channel) references the
 branch, price lists, operations and warehouse it maps to. Its **credential**
 subcollections (`credenciais`, `tokenDuravel`) are deliberately **not registered**
 in `ALL_DOMAINS`, so the rules generator emits no match block and Firestore
-default-denies them — they are Admin-SDK-only. Each `produtos` doc also carries the
-seven marketplace-link subcollections (loose pass-through, written by Flutter).
+default-denies them — they are Admin-SDK-only. Its `brandshopee` subcollection
+(Shopee brand-cache docs) IS registered, gated by the same `integracao`
+permissions. Each `produtos` doc also carries the seven marketplace-link
+subcollections (loose pass-through, written by Flutter).
 
 ```mermaid
 erDiagram
@@ -426,8 +428,9 @@ erDiagram
   integracao }o--o| depositos : "depositoOuterRef"
   integracao ||--o{ credenciais : "sub: credenciais (admin-only, default-deny)"
   integracao ||--o{ tokenDuravel : "sub: tokenDuravel (admin-only)"
+  integracao ||--o{ brandshopee : "sub: brandshopee (Shopee brand cache)"
 
-  produtos ||--o{ marketplace_links : "7 subs: produtoMercadoLivre, produtoshopee, …"
+  produtos ||--o{ marketplace_links : "7 subs: produtoMercadoLivre, prodshopee, …"
 
   chat {
     int estadoConversa
@@ -474,11 +477,11 @@ subcollection, and its key outgoing references. Subcollection paths use
 | produto | `produtos` | top | `categoriaProdutoOuterRef`, `tabelaDeMedidasModaUid`, `paiId`, `grupoDeVariacoesUid[]`, `precos{}`, `arquivoOuterRef` |
 | produtoMercadoLivre | `produtos/{produtoId}/produtoMercadoLivre` | sub | pass-through |
 | variacaoMercadoLivre | `produtos/{produtoId}/variacaoMercadoLivre` | sub | pass-through |
-| produtoShopee | `produtos/{produtoId}/produtoshopee` | sub | pass-through |
-| variacaoShopee | `produtos/{produtoId}/variacaoshopee` | sub | pass-through |
-| produtoMagalu | `produtos/{produtoId}/produtomagalu` | sub | pass-through |
-| produtoAmazon | `produtos/{produtoId}/produtoamazon` | sub | pass-through |
-| produtoLojaIntegrada | `produtos/{produtoId}/produtointegrada` | sub | pass-through |
+| produtoShopee | `produtos/{produtoId}/prodshopee` | sub | pass-through |
+| variacaoShopee | `produtos/{produtoId}/variashopee` | sub | pass-through |
+| produtoMagalu | `produtos/{produtoId}/produtoMagalu2` | sub | pass-through |
+| produtoAmazon | `produtos/{produtoId}/prodAmazon` | sub | pass-through |
+| produtoLojaIntegrada | `produtos/{produtoId}/produtolojaintegrada` | sub | pass-through |
 | estoqueProduto | `produtos/{produtoId}/estoques` | sub | `depositoOuterRef` → depositos |
 | historicoEstoque | `produtos/{produtoId}/estoques/{estoqueId}/historicoEstoque` | sub | `pedidoOuterRef`, `usuarioOuterRef` |
 | historicoPreco | `produtos/{produtoId}/historicoDePrecos` | sub | `listaDePrecoHistoricoOuterRef` → listaDePrecos |
@@ -502,6 +505,7 @@ subcollection, and its key outgoing references. Subcollection paths use
 | conversa | `chat` | top | `usarioOuterRef`, `integracaoOuterRef`, `pedidoOuterRef`, `produtoOuterRef`, incidente |
 | mensagem | `chat/{conversaId}/mensagem` | sub | `usarioMensagemOuterRef` → usuarios |
 | integracao | `integracao` | top | `filialIntegracaoPedidoOuterRef`, `tabelaNormal/PromocionalOuterRef`, `operacao/operacaoDevolucaoOuterRef`, `depositoOuterRef` |
+| brandShopee | `integracao/{integracaoId}/brandshopee` | sub | pass-through (Shopee brand cache, gated by `integracao` perms) |
 | cargo | `cargos` | top | — |
 | usuario | `usuarios` | top | `cargos[]` → cargos |
 | deposito | `depositos` | top | — |

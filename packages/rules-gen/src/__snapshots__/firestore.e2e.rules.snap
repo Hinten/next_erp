@@ -46,7 +46,8 @@ service cloud.firestore {
       return (!c.hasAny(['dataCadastro']) || (d.get('dataCadastro', null) == null || d.get('dataCadastro', null) is int))
         && (!c.hasAny(['hasLinkPagamento']) || d.get('hasLinkPagamento', null) is bool)
         && (!c.hasAny(['nome']) || d.get('nome', null) is string && d.get('nome', null).size() <= 255)
-        && (!c.hasAny(['tipo']) || d.get('tipo', null) == 1);
+        && (!c.hasAny(['tipo']) || d.get('tipo', null) == 1)
+        && (!c.hasAny(['user_id']) || (d.get('user_id', null) == null || d.get('user_id', null) is int));
     }
 
     // d = incoming document, c = touched keys (keys() on create,
@@ -270,6 +271,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_integracao', 4);
     }
 
+    match /integracao/{integracaoId}/brandshopee/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+      allow create, update: if isSuperUser() || p('d_integracao', 2);
+      allow delete: if isSuperUser() || p('d_integracao', 4);
+    }
+
     match /listaDePrecos/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
@@ -388,19 +395,25 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_impostoProduto', 4);
     }
 
-    match /produtos/{produtoId}/produtoamazon/{docId} {
+    match /produtos/{produtoId}/prodAmazon/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
-    match /produtos/{produtoId}/produtointegrada/{docId} {
+    match /produtos/{produtoId}/prodshopee/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
-    match /produtos/{produtoId}/produtomagalu/{docId} {
+    match /produtos/{produtoId}/produtolojaintegrada/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+      allow create, update: if isSuperUser() || p('d_produto', 2);
+      allow delete: if isSuperUser() || p('d_produto', 4);
+    }
+
+    match /produtos/{produtoId}/produtoMagalu2/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
@@ -412,19 +425,13 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
-    match /produtos/{produtoId}/produtoshopee/{docId} {
-      allow read: if isSuperUser() || p('d_produto', 1);
-      allow create, update: if isSuperUser() || p('d_produto', 2);
-      allow delete: if isSuperUser() || p('d_produto', 4);
-    }
-
     match /produtos/{produtoId}/variacaoMercadoLivre/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
     }
 
-    match /produtos/{produtoId}/variacaoshopee/{docId} {
+    match /produtos/{produtoId}/variashopee/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
       allow create, update: if isSuperUser() || p('d_produto', 2);
       allow delete: if isSuperUser() || p('d_produto', 4);
@@ -453,6 +460,9 @@ service cloud.firestore {
     // Collection-group reads (client groupQuery / collectionGroup).
     // A leaf shared by several collections carries the UNION of their
     // read claims (see the dedupe note in emitRules).
+    match /{path=**}/brandshopee/{docId} {
+      allow read: if isSuperUser() || p('d_integracao', 1);
+    }
     match /{path=**}/cartacorrecao/{docId} {
       allow read: if isSuperUser() || p('d_fiscal', 1);
     }
@@ -504,19 +514,19 @@ service cloud.firestore {
     match /{path=**}/pagamentos/{docId} {
       allow read: if isSuperUser() || p('d_pagamento', 1);
     }
+    match /{path=**}/prodAmazon/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+    }
+    match /{path=**}/prodshopee/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+    }
+    match /{path=**}/produtoMagalu2/{docId} {
+      allow read: if isSuperUser() || p('d_produto', 1);
+    }
     match /{path=**}/produtoMercadoLivre/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
-    match /{path=**}/produtoamazon/{docId} {
-      allow read: if isSuperUser() || p('d_produto', 1);
-    }
-    match /{path=**}/produtointegrada/{docId} {
-      allow read: if isSuperUser() || p('d_produto', 1);
-    }
-    match /{path=**}/produtomagalu/{docId} {
-      allow read: if isSuperUser() || p('d_produto', 1);
-    }
-    match /{path=**}/produtoshopee/{docId} {
+    match /{path=**}/produtolojaintegrada/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
     match /{path=**}/regras/{docId} {
@@ -528,7 +538,7 @@ service cloud.firestore {
     match /{path=**}/variacaoMercadoLivre/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
-    match /{path=**}/variacaoshopee/{docId} {
+    match /{path=**}/variashopee/{docId} {
       allow read: if isSuperUser() || p('d_produto', 1);
     }
   }

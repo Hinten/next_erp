@@ -6,7 +6,13 @@ import {
   initializeAuth,
   indexedDBLocalPersistence,
 } from 'firebase/auth';
-import { type Firestore, connectFirestoreEmulator, getFirestore } from 'firebase/firestore';
+import {
+  type Firestore,
+  connectFirestoreEmulator,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from 'firebase/firestore';
 import { type Functions, connectFunctionsEmulator, getFunctions } from 'firebase/functions';
 import { type FirebaseStorage, getStorage } from 'firebase/storage';
 
@@ -56,7 +62,17 @@ export function getFirebaseAuth(): Auth {
 export function getFirebaseFirestore(): Firestore {
   if (db) return db;
   const databaseId = process.env.NEXT_PUBLIC_FIREBASE_DATABASE_ID ?? 'default';
-  db = getFirestore(getFirebaseApp(), databaseId);
+  // `initializeFirestore` (vs `getFirestore`) lets us enable the IndexedDB
+  // persistent cache with multi-tab coordination: the inbox streams the same
+  // conversas/messages across the app, so a warm local cache makes navigation
+  // instant and cuts reads. This is the ONLY caller (the module-level `db`
+  // singleton guards against a second init on the same app+database), and the
+  // 3rd positional arg pins the named database (`default`, not `(default)`).
+  db = initializeFirestore(
+    getFirebaseApp(),
+    { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) },
+    databaseId,
+  );
   if (USE_FIREBASE_EMULATOR) {
     connectFirestoreEmulator(db, EMULATOR_HOST, 8080);
   }

@@ -23,7 +23,7 @@ import {
 } from './pedido';
 import { counter } from './counter';
 import { conversa, mensagem } from './conversa';
-import { integracao } from './integracao';
+import { integracao, brandShopee } from './integracao';
 import { cargo } from './cargo';
 import { usuario } from './usuario';
 import { deposito } from './deposito';
@@ -72,6 +72,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   conversa,
   mensagem,
   integracao,
+  brandShopee,
   cargo,
   usuario,
   deposito,
