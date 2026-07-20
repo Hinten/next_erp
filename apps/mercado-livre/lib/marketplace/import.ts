@@ -38,6 +38,7 @@ import {
   assembleImportPlan,
 } from './importCore';
 import { importCategoriaChain } from './importCategoria';
+import { isAlreadyExists } from './grpcErrors';
 import { lastSegment, refMatchesIntegracao } from './linkRefs';
 import { type Bucket } from './arquivoUpload';
 import { importProdutoPhotos } from './importPhotos';
@@ -102,11 +103,14 @@ export async function importProduto(
     if (!(err instanceof MercadoLivreError)) throw err;
   }
 
+  // One timestamp for the whole run — categoria chain + produto/link writes.
+  const now = Date.now();
+
   // ERP Categoria chain (#442) — best-effort: an ML category-API failure yields
   // null (produto imports without a category); Firestore failures propagate.
   let categoriaOuterRef: string | null = null;
   if (options.importarCategorias && mapped.categoryId) {
-    categoriaOuterRef = await importCategoriaChain({ db, api }, mapped.categoryId, Date.now());
+    categoriaOuterRef = await importCategoriaChain({ db, api }, mapped.categoryId, now);
   }
 
   // ---- Resolve the ERP produto (link → sku → deterministic id) ----------
@@ -133,7 +137,6 @@ export async function importProduto(
     isCreate || !depositoId ? null : await readEstoque(db, produtoId, depositoId);
 
   // ---- Assemble + execute ----------------------------------------------
-  const now = Date.now();
   const plan = assembleImportPlan({
     mapped,
     options,
@@ -301,11 +304,6 @@ async function resolveExistingProduto(
 /** Stable hex hash for deterministic produto / link ids (dual-run convergence). */
 function sha256(s: string): string {
   return createHash('sha256').update(s).digest('hex');
-}
-
-/** gRPC ALREADY_EXISTS (code 6) from `docRef.create()` on a doc that now exists. */
-function isAlreadyExists(err: unknown): boolean {
-  return err instanceof Error && (err as { code?: unknown }).code === 6;
 }
 
 async function readRaw(

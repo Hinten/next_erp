@@ -26,6 +26,8 @@ import {
 import { type Categoria, toOuterRef } from '@delfrance/schemas';
 import { categoriaCollection } from '@delfrance/data/admin/collections';
 
+import { isAlreadyExists } from './grpcErrors';
+
 export interface CategoriaChain {
   docs: Array<{ id: string; data: Categoria }>;
   leafOuterRef: string | null;
@@ -106,9 +108,4 @@ export async function importCategoriaChain(
     }
   }
   return chain.leafOuterRef;
-}
-
-/** gRPC ALREADY_EXISTS (code 6) from `docRef.create()` on a doc that now exists. */
-function isAlreadyExists(err: unknown): boolean {
-  return err instanceof Error && (err as { code?: unknown }).code === 6;
 }
