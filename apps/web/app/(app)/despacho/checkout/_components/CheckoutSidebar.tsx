@@ -1,7 +1,14 @@
 'use client';
 
-import { Divider, Select, Stack, Text } from '@mantine/core';
+import { Divider, Select, Stack } from '@mantine/core';
+import type { Firestore } from 'firebase/firestore';
+import type { NFeHttpClient } from '@delfrance/integrations-nfe/http-provider';
+import type { FreightHttpClient } from '@delfrance/integrations-freight-br/http-client';
+import type { Pedido } from '@delfrance/schemas';
 import type { CheckoutDanfeFormat } from '@/lib/checkout/nfeFlow';
+import { NfeStatusTile } from './NfeStatusTile';
+import { FreteSummary } from './FreteSummary';
+import { OutrosCheckoutsPane } from './OutrosCheckoutsPane';
 
 const DANFE_OPTIONS: { value: CheckoutDanfeFormat; label: string }[] = [
   { value: 'simplificadoPdf', label: 'Simplificado PDF' },
@@ -16,30 +23,49 @@ const ETIQUETA_OPTIONS: { value: 'pdf' | 'zpl2'; label: string }[] = [
 ];
 
 export interface CheckoutSidebarProps {
+  db: Firestore;
+  /** the loaded pedido (the parent renders the sidebar only when one is loaded). */
+  pedido: Pedido;
+  pedidoId: string;
+  /** current operator uid for the Outros-Checkouts query; `null` while unresolved. */
+  uid: string | null;
+  nfeClient: NFeHttpClient | null;
+  freightClient: FreightHttpClient | null;
   formatoDanfe: CheckoutDanfeFormat;
   onFormatoDanfe: (v: CheckoutDanfeFormat) => void;
   formatoEtiqueta: 'pdf' | 'zpl2';
   onFormatoEtiqueta: (v: 'pdf' | 'zpl2') => void;
-  /** whether a pedido is loaded (drives the placeholder copy). */
-  hasPedido: boolean;
+  /** re-fetch the loaded pedido (after an external freight edit). */
+  onReload: () => void;
 }
 
 /**
- * The right-hand controls column. PR 5 wires the two print-format selects (they
- * drive the post-save DANFE / etiqueta calls, so they must be live here);
- * the NF-e status tile, frete summary (link + reload), and the "Outros
- * Checkouts" realtime panel are PR 6's reliability surfaces — placeholders for
- * now (`outrosCheckoutsQuery` already exists in `@/lib/checkout/queries`).
+ * The checkout right-rail: live NF-e status, a read-only frete summary
+ * (link-out + reload), the DANFE / etiqueta print-format selects that drive both
+ * the Salvar post-save and the reprints, and the "Outros Checkouts" reprint
+ * panel. The print-target reliability lives in `OutroCheckoutModal` — this shell
+ * just wires the pieces for the loaded pedido.
  */
 export function CheckoutSidebar({
+  db,
+  pedido,
+  pedidoId,
+  uid,
+  nfeClient,
+  freightClient,
   formatoDanfe,
   onFormatoDanfe,
   formatoEtiqueta,
   onFormatoEtiqueta,
-  hasPedido,
+  onReload,
 }: CheckoutSidebarProps) {
   return (
     <Stack gap="sm" w={240}>
+      <NfeStatusTile db={db} pedidoId={pedidoId} />
+      <FreteSummary pedidoId={pedidoId} frete={pedido.freteInicial} onReload={onReload} />
+
+      <Divider />
+
       <Select
         label="Formato do DANFE"
         data={DANFE_OPTIONS}
@@ -54,12 +80,16 @@ export function CheckoutSidebar({
         allowDeselect={false}
         onChange={(v) => v && onFormatoEtiqueta(v as 'pdf' | 'zpl2')}
       />
+
       <Divider label="Outros checkouts" labelPosition="center" />
-      <Text size="xs" c="dimmed">
-        {hasPedido
-          ? 'Painel de reimpressão e status (NF-e, frete, outros checkouts) — em breve.'
-          : 'Carregue um pedido para começar.'}
-      </Text>
+      <OutrosCheckoutsPane
+        db={db}
+        uid={uid}
+        nfeClient={nfeClient}
+        freightClient={freightClient}
+        formatoDanfe={formatoDanfe}
+        formatoEtiqueta={formatoEtiqueta}
+      />
     </Stack>
   );
 }
