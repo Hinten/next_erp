@@ -161,19 +161,14 @@ function HorarioFuncionamentoInput({ value, onChange, disabled, label, hint }: F
 
 /**
  * Tab order for the WhatsApp create/edit screens. The flat form (#528) mixed
- * identity, Cloud API ids, auto-reply messaging and order-routing refs into a
- * single wall of inputs; grouping them by subject keeps the screen scannable.
- * Consumed by `ObjectView`'s `sections` prop; per-field assignment lives on
- * each `FieldConfig.section` below. Order = relevance for an operator:
- * identity first, then the Meta connection that makes the number work, then
- * the attendance behaviour, then the sales/fiscal defaults orders inherit.
+ * identity, Cloud API ids and auto-reply messaging into a single wall of
+ * inputs; grouping them by subject keeps the screen scannable. Consumed by
+ * `ObjectView`'s `sections` prop; per-field assignment lives on each
+ * `FieldConfig.section` below. Order = relevance for an operator: identity and
+ * the sales/fiscal defaults orders inherit first, then the Meta connection
+ * that makes the number work, then the attendance behaviour.
  */
-export const WHATSAPP_SECTIONS: string[] = [
-  'Geral',
-  'Conexão (Cloud API)',
-  'Atendimento',
-  'Vendas e fiscal',
-];
+export const WHATSAPP_SECTIONS: string[] = ['Geral', 'Conexão (Cloud API)', 'Atendimento'];
 
 /**
  * Field config shared by the WhatsApp create and edit screens — mirrors
@@ -238,32 +233,32 @@ export const whatsappFields: Record<string, FieldConfig> = {
   },
   filialIntegracaoPedidoOuterRef: {
     label: 'Filial',
-    section: 'Vendas e fiscal',
+    section: 'Geral',
     renderInput: filialRefRenderInput(true),
   },
   tabelaNormalOuterRef: {
     label: 'Tabela de preços',
-    section: 'Vendas e fiscal',
+    section: 'Geral',
     renderInput: refRenderInput(listaDePrecosCollection, true),
   },
   tabelaPromocionalOuterRef: {
     label: 'Tabela promocional',
-    section: 'Vendas e fiscal',
+    section: 'Geral',
     renderInput: refRenderInput(listaDePrecosCollection, false),
   },
   operacaoOuterRef: {
     label: 'Operação fiscal',
-    section: 'Vendas e fiscal',
+    section: 'Geral',
     renderInput: refRenderInput(operacaoCollection, false),
   },
   operacaoDevolucaoOuterRef: {
     label: 'Operação de devolução',
-    section: 'Vendas e fiscal',
+    section: 'Geral',
     renderInput: refRenderInput(operacaoCollection, false),
   },
   depositoOuterRef: {
     label: 'Depósito',
-    section: 'Vendas e fiscal',
+    section: 'Geral',
     renderInput: refRenderInput(depositoCollection, true),
   },
 };
