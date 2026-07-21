@@ -37,10 +37,12 @@ import type { Produto } from '../../produto/collection/produto';
 /* -------------------------------------------------------------------------- */
 
 /**
- * Half-up 2-decimal rounding — the repo canonical (`@delfrance/core/money`),
- * replacing the legacy `duasCasasDecimais` (`toStringAsFixed(2)`;
- * `.old/packages/global/lib/src/mathExtensions.dart:3-7`). Same documented
- * x.xx5-edge divergence stance as `totals.ts`. Never `.toFixed(2)` (lint-banned).
+ * 2-decimal rounding — the repo canonical (`@delfrance/core/money`), rounding
+ * from the IEEE-754 double: byte-parity with the legacy `duasCasasDecimais`
+ * (`toStringAsFixed(2)` reparsed;
+ * `.old/packages/global/lib/src/mathExtensions.dart:3-7`). Same parity stance
+ * as `totals.ts`. Never hand-rolled `.toFixed(2)` (lint-banned) — go through
+ * this alias so the canonical impl stays the single source of truth.
  */
 export const q2 = roundReais;
 
