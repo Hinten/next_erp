@@ -61,6 +61,11 @@ const NAV: NavEntry[] = [
       { href: '/categorias', label: 'Categorias', perm: PERM.categoria.read },
       { href: '/medidas', label: 'Medidas', perm: PERM.produto.read },
       { href: '/listas-de-precos', label: 'Lista de Precos', perm: PERM.produto.read },
+      {
+        href: '/produtos/recalcular-precos',
+        label: 'Recalcular Preços',
+        perm: PERM.produto.write,
+      },
       { href: '/depositos', label: 'Depositos de Estoque', perm: PERM.estoque.read },
       { href: '/etiquetas', label: 'Etiquetas', perm: PERM.produto.read },
       { href: '/balanco', label: 'Balanço', perm: PERM.produto.read },

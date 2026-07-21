@@ -76,9 +76,30 @@ export default defineConfig({
     // by naming it `<x>.cadastros.e2e.spec.ts` or `<x>.vendas.e2e.spec.ts`;
     // no config edit needed.
     {
-      // Master-data domain → e2e-cadastros.yml
+      // Master-data domain → e2e-cadastros.yml. Excludes recalcular-precos
+      // (see `crud-cadastros-recalculo` below) — that spec needs the whole
+      // catalog quiescent, so it can't share this project's parallel pool.
       name: 'crud-cadastros',
       testMatch: /\.cadastros\.e2e\.spec\.ts$/,
+      testIgnore: /recalcular-precos\.cadastros\.e2e\.spec\.ts$/,
+      use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      // Bulk price recalculation (#544): `Aplicar` scans + writes EVERY
+      // parent produto in the shared `produtos` collection with no
+      // per-spec scoping (the screen exposes none — see the spec's own top
+      // comment). If it ran fullyParallel alongside the rest of
+      // `crud-cadastros`, its writes would race their seed/assert/cleanup
+      // windows — a stray `precos` key can land on another spec's
+      // still-alive produto and break its strict equality assertions
+      // (observed against produto-preco.cadastros.e2e.spec.ts).
+      // `dependencies` makes Playwright run every `crud-cadastros` test
+      // (including each spec's `afterAll` cleanup) to completion FIRST, so
+      // by the time this spec's `Aplicar` fires the shared catalog is
+      // quiescent.
+      name: 'crud-cadastros-recalculo',
+      testMatch: /recalcular-precos\.cadastros\.e2e\.spec\.ts$/,
+      dependencies: ['crud-cadastros'],
       use: { ...devices['Desktop Chrome'] },
     },
     {

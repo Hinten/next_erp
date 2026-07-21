@@ -10,6 +10,7 @@ import { ObjectView } from '@delfrance/ui';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
+import { RecalcularPrecosCanalAction } from '../../_components/RecalcularPrecosCanalAction';
 import { ContaWhatsappHealth } from '../_components/ContaWhatsappHealth';
 import { ContaWhatsappPanel } from '../_components/ContaWhatsappPanel';
 import {
@@ -34,9 +35,12 @@ export default function ContaWhatsappPage() {
     <Stack>
       <Group justify="space-between" align="center">
         <Title order={2}>Conta WhatsApp</Title>
-        <Anchor component={Link} href="/canais/whatsapp" size="sm">
-          ← Voltar à lista
-        </Anchor>
+        <Group gap="sm">
+          <RecalcularPrecosCanalAction integracaoId={params.id} />
+          <Anchor component={Link} href="/canais/whatsapp" size="sm">
+            ← Voltar à lista
+          </Anchor>
+        </Group>
       </Group>
 
       <ContaWhatsappPanel integracaoId={params.id} />

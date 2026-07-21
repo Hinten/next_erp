@@ -10,6 +10,7 @@ import { ObjectView } from '@delfrance/ui';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
+import { RecalcularPrecosCanalAction } from '../../_components/RecalcularPrecosCanalAction';
 import { ContaMercadoLivrePanel } from '../_components/ContaMercadoLivrePanel';
 import {
   mercadoLivreExcludedFields,
@@ -32,9 +33,12 @@ export default function ContaMercadoLivrePage() {
     <Stack>
       <Group justify="space-between" align="center">
         <Title order={2}>Conta Mercado Livre</Title>
-        <Anchor component={Link} href="/canais/mercado-livre" size="sm">
-          ← Voltar à lista
-        </Anchor>
+        <Group gap="sm">
+          <RecalcularPrecosCanalAction integracaoId={params.id} />
+          <Anchor component={Link} href="/canais/mercado-livre" size="sm">
+            ← Voltar à lista
+          </Anchor>
+        </Group>
       </Group>
 
       <ContaMercadoLivrePanel integracaoId={params.id} />
