@@ -11,6 +11,27 @@ import {
   resolveIntegracaoByUserId,
 } from './notificacao';
 
+// #441 default migration-runner wiring (`notificacao.ts`'s `runUptinMigration`)
+// is mocked at its three seams — `handleUptinMigration` itself, the ML-context
+// loader, and the API factory — so "default wiring" tests below prove the wire-
+// up (loadMercadoLivreContext → createMercadoLivreApi → handleUptinMigration)
+// runs with NO real network/Firestore-token dependency. Everything else these
+// modules export stays real (spread from `importActual`).
+const h = vi.hoisted(() => ({
+  handleUptinMigration: vi.fn(async () => {}),
+  loadMercadoLivreContext: vi.fn(),
+  createMercadoLivreApi: vi.fn(() => ({}) as never),
+}));
+vi.mock('./importMigration', () => ({ handleUptinMigration: h.handleUptinMigration }));
+vi.mock('./mercadoLivre', async (importActual) => {
+  const actual = await importActual<typeof import('./mercadoLivre')>();
+  return { ...actual, loadMercadoLivreContext: h.loadMercadoLivreContext };
+});
+vi.mock('@delfrance/integrations-mercado-livre', async (importActual) => {
+  const actual = await importActual<typeof import('@delfrance/integrations-mercado-livre')>();
+  return { ...actual, createMercadoLivreApi: h.createMercadoLivreApi };
+});
+
 /* ----------------------------- fake Firestore ---------------------------- */
 // Supports the access shapes the admin handles use: doc get/set/create/delete,
 // and chained where/orderBy/limit/get queries (ops: '==', '<', 'in'). Fault
@@ -184,6 +205,9 @@ function seedFailed(db: FakeDb, id: string, over: DocData = {}): void {
 beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
+  h.handleUptinMigration.mockClear();
+  h.loadMercadoLivreContext.mockReset(); // per-test mockResolvedValue must not leak
+  h.createMercadoLivreApi.mockClear();
 });
 
 /* ------------------------------ parse + topics --------------------------- */
@@ -381,6 +405,122 @@ describe('handleNotificationTask', () => {
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
     expect(resolveItemsApi).not.toHaveBeenCalled(); // no link → no external call
     expect(db.docs(NOTIF).size).toBe(0);
+  });
+});
+
+/* ------------------ #441 migration takeover wiring (items topic) --------- */
+
+describe('handleNotificationTask — #441 migration takeover wiring', () => {
+  const LINK_PATH = 'produtos/prod1/produtoMercadoLivre';
+
+  function seedMigrationLink(db: FakeDb): void {
+    db.seed(LINK_PATH, 'link1', {
+      id: 'MLB1',
+      contaOuterRef: 'documents/integracao/conta-A',
+      title: 'x',
+      estado: 'p',
+      status: 'active',
+      sub_status: null,
+      isUserProductModel: false,
+    });
+  }
+  /** A resolver whose `getItem` returns a closed, migration-source-tagged listing. */
+  function migrationResolveItemsApi() {
+    const getItem = vi.fn(async () => ({
+      id: 'MLB1',
+      status: 'closed',
+      tags: ['variations_migration_source'],
+    }));
+    return vi.fn(async () => ({ getItem }) as never);
+  }
+
+  it('default wiring (no override): resolves the ML context + api and calls handleUptinMigration', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    seedMigrationLink(db);
+    h.loadMercadoLivreContext.mockResolvedValue({
+      integracaoId: 'conta-A',
+      conta: {
+        user_id: 999,
+        tabelaNormalOuterRef: 'documents/listaDePrecos/l1',
+        tabelaPromocionalOuterRef: null,
+        depositoOuterRef: null,
+      },
+      resolveChannelContext: async () => ({
+        integracaoId: 'conta-A',
+        accessToken: 'AT',
+        account: {},
+      }),
+    });
+
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N20', resource: '/items/MLB1', topic: 'items' }),
+      0,
+      migrationResolveItemsApi(),
+      // migrationRunner OMITTED — the production default must be used.
+    );
+
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
+    expect(h.loadMercadoLivreContext).toHaveBeenCalledWith(asDb(db), 'conta-A');
+    expect(h.createMercadoLivreApi).toHaveBeenCalled();
+    expect(h.handleUptinMigration).toHaveBeenCalledWith(
+      expect.objectContaining({ integracaoId: 'conta-A', sellerUserId: 999 }),
+      'MLB1',
+      expect.objectContaining({ produtoId: 'prod1', linkDocId: 'link1' }),
+    );
+  });
+
+  it('an injected migrationRunner is threaded instead of the default, which is never invoked', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    seedMigrationLink(db);
+    const migrationRunner = vi.fn(async () => {});
+
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N21', resource: '/items/MLB1', topic: 'items' }),
+      0,
+      migrationResolveItemsApi(),
+      migrationRunner,
+    );
+
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
+    expect(migrationRunner).toHaveBeenCalledWith(
+      asDb(db),
+      'conta-A',
+      'MLB1',
+      expect.objectContaining({ produtoId: 'prod1', linkDocId: 'link1' }),
+    );
+    expect(h.handleUptinMigration).not.toHaveBeenCalled(); // default bypassed entirely
+    expect(h.loadMercadoLivreContext).not.toHaveBeenCalled();
+  });
+
+  it('a non-migration items notification is unaffected by the #441 wiring (no runner call at all)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    db.seed(LINK_PATH, 'link1', {
+      id: 'MLB1',
+      contaOuterRef: 'documents/integracao/conta-A',
+      title: 'x',
+      estado: 'pa',
+      status: 'paused',
+      sub_status: null,
+      isUserProductModel: false,
+    });
+    const getItem = vi.fn(async () => ({ id: 'MLB1', status: 'paused' }));
+    const resolveItemsApi = vi.fn(async () => ({ getItem }) as never);
+
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N22', resource: '/items/MLB1', topic: 'items' }),
+      0,
+      resolveItemsApi,
+    );
+
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
+    expect(h.handleUptinMigration).not.toHaveBeenCalled();
+    expect(h.loadMercadoLivreContext).not.toHaveBeenCalled();
   });
 });
 

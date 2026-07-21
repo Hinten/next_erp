@@ -784,4 +784,110 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
       expect((res.family?.failures ?? []).length).toBe(MAX_FAMILY_SIBLINGS);
     });
   });
+
+  describe('upParentOverride (#441 — UP migration parent forcing)', () => {
+    const LEGACY_PARENT_ID = 'legacy-parent-XYZ';
+
+    it('forces the family parent onto the override produto — no cascade resolution, no duplicate parent at the normal hash id', async () => {
+      const db = new FakeDb();
+      db.seed('produtos', LEGACY_PARENT_ID, { nome: 'Camiseta Legada', sku: 'OLD-SKU' });
+      const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A } });
+      const res = await importProduto(
+        deps(db, api, {
+          familyFanOut: false,
+          upParentOverride: { produtoId: LEGACY_PARENT_ID },
+        }),
+        MEMBER_A_ID,
+      );
+
+      expect(res.produtoId).toBe(LEGACY_PARENT_ID);
+      expect(res.created).toBe(false); // the override produto already existed (the OLD legacy parent)
+
+      // the family PML link mints UNDER the override produto, literal fixed doc id.
+      const link = db
+        .docs(`produtos/${LEGACY_PARENT_ID}/produtoMercadoLivre`)
+        .get(expectedParentLinkId);
+      expect(link).toMatchObject({ id: FAMILY_ID, isUserProductModel: true });
+
+      // no separate family parent minted at the normal deterministic-hash id.
+      expect(db.docs('produtos').has(expectedParentId)).toBe(false);
+
+      // the called member's own child still lands correctly, parented on the override.
+      const childId = expectedChildId(MEMBER_A_ID);
+      expect(db.docs('produtos').get(childId)).toMatchObject({
+        paiId: LEGACY_PARENT_ID,
+        sku: 'SKU-A',
+      });
+    });
+
+    it('reuses an EXISTING family PML link already under the override produto (linkDocId + raw spread) instead of a fresh mint', async () => {
+      const db = new FakeDb();
+      db.seed('produtos', LEGACY_PARENT_ID, { nome: 'Camiseta Legada', sku: 'OLD-SKU' });
+      db.seed(`produtos/${LEGACY_PARENT_ID}/produtoMercadoLivre`, 'pre-existing-link-id', {
+        id: FAMILY_ID,
+        contaOuterRef: 'documents/integracao/conta-A',
+        someLegacyField: 'preserved',
+      });
+      const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A } });
+      const res = await importProduto(
+        deps(db, api, {
+          familyFanOut: false,
+          upParentOverride: { produtoId: LEGACY_PARENT_ID },
+        }),
+        MEMBER_A_ID,
+      );
+
+      expect(res.produtoId).toBe(LEGACY_PARENT_ID);
+      // the existing link doc is reused (spread-existing) — no second link doc.
+      expect(db.docs(`produtos/${LEGACY_PARENT_ID}/produtoMercadoLivre`).size).toBe(1);
+      const link = db
+        .docs(`produtos/${LEGACY_PARENT_ID}/produtoMercadoLivre`)
+        .get('pre-existing-link-id');
+      expect(link).toMatchObject({
+        id: FAMILY_ID,
+        someLegacyField: 'preserved',
+        isUserProductModel: true,
+      });
+    });
+
+    it('a link under the override produto belonging to a DIFFERENT integração is ignored — a fresh link mints instead', async () => {
+      const db = new FakeDb();
+      db.seed('produtos', LEGACY_PARENT_ID, { nome: 'Camiseta Legada', sku: 'OLD-SKU' });
+      db.seed(`produtos/${LEGACY_PARENT_ID}/produtoMercadoLivre`, 'other-account-link', {
+        id: FAMILY_ID,
+        contaOuterRef: 'documents/integracao/conta-OUTRA',
+      });
+      const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A } });
+      const res = await importProduto(
+        deps(db, api, {
+          familyFanOut: false,
+          upParentOverride: { produtoId: LEGACY_PARENT_ID },
+        }),
+        MEMBER_A_ID,
+      );
+
+      expect(res.produtoId).toBe(LEGACY_PARENT_ID);
+      // the foreign-account link survives untouched, AND our own fresh link mints
+      // at the literal fixed doc id — two links total under the override produto.
+      expect(db.docs(`produtos/${LEGACY_PARENT_ID}/produtoMercadoLivre`).size).toBe(2);
+      const ownLink = db
+        .docs(`produtos/${LEGACY_PARENT_ID}/produtoMercadoLivre`)
+        .get(expectedParentLinkId);
+      expect(ownLink).toMatchObject({
+        id: FAMILY_ID,
+        contaOuterRef: 'documents/integracao/conta-A',
+      });
+    });
+
+    it('override absent → resolution is byte-identical to the pre-existing cascade (regression pin)', async () => {
+      const db = new FakeDb();
+      const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A } });
+      const res = await importProduto(deps(db, api, { familyFanOut: false }), MEMBER_A_ID);
+
+      // same literal parity id as the dedicated cascade test earlier in this
+      // file — proves `upParentOverride` is fully inert when omitted.
+      expect(res.produtoId).toBe(expectedParentId);
+      expect(res.created).toBe(true);
+    });
+  });
 });

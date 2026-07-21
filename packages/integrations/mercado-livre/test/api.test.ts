@@ -174,6 +174,71 @@ describe('createMercadoLivreApi — User-Products family fan-out (#521)', () => 
   });
 });
 
+describe('createMercadoLivreApi — User-Products migration (#441)', () => {
+  it('getMigrationLiveListing hits /items/{id}/migration_live_listing and parses new_items', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        new_items: [
+          { new_item_id: 'MLB111', variation_id: 174390848694 },
+          { new_item_id: 'MLB222', variation_id: '174390848695' },
+        ],
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const listing = await api.getMigrationLiveListing('MLB1');
+    expect(listing.new_items).toEqual([
+      { new_item_id: 'MLB111', variation_id: 174390848694 },
+      { new_item_id: 'MLB222', variation_id: '174390848695' },
+    ]);
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toBe('https://api.mercadolibre.com/items/MLB1/migration_live_listing');
+  });
+
+  it('getMigrationLiveListing defaults new_items to [] when ML omits the field', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({}),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const listing = await api.getMigrationLiveListing('MLB1');
+    expect(listing.new_items).toEqual([]);
+  });
+
+  it('getMigrationLiveListing tolerates unknown extra fields on the listing and its entries', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        new_items: [{ new_item_id: 'MLB111', variation_id: 1, extra_ml_field: true }],
+        another_new_field: 'x',
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const listing = (await api.getMigrationLiveListing('MLB1')) as Record<string, unknown>;
+    expect(listing.another_new_field).toBe('x');
+    expect((listing.new_items as Record<string, unknown>[])[0]!.extra_ml_field).toBe(true);
+  });
+
+  it('getMigrationLiveListing maps a 404 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'not found' }, 404),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getMigrationLiveListing('MLB404')).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 404,
+    });
+  });
+
+  it('getMigrationLiveListing maps a 500 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'boom' }, 500),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getMigrationLiveListing('MLB1')).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 500,
+    });
+  });
+});
+
 describe('createMercadoLivreApi — retries + errors', () => {
   it('does NOT retry a 429 — throws an HTTP error immediately', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>

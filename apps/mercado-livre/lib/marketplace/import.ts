@@ -27,6 +27,12 @@
  * `sku`. A FRESH produto's id is always a deterministic hash — NOT the
  * seller_custom_field, which ML does not keep unique across a seller's items
  * (reusing it as the id would collide two distinct listings onto one produto).
+ *
+ * `ImportDeps.upParentOverride` (#441): the UP resolution cascade can be
+ * bypassed to force the family parent onto a caller-named produto — used by
+ * `importMigration.ts` when ML migrates a legacy `variations[]` listing to
+ * User-Products, so the new family lands on the OLD legacy parent instead of
+ * minting a duplicate. See `resolveUpParentOverride` below; inert when absent.
  */
 import { createHash } from 'node:crypto';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
@@ -86,6 +92,19 @@ export interface ImportDeps {
    * level regardless of how deep a sibling's own family data claims to go.
    */
   familyFanOut?: boolean;
+  /**
+   * #441 migration override: force the UP family parent onto an EXISTING
+   * produto (the OLD legacy `variations[]` parent that owned the listing
+   * before ML migrated it to User-Products) instead of running the normal
+   * `resolveExistingUpParent` cascade. UP branch only (`isUserProduct`);
+   * ignored for a simple/legacy-`variations[]` item. The cascade would miss by
+   * construction for a migrated member (its own link is numeric-id-keyed under
+   * the OLD scheme, the family-id link doesn't exist yet, and a stray sku
+   * coincidence isn't guaranteed) and would otherwise mint a duplicate family
+   * parent — see `importMigration.ts`. Simple/`variations[]`/normal-UP import
+   * behavior is byte-identical when this field is absent.
+   */
+  upParentOverride?: { produtoId: string };
 }
 
 export interface ImportResult {
@@ -218,7 +237,14 @@ export async function importProduto(
   // (this member's own link → the family-id link → sku); simple/variations[]
   // keep the existing single-item cascade untouched.
   const resolved = isUserProduct
-    ? await resolveExistingUpParent(db, itemId, up!.canonicalId, mapped.sku, integracaoId)
+    ? deps.upParentOverride
+      ? await resolveUpParentOverride(
+          db,
+          deps.upParentOverride.produtoId,
+          up!.canonicalId,
+          integracaoId,
+        )
+      : await resolveExistingUpParent(db, itemId, up!.canonicalId, mapped.sku, integracaoId)
     : await resolveExistingProduto(db, itemId, mapped.sku, integracaoId);
   // A fresh produto id is a deterministic hash — NOT the seller_custom_field,
   // which ML does not keep unique across a seller's items (two items sharing a
@@ -639,6 +665,38 @@ async function resolveExistingUpParent(
     }
   }
   return null;
+}
+
+/**
+ * #441 migration override: resolve the UP family parent onto a CALLER-SUPPLIED
+ * produto (the OLD legacy parent) instead of `resolveExistingUpParent`'s own
+ * cascade. Looks for an existing `produtoMercadoLivre` link under that ONE
+ * produto with `id == canonicalId` (the family id) for this integração — so a
+ * second migrated member of the same family reuses the SAME link doc rather
+ * than a fresh mint colliding on `100000000000000000<canonicalId>` (same doc
+ * id, `.set()` is idempotent either way, but reusing lets the caller's
+ * spread-existing fill-null logic see the prior write). No link yet → null
+ * `linkDocId`/`linkRaw`, and the caller's existing fresh-mint fallback
+ * (`100000000000000000${canonicalId}`) applies unchanged. `produtoId` is
+ * always the override — this never returns null (the override always names an
+ * existing produto to write onto).
+ */
+async function resolveUpParentOverride(
+  db: Firestore,
+  produtoId: string,
+  canonicalId: string,
+  integracaoId: string,
+): Promise<ResolvedProduto> {
+  const linkSnap = await produtoMercadoLivreLinkCollection
+    .ref(db, { produtoId })
+    .where('id', '==', canonicalId)
+    .get();
+  for (const d of linkSnap.docs) {
+    const raw = d.data() as Record<string, unknown>;
+    if (!refMatchesIntegracao(raw.contaOuterRef, integracaoId)) continue;
+    return { produtoId, linkDocId: d.id, linkRaw: raw };
+  }
+  return { produtoId, linkDocId: null, linkRaw: null };
 }
 
 /**

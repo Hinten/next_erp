@@ -322,6 +322,35 @@ export const userProductItemsSearchSchema = z
   .passthrough();
 export type MlUserProductItemsSearch = z.infer<typeof userProductItemsSearchSchema>;
 
+/* --------------------- User-Products migration (#441) --------------------- */
+
+/**
+ * One entry of `GET /items/{id}/migration_live_listing` — only the two fields
+ * the migration handler consumes (legacy `tasks.dart:871-1036`):
+ * `new_item_id` (the new User-Products member's MLB item id) and
+ * `variation_id` (the OLD numeric legacy variation id it replaces). ML has
+ * sent both as string and number over time — accept either.
+ */
+export const migrationNewItemSchema = z
+  .object({
+    new_item_id: z.union([z.string(), z.number()]).nullable().optional(),
+    variation_id: z.union([z.string(), z.number()]).nullable().optional(),
+  })
+  .passthrough();
+export type MlMigrationNewItem = z.infer<typeof migrationNewItemSchema>;
+
+/**
+ * `GET /items/{id}/migration_live_listing` — the new User-Products items a
+ * legacy `variations[]` listing was migrated to, keyed by `new_items`
+ * (legacy `tasks.dart:871-1036`).
+ */
+export const migrationLiveListingSchema = z
+  .object({
+    new_items: z.array(migrationNewItemSchema).default([]),
+  })
+  .passthrough();
+export type MlMigrationLiveListing = z.infer<typeof migrationLiveListingSchema>;
+
 /* ------------------------------ Size charts ------------------------------ */
 
 /**
