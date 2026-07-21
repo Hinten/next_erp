@@ -67,6 +67,19 @@ ruleTester.run('no-error-as-sole-instanceof', rule, {
       errors: [{ messageId: 'soleError' }],
     },
     {
+      // Regression: an earlier hasThrow() accepted a `throw` ANYWHERE in the
+      // subtree, so this conditional rethrow wrongly suppressed the warning
+      // even though the `return null` branch still swallows.
+      name: 'a CONDITIONAL throw is not a rethrow — the other branch swallows',
+      code: `function h() { try { f(); } catch (e) { if (e instanceof Error) { if (fatal) throw e; return null; } } }`,
+      errors: [{ messageId: 'soleError' }],
+    },
+    {
+      name: 'throw nested in a loop is not a top-level rethrow',
+      code: `function h() { try { f(); } catch (e) { for (const x of xs) { if (e instanceof Error) throw e; } log(e); } }`,
+      errors: [{ messageId: 'soleError' }],
+    },
+    {
       name: 'nested catch is judged on its own',
       code: `try { f(); } catch (outer) {
         if (!(outer instanceof FirebaseError)) throw outer;

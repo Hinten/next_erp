@@ -167,13 +167,13 @@ const config = [
       // The distinct rule name matters: flat config does full-replacement per
       // rule NAME, so this survives the `no-restricted-syntax` overrides in
       // apps/nfe and packages/integrations/nfe that drop the base catch
-      // selectors — which is exactly where it earns its keep (17 of the 25
+      // selectors — which is exactly where it earns its keep (18 of the 51
       // current hits are in apps/nfe).
       //
-      // Warn, not error: 25 pre-existing sites, mostly benign `.message`
+      // Warn, not error: 51 pre-existing sites, mostly benign `.message`
       // extraction. A ratchet against backsliding, mirroring
       // no-inline-admin-collection. NOTE lint-staged runs `--max-warnings 0`,
-      // so editing one of those 25 files means fixing it first.
+      // so editing one of those 51 files means fixing it first.
       'delfrance/no-error-as-sole-instanceof': 'warn',
     },
   },

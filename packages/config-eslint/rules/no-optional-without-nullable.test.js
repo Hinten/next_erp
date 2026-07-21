@@ -60,7 +60,9 @@ ruleTester.run('no-optional-without-nullable', rule, {
       filename: '/repo/apps/web/lib/forms/filtro.ts',
     },
     {
-      name: 'schemas tests are out of scope only if outside src/ — this one is inside, see invalid',
+      // Another package's src/ is out of scope: the rule matches the full
+      // `/packages/schemas/src/` segment, not just any `src/`.
+      name: 'a different package under src/ is out of scope',
       code: `const s = z.string().optional();`,
       filename: '/repo/packages/integrations/nfe/src/wire.ts',
     },

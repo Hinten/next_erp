@@ -1,7 +1,6 @@
 # CLAUDE.md
 
-Loaded on **every** turn, so it carries only what an agent would otherwise get
-wrong. Detail lives where it is cheaper: the per-app `CLAUDE.md` files, the
+Detail lives where it is cheaper: the per-app `CLAUDE.md` files, the
 skills in `.claude/skills/`, the ADRs under `apps/docs/`, and package READMEs.
 
 ## What this is
@@ -9,8 +8,8 @@ skills in `.claude/skills/`, the ADRs under `apps/docs/`, and package READMEs.
 `@delfrance/erp-next` (Apache-2.0) — a multi-app Next.js/Turborepo monorepo, the
 OSS rewrite of the Delfrance Flutter ERP at feature parity on the same Firebase
 backend. See `README.md` and `CONTRIBUTING.md`. The Flutter app is a separate
-repo; a read-only copy sits at `.old/` (gitignored) and is the **parity
-reference for ports**.
+repo; a read-only copy sits at `.old/` (gitignored, present only in local
+checkouts) and is the **parity reference for ports**.
 
 CI — everything in `.github/workflows/` runs **concurrently**, gated on nothing.
 `ci.yml` is the only workflow with no path filter, so every PR gets it; it
@@ -30,9 +29,8 @@ packages/{schemas,ui,data,auth,core}, tools/test-fixtures). A PR touching only
    and offers no one-click index link — it silently **full-scans**, and
    Enterprise bills **data scanned**, so the mistake lands on the invoice rather
    than in your face. Enterprise auto-creates **zero** indexes: declare them in
-   `firestore.indexes.json` and deploy with
-   `firebase deploy --only firestore:indexes`. Index hot queries; never filter
-   client-side to dodge a composite index. **Three query classes are
+   `firestore.indexes.json`. Index hot queries; when possible, filter
+   client-side to use the firebase local cache. **Three query classes are
    index-MANDATORY** — every `meta.defaultQuery`, every `meta.pickerRecencySort`,
    every TableView update-monitor query — enforced by the
    `delfrance/default-query-needs-index` lint **error** plus the

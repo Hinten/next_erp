@@ -21,13 +21,14 @@
 //   - a catch with no `instanceof` at all: that shape is the base
 //     `no-restricted-syntax` selectors' job, not this rule's
 //
-// Warn, not error: 25 sites currently trip this (17 of them in apps/nfe, which
-// is precisely where the base catch selectors are switched off by that
-// workspace's own `no-restricted-syntax` override — flat config replaces a rule
-// by NAME, and this rule's distinct name is what lets it reach there). A guard
-// against backsliding, mirroring how `no-inline-admin-collection` is
-// registered. NOTE lint-staged runs `--max-warnings 0`, so editing one of those
-// 25 files means fixing it first.
+// Warn, not error: 51 sites currently trip this — apps/nfe 18, apps/web 13,
+// apps/whatsapp 11, apps/mercado-livre 4, apps/mercado-pago 4,
+// tools/test-fixtures 1. apps/nfe leads because that workspace's own
+// `no-restricted-syntax` override switches the base catch selectors off (flat
+// config replaces a rule by NAME, and this rule's distinct name is what lets it
+// reach there). A guard against backsliding, mirroring how
+// `no-inline-admin-collection` is registered. NOTE lint-staged runs
+// `--max-warnings 0`, so editing one of those 51 files means fixing it first.
 
 /** Right-hand identifier of an `x instanceof Y` expression, or null. */
 function instanceofRhsName(node) {
@@ -78,34 +79,26 @@ function collectInstanceofNames(root) {
   return names;
 }
 
-/** Does this subtree rethrow? (a `throw` anywhere outside a nested catch) */
-function hasThrow(root) {
-  let found = false;
-  const seen = new Set();
-
-  const walk = (node) => {
-    if (found || !node || typeof node.type !== 'string' || seen.has(node)) return;
-    seen.add(node);
-    if (node.type === 'CatchClause' && node !== root) return;
-    if (node.type === 'ThrowStatement') {
-      found = true;
-      return;
-    }
-    for (const key of Object.keys(node)) {
-      if (key === 'parent') continue;
-      const child = node[key];
-      if (Array.isArray(child)) {
-        for (const c of child) {
-          if (c && typeof c.type === 'string') walk(c);
-        }
-      } else if (child && typeof child.type === 'string') {
-        walk(child);
-      }
-    }
-  };
-
-  walk(root);
-  return found;
+/**
+ * Does the catch rethrow **unconditionally**? Only a `throw` at the TOP LEVEL of
+ * the catch block counts.
+ *
+ * A nested `throw` — inside an `if`, a loop, a `switch`, a callback — is
+ * conditional: the other branch still falls through and swallows the error. An
+ * earlier version of this rule accepted any `throw` anywhere in the subtree,
+ * which silently exempted shapes like
+ *
+ *   catch (e) { if (e instanceof Error) { if (fatal) throw e; return null; } }
+ *
+ * i.e. precisely the swallow this rule exists to find.
+ *
+ * Note the inverted-guard pattern `if (!(e instanceof X)) throw e;` does not
+ * need this exemption: it narrows on a real class, so `create()` returns before
+ * ever calling here.
+ */
+function rethrowsUnconditionally(catchClause) {
+  const statements = catchClause.body?.body ?? [];
+  return statements.some((stmt) => stmt.type === 'ThrowStatement');
 }
 
 const rule = {
@@ -134,8 +127,8 @@ const rule = {
         if (names.length === 0) return;
         // Narrowed on something real → fine.
         if (names.some((n) => n !== 'Error')) return;
-        // Unconditional-ish rethrow → nothing is swallowed.
-        if (hasThrow(node)) return;
+        // Unconditional rethrow at the top of the catch → nothing is swallowed.
+        if (rethrowsUnconditionally(node)) return;
 
         context.report({ node: node.param ?? node, messageId: 'soleError' });
       },
