@@ -71,19 +71,31 @@ async function submitCode(input: HTMLInputElement, code: string): Promise<void> 
   await yieldToReact(); // flush: the field clears before the next code
 }
 
-/** Poll (rAF) for an element that mounts inside the freshly-rendered child. */
+/**
+ * Poll (rAF) for an element that mounts inside the freshly-rendered child, up to
+ * a WALL-CLOCK deadline. Deliberately time-based rather than a frame count: rAF
+ * throttles hard in a hidden/background page, and a Next dev cold compile can
+ * push the first paint well past a couple of seconds — a frame budget would give
+ * up early and then fail SILENTLY (no auto-load, and the local-perf spec times
+ * out with no clue why). On timeout we warn loudly instead.
+ */
 function waitForElement<T extends Element>(
   selector: string,
   isCancelled: () => boolean,
-  maxFrames = 120,
+  timeoutMs = 30_000,
 ): Promise<T | null> {
   return new Promise((resolve) => {
-    let frames = 0;
+    const deadline = performance.now() + timeoutMs;
     const tick = (): void => {
       if (isCancelled()) return resolve(null);
       const el = document.querySelector<T>(selector);
       if (el) return resolve(el);
-      if (frames++ >= maxFrames) return resolve(null);
+      if (performance.now() >= deadline) {
+        console.warn(
+          `[checkout harness] "${selector}" not found within ${timeoutMs}ms — auto-load skipped.`,
+        );
+        return resolve(null);
+      }
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);

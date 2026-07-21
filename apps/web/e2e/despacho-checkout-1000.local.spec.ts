@@ -2,15 +2,17 @@ import { expect, test } from '@playwright/test';
 
 /**
  * LOCAL-ONLY perf + leak smoke for the checkout screen against a 1000-line-item
- * pedido. It is NOT run by any CI workflow: it belongs to the `local-perf`
- * Playwright project (see playwright.config.ts), which is collected only by an
- * explicit `--project=local-perf` — and no workflow passes that. Wall-time and
- * DOM-node budgets are machine-dependent, so CI gates the scan ALGORITHM instead
- * via the op-count test in `@delfrance/schemas`
+ * pedido. It belongs to the `local-perf` Playwright project, which is only ADDED
+ * to the config when `CHECKOUT_PERF=1` — Playwright runs EVERY configured project
+ * when no `--project` is passed, so an unguarded project would join every plain
+ * local `playwright test`. CI never runs it either way: each workflow passes
+ * explicit `--project=` args (see e2e-reusable.yml). Wall-time and DOM-node
+ * budgets are machine-dependent, so CI gates the scan ALGORITHM instead via the
+ * op-count test in `@delfrance/schemas`
  * (`pedido/pureLogic/checkoutEngine.perf.test.ts`).
  *
  * Run it locally (dev server, so the dev-only harness route is live) with:
- *   pnpm --filter @delfrance/web exec playwright test --project=local-perf
+ *   CHECKOUT_PERF=1 pnpm --filter @delfrance/web exec playwright test --project=local-perf
  *
  * It drives the dev harness route `/despacho/checkout/harness`, which builds a
  * fully in-memory 1000-item pedido via the fixture seam and auto-loads it, then:
