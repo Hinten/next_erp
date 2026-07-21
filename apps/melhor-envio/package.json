@@ -17,20 +17,20 @@
     "@delfrance/data": "workspace:*",
     "@delfrance/integrations-freight-br": "workspace:*",
     "@delfrance/schemas": "workspace:*",
-    "firebase-admin": "^14.0.0",
-    "next": "16.2.6",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "zod": "^4.4.3"
+    "firebase-admin": "catalog:",
+    "next": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
-    "@types/node": "^24.10.0",
-    "@types/react": "^19.2.0",
-    "eslint": "^9.39.4",
-    "eslint-config-next": "^16.2.6",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "eslint": "catalog:",
+    "eslint-config-next": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

@@ -4,6 +4,114 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    '@dnd-kit/core':
+      specifier: ^6.3.1
+      version: 6.3.1
+    '@dnd-kit/sortable':
+      specifier: ^10.0.0
+      version: 10.0.0
+    '@dnd-kit/utilities':
+      specifier: ^3.2.2
+      version: 3.2.2
+    '@hookform/resolvers':
+      specifier: ^5.2.2
+      version: 5.2.2
+    '@mantine/core':
+      specifier: ^9.2.0
+      version: 9.2.0
+    '@mantine/dates':
+      specifier: ^9.2.0
+      version: 9.2.0
+    '@mantine/hooks':
+      specifier: ^9.2.0
+      version: 9.2.0
+    '@mantine/notifications':
+      specifier: ^9.2.0
+      version: 9.2.0
+    '@tabler/icons-react':
+      specifier: ^3.21.0
+      version: 3.44.0
+    '@tanstack/react-query':
+      specifier: ^5.100.10
+      version: 5.100.10
+    '@testing-library/react':
+      specifier: ^16.3.2
+      version: 16.3.2
+    '@types/node':
+      specifier: ^24.10.0
+      version: 24.12.4
+    '@types/node-forge':
+      specifier: ^1.3.14
+      version: 1.3.14
+    '@types/react':
+      specifier: ^19.2.0
+      version: 19.2.14
+    '@types/react-dom':
+      specifier: ^19.2.0
+      version: 19.2.3
+    esbuild:
+      specifier: ^0.25.0
+      version: 0.25.12
+    eslint:
+      specifier: ^9.39.4
+      version: 9.39.4
+    eslint-config-next:
+      specifier: ^16.2.6
+      version: 16.2.6
+    eslint-config-prettier:
+      specifier: ^10.1.5
+      version: 10.1.8
+    firebase:
+      specifier: ^12.13.0
+      version: 12.13.0
+    firebase-admin:
+      specifier: ^14.0.0
+      version: 14.0.0
+    firebase-functions:
+      specifier: ^7.3.0
+      version: 7.3.0
+    google-auth-library:
+      specifier: ^10.6.2
+      version: 10.6.2
+    jsdom:
+      specifier: ^29.1.1
+      version: 29.1.1
+    next:
+      specifier: 16.2.6
+      version: 16.2.6
+    node-forge:
+      specifier: ^1.4.0
+      version: 1.4.0
+    react:
+      specifier: ^19.2.0
+      version: 19.2.6
+    react-dom:
+      specifier: ^19.2.0
+      version: 19.2.6
+    react-hook-form:
+      specifier: ^7.75.0
+      version: 7.75.0
+    tsx:
+      specifier: ^4.21.0
+      version: 4.21.0
+    typescript:
+      specifier: ^6.0.3
+      version: 6.0.3
+    typescript-eslint:
+      specifier: ^8.59.3
+      version: 8.59.3
+    vitest:
+      specifier: ^4.1.6
+      version: 4.1.6
+    xmllint-wasm:
+      specifier: ^5.2.0
+      version: 5.2.0
+    zod:
+      specifier: ^4.4.3
+      version: 4.4.3
+
 importers:
 
   .:
@@ -24,16 +132,16 @@ importers:
         specifier: ^3.4.2
         version: 3.8.3
       tsx:
-        specifier: ^4.21.0
+        specifier: 'catalog:'
         version: 4.21.0
       turbo:
         specifier: ^2.9.14
         version: 2.9.14
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   apps/docs:
@@ -58,7 +166,7 @@ importers:
         specifier: ^0.9.9
         version: 0.9.9(prettier@3.8.3)(typescript@6.0.3)
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
 
   apps/example:
@@ -79,20 +187,20 @@ importers:
         specifier: workspace:*
         version: link:../../packages/schemas
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       tsx:
-        specifier: ^4.21.0
+        specifier: 'catalog:'
         version: 4.21.0
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
 
   apps/functions:
@@ -123,19 +231,19 @@ importers:
         specifier: workspace:*
         version: link:../../packages/schemas
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
 
   apps/integrations:
@@ -150,19 +258,19 @@ importers:
         specifier: workspace:*
         version: link:../../packages/schemas
       firebase-admin:
-        specifier: ^14.0.0
+        specifier: 'catalog:'
         version: 14.0.0
       next:
-        specifier: 16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       react:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6
       react-dom:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6(react@19.2.6)
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-eslint':
@@ -172,22 +280,22 @@ importers:
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       '@types/react':
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.14
       eslint:
-        specifier: ^9.39.4
+        specifier: 'catalog:'
         version: 9.39.4
       eslint-config-next:
-        specifier: ^16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   apps/melhor-envio:
@@ -205,19 +313,19 @@ importers:
         specifier: workspace:*
         version: link:../../packages/schemas
       firebase-admin:
-        specifier: ^14.0.0
+        specifier: 'catalog:'
         version: 14.0.0
       next:
-        specifier: 16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       react:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6
       react-dom:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6(react@19.2.6)
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-eslint':
@@ -227,22 +335,22 @@ importers:
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       '@types/react':
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.14
       eslint:
-        specifier: ^9.39.4
+        specifier: 'catalog:'
         version: 9.39.4
       eslint-config-next:
-        specifier: ^16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   apps/mercado-livre:
@@ -266,22 +374,22 @@ importers:
         specifier: workspace:*
         version: link:../../packages/storage
       firebase-admin:
-        specifier: ^14.0.0
+        specifier: 'catalog:'
         version: 14.0.0
       firebase-functions:
-        specifier: ^7.3.0
+        specifier: 'catalog:'
         version: 7.3.0(firebase-admin@14.0.0)
       next:
-        specifier: 16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       react:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6
       react-dom:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6(react@19.2.6)
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-eslint':
@@ -291,25 +399,25 @@ importers:
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       '@types/react':
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.14
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
       eslint:
-        specifier: ^9.39.4
+        specifier: 'catalog:'
         version: 9.39.4
       eslint-config-next:
-        specifier: ^16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   apps/mercado-pago:
@@ -330,22 +438,22 @@ importers:
         specifier: workspace:*
         version: link:../../packages/schemas
       firebase-admin:
-        specifier: ^14.0.0
+        specifier: 'catalog:'
         version: 14.0.0
       firebase-functions:
-        specifier: ^7.3.0
+        specifier: 'catalog:'
         version: 7.3.0(firebase-admin@14.0.0)
       next:
-        specifier: 16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       react:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6
       react-dom:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6(react@19.2.6)
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-eslint':
@@ -355,25 +463,25 @@ importers:
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       '@types/react':
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.14
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
       eslint:
-        specifier: ^9.39.4
+        specifier: 'catalog:'
         version: 9.39.4
       eslint-config-next:
-        specifier: ^16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   apps/nfe:
@@ -394,22 +502,22 @@ importers:
         specifier: workspace:*
         version: link:../../packages/schemas
       firebase-admin:
-        specifier: ^14.0.0
+        specifier: 'catalog:'
         version: 14.0.0
       google-auth-library:
-        specifier: ^10.6.2
+        specifier: 'catalog:'
         version: 10.6.2
       next:
-        specifier: 16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       react:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6
       react-dom:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6(react@19.2.6)
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-eslint':
@@ -422,37 +530,37 @@ importers:
         specifier: workspace:*
         version: link:../../packages/config-vitest
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       '@types/node-forge':
-        specifier: ^1.3.14
+        specifier: 'catalog:'
         version: 1.3.14
       '@types/react':
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.14
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
       eslint:
-        specifier: ^9.39.4
+        specifier: 'catalog:'
         version: 9.39.4
       eslint-config-next:
-        specifier: ^16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       firebase-functions:
-        specifier: ^7.3.0
+        specifier: 'catalog:'
         version: 7.3.0(firebase-admin@14.0.0)
       node-forge:
-        specifier: ^1.4.0
+        specifier: 'catalog:'
         version: 1.4.0
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
       xmllint-wasm:
-        specifier: ^5.2.0
+        specifier: 'catalog:'
         version: 5.2.0(@types/node@24.12.4)
 
   apps/web:
@@ -482,13 +590,13 @@ importers:
         specifier: workspace:*
         version: link:../../packages/ui
       '@dnd-kit/core':
-        specifier: ^6.3.1
+        specifier: 'catalog:'
         version: 6.3.1(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@dnd-kit/sortable':
-        specifier: ^10.0.0
+        specifier: 'catalog:'
         version: 10.0.0(@dnd-kit/core@6.3.1(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       '@dnd-kit/utilities':
-        specifier: ^3.2.2
+        specifier: 'catalog:'
         version: 3.2.2(react@19.2.6)
       '@emoji-mart/data':
         specifier: ^1.2.1
@@ -497,16 +605,16 @@ importers:
         specifier: ^1.1.1
         version: 1.1.1(emoji-mart@5.6.0)(react@19.2.6)
       '@hookform/resolvers':
-        specifier: ^5.2.2
+        specifier: 'catalog:'
         version: 5.2.2(react-hook-form@7.75.0(react@19.2.6))
       '@mantine/charts':
         specifier: ^9.2.0
         version: 9.2.0(@mantine/core@9.2.0(@mantine/hooks@9.2.0(react@19.2.6))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(@mantine/hooks@9.2.0(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(recharts@3.8.1(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react-is@17.0.2)(react@19.2.6)(redux@5.0.1))
       '@mantine/core':
-        specifier: ^9.2.0
+        specifier: 'catalog:'
         version: 9.2.0(@mantine/hooks@9.2.0(react@19.2.6))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@mantine/dates':
-        specifier: ^9.2.0
+        specifier: 'catalog:'
         version: 9.2.0(@mantine/core@9.2.0(@mantine/hooks@9.2.0(react@19.2.6))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(@mantine/hooks@9.2.0(react@19.2.6))(dayjs@1.11.20)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@mantine/dropzone':
         specifier: 9.2.0
@@ -515,16 +623,16 @@ importers:
         specifier: ^9.2.0
         version: 9.2.0(react@19.2.6)
       '@mantine/hooks':
-        specifier: ^9.2.0
+        specifier: 'catalog:'
         version: 9.2.0(react@19.2.6)
       '@mantine/notifications':
-        specifier: ^9.2.0
+        specifier: 'catalog:'
         version: 9.2.0(@mantine/core@9.2.0(@mantine/hooks@9.2.0(react@19.2.6))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(@mantine/hooks@9.2.0(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@tabler/icons-react':
-        specifier: ^3.21.0
+        specifier: 'catalog:'
         version: 3.44.0(react@19.2.6)
       '@tanstack/react-query':
-        specifier: ^5.100.10
+        specifier: 'catalog:'
         version: 5.100.10(react@19.2.6)
       '@tanstack/react-virtual':
         specifier: ^3.14.5
@@ -539,7 +647,7 @@ importers:
         specifier: ^0.8.2
         version: 0.8.3
       firebase:
-        specifier: ^12.13.0
+        specifier: 'catalog:'
         version: 12.13.0
       html-to-image:
         specifier: ^1.11.13
@@ -551,19 +659,19 @@ importers:
         specifier: ^3.0.4
         version: 3.0.4
       next:
-        specifier: 16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       next-intl:
         specifier: ^4.12.0
         version: 4.12.0(next@16.2.6(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(typescript@6.0.3)
       react:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6
       react-dom:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6(react@19.2.6)
       react-hook-form:
-        specifier: ^7.75.0
+        specifier: 'catalog:'
         version: 7.75.0(react@19.2.6)
       react-to-print:
         specifier: ^3.1.1
@@ -572,7 +680,7 @@ importers:
         specifier: ^3.8.1
         version: 3.8.1(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react-is@17.0.2)(react@19.2.6)(redux@5.0.1)
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-eslint':
@@ -588,52 +696,52 @@ importers:
         specifier: ^1.60.0
         version: 1.60.0
       '@testing-library/react':
-        specifier: ^16.3.2
+        specifier: 'catalog:'
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@types/jsbarcode':
         specifier: ^3.11.4
         version: 3.11.4
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       '@types/react':
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.14
       '@types/react-dom':
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.3(@types/react@19.2.14)
       eslint:
-        specifier: ^9.39.4
+        specifier: 'catalog:'
         version: 9.39.4
       eslint-config-next:
-        specifier: ^16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       firebase-admin:
-        specifier: ^14.0.0
+        specifier: 'catalog:'
         version: 14.0.0
       jsdom:
-        specifier: ^29.1.1
+        specifier: 'catalog:'
         version: 29.1.1(@noble/hashes@1.8.0)
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   apps/webchat:
     dependencies:
       firebase:
-        specifier: ^12.13.0
+        specifier: 'catalog:'
         version: 12.13.0
       next:
-        specifier: 16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       react:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6
       react-dom:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6(react@19.2.6)
     devDependencies:
       '@delfrance/config-eslint':
@@ -643,22 +751,22 @@ importers:
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       '@types/react':
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.14
       eslint:
-        specifier: ^9.39.4
+        specifier: 'catalog:'
         version: 9.39.4
       eslint-config-next:
-        specifier: ^16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   apps/whatsapp:
@@ -682,22 +790,22 @@ importers:
         specifier: workspace:*
         version: link:../../packages/storage
       firebase-admin:
-        specifier: ^14.0.0
+        specifier: 'catalog:'
         version: 14.0.0
       firebase-functions:
-        specifier: ^7.3.0
+        specifier: 'catalog:'
         version: 7.3.0(firebase-admin@14.0.0)
       next:
-        specifier: 16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       react:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6
       react-dom:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6(react@19.2.6)
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-eslint':
@@ -707,25 +815,25 @@ importers:
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       '@types/react':
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.14
       esbuild:
-        specifier: ^0.25.0
+        specifier: 'catalog:'
         version: 0.25.12
       eslint:
-        specifier: ^9.39.4
+        specifier: 'catalog:'
         version: 9.39.4
       eslint-config-next:
-        specifier: ^16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/auth:
@@ -734,26 +842,26 @@ importers:
         specifier: workspace:*
         version: link:../config-tsconfig
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/config-eslint:
     dependencies:
       eslint-config-prettier:
-        specifier: ^10.1.5
+        specifier: 'catalog:'
         version: 10.1.8(eslint@9.39.4)
       typescript-eslint:
-        specifier: ^8.59.3
+        specifier: 'catalog:'
         version: 8.59.3(eslint@9.39.4)(typescript@6.0.3)
     devDependencies:
       eslint:
-        specifier: ^9.39.4
+        specifier: 'catalog:'
         version: 9.39.4
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/config-tsconfig: {}
@@ -763,17 +871,17 @@ importers:
   packages/core:
     dependencies:
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../config-tsconfig
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/data:
@@ -782,32 +890,32 @@ importers:
         specifier: workspace:*
         version: link:../schemas
       firebase:
-        specifier: ^12.13.0
+        specifier: 'catalog:'
         version: 12.13.0
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../config-tsconfig
       '@tanstack/react-query':
-        specifier: ^5.100.10
+        specifier: 'catalog:'
         version: 5.100.10(react@19.2.6)
       '@types/react':
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.14
       firebase-admin:
-        specifier: ^14.0.0
+        specifier: 'catalog:'
         version: 14.0.0
       react:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/integrations/amazon-sp-api:
@@ -820,10 +928,10 @@ importers:
         specifier: workspace:*
         version: link:../../config-tsconfig
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/integrations/facebook:
@@ -836,35 +944,35 @@ importers:
         specifier: workspace:*
         version: link:../../config-tsconfig
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/integrations/freight-br:
     dependencies:
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
       eslint:
-        specifier: ^9.39.4
+        specifier: 'catalog:'
         version: 9.39.4
       eslint-config-prettier:
-        specifier: ^10.1.5
+        specifier: 'catalog:'
         version: 10.1.8(eslint@9.39.4)
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       typescript-eslint:
-        specifier: ^8.59.3
+        specifier: 'catalog:'
         version: 8.59.3(eslint@9.39.4)(typescript@6.0.3)
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/integrations/loja-integrada:
@@ -877,10 +985,10 @@ importers:
         specifier: workspace:*
         version: link:../../config-tsconfig
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/integrations/magalu:
@@ -893,10 +1001,10 @@ importers:
         specifier: workspace:*
         version: link:../../config-tsconfig
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/integrations/mercado-livre:
@@ -905,17 +1013,17 @@ importers:
         specifier: workspace:*
         version: link:../../core
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/integrations/mercado-pago:
@@ -927,17 +1035,17 @@ importers:
         specifier: workspace:*
         version: link:../../schemas
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/integrations/nfe:
@@ -955,7 +1063,7 @@ importers:
         specifier: ^4.11.1
         version: 4.11.1
       node-forge:
-        specifier: ^1.3.1
+        specifier: 'catalog:'
         version: 1.4.0
       pdfkit:
         specifier: ^0.19.0
@@ -967,10 +1075,10 @@ importers:
         specifier: ^6.0.1
         version: 6.1.2
       xmllint-wasm:
-        specifier: ^5.2.0
+        specifier: 'catalog:'
         version: 5.2.0(@types/node@24.12.4)
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-eslint':
@@ -983,31 +1091,31 @@ importers:
         specifier: workspace:*
         version: link:../../config-vitest
       '@types/node-forge':
-        specifier: ^1.3.11
+        specifier: 'catalog:'
         version: 1.3.14
       '@types/pdfkit':
         specifier: ^0.17.6
         version: 0.17.6
       eslint:
-        specifier: ^9.39.4
+        specifier: 'catalog:'
         version: 9.39.4
       eslint-config-prettier:
-        specifier: ^10.1.5
+        specifier: 'catalog:'
         version: 10.1.8(eslint@9.39.4)
       firebase-admin:
-        specifier: ^14.0.0
+        specifier: 'catalog:'
         version: 14.0.0
       tsx:
-        specifier: ^4.21.0
+        specifier: 'catalog:'
         version: 4.21.0
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       typescript-eslint:
-        specifier: ^8.59.3
+        specifier: 'catalog:'
         version: 8.59.3(eslint@9.39.4)(typescript@6.0.3)
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/integrations/shopee:
@@ -1020,29 +1128,29 @@ importers:
         specifier: workspace:*
         version: link:../../config-tsconfig
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/integrations/whatsapp-cloud-api:
     dependencies:
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/plugin-sdk:
@@ -1055,10 +1163,10 @@ importers:
         specifier: workspace:*
         version: link:../config-tsconfig
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/rules-gen:
@@ -1073,7 +1181,7 @@ importers:
         specifier: workspace:*
         version: link:../schemas
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-tsconfig':
@@ -1083,25 +1191,25 @@ importers:
         specifier: ^5.0.1
         version: 5.0.1(firebase@12.13.0)
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       firebase:
-        specifier: ^12.13.0
+        specifier: 'catalog:'
         version: 12.13.0
       gaxios:
         specifier: ^7.1.4
         version: 7.1.4
       google-auth-library:
-        specifier: ^10.6.2
+        specifier: 'catalog:'
         version: 10.6.2
       tsx:
-        specifier: ^4.21.0
+        specifier: 'catalog:'
         version: 4.21.0
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/schemas:
@@ -1110,7 +1218,7 @@ importers:
         specifier: workspace:*
         version: link:../core
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-eslint':
@@ -1120,19 +1228,19 @@ importers:
         specifier: workspace:*
         version: link:../config-tsconfig
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       eslint:
-        specifier: ^9.39.4
+        specifier: 'catalog:'
         version: 9.39.4
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       typescript-eslint:
-        specifier: ^8.59.3
+        specifier: 'catalog:'
         version: 8.59.3(eslint@9.39.4)(typescript@6.0.3)
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/storage:
@@ -1144,23 +1252,23 @@ importers:
         specifier: workspace:*
         version: link:../schemas
       firebase:
-        specifier: ^12.13.0
+        specifier: 'catalog:'
         version: 12.13.0
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../config-tsconfig
       firebase-admin:
-        specifier: ^14.0.0
+        specifier: 'catalog:'
         version: 14.0.0
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   packages/ui:
@@ -1175,71 +1283,71 @@ importers:
         specifier: workspace:*
         version: link:../schemas
       '@dnd-kit/core':
-        specifier: ^6.3.1
+        specifier: 'catalog:'
         version: 6.3.1(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@dnd-kit/sortable':
-        specifier: ^10.0.0
+        specifier: 'catalog:'
         version: 10.0.0(@dnd-kit/core@6.3.1(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)
       '@dnd-kit/utilities':
-        specifier: ^3.2.2
+        specifier: 'catalog:'
         version: 3.2.2(react@19.2.6)
       '@hookform/resolvers':
-        specifier: ^5.2.2
+        specifier: 'catalog:'
         version: 5.2.2(react-hook-form@7.75.0(react@19.2.6))
       '@tabler/icons-react':
-        specifier: ^3.21.0
+        specifier: 'catalog:'
         version: 3.44.0(react@19.2.6)
       firebase:
-        specifier: ^12.13.0
+        specifier: 'catalog:'
         version: 12.13.0
       react-hook-form:
-        specifier: ^7.75.0
+        specifier: 'catalog:'
         version: 7.75.0(react@19.2.6)
       zod:
-        specifier: ^4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../config-tsconfig
       '@mantine/core':
-        specifier: ^9.2.0
+        specifier: 'catalog:'
         version: 9.2.0(@mantine/hooks@9.2.0(react@19.2.6))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@mantine/dates':
-        specifier: ^9.2.0
+        specifier: 'catalog:'
         version: 9.2.0(@mantine/core@9.2.0(@mantine/hooks@9.2.0(react@19.2.6))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(@mantine/hooks@9.2.0(react@19.2.6))(dayjs@1.11.20)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@mantine/hooks':
-        specifier: ^9.2.0
+        specifier: 'catalog:'
         version: 9.2.0(react@19.2.6)
       '@mantine/notifications':
-        specifier: ^9.2.0
+        specifier: 'catalog:'
         version: 9.2.0(@mantine/core@9.2.0(@mantine/hooks@9.2.0(react@19.2.6))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(@mantine/hooks@9.2.0(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@testing-library/react':
-        specifier: ^16.3.2
+        specifier: 'catalog:'
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@types/react':
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.14
       '@types/react-dom':
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.3(@types/react@19.2.14)
       jsdom:
-        specifier: ^29.1.1
+        specifier: 'catalog:'
         version: 29.1.1(@noble/hashes@1.8.0)
       next:
-        specifier: 16.2.6
+        specifier: 'catalog:'
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       react:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6
       react-dom:
-        specifier: ^19.2.0
+        specifier: 'catalog:'
         version: 19.2.6(react@19.2.6)
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   tools/migrations:
@@ -1248,23 +1356,23 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
       firebase-admin:
-        specifier: ^14.0.0
+        specifier: 'catalog:'
         version: 14.0.0
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       tsx:
-        specifier: ^4.21.0
+        specifier: 'catalog:'
         version: 4.21.0
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
       vitest:
-        specifier: ^4.1.6
+        specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
 
   tools/test-fixtures:
@@ -1276,20 +1384,20 @@ importers:
         specifier: workspace:*
         version: link:../../packages/schemas
       firebase-admin:
-        specifier: ^14.0.0
+        specifier: 'catalog:'
         version: 14.0.0
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
       '@types/node':
-        specifier: ^24.10.0
+        specifier: 'catalog:'
         version: 24.12.4
       tsx:
-        specifier: ^4.21.0
+        specifier: 'catalog:'
         version: 4.21.0
       typescript:
-        specifier: ^6.0.3
+        specifier: 'catalog:'
         version: 6.0.3
 
 packages:
