@@ -1,24 +1,33 @@
 /**
- * Variation-children orchestration (IO layer, ML→ERP) — issue #520. Called from
- * `import.ts` once the parent produto + its `produtoMercadoLivre` link exist:
- * writes one child produto per usable legacy `variations[]` entry — its own
- * produto doc, `variacaoMercadoLivre` link, estoque, and the dual-run
- * `marketplace` denorm — using the taxonomy resolved by `importTaxonomia`
- * (#519) and the pure assembly in `importCore.assembleVariationChildPlan`.
+ * Variation-children orchestration (IO layer, ML→ERP) — issue #520, extended
+ * for User-Products (#521). Called from `import.ts` once the parent produto +
+ * its `produtoMercadoLivre` link exist: writes one child produto per usable
+ * entry — its own produto doc, `variacaoMercadoLivre` link, estoque, and the
+ * dual-run `marketplace` denorm — using the taxonomy resolved by
+ * `importTaxonomia` (#519) and the pure assembly in
+ * `importCore.assembleVariationChildPlan`.
  *
- * Doc-id parity — mirrors the legacy `generateLocalId` scheme so a re-import
- * from either app converges on the SAME docs:
- *  - child produto id: reused from an existing link/SKU match, else the same
- *    per-item hash scheme `import.ts` uses for the parent —
- *    `sha256(parentProdutoId|variationId)` (NOT the ML variation's own
- *    `seller_custom_field`, for the same collision reason as the parent);
- *  - link doc id: reused when resolved, else the legacy fixed-width form
- *    `'XMLB000000000000000' + itemId + 'vMLB' + variationId`
- *    (`models.dart:1585-1587`).
+ * Two doc-id schemes, selected by the optional `up` param (mirrors the legacy
+ * `generateLocalId` scheme either way, so a re-import from either app
+ * converges on the SAME docs):
+ *  - legacy `variations[]` (`up` omitted): child produto id reused from an
+ *    existing link/SKU match, else `sha256(parentProdutoId|variationId)` (NOT
+ *    the ML variation's own `seller_custom_field`, for the same collision
+ *    reason as the parent); link doc id reused when resolved, else the legacy
+ *    fixed-width form `'XMLB000000000000000' + itemId + 'vMLB' + variationId`
+ *    (`models.dart:1585-1587`); the child link resolves by its numeric `id`
+ *    field scoped to the parent link;
+ *  - User-Products (`up: { parentLinkDocId }`): child produto id AND its link
+ *    doc id are the SAME string, `'XMLB000000000000000' + parentLinkDocId +
+ *    'vMLB' + memberItemId` (`models.dart:1585-1587` + `produtos.dart:718,764`
+ *    — note the first segment is the PARENT'S OWN PML DOC id, not the ML item
+ *    id); the child link resolves by its string `itemId` field (the member's
+ *    own MLB id) scoped to the parent link, not a numeric `id`.
  *
- * No photo import here (legacy parity): `variations[].picture_ids` is never
- * imported — only the parent-level `item.pictures` are (handled by `import.ts`
- * itself, via `importPhotos.ts`, after this module returns).
+ * No photo import here (legacy parity): `variations[].picture_ids` /
+ * User-Products per-member pictures are never imported — only the
+ * parent-level `item.pictures` are (handled by `import.ts` itself, via
+ * `importPhotos.ts`, after this module returns).
  */
 import { createHash } from 'node:crypto';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
@@ -55,11 +64,23 @@ export interface ImportVariationChildrenResult {
   created: number;
 }
 
+/**
+ * User-Products mode switch: when set, every child in this call resolves +
+ * mints ids via the User-Products scheme (see the module doc) instead of the
+ * legacy `variations[]` scheme. `parentLinkDocId` is the parent's OWN
+ * `produtoMercadoLivre` link doc id (resolved-existing or freshly minted by
+ * `import.ts`) — the first segment of the fixed-width child id/link-id string.
+ */
+export interface ImportVariationChildrenUpOptions {
+  parentLinkDocId: string;
+}
+
 export async function importVariationChildren(
   deps: ImportVariationChildrenDeps,
   parent: VariationParentInfo,
   mappedVariations: readonly MappedMlVariation[],
   taxonomia: readonly TaxonomiaResolution[],
+  up?: ImportVariationChildrenUpOptions,
 ): Promise<ImportVariationChildrenResult> {
   const { db, integracaoId, options, depositoOuterRef, now } = deps;
   const depositoId = depositoOuterRef ? lastSegment(depositoOuterRef) : null;
@@ -72,11 +93,18 @@ export async function importVariationChildren(
       mappedVariation.sku,
       parent.produtoId,
       parent.linkOuterRef,
+      up != null,
     );
+    const fixedWidthId = up
+      ? `XMLB000000000000000${up.parentLinkDocId}vMLB${mappedVariation.variationId}`
+      : null;
     const produtoId =
-      resolved?.produtoId ?? sha256(`${parent.produtoId}|${mappedVariation.variationId}`);
+      resolved?.produtoId ??
+      fixedWidthId ??
+      sha256(`${parent.produtoId}|${mappedVariation.variationId}`);
     const linkDocId =
       resolved?.linkDocId ??
+      fixedWidthId ??
       `XMLB000000000000000${parent.mlItemId}vMLB${mappedVariation.variationId}`;
 
     const ref = produtoCollection.docRef(db, {}, produtoId);
@@ -100,6 +128,7 @@ export async function importVariationChildren(
       existingLinkRaw: resolved?.linkRaw ?? null,
       existingEstoqueQty: existingStock?.quantidade ?? null,
       existingEstoqueReservada: existingStock?.reservada ?? null,
+      up: up ? { itemId: mappedVariation.variationId } : null,
       now,
     };
     let plan = assembleVariationChildPlan(args);
@@ -161,11 +190,16 @@ export async function importVariationChildren(
 
     // Dual-run denorm — child entries carry `externalParentId` (the parent's ML
     // item id), unlike the parent's own entry which omits it (models.dart:2325).
+    // User-Products children also carry `relevantData.isUserProductModel`
+    // (`plan.denorm.relevantData`, set by `assembleVariationChildPlan` only when
+    // `up` was passed) — omitted entirely for a legacy variations[] child, so
+    // that path's denorm shape stays byte-identical.
     await produtoCollection.docRef(db, {}, produtoId).update({
       marketplace: FieldValue.arrayUnion({
         integracaoUid: integracaoId,
         externalId: plan.denorm.externalId,
         externalParentId: plan.denorm.externalParentId,
+        ...(plan.denorm.relevantData ? { relevantData: plan.denorm.relevantData } : {}),
       }),
       marketplaceIds: FieldValue.arrayUnion(plan.denorm.externalId),
       integracoesComProduto: FieldValue.arrayUnion(integracaoId),
@@ -187,12 +221,17 @@ interface ResolvedChild {
 }
 
 /**
- * Resolve the ERP child produto for one ML variation: first by an existing
- * `variacaoMercadoLivre` link with `id == <numeric variation id>` scoped to THIS
- * parent link (a collectionGroup query, filtered by the exact
- * `produtoMercadoLivreOuterRef` string — a variation id is only unique within its
- * own item), then by `sku` + `paiId == parentProdutoId` — and when found by SKU,
- * REUSE that child's existing link for this parent if present. Null → create.
+ * Resolve the ERP child produto for one variation/member: first by an existing
+ * `variacaoMercadoLivre` link scoped to THIS parent link (a collectionGroup
+ * query, filtered by the exact `produtoMercadoLivreOuterRef` string), then by
+ * `sku` + `paiId == parentProdutoId` — and when found by SKU, REUSE that
+ * child's existing link for this parent if present. Null → create.
+ *
+ * `matchByItemId` selects the link-lookup field: legacy `variations[]`
+ * (false) matches on the numeric `id` field (a variation id is only unique
+ * within its own item, hence the parent-link scoping); User-Products (true)
+ * matches on the string `itemId` field (the member's own MLB id — globally
+ * unique, but still parent-scoped for symmetry/defense-in-depth).
  */
 async function resolveExistingChild(
   db: Firestore,
@@ -200,16 +239,12 @@ async function resolveExistingChild(
   childSku: string | null,
   parentProdutoId: string,
   parentLinkOuterRef: string,
+  matchByItemId: boolean,
 ): Promise<ResolvedChild | null> {
-  const numericId = numericVariationId(variationId);
-  if (numericId != null) {
-    // Both filters server-side: a variation id is only unique within its item, so
-    // filtering the parent-link ref in memory would pull every same-id link doc
-    // across the whole DB. Exact string equality is safe here (both apps write the
-    // same `documents/...` form) — unlike the parent's tolerant refMatchesIntegracao.
+  if (matchByItemId) {
     const linkSnap = await variacaoMercadoLivreLinkCollection
       .groupQuery(db)
-      .where('id', '==', numericId)
+      .where('itemId', '==', variationId)
       .where('produtoMercadoLivreOuterRef', '==', parentLinkOuterRef)
       .limit(1)
       .get();
@@ -218,6 +253,27 @@ async function resolveExistingChild(
       const produtoId = d.ref.parent?.parent?.id;
       if (produtoId) {
         return { produtoId, linkDocId: d.id, linkRaw: d.data() as Record<string, unknown> };
+      }
+    }
+  } else {
+    const numericId = numericVariationId(variationId);
+    if (numericId != null) {
+      // Both filters server-side: a variation id is only unique within its item, so
+      // filtering the parent-link ref in memory would pull every same-id link doc
+      // across the whole DB. Exact string equality is safe here (both apps write the
+      // same `documents/...` form) — unlike the parent's tolerant refMatchesIntegracao.
+      const linkSnap = await variacaoMercadoLivreLinkCollection
+        .groupQuery(db)
+        .where('id', '==', numericId)
+        .where('produtoMercadoLivreOuterRef', '==', parentLinkOuterRef)
+        .limit(1)
+        .get();
+      const d = linkSnap.docs[0];
+      if (d) {
+        const produtoId = d.ref.parent?.parent?.id;
+        if (produtoId) {
+          return { produtoId, linkDocId: d.id, linkRaw: d.data() as Record<string, unknown> };
+        }
       }
     }
   }

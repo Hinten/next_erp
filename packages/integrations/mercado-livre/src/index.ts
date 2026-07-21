@@ -9,6 +9,7 @@ export * from './mapping/attributes';
 export * from './mapping/itemPayload';
 export * from './mapping/importItem';
 export * from './mapping/importVariations';
+export * from './mapping/importUserProduct';
 export * from './mapping/pictures';
 
 /**

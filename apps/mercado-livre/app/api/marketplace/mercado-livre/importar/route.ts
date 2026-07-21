@@ -3,12 +3,15 @@
  * Livre listing into an ERP produto. Body: `{ integracaoId, itemId }` (`itemId` =
  * the `MLB…` id). Requires `PERM.integracao.write`.
  *
- * Simple listings AND the legacy `variations[]` model both import (#520 — one
- * child produto per variation, plus the shared variation taxonomy). Only a
- * `family_name` (User-Products) listing returns 422 `ML_IMPORT_BLOCKED` (that
- * model's import is tracked in #521). Responses: 200
- * `{ produtoId, estado, nome, created, variations: { total, created } }`; 422
- * with the blocking issues; ML/API errors map through `mercadoLivreErrorResponse`.
+ * All three ML listing models import: simple, legacy `variations[]` (#520 —
+ * one child produto per variation, plus the shared variation taxonomy), and
+ * `family_name` / User-Products (#521 — a family parent + this member as a
+ * child, with a best-effort server-side fan-out to the rest of the family).
+ * Responses: 200 `{ produtoId, estado, nome, created, variations: { total,
+ * created }, family?: { total, imported, created, capped, failures } }`
+ * (`family` present only for a User-Products primary-member call); 422
+ * `ML_IMPORT_BLOCKED` with the blocking issues (e.g. a closed listing, wrong
+ * seller); ML/API errors map through `mercadoLivreErrorResponse`.
  */
 import { NextResponse } from 'next/server';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';

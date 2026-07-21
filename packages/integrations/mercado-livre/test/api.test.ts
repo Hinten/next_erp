@@ -100,6 +100,80 @@ describe('createMercadoLivreApi — happy paths', () => {
   });
 });
 
+describe('createMercadoLivreApi — User-Products family fan-out (#521)', () => {
+  it('getUserProductFamily hits /sites/MLB/user-products-families/{id} and parses user_products_ids', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ user_products_ids: ['UPtin1', 'UPtin2'] }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const family = await api.getUserProductFamily('UPF123');
+    expect(family.user_products_ids).toEqual(['UPtin1', 'UPtin2']);
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toBe('https://api.mercadolibre.com/sites/MLB/user-products-families/UPF123');
+  });
+
+  it('getUserProductFamily defaults user_products_ids to [] when ML omits the field', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({}),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const family = await api.getUserProductFamily('UPF123');
+    expect(family.user_products_ids).toEqual([]);
+  });
+
+  it('getUserProductFamily tolerates unknown extra fields', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ user_products_ids: [], name: 'Camiseta' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const family = (await api.getUserProductFamily('UPF123')) as Record<string, unknown>;
+    expect(family.name).toBe('Camiseta');
+  });
+
+  it('getUserProductFamily maps a 404 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'family not found' }, 404),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getUserProductFamily('UPF404')).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 404,
+    });
+  });
+
+  it('searchItemsByUserProduct joins ids with a comma and hits /users/{sellerId}/items/search', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ results: ['MLB111', 'MLB222'] }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const found = await api.searchItemsByUserProduct(999, ['UPtin1', 'UPtin2']);
+    expect(found.results).toEqual(['MLB111', 'MLB222']);
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toContain('/users/999/items/search');
+    expect(url).toContain('user_product_id=UPtin1%2CUPtin2');
+  });
+
+  it('searchItemsByUserProduct defaults results to [] when ML omits the field', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({}),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const found = await api.searchItemsByUserProduct(999, ['UPtin1']);
+    expect(found.results).toEqual([]);
+  });
+
+  it('searchItemsByUserProduct maps a 500 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'boom' }, 500),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.searchItemsByUserProduct(999, ['UPtin1'])).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 500,
+    });
+  });
+});
+
 describe('createMercadoLivreApi — retries + errors', () => {
   it('does NOT retry a 429 — throws an HTTP error immediately', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>

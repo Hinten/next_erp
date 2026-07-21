@@ -112,6 +112,11 @@ export const itemSchema = z
     title: z.string().nullable().optional(),
     /** User-Products model — ML titles the listing from the family. */
     family_name: z.string().nullable().optional(),
+    /** User-Products model — groups sibling items (one MLB item per variation, #521). */
+    family_id: z.union([z.string(), z.number()]).nullable().optional(),
+    user_product_id: z.string().nullable().optional(),
+    /** User-Products model — the variation identity lives at the item ROOT (no `variations[]`). */
+    attribute_combinations: z.array(itemAttributeSchema).nullable().optional(),
     category_id: z.string().nullable().optional(),
     price: z.number().nullable().optional(),
     /** Normal price (promo/`price` may be lower); import uses `base_price ?? price`. */
@@ -290,6 +295,32 @@ export const packSchema = z
   })
   .passthrough();
 export type MlPack = z.infer<typeof packSchema>;
+
+/* --------------------- User-Products family fan-out (#521) --------------------- */
+
+/**
+ * `GET /sites/{siteId}/user-products-families/{familyId}` — the sibling
+ * User-Product ids (`UPtin…`) of a family, keyed by `user_products_ids`
+ * (legacy `providers/importacao.dart:174`: `familySearch['user_products_ids']`).
+ */
+export const userProductFamilySchema = z
+  .object({
+    user_products_ids: z.array(z.string()).default([]),
+  })
+  .passthrough();
+export type MlUserProductFamily = z.infer<typeof userProductFamilySchema>;
+
+/**
+ * `GET /users/{sellerId}/items/search?user_product_id=<csv>` — the MLB item
+ * ids for a batch of User-Product ids, keyed by `results` (legacy
+ * `providers/importacao.dart:179`: `mlbIdSearch['results']`).
+ */
+export const userProductItemsSearchSchema = z
+  .object({
+    results: z.array(z.string()).default([]),
+  })
+  .passthrough();
+export type MlUserProductItemsSearch = z.infer<typeof userProductItemsSearchSchema>;
 
 /* ------------------------------ Size charts ------------------------------ */
 
