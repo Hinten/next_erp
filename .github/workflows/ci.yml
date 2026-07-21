@@ -4,7 +4,10 @@ on:
   push:
     branches: [master, main]
   pull_request:
-    branches: [master, main]
+    # `branches:` matches the PR's BASE, not its head — so the `claude/**` entry
+    # is what gives a stacked PR (B -> A -> main) CI. Stack onto a `claude/`
+    # branch; a child based on anything else reports zero checks.
+    branches: [master, main, 'claude/**']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

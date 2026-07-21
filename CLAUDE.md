@@ -12,14 +12,18 @@ repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 
 CI — everything in `.github/workflows/` runs **concurrently**, gated on nothing.
-`ci.yml` is the only workflow with no path filter, so every PR gets it; it
-excludes the nfe/freight/storage/functions tests, which the domain pipelines
-`ci-{nfe,freight,storage,rules}.yml` own.
+`ci.yml` and `e2e-emulator.yml` are the two workflows with no path filter, so
+every PR gets both; `ci.yml` excludes the nfe/freight/storage/functions tests,
+which the domain pipelines `ci-{nfe,freight,storage,rules}.yml` own.
 
-⚠️ Every other workflow is **`paths:`-filtered**, e2e included (apps/web,
-packages/{schemas,ui,data,auth,core}, tools/test-fixtures). A PR touching only
-`packages/integrations/**` or `apps/nfe/**` runs **no e2e** — those checks show
-*skipped*, not failed. "CI green" ≠ "e2e passed".
+⚠️ Every other workflow is **`paths:`-filtered**, the staging e2e lanes included
+(apps/web, packages/{schemas,ui,data,auth,core}, tools/test-fixtures). A PR
+touching only `packages/integrations/**` or `apps/nfe/**` runs **no e2e** —
+those checks show *skipped*, not failed. "CI green" ≠ "e2e passed".
+
+Every `pull_request` base filter is `[master, main, 'claude/**']`. That key
+matches the PR's **base**, so **stack onto a `claude/`-prefixed branch** — a
+stacked PR based on anything else reports zero checks, not failures.
 
 ## Critical rules
 
