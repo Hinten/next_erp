@@ -1,9 +1,6 @@
 import {
-  diffPrecos,
   estoqueProdutoMeta,
   estoqueProdutoSchema,
-  historicoCustoMeta,
-  historicoPrecoMeta,
   impostoProdutoMeta,
   impostoProdutoSchema,
   makeEstoqueUid,
@@ -11,24 +8,31 @@ import {
   produtoExtraDataMeta,
   produtoExtraDataSchema,
   produtoMeta,
-  samePrecos,
   PRODUTO_EXTRA_DATA_DOC_ID,
   PRODUTO_SUBCOLLECTION_NAMES,
   type ComponentesKit,
   type ImpostoProduto,
-  type PrecoChange,
-  type PrecosMap,
   type ProdutoExtraData,
 } from '@delfrance/schemas';
 import type { ProdutoDataPort, ProdutoWriteOp } from './port';
 
 // ---------------------------------------------------------------------------
 // Paths (derived from the schema metas so they can never drift from the rules)
+//
+// Price/cost history (`historicoDePrecos`/`historicoDeCusto`) and the
+// parent→children precos propagation used to live here (`buildPrecoHistoryOps`,
+// `recordPrecoHistory`, `buildCustoHistoryOp`, `recordCustoHistory`,
+// `propagatePrecosToChildren`, `applyPrecosChange`) — removed 2026-07-21. Both
+// are now server-owned by the `onProdutoPrecoCustoChanged` Cloud Function
+// trigger (apps/functions), which fires on every produto write, diffs
+// precos/custo against the previous doc, records the history and propagates to
+// children (gated on `paiId == null` and `propagatePriceToChildren`). The only
+// remaining client-side history write is `appendPrecoHistory`
+// (apps/web/lib/produtos/precoHistory.ts) for a NEWLY CREATED variation child —
+// the trigger ignores children entirely.
 // ---------------------------------------------------------------------------
 
 const PRODUTOS = produtoMeta.collectionPath; // produtos
-const HISTORICO_PRECO = historicoPrecoMeta.collectionPath; // produtos/{produtoId}/historicoDePrecos
-const HISTORICO_CUSTO = historicoCustoMeta.collectionPath; // produtos/{produtoId}/historicoDeCusto
 const EXTRA_DATA = produtoExtraDataMeta.collectionPath; // produtos/{produtoId}/extraData
 const ESTOQUE = estoqueProdutoMeta.collectionPath; // produtos/{produtoId}/estoques
 const IMPOSTO = impostoProdutoMeta.collectionPath; // produtos/{produtoId}/imposto
@@ -36,66 +40,6 @@ const IMPOSTO = impostoProdutoMeta.collectionPath; // produtos/{produtoId}/impos
 const produtoDocPath = (id: string) => `${PRODUTOS}/${id}`;
 const subDocPath = (template: string, produtoId: string, docId: string) =>
   `${template.replace('{produtoId}', produtoId)}/${docId}`;
-
-// ---------------------------------------------------------------------------
-// Price / cost history (Flutter `Produto.save()` history writes)
-// ---------------------------------------------------------------------------
-
-/**
- * Build one `historicoDePrecos` set-op per price change — mirror of the Flutter
- * history writes (`models.dart:2078-2130`). Wire shape: outerRef =
- * `documents/listaDePrecos/<id>` (`pathWithDocuments`), `valorOriginal` /
- * `valorFinal` explicitly null when absent, `timestamp` = ms epoch.
- */
-export function buildPrecoHistoryOps(
-  port: ProdutoDataPort,
-  produtoId: string,
-  changes: PrecoChange[],
-): ProdutoWriteOp[] {
-  const timestamp = port.now();
-  return changes.map((change) => ({
-    type: 'set',
-    path: subDocPath(HISTORICO_PRECO, produtoId, port.newId()),
-    data: {
-      listaDePrecoHistoricoOuterRef: `documents/listaDePrecos/${change.listaId}`,
-      valorOriginal: change.valorOriginal,
-      valorFinal: change.valorFinal,
-      timestamp,
-    },
-  }));
-}
-
-/** Build one `historicoDeCusto` set-op (`{ valor, timestamp: ms-epoch }`). */
-export function buildCustoHistoryOp(
-  port: ProdutoDataPort,
-  produtoId: string,
-  valor: number,
-): ProdutoWriteOp {
-  return {
-    type: 'set',
-    path: subDocPath(HISTORICO_CUSTO, produtoId, port.newId()),
-    data: { valor, timestamp: port.now() },
-  };
-}
-
-/** Record price-change history (no-op when there are no changes). */
-export async function recordPrecoHistory(
-  port: ProdutoDataPort,
-  produtoId: string,
-  changes: PrecoChange[],
-): Promise<void> {
-  if (changes.length === 0) return;
-  await port.commit(buildPrecoHistoryOps(port, produtoId, changes));
-}
-
-/** Record one cost-change history record. */
-export async function recordCustoHistory(
-  port: ProdutoDataPort,
-  produtoId: string,
-  valor: number,
-): Promise<void> {
-  await port.commit([buildCustoHistoryOp(port, produtoId, valor)]);
-}
 
 // ---------------------------------------------------------------------------
 // Produto extra data (Descrição + Google Merchant — the singleton subdocument)
@@ -454,53 +398,6 @@ export async function propagateKitStatusToChildren(
   if (children.length === 0) return [];
   await port.commit(buildKitStatusChildOps(change, children));
   return children.map((c) => c.id);
-}
-
-// ---------------------------------------------------------------------------
-// Child precos propagation (Flutter per-child `updateOnly`, NO history)
-// ---------------------------------------------------------------------------
-
-/**
- * Refresh the `precos` of every existing variation child whose map differs
- * from the parent's value — Flutter's `produtoTableProvider.dart:556-568`.
- * Pedidos resolve the price on the SOLD child doc, so a stale child would sell
- * at the old price. Returns the ids that were updated.
- *
- * (The adapter forces the children read to the server — a cache-served read on
- * a freshly navigated editor can be cold and silently skip the propagation.)
- */
-export async function propagatePrecosToChildren(
-  port: ProdutoDataPort,
-  parentId: string,
-  precos: PrecosMap,
-): Promise<string[]> {
-  const children = await port.getChildren(parentId);
-  const stale = children.filter((c) => !samePrecos(c.precos, precos));
-  if (stale.length === 0) return [];
-  await port.commit(
-    stale.map((c) => ({
-      type: 'update',
-      path: produtoDocPath(c.id),
-      data: { precos: precos ?? null },
-    })),
-  );
-  return stale.map((c) => c.id);
-}
-
-/**
- * Diff old→new precos, record the history, and — when the map changed —
- * propagate it to the variation children. The composite the editor's
- * `onAfterSave` and a future agent both call. Returns whether anything changed.
- */
-export async function applyPrecosChange(
-  port: ProdutoDataPort,
-  args: { produtoId: string; oldPrecos: PrecosMap; newPrecos: PrecosMap },
-): Promise<{ changed: boolean }> {
-  const changes = diffPrecos(args.oldPrecos, args.newPrecos);
-  if (changes.length === 0) return { changed: false };
-  await recordPrecoHistory(port, args.produtoId, changes);
-  await propagatePrecosToChildren(port, args.produtoId, args.newPrecos);
-  return { changed: true };
 }
 
 // ---------------------------------------------------------------------------

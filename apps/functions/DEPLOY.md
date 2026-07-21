@@ -93,6 +93,22 @@ lifecycle functions (#136 / #95) — see ADR 0010, the produto deletion lifecycl
 ADR added in PR #170 (`apps/docs/src/content/docs/adr/0010-produto-deletion-lifecycle.md`;
 it lands with that PR, so the path resolves once both merge to main).
 
+## `onProdutoPrecoCustoChanged` (price/custo history + child propagation)
+
+Ships in this same `functions:storage` codebase — no config change, no new
+deploy command; it goes out with the next `firebase deploy --only
+functions:storage` run above. It moves `historicoDePrecos`/`historicoDeCusto`
+recording and parent→children `precos` propagation server-side (previously the
+Next produto editor's `onAfterSave`).
+
+**Deploy this trigger BEFORE OR WITH the web release that removes the
+client-side history/propagation writes** — until it's live, an edit made while
+only the OLD client code runs would record no history and propagate nothing.
+Deploying the trigger first is safe on its own (both the old client writes and
+the new trigger writes for a while, which is the accepted dual-run — see the
+schema/trigger PR notes), so when in doubt deploy the function first and ship
+the client change after.
+
 ## Known first-run gotchas (not yet executed)
 
 This lane has been prepared but **not run end-to-end** yet. On a first cloud deploy,

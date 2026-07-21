@@ -149,6 +149,7 @@ service cloud.firestore {
         && (!c.hasAny(['pesoLiquidoKg']) || (d.get('pesoLiquidoKg', null) == null || d.get('pesoLiquidoKg', null) is number))
         && (!c.hasAny(['precos']) || (d.get('precos', null) == null || d.get('precos', null) is map))
         && (!c.hasAny(['profundidadeCm']) || (d.get('profundidadeCm', null) == null || d.get('profundidadeCm', null) is number))
+        && (!c.hasAny(['propagatePriceToChildren']) || d.get('propagatePriceToChildren', null) is bool)
         && (!c.hasAny(['publicado']) || d.get('publicado', null) is bool)
         && (!c.hasAny(['sku']) || (d.get('sku', null) == null || d.get('sku', null) is string && d.get('sku', null).size() <= 255))
         && (!c.hasAny(['statusProdutosMarketplace']) || (d.get('statusProdutosMarketplace', null) == null || d.get('statusProdutosMarketplace', null) is map))
