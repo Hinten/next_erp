@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
-import { listaDePrecosSchema } from '@delfrance/schemas';
+import { nowMillis } from '@delfrance/core/datetime';
 import { ObjectView } from '@delfrance/ui';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -15,6 +15,7 @@ import {
   LISTA_DE_PRECOS_SECTIONS,
   listaDePrecosFields,
 } from '../_components/listaDePrecosFields';
+import { listaDePrecosFormSchema } from '../_components/listaDePrecosFormSchema';
 
 export default function NovaListaDePrecosPage() {
   const router = useRouter();
@@ -32,11 +33,11 @@ export default function NovaListaDePrecosPage() {
       </Group>
 
       <ObjectView
-        schema={listaDePrecosSchema}
+        schema={listaDePrecosFormSchema}
         collection={listaDePrecosCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}
-        defaultValues={LISTA_DE_PRECOS_CREATE_DEFAULTS}
+        defaultValues={{ ...LISTA_DE_PRECOS_CREATE_DEFAULTS, timestamp: nowMillis() }}
         excludedFields={LISTA_DE_PRECOS_EXCLUDED_FIELDS}
         fields={listaDePrecosFields}
         sections={LISTA_DE_PRECOS_SECTIONS}

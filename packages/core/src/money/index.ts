@@ -36,30 +36,23 @@ export function format(value: Money, locale = 'pt-BR'): string {
 }
 
 /**
- * Shift `value` by `exp` powers of ten using its STRING form — exact where a
- * binary `value * 10**exp` is not. Splits on any existing exponent so values that
- * stringify in scientific notation (e.g. a `5.5e-17` float residual, or `1e-7`)
- * shift correctly instead of producing the invalid literal `"5.5e-17e2"` → NaN.
- */
-function shiftDecimal(value: number, exp: number): number {
-  if (value === 0) return 0;
-  const [mantissa, e] = value.toString().split('e');
-  return Number(`${mantissa}e${e ? Number(e) + exp : exp}`);
-}
-
-/**
  * THE canonical money rounding for the whole codebase: round a reais amount to 2
- * decimals, **HALF UP, away from zero** (symmetric for credits/debits — the 3rd
- * decimal decides: 0–4 down, 5–9 up). Examples: `5.523→5.52`, `6.555→6.56`,
- * `6.739→6.74`, `1.005→1.01`, `2.675→2.68`, `-6.555→-6.56`.
+ * decimals **from its IEEE-754 double representation** — `Number(n.toFixed(2))`.
+ * This is deliberate byte-parity with the live Flutter app's `duasCasasDecimais`
+ * (`.old/packages/global/lib/src/mathExtensions.dart:4-6`,
+ * `double.parse(x.toStringAsFixed(2))`): both languages format the *actual*
+ * double to 2 decimals and reparse, so a x.xx5 boundary rounds whichever way the
+ * double sitting under it actually leans — NOT a textbook half-up rule. E.g.
+ * `1.005→1.00`, `2.675→2.67`, `6.555→6.55` all round DOWN because the nearest
+ * double to each is a hair below the tie (`1.00499999999999989…`,
+ * `2.67499999999999982…`, `6.55499999999999972…`), while `24.015→24.02` rounds
+ * UP because its double (`24.0150000000000005684…`) sits a hair above.
  *
- * It is **float-robust** where the naive impls are not: both `n.toFixed(2)` and
- * `Math.round(n * 100) / 100` give `6.555→6.55`, because the IEEE-754 double
- * nearest to 6.555 is 6.55499…. Shifting via the string form recovers the exact
- * `655.5`, so `Math.round` rounds it up to `656`. `abs`+`sign` keeps it symmetric
- * (`Math.round` alone rounds .5 toward +∞, biasing negatives), and tiny values
- * (incl. near-zero float residuals like `0.1 + 0.2 - 0.3`) collapse to a clean
- * `0` rather than `NaN` or `-0`.
+ * Replaces the float-robust half-up implementation this helper used before
+ * 2026-07-21 (string-shift + `Math.round`, which recovered the exact decimal and
+ * rounded `6.555→6.56`/`1.005→1.01`) — that divergence from Dart was flagged as
+ * deliberate at the time; the parity call has since been reversed, so the two
+ * apps now agree byte-for-byte on every reais value they round.
  *
  * Use this for every monetary CALCULATION (business + fiscal). Ad-hoc
  * `.toFixed(2)` / `Math.round(x*100)/100` are reserved for wire-string
@@ -67,17 +60,19 @@ function shiftDecimal(value: number, exp: number): number {
  */
 export function roundReais(n: number): number {
   if (!Number.isFinite(n)) return n;
-  const rounded = shiftDecimal(Math.round(shiftDecimal(Math.abs(n), 2)), -2);
-  // `n < 0 ? -rounded` would yield -0 when `rounded === 0`; keep a clean +0.
-  return n < 0 && rounded !== 0 ? -rounded : rounded;
+  const rounded = Number(n.toFixed(2));
+  // `n.toFixed(2)` can format a tiny negative residual as `"-0.00"`; keep a
+  // clean `+0` rather than let `-0` leak into currency display (`-R$ 0,00`).
+  return rounded === 0 ? 0 : rounded;
 }
 
 /**
  * Format a reais amount as a localized BRL string (e.g. `6.5 → "R$ 6,50"`). The
  * ONE sanctioned reais→integer-cents conversion: it applies {@link roundReais}
- * first (so a stray 3rd decimal still displays half-up, `6.555 → "R$ 6,56"`),
- * then scales to the integer minor units the {@link money} constructor requires.
- * Prefer this over hand-rolled `format(money(Math.round(value * 100)))`.
+ * first (so a stray 3rd decimal still displays rounded from the double,
+ * `6.555 → "R$ 6,55"`), then scales to the integer minor units the {@link money}
+ * constructor requires. Prefer this over hand-rolled
+ * `format(money(Math.round(value * 100)))`.
  */
 export function formatReais(reais: number, currency = 'BRL', locale = 'pt-BR'): string {
   return format(money(Math.round(roundReais(reais) * 100), currency), locale);

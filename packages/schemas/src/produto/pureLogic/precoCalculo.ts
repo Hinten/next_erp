@@ -8,7 +8,8 @@ import type { Preco } from '../collection/produto';
  * / `_calcularPrecoParaFormula` (`packages/produtos/lib/src/models.dart:144-212`)
  * and `FormulaCalculoPreco.getTaxaFixaPorPeso` (`:402-419`). Behavior mirrors
  * the Dart implementation (selection by `limiar`, weight-banded `taxaFixa`),
- * rounding money with the canonical `roundReais` (half-up at 2dp) from
+ * rounding money with the canonical `roundReais` (2dp from the IEEE-754
+ * double — byte-parity with Dart's `duasCasasDecimais`) from
  * `@delfrance/core/money`.
  */
 
@@ -19,8 +20,14 @@ import type { Preco } from '../collection/produto';
 // The Flutter app parses `formula` with the `math_expressions` package and
 // binds single-letter variables. This is a minimal recursive-descent
 // equivalent: numbers, variables, + - * / ^ (right-assoc power), unary minus
-// and parentheses. Anything unparsable returns null — the Dart code wraps the
-// parse in try/catch and skips the formula.
+// and parentheses. Anything unparsable — OR unevaluatable, e.g. an unbound
+// variable — returns null here. That is deliberately MORE tolerant than the
+// Dart original: `models.dart:144-168` wraps only `p.parse(formula)` in
+// try/catch; `exp.evaluate(...)` at `:167` is unguarded, so an unbound
+// variable at evaluate time crashes the whole calc instead of just skipping
+// that one formula. This engine skips instead of crashing on any
+// parse-or-evaluate failure; malformed/unbound formulas are meant to be
+// caught earlier, at edit time (the F1 formula validator), not re-thrown here.
 
 class ParseError extends Error {}
 

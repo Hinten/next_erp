@@ -69,7 +69,8 @@ export function fmtUnitValueOpt(name: string, n: number | null | undefined): str
 }
 
 /**
- * Canonical money rounding (half-up at 2dp), re-exported so the tribute module
- * keeps a single rounding import surface. See `@delfrance/core/money`.
+ * Canonical money rounding (2dp from the IEEE-754 double — byte-parity with
+ * Dart's `duasCasasDecimais`), re-exported so the tribute module keeps a
+ * single rounding import surface. See `@delfrance/core/money`.
  */
 export { roundReais } from '@delfrance/core/money';

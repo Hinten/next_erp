@@ -103,9 +103,9 @@ export interface PedidoDerivedTotals {
  * to the caller; this owns only the item/frete/devolução-derived caches so the
  * web resolver and a future MCP agent share one implementation.
  *
- * Every value is rounded with the canonical `roundReais` (half-up at 2dp). This
- * intentionally diverges from Flutter's `.duasCasasDecimais` (`toFixed`) at the
- * x.xx5 edge, where the legacy app rounds down — see `@delfrance/core/money`.
+ * Every value is rounded with the canonical `roundReais`, which rounds from the
+ * IEEE-754 double at 2dp — byte-parity with Flutter's `.duasCasasDecimais`
+ * (`toStringAsFixed(2)` reparsed); see `@delfrance/core/money`.
  */
 export function derivePedidoTotals(args: {
   itens: ReadonlyArray<ItemDoPedido>;

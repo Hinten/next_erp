@@ -5,7 +5,6 @@ import { useParams, useRouter } from 'next/navigation';
 import { deleteDoc } from 'firebase/firestore';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
-import { listaDePrecosSchema } from '@delfrance/schemas';
 import { ObjectView } from '@delfrance/ui';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -15,6 +14,7 @@ import {
   LISTA_DE_PRECOS_SECTIONS,
   listaDePrecosFields,
 } from '../../_components/listaDePrecosFields';
+import { listaDePrecosFormSchema } from '../../_components/listaDePrecosFormSchema';
 
 export default function EditarListaDePrecosPage() {
   const params = useParams<{ id: string }>();
@@ -39,7 +39,7 @@ export default function EditarListaDePrecosPage() {
       </Group>
 
       <ObjectView
-        schema={listaDePrecosSchema}
+        schema={listaDePrecosFormSchema}
         collection={listaDePrecosCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}

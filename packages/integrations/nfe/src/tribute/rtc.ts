@@ -53,7 +53,8 @@ export interface RtcItemValues {
 /**
  * Compute the per-item IBS/CBS/IS values from the config + the line total.
  * `vBC` defaults to `vProd` (Simples Nacional posture). Each value is rounded
- * half-up at 2dp via `roundReais`, matching the PIS/COFINS path.
+ * at 2dp via the canonical `roundReais` (from the IEEE-754 double, byte-parity
+ * with Dart's `duasCasasDecimais`), matching the PIS/COFINS path.
  */
 export function computeRtcItemValues(cfg: ConfiguracaoIBSCBS, vProd: number): RtcItemValues {
   const vBC = cfg.vBC ?? vProd;
