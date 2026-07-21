@@ -113,23 +113,28 @@ function AlterarPrecosContent() {
   const deferredRegraValues = useDeferredValue(regraValues);
   const deferredIsValid = useDeferredValue(isValid);
 
+  // Keyed on the STRINGIFIED values on purpose: `useWatch()` hands back a new
+  // object reference on every keystroke even when the resolved value is
+  // unchanged (e.g. toggling focus in/out of an already-valid field) —
+  // stringifying avoids re-parsing (and, downstream, rebuilding the whole
+  // preview) for a no-op change. Hoisted to plain variables because the hooks
+  // lint requires dependency arrays of simple expressions.
+  const deferredRegraSerial = JSON.stringify(deferredRegraValues);
+
   const regra = useMemo(() => {
     if (!deferredIsValid) return null;
     const parsed = regraSchema.safeParse(deferredRegraValues);
     return parsed.success ? parsed.data : null;
-    // Keyed on the STRINGIFIED value on purpose: `useWatch()` hands back a new
-    // object reference on every keystroke even when the resolved value is
-    // unchanged (e.g. toggling focus in/out of an already-valid field) —
-    // stringifying avoids re-parsing (and, downstream, rebuilding the whole
-    // preview) for a no-op change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deferredIsValid, JSON.stringify(deferredRegraValues)]);
+  }, [deferredIsValid, deferredRegraSerial]);
+
+  const regraSerial = JSON.stringify(regra);
 
   const previewRows = useMemo(() => {
     if (!targetListaId || !regra) return [];
     return buildPreviewRows(produtosArray, targetListaId, regra);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [produtosArray, targetListaId, JSON.stringify(regra)]);
+  }, [produtosArray, targetListaId, regraSerial]);
 
   const handleInclude = useCallback((rows: ProdutoPrecoRow[]) => {
     setSelecionados((prev) => {
