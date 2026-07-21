@@ -1,5 +1,5 @@
 import { FirebaseError } from 'firebase/app';
-import { doc, updateDoc, type Firestore } from 'firebase/firestore';
+import { updateDoc, type Firestore } from 'firebase/firestore';
 import { ZodError } from 'zod';
 import type { PrecosMap } from '@delfrance/schemas';
 import { getDocsByIds } from '@/lib/data/getDocsByIds';
@@ -57,14 +57,16 @@ async function defaultFetchFresh(
  * `onProdutoPrecoCustoChanged` Cloud Function trigger — this never touches
  * either.
  *
- * Uses the RAW (unconverted) doc ref + Firestore's `updateDoc`, not the
- * collection handle's `merge()`: `merge()` writes via `setDoc(..., { merge:
- * true })`, which CREATES the document if it no longer exists — exactly the
- * "resurrect a deleted produto" failure mode this apply step must not have.
- * `updateDoc` fails loud (`not-found`) on a doc deleted mid-run instead.
+ * Uses the collection handle's `docRef` + Firestore's `updateDoc`, not the
+ * handle's `merge()`: `merge()` writes via `setDoc(..., { merge: true })`,
+ * which CREATES the document if it no longer exists — exactly the "resurrect
+ * a deleted produto" failure mode this apply step must not have. `updateDoc`
+ * fails loud (`not-found`) on a doc deleted mid-run instead, and never runs
+ * the ref's converter (converters apply to set/add only), so the patch is a
+ * plain whole-map field replace of `precos`.
  */
 async function defaultWrite(db: Firestore, produtoId: string, precos: PrecosMap): Promise<void> {
-  await updateDoc(doc(db, produtoCollection.resolvePath({}), produtoId), { precos });
+  await updateDoc(produtoCollection.docRef(db, {}, produtoId), { precos });
 }
 
 async function processRow(
