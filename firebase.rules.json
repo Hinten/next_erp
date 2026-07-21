@@ -1,6 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/firebase",
-  "//": "Deploy-ISOLATED config used only by the Firestore rules emulator suite (ci-rules.yml: `firebase emulators:exec --config firebase.rules.json`). Kept separate from the root firebase.json so a stray `firebase deploy` can never push the generated firestore.rules — deploy stays manual/coordinated while production runs the Flutter-generated ruleset (CLAUDE.md critical rule 1). Firestore listens on 8081 so the storage suite (firebase.functions.json, port 8080) can run alongside.",
+  "//": "Deploy-ISOLATED config used only by the Firestore rules emulator suite (ci-rules.yml: `firebase emulators:exec --config firebase.rules.json`). Kept separate from the root firebase.json so a stray `firebase deploy` can never push the generated firestore.rules — deploy stays manual/coordinated (CLAUDE.md critical rule 2). Production runs the @delfrance/rules-gen output via the root firebase.json. Firestore listens on 8081 so the storage suite (firebase.functions.json, port 8080) can run alongside.",
   "firestore": {
     "rules": "firestore.rules",
     "indexes": "firestore.indexes.json"

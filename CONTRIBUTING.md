@@ -22,7 +22,7 @@ pnpm dev
 ## Workflow
 
 1. Open an issue describing the change before large work.
-2. Branch off `master`. Use `feat/`, `fix/`, `refactor/`, `docs/` prefixes.
+2. Branch off `main`. Use `feat/`, `fix/`, `refactor/`, `docs/` prefixes.
 3. Run `pnpm turbo run lint typecheck test` before pushing.
 4. Follow Conventional Commits (`feat:`, `fix:`, `refactor:`, `feat(integrations):`, …).
 5. PRs require all CI checks green and one maintainer review.

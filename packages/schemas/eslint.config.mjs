@@ -8,6 +8,7 @@
 import tseslint from 'typescript-eslint';
 import defaultQueryNeedsIndex from '@delfrance/config-eslint/rules/default-query-needs-index.js';
 import noAdHocMoneyRounding from '@delfrance/config-eslint/rules/no-ad-hoc-money-rounding.js';
+import noOptionalWithoutNullable from '@delfrance/config-eslint/rules/no-optional-without-nullable.js';
 import { prettier } from '@delfrance/config-eslint';
 
 const config = [
@@ -25,12 +26,16 @@ const config = [
         rules: {
           'default-query-needs-index': defaultQueryNeedsIndex,
           'no-ad-hoc-money-rounding': noAdHocMoneyRounding,
+          'no-optional-without-nullable': noOptionalWithoutNullable,
         },
       },
     },
     rules: {
       'delfrance/default-query-needs-index': 'error',
       'delfrance/no-ad-hoc-money-rounding': 'error',
+      // `.optional()` must be paired with `.nullable()` — Firebase rejects
+      // `undefined` in addDoc/setDoc. This package is the rule's whole scope.
+      'delfrance/no-optional-without-nullable': 'error',
     },
   },
   // eslint-config-prettier LAST — disables stylistic rules that conflict with
