@@ -66,6 +66,11 @@ const NAV: NavEntry[] = [
         label: 'Recalcular Preços',
         perm: PERM.produto.write,
       },
+      {
+        href: '/produtos/alterar-precos',
+        label: 'Alterar Preço em Massa',
+        perm: PERM.produto.write,
+      },
       { href: '/depositos', label: 'Depositos de Estoque', perm: PERM.estoque.read },
       { href: '/etiquetas', label: 'Etiquetas', perm: PERM.produto.read },
       { href: '/balanco', label: 'Balanço', perm: PERM.produto.read },
