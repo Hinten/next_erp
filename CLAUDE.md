@@ -21,9 +21,10 @@ which the domain pipelines `ci-{nfe,freight,storage,rules}.yml` own.
 touching only `packages/integrations/**` or `apps/nfe/**` runs **no e2e** —
 those checks show *skipped*, not failed. "CI green" ≠ "e2e passed".
 
-Every `pull_request` base filter is `[master, main, 'claude/**']`. That key
-matches the PR's **base**, so **stack onto a `claude/`-prefixed branch** — a
-stacked PR based on anything else reports zero checks, not failures.
+Every `pull_request` base filter is
+`[master, main, 'claude/**', 'feat/**', 'fix/**']`. That key matches the PR's
+**base**, so a **stacked PR** must sit on one of those prefixes — on anything
+else (`chore/`, `docs/`, …) it reports zero checks, not failures.
 
 ## Critical rules
 
