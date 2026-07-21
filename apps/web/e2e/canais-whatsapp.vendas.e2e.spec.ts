@@ -114,7 +114,11 @@ test.describe.serial('Canais WhatsApp e2e — TableView / ObjectView', () => {
     // abertura/fechamento TimeInputs, save, then reload and confirm the
     // toggle round-trips (the wire shape is a `PeriodoWhatsapp[]`, asserted
     // indirectly here via the UI staying consistent after a reload).
+    // `horario_funcionamento` lives on the "Atendimento" tab, so open it
+    // first — the form defaults to the "Geral" tab where these inputs are
+    // not rendered.
     await page.goto(`/canais/whatsapp/${row(3)}`);
+    await page.getByRole('tab', { name: 'Atendimento' }).click();
     await page.getByLabel('Segunda-feira', { exact: true }).check();
     await page.getByLabel('Segunda-feira — Abertura', { exact: true }).fill('09:00');
     await page.getByLabel('Segunda-feira — Fechamento', { exact: true }).fill('18:30');
@@ -122,6 +126,7 @@ test.describe.serial('Canais WhatsApp e2e — TableView / ObjectView', () => {
     await page.waitForURL(/\/canais\/whatsapp$/, { timeout: 15_000 });
 
     await page.goto(`/canais/whatsapp/${row(3)}`);
+    await page.getByRole('tab', { name: 'Atendimento' }).click();
     await expect(page.getByLabel('Segunda-feira', { exact: true })).toBeChecked();
     await expect(page.getByLabel('Segunda-feira — Abertura', { exact: true })).toHaveValue('09:00');
     await expect(page.getByLabel('Segunda-feira — Fechamento', { exact: true })).toHaveValue(

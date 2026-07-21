@@ -9,7 +9,11 @@ import { ObjectView } from '@delfrance/ui';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth } from '@/lib/auth';
-import { whatsappExcludedFields, whatsappFields } from '../_components/whatsappFieldOverrides';
+import {
+  WHATSAPP_SECTIONS,
+  whatsappExcludedFields,
+  whatsappFields,
+} from '../_components/whatsappFieldOverrides';
 
 export default function NovoWhatsappPage() {
   const router = useRouter();
@@ -38,6 +42,7 @@ export default function NovoWhatsappPage() {
         }}
         excludedFields={whatsappExcludedFields}
         fields={whatsappFields}
+        sections={WHATSAPP_SECTIONS}
         saveLabel="Criar"
         showSaveAndContinue={false}
         onSaved={(id) => router.replace(`/canais/whatsapp/${id}`)}

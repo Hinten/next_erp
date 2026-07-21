@@ -101,6 +101,40 @@ class FakeDb {
     }
     return this.query(entries);
   }
+
+  // Minimal transaction fake for the taxonomy resolver (#519/#520): no real
+  // isolation/retry — reads and writes apply immediately against the same maps,
+  // which is enough for these single-threaded unit tests.
+  async runTransaction<T>(fn: (tx: FakeTransaction) => Promise<T>): Promise<T> {
+    const tx: FakeTransaction = {
+      get: async (ref: { get: () => Promise<unknown> }) => ref.get(),
+      create: async (ref: { create: (d: DocData) => Promise<void> }, data: DocData) => {
+        await ref.create(data);
+      },
+      set: async (
+        ref: { set: (d: DocData, o?: { merge?: boolean }) => Promise<void> },
+        data: DocData,
+        opts?: { merge?: boolean },
+      ) => {
+        await ref.set(data, opts);
+      },
+      update: async (ref: { update: (d: DocData) => Promise<void> }, patch: DocData) => {
+        await ref.update(patch);
+      },
+    };
+    return fn(tx);
+  }
+}
+
+interface FakeTransaction {
+  get: (ref: { get: () => Promise<unknown> }) => Promise<unknown>;
+  create: (ref: { create: (d: DocData) => Promise<void> }, data: DocData) => Promise<void>;
+  set: (
+    ref: { set: (d: DocData, o?: { merge?: boolean }) => Promise<void> },
+    data: DocData,
+    opts?: { merge?: boolean },
+  ) => Promise<void>;
+  update: (ref: { update: (d: DocData) => Promise<void> }, patch: DocData) => Promise<void>;
 }
 
 function parentDocId(colPath: string): string {
@@ -176,16 +210,12 @@ beforeEach(() => {
 });
 
 describe('importProduto — guards', () => {
-  it('rejects a listing with variations (→ #438)', async () => {
-    const db = new FakeDb();
-    const api = makeApi({ ...SIMPLE_ITEM, variations: [{ id: 1 }] });
-    await expect(importProduto(deps(db, api), 'MLB123')).rejects.toThrow(MercadoLivreImportError);
-  });
-
-  it('rejects a User-Products listing (family_name)', async () => {
+  it('rejects a User-Products listing (family_name) — #521', async () => {
     const db = new FakeDb();
     const api = makeApi({ ...SIMPLE_ITEM, family_name: 'Camiseta' });
-    await expect(importProduto(deps(db, api), 'MLB123')).rejects.toThrow(/variações/);
+    const promise = importProduto(deps(db, api), 'MLB123');
+    await expect(promise).rejects.toThrow(MercadoLivreImportError);
+    await expect(promise).rejects.toThrow(/User-Products/);
   });
 
   it('rejects a closed listing', async () => {
@@ -362,5 +392,137 @@ describe('importProduto — ERP Categoria chain (#442)', () => {
     expect(res.created).toBe(true);
     expect(db.docs('produtos').get(res.produtoId)!.categoriaProdutoOuterRef).toBeNull();
     expect(db.docs('categorias').size).toBe(0);
+  });
+});
+
+describe('importProduto — legacy variations[] listing (#520)', () => {
+  // No top-level SELLER_SKU on the item itself → the parent sku falls back to the
+  // strip-6 guess (`skuGuessFromVariations`): both children's SELLER_SKU collapse
+  // to the SAME 'SHIRT1-' stem once the last 6 chars are stripped.
+  const VARIATION_ITEM: DocData = {
+    id: 'MLB999',
+    title: 'Camiseta',
+    category_id: 'MLB1430',
+    base_price: 59.9,
+    price: 59.9,
+    condition: 'new',
+    status: 'active',
+    listing_type_id: 'gold_special',
+    seller_id: 55,
+    attributes: [],
+    variations: [
+      {
+        id: 111,
+        available_quantity: 5,
+        attributes: [{ id: 'SELLER_SKU', value_name: 'SHIRT1-000111' }],
+        attribute_combinations: [
+          { id: 'SIZE', name: 'Tamanho', value_id: '10', value_name: 'G' },
+          { id: 'COLOR', name: 'Cor', value_id: '20', value_name: 'Azul' },
+        ],
+      },
+      {
+        id: 222,
+        available_quantity: 7,
+        attributes: [{ id: 'SELLER_SKU', value_name: 'SHIRT1-000222' }],
+        attribute_combinations: [
+          { id: 'SIZE', name: 'Tamanho', value_id: '11', value_name: 'M' },
+          { id: 'COLOR', name: 'Cor', value_id: '20', value_name: 'Azul' },
+        ],
+      },
+    ],
+  };
+
+  it('imports the parent + one child produto per variation, with links/estoque/denorm', async () => {
+    const db = new FakeDb();
+    const api = makeApi(VARIATION_ITEM);
+    const res = await importProduto(deps(db, api), 'MLB999');
+
+    expect(res.created).toBe(true);
+    expect(res.variations).toEqual({ total: 2, created: 2 });
+    // parent sku falls back to the strip-6 guess (shared stem across children)
+    expect(db.docs('produtos').get(res.produtoId)).toMatchObject({ sku: 'SHIRT1-' });
+    // parent never gets its own stock — it lives on the children
+    expect(db.docs(`produtos/${res.produtoId}/estoques`).size).toBe(0);
+
+    const parentLinkId = [...db.docs(`produtos/${res.produtoId}/produtoMercadoLivre`).keys()][0]!;
+    const parentLinkOuterRef = `documents/produtos/${res.produtoId}/produtoMercadoLivre/${parentLinkId}`;
+
+    const children = [...db.docs('produtos').entries()].filter(
+      ([id, d]) => id !== res.produtoId && d.paiId === res.produtoId,
+    );
+    expect(children).toHaveLength(2);
+
+    for (const [childId, childData] of children) {
+      expect(childData).toMatchObject({ publicado: true, paiId: res.produtoId });
+      expect(typeof childData.sku).toBe('string');
+      expect((childData.sku as string).startsWith('SHIRT1-')).toBe(true);
+
+      // legacy fixed-width link doc id: 'XMLB000000000000000' + itemId + 'vMLB' + variationId
+      const links = db.docs(`produtos/${childId}/variacaoMercadoLivre`);
+      expect(links.size).toBe(1);
+      const [linkId, linkData] = [...links.entries()][0]!;
+      expect(linkId.startsWith('XMLB000000000000000MLB999vMLB')).toBe(true);
+      expect(linkData).toMatchObject({
+        produtoVariacaoOuterRef: `documents/produtos/${childId}`,
+        produtoMercadoLivreOuterRef: parentLinkOuterRef,
+      });
+
+      // one estoque doc per child, quantidade = that variation's available_quantity
+      const estoques = db.docs(`produtos/${childId}/estoques`);
+      expect(estoques.size).toBe(1);
+      const [, estoqueData] = [...estoques.entries()][0]!;
+      expect(typeof estoqueData.quantidade).toBe('number');
+
+      // dual-run denorm: the child's marketplace entry carries externalParentId
+      // (the parent's own entry never does — models.dart `ProdMarketplace` json).
+      const update = db.updates.find(
+        (u) => u.path === `produtos/${childId}` && 'marketplace' in u.patch,
+      );
+      expect(update).toBeDefined();
+    }
+  });
+
+  it('re-import resolves the SAME parent + child docs (idempotent — no duplicate produtos/links)', async () => {
+    const db = new FakeDb();
+    const api = makeApi(VARIATION_ITEM);
+    const first = await importProduto(deps(db, api), 'MLB999');
+    expect(db.docs('produtos').size).toBe(3); // parent + 2 children
+
+    const second = await importProduto(deps(db, api), 'MLB999');
+    expect(second.produtoId).toBe(first.produtoId);
+    expect(second.created).toBe(false);
+    expect(second.variations).toEqual({ total: 2, created: 0 });
+    expect(db.docs('produtos').size).toBe(3); // no new docs created
+
+    const parentLinks = db.docs(`produtos/${first.produtoId}/produtoMercadoLivre`);
+    expect(parentLinks.size).toBe(1);
+    const children = [...db.docs('produtos').entries()].filter(
+      ([id, d]) => id !== first.produtoId && d.paiId === first.produtoId,
+    );
+    for (const [childId] of children) {
+      expect(db.docs(`produtos/${childId}/variacaoMercadoLivre`).size).toBe(1);
+    }
+  });
+
+  it('taxonomy: the SHARED COLOR grupo (same value on both variations) is created only once', async () => {
+    const db = new FakeDb();
+    const api = makeApi(VARIATION_ITEM);
+    const res = await importProduto(deps(db, api), 'MLB999');
+
+    // Two distinct attribute ids (SIZE, COLOR) across both variations — even
+    // though COLOR:Azul repeats identically on both — resolve to exactly 2
+    // grupoDeVariacoes docs, not 4.
+    expect(db.docs('grupoDeVariacoes').size).toBe(2);
+    expect(db.docs('grupoDeVariacoes').has('SIZE')).toBe(true);
+    expect(db.docs('grupoDeVariacoes').has('COLOR')).toBe(true);
+
+    const children = [...db.docs('produtos').entries()].filter(
+      ([id, d]) => id !== res.produtoId && d.paiId === res.produtoId,
+    );
+    for (const [, childData] of children) {
+      expect(childData.grupoDeVariacoesUid).toEqual(expect.arrayContaining(['SIZE', 'COLOR']));
+      expect(Array.isArray(childData.variacoesUid)).toBe(true);
+      expect((childData.variacoesUid as string[]).length).toBeGreaterThan(0);
+    }
   });
 });

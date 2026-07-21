@@ -97,6 +97,25 @@ export default defineConfig({
       testMatch: /\.emulator\.e2e\.spec\.ts$/,
       use: { ...devices['Desktop Chrome'] },
     },
+    // OPT-IN perf/leak project (the checkout 1000-item harness spec,
+    // `*.local.spec.ts`). Playwright runs EVERY configured project when no
+    // `--project` is passed, so this one is only ADDED to the list when
+    // `CHECKOUT_PERF=1` — an unguarded project would drag the slow,
+    // machine-dependent 1000-scan spec into every plain local `playwright test`.
+    // CI never runs it either way: each workflow passes explicit `--project=`
+    // args (see e2e-reusable.yml). CI gates the scan ALGORITHM instead, via the
+    // op-count test in `@delfrance/schemas` (`checkoutEngine.perf.test.ts`).
+    // Run it with (needs the dev server — the harness route is dev-only):
+    //   CHECKOUT_PERF=1 playwright test --project=local-perf
+    ...(process.env.CHECKOUT_PERF === '1'
+      ? [
+          {
+            name: 'local-perf',
+            testMatch: /\.local\.spec\.ts$/,
+            use: { ...devices['Desktop Chrome'] },
+          },
+        ]
+      : []),
   ],
   webServer: process.env.PLAYWRIGHT_BASE_URL
     ? undefined

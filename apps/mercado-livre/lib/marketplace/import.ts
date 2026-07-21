@@ -4,10 +4,14 @@
  * produto + extraData + estoque + `produtoMercadoLivre` link in the exact Flutter
  * wire shape (dual-run). The inverse of `publish.ts`.
  *
- * 7a scope: SIMPLE listings only — a `variations[]` or `family_name` item is
- * rejected with a clear message (variation/User-Products import needs the
- * deferred variation-taxonomy work, #438). Existing ERP data is preserved:
- * parent fields fill-nulls, stock never clobbered unless `sobrescreverEstoque`.
+ * Scope: a `family_name` (User-Products) item is rejected — that model needs its
+ * own deferred design (#521). The legacy `variations[]` model IS supported
+ * (#520): one child produto is created/synced per usable variation, with the
+ * shared `grupoDeVariacoes`/`Variante` taxonomy resolved via `importTaxonomia`
+ * and the children written by `importVariations.ts` — see `importVariationChildren`
+ * below. Existing ERP data is preserved: parent fields fill-nulls, stock never
+ * clobbered unless `sobrescreverEstoque` (and never written on the PARENT at all
+ * when it has variations — stock lives on the children).
  *
  * Dedup / dual-run convergence: the produto is resolved by the link doc's `id`
  * (== ML item id, a collectionGroup query — the same key the Flutter app matches
@@ -20,10 +24,13 @@ import { createHash } from 'node:crypto';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import {
   type MercadoLivreApi,
+  type MlItemAttribute,
   MercadoLivreError,
   mapMlItemToImport,
+  mapMlVariationsToImport,
+  skuGuessFromVariations,
 } from '@delfrance/integrations-mercado-livre';
-import { PRODUTO_EXTRA_DATA_DOC_ID } from '@delfrance/schemas';
+import { PRODUTO_EXTRA_DATA_DOC_ID, toOuterRef } from '@delfrance/schemas';
 import {
   estoqueCollection,
   produtoCollection,
@@ -33,11 +40,14 @@ import {
 
 import {
   type ImportOptions,
+  type ImportPlan,
   DEFAULT_IMPORT_OPTIONS,
   MercadoLivreImportError,
   assembleImportPlan,
 } from './importCore';
 import { importCategoriaChain } from './importCategoria';
+import { resolveTaxonomia } from './importTaxonomia';
+import { importVariationChildren } from './importVariations';
 import { isAlreadyExists } from './grpcErrors';
 import { lastSegment, refMatchesIntegracao } from './linkRefs';
 import { type Bucket } from './arquivoUpload';
@@ -64,6 +74,8 @@ export interface ImportResult {
   estado: string;
   nome: string;
   created: boolean;
+  /** Legacy `variations[]` children (#520) — `{ total: 0, created: 0 }` for a simple listing. */
+  variations: { total: number; created: number };
 }
 
 export async function importProduto(
@@ -80,9 +92,9 @@ export async function importProduto(
   if (item.status === 'closed') {
     throw new MercadoLivreImportError([`anúncio ${itemId} está encerrado (status closed)`]);
   }
-  if (item.family_name != null || (item.variations?.length ?? 0) > 0) {
+  if (item.family_name != null) {
     throw new MercadoLivreImportError([
-      `anúncio ${itemId} tem variações — a importação de variações/User-Products ainda não está disponível (issue #438)`,
+      `anúncio ${itemId} é um anúncio no modelo User-Products (family_name) — a importação desse formato ainda não está disponível (issue #521)`,
     ]);
   }
   if (deps.sellerUserId == null) {
@@ -92,7 +104,16 @@ export async function importProduto(
     throw new MercadoLivreImportError([`anúncio ${itemId} pertence a outro vendedor`]);
   }
 
-  const mapped = mapMlItemToImport(item);
+  // Legacy `variations[]` model (#520) — the parent's own sku falls back to the
+  // strip-6 guess when it has none of its own (`gessSkuFromMercadoLivre` parity);
+  // the whole precos map + no per-item stock apply to it (produtos.dart:226-290).
+  const hasVariations = (item.variations?.length ?? 0) > 0;
+  const mappedItem = mapMlItemToImport(item);
+  const mapped = {
+    ...mappedItem,
+    sku: mappedItem.sku ?? (hasVariations ? skuGuessFromVariations(item) : null),
+  };
+  const mappedVariations = hasVariations ? mapMlVariationsToImport(item) : [];
 
   // Best-effort description (a missing/failed description never blocks import).
   let descricao: string | null = null;
@@ -112,6 +133,18 @@ export async function importProduto(
   if (options.importarCategorias && mapped.categoryId) {
     categoriaOuterRef = await importCategoriaChain({ db, api }, mapped.categoryId, now);
   }
+
+  // Variation taxonomy (#519/#520) — match-first, create-if-absent grupoDeVariacoes
+  // + Variante for every combo attribute across ALL variations, so two children
+  // sharing a grupo (e.g. both carry SIZE) resolve/create it exactly once.
+  const combos: MlItemAttribute[] = hasVariations ? mappedVariations.flatMap((v) => v.combos) : [];
+  const taxonomia = hasVariations
+    ? await resolveTaxonomia({ db }, { combos, integracaoId, now })
+    : [];
+  const parentGrupoUids = hasVariations ? uniqueFirstSeen(taxonomia.map((t) => t.grupoUid)) : null;
+  const parentVariacoesUid = hasVariations
+    ? uniqueFirstSeen(taxonomia.map((t) => t.varianteFake))
+    : null;
 
   // ---- Resolve the ERP produto (link → sku → deterministic id) ----------
   const resolved = await resolveExistingProduto(db, itemId, mapped.sku, integracaoId);
@@ -133,8 +166,10 @@ export async function importProduto(
       );
   const existingLinkRaw = resolved?.linkRaw ?? null;
   const depositoId = deps.depositoOuterRef ? lastSegment(deps.depositoOuterRef) : null;
+  // A produto with variations never carries its own stock (it lives on the
+  // children) — skip the read, the plan nulls the estoque write regardless.
   const existingStock =
-    isCreate || !depositoId ? null : await readEstoque(db, produtoId, depositoId);
+    isCreate || !depositoId || hasVariations ? null : await readEstoque(db, produtoId, depositoId);
 
   // ---- Assemble + execute ----------------------------------------------
   const plan = assembleImportPlan({
@@ -156,6 +191,9 @@ export async function importProduto(
     existingExtra,
     existingEstoqueQty: existingStock?.quantidade ?? null,
     existingEstoqueReservada: existingStock?.reservada ?? null,
+    hasVariations,
+    parentGrupoUids,
+    parentVariacoesUid,
     now,
   });
 
@@ -229,6 +267,35 @@ export async function importProduto(
     integracoesComProduto: FieldValue.arrayUnion(integracaoId),
   });
 
+  // Variation children (#520) — one produto per usable ML variation, run after
+  // the parent's own produto/link exist (children reference the parent link's
+  // outer-ref). No-op ({ total: 0, created: 0 }) for a simple listing.
+  let variationsResult = { total: 0, created: 0 };
+  if (hasVariations) {
+    const parentLinkOuterRef = toOuterRef(`produtos/${produtoId}/produtoMercadoLivre/${linkDocId}`);
+    variationsResult = await importVariationChildren(
+      { db, integracaoId, options, depositoOuterRef: deps.depositoOuterRef, now },
+      {
+        produtoId,
+        precos: resolveParentPrecosForChildren(isCreate, plan, existingProduto),
+        linkOuterRef: parentLinkOuterRef,
+        mlItemId: itemId,
+        ehKit: mapped.ehKit,
+        ehUsado: mapped.ehUsado,
+        categoriaOuterRef,
+        dims: {
+          pesoLiquidoKg: mapped.pesoLiquidoKg,
+          pesoBrutoKg: mapped.pesoBrutoKg,
+          alturaCm: mapped.alturaCm,
+          larguraCm: mapped.larguraCm,
+          profundidadeCm: mapped.profundidadeCm,
+        },
+      },
+      mappedVariations,
+      taxonomia,
+    );
+  }
+
   // Photos (#439) — additive, high-quality, best-effort. After the produto exists;
   // skips already-imported pictures; per-picture failures are logged, not fatal.
   // Requires a Storage bucket (omitted in tests that don't exercise photos).
@@ -240,7 +307,45 @@ export async function importProduto(
     );
   }
 
-  return { produtoId, estado: mapped.estado, nome: mapped.nome, created: isCreate };
+  return {
+    produtoId,
+    estado: mapped.estado,
+    nome: mapped.nome,
+    created: isCreate,
+    variations: variationsResult,
+  };
+}
+
+/**
+ * The parent's WHOLE `precos` map as it stands AFTER this run's price write —
+ * legacy copies this whole map onto every child (`produtos.dart:284-290`; ML
+ * itself forbids per-variation prices). Derived from the plan instead of a
+ * re-read: create folds prices straight into `plan.produto.data`; update writes
+ * them via the dotted-path `precosOps` (never on the produto patch), so the
+ * final map is the existing one with `precosOps` overlaid.
+ */
+function resolveParentPrecosForChildren(
+  isCreate: boolean,
+  plan: ImportPlan,
+  existingProduto: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (isCreate) {
+    const created = plan.produto?.data.precos;
+    return (created as Record<string, unknown> | null | undefined) ?? null;
+  }
+  const merged: Record<string, unknown> = {
+    ...((existingProduto?.precos as Record<string, unknown> | undefined) ?? {}),
+  };
+  if (plan.precosOps) {
+    for (const [k, v] of Object.entries(plan.precosOps.set)) merged[k] = v;
+    for (const k of plan.precosOps.delete) delete merged[k];
+  }
+  return Object.keys(merged).length > 0 ? merged : null;
+}
+
+/** Insertion-order de-dup (`Set` preserves first-seen order). */
+function uniqueFirstSeen(values: readonly string[]): string[] {
+  return [...new Set(values)];
 }
 
 /* -------------------------------------------------------------------------- */

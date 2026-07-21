@@ -53,7 +53,10 @@ export function OutrosCheckoutsPane({
           <Stack gap={2}>
             {rows.map((row) => (
               <UnstyledButton
-                key={row.checkoutId}
+                // Composite key: a collection-group query can surface the same
+                // checkout doc id under different pedidos, so key by the globally
+                // unique (pedidoId, checkoutId) pair — never the leaf id alone.
+                key={`${row.pedidoId}:${row.checkoutId}`}
                 onClick={() => setSelected(row)}
                 px="xs"
                 py={4}

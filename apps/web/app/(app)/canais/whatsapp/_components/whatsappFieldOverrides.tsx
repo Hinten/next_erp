@@ -155,47 +155,41 @@ function HorarioFuncionamentoInput({ value, onChange, disabled, label, hint }: F
   );
 }
 
+/* -------------------------------------------------------------------------- */
+/*                            Tab (section) layout                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Tab order for the WhatsApp create/edit screens. The flat form (#528) mixed
+ * identity, Cloud API ids and auto-reply messaging into a single wall of
+ * inputs; grouping them by subject keeps the screen scannable. Consumed by
+ * `ObjectView`'s `sections` prop; per-field assignment lives on each
+ * `FieldConfig.section` below. Order = relevance for an operator: identity and
+ * the sales/fiscal defaults orders inherit first, then the Meta connection
+ * that makes the number work, then the attendance behaviour.
+ */
+export const WHATSAPP_SECTIONS: string[] = ['Geral', 'Conexão (Cloud API)', 'Atendimento'];
+
 /**
  * Field config shared by the WhatsApp create and edit screens — mirrors
  * `balcaoFields`/`mercadoLivreFields` (the outer-ref selectors + `cor`), plus
- * the WhatsApp-only identity/messaging fields (#528).
+ * the WhatsApp-only identity/messaging fields (#528). Each field carries a
+ * `section` so the form renders as subject-grouped tabs (`WHATSAPP_SECTIONS`).
  */
 export const whatsappFields: Record<string, FieldConfig> = {
-  filialIntegracaoPedidoOuterRef: {
-    label: 'Filial',
-    renderInput: filialRefRenderInput(true),
-  },
-  tabelaNormalOuterRef: {
-    label: 'Tabela de preços',
-    renderInput: refRenderInput(listaDePrecosCollection, true),
-  },
-  tabelaPromocionalOuterRef: {
-    label: 'Tabela promocional',
-    renderInput: refRenderInput(listaDePrecosCollection, false),
-  },
-  operacaoOuterRef: {
-    label: 'Operação fiscal',
-    renderInput: refRenderInput(operacaoCollection, false),
-  },
-  operacaoDevolucaoOuterRef: {
-    label: 'Operação de devolução',
-    renderInput: refRenderInput(operacaoCollection, false),
-  },
-  depositoOuterRef: {
-    label: 'Depósito',
-    renderInput: refRenderInput(depositoCollection, true),
-  },
-  cor: { renderInput: CorInput },
-  nome: { label: 'Nome' },
-  ativo: { label: 'Ativo' },
-  padrao: { label: 'Padrão' },
+  nome: { label: 'Nome', section: 'Geral' },
   numero: {
     label: 'Número',
+    section: 'Geral',
     kind: 'tel',
     hint: 'Número de telefone conectado (com DDI/DDD, somente dígitos).',
   },
+  ativo: { label: 'Ativo', section: 'Geral' },
+  padrao: { label: 'Padrão', section: 'Geral' },
+  cor: { section: 'Geral', renderInput: CorInput },
   phoneNumberId: {
     label: 'ID do Número de Telefone',
+    section: 'Conexão (Cloud API)',
     hint: 'ID do número de telefone associado à conta do WhatsApp Business Cloud (Meta Graph API).',
   },
   // NOTE: despite the name, `wa_id` is NOT the WhatsApp Business Account ID —
@@ -207,6 +201,7 @@ export const whatsappFields: Record<string, FieldConfig> = {
   // number needs to set it explicitly.
   wa_id: {
     label: 'WA ID',
+    section: 'Conexão (Cloud API)',
     hint:
       'Historicamente recebe o MESMO valor do "ID do Número de Telefone" acima — o webhook ' +
       'de entrada resolve a conta comparando este campo com o phone_number_id recebido do ' +
@@ -214,6 +209,7 @@ export const whatsappFields: Record<string, FieldConfig> = {
   },
   waba_id: {
     label: 'WABA ID (conta comercial)',
+    section: 'Conexão (Cloud API)',
     hint:
       'ID real da WhatsApp Business Account (diferente do "WA ID" acima, que é o phone_number_id). ' +
       'Usado nas chamadas de nível de conta do Graph — por ex. a verificação de inscrição do ' +
@@ -221,16 +217,49 @@ export const whatsappFields: Record<string, FieldConfig> = {
   },
   mensagem_automatica: {
     label: 'Mensagem automática (dentro do horário de atendimento)',
+    section: 'Atendimento',
     kind: 'longText',
   },
   mensagem_inatividade: {
     label: 'Mensagem de inatividade (fora do horário de atendimento)',
+    section: 'Atendimento',
     kind: 'longText',
   },
   horario_funcionamento: {
     label: 'Horário de funcionamento',
+    section: 'Atendimento',
     hint: 'Ative os dias em que a conta atende e defina o horário de abertura/fechamento de cada um.',
     renderInput: HorarioFuncionamentoInput,
+  },
+  filialIntegracaoPedidoOuterRef: {
+    label: 'Filial',
+    section: 'Geral',
+    renderInput: filialRefRenderInput(true),
+  },
+  tabelaNormalOuterRef: {
+    label: 'Tabela de preços',
+    section: 'Geral',
+    renderInput: refRenderInput(listaDePrecosCollection, true),
+  },
+  tabelaPromocionalOuterRef: {
+    label: 'Tabela promocional',
+    section: 'Geral',
+    renderInput: refRenderInput(listaDePrecosCollection, false),
+  },
+  operacaoOuterRef: {
+    label: 'Operação fiscal',
+    section: 'Geral',
+    renderInput: refRenderInput(operacaoCollection, false),
+  },
+  operacaoDevolucaoOuterRef: {
+    label: 'Operação de devolução',
+    section: 'Geral',
+    renderInput: refRenderInput(operacaoCollection, false),
+  },
+  depositoOuterRef: {
+    label: 'Depósito',
+    section: 'Geral',
+    renderInput: refRenderInput(depositoCollection, true),
   },
 };
 

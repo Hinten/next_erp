@@ -16,8 +16,13 @@
  *  - the produto-field update is gated by `atualizarProdutoPai`
  *    (`completarDadosProdutoPai`).
  */
-import type { MappedMlItem } from '@delfrance/integrations-mercado-livre';
+import type {
+  MappedMlItem,
+  MappedMlVariation,
+  MlItemAttribute,
+} from '@delfrance/integrations-mercado-livre';
 import { CONDICAO_PRODUTO, makeEstoqueUid, toOuterRef } from '@delfrance/schemas';
+import type { TaxonomiaResolution } from './taxonomiaCore';
 
 /** Import blocked by unusable item data — maps to HTTP 422. */
 export class MercadoLivreImportError extends Error {
@@ -72,6 +77,20 @@ export interface ImportAssembleArgs {
   descricao: string | null;
   /** Leaf ERP Categoria outer-ref resolved from the ML category chain (#442); null = skip. */
   categoriaOuterRef: string | null;
+  /**
+   * True when the ML item has `variations[]` (#520). Parent stock lives on the
+   * CHILDREN in that case, so the estoque plan below is always skipped for the
+   * parent — see `assembleVariationChildPlan` for the per-child stock write.
+   */
+  hasVariations: boolean;
+  /**
+   * Parent-level taxonomy links derived from the resolved variation combos
+   * (unique, IO-deduped) — null when the item has no variations. Legacy never
+   * touches these on the PARENT doc (only children carry them); Lucas's D2
+   * deviation backfills the parent too, fill-only (see the update path below).
+   */
+  parentGrupoUids: string[] | null;
+  parentVariacoesUid: string[] | null;
   /** Existing raw docs (spread/fill-nulls). Null on create. */
   existingProduto: Record<string, unknown> | null;
   existingLinkRaw: Record<string, unknown> | null;
@@ -105,6 +124,12 @@ export interface ImportPlan {
 
 /** extraData.descricao is capped at 3000 chars (`produtoExtraDataSchema`). */
 const DESCRICAO_MAX = 3000;
+
+/**
+ * produto.nome is capped at 100 chars (`produtoSchema`). A composed variation
+ * child nome (title + value names) can exceed it — ML titles alone go up to 60.
+ */
+const PRODUTO_NOME_MAX = 100;
 
 function firstNonEmpty(...vals: Array<unknown>): number | null {
   for (const v of vals) if (typeof v === 'number' && Number.isFinite(v)) return v;
@@ -168,6 +193,9 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
         // On create there's nothing to clear — fold the price writes into the doc.
         precos: precosOps ? precosOps.set : null,
         categoriaProdutoOuterRef: args.categoriaOuterRef,
+        // D2 (#520): parent taxonomy links — null unless the item has variations.
+        grupoDeVariacoesUid: args.parentGrupoUids,
+        variacoesUid: args.parentVariacoesUid,
         timestamp: now,
       },
     };
@@ -197,6 +225,19 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
     if (!categoriaJaDefinida && args.categoriaOuterRef != null) {
       patch.categoriaProdutoOuterRef = args.categoriaOuterRef;
     }
+    // D2 (#520): same fill-only rationale as categoriaProdutoOuterRef above, but for
+    // NULL-OR-EMPTY (a produto created before variation import has `[]`/null, not a
+    // populated array) — never overwrites links the user or a prior import already set.
+    const fillEmptyArray = (
+      key: 'grupoDeVariacoesUid' | 'variacoesUid',
+      value: string[] | null,
+    ) => {
+      const existing = existingProduto?.[key];
+      const isEmpty = existing == null || (Array.isArray(existing) && existing.length === 0);
+      if (isEmpty && value != null && value.length > 0) patch[key] = value;
+    };
+    fillEmptyArray('grupoDeVariacoesUid', args.parentGrupoUids);
+    fillEmptyArray('variacoesUid', args.parentVariacoesUid);
     produto = Object.keys(patch).length > 0 ? { data: patch, full: false } : null;
   }
 
@@ -210,29 +251,34 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
   if (Object.keys(extraPatch).length > 0) extra = extraPatch;
 
   // ---- stock ------------------------------------------------------------
+  // #520: when the item has variations, stock lives on the CHILDREN (each variation
+  // is its own estoque doc) — the parent never gets a stock write, regardless of the
+  // import options. See `assembleVariationChildPlan` for the per-child equivalent.
   let estoque: { docId: string; data: Record<string, unknown> } | null = null;
-  const depositoId = args.depositoOuterRef ? lastSegment(args.depositoOuterRef) : null;
-  const exists = args.existingEstoqueQty != null;
-  const writeStock =
-    args.depositoOuterRef != null &&
-    depositoId != null &&
-    (exists ? options.sobrescreverEstoque : options.importarEstoque);
-  if (writeStock) {
-    // ML `available_quantity` is the BUYABLE count → ERP `disponivel`. Since
-    // `disponivel = quantidade - reservada`, an overwrite of a stock that already
-    // has reservations must add them back into `quantidade`, or the ERP would show
-    // fewer available than ML. On create reservada is 0.
-    const reservada = exists ? (args.existingEstoqueReservada ?? 0) : 0;
-    estoque = {
-      docId: makeEstoqueUid(args.produtoId, depositoId!),
-      data: {
-        parentId: args.produtoId,
-        depositoOuterRef: toOuterRef(`depositos/${depositoId}`),
-        quantidade: mapped.availableQuantity + reservada,
-        ultimaModificacao: now,
-        ...(exists ? {} : { dataCriacao: now }),
-      },
-    };
+  if (!args.hasVariations) {
+    const depositoId = args.depositoOuterRef ? lastSegment(args.depositoOuterRef) : null;
+    const exists = args.existingEstoqueQty != null;
+    const writeStock =
+      args.depositoOuterRef != null &&
+      depositoId != null &&
+      (exists ? options.sobrescreverEstoque : options.importarEstoque);
+    if (writeStock) {
+      // ML `available_quantity` is the BUYABLE count → ERP `disponivel`. Since
+      // `disponivel = quantidade - reservada`, an overwrite of a stock that already
+      // has reservations must add them back into `quantidade`, or the ERP would show
+      // fewer available than ML. On create reservada is 0.
+      const reservada = exists ? (args.existingEstoqueReservada ?? 0) : 0;
+      estoque = {
+        docId: makeEstoqueUid(args.produtoId, depositoId!),
+        data: {
+          parentId: args.produtoId,
+          depositoOuterRef: toOuterRef(`depositos/${depositoId}`),
+          quantidade: mapped.availableQuantity + reservada,
+          ultimaModificacao: now,
+          ...(exists ? {} : { dataCriacao: now }),
+        },
+      };
+    }
   }
 
   // ---- produtoMercadoLivre link (spread existing → stamp) ----------------
@@ -275,4 +321,241 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
 function lastSegment(ref: string): string {
   const parts = ref.split('/').filter(Boolean);
   return parts[parts.length - 1] ?? ref;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                     Variation children (#520)                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Pure assembly for one variation CHILD produto — the counterpart to
+ * `assembleImportPlan` for `hasVariations` items. One call per
+ * `MappedMlVariation`; the IO layer (`importVariations.ts`) resolves the
+ * existing child (link → SKU) and loops this over every usable variation.
+ *
+ * Ported semantics (`.old/packages/canais_de_venda/mercado_livre/lib/src/utils/produtos.dart`
+ * + `models.dart`, see the issue #520 design notes):
+ *  - `nome`/`sku`/`ehKit`/`ehUsado` mirror the parent per legacy `produtos.dart:284-290`;
+ *  - price is NEVER set per-variation on ML — a child always copies the parent's
+ *    WHOLE `precos` map (`importarPreco` on create, `sobrescreverPreco` on
+ *    update), never the tabela-scoped `precosOps` machinery;
+ *  - dims/categoria are copied from the parent only under `atualizarProdutoPai`
+ *    (the legacy `completarDadosProdutoPai` / `getData` gate), same as sku/
+ *    publicado/taxonomy links are NOT gated by it (those always fill-null);
+ *  - the `variacaoMercadoLivre` link doc's wire shape is the OLD Flutter
+ *    `VariacoesML` shape verbatim — `variacaoMercadoLivreLinkCollection` parses it.
+ */
+export interface VariationChildAssembleArgs {
+  mappedVariation: MappedMlVariation;
+  /** Every resolved taxonomy entry for the item; filtered here to this variation's combos. */
+  taxonomia: readonly TaxonomiaResolution[];
+  parent: {
+    produtoId: string;
+    precos: Record<string, unknown> | null;
+    /** Canonical `documents/produtos/<id>/produtoMercadoLivre/<linkDocId>` outer-ref. */
+    linkOuterRef: string;
+    mlItemId: string;
+    ehKit: boolean;
+    ehUsado: boolean;
+    categoriaOuterRef: string | null;
+    dims: {
+      pesoLiquidoKg: number | null;
+      pesoBrutoKg: number | null;
+      alturaCm: number | null;
+      larguraCm: number | null;
+      profundidadeCm: number | null;
+    };
+  };
+  options: ImportOptions;
+  /** The CHILD produto's own id (distinct from `parent.produtoId`). */
+  produtoId: string;
+  isCreate: boolean;
+  linkDocId: string;
+  integracaoId: string;
+  depositoOuterRef: string | null;
+  existingProduto: Record<string, unknown> | null;
+  existingLinkRaw: Record<string, unknown> | null;
+  existingEstoqueQty: number | null;
+  existingEstoqueReservada: number | null;
+  now: number;
+}
+
+export interface VariationChildPlan {
+  /** Child produto write: `full` on create, merge patch on update; null = skip. */
+  produto: { data: Record<string, unknown>; full: boolean } | null;
+  /** Child stock write; null = skip (option off, no depósito, or overwrite disabled). */
+  estoque: { docId: string; data: Record<string, unknown> } | null;
+  /** The `variacaoMercadoLivre` link doc (full set, spread-existing). */
+  link: Record<string, unknown>;
+  /** Dual-run `marketplace`/`marketplaceIds` denorm entry (applied by IO). */
+  denorm: { externalId: string; externalParentId: string };
+}
+
+/**
+ * Same `attrKey` formula as `taxonomiaCore.planTaxonomia` — `(id ?? name) + '|' +
+ * (value_id ?? value_name)` — used here ONLY to filter the item-wide `taxonomia`
+ * array down to this variation's own combos. Must stay identical to the
+ * taxonomy resolver's formula or a resolved grupo/variante silently drops off
+ * the child instead of linking.
+ */
+function comboAttrKey(combo: MlItemAttribute): string {
+  return `${combo.id ?? combo.name ?? ''}|${combo.value_id ?? combo.value_name ?? ''}`;
+}
+
+/** `"123"` → `123`; anything not a plain (optionally signed) integer string → `null`. */
+function numericVariationId(id: string): number | null {
+  return /^-?\d+$/.test(id) ? Number(id) : null;
+}
+
+/**
+ * One `attribute_combinations` entry → the link doc's embedded wire shape; null
+ * when it has no id (the wire schema requires one). Null-valued keys are OMITTED,
+ * not written as explicit nulls — legacy `AttributesMLNew` serializes with
+ * `@JsonKey(includeIfNull: false)`, so Flutter-written entries lack them.
+ */
+function comboToWireAttribute(combo: MlItemAttribute): Record<string, unknown> | null {
+  if (!combo.id) return null;
+  const wire: Record<string, unknown> = { id: combo.id };
+  if (combo.name != null) wire.name = combo.name;
+  if (combo.value_id != null) wire.value_id = combo.value_id;
+  if (combo.value_name != null) wire.value_name = combo.value_name;
+  if (combo.attribute_group_id != null) wire.attribute_group_id = combo.attribute_group_id;
+  if (combo.attribute_group_name != null) wire.attribute_group_name = combo.attribute_group_name;
+  return wire;
+}
+
+export function assembleVariationChildPlan(args: VariationChildAssembleArgs): VariationChildPlan {
+  const { mappedVariation, taxonomia, parent, options, isCreate, existingProduto, now } = args;
+
+  // This variation's own resolved taxonomy — the item-wide `taxonomia` array covers
+  // every variation's combos, so filter to the ones this variation actually has.
+  const comboKeys = new Set(mappedVariation.combos.map(comboAttrKey));
+  const matched = taxonomia.filter((t) => comboKeys.has(t.attrKey));
+  const grupoUidsSet = [...new Set(matched.map((t) => t.grupoUid))];
+  const varianteFakesSet = [...new Set(matched.map((t) => t.varianteFake))];
+  const grupoUids = grupoUidsSet.length > 0 ? grupoUidsSet : null;
+  const varianteFakes = varianteFakesSet.length > 0 ? varianteFakesSet : null;
+
+  // ---- produto ------------------------------------------------------------
+  let produto: { data: Record<string, unknown>; full: boolean } | null = null;
+  if (isCreate) {
+    produto = {
+      full: true,
+      data: {
+        nome: mappedVariation.nome.slice(0, PRODUTO_NOME_MAX),
+        sku: mappedVariation.sku,
+        paiId: parent.produtoId,
+        publicado: true,
+        ehKit: parent.ehKit,
+        ehUsado: parent.ehUsado,
+        // ML forbids per-variation prices — the child always mirrors the parent's
+        // WHOLE precos map (legacy `produtos.dart:284-290`), gated the same as the
+        // parent's own create-time price write.
+        precos: options.importarPreco ? parent.precos : null,
+        grupoDeVariacoesUid: grupoUids,
+        variacoesUid: varianteFakes,
+        // Legacy `completarDadosProdutoPai`/`getData` gate — dims/categoria only
+        // copy onto the child when the option is on (sku/publicado/taxonomy above
+        // are NOT gated by it, they always fill).
+        ...(options.atualizarProdutoPai
+          ? {
+              pesoLiquidoKg: parent.dims.pesoLiquidoKg,
+              pesoBrutoKg: parent.dims.pesoBrutoKg,
+              alturaCm: parent.dims.alturaCm,
+              larguraCm: parent.dims.larguraCm,
+              profundidadeCm: parent.dims.profundidadeCm,
+              categoriaProdutoOuterRef: parent.categoriaOuterRef,
+            }
+          : {}),
+        timestamp: now,
+      },
+    };
+  } else {
+    const patch: Record<string, unknown> = {};
+    const fillNull = (key: string, value: unknown) => {
+      if ((existingProduto?.[key] ?? null) == null && value != null) patch[key] = value;
+    };
+    fillNull('sku', mappedVariation.sku);
+    if ((existingProduto?.publicado ?? null) == null) patch.publicado = true;
+
+    // Fill-null-OR-EMPTY (never overwrite a non-empty array) — same D2 rationale as
+    // the parent's own fill in `assembleImportPlan`.
+    const fillEmptyArray = (key: string, value: string[] | null) => {
+      const existing = existingProduto?.[key];
+      const isEmpty = existing == null || (Array.isArray(existing) && existing.length === 0);
+      if (isEmpty && value != null && value.length > 0) patch[key] = value;
+    };
+    fillEmptyArray('grupoDeVariacoesUid', grupoUids);
+    fillEmptyArray('variacoesUid', varianteFakes);
+
+    if (options.atualizarProdutoPai) {
+      fillNull('pesoLiquidoKg', parent.dims.pesoLiquidoKg);
+      fillNull('pesoBrutoKg', parent.dims.pesoBrutoKg);
+      fillNull('alturaCm', parent.dims.alturaCm);
+      fillNull('larguraCm', parent.dims.larguraCm);
+      fillNull('profundidadeCm', parent.dims.profundidadeCm);
+      fillNull('categoriaProdutoOuterRef', parent.categoriaOuterRef);
+    }
+
+    // Precos bypass the dotted-path precosOps machinery entirely here: since ML never
+    // carries per-variation prices, a re-import always mirrors the parent's WHOLE precos
+    // map onto the child (legacy `Produto.copyWith`-whole-doc-save parity) instead of
+    // patching individual tabela keys the way the parent's own precosOps does.
+    if (options.sobrescreverPreco) patch.precos = parent.precos;
+
+    produto = Object.keys(patch).length > 0 ? { data: patch, full: false } : null;
+  }
+
+  // ---- estoque --------------------------------------------------------------
+  // Same rules as the parent's (non-variation) stock section — create when absent
+  // + importarEstoque; overwrite only under sobrescreverEstoque, adding reservada
+  // back so `disponivel` still matches ML — but keyed to the CHILD's own produtoId
+  // and quantity.
+  let estoque: { docId: string; data: Record<string, unknown> } | null = null;
+  const depositoId = args.depositoOuterRef ? lastSegment(args.depositoOuterRef) : null;
+  const exists = args.existingEstoqueQty != null;
+  const writeStock =
+    args.depositoOuterRef != null &&
+    depositoId != null &&
+    (exists ? options.sobrescreverEstoque : options.importarEstoque);
+  if (writeStock) {
+    const reservada = exists ? (args.existingEstoqueReservada ?? 0) : 0;
+    estoque = {
+      docId: makeEstoqueUid(args.produtoId, depositoId!),
+      data: {
+        parentId: args.produtoId,
+        depositoOuterRef: toOuterRef(`depositos/${depositoId}`),
+        quantidade: mappedVariation.availableQuantity + reservada,
+        ultimaModificacao: now,
+        ...(exists ? {} : { dataCriacao: now }),
+      },
+    };
+  }
+
+  // ---- variacaoMercadoLivre link (spread existing → stamp the EXACT legacy wire) --
+  const existingLink = args.existingLinkRaw ?? {};
+  const link: Record<string, unknown> = {
+    ...existingLink,
+    id: numericVariationId(mappedVariation.variationId),
+    // Legacy variations[] branch never sets itemId (User-Products only) — preserve
+    // whatever's already there (or null on a fresh link).
+    itemId: (existingLink.itemId as string | null | undefined) ?? null,
+    produtoVariacaoOuterRef: toOuterRef(`produtos/${args.produtoId}`),
+    produtoMercadoLivreOuterRef: parent.linkOuterRef,
+    // Deliberate deviation: legacy sourced this from attribute_combinations
+    // (models.dart:1726), where SELLER_SKU never appears — so Flutter writes null.
+    // The variation's real SELLER_SKU is strictly more useful, and link.sku is
+    // not a dedup/query key (children resolve by the `id` field + produto sku).
+    sku: mappedVariation.sku,
+    attributes: mappedVariation.combos
+      .map(comboToWireAttribute)
+      .filter((a): a is Record<string, unknown> => a !== null),
+  };
+
+  return {
+    produto,
+    estoque,
+    link,
+    denorm: { externalId: mappedVariation.variationId, externalParentId: parent.mlItemId },
+  };
 }
