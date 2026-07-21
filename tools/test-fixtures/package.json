@@ -28,7 +28,7 @@
   "dependencies": {
     "@delfrance/auth": "workspace:*",
     "@delfrance/schemas": "workspace:*",
-    "firebase-admin": "^13.9.0"
+    "firebase-admin": "^14.0.0"
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",

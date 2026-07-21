@@ -77,7 +77,7 @@ Batch writes ≤ 500 ops/commit.
 - **Dry-run by default**; `--apply` to write. Dry-run logs every intended
   `path · field · old → new` without writing.
 - **Log every change** to a timestamped file under `out/`.
-- firebase-admin v13.
+- firebase-admin v14.
 
 This is implemented by the `@delfrance/migrations` package:
 

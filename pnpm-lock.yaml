@@ -104,8 +104,8 @@ importers:
         specifier: ^14.0.0
         version: 14.0.0
       firebase-functions:
-        specifier: ^7.0.0
-        version: 7.2.5(firebase-admin@14.0.0)
+        specifier: ^7.3.0
+        version: 7.3.0(firebase-admin@14.0.0)
       sharp:
         specifier: ^0.34.0
         version: 0.34.5
@@ -150,8 +150,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/schemas
       firebase-admin:
-        specifier: ^13.9.0
-        version: 13.9.0
+        specifier: ^14.0.0
+        version: 14.0.0
       next:
         specifier: 16.2.6
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -205,8 +205,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/schemas
       firebase-admin:
-        specifier: ^13.9.0
-        version: 13.9.0
+        specifier: ^14.0.0
+        version: 14.0.0
       next:
         specifier: 16.2.6
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -266,11 +266,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/storage
       firebase-admin:
-        specifier: ^13.9.0
-        version: 13.9.0
+        specifier: ^14.0.0
+        version: 14.0.0
       firebase-functions:
-        specifier: ^7.0.0
-        version: 7.2.5(firebase-admin@13.9.0)
+        specifier: ^7.3.0
+        version: 7.3.0(firebase-admin@14.0.0)
       next:
         specifier: 16.2.6
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -330,11 +330,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/schemas
       firebase-admin:
-        specifier: ^13.9.0
-        version: 13.9.0
+        specifier: ^14.0.0
+        version: 14.0.0
       firebase-functions:
-        specifier: ^7.0.0
-        version: 7.2.5(firebase-admin@13.9.0)
+        specifier: ^7.3.0
+        version: 7.3.0(firebase-admin@14.0.0)
       next:
         specifier: 16.2.6
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -394,8 +394,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/schemas
       firebase-admin:
-        specifier: ^13.9.0
-        version: 13.9.0
+        specifier: ^14.0.0
+        version: 14.0.0
       google-auth-library:
         specifier: ^10.6.2
         version: 10.6.2
@@ -440,8 +440,8 @@ importers:
         specifier: ^16.2.6
         version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       firebase-functions:
-        specifier: ^7.0.0
-        version: 7.2.5(firebase-admin@13.9.0)
+        specifier: ^7.3.0
+        version: 7.3.0(firebase-admin@14.0.0)
       node-forge:
         specifier: ^1.4.0
         version: 1.4.0
@@ -609,8 +609,8 @@ importers:
         specifier: ^16.2.6
         version: 16.2.6(eslint@9.39.4)(typescript@6.0.3)
       firebase-admin:
-        specifier: ^13.9.0
-        version: 13.9.0
+        specifier: ^14.0.0
+        version: 14.0.0
       jsdom:
         specifier: ^29.1.1
         version: 29.1.1(@noble/hashes@1.8.0)
@@ -682,11 +682,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/storage
       firebase-admin:
-        specifier: ^13.9.0
-        version: 13.9.0
+        specifier: ^14.0.0
+        version: 14.0.0
       firebase-functions:
-        specifier: ^7.0.0
-        version: 7.2.5(firebase-admin@13.9.0)
+        specifier: ^7.3.0
+        version: 7.3.0(firebase-admin@14.0.0)
       next:
         specifier: 16.2.6
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -798,8 +798,8 @@ importers:
         specifier: ^19.2.0
         version: 19.2.14
       firebase-admin:
-        specifier: ^13.9.0
-        version: 13.9.0
+        specifier: ^14.0.0
+        version: 14.0.0
       react:
         specifier: ^19.2.0
         version: 19.2.6
@@ -995,8 +995,8 @@ importers:
         specifier: ^10.1.5
         version: 10.1.8(eslint@9.39.4)
       firebase-admin:
-        specifier: ^13.9.0
-        version: 13.9.0
+        specifier: ^14.0.0
+        version: 14.0.0
       tsx:
         specifier: ^4.21.0
         version: 4.21.0
@@ -1154,8 +1154,8 @@ importers:
         specifier: workspace:*
         version: link:../config-tsconfig
       firebase-admin:
-        specifier: ^13.9.0
-        version: 13.9.0
+        specifier: ^14.0.0
+        version: 14.0.0
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -1248,8 +1248,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
       firebase-admin:
-        specifier: ^13.9.0
-        version: 13.9.0
+        specifier: ^14.0.0
+        version: 14.0.0
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
@@ -1276,8 +1276,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/schemas
       firebase-admin:
-        specifier: ^13.9.0
-        version: 13.9.0
+        specifier: ^14.0.0
+        version: 14.0.0
     devDependencies:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
@@ -2238,10 +2238,6 @@ packages:
 
   '@formatjs/intl-localematcher@0.8.7':
     resolution: {integrity: sha512-1R/ljfRKG1fUhKG4F0lUmrEKPkr/PlHqbgQ8xeYQYYunXu5/0+vbQeeVgGAgydp13Tq+S1X5Qjn6L90hijXjHg==}
-
-  '@google-cloud/firestore@7.11.6':
-    resolution: {integrity: sha512-EW/O8ktzwLfyWBOsNuhRoMi8lrC3clHM5LVFhGvO1HCsLozCOOXRAlHrYBoE6HL42Sc8yYMuCb2XqcnJ4OOEpw==}
-    engines: {node: '>=14.0.0'}
 
   '@google-cloud/firestore@8.6.0':
     resolution: {integrity: sha512-TdvZHfwQj5B5CSDEgDqyrhdVqtOSupmBXDQPasMAJiC64tjsGvyMooNiC43fdk1TsUHeklyoZ6/vQ1TjWKVMbg==}
@@ -3361,9 +3357,6 @@ packages:
 
   '@types/jsonwebtoken@9.0.10':
     resolution: {integrity: sha512-asx5hIG9Qmf/1oStypjanR7iKTv0gXQ1Ov/jfrX6kS/EO0OFni8orbmGCn0672NHR3kXHwpAwR+B368ZGN/2rA==}
-
-  '@types/long@4.0.2':
-    resolution: {integrity: sha512-MqTGEo5bj5t157U6fA/BiDynNkn0YknVdh48CMPkTSpFTVmvao5UQmm7uEF6xBEo7qIMAlY/JSleYaE6VOdpaA==}
 
   '@types/mdast@4.0.4':
     resolution: {integrity: sha512-kGaNbPh1k7AFzgpud/gMdvIm5xuECykRR+JnWKQno9TAXVa6WIVCGTPvYGekIDL4uwCZQSYbUxNBSb1aUo79oA==}
@@ -4912,22 +4905,18 @@ packages:
     resolution: {integrity: sha512-78/PXT1wlLLDgTzDs7sjq9hzz0vXD+zn+7wypEe4fXQxCmdmqfGsEPQxmiCSQI3ajFV91bVSsvNtrJRiW6nGng==}
     engines: {node: '>=10'}
 
-  firebase-admin@13.9.0:
-    resolution: {integrity: sha512-qiCVBBFH+kfLiCXuuE9eAbBQSckPuA43fbQ/MNvQfd9nZcHFQExmQICD/N0sZrNZDNy8FSywhjFzJJGVQzG5UA==}
-    engines: {node: '>=18'}
-
   firebase-admin@14.0.0:
     resolution: {integrity: sha512-U88/r6VWiBQ05+UlLaF1A1AN4Y3SAGQKcQWawzafEAnXVaCZ21+2KclMPdlIQAAF5pUtN+FkXCSQnJEpc6QDZA==}
     engines: {node: '>=22'}
 
-  firebase-functions@7.2.5:
-    resolution: {integrity: sha512-K+pP0AknluAguLRbD96hibyXbnOgwnvd4hkExWdGrxnNCLoj8LBFj08uvJYxyvhsCgYzQumrUaHBW4lsXKSiRg==}
+  firebase-functions@7.3.0:
+    resolution: {integrity: sha512-S3JhjESOWMq13iDodwgUPWNQ3gLAu7oTLDwF7hTtisyjVanEeQzYezgW+JTfd8I0kCJQzjGPC/wHQ19IL7CgaA==}
     engines: {node: '>=18.0.0'}
     hasBin: true
     peerDependencies:
       '@apollo/server': ^5.2.0
       '@as-integrations/express4': ^1.1.2
-      firebase-admin: ^11.10.0 || ^12.0.0 || ^13.0.0
+      firebase-admin: ^11.10.0 || ^12.0.0 || ^13.0.0 || ^14.0.0
       graphql: ^16.12.0
     peerDependenciesMeta:
       '@apollo/server':
@@ -5130,10 +5119,6 @@ packages:
 
   google-auth-library@9.15.1:
     resolution: {integrity: sha512-Jb6Z0+nvECVz+2lzSMt9u98UsoakXxA2HGHMCxh+so3n90XgYWkq5dur19JAJV7ONiJY22yBTyJB1TSkvPq9Ng==}
-    engines: {node: '>=14'}
-
-  google-gax@4.6.1:
-    resolution: {integrity: sha512-V6eky/xz2mcKfAd1Ioxyd6nmA61gao3n01C+YeuIwu3vzM9EDR6wcVzMSIbLMDXWeoi9SHYctXuKYC5uJUT3eQ==}
     engines: {node: '>=14'}
 
   google-gax@5.0.7:
@@ -5575,9 +5560,6 @@ packages:
   jackspeak@3.4.3:
     resolution: {integrity: sha512-OGlZQpz2yfahA/Rd1Y8Cd9SIEsqvXkLVoSw/cgwhnhFMDbsQFeZYoJJ7bIZBS9BcamUW96asq/npPWugM+RQBw==}
 
-  jose@4.15.9:
-    resolution: {integrity: sha512-1vUQX+IdDMVPj4k8kOxgUqlcK518yluMuGZwqlr44FS1ppZB/5GWh4rZG89erpOBOJjU/OBsnCVFfapsRz6nEA==}
-
   jose@6.2.3:
     resolution: {integrity: sha512-YYVDInQKFJfR/xa3ojUTl8c2KoTwiL1R5Wg9YCydwH0x0B9grbzlg5HC7mMjCtUJjbQ/YnGEZIhI5tCgfTb4Hw==}
 
@@ -5661,10 +5643,6 @@ packages:
 
   jwa@2.0.1:
     resolution: {integrity: sha512-hRF04fqJIP8Abbkq5NKGN0Bbr3JxlQ+qhZufXVr0DvujKy93ZCbXZMHDL4EOtodSbCWxOqR8MS1tXA5hwqCXDg==}
-
-  jwks-rsa@3.2.2:
-    resolution: {integrity: sha512-BqTyEDV+lS8F2trk3A+qJnxV5Q9EqKCBJOPti3W97r7qTympCZjb7h2X6f2kc+0K3rsSTY1/6YG2eaXKoj497w==}
-    engines: {node: '>=14'}
 
   jwks-rsa@4.1.0:
     resolution: {integrity: sha512-sbkByqyATKYJP5F4RXj03N5TUNC0QLTjCAZvwTzC4BwJZ8e0/cWxN8YROnyUth2g1/ONWi4eSFHeu6oYalrc3Q==}
@@ -5790,13 +5768,6 @@ packages:
 
   lru-cache@5.1.1:
     resolution: {integrity: sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w==}
-
-  lru-cache@6.0.0:
-    resolution: {integrity: sha512-Jo6dJ04CmSjuznwJSS3pUeWmd/H0ffTlkXXgwZi+eq1UCmqQwCh+eLsYOYCwY991i2Fah4h1BEMCx4qThGbsiA==}
-    engines: {node: '>=10'}
-
-  lru-memoizer@2.3.0:
-    resolution: {integrity: sha512-GXn7gyHAMhO13WSKrIiNfztwxodVsP8IoZ3XfrJV4yH2x0/OeTO/FIaAHTY5YekdGgW94njfuKmyyt1E0mR6Ug==}
 
   lru-memoizer@3.0.0:
     resolution: {integrity: sha512-m83w/cYXLdUIboKSPxzPAGfYnk+vqeDYXuoSrQRw1q+yVEd8IXhvMufN8Q5TIPe7e2jyX4SRNrDJI2Skw1yznQ==}
@@ -6469,10 +6440,6 @@ packages:
 
   property-information@7.1.0:
     resolution: {integrity: sha512-TwEZ+X+yCJmYfL7TPUOcvBZ4QfoT5YenQiJuX//0th53DE6w0xxLEtfK3iyryQFddXuvkIk51EEgrJQ0WJkOmQ==}
-
-  proto3-json-serializer@2.0.2:
-    resolution: {integrity: sha512-SAzp/O4Yh02jGdRc+uIrGoe87dkN/XtwxfZ4ZyafJHymd79ozp5VG5nyZ7ygqPM5+cpLDjjGnYFUkngonyDPOQ==}
-    engines: {node: '>=14.0.0'}
 
   proto3-json-serializer@3.0.4:
     resolution: {integrity: sha512-E1sbAYg3aEbXrq0n1ojJkRHQJGE1kaE/O6GLA94y8rnJBfgvOPTOd1b9hOceQK1FFZI9qMh1vBERCyO2ifubcw==}
@@ -7766,9 +7733,6 @@ packages:
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
-  yallist@4.0.0:
-    resolution: {integrity: sha512-3wdGidZyq5PB084XLES5TpOSRA3wjXAlIWMhum2kRcv/41Sn2emQ0dycQW4uZXLejwKvg6EsvbdlVL+FYEct7A==}
-
   yaml-language-server@1.20.0:
     resolution: {integrity: sha512-qhjK/bzSRZ6HtTvgeFvjNPJGWdZ0+x5NREV/9XZWFjIGezew2b4r5JPy66IfOhd5OA7KeFwk1JfmEbnTvev0cA==}
     hasBin: true
@@ -8948,18 +8912,6 @@ snapshots:
     dependencies:
       '@formatjs/fast-memoize': 3.1.5
 
-  '@google-cloud/firestore@7.11.6':
-    dependencies:
-      '@opentelemetry/api': 1.9.1
-      fast-deep-equal: 3.1.3
-      functional-red-black-tree: 1.0.1
-      google-gax: 4.6.1
-      protobufjs: 7.5.8
-    transitivePeerDependencies:
-      - encoding
-      - supports-color
-    optional: true
-
   '@google-cloud/firestore@8.6.0':
     dependencies:
       '@opentelemetry/api': 1.9.1
@@ -9947,9 +9899,6 @@ snapshots:
     dependencies:
       '@types/ms': 2.1.0
       '@types/node': 24.12.4
-
-  '@types/long@4.0.2':
-    optional: true
 
   '@types/mdast@4.0.4':
     dependencies:
@@ -11876,25 +11825,6 @@ snapshots:
       locate-path: 6.0.0
       path-exists: 4.0.0
 
-  firebase-admin@13.9.0:
-    dependencies:
-      '@fastify/busboy': 3.2.0
-      '@firebase/database-compat': 2.1.4
-      '@firebase/database-types': 1.0.20
-      farmhash-modern: 1.1.0
-      fast-deep-equal: 3.1.3
-      google-auth-library: 10.6.2
-      jsonwebtoken: 9.0.3
-      jwks-rsa: 3.2.2
-      node-forge: 1.4.0
-      uuid: 11.1.1
-    optionalDependencies:
-      '@google-cloud/firestore': 7.11.6
-      '@google-cloud/storage': 7.19.0
-    transitivePeerDependencies:
-      - encoding
-      - supports-color
-
   firebase-admin@14.0.0:
     dependencies:
       '@fastify/busboy': 3.2.0
@@ -11912,18 +11842,7 @@ snapshots:
       - encoding
       - supports-color
 
-  firebase-functions@7.2.5(firebase-admin@13.9.0):
-    dependencies:
-      '@types/cors': 2.8.19
-      '@types/express': 4.17.25
-      cors: 2.8.6
-      express: 4.22.2
-      firebase-admin: 13.9.0
-      protobufjs: 7.5.8
-    transitivePeerDependencies:
-      - supports-color
-
-  firebase-functions@7.2.5(firebase-admin@14.0.0):
+  firebase-functions@7.3.0(firebase-admin@14.0.0):
     dependencies:
       '@types/cors': 2.8.19
       '@types/express': 4.17.25
@@ -12222,25 +12141,6 @@ snapshots:
       gcp-metadata: 6.1.1
       gtoken: 7.1.0
       jws: 4.0.1
-    transitivePeerDependencies:
-      - encoding
-      - supports-color
-    optional: true
-
-  google-gax@4.6.1:
-    dependencies:
-      '@grpc/grpc-js': 1.14.3
-      '@grpc/proto-loader': 0.7.15
-      '@types/long': 4.0.2
-      abort-controller: 3.0.0
-      duplexify: 4.1.3
-      google-auth-library: 9.15.1
-      node-fetch: 2.7.0
-      object-hash: 3.0.0
-      proto3-json-serializer: 2.0.2
-      protobufjs: 7.5.8
-      retry-request: 7.0.2
-      uuid: 9.0.1
     transitivePeerDependencies:
       - encoding
       - supports-color
@@ -12824,8 +12724,6 @@ snapshots:
     optionalDependencies:
       '@pkgjs/parseargs': 0.11.0
 
-  jose@4.15.9: {}
-
   jose@6.2.3: {}
 
   js-md4@0.3.2: {}
@@ -12935,16 +12833,6 @@ snapshots:
       buffer-equal-constant-time: 1.0.1
       ecdsa-sig-formatter: 1.0.11
       safe-buffer: 5.2.1
-
-  jwks-rsa@3.2.2:
-    dependencies:
-      '@types/jsonwebtoken': 9.0.10
-      debug: 4.4.3
-      jose: 4.15.9
-      limiter: 1.1.5
-      lru-memoizer: 2.3.0
-    transitivePeerDependencies:
-      - supports-color
 
   jwks-rsa@4.1.0:
     dependencies:
@@ -13071,15 +12959,6 @@ snapshots:
   lru-cache@5.1.1:
     dependencies:
       yallist: 3.1.1
-
-  lru-cache@6.0.0:
-    dependencies:
-      yallist: 4.0.0
-
-  lru-memoizer@2.3.0:
-    dependencies:
-      lodash.clonedeep: 4.5.0
-      lru-cache: 6.0.0
 
   lru-memoizer@3.0.0:
     dependencies:
@@ -14037,11 +13916,6 @@ snapshots:
       react-is: 16.13.1
 
   property-information@7.1.0: {}
-
-  proto3-json-serializer@2.0.2:
-    dependencies:
-      protobufjs: 7.5.8
-    optional: true
 
   proto3-json-serializer@3.0.4:
     dependencies:
@@ -15556,8 +15430,6 @@ snapshots:
   y18n@5.0.8: {}
 
   yallist@3.1.1: {}
-
-  yallist@4.0.0: {}
 
   yaml-language-server@1.20.0:
     dependencies:

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppErrorCodes, FirebaseAppError } from 'firebase-admin/app';
-import { AuthClientErrorCode, FirebaseAuthError } from 'firebase-admin/auth';
+import { AppErrorCode, FirebaseAppError } from 'firebase-admin/app';
+import { AuthErrorCode, FirebaseAuthError } from 'firebase-admin/auth';
 import { rulesClaimsFromBits } from '@delfrance/auth';
 import { SUPERUSER_MASK } from '@delfrance/schemas';
 
@@ -35,19 +35,6 @@ vi.mock('@/lib/firebase/admin', () => ({
 }));
 
 const { POST } = await import('./route');
-
-// The firebase-admin .d.ts only surfaces the constructor inherited from Error,
-// but at runtime FirebaseAuthError takes an ErrorInfo and FirebaseAppError
-// takes (code, message) — cast so the tests can build the real classes the
-// catch narrows on.
-const AuthErrorCtor = FirebaseAuthError as unknown as new (info: {
-  code: string;
-  message: string;
-}) => FirebaseAuthError;
-const AppErrorCtor = FirebaseAppError as unknown as new (
-  code: string,
-  message: string,
-) => FirebaseAppError;
 
 function req(body: unknown, headers: Record<string, string> = {}): Request {
   return new Request('http://localhost:3001/api/admin/users', {
@@ -190,7 +177,12 @@ describe('POST /api/admin/users', () => {
   it('maps email-already-exists to 409', async () => {
     mocks.verifyIdToken.mockResolvedValue(CALLER_CLAIM);
     mocks.cargoGet.mockResolvedValue({ data: () => undefined });
-    mocks.createUser.mockRejectedValue(new AuthErrorCtor(AuthClientErrorCode.EMAIL_ALREADY_EXISTS));
+    mocks.createUser.mockRejectedValue(
+      new FirebaseAuthError({
+        code: AuthErrorCode.EMAIL_ALREADY_EXISTS,
+        message: 'The email address is already in use by another account.',
+      }),
+    );
 
     const res = await POST(req(VALID_BODY, { authorization: 'Bearer t' }));
     expect(res.status).toBe(409);
@@ -202,7 +194,10 @@ describe('POST /api/admin/users', () => {
   it('maps unmapped FirebaseAuthError codes to 500 with the error message', async () => {
     mocks.verifyIdToken.mockResolvedValue(CALLER_CLAIM);
     mocks.cargoGet.mockResolvedValue({ data: () => undefined });
-    const fbErr = new AuthErrorCtor(AuthClientErrorCode.INTERNAL_ERROR);
+    const fbErr = new FirebaseAuthError({
+      code: AuthErrorCode.INTERNAL_ERROR,
+      message: 'An internal error has occurred.',
+    });
     mocks.createUser.mockRejectedValue(fbErr);
 
     const res = await POST(req(VALID_BODY, { authorization: 'Bearer t' }));
@@ -214,7 +209,7 @@ describe('POST /api/admin/users', () => {
     mocks.verifyIdToken.mockResolvedValue(CALLER_CLAIM);
     mocks.cargoGet.mockResolvedValue({ data: () => undefined });
     mocks.createUser.mockRejectedValue(
-      new AppErrorCtor(AppErrorCodes.INVALID_CREDENTIAL, 'bad credential'),
+      new FirebaseAppError({ code: AppErrorCode.INVALID_CREDENTIAL, message: 'bad credential' }),
     );
 
     const res = await POST(req(VALID_BODY, { authorization: 'Bearer t' }));

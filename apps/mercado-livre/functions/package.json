@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "//": "NOT a pnpm workspace package — apps/mercado-livre/functions is a deploy-artifact-only sub-build of @delfrance/mercado-livre-app (typecheck/lint/test run via apps/mercado-livre's tasks; tsconfig `**/*.ts` + `eslint .` + vitest `functions/**` cover it). This file is the TEMPLATE that scripts/prepare-deploy.mjs reads to emit the MINIMAL .deploy/mercado-livre-functions/package.json — only the 2 runtime deps below (no workspace:* — esbuild bundles @delfrance/*). Its deps must also be present in apps/mercado-livre's package.json so the bundle's externals resolve locally.",
   "dependencies": {
-    "firebase-admin": "^13.9.0",
-    "firebase-functions": "^7.0.0"
+    "firebase-admin": "^14.0.0",
+    "firebase-functions": "^7.3.0"
   }
 }
