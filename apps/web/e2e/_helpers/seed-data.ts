@@ -2927,3 +2927,395 @@ export async function docExistsByField(
   const snap = await db().collection(collection).where(field, '==', value).limit(1).get();
   return !snap.empty;
 }
+
+/* -------------------------------------------------------------------------- */
+/*        Despacho — Checkout screen fixtures (PR 8, e2e vendas suite)         */
+/* -------------------------------------------------------------------------- */
+
+/** A produtos doc shaped like the other pedido fixtures (converter-parseable). */
+function checkoutProdutoDoc(nome: string, sku: string, ehKit = false) {
+  return {
+    nome,
+    sku,
+    codPai: null,
+    paiId: null,
+    ordem: null,
+    gtin: null,
+    codFornecedor: null,
+    categoriaProdutoOuterRef: null,
+    pesoLiquidoKg: null,
+    pesoBrutoKg: null,
+    alturaCm: null,
+    larguraCm: null,
+    profundidadeCm: null,
+    ehKit,
+    ehKitVirtual: false,
+    publicado: true,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    crossdocking: null,
+    precos: null,
+    grupoDeVariacoesUid: null,
+    variacoesUid: null,
+    componentesKitKeys: null,
+    componentesKit: null,
+    integracoesComProduto: [],
+    marketplaceIds: null,
+    marketplace: [],
+    statusProdutosMarketplace: null,
+    fotos: null,
+    videos: null,
+    anexos: null,
+    fotosArquivosIds: null,
+    nome_embedding: null,
+  };
+}
+
+/** One flattened `pedido.itens` line entry (mirrors `seedPedidoImpressaoFixtures`). */
+function checkoutItem(produtoId: string, sku: string, nome: string, ordem: number) {
+  return {
+    produtoUid: produtoId,
+    ordem,
+    ensureUniqueId: null,
+    mktplaceId: null,
+    sku,
+    gtin: null,
+    nomeDeVenda: nome,
+    precoDeVenda: 10,
+    descontoUnitario: 0,
+    quantidade: 1,
+    custo: null,
+    timestamp: null,
+    imposto: null,
+  };
+}
+
+/**
+ * A `freteInicial` block in the Flutter wire shape (mirrors the marketplace
+ * frete in `seedPedidoFreteFixtures`). `estado` is seeded inside the
+ * `ALLOWED_FRETE_ESTADOS` set the save gate accepts (`emSeparacao`), so Salvar
+ * never trips the "frete não está em Despacho autorizado…" confirm dialog; the
+ * transaction then flips it to `checkFinalizado`. `printLabelId` +
+ * `integracaoFreteOuterRef` are only set for the Melhor Envio reprint pedidos.
+ */
+function checkoutFrete(opts: {
+  printLabelId?: string | null;
+  integracaoFreteOuterRef?: string | null;
+}) {
+  return {
+    externalId: null,
+    printLabelId: opts.printLabelId ?? null,
+    externalOptionId: null,
+    externalOptionIntegracao: null,
+    externalOptionData: null,
+    estado: 'emSeparacao',
+    integracaoFreteOuterRef: opts.integracaoFreteOuterRef ?? null,
+    modalidade: '0',
+    codRastreio: null,
+    valorCobrado: 25.9,
+    custoCalculado: null,
+    custoFinal: null,
+    ehReverso: false,
+    prazoExtra: 0,
+    prazoDespacho: null,
+    dataEntrega: null,
+    dataPrevisaoEntrega: null,
+    valor_assegurado: null,
+    transportadora: null,
+    veiculo: null,
+    reboques: null,
+    vagao: null,
+    balsa: null,
+    volumes: null,
+    integracao_path: null,
+    clienteRecebedorOuterReference: null,
+    enderecoFreteOuterReference: null,
+    ultimaModificacao: null,
+  };
+}
+
+export interface CheckoutFixtures {
+  clienteId: string;
+  integracaoId: string;
+  /** the Melhor Envio `int_frete` the reprint pedidos (A/B) point their frete at. */
+  intFreteMelId: string;
+  /** the shared single-line produto used by the happy / wrong / A / B pedidos. */
+  lineProdutoId: string;
+  lineSku: string;
+  /** a valid produto NOT on any pedido — scanned in the wrong-product test. */
+  extraProdutoId: string;
+  extraSku: string;
+  /** happy-path pedido (1 line). */
+  happyId: string;
+  happyNumero: string;
+  /** kit pedido (1 whole-kit line) + its component/kit skus. */
+  kitPedidoId: string;
+  kitPedidoNumero: string;
+  kitId: string;
+  kitSku: string;
+  componentId: string;
+  /** wrong-product pedido (1 line; scanning the extra produto errors). */
+  wrongId: string;
+  wrongNumero: string;
+  /** the two Melhor Envio pedidos for the wrong-label reprint regression. */
+  pedidoAId: string;
+  pedidoANumero: string;
+  labelA: string;
+  pedidoBId: string;
+  pedidoBNumero: string;
+  labelB: string;
+  /** 120-line bulk pedido + every line's sku, in ordem order. */
+  bulkId: string;
+  bulkNumero: string;
+  bulkSkus: string[];
+  /** every pedido id the suite checks out (for `checkout` subcollection cleanup). */
+  checkoutPedidoIds: string[];
+}
+
+/**
+ * Fixtures for the despacho/checkout screen e2e (`despacho-checkout.vendas`).
+ *
+ * Seeds one cliente + integração, one Melhor Envio `int_frete`, the produtos the
+ * five tests scan, and six saída pedidos — all `estado: 'pago'` with a non-null
+ * `freteInicial` in an allowed estado so Salvar reaches the transaction:
+ *
+ *  - happy:  1 line (`lineProduto`), no frete integração.
+ *  - kit:    1 whole-kit line; the kit + its component exist as their own
+ *            produto docs (the checkout loads components in a wave-2 fetch).
+ *  - wrong:  1 line; plus an `extraProduto` NOT on the pedido to scan.
+ *  - A / B:  1 line each; frete points at the Melhor Envio `int_frete` and
+ *            carries a DISTINCT `printLabelId` (`…-LABEL-A` / `…-LABEL-B`). The
+ *            `/imprimir` payload has no pedidoId, so the label id IS the pedido
+ *            identity the wrong-label regression asserts on.
+ *  - bulk:   120 distinct single-unit lines (the real Firestore load path).
+ */
+export async function seedCheckoutFixtures(prefix: string): Promise<CheckoutFixtures> {
+  const UP = prefix.toUpperCase().replace(/-/g, '_');
+  const now = Date.now();
+  const nowMicros = millisToMicros(now);
+
+  const clienteId = `${prefix}-cli`;
+  const integracaoId = `${prefix}-int`;
+  const intFreteMelId = `${prefix}-me`;
+
+  const lineProdutoId = `${prefix}-pro`;
+  const lineSku = `${UP}_PRO`;
+  const extraProdutoId = `${prefix}-extra`;
+  const extraSku = `${UP}_EXTRA`;
+
+  // Kit produtos: reuse the shared kit helpers so the component exists as its
+  // own doc (the checkout's wave-2 fetch loads it) and the kit carries the
+  // `componentesKit` map + `componentesKitKeys` the engine reads.
+  const component = await seedComponenteKit(prefix, 10, 'kitcomp');
+  const kit = await seedKitReferencing(prefix, component.id);
+  const kitSku = `${UP}_KIT`;
+
+  const happyId = `${prefix}-h`;
+  const kitPedidoId = `${prefix}-kp`;
+  const wrongId = `${prefix}-w`;
+  const pedidoAId = `${prefix}-pa`;
+  const pedidoBId = `${prefix}-pb`;
+  const bulkId = `${prefix}-bulk`;
+  const labelA = `${prefix}-LABEL-A`;
+  const labelB = `${prefix}-LABEL-B`;
+
+  const bulkSkus = Array.from({ length: 120 }, (_, i) => `${UP}_B_${pad(i + 1)}`);
+
+  // Shared pedido scaffold (differs per pedido only in numero + itens + frete).
+  const pedidoBase = {
+    ehSaida: true,
+    estado: 'pago', // save gate ESTADO_PEDIDO_PAGO
+    descontoTotal: 0,
+    valorCobrado: 10,
+    timestamp: nowMicros,
+    ultimaModificacao: nowMicros,
+    estoqueAplicado: null,
+    dataIndisponivelEstoque: null,
+    dataRemocaoEstoque: null,
+    foiImpresso: false,
+    dtImpressao: null,
+    vendedorPedidoOuterRef: null,
+    integracaoPedidoOuterRef: `documents/integracao/${integracaoId}`,
+    operacaoPedidoOuterRef: null,
+    clientePedidoOuterRef: `documents/clientes/${clienteId}`,
+    enderecoFiscalOuterRef: null,
+    listaDePrecosOuterRef: null,
+    observacoesInternas: null,
+  };
+
+  const batch = db().batch();
+
+  batch.set(db().collection('clientes').doc(clienteId), {
+    tipo: '1',
+    nome: clienteId,
+    cpf_cnpj: validTestCnpj(runDigits(12)),
+    idEstrangeiro: null,
+    ie: null,
+    imun: null,
+    isUF: null,
+    email: null,
+    telefone: null,
+    observacoesInternas: null,
+    timestamp: now,
+    ultimaModificacao: now,
+    nome_embedding: null,
+    telefone_embedding: null,
+    userCliente: null,
+  });
+
+  batch.set(db().collection('integracao').doc(integracaoId), {
+    tipo: 7, // balcao
+    padrao: false,
+    nome: integracaoId,
+    cpf_cnpj: null,
+    idCadIntTran: null,
+    ativo: true,
+    cor: null,
+    modalidadeFreteImportacao: null,
+    filialIntegracaoPedidoOuterRef: null,
+    tabelaNormalOuterRef: null,
+    tabelaPromocionalOuterRef: null,
+    operacaoOuterRef: null,
+    operacaoDevolucaoOuterRef: null,
+    depositoOuterRef: null,
+    dataCadastro: now,
+  });
+
+  // Melhor Envio int_frete — reprintCheckoutEtiqueta dereferences this via the
+  // pedido's `integracaoFreteOuterRef` (a RAW getDoc: only `tipo` is read), then
+  // dispatches to the melhorEnvios provider which POSTs `/imprimir`.
+  batch.set(db().collection('int_frete').doc(intFreteMelId), {
+    tipo: 'melhorEnvios',
+    nome: intFreteMelId,
+    ativo: true,
+    filialIntegracaoFreteOuterRef: null,
+    enderecoDeOrigem: null,
+    dataCadastro: now,
+    mapa: null,
+    faixaCep: null,
+    horarioDeCorte: null,
+    prazoExtra: 0,
+    client_id: null,
+    client_secret: null,
+  });
+
+  // Produtos: the shared line produto + the unexpected extra produto. (The kit +
+  // component were already committed above by the kit helpers.)
+  batch.set(
+    db().collection('produtos').doc(lineProdutoId),
+    checkoutProdutoDoc(lineProdutoId, lineSku),
+  );
+  batch.set(
+    db().collection('produtos').doc(extraProdutoId),
+    checkoutProdutoDoc(extraProdutoId, extraSku),
+  );
+  // Stamp the kit produto's own SKU so a whole-kit scan resolves by SKU.
+  batch.update(db().collection('produtos').doc(kit.kitId), { sku: kitSku });
+
+  // 120 bulk produtos.
+  bulkSkus.forEach((sku, i) => {
+    const id = `${bulkId}-p${pad(i + 1)}`;
+    batch.set(db().collection('produtos').doc(id), checkoutProdutoDoc(id, sku));
+  });
+
+  // Pedidos --------------------------------------------------------------------
+  const oneLine = (produtoId: string, sku: string) => ({
+    itens: { [produtoId]: [checkoutItem(produtoId, sku, produtoId, 1)] },
+    itensIds: [produtoId],
+  });
+
+  batch.set(db().collection('pedidos').doc(happyId), {
+    ...pedidoBase,
+    numero: happyId,
+    ...oneLine(lineProdutoId, lineSku),
+    freteInicial: checkoutFrete({}),
+  });
+  batch.set(db().collection('pedidos').doc(kitPedidoId), {
+    ...pedidoBase,
+    numero: kitPedidoId,
+    ...oneLine(kit.kitId, kitSku),
+    freteInicial: checkoutFrete({}),
+  });
+  batch.set(db().collection('pedidos').doc(wrongId), {
+    ...pedidoBase,
+    numero: wrongId,
+    ...oneLine(lineProdutoId, lineSku),
+    freteInicial: checkoutFrete({}),
+  });
+  batch.set(db().collection('pedidos').doc(pedidoAId), {
+    ...pedidoBase,
+    numero: pedidoAId,
+    ...oneLine(lineProdutoId, lineSku),
+    freteInicial: checkoutFrete({
+      printLabelId: labelA,
+      integracaoFreteOuterRef: `documents/int_frete/${intFreteMelId}`,
+    }),
+  });
+  batch.set(db().collection('pedidos').doc(pedidoBId), {
+    ...pedidoBase,
+    numero: pedidoBId,
+    ...oneLine(lineProdutoId, lineSku),
+    freteInicial: checkoutFrete({
+      printLabelId: labelB,
+      integracaoFreteOuterRef: `documents/int_frete/${intFreteMelId}`,
+    }),
+  });
+
+  // 120-line bulk pedido.
+  const bulkItens: Record<string, unknown[]> = {};
+  const bulkItensIds: string[] = [];
+  bulkSkus.forEach((sku, i) => {
+    const id = `${bulkId}-p${pad(i + 1)}`;
+    bulkItens[id] = [checkoutItem(id, sku, id, i + 1)];
+    bulkItensIds.push(id);
+  });
+  batch.set(db().collection('pedidos').doc(bulkId), {
+    ...pedidoBase,
+    numero: bulkId,
+    itens: bulkItens,
+    itensIds: bulkItensIds,
+    freteInicial: checkoutFrete({}),
+  });
+
+  await batch.commit();
+
+  return {
+    clienteId,
+    integracaoId,
+    intFreteMelId,
+    lineProdutoId,
+    lineSku,
+    extraProdutoId,
+    extraSku,
+    happyId,
+    happyNumero: happyId,
+    kitPedidoId,
+    kitPedidoNumero: kitPedidoId,
+    kitId: kit.kitId,
+    kitSku,
+    componentId: component.id,
+    wrongId,
+    wrongNumero: wrongId,
+    pedidoAId,
+    pedidoANumero: pedidoAId,
+    labelA,
+    pedidoBId,
+    pedidoBNumero: pedidoBId,
+    labelB,
+    bulkId,
+    bulkNumero: bulkId,
+    bulkSkus,
+    checkoutPedidoIds: [happyId, kitPedidoId, wrongId, pedidoAId, pedidoBId, bulkId],
+  };
+}
+
+/**
+ * Teardown for `seedCheckoutFixtures`. Firestore never cascades, so every
+ * pedido that was checked out must have its `checkout` subcollection swept
+ * BEFORE the parent pedido sweep (`cleanupPedidoFixtures` deletes the pedido
+ * doc but not its subcollection). Also sweeps the Melhor Envio `int_frete`.
+ */
+export async function cleanupCheckoutFixtures(prefix: string, pedidoIds: string[]): Promise<void> {
+  await Promise.all(pedidoIds.map((id) => cleanupPedidoSubcollection(id, 'checkout')));
+  await Promise.all([cleanupPedidoFixtures(prefix), cleanupIntFreteFixtures(prefix)]);
+}
