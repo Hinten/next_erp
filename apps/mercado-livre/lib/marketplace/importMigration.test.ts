@@ -429,7 +429,7 @@ describe('handleUptinMigration — partial migration', () => {
 });
 
 describe('handleUptinMigration — replay idempotency', () => {
-  it('stamps already-registered members to publicado and skips both import + prune', async () => {
+  it('crash-retry: registered members with SURVIVING old links re-enqueue them and the prune converges', async () => {
     const db = new FakeDb();
     seedBaseline(db);
     // Simulate a PRIOR run that already imported both members under the family PML.
@@ -477,10 +477,58 @@ describe('handleUptinMigration — replay idempotency', () => {
       isUserProductModel: true,
     });
 
-    // prune skipped entirely — nothing was queued for deletion on replay.
-    expect(db.docs(`produtos/${CHILD_1}/variacaoMercadoLivre`).has(OLD_LINK_1)).toBe(true);
-    expect(db.docs(`produtos/${CHILD_2}/variacaoMercadoLivre`).has(OLD_LINK_2)).toBe(true);
+    // CONVERGENCE (Copilot review, #617): this seeding IS the crash-retry
+    // scenario — a prior run imported both members but died before the prune
+    // batch (old links + source PML still present). The retry must re-locate
+    // the stale old links off the registered members and finish the prune,
+    // or `fullyMigrated` could never become true.
+    expect(db.docs(`produtos/${CHILD_1}/variacaoMercadoLivre`).has(OLD_LINK_1)).toBe(false);
+    expect(db.docs(`produtos/${CHILD_2}/variacaoMercadoLivre`).has(OLD_LINK_2)).toBe(false);
+    expect(db.docs(`produtos/${TP1}/produtoMercadoLivre`).has(SOURCE_PML_DOC_ID)).toBe(false);
+  });
+
+  it('partial family: registered members whose old links are ALREADY gone stay stamp-only (no prune)', async () => {
+    const db = new FakeDb();
+    // Third child = a sibling variation NOT covered by new_items — the source
+    // listing is genuinely not fully migrated yet.
+    seedBaseline(db, { withThirdChild: true });
+    // A prior PARTIAL run already imported member 1 AND deleted its old link
+    // (the unconditional delete loop) — so the retry's best-effort re-locate
+    // finds nothing for it: genuinely stamp-only, and the prune gate stays
+    // closed because of the uncovered third sibling.
+    db.docs(`produtos/${CHILD_1}/variacaoMercadoLivre`).delete(OLD_LINK_1);
+    db.seed(`produtos/${TP1}/produtoMercadoLivre`, expectedFamilyLinkId, {
+      contaOuterRef: `documents/integracao/${CONTA}`,
+      id: FAMILY_ID,
+      title: 'Camiseta Família',
+      estado: 'am',
+      isUserProductModel: false,
+    });
+    db.seed(`produtos/${CHILD_1}/variacaoMercadoLivre`, 'newLink1', {
+      itemId: MEMBER_1_ID,
+      id: null,
+      produtoVariacaoOuterRef: toOuterRef(`produtos/${CHILD_1}`),
+      produtoMercadoLivreOuterRef: toOuterRef(
+        `produtos/${TP1}/produtoMercadoLivre/${expectedFamilyLinkId}`,
+      ),
+      sku: 'SKU-AZUL-P',
+    });
+
+    const api = makeMigrationApi({
+      newItems: [{ new_item_id: MEMBER_1_ID, variation_id: 1001 }],
+    });
+
+    await handleUptinMigration(migrationDeps(db, api), SOURCE_ITEM_ID, sourceLink());
+
+    expect(api.getItem).not.toHaveBeenCalled();
+    expect(db.docs(`produtos/${TP1}/produtoMercadoLivre`).get(expectedFamilyLinkId)).toMatchObject({
+      estado: 'p',
+      isUserProductModel: true,
+    });
+    // No prune: nothing was queued (member 1's old link already gone) and the
+    // third sibling's old link keeps the fully-migrated gate closed anyway.
     expect(db.docs(`produtos/${TP1}/produtoMercadoLivre`).has(SOURCE_PML_DOC_ID)).toBe(true);
+    expect(db.docs(`produtos/${CHILD_2}/variacaoMercadoLivre`).has(OLD_LINK_2)).toBe(true);
   });
 });
 

@@ -204,6 +204,20 @@ export async function handleUptinMigration(
             linkDocId: registered.linkDocId,
           });
         }
+        // Convergence after a mid-run crash: a previous attempt may have
+        // imported this member but died BEFORE the prune batch, leaving its
+        // OLD link alive — and this stamp-only path would then never enqueue
+        // it again, so `fullyMigrated` could never become true. Best-effort
+        // re-locate it (no throw — on a clean replay it's already deleted and
+        // this finds nothing, keeping "successful replay is stamp-only").
+        const staleVariationId = asNumericVariationId(newItem.variation_id);
+        const staleOldLink =
+          staleVariationId != null
+            ? await findOldVariacaoLink(db, staleVariationId, sourcePmlOuterRef)
+            : null;
+        if (staleOldLink) {
+          oldLinksToDelete.push({ produtoId: staleOldLink.produtoId, docId: staleOldLink.docId });
+        }
         continue;
       }
 

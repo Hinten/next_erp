@@ -687,9 +687,13 @@ async function resolveUpParentOverride(
   canonicalId: string,
   integracaoId: string,
 ): Promise<ResolvedProduto> {
+  // limit(10), not limit(1): the integração filter runs in memory (tolerant
+  // ref matching), so the first doc could belong to another conta. Same bound
+  // as resolveExistingUpParent's member-link scan.
   const linkSnap = await produtoMercadoLivreLinkCollection
     .ref(db, { produtoId })
     .where('id', '==', canonicalId)
+    .limit(10)
     .get();
   for (const d of linkSnap.docs) {
     const raw = d.data() as Record<string, unknown>;
