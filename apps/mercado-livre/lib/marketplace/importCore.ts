@@ -344,6 +344,14 @@ function lastSegment(ref: string): string {
  *    publicado/taxonomy links are NOT gated by it (those always fill-null);
  *  - the `variacaoMercadoLivre` link doc's wire shape is the OLD Flutter
  *    `VariacoesML` shape verbatim — `variacaoMercadoLivreLinkCollection` parses it.
+ *
+ * User-Products mode (#521, `args.up`): a User-Products family member is its
+ * OWN MLB item — there's no numeric ML "variation id" the way `variations[]`
+ * has one. The `up` flag swaps only the `variacaoMercadoLivre` link's identity
+ * fields (`itemId` set to the member's MLB id, numeric `id` never stamped) and
+ * adds the dual-run `relevantData.isUserProductModel` marker to the denorm
+ * entry — every other field (sku, nome, precos, dims/categoria, taxonomy) is
+ * assembled identically to the #520 `variations[]` path.
  */
 export interface VariationChildAssembleArgs {
   mappedVariation: MappedMlVariation;
@@ -378,6 +386,14 @@ export interface VariationChildAssembleArgs {
   existingEstoqueQty: number | null;
   existingEstoqueReservada: number | null;
   now: number;
+  /**
+   * User-Products import (#521): when set, this child's `variacaoMercadoLivre`
+   * link is keyed by the member's own ML **itemId** (its own MLB id) instead of
+   * a numeric ML variation id — User-Products members have none. `null` = the
+   * #520 `variations[]` behavior (numeric `id` derived from `variationId`,
+   * `itemId` preserved-or-null).
+   */
+  up: { itemId: string } | null;
 }
 
 export interface VariationChildPlan {
@@ -387,8 +403,14 @@ export interface VariationChildPlan {
   estoque: { docId: string; data: Record<string, unknown> } | null;
   /** The `variacaoMercadoLivre` link doc (full set, spread-existing). */
   link: Record<string, unknown>;
-  /** Dual-run `marketplace`/`marketplaceIds` denorm entry (applied by IO). */
-  denorm: { externalId: string; externalParentId: string };
+  /**
+   * Dual-run `marketplace`/`marketplaceIds` denorm entry (applied by IO).
+   * `relevantData` is set ONLY in User-Products mode (#521) — the parity
+   * marker (`isUserProductModel: true`) that must byte-match Flutter's
+   * `ProdMarketplace.relevantData` (`includeIfNull: false`, so it's simply
+   * absent — not `undefined` — outside UP mode).
+   */
+  denorm: { externalId: string; externalParentId: string; relevantData?: Record<string, unknown> };
 }
 
 /**
@@ -536,16 +558,24 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
   const existingLink = args.existingLinkRaw ?? {};
   const link: Record<string, unknown> = {
     ...existingLink,
-    id: numericVariationId(mappedVariation.variationId),
-    // Legacy variations[] branch never sets itemId (User-Products only) — preserve
-    // whatever's already there (or null on a fresh link).
-    itemId: (existingLink.itemId as string | null | undefined) ?? null,
+    // #520 variations[]: numeric `id` derived from the ML variation id; `itemId`
+    // is User-Products-only, so it's preserved-or-null (never stamped).
+    // #521 User-Products: the member IS its own MLB item — `itemId` is stamped
+    // from it; the numeric `id` field has nothing to derive from (a UP member's
+    // "variationId" is its own MLB itemId, not a numeric ML variation id), so
+    // it's preserved-or-null instead of ever being (re)computed here.
+    id: args.up
+      ? ((existingLink.id as number | null | undefined) ?? null)
+      : numericVariationId(mappedVariation.variationId),
+    itemId: args.up ? args.up.itemId : ((existingLink.itemId as string | null | undefined) ?? null),
     produtoVariacaoOuterRef: toOuterRef(`produtos/${args.produtoId}`),
     produtoMercadoLivreOuterRef: parent.linkOuterRef,
     // Deliberate deviation: legacy sourced this from attribute_combinations
     // (models.dart:1726), where SELLER_SKU never appears — so Flutter writes null.
     // The variation's real SELLER_SKU is strictly more useful, and link.sku is
     // not a dedup/query key (children resolve by the `id` field + produto sku).
+    // D-C (#521): the SAME rule applies in User-Products mode — the child's sku
+    // is always the member's own SELLER_SKU, never the parent's familyId.
     sku: mappedVariation.sku,
     attributes: mappedVariation.combos
       .map(comboToWireAttribute)
@@ -556,6 +586,10 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
     produto,
     estoque,
     link,
-    denorm: { externalId: mappedVariation.variationId, externalParentId: parent.mlItemId },
+    denorm: {
+      externalId: mappedVariation.variationId,
+      externalParentId: parent.mlItemId,
+      ...(args.up ? { relevantData: { isUserProductModel: true } } : {}),
+    },
   };
 }

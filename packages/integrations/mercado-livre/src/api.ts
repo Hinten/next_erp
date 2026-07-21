@@ -21,6 +21,8 @@ import {
   type MlSizeChartApi,
   type MlTechnicalSpecs,
   type MlUser,
+  type MlUserProductFamily,
+  type MlUserProductItemsSearch,
   activeChartDomainsSchema,
   catalogDomainSchema,
   categoryAttributesSchema,
@@ -35,6 +37,8 @@ import {
   sizeChartApiSchema,
   technicalSpecsSchema,
   tokenErrorSchema,
+  userProductFamilySchema,
+  userProductItemsSearchSchema,
   userSchema,
 } from './types';
 
@@ -79,6 +83,20 @@ export interface MercadoLivreApi {
     seller: number | string;
     [key: string]: string | number | undefined;
   }): Promise<MlOrderSearch>;
+
+  /**
+   * `GET /sites/MLB/user-products-families/{familyId}` — sibling User-Product
+   * ids of a family (User-Products model family fan-out, #521).
+   */
+  getUserProductFamily(familyId: string): Promise<MlUserProductFamily>;
+  /**
+   * `GET /users/{sellerId}/items/search?user_product_id=<csv>` — resolves a
+   * batch of User-Product ids to their MLB item ids (#521 family fan-out).
+   */
+  searchItemsByUserProduct(
+    sellerId: number,
+    userProductIds: readonly string[],
+  ): Promise<MlUserProductItemsSearch>;
 
   /** `POST /items` — first publish. Build the body with `buildItemPayload`. */
   createItem(payload: Record<string, unknown>): Promise<MlItem>;
@@ -247,6 +265,13 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getPack: (id) => request('GET', `/packs/${id}`, packSchema),
     searchOrders: (params) =>
       request('GET', '/orders/search', orderSearchSchema, { query: params }),
+
+    getUserProductFamily: (familyId) =>
+      request('GET', `/sites/MLB/user-products-families/${familyId}`, userProductFamilySchema),
+    searchItemsByUserProduct: (sellerId, userProductIds) =>
+      request('GET', `/users/${sellerId}/items/search`, userProductItemsSearchSchema, {
+        query: { user_product_id: userProductIds.join(',') },
+      }),
 
     createItem: (payload) => request('POST', '/items', itemSchema, { body: payload }),
     updateItem: (id, payload) => request('PUT', `/items/${id}`, itemSchema, { body: payload }),

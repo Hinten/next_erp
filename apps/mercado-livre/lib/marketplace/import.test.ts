@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import { MercadoLivreError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 
 import { type ImportDeps, importProduto } from './import';
 import { MercadoLivreImportError } from './importCore';
+import { MAX_FAMILY_SIBLINGS } from './importFamily';
 import { type Bucket } from './arquivoUpload';
 
 /* ------------------------------ fake Firestore ---------------------------- */
@@ -210,14 +212,6 @@ beforeEach(() => {
 });
 
 describe('importProduto — guards', () => {
-  it('rejects a User-Products listing (family_name) — #521', async () => {
-    const db = new FakeDb();
-    const api = makeApi({ ...SIMPLE_ITEM, family_name: 'Camiseta' });
-    const promise = importProduto(deps(db, api), 'MLB123');
-    await expect(promise).rejects.toThrow(MercadoLivreImportError);
-    await expect(promise).rejects.toThrow(/User-Products/);
-  });
-
   it('rejects a closed listing', async () => {
     const db = new FakeDb();
     const api = makeApi({ ...SIMPLE_ITEM, status: 'closed' });
@@ -524,5 +518,270 @@ describe('importProduto — legacy variations[] listing (#520)', () => {
       expect(Array.isArray(childData.variacoesUid)).toBe(true);
       expect((childData.variacoesUid as string[]).length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('importProduto — User-Products (family_name) listing (#521)', () => {
+  const FAMILY_ID = 'FAM1';
+  const MEMBER_A_ID = 'MLBA1';
+  const MEMBER_B_ID = 'MLBB1';
+  const MEMBER_C_ID = 'MLBC1';
+
+  const MEMBER_A: DocData = {
+    id: MEMBER_A_ID,
+    family_name: 'Camiseta Família',
+    family_id: FAMILY_ID,
+    title: 'Camiseta',
+    category_id: 'MLB1430',
+    base_price: 59.9,
+    price: 59.9,
+    available_quantity: 5,
+    condition: 'new',
+    status: 'active',
+    listing_type_id: 'gold_special',
+    seller_id: 55,
+    user_product_id: 'UP-A',
+    attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-A' }],
+    attribute_combinations: [{ id: 'SIZE', name: 'Tamanho', value_id: '10', value_name: 'G' }],
+  };
+  const MEMBER_B: DocData = {
+    ...MEMBER_A,
+    id: MEMBER_B_ID,
+    user_product_id: 'UP-B',
+    available_quantity: 7,
+    attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-B' }],
+    attribute_combinations: [{ id: 'SIZE', name: 'Tamanho', value_id: '11', value_name: 'M' }],
+  };
+  const MEMBER_C: DocData = {
+    ...MEMBER_A,
+    id: MEMBER_C_ID,
+    user_product_id: 'UP-C',
+    available_quantity: 3,
+    attributes: [{ id: 'SELLER_SKU', value_name: 'SKU-C' }],
+    attribute_combinations: [{ id: 'SIZE', name: 'Tamanho', value_id: '12', value_name: 'P' }],
+  };
+
+  // Literal parity ids (deps()'s integracaoId is 'conta-A') — pinned directly
+  // against the production formula so a regression that reintroduces a
+  // separator (or otherwise changes the concat) is caught here, not just by a
+  // hex-64/prefix shape check.
+  const expectedParentId = createHash('sha256').update(`conta-A${FAMILY_ID}`).digest('hex');
+  const expectedParentLinkId = `100000000000000000${FAMILY_ID}`;
+  const expectedChildId = (memberId: string) =>
+    `XMLB000000000000000${expectedParentLinkId}vMLB${memberId}`;
+
+  /** `FieldValue.arrayUnion(...)`'s public `elements` array — the appended entries. */
+  function arrayUnionElements(v: unknown): unknown[] {
+    return (v as { elements: unknown[] }).elements;
+  }
+
+  function makeUpApi(opts: {
+    items: Record<string, DocData>;
+    family?: DocData | Error;
+    search?: DocData | Error;
+    category?: DocData | Error;
+  }): MercadoLivreApi {
+    const category = opts.category ?? { id: 'MLB1430', name: 'Roupas' };
+    return {
+      getItem: vi.fn(async (id: string) => {
+        const it = opts.items[id];
+        // A sibling the test didn't fixture is a best-effort fan-out failure
+        // (MercadoLivreError), not a hard crash — mirrors a real "item not found".
+        if (!it) throw new MercadoLivreError(`item não encontrado: ${id}`);
+        return it;
+      }),
+      getItemDescription: vi.fn(async () => ({ plain_text: 'Descrição' })),
+      getCategory: vi.fn(async () => {
+        if (category instanceof Error) throw category;
+        return category;
+      }),
+      getUserProductFamily: vi.fn(async () => {
+        if (opts.family instanceof Error) throw opts.family;
+        return opts.family ?? { user_products_ids: [] };
+      }),
+      searchItemsByUserProduct: vi.fn(async () => {
+        if (opts.search instanceof Error) throw opts.search;
+        return opts.search ?? { results: [] };
+      }),
+    } as unknown as MercadoLivreApi;
+  }
+
+  it('imports the family parent + the called member as a child — literal parity ids, denorm, skip-stock', async () => {
+    const db = new FakeDb();
+    const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A } });
+    const res = await importProduto(deps(db, api), MEMBER_A_ID);
+
+    expect(res.created).toBe(true);
+    expect(res.nome).toBe('Camiseta Família');
+    expect(res.produtoId).toBe(expectedParentId);
+    expect(res.variations).toEqual({ total: 1, created: 1 });
+    // no siblings found (default empty family/search) — the fan-out still ran
+    // (default familyFanOut) and reported an empty summary.
+    expect(res.family).toEqual({ total: 0, imported: 0, created: 0, capped: false, failures: [] });
+
+    // parent: sku falls back to the family id (parity); never gets its own stock.
+    expect(db.docs('produtos').get(expectedParentId)).toMatchObject({
+      nome: 'Camiseta Família',
+      sku: FAMILY_ID,
+    });
+    expect(db.docs(`produtos/${expectedParentId}/estoques`).size).toBe(0);
+
+    // parent link: literal fixed doc id; `id` field = family id; isUserProductModel stamped.
+    const parentLink = db
+      .docs(`produtos/${expectedParentId}/produtoMercadoLivre`)
+      .get(expectedParentLinkId);
+    expect(parentLink).toMatchObject({ id: FAMILY_ID, isUserProductModel: true });
+
+    // parent denorm carries relevantData.isUserProductModel (parity — ProdMarketplace.relevantData).
+    const parentUpdate = db.updates.find(
+      (u) => u.path === `produtos/${expectedParentId}` && 'marketplace' in u.patch,
+    );
+    expect(parentUpdate).toBeDefined();
+    expect(arrayUnionElements(parentUpdate!.patch.marketplace)[0]).toMatchObject({
+      integracaoUid: 'conta-A',
+      externalId: FAMILY_ID,
+      relevantData: { isUserProductModel: true },
+    });
+
+    // child: produto id AND link doc id are the SAME literal fixed-width string.
+    const childId = expectedChildId(MEMBER_A_ID);
+    expect(db.docs('produtos').get(childId)).toMatchObject({
+      paiId: expectedParentId,
+      sku: 'SKU-A',
+    });
+    const childLink = db.docs(`produtos/${childId}/variacaoMercadoLivre`).get(childId);
+    expect(childLink).toMatchObject({ itemId: MEMBER_A_ID, id: null });
+
+    // child stock created from the member's own available_quantity.
+    const childEstoques = db.docs(`produtos/${childId}/estoques`);
+    expect(childEstoques.size).toBe(1);
+    expect([...childEstoques.values()][0]).toMatchObject({ quantidade: 5 });
+
+    // child denorm also carries relevantData + externalParentId = family id.
+    const childUpdate = db.updates.find(
+      (u) => u.path === `produtos/${childId}` && 'marketplace' in u.patch,
+    );
+    expect(arrayUnionElements(childUpdate!.patch.marketplace)[0]).toMatchObject({
+      externalId: MEMBER_A_ID,
+      externalParentId: FAMILY_ID,
+      relevantData: { isUserProductModel: true },
+    });
+  });
+
+  it('a second member of the same family resolves the SAME parent via the family-id link', async () => {
+    const db = new FakeDb();
+    const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A, [MEMBER_B_ID]: MEMBER_B } });
+    const resA = await importProduto(deps(db, api), MEMBER_A_ID);
+    const resB = await importProduto(deps(db, api, { familyFanOut: false }), MEMBER_B_ID);
+
+    expect(resB.produtoId).toBe(resA.produtoId);
+    expect(db.docs('produtos').get(expectedChildId(MEMBER_B_ID))).toMatchObject({
+      paiId: resA.produtoId,
+      sku: 'SKU-B',
+    });
+    // only one parent produto exists (parent + 2 children)
+    expect(db.docs('produtos').size).toBe(3);
+  });
+
+  it('re-importing the same member is idempotent (zero new docs)', async () => {
+    const db = new FakeDb();
+    const api = makeUpApi({ items: { [MEMBER_A_ID]: MEMBER_A } });
+    await importProduto(deps(db, api), MEMBER_A_ID);
+    const countAfterFirst = db.docs('produtos').size;
+
+    const second = await importProduto(deps(db, api, { familyFanOut: false }), MEMBER_A_ID);
+    expect(second.created).toBe(false);
+    expect(second.variations).toEqual({ total: 1, created: 0 });
+    expect(db.docs('produtos').size).toBe(countAfterFirst);
+  });
+
+  describe('family fan-out', () => {
+    it('imports the sibling found via the family endpoints, calling the family endpoint exactly once (no recursion)', async () => {
+      const db = new FakeDb();
+      const api = makeUpApi({
+        items: { [MEMBER_A_ID]: MEMBER_A, [MEMBER_B_ID]: MEMBER_B },
+        family: { user_products_ids: ['UP-A', 'UP-B'] },
+        search: { results: [MEMBER_A_ID, MEMBER_B_ID] }, // echoes the primary — must be filtered out
+      });
+      const res = await importProduto(deps(db, api), MEMBER_A_ID);
+
+      expect(res.family).toMatchObject({
+        total: 1,
+        imported: 1,
+        created: 1,
+        capped: false,
+        failures: [],
+      });
+      // exactly once — a sibling import never re-triggers its own family lookup.
+      expect(api.getUserProductFamily).toHaveBeenCalledTimes(1);
+      expect(api.getItem).toHaveBeenCalledWith(MEMBER_B_ID);
+      expect(db.docs('produtos').get(expectedChildId(MEMBER_B_ID))).toMatchObject({
+        sku: 'SKU-B',
+      });
+    });
+
+    it('a MercadoLivreError resolving the family is best-effort — primary-only import, reflected in the family block', async () => {
+      const db = new FakeDb();
+      const api = makeUpApi({
+        items: { [MEMBER_A_ID]: MEMBER_A },
+        family: new MercadoLivreError('family lookup indisponível'),
+      });
+      const res = await importProduto(deps(db, api), MEMBER_A_ID);
+
+      expect(res.created).toBe(true);
+      // resolutionError distinguishes "couldn't ask ML" from a real
+      // single-member family (which carries NO resolutionError key).
+      expect(res.family).toEqual({
+        total: 0,
+        imported: 0,
+        created: 0,
+        capped: false,
+        failures: [],
+        resolutionError: 'family lookup indisponível',
+      });
+    });
+
+    it('one sibling failing with MercadoLivreImportError (closed) is recorded; others still succeed', async () => {
+      const db = new FakeDb();
+      const api = makeUpApi({
+        items: {
+          [MEMBER_A_ID]: MEMBER_A,
+          [MEMBER_B_ID]: { ...MEMBER_B, status: 'closed' },
+          [MEMBER_C_ID]: MEMBER_C,
+        },
+        family: { user_products_ids: ['UP-A', 'UP-B', 'UP-C'] },
+        search: { results: [MEMBER_A_ID, MEMBER_B_ID, MEMBER_C_ID] },
+      });
+      const res = await importProduto(deps(db, api), MEMBER_A_ID);
+
+      expect(res.family?.imported).toBe(1);
+      expect(res.family?.created).toBe(1);
+      expect(res.family?.failures).toEqual([
+        { itemId: MEMBER_B_ID, error: expect.stringContaining('encerrado') },
+      ]);
+      // the successful sibling (C) still landed its own child produto.
+      expect(db.docs('produtos').get(expectedChildId(MEMBER_C_ID))).toMatchObject({
+        sku: 'SKU-C',
+      });
+    });
+
+    it('caps the fan-out and reports the cap when the family has more siblings than the limit', async () => {
+      const db = new FakeDb();
+      const siblingIds = Array.from({ length: MAX_FAMILY_SIBLINGS + 5 }, (_, i) => `MLBSIB${i}`);
+      const api = makeUpApi({
+        // Siblings are intentionally NOT fixtured — every attempted one fails
+        // best-effort (MercadoLivreError), which is enough to prove the CAP
+        // arithmetic without needing 65 real fixtures.
+        items: { [MEMBER_A_ID]: MEMBER_A },
+        family: { user_products_ids: siblingIds.map((_, i) => `UP-SIB${i}`) },
+        search: { results: [MEMBER_A_ID, ...siblingIds] },
+      });
+      const res = await importProduto(deps(db, api), MEMBER_A_ID);
+
+      expect(res.family?.capped).toBe(true);
+      expect(res.family?.total).toBe(MAX_FAMILY_SIBLINGS);
+      expect(res.family?.imported).toBe(0);
+      expect((res.family?.failures ?? []).length).toBe(MAX_FAMILY_SIBLINGS);
+    });
   });
 });

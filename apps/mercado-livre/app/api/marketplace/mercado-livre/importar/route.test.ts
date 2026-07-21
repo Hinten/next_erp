@@ -135,17 +135,32 @@ describe('POST /api/marketplace/mercado-livre/importar', () => {
     expect(h.importProduto).not.toHaveBeenCalled();
   });
 
-  it('maps import issues to 422 ML_IMPORT_BLOCKED (family_name/User-Products — #521)', async () => {
+  it('maps import issues to 422 ML_IMPORT_BLOCKED (e.g. a closed listing)', async () => {
     h.importProduto.mockRejectedValue(
-      new MercadoLivreImportError([
-        'anúncio MLB123 é um anúncio User-Products (family_name) — issue #521',
-      ]),
+      new MercadoLivreImportError(['anúncio MLB123 está encerrado (status closed)']),
     );
     const res = await POST(req({ integracaoId: 'int-1', itemId: 'MLB123' }));
     expect(res.status).toBe(422);
     const body = await res.json();
     expect(body.code).toBe('ML_IMPORT_BLOCKED');
     expect(body.issues).toHaveLength(1);
+  });
+
+  it('a User-Products (family_name) listing imports successfully, with the family fan-out summary passed through (#521)', async () => {
+    h.importProduto.mockResolvedValue({
+      produtoId: 'prod-family',
+      estado: 'p',
+      nome: 'Camiseta Família',
+      created: true,
+      variations: { total: 1, created: 1 },
+      family: { total: 2, imported: 2, created: 2, capped: false, failures: [] },
+    });
+    const res = await POST(req({ integracaoId: 'int-1', itemId: 'MLB123' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      produtoId: 'prod-family',
+      family: { total: 2, imported: 2, created: 2, capped: false, failures: [] },
+    });
   });
 
   it('maps a dead credential to 409 via the shared error mapper', async () => {

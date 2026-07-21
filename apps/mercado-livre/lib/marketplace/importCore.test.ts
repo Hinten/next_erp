@@ -436,6 +436,7 @@ function childArgs(over: Partial<VariationChildAssembleArgs> = {}): VariationChi
     existingEstoqueQty: null,
     existingEstoqueReservada: null,
     now: 1_700_000_000_000,
+    up: null,
     ...over,
   };
 }
@@ -751,5 +752,67 @@ describe('assembleVariationChildPlan — denorm', () => {
   it('denorm carries the variation id + the parent ML item id', () => {
     const plan = assembleVariationChildPlan(childArgs());
     expect(plan.denorm).toEqual({ externalId: '999', externalParentId: 'MLB123' });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*               User-Products (family_name) mode — #521                     */
+/* -------------------------------------------------------------------------- */
+
+describe('assembleVariationChildPlan — User-Products mode (args.up)', () => {
+  it('stamps link.itemId from up.itemId; numeric id stays null even when the id string looks numeric', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        mappedVariation: mappedVariation({ variationId: '4455667788' }),
+        up: { itemId: '4455667788' },
+      }),
+    );
+    expect(plan.link.itemId).toBe('4455667788');
+    expect(plan.link.id).toBeNull();
+  });
+
+  it('preserves an existing numeric link id on re-import (never recomputed from the itemId)', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        mappedVariation: mappedVariation({ variationId: 'MLB4455667788' }),
+        up: { itemId: 'MLB4455667788' },
+        existingLinkRaw: { id: 42, itemId: 'MLB4455667788' },
+      }),
+    );
+    expect(plan.link.id).toBe(42);
+    expect(plan.link.itemId).toBe('MLB4455667788');
+  });
+
+  it('denorm carries the exact isUserProductModel relevantData marker (byte-match Flutter ProdMarketplace.relevantData)', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        mappedVariation: mappedVariation({ variationId: 'MLB4455667788' }),
+        up: { itemId: 'MLB4455667788' },
+      }),
+    );
+    expect(plan.denorm).toEqual({
+      externalId: 'MLB4455667788',
+      externalParentId: 'MLB123',
+      relevantData: { isUserProductModel: true },
+    });
+  });
+
+  it('child sku is always the member own SELLER_SKU (D-C) — never a family/parent sku fallback', () => {
+    const plan = assembleVariationChildPlan(
+      childArgs({
+        mappedVariation: mappedVariation({ variationId: 'MLB4455667788', sku: 'MEMBER-SKU' }),
+        up: { itemId: 'MLB4455667788' },
+      }),
+    );
+    expect(plan.produto?.data.sku).toBe('MEMBER-SKU');
+    expect(plan.link.sku).toBe('MEMBER-SKU');
+  });
+
+  it('up: null (#520 variations[] mode) regression — numeric id, itemId preserved-or-null, no relevantData key', () => {
+    const plan = assembleVariationChildPlan(childArgs());
+    expect(plan.link.id).toBe(999);
+    expect(plan.link.itemId).toBeNull();
+    expect(plan.denorm).toEqual({ externalId: '999', externalParentId: 'MLB123' });
+    expect(plan.denorm).not.toHaveProperty('relevantData');
   });
 });
