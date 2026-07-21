@@ -13,6 +13,7 @@ const ESLINT_WORKSPACES = [
   'apps/integrations',
   'apps/nfe',
   'apps/webchat',
+  'packages/schemas',
   'packages/integrations/nfe',
   'packages/integrations/freight-br',
 ].sort((a, b) => b.length - a.length);
@@ -36,8 +37,8 @@ export default function lintStaged(stagedFiles) {
   }
 
   // 2) ESLint --fix, grouped by owning workspace. Code files that live outside
-  //    any ESLint-config workspace (e.g. packages/schemas) have no config to
-  //    run against, so they get Prettier only.
+  //    any ESLint-config workspace (e.g. packages/core, packages/ui) have no
+  //    config to run against, so they get Prettier only.
   const byWorkspace = new Map();
   for (const abs of stagedFiles) {
     if (!CODE_RE.test(abs)) continue;

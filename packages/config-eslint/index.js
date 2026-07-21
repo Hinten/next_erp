@@ -3,6 +3,8 @@
 import noInlineAdminCollection from './rules/no-inline-admin-collection.js';
 import defaultQueryNeedsIndex from './rules/default-query-needs-index.js';
 import noAdHocMoneyRounding from './rules/no-ad-hoc-money-rounding.js';
+import noOptionalWithoutNullable from './rules/no-optional-without-nullable.js';
+import noErrorAsSoleInstanceof from './rules/no-error-as-sole-instanceof.js';
 import eslintConfigPrettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
@@ -74,6 +76,8 @@ const config = [
           'no-inline-admin-collection': noInlineAdminCollection,
           'default-query-needs-index': defaultQueryNeedsIndex,
           'no-ad-hoc-money-rounding': noAdHocMoneyRounding,
+          'no-optional-without-nullable': noOptionalWithoutNullable,
+          'no-error-as-sole-instanceof': noErrorAsSoleInstanceof,
         },
       },
     },
@@ -146,6 +150,31 @@ const config = [
       // are forbidden (the canonical impls + wire-format serializers are
       // allow-listed in the rule). See rules/no-ad-hoc-money-rounding.js.
       'delfrance/no-ad-hoc-money-rounding': 'error',
+
+      // In packages/schemas, `.optional()` must be paired with `.nullable()` —
+      // the Firebase SDK rejects `undefined` in addDoc/setDoc, so a bare
+      // `.optional()` is a runtime crash on the first blank input. The rule
+      // self-scopes by path, so this entry is inert outside packages/schemas
+      // (it is re-declared in packages/schemas/eslint.config.mjs, which does
+      // NOT extend this base). See rules/no-optional-without-nullable.js.
+      'delfrance/no-optional-without-nullable': 'error',
+
+      // The half of the no-generic-catch rule the `no-restricted-syntax`
+      // selectors below cannot express: they check that SOME `instanceof`
+      // exists, not WHICH class. `Error` is the parent of every exception, so
+      // narrowing only on it swallows FirebaseError/ZodError alike.
+      //
+      // The distinct rule name matters: flat config does full-replacement per
+      // rule NAME, so this survives the `no-restricted-syntax` overrides in
+      // apps/nfe and packages/integrations/nfe that drop the base catch
+      // selectors — which is exactly where it earns its keep (18 of the 51
+      // current hits are in apps/nfe).
+      //
+      // Warn, not error: 51 pre-existing sites, mostly benign `.message`
+      // extraction. A ratchet against backsliding, mirroring
+      // no-inline-admin-collection. NOTE lint-staged runs `--max-warnings 0`,
+      // so editing one of those 51 files means fixing it first.
+      'delfrance/no-error-as-sole-instanceof': 'warn',
     },
   },
 ];
