@@ -115,6 +115,12 @@ export interface ImportResult {
     /** True when the family had more siblings than `importFamily.ts`'s cap allows. */
     capped: boolean;
     failures: Array<{ itemId: string; error: string }>;
+    /**
+     * Set when the ML sibling-RESOLUTION calls failed (best-effort — the
+     * primary member still imported); absent when resolution succeeded, so an
+     * empty `total` with no error really means a single-member family.
+     */
+    resolutionError?: string;
   };
 }
 
@@ -412,6 +418,12 @@ export async function importProduto(
       const failures: Array<{ itemId: string; error: string }> = [];
       let imported = 0;
       let created = 0;
+      // Deliberately SEQUENTIAL: every sibling merges the SAME family parent
+      // (produto fill-null, PML link spread-set, denorm arrayUnion, taxonomy
+      // tx) — concurrency would only buy tx-contention retries and
+      // ALREADY_EXISTS churn on shared docs. The cap (60) bounds the worst
+      // case, and a request killed mid-loop recovers by re-importing (every
+      // write is idempotent/convergent).
       for (const siblingId of siblings.ids) {
         try {
           const siblingRes = await importProduto({ ...deps, familyFanOut: false }, siblingId);
@@ -437,6 +449,8 @@ export async function importProduto(
         created,
         capped: siblings.capped,
         failures,
+        // Key absent (not undefined-valued) when resolution succeeded.
+        ...(siblings.resolutionError != null ? { resolutionError: siblings.resolutionError } : {}),
       };
     } else {
       // No family id to expand (shouldn't happen for a real User-Products item)
@@ -568,9 +582,15 @@ async function resolveExistingUpParent(
   sku: string | null,
   integracaoId: string,
 ): Promise<ResolvedProduto | null> {
+  // An MLB item id is globally unique on ML, so >1 hit only means the SAME
+  // listing imported under multiple integração accounts — a small set. The
+  // limit bounds a pathological scan (the link has no conta field to filter
+  // server-side — adding one would pollute the legacy VariacoesML wire); the
+  // family-id and SKU steps below remain the fallback.
   const memberLinkSnap = await variacaoMercadoLivreLinkCollection
     .groupQuery(db)
     .where('itemId', '==', itemId)
+    .limit(10)
     .get();
   for (const d of memberLinkSnap.docs) {
     const raw = d.data() as Record<string, unknown>;

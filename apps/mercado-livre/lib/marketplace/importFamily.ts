@@ -32,6 +32,12 @@ export interface FamilySiblingsResult {
   ids: string[];
   /** True when more siblings were found than the cap allows. */
   capped: boolean;
+  /**
+   * The ML-API failure that aborted sibling RESOLUTION (best-effort — the
+   * caller proceeds primary-only); null on success. Distinguishes "the family
+   * really has no siblings" from "we couldn't ask ML about the family".
+   */
+  resolutionError: string | null;
 }
 
 /**
@@ -51,16 +57,24 @@ export async function resolveFamilySiblingIds(
     // `user_products_ids`/`results` are schema-defaulted `string[]` (never
     // null/undefined) — only an empty VALUE needs filtering, not the type.
     const userProductIds = family.user_products_ids.filter((id) => id.length > 0);
-    if (userProductIds.length === 0) return { ids: [], capped: false };
+    if (userProductIds.length === 0) return { ids: [], capped: false, resolutionError: null };
 
     const search = await deps.api.searchItemsByUserProduct(sellerUserId, userProductIds);
     const siblingIds = [...new Set(search.results)].filter(
       (id) => id.length > 0 && id !== primaryItemId,
     );
     const capped = siblingIds.length > MAX_FAMILY_SIBLINGS;
-    return { ids: capped ? siblingIds.slice(0, MAX_FAMILY_SIBLINGS) : siblingIds, capped };
+    return {
+      ids: capped ? siblingIds.slice(0, MAX_FAMILY_SIBLINGS) : siblingIds,
+      capped,
+      resolutionError: null,
+    };
   } catch (err) {
-    if (err instanceof MercadoLivreError) return { ids: [], capped: false }; // best-effort: primary-only import
+    // Best-effort: primary-only import — but SURFACED (not silently identical
+    // to an empty family) so the caller can report it on the family block.
+    if (err instanceof MercadoLivreError) {
+      return { ids: [], capped: false, resolutionError: err.message };
+    }
     throw err;
   }
 }

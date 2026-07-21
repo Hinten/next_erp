@@ -729,12 +729,15 @@ describe('importProduto — User-Products (family_name) listing (#521)', () => {
       const res = await importProduto(deps(db, api), MEMBER_A_ID);
 
       expect(res.created).toBe(true);
+      // resolutionError distinguishes "couldn't ask ML" from a real
+      // single-member family (which carries NO resolutionError key).
       expect(res.family).toEqual({
         total: 0,
         imported: 0,
         created: 0,
         capped: false,
         failures: [],
+        resolutionError: 'family lookup indisponível',
       });
     });
 
