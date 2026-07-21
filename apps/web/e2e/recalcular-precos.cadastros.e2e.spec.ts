@@ -202,6 +202,10 @@ test.describe.serial('Recalcular preços e2e (#544)', () => {
     // the "aumentar" gate under a brand-new lista id, so this is never empty.
     await expect(aplicar).toBeEnabled();
     await aplicar.click();
+    // Blast-radius confirm modal: Aplicar always confirms the will-apply
+    // count before the first write.
+    await expect(page.getByText('Confirmar aplicação')).toBeVisible();
+    await page.getByRole('button', { name: 'Confirmar', exact: true }).click();
     await expect(page.getByText('Recálculo concluído')).toBeVisible({ timeout: 90_000 });
 
     await expect

@@ -20,6 +20,7 @@ import {
   Badge,
   Button,
   Group,
+  Modal,
   Paper,
   Progress,
   Select,
@@ -28,7 +29,7 @@ import {
 } from '@mantine/core';
 import { IconDownload } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
-import { buildQuery, limit, orderByField } from '@delfrance/data';
+import { buildQuery, limit, orderByField, whereEqual } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
 
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -81,15 +82,21 @@ export function RecalcularPrecosScreen() {
   const searchParams = useSearchParams();
   const listaIdParam = searchParams.get('listaId');
 
+  // SERVER-side `ativo == true` filter (legacy `ativo__isEqualTo(true)`
+  // parity): filtering client-side AFTER `limit(200)` could silently hide
+  // active listas whose nome sorts past 200 inactive ones. Enterprise
+  // Firestore runs the unindexed equality as a scan (tiny collection).
   const listasQuery = useMemo(
-    () => buildQuery(listaDePrecosCollection.ref(db, {}), [orderByField('nome'), limit(200)]),
+    () =>
+      buildQuery(listaDePrecosCollection.ref(db, {}), [
+        whereEqual('ativo', true),
+        orderByField('nome'),
+        limit(200),
+      ]),
     [db],
   );
   const listasSnap = useSnapshot(listasQuery);
-  const listasAtivas = useMemo(
-    () => (listasSnap.data ?? []).filter((r) => r.data.ativo === true),
-    [listasSnap.data],
-  );
+  const listasAtivas = useMemo(() => listasSnap.data ?? [], [listasSnap.data]);
   const selectData = useMemo(
     () => listasAtivas.map((r) => ({ value: r.id, label: r.data.nome })),
     [listasAtivas],
@@ -98,6 +105,9 @@ export function RecalcularPrecosScreen() {
   const [listaId, setListaId] = useState<string | null>(null);
   const [paramInvalido, setParamInvalido] = useState(false);
   const [mode, setMode] = useState<AplicarMode>('aplicarTudo');
+  // Blast-radius guardrail (owner decision, 2026-07-21): Aplicar sweeps the
+  // WHOLE parent catalog, so it always confirms the will-apply count first.
+  const [confirmandoAplicar, setConfirmandoAplicar] = useState(false);
   const [fase, setFase] = useState<Fase>({ fase: 'selecionar' });
   const abortRef = useRef<AbortController | null>(null);
 
@@ -354,15 +364,41 @@ export function RecalcularPrecosScreen() {
                 <Button variant="default" onClick={() => setFase({ fase: 'selecionar' })}>
                   Voltar
                 </Button>
-                <Button
-                  onClick={() => void handleAplicar(fase.rows, fase.comErro)}
-                  disabled={aplicarCount === 0}
-                >
+                <Button onClick={() => setConfirmandoAplicar(true)} disabled={aplicarCount === 0}>
                   Aplicar
                 </Button>
               </Group>
             </Group>
           </Stack>
+
+          <Modal
+            opened={confirmandoAplicar}
+            onClose={() => setConfirmandoAplicar(false)}
+            title="Confirmar aplicação"
+            centered
+          >
+            <Stack>
+              <Text size="sm">
+                Aplicar novos preços em <strong>{aplicarCount}</strong> produto(s) na lista{' '}
+                <strong>{selectedLista?.nome ?? ''}</strong> (
+                {APLICAR_MODE_LABELS[mode].toLowerCase()})? Esta ação altera o catálogo inteiro
+                conforme o modo selecionado e não pode ser desfeita em lote.
+              </Text>
+              <Group justify="flex-end">
+                <Button variant="default" onClick={() => setConfirmandoAplicar(false)}>
+                  Cancelar
+                </Button>
+                <Button
+                  onClick={() => {
+                    setConfirmandoAplicar(false);
+                    void handleAplicar(fase.rows, fase.comErro);
+                  }}
+                >
+                  Confirmar
+                </Button>
+              </Group>
+            </Stack>
+          </Modal>
         </Paper>
       )}
 
