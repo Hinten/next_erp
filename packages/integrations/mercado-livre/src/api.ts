@@ -14,6 +14,7 @@ import {
   type MlDomainDiscovery,
   type MlItem,
   type MlItemDescription,
+  type MlMigrationLiveListing,
   type MlOrder,
   type MlOrderSearch,
   type MlPack,
@@ -30,6 +31,7 @@ import {
   domainDiscoverySchema,
   itemDescriptionSchema,
   itemSchema,
+  migrationLiveListingSchema,
   orderSchema,
   orderSearchSchema,
   packSchema,
@@ -97,6 +99,12 @@ export interface MercadoLivreApi {
     sellerId: number,
     userProductIds: readonly string[],
   ): Promise<MlUserProductItemsSearch>;
+  /**
+   * `GET /items/{id}/migration_live_listing` — the new User-Products items a
+   * legacy `variations[]` listing was migrated to (User-Products migration,
+   * #441).
+   */
+  getMigrationLiveListing(itemId: string): Promise<MlMigrationLiveListing>;
 
   /** `POST /items` — first publish. Build the body with `buildItemPayload`. */
   createItem(payload: Record<string, unknown>): Promise<MlItem>;
@@ -272,6 +280,8 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       request('GET', `/users/${sellerId}/items/search`, userProductItemsSearchSchema, {
         query: { user_product_id: userProductIds.join(',') },
       }),
+    getMigrationLiveListing: (itemId) =>
+      request('GET', `/items/${itemId}/migration_live_listing`, migrationLiveListingSchema),
 
     createItem: (payload) => request('POST', '/items', itemSchema, { body: payload }),
     updateItem: (id, payload) => request('PUT', `/items/${id}`, itemSchema, { body: payload }),

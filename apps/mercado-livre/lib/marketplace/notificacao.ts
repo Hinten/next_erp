@@ -33,6 +33,7 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
 import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 import {
   integracaoCollection,
   notificacaoMercadoLivreCollection,
@@ -41,10 +42,13 @@ import {
 import { isAlreadyExists } from './grpcErrors';
 import {
   type ItemsApiResolver,
+  type MigrationRunner,
   resolveItemsApiFromContext,
   syncItemStatus,
 } from './itemsStatusSync';
+import { handleUptinMigration } from './importMigration';
 import { parseItemIdFromResource } from './linkRefs';
+import { loadMercadoLivreContext } from './mercadoLivre';
 
 /**
  * The deployed `onTaskDispatched` function name — which is ALSO its
@@ -193,6 +197,40 @@ export async function resolveIntegracaoByUserId(
   return snap.docs[0]?.id ?? null;
 }
 
+function asStringOrNull(v: unknown): string | null {
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+function asNumberOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+/**
+ * The production #441 migration runner: loads the account's live ML API (same
+ * seller-token path as `resolveItemsApiFromContext`) plus the price-table /
+ * deposit refs the import needs (mirrors the `/importar` route's narrowing),
+ * then runs the UP-migration takeover. Wired as `processNotificationPayload`'s
+ * default so an ordinary `items` notification needs no caller change; tests
+ * inject their own runner.
+ */
+const runUptinMigration: MigrationRunner = async (db, integracaoId, itemId, sourceLink) => {
+  const ctx = await loadMercadoLivreContext(db, integracaoId);
+  const channelCtx = await ctx.resolveChannelContext();
+  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  await handleUptinMigration(
+    {
+      db,
+      api,
+      integracaoId,
+      sellerUserId: asNumberOrNull(ctx.conta.user_id),
+      tabelaNormalOuterRef: asStringOrNull(ctx.conta.tabelaNormalOuterRef),
+      tabelaPromocionalOuterRef: asStringOrNull(ctx.conta.tabelaPromocionalOuterRef),
+      depositoOuterRef: asStringOrNull(ctx.conta.depositoOuterRef),
+    },
+    itemId,
+    sourceLink,
+  );
+};
+
 /** Deterministic result of processing one payload (transient failures THROW). */
 export type ProcessOutcome =
   | { kind: 'done'; integracaoId: string } // known topic processed
@@ -210,19 +248,22 @@ export async function processNotificationPayload(
   db: Firestore,
   payload: MlNotificationPayload,
   resolveItemsApi: ItemsApiResolver = resolveItemsApiFromContext,
+  migrationRunner: MigrationRunner = runUptinMigration,
 ): Promise<ProcessOutcome> {
   const integracaoId = await resolveIntegracaoByUserId(db, payload.user_id ?? null);
   if (!integracaoId) return { kind: 'no-account' };
   if (!isKnownTopic(payload.topic)) return { kind: 'unknown-topic', integracaoId };
 
-  // `items` — status-sync of an already-linked listing (#440). THROWS on a
-  // transient failure (so the queue/sweep retry) and is idempotent, keyed by the
-  // item id. A malformed resource (no id segment) is deterministic → ack it.
+  // `items` — status-sync of an already-linked listing (#440), including the
+  // #441 UP-migration takeover for a closed `variations_migration_source`
+  // listing. THROWS on a transient failure (so the queue/sweep retry) and is
+  // idempotent, keyed by the item id. A malformed resource (no id segment) is
+  // deterministic → ack it.
   if (payload.topic === 'items') {
     const itemId = parseItemIdFromResource(payload.resource);
     // The resolver is threaded (not a pre-built API) so syncItemStatus can go
     // link-first and skip the ML call entirely for an unlinked item.
-    if (itemId) await syncItemStatus(db, integracaoId, itemId, resolveItemsApi);
+    if (itemId) await syncItemStatus(db, integracaoId, itemId, resolveItemsApi, migrationRunner);
     return { kind: 'done', integracaoId };
   }
 
@@ -251,6 +292,7 @@ export async function handleNotificationTask(
   data: unknown,
   retryCount: number,
   resolveItemsApi: ItemsApiResolver = resolveItemsApiFromContext,
+  migrationRunner: MigrationRunner = runUptinMigration,
 ): Promise<TaskResult> {
   let payload: MlNotificationPayload;
   try {
@@ -262,7 +304,7 @@ export async function handleNotificationTask(
 
   let result: ProcessOutcome;
   try {
-    result = await processNotificationPayload(db, payload, resolveItemsApi);
+    result = await processNotificationPayload(db, payload, resolveItemsApi, migrationRunner);
   } catch (err) {
     // Transient (Firestore / ML API / network). Retry in-task until the final
     // attempt; then persist `failed` so the sweep re-drives it (a throw on the
@@ -407,6 +449,7 @@ export async function reprocessNotifications(
   db: Firestore,
   opts: ReprocessOptions = {},
   resolveItemsApi: ItemsApiResolver = resolveItemsApiFromContext,
+  migrationRunner: MigrationRunner = runUptinMigration,
 ): Promise<ReprocessResult> {
   const now = opts.now ?? Date.now();
   const cutoff = now - (opts.olderThanMs ?? ONE_HOUR_MS);
@@ -448,7 +491,12 @@ export async function reprocessNotifications(
     const tentativas = (doc.tentativas ?? 0) + 1;
 
     try {
-      const result = await processNotificationPayload(db, payload, resolveItemsApi);
+      const result = await processNotificationPayload(
+        db,
+        payload,
+        resolveItemsApi,
+        migrationRunner,
+      );
       if (result.kind === 'done') {
         await deleteNotification(db, d.id); // resolved → leave the failures store
         outcomes.done = (outcomes.done ?? 0) + 1;

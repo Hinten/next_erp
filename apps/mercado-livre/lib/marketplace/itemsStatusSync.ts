@@ -20,11 +20,19 @@
  *    change; we also sync when the raw `status`/`sub_status` change, so the bot
  *    never sees a stale sub_status.
  *
- * Scope (7a): SIMPLE listings. User-Products links, a listing still mid-migration
- * (`estado === 'am'`), and migration-tagged items are DEFERRED to #441 (the
- * Flutter app owns the UP migration during dual-run; syncing `estado` here would
- * fight it). The variation-children denorm sweep on cancel is deferred to #438
- * (7a produtos are childless).
+ * Scope (7a): SIMPLE listings. User-Products links and a listing still
+ * mid-migration (`estado === 'am'`) are DEFERRED — a UP link or an
+ * awaiting-migration listing is driven by the Flutter app during dual-run;
+ * syncing `estado` here would fight it. The variation-children denorm sweep on
+ * cancel is deferred to #438 (7a produtos are childless).
+ *
+ * #441 (UP migration takeover): a `variations_migration_source`-tagged listing
+ * that has gone `closed` is the ML-side signal that a legacy `variations[]`
+ * listing finished migrating to User-Products — `migrationRunner`, when
+ * supplied, runs that takeover (see `importMigration.ts`'s `handleUptinMigration`,
+ * wired as the default by `notificacao.ts`) INSTEAD of the normal estado merge.
+ * Every other migration-tag case (the `variations_migration_uptin` tag, a
+ * source-tagged item not yet `closed`, or no runner supplied) still defers.
  */
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 import {
@@ -40,6 +48,7 @@ import {
 
 import { loadMercadoLivreContext } from './mercadoLivre';
 import { refMatchesIntegracao } from './linkRefs';
+import type { UptinSourceLink } from './importMigration';
 
 /** The minimal ML API surface the status-sync needs (injectable for tests). */
 export interface ItemsSyncApi {
@@ -66,12 +75,29 @@ const MIGRATION_TAGS: ReadonlySet<string> = new Set([
   'variations_migration_source',
   'variations_migration_uptin',
 ]);
+/** The specific tag that, combined with `status === 'closed'`, hands off to `migrationRunner`. */
+const MIGRATION_SOURCE_TAG = 'variations_migration_source';
+
+/**
+ * Executes the #441 UP-migration takeover for a `variations_migration_source`
+ * listing that has gone `closed`. Injectable for tests; the production impl
+ * (wired as `syncItemStatus`'s default-free 5th param by `notificacao.ts`) loads
+ * a live ML API for the account and calls `handleUptinMigration`. THROWS on any
+ * failure (transient or a missing old variation) so the pipeline retries.
+ */
+export type MigrationRunner = (
+  db: Firestore,
+  integracaoId: string,
+  itemId: string,
+  sourceLink: UptinSourceLink,
+) => Promise<void>;
 
 export type ItemsSyncOutcome =
   | 'synced' // the link (and maybe parent denorm) was updated
   | 'unchanged' // estado/status/sub_status all already current (idempotent no-op)
   | 'no-link' // no linked produto for this item on this account
   | 'deferred-up' // a User-Products / migrating listing — deferred to #441
+  | 'migrated' // a migration-source listing went closed → #441 takeover ran
   | 'item-gone'; // the listing 404s (deleted) — nothing to sync
 
 /**
@@ -90,6 +116,7 @@ export async function syncItemStatus(
   integracaoId: string,
   itemId: string,
   resolveApi: ItemsApiResolver,
+  migrationRunner?: MigrationRunner,
 ): Promise<ItemsSyncOutcome> {
   const link = await resolveLink(db, itemId, integracaoId);
   if (!link) return 'no-link';
@@ -112,8 +139,23 @@ export async function syncItemStatus(
     throw err; // transient (5xx/429/network) or reauth → the queue/sweep retry
   }
 
-  // Migration-tagged item → #441 (needs the fetched item's `tags`).
-  if ((item.tags ?? []).some((t) => MIGRATION_TAGS.has(t))) {
+  // Migration-tagged item (needs the fetched item's `tags`). The ONE takeover
+  // case — this listing's source tag + it just went `closed` + a runner was
+  // supplied — hands off to the #441 UP-migration branch INSTEAD of the normal
+  // estado merge below. Every other tag combination (the uptin tag, a
+  // source-tagged item still open, or no runner supplied) keeps deferring, same
+  // as before #441 existed.
+  const tags = item.tags ?? [];
+  if (tags.includes(MIGRATION_SOURCE_TAG) && item.status === 'closed' && migrationRunner) {
+    const sourceLink: UptinSourceLink = {
+      produtoId: link.produtoId,
+      linkDocId: link.docId,
+      raw: link.data,
+    };
+    await migrationRunner(db, integracaoId, itemId, sourceLink);
+    return 'migrated';
+  }
+  if (tags.some((t) => MIGRATION_TAGS.has(t))) {
     return 'deferred-up';
   }
 

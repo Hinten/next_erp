@@ -371,6 +371,89 @@ describe('syncItemStatus — deferred UP / migration (#441)', () => {
   });
 });
 
+describe('syncItemStatus — #441 migration takeover', () => {
+  it('source tag + closed + a runner supplied → migrated, runner gets the resolved link, no estado merge', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    const migrationRunner = vi.fn(async () => {});
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'closed', tags: ['variations_migration_source'] }),
+      migrationRunner,
+    );
+    expect(out).toBe('migrated');
+    expect(migrationRunner).toHaveBeenCalledWith(asDb(db), CONTA, ITEM, {
+      produtoId: PRODUTO,
+      linkDocId: 'link1',
+      raw: expect.objectContaining({ id: ITEM }),
+    });
+    // the takeover branch REPLACES the normal estado merge — no link/parent write here.
+    expect(db.updates).toEqual([]);
+    expect(db.docData(LINK_PATH, 'link1')).toMatchObject({ estado: 'p', status: 'active' });
+  });
+
+  it('source tag + closed but NO runner supplied → still deferred-up (unchanged pre-#441 behavior)', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'closed', tags: ['variations_migration_source'] }),
+    );
+    expect(out).toBe('deferred-up');
+  });
+
+  it('source tag but NOT yet closed, even with a runner supplied → deferred-up, runner never invoked', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    const migrationRunner = vi.fn(async () => {});
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'active', tags: ['variations_migration_source'] }),
+      migrationRunner,
+    );
+    expect(out).toBe('deferred-up');
+    expect(migrationRunner).not.toHaveBeenCalled();
+  });
+
+  it('uptin tag (the OTHER migration tag) never takes over, even closed + a runner supplied', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    const migrationRunner = vi.fn(async () => {});
+    const out = await syncItemStatus(
+      asDb(db),
+      CONTA,
+      ITEM,
+      resolverFor({ status: 'closed', tags: ['variations_migration_uptin'] }),
+      migrationRunner,
+    );
+    expect(out).toBe('deferred-up');
+    expect(migrationRunner).not.toHaveBeenCalled();
+  });
+
+  it('a migrationRunner throw propagates (pipeline retries) instead of being swallowed', async () => {
+    const db = new FakeDb();
+    seedLink(db);
+    const migrationRunner = vi.fn(async () => {
+      throw new Error('old variação not found');
+    });
+    await expect(
+      syncItemStatus(
+        asDb(db),
+        CONTA,
+        ITEM,
+        resolverFor({ status: 'closed', tags: ['variations_migration_source'] }),
+        migrationRunner,
+      ),
+    ).rejects.toThrow('old variação not found');
+  });
+});
+
 describe('syncItemStatus — transport errors', () => {
   it('404 (deleted listing) → item-gone, no throw', async () => {
     const db = new FakeDb();
