@@ -66,6 +66,15 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+/**
+ * jest-dom matchers are NOT registered in this app's vitest setup
+ * (vitest.setup.ts imports only @testing-library/react cleanup), so checkbox
+ * state is asserted via the DOM property directly.
+ */
+function isChecked(el: HTMLElement): boolean {
+  return (el as HTMLInputElement).checked;
+}
+
 describe('ProdutoPickerModal', () => {
   it('toggles a single row via its checkbox and includes only that row', () => {
     useSnapshotMock.mockReturnValue({
@@ -94,8 +103,8 @@ describe('ProdutoPickerModal', () => {
 
     fireEvent.click(screen.getByText('Produto a'));
 
-    expect(screen.getByRole('checkbox', { name: 'Selecionar Produto a' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Selecionar Produto b' })).not.toBeChecked();
+    expect(isChecked(screen.getByRole('checkbox', { name: 'Selecionar Produto a' }))).toBe(true);
+    expect(isChecked(screen.getByRole('checkbox', { name: 'Selecionar Produto b' }))).toBe(false);
   });
 
   it('header checkbox selects every loaded row, and including clears the selection', () => {
@@ -107,8 +116,8 @@ describe('ProdutoPickerModal', () => {
     const { onInclude } = renderModal();
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Selecionar todos os carregados' }));
-    expect(screen.getByRole('checkbox', { name: 'Selecionar Produto a' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Selecionar Produto b' })).toBeChecked();
+    expect(isChecked(screen.getByRole('checkbox', { name: 'Selecionar Produto a' }))).toBe(true);
+    expect(isChecked(screen.getByRole('checkbox', { name: 'Selecionar Produto b' }))).toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: 'Incluir selecionados' }));
     expect(onInclude).toHaveBeenCalledWith([
@@ -119,8 +128,8 @@ describe('ProdutoPickerModal', () => {
     // Selection is cleared after inclusion — the header checkbox unchecks and
     // the "Incluir selecionados" button is disabled again (nothing selected).
     expect(
-      screen.getByRole('checkbox', { name: 'Selecionar todos os carregados' }),
-    ).not.toBeChecked();
+      isChecked(screen.getByRole('checkbox', { name: 'Selecionar todos os carregados' })),
+    ).toBe(false);
     expect(screen.getByRole('button', { name: 'Incluir selecionados' })).toHaveProperty(
       'disabled',
       true,
@@ -139,8 +148,8 @@ describe('ProdutoPickerModal', () => {
     fireEvent.click(header);
     fireEvent.click(header);
 
-    expect(screen.getByRole('checkbox', { name: 'Selecionar Produto a' })).not.toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Selecionar Produto b' })).not.toBeChecked();
+    expect(isChecked(screen.getByRole('checkbox', { name: 'Selecionar Produto a' }))).toBe(false);
+    expect(isChecked(screen.getByRole('checkbox', { name: 'Selecionar Produto b' }))).toBe(false);
   });
 
   it('does not dedupe repeated inclusion of the same row — dedup is the parent’s job', () => {
