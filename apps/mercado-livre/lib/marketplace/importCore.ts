@@ -348,7 +348,7 @@ function lastSegment(ref: string): string {
 export interface VariationChildAssembleArgs {
   mappedVariation: MappedMlVariation;
   /** Every resolved taxonomy entry for the item; filtered here to this variation's combos. */
-  taxonomia: TaxonomiaResolution[];
+  taxonomia: readonly TaxonomiaResolution[];
   parent: {
     produtoId: string;
     precos: Record<string, unknown> | null;

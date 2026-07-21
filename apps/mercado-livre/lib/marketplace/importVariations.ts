@@ -88,7 +88,7 @@ export async function importVariationChildren(
 
     const args: VariationChildAssembleArgs = {
       mappedVariation,
-      taxonomia: [...taxonomia],
+      taxonomia,
       parent,
       options,
       produtoId,
@@ -203,15 +203,22 @@ async function resolveExistingChild(
 ): Promise<ResolvedChild | null> {
   const numericId = numericVariationId(variationId);
   if (numericId != null) {
+    // Both filters server-side: a variation id is only unique within its item, so
+    // filtering the parent-link ref in memory would pull every same-id link doc
+    // across the whole DB. Exact string equality is safe here (both apps write the
+    // same `documents/...` form) — unlike the parent's tolerant refMatchesIntegracao.
     const linkSnap = await variacaoMercadoLivreLinkCollection
       .groupQuery(db)
       .where('id', '==', numericId)
+      .where('produtoMercadoLivreOuterRef', '==', parentLinkOuterRef)
+      .limit(1)
       .get();
-    for (const d of linkSnap.docs) {
-      const raw = d.data() as Record<string, unknown>;
-      if (raw.produtoMercadoLivreOuterRef !== parentLinkOuterRef) continue;
+    const d = linkSnap.docs[0];
+    if (d) {
       const produtoId = d.ref.parent?.parent?.id;
-      if (produtoId) return { produtoId, linkDocId: d.id, linkRaw: raw };
+      if (produtoId) {
+        return { produtoId, linkDocId: d.id, linkRaw: d.data() as Record<string, unknown> };
+      }
     }
   }
 
