@@ -62,6 +62,7 @@ beforeEach(() => {
     estado: 'p',
     nome: 'Camiseta',
     created: true,
+    variations: { total: 0, created: 0 },
   });
 });
 
@@ -74,6 +75,7 @@ describe('POST /api/marketplace/mercado-livre/importar', () => {
       estado: 'p',
       nome: 'Camiseta',
       created: true,
+      variations: { total: 0, created: 0 },
     });
 
     const [deps, itemId] = h.importProduto.mock.calls[0]!;
@@ -85,6 +87,19 @@ describe('POST /api/marketplace/mercado-livre/importar', () => {
       tabelaPromocionalOuterRef: 'documents/listaDePrecos/lista-2',
       depositoOuterRef: 'documents/depositos/dep-1',
     });
+  });
+
+  it('passes through the variations summary for a legacy variations[] listing (#520)', async () => {
+    h.importProduto.mockResolvedValue({
+      produtoId: 'prod-9',
+      estado: 'p',
+      nome: 'Camiseta',
+      created: true,
+      variations: { total: 2, created: 2 },
+    });
+    const res = await POST(req({ integracaoId: 'int-1', itemId: 'MLB123' }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ variations: { total: 2, created: 2 } });
   });
 
   it('forwards only the known boolean option flags (incl. importarFotos, importarCategorias)', async () => {
@@ -120,9 +135,11 @@ describe('POST /api/marketplace/mercado-livre/importar', () => {
     expect(h.importProduto).not.toHaveBeenCalled();
   });
 
-  it('maps import issues to 422 ML_IMPORT_BLOCKED', async () => {
+  it('maps import issues to 422 ML_IMPORT_BLOCKED (family_name/User-Products — #521)', async () => {
     h.importProduto.mockRejectedValue(
-      new MercadoLivreImportError(['anúncio MLB123 tem variações — issue #438']),
+      new MercadoLivreImportError([
+        'anúncio MLB123 é um anúncio User-Products (family_name) — issue #521',
+      ]),
     );
     const res = await POST(req({ integracaoId: 'int-1', itemId: 'MLB123' }));
     expect(res.status).toBe(422);
