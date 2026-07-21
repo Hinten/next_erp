@@ -19,6 +19,7 @@ import {
   type MlOrderSearch,
   type MlPack,
   type MlPictureUpload,
+  type MlSellerItemsScan,
   type MlSizeChartApi,
   type MlTechnicalSpecs,
   type MlUser,
@@ -36,6 +37,7 @@ import {
   orderSearchSchema,
   packSchema,
   pictureUploadSchema,
+  sellerItemsScanSchema,
   sizeChartApiSchema,
   technicalSpecsSchema,
   tokenErrorSchema,
@@ -105,6 +107,12 @@ export interface MercadoLivreApi {
    * #441).
    */
   getMigrationLiveListing(itemId: string): Promise<MlMigrationLiveListing>;
+  /**
+   * `GET /users/{sellerId}/items/search?search_type=scan[&scroll_id=]` — one
+   * page of the seller's full listing set (mass import scan, #621). Pass the
+   * previous page's `scroll_id` to continue; omit/`null` to start a new scan.
+   */
+  scanSellerItems(sellerId: number, scrollId?: string | null): Promise<MlSellerItemsScan>;
 
   /** `POST /items` — first publish. Build the body with `buildItemPayload`. */
   createItem(payload: Record<string, unknown>): Promise<MlItem>;
@@ -282,6 +290,10 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       }),
     getMigrationLiveListing: (itemId) =>
       request('GET', `/items/${itemId}/migration_live_listing`, migrationLiveListingSchema),
+    scanSellerItems: (sellerId, scrollId) =>
+      request('GET', `/users/${sellerId}/items/search`, sellerItemsScanSchema, {
+        query: { search_type: 'scan', ...(scrollId ? { scroll_id: scrollId } : {}) },
+      }),
 
     createItem: (payload) => request('POST', '/items', itemSchema, { body: payload }),
     updateItem: (id, payload) => request('PUT', `/items/${id}`, itemSchema, { body: payload }),
