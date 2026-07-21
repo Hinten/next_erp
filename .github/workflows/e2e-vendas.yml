@@ -9,8 +9,8 @@ name: E2E — Vendas
 # isolates its Firestore namespace + ephemeral user.
 on:
   pull_request:
-    # 'claude/**' covers stacked PRs — see ci.yml.
-    branches: [master, main, 'claude/**']
+    # The prefix entries cover stacked PRs — see ci.yml.
+    branches: [master, main, 'claude/**', 'feat/**', 'fix/**']
     paths:
       - 'apps/web/**'
       - 'packages/schemas/**'

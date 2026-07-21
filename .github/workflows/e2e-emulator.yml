@@ -15,8 +15,8 @@ name: E2E — Emulator (estoque)
 
 on:
   pull_request:
-    # 'claude/**' covers stacked PRs — see ci.yml.
-    branches: [master, main, 'claude/**']
+    # The prefix entries cover stacked PRs — see ci.yml.
+    branches: [master, main, 'claude/**', 'feat/**', 'fix/**']
   workflow_dispatch:
 
 concurrency:
