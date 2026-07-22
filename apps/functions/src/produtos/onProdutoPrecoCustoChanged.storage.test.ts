@@ -29,7 +29,14 @@ describe.skipIf(!EMULATED)('onProdutoPrecoCustoChanged core (emulator)', () => {
     await db.collection('produtos').doc(produtoId).set({ nome: 'Produto', paiId: null });
 
     const after = { nome: 'Produto', paiId: null, precos: { l1: { valor: 20 } }, custo: 10 };
-    await recordProdutoHistoryAndPropagate(db, produtoId, undefined, after, eventId);
+    await recordProdutoHistoryAndPropagate(
+      db,
+      produtoId,
+      undefined,
+      after,
+      eventId,
+      EVENT_TIME_MILLIS,
+    );
 
     const precoRef = db
       .collection('produtos')
@@ -42,7 +49,29 @@ describe.skipIf(!EMULATED)('onProdutoPrecoCustoChanged core (emulator)', () => {
       listaDePrecoHistoricoOuterRef: 'documents/listaDePrecos/l1',
       valorOriginal: null,
       valorFinal: 20,
+      timestamp: EVENT_TIME_MILLIS,
     });
+
+    // Redelivery idempotency: the SAME event (same id + same event time)
+    // rewrites a content-IDENTICAL doc — including the timestamp, which is
+    // event-derived rather than wall-clock (Copilot review, PR #609).
+    const firstDelivery = precoDoc.data();
+    await recordProdutoHistoryAndPropagate(
+      db,
+      produtoId,
+      undefined,
+      after,
+      eventId,
+      EVENT_TIME_MILLIS,
+    );
+    const redelivered = await precoRef.get();
+    expect(redelivered.data()).toEqual(firstDelivery);
+    const allPrecoHist = await db
+      .collection('produtos')
+      .doc(produtoId)
+      .collection('historicoDePrecos')
+      .get();
+    expect(allPrecoHist.size).toBe(1);
 
     const custoRef = db
       .collection('produtos')
@@ -53,7 +82,14 @@ describe.skipIf(!EMULATED)('onProdutoPrecoCustoChanged core (emulator)', () => {
 
     // Redelivery — same event id, same before/after: rewrites the exact same
     // docs (harmless), never a second record.
-    await recordProdutoHistoryAndPropagate(db, produtoId, undefined, after, eventId);
+    await recordProdutoHistoryAndPropagate(
+      db,
+      produtoId,
+      undefined,
+      after,
+      eventId,
+      EVENT_TIME_MILLIS,
+    );
     const precoSnap = await db
       .collection('produtos')
       .doc(produtoId)
@@ -81,7 +117,7 @@ describe.skipIf(!EMULATED)('onProdutoPrecoCustoChanged core (emulator)', () => {
 
     const before = { nome: 'Pai', paiId: null, precos: { l1: { valor: 10 } } };
     const after = { nome: 'Pai', paiId: null, precos: { l1: { valor: 20 } } };
-    await recordProdutoHistoryAndPropagate(db, parentId, before, after, eventId);
+    await recordProdutoHistoryAndPropagate(db, parentId, before, after, eventId, EVENT_TIME_MILLIS);
 
     const same = (await db.collection('produtos').doc(childSame).get()).data()!;
     const diff = (await db.collection('produtos').doc(childDiff).get()).data()!;
@@ -111,7 +147,7 @@ describe.skipIf(!EMULATED)('onProdutoPrecoCustoChanged core (emulator)', () => {
       precos: { l1: { valor: 30 } },
       propagatePriceToChildren: false,
     };
-    await recordProdutoHistoryAndPropagate(db, parentId, before, after, eventId);
+    await recordProdutoHistoryAndPropagate(db, parentId, before, after, eventId, EVENT_TIME_MILLIS);
 
     const historico = await db
       .collection('produtos')
@@ -135,7 +171,7 @@ describe.skipIf(!EMULATED)('onProdutoPrecoCustoChanged core (emulator)', () => {
 
     const before = { nome: 'Variação', paiId: 'algumPai', precos: null };
     const after = { nome: 'Variação', paiId: 'algumPai', precos: { l1: { valor: 5 } } };
-    await recordProdutoHistoryAndPropagate(db, childId, before, after, eventId);
+    await recordProdutoHistoryAndPropagate(db, childId, before, after, eventId, EVENT_TIME_MILLIS);
 
     const historico = await db
       .collection('produtos')
@@ -152,7 +188,14 @@ describe.skipIf(!EMULATED)('onProdutoPrecoCustoChanged core (emulator)', () => {
     const before = { nome: 'Deletado', paiId: null, precos: { l1: { valor: 5 } } };
 
     await expect(
-      recordProdutoHistoryAndPropagate(db, produtoId, before, undefined, eventId),
+      recordProdutoHistoryAndPropagate(
+        db,
+        produtoId,
+        before,
+        undefined,
+        eventId,
+        EVENT_TIME_MILLIS,
+      ),
     ).resolves.toBeUndefined();
 
     const historico = await db

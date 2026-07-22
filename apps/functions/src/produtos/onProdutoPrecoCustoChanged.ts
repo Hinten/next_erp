@@ -153,13 +153,20 @@ export async function recordProdutoHistoryAndPropagate(
   before: DocumentData | undefined,
   after: DocumentData | undefined,
   eventId: string,
+  /**
+   * Millis to stamp on the history records — the CloudEvent's `event.time`,
+   * NOT `Date.now()`: a redelivered event must rewrite its deterministic doc
+   * ids with IDENTICAL content, and a wall-clock timestamp would differ per
+   * delivery (Copilot review, PR #609).
+   */
+  eventTimeMillis: number,
 ): Promise<void> {
   if (!isParentProdutoWrite(after)) return;
 
   const { precoChanges, custoChange } = computeProdutoHistoryChanges(before, after);
   if (precoChanges.length === 0 && custoChange === null) return;
 
-  const timestamp = Date.now();
+  const timestamp = eventTimeMillis;
   const writes: PendingWrite[] = precoChanges.map((change) => ({
     ref: historicoPrecoCollection.docRef(db, { produtoId }, `${eventId}-${change.listaId}`),
     data: historicoPrecoCollection.parse({
@@ -192,12 +199,12 @@ export async function recordProdutoHistoryAndPropagate(
     writes.push(...childWrites);
   }
 
-  // Deterministic history ids (`{eventId}-{listaId}` / `{eventId}-custo`) make
-  // a redelivered event idempotent: `set` (not merge) just rewrites the exact
-  // same content again, harmless. Duplicate rows against the still-live
-  // legacy Flutter client — which appends its own history independently, with
-  // its own random doc ids — are ACCEPTED: no dedup guard (owner decision,
-  // 2026-07-21).
+  // Deterministic history ids (`{eventId}-{listaId}` / `{eventId}-custo`) plus
+  // the event-derived `timestamp` (never `Date.now()`) make a redelivered
+  // event idempotent: `set` (not merge) rewrites content-IDENTICAL docs,
+  // harmless. Duplicate rows against the still-live legacy Flutter client —
+  // which appends its own history independently, with its own random doc ids
+  // — are ACCEPTED: no dedup guard (owner decision, 2026-07-21).
   await commitChunked(db, writes);
 
   const propagated = writes.length - precoChanges.length - (custoChange !== null ? 1 : 0);
@@ -229,6 +236,17 @@ export const onProdutoPrecoCustoChanged = onDocumentWritten(
     const { produtoId } = event.params;
     const before = event.data?.before?.data();
     const after = event.data?.after?.data();
-    await recordProdutoHistoryAndPropagate(getDb(), produtoId, before, after, event.id);
+    // `event.time` is the CloudEvent occurrence time — stable across
+    // redeliveries of the SAME event, so the deterministic history docs stay
+    // content-identical on retries (Date.parse of an ISO string → millis).
+    const eventTimeMillis = Date.parse(event.time);
+    await recordProdutoHistoryAndPropagate(
+      getDb(),
+      produtoId,
+      before,
+      after,
+      event.id,
+      Number.isNaN(eventTimeMillis) ? Date.now() : eventTimeMillis,
+    );
   },
 );
