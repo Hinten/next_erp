@@ -17,6 +17,7 @@ import {
   whereArrayContains,
 } from '@delfrance/data';
 import { formatReais } from '@delfrance/core';
+import { microsToDate } from '@delfrance/core/datetime';
 import { historicoModificacoesCollection } from '@/lib/data/historicoModificacoesCollection';
 import {
   buildCustoHistoryRows,
@@ -133,7 +134,7 @@ export function ProdutoHistoryButton({
               {state.rows.map((row) => (
                 <Table.Tr key={row.key}>
                   <Table.Td>
-                    {row.timestamp ? dateFmt.format(new Date(row.timestamp)) : '—'}
+                    {row.timestamp ? dateFmt.format(microsToDate(row.timestamp)) : '—'}
                   </Table.Td>
                   <Table.Td>
                     <ValorLado value={row.original} vazio="—" />
