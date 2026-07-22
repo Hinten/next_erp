@@ -84,12 +84,17 @@ async function processRow(
 
   const freshAtual = produto.precos?.[targetListaId]?.valor ?? null;
 
-  if (gate && !gate(freshAtual, row.novoValor)) {
-    return { produtoId: row.produtoId, status: 'pulado', erro: null };
-  }
-
+  // No-op BEFORE the gate: a gate that rejects equality (e.g.
+  // `deveAplicar('aplicarTudo', …)` returns false when atual === novo) must not
+  // reclassify an unchanged row as 'pulado' — it was never going to be written
+  // either way, and the concluído summary distinguishes the two buckets
+  // (Copilot review, PR #610).
   if (row.novoValor === freshAtual) {
     return { produtoId: row.produtoId, status: 'semAlteracao', erro: null };
+  }
+
+  if (gate && !gate(freshAtual, row.novoValor)) {
+    return { produtoId: row.produtoId, status: 'pulado', erro: null };
   }
 
   try {

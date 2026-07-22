@@ -99,6 +99,33 @@ describe('applyPrecoAlteracoes', () => {
     expect(write).not.toHaveBeenCalled();
   });
 
+  it('classifies an unchanged row as "semAlteracao" even when a gate would reject the equality', async () => {
+    // Regression (Copilot review, PR #610): the no-op check must run BEFORE
+    // the gate — `deveAplicar('aplicarTudo', atual, novo)` returns false when
+    // atual === novo, which previously reclassified unchanged rows as
+    // 'pulado' and skewed the concluído summary buckets.
+    const fetchFresh = vi.fn(
+      async () => new Map<string, ProdutoPrecosSnapshot>([['p1', snap({ lista1: { valor: 10 } })]]),
+    );
+    const write = vi.fn(async () => {});
+    const equalityRejectingGate = vi.fn(
+      (atual: number | null, novo: number) => atual === null || atual !== novo,
+    );
+
+    const outcomes = await applyPrecoAlteracoes(db, {
+      targetListaId: 'lista1',
+      rows: [{ produtoId: 'p1', novoValor: 10 }],
+      gate: equalityRejectingGate,
+      fetchFresh,
+      write,
+    });
+
+    expect(outcomes).toEqual([{ produtoId: 'p1', status: 'semAlteracao', erro: null }]);
+    expect(write).not.toHaveBeenCalled();
+    // The no-op short-circuits before the gate is ever consulted.
+    expect(equalityRejectingGate).not.toHaveBeenCalled();
+  });
+
   it('contains a narrowed FirebaseError to its own row — the rest of the run still proceeds', async () => {
     const fetchFresh = vi.fn(
       async () =>
