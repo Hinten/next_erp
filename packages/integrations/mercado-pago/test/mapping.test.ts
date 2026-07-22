@@ -183,6 +183,35 @@ describe('mpPaymentToPagamento — amounts', () => {
     const { pagamento } = map({ transaction_amount: 0.1, shipping_cost: 0.2 });
     expect(pagamento.valor).toBe(0.3);
   });
+
+  // #608: money rounding routes through the canonical `roundReais` (byte-parity
+  // with Dart's `duasCasasDecimais` = `double.parse(toStringAsFixed(2))`), NOT
+  // the previous local `round2` (`Math.round((v + EPSILON) * 100) / 100`). At an
+  // x.xx5 tie the two diverge: the double under 6.555 / 1.005 / 2.675 sits a hair
+  // BELOW the tie, so `roundReais` rounds it DOWN while the old `+ EPSILON` nudge
+  // pushed it UP. These cases assert the Dart-faithful DOWN result and fail under
+  // the removed helper.
+  it('rounds valorSemJuros ties from the double, Dart-faithful (6.555 → 6.55, not 6.56)', () => {
+    const { pagamento } = map({ transaction_amount: 6.555 });
+    expect(pagamento.valor).toBe(6.55);
+  });
+
+  it('rounds a valorSemJuros tie down (1.005 → 1.00, not 1.01)', () => {
+    const { pagamento } = map({ transaction_amount: 1.005 });
+    expect(pagamento.valor).toBe(1);
+  });
+
+  it('rounds the refunds sum from the double before the net (refund 2.675 → 2.67, not 2.68)', () => {
+    const { pagamento } = map({
+      status: 'approved',
+      transaction_amount: 100,
+      refunds: [{ amount: 2.675 }],
+    });
+    // refunds 2.67 (Dart-faithful) → valor 100 − 2.67 = 97.33; the old +EPSILON
+    // helper rounded the refund to 2.68 and yielded 97.32.
+    expect(pagamento.valor).toBe(97.33);
+    expect(pagamento.status_pagamento).toBe(STATUS_PAGAMENTO.estornado_parcialmente);
+  });
 });
 
 describe('mpPaymentToPagamento — tarifas composition', () => {
