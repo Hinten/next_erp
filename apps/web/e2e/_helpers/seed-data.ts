@@ -2653,6 +2653,21 @@ export async function getProdutoData(produtoId: string): Promise<Record<string, 
   return (snap.data() as Record<string, unknown> | undefined) ?? null;
 }
 
+/**
+ * Patch arbitrary fields on an existing produto doc via a raw Admin `update`
+ * (bypasses the collection's Zod-parsing handle, same as every other
+ * Admin-seeded write in this file) — for fixture setup the real editor UI
+ * has no field for yet (`propagatePriceToChildren`) or that must land on a
+ * produto without going through it (a variation child's `precos`, to prove
+ * the child never gets its own price history).
+ */
+export async function setProdutoFields(
+  produtoId: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  await db().collection('produtos').doc(produtoId).update(patch);
+}
+
 /** The `produtos/<id>/extraData/singleton` doc (Descrição + Google Merchant), or null. */
 export async function getProdutoExtraData(
   produtoId: string,

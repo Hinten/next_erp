@@ -10,6 +10,7 @@ import {
   Badge,
   Button,
   Group,
+  Menu,
   Skeleton,
   Stack,
   Table,
@@ -18,7 +19,9 @@ import {
 import { PageHeader } from '@delfrance/ui';
 import { buildQuery, defaultQueryConstraints, whereOp } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
+import { PERM } from '@delfrance/auth';
 import { produtoMeta } from '@delfrance/schemas';
+import { usePermission } from '@/lib/auth';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { ImportarMercadoLivreModal } from './_components/ImportarMercadoLivreModal';
@@ -29,6 +32,7 @@ const PREFIX_SENTINEL = '\uf8ff';
 
 export default function ProdutosPage() {
   const router = useRouter();
+  const { allowed: canWritePrecos } = usePermission(PERM.produto.write);
   const [search, setSearch] = useState('');
   const [importOpen, setImportOpen] = useState(false);
   const trimmed = search.trim();
@@ -60,6 +64,21 @@ export default function ProdutosPage() {
             <Button variant="default" onClick={() => setImportOpen(true)}>
               Importar do Mercado Livre
             </Button>
+            {canWritePrecos && (
+              <Menu withinPortal position="bottom-end" shadow="md">
+                <Menu.Target>
+                  <Button variant="default">Preços em massa</Button>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  <Menu.Item component={Link} href="/produtos/recalcular-precos">
+                    Recalcular preços
+                  </Menu.Item>
+                  <Menu.Item component={Link} href="/produtos/alterar-precos">
+                    Alterar preços em massa
+                  </Menu.Item>
+                </Menu.Dropdown>
+              </Menu>
+            )}
             <Button component={Link} href="/produtos/novo">
               Novo produto
             </Button>

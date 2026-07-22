@@ -243,6 +243,19 @@ export {
 } from './notificacaoMercadoPago';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the "Importar todos os
+  // anúncios" mass-import job/checkpoint doc (#621).
+  importacaoMercadoLivreStatusSchema,
+  massImportOptionsSchema,
+  massImportFailureSchema,
+  importacaoMercadoLivreSchema,
+  type ImportacaoMercadoLivreStatus,
+  type MassImportOptions,
+  type MassImportFailure,
+  type ImportacaoMercadoLivre,
+} from './importacaoMercadoLivre';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log,
   // mirrors notificacaoMercadoPago above (#527). Bare schema+meta (perms 0n),
   // not a DomainSchema — see the NOTE at the bottom of notificacoesWhatsapp.ts.

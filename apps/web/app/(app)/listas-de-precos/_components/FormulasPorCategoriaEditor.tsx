@@ -4,12 +4,15 @@ import { useState } from 'react';
 import { ActionIcon, Fieldset, Group, Stack, Text, TextInput } from '@mantine/core';
 import { IconArrowBackUp, IconTrash } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
+import { FirebaseError } from 'firebase/app';
 import { getDoc } from 'firebase/firestore';
+import { useFormContext } from 'react-hook-form';
 import { DELETE_MARK } from '@delfrance/ui';
 import { CollectionSelect } from '@/components/collection-select/CollectionSelect';
 import { categoriaCollection } from '@/lib/data/categoriaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { FormulaListEditor } from './FormulaListEditor';
+import { stripFormulasCalculoPreco } from './formulaStrip';
 
 /**
  * Read-only categoria name for a bucket header. The key is fixed for the life
@@ -82,12 +85,19 @@ export function FormulasPorCategoriaEditor({
   // Local so the "add" picker resets to empty after each pick (it never holds
   // a persistent value — the picked category becomes a card below).
   const [pickerValue, setPickerValue] = useState<unknown>(null);
+  const db = getFirebaseFirestore();
+  // RHF context so `handleAdd` can read the sibling `formulasCalculoPreco`
+  // field's live (possibly unsaved) value. Typed non-null by RHF but actually
+  // `null` outside a `FormProvider` — this editor is always mounted inside
+  // `ObjectView`'s provider (see `listaDePrecosFields.tsx`), so the `?? null`
+  // fallbacks below are just defensive.
+  const form = useFormContext();
 
   const patchEntry = (key: string, patch: Partial<CategoriaEntry>) => {
     onChange({ ...record, [key]: { ...record[key], ...patch } });
   };
 
-  const handleAdd = (raw: unknown) => {
+  const handleAdd = async (raw: unknown) => {
     setPickerValue(null);
     const id = idFromRef(raw);
     if (!id) return;
@@ -97,7 +107,33 @@ export function FormulasPorCategoriaEditor({
       if (existing[DELETE_MARK]) patchEntry(id, { [DELETE_MARK]: false });
       return;
     }
-    onChange({ ...record, [id]: { name: '', formulasCalculoPreco: null } });
+    // Legacy parity (.old/lib/produtos/pages/listaDePrecosCadastroView.dart:955-966):
+    // adding a categoria snapshots the lista's CURRENT default
+    // `formulasCalculoPreco` (deep copy, so later edits to either list never
+    // cross-contaminate) into the new bucket, with any staged-deletion rows
+    // already dropped. An empty default collapses to `null` — the pricing
+    // engine already falls back to the default list for a null bucket.
+    const rawDefault = form?.getValues('formulasCalculoPreco') ?? null;
+    const formulasCalculoPreco = stripFormulasCalculoPreco(structuredClone(rawDefault));
+    // Legacy also names the bucket after the categoria. `CollectionSelect`
+    // only emits the picked doc-path (no label), so resolve the name the same
+    // way `CategoriaNomeLabel` displays it below; fall back to the raw id if
+    // the read fails or the doc has no `nome`.
+    let name = id;
+    try {
+      const snap = await getDoc(categoriaCollection.docRef(db, {}, id));
+      const nome = snap.data()?.nome;
+      if (typeof nome === 'string' && nome) name = nome;
+    } catch (err) {
+      if (!(err instanceof FirebaseError)) throw err;
+    }
+    // Merge base re-read AFTER the awaited categoria fetch: `record` was
+    // captured before the round-trip, so a concurrent edit during the await
+    // (e.g. staging another bucket for deletion) would be clobbered by the
+    // stale closure. The live RHF value is the freshest source.
+    const live = form?.getValues('formulasPorCategoria');
+    const base = live !== undefined ? toRecord(live) : record;
+    onChange({ ...base, [id]: { name, formulasCalculoPreco } });
   };
 
   const perEntryError = (key: string): unknown => {

@@ -22,6 +22,8 @@ export { categoriaCollection } from './categoriaCollection';
 export { produtoCollection } from './produtoCollection';
 export { estoqueCollection } from './estoqueCollection';
 export { historicoEstoqueCollection } from './historicoEstoqueCollection';
+export { historicoPrecoCollection } from './historicoPrecoCollection';
+export { historicoCustoCollection } from './historicoCustoCollection';
 export { tabelaDeMedidasCollection } from './tabelaDeMedidasCollection';
 export { intFreteCollection } from './intFreteCollection';
 export { tokenMelEnvCollection } from './tokenMelEnvCollection';
@@ -35,6 +37,7 @@ export {
 export { grupoDeVariacoesCollection } from './grupoDeVariacoesCollection';
 export { produtoExtraDataCollection } from './produtoExtraDataCollection';
 export { notificacaoMercadoLivreCollection } from './notificacaoMercadoLivreCollection';
+export { importacaoMercadoLivreCollection } from './importacaoMercadoLivreCollection';
 export { pedidoCollection } from './pedidoCollection';
 export { operacaoCollection } from './operacaoCollection';
 export { incidenteCollection } from './incidenteCollection';

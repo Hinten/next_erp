@@ -7,19 +7,15 @@ import {
 import type { ProdutoDataPort, ProdutoSnapshot, ProdutoWriteOp } from './port';
 import {
   ProdutoReferencedError,
-  applyPrecosChange,
   buildChildrenComponentesKitOps,
   buildExtraDataWriteOps,
   buildImpostoWriteOps,
   buildKitStatusChildOps,
   buildLocalizacaoOp,
-  buildPrecoHistoryOps,
   deleteProdutoCascade,
   findProdutoReferences,
   planMovimentacao,
   propagateKitStatusToChildren,
-  propagatePrecosToChildren,
-  recordPrecoHistory,
   resolveKitGuardInputs,
   saveChildrenComponentesKit,
   saveProdutoExtraData,
@@ -63,33 +59,6 @@ const snap = (id: string, precos: ProdutoSnapshot['precos'], nome = id): Produto
   id,
   nome,
   precos,
-});
-
-describe('preco/custo history ops', () => {
-  it('buildPrecoHistoryOps emits the Flutter wire shape', () => {
-    const { port } = memoryPort();
-    const ops = buildPrecoHistoryOps(port, 'p1', [
-      { listaId: 'L1', valorOriginal: null, valorFinal: 10 },
-    ]);
-    expect(ops).toEqual([
-      {
-        type: 'set',
-        path: 'produtos/p1/historicoDePrecos/id1',
-        data: {
-          listaDePrecoHistoricoOuterRef: 'documents/listaDePrecos/L1',
-          valorOriginal: null,
-          valorFinal: 10,
-          timestamp: 1000,
-        },
-      },
-    ]);
-  });
-
-  it('recordPrecoHistory is a no-op for an empty change set', async () => {
-    const { port, committed } = memoryPort();
-    await recordPrecoHistory(port, 'p1', []);
-    expect(committed).toEqual([]);
-  });
 });
 
 describe('produto extra data (Descrição + Google Merchant singleton)', () => {
@@ -470,52 +439,6 @@ describe('resolveKitGuardInputs (agent/MCP kit-guard resolution #479)', () => {
     });
     expect(kitFlagCalls).toHaveLength(1);
     expect([...kitFlagCalls[0]!].sort()).toEqual(['a', 'b', 'pai']);
-  });
-});
-
-describe('propagatePrecosToChildren', () => {
-  it('updates only the children whose precos differ', async () => {
-    const { port, committed } = memoryPort({
-      children: [snap('c1', { L1: { valor: 5 } }), snap('c2', { L1: { valor: 10 } })],
-    });
-    const updated = await propagatePrecosToChildren(port, 'p1', { L1: { valor: 10 } });
-    expect(updated).toEqual(['c1']);
-    expect(committed).toEqual([
-      [{ type: 'update', path: 'produtos/c1', data: { precos: { L1: { valor: 10 } } } }],
-    ]);
-  });
-
-  it('does nothing when every child already matches', async () => {
-    const { port, committed } = memoryPort({ children: [snap('c1', { L1: { valor: 10 } })] });
-    expect(await propagatePrecosToChildren(port, 'p1', { L1: { valor: 10 } })).toEqual([]);
-    expect(committed).toEqual([]);
-  });
-});
-
-describe('applyPrecosChange', () => {
-  it('records history + propagates when the map changed', async () => {
-    const { port, committed } = memoryPort({ children: [snap('c1', { L1: { valor: 5 } })] });
-    const out = await applyPrecosChange(port, {
-      produtoId: 'p1',
-      oldPrecos: { L1: { valor: 5 } },
-      newPrecos: { L1: { valor: 10 } },
-    });
-    expect(out).toEqual({ changed: true });
-    // one commit for history, one for child propagation
-    expect(committed).toHaveLength(2);
-    expect(committed[0]?.[0]?.path).toBe('produtos/p1/historicoDePrecos/id1');
-    expect(committed[1]?.[0]).toMatchObject({ type: 'update', path: 'produtos/c1' });
-  });
-
-  it('is a no-op when the map is unchanged', async () => {
-    const { port, committed } = memoryPort({ children: [snap('c1', { L1: { valor: 5 } })] });
-    const out = await applyPrecosChange(port, {
-      produtoId: 'p1',
-      oldPrecos: { L1: { valor: 5 } },
-      newPrecos: { L1: { valor: 5 } },
-    });
-    expect(out).toEqual({ changed: false });
-    expect(committed).toEqual([]);
   });
 });
 

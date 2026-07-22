@@ -7,10 +7,6 @@ export {
 } from './estoqueComando';
 
 export {
-  buildPrecoHistoryOps,
-  buildCustoHistoryOp,
-  recordPrecoHistory,
-  recordCustoHistory,
   buildExtraDataWriteOps,
   saveProdutoExtraData,
   buildLocalizacaoOp,
@@ -28,8 +24,6 @@ export {
   type KitStatusChange,
   resolveKitGuardInputs,
   type ResolvedKitGuards,
-  propagatePrecosToChildren,
-  applyPrecosChange,
   findProdutoReferences,
   hasReferences,
   describeReferences,

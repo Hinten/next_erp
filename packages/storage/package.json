@@ -18,11 +18,11 @@
   "dependencies": {
     "@delfrance/data": "workspace:*",
     "@delfrance/schemas": "workspace:*",
-    "firebase": "^12.13.0",
-    "zod": "^4.4.3"
+    "firebase": "catalog:",
+    "zod": "catalog:"
   },
   "peerDependencies": {
-    "firebase-admin": "^13"
+    "firebase-admin": "^14"
   },
   "peerDependenciesMeta": {
     "firebase-admin": {
@@ -32,9 +32,9 @@
   "devDependencies": {
     "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
-    "eslint": "^9.39.4",
-    "firebase-admin": "^13.9.0",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "eslint": "catalog:",
+    "firebase-admin": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

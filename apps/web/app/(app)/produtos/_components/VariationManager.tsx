@@ -300,11 +300,13 @@ export function VariationManager({
    *     the whole flush.
    *
    * Pricing parity: children CREATED here carry the PARENT's `precos` (with
-   * their initial history records — `produtoTableProvider.dart:497`). Refreshing
-   * the precos of EXISTING children when the parent's map changes happens at the
-   * page layer (the `applyPrecosChange` use-case) so it fires even when the
-   * Variações tab — and therefore this manager's live children snapshot — was
-   * never opened.
+   * their initial history records — `produtoTableProvider.dart:497` — written
+   * client-side below via `appendPrecoHistory`, since the server-side trigger
+   * ignores children entirely). Refreshing the precos of EXISTING children when
+   * the parent's map changes is now server-owned too: the
+   * `onProdutoPrecoCustoChanged` Cloud Function trigger fires on the parent's
+   * produto write, so it propagates even when the Variações tab — and
+   * therefore this manager's live children snapshot — was never opened.
    */
   const flushStagedChildren = async (parentId: string): Promise<void> => {
     const duplicates = findDuplicateSkus(rows);
@@ -386,10 +388,14 @@ export function VariationManager({
         batch.set(produtoCollection.docRef(db, {}, childId), docData);
         writes += 1;
         // Flutter parity: a child born with prices gets its initial history
-        // records (its save() runs the same oldPrecos-null diff).
+        // records (its save() runs the same oldPrecos-null diff). This is the
+        // ONLY remaining client-side precos-history write: the server-side
+        // `onProdutoPrecoCustoChanged` trigger exits early for any produto with
+        // a `paiId` set, so a newly created child never gets one from there.
         appendPrecoHistory(batch, db, childId, diffPrecos(null, parentPrecos));
       } else if (row.dirty || ordem !== row.serverOrdem) {
-        // precos is propagated to existing children at the page layer.
+        // precos is propagated to existing children server-side (the
+        // `onProdutoPrecoCustoChanged` trigger, on the parent's produto write).
         batch.update(produtoCollection.docRef(db, {}, row.id), {
           nome: row.nome,
           sku: row.sku === '' ? null : row.sku,

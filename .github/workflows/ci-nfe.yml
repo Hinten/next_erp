@@ -28,7 +28,8 @@ on:
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-nfe.yml'
   pull_request:
-    branches: [master, main]
+    # The prefix entries cover stacked PRs — see ci.yml.
+    branches: [master, main, 'claude/**', 'feat/**', 'fix/**']
     paths:
       - 'apps/nfe/**'
       - 'packages/integrations/nfe/**'

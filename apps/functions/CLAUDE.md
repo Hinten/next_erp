@@ -182,11 +182,11 @@ deploy config or `prepare-deploy.mjs`.
    buildpack's install also **parses `devDependencies` specs even with
    `--omit=dev`** — verified — so merely moving the workspace deps to
    `devDependencies` does NOT help, and an `.npmrc` `omit=dev` would not either.
-   Fix: deploy a **generated, minimal `package.json`** carrying only the 3 real
-   runtime `dependencies` (firebase-admin / firebase-functions / sharp) — no
-   `devDependencies`, no `workspace:*`, no build script. esbuild already bundled
-   data/schemas, so the cloud needs nothing else. This is why `source` is a
-   generated folder, not `apps/functions`.
+   Fix: deploy a **generated, minimal `package.json`** carrying only the 4 real
+   runtime `dependencies` (firebase-admin / firebase-functions /
+   @google-cloud/firestore / sharp) — no `devDependencies`, no `workspace:*`, no
+   build script. esbuild already bundled data/schemas, so the cloud needs
+   nothing else. This is why `source` is a generated folder, not `apps/functions`.
 
 4. **`Failed to find location of Firebase Functions SDK`** — firebase-tools'
    *local* trigger analysis locates AND spawns the SDK from
@@ -195,7 +195,7 @@ deploy config or `prepare-deploy.mjs`.
    `…/runtimes/node/index.js`, which checks only 4 fixed dirs). Fix:
    `prepare-deploy.mjs` junctions the workspace's `node_modules` into the
    artifact; `ignore: ["node_modules"]` keeps the junction OUT of the upload, so
-   the cloud still reinstalls just the 3 deps.
+   the cloud still reinstalls just the 4 deps.
 
 5. **The junction's directory depth matters** — pnpm's symlinks inside
    `node_modules` are **relative**. The artifact MUST sit at the **same depth as
@@ -212,7 +212,7 @@ deploy config or `prepare-deploy.mjs`.
    `NODE_EXTRA_CA_CERTS=<path>/norton-root.pem` (the user's own terminal already
    trusts it). This is also why the artifact uses a `node_modules` **junction**
    rather than a fresh `npm install` — a local registry install hits the same
-   Norton TLS wall (and an npm peer-resolution `ERESOLVE`).
+   Norton TLS wall.
 
 7. **`Changing from an HTTPS function to a background triggered function is not
    allowed`** — if a function with the same name already exists with a different
@@ -230,18 +230,6 @@ deploy config or `prepare-deploy.mjs`.
    `5 NOT_FOUND`. The emulator suite must read the same id (see the storage test's `getDb`). The
    convention is repo-wide (apps/web, apps/integrations, apps/nfe, tools/test-fixtures,
    `.env.example`).
-
-9. **Cloud build `ERESOLVE` on `firebase-admin@14`** — this package is on
-   firebase-admin 14 for the `@google-cloud/firestore` v8 **Pipelines** API, which
-   the orphan sweep's `fetchUnreferencedCandidates` regex scan needs (a hard
-   requirement — not optional). But `firebase-functions` (incl. 7.x) still pins its
-   peer to `firebase-admin@^11 || ^12 || ^13`. pnpm tolerates the mismatch locally
-   and the combo is runtime-fine (the ci-storage emulator suite passes on admin 14 +
-   functions 7.x), but the gen2 buildpack's STRICT `npm install` fails with
-   `ERESOLVE unable to resolve dependency tree`. Fix: `prepare-deploy.mjs` writes a
-   `legacy-peer-deps=true` **`.npmrc`** into the artifact, relaxing ONLY the cloud
-   peer check (repo + CI installs are untouched). Remove once firebase-functions
-   adds `^14` to its peer range.
 
 ## Build notes
 

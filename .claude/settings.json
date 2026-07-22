@@ -11,7 +11,24 @@
       "Bash(git commit *)",
       "Bash(gh pr create *)",
       "Bash(gh issue create *)",
-      "Bash(gh issue list *)"
+      "Bash(gh issue list *)",
+      "Bash(gh issue view *)",
+      "Bash(gh run list *)",
+      "Bash(gh run view *)",
+      "Bash(gh run watch *)",
+      "Bash(gh workflow view *)",
+      "Bash(gh workflow list *)",
+      "mcp__github__issue_read",
+      "mcp__github__list_issues",
+      "mcp__github__search_issues",
+      "mcp__github__list_issue_fields",
+      "mcp__github__list_issue_types",
+      "mcp__github__actions_get",
+      "mcp__github__actions_list",
+      "mcp__github__get_job_logs",
+      "mcp__github__get_check_run",
+      "mcp__github__pull_request_read",
+      "mcp__github__list_pull_requests"
     ],
 
     "deny": [
@@ -22,7 +39,20 @@
       "Read(./.ignore/**)"
     ]
   },
+  "_comment_branch_prefix": "The PreToolUse hook refuses `git checkout -b` / `switch -c` / `branch <name>` / `worktree add -b` for any name outside `claude/`. Every workflow's pull_request trigger filters on the PR's BASE branch, so a PR stacked onto a branch outside that list reports zero checks — silently, as 'no checks reported' rather than a failure — and can be merged untested. Deleting, listing and checking out existing branches are unaffected. Remove this hook entry to disable.",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-claude-branch-prefix.mjs\"",
+            "statusMessage": "Checking branch name"
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "matcher": "",

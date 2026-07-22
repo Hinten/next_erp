@@ -29,14 +29,14 @@
   "dependencies": {
     "@delfrance/auth": "workspace:*",
     "@delfrance/schemas": "workspace:*",
-    "firebase-admin": "^13.9.0"
+    "firebase-admin": "catalog:"
   },
   "devDependencies": {
     "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
-    "@types/node": "^24.10.0",
-    "eslint": "^9.39.4",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.3"
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
   }
 }

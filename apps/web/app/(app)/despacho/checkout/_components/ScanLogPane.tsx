@@ -4,7 +4,7 @@ import { memo, useRef } from 'react';
 import { ActionIcon, Badge, Group, Stack, Text, Tooltip } from '@mantine/core';
 import { IconTrash, IconTrashOff, IconAlertCircle } from '@tabler/icons-react';
 import type { ScanKind, ScanLogEntry } from '@delfrance/schemas';
-import { useVirtualRows } from './useVirtualRows';
+import { useVirtualRows } from '@/components/virtual-rows/useVirtualRows';
 
 const KIND_LABEL: Record<Exclude<ScanKind, 'error'>, string> = {
   unit: 'Unidade',

@@ -16,14 +16,14 @@
     "@delfrance/data": "workspace:*",
     "@delfrance/plugin-sdk": "workspace:*",
     "@delfrance/schemas": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
-    "@types/node": "^24.10.0",
-    "eslint": "^9.39.4",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.3"
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
   }
 }

@@ -1,32 +1,24 @@
 ---
-name: impl-verify
-description: >-
-  Use when the user asks to build a multi-file implementation slice with
-  multi-agent orchestration — /impl-verify, "run the implement-verify
-  workflow", "build this slice with the workflow", "fan-out implement +
-  adversarial verify", "ultracode this slice". Runs a Workflow: lock
-  contracts, fan out implementation agents with disjoint file ownership,
-  adversarially verify with independent high-effort reviewers, gate
-  sequentially, ship a draft PR. Do NOT use for trivial edits, single-file
-  changes, or pure research.
+description: Implement → adversarially verify → gate → ship one PR-sized slice via multi-agent Workflow orchestration.
 argument-hint: <issue number or slice description>
 ---
 
-# impl-verify — implement → adversarially verify → gate → ship
+# /cheapworkflow — implement → adversarially verify → gate → ship
 
 Deliver one PR-sized slice through a Workflow orchestration. Invoking this
-skill is the user's explicit opt-in to multi-agent orchestration (the
-Workflow tool).
+command is the user's explicit opt-in to multi-agent orchestration (the
+Workflow tool) — do not launch this orchestration unless the user typed
+`/cheapworkflow` themselves.
 
-**Input**: the slice to build — ideally an issue number plus the approved plan
-and agreed deviations. No approved plan yet? STOP and present one first; this
-skill starts at "approved, build it".
+**Input**: $ARGUMENTS — the slice to build, ideally an issue number plus the
+approved plan and agreed deviations. No approved plan yet? STOP and present
+one first; this command starts at "approved, build it".
 
 **Before writing your first workflow script**, read
-[references/workflow-template.md](references/workflow-template.md) (the
-annotated script skeleton — copy its structure exactly). For a fully-worked
-realistic run — including a user-authorized Fable escalation — read
-[references/example-run.md](references/example-run.md).
+[workflow-template.md](../command-references/cheapworkflow/workflow-template.md)
+(the annotated script skeleton — copy its structure exactly). For a
+fully-worked realistic run — including a user-authorized Fable escalation —
+read [example-run.md](../command-references/cheapworkflow/example-run.md).
 
 ## Checklist (track this)
 
@@ -86,7 +78,8 @@ verifiers. **Never silently**: before launching, ask the user for
 authorization, naming (a) which agents, (b) why the component qualifies,
 (c) that it costs more. Default ladder on a "no" — the main loop hand-reviews
 the hard component instead. The authorization wording and script wiring are
-shown in [references/example-run.md](references/example-run.md).
+shown in
+[example-run.md](../command-references/cheapworkflow/example-run.md).
 
 ## Ship (phase 4–6 details)
 
@@ -100,3 +93,4 @@ shown in [references/example-run.md](references/example-run.md).
 4. Mark ready-for-review when green, then keep watching for code-review
    comments: triage each finding, fix in the SAME PR, reply pointing at the
    fix commit, re-watch CI.
+

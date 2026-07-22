@@ -31,6 +31,8 @@ const STATIC_ROUTES: string[] = [
   '/medidas',
   '/medidas/novo',
   '/listas-de-precos',
+  '/produtos/recalcular-precos',
+  '/produtos/alterar-precos',
   '/depositos',
   '/etiquetas',
   '/balanco',

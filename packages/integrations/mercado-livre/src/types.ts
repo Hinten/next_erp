@@ -322,6 +322,29 @@ export const userProductItemsSearchSchema = z
   .passthrough();
 export type MlUserProductItemsSearch = z.infer<typeof userProductItemsSearchSchema>;
 
+/* --------------------- Mass import seller scan (#621) --------------------- */
+
+/**
+ * `GET /users/{sellerId}/items/search?search_type=scan[&scroll_id=]` — the
+ * seller's full listing set, one page (up to ~100 ids) per call. Keyed by
+ * `results` (MLB item ids) + `scroll_id` (legacy `importacao.dart:119-188`:
+ * `resultado['results']` / `resultado['scroll_id']`); the caller stops paging
+ * once `results` is empty OR `scroll_id` comes back absent/empty — there is no
+ * `limit` param on this endpoint (unlike `searchItemsByUserProduct`).
+ */
+export const sellerItemsScanSchema = z
+  .object({
+    scroll_id: z.string().nullable().optional(),
+    results: z.array(z.string()).default([]),
+    paging: z
+      .object({ total: z.number().nullable().optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+export type MlSellerItemsScan = z.infer<typeof sellerItemsScanSchema>;
+
 /* --------------------- User-Products migration (#441) --------------------- */
 
 /**

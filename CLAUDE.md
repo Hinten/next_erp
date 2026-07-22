@@ -12,14 +12,19 @@ repo; a read-only copy sits at `.old/` (gitignored, present only in local
 checkouts) and is the **parity reference for ports**.
 
 CI — everything in `.github/workflows/` runs **concurrently**, gated on nothing.
-`ci.yml` is the only workflow with no path filter, so every PR gets it; it
-excludes the nfe/freight/storage/functions tests, which the domain pipelines
-`ci-{nfe,freight,storage,rules}.yml` own.
+`ci.yml` and `e2e-emulator.yml` are the two workflows with no path filter, so
+every PR gets both; `ci.yml` excludes the nfe/freight/storage/functions tests,
+which the domain pipelines `ci-{nfe,freight,storage,rules}.yml` own.
 
-⚠️ Every other workflow is **`paths:`-filtered**, e2e included (apps/web,
-packages/{schemas,ui,data,auth,core}, tools/test-fixtures). A PR touching only
-`packages/integrations/**` or `apps/nfe/**` runs **no e2e** — those checks show
-*skipped*, not failed. "CI green" ≠ "e2e passed".
+⚠️ Every other workflow is **`paths:`-filtered**, the staging e2e lanes included
+(apps/web, packages/{schemas,ui,data,auth,core}, tools/test-fixtures). A PR
+touching only `packages/integrations/**` or `apps/nfe/**` runs **no e2e** —
+those checks show *skipped*, not failed. "CI green" ≠ "e2e passed".
+
+Every `pull_request` base filter is
+`[master, main, 'claude/**', 'feat/**', 'fix/**']`. That key matches the PR's
+**base**, so a **stacked PR** must sit on one of those prefixes — on anything
+else (`chore/`, `docs/`, …) it reports zero checks, not failures.
 
 ## Critical rules
 
@@ -98,8 +103,7 @@ packages/{schemas,ui,data,auth,core}, tools/test-fixtures). A PR touching only
   `mercado-pago` (:3007) · `whatsapp` (:3008) — API-only App Hosting backends,
   **one deployable per channel**, each importing its logic from the matching
   `packages/integrations/<channel>`.
-- `functions` — **not** a Next app: gen2 Cloud Functions, codebase `storage`,
-  the only firebase-admin **v14** consumer.
+- `functions` — **not** a Next app: gen2 Cloud Functions, codebase `storage`.
 
 `apps/{nfe,mercado-livre,mercado-pago,whatsapp}/functions/` are **nested**
 Functions codebases deployed via `firebase.<name>.deploy.json`. They are **not**
@@ -159,11 +163,12 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
 ## Key fixed decisions
 
 - Firebase backend stays. Node >= 22. Zod is the schema source of truth.
-- **firebase-admin is deliberately split — do not "unify" it.** `apps/functions`
-  is on **v14** for the Pipelines API (orphan sweep) and
-  `FieldValue.maximum/minimum` (estoque callable), both absent in v13.
-  Everything else is on v13, and `packages/{data,storage}` declare an optional
-  peer `^13` that `apps/functions` knowingly violates. Typecheck-clean.
+- **firebase-admin floor = v14, firebase-functions floor = `^7.3.0` — do not
+  lower either.** `apps/functions` needs the v8 Pipelines API +
+  `FieldValue.maximum/minimum` (a downgrade fails typecheck), and 7.3.0 is the
+  first firebase-functions whose peer range admits `firebase-admin@^14` —
+  lowering it breaks every deploy artifact's plain cloud `npm install`
+  (`ERESOLVE`), which no CI lane exercises.
 - `next lint` is gone in Next 16 — every lint script is `eslint .`. `@delfrance/config-eslint`
   is split into composable entries: the default export is the framework-agnostic
   core, `./react` adds the `react-hooks` warns (plugin supplied by
@@ -179,7 +184,14 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `no-error-as-sole-instanceof` (warn).
 - Firebase App Hosting deploys every Next app; heavy work goes to Cloud
   Functions. `apps/portal/` does NOT exist — public pages are deferred.
-- **Versions are not restated here — read the `package.json`.** There is no pnpm
-  catalog, so versions are duplicated per manifest and `next` is pinned **exact**
-  in 9 of them (a Next bump is a coordinated edit, not a lockfile refresh).
-  `packageManager` is the authority for pnpm.
+- **Shared dependency versions live in the pnpm `catalog:`**
+  (`pnpm-workspace.yaml`): a dep declared by 2+ workspace manifests is
+  cataloged and referenced as `catalog:`; single-consumer deps stay literal.
+  `catalogMode: strict` routes `pnpm add` through the catalog. Four things
+  NEVER use `catalog:`: the 4 nested `apps/*/functions` manifests (not
+  workspace members), `apps/functions`' runtime `dependencies` (every
+  `prepare-deploy.mjs` copies `dependencies` verbatim into an artifact that
+  plain cloud `npm install` must resolve), all `peerDependencies` (libraries
+  keep broad ranges), and `workspace:*` specs. `next` stays pinned **exact**
+  (`16.2.6`) in the catalog — a Next bump is still one deliberate edit, now a
+  single line. `packageManager` is the authority for pnpm.

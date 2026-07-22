@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppErrorCodes, FirebaseAppError } from 'firebase-admin/app';
-import { AuthClientErrorCode, FirebaseAuthError } from 'firebase-admin/auth';
+import { AppErrorCode, FirebaseAppError } from 'firebase-admin/app';
+import { AuthErrorCode, FirebaseAuthError } from 'firebase-admin/auth';
 import { rulesClaimsFromBits } from '@delfrance/auth';
 
 // Mock the firebase-admin singleton wrapper. The test exercises route logic
@@ -28,19 +28,6 @@ vi.mock('@/lib/firebase/admin', () => ({
 }));
 
 const { POST } = await import('./route');
-
-// The firebase-admin .d.ts only surfaces the constructor inherited from Error,
-// but at runtime FirebaseAuthError takes an ErrorInfo and FirebaseAppError
-// takes (code, message) — cast so the tests can build the real classes the
-// catch narrows on.
-const AuthErrorCtor = FirebaseAuthError as unknown as new (info: {
-  code: string;
-  message: string;
-}) => FirebaseAuthError;
-const AppErrorCtor = FirebaseAppError as unknown as new (
-  code: string,
-  message: string,
-) => FirebaseAppError;
 
 function req(headers: Record<string, string> = {}): Request {
   return new Request('http://localhost:3001/api/admin/users/target/claims', {
@@ -77,7 +64,12 @@ describe('POST /api/admin/users/[uid]/claims', () => {
   });
 
   it('maps FirebaseAuthError to 401', async () => {
-    mocks.verifyIdToken.mockRejectedValue(new AuthErrorCtor(AuthClientErrorCode.ID_TOKEN_EXPIRED));
+    mocks.verifyIdToken.mockRejectedValue(
+      new FirebaseAuthError({
+        code: AuthErrorCode.ID_TOKEN_EXPIRED,
+        message: 'The provided Firebase ID token is expired.',
+      }),
+    );
     const res = await POST(req({ authorization: 'Bearer t' }), ctx());
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Token inválido ou expirado.' });
@@ -85,7 +77,7 @@ describe('POST /api/admin/users/[uid]/claims', () => {
 
   it('maps FirebaseAppError (admin init failure) to 500 with the app/ code', async () => {
     mocks.verifyIdToken.mockRejectedValue(
-      new AppErrorCtor(AppErrorCodes.INVALID_CREDENTIAL, 'bad credential'),
+      new FirebaseAppError({ code: AppErrorCode.INVALID_CREDENTIAL, message: 'bad credential' }),
     );
     const res = await POST(req({ authorization: 'Bearer t' }), ctx());
     expect(res.status).toBe(500);

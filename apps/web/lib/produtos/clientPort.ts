@@ -20,10 +20,6 @@ import type { TransactionWrite } from '@delfrance/ui';
 import { type ImpostoProduto, type ProdutoExtraData } from '@delfrance/schemas';
 import { getFirebaseFunctions } from '@/lib/firebase/client';
 import { produtoCollection } from '@/lib/data/produtoCollection';
-import {
-  historicoCustoCollection,
-  historicoPrecoCollection,
-} from '@/lib/data/historicoCollections';
 import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
 import { estoqueProdutoCollection } from '@/lib/data/estoqueProdutoCollection';
 import { impostoProdutoCollection } from '@/lib/data/impostoProdutoCollection';
@@ -42,7 +38,10 @@ const subcollectionHandles = new Map(
  * handle ref — apps/web bans raw `doc()`/`collection()` (they skip the Zod
  * converter), so the dumb adapter maps the finite produto path patterns to
  * their handles. New produto subcollections (extraData, estoques, imposto) add
- * a case here when their tab lands.
+ * a case here when their tab lands. (`historicoDePrecos`/`historicoDeCusto`
+ * are NOT mapped here — no remaining use-case commits to them through this
+ * port; the only client-side history write, `appendPrecoHistory` for a newly
+ * created variation child, goes straight through a raw `WriteBatch`.)
  */
 function refForPath(db: Firestore, path: string): DocumentReference {
   const parts = path.split('/');
@@ -51,12 +50,6 @@ function refForPath(db: Firestore, path: string): DocumentReference {
   }
   if (parts.length === 4 && parts[0] === 'produtos') {
     const [, produtoId, sub, id] = parts as [string, string, string, string];
-    if (sub === 'historicoDePrecos') {
-      return historicoPrecoCollection.docRef(db, { produtoId }, id) as DocumentReference;
-    }
-    if (sub === 'historicoDeCusto') {
-      return historicoCustoCollection.docRef(db, { produtoId }, id) as DocumentReference;
-    }
     if (sub === 'extraData') {
       return produtoExtraDataCollection.docRef(db, { produtoId }, id) as DocumentReference;
     }
@@ -199,7 +192,7 @@ export function createClientProdutoPort(db: Firestore): ProdutoDataPort {
     async getChildren(parentId) {
       // Forced to the server: a freshly navigated editor's local cache for this
       // query can be cold, and a cache-served read would return zero children —
-      // silently skipping precos propagation / cascade delete.
+      // silently skipping kit-status propagation / cascade delete.
       const snap = await getDocsFromServer(
         buildQuery(produtoCollection.ref(db, {}), [whereEqual('paiId', parentId)]),
       );

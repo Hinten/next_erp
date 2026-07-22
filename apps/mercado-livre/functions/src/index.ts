@@ -9,8 +9,10 @@ import {
   MERCADO_LIVRE_NOTIFICATION_QUEUE,
   reprocessNotifications,
 } from '../../lib/marketplace/notificacao';
+import { MERCADO_LIVRE_MASS_IMPORT_QUEUE } from '../../lib/marketplace/massImport';
 import { getDb } from './lib/admin';
 import * as notificationHandlers from './processNotification';
+import * as massImportHandlers from './processMassImport';
 
 /**
  * Mercado Livre Cloud Functions (gen2), codebase `mercado-livre`. Deployed as a
@@ -20,7 +22,8 @@ import * as notificationHandlers from './processNotification';
  * Step 6 wires the resilient notification pipeline as a **Cloud Tasks queue**
  * (`processMercadoLivreNotification`, ./processNotification) + an `onSchedule`
  * reprocess sweep; `importMercadoLivreOrders` stays a skeleton until the
- * order-import milestone (#362).
+ * order-import milestone (#362). Step 8 (#621) adds the mass-import job queue
+ * (`processMercadoLivreMassImport`, ./processMassImport).
  */
 
 // Rename-safety: the DEPLOYED function name is the export KEY of the handler
@@ -40,6 +43,20 @@ if (!(MERCADO_LIVRE_NOTIFICATION_QUEUE in notificationHandlers)) {
 
 /** The queue-based notification processor (rate-limited, retry-with-backoff). */
 export { processMercadoLivreNotification } from './processNotification';
+
+// Same rename-safety assertion for the Step 8 mass-import queue: the scheduler
+// (`mlMassImportTasks.ts`, and `processMassImportJob`'s own self-continuation)
+// enqueues against `MERCADO_LIVRE_MASS_IMPORT_QUEUE`.
+if (!(MERCADO_LIVRE_MASS_IMPORT_QUEUE in massImportHandlers)) {
+  throw new Error(
+    `[mercado-livre] function-name drift: functions/src/processMassImport.ts must export a ` +
+      `handler named '${MERCADO_LIVRE_MASS_IMPORT_QUEUE}' (the enqueue target). ` +
+      `Rename the export and the MERCADO_LIVRE_MASS_IMPORT_QUEUE constant together.`,
+  );
+}
+
+/** The queue-based mass-import job processor (Step 8, #621). */
+export { processMercadoLivreMassImport } from './processMassImport';
 
 /** Periodic backstop that pulls new/updated ML orders for each connected account. */
 export const importMercadoLivreOrders = onSchedule('every 15 minutes', async () => {

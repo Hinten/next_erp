@@ -1,13 +1,24 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { ActionIcon, Alert, Badge, Group, Stack, Text, Tooltip } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconArrowBackUp, IconCalculator, IconTrash } from '@tabler/icons-react';
+import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import { useFormContext } from 'react-hook-form';
-import { type ListaDePrecos, type PrecosMap, calcularPreco, temFormulas } from '@delfrance/schemas';
+import {
+  type ComponentesKit,
+  type ListaDePrecos,
+  type PrecosMap,
+  calcularPreco,
+  custoDoKit,
+  temFormulas,
+} from '@delfrance/schemas';
+import { getDocsByIds } from '@/lib/data/getDocsByIds';
+import { produtoCollection } from '@/lib/data/produtoCollection';
 import { CurrencyInput } from './CurrencyInput';
+import { stripKitForSave } from './KitManager';
 import { ProdutoHistoryButton } from './ProdutoHistoryButton';
 
 /** A `listaDePrecos` snapshot row, supplied by the page's bounded query. */
@@ -73,6 +84,14 @@ export interface PrecoCustoManagerProps {
  * validation error. The `custo` input renders as its own field (`CustoField`);
  * this manager reads it (plus weight/categoria) live via `useFormContext` so a
  * custo typed but not yet saved feeds the recalc.
+ *
+ * For a KIT produto the `custo` field is only kept in sync by `KitManager`'s
+ * effect, which lives in the Kit tab — and Mantine's `keepMountedMode:
+ * 'activity'` never runs a tab's effects until it's been opened at least once,
+ * so `custo` can be null/stale if the user recalcs without ever visiting the
+ * Kit tab. The recalc handler resolves the kit cost itself on demand instead
+ * (legacy parity: `custoProdutoContabilizandoKit` computes on demand rather
+ * than trusting a cached field) — see `custoDoKitAgora` below.
  */
 export function PrecoCustoManager({
   produtoId,
@@ -90,6 +109,10 @@ export function PrecoCustoManager({
   // RHF context is typed non-null but IS null outside a provider — see
   // VariationManager for the precedent and rationale.
   const form = useFormContext();
+
+  // Lista id currently resolving a kit's on-demand cost (drives the row's
+  // recalc-button loading state) — `null` when nothing is in flight.
+  const [recalculandoId, setRecalculandoId] = useState<string | null>(null);
 
   // Active listas first (stable input order); inactive ones appended only
   // while a price exists on them, so legacy entries stay visible/removable.
@@ -132,8 +155,75 @@ export function PrecoCustoManager({
     return { custo: custo ?? null, pesoKg, idCategoria };
   }
 
-  function recalcular(lista: ListaComId) {
-    const { custo, pesoKg, idCategoria } = recalcInputs();
+  /**
+   * Kit cost, resolved on demand (mirrors `KitManager`'s data-access idiom:
+   * a batched `getDocsByIds` read for the components, plus one more for any
+   * component whose own custo is missing and has a `paiId` — a variation
+   * child falling back to its parent's custo, same as `custoDoKit`'s
+   * contract). No cache: this only runs when the recalc button is clicked, so
+   * it works whether or not the Kit tab has ever been mounted.
+   */
+  async function custoDoKitAgora(componentesKit: ComponentesKit) {
+    const ids = Object.keys(componentesKit);
+    const compMap = await getDocsByIds(db, produtoCollection, ids);
+    const custoByProdutoId: Record<string, number | null | undefined> = {};
+    const paiByProdutoId: Record<string, string | null | undefined> = {};
+    for (const [id, data] of compMap) {
+      custoByProdutoId[id] = data.custo;
+      paiByProdutoId[id] = data.paiId;
+    }
+    const paiIds = [
+      ...new Set(
+        ids
+          .filter((id) => (custoByProdutoId[id] ?? null) === null && paiByProdutoId[id])
+          .map((id) => paiByProdutoId[id] as string),
+      ),
+    ];
+    if (paiIds.length > 0) {
+      const paiMap = await getDocsByIds(db, produtoCollection, paiIds);
+      for (const [id, data] of paiMap) custoByProdutoId[id] = data.custo;
+    }
+    return { ...custoDoKit(componentesKit, custoByProdutoId, paiByProdutoId), compMap };
+  }
+
+  async function recalcular(lista: ListaComId) {
+    const { custo: custoDoForm, pesoKg, idCategoria } = recalcInputs();
+    const ehKit = form?.getValues('ehKit') === true;
+    const componentesKit = ehKit ? stripKitForSave(form?.getValues('componentesKit')) : null;
+
+    let custo: number | null;
+    if (componentesKit) {
+      setRecalculandoId(lista.id);
+      try {
+        const { custo: custoKit, faltando, compMap } = await custoDoKitAgora(componentesKit);
+        if (faltando.length > 0) {
+          const nomes = faltando.map((id) => {
+            const c = compMap.get(id);
+            return c ? `${c.sku ?? 'Sem SKU'} - ${c.nome} (${id})` : id;
+          });
+          notifications.show({
+            color: 'red',
+            message: `Componentes do kit sem custo: ${nomes.join(', ')}`,
+          });
+          return;
+        }
+        custo = custoKit;
+      } catch (err) {
+        if (err instanceof FirebaseError) {
+          notifications.show({
+            color: 'red',
+            message: `Falha ao calcular o custo do kit: ${err.message}`,
+          });
+          return;
+        }
+        throw err;
+      } finally {
+        setRecalculandoId(null);
+      }
+    } else {
+      custo = custoDoForm;
+    }
+
     if (custo === null || custo <= 0) {
       notifications.show({
         color: 'yellow',
@@ -207,8 +297,9 @@ export function PrecoCustoManager({
                 <ActionIcon
                   variant="subtle"
                   mb={4}
-                  onClick={() => recalcular(lista)}
-                  disabled={!temFormulas(lista.data, idCategoria)}
+                  onClick={() => void recalcular(lista)}
+                  disabled={!temFormulas(lista.data, idCategoria) || recalculandoId !== null}
+                  loading={recalculandoId === lista.id}
                   aria-label={`Recalcular ${lista.data.nome}`}
                 >
                   <IconCalculator size={16} />

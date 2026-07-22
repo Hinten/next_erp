@@ -27,10 +27,8 @@ import {
 import { buildQuery, limit, orderByField, whereArrayContains, whereEqual } from '@delfrance/data';
 import {
   ProdutoReferencedError,
-  applyPrecosChange,
   deleteProdutoCascade,
   propagateKitStatusToChildren,
-  recordCustoHistory,
 } from '@delfrance/data/produto';
 import { useDocSnapshot, useSnapshot } from '@delfrance/data/hooks';
 import { uploadProductImage } from '@delfrance/storage';
@@ -87,8 +85,8 @@ export default function EditarProdutoPage() {
   const { allowed: canWrite } = usePermission(PERM.produto.write);
   const db = getFirebaseFirestore();
   const storage = getFirebaseStorage();
-  // Client adapter for the framework-agnostic produto use-cases (history,
-  // child-precos propagation, reference guard + cascade delete).
+  // Client adapter for the framework-agnostic produto use-cases (kit-status
+  // propagation, reference guard + cascade delete).
   const port = useMemo(() => createClientProdutoPort(db), [db]);
 
   // Variation groups (live) — shared between the Variações tab and the
@@ -156,11 +154,10 @@ export default function EditarProdutoPage() {
     [params.id, effectiveVariationRows],
   );
 
-  // Price-history bookkeeping (Flutter parity: `Produto.save()` records every
-  // precos change). `lastSavedPrecos` pins the PERSISTED map once, from the
-  // first doc emit, so it can serve as the "old" value at onAfterSave time;
-  // the "new" value is read back fresh from the just-saved parent doc (the
-  // live snapshot can't be trusted to have re-emitted yet).
+  // Live snapshot of this produto: feeds the parent-kit lookup below (`paiId`)
+  // and the kit-status "old value" fallback in `onAfterSave` (precos/custo
+  // history is no longer read from it — that bookkeeping is server-owned now,
+  // see `lastSavedKitStatus` below).
   const produtoDocRef = useMemo(() => produtoCollection.docRef(db, {}, params.id), [db, params.id]);
   const produtoSnap = useDocSnapshot(produtoDocRef);
   // Parent kit-status (#298): when this produto is a variation child (`paiId`
@@ -203,27 +200,20 @@ export default function EditarProdutoPage() {
   );
   // True when more kits reference this produto than we display (capped query).
   const referencedByMore = referencedByAll.length > REFERENCED_BY_DISPLAY;
-  const lastSavedPrecos = useRef<{ ready: boolean; value: PrecosMap }>({
-    ready: false,
-    value: null,
-  });
-  // Same bookkeeping for `custo`: a historicoDeCusto record is written on each
-  // change. `ready` guards the first emit so we don't record on initial load.
-  const lastSavedCusto = useRef<{ ready: boolean; value: number | null }>({
-    ready: false,
-    value: null,
-  });
-  // Same bookkeeping for the kit status: when `ehKit`/`ehKitVirtual` flips, the
-  // existing variation children are synced on save (Flutter parity).
+  // Kit-status bookkeeping (Flutter parity, `produtoTableProvider.dart:556-589`):
+  // when `ehKit`/`ehKitVirtual` flips, the existing variation children are
+  // synced on save. `lastSavedKitStatus` pins the PERSISTED status once, from
+  // the first doc emit, so it can serve as the "old" value at onAfterSave time
+  // (precos/custo history had the same pinning idiom, but that bookkeeping is
+  // gone now — the `onProdutoPrecoCustoChanged` trigger diffs against the
+  // stored doc itself).
   const lastSavedKitStatus = useRef<{ ready: boolean; ehKit: boolean; ehKitVirtual: boolean }>({
     ready: false,
     ehKit: false,
     ehKitVirtual: false,
   });
   useEffect(() => {
-    if (!lastSavedPrecos.current.ready && produtoSnap.data) {
-      lastSavedPrecos.current = { ready: true, value: produtoSnap.data.data.precos ?? null };
-      lastSavedCusto.current = { ready: true, value: produtoSnap.data.data.custo ?? null };
+    if (!lastSavedKitStatus.current.ready && produtoSnap.data) {
       lastSavedKitStatus.current = {
         ready: true,
         ehKit: produtoSnap.data.data.ehKit ?? false,
@@ -566,34 +556,14 @@ export default function EditarProdutoPage() {
           return issues;
         }}
         onAfterSave={async (id, values) => {
-          // `values.precos`/`values.custo` are exactly what this save persisted
-          // (ObjectView hands us the transformed values) — no captured-state
-          // staleness, no re-read race. The domain use-cases record the history
-          // and (on a real change) propagate the precos to every variation child
-          // — which must fire even when only the Preço e custo tab was touched,
-          // so it can't depend on the Variações tab's live snapshot.
-          //
-          // "Old" value = the ref pinned at the first doc emit, or — if a save
-          // beat that emit — the live snapshot, so a fast first save still
-          // records history and only propagates on a real change.
-          const newPrecos = (values.precos as PrecosMap) ?? null;
-          const oldPrecos = lastSavedPrecos.current.ready
-            ? lastSavedPrecos.current.value
-            : (produtoSnap.data?.data.precos ?? null);
-          await applyPrecosChange(port, { produtoId: id, oldPrecos, newPrecos });
-          lastSavedPrecos.current = { ready: true, value: newPrecos };
-
-          // Cost history (historicoDeCusto): one record per change. Only a
-          // numeric custo that actually differs from the last persisted value
-          // is recorded (a cleared/null custo can't be represented as a record).
-          const newCusto = typeof values.custo === 'number' ? values.custo : null;
-          const oldCusto = lastSavedCusto.current.ready
-            ? lastSavedCusto.current.value
-            : (produtoSnap.data?.data.custo ?? null);
-          if (newCusto !== null && newCusto !== oldCusto) {
-            await recordCustoHistory(port, id, newCusto);
-          }
-          lastSavedCusto.current = { ready: true, value: newCusto };
+          // Precos/custo history + child-precos propagation used to be recorded
+          // here (client-side, diffed against `lastSavedPrecos`/`lastSavedCusto`).
+          // Both are now server-owned: the `onProdutoPrecoCustoChanged` Cloud
+          // Function trigger (since 2026-07-21) fires on the produto write this
+          // save just made, diffs precos/custo against the previous doc itself,
+          // records the history and propagates to the variation children — this
+          // page no longer needs to (and skips entirely for a child produto,
+          // `paiId != null`, and when `propagatePriceToChildren` is false).
 
           // Kit-status propagation (Flutter parity,
           // `produtoTableProvider.dart:556-589`): when the parent's

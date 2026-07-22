@@ -5,7 +5,7 @@ import type { ScanLogEntry } from '@delfrance/schemas';
 
 // jsdom has no layout, so the real virtualizer measures 0 rows — mock the thin
 // wrapper to render every row.
-vi.mock('./useVirtualRows', () => ({
+vi.mock('@/components/virtual-rows/useVirtualRows', () => ({
   useVirtualRows: (count: number) => ({
     rows: Array.from({ length: count }, (_, index) => ({ index, start: index * 64, size: 64 })),
     totalSize: count * 64,

@@ -24,4 +24,9 @@ setGlobalOptions({
   // functions that call the ML API (e.g. order import, notification processing):
   //   secrets: ['MERCADO_LIVRE_CLIENT_SECRET'],
   // Set it with `firebase functions:secrets:set MERCADO_LIVRE_CLIENT_SECRET`.
+  // (Step 8 / #621 bound `MERCADO_LIVRE_CLIENT_ID` + `MERCADO_LIVRE_CLIENT_SECRET`
+  // PER-FUNCTION on `processMercadoLivreMassImport` — see processMassImport.ts —
+  // rather than here, since it's the only function so far whose default deps
+  // refresh an ML access token. If a second function needs them, promote to a
+  // codebase-wide bind here instead of duplicating the `secrets` array.)
 });

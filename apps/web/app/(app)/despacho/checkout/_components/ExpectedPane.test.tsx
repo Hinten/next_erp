@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Firestore } from 'firebase/firestore';
 import type { EngineProduto, ExpectedItem } from '@delfrance/schemas';
 
-vi.mock('./useVirtualRows', () => ({
+vi.mock('@/components/virtual-rows/useVirtualRows', () => ({
   useVirtualRows: (count: number) => ({
     rows: Array.from({ length: count }, (_, index) => ({ index, start: index * 76, size: 76 })),
     totalSize: count * 76,

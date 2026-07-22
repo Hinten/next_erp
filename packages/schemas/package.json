@@ -13,14 +13,14 @@
   },
   "dependencies": {
     "@delfrance/core": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
-    "@types/node": "^24.10.0",
-    "eslint": "^9.39.4",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

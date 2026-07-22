@@ -16,8 +16,8 @@
   "devDependencies": {
     "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
-    "eslint": "^9.39.4",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "eslint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }
