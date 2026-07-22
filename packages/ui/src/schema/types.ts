@@ -150,6 +150,14 @@ export interface ActionConfig<T> {
    */
   icon?: ReactNode;
   requiresSelection?: boolean;
+  /**
+   * When true and nothing is selected, if the table currently shows **exactly
+   * one** visible row, treat that row as the selection (button stays enabled
+   * and `run` receives it). Port of the Flutter InfiniteScrollingTableAction
+   * perk used by Download Anexos (`intent.selected` empty + `intent.data.length
+   * == 1`). Other bulk actions leave this off.
+   */
+  fallbackToSingleVisibleRow?: boolean;
   refreshOnComplete?: boolean;
   run: (rows: SnapshotRow<T>[]) => Promise<void> | void;
   confirm?: { title: string; message: string };

@@ -840,6 +840,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                 <ActionBar
                   actions={actions}
                   selectedRows={selectedRows}
+                  visibleRows={rows ?? []}
                   newHref={newHref}
                   renderNewButton={renderNewButton}
                   copyHref={copyHref}
@@ -1056,6 +1057,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           <ActionSidePanel
             actions={actions}
             selectedRows={selectedRows}
+            visibleRows={rows ?? []}
             newHref={newHref}
             renderNewButton={renderNewButton}
             copyHref={copyHref}

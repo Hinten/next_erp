@@ -24,6 +24,9 @@ export function useDownloadAnexosAction(): { readonly action: ActionConfig<Pedid
       color: 'gray',
       icon: <IconPaperclip size={16} />,
       requiresSelection: true,
+      // Flutter perk: when the list shows exactly one pedido and nothing is
+      // checked, still run on that row (TableView passes visible rows).
+      fallbackToSingleVisibleRow: true,
       run: async (rows) => {
         if (rows.length === 0) {
           notifications.show({
