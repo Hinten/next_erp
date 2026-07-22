@@ -104,6 +104,7 @@ export const balcaoExcludedFields = [
   'idCadIntTran',
   'modalidadeFreteImportacao',
   'dataCadastro',
+  'ultimaModificacao',
   'user_id', // latent leak (rendered as a raw number input) — per-channel field, hidden here, surfaced by their own channel screens/flows
   'tabelaMercadoShopsOuterRef', // per-channel fields — hidden here, surfaced by their own channel screens/flows
   'tabelaMercadoShopsPromocionalOuterRef', // per-channel fields — hidden here, surfaced by their own channel screens/flows

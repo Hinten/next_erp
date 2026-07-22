@@ -46,4 +46,11 @@ export {
   type SaveRecordInput,
   type SaveRecordResult,
 } from './object/saveRecord';
+export {
+  resolveStampFields,
+  CREATED_AT_CANDIDATES,
+  MODIFIED_AT_CANDIDATES,
+  type ResolvedStampFields,
+  type StampFieldOverride,
+} from './object/resolveStampFields';
 export { useUnsavedChangesGuard } from './object/useUnsavedChangesGuard';

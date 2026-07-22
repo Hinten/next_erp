@@ -147,7 +147,6 @@ export function useTableUrlState(
     if (next !== `${pathname}${window.location.search}`) {
       window.history.replaceState(null, '', next);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtersSerial, sort?.field, sort?.direction]);
 
   return { filters, setFilters, filtersSerial, sort, setSort };

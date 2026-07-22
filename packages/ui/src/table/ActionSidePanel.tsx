@@ -7,12 +7,18 @@ import Link from 'next/link';
 import type { Route } from 'next';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { ActionConfig } from '../schema/types';
+import { isActionDisabled } from './resolveActionRows';
 import { useActionRunner } from './useActionRunner';
 
 export interface ActionSidePanelProps<T> {
   actions: Array<ActionConfig<T>>;
   /** Rows currently checked in the table. */
   selectedRows: SnapshotRow<T>[];
+  /**
+   * Rows currently shown in the table (filtered page). Powers
+   * `ActionConfig.fallbackToSingleVisibleRow`.
+   */
+  visibleRows?: SnapshotRow<T>[];
   /** Render a "Novo" button at the top when set. */
   newHref?: string;
   /** Custom render for "Novo" (e.g. a Next Link). */
@@ -36,6 +42,7 @@ export interface ActionSidePanelProps<T> {
 export function ActionSidePanel<T>({
   actions,
   selectedRows,
+  visibleRows = [],
   newHref,
   renderNewButton,
   copyHref,
@@ -43,7 +50,11 @@ export function ActionSidePanel<T>({
   collapsed,
   onToggleCollapsed,
 }: ActionSidePanelProps<T>) {
-  const { trigger, confirmModal } = useActionRunner({ selectedRows, onActionComplete });
+  const { trigger, confirmModal } = useActionRunner({
+    selectedRows,
+    visibleRows,
+    onActionComplete,
+  });
 
   const copyRow = selectedRows.length === 1 ? selectedRows[0] : null;
 
@@ -120,7 +131,7 @@ export function ActionSidePanel<T>({
         {actions.length > 0 && (newHref || renderNewButton || copyHref) && <Divider />}
 
         {actions.map((a) => {
-          const disabled = !!a.requiresSelection && selectedRows.length === 0;
+          const disabled = isActionDisabled(a, selectedRows, visibleRows);
           return (
             <Button
               key={a.id}

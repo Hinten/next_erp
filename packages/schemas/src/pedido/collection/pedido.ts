@@ -247,6 +247,7 @@ export const pedidoMeta: CollectionMetadata = {
     { path: 'pedidos/{pedidoId}/incidentes', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/frete', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/nfev4', onDelete: 'cascade' },
+    { path: 'pedidos/{pedidoId}/orderML', onDelete: 'cascade' },
   ],
   defaultQuery: {
     // Direction slice: one collection serves both /pedidos (saídas) and

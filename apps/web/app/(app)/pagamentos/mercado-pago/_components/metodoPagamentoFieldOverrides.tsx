@@ -24,6 +24,11 @@ export const metodoPagamentoFields: Record<string, FieldConfig> = {
  *  - `user_id` is server-denormalized at OAuth exchange (the connected MP
  *    collector id) — display-only, surfaced in `ContaMercadoPagoPanel`
  *    instead of as a form field.
- *  - `dataCadastro` is stamped automatically on create.
+ *  - `dataCadastro` / `ultimaModificacao` are stamped by `saveRecord`.
  */
-export const metodoPagamentoExcludedFields = ['tipo', 'user_id', 'dataCadastro'];
+export const metodoPagamentoExcludedFields = [
+  'tipo',
+  'user_id',
+  'dataCadastro',
+  'ultimaModificacao',
+];

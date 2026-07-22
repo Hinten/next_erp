@@ -41,7 +41,7 @@ export default function FilialPage() {
           db={db}
           currentUserUid={user?.uid ?? ''}
           recordId={params.id}
-          excludedFields={['timestamp', 'certificado']}
+          excludedFields={['timestamp', 'ultimaModificacao', 'certificado']}
           fields={filialObjectFields}
           saveLabel="Salvar alterações"
           canEdit={canWrite}

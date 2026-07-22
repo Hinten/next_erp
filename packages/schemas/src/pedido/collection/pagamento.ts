@@ -323,6 +323,8 @@ export const metodoPagamentoSchema = z.object({
    */
   user_id: z.number().int().nullable().default(null),
   dataCadastro: microsSinceEpoch('Data de cadastro').nullable().default(null),
+  // Same µs unit as `dataCadastro` — stamped by `saveRecord` on every write.
+  ultimaModificacao: microsSinceEpoch('Última modificação').nullable().optional(),
 });
 export type MetodoPagamento = z.infer<typeof metodoPagamentoSchema>;
 

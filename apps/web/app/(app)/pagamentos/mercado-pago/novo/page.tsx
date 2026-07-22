@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { TIPO_INTEGRACAO_PGTO, metodoPagamentoSchema } from '@delfrance/schemas';
-import { nowMicros } from '@delfrance/core/datetime';
 import { ObjectView } from '@delfrance/ui';
 import { metodoPagamentoCollection } from '@/lib/data/pagamentoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -37,7 +36,6 @@ export default function NovaContaMercadoPagoPage() {
         defaultValues={{
           tipo: TIPO_INTEGRACAO_PGTO.mercadoPago,
           hasLinkPagamento: false,
-          dataCadastro: nowMicros(),
         }}
         excludedFields={metodoPagamentoExcludedFields}
         fields={metodoPagamentoFields}

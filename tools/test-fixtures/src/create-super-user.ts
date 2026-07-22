@@ -1,3 +1,4 @@
+/* eslint-disable no-console -- CLI tool: stdout is the interface */
 /**
  * Promotes a Firebase user (by email) to a durable SUPER USER.
  *

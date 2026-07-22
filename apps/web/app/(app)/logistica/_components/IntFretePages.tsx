@@ -104,8 +104,10 @@ export function IntFreteCreatePage({ slice }: { slice: LogisticaSlice }) {
   const router = useRouter();
   const { user } = useAuth();
   const { allowed: canWrite } = usePermission(PERM.frete.write);
-  // Stamped once per mount (lazy initializer keeps the render pure).
-  // Required ms-epoch int — the Flutter read crashes on null.
+  // `dataCadastro` is required (non-nullable) for Flutter dual-run — seed a
+  // provisional epoch so the form validates; saveRecord re-stamps on create
+  // only when the value is nullish, so a real create time still comes from
+  // page open here (required fields are absent from emptyDefaults).
   const [dataCadastro] = useState(() => Date.now());
 
   return (

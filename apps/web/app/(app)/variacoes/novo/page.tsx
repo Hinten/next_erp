@@ -37,9 +37,6 @@ export default function NovoGrupoVariacaoPage() {
           ordem: 1,
           permiteFotos: false,
           variacoes: [],
-          // ms-int (#484/#486). `new Date().getTime()` (not `Date.now()`) to
-          // satisfy the react-hooks purity rule for a value read during render.
-          timestamp: new Date().getTime(),
         }}
         sections={GRUPO_SECTIONS}
         fields={grupoFields}

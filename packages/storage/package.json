@@ -10,7 +10,7 @@
     "./admin": "./src/admin/index.ts"
   },
   "scripts": {
-    "lint": "echo 'no lint configured for this package yet'",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
@@ -30,7 +30,9 @@
     }
   },
   "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
+    "eslint": "catalog:",
     "firebase-admin": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

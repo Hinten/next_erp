@@ -1,3 +1,4 @@
+/* eslint-disable no-console -- CLI tool: stdout is the interface */
 /**
  * Grants all permissions to a Firebase user by email.
  *

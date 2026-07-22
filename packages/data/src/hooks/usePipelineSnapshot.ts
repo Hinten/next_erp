@@ -55,7 +55,6 @@ export function usePipelineSnapshot<T>(pipeline: Pipeline | null): SnapshotState
             if (PIPELINE_ID_FIELD in data) delete data[PIPELINE_ID_FIELD];
             const id = r.ref?.id ?? r.id ?? projectedId ?? '';
             if (!id) {
-              // eslint-disable-next-line no-console
               console.warn(
                 '[usePipelineSnapshot] result has no document id — pipeline used ' +
                   '.select() without the id projection (see PIPELINE_ID_FIELD).',

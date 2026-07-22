@@ -50,3 +50,5 @@ export { conversaCollection } from './conversaCollection';
 export { mensagemCollection } from './mensagemCollection';
 export { credenciaisWhatsappCollection } from './credenciaisWhatsappCollection';
 export { notificacoesWhatsappCollection } from './notificacoesWhatsappCollection';
+export { orderMLCollection } from './orderMLCollection';
+export { enderecoCollection } from './enderecoCollection';

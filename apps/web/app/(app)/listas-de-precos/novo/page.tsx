@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { PERM } from '@delfrance/auth';
-import { nowMillis } from '@delfrance/core/datetime';
 import { ObjectView } from '@delfrance/ui';
 import { listaDePrecosCollection } from '@/lib/data/listaDePrecosCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -37,7 +36,7 @@ export default function NovaListaDePrecosPage() {
         collection={listaDePrecosCollection}
         db={db}
         currentUserUid={user?.uid ?? ''}
-        defaultValues={{ ...LISTA_DE_PRECOS_CREATE_DEFAULTS, timestamp: nowMillis() }}
+        defaultValues={LISTA_DE_PRECOS_CREATE_DEFAULTS}
         excludedFields={LISTA_DE_PRECOS_EXCLUDED_FIELDS}
         fields={listaDePrecosFields}
         sections={LISTA_DE_PRECOS_SECTIONS}

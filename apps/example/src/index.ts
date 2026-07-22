@@ -1,3 +1,4 @@
+/* eslint-disable no-console -- demo CLI: stdout is the interface */
 /**
  * Delfrance OSS demo — minimal showcase that exercises every public
  * surface a contributor would touch to build an ERP feature on top of

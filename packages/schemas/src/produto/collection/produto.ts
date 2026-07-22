@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { CollectionMetadata } from '../../types';
+import { millisSinceEpoch } from '../../shared/datetime';
 import { outerRefSchema } from '../../shared/outerRef';
 import { fotoSchema } from '../../storage/foto';
 import { videoSchema } from '../../storage/video';
@@ -102,6 +103,12 @@ export const produtoSchema = z
 
     // Server-managed.
     nome_embedding: z.unknown().nullable().default(null),
+
+    // System stamps — create-only `timestamp` (nullish coalesce) and
+    // `ultimaModificacao` on every write; both stamped by `saveRecord` /
+    // ObjectView so the TableView update-monitor sees edits.
+    timestamp: millisSinceEpoch('Criação').nullable().default(null),
+    ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
   })
   .passthrough();
 

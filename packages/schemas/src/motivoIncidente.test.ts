@@ -4,7 +4,11 @@ import { motivoIncidenteMeta, motivoIncidenteSchema } from './motivoIncidente';
 describe('motivoIncidenteSchema', () => {
   it('accepts a minimal valid motivo and applies ativo default', () => {
     const out = motivoIncidenteSchema.parse({ nome: 'Atraso na entrega' });
-    expect(out).toEqual({ nome: 'Atraso na entrega', ativo: true });
+    expect(out).toEqual({
+      nome: 'Atraso na entrega',
+      ativo: true,
+      timestamp: null,
+    });
   });
 
   it('rejects empty nome', () => {
