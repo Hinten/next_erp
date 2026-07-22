@@ -891,6 +891,26 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "orderML",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "id",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "orderML",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "pack_id",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": []
