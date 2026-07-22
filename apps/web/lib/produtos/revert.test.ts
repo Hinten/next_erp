@@ -236,6 +236,13 @@ describe('applyRevert', () => {
     expect(h.produtoMerge).not.toHaveBeenCalled();
   });
 
+  it('keys the produto scope on produtoId, ignoring a mismatched docId', async () => {
+    // A malformed target naming another doc must never redirect the write —
+    // the produto the UI is editing (produtoId) is the only valid target.
+    await applyRevert(db, target({ docId: 'outro-produto', oldValue: 'Antigo', field: 'nome' }));
+    expect(h.produtoMerge).toHaveBeenCalledWith(db, {}, 'prod1', { nome: 'Antigo' });
+  });
+
   it('enforces the whitelist itself — a non-whitelisted field never reaches merge()', async () => {
     // The UI gates via isRevertible before offering Restaurar, but the data
     // layer must not trust the caller: rules do not re-encode the whitelist.

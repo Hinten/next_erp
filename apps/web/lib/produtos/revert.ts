@@ -121,7 +121,10 @@ export interface RevertTarget {
 /** Resolves the converter-bound doc ref a revert target writes/reads through. */
 function refFor(db: Firestore, target: RevertTarget): DocumentReference {
   if (target.subcolecao === null) {
-    return produtoCollection.docRef(db, {}, target.docId) as DocumentReference;
+    // The produto doc's entries carry docId == produtoId; key on `produtoId`
+    // (the produto the UI is editing) so a malformed/mismatched target can
+    // never read or write a DIFFERENT produto than the one it names.
+    return produtoCollection.docRef(db, {}, target.produtoId) as DocumentReference;
   }
   if (target.subcolecao === 'extraData') {
     return produtoExtraDataCollection.docRef(
@@ -187,7 +190,9 @@ export async function applyRevert(db: Firestore, target: RevertTarget): Promise<
   }
   const patch = { [target.field]: target.oldValue ?? null };
   if (target.subcolecao === null) {
-    await produtoCollection.merge(db, {}, target.docId, patch);
+    // Same rule as `refFor`: the produto scope keys on `produtoId`, never on
+    // the entry-carried `docId`.
+    await produtoCollection.merge(db, {}, target.produtoId, patch);
     return;
   }
   if (target.subcolecao === 'extraData') {
