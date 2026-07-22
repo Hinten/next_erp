@@ -30,6 +30,7 @@ import {
   paginate,
 } from '@delfrance/data';
 import { TRUNCATED_VALUE_KEY } from '@delfrance/core';
+import { microsToDate } from '@delfrance/core/datetime';
 import { historicoModificacoesCollection } from '@/lib/data/historicoModificacoesCollection';
 import { applyRevert, checkRevert, isRevertible, type RevertTarget } from '@/lib/produtos/revert';
 
@@ -504,7 +505,7 @@ function EntryRow({ entry, expanded, full, pendingKey, onToggle, onRestaurar }: 
             {KIND_LABELS[entry.kind]}
           </Badge>
           <Text size="sm" c="dimmed">
-            {entry.timestamp ? dateFmt.format(new Date(entry.timestamp)) : '—'}
+            {entry.timestamp ? dateFmt.format(microsToDate(entry.timestamp)) : '—'}
           </Text>
           <Text size="sm">
             {entry.subcolecao ? `${entry.subcolecao} · ${entry.docId}` : entry.docId}
