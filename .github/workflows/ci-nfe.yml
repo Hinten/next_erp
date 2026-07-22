@@ -76,7 +76,9 @@ jobs:
       - name: Setup pnpm via corepack
         run: |
           corepack enable
-          corepack prepare pnpm@10.33.4 --activate
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
           pnpm --version
 
       - name: Get pnpm store path
@@ -97,9 +99,18 @@ jobs:
         # Re-running the codegen against the committed XSD pack must
         # produce a clean working tree. Drift here means someone edited
         # nfe-schema*.ts by hand instead of via the generator.
+        #
+        # Diff `generated/`, NOT `src/types/` — the latter holds two
+        # re-export shims the generator never writes to, so diffing it
+        # made this check a no-op (issue #611). Diffing the whole tree
+        # rather than generated/moc7.0/types/ keeps the step
+        # MOC-agnostic: a MOC bump needs no edit here. `add -N`
+        # registers newly-emitted untracked files so `git diff` sees
+        # them — without it a forgotten new output file passes silently.
         run: |
           pnpm --filter @delfrance/integrations-nfe gen:nfe-types
-          git diff --exit-code packages/integrations/nfe/src/types/
+          git add --intent-to-add packages/integrations/nfe/generated/
+          git diff --exit-code packages/integrations/nfe/generated/
 
       - name: Lint
         run: |
@@ -165,7 +176,10 @@ jobs:
       - name: Setup pnpm via corepack
         run: |
           corepack enable
-          corepack prepare pnpm@10.33.4 --activate
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin.
+          pnpm --version
 
       - name: Install
         run: pnpm install --frozen-lockfile

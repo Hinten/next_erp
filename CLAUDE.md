@@ -187,4 +187,8 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   plain cloud `npm install` must resolve), all `peerDependencies` (libraries
   keep broad ranges), and `workspace:*` specs. `next` stays pinned **exact**
   (`16.2.6`) in the catalog — a Next bump is still one deliberate edit, now a
-  single line. `packageManager` is the authority for pnpm.
+  single line. **`packageManager` is the sole authority for pnpm** — corepack
+  honours it over any activated default, so CI runs only `corepack enable`
+  and never pins a version. Do not re-add a `corepack prepare pnpm@x.y.z`:
+  it is silently overridden, which is exactly how the workflows drifted to
+  declaring a version they never used (#612).

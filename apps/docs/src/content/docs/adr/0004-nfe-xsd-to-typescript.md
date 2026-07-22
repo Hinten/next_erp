@@ -64,6 +64,14 @@ Generated output is committed and regenerated only when the XSD packs change
 tracked in `schemas/MANIFEST.json` so the SEFAZ update-watch routine can diff
 them against the portal.
 
+**Note — the paths above are superseded.** The XSDs and the codegen output
+later moved under `packages/integrations/nfe/generated/moc<version>/`
+(`schemas/` and `types/`) so MOC versions can sit side by side, and the
+generator now emits **two** files: `nfe-schema.ts` plus a Zod mirror,
+`nfe-schema-zod.ts`. What remains at `src/types/nfe-schema*.ts` are re-export
+shims. The decision recorded above is unchanged — only the layout moved. See
+the package `CLAUDE.md` for the current version-pinning playbook.
+
 ## Status
 
 Accepted.
