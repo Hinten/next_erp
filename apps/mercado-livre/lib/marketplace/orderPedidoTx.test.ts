@@ -29,7 +29,6 @@ interface FakeDocRef {
   set: (data: DocData) => void;
   create: (data: DocData) => void;
   update: (patch: DocData) => void;
-  collection: (name: string) => FakeCollection;
 }
 
 interface FakeCollection {
@@ -94,7 +93,6 @@ class FakeDb {
         if (!col.has(id)) throw Object.assign(new Error('not found'), { code: 5 });
         col.set(id, { ...(col.get(id) ?? {}), ...patch });
       },
-      collection: (name: string) => self.collection(`${path}/${id}/${name}`),
     };
   }
 

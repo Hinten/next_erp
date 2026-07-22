@@ -38,7 +38,7 @@ class FakeDb {
   seed(path: string, id: string, data: DocData): void {
     this.col(path).set(id, data);
   }
-  doc(path: string, id: string): DocData | undefined {
+  storedDoc(path: string, id: string): DocData | undefined {
     return this.col(path).get(id);
   }
 
@@ -404,7 +404,7 @@ describe('findOrCreateCliente', () => {
     const result = await findOrCreateCliente(db(fake), baseFields, NOW_MS);
     expect(result.created).toBe(true);
 
-    const stored = fake.doc('clientes', result.clienteId);
+    const stored = fake.storedDoc('clientes', result.clienteId);
     expect(stored).toMatchObject({
       tipo: '0',
       nome: 'Maria Silva',
@@ -476,7 +476,7 @@ describe('findOrCreateCliente', () => {
     );
     expect(result).toEqual({ clienteId: 'cli-5', created: false });
 
-    const stored = fake.doc('clientes', 'cli-5');
+    const stored = fake.storedDoc('clientes', 'cli-5');
     expect(stored?.nome).toBe('Maria Silva Nova Sobrenome');
     expect(stored?.email).toBe('new@example.com');
     expect(stored?.ultimaModificacao).toBe(NOW_MS);
@@ -496,7 +496,7 @@ describe('findOrCreateCliente', () => {
 
     await findOrCreateCliente(db(fake), { ...baseFields, nome: 'Maria' }, NOW_MS);
 
-    const stored = fake.doc('clientes', 'cli-6');
+    const stored = fake.storedDoc('clientes', 'cli-6');
     expect(stored?.nome).toBe('Maria Silva Santos');
   });
 
@@ -523,7 +523,7 @@ describe('findOrCreateCliente', () => {
     const result = await findOrCreateCliente(db(fake), { ...baseFields, nome: '' }, NOW_MS);
     expect(result).toEqual({ clienteId: 'cli-7', created: false });
 
-    const stored = fake.doc('clientes', 'cli-7');
+    const stored = fake.storedDoc('clientes', 'cli-7');
     expect(stored?.ultimaModificacao).toBeUndefined();
     expect(stored?.nome).toBe('Maria Silva');
   });
@@ -555,7 +555,7 @@ describe('ensureEndereco', () => {
     const fake = new FakeDb();
     const id = await ensureEndereco(db(fake), 'cli-1', fields);
     expect(id).toBe(makeEnderecoId(fields));
-    expect(fake.doc('clientes/cli-1/enderecos', id)).toMatchObject({
+    expect(fake.storedDoc('clientes/cli-1/enderecos', id)).toMatchObject({
       logradouro: 'Rua Teste',
       cep: '01310100',
       estado: 'SP',

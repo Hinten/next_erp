@@ -163,6 +163,7 @@ import {
 } from '@delfrance/schemas';
 import {
   incidenteCollection,
+  orderMLCollection,
   pagamentoCollection,
   pedidoCollection,
 } from '@delfrance/data/admin/collections';
@@ -291,7 +292,7 @@ export async function discoverPedidoMercadoLivre(
     // orderML mirror child + embedded-payment docs, per order, under the TARGET.
     const orderBundles: OrderReadBundle[] = [];
     for (const order of args.orders) {
-      const orderMlRef = targetRef.collection('orderML').doc(String(order.id));
+      const orderMlRef = orderMLCollection.docRef(db, { pedidoId: targetId }, String(order.id));
       const orderMlSnap = await tx.get(orderMlRef);
       const orderMlRaw = orderMlSnap.exists
         ? (orderMlSnap.data() as Record<string, unknown>)
@@ -463,7 +464,12 @@ export async function discoverPedidoMercadoLivre(
           entry.ref,
           pedidoCollection.parseMerge({ estado: 'cancelado', ultimaModificacao: nowUs }),
         );
-        const incidenteRef = incidenteCollection.ref(db, { pedidoId: entry.ref.id }).doc();
+        const incidenteId = incidenteCollection.newDocId(db, { pedidoId: entry.ref.id });
+        const incidenteRef = incidenteCollection.docRef(
+          db,
+          { pedidoId: entry.ref.id },
+          incidenteId,
+        );
         tx.set(
           incidenteRef,
           incidenteCollection.parse({
