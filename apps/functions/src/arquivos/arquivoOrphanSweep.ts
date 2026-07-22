@@ -19,6 +19,7 @@ import {
 } from '@delfrance/schemas';
 
 import { getAdminApp, getDb } from '../lib/admin';
+import { isGrpcLikeError } from '../lib/grpcErrors';
 
 type Bucket = ReturnType<Storage['bucket']>;
 
@@ -114,6 +115,7 @@ export async function sweepPhantomDocs(db: Firestore, bucket: Bucket): Promise<n
       await doc.ref.delete();
       deleted += 1;
     } catch (err) {
+      if (!isGrpcLikeError(err)) throw err;
       failed += 1;
       logger.error(`sweepPhantomDocs: ${doc.id} failed`, err);
     }
@@ -293,6 +295,7 @@ export async function sweepUnreferencedArquivos(
       await ref.delete();
       deleted += 1;
     } catch (err) {
+      if (!isGrpcLikeError(err)) throw err;
       failed += 1;
       logger.error(`sweepUnreferencedArquivos: ${ref.id} failed`, err);
     }
@@ -388,6 +391,7 @@ export async function sweepMarkedForDeletion(db: Firestore): Promise<number> {
       await ref.delete();
       deleted += 1;
     } catch (err) {
+      if (!isGrpcLikeError(err)) throw err;
       failed += 1;
       logger.error(`sweepMarkedForDeletion: ${ref.id} failed`, err);
     }

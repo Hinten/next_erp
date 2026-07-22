@@ -83,7 +83,6 @@ export default function NovaOperacaoPage() {
           movimentaIndisponivelEstoque: true,
           indPres: '2',
           indIntermed: '1',
-          timestamp: nowMillis(),
         }}
         saveLabel="Criar"
         showSaveAndContinue={false}

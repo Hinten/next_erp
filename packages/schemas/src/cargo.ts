@@ -21,8 +21,10 @@ export const cargoSchema = z.object({
   // `T | null | undefined`. Forms default empty inputs to `null`.
   descricao: z.string().max(500).nullable(),
   permissoes: z.string().regex(/^\d+$/, 'apenas dígitos').default('0'),
-  // Milliseconds since epoch (numeric-epoch standard); reads tolerantly.
+  // System stamps — create-only `timestamp` (nullish coalesce) and
+  // `ultimaModificacao` on every write; both stamped by `saveRecord`.
   timestamp: millisSinceEpoch().nullable().default(null),
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
 });
 
 export type Cargo = z.infer<typeof cargoSchema>;
@@ -41,7 +43,19 @@ export const cargo = { schema: cargoSchema, meta: cargoMeta };
 export function decodePermissoes(c: Pick<Cargo, 'permissoes'>): bigint {
   try {
     return BigInt(c.permissoes ?? '0');
-  } catch {
+  } catch (err) {
+    // BigInt() conversion throws exactly three classes: SyntaxError (malformed
+    // string), RangeError (non-integer number), TypeError (Symbol/nullish).
+    // Any of them here means corrupted stored data — zodParse returns raw docs
+    // on schema mismatch, so permissoes can arrive as any shape — and the
+    // contract is "corruption reads as no permissions", not a crashed screen.
+    if (
+      !(err instanceof SyntaxError) &&
+      !(err instanceof RangeError) &&
+      !(err instanceof TypeError)
+    ) {
+      throw err;
+    }
     return 0n;
   }
 }

@@ -46,7 +46,6 @@ export function useCollectionMonitor<S extends ZodObject<ZodRawShape>>(opts: {
     if (!field) return null;
     return buildQuery(collection.ref(db, pathContext), [orderByField(field, 'desc'), limit(1)]);
     // pathContext is identity-tracked like the rest of the data layer.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, collection, field]);
 
   const snap = useSnapshot<z.infer<S>>(query);

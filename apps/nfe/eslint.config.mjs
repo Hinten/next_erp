@@ -1,4 +1,5 @@
 import base, { prettier, typeAware } from '@delfrance/config-eslint';
+import react from '@delfrance/config-eslint/react';
 import next from 'eslint-config-next';
 
 // Rule A — no multi-arg `console.*` in NF-e code paths. The single-arg
@@ -59,6 +60,7 @@ const ruleCNoRawFirestoreRefs = [
 
 const config = [
   ...base,
+  ...react,
   ...next,
   // registerPlugin: false — eslint-config-next already registers @typescript-eslint.
   ...typeAware(import.meta.dirname, { registerPlugin: false }),

@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { categoriaSchema } from '@delfrance/schemas';
-import { nowMillis } from '@delfrance/core/datetime';
 import { ObjectView } from '@delfrance/ui';
 import { categoriaCollection } from '@/lib/data/categoriaCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -30,7 +29,6 @@ export default function NovaCategoriaPage() {
         currentUserUid={user?.uid ?? ''}
         defaultValues={{
           permiteCadastro: true,
-          timestamp: nowMillis(),
         }}
         excludedFields={['timestamp', 'categoriaPaiOuterRef', 'ultimaModificacao']}
         saveLabel="Criar"

@@ -23,6 +23,9 @@ export const ENDERECO_HIDDEN_KEYS = [
   'cPais',
   'pais',
   'codigoMunicipio',
+  // System stamps — written by `saveRecord` / ObjectView, never form inputs.
+  'timestamp',
+  'ultimaModificacao',
 ] as const;
 
 /**

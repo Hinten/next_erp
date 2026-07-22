@@ -17,7 +17,7 @@
     "./pedido": "./src/pedido/index.ts"
   },
   "scripts": {
-    "lint": "echo 'no lint configured for this package yet'",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
@@ -44,9 +44,11 @@
     }
   },
   "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
     "@tanstack/react-query": "catalog:",
     "@types/react": "catalog:",
+    "eslint": "catalog:",
     "firebase-admin": "catalog:",
     "react": "catalog:",
     "typescript": "catalog:",

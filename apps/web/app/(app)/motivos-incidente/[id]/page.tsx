@@ -38,7 +38,7 @@ export default function MotivoIncidentePage() {
         db={db}
         currentUserUid={user?.uid ?? ''}
         recordId={params.id}
-        excludedFields={['ultimaModificacao']}
+        excludedFields={['timestamp', 'ultimaModificacao']}
         saveLabel="Salvar alterações"
         canEdit={canWrite}
         readOnly={!canWrite}

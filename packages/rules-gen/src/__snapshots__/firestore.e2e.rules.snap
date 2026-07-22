@@ -47,6 +47,7 @@ service cloud.firestore {
         && (!c.hasAny(['hasLinkPagamento']) || d.get('hasLinkPagamento', null) is bool)
         && (!c.hasAny(['nome']) || d.get('nome', null) is string && d.get('nome', null).size() <= 255)
         && (!c.hasAny(['tipo']) || d.get('tipo', null) == 1)
+        && (!c.hasAny(['ultimaModificacao']) || (d.get('ultimaModificacao', null) == null || d.get('ultimaModificacao', null) is int))
         && (!c.hasAny(['user_id']) || (d.get('user_id', null) == null || d.get('user_id', null) is int));
     }
 
@@ -153,6 +154,8 @@ service cloud.firestore {
         && (!c.hasAny(['sku']) || (d.get('sku', null) == null || d.get('sku', null) is string && d.get('sku', null).size() <= 255))
         && (!c.hasAny(['statusProdutosMarketplace']) || (d.get('statusProdutosMarketplace', null) == null || d.get('statusProdutosMarketplace', null) is map))
         && (!c.hasAny(['tabelaDeMedidasModaUid']) || (d.get('tabelaDeMedidasModaUid', null) == null || d.get('tabelaDeMedidasModaUid', null) is string))
+        && (!c.hasAny(['timestamp']) || (d.get('timestamp', null) == null || d.get('timestamp', null) is int))
+        && (!c.hasAny(['ultimaModificacao']) || (d.get('ultimaModificacao', null) == null || d.get('ultimaModificacao', null) is int))
         && (!c.hasAny(['variacoesUid']) || (d.get('variacoesUid', null) == null || d.get('variacoesUid', null) is list))
         && (!c.hasAny(['videos']) || (d.get('videos', null) == null || d.get('videos', null) is list));
     }
@@ -346,6 +349,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_fiscal', 4);
     }
 
+    match /pedidos/{pedidoId}/orderML/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+      allow create, update: if isSuperUser() || p('d_pedido', 2);
+      allow delete: if isSuperUser() || p('d_pedido', 4);
+    }
+
     match /pedidos/{pedidoId}/pagamentos/{docId} {
       allow read: if isSuperUser() || p('d_pagamento', 1);
       allow create: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamentos(request.resource.data, request.resource.data.keys());
@@ -520,6 +529,9 @@ service cloud.firestore {
     }
     match /{path=**}/nfev4/{docId} {
       allow read: if isSuperUser() || p('d_nfe', 1);
+    }
+    match /{path=**}/orderML/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
     }
     match /{path=**}/pagamentos/{docId} {
       allow read: if isSuperUser() || p('d_pagamento', 1);

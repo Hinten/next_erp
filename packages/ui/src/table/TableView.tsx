@@ -107,6 +107,17 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   virtualColumns?: ReadonlyArray<VirtualColumn<z.infer<S>>>;
 
   actions?: Array<ActionConfig<z.infer<S>>>;
+  /**
+   * How the ActionBar lays out bulk actions — forwarded to `ActionBar`.
+   * Defaults to `'auto'` (inline until `overflowThreshold`, then overflow menu).
+   */
+  actionsLayout?: import('./ActionBar').ActionsLayout;
+  /**
+   * With `actionsLayout: 'auto'`, collapse into the overflow menu once the
+   * action count exceeds this. Default 3. Raise it on screens with more
+   * bulk actions so e2e/users still see labeled buttons (e.g. /pedidos).
+   */
+  overflowThreshold?: number;
   selectable?: boolean;
 
   /**
@@ -216,6 +227,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   fields: fieldOverrides = {},
   virtualColumns = [],
   actions = [],
+  actionsLayout,
+  overflowThreshold,
   selectable = false,
   copyHref,
   monitorField,
@@ -257,7 +270,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const columnsStorageKey = useMemo(
     () => `delfrance:tableview:columns:${collection.resolvePath(pathContext)}`,
     // pathContext is identity-tracked like the rest of the data layer.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [collection],
   );
 
@@ -275,7 +287,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const panelStorageKey = useMemo(
     () => `delfrance:tableview:actionspanel:${collection.resolvePath(pathContext)}`,
     // pathContext is identity-tracked like the rest of the data layer.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [collection],
   );
   const [panelCollapsed, setPanelCollapsed] = useLocalStorage<boolean>({
@@ -381,7 +392,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     }
     return null;
     // filtersSerial stands in for `filters`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subLookupFields, filtersSerial]);
 
   const subLookup = useSubcollectionIdLookup(db, subLookupSpec);
@@ -399,7 +409,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   const serverFilters = useMemo<Record<string, ColumnFilterValue>>(() => {
     if (subLookupKeys.size === 0) return filters;
     return Object.fromEntries(Object.entries(filters).filter(([k]) => !subLookupKeys.has(k)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtersSerial, subLookupKeys]);
   const serverFiltersSerial = useMemo(
     () =>
@@ -436,7 +445,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     });
     // queryParamsSerial stands in for queryParams; defaultQuery is identity-
     // tracked like meta itself.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defaultQuery, queryParamsSerial]);
   const baseFiltersSerial = useMemo(() => JSON.stringify(baseFilters), [baseFilters]);
 
@@ -464,7 +472,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       return defaultQuery.orderBy.map((o) => ({ field: o.field, direction: o.direction }));
     }
     return undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sort?.field, sort?.direction, defaultQuery]);
   // Column the header arrow points at when the user hasn't sorted yet.
   const displaySort: SortState | undefined =
@@ -545,7 +552,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     }
     // `pathContext` is intentionally not stringified; consumers should keep
     // the object stable across renders (matches the rest of the data layer).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     db,
     collection,
@@ -624,7 +630,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
     for (const o of effectiveOrderBy ?? []) constraints.push(orderByField(o.field, o.direction));
     constraints.push(fsLimit(effectiveLimit));
     return buildQuery(base, constraints);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     db,
     collection,
@@ -657,7 +662,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
       return applyColumnFilters(snap.data, serverFilters);
     },
     // serverFiltersSerial stands in for the `serverFilters` object content.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [pipeline, snap.data, serverFiltersSerial, lookupEmpty, extraEmpty],
   );
 
@@ -666,7 +670,6 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   // makes sense for the result set the user was looking at.
   useEffect(() => {
     setPages(1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     filtersSerial,
     baseFiltersSerial,
@@ -837,9 +840,12 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                 <ActionBar
                   actions={actions}
                   selectedRows={selectedRows}
+                  visibleRows={rows ?? []}
                   newHref={newHref}
                   renderNewButton={renderNewButton}
                   copyHref={copyHref}
+                  actionsLayout={actionsLayout}
+                  overflowThreshold={overflowThreshold}
                   onActionComplete={() => {
                     setSelected(new Set());
                     setRefreshKey((k) => k + 1);
@@ -1051,6 +1057,7 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
           <ActionSidePanel
             actions={actions}
             selectedRows={selectedRows}
+            visibleRows={rows ?? []}
             newHref={newHref}
             renderNewButton={renderNewButton}
             copyHref={copyHref}

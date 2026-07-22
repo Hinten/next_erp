@@ -186,6 +186,9 @@ export const intFreteSchema = z
       .describe('Endereço de origem'),
     /** Required ms since epoch — Flutter crashes on null (late final DateTime). */
     dataCadastro: millisSinceEpoch('Data de cadastro'),
+    // System stamp — stamped by `saveRecord` on every write so the TableView
+    // update-monitor sees edits.
+    ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
 
     mapa: z.array(mapaDeIntegracoesSchema).nullable().default(null).describe('Mapa de integrações'),
     faixaCep: z.array(faixaDeCepSchema).nullable().default(null).describe('Faixas de CEP'),

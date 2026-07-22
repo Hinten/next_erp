@@ -23,6 +23,13 @@ import { getDb } from './lib/admin';
  * ⚠️ The export name below IS the deployed function + queue name — it MUST equal
  * `MERCADO_LIVRE_NOTIFICATION_QUEUE` (the receiver enqueues against that string).
  * Rename both together, or the enqueue targets a non-existent queue (silent drop).
+ *
+ * Secrets: `MERCADO_LIVRE_CLIENT_ID` / `MERCADO_LIVRE_CLIENT_SECRET` are bound on
+ * THIS function (mirrors `processMassImport.ts`) because the Step 9 order-import
+ * default runner (`notificacao.ts`'s `runOrderImport`) calls
+ * `loadMercadoLivreContext` → `resolveChannelContext`, which refreshes the
+ * account's ML access token via `mercadoLivreOAuthConfig()` (reads both env
+ * vars) whenever it's near expiry — same rationale as the mass-import function.
  */
 export const processMercadoLivreNotification = onTaskDispatched(
   {
@@ -33,6 +40,7 @@ export const processMercadoLivreNotification = onTaskDispatched(
       maxDoublings: 2,
     },
     rateLimits: { maxConcurrentDispatches: 3, maxDispatchesPerSecond: 5 },
+    secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET'],
   },
   async (req) => {
     const result = await handleNotificationTask(getDb(), req.data, req.retryCount ?? 0);

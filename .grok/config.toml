@@ -1,0 +1,94 @@
+# Project permission allowlist for Grok (merged with .claude/settings.json).
+# Narrow scope: PR workflow on claude/* only, read issues, read CI.
+# deny always wins over allow. Force-push, rebase, reset --hard, and main
+# push/delete/switch are denied. Takes effect on the next Grok session.
+
+[permission]
+allow = [
+  # Read-only git
+  "Bash(git status *)",
+  "Bash(git diff *)",
+  "Bash(git log *)",
+  "Bash(git show *)",
+  "Bash(git rev-parse *)",
+  "Bash(git fetch *)",
+  "Bash(git branch --show-current *)",
+  "Bash(git branch -vv *)",
+  "Bash(git branch --list *)",
+  "Bash(git branch -l *)",
+
+  # Commits on current branch (never main — agent should be on claude/*)
+  "Bash(git commit *)",
+  "Bash(git add *)",
+
+  # Create/switch only claude/* (also enforced by PreToolUse branch-prefix hook)
+  "Bash(git checkout -b claude/*)",
+  "Bash(git checkout -B claude/*)",
+  "Bash(git switch -c claude/*)",
+  "Bash(git switch -C claude/*)",
+  "Bash(git checkout claude/*)",
+  "Bash(git switch claude/*)",
+
+  # Push only HEAD or claude/* remotes (never main — see deny)
+  "Bash(git push -u origin HEAD)",
+  "Bash(git push origin HEAD)",
+  "Bash(git push -u origin claude/*)",
+  "Bash(git push origin claude/*)",
+
+  # GitHub — create/read PRs, read issues, read CI (no merge)
+  "Bash(gh pr create *)",
+  "Bash(gh pr view *)",
+  "Bash(gh pr list *)",
+  "Bash(gh pr checks *)",
+  "Bash(gh pr diff *)",
+  "Bash(gh pr status *)",
+  "Bash(gh issue list *)",
+  "Bash(gh issue view *)",
+  "Bash(gh issue create *)",
+  "Bash(gh run list *)",
+  "Bash(gh run view *)",
+  "Bash(gh run watch *)",
+  "Bash(gh api repos/*/actions/*)",
+  "Bash(gh api repos/*/issues/*)",
+  "Bash(gh api repos/*/pulls/*)",
+  "Bash(gh api graphql *)",
+  "Bash(gh workflow list *)",
+  "Bash(gh workflow view *)",
+  "Bash(gh status *)",
+  "Bash(gh auth status *)",
+
+  "MCPTool(github__*)",
+  "MCPTool(tasks__*)",
+  "MCPTool(playwright__*)",
+  "MCPTool(mercadolibre-mcp-server__*)",
+]
+
+deny = [
+  "Bash(rm -rf *)",
+  "Bash(git push --force *)",
+  "Bash(git push -f *)",
+  "Bash(git push --force-with-lease *)",
+  "Bash(git push * main)",
+  "Bash(git push * main:*)",
+  "Bash(git push origin main *)",
+  "Bash(git push origin main)",
+  "Bash(git push -u origin main *)",
+  "Bash(git push -u origin main)",
+  "Bash(git rebase *)",
+  "Bash(git reset --hard *)",
+  "Bash(git reset --hard)",
+  "Bash(git branch -D *)",
+  "Bash(git branch -d main *)",
+  "Bash(git branch -d main)",
+  "Bash(git branch -D main *)",
+  "Bash(git branch -D main)",
+  "Bash(git checkout main *)",
+  "Bash(git checkout main)",
+  "Bash(git switch main *)",
+  "Bash(git switch main)",
+  "Bash(gh pr merge *)",
+  "Read(.env)",
+  "Read(.env.local)",
+  "Read(secrets/**)",
+  "Read(.ignore/**)",
+]

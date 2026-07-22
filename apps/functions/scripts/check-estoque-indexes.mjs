@@ -1,3 +1,4 @@
+/* eslint-disable no-console -- CLI script: stdout is the interface */
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 

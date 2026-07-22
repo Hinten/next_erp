@@ -18,8 +18,10 @@
  *
  * Disposition (`handleNotificationTask`):
  *  - `done`     — a known topic was processed: NOTHING is persisted. The `items`
- *                 topic runs the status-sync (#440); the remaining topics are
- *                 no-ops until their per-topic handlers land in Steps 9–14;
+ *                 topic runs the status-sync (#440); `orders_v2`/`orders` run the
+ *                 Step 9 order→pedido import (see `runOrderImport` below); the
+ *                 remaining topics are no-ops until their per-topic handlers land
+ *                 in later steps;
  *  - transient  — a transient infra failure (Firestore/ML API/network) THROWS so
  *                 the queue retries with backoff; on the FINAL attempt it persists
  *                 `failed` (so the sweep re-drives it) instead of throwing;
@@ -33,6 +35,7 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
 import { INTEGRACAO_TIPO } from '@delfrance/schemas';
+import { millisToMicros } from '@delfrance/core/datetime';
 import { createMercadoLivreApi } from '@delfrance/integrations-mercado-livre';
 import {
   integracaoCollection,
@@ -47,8 +50,9 @@ import {
   syncItemStatus,
 } from './itemsStatusSync';
 import { handleUptinMigration } from './importMigration';
-import { parseItemIdFromResource } from './linkRefs';
+import { lastSegment, parseItemIdFromResource } from './linkRefs';
 import { loadMercadoLivreContext } from './mercadoLivre';
+import { type OrderImportResult, importPedidoMercadoLivre } from './orderImport';
 
 /**
  * The deployed `onTaskDispatched` function name — which is ALSO its
@@ -231,11 +235,58 @@ const runUptinMigration: MigrationRunner = async (db, integracaoId, itemId, sour
   );
 };
 
+/**
+ * The Step 9 order-import seam invoked for `orders_v2`/`orders` notifications —
+ * shaped exactly like `MigrationRunner` (topic handler → typed runner,
+ * injectable for tests, defaulted to the real ML-context-backed impl below).
+ * `resourceId` is the numeric ML id parsed from the notification's `resource`;
+ * it may name either an order or a pack — `importPedidoMercadoLivre`
+ * disambiguates internally (legacy tasks.dart:387-393's get_order-404-as-pack
+ * fallback), so the dispatcher never needs to know which.
+ */
+export type OrderImportRunner = (
+  db: Firestore,
+  integracaoId: string,
+  resourceId: number,
+) => Promise<OrderImportResult>;
+
+/**
+ * The production Step 9 order importer: loads the account's live ML API (same
+ * seller-token path as `resolveItemsApiFromContext` / `runUptinMigration`) and
+ * calls A3's `importPedidoMercadoLivre` with ONE clock read for the whole
+ * operation (µs + ms threaded together from a single `Date.now()`, never
+ * re-read downstream). Wired as `processNotificationPayload`'s default for
+ * `orders_v2`/`orders` so an ordinary notification needs no caller change;
+ * tests inject their own runner.
+ */
+const runOrderImport: OrderImportRunner = async (db, integracaoId, resourceId) => {
+  const ctx = await loadMercadoLivreContext(db, integracaoId);
+  const channelCtx = await ctx.resolveChannelContext();
+  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const nowMs = Date.now();
+  const nowUs = millisToMicros(nowMs);
+  return importPedidoMercadoLivre({ db, api, integracaoId, nowUs, nowMs }, resourceId);
+};
+
+/**
+ * The ML order/pack id from an `orders_v2`/`orders` notification `resource`
+ * (`/orders/123` → `123`). Tolerates a bare numeric id with no path segments
+ * (`lastSegment` falls back to the whole string when there's no `/`). Anything
+ * non-numeric — a coding bug or an ML-side anomaly, never seen in practice — is
+ * malformed: the caller drops it rather than dispatching a bogus import.
+ */
+function parseOrderResourceId(resource: string): number | null {
+  const last = lastSegment(resource);
+  if (!/^\d+$/.test(last)) return null;
+  return Number(last);
+}
+
 /** Deterministic result of processing one payload (transient failures THROW). */
 export type ProcessOutcome =
   | { kind: 'done'; integracaoId: string } // known topic processed
   | { kind: 'no-account' } // no active integração for the seller
-  | { kind: 'unknown-topic'; integracaoId: string }; // unsupported topic
+  | { kind: 'unknown-topic'; integracaoId: string } // unsupported topic
+  | { kind: 'malformed-resource'; integracaoId: string }; // orders_v2/orders resource had no parseable id
 
 /**
  * Process one notification payload — resolve the account, dispatch by topic.
@@ -249,6 +300,7 @@ export async function processNotificationPayload(
   payload: MlNotificationPayload,
   resolveItemsApi: ItemsApiResolver = resolveItemsApiFromContext,
   migrationRunner: MigrationRunner = runUptinMigration,
+  orderImportRunner: OrderImportRunner = runOrderImport,
 ): Promise<ProcessOutcome> {
   const integracaoId = await resolveIntegracaoByUserId(db, payload.user_id ?? null);
   if (!integracaoId) return { kind: 'no-account' };
@@ -267,11 +319,33 @@ export async function processNotificationPayload(
     return { kind: 'done', integracaoId };
   }
 
-  // Other known topics: the per-topic handlers (order / payment / shipment /
-  // price / claim) land in later steps; here the foundation acks them so the
-  // pipeline is exercisable end-to-end. A future handler MUST THROW on a
-  // transient failure (so the queue/sweep retry) and be idempotent keyed by the
-  // ML resource id — it must never fall through to a silent success.
+  // `orders_v2` (and the legacy alias `orders`) — order → pedido import (Step 9).
+  // Idempotent, keyed by the ML order/pack id (A2's discover-or-create
+  // transaction inside `importPedidoMercadoLivre`). THROWS on a transient
+  // failure (ML API / Firestore / network) so the queue/sweep retry. A
+  // seller-mismatch or buyer-less order is a deterministic drop (legacy
+  // tasks.dart:363-787) — logged, still acked `done`. A resource with no
+  // parseable numeric id is malformed: dropped WITHOUT dispatching a bogus
+  // import (mirrors the top-level schema-parse drop — no persist, no retry).
+  if (payload.topic === 'orders_v2' || payload.topic === 'orders') {
+    const resourceId = parseOrderResourceId(payload.resource);
+    if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
+    const result = await orderImportRunner(db, integracaoId, resourceId);
+    if (result.skipped) {
+      console.warn('[mercado-livre] order import skipped', {
+        integracaoId,
+        resourceId,
+        skipped: result.skipped,
+      });
+    }
+    return { kind: 'done', integracaoId };
+  }
+
+  // Other known topics: the per-topic handlers (payment / shipment / price /
+  // claim) land in later steps; here the foundation acks them so the pipeline
+  // is exercisable end-to-end. A future handler MUST THROW on a transient
+  // failure (so the queue/sweep retry) and be idempotent keyed by the ML
+  // resource id — it must never fall through to a silent success.
   return { kind: 'done', integracaoId };
 }
 
@@ -293,6 +367,7 @@ export async function handleNotificationTask(
   retryCount: number,
   resolveItemsApi: ItemsApiResolver = resolveItemsApiFromContext,
   migrationRunner: MigrationRunner = runUptinMigration,
+  orderImportRunner: OrderImportRunner = runOrderImport,
 ): Promise<TaskResult> {
   let payload: MlNotificationPayload;
   try {
@@ -304,7 +379,13 @@ export async function handleNotificationTask(
 
   let result: ProcessOutcome;
   try {
-    result = await processNotificationPayload(db, payload, resolveItemsApi, migrationRunner);
+    result = await processNotificationPayload(
+      db,
+      payload,
+      resolveItemsApi,
+      migrationRunner,
+      orderImportRunner,
+    );
   } catch (err) {
     // Transient (Firestore / ML API / network). Retry in-task until the final
     // attempt; then persist `failed` so the sweep re-drives it (a throw on the
@@ -348,6 +429,18 @@ export async function handleNotificationTask(
   if (result.kind === 'unknown-topic') {
     await persistNotification(db, payload, 'parked', 0, `tópico não suportado: ${payload.topic}`);
     return { outcome: 'parked', integracaoId: result.integracaoId, topic: payload.topic };
+  }
+  if (result.kind === 'malformed-resource') {
+    // A coding/ML-side anomaly (an orders_v2/orders resource with no parseable
+    // numeric id) — nothing to retry, nothing worth persisting (same
+    // disposition as the schema-parse drop above, just discovered one layer
+    // deeper, after the account/topic are already known).
+    console.warn('[mercado-livre] order notification DROPPED — unparseable resource', {
+      id: payload.id,
+      resource: payload.resource,
+      topic: payload.topic,
+    });
+    return { outcome: 'dropped', integracaoId: result.integracaoId, topic: payload.topic };
   }
   // done — NOTHING persisted (the cost win).
   return { outcome: 'done', integracaoId: result.integracaoId, topic: payload.topic };
@@ -450,6 +543,7 @@ export async function reprocessNotifications(
   opts: ReprocessOptions = {},
   resolveItemsApi: ItemsApiResolver = resolveItemsApiFromContext,
   migrationRunner: MigrationRunner = runUptinMigration,
+  orderImportRunner: OrderImportRunner = runOrderImport,
 ): Promise<ReprocessResult> {
   const now = opts.now ?? Date.now();
   const cutoff = now - (opts.olderThanMs ?? ONE_HOUR_MS);
@@ -496,6 +590,7 @@ export async function reprocessNotifications(
         payload,
         resolveItemsApi,
         migrationRunner,
+        orderImportRunner,
       );
       if (result.kind === 'done') {
         await deleteNotification(db, d.id); // resolved → leave the failures store
@@ -507,6 +602,19 @@ export async function reprocessNotifications(
           'parked',
           tentativas,
           `tópico não suportado: ${payload.topic}`,
+          now,
+        );
+        outcomes.parked = (outcomes.parked ?? 0) + 1;
+      } else if (result.kind === 'malformed-resource') {
+        // Terminal, same as unknown-topic: an unparseable resource will never
+        // become parseable on a later sweep — park it instead of bumping
+        // tentativas under the (misleading) "no active account" message below.
+        await markNotification(
+          db,
+          d.id,
+          'parked',
+          tentativas,
+          `resource malformado: ${payload.resource}`,
           now,
         );
         outcomes.parked = (outcomes.parked ?? 0) + 1;

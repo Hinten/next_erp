@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { depositoSchema } from '@delfrance/schemas';
-import { nowMillis } from '@delfrance/core/datetime';
 import { ObjectView } from '@delfrance/ui';
 import { depositoCollection } from '@/lib/data/depositoCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -28,7 +27,7 @@ export default function NovoDepositoPage() {
         collection={depositoCollection}
         db={getFirebaseFirestore()}
         currentUserUid={user?.uid ?? ''}
-        defaultValues={{ ativo: true, timestamp: nowMillis() }}
+        defaultValues={{ ativo: true }}
         excludedFields={['timestamp', 'ultimaModificacao']}
         saveLabel="Criar"
         showSaveAndContinue={false}
