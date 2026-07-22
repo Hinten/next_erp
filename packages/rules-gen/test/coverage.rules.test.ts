@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { assertSucceeds, type RulesTestEnvironment } from '@firebase/rules-unit-testing';
+import {
+  assertFails,
+  assertSucceeds,
+  type RulesTestEnvironment,
+} from '@firebase/rules-unit-testing';
 import { deleteDoc, doc, getDoc, setDoc, updateDoc, type Firestore } from 'firebase/firestore';
 import { rulesClaimsFromBits } from '@delfrance/auth';
 import { ALL_DOMAINS } from '@delfrance/schemas';
@@ -52,8 +56,12 @@ describe.skipIf(!EMULATED)('CRUD coverage matrix — every domain is governed (#
     await env?.cleanup();
   });
 
+  // serverOwned domains (Admin SDK only) are excluded from the generic CRUD
+  // floor above — a superuser is denied every write there by design (see the
+  // carve-out below) — and asserted separately instead.
   for (const domain of ALL_DOMAINS) {
     const path = domain.meta.collectionPath;
+    if (domain.meta.serverOwned) continue;
     it(`${path}: superuser can create, get, update, delete`, async () => {
       const ref = doc(su(), concretePath(path));
       const payload = VALIDATED_PAYLOAD[path] ?? { mtx: 1 };
@@ -64,9 +72,34 @@ describe.skipIf(!EMULATED)('CRUD coverage matrix — every domain is governed (#
     });
   }
 
+  describe('serverOwned domains: read-only floor, no su write bypass', () => {
+    for (const domain of ALL_DOMAINS) {
+      const path = domain.meta.collectionPath;
+      if (!domain.meta.serverOwned) continue;
+      it(`${path}: superuser can get but create/update/delete are ALL denied`, async () => {
+        const ref = doc(su(), concretePath(path));
+        // The doc must exist for get/update/delete to exercise the rule
+        // (not a not-found short-circuit) — seed it with rules disabled.
+        await env.withSecurityRulesDisabled(async (ctx) => {
+          await setDoc(doc(ctx.firestore() as unknown as Firestore, concretePath(path)), {
+            mtx: 1,
+          });
+        });
+        await assertFails(setDoc(ref, { mtx: 2 })); // create/overwrite
+        await assertSucceeds(getDoc(ref)); // get
+        await assertFails(updateDoc(ref, { mtx: 3 })); // update
+        await assertFails(deleteDoc(ref)); // delete
+      });
+    }
+  });
+
   it('the matrix actually covered the produto subcollections', () => {
     const paths = ALL_DOMAINS.map((d) => d.meta.collectionPath);
     expect(paths).toContain('produtos/{produtoId}/produtoMercadoLivre');
     expect(paths).toContain('produtos/{produtoId}/variacaoMercadoLivre');
+  });
+
+  it('the matrix has at least one serverOwned domain to exercise the carve-out', () => {
+    expect(ALL_DOMAINS.some((d) => d.meta.serverOwned)).toBe(true);
   });
 });

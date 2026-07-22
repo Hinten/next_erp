@@ -124,6 +124,18 @@ export interface CollectionMetadata {
    * the `su` super-user claim does NOT bypass this.
    */
   serverOwnedFields?: ReadonlyArray<string>;
+  /**
+   * Marks a collection written EXCLUSIVELY by the Admin SDK (a Cloud
+   * Function trigger, never a client). The rules generator denies all client
+   * writes outright — `allow create, update, delete: if false;` — with no
+   * `su` super-user bypass, unlike the per-field `serverOwnedFields` guard.
+   * Read access still follows `permissions.read` as usual. Mutually
+   * exclusive with `serverOwnedFields` and with a `VALIDATOR_WHITELIST`
+   * entry for the collection — declaring either alongside `serverOwned` is a
+   * contradiction (a field-level write guard is meaningless when writes are
+   * denied entirely) and the generator throws at generation time.
+   */
+  serverOwned?: boolean;
 }
 
 export interface DomainSchema<T extends z.ZodTypeAny> {

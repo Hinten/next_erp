@@ -77,6 +77,63 @@ describe('emitRules', () => {
     expect(out).not.toContain('allow create, update:');
   });
 
+  it('emits a read-only deny-all block for a serverOwned collection', () => {
+    const owned: DomainSchema<z.ZodTypeAny> = {
+      schema: z.object({ campos: z.array(z.string()) }),
+      meta: {
+        collectionPath: 'produtos/{produtoId}/historicoDeModificacoes',
+        permissions: {
+          read: PERM.produto.read,
+          write: PERM.produto.write,
+          delete: PERM.produto.delete,
+        },
+        serverOwned: true,
+      },
+    };
+    const out = emitRules([owned], [], new Set());
+    expect(out).toContain(
+      'match /produtos/{produtoId}/historicoDeModificacoes/{docId} {\n' +
+        "      allow read: if isSuperUser() || p('d_produto', 1);\n" +
+        '      // Server-owned collection — Admin SDK only, no su bypass.\n' +
+        '      allow create, update, delete: if false;\n' +
+        '    }',
+    );
+    expect(out).not.toContain('v_produtos');
+  });
+
+  it('throws when serverOwned coexists with a validator-whitelist entry', () => {
+    const owned: DomainSchema<z.ZodTypeAny> = {
+      schema: z.object({ nome: z.string() }),
+      meta: {
+        collectionPath: 'foo',
+        permissions: {
+          read: PERM.cliente.read,
+          write: PERM.cliente.write,
+          delete: PERM.cliente.delete,
+        },
+        serverOwned: true,
+      },
+    };
+    expect(() => emitRules([owned], [], new Set(['foo']))).toThrow(/validator-whitelisted/);
+  });
+
+  it('throws when serverOwned coexists with non-empty serverOwnedFields', () => {
+    const owned: DomainSchema<z.ZodTypeAny> = {
+      schema: z.object({ nome: z.string() }),
+      meta: {
+        collectionPath: 'foo',
+        permissions: {
+          read: PERM.cliente.read,
+          write: PERM.cliente.write,
+          delete: PERM.cliente.delete,
+        },
+        serverOwned: true,
+        serverOwnedFields: ['snap'],
+      },
+    };
+    expect(() => emitRules([owned], [], new Set())).toThrow(/exclusive with serverOwnedFields/);
+  });
+
   it('reuses meta placeholders as wildcards and appends {docId}', () => {
     const out = emitRules([domain('clientes/{clienteId}/enderecos')], [], new Set());
     expect(out).toContain('match /clientes/{clienteId}/enderecos/{docId} {');

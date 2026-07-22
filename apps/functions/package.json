@@ -15,7 +15,7 @@
     "test:storage": "vitest run --config vitest.storage.config.ts",
     "clean": "rm -rf dist .turbo *.tsbuildinfo coverage"
   },
-  "//runtime-deps": "@delfrance/auth + @delfrance/data + @delfrance/schemas are BUILD-time only: esbuild bundles them into the deploy artifact (only firebase-admin/firebase-functions/@google-cloud/firestore/sharp stay `external`), so they live in devDependencies. The deploy does NOT upload this file — scripts/prepare-deploy.mjs emits a MINIMAL package.json (just the 4 `dependencies` below, no devDeps) into the generated .deploy/ folder, because the cloud `npm install` cannot resolve pnpm `workspace:*` (and the buildpack installs devDeps too). See apps/functions/DEPLOY.md. These 4 dependency specs must stay LITERAL semver — never catalog: — this dependencies block is copied verbatim into the artifact and resolved by plain npm.",
+  "//runtime-deps": "@delfrance/auth + @delfrance/core + @delfrance/data + @delfrance/schemas are BUILD-time only: esbuild bundles them into the deploy artifact (only firebase-admin/firebase-functions/@google-cloud/firestore/sharp stay `external`), so they live in devDependencies. The deploy does NOT upload this file — scripts/prepare-deploy.mjs emits a MINIMAL package.json (just the 4 `dependencies` below, no devDeps) into the generated .deploy/ folder, because the cloud `npm install` cannot resolve pnpm `workspace:*` (and the buildpack installs devDeps too). See apps/functions/DEPLOY.md. These 4 dependency specs must stay LITERAL semver — never catalog: — this dependencies block is copied verbatim into the artifact and resolved by plain npm.",
   "dependencies": {
     "@google-cloud/firestore": "^8.6.0",
     "firebase-admin": "^14.0.0",
@@ -25,6 +25,7 @@
   "devDependencies": {
     "@delfrance/auth": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
+    "@delfrance/core": "workspace:*",
     "@delfrance/data": "workspace:*",
     "@delfrance/schemas": "workspace:*",
     "@types/node": "catalog:",

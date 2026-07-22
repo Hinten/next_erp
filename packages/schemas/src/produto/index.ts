@@ -23,6 +23,7 @@ export * from './collection/extraData'; // produtos/{id}/extraData (singleton)
 export * from './collection/estoque'; // produtos/{id}/estoques
 export * from './collection/historicoEstoque'; // produtos/{id}/estoques/{estId}/historicoEstoque
 export * from './collection/historicos'; // produtos/{id}/historicoDePrecos | historicoDeCusto
+export * from './collection/historicoModificacoes'; // produtos/{id}/historicoDeModificacoes
 export * from './collection/subcollections'; // produtos/{id}/<marketplace link docs>
 export * from './collection/mercadoLivreLink'; // typed ML link-doc write shapes (not DomainSchemas)
 export * from './collection/shopeeLink'; // typed Shopee link-doc write shapes (not DomainSchemas)

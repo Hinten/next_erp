@@ -224,6 +224,9 @@ importers:
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
+      '@delfrance/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@delfrance/data':
         specifier: workspace:*
         version: link:../../packages/data
