@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppErrorCodes, FirebaseAppError } from 'firebase-admin/app';
-import { AuthClientErrorCode, FirebaseAuthError } from 'firebase-admin/auth';
+import { AppErrorCode, FirebaseAppError } from 'firebase-admin/app';
+import { AuthErrorCode, FirebaseAuthError } from 'firebase-admin/auth';
 import { PERM } from '@delfrance/auth';
 
 const h = vi.hoisted(() => ({ verifyIdToken: vi.fn() }));
@@ -10,19 +10,6 @@ vi.mock('@/lib/firebase/admin', () => ({
 }));
 
 const { verifyCaller } = await import('./verifyCaller');
-
-// The firebase-admin .d.ts only surfaces the constructor inherited from Error,
-// but at runtime FirebaseAuthError takes an ErrorInfo and FirebaseAppError
-// takes (code, message) — cast so the tests can build the real classes the
-// catch narrows on.
-const AuthErrorCtor = FirebaseAuthError as unknown as new (info: {
-  code: string;
-  message: string;
-}) => FirebaseAuthError;
-const AppErrorCtor = FirebaseAppError as unknown as new (
-  code: string,
-  message: string,
-) => FirebaseAppError;
 
 const REQUIRED = PERM.integracao.read;
 const CALLER = { uid: 'u1', permissions: REQUIRED.toString() };
@@ -69,7 +56,12 @@ describe('verifyCaller', () => {
   });
 
   it('maps FirebaseAuthError to 401 with the auth/ code in the body', async () => {
-    h.verifyIdToken.mockRejectedValue(new AuthErrorCtor(AuthClientErrorCode.ID_TOKEN_EXPIRED));
+    h.verifyIdToken.mockRejectedValue(
+      new FirebaseAuthError({
+        code: AuthErrorCode.ID_TOKEN_EXPIRED,
+        message: 'The provided Firebase ID token is expired.',
+      }),
+    );
     const error = expectError(await verifyCaller(req({ authorization: 'Bearer t' }), REQUIRED));
     expect(error.status).toBe(401);
     expect(await error.json()).toEqual({
@@ -80,7 +72,7 @@ describe('verifyCaller', () => {
 
   it('maps FirebaseAppError to 500 with the app/ code', async () => {
     h.verifyIdToken.mockRejectedValue(
-      new AppErrorCtor(AppErrorCodes.INVALID_CREDENTIAL, 'bad credential'),
+      new FirebaseAppError({ code: AppErrorCode.INVALID_CREDENTIAL, message: 'bad credential' }),
     );
     const error = expectError(await verifyCaller(req({ authorization: 'Bearer t' }), REQUIRED));
     expect(error.status).toBe(500);

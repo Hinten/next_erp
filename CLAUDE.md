@@ -102,8 +102,7 @@ else (`chore/`, `docs/`, …) it reports zero checks, not failures.
   `mercado-pago` (:3007) · `whatsapp` (:3008) — API-only App Hosting backends,
   **one deployable per channel**, each importing its logic from the matching
   `packages/integrations/<channel>`.
-- `functions` — **not** a Next app: gen2 Cloud Functions, codebase `storage`,
-  the only firebase-admin **v14** consumer.
+- `functions` — **not** a Next app: gen2 Cloud Functions, codebase `storage`.
 
 `apps/{nfe,mercado-livre,mercado-pago,whatsapp}/functions/` are **nested**
 Functions codebases deployed via `firebase.<name>.deploy.json`. They are **not**
@@ -163,11 +162,12 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
 ## Key fixed decisions
 
 - Firebase backend stays. Node >= 22. Zod is the schema source of truth.
-- **firebase-admin is deliberately split — do not "unify" it.** `apps/functions`
-  is on **v14** for the Pipelines API (orphan sweep) and
-  `FieldValue.maximum/minimum` (estoque callable), both absent in v13.
-  Everything else is on v13, and `packages/{data,storage}` declare an optional
-  peer `^13` that `apps/functions` knowingly violates. Typecheck-clean.
+- **firebase-admin floor = v14, firebase-functions floor = `^7.3.0` — do not
+  lower either.** `apps/functions` needs the v8 Pipelines API +
+  `FieldValue.maximum/minimum` (a downgrade fails typecheck), and 7.3.0 is the
+  first firebase-functions whose peer range admits `firebase-admin@^14` —
+  lowering it breaks every deploy artifact's plain cloud `npm install`
+  (`ERESOLVE`), which no CI lane exercises.
 - `next lint` is gone in Next 16 — every lint script is `eslint .`, and the 8
   Next apps spread `@delfrance/config-eslint` + `eslint-config-next` +
   `typeAware(...)` with `prettier` LAST. `apps/{docs,example,functions}` are not

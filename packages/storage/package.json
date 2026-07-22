@@ -22,7 +22,7 @@
     "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "firebase-admin": "^13"
+    "firebase-admin": "^14"
   },
   "peerDependenciesMeta": {
     "firebase-admin": {
@@ -31,7 +31,7 @@
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",
-    "firebase-admin": "^13.9.0",
+    "firebase-admin": "^14.0.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"
   }
