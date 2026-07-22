@@ -11,9 +11,10 @@ import {
  * produto editor's Impostos tab. `id` mirrors the doc id (never a meaningful
  * edit) and `timestamp` is the per-write stamp every save touches, so both
  * are dropped from the diff. A delete of an imposto doc records a
- * `kind: 'delete'` entry carrying the FULL pre-delete snapshot (`old` = the
- * values, `new` = null) — the factory's default delete behavior, exercised
- * by the emulator suite.
+ * `kind: 'delete'` entry carrying the pre-delete values of every
+ * NON-ignored field (`old` = the values, `new` = null; `id`/`timestamp`
+ * stay out) — the factory's default delete behavior, exercised by the
+ * emulator suite.
  *
  * `requireParentExists: true` guards the same cascade race as extraData: a
  * produto delete's `recursiveDelete` (`onProdutoDeleted`) sweeps this
