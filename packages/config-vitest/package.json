@@ -8,5 +8,12 @@
   },
   "files": [
     "env.js"
-  ]
+  ],
+  "scripts": {
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
+    "eslint": "^9.39.4"
+  }
 }

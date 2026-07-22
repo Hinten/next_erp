@@ -6,6 +6,7 @@
   "main": "./src/index.ts",
   "scripts": {
     "demo": "tsx src/index.ts",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
@@ -18,8 +19,10 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
     "@types/node": "^24.10.0",
+    "eslint": "^9.39.4",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   }

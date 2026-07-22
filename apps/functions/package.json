@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "lint": "echo 'no lint configured for this package yet'",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "build": "node build.mjs",
     "test": "vitest run --config vitest.config.ts",
@@ -24,11 +24,13 @@
   },
   "devDependencies": {
     "@delfrance/auth": "workspace:*",
+    "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
     "@delfrance/data": "workspace:*",
     "@delfrance/schemas": "workspace:*",
     "@types/node": "^24.10.0",
     "esbuild": "^0.25.0",
+    "eslint": "^9.39.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6",
     "zod": "^4.4.3"
