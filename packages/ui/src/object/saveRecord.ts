@@ -13,7 +13,7 @@ import { isEmpty, pickDirty } from './diff';
 
 /**
  * A sibling document write that must ride the SAME transaction as the main
- * record — so the two commit together or not at all, in a single round-trip.
+ * record — so the two commit together or not at all.
  * The motivating case: a produto's `extraData` singleton, which on a flaky
  * connection used to be a separate `writeBatch` that could be lost while the
  * produto doc committed (orphan state). `ref` is a converter-bound
@@ -83,7 +83,9 @@ export class NothingChangedError extends Error {
  * Why a transaction for a one-doc write? The caller's API surface ("save"
  * returns Promise<void>) doesn't need to change later when more sibling
  * writes (e.g. denormalized counters) join the same transaction — the main
- * doc and every sibling write already commit atomically, in one round-trip.
+ * doc and every sibling write already commit atomically (the SDK may retry
+ * the transaction internally; atomicity, not a single round-trip, is the
+ * guarantee).
  */
 export async function saveRecord<
   S extends ZodTypeAny,

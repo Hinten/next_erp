@@ -349,4 +349,17 @@ describe('buildPipeline', () => {
       expect.objectContaining({ kind: 'aliased', alias: 'rowId' }),
     );
   });
+
+  it('rejects a select entry that would collide with the reserved rowId projection', () => {
+    const { db } = makeDb(true);
+    expect(() =>
+      buildPipeline(db, {
+        collection: 'produtos',
+        select: [{ field: 'sku', as: 'rowId' }],
+      }),
+    ).toThrow(/reserved/);
+    expect(() => buildPipeline(db, { collection: 'produtos', select: ['rowId'] })).toThrow(
+      /reserved/,
+    );
+  });
 });

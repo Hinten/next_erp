@@ -307,7 +307,18 @@ export function buildPipeline(db: Firestore, spec: PipelineSpec): Pipeline {
     // `PipelineResult.ref` (the server omits the document key for projected
     // results), so without this the row identity is lost. `field('__name__')`
     // is the SDK-special-cased reference to the document path; `documentId()`
-    // extracts the short id from it.
+    // extracts the short id from it. The alias is RESERVED: a caller selection
+    // that would emit its own output field under the same name would collide
+    // with the appended id projection and break row-id reading downstream.
+    for (const entry of spec.select) {
+      const outputName = typeof entry === 'string' ? entry : entry.as;
+      if (outputName === PIPELINE_ID_FIELD) {
+        throw new Error(
+          `buildPipeline: select output "${PIPELINE_ID_FIELD}" is reserved for the ` +
+            `document-id projection. Pick a different alias/field name.`,
+        );
+      }
+    }
     const idSelection = documentId(field('__name__')).as(PIPELINE_ID_FIELD);
     // Bare-string entries pass through unchanged; `{ field, as }` entries
     // become `field(entry.field).as(entry.as)` so the caller can pull a

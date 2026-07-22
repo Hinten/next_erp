@@ -91,7 +91,9 @@ projection: `documentId(field('__name__')).as(PIPELINE_ID_FIELD)`
 `__`-wrapped names for projection output). `usePipelineSnapshot`
 (`packages/data/src/hooks/usePipelineSnapshot.ts`) reads `rowId` back off
 each result and deletes it from `row.data` before handing rows to the
-caller, so consumers never see the alias leak through.
+caller, so consumers never see the alias leak through. The `rowId` output
+name is RESERVED — `buildPipeline` throws if any select entry (bare string
+or `{ as }`) would emit its own field under it.
 
 **Search** (`buildSimilarityPattern`/`buildSimilarityRegExp`): input is
 trimmed, NFD-normalized to strip diacritics, lowercased, regex-escaped, then
