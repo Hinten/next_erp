@@ -4,7 +4,11 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 // `vi.hoisted` ensures the mock object is built before vi.mock evaluates.
 const { mockPipelinesExports } = vi.hoisted(() => ({
   mockPipelinesExports: {
-    field: (n: string) => ({ kind: 'field', name: n }),
+    field: (n: string) => ({
+      kind: 'field',
+      name: n,
+      as: (alias: string) => ({ kind: 'aliased', alias, expr: { kind: 'field', name: n } }),
+    }),
     and: (...xs: unknown[]) => ({ kind: 'and', xs }),
     or: (...xs: unknown[]) => ({ kind: 'or', xs }),
     ascending: (f: unknown) => ({ kind: 'asc', f }),
@@ -231,6 +235,11 @@ describe('buildPipeline', () => {
     ).toThrow(/empty/);
   });
 
+  it('idIn with an empty list throws instead of silently full-scanning the collection', () => {
+    const { db } = makeDb(true);
+    expect(() => buildPipeline(db, { collection: 'pedidos', idIn: [] })).toThrow(/empty id list/);
+  });
+
   it('eq with an array value throws (only array-contains-any takes a list)', () => {
     const { db } = makeDb(true);
     expect(() =>
@@ -309,6 +318,48 @@ describe('buildPipeline', () => {
       'email',
       'cpf_cnpj',
       expect.objectContaining({ kind: 'aliased', alias: 'rowId' }),
+    );
+  });
+
+  it('an object select entry projects field(x).as(y)', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'produtos/p1/historicoDeModificacoes',
+      select: [{ field: 'changes.precos', as: 'change' }],
+    });
+    expect(stage.select).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'aliased',
+        alias: 'change',
+        expr: expect.objectContaining({ kind: 'field', name: 'changes.precos' }),
+      }),
+      expect.objectContaining({ kind: 'aliased', alias: 'rowId' }),
+    );
+  });
+
+  it('mixes bare string and object select entries, plus the appended rowId', () => {
+    const { db, stage } = makeDb(true);
+    buildPipeline(db, {
+      collection: 'produtos/p1/historicoDeModificacoes',
+      select: [{ field: 'changes.custo', as: 'change' }, 'timestamp'],
+    });
+    expect(stage.select).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'aliased', alias: 'change' }),
+      'timestamp',
+      expect.objectContaining({ kind: 'aliased', alias: 'rowId' }),
+    );
+  });
+
+  it('rejects a select entry that would collide with the reserved rowId projection', () => {
+    const { db } = makeDb(true);
+    expect(() =>
+      buildPipeline(db, {
+        collection: 'produtos',
+        select: [{ field: 'sku', as: 'rowId' }],
+      }),
+    ).toThrow(/reserved/);
+    expect(() => buildPipeline(db, { collection: 'produtos', select: ['rowId'] })).toThrow(
+      /reserved/,
     );
   });
 });

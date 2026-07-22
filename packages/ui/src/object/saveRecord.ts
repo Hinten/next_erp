@@ -9,12 +9,11 @@ import {
 import type { z, ZodTypeAny } from 'zod';
 import { nowMicros, nowMillis } from '@delfrance/core/datetime';
 import { type CollectionHandle, type PathContext } from '@delfrance/data';
-import { writeAuditEntry } from '@delfrance/data/audit';
 import { isEmpty, pickDirty } from './diff';
 
 /**
  * A sibling document write that must ride the SAME transaction as the main
- * record — so the two commit together or not at all, in a single round-trip.
+ * record — so the two commit together or not at all.
  * The motivating case: a produto's `extraData` singleton, which on a flaky
  * connection used to be a separate `writeBatch` that could be lost while the
  * produto doc committed (orphan state). `ref` is a converter-bound
@@ -37,7 +36,13 @@ export interface SaveRecordInput<S extends ZodTypeAny, T extends Record<string, 
   values: T;
   /** RHF `formState.dirtyFields`. */
   dirtyFields: Partial<Record<keyof T, unknown>>;
-  /** Uid threaded through to the audit entry. */
+  /**
+   * Uid of the acting user. Unused internally since the audit-entry write it
+   * fed was retired (the dormant `writeAuditEntry` stub — no feature ever
+   * activated it); kept required because `ObjectView` and its many callers
+   * already thread it through, and a future consumer (e.g. a real audit trail)
+   * can pick it back up without a signature change.
+   */
   currentUserUid: string;
   /**
    * Additional documents to write atomically with the main record, in the SAME
@@ -100,16 +105,14 @@ function resolveStampKey(option: string | false | undefined, fallback: string): 
 }
 
 /**
- * Save a single record (create or update) inside a transaction. The
- * transaction also runs `writeAuditEntry`, which is a no-op stub today but
- * will record a per-mutation audit row in the same atomic write.
+ * Save a single record (create or update) inside a transaction.
  *
- * Why a transaction for a one-doc write? Two reasons:
- *  1. Forces the audit entry to ride the same atomic boundary as the data
- *     write when the stub gets activated.
- *  2. The caller's API surface ("save" returns Promise<void>) doesn't need
- *     to change later when more sibling writes (e.g. denormalized counters)
- *     join the same transaction.
+ * Why a transaction for a one-doc write? The caller's API surface ("save"
+ * returns Promise<void>) doesn't need to change later when more sibling
+ * writes (e.g. denormalized counters) join the same transaction — the main
+ * doc and every sibling write already commit atomically (the SDK may retry
+ * the transaction internally; atomicity, not a single round-trip, is the
+ * guarantee).
  */
 export async function saveRecord<
   S extends ZodTypeAny,
@@ -203,14 +206,6 @@ export async function saveRecord<
       else if (w.type === 'delete') tx.delete(w.ref as DocumentReference);
       else tx.set(w.ref as DocumentReference, w.data as never);
     }
-
-    writeAuditEntry(tx, {
-      collectionPath: input.collection.resolvePath(input.pathContext),
-      docId: ref.id,
-      uid: input.currentUserUid,
-      kind: isUpdate ? 'update' : 'create',
-      patch: patch as Record<string, unknown>,
-    });
   });
 
   return { id: ref.id, patch };

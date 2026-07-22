@@ -23,13 +23,14 @@ import type { ProdutoDataPort, ProdutoWriteOp } from './port';
 // parent→children precos propagation used to live here (`buildPrecoHistoryOps`,
 // `recordPrecoHistory`, `buildCustoHistoryOp`, `recordCustoHistory`,
 // `propagatePrecosToChildren`, `applyPrecosChange`) — removed 2026-07-21. Both
-// are now server-owned by the `onProdutoPrecoCustoChanged` Cloud Function
-// trigger (apps/functions), which fires on every produto write, diffs
-// precos/custo against the previous doc, records the history and propagates to
-// children (gated on `paiId == null` and `propagatePriceToChildren`). The only
-// remaining client-side history write is `appendPrecoHistory`
-// (apps/web/lib/produtos/precoHistory.ts) for a NEWLY CREATED variation child —
-// the trigger ignores children entirely.
+// are now server-owned by the `onProdutoChanged` Cloud Function trigger
+// (apps/functions), which fires on every produto write, diffs the changed
+// top-level fields against the previous doc into one unified
+// `historicoDeModificacoes` entry, and propagates precos to children (gated on
+// `paiId == null` and `propagatePriceToChildren`). There is no remaining
+// client-side history write; a newly created variation child's initial precos
+// deliberately gets no entry either (the trigger's `produtoExtraIgnores` drops
+// `precos` from the diff for any produto with a `paiId` set).
 // ---------------------------------------------------------------------------
 
 const PRODUTOS = produtoMeta.collectionPath; // produtos

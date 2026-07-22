@@ -10,7 +10,6 @@
     "./hooks": "./src/hooks/index.ts",
     "./hooks/usePipelineSnapshot": "./src/hooks/usePipelineSnapshot.ts",
     "./pipeline-queries": "./src/pipeline-queries.ts",
-    "./audit": "./src/audit.ts",
     "./server": "./src/server/index.ts",
     "./admin": "./src/admin/index.ts",
     "./admin/collections": "./src/admin/collections/index.ts",
