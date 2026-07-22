@@ -30,9 +30,9 @@ export interface ProdutoKitFlag {
 
 /**
  * One write in a logical batch. `path` is a full Firestore document path
- * (e.g. `produtos/<id>/historicoDePrecos/<docId>`). The adapter chunks an op
- * list into ≤499-operation batches, preserving order (so a delete cascade can
- * keep the parent last).
+ * (e.g. `produtos/<id>/imposto/<docId>`). The adapter chunks an op list into
+ * ≤499-operation batches, preserving order (so a delete cascade can keep the
+ * parent last).
  */
 export type ProdutoWriteOp =
   | { type: 'set'; path: string; data: Record<string, unknown> }
