@@ -360,7 +360,10 @@ export const integracaoSchema = z
     operacaoDevolucaoOuterRef: outerRefSchema.nullable().default(null),
     depositoOuterRef: outerRefSchema.nullable().default(null),
 
+    // System stamps — `dataCadastro` create-only (nullish coalesce) and
+    // `ultimaModificacao` on every write; both stamped by `saveRecord`.
     dataCadastro: millisSinceEpoch().nullable().default(null),
+    ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
   })
   .passthrough();
 

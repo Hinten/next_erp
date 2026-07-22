@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
 import type { CollectionHandle } from '@delfrance/data';
 
@@ -239,5 +239,215 @@ describe('saveRecord — siblingWrites (atomic same-transaction writes)', () => 
       expect.objectContaining({ id: 'gone' }),
     );
     expect(firestoreMock.txMock.update).toHaveBeenCalledOnce(); // main doc patch
+  });
+});
+
+describe('saveRecord — create/modify stamps', () => {
+  const FIXED_MS = 1_700_000_000_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_MS);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('on create, stamps null timestamp with stampUnit ms', async () => {
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      values: { nome: 'novo', timestamp: null },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+    });
+    expect(firestoreMock.txMock.set.mock.calls[0]![1]).toEqual({
+      nome: 'novo',
+      timestamp: FIXED_MS,
+    });
+  });
+
+  it('on create, stamps null timestamp with stampUnit us', async () => {
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      values: { nome: 'novo', timestamp: null },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'us',
+    });
+    expect(firestoreMock.txMock.set.mock.calls[0]![1]).toEqual({
+      nome: 'novo',
+      timestamp: FIXED_MS * 1000,
+    });
+  });
+
+  it('on create, stamps null timestamp with default iso unit', async () => {
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      values: { nome: 'novo', timestamp: null },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+    });
+    expect(firestoreMock.txMock.set.mock.calls[0]![1]).toEqual({
+      nome: 'novo',
+      timestamp: new Date(FIXED_MS).toISOString(),
+    });
+  });
+
+  it('on create, stamps dataCadastro when createdAtField overrides the default key', async () => {
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      values: { nome: 'bandeira', dataCadastro: null },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+      createdAtField: 'dataCadastro',
+    });
+    const payload = firestoreMock.txMock.set.mock.calls[0]![1] as Record<string, unknown>;
+    expect(payload.dataCadastro).toBe(FIXED_MS);
+    expect(payload).not.toHaveProperty('timestamp');
+  });
+
+  it('on create, preserves an explicit non-null creation timestamp', async () => {
+    const explicit = 1_600_000_000_000;
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      values: { nome: 'novo', timestamp: explicit },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+    });
+    expect(firestoreMock.txMock.set.mock.calls[0]![1]).toEqual({
+      nome: 'novo',
+      timestamp: explicit,
+    });
+  });
+
+  it('on update, never writes the creation field even when it is null', async () => {
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      recordId: 'EXISTING_ID',
+      values: { nome: 'editado', timestamp: null },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+    });
+    expect(firestoreMock.txMock.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'EXISTING_ID' }),
+      { nome: 'editado' },
+    );
+  });
+
+  it('on create, stamps both timestamp and ultimaModificacao when null', async () => {
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      values: { nome: 'novo', timestamp: null, ultimaModificacao: null },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+    });
+    expect(firestoreMock.txMock.set.mock.calls[0]![1]).toEqual({
+      nome: 'novo',
+      timestamp: FIXED_MS,
+      ultimaModificacao: FIXED_MS,
+    });
+  });
+
+  it('on update, stamps ultimaModificacao into the patch', async () => {
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      recordId: 'EXISTING_ID',
+      values: { nome: 'editado', ultimaModificacao: null },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+    });
+    expect(firestoreMock.txMock.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'EXISTING_ID' }),
+      { nome: 'editado', ultimaModificacao: FIXED_MS },
+    );
+  });
+
+  it('on create without a creation key, does not inject timestamp', async () => {
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      values: { nome: 'novo' },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+    });
+    expect(firestoreMock.txMock.set.mock.calls[0]![1]).toEqual({ nome: 'novo' });
+  });
+
+  it('createdAtField: false disables creation stamp even when timestamp is null', async () => {
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      values: { nome: 'novo', timestamp: null },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+      createdAtField: false,
+    });
+    expect(firestoreMock.txMock.set.mock.calls[0]![1]).toEqual({
+      nome: 'novo',
+      timestamp: null,
+    });
+  });
+
+  it('modifiedAtField: false disables last-modified stamp', async () => {
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      recordId: 'EXISTING_ID',
+      values: { nome: 'editado', ultimaModificacao: null },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+      modifiedAtField: false,
+    });
+    expect(firestoreMock.txMock.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'EXISTING_ID' }),
+      { nome: 'editado' },
+    );
+  });
+
+  it('modifiedAtField override stamps a custom key', async () => {
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      recordId: 'EXISTING_ID',
+      values: { nome: 'editado', customMod: null },
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+      modifiedAtField: 'customMod',
+    });
+    expect(firestoreMock.txMock.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'EXISTING_ID' }),
+      { nome: 'editado', customMod: FIXED_MS },
+    );
   });
 });

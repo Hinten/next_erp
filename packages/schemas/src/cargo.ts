@@ -21,8 +21,10 @@ export const cargoSchema = z.object({
   // `T | null | undefined`. Forms default empty inputs to `null`.
   descricao: z.string().max(500).nullable(),
   permissoes: z.string().regex(/^\d+$/, 'apenas dígitos').default('0'),
-  // Milliseconds since epoch (numeric-epoch standard); reads tolerantly.
+  // System stamps — create-only `timestamp` (nullish coalesce) and
+  // `ultimaModificacao` on every write; both stamped by `saveRecord`.
   timestamp: millisSinceEpoch().nullable().default(null),
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
 });
 
 export type Cargo = z.infer<typeof cargoSchema>;

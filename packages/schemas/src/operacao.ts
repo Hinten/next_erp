@@ -116,7 +116,10 @@ export const operacaoSchema = z.object({
 
   infCpl: z.string().max(5000).nullable(),
 
+  // System stamps — create-only `timestamp` (nullish coalesce) and
+  // `ultimaModificacao` on every write; both stamped by `saveRecord`.
   timestamp: millisSinceEpoch().nullable().optional(),
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
 });
 
 export type Operacao = z.infer<typeof operacaoSchema>;
