@@ -1,14 +1,10 @@
-// Library-side ESLint config. Does NOT extend `@delfrance/config-eslint`
-// because the base ships React Compiler rules that require
-// `eslint-plugin-react-hooks` (consumed by apps/* via
-// `eslint-config-next`). This library has no React surface, and the
-// strict catch rule from the base would surface ~19 pre-existing
-// violations across `src/**` + `test/**` that are out of scope for the
-// pre-real-cert audit. So we ship only the two cert-leak guard rules
-// here; the catch rule remains enforced at the apps/* boundary.
-import tseslint from 'typescript-eslint';
-import eslintConfigPrettier from 'eslint-config-prettier';
-import noAdHocMoneyRounding from '@delfrance/config-eslint/rules/no-ad-hoc-money-rounding.js';
+// Library-side ESLint config. Composes the shared base — its universal TS
+// parse block covers this package's `.ts`/`.mts`/`.cts` files, and
+// `typeAware` supplies the type-aware async-correctness rules, so we no
+// longer hand-roll either. The base's `no-restricted-syntax` (the
+// repo-wide catch convention) is turned off below and the two NF-e-only
+// selectors are layered back on for `src/**`.
+import base, { prettier, typeAware } from '@delfrance/config-eslint';
 
 // Rule A — no multi-arg `console.*` in NF-e code paths. See the
 // apps-side config for the rationale; the leak shape is the same and
@@ -43,6 +39,7 @@ const NFE_CODE_PATHS = [
 ];
 
 const config = [
+  ...base,
   {
     ignores: [
       '**/.next/**',
@@ -56,13 +53,13 @@ const config = [
       'src/codegen/**',
     ],
   },
-  {
-    files: ['**/*.ts', '**/*.mts', '**/*.cts'],
-    languageOptions: {
-      parser: tseslint.parser,
-      parserOptions: { ecmaVersion: 'latest', sourceType: 'module' },
-    },
-  },
+  // The base's `no-restricted-syntax` carries the repo-wide catch
+  // convention, which would surface ~19 pre-existing violations across
+  // `src/**` + `test/**` out of scope for the pre-real-cert audit. Turn
+  // it off here — the convention stays lint-enforced at the apps/*
+  // boundary — and the two blocks below re-enable it with the
+  // NF-e-only Rule A / Rule B selectors.
+  { rules: { 'no-restricted-syntax': 'off' } },
   // NF-e code paths — Rule A (no raw console.*) + Rule B (no
   // NFE_CERT_* env reads). Combined in a single block because flat
   // config does full-replacement on `no-restricted-syntax` between
@@ -85,38 +82,24 @@ const config = [
       'no-restricted-syntax': ['error', ruleBCertEnv],
     },
   },
+  // The unified cert loader owns the cert audit channel — its greppable
+  // `console.debug('[nfe-cert] …')` load-trail line is the point, so the
+  // base's `no-console` (warn/error allowlist) is off here.
+  {
+    files: ['src/cert/index.ts'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
   // Type-aware async-correctness rules. Scoped to `src/**` so the file set
   // matches this package's tsconfig `include` (`src/**/*.ts`) — the root
   // `vitest.config.ts` stays outside the typed program and is parsed by the
-  // non-type-aware block above. `projectService` discovers the nearest tsconfig.
-  {
-    files: ['src/**/*.{ts,mts}'],
-    languageOptions: {
-      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
-    },
-    plugins: { '@typescript-eslint': tseslint.plugin },
-    rules: {
-      '@typescript-eslint/no-floating-promises': 'error',
-      '@typescript-eslint/no-misused-promises': [
-        'error',
-        { checksVoidReturn: { attributes: false } },
-      ],
-      '@typescript-eslint/await-thenable': 'error',
-    },
-  },
-  // Money math must use roundReais() from @delfrance/core/money — ad-hoc
-  // `.toFixed(2)` / `Math.round(x * 100)` are forbidden. The XSD string
-  // serializers (`tribute/format.ts`, `generator/det.ts`) are allow-listed
-  // inside the rule. Distinct rule name, so it coexists with the
-  // `no-restricted-syntax` blocks above.
-  {
-    files: ['src/**/*.ts'],
-    plugins: { delfrance: { rules: { 'no-ad-hoc-money-rounding': noAdHocMoneyRounding } } },
-    rules: { 'delfrance/no-ad-hoc-money-rounding': 'error' },
-  },
+  // base's non-type-aware universal block. `projectService` discovers the
+  // nearest tsconfig.
+  ...typeAware(import.meta.dirname, { files: ['src/**/*.{ts,mts}'] }),
   // eslint-config-prettier LAST — disables stylistic rules that conflict with
   // Prettier (formatting is owned by `prettier.config.mjs` / `pnpm format`).
-  eslintConfigPrettier,
+  prettier,
 ];
 
 export default config;

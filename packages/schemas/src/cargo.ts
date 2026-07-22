@@ -41,7 +41,10 @@ export const cargo = { schema: cargoSchema, meta: cargoMeta };
 export function decodePermissoes(c: Pick<Cargo, 'permissoes'>): bigint {
   try {
     return BigInt(c.permissoes ?? '0');
-  } catch {
+  } catch (err) {
+    // BigInt throws SyntaxError on a malformed permissoes string — treat that
+    // stored-data corruption as "no permissions" rather than crashing reads.
+    if (!(err instanceof SyntaxError)) throw err;
     return 0n;
   }
 }

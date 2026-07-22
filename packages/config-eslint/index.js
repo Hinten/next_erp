@@ -69,6 +69,23 @@ const config = [
   {
     ignores: ['**/.next/**', '**/dist/**', '**/out/**', '**/node_modules/**', '**/coverage/**'],
   },
+  // ESLint's flat-config default (`**/*.{js,mjs,cjs}`) does not include `.ts` —
+  // a file is only linted at all if SOME block's `files` matches it. Without
+  // this block, `eslint .` would silently skip root-level `*.ts` config files
+  // (e.g. a library workspace's own `vitest.config.ts`) in any workspace that
+  // doesn't also spread `typeAware(...)`. Deliberately non-type-aware (no
+  // `parserOptions.projectService`, no `rules`) — it only lets the TS parser
+  // see the file. `typeAware(...)` is spread after `...base` in every
+  // consumer, so for files it also covers its block sits later in the array
+  // and wins (a later block's `languageOptions` for the same file replaces
+  // this one's, it doesn't merge with it).
+  {
+    files: ['**/*.{ts,tsx,mts,cts}'],
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: { ecmaVersion: 'latest', sourceType: 'module' },
+    },
+  },
   {
     plugins: {
       delfrance: {
@@ -126,11 +143,6 @@ const config = [
             'Generic catch is forbidden. The catch body must contain either an `instanceof <SpecificError>` check OR a `throw` (rethrow). Silent fallbacks hide bugs during debugging.',
         },
       ],
-      // React Compiler-aware rules from eslint-plugin-react-hooks v7. The
-      // project doesn't enable React Compiler yet; keep these as advisory
-      // warnings instead of errors so existing patterns don't block CI.
-      'react-hooks/set-state-in-effect': 'warn',
-      'react-hooks/preserve-manual-memoization': 'warn',
 
       // Keep Admin-SDK collection handles in the canonical registry at
       // packages/data/src/admin/collections (imported via
@@ -154,9 +166,9 @@ const config = [
       // In packages/schemas, `.optional()` must be paired with `.nullable()` —
       // the Firebase SDK rejects `undefined` in addDoc/setDoc, so a bare
       // `.optional()` is a runtime crash on the first blank input. The rule
-      // self-scopes by path, so this entry is inert outside packages/schemas
-      // (it is re-declared in packages/schemas/eslint.config.mjs, which does
-      // NOT extend this base). See rules/no-optional-without-nullable.js.
+      // self-scopes by path, so this entry is inert outside packages/schemas,
+      // which receives it by spreading this base like every other library.
+      // See rules/no-optional-without-nullable.js.
       'delfrance/no-optional-without-nullable': 'error',
 
       // The half of the no-generic-catch rule the `no-restricted-syntax`

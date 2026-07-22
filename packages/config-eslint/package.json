@@ -4,13 +4,20 @@
   "private": true,
   "type": "module",
   "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./react": "./react.js",
+    "./rules/*": "./rules/*",
+    "./package.json": "./package.json"
+  },
   "files": [
     "index.js",
     "react.js",
     "rules"
   ],
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint": "eslint ."
   },
   "dependencies": {
     "eslint-config-prettier": "^10.1.5",
