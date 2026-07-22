@@ -174,6 +174,72 @@ describe('createMercadoLivreApi — User-Products family fan-out (#521)', () => 
   });
 });
 
+describe('createMercadoLivreApi — mass import seller scan (#621)', () => {
+  it('scanSellerItems hits /users/{sellerId}/items/search with search_type=scan and no scroll_id on the first page', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ results: ['MLB111', 'MLB222'], scroll_id: 'SCROLL1' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const page = await api.scanSellerItems(999);
+    expect(page.results).toEqual(['MLB111', 'MLB222']);
+    expect(page.scroll_id).toBe('SCROLL1');
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toContain('/users/999/items/search');
+    expect(url).toContain('search_type=scan');
+    expect(url).not.toContain('scroll_id');
+  });
+
+  it('scanSellerItems forwards a non-empty scroll_id on subsequent pages', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ results: [], scroll_id: '' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await api.scanSellerItems(999, 'SCROLL1');
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toContain('scroll_id=SCROLL1');
+  });
+
+  it('scanSellerItems omits scroll_id when passed null (start-of-scan sentinel)', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ results: [] }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await api.scanSellerItems(999, null);
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).not.toContain('scroll_id');
+  });
+
+  it('scanSellerItems defaults results to [] when ML omits the field', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({}),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const page = await api.scanSellerItems(999);
+    expect(page.results).toEqual([]);
+    expect(page.scroll_id).toBeUndefined();
+  });
+
+  it('scanSellerItems tolerates unknown extra fields', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ results: [], paging: { total: 0 }, another_new_field: 'x' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const page = (await api.scanSellerItems(999)) as Record<string, unknown>;
+    expect(page.another_new_field).toBe('x');
+  });
+
+  it('scanSellerItems maps a 500 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'boom' }, 500),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.scanSellerItems(999)).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 500,
+    });
+  });
+});
+
 describe('createMercadoLivreApi — User-Products migration (#441)', () => {
   it('getMigrationLiveListing hits /items/{id}/migration_live_listing and parses new_items', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>

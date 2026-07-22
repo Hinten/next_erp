@@ -67,6 +67,39 @@ export interface MercadoLivreImportarResult {
   created: boolean;
 }
 
+/** The `massImportOptionsSchema` booleans — all optional here, server defaults the rest. */
+export interface MercadoLivreMassImportOptions {
+  importarEstoque?: boolean;
+  sobrescreverEstoque?: boolean;
+  importarPreco?: boolean;
+  sobrescreverPreco?: boolean;
+  atualizarProdutoPai?: boolean;
+  importarFotos?: boolean;
+  importarCategorias?: boolean;
+  /** Default false — a re-scan skips listings already linked to this account. */
+  atualizarCadastrados?: boolean;
+}
+
+/** One per-item failure recorded on a mass-import job (capped server-side). */
+export interface MercadoLivreMassImportFailure {
+  itemId: string;
+  error: string;
+}
+
+/** Progress snapshot of a mass-import job (`GET importar-todos/status`). */
+export interface MercadoLivreMassImportStatus {
+  status: 'running' | 'completed' | 'failed';
+  scanned: number;
+  imported: number;
+  created: number;
+  skipped: number;
+  failureCount: number;
+  failures: MercadoLivreMassImportFailure[];
+  startedAt: number;
+  finishedAt: number | null;
+  erro: string | null;
+}
+
 /** One chart-enabled ML domain (`GET size-charts/domains`). */
 export interface MercadoLivreChartDomain {
   domain_id: string;
@@ -126,6 +159,22 @@ export interface MercadoLivreClient {
       importarCategorias?: boolean;
     };
   }): Promise<MercadoLivreImportarResult>;
+  /**
+   * Kick off a full mass import ("Importar todos os anúncios") for the account
+   * (PERM.integracao.write) — scans every listing and imports each one,
+   * checkpointed server-side. Poll progress with `massImportStatus`. A second
+   * call while one is already running comes back as a 409
+   * `MercadoLivreClientHttpError` with `code: 'ML_MASS_IMPORT_RUNNING'`.
+   */
+  startMassImport(input: {
+    integracaoId: string;
+    options?: MercadoLivreMassImportOptions;
+  }): Promise<{ jobId: string }>;
+  /** Poll a mass-import job's progress (PERM.integracao.read). 404s on an unknown/foreign jobId. */
+  massImportStatus(input: {
+    integracaoId: string;
+    jobId: string;
+  }): Promise<MercadoLivreMassImportStatus>;
   /** Chart-enabled ML domains for the chart-editor picker (PERM.integracao.read). */
   sizeChartDomains(integracaoId: string): Promise<{ domains: MercadoLivreChartDomain[] }>;
   /**
@@ -215,6 +264,15 @@ export function createMercadoLivreClient(config: {
       call<MercadoLivrePublicarResult>('/api/marketplace/mercado-livre/publicar', input),
     importar: (input) =>
       call<MercadoLivreImportarResult>('/api/marketplace/mercado-livre/importar', input),
+    startMassImport: (input) =>
+      call<{ jobId: string }>('/api/marketplace/mercado-livre/importar-todos', {
+        integracaoId: input.integracaoId,
+        options: input.options,
+      }),
+    massImportStatus: (input) =>
+      call<MercadoLivreMassImportStatus>(
+        `/api/marketplace/mercado-livre/importar-todos/status?integracaoId=${encodeURIComponent(input.integracaoId)}&jobId=${encodeURIComponent(input.jobId)}`,
+      ),
     sizeChartDomains: (integracaoId) =>
       call<{ domains: MercadoLivreChartDomain[] }>(
         `/api/marketplace/mercado-livre/size-charts/domains?integracaoId=${encodeURIComponent(integracaoId)}`,

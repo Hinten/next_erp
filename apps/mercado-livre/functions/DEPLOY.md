@@ -19,7 +19,9 @@ analysis. `firebase.mercado-livre.deploy.json` points `source` at the generated
 - Env / secrets on the deployed function: `FIREBASE_PROJECT_ID` + admin creds; and,
   once the ML API calls are wired (Phase 5), `MERCADO_LIVRE_CLIENT_SECRET` via
   `firebase functions:secrets:set MERCADO_LIVRE_CLIENT_SECRET` (declared in
-  `src/options.ts`).
+  `src/options.ts`). `processMercadoLivreMassImport` additionally needs
+  `MERCADO_LIVRE_CLIENT_ID` (bound per-function — see below):
+  `firebase functions:secrets:set MERCADO_LIVRE_CLIENT_ID --project <project-id>`.
 - **Region match**: the App Hosting backend must enqueue onto the queue in the
   function's region. The enqueuer resolves the region from
   `MERCADO_LIVRE_TASKS_REGION ?? FUNCTIONS_REGION ?? us-east5` (App Hosting / Cloud
@@ -47,11 +49,12 @@ locally without deploying: `node apps/mercado-livre/functions/build.mjs` (writes
 
 ## Functions in this codebase
 
-| Export                               | Trigger                                | Purpose                                                                                                                                                                                                                                                                    |
-| ------------------------------------ | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `importMercadoLivreOrders`           | `onSchedule('every 15 minutes')`       | Incremental order pull per connected account (#362) — **skeleton no-op** until that milestone.                                                                                                                                                                             |
-| `processMercadoLivreNotification`    | `onTaskDispatched` (Cloud Tasks queue) | Step 6 — process a queued ML notification (resolve account by `user_id`, dispatch by topic). Rate-limited + retry-with-backoff; the receiver enqueues, this runs in-process. Persists to `notificacoesMercadoLivre` ONLY on retry-exhaustion / no-account / unknown topic. |
-| `reprocessMercadoLivreNotifications` | `onSchedule('every 30 minutes')`       | Step 6 — reprocess backstop for persisted `failed` notifications older than 1h (deletes on success, parks at the cap).                                                                                                                                                     |
+| Export                               | Trigger                                | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `importMercadoLivreOrders`           | `onSchedule('every 15 minutes')`       | Incremental order pull per connected account (#362) — **skeleton no-op** until that milestone.                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `processMercadoLivreNotification`    | `onTaskDispatched` (Cloud Tasks queue) | Step 6 — process a queued ML notification (resolve account by `user_id`, dispatch by topic). Rate-limited + retry-with-backoff; the receiver enqueues, this runs in-process. Persists to `notificacoesMercadoLivre` ONLY on retry-exhaustion / no-account / unknown topic.                                                                                                                                                                                                                                                                             |
+| `reprocessMercadoLivreNotifications` | `onSchedule('every 30 minutes')`       | Step 6 — reprocess backstop for persisted `failed` notifications older than 1h (deletes on success, parks at the cap).                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `processMercadoLivreMassImport`      | `onTaskDispatched` (Cloud Tasks queue) | Step 8 (#621) — "Importar todos os anúncios": scans the seller's full listing via `scanSellerItems`, drains up to `MASS_IMPORT_ITEMS_PER_DISPATCH` items per dispatch through `importProduto`, and re-enqueues itself onto its OWN queue until the job (`importacoesMercadoLivre/{jobId}`) is exhausted. Single in-flight dispatch (`maxConcurrentDispatches: 1`) since the job doc is the checkpoint. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` from Secret Manager per-function (see `src/options.ts`) for the ML token refresh. |
 
 ### Durability & the residual loss window
 
@@ -93,6 +96,37 @@ persisting the notification as `failed` (the reprocess sweep drains it) and stil
 acks 200 — so notifications are not lost, but the intended rate-limited queue path
 is inactive. Verify the queue exists after the first deploy:
 `gcloud tasks queues describe processMercadoLivreNotification --location=<region>`.
+
+## Mass-import job queue (Step 8, #621)
+
+`processMercadoLivreMassImport` auto-provisions its own Cloud Tasks queue the
+same way `processMercadoLivreNotification` does — no separate Terraform/gcloud
+queue-creation step. It reuses the **same** enqueuer IAM grant (above): both the
+`/importar-todos` route and the task handler's own self-continuation enqueue
+via `createMlMassImportScheduler()` (`lib/marketplace/mlMassImportTasks.ts`),
+which is the same App Hosting runtime SA → functions runtime SA path already
+granted `roles/cloudtasks.enqueuer` / `roles/iam.serviceAccountUser`. It also
+reuses the notification pipeline's `MERCADO_LIVRE_TASKS_DISABLED` /
+`MERCADO_LIVRE_TASKS_REGION` env knobs — no new region/valve config needed.
+
+**New secret requirement**: unlike `processMercadoLivreNotification`,
+`processMercadoLivreMassImport` binds `MERCADO_LIVRE_CLIENT_ID` +
+`MERCADO_LIVRE_CLIENT_SECRET` directly on its own `onTaskDispatched` options
+(`secrets: [...]` in `src/processMassImport.ts`, not the codebase-wide
+`setGlobalOptions` in `src/options.ts`) because its default import path
+refreshes the connected account's ML access token
+(`mercadoLivreOAuthConfig()` reads both). Set them once per project before the
+first mass-import run:
+
+```bash
+firebase functions:secrets:set MERCADO_LIVRE_CLIENT_ID --project <project-id>
+firebase functions:secrets:set MERCADO_LIVRE_CLIENT_SECRET --project <project-id>
+```
+
+(These are typically already set as Secret Manager-backed App Hosting env vars
+for the `apps/mercado-livre` backend itself — see its `apphosting.yaml` — but
+that binding does NOT reach this separate functions codebase; it must be bound
+here too.)
 
 ## ⚠️ Callback-URL cutover — coordinate with the legacy Flutter functions
 

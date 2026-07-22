@@ -35,6 +35,7 @@ export {
 export { grupoDeVariacoesCollection } from './grupoDeVariacoesCollection';
 export { produtoExtraDataCollection } from './produtoExtraDataCollection';
 export { notificacaoMercadoLivreCollection } from './notificacaoMercadoLivreCollection';
+export { importacaoMercadoLivreCollection } from './importacaoMercadoLivreCollection';
 export { pedidoCollection } from './pedidoCollection';
 export { operacaoCollection } from './operacaoCollection';
 export { incidenteCollection } from './incidenteCollection';

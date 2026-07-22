@@ -2,7 +2,18 @@
 
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { Alert, Badge, Button, Card, Group, Loader, Stack, Text } from '@mantine/core';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  Checkbox,
+  Group,
+  Loader,
+  Modal,
+  Stack,
+  Text,
+} from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { useQuery } from '@tanstack/react-query';
 import { PERM } from '@delfrance/auth';
@@ -11,6 +22,7 @@ import { usePermission } from '@/lib/auth';
 import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
+  type MercadoLivreMassImportStatus,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 
@@ -75,6 +87,73 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
   const connected = query.data?.connected === true;
   const me = query.data?.me ?? null;
 
+  // --- Mass import ("Importar todos os anúncios", #621) ---
+  const [massImportOpened, setMassImportOpened] = useState(false);
+  const [massImportBusy, setMassImportBusy] = useState(false);
+  const [massImportJobId, setMassImportJobId] = useState<string | null>(null);
+  const [importarEstoque, setImportarEstoque] = useState(true);
+  const [sobrescreverEstoque, setSobrescreverEstoque] = useState(false);
+  const [importarPreco, setImportarPreco] = useState(true);
+  const [sobrescreverPreco, setSobrescreverPreco] = useState(true);
+  const [importarFotos, setImportarFotos] = useState(true);
+  const [importarCategorias, setImportarCategorias] = useState(true);
+  const [atualizarProdutoPai, setAtualizarProdutoPai] = useState(true);
+  const [atualizarCadastrados, setAtualizarCadastrados] = useState(false);
+
+  const massImportQuery = useQuery({
+    queryKey: ['ml-mass-import', integracaoId, massImportJobId],
+    queryFn: () => {
+      if (!client || !massImportJobId) throw new Error('not ready');
+      return client.massImportStatus({ integracaoId, jobId: massImportJobId });
+    },
+    enabled: Boolean(client) && Boolean(massImportJobId),
+    retry: false,
+    refetchInterval: (q) => (q.state.data?.status === 'running' ? 3000 : false),
+  });
+
+  async function handleStartMassImport() {
+    if (!client) return;
+    setMassImportBusy(true);
+    try {
+      const { jobId } = await client.startMassImport({
+        integracaoId,
+        options: {
+          importarEstoque,
+          sobrescreverEstoque,
+          importarPreco,
+          sobrescreverPreco,
+          importarFotos,
+          importarCategorias,
+          atualizarProdutoPai,
+          atualizarCadastrados,
+        },
+      });
+      setMassImportJobId(jobId);
+      setMassImportOpened(false);
+    } catch (err) {
+      if (err instanceof MercadoLivreClientHttpError) {
+        if (err.code === 'ML_MASS_IMPORT_RUNNING') {
+          notifications.show({
+            color: 'yellow',
+            message: 'Já existe uma importação em andamento.',
+          });
+        } else {
+          notifications.show({ color: 'red', message: err.message });
+        }
+        return;
+      }
+      if (err instanceof MercadoLivreClientNetworkError) {
+        notifications.show({ color: 'red', message: 'Falha de rede ao iniciar a importação.' });
+        return;
+      }
+      throw err;
+    } finally {
+      setMassImportBusy(false);
+    }
+  }
+
+  const massImport = massImportQuery.data;
+
   return (
     <Card withBorder padding="md">
       <Stack gap="sm">
@@ -108,12 +187,134 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
           >
             {connected ? 'Reautenticar' : 'Conectar conta'}
           </Button>
+          <Button
+            type="button"
+            variant="default"
+            onClick={() => setMassImportOpened(true)}
+            disabled={!client || !canWrite}
+          >
+            Importar todos os anúncios
+          </Button>
           {!canWrite && (
             <Text size="xs" c="dimmed">
               Requer permissão de escrita em integrações.
             </Text>
           )}
         </Group>
+
+        {massImportJobId && <MassImportProgress query={massImportQuery} data={massImport} />}
+      </Stack>
+
+      <Modal
+        opened={massImportOpened}
+        onClose={() => setMassImportOpened(false)}
+        title="Importar todos os anúncios"
+        centered
+      >
+        <Stack>
+          <Text size="sm" c="dimmed">
+            Varre todos os anúncios da conta e importa (ou atualiza) cada um. Pode levar alguns
+            minutos — acompanhe o progresso neste painel.
+          </Text>
+          <Checkbox
+            label="Importar estoque"
+            checked={importarEstoque}
+            onChange={(e) => setImportarEstoque(e.currentTarget.checked)}
+          />
+          <Checkbox
+            label="Sobrescrever estoque existente"
+            checked={sobrescreverEstoque}
+            onChange={(e) => setSobrescreverEstoque(e.currentTarget.checked)}
+            disabled={!importarEstoque}
+          />
+          <Checkbox
+            label="Importar preço"
+            checked={importarPreco}
+            onChange={(e) => setImportarPreco(e.currentTarget.checked)}
+          />
+          <Checkbox
+            label="Sobrescrever preço existente"
+            checked={sobrescreverPreco}
+            onChange={(e) => setSobrescreverPreco(e.currentTarget.checked)}
+            disabled={!importarPreco}
+          />
+          <Checkbox
+            label="Importar fotos"
+            checked={importarFotos}
+            onChange={(e) => setImportarFotos(e.currentTarget.checked)}
+          />
+          <Checkbox
+            label="Importar categorias"
+            checked={importarCategorias}
+            onChange={(e) => setImportarCategorias(e.currentTarget.checked)}
+          />
+          <Checkbox
+            label="Completar dados do produto pai"
+            checked={atualizarProdutoPai}
+            onChange={(e) => setAtualizarProdutoPai(e.currentTarget.checked)}
+          />
+          <Checkbox
+            label="Atualizar anúncios já cadastrados"
+            checked={atualizarCadastrados}
+            onChange={(e) => setAtualizarCadastrados(e.currentTarget.checked)}
+          />
+          <Button onClick={handleStartMassImport} loading={massImportBusy} disabled={!client}>
+            Iniciar importação
+          </Button>
+        </Stack>
+      </Modal>
+    </Card>
+  );
+}
+
+/** Progress/outcome section for the running-or-finished mass-import job. */
+function MassImportProgress({
+  query,
+  data,
+}: {
+  query: { isLoading: boolean; error: unknown };
+  data: MercadoLivreMassImportStatus | undefined;
+}) {
+  if (query.error != null) {
+    const message =
+      query.error instanceof MercadoLivreClientHttpError
+        ? query.error.message
+        : query.error instanceof MercadoLivreClientNetworkError
+          ? 'Falha de rede ao consultar a importação.'
+          : 'Não foi possível consultar a importação.';
+    return (
+      <Alert color="yellow" variant="light">
+        {message}
+      </Alert>
+    );
+  }
+  if (!data) {
+    return query.isLoading ? <Loader size="sm" /> : null;
+  }
+
+  return (
+    <Card withBorder padding="sm">
+      <Stack gap={4}>
+        <Group justify="space-between">
+          <Text size="sm" fw={500}>
+            Importação em massa
+          </Text>
+          {data.status === 'running' && <Loader size="xs" />}
+        </Group>
+        <Text size="sm">
+          {data.scanned} anúncios encontrados · {data.imported} importados · {data.skipped} pulados
+          · {data.failureCount} falhas
+        </Text>
+        {data.status === 'completed' && (
+          <Alert color="green" variant="light">
+            Importação concluída.
+          </Alert>
+        )}
+        {data.status === 'failed' && (
+          <Alert color="red" variant="light">
+            Falha na importação{data.erro ? `: ${data.erro}` : '.'}
+          </Alert>
+        )}
       </Stack>
     </Card>
   );
