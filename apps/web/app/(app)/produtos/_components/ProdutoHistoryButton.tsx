@@ -30,6 +30,19 @@ import {
 const brl = (value: number) => formatReais(value);
 const dateFmt = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
 
+/**
+ * The Firestore JS SDK registers `db.pipeline()` on every Firestore instance
+ * (side-effect-imported from `firebase/firestore/pipelines`) regardless of
+ * what backend it's connected to — so `isPipelineSupported(db)` returns
+ * `true` even against the Firebase Emulator Suite, which does not implement
+ * the Pipelines RPC at all (see the `firestore-pipelines` skill, §5/§7). The
+ * build-time emulator flag (same one `lib/firebase/client.ts` uses to decide
+ * whether to call `connectFirestoreEmulator`) is the only deterministic
+ * signal `isPipelineSupported` can't give us — gate on it explicitly instead
+ * of guessing at a runtime error code from the failed RPC.
+ */
+const USING_FIRESTORE_EMULATOR = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATOR === 'true';
+
 /** `historicoDeModificacoes.campos` entry each kind's changes live under. */
 const CHANGED_FIELD = { preco: 'precos', custo: 'custo' } as const;
 
@@ -174,7 +187,7 @@ async function fetchHistoryEntries(
   produtoId: string,
   changedField: string,
 ): Promise<HistoryEntryRow[]> {
-  if (isPipelineSupported(db)) {
+  if (isPipelineSupported(db) && !USING_FIRESTORE_EMULATOR) {
     try {
       return await fetchHistoryEntriesViaPipeline(db, produtoId, changedField);
     } catch (err) {

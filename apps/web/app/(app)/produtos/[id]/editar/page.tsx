@@ -48,6 +48,7 @@ import { ExtraDataManager } from '../../_components/ExtraDataManager';
 import { ImpostoManager } from '../../_components/ImpostoManager';
 import { KitManager, stripKitForSave } from '../../_components/KitManager';
 import { KitVariacoesManager, type KitVariacoesFlush } from '../../_components/KitVariacoesManager';
+import { ModificacoesManager } from '../../_components/ModificacoesManager';
 import { PrecoCustoManager, stripPrecosForSave } from '../../_components/PrecoCustoManager';
 import { VideoManager } from '../../_components/VideoManager';
 import { VariationManager, type VariationRow } from '../../_components/VariationManager';
@@ -62,21 +63,27 @@ import {
 const REFERENCED_BY_DISPLAY = 5;
 
 /**
- * Edit-only page schema: the aggregate model plus the `mercadoLivre` UI anchor
- * — a transient key whose only job is giving the Mercado Livre tab a field
- * descriptor (the tab is self-contained; nothing is read from or written to
- * the form value). Edit-only because publishing needs a SAVED produto, so the
- * create page keeps the plain aggregate.
+ * Edit-only page schema: the aggregate model plus two UI-anchor keys —
+ * `mercadoLivre` and `modificacoes` — whose only job is giving their tab a
+ * field descriptor (both tabs are self-contained; nothing is read from or
+ * written to the form value for either). Edit-only because both need a
+ * SAVED produto (publishing; a modification history), so the create page
+ * keeps the plain aggregate.
  */
 const produtoEditarSchema = produtoPageBaseSchema.extend({
   mercadoLivre: z.null().default(null),
+  modificacoes: z.null().default(null),
 });
 
-/** Tab order for the edit page — the shared sections plus Mercado Livre. */
-const PRODUTO_SECTIONS_EDITAR = [...PRODUTO_SECTIONS, 'Mercado Livre'];
+/** Tab order for the edit page — the shared sections plus Mercado Livre + Modificações. */
+const PRODUTO_SECTIONS_EDITAR = [...PRODUTO_SECTIONS, 'Mercado Livre', 'Modificações'];
 
-/** The shared transient keys plus the Mercado Livre tab anchor. */
-const PRODUTO_TRANSIENT_FIELDS_EDITAR = [...PRODUTO_TRANSIENT_FIELDS, 'mercadoLivre'];
+/** The shared transient keys plus the Mercado Livre + Modificações tab anchors. */
+const PRODUTO_TRANSIENT_FIELDS_EDITAR = [
+  ...PRODUTO_TRANSIENT_FIELDS,
+  'mercadoLivre',
+  'modificacoes',
+];
 
 export default function EditarProdutoPage() {
   const params = useParams<{ id: string }>();
@@ -400,6 +407,14 @@ export default function EditarProdutoPage() {
         renderInput: (p) => (
           <MercadoLivreManager produtoId={params.id} db={db} disabled={p.disabled} />
         ),
+      },
+      modificacoes: {
+        label: 'Modificações',
+        section: 'Modificações',
+        // Self-contained tab (like Estoque/Mercado Livre): a read-only feed of
+        // the produto's unified `historicoDeModificacoes` entries with
+        // per-field revert, decoupled from this form's save.
+        renderInput: () => <ModificacoesManager produtoId={params.id} db={db} />,
       },
       componentesKit: {
         label: 'Componentes do kit',
