@@ -28,7 +28,7 @@ describe('extraDataHistorySource', () => {
       subcolecao: 'extraData',
       docId: 'singleton',
       eventId: 'evt1',
-      eventTimeMillis: 1000,
+      eventTimeMicros: 1_000_000,
     });
     expect(entry).toBeNull();
   });
@@ -42,7 +42,7 @@ describe('extraDataHistorySource', () => {
       subcolecao: 'extraData',
       docId: 'singleton',
       eventId: 'evt1',
-      eventTimeMillis: 1000,
+      eventTimeMicros: 1_000_000,
     });
     expect(entry?.campos).toEqual(['descricao']);
   });
@@ -72,7 +72,7 @@ describe('impostoHistorySource', () => {
       subcolecao: 'imposto',
       docId: 'op1',
       eventId: 'evt1',
-      eventTimeMillis: 1000,
+      eventTimeMicros: 1_000_000,
     });
     expect(entry).toBeNull();
   });
@@ -86,7 +86,7 @@ describe('impostoHistorySource', () => {
       subcolecao: 'imposto',
       docId: 'op1',
       eventId: 'evt1',
-      eventTimeMillis: 1000,
+      eventTimeMicros: 1_000_000,
     });
     expect(entry?.campos).toEqual(['NCM']);
   });

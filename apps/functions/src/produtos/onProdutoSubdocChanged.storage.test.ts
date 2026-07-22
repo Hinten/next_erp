@@ -33,7 +33,7 @@ function freshId(prefix = 'p') {
  * the trigger passes; a constant so the redelivery assertion can compare
  * content-identical docs (timestamp included).
  */
-const EVENT_TIME_MILLIS = Date.parse('2026-07-21T12:00:00.000Z');
+const EVENT_TIME_MICROS = Date.parse('2026-07-21T12:00:00.000Z') * 1000;
 
 /** Composes one write exactly like `makeModificationHistoryTrigger`'s callback body. */
 async function driveTrigger(
@@ -43,7 +43,7 @@ async function driveTrigger(
   before: DocumentData | undefined,
   after: DocumentData | undefined,
   eventId: string,
-  eventTimeMillis: number = EVENT_TIME_MILLIS,
+  eventTimeMicros: number = EVENT_TIME_MICROS,
 ): Promise<boolean> {
   const { produtoId, docId, path } = source.resolve(params);
   const entry = buildModificationEntry({
@@ -54,7 +54,7 @@ async function driveTrigger(
     subcolecao: source.subcolecao,
     docId,
     eventId,
-    eventTimeMillis,
+    eventTimeMicros,
   });
   if (entry === null) return false;
   return recordModification(db, produtoId, entry, {
