@@ -41,7 +41,11 @@ jobs:
       - name: Set up pnpm via Corepack
         run: |
           corepack enable
-          corepack prepare pnpm@11.2.2 --activate
+          # No version pinned on purpose: corepack takes it from
+          # `packageManager` in package.json — the single source of
+          # truth — and overrides any `corepack prepare` pin. Keeping
+          # it unpinned is what guarantees this prewarm environment
+          # matches the one CI actually installs with.
           pnpm --version
 
       - name: Get pnpm store path

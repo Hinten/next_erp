@@ -7,7 +7,9 @@ Thanks for considering a contribution. This monorepo is in active development; e
 Prerequisites:
 
 - Node 22+
-- pnpm 9+
+- pnpm — run `corepack enable` once and the right version is fetched for you.
+  It is pinned by `packageManager` in `package.json` (the single source of
+  truth), so there is no need to install pnpm globally.
 - A Firebase project for testing (your own; the maintainers' staging project is reserved for CI)
 
 ```bash
