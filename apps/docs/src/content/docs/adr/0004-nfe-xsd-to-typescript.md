@@ -69,8 +69,12 @@ later moved under `packages/integrations/nfe/generated/moc<version>/`
 (`schemas/` and `types/`) so MOC versions can sit side by side, and the
 generator now emits **two** files: `nfe-schema.ts` plus a Zod mirror,
 `nfe-schema-zod.ts`. What remains at `src/types/nfe-schema*.ts` are re-export
-shims. The decision recorded above is unchanged — only the layout moved. See
-the package `CLAUDE.md` for the current version-pinning playbook.
+shims. `MANIFEST.json` followed the XSDs to
+`generated/moc<version>/schemas/MANIFEST.json` — provenance is now per-MOC, so
+each vendored pack documents itself and a new MOC cannot silently inherit the
+previous one's manifest. The decision recorded above is unchanged — only the
+layout moved. See the package `CLAUDE.md` for the current version-pinning
+playbook.
 
 ## Status
 

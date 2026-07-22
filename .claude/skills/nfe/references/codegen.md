@@ -14,9 +14,9 @@ SEFAZ update-watch routine automates it.
   `src/types/nfe-schema*.ts` are re-export **shims** the generator never
   writes to; mistaking them for the output is what made the `ci-nfe.yml`
   drift check a no-op (#611).
-- **Provenance**: `packages/integrations/nfe/schemas/MANIFEST.json` — note it
-  sits at the package root, **not** beside the XSDs it describes; it did not
-  move with them.
+- **Provenance**: `packages/integrations/nfe/generated/moc7.0/schemas/MANIFEST.json`
+  — beside the XSDs it describes, and **scoped to one MOC**: a future MOC 8.0
+  pack gets its own `generated/moc8.0/schemas/MANIFEST.json`.
 
 ## When to re-run
 
@@ -38,12 +38,15 @@ schemas. The schema list page:
 3. **Re-vendor `generated/moc7.0/schemas/`.** A full pack replaces the base
    set; a leiaute delta overlays its files on top of the current base (newer
    leiaute wins). The current set = `PL_009i` base + `PL_010c` leiaute
-   overlay, 28 files on disk (the generator reads 27 —
-   `xmldsig-core-schema` is excluded, see below).
+   overlay, 28 `.xsd` files on disk (the generator reads 27 —
+   `xmldsig-core-schema` is excluded, see below). `MANIFEST.json` shares the
+   directory; every reader filters on `.xsd`, so it is inert.
 4. **Verify imports resolve** — every `xs:include`/`xs:import`
    `schemaLocation` must point at a file present in
    `generated/moc7.0/schemas/`.
-5. **Update `MANIFEST.json`** — pack name, NT, publish date, URL, role.
+5. **Update `generated/moc7.0/schemas/MANIFEST.json`** — pack name, NT,
+   publish date, URL, role. Vendoring a **new MOC** means a new manifest in
+   that MOC's own `schemas/` dir, never an edit to the old one.
 6. **Run** `gen:nfe-types`.
 7. **Typecheck and review** the `generated/moc7.0/types/` diff — a new NT
    usually adds/renames fields; check nothing the generator can't express

@@ -1,5 +1,6 @@
 {
-  "description": "SEFAZ NF-e XSD packs vendored in this directory. The SEFAZ update-watch routine diffs this manifest against the portal to detect new Notas Técnicas / schema packs.",
+  "description": "Provenance for the SEFAZ NF-e XSD packs vendored in this directory, alongside this manifest. Scoped to one MOC version: each generated/moc<version>/schemas/ carries its own MANIFEST.json, so a future MOC 8.0 pack gets generated/moc8.0/schemas/MANIFEST.json rather than overwriting this one. The SEFAZ update-watch routine diffs this manifest against the portal to detect new Notas Técnicas / schema packs.",
+  "moc": "7.0",
   "layout": "4.00",
   "portalListUrl": "https://www.nfe.fazenda.gov.br/portal/listaConteudo.aspx?tipoConteudo=BMPFMBoln3w=",
   "packs": [
