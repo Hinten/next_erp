@@ -172,7 +172,7 @@ describe.skipIf(!EMULATED)('onProdutoExtraDataChanged / onProdutoImpostoChanged 
       expect(entry.path).toBe(`produtos/${produtoId}/imposto/${operacaoId}`);
     });
 
-    it('a delete with the parent EXISTING records kind "delete", full snapshot', async () => {
+    it('a delete with the parent EXISTING records kind "delete" with every non-ignored field', async () => {
       const db = getDb();
       const produtoId = freshId();
       await db.collection('produtos').doc(produtoId).set({ nome: 'Produto' });
@@ -209,6 +209,30 @@ describe.skipIf(!EMULATED)('onProdutoExtraDataChanged / onProdutoImpostoChanged 
         { produtoId, docId: operacaoId },
         before,
         undefined,
+        eventId,
+      );
+      expect(wrote).toBe(false);
+
+      const entries = await historyCollection(db, produtoId).get();
+      expect(entries.empty).toBe(true);
+    });
+
+    it('an update with the parent produto MISSING records NO entry either', async () => {
+      // A user's update event delivered AFTER onProdutoDeleted's cascade —
+      // the guard covers every entry kind, not only the cascade's deletes.
+      const db = getDb();
+      const produtoId = freshId('gone');
+
+      const operacaoId = freshId('op');
+      const before = { id: operacaoId, timestamp: 1, NCM: '12345678' };
+      const after = { id: operacaoId, timestamp: 2, NCM: '87654321' };
+      const eventId = freshId('evt');
+      const wrote = await driveTrigger(
+        db,
+        impostoHistorySource,
+        { produtoId, docId: operacaoId },
+        before,
+        after,
         eventId,
       );
       expect(wrote).toBe(false);
