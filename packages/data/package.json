@@ -25,8 +25,8 @@
   },
   "dependencies": {
     "@delfrance/schemas": "workspace:*",
-    "firebase": "^12.13.0",
-    "zod": "^4.4.3"
+    "firebase": "catalog:",
+    "zod": "catalog:"
   },
   "peerDependencies": {
     "@tanstack/react-query": "^5",
@@ -46,11 +46,11 @@
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",
-    "@tanstack/react-query": "^5.100.10",
-    "@types/react": "^19.2.0",
-    "firebase-admin": "^14.0.0",
-    "react": "^19.2.0",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "@tanstack/react-query": "catalog:",
+    "@types/react": "catalog:",
+    "firebase-admin": "catalog:",
+    "react": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

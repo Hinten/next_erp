@@ -28,12 +28,12 @@
   "dependencies": {
     "@delfrance/auth": "workspace:*",
     "@delfrance/schemas": "workspace:*",
-    "firebase-admin": "^14.0.0"
+    "firebase-admin": "catalog:"
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",
-    "@types/node": "^24.10.0",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.3"
+    "@types/node": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
   }
 }

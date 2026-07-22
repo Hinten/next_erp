@@ -177,7 +177,14 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `no-optional-without-nullable` (error), `no-inline-admin-collection` (warn).
 - Firebase App Hosting deploys every Next app; heavy work goes to Cloud
   Functions. `apps/portal/` does NOT exist — public pages are deferred.
-- **Versions are not restated here — read the `package.json`.** There is no pnpm
-  catalog, so versions are duplicated per manifest and `next` is pinned **exact**
-  in 9 of them (a Next bump is a coordinated edit, not a lockfile refresh).
-  `packageManager` is the authority for pnpm.
+- **Shared dependency versions live in the pnpm `catalog:`**
+  (`pnpm-workspace.yaml`): a dep declared by 2+ workspace manifests is
+  cataloged and referenced as `catalog:`; single-consumer deps stay literal.
+  `catalogMode: strict` routes `pnpm add` through the catalog. Four things
+  NEVER use `catalog:`: the 4 nested `apps/*/functions` manifests (not
+  workspace members), `apps/functions`' runtime `dependencies` (every
+  `prepare-deploy.mjs` copies `dependencies` verbatim into an artifact that
+  plain cloud `npm install` must resolve), all `peerDependencies` (libraries
+  keep broad ranges), and `workspace:*` specs. `next` stays pinned **exact**
+  (`16.2.6`) in the catalog — a Next bump is still one deliberate edit, now a
+  single line. `packageManager` is the authority for pnpm.

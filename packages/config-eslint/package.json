@@ -13,14 +13,14 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "eslint-config-prettier": "^10.1.5",
-    "typescript-eslint": "^8.59.3"
+    "eslint-config-prettier": "catalog:",
+    "typescript-eslint": "catalog:"
   },
   "peerDependencies": {
     "eslint": ">=9"
   },
   "devDependencies": {
-    "eslint": "^9.39.4",
-    "vitest": "^4.1.6"
+    "eslint": "catalog:",
+    "vitest": "catalog:"
   }
 }

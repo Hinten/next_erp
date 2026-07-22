@@ -12,12 +12,12 @@
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
-    "zod": "^4.4.3"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",
-    "@types/node": "^24.10.0",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

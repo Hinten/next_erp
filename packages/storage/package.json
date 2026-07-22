@@ -18,8 +18,8 @@
   "dependencies": {
     "@delfrance/data": "workspace:*",
     "@delfrance/schemas": "workspace:*",
-    "firebase": "^12.13.0",
-    "zod": "^4.4.3"
+    "firebase": "catalog:",
+    "zod": "catalog:"
   },
   "peerDependencies": {
     "firebase-admin": "^14"
@@ -31,8 +31,8 @@
   },
   "devDependencies": {
     "@delfrance/config-tsconfig": "workspace:*",
-    "firebase-admin": "^14.0.0",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.6"
+    "firebase-admin": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }
