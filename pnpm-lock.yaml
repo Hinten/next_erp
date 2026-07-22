@@ -190,12 +190,18 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../packages/config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
       '@types/node':
         specifier: 'catalog:'
         version: 24.12.4
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       tsx:
         specifier: 'catalog:'
         version: 4.21.0
@@ -221,6 +227,9 @@ importers:
       '@delfrance/auth':
         specifier: workspace:*
         version: link:../../packages/auth
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../packages/config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
@@ -236,6 +245,9 @@ importers:
       esbuild:
         specifier: 'catalog:'
         version: 0.25.12
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -838,9 +850,15 @@ importers:
 
   packages/auth:
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../config-tsconfig
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -866,7 +884,14 @@ importers:
 
   packages/config-tsconfig: {}
 
-  packages/config-vitest: {}
+  packages/config-vitest:
+    devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../config-eslint
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
 
   packages/core:
     dependencies:
@@ -874,9 +899,15 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../config-tsconfig
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -896,6 +927,9 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../config-tsconfig
@@ -905,6 +939,9 @@ importers:
       '@types/react':
         specifier: 'catalog:'
         version: 19.2.14
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       firebase-admin:
         specifier: 'catalog:'
         version: 14.0.0
@@ -924,9 +961,15 @@ importers:
         specifier: workspace:*
         version: link:../../core
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -940,9 +983,15 @@ importers:
         specifier: workspace:*
         version: link:../../core
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -956,21 +1005,18 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
       eslint:
         specifier: 'catalog:'
         version: 9.39.4
-      eslint-config-prettier:
-        specifier: 'catalog:'
-        version: 10.1.8(eslint@9.39.4)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
-      typescript-eslint:
-        specifier: 'catalog:'
-        version: 8.59.3(eslint@9.39.4)(typescript@6.0.3)
       vitest:
         specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
@@ -981,9 +1027,15 @@ importers:
         specifier: workspace:*
         version: link:../../core
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -997,9 +1049,15 @@ importers:
         specifier: workspace:*
         version: link:../../core
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1016,9 +1074,15 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1038,9 +1102,15 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1099,9 +1169,6 @@ importers:
       eslint:
         specifier: 'catalog:'
         version: 9.39.4
-      eslint-config-prettier:
-        specifier: 'catalog:'
-        version: 10.1.8(eslint@9.39.4)
       firebase-admin:
         specifier: 'catalog:'
         version: 14.0.0
@@ -1111,9 +1178,6 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
-      typescript-eslint:
-        specifier: 'catalog:'
-        version: 8.59.3(eslint@9.39.4)(typescript@6.0.3)
       vitest:
         specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
@@ -1124,9 +1188,15 @@ importers:
         specifier: workspace:*
         version: link:../../core
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1140,12 +1210,18 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../config-tsconfig
       '@types/node':
         specifier: 'catalog:'
         version: 24.12.4
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1159,9 +1235,15 @@ importers:
         specifier: workspace:*
         version: link:../core
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../config-tsconfig
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1184,6 +1266,9 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../config-tsconfig
@@ -1193,6 +1278,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 24.12.4
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       firebase:
         specifier: 'catalog:'
         version: 12.13.0
@@ -1236,9 +1324,6 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
-      typescript-eslint:
-        specifier: 'catalog:'
-        version: 8.59.3(eslint@9.39.4)(typescript@6.0.3)
       vitest:
         specifier: 'catalog:'
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.4)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@7.3.3(@types/node@24.12.4)(tsx@4.21.0)(yaml@2.9.0))
@@ -1258,9 +1343,15 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../config-tsconfig
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       firebase-admin:
         specifier: 'catalog:'
         version: 14.0.0
@@ -1307,6 +1398,9 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../config-tsconfig
@@ -1331,6 +1425,12 @@ importers:
       '@types/react-dom':
         specifier: 'catalog:'
         version: 19.2.3(@types/react@19.2.14)
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
+      eslint-plugin-react-hooks:
+        specifier: ^7.1.1
+        version: 7.1.1(eslint@9.39.4)
       jsdom:
         specifier: 'catalog:'
         version: 29.1.1(@noble/hashes@1.8.0)
@@ -1359,12 +1459,18 @@ importers:
         specifier: 'catalog:'
         version: 14.0.0
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../packages/config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
       '@types/node':
         specifier: 'catalog:'
         version: 24.12.4
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       tsx:
         specifier: 'catalog:'
         version: 4.21.0
@@ -1387,12 +1493,18 @@ importers:
         specifier: 'catalog:'
         version: 14.0.0
     devDependencies:
+      '@delfrance/config-eslint':
+        specifier: workspace:*
+        version: link:../../packages/config-eslint
       '@delfrance/config-tsconfig':
         specifier: workspace:*
         version: link:../../packages/config-tsconfig
       '@types/node':
         specifier: 'catalog:'
         version: 24.12.4
+      eslint:
+        specifier: 'catalog:'
+        version: 9.39.4
       tsx:
         specifier: 'catalog:'
         version: 4.21.0

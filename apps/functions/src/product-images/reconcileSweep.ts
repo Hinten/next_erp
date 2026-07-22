@@ -4,6 +4,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { arquivoCollection } from '@delfrance/data/admin/collections';
 
 import { getAdminApp, getDb } from '../lib/admin';
+import { isGrpcLikeError } from '../lib/grpcErrors';
 import { processProductOriginal } from './processOriginal';
 
 /**
@@ -57,9 +58,12 @@ export const reconcileProductImages = onSchedule(
         written += await processProductOriginal(bucket, db, name);
         processed += 1;
       } catch (err) {
-        // Isolate per-doc failures (e.g. the Storage object was deleted/unreadable)
-        // so one bad original doesn't abort the batch. Logged (not swallowed
-        // silently); the doc stays `pending` and is retried next run.
+        // Only gRPC-shaped Admin-SDK errors (e.g. the Storage object was
+        // deleted/unreadable) are isolated per-doc; anything else propagates
+        // and aborts the run (deliberate — a non-gRPC failure, like `sharp`
+        // choking on a corrupt image, is not safe to silently keep retrying
+        // per-doc forever). The doc stays `pending` and is retried next run.
+        if (!isGrpcLikeError(err)) throw err;
         failed += 1;
         logger.error(`reconcileProductImages: ${name} (${doc.id}) failed`, err);
       }

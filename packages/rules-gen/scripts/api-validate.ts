@@ -10,6 +10,7 @@
  *   FIREBASE_PROJECT_ID      target project id
  *   FIREBASE_SERVICE_ACCOUNT service-account JSON (scope: auth/firebase)
  */
+/* eslint-disable no-console -- CI validation script: stdout is the interface */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { GaxiosError } from 'gaxios';

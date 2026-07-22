@@ -41,7 +41,19 @@ export const cargo = { schema: cargoSchema, meta: cargoMeta };
 export function decodePermissoes(c: Pick<Cargo, 'permissoes'>): bigint {
   try {
     return BigInt(c.permissoes ?? '0');
-  } catch {
+  } catch (err) {
+    // BigInt() conversion throws exactly three classes: SyntaxError (malformed
+    // string), RangeError (non-integer number), TypeError (Symbol/nullish).
+    // Any of them here means corrupted stored data — zodParse returns raw docs
+    // on schema mismatch, so permissoes can arrive as any shape — and the
+    // contract is "corruption reads as no permissions", not a crashed screen.
+    if (
+      !(err instanceof SyntaxError) &&
+      !(err instanceof RangeError) &&
+      !(err instanceof TypeError)
+    ) {
+      throw err;
+    }
     return 0n;
   }
 }

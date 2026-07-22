@@ -31,7 +31,8 @@ export function parseZodDescription(zodType: ZodTypeAny): ParsedDescription {
       if (parsed && typeof parsed === 'object') {
         return parsed as ParsedDescription;
       }
-    } catch {
+    } catch (err) {
+      if (!(err instanceof SyntaxError)) throw err;
       // Fall through to plain-string handling — describe() may legitimately
       // contain a curly brace in prose.
     }

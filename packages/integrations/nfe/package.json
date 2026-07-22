@@ -43,11 +43,9 @@
     "@types/node-forge": "catalog:",
     "@types/pdfkit": "^0.17.6",
     "eslint": "catalog:",
-    "eslint-config-prettier": "catalog:",
     "firebase-admin": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
-    "typescript-eslint": "catalog:",
     "vitest": "catalog:"
   }
 }

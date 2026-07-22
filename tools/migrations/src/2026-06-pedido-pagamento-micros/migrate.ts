@@ -103,7 +103,6 @@ const isDirectInvocation =
 
 if (isDirectInvocation) {
   runMigration('pedido-pagamento-micros', run).catch((err: unknown) => {
-    // eslint-disable-next-line no-console
     console.error(err);
     process.exitCode = 1;
   });

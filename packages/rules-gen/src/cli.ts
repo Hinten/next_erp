@@ -1,3 +1,4 @@
+/* eslint-disable no-console -- CLI tool: stdout is the interface */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { generateRulesSource } from './generate';

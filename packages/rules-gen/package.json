@@ -6,7 +6,7 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
-    "lint": "echo 'no lint configured for this package yet'",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "test:rules": "vitest run --config vitest.rules.config.ts",
@@ -25,9 +25,11 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@delfrance/config-eslint": "workspace:*",
     "@delfrance/config-tsconfig": "workspace:*",
     "@firebase/rules-unit-testing": "^5.0.1",
     "@types/node": "catalog:",
+    "eslint": "catalog:",
     "firebase": "catalog:",
     "gaxios": "^7.1.4",
     "google-auth-library": "catalog:",
