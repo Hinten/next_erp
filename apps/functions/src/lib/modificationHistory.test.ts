@@ -7,7 +7,7 @@ const base = {
   subcolecao: null,
   docId: 'p1',
   eventId: 'evt1',
-  eventTimeMillis: 1000,
+  eventTimeMicros: 1_000_000,
 };
 
 describe('buildModificationEntry — kind', () => {
@@ -106,14 +106,14 @@ describe('buildModificationEntry — path/subcolecao/docId/eventId/timestamp thr
       subcolecao: 'estoques',
       docId: 'e1',
       eventId: 'evt-xyz',
-      eventTimeMillis: 424242,
+      eventTimeMicros: 424_242_000,
     });
     expect(entry).toMatchObject({
       path: 'produtos/p1/estoques/e1',
       subcolecao: 'estoques',
       docId: 'e1',
       eventId: 'evt-xyz',
-      timestamp: 424242,
+      timestamp: 424_242_000,
     });
   });
 
