@@ -4,7 +4,6 @@ import {
   cleanupProdutoSubcollection,
   e2ePrefix,
   getProdutoData,
-  seedHistoricoCusto,
   seedListasDePreco,
   seedProdutoComFilho,
 } from './_helpers/seed-data';
@@ -17,10 +16,12 @@ import { warmRoutes } from './helpers/warmup';
  * read-only custo-history modal and the min-price/staged-removal validation.
  * Runs serially — later tests build on the prices written by earlier ones.
  *
- * The automatic price/custo-history records and the parent→children precos
- * propagation are now owned by the produto-write Cloud Function trigger —
- * staging has no deployed functions, so those effects are covered by
- * `produto-preco.emulator.e2e.spec.ts` instead.
+ * The automatic modification-history records and the parent→children precos
+ * propagation are now owned by the produto-write Cloud Function trigger,
+ * which writes the unified `historicoDeModificacoes` subcollection the modal
+ * reads — staging has no deployed functions, so it stays EMPTY here; the
+ * modal's empty state is all this suite can prove. Real trigger-written
+ * content is covered by `produto-preco.emulator.e2e.spec.ts` instead.
  */
 test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
   const prefix = e2ePrefix('prod-preco');
@@ -46,9 +47,14 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
 
   test.afterAll(async () => {
     await Promise.all([
+      // Legacy subcollections nothing writes anymore — harmless no-ops today,
+      // kept in case a stray write ever lands there again.
       cleanupProdutoSubcollection(parentId, 'historicoDePrecos'),
       cleanupProdutoSubcollection(parentId, 'historicoDeCusto'),
       cleanupProdutoSubcollection(childId, 'historicoDePrecos'),
+      // The unified history subcollection the modal reads — empty today (no
+      // deployed trigger on staging), but not once it is.
+      cleanupProdutoSubcollection(parentId, 'historicoDeModificacoes'),
     ]);
     await cleanupByNamePrefix('produtos', prefix);
     await cleanupByNamePrefix('listaDePrecos', prefix);
@@ -99,15 +105,17 @@ test.describe.serial('Produtos preço/custo e2e — Preço e custo tab', () => {
       .toEqual({ [varejoId]: { valor: 25 } });
   });
 
-  test('shows a seeded cost-history record in the modal', async ({ page }) => {
-    // Cost-history recording is the produto-write trigger's job now (see
-    // produto-preco.emulator.e2e.spec.ts) — this test only proves the modal
-    // renders a record that's already there, seeded directly the way the
-    // still-live legacy Flutter app also writes these.
-    await seedHistoricoCusto(parentId, 8.5);
+  test('shows the empty state in the cost-history modal (no trigger deployed on staging)', async ({
+    page,
+  }) => {
+    // The modal reads `historicoDeModificacoes`, written only by the
+    // `onProdutoChanged` Cloud Function trigger — staging has no deployed
+    // functions, so the collection stays empty here regardless of the price/
+    // custo edits above. Real seeded-content coverage lives in
+    // produto-preco.emulator.e2e.spec.ts, which runs the trigger for real.
     await openPrecoTab(page);
     await page.getByRole('button', { name: 'Histórico de custo' }).click();
-    await expect(page.getByText(/8,50/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText('Nenhum registro.')).toBeVisible({ timeout: 15_000 });
   });
 
   test('rejects a price of 0 (min R$ 0,01) without silently dropping it', async ({ page }) => {

@@ -31,8 +31,6 @@ export { nowMicros } from '@delfrance/core/datetime';
 // data layer (which depends on schemas, not core directly) can detect changes.
 export { valuesEqual } from '@delfrance/core';
 
-export { auditEntrySchema, type AuditEntry } from './shared/audit';
-
 export {
   outerRefSchema,
   idRefSchema,

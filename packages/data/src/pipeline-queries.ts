@@ -85,6 +85,15 @@ export interface PipelineFieldFilter {
   value: string | number | boolean | null | ReadonlyArray<string | number | boolean | null>;
 }
 
+/**
+ * One `select` projection entry: a bare field path passed through as-is, or
+ * `{ field, as }` to project `field` under an alias (Pipeline
+ * `field(entry.field).as(entry.as)`). Aliasing lets a caller pull a single
+ * nested value (e.g. `changes.precos`) out under a short, stable row key
+ * instead of the caller having to know the source field's dotted path.
+ */
+export type PipelineSelectEntry = string | { field: string; as: string };
+
 export interface PipelineSpec {
   collection: string;
   /**
@@ -107,17 +116,21 @@ export interface PipelineSpec {
    * transfer. `.select()` strips `PipelineResult.ref`, so `buildPipeline`
    * automatically appends the document id as a field aliased to
    * `PIPELINE_ID_FIELD` — `usePipelineSnapshot` reads it back. Row identity
-   * is preserved; callers just pass the fields they want.
+   * is preserved; callers just pass the fields they want. Entries may be a
+   * bare field path or `{ field, as }` to project under an alias.
    */
-  select?: string[];
+  select?: PipelineSelectEntry[];
   /**
    * Restrict the source to a specific set of document ids (within
    * `collection`). When present and non-empty the pipeline sources from
    * `documents([...])` instead of the whole `collection(...)`, then applies the
    * same filters/sort/select/limit. Used by subcollection-lookup filters (e.g.
    * the pedido NF column) that resolve a sibling collection-group query to a
-   * handful of parent ids. An empty array yields no rows — callers should skip
-   * building the pipeline entirely in that case (the source would be empty).
+   * handful of parent ids. An empty array means "no rows" — callers must skip
+   * building the pipeline entirely (`buildPipeline` THROWS on `[]`; falling
+   * through to the collection source would silently full-scan it, the exact
+   * Enterprise data-scanned billing trap, mirroring the `array-contains-any`
+   * empty-list rule).
    */
   idIn?: string[];
   limit?: number;
@@ -245,14 +258,23 @@ function filterExpr(f: PipelineFieldFilter): BooleanExpression {
 export function buildPipeline(db: Firestore, spec: PipelineSpec): Pipeline {
   if (!isPipelineSupported(db)) throw new PipelineUnsupportedError();
 
-  // `idIn` (when non-empty) sources from the specific parent documents a
-  // subcollection lookup resolved to; otherwise scan the whole collection.
-  // `eqAny`/`in` over `__name__` isn't in the Pipelines API of this SDK, so the
+  // An empty id set means "no rows" — falling through to the collection
+  // source would silently FULL-SCAN it (Enterprise bills data scanned), so
+  // fail loudly instead, mirroring the `array-contains-any` empty-list rule.
+  if (spec.idIn && spec.idIn.length === 0) {
+    throw new Error(
+      `buildPipeline: idIn on "${spec.collection}" received an empty id list. ` +
+        `Skip the query and render an empty result set instead.`,
+    );
+  }
+
+  // `idIn` sources from the specific parent documents a subcollection lookup
+  // resolved to; otherwise scan the whole collection. `eqAny`/`in` over
+  // `__name__` isn't in the Pipelines API of this SDK, so the
   // `documents([...])` source stage is how we constrain to an id set.
-  let pipe: Pipeline =
-    spec.idIn && spec.idIn.length > 0
-      ? db.pipeline().documents(spec.idIn.map((id) => `${spec.collection}/${id}`))
-      : db.pipeline().collection(spec.collection);
+  let pipe: Pipeline = spec.idIn
+    ? db.pipeline().documents(spec.idIn.map((id) => `${spec.collection}/${id}`))
+    : db.pipeline().collection(spec.collection);
 
   if (spec.search && spec.search.fields.length > 0) {
     const pattern = buildSimilarityPattern(spec.search.term);
@@ -287,7 +309,13 @@ export function buildPipeline(db: Firestore, spec: PipelineSpec): Pipeline {
     // is the SDK-special-cased reference to the document path; `documentId()`
     // extracts the short id from it.
     const idSelection = documentId(field('__name__')).as(PIPELINE_ID_FIELD);
-    const selections = [...spec.select, idSelection];
+    // Bare-string entries pass through unchanged; `{ field, as }` entries
+    // become `field(entry.field).as(entry.as)` so the caller can pull a
+    // nested value out under a short, stable alias.
+    const requested = spec.select.map((entry) =>
+      typeof entry === 'string' ? entry : field(entry.field).as(entry.as),
+    );
+    const selections = [...requested, idSelection];
     pipe = pipe.select(selections[0]!, ...selections.slice(1));
   }
 

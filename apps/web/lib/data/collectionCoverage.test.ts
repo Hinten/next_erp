@@ -2,7 +2,11 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { ALL_DOMAINS, PRODUTO_SUBCOLLECTION_NAMES } from '@delfrance/schemas';
+import {
+  ALL_DOMAINS,
+  PRODUTO_SUBCOLLECTION_NAMES,
+  historicoModificacaoMeta,
+} from '@delfrance/schemas';
 import { GRUPO_ECONOMICO_COLLECTION_PATH } from '@delfrance/core/tenant';
 
 /**
@@ -39,6 +43,7 @@ const COVERED = new Set<string>([
 /** Identifiers used as `path:` we can't resolve statically — map the known ones. */
 const PATH_IDENTIFIERS: Record<string, string> = {
   GRUPO_ECONOMICO_COLLECTION_PATH,
+  'historicoModificacaoMeta.collectionPath': historicoModificacaoMeta.collectionPath,
 };
 
 const dataDir = dirname(fileURLToPath(import.meta.url));

@@ -39,9 +39,9 @@ const subcollectionHandles = new Map(
  * converter), so the dumb adapter maps the finite produto path patterns to
  * their handles. New produto subcollections (extraData, estoques, imposto) add
  * a case here when their tab lands. (`historicoDePrecos`/`historicoDeCusto`
- * are NOT mapped here — no remaining use-case commits to them through this
- * port; the only client-side history write, `appendPrecoHistory` for a newly
- * created variation child, goes straight through a raw `WriteBatch`.)
+ * are NOT mapped here — nothing on the web side writes them anymore; produto
+ * modification history is unified server-side in `historicoDeModificacoes`,
+ * owned by the `onProdutoChanged` Cloud Function trigger.)
  */
 function refForPath(db: Firestore, path: string): DocumentReference {
   const parts = path.split('/');

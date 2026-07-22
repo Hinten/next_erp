@@ -4,7 +4,7 @@ import type { CollectionHandle } from '@delfrance/data';
 
 // `vi.mock` is hoisted, so anything its factory closes over must come from
 // `vi.hoisted`.
-const { firestoreMock, auditMock } = vi.hoisted(() => {
+const { firestoreMock } = vi.hoisted(() => {
   const txMock = { set: vi.fn(), update: vi.fn(), delete: vi.fn() };
   const runTransactionMock = vi.fn(
     async (_db: unknown, fn: (tx: typeof txMock) => Promise<void>) => {
@@ -13,10 +13,8 @@ const { firestoreMock, auditMock } = vi.hoisted(() => {
   );
   const docMock = vi.fn(() => ({ id: 'NEW_ID' }));
   const collectionMock = vi.fn(() => ({ withConverter: () => 'COLL_REF' }));
-  const writeAuditEntryMock = vi.fn();
   return {
     firestoreMock: { txMock, runTransactionMock, docMock, collectionMock },
-    auditMock: { writeAuditEntryMock },
   };
 });
 
@@ -24,9 +22,6 @@ vi.mock('firebase/firestore', () => ({
   runTransaction: firestoreMock.runTransactionMock,
   doc: firestoreMock.docMock,
   collection: firestoreMock.collectionMock,
-}));
-vi.mock('@delfrance/data/audit', () => ({
-  writeAuditEntry: auditMock.writeAuditEntryMock,
 }));
 
 import { NothingChangedError, saveRecord, type TransactionWrite } from './saveRecord';
@@ -54,7 +49,6 @@ beforeEach(() => {
   firestoreMock.runTransactionMock.mockClear();
   firestoreMock.docMock.mockClear();
   firestoreMock.collectionMock.mockClear();
-  auditMock.writeAuditEntryMock.mockReset();
 });
 
 describe('saveRecord', () => {
@@ -121,46 +115,6 @@ describe('saveRecord', () => {
     expect(firestoreMock.txMock.set.mock.calls[0]![1]).toEqual({ nome: 'novo', email: null });
     expect(result.id).toBe('NEW_ID');
     expect(firestoreMock.txMock.update).not.toHaveBeenCalled();
-  });
-
-  it('passes kind/uid/patch correctly to writeAuditEntry on both create and update', async () => {
-    await saveRecord({
-      db: {} as never,
-      collection: fakeCollection(),
-      pathContext: {},
-      values: { nome: 'x' },
-      dirtyFields: { nome: true },
-      currentUserUid: 'uid-create',
-    });
-    expect(auditMock.writeAuditEntryMock).toHaveBeenLastCalledWith(
-      firestoreMock.txMock,
-      expect.objectContaining({
-        kind: 'create',
-        uid: 'uid-create',
-        docId: 'NEW_ID',
-        collectionPath: 'clientes',
-        patch: { nome: 'x' },
-      }),
-    );
-
-    await saveRecord({
-      db: {} as never,
-      collection: fakeCollection(),
-      pathContext: {},
-      recordId: 'EXISTING_ID',
-      values: { nome: 'y' },
-      dirtyFields: { nome: true },
-      currentUserUid: 'uid-update',
-    });
-    expect(auditMock.writeAuditEntryMock).toHaveBeenLastCalledWith(
-      firestoreMock.txMock,
-      expect.objectContaining({
-        kind: 'update',
-        uid: 'uid-update',
-        docId: 'EXISTING_ID',
-        patch: { nome: 'y' },
-      }),
-    );
   });
 });
 

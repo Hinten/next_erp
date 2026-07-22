@@ -20,6 +20,7 @@ export {
 export { defaultQueryConstraints, type DefaultQueryOptions } from './defaultQuery';
 
 export {
+  PIPELINE_ID_FIELD,
   PipelineUnsupportedError,
   buildPipeline,
   isPipelineSupported,
@@ -29,6 +30,5 @@ export {
   type PipelineOrderSpec,
   type PipelineFieldFilter,
   type PipelineFilterOp,
+  type PipelineSelectEntry,
 } from './pipeline-queries';
-
-export { writeAuditEntry, type AuditEntryInput } from './audit';

@@ -2840,16 +2840,6 @@ export async function listHistoricoModificacoes(
   return snap.docs.map((d) => d.data() as Record<string, unknown>);
 }
 
-/** Seed one `historicoDeCusto` record (the old app's wire shape). */
-export async function seedHistoricoCusto(produtoId: string, valor: number): Promise<void> {
-  await db()
-    .collection('produtos')
-    .doc(produtoId)
-    .collection('historicoDeCusto')
-    .doc('custo-test')
-    .set({ valor, timestamp: Date.now() });
-}
-
 /**
  * Seed `n` listaDePrecos docs for the `/listas-de-precos` CRUD suite. `padrao`
  * is true only on the first row and `ativo` alternates, so the boolean column

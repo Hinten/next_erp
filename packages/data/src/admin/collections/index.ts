@@ -22,8 +22,6 @@ export { categoriaCollection } from './categoriaCollection';
 export { produtoCollection } from './produtoCollection';
 export { estoqueCollection } from './estoqueCollection';
 export { historicoEstoqueCollection } from './historicoEstoqueCollection';
-export { historicoPrecoCollection } from './historicoPrecoCollection';
-export { historicoCustoCollection } from './historicoCustoCollection';
 export { historicoModificacaoCollection } from './historicoModificacaoCollection';
 export { tabelaDeMedidasCollection } from './tabelaDeMedidasCollection';
 export { intFreteCollection } from './intFreteCollection';
