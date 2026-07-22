@@ -4,6 +4,7 @@ import { useState, type ReactNode } from 'react';
 import { Button, Group, Modal, Stack, Text } from '@mantine/core';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { ActionConfig } from '../schema/types';
+import { resolveActionRows } from './resolveActionRows';
 
 /**
  * Shared bulk-action dispatcher for the ActionBar and the ActionSidePanel.
@@ -13,10 +14,16 @@ import type { ActionConfig } from '../schema/types';
  */
 export function useActionRunner<T>({
   selectedRows,
+  visibleRows = [],
   onActionComplete,
 }: {
   /** Rows currently checked in the table. */
   selectedRows: SnapshotRow<T>[];
+  /**
+   * Rows currently shown in the table (filtered page). Used when an action
+   * sets `fallbackToSingleVisibleRow` and nothing is selected.
+   */
+  visibleRows?: SnapshotRow<T>[];
   /** Called after a `refreshOnComplete` action finishes (e.g. delete). */
   onActionComplete?: () => void;
 }): {
@@ -26,7 +33,8 @@ export function useActionRunner<T>({
   const [pending, setPending] = useState<ActionConfig<T> | null>(null);
 
   async function execute(action: ActionConfig<T>) {
-    await action.run(selectedRows);
+    const rows = resolveActionRows(action, selectedRows, visibleRows);
+    await action.run(rows);
     if (action.refreshOnComplete) onActionComplete?.();
   }
 

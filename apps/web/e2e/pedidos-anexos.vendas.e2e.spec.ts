@@ -114,4 +114,32 @@ test.describe.serial('Pedidos e2e — Download Anexos', () => {
     await page.waitForTimeout(500);
     expect(gotDownload).toBe(false);
   });
+
+  test('single visible row: downloads without selecting the checkbox', async ({ page }) => {
+    // Flutter perk: when the list has exactly one hit and nothing is checked,
+    // Download Anexos still runs on that pedido.
+    await page.route(fixtures.arquivoUrl, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/pdf',
+        body: payload,
+      });
+    });
+
+    await page.goto('/pedidos');
+    await expect(page.getByRole('heading', { name: 'Pedidos' })).toBeVisible();
+    await expect(page.getByRole('table')).toBeVisible({ timeout: 15_000 });
+
+    await applyTextFilter(page, 'Número', fixtures.withAnexoNumero);
+    await expectRowVisible(page, fixtures.withAnexoNumero);
+
+    // Ensure the row is NOT selected.
+    const row = page.getByRole('row', { name: new RegExp(fixtures.withAnexoNumero) });
+    await expect(row.getByRole('checkbox')).not.toBeChecked();
+
+    const downloadPromise = page.waitForEvent('download', { timeout: 30_000 });
+    await page.getByRole('button', { name: 'Download Anexos', exact: true }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe(fixtures.arquivoFileName);
+  });
 });

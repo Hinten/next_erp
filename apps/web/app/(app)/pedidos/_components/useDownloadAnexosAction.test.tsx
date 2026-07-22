@@ -9,6 +9,7 @@ describe('useDownloadAnexosAction', () => {
     expect(result.current.action.id).toBe('download-anexos');
     expect(result.current.action.label).toBe('Download Anexos');
     expect(result.current.action.requiresSelection).toBe(true);
+    expect(result.current.action.fallbackToSingleVisibleRow).toBe(true);
     expect(typeof result.current.action.run).toBe('function');
   });
 });
