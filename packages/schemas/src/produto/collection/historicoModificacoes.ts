@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { microsSinceEpoch } from '../../shared/datetime';
 import type { CollectionMetadata } from '../../types';
 
 // Unified modification history is produto-scoped: it reuses the produto
@@ -18,8 +19,10 @@ const PERM_PRODUTO_DELETE = 1n << 10n;
  * (`meta.serverOwned`, no `su` bypass). One doc per Firestore CloudEvent that
  * touches the produto — `docId` = `eventId`, so a redelivered event overwrites
  * the same doc with content-identical data instead of duplicating it.
- * `timestamp` is the event's `event.time`, in epoch milliseconds (not
- * `Date.now()`, so replays stay ordered by when the write actually happened).
+ * `timestamp` is the event's `event.time` as **microseconds since epoch**
+ * (`microsSinceEpoch()`, the repo's datetime standard; ms-derived precision ×
+ * 1000, like `nowMicros()`) — never `Date.now()`, so replays stay
+ * content-identical and ordered by when the write actually happened.
  * `campos`/`changes` cover only top-level fields that changed, diffed by
  * `@delfrance/core`'s `diffDocumentFields`.
  *
@@ -37,7 +40,7 @@ export const historicoModificacaoSchema = z
     kind: z.enum(['create', 'update', 'delete']),
     campos: z.array(z.string()),
     changes: z.record(z.string(), z.object({ old: z.unknown(), new: z.unknown() }).passthrough()),
-    timestamp: z.number().int(),
+    timestamp: microsSinceEpoch(),
     eventId: z.string(),
   })
   .passthrough();

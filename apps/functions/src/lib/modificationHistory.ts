@@ -1,6 +1,7 @@
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { diffDocumentFields } from '@delfrance/core';
+import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
 import {
   historicoModificacaoCollection,
   produtoCollection,
@@ -43,7 +44,8 @@ export function buildModificationEntry(input: {
   subcolecao: string | null;
   docId: string;
   eventId: string;
-  eventTimeMillis: number;
+  /** Event time as MICROSECONDS since epoch (`microsSinceEpoch` convention). */
+  eventTimeMicros: number;
 }): ModificationEntry | null {
   const diff = diffDocumentFields(input.before, input.after, { ignore: input.ignore });
   if (diff === null) return null;
@@ -54,7 +56,7 @@ export function buildModificationEntry(input: {
     kind: diff.kind,
     campos: diff.campos,
     changes: diff.changes,
-    timestamp: input.eventTimeMillis,
+    timestamp: input.eventTimeMicros,
     eventId: input.eventId,
   };
 }
@@ -123,7 +125,9 @@ export function makeModificationHistoryTrigger(
       const after = event.data?.after?.data();
       // `event.time` is the CloudEvent occurrence time — stable across
       // redeliveries of the SAME event, so the deterministic entry doc stays
-      // content-identical on retries (Date.parse of an ISO string → millis).
+      // content-identical on retries. Stored as MICROSECONDS since epoch
+      // (`microsSinceEpoch`, the repo's datetime standard — ms-derived × 1000,
+      // same precision model as `nowMicros()`).
       const eventTimeMillis = Date.parse(event.time);
 
       const entry = buildModificationEntry({
@@ -134,7 +138,9 @@ export function makeModificationHistoryTrigger(
         subcolecao: source.subcolecao,
         docId,
         eventId: event.id,
-        eventTimeMillis: Number.isNaN(eventTimeMillis) ? Date.now() : eventTimeMillis,
+        eventTimeMicros: Number.isNaN(eventTimeMillis)
+          ? nowMicros()
+          : millisToMicros(eventTimeMillis),
       });
       if (entry === null) return;
 

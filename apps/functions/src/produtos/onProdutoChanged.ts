@@ -2,6 +2,7 @@ import type { DocumentData, DocumentReference, Firestore } from 'firebase-admin/
 import { logger } from 'firebase-functions';
 import { onDocumentWritten } from 'firebase-functions/v2/firestore';
 import { produtoCollection } from '@delfrance/data/admin/collections';
+import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
 import { produtoMeta, samePrecos, type PrecosMap } from '@delfrance/schemas';
 
 import { getDb } from '../lib/admin';
@@ -117,12 +118,13 @@ export async function recordProdutoModificationAndPropagate(
   after: DocumentData | undefined,
   eventId: string,
   /**
-   * Millis to stamp on the entry — the CloudEvent's `event.time`, NOT
-   * `Date.now()`: a redelivered event must rewrite its deterministic doc id
-   * with IDENTICAL content, and a wall-clock timestamp would differ per
-   * delivery (Copilot review, PR #609).
+   * MICROSECONDS since epoch (`microsSinceEpoch` convention) to stamp on the
+   * entry — derived from the CloudEvent's `event.time`, NOT `Date.now()`: a
+   * redelivered event must rewrite its deterministic doc id with IDENTICAL
+   * content, and a wall-clock timestamp would differ per delivery (Copilot
+   * review, PR #609).
    */
-  eventTimeMillis: number,
+  eventTimeMicros: number,
 ): Promise<void> {
   if (after === undefined) return; // produto delete — no entry (see doc comment)
 
@@ -134,7 +136,7 @@ export async function recordProdutoModificationAndPropagate(
     subcolecao: null,
     docId: produtoId,
     eventId,
-    eventTimeMillis,
+    eventTimeMicros,
   });
   if (entry === null) return;
 
@@ -187,7 +189,8 @@ export const onProdutoChanged = onDocumentWritten(
     const after = event.data?.after?.data();
     // `event.time` is the CloudEvent occurrence time — stable across
     // redeliveries of the SAME event, so the deterministic entry doc stays
-    // content-identical on retries (Date.parse of an ISO string → millis).
+    // content-identical on retries. Stored as MICROSECONDS since epoch
+    // (`microsSinceEpoch`, the repo's datetime standard).
     const eventTimeMillis = Date.parse(event.time);
     await recordProdutoModificationAndPropagate(
       getDb(),
@@ -195,7 +198,7 @@ export const onProdutoChanged = onDocumentWritten(
       before,
       after,
       event.id,
-      Number.isNaN(eventTimeMillis) ? Date.now() : eventTimeMillis,
+      Number.isNaN(eventTimeMillis) ? nowMicros() : millisToMicros(eventTimeMillis),
     );
   },
 );
