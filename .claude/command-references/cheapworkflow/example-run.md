@@ -1,4 +1,4 @@
-# Worked example — a full impl-verify run with all four model tiers
+# Worked example — a full /cheapworkflow run with all four model tiers
 
 Fictional but realistic slice: **issue #312 — port the payment-webhook
 reconciliation module** from a legacy service into `apps/payments`. The
