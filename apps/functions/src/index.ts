@@ -14,6 +14,8 @@ export { reconcileArquivoOrphans } from './arquivos/arquivoOrphanSweep';
 export { onProdutoDeleted } from './produtos/onProdutoDeleted';
 // Deployed-function identity kept; clean rename is a filed follow-up.
 export { onProdutoChanged as onProdutoPrecoCustoChanged } from './produtos/onProdutoChanged';
+export { onProdutoExtraDataChanged } from './produtos/onProdutoExtraDataChanged';
+export { onProdutoImpostoChanged } from './produtos/onProdutoImpostoChanged';
 export { onEstoqueDeleted } from './estoques/onEstoqueDeleted';
 export { onNfeDeleted } from './nfe/onNfeDeleted';
 export { aplicarEstoque } from './estoques/aplicarEstoque';
