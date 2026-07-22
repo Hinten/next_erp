@@ -162,14 +162,12 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
 ## Key fixed decisions
 
 - Firebase backend stays. Node >= 22. Zod is the schema source of truth.
-- **firebase-admin is unified on v14 repo-wide — the floor cannot drop below
-  14.** `apps/functions` needs the `@google-cloud/firestore` v8 **Pipelines**
-  API (arquivo orphan sweep) and `FieldValue.maximum/minimum` (estoque
-  callable), both absent in v13. `packages/{data,storage}` declare an optional
-  peer `^14`. `firebase-functions` is floored at `^7.3.0` — the first release
-  whose peer range admits `firebase-admin@^14` — which is what lets every
-  deploy artifact's plain `npm install` resolve cleanly with no
-  `legacy-peer-deps` `.npmrc`.
+- **firebase-admin floor = v14, firebase-functions floor = `^7.3.0` — do not
+  lower either.** `apps/functions` needs the v8 Pipelines API +
+  `FieldValue.maximum/minimum` (a downgrade fails typecheck), and 7.3.0 is the
+  first firebase-functions whose peer range admits `firebase-admin@^14` —
+  lowering it breaks every deploy artifact's plain cloud `npm install`
+  (`ERESOLVE`), which no CI lane exercises.
 - `next lint` is gone in Next 16 — every lint script is `eslint .`, and the 8
   Next apps spread `@delfrance/config-eslint` + `eslint-config-next` +
   `typeAware(...)` with `prettier` LAST. `apps/{docs,example,functions}` are not
