@@ -175,7 +175,14 @@ export function mlPaymentToPagamento(args: {
 
   const refunds = roundReais((payment.refunds ?? []).reduce((sum, r) => sum + (r.amount ?? 0), 0));
 
-  const valor = roundReais(totalPagoBruto - refunds);
+  // The NET value legacy mutates `totalPagoSemJuros` into — the status-override
+  // comparisons below read THIS (possibly negative) value, exactly like legacy.
+  const valorNet = roundReais(totalPagoBruto - refunds);
+  // The PERSISTED valor clamps at 0: legacy wrote the raw negative on an
+  // over-refund (Dart had no write validation), but our `pagamentoSchema.valor`
+  // is `.min(0)` — a negative would fail the write. The clamp never changes the
+  // status outcome (net <= 0 always lands in the `estornado` branch).
+  const valor = Math.max(0, valorNet);
 
   const mercadoLivrePaymentType = payment.payment_type ?? payment.payment_type_id ?? null;
 
@@ -189,9 +196,9 @@ export function mlPaymentToPagamento(args: {
   // Refund overrides applied AFTER the base status mapping (models.dart:4489-4493):
   // a partial refund (0 < refunds < net valor) downgrades an `aprovado` payment
   // to `estornado_parcialmente`; a full-or-over refund downgrades it to `estornado`.
-  if (statusPagamento === STATUS_PAGAMENTO.aprovado && refunds > 0 && refunds < valor) {
+  if (statusPagamento === STATUS_PAGAMENTO.aprovado && refunds > 0 && refunds < valorNet) {
     statusPagamento = STATUS_PAGAMENTO.estornado_parcialmente;
-  } else if (statusPagamento === STATUS_PAGAMENTO.aprovado && refunds >= valor) {
+  } else if (statusPagamento === STATUS_PAGAMENTO.aprovado && refunds >= valorNet) {
     statusPagamento = STATUS_PAGAMENTO.estornado;
   }
 

@@ -65,8 +65,10 @@ describe('mlPaymentToPagamento — status + refund overrides', () => {
       nowUs: NOW_US,
     });
 
-    // net valor = roundReais(50 - 60) = -10; refunds(60) >= net(-10) → estornado.
-    expect(mapped.valor).toBe(-10);
+    // net = roundReais(50 - 60) = -10; refunds(60) >= net(-10) → estornado. The
+    // PERSISTED valor clamps at 0 (pagamentoSchema.valor is .min(0) — legacy
+    // wrote the raw negative, our schema forbids it).
+    expect(mapped.valor).toBe(0);
     expect(mapped.status_pagamento).toBe(STATUS_PAGAMENTO.estornado);
   });
 
