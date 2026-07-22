@@ -27,6 +27,13 @@
  *     silently drops. App Hosting / Cloud Run does NOT expose its own region as an
  *     env var (only the metadata server does), so it must be configured; the
  *     default matches the ML backend's deploy region (`us-east5`).
+ *
+ * `enqueue`'s optional 2nd arg (`MlEnqueueOptions`) passes through to the queue's
+ * `TaskOptions` — the webhook route uses `scheduleDelaySeconds: 10` for the
+ * order-family topics (`orders_v2`/`orders`/`payments`/`shipments`), since ML is
+ * eventually consistent and an immediate re-fetch can race the write that fired
+ * the notification (legacy `functions.dart:17-48` delayed EVERY topic this way;
+ * we scope it to the topics that actually re-fetch a cross-referenced resource).
  */
 import { getFunctions } from 'firebase-admin/functions';
 
@@ -39,11 +46,22 @@ function mlTasksRegion(): string {
 }
 
 /**
+ * Per-enqueue delivery options — currently just the delay. Mirrors (a subset
+ * of) the Functions SDK's `TaskOptions.scheduleDelaySeconds`; kept as our own
+ * minimal shape rather than re-exporting the SDK type so callers (the webhook
+ * route) don't need a `firebase-admin/functions` import for a single field.
+ */
+export interface MlEnqueueOptions {
+  /** Delay (seconds) added to now before the task is first attempted. */
+  scheduleDelaySeconds?: number;
+}
+
+/**
  * The enqueue seam. The receiver depends on this interface, not the transport, so
  * unit tests pass a fake recorder; the real one comes from `createMlTaskScheduler()`.
  */
 export interface MlTaskScheduler {
-  enqueue(payload: MlNotificationPayload): Promise<void>;
+  enqueue(payload: MlNotificationPayload, opts?: MlEnqueueOptions): Promise<void>;
 }
 
 /**
@@ -67,8 +85,8 @@ class FirebaseMlTaskScheduler implements MlTaskScheduler {
     );
   }
 
-  async enqueue(payload: MlNotificationPayload): Promise<void> {
-    await this.queue().enqueue(payload);
+  async enqueue(payload: MlNotificationPayload, opts?: MlEnqueueOptions): Promise<void> {
+    await this.queue().enqueue(payload, opts);
   }
 }
 

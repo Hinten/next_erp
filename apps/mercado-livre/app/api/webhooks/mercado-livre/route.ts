@@ -45,6 +45,22 @@ import { createMlTaskScheduler } from '@/lib/marketplace/mlTasks';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+/**
+ * Topics whose Step 9+ handlers re-fetch a cross-referenced ML resource
+ * (order/payment/shipment) that can lag the notification itself — ML is
+ * eventually consistent, so an immediate GET can 404 or return stale data.
+ * Legacy delayed EVERY topic 10s before dispatch (`functions.dart:17-48`); we
+ * scope the delay to the topics that actually need it (approved deviation —
+ * `items` and the rest keep today's immediate dispatch).
+ */
+const ORDER_FAMILY_TOPICS: ReadonlySet<string> = new Set([
+  'orders_v2',
+  'orders',
+  'payments',
+  'shipments',
+]);
+const ORDER_FAMILY_SCHEDULE_DELAY_SECONDS = 10;
+
 export async function POST(req: Request): Promise<NextResponse> {
   const raw = await req.text();
 
@@ -68,9 +84,13 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   // Enqueue the lean payload; the queue processes it out-of-band at a bounded
-  // rate. No Firestore write on this path.
+  // rate. No Firestore write on this path. Order-family topics get a 10s
+  // scheduling delay (see the const above); every other topic is unchanged.
+  const enqueueOpts = ORDER_FAMILY_TOPICS.has(parsed.payload.topic)
+    ? { scheduleDelaySeconds: ORDER_FAMILY_SCHEDULE_DELAY_SECONDS }
+    : undefined;
   try {
-    await createMlTaskScheduler().enqueue(parsed.payload);
+    await createMlTaskScheduler().enqueue(parsed.payload, enqueueOpts);
   } catch (err) {
     if (!(err instanceof Error)) throw err;
     // The enqueue path failed (IAM not granted / transport / disabled). Persist

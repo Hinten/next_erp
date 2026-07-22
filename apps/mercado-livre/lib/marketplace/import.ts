@@ -529,7 +529,13 @@ function uniqueFirstSeen(values: readonly string[]): string[] {
 
 /* -------------------------------------------------------------------------- */
 
-interface ResolvedProduto {
+/**
+ * Exported for reuse by the order-import orchestrator (Step 9,
+ * `orderImport.ts`): an ML order line's produto is resolved the same way an
+ * import resolves the ML item it's importing (link → sku), so the two flows
+ * share this one lookup instead of a second copy.
+ */
+export interface ResolvedProduto {
   produtoId: string;
   /** Existing link doc id + raw (when resolved via the link); null via SKU. */
   linkDocId: string | null;
@@ -543,7 +549,7 @@ interface ResolvedProduto {
  * by SKU, REUSE that produto's existing link for this integração (else a
  * re-import would mint a duplicate link doc). Null → create.
  */
-async function resolveExistingProduto(
+export async function resolveExistingProduto(
   db: Firestore,
   itemId: string,
   sku: string | null,

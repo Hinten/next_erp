@@ -20,13 +20,14 @@ process.env.MERCADO_LIVRE_TASKS_REGION ??= region;
 setGlobalOptions({
   region,
   maxInstances: 10,
-  // Phase 5: bind the Mercado Livre app secret from Secret Manager for the
-  // functions that call the ML API (e.g. order import, notification processing):
-  //   secrets: ['MERCADO_LIVRE_CLIENT_SECRET'],
-  // Set it with `firebase functions:secrets:set MERCADO_LIVRE_CLIENT_SECRET`.
-  // (Step 8 / #621 bound `MERCADO_LIVRE_CLIENT_ID` + `MERCADO_LIVRE_CLIENT_SECRET`
-  // PER-FUNCTION on `processMercadoLivreMassImport` — see processMassImport.ts —
-  // rather than here, since it's the only function so far whose default deps
-  // refresh an ML access token. If a second function needs them, promote to a
-  // codebase-wide bind here instead of duplicating the `secrets` array.)
+  // The Mercado Livre app secret is bound PER-FUNCTION (not globally here) on
+  // every function whose default deps refresh an ML access token — set with
+  // `firebase functions:secrets:set MERCADO_LIVRE_CLIENT_ID/_SECRET`:
+  //   - `processMercadoLivreMassImport` (Step 8 / #621) — processMassImport.ts
+  //   - `processMercadoLivreNotification` (Step 9 order import) — processNotification.ts
+  // Both declare `secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET']`
+  // on their own `onTaskDispatched(...)` options rather than here, so a function
+  // with no ML API call (e.g. a future pure-Firestore trigger) never gets the
+  // secret bound to it. Promote to a codebase-wide bind here only if that
+  // per-function duplication becomes unwieldy (a THIRD+ consumer).
 });
