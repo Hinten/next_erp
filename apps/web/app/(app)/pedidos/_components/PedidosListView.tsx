@@ -206,6 +206,10 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
           </Button>
         )}
         selectable
+        // 4 actions on saída (emit + print + download anexos + devolução
+        // integral). Default ActionBar threshold is 3 → overflow menu, which
+        // hid labeled buttons and broke every pedidos bulk-action e2e.
+        overflowThreshold={4}
         actions={[emitNFeAction, printAction, downloadAnexosAction, ...extraActions]}
       />
       <EmitirLoteDialog

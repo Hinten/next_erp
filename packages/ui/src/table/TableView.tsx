@@ -107,6 +107,17 @@ export interface TableViewProps<S extends ZodObject<ZodRawShape>> {
   virtualColumns?: ReadonlyArray<VirtualColumn<z.infer<S>>>;
 
   actions?: Array<ActionConfig<z.infer<S>>>;
+  /**
+   * How the ActionBar lays out bulk actions — forwarded to `ActionBar`.
+   * Defaults to `'auto'` (inline until `overflowThreshold`, then overflow menu).
+   */
+  actionsLayout?: import('./ActionBar').ActionsLayout;
+  /**
+   * With `actionsLayout: 'auto'`, collapse into the overflow menu once the
+   * action count exceeds this. Default 3. Raise it on screens with more
+   * bulk actions so e2e/users still see labeled buttons (e.g. /pedidos).
+   */
+  overflowThreshold?: number;
   selectable?: boolean;
 
   /**
@@ -216,6 +227,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
   fields: fieldOverrides = {},
   virtualColumns = [],
   actions = [],
+  actionsLayout,
+  overflowThreshold,
   selectable = false,
   copyHref,
   monitorField,
@@ -840,6 +853,8 @@ export function TableView<S extends ZodObject<ZodRawShape>>({
                   newHref={newHref}
                   renderNewButton={renderNewButton}
                   copyHref={copyHref}
+                  actionsLayout={actionsLayout}
+                  overflowThreshold={overflowThreshold}
                   onActionComplete={() => {
                     setSelected(new Set());
                     setRefreshKey((k) => k + 1);
