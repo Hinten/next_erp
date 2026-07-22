@@ -21,6 +21,13 @@ function freshId(prefix = 'p') {
   return `${prefix}${randomUUID().replace(/-/g, '')}`;
 }
 
+/**
+ * Fixed event time for every test call — mirrors the CloudEvent `event.time`
+ * the wrapper passes; a constant so the redelivery assertions can compare
+ * content-identical docs (timestamp included).
+ */
+const EVENT_TIME_MILLIS = Date.parse('2026-07-21T12:00:00.000Z');
+
 describe.skipIf(!EMULATED)('onProdutoPrecoCustoChanged core (emulator)', () => {
   it('writes deterministic history docs and is idempotent on redelivery', async () => {
     const db = getDb();
