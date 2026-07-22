@@ -347,6 +347,12 @@ service cloud.firestore {
       allow delete: if isSuperUser() || p('d_fiscal', 4);
     }
 
+    match /pedidos/{pedidoId}/orderML/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+      allow create, update: if isSuperUser() || p('d_pedido', 2);
+      allow delete: if isSuperUser() || p('d_pedido', 4);
+    }
+
     match /pedidos/{pedidoId}/pagamentos/{docId} {
       allow read: if isSuperUser() || p('d_pagamento', 1);
       allow create: if (isSuperUser() || p('d_pagamento', 2)) && v_pedidos_pagamentos(request.resource.data, request.resource.data.keys());
@@ -508,6 +514,9 @@ service cloud.firestore {
     }
     match /{path=**}/nfev4/{docId} {
       allow read: if isSuperUser() || p('d_nfe', 1);
+    }
+    match /{path=**}/orderML/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
     }
     match /{path=**}/pagamentos/{docId} {
       allow read: if isSuperUser() || p('d_pagamento', 1);

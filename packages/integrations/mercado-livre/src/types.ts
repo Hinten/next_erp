@@ -296,6 +296,243 @@ export const packSchema = z
   .passthrough();
 export type MlPack = z.infer<typeof packSchema>;
 
+/* --------------------- Order payments + shipments (Step 9 order import) --------------------- */
+
+/** One entry of `payment.charge_details`/`charges_details[]` — fee/charge line items (legacy `ChargeDetailsMercadoLivre`, models.dart:4941-4979). Only the fields `toPagamento`'s tarifas calc reads are typed. */
+export const mlPaymentChargeDetailSchema = z
+  .object({
+    accounts: z
+      .object({ from: z.string().nullable().optional(), to: z.string().nullable().optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
+    amounts: z
+      .object({
+        original: z.number().nullable().optional(),
+        refunded: z.number().nullable().optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+export type MlPaymentChargeDetail = z.infer<typeof mlPaymentChargeDetailSchema>;
+
+/** One entry of `payment.fee_details[]` (legacy `FeeDetailsMercadoLivrePayment`, models.dart:4787-4800) — only `amount` feeds `toPagamento`'s tarifas total; `fee_payer`/`type` ride through `.passthrough()` untyped. */
+export const mlPaymentFeeDetailSchema = z
+  .object({
+    amount: z.number().nullable().optional(),
+  })
+  .passthrough();
+export type MlPaymentFeeDetail = z.infer<typeof mlPaymentFeeDetailSchema>;
+
+/** One entry of `payment.refunds[]` (legacy `MercadoLivreRefund`, models.dart:4813-4845) — only `amount` feeds `toPagamento`'s refund total. */
+export const mlPaymentRefundSchema = z
+  .object({
+    amount: z.number().nullable().optional(),
+  })
+  .passthrough();
+export type MlPaymentRefund = z.infer<typeof mlPaymentRefundSchema>;
+
+/**
+ * `GET /collections/{paymentId}` (legacy `get_payment`, api.dart:1446-1454) — a
+ * Mercado Pago payment tied to an ML order. Tolerant: only the fields
+ * `MercadoLivrePayment.toPagamento` (legacy models.dart:4455-4693) consumes are
+ * typed — `payer` is unused by the mapper and rides through `.passthrough()`
+ * untyped, and `card` is typed only down to `last_four_digits`.
+ */
+export const mlPaymentSchema = z
+  .object({
+    id: z.number().int(),
+    date_created: z.string().nullable().optional(),
+    date_approved: z.string().nullable().optional(),
+    date_last_updated: z.string().nullable().optional(),
+    last_modified: z.string().nullable().optional(),
+    reason: z.string().nullable().optional(),
+    transaction_amount: z.number().nullable().optional(),
+    total_paid_amount: z.number().nullable().optional(),
+    shipping_cost: z.number().nullable().optional(),
+    coupon_amount: z.number().nullable().optional(),
+    status: z.string().nullable().optional(),
+    installments: z.number().nullable().optional(),
+    payment_type: z.string().nullable().optional(),
+    payment_type_id: z.string().nullable().optional(),
+    payment_method_id: z.string().nullable().optional(),
+    card_id: z.number().nullable().optional(),
+    card: z
+      .object({ last_four_digits: z.string().nullable().optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
+    authorization_code: z.string().nullable().optional(),
+    marketplace_fee: z.number().nullable().optional(),
+    fee_details: z.array(mlPaymentFeeDetailSchema).nullable().optional(),
+    charge_details: z.array(mlPaymentChargeDetailSchema).nullable().optional(),
+    charges_details: z.array(mlPaymentChargeDetailSchema).nullable().optional(),
+    refunds: z.array(mlPaymentRefundSchema).nullable().optional(),
+  })
+  .passthrough();
+export type MlPayment = z.infer<typeof mlPaymentSchema>;
+
+/** One `shipping_option.estimated_*` sub-object — every variant is `{ date: string|null, ... }`; only `date` is consumed. */
+const mlShipmentEstimatedDateSchema = z
+  .object({ date: z.string().nullable().optional() })
+  .passthrough();
+
+/** `shipment.shipping_option` (legacy `ShippingOption`, models.dart:6052-6127) — only the dispatch/delivery-window fields `_getPrazoDespacho`/`toFrete` read. */
+export const mlShipmentOptionSchema = z
+  .object({
+    list_cost: z.number().nullable().optional(),
+    estimated_handling_limit: mlShipmentEstimatedDateSchema.nullable().optional(),
+    estimated_delivery_limit: mlShipmentEstimatedDateSchema.nullable().optional(),
+    estimated_delivery_time: mlShipmentEstimatedDateSchema.nullable().optional(),
+  })
+  .passthrough();
+export type MlShipmentOption = z.infer<typeof mlShipmentOptionSchema>;
+
+/**
+ * `GET /shipments/{shipmentId}` (legacy `get_shipment`, api.dart:1635-1641) — a
+ * shipment tied to an ML order. Tolerant: only the fields
+ * `MercadoLivreShipping.toFrete`/`toEstadoFrete` (legacy models.dart:5340-5394)
+ * consume are typed (address fields are resolved from billing_info instead, so
+ * `receiver_address`/`sender_address` are left untyped on `.passthrough()`).
+ */
+export const mlShipmentSchema = z
+  .object({
+    id: z.number().int(),
+    order_id: z.number().int().nullable().optional(),
+    status: z.string().nullable().optional(),
+    substatus: z.string().nullable().optional(),
+    tracking_number: z.string().nullable().optional(),
+    last_updated: z.string().nullable().optional(),
+    base_cost: z.number().nullable().optional(),
+    logistic_type: z.string().nullable().optional(),
+    shipping_option: mlShipmentOptionSchema.nullable().optional(),
+  })
+  .passthrough();
+export type MlShipment = z.infer<typeof mlShipmentSchema>;
+
+/**
+ * One entry of `GET /shipments/{shipmentId}/payments` — **the endpoint returns
+ * a bare JSON ARRAY**, not `{ results: [...] }` (legacy `get_shipment_payments`,
+ * api.dart:1652-1661, returns `List<Map<String,dynamic>>`). Only `status` +
+ * `amount` are consumed (legacy `toFrete`, models.dart:5372-5378); `amount` has
+ * been observed as both a JSON number and a numeric string in the wild, hence
+ * the union.
+ */
+export const mlShipmentPaymentSchema = z
+  .object({
+    status: z.string().nullable().optional(),
+    amount: z.union([z.number(), z.string()]).nullable().optional(),
+  })
+  .passthrough();
+export type MlShipmentPayment = z.infer<typeof mlShipmentPaymentSchema>;
+/** The array wrapper for `getShipmentPayments` — see `mlShipmentPaymentSchema`. */
+export const mlShipmentPaymentsSchema = z.array(mlShipmentPaymentSchema);
+
+/** `GET /shipments/{shipmentId}/sla` (legacy `get_shipment_sla`, api.dart:1671-1677) — only `expected_date` is consumed (legacy `_getPrazoDespacho`, tasks.dart:38-43). */
+export const mlShipmentSlaSchema = z
+  .object({
+    expected_date: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlShipmentSla = z.infer<typeof mlShipmentSlaSchema>;
+
+/** One weekday entry of the seller shipping schedule (legacy `_getPrazoDespacho`, tasks.dart:112-133: `schedule[day]['work']` / `schedule[day]['detail'][0]['cutoff']`). */
+export const mlSellerShippingScheduleDaySchema = z
+  .object({
+    work: z.boolean().nullable().optional(),
+    detail: z
+      .array(z.object({ cutoff: z.string().nullable().optional() }).passthrough())
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+export type MlSellerShippingScheduleDay = z.infer<typeof mlSellerShippingScheduleDaySchema>;
+
+/**
+ * `GET /users/{sellerId}/shipping/schedule/{logisticType}` (legacy
+ * `get_horarios_despacho`, api.dart:1687-1693) — the seller's weekly dispatch
+ * window, keyed by lowercase English weekday name (`monday`…`sunday`).
+ */
+export const mlSellerShippingScheduleSchema = z
+  .object({
+    schedule: z.record(z.string(), mlSellerShippingScheduleDaySchema).nullable().optional(),
+  })
+  .passthrough();
+export type MlSellerShippingSchedule = z.infer<typeof mlSellerShippingScheduleSchema>;
+
+/**
+ * `GET /orders/{orderId}/billing_info` sent with header `x-version: 2` (legacy
+ * `get_billing_info_v2`, api.dart:1432-1444) — the buyer's fiscal identity +
+ * address for NF-e emission. Tolerant: only the fields `BillingInfoResponse`'s
+ * `toEndereco`/`toCliente` (legacy api_types/billing_info.dart:74-113) consume
+ * are typed; `seller` and `attributes` ride through `.passthrough()` untyped.
+ */
+export const mlBillingInfoSchema = z
+  .object({
+    site_id: z.string().nullable().optional(),
+    buyer: z
+      .object({
+        cust_id: z.union([z.string(), z.number()]).nullable().optional(),
+        billing_info: z
+          .object({
+            name: z.string().nullable().optional(),
+            last_name: z.string().nullable().optional(),
+            identification: z
+              .object({
+                type: z.string().nullable().optional(),
+                number: z.string().nullable().optional(),
+              })
+              .passthrough()
+              .nullable()
+              .optional(),
+            taxes: z
+              .object({
+                inscriptions: z
+                  .object({ state_registration: z.string().nullable().optional() })
+                  .passthrough()
+                  .nullable()
+                  .optional(),
+                taxpayer_type: z
+                  .object({ description: z.string().nullable().optional() })
+                  .passthrough()
+                  .nullable()
+                  .optional(),
+              })
+              .passthrough()
+              .nullable()
+              .optional(),
+            address: z
+              .object({
+                street_name: z.string().nullable().optional(),
+                street_number: z.string().nullable().optional(),
+                city_name: z.string().nullable().optional(),
+                comment: z.string().nullable().optional(),
+                neighborhood: z.string().nullable().optional(),
+                state: z
+                  .object({ name: z.string().nullable().optional() })
+                  .passthrough()
+                  .nullable()
+                  .optional(),
+                zip_code: z.string().nullable().optional(),
+                country_id: z.string().nullable().optional(),
+              })
+              .passthrough()
+              .nullable()
+              .optional(),
+          })
+          .passthrough()
+          .nullable()
+          .optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+export type MlBillingInfo = z.infer<typeof mlBillingInfoSchema>;
+
 /* --------------------- User-Products family fan-out (#521) --------------------- */
 
 /**

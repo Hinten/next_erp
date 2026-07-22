@@ -1,4 +1,4 @@
-import type { z } from 'zod';
+import { z } from 'zod';
 import {
   MercadoLivreHttpError,
   MercadoLivreNetworkError,
@@ -8,6 +8,7 @@ import {
 import { DEFAULT_API_BASE_URL } from './oauth';
 import {
   type MlActiveChartDomains,
+  type MlBillingInfo,
   type MlCatalogDomain,
   type MlCategory,
   type MlCategoryAttribute,
@@ -18,8 +19,13 @@ import {
   type MlOrder,
   type MlOrderSearch,
   type MlPack,
+  type MlPayment,
   type MlPictureUpload,
   type MlSellerItemsScan,
+  type MlSellerShippingSchedule,
+  type MlShipment,
+  type MlShipmentPayment,
+  type MlShipmentSla,
   type MlSizeChartApi,
   type MlTechnicalSpecs,
   type MlUser,
@@ -33,6 +39,12 @@ import {
   itemDescriptionSchema,
   itemSchema,
   migrationLiveListingSchema,
+  mlBillingInfoSchema,
+  mlPaymentSchema,
+  mlSellerShippingScheduleSchema,
+  mlShipmentPaymentsSchema,
+  mlShipmentSchema,
+  mlShipmentSlaSchema,
   orderSchema,
   orderSearchSchema,
   packSchema,
@@ -87,6 +99,33 @@ export interface MercadoLivreApi {
     seller: number | string;
     [key: string]: string | number | undefined;
   }): Promise<MlOrderSearch>;
+
+  /** `GET /collections/{paymentId}` — a Mercado Pago payment tied to an ML order (order import, Step 9). */
+  getPayment(paymentId: number | string): Promise<MlPayment>;
+  /** `GET /shipments/{shipmentId}` — a shipment tied to an ML order (order import, Step 9). */
+  getShipment(shipmentId: number | string): Promise<MlShipment>;
+  /**
+   * `GET /shipments/{shipmentId}/payments` — the shipping-cost payments for a
+   * shipment. **The endpoint returns a bare JSON array**, not a `results`
+   * envelope (order import, Step 9).
+   */
+  getShipmentPayments(shipmentId: number | string): Promise<MlShipmentPayment[]>;
+  /** `GET /shipments/{shipmentId}/sla` — the dispatch deadline for a shipment (order import, Step 9). */
+  getShipmentSla(shipmentId: number | string): Promise<MlShipmentSla>;
+  /**
+   * `GET /users/{sellerId}/shipping/schedule/{logisticType}` — the seller's
+   * weekly dispatch-window schedule, used to compute the next valid dispatch
+   * slot when the shipment SLA call fails (order import, Step 9).
+   */
+  getSellerShippingSchedule(
+    sellerId: number | string,
+    logisticType: string,
+  ): Promise<MlSellerShippingSchedule>;
+  /**
+   * `GET /orders/{orderId}/billing_info` — buyer fiscal data for NF-e
+   * emission. Sent with header `x-version: 2` (order import, Step 9).
+   */
+  getOrderBillingInfo(orderId: number | string): Promise<MlBillingInfo>;
 
   /**
    * `GET /sites/MLB/user-products-families/{familyId}` — sibling User-Product
@@ -281,6 +320,23 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     getPack: (id) => request('GET', `/packs/${id}`, packSchema),
     searchOrders: (params) =>
       request('GET', '/orders/search', orderSearchSchema, { query: params }),
+
+    getPayment: (paymentId) => request('GET', `/collections/${paymentId}`, mlPaymentSchema),
+    getShipment: (shipmentId) => request('GET', `/shipments/${shipmentId}`, mlShipmentSchema),
+    getShipmentPayments: (shipmentId) =>
+      request('GET', `/shipments/${shipmentId}/payments`, mlShipmentPaymentsSchema),
+    getShipmentSla: (shipmentId) =>
+      request('GET', `/shipments/${shipmentId}/sla`, mlShipmentSlaSchema),
+    getSellerShippingSchedule: (sellerId, logisticType) =>
+      request(
+        'GET',
+        `/users/${sellerId}/shipping/schedule/${logisticType}`,
+        mlSellerShippingScheduleSchema,
+      ),
+    getOrderBillingInfo: (orderId) =>
+      request('GET', `/orders/${orderId}/billing_info`, mlBillingInfoSchema, {
+        headers: { 'x-version': '2' },
+      }),
 
     getUserProductFamily: (familyId) =>
       request('GET', `/sites/MLB/user-products-families/${familyId}`, userProductFamilySchema),

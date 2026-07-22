@@ -20,6 +20,7 @@ import {
   incidente,
   checkout,
   historicoEstadoPedido,
+  orderML,
 } from './pedido';
 import { counter } from './counter';
 import { conversa, mensagem } from './conversa';
@@ -68,6 +69,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   incidente,
   checkout,
   historicoEstadoPedido,
+  orderML,
   counter,
   conversa,
   mensagem,

@@ -100,6 +100,238 @@ describe('createMercadoLivreApi — happy paths', () => {
   });
 });
 
+describe('createMercadoLivreApi — order payments + shipments (order import, Step 9)', () => {
+  it('getPayment hits /collections/{id} and parses the payment', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 123456789,
+        status: 'approved',
+        status_detail: 'accredited',
+        transaction_amount: 50,
+        coupon_amount: 0,
+        installments: 1,
+        payment_type_id: 'credit_card',
+        payment_method_id: 'visa',
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const payment = await api.getPayment(123456789);
+    expect(payment.id).toBe(123456789);
+    expect(payment.status).toBe('approved');
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toBe('https://api.mercadolibre.com/collections/123456789');
+  });
+
+  it('getPayment tolerates unknown extra fields and types charge/fee/refund details', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 1,
+        status: 'approved',
+        transaction_amount: 100,
+        coupon_amount: 0,
+        marketplace_fee: 5,
+        fee_details: [{ amount: 5, fee_payer: 'collector', type: 'application_fee' }],
+        charges_details: [
+          { accounts: { from: 'collector', to: 'mp' }, amounts: { original: 1.11, refunded: 0 } },
+        ],
+        refunds: [{ id: 1, amount: 10 }],
+        card: { last_four_digits: '1234' },
+        payer: { id: '999', a_field_the_mapper_never_reads: true },
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const payment = (await api.getPayment(1)) as Record<string, unknown>;
+    expect(payment.fee_details).toEqual([
+      { amount: 5, fee_payer: 'collector', type: 'application_fee' },
+    ]);
+    expect(payment.charges_details).toEqual([
+      { accounts: { from: 'collector', to: 'mp' }, amounts: { original: 1.11, refunded: 0 } },
+    ]);
+    expect(payment.refunds).toEqual([{ id: 1, amount: 10 }]);
+    expect((payment.card as Record<string, unknown>).last_four_digits).toBe('1234');
+    // `payer` isn't consumed by any mapper — still rides through untyped.
+    expect((payment.payer as Record<string, unknown>).a_field_the_mapper_never_reads).toBe(true);
+  });
+
+  it('getPayment maps a 404 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'payment not found' }, 404),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getPayment(999)).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 404,
+    });
+  });
+
+  it('getShipment hits /shipments/{id} and parses the dispatch/delivery windows', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 555,
+        order_id: 2000003508897196,
+        status: 'ready_to_ship',
+        substatus: 'ready_to_print',
+        tracking_number: 'BR123456789',
+        last_updated: '2022-08-22T00:00:00.000-03:00',
+        base_cost: 8.91,
+        logistic_type: 'cross_docking',
+        shipping_option: {
+          list_cost: 8.91,
+          estimated_handling_limit: { date: '2022-08-22T00:00:00.000-03:00' },
+          estimated_delivery_limit: { date: '2022-08-24T00:00:00.000-03:00' },
+          estimated_delivery_time: { date: '2022-08-24T00:00:00.000-03:00' },
+        },
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const shipment = await api.getShipment(555);
+    expect(shipment.status).toBe('ready_to_ship');
+    expect(shipment.substatus).toBe('ready_to_print');
+    expect(shipment.shipping_option?.estimated_handling_limit?.date).toBe(
+      '2022-08-22T00:00:00.000-03:00',
+    );
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toBe('https://api.mercadolibre.com/shipments/555');
+  });
+
+  it('getShipment maps a 500 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'boom' }, 500),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipment(555)).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 500,
+    });
+  });
+
+  it('getShipmentPayments hits /shipments/{id}/payments and parses the BARE ARRAY response', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse([
+        { status: 'approved', amount: 8.91 },
+        { status: 'approved', amount: '2.5' }, // ML has sent amount as a numeric string too
+      ]),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const payments = await api.getShipmentPayments(555);
+    expect(payments).toEqual([
+      { status: 'approved', amount: 8.91 },
+      { status: 'approved', amount: '2.5' },
+    ]);
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toBe('https://api.mercadolibre.com/shipments/555/payments');
+  });
+
+  it('getShipmentPayments maps a 500 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'boom' }, 500),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentPayments(555)).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 500,
+    });
+  });
+
+  it('getShipmentSla hits /shipments/{id}/sla and parses expected_date', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ expected_date: '2022-08-22T00:00:00.000-03:00' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const sla = await api.getShipmentSla(555);
+    expect(sla.expected_date).toBe('2022-08-22T00:00:00.000-03:00');
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toBe('https://api.mercadolibre.com/shipments/555/sla');
+  });
+
+  it('getShipmentSla maps a 404 to an HTTP error (caller falls back to the seller schedule)', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'not found' }, 404),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getShipmentSla(555)).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 404,
+    });
+  });
+
+  it('getSellerShippingSchedule hits /users/{sellerId}/shipping/schedule/{logisticType} and parses the weekday schedule', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        schedule: {
+          monday: { work: true, detail: [{ cutoff: '14:00' }] },
+          sunday: { work: false, detail: [] },
+        },
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const schedule = await api.getSellerShippingSchedule(999, 'cross_docking');
+    expect(schedule.schedule?.monday?.work).toBe(true);
+    expect(schedule.schedule?.monday?.detail?.[0]?.cutoff).toBe('14:00');
+    expect(schedule.schedule?.sunday?.work).toBe(false);
+    const url = String(fetchMock.mock.calls[0]![0]);
+    expect(url).toBe('https://api.mercadolibre.com/users/999/shipping/schedule/cross_docking');
+  });
+
+  it('getSellerShippingSchedule maps a 500 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'boom' }, 500),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getSellerShippingSchedule(999, 'drop_off')).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 500,
+    });
+  });
+
+  it('getOrderBillingInfo hits /orders/{id}/billing_info WITH the x-version: 2 header and parses buyer fiscal data', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        site_id: 'MLB',
+        buyer: {
+          cust_id: 234343545,
+          billing_info: {
+            name: 'Apple Brasil',
+            identification: { type: 'CNPJ', number: '326594309119203' },
+            taxes: {
+              inscriptions: { state_registration: '30703088534' },
+              taxpayer_type: { description: 'Contribuinte' },
+            },
+            address: {
+              street_name: 'Nicolau de Marcos',
+              street_number: '05',
+              city_name: 'Bom Jardim',
+              neighborhood: 'Jardim Ornelas',
+              state: { name: 'Rio de Janeiro' },
+              zip_code: '28660000',
+              country_id: 'BR',
+            },
+          },
+        },
+        seller: { cust_id: 34345454 },
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const billing = await api.getOrderBillingInfo(2000003508897196);
+    expect(billing.buyer?.billing_info?.identification?.type).toBe('CNPJ');
+    expect(billing.buyer?.billing_info?.address?.zip_code).toBe('28660000');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.mercadolibre.com/orders/2000003508897196/billing_info');
+    expect((init!.headers as Record<string, string>)['x-version']).toBe('2');
+  });
+
+  it('getOrderBillingInfo maps a 404 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'not found' }, 404),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getOrderBillingInfo(1)).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 404,
+    });
+  });
+});
+
 describe('createMercadoLivreApi — User-Products family fan-out (#521)', () => {
   it('getUserProductFamily hits /sites/MLB/user-products-families/{id} and parses user_products_ids', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
