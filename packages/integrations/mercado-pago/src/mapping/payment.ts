@@ -5,6 +5,7 @@ import {
   type Pagamento,
   type StatusPagamento,
 } from '@delfrance/schemas';
+import { roundReais } from '@delfrance/core/money';
 import type { MpPayment } from '../types';
 
 /**
@@ -20,16 +21,6 @@ import type { MpPayment } from '../types';
  * (the tests parse it to prove that) whose doc id is `String(payment.id)`, so a
  * redelivery upserts the same doc idempotently.
  */
-
-/**
- * Round a monetary amount to two decimals, half-up. Mirrors the legacy
- * `duasCasasDecimais` (`double.parse(toStringAsFixed(2))`); the `+ EPSILON`
- * nudge cleans the float-sum artifacts (`0.1 + 0.2 === 0.30000000000000004`)
- * that would otherwise round the wrong way.
- */
-function round2(value: number): number {
-  return Math.round((value + Number.EPSILON) * 100) / 100;
-}
 
 /**
  * ISO-8601 → microseconds since epoch (the pagamento datetime unit). MP returns
@@ -108,16 +99,18 @@ export function mpPaymentToPagamento(
   const pagamentoId = String(payment.id);
 
   // valorSemJuros — gross paid amount (transaction + shipping), before refunds.
-  const valorSemJuros = round2((payment.transaction_amount ?? 0) + (payment.shipping_cost ?? 0));
+  const valorSemJuros = roundReais(
+    (payment.transaction_amount ?? 0) + (payment.shipping_cost ?? 0),
+  );
 
   // refunds — Σ refunds[].amount.
-  const refunds = round2(sumAmounts((payment.refunds ?? []).map((r) => r.amount)));
+  const refunds = roundReais(sumAmounts((payment.refunds ?? []).map((r) => r.amount)));
 
   // valor — the net amount retained (gross − refunds), clamped at 0:
   // over-refunds (chargeback fees, rounding across multiple partial refunds)
   // can push Σrefunds past the gross, and `pagamentoSchema.valor` is min(0) —
   // a negative value would fail the parse and park the whole delivery.
-  const valor = Math.max(0, round2(valorSemJuros - refunds));
+  const valor = Math.max(0, roundReais(valorSemJuros - refunds));
 
   // tarifas — MP's take: marketplace fee + itemized fee_details + the
   // collector→mp charges (original − refunded); other account pairs are ignored.

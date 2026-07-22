@@ -373,8 +373,8 @@ export function loadCertificateFromEnv(env: NodeJS.ProcessEnv = process.env): NF
   warnIfCertNearExpiry(cert);
   // Audit trail — one greppable line per cert load. Lets ops verify
   // "the cert was loaded N times this boot" (expected N=1 in prod).
-  // Uses console.debug so it survives the base config's `no-console`
-  // allowlist (matches warnIfCertNearExpiry's channel).
+  // console.debug keeps it off the warn/error channels; this file is exempt
+  // from `no-console` in eslint.config.mjs (it owns the cert audit channel).
   console.debug(`[nfe-cert] loaded source=${source}`);
   return cert;
 }

@@ -256,7 +256,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   const docRef = useMemo(
     () => (internalId ? collection.docRef(db, pathContext, internalId) : null),
     // pathContext intentionally identity-tracked.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, collection, internalId],
   );
   const docSnap = useDocSnapshot<Doc>(docRef);
@@ -270,7 +269,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   const copyDocRef = useMemo(
     () => (copyFromId ? collection.docRef(db, pathContext, copyFromId) : null),
     // pathContext intentionally identity-tracked.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, collection, copyFromId],
   );
   const copySnap = useDocSnapshot<Doc>(copyDocRef);
@@ -334,7 +332,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       return { ...result, errors } as typeof result;
     };
     return wrapped;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schema, fieldOverrides, validate]);
 
   const form = useForm<FieldValues>({
@@ -377,7 +374,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
     } else if (!internalId) {
       form.reset({ ...emptyDefaults, ...(defaultValues ?? {}) } as FieldValues);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docSnap.data?.id, docSnap.fromCache]);
 
   // Copy mode: once the source doc loads, seed the form with its values. The
@@ -393,7 +389,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       ...(defaultValues ?? {}),
       ...source,
     } as FieldValues);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [copySnap.data?.id]);
 
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -550,7 +545,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
       (map[section] ??= []).push(d);
     }
     return map;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleDescriptors, fieldOverrides, sections?.join('|')]);
 
   // Reverse of `grouped`: top-level field key → section name, for mapping

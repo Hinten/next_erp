@@ -132,7 +132,6 @@ export function useSubcollectionIdLookup(
       cancelled = true;
     };
     // `db` is stable; `key` encodes the spec content (and `cap`).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, key]);
 
   return state;

@@ -1,3 +1,4 @@
+/* eslint-disable no-console -- CLI script: stdout is the interface */
 import { bundle } from '../build.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';

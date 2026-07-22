@@ -34,7 +34,6 @@ export function SearchBar({
     return () => clearTimeout(handle);
     // onChange is intentionally outside deps — callers typically pass an
     // inline arrow which would re-fire the timeout on every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, debounceMs]);
 
   return (

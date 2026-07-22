@@ -128,7 +128,6 @@ export function parseSoftRead<T extends z.ZodTypeAny>(
 ): z.infer<T> {
   const result = schema.safeParse(raw);
   if (result.success) return result.data as z.infer<T>;
-  // eslint-disable-next-line no-console
   console.warn(`[data] schema mismatch on ${path}`, result.error.issues);
   return raw as z.infer<T>;
 }

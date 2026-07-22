@@ -20,11 +20,6 @@ export interface AuditEntryInput {
  * TODO Phase X: enable audit writes (use Firestore rules to restrict writes
  * to this path to Cloud Functions / privileged callers).
  */
-export function writeAuditEntry(
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  tx: Transaction,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  entry: AuditEntryInput,
-): void {
+export function writeAuditEntry(tx: Transaction, entry: AuditEntryInput): void {
   // intentionally empty — see TODO above
 }
