@@ -84,6 +84,21 @@ export class NothingChangedError extends Error {
   }
 }
 
+/** Keys that must never be used as dynamic object property names. */
+const PROTOTYPE_POLLUTION_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * Resolve a stamp field option to a safe key (or `undefined` when disabled /
+ * invalid). Rejects prototype-polluting keys so a caller-supplied
+ * `createdAtField` / `modifiedAtField` cannot mutate `Object.prototype`.
+ */
+function resolveStampKey(option: string | false | undefined, fallback: string): string | undefined {
+  if (option === false) return undefined;
+  const key = option ?? fallback;
+  if (PROTOTYPE_POLLUTION_KEYS.has(key)) return undefined;
+  return key;
+}
+
 /**
  * Save a single record (create or update) inside a transaction. The
  * transaction also runs `writeAuditEntry`, which is a no-op stub today but
@@ -132,11 +147,9 @@ export async function saveRecord<
 
   // Field names: default to the monorepo majority (`timestamp` /
   // `ultimaModificacao`); ObjectView overrides for `dataCadastro` etc.
-  // `false` disables that stamp entirely.
-  const modifiedKey =
-    input.modifiedAtField === false ? undefined : (input.modifiedAtField ?? 'ultimaModificacao');
-  const createdKey =
-    input.createdAtField === false ? undefined : (input.createdAtField ?? 'timestamp');
+  // `false` (or a prototype-polluting key) disables that stamp entirely.
+  const modifiedKey = resolveStampKey(input.modifiedAtField, 'ultimaModificacao');
+  const createdKey = resolveStampKey(input.createdAtField, 'timestamp');
 
   // Stamps run ONLY when the main doc is actually written — so the TableView
   // update-monitor sees real edits, and a sibling-only save doesn't bump an

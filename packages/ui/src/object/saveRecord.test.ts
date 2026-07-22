@@ -450,4 +450,25 @@ describe('saveRecord — create/modify stamps', () => {
       { nome: 'editado', customMod: FIXED_MS },
     );
   });
+
+  it('rejects prototype-polluting stamp field names (no Object.prototype mutation)', async () => {
+    const values: Record<string, unknown> = { nome: 'x' };
+    await saveRecord({
+      db: {} as never,
+      collection: fakeCollection(),
+      pathContext: {},
+      values,
+      dirtyFields: { nome: true },
+      currentUserUid: 'u1',
+      stampUnit: 'ms',
+      createdAtField: '__proto__',
+      modifiedAtField: 'constructor',
+    });
+    // Polluting keys are treated as disabled — payload is unchanged plain values.
+    expect(firestoreMock.txMock.set.mock.calls[0]![1]).toEqual({ nome: 'x' });
+    // constructor on Object.prototype must remain the real Function, not a stamp number.
+    expect(typeof (Object.prototype as unknown as { constructor: unknown }).constructor).toBe(
+      'function',
+    );
+  });
 });
