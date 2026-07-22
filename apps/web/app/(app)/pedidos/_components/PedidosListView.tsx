@@ -31,6 +31,7 @@ import { EmitirLoteDialog } from './EmitirLoteDialog';
 import { NfColumnFilter } from './NfColumnFilter';
 import { PrintComumDialog } from './print/PrintComumDialog';
 import { usePrintComumAction } from './print/usePrintComumAction';
+import { useDownloadAnexosAction } from './useDownloadAnexosAction';
 import { DIRECAO, type Direcao } from './direcao';
 import { DirecaoBadge } from './DirecaoBadge';
 import { DirecaoSurface } from './DirecaoSurface';
@@ -157,6 +158,7 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
   const cfg = DIRECAO[direcao];
   const { action: emitNFeAction, loteModal } = useEmitirNFeAction();
   const { action: printAction, printModal } = usePrintComumAction();
+  const { action: downloadAnexosAction } = useDownloadAnexosAction();
   return (
     <DirecaoSurface direcao={direcao}>
       <ContingenciaBanner />
@@ -204,7 +206,7 @@ export function PedidosListView({ direcao, extraActions = [] }: PedidosListViewP
           </Button>
         )}
         selectable
-        actions={[emitNFeAction, printAction, ...extraActions]}
+        actions={[emitNFeAction, printAction, downloadAnexosAction, ...extraActions]}
       />
       <EmitirLoteDialog
         opened={loteModal.opened}
