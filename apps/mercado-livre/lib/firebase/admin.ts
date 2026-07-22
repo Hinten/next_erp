@@ -116,19 +116,36 @@ export function getAdminFirestore(): Firestore {
  * `<projectId>.appspot.com`. Exported for unit tests.
  */
 export function resolveStorageBucketName(): string {
-  const explicit = process.env.FIREBASE_STORAGE_BUCKET;
-  if (explicit) return explicit;
-  const projectId = resolveProjectId(loadServiceAccount());
-  if (!projectId) {
+  const name = storageBucketNameOrNull();
+  if (!name) {
     throw new Error(
       'Storage bucket not found. Set FIREBASE_STORAGE_BUCKET (or FIREBASE_PROJECT_ID / ' +
         'a service account so it can be derived as <projectId>.appspot.com).',
     );
   }
-  return `${projectId}.appspot.com`;
+  return name;
+}
+
+/** The nullable core of `resolveStorageBucketName` — null when unresolvable. */
+function storageBucketNameOrNull(): string | null {
+  const explicit = process.env.FIREBASE_STORAGE_BUCKET;
+  if (explicit) return explicit;
+  const projectId = resolveProjectId(loadServiceAccount());
+  return projectId ? `${projectId}.appspot.com` : null;
 }
 
 /** The default Cloud Storage bucket for server-side uploads (ML photo import). */
 export function getAdminBucket(): ReturnType<Storage['bucket']> {
   return getStorage(getAdminApp()).bucket(resolveStorageBucketName());
+}
+
+/**
+ * Like `getAdminBucket`, but null when the bucket NAME can't be resolved
+ * (missing FIREBASE_STORAGE_BUCKET / derivable project id) — for callers that
+ * deliberately degrade to skip-photos (the mass-import job) instead of failing.
+ * Real infra bugs (a broken admin app, Storage SDK failures) still throw.
+ */
+export function tryGetAdminBucket(): ReturnType<Storage['bucket']> | null {
+  const name = storageBucketNameOrNull();
+  return name ? getStorage(getAdminApp()).bucket(name) : null;
 }

@@ -80,13 +80,25 @@ export async function POST(req: Request): Promise<NextResponse> {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Falha ao enfileirar a importação.';
       // Best-effort: mark the job failed so the status route/UI surfaces the
-      // outage instead of leaving an orphaned `running` doc with no worker.
-      await importacaoMercadoLivreCollection.merge(db, {}, jobId, {
-        status: 'failed',
-        erro: message,
-        finishedAt: Date.now(),
-        updatedAt: Date.now(),
-      });
+      // outage instead of leaving an orphaned `running` doc with no worker. The
+      // stamp itself is guarded (same boundary shape as the webhook receiver's
+      // enqueue fallback) so a concurrent Firestore outage still yields the 503
+      // instead of an unhandled throw — the stamp failure is only logged.
+      const failedAt = Date.now();
+      try {
+        await importacaoMercadoLivreCollection.merge(db, {}, jobId, {
+          status: 'failed',
+          erro: message,
+          finishedAt: failedAt,
+          updatedAt: failedAt,
+        });
+      } catch (stampErr) {
+        if (!(stampErr instanceof Error)) throw stampErr;
+        console.warn('[mercado-livre/importar-todos] failure-stamp falhou', {
+          jobId,
+          message: stampErr.message,
+        });
+      }
       return NextResponse.json(
         { error: message, code: 'ML_MASS_IMPORT_ENQUEUE_FAILED' },
         { status: 503 },

@@ -66,7 +66,7 @@ import { type ImportOptions, MercadoLivreImportError } from './importCore';
 import { refMatchesIntegracao } from './linkRefs';
 import { loadMercadoLivreContext } from './mercadoLivre';
 import { type Bucket } from './arquivoUpload';
-import { getAdminBucket } from '../firebase/admin';
+import { tryGetAdminBucket } from '../firebase/admin';
 
 /**
  * The deployed `onTaskDispatched` function name — which is ALSO its
@@ -182,25 +182,16 @@ function asNumberOrNull(v: unknown): number | null {
 }
 
 /**
- * `getAdminBucket()` throws (a plain `Error`) when Storage bucket resolution
- * fails — a backend/env misconfiguration (`FIREBASE_STORAGE_BUCKET` /
- * `FIREBASE_PROJECT_ID` unset), never a per-item concern. `importProduto`
- * already treats a missing `bucket` as "skip this item's photos" (every other
- * option still applies), so a mass-import run degrades the SAME way here
- * instead of failing the entire batch of otherwise-importable listings over a
- * Storage config issue. Deliberately scoped to ONLY this one synchronous call
- * (not a broader try/catch) — narrower than the repo's usual per-class `catch`
- * convention because `getAdminBucket()`'s own failure surface is a single plain
- * `Error` with no dedicated class to narrow to; see `notes` in the PR for the
- * explicit call-out.
+ * A missing Storage bucket NAME is a backend/env misconfiguration
+ * (`FIREBASE_STORAGE_BUCKET` / derivable project id unset), never a per-item
+ * concern — `importProduto` already treats a missing `bucket` as "skip this
+ * item's photos", so a mass-import run degrades the SAME way instead of
+ * failing the entire batch over a Storage config gap. `tryGetAdminBucket`
+ * makes that a null-return (no catch at all), so genuine infra bugs — a broken
+ * admin app, Storage SDK failures — still propagate and fail the dispatch.
  */
 function resolveOptionalBucket(): Bucket | undefined {
-  try {
-    return getAdminBucket();
-  } catch (err) {
-    if (!(err instanceof Error)) throw err;
-    return undefined;
-  }
+  return tryGetAdminBucket() ?? undefined;
 }
 
 /**

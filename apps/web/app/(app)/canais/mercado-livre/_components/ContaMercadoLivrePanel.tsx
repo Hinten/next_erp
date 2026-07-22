@@ -97,6 +97,7 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
   const [sobrescreverPreco, setSobrescreverPreco] = useState(true);
   const [importarFotos, setImportarFotos] = useState(true);
   const [importarCategorias, setImportarCategorias] = useState(true);
+  const [atualizarProdutoPai, setAtualizarProdutoPai] = useState(true);
   const [atualizarCadastrados, setAtualizarCadastrados] = useState(false);
 
   const massImportQuery = useQuery({
@@ -123,6 +124,7 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
           sobrescreverPreco,
           importarFotos,
           importarCategorias,
+          atualizarProdutoPai,
           atualizarCadastrados,
         },
       });
@@ -245,6 +247,11 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
             label="Importar categorias"
             checked={importarCategorias}
             onChange={(e) => setImportarCategorias(e.currentTarget.checked)}
+          />
+          <Checkbox
+            label="Completar dados do produto pai"
+            checked={atualizarProdutoPai}
+            onChange={(e) => setAtualizarProdutoPai(e.currentTarget.checked)}
           />
           <Checkbox
             label="Atualizar anúncios já cadastrados"
