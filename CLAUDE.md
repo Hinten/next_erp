@@ -80,8 +80,9 @@ packages/{schemas,ui,data,auth,core}, tools/test-fixtures). A PR touching only
    `no-restricted-syntax` selectors); which class sits on the RHS is convention.
    ⚠️ Flat config **replaces** a rule by name instead of merging, so a workspace
    that redeclares `no-restricted-syntax` drops the base selectors. Five apps
-   re-spread them; **`apps/nfe` and `packages/integrations/nfe` deliberately do
-   not** — there the catch rule is OFF and the convention is on you, which is
+   re-spread them; **`apps/nfe`** and **`packages/integrations/nfe`**
+   deliberately opt out (the nfe package via an explicit `'no-restricted-syntax': 'off'`
+   block) — there the catch rule is OFF and the convention is on you, which is
    exactly where a swallowed SEFAZ error costs most.
 
 ## Layout
@@ -163,13 +164,19 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `FieldValue.maximum/minimum` (estoque callable), both absent in v13.
   Everything else is on v13, and `packages/{data,storage}` declare an optional
   peer `^13` that `apps/functions` knowingly violates. Typecheck-clean.
-- `next lint` is gone in Next 16 — every lint script is `eslint .`, and the 8
-  Next apps spread `@delfrance/config-eslint` + `eslint-config-next` +
-  `typeAware(...)` with `prettier` LAST. `apps/{docs,example,functions}` are not
-  linted.
-- Four custom lint rules in `packages/config-eslint/rules/`:
+- `next lint` is gone in Next 16 — every lint script is `eslint .`. `@delfrance/config-eslint`
+  is split into composable entries: the default export is the framework-agnostic
+  core, `./react` adds the `react-hooks` warns (plugin supplied by
+  `eslint-config-next`, or registered locally as in `packages/ui`), and
+  `typeAware(...)` layers the async-correctness rules scoped to the workspace's
+  tsconfig `include`. The 8 Next apps spread base + react + `eslint-config-next`
+  + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
+  + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
+  are not linted.
+- Five custom lint rules in `packages/config-eslint/rules/`:
   `default-query-needs-index`, `no-ad-hoc-money-rounding` and
-  `no-optional-without-nullable` (error), `no-inline-admin-collection` (warn).
+  `no-optional-without-nullable` (error), `no-inline-admin-collection` and
+  `no-error-as-sole-instanceof` (warn).
 - Firebase App Hosting deploys every Next app; heavy work goes to Cloud
   Functions. `apps/portal/` does NOT exist — public pages are deferred.
 - **Versions are not restated here — read the `package.json`.** There is no pnpm
