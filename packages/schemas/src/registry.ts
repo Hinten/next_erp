@@ -9,6 +9,7 @@ import {
   historicoEstoque,
   historicoPreco,
   historicoCusto,
+  historicoModificacao,
   PRODUTO_SUBCOLLECTION_DOMAINS,
 } from './produto';
 import { categoria } from './categoria';
@@ -95,6 +96,7 @@ export const ALL_DOMAINS: ReadonlyArray<DomainSchema<z.ZodTypeAny>> = [
   regraImposto,
   historicoPreco,
   historicoCusto,
+  historicoModificacao,
   produtoExtraData,
   estoqueProduto,
   historicoEstoque,

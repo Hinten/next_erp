@@ -39,9 +39,23 @@ export function emitRules(
   for (const domain of [...domains].sort(byPath)) {
     const { collectionPath } = domain.meta;
     const perms = resolvePermissions(domain.meta);
+    const serverOwned = domain.meta.serverOwned ?? false;
+
+    if (serverOwned && validatorWhitelist.has(collectionPath)) {
+      throw new Error(
+        `${collectionPath}: serverOwned collections cannot be validator-whitelisted — ` +
+          `Admin SDK writes bypass rules entirely, so a field validator would never run.`,
+      );
+    }
+    if (serverOwned && (domain.meta.serverOwnedFields?.length ?? 0) > 0) {
+      throw new Error(
+        `${collectionPath}: serverOwned is exclusive with serverOwnedFields — the whole ` +
+          `collection is already client-write-denied, a per-field guard is meaningless.`,
+      );
+    }
 
     let validatorName: string | null = null;
-    if (validatorWhitelist.has(collectionPath)) {
+    if (!serverOwned && validatorWhitelist.has(collectionPath)) {
       validatorName = `v_${collectionPath
         .split('/')
         .filter((s) => !s.startsWith('{'))
@@ -57,7 +71,13 @@ export function emitRules(
     }
 
     flatBlocks.push(
-      matchBlock(collectionPath, perms, validatorName, domain.meta.serverOwnedFields ?? []),
+      matchBlock(
+        collectionPath,
+        perms,
+        validatorName,
+        domain.meta.serverOwnedFields ?? [],
+        serverOwned,
+      ),
     );
 
     if (collectionPath.includes('/')) {
@@ -160,10 +180,21 @@ function matchBlock(
   perms: { read: ClaimCheck; write: ClaimCheck; delete: ClaimCheck },
   validatorName: string | null,
   serverOwnedFields: ReadonlyArray<string>,
+  serverOwned: boolean,
 ): string[] {
   const lines: string[] = [];
   lines.push(`    match /${collectionPath}/{docId} {`);
   lines.push(`      allow read: if isSuperUser() || p('${perms.read.claim}', ${perms.read.k});`);
+
+  if (serverOwned) {
+    // Written EXCLUSIVELY by the Admin SDK (a trigger, never a client) — no
+    // su bypass, unlike the per-field serverOwnedFields guard below.
+    lines.push('      // Server-owned collection — Admin SDK only, no su bypass.');
+    lines.push('      allow create, update, delete: if false;');
+    lines.push('    }');
+    return lines;
+  }
+
   // Super user bypasses the write-permission check; the field validator (when
   // present) is ANDed OUTSIDE the bypass, so even a super user writes valid data.
   const w = `(isSuperUser() || p('${perms.write.claim}', ${perms.write.k}))`;

@@ -6,3 +6,4 @@ export * from './phone';
 export * from './tenant';
 export * from './plugins';
 export * from './equality';
+export * from './diff';

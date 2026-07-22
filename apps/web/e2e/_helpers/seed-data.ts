@@ -2824,6 +2824,22 @@ export async function listHistoricoCusto(
   return snap.docs.map((d) => d.data() as Record<string, unknown>);
 }
 
+/**
+ * All `historicoDeModificacoes` docs of a produto (unsorted, raw wire data) —
+ * the unified modification-history entries `onProdutoChanged` writes, one per
+ * produto write, each recording only the top-level fields that changed.
+ */
+export async function listHistoricoModificacoes(
+  produtoId: string,
+): Promise<Array<Record<string, unknown>>> {
+  const snap = await db()
+    .collection('produtos')
+    .doc(produtoId)
+    .collection('historicoDeModificacoes')
+    .get();
+  return snap.docs.map((d) => d.data() as Record<string, unknown>);
+}
+
 /** Seed one `historicoDeCusto` record (the old app's wire shape). */
 export async function seedHistoricoCusto(produtoId: string, valor: number): Promise<void> {
   await db()

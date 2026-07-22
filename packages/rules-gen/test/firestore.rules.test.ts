@@ -260,6 +260,57 @@ describe.skipIf(!EMULATED)('generated firestore.rules', () => {
     });
   });
 
+  describe('server-owned produtos/historicoDeModificacoes (meta.serverOwned)', () => {
+    // Written EXCLUSIVELY by the onProdutoChanged trigger (Admin SDK, which
+    // bypasses rules entirely). Reads follow the ordinary produto read bit;
+    // ALL client writes are denied outright — including a superuser, unlike
+    // the per-field serverOwnedFields guard tested above.
+    const entry = {
+      path: 'produtos/p-hist',
+      subcolecao: null,
+      docId: 'p-hist',
+      kind: 'update',
+      campos: ['nome'],
+      changes: { nome: { old: 'a', new: 'b' } },
+      timestamp: 1_700_000_000_000,
+      eventId: 'evt-1',
+    };
+
+    it('the produto read bit reads a single entry and lists the subcollection', async () => {
+      await seed('produtos/p-hist/historicoDeModificacoes/evt-1', entry);
+      const reader = db({ d_produto: 1 });
+      await assertSucceeds(getDoc(doc(reader, 'produtos/p-hist/historicoDeModificacoes/evt-1')));
+      await assertSucceeds(getDocs(collection(reader, 'produtos/p-hist/historicoDeModificacoes')));
+    });
+
+    it('the produto read bit collection-group-reads across produtos', async () => {
+      await assertSucceeds(
+        getDocs(collectionGroup(db({ d_produto: 1 }), 'historicoDeModificacoes')),
+      );
+      await assertFails(getDocs(collectionGroup(db({ d_pedido: 7 }), 'historicoDeModificacoes')));
+    });
+
+    it('denies every client write, even with the produto write bit', async () => {
+      const writer = db({ d_produto: 2 });
+      await assertFails(
+        setDoc(doc(writer, 'produtos/p-hist/historicoDeModificacoes/evt-2'), entry),
+      );
+      await assertFails(
+        updateDoc(doc(writer, 'produtos/p-hist/historicoDeModificacoes/evt-1'), { campos: [] }),
+      );
+      await assertFails(deleteDoc(doc(writer, 'produtos/p-hist/historicoDeModificacoes/evt-1')));
+    });
+
+    it('denies every write even for a superuser (no su bypass)', async () => {
+      const su = db(rulesClaimsFromBits((1n << 128n) - 1n));
+      await assertFails(setDoc(doc(su, 'produtos/p-hist/historicoDeModificacoes/evt-3'), entry));
+      await assertFails(
+        updateDoc(doc(su, 'produtos/p-hist/historicoDeModificacoes/evt-1'), { campos: [] }),
+      );
+      await assertFails(deleteDoc(doc(su, 'produtos/p-hist/historicoDeModificacoes/evt-1')));
+    });
+  });
+
   describe('grupoEconomico tenant registry', () => {
     it('signed-in users read exactly their own grupo doc', async () => {
       await seed('grupoEconomico/g1', { nome: 'Grupo 1' });
