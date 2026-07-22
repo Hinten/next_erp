@@ -65,12 +65,14 @@ export function buildModificationEntry(input: {
  * Write one entry at a deterministic id (`entry.eventId`) — a redelivery of
  * the same CloudEvent rewrites a content-identical doc, never a duplicate.
  *
- * `opts.requireParentExists` guards the one case where the owning produto can
- * legitimately be gone by the time this runs: a cascade re-fire on a child
- * subcollection write racing `onProdutoDeleted`'s `recursiveDelete`. Recording
- * an entry under an already-deleted (or mid-delete) produto would either be
- * swept a moment later or orphaned outright, so the write is skipped and
- * `false` returned instead.
+ * `opts.requireParentExists` guards writes racing (or delivered after)
+ * `onProdutoDeleted`'s `recursiveDelete`: the cascade fires DELETE events for
+ * every swept subcollection doc, and a user's create/update event can also be
+ * delivered late, once the owning produto is already gone (a subcollection
+ * event carries no parent-liveness guarantee). Recording an entry under a
+ * deleted (or mid-delete) produto would either be swept a moment later or
+ * orphaned outright, so EVERY entry kind re-checks the parent and skips
+ * (returning `false`) when it is missing — one extra read per guarded write.
  */
 export async function recordModification(
   db: Firestore,
@@ -78,7 +80,7 @@ export async function recordModification(
   entry: ModificationEntry,
   opts?: { requireParentExists?: boolean },
 ): Promise<boolean> {
-  if (opts?.requireParentExists && entry.kind === 'delete') {
+  if (opts?.requireParentExists) {
     const produtoSnap = await produtoCollection.docRef(db, {}, produtoId).get();
     if (!produtoSnap.exists) return false;
   }
