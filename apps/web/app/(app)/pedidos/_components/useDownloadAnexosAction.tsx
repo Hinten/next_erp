@@ -39,7 +39,7 @@ export function useDownloadAnexosAction(): { readonly action: ActionConfig<Pedid
           rows.map((r) => r.id),
         );
 
-        if (result.noneFound || result.downloaded === 0) {
+        if (result.noneFound) {
           const one = rows.length === 1;
           notifications.show({
             color: 'gray',
@@ -47,12 +47,16 @@ export function useDownloadAnexosAction(): { readonly action: ActionConfig<Pedid
               ? `Nenhum anexo encontrado no pedido ${rows[0]!.data.numero ?? rows[0]!.id}`
               : 'Nenhum anexo encontrado para os pedidos selecionados',
           });
-          if (result.errors.length > 0) {
-            notifications.show({
-              color: 'orange',
-              message: result.errors[0],
-            });
-          }
+          return;
+        }
+
+        if (result.downloaded === 0) {
+          // Anexos existed but every resolve/download failed — do not claim
+          // "none found" (Copilot review on #642).
+          notifications.show({
+            color: 'orange',
+            message: result.errors[0] ?? 'Não foi possível baixar os anexos. Tente novamente.',
+          });
           return;
         }
 

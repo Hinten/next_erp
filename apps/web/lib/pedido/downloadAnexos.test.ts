@@ -305,7 +305,70 @@ describe('downloadAnexos orchestrator', () => {
     });
 
     expect(result.downloaded).toBe(1);
+    expect(result.noneFound).toBe(false);
     expect(result.errors.length).toBeGreaterThanOrEqual(1);
     expect(save).toHaveBeenCalledOnce();
+  });
+
+  it('sets noneFound false when anexos exist but every download fails', async () => {
+    const result = await downloadAnexos(db, ['ped-1'], {
+      cache: createMemoryArquivoCache(),
+      save: vi.fn(),
+      fetchImpl: vi.fn(async () => new Response(null, { status: 500 })),
+      delayMs: 0,
+      loadPedidos: async () =>
+        new Map([
+          [
+            'ped-1',
+            pedido({
+              p1: [{ produtoUid: 'p1', quantidade: 1, ordem: 0, precoDeVenda: 1 } as never],
+            }),
+          ],
+        ]),
+      loadProdutos: async () =>
+        new Map([
+          [
+            'p1',
+            produto({
+              anexos: [{ arquivoOuterRef: 'arquivos/a1' }],
+            }),
+          ],
+        ]),
+      loadArquivos: async () =>
+        new Map([['a1', arquivo({ filename: 'a.pdf', url: 'https://x/a1' })]]),
+    });
+
+    expect(result.noneFound).toBe(false);
+    expect(result.downloaded).toBe(0);
+    expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it('sets noneFound false when arquivo docs are missing', async () => {
+    const result = await downloadAnexos(db, ['ped-1'], {
+      delayMs: 0,
+      loadPedidos: async () =>
+        new Map([
+          [
+            'ped-1',
+            pedido({
+              p1: [{ produtoUid: 'p1', quantidade: 1, ordem: 0, precoDeVenda: 1 } as never],
+            }),
+          ],
+        ]),
+      loadProdutos: async () =>
+        new Map([
+          [
+            'p1',
+            produto({
+              anexos: [{ arquivoOuterRef: 'arquivos/missing' }],
+            }),
+          ],
+        ]),
+      loadArquivos: async () => new Map(),
+    });
+
+    expect(result.noneFound).toBe(false);
+    expect(result.downloaded).toBe(0);
+    expect(result.errors.some((e) => /não encontrado/i.test(e))).toBe(true);
   });
 });

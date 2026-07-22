@@ -36,7 +36,13 @@ export interface DownloadAnexosResult {
   readonly fromCache: number;
   readonly skipped: number;
   readonly errors: ReadonlyArray<string>;
-  /** True when no distinct anexo was found on any resolved product. */
+  /**
+   * True only when no distinct anexo ref was discovered on any resolved
+   * product (empty selection / empty itens / products without `anexos`).
+   * False when at least one arquivo id was collected — even if every later
+   * resolve/download step failed (missing doc, null URL, network). The UI
+   * must not show "Nenhum anexo encontrado" in that failure path.
+   */
   readonly noneFound: boolean;
 }
 
@@ -253,13 +259,16 @@ export async function downloadAnexos(
     metas.push(meta);
   }
 
+  // We already know `arquivoIds.length > 0` (earlier early-return). Anexos
+  // were found; any empty-meta / download-failure path is a failure, not
+  // "none found".
   if (metas.length === 0) {
     return {
       downloaded: 0,
       fromCache: 0,
       skipped: errors.length,
       errors,
-      noneFound: true,
+      noneFound: false,
     };
   }
 
@@ -287,6 +296,6 @@ export async function downloadAnexos(
     fromCache,
     skipped,
     errors,
-    noneFound: downloaded === 0 && nameInputs.length === 0,
+    noneFound: false,
   };
 }
