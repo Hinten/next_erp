@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // persists via the admin handle. Mock the scheduler + admin + collection so the
 // route's own logic (parse, enqueue, fallback, ack) runs real.
 const h = vi.hoisted(() => ({
-  enqueue: vi.fn(async (_payload: unknown) => {}),
+  enqueue: vi.fn(async (_payload: unknown, _opts?: { scheduleDelaySeconds?: number }) => {}),
   create: vi.fn(async () => {}),
   docRef: vi.fn(),
   parse: vi.fn((f: unknown) => f),
@@ -60,6 +60,20 @@ describe('POST /api/webhooks/mercado-livre', () => {
       user_id: 55,
     });
     expect(h.create).not.toHaveBeenCalled(); // happy path writes nothing
+  });
+
+  it('order-family topics (orders_v2/orders/payments/shipments) enqueue with a 10s schedule delay', async () => {
+    await POST(req({ _id: 'N2', resource: '/orders/2', topic: 'orders_v2', user_id: 1 }));
+    expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
+
+    h.enqueue.mockClear();
+    await POST(req({ _id: 'N3', resource: '/payments/3', topic: 'payments', user_id: 1 }));
+    expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
+  });
+
+  it('non-order-family topics (e.g. items) enqueue with no schedule delay', async () => {
+    await POST(req({ _id: 'N4', resource: '/items/MLB1', topic: 'items', user_id: 1 }));
+    expect(h.enqueue.mock.calls[0]![1]).toBeUndefined();
   });
 
   it('acks without enqueuing on noise (missing topic/resource) and on bad JSON', async () => {

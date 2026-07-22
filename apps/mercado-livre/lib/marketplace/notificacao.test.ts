@@ -12,17 +12,27 @@ import {
 } from './notificacao';
 
 // #441 default migration-runner wiring (`notificacao.ts`'s `runUptinMigration`)
-// is mocked at its three seams — `handleUptinMigration` itself, the ML-context
-// loader, and the API factory — so "default wiring" tests below prove the wire-
-// up (loadMercadoLivreContext → createMercadoLivreApi → handleUptinMigration)
-// runs with NO real network/Firestore-token dependency. Everything else these
-// modules export stays real (spread from `importActual`).
+// and the Step 9 default order-import wiring (`runOrderImport`) are mocked at
+// their shared seams — `handleUptinMigration` / `importPedidoMercadoLivre`
+// themselves, the ML-context loader, and the API factory — so "default wiring"
+// tests below prove the wire-up (loadMercadoLivreContext → createMercadoLivreApi
+// → handleUptinMigration/importPedidoMercadoLivre) runs with NO real
+// network/Firestore-token dependency. Everything else these modules export
+// stays real (spread from `importActual`).
 const h = vi.hoisted(() => ({
   handleUptinMigration: vi.fn(async () => {}),
   loadMercadoLivreContext: vi.fn(),
   createMercadoLivreApi: vi.fn(() => ({}) as never),
+  importPedidoMercadoLivre: vi.fn(
+    async (_deps: { nowUs: number; nowMs: number; integracaoId: string }, _resourceId: number) => ({
+      pedidoId: 'ped1',
+      created: true,
+      skipped: null,
+    }),
+  ),
 }));
 vi.mock('./importMigration', () => ({ handleUptinMigration: h.handleUptinMigration }));
+vi.mock('./orderImport', () => ({ importPedidoMercadoLivre: h.importPedidoMercadoLivre }));
 vi.mock('./mercadoLivre', async (importActual) => {
   const actual = await importActual<typeof import('./mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadMercadoLivreContext };
@@ -169,12 +179,18 @@ const asDb = (db: FakeDb) => db as unknown as Firestore;
 function seedConta(db: FakeDb, id: string, userId: number, ativo = true): void {
   db.seed('integracao', id, { tipo: 1, user_id: userId, ativo, nome: id });
 }
-/** A lean ML-wire payload (what the receiver enqueues / the sweep rebuilds). */
+/**
+ * A lean ML-wire payload (what the receiver enqueues / the sweep rebuilds).
+ * Default topic is `questions` — a KNOWN but permanently-postponed topic (see
+ * `notificacao.ts`'s module doc) — so a bare `payloadOf()` exercises the
+ * generic no-op dispatch fallback, not the Step 9 order-import branch that now
+ * owns `orders_v2`/`orders` (see the dedicated describe block below).
+ */
 function payloadOf(over: DocData = {}): DocData {
   return {
     id: 'N1',
-    resource: '/orders/123',
-    topic: 'orders_v2',
+    resource: '/questions/123',
+    topic: 'questions',
     user_id: 55,
     application_id: 999,
     attempts: 1,
@@ -183,12 +199,17 @@ function payloadOf(over: DocData = {}): DocData {
     ...over,
   };
 }
-/** A persisted `failed` notification doc (what the sweep re-drives). */
+/**
+ * A persisted `failed` notification doc (what the sweep re-drives). Same
+ * generic-inert-topic default as `payloadOf` — tests below that only override
+ * `resource` (for dedup/aging) keep exercising the no-op fallback, not order
+ * import.
+ */
 function seedFailed(db: FakeDb, id: string, over: DocData = {}): void {
   db.seed(NOTIF, id, {
     id,
-    resource: '/orders/1',
-    topic: 'orders_v2',
+    resource: '/questions/1',
+    topic: 'questions',
     user_id: 55,
     application_id: 999,
     attempts: 1,
@@ -208,6 +229,7 @@ beforeEach(() => {
   h.handleUptinMigration.mockClear();
   h.loadMercadoLivreContext.mockReset(); // per-test mockResolvedValue must not leak
   h.createMercadoLivreApi.mockClear();
+  h.importPedidoMercadoLivre.mockClear();
 });
 
 /* ------------------------------ parse + topics --------------------------- */
@@ -300,7 +322,7 @@ describe('handleNotificationTask', () => {
     const db = new FakeDb();
     seedConta(db, 'conta-A', 55);
     const r = await handleNotificationTask(asDb(db), payloadOf(), 0);
-    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'orders_v2' });
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'questions' });
     expect(db.docs(NOTIF).size).toBe(0);
   });
 
@@ -321,7 +343,7 @@ describe('handleNotificationTask', () => {
     const doc = db.docs(NOTIF).get('N1')!;
     expect(doc.status).toBe('failed');
     expect(doc.tentativas).toBe(0);
-    expect(doc.resource).toBe('/orders/123'); // ML wire fields persisted
+    expect(doc.resource).toBe('/questions/123'); // ML wire fields persisted
   });
 
   it('transient failure re-throws while under the attempt cap (queue retries)', async () => {
@@ -521,6 +543,189 @@ describe('handleNotificationTask — #441 migration takeover wiring', () => {
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
     expect(h.handleUptinMigration).not.toHaveBeenCalled();
     expect(h.loadMercadoLivreContext).not.toHaveBeenCalled();
+  });
+});
+
+/* --------------- orders_v2/orders order-import dispatch (Step 9) --------- */
+
+describe('handleNotificationTask — orders_v2/orders order-import dispatch (Step 9)', () => {
+  it('orders_v2: parses the numeric resource id and routes it to the injected runner, acks done with nothing persisted', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const orderImportRunner = vi.fn(async () => ({
+      pedidoId: 'ped1',
+      created: true,
+      skipped: null,
+    }));
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N40', resource: '/orders/987654', topic: 'orders_v2' }),
+      0,
+      undefined,
+      undefined,
+      orderImportRunner,
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'orders_v2' });
+    expect(orderImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 987654);
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('orders (legacy alias): dispatches exactly like orders_v2', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const orderImportRunner = vi.fn(async () => ({
+      pedidoId: 'ped2',
+      created: false,
+      skipped: null,
+    }));
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N41', resource: '/orders/42', topic: 'orders' }),
+      0,
+      undefined,
+      undefined,
+      orderImportRunner,
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'orders' });
+    expect(orderImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 42);
+  });
+
+  it('tolerates a bare numeric resource with no path segments', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const orderImportRunner = vi.fn(async () => ({
+      pedidoId: null,
+      created: false,
+      skipped: null,
+    }));
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N42', resource: '2001', topic: 'orders_v2' }),
+      0,
+      undefined,
+      undefined,
+      orderImportRunner,
+    );
+    expect(r.outcome).toBe('done');
+    expect(orderImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 2001);
+  });
+
+  it('a skipped import (seller-mismatch/no-buyer) still acks done — nothing persisted, nothing thrown', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const orderImportRunner = vi.fn(async () => ({
+      pedidoId: null,
+      created: false,
+      skipped: 'seller-mismatch' as const,
+    }));
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N43', resource: '/orders/5', topic: 'orders_v2' }),
+      0,
+      undefined,
+      undefined,
+      orderImportRunner,
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'orders_v2' });
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('a malformed (non-numeric) resource is dropped WITHOUT dispatching to the runner', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const orderImportRunner = vi.fn(async () => ({
+      pedidoId: null,
+      created: false,
+      skipped: null,
+    }));
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N44', resource: '/orders/abc', topic: 'orders_v2' }),
+      0,
+      undefined,
+      undefined,
+      orderImportRunner,
+    );
+    expect(r).toMatchObject({ outcome: 'dropped', integracaoId: 'conta-A', topic: 'orders_v2' });
+    expect(orderImportRunner).not.toHaveBeenCalled();
+    expect(db.docs(NOTIF).size).toBe(0); // dropped — no persist
+  });
+
+  it('the runner throwing on a non-final attempt propagates (queue retries)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const orderImportRunner = vi.fn(async () => {
+      throw new Error('ml api unavailable');
+    });
+    await expect(
+      handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: 'N45', resource: '/orders/7', topic: 'orders_v2' }),
+        0,
+        undefined,
+        undefined,
+        orderImportRunner,
+      ),
+    ).rejects.toThrow('ml api unavailable');
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('the runner throwing on the FINAL attempt persists failed (reuses the existing final-attempt harness)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const orderImportRunner = vi.fn(async () => {
+      throw new Error('ml api unavailable');
+    });
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N46', resource: '/orders/8', topic: 'orders_v2' }),
+      TASK_MAX_ATTEMPTS - 1,
+      undefined,
+      undefined,
+      orderImportRunner,
+    );
+    expect(r.outcome).toBe('failed');
+    const doc = db.docs(NOTIF).get('N46')!;
+    expect(doc.status).toBe('failed');
+    expect(doc.erro).toContain('ml api unavailable');
+  });
+
+  it('default wiring (no override): resolves the ML context + api and calls importPedidoMercadoLivre with one clock read', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    h.loadMercadoLivreContext.mockResolvedValue({
+      integracaoId: 'conta-A',
+      conta: { user_id: 999 },
+      resolveChannelContext: async () => ({
+        integracaoId: 'conta-A',
+        accessToken: 'AT',
+        account: {},
+      }),
+    });
+    h.importPedidoMercadoLivre.mockResolvedValue({
+      pedidoId: 'ped9',
+      created: true,
+      skipped: null,
+    });
+
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N47', resource: '/orders/9', topic: 'orders_v2' }),
+      0,
+      // resolveItemsApi/migrationRunner/orderImportRunner ALL omitted — the
+      // production defaults must be used.
+    );
+
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'orders_v2' });
+    expect(h.loadMercadoLivreContext).toHaveBeenCalledWith(asDb(db), 'conta-A');
+    expect(h.createMercadoLivreApi).toHaveBeenCalled();
+    expect(h.importPedidoMercadoLivre).toHaveBeenCalledWith(
+      expect.objectContaining({ integracaoId: 'conta-A' }),
+      9,
+    );
+    const [depsArg] = h.importPedidoMercadoLivre.mock.calls[0]!;
+    // ONE clock read: nowUs is nowMs converted, not re-read independently.
+    expect(depsArg.nowUs).toBe(depsArg.nowMs * 1000);
   });
 });
 

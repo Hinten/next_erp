@@ -165,12 +165,17 @@ function buildOrderItemWire(line: MlOrderItemLine): Record<string, unknown> {
 /*                                 buyer wire                                  */
 /* -------------------------------------------------------------------------- */
 
-/** `_$BuyerToJson` — all 4 keys always written, none omitted (models.g.dart:591-596). */
-function buildBuyerWire(order: MlOrder): Record<string, unknown> {
+/**
+ * `_$BuyerToJson` — all 4 keys always written for a NON-NULL buyer, none
+ * omitted (models.g.dart:591-596); a buyer-less order serializes `buyer: null`
+ * (the generated nullable-toJson short-circuits), NOT an all-null object.
+ */
+function buildBuyerWire(order: MlOrder): Record<string, unknown> | null {
   const buyer = order.buyer ?? null;
+  if (buyer == null) return null;
   const ex = buyerExtras(order);
   return {
-    id: buyer?.id ?? null,
+    id: buyer.id ?? null,
     nickname: ex.nickname ?? null,
     first_name: ex.first_name ?? null,
     last_name: ex.last_name ?? null,
