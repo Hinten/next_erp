@@ -7,7 +7,6 @@ import { Alert, Anchor, Group, Stack, Title } from '@mantine/core';
 import { FirebaseError } from 'firebase/app';
 import { IconMapPin, IconUserExclamation } from '@tabler/icons-react';
 import { clienteFormSchema } from '@delfrance/schemas';
-import { nowMillis } from '@delfrance/core/datetime';
 import { ObjectView } from '@delfrance/ui';
 import { CnpjLookupConfigProvider, CnpjLookupField } from '@/components/inputs/CnpjLookupField';
 import { TelefoneField, prepareForSaveTelefone } from '@/components/inputs/TelefoneInput';
@@ -143,7 +142,7 @@ function NovoClienteForm() {
           db={getFirebaseFirestore()}
           currentUserUid={user?.uid ?? ''}
           defaultValues={{
-            timestamp: nowMillis(),
+            // `timestamp` / `ultimaModificacao` stamped by saveRecord on create.
             ...(nomePrefill ? { nome: nomePrefill } : {}),
             ...(userClientePrefill ? { userCliente: userClientePrefill } : {}),
           }}

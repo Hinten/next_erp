@@ -32,7 +32,9 @@ export const usuarioSchema = z.object({
   // Datetime fields — millisecondsSinceEpoch INT wire format (#484/#486, legacy
   // `maybeDateTimeToJson` parity); reads tolerate a stray ISO/µs value via the codec.
   ultimoAcesso: millisSinceEpoch().nullable().default(null),
+  // System stamps — create-only `timestamp` and last-modified on every write.
   timestamp: millisSinceEpoch().nullable().default(null),
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
   /**
    * Sem-auth external-channel contact key — legacy `generateExternalId`:
    * `sha256('<canal>-<externalId>')` (e.g. `'whatsapp-5511999999999'`),

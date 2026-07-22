@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 
 const PERM_ENDERECO_READ = 1n << 3n;
@@ -94,6 +95,9 @@ export const enderecoSchema = z.object({
     .nullable()
     .default(null)
     .describe('Telefone'),
+  // System stamps — stamped by `saveRecord` / ObjectView (hidden from forms).
+  timestamp: millisSinceEpoch('Criação').nullable().default(null),
+  ultimaModificacao: millisSinceEpoch('Última modificação').nullable().optional(),
 });
 
 export type Endereco = z.infer<typeof enderecoSchema>;

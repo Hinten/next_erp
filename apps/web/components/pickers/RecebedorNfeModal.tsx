@@ -27,6 +27,9 @@ const ADDRESS_KEYS = [
   'estado',
   'cPais',
   'pais',
+  // System stamps — not recebedor inputs.
+  'timestamp',
+  'ultimaModificacao',
 ];
 
 export interface RecebedorNfeModalProps {

@@ -4,7 +4,6 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Anchor, Group, Stack, Title } from '@mantine/core';
 import { filialSchema } from '@delfrance/schemas';
-import { nowMillis } from '@delfrance/core/datetime';
 import { ObjectView } from '@delfrance/ui';
 import { filialCollection } from '@/lib/data/filialCollection';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -31,8 +30,7 @@ export default function NovaFilialPage() {
           collection={filialCollection}
           db={getFirebaseFirestore()}
           currentUserUid={user?.uid ?? ''}
-          defaultValues={{ timestamp: nowMillis() }}
-          excludedFields={['timestamp', 'certificado']}
+          excludedFields={['timestamp', 'ultimaModificacao', 'certificado']}
           fields={filialObjectFields}
           saveLabel="Criar"
           showSaveAndContinue={false}

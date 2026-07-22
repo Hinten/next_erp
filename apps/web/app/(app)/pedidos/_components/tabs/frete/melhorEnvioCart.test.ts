@@ -74,6 +74,7 @@ const ORIGIN: Endereco = {
   imun: null,
   email: 'loja@example.com',
   telefone: '1133334444',
+  timestamp: null,
 };
 
 const FILIAL: Filial = {
@@ -107,6 +108,7 @@ const DEST_PF: Endereco = {
   imun: null,
   email: 'maria@example.com',
   telefone: '21999998888',
+  timestamp: null,
 };
 
 const ITENS: ItemDoPedido[] = [

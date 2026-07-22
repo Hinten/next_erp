@@ -33,16 +33,11 @@ import { valuesEqual } from './diff';
 import { FieldRenderer } from './FieldRenderer';
 import { RecordPager } from './RecordPager';
 import { SectionTabs } from './SectionTabs';
+import { resolveStampFields, type StampFieldOverride } from './resolveStampFields';
 import { NothingChangedError, saveRecord, type TransactionWrite } from './saveRecord';
 import { useUnsavedChangesGuard } from './useUnsavedChangesGuard';
 
 export type { TransactionWrite };
-
-/**
- * Fields dropped from a copied source document — the new record must get its
- * own creation/modification stamps, not inherit the source's.
- */
-const COPY_STRIP_KEYS = ['timestamp', 'ultimaModificacao'];
 
 /**
  * Synthetic error key for key-less (form-level / cross-field) validation
@@ -199,6 +194,18 @@ export interface ObjectViewProps<S extends ZodObject<ZodRawShape>, C extends Zod
    * omitted, falls back to `window.confirm` with a generic message.
    */
   deleteConfirmMessage?: string;
+
+  /**
+   * Override auto-detect of the creation stamp field (`timestamp` /
+   * `dataCadastro` / …). `false` disables create stamping. Default: first
+   * candidate present on the schema descriptors.
+   */
+  createdAtField?: StampFieldOverride;
+  /**
+   * Override auto-detect of the last-modified stamp field
+   * (`ultimaModificacao`). `false` disables. Default: auto from schema.
+   */
+  modifiedAtField?: StampFieldOverride;
 }
 
 /**
@@ -238,6 +245,8 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   deleteLabel = 'Excluir',
   canDelete = true,
   deleteConfirmMessage,
+  createdAtField: createdAtFieldProp,
+  modifiedAtField: modifiedAtFieldProp,
 }: ObjectViewProps<S, C>) {
   const editingAllowed = !readOnly && canEdit;
   const deleteVisible = !!onDelete && canDelete;
@@ -247,6 +256,22 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   type Doc = z.infer<C>;
 
   const descriptors = useMemo(() => extractFieldsFromSchema(schema), [schema]);
+  // Creation / last-modified field names + epoch unit for saveRecord stamps.
+  // Auto-detect from the schema; props override (or disable with `false`).
+  const stampFields = useMemo(
+    () =>
+      resolveStampFields(descriptors, {
+        createdAtField: createdAtFieldProp,
+        modifiedAtField: modifiedAtFieldProp,
+      }),
+    [descriptors, createdAtFieldProp, modifiedAtFieldProp],
+  );
+  const copyStripKeys = useMemo(() => {
+    const keys: string[] = [];
+    if (stampFields.createdAtField) keys.push(stampFields.createdAtField);
+    if (stampFields.modifiedAtField) keys.push(stampFields.modifiedAtField);
+    return keys;
+  }, [stampFields.createdAtField, stampFields.modifiedAtField]);
 
   // Once a create-mode save lands, retain the new id so subsequent saves on
   // the same mount are treated as updates (partial patches).
@@ -379,11 +404,12 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
   // Copy mode: once the source doc loads, seed the form with its values. The
   // document id never lives in the schema data, so it's already excluded;
   // creation/modification stamps are stripped so the new record gets fresh
-  // ones. The page's `defaultValues` lose to the source (it's a clone).
+  // ones (resolved field names — e.g. `dataCadastro`, not only `timestamp`).
+  // The page's `defaultValues` lose to the source (it's a clone).
   useEffect(() => {
     if (!copySnap.data || internalId) return;
     const source = { ...(copySnap.data.data as Record<string, unknown>) };
-    for (const key of COPY_STRIP_KEYS) delete source[key];
+    for (const key of copyStripKeys) delete source[key];
     form.reset({
       ...emptyDefaults,
       ...(defaultValues ?? {}),
@@ -433,11 +459,6 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         values[key] = next;
       }
     }
-    // Resolve the unit for the `ultimaModificacao` stamp from the schema so a
-    // numeric-epoch collection gets a number, not an ISO string.
-    const stampDesc = descriptors.find((d) => d.key === 'ultimaModificacao');
-    const stampUnit: 'iso' | 'ms' | 'us' =
-      stampDesc?.kind === 'datetime' ? (stampDesc.dateUnit ?? 'ms') : 'iso';
     // Transient fields (aggregate page-model extras) are validated + rendered
     // but never reach the document: strip them — and their dirty flags — from
     // what `saveRecord` writes. The FULL `values` still flow to `form.reset`,
@@ -465,7 +486,12 @@ export function ObjectView<S extends ZodObject<ZodRawShape>, C extends ZodTypeAn
         // turns them into sibling writes keyed by the resolved record id.
         siblingWrites: transactionWrites ? (id) => transactionWrites(id, values) : undefined,
         currentUserUid,
-        stampUnit,
+        stampUnit: stampFields.stampUnit,
+        // `false` when auto-detect found nothing — don't fall back to the
+        // saveRecord defaults (`timestamp` / `ultimaModificacao`) on schemas
+        // that genuinely lack those keys.
+        createdAtField: stampFields.createdAtField ?? false,
+        modifiedAtField: stampFields.modifiedAtField ?? false,
       });
       // Zero out dirty state while preserving the persisted (transformed) values.
       form.reset(values as typeof raw);

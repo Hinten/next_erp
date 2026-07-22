@@ -14,8 +14,9 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
 export const motivoIncidenteSchema = z.object({
   nome: z.string().min(1).describe('Nome'),
   ativo: z.boolean().default(true).describe('Ativo'),
-  // System field — stamped by `saveRecord` on every write so the TableView
-  // update-monitor sees edits.
+  // System stamps — create-only `timestamp` (nullish coalesce) and
+  // `ultimaModificacao` on every write; both stamped by `saveRecord`.
+  timestamp: millisSinceEpoch('Criação').nullable().default(null),
   ultimaModificacao: millisSinceEpoch().nullable().optional(),
 });
 

@@ -145,6 +145,9 @@ export const PRODUTO_EXCLUDED_FIELDS: string[] = [
   'fotosArquivosIds',
   'paiId',
   'ordem',
+  // System stamps — written by `saveRecord` / ObjectView, never form inputs.
+  'timestamp',
+  'ultimaModificacao',
   // `id` is only a cross-document validation context (the produto doc id), never
   // rendered. (`extraData` → Descrição tab, `estoques` → Estoque tab, `impostos`
   // → Impostos tab.)

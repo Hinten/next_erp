@@ -26,7 +26,7 @@ export interface LogisticaSlice {
 }
 
 /** Hidden on every slice: pinned/stamped/no-UI-yet fields. */
-export const SHARED_EXCLUDED = ['tipo', 'dataCadastro', 'mapa'] as const;
+export const SHARED_EXCLUDED = ['tipo', 'dataCadastro', 'ultimaModificacao', 'mapa'] as const;
 
 /** Tab names — `intFreteFields` assigns the special editors to them; every
  * unsectioned field lands on the first tab. */
