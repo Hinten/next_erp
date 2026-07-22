@@ -36,13 +36,55 @@
       "publishedAt": "2026-03-26",
       "role": "leiaute-overlay",
       "description": "NF-e leiaute delta — overlays the NF-e structure files over the base pack and adds DFeTiposBasicos.",
-      "url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=%2BZqiLFb5FGE=",
+      "url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=8chO69DQYZ8=",
       "overlays": [
         "leiauteNFe_v4.00.xsd",
         "nfe_v4.00.xsd",
         "tiposBasico_v4.00.xsd",
         "DFeTiposBasicos_v1.00.xsd"
       ]
+    },
+    {
+      "name": "Evento_Generico_PL_v1.01",
+      "nt": null,
+      "publishedAt": "2014-05-30",
+      "role": "evento-base",
+      "description": "Generic NF-e evento pack — the evento transport envelope (envEvento / retEnvEvento / procEventoNFe), the shared TEvento leiaute, and the v1.03 basic types used by the whole evento family. tiposBasico_v1.03.xsd is byte-identical in all four evento packs; it is attributed here, to the pack that owns the envelope. The pack's own xmldsig-core-schema copy is not vendored — the PL_009i one is. The portal entry names no Nota Técnica, hence nt: null.",
+      "url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=zHyCKC788y8=",
+      "provides": [
+        "envEvento_v1.00.xsd",
+        "retEnvEvento_v1.00.xsd",
+        "procEventoNFe_v1.00.xsd",
+        "leiauteEvento_v1.00.xsd",
+        "tiposBasico_v1.03.xsd"
+      ]
+    },
+    {
+      "name": "Evento_CCe_PL_v1.01",
+      "nt": null,
+      "publishedAt": "2014-05-30",
+      "role": "evento-payload",
+      "description": "Carta de Correção Eletrônica — supplies only the tpEvento 110110 detEvento payload schema. The pack's CCe-specific envelope files (envCCe, leiauteCCe, retEnvCCe, procCCeNFe, CCe) are deliberately not vendored: the envelope comes from Evento_Generico_PL_v1.01 and the payload is fed into its detEvento #raw slot. The portal entry names no Nota Técnica, hence nt: null.",
+      "url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=%2B0MSTVshMl8=",
+      "provides": ["e110110_v1.00.xsd"]
+    },
+    {
+      "name": "Evento_Canc_PL_v1.01",
+      "nt": null,
+      "publishedAt": "2014-05-30",
+      "role": "evento-payload",
+      "description": "Cancelamento — supplies only the tpEvento 110111 detEvento payload schema. The pack's cancelamento-specific envelope files (envEventoCancNFe, leiauteEventoCancNFe, retEnvEventoCancNFe, procEventoCancNFe, eventoCancNFe) are deliberately not vendored; the envelope comes from Evento_Generico_PL_v1.01. The portal entry names no Nota Técnica, hence nt: null.",
+      "url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=Ig8Y9i6kgOc=",
+      "provides": ["e110111_v1.00.xsd"]
+    },
+    {
+      "name": "Evento_EPEC_PL_v1.01",
+      "nt": null,
+      "publishedAt": "2014-05-30",
+      "role": "evento-payload",
+      "description": "EPEC (Evento Prévio de Emissão em Contingência) — supplies only the tpEvento 110140 detEvento payload schema. The pack's EPEC-specific envelope files (envEPEC, leiauteEPEC, retEnvEPEC, procEPEC, EPEC) are deliberately not vendored; the envelope comes from Evento_Generico_PL_v1.01. The portal entry names no Nota Técnica, hence nt: null.",
+      "url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=OPt9hJUGOv0=",
+      "provides": ["e110140_v1.00.xsd"]
     }
   ]
 }
