@@ -12,7 +12,7 @@ import {
   type ExpectedItem,
 } from '@delfrance/schemas';
 import { ProdutoFoto } from './ProdutoFoto';
-import { useVirtualRows } from './useVirtualRows';
+import { useVirtualRows } from '@/components/virtual-rows/useVirtualRows';
 
 const ROW_HEIGHT = 76;
 
