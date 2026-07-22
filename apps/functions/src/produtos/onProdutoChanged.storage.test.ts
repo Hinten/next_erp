@@ -26,7 +26,7 @@ function freshId(prefix = 'p') {
  * the wrapper passes; a constant so the redelivery assertions can compare
  * content-identical docs (timestamp included).
  */
-const EVENT_TIME_MILLIS = Date.parse('2026-07-21T12:00:00.000Z');
+const EVENT_TIME_MICROS = Date.parse('2026-07-21T12:00:00.000Z') * 1000;
 
 describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
   it('records ONE entry for a parent precos+custo change, no legacy docs', async () => {
@@ -43,7 +43,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
       before,
       after,
       eventId,
-      EVENT_TIME_MILLIS,
+      EVENT_TIME_MICROS,
     );
 
     const entryRef = db
@@ -61,7 +61,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
       new: { l1: { valor: 20 } },
     });
     expect(entry.changes.custo).toEqual({ old: 5, new: 10 });
-    expect(entry.timestamp).toBe(EVENT_TIME_MILLIS);
+    expect(entry.timestamp).toBe(EVENT_TIME_MICROS);
 
     const allEntries = await db
       .collection('produtos')
@@ -101,7 +101,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
       before,
       after,
       eventId,
-      EVENT_TIME_MILLIS,
+      EVENT_TIME_MICROS,
     );
 
     const entryRef = db
@@ -117,7 +117,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
       before,
       after,
       eventId,
-      EVENT_TIME_MILLIS,
+      EVENT_TIME_MICROS,
     );
     const redelivered = (await entryRef.get()).data();
     expect(redelivered).toEqual(firstDelivery);
@@ -142,7 +142,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
       undefined,
       after,
       eventId,
-      EVENT_TIME_MILLIS,
+      EVENT_TIME_MICROS,
     );
 
     const entry = (
@@ -184,7 +184,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
       before,
       after,
       eventId,
-      EVENT_TIME_MILLIS,
+      EVENT_TIME_MICROS,
     );
 
     const same = (await db.collection('produtos').doc(childSame).get()).data()!;
@@ -221,7 +221,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
       before,
       after,
       eventId,
-      EVENT_TIME_MILLIS,
+      EVENT_TIME_MICROS,
     );
 
     const entries = await db
@@ -252,7 +252,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
       before,
       after,
       eventId,
-      EVENT_TIME_MILLIS,
+      EVENT_TIME_MICROS,
     );
 
     const entries = await db
@@ -280,7 +280,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
       before,
       after,
       eventId,
-      EVENT_TIME_MILLIS,
+      EVENT_TIME_MICROS,
     );
 
     const entries = await db
@@ -306,7 +306,7 @@ describe.skipIf(!EMULATED)('onProdutoChanged core (emulator)', () => {
         before,
         undefined,
         eventId,
-        EVENT_TIME_MILLIS,
+        EVENT_TIME_MICROS,
       ),
     ).resolves.toBeUndefined();
 
