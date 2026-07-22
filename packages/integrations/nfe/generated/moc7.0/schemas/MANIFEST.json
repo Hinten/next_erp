@@ -36,7 +36,7 @@
       "publishedAt": "2026-03-26",
       "role": "leiaute-overlay",
       "description": "NF-e leiaute delta — overlays the NF-e structure files over the base pack and adds DFeTiposBasicos.",
-      "url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=%2BZqiLFb5FGE=",
+      "url": "https://www.nfe.fazenda.gov.br/portal/exibirArquivo.aspx?conteudo=8chO69DQYZ8=",
       "overlays": [
         "leiauteNFe_v4.00.xsd",
         "nfe_v4.00.xsd",
