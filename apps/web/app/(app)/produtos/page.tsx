@@ -73,7 +73,9 @@ export default function ProdutosPage() {
                   <Menu.Item component={Link} href="/produtos/recalcular-precos">
                     Recalcular preços
                   </Menu.Item>
-                  {/* A sibling PR adds a second item here (edição de preço em massa). */}
+                  <Menu.Item component={Link} href="/produtos/alterar-precos">
+                    Alterar preços em massa
+                  </Menu.Item>
                 </Menu.Dropdown>
               </Menu>
             )}
