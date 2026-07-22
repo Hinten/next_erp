@@ -234,7 +234,7 @@ beforeEach(() => {
   // crash on an unconfigured mock) — tests exercising the cliente/endereço
   // steps directly override these per-case.
   vi.mocked(billingInfoToClienteFields).mockReturnValue({
-    tipo: 'pf',
+    tipo: '0',
     nome: 'Comprador Padrão',
     cpf_cnpj: '00000000000',
     idEstrangeiro: null,
@@ -343,7 +343,7 @@ describe('importPedidoMercadoLivre — cliente', () => {
     const api = makeApi({ getOrder: vi.fn(async () => order) });
 
     vi.mocked(billingInfoToClienteFields).mockReturnValue({
-      tipo: 'pf',
+      tipo: '0',
       nome: 'Fulano',
       cpf_cnpj: '11122233344',
       idEstrangeiro: null,

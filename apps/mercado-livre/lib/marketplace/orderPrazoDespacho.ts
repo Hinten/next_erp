@@ -196,7 +196,11 @@ function parseDespacho(ctx: ScheduleContext, cutoff: string, offsetDays = 0): nu
       `offset de fuso horário inválido: "${tzSuffix}"`,
     );
   }
-  const handlingOffsetMs = tzHours * 3_600_000 + tzMinutes * 60_000;
+  // The sign applies to the WHOLE offset, not just the hour component — for a
+  // "-03:30" offset the minutes are also negative (-3.5h, not -3h + 30min).
+  // Taken from the string ('-00:30' parses to hours -0, which `< 0` misses).
+  const tzSign = tzSuffix.trim().startsWith('-') ? -1 : 1;
+  const handlingOffsetMs = tzSign * (Math.abs(tzHours) * 3_600_000 + tzMinutes * 60_000);
   const localMidnightMs = baseMs - handlingOffsetMs;
 
   const [cutoffHoursRaw, cutoffMinutesRaw] = cutoff.split(':');

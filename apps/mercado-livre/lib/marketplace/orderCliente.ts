@@ -55,7 +55,7 @@ import { createHash } from 'node:crypto';
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { clienteCollection, enderecoCollection } from '@delfrance/data/admin/collections';
 import { normalizeTelefone, telefoneQueryShapes } from '@delfrance/core/phone';
-import { type Cliente, type UF, ufSchema } from '@delfrance/schemas';
+import { type Cliente, type TipoCliente, type UF, ufSchema } from '@delfrance/schemas';
 import type { MlBillingInfo, MlShipment } from '@delfrance/integrations-mercado-livre';
 import { isAlreadyExists } from './grpcErrors';
 
@@ -77,7 +77,7 @@ export class MlBillingInfoUnsupportedError extends Error {
 
 /** Cliente fields resolvable from ML billing info — see `billingInfoToClienteFields`. */
 export interface ClienteImportFields {
-  tipo: string;
+  tipo: TipoCliente;
   nome: string;
   cpf_cnpj: string | null;
   idEstrangeiro: string | null;
@@ -489,10 +489,14 @@ export async function findOrCreateCliente(
   fields: ClienteImportFields,
   nowMs: number,
 ): Promise<{ clienteId: string; created: boolean }> {
-  // Dedup-query normalization only (clientes/models.dart:272) — the STORED
-  // field keeps the caller's value, matching legacy exactly (in practice the
-  // caller already hands over a clean digits-only value here).
-  const cpfCnpjDigits = fields.cpf_cnpj != null ? fields.cpf_cnpj.replace(/\D/g, '') : null;
+  // Dedup-query normalization only — the STORED field keeps the caller's
+  // value. Legacy stripped to digits (clientes/models.dart:272), but our
+  // clienteSchema accepts the ALPHANUMERIC CNPJ (`[0-9A-Z]*`) — a digits-only
+  // strip would mangle those and query the wrong key, silently duplicating
+  // the cliente. Use the repo-standard normalization instead (punctuation/
+  // whitespace stripped, uppercased — same as apps/web/lib/clientes/dedup.ts).
+  const cpfCnpjDigits =
+    fields.cpf_cnpj != null ? fields.cpf_cnpj.replace(/[.\-/\s]/g, '').toUpperCase() : null;
   const normalizedTelefone = fields.telefone != null ? normalizeTelefone(fields.telefone) : null;
 
   let existing: ExistingCliente | null = null;
