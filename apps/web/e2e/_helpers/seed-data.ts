@@ -3334,3 +3334,230 @@ export async function cleanupCheckoutFixtures(prefix: string, pedidoIds: string[
   await Promise.all(pedidoIds.map((id) => cleanupPedidoSubcollection(id, 'checkout')));
   await Promise.all([cleanupPedidoFixtures(prefix), cleanupIntFreteFixtures(prefix)]);
 }
+
+/* -------------------------------------------------------------------------- */
+/*     Pedidos — Download Anexos bulk action fixtures (#550)                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Fixtures for the bulk "Download Anexos" action:
+ *  - parent produto with one `anexos` entry pointing at a seeded `arquivos` doc
+ *  - variation child (`paiId` = parent) with no own anexos
+ *  - product with no anexos
+ *  - pedido whose line points at the **variation** (forces parent fallback)
+ *  - pedido whose product has no anexos (empty path)
+ *
+ * The arquivo `url` is a deterministic HTTPS placeholder; e2e specs `page.route`
+ * it so Playwright never needs a real Storage object / CORS round-trip.
+ */
+export async function seedPedidoAnexosFixtures(prefix: string): Promise<{
+  parentProdutoId: string;
+  variationProdutoId: string;
+  noAnexoProdutoId: string;
+  arquivoId: string;
+  arquivoUrl: string;
+  arquivoFileName: string;
+  withAnexoPedidoId: string;
+  withAnexoNumero: string;
+  noAnexoPedidoId: string;
+  noAnexoNumero: string;
+  clienteId: string;
+  integracaoId: string;
+}> {
+  const clienteId = `${prefix}-cli-001`;
+  const integracaoId = `${prefix}-int-001`;
+  const parentProdutoId = `${prefix}-pro-parent`;
+  const variationProdutoId = `${prefix}-pro-var`;
+  const noAnexoProdutoId = `${prefix}-pro-empty`;
+  const arquivoId = `${prefix}-arq-001`;
+  const arquivoUrl = `https://e2e-anexo.invalid/${prefix}/manual.pdf`;
+  const arquivoFileName = `${prefix}-manual.pdf`;
+  const withAnexoPedidoId = `${prefix}-ped-anexo`;
+  const noAnexoPedidoId = `${prefix}-ped-empty`;
+  const now = Date.now();
+  const nowMicros = millisToMicros(now);
+  const skuParent = `${prefix.toUpperCase().replace(/-/g, '_')}_PAR`;
+  const skuVar = `${prefix.toUpperCase().replace(/-/g, '_')}_VAR`;
+  const skuEmpty = `${prefix.toUpperCase().replace(/-/g, '_')}_EMP`;
+
+  const item = (produtoId: string, sku: string) => ({
+    produtoUid: produtoId,
+    ordem: 1,
+    ensureUniqueId: null,
+    mktplaceId: null,
+    sku,
+    gtin: null,
+    nomeDeVenda: produtoId,
+    precoDeVenda: 10,
+    descontoUnitario: 0,
+    quantidade: 1,
+    custo: null,
+    timestamp: null,
+    imposto: null,
+  });
+
+  const pedidoBody = (produtoId: string, sku: string, numero: string) => ({
+    ehSaida: true,
+    estado: 'iniciado',
+    numero,
+    itens: { [produtoId]: [item(produtoId, sku)] },
+    itensIds: [produtoId],
+    descontoTotal: 0,
+    valorCobrado: 10,
+    timestamp: nowMicros,
+    ultimaModificacao: nowMicros,
+    freteInicial: null,
+    estoqueAplicado: null,
+    dataIndisponivelEstoque: null,
+    dataRemocaoEstoque: null,
+    vendedorPedidoOuterRef: null,
+    integracaoPedidoOuterRef: `documents/integracao/${integracaoId}`,
+    operacaoPedidoOuterRef: null,
+    clientePedidoOuterRef: `documents/clientes/${clienteId}`,
+    enderecoFiscalOuterRef: null,
+    listaDePrecosOuterRef: null,
+    observacoesInternas: null,
+    foiImpresso: false,
+    dtImpressao: null,
+  });
+
+  const produtoBody = (nome: string, sku: string, extra: Record<string, unknown> = {}) => ({
+    nome,
+    sku,
+    codPai: null,
+    paiId: null,
+    ordem: null,
+    gtin: null,
+    codFornecedor: null,
+    categoriaProdutoOuterRef: null,
+    pesoLiquidoKg: null,
+    pesoBrutoKg: null,
+    alturaCm: null,
+    larguraCm: null,
+    profundidadeCm: null,
+    ehKit: false,
+    ehKitVirtual: false,
+    publicado: true,
+    ofereceFreteGratis: false,
+    permiteVendaSemEstoque: false,
+    crossdocking: null,
+    precos: null,
+    grupoDeVariacoesUid: null,
+    variacoesUid: null,
+    componentesKitKeys: null,
+    componentesKit: null,
+    integracoesComProduto: [],
+    marketplaceIds: null,
+    marketplace: [],
+    statusProdutosMarketplace: null,
+    fotos: null,
+    videos: null,
+    anexos: null,
+    fotosArquivosIds: null,
+    nome_embedding: null,
+    ...extra,
+  });
+
+  const batch = db().batch();
+  batch.set(db().collection('clientes').doc(clienteId), {
+    tipo: '1',
+    nome: clienteId,
+    cpf_cnpj: validTestCnpj(runDigits(12)),
+    idEstrangeiro: null,
+    ie: null,
+    imun: null,
+    isUF: null,
+    email: null,
+    telefone: null,
+    observacoesInternas: null,
+    timestamp: now,
+    ultimaModificacao: now,
+    nome_embedding: null,
+    telefone_embedding: null,
+    userCliente: null,
+  });
+  batch.set(db().collection('integracao').doc(integracaoId), {
+    tipo: 7,
+    padrao: false,
+    nome: integracaoId,
+    cpf_cnpj: null,
+    idCadIntTran: null,
+    ativo: true,
+    cor: null,
+    modalidadeFreteImportacao: null,
+    filialIntegracaoPedidoOuterRef: null,
+    tabelaNormalOuterRef: null,
+    tabelaPromocionalOuterRef: null,
+    operacaoOuterRef: null,
+    operacaoDevolucaoOuterRef: null,
+    depositoOuterRef: null,
+    dataCadastro: now,
+  });
+  batch.set(db().collection('arquivos').doc(arquivoId), {
+    filetype: 'document',
+    filepath: `produtos/${parentProdutoId}/anexos`,
+    filename: `${arquivoId}.pdf`,
+    originalFilename: arquivoFileName,
+    contentType: 'application/pdf',
+    url: arquivoUrl,
+    externalIds: [],
+    criadoEm: nowMicros,
+    resizeState: null,
+    uploadState: 'finalized',
+    markedForDeletionAt: null,
+  });
+  batch.set(
+    db().collection('produtos').doc(parentProdutoId),
+    produtoBody(parentProdutoId, skuParent, {
+      anexos: [{ arquivoOuterRef: `arquivos/${arquivoId}` }],
+    }),
+  );
+  batch.set(
+    db().collection('produtos').doc(variationProdutoId),
+    produtoBody(variationProdutoId, skuVar, {
+      paiId: parentProdutoId,
+      anexos: null,
+    }),
+  );
+  batch.set(
+    db().collection('produtos').doc(noAnexoProdutoId),
+    produtoBody(noAnexoProdutoId, skuEmpty, { anexos: null }),
+  );
+  batch.set(
+    db().collection('pedidos').doc(withAnexoPedidoId),
+    pedidoBody(variationProdutoId, skuVar, withAnexoPedidoId),
+  );
+  batch.set(
+    db().collection('pedidos').doc(noAnexoPedidoId),
+    pedidoBody(noAnexoProdutoId, skuEmpty, noAnexoPedidoId),
+  );
+  await batch.commit();
+
+  return {
+    parentProdutoId,
+    variationProdutoId,
+    noAnexoProdutoId,
+    arquivoId,
+    arquivoUrl,
+    arquivoFileName,
+    withAnexoPedidoId,
+    withAnexoNumero: withAnexoPedidoId,
+    noAnexoPedidoId,
+    noAnexoNumero: noAnexoPedidoId,
+    clienteId,
+    integracaoId,
+  };
+}
+
+/** Teardown for `seedPedidoAnexosFixtures`. */
+export async function cleanupPedidoAnexosFixtures(
+  prefix: string,
+  arquivoId: string,
+): Promise<void> {
+  await db()
+    .collection('arquivos')
+    .doc(arquivoId)
+    .delete()
+    .catch(() => undefined);
+  await cleanupPedidoFixtures(prefix);
+}
