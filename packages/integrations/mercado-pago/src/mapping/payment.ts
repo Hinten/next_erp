@@ -6,7 +6,6 @@ import {
   type Pagamento,
   type StatusPagamento,
 } from '@delfrance/schemas';
-import { roundReais } from '@delfrance/core/money';
 import type { MpPayment } from '../types';
 
 /**
