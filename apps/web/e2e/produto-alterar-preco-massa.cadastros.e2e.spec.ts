@@ -126,7 +126,7 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
     await expect(page.getByText('Total de Produtos: 3', { exact: true })).toBeVisible();
 
     await selectField(page, 'Regra', 'Valor Fixo');
-    await page.getByLabel('Novo Preco', { exact: true }).fill('50');
+    await page.getByLabel('Novo Preço', { exact: true }).fill('50');
 
     // A already carries a varejo price (20) — the preview shows the pair.
     const aRow = previewRowLocator(page, aNome);
@@ -162,7 +162,7 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
     await includeProdutos(page, prefix, [aNome, bNome, cNome]);
 
     await selectField(page, 'Regra', 'Valor Fixo');
-    await page.getByLabel('Novo Preco', { exact: true }).fill('10');
+    await page.getByLabel('Novo Preço', { exact: true }).fill('10');
 
     // All three currently sit at 50 (previous test) — lowering to 10 needs
     // "Baixar preços" (off by default: aumentar=true, baixar=false).
@@ -243,7 +243,7 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
     await includeProdutos(page, prefix, [aNome, bNome, cNome]);
 
     await selectField(page, 'Regra', 'Valor Fixo');
-    await page.getByLabel('Novo Preco', { exact: true }).fill('50');
+    await page.getByLabel('Novo Preço', { exact: true }).fill('50');
     await page.getByLabel('Valor Máximo', { exact: true }).fill('40');
 
     // 'Valor Fixo' computes the SAME 50 for every row, so all three land out
@@ -278,7 +278,7 @@ test.describe.serial('Alterar preço em massa e2e (#545)', () => {
     await selectFieldWithSearch(page, 'Lista de preços', varejoNome);
     await includeProdutos(page, prefix, [aNome]);
     await selectField(page, 'Regra', 'Valor Fixo');
-    await page.getByLabel('Novo Preco', { exact: true }).fill('1');
+    await page.getByLabel('Novo Preço', { exact: true }).fill('1');
 
     const baixarRelatorio = page.getByRole('button', { name: 'Baixar Relatório', exact: true });
     await expect(baixarRelatorio).toBeEnabled({ timeout: 10_000 });

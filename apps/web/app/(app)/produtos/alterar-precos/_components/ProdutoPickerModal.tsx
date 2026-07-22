@@ -248,6 +248,10 @@ export function ProdutoPickerModal({ opened, onClose, onInclude }: ProdutoPicker
   }
 
   async function handleIncluirFiltrados() {
+    // Re-entrancy guard (Copilot review): a second invocation while a bulk
+    // load is in flight would start a concurrent paged loop and duplicate
+    // `onInclude` emissions. The button is also disabled while loading.
+    if (loadingTodos) return;
     const controller = new AbortController();
     abortRef.current = controller;
     setLoadingTodos(true);
@@ -400,6 +404,7 @@ export function ProdutoPickerModal({ opened, onClose, onInclude }: ProdutoPicker
             <Button
               variant="default"
               loading={loadingTodos}
+              disabled={loadingTodos}
               onClick={() => void handleIncluirFiltrados()}
             >
               Incluir todos os filtrados

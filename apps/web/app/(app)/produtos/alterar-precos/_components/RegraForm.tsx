@@ -231,7 +231,7 @@ export function RegraForm({ form, listaOptions, targetListaId }: RegraFormProps)
           <Text size="sm">até</Text>
           <RegraNumberField form={form} name="valorMaximo" label="Valor Máximo" />
           <Text size="sm">=</Text>
-          <RegraNumberField form={form} name="novoPreco" label="Novo Preco" />
+          <RegraNumberField form={form} name="novoPreco" label="Novo Preço" />
         </Group>
       )}
 
