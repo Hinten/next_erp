@@ -1,0 +1,44 @@
+# Project permission allowlist for Grok (merged with .claude/settings.json).
+# Agents may create PRs from claude/* branches (branch create gated by the
+# PreToolUse hook in .claude/settings.json), read open issues, and inspect CI.
+# Changes take effect on the next Grok session.
+
+[permission]
+allow = [
+  # Git — PR workflow on claude/* (create is hook-enforced)
+  "Bash(git commit *)",
+  "Bash(git add *)",
+  "Bash(git status *)",
+  "Bash(git diff *)",
+  "Bash(git log *)",
+  "Bash(git show *)",
+  "Bash(git rev-parse *)",
+  "Bash(git branch *)",
+  "Bash(git fetch *)",
+  "Bash(git checkout *)",
+  "Bash(git switch *)",
+  "Bash(git push *)",
+
+  # GitHub CLI — issues, PRs, CI
+  "Bash(gh pr *)",
+  "Bash(gh issue *)",
+  "Bash(gh run *)",
+  "Bash(gh api *)",
+  "Bash(gh workflow *)",
+  "Bash(gh status *)",
+  "Bash(gh auth status *)",
+
+  # MCP (Grok form)
+  "MCPTool(github__*)",
+  "MCPTool(tasks__*)",
+  "MCPTool(playwright__*)",
+  "MCPTool(mercadolibre-mcp-server__*)",
+]
+
+deny = [
+  "Bash(rm -rf *)",
+  "Read(.env)",
+  "Read(.env.local)",
+  "Read(secrets/**)",
+  "Read(.ignore/**)",
+]

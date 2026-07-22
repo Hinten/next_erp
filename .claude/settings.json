@@ -1,23 +1,43 @@
 {
   "_comment": "English-practice setup. The repo owner is a native Portuguese speaker working to perfect their English writing while they code. 'language' makes Claude reply in English; the UserPromptSubmit hook asks Claude to write commits and PRs in English and to give light corrections of the owner's English when there is a clear mistake. This is a personal learning aid and is safe to remove.",
   "language": "english",
+  "_comment_permissions": "Agent allowlist (Claude Code + Grok). Create PRs only from claude/* branches (branch creation is gated by the PreToolUse hook below). Read-only issue/CI inspection is always allowed. git push is on Grok's dangerous list and needs an explicit allow here. MCPTool(...) is the Grok-native form; mcp__* is kept for Claude Code compatibility.",
   "permissions": {
     "allow": [
       "mcp__mercadolibre-mcp-server",
       "mcp__playwright",
+      "MCPTool(mercadolibre-mcp-server__*)",
+      "MCPTool(playwright__*)",
+      "MCPTool(github__*)",
+      "MCPTool(tasks__*)",
+
       "Bash(pnpm turbo run typecheck)",
       "Bash(pnpm turbo run typecheck *)",
       "Bash(hash -r)",
+
       "Bash(git commit *)",
-      "Bash(gh pr create *)",
-      "Bash(gh issue create *)",
-      "Bash(gh issue list *)",
-      "Bash(gh issue view *)",
-      "Bash(gh run list *)",
-      "Bash(gh run view *)",
-      "Bash(gh run watch *)",
-      "Bash(gh workflow view *)",
-      "Bash(gh workflow list *)",
+      "Bash(git add *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git rev-parse *)",
+      "Bash(git branch *)",
+      "Bash(git fetch *)",
+      "Bash(git checkout *)",
+      "Bash(git switch *)",
+      "Bash(git push *)",
+      "Bash(git push -u origin HEAD)",
+      "Bash(git push -u origin *)",
+
+      "Bash(gh pr *)",
+      "Bash(gh issue *)",
+      "Bash(gh run *)",
+      "Bash(gh api *)",
+      "Bash(gh workflow *)",
+      "Bash(gh status *)",
+      "Bash(gh auth status *)",
+
       "mcp__github__issue_read",
       "mcp__github__list_issues",
       "mcp__github__search_issues",
@@ -39,7 +59,7 @@
       "Read(./.ignore/**)"
     ]
   },
-  "_comment_branch_prefix": "The PreToolUse hook refuses `git checkout -b` / `switch -c` / `branch <name>` / `worktree add -b` for any name outside `claude/`. Every workflow's pull_request trigger filters on the PR's BASE branch, so a PR stacked onto a branch outside that list reports zero checks — silently, as 'no checks reported' rather than a failure — and can be merged untested. Deleting, listing and checking out existing branches are unaffected. Remove this hook entry to disable.",
+  "_comment_branch_prefix": "The PreToolUse hook refuses `git checkout -b` / `switch -c` / `branch <name>` / `worktree add -b` for any name outside `claude/`. Every workflow's pull_request trigger filters on the PR's BASE branch, so a PR stacked onto a branch outside that list reports zero checks — silently, as 'no checks reported' rather than a failure — and can be merged untested. Deleting, listing and checking out existing branches are unaffected. Remove this hook entry to disable. Combined with the git push allow above, agents may open PRs only after creating a claude/* branch.",
   "hooks": {
     "PreToolUse": [
       {
