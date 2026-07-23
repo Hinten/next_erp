@@ -248,6 +248,16 @@ export const pedidoMeta: CollectionMetadata = {
     { path: 'pedidos/{pedidoId}/frete', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/nfev4', onDelete: 'cascade' },
     { path: 'pedidos/{pedidoId}/orderML', onDelete: 'cascade' },
+    // Freight-history / checkout / checkin subcollections. No writer emits
+    // these in the new app yet, but the cascade must clean them once their
+    // feature lands so a deleted pedido never leaves orphans (#372). `checkout`
+    // already has a schema (`checkoutFretePedidoMeta`); `checkin` and
+    // `historicoFtIni` reuse the legacy leaf names, matching the `checkout`
+    // convention. `histestq` is intentionally omitted: it is a dead legacy
+    // constant with no model, rules block, or writer in either app.
+    { path: 'pedidos/{pedidoId}/historicoFtIni', onDelete: 'cascade' },
+    { path: 'pedidos/{pedidoId}/checkout', onDelete: 'cascade' },
+    { path: 'pedidos/{pedidoId}/checkin', onDelete: 'cascade' },
   ],
   defaultQuery: {
     // Direction slice: one collection serves both /pedidos (saídas) and
