@@ -1,0 +1,531 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Firestore } from 'firebase-admin/firestore';
+import { MercadoLivreHttpError, type MercadoLivreApi } from '@delfrance/integrations-mercado-livre';
+
+// Isolate this handler's own orchestration from `resolvePrazoDespacho`'s
+// internal decision tree (SLA fetch / schedule search) — that module has its
+// own dedicated test file (`orderPrazoDespacho.test.ts`). Everything else
+// (`orderImport.ts`'s `loadContaBag`/`mergeFreteInicial`/
+// `resolveMercadoEnviosIntFreteOuterRef`, `orderShipmentMapping.ts`'s real
+// mapper + `mergeEstadoFretePreservando`) runs FOR REAL against the FakeDb
+// below, since several cases here assert on their actual merge output.
+vi.mock('./orderPrazoDespacho', () => ({
+  resolvePrazoDespacho: vi.fn(async () => null),
+}));
+
+import { resolvePrazoDespacho } from './orderPrazoDespacho';
+import { importShipmentMercadoLivre, type ShipmentImportDeps } from './orderShipmentImport';
+
+/* ------------------------------ fake Firestore ---------------------------- */
+// Own copy (a concurrent agent owns `orderPaymentImport.test.ts` — not shared).
+// Scoped to what `orderShipmentImport.ts` touches: `integracao`, `int_frete`,
+// `pedidos/{pedidoId}/orderML` (collectionGroup, docs carry `ref.parent.parent.id`
+// — same pattern as `import.test.ts`), and `pedidos` (doc get/update inside the
+// one transaction). `opLog` + a reads-before-writes guard inside
+// `runTransaction` mirror `orderPedidoTx.test.ts`'s FakeDb — this handler's own
+// "exactly one read" contract relies on the guard being real, not decorative.
+
+type DocData = Record<string, unknown>;
+type OpKind = 'get' | 'update';
+
+interface FakeSnap {
+  exists: boolean;
+  id: string;
+  data: () => DocData | undefined;
+}
+
+interface FakeDocRef {
+  id: string;
+  get: () => Promise<FakeSnap>;
+  update: (patch: DocData) => Promise<void>;
+}
+
+interface FakeTransaction {
+  get: (ref: FakeDocRef) => Promise<FakeSnap>;
+  update: (ref: FakeDocRef, patch: DocData) => Promise<void>;
+}
+
+function parentDocId(colPath: string): string {
+  const segs = colPath.split('/').filter(Boolean);
+  return segs[segs.length - 2] ?? '';
+}
+
+class FakeDb {
+  readonly cols = new Map<string, Map<string, DocData>>();
+  readonly opLog: Array<{ op: OpKind; path: string }> = [];
+  private readonly patches = new Map<string, DocData>();
+  private autoN = 0;
+
+  private col(path: string): Map<string, DocData> {
+    let c = this.cols.get(path);
+    if (!c) this.cols.set(path, (c = new Map()));
+    return c;
+  }
+  seed(path: string, id: string, data: DocData): void {
+    this.col(path).set(id, data);
+  }
+  docs(path: string): Map<string, DocData> {
+    return this.col(path);
+  }
+  /** The last `update()` patch object written at `path/id` — for asserting the write's exact shape. */
+  lastPatch(path: string, id: string): DocData | undefined {
+    return this.patches.get(`${path}/${id}`);
+  }
+
+  private query(entries: Array<[string, DocData, string]>) {
+    const clauses: Array<[string, unknown]> = [];
+    let lim: number | null = null;
+    const q = {
+      where(field: string, _op: string, value: unknown) {
+        clauses.push([field, value]);
+        return q;
+      },
+      limit(n: number) {
+        lim = n;
+        return q;
+      },
+      async get() {
+        let rows = entries.filter(([, d]) => clauses.every(([f, v]) => d[f] === v));
+        if (lim != null) rows = rows.slice(0, lim);
+        return {
+          docs: rows.map(([id, d, colPath]) => ({
+            id,
+            data: () => d,
+            exists: true,
+            ref: { parent: { parent: { id: parentDocId(colPath) } } },
+          })),
+          empty: rows.length === 0,
+        };
+      },
+    };
+    return q;
+  }
+
+  private makeDocRef(path: string, id: string): FakeDocRef {
+    const self = this;
+    const col = this.col(path);
+    return {
+      id,
+      get: async () => {
+        self.opLog.push({ op: 'get', path: `${path}/${id}` });
+        return { exists: col.has(id), id, data: () => col.get(id) };
+      },
+      update: async (patch: DocData) => {
+        self.opLog.push({ op: 'update', path: `${path}/${id}` });
+        self.patches.set(`${path}/${id}`, patch);
+        col.set(id, { ...(col.get(id) ?? {}), ...patch });
+      },
+    };
+  }
+
+  collection(path: string) {
+    const self = this;
+    const col = this.col(path);
+    return {
+      doc: (id?: string) => self.makeDocRef(path, id ?? `auto-${++self.autoN}`),
+      where: (field: string, op: string, value: unknown) =>
+        self.query([...col.entries()].map(([id, d]) => [id, d, path])).where(field, op, value),
+      get: async () => ({
+        docs: [...col.entries()].map(([id, d]) => ({ id, data: () => d, exists: true })),
+      }),
+    };
+  }
+
+  collectionGroup(groupId: string) {
+    const entries: Array<[string, DocData, string]> = [];
+    for (const [path, col] of this.cols) {
+      if (path.split('/').pop() === groupId) {
+        for (const [id, d] of col) entries.push([id, d, path]);
+      }
+    }
+    return this.query(entries);
+  }
+
+  // Admin SDK invariant: every read in a transaction must happen before its
+  // first write. `wroteAlready` is scoped to THIS call, not the FakeDb
+  // instance, so sequential transactions in the same test don't bleed.
+  async runTransaction<T>(fn: (tx: FakeTransaction) => Promise<T>): Promise<T> {
+    let wroteAlready = false;
+    const guardRead = (): void => {
+      if (wroteAlready) {
+        throw new Error('read after write in transaction (Admin SDK invariant)');
+      }
+    };
+    const tx: FakeTransaction = {
+      get: (ref) => {
+        guardRead();
+        return ref.get();
+      },
+      update: async (ref, patch) => {
+        await ref.update(patch);
+        wroteAlready = true;
+      },
+    };
+    return fn(tx);
+  }
+}
+
+const asDb = (db: FakeDb) => db as unknown as Firestore;
+
+/* --------------------------------- fixtures ------------------------------- */
+
+const INTEGRACAO_ID = 'conta-A';
+const SELLER_USER_ID = 555;
+const NOW_US = Date.parse('2026-02-01T00:00:00.000Z') * 1000;
+
+function seedConta(db: FakeDb, over: DocData = {}): void {
+  db.seed('integracao', INTEGRACAO_ID, {
+    tipo: 1,
+    nome: 'Loja ML',
+    ativo: true,
+    user_id: SELLER_USER_ID,
+    cpf_cnpj: '11222333000144',
+    operacaoOuterRef: 'documents/operacao/op1',
+    tabelaNormalOuterRef: 'documents/tabelasDePrecos/tabNormal',
+    modalidadeFreteImportacao: null,
+    ...over,
+  });
+}
+
+function seedIntFrete(db: FakeDb, id = 'if-1'): void {
+  db.seed('int_frete', id, {
+    tipo: 'mercadoLivre',
+    ativo: true,
+    contaMercadoLivreMercadoEnviosOuterRef: `integracao/${INTEGRACAO_ID}`,
+    dataCadastro: 1000,
+  });
+}
+
+function seedOrderMl(
+  db: FakeDb,
+  pedidoId: string,
+  orderId: number,
+  opts: { packId?: number | null } = {},
+): void {
+  db.seed(`pedidos/${pedidoId}/orderML`, String(orderId), {
+    id: orderId,
+    pack_id: opts.packId ?? null,
+    last_updated: '2026-01-01T00:00:00.000-03:00',
+  });
+}
+
+function makeShipment(opts: {
+  id: number;
+  orderId?: number | null;
+  status?: string;
+  lastUpdated?: string | null;
+  trackingNumber?: string | null;
+}): DocData {
+  return {
+    id: opts.id,
+    order_id: opts.orderId === undefined ? 1 : opts.orderId,
+    status: opts.status ?? 'shipped',
+    substatus: null,
+    tracking_number: opts.trackingNumber ?? null,
+    last_updated:
+      opts.lastUpdated === undefined ? '2026-01-15T00:00:00.000-03:00' : opts.lastUpdated,
+    base_cost: 10,
+    logistic_type: 'drop_off',
+    shipping_option: { list_cost: 20 },
+  };
+}
+
+function makeApi(over: Partial<Record<keyof MercadoLivreApi, unknown>> = {}): MercadoLivreApi {
+  return {
+    getShipment: vi.fn(async (id: number | string) => makeShipment({ id: Number(id) })),
+    getShipmentPayments: vi.fn(async () => []),
+    ...over,
+  } as unknown as MercadoLivreApi;
+}
+
+function deps(db: FakeDb, api: MercadoLivreApi): ShipmentImportDeps {
+  return { db: asDb(db), api, integracaoId: INTEGRACAO_ID, nowUs: NOW_US };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(resolvePrazoDespacho).mockResolvedValue(null);
+});
+
+/* ----------------------------------- tests --------------------------------- */
+
+describe('importShipmentMercadoLivre — order/orderML resolution', () => {
+  it('skips when the shipment carries no order_id', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const api = makeApi({
+      getShipment: vi.fn(async () => makeShipment({ id: 777, orderId: null })),
+    });
+
+    const result = await importShipmentMercadoLivre(deps(db, api), 777);
+
+    expect(result).toEqual({ pedidoId: null, skipped: 'sem-order-id' });
+  });
+
+  it('skips (and logs) when no orderML doc matches the order id by pack_id nor id', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const api = makeApi({
+      getShipment: vi.fn(async () => makeShipment({ id: 777, orderId: 42 })),
+    });
+
+    const result = await importShipmentMercadoLivre(deps(db, api), 777);
+
+    expect(result).toEqual({ pedidoId: null, skipped: 'pedido-nao-encontrado' });
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('prefers a pack_id match over an id match (pack_id-then-id two-step resolve)', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    // Seeded FIRST so an (incorrect) id-only resolve would return this one.
+    seedOrderMl(db, 'pedido-standalone', 55, { packId: null });
+    // Seeded SECOND, but the ONLY doc whose pack_id matches — must win.
+    seedOrderMl(db, 'pedido-pack', 55, { packId: 55 });
+    db.seed('pedidos', 'pedido-pack', { estado: 'iniciado', freteInicial: null });
+
+    const api = makeApi({
+      getShipment: vi.fn(async () => makeShipment({ id: 900, orderId: 55 })),
+    });
+
+    const result = await importShipmentMercadoLivre(deps(db, api), 900);
+
+    expect(result.pedidoId).toBe('pedido-pack');
+  });
+});
+
+describe('importShipmentMercadoLivre — frete guards', () => {
+  it('skips with ZERO writes when the pedido has no freteInicial yet', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'iniciado',
+      enderecoFiscalOuterRef: null,
+      freteInicial: null,
+    });
+    const api = makeApi({
+      getShipment: vi.fn(async () => makeShipment({ id: 777, orderId: 1 })),
+    });
+
+    const result = await importShipmentMercadoLivre(deps(db, api), 777);
+
+    expect(result).toEqual({ pedidoId: 'pedido-1', skipped: 'sem-frete-inicial' });
+    expect(db.opLog.some((e) => e.op === 'update' && e.path.startsWith('pedidos/'))).toBe(false);
+    expect(db.docs('pedidos').get('pedido-1')).toEqual({
+      estado: 'iniciado',
+      enderecoFiscalOuterRef: null,
+      freteInicial: null,
+    });
+  });
+});
+
+describe('importShipmentMercadoLivre — staleness', () => {
+  function seedFreteInicial(db: FakeDb, over: DocData = {}): void {
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '777',
+        ultimaModificacao: Date.parse('2026-01-10T00:00:00.000Z') * 1000,
+        ...over,
+      },
+    });
+  }
+
+  it('skips as stale when the stored ultimaModificacao is NOT older than the incoming one', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedFreteInicial(db); // stored 2026-01-10
+    const api = makeApi({
+      getShipment: vi.fn(async () =>
+        makeShipment({ id: 777, orderId: 1, lastUpdated: '2026-01-05T00:00:00.000-03:00' }),
+      ), // OLDER than stored
+    });
+
+    const result = await importShipmentMercadoLivre(deps(db, api), 777);
+
+    expect(result).toEqual({ pedidoId: 'pedido-1', skipped: 'stale' });
+  });
+
+  it('skips as stale when the stored ultimaModificacao is null — the OPPOSITE default from the payments gate', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedFreteInicial(db, { ultimaModificacao: null });
+    const api = makeApi({
+      // A fresh, well-formed incoming timestamp — would otherwise clearly win.
+      getShipment: vi.fn(async () => makeShipment({ id: 777, orderId: 1 })),
+    });
+
+    const result = await importShipmentMercadoLivre(deps(db, api), 777);
+
+    expect(result).toEqual({ pedidoId: 'pedido-1', skipped: 'stale' });
+  });
+
+  it('skips as stale when the mapped ultimaModificacao cannot be computed (shipment.last_updated absent)', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedFreteInicial(db); // valid stored timestamp
+    const api = makeApi({
+      getShipment: vi.fn(async () => makeShipment({ id: 777, orderId: 1, lastUpdated: null })),
+    });
+
+    const result = await importShipmentMercadoLivre(deps(db, api), 777);
+
+    expect(result).toEqual({ pedidoId: 'pedido-1', skipped: 'stale' });
+  });
+});
+
+describe('importShipmentMercadoLivre — happy path write', () => {
+  it('merges freteInicial (preserving unmapped + null-mapped fields and estado) and writes EXACTLY {freteInicial, lastMarketplaceUpdate}', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento', // must stay untouched by this handler
+      enderecoFiscalOuterRef: 'documents/clientes/cli-1/enderecos/end-1',
+      freteInicial: {
+        estado: 'despachoAutorizado',
+        externalId: '777',
+        printLabelId: 'label-123',
+        externalOptionId: 'opt-9',
+        externalOptionData: { foo: 'bar' },
+        codRastreio: 'BR123456789',
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00.000Z') * 1000, // OLDER than incoming
+      },
+    });
+    const api = makeApi({
+      getShipment: vi.fn(async () =>
+        makeShipment({
+          id: 777,
+          orderId: 1,
+          status: 'pending', // base map -> 'iniciado'; must NOT regress despachoAutorizado
+          lastUpdated: '2026-01-15T00:00:00.000-03:00',
+          trackingNumber: null, // must NOT clobber the stored codRastreio
+        }),
+      ),
+    });
+
+    const result = await importShipmentMercadoLivre(deps(db, api), 777);
+
+    expect(result).toEqual({ pedidoId: 'pedido-1', skipped: null });
+
+    // Reads-before-writes: exactly one get, then one update, on the pedido doc.
+    const pedidoOps = db.opLog.filter((e) => e.path === 'pedidos/pedido-1');
+    expect(pedidoOps.map((e) => e.op)).toEqual(['get', 'update']);
+
+    const patch = db.lastPatch('pedidos', 'pedido-1')!;
+    expect(Object.keys(patch).sort()).toEqual(['freteInicial', 'lastMarketplaceUpdate']);
+    expect(patch.lastMarketplaceUpdate).toBe(NOW_US);
+
+    const freteInicial = patch.freteInicial as DocData;
+    expect(freteInicial.estado).toBe('despachoAutorizado'); // preserved, not regressed to 'iniciado'
+    expect(freteInicial.printLabelId).toBe('label-123'); // unmapped field, preserved
+    expect(freteInicial.externalOptionId).toBe('opt-9'); // unmapped field, preserved
+    expect(freteInicial.externalOptionData).toEqual({ foo: 'bar' }); // unmapped field, preserved
+    expect(freteInicial.codRastreio).toBe('BR123456789'); // incoming tracking_number null -> preserved
+
+    // pedido.estado (the TOP-LEVEL field) is never part of the patch.
+    expect(db.docs('pedidos').get('pedido-1')!.estado).toBe('emProcessamento');
+  });
+
+  it('warns on an externalId mismatch but still processes the merge', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'emProcessamento',
+      enderecoFiscalOuterRef: null,
+      freteInicial: {
+        estado: 'iniciado',
+        externalId: '999', // MISMATCH vs the incoming shipment.id (777)
+        ultimaModificacao: Date.parse('2026-01-01T00:00:00.000Z') * 1000,
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const api = makeApi({
+      getShipment: vi.fn(async () =>
+        makeShipment({ id: 777, orderId: 1, lastUpdated: '2026-01-15T00:00:00.000-03:00' }),
+      ),
+    });
+
+    const result = await importShipmentMercadoLivre(deps(db, api), 777);
+
+    expect(result).toEqual({ pedidoId: 'pedido-1', skipped: null });
+    const messages = warn.mock.calls.map((c) => c[0]);
+    expect(messages.some((m) => typeof m === 'string' && m.includes('externalId divergente'))).toBe(
+      true,
+    );
+  });
+
+  it('calls resolvePrazoDespacho with fallbackUs null and the account sellerId', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    seedIntFrete(db);
+    seedOrderMl(db, 'pedido-1', 1);
+    db.seed('pedidos', 'pedido-1', {
+      estado: 'iniciado',
+      enderecoFiscalOuterRef: null,
+      freteInicial: null,
+    });
+    const shipment = makeShipment({ id: 777, orderId: 1 });
+    const api = makeApi({ getShipment: vi.fn(async () => shipment) });
+
+    await importShipmentMercadoLivre(deps(db, api), 777);
+
+    expect(resolvePrazoDespacho).toHaveBeenCalledWith(
+      expect.objectContaining({ api, shipment, sellerId: SELLER_USER_ID, fallbackUs: null }),
+    );
+  });
+});
+
+describe('importShipmentMercadoLivre — error policy', () => {
+  it('returns shipment-404 on a 404 from the primary getShipment call', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const api = makeApi({
+      getShipment: vi.fn(async () => {
+        throw new MercadoLivreHttpError('ML 404: not found', 404, null);
+      }),
+    });
+
+    const result = await importShipmentMercadoLivre(deps(db, api), 777);
+
+    expect(result).toEqual({ pedidoId: null, skipped: 'shipment-404' });
+  });
+
+  it('propagates a non-404 MercadoLivreHttpError', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const api = makeApi({
+      getShipment: vi.fn(async () => {
+        throw new MercadoLivreHttpError('ML 500: server error', 500, null);
+      }),
+    });
+
+    await expect(importShipmentMercadoLivre(deps(db, api), 777)).rejects.toBeInstanceOf(
+      MercadoLivreHttpError,
+    );
+  });
+
+  it('propagates a network/generic error instead of swallowing it', async () => {
+    const db = new FakeDb();
+    seedConta(db);
+    const api = makeApi({
+      getShipment: vi.fn(async () => {
+        throw new Error('network down');
+      }),
+    });
+
+    await expect(importShipmentMercadoLivre(deps(db, api), 777)).rejects.toThrow('network down');
+  });
+});
