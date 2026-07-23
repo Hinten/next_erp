@@ -293,8 +293,8 @@ function buildPaymentWire(raw: Record<string, unknown>): Record<string, unknown>
  * Build the full `orderML` wire object for one Mercado Livre order. Pure — no
  * IO, no `Date.now()`. `contaOuterRef` is normalized to the canonical
  * `documents/integracao/<id>` form via `toOuterRef` (no leading slash — NOT the
- * same convention as `makePagamentoIdMercadoLivre`'s sha1 preimage, which needs
- * a leading slash; see `orderIds.ts`).
+ * same convention as `makePagamentoIdMercadoLivre`'s sha256 preimage, which
+ * needs a leading slash; see `orderIds.ts`).
  */
 export function buildOrderMLWire(args: {
   order: MlOrder;
