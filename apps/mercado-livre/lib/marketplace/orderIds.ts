@@ -10,7 +10,7 @@
  * Sources:
  *  - Pedido.generateUid       `.old/packages/pedido/lib/src/models.dart:3736-3740`
  *  - ItemDoPedido.generateUid `.old/packages/pedido/lib/src/models.dart:149-153`
- *  - Pagamento.generateUid    `.old/packages/pedido/lib/src/models.dart:779-783`
+ *  - generateUid (top-level)  `.old/packages/global/lib/src/utils.dart:75-79`
  *  - Pagamento.generatePagamentoUid `.old/packages/pedido/lib/src/models.dart:2000-2002`
  *  - ML call site (pedido id) `.old/packages/canais_de_venda/mercado_livre/lib/src/models.dart:2997-3007`
  *  - ML call site (item id)   `.old/packages/canais_de_venda/mercado_livre/lib/src/models.dart:3179-3211`
@@ -19,10 +19,6 @@ import { createHash } from 'node:crypto';
 
 function sha256Hex(input: string): string {
   return createHash('sha256').update(input, 'utf8').digest('hex');
-}
-
-function sha1Hex(input: string): string {
-  return createHash('sha1').update(input, 'utf8').digest('hex');
 }
 
 /**
@@ -58,14 +54,27 @@ export function makeItemEnsureUniqueId(orderId: number, mktplaceId: string, inde
 /**
  * Deterministic `pedidos/{pedidoId}/pagamentos/{id}` doc id for one ML payment.
  * Mirrors `Pagamento.generatePagamentoUid(integracaoPath)` →
- * `Pagamento.generateUid(integracaoPath, id.toString())` →
- * `sha1(utf8(integracaoPath + id.toString()))`, where `integracaoPath` is the
+ * `generateUid(integracaoPath, id.toString())` →
+ * `sha256(utf8("${integracaoPath}-${id}"))`, where `integracaoPath` is the
  * conta's legacy Flutter `DocumentId.path` — `/documents/integracao/{contaId}`
- * (LEADING SLASH, and no separator before the payment id). This is a DIFFERENT
- * convention from the `documents/<col>/<id>` OuterRef wire format used
- * elsewhere in this app (which has no leading slash) — do not normalize this
- * preimage through `toOuterRef`, it would change the digest.
+ * (LEADING SLASH), and the top-level `generateUid` joins its two arguments with
+ * a `-` before hashing.
+ *
+ * ⚠️ Resolution chain, verified in the legacy source: the unqualified
+ * `generateUid(...)` call inside `Pagamento` does NOT hit the sha1 static at
+ * `pedido/models.dart:780` — that one belongs to `FreteDoPedido`, and Dart
+ * never resolves another class's statics unqualified. With no `generateUid` on
+ * `Model`/`Child`/`_PagamentoModel` either, the call falls through to the
+ * IMPORTED top-level `generateUid` (`global/utils.dart:75-79`), which is
+ * sha256 over `"$canalDeVendas-${id}"`. Every legacy ML call site (order
+ * import AND the payments-notification handler) goes through this same chain,
+ * so sha256-with-dash is the one true id.
+ *
+ * The leading-slash path is a DIFFERENT convention from the
+ * `documents/<col>/<id>` OuterRef wire format used elsewhere in this app
+ * (which has no leading slash) — do not normalize this preimage through
+ * `toOuterRef`, it would change the digest.
  */
 export function makePagamentoIdMercadoLivre(contaId: string, paymentId: number | string): string {
-  return sha1Hex(`/documents/integracao/${contaId}${paymentId}`);
+  return sha256Hex(`/documents/integracao/${contaId}-${paymentId}`);
 }

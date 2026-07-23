@@ -85,10 +85,10 @@ describe('makeItemEnsureUniqueId', () => {
 });
 
 describe('makePagamentoIdMercadoLivre', () => {
-  it('matches the legacy sha1("/documents/integracao/<contaId><paymentId>") digest', () => {
-    // sha1(utf8("/documents/integracao/CONTA12325110070625"))
+  it('matches the legacy sha256("/documents/integracao/<contaId>-<paymentId>") digest', () => {
+    // sha256(utf8("/documents/integracao/CONTA123-25110070625"))
     expect(makePagamentoIdMercadoLivre('CONTA123', 25110070625)).toBe(
-      '8b2c91eee36e1ea698eb8c5d7f7feed1de265cd4',
+      '32d4371094eecb95de2ec2b40c465688b32e594f0f2a55db07868aa588c0774e',
     );
   });
 
@@ -99,12 +99,20 @@ describe('makePagamentoIdMercadoLivre', () => {
   });
 
   it('the leading slash is load-bearing — omitting it changes the digest', () => {
-    // sha1(utf8("documents/integracao/CONTA12325110070625")) — no leading slash
-    const withoutLeadingSlash = '772b60dbfabe9dbfc6d2b52bdb020158a572236a';
+    // sha256(utf8("documents/integracao/CONTA123-25110070625")) — no leading slash
+    const withoutLeadingSlash = 'f8553acd1aa26f576ef2eed66eb42e8d78a1b91415111285f55505e38137f2bf';
     expect(makePagamentoIdMercadoLivre('CONTA123', 25110070625)).not.toBe(withoutLeadingSlash);
   });
 
-  it('returns a 40-char lowercase hex digest', () => {
-    expect(makePagamentoIdMercadoLivre('CONTA123', 1)).toMatch(/^[0-9a-f]{40}$/);
+  it('the dash separator is load-bearing — omitting it changes the digest', () => {
+    // sha256(utf8("/documents/integracao/CONTA12325110070625")) — no dash; this is
+    // also the preimage the pre-fix (sha1) implementation hashed, so it doubles as
+    // a regression pin against reintroducing the old derivation.
+    const withoutDash = '4edefcf9ae1d05cad29471431a33b7f86ab5901a5f2ae6930a3b69b02c8a27ca';
+    expect(makePagamentoIdMercadoLivre('CONTA123', 25110070625)).not.toBe(withoutDash);
+  });
+
+  it('returns a 64-char lowercase hex digest', () => {
+    expect(makePagamentoIdMercadoLivre('CONTA123', 1)).toMatch(/^[0-9a-f]{64}$/);
   });
 });
