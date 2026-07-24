@@ -194,8 +194,8 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
         precos: precosOps ? precosOps.set : null,
         categoriaProdutoOuterRef: args.categoriaOuterRef,
         // D2 (#520): parent taxonomy links — null unless the item has variations.
-        grupoDeVariacoesUid: args.parentGrupoUids,
-        variacoesUid: args.parentVariacoesUid,
+        grupoDeVariacoesUid: (args.parentGrupoUids?.length ?? 0) > 0 ? args.parentGrupoUids : null,
+        variacoesUid: (args.parentVariacoesUid?.length ?? 0) > 0 ? args.parentVariacoesUid : null,
         timestamp: now,
       },
     };
@@ -474,8 +474,8 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
         // WHOLE precos map (legacy `produtos.dart:284-290`), gated the same as the
         // parent's own create-time price write.
         precos: options.importarPreco ? parent.precos : null,
-        grupoDeVariacoesUid: grupoUids,
-        variacoesUid: varianteFakes,
+        grupoDeVariacoesUid: (grupoUids?.length ?? 0) > 0 ? grupoUids : null,
+        variacoesUid: (varianteFakes?.length ?? 0) > 0 ? varianteFakes : null,
         // Legacy `completarDadosProdutoPai`/`getData` gate — dims/categoria only
         // copy onto the child when the option is on (sku/publicado/taxonomy above
         // are NOT gated by it, they always fill).
