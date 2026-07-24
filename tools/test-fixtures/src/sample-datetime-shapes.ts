@@ -33,6 +33,7 @@ import {
   KNOWN_ISO_EXCEPTIONS,
   collectObservations,
   datetimeFieldsForSchema,
+  normalizePath,
 } from './datetime-shapes';
 
 export interface Options {
@@ -153,6 +154,12 @@ export function buildReport(
   // De-duplicate by path (a nullable field yields one spec after anyOf recursion).
   const specByPath = new Map<string, DatetimeFieldSpec>();
   for (const spec of specs) if (!specByPath.has(spec.path)) specByPath.set(spec.path, spec);
+  const declaredPaths = new Set(specByPath.keys());
+  // `collectObservations` matches interest by leaf NAME (that's all it can do
+  // while walking), so it records every value whose name is a declared datetime
+  // field — including same-named fields at different paths (e.g. top-level
+  // `timestamp` and `freteInicial.timestamp` on a pedido). Attribution back to
+  // the right field then happens by normalized PATH below, not by name.
   const declaredNames = new Set([...specByPath.values()].map((s) => s.name));
   const interesting = new Set<string>([...declaredNames, ...KNOWN_ISO_EXCEPTIONS]);
 
@@ -163,9 +170,12 @@ export function buildReport(
     let presentDocs = 0;
     let example: unknown;
     for (const observations of perDoc) {
-      const match = observations.find((o) => o.name === spec.name);
-      if (match) {
-        presentDocs += 1;
+      // Match by full (array-normalized) path so a same-named field on another
+      // path can't be attributed here. An array-valued field can match more
+      // than once per doc — count each occurrence, but the doc only once.
+      const matches = observations.filter((o) => normalizePath(o.path) === spec.path);
+      if (matches.length > 0) presentDocs += 1;
+      for (const match of matches) {
         bump(shapeCounts, match.shape);
         if (example === undefined) example = match.example;
       }
@@ -174,12 +184,14 @@ export function buildReport(
   });
 
   // Datetime-shaped values (Timestamp / ISO string) found where no datetime
-  // field is declared — grouped by path with array indices normalized.
+  // field is declared — grouped by path with array indices normalized. Excluded
+  // by declared PATH (not name), so a legacy shape on a same-named-but-nested
+  // field stays attributed to its field row above instead of vanishing here.
   const discoveredMap = new Map<string, DiscoveredReport>();
   for (const observations of perDoc) {
     for (const obs of observations) {
-      if (declaredNames.has(obs.name)) continue;
-      const normalized = obs.path.replace(/\[\d+\]/g, '[]');
+      const normalized = normalizePath(obs.path);
+      if (declaredPaths.has(normalized)) continue;
       const key = `${normalized}|${obs.shape}`;
       const existing = discoveredMap.get(key);
       if (existing) existing.count += 1;

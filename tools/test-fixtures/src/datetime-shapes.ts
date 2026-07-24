@@ -54,11 +54,20 @@ export const KNOWN_ISO_EXCEPTIONS: ReadonlySet<string> = new Set([
   'fechamento',
 ]);
 
-const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?/;
+// Anchored at both ends so a datetime-*prefixed* free-text value (a date range,
+// a "2024-01-15 10:30 promo" note) is NOT misclassified as a datetime. Seconds,
+// fractional seconds and the zone offset are optional.
+const ISO_DATETIME_RE =
+  /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:?\d{2})?$/;
 
 /** True for an ISO-8601-ish datetime string (date + time, parseable). */
 export function isIsoDateTimeString(value: string): boolean {
   return ISO_DATETIME_RE.test(value) && !Number.isNaN(Date.parse(value));
+}
+
+/** Normalize array indices in a runtime path (`foo[2].bar`) to `foo[].bar`. */
+export function normalizePath(path: string): string {
+  return path.replace(/\[\d+\]/g, '[]');
 }
 
 /** Classify a single runtime value into a wire shape. */
@@ -133,7 +142,21 @@ function walkJsonSchema(
  * rules generator uses so the wire shape matches exactly.
  */
 export function datetimeFieldsForSchema(schema: z.ZodTypeAny): DatetimeFieldSpec[] {
-  const json = z.toJSONSchema(schema, { io: 'output', unrepresentable: 'any' }) as JsonSchema;
+  // `reused: 'inline'` expands a subschema object reused by reference so the
+  // walk sees its fields inline instead of behind a `$ref` it can't resolve.
+  const json = z.toJSONSchema(schema, {
+    io: 'output',
+    unrepresentable: 'any',
+    reused: 'inline',
+  }) as JsonSchema;
+  // A cyclic schema still forces a `$ref`; the walk can't resolve those, so fail
+  // loudly rather than silently under-report the datetime fields.
+  if (JSON.stringify(json).includes('"$ref"')) {
+    throw new Error(
+      'datetimeFieldsForSchema: JSON schema contains a $ref (cyclic reuse); ' +
+        'the datetime-field walk does not resolve refs and would under-report.',
+    );
+  }
   const acc: DatetimeFieldSpec[] = [];
   walkJsonSchema(json, '', acc);
   return acc;

@@ -155,3 +155,50 @@ describe('buildReport / renderMarkdown (pagamentos)', () => {
     expect(md).toContain('| `cheque.bomPara` | iso-string |');
   });
 });
+
+describe('buildReport — same-named fields at different paths (pedidos)', () => {
+  const path = 'pedidos';
+  // `pedidos` has `timestamp`/`ultimaModificacao` BOTH top-level and under
+  // `freteInicial`. A doc where the nested copy carries a legacy ISO string
+  // while the top-level copy is a canonical µs int must attribute each shape to
+  // its own path — matching by leaf name alone would conflate them.
+  const docs = [
+    {
+      timestamp: 1_700_000_000_000_000, // top-level: canonical µs int
+      freteInicial: {
+        timestamp: '2020-01-01T00:00:00Z', // nested: legacy ISO
+        ultimaModificacao: '2020-01-01T00:00:00Z',
+      },
+    },
+  ];
+
+  it('does not conflate top-level vs freteInicial.* datetime fields', () => {
+    const report = buildReport(path, schemaFor(path), docs);
+    const byPath = new Map(report.fields.map((f) => [f.path, f]));
+
+    // Top-level timestamp: the µs int — number, present.
+    expect(byPath.get('timestamp')?.shapeCounts.get('number')).toBe(1);
+    expect(byPath.get('timestamp')?.presentDocs).toBe(1);
+
+    // Nested freteInicial.timestamp: the legacy ISO — iso-string, NOT number.
+    expect(byPath.get('freteInicial.timestamp')?.shapeCounts.get('iso-string')).toBe(1);
+    expect(byPath.get('freteInicial.timestamp')?.shapeCounts.get('number')).toBeUndefined();
+
+    // Top-level ultimaModificacao is absent in this doc (only the nested one set).
+    expect(byPath.get('ultimaModificacao')?.presentDocs).toBe(0);
+
+    // The nested ISO strings are attributed to their declared fields, so they
+    // must NOT leak into the "discovered" table.
+    expect(report.discovered).toHaveLength(0);
+  });
+
+  it('renders the ⚠️ legacy-shape flag on a numeric field observed as ISO', () => {
+    const report = buildReport(path, schemaFor(path), docs);
+    const md = renderMarkdown([report], { limit: 5, parentScan: 25, json: false });
+    // freteInicial.timestamp is a declared µs field observed as iso-string → ⚠️.
+    const row = md.split('\n').find((l) => l.includes('`freteInicial.timestamp`'));
+    expect(row).toBeDefined();
+    expect(row).toContain('iso-string×1');
+    expect(row).toContain('⚠️');
+  });
+});
