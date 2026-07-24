@@ -52,3 +52,4 @@ export { credenciaisWhatsappCollection } from './credenciaisWhatsappCollection';
 export { notificacoesWhatsappCollection } from './notificacoesWhatsappCollection';
 export { orderMLCollection } from './orderMLCollection';
 export { enderecoCollection } from './enderecoCollection';
+export { backfillPedidosMercadoLivreCollection } from './backfillPedidosMercadoLivreCollection';
