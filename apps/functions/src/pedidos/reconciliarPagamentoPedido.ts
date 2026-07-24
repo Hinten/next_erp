@@ -21,6 +21,12 @@ export interface ReconciliarPagamentoPedidoResult {
  * settle on a stale estado. This callable delegates to the Admin-SDK
  * `reconcilePedidoEstado` (`@delfrance/data/admin`), which reads the pedido
  * AND every pagamento in ONE transaction. Same auth model as `aplicarEstoque`.
+ *
+ * NOT YET called from `apps/web` — `PagamentosSection`'s `reconcileEstado()`
+ * still uses the client-side `reconcilePedidoEstadoFromPagamentos`
+ * (`@delfrance/data/pedido`) pending this function's deploy (deploy is
+ * manual — root rule #1; see `apps/functions/CLAUDE.md`). Once deployed, a
+ * follow-up PR flips that call site to `httpsCallable('reconciliarPagamentoPedido')`.
  */
 export const reconciliarPagamentoPedido = onCall(async (request) => {
   if (!request.auth) {

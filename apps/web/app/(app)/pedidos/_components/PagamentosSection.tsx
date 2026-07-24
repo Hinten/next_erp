@@ -24,10 +24,14 @@ import { notifications } from '@mantine/notifications';
 import { IconCash } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import { getDoc } from 'firebase/firestore';
+import { getDoc, getDocs } from 'firebase/firestore';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import { deletePagamento, savePagamento } from '@delfrance/data/pedido';
+import {
+  deletePagamento,
+  reconcilePedidoEstadoFromPagamentos,
+  savePagamento,
+} from '@delfrance/data/pedido';
 import {
   BANDEIRA_LABELS,
   ESTADO_PEDIDO_LABELS,
@@ -44,7 +48,7 @@ import { formatReais } from '@delfrance/core/money';
 import { epochToPickerString, pickerStringToEpoch } from '@delfrance/ui';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
-import { callReconciliarPagamentoPedido, createClientPedidoPort } from '@/lib/pedidos/clientPort';
+import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { CurrencyInput } from '@/app/(app)/produtos/_components/CurrencyInput';
 import { PagamentoStatusBadge } from '../../pagamentos/_components/StatusBadge';
@@ -55,9 +59,11 @@ import {
   pagamentoDataFromForm,
   pagamentoFieldVisibility,
   remainingToPay,
+  sumPagamentosPagos,
   validatePagamentoForm,
   type PagamentoFormState,
 } from './PagamentoForm';
+import { useAuth } from '@/lib/auth/useAuth';
 
 const brl = (n: number): string => formatReais(n);
 
@@ -115,18 +121,27 @@ export function PagamentosSection({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const { user } = useAuth();
 
   // Auto-estado transition (legacy `cadastroPedidoProvider`): after every
-  // pagamento mutation, let the server-owned `reconciliarPagamentoPedido`
-  // callable re-sum the payments and advance/downgrade the pedido `estado`
-  // (→ pago / aguardando) plus append a history row. It reads the pedido and
-  // every pagamento in one Admin-SDK transaction (#308) — the client SDK can't
-  // query inside a transaction, so a client-side sum could race across
-  // concurrent tabs/sessions. Best-effort — the pagamento itself is already
-  // saved, so a failed reconcile must not surface as a save error.
+  // pagamento mutation, re-read the payments, sum the approved ones, and let the
+  // use-case advance/downgrade the pedido `estado` (→ pago / aguardando) plus
+  // append a history row. Best-effort — the pagamento itself is already saved, so
+  // a failed reconcile must not surface as a save error.
   async function reconcileEstado() {
     try {
-      await callReconciliarPagamentoPedido(pedidoId);
+      const snap = await getDocs(pagamentoCollection.ref(getFirebaseFirestore(), { pedidoId }));
+      const valorPago = sumPagamentosPagos(
+        snap.docs.map((d) => {
+          const p = d.data();
+          return { id: d.id, valor: p.valor, status_pagamento: p.status_pagamento };
+        }),
+      );
+      await reconcilePedidoEstadoFromPagamentos(createClientPedidoPort(getFirebaseFirestore()), {
+        pedidoId,
+        valorPago,
+        usuarioRef: user ? `documents/usuarios/${user.uid}` : null,
+      });
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;
       // Reached after save / delete / status change, so keep the message neutral.

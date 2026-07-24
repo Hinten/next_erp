@@ -173,8 +173,8 @@ export function isPagamentoPagante(status: number | null | undefined): boolean {
 /**
  * Total amount already paid on a pedido: the sum of every {@link isPagamentoPagante}
  * payment's `valor`, 2-decimal-rounded. The one summing rule behind `valorPago`
- * for the estado auto-transition (the admin `reconcilePedidoEstado` /
- * `reconcilePedidoFromPagamento`) as well as the footer's Vlr. Pago /
+ * for the estado auto-transition (`reconcilePedidoEstadoFromPagamentos` and the
+ * admin `reconcilePedidoFromPagamento`) as well as the footer's Vlr. Pago /
  * Troco. Accepts any row carrying `valor` + `status_pagamento` (a full
  * `Pagamento` doc or a lighter summary).
  */
