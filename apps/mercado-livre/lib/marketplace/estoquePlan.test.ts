@@ -995,7 +995,7 @@ describe('fetchResolutionBundle — Q2 stage tree + assembly', () => {
     const db = new FakeDb();
     db.queuePipelinePage([]);
 
-    await fetchResolutionBundle(asDb(db), { integracaoId: CONTA, anchorRefsOrIds: ['PROD'] });
+    await fetchResolutionBundle(asDb(db), { integracaoId: CONTA, anchorIds: ['PROD'] });
 
     expect(db.pipelineExecutions).toHaveLength(1);
     const stages = db.pipelineExecutions[0]!;
@@ -1007,15 +1007,15 @@ describe('fetchResolutionBundle — Q2 stage tree + assembly', () => {
 
   it('documents() guards: empty anchor set → no pipeline; duplicate ids de-duped', async () => {
     const db = new FakeDb();
-    expect(
-      await fetchResolutionBundle(asDb(db), { integracaoId: CONTA, anchorRefsOrIds: [] }),
-    ).toEqual(new Map());
+    expect(await fetchResolutionBundle(asDb(db), { integracaoId: CONTA, anchorIds: [] })).toEqual(
+      new Map(),
+    );
     expect(db.pipelineExecutions).toHaveLength(0);
 
     db.queuePipelinePage([]);
     await fetchResolutionBundle(asDb(db), {
       integracaoId: CONTA,
-      anchorRefsOrIds: ['PROD', 'PROD'],
+      anchorIds: ['PROD', 'PROD'],
     });
     const refs = db.pipelineExecutions[0]![0]!.args[0] as Array<{ id: string }>;
     expect(refs.map((r) => r.id)).toEqual(['PROD']);
@@ -1045,7 +1045,7 @@ describe('fetchResolutionBundle — Q2 stage tree + assembly', () => {
 
     const bundle = await fetchResolutionBundle(asDb(db), {
       integracaoId: CONTA,
-      anchorRefsOrIds: ['PROD', 'OTHER', 'GONE'],
+      anchorIds: ['PROD', 'OTHER', 'GONE'],
     });
 
     expect([...bundle.keys()]).toEqual(['PROD', 'OTHER']);

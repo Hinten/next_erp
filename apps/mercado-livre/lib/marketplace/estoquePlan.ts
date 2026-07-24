@@ -666,8 +666,8 @@ export type ResolutionBundle = Map<string, ResolutionAnchor>;
 
 export interface FetchResolutionBundleArgs {
   integracaoId: string;
-  /** Family-anchor produto ids (doc refs are built internally). */
-  anchorRefsOrIds: string[];
+  /** Family-anchor produto DOC IDS — plain ids only, never paths/outerRefs (refs are built internally). */
+  anchorIds: string[];
 }
 
 /**
@@ -695,10 +695,10 @@ export interface FetchResolutionBundleArgs {
  */
 export async function fetchResolutionBundle(
   db: Firestore,
-  { integracaoId, anchorRefsOrIds }: FetchResolutionBundleArgs,
+  { integracaoId, anchorIds }: FetchResolutionBundleArgs,
 ): Promise<ResolutionBundle> {
   const bundle: ResolutionBundle = new Map();
-  const uniqueIds = [...new Set(anchorRefsOrIds)];
+  const uniqueIds = [...new Set(anchorIds)];
   if (uniqueIds.length === 0) return bundle; // documents() needs at least one doc
   const anchorRefs = uniqueIds.map((id) => produtoCollection.docRef(db, {}, id));
 
@@ -935,7 +935,7 @@ export async function resolveSendUnits(
     anchorProduto = (parentSnap.data() ?? {}) as RawGateFields;
   }
 
-  const bundle = await fetchResolutionBundle(db, { integracaoId, anchorRefsOrIds: [anchorId] });
+  const bundle = await fetchResolutionBundle(db, { integracaoId, anchorIds: [anchorId] });
   return resolveSendUnitsFromBundle(bundle, { integracaoId, produtoId, anchorId, anchorProduto });
 }
 
