@@ -21,6 +21,15 @@ export { RECENCY_SORT } from './types';
 export { ALL_DOMAINS } from './registry';
 
 export { millisSinceEpoch, microsSinceEpoch } from './shared/datetime';
+
+// The four LOCAL resilience fields shared by every failures-only inbound-webhook
+// notification collection. Exported so a NEW channel's schema can spread the same
+// block the pipeline in `@delfrance/data/admin/notifications` writes/reads blind.
+export {
+  notificacaoResilienciaStatusSchema,
+  notificationResilienceFields,
+  type NotificacaoResilienciaStatus,
+} from './shared/notificationResilience';
 // Re-export `nowMicros` so schema consumers (e.g. @delfrance/storage,
 // apps/functions) can stamp numeric-epoch fields without a direct @delfrance/core
 // dep. (The other epoch/coercion helpers are imported straight from

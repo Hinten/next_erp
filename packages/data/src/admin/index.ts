@@ -6,3 +6,5 @@ export {
 } from './defineAdminCollection';
 
 export { reconcilePedidoFromPagamento, PedidoReconcileNotFoundError } from './pedidoReconcile';
+
+export { isAlreadyExists, isNotFound } from './grpcErrors';

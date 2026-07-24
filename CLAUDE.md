@@ -154,7 +154,10 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `apps/<channel>/app/api/{webhooks,oauth}/<channel>/…` — one App Hosting
   backend per channel. Never in `apps/web`, and no longer in
   `apps/integrations`. Heavy work dispatches to a Cloud Function; the route
-  handler responds 200 fast.
+  handler responds 200 fast. For an **inbound notification receiver**, build on
+  the shared pipeline (`defineNotificationPipeline` in
+  `@delfrance/data/admin/notifications`) via the `webhook-notifications` skill —
+  never hand-roll the persistence/retry/sweep triad again.
 - **New e2e test** → the **filename suffix picks the lane**, nothing else to
   wire: `.cadastros.e2e.spec.ts` (master data), `.vendas.e2e.spec.ts`
   (sales/fiscal/config), `.emulator.e2e.spec.ts` (offline), `.smoke.spec.ts`.
