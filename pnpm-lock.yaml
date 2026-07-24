@@ -388,6 +388,9 @@ importers:
       '@delfrance/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@google-cloud/firestore':
+        specifier: ^8.6.0
+        version: 8.6.0
       firebase-admin:
         specifier: 'catalog:'
         version: 14.0.0
