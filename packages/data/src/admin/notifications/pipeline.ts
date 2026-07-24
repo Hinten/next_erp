@@ -229,16 +229,23 @@ export function defineNotificationPipeline<TPayload, TOutcome>(
       for (const d of snap.docs) {
         const raw = d.data() as Record<string, unknown>;
 
-        const parsedDoc = collection.parseRead(raw, collection.docPath({}, d.id));
-        const payload = config.fromDoc(parsedDoc, raw);
-
-        const dedupKey = config.dedupKeyOf(payload);
-        if (dedupKey && seen.has(dedupKey)) continue; // dup within this run — leave it for a later one
-        if (dedupKey) seen.add(dedupKey);
-
-        const tentativas = ((parsedDoc as { tentativas?: number }).tentativas ?? 0) + 1;
+        // Seeded from the RAW doc so the catch below can still mark the
+        // document when REHYDRATION itself is what failed; recomputed from the
+        // parsed doc as soon as that succeeds (the parse applies the schema
+        // default). `parseRead` is soft — it logs and returns raw rather than
+        // throwing on a schema mismatch — but `fromDoc` is CHANNEL-supplied and
+        // this is generic infrastructure, so it is not ours to assume total.
+        let tentativas = (typeof raw.tentativas === 'number' ? raw.tentativas : 0) + 1;
 
         try {
+          const parsedDoc = collection.parseRead(raw, collection.docPath({}, d.id));
+          const payload = config.fromDoc(parsedDoc, raw);
+          tentativas = ((parsedDoc as { tentativas?: number }).tentativas ?? 0) + 1;
+
+          const dedupKey = config.dedupKeyOf(payload);
+          if (dedupKey && seen.has(dedupKey)) continue; // dup within this run — leave it for a later one
+          if (dedupKey) seen.add(dedupKey);
+
           const result = await config.process(db, payload);
           const disposition = config.toDisposition(result, payload, 'sweep');
 
@@ -262,10 +269,11 @@ export function defineNotificationPipeline<TPayload, TOutcome>(
           // See the TRANSIENT-BOUNDARY note in this module's header.
           // eslint-disable-next-line delfrance/no-error-as-sole-instanceof
         } catch (err) {
-          // Batch-isolation boundary: a transient failure on ONE notification
-          // must never abort the sweep. Bump tentativas (parking at the cap);
-          // if even that mark write fails, collect and move on. Non-Error
-          // throws still propagate — they are coding bugs, not outages.
+          // Batch-isolation boundary: a failure on ONE notification must never
+          // abort the sweep — that covers rehydrating it as well as processing
+          // it. Bump tentativas (parking at the cap); if even that mark write
+          // fails, collect and move on. Non-Error throws still propagate — they
+          // are coding bugs, not outages.
           if (!(err instanceof Error)) throw err;
           try {
             const status: NotificationStatus = tentativas >= MAX_TENTATIVAS ? 'parked' : 'failed';

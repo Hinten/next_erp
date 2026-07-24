@@ -417,6 +417,38 @@ describe('reprocess (the durable-cursor sweep)', () => {
     expect(db.docs(NOTIF).has('N2')).toBe(false);
   });
 
+  it('isolates a REHYDRATION failure too, not just a processing one', async () => {
+    seedFailed('N1', '/orders/1');
+    seedFailed('N2', '/orders/2');
+    // `fromDoc` is channel-supplied, so the shared core cannot assume it is
+    // total. A throw there must be contained exactly like a `process` throw —
+    // otherwise one malformed doc aborts the whole sweep.
+    const pipeline = defineNotificationPipeline<TestPayload, TestOutcome>({
+      channel: 'teste',
+      collection,
+      taskSchema,
+      docIdOf: (p) => p.id,
+      dedupKeyOf: (p) => p.resource,
+      toDocFields: (p) => ({ id: p.id, resource: p.resource }),
+      fromDoc: (parsed) => {
+        const d = parsed as { id: string | null; resource: string };
+        if (d.id === 'N1') throw new Error('rehydration exploded');
+        return { id: d.id, resource: d.resource };
+      },
+      process: async () => ({ kind: 'ok' }),
+      toDisposition: () => ({ kind: 'resolve' }),
+    });
+
+    const res = await pipeline.reprocess(asDb(db), { now: NOW });
+
+    expect(res.errors).toEqual([{ docId: 'N1', message: 'rehydration exploded' }]);
+    expect(res.processed).toBe(1); // N2 still ran
+    expect(db.docs(NOTIF).has('N2')).toBe(false); // ...and resolved
+    // The un-rehydratable doc is still marked, so it ages out via the cap
+    // instead of being retried forever.
+    expect(db.docs(NOTIF).get('N1')).toMatchObject({ status: 'failed', tentativas: 1 });
+  });
+
   it('survives a mark write that ALSO fails — collected, not thrown', async () => {
     seedFailed('N1', '/orders/1');
     db.failMarkIds.add('N1');
