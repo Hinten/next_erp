@@ -62,7 +62,6 @@ export default async function globalSetup(_config: FullConfig) {
   );
 
   const storageStatePath = STORAGE_STATE_PATH;
-  await mkdir(dirname(storageStatePath), { recursive: true });
 
   // --- Auth is mandatory ---------------------------------------------------
   // In emulator mode a service account is intentionally absent (the emulator
@@ -80,6 +79,7 @@ export default async function globalSetup(_config: FullConfig) {
   }
 
   // --- Happy path --------------------------------------------------------
+  await mkdir(dirname(storageStatePath), { recursive: true });
   // Ephemeral test user: a fresh account per run, deleted by globalTeardown.
   const staleSwept = await sweepStaleE2EUsers();
   if (staleSwept > 0) {
