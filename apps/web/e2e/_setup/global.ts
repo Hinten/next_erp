@@ -12,12 +12,17 @@ export const STORAGE_STATE_PATH = 'e2e/.auth/su.json';
  * to a file. Tests that need an authenticated context declare
  * `test.use({ storageState })` to skip the login flow per-test.
  *
- * Skipped when E2E_SU_EMAIL/E2E_SU_PASSWORD are not set — tests that require
- * auth will skip themselves individually via `test.skip()`.
+ * Throws when E2E_SU_EMAIL/E2E_SU_PASSWORD are not set — auth is mandatory for
+ * every e2e run, so a missing secret is a misconfiguration to fail loud on,
+ * not a reason to silently skip the SU login and let `configuracoes.spec.ts`
+ * self-skip downstream.
  */
 async function globalSetup(config: FullConfig): Promise<void> {
   if (!process.env.E2E_SU_EMAIL || !process.env.E2E_SU_PASSWORD) {
-    return;
+    throw new Error(
+      '[_setup/global] missing required env: E2E_SU_EMAIL/E2E_SU_PASSWORD. Auth ' +
+        'setup is mandatory for every e2e run — configure these as repo secrets.',
+    );
   }
   mkdirSync(dirname(STORAGE_STATE_PATH), { recursive: true });
   const baseURL = config.projects[0]?.use?.baseURL;
