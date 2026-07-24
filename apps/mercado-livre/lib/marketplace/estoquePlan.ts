@@ -20,7 +20,7 @@
  *    layer (api.dart:1182-1203) → `quantidadeParaEnvio` floors then clamps
  *    `ESTOQUE_MIN..MERCADO_LIVRE_STOCK_MAX`.
  *  - `ehKitVirtual` produtos NEVER get stock sent (functions.dart:286-289) →
- *    `quantidadeParaEnvio` returns null and `resolveSendUnits` skips
+ *    `quantidadeParaEnvio` returns null and the send-unit resolution skips
  *    `'kit-virtual'`.
  *
  * Listing-status whitelist (developers.mercadolivre.com.br, read 2026-07-24 —
@@ -34,19 +34,51 @@
  * `sub_status` includes `'out_of_stock'`). Anything outside the documented set
  * is `desconhecido` — never sent, loudly logged (status tracking, per Lucas).
  *
+ * ---- Discovery/resolution = TWO pipeline executions per conta per sweep (the
+ * owner-approved joined design, PR #678 review). Against the ~19k-produto
+ * catalog the first cut (driver pipeline + chunked classic kit queries +
+ * per-candidate doc reads) issued O(candidates) queries per sweep; correlated
+ * subqueries push every join server-side, so the query COUNT stays constant:
+ *   Q1 `fetchChangedEstoquesJoined` — changed estoques of one depósito with,
+ *      per row: the owning produto (scalar join on `__name__`), the kit
+ *      parents consuming it (reverse join on `componentesKitKeys`) and a 30d
+ *      sales flag (`historicoEstoque` probe). Keyset-paginated
+ *      (`ultimaModificacao` + `__name__` tuple — no re-fetch, no dedup).
+ *   Q2 `fetchResolutionBundle` — one `documents()` pipeline over the family
+ *      anchors, joining this conta's `produtoMercadoLivre` link (scalar) and
+ *      the variation children + their `variacaoMercadoLivre` links (nested
+ *      array — nesting depth 3 of the 20 allowed).
+ * Constant query count is NOT free per row: every correlated subquery seeks
+ * its own index once per outer row, and Enterprise auto-creates NO indexes —
+ * an unindexed subquery silently full-scans per row, billed by data scanned.
+ * Index ledger (PR C declares the new entries):
+ *  - driver: `estoques(depositoOuterRef ASC, ultimaModificacao ASC, __name__
+ *    ASC)` COLLECTION_GROUP — `__name__` EXPLICIT (Enterprise omits the
+ *    implicit trailing key Standard docs assume; the keyset tuple needs it);
+ *  - produto scalar join: `__name__` equality → primary-key seek, no entry;
+ *  - kit reverse join: `produtos(componentesKitKeys CONTAINS)`;
+ *  - sales probe: `historicoEstoque(tipo ASC, timestamp ASC)` COLLECTION_GROUP;
+ *  - children: the `paiId` equality rides the existing `produtos(paiId, nome)`
+ *    index as a prefix;
+ *  - link probe: unindexed scan of a 1-2 doc subcollection — noise.
+ * The 128 MiB materialization ceiling spans the WHOLE query including every
+ * joined document — hence each subquery `select`s a minimal field set (ids +
+ * link scalars, never full produto docs) and the sales probe is `limit(1)`.
+ *
  * ---- `ehExpansaoDeKit` provenance honesty: a kit parent discovered through a
- * changed COMPONENT carries the **component's** estoque doc path, timestamp
- * and quantities in its `EstoqueCandidato` — the parent's own estoque is NOT
- * read during discovery. Downstream filters (PR C's low-stock limiar)
- * therefore evaluate the TRIGGERING doc, and the real family quantity is
- * always recomputed fresh by `computeQuantidades` at send time.
+ * changed COMPONENT carries the **component's** estoque doc path, timestamp,
+ * quantities and `temVenda30d` in its `EstoqueCandidato` — the parent's own
+ * estoque/produto is NOT read during discovery (`produto: null`; Q2's anchor
+ * read supplies the parent's gate fields). Downstream filters (PR C's
+ * low-stock limiar) therefore evaluate the TRIGGERING doc, and the real family
+ * quantity is always recomputed fresh by `computeQuantidades` at send time.
  *
  * ---- Config: business tunables read `process.env` LAZILY (at call time,
  * never at module load — mirrors `orderBackfill`'s flag check) so functions
  * cold starts and the unit tests both see current values; pure mechanics stay
  * code constants.
  */
-import type { Firestore } from 'firebase-admin/firestore';
+import type { DocumentReference, Firestore } from 'firebase-admin/firestore';
 // Pipeline expression builders live in the `/pipelines` subpath (admin
 // `@google-cloud/firestore` v8). Namespace import — the module is `export =`d.
 import * as pipelines from '@google-cloud/firestore/pipelines';
@@ -62,10 +94,7 @@ import {
   estoqueCollection,
   produtoCollection,
   produtoMercadoLivreLinkCollection,
-  variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
-
-import { refMatchesIntegracao } from './linkRefs';
 
 /* ------------------------------ configuration ----------------------------- */
 
@@ -84,9 +113,6 @@ export const ESTOQUE_MIN = 0;
  * and deliberately do NOT count — bounded by the 2AM full sweep.
  */
 export const TIPOS_VENDA = ['reserva', 'saida'] as const;
-
-/** `array-contains-any` accepts at most 10 candidates per classic query. */
-export const KIT_PARENT_CHUNK = 10;
 
 /** Max jitter (seconds) added when a paused conta's task re-enqueues itself (PR B). */
 export const PAUSE_REENQUEUE_JITTER_MAX_S = 30;
@@ -186,7 +212,7 @@ export function concurrentDispatches(): number {
   return envInt('MERCADO_LIVRE_STOCK_CONCURRENT_DISPATCHES', 2);
 }
 
-/* ------------------------- changed-estoques pipeline ----------------------- */
+/* -------------------- Q1: joined changed-estoques driver -------------------- */
 
 /** One changed estoque doc, flattened to what discovery + the limiar filter need. */
 export interface ChangedEstoque {
@@ -200,215 +226,283 @@ export interface ChangedEstoque {
   quantidadeReservada: number;
 }
 
-export interface FetchChangedEstoquesArgs {
+/**
+ * Raw (unvalidated) produto gate fields joined server-side by Q1/Q2 — read
+ * defensively, exactly like a `doc.data()` record.
+ */
+export interface RawGateFields {
+  paiId?: unknown;
+  publicado?: unknown;
+  ehKit?: unknown;
+  ehKitVirtual?: unknown;
+  integracoesComProduto?: unknown;
+  timestamp?: unknown;
+  [key: string]: unknown;
+}
+
+/** One Q1 row: a changed estoque with its three server-side joins attached. */
+export interface EstoqueChangeRow extends ChangedEstoque {
+  /** Scalar-joined owning produto; null when deleted mid-sweep (0-row subquery). */
+  produto: RawGateFields | null;
+  /** Ids of kit produtos consuming this produto (`componentesKitKeys` reverse join). */
+  kitParentIds: string[];
+  /** True when the estoque had a `TIPOS_VENDA` movement since `tipoVendaCutoffMs`. */
+  temVenda30d: boolean;
+}
+
+export interface FetchChangedEstoquesJoinedArgs {
+  /**
+   * Conta being swept. Q1's stages are conta-agnostic (stock movement is
+   * per-depósito) — carried for call-shape symmetry with Q2 + sweep logging.
+   */
+  integracaoId: string;
   /** Canonical `documents/depositos/<id>` ref string stored on the estoque docs. */
   depositoOuterRef: string;
   /** Exclusive window start (ms since epoch). */
   fromMs: number;
+  /** Inclusive lower bound (ms) of the sales-activity probe (now − 30d). */
+  tipoVendaCutoffMs: number;
   /** Page size override — defaults to `candidatePageLimit()`. */
   pageLimit?: number;
 }
 
-/** The pipeline seam — `discoverStockCandidates` takes it injectable (tests stub it). */
-export type FetchChangedEstoques = (
+/** The Q1 seam — `discoverStockCandidates` takes it injectable (tests stub it). */
+export type FetchChangedEstoquesJoined = (
   db: Firestore,
-  args: FetchChangedEstoquesArgs,
-) => Promise<ChangedEstoque[]>;
+  args: FetchChangedEstoquesJoinedArgs,
+) => Promise<EstoqueChangeRow[]>;
+
+/** Keyset cursor: the last row of the previous page (total order, module doc). */
+interface KeysetCursor {
+  ultimaModificacaoMs: number;
+  ref: DocumentReference;
+}
 
 /**
- * THE pipeline (the only one in the stock sync): every estoque doc of one
- * depósito changed after `fromMs`, ascending by `ultimaModificacao`. A
- * `collectionGroup('estoques')` scan with an equality + range filter — rides
- * the `estoques(depositoOuterRef ASC, ultimaModificacao ASC)` COLLECTION_GROUP
- * index (PR C declares it; Enterprise auto-creates NOTHING and an unindexed
- * pipeline silently full-scans, billed by data scanned).
+ * Q1 (module doc): every estoque doc of one depósito changed after `fromMs`,
+ * with the produto scalar join, the kit-parent reverse join and the 30d sales
+ * flag attached per row by correlated subqueries. Ascending
+ * (`ultimaModificacao`, `__name__`) total order; page 1 filters
+ * `ultimaModificacao > fromMs`, later pages replace the range term with the
+ * keyset tuple `(um > lastUm) OR (um == lastUm AND __name__ > lastRef)` — a
+ * keyset page never re-fetches its boundary, so there is no dedup and
+ * termination is simply "raw page shorter than `pageLimit`". The sales flag is
+ * derived server-side (`.toArrayExpression().length().greaterThan(0)` — the
+ * SKILL §4 `restaurant_count` chaining).
  *
- * Deliberately NO `select` stage: `row.ref` must stay present (a `select`
- * drops it) because the produtoId is derived from the doc path.
- *
- * Pagination: pipelines have no cursor, so a full page re-executes with
- * `>= lastSeenMs` (ties at the boundary are re-fetched and de-duped by doc
- * path). Termination is on RAW page size — a page shorter than `pageLimit`
- * means the range is drained. It must NOT be on the de-duplicated new-row
- * count: every `>=` re-cover necessarily re-fetches the boundary doc, so a
- * new-row count is structurally < pageLimit on every page after the first and
- * would cap the scan at 2 pages, silently dropping the backlog tail.
- * Bounded risk accepted: if MORE than `pageLimit` docs share one
- * `ultimaModificacao` value, a full page can yield zero new rows with no way
- * to advance the bound — the loop then warns loudly and truncates rather than
- * spin. Impossible at realistic page sizes for per-produto stock writes.
+ * The subqueries seek per row (index ledger in the module doc). `define`d
+ * variables are dropped from the output, and there is deliberately NO outer
+ * `select` stage: `row.ref` must survive (a `select` drops it) because
+ * produtoId/estoqueDocPath are derived from the doc path client-side.
  *
  * NOT emulator-runnable (pipelines never are) — tested through the seam;
  * live-validated by PR C's `check-stock-indexes.mjs`.
  */
-export const fetchChangedEstoquesPipeline: FetchChangedEstoques = async (db, args) => {
+export const fetchChangedEstoquesJoined: FetchChangedEstoquesJoined = async (db, args) => {
   const pageLimit = args.pageLimit ?? candidatePageLimit();
-  const seen = new Set<string>();
-  const rows: ChangedEstoque[] = [];
-  let bound = args.fromMs;
-  let inclusive = false; // first page is `> fromMs`; re-covers use `>= lastSeenMs`
+  const rows: EstoqueChangeRow[] = [];
+  let cursor: KeysetCursor | null = null;
 
   for (;;) {
+    // Explicit annotation: breaks the loop's inference cycle (cursor ← last ←
+    // snap ← rangeTerm ← cursor's flow type).
+    const rangeTerm: pipelines.BooleanExpression =
+      cursor == null
+        ? pipelines.greaterThan(pipelines.field('ultimaModificacao'), args.fromMs)
+        : pipelines.or(
+            pipelines.greaterThan(pipelines.field('ultimaModificacao'), cursor.ultimaModificacaoMs),
+            pipelines.and(
+              pipelines.equal(pipelines.field('ultimaModificacao'), cursor.ultimaModificacaoMs),
+              // constant() accepts a DocumentReference — the tuple tiebreaker.
+              pipelines.greaterThan(pipelines.field('__name__'), pipelines.constant(cursor.ref)),
+            ),
+          );
+
     // eslint-disable-next-line no-restricted-syntax -- pipeline SOURCE stage, not a raw ref; defineAdminCollection handles have no pipeline surface
     const snap = await db
       .pipeline()
       .collectionGroup('estoques')
       .where(
         pipelines.and(
-          pipelines.equal(pipelines.field('depositoOuterRef'), args.depositoOuterRef),
-          inclusive
-            ? pipelines.greaterThanOrEqual(pipelines.field('ultimaModificacao'), bound)
-            : pipelines.greaterThan(pipelines.field('ultimaModificacao'), bound),
+          // Both accepted *OuterRef forms (outerRef.ts invariant: readers
+          // tolerate the bare form) — two leading-equality index seeks.
+          pipelines.or(
+            pipelines.equal(pipelines.field('depositoOuterRef'), args.depositoOuterRef),
+            pipelines.equal(
+              pipelines.field('depositoOuterRef'),
+              args.depositoOuterRef.replace(/^documents\//, ''),
+            ),
+          ),
+          rangeTerm,
         ),
       )
-      .sort(pipelines.ascending(pipelines.field('ultimaModificacao')))
+      .sort(
+        pipelines.ascending(pipelines.field('ultimaModificacao')),
+        pipelines.ascending(pipelines.field('__name__')),
+      )
       .limit(pageLimit)
+      // parent() of a DOCUMENT ref hops to the parent document (the api.md §5
+      // manual-equivalent: one hop from a subcollection doc to its owner), so
+      // estoque `produtos/<pid>/estoques/<eid>` → the produto DOCUMENT.
+      .define(
+        pipelines.parent(pipelines.field('__name__')).as('produtoRef'),
+        pipelines.documentId(pipelines.parent(pipelines.field('__name__'))).as('produtoId'),
+      )
+      .addFields(
+        // (a) produto scalar join — 0 rows (deleted mid-sweep) → null.
+        // eslint-disable-next-line no-restricted-syntax -- correlated-subquery SOURCE stage, not a raw ref; defineAdminCollection handles have no pipeline surface
+        db
+          .pipeline()
+          .collection('produtos')
+          .where(pipelines.field('__name__').equal(pipelines.variable('produtoRef')))
+          .select(
+            'paiId',
+            'publicado',
+            'ehKit',
+            'ehKitVirtual',
+            'integracoesComProduto',
+            'timestamp',
+          )
+          .toScalarExpression()
+          .as('produto'),
+        // (b) kit-parents reverse join — ids only (128 MiB ceiling, module doc).
+        // eslint-disable-next-line no-restricted-syntax -- correlated-subquery SOURCE stage (see chain-start note above)
+        db
+          .pipeline()
+          .collection('produtos')
+          .where(
+            pipelines.arrayContains(
+              pipelines.field('componentesKitKeys'),
+              pipelines.variable('produtoId'),
+            ),
+          )
+          .select(pipelines.documentId(pipelines.field('__name__')).as('kitId'))
+          .toArrayExpression()
+          .as('kitParents'),
+        // (c) 30d sales flag — `limit(1)` existence probe, boolean server-side.
+        pipelines
+          .subcollection('historicoEstoque')
+          .where(
+            pipelines.and(
+              // equalAny only exists as an Expression METHOD in v8.6.0 (the
+              // free-function form is a docs-only spelling — skill api.md).
+              pipelines.field('tipo').equalAny([...TIPOS_VENDA]),
+              pipelines.greaterThanOrEqual(pipelines.field('timestamp'), args.tipoVendaCutoffMs),
+            ),
+          )
+          .limit(1)
+          .select('tipo')
+          .toArrayExpression()
+          .length()
+          .greaterThan(0)
+          .as('temVenda30d'),
+      )
       .execute();
 
-    let newRows = 0;
-    let lastSeenMs: number | null = null;
     for (const row of snap.results) {
-      if (!row.ref) continue; // no `select` → ref is present; guard the optional type
+      if (!row.ref) continue; // no outer `select` → ref is present; guard the optional type
       const data = row.data() as Record<string, unknown>;
       const ms = finiteNumber(data.ultimaModificacao);
       if (ms == null) continue; // matched the range server-side; purely defensive
-      lastSeenMs = ms; // ascending sort → the last valid row is the page max
-      const path = row.ref.path;
-      if (seen.has(path)) continue; // boundary tie re-fetched by the `>=` re-cover
-      seen.add(path);
-      newRows += 1;
-      const produtoId = path.split('/')[1];
+      const produtoId = row.ref.path.split('/')[1];
       if (!produtoId) continue;
       rows.push({
         produtoId,
-        estoqueDocPath: path,
+        estoqueDocPath: row.ref.path,
         ultimaModificacaoMs: ms,
         quantidade: finiteNumber(data.quantidade) ?? 0,
         quantidadeReservada: finiteNumber(data.quantidadeReservada) ?? 0,
+        produto: (data.produto ?? null) as RawGateFields | null,
+        kitParentIds: Array.isArray(data.kitParents)
+          ? data.kitParents.filter((k): k is string => typeof k === 'string')
+          : [],
+        temVenda30d: data.temVenda30d === true,
       });
     }
 
-    if (snap.results.length < pageLimit || lastSeenMs == null) break; // backlog drained
-    if (newRows === 0) {
-      // Full page, zero new rows: > pageLimit docs share one ultimaModificacao
-      // and all are already collected — the `>=` bound cannot advance. Truncate
-      // loudly instead of spinning; the next sweep re-covers from its window.
-      console.warn(
-        `[estoquePlan] pagination stuck on ultimaModificacao tie at ${bound} ` +
-          `(page of ${snap.results.length} rows, all previously seen) — truncating scan`,
-      );
-      break;
-    }
-    bound = lastSeenMs;
-    inclusive = true;
+    if (snap.results.length < pageLimit) break; // backlog drained
+    const last = snap.results[snap.results.length - 1];
+    const lastMs =
+      last == null
+        ? null
+        : finiteNumber((last.data() as Record<string, unknown>).ultimaModificacao);
+    if (last?.ref == null || lastMs == null) break; // defensive — cannot form the keyset tuple
+    cursor = { ultimaModificacaoMs: lastMs, ref: last.ref };
   }
   return rows;
-};
-
-/* --------------------------- kit-parent expansion -------------------------- */
-
-/** A kit produto that consumes at least one of the queried components. */
-export interface KitParent {
-  produtoId: string;
-  /** The parent's denormalized component-id array (raw, string-filtered). */
-  componentesKitKeys: string[];
-}
-
-/** The kit-parent seam — `discoverStockCandidates` takes it injectable. */
-export type FetchKitParents = (db: Firestore, componentIds: string[]) => Promise<KitParent[]>;
-
-/**
- * Kit parents of the given component produtos: classic
- * `produtos where componentesKitKeys array-contains-any <chunk>` queries,
- * chunked at `KIT_PARENT_CHUNK` (the classic-query candidate cap), de-duped
- * across chunks. Rides the `produtos(componentesKitKeys CONTAINS)` index
- * (PR C declares it). Classic on purpose — small, emulator-testable, and the
- * pipeline buys nothing here.
- */
-export const fetchKitParentsQuery: FetchKitParents = async (db, componentIds) => {
-  const unique = [...new Set(componentIds)];
-  const byId = new Map<string, KitParent>();
-  for (let i = 0; i < unique.length; i += KIT_PARENT_CHUNK) {
-    const chunk = unique.slice(i, i + KIT_PARENT_CHUNK);
-    const snap = await produtoCollection
-      .ref(db, {})
-      .where('componentesKitKeys', 'array-contains-any', chunk)
-      .get();
-    for (const doc of snap.docs) {
-      if (byId.has(doc.id)) continue; // a parent can match several chunks
-      const raw = (doc.data() as Record<string, unknown>).componentesKitKeys;
-      byId.set(doc.id, {
-        produtoId: doc.id,
-        componentesKitKeys: Array.isArray(raw)
-          ? raw.filter((k): k is string => typeof k === 'string')
-          : [],
-      });
-    }
-  }
-  return [...byId.values()];
 };
 
 /* -------------------------------- discovery -------------------------------- */
 
 /**
  * One send candidate. ⚠️ When `ehExpansaoDeKit` is true the estoque fields
- * (path, timestamp, quantities) belong to the TRIGGERING COMPONENT's doc —
- * the kit parent's own estoque was not read during discovery (module doc).
+ * (path, timestamp, quantities) and `temVenda30d` belong to the TRIGGERING
+ * COMPONENT's doc, and `produto` is null — the kit parent's own estoque/
+ * produto was not read during discovery (module doc); Q2's anchor read
+ * resolves the parent's gate fields.
  */
 export interface EstoqueCandidato extends ChangedEstoque {
   ehExpansaoDeKit: boolean;
+  /** Q1-joined gate fields of THIS produto; null on kit-parent expansions. */
+  produto: RawGateFields | null;
+  temVenda30d: boolean;
 }
 
-export interface DiscoverStockCandidatesArgs {
-  depositoOuterRef: string;
-  fromMs: number;
-  pageLimit?: number;
-}
+export type DiscoverStockCandidatesArgs = FetchChangedEstoquesJoinedArgs;
 
 export interface DiscoverStockCandidatesDeps {
-  fetchChanged?: FetchChangedEstoques;
-  fetchKitParents?: FetchKitParents;
+  fetchChanged?: FetchChangedEstoquesJoined;
 }
 
 /**
- * Discover every produto needing a stock send for one depósito window: the
- * directly-changed estoques (pipeline) plus every kit parent consuming one of
- * the changed produtos as a component (classic chunked expansion). De-duped
- * into a Map keyed by produtoId; a parent whose OWN estoque also changed stays
- * a direct candidate (`ehExpansaoDeKit: false` wins). Quantities ride along so
- * PR C's limiar filter needs no re-read.
+ * Discover every produto needing a stock send for one depósito window, from
+ * Q1's joined rows alone (no further reads): the directly-changed estoques
+ * plus every kit parent consuming one of them as a component
+ * (`row.kitParentIds`). De-duped into a Map keyed by produtoId; a parent whose
+ * OWN estoque also changed stays a direct candidate (`ehExpansaoDeKit: false`
+ * wins). A row whose `produto` join came back null (deleted mid-sweep) yields
+ * NO direct candidate, but its kit parents still expand — the parents exist
+ * independently and their own gate fields come from Q2's anchor read.
+ * Quantities + `temVenda30d` ride along so PR C's limiar/activity filters need
+ * no re-read.
  */
 export async function discoverStockCandidates(
   db: Firestore,
   args: DiscoverStockCandidatesArgs,
   deps: DiscoverStockCandidatesDeps = {},
 ): Promise<Map<string, EstoqueCandidato>> {
-  const fetchChanged = deps.fetchChanged ?? fetchChangedEstoquesPipeline;
-  const fetchKitParents = deps.fetchKitParents ?? fetchKitParentsQuery;
+  const fetchChanged = deps.fetchChanged ?? fetchChangedEstoquesJoined;
+  const rows = await fetchChanged(db, args);
 
-  const changed = await fetchChanged(db, args);
   const out = new Map<string, EstoqueCandidato>();
-  for (const row of changed) {
-    // One estoque per (produto, depósito) — the first occurrence wins defensively.
-    if (out.has(row.produtoId)) continue;
-    out.set(row.produtoId, { ...row, ehExpansaoDeKit: false });
-  }
-  if (changed.length === 0) return out;
-
-  const parents = await fetchKitParents(
-    db,
-    changed.map((r) => r.produtoId),
-  );
-  for (const parent of parents) {
-    if (out.has(parent.produtoId)) continue; // direct change wins over kit expansion
-    const keys = new Set(parent.componentesKitKeys);
-    const trigger = changed.find((r) => keys.has(r.produtoId));
-    if (!trigger) continue; // defensive — seam returned an unrelated parent
-    out.set(parent.produtoId, {
-      ...trigger,
-      produtoId: parent.produtoId,
-      ehExpansaoDeKit: true,
+  for (const row of rows) {
+    if (row.produto == null) continue; // produto deleted mid-sweep — no direct candidate
+    if (out.has(row.produtoId)) continue; // one estoque per (produto, depósito) — defensive
+    out.set(row.produtoId, {
+      produtoId: row.produtoId,
+      estoqueDocPath: row.estoqueDocPath,
+      ultimaModificacaoMs: row.ultimaModificacaoMs,
+      quantidade: row.quantidade,
+      quantidadeReservada: row.quantidadeReservada,
+      ehExpansaoDeKit: false,
+      produto: row.produto,
+      temVenda30d: row.temVenda30d,
     });
+  }
+  for (const row of rows) {
+    for (const kitId of row.kitParentIds) {
+      if (out.has(kitId)) continue; // direct change wins over expansion; first trigger wins
+      out.set(kitId, {
+        produtoId: kitId,
+        estoqueDocPath: row.estoqueDocPath, // the component's doc — provenance in the docblock
+        ultimaModificacaoMs: row.ultimaModificacaoMs,
+        quantidade: row.quantidade,
+        quantidadeReservada: row.quantidadeReservada,
+        ehExpansaoDeKit: true,
+        produto: null,
+        temVenda30d: row.temVenda30d,
+      });
+    }
   }
   return out;
 }
@@ -520,11 +614,6 @@ export interface SendSkip {
   reason: SendSkipReason;
 }
 
-export interface ResolveSendUnitsArgs {
-  integracaoId: string;
-  produtoId: string;
-}
-
 export interface ResolvedSendUnits {
   units: SendUnit[];
   skips: SendSkip[];
@@ -534,91 +623,237 @@ function skipOnly(produtoId: string, reason: SendSkipReason): ResolvedSendUnits 
   return { units: [], skips: [{ produtoId, reason }] };
 }
 
+/* ----------------------- Q2: resolution bundle + ladder --------------------- */
+
+/** Raw variação link row joined by Q2 — read defensively. */
+export interface BundleVarLink {
+  itemId?: unknown;
+  id?: unknown;
+  produtoMercadoLivreOuterRef?: unknown;
+  [key: string]: unknown;
+}
+
+/** One variation child of an anchor, with its variação links. */
+export interface BundleChild {
+  childId: string;
+  varLinks: BundleVarLink[];
+}
+
+/** Raw `produtoMercadoLivre` link scalar joined by Q2 — read defensively. */
+export interface BundleLink {
+  id?: unknown;
+  estado?: unknown;
+  status?: unknown;
+  sub_status?: unknown;
+  isUserProductModel?: unknown;
+  linkDocId?: unknown;
+  [key: string]: unknown;
+}
+
+/** Everything `resolveSendUnitsFromBundle` needs about one family anchor. */
+export interface ResolutionAnchor {
+  anchorId: string;
+  /** The anchor doc's own raw fields (the `documents()` row IS the anchor doc). */
+  produto: RawGateFields;
+  /** This conta's link, or null when the conta has none. */
+  link: BundleLink | null;
+  /** Variation children, sorted by childId (determinism — see the docblock). */
+  children: BundleChild[];
+}
+
+/** Anchor produto id → its resolution data. Missing id = anchor doc deleted. */
+export type ResolutionBundle = Map<string, ResolutionAnchor>;
+
+export interface FetchResolutionBundleArgs {
+  integracaoId: string;
+  /** Family-anchor produto ids (doc refs are built internally). */
+  anchorRefsOrIds: string[];
+}
+
 /**
- * Resolve one candidate produto into the send units its family needs, for one
- * integração. The ANCHOR is the family parent (`paiId` when the candidate is a
- * variation child — e.g. a kit component estoque living on a child). Reads the
- * anchor's `produtoMercadoLivre` subcollection and filters `contaOuterRef` in
- * memory (tolerant matching, same as import/status-sync — the wire has no
- * server-filterable conta field).
+ * Q2 (module doc): one `documents()` pipeline over the family anchors, joining
+ * per anchor:
+ *  (a) this conta's `produtoMercadoLivre` link — a `limit(1)` scalar subquery
+ *      matching `contaOuterRef` against BOTH accepted `*OuterRef` forms
+ *      (`documents/integracao/<id>` and bare `integracao/<id>`) — the same
+ *      two forms the in-memory `refMatchesIntegracao` (linkRefs.ts) tolerates
+ *      on the import read path. The canonical form is the wire rule
+ *      (importVariations.ts) and legacy writes at most one link per conta,
+ *      which is what makes the `limit(1)`-scalar safe.
+ *  (b) the variation children (`paiId == anchor`) with their
+ *      `variacaoMercadoLivre` links — a nested array subquery (depth 3 of 20),
+ *      minimal fields only (128 MiB ceiling, module doc).
+ * The anchor rows themselves carry the anchor's own gate fields (documents()
+ * rows ARE the anchor docs; no outer `select` strips them — `row.ref` also
+ * survives, providing the anchorId). A produto deleted mid-sweep is silently
+ * omitted by `documents()` → missing bundle entry → `'sem-link'` downstream.
  *
- * Skips, evaluated in order: `'sem-link'` (no produto/anchor doc or no link
- * for this conta — a produto deleted mid-sweep lands here too),
- * `'sem-item-id'` (never published), `'aguardando-migracao'` (`estado 'am'`,
- * mid-UP-migration, Flutter-driven), `'status-nao-enviavel'` (whitelist gate;
- * `desconhecido` statuses additionally warn — status tracking per Lucas),
- * `'kit-virtual'`, `'nao-publicado'`, `'conta-fora-do-produto'`.
+ * `documents()` requires >= 1 doc and rejects duplicates — both guarded here.
+ * Children are sorted by childId client-side purely for output determinism;
+ * the legacy `nome` order is NOT needed because unit order feeds nothing
+ * order-sensitive (each unit is an independent ML call).
+ */
+export async function fetchResolutionBundle(
+  db: Firestore,
+  { integracaoId, anchorRefsOrIds }: FetchResolutionBundleArgs,
+): Promise<ResolutionBundle> {
+  const bundle: ResolutionBundle = new Map();
+  const uniqueIds = [...new Set(anchorRefsOrIds)];
+  if (uniqueIds.length === 0) return bundle; // documents() needs at least one doc
+  const anchorRefs = uniqueIds.map((id) => produtoCollection.docRef(db, {}, id));
+
+  const snap = await db
+    .pipeline()
+    .documents(anchorRefs)
+    .define(pipelines.documentId(pipelines.field('__name__')).as('anchorId'))
+    .addFields(
+      // (a) link scalar join — legacy writes at most one link per conta, and
+      // limit(1) makes the scalar safe even against dirty duplicate links.
+      pipelines
+        .subcollection('produtoMercadoLivre')
+        .where(
+          // Both accepted *OuterRef forms — mirrors refMatchesIntegracao
+          // (linkRefs.ts); a 1-2 doc subcollection, the or() costs nothing.
+          pipelines.or(
+            pipelines.equal(
+              pipelines.field('contaOuterRef'),
+              `documents/integracao/${integracaoId}`,
+            ),
+            pipelines.equal(pipelines.field('contaOuterRef'), `integracao/${integracaoId}`),
+          ),
+        )
+        .limit(1)
+        .select(
+          'id',
+          'estado',
+          'status',
+          'sub_status',
+          'isUserProductModel',
+          pipelines.documentId(pipelines.field('__name__')).as('linkDocId'),
+        )
+        .toScalarExpression()
+        .as('link'),
+      // (b) children + their variação links (each nested row is a CHILD, so
+      // subcollection() joins on the child's __name__).
+      // eslint-disable-next-line no-restricted-syntax -- correlated-subquery SOURCE stage, not a raw ref; defineAdminCollection handles have no pipeline surface
+      db
+        .pipeline()
+        .collection('produtos')
+        .where(pipelines.equal(pipelines.field('paiId'), pipelines.variable('anchorId')))
+        .select(
+          pipelines.documentId(pipelines.field('__name__')).as('childId'),
+          pipelines
+            .subcollection('variacaoMercadoLivre')
+            .select('itemId', 'id', 'produtoMercadoLivreOuterRef')
+            .toArrayExpression()
+            .as('varLinks'),
+        )
+        .toArrayExpression()
+        .as('children'),
+    )
+    .execute();
+
+  for (const row of snap.results) {
+    if (!row.ref) continue; // no outer `select` → ref is present; guard the optional type
+    const segments = row.ref.path.split('/');
+    const anchorId = segments[segments.length - 1];
+    if (!anchorId) continue;
+    const data = row.data() as Record<string, unknown>;
+
+    const link =
+      data.link != null && typeof data.link === 'object' ? (data.link as BundleLink) : null;
+
+    const children: BundleChild[] = [];
+    for (const rawChild of Array.isArray(data.children) ? data.children : []) {
+      if (rawChild == null || typeof rawChild !== 'object') continue;
+      const child = rawChild as Record<string, unknown>;
+      if (typeof child.childId !== 'string' || child.childId === '') continue;
+      children.push({
+        childId: child.childId,
+        varLinks: Array.isArray(child.varLinks)
+          ? child.varLinks.filter((v): v is BundleVarLink => v != null && typeof v === 'object')
+          : [],
+      });
+    }
+    children.sort((a, b) => (a.childId < b.childId ? -1 : a.childId > b.childId ? 1 : 0));
+
+    bundle.set(anchorId, { anchorId, produto: data as RawGateFields, link, children });
+  }
+  return bundle;
+}
+
+export interface ResolveFromBundleArgs {
+  integracaoId: string;
+  /** The original candidate produto (context only — skips report on the anchor). */
+  produtoId: string;
+  /** The family anchor the bundle entry is keyed by. */
+  anchorId: string;
+  /**
+   * The anchor's gate fields when the caller already holds them (the candidate
+   * IS the anchor and Q1 joined its produto, or the wrapper read it). Null →
+   * fall back to the bundle entry's own anchor fields (kit-parent expansions,
+   * `paiId` children).
+   */
+  anchorProduto: RawGateFields | null;
+}
+
+/**
+ * Pure assembly: resolve one family anchor into its send units from a Q2
+ * bundle, reproducing the legacy decision ladder EXACTLY, in order:
+ * `'sem-link'` (anchor produto missing — deleted mid-sweep, `documents()`
+ * omits it — or no link for this conta), `'sem-item-id'` (never published),
+ * `'aguardando-migracao'` (`estado 'am'`, mid-UP-migration, Flutter-driven),
+ * `'status-nao-enviavel'` (whitelist gate; `desconhecido` statuses
+ * additionally warn — status tracking per Lucas), `'kit-virtual'`,
+ * `'nao-publicado'`, `'conta-fora-do-produto'`.
  *
  * Old model (`isUserProductModel !== true`): ONE `'item'` unit per FAMILY —
  * the task handler expands all variations into a single bulk `PUT items/{id}`
  * (still 1 task = 1 ML call). User Products: one `'variationItem'` unit per
- * variation child (each variation is its own ML item — no family bulk exists);
- * a childless UP family degenerates to a single `'item'` unit. Children ride
- * the existing `produtos(paiId, nome)` index, hence the `orderBy('nome')`.
+ * variation child (each variation is its own ML item — no family bulk exists),
+ * matching each child's variação link by
+ * `produtoMercadoLivreOuterRef === toOuterRef(<parent link docPath>)` — exact
+ * string match is safe here because both apps write the canonical
+ * `documents/...` form for this field (see importVariations.ts). A childless
+ * UP family degenerates to a single `'item'` unit.
  */
-export async function resolveSendUnits(
-  db: Firestore,
-  { integracaoId, produtoId }: ResolveSendUnitsArgs,
-): Promise<ResolvedSendUnits> {
-  // (a) Resolve the family anchor.
-  const produtoSnap = await produtoCollection.docRef(db, {}, produtoId).get();
-  if (!produtoSnap.exists) return skipOnly(produtoId, 'sem-link');
-  const produtoRaw = (produtoSnap.data() ?? {}) as Record<string, unknown>;
-  const paiId =
-    typeof produtoRaw.paiId === 'string' && produtoRaw.paiId !== '' ? produtoRaw.paiId : null;
+export function resolveSendUnitsFromBundle(
+  bundle: ResolutionBundle,
+  args: ResolveFromBundleArgs,
+): ResolvedSendUnits {
+  const { anchorId } = args;
+  const anchor = bundle.get(anchorId) ?? null;
+  if (anchor == null) return skipOnly(anchorId, 'sem-link'); // anchor doc gone
+  const gate = args.anchorProduto ?? anchor.produto;
 
-  let anchorId = produtoId;
-  let anchorRaw = produtoRaw;
-  if (paiId != null) {
-    anchorId = paiId;
-    const parentSnap = await produtoCollection.docRef(db, {}, paiId).get();
-    if (!parentSnap.exists) return skipOnly(anchorId, 'sem-link');
-    anchorRaw = (parentSnap.data() ?? {}) as Record<string, unknown>;
-  }
-
-  // (b) This conta's link under the anchor (in-memory conta filter).
-  const linkSnap = await produtoMercadoLivreLinkCollection.ref(db, { produtoId: anchorId }).get();
-  let link: Record<string, unknown> | null = null;
-  let linkDocId: string | null = null;
-  for (const d of linkSnap.docs) {
-    const raw = d.data() as Record<string, unknown>;
-    if (!refMatchesIntegracao(raw.contaOuterRef, integracaoId)) continue;
-    link = raw;
-    linkDocId = d.id;
-    break;
-  }
-  if (link == null || linkDocId == null) return skipOnly(anchorId, 'sem-link');
+  const link = anchor.link;
+  if (link == null) return skipOnly(anchorId, 'sem-link');
 
   const itemId = typeof link.id === 'string' && link.id !== '' ? link.id : null;
   if (itemId == null) return skipOnly(anchorId, 'sem-item-id');
   if (link.estado === 'am') return skipOnly(anchorId, 'aguardando-migracao');
 
-  // (c) Listing-status whitelist gate.
-  const gate = podeEnviarEstoque(
+  const statusGate = podeEnviarEstoque(
     typeof link.status === 'string' ? link.status : null,
     Array.isArray(link.sub_status)
       ? link.sub_status.filter((s): s is string => typeof s === 'string')
       : null,
   );
-  if (gate.desconhecido) {
+  if (statusGate.desconhecido) {
     console.warn('[mercado-livre] stock-sync: status de anúncio fora do conjunto documentado', {
-      integracaoId,
+      integracaoId: args.integracaoId,
       produtoId: anchorId,
       itemId,
       status: link.status ?? null,
     });
   }
-  if (!gate.enviar) return skipOnly(anchorId, 'status-nao-enviavel');
+  if (!statusGate.enviar) return skipOnly(anchorId, 'status-nao-enviavel');
 
-  // (d) Produto-level gates (legacy publicado / conta / kit-virtual gates).
-  if (anchorRaw.ehKitVirtual === true) return skipOnly(anchorId, 'kit-virtual');
-  if (anchorRaw.publicado !== true) return skipOnly(anchorId, 'nao-publicado');
-  const integracoes = Array.isArray(anchorRaw.integracoesComProduto)
-    ? anchorRaw.integracoesComProduto
-    : [];
-  if (!integracoes.includes(integracaoId)) return skipOnly(anchorId, 'conta-fora-do-produto');
+  if (gate.ehKitVirtual === true) return skipOnly(anchorId, 'kit-virtual');
+  if (gate.publicado !== true) return skipOnly(anchorId, 'nao-publicado');
+  const integracoes = Array.isArray(gate.integracoesComProduto) ? gate.integracoesComProduto : [];
+  if (!integracoes.includes(args.integracaoId)) return skipOnly(anchorId, 'conta-fora-do-produto');
 
-  // (e) Old model → ONE family unit.
   if (link.isUserProductModel !== true) {
     return {
       units: [{ kind: 'item', itemId, produtoId: anchorId, variacaoProdutoId: null }],
@@ -626,49 +861,82 @@ export async function resolveSendUnits(
     };
   }
 
-  // (f) User Products → one unit per variation child.
-  const childrenSnap = await produtoCollection
-    .ref(db, {})
-    .where('paiId', '==', anchorId)
-    .orderBy('nome', 'asc')
-    .get();
-  if (childrenSnap.docs.length === 0) {
+  if (anchor.children.length === 0) {
     return {
       units: [{ kind: 'item', itemId, produtoId: anchorId, variacaoProdutoId: null }],
       skips: [],
     };
   }
 
-  const parentLinkOuterRef = toOuterRef(
-    produtoMercadoLivreLinkCollection.docPath({ produtoId: anchorId }, linkDocId),
-  );
+  const linkDocId =
+    typeof link.linkDocId === 'string' && link.linkDocId !== '' ? link.linkDocId : null;
+  const parentLinkOuterRef =
+    linkDocId == null
+      ? null
+      : toOuterRef(produtoMercadoLivreLinkCollection.docPath({ produtoId: anchorId }, linkDocId));
+
   const units: SendUnit[] = [];
   const skips: SendSkip[] = [];
-  for (const child of childrenSnap.docs) {
-    const varSnap = await variacaoMercadoLivreLinkCollection.ref(db, { produtoId: child.id }).get();
+  for (const child of anchor.children) {
     // Exact string match is safe here — both apps write the canonical
     // `documents/...` form for this field (see importVariations.ts).
-    const varLink = varSnap.docs
-      .map((d) => d.data() as Record<string, unknown>)
-      .find((raw) => raw.produtoMercadoLivreOuterRef === parentLinkOuterRef);
+    const varLink =
+      parentLinkOuterRef == null
+        ? undefined
+        : child.varLinks.find((raw) => raw.produtoMercadoLivreOuterRef === parentLinkOuterRef);
     if (varLink == null) {
-      skips.push({ produtoId: child.id, reason: 'sem-link' });
+      skips.push({ produtoId: child.childId, reason: 'sem-link' });
       continue;
     }
     const varItemId =
       typeof varLink.itemId === 'string' && varLink.itemId !== '' ? varLink.itemId : null;
     if (varItemId == null) {
-      skips.push({ produtoId: child.id, reason: 'sem-item-id' });
+      skips.push({ produtoId: child.childId, reason: 'sem-item-id' });
       continue;
     }
     units.push({
       kind: 'variationItem',
       itemId: varItemId,
       produtoId: anchorId,
-      variacaoProdutoId: child.id,
+      variacaoProdutoId: child.childId,
     });
   }
   return { units, skips };
+}
+
+export interface ResolveSendUnitsArgs {
+  integracaoId: string;
+  produtoId: string;
+}
+
+/**
+ * Single-family resolution — the PR B task-handler entry point (name/signature
+ * kept for the stacked send-queue branch). Resolves the family ANCHOR (`paiId`
+ * when the candidate is a variation child — e.g. a kit component estoque
+ * living on a child; plain doc gets, fine for the one-family case), then runs
+ * Q2 for that single anchor and the pure ladder above.
+ */
+export async function resolveSendUnits(
+  db: Firestore,
+  { integracaoId, produtoId }: ResolveSendUnitsArgs,
+): Promise<ResolvedSendUnits> {
+  const produtoSnap = await produtoCollection.docRef(db, {}, produtoId).get();
+  if (!produtoSnap.exists) return skipOnly(produtoId, 'sem-link');
+  const produtoRaw = (produtoSnap.data() ?? {}) as RawGateFields;
+  const paiId =
+    typeof produtoRaw.paiId === 'string' && produtoRaw.paiId !== '' ? produtoRaw.paiId : null;
+
+  let anchorId = produtoId;
+  let anchorProduto = produtoRaw;
+  if (paiId != null) {
+    anchorId = paiId;
+    const parentSnap = await produtoCollection.docRef(db, {}, paiId).get();
+    if (!parentSnap.exists) return skipOnly(anchorId, 'sem-link');
+    anchorProduto = (parentSnap.data() ?? {}) as RawGateFields;
+  }
+
+  const bundle = await fetchResolutionBundle(db, { integracaoId, anchorRefsOrIds: [anchorId] });
+  return resolveSendUnitsFromBundle(bundle, { integracaoId, produtoId, anchorId, anchorProduto });
 }
 
 /* --------------------------- quantities from the db ------------------------ */

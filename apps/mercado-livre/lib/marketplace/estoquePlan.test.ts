@@ -4,26 +4,116 @@ import type { Firestore } from 'firebase-admin/firestore';
 // Mock the admin Pipelines subpath with tagged-object builders (the
 // firestore-pipelines skill pattern): the pipeline is NEVER executed in unit
 // tests — assertions target the stages/expressions the code builds, via a fake
-// `db.pipeline()` chain below.
-const { mockPipelinesExports } = vi.hoisted(() => ({
-  mockPipelinesExports: {
-    field: (name: string) => ({ kind: 'field', name }),
-    equal: (l: unknown, r: unknown) => ({ kind: 'equal', l, r }),
-    greaterThan: (l: unknown, r: unknown) => ({ kind: 'gt', l, r }),
-    greaterThanOrEqual: (l: unknown, r: unknown) => ({ kind: 'gte', l, r }),
-    and: (...xs: unknown[]) => ({ kind: 'and', xs }),
-    ascending: (f: unknown) => ({ kind: 'asc', f }),
-  } as Record<string, unknown>,
-}));
+// `db.pipeline()` chain below. Chainable methods live on prototypes so
+// `toEqual` structural assertions see only the tag data.
+const { mockPipelinesExports, FakeChain } = vi.hoisted(() => {
+  class Expr {
+    constructor(props: Record<string, unknown>) {
+      Object.assign(this, props);
+    }
+    as(name: string): Expr {
+      return new Expr({ kind: 'as', name, of: this });
+    }
+    equal(r: unknown): Expr {
+      return new Expr({ kind: 'equal', l: this, r });
+    }
+    equalAny(values: unknown): Expr {
+      return new Expr({ kind: 'equalAny', l: this, values });
+    }
+    length(): Expr {
+      return new Expr({ kind: 'length', of: this });
+    }
+    greaterThan(r: unknown): Expr {
+      return new Expr({ kind: 'gt', l: this, r });
+    }
+  }
+
+  type Stage = { stage: string; args: unknown[] };
+
+  // One recorder for every pipeline shape: `db.pipeline()` chains carry an
+  // executor (canned pages); embedded subqueries (`subcollection(...)` and
+  // nested `db.pipeline()` chains) are terminated by the to*Expression()
+  // calls, freezing their recorded stages into a tagged expression.
+  class FakeChain {
+    readonly stages: Stage[] = [];
+    constructor(private readonly exec: ((stages: Stage[]) => Promise<unknown>) | null = null) {}
+    private push(stage: string, args: unknown[]): this {
+      this.stages.push({ stage, args });
+      return this;
+    }
+    collection(path: string): this {
+      return this.push('collection', [path]);
+    }
+    collectionGroup(id: string): this {
+      return this.push('collectionGroup', [id]);
+    }
+    documents(refs: unknown[]): this {
+      return this.push('documents', [refs]);
+    }
+    where(condition: unknown): this {
+      return this.push('where', [condition]);
+    }
+    sort(...orderings: unknown[]): this {
+      return this.push('sort', orderings);
+    }
+    limit(n: number): this {
+      return this.push('limit', [n]);
+    }
+    define(...bindings: unknown[]): this {
+      return this.push('define', bindings);
+    }
+    addFields(...fields: unknown[]): this {
+      return this.push('addFields', fields);
+    }
+    select(...selections: unknown[]): this {
+      return this.push('select', selections);
+    }
+    toScalarExpression(): Expr {
+      return new Expr({ kind: 'scalarSubquery', stages: this.stages });
+    }
+    toArrayExpression(): Expr {
+      return new Expr({ kind: 'arraySubquery', stages: this.stages });
+    }
+    async execute(): Promise<unknown> {
+      if (!this.exec) throw new Error('FakeChain: only db.pipeline() chains are executable');
+      return this.exec(this.stages);
+    }
+  }
+
+  const mockPipelinesExports = {
+    field: (name: string) => new Expr({ kind: 'field', name }),
+    variable: (name: string) => new Expr({ kind: 'variable', name }),
+    constant: (v: unknown) => new Expr({ kind: 'constant', v }),
+    equal: (l: unknown, r: unknown) => new Expr({ kind: 'equal', l, r }),
+    greaterThan: (l: unknown, r: unknown) => new Expr({ kind: 'gt', l, r }),
+    greaterThanOrEqual: (l: unknown, r: unknown) => new Expr({ kind: 'gte', l, r }),
+    arrayContains: (arr: unknown, v: unknown) => new Expr({ kind: 'arrayContains', arr, v }),
+    and: (...xs: unknown[]) => new Expr({ kind: 'and', xs }),
+    or: (...xs: unknown[]) => new Expr({ kind: 'or', xs }),
+    ascending: (f: unknown) => new Expr({ kind: 'asc', f }),
+    documentId: (e: unknown) => new Expr({ kind: 'documentId', of: e }),
+    parent: (e: unknown) => new Expr({ kind: 'parent', of: e }),
+    subcollection: (path: string) => {
+      const chain = new FakeChain();
+      chain.stages.push({ stage: 'subcollection', args: [path] });
+      return chain;
+    },
+  } as Record<string, unknown>;
+
+  return { mockPipelinesExports, FakeChain };
+});
 
 vi.mock('@google-cloud/firestore/pipelines', () => mockPipelinesExports);
 
 import {
-  type ChangedEstoque,
+  type BundleChild,
   ESTOQUE_MIN,
-  KIT_PARENT_CHUNK,
+  type EstoqueChangeRow,
   MERCADO_LIVRE_STOCK_SEND_QUEUE,
   PAUSE_REENQUEUE_JITTER_MAX_S,
+  type ResolutionAnchor,
+  type ResolutionBundle,
+  type ResolveFromBundleArgs,
   STOCK_SYNC_FLAG_ENV,
   TIPOS_VENDA,
   atividadeLookbackDays,
@@ -37,8 +127,8 @@ import {
   envFlag,
   envInt,
   estoqueMax,
-  fetchChangedEstoquesPipeline,
-  fetchKitParentsQuery,
+  fetchChangedEstoquesJoined,
+  fetchResolutionBundle,
   incrementalWindowMin,
   isStockSyncEnabled,
   kitIncluiEstoqueProprio,
@@ -49,14 +139,15 @@ import {
   quantidadeParaEnvio,
   ratePauseMin,
   resolveSendUnits,
+  resolveSendUnitsFromBundle,
   windowOverlapSec,
 } from './estoquePlan';
 
 /* ------------------------------ fake Firestore ----------------------------- */
 // Extension of orderBackfill.test.ts's FakeDb: chained
-// `where().orderBy().limit().get()` with real op support (`==`,
-// `array-contains-any`) + a plain `.get()` on a collection (subcollection
-// reads) + doc get/set. Queries are logged so chunking can be asserted.
+// `where().orderBy().limit().get()` with real op support + a plain `.get()` on
+// a collection + doc get/set, PLUS a `pipeline()` surface answering from a
+// queue of pre-canned pages while recording every execution's stage list.
 
 type DocData = Record<string, unknown>;
 
@@ -93,13 +184,10 @@ interface FakeQuery {
 
 type FakeCollection = FakeQuery & { doc: (id?: string) => FakeDocRef };
 
+type RecordedStage = { stage: string; args: unknown[] };
+
 function clauseMatches(data: DocData, c: Clause): boolean {
   if (c.op === '==') return data[c.field] === c.value;
-  if (c.op === 'array-contains-any') {
-    const arr = data[c.field];
-    const wanted = c.value as unknown[];
-    return Array.isArray(arr) && wanted.some((w) => arr.includes(w));
-  }
   throw new Error(`FakeDb: unsupported op ${c.op}`);
 }
 
@@ -112,6 +200,8 @@ class FakeDb {
     orderBy: Array<[string, string]>;
     limit: number | null;
   }> = [];
+  readonly pipelineExecutions: RecordedStage[][] = [];
+  private readonly pipelinePages: Array<Array<{ path: string; data: DocData }>> = [];
   private autoN = 0;
 
   private col(path: string): Map<string, DocData> {
@@ -122,6 +212,18 @@ class FakeDb {
 
   seed(path: string, id: string, data: DocData): void {
     this.col(path).set(id, data);
+  }
+
+  queuePipelinePage(rows: Array<{ path: string; data: DocData }>): void {
+    this.pipelinePages.push(rows);
+  }
+
+  pipeline(): InstanceType<typeof FakeChain> {
+    return new FakeChain(async (stages) => {
+      this.pipelineExecutions.push(stages);
+      const rows = this.pipelinePages.shift() ?? [];
+      return { results: rows.map((r) => ({ ref: { path: r.path }, data: () => r.data })) };
+    });
   }
 
   private makeQuery(path: string): FakeQuery {
@@ -191,68 +293,8 @@ class FakeDb {
   }
 }
 
-function asDb(db: FakeDb | FakePipelineDb | Record<string, unknown>): Firestore {
+function asDb(db: FakeDb | Record<string, unknown>): Firestore {
   return db as unknown as Firestore;
-}
-
-/* ------------------------------ fake pipeline ------------------------------ */
-// Chainable `db.pipeline()` recording each execution's stages and answering
-// from a queue of pre-canned pages. Rows expose `{ ref: { path }, data() }` —
-// the exact PipelineResult surface the code touches.
-
-interface PipelineCall {
-  collectionGroup: string | null;
-  where: unknown;
-  sort: unknown;
-  limit: number | null;
-}
-
-interface FakePipelineStage {
-  collectionGroup: (id: string) => FakePipelineStage;
-  where: (expr: unknown) => FakePipelineStage;
-  sort: (o: unknown) => FakePipelineStage;
-  limit: (n: number) => FakePipelineStage;
-  execute: () => Promise<{ results: Array<{ ref: { path: string }; data: () => DocData }> }>;
-}
-
-class FakePipelineDb {
-  readonly calls: PipelineCall[] = [];
-  private readonly pages: Array<Array<{ path: string; data: DocData }>> = [];
-
-  queuePage(rows: Array<{ path: string; data: DocData }>): void {
-    this.pages.push(rows);
-  }
-
-  pipeline(): FakePipelineStage {
-    const self = this;
-    const call: PipelineCall = { collectionGroup: null, where: null, sort: null, limit: null };
-    const stage: FakePipelineStage = {
-      collectionGroup(id: string) {
-        call.collectionGroup = id;
-        return stage;
-      },
-      where(expr: unknown) {
-        call.where = expr;
-        return stage;
-      },
-      sort(o: unknown) {
-        call.sort = o;
-        return stage;
-      },
-      limit(n: number) {
-        call.limit = n;
-        return stage;
-      },
-      async execute() {
-        self.calls.push({ ...call });
-        const rows = self.pages.shift() ?? [];
-        return {
-          results: rows.map((r) => ({ ref: { path: r.path }, data: () => r.data })),
-        };
-      },
-    };
-    return stage;
-  }
 }
 
 /* --------------------------------- helpers --------------------------------- */
@@ -261,6 +303,7 @@ const DEP = 'documents/depositos/DEP';
 const DEPOSITO_ID = 'DEP';
 const CONTA = 'conta-A';
 const FROM_MS = Date.parse('2026-07-24T10:00:00.000Z');
+const CUTOFF_MS = Date.parse('2026-06-24T10:00:00.000Z');
 const T1 = Date.parse('2026-07-24T10:05:00.000Z');
 const T2 = Date.parse('2026-07-24T10:10:00.000Z');
 const T3 = Date.parse('2026-07-24T10:15:00.000Z');
@@ -279,46 +322,199 @@ const TOUCHED_ENV = [
   'ESTOQUE_PLAN_TEST_FLAG',
 ];
 
-function estoqueRow(
+const estoquePath = (produtoId: string) =>
+  `produtos/${produtoId}/estoques/est-${produtoId}-${DEPOSITO_ID}`;
+
+/** One canned Q1 execution row (an estoque doc with its joined fields). */
+function estoquePage(produtoId: string, ms: number, data: DocData = {}) {
+  return { path: estoquePath(produtoId), data: { ultimaModificacao: ms, produto: {}, ...data } };
+}
+
+/** One already-mapped Q1 row (the seam's output shape) for discovery tests. */
+function changeRow(
   produtoId: string,
   ms: number,
   quantidade = 0,
   quantidadeReservada = 0,
-): ChangedEstoque {
+  extra: Partial<EstoqueChangeRow> = {},
+): EstoqueChangeRow {
   return {
     produtoId,
-    estoqueDocPath: `produtos/${produtoId}/estoques/est-${produtoId}-${DEPOSITO_ID}`,
+    estoqueDocPath: estoquePath(produtoId),
     ultimaModificacaoMs: ms,
     quantidade,
     quantidadeReservada,
+    produto: {},
+    kitParentIds: [],
+    temVenda30d: false,
+    ...extra,
   };
 }
 
-function seedAnchor(db: FakeDb, id = 'PROD', extra: DocData = {}): void {
-  db.seed('produtos', id, {
-    nome: `Produto ${id}`,
-    paiId: null,
-    publicado: true,
-    ehKit: false,
-    ehKitVirtual: false,
-    integracoesComProduto: [CONTA],
-    ...extra,
-  });
-}
-
-function seedLink(db: FakeDb, produtoId = 'PROD', extra: DocData = {}): void {
-  db.seed(`produtos/${produtoId}/produtoMercadoLivre`, 'link1', {
-    contaOuterRef: `documents/integracao/${CONTA}`,
-    id: 'MLB111',
-    estado: 'p',
-    status: 'active',
-    sub_status: null,
-    isUserProductModel: false,
-    ...extra,
-  });
-}
-
 const PARENT_LINK_REF = 'documents/produtos/PROD/produtoMercadoLivre/link1';
+
+/* Expected-tree builders (plain objects — the mock Exprs compare structurally). */
+const f = (name: string) => ({ kind: 'field', name });
+const vr = (name: string) => ({ kind: 'variable', name });
+const alias = (name: string, of: unknown) => ({ kind: 'as', name, of });
+const eq = (l: unknown, r: unknown) => ({ kind: 'equal', l, r });
+const gt = (l: unknown, r: unknown) => ({ kind: 'gt', l, r });
+const gte = (l: unknown, r: unknown) => ({ kind: 'gte', l, r });
+const AND = (...xs: unknown[]) => ({ kind: 'and', xs });
+const OR = (...xs: unknown[]) => ({ kind: 'or', xs });
+const asc = (name: string) => ({ kind: 'asc', f: f(name) });
+const docId = (of: unknown) => ({ kind: 'documentId', of });
+const parentOf = (of: unknown) => ({ kind: 'parent', of });
+
+/** The Q1 outer `where`: both depósito *OuterRef forms AND'ed with the range term. */
+const q1Where = (range: unknown) =>
+  AND(
+    OR(eq(f('depositoOuterRef'), DEP), eq(f('depositoOuterRef'), DEP.replace(/^documents\//, ''))),
+    range,
+  );
+
+/** Keyset tuple predicate carrying the previous page's last row. */
+const keyset = (ms: number, path: string) =>
+  OR(
+    gt(f('ultimaModificacao'), ms),
+    AND(eq(f('ultimaModificacao'), ms), gt(f('__name__'), { kind: 'constant', v: { path } })),
+  );
+
+/** The full documented Q1 stage tree for one page. */
+function q1ExpectedStages(where: unknown, limit: number): RecordedStage[] {
+  return [
+    { stage: 'collectionGroup', args: ['estoques'] },
+    { stage: 'where', args: [where] },
+    { stage: 'sort', args: [asc('ultimaModificacao'), asc('__name__')] },
+    { stage: 'limit', args: [limit] },
+    {
+      stage: 'define',
+      args: [
+        alias('produtoRef', parentOf(f('__name__'))),
+        alias('produtoId', docId(parentOf(f('__name__')))),
+      ],
+    },
+    {
+      stage: 'addFields',
+      args: [
+        alias('produto', {
+          kind: 'scalarSubquery',
+          stages: [
+            { stage: 'collection', args: ['produtos'] },
+            { stage: 'where', args: [eq(f('__name__'), vr('produtoRef'))] },
+            {
+              stage: 'select',
+              args: [
+                'paiId',
+                'publicado',
+                'ehKit',
+                'ehKitVirtual',
+                'integracoesComProduto',
+                'timestamp',
+              ],
+            },
+          ],
+        }),
+        alias('kitParents', {
+          kind: 'arraySubquery',
+          stages: [
+            { stage: 'collection', args: ['produtos'] },
+            {
+              stage: 'where',
+              args: [{ kind: 'arrayContains', arr: f('componentesKitKeys'), v: vr('produtoId') }],
+            },
+            { stage: 'select', args: [alias('kitId', docId(f('__name__')))] },
+          ],
+        }),
+        alias(
+          'temVenda30d',
+          gt(
+            {
+              kind: 'length',
+              of: {
+                kind: 'arraySubquery',
+                stages: [
+                  { stage: 'subcollection', args: ['historicoEstoque'] },
+                  {
+                    stage: 'where',
+                    args: [
+                      AND(
+                        { kind: 'equalAny', l: f('tipo'), values: [...TIPOS_VENDA] },
+                        gte(f('timestamp'), CUTOFF_MS),
+                      ),
+                    ],
+                  },
+                  { stage: 'limit', args: [1] },
+                  { stage: 'select', args: ['tipo'] },
+                ],
+              },
+            },
+            0,
+          ),
+        ),
+      ],
+    },
+  ];
+}
+
+/** The documented Q2 stage tree after the `documents()` source. */
+function q2ExpectedTailStages(): RecordedStage[] {
+  return [
+    { stage: 'define', args: [alias('anchorId', docId(f('__name__')))] },
+    {
+      stage: 'addFields',
+      args: [
+        alias('link', {
+          kind: 'scalarSubquery',
+          stages: [
+            { stage: 'subcollection', args: ['produtoMercadoLivre'] },
+            {
+              stage: 'where',
+              args: [
+                OR(
+                  eq(f('contaOuterRef'), `documents/integracao/${CONTA}`),
+                  eq(f('contaOuterRef'), `integracao/${CONTA}`),
+                ),
+              ],
+            },
+            { stage: 'limit', args: [1] },
+            {
+              stage: 'select',
+              args: [
+                'id',
+                'estado',
+                'status',
+                'sub_status',
+                'isUserProductModel',
+                alias('linkDocId', docId(f('__name__'))),
+              ],
+            },
+          ],
+        }),
+        alias('children', {
+          kind: 'arraySubquery',
+          stages: [
+            { stage: 'collection', args: ['produtos'] },
+            { stage: 'where', args: [eq(f('paiId'), vr('anchorId'))] },
+            {
+              stage: 'select',
+              args: [
+                alias('childId', docId(f('__name__'))),
+                alias('varLinks', {
+                  kind: 'arraySubquery',
+                  stages: [
+                    { stage: 'subcollection', args: ['variacaoMercadoLivre'] },
+                    { stage: 'select', args: ['itemId', 'id', 'produtoMercadoLivreOuterRef'] },
+                  ],
+                }),
+              ],
+            },
+          ],
+        }),
+      ],
+    },
+  ];
+}
 
 beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -335,7 +531,6 @@ describe('constants', () => {
   it('pure code constants keep their spec values', () => {
     expect(ESTOQUE_MIN).toBe(0);
     expect(TIPOS_VENDA).toEqual(['reserva', 'saida']);
-    expect(KIT_PARENT_CHUNK).toBe(10);
     expect(PAUSE_REENQUEUE_JITTER_MAX_S).toBe(30);
     expect(MERCADO_LIVRE_STOCK_SEND_QUEUE).toBe('sendMercadoLivreStock');
     expect(STOCK_SYNC_FLAG_ENV).toBe('MERCADO_LIVRE_STOCK_SYNC_ENABLED');
@@ -594,498 +789,646 @@ describe('quantidadeParaEnvio — kit math + clamps', () => {
   });
 });
 
-describe('fetchChangedEstoquesPipeline — stages, paging, tie de-dup', () => {
-  it('single short page: exact stages + mapped rows (produtoId from the doc path)', async () => {
-    const fake = new FakePipelineDb();
-    fake.queuePage([
-      {
-        path: 'produtos/PROD-1/estoques/est-PROD-1-DEP',
-        data: { ultimaModificacao: T1, quantidade: 5, quantidadeReservada: 2 },
-      },
-      // Missing quantities tolerate legacy docs → 0.
-      { path: 'produtos/PROD-2/estoques/est-PROD-2-DEP', data: { ultimaModificacao: T2 } },
+describe('fetchChangedEstoquesJoined — stage tree, keyset paging, row mapping', () => {
+  const Q1_ARGS = {
+    integracaoId: CONTA,
+    depositoOuterRef: DEP,
+    fromMs: FROM_MS,
+    tipoVendaCutoffMs: CUTOFF_MS,
+  };
+
+  it('single short page: the full documented stage tree + joined-row mapping', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([
+      estoquePage('PROD-1', T1, {
+        quantidade: 5,
+        quantidadeReservada: 2,
+        produto: { publicado: true, ehKit: false },
+        kitParents: ['KIT-1', 42], // non-strings filtered out
+        temVenda30d: true,
+      }),
+      // Produto deleted mid-sweep (scalar join → null); legacy doc without
+      // quantities → 0; joins absent → [] / false.
+      { path: estoquePath('PROD-2'), data: { ultimaModificacao: T2 } },
     ]);
 
-    const rows = await fetchChangedEstoquesPipeline(asDb(fake), {
-      depositoOuterRef: DEP,
-      fromMs: FROM_MS,
-      pageLimit: 10,
-    });
+    const rows = await fetchChangedEstoquesJoined(asDb(db), { ...Q1_ARGS, pageLimit: 10 });
 
     expect(rows).toEqual([
       {
         produtoId: 'PROD-1',
-        estoqueDocPath: 'produtos/PROD-1/estoques/est-PROD-1-DEP',
+        estoqueDocPath: estoquePath('PROD-1'),
         ultimaModificacaoMs: T1,
         quantidade: 5,
         quantidadeReservada: 2,
+        produto: { publicado: true, ehKit: false },
+        kitParentIds: ['KIT-1'],
+        temVenda30d: true,
       },
       {
         produtoId: 'PROD-2',
-        estoqueDocPath: 'produtos/PROD-2/estoques/est-PROD-2-DEP',
+        estoqueDocPath: estoquePath('PROD-2'),
         ultimaModificacaoMs: T2,
         quantidade: 0,
         quantidadeReservada: 0,
+        produto: null,
+        kitParentIds: [],
+        temVenda30d: false,
       },
     ]);
 
-    expect(fake.calls).toHaveLength(1);
-    const call = fake.calls[0]!;
-    expect(call.collectionGroup).toBe('estoques');
-    expect(call.where).toEqual({
-      kind: 'and',
-      xs: [
-        { kind: 'equal', l: { kind: 'field', name: 'depositoOuterRef' }, r: DEP },
-        { kind: 'gt', l: { kind: 'field', name: 'ultimaModificacao' }, r: FROM_MS },
-      ],
-    });
-    expect(call.sort).toEqual({ kind: 'asc', f: { kind: 'field', name: 'ultimaModificacao' } });
-    expect(call.limit).toBe(10);
+    expect(db.pipelineExecutions).toHaveLength(1);
+    expect(db.pipelineExecutions[0]).toEqual(
+      q1ExpectedStages(q1Where(gt(f('ultimaModificacao'), FROM_MS)), 10),
+    );
   });
 
-  it('drains a >2-page backlog: full re-cover pages keep paging until a short page', async () => {
-    // Regression guard: termination MUST be on RAW page size, not de-duplicated
-    // new-row count — every `>=` re-cover re-fetches its boundary doc, so a
-    // new-row-based break would hard-cap the scan at 2 pages and drop D.
-    const fake = new FakePipelineDb();
-    fake.queuePage([
-      { path: 'produtos/A/estoques/est-A-DEP', data: { ultimaModificacao: T1 } },
-      { path: 'produtos/B/estoques/est-B-DEP', data: { ultimaModificacao: T2 } },
-    ]);
-    // `>= T2` re-cover: boundary dup + one new row — still a FULL page.
-    fake.queuePage([
-      { path: 'produtos/B/estoques/est-B-DEP', data: { ultimaModificacao: T2 } },
-      { path: 'produtos/C/estoques/est-C-DEP', data: { ultimaModificacao: T3 } },
-    ]);
-    // `>= T3` re-cover: boundary dup + the tail row — short page ends the scan.
-    fake.queuePage([
-      { path: 'produtos/C/estoques/est-C-DEP', data: { ultimaModificacao: T3 } },
-      { path: 'produtos/D/estoques/est-D-DEP', data: { ultimaModificacao: T4 } },
-    ]);
-    fake.queuePage([{ path: 'produtos/D/estoques/est-D-DEP', data: { ultimaModificacao: T4 } }]);
+  it('keyset drain: full pages advance the (ultimaModificacao, ref) tuple, no re-fetch', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([estoquePage('A', T1), estoquePage('B', T2)]); // full
+    db.queuePipelinePage([estoquePage('C', T3), estoquePage('D', T3)]); // full — in-page tie is fine
+    db.queuePipelinePage([estoquePage('E', T4)]); // short → drained
 
-    const rows = await fetchChangedEstoquesPipeline(asDb(fake), {
-      depositoOuterRef: DEP,
-      fromMs: FROM_MS,
-      pageLimit: 2,
-    });
+    const rows = await fetchChangedEstoquesJoined(asDb(db), { ...Q1_ARGS, pageLimit: 2 });
 
-    expect(rows.map((r) => r.produtoId)).toEqual(['A', 'B', 'C', 'D']); // no dups, no drops
-    // Page 3 was full (dup + D), so one final `>= T4` re-cover comes back
-    // all-dups-short and drains; the 4th queued page proves the loop got there.
-    expect(fake.calls).toHaveLength(4);
-    // Page 1: strict `>` on the window start; re-covers: inclusive `>=` on the tie.
-    expect(fake.calls[0]!.where).toEqual({
-      kind: 'and',
-      xs: [
-        { kind: 'equal', l: { kind: 'field', name: 'depositoOuterRef' }, r: DEP },
-        { kind: 'gt', l: { kind: 'field', name: 'ultimaModificacao' }, r: FROM_MS },
-      ],
+    expect(rows.map((r) => r.produtoId)).toEqual(['A', 'B', 'C', 'D', 'E']); // no dups, no drops
+    expect(db.pipelineExecutions).toHaveLength(3);
+    // Page 1: strict `>` on the window start; later pages: the keyset tuple.
+    expect(db.pipelineExecutions[0]![1]).toEqual({
+      stage: 'where',
+      args: [q1Where(gt(f('ultimaModificacao'), FROM_MS))],
     });
-    expect(fake.calls[1]!.where).toEqual({
-      kind: 'and',
-      xs: [
-        { kind: 'equal', l: { kind: 'field', name: 'depositoOuterRef' }, r: DEP },
-        { kind: 'gte', l: { kind: 'field', name: 'ultimaModificacao' }, r: T2 },
-      ],
+    expect(db.pipelineExecutions[1]![1]).toEqual({
+      stage: 'where',
+      args: [q1Where(keyset(T2, estoquePath('B')))],
     });
-    expect(fake.calls[2]!.where).toEqual({
-      kind: 'and',
-      xs: [
-        { kind: 'equal', l: { kind: 'field', name: 'depositoOuterRef' }, r: DEP },
-        { kind: 'gte', l: { kind: 'field', name: 'ultimaModificacao' }, r: T3 },
-      ],
-    });
-    expect(fake.calls[3]!.where).toEqual({
-      kind: 'and',
-      xs: [
-        { kind: 'equal', l: { kind: 'field', name: 'depositoOuterRef' }, r: DEP },
-        { kind: 'gte', l: { kind: 'field', name: 'ultimaModificacao' }, r: T4 },
-      ],
+    expect(db.pipelineExecutions[2]![1]).toEqual({
+      stage: 'where',
+      args: [q1Where(keyset(T3, estoquePath('D')))],
     });
   });
 
-  it('a FULL re-cover page of only already-seen rows truncates loudly instead of spinning', async () => {
-    // > pageLimit docs sharing one ultimaModificacao: the `>=` bound cannot
-    // advance, so the loop must warn and stop rather than loop forever.
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      const fake = new FakePipelineDb();
-      fake.queuePage([{ path: 'produtos/A/estoques/est-A-DEP', data: { ultimaModificacao: T1 } }]);
-      fake.queuePage([{ path: 'produtos/A/estoques/est-A-DEP', data: { ultimaModificacao: T1 } }]);
+  it('an all-one-timestamp page boundary drains via the __name__ tiebreaker (no loss)', async () => {
+    // The old `>=`-re-cover design could not advance past a page-crossing
+    // timestamp tie; the keyset tuple walks straight through it.
+    const db = new FakeDb();
+    db.queuePipelinePage([estoquePage('A', T1), estoquePage('B', T1)]); // full, single ts
+    db.queuePipelinePage([estoquePage('C', T1)]); // short — same ts, past B by ref
 
-      const rows = await fetchChangedEstoquesPipeline(asDb(fake), {
-        depositoOuterRef: DEP,
-        fromMs: FROM_MS,
-        pageLimit: 1,
-      });
+    const rows = await fetchChangedEstoquesJoined(asDb(db), { ...Q1_ARGS, pageLimit: 2 });
 
-      expect(rows.map((r) => r.produtoId)).toEqual(['A']);
-      expect(fake.calls).toHaveLength(2); // full page → one re-cover → all dups → stop
-      expect(warn).toHaveBeenCalledTimes(1);
-      expect(String(warn.mock.calls[0]![0])).toContain('truncating scan');
-    } finally {
-      warn.mockRestore();
-    }
+    expect(rows.map((r) => r.produtoId)).toEqual(['A', 'B', 'C']);
+    expect(db.pipelineExecutions).toHaveLength(2);
+    expect(db.pipelineExecutions[1]![1]).toEqual({
+      stage: 'where',
+      args: [q1Where(keyset(T1, estoquePath('B')))],
+    });
   });
 
   it('default page size comes from MERCADO_LIVRE_STOCK_CANDIDATE_PAGE_LIMIT, lazily', async () => {
     process.env.MERCADO_LIVRE_STOCK_CANDIDATE_PAGE_LIMIT = '3';
-    const fake = new FakePipelineDb();
-    fake.queuePage([{ path: 'produtos/A/estoques/est-A-DEP', data: { ultimaModificacao: T1 } }]);
+    const db = new FakeDb();
+    db.queuePipelinePage([estoquePage('A', T1)]);
 
-    await fetchChangedEstoquesPipeline(asDb(fake), { depositoOuterRef: DEP, fromMs: FROM_MS });
+    await fetchChangedEstoquesJoined(asDb(db), Q1_ARGS);
 
-    expect(fake.calls[0]!.limit).toBe(3);
+    expect(db.pipelineExecutions[0]![3]).toEqual({ stage: 'limit', args: [3] });
   });
 });
 
-describe('fetchKitParentsQuery — chunking + dedup', () => {
-  it('chunks at KIT_PARENT_CHUNK and de-dups parents matched by several chunks', async () => {
-    const db = new FakeDb();
-    db.seed('produtos', 'KIT-A', { componentesKitKeys: ['c0'] });
-    db.seed('produtos', 'KIT-B', { componentesKitKeys: ['c15'] });
-    // Matched by chunk 1 (c0) AND chunk 3 (c24) → must come back once.
-    db.seed('produtos', 'KIT-C', { componentesKitKeys: ['c24', 'c0'] });
-    db.seed('produtos', 'NOT-KIT', { componentesKitKeys: ['other'] });
-
-    const componentIds = Array.from({ length: 25 }, (_, i) => `c${i}`);
-    const parents = await fetchKitParentsQuery(asDb(db), componentIds);
-
-    expect(parents.map((p) => p.produtoId).sort()).toEqual(['KIT-A', 'KIT-B', 'KIT-C']);
-    expect(db.queryLog).toHaveLength(3); // ceil(25 / 10)
-    const chunks = db.queryLog.map((q) => q.clauses[0]!);
-    expect(chunks.every((c) => c.field === 'componentesKitKeys')).toBe(true);
-    expect(chunks.every((c) => c.op === 'array-contains-any')).toBe(true);
-    expect((chunks[0]!.value as string[]).length).toBe(KIT_PARENT_CHUNK);
-    expect((chunks[1]!.value as string[]).length).toBe(KIT_PARENT_CHUNK);
-    expect(chunks[2]!.value).toEqual(['c20', 'c21', 'c22', 'c23', 'c24']);
-  });
-
-  it('de-dups input component ids before chunking', async () => {
-    const db = new FakeDb();
-    db.seed('produtos', 'KIT-A', { componentesKitKeys: ['c1'] });
-    await fetchKitParentsQuery(asDb(db), ['c1', 'c1', 'c2']);
-    expect(db.queryLog).toHaveLength(1);
-    expect(db.queryLog[0]!.clauses[0]!.value).toEqual(['c1', 'c2']);
-  });
-
-  it('empty input → no query at all', async () => {
-    const db = new FakeDb();
-    expect(await fetchKitParentsQuery(asDb(db), [])).toEqual([]);
-    expect(db.queryLog).toHaveLength(0);
-  });
-
-  it('filters non-string entries out of the returned componentesKitKeys', async () => {
-    const db = new FakeDb();
-    db.seed('produtos', 'KIT-A', { componentesKitKeys: ['c1', 42, null] });
-    const parents = await fetchKitParentsQuery(asDb(db), ['c1']);
-    expect(parents).toEqual([{ produtoId: 'KIT-A', componentesKitKeys: ['c1'] }]);
-  });
-});
-
-describe('discoverStockCandidates — direct + kit expansion', () => {
+describe('discoverStockCandidates — direct + kit expansion from joined rows', () => {
   const dummyDb = asDb({});
+  const ARGS = {
+    integracaoId: CONTA,
+    depositoOuterRef: DEP,
+    fromMs: FROM_MS,
+    tipoVendaCutoffMs: CUTOFF_MS,
+  };
 
-  it('direct candidates carry the estoque fields with ehExpansaoDeKit false', async () => {
-    const changed = [estoqueRow('A', T1, 3, 1), estoqueRow('B', T2, 8, 0)];
-    const fetchChanged = vi.fn(async () => changed);
-    const fetchKitParents = vi.fn(async () => []);
+  it('direct candidates carry the joined produto + temVenda30d, ehExpansaoDeKit false', async () => {
+    const rows = [
+      changeRow('A', T1, 3, 1, { produto: { publicado: true }, temVenda30d: true }),
+      changeRow('B', T2, 8, 0),
+    ];
+    const fetchChanged = vi.fn(async () => rows);
 
-    const map = await discoverStockCandidates(
-      dummyDb,
-      { depositoOuterRef: DEP, fromMs: FROM_MS },
-      { fetchChanged, fetchKitParents },
-    );
+    const map = await discoverStockCandidates(dummyDb, ARGS, { fetchChanged });
 
-    expect(fetchChanged).toHaveBeenCalledWith(dummyDb, { depositoOuterRef: DEP, fromMs: FROM_MS });
-    expect(fetchKitParents).toHaveBeenCalledWith(dummyDb, ['A', 'B']);
+    expect(fetchChanged).toHaveBeenCalledWith(dummyDb, ARGS);
     expect([...map.keys()]).toEqual(['A', 'B']);
-    expect(map.get('A')).toEqual({ ...estoqueRow('A', T1, 3, 1), ehExpansaoDeKit: false });
-  });
-
-  it('kit parents join with the TRIGGERING component estoque fields, flagged', async () => {
-    const changed = [estoqueRow('A', T1, 2, 0)];
-    const fetchChanged = vi.fn(async () => changed);
-    const fetchKitParents = vi.fn(async () => [
-      { produtoId: 'KIT', componentesKitKeys: ['X', 'A'] },
-    ]);
-
-    const map = await discoverStockCandidates(
-      dummyDb,
-      { depositoOuterRef: DEP, fromMs: FROM_MS },
-      { fetchChanged, fetchKitParents },
-    );
-
-    expect(map.get('KIT')).toEqual({
-      ...estoqueRow('A', T1, 2, 0), // the component's doc — provenance documented
-      produtoId: 'KIT',
-      ehExpansaoDeKit: true,
+    expect(map.get('A')).toEqual({
+      produtoId: 'A',
+      estoqueDocPath: estoquePath('A'),
+      ultimaModificacaoMs: T1,
+      quantidade: 3,
+      quantidadeReservada: 1,
+      ehExpansaoDeKit: false,
+      produto: { publicado: true },
+      temVenda30d: true,
     });
   });
 
+  it('kit parents expand with the TRIGGERING row estoque fields, produto null, flag passthrough', async () => {
+    const rows = [
+      changeRow('A', T1, 2, 0, { kitParentIds: ['X-KIT', 'KIT'], temVenda30d: true }),
+      // A second trigger listing KIT must NOT overwrite the first expansion.
+      changeRow('B', T2, 9, 0, { kitParentIds: ['KIT'] }),
+    ];
+    const fetchChanged = vi.fn(async () => rows);
+
+    const map = await discoverStockCandidates(dummyDb, ARGS, { fetchChanged });
+
+    expect(map.get('KIT')).toEqual({
+      produtoId: 'KIT',
+      estoqueDocPath: estoquePath('A'), // the component's doc — provenance documented
+      ultimaModificacaoMs: T1,
+      quantidade: 2,
+      quantidadeReservada: 0,
+      ehExpansaoDeKit: true,
+      produto: null,
+      temVenda30d: true,
+    });
+    expect(map.get('X-KIT')?.ehExpansaoDeKit).toBe(true);
+  });
+
   it('a parent whose OWN estoque also changed stays a direct candidate', async () => {
-    const changed = [estoqueRow('A', T1, 2, 0), estoqueRow('KIT', T2, 6, 1)];
-    const fetchChanged = vi.fn(async () => changed);
-    const fetchKitParents = vi.fn(async () => [{ produtoId: 'KIT', componentesKitKeys: ['A'] }]);
+    const rows = [
+      changeRow('A', T1, 2, 0, { kitParentIds: ['KIT'] }),
+      changeRow('KIT', T2, 6, 1, { produto: { ehKit: true } }),
+    ];
+    const fetchChanged = vi.fn(async () => rows);
 
-    const map = await discoverStockCandidates(
-      dummyDb,
-      { depositoOuterRef: DEP, fromMs: FROM_MS },
-      { fetchChanged, fetchKitParents },
-    );
+    const map = await discoverStockCandidates(dummyDb, ARGS, { fetchChanged });
 
-    expect(map.get('KIT')).toEqual({ ...estoqueRow('KIT', T2, 6, 1), ehExpansaoDeKit: false });
+    expect(map.get('KIT')).toEqual({
+      produtoId: 'KIT',
+      estoqueDocPath: estoquePath('KIT'),
+      ultimaModificacaoMs: T2,
+      quantidade: 6,
+      quantidadeReservada: 1,
+      ehExpansaoDeKit: false,
+      produto: { ehKit: true },
+      temVenda30d: false,
+    });
     expect(map.size).toBe(2);
   });
 
-  it('no changed estoques → no kit-parent query, empty map', async () => {
-    const fetchChanged = vi.fn(async () => []);
-    const fetchKitParents = vi.fn(async () => []);
-    const map = await discoverStockCandidates(
-      dummyDb,
-      { depositoOuterRef: DEP, fromMs: FROM_MS },
-      { fetchChanged, fetchKitParents },
-    );
-    expect(map.size).toBe(0);
-    expect(fetchKitParents).not.toHaveBeenCalled();
+  it('a produto-null row yields NO direct candidate; its kit parents still expand', async () => {
+    const rows = [changeRow('A', T1, 2, 0, { produto: null, kitParentIds: ['KIT'] })];
+    const fetchChanged = vi.fn(async () => rows);
+
+    const map = await discoverStockCandidates(dummyDb, ARGS, { fetchChanged });
+
+    expect(map.has('A')).toBe(false);
+    expect(map.get('KIT')?.ehExpansaoDeKit).toBe(true);
   });
 
-  it('a seam-returned parent triggered by none of the changed rows is dropped', async () => {
-    const fetchChanged = vi.fn(async () => [estoqueRow('A', T1)]);
-    const fetchKitParents = vi.fn(async () => [
-      { produtoId: 'KIT', componentesKitKeys: ['unrelated'] },
-    ]);
-    const map = await discoverStockCandidates(
-      dummyDb,
-      { depositoOuterRef: DEP, fromMs: FROM_MS },
-      { fetchChanged, fetchKitParents },
-    );
-    expect(map.has('KIT')).toBe(false);
+  it('no changed rows → empty map', async () => {
+    const fetchChanged = vi.fn(async () => []);
+    const map = await discoverStockCandidates(dummyDb, ARGS, { fetchChanged });
+    expect(map.size).toBe(0);
   });
 });
 
-describe('resolveSendUnits', () => {
-  function run(db: FakeDb, produtoId = 'PROD') {
-    return resolveSendUnits(asDb(db), { integracaoId: CONTA, produtoId });
+describe('fetchResolutionBundle — Q2 stage tree + assembly', () => {
+  it('builds the documented stage tree (documents → define anchorId → link + children)', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([]);
+
+    await fetchResolutionBundle(asDb(db), { integracaoId: CONTA, anchorRefsOrIds: ['PROD'] });
+
+    expect(db.pipelineExecutions).toHaveLength(1);
+    const stages = db.pipelineExecutions[0]!;
+    expect(stages[0]!.stage).toBe('documents');
+    const refs = stages[0]!.args[0] as Array<{ id: string }>;
+    expect(refs.map((r) => r.id)).toEqual(['PROD']);
+    expect(stages.slice(1)).toEqual(q2ExpectedTailStages());
+  });
+
+  it('documents() guards: empty anchor set → no pipeline; duplicate ids de-duped', async () => {
+    const db = new FakeDb();
+    expect(
+      await fetchResolutionBundle(asDb(db), { integracaoId: CONTA, anchorRefsOrIds: [] }),
+    ).toEqual(new Map());
+    expect(db.pipelineExecutions).toHaveLength(0);
+
+    db.queuePipelinePage([]);
+    await fetchResolutionBundle(asDb(db), {
+      integracaoId: CONTA,
+      anchorRefsOrIds: ['PROD', 'PROD'],
+    });
+    const refs = db.pipelineExecutions[0]![0]!.args[0] as Array<{ id: string }>;
+    expect(refs.map((r) => r.id)).toEqual(['PROD']);
+  });
+
+  it('assembles anchors: link map/null, children sorted by childId, missing docs omitted', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([
+      {
+        path: 'produtos/PROD',
+        data: {
+          publicado: true,
+          link: { id: 'MLB111', linkDocId: 'link1' },
+          children: [
+            {
+              childId: 'CH2',
+              varLinks: [{ itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
+            },
+            { childId: 'CH1', varLinks: [] },
+            { childId: '', varLinks: [] }, // junk rows dropped
+            'garbage',
+          ],
+        },
+      },
+      { path: 'produtos/OTHER', data: {} },
+    ]);
+
+    const bundle = await fetchResolutionBundle(asDb(db), {
+      integracaoId: CONTA,
+      anchorRefsOrIds: ['PROD', 'OTHER', 'GONE'],
+    });
+
+    expect([...bundle.keys()]).toEqual(['PROD', 'OTHER']);
+    const prod = bundle.get('PROD')!;
+    expect(prod.anchorId).toBe('PROD');
+    expect(prod.produto.publicado).toBe(true);
+    expect(prod.link).toEqual({ id: 'MLB111', linkDocId: 'link1' });
+    expect(prod.children).toEqual([
+      { childId: 'CH1', varLinks: [] },
+      {
+        childId: 'CH2',
+        varLinks: [{ itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
+      },
+    ]);
+    const other = bundle.get('OTHER')!;
+    expect(other.link).toBeNull(); // scalar subquery with 0 rows → null → no conta link
+    expect(other.children).toEqual([]);
+    expect(bundle.has('GONE')).toBe(false); // documents() silently omits missing docs
+  });
+});
+
+describe('resolveSendUnitsFromBundle — decision ladder', () => {
+  interface AnchorSpec {
+    anchorId?: string;
+    produto?: DocData;
+    link?: DocData | null;
+    children?: BundleChild[];
   }
 
-  it('old model happy path → ONE family item unit', async () => {
-    const db = new FakeDb();
-    seedAnchor(db);
-    seedLink(db);
-    expect(await run(db)).toEqual({
+  function makeAnchor(spec: AnchorSpec = {}): ResolutionAnchor {
+    const anchorId = spec.anchorId ?? 'PROD';
+    return {
+      anchorId,
+      produto: {
+        nome: `Produto ${anchorId}`,
+        paiId: null,
+        publicado: true,
+        ehKit: false,
+        ehKitVirtual: false,
+        integracoesComProduto: [CONTA],
+        ...spec.produto,
+      },
+      link:
+        spec.link === null
+          ? null
+          : {
+              id: 'MLB111',
+              estado: 'p',
+              status: 'active',
+              sub_status: null,
+              isUserProductModel: false,
+              linkDocId: 'link1',
+              ...spec.link,
+            },
+      children: spec.children ?? [],
+    };
+  }
+
+  function makeBundle(...anchors: ResolutionAnchor[]): ResolutionBundle {
+    return new Map(anchors.map((a) => [a.anchorId, a]));
+  }
+
+  function runBundle(bundle: ResolutionBundle, over: Partial<ResolveFromBundleArgs> = {}) {
+    return resolveSendUnitsFromBundle(bundle, {
+      integracaoId: CONTA,
+      produtoId: 'PROD',
+      anchorId: 'PROD',
+      anchorProduto: null,
+      ...over,
+    });
+  }
+
+  it('old model happy path → ONE family item unit', () => {
+    expect(runBundle(makeBundle(makeAnchor()))).toEqual({
       units: [{ kind: 'item', itemId: 'MLB111', produtoId: 'PROD', variacaoProdutoId: null }],
       skips: [],
     });
   });
 
-  it('old model with variation children STILL yields one family unit', async () => {
-    const db = new FakeDb();
-    seedAnchor(db);
-    seedLink(db);
-    db.seed('produtos', 'CH1', { nome: 'Child 1', paiId: 'PROD' });
-    db.seed('produtos', 'CH2', { nome: 'Child 2', paiId: 'PROD' });
-    const res = await run(db);
-    expect(res.units).toEqual([
+  it('old model with variation children STILL yields one family unit', () => {
+    const bundle = makeBundle(
+      makeAnchor({
+        children: [
+          {
+            childId: 'CH1',
+            varLinks: [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
+          },
+        ],
+      }),
+    );
+    expect(runBundle(bundle).units).toEqual([
       { kind: 'item', itemId: 'MLB111', produtoId: 'PROD', variacaoProdutoId: null },
     ]);
   });
 
-  it('paused + out_of_stock is enviável (ML auto-reactivates on qty > 0)', async () => {
-    const db = new FakeDb();
-    seedAnchor(db);
-    seedLink(db, 'PROD', { status: 'paused', sub_status: ['out_of_stock'] });
-    const res = await run(db);
+  it('paused + out_of_stock is enviável (ML auto-reactivates on qty > 0)', () => {
+    const res = runBundle(
+      makeBundle(makeAnchor({ link: { status: 'paused', sub_status: ['out_of_stock'] } })),
+    );
     expect(res.units).toHaveLength(1);
     expect(res.skips).toEqual([]);
   });
 
-  it('missing produto doc → sem-link (produto deleted mid-sweep)', async () => {
-    const db = new FakeDb();
-    expect(await run(db, 'GONE')).toEqual({
+  it('missing anchor entry → sem-link (produto deleted mid-sweep)', () => {
+    expect(runBundle(makeBundle(), { anchorId: 'GONE', produtoId: 'GONE' })).toEqual({
       units: [],
       skips: [{ produtoId: 'GONE', reason: 'sem-link' }],
     });
   });
 
-  it('no link doc at all → sem-link', async () => {
-    const db = new FakeDb();
-    seedAnchor(db);
-    expect((await run(db)).skips).toEqual([{ produtoId: 'PROD', reason: 'sem-link' }]);
+  it('no link for this conta → sem-link', () => {
+    expect(runBundle(makeBundle(makeAnchor({ link: null }))).skips).toEqual([
+      { produtoId: 'PROD', reason: 'sem-link' },
+    ]);
   });
 
-  it("another conta's link does not count → sem-link", async () => {
-    const db = new FakeDb();
-    seedAnchor(db);
-    seedLink(db, 'PROD', { contaOuterRef: 'documents/integracao/conta-OUTRA' });
-    expect((await run(db)).skips).toEqual([{ produtoId: 'PROD', reason: 'sem-link' }]);
+  it('link never published (id null) → sem-item-id', () => {
+    expect(runBundle(makeBundle(makeAnchor({ link: { id: null } }))).skips).toEqual([
+      { produtoId: 'PROD', reason: 'sem-item-id' },
+    ]);
   });
 
-  it('link never published (id null) → sem-item-id', async () => {
-    const db = new FakeDb();
-    seedAnchor(db);
-    seedLink(db, 'PROD', { id: null });
-    expect((await run(db)).skips).toEqual([{ produtoId: 'PROD', reason: 'sem-item-id' }]);
+  it("estado 'am' (mid-UP-migration, Flutter-driven) → aguardando-migracao", () => {
+    expect(runBundle(makeBundle(makeAnchor({ link: { estado: 'am' } }))).skips).toEqual([
+      { produtoId: 'PROD', reason: 'aguardando-migracao' },
+    ]);
   });
 
-  it("estado 'am' (mid-UP-migration, Flutter-driven) → aguardando-migracao", async () => {
-    const db = new FakeDb();
-    seedAnchor(db);
-    seedLink(db, 'PROD', { estado: 'am' });
-    expect((await run(db)).skips).toEqual([{ produtoId: 'PROD', reason: 'aguardando-migracao' }]);
-  });
-
-  it('non-enviável documented status → status-nao-enviavel, NO warn', async () => {
-    const db = new FakeDb();
-    seedAnchor(db);
-    seedLink(db, 'PROD', { status: 'paused', sub_status: ['paused_by_seller'] });
+  it('non-enviável documented status → status-nao-enviavel, NO warn', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockClear();
-    expect((await run(db)).skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
+    const res = runBundle(
+      makeBundle(makeAnchor({ link: { status: 'paused', sub_status: ['paused_by_seller'] } })),
+    );
+    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('undocumented status → status-nao-enviavel + loud warn (status tracking)', async () => {
-    const db = new FakeDb();
-    seedAnchor(db);
-    seedLink(db, 'PROD', { status: 'brand_new_status', sub_status: null });
+  it('undocumented status → status-nao-enviavel + loud warn (status tracking)', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockClear();
-    expect((await run(db)).skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
+    const res = runBundle(
+      makeBundle(makeAnchor({ link: { status: 'brand_new_status', sub_status: null } })),
+    );
+    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('status'),
       expect.objectContaining({ produtoId: 'PROD', itemId: 'MLB111', status: 'brand_new_status' }),
     );
   });
 
-  it('ehKitVirtual anchor → kit-virtual', async () => {
-    const db = new FakeDb();
-    seedAnchor(db, 'PROD', { ehKitVirtual: true });
-    seedLink(db);
-    expect((await run(db)).skips).toEqual([{ produtoId: 'PROD', reason: 'kit-virtual' }]);
+  it('ehKitVirtual anchor → kit-virtual', () => {
+    expect(runBundle(makeBundle(makeAnchor({ produto: { ehKitVirtual: true } }))).skips).toEqual([
+      { produtoId: 'PROD', reason: 'kit-virtual' },
+    ]);
   });
 
-  it('unpublished anchor → nao-publicado', async () => {
-    const db = new FakeDb();
-    seedAnchor(db, 'PROD', { publicado: false });
-    seedLink(db);
-    expect((await run(db)).skips).toEqual([{ produtoId: 'PROD', reason: 'nao-publicado' }]);
+  it('unpublished anchor → nao-publicado', () => {
+    expect(runBundle(makeBundle(makeAnchor({ produto: { publicado: false } }))).skips).toEqual([
+      { produtoId: 'PROD', reason: 'nao-publicado' },
+    ]);
   });
 
-  it('conta not in integracoesComProduto → conta-fora-do-produto', async () => {
-    const db = new FakeDb();
-    seedAnchor(db, 'PROD', { integracoesComProduto: ['outra-conta'] });
-    seedLink(db);
-    expect((await run(db)).skips).toEqual([{ produtoId: 'PROD', reason: 'conta-fora-do-produto' }]);
+  it('conta not in integracoesComProduto → conta-fora-do-produto', () => {
+    expect(
+      runBundle(makeBundle(makeAnchor({ produto: { integracoesComProduto: ['outra-conta'] } })))
+        .skips,
+    ).toEqual([{ produtoId: 'PROD', reason: 'conta-fora-do-produto' }]);
   });
 
-  it('skip reasons follow the documented evaluation order', async () => {
+  it('an explicit anchorProduto (Q1-joined) wins over the bundle row gate fields', () => {
+    // The bundle row says published; the Q1-joined produto the caller already
+    // holds says unpublished — the caller's copy must drive the gates.
+    const res = runBundle(makeBundle(makeAnchor()), {
+      anchorProduto: { publicado: false, ehKitVirtual: false, integracoesComProduto: [CONTA] },
+    });
+    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'nao-publicado' }]);
+  });
+
+  it('skip reasons follow the documented evaluation order', () => {
     // Link-level reasons before produto-level gates: estado 'am' wins over an
     // unknown status AND over kit-virtual/nao-publicado.
-    const db = new FakeDb();
-    seedAnchor(db, 'PROD', { ehKitVirtual: true, publicado: false });
-    seedLink(db, 'PROD', { estado: 'am', status: 'weird' });
-    expect((await run(db)).skips).toEqual([{ produtoId: 'PROD', reason: 'aguardando-migracao' }]);
+    expect(
+      runBundle(
+        makeBundle(
+          makeAnchor({
+            produto: { ehKitVirtual: true, publicado: false },
+            link: { estado: 'am', status: 'weird' },
+          }),
+        ),
+      ).skips,
+    ).toEqual([{ produtoId: 'PROD', reason: 'aguardando-migracao' }]);
 
     // status gate before the produto-level gates.
-    const db2 = new FakeDb();
-    seedAnchor(db2, 'PROD', { ehKitVirtual: true });
-    seedLink(db2, 'PROD', { status: 'paused', sub_status: [] });
-    expect((await run(db2)).skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
+    expect(
+      runBundle(
+        makeBundle(
+          makeAnchor({
+            produto: { ehKitVirtual: true },
+            link: { status: 'paused', sub_status: [] },
+          }),
+        ),
+      ).skips,
+    ).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
   });
 
-  it('UP model: one variationItem unit per child, ordered by nome', async () => {
-    const db = new FakeDb();
-    seedAnchor(db);
-    seedLink(db, 'PROD', { isUserProductModel: true });
-    // Insertion order is CH1 then CH2; nome order is CH2 ('Alpha') first.
-    db.seed('produtos', 'CH1', { nome: 'Beta', paiId: 'PROD' });
-    db.seed('produtos', 'CH2', { nome: 'Alpha', paiId: 'PROD' });
-    db.seed('produtos/CH1/variacaoMercadoLivre', 'v1', {
-      itemId: 'MLB-CH1',
-      produtoMercadoLivreOuterRef: PARENT_LINK_REF,
-    });
-    db.seed('produtos/CH2/variacaoMercadoLivre', 'v2', {
-      itemId: 'MLB-CH2',
-      produtoMercadoLivreOuterRef: PARENT_LINK_REF,
-    });
-    // A stale link pointing at ANOTHER parent link must be ignored.
-    db.seed('produtos/CH2/variacaoMercadoLivre', 'v-old', {
-      itemId: 'MLB-OLD',
-      produtoMercadoLivreOuterRef: 'documents/produtos/OTHER/produtoMercadoLivre/linkX',
-    });
-
-    const res = await run(db);
-    expect(res).toEqual({
+  it('UP model: one variationItem unit per child, in bundle (childId) order', () => {
+    const bundle = makeBundle(
+      makeAnchor({
+        link: { isUserProductModel: true },
+        children: [
+          {
+            childId: 'CH1',
+            varLinks: [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
+          },
+          {
+            childId: 'CH2',
+            varLinks: [
+              // A stale link pointing at ANOTHER parent link must be ignored.
+              {
+                itemId: 'MLB-OLD',
+                produtoMercadoLivreOuterRef: 'documents/produtos/OTHER/produtoMercadoLivre/linkX',
+              },
+              { itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(runBundle(bundle)).toEqual({
       units: [
-        { kind: 'variationItem', itemId: 'MLB-CH2', produtoId: 'PROD', variacaoProdutoId: 'CH2' },
         { kind: 'variationItem', itemId: 'MLB-CH1', produtoId: 'PROD', variacaoProdutoId: 'CH1' },
+        { kind: 'variationItem', itemId: 'MLB-CH2', produtoId: 'PROD', variacaoProdutoId: 'CH2' },
       ],
       skips: [],
     });
-    // The children query rides the (paiId, nome) index → orderBy nome present.
-    const childrenQuery = db.queryLog.find((q) =>
-      q.clauses.some((c) => c.field === 'paiId' && c.value === 'PROD'),
-    );
-    expect(childrenQuery?.orderBy).toEqual([['nome', 'asc']]);
   });
 
-  it('UP child without a variação link → per-child sem-link skip, siblings sent', async () => {
-    const db = new FakeDb();
-    seedAnchor(db);
-    seedLink(db, 'PROD', { isUserProductModel: true });
-    db.seed('produtos', 'CH1', { nome: 'A', paiId: 'PROD' });
-    db.seed('produtos', 'CH2', { nome: 'B', paiId: 'PROD' });
-    db.seed('produtos/CH1/variacaoMercadoLivre', 'v1', {
-      itemId: 'MLB-CH1',
-      produtoMercadoLivreOuterRef: PARENT_LINK_REF,
-    });
-
-    const res = await run(db);
+  it('UP child without a matching variação link → per-child sem-link, siblings sent', () => {
+    const bundle = makeBundle(
+      makeAnchor({
+        link: { isUserProductModel: true },
+        children: [
+          {
+            childId: 'CH1',
+            varLinks: [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
+          },
+          { childId: 'CH2', varLinks: [] },
+        ],
+      }),
+    );
+    const res = runBundle(bundle);
     expect(res.units).toEqual([
       { kind: 'variationItem', itemId: 'MLB-CH1', produtoId: 'PROD', variacaoProdutoId: 'CH1' },
     ]);
     expect(res.skips).toEqual([{ produtoId: 'CH2', reason: 'sem-link' }]);
   });
 
-  it('UP child link without itemId → per-child sem-item-id skip', async () => {
-    const db = new FakeDb();
-    seedAnchor(db);
-    seedLink(db, 'PROD', { isUserProductModel: true });
-    db.seed('produtos', 'CH1', { nome: 'A', paiId: 'PROD' });
-    db.seed('produtos/CH1/variacaoMercadoLivre', 'v1', {
-      itemId: null,
-      produtoMercadoLivreOuterRef: PARENT_LINK_REF,
-    });
-    expect((await run(db)).skips).toEqual([{ produtoId: 'CH1', reason: 'sem-item-id' }]);
+  it('UP child link without itemId → per-child sem-item-id skip', () => {
+    const bundle = makeBundle(
+      makeAnchor({
+        link: { isUserProductModel: true },
+        children: [
+          {
+            childId: 'CH1',
+            varLinks: [{ itemId: null, produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
+          },
+        ],
+      }),
+    );
+    expect(runBundle(bundle).skips).toEqual([{ produtoId: 'CH1', reason: 'sem-item-id' }]);
   });
 
-  it('childless UP family degenerates to a single item unit', async () => {
+  it('UP link without a linkDocId cannot match variação links → per-child sem-link', () => {
+    const bundle = makeBundle(
+      makeAnchor({
+        link: { isUserProductModel: true, linkDocId: null },
+        children: [
+          {
+            childId: 'CH1',
+            varLinks: [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
+          },
+        ],
+      }),
+    );
+    expect(runBundle(bundle).skips).toEqual([{ produtoId: 'CH1', reason: 'sem-link' }]);
+  });
+
+  it('childless UP family degenerates to a single item unit', () => {
+    expect(runBundle(makeBundle(makeAnchor({ link: { isUserProductModel: true } })))).toEqual({
+      units: [{ kind: 'item', itemId: 'MLB111', produtoId: 'PROD', variacaoProdutoId: null }],
+      skips: [],
+    });
+  });
+});
+
+describe('resolveSendUnits — single-family wrapper wiring', () => {
+  function seedProduto(db: FakeDb, id: string, extra: DocData = {}): void {
+    db.seed('produtos', id, {
+      nome: `Produto ${id}`,
+      paiId: null,
+      publicado: true,
+      ehKit: false,
+      ehKitVirtual: false,
+      integracoesComProduto: [CONTA],
+      ...extra,
+    });
+  }
+
+  function bundleRow(anchorId: string, extra: DocData = {}) {
+    return {
+      path: `produtos/${anchorId}`,
+      data: {
+        link: {
+          id: 'MLB111',
+          estado: 'p',
+          status: 'active',
+          sub_status: null,
+          isUserProductModel: false,
+          linkDocId: 'link1',
+        },
+        children: [],
+        ...extra,
+      },
+    };
+  }
+
+  function run(db: FakeDb, produtoId = 'PROD') {
+    return resolveSendUnits(asDb(db), { integracaoId: CONTA, produtoId });
+  }
+
+  it('anchor read → Q2 for that single anchor → the bundle ladder', async () => {
     const db = new FakeDb();
-    seedAnchor(db);
-    seedLink(db, 'PROD', { isUserProductModel: true });
+    seedProduto(db, 'PROD');
+    db.queuePipelinePage([bundleRow('PROD')]);
+
     expect(await run(db)).toEqual({
       units: [{ kind: 'item', itemId: 'MLB111', produtoId: 'PROD', variacaoProdutoId: null }],
       skips: [],
     });
+    expect(db.pipelineExecutions).toHaveLength(1);
+    const docsStage = db.pipelineExecutions[0]![0]!;
+    expect(docsStage.stage).toBe('documents');
+    expect((docsStage.args[0] as Array<{ id: string }>).map((r) => r.id)).toEqual(['PROD']);
   });
 
   it('a variation-child candidate anchors on its parent via paiId', async () => {
     const db = new FakeDb();
-    seedAnchor(db);
-    seedLink(db);
+    seedProduto(db, 'PROD');
     db.seed('produtos', 'CHILD', { nome: 'Child', paiId: 'PROD' });
+    db.queuePipelinePage([bundleRow('PROD')]);
+
     expect(await run(db, 'CHILD')).toEqual({
       units: [{ kind: 'item', itemId: 'MLB111', produtoId: 'PROD', variacaoProdutoId: null }],
       skips: [],
     });
+    const docsStage = db.pipelineExecutions[0]![0]!;
+    expect((docsStage.args[0] as Array<{ id: string }>).map((r) => r.id)).toEqual(['PROD']);
   });
 
-  it('paiId pointing at a missing parent → sem-link on the PARENT id', async () => {
+  it('missing produto doc → sem-link, no pipeline executed', async () => {
+    const db = new FakeDb();
+    expect(await run(db, 'GONE')).toEqual({
+      units: [],
+      skips: [{ produtoId: 'GONE', reason: 'sem-link' }],
+    });
+    expect(db.pipelineExecutions).toHaveLength(0);
+  });
+
+  it('paiId pointing at a missing parent → sem-link on the PARENT id, no pipeline', async () => {
     const db = new FakeDb();
     db.seed('produtos', 'CHILD', { nome: 'Child', paiId: 'GONE-PARENT' });
     expect((await run(db, 'CHILD')).skips).toEqual([
       { produtoId: 'GONE-PARENT', reason: 'sem-link' },
     ]);
+    expect(db.pipelineExecutions).toHaveLength(0);
+  });
+
+  it("the wrapper's own anchor read drives the gates (anchorProduto wins)", async () => {
+    const db = new FakeDb();
+    seedProduto(db, 'PROD', { publicado: false });
+    // The bundle row (the raw anchor doc, as Q2 would return it) claims
+    // published — the wrapper's classic read must win via anchorProduto.
+    db.queuePipelinePage([bundleRow('PROD', { publicado: true })]);
+    expect((await run(db)).skips).toEqual([{ produtoId: 'PROD', reason: 'nao-publicado' }]);
   });
 });
 
