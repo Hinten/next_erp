@@ -145,6 +145,62 @@ class FakeDb {
       },
     });
   }
+
+  // Semantic stand-in for estoquePlan's Q2 resolution pipeline: answers the
+  // `documents(anchors) + link/children subqueries` shape from the SAME seeded
+  // collections the tests already use, so the handler exercises the REAL
+  // resolveSendUnits without per-test bundle fixtures. Stage args are ignored
+  // — the Q2 stage tree itself is pinned by estoquePlan.test.ts.
+  pipeline(): unknown {
+    const self = this;
+    // Inert chainable expression stub for the subquery terminators.
+    const inertExpr: Record<string, unknown> = {};
+    for (const m of ['as', 'length', 'greaterThan', 'equal']) inertExpr[m] = () => inertExpr;
+    let anchorIds: string[] = [];
+    const chain = {
+      documents(refs: Array<{ id: string }>) {
+        anchorIds = refs.map((r) => r.id);
+        return chain;
+      },
+      define: () => chain,
+      addFields: () => chain,
+      // Inert absorbers for the NESTED subquery builder chains (their stage
+      // trees are pinned by estoquePlan.test.ts; here only execute() matters).
+      collection: () => chain,
+      collectionGroup: () => chain,
+      where: () => chain,
+      select: () => chain,
+      sort: () => chain,
+      limit: () => chain,
+      toArrayExpression: () => inertExpr,
+      toScalarExpression: () => inertExpr,
+      async execute() {
+        const results = anchorIds.flatMap((id) => {
+          const produto = self.docs('produtos').get(id);
+          if (!produto) return []; // documents() silently omits missing docs
+          const link =
+            [...self.docs(`produtos/${id}/produtoMercadoLivre`).entries()]
+              .map(([docId, raw]): DocData => ({ ...raw, linkDocId: docId }))
+              .find(
+                (l) =>
+                  l.contaOuterRef === `documents/integracao/${CONTA}` ||
+                  l.contaOuterRef === `integracao/${CONTA}`,
+              ) ?? null;
+          const children = [...self.docs('produtos').entries()]
+            .filter(([, d]) => d.paiId === id)
+            .map(([childId]) => ({
+              childId,
+              varLinks: [...self.docs(`produtos/${childId}/variacaoMercadoLivre`).values()],
+            }));
+          return [
+            { ref: { path: `produtos/${id}` }, data: () => ({ ...produto, link, children }) },
+          ];
+        });
+        return { results };
+      },
+    };
+    return chain;
+  }
 }
 
 function asDb(db: FakeDb): Firestore {
