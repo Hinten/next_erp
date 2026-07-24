@@ -138,10 +138,16 @@ function numericField(data: Record<string, unknown> | undefined, key: string): n
 /**
  * Admin-SDK Firestore and Cloud Tasks enqueue transport failures surface as
  * `Error`s carrying a numeric gRPC status `code` — the same discriminant
- * family `grpcErrors.ts` uses for ALREADY_EXISTS/NOT_FOUND.
+ * family `grpcErrors.ts` uses for ALREADY_EXISTS/NOT_FOUND. Narrowed to the
+ * actual gRPC status range (integers 1–16; 0 = OK never rides an error): a
+ * coding-bug `Error` that happens to expose some other numeric `code` must NOT
+ * be contained — it has to fail the tick loudly (the whole point of the
+ * containment boundary's rethrow arm).
  */
 function isGrpcCodedError(err: unknown): err is Error {
-  return err instanceof Error && typeof (err as { code?: unknown }).code === 'number';
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === 'number' && Number.isInteger(code) && code >= 1 && code <= 16;
 }
 
 /**

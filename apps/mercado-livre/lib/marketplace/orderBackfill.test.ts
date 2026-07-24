@@ -556,4 +556,37 @@ describe('runOrderBackfillSweep — per-conta failure isolation', () => {
     // Nothing recorded for the conta — the tick failed loudly.
     expect(db.docs(BACKFILL_PATH).has('INT-A')).toBe(false);
   });
+
+  it('a gRPC-coded transport error (integer code 1–16) is contained', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', 111);
+    const searchOrders = vi.fn(async (_params: SearchParams) => {
+      // gRPC 14 UNAVAILABLE — the Admin-SDK transport failure shape.
+      throw Object.assign(new Error('14 UNAVAILABLE: connection dropped'), { code: 14 });
+    });
+    wireApi(searchOrders);
+    const { scheduler } = makeScheduler();
+
+    const result = await run(db, scheduler);
+
+    expect(result.contas[0]!.error).toContain('UNAVAILABLE');
+    const doc = db.docs(BACKFILL_PATH).get('INT-A');
+    expect(doc?.cursorUs).toBeUndefined();
+    expect(doc?.lastSweepAtUs).toBe(NOW_US);
+  });
+
+  it('an Error with a numeric code OUTSIDE the gRPC status range (1–16) RETHROWS', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A', 111);
+    const searchOrders = vi.fn(async (_params: SearchParams) => {
+      // e.g. an HTTP-status-shaped code on a non-plugin error — a coding bug,
+      // NOT a gRPC transport failure; must not be swallowed by the containment.
+      throw Object.assign(new Error('unexpected: 404-coded non-plugin error'), { code: 404 });
+    });
+    wireApi(searchOrders);
+    const { scheduler } = makeScheduler();
+
+    await expect(run(db, scheduler)).rejects.toThrow('404-coded');
+    expect(db.docs(BACKFILL_PATH).has('INT-A')).toBe(false);
+  });
 });
