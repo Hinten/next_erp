@@ -254,6 +254,16 @@ export {
 } from './importacaoMercadoLivre';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // cursor doc for the flag-gated order-backfill sweep (#360, Step 9 PR 4).
+  // Bare schema+meta (perms 0n), not a DomainSchema — see the NOTE at the
+  // bottom of backfillPedidosMercadoLivre.ts.
+  backfillPedidosMercadoLivreSchema,
+  backfillPedidosMercadoLivreMeta,
+  type BackfillPedidosMercadoLivre,
+} from './backfillPedidosMercadoLivre';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log,
   // mirrors notificacaoMercadoPago above (#527). Bare schema+meta (perms 0n),
   // not a DomainSchema — see the NOTE at the bottom of notificacoesWhatsapp.ts.
