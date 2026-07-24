@@ -28,7 +28,13 @@ function cfg(
   };
 }
 
-const USER = { id: 123, nickname: 'SELLER', email: 'x@y.z', site_id: 'MLB' };
+const USER = {
+  id: 123,
+  nickname: 'SELLER',
+  email: 'x@y.z',
+  site_id: 'MLB',
+  tags: ['normal', 'user_info_verified'],
+};
 const ORDER = {
   id: 2000003508897196,
   status: 'paid',
@@ -53,6 +59,7 @@ describe('createMercadoLivreApi — happy paths', () => {
     const me = await api.getMe();
 
     expect(me.id).toBe(123);
+    expect(me.tags).toEqual(['normal', 'user_info_verified']);
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe('https://api.mercadolibre.com/users/me');
     expect((init!.headers as Record<string, string>).Authorization).toBe('Bearer live-token');

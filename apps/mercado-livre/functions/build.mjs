@@ -6,6 +6,8 @@ import { dirname, join } from 'node:path';
 // single self-contained ESM file, inlining the function region (Firebase reads
 // no env during codebase analysis). Externals:
 //   - firebase-admin / firebase-functions — provided by the runtime.
+//   - @google-cloud/firestore — the stock sweep imports pipeline builders from
+//     `@google-cloud/firestore/pipelines`; a direct runtime dep, never bundled.
 // Everything else (@delfrance/*) is inlined. Unlike the NF-e functions, there
 // are no on-disk data assets (ca/*.pem, XSD) to copy — so prepare-deploy.mjs is
 // just bundle + minimal package.json + node_modules junction.
@@ -23,7 +25,14 @@ export async function bundle(outfile) {
     format: 'esm',
     target: 'node20',
     outfile,
-    external: ['firebase-admin', 'firebase-admin/*', 'firebase-functions', 'firebase-functions/*'],
+    external: [
+      'firebase-admin',
+      'firebase-admin/*',
+      'firebase-functions',
+      'firebase-functions/*',
+      '@google-cloud/firestore',
+      '@google-cloud/firestore/*',
+    ],
     define: {
       'process.env.FUNCTIONS_REGION': JSON.stringify(region),
     },
