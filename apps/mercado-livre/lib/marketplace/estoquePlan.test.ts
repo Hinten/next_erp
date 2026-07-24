@@ -870,13 +870,14 @@ describe('resolveSendUnits', () => {
     return resolveSendUnits(asDb(db), { integracaoId: CONTA, produtoId });
   }
 
-  it('old model happy path → ONE family item unit', async () => {
+  it('old model happy path → ONE family item unit + the link identity', async () => {
     const db = new FakeDb();
     seedAnchor(db);
     seedLink(db);
     expect(await run(db)).toEqual({
       units: [{ kind: 'item', itemId: 'MLB111', produtoId: 'PROD', variacaoProdutoId: null }],
       skips: [],
+      link: { docId: 'link1', produtoId: 'PROD' },
     });
   });
 
@@ -906,7 +907,25 @@ describe('resolveSendUnits', () => {
     expect(await run(db, 'GONE')).toEqual({
       units: [],
       skips: [{ produtoId: 'GONE', reason: 'sem-link' }],
+      link: null,
     });
+  });
+
+  it('link identity for the writeback: null on early skips, populated once found', async () => {
+    // No link doc at all → null (early skip, nothing to write back onto).
+    const db = new FakeDb();
+    seedAnchor(db);
+    expect((await run(db)).link).toBeNull();
+    // Link found but skipped later (sem-item-id) → identity still returned.
+    const db2 = new FakeDb();
+    seedAnchor(db2);
+    seedLink(db2, 'PROD', { id: null });
+    expect((await run(db2)).link).toEqual({ docId: 'link1', produtoId: 'PROD' });
+    // Skipped by a produto-level gate → identity still returned.
+    const db3 = new FakeDb();
+    seedAnchor(db3, 'PROD', { publicado: false });
+    seedLink(db3);
+    expect((await run(db3)).link).toEqual({ docId: 'link1', produtoId: 'PROD' });
   });
 
   it('no link doc at all → sem-link', async () => {
@@ -1021,6 +1040,7 @@ describe('resolveSendUnits', () => {
         { kind: 'variationItem', itemId: 'MLB-CH1', produtoId: 'PROD', variacaoProdutoId: 'CH1' },
       ],
       skips: [],
+      link: { docId: 'link1', produtoId: 'PROD' },
     });
     // The children query rides the (paiId, nome) index → orderBy nome present.
     const childrenQuery = db.queryLog.find((q) =>
@@ -1066,6 +1086,7 @@ describe('resolveSendUnits', () => {
     expect(await run(db)).toEqual({
       units: [{ kind: 'item', itemId: 'MLB111', produtoId: 'PROD', variacaoProdutoId: null }],
       skips: [],
+      link: { docId: 'link1', produtoId: 'PROD' },
     });
   });
 
@@ -1077,6 +1098,7 @@ describe('resolveSendUnits', () => {
     expect(await run(db, 'CHILD')).toEqual({
       units: [{ kind: 'item', itemId: 'MLB111', produtoId: 'PROD', variacaoProdutoId: null }],
       skips: [],
+      link: { docId: 'link1', produtoId: 'PROD' },
     });
   });
 

@@ -264,6 +264,16 @@ export {
 } from './backfillPedidosMercadoLivre';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // state doc for the flag-gated ML stock-sync sweeps (Step 10). Bare
+  // schema+meta (perms 0n), not a DomainSchema — see the NOTE at the bottom
+  // of estoqueMercadoLivreSync.ts.
+  estoqueMercadoLivreSyncSchema,
+  estoqueMercadoLivreSyncMeta,
+  type EstoqueMercadoLivreSync,
+} from './estoqueMercadoLivreSync';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log,
   // mirrors notificacaoMercadoPago above (#527). Bare schema+meta (perms 0n),
   // not a DomainSchema — see the NOTE at the bottom of notificacoesWhatsapp.ts.

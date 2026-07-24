@@ -525,13 +525,30 @@ export interface ResolveSendUnitsArgs {
   produtoId: string;
 }
 
+/**
+ * The conta's `produtoMercadoLivre` link doc under the family anchor — the
+ * send handler's writeback target (PR B merges the ML response status onto it).
+ */
+export interface ResolvedLinkIdentity {
+  /** Link doc id under `produtos/{produtoId}/produtoMercadoLivre`. */
+  docId: string;
+  /** The family ANCHOR produto the link doc lives under. */
+  produtoId: string;
+}
+
 export interface ResolvedSendUnits {
   units: SendUnit[];
   skips: SendSkip[];
+  /** Null only on early skips, before the conta's link doc is found. */
+  link: ResolvedLinkIdentity | null;
 }
 
-function skipOnly(produtoId: string, reason: SendSkipReason): ResolvedSendUnits {
-  return { units: [], skips: [{ produtoId, reason }] };
+function skipOnly(
+  produtoId: string,
+  reason: SendSkipReason,
+  link: ResolvedLinkIdentity | null = null,
+): ResolvedSendUnits {
+  return { units: [], skips: [{ produtoId, reason }], link };
 }
 
 /**
@@ -555,6 +572,10 @@ function skipOnly(produtoId: string, reason: SendSkipReason): ResolvedSendUnits 
  * variation child (each variation is its own ML item — no family bulk exists);
  * a childless UP family degenerates to a single `'item'` unit. Children ride
  * the existing `produtos(paiId, nome)` index, hence the `orderBy('nome')`.
+ *
+ * Also returns the conta's link identity (`link`) — the send handler's
+ * writeback target — populated on EVERY return once the link doc is found
+ * (skips included); null only on the earlier skips.
  */
 export async function resolveSendUnits(
   db: Firestore,
@@ -588,10 +609,11 @@ export async function resolveSendUnits(
     break;
   }
   if (link == null || linkDocId == null) return skipOnly(anchorId, 'sem-link');
+  const linkIdentity: ResolvedLinkIdentity = { docId: linkDocId, produtoId: anchorId };
 
   const itemId = typeof link.id === 'string' && link.id !== '' ? link.id : null;
-  if (itemId == null) return skipOnly(anchorId, 'sem-item-id');
-  if (link.estado === 'am') return skipOnly(anchorId, 'aguardando-migracao');
+  if (itemId == null) return skipOnly(anchorId, 'sem-item-id', linkIdentity);
+  if (link.estado === 'am') return skipOnly(anchorId, 'aguardando-migracao', linkIdentity);
 
   // (c) Listing-status whitelist gate.
   const gate = podeEnviarEstoque(
@@ -608,21 +630,24 @@ export async function resolveSendUnits(
       status: link.status ?? null,
     });
   }
-  if (!gate.enviar) return skipOnly(anchorId, 'status-nao-enviavel');
+  if (!gate.enviar) return skipOnly(anchorId, 'status-nao-enviavel', linkIdentity);
 
   // (d) Produto-level gates (legacy publicado / conta / kit-virtual gates).
-  if (anchorRaw.ehKitVirtual === true) return skipOnly(anchorId, 'kit-virtual');
-  if (anchorRaw.publicado !== true) return skipOnly(anchorId, 'nao-publicado');
+  if (anchorRaw.ehKitVirtual === true) return skipOnly(anchorId, 'kit-virtual', linkIdentity);
+  if (anchorRaw.publicado !== true) return skipOnly(anchorId, 'nao-publicado', linkIdentity);
   const integracoes = Array.isArray(anchorRaw.integracoesComProduto)
     ? anchorRaw.integracoesComProduto
     : [];
-  if (!integracoes.includes(integracaoId)) return skipOnly(anchorId, 'conta-fora-do-produto');
+  if (!integracoes.includes(integracaoId)) {
+    return skipOnly(anchorId, 'conta-fora-do-produto', linkIdentity);
+  }
 
   // (e) Old model → ONE family unit.
   if (link.isUserProductModel !== true) {
     return {
       units: [{ kind: 'item', itemId, produtoId: anchorId, variacaoProdutoId: null }],
       skips: [],
+      link: linkIdentity,
     };
   }
 
@@ -636,6 +661,7 @@ export async function resolveSendUnits(
     return {
       units: [{ kind: 'item', itemId, produtoId: anchorId, variacaoProdutoId: null }],
       skips: [],
+      link: linkIdentity,
     };
   }
 
@@ -668,7 +694,7 @@ export async function resolveSendUnits(
       variacaoProdutoId: child.id,
     });
   }
-  return { units, skips };
+  return { units, skips, link: linkIdentity };
 }
 
 /* --------------------------- quantities from the db ------------------------ */

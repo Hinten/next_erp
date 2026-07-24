@@ -564,6 +564,29 @@ describe('createMercadoLivreApi — retries + errors', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('carries a numeric Retry-After header as retryAfterSec (null when absent or HTTP-date)', async () => {
+    const with429 = (headers: Record<string, string>) =>
+      vi.fn(
+        async (_u: string | URL | Request, _i?: RequestInit) =>
+          new Response(JSON.stringify({ error: 'local_rate_limited' }), {
+            status: 429,
+            headers: { 'content-type': 'application/json', ...headers },
+          }),
+      );
+    await expect(
+      createMercadoLivreApi(cfg(with429({ 'retry-after': '17' }))).getMe(),
+    ).rejects.toMatchObject({ constructor: MercadoLivreHttpError, status: 429, retryAfterSec: 17 });
+    await expect(createMercadoLivreApi(cfg(with429({}))).getMe()).rejects.toMatchObject({
+      status: 429,
+      retryAfterSec: null,
+    });
+    await expect(
+      createMercadoLivreApi(
+        cfg(with429({ 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' })),
+      ).getMe(),
+    ).rejects.toMatchObject({ status: 429, retryAfterSec: null });
+  });
+
   it('retries a network failure then succeeds', async () => {
     const fetchMock = vi.fn();
     fetchMock

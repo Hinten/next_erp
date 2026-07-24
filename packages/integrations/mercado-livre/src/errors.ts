@@ -20,6 +20,12 @@ export class MercadoLivreHttpError extends MercadoLivreError {
     readonly status: number,
     /** The parsed error body, when JSON; the raw text otherwise. */
     readonly body: unknown,
+    /**
+     * The response's `Retry-After` header in whole seconds, when present and
+     * numeric (429 rate limits) — null otherwise. Callers honour it when
+     * scheduling a pause instead of a fixed default.
+     */
+    readonly retryAfterSec: number | null = null,
   ) {
     super(message);
     this.name = 'MercadoLivreHttpError';
