@@ -127,6 +127,9 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
       jsonResponse({
         id: 1,
         status: 'approved',
+        marketplace: 'NONE',
+        external_reference: '2000003508419013',
+        order_id: 2000003508419013,
         transaction_amount: 100,
         coupon_amount: 0,
         marketplace_fee: 5,
@@ -149,6 +152,10 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     ]);
     expect(payment.refunds).toEqual([{ id: 1, amount: 10 }]);
     expect((payment.card as Record<string, unknown>).last_four_digits).toBe('1234');
+    // marketplace/external_reference/order_id are consumed by the payments-topic handler.
+    expect(payment.marketplace).toBe('NONE');
+    expect(payment.external_reference).toBe('2000003508419013');
+    expect(payment.order_id).toBe(2000003508419013);
     // `payer` isn't consumed by any mapper — still rides through untyped.
     expect((payment.payer as Record<string, unknown>).a_field_the_mapper_never_reads).toBe(true);
   });

@@ -80,6 +80,19 @@
  *   pedido that skips its own item merge (a fresher sibling order already won)
  *   also skips this order's payment upserts.
  *
+ *   ⚠️ Parity fix (approved deviation, NOT byte parity with the excerpt
+ *   above): legacy's own `pagamentosInstances[...].update(pagamento)` call on
+ *   the UPDATE branch is `Pagamento.update` (`models.odm.g.dart:11786-11813`)
+ *   — a field-level merge, not the full-object overwrite the pseudocode above
+ *   implies. This port matches that merge exactly via
+ *   `mergePagamentoUpdate` (`orderPaymentMapping.ts`, shared with the
+ *   `payments`-topic handler, `orderPaymentImport.ts` — Step 9 PR 3): the
+ *   CREATE branch still writes the mapped doc fresh, but the UPDATE branch
+ *   merges onto the stored doc instead of clobbering it, so a stored field the
+ *   mapper never touches (`metodoPagamentoOuterRef`, `cheque`, `juros`, `nFat`,
+ *   `vencimento`, `dataCancelamento`, …) survives an order-import-driven
+ *   payment refresh.
+ *
  * (d) Pack absorption (341-353), verbatim:
  *   ```dart
  *   if (uidPack != null) {
@@ -171,7 +184,7 @@ import {
 import { makePagamentoIdMercadoLivre, makePedidoIdMercadoLivre } from './orderIds';
 import { mlOrderToPedidoCoreFields } from './orderMapping';
 import { buildOrderMLWire } from './orderMLWire';
-import { mlPaymentToPagamento } from './orderPaymentMapping';
+import { mergePagamentoUpdate, mlPaymentToPagamento } from './orderPaymentMapping';
 
 export interface DiscoverPedidoArgs {
   db: Firestore;
@@ -211,6 +224,9 @@ interface PaymentReadBundle {
   payment: MlPayment;
   ref: FirebaseFirestore.DocumentReference;
   exists: boolean;
+  /** The stored doc's raw fields (default `{}` when absent) — the merge base
+   * for `mergePagamentoUpdate` on the UPDATE branch below. */
+  existingRaw: Record<string, unknown>;
   existingUltimaModificacao: number | null;
 }
 
@@ -308,6 +324,7 @@ export async function discoverPedidoMercadoLivre(
           payment,
           ref: pagRef,
           exists: pagSnap.exists,
+          existingRaw: pagRaw ?? {},
           existingUltimaModificacao: readNumberField(pagRaw, 'ultimaModificacao'),
         });
       }
@@ -376,7 +393,10 @@ export async function discoverPedidoMercadoLivre(
       pedidoTouched = true;
 
       // Embedded-payments upsert (c) — create when absent, overwrite only
-      // when the incoming payment is strictly newer than what's stored.
+      // when the incoming payment is strictly newer than what's stored. The
+      // UPDATE branch merges onto the stored doc via `mergePagamentoUpdate`
+      // (parity fix, see the module doc's ⚠️ note above) instead of
+      // overwriting it wholesale; CREATE still writes the mapped doc fresh.
       for (const p of bundle.payments) {
         const mapped = mlPaymentToPagamento({
           payment: p.payment,
@@ -388,7 +408,8 @@ export async function discoverPedidoMercadoLivre(
           p.existingUltimaModificacao == null ||
           p.existingUltimaModificacao < mapped.ultimaModificacao;
         if (shouldWrite) {
-          tx.set(p.ref, pagamentoCollection.parse(mapped));
+          const toWrite = p.exists ? mergePagamentoUpdate(p.existingRaw, mapped) : mapped;
+          tx.set(p.ref, pagamentoCollection.parse(toWrite));
         }
       }
     }
