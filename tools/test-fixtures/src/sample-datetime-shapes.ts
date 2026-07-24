@@ -43,23 +43,38 @@ export interface Options {
   serviceAccountPath?: string;
 }
 
-function parseOptions(argv: string[]): Options {
+export function parseOptions(argv: string[]): Options {
   let limit = 5;
   let parentScan = 0;
   let json = false;
   let serviceAccountPath: string | undefined;
+  // Only treat the following token as a flag's value when it isn't itself a
+  // flag, so `--limit --json` doesn't swallow `--json` (and silently fall back
+  // to the default limit). Mirrors the parsing in args.ts.
+  const valueFor = (index: number): string | undefined => {
+    const next = argv[index + 1];
+    return next !== undefined && !next.startsWith('-') ? next : undefined;
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    const next = argv[i + 1];
-    if (arg === '--limit' && next !== undefined) {
-      limit = Math.max(1, Number.parseInt(next, 10) || 5);
-      i += 1;
-    } else if (arg === '--parent-scan' && next !== undefined) {
-      parentScan = Math.max(1, Number.parseInt(next, 10) || 0);
-      i += 1;
-    } else if ((arg === '--service-account' || arg === '-s') && next !== undefined) {
-      serviceAccountPath = next;
-      i += 1;
+    if (arg === '--limit') {
+      const value = valueFor(i);
+      if (value !== undefined) {
+        limit = Math.max(1, Number.parseInt(value, 10) || 5);
+        i += 1;
+      }
+    } else if (arg === '--parent-scan') {
+      const value = valueFor(i);
+      if (value !== undefined) {
+        parentScan = Math.max(1, Number.parseInt(value, 10) || 0);
+        i += 1;
+      }
+    } else if (arg === '--service-account' || arg === '-s') {
+      const value = valueFor(i);
+      if (value !== undefined) {
+        serviceAccountPath = value;
+        i += 1;
+      }
     } else if (arg === '--json') {
       json = true;
     }

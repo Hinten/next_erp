@@ -9,7 +9,7 @@ import {
   datetimeFieldsForSchema,
   isIsoDateTimeString,
 } from './datetime-shapes';
-import { buildReport, renderMarkdown } from './sample-datetime-shapes';
+import { buildReport, parseOptions, renderMarkdown } from './sample-datetime-shapes';
 
 function schemaFor(path: string): z.ZodTypeAny {
   const domain = ALL_DOMAINS.find((d) => d.meta.collectionPath === path);
@@ -153,6 +153,24 @@ describe('buildReport / renderMarkdown (pagamentos)', () => {
     expect(md).toContain('`Cheque.bomPara`: found');
     expect(md).toContain('| `vencimento` | number (µs-int) |');
     expect(md).toContain('| `cheque.bomPara` | iso-string |');
+  });
+});
+
+describe('parseOptions', () => {
+  it('parses values and applies defaults', () => {
+    expect(parseOptions(['--limit', '10', '--json'])).toMatchObject({ limit: 10, json: true });
+    expect(parseOptions([])).toMatchObject({ limit: 5, parentScan: 25, json: false });
+    expect(parseOptions(['--service-account', '/tmp/sa.json'])).toMatchObject({
+      serviceAccountPath: '/tmp/sa.json',
+    });
+  });
+
+  it('does not swallow a following flag as a value', () => {
+    // `--limit --json`: the missing value must not consume `--json`, and limit
+    // stays at its default rather than silently parsing `--json` as a number.
+    const opts = parseOptions(['--limit', '--json']);
+    expect(opts.json).toBe(true);
+    expect(opts.limit).toBe(5);
   });
 });
 
