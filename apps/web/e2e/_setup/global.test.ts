@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FullConfig } from '@playwright/test';
 import globalSetup from './global';
 
-// #31: the SU globalSetup used to skip silently (return with no storageState)
-// when E2E_SU_EMAIL/E2E_SU_PASSWORD were missing, letting `configuracoes.spec.ts`
-// self-skip downstream with no loud signal. It must now throw — this check
-// runs before any browser/network call, so no real Firebase project is needed.
-describe('_setup/global — SU auth env is mandatory', () => {
+// #31: this shared globalSetup step stays best-effort on purpose. Playwright
+// runs it once regardless of `--project` filtering, and only the
+// `configuracoes` project touches the SU session — smoke/crud-*/emulator
+// never do, and none of them should need SU credentials configured. The
+// mandatory check lives in `configuracoes.spec.ts` (`requireSuAuthEnv()`)
+// instead — see `_helpers/auth.test.ts`.
+describe('_setup/global — SU login is best-effort', () => {
   let savedEmail: string | undefined;
   let savedPassword: string | undefined;
 
@@ -24,12 +26,7 @@ describe('_setup/global — SU auth env is mandatory', () => {
     else process.env.E2E_SU_PASSWORD = savedPassword;
   });
 
-  it('throws when E2E_SU_EMAIL and E2E_SU_PASSWORD are both missing', async () => {
-    await expect(globalSetup({} as FullConfig)).rejects.toThrow(/E2E_SU_EMAIL\/E2E_SU_PASSWORD/);
-  });
-
-  it('throws when only E2E_SU_PASSWORD is missing', async () => {
-    process.env.E2E_SU_EMAIL = 'su@example.com';
-    await expect(globalSetup({} as FullConfig)).rejects.toThrow(/E2E_SU_EMAIL\/E2E_SU_PASSWORD/);
+  it('resolves without logging in when E2E_SU_EMAIL/E2E_SU_PASSWORD are missing', async () => {
+    await expect(globalSetup({ projects: [] } as unknown as FullConfig)).resolves.toBeUndefined();
   });
 });

@@ -12,17 +12,18 @@ export const STORAGE_STATE_PATH = 'e2e/.auth/su.json';
  * to a file. Tests that need an authenticated context declare
  * `test.use({ storageState })` to skip the login flow per-test.
  *
- * Throws when E2E_SU_EMAIL/E2E_SU_PASSWORD are not set — auth is mandatory for
- * every e2e run, so a missing secret is a misconfiguration to fail loud on,
- * not a reason to silently skip the SU login and let `configuracoes.spec.ts`
- * self-skip downstream.
+ * Skipped when E2E_SU_EMAIL/E2E_SU_PASSWORD are not set. Playwright runs
+ * `globalSetup` once regardless of `--project` filtering, and only ONE
+ * project (`configuracoes`) actually uses the SU session — throwing here
+ * would break every other project (smoke, crud-*, emulator) that never
+ * touches it, none of which should need SU credentials at all. #31 made
+ * auth mandatory where it's actually required: `configuracoes.spec.ts` now
+ * fails loud (`requireSuAuthEnv()`) instead of self-skipping when these are
+ * missing — this shared setup step stays best-effort on purpose.
  */
 async function globalSetup(config: FullConfig): Promise<void> {
   if (!process.env.E2E_SU_EMAIL || !process.env.E2E_SU_PASSWORD) {
-    throw new Error(
-      '[_setup/global] missing required env: E2E_SU_EMAIL/E2E_SU_PASSWORD. Auth ' +
-        'setup is mandatory for every e2e run — configure these as repo secrets.',
-    );
+    return;
   }
   mkdirSync(dirname(STORAGE_STATE_PATH), { recursive: true });
   const baseURL = config.projects[0]?.use?.baseURL;

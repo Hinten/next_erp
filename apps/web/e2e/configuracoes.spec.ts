@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { PERM } from '@delfrance/auth';
-import { E2E_SU_EMAIL, E2E_SU_PASSWORD } from './_helpers/auth';
+import { requireSuAuthEnv } from './_helpers/auth';
 import {
   deleteAuthUserByEmail,
   deleteCargoById,
@@ -24,12 +24,16 @@ import { getRunId } from './_helpers/run-id';
  *
  * Tests run serially (`describe.serial`): later steps consume entities created
  * in earlier steps. `afterAll` cleans up every doc/user it touched.
+ *
+ * #31: E2E_SU_EMAIL/E2E_SU_PASSWORD missing is a hard failure here
+ * (`requireSuAuthEnv()`), not a silent skip — this is the one suite that
+ * actually needs the SU session, so a misconfigured secret should fail loud.
  */
 
-const authConfigured = Boolean(E2E_SU_EMAIL && E2E_SU_PASSWORD);
-
 test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
-  test.skip(!authConfigured, 'E2E_SU_EMAIL/E2E_SU_PASSWORD not configured.');
+  test.beforeAll(() => {
+    requireSuAuthEnv();
+  });
   test.use({ storageState: 'e2e/.auth/su.json' });
 
   const runId = getRunId();
