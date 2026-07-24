@@ -474,8 +474,8 @@ export function assembleVariationChildPlan(args: VariationChildAssembleArgs): Va
         // WHOLE precos map (legacy `produtos.dart:284-290`), gated the same as the
         // parent's own create-time price write.
         precos: options.importarPreco ? parent.precos : null,
-        grupoDeVariacoesUid: (grupoUids?.length ?? 0) > 0 ? grupoUids : null,
-        variacoesUid: (varianteFakes?.length ?? 0) > 0 ? varianteFakes : null,
+        grupoDeVariacoesUid: grupoUids,
+        variacoesUid: varianteFakes,
         // Legacy `completarDadosProdutoPai`/`getData` gate — dims/categoria only
         // copy onto the child when the option is on (sku/publicado/taxonomy above
         // are NOT gated by it, they always fill).
