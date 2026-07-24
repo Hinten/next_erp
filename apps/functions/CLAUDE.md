@@ -128,6 +128,14 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   first-touch create still initializes `ultimaModificacao: now` like every other
   create path). ⚠️ On the app's critical path: the staging estoque tab + the estoque
   Playwright e2e only work once this is DEPLOYED (deploy is manual — root rule #1).
+- **`reconciliarPagamentoPedido`** (`onCall`) — server-owned pedido `estado`
+  reconcile for the web client (#308). The client SDK can't read a query inside
+  `runTransaction`, so summing a pedido's pagamentos client-side before the tx
+  let two concurrent reconciles (different tabs/sessions) settle on a stale
+  estado. Delegates to the Admin-SDK `reconcilePedidoEstado`
+  (`@delfrance/data/admin`), which reads the pedido AND every pagamento in ONE
+  transaction. Same auth model as `aplicarEstoque`: `PERM.pedido.write` (or
+  `su`), Zod-validated `{ pedidoId }`.
 - ⚠️ All three target the NAMED `default` database (gotcha #8). `@delfrance/auth`
   is a new build-time dep (esbuild-bundled, like data/schemas) for `hasPerm`/`PERM`.
 

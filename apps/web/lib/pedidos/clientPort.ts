@@ -6,10 +6,12 @@ import {
   type DocumentReference,
   type Firestore,
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import { nowMicros } from '@delfrance/core/datetime';
 import { buildQuery, limit, whereEqual } from '@delfrance/data';
 import type { PedidoDevolucaoDataPort, PedidoDocData, PedidoWriteOp } from '@delfrance/data/pedido';
-import { ESTADO_NFE, TIPO_NFE } from '@delfrance/schemas';
+import { ESTADO_NFE, TIPO_NFE, type EstadoPedido } from '@delfrance/schemas';
+import { getFirebaseFunctions } from '@/lib/firebase/client';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { counterCollection } from '@/lib/data/counterCollection';
 import { historicoEstadoCollection } from '@/lib/data/historicoEstadoCollection';
@@ -54,6 +56,25 @@ function refForPath(db: Firestore, path: string): DocumentReference {
     }
   }
   throw new Error(`clientPedidoPort: unmapped write path "${path}"`);
+}
+
+/**
+ * Invoke the server-owned `reconciliarPagamentoPedido` callable
+ * (`apps/functions`). It reads the pedido AND every pagamento in ONE
+ * Admin-SDK transaction, so the estado auto-transition settles on a
+ * consistent snapshot — the client SDK can't query inside a transaction, so
+ * the former client-side reconcile could race across concurrent tabs/sessions
+ * (#308). Failures arrive as a `FirebaseError` (FunctionsError) the caller
+ * narrows on, mirroring `lib/produtos/clientPort.ts`'s `callAplicarEstoque`.
+ */
+export function callReconciliarPagamentoPedido(
+  pedidoId: string,
+): Promise<{ transition: EstadoPedido | null }> {
+  const fn = httpsCallable<{ pedidoId: string }, { transition: EstadoPedido | null }>(
+    getFirebaseFunctions(),
+    'reconciliarPagamentoPedido',
+  );
+  return fn({ pedidoId }).then((res) => res.data);
 }
 
 /**
