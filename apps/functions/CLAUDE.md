@@ -62,27 +62,34 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   eager mark missed): product media (`produtos/<id>/originals|videos|anexos`) past
   the grace window that **no produto references** → delete (then `onArquivoDeleted` frees
   the object + cascades any derivatives) — a produto deleted entirely (until #136), a console
-  edit, or a dropped trigger delivery. Candidates come from a **regex pipeline**
-  (`fetchUnreferencedCandidates`: `regexContains('filepath', …) AND criadoEm<cutoff`,
-  sorted, on the `arquivos(criadoEm)` index) so non-product docs are never loaded;
-  the reference check is an **owner-document lookup**, NOT a collection scan: a
-  product arquivo encodes its owner `produtoId` in its storage path, so
-  `resolveReferencedArquivoRefs` reads ONLY the produtos owning the candidate batch
-  (one batched `getAll`, field-masked to `fotos`/`videos`/`anexos`) —
-  O(distinct produtos), never O(all produtos). ⚠️ The pipeline (admin v14 /
-  `@google-cloud/firestore` v8 `@google-cloud/firestore/pipelines`) does **not** run
-  in the emulator, so the candidate fetch and the owner lookup are **seams**
-  (`fetchCandidates` / `resolveReferenced`) the emulator suite overrides; the
-  pipeline is live-validated. Grace is `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests);
-  `criadoEm` is microseconds-since-epoch (schema default `nowMicros()`).
+  edit, or a dropped trigger delivery. **Round-robin paging (#234)**: candidates come
+  from `fetchArquivoPage`, a **classic** `orderBy(FieldPath.documentId())` query
+  (Firestore's always-available native ordering, no declared index) paginated with
+  `startAfter(lastKey)` — no pipeline, no server-side age/ownership filter. The
+  grace-window (`criadoEm<cutoff`) and owner-media (`parseOwnedMediaDir`) scoping
+  happen on the fetched page, in code. The last key reached is persisted to
+  `arquivoOrphanSweepState/cursor` (admin-only, not in `ALL_DOMAINS`); the next tick's
+  page starts right after it, and a page shorter than `BATCH_LIMIT` (end of the
+  collection in key order) wraps the cursor back to `null`. This guarantees every
+  arquivo is examined within `ceil(total / BATCH_LIMIT)` ticks regardless of orphan
+  density — fixing the old oldest-`criadoEm`-first scan's liveness gap (a large head
+  of long-lived referenced photos could starve newer orphans out of the window
+  forever). The reference check is still an **owner-document lookup**, NOT a
+  collection scan: a product arquivo encodes its owner `produtoId` in its storage
+  path, so `resolveReferencedArquivoRefs` reads ONLY the produtos owning the candidate
+  batch (one batched `getAll`, field-masked to `fotos`/`videos`/`anexos`) —
+  O(distinct produtos), never O(all produtos). Both the page fetch and the owner
+  lookup are **seams** (`fetchPage` / `resolveReferenced`) the emulator suite can
+  override, though neither needs a pipeline anymore — the default page fetch runs in
+  the emulator too. Grace is `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests); `criadoEm` is
+  microseconds-since-epoch (schema default `nowMicros()`).
   ⚠️ **Index requirement**: this Enterprise edition creates NO index automatically
-  — the three sweep indexes (`arquivos(uploadState, criadoEm)`, `arquivos(criadoEm)`
-  + `arquivos(markedForDeletionAt)`) are declared in `firestore.indexes.json` and must
+  — the two remaining sweep indexes (`arquivos(uploadState, criadoEm)` +
+  `arquivos(markedForDeletionAt)`) are declared in `firestore.indexes.json` and must
   be deployed (`firebase deploy --only firestore:indexes`); verify usage live with
-  `scripts/check-sweep-indexes.mjs` (`explain({ analyze: true })`).
-  ⚠️ **Coverage caveat**: the candidate scan still re-reads the OLDEST docs, so a
-  large head of long-lived referenced photos can starve newer orphans — a persisted
-  round-robin cursor is the planned fix (issue #234).
+  `scripts/check-sweep-indexes.mjs` (`explain({ analyze: true })`). The unreferenced
+  sweep's own scan needs no index (document-key ordering is native), so it is
+  deliberately NOT covered by that script.
 
 - **`onProdutoDeleted`** (`onDocumentDeleted('produtos/{produtoId}')`) — the
   authoritative produto delete cascade (#226/#136/#199), core
