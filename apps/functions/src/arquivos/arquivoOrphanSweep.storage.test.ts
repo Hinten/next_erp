@@ -289,6 +289,55 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     await cursorRef.delete();
   });
 
+  it('real page fetch resumes after a persisted cursor: skips docs at/before it, reaps docs after it (#234)', async () => {
+    const db = getDb();
+    const bucket = getBucket();
+    const cursorRef = db
+      .collection('arquivoOrphanSweepState')
+      .doc(ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID);
+    await cursorRef.delete();
+
+    const ownerId = `p${randomUUID().replace(/-/g, '')}`; // owner produto never created → every seeded arquivo is an orphan
+    const past = nowMicros() - 10 * DAY_MICROS;
+    const seed = async (docId: string) => {
+      const oPath = productOriginalPath(ownerId, randomUUID().replace(/-/g, ''), 'png');
+      const slash = oPath.lastIndexOf('/');
+      await db
+        .collection('arquivos')
+        .doc(docId)
+        .set({
+          filetype: 'image',
+          filepath: oPath.slice(0, slash),
+          filename: oPath.slice(slash + 1),
+          contentType: 'image/png',
+          url: null,
+          externalIds: [],
+          uploadState: 'finalized',
+          criadoEm: past,
+        });
+    };
+    // Explicit, orderable doc ids (independent of the usual `<ownerId>_<hash>`
+    // convention — the sweep only cares about `filepath`, not the id shape) so
+    // the key ordering the cursor relies on is deterministic in this test.
+    const beforeId = `aaa-cursor-test-${randomUUID().replace(/-/g, '')}`;
+    const afterId = `zzz-cursor-test-${randomUUID().replace(/-/g, '')}`;
+    await seed(beforeId);
+    await seed(afterId);
+
+    // Pretend a previous tick already scanned through `beforeId` — the real
+    // fetch's `startAfter(lastKey)` must exclude it (and anything before it),
+    // not just the seam-based mechanics tested above.
+    await cursorRef.set({ lastKey: beforeId, updatedAt: past });
+
+    await sweepUnreferencedArquivos(db, bucket); // real fetch + real resolve, no seams
+
+    expect((await db.collection('arquivos').doc(beforeId).get()).exists).toBe(true); // before the cursor → never scanned
+    expect((await db.collection('arquivos').doc(afterId).get()).exists).toBe(false); // after the cursor → scanned, orphaned → deleted
+
+    await db.collection('arquivos').doc(beforeId).delete(); // cleanup — the sweep correctly never touches it
+    await cursorRef.delete();
+  });
+
   it('resolveReferencedArquivoRefs reads only the named produtos and skips missing ones', async () => {
     const db = getDb();
     const produtoId = `p${randomUUID().replace(/-/g, '')}`;
