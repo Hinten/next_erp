@@ -1,18 +1,10 @@
 # apps/integrations — CLAUDE.md
 
-API-only Next.js app. Receives webhooks and OAuth callbacks from external systems. Deploys to Firebase App Hosting.
+**Shared webhook/OAuth scaffolding only** — not a home for channel-specific routes.
 
-> **Melhor Envio freight lives in its own app** — `apps/melhor-envio`
-> (`@delfrance/melhor-envio-app`, `:3005`), split out for isolated logs/deploy.
-> Don't add freight routes here.
+This app provides the **authentication/verification layers** that every webhook/OAuth flow needs: `withSignature` HOF for HMAC-verified webhooks, `verifyCaller` for Cloud Function admittance. It also hosts the health-check endpoint and the admin user-management callable endpoints that `apps/web` consumes (user creation, custom-claims refresh).
 
-## Rules specific to this app
-
-1. **No UI code**. No React components beyond the placeholder root page. Add nothing under `app/(app)/` or any client routes.
-2. **Route handlers stay thin**. Validate signature, parse payload, optionally write a marker doc to Firestore, then **dispatch heavy work to a Cloud Function** via `lib/queue/dispatch.ts`. Respond fast (200 within ~1s).
-3. **No Firebase Auth user sessions here**. Auth is per-channel: HMAC signature, OAuth state token, or Firebase ID token verified via Admin SDK for callable-style endpoints.
-4. **All secrets in Cloud Secret Manager** (Firebase App Hosting wires them in). Never commit secrets to apphosting.yaml.
-5. **Idempotency is mandatory**. Most marketplaces retry. Use a dedup key (event ID) when calling `dispatch`.
+**Every marketplace/channel has its own app** — see root `CLAUDE.md` rule on channel-specific routes. A new receiver does NOT go in `apps/integrations`; it goes in its own `apps/<channel>` backend. Refer to `.claude/skills/webhook-notifications/SKILL.md` for the full pattern (pipeline, disposition matrix, receiver wiring, sweep).
 
 ## Structure
 
@@ -22,16 +14,24 @@ app/
   page.tsx                Placeholder landing
   api/
     health/route.ts       GET — uptime check
+    admin/
+      users/route.ts      POST — admin user creation (requires PERM.su or bearer token)
+      users/[uid]/
+        claims/route.ts   POST — recompute custom claims for a uid
     webhooks/
-      _test/route.ts      POST with HMAC verification — wiring smoke test
-      <channel>/...       Phase 5: ML, Shopee, Amazon, Magalu, Loja Integrada, FB, WhatsApp, MP
+      <channel>/...       DEPRECATED — moved to apps/<channel>. Do not add routes here.
     oauth/
-      <channel>/callback/route.ts   Phase 5: OAuth code-for-token exchange
+      <channel>/...       DEPRECATED — moved to apps/<channel>. Do not add routes here.
 lib/
   firebase/admin.ts       Singletons via firebase-admin SDK
-  signatures/hmac.ts      Constant-time HMAC verify
-  queue/dispatch.ts       Stub now → Pub/Sub or Cloud Function HTTP in Phase 5
+  signatures/
+    hmac.ts               Constant-time HMAC verify
+    withSignature.ts      HOF that wraps a handler: verify HMAC, parse JSON, call handler
+  auth/
+    verifyCaller.ts       Admin SDK token + auth verification for Cloud Function callables
 ```
+
+> **Melhor Envio freight lives in its own app** — `apps/melhor-envio` (`:3005`), split out for isolated logs/deploy. Its webhook receiver, OAuth flow, and Cloud Functions codebase all live there.
 
 ## Dev
 
@@ -41,8 +41,8 @@ pnpm dev                                        # run all apps from the repo roo
 curl http://localhost:3001/api/health
 ```
 
-This app deploys on :3001 and is required by `apps/web` for admin endpoints (user creation, claims refresh). Prefer `pnpm dev` at the root so web + integrations come up together. `pnpm --filter @delfrance/integrations-app dev` works for isolated webhook/OAuth work where the web app isn't needed.
+Deploys to Firebase App Hosting on :3001. Required by `apps/web` for admin endpoints. Prefer `pnpm dev` at the root. For isolated webhook/OAuth testing (on a channel app), use `pnpm --filter @delfrance/<channel>-app dev` on that app instead.
 
-## Deploy
+## Rewrite note (2026-07-24)
 
-Firebase App Hosting. Site: configured per-deployment (e.g. `api-<your-org>`). Config: `apphosting.yaml` here.
+Dead scaffolding removed: `lib/queue/dispatch.ts` (stub, never integrated), `app/api/webhooks/_test/` (smoke test replaced by `lib/signatures/withSignature.test.ts`), and stale OAuth/webhook docs. The app now documents what it **is** — shared verifiers — rather than what it was planned to be.
