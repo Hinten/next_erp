@@ -3,8 +3,8 @@ import type { MarketplaceChannel } from '@delfrance/core/plugins';
 /**
  * Facebook (Marketplace + Messenger) plugin scaffold. Phase 5 wraps
  * the Graph API + Messenger Platform; webhook receiver (when implemented)
- * will live in `apps/facebook/app/api/webhooks/facebook/route.ts` and use
- * the shared `withSignature` verification helper from `apps/integrations`.
+ * will follow the pattern: `apps/<channel>/app/api/webhooks/<channel>/route.ts`
+ * and use the shared `withSignature` verification helper from `apps/integrations`.
  */
 export interface FacebookConfig {
   appId: string;

@@ -4,7 +4,7 @@
 
 This app provides the **authentication/verification layers** that every webhook/OAuth flow needs: `withSignature` HOF for HMAC-verified webhooks, `verifyCaller` for Cloud Function admittance. It also hosts the health-check endpoint and the admin user-management callable endpoints that `apps/web` consumes (user creation, custom-claims refresh).
 
-**Every marketplace/channel has its own app** — see root `CLAUDE.md` rule on channel-specific routes. A new receiver does NOT go in `apps/integrations`; it goes in its own `apps/<channel>` backend. Refer to `.claude/skills/webhook-notifications/SKILL.md` for the full pattern (pipeline, disposition matrix, receiver wiring, sweep).
+**Every marketplace/channel has its own app** — see root `CLAUDE.md` rule on channel-specific routes. A new receiver does NOT go in `apps/integrations`; it goes in its own `apps/<channel>` backend with its own Cloud Functions codebase and deployment manifest.
 
 ## Structure
 
