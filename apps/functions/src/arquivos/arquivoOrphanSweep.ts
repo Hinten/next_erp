@@ -9,6 +9,7 @@ import {
   produtoCollection,
   tabelaDeMedidasCollection,
 } from '@delfrance/data/admin/collections';
+import { coerceToMicros } from '@delfrance/core/datetime';
 import {
   ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID,
   ARQUIVOS_COLLECTION,
@@ -199,6 +200,13 @@ type ResolveReferenced = (
  * media or the grace window: {@link sweepUnreferencedArquivos} applies both
  * filters to the fetched page, in code, the same way it already re-verifies
  * owner references. No pipeline involved, so this runs in the emulator too.
+ *
+ * `criadoEm` is read raw (no `arquivoCollection.parseRead`, which would
+ * validate the WHOLE doc for a field the sweep only needs to compare) but
+ * still runs through the schema's own tolerant `coerceToMicros` — the same
+ * coercion `microsSinceEpoch()` applies on a normal read — so a legacy ms
+ * number / ISO string / `Date` still resolves to a real µs value instead of
+ * being permanently treated as "unknown age, never sweep".
  */
 async function fetchArquivoPage(db: Firestore, lastKey: string | null): Promise<ArquivoPageRow[]> {
   let query = arquivoCollection.ref(db, {}).orderBy(FieldPath.documentId()).limit(BATCH_LIMIT);
@@ -207,12 +215,11 @@ async function fetchArquivoPage(db: Firestore, lastKey: string | null): Promise<
   return snap.docs.map((doc) => {
     const data = doc.data();
     const filepath = data.filepath as string | null | undefined;
-    const criadoEm = data.criadoEm as number | null | undefined;
     return {
       ref: doc.ref,
       id: doc.id,
       filepath: typeof filepath === 'string' ? filepath : null,
-      criadoEm: typeof criadoEm === 'number' ? criadoEm : null,
+      criadoEm: coerceToMicros(data.criadoEm),
     };
   });
 }

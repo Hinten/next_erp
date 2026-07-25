@@ -338,6 +338,44 @@ describe.skipIf(!EMULATED)('arquivo orphan sweeps (emulator)', () => {
     await cursorRef.delete();
   });
 
+  it('real page fetch coerces a legacy non-numeric criadoEm so old docs are still swept (#234)', async () => {
+    const db = getDb();
+    const bucket = getBucket();
+    const cursorRef = db
+      .collection('arquivoOrphanSweepState')
+      .doc(ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID);
+    await cursorRef.delete();
+
+    const ownerId = `p${randomUUID().replace(/-/g, '')}`; // owner produto never created → orphan
+    const hash = randomUUID().replace(/-/g, '');
+    const oPath = productOriginalPath(ownerId, hash, 'png');
+    const slash = oPath.lastIndexOf('/');
+    const id = productArquivoId(ownerId, hash);
+    // Legacy shape: an ISO string instead of the schema's µs-int wire format —
+    // `microsSinceEpoch()` tolerates this on a normal read via `coerceToMicros`;
+    // the sweep's raw-field fetch must too, or such a doc is skipped forever.
+    const pastIso = new Date(Number(nowMicros() - 10 * DAY_MICROS) / 1000).toISOString();
+    await db
+      .collection('arquivos')
+      .doc(id)
+      .set({
+        filetype: 'image',
+        filepath: oPath.slice(0, slash),
+        filename: oPath.slice(slash + 1),
+        contentType: 'image/png',
+        url: null,
+        externalIds: [],
+        uploadState: 'finalized',
+        criadoEm: pastIso,
+      });
+
+    await sweepUnreferencedArquivos(db, bucket); // real fetch, no seams
+
+    expect((await db.collection('arquivos').doc(id).get()).exists).toBe(false);
+
+    await cursorRef.delete();
+  });
+
   it('resolveReferencedArquivoRefs reads only the named produtos and skips missing ones', async () => {
     const db = getDb();
     const produtoId = `p${randomUUID().replace(/-/g, '')}`;
