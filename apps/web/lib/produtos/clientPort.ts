@@ -17,7 +17,11 @@ import {
   type ProdutoWriteOp,
 } from '@delfrance/data/produto';
 import type { TransactionWrite } from '@delfrance/ui';
-import { type ImpostoProduto, type ProdutoExtraData } from '@delfrance/schemas';
+import {
+  type ComponentesKit,
+  type ImpostoProduto,
+  type ProdutoExtraData,
+} from '@delfrance/schemas';
 import { getFirebaseFunctions } from '@/lib/firebase/client';
 import { produtoCollection } from '@/lib/data/produtoCollection';
 import { produtoExtraDataCollection } from '@/lib/data/produtoExtraDataCollection';
@@ -64,6 +68,25 @@ function refForPath(db: Firestore, path: string): DocumentReference {
 }
 
 /**
+ * Derive `itensNoKit` from the kit composition when it's left blank. Calculates
+ * the sum of all component quantities in a kit. For a kit with multiple items,
+ * this represents the total count of individual items that make up the multipack.
+ * If the produto is not a kit or has no components, returns the original value.
+ */
+export function deriveItensNoKit(
+  itensNoKit: number | null | undefined,
+  ehKit: boolean,
+  componentesKit: ComponentesKit | null,
+): number | null {
+  // Keep user-provided values — only derive when explicitly null/undefined
+  if (itensNoKit != null) return itensNoKit;
+  if (!ehKit || !componentesKit || Object.keys(componentesKit).length === 0) return null;
+  // Sum the quantities of all components
+  const total = Object.values(componentesKit).reduce((sum, kit) => sum + (kit.quantidade ?? 1), 0);
+  return total;
+}
+
+/**
  * The produto's transient subdocuments to write ATOMICALLY with the produto doc
  * (ObjectView `transactionWrites`): the `extraData` singleton and the per-operação
  * `imposto` docs (Flutter saves imposto in the produto's batch). Reuses the
@@ -86,8 +109,15 @@ export function buildProdutoTransactionWrites(
     else writes.push({ type: 'set', ref, data: op.data });
   };
 
-  const extra = (values.extraData as ProdutoExtraData | null) ?? null;
+  let extra = (values.extraData as ProdutoExtraData | null) ?? null;
   if (extra) {
+    // Derive itensNoKit when it's blank on a kit
+    const ehKit = (values.ehKit as boolean) ?? false;
+    const componentesKit = (values.componentesKit as ComponentesKit | null) ?? null;
+    extra = {
+      ...extra,
+      itensNoKit: deriveItensNoKit(extra.itensNoKit, ehKit, componentesKit),
+    };
     for (const op of buildExtraDataWriteOps(produtoId, extra)) pushOp(op);
   }
 
