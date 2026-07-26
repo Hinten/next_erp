@@ -8,6 +8,7 @@ import {
   buildIncidenteOp,
   buildPagamentoOp,
   buildPedidoPatch,
+  cancelarPedido,
   deleteIncidente,
   deletePagamento,
   nextPedidoEstado,
@@ -457,6 +458,52 @@ describe('reconcilePedidoEstadoFromPagamentos', () => {
       valorPago: 100,
     });
     expect(result).toBeNull();
+    expect(committed()).toEqual([]);
+  });
+});
+
+describe('cancelarPedido', () => {
+  it('sets estado cancelado and appends a história row', async () => {
+    const { port, written, committed } = fakePort({ estado: 'pago', valorCobrado: 100 }, 777);
+    const result = await cancelarPedido(port, {
+      pedidoId: 'x',
+      usuarioRef: 'documents/usuarios/u1',
+    });
+    expect(result).toBe(true);
+    expect(written()).toEqual({ estado: 'cancelado', ultimaModificacao: 777 });
+    expect(committed()).toEqual([
+      {
+        type: 'set',
+        path: 'pedidos/x/historicoEstadoPedido/newid',
+        data: {
+          estado: 'cancelado',
+          usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
+          data: 777,
+        },
+      },
+    ]);
+  });
+
+  it('defaults usuarioRef to null when omitted', async () => {
+    const { port, committed } = fakePort({ estado: 'pago', valorCobrado: 100 }, 777);
+    await cancelarPedido(port, { pedidoId: 'x' });
+    expect(committed()[0]).toMatchObject({
+      data: { usuarioHistoricoEstadosPedidoOuterRef: null },
+    });
+  });
+
+  it('is idempotent — a no-op (empty patch, no história) when already cancelado', async () => {
+    const { port, written, committed } = fakePort({ estado: 'cancelado', valorCobrado: 100 }, 777);
+    const result = await cancelarPedido(port, { pedidoId: 'x' });
+    expect(result).toBe(false);
+    expect(written()).toEqual({});
+    expect(committed()).toEqual([]);
+  });
+
+  it('skips everything when the doc is gone', async () => {
+    const { port, committed } = fakePort(null, 777);
+    const result = await cancelarPedido(port, { pedidoId: 'x' });
+    expect(result).toBe(false);
     expect(committed()).toEqual([]);
   });
 });

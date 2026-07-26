@@ -1,13 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { FirebaseError } from 'firebase/app';
 import { NFeRejectedError } from '@delfrance/integrations-nfe/http-provider';
 
-const { cancelarMock, showErrorMock, notifShowMock } = vi.hoisted(() => ({
-  cancelarMock: vi.fn(),
-  showErrorMock: vi.fn(),
-  notifShowMock: vi.fn(),
-}));
+const { cancelarMock, showErrorMock, notifShowMock, confirmMock, cancelarPedidoMock } = vi.hoisted(
+  () => ({
+    cancelarMock: vi.fn(),
+    showErrorMock: vi.fn(),
+    notifShowMock: vi.fn(),
+    confirmMock: vi.fn(),
+    cancelarPedidoMock: vi.fn(),
+  }),
+);
 
 vi.mock('@/lib/nfe/client', () => ({
   useNFeClient: () => ({ cancelar: cancelarMock }),
@@ -17,6 +22,21 @@ vi.mock('@/lib/notifications/showErrorNotification', () => ({
 }));
 vi.mock('@mantine/notifications', () => ({
   notifications: { show: notifShowMock },
+}));
+vi.mock('@/lib/auth/useAuth', () => ({
+  useAuth: () => ({ user: { uid: 'u1' } }),
+}));
+vi.mock('@/lib/pedidos/clientPort', () => ({
+  createClientPedidoPort: vi.fn(() => ({})),
+}));
+vi.mock('@/lib/firebase/client', () => ({
+  getFirebaseFirestore: vi.fn(() => ({})),
+}));
+vi.mock('@/app/(app)/pedidos/_components/ConfirmDialog', () => ({
+  useConfirmDialog: () => ({ confirm: confirmMock, element: null }),
+}));
+vi.mock('@delfrance/data/pedido', () => ({
+  cancelarPedido: cancelarPedidoMock,
 }));
 
 import { CancelarNFeForm } from './CancelarNFeForm';
@@ -41,6 +61,7 @@ afterEach(() => {
 describe('CancelarNFeForm', () => {
   it('cancels the specific nfeId on submit', async () => {
     cancelarMock.mockResolvedValue({ estado: 'c', cStat: '135' });
+    confirmMock.mockResolvedValue(false);
     wrap(<CancelarNFeForm pedidoId="PED-1" nfeId="s1" numero={42} />);
 
     fillAndConfirm();
@@ -65,5 +86,64 @@ describe('CancelarNFeForm', () => {
         message: 'SEFAZ rejeitou o cancelamento (cStat 573): Rejeicao: Duplicidade de Evento',
       }),
     );
+    // A rejected cancelamento never reaches the pedido-cancel prompt.
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(cancelarPedidoMock).not.toHaveBeenCalled();
+  });
+
+  it('confirming the prompt also cancels the pedido', async () => {
+    cancelarMock.mockResolvedValue({ estado: 'c', cStat: '135' });
+    confirmMock.mockResolvedValue(true);
+    cancelarPedidoMock.mockResolvedValue(true);
+    wrap(<CancelarNFeForm pedidoId="PED-1" nfeId="s1" />);
+
+    fillAndConfirm();
+
+    await waitFor(() =>
+      expect(confirmMock).toHaveBeenCalledWith({
+        title: 'Cancelar pedido?',
+        message: 'Também deseja cancelar o pedido?',
+      }),
+    );
+    await waitFor(() =>
+      expect(cancelarPedidoMock).toHaveBeenCalledWith(expect.anything(), {
+        pedidoId: 'PED-1',
+        usuarioRef: 'documents/usuarios/u1',
+      }),
+    );
+  });
+
+  it('declining the prompt leaves the pedido untouched', async () => {
+    cancelarMock.mockResolvedValue({ estado: 'c', cStat: '135' });
+    confirmMock.mockResolvedValue(false);
+    wrap(<CancelarNFeForm pedidoId="PED-1" nfeId="s1" />);
+
+    fillAndConfirm();
+
+    await waitFor(() => expect(confirmMock).toHaveBeenCalled());
+    expect(cancelarPedidoMock).not.toHaveBeenCalled();
+  });
+
+  it('a pedido-cancel failure does not undo the reported NF-e cancelamento success', async () => {
+    cancelarMock.mockResolvedValue({ estado: 'c', cStat: '135' });
+    confirmMock.mockResolvedValue(true);
+    cancelarPedidoMock.mockRejectedValue(new FirebaseError('permission-denied', 'nope'));
+    wrap(<CancelarNFeForm pedidoId="PED-1" nfeId="s1" />);
+
+    fillAndConfirm();
+
+    await waitFor(() =>
+      expect(notifShowMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          color: 'yellow',
+          message: 'O pedido não pôde ser cancelado automaticamente.',
+        }),
+      ),
+    );
+    // The NF-e cancelamento toast fired earlier and is untouched by the pedido failure.
+    expect(notifShowMock).toHaveBeenCalledWith(
+      expect.objectContaining({ color: 'teal', title: 'NF-e cancelada' }),
+    );
+    expect(showErrorMock).not.toHaveBeenCalled();
   });
 });

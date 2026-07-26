@@ -422,3 +422,34 @@ export async function reconcilePedidoEstadoFromPagamentos(
   }
   return transitionedTo;
 }
+
+/**
+ * Manually cancel a pedido — the operator-driven "Também deseja cancelar o
+ * pedido?" prompt shown after an NF-e cancelamento (#74, legacy
+ * `cancelamentoNFe.dart:229-261`). Sets `estado: 'cancelado'` unconditionally
+ * (no terminal-state gate: the operator explicitly chose this, unlike the
+ * payment-driven {@link reconcilePedidoEstadoFromPagamentos}) and appends a
+ * `historicoEstadoPedido` row. Idempotent: a no-op (no doc write, no history
+ * row) when the pedido is already `cancelado` or missing. Returns whether the
+ * estado actually changed.
+ */
+export async function cancelarPedido(
+  port: PedidoDataPort,
+  args: { pedidoId: string; usuarioRef?: string | null },
+): Promise<boolean> {
+  let changed = false;
+  await port.updatePedido(args.pedidoId, (current) => {
+    // Reset per attempt: the client adapter re-runs `apply` on transaction
+    // contention, so only the final (committed) attempt must set this.
+    changed = false;
+    if (current === null || current.estado === 'cancelado') return {};
+    changed = true;
+    return { estado: 'cancelado', ultimaModificacao: port.now() };
+  });
+  if (changed) {
+    await port.commit([
+      buildEstadoHistoryOp(port, args.pedidoId, 'cancelado', args.usuarioRef ?? null),
+    ]);
+  }
+  return changed;
+}
