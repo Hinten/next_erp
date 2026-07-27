@@ -324,11 +324,10 @@ export async function processStockSendTask(
       if (err.status === 429) {
         // Rate limit: stamp the per-conta pause (Retry-After when ML sent one)
         // and RETHROW — the queue's backoff retries this task into the pause
-        // gate. pauseCount is an advisory counter: read-modify-write, no tx.
+        // gate. pauseCount is an advisory counter (no tx) — reuse the pause
+        // gate's read from the top of this task instead of a second get().
         const pauseSec = err.retryAfterSec ?? ratePauseMin() * 60;
-        const countSnap = await stateRef().get();
-        const countRaw = (countSnap.data() ?? {}) as Record<string, unknown>;
-        const pauseCount = finiteNumber(countRaw.pauseCount) ?? 0;
+        const pauseCount = finiteNumber(stateRaw.pauseCount) ?? 0;
         await estoqueMercadoLivreSyncCollection.merge(db, {}, payload.integracaoId, {
           pausedUntilUs: millisToMicros(nowMs + pauseSec * 1000),
           pauseCount: pauseCount + 1,

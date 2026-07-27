@@ -21,7 +21,7 @@ vi.mock('../firebase/admin', () => ({ getAdminApp: () => ({ __app: true }) }));
 const { createMlStockTaskScheduler } = await import('./mlStockTasks');
 const { MlTasksDisabledError } = await import('./mlTasks');
 
-// A representative stock send-task payload (targets only, never quantities —
+// A representative stock send-task payload (carries sweep-computed quantities —
 // the schema itself lives in estoqueSend.ts; the scheduler treats it opaquely).
 const payload = {
   integracaoId: 'integ-1',

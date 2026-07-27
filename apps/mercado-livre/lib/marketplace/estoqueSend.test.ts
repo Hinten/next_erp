@@ -213,14 +213,16 @@ describe('mlStockSendTaskSchema', () => {
         componentEstoques: [],
       },
       integracoesComProduto: [CONTA],
-      link: {
-        id: 'MLB111',
-        estado: 'p',
-        status: 'active',
-        sub_status: [],
-        isUserProductModel: false,
-        linkDocId: 'link1',
-      },
+      links: [
+        {
+          id: 'MLB111',
+          estado: 'p',
+          status: 'active',
+          sub_status: [],
+          isUserProductModel: false,
+          linkDocId: 'link1',
+        },
+      ],
       children: [],
       temVenda30d: false,
     };
