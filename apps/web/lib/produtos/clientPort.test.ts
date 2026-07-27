@@ -66,4 +66,43 @@ describe('deriveItensNoKit', () => {
 
     expect(result).toBe(null);
   });
+
+  it('skips null entries and counts valid objects (defaulting missing quantidade to 1)', () => {
+    const componentesKit = {
+      'comp-1': { quantidade: 3, limitarEstoque: true, timestamp: null },
+      'comp-2': null as any,
+      'comp-3': { quantidade: -1, limitarEstoque: true, timestamp: null },
+      'comp-4': { limitarEstoque: true, timestamp: null } as any,
+    };
+
+    const result = deriveItensNoKit(null, true, componentesKit);
+
+    // comp-1: 3, comp-2: skipped (null), comp-3: skipped (negative), comp-4: 1 (default)
+    expect(result).toBe(4);
+  });
+
+  it('returns null when no valid kit components exist', () => {
+    const componentesKit = {
+      'comp-1': null as any,
+      'comp-2': { quantidade: -1, limitarEstoque: true, timestamp: null },
+      'comp-3': { quantidade: 0, limitarEstoque: true, timestamp: null },
+    };
+
+    const result = deriveItensNoKit(null, true, componentesKit);
+
+    // comp-1: skipped (null), comp-2: skipped (negative), comp-3: skipped (zero)
+    expect(result).toBe(null);
+  });
+
+  it('defaults missing quantidade to 1 for legacy docs without explicit quantities', () => {
+    const componentesKit = {
+      'comp-1': { limitarEstoque: true, timestamp: null } as any,
+      'comp-2': { limitarEstoque: true, timestamp: null } as any,
+    };
+
+    const result = deriveItensNoKit(null, true, componentesKit);
+
+    // Both entries default quantidade to 1
+    expect(result).toBe(2);
+  });
 });

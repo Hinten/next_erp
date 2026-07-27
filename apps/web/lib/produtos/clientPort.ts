@@ -72,6 +72,9 @@ function refForPath(db: Firestore, path: string): DocumentReference {
  * the sum of all component quantities in a kit. For a kit with multiple items,
  * this represents the total count of individual items that make up the multipack.
  * If the produto is not a kit or has no components, returns the original value.
+ *
+ * Defensive: skips non-object entries (null, junk from legacy soft-read docs)
+ * but preserves the legacy default of 1 for entries without an explicit `quantidade`.
  */
 export function deriveItensNoKit(
   itensNoKit: number | null | undefined,
@@ -81,9 +84,19 @@ export function deriveItensNoKit(
   // Keep user-provided values — only derive when explicitly null/undefined
   if (itensNoKit != null) return itensNoKit;
   if (!ehKit || !componentesKit || Object.keys(componentesKit).length === 0) return null;
-  // Sum the quantities of all components
-  const total = Object.values(componentesKit).reduce((sum, kit) => sum + (kit.quantidade ?? 1), 0);
-  return total;
+  // Sum the quantities of all components, skipping junk entries (null, non-objects)
+  // but defaulting missing quantidade to 1 for backward compat with legacy docs
+  let total = 0;
+  for (const entry of Object.values(componentesKit)) {
+    // Skip null/junk entries; count valid objects (with or without quantidade)
+    if (entry && typeof entry === 'object') {
+      const qty = (entry as { quantidade?: number }).quantidade ?? 1;
+      if (typeof qty === 'number' && qty > 0) {
+        total += qty;
+      }
+    }
+  }
+  return total > 0 ? total : null;
 }
 
 /**
@@ -109,11 +122,29 @@ export function buildProdutoTransactionWrites(
     else writes.push({ type: 'set', ref, data: op.data });
   };
 
+  const ehKit = (values.ehKit as boolean) ?? false;
+  const componentesKit = (values.componentesKit as ComponentesKit | null) ?? null;
   let extra = (values.extraData as ProdutoExtraData | null) ?? null;
+
+  // Ensure extraData is created when deriving itensNoKit for kits, even if the
+  // ExtraDataManager kept it null (tab not edited, singleton doesn't exist yet).
+  // This ensures the auto-derived count is persisted on every kit save.
+  if (!extra && ehKit && componentesKit && Object.keys(componentesKit).length > 0) {
+    extra = {
+      descricao: null,
+      marca: null,
+      metaDescricao: null,
+      keyWords: null,
+      youtube: null,
+      condicao: 1,
+      coteudoAdulto: false,
+      itensNoKit: null,
+      googleMerchantData: null,
+    };
+  }
+
   if (extra) {
     // Derive itensNoKit when it's blank on a kit
-    const ehKit = (values.ehKit as boolean) ?? false;
-    const componentesKit = (values.componentesKit as ComponentesKit | null) ?? null;
     extra = {
       ...extra,
       itensNoKit: deriveItensNoKit(extra.itensNoKit, ehKit, componentesKit),
