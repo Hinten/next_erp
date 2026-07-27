@@ -21,6 +21,15 @@ on:
         description: Short theme id used for the report artifact name.
         required: true
         type: string
+      integrations:
+        description: >-
+          Also build and serve apps/integrations on :3001. Needed by suites that
+          drive the admin endpoints (POST /api/admin/users and .../claims) —
+          those route handlers live in that app, NOT in apps/web, which has no
+          route handlers at all. Only the vendas lane needs it today.
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   e2e:
@@ -52,6 +61,14 @@ jobs:
       # theme; harmless when the suite isn't selected — its setup self-skips).
       E2E_SU_EMAIL: ${{ secrets.E2E_SU_EMAIL }}
       E2E_SU_PASSWORD: ${{ secrets.E2E_SU_PASSWORD }}
+      # Where apps/web's admin HTTP client points. Next INLINES NEXT_PUBLIC_* at
+      # build time, so this has to be set for the build below, not just at test
+      # time. Deliberately unconditional: both lanes then produce an identical
+      # web build, so the `nextjs-web-e2e-*` cache they share (same key, same
+      # SHA, concurrent runs) can't hand one lane a build carrying the other's
+      # inlined value. Inert without `integrations: true` — no cadastros spec
+      # calls the admin endpoints.
+      NEXT_PUBLIC_INTEGRATIONS_URL: http://localhost:3001
       # Emit client source maps so prod-build stack traces are readable in the
       # Playwright trace. Build-only; real App Hosting deploys leave it unset.
       E2E_SOURCEMAPS: 'true'
@@ -114,12 +131,27 @@ jobs:
         # (which export ./src) from source.
         run: pnpm --filter @delfrance/web exec next build
 
+      - name: Build integrations (production)
+        if: ${{ inputs.integrations }}
+        # Same `next`-directly rationale as the web build above: the package
+        # script wraps it in `dotenv -e ../../.env.local`, which doesn't exist
+        # in CI. The admin routes are force-dynamic, so they read
+        # FIREBASE_PROJECT_ID / FIREBASE_SERVICE_ACCOUNT at request time from
+        # the job env — nothing extra to inject at build time.
+        run: pnpm --filter @delfrance/integrations-app exec next build
+
       - name: e2e (web) — ${{ inputs.slug }}
         # Playwright's webServer runs PLAYWRIGHT_WEB_CMD (next start) and waits
         # for :3000 before the suites — a precompiled prod server, no cold
-        # compile, so workers don't race the compiler.
+        # compile, so workers don't race the compiler. With `integrations: true`
+        # it brings up a second server on :3001 the same way; an empty value
+        # leaves that entry out of the webServer list entirely.
         env:
           PLAYWRIGHT_WEB_CMD: pnpm exec next start --port 3000
+          PLAYWRIGHT_INTEGRATIONS_CMD: >-
+            ${{ inputs.integrations
+            && 'pnpm --filter @delfrance/integrations-app exec next start --port 3001'
+            || '' }}
         run: |
           args=""
           for p in ${{ inputs.projects }}; do args="$args --project=$p"; done
