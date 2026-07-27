@@ -11,6 +11,7 @@ export * from './mapping/importItem';
 export * from './mapping/importVariations';
 export * from './mapping/importUserProduct';
 export * from './mapping/pictures';
+export * from './zplDanfeFilter';
 
 /**
  * Mercado Livre plugin (MarketplaceChannel).
