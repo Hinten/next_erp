@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   MercadoLivreHttpError,
@@ -8,7 +9,7 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 import { estoqueMercadoLivreSyncCollection } from '@delfrance/data/admin/collections';
 
-import { PAUSE_REENQUEUE_JITTER_MAX_S } from './estoquePlan';
+import { PAUSE_REENQUEUE_JITTER_MAX_S, type StockFamilyRow, buildSendTasks } from './estoquePlan';
 import { MlTasksDisabledError } from './mlTasks';
 import {
   type MlStockSendTask,
@@ -19,9 +20,10 @@ import {
 } from './estoqueSend';
 
 /* ------------------------------ fake Firestore ----------------------------- */
-// Copy of estoquePlan.test.ts's FakeDb: chained `where().orderBy().limit().get()`
-// with real `==` support + a plain `.get()` on a collection (subcollection
-// reads) + doc get/set with `{ merge: true }` (the admin handle's `merge()`).
+// Doc-level fake: `collection(path).doc(id)` with get / set({ merge }) + an
+// opLog. The handler makes NO collection queries anymore — payloads carry the
+// sweep-computed quantities AND the writeback target — so the only Firestore
+// surface it touches is the pause-state doc get and the two merge writebacks.
 
 type DocData = Record<string, unknown>;
 
@@ -37,36 +39,9 @@ interface FakeDocRef {
   set: (data: DocData, opts?: { merge?: boolean }) => void;
 }
 
-interface FakeQueryDoc {
-  id: string;
-  data: () => DocData;
-  exists: true;
-}
-
-interface Clause {
-  field: string;
-  op: string;
-  value: unknown;
-}
-
-interface FakeQuery {
-  where: (field: string, op: string, value: unknown) => FakeQuery;
-  orderBy: (field: string, dir?: string) => FakeQuery;
-  limit: (n: number) => FakeQuery;
-  get: () => Promise<{ docs: FakeQueryDoc[]; empty: boolean }>;
-}
-
-type FakeCollection = FakeQuery & { doc: (id?: string) => FakeDocRef };
-
-function clauseMatches(data: DocData, c: Clause): boolean {
-  if (c.op === '==') return data[c.field] === c.value;
-  throw new Error(`FakeDb: unsupported op ${c.op}`);
-}
-
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
   readonly opLog: Array<{ op: 'get' | 'set'; path: string }> = [];
-  private autoN = 0;
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
@@ -81,125 +56,25 @@ class FakeDb {
     return this.col(path);
   }
 
-  private makeQuery(path: string): FakeQuery {
+  collection(path: string): { doc: (id: string) => FakeDocRef } {
     const self = this;
-    const clauses: Clause[] = [];
-    const order: Array<[string, string]> = [];
-    let lim: number | null = null;
-    const q: FakeQuery = {
-      where(field, op, value) {
-        clauses.push({ field, op, value });
-        return q;
-      },
-      orderBy(field, dir = 'asc') {
-        order.push([field, dir]);
-        return q;
-      },
-      limit(n) {
-        lim = n;
-        return q;
-      },
-      async get() {
-        let rows = [...self.col(path).entries()].map(([id, data]) => ({ id, data }));
-        rows = rows.filter((r) => clauses.every((c) => clauseMatches(r.data, c)));
-        for (const [field, dir] of [...order].reverse()) {
-          rows.sort((a, b) => {
-            const av = String(a.data[field] ?? '');
-            const bv = String(b.data[field] ?? '');
-            const cmp = av < bv ? -1 : av > bv ? 1 : 0;
-            return dir === 'desc' ? -cmp : cmp;
-          });
-        }
-        if (lim != null) rows = rows.slice(0, lim);
+    return {
+      doc(id: string): FakeDocRef {
+        const col = self.col(path);
         return {
-          docs: rows.map((r) => ({ id: r.id, data: () => r.data, exists: true as const })),
-          empty: rows.length === 0,
+          id,
+          get: async () => {
+            self.opLog.push({ op: 'get', path: `${path}/${id}` });
+            return { exists: col.has(id), id, data: () => col.get(id) };
+          },
+          set: (data: DocData, opts?: { merge?: boolean }) => {
+            self.opLog.push({ op: 'set', path: `${path}/${id}` });
+            if (opts?.merge) col.set(id, { ...(col.get(id) ?? {}), ...data });
+            else col.set(id, { ...data });
+          },
         };
       },
     };
-    return q;
-  }
-
-  private makeDocRef(path: string, id: string): FakeDocRef {
-    const self = this;
-    const col = this.col(path);
-    return {
-      id,
-      get: async () => {
-        self.opLog.push({ op: 'get', path: `${path}/${id}` });
-        return { exists: col.has(id), id, data: () => col.get(id) };
-      },
-      set: (data: DocData, opts?: { merge?: boolean }) => {
-        self.opLog.push({ op: 'set', path: `${path}/${id}` });
-        if (opts?.merge) col.set(id, { ...(col.get(id) ?? {}), ...data });
-        else col.set(id, { ...data });
-      },
-    };
-  }
-
-  collection(path: string): FakeCollection {
-    const self = this;
-    return Object.assign(this.makeQuery(path), {
-      doc(id?: string) {
-        return self.makeDocRef(path, id ?? `auto-${++self.autoN}`);
-      },
-    });
-  }
-
-  // Semantic stand-in for estoquePlan's Q2 resolution pipeline: answers the
-  // `documents(anchors) + link/children subqueries` shape from the SAME seeded
-  // collections the tests already use, so the handler exercises the REAL
-  // resolveSendUnits without per-test bundle fixtures. Stage args are ignored
-  // — the Q2 stage tree itself is pinned by estoquePlan.test.ts.
-  pipeline(): unknown {
-    const self = this;
-    // Inert chainable expression stub for the subquery terminators.
-    const inertExpr: Record<string, unknown> = {};
-    for (const m of ['as', 'length', 'greaterThan', 'equal']) inertExpr[m] = () => inertExpr;
-    let anchorIds: string[] = [];
-    const chain = {
-      documents(refs: Array<{ id: string }>) {
-        anchorIds = refs.map((r) => r.id);
-        return chain;
-      },
-      define: () => chain,
-      addFields: () => chain,
-      // Inert absorbers for the NESTED subquery builder chains (their stage
-      // trees are pinned by estoquePlan.test.ts; here only execute() matters).
-      collection: () => chain,
-      collectionGroup: () => chain,
-      where: () => chain,
-      select: () => chain,
-      sort: () => chain,
-      limit: () => chain,
-      toArrayExpression: () => inertExpr,
-      toScalarExpression: () => inertExpr,
-      async execute() {
-        const results = anchorIds.flatMap((id) => {
-          const produto = self.docs('produtos').get(id);
-          if (!produto) return []; // documents() silently omits missing docs
-          const link =
-            [...self.docs(`produtos/${id}/produtoMercadoLivre`).entries()]
-              .map(([docId, raw]): DocData => ({ ...raw, linkDocId: docId }))
-              .find(
-                (l) =>
-                  l.contaOuterRef === `documents/integracao/${CONTA}` ||
-                  l.contaOuterRef === `integracao/${CONTA}`,
-              ) ?? null;
-          const children = [...self.docs('produtos').entries()]
-            .filter(([, d]) => d.paiId === id)
-            .map(([childId]) => ({
-              childId,
-              varLinks: [...self.docs(`produtos/${childId}/variacaoMercadoLivre`).values()],
-            }));
-          return [
-            { ref: { path: `produtos/${id}` }, data: () => ({ ...produto, link, children }) },
-          ];
-        });
-        return { results };
-      },
-    };
-    return chain;
   }
 }
 
@@ -210,46 +85,14 @@ function asDb(db: FakeDb): Firestore {
 /* --------------------------------- helpers --------------------------------- */
 
 const CONTA = 'conta-A';
-const DEPOSITO_ID = 'DEP';
 const DEP_REF = 'documents/depositos/DEP';
 const NOW_MS = Date.parse('2026-07-24T12:00:00.000Z');
 const NOW_US = NOW_MS * 1000;
+/** When "the sweep" computed the payload's quantities — 42s before NOW. */
+const SWEEP_MS = NOW_MS - 42_000;
 
 const STATE_PATH = estoqueMercadoLivreSyncCollection.resolvePath({});
 const LINK_PATH = 'produtos/PROD/produtoMercadoLivre';
-const PARENT_LINK_REF = 'documents/produtos/PROD/produtoMercadoLivre/link1';
-
-function seedAnchor(db: FakeDb, id = 'PROD', extra: DocData = {}): void {
-  db.seed('produtos', id, {
-    nome: `Produto ${id}`,
-    paiId: null,
-    publicado: true,
-    ehKit: false,
-    ehKitVirtual: false,
-    integracoesComProduto: [CONTA],
-    ...extra,
-  });
-}
-
-function seedLink(db: FakeDb, produtoId = 'PROD', extra: DocData = {}): void {
-  db.seed(`produtos/${produtoId}/produtoMercadoLivre`, 'link1', {
-    contaOuterRef: `documents/integracao/${CONTA}`,
-    id: 'MLB111',
-    estado: 'p',
-    status: 'active',
-    sub_status: null,
-    isUserProductModel: false,
-    ...extra,
-  });
-}
-
-function seedEstoque(db: FakeDb, produtoId: string, quantidade: number, reservada = 0): void {
-  db.seed(`produtos/${produtoId}/estoques`, `est-${produtoId}-${DEPOSITO_ID}`, {
-    depositoOuterRef: DEP_REF,
-    quantidade,
-    quantidadeReservada: reservada,
-  });
-}
 
 function payload(over: Partial<MlStockSendTask> = {}): MlStockSendTask {
   return {
@@ -258,15 +101,27 @@ function payload(over: Partial<MlStockSendTask> = {}): MlStockSendTask {
     itemId: 'MLB111',
     kind: 'item',
     variacaoProdutoId: null,
+    linkDocId: 'link1',
+    quantidade: 10,
+    variations: null,
+    sweepComputedAtMs: SWEEP_MS,
     sweepId: 'sweep-1',
     reenqueues: 0,
     ...over,
   };
 }
 
-/** UP-model variationItem payload targeting child CH1's item. */
-function variationPayload(over: Partial<MlStockSendTask> = {}): MlStockSendTask {
-  return payload({ kind: 'variationItem', itemId: 'MLB-CH1', variacaoProdutoId: 'CH1', ...over });
+/** Seed the writeback-target link doc (only the writeback/error tests need it). */
+function seedLink(db: FakeDb, extra: DocData = {}): void {
+  db.seed(LINK_PATH, 'link1', {
+    contaOuterRef: `documents/integracao/${CONTA}`,
+    id: 'MLB111',
+    estado: 'p',
+    status: 'active',
+    sub_status: null,
+    isUserProductModel: false,
+    ...extra,
+  });
 }
 
 interface HarnessOpts {
@@ -311,6 +166,7 @@ function run(h: Harness, p: unknown = payload()) {
 }
 
 beforeEach(() => {
+  vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -322,17 +178,63 @@ afterEach(() => {
 /* ---------------------------------- tests ---------------------------------- */
 
 describe('mlStockSendTaskSchema', () => {
-  it('fills the defaults and rejects junk (targets only — no quantity field)', () => {
+  it('fills the defaults and rejects junk', () => {
     const parsed = mlStockSendTaskSchema.parse({
       integracaoId: CONTA,
       produtoId: 'PROD',
       itemId: 'MLB111',
       kind: 'item',
+      linkDocId: 'link1',
+      sweepComputedAtMs: SWEEP_MS,
       sweepId: 'sweep-1',
     });
-    expect(parsed).toEqual(payload());
+    expect(parsed).toEqual(payload({ quantidade: null }));
     expect(() => mlStockSendTaskSchema.parse({ integracaoId: CONTA })).toThrow();
     expect(() => mlStockSendTaskSchema.parse(payload({ kind: 'family' as never }))).toThrow();
+    expect(() => mlStockSendTaskSchema.parse(payload({ quantidade: 1.5 }))).toThrow();
+    expect(() =>
+      mlStockSendTaskSchema.parse(
+        payload({ quantidade: null, variations: [{ id: 101, available_quantity: -1 }] }),
+      ),
+    ).toThrow();
+  });
+
+  it('accepts a buildSendTasks draft verbatim (the sweep-side wire contract)', () => {
+    const row: StockFamilyRow = {
+      anchorId: 'PROD',
+      anchor: {
+        produtoId: 'PROD',
+        ehKit: false,
+        ehKitVirtual: false,
+        publicado: true,
+        componentesKit: null,
+        timestampMs: null,
+        estoque: null,
+        componentEstoques: [],
+      },
+      integracoesComProduto: [CONTA],
+      link: {
+        id: 'MLB111',
+        estado: 'p',
+        status: 'active',
+        sub_status: [],
+        isUserProductModel: false,
+        linkDocId: 'link1',
+      },
+      children: [],
+      temVenda30d: false,
+    };
+    const built = buildSendTasks(row, new Map([['PROD', 7]]), {
+      integracaoId: CONTA,
+      sweepId: 'sweep-1',
+      sweepComputedAtMs: SWEEP_MS,
+    });
+    expect(built.skips).toEqual([]);
+    expect(built.tasks).toHaveLength(1);
+    // The compile-time half of the contract: a draft IS a valid schema input
+    // (field names/nullability drift fails typecheck on this assignment).
+    const drafts: Array<z.input<typeof mlStockSendTaskSchema>> = built.tasks;
+    expect(mlStockSendTaskSchema.parse(drafts[0])).toEqual(payload({ quantidade: 7 }));
   });
 });
 
@@ -392,9 +294,6 @@ describe('processStockSendTask — pause gate', () => {
   it('an EXPIRED pause does not gate — the task sends normally', async () => {
     const h = makeHarness();
     h.db.seed(STATE_PATH, CONTA, { pausedUntilUs: NOW_US - 1 });
-    seedAnchor(h.db);
-    seedLink(h.db);
-    seedEstoque(h.db, 'PROD', 10);
 
     const res = await run(h);
 
@@ -407,8 +306,6 @@ describe('processStockSendTask — pause gate', () => {
 describe('processStockSendTask — deterministic skips', () => {
   it('integração sem depósito → skipped before any token/ML work', async () => {
     const h = makeHarness({ conta: { nome: 'sem depósito' } });
-    seedAnchor(h.db);
-    seedLink(h.db);
 
     const res = await run(h);
 
@@ -420,123 +317,75 @@ describe('processStockSendTask — deterministic skips', () => {
       itemId: 'MLB111',
     });
   });
-
-  it('gate closed since the sweep (fresh resolveSendUnits finds no unit) → skipped', async () => {
-    const h = makeHarness();
-    seedAnchor(h.db);
-    seedLink(h.db, 'PROD', { status: 'paused', sub_status: ['paused_by_seller'] });
-
-    const res = await run(h);
-
-    expect(res).toEqual({ outcome: 'skipped', reason: 'unidade-ausente' });
-    expect(h.updateItem).not.toHaveBeenCalled();
-  });
-
-  it('fresh quantity unavailable (kit-virtual child) → skipped, no ML call', async () => {
-    const h = makeHarness();
-    seedAnchor(h.db);
-    seedLink(h.db, 'PROD', { isUserProductModel: true });
-    // The child is send-unit-resolvable but computeQuantidades says never send.
-    h.db.seed('produtos', 'CH1', { nome: 'A', paiId: 'PROD', ehKit: true, ehKitVirtual: true });
-    h.db.seed('produtos/CH1/variacaoMercadoLivre', 'v1', {
-      itemId: 'MLB-CH1',
-      produtoMercadoLivreOuterRef: PARENT_LINK_REF,
-    });
-
-    const res = await run(h, variationPayload());
-
-    expect(res).toEqual({ outcome: 'skipped', reason: 'quantidade-indisponivel' });
-    expect(h.updateItem).not.toHaveBeenCalled();
-  });
 });
 
-describe('processStockSendTask — request bodies (fresh quantities)', () => {
-  it('variationItem (UP model) → single available_quantity for the child', async () => {
-    const h = makeHarness({
-      updateItem: async (): Promise<MlItem> => ({ id: 'MLB-CH1', status: 'active' }),
-    });
-    seedAnchor(h.db);
-    seedLink(h.db, 'PROD', { isUserProductModel: true });
-    h.db.seed('produtos', 'CH1', { nome: 'A', paiId: 'PROD' });
-    h.db.seed('produtos/CH1/variacaoMercadoLivre', 'v1', {
-      itemId: 'MLB-CH1',
-      produtoMercadoLivreOuterRef: PARENT_LINK_REF,
-    });
-    seedEstoque(h.db, 'CH1', 6, 2);
+describe('processStockSendTask — request bodies (payload verbatim)', () => {
+  it('quantidade → exactly { available_quantity }, and ONLY the state-doc read', async () => {
+    const h = makeHarness();
 
-    const res = await run(h, variationPayload());
+    const res = await run(h, payload({ quantidade: 7 }));
 
     expect(res).toEqual({ outcome: 'sent', reason: null });
-    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB-CH1', { available_quantity: 4 });
+    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', { available_quantity: 7 });
+    // The WHOLE Firestore op log: the pause-state get before the call, then
+    // the link writeback — no produto/link/children/estoque read anywhere.
+    expect(h.db.opLog).toEqual([
+      { op: 'get', path: `${STATE_PATH}/${CONTA}` },
+      { op: 'set', path: `${LINK_PATH}/link1` },
+    ]);
   });
 
-  it('old-model family → ONE bulk PUT; linkless/id-less children warn + drop out', async () => {
+  it('variations → the array passes through untouched', async () => {
     const h = makeHarness();
-    seedAnchor(h.db);
-    seedLink(h.db); // old model (isUserProductModel false)
-    h.db.seed('produtos', 'CH1', { nome: 'A', paiId: 'PROD' });
-    h.db.seed('produtos', 'CH2', { nome: 'B', paiId: 'PROD' });
-    h.db.seed('produtos', 'CH3', { nome: 'C', paiId: 'PROD' }); // link without a numeric id
-    h.db.seed('produtos', 'CH4', { nome: 'D', paiId: 'PROD' }); // no link at all
-    h.db.seed('produtos/CH1/variacaoMercadoLivre', 'v1', {
-      id: 101,
-      produtoMercadoLivreOuterRef: PARENT_LINK_REF,
-    });
-    h.db.seed('produtos/CH2/variacaoMercadoLivre', 'v2', {
-      id: 102,
-      produtoMercadoLivreOuterRef: PARENT_LINK_REF,
-    });
-    h.db.seed('produtos/CH3/variacaoMercadoLivre', 'v3', {
-      id: null,
-      itemId: 'MLB-UPISH',
-      produtoMercadoLivreOuterRef: PARENT_LINK_REF,
-    });
-    seedEstoque(h.db, 'CH1', 5);
-    seedEstoque(h.db, 'CH2', 9, 1);
+    const variations = [
+      { id: 101, available_quantity: 5 },
+      { id: 102, available_quantity: 0 },
+    ];
 
-    const res = await run(h);
+    const res = await run(h, payload({ quantidade: null, variations }));
 
     expect(res).toEqual({ outcome: 'sent', reason: null });
-    // The numeric variação `id` (NOT the UP itemId), all linked children, fresh quantities.
-    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', {
-      variations: [
-        { id: 101, available_quantity: 5 },
-        { id: 102, available_quantity: 8 },
-      ],
-    });
-    // CH3 (no numeric id) + CH4 (no link) each warned — legacy sent what it could.
-    const semLinkWarns = vi
-      .mocked(console.warn)
-      .mock.calls.filter((c) => String(c[0]).includes('sem link/id numérico'));
-    expect(semLinkWarns).toHaveLength(2);
+    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', { variations });
   });
 
-  it('childless item → single available_quantity for the anchor', async () => {
+  it('quantidade AND variations both null → dropped, no ML call', async () => {
     const h = makeHarness();
-    seedAnchor(h.db);
-    seedLink(h.db);
-    seedEstoque(h.db, 'PROD', 12, 2);
 
-    const res = await run(h);
+    const res = await run(h, payload({ quantidade: null, variations: null }));
+
+    expect(res).toEqual({ outcome: 'dropped', reason: 'payload-sem-quantidade' });
+    expect(h.updateItem).not.toHaveBeenCalled();
+    expect(vi.mocked(console.error)).toHaveBeenCalledTimes(1);
+  });
+
+  it('quantidade AND variations both non-null → variations win, loudly', async () => {
+    const h = makeHarness();
+    const variations = [{ id: 101, available_quantity: 3 }];
+
+    const res = await run(h, payload({ quantidade: 9, variations }));
 
     expect(res).toEqual({ outcome: 'sent', reason: null });
-    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', { available_quantity: 10 });
+    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', { variations });
+    expect(vi.mocked(console.warn)).toHaveBeenCalledWith(
+      expect.stringContaining('variations vence'),
+      expect.objectContaining({ integracaoId: CONTA, itemId: 'MLB111' }),
+    );
   });
 
-  it('the 0..99999 clamp flows through computeQuantidades', async () => {
+  it("every 'sent' logs ageMs = now − sweepComputedAtMs (staleness observability)", async () => {
     const h = makeHarness();
-    seedAnchor(h.db);
-    seedLink(h.db);
-    seedEstoque(h.db, 'PROD', 250_000);
 
-    await run(h);
+    await run(h, payload({ sweepComputedAtMs: NOW_MS - 90_000 }));
 
-    expect(h.updateItem).toHaveBeenCalledExactlyOnceWith('MLB111', { available_quantity: 99999 });
+    expect(vi.mocked(console.info)).toHaveBeenCalledWith(
+      expect.stringContaining('enviado'),
+      expect.objectContaining({ ageMs: 90_000, itemId: 'MLB111', sweepId: 'sweep-1' }),
+    );
   });
 });
 
 describe('processStockSendTask — writeback', () => {
-  it('merges the fresh ML status onto the anchor link (itemsStatusSync shape)', async () => {
+  it('merges the fresh ML status onto the payload-addressed link doc', async () => {
     const h = makeHarness({
       updateItem: async (): Promise<MlItem> => ({
         id: 'MLB111',
@@ -544,9 +393,7 @@ describe('processStockSendTask — writeback', () => {
         sub_status: ['out_of_stock'],
       }),
     });
-    seedAnchor(h.db);
-    seedLink(h.db, 'PROD', { title: 'Produto PROD' });
-    seedEstoque(h.db, 'PROD', 0);
+    seedLink(h.db, { title: 'Produto PROD' });
 
     await run(h);
 
@@ -562,13 +409,23 @@ describe('processStockSendTask — writeback', () => {
     });
   });
 
+  it('the target comes from the payload — linkDocId under produtoId, never re-resolved', async () => {
+    const h = makeHarness();
+
+    await run(h, payload({ produtoId: 'OTHER', linkDocId: 'lk9' }));
+
+    expect(h.db.docs('produtos/OTHER/produtoMercadoLivre').get('lk9')).toMatchObject({
+      estado: 'p',
+      status: 'active',
+      ultimaModificacao: NOW_MS,
+    });
+  });
+
   it('a response without sub_status writes [] (never undefined on the wire)', async () => {
     const h = makeHarness({
       updateItem: async (): Promise<MlItem> => ({ id: 'MLB111', status: 'active' }),
     });
-    seedAnchor(h.db);
     seedLink(h.db);
-    seedEstoque(h.db, 'PROD', 3);
 
     await run(h);
 
@@ -582,12 +439,6 @@ describe('processStockSendTask — writeback', () => {
 });
 
 describe('processStockSendTask — error policy', () => {
-  function seedHappy(h: Harness): void {
-    seedAnchor(h.db);
-    seedLink(h.db);
-    seedEstoque(h.db, 'PROD', 10);
-  }
-
   it('429 WITH Retry-After → pause stamped from the header, counter bumped, RETHROW', async () => {
     const boom = new MercadoLivreHttpError('rate limited', 429, {}, 17);
     const h = makeHarness({
@@ -595,7 +446,7 @@ describe('processStockSendTask — error policy', () => {
         throw boom;
       },
     });
-    seedHappy(h);
+    seedLink(h.db);
     h.db.seed(STATE_PATH, CONTA, { pauseCount: 3 });
 
     await expect(run(h)).rejects.toBe(boom);
@@ -617,7 +468,7 @@ describe('processStockSendTask — error policy', () => {
         throw boom;
       },
     });
-    seedHappy(h);
+    seedLink(h.db);
 
     await expect(run(h)).rejects.toBe(boom);
 
@@ -627,13 +478,13 @@ describe('processStockSendTask — error policy', () => {
     });
   });
 
-  it("404 (deterministic 4xx) → estado 'E' stamped on the link, SUCCESS", async () => {
+  it("404 (deterministic 4xx) → estado 'E' stamped on the payload's link, SUCCESS", async () => {
     const h = makeHarness({
       updateItem: async (): Promise<MlItem> => {
         throw new MercadoLivreHttpError('ML 404: item not found', 404, null);
       },
     });
-    seedHappy(h);
+    seedLink(h.db);
 
     const res = await run(h);
 
@@ -653,7 +504,7 @@ describe('processStockSendTask — error policy', () => {
         throw boom;
       },
     });
-    seedHappy(h);
+    seedLink(h.db);
 
     await expect(run(h)).rejects.toBe(boom);
 
@@ -668,7 +519,7 @@ describe('processStockSendTask — error policy', () => {
         throw boom;
       },
     });
-    seedHappy(h);
+    seedLink(h.db);
 
     await expect(run(h)).rejects.toBe(boom);
   });
@@ -679,7 +530,7 @@ describe('processStockSendTask — error policy', () => {
         throw new MercadoLivreReauthRequiredError('refresh_failed', 'reconecte a conta');
       },
     });
-    seedHappy(h);
+    seedLink(h.db);
 
     const res = await run(h);
 

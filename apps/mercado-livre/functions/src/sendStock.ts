@@ -15,10 +15,12 @@ import { getDb } from './lib/admin';
  * enqueue **one task = one ML API call** onto this function's auto-provisioned
  * queue — the whole point of the rebuild: the legacy queue throttled tasks
  * while a task burst N per-variation calls, so its per-second limit never
- * limited actual ML calls (429 storms). Payloads carry TARGETS, never
- * quantities: `processStockSendTask` re-reads stock + the listing-status gate
- * at execution time, so a Cloud Tasks retry can never overwrite a newer value
- * with a stale one. A task landing on a 429-paused conta re-enqueues itself
+ * limited actual ML calls (429 storms). Payloads carry the SWEEP-COMPUTED
+ * quantities: `processStockSendTask` transmits them VERBATIM (owner-locked
+ * legacy parity — zero produto/estoque reads at send time), so a Cloud Tasks
+ * retry or a pause-parked task can send numbers up to `now − sweepComputedAtMs`
+ * old — the handler logs `ageMs` on every send and the next sweep converges
+ * any staleness. A task landing on a 429-paused conta re-enqueues itself
  * via the scheduler (delay + jitter) instead of burning queue retries; a 429
  * itself pauses the conta and RETHROWS so the retry rides the queue backoff
  * into that pause gate.

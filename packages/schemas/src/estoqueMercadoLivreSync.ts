@@ -5,8 +5,10 @@ import type { CollectionMetadata } from './types';
 /**
  * `estoqueMercadoLivreSync` (TOP-LEVEL) — the per-conta durable state doc for
  * the flag-gated ML stock-sync sweeps (Step 10). The 15-minute incremental
- * sweep and the 2AM daily sweep discover changed estoques, resolve send units
- * and enqueue one Cloud Task per ML API call; this doc — ONE per conta,
+ * sweep and the 2AM daily sweep discover the changed produto families, compute
+ * every quantity at sweep time and enqueue one Cloud Task per ML API call (the
+ * task payload CARRIES the quantities — the send handler transmits them
+ * verbatim, never re-reading stock); this doc — ONE per conta,
  * **doc id = integracaoId** — is where a conta's progress and health survive
  * across ticks. Datetimes are µs since epoch (`microsSinceEpoch()`), the state
  * doc standard; produto/estoque source fields stay ms and are converted at the
@@ -18,8 +20,9 @@ import type { CollectionMetadata } from './types';
  * lastError: null }`; the daily sweep merges `{ lastDailyAtUs, lastError: null }`
  * WITHOUT touching `cursorUs`. On a contained per-conta error either sweep
  * merges `{ lastError, lastErrorAtUs }` without advancing the cursor, so the
- * next tick retries the same window (re-covering is harmless — task handlers
- * re-read fresh stock at execution time). The send-task handler owns the 429
+ * next tick retries the same window (re-covering is harmless — the re-run
+ * recomputes quantities at ITS OWN sweep time and enqueues fresh payloads,
+ * which the send handler transmits verbatim). The send-task handler owns the 429
  * pair: on a rate-limit it merges `{ pausedUntilUs, pauseCount+1 }` and both
  * the pause gate and later sweeps honour it per conta.
  *

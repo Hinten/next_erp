@@ -1,19 +1,28 @@
 /**
- * Mercado Livre **stock send task handler** (Step 10 PR B) — the core behind
- * the `sendMercadoLivreStock` `onTaskDispatched` queue (`functions/src/
- * sendStock.ts`). One task = one ML API call (the whole point of the new
- * queue): the sweeps (PR C) enqueue a task per send unit, and this handler
- * executes exactly one `PUT /items/{itemId}`.
+ * Mercado Livre **stock send task handler** (Step 10 PR B, produtos-first
+ * rework) — the core behind the `sendMercadoLivreStock` `onTaskDispatched`
+ * queue (`functions/src/sendStock.ts`). One task = one ML API call (the whole
+ * point of the new queue): the sweeps (PR C) enqueue one task per ML call and
+ * this handler executes exactly one `PUT /items/{itemId}` carrying the
+ * payload's numbers.
  *
- * ---- Payloads carry TARGETS, never quantities. A Cloud Tasks retry (or a
- * task parked behind a 429 pause) can fire minutes after the sweep that
- * enqueued it — a quantity baked into the payload would overwrite newer stock
- * with a stale number. So the payload names WHAT to send (`integracaoId`,
- * family anchor `produtoId`, the one `itemId`, kind) and the handler re-reads
- * everything decision-relevant at execution time: the send gate
- * (`resolveSendUnits` — link, status whitelist, publicado/conta/kit gates) and
- * the quantities (`computeQuantidades`). A gate that closed since the sweep is
- * a success-skip, never an error.
+ * ---- Payloads CARRY quantities, computed at sweep time (owner-locked
+ * 2026-07-27 — the INVERSE of the first cut's "targets, never quantities"
+ * contract; legacy BigQuery parity: the Flutter sender likewise transmitted
+ * sweep-computed numbers and never re-read produtos/estoques). The sweep runs
+ * THE joined query once (`estoquePlan.fetchStockFamilies`), computes every
+ * family member's quantity (`quantidadesDaFamilia`) and bakes the result into
+ * the task — `quantidade` XOR `variations` — together with `linkDocId`, the
+ * status-writeback target, so the handler re-resolves NOTHING: no fresh gate,
+ * no fresh quantities, no produto/link/children/estoque reads. Firestore
+ * reads per task: the per-conta pause state doc (plus the context loader's
+ * own conta/token loads).
+ *
+ * ---- Retry staleness — the trade the owner chose over a monotonic guard: a
+ * Cloud Tasks retry, or a task parked behind a 429 pause, sends numbers up to
+ * `now − sweepComputedAtMs` old and can briefly overwrite a newer value; the
+ * next sweep converges. Every `'sent'` logs `ageMs` so that staleness stays
+ * observable.
  *
  * ---- Per-conta 429 pause (`estoqueMercadoLivreSync/{integracaoId}`): on a
  * rate-limit the handler stamps `pausedUntilUs` (Retry-After when ML sent one,
@@ -34,7 +43,7 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
 import { millisToMicros } from '@delfrance/core/datetime';
-import { idFromRef, toOuterRef } from '@delfrance/schemas';
+import { idFromRef } from '@delfrance/schemas';
 import {
   type MlItem,
   MercadoLivreHttpError,
@@ -44,19 +53,10 @@ import {
 } from '@delfrance/integrations-mercado-livre';
 import {
   estoqueMercadoLivreSyncCollection,
-  produtoCollection,
   produtoMercadoLivreLinkCollection,
-  variacaoMercadoLivreLinkCollection,
 } from '@delfrance/data/admin/collections';
 
-import {
-  PAUSE_REENQUEUE_JITTER_MAX_S,
-  type ResolvedLinkIdentity,
-  computeQuantidades,
-  maxPauseReenqueues,
-  ratePauseMin,
-  resolveSendUnits,
-} from './estoquePlan';
+import { PAUSE_REENQUEUE_JITTER_MAX_S, maxPauseReenqueues, ratePauseMin } from './estoquePlan';
 import { loadMercadoLivreContext } from './mercadoLivre';
 import { MlTasksDisabledError } from './mlTasks';
 import type { MlStockTaskScheduler } from './mlStockTasks';
@@ -64,19 +64,39 @@ import type { MlStockTaskScheduler } from './mlStockTasks';
 /* ------------------------------- task payload ------------------------------ */
 
 /**
- * The stock send task payload — TARGETS ONLY, never quantities (module doc).
- * Enqueued by the sweeps (PR C) and by the pause gate's self re-enqueue;
+ * The stock send task payload — carries the SWEEP-COMPUTED quantities (module
+ * doc). Enqueued by the sweeps (PR C) and by the pause gate's self re-enqueue;
  * re-validated on every dispatch (Cloud Tasks payloads are wire data).
+ *
+ * Deliberately PLAIN zod (the registry-safe convention — no `.refine`): the
+ * "exactly ONE of `quantidade` / `variations` non-null" invariant is enforced
+ * by the handler instead (both null → dropped `'payload-sem-quantidade'`;
+ * both non-null → `variations` wins, loudly).
+ *
+ * `estoquePlan.buildSendTasks`'s `StockSendTaskDraft` mirrors this shape
+ * field-for-field, so the sweep's drafts parse verbatim — pinned (compile-time
+ * and runtime) in estoqueSend.test.ts.
  */
 export const mlStockSendTaskSchema = z.object({
   integracaoId: z.string().min(1),
-  /** The family ANCHOR produto — quantities are computed for this family. */
+  /** The family ANCHOR produto — the writeback path segment + log identity. */
   produtoId: z.string().min(1),
   /** The ONE MLB item this task PUTs. */
   itemId: z.string().min(1),
   kind: z.enum(['item', 'variationItem']),
   /** UP model: the variation child behind `itemId`; null on `kind: 'item'`. */
   variacaoProdutoId: z.string().min(1).nullable().default(null),
+  /** The conta's `produtoMercadoLivre` link doc id — the status-writeback target, NEVER re-resolved. */
+  linkDocId: z.string().min(1),
+  /** Single-item quantity (sweep-computed) — null when `variations` carries the numbers. */
+  quantidade: z.number().int().min(0).nullable().default(null),
+  /** Old-model bulk send: one entry per variation, `id` = the NUMERIC variação-link id. */
+  variations: z
+    .array(z.object({ id: z.number().int(), available_quantity: z.number().int().min(0) }))
+    .nullable()
+    .default(null),
+  /** When the sweep computed the quantities (ms since epoch) — feeds the `ageMs` sent log. */
+  sweepComputedAtMs: z.number().int(),
   /** The sweep tick that enqueued this task (log correlation only). */
   sweepId: z.string().min(1),
   /** How many times the pause gate re-enqueued this task (capped → drop). */
@@ -127,9 +147,9 @@ function defaultJitterSec(maxS: number): number {
 
 export type StockSendOutcome =
   | 'sent' // the ONE ML call succeeded and the link writeback landed
-  | 'skipped' // deterministic no-send (gate closed / no depósito / no quantity)
+  | 'skipped' // deterministic no-send (conta misconfigured — no depósito)
   | 'paused-requeued' // conta paused → the task re-enqueued itself past the pause
-  | 'dropped' // malformed payload or pause re-enqueue cap — never retried
+  | 'dropped' // malformed/quantity-less payload or pause re-enqueue cap — never retried
   | 'erro-registrado'; // deterministic ML failure recorded — SUCCESS to the queue
 
 export interface StockSendResult {
@@ -209,14 +229,13 @@ export async function processStockSendTask(
     return { outcome: 'paused-requeued', reason: null };
   }
 
-  // The link identity (writeback target) once resolved — the 4xx error stamp
-  // needs it inside the catch.
-  let link: ResolvedLinkIdentity | null = null;
-
   try {
-    // (2) Account context → depósito → live ML API (the notificacao.ts runner
-    // chain). The depósito check runs BEFORE the token resolve — a conta with
-    // no depósito has nothing to send, so it never needs (or refreshes) a token.
+    // (2) Account context → depósito guard → live ML API (the notificacao.ts
+    // runner chain). The depósito presence check is a CHEAP conta-misconfig
+    // guard — it reads the integração doc the context already loaded (no extra
+    // query) and runs BEFORE the token resolve, so a depósito-less conta never
+    // needs (or refreshes) a token. Mirrors sincronizarEstoquePedido's 'sem
+    // depósito' skip; the sweep should never have enqueued for such a conta.
     const contextLoader = deps.contextLoader ?? loadMercadoLivreContext;
     const apiFactory = deps.apiFactory ?? createMercadoLivreApi;
     const ctx = await contextLoader(db, payload.integracaoId);
@@ -224,7 +243,6 @@ export async function processStockSendTask(
     const depositoId =
       typeof depositoRef === 'string' && depositoRef !== '' ? idFromRef(depositoRef) : '';
     if (!depositoId) {
-      // Mirrors sincronizarEstoquePedido's 'sem depósito' skip.
       console.warn('[mercado-livre] stock-send: integração sem depósito — nada a enviar', {
         integracaoId: payload.integracaoId,
         itemId: payload.itemId,
@@ -234,99 +252,61 @@ export async function processStockSendTask(
     const channelCtx = await ctx.resolveChannelContext(nowMs);
     const api = apiFactory({ getAccessToken: async () => channelCtx.accessToken });
 
-    // (3) FRESH gate: re-resolve the family's send units and find this task's
-    // target. Absent — the gate closed since the sweep (status flipped, link
-    // gone, listing now 'am', produto unpublished…) — is a success-skip.
-    const resolved = await resolveSendUnits(db, {
+    // (3) The request body — the payload's sweep-computed numbers, VERBATIM
+    // (module doc: no re-resolution, no fresh reads). The schema stays plain,
+    // so the exactly-one invariant is enforced here: both null is an enqueue
+    // bug (a retry would fail identically → drop); both non-null prefers the
+    // bulk `variations`, loudly.
+    if (payload.variations != null && payload.quantidade != null) {
+      console.warn(
+        '[mercado-livre] stock-send: payload com quantidade E variations — variations vence',
+        { integracaoId: payload.integracaoId, itemId: payload.itemId, sweepId: payload.sweepId },
+      );
+    }
+    const body: Record<string, unknown> | null =
+      payload.variations != null
+        ? { variations: payload.variations }
+        : payload.quantidade != null
+          ? { available_quantity: payload.quantidade }
+          : null;
+    if (body == null) {
+      console.error(
+        '[mercado-livre] stock-send: payload sem quantidade nem variations — task descartada',
+        { integracaoId: payload.integracaoId, itemId: payload.itemId, sweepId: payload.sweepId },
+      );
+      return { outcome: 'dropped', reason: 'payload-sem-quantidade' };
+    }
+
+    // (4) The ONE ML API call this task exists for.
+    const resp = await api.updateItem(payload.itemId, body);
+
+    // (5) Writeback (itemsStatusSync discipline): merge the fresh listing
+    // status onto the link doc the PAYLOAD names (`linkDocId` under the anchor
+    // `produtoId` — carried from the sweep, never re-resolved) so the derived
+    // estado + raw status/sub_status never go stale on a successful send.
+    await produtoMercadoLivreLinkCollection.merge(
+      db,
+      { produtoId: payload.produtoId },
+      payload.linkDocId,
+      {
+        estado: estadoFromMlStatus(resp.status),
+        status: resp.status ?? null,
+        sub_status: resp.sub_status ?? [],
+        ultimaModificacao: nowMs,
+      },
+    );
+
+    // Staleness observability (module doc): the numbers were computed at sweep
+    // time and sent verbatim — `ageMs` says how old they were.
+    console.info('[mercado-livre] stock-send: enviado', {
       integracaoId: payload.integracaoId,
-      produtoId: payload.produtoId,
-    });
-    link = resolved.link;
-    const unit = resolved.units.find((u) => u.itemId === payload.itemId);
-    if (unit == null || link == null) {
-      console.warn('[mercado-livre] stock-send: gate fechado desde o sweep — task ignorada', {
-        integracaoId: payload.integracaoId,
-        itemId: payload.itemId,
-        skips: resolved.skips,
-      });
-      return { outcome: 'skipped', reason: 'unidade-ausente' };
-    }
-
-    // (4) FRESH quantities → request body.
-    let body: Record<string, unknown>;
-    if (unit.kind === 'variationItem') {
-      // UP model: each variation is its own ML item → single quantity.
-      const qty = await computeQuantidades(db, {
-        produtoId: unit.variacaoProdutoId ?? unit.produtoId,
-        depositoId,
-      });
-      if (qty == null) return { outcome: 'skipped', reason: 'quantidade-indisponivel' };
-      body = { available_quantity: qty };
-    } else {
-      const childrenSnap = await produtoCollection
-        .ref(db, {})
-        .where('paiId', '==', unit.produtoId)
-        .orderBy('nome', 'asc')
-        .get();
-      if (childrenSnap.docs.length === 0) {
-        // Childless listing → single quantity for the anchor itself.
-        const qty = await computeQuantidades(db, { produtoId: unit.produtoId, depositoId });
-        if (qty == null) return { outcome: 'skipped', reason: 'quantidade-indisponivel' };
-        body = { available_quantity: qty };
-      } else {
-        // Old model with variations: ONE bulk PUT carrying every child that
-        // has a numeric variação link id (parity: legacy sent what it could).
-        const parentLinkOuterRef = toOuterRef(
-          produtoMercadoLivreLinkCollection.docPath({ produtoId: link.produtoId }, link.docId),
-        );
-        const variations: Array<{ id: number; available_quantity: number }> = [];
-        for (const child of childrenSnap.docs) {
-          const varSnap = await variacaoMercadoLivreLinkCollection
-            .ref(db, { produtoId: child.id })
-            .get();
-          const varLink = varSnap.docs
-            .map((d) => d.data() as Record<string, unknown>)
-            .find((raw) => raw.produtoMercadoLivreOuterRef === parentLinkOuterRef);
-          // The NUMERIC ML variation `id` this time — NOT the UP `itemId`.
-          const variationId =
-            typeof varLink?.id === 'number' && Number.isInteger(varLink.id) ? varLink.id : null;
-          if (variationId == null) {
-            console.warn(
-              '[mercado-livre] stock-send: variação sem link/id numérico — fora do envio',
-              { integracaoId: payload.integracaoId, itemId: unit.itemId, produtoId: child.id },
-            );
-            continue;
-          }
-          const qty = await computeQuantidades(db, { produtoId: child.id, depositoId });
-          if (qty == null) {
-            console.warn(
-              '[mercado-livre] stock-send: variação sem quantidade computável — fora do envio',
-              { integracaoId: payload.integracaoId, itemId: unit.itemId, produtoId: child.id },
-            );
-            continue;
-          }
-          variations.push({ id: variationId, available_quantity: qty });
-        }
-        if (variations.length === 0) return { outcome: 'skipped', reason: 'sem-variacoes' };
-        body = { variations };
-      }
-    }
-
-    // (5) The ONE ML API call this task exists for.
-    const resp = await api.updateItem(unit.itemId, body);
-
-    // (6) Writeback (itemsStatusSync discipline): merge the fresh listing
-    // status onto the anchor's link doc so the derived estado + raw
-    // status/sub_status never go stale on a successful send.
-    await produtoMercadoLivreLinkCollection.merge(db, { produtoId: link.produtoId }, link.docId, {
-      estado: estadoFromMlStatus(resp.status),
-      status: resp.status ?? null,
-      sub_status: resp.sub_status ?? [],
-      ultimaModificacao: nowMs,
+      itemId: payload.itemId,
+      sweepId: payload.sweepId,
+      ageMs: nowMs - payload.sweepComputedAtMs,
     });
     return { outcome: 'sent', reason: null };
   } catch (err) {
-    // (7) Narrowed error policy (module doc) — anything unlisted RETHROWS.
+    // (6) Narrowed error policy (module doc) — anything unlisted RETHROWS.
     if (err instanceof MercadoLivreReauthRequiredError) {
       // A dead credential never self-heals by retrying — record and succeed.
       console.error('[mercado-livre] stock-send: credencial morta — reconecte a conta', {
@@ -359,21 +339,20 @@ export async function processStockSendTask(
       }
       if (err.status >= 400 && err.status < 500) {
         // Deterministic rejection (404 gone, 400 validation…) — a retry fails
-        // identically. Stamp the link like publish.ts does and succeed.
+        // identically. Stamp the link like publish.ts does and succeed; the
+        // payload carries the writeback target, so no resolution state needed.
         console.error('[mercado-livre] stock-send: rejeição determinística do ML — sem retry', {
           integracaoId: payload.integracaoId,
           itemId: payload.itemId,
           status: err.status,
           error: err.message,
         });
-        if (link != null) {
-          await produtoMercadoLivreLinkCollection.merge(
-            db,
-            { produtoId: link.produtoId },
-            link.docId,
-            { estado: 'E', errors: [err.message], ultimaModificacao: nowMs },
-          );
-        }
+        await produtoMercadoLivreLinkCollection.merge(
+          db,
+          { produtoId: payload.produtoId },
+          payload.linkDocId,
+          { estado: 'E', errors: [err.message], ultimaModificacao: nowMs },
+        );
         return { outcome: 'erro-registrado', reason: 'http-4xx' };
       }
       throw err; // 5xx — transient, the queue retries
