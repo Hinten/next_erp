@@ -136,7 +136,7 @@ describe('CancelarNFeForm', () => {
       expect(notifShowMock).toHaveBeenCalledWith(
         expect.objectContaining({
           color: 'yellow',
-          message: 'O pedido não pôde ser cancelado automaticamente.',
+          message: 'Não foi possível confirmar o cancelamento do pedido — verifique o pedido.',
         }),
       ),
     );

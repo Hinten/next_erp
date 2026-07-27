@@ -64,9 +64,12 @@ export function CancelarNFeForm({ pedidoId, nfeId, numero }: CancelarNFeFormProp
       });
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;
+      // `cancelarPedido` can fail after already writing the estado (e.g. the
+      // história append), so this must not assert the pedido stayed
+      // unchanged — just point the operator at it.
       notifications.show({
         color: 'yellow',
-        message: 'O pedido não pôde ser cancelado automaticamente.',
+        message: 'Não foi possível confirmar o cancelamento do pedido — verifique o pedido.',
       });
     }
   }
