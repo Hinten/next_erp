@@ -1,4 +1,4 @@
-import { Unzip, Zip, ZipDeflate, strToU8, unzipSync } from 'fflate';
+import { Zip, ZipDeflate, strToU8, unzipSync } from 'fflate';
 
 /**
  * Parse ZPL blocks from a string. ZPL blocks are delimited by ^XA (start) and
@@ -61,16 +61,27 @@ export function removeZplDanfeBlocks(zpl: string): string | null {
 
 /**
  * Remove DANFE blocks from a ZIP file containing ZPL labels.
- * Returns the processed ZIP bytes, or null if no DANFE blocks were found.
+ * Returns the processed ZIP bytes (with DANFE blocks removed), or null if no changes
+ * should be made (fail-safe).
  *
- * The fail-safe behavior:
- * - If no DANFE blocks are found in any file, returns null
- * - If removal would empty a file's content, skips the removal for that file
- * - If all files would be emptied, returns null (returns original)
+ * The fail-safe behavior ensures printing is never blocked:
+ * - If the input ZIP is corrupt/invalid, returns null (preserves original)
+ * - If no DANFE blocks are found in any file, returns null (no changes needed)
+ * - If removal would empty a file's content, skips removal for that file
+ * - If all files would be emptied, returns null (preserves original)
  */
 export function removeZplDanfeFromZip(zipBytes: Uint8Array): Uint8Array | null {
-  // Unzip the input
-  const unzipped = unzipSync(zipBytes);
+  // Unzip the input; on corrupt ZIP, fail-safe to return null (preserve original)
+  let unzipped: Record<string, Uint8Array>;
+  try {
+    unzipped = unzipSync(zipBytes);
+  } catch (err) {
+    if (err instanceof Error) {
+      // Corrupt or invalid ZIP — return null to preserve the original bytes
+      return null;
+    }
+    throw err;
+  }
 
   const files = Object.entries(unzipped);
   let hadAnyDanfe = false;

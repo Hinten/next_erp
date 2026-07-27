@@ -1,8 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { parseZplBlocks, removeZplDanfeBlocks, removeZplDanfeFromZip } from '../src/zplDanfeFilter';
-import { Zip, ZipDeflate, strToU8 } from 'fflate';
+import { Zip, ZipDeflate, strToU8, unzipSync } from 'fflate';
 
 describe('zplDanfeFilter', () => {
+  // Helper to extract text from a ZIP file
+  function getZipFileContent(zipBytes: Uint8Array, filename: string): string {
+    const unzipped = unzipSync(zipBytes);
+    const fileBytes = unzipped[filename];
+    if (!fileBytes) {
+      throw new Error(`File ${filename} not found in ZIP`);
+    }
+    return new TextDecoder().decode(fileBytes);
+  }
+
   describe('parseZplBlocks', () => {
     it('parses a single ZPL block', () => {
       const zpl = `^XA
@@ -150,6 +160,10 @@ describe('zplDanfeFilter', () => {
       const result = removeZplDanfeFromZip(zipBytes);
       expect(result).not.toBeNull();
       expect(result).toBeInstanceOf(Uint8Array);
+      // Verify DANFE was actually removed
+      const content = getZipFileContent(result!, 'label.zpl');
+      expect(content).not.toContain('DANFE Block');
+      expect(content).toContain('Label');
     });
 
     it('returns null if no DANFE found in ZIP', async () => {
@@ -221,6 +235,12 @@ describe('zplDanfeFilter', () => {
 
       const result = removeZplDanfeFromZip(zipBytes);
       expect(result).not.toBeNull();
+      // Verify DANFE was removed from file1 and file2 still exists
+      const label1 = getZipFileContent(result!, 'label1.zpl');
+      expect(label1).not.toContain('DANFE');
+      expect(label1).toContain('Label 1');
+      const label2 = getZipFileContent(result!, 'label2.zpl');
+      expect(label2).toContain('Label 2');
     });
 
     it('returns null if all files would be emptied by DANFE removal', async () => {
@@ -289,6 +309,13 @@ describe('zplDanfeFilter', () => {
 
       const result = removeZplDanfeFromZip(zipBytes);
       expect(result).not.toBeNull();
+      // Verify DANFE was removed from ZPL file
+      const zplResult = getZipFileContent(result!, 'label.zpl');
+      expect(zplResult).not.toContain('DANFE');
+      expect(zplResult).toContain('Label');
+      // Verify non-ZPL file is preserved unchanged
+      const txtResult = getZipFileContent(result!, 'manifest.txt');
+      expect(txtResult).toBe(txtContent);
     });
 
     it('handles edge case: empty ZIP', async () => {
