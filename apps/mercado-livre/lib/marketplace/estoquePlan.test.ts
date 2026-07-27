@@ -119,6 +119,7 @@ import {
   ESTOQUE_MIN,
   type FamilyChild,
   type FamilyMember,
+  MAX_VARIATIONS_PER_TASK,
   MERCADO_LIVRE_STOCK_SEND_QUEUE,
   PAUSE_REENQUEUE_JITTER_MAX_S,
   type RawVarLinkRow,
@@ -212,6 +213,7 @@ const TOUCHED_ENV = [
 ];
 
 const PARENT_LINK_REF = 'documents/produtos/PROD/produtoMercadoLivre/link1';
+const PARENT_LINK_REF2 = 'documents/produtos/PROD/produtoMercadoLivre/link2';
 
 /* Expected-tree builders (plain objects — the mock Exprs compare structurally). */
 const f = (name: string) => ({ kind: 'field', name });
@@ -323,8 +325,10 @@ const maxChildrenSub = () => ({
   ],
 });
 
+// ARRAY join, no limit(1): a produto can hold SEVERAL live listings on ONE
+// conta and every one receives stock (functions.dart:275-282).
 const linkSub = () => ({
-  kind: 'scalarSubquery',
+  kind: 'arraySubquery',
   stages: [
     { stage: 'subcollection', args: ['produtoMercadoLivre'] },
     {
@@ -336,7 +340,6 @@ const linkSub = () => ({
         ),
       ],
     },
-    { stage: 'limit', args: [1] },
     {
       stage: 'select',
       args: [
@@ -457,7 +460,7 @@ function expectedStages(s1: unknown, limit: number, changedSinceMs = FROM_MS): R
         'timestamp',
         alias('estoque', ownEstoqueSub()),
         alias('componentEstoques', compEstoquesSub('anchorKitKeys')),
-        alias('link', linkSub()),
+        alias('links', linkSub()),
         alias('children', childrenSub()),
         alias('temVenda30d', gt(len(vendaSub()), 0)),
       ],
@@ -491,7 +494,8 @@ function child(
 interface FamilyRowSpec {
   anchor?: Partial<FamilyMember>;
   integracoes?: string[];
-  link?: Record<string, unknown> | null;
+  /** Each entry merges over the default listing; `[]` = conta has no listings. */
+  links?: Array<Record<string, unknown>>;
   children?: FamilyChild[];
   temVenda30d?: boolean;
 }
@@ -501,18 +505,15 @@ function familyRow(spec: FamilyRowSpec = {}): StockFamilyRow {
     anchorId: 'PROD',
     anchor: member('PROD', spec.anchor),
     integracoesComProduto: spec.integracoes ?? [CONTA],
-    link:
-      spec.link === null
-        ? null
-        : {
-            id: 'MLB111',
-            estado: 'p',
-            status: 'active',
-            sub_status: null,
-            isUserProductModel: false,
-            linkDocId: 'link1',
-            ...spec.link,
-          },
+    links: (spec.links ?? [{}]).map((link) => ({
+      id: 'MLB111',
+      estado: 'p',
+      status: 'active',
+      sub_status: null,
+      isUserProductModel: false,
+      linkDocId: 'link1',
+      ...link,
+    })),
     children: spec.children ?? [],
     temVenda30d: spec.temVenda30d ?? false,
   };
@@ -520,6 +521,7 @@ function familyRow(spec: FamilyRowSpec = {}): StockFamilyRow {
 
 beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -540,6 +542,7 @@ describe('constants', () => {
       'estornadoParcialmente',
     ]);
     expect(PAUSE_REENQUEUE_JITTER_MAX_S).toBe(30);
+    expect(MAX_VARIATIONS_PER_TASK).toBe(2000);
     expect(MERCADO_LIVRE_STOCK_SEND_QUEUE).toBe('sendMercadoLivreStock');
     expect(STOCK_SYNC_FLAG_ENV).toBe('MERCADO_LIVRE_STOCK_SYNC_ENABLED');
   });
@@ -877,7 +880,7 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
           'junk',
           null,
         ],
-        link: { id: 'MLB111', linkDocId: 'link1' },
+        links: [{ id: 'MLB111', linkDocId: 'link1' }, 'junk', null], // non-objects filtered
         children: [
           {
             childId: 'CH2',
@@ -885,7 +888,10 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
             timestamp: T2,
             estoque: { quantidade: 3, quantidadeReservada: 1 },
             componentEstoques: [],
-            varLinks: [{ itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
+            varLinks: [
+              { itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF },
+              ['array-junk'], // arrays are objects — filtered explicitly
+            ],
           },
           { childId: 'CH1', varLinks: 'junk' }, // legacy doc — defaults everywhere
           { childId: '', varLinks: [] }, // junk rows dropped
@@ -915,7 +921,7 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
           ],
         },
         integracoesComProduto: [CONTA],
-        link: { id: 'MLB111', linkDocId: 'link1' },
+        links: [{ id: 'MLB111', linkDocId: 'link1' }],
         children: [
           {
             produtoId: 'CH1',
@@ -955,7 +961,7 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
           componentEstoques: [],
         },
         integracoesComProduto: [],
-        link: null,
+        links: [],
         children: [],
         temVenda30d: false,
       },
@@ -1154,46 +1160,46 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
   });
 
   it('paused + out_of_stock is enviável (ML auto-reactivates on qty > 0)', () => {
-    const res = run(familyRow({ link: { status: 'paused', sub_status: ['out_of_stock'] } }));
+    const res = run(familyRow({ links: [{ status: 'paused', sub_status: ['out_of_stock'] }] }));
     expect(res.tasks).toHaveLength(1);
     expect(res.skips).toEqual([]);
   });
 
-  it('no link for this conta → sem-link', () => {
-    expect(run(familyRow({ link: null }))).toEqual({
+  it('conta with no listings (links: []) → single sem-link skip', () => {
+    expect(run(familyRow({ links: [] }))).toEqual({
       tasks: [],
       skips: [{ produtoId: 'PROD', reason: 'sem-link' }],
     });
   });
 
   it('link without a doc id (defensive — server-projected) → sem-link', () => {
-    expect(run(familyRow({ link: { linkDocId: null } })).skips).toEqual([
+    expect(run(familyRow({ links: [{ linkDocId: null }] })).skips).toEqual([
       { produtoId: 'PROD', reason: 'sem-link' },
     ]);
   });
 
   it('link never published (id null) → sem-item-id', () => {
-    expect(run(familyRow({ link: { id: null } })).skips).toEqual([
+    expect(run(familyRow({ links: [{ id: null }] })).skips).toEqual([
       { produtoId: 'PROD', reason: 'sem-item-id' },
     ]);
   });
 
   it("estado 'am' (mid-UP-migration, Flutter-driven) → aguardando-migracao", () => {
-    expect(run(familyRow({ link: { estado: 'am' } })).skips).toEqual([
+    expect(run(familyRow({ links: [{ estado: 'am' }] })).skips).toEqual([
       { produtoId: 'PROD', reason: 'aguardando-migracao' },
     ]);
   });
 
   it('non-enviável documented status → status-nao-enviavel, NO warn', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockClear();
-    const res = run(familyRow({ link: { status: 'paused', sub_status: ['paused_by_seller'] } }));
+    const res = run(familyRow({ links: [{ status: 'paused', sub_status: ['paused_by_seller'] }] }));
     expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('undocumented status → status-nao-enviavel + loud warn (status tracking)', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockClear();
-    const res = run(familyRow({ link: { status: 'brand_new_status', sub_status: null } }));
+    const res = run(familyRow({ links: [{ status: 'brand_new_status', sub_status: null }] }));
     expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('status'),
@@ -1222,26 +1228,32 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
   });
 
   it('skip reasons follow the documented evaluation order', () => {
-    // Link-level reasons before produto-level gates: estado 'am' wins over an
-    // unknown status AND over kit-virtual/nao-publicado.
+    // Anchor-level rungs run ONCE before the per-listing loop: kit-virtual
+    // wins over nao-publicado AND over every per-listing reason (estado 'am',
+    // unknown status) — ONE family skip, never one per listing.
     expect(
       run(
         familyRow({
           anchor: { ehKitVirtual: true, publicado: false },
-          link: { estado: 'am', status: 'weird' },
+          links: [{ estado: 'am', status: 'weird' }],
         }),
       ).skips,
-    ).toEqual([{ produtoId: 'PROD', reason: 'aguardando-migracao' }]);
+    ).toEqual([{ produtoId: 'PROD', reason: 'kit-virtual' }]);
 
-    // status gate before the produto-level gates.
     expect(
       run(
         familyRow({
           anchor: { ehKitVirtual: true },
-          link: { status: 'paused', sub_status: [] },
+          links: [{ status: 'paused', sub_status: [] }],
         }),
       ).skips,
-    ).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
+    ).toEqual([{ produtoId: 'PROD', reason: 'kit-virtual' }]);
+
+    // Inside the loop the per-listing rungs keep their order: estado 'am'
+    // wins over an unknown status.
+    expect(run(familyRow({ links: [{ estado: 'am', status: 'weird' }] })).skips).toEqual([
+      { produtoId: 'PROD', reason: 'aguardando-migracao' },
+    ]);
   });
 
   it('old model + children → ONE bulk item task with numeric variation ids', () => {
@@ -1313,8 +1325,9 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
     ]);
   });
 
-  it('old bulk: > 1000 variations still builds ONE task but warns loudly (no cap)', () => {
+  it('old bulk: > 1000 variations (below the cap) still builds ONE task + early warn', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockClear();
+    const errorSpy = vi.spyOn(console, 'error').mockClear();
     const children: FamilyChild[] = [];
     const qty = new Map<string, number>([['PROD', 7]]);
     for (let i = 1; i <= 1001; i++) {
@@ -1329,6 +1342,33 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
       expect.stringContaining('variations'),
       expect.objectContaining({ produtoId: 'PROD', itemId: 'MLB111', variations: 1001 }),
     );
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('old bulk: variations past MAX_VARIATIONS_PER_TASK → NO task, skip + console.error', () => {
+    // Past the cap the Cloud Tasks enqueue itself would reject the ~100 KB+
+    // payload and the sweep would re-attempt the same family forever.
+    const warnSpy = vi.spyOn(console, 'warn').mockClear();
+    const errorSpy = vi.spyOn(console, 'error').mockClear();
+    const children: FamilyChild[] = [];
+    const qty = new Map<string, number>([['PROD', 7]]);
+    for (let i = 1; i <= MAX_VARIATIONS_PER_TASK + 1; i++) {
+      children.push(child(`CH${i}`, [{ id: i, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]));
+      qty.set(`CH${i}`, 1);
+    }
+    const res = buildSendTasks(familyRow({ children }), qty, OPTS);
+    expect(res.tasks).toEqual([]);
+    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'variations-excede-limite' }]);
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('variations'),
+      expect.objectContaining({
+        produtoId: 'PROD',
+        itemId: 'MLB111',
+        variations: MAX_VARIATIONS_PER_TASK + 1,
+        max: MAX_VARIATIONS_PER_TASK,
+      }),
+    );
+    expect(warnSpy).not.toHaveBeenCalled(); // the hard guard runs BEFORE the early warn
   });
 
   it('old bulk: EVERY child excluded → no task, only the skips', () => {
@@ -1344,7 +1384,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
 
   it('UP model: one variationItem task per child, deduped by itemId', () => {
     const row = familyRow({
-      link: { isUserProductModel: true },
+      links: [{ isUserProductModel: true }],
       children: [
         child('CH1', [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
         child('CH2', [{ itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
@@ -1383,7 +1423,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
 
   it('UP model: per-child sem-link / sem-item-id / kit-virtual skips, siblings sent', () => {
     const row = familyRow({
-      link: { isUserProductModel: true },
+      links: [{ isUserProductModel: true }],
       children: [
         child('CH1', [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
         child('CH2', []),
@@ -1415,7 +1455,7 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
   });
 
   it('childless UP family degenerates to a single item task with the anchor quantity', () => {
-    expect(run(familyRow({ link: { isUserProductModel: true } }))).toEqual({
+    expect(run(familyRow({ links: [{ isUserProductModel: true }] }))).toEqual({
       tasks: [
         {
           ...BASE_TASK,
@@ -1423,6 +1463,116 @@ describe('buildSendTasks — decision ladder + task shapes', () => {
           itemId: 'MLB111',
           variacaoProdutoId: null,
           quantidade: 7,
+          variations: null,
+        },
+      ],
+      skips: [],
+    });
+  });
+
+  /* ------------- multi-listing: the legacy per-listing loop --------------- */
+
+  it('two ACTIVE listings on one conta (old model) → one item task PER listing, per-link matching', () => {
+    // Each listing carries its OWN itemId/linkDocId, and each child variation
+    // is matched against THAT listing's docPath (PARENT_LINK_REF vs _REF2).
+    const row = familyRow({
+      links: [{}, { id: 'MLB222', linkDocId: 'link2' }],
+      children: [
+        child('CH1', [
+          { id: 101, produtoMercadoLivreOuterRef: PARENT_LINK_REF },
+          { id: 201, produtoMercadoLivreOuterRef: PARENT_LINK_REF2 },
+        ]),
+        child('CH2', [
+          { id: 102, produtoMercadoLivreOuterRef: PARENT_LINK_REF },
+          { id: 202, produtoMercadoLivreOuterRef: PARENT_LINK_REF2 },
+        ]),
+      ],
+    });
+    const qty = new Map([
+      ['PROD', 7],
+      ['CH1', 3],
+      ['CH2', 4],
+    ]);
+    expect(buildSendTasks(row, qty, OPTS)).toEqual({
+      tasks: [
+        {
+          ...BASE_TASK,
+          kind: 'item',
+          itemId: 'MLB111',
+          variacaoProdutoId: null,
+          quantidade: null,
+          variations: [
+            { id: 101, available_quantity: 3 },
+            { id: 102, available_quantity: 4 },
+          ],
+        },
+        {
+          ...BASE_TASK,
+          linkDocId: 'link2',
+          kind: 'item',
+          itemId: 'MLB222',
+          variacaoProdutoId: null,
+          quantidade: null,
+          variations: [
+            { id: 201, available_quantity: 3 },
+            { id: 202, available_quantity: 4 },
+          ],
+        },
+      ],
+      skips: [],
+    });
+  });
+
+  it('per-listing status gate: a paused listing skips ALONE, the active sibling still sends', () => {
+    const res = run(
+      familyRow({
+        links: [
+          { status: 'paused', sub_status: ['paused_by_seller'] },
+          { id: 'MLB222', linkDocId: 'link2' },
+        ],
+      }),
+    );
+    expect(res.tasks).toEqual([
+      {
+        ...BASE_TASK,
+        linkDocId: 'link2',
+        kind: 'item',
+        itemId: 'MLB222',
+        variacaoProdutoId: null,
+        quantidade: 7,
+        variations: null,
+      },
+    ]);
+    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
+  });
+
+  it('UP dedup across listings: two links resolving the SAME variation itemId emit once', () => {
+    // The cycle-wide emittedItemIds set spans the whole per-listing loop —
+    // the duplicate drops silently (legacy debug print, no skip).
+    const row = familyRow({
+      links: [
+        { isUserProductModel: true },
+        { id: 'MLB222', linkDocId: 'link2', isUserProductModel: true },
+      ],
+      children: [
+        child('CH1', [
+          { itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF },
+          { itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF2 },
+        ]),
+      ],
+    });
+    const qty = new Map([
+      ['PROD', 7],
+      ['CH1', 3],
+    ]);
+    expect(buildSendTasks(row, qty, OPTS)).toEqual({
+      tasks: [
+        {
+          ...BASE_TASK,
+          kind: 'variationItem',
+          itemId: 'MLB-CH1',
+          variacaoProdutoId: 'CH1',
+          quantidade: 3,
           variations: null,
         },
       ],

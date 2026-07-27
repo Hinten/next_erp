@@ -14,10 +14,13 @@
  * send time). The sweep template is the legacy BigQuery SQL
  * `.old/packages/canal_de_vendas/big_query/changed_estoque_big_query.sql`
  * (live copy inlined in `estoques.dart:394-529`): drive FROM the family
- * anchors (`paiId == null`), join estoques + pedidos + the conta's
- * `produtoMercadoLivre` link + the variation children server-side in ONE
- * pipeline execution per conta per sweep page, with a minimal `select`, and
- * hand the sender a payload it NEVER re-reads produtos/estoques for.
+ * anchors (`paiId == null`), join estoques + pedidos + ALL of the conta's
+ * `produtoMercadoLivre` links (a produto can hold SEVERAL live listings on
+ * ONE conta — the legacy sender loops every one, functions.dart:275-282, and
+ * `buildSendTasks` emits tasks per listing) + the variation children
+ * server-side in ONE pipeline execution per conta per sweep page, with a
+ * minimal `select`, and hand the sender a payload it NEVER re-reads
+ * produtos/estoques for.
  *
  * Owner decisions locked 2026-07-27:
  *  1. Sale estados = the `ESTADOS_VENDA` allow-list (emAnalise /
@@ -269,7 +272,10 @@ export interface RawEstoqueRow {
   [key: string]: unknown;
 }
 
-/** Raw `produtoMercadoLivre` link scalar joined per anchor — read defensively. */
+/**
+ * One raw `produtoMercadoLivre` link row — ONE of the conta's listings on the
+ * family (the join returns every listing) — read defensively.
+ */
 export interface RawStockLinkRow {
   id?: unknown;
   estado?: unknown;
@@ -318,8 +324,13 @@ export interface StockFamilyRow {
   anchor: FamilyMember;
   /** The anchor's `integracoesComProduto` (conta gate), strings only. */
   integracoesComProduto: string[];
-  /** This conta's `produtoMercadoLivre` link, or null when the conta has none. */
-  link: RawStockLinkRow | null;
+  /**
+   * ALL of this conta's `produtoMercadoLivre` links on the family — one row
+   * per listing (anúncio), empty when the conta has none. A produto can hold
+   * several live listings on ONE conta and the legacy sender loops every one
+   * (functions.dart:275-282), so `buildSendTasks` emits per listing.
+   */
+  links: RawStockLinkRow[];
   /** Variation children, sorted by produtoId (output determinism only). */
   children: FamilyChild[];
   /**
@@ -400,8 +411,10 @@ export type FetchStockFamilies = (
  *  - S5 `sort(__name__)` + `limit(pageLimit)` — `__name__` is unique, the
  *    keyset needs no tuple.
  *  - S6 the projection (minimal fields — the 128 MiB ceiling spans joins):
- *    anchor gate fields + own/component estoques + the conta link scalar +
- *    the children array (each with its own estoques + variação links) + the
+ *    anchor gate fields + own/component estoques + the conta's link ARRAY
+ *    (every listing this conta holds on the family — the legacy sender loops
+ *    them all, functions.dart:275-282, one stock send per listing) + the
+ *    children array (each with its own estoques + variação links) + the
  *    family-level pedidos EXISTS probe (`temVenda30d`) — omitted entirely
  *    when `vendaCutoffUs` is null (the daily sweep).
  * Returns ONE page: `rows` plus `nextAfterAnchorId` (the last row's
@@ -516,9 +529,13 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
       .aggregate(pipelines.maximum('m').as('max'))
       .toScalarExpression();
 
-  // This conta's link — legacy writes at most one link per conta; limit(1)
-  // keeps the scalar safe even against dirty duplicate links. Both accepted
-  // contaOuterRef forms, mirroring refMatchesIntegracao (linkRefs.ts).
+  // ALL of this conta's links — the legacy sender loops EVERY listing the
+  // conta holds on the produto (functions.dart:275-282:
+  // `allMarketplaceTarget(contaId)` → one per-listing status gate + stock
+  // send each), so no limit(1): a produto can carry several live anúncios on
+  // ONE conta and each must receive stock. The per-conta filter still scopes
+  // the array to THIS conta's listings. Both accepted contaOuterRef forms,
+  // mirroring refMatchesIntegracao (linkRefs.ts).
   const linkJoin = () =>
     pipelines
       .subcollection('produtoMercadoLivre')
@@ -531,7 +548,6 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
           pipelines.equal(pipelines.field('contaOuterRef'), `integracao/${args.integracaoId}`),
         ),
       )
-      .limit(1)
       .select(
         'id',
         'estado',
@@ -540,7 +556,7 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
         'isUserProductModel',
         pipelines.documentId(pipelines.field('__name__')).as('linkDocId'),
       )
-      .toScalarExpression();
+      .toArrayExpression();
 
   // Variation children with their own estoques + variação links (each nested
   // row is a CHILD, so subcollection() joins on the child's __name__).
@@ -662,7 +678,7 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
       'timestamp',
       ownEstoque().as('estoque'),
       compEstoques('anchorKitKeys').as('componentEstoques'),
-      linkJoin().as('link'),
+      linkJoin().as('links'),
       childrenJoin().as('children'),
       // Skippable sales probe (daily sweep passes vendaCutoffUs null): the
       // absent field coerces to `temVenda30d: false` in mapFamilyRow.
@@ -693,7 +709,9 @@ function mapFamilyRow(anchorId: string, data: Record<string, unknown>): StockFam
     children.push({
       ...coerceMember(child.childId, child),
       varLinks: Array.isArray(child.varLinks)
-        ? child.varLinks.filter((v): v is RawVarLinkRow => v != null && typeof v === 'object')
+        ? child.varLinks.filter(
+            (v): v is RawVarLinkRow => v != null && typeof v === 'object' && !Array.isArray(v),
+          )
         : [],
     });
   }
@@ -707,8 +725,9 @@ function mapFamilyRow(anchorId: string, data: Record<string, unknown>): StockFam
     integracoesComProduto: Array.isArray(data.integracoesComProduto)
       ? data.integracoesComProduto.filter((x): x is string => typeof x === 'string')
       : [],
-    link:
-      data.link != null && typeof data.link === 'object' ? (data.link as RawStockLinkRow) : null,
+    links: Array.isArray(data.links)
+      ? data.links.filter((l): l is RawStockLinkRow => l != null && typeof l === 'object')
+      : [],
     children,
     temVenda30d: data.temVenda30d === true,
   };
@@ -894,6 +913,17 @@ export function deveEnviarIncremental(
 
 export type SendUnitKind = 'item' | 'variationItem';
 
+/**
+ * Hard cap on one old-model bulk task's `variations` array. Cloud Tasks
+ * rejects payloads over ~100 KB at ENQUEUE time — and a rejected enqueue means
+ * the sweep re-attempts the same unsendable family forever. One serialized
+ * entry (`{"id":<~13-digit ML id>,"available_quantity":<=99999},`) is ~40 B,
+ * so 2000 entries ≈ 80 KB — comfortably under the limit with headroom for the
+ * task envelope. Above the cap NO task is built: the listing skips
+ * `'variations-excede-limite'` + `console.error`.
+ */
+export const MAX_VARIATIONS_PER_TASK = 2000;
+
 export type SendSkipReason =
   | 'sem-link'
   | 'sem-item-id'
@@ -901,7 +931,8 @@ export type SendSkipReason =
   | 'status-nao-enviavel'
   | 'kit-virtual'
   | 'nao-publicado'
-  | 'conta-fora-do-produto';
+  | 'conta-fora-do-produto'
+  | 'variations-excede-limite';
 
 export interface SendSkip {
   /** The produto the reason applies to — the family anchor, or the UP child. */
@@ -961,25 +992,46 @@ function skipOnly(produtoId: string, reason: SendSkipReason): BuildSendTasksResu
 
 /**
  * Pure assembly: resolve one family row + its sweep-time quantities into
- * send-task drafts, reproducing the legacy decision ladder EXACTLY, in order:
- * `'sem-link'` (no link for this conta — or a link without a doc id,
- * defensive), `'sem-item-id'` (never published), `'aguardando-migracao'`
- * (`estado 'am'`, mid-UP-migration, Flutter-driven), `'status-nao-enviavel'`
- * (whitelist gate; `desconhecido` statuses additionally warn — status
- * tracking per Lucas), `'kit-virtual'`, `'nao-publicado'`,
+ * send-task drafts, reproducing the legacy PER-LISTING loop
+ * (functions.dart:275-282: `allMarketplaceTarget(contaId)` yields EVERY
+ * listing this conta holds on the produto, and each gets its OWN status gate
+ * and its OWN stock send — a skipped listing never blocks its siblings).
+ *
+ * Anchor-level rungs run ONCE, before the loop, in order: `'sem-link'` (the
+ * conta has NO listings on this family), `'kit-virtual'`
+ * (functions.dart:286-289), then the defensive `'nao-publicado'` /
  * `'conta-fora-do-produto'`.
  *
- * Old model (`isUserProductModel !== true`) with children: ONE `'item'` task
- * carrying the whole family as bulk `variations` (1 task = 1 ML call) —
- * children matched by `produtoMercadoLivreOuterRef === toOuterRef(<parent
- * link docPath>)` (exact string match is safe: both apps write the canonical
- * `documents/...` form, see importVariations.ts), each entry's `id` the
- * NUMERIC variação-link id. Unmatched / id-less / quantity-less children are
- * skip-logged and excluded; ALL children excluded → NO task (skips only).
- * Old model childless → one `'item'` task with the anchor quantity. User
- * Products: one `'variationItem'` task per child (each variation is its own
- * ML item), de-duplicated by itemId; a childless UP family degenerates to a
- * single `'item'` task with the anchor quantity.
+ * Per-listing rungs (legacy `continue` semantics — the skip is pushed and the
+ * OTHER listings still send): `'sem-link'` (listing without a doc id,
+ * defensive — server-projected), `'sem-item-id'` (never published),
+ * `'aguardando-migracao'` (`estado 'am'`, mid-UP-migration, Flutter-driven),
+ * `'status-nao-enviavel'` (whitelist gate PER listing; `desconhecido`
+ * statuses additionally warn with that listing's itemId — status tracking per
+ * Lucas).
+ *
+ * Per surviving listing — every task carries THAT listing's `linkDocId`
+ * (writeback per listing): old model (`isUserProductModel !== true`) with
+ * children → ONE `'item'` task carrying the whole family as bulk `variations`
+ * (1 task = 1 ML call) — children matched by `produtoMercadoLivreOuterRef ===
+ * toOuterRef(<THIS listing's docPath>)` (exact string match is safe: both
+ * apps write the canonical `documents/...` form, see importVariations.ts),
+ * each entry's `id` the NUMERIC variação-link id. Unmatched / id-less /
+ * quantity-less children are skip-logged and excluded; ALL children excluded
+ * → NO task for that listing (skips only); a `variations` array past
+ * `MAX_VARIATIONS_PER_TASK` also builds NO task (the enqueue would blow the
+ * ~100 KB Cloud Tasks payload limit and the sweep would retry forever) —
+ * skip `'variations-excede-limite'` + `console.error`, with the existing
+ * >1000 warn kept as the early warning below the cap. Old model childless → one `'item'`
+ * task with the anchor quantity. User Products: one `'variationItem'` task
+ * per child (each variation is its own ML item); a childless UP listing
+ * degenerates to a single `'item'` task with the anchor quantity.
+ *
+ * Cycle-wide dedup (the legacy `processedUpFamilies` /
+ * `processedUpVariationItems` sets): ONE `emittedItemIds` set spans the whole
+ * family loop — a task whose ML item id (`'item'` → the listing's MLB id,
+ * `'variationItem'` → the variation item id) was already emitted is dropped
+ * silently (legacy printed only a debug line — no warn spam).
  *
  * A member missing from `quantidades` means `quantidadeDoMembro` returned
  * null — only `ehKitVirtual` does that, so the skip reason is
@@ -992,32 +1044,7 @@ export function buildSendTasks(
 ): BuildSendTasksResult {
   const { anchorId } = row;
 
-  const link = row.link;
-  if (link == null) return skipOnly(anchorId, 'sem-link');
-  const linkDocId =
-    typeof link.linkDocId === 'string' && link.linkDocId !== '' ? link.linkDocId : null;
-  if (linkDocId == null) return skipOnly(anchorId, 'sem-link'); // defensive — server-projected
-
-  const itemId = typeof link.id === 'string' && link.id !== '' ? link.id : null;
-  if (itemId == null) return skipOnly(anchorId, 'sem-item-id');
-  if (link.estado === 'am') return skipOnly(anchorId, 'aguardando-migracao');
-
-  const statusGate = podeEnviarEstoque(
-    typeof link.status === 'string' ? link.status : null,
-    Array.isArray(link.sub_status)
-      ? link.sub_status.filter((s): s is string => typeof s === 'string')
-      : null,
-  );
-  if (statusGate.desconhecido) {
-    console.warn('[mercado-livre] stock-sync: status de anúncio fora do conjunto documentado', {
-      integracaoId: opts.integracaoId,
-      produtoId: anchorId,
-      itemId,
-      status: link.status ?? null,
-    });
-  }
-  if (!statusGate.enviar) return skipOnly(anchorId, 'status-nao-enviavel');
-
+  if (row.links.length === 0) return skipOnly(anchorId, 'sem-link');
   if (row.anchor.ehKitVirtual) return skipOnly(anchorId, 'kit-virtual');
   // DEFENSIVE-ONLY rung: S1 already filters `publicado` server-side (keep the S1 term).
   if (!row.anchor.publicado) return skipOnly(anchorId, 'nao-publicado');
@@ -1026,40 +1053,160 @@ export function buildSendTasks(
     return skipOnly(anchorId, 'conta-fora-do-produto');
   }
 
-  const base = {
-    integracaoId: opts.integracaoId,
-    produtoId: anchorId,
-    linkDocId,
-    sweepId: opts.sweepId,
-    sweepComputedAtMs: opts.sweepComputedAtMs,
-    reenqueues: 0,
-  };
+  const tasks: StockSendTaskDraft[] = [];
+  const skips: SendSkip[] = [];
+  // Cycle-wide dedup across ALL of the family's listings (legacy
+  // processedUpFamilies / processedUpVariationItems): each ML item id is sent
+  // at most once per cycle; a duplicate drops silently (legacy debug print).
+  const emittedItemIds = new Set<string>();
 
-  if (row.children.length === 0) {
-    // Childless family (old model or UP alike) → one item task with the
-    // anchor's own quantity. A missing entry is only possible for virtuals —
-    // unreachable after the kit-virtual rung, guarded defensively.
-    const quantidade = quantidades.get(anchorId) ?? null;
-    if (quantidade == null) return skipOnly(anchorId, 'kit-virtual');
-    return {
-      tasks: [
-        { ...base, kind: 'item', itemId, variacaoProdutoId: null, quantidade, variations: null },
-      ],
-      skips: [],
+  // The legacy per-listing loop (functions.dart:275-282) — each of the
+  // conta's listings gets its own gates and its own send; `continue` skips
+  // ONE listing, never the family.
+  for (const link of row.links) {
+    const linkDocId =
+      typeof link.linkDocId === 'string' && link.linkDocId !== '' ? link.linkDocId : null;
+    if (linkDocId == null) {
+      skips.push({ produtoId: anchorId, reason: 'sem-link' }); // defensive — server-projected
+      continue;
+    }
+
+    const itemId = typeof link.id === 'string' && link.id !== '' ? link.id : null;
+    if (itemId == null) {
+      skips.push({ produtoId: anchorId, reason: 'sem-item-id' });
+      continue;
+    }
+    if (link.estado === 'am') {
+      skips.push({ produtoId: anchorId, reason: 'aguardando-migracao' });
+      continue;
+    }
+
+    const statusGate = podeEnviarEstoque(
+      typeof link.status === 'string' ? link.status : null,
+      Array.isArray(link.sub_status)
+        ? link.sub_status.filter((s): s is string => typeof s === 'string')
+        : null,
+    );
+    if (statusGate.desconhecido) {
+      console.warn('[mercado-livre] stock-sync: status de anúncio fora do conjunto documentado', {
+        integracaoId: opts.integracaoId,
+        produtoId: anchorId,
+        itemId,
+        status: link.status ?? null,
+      });
+    }
+    if (!statusGate.enviar) {
+      skips.push({ produtoId: anchorId, reason: 'status-nao-enviavel' });
+      continue;
+    }
+
+    const base = {
+      integracaoId: opts.integracaoId,
+      produtoId: anchorId,
+      linkDocId, // THIS listing's link doc — status writeback per listing
+      sweepId: opts.sweepId,
+      sweepComputedAtMs: opts.sweepComputedAtMs,
+      reenqueues: 0,
     };
-  }
 
-  // Exact string match is safe here — both apps write the canonical
-  // `documents/...` form for this field (see importVariations.ts).
-  const parentLinkOuterRef = toOuterRef(
-    produtoMercadoLivreLinkCollection.docPath({ produtoId: anchorId }, linkDocId),
-  );
+    if (row.children.length === 0) {
+      if (emittedItemIds.has(itemId)) continue; // cycle-wide dedup — silent (set above)
+      // Childless family (old model or UP alike) → one item task with the
+      // anchor's own quantity. A missing entry is only possible for virtuals —
+      // unreachable after the kit-virtual rung, guarded defensively.
+      const quantidade = quantidades.get(anchorId) ?? null;
+      if (quantidade == null) {
+        skips.push({ produtoId: anchorId, reason: 'kit-virtual' });
+        continue;
+      }
+      emittedItemIds.add(itemId);
+      tasks.push({
+        ...base,
+        kind: 'item',
+        itemId,
+        variacaoProdutoId: null,
+        quantidade,
+        variations: null,
+      });
+      continue;
+    }
 
-  if (link.isUserProductModel !== true) {
-    // Old model bulk: the whole family in ONE `PUT items/{id}` with a
-    // `variations` array — still 1 task = 1 ML call.
-    const variations: StockVariationEntry[] = [];
-    const skips: SendSkip[] = [];
+    // Exact string match is safe here — both apps write the canonical
+    // `documents/...` form for this field (see importVariations.ts).
+    const parentLinkOuterRef = toOuterRef(
+      produtoMercadoLivreLinkCollection.docPath({ produtoId: anchorId }, linkDocId),
+    );
+
+    if (link.isUserProductModel !== true) {
+      // Old model bulk: the whole family in ONE `PUT items/{id}` with a
+      // `variations` array — still 1 task = 1 ML call per listing. Dedup
+      // BEFORE the per-child work: a duplicate MLB id re-logs no child skips.
+      if (emittedItemIds.has(itemId)) continue; // cycle-wide dedup — silent (set above)
+      const variations: StockVariationEntry[] = [];
+      for (const child of row.children) {
+        const varLink = child.varLinks.find(
+          (v) => v.produtoMercadoLivreOuterRef === parentLinkOuterRef,
+        );
+        if (varLink == null) {
+          skips.push({ produtoId: child.produtoId, reason: 'sem-link' });
+          continue;
+        }
+        const varId =
+          typeof varLink.id === 'number' && Number.isFinite(varLink.id) ? varLink.id : null;
+        if (varId == null) {
+          skips.push({ produtoId: child.produtoId, reason: 'sem-item-id' });
+          continue;
+        }
+        const quantidade = quantidades.get(child.produtoId) ?? null;
+        if (quantidade == null) {
+          skips.push({ produtoId: child.produtoId, reason: 'kit-virtual' });
+          continue;
+        }
+        variations.push({ id: varId, available_quantity: quantidade });
+      }
+      if (variations.length === 0) continue; // nothing sendable on this listing
+      if (variations.length > MAX_VARIATIONS_PER_TASK) {
+        // Hard cap (see MAX_VARIATIONS_PER_TASK): past it the Cloud Tasks
+        // enqueue itself would reject the ~100 KB+ payload and the sweep
+        // would re-attempt the same unsendable family forever — build NO task.
+        console.error(
+          '[mercado-livre] stock-sync: família excede o limite de variations por task',
+          {
+            integracaoId: opts.integracaoId,
+            produtoId: anchorId,
+            itemId,
+            variations: variations.length,
+            max: MAX_VARIATIONS_PER_TASK,
+          },
+        );
+        skips.push({ produtoId: anchorId, reason: 'variations-excede-limite' });
+        continue;
+      }
+      if (variations.length > 1000) {
+        // Early warning below the MAX_VARIATIONS_PER_TASK cap (~40 B/entry
+        // against the 100 KB Cloud Tasks payload limit) — families this large
+        // deserve a look before they grow into the hard limit.
+        console.warn('[mercado-livre] stock-sync: família com variations acima de 1000 entradas', {
+          integracaoId: opts.integracaoId,
+          produtoId: anchorId,
+          itemId,
+          variations: variations.length,
+        });
+      }
+      emittedItemIds.add(itemId);
+      tasks.push({
+        ...base,
+        kind: 'item',
+        itemId,
+        variacaoProdutoId: null,
+        quantidade: null,
+        variations,
+      });
+      continue;
+    }
+
+    // User Products: one task per variation child — each variation is its own
+    // ML item; the cycle-wide set keeps one task per ML item across listings.
     for (const child of row.children) {
       const varLink = child.varLinks.find(
         (v) => v.produtoMercadoLivreOuterRef === parentLinkOuterRef,
@@ -1068,80 +1215,30 @@ export function buildSendTasks(
         skips.push({ produtoId: child.produtoId, reason: 'sem-link' });
         continue;
       }
-      const varId =
-        typeof varLink.id === 'number' && Number.isFinite(varLink.id) ? varLink.id : null;
-      if (varId == null) {
+      const varItemId =
+        typeof varLink.itemId === 'string' && varLink.itemId !== '' ? varLink.itemId : null;
+      if (varItemId == null) {
         skips.push({ produtoId: child.produtoId, reason: 'sem-item-id' });
         continue;
       }
+      if (emittedItemIds.has(varItemId)) continue; // cycle-wide dedup — silent (set above)
       const quantidade = quantidades.get(child.produtoId) ?? null;
       if (quantidade == null) {
         skips.push({ produtoId: child.produtoId, reason: 'kit-virtual' });
         continue;
       }
-      variations.push({ id: varId, available_quantity: quantidade });
-    }
-    if (variations.length === 0) return { tasks: [], skips }; // nothing sendable
-    if (variations.length > 1000) {
-      // ~40 B/entry against the 100 KB Cloud Tasks payload limit — no cap,
-      // but families this large deserve a look.
-      console.warn('[mercado-livre] stock-sync: família com variations acima de 1000 entradas', {
-        integracaoId: opts.integracaoId,
-        produtoId: anchorId,
-        itemId,
-        variations: variations.length,
+      emittedItemIds.add(varItemId);
+      tasks.push({
+        ...base,
+        kind: 'variationItem',
+        itemId: varItemId,
+        variacaoProdutoId: child.produtoId,
+        quantidade,
+        variations: null,
       });
     }
-    return {
-      tasks: [
-        {
-          ...base,
-          kind: 'item',
-          itemId,
-          variacaoProdutoId: null,
-          quantidade: null,
-          variations,
-        },
-      ],
-      skips,
-    };
   }
 
-  // User Products: one task per variation child — each variation is its own
-  // ML item, de-duplicated by itemId (a task per ML call, never two).
-  const tasks: StockSendTaskDraft[] = [];
-  const skips: SendSkip[] = [];
-  const seenItemIds = new Set<string>();
-  for (const child of row.children) {
-    const varLink = child.varLinks.find(
-      (v) => v.produtoMercadoLivreOuterRef === parentLinkOuterRef,
-    );
-    if (varLink == null) {
-      skips.push({ produtoId: child.produtoId, reason: 'sem-link' });
-      continue;
-    }
-    const varItemId =
-      typeof varLink.itemId === 'string' && varLink.itemId !== '' ? varLink.itemId : null;
-    if (varItemId == null) {
-      skips.push({ produtoId: child.produtoId, reason: 'sem-item-id' });
-      continue;
-    }
-    if (seenItemIds.has(varItemId)) continue; // dedup — one task per ML item
-    const quantidade = quantidades.get(child.produtoId) ?? null;
-    if (quantidade == null) {
-      skips.push({ produtoId: child.produtoId, reason: 'kit-virtual' });
-      continue;
-    }
-    seenItemIds.add(varItemId);
-    tasks.push({
-      ...base,
-      kind: 'variationItem',
-      itemId: varItemId,
-      variacaoProdutoId: child.produtoId,
-      quantidade,
-      variations: null,
-    });
-  }
   return { tasks, skips };
 }
 
