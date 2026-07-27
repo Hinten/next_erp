@@ -138,20 +138,44 @@ export default defineConfig({
         ]
       : []),
   ],
-  webServer: process.env.PLAYWRIGHT_BASE_URL
-    ? undefined
-    : {
-        // Local dev serves with `pnpm dev`. CI overrides this with
-        // `PLAYWRIGHT_WEB_CMD='pnpm exec next start --port 3000'` to serve a
-        // production build — no per-route cold compile, so it answers fast.
-        command: process.env.PLAYWRIGHT_WEB_CMD ?? 'pnpm dev',
-        port: PORT,
-        reuseExistingServer: !process.env.CI,
-        // Next 16 dev cold-compiles every imported module on first request; in
-        // CI we've seen this exceed the previous 60s budget. 180s gives
-        // headroom while still failing the run if the server never comes up.
-        timeout: 180_000,
-        stdout: 'pipe',
-        stderr: 'pipe',
-      },
+  webServer: [
+    ...(process.env.PLAYWRIGHT_BASE_URL
+      ? []
+      : [
+          {
+            // Local dev serves with `pnpm dev`. CI overrides this with
+            // `PLAYWRIGHT_WEB_CMD='pnpm exec next start --port 3000'` to serve a
+            // production build — no per-route cold compile, so it answers fast.
+            command: process.env.PLAYWRIGHT_WEB_CMD ?? 'pnpm dev',
+            port: PORT,
+            reuseExistingServer: !process.env.CI,
+            // Next 16 dev cold-compiles every imported module on first request; in
+            // CI we've seen this exceed the previous 60s budget. 180s gives
+            // headroom while still failing the run if the server never comes up.
+            timeout: 180_000,
+            stdout: 'pipe' as const,
+            stderr: 'pipe' as const,
+          },
+        ]),
+    // configuracoes.spec.ts drives the admin endpoints (user creation + claims
+    // refresh), which live in apps/integrations on :3001 — apps/web has no route
+    // handlers at all, so without this server those calls 404 against :3000 and
+    // the suite fails on a status assertion. Opt-in via the env var, mirroring
+    // PLAYWRIGHT_WEB_CMD above: only the vendas CI lane sets it (see
+    // e2e-reusable.yml's `integrations` input). Unset locally, where root
+    // `pnpm dev` already serves :3001 — and where the client falls back to
+    // http://localhost:3001 in development anyway.
+    ...(process.env.PLAYWRIGHT_INTEGRATIONS_CMD
+      ? [
+          {
+            command: process.env.PLAYWRIGHT_INTEGRATIONS_CMD,
+            port: 3001,
+            reuseExistingServer: !process.env.CI,
+            timeout: 180_000,
+            stdout: 'pipe' as const,
+            stderr: 'pipe' as const,
+          },
+        ]
+      : []),
+  ],
 });

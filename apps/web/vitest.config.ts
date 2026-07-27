@@ -11,10 +11,11 @@ export default defineConfig({
     name: '@delfrance/web',
     environment: 'jsdom',
     setupFiles: ['./vitest.setup.ts'],
-    include: ['{app,lib,components}/**/*.test.{ts,tsx}'],
-    // Playwright e2e specs live under e2e/ and are run by `pnpm test:e2e`,
-    // not by Vitest.
-    exclude: ['node_modules', 'e2e/**', '.next/**'],
+    // e2e/**/*.test.ts covers plain-node unit tests of e2e infra itself (e.g.
+    // globalSetup's mandatory-auth-env guard) — distinct from the Playwright
+    // specs under e2e/ (always *.spec.ts, run by `pnpm test:e2e`, not Vitest).
+    include: ['{app,lib,components}/**/*.test.{ts,tsx}', 'e2e/**/*.test.{ts,tsx}'],
+    exclude: ['node_modules', 'e2e/**/*.spec.ts', '.next/**'],
   },
   resolve: {
     alias: {
