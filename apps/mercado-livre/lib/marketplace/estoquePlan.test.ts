@@ -14,11 +14,17 @@ const { mockPipelinesExports, FakeChain } = vi.hoisted(() => {
     as(name: string): Expr {
       return new Expr({ kind: 'as', name, of: this });
     }
-    equal(r: unknown): Expr {
-      return new Expr({ kind: 'equal', l: this, r });
-    }
     equalAny(values: unknown): Expr {
       return new Expr({ kind: 'equalAny', l: this, values });
+    }
+    arrayContains(v: unknown): Expr {
+      return new Expr({ kind: 'arrayContains', l: this, v });
+    }
+    arrayContainsAny(values: unknown): Expr {
+      return new Expr({ kind: 'arrayContainsAny', l: this, values });
+    }
+    greaterThanOrEqual(r: unknown): Expr {
+      return new Expr({ kind: 'gte', l: this, r });
     }
     length(): Expr {
       return new Expr({ kind: 'length', of: this });
@@ -47,9 +53,6 @@ const { mockPipelinesExports, FakeChain } = vi.hoisted(() => {
     collectionGroup(id: string): this {
       return this.push('collectionGroup', [id]);
     }
-    documents(refs: unknown[]): this {
-      return this.push('documents', [refs]);
-    }
     where(condition: unknown): this {
       return this.push('where', [condition]);
     }
@@ -67,6 +70,9 @@ const { mockPipelinesExports, FakeChain } = vi.hoisted(() => {
     }
     select(...selections: unknown[]): this {
       return this.push('select', selections);
+    }
+    aggregate(...accumulators: unknown[]): this {
+      return this.push('aggregate', accumulators);
     }
     toScalarExpression(): Expr {
       return new Expr({ kind: 'scalarSubquery', stages: this.stages });
@@ -86,13 +92,16 @@ const { mockPipelinesExports, FakeChain } = vi.hoisted(() => {
     constant: (v: unknown) => new Expr({ kind: 'constant', v }),
     equal: (l: unknown, r: unknown) => new Expr({ kind: 'equal', l, r }),
     greaterThan: (l: unknown, r: unknown) => new Expr({ kind: 'gt', l, r }),
-    greaterThanOrEqual: (l: unknown, r: unknown) => new Expr({ kind: 'gte', l, r }),
-    arrayContains: (arr: unknown, v: unknown) => new Expr({ kind: 'arrayContains', arr, v }),
     and: (...xs: unknown[]) => new Expr({ kind: 'and', xs }),
     or: (...xs: unknown[]) => new Expr({ kind: 'or', xs }),
     ascending: (f: unknown) => new Expr({ kind: 'asc', f }),
     documentId: (e: unknown) => new Expr({ kind: 'documentId', of: e }),
-    parent: (e: unknown) => new Expr({ kind: 'parent', of: e }),
+    coalesce: (...xs: unknown[]) => new Expr({ kind: 'coalesce', xs }),
+    conditional: (c: unknown, t: unknown, e: unknown) => new Expr({ kind: 'conditional', c, t, e }),
+    array: (elements: unknown[]) => new Expr({ kind: 'array', elements }),
+    arrayConcat: (...xs: unknown[]) => new Expr({ kind: 'arrayConcat', xs }),
+    logicalMaximum: (...xs: unknown[]) => new Expr({ kind: 'logicalMaximum', xs }),
+    maximum: (f: unknown) => new Expr({ kind: 'maximum', f }),
     subcollection: (path: string) => {
       const chain = new FakeChain();
       chain.stages.push({ stage: 'subcollection', args: [path] });
@@ -106,29 +115,28 @@ const { mockPipelinesExports, FakeChain } = vi.hoisted(() => {
 vi.mock('@google-cloud/firestore/pipelines', () => mockPipelinesExports);
 
 import {
-  type BundleChild,
+  ESTADOS_VENDA,
   ESTOQUE_MIN,
-  type EstoqueChangeRow,
+  type FamilyChild,
+  type FamilyMember,
   MERCADO_LIVRE_STOCK_SEND_QUEUE,
   PAUSE_REENQUEUE_JITTER_MAX_S,
-  type ResolutionAnchor,
-  type ResolutionBundle,
-  type ResolveFromBundleArgs,
+  type RawVarLinkRow,
   STOCK_SYNC_FLAG_ENV,
-  TIPOS_VENDA,
+  type StockFamilyRow,
+  anchorPageLimit,
   atividadeLookbackDays,
-  candidatePageLimit,
-  computeQuantidades,
+  buildSendTasks,
   concurrentDispatches,
   cursorMaxLookbackHours,
   dailyWindowHours,
-  discoverStockCandidates,
+  deveEnviarIncremental,
   dispatchesPerSecond,
+  disponivelByProdutoIdFrom,
   envFlag,
   envInt,
   estoqueMax,
-  fetchChangedEstoquesJoined,
-  fetchResolutionBundle,
+  fetchStockFamilies,
   incrementalWindowMin,
   isStockSyncEnabled,
   kitIncluiEstoqueProprio,
@@ -136,85 +144,29 @@ import {
   maxPauseReenqueues,
   maxTasksPerSweep,
   podeEnviarEstoque,
+  quantidadeDoMembro,
   quantidadeParaEnvio,
+  quantidadesDaFamilia,
   ratePauseMin,
-  resolveSendUnits,
-  resolveSendUnitsFromBundle,
   windowOverlapSec,
 } from './estoquePlan';
 
 /* ------------------------------ fake Firestore ----------------------------- */
-// Extension of orderBackfill.test.ts's FakeDb: chained
-// `where().orderBy().limit().get()` with real op support + a plain `.get()` on
-// a collection + doc get/set, PLUS a `pipeline()` surface answering from a
-// queue of pre-canned pages while recording every execution's stage list.
+// THE query never runs in unit tests: `db.pipeline()` answers from a queue of
+// pre-canned pages while recording every execution's stage list; the only
+// classic surface needed is `collection().doc()` (the keyset cursor ref built
+// through produtoCollection.docRef), which returns a plain tagged object so
+// the stage-tree assertions stay structural.
 
 type DocData = Record<string, unknown>;
 
-interface FakeSnap {
-  exists: boolean;
-  id: string;
-  data: () => DocData | undefined;
-}
-
-interface FakeDocRef {
-  id: string;
-  get: () => Promise<FakeSnap>;
-  set: (data: DocData, opts?: { merge?: boolean }) => void;
-}
-
-interface FakeQueryDoc {
-  id: string;
-  data: () => DocData;
-  exists: true;
-}
-
-interface Clause {
-  field: string;
-  op: string;
-  value: unknown;
-}
-
-interface FakeQuery {
-  where: (field: string, op: string, value: unknown) => FakeQuery;
-  orderBy: (field: string, dir?: string) => FakeQuery;
-  limit: (n: number) => FakeQuery;
-  get: () => Promise<{ docs: FakeQueryDoc[]; empty: boolean }>;
-}
-
-type FakeCollection = FakeQuery & { doc: (id?: string) => FakeDocRef };
-
 type RecordedStage = { stage: string; args: unknown[] };
 
-function clauseMatches(data: DocData, c: Clause): boolean {
-  if (c.op === '==') return data[c.field] === c.value;
-  throw new Error(`FakeDb: unsupported op ${c.op}`);
-}
-
 class FakeDb {
-  readonly cols = new Map<string, Map<string, DocData>>();
-  readonly opLog: Array<{ op: 'get' | 'set'; path: string }> = [];
-  readonly queryLog: Array<{
-    path: string;
-    clauses: Clause[];
-    orderBy: Array<[string, string]>;
-    limit: number | null;
-  }> = [];
   readonly pipelineExecutions: RecordedStage[][] = [];
-  private readonly pipelinePages: Array<Array<{ path: string; data: DocData }>> = [];
-  private autoN = 0;
+  private readonly pipelinePages: DocData[][] = [];
 
-  private col(path: string): Map<string, DocData> {
-    let c = this.cols.get(path);
-    if (!c) this.cols.set(path, (c = new Map()));
-    return c;
-  }
-
-  seed(path: string, id: string, data: DocData): void {
-    this.col(path).set(id, data);
-  }
-
-  queuePipelinePage(rows: Array<{ path: string; data: DocData }>): void {
+  queuePipelinePage(rows: DocData[]): void {
     this.pipelinePages.push(rows);
   }
 
@@ -222,74 +174,12 @@ class FakeDb {
     return new FakeChain(async (stages) => {
       this.pipelineExecutions.push(stages);
       const rows = this.pipelinePages.shift() ?? [];
-      return { results: rows.map((r) => ({ ref: { path: r.path }, data: () => r.data })) };
+      return { results: rows.map((d) => ({ data: () => d })) };
     });
   }
 
-  private makeQuery(path: string): FakeQuery {
-    const self = this;
-    const clauses: Clause[] = [];
-    const order: Array<[string, string]> = [];
-    let lim: number | null = null;
-    const q: FakeQuery = {
-      where(field, op, value) {
-        clauses.push({ field, op, value });
-        return q;
-      },
-      orderBy(field, dir = 'asc') {
-        order.push([field, dir]);
-        return q;
-      },
-      limit(n) {
-        lim = n;
-        return q;
-      },
-      async get() {
-        self.queryLog.push({ path, clauses: [...clauses], orderBy: [...order], limit: lim });
-        let rows = [...self.col(path).entries()].map(([id, data]) => ({ id, data }));
-        rows = rows.filter((r) => clauses.every((c) => clauseMatches(r.data, c)));
-        for (const [field, dir] of [...order].reverse()) {
-          rows.sort((a, b) => {
-            const av = String(a.data[field] ?? '');
-            const bv = String(b.data[field] ?? '');
-            const cmp = av < bv ? -1 : av > bv ? 1 : 0;
-            return dir === 'desc' ? -cmp : cmp;
-          });
-        }
-        if (lim != null) rows = rows.slice(0, lim);
-        return {
-          docs: rows.map((r) => ({ id: r.id, data: () => r.data, exists: true as const })),
-          empty: rows.length === 0,
-        };
-      },
-    };
-    return q;
-  }
-
-  private makeDocRef(path: string, id: string): FakeDocRef {
-    const self = this;
-    const col = this.col(path);
-    return {
-      id,
-      get: async () => {
-        self.opLog.push({ op: 'get', path: `${path}/${id}` });
-        return { exists: col.has(id), id, data: () => col.get(id) };
-      },
-      set: (data: DocData, opts?: { merge?: boolean }) => {
-        self.opLog.push({ op: 'set', path: `${path}/${id}` });
-        if (opts?.merge) col.set(id, { ...(col.get(id) ?? {}), ...data });
-        else col.set(id, { ...data });
-      },
-    };
-  }
-
-  collection(path: string): FakeCollection {
-    const self = this;
-    return Object.assign(this.makeQuery(path), {
-      doc(id?: string) {
-        return self.makeDocRef(path, id ?? `auto-${++self.autoN}`);
-      },
-    });
+  collection(path: string): { doc: (id: string) => { refPath: string } } {
+    return { doc: (id: string) => ({ refPath: `${path}/${id}` }) };
   }
 }
 
@@ -299,15 +189,14 @@ function asDb(db: FakeDb | Record<string, unknown>): Firestore {
 
 /* --------------------------------- helpers --------------------------------- */
 
-const DEP = 'documents/depositos/DEP';
 const DEPOSITO_ID = 'DEP';
 const CONTA = 'conta-A';
 const FROM_MS = Date.parse('2026-07-24T10:00:00.000Z');
-const CUTOFF_MS = Date.parse('2026-06-24T10:00:00.000Z');
+const CUTOFF_US = Date.parse('2026-06-24T10:00:00.000Z') * 1000;
 const T1 = Date.parse('2026-07-24T10:05:00.000Z');
 const T2 = Date.parse('2026-07-24T10:10:00.000Z');
-const T3 = Date.parse('2026-07-24T10:15:00.000Z');
 const T4 = Date.parse('2026-07-24T10:20:00.000Z');
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Every env var the tests mutate — cleared after each test. */
 const TOUCHED_ENV = [
@@ -316,40 +205,11 @@ const TOUCHED_ENV = [
   'MERCADO_LIVRE_STOCK_LIMIAR',
   'MERCADO_LIVRE_STOCK_MAX',
   'MERCADO_LIVRE_STOCK_KIT_INCLUI_PROPRIO',
-  'MERCADO_LIVRE_STOCK_CANDIDATE_PAGE_LIMIT',
+  'MERCADO_LIVRE_STOCK_ANCHOR_PAGE_LIMIT',
   'MERCADO_LIVRE_STOCK_RATE_PAUSE_MIN',
   'ESTOQUE_PLAN_TEST_INT',
   'ESTOQUE_PLAN_TEST_FLAG',
 ];
-
-const estoquePath = (produtoId: string) =>
-  `produtos/${produtoId}/estoques/est-${produtoId}-${DEPOSITO_ID}`;
-
-/** One canned Q1 execution row (an estoque doc with its joined fields). */
-function estoquePage(produtoId: string, ms: number, data: DocData = {}) {
-  return { path: estoquePath(produtoId), data: { ultimaModificacao: ms, produto: {}, ...data } };
-}
-
-/** One already-mapped Q1 row (the seam's output shape) for discovery tests. */
-function changeRow(
-  produtoId: string,
-  ms: number,
-  quantidade = 0,
-  quantidadeReservada = 0,
-  extra: Partial<EstoqueChangeRow> = {},
-): EstoqueChangeRow {
-  return {
-    produtoId,
-    estoqueDocPath: estoquePath(produtoId),
-    ultimaModificacaoMs: ms,
-    quantidade,
-    quantidadeReservada,
-    produto: {},
-    kitParentIds: [],
-    temVenda30d: false,
-    ...extra,
-  };
-}
 
 const PARENT_LINK_REF = 'documents/produtos/PROD/produtoMercadoLivre/link1';
 
@@ -364,156 +224,298 @@ const AND = (...xs: unknown[]) => ({ kind: 'and', xs });
 const OR = (...xs: unknown[]) => ({ kind: 'or', xs });
 const asc = (name: string) => ({ kind: 'asc', f: f(name) });
 const docId = (of: unknown) => ({ kind: 'documentId', of });
-const parentOf = (of: unknown) => ({ kind: 'parent', of });
+const coal = (...xs: unknown[]) => ({ kind: 'coalesce', xs });
+const arr = (elements: unknown[]) => ({ kind: 'array', elements });
+const arrConcat = (...xs: unknown[]) => ({ kind: 'arrayConcat', xs });
+const logicalMax = (...xs: unknown[]) => ({ kind: 'logicalMaximum', xs });
+const maxOf = (fld: string) => ({ kind: 'maximum', f: fld });
+const contains = (l: unknown, v: unknown) => ({ kind: 'arrayContains', l, v });
+const containsAny = (l: unknown, values: unknown) => ({ kind: 'arrayContainsAny', l, values });
+const inAny = (l: unknown, values: unknown) => ({ kind: 'equalAny', l, values });
+const cnst = (v: unknown) => ({ kind: 'constant', v });
+const cond = (c: unknown, t: unknown, e: unknown) => ({ kind: 'conditional', c, t, e });
+const len = (of: unknown) => ({ kind: 'length', of });
 
-/** The Q1 outer `where`: both depósito *OuterRef forms AND'ed with the range term. */
-const q1Where = (range: unknown) =>
+/** Both accepted depósito *OuterRef forms — the shared `depMatch` predicate. */
+const depOr = OR(
+  eq(f('depositoOuterRef'), `documents/depositos/${DEPOSITO_ID}`),
+  eq(f('depositoOuterRef'), `depositos/${DEPOSITO_ID}`),
+);
+
+const ownEstoqueSub = () => ({
+  kind: 'scalarSubquery',
+  stages: [
+    { stage: 'subcollection', args: ['estoques'] },
+    { stage: 'where', args: [depOr] },
+    { stage: 'limit', args: [1] },
+    { stage: 'select', args: ['quantidade', 'quantidadeReservada', 'ultimaModificacao'] },
+  ],
+});
+
+const ownEstoqueMaxSub = () => ({
+  kind: 'scalarSubquery',
+  stages: [
+    { stage: 'subcollection', args: ['estoques'] },
+    { stage: 'where', args: [depOr] },
+    { stage: 'aggregate', args: [alias('max', maxOf('ultimaModificacao'))] },
+  ],
+});
+
+// Both kit joins are guarded: empty-IN semantics for equalAny are
+// undocumented, so a `conditional` short-circuits the empty-key-list
+// (non-kit, dominant) path — array fallback `[]`, scalar fallback null.
+const compEstoquesSub = (keysVar: string) =>
+  cond(
+    gt(len(vr(keysVar)), 0),
+    {
+      kind: 'arraySubquery',
+      stages: [
+        { stage: 'collectionGroup', args: ['estoques'] },
+        { stage: 'where', args: [AND(inAny(f('parentId'), vr(keysVar)), depOr)] },
+        {
+          stage: 'select',
+          args: ['parentId', 'quantidade', 'quantidadeReservada', 'ultimaModificacao'],
+        },
+      ],
+    },
+    arr([]),
+  );
+
+const compEstoquesMaxSub = (keysVar: string) =>
+  cond(
+    gt(len(vr(keysVar)), 0),
+    {
+      kind: 'scalarSubquery',
+      stages: [
+        { stage: 'collectionGroup', args: ['estoques'] },
+        { stage: 'where', args: [AND(inAny(f('parentId'), vr(keysVar)), depOr)] },
+        { stage: 'aggregate', args: [alias('max', maxOf('ultimaModificacao'))] },
+      ],
+    },
+    cnst(null),
+  );
+
+const kitKeysDef = (name: string) => alias(name, coal(f('componentesKitKeys'), arr([])));
+
+const childIdsSub = () => ({
+  kind: 'arraySubquery',
+  stages: [
+    { stage: 'collection', args: ['produtos'] },
+    { stage: 'where', args: [eq(f('paiId'), vr('anchorId'))] },
+    { stage: 'select', args: [alias('childId', docId(f('__name__')))] },
+  ],
+});
+
+// The rollup binds `maxChildKitKeys`, NOT the childrenJoin's `childKitKeys` —
+// sibling rebinding of one global variable name is an unverified assumption
+// (spike a).
+const maxChildrenSub = () => ({
+  kind: 'scalarSubquery',
+  stages: [
+    { stage: 'collection', args: ['produtos'] },
+    { stage: 'where', args: [eq(f('paiId'), vr('anchorId'))] },
+    { stage: 'define', args: [kitKeysDef('maxChildKitKeys')] },
+    {
+      stage: 'select',
+      args: [alias('m', logicalMax(ownEstoqueMaxSub(), compEstoquesMaxSub('maxChildKitKeys')))],
+    },
+    { stage: 'aggregate', args: [alias('max', maxOf('m'))] },
+  ],
+});
+
+const linkSub = () => ({
+  kind: 'scalarSubquery',
+  stages: [
+    { stage: 'subcollection', args: ['produtoMercadoLivre'] },
+    {
+      stage: 'where',
+      args: [
+        OR(
+          eq(f('contaOuterRef'), `documents/integracao/${CONTA}`),
+          eq(f('contaOuterRef'), `integracao/${CONTA}`),
+        ),
+      ],
+    },
+    { stage: 'limit', args: [1] },
+    {
+      stage: 'select',
+      args: [
+        'id',
+        'estado',
+        'status',
+        'sub_status',
+        'isUserProductModel',
+        alias('linkDocId', docId(f('__name__'))),
+      ],
+    },
+  ],
+});
+
+const childrenSub = () => ({
+  kind: 'arraySubquery',
+  stages: [
+    { stage: 'collection', args: ['produtos'] },
+    { stage: 'where', args: [eq(f('paiId'), vr('anchorId'))] },
+    { stage: 'define', args: [kitKeysDef('childKitKeys')] },
+    {
+      stage: 'select',
+      args: [
+        alias('childId', docId(f('__name__'))),
+        'ehKit',
+        'ehKitVirtual',
+        'publicado',
+        'componentesKit',
+        'timestamp',
+        alias('estoque', ownEstoqueSub()),
+        alias('componentEstoques', compEstoquesSub('childKitKeys')),
+        alias('varLinks', {
+          kind: 'arraySubquery',
+          stages: [
+            { stage: 'subcollection', args: ['variacaoMercadoLivre'] },
+            { stage: 'select', args: ['itemId', 'id', 'produtoMercadoLivreOuterRef'] },
+          ],
+        }),
+      ],
+    },
+  ],
+});
+
+const vendaSub = (estados: unknown[] = [...ESTADOS_VENDA]) => ({
+  kind: 'arraySubquery',
+  stages: [
+    { stage: 'collection', args: ['pedidos'] },
+    {
+      stage: 'where',
+      args: [
+        AND(
+          containsAny(f('itensIds'), arrConcat(arr([vr('anchorId')]), vr('childIds'))),
+          eq(f('ehSaida'), true),
+          gte(f('timestamp'), CUTOFF_US),
+          inAny(f('estado'), estados),
+        ),
+      ],
+    },
+    { stage: 'limit', args: [1] },
+    { stage: 'select', args: ['estado'] },
+  ],
+});
+
+/** THE query's S1 base terms (page 1 of a fresh sweep). */
+const s1Terms = () => [
+  eq(f('paiId'), null),
+  eq(f('publicado'), true),
+  contains(f('integracoesComProduto'), CONTA),
+];
+const s1Page1 = () => AND(...s1Terms());
+const s1After = (anchorId: string) =>
   AND(
-    OR(eq(f('depositoOuterRef'), DEP), eq(f('depositoOuterRef'), DEP.replace(/^documents\//, ''))),
-    range,
+    ...s1Terms(),
+    gt(f('__name__'), { kind: 'constant', v: { refPath: `produtos/${anchorId}` } }),
   );
 
-/** Keyset tuple predicate carrying the previous page's last row. */
-const keyset = (ms: number, path: string) =>
-  OR(
-    gt(f('ultimaModificacao'), ms),
-    AND(eq(f('ultimaModificacao'), ms), gt(f('__name__'), { kind: 'constant', v: { path } })),
-  );
-
-/** The full documented Q1 stage tree for one page. */
-function q1ExpectedStages(where: unknown, limit: number): RecordedStage[] {
+/**
+ * The full documented THE-query stage tree for ONE page (one execution):
+ * S1 where → S2 define (plain) → S3 addFields (the subquery-embed site) →
+ * S4 where over the added FIELDS → S4b define(childIds) → S5 sort+limit →
+ * S6 select.
+ */
+function expectedStages(s1: unknown, limit: number, changedSinceMs = FROM_MS): RecordedStage[] {
   return [
-    { stage: 'collectionGroup', args: ['estoques'] },
-    { stage: 'where', args: [where] },
-    { stage: 'sort', args: [asc('ultimaModificacao'), asc('__name__')] },
-    { stage: 'limit', args: [limit] },
+    { stage: 'collection', args: ['produtos'] },
+    { stage: 'where', args: [s1] },
     {
       stage: 'define',
       args: [
-        alias('produtoRef', parentOf(f('__name__'))),
-        alias('produtoId', docId(parentOf(f('__name__')))),
+        alias('anchorId', docId(f('__name__'))),
+        alias('anchorKitKeys', coal(f('componentesKitKeys'), arr([]))),
       ],
     },
     {
       stage: 'addFields',
       args: [
-        alias('produto', {
-          kind: 'scalarSubquery',
-          stages: [
-            { stage: 'collection', args: ['produtos'] },
-            { stage: 'where', args: [eq(f('__name__'), vr('produtoRef'))] },
-            {
-              stage: 'select',
-              args: [
-                'paiId',
-                'publicado',
-                'ehKit',
-                'ehKitVirtual',
-                'integracoesComProduto',
-                'timestamp',
-              ],
-            },
-          ],
-        }),
-        alias('kitParents', {
-          kind: 'arraySubquery',
-          stages: [
-            { stage: 'collection', args: ['produtos'] },
-            {
-              stage: 'where',
-              args: [{ kind: 'arrayContains', arr: f('componentesKitKeys'), v: vr('produtoId') }],
-            },
-            { stage: 'select', args: [alias('kitId', docId(f('__name__')))] },
-          ],
-        }),
-        alias(
-          'temVenda30d',
-          gt(
-            {
-              kind: 'length',
-              of: {
-                kind: 'arraySubquery',
-                stages: [
-                  { stage: 'subcollection', args: ['historicoEstoque'] },
-                  {
-                    stage: 'where',
-                    args: [
-                      AND(
-                        { kind: 'equalAny', l: f('tipo'), values: [...TIPOS_VENDA] },
-                        gte(f('timestamp'), CUTOFF_MS),
-                      ),
-                    ],
-                  },
-                  { stage: 'limit', args: [1] },
-                  { stage: 'select', args: ['tipo'] },
-                ],
-              },
-            },
-            0,
-          ),
-        ),
+        alias('maxOwn', ownEstoqueMaxSub()),
+        alias('maxComp', compEstoquesMaxSub('anchorKitKeys')),
+        alias('maxChildren', maxChildrenSub()),
+      ],
+    },
+    {
+      stage: 'where',
+      args: [gt(coal(logicalMax(f('maxOwn'), f('maxComp'), f('maxChildren')), 0), changedSinceMs)],
+    },
+    { stage: 'define', args: [alias('childIds', childIdsSub())] },
+    { stage: 'sort', args: [asc('__name__')] },
+    { stage: 'limit', args: [limit] },
+    {
+      stage: 'select',
+      args: [
+        alias('anchorId', vr('anchorId')),
+        'ehKit',
+        'ehKitVirtual',
+        'publicado',
+        'componentesKit',
+        'integracoesComProduto',
+        'timestamp',
+        alias('estoque', ownEstoqueSub()),
+        alias('componentEstoques', compEstoquesSub('anchorKitKeys')),
+        alias('link', linkSub()),
+        alias('children', childrenSub()),
+        alias('temVenda30d', gt(len(vendaSub()), 0)),
       ],
     },
   ];
 }
 
-/** The documented Q2 stage tree after the `documents()` source. */
-function q2ExpectedTailStages(): RecordedStage[] {
-  return [
-    { stage: 'define', args: [alias('anchorId', docId(f('__name__')))] },
-    {
-      stage: 'addFields',
-      args: [
-        alias('link', {
-          kind: 'scalarSubquery',
-          stages: [
-            { stage: 'subcollection', args: ['produtoMercadoLivre'] },
-            {
-              stage: 'where',
-              args: [
-                OR(
-                  eq(f('contaOuterRef'), `documents/integracao/${CONTA}`),
-                  eq(f('contaOuterRef'), `integracao/${CONTA}`),
-                ),
-              ],
-            },
-            { stage: 'limit', args: [1] },
-            {
-              stage: 'select',
-              args: [
-                'id',
-                'estado',
-                'status',
-                'sub_status',
-                'isUserProductModel',
-                alias('linkDocId', docId(f('__name__'))),
-              ],
-            },
-          ],
-        }),
-        alias('children', {
-          kind: 'arraySubquery',
-          stages: [
-            { stage: 'collection', args: ['produtos'] },
-            { stage: 'where', args: [eq(f('paiId'), vr('anchorId'))] },
-            {
-              stage: 'select',
-              args: [
-                alias('childId', docId(f('__name__'))),
-                alias('varLinks', {
-                  kind: 'arraySubquery',
-                  stages: [
-                    { stage: 'subcollection', args: ['variacaoMercadoLivre'] },
-                    { stage: 'select', args: ['itemId', 'id', 'produtoMercadoLivreOuterRef'] },
-                  ],
-                }),
-              ],
-            },
-          ],
-        }),
-      ],
-    },
-  ];
+/** A fully-defaulted family member for the pure-reducer fixtures. */
+function member(produtoId: string, extra: Partial<FamilyMember> = {}): FamilyMember {
+  return {
+    produtoId,
+    ehKit: false,
+    ehKitVirtual: false,
+    publicado: true,
+    componentesKit: null,
+    timestampMs: null,
+    estoque: null,
+    componentEstoques: [],
+    ...extra,
+  };
+}
+
+function child(
+  produtoId: string,
+  varLinks: RawVarLinkRow[] = [],
+  extra: Partial<FamilyMember> = {},
+): FamilyChild {
+  return { ...member(produtoId, extra), varLinks };
+}
+
+interface FamilyRowSpec {
+  anchor?: Partial<FamilyMember>;
+  integracoes?: string[];
+  link?: Record<string, unknown> | null;
+  children?: FamilyChild[];
+  temVenda30d?: boolean;
+}
+
+function familyRow(spec: FamilyRowSpec = {}): StockFamilyRow {
+  return {
+    anchorId: 'PROD',
+    anchor: member('PROD', spec.anchor),
+    integracoesComProduto: spec.integracoes ?? [CONTA],
+    link:
+      spec.link === null
+        ? null
+        : {
+            id: 'MLB111',
+            estado: 'p',
+            status: 'active',
+            sub_status: null,
+            isUserProductModel: false,
+            linkDocId: 'link1',
+            ...spec.link,
+          },
+    children: spec.children ?? [],
+    temVenda30d: spec.temVenda30d ?? false,
+  };
 }
 
 beforeEach(() => {
@@ -530,7 +532,13 @@ afterEach(() => {
 describe('constants', () => {
   it('pure code constants keep their spec values', () => {
     expect(ESTOQUE_MIN).toBe(0);
-    expect(TIPOS_VENDA).toEqual(['reserva', 'saida']);
+    expect(ESTADOS_VENDA).toEqual([
+      'emAnalise',
+      'emProcessamento',
+      'pago',
+      'finalizado',
+      'estornadoParcialmente',
+    ]);
     expect(PAUSE_REENQUEUE_JITTER_MAX_S).toBe(30);
     expect(MERCADO_LIVRE_STOCK_SEND_QUEUE).toBe('sendMercadoLivreStock');
     expect(STOCK_SYNC_FLAG_ENV).toBe('MERCADO_LIVRE_STOCK_SYNC_ENABLED');
@@ -571,7 +579,7 @@ describe('env helpers', () => {
     expect(limiarEstoqueBaixo()).toBe(5);
     expect(estoqueMax()).toBe(99999);
     expect(kitIncluiEstoqueProprio()).toBe(false);
-    expect(candidatePageLimit()).toBe(1000);
+    expect(anchorPageLimit()).toBe(250);
     expect(maxTasksPerSweep()).toBe(2000);
     expect(ratePauseMin()).toBe(5);
     expect(maxPauseReenqueues()).toBe(10);
@@ -789,405 +797,403 @@ describe('quantidadeParaEnvio — kit math + clamps', () => {
   });
 });
 
-describe('fetchChangedEstoquesJoined — stage tree, keyset paging, row mapping', () => {
-  const Q1_ARGS = {
+describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => {
+  const FS_ARGS = {
     integracaoId: CONTA,
-    depositoOuterRef: DEP,
-    fromMs: FROM_MS,
-    tipoVendaCutoffMs: CUTOFF_MS,
+    depositoId: DEPOSITO_ID,
+    changedSinceMs: FROM_MS,
+    vendaCutoffUs: CUTOFF_US,
+    estadosVenda: ESTADOS_VENDA,
   };
 
-  it('single short page: the full documented stage tree + joined-row mapping', async () => {
+  it('single short page: the full documented stage tree (THE query), ONE execution', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([{ anchorId: 'PROD' }]);
+
+    const page = await fetchStockFamilies(asDb(db), { ...FS_ARGS, pageLimit: 10 });
+
+    expect(db.pipelineExecutions).toHaveLength(1);
+    expect(db.pipelineExecutions[0]).toEqual(expectedStages(s1Page1(), 10));
+    expect(page.nextAfterAnchorId).toBeNull(); // short page → drained
+  });
+
+  it('changedSinceMs -1 (force-all): the S4 where is gt(coalesce(...), -1)', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([]);
+
+    await fetchStockFamilies(asDb(db), { ...FS_ARGS, changedSinceMs: -1, pageLimit: 10 });
+
+    expect(db.pipelineExecutions[0]![4]).toEqual({
+      stage: 'where',
+      args: [gt(coal(logicalMax(f('maxOwn'), f('maxComp'), f('maxChildren')), 0), -1)],
+    });
+  });
+
+  it('the pedidos probe carries exactly the estadosVenda ARG, not the constant', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([]);
+    const SENTINEL = ['sentinel-estado-1', 'sentinel-estado-2'];
+
+    await fetchStockFamilies(asDb(db), { ...FS_ARGS, estadosVenda: SENTINEL, pageLimit: 10 });
+
+    const select = db.pipelineExecutions[0]![8]!;
+    expect(select.stage).toBe('select');
+    expect(select.args[select.args.length - 1]).toEqual(
+      alias('temVenda30d', gt(len(vendaSub(SENTINEL)), 0)),
+    );
+  });
+
+  it('vendaCutoffUs null (daily sweep): NO pedidos subquery; temVenda30d false client-side', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([{ anchorId: 'PROD' }]);
+
+    const page = await fetchStockFamilies(asDb(db), {
+      ...FS_ARGS,
+      vendaCutoffUs: null,
+      pageLimit: 10,
+    });
+
+    const select = db.pipelineExecutions[0]![8]!;
+    expect(select.stage).toBe('select');
+    expect(JSON.stringify(select.args)).not.toContain('pedidos');
+    expect(JSON.stringify(select.args)).not.toContain('temVenda30d');
+    expect(page.rows[0]!.temVenda30d).toBe(false); // client-side constant
+  });
+
+  it('maps projected rows: members coerced, children sorted, junk filtered', async () => {
     const db = new FakeDb();
     db.queuePipelinePage([
-      estoquePage('PROD-1', T1, {
-        quantidade: 5,
-        quantidadeReservada: 2,
-        produto: { publicado: true, ehKit: false },
-        kitParents: ['KIT-1', 42], // non-strings filtered out
+      {
+        anchorId: 'PROD',
+        ehKit: true,
+        ehKitVirtual: false,
+        publicado: true,
+        componentesKit: { A: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+        integracoesComProduto: [CONTA, 42], // non-strings filtered out
+        timestamp: T1,
+        estoque: { quantidade: 5, quantidadeReservada: 2, ultimaModificacao: T1 },
+        componentEstoques: [
+          { parentId: 'A', quantidade: 10, quantidadeReservada: 0, ultimaModificacao: T2 },
+          'junk',
+          null,
+        ],
+        link: { id: 'MLB111', linkDocId: 'link1' },
+        children: [
+          {
+            childId: 'CH2',
+            publicado: true,
+            timestamp: T2,
+            estoque: { quantidade: 3, quantidadeReservada: 1 },
+            componentEstoques: [],
+            varLinks: [{ itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
+          },
+          { childId: 'CH1', varLinks: 'junk' }, // legacy doc — defaults everywhere
+          { childId: '', varLinks: [] }, // junk rows dropped
+          'garbage',
+        ],
         temVenda30d: true,
-      }),
-      // Produto deleted mid-sweep (scalar join → null); legacy doc without
-      // quantities → 0; joins absent → [] / false.
-      { path: estoquePath('PROD-2'), data: { ultimaModificacao: T2 } },
+      },
+      { anchorId: 'PROD2' }, // minimal row → coerced defaults, joins absent
+      { publicado: true }, // no anchorId → skipped (defensive)
     ]);
 
-    const rows = await fetchChangedEstoquesJoined(asDb(db), { ...Q1_ARGS, pageLimit: 10 });
+    const { rows } = await fetchStockFamilies(asDb(db), { ...FS_ARGS, pageLimit: 10 });
 
     expect(rows).toEqual([
       {
-        produtoId: 'PROD-1',
-        estoqueDocPath: estoquePath('PROD-1'),
-        ultimaModificacaoMs: T1,
-        quantidade: 5,
-        quantidadeReservada: 2,
-        produto: { publicado: true, ehKit: false },
-        kitParentIds: ['KIT-1'],
+        anchorId: 'PROD',
+        anchor: {
+          produtoId: 'PROD',
+          ehKit: true,
+          ehKitVirtual: false,
+          publicado: true,
+          componentesKit: { A: { quantidade: 2, limitarEstoque: true, timestamp: null } },
+          timestampMs: T1,
+          estoque: { quantidade: 5, quantidadeReservada: 2, ultimaModificacao: T1 },
+          componentEstoques: [
+            { parentId: 'A', quantidade: 10, quantidadeReservada: 0, ultimaModificacao: T2 },
+          ],
+        },
+        integracoesComProduto: [CONTA],
+        link: { id: 'MLB111', linkDocId: 'link1' },
+        children: [
+          {
+            produtoId: 'CH1',
+            ehKit: false,
+            ehKitVirtual: false,
+            publicado: false,
+            componentesKit: null,
+            timestampMs: null,
+            estoque: null,
+            componentEstoques: [],
+            varLinks: [],
+          },
+          {
+            produtoId: 'CH2',
+            ehKit: false,
+            ehKitVirtual: false,
+            publicado: true,
+            componentesKit: null,
+            timestampMs: T2,
+            estoque: { quantidade: 3, quantidadeReservada: 1 },
+            componentEstoques: [],
+            varLinks: [{ itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
+          },
+        ],
         temVenda30d: true,
       },
       {
-        produtoId: 'PROD-2',
-        estoqueDocPath: estoquePath('PROD-2'),
-        ultimaModificacaoMs: T2,
-        quantidade: 0,
-        quantidadeReservada: 0,
-        produto: null,
-        kitParentIds: [],
+        anchorId: 'PROD2',
+        anchor: {
+          produtoId: 'PROD2',
+          ehKit: false,
+          ehKitVirtual: false,
+          publicado: false,
+          componentesKit: null,
+          timestampMs: null,
+          estoque: null,
+          componentEstoques: [],
+        },
+        integracoesComProduto: [],
+        link: null,
+        children: [],
         temVenda30d: false,
       },
     ]);
+  });
+
+  it('a FULL page returns the last anchorId as nextAfterAnchorId — one execution, no drain', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([{ anchorId: 'A' }, { anchorId: 'B' }]); // full (pageLimit 2)
+    db.queuePipelinePage([{ anchorId: 'C' }]); // must NOT be consumed
+
+    const page = await fetchStockFamilies(asDb(db), { ...FS_ARGS, pageLimit: 2 });
+
+    expect(page.rows.map((r) => r.anchorId)).toEqual(['A', 'B']);
+    expect(page.nextAfterAnchorId).toBe('B');
+    expect(db.pipelineExecutions).toHaveLength(1); // page-aware: never drains internally
+  });
+
+  it('a SHORT page returns nextAfterAnchorId null (backlog drained)', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([{ anchorId: 'C' }]);
+
+    const page = await fetchStockFamilies(asDb(db), { ...FS_ARGS, pageLimit: 2 });
+
+    expect(page.rows.map((r) => r.anchorId)).toEqual(['C']);
+    expect(page.nextAfterAnchorId).toBeNull();
+  });
+
+  it('afterAnchorId (the fed-back cursor) adds the __name__ > docRef term to S1', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([{ anchorId: 'Y' }]);
+
+    await fetchStockFamilies(asDb(db), { ...FS_ARGS, pageLimit: 10, afterAnchorId: 'X' });
 
     expect(db.pipelineExecutions).toHaveLength(1);
-    expect(db.pipelineExecutions[0]).toEqual(
-      q1ExpectedStages(q1Where(gt(f('ultimaModificacao'), FROM_MS)), 10),
-    );
+    // The keyset cursor is rebuilt as a produtos docRef (select drops refs).
+    expect(db.pipelineExecutions[0]![1]).toEqual({ stage: 'where', args: [s1After('X')] });
   });
 
-  it('keyset drain: full pages advance the (ultimaModificacao, ref) tuple, no re-fetch', async () => {
+  it('default page size comes from MERCADO_LIVRE_STOCK_ANCHOR_PAGE_LIMIT, lazily', async () => {
+    process.env.MERCADO_LIVRE_STOCK_ANCHOR_PAGE_LIMIT = '3';
     const db = new FakeDb();
-    db.queuePipelinePage([estoquePage('A', T1), estoquePage('B', T2)]); // full
-    db.queuePipelinePage([estoquePage('C', T3), estoquePage('D', T3)]); // full — in-page tie is fine
-    db.queuePipelinePage([estoquePage('E', T4)]); // short → drained
+    db.queuePipelinePage([{ anchorId: 'A' }]);
 
-    const rows = await fetchChangedEstoquesJoined(asDb(db), { ...Q1_ARGS, pageLimit: 2 });
+    await fetchStockFamilies(asDb(db), FS_ARGS);
 
-    expect(rows.map((r) => r.produtoId)).toEqual(['A', 'B', 'C', 'D', 'E']); // no dups, no drops
-    expect(db.pipelineExecutions).toHaveLength(3);
-    // Page 1: strict `>` on the window start; later pages: the keyset tuple.
-    expect(db.pipelineExecutions[0]![1]).toEqual({
-      stage: 'where',
-      args: [q1Where(gt(f('ultimaModificacao'), FROM_MS))],
-    });
-    expect(db.pipelineExecutions[1]![1]).toEqual({
-      stage: 'where',
-      args: [q1Where(keyset(T2, estoquePath('B')))],
-    });
-    expect(db.pipelineExecutions[2]![1]).toEqual({
-      stage: 'where',
-      args: [q1Where(keyset(T3, estoquePath('D')))],
-    });
-  });
-
-  it('an all-one-timestamp page boundary drains via the __name__ tiebreaker (no loss)', async () => {
-    // The old `>=`-re-cover design could not advance past a page-crossing
-    // timestamp tie; the keyset tuple walks straight through it.
-    const db = new FakeDb();
-    db.queuePipelinePage([estoquePage('A', T1), estoquePage('B', T1)]); // full, single ts
-    db.queuePipelinePage([estoquePage('C', T1)]); // short — same ts, past B by ref
-
-    const rows = await fetchChangedEstoquesJoined(asDb(db), { ...Q1_ARGS, pageLimit: 2 });
-
-    expect(rows.map((r) => r.produtoId)).toEqual(['A', 'B', 'C']);
-    expect(db.pipelineExecutions).toHaveLength(2);
-    expect(db.pipelineExecutions[1]![1]).toEqual({
-      stage: 'where',
-      args: [q1Where(keyset(T1, estoquePath('B')))],
-    });
-  });
-
-  it('default page size comes from MERCADO_LIVRE_STOCK_CANDIDATE_PAGE_LIMIT, lazily', async () => {
-    process.env.MERCADO_LIVRE_STOCK_CANDIDATE_PAGE_LIMIT = '3';
-    const db = new FakeDb();
-    db.queuePipelinePage([estoquePage('A', T1)]);
-
-    await fetchChangedEstoquesJoined(asDb(db), Q1_ARGS);
-
-    expect(db.pipelineExecutions[0]![3]).toEqual({ stage: 'limit', args: [3] });
+    expect(db.pipelineExecutions[0]![7]).toEqual({ stage: 'limit', args: [3] });
   });
 });
 
-describe('discoverStockCandidates — direct + kit expansion from joined rows', () => {
-  const dummyDb = asDb({});
-  const ARGS = {
+describe('sweep-time quantities — pure reducers', () => {
+  it('disponivelByProdutoIdFrom: keyed by parentId, disponivel math, junk skipped', () => {
+    expect(
+      disponivelByProdutoIdFrom([
+        { parentId: 'A', quantidade: 10, quantidadeReservada: 3 },
+        { parentId: 'B', quantidade: 5 }, // missing reservada → 0
+        { parentId: '', quantidade: 1 }, // junk key skipped
+        { quantidade: 2 }, // no parentId skipped
+        { parentId: 'C', quantidade: 'x' }, // non-finite → 0
+      ]),
+    ).toEqual({ A: 7, B: 5, C: 0 });
+  });
+
+  it('quantidadeDoMembro: non-kit own disponivel (quantidade − reservada), floored', () => {
+    expect(
+      quantidadeDoMembro(member('P1', { estoque: { quantidade: 10, quantidadeReservada: 3 } })),
+    ).toBe(7);
+    expect(quantidadeDoMembro(member('P1', { estoque: { quantidade: 7.5 } }))).toBe(7);
+  });
+
+  it('quantidadeDoMembro: missing own estoque reads as 0', () => {
+    expect(quantidadeDoMembro(member('P1'))).toBe(0);
+  });
+
+  it('quantidadeDoMembro: ehKitVirtual → null (never send)', () => {
+    expect(
+      quantidadeDoMembro(
+        member('V1', { ehKit: true, ehKitVirtual: true, estoque: { quantidade: 50 } }),
+      ),
+    ).toBeNull();
+  });
+
+  it('quantidadeDoMembro: kit min over the joined component rows; missing component = 0', () => {
+    const kit = member('KIT', {
+      ehKit: true,
+      componentesKit: {
+        A: { quantidade: 2, limitarEstoque: true, timestamp: null },
+        B: { quantidade: 3, limitarEstoque: true, timestamp: null },
+      },
+      estoque: { quantidade: 5, quantidadeReservada: 1 },
+      componentEstoques: [
+        { parentId: 'A', quantidade: 10, quantidadeReservada: 0 },
+        { parentId: 'B', quantidade: 9, quantidadeReservada: 0 },
+      ],
+    });
+    expect(quantidadeDoMembro(kit)).toBe(3); // min(10/2, 9/3); own 4 NOT added by default
+
+    // B's estoque row missing at this depósito → counts as 0 (#238).
+    expect(
+      quantidadeDoMembro({
+        ...kit,
+        componentEstoques: [{ parentId: 'A', quantidade: 10, quantidadeReservada: 0 }],
+      }),
+    ).toBe(0);
+  });
+
+  it('quantidadesDaFamilia: anchor + children keyed by produto id, virtuals omitted', () => {
+    const row = familyRow({
+      anchor: { estoque: { quantidade: 7, quantidadeReservada: 0 } },
+      children: [
+        child('CH1', [], { estoque: { quantidade: 4, quantidadeReservada: 1 } }),
+        child('CHV', [], { ehKit: true, ehKitVirtual: true, estoque: { quantidade: 9 } }),
+      ],
+    });
+    expect(quantidadesDaFamilia(row)).toEqual(
+      new Map([
+        ['PROD', 7],
+        ['CH1', 3],
+      ]),
+    );
+  });
+});
+
+describe('deveEnviarIncremental — activity filter OR-arms', () => {
+  const NOW = T4;
+  const quietRow = () =>
+    familyRow({
+      anchor: { timestampMs: NOW - 40 * DAY_MS },
+      children: [child('CH1', [], { timestampMs: NOW - 35 * DAY_MS })],
+    });
+  const okQty = new Map([
+    ['PROD', 10],
+    ['CH1', 8],
+  ]);
+
+  it('family sale in the window → send', () => {
+    expect(deveEnviarIncremental({ ...quietRow(), temVenda30d: true }, okQty, NOW)).toBe(true);
+  });
+
+  it('any member created within the lookback → send (anchor or child)', () => {
+    const recentAnchor = familyRow({ anchor: { timestampMs: NOW - DAY_MS } });
+    expect(deveEnviarIncremental(recentAnchor, okQty, NOW)).toBe(true);
+
+    const recentChild = familyRow({
+      anchor: { timestampMs: NOW - 40 * DAY_MS },
+      children: [child('CH1', [], { timestampMs: NOW - DAY_MS })],
+    });
+    expect(deveEnviarIncremental(recentChild, okQty, NOW)).toBe(true);
+  });
+
+  it('any quantity below the limiar → send; the limiar is env-tunable', () => {
+    const lowQty = new Map([
+      ['PROD', 10],
+      ['CH1', 3], // < 5
+    ]);
+    expect(deveEnviarIncremental(quietRow(), lowQty, NOW)).toBe(true);
+    process.env.MERCADO_LIVRE_STOCK_LIMIAR = '2';
+    expect(deveEnviarIncremental(quietRow(), lowQty, NOW)).toBe(false); // 3 >= 2
+  });
+
+  it('no sale, nothing recent, all quantities healthy → skip', () => {
+    expect(deveEnviarIncremental(quietRow(), okQty, NOW)).toBe(false);
+    expect(deveEnviarIncremental(familyRow(), new Map(), NOW)).toBe(false); // null timestamps
+  });
+});
+
+describe('buildSendTasks — decision ladder + task shapes', () => {
+  const OPTS = { integracaoId: CONTA, sweepId: 'sweep-1', sweepComputedAtMs: T4 };
+  const BASE_TASK = {
     integracaoId: CONTA,
-    depositoOuterRef: DEP,
-    fromMs: FROM_MS,
-    tipoVendaCutoffMs: CUTOFF_MS,
+    produtoId: 'PROD',
+    linkDocId: 'link1',
+    sweepId: 'sweep-1',
+    sweepComputedAtMs: T4,
+    reenqueues: 0,
   };
 
-  it('direct candidates carry the joined produto + temVenda30d, ehExpansaoDeKit false', async () => {
-    const rows = [
-      changeRow('A', T1, 3, 1, { produto: { publicado: true }, temVenda30d: true }),
-      changeRow('B', T2, 8, 0),
-    ];
-    const fetchChanged = vi.fn(async () => rows);
+  function run(row: StockFamilyRow, qty: ReadonlyMap<string, number> = new Map([['PROD', 7]])) {
+    return buildSendTasks(row, qty, OPTS);
+  }
 
-    const map = await discoverStockCandidates(dummyDb, ARGS, { fetchChanged });
-
-    expect(fetchChanged).toHaveBeenCalledWith(dummyDb, ARGS);
-    expect([...map.keys()]).toEqual(['A', 'B']);
-    expect(map.get('A')).toEqual({
-      produtoId: 'A',
-      estoqueDocPath: estoquePath('A'),
-      ultimaModificacaoMs: T1,
-      quantidade: 3,
-      quantidadeReservada: 1,
-      ehExpansaoDeKit: false,
-      produto: { publicado: true },
-      temVenda30d: true,
-    });
-  });
-
-  it('kit parents expand with the TRIGGERING row estoque fields, produto null, flag passthrough', async () => {
-    const rows = [
-      changeRow('A', T1, 2, 0, { kitParentIds: ['X-KIT', 'KIT'], temVenda30d: true }),
-      // A second trigger listing KIT must NOT overwrite the first expansion.
-      changeRow('B', T2, 9, 0, { kitParentIds: ['KIT'] }),
-    ];
-    const fetchChanged = vi.fn(async () => rows);
-
-    const map = await discoverStockCandidates(dummyDb, ARGS, { fetchChanged });
-
-    expect(map.get('KIT')).toEqual({
-      produtoId: 'KIT',
-      estoqueDocPath: estoquePath('A'), // the component's doc — provenance documented
-      ultimaModificacaoMs: T1,
-      quantidade: 2,
-      quantidadeReservada: 0,
-      ehExpansaoDeKit: true,
-      produto: null,
-      temVenda30d: true,
-    });
-    expect(map.get('X-KIT')?.ehExpansaoDeKit).toBe(true);
-  });
-
-  it('a parent whose OWN estoque also changed stays a direct candidate', async () => {
-    const rows = [
-      changeRow('A', T1, 2, 0, { kitParentIds: ['KIT'] }),
-      changeRow('KIT', T2, 6, 1, { produto: { ehKit: true } }),
-    ];
-    const fetchChanged = vi.fn(async () => rows);
-
-    const map = await discoverStockCandidates(dummyDb, ARGS, { fetchChanged });
-
-    expect(map.get('KIT')).toEqual({
-      produtoId: 'KIT',
-      estoqueDocPath: estoquePath('KIT'),
-      ultimaModificacaoMs: T2,
-      quantidade: 6,
-      quantidadeReservada: 1,
-      ehExpansaoDeKit: false,
-      produto: { ehKit: true },
-      temVenda30d: false,
-    });
-    expect(map.size).toBe(2);
-  });
-
-  it('a produto-null row yields NO direct candidate; its kit parents still expand', async () => {
-    const rows = [changeRow('A', T1, 2, 0, { produto: null, kitParentIds: ['KIT'] })];
-    const fetchChanged = vi.fn(async () => rows);
-
-    const map = await discoverStockCandidates(dummyDb, ARGS, { fetchChanged });
-
-    expect(map.has('A')).toBe(false);
-    expect(map.get('KIT')?.ehExpansaoDeKit).toBe(true);
-  });
-
-  it('no changed rows → empty map', async () => {
-    const fetchChanged = vi.fn(async () => []);
-    const map = await discoverStockCandidates(dummyDb, ARGS, { fetchChanged });
-    expect(map.size).toBe(0);
-  });
-});
-
-describe('fetchResolutionBundle — Q2 stage tree + assembly', () => {
-  it('builds the documented stage tree (documents → define anchorId → link + children)', async () => {
-    const db = new FakeDb();
-    db.queuePipelinePage([]);
-
-    await fetchResolutionBundle(asDb(db), { integracaoId: CONTA, anchorIds: ['PROD'] });
-
-    expect(db.pipelineExecutions).toHaveLength(1);
-    const stages = db.pipelineExecutions[0]!;
-    expect(stages[0]!.stage).toBe('documents');
-    const refs = stages[0]!.args[0] as Array<{ id: string }>;
-    expect(refs.map((r) => r.id)).toEqual(['PROD']);
-    expect(stages.slice(1)).toEqual(q2ExpectedTailStages());
-  });
-
-  it('documents() guards: empty anchor set → no pipeline; duplicate ids de-duped', async () => {
-    const db = new FakeDb();
-    expect(await fetchResolutionBundle(asDb(db), { integracaoId: CONTA, anchorIds: [] })).toEqual(
-      new Map(),
-    );
-    expect(db.pipelineExecutions).toHaveLength(0);
-
-    db.queuePipelinePage([]);
-    await fetchResolutionBundle(asDb(db), {
-      integracaoId: CONTA,
-      anchorIds: ['PROD', 'PROD'],
-    });
-    const refs = db.pipelineExecutions[0]![0]!.args[0] as Array<{ id: string }>;
-    expect(refs.map((r) => r.id)).toEqual(['PROD']);
-  });
-
-  it('assembles anchors: link map/null, children sorted by childId, missing docs omitted', async () => {
-    const db = new FakeDb();
-    db.queuePipelinePage([
-      {
-        path: 'produtos/PROD',
-        data: {
-          publicado: true,
-          link: { id: 'MLB111', linkDocId: 'link1' },
-          children: [
-            {
-              childId: 'CH2',
-              varLinks: [{ itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
-            },
-            { childId: 'CH1', varLinks: [] },
-            { childId: '', varLinks: [] }, // junk rows dropped
-            'garbage',
-          ],
+  it('childless old model happy path → ONE item task carrying the anchor quantity', () => {
+    expect(run(familyRow())).toEqual({
+      tasks: [
+        {
+          ...BASE_TASK,
+          kind: 'item',
+          itemId: 'MLB111',
+          variacaoProdutoId: null,
+          quantidade: 7,
+          variations: null,
         },
-      },
-      { path: 'produtos/OTHER', data: {} },
-    ]);
-
-    const bundle = await fetchResolutionBundle(asDb(db), {
-      integracaoId: CONTA,
-      anchorIds: ['PROD', 'OTHER', 'GONE'],
-    });
-
-    expect([...bundle.keys()]).toEqual(['PROD', 'OTHER']);
-    const prod = bundle.get('PROD')!;
-    expect(prod.anchorId).toBe('PROD');
-    expect(prod.produto.publicado).toBe(true);
-    expect(prod.link).toEqual({ id: 'MLB111', linkDocId: 'link1' });
-    expect(prod.children).toEqual([
-      { childId: 'CH1', varLinks: [] },
-      {
-        childId: 'CH2',
-        varLinks: [{ itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
-      },
-    ]);
-    const other = bundle.get('OTHER')!;
-    expect(other.link).toBeNull(); // scalar subquery with 0 rows → null → no conta link
-    expect(other.children).toEqual([]);
-    expect(bundle.has('GONE')).toBe(false); // documents() silently omits missing docs
-  });
-});
-
-describe('resolveSendUnitsFromBundle — decision ladder', () => {
-  interface AnchorSpec {
-    anchorId?: string;
-    produto?: DocData;
-    link?: DocData | null;
-    children?: BundleChild[];
-  }
-
-  function makeAnchor(spec: AnchorSpec = {}): ResolutionAnchor {
-    const anchorId = spec.anchorId ?? 'PROD';
-    return {
-      anchorId,
-      produto: {
-        nome: `Produto ${anchorId}`,
-        paiId: null,
-        publicado: true,
-        ehKit: false,
-        ehKitVirtual: false,
-        integracoesComProduto: [CONTA],
-        ...spec.produto,
-      },
-      link:
-        spec.link === null
-          ? null
-          : {
-              id: 'MLB111',
-              estado: 'p',
-              status: 'active',
-              sub_status: null,
-              isUserProductModel: false,
-              linkDocId: 'link1',
-              ...spec.link,
-            },
-      children: spec.children ?? [],
-    };
-  }
-
-  function makeBundle(...anchors: ResolutionAnchor[]): ResolutionBundle {
-    return new Map(anchors.map((a) => [a.anchorId, a]));
-  }
-
-  function runBundle(bundle: ResolutionBundle, over: Partial<ResolveFromBundleArgs> = {}) {
-    return resolveSendUnitsFromBundle(bundle, {
-      integracaoId: CONTA,
-      produtoId: 'PROD',
-      anchorId: 'PROD',
-      anchorProduto: null,
-      ...over,
-    });
-  }
-
-  it('old model happy path → ONE family item unit', () => {
-    expect(runBundle(makeBundle(makeAnchor()))).toEqual({
-      units: [{ kind: 'item', itemId: 'MLB111', produtoId: 'PROD', variacaoProdutoId: null }],
+      ],
       skips: [],
     });
   });
 
-  it('old model with variation children STILL yields one family unit', () => {
-    const bundle = makeBundle(
-      makeAnchor({
-        children: [
-          {
-            childId: 'CH1',
-            varLinks: [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
-          },
-        ],
-      }),
-    );
-    expect(runBundle(bundle).units).toEqual([
-      { kind: 'item', itemId: 'MLB111', produtoId: 'PROD', variacaoProdutoId: null },
-    ]);
-  });
-
   it('paused + out_of_stock is enviável (ML auto-reactivates on qty > 0)', () => {
-    const res = runBundle(
-      makeBundle(makeAnchor({ link: { status: 'paused', sub_status: ['out_of_stock'] } })),
-    );
-    expect(res.units).toHaveLength(1);
+    const res = run(familyRow({ link: { status: 'paused', sub_status: ['out_of_stock'] } }));
+    expect(res.tasks).toHaveLength(1);
     expect(res.skips).toEqual([]);
   });
 
-  it('missing anchor entry → sem-link (produto deleted mid-sweep)', () => {
-    expect(runBundle(makeBundle(), { anchorId: 'GONE', produtoId: 'GONE' })).toEqual({
-      units: [],
-      skips: [{ produtoId: 'GONE', reason: 'sem-link' }],
+  it('no link for this conta → sem-link', () => {
+    expect(run(familyRow({ link: null }))).toEqual({
+      tasks: [],
+      skips: [{ produtoId: 'PROD', reason: 'sem-link' }],
     });
   });
 
-  it('no link for this conta → sem-link', () => {
-    expect(runBundle(makeBundle(makeAnchor({ link: null }))).skips).toEqual([
+  it('link without a doc id (defensive — server-projected) → sem-link', () => {
+    expect(run(familyRow({ link: { linkDocId: null } })).skips).toEqual([
       { produtoId: 'PROD', reason: 'sem-link' },
     ]);
   });
 
   it('link never published (id null) → sem-item-id', () => {
-    expect(runBundle(makeBundle(makeAnchor({ link: { id: null } }))).skips).toEqual([
+    expect(run(familyRow({ link: { id: null } })).skips).toEqual([
       { produtoId: 'PROD', reason: 'sem-item-id' },
     ]);
   });
 
   it("estado 'am' (mid-UP-migration, Flutter-driven) → aguardando-migracao", () => {
-    expect(runBundle(makeBundle(makeAnchor({ link: { estado: 'am' } }))).skips).toEqual([
+    expect(run(familyRow({ link: { estado: 'am' } })).skips).toEqual([
       { produtoId: 'PROD', reason: 'aguardando-migracao' },
     ]);
   });
 
   it('non-enviável documented status → status-nao-enviavel, NO warn', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockClear();
-    const res = runBundle(
-      makeBundle(makeAnchor({ link: { status: 'paused', sub_status: ['paused_by_seller'] } })),
-    );
+    const res = run(familyRow({ link: { status: 'paused', sub_status: ['paused_by_seller'] } }));
     expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('undocumented status → status-nao-enviavel + loud warn (status tracking)', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockClear();
-    const res = runBundle(
-      makeBundle(makeAnchor({ link: { status: 'brand_new_status', sub_status: null } })),
-    );
+    const res = run(familyRow({ link: { status: 'brand_new_status', sub_status: null } }));
     expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('status'),
@@ -1196,346 +1202,231 @@ describe('resolveSendUnitsFromBundle — decision ladder', () => {
   });
 
   it('ehKitVirtual anchor → kit-virtual', () => {
-    expect(runBundle(makeBundle(makeAnchor({ produto: { ehKitVirtual: true } }))).skips).toEqual([
+    expect(run(familyRow({ anchor: { ehKitVirtual: true } })).skips).toEqual([
       { produtoId: 'PROD', reason: 'kit-virtual' },
     ]);
   });
 
   it('unpublished anchor → nao-publicado', () => {
-    expect(runBundle(makeBundle(makeAnchor({ produto: { publicado: false } }))).skips).toEqual([
+    // DEFENSIVE-ONLY rung: S1 already filters `publicado` server-side.
+    expect(run(familyRow({ anchor: { publicado: false } })).skips).toEqual([
       { produtoId: 'PROD', reason: 'nao-publicado' },
     ]);
   });
 
   it('conta not in integracoesComProduto → conta-fora-do-produto', () => {
-    expect(
-      runBundle(makeBundle(makeAnchor({ produto: { integracoesComProduto: ['outra-conta'] } })))
-        .skips,
-    ).toEqual([{ produtoId: 'PROD', reason: 'conta-fora-do-produto' }]);
-  });
-
-  it('an explicit anchorProduto (Q1-joined) wins over the bundle row gate fields', () => {
-    // The bundle row says published; the Q1-joined produto the caller already
-    // holds says unpublished — the caller's copy must drive the gates.
-    const res = runBundle(makeBundle(makeAnchor()), {
-      anchorProduto: { publicado: false, ehKitVirtual: false, integracoesComProduto: [CONTA] },
-    });
-    expect(res.skips).toEqual([{ produtoId: 'PROD', reason: 'nao-publicado' }]);
+    // DEFENSIVE-ONLY rung: S1 already filters the conta server-side.
+    expect(run(familyRow({ integracoes: ['outra-conta'] })).skips).toEqual([
+      { produtoId: 'PROD', reason: 'conta-fora-do-produto' },
+    ]);
   });
 
   it('skip reasons follow the documented evaluation order', () => {
     // Link-level reasons before produto-level gates: estado 'am' wins over an
     // unknown status AND over kit-virtual/nao-publicado.
     expect(
-      runBundle(
-        makeBundle(
-          makeAnchor({
-            produto: { ehKitVirtual: true, publicado: false },
-            link: { estado: 'am', status: 'weird' },
-          }),
-        ),
+      run(
+        familyRow({
+          anchor: { ehKitVirtual: true, publicado: false },
+          link: { estado: 'am', status: 'weird' },
+        }),
       ).skips,
     ).toEqual([{ produtoId: 'PROD', reason: 'aguardando-migracao' }]);
 
     // status gate before the produto-level gates.
     expect(
-      runBundle(
-        makeBundle(
-          makeAnchor({
-            produto: { ehKitVirtual: true },
-            link: { status: 'paused', sub_status: [] },
-          }),
-        ),
+      run(
+        familyRow({
+          anchor: { ehKitVirtual: true },
+          link: { status: 'paused', sub_status: [] },
+        }),
       ).skips,
     ).toEqual([{ produtoId: 'PROD', reason: 'status-nao-enviavel' }]);
   });
 
-  it('UP model: one variationItem unit per child, in bundle (childId) order', () => {
-    const bundle = makeBundle(
-      makeAnchor({
-        link: { isUserProductModel: true },
-        children: [
+  it('old model + children → ONE bulk item task with numeric variation ids', () => {
+    const row = familyRow({
+      children: [
+        child('CH1', [{ id: 101, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+        child('CH2', [
+          // A stale link pointing at ANOTHER parent link must be ignored.
           {
-            childId: 'CH1',
-            varLinks: [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
+            id: 999,
+            produtoMercadoLivreOuterRef: 'documents/produtos/OTHER/produtoMercadoLivre/linkX',
           },
-          {
-            childId: 'CH2',
-            varLinks: [
-              // A stale link pointing at ANOTHER parent link must be ignored.
-              {
-                itemId: 'MLB-OLD',
-                produtoMercadoLivreOuterRef: 'documents/produtos/OTHER/produtoMercadoLivre/linkX',
-              },
-              { itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF },
-            ],
-          },
-        ],
-      }),
-    );
-    expect(runBundle(bundle)).toEqual({
-      units: [
-        { kind: 'variationItem', itemId: 'MLB-CH1', produtoId: 'PROD', variacaoProdutoId: 'CH1' },
-        { kind: 'variationItem', itemId: 'MLB-CH2', produtoId: 'PROD', variacaoProdutoId: 'CH2' },
+          { id: 102, produtoMercadoLivreOuterRef: PARENT_LINK_REF },
+        ]),
+      ],
+    });
+    const qty = new Map([
+      ['PROD', 7],
+      ['CH1', 3],
+      ['CH2', 4],
+    ]);
+    expect(buildSendTasks(row, qty, OPTS)).toEqual({
+      tasks: [
+        {
+          ...BASE_TASK,
+          kind: 'item',
+          itemId: 'MLB111',
+          variacaoProdutoId: null,
+          quantidade: null,
+          variations: [
+            { id: 101, available_quantity: 3 },
+            { id: 102, available_quantity: 4 },
+          ],
+        },
       ],
       skips: [],
     });
   });
 
-  it('UP child without a matching variação link → per-child sem-link, siblings sent', () => {
-    const bundle = makeBundle(
-      makeAnchor({
-        link: { isUserProductModel: true },
-        children: [
-          {
-            childId: 'CH1',
-            varLinks: [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
-          },
-          { childId: 'CH2', varLinks: [] },
-        ],
-      }),
-    );
-    const res = runBundle(bundle);
-    expect(res.units).toEqual([
-      { kind: 'variationItem', itemId: 'MLB-CH1', produtoId: 'PROD', variacaoProdutoId: 'CH1' },
+  it('old bulk: unmatched / non-numeric-id / quantity-less children skip, siblings ride', () => {
+    const row = familyRow({
+      children: [
+        child('CH1', [{ id: 101, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+        child('CH2', []), // no varLink for this parent → sem-link
+        child('CH3', [{ id: 'MLB-STRING', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]), // → sem-item-id
+        child('CHV', [{ id: 104, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]), // no qty → kit-virtual
+      ],
+    });
+    const qty = new Map([
+      ['PROD', 7],
+      ['CH1', 3],
+      ['CH3', 5],
     ]);
-    expect(res.skips).toEqual([{ produtoId: 'CH2', reason: 'sem-link' }]);
+    const res = buildSendTasks(row, qty, OPTS);
+    expect(res.tasks).toEqual([
+      {
+        ...BASE_TASK,
+        kind: 'item',
+        itemId: 'MLB111',
+        variacaoProdutoId: null,
+        quantidade: null,
+        variations: [{ id: 101, available_quantity: 3 }],
+      },
+    ]);
+    expect(res.skips).toEqual([
+      { produtoId: 'CH2', reason: 'sem-link' },
+      { produtoId: 'CH3', reason: 'sem-item-id' },
+      { produtoId: 'CHV', reason: 'kit-virtual' },
+    ]);
   });
 
-  it('UP child link without itemId → per-child sem-item-id skip', () => {
-    const bundle = makeBundle(
-      makeAnchor({
-        link: { isUserProductModel: true },
-        children: [
-          {
-            childId: 'CH1',
-            varLinks: [{ itemId: null, produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
-          },
-        ],
-      }),
+  it('old bulk: > 1000 variations still builds ONE task but warns loudly (no cap)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockClear();
+    const children: FamilyChild[] = [];
+    const qty = new Map<string, number>([['PROD', 7]]);
+    for (let i = 1; i <= 1001; i++) {
+      children.push(child(`CH${i}`, [{ id: i, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]));
+      qty.set(`CH${i}`, 1);
+    }
+    const res = buildSendTasks(familyRow({ children }), qty, OPTS);
+    expect(res.tasks).toHaveLength(1);
+    expect(res.tasks[0]!.variations).toHaveLength(1001);
+    expect(res.skips).toEqual([]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('variations'),
+      expect.objectContaining({ produtoId: 'PROD', itemId: 'MLB111', variations: 1001 }),
     );
-    expect(runBundle(bundle).skips).toEqual([{ produtoId: 'CH1', reason: 'sem-item-id' }]);
   });
 
-  it('UP link without a linkDocId cannot match variação links → per-child sem-link', () => {
-    const bundle = makeBundle(
-      makeAnchor({
-        link: { isUserProductModel: true, linkDocId: null },
-        children: [
-          {
-            childId: 'CH1',
-            varLinks: [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
-          },
-        ],
-      }),
-    );
-    expect(runBundle(bundle).skips).toEqual([{ produtoId: 'CH1', reason: 'sem-link' }]);
-  });
-
-  it('childless UP family degenerates to a single item unit', () => {
-    expect(runBundle(makeBundle(makeAnchor({ link: { isUserProductModel: true } })))).toEqual({
-      units: [{ kind: 'item', itemId: 'MLB111', produtoId: 'PROD', variacaoProdutoId: null }],
-      skips: [],
+  it('old bulk: EVERY child excluded → no task, only the skips', () => {
+    const row = familyRow({ children: [child('CH1', []), child('CH2', [])] });
+    expect(buildSendTasks(row, new Map([['PROD', 7]]), OPTS)).toEqual({
+      tasks: [],
+      skips: [
+        { produtoId: 'CH1', reason: 'sem-link' },
+        { produtoId: 'CH2', reason: 'sem-link' },
+      ],
     });
   });
-});
 
-describe('resolveSendUnits — single-family wrapper wiring', () => {
-  function seedProduto(db: FakeDb, id: string, extra: DocData = {}): void {
-    db.seed('produtos', id, {
-      nome: `Produto ${id}`,
-      paiId: null,
-      publicado: true,
-      ehKit: false,
-      ehKitVirtual: false,
-      integracoesComProduto: [CONTA],
-      ...extra,
+  it('UP model: one variationItem task per child, deduped by itemId', () => {
+    const row = familyRow({
+      link: { isUserProductModel: true },
+      children: [
+        child('CH1', [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+        child('CH2', [{ itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+        // Duplicate ML item (two children pointing at the same listing) — one call only.
+        child('CH3', [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+      ],
     });
-  }
-
-  function bundleRow(anchorId: string, extra: DocData = {}) {
-    return {
-      path: `produtos/${anchorId}`,
-      data: {
-        link: {
-          id: 'MLB111',
-          estado: 'p',
-          status: 'active',
-          sub_status: null,
-          isUserProductModel: false,
-          linkDocId: 'link1',
+    const qty = new Map([
+      ['PROD', 7],
+      ['CH1', 3],
+      ['CH2', 4],
+      ['CH3', 5],
+    ]);
+    expect(buildSendTasks(row, qty, OPTS)).toEqual({
+      tasks: [
+        {
+          ...BASE_TASK,
+          kind: 'variationItem',
+          itemId: 'MLB-CH1',
+          variacaoProdutoId: 'CH1',
+          quantidade: 3,
+          variations: null,
         },
-        children: [],
-        ...extra,
-      },
-    };
-  }
-
-  function run(db: FakeDb, produtoId = 'PROD') {
-    return resolveSendUnits(asDb(db), { integracaoId: CONTA, produtoId });
-  }
-
-  it('anchor read → Q2 for that single anchor → the bundle ladder', async () => {
-    const db = new FakeDb();
-    seedProduto(db, 'PROD');
-    db.queuePipelinePage([bundleRow('PROD')]);
-
-    expect(await run(db)).toEqual({
-      units: [{ kind: 'item', itemId: 'MLB111', produtoId: 'PROD', variacaoProdutoId: null }],
+        {
+          ...BASE_TASK,
+          kind: 'variationItem',
+          itemId: 'MLB-CH2',
+          variacaoProdutoId: 'CH2',
+          quantidade: 4,
+          variations: null,
+        },
+      ],
       skips: [],
     });
-    expect(db.pipelineExecutions).toHaveLength(1);
-    const docsStage = db.pipelineExecutions[0]![0]!;
-    expect(docsStage.stage).toBe('documents');
-    expect((docsStage.args[0] as Array<{ id: string }>).map((r) => r.id)).toEqual(['PROD']);
   });
 
-  it('a variation-child candidate anchors on its parent via paiId', async () => {
-    const db = new FakeDb();
-    seedProduto(db, 'PROD');
-    db.seed('produtos', 'CHILD', { nome: 'Child', paiId: 'PROD' });
-    db.queuePipelinePage([bundleRow('PROD')]);
-
-    expect(await run(db, 'CHILD')).toEqual({
-      units: [{ kind: 'item', itemId: 'MLB111', produtoId: 'PROD', variacaoProdutoId: null }],
-      skips: [],
+  it('UP model: per-child sem-link / sem-item-id / kit-virtual skips, siblings sent', () => {
+    const row = familyRow({
+      link: { isUserProductModel: true },
+      children: [
+        child('CH1', [{ itemId: 'MLB-CH1', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+        child('CH2', []),
+        child('CH3', [{ itemId: null, produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+        child('CHV', [{ itemId: 'MLB-CHV', produtoMercadoLivreOuterRef: PARENT_LINK_REF }]),
+      ],
     });
-    const docsStage = db.pipelineExecutions[0]![0]!;
-    expect((docsStage.args[0] as Array<{ id: string }>).map((r) => r.id)).toEqual(['PROD']);
-  });
-
-  it('missing produto doc → sem-link, no pipeline executed', async () => {
-    const db = new FakeDb();
-    expect(await run(db, 'GONE')).toEqual({
-      units: [],
-      skips: [{ produtoId: 'GONE', reason: 'sem-link' }],
-    });
-    expect(db.pipelineExecutions).toHaveLength(0);
-  });
-
-  it('paiId pointing at a missing parent → sem-link on the PARENT id, no pipeline', async () => {
-    const db = new FakeDb();
-    db.seed('produtos', 'CHILD', { nome: 'Child', paiId: 'GONE-PARENT' });
-    expect((await run(db, 'CHILD')).skips).toEqual([
-      { produtoId: 'GONE-PARENT', reason: 'sem-link' },
+    const qty = new Map([
+      ['PROD', 7],
+      ['CH1', 3],
+      ['CH3', 5],
     ]);
-    expect(db.pipelineExecutions).toHaveLength(0);
-  });
-
-  it("the wrapper's own anchor read drives the gates (anchorProduto wins)", async () => {
-    const db = new FakeDb();
-    seedProduto(db, 'PROD', { publicado: false });
-    // The bundle row (the raw anchor doc, as Q2 would return it) claims
-    // published — the wrapper's classic read must win via anchorProduto.
-    db.queuePipelinePage([bundleRow('PROD', { publicado: true })]);
-    expect((await run(db)).skips).toEqual([{ produtoId: 'PROD', reason: 'nao-publicado' }]);
-  });
-});
-
-describe('computeQuantidades', () => {
-  function seedEstoque(db: FakeDb, produtoId: string, quantidade: number, reservada = 0): void {
-    db.seed(`produtos/${produtoId}/estoques`, `est-${produtoId}-${DEPOSITO_ID}`, {
-      depositoOuterRef: DEP,
-      quantidade,
-      quantidadeReservada: reservada,
-    });
-  }
-
-  function run(db: FakeDb, produtoId: string) {
-    return computeQuantidades(asDb(db), { produtoId, depositoId: DEPOSITO_ID });
-  }
-
-  it('non-kit: quantidade − reservada, floored', async () => {
-    const db = new FakeDb();
-    db.seed('produtos', 'P1', { ehKit: false, ehKitVirtual: false });
-    seedEstoque(db, 'P1', 10, 3);
-    expect(await run(db, 'P1')).toBe(7);
-
-    const db2 = new FakeDb();
-    db2.seed('produtos', 'P1', { ehKit: false, ehKitVirtual: false });
-    seedEstoque(db2, 'P1', 7.5);
-    expect(await run(db2, 'P1')).toBe(7);
-  });
-
-  it('missing estoque doc → own disponivel 0', async () => {
-    const db = new FakeDb();
-    db.seed('produtos', 'P1', { ehKit: false, ehKitVirtual: false });
-    expect(await run(db, 'P1')).toBe(0);
-  });
-
-  it('missing produto doc → null (do not send)', async () => {
-    const db = new FakeDb();
-    expect(await run(db, 'GONE')).toBeNull();
-  });
-
-  it('ehKitVirtual → null', async () => {
-    const db = new FakeDb();
-    db.seed('produtos', 'V1', { ehKit: true, ehKitVirtual: true });
-    seedEstoque(db, 'V1', 50);
-    expect(await run(db, 'V1')).toBeNull();
-  });
-
-  it('kit: component-min over deterministic estoque doc reads', async () => {
-    const db = new FakeDb();
-    db.seed('produtos', 'KIT', {
-      ehKit: true,
-      ehKitVirtual: false,
-      componentesKit: {
-        A: { quantidade: 2, limitarEstoque: true, timestamp: null },
-        B: { quantidade: 3, limitarEstoque: true, timestamp: null },
+    const res = buildSendTasks(row, qty, OPTS);
+    expect(res.tasks).toEqual([
+      {
+        ...BASE_TASK,
+        kind: 'variationItem',
+        itemId: 'MLB-CH1',
+        variacaoProdutoId: 'CH1',
+        quantidade: 3,
+        variations: null,
       },
-    });
-    seedEstoque(db, 'KIT', 5, 1);
-    seedEstoque(db, 'A', 10);
-    seedEstoque(db, 'B', 9);
-
-    expect(await run(db, 'KIT')).toBe(3); // min(10/2, 9/3); own 4 NOT added by default
-    // Direct doc gets by the deterministic makeEstoqueUid id — no query.
-    const paths = db.opLog.filter((e) => e.op === 'get').map((e) => e.path);
-    expect(paths).toContain('produtos/KIT/estoques/est-KIT-DEP');
-    expect(paths).toContain('produtos/A/estoques/est-A-DEP');
-    expect(paths).toContain('produtos/B/estoques/est-B-DEP');
-    expect(db.queryLog).toHaveLength(0);
+    ]);
+    expect(res.skips).toEqual([
+      { produtoId: 'CH2', reason: 'sem-link' },
+      { produtoId: 'CH3', reason: 'sem-item-id' },
+      { produtoId: 'CHV', reason: 'kit-virtual' },
+    ]);
   });
 
-  it('kit: missing component estoque doc counts as 0 (#238)', async () => {
-    const db = new FakeDb();
-    db.seed('produtos', 'KIT', {
-      ehKit: true,
-      ehKitVirtual: false,
-      componentesKit: {
-        A: { quantidade: 1, limitarEstoque: true, timestamp: null },
-        B: { quantidade: 1, limitarEstoque: true, timestamp: null },
-      },
+  it('childless UP family degenerates to a single item task with the anchor quantity', () => {
+    expect(run(familyRow({ link: { isUserProductModel: true } }))).toEqual({
+      tasks: [
+        {
+          ...BASE_TASK,
+          kind: 'item',
+          itemId: 'MLB111',
+          variacaoProdutoId: null,
+          quantidade: 7,
+          variations: null,
+        },
+      ],
+      skips: [],
     });
-    seedEstoque(db, 'A', 10);
-    // B has no estoque doc at this depósito.
-    expect(await run(db, 'KIT')).toBe(0);
-  });
-
-  it('kit: unconstrained components fall back to own stock', async () => {
-    const db = new FakeDb();
-    db.seed('produtos', 'KIT', {
-      ehKit: true,
-      ehKitVirtual: false,
-      componentesKit: { A: { quantidade: 1, limitarEstoque: false, timestamp: null } },
-    });
-    seedEstoque(db, 'KIT', 6, 2);
-    seedEstoque(db, 'A', 100);
-    expect(await run(db, 'KIT')).toBe(4);
-  });
-
-  it('kit: the env own-stock hook adds own disponivel to the min', async () => {
-    const db = new FakeDb();
-    db.seed('produtos', 'KIT', {
-      ehKit: true,
-      ehKitVirtual: false,
-      componentesKit: { A: { quantidade: 2, limitarEstoque: true, timestamp: null } },
-    });
-    seedEstoque(db, 'KIT', 4);
-    seedEstoque(db, 'A', 10);
-    expect(await run(db, 'KIT')).toBe(5); // hook OFF → min only
-    process.env.MERCADO_LIVRE_STOCK_KIT_INCLUI_PROPRIO = '1';
-    expect(await run(db, 'KIT')).toBe(9); // min 5 + own 4
   });
 });
