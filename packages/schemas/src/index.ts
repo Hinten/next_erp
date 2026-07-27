@@ -264,6 +264,17 @@ export {
 } from './backfillPedidosMercadoLivre';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the persisted round-robin
+  // cursor for the unreferenced-arquivo sweep (#234). Bare schema+meta
+  // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
+  // arquivoOrphanSweepState.ts.
+  ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID,
+  arquivoOrphanSweepStateSchema,
+  arquivoOrphanSweepStateMeta,
+  type ArquivoOrphanSweepState,
+} from './arquivoOrphanSweepState';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log,
   // mirrors notificacaoMercadoPago above (#527). Bare schema+meta (perms 0n),
   // not a DomainSchema — see the NOTE at the bottom of notificacoesWhatsapp.ts.

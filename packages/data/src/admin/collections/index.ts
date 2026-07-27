@@ -18,6 +18,7 @@ export { cartaCorrecaoCollection } from './cartaCorrecaoCollection';
 export { cargoCollection } from './cargoCollection';
 export { usuarioCollection } from './usuarioCollection';
 export { arquivoCollection } from './arquivoCollection';
+export { arquivoOrphanSweepStateCollection } from './arquivoOrphanSweepStateCollection';
 export { categoriaCollection } from './categoriaCollection';
 export { produtoCollection } from './produtoCollection';
 export { estoqueCollection } from './estoqueCollection';
