@@ -2,7 +2,7 @@ import { type ScheduleOptions, onSchedule } from 'firebase-functions/v2/schedule
 import { logger } from 'firebase-functions/v2';
 
 import { STOCK_SYNC_FLAG_ENV } from '../../lib/marketplace/estoquePlan';
-import { runStockSweep } from '../../lib/marketplace/estoqueSweep';
+import { isSlotDoDaily, runStockSweep } from '../../lib/marketplace/estoqueSweep';
 import { createMlStockTaskScheduler } from '../../lib/marketplace/mlStockTasks';
 import { getDb } from './lib/admin';
 
@@ -11,20 +11,22 @@ import { getDb } from './lib/admin';
  * wrappers over `runStockSweep` (lib/marketplace/estoqueSweep.ts), mirroring
  * the `importMercadoLivreOrders` wrapper in index.ts:
  *
- *  - `sweepMercadoLivreStock` — every 15 minutes EXCEPT the 02:00–02:59 hour
- *    (`0,15,30,45 0-1,3-23 * * *`, America/Sao_Paulo), `'incremental'` mode: per
+ *  - `sweepMercadoLivreStock` — every 15 minutes, `'incremental'` mode: per
  *    conta, discovers the produto families whose estoques changed since the
  *    durable cursor (state doc `estoqueMercadoLivreSync/{integracaoId}`),
  *    applies the 30-day activity filter and enqueues one send task per ML API
- *    call onto the `sendMercadoLivreStock` queue. The skipped hour is harmless:
- *    the window derives from the cursor, so the 03:00 tick re-covers it — and
- *    the daily pass owns that hour anyway.
+ *    call onto the `sendMercadoLivreStock` queue. The ONE tick at the 02:00
+ *    slot is skipped in code (`isSlotDoDaily` — a single cron line cannot
+ *    exclude just one slot): that slot belongs to the daily pass below, while
+ *    02:15/02:30/02:45 still run (owner call — stock changed at 02:05 must
+ *    sync at 02:15, not 03:00; the cursor makes the one skipped slot
+ *    self-healing regardless).
  *  - `sweepMercadoLivreStockDaily` — 02:00 America/Sao_Paulo, `'daily'` mode:
  *    the same discovery over a FLAT `dailyWindowHours()` (24h) lookback — NOT
  *    a force-all `changedSinceMs: -1` scan — with no activity filter and no
  *    pedidos probe: the full-reconciliation pass over everything that moved in
- *    the last day. It runs alone in its hour (the incremental cron excludes
- *    hour 2), so the two never contend for one conta's caps and state doc.
+ *    the last day. It owns its slot alone (the incremental skips 02:00), so
+ *    the two never contend for one conta's caps and state doc.
  *
  * **Flag-gated OFF**: until `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1` is set (the
  * coordinated cutover — same window the legacy Flutter sender dies) both
@@ -82,19 +84,25 @@ async function runAndLog(mode: 'incremental' | 'daily'): Promise<void> {
 }
 
 /**
- * The 15-minute incremental stock sweep (flag-gated — module doc). The cron
- * excludes the 02:00–02:59 hour — that hour belongs to the daily pass.
+ * The 15-minute incremental stock sweep (flag-gated — module doc). Skips only
+ * the 02:00 slot — it belongs to the daily pass; 02:15/30/45 run normally.
  */
 export const sweepMercadoLivreStock = onSchedule(
-  sweepScheduleOptions('0,15,30,45 0-1,3-23 * * *'),
+  sweepScheduleOptions('every 15 minutes'),
   async () => {
+    if (isSlotDoDaily(Date.now())) {
+      logger.info(
+        '[mercado-livre] stock sweep (incremental) — 02:00 America/Sao_Paulo slot belongs to the daily sweep, skipping this tick',
+      );
+      return;
+    }
     await runAndLog('incremental');
   },
 );
 
 /**
- * The 02:00 daily full stock sweep (flag-gated — module doc). Runs alone in
- * its hour: the incremental cron above skips hour 2 entirely.
+ * The 02:00 daily full stock sweep (flag-gated — module doc). Owns its slot:
+ * the incremental wrapper above skips exactly this tick.
  */
 export const sweepMercadoLivreStockDaily = onSchedule(
   sweepScheduleOptions('0 2 * * *'),

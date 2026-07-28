@@ -46,6 +46,7 @@ import {
   MAX_PAGES_PER_SWEEP,
   type StockSweepDeps,
   type StockSweepMode,
+  isSlotDoDaily,
   janelaDoSweep,
   runStockSweep,
 } from './estoqueSweep';
@@ -318,6 +319,21 @@ afterEach(() => {
 });
 
 /* ------------------------------ janelaDoSweep ------------------------------ */
+
+describe('isSlotDoDaily', () => {
+  // São Paulo is fixed UTC-3 (Brazil abolished DST in 2019): 02:MM local =
+  // 05:MM UTC. The guard must flag ONLY the 02:00–02:14 slot.
+  it('flags only the 02:00 São Paulo slot', () => {
+    expect(isSlotDoDaily(Date.parse('2026-07-28T05:00:00Z'))).toBe(true); // 02:00
+    expect(isSlotDoDaily(Date.parse('2026-07-28T05:00:41Z'))).toBe(true); // 02:00 + jitter
+    expect(isSlotDoDaily(Date.parse('2026-07-28T05:14:59Z'))).toBe(true); // still the slot
+    expect(isSlotDoDaily(Date.parse('2026-07-28T05:15:00Z'))).toBe(false); // 02:15 RUNS (owner call)
+    expect(isSlotDoDaily(Date.parse('2026-07-28T05:30:00Z'))).toBe(false); // 02:30 runs
+    expect(isSlotDoDaily(Date.parse('2026-07-28T04:45:00Z'))).toBe(false); // 01:45 runs
+    expect(isSlotDoDaily(Date.parse('2026-07-28T06:00:00Z'))).toBe(false); // 03:00 runs
+    expect(isSlotDoDaily(Date.parse('2026-07-28T14:00:00Z'))).toBe(false); // 11:00 runs
+  });
+});
 
 describe('janelaDoSweep', () => {
   it('incremental, no cursor → default window minus overlap; venda cutoff = 30d in µs', () => {

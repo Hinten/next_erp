@@ -121,6 +121,29 @@ import { MercadoLivreContaNotConfiguredError, loadMercadoLivreContext } from './
 export type StockSweepMode = 'incremental' | 'daily';
 
 /**
+ * Is `nowMs` inside the 02:00 America/Sao_Paulo slot (02:00–02:14) that
+ * belongs to the DAILY sweep? A single cron line cannot express "every
+ * quarter-hour except only the 02:00 slot" (minute × hour fields are a
+ * cross-product), so the incremental wrapper runs on every quarter-hour and
+ * skips this one slot in code — 02:15/02:30/02:45 still run (owner call:
+ * stock changed at 02:05 must sync at 02:15, not 03:00). `< 15` also absorbs
+ * Cloud Scheduler jitter on the 02:00 firing.
+ */
+export function isSlotDoDaily(nowMs: number): boolean {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Sao_Paulo',
+    hour12: false,
+    hour: 'numeric',
+    minute: 'numeric',
+  }).formatToParts(new Date(nowMs));
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? Number.NaN);
+  // Intl emits hour '24' for midnight under hour12:false in some ICU versions
+  // — irrelevant here (we only compare against 2), but normalize anyway.
+  const hour = get('hour') % 24;
+  return hour === 2 && get('minute') < 15;
+}
+
+/**
  * Page cap per conta per tick — bounds one tick's pipeline executions
  * (`orderBackfill.MAX_PAGES_PER_TICK` precedent). Hitting it with backlog
  * remaining truncates the sweep: loud warn, cursor NOT advanced, and the
