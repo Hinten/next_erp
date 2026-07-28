@@ -23,6 +23,15 @@ on:
       - 'packages/data/src/admin/pedidoReconcile*.ts'
       - 'packages/data/src/pedido/usecases.ts'
       - 'packages/schemas/src/pedido/collection/pagamento.ts'
+      # `onPedidoEstadoChanged` writes the estado audit trail THROUGH these two
+      # (`historicoEstadoPedidoCollection.parse`), and since #697 they are the
+      # only place the row shape is asserted — the always-on assertion that used
+      # to live in `@delfrance/data` went away with the client-side writer, and
+      # `ci.yml` excludes `@delfrance/functions` from its test filter. Without
+      # these entries a PR editing only the schema runs no test that reads the
+      # trail's fields at all.
+      - 'packages/schemas/src/pedido/collection/historicoEstadoPedido.ts'
+      - 'packages/data/src/admin/collections/historicoEstadoPedidoCollection.ts'
       - 'storage.rules'
       - 'cors.json'
       - 'firebase.functions.json'
@@ -47,6 +56,15 @@ on:
       - 'packages/data/src/admin/pedidoReconcile*.ts'
       - 'packages/data/src/pedido/usecases.ts'
       - 'packages/schemas/src/pedido/collection/pagamento.ts'
+      # `onPedidoEstadoChanged` writes the estado audit trail THROUGH these two
+      # (`historicoEstadoPedidoCollection.parse`), and since #697 they are the
+      # only place the row shape is asserted — the always-on assertion that used
+      # to live in `@delfrance/data` went away with the client-side writer, and
+      # `ci.yml` excludes `@delfrance/functions` from its test filter. Without
+      # these entries a PR editing only the schema runs no test that reads the
+      # trail's fields at all.
+      - 'packages/schemas/src/pedido/collection/historicoEstadoPedido.ts'
+      - 'packages/data/src/admin/collections/historicoEstadoPedidoCollection.ts'
       - 'storage.rules'
       - 'cors.json'
       - 'firebase.functions.json'

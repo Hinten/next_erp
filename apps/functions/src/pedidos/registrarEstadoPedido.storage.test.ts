@@ -91,13 +91,23 @@ describe.skipIf(!EMULATED)('registrarEstadoPedido core (emulator)', () => {
     })!;
 
     await recordEstadoHistory(db, pedidoId, entry);
+    const firstDelivery = (await historyRows(db, pedidoId))[0]!.data();
+
     await recordEstadoHistory(db, pedidoId, entry);
 
     const rows = await historyRows(db, pedidoId);
     expect(rows).toHaveLength(1);
+    // Content-identical, not merely "still one doc". Reading the first delivery
+    // BACK out of Firestore is the point: comparing the in-memory `entry` to
+    // itself would prove nothing, whereas this fails if anything in
+    // `recordEstadoHistory` or the converter re-stamps a field on rewrite — the
+    // reason `data` comes from `event.time` and never `Date.now()`.
+    expect(rows[0]!.data()).toEqual(firstDelivery);
     expect(rows[0]!.data()).toMatchObject({
       estado: 'cancelado',
       usuarioHistoricoEstadosPedidoOuterRef: null,
+      data: EVENT_TIME_MICROS,
+      eventId,
     });
   });
 

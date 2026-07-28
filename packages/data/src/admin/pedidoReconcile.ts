@@ -64,7 +64,12 @@ const GATEWAY_OWNED = [
  * The `historicoEstadoPedido` audit row is NOT written here: the
  * `onPedidoEstadoChanged` trigger observes the pedido write below and records
  * the transition. Both callers run on the Admin SDK, so that row carries a null
- * usuário — an automatic, payment-driven transition has no end user behind it.
+ * usuário — but for DIFFERENT reasons, and only one of them is "there is no
+ * operator": {@link reconcilePedidoFromPagamento} serves the Mercado Pago
+ * webhook and genuinely has no end user, while {@link reconcilePedidoEstado} is
+ * called from an onCall that REJECTS unauthenticated requests and therefore
+ * knows exactly who the operator is. It deliberately does not carry them
+ * through — see the note on that function.
  */
 function applyEstadoTransition(
   tx: Transaction,
@@ -246,6 +251,14 @@ export async function reconcilePedidoFromPagamento(
  * runs on the Admin SDK — so the transition is recorded with a null usuário even
  * though the calling operator is known to the callable. That is deliberate: an
  * automatic, payment-driven transition is system-caused, not user-caused.
+ *
+ * ⚠️ Be precise about what that costs. This is the ONE path where the actor
+ * regressed: the Pagamentos tab named the operator before the #308 cutover and
+ * still did during it. The web editor's estado change (client SDK) keeps its
+ * actor and a pedido create now GAINS one; the webhook and the Mercado Livre
+ * import were null before and after. Until that is revisited (issue #711), the
+ * only surviving attribution for this path is the `logger.info` line in
+ * `reconciliarPagamentoPedido.ts`, which ages out with log retention.
  */
 export async function reconcilePedidoEstado(
   db: FirebaseAdminFirestore,
