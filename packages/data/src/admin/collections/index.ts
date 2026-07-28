@@ -54,3 +54,4 @@ export { notificacoesWhatsappCollection } from './notificacoesWhatsappCollection
 export { orderMLCollection } from './orderMLCollection';
 export { enderecoCollection } from './enderecoCollection';
 export { backfillPedidosMercadoLivreCollection } from './backfillPedidosMercadoLivreCollection';
+export { estoqueMercadoLivreSyncCollection } from './estoqueMercadoLivreSyncCollection';
