@@ -67,7 +67,7 @@ else (`chore/`, `docs/`, …) it reports zero checks, not failures.
    the offline `demo-erp`), with seed/teardown in `tools/test-fixtures`. The
    carve-outs are `ci-storage.yml`, `ci-rules.yml`, and `e2e-emulator.yml`
    (`firebase.e2e.json`, auth+firestore+storage+functions), which runs **every**
-   `*.emulator.e2e.spec.ts` — two today. Every other e2e spec hits staging. Do
+   `*.emulator.e2e.spec.ts` — five today. Every other e2e spec hits staging. Do
    **not** add a local-dev emulator mode: `NEXT_PUBLIC_USE_FIREBASE_EMULATOR`
    exists for that CI lane only and is off by default.
 5. **`apps/web` is client-first.** Default to `'use client'` — the ERP is behind

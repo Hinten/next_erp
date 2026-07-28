@@ -1,13 +1,14 @@
-name: E2E — Emulator (estoque)
+name: E2E — Emulator (callables + triggers)
 
-# Runs the estoque Playwright spec (produto-estoque.emulator.e2e.spec.ts) against
-# the Firebase Emulator Suite (Auth + Firestore + Functions), where the
-# `aplicarEstoque` callable is served LOCALLY — so the estoque
-# UI → callable → Firestore flow is validated in CI without a staging deploy.
+# Runs every `*.emulator.e2e.spec.ts` against the Firebase Emulator Suite
+# (Auth + Firestore + Storage + Functions), where the `storage`-codebase functions
+# are served LOCALLY from source — so each UI → callable/trigger → Firestore flow is
+# validated in CI without a staging deploy. Covers `aplicarEstoque` (estoque tab),
+# `reconciliarPagamentoPedido` (pedido Pagamentos tab, #308) and the produto triggers.
 #
-# Deliberately scoped: only this one spec runs on the emulator, because it depends
-# on a Cloud Function that isn't deployed to staging. Every other e2e spec still
-# runs against staging (CLAUDE.md's "app/e2e on staging" decision holds). This lane
+# Deliberately scoped: these specs run here because they depend on Cloud Functions
+# that are only live once a human deploys them. Every other e2e spec still runs
+# against staging (CLAUDE.md's "app/e2e on staging" decision holds). This lane
 # is OFFLINE — it needs no Firebase secrets, so it also runs on fork PRs.
 #
 # Machinery mirrors ci-storage.yml (JDK + firebase-tools + emulators:exec) and
@@ -100,8 +101,9 @@ jobs:
       - name: Build web (emulator mode)
         # NEXT_PUBLIC_* are inlined at build time. The emulator flag + host make the
         # client connect Auth/Firestore/Functions to the local emulators; the rest is
-        # dummy Firebase config the emulators ignore (no real key/bucket needed). The
-        # estoque spec touches no Storage, so no storage-emulator client wiring.
+        # dummy Firebase config the emulators ignore (no real key/bucket needed). No
+        # emulator spec touches Storage from the browser, so no storage-emulator
+        # client wiring.
         env:
           NEXT_PUBLIC_USE_FIREBASE_EMULATOR: 'true'
           NEXT_PUBLIC_FIREBASE_EMULATOR_HOST: 127.0.0.1
@@ -122,8 +124,9 @@ jobs:
         # fixtures (seed / ephemeral user / claims) target the emulator with no
         # service account. Playwright's webServer runs `next start` (prod build,
         # already wired to the emulators via the build-time flag); the `emulator`
-        # project runs only the estoque spec. GITHUB_RUN_ID (auto) keeps the
-        # fixture namespace consistent, matching firestore.e2e.rules.
+        # project collects every `*.emulator.e2e.spec.ts` by filename suffix — a new
+        # spec needs no wiring here. GITHUB_RUN_ID (auto) keeps the fixture
+        # namespace consistent, matching firestore.e2e.rules.
         run: |
           firebase emulators:exec \
             --config firebase.e2e.json \
