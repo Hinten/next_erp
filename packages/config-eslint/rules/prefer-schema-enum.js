@@ -60,7 +60,9 @@
 //     the member set is the only thing that identifies an enum here — and when
 //     two claim the same one, nothing left in the type says which is meant.
 //     Answering anyway would name the wrong module's constant in code that still
-//     compiles. Seven enums are parked this way today; see `buildRegistry`.
+//     compiles. No enum is parked today — only opted-in enums reach the registry
+//     at all, and none of the colliding ones has a constant yet. #699 parks seven
+//     as it adds theirs. See `buildRegistry`.
 //
 // Error (not warn): the constants exist precisely so the enum members have one
 // spelling; a second spelling drifting back in is the thing this prevents.
@@ -227,14 +229,16 @@ function buildRegistry(program) {
   }
   // Two enums that share a member set are INDISTINGUISHABLE here, and
   // `byValueKey` is last-writer-wins, so leaving them in would silently answer
-  // for whichever was registered last. Three real groups collide: `Origem`
-  // ('0'…'8', imposto/tribute.ts) with `OrigemProdutoImposto` (the same SEFAZ
-  // concept declared again in operacao.ts); `IndIncentivo` with `AmbienteNFE`
-  // ('1' | '2'); and the three 'failed' | 'parked' notification statuses. Because
-  // the colliding enums carry the SAME strings, a suggestion naming the wrong
-  // module's constant still compiles and still passes tests — undetectable
-  // downstream. `IndIncentivo` vs `AmbienteNFE` is the vivid one: it would turn
-  // "incentivo fiscal: sim" into "ambiente: produção".
+  // for whichever was registered last. Nothing collides yet — an enum only
+  // reaches this loop once it has a companion constant, and today's 13 are all
+  // distinct. #699 adds 35 more and brings three colliding groups with them:
+  // `Origem` ('0'…'8', imposto/tribute.ts) with `OrigemProdutoImposto` (the same
+  // SEFAZ concept declared again in operacao.ts); `IndIncentivo` with
+  // `AmbienteNFE` ('1' | '2'); and the three 'failed' | 'parked' notification
+  // statuses. Because the colliding enums carry the SAME strings, a suggestion
+  // naming the wrong module's constant still compiles and still passes tests —
+  // undetectable downstream. `IndIncentivo` vs `AmbienteNFE` is the vivid one: it
+  // would turn "incentivo fiscal: sim" into "ambiente: produção".
   //
   // Dropping the key parks those enums ENTIRELY, not just in nullable positions:
   // `z.infer` erases the alias (verified against real zod — `getTypeAtLocation`
