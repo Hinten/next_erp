@@ -165,48 +165,13 @@ export async function savePedido(
 }
 
 // ---------------------------------------------------------------------------
-// Estado history (legacy `HistoricoEstadosPedido` write on estado change)
+// Estado history
 // ---------------------------------------------------------------------------
-
-const HISTORICO_ESTADO_PATH = (pedidoId: string, docId: string): string =>
-  `pedidos/${pedidoId}/historicoEstadoPedido/${docId}`;
-
-/**
- * Build one `historicoEstadoPedido` set-op recording a pedido's new `estado` and
- * who set it — mirror of the legacy `Pedido.save()` history write
- * (`models.dart:3838`). `data` is a µs-epoch stamp; `usuarioRef` is the
- * `documents/usuarios/<uid>` outer-ref string (null when unknown).
- */
-export function buildEstadoHistoryOp(
-  port: PedidoDataPort,
-  pedidoId: string,
-  estado: EstadoPedido,
-  usuarioRef: string | null,
-): PedidoWriteOp {
-  return {
-    type: 'set',
-    path: HISTORICO_ESTADO_PATH(pedidoId, port.newId()),
-    data: {
-      estado,
-      usuarioHistoricoEstadosPedidoOuterRef: usuarioRef,
-      data: port.now(),
-    },
-  };
-}
-
-/**
- * Append a `historicoEstadoPedido` audit row for a manual estado change. The
- * editor calls this AFTER the pedido doc save committed the new `estado`, so the
- * history reflects what was persisted; a future MCP agent calls it the same way.
- */
-export async function recordEstadoChange(
-  port: PedidoDataPort,
-  args: { pedidoId: string; estado: EstadoPedido; usuarioRef?: string | null },
-): Promise<void> {
-  await port.commit([
-    buildEstadoHistoryOp(port, args.pedidoId, args.estado, args.usuarioRef ?? null),
-  ]);
-}
+// There is deliberately NO history helper here. `historicoEstadoPedido` rows are
+// written exclusively by the `onPedidoEstadoChanged` Cloud Function, which
+// observes every `pedidos/{pedidoId}` write — so any code path that changes
+// `estado` is covered automatically and none may append rows itself (the rules
+// deny client writes to that subcollection).
 
 // ---------------------------------------------------------------------------
 // Incidentes (pedidos/{id}/incidentes subcollection CRUD)

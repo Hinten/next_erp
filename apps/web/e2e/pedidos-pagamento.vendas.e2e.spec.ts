@@ -241,7 +241,11 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
       )
       .toBe('pago');
 
-    // …and appends a historicoEstadoPedido row recording it.
+    // …and a historicoEstadoPedido row records it. That row is written by the
+    // `onPedidoEstadoChanged` Cloud Function (apps/functions) reacting to the
+    // pedido write — no longer by the client — so this assertion requires the
+    // function to be DEPLOYED to the staging project. The timeout covers a cold
+    // start on top of the trigger's own delivery latency.
     await expect
       .poll(
         async () => {
@@ -252,7 +256,7 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
             .get();
           return snap.docs.map((d) => d.data().estado as string);
         },
-        { timeout: 15_000 },
+        { timeout: 30_000 },
       )
       .toContain('pago');
   });

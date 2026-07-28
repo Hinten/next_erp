@@ -4,14 +4,12 @@ import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 import {
   PedidoConflictError,
   PedidoNothingChangedError,
-  buildEstadoHistoryOp,
   buildIncidenteOp,
   buildPagamentoOp,
   buildPedidoPatch,
   deleteIncidente,
   deletePagamento,
   nextPedidoEstado,
-  recordEstadoChange,
   remotelyChangedFields,
   savePedido,
   saveIncidente,
@@ -194,27 +192,16 @@ describe('savePedido', () => {
 });
 
 describe('estado history', () => {
-  it('buildEstadoHistoryOp writes estado + usuario ref + µs stamp to the subcollection', () => {
-    const { port } = fakePort(null, 4242);
-    const op = buildEstadoHistoryOp(port, 'ped1', 'pago', 'documents/usuarios/u1');
-    expect(op).toEqual({
-      type: 'set',
-      path: 'pedidos/ped1/historicoEstadoPedido/newid',
-      data: {
-        estado: 'pago',
-        usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
-        data: 4242,
-      },
+  it('is never written from here — the onPedidoEstadoChanged trigger owns it', async () => {
+    const { port, written, committed } = fakePort({ estado: 'iniciado' }, 4242);
+    await savePedido(port, {
+      pedidoId: 'ped1',
+      patch: { estado: 'pago' },
+      baseline: { estado: 'iniciado' },
     });
-  });
-
-  it('recordEstadoChange commits one op (usuario defaults to null)', async () => {
-    const { port, committed } = fakePort(null);
-    await recordEstadoChange(port, { pedidoId: 'ped1', estado: 'cancelado' });
-    expect(committed()).toHaveLength(1);
-    expect(committed()[0]).toMatchObject({
-      data: { estado: 'cancelado', usuarioHistoricoEstadosPedidoOuterRef: null },
-    });
+    // The estado lands on the pedido doc; no historicoEstadoPedido op rides along.
+    expect(written()).toEqual({ estado: 'pago', ultimaModificacao: 4242 });
+    expect(committed()).toEqual([]);
   });
 });
 

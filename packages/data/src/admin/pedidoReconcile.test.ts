@@ -110,7 +110,7 @@ const T_OLD = 1_700_000_001_000_000;
 const T_NEW = 1_700_000_002_000_000;
 
 describe('reconcilePedidoFromPagamento', () => {
-  it('full payment → pago, authorizes frete dispatch, and appends a history row', async () => {
+  it('full payment → pago, authorizes frete dispatch, and appends NO history row', async () => {
     const { db, store, writes } = makeDb({
       'pedidos/p1': {
         estado: 'aguardandoConfirmacaoDePagamento',
@@ -127,7 +127,6 @@ describe('reconcilePedidoFromPagamento', () => {
         status_pagamento: STATUS_PAGAMENTO.aprovado,
         ultimaModificacao: T_NEW,
       }),
-      usuarioRef: 'documents/usuarios/u1',
     });
 
     expect(result).toEqual({ transition: 'pago', skippedStale: false });
@@ -149,13 +148,10 @@ describe('reconcilePedidoFromPagamento', () => {
     // First-seen dataCadastro stamped on create.
     expect(typeof store['pedidos/p1/pagamentos/pay1']!.dataCadastro).toBe('number');
 
-    // Exactly one history row, with the new estado.
+    // No history row from here — the onPedidoEstadoChanged trigger observes the
+    // pedido write above and records the transition.
     const historyWrites = writes.sets.filter((w) => w.path.includes('/historicoEstadoPedido/'));
-    expect(historyWrites).toHaveLength(1);
-    expect(historyWrites[0]!.data).toMatchObject({
-      estado: 'pago',
-      usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
-    });
+    expect(historyWrites).toEqual([]);
   });
 
   it('partial payment → aguardandoConfirmacaoDePagamento, does NOT authorize frete', async () => {
@@ -412,10 +408,7 @@ describe('reconcilePedidoEstado', () => {
       },
     });
 
-    const result = await reconcilePedidoEstado(db, {
-      pedidoId: PEDIDO_ID,
-      usuarioRef: 'documents/usuarios/u1',
-    });
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
 
     expect(result).toEqual({ transition: 'pago' });
     expect(store['pedidos/p1']!.estado).toBe('pago');
@@ -425,12 +418,10 @@ describe('reconcilePedidoEstado', () => {
     });
     // No pagamento doc was touched — this reconcile only reads them.
     expect(writes.sets.filter((w) => w.path.includes('/pagamentos/'))).toHaveLength(0);
+    // No history row from here either — the onPedidoEstadoChanged trigger
+    // observes the pedido write above and records the transition.
     const historyWrites = writes.sets.filter((w) => w.path.includes('/historicoEstadoPedido/'));
-    expect(historyWrites).toHaveLength(1);
-    expect(historyWrites[0]!.data).toMatchObject({
-      estado: 'pago',
-      usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
-    });
+    expect(historyWrites).toEqual([]);
   });
 
   it('advances to aguardando on a partial payment without touching frete', async () => {
@@ -511,7 +502,9 @@ describe('reconcilePedidoEstado', () => {
     expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
     // A downgrade never re-authorizes dispatch, so `freteInicial` is left alone.
     expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'despachoAutorizado' });
-    expect(writes.sets.filter((w) => w.path.includes('/historicoEstadoPedido/'))).toHaveLength(1);
+    // No history row from here — the onPedidoEstadoChanged trigger records the
+    // downgrade off the pedido write, and no trigger runs against this fake db.
+    expect(writes.sets.filter((w) => w.path.includes('/historicoEstadoPedido/'))).toEqual([]);
   });
 
   it('never auto-reverts a terminal estado (e.g. finalizado) even if fully paid', async () => {

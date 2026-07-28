@@ -14,8 +14,6 @@ export {
   buildPedidoPatch,
   savePedido,
   remotelyChangedFields,
-  buildEstadoHistoryOp,
-  recordEstadoChange,
   buildIncidenteOp,
   saveIncidente,
   deleteIncidente,
