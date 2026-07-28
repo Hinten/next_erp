@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { Firestore as FirebaseAdminFirestore } from 'firebase-admin/firestore';
 import { STATUS_PAGAMENTO, pagamentoSchema, type Pagamento } from '@delfrance/schemas';
 
-import { PedidoReconcileNotFoundError, reconcilePedidoFromPagamento } from './pedidoReconcile';
+import {
+  PedidoReconcileNotFoundError,
+  reconcilePedidoEstado,
+  reconcilePedidoFromPagamento,
+} from './pedidoReconcile';
 
 /* -------------------------------------------------------------------------- */
 /*  Fake Admin-SDK Firestore                                                  */
@@ -379,5 +383,140 @@ describe('reconcilePedidoFromPagamento', () => {
       }),
     ).rejects.toBeInstanceOf(PedidoReconcileNotFoundError);
     expect(writes.sets).toHaveLength(0);
+  });
+});
+
+describe('reconcilePedidoEstado', () => {
+  it('sums approved pagamentos ACROSS multiple existing docs, atomically with the pedido read (#308)', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': {
+        estado: 'aguardandoConfirmacaoDePagamento',
+        valorCobrado: 100,
+        freteInicial: { estado: 'iniciado', codRastreio: null },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 60,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+      'pedidos/p1/pagamentos/pay2': {
+        valor: 40,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_NEW,
+      },
+      // Not paying (pendente) — must NOT count toward valorPago.
+      'pedidos/p1/pagamentos/pay3': {
+        valor: 1000,
+        status_pagamento: STATUS_PAGAMENTO.pendente,
+        ultimaModificacao: T_NEW,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, {
+      pedidoId: PEDIDO_ID,
+      usuarioRef: 'documents/usuarios/u1',
+    });
+
+    expect(result).toEqual({ transition: 'pago' });
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+    expect(store['pedidos/p1']!.freteInicial).toEqual({
+      estado: 'despachoAutorizado',
+      codRastreio: null,
+    });
+    // No pagamento doc was touched — this reconcile only reads them.
+    expect(writes.sets.filter((w) => w.path.includes('/pagamentos/'))).toHaveLength(0);
+    const historyWrites = writes.sets.filter((w) => w.path.includes('/historicoEstadoPedido/'));
+    expect(historyWrites).toHaveLength(1);
+    expect(historyWrites[0]!.data).toMatchObject({
+      estado: 'pago',
+      usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
+    });
+  });
+
+  it('advances to aguardando on a partial payment without touching frete', async () => {
+    const { db, store } = makeDb({
+      'pedidos/p1': {
+        estado: 'iniciado',
+        valorCobrado: 100,
+        freteInicial: { estado: 'iniciado' },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 40,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+    expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
+    expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'iniciado' });
+  });
+
+  it('is a no-op (no write, no história) when no pagamento exists yet', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': { estado: 'iniciado', valorCobrado: 100 },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: null });
+    expect(store['pedidos/p1']!.estado).toBe('iniciado');
+    expect(writes.updates).toHaveLength(0);
+    expect(writes.sets).toHaveLength(0);
+  });
+
+  it('never auto-reverts a terminal estado (e.g. finalizado) even if fully paid', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': {
+        estado: 'finalizado',
+        valorCobrado: 100,
+        freteInicial: { estado: 'entregue' },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: null });
+    expect(store['pedidos/p1']!.estado).toBe('finalizado');
+    expect(writes.updates).toHaveLength(0);
+    expect(writes.sets).toHaveLength(0);
+  });
+
+  it('does NOT regress a frete already past despachoAutorizado when it becomes pago', async () => {
+    const { db, store } = makeDb({
+      'pedidos/p1': {
+        estado: 'aguardandoConfirmacaoDePagamento',
+        valorCobrado: 100,
+        freteInicial: { estado: 'postado', codRastreio: 'BR123' },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: 'pago' });
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+    expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'postado', codRastreio: 'BR123' });
+  });
+
+  it('throws PedidoReconcileNotFoundError when the pedido is missing', async () => {
+    const { db, writes } = makeDb({});
+
+    await expect(reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID })).rejects.toBeInstanceOf(
+      PedidoReconcileNotFoundError,
+    );
+    expect(writes.sets).toHaveLength(0);
+    expect(writes.updates).toHaveLength(0);
   });
 });
