@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { microsSinceEpoch } from './shared/datetime';
+import { microsSinceEpoch, millisSinceEpoch } from './shared/datetime';
 import type { CollectionMetadata } from './types';
 
 /**
@@ -83,11 +83,11 @@ export const estoqueMercadoLivreSyncSchema = z.object({
       /** Keyset cursor: THE query resumes after this produto anchor id. */
       afterAnchorId: z.string().min(1),
       /** The frozen window start (ms since epoch) the truncated sweep used. */
-      changedSinceMs: z.number().int(),
+      changedSinceMs: millisSinceEpoch(),
       /** The frozen sales-probe lower bound (µs) — null ⇒ daily semantics. */
-      vendaCutoffUs: z.number().int().nullable(),
+      vendaCutoffUs: microsSinceEpoch().nullable(),
       /** When the ORIGINAL (pre-truncation) sweep started (µs). */
-      startedAtUs: z.number().int(),
+      startedAtUs: microsSinceEpoch(),
     })
     .nullable()
     .default(null),
