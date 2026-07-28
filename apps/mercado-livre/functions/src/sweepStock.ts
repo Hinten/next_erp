@@ -11,17 +11,20 @@ import { getDb } from './lib/admin';
  * wrappers over `runStockSweep` (lib/marketplace/estoqueSweep.ts), mirroring
  * the `importMercadoLivreOrders` wrapper in index.ts:
  *
- *  - `sweepMercadoLivreStock` — every 15 minutes, `'incremental'` mode: per
+ *  - `sweepMercadoLivreStock` — every 15 minutes EXCEPT the 02:00–02:59 hour
+ *    (`0,15,30,45 0-1,3-23 * * *`, America/Sao_Paulo), `'incremental'` mode: per
  *    conta, discovers the produto families whose estoques changed since the
  *    durable cursor (state doc `estoqueMercadoLivreSync/{integracaoId}`),
  *    applies the 30-day activity filter and enqueues one send task per ML API
- *    call onto the `sendMercadoLivreStock` queue.
- *  - `sweepMercadoLivreStockDaily` — 02:07 America/Sao_Paulo, `'daily'` mode:
+ *    call onto the `sendMercadoLivreStock` queue. The skipped hour is harmless:
+ *    the window derives from the cursor, so the 03:00 tick re-covers it — and
+ *    the daily pass owns that hour anyway.
+ *  - `sweepMercadoLivreStockDaily` — 02:00 America/Sao_Paulo, `'daily'` mode:
  *    the same discovery over a FLAT `dailyWindowHours()` (24h) lookback — NOT
  *    a force-all `changedSinceMs: -1` scan — with no activity filter and no
  *    pedidos probe: the full-reconciliation pass over everything that moved in
- *    the last day. The `:07` offset keeps it off the every-15-minute tick, so
- *    the two never contend for the same conta's caps and state doc.
+ *    the last day. It runs alone in its hour (the incremental cron excludes
+ *    hour 2), so the two never contend for one conta's caps and state doc.
  *
  * **Flag-gated OFF**: until `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1` is set (the
  * coordinated cutover — same window the legacy Flutter sender dies) both
@@ -78,20 +81,23 @@ async function runAndLog(mode: 'incremental' | 'daily'): Promise<void> {
   }
 }
 
-/** The 15-minute incremental stock sweep (flag-gated — module doc). */
+/**
+ * The 15-minute incremental stock sweep (flag-gated — module doc). The cron
+ * excludes the 02:00–02:59 hour — that hour belongs to the daily pass.
+ */
 export const sweepMercadoLivreStock = onSchedule(
-  sweepScheduleOptions('every 15 minutes'),
+  sweepScheduleOptions('0,15,30,45 0-1,3-23 * * *'),
   async () => {
     await runAndLog('incremental');
   },
 );
 
 /**
- * The 02:07 daily full stock sweep (flag-gated — module doc). The `:07` offset
- * deliberately misses the every-15-minute tick's slots (:00/:15/:30/:45).
+ * The 02:00 daily full stock sweep (flag-gated — module doc). Runs alone in
+ * its hour: the incremental cron above skips hour 2 entirely.
  */
 export const sweepMercadoLivreStockDaily = onSchedule(
-  sweepScheduleOptions('7 2 * * *'),
+  sweepScheduleOptions('0 2 * * *'),
   async () => {
     await runAndLog('daily');
   },
