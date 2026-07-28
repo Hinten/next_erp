@@ -4,17 +4,18 @@
  * (PR C) and the `sendMercadoLivreStock` task handler (PR B). No scheduling,
  * no task enqueue and no ML API call lives here: this module DISCOVERS the
  * produto FAMILIES with stock movement (`fetchStockFamilies` — THE query),
- * computes every family member's send quantity at sweep time
- * (`quantidadesDaFamilia`), applies the incremental activity filter
- * (`deveEnviarIncremental`) and turns one family row into ready-to-enqueue
- * send-task drafts (`buildSendTasks`).
+ * fetches the sold produto ids once per conta per incremental sweep
+ * (`fetchSoldProdutoIds` — the uncorrelated sales pre-pass), computes every
+ * family member's send quantity at sweep time (`quantidadesDaFamilia`),
+ * applies the incremental activity filter (`deveEnviarIncremental`) and turns
+ * one family row into ready-to-enqueue send-task drafts (`buildSendTasks`).
  *
  * ---- Produtos-first joined discovery (the owner-approved redesign of the
  * first #678 cut, which ran two pipeline executions and re-read everything at
  * send time). The sweep template is the legacy BigQuery SQL
  * `.old/packages/canal_de_vendas/big_query/changed_estoque_big_query.sql`
  * (live copy inlined in `estoques.dart:394-529`): drive FROM the family
- * anchors (`paiId == null`), join estoques + pedidos + ALL of the conta's
+ * anchors (`paiId == null`), join estoques + ALL of the conta's
  * `produtoMercadoLivre` links (a produto can hold SEVERAL live listings on
  * ONE conta — the legacy sender loops every one, functions.dart:275-282, and
  * `buildSendTasks` emits tasks per listing) + the variation children
@@ -36,7 +37,8 @@
  *     converges any staleness.
  *
  * Timestamp units: produto/estoque timestamps are MS since epoch; pedido
- * `timestamp` is µS (hence `vendaCutoffUs`). Residual risk: pre-µs-migration
+ * `timestamp` is µS (hence the sold-ids pass's `vendaCutoffUs`). Residual
+ * risk: pre-µs-migration
  * pedidos still holding ms at rest silently miss the sales window — accepted,
  * bounded by the pedido µs migration having run. Residual risk 2: component
  * quantities depend on the `estoques.parentId` denorm (legal null at rest per
@@ -46,38 +48,63 @@
  * spot-check before the flag flips.
  *
  * ---- Index ledger (PR C declares the entries; Enterprise auto-creates NONE
- * — an unindexed correlated subquery silently full-scans once per outer row,
- * billed by data scanned):
- *  - anchors (S1): `produtos(paiId ASC, publicado ASC, __name__ ASC)` and
+ * — an unindexed predicate silently full-scans, billed by data scanned):
+ *  - anchors (S1): `produtos(paiId ASC, publicado ASC, __name__ ASC)` plus
+ *    BOTH declared twins for the array term —
  *    `produtos(paiId ASC, publicado ASC, integracoesComProduto ASC,
- *    __name__ ASC)` — ASC on the array field, see spike (b);
+ *    __name__ ASC)` and `produtos(paiId ASC, publicado ASC,
+ *    integracoesComProduto CONTAINS, __name__ ASC)`. Which form an
+ *    `arrayContains` predicate actually seeks is spike (b)'s question: the
+ *    staging gate PRINTS the ridden index, and the LOSER is dropped in a
+ *    follow-up (they are declared together only so the gate can adjudicate);
  *  - estoque joins: `estoques(parentId ASC, depositoOuterRef ASC,
  *    ultimaModificacao ASC)` COLLECTION_GROUP — `parentId` carries the
  *    `equalAny` seek, `ultimaModificacao` covers the MAX branch;
- *  - sales probe: `pedidos(itensIds ASC, ehSaida ASC, estado ASC,
- *    timestamp ASC)` + the `itensIds CONTAINS` twin with the same tail (#407)
- *    — equalities first, the single range (`timestamp`) LAST; keep whichever
- *    explainStats uses;
+ *  - subcollection() probes: two COLLECTION-scope entries —
+ *    `estoques(depositoOuterRef)` and `produtoMercadoLivre(contaOuterRef)`.
+ *    Staging explain evidence (gate run 2, 2026-07-28): with no
+ *    COLLECTION-scope index a `subcollection()` probe carrying a WHERE
+ *    compiles to a COLLECTION-GROUP index scan with the PARENT as a RESIDUAL
+ *    filter (every family's subcollection docs scanned per row); with these
+ *    entries the access is partition-bounded;
+ *  - the `variacaoMercadoLivre` probe gets NO entry: it has no `where` at all,
+ *    and the same run 2 plans show it already compiling to a partition-bounded
+ *    `TableScan` over the one child's subcollection — an index would have no
+ *    predicate to serve (a declared entry was dropped for exactly that reason);
  *  - children: the `paiId` equality rides the existing `produtos(paiId,
- *    nome)` index as a prefix; the subcollection probes scan 1-3 docs (noise).
- * ⚠️ BLOCKING pre-merge for PR C: a live
- * `execute({ explainOptions: { mode: 'analyze' } })` proving the pedidos
- * probe rides an index — unindexed it scans pedidos once per anchor row (the
- * one catastrophic failure mode). The explain gate must also capture the
- * daily-sweep page-2 plan (the keyset-over-computed-filter cost regime), not
- * just page 1.
+ *    nome)` index as a prefix;
+ *  - sales pass (`fetchSoldProdutoIds` — NOT part of THE query): rides the NEW
+ *    `pedidos(ehSaida ASC, estado ASC, timestamp DESC)` entry, where ALL
+ *    THREE predicates bind. Do not assume a two-field index suffices: in run 2,
+ *    with `pedidos(ehSaida, timestamp DESC)` AND `pedidos(ehSaida, estado,
+ *    numero)` both deployed, the planner picked the `estado` one and left
+ *    `timestamp` as a RESIDUAL filter — i.e. unbounded over ALL time, the
+ *    opposite of the 30d window the pass is supposed to cost. The former
+ *    per-anchor correlated pedidos probe (and its `itensIds` index twins) is
+ *    GONE — see the fetchSoldProdutoIds docblock for why.
+ * ⚠️ Explain-dialect note (the staging gate's plans, 2026-07-28): a node
+ * named `SequentialScan` that carries an `index: /<name>@[id=…]` identifier
+ * AND bounded `ranges:`/`constraints:` IS an index range scan — healthy
+ * (IndexSeek/SeekingScan are seeks). A `TableScan` carries no index
+ * identifier at all and is healthy only when `partition:` is non-root. Only
+ * unbounded/identifier-less scans over the root partition, or target
+ * predicates served ONLY by residual `Filter` NODES (`• Filter` +
+ * `expression:` — a node-local `filter:` line is a push-down INTO the access
+ * node, which is the good case), indicate a missing index.
  * The 128 MiB materialization ceiling spans the WHOLE query including every
- * joined document — hence every subquery `select`s a minimal field set and
- * the sales probe is `limit(1)`.
+ * joined document — hence every subquery `select`s a minimal field set.
  *
- * Three API spikes stay open until PR C finalizes the query shape (TODO
+ * Two API spikes stay open until PR C finalizes the query shape (TODO
  * markers at the call sites): (a) nested `define` inside BOTH the maxChildren
  * rollup and the S6 childrenJoin subqueries (and the same-name question — the
  * two sites deliberately bind different variable names); (b) whether
- * pipelines seek CONTAINS or ASCENDING index entries for the array predicates
- * (`itensIds`, `integracoesComProduto`); (c) does `define` accept a
- * correlated-subquery expression (`childIds`)? fallback: project `childIds`
- * via `addFields` and split the sales probe into a second execution.
+ * pipelines seek CONTAINS or ASCENDING index entries for the
+ * `integracoesComProduto` array predicate. Spike (c) — "does `define` accept
+ * a correlated-subquery expression?" — is RETIRED: proven live on staging
+ * 2026-07-28 (a subquery-valued `define` executes fine), then made moot the
+ * same day when the per-anchor sales probe (the `childIds` variable's only
+ * consumer) moved out of THE query into the uncorrelated
+ * `fetchSoldProdutoIds` pre-pass; nothing defines a subquery anymore.
  *
  * ---- Legacy parity anchors (`.old/packages/canais_de_venda`, verified
  * 2026-07-24):
@@ -97,10 +124,13 @@
  *    `'kit-virtual'`.
  *  - vendido30dias = a LEFT JOIN against a 30d order-items aggregate ON the
  *    SOLD produto id (kit sales attribute to the KIT, matching the legacy
- *    `produtoIdNoItem`) → here ONE family-level pedidos EXISTS probe over
- *    anchor + children ids, never a `historicoEstoque` probe (kit sales only
- *    move COMPONENT estoques — the probe on the produto's own history never
- *    flagged kits, the #678-review bug).
+ *    `produtoIdNoItem`) → here ONE UNCORRELATED pedidos pre-pass per conta
+ *    per incremental sweep (`fetchSoldProdutoIds`) whose Set of sold produto
+ *    ids feeds `deveEnviarIncremental` (a family "sold" when the ANCHOR or
+ *    ANY child id is in the Set — legacy hasSales = own or any child), never
+ *    a `historicoEstoque` probe (kit sales only move COMPONENT estoques —
+ *    the probe on the produto's own history never flagged kits, the
+ *    #678-review bug).
  *
  * Listing-status whitelist (developers.mercadolivre.com.br, read 2026-07-24 —
  * replaces the dropped legacy `statusProdMarketplace.podeEnviarEstoque` gate):
@@ -147,8 +177,8 @@ export const ESTOQUE_MIN = 0;
 /**
  * Pedido `estado` values that count as "had sales" for the incremental
  * sweep's 30-day activity filter — the owner-locked ALLOW-LIST (2026-07-27).
- * The sweep passes it into `fetchStockFamilies` (kept as an arg so tests pin
- * the exact list wired into the pedidos probe).
+ * The sweep passes it into `fetchSoldProdutoIds` (kept as an arg so tests pin
+ * the exact list wired into the pedidos pre-pass).
  */
 export const ESTADOS_VENDA = [
   'emAnalise',
@@ -206,6 +236,15 @@ export function dailyWindowHours(): number {
 /** Sales/created activity-filter lookback (days) for the incremental sweep. */
 export function atividadeLookbackDays(): number {
   return envInt('MERCADO_LIVRE_STOCK_ATIVIDADE_LOOKBACK_D', 30);
+}
+
+/**
+ * Cap on the `fetchSoldProdutoIds` distinct-ids result. Hitting it means some
+ * sold ids are MISSING from the Set (see the truncation note on that
+ * function) — the pass warns loudly and the daily sweep corrects.
+ */
+export function soldIdsLimit(): number {
+  return envInt('MERCADO_LIVRE_STOCK_SOLD_IDS_LIMIT', 10_000);
 }
 
 /**
@@ -333,11 +372,6 @@ export interface StockFamilyRow {
   links: RawStockLinkRow[];
   /** Variation children, sorted by produtoId (output determinism only). */
   children: FamilyChild[];
-  /**
-   * True when the family had a `ESTADOS_VENDA` pedido since `vendaCutoffUs`;
-   * always false when the probe was skipped (`vendaCutoffUs: null`).
-   */
-  temVenda30d: boolean;
 }
 
 export interface FetchStockFamiliesArgs {
@@ -347,16 +381,6 @@ export interface FetchStockFamiliesArgs {
   depositoId: string;
   /** Exclusive window start (ms since epoch); `-1` = force-all (daily sweep). */
   changedSinceMs: number;
-  /**
-   * Inclusive lower bound (µs since epoch) of the pedidos sales probe — or
-   * null to SKIP the probe entirely. The daily sweep passes null (it sends
-   * everything, nothing reads the flag), removing one correlated pedidos
-   * subquery per anchor on the force-all run; rows then carry
-   * `temVenda30d: false` (a client-side constant).
-   */
-  vendaCutoffUs: number | null;
-  /** Pedido estados counting as a sale — the sweep passes `ESTADOS_VENDA`. */
-  estadosVenda: readonly string[];
   /** Page size override — defaults to `anchorPageLimit()`. */
   pageLimit?: number;
   /** Resume after this anchor id (keyset) — page 1 of a fresh sweep omits it. */
@@ -403,20 +427,17 @@ export type FetchStockFamilies = (
  *    changedSinceMs`. The heavy S6 projection then runs only for surviving
  *    anchors; `coalesce(..., 0)` keeps no-estoque families out for positive
  *    windows and gives `changedSinceMs = -1` force-all free.
- *  - S4b define: `childIds` (ids-only) — the ONE remaining subquery-in-define,
- *    because it must be a VARIABLE: the nested pedidos probe reads
- *    `variable('childIds')` and a nested subquery cannot see outer fields
- *    (spike c covers the define-accepts-subquery risk). Placed AFTER the S4
- *    filter so only surviving anchors pay the children scan.
  *  - S5 `sort(__name__)` + `limit(pageLimit)` — `__name__` is unique, the
  *    keyset needs no tuple.
  *  - S6 the projection (minimal fields — the 128 MiB ceiling spans joins):
  *    anchor gate fields + own/component estoques + the conta's link ARRAY
  *    (every listing this conta holds on the family — the legacy sender loops
  *    them all, functions.dart:275-282, one stock send per listing) + the
- *    children array (each with its own estoques + variação links) + the
- *    family-level pedidos EXISTS probe (`temVenda30d`) — omitted entirely
- *    when `vendaCutoffUs` is null (the daily sweep).
+ *    children array (each with its own estoques + variação links).
+ * The SALES signal is deliberately NOT part of THE query: the per-anchor
+ * pedidos probe needed a per-row VARIABLE membership list, which the planner
+ * can only bind as a residual Filter (never an array-index seek) — it lives
+ * in the separate uncorrelated `fetchSoldProdutoIds` pre-pass instead.
  * Returns ONE page: `rows` plus `nextAfterAnchorId` (the last row's
  * `anchorId` when the page came back full, else null — backlog drained).
  *
@@ -499,16 +520,6 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
   const kitKeysDefine = (name: string) =>
     pipelines.coalesce(pipelines.field('componentesKitKeys'), pipelines.array([])).as(name);
 
-  // Ids-only children rollup — feeds the family-level pedidos probe.
-  const childIds = () =>
-    // eslint-disable-next-line no-restricted-syntax -- correlated-subquery SOURCE stage (see chain-start note above)
-    db
-      .pipeline()
-      .collection('produtos')
-      .where(pipelines.equal(pipelines.field('paiId'), pipelines.variable('anchorId')))
-      .select(pipelines.documentId(pipelines.field('__name__')).as('childId'))
-      .toArrayExpression();
-
   // TODO(pre-PR-C spike a): confirm a nested `define` inside a correlated
   // subquery binds per SUBQUERY row — at BOTH nested-define sites: this
   // maxChildren rollup (`maxChildKitKeys`) AND the S6 childrenJoin
@@ -584,37 +595,6 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
       )
       .toArrayExpression();
 
-  // Family-level sales EXISTS: ONE pedidos probe over anchor + children ids
-  // (kit sales attribute to the sold produto id — module doc).
-  // TODO(pre-PR-C spike b): verify via explainStats whether this rides the
-  // `itensIds ASC` or the `itensIds CONTAINS` index entry — declare BOTH in
-  // PR C, keep whichever the analyze run shows used.
-  const vendaProbe = (cutoffUs: number) =>
-    // eslint-disable-next-line no-restricted-syntax -- correlated-subquery SOURCE stage (see chain-start note above)
-    db
-      .pipeline()
-      .collection('pedidos')
-      .where(
-        pipelines.and(
-          pipelines
-            .field('itensIds')
-            .arrayContainsAny(
-              pipelines.arrayConcat(
-                pipelines.array([pipelines.variable('anchorId')]),
-                pipelines.variable('childIds'),
-              ),
-            ),
-          pipelines.equal(pipelines.field('ehSaida'), true),
-          pipelines.field('timestamp').greaterThanOrEqual(cutoffUs),
-          pipelines.field('estado').equalAny([...args.estadosVenda]),
-        ),
-      )
-      .limit(1)
-      .select('estado')
-      .toArrayExpression()
-      .length()
-      .greaterThan(0);
-
   const paiTerm = pipelines.equal(pipelines.field('paiId'), null);
   const publicadoTerm = pipelines.equal(pipelines.field('publicado'), true);
   const contaTerm = pipelines.field('integracoesComProduto').arrayContains(args.integracaoId);
@@ -660,10 +640,6 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
         args.changedSinceMs,
       ),
     )
-    // S4b — after the S4 filter, so only surviving anchors pay the children
-    // scan. Spike (c): the one remaining subquery-in-define (childIds must be
-    // a VARIABLE — the nested pedidos probe cannot see outer fields).
-    .define(childIds().as('childIds'))
     .sort(pipelines.ascending(pipelines.field('__name__')))
     .limit(pageLimit)
     .select(
@@ -680,9 +656,6 @@ export const fetchStockFamilies: FetchStockFamilies = async (db, args) => {
       compEstoques('anchorKitKeys').as('componentEstoques'),
       linkJoin().as('links'),
       childrenJoin().as('children'),
-      // Skippable sales probe (daily sweep passes vendaCutoffUs null): the
-      // absent field coerces to `temVenda30d: false` in mapFamilyRow.
-      ...(args.vendaCutoffUs == null ? [] : [vendaProbe(args.vendaCutoffUs).as('temVenda30d')]),
     )
     .execute();
 
@@ -729,7 +702,6 @@ function mapFamilyRow(anchorId: string, data: Record<string, unknown>): StockFam
       ? data.links.filter((l): l is RawStockLinkRow => l != null && typeof l === 'object')
       : [],
     children,
-    temVenda30d: data.temVenda30d === true,
   };
 }
 
@@ -752,6 +724,96 @@ function coerceMember(produtoId: string, raw: Record<string, unknown>): FamilyMe
       : [],
   };
 }
+
+/* --------------------------- sold-ids pre-pass ----------------------------- */
+
+export interface FetchSoldProdutoIdsArgs {
+  /** Inclusive lower bound (µs since epoch) of the pedidos sales window. */
+  vendaCutoffUs: number;
+  /** Pedido estados counting as a sale — the sweep passes `ESTADOS_VENDA`. */
+  estadosVenda: readonly string[];
+  /** Distinct-ids cap override — defaults to `soldIdsLimit()`. */
+  limit?: number;
+}
+
+/** The sold-ids seam the sweeps consume — injectable so tests stub it. */
+export type FetchSoldProdutoIds = (
+  db: Firestore,
+  args: FetchSoldProdutoIdsArgs,
+) => Promise<Set<string>>;
+
+/**
+ * The UNCORRELATED sales pre-pass: ONE pipeline execution per conta per
+ * incremental sweep returning the DISTINCT produto ids sold (any
+ * `estadosVenda` pedido) since `vendaCutoffUs` —
+ * `pedidos.where(...).unnest(itensIds → pid).distinct(pid).limit(cap)`.
+ * The sweep runs it once BEFORE the page loop and `deveEnviarIncremental`
+ * checks family membership (anchor OR any child) against the Set.
+ *
+ * Why the correlated per-anchor probe was RETIRED (staging explain evidence,
+ * gate run 2, 2026-07-28): the probe's `itensIds` membership list was a
+ * per-row VARIABLE (anchor + childIds), and the planner binds variable
+ * candidate lists only as RESIDUAL Filters — the plan scanned the OLD
+ * `pedidos(ehSaida, estado, numero)` index with `itensIds` + `timestamp` as
+ * residuals, once per anchor, never seeking the declared `itensIds` array
+ * indexes (since removed). Owner decision: the sales signal moved out of THE
+ * query into this single pre-pass.
+ *
+ * Index: rides the NEW `pedidos(ehSaida ASC, estado ASC, timestamp DESC)`
+ * entry — all three predicates bind (equality, equalAny, range). It is NOT
+ * enough for the individual fields to be indexed somewhere: gate run 2
+ * (2026-07-28) had both `pedidos(ehSaida, timestamp DESC)` and
+ * `pedidos(ehSaida, estado, numero)` deployed and the planner chose the
+ * `estado` one, leaving `timestamp` in a residual Filter — the pass would then
+ * scan every saída pedido ever written instead of the 30d window. The staging
+ * gate FAILS on exactly that shape (a residual `timestamp`).
+ *
+ * Truncation: hitting the cap (`limit`, default `soldIdsLimit()`) means some
+ * sold produto ids are MISSING from the Set — the incremental sweep then
+ * UNDER-sends (a sold-but-otherwise-quiet family is skipped); the daily
+ * force-all sweep corrects within 24h. The pass warns LOUDLY when the result
+ * size equals the cap so the operator can raise
+ * `MERCADO_LIVRE_STOCK_SOLD_IDS_LIMIT`.
+ *
+ * NOT emulator-runnable (pipelines never are) — tested through the seam.
+ */
+export const fetchSoldProdutoIds: FetchSoldProdutoIds = async (db, args) => {
+  const limit = args.limit ?? soldIdsLimit();
+
+  // eslint-disable-next-line no-restricted-syntax -- pipeline SOURCE stage, not a raw ref; defineAdminCollection handles have no pipeline surface
+  const snap = await db
+    .pipeline()
+    .collection('pedidos')
+    .where(
+      pipelines.and(
+        pipelines.equal(pipelines.field('ehSaida'), true),
+        pipelines.field('estado').equalAny([...args.estadosVenda]),
+        pipelines.field('timestamp').greaterThanOrEqual(args.vendaCutoffUs),
+      ),
+    )
+    // unnest(selectable, indexField?): one row per itensIds element, aliased
+    // `pid`; distinct(group,...) then dedupes (a MERGING stage — only `pid`
+    // survives it, which is all the mapping below reads).
+    .unnest(pipelines.field('itensIds').as('pid'))
+    .distinct('pid')
+    .limit(limit)
+    .execute();
+
+  const soldIds = new Set<string>();
+  for (const result of snap.results) {
+    const pid = (result.data() as Record<string, unknown>).pid;
+    if (typeof pid === 'string' && pid !== '') soldIds.add(pid);
+  }
+  if (snap.results.length === limit) {
+    console.warn(
+      '[mercado-livre] stock-sync: sold-ids TRUNCADO no limite — ids vendidos faltando; ' +
+        'o sweep incremental sub-envia e o daily corrige; aumente ' +
+        'MERCADO_LIVRE_STOCK_SOLD_IDS_LIMIT',
+      { limit, distinctIds: soldIds.size },
+    );
+  }
+  return soldIds;
+};
 
 /* ------------------------------- status gate ------------------------------- */
 
@@ -888,17 +950,19 @@ export function quantidadesDaFamilia(row: StockFamilyRow): Map<string, number> {
 
 /**
  * Incremental-sweep activity filter (the daily sweep sends ALL families):
- * send when the family sold in the lookback window (`temVenda30d`), OR any
- * member was created recently (`timestamp` within `atividadeLookbackDays()`),
- * OR any member's quantity is below `limiarEstoqueBaixo()` (legacy
- * `disponivel < 5` override).
+ * send when the family sold in the lookback window (the ANCHOR id or ANY
+ * child id is in `soldIds`, the `fetchSoldProdutoIds` Set — legacy hasSales =
+ * own or any child), OR any member was created recently (`timestamp` within
+ * `atividadeLookbackDays()`), OR any member's quantity is below
+ * `limiarEstoqueBaixo()` (legacy `disponivel < 5` override).
  */
 export function deveEnviarIncremental(
   row: StockFamilyRow,
   quantidades: ReadonlyMap<string, number>,
   nowMs: number,
+  soldIds: ReadonlySet<string>,
 ): boolean {
-  if (row.temVenda30d) return true;
+  if (soldIds.has(row.anchorId) || row.children.some((c) => soldIds.has(c.produtoId))) return true;
   const criadoCutoffMs = nowMs - atividadeLookbackDays() * 24 * 60 * 60 * 1000;
   const members = [row.anchor, ...row.children];
   if (members.some((m) => m.timestampMs != null && m.timestampMs >= criadoCutoffMs)) return true;

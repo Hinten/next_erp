@@ -388,6 +388,13 @@ to exercise must either avoid pipelines or take a seam:
 
 ## 9. Gotchas
 
+- **Zero-result executions carry NO `explainStats`** (admin v8.6.0,
+  staging-verified): `execute({ explainOptions: { mode: 'analyze' } })` returns
+  `explainStats: undefined` whenever `results` is empty — the plan is simply
+  lost, even though the backend computed one. When capturing plans (e.g.
+  `check-stock-indexes.mjs`-style gates), make sure the probed window/filters
+  actually match rows, or retry with a widened constant of the SAME stage shape
+  and label it.
 - **Always feature-detect, don't assume.** `isPipelineSupported(db)` checks
   `typeof db.pipeline === 'function'`; `buildPipeline` throws
   `PipelineUnsupportedError` if you skip the check and the SDK predates Pipelines.
