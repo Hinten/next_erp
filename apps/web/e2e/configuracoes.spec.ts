@@ -8,6 +8,7 @@ import {
   getUserPermissionsClaim,
 } from './_helpers/admin-cleanup';
 import { getRunId } from './_helpers/run-id';
+import { e2ePrefix } from './_helpers/seed-data';
 
 /**
  * End-to-end coverage for the User+Cargo CRUD flow against Firebase staging.
@@ -50,8 +51,15 @@ test.describe.serial('Configuracoes — cargo + usuario CRUD', () => {
   test.use({ storageState: 'e2e/.auth/su.json' });
 
   const runId = getRunId();
-  const cargoNome = `E2E Cargo ${runId}`;
-  const userNome = `E2E User ${runId}`;
+  // Names carry the standard `e2e-<runId>-` prefix so the orphan sweep can find
+  // them (#712). The cargo gets a Firestore auto-id and the usuário's id is the
+  // Auth uid, so before this the prefix appeared in neither the id nor a field —
+  // and the only cleanup was by captured id, which a cancelled run loses. Both
+  // list pages are ordered by `nome` and capped at 50 rows.
+  const prefix = e2ePrefix('cfg');
+  const cargoNome = `${prefix}-cargo`;
+  const userNome = `${prefix}-user`;
+  // `e2e-user-` is what `sweepStaleE2EUsers` matches on — keep that shape.
   const userEmail = `e2e-user-${runId}@delfrance.test`;
   const userPassword = 'E2EpasswordTest!1';
 

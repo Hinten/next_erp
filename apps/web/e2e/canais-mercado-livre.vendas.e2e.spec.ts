@@ -5,7 +5,7 @@ import {
   e2ePrefix,
   seedMercadoLivreFixtures,
 } from './_helpers/seed-data';
-import { expectRowHidden, expectRowVisible } from './helpers/table-view';
+import { applyTextFilter, expectRowHidden, expectRowVisible } from './helpers/table-view';
 import { clickSave, confirmDelete, fillField, selectFieldWithSearch } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
@@ -44,6 +44,10 @@ test.describe.serial('Canais Mercado Livre e2e — TableView / ObjectView', () =
     await expect(page.getByRole('heading', { name: 'Mercado Livre' })).toBeVisible();
     await expect(page.getByRole('table')).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText('Erro ao carregar')).toHaveCount(0);
+    // Narrow to this run first: the list is `orderBy nome asc` with `limit: 50`,
+    // so a run-scoped name is only findable while it stays on page 1 — which
+    // orphaned fixtures from older runs quietly prevent (#712).
+    await applyTextFilter(page, 'Nome', prefix);
     await expectRowVisible(page, row(1));
     await expectRowVisible(page, row(5));
   });
@@ -86,11 +90,13 @@ test.describe.serial('Canais Mercado Livre e2e — TableView / ObjectView', () =
     });
 
     await page.goto('/canais/mercado-livre');
+    await applyTextFilter(page, 'Nome', prefix);
     await expectRowVisible(page, nome);
   });
 
   test('opens an existing conta from the list', async ({ page }) => {
     await page.goto('/canais/mercado-livre');
+    await applyTextFilter(page, 'Nome', prefix);
     await page.getByRole('row', { name: new RegExp(row(2)) }).click();
     await page.waitForURL(/\/canais\/mercado-livre\/[^/]+$/, { timeout: 10_000 });
     await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(row(2));
@@ -110,6 +116,7 @@ test.describe.serial('Canais Mercado Livre e2e — TableView / ObjectView', () =
     await page.goto(`/canais/mercado-livre/${row(5)}`);
     await confirmDelete(page);
     await page.waitForURL(/\/canais\/mercado-livre$/, { timeout: 15_000 });
+    await applyTextFilter(page, 'Nome', prefix);
     await expectRowHidden(page, row(5));
   });
 });
