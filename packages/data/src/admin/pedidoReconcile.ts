@@ -9,11 +9,7 @@ import {
 } from '@delfrance/schemas';
 
 import { nextPedidoEstado } from '../pedido/usecases';
-import {
-  historicoEstadoPedidoCollection,
-  pagamentoCollection,
-  pedidoCollection,
-} from './collections';
+import { pagamentoCollection, pedidoCollection } from './collections';
 
 /**
  * Thrown when the reconcile targets a pedido that no longer exists. The webhook
@@ -78,15 +74,18 @@ const GATEWAY_OWNED = [
  *  6. applies {@link nextPedidoEstado} (which gates on the payment-driven
  *     estados) and, ONLY on a transition, writes the new `estado`, flips
  *     `freteInicial.estado` to `despachoAutorizado` (never regressing an
- *     already-posted frete — same rule as the client reconcile), appends a
- *     `historicoEstadoPedido` audit row, and stamps the pedido
- *     `ultimaModificacao` (µs).
+ *     already-posted frete — same rule as the client reconcile) and stamps the
+ *     pedido `ultimaModificacao` (µs).
+ *
+ * The `historicoEstadoPedido` audit row for a transition is written by the
+ * `onPedidoEstadoChanged` trigger observing the pedido write, with a null
+ * usuário — this path runs on the Admin SDK and has no end user behind it.
  *
  * Returns the new estado (or `null` when the pagamento was written but no estado
  * transition applies), plus whether the delivery was skipped as stale.
  *
- * Datetime units: `ultimaModificacao` / `dataCadastro` / the history `data` are
- * all MICROSECONDS since epoch (`nowMicros()`), the pagamento/pedido standard.
+ * Datetime units: `ultimaModificacao` / `dataCadastro` are MICROSECONDS since
+ * epoch (`nowMicros()`), the pagamento/pedido standard.
  */
 export async function reconcilePedidoFromPagamento(
   db: FirebaseAdminFirestore,
@@ -94,11 +93,9 @@ export async function reconcilePedidoFromPagamento(
     pedidoId: string;
     pagamentoId: string;
     pagamento: Pagamento;
-    usuarioRef?: string | null;
   },
 ): Promise<{ transition: EstadoPedido | null; skippedStale: boolean }> {
   const { pedidoId, pagamentoId, pagamento } = input;
-  const usuarioRef = input.usuarioRef ?? null;
 
   return db.runTransaction(async (tx) => {
     const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
@@ -188,18 +185,10 @@ export async function reconcilePedidoFromPagamento(
     }
     tx.update(pedidoRef, pedidoPatch);
 
-    // Append a `historicoEstadoPedido` audit row — same shape as
-    // `buildEstadoHistoryOp` (`../pedido/usecases`); `data` is a µs stamp.
-    const historyId = historicoEstadoPedidoCollection.newDocId(db, { pedidoId });
-    const historyRef = historicoEstadoPedidoCollection.docRef(db, { pedidoId }, historyId);
-    tx.set(
-      historyRef,
-      historicoEstadoPedidoCollection.parse({
-        estado: next.estado,
-        usuarioHistoricoEstadosPedidoOuterRef: usuarioRef,
-        data: nowMicros(),
-      }) as DocumentData,
-    );
+    // The `historicoEstadoPedido` audit row is appended by the
+    // `onPedidoEstadoChanged` trigger, which observes this pedido write. It has
+    // no end user behind it (this runs on the Admin SDK, from a webhook), so the
+    // row is correctly recorded with a null usuário.
 
     return { transition: next.estado, skippedStale: false };
   });

@@ -125,8 +125,9 @@ export function PagamentosSection({
 
   // Auto-estado transition (legacy `cadastroPedidoProvider`): after every
   // pagamento mutation, re-read the payments, sum the approved ones, and let the
-  // use-case advance/downgrade the pedido `estado` (→ pago / aguardando) plus
-  // append a history row. Best-effort — the pagamento itself is already saved, so
+  // use-case advance/downgrade the pedido `estado` (→ pago / aguardando). The
+  // `historicoEstadoPedido` row follows from the `onPedidoEstadoChanged` trigger
+  // observing that write. Best-effort — the pagamento itself is already saved, so
   // a failed reconcile must not surface as a save error.
   async function reconcileEstado() {
     try {
@@ -140,7 +141,6 @@ export function PagamentosSection({
       await reconcilePedidoEstadoFromPagamentos(createClientPedidoPort(getFirebaseFirestore()), {
         pedidoId,
         valorPago,
-        usuarioRef: user ? `documents/usuarios/${user.uid}` : null,
       });
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;

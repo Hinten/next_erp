@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. The exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -112,6 +112,30 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   — sweeps a single estoque's `historicoEstoque` via one `recursiveDelete`.
   Covers a standalone estoque delete; the produto-wide cascade already deletes
   history directly, so its re-fires of this trigger are idempotent no-ops.
+- **`onPedidoEstadoChanged`** (`onDocumentWrittenWithAuthContext('pedidos/{pedidoId}')`)
+  — the SOLE writer of the pedido estado audit trail
+  (`pedidos/{pedidoId}/historicoEstadoPedido`). Replaces three hand-written
+  appends at the call sites (the web editor, the client pagamento reconcile, the
+  Mercado Pago admin reconcile) which together covered only 3 of the ~12 paths
+  that change `estado` — every Mercado Livre writer and every creation path wrote
+  no row at all. Observing the document instead of the call site makes coverage
+  total: any writer, from anywhere (Flutter included), now produces a row, and
+  `historicoEstadoPedidoMeta.serverOwned` denies client writes so the trail cannot
+  be forged or erased (no `su` bypass). Records the opening `estado` on create and
+  one row per transition after that; a delete or a write that left `estado` alone
+  exits on the fast path with no reads/writes. Idempotent: the row's doc id IS
+  `event.id`, and `data` comes from `event.time`, so an at-least-once redelivery
+  rewrites a content-identical doc. **The repo's first `WithAuthContext`
+  trigger** — `resolveUsuarioOuterRef` maps `event.authId` to
+  `documents/usuarios/<uid>`, but only when it is uid-shaped: `authType` has no
+  `user` literal (client-SDK writes arrive as `api_key`, console writes as
+  `unknown` carrying an EMAIL), so anything not uid-shaped stores `null` rather
+  than a wrong actor. Admin-SDK writes (webhooks, ML import) correctly record
+  `null`. ⚠️ The actor CANNOT be verified in the emulator — it hardcodes `authId`
+  to `fake-auth-id@gmail.com` (firebase-tools#7609, closed as not-planned); the
+  emulator suite covers the write/idempotency and the resolver is unit-tested.
+  No self-retrigger (the write lands in a subcollection). Targets the named
+  `default` database (gotcha #8).
 - **`aplicarEstoque`** (`onCall` — the repo's FIRST HTTPS callable) — server-owned
   estoque write path for the web client (replaces the direct client `writeBatch`
   from PR #217). Enforces auth + `PERM.estoque.write` itself (the `su` super-user

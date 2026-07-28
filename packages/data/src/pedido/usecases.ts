@@ -171,48 +171,13 @@ export async function savePedido(
 }
 
 // ---------------------------------------------------------------------------
-// Estado history (legacy `HistoricoEstadosPedido` write on estado change)
+// Estado history
 // ---------------------------------------------------------------------------
-
-const HISTORICO_ESTADO_PATH = (pedidoId: string, docId: string): string =>
-  `pedidos/${pedidoId}/historicoEstadoPedido/${docId}`;
-
-/**
- * Build one `historicoEstadoPedido` set-op recording a pedido's new `estado` and
- * who set it — mirror of the legacy `Pedido.save()` history write
- * (`models.dart:3838`). `data` is a µs-epoch stamp; `usuarioRef` is the
- * `documents/usuarios/<uid>` outer-ref string (null when unknown).
- */
-export function buildEstadoHistoryOp(
-  port: PedidoDataPort,
-  pedidoId: string,
-  estado: EstadoPedido,
-  usuarioRef: string | null,
-): PedidoWriteOp {
-  return {
-    type: 'set',
-    path: HISTORICO_ESTADO_PATH(pedidoId, port.newId()),
-    data: {
-      estado,
-      usuarioHistoricoEstadosPedidoOuterRef: usuarioRef,
-      data: port.now(),
-    },
-  };
-}
-
-/**
- * Append a `historicoEstadoPedido` audit row for a manual estado change. The
- * editor calls this AFTER the pedido doc save committed the new `estado`, so the
- * history reflects what was persisted; a future MCP agent calls it the same way.
- */
-export async function recordEstadoChange(
-  port: PedidoDataPort,
-  args: { pedidoId: string; estado: EstadoPedido; usuarioRef?: string | null },
-): Promise<void> {
-  await port.commit([
-    buildEstadoHistoryOp(port, args.pedidoId, args.estado, args.usuarioRef ?? null),
-  ]);
-}
+// There is deliberately NO history helper here. `historicoEstadoPedido` rows are
+// written exclusively by the `onPedidoEstadoChanged` Cloud Function, which
+// observes every `pedidos/{pedidoId}` write — so any code path that changes
+// `estado` is covered automatically and none may append rows itself (the rules
+// deny client writes to that subcollection).
 
 // ---------------------------------------------------------------------------
 // Incidentes (pedidos/{id}/incidentes subcollection CRUD)
@@ -371,10 +336,10 @@ export function nextPedidoEstado(
  * porting the legacy transition that ran after each pagamento save/delete/status
  * change. Reads the pedido's own `valorCobrado` (total) transactionally, applies
  * {@link nextPedidoEstado}, and — only on a transition — writes the new `estado`
- * (flipping `freteInicial.estado` to `despachoAutorizado` when it becomes `pago`)
- * and appends a `historicoEstadoPedido` audit row (best-effort, mirroring
- * `recordEstadoChange`). A no-op when the estado already matches. Returns the new
- * estado, or `null` when nothing changed.
+ * (flipping `freteInicial.estado` to `despachoAutorizado` when it becomes `pago`).
+ * A no-op when the estado already matches. Returns the new estado, or `null` when
+ * nothing changed. The `historicoEstadoPedido` audit row for the transition is
+ * appended by the `onPedidoEstadoChanged` trigger, not here.
  *
  * `valorPago` is summed by the caller from a read taken just before this call,
  * not inside the transaction — the Firebase JS SDK can't read a query inside
@@ -386,7 +351,7 @@ export function nextPedidoEstado(
  */
 export async function reconcilePedidoEstadoFromPagamentos(
   port: PedidoDataPort,
-  args: { pedidoId: string; valorPago: number; usuarioRef?: string | null },
+  args: { pedidoId: string; valorPago: number },
 ): Promise<EstadoPedido | null> {
   let transitionedTo: EstadoPedido | null = null;
   await port.updatePedido(args.pedidoId, (current) => {
@@ -415,10 +380,5 @@ export async function reconcilePedidoEstadoFromPagamentos(
     }
     return patch;
   });
-  if (transitionedTo !== null) {
-    await port.commit([
-      buildEstadoHistoryOp(port, args.pedidoId, transitionedTo, args.usuarioRef ?? null),
-    ]);
-  }
   return transitionedTo;
 }

@@ -123,7 +123,6 @@ describe('reconcilePedidoFromPagamento', () => {
         status_pagamento: STATUS_PAGAMENTO.aprovado,
         ultimaModificacao: T_NEW,
       }),
-      usuarioRef: 'documents/usuarios/u1',
     });
 
     expect(result).toEqual({ transition: 'pago', skippedStale: false });
@@ -145,13 +144,10 @@ describe('reconcilePedidoFromPagamento', () => {
     // First-seen dataCadastro stamped on create.
     expect(typeof store['pedidos/p1/pagamentos/pay1']!.dataCadastro).toBe('number');
 
-    // Exactly one history row, with the new estado.
+    // No history row from here — the onPedidoEstadoChanged trigger observes the
+    // pedido write above and records the transition.
     const historyWrites = writes.sets.filter((w) => w.path.includes('/historicoEstadoPedido/'));
-    expect(historyWrites).toHaveLength(1);
-    expect(historyWrites[0]!.data).toMatchObject({
-      estado: 'pago',
-      usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
-    });
+    expect(historyWrites).toEqual([]);
   });
 
   it('partial payment → aguardandoConfirmacaoDePagamento, does NOT authorize frete', async () => {

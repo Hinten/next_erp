@@ -18,6 +18,7 @@ export { onProdutoExtraDataChanged } from './produtos/onProdutoExtraDataChanged'
 export { onProdutoImpostoChanged } from './produtos/onProdutoImpostoChanged';
 export { onEstoqueDeleted } from './estoques/onEstoqueDeleted';
 export { onNfeDeleted } from './nfe/onNfeDeleted';
+export { onPedidoEstadoChanged } from './pedidos/registrarEstadoPedido';
 export { aplicarEstoque } from './estoques/aplicarEstoque';
 export {
   onPedidoEstoqueSync,

@@ -4,7 +4,6 @@ import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 import {
   PedidoConflictError,
   PedidoNothingChangedError,
-  buildEstadoHistoryOp,
   buildIncidenteOp,
   buildPagamentoOp,
   buildPedidoPatch,
@@ -12,7 +11,6 @@ import {
   deletePagamento,
   nextPedidoEstado,
   reconcilePedidoEstadoFromPagamentos,
-  recordEstadoChange,
   remotelyChangedFields,
   savePedido,
   saveIncidente,
@@ -195,27 +193,16 @@ describe('savePedido', () => {
 });
 
 describe('estado history', () => {
-  it('buildEstadoHistoryOp writes estado + usuario ref + µs stamp to the subcollection', () => {
-    const { port } = fakePort(null, 4242);
-    const op = buildEstadoHistoryOp(port, 'ped1', 'pago', 'documents/usuarios/u1');
-    expect(op).toEqual({
-      type: 'set',
-      path: 'pedidos/ped1/historicoEstadoPedido/newid',
-      data: {
-        estado: 'pago',
-        usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
-        data: 4242,
-      },
+  it('is never written from here — the onPedidoEstadoChanged trigger owns it', async () => {
+    const { port, written, committed } = fakePort({ estado: 'iniciado' }, 4242);
+    await savePedido(port, {
+      pedidoId: 'ped1',
+      patch: { estado: 'pago' },
+      baseline: { estado: 'iniciado' },
     });
-  });
-
-  it('recordEstadoChange commits one op (usuario defaults to null)', async () => {
-    const { port, committed } = fakePort(null);
-    await recordEstadoChange(port, { pedidoId: 'ped1', estado: 'cancelado' });
-    expect(committed()).toHaveLength(1);
-    expect(committed()[0]).toMatchObject({
-      data: { estado: 'cancelado', usuarioHistoricoEstadosPedidoOuterRef: null },
-    });
+    // The estado lands on the pedido doc; no historicoEstadoPedido op rides along.
+    expect(written()).toEqual({ estado: 'pago', ultimaModificacao: 4242 });
+    expect(committed()).toEqual([]);
   });
 });
 
@@ -353,7 +340,7 @@ describe('nextPedidoEstado (rule table)', () => {
 });
 
 describe('reconcilePedidoEstadoFromPagamentos', () => {
-  it('writes pago + frete despachoAutorizado + a história row on full payment', async () => {
+  it('writes pago + frete despachoAutorizado on full payment, and no história op', async () => {
     const { port, written, committed } = fakePort(
       { estado: 'iniciado', valorCobrado: 100, freteInicial: { valorCobrado: 7 } },
       777,
@@ -361,7 +348,6 @@ describe('reconcilePedidoEstadoFromPagamentos', () => {
     const result = await reconcilePedidoEstadoFromPagamentos(port, {
       pedidoId: 'x',
       valorPago: 100,
-      usuarioRef: 'documents/usuarios/u1',
     });
     expect(result).toBe('pago');
     expect(written()).toEqual({
@@ -369,17 +355,8 @@ describe('reconcilePedidoEstadoFromPagamentos', () => {
       ultimaModificacao: 777,
       freteInicial: { valorCobrado: 7, estado: 'despachoAutorizado' },
     });
-    expect(committed()).toEqual([
-      {
-        type: 'set',
-        path: 'pedidos/x/historicoEstadoPedido/newid',
-        data: {
-          estado: 'pago',
-          usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
-          data: 777,
-        },
-      },
-    ]);
+    // The audit row comes from the onPedidoEstadoChanged trigger, not from here.
+    expect(committed()).toEqual([]);
   });
 
   it('writes only estado (no freteInicial key) when the pedido has no frete', async () => {
