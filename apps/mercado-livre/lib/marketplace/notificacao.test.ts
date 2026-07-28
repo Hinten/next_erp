@@ -45,6 +45,7 @@ const h = vi.hoisted(() => ({
       skipped: null,
     }),
   ),
+  syncItemPrices: vi.fn(async () => 'synced' as const),
 }));
 vi.mock('./importMigration', () => ({ handleUptinMigration: h.handleUptinMigration }));
 vi.mock('./orderImport', () => ({ importPedidoMercadoLivre: h.importPedidoMercadoLivre }));
@@ -54,6 +55,10 @@ vi.mock('./orderPaymentImport', () => ({
 vi.mock('./orderShipmentImport', () => ({
   importShipmentMercadoLivre: h.importShipmentMercadoLivre,
 }));
+vi.mock('./itemsPricesSync', async (importActual) => {
+  const actual = await importActual<typeof import('./itemsPricesSync')>();
+  return { ...actual, syncItemPrices: h.syncItemPrices };
+});
 vi.mock('./mercadoLivre', async (importActual) => {
   const actual = await importActual<typeof import('./mercadoLivre')>();
   return { ...actual, loadMercadoLivreContext: h.loadMercadoLivreContext };
@@ -429,7 +434,7 @@ describe('handleNotificationTask', () => {
       asDb(db),
       payloadOf({ id: 'N9', resource: '/items/MLB1', topic: 'items' }),
       0,
-      resolveItemsApi,
+      { resolveItemsApi },
     );
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
     expect(resolveItemsApi).toHaveBeenCalledWith(asDb(db), 'conta-A');
@@ -445,7 +450,7 @@ describe('handleNotificationTask', () => {
       asDb(db),
       payloadOf({ id: 'N10', resource: '/items/MLB404', topic: 'items' }),
       0,
-      resolveItemsApi,
+      { resolveItemsApi },
     );
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
     expect(resolveItemsApi).not.toHaveBeenCalled(); // no link → no external call
@@ -502,8 +507,8 @@ describe('handleNotificationTask — #441 migration takeover wiring', () => {
       asDb(db),
       payloadOf({ id: 'N20', resource: '/items/MLB1', topic: 'items' }),
       0,
-      migrationResolveItemsApi(),
       // migrationRunner OMITTED — the production default must be used.
+      { resolveItemsApi: migrationResolveItemsApi() },
     );
 
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
@@ -526,8 +531,7 @@ describe('handleNotificationTask — #441 migration takeover wiring', () => {
       asDb(db),
       payloadOf({ id: 'N21', resource: '/items/MLB1', topic: 'items' }),
       0,
-      migrationResolveItemsApi(),
-      migrationRunner,
+      { resolveItemsApi: migrationResolveItemsApi(), migrationRunner },
     );
 
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
@@ -560,7 +564,7 @@ describe('handleNotificationTask — #441 migration takeover wiring', () => {
       asDb(db),
       payloadOf({ id: 'N22', resource: '/items/MLB1', topic: 'items' }),
       0,
-      resolveItemsApi,
+      { resolveItemsApi },
     );
 
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items' });
@@ -584,9 +588,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N40', resource: '/orders/987654', topic: 'orders_v2' }),
       0,
-      undefined,
-      undefined,
-      orderImportRunner,
+      { orderImportRunner },
     );
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'orders_v2' });
     expect(orderImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 987654);
@@ -605,9 +607,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N41', resource: '/orders/42', topic: 'orders' }),
       0,
-      undefined,
-      undefined,
-      orderImportRunner,
+      { orderImportRunner },
     );
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'orders' });
     expect(orderImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 42);
@@ -625,9 +625,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N42', resource: '2001', topic: 'orders_v2' }),
       0,
-      undefined,
-      undefined,
-      orderImportRunner,
+      { orderImportRunner },
     );
     expect(r.outcome).toBe('done');
     expect(orderImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 2001);
@@ -645,9 +643,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N43', resource: '/orders/5', topic: 'orders_v2' }),
       0,
-      undefined,
-      undefined,
-      orderImportRunner,
+      { orderImportRunner },
     );
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'orders_v2' });
     expect(db.docs(NOTIF).size).toBe(0);
@@ -665,9 +661,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N44', resource: '/orders/abc', topic: 'orders_v2' }),
       0,
-      undefined,
-      undefined,
-      orderImportRunner,
+      { orderImportRunner },
     );
     expect(r).toMatchObject({ outcome: 'dropped', integracaoId: 'conta-A', topic: 'orders_v2' });
     expect(orderImportRunner).not.toHaveBeenCalled();
@@ -685,9 +679,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
         asDb(db),
         payloadOf({ id: 'N45', resource: '/orders/7', topic: 'orders_v2' }),
         0,
-        undefined,
-        undefined,
-        orderImportRunner,
+        { orderImportRunner },
       ),
     ).rejects.toThrow('ml api unavailable');
     expect(db.docs(NOTIF).size).toBe(0);
@@ -703,9 +695,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N46', resource: '/orders/8', topic: 'orders_v2' }),
       TASK_MAX_ATTEMPTS - 1,
-      undefined,
-      undefined,
-      orderImportRunner,
+      { orderImportRunner },
     );
     expect(r.outcome).toBe('failed');
     const doc = db.docs(NOTIF).get('N46')!;
@@ -735,8 +725,7 @@ describe('handleNotificationTask — orders_v2/orders order-import dispatch (Ste
       asDb(db),
       payloadOf({ id: 'N47', resource: '/orders/9', topic: 'orders_v2' }),
       0,
-      // resolveItemsApi/migrationRunner/orderImportRunner ALL omitted — the
-      // production defaults must be used.
+      // runners omitted entirely — the production defaults must be used.
     );
 
     expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'orders_v2' });
@@ -770,11 +759,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         asDb(db),
         payloadOf({ id: 'N60', resource: '/payments/123456', topic: 'payments' }),
         0,
-        undefined,
-        undefined,
-        orderImportRunner,
-        paymentImportRunner,
-        shipmentImportRunner,
+        { orderImportRunner, paymentImportRunner, shipmentImportRunner },
       );
       expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'payments' });
       expect(paymentImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 123456);
@@ -794,10 +779,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         asDb(db),
         payloadOf({ id: 'N61', resource: '/payments/1', topic: 'payments' }),
         0,
-        undefined,
-        undefined,
-        undefined,
-        paymentImportRunner,
+        { paymentImportRunner },
       );
       expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'payments' });
       expect(db.docs(NOTIF).size).toBe(0);
@@ -811,10 +793,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         asDb(db),
         payloadOf({ id: 'N62', resource: '/payments/abc', topic: 'payments' }),
         0,
-        undefined,
-        undefined,
-        undefined,
-        paymentImportRunner,
+        { paymentImportRunner },
       );
       expect(r).toMatchObject({ outcome: 'dropped', integracaoId: 'conta-A', topic: 'payments' });
       expect(paymentImportRunner).not.toHaveBeenCalled();
@@ -832,10 +811,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
           asDb(db),
           payloadOf({ id: 'N63', resource: '/payments/7', topic: 'payments' }),
           0,
-          undefined,
-          undefined,
-          undefined,
-          paymentImportRunner,
+          { paymentImportRunner },
         ),
       ).rejects.toThrow('ml api unavailable');
       expect(db.docs(NOTIF).size).toBe(0);
@@ -851,10 +827,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         asDb(db),
         payloadOf({ id: 'N64', resource: '/payments/8', topic: 'payments' }),
         TASK_MAX_ATTEMPTS - 1,
-        undefined,
-        undefined,
-        undefined,
-        paymentImportRunner,
+        { paymentImportRunner },
       );
       expect(r.outcome).toBe('failed');
       const doc = db.docs(NOTIF).get('N64')!;
@@ -881,8 +854,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
           asDb(db),
           payloadOf({ id: 'N65', resource: '/payments/9', topic: 'payments' }),
           0,
-          // resolveItemsApi/migrationRunner/orderImportRunner/paymentImportRunner/
-          // shipmentImportRunner ALL omitted — the production defaults must be used.
+          // runners omitted entirely — the production defaults must be used.
         );
         expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'payments' });
         expect(h.loadMercadoLivreContext).toHaveBeenCalledWith(asDb(db), 'conta-A');
@@ -912,11 +884,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         asDb(db),
         payloadOf({ id: 'N70', resource: '/shipments/987654', topic: 'shipments' }),
         0,
-        undefined,
-        undefined,
-        orderImportRunner,
-        paymentImportRunner,
-        shipmentImportRunner,
+        { orderImportRunner, paymentImportRunner, shipmentImportRunner },
       );
       expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'shipments' });
       expect(shipmentImportRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 987654);
@@ -936,11 +904,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         asDb(db),
         payloadOf({ id: 'N71', resource: '/shipments/1', topic: 'shipments' }),
         0,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        shipmentImportRunner,
+        { shipmentImportRunner },
       );
       expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'shipments' });
       expect(db.docs(NOTIF).size).toBe(0);
@@ -954,11 +918,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         asDb(db),
         payloadOf({ id: 'N72', resource: '/shipments/abc', topic: 'shipments' }),
         0,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        shipmentImportRunner,
+        { shipmentImportRunner },
       );
       expect(r).toMatchObject({ outcome: 'dropped', integracaoId: 'conta-A', topic: 'shipments' });
       expect(shipmentImportRunner).not.toHaveBeenCalled();
@@ -976,11 +936,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
           asDb(db),
           payloadOf({ id: 'N73', resource: '/shipments/7', topic: 'shipments' }),
           0,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          shipmentImportRunner,
+          { shipmentImportRunner },
         ),
       ).rejects.toThrow('ml api unavailable');
       expect(db.docs(NOTIF).size).toBe(0);
@@ -996,11 +952,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
         asDb(db),
         payloadOf({ id: 'N74', resource: '/shipments/8', topic: 'shipments' }),
         TASK_MAX_ATTEMPTS - 1,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        shipmentImportRunner,
+        { shipmentImportRunner },
       );
       expect(r.outcome).toBe('failed');
       const doc = db.docs(NOTIF).get('N74')!;
@@ -1027,8 +979,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
           asDb(db),
           payloadOf({ id: 'N75', resource: '/shipments/9', topic: 'shipments' }),
           0,
-          // resolveItemsApi/migrationRunner/orderImportRunner/paymentImportRunner/
-          // shipmentImportRunner ALL omitted — the production defaults must be used.
+          // runners omitted entirely — the production defaults must be used.
         );
         expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'shipments' });
         expect(h.loadMercadoLivreContext).toHaveBeenCalledWith(asDb(db), 'conta-A');
@@ -1063,11 +1014,7 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
       const res = await reprocessNotifications(
         asDb(db),
         { now: 10_000, olderThanMs: 100 },
-        undefined,
-        undefined,
-        undefined,
-        paymentImportRunner,
-        shipmentImportRunner,
+        { paymentImportRunner, shipmentImportRunner },
       );
 
       expect(res.processed).toBe(2);
@@ -1078,6 +1025,96 @@ describe('handleNotificationTask — payments/shipments import dispatch (Step 9 
       expect(db.docs(NOTIF).has('N80')).toBe(false);
       expect(db.docs(NOTIF).has('N81')).toBe(false);
     });
+  });
+});
+
+/* --------------- items_prices price-sync dispatch (Step 11) --------------- */
+
+describe('handleNotificationTask — items_prices price-sync dispatch (Step 11)', () => {
+  it('parses the item id from the /items/{id}/prices resource and routes it to the injected runner, acks done with nothing persisted', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const itemsPricesRunner = vi.fn(async () => 'synced' as const);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N90', resource: '/items/MLB777/prices', topic: 'items_prices' }),
+      0,
+      { itemsPricesRunner },
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items_prices' });
+    expect(itemsPricesRunner).toHaveBeenCalledWith(asDb(db), 'conta-A', 'MLB777');
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('default wiring (runners omitted): the real runItemsPricesSync path reaches syncItemPrices', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N95', resource: '/items/MLB777/prices', topic: 'items_prices' }),
+      0,
+      // runners omitted entirely — the production default must be used.
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items_prices' });
+    expect(h.syncItemPrices).toHaveBeenCalledWith(asDb(db), 'conta-A', 'MLB777');
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('a non-synced outcome (e.g. no-link) still acks done — deterministic, never retried — and warns', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const itemsPricesRunner = vi.fn(async () => 'no-link' as const);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N91', resource: '/items/MLB777/prices', topic: 'items_prices' }),
+      0,
+      { itemsPricesRunner },
+    );
+    expect(r).toMatchObject({ outcome: 'done', integracaoId: 'conta-A', topic: 'items_prices' });
+    expect(console.warn).toHaveBeenCalledWith(
+      '[mercado-livre] items_prices sync skipped',
+      expect.objectContaining({ integracaoId: 'conta-A', itemId: 'MLB777', outcome: 'no-link' }),
+    );
+    expect(db.docs(NOTIF).size).toBe(0);
+  });
+
+  it('a malformed resource (no /prices suffix, or garbage) is dropped WITHOUT dispatching to the runner', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const itemsPricesRunner = vi.fn(async () => 'synced' as const);
+    const r = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N92', resource: '/items/MLB777', topic: 'items_prices' }),
+      0,
+      { itemsPricesRunner },
+    );
+    expect(r).toMatchObject({ outcome: 'dropped', integracaoId: 'conta-A', topic: 'items_prices' });
+    const g = await handleNotificationTask(
+      asDb(db),
+      payloadOf({ id: 'N93', resource: 'garbage', topic: 'items_prices' }),
+      0,
+      { itemsPricesRunner },
+    );
+    expect(g.outcome).toBe('dropped');
+    expect(itemsPricesRunner).not.toHaveBeenCalled();
+    expect(db.docs(NOTIF).size).toBe(0); // dropped — no persist
+  });
+
+  it('the runner throwing propagates (transient contract preserved — queue retries)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'conta-A', 55);
+    const itemsPricesRunner = vi.fn(async () => {
+      throw new Error('ml api unavailable');
+    });
+    await expect(
+      handleNotificationTask(
+        asDb(db),
+        payloadOf({ id: 'N94', resource: '/items/MLB777/prices', topic: 'items_prices' }),
+        0,
+        { itemsPricesRunner },
+      ),
+    ).rejects.toThrow('ml api unavailable');
+    expect(db.docs(NOTIF).size).toBe(0);
   });
 });
 

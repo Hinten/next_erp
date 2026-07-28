@@ -62,16 +62,22 @@ describe('POST /api/webhooks/mercado-livre', () => {
     expect(h.create).not.toHaveBeenCalled(); // happy path writes nothing
   });
 
-  it('order-family topics (orders_v2/orders/payments/shipments) enqueue with a 10s schedule delay', async () => {
+  it('refetch-delay topics (orders_v2/orders/payments/shipments/items_prices) enqueue with a 10s schedule delay', async () => {
     await POST(req({ _id: 'N2', resource: '/orders/2', topic: 'orders_v2', user_id: 1 }));
     expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
 
     h.enqueue.mockClear();
     await POST(req({ _id: 'N3', resource: '/payments/3', topic: 'payments', user_id: 1 }));
     expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
+
+    h.enqueue.mockClear();
+    await POST(
+      req({ _id: 'N3b', resource: '/items/MLB1/prices', topic: 'items_prices', user_id: 1 }),
+    );
+    expect(h.enqueue.mock.calls[0]![1]).toEqual({ scheduleDelaySeconds: 10 });
   });
 
-  it('non-order-family topics (e.g. items) enqueue with no schedule delay', async () => {
+  it('non-refetch-delay topics (e.g. items) enqueue with no schedule delay', async () => {
     await POST(req({ _id: 'N4', resource: '/items/MLB1', topic: 'items', user_id: 1 }));
     expect(h.enqueue.mock.calls[0]![1]).toBeUndefined();
   });

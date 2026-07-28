@@ -107,6 +107,92 @@ describe('createMercadoLivreApi — happy paths', () => {
   });
 });
 
+describe('createMercadoLivreApi — item prices (items_prices topic, Step 11)', () => {
+  it('getPrices hits /items/{id}/prices with the Bearer token and parses standard + promotion entries', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 'MLB123',
+        prices: [
+          {
+            id: '1',
+            type: 'standard',
+            amount: 79.9,
+            regular_amount: null,
+            currency_id: 'BRL',
+            last_updated: '2026-07-01T00:00:00Z',
+            conditions: {
+              context_restrictions: ['channel_marketplace'],
+              start_time: null,
+              end_time: null,
+            },
+          },
+          {
+            id: '2',
+            type: 'promotion',
+            amount: 59.9,
+            regular_amount: 79.9,
+            currency_id: 'BRL',
+            last_updated: '2026-07-15T00:00:00Z',
+            conditions: {
+              context_restrictions: ['channel_marketplace'],
+              start_time: '2026-07-15T00:00:00Z',
+              end_time: '2026-07-31T23:59:59Z',
+            },
+          },
+        ],
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const prices = await api.getPrices('MLB123');
+    expect(prices.id).toBe('MLB123');
+    expect(prices.prices).toHaveLength(2);
+    expect(prices.prices[0]!.type).toBe('standard');
+    expect(prices.prices[1]!.type).toBe('promotion');
+    expect(prices.prices[1]!.regular_amount).toBe(79.9);
+    expect(prices.prices[1]!.conditions?.context_restrictions).toEqual(['channel_marketplace']);
+    expect(prices.prices[1]!.conditions?.end_time).toBe('2026-07-31T23:59:59Z');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.mercadolibre.com/items/MLB123/prices');
+    expect((init!.headers as Record<string, string>).Authorization).toBe('Bearer live-token');
+  });
+
+  it('getPrices tolerates unknown extra fields at every level and a null conditions', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 'MLB123',
+        reference_prices: [{ type: 'was' }], // extra root field
+        prices: [
+          { id: '1', type: 'standard', amount: 10, conditions: null, brand_new_entry_field: true },
+          {
+            id: '2',
+            type: 'promotion',
+            amount: 8,
+            conditions: { context_restrictions: ['channel_mshops'], eligible: true },
+          },
+        ],
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const prices = (await api.getPrices('MLB123')) as Record<string, unknown>;
+    expect(prices.reference_prices).toEqual([{ type: 'was' }]);
+    const entries = prices.prices as Record<string, unknown>[];
+    expect(entries[0]!.conditions).toBeNull();
+    expect(entries[0]!.brand_new_entry_field).toBe(true);
+    expect((entries[1]!.conditions as Record<string, unknown>).eligible).toBe(true);
+  });
+
+  it('getPrices maps a 404 to an HTTP error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'item not found' }, 404),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.getPrices('MLB404')).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 404,
+    });
+  });
+});
+
 describe('createMercadoLivreApi — order payments + shipments (order import, Step 9)', () => {
   it('getPayment hits /collections/{id} and parses the payment', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
