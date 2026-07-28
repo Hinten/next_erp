@@ -1,8 +1,13 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
-import { E2E_FIXTURE_TARGETS, PARENTS_WITH_SUBCOLLECTIONS, prefixEnd } from './stale-sweep';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  E2E_FIXTURE_TARGETS,
+  PARENTS_WITH_SUBCOLLECTIONS,
+  prefixEnd,
+  sweepOrphanedE2EFixtures,
+} from './stale-sweep';
 
 /**
  * Drift backstop for the orphan sweep (#712).
@@ -141,6 +146,115 @@ describe('PARENTS_WITH_SUBCOLLECTIONS', () => {
         true,
       );
     }
+  });
+});
+
+/** Every write the sweep attempts, so a "dry" run can be shown to make none. */
+interface Writes {
+  batchDeletes: string[];
+  commits: number;
+  recursiveDeletes: string[];
+  sets: string[];
+}
+
+/**
+ * Minimal Firestore stand-in. Returns `docs` for any query against a named
+ * collection and records every mutating call. `previousRunId` is what the
+ * concurrency-group marker reports, which is what drives Pass A.
+ */
+function fakeDb(writes: Writes, docs: Record<string, string[]>, previousRunId: string) {
+  const oneDayAgo = () => Date.now() - 24 * 60 * 60 * 1000;
+  const snapshotFor = (name: string) => {
+    const ids = docs[name] ?? [];
+    return {
+      size: ids.length,
+      docs: ids.map((id) => ({
+        ref: { path: `${name}/${id}`, parent: { id: name } },
+        createTime: { toMillis: oneDayAgo },
+      })),
+    };
+  };
+  const query = (name: string) => {
+    const q: Record<string, unknown> = {
+      where: () => q,
+      limit: () => q,
+      startAfter: () => q,
+      get: () => Promise.resolve(snapshotFor(name)),
+    };
+    return q;
+  };
+
+  return {
+    collection: (name: string) => ({
+      ...query(name),
+      doc: (id: string) => ({
+        get: () => Promise.resolve({ get: () => previousRunId }),
+        set: () => {
+          writes.sets.push(`${name}/${id}`);
+          return Promise.resolve();
+        },
+      }),
+    }),
+    batch: () => ({
+      delete: (ref: { path: string }) => writes.batchDeletes.push(ref.path),
+      commit: () => {
+        writes.commits += 1;
+        return Promise.resolve();
+      },
+    }),
+    bulkWriter: () => ({ close: () => Promise.resolve() }),
+    recursiveDelete: (ref: { path: string }) => {
+      writes.recursiveDeletes.push(ref.path);
+      return Promise.resolve();
+    },
+  };
+}
+
+describe('sweepOrphanedE2EFixtures dry run', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const noWrites = (): Writes => ({
+    batchDeletes: [],
+    commits: 0,
+    recursiveDeletes: [],
+    sets: [],
+  });
+
+  // `depositos` is a leaf (batch delete), `pedidos` owns subcollections
+  // (recursiveDelete) — both delete paths have to stay quiet under `dryRun`.
+  const staleDocs = { depositos: ['e2e-111-dep-001'], pedidos: ['e2e-111-ped-001'] };
+
+  function stubCiEnv() {
+    vi.stubEnv('GITHUB_WORKFLOW', 'e2e-vendas');
+    vi.stubEnv('GITHUB_REF', 'refs/pull/715/merge');
+    vi.stubEnv('GITHUB_RUN_ID', '222');
+  }
+
+  it('issues no writes at all — not even the concurrency-group marker', async () => {
+    stubCiEnv();
+    const writes = noWrites();
+
+    const report = await sweepOrphanedE2EFixtures(true, fakeDb(writes, staleDocs, '111') as never);
+
+    // It must still find and report the candidates…
+    expect(report.deleted).toBeGreaterThan(0);
+    // …while touching nothing. Both passes take the same flag: forwarding it to
+    // only one of them is what made `sweep:e2e` delete while reporting
+    // "would delete" (#715 review).
+    expect(writes).toEqual(noWrites());
+  });
+
+  it('does delete once the flag is off, so the assertion above is not vacuous', async () => {
+    stubCiEnv();
+    const writes = noWrites();
+
+    await sweepOrphanedE2EFixtures(false, fakeDb(writes, staleDocs, '111') as never);
+
+    expect(writes.batchDeletes).toContain('depositos/e2e-111-dep-001');
+    expect(writes.recursiveDeletes).toContain('pedidos/e2e-111-ped-001');
+    expect(writes.sets).toContain('e2e_runMarkers/e2e-vendas__refs_pull_715_merge');
   });
 });
 

@@ -201,10 +201,12 @@ interface SweepOptions {
   prefixes: readonly string[];
   /** Keep anything younger than this. `null` disables the gate entirely. */
   maxAgeMs: number | null;
-  /** Report what would be deleted without deleting it. */
+  /** Report what would be deleted without deleting it. Issues NO writes at all. */
   dryRun?: boolean;
   /** Absolute wall-clock deadline shared across the whole sweep. */
   deadline?: number;
+  /** Firestore instance. Defaults to the shared Admin SDK singleton; a test injects a fake. */
+  database?: Firestore;
 }
 
 /**
@@ -332,7 +334,7 @@ async function deleteDocs(
 
 /** One pass over every target. */
 async function sweep(options: SweepOptions): Promise<SweepReport> {
-  const database = db();
+  const database = options.database ?? db();
   const deadline = options.deadline ?? Date.now() + SWEEP_BUDGET_MS;
   const report = emptyReport();
 
@@ -410,20 +412,26 @@ function concurrencyGroupId(): string | null {
  * is a no-op. Never sweeps the *current* run id — a re-run reuses
  * `GITHUB_RUN_ID`, so attempt 2 shares attempt 1's prefix.
  */
-export async function reclaimPredecessorRun(dryRun = false): Promise<SweepReport> {
+export async function reclaimPredecessorRun(
+  options: { dryRun?: boolean; database?: Firestore } = {},
+): Promise<SweepReport> {
   const groupId = concurrencyGroupId();
   if (!groupId) return emptyReport();
 
+  const database = options.database ?? db();
   const runId = getRunId();
-  const marker = db().collection(RUN_MARKERS_COLLECTION).doc(groupId);
+  const marker = database.collection(RUN_MARKERS_COLLECTION).doc(groupId);
   const previous = (await marker.get()).get('runId');
-  await marker.set({ runId, startedAt: Date.now() });
+  // Claiming the group is a write, so a dry run must not do it — otherwise
+  // inspecting the backlog from inside CI would clobber the marker and leave the
+  // next real run believing it had already claimed the group.
+  if (!options.dryRun) await marker.set({ runId, startedAt: Date.now() });
 
   if (typeof previous !== 'string' || previous === runId) return emptyReport();
 
   // eslint-disable-next-line no-console
   console.log(`[sweep] reclaiming fixtures from superseded run ${previous}`);
-  return sweep({ prefixes: [`${E2E_PREFIX}${previous}-`], maxAgeMs: null, dryRun });
+  return sweep({ prefixes: [`${E2E_PREFIX}${previous}-`], maxAgeMs: null, ...options });
 }
 
 /**
@@ -437,17 +445,27 @@ export async function reclaimPredecessorRun(dryRun = false): Promise<SweepReport
  * timestamp — there is no stable run scope at all — so the broad prefix stays,
  * which is also what clears cruft from earlier local runs.
  */
-export async function sweepCurrentRunFixtures(): Promise<SweepReport> {
+export async function sweepCurrentRunFixtures(database?: Firestore): Promise<SweepReport> {
   const prefix = process.env.GITHUB_RUN_ID ? `${E2E_PREFIX}${getRunId()}-` : E2E_PREFIX;
-  return sweep({ prefixes: [prefix], maxAgeMs: null });
+  return sweep({ prefixes: [prefix], maxAgeMs: null, database });
 }
 
-/** Pass B. Everything still carrying an `e2e-` prefix and older than the cutoff. */
+/**
+ * Pass B. Everything still carrying an `e2e-` prefix and older than the cutoff.
+ *
+ * Options object rather than positional `(maxAgeMs, dryRun)` on purpose: a
+ * trailing boolean that defaults to the *unsafe* value is exactly how the caller
+ * below silently dropped `dryRun` and made `sweep:e2e` delete during a dry run.
+ */
 export async function sweepStaleFixtures(
-  maxAgeMs = STALE_E2E_FIXTURE_AGE_MS,
-  dryRun = false,
+  options: { maxAgeMs?: number; dryRun?: boolean; database?: Firestore } = {},
 ): Promise<SweepReport> {
-  return sweep({ prefixes: [E2E_PREFIX], maxAgeMs, dryRun });
+  return sweep({
+    prefixes: [E2E_PREFIX],
+    maxAgeMs: options.maxAgeMs ?? STALE_E2E_FIXTURE_AGE_MS,
+    dryRun: options.dryRun,
+    database: options.database,
+  });
 }
 
 /**
@@ -455,8 +473,17 @@ export async function sweepStaleFixtures(
  * lanes run this at the same time, and deleting an already-deleted doc is a
  * no-op.
  */
-export async function sweepOrphanedE2EFixtures(dryRun = false): Promise<SweepReport> {
-  const report = mergeReports(await reclaimPredecessorRun(dryRun), await sweepStaleFixtures());
+export async function sweepOrphanedE2EFixtures(
+  dryRun = false,
+  database?: Firestore,
+): Promise<SweepReport> {
+  // Both passes take the same flags. Forwarding to only one of them is what made
+  // `sweep:e2e` delete while reporting "would delete".
+  const options = { dryRun, database };
+  const report = mergeReports(
+    await reclaimPredecessorRun(options),
+    await sweepStaleFixtures(options),
+  );
   const summary = Object.entries(report.byCollection)
     .map(([collection, count]) => `${collection}:${count}`)
     .join(' ');
