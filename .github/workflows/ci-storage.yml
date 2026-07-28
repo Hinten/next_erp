@@ -16,6 +16,13 @@ on:
       - 'packages/schemas/src/storage/foto.ts'
       - 'packages/data/src/admin/collections/arquivoCollection.ts'
       - 'packages/data/src/admin/collections/produtoCollection.ts'
+      # The pedido estado reconcile + everything its emulator suite exercises: the
+      # transition rule table (`nextPedidoEstado`) and the paying-status/sum rule
+      # (`sumPagamentosPagos`) both live outside this file, so editing either alone
+      # would otherwise skip the only test that runs the real Admin-SDK transaction.
+      - 'packages/data/src/admin/pedidoReconcile*.ts'
+      - 'packages/data/src/pedido/usecases.ts'
+      - 'packages/schemas/src/pedido/collection/pagamento.ts'
       - 'storage.rules'
       - 'cors.json'
       - 'firebase.functions.json'
@@ -33,6 +40,13 @@ on:
       - 'packages/schemas/src/storage/foto.ts'
       - 'packages/data/src/admin/collections/arquivoCollection.ts'
       - 'packages/data/src/admin/collections/produtoCollection.ts'
+      # The pedido estado reconcile + everything its emulator suite exercises: the
+      # transition rule table (`nextPedidoEstado`) and the paying-status/sum rule
+      # (`sumPagamentosPagos`) both live outside this file, so editing either alone
+      # would otherwise skip the only test that runs the real Admin-SDK transaction.
+      - 'packages/data/src/admin/pedidoReconcile*.ts'
+      - 'packages/data/src/pedido/usecases.ts'
+      - 'packages/schemas/src/pedido/collection/pagamento.ts'
       - 'storage.rules'
       - 'cors.json'
       - 'firebase.functions.json'
