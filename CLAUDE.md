@@ -187,7 +187,7 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   a position typed as a Zod enum (`estado === 'pago'` → `ESTADO_PEDIDO.pago`).
   An enum opts in by gaining a companion
   `as const satisfies Record<string, T>` constant — 13 of the 49 have one today
-  (#697 tracks the rest).
+  (#699 tracks the rest).
 - Firebase App Hosting deploys every Next app; heavy work goes to Cloud
   Functions. `apps/portal/` does NOT exist — public pages are deferred.
 - **Shared dependency versions live in the pnpm `catalog:`**
