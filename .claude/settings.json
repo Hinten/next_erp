@@ -117,6 +117,16 @@
             "statusMessage": "Checking branch name"
           }
         ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-firebase-deploy.mjs\"",
+            "statusMessage": "Checking for firebase deploy"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
