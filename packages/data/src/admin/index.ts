@@ -5,4 +5,8 @@ export {
   type PathContext,
 } from './defineAdminCollection';
 
-export { reconcilePedidoFromPagamento, PedidoReconcileNotFoundError } from './pedidoReconcile';
+export {
+  reconcilePedidoEstado,
+  reconcilePedidoFromPagamento,
+  PedidoReconcileNotFoundError,
+} from './pedidoReconcile';

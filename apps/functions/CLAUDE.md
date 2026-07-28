@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Sixteen exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -135,8 +135,20 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   first-touch create still initializes `ultimaModificacao: now` like every other
   create path). ⚠️ On the app's critical path: the staging estoque tab + the estoque
   Playwright e2e only work once this is DEPLOYED (deploy is manual — root rule #1).
-- ⚠️ All three target the NAMED `default` database (gotcha #8). `@delfrance/auth`
-  is a new build-time dep (esbuild-bundled, like data/schemas) for `hasPerm`/`PERM`.
+- **`reconciliarPagamentoPedido`** (`onCall`) — server-owned pedido `estado`
+  reconcile for the web client (#308). The client SDK can't read a query inside
+  `runTransaction`, so summing a pedido's pagamentos client-side before the tx
+  let two concurrent reconciles (different tabs/sessions) settle on a stale
+  estado. Delegates to the Admin-SDK `reconcilePedidoEstado`
+  (`@delfrance/data/admin`), which reads the pedido AND every pagamento in ONE
+  transaction. Same auth model as `aplicarEstoque`: `PERM.pedido.write` (or
+  `su`), Zod-validated `{ pedidoId }`. ⚠️ On the app's critical path: the
+  Pagamentos tab's `reconcileEstado()` calls this callable, so the pedido
+  estado auto-transition only works once this is DEPLOYED (deploy is manual —
+  root rule #1).
+- ⚠️ Every trigger and callable above targets the NAMED `default` database
+  (gotcha #8). `@delfrance/auth` is a build-time dep (esbuild-bundled, like
+  data/schemas) for `hasPerm`/`PERM`.
 
 - The entry (`src/index.ts`) is **esbuild-bundled into a single ESM file**.
   Only `firebase-admin`, `firebase-functions`, `@google-cloud/firestore` (the

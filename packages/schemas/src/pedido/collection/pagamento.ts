@@ -161,10 +161,10 @@ export function statusToEstadoPedido(status: StatusPagamento): EstadoPedido {
  * Whether a payment counts toward "paid": no status (`null`/`undefined`) OR
  * `aprovado`. This is the canonical rule shared by every "how much is paid?"
  * consumer — the web footer's Vlr. Pago, the NFe bundle (`apps/nfe`'s
- * `bundle.ts`, "matches Flutter"), and the client + server-side estado
- * reconciles — so the payment total is computed identically everywhere. Every
- * other status (pendente, em disputa, recusado, cancelado, estornado…) does
- * NOT cover the total.
+ * `bundle.ts`, "matches Flutter"), and the server-side estado reconciles — so
+ * the payment total is computed identically everywhere. Every other status
+ * (pendente, em disputa, recusado, cancelado, estornado…) does NOT cover the
+ * total.
  */
 export function isPagamentoPagante(status: number | null | undefined): boolean {
   return status == null || status === STATUS_PAGAMENTO.aprovado;
@@ -173,9 +173,10 @@ export function isPagamentoPagante(status: number | null | undefined): boolean {
 /**
  * Total amount already paid on a pedido: the sum of every {@link isPagamentoPagante}
  * payment's `valor`, 2-decimal-rounded. The one summing rule behind `valorPago`
- * for the estado auto-transition (`reconcilePedidoEstadoFromPagamentos` and the
- * admin `reconcilePedidoFromPagamento`) as well as the footer's Vlr. Pago /
- * Troco. Accepts any row carrying `valor` + `status_pagamento` (a full
+ * for the estado auto-transition (the admin `reconcilePedidoEstado` and
+ * `reconcilePedidoFromPagamento`, both in
+ * `packages/data/src/admin/pedidoReconcile.ts`) as well as the footer's Vlr.
+ * Pago / Troco. Accepts any row carrying `valor` + `status_pagamento` (a full
  * `Pagamento` doc or a lighter summary).
  */
 export function sumPagamentosPagos(

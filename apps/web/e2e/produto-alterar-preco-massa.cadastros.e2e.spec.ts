@@ -17,10 +17,12 @@ import { warmRoutes } from './helpers/warmup';
  * writes the produtos the user explicitly selects — no whole-catalog scan —
  * so it lives in the plain `crud-cadastros` project (no `dependencies` dance)
  * as long as every selection is made through the "Buscar" filter scoped to
- * this suite's own run-prefixed produtos. Staging has no deployed functions,
- * so `historicoDePrecos`/parent→children propagation (the
- * `onProdutoPrecoCustoChanged` trigger) are NOT assertable here — only the
- * parent `precos` write + the screen's own UI/CSV behavior.
+ * this suite's own run-prefixed produtos. `historicoDePrecos`/parent→children
+ * propagation (the `onProdutoPrecoCustoChanged` trigger) are NOT asserted
+ * here — the trigger IS deployed on staging, but its effects land
+ * asynchronously and this suite proves only the parent `precos` write + the
+ * screen's own UI/CSV behavior. The trigger itself is covered deterministically
+ * by `produto-preco.emulator.e2e.spec.ts`.
  *
  * Three behaviors worth flagging for reviewers, since they shape the test
  * order below:

@@ -1,4 +1,10 @@
-import type { DocumentData, Firestore as FirebaseAdminFirestore } from 'firebase-admin/firestore';
+import type {
+  DocumentData,
+  DocumentReference,
+  DocumentSnapshot,
+  Firestore as FirebaseAdminFirestore,
+  Transaction,
+} from 'firebase-admin/firestore';
 import {
   isFreteJaPostado,
   nowMicros,
@@ -52,14 +58,75 @@ const GATEWAY_OWNED = [
 ] as const;
 
 /**
+ * Shared tail of both admin reconciles: given the pedido's already-read
+ * snapshot and the (already computed) `valorPago`, applies {@link
+ * nextPedidoEstado} and — only on a transition — writes the new `estado`,
+ * flips `freteInicial.estado` to `despachoAutorizado` (never regressing an
+ * already-posted frete), and appends a `historicoEstadoPedido` audit row.
+ * Returns the new estado, or `null` when no transition applies.
+ */
+async function applyEstadoTransition(
+  tx: Transaction,
+  db: FirebaseAdminFirestore,
+  pedidoRef: DocumentReference,
+  pedidoId: string,
+  pedidoSnap: DocumentSnapshot,
+  valorPago: number,
+  usuarioRef: string | null,
+): Promise<EstadoPedido | null> {
+  const estado = pedidoSnap.get('estado') as EstadoPedido;
+  const total =
+    typeof pedidoSnap.get('valorCobrado') === 'number'
+      ? (pedidoSnap.get('valorCobrado') as number)
+      : 0;
+  const next = nextPedidoEstado(estado, total, valorPago);
+  if (next === null) return null;
+
+  const pedidoPatch: Record<string, unknown> = {
+    estado: next.estado,
+    ultimaModificacao: nowMicros(),
+  };
+  if (next.autorizarDespacho) {
+    const frete = pedidoSnap.get('freteInicial');
+    if (frete && typeof frete === 'object') {
+      const freteRecord = frete as Record<string, unknown>;
+      const freteEstado = freteRecord.estado as EstadoFrete | undefined;
+      // Only authorize dispatch from a pre-shipment state — never regress an
+      // in-flight frete (postado / a caminho / entregue) back to authorized.
+      if (!freteEstado || !isFreteJaPostado(freteEstado)) {
+        pedidoPatch.freteInicial = { ...freteRecord, estado: 'despachoAutorizado' };
+      }
+    }
+  }
+  tx.update(pedidoRef, pedidoPatch);
+
+  // Append a `historicoEstadoPedido` audit row — same shape as
+  // `buildEstadoHistoryOp` (`../pedido/usecases`); `data` is a µs stamp.
+  const historyId = historicoEstadoPedidoCollection.newDocId(db, { pedidoId });
+  const historyRef = historicoEstadoPedidoCollection.docRef(db, { pedidoId }, historyId);
+  tx.set(
+    historyRef,
+    historicoEstadoPedidoCollection.parse({
+      estado: next.estado,
+      usuarioHistoricoEstadosPedidoOuterRef: usuarioRef,
+      data: nowMicros(),
+    }) as DocumentData,
+  );
+
+  return next.estado;
+}
+
+/**
  * Server-side (Admin SDK) reconcile of a pedido's `estado` from ONE inbound
- * payment — the fully-consistent counterpart to the client
- * `reconcilePedidoEstadoFromPagamentos` (`../pedido/usecases`). That client path
- * carries a documented atomicity caveat (#308): the Firebase JS SDK can't read a
- * query inside `runTransaction`, so `valorPago` is summed BEFORE the tx and two
- * reconciles can briefly settle on a stale estado. The Admin SDK CAN query
- * in-transaction, so this path reads the whole payment set atomically with the
- * pedido — no race. **Webhook writers (Mercado Pago) are the primary caller.**
+ * payment. It replaced a client-side reconcile that used to live in
+ * `../pedido/usecases` and carried a documented atomicity caveat (#308): the
+ * Firebase JS SDK can't read a query inside `runTransaction`, so `valorPago`
+ * was summed BEFORE the tx and two reconciles could settle on a stale estado.
+ * The Admin SDK CAN query in-transaction, so this path reads the whole payment
+ * set atomically with the pedido — no race. **Webhook writers (Mercado Pago)
+ * are the primary caller.** See {@link reconcilePedidoEstado} for the
+ * callable-facing counterpart that reconciles from the CURRENT payment set
+ * instead of upserting one — that one now serves the web client.
  *
  * In one transaction it:
  *  1. reads the pedido (missing → {@link PedidoReconcileNotFoundError});
@@ -78,9 +145,8 @@ const GATEWAY_OWNED = [
  *  6. applies {@link nextPedidoEstado} (which gates on the payment-driven
  *     estados) and, ONLY on a transition, writes the new `estado`, flips
  *     `freteInicial.estado` to `despachoAutorizado` (never regressing an
- *     already-posted frete — same rule as the client reconcile), appends a
- *     `historicoEstadoPedido` audit row, and stamps the pedido
- *     `ultimaModificacao` (µs).
+ *     already-posted frete), appends a `historicoEstadoPedido` audit row, and
+ *     stamps the pedido `ultimaModificacao` (µs).
  *
  * Returns the new estado (or `null` when the pagamento was written but no estado
  * transition applies), plus whether the delivery was skipped as stale.
@@ -160,47 +226,71 @@ export async function reconcilePedidoFromPagamento(
     });
     const valorPago = sumPagamentosPagos(paymentsForSum);
 
-    const estado = pedidoSnap.get('estado') as EstadoPedido;
-    const total =
-      typeof pedidoSnap.get('valorCobrado') === 'number'
-        ? (pedidoSnap.get('valorCobrado') as number)
-        : 0;
-    const next = nextPedidoEstado(estado, total, valorPago);
-    if (next === null) {
-      return { transition: null, skippedStale: false };
-    }
+    const transition = await applyEstadoTransition(
+      tx,
+      db,
+      pedidoRef,
+      pedidoId,
+      pedidoSnap,
+      valorPago,
+      usuarioRef,
+    );
+    return { transition, skippedStale: false };
+  });
+}
 
-    const pedidoPatch: Record<string, unknown> = {
-      estado: next.estado,
-      ultimaModificacao: nowMicros(),
-    };
-    if (next.autorizarDespacho) {
-      const frete = pedidoSnap.get('freteInicial');
-      if (frete && typeof frete === 'object') {
-        const freteRecord = frete as Record<string, unknown>;
-        const freteEstado = freteRecord.estado as EstadoFrete | undefined;
-        // Only authorize dispatch from a pre-shipment state — never regress an
-        // in-flight frete (postado / a caminho / entregue) back to authorized.
-        if (!freteEstado || !isFreteJaPostado(freteEstado)) {
-          pedidoPatch.freteInicial = { ...freteRecord, estado: 'despachoAutorizado' };
-        }
-      }
-    }
-    tx.update(pedidoRef, pedidoPatch);
+/**
+ * Server-side (Admin SDK) reconcile of a pedido's `estado` from its CURRENT
+ * pagamentos — the callable-facing counterpart to {@link
+ * reconcilePedidoFromPagamento}. Where that one upserts ONE inbound (webhook)
+ * payment, this one assumes every pagamento was already written by its own
+ * path (client CRUD via `savePagamento`/`deletePagamento`) and just settles
+ * `estado` from the current payment set — the fully-consistent replacement for
+ * the client-side reconcile deleted from `../pedido/usecases` in #308, which
+ * summed `valorPago` with a `getDocs` BEFORE `runTransaction` (the Firebase JS
+ * SDK can't query inside a transaction), so two concurrent reconciles could
+ * settle on a stale estado. This one reads the pedido AND every pagamento in
+ * the SAME transaction — no race.
+ *
+ * Exposed via the `reconciliarPagamentoPedido` Cloud Function callable
+ * (`apps/functions`), and this IS the web client's reconcile path:
+ * `PagamentosSection`'s `reconcileEstado()` calls that callable, which
+ * delegates here. The cutover was hard — the old client-side
+ * `reconcilePedidoEstadoFromPagamentos` was deleted, there is no fallback — so
+ * the callable must be DEPLOYED for the Pagamentos tab's estado transition to
+ * happen at all (deploy is a manual, coordinated step; the e2e that exercises
+ * this exact flow, `apps/web/e2e/pedidos-pagamento.vendas.e2e.spec.ts`, hits
+ * real staging Cloud Functions).
+ */
+export async function reconcilePedidoEstado(
+  db: FirebaseAdminFirestore,
+  input: { pedidoId: string; usuarioRef?: string | null },
+): Promise<{ transition: EstadoPedido | null }> {
+  const { pedidoId } = input;
+  const usuarioRef = input.usuarioRef ?? null;
 
-    // Append a `historicoEstadoPedido` audit row — same shape as
-    // `buildEstadoHistoryOp` (`../pedido/usecases`); `data` is a µs stamp.
-    const historyId = historicoEstadoPedidoCollection.newDocId(db, { pedidoId });
-    const historyRef = historicoEstadoPedidoCollection.docRef(db, { pedidoId }, historyId);
-    tx.set(
-      historyRef,
-      historicoEstadoPedidoCollection.parse({
-        estado: next.estado,
-        usuarioHistoricoEstadosPedidoOuterRef: usuarioRef,
-        data: nowMicros(),
-      }) as DocumentData,
+  return db.runTransaction(async (tx) => {
+    const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
+    const pedidoSnap = await tx.get(pedidoRef);
+    if (!pedidoSnap.exists) throw new PedidoReconcileNotFoundError(pedidoId);
+
+    const pagamentosSnap = await tx.get(pagamentoCollection.ref(db, { pedidoId }));
+    const valorPago = sumPagamentosPagos(
+      pagamentosSnap.docs.map((d) => ({
+        valor: typeof d.get('valor') === 'number' ? (d.get('valor') as number) : 0,
+        status_pagamento: d.get('status_pagamento') as number | null | undefined,
+      })),
     );
 
-    return { transition: next.estado, skippedStale: false };
+    const transition = await applyEstadoTransition(
+      tx,
+      db,
+      pedidoRef,
+      pedidoId,
+      pedidoSnap,
+      valorPago,
+      usuarioRef,
+    );
+    return { transition };
   });
 }
