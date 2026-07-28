@@ -63,6 +63,9 @@ catalogs:
     eslint-config-prettier:
       specifier: ^10.1.5
       version: 10.1.8
+    fflate:
+      specifier: ^0.8.2
+      version: 0.8.3
     firebase:
       specifier: ^12.13.0
       version: 12.13.0
@@ -1076,6 +1079,9 @@ importers:
       '@delfrance/core':
         specifier: workspace:*
         version: link:../../core
+      fflate:
+        specifier: 'catalog:'
+        version: 0.8.3
       zod:
         specifier: 'catalog:'
         version: 4.4.3
