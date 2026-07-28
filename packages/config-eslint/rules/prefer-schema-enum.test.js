@@ -24,6 +24,15 @@ const ruleTester = new RuleTester({
     parserOptions: {
       project: './tsconfig.json',
       tsconfigRootDir: FIXTURE_DIR,
+      // REQUIRED, and only observably so in CI. typescript-eslint infers
+      // "single run" mode when `process.env.CI` is set, which builds the program
+      // once from the files ON DISK and never applies the content RuleTester
+      // swaps in per case. Every case would then be checked against the empty
+      // `app/target.ts`, so nothing is enum-typed and every `invalid` case
+      // reports zero errors — green locally, 12 failures in Actions.
+      // `@typescript-eslint/rule-tester` sets this for you; ESLint's built-in
+      // RuleTester does not.
+      disallowAutomaticSingleRunInference: true,
     },
   },
 });
