@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ESTADO_FRETE,
   ESTADOS_FRETE_PRE_AUTORIZACAO,
   ESTADOS_FRETE_REMOVE_ESTOQUE,
   FREIGHT_TIPO_CAPS,
@@ -231,22 +232,22 @@ describe('FREIGHT_TIPO_CAPS', () => {
 
 describe('isFreteJaPostado', () => {
   it('is false for the não-postado estados (no re-emit confirm needed)', () => {
-    expect(isFreteJaPostado('iniciado')).toBe(false);
-    expect(isFreteJaPostado('aguardandoNFe')).toBe(false);
-    expect(isFreteJaPostado('empacotado')).toBe(false);
-    expect(isFreteJaPostado('aguardandoAgendamento')).toBe(false);
+    expect(isFreteJaPostado(ESTADO_FRETE.iniciado)).toBe(false);
+    expect(isFreteJaPostado(ESTADO_FRETE.aguardandoNFe)).toBe(false);
+    expect(isFreteJaPostado(ESTADO_FRETE.empacotado)).toBe(false);
+    expect(isFreteJaPostado(ESTADO_FRETE.aguardandoAgendamento)).toBe(false);
   });
 
   it('is false for checkFinalizado (explicitly excluded by the Dart guard)', () => {
-    expect(isFreteJaPostado('checkFinalizado')).toBe(false);
+    expect(isFreteJaPostado(ESTADO_FRETE.checkFinalizado)).toBe(false);
   });
 
   it('is true once the frete is posted / in transit / terminal', () => {
-    expect(isFreteJaPostado('postado')).toBe(true);
-    expect(isFreteJaPostado('aguardandoPostagem')).toBe(true);
-    expect(isFreteJaPostado('aCaminho')).toBe(true);
-    expect(isFreteJaPostado('entregue')).toBe(true);
-    expect(isFreteJaPostado('cancelado')).toBe(true);
+    expect(isFreteJaPostado(ESTADO_FRETE.postado)).toBe(true);
+    expect(isFreteJaPostado(ESTADO_FRETE.aguardandoPostagem)).toBe(true);
+    expect(isFreteJaPostado(ESTADO_FRETE.aCaminho)).toBe(true);
+    expect(isFreteJaPostado(ESTADO_FRETE.entregue)).toBe(true);
+    expect(isFreteJaPostado(ESTADO_FRETE.cancelado)).toBe(true);
   });
 });
 
@@ -263,36 +264,36 @@ describe('isFreteJaPostado', () => {
  * estado has to be classified deliberately, not inherit `false` by default.
  */
 const PODE_AUTORIZAR: EstadoFrete[] = [
-  'iniciado',
-  'aguardandoAutorizacao',
-  'aguardandoNFe',
-  'aguardandoValidacaoTransporadora',
+  ESTADO_FRETE.iniciado,
+  ESTADO_FRETE.aguardandoAutorizacao,
+  ESTADO_FRETE.aguardandoNFe,
+  ESTADO_FRETE.aguardandoValidacaoTransporadora,
 ];
 
 const NAO_PODE_AUTORIZAR: EstadoFrete[] = [
-  'fulfillment',
-  'despachoAutorizado',
-  'aguardandoAgendamento',
-  'despachoNegado',
-  'emSeparacao',
-  'empacotado',
-  'aguardandoPostagem',
-  'checkFinalizado',
-  'postado',
-  'recebidoPelaTransportadora',
-  'aCaminho',
-  'tentandoRealizarEntrega',
-  'entregue',
-  'falhaNaEntrega',
-  'suspenso',
-  'enderecoNaoEncontrado',
-  'aCaminhoDoRemetente',
-  'devolvido',
-  'objetoExtraviado',
-  'cancelado',
-  'desconhecido',
-  'error',
-  'aguardandoRetirada',
+  ESTADO_FRETE.fulfillment,
+  ESTADO_FRETE.despachoAutorizado,
+  ESTADO_FRETE.aguardandoAgendamento,
+  ESTADO_FRETE.despachoNegado,
+  ESTADO_FRETE.emSeparacao,
+  ESTADO_FRETE.empacotado,
+  ESTADO_FRETE.aguardandoPostagem,
+  ESTADO_FRETE.checkFinalizado,
+  ESTADO_FRETE.postado,
+  ESTADO_FRETE.recebidoPelaTransportadora,
+  ESTADO_FRETE.aCaminho,
+  ESTADO_FRETE.tentandoRealizarEntrega,
+  ESTADO_FRETE.entregue,
+  ESTADO_FRETE.falhaNaEntrega,
+  ESTADO_FRETE.suspenso,
+  ESTADO_FRETE.enderecoNaoEncontrado,
+  ESTADO_FRETE.aCaminhoDoRemetente,
+  ESTADO_FRETE.devolvido,
+  ESTADO_FRETE.objetoExtraviado,
+  ESTADO_FRETE.cancelado,
+  ESTADO_FRETE.desconhecido,
+  ESTADO_FRETE.error,
+  ESTADO_FRETE.aguardandoRetirada,
 ];
 
 describe('ESTADOS_FRETE_PRE_AUTORIZACAO', () => {
@@ -320,15 +321,15 @@ describe('ESTADOS_FRETE_PRE_AUTORIZACAO', () => {
   it('excludes the estados that are progress past authorization', () => {
     // The exact regression #702 fixes: `!isFreteJaPostado(...)` said `true` for the
     // first four, so a payment erased warehouse progress.
-    expect(podeAutorizarDespacho('empacotado')).toBe(false);
-    expect(podeAutorizarDespacho('emSeparacao')).toBe(false);
-    expect(podeAutorizarDespacho('aguardandoAgendamento')).toBe(false);
-    expect(podeAutorizarDespacho('checkFinalizado')).toBe(false);
-    expect(podeAutorizarDespacho('despachoAutorizado')).toBe(false);
-    expect(podeAutorizarDespacho('despachoNegado')).toBe(false);
-    expect(podeAutorizarDespacho('desconhecido')).toBe(false);
-    expect(podeAutorizarDespacho('fulfillment')).toBe(false);
-    expect(podeAutorizarDespacho('postado')).toBe(false);
+    expect(podeAutorizarDespacho(ESTADO_FRETE.empacotado)).toBe(false);
+    expect(podeAutorizarDespacho(ESTADO_FRETE.emSeparacao)).toBe(false);
+    expect(podeAutorizarDespacho(ESTADO_FRETE.aguardandoAgendamento)).toBe(false);
+    expect(podeAutorizarDespacho(ESTADO_FRETE.checkFinalizado)).toBe(false);
+    expect(podeAutorizarDespacho(ESTADO_FRETE.despachoAutorizado)).toBe(false);
+    expect(podeAutorizarDespacho(ESTADO_FRETE.despachoNegado)).toBe(false);
+    expect(podeAutorizarDespacho(ESTADO_FRETE.desconhecido)).toBe(false);
+    expect(podeAutorizarDespacho(ESTADO_FRETE.fulfillment)).toBe(false);
+    expect(podeAutorizarDespacho(ESTADO_FRETE.postado)).toBe(false);
   });
 });
 

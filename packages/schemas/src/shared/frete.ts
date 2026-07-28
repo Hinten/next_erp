@@ -98,20 +98,55 @@ export const estadoFreteSchema = z
 export type EstadoFrete = z.infer<typeof estadoFreteSchema>;
 
 /**
+ * Named members of {@link estadoFreteSchema} — the ONLY way to write an
+ * `EstadoFrete` in code. Same rationale as `ESTADO_PEDIDO`; enforced by the
+ * `delfrance/prefer-schema-enum` lint rule.
+ */
+export const ESTADO_FRETE = {
+  fulfillment: 'fulfillment',
+  iniciado: 'iniciado',
+  aguardandoAutorizacao: 'aguardandoAutorizacao',
+  aguardandoNFe: 'aguardandoNFe',
+  aguardandoValidacaoTransporadora: 'aguardandoValidacaoTransporadora',
+  despachoAutorizado: 'despachoAutorizado',
+  aguardandoAgendamento: 'aguardandoAgendamento',
+  despachoNegado: 'despachoNegado',
+  emSeparacao: 'emSeparacao',
+  empacotado: 'empacotado',
+  aguardandoPostagem: 'aguardandoPostagem',
+  checkFinalizado: 'checkFinalizado',
+  postado: 'postado',
+  recebidoPelaTransportadora: 'recebidoPelaTransportadora',
+  aCaminho: 'aCaminho',
+  tentandoRealizarEntrega: 'tentandoRealizarEntrega',
+  entregue: 'entregue',
+  falhaNaEntrega: 'falhaNaEntrega',
+  suspenso: 'suspenso',
+  enderecoNaoEncontrado: 'enderecoNaoEncontrado',
+  aCaminhoDoRemetente: 'aCaminhoDoRemetente',
+  devolvido: 'devolvido',
+  objetoExtraviado: 'objetoExtraviado',
+  cancelado: 'cancelado',
+  desconhecido: 'desconhecido',
+  error: 'error',
+  aguardandoRetirada: 'aguardandoRetirada',
+} as const satisfies Record<string, EstadoFrete>;
+
+/**
  * Estados in which the frete has NOT yet been posted to the carrier — ported
  * from the Dart `naoPostado` list (`integracao_frete_base.dart`).
  */
-export const ESTADOS_FRETE_NAO_POSTADO: ReadonlySet<EstadoFrete> = new Set([
-  'iniciado',
-  'aguardandoAutorizacao',
-  'aguardandoNFe',
-  'aguardandoValidacaoTransporadora',
-  'despachoAutorizado',
-  'despachoNegado',
-  'emSeparacao',
-  'empacotado',
-  'desconhecido',
-  'aguardandoAgendamento',
+export const ESTADOS_FRETE_NAO_POSTADO: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
+  ESTADO_FRETE.iniciado,
+  ESTADO_FRETE.aguardandoAutorizacao,
+  ESTADO_FRETE.aguardandoNFe,
+  ESTADO_FRETE.aguardandoValidacaoTransporadora,
+  ESTADO_FRETE.despachoAutorizado,
+  ESTADO_FRETE.despachoNegado,
+  ESTADO_FRETE.emSeparacao,
+  ESTADO_FRETE.empacotado,
+  ESTADO_FRETE.desconhecido,
+  ESTADO_FRETE.aguardandoAgendamento,
 ]);
 
 /**
@@ -127,7 +162,7 @@ export const ESTADOS_FRETE_NAO_POSTADO: ReadonlySet<EstadoFrete> = new Set([
  * {@link ESTADOS_FRETE_PRE_AUTORIZACAO} for that question (#702).
  */
 export function isFreteJaPostado(estado: EstadoFrete): boolean {
-  return estado !== 'checkFinalizado' && !ESTADOS_FRETE_NAO_POSTADO.has(estado);
+  return estado !== ESTADO_FRETE.checkFinalizado && !ESTADOS_FRETE_NAO_POSTADO.has(estado);
 }
 
 /**
@@ -152,11 +187,11 @@ export function isFreteJaPostado(estado: EstadoFrete): boolean {
  * unit tests), so authorizing dispatch can never un-remove stock through
  * `efeitoEstoquePedido`.
  */
-export const ESTADOS_FRETE_PRE_AUTORIZACAO: ReadonlySet<EstadoFrete> = new Set([
-  'iniciado',
-  'aguardandoAutorizacao',
-  'aguardandoNFe',
-  'aguardandoValidacaoTransporadora',
+export const ESTADOS_FRETE_PRE_AUTORIZACAO: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
+  ESTADO_FRETE.iniciado,
+  ESTADO_FRETE.aguardandoAutorizacao,
+  ESTADO_FRETE.aguardandoNFe,
+  ESTADO_FRETE.aguardandoValidacaoTransporadora,
 ]);
 
 /**
@@ -176,22 +211,22 @@ export function podeAutorizarDespacho(estado: EstadoFrete): boolean {
  * the failure/return tail (the goods are out of the warehouse either way).
  * Consumed by the pedido→estoque sync (`efeitoEstoquePedido`).
  */
-export const ESTADOS_FRETE_REMOVE_ESTOQUE: ReadonlySet<EstadoFrete> = new Set([
-  'empacotado',
-  'aguardandoPostagem',
-  'checkFinalizado',
-  'postado',
-  'recebidoPelaTransportadora',
-  'aCaminho',
-  'tentandoRealizarEntrega',
-  'entregue',
-  'falhaNaEntrega',
-  'suspenso',
-  'enderecoNaoEncontrado',
-  'aCaminhoDoRemetente',
-  'devolvido',
-  'objetoExtraviado',
-  'aguardandoRetirada',
+export const ESTADOS_FRETE_REMOVE_ESTOQUE: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
+  ESTADO_FRETE.empacotado,
+  ESTADO_FRETE.aguardandoPostagem,
+  ESTADO_FRETE.checkFinalizado,
+  ESTADO_FRETE.postado,
+  ESTADO_FRETE.recebidoPelaTransportadora,
+  ESTADO_FRETE.aCaminho,
+  ESTADO_FRETE.tentandoRealizarEntrega,
+  ESTADO_FRETE.entregue,
+  ESTADO_FRETE.falhaNaEntrega,
+  ESTADO_FRETE.suspenso,
+  ESTADO_FRETE.enderecoNaoEncontrado,
+  ESTADO_FRETE.aCaminhoDoRemetente,
+  ESTADO_FRETE.devolvido,
+  ESTADO_FRETE.objetoExtraviado,
+  ESTADO_FRETE.aguardandoRetirada,
 ]);
 
 /**
@@ -199,9 +234,9 @@ export const ESTADOS_FRETE_REMOVE_ESTOQUE: ReadonlySet<EstadoFrete> = new Set([
  * `ignorarRemocaoDeEstoque` pair (`integracao_frete_base.dart:201`): an unknown
  * or errored freight status is noise, not a shipping event.
  */
-export const ESTADOS_FRETE_IGNORAR_REMOCAO: ReadonlySet<EstadoFrete> = new Set([
-  'desconhecido',
-  'error',
+export const ESTADOS_FRETE_IGNORAR_REMOCAO: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
+  ESTADO_FRETE.desconhecido,
+  ESTADO_FRETE.error,
 ]);
 
 /* -------------------------------------------------------------------------- */

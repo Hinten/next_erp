@@ -74,6 +74,7 @@ export * from './produto';
 export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './categoria';
 
 export {
+  ESTADO_FRETE,
   ESTADO_FRETE_LABELS,
   ESTADOS_FRETE_NAO_POSTADO,
   ESTADOS_FRETE_PRE_AUTORIZACAO,

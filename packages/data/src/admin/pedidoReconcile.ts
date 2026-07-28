@@ -6,6 +6,7 @@ import type {
   Transaction,
 } from 'firebase-admin/firestore';
 import {
+  ESTADO_FRETE,
   isFreteMarketplaceOwned,
   nowMicros,
   podeAutorizarDespacho,
@@ -109,7 +110,7 @@ function applyEstadoTransition(
         freteRecord.externalOptionIntegracao as string | null | undefined,
       );
       if (podeAutorizar && !marketplaceOwned) {
-        pedidoPatch.freteInicial = { ...freteRecord, estado: 'despachoAutorizado' };
+        pedidoPatch.freteInicial = { ...freteRecord, estado: ESTADO_FRETE.despachoAutorizado };
       }
     }
   }

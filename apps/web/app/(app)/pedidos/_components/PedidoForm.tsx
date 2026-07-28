@@ -9,6 +9,7 @@ import { notifications } from '@mantine/notifications';
 import { IconExclamationCircle, IconLock } from '@tabler/icons-react';
 import { PERM } from '@delfrance/auth';
 import {
+  ESTADO_PEDIDO,
   derivePedidoTotals,
   ESTADO_NFE,
   ESTADO_NFE_LABELS,
@@ -89,7 +90,7 @@ const EMPTY_DEFAULTS: PedidoFormState = {
   ehSaidaOriginal: null,
   ehSaida: true,
   hasUserInteraction: null,
-  estado: 'iniciado',
+  estado: ESTADO_PEDIDO.iniciado,
   numero: null,
   vendedorPedidoOuterRef: null,
   // null (not undefined): Firestore's addDoc rejects `undefined` field values
@@ -395,7 +396,7 @@ export function PedidoForm({
   // (async, racy); the reactive `useSnapshot` here keeps the lock in step live.
   // `liveEstado` (the persisted snapshot estado) is the right source — matching
   // the legacy "loaded estado" — and avoids subscribing the whole form to a watch.
-  const estadoNow: EstadoPedido = liveEstado ?? 'iniciado';
+  const estadoNow: EstadoPedido = liveEstado ?? ESTADO_PEDIDO.iniciado;
   const nfeQuery = useMemo(
     () =>
       pedidoId

@@ -4,7 +4,12 @@ import { Anchor, Badge, Button, Group, Stack, Text } from '@mantine/core';
 import Link from 'next/link';
 import type { Route } from 'next';
 import { IconExternalLink, IconReload } from '@tabler/icons-react';
-import { ESTADO_FRETE_LABELS, isFreteJaPostado, type FreteDoPedido } from '@delfrance/schemas';
+import {
+  ESTADO_FRETE,
+  ESTADO_FRETE_LABELS,
+  isFreteJaPostado,
+  type FreteDoPedido,
+} from '@delfrance/schemas';
 
 /**
  * Read-only frete summary for the loaded pedido. Deliberately NOT an editor
@@ -38,7 +43,9 @@ export function FreteSummary({
         ) : (
           <Badge
             variant="light"
-            color={frete.estado === 'checkFinalizado' ? 'green' : posted ? 'blue' : 'gray'}
+            color={
+              frete.estado === ESTADO_FRETE.checkFinalizado ? 'green' : posted ? 'blue' : 'gray'
+            }
           >
             {ESTADO_FRETE_LABELS[frete.estado] ?? frete.estado}
           </Badge>

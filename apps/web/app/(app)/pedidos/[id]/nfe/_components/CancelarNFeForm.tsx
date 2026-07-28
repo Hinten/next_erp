@@ -5,7 +5,16 @@
  * aprovada. Collects the SEFAZ-required justification (`xJust`, 15–255) and
  * POSTs to `/api/nfe/cancelar` for the specific `nfeId`. On success the NF-e
  * flips to `cancelada` on its own (the screen subscribes to the nfev4 doc via
- * `onSnapshot`) and a new audit row appears, so we just toast.
+ * `onSnapshot`) and a new audit row appears, so we just toast — then hand off to
+ * `onCancelamentoConcluido`, which prompts the operator to also cancel the
+ * pedido (#74, legacy `cancelamentoNFe.dart:229-261`).
+ *
+ * That prompt deliberately lives on the PAGE, not here: this form only renders
+ * while the NF-e is aprovada, and the cancelamento endpoint persists
+ * `estado: 'c'` before it answers — so the screen's `onSnapshot` unmounts this
+ * component within milliseconds of `cancelar()` resolving. A dialog owned here
+ * would be torn down before the operator ever saw it. See
+ * `useCancelarPedidoPrompt`.
  */
 import { useState } from 'react';
 import { Alert, Button, Group, Stack, Textarea } from '@mantine/core';
@@ -27,9 +36,20 @@ export interface CancelarNFeFormProps {
   readonly pedidoId: string;
   readonly nfeId: string;
   readonly numero?: number | null;
+  /**
+   * Awaited after — and only after — a homologated cancelamento. Optional and
+   * best-effort: a failure in the follow-up must never read as the NF-e
+   * cancelamento having failed.
+   */
+  readonly onCancelamentoConcluido?: () => Promise<void>;
 }
 
-export function CancelarNFeForm({ pedidoId, nfeId, numero }: CancelarNFeFormProps) {
+export function CancelarNFeForm({
+  pedidoId,
+  nfeId,
+  numero,
+  onCancelamentoConcluido,
+}: CancelarNFeFormProps) {
   const client = useNFeClient();
   const [xJust, setXJust] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -46,8 +66,10 @@ export function CancelarNFeForm({ pedidoId, nfeId, numero }: CancelarNFeFormProp
     }
     if (invalid) return;
     setSubmitting(true);
+    let cancelamentoOk = false;
     try {
       await client.cancelar(pedidoId, nfeId, trimmed);
+      cancelamentoOk = true;
       notifications.show({
         color: 'teal',
         title: 'NF-e cancelada',
@@ -68,6 +90,10 @@ export function CancelarNFeForm({ pedidoId, nfeId, numero }: CancelarNFeFormProp
     } finally {
       setSubmitting(false);
     }
+    // Independent of the try/catch above so a follow-up failure can never be
+    // mistaken for (or roll back) the already-reported NF-e cancelamento. The
+    // callback outlives this component — see the header note.
+    if (cancelamentoOk) await onCancelamentoConcluido?.();
   }
 
   return (

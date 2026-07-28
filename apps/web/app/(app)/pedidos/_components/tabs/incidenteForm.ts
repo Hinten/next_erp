@@ -1,4 +1,5 @@
 import {
+  ESTADO_FRETE,
   TIPO_INCIDENTE,
   type Incidente,
   type OrigemIncidente,
@@ -68,7 +69,7 @@ export function formFromIncidente(inc: Incidente): IncidenteFormState {
  */
 export function isResolucaoLocked(base: Incidente | null): boolean {
   const frete = base?.resolucao?.frete ?? null;
-  return frete != null && frete.estado !== 'iniciado';
+  return frete != null && frete.estado !== ESTADO_FRETE.iniciado;
 }
 
 /** Trim, then map an empty (or whitespace-only) string to null. */

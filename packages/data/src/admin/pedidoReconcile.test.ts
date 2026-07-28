@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Firestore as FirebaseAdminFirestore } from 'firebase-admin/firestore';
 import {
+  ESTADO_FRETE,
   STATUS_PAGAMENTO,
   estadoFreteSchema,
   pagamentoSchema,
@@ -125,10 +126,10 @@ const T_NEW = 1_700_000_002_000_000;
  * warehouse estado.
  */
 const FLIPPABLE: readonly EstadoFrete[] = [
-  'iniciado',
-  'aguardandoAutorizacao',
-  'aguardandoNFe',
-  'aguardandoValidacaoTransporadora',
+  ESTADO_FRETE.iniciado,
+  ESTADO_FRETE.aguardandoAutorizacao,
+  ESTADO_FRETE.aguardandoNFe,
+  ESTADO_FRETE.aguardandoValidacaoTransporadora,
 ];
 
 describe('reconcilePedidoFromPagamento', () => {
