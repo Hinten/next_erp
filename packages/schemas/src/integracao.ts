@@ -346,16 +346,10 @@ export const integracaoSchema = z
     filialIntegracaoPedidoOuterRef: outerRefSchema.nullable().default(null),
     tabelaNormalOuterRef: outerRefSchema.nullable().default(null),
     tabelaPromocionalOuterRef: outerRefSchema.nullable().default(null),
-    /**
-     * Mercado Livre — Mercado-Shops-only price table refs
-     * (`ContaMercadoLivre.tabelaMercadoShopsOuterRef` /
-     * `.tabelaMercadoShopsPromocionalOuterRef`, models.dart). A SECOND price-
-     * table pair distinct from `tabelaNormalOuterRef` / `tabelaPromocionalOuterRef`
-     * above — these two apply only to the Mercado Shops storefront, not the
-     * marketplace listing.
-     */
-    tabelaMercadoShopsOuterRef: outerRefSchema.nullable().default(null),
-    tabelaMercadoShopsPromocionalOuterRef: outerRefSchema.nullable().default(null),
+    // The legacy `tabelaMercadoShopsOuterRef` / `tabelaMercadoShopsPromocionalOuterRef`
+    // pair is deliberately NOT modeled: Mercado Shops was discontinued by ML on
+    // 2025-12-31, and neither app ever consumed the refs. Legacy docs still
+    // carrying them ride `.passthrough()` untouched (dual-run safe).
     operacaoOuterRef: outerRefSchema.nullable().default(null),
     operacaoDevolucaoOuterRef: outerRefSchema.nullable().default(null),
     depositoOuterRef: outerRefSchema.nullable().default(null),

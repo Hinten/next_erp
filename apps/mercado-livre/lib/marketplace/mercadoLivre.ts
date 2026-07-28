@@ -133,10 +133,9 @@ export async function loadMercadoLivreContext(
   const oauthConfig = mercadoLivreOAuthConfig();
   const store = createTokenDuravelStore(db, integracaoId);
 
-  // The per-account singularities (ML `user_id`, the Mercado-Shops-only price
-  // table refs) are now typed fields on `integracaoSchema` (#289) rather than
-  // opaque passthrough. Pass the parsed values through; the plugin reads what
-  // it needs.
+  // The per-account singularity (ML `user_id`) is a typed field on
+  // `integracaoSchema` (#289) rather than opaque passthrough. Pass the parsed
+  // value through; the plugin reads what it needs.
   const account: Readonly<Record<string, unknown>> = mercadoLivreAccountBag(conta);
 
   return {
@@ -164,13 +163,12 @@ export async function loadMercadoLivreContext(
 /**
  * The ML-relevant slice of an `integracao` account, typed off
  * `integracaoSchema` (#289) rather than an ad-hoc `Record<string, unknown>`
- * read: `user_id` (the ML seller id) plus the Mercado-Shops-only price table
- * refs, distinct from the shared `tabelaNormal/PromocionalOuterRef`.
+ * read: `user_id` (the ML seller id). The Mercado-Shops price-table refs the
+ * bag used to carry were dropped with the schema fields (Mercado Shops was
+ * discontinued 2025-12-31; nothing ever consumed them).
  */
 export function mercadoLivreAccountBag(conta: Integracao): Readonly<Record<string, unknown>> {
   return {
     user_id: conta.user_id,
-    tabelaMercadoShopsOuterRef: conta.tabelaMercadoShopsOuterRef,
-    tabelaMercadoShopsPromocionalOuterRef: conta.tabelaMercadoShopsPromocionalOuterRef,
   };
 }
