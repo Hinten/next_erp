@@ -18,13 +18,17 @@ import type { CollectionMetadata } from './types';
  * the fields only make sense together): after a conta's incremental discovery
  * + enqueues ALL succeed, the sweep merges `{ cursorUs: toUs, lastSweepAtUs,
  * lastError: null }`; the daily sweep merges `{ lastDailyAtUs, lastError: null }`
- * WITHOUT touching `cursorUs`. On a contained per-conta error either sweep
- * merges `{ lastError, lastErrorAtUs }` without advancing the cursor, so the
- * next tick retries the same window (re-covering is harmless — the re-run
- * recomputes quantities at ITS OWN sweep time and enqueues fresh payloads,
- * which the send handler transmits verbatim). The send-task handler owns the 429
- * pair: on a rate-limit it merges `{ pausedUntilUs, pauseCount+1 }` and both
- * the pause gate and later sweeps honour it per conta.
+ * WITHOUT touching `cursorUs`. A TRUNCATED sweep (page or task cap) merges
+ * `{ continuacao }` instead — the frozen window + keyset position the NEXT tick
+ * resumes — and leaves `cursorUs` alone until that continuation drains. On a
+ * contained per-conta error either sweep merges `{ lastError, lastErrorAtUs }`
+ * without advancing the cursor, so the next tick retries the same window
+ * (re-covering is harmless — the re-run recomputes quantities at ITS OWN sweep
+ * time and enqueues fresh payloads, which the send handler transmits verbatim).
+ * The send-task handler owns the 429 pair: on a rate-limit it merges
+ * `{ pausedUntilUs, pauseCount+1 }` and both the pause gate and later sweeps
+ * honour it per conta (a paused conta is skipped whole, cursor + continuacao
+ * untouched).
  *
  * Admin-only / default-deny: bare `{ schema, meta }` (perms `0n`), NOT
  * registered in `ALL_DOMAINS` (mirrors `backfillPedidosMercadoLivre` /
@@ -60,6 +64,33 @@ export const estoqueMercadoLivreSyncSchema = z.object({
   pausedUntilUs: microsSinceEpoch().nullable().default(null),
   /** How many 429 pauses this conta has accumulated (observability counter). */
   pauseCount: z.number().int().default(0),
+  /**
+   * The frozen keyset position + window of a **TRUNCATED** sweep. A sweep that
+   * hits the page cap or the task cap stores where it stopped
+   * (`afterAnchorId`) together with the window it was running
+   * (`changedSinceMs` / `vendaCutoffUs`) and the ORIGINAL sweep's start
+   * (`startedAtUs`); the next tick **RESUMES that same sweep** — same window,
+   * same filter mode (`vendaCutoffUs == null` ⇒ daily semantics: the pedidos
+   * probe was skipped, so nothing reads the sales flag) — instead of
+   * restarting page 1 of a re-derived window, which is how a conta with a
+   * standing backlog would otherwise never reach its tail. Cleared (`null`)
+   * the moment the continuation drains; an incremental continuation then
+   * advances `cursorUs` to `startedAtUs`, because the frozen window is covered
+   * exactly up to the original sweep's start.
+   */
+  continuacao: z
+    .object({
+      /** Keyset cursor: THE query resumes after this produto anchor id. */
+      afterAnchorId: z.string().min(1),
+      /** The frozen window start (ms since epoch) the truncated sweep used. */
+      changedSinceMs: z.number().int(),
+      /** The frozen sales-probe lower bound (µs) — null ⇒ daily semantics. */
+      vendaCutoffUs: z.number().int().nullable(),
+      /** When the ORIGINAL (pre-truncation) sweep started (µs). */
+      startedAtUs: z.number().int(),
+    })
+    .nullable()
+    .default(null),
 });
 export type EstoqueMercadoLivreSync = z.infer<typeof estoqueMercadoLivreSyncSchema>;
 
