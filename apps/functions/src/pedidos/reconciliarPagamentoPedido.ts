@@ -42,9 +42,13 @@ export const reconciliarPagamentoPedido = onCall(async (request) => {
   }
 
   try {
+    // No `usuarioRef`: the historicoEstadoPedido row comes from the
+    // `onPedidoEstadoChanged` trigger, which derives the actor from the pedido
+    // write's auth context. This reconcile writes via the Admin SDK, so the row
+    // records a null usuário — an automatic, payment-driven transition is
+    // system-caused. The operator is still captured in the log line below.
     const result = await reconcilePedidoEstado(getDb(), {
       pedidoId: parsed.data.pedidoId,
-      usuarioRef: `documents/usuarios/${request.auth.uid}`,
     });
     logger.info(
       `reconciliarPagamentoPedido: ${parsed.data.pedidoId} → ${result.transition ?? '(sem transição)'} (por ${request.auth.uid})`,

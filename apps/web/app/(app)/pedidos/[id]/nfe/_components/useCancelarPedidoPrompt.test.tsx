@@ -11,9 +11,6 @@ const { notifShowMock, confirmMock, cancelarPedidoMock } = vi.hoisted(() => ({
 vi.mock('@mantine/notifications', () => ({
   notifications: { show: notifShowMock },
 }));
-vi.mock('@/lib/auth/useAuth', () => ({
-  useAuth: () => ({ user: { uid: 'u1' } }),
-}));
 vi.mock('@/lib/pedidos/clientPort', () => ({
   createClientPedidoPort: vi.fn(() => ({})),
 }));
@@ -34,7 +31,7 @@ afterEach(() => {
 });
 
 describe('useCancelarPedidoPrompt', () => {
-  it('confirming the prompt cancels the pedido as the current user', async () => {
+  it('confirming the prompt cancels the pedido', async () => {
     confirmMock.mockResolvedValue(true);
     cancelarPedidoMock.mockResolvedValue(true);
     const { result } = renderHook(() => useCancelarPedidoPrompt());
@@ -45,10 +42,9 @@ describe('useCancelarPedidoPrompt', () => {
       title: 'Cancelar pedido?',
       message: 'Também deseja cancelar o pedido?',
     });
-    expect(cancelarPedidoMock).toHaveBeenCalledWith(expect.anything(), {
-      pedidoId: 'PED-1',
-      usuarioRef: 'documents/usuarios/u1',
-    });
+    // No usuarioRef: the onPedidoEstadoChanged trigger derives the actor from
+    // this write's own auth context.
+    expect(cancelarPedidoMock).toHaveBeenCalledWith(expect.anything(), { pedidoId: 'PED-1' });
   });
 
   it('declining leaves the pedido untouched', async () => {

@@ -127,8 +127,9 @@ export function PagamentosSection({
 
   // Auto-estado transition (legacy `cadastroPedidoProvider`): after every pagamento
   // mutation the server-owned `reconciliarPagamentoPedido` callable re-sums the
-  // payments and advances/downgrades the pedido `estado` (→ pago / aguardando) plus
-  // appends a history row. It reads the pedido AND every pagamento in ONE Admin-SDK
+  // payments and advances/downgrades the pedido `estado` (→ pago / aguardando). The
+  // `historicoEstadoPedido` row follows from the `onPedidoEstadoChanged` trigger
+  // observing that write. It reads the pedido AND every pagamento in ONE Admin-SDK
   // transaction (#308) — the client SDK can't query inside a transaction, so the old
   // client-side sum raced across tabs/sessions.
   //

@@ -16,11 +16,7 @@ import {
 } from '@delfrance/schemas';
 
 import { nextPedidoEstado } from '../pedido/usecases';
-import {
-  historicoEstadoPedidoCollection,
-  pagamentoCollection,
-  pedidoCollection,
-} from './collections';
+import { pagamentoCollection, pedidoCollection } from './collections';
 
 /**
  * Thrown when the reconcile targets a pedido that no longer exists. The webhook
@@ -61,20 +57,22 @@ const GATEWAY_OWNED = [
 /**
  * Shared tail of both admin reconciles: given the pedido's already-read
  * snapshot and the (already computed) `valorPago`, applies {@link
- * nextPedidoEstado} and — only on a transition — writes the new `estado`,
+ * nextPedidoEstado} and — only on a transition — writes the new `estado` and
  * flips `freteInicial.estado` to `despachoAutorizado` (never regressing an
- * already-posted frete), and appends a `historicoEstadoPedido` audit row.
- * Returns the new estado, or `null` when no transition applies.
+ * already-posted frete). Returns the new estado, or `null` when no transition
+ * applies.
+ *
+ * The `historicoEstadoPedido` audit row is NOT written here: the
+ * `onPedidoEstadoChanged` trigger observes the pedido write below and records
+ * the transition. Both callers run on the Admin SDK, so that row carries a null
+ * usuário — an automatic, payment-driven transition has no end user behind it.
  */
-async function applyEstadoTransition(
+function applyEstadoTransition(
   tx: Transaction,
-  db: FirebaseAdminFirestore,
   pedidoRef: DocumentReference,
-  pedidoId: string,
   pedidoSnap: DocumentSnapshot,
   valorPago: number,
-  usuarioRef: string | null,
-): Promise<EstadoPedido | null> {
+): EstadoPedido | null {
   const estado = pedidoSnap.get('estado') as EstadoPedido;
   const total =
     typeof pedidoSnap.get('valorCobrado') === 'number'
@@ -100,19 +98,6 @@ async function applyEstadoTransition(
     }
   }
   tx.update(pedidoRef, pedidoPatch);
-
-  // Append a `historicoEstadoPedido` audit row — same shape as
-  // `buildEstadoHistoryOp` (`../pedido/usecases`); `data` is a µs stamp.
-  const historyId = historicoEstadoPedidoCollection.newDocId(db, { pedidoId });
-  const historyRef = historicoEstadoPedidoCollection.docRef(db, { pedidoId }, historyId);
-  tx.set(
-    historyRef,
-    historicoEstadoPedidoCollection.parse({
-      estado: next.estado,
-      usuarioHistoricoEstadosPedidoOuterRef: usuarioRef,
-      data: nowMicros(),
-    }) as DocumentData,
-  );
 
   return next.estado;
 }
@@ -146,14 +131,18 @@ async function applyEstadoTransition(
  *  6. applies {@link nextPedidoEstado} (which gates on the payment-driven
  *     estados) and, ONLY on a transition, writes the new `estado`, flips
  *     `freteInicial.estado` to `despachoAutorizado` (never regressing an
- *     already-posted frete), appends a `historicoEstadoPedido` audit row, and
- *     stamps the pedido `ultimaModificacao` (µs).
+ *     already-posted frete — same rule as the client reconcile) and stamps the
+ *     pedido `ultimaModificacao` (µs).
+ *
+ * The `historicoEstadoPedido` audit row for a transition is written by the
+ * `onPedidoEstadoChanged` trigger observing the pedido write, with a null
+ * usuário — this path runs on the Admin SDK and has no end user behind it.
  *
  * Returns the new estado (or `null` when the pagamento was written but no estado
  * transition applies), plus whether the delivery was skipped as stale.
  *
- * Datetime units: `ultimaModificacao` / `dataCadastro` / the history `data` are
- * all MICROSECONDS since epoch (`nowMicros()`), the pagamento/pedido standard.
+ * Datetime units: `ultimaModificacao` / `dataCadastro` are MICROSECONDS since
+ * epoch (`nowMicros()`), the pagamento/pedido standard.
  */
 export async function reconcilePedidoFromPagamento(
   db: FirebaseAdminFirestore,
@@ -161,11 +150,9 @@ export async function reconcilePedidoFromPagamento(
     pedidoId: string;
     pagamentoId: string;
     pagamento: Pagamento;
-    usuarioRef?: string | null;
   },
 ): Promise<{ transition: EstadoPedido | null; skippedStale: boolean }> {
   const { pedidoId, pagamentoId, pagamento } = input;
-  const usuarioRef = input.usuarioRef ?? null;
 
   return db.runTransaction(async (tx) => {
     const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
@@ -227,15 +214,7 @@ export async function reconcilePedidoFromPagamento(
     });
     const valorPago = sumPagamentosPagos(paymentsForSum);
 
-    const transition = await applyEstadoTransition(
-      tx,
-      db,
-      pedidoRef,
-      pedidoId,
-      pedidoSnap,
-      valorPago,
-      usuarioRef,
-    );
+    const transition = applyEstadoTransition(tx, pedidoRef, pedidoSnap, valorPago);
     return { transition, skippedStale: false };
   });
 }
@@ -262,13 +241,18 @@ export async function reconcilePedidoFromPagamento(
  * happen at all (deploy is a manual, coordinated step; the e2e that exercises
  * this exact flow, `apps/web/e2e/pedidos-pagamento.vendas.e2e.spec.ts`, hits
  * real staging Cloud Functions).
+ *
+ * Takes NO `usuarioRef`: the `historicoEstadoPedido` row is written by the
+ * `onPedidoEstadoChanged` trigger from the pedido write's auth context, and this
+ * runs on the Admin SDK — so the transition is recorded with a null usuário even
+ * though the calling operator is known to the callable. That is deliberate: an
+ * automatic, payment-driven transition is system-caused, not user-caused.
  */
 export async function reconcilePedidoEstado(
   db: FirebaseAdminFirestore,
-  input: { pedidoId: string; usuarioRef?: string | null },
+  input: { pedidoId: string },
 ): Promise<{ transition: EstadoPedido | null }> {
   const { pedidoId } = input;
-  const usuarioRef = input.usuarioRef ?? null;
 
   return db.runTransaction(async (tx) => {
     const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
@@ -283,15 +267,7 @@ export async function reconcilePedidoEstado(
       })),
     );
 
-    const transition = await applyEstadoTransition(
-      tx,
-      db,
-      pedidoRef,
-      pedidoId,
-      pedidoSnap,
-      valorPago,
-      usuarioRef,
-    );
+    const transition = applyEstadoTransition(tx, pedidoRef, pedidoSnap, valorPago);
     return { transition };
   });
 }

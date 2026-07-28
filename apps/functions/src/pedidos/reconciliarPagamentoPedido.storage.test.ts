@@ -31,6 +31,33 @@ async function historicos(db: Firestore, pedidoId: string) {
 }
 
 /**
+ * The `historicoEstadoPedido` trail is no longer written by the reconcile: the
+ * `onPedidoEstadoChanged` trigger observes the pedido write and appends it
+ * asynchronously, so the rows land AFTER `reconcilePedidoEstado` resolves. Poll
+ * until the expected estado shows up.
+ *
+ * Note the trail also carries an OPENING row for the estado `seedPedido` created
+ * the pedido with — the trigger records creates too — so assertions here count
+ * rows of a given estado rather than the whole trail.
+ */
+async function waitForEstadoRow(
+  db: Firestore,
+  pedidoId: string,
+  estado: string,
+  timeoutMs = 20_000,
+): Promise<Array<Record<string, unknown>>> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const trail = await historicos(db, pedidoId);
+    if (trail.some((r) => r.estado === estado)) return trail;
+    if (Date.now() > deadline) {
+      throw new Error(`timed out waiting for a '${estado}' historicoEstadoPedido row`);
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+/**
  * Seed one pedido + its pagamentos with plain Admin-SDK writes (deliberately
  * NOT through the collection handles the code under test uses). The pedido id
  * is unique per call so tests never interfere.
@@ -69,10 +96,7 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
       ],
     );
 
-    const result = await reconcilePedidoEstado(db, {
-      pedidoId,
-      usuarioRef: 'documents/usuarios/u1',
-    });
+    const result = await reconcilePedidoEstado(db, { pedidoId });
 
     expect(result).toEqual({ transition: 'pago' });
 
@@ -80,13 +104,15 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
     expect(pedido.estado).toBe('pago');
     expect(pedido.freteInicial).toEqual({ estado: 'despachoAutorizado', codRastreio: null });
 
-    const trail = await historicos(db, pedidoId);
-    expect(trail).toHaveLength(1);
-    expect(trail[0]).toMatchObject({
-      estado: 'pago',
-      usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
+    // The trigger records the transition. Exactly one `pago` row, and its usuário
+    // is null: this reconcile runs on the Admin SDK, so there is no end user
+    // behind the write for the trigger's auth context to resolve.
+    const trail = await waitForEstadoRow(db, pedidoId, 'pago');
+    expect(trail.filter((r) => r.estado === 'pago')).toHaveLength(1);
+    expect(trail.find((r) => r.estado === 'pago')).toMatchObject({
+      usuarioHistoricoEstadosPedidoOuterRef: null,
     });
-  });
+  }, 60_000);
 
   it('two concurrent reconciles settle on one consistent estado and write one history row (#308)', async () => {
     const db = getDb();
@@ -108,18 +134,19 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
     // `nextPedidoEstado` returns null for an already-`pago` fully-paid pedido,
     // and it commits nothing — hence exactly one history row.
     const resultados = await Promise.all([
-      reconcilePedidoEstado(db, { pedidoId, usuarioRef: 'documents/usuarios/u1' }),
-      reconcilePedidoEstado(db, { pedidoId, usuarioRef: 'documents/usuarios/u2' }),
+      reconcilePedidoEstado(db, { pedidoId }),
+      reconcilePedidoEstado(db, { pedidoId }),
     ]);
 
     // Exactly one transitioned; the other was a clean no-op.
     expect(resultados.map((r) => r.transition).filter((t) => t !== null)).toEqual(['pago']);
     expect((await pedidoRef(db, pedidoId).get()).data()!.estado).toBe('pago');
 
-    const trail = await historicos(db, pedidoId);
-    expect(trail).toHaveLength(1);
-    expect(trail[0]).toMatchObject({ estado: 'pago' });
-  });
+    // …and the trail agrees: ONE `pago` row, not two. The loser committed no
+    // pedido write, so the trigger had nothing to record for it.
+    const trail = await waitForEstadoRow(db, pedidoId, 'pago');
+    expect(trail.filter((r) => r.estado === 'pago')).toHaveLength(1);
+  }, 60_000);
 
   it('throws PedidoReconcileNotFoundError against a real missing pedido', async () => {
     const db = getDb();

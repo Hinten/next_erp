@@ -165,48 +165,13 @@ export async function savePedido(
 }
 
 // ---------------------------------------------------------------------------
-// Estado history (legacy `HistoricoEstadosPedido` write on estado change)
+// Estado history
 // ---------------------------------------------------------------------------
-
-const HISTORICO_ESTADO_PATH = (pedidoId: string, docId: string): string =>
-  `pedidos/${pedidoId}/historicoEstadoPedido/${docId}`;
-
-/**
- * Build one `historicoEstadoPedido` set-op recording a pedido's new `estado` and
- * who set it — mirror of the legacy `Pedido.save()` history write
- * (`models.dart:3838`). `data` is a µs-epoch stamp; `usuarioRef` is the
- * `documents/usuarios/<uid>` outer-ref string (null when unknown).
- */
-export function buildEstadoHistoryOp(
-  port: PedidoDataPort,
-  pedidoId: string,
-  estado: EstadoPedido,
-  usuarioRef: string | null,
-): PedidoWriteOp {
-  return {
-    type: 'set',
-    path: HISTORICO_ESTADO_PATH(pedidoId, port.newId()),
-    data: {
-      estado,
-      usuarioHistoricoEstadosPedidoOuterRef: usuarioRef,
-      data: port.now(),
-    },
-  };
-}
-
-/**
- * Append a `historicoEstadoPedido` audit row for a manual estado change. The
- * editor calls this AFTER the pedido doc save committed the new `estado`, so the
- * history reflects what was persisted; a future MCP agent calls it the same way.
- */
-export async function recordEstadoChange(
-  port: PedidoDataPort,
-  args: { pedidoId: string; estado: EstadoPedido; usuarioRef?: string | null },
-): Promise<void> {
-  await port.commit([
-    buildEstadoHistoryOp(port, args.pedidoId, args.estado, args.usuarioRef ?? null),
-  ]);
-}
+// There is deliberately NO history helper here. `historicoEstadoPedido` rows are
+// written exclusively by the `onPedidoEstadoChanged` Cloud Function, which
+// observes every `pedidos/{pedidoId}` write — so any code path that changes
+// `estado` is covered automatically and none may append rows itself (the rules
+// deny client writes to that subcollection).
 
 // ---------------------------------------------------------------------------
 // Incidentes (pedidos/{id}/incidentes subcollection CRUD)
@@ -381,14 +346,19 @@ export function nextPedidoEstado(
  * pedido?" prompt shown after an NF-e cancelamento (#74, legacy
  * `cancelamentoNFe.dart:229-261`). Sets `estado: 'cancelado'` unconditionally
  * (no terminal-state gate: the operator explicitly chose this, unlike the
- * payment-driven server reconcile in `../admin/pedidoReconcile`) and appends a
- * `historicoEstadoPedido` row. Idempotent: a no-op (no doc write, no history
- * row) when the pedido is already `cancelado` or missing. Returns whether the
- * estado actually changed.
+ * payment-driven server reconcile in `../admin/pedidoReconcile`). Idempotent:
+ * a no-op when the pedido is already `cancelado` or missing. Returns whether
+ * the estado actually changed.
+ *
+ * Writes ONLY the pedido doc. The `historicoEstadoPedido` row is appended by
+ * the `onPedidoEstadoChanged` trigger, which observes this very write and
+ * derives the actor from its auth context — so no `usuarioRef` is threaded
+ * through here, and appending a row by hand would now be denied by the rules
+ * (`meta.serverOwned`).
  */
 export async function cancelarPedido(
   port: PedidoDataPort,
-  args: { pedidoId: string; usuarioRef?: string | null },
+  args: { pedidoId: string },
 ): Promise<boolean> {
   let changed = false;
   await port.updatePedido(args.pedidoId, (current) => {
@@ -399,10 +369,5 @@ export async function cancelarPedido(
     changed = true;
     return { estado: ESTADO_PEDIDO.cancelado, ultimaModificacao: port.now() };
   });
-  if (changed) {
-    await port.commit([
-      buildEstadoHistoryOp(port, args.pedidoId, ESTADO_PEDIDO.cancelado, args.usuarioRef ?? null),
-    ]);
-  }
   return changed;
 }

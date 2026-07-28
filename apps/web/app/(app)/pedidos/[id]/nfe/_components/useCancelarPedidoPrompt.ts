@@ -20,7 +20,6 @@ import { FirebaseError } from 'firebase/app';
 import { notifications } from '@mantine/notifications';
 import { cancelarPedido } from '@delfrance/data/pedido';
 
-import { useAuth } from '@/lib/auth/useAuth';
 import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useConfirmDialog } from '@/app/(app)/pedidos/_components/ConfirmDialog';
@@ -33,7 +32,6 @@ export interface UseCancelarPedidoPromptResult {
 }
 
 export function useCancelarPedidoPrompt(): UseCancelarPedidoPromptResult {
-  const { user } = useAuth();
   const { confirm, element } = useConfirmDialog();
 
   async function promptCancelarPedido(pedidoId: string): Promise<void> {
@@ -43,15 +41,12 @@ export function useCancelarPedidoPrompt(): UseCancelarPedidoPromptResult {
     });
     if (!cancelarTambem) return;
     try {
-      await cancelarPedido(createClientPedidoPort(getFirebaseFirestore()), {
-        pedidoId,
-        usuarioRef: user ? `documents/usuarios/${user.uid}` : null,
-      });
+      await cancelarPedido(createClientPedidoPort(getFirebaseFirestore()), { pedidoId });
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;
-      // `cancelarPedido` can fail after already writing the estado (e.g. the
-      // história append), so this must not assert the pedido stayed
-      // unchanged — just point the operator at it.
+      // Do not assert the pedido stayed unchanged: the estado write may well
+      // have landed, and the `onPedidoEstadoChanged` trigger appends the
+      // história row from it. Just point the operator at the pedido.
       notifications.show({
         color: 'yellow',
         message: 'Não foi possível confirmar o cancelamento do pedido — verifique o pedido.',

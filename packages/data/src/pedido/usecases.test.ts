@@ -5,7 +5,6 @@ import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 import {
   PedidoConflictError,
   PedidoNothingChangedError,
-  buildEstadoHistoryOp,
   buildIncidenteOp,
   buildPagamentoOp,
   buildPedidoPatch,
@@ -13,7 +12,6 @@ import {
   deleteIncidente,
   deletePagamento,
   nextPedidoEstado,
-  recordEstadoChange,
   remotelyChangedFields,
   savePedido,
   saveIncidente,
@@ -196,27 +194,16 @@ describe('savePedido', () => {
 });
 
 describe('estado history', () => {
-  it('buildEstadoHistoryOp writes estado + usuario ref + µs stamp to the subcollection', () => {
-    const { port } = fakePort(null, 4242);
-    const op = buildEstadoHistoryOp(port, 'ped1', ESTADO_PEDIDO.pago, 'documents/usuarios/u1');
-    expect(op).toEqual({
-      type: 'set',
-      path: 'pedidos/ped1/historicoEstadoPedido/newid',
-      data: {
-        estado: 'pago',
-        usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
-        data: 4242,
-      },
+  it('is never written from here — the onPedidoEstadoChanged trigger owns it', async () => {
+    const { port, written, committed } = fakePort({ estado: 'iniciado' }, 4242);
+    await savePedido(port, {
+      pedidoId: 'ped1',
+      patch: { estado: 'pago' },
+      baseline: { estado: 'iniciado' },
     });
-  });
-
-  it('recordEstadoChange commits one op (usuario defaults to null)', async () => {
-    const { port, committed } = fakePort(null);
-    await recordEstadoChange(port, { pedidoId: 'ped1', estado: ESTADO_PEDIDO.cancelado });
-    expect(committed()).toHaveLength(1);
-    expect(committed()[0]).toMatchObject({
-      data: { estado: 'cancelado', usuarioHistoricoEstadosPedidoOuterRef: null },
-    });
+    // The estado lands on the pedido doc; no historicoEstadoPedido op rides along.
+    expect(written()).toEqual({ estado: 'pago', ultimaModificacao: 4242 });
+    expect(committed()).toEqual([]);
   });
 });
 
@@ -354,36 +341,22 @@ describe('nextPedidoEstado (rule table)', () => {
 });
 
 describe('cancelarPedido', () => {
-  it('sets estado cancelado and appends a história row', async () => {
-    const { port, written, committed } = fakePort({ estado: 'pago', valorCobrado: 100 }, 777);
-    const result = await cancelarPedido(port, {
-      pedidoId: 'x',
-      usuarioRef: 'documents/usuarios/u1',
-    });
+  it('sets estado cancelado on the pedido doc', async () => {
+    const { port, written } = fakePort({ estado: 'pago', valorCobrado: 100 }, 777);
+    const result = await cancelarPedido(port, { pedidoId: 'x' });
     expect(result).toBe(true);
     expect(written()).toEqual({ estado: 'cancelado', ultimaModificacao: 777 });
-    expect(committed()).toEqual([
-      {
-        type: 'set',
-        path: 'pedidos/x/historicoEstadoPedido/newid',
-        data: {
-          estado: 'cancelado',
-          usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
-          data: 777,
-        },
-      },
-    ]);
   });
 
-  it('defaults usuarioRef to null when omitted', async () => {
+  it('writes no história row — the onPedidoEstadoChanged trigger owns it', async () => {
     const { port, committed } = fakePort({ estado: 'pago', valorCobrado: 100 }, 777);
     await cancelarPedido(port, { pedidoId: 'x' });
-    expect(committed()[0]).toMatchObject({
-      data: { usuarioHistoricoEstadosPedidoOuterRef: null },
-    });
+    // The subcollection is `meta.serverOwned`: a client append is denied by the
+    // rules, and the trigger derives the actor from this write's auth context.
+    expect(committed()).toEqual([]);
   });
 
-  it('is idempotent — a no-op (empty patch, no história) when already cancelado', async () => {
+  it('is idempotent — a no-op (empty patch) when already cancelado', async () => {
     const { port, written, committed } = fakePort({ estado: 'cancelado', valorCobrado: 100 }, 777);
     const result = await cancelarPedido(port, { pedidoId: 'x' });
     expect(result).toBe(false);
