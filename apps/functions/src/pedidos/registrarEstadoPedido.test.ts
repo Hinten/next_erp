@@ -12,6 +12,13 @@ describe('resolveUsuarioOuterRef', () => {
     expect(resolveUsuarioOuterRef('unknown', uid28)).toBe(`documents/usuarios/${uid28}`);
   });
 
+  it('accepts the _ and - a custom (Admin-SDK-set) uid may carry', () => {
+    // `createUser({ uid })` and user imports allow these; dropping such an actor
+    // to null would be a silent audit gap.
+    const custom = 'tenant_acme-user-000042xyz';
+    expect(resolveUsuarioOuterRef('api_key', custom)).toBe(`documents/usuarios/${custom}`);
+  });
+
   it('returns null when there is no authId at all', () => {
     expect(resolveUsuarioOuterRef('api_key', undefined)).toBeNull();
     expect(resolveUsuarioOuterRef(undefined, undefined)).toBeNull();

@@ -30,11 +30,23 @@ const NON_USER_AUTH_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Firebase Auth uids are opaque alphanumeric strings (28 chars for the standard
- * providers). The band is deliberately wide but the character class is strict:
- * it is what rejects everything that is NOT a uid, which is the whole point.
+ * Firebase Auth uids: 28 alphanumeric chars from the standard providers, but a
+ * uid set explicitly via the Admin SDK (`createUser({ uid })`) or an imported
+ * user may also carry `_` and `-`, up to 128 chars. Both are accepted so a real
+ * actor is never dropped to `null`.
+ *
+ * Every call site in this repo currently lets Firebase generate the uid
+ * (`apps/integrations/.../admin/users/route.ts`, `tools/test-fixtures`), so the
+ * wider class costs nothing today — it just removes a silent trap if a custom
+ * uid ever appears.
+ *
+ * The class stays strict about what it EXCLUDES, which is the whole point: no
+ * `@` and no `.`, so emails never pass. That is what rejects Firebase-console
+ * writes (operator email), service-account identifiers, and the emulator's
+ * hardcoded `fake-auth-id@gmail.com`. The 20-char floor keeps short junk out;
+ * every uid this project mints is 28.
  */
-const UID_PATTERN = /^[A-Za-z0-9]{20,128}$/;
+const UID_PATTERN = /^[A-Za-z0-9_-]{20,128}$/;
 
 /**
  * Map a Firestore event's auth context to the repo's `documents/usuarios/<uid>`
