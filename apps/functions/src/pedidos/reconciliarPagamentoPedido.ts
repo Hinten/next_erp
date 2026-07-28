@@ -24,9 +24,10 @@ export interface ReconciliarPagamentoPedidoResult {
  *
  * NOT YET called from `apps/web` — `PagamentosSection`'s `reconcileEstado()`
  * still uses the client-side `reconcilePedidoEstadoFromPagamentos`
- * (`@delfrance/data/pedido`) pending this function's deploy (deploy is
- * manual — root rule #1; see `apps/functions/CLAUDE.md`). Once deployed, a
- * follow-up PR flips that call site to `httpsCallable('reconciliarPagamentoPedido')`.
+ * (`@delfrance/data/pedido`) pending this function's deploy (deploy is manual
+ * — see the "Deploying" section in `apps/functions/CLAUDE.md`). Once
+ * deployed, a follow-up PR flips that call site to
+ * `httpsCallable('reconciliarPagamentoPedido')`.
  */
 export const reconciliarPagamentoPedido = onCall(async (request) => {
   if (!request.auth) {

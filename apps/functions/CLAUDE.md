@@ -137,8 +137,8 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   transaction. Same auth model as `aplicarEstoque`: `PERM.pedido.write` (or
   `su`), Zod-validated `{ pedidoId }`. ⚠️ NOT YET called from `apps/web` — the
   Pagamentos tab still uses the client-side `reconcilePedidoEstadoFromPagamentos`
-  until this is DEPLOYED (deploy is manual — root rule #1); a follow-up PR
-  flips the call site once it's live on staging.
+  until this is DEPLOYED (deploy is manual — see "Deploying" below); a
+  follow-up PR flips the call site once it's live on staging.
 - ⚠️ All three target the NAMED `default` database (gotcha #8). `@delfrance/auth`
   is a new build-time dep (esbuild-bundled, like data/schemas) for `hasPerm`/`PERM`.
 
