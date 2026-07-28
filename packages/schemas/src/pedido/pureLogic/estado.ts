@@ -1,4 +1,5 @@
 import { ESTADO_NFE, type EstadoNFe } from '../../nfe';
+import { ESTADO_PEDIDO } from '../collection/pedido';
 import type { EstadoPedido } from '../collection/pedido';
 
 /* -------------------------------------------------------------------------- */
@@ -50,9 +51,9 @@ export function bucketOf(estado: EstadoPedido): EstadoBucket {
  * "not returnable" — the safe default.
  */
 const PODE_TROCAR: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
-  'pago',
-  'estornadoParcialmente',
-  'finalizado',
+  ESTADO_PEDIDO.pago,
+  ESTADO_PEDIDO.estornadoParcialmente,
+  ESTADO_PEDIDO.finalizado,
 ]);
 
 export function podeTrocar(estado: EstadoPedido): boolean {
@@ -74,12 +75,12 @@ export function podeTrocar(estado: EstadoPedido): boolean {
  * that unambiguously represent a voided sale.
  */
 const EMISSAO_NFE_BLOQUEADA: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
-  'carrinhoAbandonado',
-  'pagamentoNaoRealizado',
-  'estornadoIntegralmente',
-  'processandoCancelamento',
-  'cancelado',
-  'fraude',
+  ESTADO_PEDIDO.carrinhoAbandonado,
+  ESTADO_PEDIDO.pagamentoNaoRealizado,
+  ESTADO_PEDIDO.estornadoIntegralmente,
+  ESTADO_PEDIDO.processandoCancelamento,
+  ESTADO_PEDIDO.cancelado,
+  ESTADO_PEDIDO.fraude,
 ]);
 
 /**
@@ -108,11 +109,11 @@ export function emissaoNFeBloqueadaPorEstado(estado: EstadoPedido): boolean {
  * `EstadoPedido` defaults to LOCKED — the safe default.
  */
 const ITENS_EDITAVEIS: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
-  'iniciado',
-  'carrinho',
-  'carrinhoAbandonado',
-  'escolhendoFormaDePagamento',
-  'error',
+  ESTADO_PEDIDO.iniciado,
+  ESTADO_PEDIDO.carrinho,
+  ESTADO_PEDIDO.carrinhoAbandonado,
+  ESTADO_PEDIDO.escolhendoFormaDePagamento,
+  ESTADO_PEDIDO.error,
 ]);
 
 /**
@@ -138,9 +139,9 @@ export function travarInclusaoProduto(estado: EstadoPedido): boolean {
  * to LOCKED-once-NF-e-aprovada — the safe default.
  */
 const PAGAMENTO_EDITAVEL_COM_NFE: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
-  'iniciado',
-  'aguardandoConfirmacaoDePagamento',
-  'cancelado',
+  ESTADO_PEDIDO.iniciado,
+  ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+  ESTADO_PEDIDO.cancelado,
 ]);
 
 /**
@@ -160,11 +161,11 @@ export function travarPagamentoComNFe(estado: EstadoPedido): boolean {
  * user opens the "add pagamento" form — it is NOT a lock.
  */
 const PAGAMENTO_INESPERADO: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
-  'pago',
-  'emProcessamento',
-  'finalizado',
-  'estornadoParcialmente',
-  'estornadoIntegralmente',
+  ESTADO_PEDIDO.pago,
+  ESTADO_PEDIDO.emProcessamento,
+  ESTADO_PEDIDO.finalizado,
+  ESTADO_PEDIDO.estornadoParcialmente,
+  ESTADO_PEDIDO.estornadoIntegralmente,
 ]);
 
 export function pagamentoInesperado(estado: EstadoPedido): boolean {

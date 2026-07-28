@@ -111,7 +111,7 @@ export const enviNfeMsgSchema = z.object({
   error: z.string().nullable().describe('Erro'),
   /** Mirrors `EnviNFeMsg.codEmissao` — SEFAZ `tpEmis` for this msg. */
   tpEmis: z.number().int().nullable().describe('Tipo de emissão (tpEmis)'),
-  estado: estadoEnviNFeMsgSchema.default('2').describe('Estado'),
+  estado: estadoEnviNFeMsgSchema.default(ESTADO_ENVI_NFE_MSG.respondido).describe('Estado'),
   timestamp: millisSinceEpoch('Criação').nullable().default(null),
   ultima_modificacao: millisSinceEpoch('Última modificação').nullable().default(null),
 });

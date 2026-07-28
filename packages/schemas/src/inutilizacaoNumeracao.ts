@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { CollectionMetadata } from './types';
 import { millisSinceEpoch } from './shared/datetime';
 import { estadoEnviNFeMsgSchema } from './enviNfeMsg';
+import { ESTADO_ENVI_NFE_MSG } from './enviNfeMsg';
 
 // Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth — same audit
 // surface as `EnviNFeMsg` (`.old/packages/nfe_client/lib/src/models.dart`
@@ -54,7 +55,7 @@ export const inutNumeracaoSchema = z.object({
   /** Transport/error message when the round-trip failed before a SEFAZ reply. */
   error: z.string().nullable(),
 
-  estado: estadoEnviNFeMsgSchema.default('0'),
+  estado: estadoEnviNFeMsgSchema.default(ESTADO_ENVI_NFE_MSG.iniciado),
   timestamp: millisSinceEpoch().nullable().default(null),
   ultima_modificacao: millisSinceEpoch().nullable().default(null),
 });

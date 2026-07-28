@@ -1,4 +1,6 @@
 import {
+  ESTADO_FRETE,
+  ESTADO_PEDIDO,
   isFreteJaPostado,
   valuesEqual,
   type EstadoFrete,
@@ -318,14 +320,14 @@ export async function deletePagamento(
  * — participate.
  */
 const AUTO_ESTADO_SOURCES = new Set<EstadoPedido>([
-  'iniciado',
-  'carrinho',
-  'escolhendoFormaDePagamento',
-  'aguardandoConfirmacaoDePagamento',
-  'pagamentoNaoRealizado',
-  'emAnalise',
-  'emProcessamento',
-  'pago',
+  ESTADO_PEDIDO.iniciado,
+  ESTADO_PEDIDO.carrinho,
+  ESTADO_PEDIDO.escolhendoFormaDePagamento,
+  ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+  ESTADO_PEDIDO.pagamentoNaoRealizado,
+  ESTADO_PEDIDO.emAnalise,
+  ESTADO_PEDIDO.emProcessamento,
+  ESTADO_PEDIDO.pago,
 ]);
 
 /**
@@ -354,14 +356,20 @@ export function nextPedidoEstado(
   if (total <= 0) return null;
   const fullyPaid = valorPago >= total;
   if (fullyPaid) {
-    return estado === 'pago' ? null : { estado: 'pago', autorizarDespacho: true };
+    return estado === ESTADO_PEDIDO.pago
+      ? null
+      : { estado: ESTADO_PEDIDO.pago, autorizarDespacho: true };
   }
-  if (valorPago > 0 && estado !== 'pago' && estado !== 'aguardandoConfirmacaoDePagamento') {
-    return { estado: 'aguardandoConfirmacaoDePagamento', autorizarDespacho: false };
+  if (
+    valorPago > 0 &&
+    estado !== ESTADO_PEDIDO.pago &&
+    estado !== ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento
+  ) {
+    return { estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento, autorizarDespacho: false };
   }
-  if (estado === 'pago') {
+  if (estado === ESTADO_PEDIDO.pago) {
     // Was fully paid, no longer is → downgrade.
-    return { estado: 'aguardandoConfirmacaoDePagamento', autorizarDespacho: false };
+    return { estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento, autorizarDespacho: false };
   }
   return null;
 }
@@ -410,7 +418,7 @@ export async function reconcilePedidoEstadoFromPagamentos(
       // Only authorize dispatch from a pre-shipment state — never regress an
       // in-flight frete (postado / a caminho / entregue) back to authorized.
       if (!freteEstado || !isFreteJaPostado(freteEstado)) {
-        patch.freteInicial = { ...frete, estado: 'despachoAutorizado' };
+        patch.freteInicial = { ...frete, estado: ESTADO_FRETE.despachoAutorizado };
       }
     }
     return patch;
@@ -442,13 +450,13 @@ export async function cancelarPedido(
     // Reset per attempt: the client adapter re-runs `apply` on transaction
     // contention, so only the final (committed) attempt must set this.
     changed = false;
-    if (current === null || current.estado === 'cancelado') return {};
+    if (current === null || current.estado === ESTADO_PEDIDO.cancelado) return {};
     changed = true;
-    return { estado: 'cancelado', ultimaModificacao: port.now() };
+    return { estado: ESTADO_PEDIDO.cancelado, ultimaModificacao: port.now() };
   });
   if (changed) {
     await port.commit([
-      buildEstadoHistoryOp(port, args.pedidoId, 'cancelado', args.usuarioRef ?? null),
+      buildEstadoHistoryOp(port, args.pedidoId, ESTADO_PEDIDO.cancelado, args.usuarioRef ?? null),
     ]);
   }
   return changed;

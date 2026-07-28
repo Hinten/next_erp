@@ -54,6 +54,35 @@ export const estadoPedidoSchema = z
 export type EstadoPedido = z.infer<typeof estadoPedidoSchema>;
 
 /**
+ * Named members of {@link estadoPedidoSchema} — the ONLY way to write an
+ * `EstadoPedido` in code. Values are identical to the keys here (unlike
+ * `ESTADO_NFE`, whose wire values are single chars), so this buys rename-safety
+ * and discoverability rather than translation: a typo'd `'cancelaado'` becomes a
+ * compile error instead of a value Firestore happily stores.
+ *
+ * Enforced by the `delfrance/prefer-schema-enum` lint rule, which fires for any
+ * Zod enum that has a companion constant like this one.
+ */
+export const ESTADO_PEDIDO = {
+  iniciado: 'iniciado',
+  carrinho: 'carrinho',
+  carrinhoAbandonado: 'carrinhoAbandonado',
+  escolhendoFormaDePagamento: 'escolhendoFormaDePagamento',
+  aguardandoConfirmacaoDePagamento: 'aguardandoConfirmacaoDePagamento',
+  pagamentoNaoRealizado: 'pagamentoNaoRealizado',
+  emAnalise: 'emAnalise',
+  emProcessamento: 'emProcessamento',
+  pago: 'pago',
+  estornadoParcialmente: 'estornadoParcialmente',
+  estornadoIntegralmente: 'estornadoIntegralmente',
+  processandoCancelamento: 'processandoCancelamento',
+  cancelado: 'cancelado',
+  fraude: 'fraude',
+  finalizado: 'finalizado',
+  error: 'error',
+} as const satisfies Record<string, EstadoPedido>;
+
+/**
  * ItemDoPedido — embedded item structure inside `Pedido.itens`. Mirrors
  * `packages/pedido/lib/src/models.dart` ItemDoPedido. Nested complex
  * fields (`imposto`) are pass-through.

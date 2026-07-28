@@ -47,6 +47,7 @@ import { discoverPedidoMercadoLivre } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 import { importPedidoMercadoLivre, mergeFreteInicial, type OrderImportDeps } from './orderImport';
 import type { MappedFreteInicialFields } from './orderShipmentMapping';
+import { ESTADO_FRETE } from '@delfrance/schemas';
 import type { FreteDoPedido } from '@delfrance/schemas';
 
 /* ------------------------------ fake Firestore ---------------------------- */
@@ -584,7 +585,7 @@ describe('mergeFreteInicial', () => {
     return {
       externalId: '777',
       externalOptionIntegracao: 'mercadoLivre',
-      estado: 'postado',
+      estado: ESTADO_FRETE.postado,
       integracaoFreteOuterRef: null,
       enderecoFreteOuterReference: null,
       modalidade: '1',

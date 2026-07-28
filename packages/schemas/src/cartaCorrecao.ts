@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { CollectionMetadata } from './types';
 import { microsSinceEpoch, millisSinceEpoch } from './shared/datetime';
 import { estadoEnviNFeMsgSchema } from './enviNfeMsg';
+import { ESTADO_ENVI_NFE_MSG } from './enviNfeMsg';
 
 // Mirror `PERM.fiscal` (byte 9, bits 72-74) from @delfrance/auth — same audit
 // surface as `EnviNFeMsg` / `InutNumeracao`. The old Flutter `CartaDeCorrecao`
@@ -64,7 +65,7 @@ export const cartaCorrecaoSchema = z.object({
   /** Re-send attempts for a pending CC-e; `null` on terminal records. #81. */
   retries: z.number().int().nullable().default(null),
 
-  estado: estadoEnviNFeMsgSchema.default('0'),
+  estado: estadoEnviNFeMsgSchema.default(ESTADO_ENVI_NFE_MSG.iniciado),
   timestamp: millisSinceEpoch().nullable().default(null),
   ultima_modificacao: millisSinceEpoch().nullable().default(null),
 });

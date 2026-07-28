@@ -92,7 +92,7 @@ export const nfeSchema = z.object({
   numeracao: z.number().int(),
   serie: z.number().int(),
   tpEmis: z.number().int().default(1),
-  estado: estadoNFeSchema.default('0'),
+  estado: estadoNFeSchema.default(ESTADO_NFE.gerado),
 
   /**
    * Denormalized owning-filial id (the parent pedido's filial). Lets a

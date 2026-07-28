@@ -4,6 +4,7 @@ import type { CollectionMetadata } from '../../types';
 import { microsSinceEpoch } from '../../shared/datetime';
 import { bandeiraSchema } from '../../bandeiraCartao';
 import { outerRefSchema } from '../../shared/outerRef';
+import { ESTADO_PEDIDO } from './pedido';
 import type { EstadoPedido } from './pedido';
 
 const PERM_PAGAMENTO_READ = 1n << 24n;
@@ -136,24 +137,24 @@ export function statusToEstadoPedido(status: StatusPagamento): EstadoPedido {
     case STATUS_PAGAMENTO.pendente:
     case STATUS_PAGAMENTO.pago_parcialmente:
     case STATUS_PAGAMENTO.em_processo_aprovacao:
-      return 'aguardandoConfirmacaoDePagamento';
+      return ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento;
     case STATUS_PAGAMENTO.em_revisao:
-      return 'emAnalise';
+      return ESTADO_PEDIDO.emAnalise;
     case STATUS_PAGAMENTO.aprovado:
     case STATUS_PAGAMENTO.em_disputa:
-      return 'pago';
+      return ESTADO_PEDIDO.pago;
     case STATUS_PAGAMENTO.recusado:
-      return 'pagamentoNaoRealizado';
+      return ESTADO_PEDIDO.pagamentoNaoRealizado;
     case STATUS_PAGAMENTO.cancelado:
-      return 'cancelado';
+      return ESTADO_PEDIDO.cancelado;
     case STATUS_PAGAMENTO.estornado:
     case STATUS_PAGAMENTO.devolvido:
     case STATUS_PAGAMENTO.estornado_totalmente:
-      return 'estornadoIntegralmente';
+      return ESTADO_PEDIDO.estornadoIntegralmente;
     case STATUS_PAGAMENTO.estornado_parcialmente:
-      return 'estornadoParcialmente';
+      return ESTADO_PEDIDO.estornadoParcialmente;
     default:
-      return 'error';
+      return ESTADO_PEDIDO.error;
   }
 }
 

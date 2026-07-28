@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ESTADO_PEDIDO } from '@delfrance/schemas';
 import type { ItemDoPedido, Pedido } from '@delfrance/schemas';
 import { type PedidoLite, overview, porBucket, porEstado, topProdutos } from './aggregations';
 
@@ -40,7 +41,7 @@ function p(estado: Pedido['estado'], itens: Pedido['itens']): PedidoLite {
 describe('topProdutos', () => {
   it('ranks by total quantity sold across pedidos', () => {
     const dataset: PedidoLite[] = [
-      p('pago', {
+      p(ESTADO_PEDIDO.pago, {
         a: [
           i({
             ordem: 1,
@@ -52,7 +53,7 @@ describe('topProdutos', () => {
         ],
         b: [i({ ordem: 2, precoDeVenda: 5, descontoUnitario: 0, quantidade: 1 })],
       }),
-      p('pago', {
+      p(ESTADO_PEDIDO.pago, {
         a: [i({ ordem: 1, precoDeVenda: 10, descontoUnitario: 1, quantidade: 2 })],
       }),
     ];
@@ -68,7 +69,7 @@ describe('topProdutos', () => {
 
   it('drops items without produtoUid (NONE bucket and empty key)', () => {
     const rows = topProdutos([
-      p('pago', {
+      p(ESTADO_PEDIDO.pago, {
         NONE: [i({ ordem: 1, precoDeVenda: 10, descontoUnitario: 0, quantidade: 99 })],
         '': [i({ ordem: 1, precoDeVenda: 5, descontoUnitario: 0, quantidade: 99 })],
       }),
@@ -81,7 +82,7 @@ describe('topProdutos', () => {
     for (let n = 0; n < 20; n++) {
       itens[`p${n}`] = [i({ ordem: 1, precoDeVenda: 1, descontoUnitario: 0, quantidade: n + 1 })];
     }
-    const rows = topProdutos([p('pago', itens)], 3);
+    const rows = topProdutos([p(ESTADO_PEDIDO.pago, itens)], 3);
     expect(rows.length).toBe(3);
     expect(rows.map((r) => r.produtoUid)).toEqual(['p19', 'p18', 'p17']);
   });
@@ -90,16 +91,20 @@ describe('topProdutos', () => {
 describe('porEstado', () => {
   it('counts pedidos per estado and sums totals', () => {
     const rows = porEstado([
-      p('pago', { x: [i({ ordem: 1, precoDeVenda: 100, descontoUnitario: 0, quantidade: 1 })] }),
-      p('pago', { x: [i({ ordem: 1, precoDeVenda: 50, descontoUnitario: 0, quantidade: 1 })] }),
-      p('cancelado', {
+      p(ESTADO_PEDIDO.pago, {
+        x: [i({ ordem: 1, precoDeVenda: 100, descontoUnitario: 0, quantidade: 1 })],
+      }),
+      p(ESTADO_PEDIDO.pago, {
+        x: [i({ ordem: 1, precoDeVenda: 50, descontoUnitario: 0, quantidade: 1 })],
+      }),
+      p(ESTADO_PEDIDO.cancelado, {
         x: [i({ ordem: 1, precoDeVenda: 40, descontoUnitario: 0, quantidade: 1 })],
       }),
     ]);
-    const pago = rows.find((r) => r.estado === 'pago');
+    const pago = rows.find((r) => r.estado === ESTADO_PEDIDO.pago);
     expect(pago?.count).toBe(2);
     expect(pago?.receita).toBe(150);
-    const cancelado = rows.find((r) => r.estado === 'cancelado');
+    const cancelado = rows.find((r) => r.estado === ESTADO_PEDIDO.cancelado);
     expect(cancelado?.count).toBe(1);
     expect(rows[0]?.estado).toBe('pago'); // sorted by count desc
   });
@@ -107,7 +112,7 @@ describe('porEstado', () => {
 
 describe('porBucket', () => {
   it('returns all four buckets even when some are empty', () => {
-    const rows = porBucket([p('pago', {}), p('iniciado', {})]);
+    const rows = porBucket([p(ESTADO_PEDIDO.pago, {}), p(ESTADO_PEDIDO.iniciado, {})]);
     const ids = rows.map((r) => r.bucket).sort();
     expect(ids).toEqual(['aberto', 'cancelado', 'concluido', 'processo']);
     const concluido = rows.find((r) => r.bucket === 'concluido');
@@ -118,10 +123,10 @@ describe('porBucket', () => {
 describe('overview', () => {
   it('sums pedidos, receita, itens; ticket médio = receita / pedidos', () => {
     const out = overview([
-      p('pago', {
+      p(ESTADO_PEDIDO.pago, {
         a: [i({ ordem: 1, precoDeVenda: 10, descontoUnitario: 0, quantidade: 2 })],
       }),
-      p('pago', {
+      p(ESTADO_PEDIDO.pago, {
         a: [i({ ordem: 1, precoDeVenda: 5, descontoUnitario: 1, quantidade: 4 })],
       }),
     ]);

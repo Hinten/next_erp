@@ -1,5 +1,7 @@
 import { getDoc, runTransaction, type Firestore } from 'firebase/firestore';
 import {
+  ESTADO_PEDIDO,
+  ESTADO_FRETE,
   checkCompleteness,
   checkoutFretePedidoSchema,
   toItemCheckoutPedido,
@@ -28,17 +30,17 @@ import { newDocId } from '../data/newDocId';
  */
 
 /** Frete estados a pedido may be in for a normal (non-confirmed) checkout (legacy 766-769). */
-const ALLOWED_FRETE_ESTADOS: ReadonlySet<EstadoFrete> = new Set([
-  'aguardandoNFe',
-  'aguardandoValidacaoTransporadora', // legacy spelling (missing 't') — must match the stored value
-  'despachoAutorizado',
-  'emSeparacao',
+const ALLOWED_FRETE_ESTADOS: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
+  ESTADO_FRETE.aguardandoNFe,
+  ESTADO_FRETE.aguardandoValidacaoTransporadora, // legacy spelling (missing 't') — must match the stored value
+  ESTADO_FRETE.despachoAutorizado,
+  ESTADO_FRETE.emSeparacao,
 ]);
 
 /** Writing this estado triggers the server `sincronizarEstoquePedido` (removes stock). */
-const ESTADO_CHECK_FINALIZADO: EstadoFrete = 'checkFinalizado';
-const ESTADO_AGUARDANDO_RETIRADA: EstadoFrete = 'aguardandoRetirada';
-const ESTADO_PEDIDO_PAGO: EstadoPedido = 'pago';
+const ESTADO_CHECK_FINALIZADO: EstadoFrete = ESTADO_FRETE.checkFinalizado;
+const ESTADO_AGUARDANDO_RETIRADA: EstadoFrete = ESTADO_FRETE.aguardandoRetirada;
+const ESTADO_PEDIDO_PAGO: EstadoPedido = ESTADO_PEDIDO.pago;
 
 export type ConfirmKind = 'frete-changed' | 'frete-estado';
 

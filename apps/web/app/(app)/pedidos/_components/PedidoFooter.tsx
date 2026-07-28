@@ -6,7 +6,7 @@ import { type Firestore } from 'firebase/firestore';
 import { Alert, Button, Group, NumberInput, Paper, Stack, Text, Tooltip } from '@mantine/core';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import { derivePedidoTotals, type Pedido, type Pagamento } from '@delfrance/schemas';
+import { ESTADO_PEDIDO, derivePedidoTotals, type Pedido, type Pagamento } from '@delfrance/schemas';
 import { formatReais, roundReais } from '@delfrance/core/money';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
 import { parseBrl } from '@/app/(app)/produtos/_components/CurrencyInput';
@@ -155,7 +155,7 @@ export function PedidoFooter({
   const estado = useWatch({ control: form.control, name: 'estado' });
   const underpaid =
     pedidoId != null &&
-    estado === 'pago' &&
+    estado === ESTADO_PEDIDO.pago &&
     roundReais(valorPago) < roundReais(totals.valorCobrado);
 
   return (
