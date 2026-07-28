@@ -10,7 +10,7 @@ import {
   ESTADO_FRETE_LABELS,
   MODALIDADE_FRETE_LABELS,
   estadoFreteSchema,
-  freightCapsFor,
+  isFreteMarketplaceOwned,
   modalidadeFreteSchema,
   type ModalidadeFrete,
 } from '@delfrance/schemas';
@@ -153,7 +153,11 @@ export function FreteTab({ form, db, disabled, pedidoId }: FreteTabProps) {
   // by hand-editing the pedido. While the integração doc is still resolving
   // the header stays locked as well (tipo unknown = ownership unknown); a
   // resolved-but-missing doc unlocks it so a dangling ref can be fixed.
-  const marketplaceOwned = freightCapsFor(tipo).marketplaceOwned;
+  // Shared predicate with the pedido estado reconcile, which refuses to authorize
+  // dispatch on a marketplace-owned block (#702). The two feed it DIFFERENT tipos
+  // and can disagree: here it is the resolved `int_frete` doc, server-side it is
+  // `freteInicial.externalOptionIntegracao` (no extra read inside the transaction).
+  const marketplaceOwned = isFreteMarketplaceOwned(tipo);
   const headerDisabled =
     disabled || marketplaceOwned || (integracaoRef != null && loadingIntegracao);
 

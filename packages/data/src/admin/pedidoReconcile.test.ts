@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { Firestore as FirebaseAdminFirestore } from 'firebase-admin/firestore';
-import { STATUS_PAGAMENTO, pagamentoSchema, type Pagamento } from '@delfrance/schemas';
+import {
+  STATUS_PAGAMENTO,
+  estadoFreteSchema,
+  pagamentoSchema,
+  type EstadoFrete,
+  type Pagamento,
+} from '@delfrance/schemas';
 
 import {
   PedidoReconcileNotFoundError,
@@ -108,6 +114,22 @@ const PAY_ID = 'pay1';
 // values and the parsed incoming values then compare on the same scale.
 const T_OLD = 1_700_000_001_000_000;
 const T_NEW = 1_700_000_002_000_000;
+
+/**
+ * The estados a payment-driven `pago` transition may flip to `despachoAutorizado`
+ * (#702). Spelled out as literals instead of imported from
+ * `ESTADOS_FRETE_PRE_AUTORIZACAO` — importing the set the reconcile is built on
+ * would only assert `Set.has === Set.has`. Written this way, WIDENING the
+ * authorizing set (a new enum member added to it, or an old one re-admitted) reds
+ * the table below instead of silently letting a payment rewrite one more
+ * warehouse estado.
+ */
+const FLIPPABLE: readonly EstadoFrete[] = [
+  'iniciado',
+  'aguardandoAutorizacao',
+  'aguardandoNFe',
+  'aguardandoValidacaoTransporadora',
+];
 
 describe('reconcilePedidoFromPagamento', () => {
   it('full payment → pago, authorizes frete dispatch, and appends NO history row', async () => {
@@ -368,6 +390,65 @@ describe('reconcilePedidoFromPagamento', () => {
     expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'postado', codRastreio: 'BR123' });
   });
 
+  // The #702 guard lives in the shared `applyEstadoTransition`, but the two entry
+  // points reach it by different routes — this one writes the pagamento FIRST —
+  // so both are covered.
+  it('does not un-pack an empacotado frete when a webhook payment pays the pedido in full (#702)', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': {
+        estado: 'aguardandoConfirmacaoDePagamento',
+        valorCobrado: 100,
+        freteInicial: { estado: 'empacotado', codRastreio: null },
+      },
+    });
+
+    const result = await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_NEW,
+      }),
+    });
+
+    expect(result).toEqual({ transition: 'pago', skippedStale: false });
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+    const pedidoUpdates = writes.updates.filter((w) => w.path === 'pedidos/p1');
+    expect(pedidoUpdates).toHaveLength(1);
+    expect(pedidoUpdates[0]!.data).not.toHaveProperty('freteInicial');
+  });
+
+  it('does not authorize dispatch on a marketplace-owned frete block (#702)', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': {
+        estado: 'aguardandoConfirmacaoDePagamento',
+        valorCobrado: 100,
+        freteInicial: {
+          estado: 'iniciado',
+          externalOptionIntegracao: 'mercadoLivre',
+          codRastreio: null,
+        },
+      },
+    });
+
+    const result = await reconcilePedidoFromPagamento(db, {
+      pedidoId: PEDIDO_ID,
+      pagamentoId: PAY_ID,
+      pagamento: mkPagamento({
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_NEW,
+      }),
+    });
+
+    expect(result).toEqual({ transition: 'pago', skippedStale: false });
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+    const pedidoUpdates = writes.updates.filter((w) => w.path === 'pedidos/p1');
+    expect(pedidoUpdates).toHaveLength(1);
+    expect(pedidoUpdates[0]!.data).not.toHaveProperty('freteInicial');
+  });
+
   it('throws PedidoReconcileNotFoundError when the pedido is missing', async () => {
     const { db, writes } = makeDb({});
 
@@ -548,6 +629,255 @@ describe('reconcilePedidoEstado', () => {
     expect(result).toEqual({ transition: 'pago' });
     expect(store['pedidos/p1']!.estado).toBe('pago');
     expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'postado', codRastreio: 'BR123' });
+  });
+
+  // The load-bearing #702 table: EVERY member of the enum goes through the real
+  // reconcile, so a future estado added to the authorizing set cannot become
+  // flippable without a deliberate edit to {@link FLIPPABLE} above.
+  it.each([...estadoFreteSchema.options])(
+    'authorizes dispatch from frete estado %s only when it precedes authorization (#702)',
+    async (estadoFrete) => {
+      const { db, writes } = makeDb({
+        'pedidos/p1': {
+          estado: 'iniciado',
+          valorCobrado: 100,
+          freteInicial: { estado: estadoFrete, codRastreio: null },
+        },
+        'pedidos/p1/pagamentos/pay1': {
+          valor: 100,
+          status_pagamento: STATUS_PAGAMENTO.aprovado,
+          ultimaModificacao: T_OLD,
+        },
+      });
+
+      const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+      // The estado transition itself never depends on the frete.
+      expect(result).toEqual({ transition: 'pago' });
+      const pedidoUpdates = writes.updates.filter((w) => w.path === 'pedidos/p1');
+      expect(pedidoUpdates).toHaveLength(1);
+      const patch = pedidoUpdates[0]!.data;
+      expect(patch.estado).toBe('pago');
+
+      if (FLIPPABLE.includes(estadoFrete)) {
+        expect(patch.freteInicial).toEqual({
+          estado: 'despachoAutorizado',
+          codRastreio: null,
+        });
+      } else {
+        // Not merely "same value" — the patch must not carry the key at all, so
+        // the frete block is never rewritten (nor its sibling fields re-stamped).
+        expect(patch).not.toHaveProperty('freteInicial');
+      }
+    },
+  );
+
+  it('does not un-pack an empacotado frete when the pedido becomes pago (#702)', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': {
+        estado: 'aguardandoConfirmacaoDePagamento',
+        valorCobrado: 100,
+        // The warehouse already packed this order; `empacotado` also removes stock
+        // (ESTADOS_FRETE_REMOVE_ESTOQUE), so regressing it un-removes it.
+        freteInicial: { estado: 'empacotado', codRastreio: null },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: 'pago' });
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+    const pedidoUpdates = writes.updates.filter((w) => w.path === 'pedidos/p1');
+    expect(pedidoUpdates).toHaveLength(1);
+    expect(pedidoUpdates[0]!.data).not.toHaveProperty('freteInicial');
+  });
+
+  it('does not pull an emSeparacao frete back off the picking floor when it becomes pago (#702)', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': {
+        estado: 'aguardandoConfirmacaoDePagamento',
+        valorCobrado: 100,
+        freteInicial: { estado: 'emSeparacao', codRastreio: null },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: 'pago' });
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+    const pedidoUpdates = writes.updates.filter((w) => w.path === 'pedidos/p1');
+    expect(pedidoUpdates).toHaveLength(1);
+    expect(pedidoUpdates[0]!.data).not.toHaveProperty('freteInicial');
+  });
+
+  it('does not drop an aguardandoAgendamento frete out of its pickup slot when it becomes pago (#702)', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': {
+        estado: 'aguardandoConfirmacaoDePagamento',
+        valorCobrado: 100,
+        freteInicial: { estado: 'aguardandoAgendamento', codRastreio: null },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: 'pago' });
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+    const pedidoUpdates = writes.updates.filter((w) => w.path === 'pedidos/p1');
+    expect(pedidoUpdates).toHaveLength(1);
+    expect(pedidoUpdates[0]!.data).not.toHaveProperty('freteInicial');
+  });
+
+  it('does not erase a finished despacho conference (checkFinalizado) when it becomes pago (#702)', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': {
+        estado: 'aguardandoConfirmacaoDePagamento',
+        valorCobrado: 100,
+        // Written by the despacho checkout screen on every completed conference
+        // (`apps/web/lib/checkout/saveCheckout.ts`) — the operator's work.
+        freteInicial: { estado: 'checkFinalizado', codRastreio: null },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: 'pago' });
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+    const pedidoUpdates = writes.updates.filter((w) => w.path === 'pedidos/p1');
+    expect(pedidoUpdates).toHaveLength(1);
+    expect(pedidoUpdates[0]!.data).not.toHaveProperty('freteInicial');
+  });
+
+  it('does not rewrite a frete that is already despachoAutorizado', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': {
+        estado: 'aguardandoConfirmacaoDePagamento',
+        valorCobrado: 100,
+        freteInicial: { estado: 'despachoAutorizado', codRastreio: null },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: 'pago' });
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+    // Already authorized — no redundant write of the whole frete map.
+    const pedidoUpdates = writes.updates.filter((w) => w.path === 'pedidos/p1');
+    expect(pedidoUpdates).toHaveLength(1);
+    expect(pedidoUpdates[0]!.data).not.toHaveProperty('freteInicial');
+  });
+
+  it('does not authorize dispatch on a marketplace-owned frete block (#702)', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': {
+        estado: 'aguardandoConfirmacaoDePagamento',
+        valorCobrado: 100,
+        // The Mercado Livre importer owns this block (the same read-only lock the
+        // Frete tab applies) — the ERP must not drive its lifecycle.
+        freteInicial: {
+          estado: 'iniciado',
+          externalOptionIntegracao: 'mercadoLivre',
+          codRastreio: null,
+        },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: 'pago' });
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+    const pedidoUpdates = writes.updates.filter((w) => w.path === 'pedidos/p1');
+    expect(pedidoUpdates).toHaveLength(1);
+    expect(pedidoUpdates[0]!.data).not.toHaveProperty('freteInicial');
+  });
+
+  it('still authorizes dispatch on an app-managed melhorEnvios frete', async () => {
+    const { db, store } = makeDb({
+      'pedidos/p1': {
+        estado: 'aguardandoConfirmacaoDePagamento',
+        valorCobrado: 100,
+        freteInicial: {
+          estado: 'iniciado',
+          externalOptionIntegracao: 'melhorEnvios',
+          codRastreio: null,
+        },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: 'pago' });
+    // Flipped, and the rest of the frete map rides along untouched.
+    expect(store['pedidos/p1']!.freteInicial).toEqual({
+      estado: 'despachoAutorizado',
+      externalOptionIntegracao: 'melhorEnvios',
+      codRastreio: null,
+    });
+  });
+
+  // The one branch the 27-row table above cannot reach: `podeAutorizarDespacho`
+  // is only consulted when an estado is present, so a malformed block — legacy
+  // Flutter or a partial merge, since `freteDoPedidoSchema` makes `estado`
+  // required — takes the `!freteEstado` short-circuit. Pinned deliberately:
+  // repairing it to `despachoAutorizado` is the pre-#702 behaviour and nothing
+  // is regressed by it (there is no progress to lose), but a future refactor
+  // that flips this in either direction should have to update a test.
+  it('authorizes dispatch on a frete block that carries no estado at all', async () => {
+    const { db, store } = makeDb({
+      'pedidos/p1': {
+        estado: 'aguardandoConfirmacaoDePagamento',
+        valorCobrado: 100,
+        freteInicial: { codRastreio: null },
+      },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: 'pago' });
+    expect(store['pedidos/p1']!.freteInicial).toEqual({
+      estado: 'despachoAutorizado',
+      codRastreio: null,
+    });
   });
 
   it('writes only estado (no freteInicial key) when the pedido has no frete', async () => {

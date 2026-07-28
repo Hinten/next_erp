@@ -76,6 +76,7 @@ export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './cat
 export {
   ESTADO_FRETE_LABELS,
   ESTADOS_FRETE_NAO_POSTADO,
+  ESTADOS_FRETE_PRE_AUTORIZACAO,
   FREIGHT_TIPO_CAPS,
   INTEGRACAO_FRETE_LABELS,
   MODALIDADE_FRETE_LABELS,
@@ -85,7 +86,9 @@ export {
   freteDoPedidoSchema,
   integracoesFreteSchema,
   isFreteJaPostado,
+  isFreteMarketplaceOwned,
   modalidadeFreteSchema,
+  podeAutorizarDespacho,
   reboqueSchema,
   transportadoraSchema,
   veiculoSchema,

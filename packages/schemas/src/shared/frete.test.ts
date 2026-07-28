@@ -1,13 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ESTADOS_FRETE_PRE_AUTORIZACAO,
+  ESTADOS_FRETE_REMOVE_ESTOQUE,
   FREIGHT_TIPO_CAPS,
+  estadoFreteSchema,
   freightCapsFor,
   freteDoPedidoSchema,
   integracoesFreteSchema,
   isFreteJaPostado,
+  isFreteMarketplaceOwned,
+  podeAutorizarDespacho,
   reboqueSchema,
   transportadoraSchema,
   veiculoSchema,
+  type EstadoFrete,
 } from './frete';
 import { derivePedidoFreteTotals, itemDoPedidoSchema } from '../pedido';
 
@@ -241,5 +247,113 @@ describe('isFreteJaPostado', () => {
     expect(isFreteJaPostado('aCaminho')).toBe(true);
     expect(isFreteJaPostado('entregue')).toBe(true);
     expect(isFreteJaPostado('cancelado')).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*        ESTADOS_FRETE_PRE_AUTORIZACAO — the #702 dispatch-guard vocab        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The expected classification, written out as literals on BOTH sides — the table
+ * test compares `podeAutorizarDespacho` against these, never against
+ * `ESTADOS_FRETE_PRE_AUTORIZACAO` itself (that would only assert
+ * `Set.has === Set.has`). Together they must partition `estadoFreteSchema.options`,
+ * so a **new** enum member lands in neither list and reds the test: a future
+ * estado has to be classified deliberately, not inherit `false` by default.
+ */
+const PODE_AUTORIZAR: EstadoFrete[] = [
+  'iniciado',
+  'aguardandoAutorizacao',
+  'aguardandoNFe',
+  'aguardandoValidacaoTransporadora',
+];
+
+const NAO_PODE_AUTORIZAR: EstadoFrete[] = [
+  'fulfillment',
+  'despachoAutorizado',
+  'aguardandoAgendamento',
+  'despachoNegado',
+  'emSeparacao',
+  'empacotado',
+  'aguardandoPostagem',
+  'checkFinalizado',
+  'postado',
+  'recebidoPelaTransportadora',
+  'aCaminho',
+  'tentandoRealizarEntrega',
+  'entregue',
+  'falhaNaEntrega',
+  'suspenso',
+  'enderecoNaoEncontrado',
+  'aCaminhoDoRemetente',
+  'devolvido',
+  'objetoExtraviado',
+  'cancelado',
+  'desconhecido',
+  'error',
+  'aguardandoRetirada',
+];
+
+describe('ESTADOS_FRETE_PRE_AUTORIZACAO', () => {
+  it('contains exactly the estados that precede despachoAutorizado', () => {
+    expect([...ESTADOS_FRETE_PRE_AUTORIZACAO].sort()).toEqual([...PODE_AUTORIZAR].sort());
+  });
+
+  it('classifies every estado of the enum (a new member must be classified deliberately)', () => {
+    expect([...PODE_AUTORIZAR, ...NAO_PODE_AUTORIZAR].sort()).toEqual(
+      [...estadoFreteSchema.options].sort(),
+    );
+    for (const estado of estadoFreteSchema.options) {
+      expect(podeAutorizarDespacho(estado)).toBe(PODE_AUTORIZAR.includes(estado));
+    }
+  });
+
+  it('is disjoint from ESTADOS_FRETE_REMOVE_ESTOQUE (dispatch must never un-remove stock)', () => {
+    // If the two overlapped, flipping a paid pedido to `despachoAutorizado` could
+    // walk `efeitoEstoquePedido` backwards and put sold goods back in the depósito.
+    for (const estado of ESTADOS_FRETE_PRE_AUTORIZACAO) {
+      expect(ESTADOS_FRETE_REMOVE_ESTOQUE.has(estado)).toBe(false);
+    }
+  });
+
+  it('excludes the estados that are progress past authorization', () => {
+    // The exact regression #702 fixes: `!isFreteJaPostado(...)` said `true` for the
+    // first four, so a payment erased warehouse progress.
+    expect(podeAutorizarDespacho('empacotado')).toBe(false);
+    expect(podeAutorizarDespacho('emSeparacao')).toBe(false);
+    expect(podeAutorizarDespacho('aguardandoAgendamento')).toBe(false);
+    expect(podeAutorizarDespacho('checkFinalizado')).toBe(false);
+    expect(podeAutorizarDespacho('despachoAutorizado')).toBe(false);
+    expect(podeAutorizarDespacho('despachoNegado')).toBe(false);
+    expect(podeAutorizarDespacho('desconhecido')).toBe(false);
+    expect(podeAutorizarDespacho('fulfillment')).toBe(false);
+    expect(podeAutorizarDespacho('postado')).toBe(false);
+  });
+});
+
+describe('isFreteMarketplaceOwned', () => {
+  it('is true for the five marketplace tipos (the read-only Frete tab lock)', () => {
+    expect(isFreteMarketplaceOwned('mercadoLivre')).toBe(true);
+    expect(isFreteMarketplaceOwned('lojaIntegrada')).toBe(true);
+    expect(isFreteMarketplaceOwned('amz')).toBe(true);
+    expect(isFreteMarketplaceOwned('magalu')).toBe(true);
+    expect(isFreteMarketplaceOwned('shopee')).toBe(true);
+  });
+
+  it('is false for the emit / manual tipos', () => {
+    expect(isFreteMarketplaceOwned('melhorEnvios')).toBe(false);
+    expect(isFreteMarketplaceOwned('motoboy')).toBe(false);
+    expect(isFreteMarketplaceOwned('retiradaNaLoja')).toBe(false);
+    expect(isFreteMarketplaceOwned('fob')).toBe(false);
+    expect(isFreteMarketplaceOwned('outros')).toBe(false);
+  });
+
+  it('tolerates an unknown / null tipo (→ not marketplace-owned)', () => {
+    // Same unparsed-Firestore tolerance as `freightCapsFor`: never a crash, and
+    // "unknown" must not accidentally lock the tab / block the reconcile.
+    expect(isFreteMarketplaceOwned('bogus-legacy-tipo')).toBe(false);
+    expect(isFreteMarketplaceOwned(null)).toBe(false);
+    expect(isFreteMarketplaceOwned(undefined)).toBe(false);
   });
 });
