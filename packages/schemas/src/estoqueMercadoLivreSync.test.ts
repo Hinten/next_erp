@@ -15,6 +15,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       lastErrorAtUs: null,
       pausedUntilUs: null,
       pauseCount: 0,
+      continuacao: null,
     });
   });
 
@@ -27,6 +28,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       lastErrorAtUs: null,
       pausedUntilUs: null,
       pauseCount: 0,
+      continuacao: null,
     };
     expect(estoqueMercadoLivreSyncSchema.parse(doc)).toEqual(doc);
   });
@@ -40,6 +42,7 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       lastErrorAtUs: 1721801100000000,
       pausedUntilUs: null,
       pauseCount: 0,
+      continuacao: null,
     };
     expect(estoqueMercadoLivreSyncSchema.parse(doc)).toEqual(doc);
   });
@@ -53,8 +56,58 @@ describe('estoqueMercadoLivreSyncSchema', () => {
       lastErrorAtUs: null,
       pausedUntilUs: 1721801400000000,
       pauseCount: 3,
+      continuacao: null,
     };
     expect(estoqueMercadoLivreSyncSchema.parse(doc)).toEqual(doc);
+  });
+
+  it('round-trips a TRUNCATED sweep doc (continuacao frozen, cursor NOT advanced)', () => {
+    const doc = {
+      cursorUs: 1721800800000000,
+      lastSweepAtUs: null,
+      lastDailyAtUs: null,
+      lastError: null,
+      lastErrorAtUs: null,
+      pausedUntilUs: null,
+      pauseCount: 0,
+      continuacao: {
+        afterAnchorId: 'PROD-42',
+        changedSinceMs: 1721800780000,
+        vendaCutoffUs: 1719208800000000,
+        startedAtUs: 1721801100000000,
+      },
+    };
+    expect(estoqueMercadoLivreSyncSchema.parse(doc)).toEqual(doc);
+  });
+
+  it('a DAILY continuation keeps vendaCutoffUs null (probe skipped ⇒ daily semantics)', () => {
+    const parsed = estoqueMercadoLivreSyncSchema.parse({
+      continuacao: {
+        afterAnchorId: 'PROD-7',
+        changedSinceMs: 1721715000000,
+        vendaCutoffUs: null,
+        startedAtUs: 1721801100000000,
+      },
+    });
+    expect(parsed.continuacao).toEqual({
+      afterAnchorId: 'PROD-7',
+      changedSinceMs: 1721715000000,
+      vendaCutoffUs: null,
+      startedAtUs: 1721801100000000,
+    });
+  });
+
+  it('rejects a continuacao with an empty afterAnchorId (no keyset position)', () => {
+    expect(() =>
+      estoqueMercadoLivreSyncSchema.parse({
+        continuacao: {
+          afterAnchorId: '',
+          changedSinceMs: 1,
+          vendaCutoffUs: null,
+          startedAtUs: 2,
+        },
+      }),
+    ).toThrow();
   });
 });
 

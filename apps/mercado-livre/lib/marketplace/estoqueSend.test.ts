@@ -224,7 +224,6 @@ describe('mlStockSendTaskSchema', () => {
         },
       ],
       children: [],
-      temVenda30d: false,
     };
     const built = buildSendTasks(row, new Map([['PROD', 7]]), {
       integracaoId: CONTA,
