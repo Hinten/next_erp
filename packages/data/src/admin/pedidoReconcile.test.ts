@@ -110,7 +110,7 @@ const T_OLD = 1_700_000_001_000_000;
 const T_NEW = 1_700_000_002_000_000;
 
 describe('reconcilePedidoFromPagamento', () => {
-  it('full payment → pago, authorizes frete dispatch, and appends a history row', async () => {
+  it('full payment → pago, authorizes frete dispatch, and appends NO history row', async () => {
     const { db, store, writes } = makeDb({
       'pedidos/p1': {
         estado: 'aguardandoConfirmacaoDePagamento',
