@@ -101,6 +101,21 @@ ruleTester.run('prefer-schema-enum', rule, {
       code: `import { ESTADO_PEDIDO } from './enums';\nexport const OK = new Set([ESTADO_PEDIDO.pago]);`,
       filename: resolve(FIXTURE_DIR, 'packages/schemas/src/self.ts'),
     },
+    {
+      // Documented limitation: control-flow narrowing strips the alias AND
+      // shrinks the union, so neither match applies. Resolving a SUBSET instead
+      // is unsound — it once rewrote an NF-e CST '07' to BANDEIRA.hipercard.
+      name: 'a narrowed operand is left alone rather than guessed at',
+      code: `${IMPORT}declare const e: EstadoPedido;\nexport const x = e !== ESTADO_PEDIDO.pago && e !== 'cancelado';`,
+      filename: IN,
+    },
+    {
+      // The regression that motivated dropping the subset match: a union that
+      // fits INSIDE an unrelated enum must never resolve to it.
+      name: 'a literal union nested inside an unrelated enum is not that enum',
+      code: `${IMPORT}declare const cst: '02' | '03';\nexport const x = cst === '02';`,
+      filename: IN,
+    },
   ],
   invalid: [
     {
@@ -169,15 +184,6 @@ ruleTester.run('prefer-schema-enum', rule, {
           ],
         },
       ],
-      output: null,
-    },
-    {
-      // Control-flow narrowing strips the alias AND shrinks the union, so the
-      // second comparison only resolves via the subset match.
-      name: 'a narrowed enum operand still resolves',
-      code: `${IMPORT}declare const e: EstadoPedido;\nexport const x = e !== ESTADO_PEDIDO.pago && e !== 'cancelado';`,
-      filename: IN,
-      errors: [err('cancelado')],
       output: null,
     },
     {

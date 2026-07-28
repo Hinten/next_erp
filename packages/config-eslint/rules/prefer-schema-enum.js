@@ -50,6 +50,11 @@
 //     typo still fails to compile — but the enum never reaches the position.
 //     Write `new Set<EstadoFrete>([...])`, the form used everywhere in this
 //     repo, and the members are checked.
+//  3. An operand NARROWED by control flow is not flagged:
+//     `estado !== ESTADO_PEDIDO.pago && estado !== 'cancelado'` narrows the
+//     second comparison to the 15 remaining members, which is neither the alias
+//     nor the whole member set. Matching a subset instead was tried and is
+//     unsound — see the note on `enumEntryFor`.
 //
 // Error (not warn): the constants exist precisely so the enum members have one
 // spelling; a second spelling drifting back in is the thing this prevents.
@@ -242,16 +247,20 @@ function targetType(node, tsNode, checker, esToTs) {
 /**
  * The enum entry a type corresponds to, or null. Ignores null/undefined members.
  *
- * Three ways in, in order of confidence:
+ * Two ways in, and deliberately only two:
  *  1. the type alias (`EstadoPedido`) — the common case;
- *  2. the exact member set, for a type the checker flattened and stripped the
- *     alias off (`EstadoPedido | null`);
- *  3. a member SUBSET, for a type control-flow narrowing shrank —
- *     `estado !== ESTADO_PEDIDO.pago && estado !== '…'` narrows the second
- *     comparison's operand to the 15 remaining members. Only accepted when
- *     exactly one registered enum contains the whole subset: `EstadoPedido` and
- *     `EstadoFrete` share `iniciado`/`cancelado`/`error`, so a small ambiguous
- *     subset resolves to nothing rather than to a guess.
+ *  2. the EXACT member set, for a type the checker flattened and stripped the
+ *     alias off (`EstadoPedido | null`).
+ *
+ * A third rule — "the literals are a SUBSET of exactly one enum's members" —
+ * was tried, to also catch an operand that control-flow narrowing had shrunk
+ * (`estado !== ESTADO_PEDIDO.pago && estado !== '…'`). It is UNSOUND and was
+ * removed: enums whose values are generic numeric-ish codes collide across
+ * unrelated domains. The NF-e `PISNT.CST` field is typed
+ * `'04' | … | '09'`, which sits entirely inside `BANDEIRA`'s
+ * `'01' | … | '09' | '99'` (credit-card brands), so the subset rule "resolved"
+ * a SEFAZ tax code to `BANDEIRA.hipercard`. It compiled, and it was nonsense.
+ * Matching only the whole member set cannot make that mistake.
  */
 function enumEntryFor(type, registry) {
   if (!type) return null;
@@ -267,17 +276,7 @@ function enumEntryFor(type, registry) {
     values.push(part.value);
   }
   if (values.length < 2) return null;
-
-  const exact = registry.byValueKey.get([...values].sort().join(' '));
-  if (exact) return exact;
-
-  let onlyMatch = null;
-  for (const entry of registry.byTypeName.values()) {
-    if (!values.every((v) => entry.members.has(v))) continue;
-    if (onlyMatch) return null; // ambiguous — say nothing
-    onlyMatch = entry;
-  }
-  return onlyMatch;
+  return registry.byValueKey.get([...values].sort().join(' ')) ?? null;
 }
 
 /**

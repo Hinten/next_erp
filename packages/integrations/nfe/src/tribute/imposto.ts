@@ -40,7 +40,6 @@ import type {
 } from '../types/nfe-schema';
 import { serializeFragment, type XmlValue } from '../xml';
 import { buildIBSCBS, buildIS, parseRtcConfig } from './rtc';
-import { BANDEIRA } from '@delfrance/schemas';
 
 export class NFeTributeError extends Error {
   constructor(message: string) {
@@ -404,7 +403,7 @@ function buildISSQN(cfg: ConfiguracaoISSQN): TNFe_infNFe_det_imposto_ISSQN {
 
 function buildPIS(cfg: ConfPIS | null | undefined, item: TributeItem): TNFe_infNFe_det_imposto_PIS {
   // Default for SN: PIS NT (CST 07 — não tributado).
-  if (cfg == null) return { PISNT: { CST: BANDEIRA.hipercard } };
+  if (cfg == null) return { PISNT: { CST: '07' } };
   return buildPISByCST(cfg, item);
 }
 
@@ -413,7 +412,7 @@ function buildCOFINS(
   item: TributeItem,
 ): TNFe_infNFe_det_imposto_COFINS {
   // Default for SN: COFINS NT (CST 07).
-  if (cfg == null) return { COFINSNT: { CST: BANDEIRA.hipercard } };
+  if (cfg == null) return { COFINSNT: { CST: '07' } };
   return buildCOFINSByCST(cfg, item);
 }
 
