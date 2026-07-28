@@ -5,7 +5,9 @@
     "moduleResolution": "bundler",
     "strict": true,
     "noEmit": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "lib": ["ES2022"],
+    "types": []
   },
   "include": ["app/**/*.ts", "packages/**/*.ts"]
 }

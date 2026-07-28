@@ -6,10 +6,16 @@ import tseslint from 'typescript-eslint';
 import rule from './prefer-schema-enum.js';
 
 // Wire RuleTester to vitest's runner (it calls describe/it at module load).
+// Unlike the other rule suites, this one is type-aware: the FIRST case pays for
+// building a real TS program over the fixture project, which is far more than a
+// pure-function test does. The fixture tsconfig sets `types: []` to keep that
+// off the monorepo's `@types/*` tree (~4.9s → ~0.3s), and the explicit timeout
+// below covers the rest of the variance on a loaded CI runner.
+const PROGRAM_BUILD_TIMEOUT_MS = 30_000;
 RuleTester.afterAll = afterAll;
 RuleTester.describe = describe;
-RuleTester.it = it;
-RuleTester.itOnly = it.only;
+RuleTester.it = (name, fn) => it(name, fn, PROGRAM_BUILD_TIMEOUT_MS);
+RuleTester.itOnly = (name, fn) => it.only(name, fn, PROGRAM_BUILD_TIMEOUT_MS);
 
 // The rule is type-aware, so every case is linted as a real file inside a real
 // TS project — `__fixtures__/enum-project`, which carries a stand-in
