@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ESTADO_PEDIDO } from '@delfrance/schemas';
 import type { Pedido } from '@delfrance/schemas';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 import {
@@ -7,6 +8,7 @@ import {
   buildIncidenteOp,
   buildPagamentoOp,
   buildPedidoPatch,
+  cancelarPedido,
   deleteIncidente,
   deletePagamento,
   nextPedidoEstado,
@@ -281,59 +283,91 @@ describe('pagamentos', () => {
 
 describe('nextPedidoEstado (rule table)', () => {
   it('fully paid → pago + authorize despacho', () => {
-    expect(nextPedidoEstado('iniciado', 100, 100)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 100)).toEqual({
       estado: 'pago',
       autorizarDespacho: true,
     });
-    expect(nextPedidoEstado('iniciado', 100, 120)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 120)).toEqual({
       estado: 'pago',
       autorizarDespacho: true,
     });
   });
 
   it('is idempotent once pago', () => {
-    expect(nextPedidoEstado('pago', 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 100)).toBeNull();
   });
 
   it('partially paid → aguardando (no despacho)', () => {
-    expect(nextPedidoEstado('iniciado', 100, 50)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 50)).toEqual({
       estado: 'aguardandoConfirmacaoDePagamento',
       autorizarDespacho: false,
     });
   });
 
   it('is idempotent once aguardando while still partial', () => {
-    expect(nextPedidoEstado('aguardandoConfirmacaoDePagamento', 100, 50)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento, 100, 50)).toBeNull();
   });
 
   it('downgrades a pago pedido that drops below its total', () => {
-    expect(nextPedidoEstado('pago', 100, 50)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 50)).toEqual({
       estado: 'aguardandoConfirmacaoDePagamento',
       autorizarDespacho: false,
     });
-    expect(nextPedidoEstado('pago', 100, 0)).toEqual({
+    expect(nextPedidoEstado(ESTADO_PEDIDO.pago, 100, 0)).toEqual({
       estado: 'aguardandoConfirmacaoDePagamento',
       autorizarDespacho: false,
     });
   });
 
   it('leaves estado alone when nothing is paid and it is not pago', () => {
-    expect(nextPedidoEstado('iniciado', 100, 0)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 100, 0)).toBeNull();
   });
 
   it('never forces a transition on a zero-total pedido (even with a payment)', () => {
-    expect(nextPedidoEstado('iniciado', 0, 0)).toBeNull();
-    expect(nextPedidoEstado('iniciado', 0, 50)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 0, 0)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.iniciado, 0, 50)).toBeNull();
   });
 
   it('never auto-reverts a terminal / fulfilled / refunded estado', () => {
     // Fully paid but cancelled/finalized → must NOT bounce back to pago.
-    expect(nextPedidoEstado('cancelado', 100, 100)).toBeNull();
-    expect(nextPedidoEstado('finalizado', 100, 100)).toBeNull();
-    expect(nextPedidoEstado('fraude', 100, 100)).toBeNull();
-    expect(nextPedidoEstado('processandoCancelamento', 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.cancelado, 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.finalizado, 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.fraude, 100, 100)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.processandoCancelamento, 100, 100)).toBeNull();
     // Partially paid (refund) on a refund state → must NOT erase it.
-    expect(nextPedidoEstado('estornadoParcialmente', 100, 50)).toBeNull();
-    expect(nextPedidoEstado('estornadoIntegralmente', 100, 0)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoParcialmente, 100, 50)).toBeNull();
+    expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoIntegralmente, 100, 0)).toBeNull();
+  });
+});
+
+describe('cancelarPedido', () => {
+  it('sets estado cancelado on the pedido doc', async () => {
+    const { port, written } = fakePort({ estado: 'pago', valorCobrado: 100 }, 777);
+    const result = await cancelarPedido(port, { pedidoId: 'x' });
+    expect(result).toBe(true);
+    expect(written()).toEqual({ estado: 'cancelado', ultimaModificacao: 777 });
+  });
+
+  it('writes no história row — the onPedidoEstadoChanged trigger owns it', async () => {
+    const { port, committed } = fakePort({ estado: 'pago', valorCobrado: 100 }, 777);
+    await cancelarPedido(port, { pedidoId: 'x' });
+    // The subcollection is `meta.serverOwned`: a client append is denied by the
+    // rules, and the trigger derives the actor from this write's auth context.
+    expect(committed()).toEqual([]);
+  });
+
+  it('is idempotent — a no-op (empty patch) when already cancelado', async () => {
+    const { port, written, committed } = fakePort({ estado: 'cancelado', valorCobrado: 100 }, 777);
+    const result = await cancelarPedido(port, { pedidoId: 'x' });
+    expect(result).toBe(false);
+    expect(written()).toEqual({});
+    expect(committed()).toEqual([]);
+  });
+
+  it('skips everything when the doc is gone', async () => {
+    const { port, committed } = fakePort(null, 777);
+    const result = await cancelarPedido(port, { pedidoId: 'x' });
+    expect(result).toBe(false);
+    expect(committed()).toEqual([]);
   });
 });

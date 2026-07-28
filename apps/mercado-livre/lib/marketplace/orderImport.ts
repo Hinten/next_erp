@@ -71,6 +71,7 @@ import {
   type MlShipmentPayment,
 } from '@delfrance/integrations-mercado-livre';
 import {
+  ESTADO_PEDIDO,
   STATUS_PAGAMENTO,
   flattenPedidoItens,
   itemSubtotal,
@@ -143,12 +144,12 @@ export interface OrderImportResult {
  * still "early" enough that a fresh shipment read should re-run the full
  * money conference (tasks.dart:512-514).
  */
-const ESTADOS_CONFERIR_PAGAMENTO: ReadonlySet<EstadoPedido> = new Set([
-  'iniciado',
-  'carrinho',
-  'escolhendoFormaDePagamento',
-  'aguardandoConfirmacaoDePagamento',
-  'pagamentoNaoRealizado',
+const ESTADOS_CONFERIR_PAGAMENTO: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  ESTADO_PEDIDO.iniciado,
+  ESTADO_PEDIDO.carrinho,
+  ESTADO_PEDIDO.escolhendoFormaDePagamento,
+  ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+  ESTADO_PEDIDO.pagamentoNaoRealizado,
 ]);
 
 /** ML order `status` values that downgrade a `pago` pedido (tasks.dart:746). */
@@ -732,7 +733,7 @@ async function applyPagoAdvanceOrDowngrade(args: {
   } = args;
 
   const podeAvancarPagamento =
-    pedido.estado === 'emProcessamento' &&
+    pedido.estado === ESTADO_PEDIDO.emProcessamento &&
     pedido.clientePedidoOuterRef != null &&
     pedido.enderecoFiscalOuterRef != null &&
     pedido.freteInicial != null;
@@ -840,7 +841,7 @@ async function applyPagoAdvanceOrDowngrade(args: {
       }
     }
   } else if (
-    pedido.estado === 'pago' &&
+    pedido.estado === ESTADO_PEDIDO.pago &&
     DOWNGRADE_TRIGGER_STATUSES.has(initialOrder.status ?? '')
   ) {
     // tasks.dart:746-774.

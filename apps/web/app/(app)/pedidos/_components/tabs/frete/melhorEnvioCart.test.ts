@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { ESTADO_FRETE } from '@delfrance/schemas';
 import type { Endereco, Filial, ItemDoPedido } from '@delfrance/schemas';
 
 import { buildPedidoCartPayload } from './melhorEnvioCart';
@@ -13,7 +14,7 @@ function makeFrete(overrides: Partial<FreteInicialFormState> = {}): FreteInicial
     externalOptionIntegracao: 'int-1',
     externalOptionData: null,
     externalOptionSelectionDate: null,
-    estado: 'iniciado',
+    estado: ESTADO_FRETE.iniciado,
     integracaoFreteOuterRef: null,
     integracaoTargetOuterRef: null,
     integracao_path: null,

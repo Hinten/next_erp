@@ -1,4 +1,4 @@
-import { valuesEqual, type EstadoPedido, type Pedido } from '@delfrance/schemas';
+import { ESTADO_PEDIDO, valuesEqual, type EstadoPedido, type Pedido } from '@delfrance/schemas';
 import type { PedidoDataPort, PedidoDocData, PedidoWriteOp } from './port';
 
 /**
@@ -277,14 +277,14 @@ export async function deletePagamento(
  * — participate.
  */
 const AUTO_ESTADO_SOURCES = new Set<EstadoPedido>([
-  'iniciado',
-  'carrinho',
-  'escolhendoFormaDePagamento',
-  'aguardandoConfirmacaoDePagamento',
-  'pagamentoNaoRealizado',
-  'emAnalise',
-  'emProcessamento',
-  'pago',
+  ESTADO_PEDIDO.iniciado,
+  ESTADO_PEDIDO.carrinho,
+  ESTADO_PEDIDO.escolhendoFormaDePagamento,
+  ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+  ESTADO_PEDIDO.pagamentoNaoRealizado,
+  ESTADO_PEDIDO.emAnalise,
+  ESTADO_PEDIDO.emProcessamento,
+  ESTADO_PEDIDO.pago,
 ]);
 
 /**
@@ -313,14 +313,20 @@ export function nextPedidoEstado(
   if (total <= 0) return null;
   const fullyPaid = valorPago >= total;
   if (fullyPaid) {
-    return estado === 'pago' ? null : { estado: 'pago', autorizarDespacho: true };
+    return estado === ESTADO_PEDIDO.pago
+      ? null
+      : { estado: ESTADO_PEDIDO.pago, autorizarDespacho: true };
   }
-  if (valorPago > 0 && estado !== 'pago' && estado !== 'aguardandoConfirmacaoDePagamento') {
-    return { estado: 'aguardandoConfirmacaoDePagamento', autorizarDespacho: false };
+  if (
+    valorPago > 0 &&
+    estado !== ESTADO_PEDIDO.pago &&
+    estado !== ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento
+  ) {
+    return { estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento, autorizarDespacho: false };
   }
-  if (estado === 'pago') {
+  if (estado === ESTADO_PEDIDO.pago) {
     // Was fully paid, no longer is → downgrade.
-    return { estado: 'aguardandoConfirmacaoDePagamento', autorizarDespacho: false };
+    return { estado: ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento, autorizarDespacho: false };
   }
   return null;
 }
@@ -334,3 +340,34 @@ export function nextPedidoEstado(
 // could settle on a stale estado (#308). The Admin SDK can, so the reconcile
 // moved server-side. `nextPedidoEstado` above stays — it is the pure rule the
 // server path applies.
+
+/**
+ * Manually cancel a pedido — the operator-driven "Também deseja cancelar o
+ * pedido?" prompt shown after an NF-e cancelamento (#74, legacy
+ * `cancelamentoNFe.dart:229-261`). Sets `estado: 'cancelado'` unconditionally
+ * (no terminal-state gate: the operator explicitly chose this, unlike the
+ * payment-driven server reconcile in `../admin/pedidoReconcile`). Idempotent:
+ * a no-op when the pedido is already `cancelado` or missing. Returns whether
+ * the estado actually changed.
+ *
+ * Writes ONLY the pedido doc. The `historicoEstadoPedido` row is appended by
+ * the `onPedidoEstadoChanged` trigger, which observes this very write and
+ * derives the actor from its auth context — so no `usuarioRef` is threaded
+ * through here, and appending a row by hand would now be denied by the rules
+ * (`meta.serverOwned`).
+ */
+export async function cancelarPedido(
+  port: PedidoDataPort,
+  args: { pedidoId: string },
+): Promise<boolean> {
+  let changed = false;
+  await port.updatePedido(args.pedidoId, (current) => {
+    // Reset per attempt: the client adapter re-runs `apply` on transaction
+    // contention, so only the final (committed) attempt must set this.
+    changed = false;
+    if (current === null || current.estado === ESTADO_PEDIDO.cancelado) return {};
+    changed = true;
+    return { estado: ESTADO_PEDIDO.cancelado, ultimaModificacao: port.now() };
+  });
+  return changed;
+}
