@@ -639,6 +639,24 @@
           "order": "ASCENDING"
         },
         {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
           "fieldPath": "dtImpressao",
           "order": "DESCENDING"
         }
@@ -1081,45 +1099,21 @@
       ]
     },
     {
-      "collectionGroup": "pedidos",
+      "collectionGroup": "estoques",
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "itensIds",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "ehSaida",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "estado",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "timestamp",
+          "fieldPath": "depositoOuterRef",
           "order": "ASCENDING"
         }
       ]
     },
     {
-      "collectionGroup": "pedidos",
+      "collectionGroup": "produtoMercadoLivre",
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "itensIds",
-          "arrayConfig": "CONTAINS"
-        },
-        {
-          "fieldPath": "ehSaida",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "estado",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "timestamp",
+          "fieldPath": "contaOuterRef",
           "order": "ASCENDING"
         }
       ]

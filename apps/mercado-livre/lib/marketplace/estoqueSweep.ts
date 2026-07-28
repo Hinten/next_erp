@@ -4,10 +4,11 @@
  * conta it runs THE produtos-first joined query
  * (`estoquePlan.fetchStockFamilies`) page by page, computes every family
  * member's quantity AT SWEEP TIME (`quantidadesDaFamilia`), applies the
- * incremental activity filter (`deveEnviarIncremental` — the daily sweep sends
- * ALL surviving families), and enqueues the resulting `buildSendTasks` drafts
- * onto the `sendMercadoLivreStock` queue. The task payload CARRIES the
- * quantities — the send handler transmits them verbatim (estoqueSend.ts).
+ * incremental activity filter (`deveEnviarIncremental`, fed the LAZY,
+ * TICK-SHARED sold-ids Set — the daily sweep sends ALL surviving families),
+ * and enqueues the resulting `buildSendTasks` drafts onto the
+ * `sendMercadoLivreStock` queue. The task payload CARRIES the quantities —
+ * the send handler transmits them verbatim (estoqueSend.ts).
  *
  * Flag-gated OFF: runs ONLY when `MERCADO_LIVRE_STOCK_SYNC_ENABLED === '1'`
  * (`isStockSyncEnabled()`); until the flag flips the deployed functions tick,
@@ -20,9 +21,20 @@
  * `cursorMaxLookbackHours()`, defaulting to `incrementalWindowMin()` when the
  * conta has no cursor yet) minus the `windowOverlapSec()` slack (legacy
  * `interval+20s`); the daily window is a flat `dailyWindowHours()` lookback.
- * The daily sweep passes `vendaCutoffUs: null` — it sends everything, nothing
- * reads the sales flag, so the pedidos probe is skipped entirely (the plan's
- * decision).
+ * The daily window derives `vendaCutoffUs: null` — it sends everything and
+ * nothing consults the sales signal.
+ *
+ * ---- Sold-ids pre-pass: LAZY, and shared by the WHOLE TICK. `runStockSweep`
+ * owns one memo keyed by `vendaCutoffUs` and hands each conta a getter; the
+ * pedidos pass fires on the FIRST family row that actually reaches
+ * `deveEnviarIncremental`, and every later row — same conta or another conta
+ * in the same tick, as long as the cutoff matches — awaits that one in-flight
+ * promise. The pass therefore runs AT MOST ONCE PER TICK, and only when at
+ * least one family needs filtering: an IDLE 15-minute tick (no conta returns a
+ * family row) pays NOTHING, and a daily tick (`vendaCutoffUs == null`) never
+ * consults it at all. A resumed continuation carries its own FROZEN cutoff and
+ * so gets its own memo key — two contas on different windows cost two passes,
+ * the honest price of two different windows.
  *
  * ---- Cursor discipline: after a conta's incremental pages + enqueues ALL
  * succeed the sweep merges `{ cursorUs: millisToMicros(nowMs), lastSweepAtUs,
@@ -85,6 +97,7 @@ import {
 
 import {
   ESTADOS_VENDA,
+  type FetchSoldProdutoIds,
   type FetchStockFamilies,
   STOCK_SYNC_FLAG_ENV,
   atividadeLookbackDays,
@@ -92,6 +105,7 @@ import {
   cursorMaxLookbackHours,
   dailyWindowHours,
   deveEnviarIncremental,
+  fetchSoldProdutoIds,
   fetchStockFamilies,
   incrementalWindowMin,
   isStockSyncEnabled,
@@ -123,6 +137,13 @@ export interface StockSweepDeps {
   nowMs: number;
   /** THE query seam — defaults to `fetchStockFamilies` (pipelines never run in tests). */
   fetchFamilies?: FetchStockFamilies;
+  /**
+   * The sold-ids pre-pass seam — defaults to `fetchSoldProdutoIds` (same
+   * reason). Called AT MOST ONCE PER TICK (module doc): the tick memoizes the
+   * promise by `vendaCutoffUs` and only the first family row that reaches the
+   * incremental filter triggers it.
+   */
+  fetchSoldIds?: FetchSoldProdutoIds;
   /** The multiorigin-guard probe seam — defaults to `api.getMe()` (`GET /users/me`). */
   getMe?: (api: MercadoLivreApi) => Promise<MlUser>;
 }
@@ -168,11 +189,14 @@ const MULTIORIGIN_ERROR =
 
 /* --------------------------------- window ---------------------------------- */
 
-/** The window `janelaDoSweep` derives — feeds `fetchStockFamilies` directly. */
+/** The window `janelaDoSweep` derives — feeds THE query + the sold-ids pass. */
 export interface SweepJanela {
   /** Exclusive estoque-change window start (ms since epoch). */
   changedSinceMs: number;
-  /** Sales-probe lower bound (µs) — null on the daily sweep (probe skipped). */
+  /**
+   * Sales-window lower bound (µs) — feeds the sold-ids pre-pass; null on the
+   * daily sweep (the pass is skipped, nothing consults the sales signal).
+   */
   vendaCutoffUs: number | null;
 }
 
@@ -181,10 +205,11 @@ export interface SweepJanela {
  * the stored cursor (ms), floored by the `cursorMaxLookbackHours()` cap so a
  * long-stale cursor can't explode the window, or the flat
  * `incrementalWindowMin()` fallback when the conta has no cursor yet — minus
- * the `windowOverlapSec()` re-cover slack either way; the sales probe looks
- * back `atividadeLookbackDays()`. Daily: a flat `dailyWindowHours()` lookback
- * (same overlap) and NO sales probe (`vendaCutoffUs: null` — the daily sweep
- * sends everything, nothing reads the flag).
+ * the `windowOverlapSec()` re-cover slack either way; the sold-ids sales
+ * window looks back `atividadeLookbackDays()`. Daily: a flat
+ * `dailyWindowHours()` lookback (same overlap) and NO sales window
+ * (`vendaCutoffUs: null` — the daily sweep sends everything, so the sold-ids
+ * pass is skipped).
  */
 export function janelaDoSweep(
   mode: StockSweepMode,
@@ -222,7 +247,13 @@ export interface SweepContinuacao {
   afterAnchorId: string;
   /** The frozen window start (ms since epoch). */
   changedSinceMs: number;
-  /** The frozen sales-probe bound (µs) — null ⇒ daily semantics (probe skipped). */
+  /**
+   * The frozen sales-window bound (µs) — null ⇒ daily semantics. It both
+   * INFERS the resumed filter mode and KEYS the resumed tick's sold-ids memo
+   * (the pass re-runs once per resuming tick over this same frozen window; a
+   * fresher Set only helps, and a conta on a different window simply gets its
+   * own memo entry).
+   */
   vendaCutoffUs: number | null;
   /** When the ORIGINAL (pre-truncation) sweep started (µs). */
   startedAtUs: number;
@@ -326,16 +357,28 @@ async function recordContaError(
 /* ------------------------------ per-conta sweep ----------------------------- */
 
 /**
+ * The tick-wide, cutoff-keyed sold-ids getter `runStockSweep` hands to every
+ * conta (module doc): resolving it the first time starts the pedidos pass;
+ * every later call with the same cutoff — this conta or any other in the same
+ * tick — awaits the SAME promise.
+ */
+type SoldIdsGetter = (vendaCutoffUs: number) => Promise<ReadonlySet<string>>;
+
+/**
  * Sweep ONE conta from its already-read state doc: RESUME a stored
  * `continuacao` (or derive a fresh window), page THE query (up to
  * `MAX_PAGES_PER_SWEEP`), filter + build + enqueue per family row, then merge
- * the state (continuation + cursor rules in the module doc). Throws on any
- * failure — the caller's containment boundary classifies it.
+ * the state (continuation + cursor rules in the module doc). The sold-ids Set
+ * is pulled LAZILY through `getSoldIds` — only when a family row actually
+ * reaches the incremental filter, and at most once for this conta (the tick's
+ * memo then makes it at most once overall). Throws on any failure — the
+ * caller's containment boundary classifies it.
  */
 async function sweepConta(
   db: Firestore,
   scheduler: MlStockTaskScheduler,
   fetchFamilies: FetchStockFamilies,
+  getSoldIds: SoldIdsGetter,
   mode: StockSweepMode,
   integracaoId: string,
   depositoId: string,
@@ -353,11 +396,16 @@ async function sweepConta(
       ? janelaDoSweep(mode, nowMs, stateRaw)
       : { changedSinceMs: continuacao.changedSinceMs, vendaCutoffUs: continuacao.vendaCutoffUs };
   // A resumed sweep's filter mode comes from the FROZEN window, never from the
-  // tick that picks it up: `vendaCutoffUs == null` means the pedidos probe was
-  // skipped, so every row carries `temVenda30d: false` and the incremental
+  // tick that picks it up: `vendaCutoffUs == null` means the sold-ids pass was
+  // skipped, so the sales arm would see an empty Set and the incremental
   // filter would wrongly drop the whole page — that window is daily-semantics.
   const filtroIncremental =
     continuacao == null ? mode === 'incremental' : continuacao.vendaCutoffUs != null;
+  // The sold-ids Set, resolved LAZILY: nothing is queried until a family row
+  // actually reaches the incremental filter below, and the tick's memo makes
+  // the pass at most once overall (module doc). Cached per conta so the second
+  // row does not even re-enter the getter.
+  let soldIds: ReadonlySet<string> | null = null;
   // The ORIGINAL sweep's start: what an incremental continuation advances
   // `cursorUs` to once it drains (the frozen window is covered up to THAT
   // instant, not up to the tick that happened to finish it).
@@ -389,8 +437,6 @@ async function sweepConta(
       integracaoId,
       depositoId,
       changedSinceMs,
-      vendaCutoffUs,
-      estadosVenda: ESTADOS_VENDA,
       afterAnchorId,
     });
     pages += 1;
@@ -398,10 +444,19 @@ async function sweepConta(
     for (const row of page.rows) {
       // (c) Quantities AT SWEEP TIME — the payload carries them verbatim.
       const quantidades = quantidadesDaFamilia(row);
-      if (filtroIncremental && !deveEnviarIncremental(row, quantidades, nowMs)) {
-        skipped += 1; // changed but inactive family — the daily sweep covers it
-        ultimoAnchorCompleto = row.anchorId;
-        continue;
+      if (filtroIncremental) {
+        // THE lazy trigger point: the first row that needs filtering pays for
+        // the pedidos pass (shared tick-wide), so a tick whose contas return
+        // no family rows never runs it. An incremental-semantics window always
+        // carries a cutoff (`janelaDoSweep` derives one; a resumed
+        // continuation froze one) — the null arm is unreachable and only keeps
+        // the empty-Set fallback honest.
+        soldIds ??= vendaCutoffUs == null ? new Set<string>() : await getSoldIds(vendaCutoffUs);
+        if (!deveEnviarIncremental(row, quantidades, nowMs, soldIds)) {
+          skipped += 1; // changed but inactive family — the daily sweep covers it
+          ultimoAnchorCompleto = row.anchorId;
+          continue;
+        }
       }
       const { tasks, skips } = buildSendTasks(row, quantidades, {
         integracaoId,
@@ -510,6 +565,11 @@ async function sweepConta(
  * guard each conta (depósito configured, not 429-paused, NOT multiorigin),
  * sweep it, all failure-isolated per conta. Returns the summary the wrapper
  * logs. The flag check comes first — off ⇒ NOTHING is read or enqueued.
+ *
+ * Owns the tick's sold-ids MEMO (module doc): one entry per `vendaCutoffUs`,
+ * populated lazily by whichever conta first needs to filter a family, awaited
+ * by every conta after it. An idle tick — no conta returns a family row — and
+ * every daily tick run ZERO pedidos queries.
  */
 export async function runStockSweep(
   db: Firestore,
@@ -526,7 +586,23 @@ export async function runStockSweep(
   const nowMs = deps.nowMs;
   const nowUs = millisToMicros(nowMs);
   const fetchFamilies = deps.fetchFamilies ?? fetchStockFamilies;
+  const fetchSoldIds = deps.fetchSoldIds ?? fetchSoldProdutoIds;
   const getMe = deps.getMe ?? defaultGetMe;
+
+  // THE tick-wide sold-ids memo: `vendaCutoffUs` → the (single) in-flight
+  // pedidos pass for that window. Storing the PROMISE, not the resolved Set,
+  // is what makes two contas that start filtering back-to-back share one
+  // query. A rejected pass is shared too — deliberately: every conta on that
+  // window would fail the same way this tick, and each failure is contained
+  // per conta by the loop below.
+  const soldIdsMemo = new Map<number, Promise<ReadonlySet<string>>>();
+  const getSoldIds: SoldIdsGetter = (vendaCutoffUs) => {
+    const memoized = soldIdsMemo.get(vendaCutoffUs);
+    if (memoized != null) return memoized;
+    const pending = fetchSoldIds(db, { vendaCutoffUs, estadosVenda: ESTADOS_VENDA });
+    soldIdsMemo.set(vendaCutoffUs, pending);
+    return pending;
+  };
 
   const snap = await integracaoCollection
     .ref(db, {})
@@ -600,6 +676,7 @@ export async function runStockSweep(
         db,
         deps.scheduler,
         fetchFamilies,
+        getSoldIds,
         mode,
         integracaoId,
         depositoId,

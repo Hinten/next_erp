@@ -16,6 +16,8 @@ import {
   ESTADOS_VENDA,
   STOCK_SYNC_FLAG_ENV,
   type FamilyMember,
+  type FetchSoldProdutoIds,
+  type FetchSoldProdutoIdsArgs,
   type FetchStockFamilies,
   type FetchStockFamiliesArgs,
   type RawStockLinkRow,
@@ -214,6 +216,16 @@ function makeFetch(pages: StockFamilyPage[] | ((args: FetchStockFamiliesArgs) =>
   return { fetchFamilies, calls };
 }
 
+/** Recording fetchSoldProdutoIds stub — the sold-ids pre-pass seam. */
+function makeSoldIds(result: ReadonlySet<string> = new Set()) {
+  const calls: FetchSoldProdutoIdsArgs[] = [];
+  const fetchSoldIds: FetchSoldProdutoIds = async (_db, args) => {
+    calls.push(args);
+    return new Set(result);
+  };
+  return { fetchSoldIds, calls };
+}
+
 function member(produtoId: string, over: Partial<FamilyMember> = {}): FamilyMember {
   return {
     produtoId,
@@ -249,14 +261,14 @@ function familyRow(over: Partial<StockFamilyRow> = {}): StockFamilyRow {
     integracoesComProduto: ['INT-A', 'INT-B'],
     links: [link()],
     children: [],
-    temVenda30d: false,
     ...over,
   };
 }
 
-/** A family that passes the incremental activity filter (sold recently). */
+/** A family that passes the incremental activity filter (created recently). */
 function activeRow(over: Partial<StockFamilyRow> = {}): StockFamilyRow {
-  return familyRow({ temVenda30d: true, ...over });
+  const row = familyRow(over);
+  return { ...row, anchor: { ...row.anchor, timestampMs: NOW_MS - 60_000 } };
 }
 
 function run(
@@ -264,7 +276,13 @@ function run(
   mode: StockSweepMode,
   deps: Partial<StockSweepDeps> & Pick<StockSweepDeps, 'scheduler'>,
 ) {
-  return runStockSweep(db as unknown as Firestore, mode, { nowMs: NOW_MS, ...deps });
+  // Tests not exercising the sold-ids seam get an inert stub (the production
+  // default would try to run a real pipeline against the FakeDb).
+  return runStockSweep(db as unknown as Firestore, mode, {
+    nowMs: NOW_MS,
+    fetchSoldIds: makeSoldIds().fetchSoldIds,
+    ...deps,
+  });
 }
 
 /** The exact draft the sweep must enqueue for the default single-link family. */
@@ -491,20 +509,25 @@ describe('runStockSweep — happy path', () => {
     seedConta(db, 'INT-A');
     wireCtx();
     const { fetchFamilies, calls } = makeFetch([{ rows: [activeRow()], nextAfterAnchorId: null }]);
+    const { fetchSoldIds, calls: soldCalls } = makeSoldIds();
     const { scheduler, enqueue } = makeScheduler();
 
-    const result = await run(db, 'incremental', { scheduler, fetchFamilies });
+    const result = await run(db, 'incremental', { scheduler, fetchFamilies, fetchSoldIds });
 
-    // THE query got the derived window + the locked estado allow-list.
+    // THE query got the derived window (sales args live on the sold-ids pass).
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual({
       integracaoId: 'INT-A',
       depositoId: 'dep-1',
       changedSinceMs: NOW_MS - 15 * 60_000 - 20_000,
-      vendaCutoffUs: (NOW_MS - 30 * 86_400_000) * 1000,
-      estadosVenda: ESTADOS_VENDA,
       afterAnchorId: null,
     });
+
+    // The sold-ids pre-pass ran ONCE, with the janela's cutoff + the locked
+    // estado allow-list.
+    expect(soldCalls).toEqual([
+      { vendaCutoffUs: (NOW_MS - 30 * 86_400_000) * 1000, estadosVenda: ESTADOS_VENDA },
+    ]);
 
     // A REAL buildSendTasks draft rode through, verbatim, with the
     // deterministic sweepId and NO enqueue options (no scheduleDelaySeconds).
@@ -549,7 +572,7 @@ describe('runStockSweep — happy path', () => {
     expect(stateGets).toHaveLength(1);
   });
 
-  it('daily: flat window, vendaCutoffUs null, lastDailyAtUs stamped, cursor untouched', async () => {
+  it('daily: flat window, NO sold-ids pass, lastDailyAtUs stamped, cursor untouched', async () => {
     const db = new FakeDb();
     seedConta(db, 'INT-A');
     const cursorUs = (NOW_MS - 3_600_000) * 1000;
@@ -558,18 +581,19 @@ describe('runStockSweep — happy path', () => {
     const { fetchFamilies, calls } = makeFetch([
       { rows: [familyRow()], nextAfterAnchorId: null }, // inactive family — daily still sends
     ]);
+    const { fetchSoldIds, calls: soldCalls } = makeSoldIds();
     const { scheduler, enqueue } = makeScheduler();
 
-    const result = await run(db, 'daily', { scheduler, fetchFamilies });
+    const result = await run(db, 'daily', { scheduler, fetchFamilies, fetchSoldIds });
 
     expect(calls[0]).toEqual({
       integracaoId: 'INT-A',
       depositoId: 'dep-1',
       changedSinceMs: NOW_MS - 24 * 3_600_000 - 20_000,
-      vendaCutoffUs: null,
-      estadosVenda: ESTADOS_VENDA,
       afterAnchorId: null,
     });
+    // The daily window has vendaCutoffUs null → the sold-ids pass is SKIPPED.
+    expect(soldCalls).toHaveLength(0);
     // No incremental filter on the daily sweep — the inactive family sends.
     expect(enqueue).toHaveBeenCalledTimes(1);
     expect(enqueue).toHaveBeenCalledWith(expectedDraft('daily', 'INT-A'));
@@ -601,7 +625,10 @@ describe('runStockSweep — incremental activity filter', () => {
     const db = new FakeDb();
     seedConta(db, 'INT-A');
     wireCtx();
-    // temVenda30d false, no recent creation, quantity 8 ≥ limiar 5 → inactive.
+    // Inactive on all three arms: the anchor/children are absent from the
+    // sold-ids Set (`run`'s default stub resolves an EMPTY one), no member was
+    // created recently (`familyRow` leaves `timestampMs` null) and the
+    // quantity 8 is ≥ the low-stock limiar 5.
     const { fetchFamilies } = makeFetch([{ rows: [familyRow()], nextAfterAnchorId: null }]);
     const { scheduler, enqueue } = makeScheduler();
 
@@ -640,6 +667,155 @@ describe('runStockSweep — incremental activity filter', () => {
 
     expect(enqueue).not.toHaveBeenCalled();
     expect(result.contas[0]).toMatchObject({ enqueued: 0, skipped: 1 });
+  });
+});
+
+/* ---------------------------- sold-ids pre-pass ---------------------------- */
+
+describe('runStockSweep — sold-ids pre-pass wiring', () => {
+  const PARENT_LINK_REF = 'documents/produtos/PROD-1/produtoMercadoLivre/link-1';
+
+  it('called ONCE per TICK — the memo is shared across contas and pages', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    seedConta(db, 'INT-B');
+    wireCtx();
+    let fetches = 0;
+    // Two pages per conta: page 1 full (feeds a keyset), page 2 short.
+    const fetchFamilies: FetchStockFamilies = async (_db, args) => {
+      fetches += 1;
+      return args.afterAnchorId == null
+        ? { rows: [activeRow()], nextAfterAnchorId: 'PROD-1' }
+        : { rows: [], nextAfterAnchorId: null };
+    };
+    const { fetchSoldIds, calls: soldCalls } = makeSoldIds();
+    const { scheduler } = makeScheduler();
+
+    await run(db, 'incremental', { scheduler, fetchFamilies, fetchSoldIds });
+
+    expect(fetches).toBe(4); // 2 pages × 2 contas
+    // Both contas derive the SAME cutoff from the one tick clock, so conta B
+    // reuses conta A's in-flight pass instead of running a second one.
+    expect(soldCalls).toEqual([
+      { vendaCutoffUs: (NOW_MS - 30 * 86_400_000) * 1000, estadosVenda: ESTADOS_VENDA },
+    ]);
+  });
+
+  it('LAZY: a tick whose contas return NO family rows never runs the pass', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    seedConta(db, 'INT-B');
+    wireCtx();
+    const { fetchFamilies, calls } = makeFetch(() => ({ rows: [], nextAfterAnchorId: null }));
+    const { fetchSoldIds, calls: soldCalls } = makeSoldIds();
+    const { scheduler } = makeScheduler();
+
+    const result = await run(db, 'incremental', { scheduler, fetchFamilies, fetchSoldIds });
+
+    // THE query still ran per conta; the pedidos pass cost NOTHING — the idle
+    // 15-minute tick is exactly this shape.
+    expect(calls).toHaveLength(2);
+    expect(soldCalls).toHaveLength(0);
+    expect(result.contas.map((c) => c.error)).toEqual([null, null]);
+  });
+
+  it('a RESUMED conta keys its own memo entry (frozen cutoff ≠ the derived one)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    seedConta(db, 'INT-B');
+    const frozenVendaUs = (NOW_MS - 5 * 3_600_000 - 30 * 86_400_000) * 1000;
+    // A resumes a frozen window; B runs its own freshly derived one.
+    db.seed(SYNC_PATH, 'INT-A', {
+      continuacao: {
+        afterAnchorId: 'PROD-9',
+        changedSinceMs: NOW_MS - 5 * 3_600_000,
+        vendaCutoffUs: frozenVendaUs,
+        startedAtUs: NOW_US - 5 * 3_600_000_000,
+      },
+    });
+    wireCtx();
+    const { fetchFamilies } = makeFetch(() => ({
+      rows: [activeRow()],
+      nextAfterAnchorId: null,
+    }));
+    const { fetchSoldIds, calls: soldCalls } = makeSoldIds();
+    const { scheduler } = makeScheduler();
+
+    await run(db, 'incremental', { scheduler, fetchFamilies, fetchSoldIds });
+
+    // Two DIFFERENT windows ⇒ two memo keys ⇒ two passes, in conta order.
+    expect(soldCalls).toEqual([
+      { vendaCutoffUs: frozenVendaUs, estadosVenda: ESTADOS_VENDA },
+      { vendaCutoffUs: (NOW_MS - 30 * 86_400_000) * 1000, estadosVenda: ESTADOS_VENDA },
+    ]);
+  });
+
+  it('daily: even with families on every page the pass NEVER runs', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    seedConta(db, 'INT-B');
+    wireCtx();
+    const { fetchFamilies } = makeFetch(() => ({
+      rows: [familyRow()],
+      nextAfterAnchorId: null,
+    }));
+    const { fetchSoldIds, calls: soldCalls } = makeSoldIds();
+    const { scheduler, enqueue } = makeScheduler();
+
+    await run(db, 'daily', { scheduler, fetchFamilies, fetchSoldIds });
+
+    expect(enqueue).toHaveBeenCalledTimes(2); // both inactive families sent
+    expect(soldCalls).toHaveLength(0);
+  });
+
+  it('a SOLD anchor id sends an otherwise-inactive family (the Set is threaded)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    wireCtx();
+    const { fetchFamilies } = makeFetch([{ rows: [familyRow()], nextAfterAnchorId: null }]);
+    const { fetchSoldIds } = makeSoldIds(new Set(['PROD-1']));
+    const { scheduler, enqueue } = makeScheduler();
+
+    const result = await run(db, 'incremental', { scheduler, fetchFamilies, fetchSoldIds });
+
+    expect(enqueue).toHaveBeenCalledTimes(1);
+    expect(result.contas[0]).toMatchObject({ enqueued: 1, skipped: 0, error: null });
+  });
+
+  it('a SOLD child id sends the family too (hasSales = own or any child)', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    wireCtx();
+    const row = familyRow({
+      children: [
+        {
+          ...member('CH-1'),
+          varLinks: [{ id: 101, produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
+        },
+      ],
+    });
+    const { fetchFamilies } = makeFetch([{ rows: [row], nextAfterAnchorId: null }]);
+    const { fetchSoldIds } = makeSoldIds(new Set(['CH-1']));
+    const { scheduler, enqueue } = makeScheduler();
+
+    const result = await run(db, 'incremental', { scheduler, fetchFamilies, fetchSoldIds });
+
+    expect(enqueue).toHaveBeenCalledTimes(1); // the old-model bulk task
+    expect(result.contas[0]).toMatchObject({ enqueued: 1, skipped: 0, error: null });
+  });
+
+  it('sold ids of OTHER produtos leave the inactive family filtered out', async () => {
+    const db = new FakeDb();
+    seedConta(db, 'INT-A');
+    wireCtx();
+    const { fetchFamilies } = makeFetch([{ rows: [familyRow()], nextAfterAnchorId: null }]);
+    const { fetchSoldIds } = makeSoldIds(new Set(['OUTRO-PROD']));
+    const { scheduler, enqueue } = makeScheduler();
+
+    const result = await run(db, 'incremental', { scheduler, fetchFamilies, fetchSoldIds });
+
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(result.contas[0]).toMatchObject({ enqueued: 0, skipped: 1, error: null });
   });
 });
 
@@ -802,9 +978,10 @@ describe('runStockSweep — persistent continuation', () => {
     db.seed(SYNC_PATH, 'INT-A', { cursorUs: (NOW_MS - 600_000) * 1000, continuacao: contInc });
     wireCtx();
     const { fetchFamilies, calls } = makeFetch([{ rows: [activeRow()], nextAfterAnchorId: null }]);
+    const { fetchSoldIds, calls: soldCalls } = makeSoldIds();
     const { scheduler, enqueue } = makeScheduler();
 
-    const result = await run(db, 'incremental', { scheduler, fetchFamilies });
+    const result = await run(db, 'incremental', { scheduler, fetchFamilies, fetchSoldIds });
 
     // ONE execution: the continuation only — this tick does NOT also run its
     // own re-derived window (that waits for the next tick, caps stay honest).
@@ -813,10 +990,11 @@ describe('runStockSweep — persistent continuation', () => {
       integracaoId: 'INT-A',
       depositoId: 'dep-1',
       changedSinceMs: FROZEN_CHANGED_MS,
-      vendaCutoffUs: FROZEN_VENDA_US,
-      estadosVenda: ESTADOS_VENDA,
       afterAnchorId: 'PROD-9',
     });
+    // The resumed sold-ids pass ran ONCE with the FROZEN cutoff — never the
+    // cursor-derived one this tick would otherwise compute.
+    expect(soldCalls).toEqual([{ vendaCutoffUs: FROZEN_VENDA_US, estadosVenda: ESTADOS_VENDA }]);
     // Tasks carry the `-cont-` sweep id (log correlation).
     expect(enqueue).toHaveBeenCalledWith({
       ...expectedDraft('incremental', 'INT-A'),
@@ -881,12 +1059,14 @@ describe('runStockSweep — persistent continuation', () => {
     db.seed(SYNC_PATH, 'INT-A', { cursorUs, continuacao: contDaily });
     wireCtx();
     // An INACTIVE family: it only survives if the incremental filter is OFF.
-    const { fetchFamilies, calls } = makeFetch([{ rows: [familyRow()], nextAfterAnchorId: null }]);
+    const { fetchFamilies } = makeFetch([{ rows: [familyRow()], nextAfterAnchorId: null }]);
+    const { fetchSoldIds, calls: soldCalls } = makeSoldIds();
     const { scheduler, enqueue } = makeScheduler();
 
-    await run(db, 'incremental', { scheduler, fetchFamilies });
+    await run(db, 'incremental', { scheduler, fetchFamilies, fetchSoldIds });
 
-    expect(calls[0]!.vendaCutoffUs).toBeNull();
+    // Frozen vendaCutoffUs null ⇒ daily semantics: NO sold-ids pass either.
+    expect(soldCalls).toHaveLength(0);
     expect(enqueue).toHaveBeenCalledTimes(1); // no incremental filter applied
     // Drained as a DAILY sweep: lastDailyAtUs stamped, cursor untouched.
     expect(db.docs(SYNC_PATH).get('INT-A')).toEqual({

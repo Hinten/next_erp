@@ -74,6 +74,15 @@ const { mockPipelinesExports, FakeChain } = vi.hoisted(() => {
     aggregate(...accumulators: unknown[]): this {
       return this.push('aggregate', accumulators);
     }
+    unnest(selectable: unknown, indexField?: unknown): this {
+      return this.push(
+        'unnest',
+        indexField === undefined ? [selectable] : [selectable, indexField],
+      );
+    }
+    distinct(...groups: unknown[]): this {
+      return this.push('distinct', groups);
+    }
     toScalarExpression(): Expr {
       return new Expr({ kind: 'scalarSubquery', stages: this.stages });
     }
@@ -137,6 +146,7 @@ import {
   envFlag,
   envInt,
   estoqueMax,
+  fetchSoldProdutoIds,
   fetchStockFamilies,
   incrementalWindowMin,
   isStockSyncEnabled,
@@ -149,6 +159,7 @@ import {
   quantidadeParaEnvio,
   quantidadesDaFamilia,
   ratePauseMin,
+  soldIdsLimit,
   windowOverlapSec,
 } from './estoquePlan';
 
@@ -208,6 +219,7 @@ const TOUCHED_ENV = [
   'MERCADO_LIVRE_STOCK_KIT_INCLUI_PROPRIO',
   'MERCADO_LIVRE_STOCK_ANCHOR_PAGE_LIMIT',
   'MERCADO_LIVRE_STOCK_RATE_PAUSE_MIN',
+  'MERCADO_LIVRE_STOCK_SOLD_IDS_LIMIT',
   'ESTOQUE_PLAN_TEST_INT',
   'ESTOQUE_PLAN_TEST_FLAG',
 ];
@@ -228,11 +240,9 @@ const asc = (name: string) => ({ kind: 'asc', f: f(name) });
 const docId = (of: unknown) => ({ kind: 'documentId', of });
 const coal = (...xs: unknown[]) => ({ kind: 'coalesce', xs });
 const arr = (elements: unknown[]) => ({ kind: 'array', elements });
-const arrConcat = (...xs: unknown[]) => ({ kind: 'arrayConcat', xs });
 const logicalMax = (...xs: unknown[]) => ({ kind: 'logicalMaximum', xs });
 const maxOf = (fld: string) => ({ kind: 'maximum', f: fld });
 const contains = (l: unknown, v: unknown) => ({ kind: 'arrayContains', l, v });
-const containsAny = (l: unknown, values: unknown) => ({ kind: 'arrayContainsAny', l, values });
 const inAny = (l: unknown, values: unknown) => ({ kind: 'equalAny', l, values });
 const cnst = (v: unknown) => ({ kind: 'constant', v });
 const cond = (c: unknown, t: unknown, e: unknown) => ({ kind: 'conditional', c, t, e });
@@ -298,15 +308,6 @@ const compEstoquesMaxSub = (keysVar: string) =>
   );
 
 const kitKeysDef = (name: string) => alias(name, coal(f('componentesKitKeys'), arr([])));
-
-const childIdsSub = () => ({
-  kind: 'arraySubquery',
-  stages: [
-    { stage: 'collection', args: ['produtos'] },
-    { stage: 'where', args: [eq(f('paiId'), vr('anchorId'))] },
-    { stage: 'select', args: [alias('childId', docId(f('__name__')))] },
-  ],
-});
 
 // The rollup binds `maxChildKitKeys`, NOT the childrenJoin's `childKitKeys` —
 // sibling rebinding of one global variable name is an unverified assumption
@@ -383,26 +384,6 @@ const childrenSub = () => ({
   ],
 });
 
-const vendaSub = (estados: unknown[] = [...ESTADOS_VENDA]) => ({
-  kind: 'arraySubquery',
-  stages: [
-    { stage: 'collection', args: ['pedidos'] },
-    {
-      stage: 'where',
-      args: [
-        AND(
-          containsAny(f('itensIds'), arrConcat(arr([vr('anchorId')]), vr('childIds'))),
-          eq(f('ehSaida'), true),
-          gte(f('timestamp'), CUTOFF_US),
-          inAny(f('estado'), estados),
-        ),
-      ],
-    },
-    { stage: 'limit', args: [1] },
-    { stage: 'select', args: ['estado'] },
-  ],
-});
-
 /** THE query's S1 base terms (page 1 of a fresh sweep). */
 const s1Terms = () => [
   eq(f('paiId'), null),
@@ -419,8 +400,9 @@ const s1After = (anchorId: string) =>
 /**
  * The full documented THE-query stage tree for ONE page (one execution):
  * S1 where → S2 define (plain) → S3 addFields (the subquery-embed site) →
- * S4 where over the added FIELDS → S4b define(childIds) → S5 sort+limit →
- * S6 select.
+ * S4 where over the added FIELDS → S5 sort+limit → S6 select. The sales
+ * signal is NOT here — it moved to the uncorrelated fetchSoldProdutoIds
+ * pre-pass (its own describe below).
  */
 function expectedStages(s1: unknown, limit: number, changedSinceMs = FROM_MS): RecordedStage[] {
   return [
@@ -445,7 +427,6 @@ function expectedStages(s1: unknown, limit: number, changedSinceMs = FROM_MS): R
       stage: 'where',
       args: [gt(coal(logicalMax(f('maxOwn'), f('maxComp'), f('maxChildren')), 0), changedSinceMs)],
     },
-    { stage: 'define', args: [alias('childIds', childIdsSub())] },
     { stage: 'sort', args: [asc('__name__')] },
     { stage: 'limit', args: [limit] },
     {
@@ -462,9 +443,31 @@ function expectedStages(s1: unknown, limit: number, changedSinceMs = FROM_MS): R
         alias('componentEstoques', compEstoquesSub('anchorKitKeys')),
         alias('links', linkSub()),
         alias('children', childrenSub()),
-        alias('temVenda30d', gt(len(vendaSub()), 0)),
       ],
     },
+  ];
+}
+
+/** The full documented sold-ids pre-pass stage tree (ONE execution). */
+function expectedSoldStages(
+  limit: number,
+  estados: readonly unknown[] = [...ESTADOS_VENDA],
+): RecordedStage[] {
+  return [
+    { stage: 'collection', args: ['pedidos'] },
+    {
+      stage: 'where',
+      args: [
+        AND(
+          eq(f('ehSaida'), true),
+          inAny(f('estado'), [...estados]),
+          gte(f('timestamp'), CUTOFF_US),
+        ),
+      ],
+    },
+    { stage: 'unnest', args: [alias('pid', f('itensIds'))] },
+    { stage: 'distinct', args: ['pid'] },
+    { stage: 'limit', args: [limit] },
   ];
 }
 
@@ -497,7 +500,6 @@ interface FamilyRowSpec {
   /** Each entry merges over the default listing; `[]` = conta has no listings. */
   links?: Array<Record<string, unknown>>;
   children?: FamilyChild[];
-  temVenda30d?: boolean;
 }
 
 function familyRow(spec: FamilyRowSpec = {}): StockFamilyRow {
@@ -515,7 +517,6 @@ function familyRow(spec: FamilyRowSpec = {}): StockFamilyRow {
       ...link,
     })),
     children: spec.children ?? [],
-    temVenda30d: spec.temVenda30d ?? false,
   };
 }
 
@@ -805,8 +806,6 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
     integracaoId: CONTA,
     depositoId: DEPOSITO_ID,
     changedSinceMs: FROM_MS,
-    vendaCutoffUs: CUTOFF_US,
-    estadosVenda: ESTADOS_VENDA,
   };
 
   it('single short page: the full documented stage tree (THE query), ONE execution', async () => {
@@ -832,35 +831,15 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
     });
   });
 
-  it('the pedidos probe carries exactly the estadosVenda ARG, not the constant', async () => {
-    const db = new FakeDb();
-    db.queuePipelinePage([]);
-    const SENTINEL = ['sentinel-estado-1', 'sentinel-estado-2'];
-
-    await fetchStockFamilies(asDb(db), { ...FS_ARGS, estadosVenda: SENTINEL, pageLimit: 10 });
-
-    const select = db.pipelineExecutions[0]![8]!;
-    expect(select.stage).toBe('select');
-    expect(select.args[select.args.length - 1]).toEqual(
-      alias('temVenda30d', gt(len(vendaSub(SENTINEL)), 0)),
-    );
-  });
-
-  it('vendaCutoffUs null (daily sweep): NO pedidos subquery; temVenda30d false client-side', async () => {
+  it('no pedidos subquery anywhere in THE query (the sales signal moved to the pre-pass)', async () => {
     const db = new FakeDb();
     db.queuePipelinePage([{ anchorId: 'PROD' }]);
 
-    const page = await fetchStockFamilies(asDb(db), {
-      ...FS_ARGS,
-      vendaCutoffUs: null,
-      pageLimit: 10,
-    });
+    await fetchStockFamilies(asDb(db), { ...FS_ARGS, pageLimit: 10 });
 
-    const select = db.pipelineExecutions[0]![8]!;
-    expect(select.stage).toBe('select');
-    expect(JSON.stringify(select.args)).not.toContain('pedidos');
-    expect(JSON.stringify(select.args)).not.toContain('temVenda30d');
-    expect(page.rows[0]!.temVenda30d).toBe(false); // client-side constant
+    expect(JSON.stringify(db.pipelineExecutions[0])).not.toContain('pedidos');
+    expect(JSON.stringify(db.pipelineExecutions[0])).not.toContain('temVenda30d');
+    expect(JSON.stringify(db.pipelineExecutions[0])).not.toContain('childIds');
   });
 
   it('maps projected rows: members coerced, children sorted, junk filtered', async () => {
@@ -897,7 +876,6 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
           { childId: '', varLinks: [] }, // junk rows dropped
           'garbage',
         ],
-        temVenda30d: true,
       },
       { anchorId: 'PROD2' }, // minimal row → coerced defaults, joins absent
       { publicado: true }, // no anchorId → skipped (defensive)
@@ -946,7 +924,6 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
             varLinks: [{ itemId: 'MLB-CH2', produtoMercadoLivreOuterRef: PARENT_LINK_REF }],
           },
         ],
-        temVenda30d: true,
       },
       {
         anchorId: 'PROD2',
@@ -963,7 +940,6 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
         integracoesComProduto: [],
         links: [],
         children: [],
-        temVenda30d: false,
       },
     ]);
   });
@@ -1008,7 +984,83 @@ describe('fetchStockFamilies — stage tree, keyset paging, row mapping', () => 
 
     await fetchStockFamilies(asDb(db), FS_ARGS);
 
-    expect(db.pipelineExecutions[0]![7]).toEqual({ stage: 'limit', args: [3] });
+    expect(db.pipelineExecutions[0]![6]).toEqual({ stage: 'limit', args: [3] });
+  });
+});
+
+describe('fetchSoldProdutoIds — the uncorrelated sales pre-pass', () => {
+  const SOLD_ARGS = { vendaCutoffUs: CUTOFF_US, estadosVenda: ESTADOS_VENDA };
+
+  it('single execution: the full documented stage tree (where → unnest → distinct → limit)', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([{ pid: 'A' }]);
+
+    await fetchSoldProdutoIds(asDb(db), { ...SOLD_ARGS, limit: 50 });
+
+    expect(db.pipelineExecutions).toHaveLength(1);
+    expect(db.pipelineExecutions[0]).toEqual(expectedSoldStages(50));
+  });
+
+  it('carries exactly the estadosVenda ARG, not the constant', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([]);
+    const SENTINEL = ['sentinel-estado-1', 'sentinel-estado-2'];
+
+    await fetchSoldProdutoIds(asDb(db), { ...SOLD_ARGS, estadosVenda: SENTINEL, limit: 50 });
+
+    expect(db.pipelineExecutions[0]).toEqual(expectedSoldStages(50, SENTINEL));
+  });
+
+  it('maps rows into a Set of string pids, junk filtered', async () => {
+    const db = new FakeDb();
+    db.queuePipelinePage([
+      { pid: 'PROD-A' },
+      { pid: '' }, // empty string dropped
+      { pid: 42 }, // non-string dropped
+      {}, // absent pid dropped
+      { pid: 'PROD-B' },
+    ]);
+
+    const soldIds = await fetchSoldProdutoIds(asDb(db), { ...SOLD_ARGS, limit: 50 });
+
+    expect(soldIds).toEqual(new Set(['PROD-A', 'PROD-B']));
+  });
+
+  it('default cap comes from soldIdsLimit() (env-tunable, read lazily)', async () => {
+    expect(soldIdsLimit()).toBe(10_000);
+    const db = new FakeDb();
+    db.queuePipelinePage([]);
+    await fetchSoldProdutoIds(asDb(db), SOLD_ARGS);
+    expect(db.pipelineExecutions[0]![4]).toEqual({ stage: 'limit', args: [10_000] });
+
+    process.env.MERCADO_LIVRE_STOCK_SOLD_IDS_LIMIT = '7';
+    const db2 = new FakeDb();
+    db2.queuePipelinePage([]);
+    await fetchSoldProdutoIds(asDb(db2), SOLD_ARGS);
+    expect(db2.pipelineExecutions[0]![4]).toEqual({ stage: 'limit', args: [7] });
+  });
+
+  it('result size == limit → LOUD truncation warn (sold ids are missing)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockClear();
+    const db = new FakeDb();
+    db.queuePipelinePage([{ pid: 'A' }, { pid: 'B' }]);
+
+    await fetchSoldProdutoIds(asDb(db), { ...SOLD_ARGS, limit: 2 });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('SOLD_IDS_LIMIT'),
+      expect.objectContaining({ limit: 2 }),
+    );
+  });
+
+  it('below the limit → no warn', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockClear();
+    const db = new FakeDb();
+    db.queuePipelinePage([{ pid: 'A' }]);
+
+    await fetchSoldProdutoIds(asDb(db), { ...SOLD_ARGS, limit: 2 });
+
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -1087,6 +1139,7 @@ describe('sweep-time quantities — pure reducers', () => {
 
 describe('deveEnviarIncremental — activity filter OR-arms', () => {
   const NOW = T4;
+  const NO_SALES: ReadonlySet<string> = new Set();
   const quietRow = () =>
     familyRow({
       anchor: { timestampMs: NOW - 40 * DAY_MS },
@@ -1097,19 +1150,27 @@ describe('deveEnviarIncremental — activity filter OR-arms', () => {
     ['CH1', 8],
   ]);
 
-  it('family sale in the window → send', () => {
-    expect(deveEnviarIncremental({ ...quietRow(), temVenda30d: true }, okQty, NOW)).toBe(true);
+  it('the ANCHOR id in soldIds → send', () => {
+    expect(deveEnviarIncremental(quietRow(), okQty, NOW, new Set(['PROD']))).toBe(true);
+  });
+
+  it('ANY child id in soldIds → send (legacy hasSales = own or any child)', () => {
+    expect(deveEnviarIncremental(quietRow(), okQty, NOW, new Set(['CH1']))).toBe(true);
+  });
+
+  it('soldIds hits on OTHER produtos do not send this family', () => {
+    expect(deveEnviarIncremental(quietRow(), okQty, NOW, new Set(['OUTRO-PROD']))).toBe(false);
   });
 
   it('any member created within the lookback → send (anchor or child)', () => {
     const recentAnchor = familyRow({ anchor: { timestampMs: NOW - DAY_MS } });
-    expect(deveEnviarIncremental(recentAnchor, okQty, NOW)).toBe(true);
+    expect(deveEnviarIncremental(recentAnchor, okQty, NOW, NO_SALES)).toBe(true);
 
     const recentChild = familyRow({
       anchor: { timestampMs: NOW - 40 * DAY_MS },
       children: [child('CH1', [], { timestampMs: NOW - DAY_MS })],
     });
-    expect(deveEnviarIncremental(recentChild, okQty, NOW)).toBe(true);
+    expect(deveEnviarIncremental(recentChild, okQty, NOW, NO_SALES)).toBe(true);
   });
 
   it('any quantity below the limiar → send; the limiar is env-tunable', () => {
@@ -1117,14 +1178,14 @@ describe('deveEnviarIncremental — activity filter OR-arms', () => {
       ['PROD', 10],
       ['CH1', 3], // < 5
     ]);
-    expect(deveEnviarIncremental(quietRow(), lowQty, NOW)).toBe(true);
+    expect(deveEnviarIncremental(quietRow(), lowQty, NOW, NO_SALES)).toBe(true);
     process.env.MERCADO_LIVRE_STOCK_LIMIAR = '2';
-    expect(deveEnviarIncremental(quietRow(), lowQty, NOW)).toBe(false); // 3 >= 2
+    expect(deveEnviarIncremental(quietRow(), lowQty, NOW, NO_SALES)).toBe(false); // 3 >= 2
   });
 
   it('no sale, nothing recent, all quantities healthy → skip', () => {
-    expect(deveEnviarIncremental(quietRow(), okQty, NOW)).toBe(false);
-    expect(deveEnviarIncremental(familyRow(), new Map(), NOW)).toBe(false); // null timestamps
+    expect(deveEnviarIncremental(quietRow(), okQty, NOW, NO_SALES)).toBe(false);
+    expect(deveEnviarIncremental(familyRow(), new Map(), NOW, NO_SALES)).toBe(false); // null timestamps
   });
 });
 
