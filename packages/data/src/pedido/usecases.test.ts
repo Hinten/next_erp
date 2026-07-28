@@ -13,7 +13,6 @@ import {
   deleteIncidente,
   deletePagamento,
   nextPedidoEstado,
-  reconcilePedidoEstadoFromPagamentos,
   recordEstadoChange,
   remotelyChangedFields,
   savePedido,
@@ -351,115 +350,6 @@ describe('nextPedidoEstado (rule table)', () => {
     // Partially paid (refund) on a refund state → must NOT erase it.
     expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoParcialmente, 100, 50)).toBeNull();
     expect(nextPedidoEstado(ESTADO_PEDIDO.estornadoIntegralmente, 100, 0)).toBeNull();
-  });
-});
-
-describe('reconcilePedidoEstadoFromPagamentos', () => {
-  it('writes pago + frete despachoAutorizado + a história row on full payment', async () => {
-    const { port, written, committed } = fakePort(
-      { estado: 'iniciado', valorCobrado: 100, freteInicial: { valorCobrado: 7 } },
-      777,
-    );
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 100,
-      usuarioRef: 'documents/usuarios/u1',
-    });
-    expect(result).toBe('pago');
-    expect(written()).toEqual({
-      estado: 'pago',
-      ultimaModificacao: 777,
-      freteInicial: { valorCobrado: 7, estado: 'despachoAutorizado' },
-    });
-    expect(committed()).toEqual([
-      {
-        type: 'set',
-        path: 'pedidos/x/historicoEstadoPedido/newid',
-        data: {
-          estado: 'pago',
-          usuarioHistoricoEstadosPedidoOuterRef: 'documents/usuarios/u1',
-          data: 777,
-        },
-      },
-    ]);
-  });
-
-  it('writes only estado (no freteInicial key) when the pedido has no frete', async () => {
-    const { port, written } = fakePort({ estado: 'iniciado', valorCobrado: 100 }, 777);
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 100,
-    });
-    expect(result).toBe('pago');
-    expect(written()).toEqual({ estado: 'pago', ultimaModificacao: 777 });
-    expect(written()).not.toHaveProperty('freteInicial');
-  });
-
-  it('does not regress an already-shipped frete when transitioning to pago', async () => {
-    const { port, written } = fakePort(
-      {
-        estado: 'iniciado',
-        valorCobrado: 100,
-        freteInicial: { valorCobrado: 7, estado: 'postado' },
-      },
-      777,
-    );
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 100,
-    });
-    expect(result).toBe('pago');
-    // estado advances, but the in-flight 'postado' frete is left untouched.
-    expect(written()).toEqual({ estado: 'pago', ultimaModificacao: 777 });
-    expect(written()).not.toHaveProperty('freteInicial');
-  });
-
-  it('does not transition (no história) a cancelado pedido that is still fully paid', async () => {
-    const { port, written, committed } = fakePort({ estado: 'cancelado', valorCobrado: 100 }, 777);
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 100,
-    });
-    expect(result).toBeNull();
-    expect(written()).toEqual({});
-    expect(committed()).toEqual([]);
-  });
-
-  it('advances to aguardando on a partial payment without touching frete', async () => {
-    const { port, written } = fakePort(
-      { estado: 'iniciado', valorCobrado: 100, freteInicial: { valorCobrado: 7 } },
-      777,
-    );
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 40,
-    });
-    expect(result).toBe('aguardandoConfirmacaoDePagamento');
-    expect(written()).toEqual({
-      estado: 'aguardandoConfirmacaoDePagamento',
-      ultimaModificacao: 777,
-    });
-  });
-
-  it('is a no-op (empty patch, no história) when the estado already matches', async () => {
-    const { port, written, committed } = fakePort({ estado: 'pago', valorCobrado: 100 }, 777);
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 100,
-    });
-    expect(result).toBeNull();
-    expect(written()).toEqual({});
-    expect(committed()).toEqual([]);
-  });
-
-  it('skips everything when the doc is gone', async () => {
-    const { port, committed } = fakePort(null, 777);
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 100,
-    });
-    expect(result).toBeNull();
-    expect(committed()).toEqual([]);
   });
 });
 

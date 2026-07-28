@@ -23,7 +23,6 @@ export {
   savePagamento,
   deletePagamento,
   nextPedidoEstado,
-  reconcilePedidoEstadoFromPagamentos,
   cancelarPedido,
   PedidoConflictError,
   PedidoNothingChangedError,

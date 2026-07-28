@@ -467,6 +467,53 @@ describe('reconcilePedidoEstado', () => {
     expect(writes.sets).toHaveLength(0);
   });
 
+  // The idempotency property the whole design leans on: calling this twice — two
+  // tabs, a retried callable, two concurrent reconciles — cannot double-write or
+  // append a second história row, because the second call re-reads the settled
+  // estado and `nextPedidoEstado` returns null.
+  it('is a no-op when the estado already matches the payment set (pago, still fully paid)', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': { estado: 'pago', valorCobrado: 100 },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: null });
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+    expect(writes.updates).toHaveLength(0);
+    expect(writes.sets).toHaveLength(0);
+  });
+
+  it('downgrades a pago pedido once its payments no longer cover the total', async () => {
+    const { db, store, writes } = makeDb({
+      'pedidos/p1': {
+        estado: 'pago',
+        valorCobrado: 100,
+        freteInicial: { estado: 'despachoAutorizado' },
+      },
+      // Refunded — `isPagamentoPagante` counts only a null or `aprovado` status,
+      // so `valorPago` drops to 0 and the pedido is no longer covered.
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.estornado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: 'aguardandoConfirmacaoDePagamento' });
+    expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
+    // A downgrade never re-authorizes dispatch, so `freteInicial` is left alone.
+    expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'despachoAutorizado' });
+    expect(writes.sets.filter((w) => w.path.includes('/historicoEstadoPedido/'))).toHaveLength(1);
+  });
+
   it('never auto-reverts a terminal estado (e.g. finalizado) even if fully paid', async () => {
     const { db, store, writes } = makeDb({
       'pedidos/p1': {
@@ -508,6 +555,26 @@ describe('reconcilePedidoEstado', () => {
     expect(result).toEqual({ transition: 'pago' });
     expect(store['pedidos/p1']!.estado).toBe('pago');
     expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'postado', codRastreio: 'BR123' });
+  });
+
+  it('writes only estado (no freteInicial key) when the pedido has no frete', async () => {
+    const { db, store, writes } = makeDb({
+      // No `freteInicial` at all — the dispatch authorization must not invent one.
+      'pedidos/p1': { estado: 'iniciado', valorCobrado: 100 },
+      'pedidos/p1/pagamentos/pay1': {
+        valor: 100,
+        status_pagamento: STATUS_PAGAMENTO.aprovado,
+        ultimaModificacao: T_OLD,
+      },
+    });
+
+    const result = await reconcilePedidoEstado(db, { pedidoId: PEDIDO_ID });
+
+    expect(result).toEqual({ transition: 'pago' });
+    expect(store['pedidos/p1']!.estado).toBe('pago');
+    const pedidoUpdates = writes.updates.filter((w) => w.path === 'pedidos/p1');
+    expect(pedidoUpdates).toHaveLength(1);
+    expect(pedidoUpdates[0]!.data).not.toHaveProperty('freteInicial');
   });
 
   it('throws PedidoReconcileNotFoundError when the pedido is missing', async () => {
