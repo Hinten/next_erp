@@ -24,3 +24,4 @@ export {
   onPedidoEstoqueSync,
   resincronizarEstoquePedido,
 } from './estoques/sincronizarEstoquePedido';
+export { reconciliarPagamentoPedido } from './pedidos/reconciliarPagamentoPedido';

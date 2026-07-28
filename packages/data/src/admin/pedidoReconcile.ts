@@ -1,4 +1,10 @@
-import type { DocumentData, Firestore as FirebaseAdminFirestore } from 'firebase-admin/firestore';
+import type {
+  DocumentData,
+  DocumentReference,
+  DocumentSnapshot,
+  Firestore as FirebaseAdminFirestore,
+  Transaction,
+} from 'firebase-admin/firestore';
 import {
   isFreteJaPostado,
   nowMicros,
@@ -48,14 +54,65 @@ const GATEWAY_OWNED = [
 ] as const;
 
 /**
+ * Shared tail of both admin reconciles: given the pedido's already-read
+ * snapshot and the (already computed) `valorPago`, applies {@link
+ * nextPedidoEstado} and — only on a transition — writes the new `estado` and
+ * flips `freteInicial.estado` to `despachoAutorizado` (never regressing an
+ * already-posted frete). Returns the new estado, or `null` when no transition
+ * applies.
+ *
+ * The `historicoEstadoPedido` audit row is NOT written here: the
+ * `onPedidoEstadoChanged` trigger observes the pedido write below and records
+ * the transition. Both callers run on the Admin SDK, so that row carries a null
+ * usuário — an automatic, payment-driven transition has no end user behind it.
+ */
+function applyEstadoTransition(
+  tx: Transaction,
+  pedidoRef: DocumentReference,
+  pedidoSnap: DocumentSnapshot,
+  valorPago: number,
+): EstadoPedido | null {
+  const estado = pedidoSnap.get('estado') as EstadoPedido;
+  const total =
+    typeof pedidoSnap.get('valorCobrado') === 'number'
+      ? (pedidoSnap.get('valorCobrado') as number)
+      : 0;
+  const next = nextPedidoEstado(estado, total, valorPago);
+  if (next === null) return null;
+
+  const pedidoPatch: Record<string, unknown> = {
+    estado: next.estado,
+    ultimaModificacao: nowMicros(),
+  };
+  if (next.autorizarDespacho) {
+    const frete = pedidoSnap.get('freteInicial');
+    if (frete && typeof frete === 'object') {
+      const freteRecord = frete as Record<string, unknown>;
+      const freteEstado = freteRecord.estado as EstadoFrete | undefined;
+      // Only authorize dispatch from a pre-shipment state — never regress an
+      // in-flight frete (postado / a caminho / entregue) back to authorized.
+      if (!freteEstado || !isFreteJaPostado(freteEstado)) {
+        pedidoPatch.freteInicial = { ...freteRecord, estado: 'despachoAutorizado' };
+      }
+    }
+  }
+  tx.update(pedidoRef, pedidoPatch);
+
+  return next.estado;
+}
+
+/**
  * Server-side (Admin SDK) reconcile of a pedido's `estado` from ONE inbound
  * payment — the fully-consistent counterpart to the client
- * `reconcilePedidoEstadoFromPagamentos` (`../pedido/usecases`). That client path
- * carries a documented atomicity caveat (#308): the Firebase JS SDK can't read a
- * query inside `runTransaction`, so `valorPago` is summed BEFORE the tx and two
- * reconciles can briefly settle on a stale estado. The Admin SDK CAN query
- * in-transaction, so this path reads the whole payment set atomically with the
- * pedido — no race. **Webhook writers (Mercado Pago) are the primary caller.**
+ * `reconcilePedidoEstadoFromPagamentos` (`../pedido/usecases`). That client
+ * path carries a documented atomicity caveat (#308): the Firebase JS SDK
+ * can't read a query inside `runTransaction`, so `valorPago` is summed BEFORE
+ * the tx and two reconciles can briefly settle on a stale estado. The Admin
+ * SDK CAN query in-transaction, so this path reads the whole payment set
+ * atomically with the pedido — no race. **Webhook writers (Mercado Pago) are
+ * the primary caller.** See {@link reconcilePedidoEstado} for the
+ * callable-facing counterpart that reconciles from the CURRENT payment set
+ * instead of upserting one.
  *
  * In one transaction it:
  *  1. reads the pedido (missing → {@link PedidoReconcileNotFoundError});
@@ -157,39 +214,58 @@ export async function reconcilePedidoFromPagamento(
     });
     const valorPago = sumPagamentosPagos(paymentsForSum);
 
-    const estado = pedidoSnap.get('estado') as EstadoPedido;
-    const total =
-      typeof pedidoSnap.get('valorCobrado') === 'number'
-        ? (pedidoSnap.get('valorCobrado') as number)
-        : 0;
-    const next = nextPedidoEstado(estado, total, valorPago);
-    if (next === null) {
-      return { transition: null, skippedStale: false };
-    }
+    const transition = applyEstadoTransition(tx, pedidoRef, pedidoSnap, valorPago);
+    return { transition, skippedStale: false };
+  });
+}
 
-    const pedidoPatch: Record<string, unknown> = {
-      estado: next.estado,
-      ultimaModificacao: nowMicros(),
-    };
-    if (next.autorizarDespacho) {
-      const frete = pedidoSnap.get('freteInicial');
-      if (frete && typeof frete === 'object') {
-        const freteRecord = frete as Record<string, unknown>;
-        const freteEstado = freteRecord.estado as EstadoFrete | undefined;
-        // Only authorize dispatch from a pre-shipment state — never regress an
-        // in-flight frete (postado / a caminho / entregue) back to authorized.
-        if (!freteEstado || !isFreteJaPostado(freteEstado)) {
-          pedidoPatch.freteInicial = { ...freteRecord, estado: 'despachoAutorizado' };
-        }
-      }
-    }
-    tx.update(pedidoRef, pedidoPatch);
+/**
+ * Server-side (Admin SDK) reconcile of a pedido's `estado` from its CURRENT
+ * pagamentos — the callable-facing counterpart to {@link
+ * reconcilePedidoFromPagamento}. Where that one upserts ONE inbound (webhook)
+ * payment, this one assumes every pagamento was already written by its own
+ * path (client CRUD via `savePagamento`/`deletePagamento`) and just settles
+ * `estado` from the current payment set — the fully-consistent counterpart to
+ * the client-side `reconcilePedidoEstadoFromPagamentos` (`../pedido/usecases`,
+ * #308): that path sums `valorPago` with a `getDocs` BEFORE `runTransaction`
+ * (the Firebase JS SDK can't query inside a transaction), so two concurrent
+ * reconciles can settle on a stale estado. This one reads the pedido AND every
+ * pagamento in the SAME transaction — no race.
+ *
+ * Exposed via the `reconciliarPagamentoPedido` Cloud Function callable
+ * (`apps/functions`), NOT YET wired into the web client — that migration
+ * needs `reconciliarPagamentoPedido` deployed to staging first (deploy is a
+ * manual, coordinated step; the e2e that exercises this exact flow,
+ * `apps/web/e2e/pedidos-pagamento.vendas.e2e.spec.ts`, hits real staging
+ * Cloud Functions). Once deployed, `PagamentosSection`'s `reconcileEstado()`
+ * can call the new callable instead of `reconcilePedidoEstadoFromPagamentos`.
+ *
+ * Takes NO `usuarioRef`: the `historicoEstadoPedido` row is written by the
+ * `onPedidoEstadoChanged` trigger from the pedido write's auth context, and this
+ * runs on the Admin SDK — so the transition is recorded with a null usuário even
+ * though the calling operator is known to the callable. That is deliberate: an
+ * automatic, payment-driven transition is system-caused, not user-caused.
+ */
+export async function reconcilePedidoEstado(
+  db: FirebaseAdminFirestore,
+  input: { pedidoId: string },
+): Promise<{ transition: EstadoPedido | null }> {
+  const { pedidoId } = input;
 
-    // The `historicoEstadoPedido` audit row is appended by the
-    // `onPedidoEstadoChanged` trigger, which observes this pedido write. It has
-    // no end user behind it (this runs on the Admin SDK, from a webhook), so the
-    // row is correctly recorded with a null usuário.
+  return db.runTransaction(async (tx) => {
+    const pedidoRef = pedidoCollection.docRef(db, {}, pedidoId);
+    const pedidoSnap = await tx.get(pedidoRef);
+    if (!pedidoSnap.exists) throw new PedidoReconcileNotFoundError(pedidoId);
 
-    return { transition: next.estado, skippedStale: false };
+    const pagamentosSnap = await tx.get(pagamentoCollection.ref(db, { pedidoId }));
+    const valorPago = sumPagamentosPagos(
+      pagamentosSnap.docs.map((d) => ({
+        valor: typeof d.get('valor') === 'number' ? (d.get('valor') as number) : 0,
+        status_pagamento: d.get('status_pagamento') as number | null | undefined,
+      })),
+    );
+
+    const transition = applyEstadoTransition(tx, pedidoRef, pedidoSnap, valorPago);
+    return { transition };
   });
 }
