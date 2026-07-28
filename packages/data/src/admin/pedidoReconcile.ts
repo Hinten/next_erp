@@ -6,6 +6,7 @@ import type {
   Transaction,
 } from 'firebase-admin/firestore';
 import {
+  ESTADO_FRETE,
   isFreteJaPostado,
   nowMicros,
   sumPagamentosPagos,
@@ -94,7 +95,7 @@ async function applyEstadoTransition(
       // Only authorize dispatch from a pre-shipment state — never regress an
       // in-flight frete (postado / a caminho / entregue) back to authorized.
       if (!freteEstado || !isFreteJaPostado(freteEstado)) {
-        pedidoPatch.freteInicial = { ...freteRecord, estado: 'despachoAutorizado' };
+        pedidoPatch.freteInicial = { ...freteRecord, estado: ESTADO_FRETE.despachoAutorizado };
       }
     }
   }
