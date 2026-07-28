@@ -10,7 +10,6 @@ import {
   deleteIncidente,
   deletePagamento,
   nextPedidoEstado,
-  reconcilePedidoEstadoFromPagamentos,
   remotelyChangedFields,
   savePedido,
   saveIncidente,
@@ -336,104 +335,5 @@ describe('nextPedidoEstado (rule table)', () => {
     // Partially paid (refund) on a refund state → must NOT erase it.
     expect(nextPedidoEstado('estornadoParcialmente', 100, 50)).toBeNull();
     expect(nextPedidoEstado('estornadoIntegralmente', 100, 0)).toBeNull();
-  });
-});
-
-describe('reconcilePedidoEstadoFromPagamentos', () => {
-  it('writes pago + frete despachoAutorizado on full payment, and no história op', async () => {
-    const { port, written, committed } = fakePort(
-      { estado: 'iniciado', valorCobrado: 100, freteInicial: { valorCobrado: 7 } },
-      777,
-    );
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 100,
-    });
-    expect(result).toBe('pago');
-    expect(written()).toEqual({
-      estado: 'pago',
-      ultimaModificacao: 777,
-      freteInicial: { valorCobrado: 7, estado: 'despachoAutorizado' },
-    });
-    // The audit row comes from the onPedidoEstadoChanged trigger, not from here.
-    expect(committed()).toEqual([]);
-  });
-
-  it('writes only estado (no freteInicial key) when the pedido has no frete', async () => {
-    const { port, written } = fakePort({ estado: 'iniciado', valorCobrado: 100 }, 777);
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 100,
-    });
-    expect(result).toBe('pago');
-    expect(written()).toEqual({ estado: 'pago', ultimaModificacao: 777 });
-    expect(written()).not.toHaveProperty('freteInicial');
-  });
-
-  it('does not regress an already-shipped frete when transitioning to pago', async () => {
-    const { port, written } = fakePort(
-      {
-        estado: 'iniciado',
-        valorCobrado: 100,
-        freteInicial: { valorCobrado: 7, estado: 'postado' },
-      },
-      777,
-    );
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 100,
-    });
-    expect(result).toBe('pago');
-    // estado advances, but the in-flight 'postado' frete is left untouched.
-    expect(written()).toEqual({ estado: 'pago', ultimaModificacao: 777 });
-    expect(written()).not.toHaveProperty('freteInicial');
-  });
-
-  it('does not transition (no história) a cancelado pedido that is still fully paid', async () => {
-    const { port, written, committed } = fakePort({ estado: 'cancelado', valorCobrado: 100 }, 777);
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 100,
-    });
-    expect(result).toBeNull();
-    expect(written()).toEqual({});
-    expect(committed()).toEqual([]);
-  });
-
-  it('advances to aguardando on a partial payment without touching frete', async () => {
-    const { port, written } = fakePort(
-      { estado: 'iniciado', valorCobrado: 100, freteInicial: { valorCobrado: 7 } },
-      777,
-    );
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 40,
-    });
-    expect(result).toBe('aguardandoConfirmacaoDePagamento');
-    expect(written()).toEqual({
-      estado: 'aguardandoConfirmacaoDePagamento',
-      ultimaModificacao: 777,
-    });
-  });
-
-  it('is a no-op (empty patch, no história) when the estado already matches', async () => {
-    const { port, written, committed } = fakePort({ estado: 'pago', valorCobrado: 100 }, 777);
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 100,
-    });
-    expect(result).toBeNull();
-    expect(written()).toEqual({});
-    expect(committed()).toEqual([]);
-  });
-
-  it('skips everything when the doc is gone', async () => {
-    const { port, committed } = fakePort(null, 777);
-    const result = await reconcilePedidoEstadoFromPagamentos(port, {
-      pedidoId: 'x',
-      valorPago: 100,
-    });
-    expect(result).toBeNull();
-    expect(committed()).toEqual([]);
   });
 });

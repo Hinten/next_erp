@@ -1,12 +1,13 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   ActionIcon,
   Alert,
   Button,
   Card,
   Group,
+  Loader,
   Modal,
   NumberInput,
   Select,
@@ -24,14 +25,10 @@ import { notifications } from '@mantine/notifications';
 import { IconCash } from '@tabler/icons-react';
 import { useQuery } from '@tanstack/react-query';
 import { FirebaseError } from 'firebase/app';
-import { getDoc, getDocs } from 'firebase/firestore';
+import { getDoc } from 'firebase/firestore';
 import { buildQuery, orderByField } from '@delfrance/data';
 import { useSnapshot } from '@delfrance/data/hooks';
-import {
-  deletePagamento,
-  reconcilePedidoEstadoFromPagamentos,
-  savePagamento,
-} from '@delfrance/data/pedido';
+import { deletePagamento, savePagamento } from '@delfrance/data/pedido';
 import {
   BANDEIRA_LABELS,
   ESTADO_PEDIDO_LABELS,
@@ -48,7 +45,7 @@ import { formatReais } from '@delfrance/core/money';
 import { epochToPickerString, pickerStringToEpoch } from '@delfrance/ui';
 import { pagamentoCollection } from '@/lib/data/pagamentoCollection';
 import { dereferenceOuterRef } from '@/lib/data/dereferenceOuterRef';
-import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
+import { callReconciliarPagamentoPedido, createClientPedidoPort } from '@/lib/pedidos/clientPort';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { CurrencyInput } from '@/app/(app)/produtos/_components/CurrencyInput';
 import { PagamentoStatusBadge } from '../../pagamentos/_components/StatusBadge';
@@ -59,13 +56,14 @@ import {
   pagamentoDataFromForm,
   pagamentoFieldVisibility,
   remainingToPay,
-  sumPagamentosPagos,
   validatePagamentoForm,
   type PagamentoFormState,
 } from './PagamentoForm';
-import { useAuth } from '@/lib/auth/useAuth';
 
 const brl = (n: number): string => formatReais(n);
+
+/** Fixed toast id so overlapping reconcile failures reuse one notification. */
+const RECONCILE_ERROR_ID = 'pedido-reconcile-falhou';
 
 const formaOptions = (Object.entries(FORMA_PAGAMENTO_LABELS) as [string, string][]).map(
   ([value, label]) => ({ value, label }),
@@ -121,34 +119,47 @@ export function PagamentosSection({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const { user } = useAuth();
+  const [reconciling, setReconciling] = useState(false);
+  // Reconciles can overlap (e.g. flipping the status on two rows in quick
+  // succession), so the indicator is refcounted — a boolean would be cleared by
+  // whichever call settles FIRST, hiding the spinner while another is in flight.
+  const reconcilesEmVoo = useRef(0);
 
-  // Auto-estado transition (legacy `cadastroPedidoProvider`): after every
-  // pagamento mutation, re-read the payments, sum the approved ones, and let the
-  // use-case advance/downgrade the pedido `estado` (→ pago / aguardando). The
+  // Auto-estado transition (legacy `cadastroPedidoProvider`): after every pagamento
+  // mutation the server-owned `reconciliarPagamentoPedido` callable re-sums the
+  // payments and advances/downgrades the pedido `estado` (→ pago / aguardando). The
   // `historicoEstadoPedido` row follows from the `onPedidoEstadoChanged` trigger
-  // observing that write. Best-effort — the pagamento itself is already saved, so
-  // a failed reconcile must not surface as a save error.
+  // observing that write. It reads the pedido AND every pagamento in ONE Admin-SDK
+  // transaction (#308) — the client SDK can't query inside a transaction, so the old
+  // client-side sum raced across tabs/sessions.
+  //
+  // Best-effort: the pagamento itself is already committed, so a failed reconcile must
+  // not surface as a save error — but it IS surfaced loudly, because the estado is now
+  // genuinely stale and only a human can settle it. `functions/not-found` in particular
+  // means the callable was never deployed (deploy is manual — apps/functions/CLAUDE.md).
   async function reconcileEstado() {
+    reconcilesEmVoo.current += 1;
+    setReconciling(true);
     try {
-      const snap = await getDocs(pagamentoCollection.ref(getFirebaseFirestore(), { pedidoId }));
-      const valorPago = sumPagamentosPagos(
-        snap.docs.map((d) => {
-          const p = d.data();
-          return { id: d.id, valor: p.valor, status_pagamento: p.status_pagamento };
-        }),
-      );
-      await reconcilePedidoEstadoFromPagamentos(createClientPedidoPort(getFirebaseFirestore()), {
-        pedidoId,
-        valorPago,
-      });
+      await callReconciliarPagamentoPedido(pedidoId);
     } catch (err) {
       if (!(err instanceof FirebaseError)) throw err;
-      // Reached after save / delete / status change, so keep the message neutral.
+      console.error('reconciliarPagamentoPedido falhou', err);
+      // Mantine IGNORES a `show` whose id is already mounted — it does not replace
+      // it — so hide first. Otherwise a second failure inside the autoClose window
+      // renders NOTHING, and back-to-back failures are exactly what a missing
+      // deploy produces.
+      notifications.hide(RECONCILE_ERROR_ID);
       notifications.show({
-        color: 'yellow',
-        message: 'O estado do pedido não pôde ser atualizado automaticamente.',
+        id: RECONCILE_ERROR_ID,
+        color: 'red',
+        title: 'Estado do pedido não atualizado',
+        message: `A alteração no pagamento foi gravada, mas o estado do pedido não pôde ser recalculado (${err.code}). Ajuste o estado manualmente na aba Estado/Histórico.`,
+        autoClose: 8000,
       });
+    } finally {
+      reconcilesEmVoo.current -= 1;
+      if (reconcilesEmVoo.current === 0) setReconciling(false);
     }
   }
 
@@ -201,6 +212,18 @@ export function PagamentosSection({
       });
       setDeleteTarget(null);
       await reconcileEstado();
+    } catch (err) {
+      if (err instanceof FirebaseError) {
+        // `deleteTarget` is only cleared on success, so the confirm modal stays
+        // open and the user can retry or cancel.
+        notifications.show({
+          color: 'red',
+          title: 'Falha ao excluir o pagamento',
+          message: err.message,
+        });
+        return;
+      }
+      throw err;
     } finally {
       setDeleting(false);
     }
@@ -222,9 +245,20 @@ export function PagamentosSection({
   return (
     <Stack>
       <Group justify="space-between" align="center">
-        <Title order={3}>Pagamentos</Title>
+        <Group gap="xs" align="center">
+          <Title order={3}>Pagamentos</Title>
+          {/* `handleSave` / `handleDelete` close their own form/modal before awaiting
+              the reconcile, so this shared indicator is what covers all three call
+              sites (add, edit, delete, inline status change). */}
+          {reconciling && (
+            <Group gap={6} c="dimmed">
+              <Loader size="xs" />
+              <Text size="xs">Atualizando o estado do pedido…</Text>
+            </Group>
+          )}
+        </Group>
         {!editing && (
-          <Button size="xs" onClick={openAdd} disabled={disabled}>
+          <Button size="xs" onClick={openAdd} disabled={disabled || reconciling}>
             + Adicionar pagamento
           </Button>
         )}
@@ -610,6 +644,15 @@ function PagamentoRow({
         pagamento: { ...pagamento, status_pagamento: nextStatus },
       });
       await onAfterChange();
+    } catch (err) {
+      // Same shape as `handleDelete`: without this a rejected save escapes as an
+      // unhandled rejection and the Select silently snaps back with no message.
+      if (!(err instanceof FirebaseError)) throw err;
+      notifications.show({
+        color: 'red',
+        title: 'Falha ao atualizar o status do pagamento',
+        message: err.message,
+      });
     } finally {
       setSavingStatus(false);
     }

@@ -103,16 +103,15 @@ function applyEstadoTransition(
 
 /**
  * Server-side (Admin SDK) reconcile of a pedido's `estado` from ONE inbound
- * payment — the fully-consistent counterpart to the client
- * `reconcilePedidoEstadoFromPagamentos` (`../pedido/usecases`). That client
- * path carries a documented atomicity caveat (#308): the Firebase JS SDK
- * can't read a query inside `runTransaction`, so `valorPago` is summed BEFORE
- * the tx and two reconciles can briefly settle on a stale estado. The Admin
- * SDK CAN query in-transaction, so this path reads the whole payment set
- * atomically with the pedido — no race. **Webhook writers (Mercado Pago) are
- * the primary caller.** See {@link reconcilePedidoEstado} for the
+ * payment. It replaced a client-side reconcile that used to live in
+ * `../pedido/usecases` and carried a documented atomicity caveat (#308): the
+ * Firebase JS SDK can't read a query inside `runTransaction`, so `valorPago`
+ * was summed BEFORE the tx and two reconciles could settle on a stale estado.
+ * The Admin SDK CAN query in-transaction, so this path reads the whole payment
+ * set atomically with the pedido — no race. **Webhook writers (Mercado Pago)
+ * are the primary caller.** See {@link reconcilePedidoEstado} for the
  * callable-facing counterpart that reconciles from the CURRENT payment set
- * instead of upserting one.
+ * instead of upserting one — that one now serves the web client.
  *
  * In one transaction it:
  *  1. reads the pedido (missing → {@link PedidoReconcileNotFoundError});
@@ -225,20 +224,22 @@ export async function reconcilePedidoFromPagamento(
  * reconcilePedidoFromPagamento}. Where that one upserts ONE inbound (webhook)
  * payment, this one assumes every pagamento was already written by its own
  * path (client CRUD via `savePagamento`/`deletePagamento`) and just settles
- * `estado` from the current payment set — the fully-consistent counterpart to
- * the client-side `reconcilePedidoEstadoFromPagamentos` (`../pedido/usecases`,
- * #308): that path sums `valorPago` with a `getDocs` BEFORE `runTransaction`
- * (the Firebase JS SDK can't query inside a transaction), so two concurrent
- * reconciles can settle on a stale estado. This one reads the pedido AND every
- * pagamento in the SAME transaction — no race.
+ * `estado` from the current payment set — the fully-consistent replacement for
+ * the client-side reconcile deleted from `../pedido/usecases` in #308, which
+ * summed `valorPago` with a `getDocs` BEFORE `runTransaction` (the Firebase JS
+ * SDK can't query inside a transaction), so two concurrent reconciles could
+ * settle on a stale estado. This one reads the pedido AND every pagamento in
+ * the SAME transaction — no race.
  *
  * Exposed via the `reconciliarPagamentoPedido` Cloud Function callable
- * (`apps/functions`), NOT YET wired into the web client — that migration
- * needs `reconciliarPagamentoPedido` deployed to staging first (deploy is a
- * manual, coordinated step; the e2e that exercises this exact flow,
- * `apps/web/e2e/pedidos-pagamento.vendas.e2e.spec.ts`, hits real staging
- * Cloud Functions). Once deployed, `PagamentosSection`'s `reconcileEstado()`
- * can call the new callable instead of `reconcilePedidoEstadoFromPagamentos`.
+ * (`apps/functions`), and this IS the web client's reconcile path:
+ * `PagamentosSection`'s `reconcileEstado()` calls that callable, which
+ * delegates here. The cutover was hard — the old client-side
+ * `reconcilePedidoEstadoFromPagamentos` was deleted, there is no fallback — so
+ * the callable must be DEPLOYED for the Pagamentos tab's estado transition to
+ * happen at all (deploy is a manual, coordinated step; the e2e that exercises
+ * this exact flow, `apps/web/e2e/pedidos-pagamento.vendas.e2e.spec.ts`, hits
+ * real staging Cloud Functions).
  *
  * Takes NO `usuarioRef`: the `historicoEstadoPedido` row is written by the
  * `onPedidoEstadoChanged` trigger from the pedido write's auth context, and this

@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. The exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -166,12 +166,13 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. The exports:
   estado. Delegates to the Admin-SDK `reconcilePedidoEstado`
   (`@delfrance/data/admin`), which reads the pedido AND every pagamento in ONE
   transaction. Same auth model as `aplicarEstoque`: `PERM.pedido.write` (or
-  `su`), Zod-validated `{ pedidoId }`. ⚠️ NOT YET called from `apps/web` — the
-  Pagamentos tab still uses the client-side `reconcilePedidoEstadoFromPagamentos`
-  until this is DEPLOYED (deploy is manual — see "Deploying" below); a
-  follow-up PR flips the call site once it's live on staging.
-- ⚠️ All three target the NAMED `default` database (gotcha #8). `@delfrance/auth`
-  is a new build-time dep (esbuild-bundled, like data/schemas) for `hasPerm`/`PERM`.
+  `su`), Zod-validated `{ pedidoId }`. ⚠️ On the app's critical path: the
+  Pagamentos tab's `reconcileEstado()` calls this callable, so the pedido
+  estado auto-transition only works once this is DEPLOYED (deploy is manual —
+  root rule #1).
+- ⚠️ Every trigger and callable above targets the NAMED `default` database
+  (gotcha #8). `@delfrance/auth` is a build-time dep (esbuild-bundled, like
+  data/schemas) for `hasPerm`/`PERM`.
 
 - The entry (`src/index.ts`) is **esbuild-bundled into a single ESM file**.
   Only `firebase-admin`, `firebase-functions`, `@google-cloud/firestore` (the
