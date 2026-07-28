@@ -20,8 +20,10 @@ const PERM_PEDIDO_DELETE = 1n << 18n;
  * Written EXCLUSIVELY by the `onPedidoEstadoChanged` Cloud Function
  * (`apps/functions/src/pedidos/registrarEstadoPedido.ts`), which observes every
  * `pedidos/{pedidoId}` write from every writer — the web editor, the Mercado
- * Pago webhook, Mercado Livre order import, Flutter — and appends one row per
- * transition. Nothing appends rows at the call site any more.
+ * Pago webhook, Mercado Livre order import, scripts — and appends one row per
+ * transition. Nothing appends rows at the call site any more, and
+ * `serverOwned` makes a client attempt fail (`delfrance/no-client-estado-history-write`
+ * catches it at lint time).
  */
 export const historicoEstadoPedidoSchema = z
   .object({

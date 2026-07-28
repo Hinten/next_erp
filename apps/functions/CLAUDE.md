@@ -119,7 +119,7 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. The exports:
   Mercado Pago admin reconcile) which together covered only 3 of the ~12 paths
   that change `estado` — every Mercado Livre writer and every creation path wrote
   no row at all. Observing the document instead of the call site makes coverage
-  total: any writer, from anywhere (Flutter included), now produces a row, and
+  total: any writer, from anywhere, now produces a row, and
   `historicoEstadoPedidoMeta.serverOwned` denies client writes so the trail cannot
   be forged or erased (no `su` bypass). Records the opening `estado` on create and
   one row per transition after that; a delete or a write that left `estado` alone

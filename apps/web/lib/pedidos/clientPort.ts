@@ -12,7 +12,6 @@ import type { PedidoDevolucaoDataPort, PedidoDocData, PedidoWriteOp } from '@del
 import { ESTADO_NFE, TIPO_NFE } from '@delfrance/schemas';
 import { pedidoCollection } from '@/lib/data/pedidoCollection';
 import { counterCollection } from '@/lib/data/counterCollection';
-import { historicoEstadoCollection } from '@/lib/data/historicoEstadoCollection';
 import { incidenteCollection } from '@/lib/data/incidenteCollection';
 import { integracaoCollection } from '@/lib/data/integracaoCollection';
 import { nfeCollection } from '@/lib/data/nfeCollection';
@@ -43,9 +42,10 @@ function refForPath(db: Firestore, path: string): DocumentReference {
   }
   if (parts.length === 4 && parts[0] === 'pedidos') {
     const [, pedidoId, sub, id] = parts as [string, string, string, string];
-    if (sub === 'historicoEstadoPedido') {
-      return historicoEstadoCollection.docRef(db, { pedidoId }, id) as DocumentReference;
-    }
+    // NOTE: `historicoEstadoPedido` is deliberately absent. That subcollection is
+    // written exclusively by the `onPedidoEstadoChanged` Cloud Function and the
+    // rules deny every client write (`meta.serverOwned`), so there is no write op
+    // to resolve — the Estado/Histórico tab only READS it, via its own handle.
     if (sub === 'incidentes') {
       return incidenteCollection.docRef(db, { pedidoId }, id) as DocumentReference;
     }
