@@ -18,6 +18,7 @@ export { cartaCorrecaoCollection } from './cartaCorrecaoCollection';
 export { cargoCollection } from './cargoCollection';
 export { usuarioCollection } from './usuarioCollection';
 export { arquivoCollection } from './arquivoCollection';
+export { arquivoOrphanSweepStateCollection } from './arquivoOrphanSweepStateCollection';
 export { categoriaCollection } from './categoriaCollection';
 export { produtoCollection } from './produtoCollection';
 export { estoqueCollection } from './estoqueCollection';
@@ -53,3 +54,4 @@ export { notificacoesWhatsappCollection } from './notificacoesWhatsappCollection
 export { orderMLCollection } from './orderMLCollection';
 export { enderecoCollection } from './enderecoCollection';
 export { backfillPedidosMercadoLivreCollection } from './backfillPedidosMercadoLivreCollection';
+export { estoqueMercadoLivreSyncCollection } from './estoqueMercadoLivreSyncCollection';

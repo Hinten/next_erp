@@ -23,6 +23,7 @@
     "teardown": "dotenv -e ../../.env.local -- tsx src/teardown.ts",
     "grant-all-perms": "dotenv -e ../../.env.local -- tsx src/grant-all-perms.ts",
     "create-super-user": "dotenv -e ../../.env.local -- tsx src/create-super-user.ts",
+    "create-user": "dotenv -e ../../.env.local -- tsx src/create-user.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.ts",
