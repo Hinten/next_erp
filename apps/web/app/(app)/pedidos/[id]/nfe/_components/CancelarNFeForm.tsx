@@ -5,30 +5,29 @@
  * aprovada. Collects the SEFAZ-required justification (`xJust`, 15–255) and
  * POSTs to `/api/nfe/cancelar` for the specific `nfeId`. On success the NF-e
  * flips to `cancelada` on its own (the screen subscribes to the nfev4 doc via
- * `onSnapshot`) and a new audit row appears, so we just toast — then prompt the
- * operator to also cancel the pedido (#74, legacy
- * `cancelamentoNFe.dart:229-261`). That follow-up is optional and best-effort:
- * a failure to cancel the pedido must never read as the NF-e cancelamento
- * having failed.
+ * `onSnapshot`) and a new audit row appears, so we just toast — then hand off to
+ * `onCancelamentoConcluido`, which prompts the operator to also cancel the
+ * pedido (#74, legacy `cancelamentoNFe.dart:229-261`).
+ *
+ * That prompt deliberately lives on the PAGE, not here: this form only renders
+ * while the NF-e is aprovada, and the cancelamento endpoint persists
+ * `estado: 'c'` before it answers — so the screen's `onSnapshot` unmounts this
+ * component within milliseconds of `cancelar()` resolving. A dialog owned here
+ * would be torn down before the operator ever saw it. See
+ * `useCancelarPedidoPrompt`.
  */
 import { useState } from 'react';
 import { Alert, Button, Group, Stack, Textarea } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertTriangle } from '@tabler/icons-react';
-import { FirebaseError } from 'firebase/app';
 import {
   NFeHttpError,
   NFeNetworkError,
   NFeRejectedError,
 } from '@delfrance/integrations-nfe/http-provider';
-import { cancelarPedido } from '@delfrance/data/pedido';
 
 import { useNFeClient } from '@/lib/nfe/client';
-import { useAuth } from '@/lib/auth/useAuth';
-import { createClientPedidoPort } from '@/lib/pedidos/clientPort';
-import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { showErrorNotification } from '@/lib/notifications/showErrorNotification';
-import { useConfirmDialog } from '@/app/(app)/pedidos/_components/ConfirmDialog';
 
 const XJUST_MIN = 15;
 const XJUST_MAX = 255;
@@ -37,12 +36,21 @@ export interface CancelarNFeFormProps {
   readonly pedidoId: string;
   readonly nfeId: string;
   readonly numero?: number | null;
+  /**
+   * Awaited after — and only after — a homologated cancelamento. Optional and
+   * best-effort: a failure in the follow-up must never read as the NF-e
+   * cancelamento having failed.
+   */
+  readonly onCancelamentoConcluido?: () => Promise<void>;
 }
 
-export function CancelarNFeForm({ pedidoId, nfeId, numero }: CancelarNFeFormProps) {
+export function CancelarNFeForm({
+  pedidoId,
+  nfeId,
+  numero,
+  onCancelamentoConcluido,
+}: CancelarNFeFormProps) {
   const client = useNFeClient();
-  const { user } = useAuth();
-  const { confirm, element: confirmDialog } = useConfirmDialog();
   const [xJust, setXJust] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -50,29 +58,6 @@ export function CancelarNFeForm({ pedidoId, nfeId, numero }: CancelarNFeFormProp
   const tooShort = trimmed.length < XJUST_MIN;
   const tooLong = trimmed.length > XJUST_MAX;
   const invalid = tooShort || tooLong;
-
-  async function promptCancelarPedido() {
-    const cancelarTambem = await confirm({
-      title: 'Cancelar pedido?',
-      message: 'Também deseja cancelar o pedido?',
-    });
-    if (!cancelarTambem) return;
-    try {
-      await cancelarPedido(createClientPedidoPort(getFirebaseFirestore()), {
-        pedidoId,
-        usuarioRef: user ? `documents/usuarios/${user.uid}` : null,
-      });
-    } catch (err) {
-      if (!(err instanceof FirebaseError)) throw err;
-      // `cancelarPedido` can fail after already writing the estado (e.g. the
-      // história append), so this must not assert the pedido stayed
-      // unchanged — just point the operator at it.
-      notifications.show({
-        color: 'yellow',
-        message: 'Não foi possível confirmar o cancelamento do pedido — verifique o pedido.',
-      });
-    }
-  }
 
   async function handleConfirm() {
     if (!client) {
@@ -105,14 +90,14 @@ export function CancelarNFeForm({ pedidoId, nfeId, numero }: CancelarNFeFormProp
     } finally {
       setSubmitting(false);
     }
-    // Independent of the try/catch above so a pedido-cancel failure can never
-    // be mistaken for (or roll back) the already-reported NF-e cancelamento.
-    if (cancelamentoOk) await promptCancelarPedido();
+    // Independent of the try/catch above so a follow-up failure can never be
+    // mistaken for (or roll back) the already-reported NF-e cancelamento. The
+    // callback outlives this component — see the header note.
+    if (cancelamentoOk) await onCancelamentoConcluido?.();
   }
 
   return (
     <Stack gap="sm">
-      {confirmDialog}
       <Alert
         color="red"
         variant="light"

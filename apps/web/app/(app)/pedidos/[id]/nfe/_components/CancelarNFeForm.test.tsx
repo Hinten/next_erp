@@ -1,18 +1,14 @@
+import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
-import { FirebaseError } from 'firebase/app';
 import { NFeRejectedError } from '@delfrance/integrations-nfe/http-provider';
 
-const { cancelarMock, showErrorMock, notifShowMock, confirmMock, cancelarPedidoMock } = vi.hoisted(
-  () => ({
-    cancelarMock: vi.fn(),
-    showErrorMock: vi.fn(),
-    notifShowMock: vi.fn(),
-    confirmMock: vi.fn(),
-    cancelarPedidoMock: vi.fn(),
-  }),
-);
+const { cancelarMock, showErrorMock, notifShowMock } = vi.hoisted(() => ({
+  cancelarMock: vi.fn(),
+  showErrorMock: vi.fn(),
+  notifShowMock: vi.fn(),
+}));
 
 vi.mock('@/lib/nfe/client', () => ({
   useNFeClient: () => ({ cancelar: cancelarMock }),
@@ -22,21 +18,6 @@ vi.mock('@/lib/notifications/showErrorNotification', () => ({
 }));
 vi.mock('@mantine/notifications', () => ({
   notifications: { show: notifShowMock },
-}));
-vi.mock('@/lib/auth/useAuth', () => ({
-  useAuth: () => ({ user: { uid: 'u1' } }),
-}));
-vi.mock('@/lib/pedidos/clientPort', () => ({
-  createClientPedidoPort: vi.fn(() => ({})),
-}));
-vi.mock('@/lib/firebase/client', () => ({
-  getFirebaseFirestore: vi.fn(() => ({})),
-}));
-vi.mock('@/app/(app)/pedidos/_components/ConfirmDialog', () => ({
-  useConfirmDialog: () => ({ confirm: confirmMock, element: null }),
-}));
-vi.mock('@delfrance/data/pedido', () => ({
-  cancelarPedido: cancelarPedidoMock,
 }));
 
 import { CancelarNFeForm } from './CancelarNFeForm';
@@ -61,7 +42,6 @@ afterEach(() => {
 describe('CancelarNFeForm', () => {
   it('cancels the specific nfeId on submit', async () => {
     cancelarMock.mockResolvedValue({ estado: 'c', cStat: '135' });
-    confirmMock.mockResolvedValue(false);
     wrap(<CancelarNFeForm pedidoId="PED-1" nfeId="s1" numero={42} />);
 
     fillAndConfirm();
@@ -73,10 +53,11 @@ describe('CancelarNFeForm', () => {
   });
 
   it('on a SEFAZ rejection, shows a clean cStat message and stays on the form', async () => {
+    const onConcluido = vi.fn();
     cancelarMock.mockRejectedValue(
       new NFeRejectedError('573', 'Rejeicao: Duplicidade de Evento', {}),
     );
-    wrap(<CancelarNFeForm pedidoId="PED-1" nfeId="s1" />);
+    wrap(<CancelarNFeForm pedidoId="PED-1" nfeId="s1" onCancelamentoConcluido={onConcluido} />);
 
     fillAndConfirm();
 
@@ -86,64 +67,70 @@ describe('CancelarNFeForm', () => {
         message: 'SEFAZ rejeitou o cancelamento (cStat 573): Rejeicao: Duplicidade de Evento',
       }),
     );
-    // A rejected cancelamento never reaches the pedido-cancel prompt.
-    expect(confirmMock).not.toHaveBeenCalled();
-    expect(cancelarPedidoMock).not.toHaveBeenCalled();
+    // A rejected cancelamento never reaches the pedido-cancel follow-up.
+    expect(onConcluido).not.toHaveBeenCalled();
   });
 
-  it('confirming the prompt also cancels the pedido', async () => {
+  it('hands off to onCancelamentoConcluido after a homologated cancelamento', async () => {
+    const onConcluido = vi.fn().mockResolvedValue(undefined);
     cancelarMock.mockResolvedValue({ estado: 'c', cStat: '135' });
-    confirmMock.mockResolvedValue(true);
-    cancelarPedidoMock.mockResolvedValue(true);
-    wrap(<CancelarNFeForm pedidoId="PED-1" nfeId="s1" />);
+    wrap(<CancelarNFeForm pedidoId="PED-1" nfeId="s1" onCancelamentoConcluido={onConcluido} />);
 
     fillAndConfirm();
 
-    await waitFor(() =>
-      expect(confirmMock).toHaveBeenCalledWith({
-        title: 'Cancelar pedido?',
-        message: 'Também deseja cancelar o pedido?',
-      }),
-    );
-    await waitFor(() =>
-      expect(cancelarPedidoMock).toHaveBeenCalledWith(expect.anything(), {
-        pedidoId: 'PED-1',
-        usuarioRef: 'documents/usuarios/u1',
-      }),
-    );
-  });
-
-  it('declining the prompt leaves the pedido untouched', async () => {
-    cancelarMock.mockResolvedValue({ estado: 'c', cStat: '135' });
-    confirmMock.mockResolvedValue(false);
-    wrap(<CancelarNFeForm pedidoId="PED-1" nfeId="s1" />);
-
-    fillAndConfirm();
-
-    await waitFor(() => expect(confirmMock).toHaveBeenCalled());
-    expect(cancelarPedidoMock).not.toHaveBeenCalled();
-  });
-
-  it('a pedido-cancel failure does not undo the reported NF-e cancelamento success', async () => {
-    cancelarMock.mockResolvedValue({ estado: 'c', cStat: '135' });
-    confirmMock.mockResolvedValue(true);
-    cancelarPedidoMock.mockRejectedValue(new FirebaseError('permission-denied', 'nope'));
-    wrap(<CancelarNFeForm pedidoId="PED-1" nfeId="s1" />);
-
-    fillAndConfirm();
-
-    await waitFor(() =>
-      expect(notifShowMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          color: 'yellow',
-          message: 'Não foi possível confirmar o cancelamento do pedido — verifique o pedido.',
-        }),
-      ),
-    );
-    // The NF-e cancelamento toast fired earlier and is untouched by the pedido failure.
+    await waitFor(() => expect(onConcluido).toHaveBeenCalledTimes(1));
+    // The follow-up runs only after the NF-e success was already reported.
     expect(notifShowMock).toHaveBeenCalledWith(
       expect.objectContaining({ color: 'teal', title: 'NF-e cancelada' }),
     );
-    expect(showErrorMock).not.toHaveBeenCalled();
+  });
+
+  it('the follow-up survives this form unmounting mid-flight', async () => {
+    // The regression this guards: `POST /api/nfe/cancelar` persists estado 'c'
+    // before answering, so the screen's onSnapshot flips the NF-e to `cancelada`
+    // and unmounts this form within milliseconds of `cancelar()` resolving. The
+    // follow-up prompt must be owned by the page (which stays mounted) — when it
+    // lived inside this component its dialog was torn down here and its promise
+    // never settled, so the operator never saw it.
+    cancelarMock.mockResolvedValue({ estado: 'c', cStat: '135' });
+    const started = vi.fn();
+    const finished = vi.fn();
+    let release: () => void = () => {};
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    function Harness() {
+      const [aprovada, setAprovada] = useState(true);
+      return (
+        <>
+          <button onClick={() => setAprovada(false)}>flip</button>
+          {aprovada && (
+            <CancelarNFeForm
+              pedidoId="PED-1"
+              nfeId="s1"
+              onCancelamentoConcluido={async () => {
+                started();
+                await pending;
+                finished();
+              }}
+            />
+          )}
+        </>
+      );
+    }
+
+    wrap(<Harness />);
+    fillAndConfirm();
+
+    await waitFor(() => expect(started).toHaveBeenCalled());
+    // The NF-e doc flips to `cancelada` → the form goes away.
+    fireEvent.click(screen.getByRole('button', { name: 'flip' }));
+    await waitFor(() =>
+      expect(screen.queryByPlaceholderText('Descreva o motivo do cancelamento')).toBeNull(),
+    );
+
+    release();
+    await waitFor(() => expect(finished).toHaveBeenCalledTimes(1));
   });
 });
