@@ -105,11 +105,19 @@ ruleTester.run('prefer-schema-enum', rule, {
       filename: resolve(FIXTURE_DIR, 'packages/schemas/src/self.ts'),
     },
     {
-      // Documented limitation: control-flow narrowing strips the alias AND
-      // shrinks the union, so neither match applies. Resolving a SUBSET instead
-      // is unsound — it once rewrote an NF-e CST '07' to BANDEIRA.hipercard.
-      name: 'a narrowed operand is left alone rather than guessed at',
-      code: `${IMPORT}declare const e: EstadoPedido;\nexport const x = e !== ESTADO_PEDIDO.pago && e !== 'cancelado';`,
+      // THE regression this rule's identification strategy exists for: a
+      // hand-written union whose members happen to match an opted-in enum is not
+      // that enum. Real case: `TpAmb = '1' | '2'` (produção / homologação)
+      // resolving to `IND_INCENTIVO` (sim / não).
+      name: 'a hand-written union sharing an enum member set is not that enum',
+      code: `${IMPORT_COLLIDE}import type { TpAmbLike } from '../packages/schemas/src/enums';\ndeclare const t: TpAmbLike;\nexport const x = t === '0';`,
+      filename: IN,
+    },
+    {
+      // Same, through a property of a generated interface — how the NF-e codegen
+      // types reach the rule. `tpImp` is the DANFE layout, not a modalidade BC.
+      name: 'a generated interface property is not a Zod enum',
+      code: `${IMPORT_COLLIDE}import type { GeneratedIde } from '../packages/schemas/src/enums';\nexport const x: GeneratedIde = { tpImp: '1' };`,
       filename: IN,
     },
     {
@@ -117,23 +125,6 @@ ruleTester.run('prefer-schema-enum', rule, {
       // fits INSIDE an unrelated enum must never resolve to it.
       name: 'a literal union nested inside an unrelated enum is not that enum',
       code: `${IMPORT}declare const cst: '02' | '03';\nexport const x = cst === '02';`,
-      filename: IN,
-    },
-    {
-      // `z.infer` erases the alias, so the member set is ALL the rule has to go
-      // on — which is why sharing one parks the enum completely, not just in
-      // nullable positions. ORIGEM and ORIGEM_PRODUTO both claim '0' | '1' | '2',
-      // nothing in the type says which is meant, and either constant would
-      // compile here. Declining is the only sound answer until the rule can read
-      // the declaration behind the operand. Real pair: `Origem` (tribute.ts) and
-      // `OrigemProdutoImposto` (operacao.ts).
-      name: 'a member set two enums share is not resolved at all',
-      code: `${IMPORT_COLLIDE}declare const o: Origem;\nexport const x = o === '0';`,
-      filename: IN,
-    },
-    {
-      name: 'a shared member set stays unresolved through a nullable position too',
-      code: `${IMPORT_COLLIDE}declare const o: OrigemProduto | null;\nexport const x = o === '1';`,
       filename: IN,
     },
   ],
@@ -268,6 +259,77 @@ ruleTester.run('prefer-schema-enum', rule, {
               output: `import { ESTADO_PEDIDO, type EstadoPedido } from '../packages/schemas/src/enums';\ndeclare const e: EstadoPedido;\nexport const x = e === ESTADO_PEDIDO.pago;`,
             },
           ],
+        },
+      ],
+      output: null,
+    },
+    {
+      // The commonest real shape. `getSymbolAtLocation` answers undefined for a
+      // property access whose object is a union — which every `pedido.estado` is
+      // once narrowed from `… | null` — so the lookup falls back to the object's
+      // type. Without that fallback the rule silently caught nothing here.
+      name: 'a property access resolves through the object type',
+      code: `${IMPORT}import type { PedidoLike } from '../packages/schemas/src/enums';\ndeclare const p: PedidoLike | null;\nexport const x = p !== null && p.estado === 'pago';`,
+      filename: IN,
+      errors: [err('pago')],
+      output: null,
+    },
+    {
+      // Destructuring is how most pure-logic helpers open, and a binding element
+      // declares no type of its own — it has to be followed back to the property.
+      name: 'a destructured binding is followed back to the property it came from',
+      code: `${IMPORT}import type { PedidoLike } from '../packages/schemas/src/enums';\nexport function f(p: PedidoLike) {\n  const { estado } = p;\n  return estado === 'pago';\n}`,
+      filename: IN,
+      errors: [err('pago')],
+      output: null,
+    },
+    {
+      // Was a documented limitation while enums were matched by member set:
+      // narrowing shrank the union and nothing matched. The operand's
+      // DECLARATION is unaffected by narrowing, so this is now caught.
+      name: 'an operand narrowed by control flow is still resolved',
+      code: `${IMPORT}declare const e: EstadoPedido;\nexport const x = e !== ESTADO_PEDIDO.pago && e !== 'cancelado';`,
+      filename: IN,
+      errors: [err('cancelado')],
+      output: null,
+    },
+    {
+      // Two enums sharing a member set are told apart by NAME. Under the old
+      // matching both were parked (#718's guard); each now resolves to its own
+      // constant — never the other module's, which would have compiled.
+      name: 'one of two enums sharing a member set resolves to its own constant',
+      code: `${IMPORT_COLLIDE}declare const o: Origem;\nexport const x = o === '0';`,
+      filename: IN,
+      errors: [
+        {
+          messageId: 'rawLiteral',
+          data: {
+            constName: 'ORIGEM',
+            typeName: 'Origem',
+            member: 'nacional',
+            value: '0',
+            replacement: 'ORIGEM.nacional',
+          },
+          suggestions: 1,
+        },
+      ],
+      output: null,
+    },
+    {
+      name: 'its colliding partner resolves to the other constant, nullable included',
+      code: `${IMPORT_COLLIDE}declare const o: OrigemProduto | null;\nexport const x = o === '1';`,
+      filename: IN,
+      errors: [
+        {
+          messageId: 'rawLiteral',
+          data: {
+            constName: 'ORIGEM_PRODUTO',
+            typeName: 'OrigemProduto',
+            member: 'importadoDireto',
+            value: '1',
+            replacement: 'ORIGEM_PRODUTO.importadoDireto',
+          },
+          suggestions: 1,
         },
       ],
       output: null,
