@@ -194,10 +194,11 @@ it on). Three separate places matter, and they are NOT interchangeable:
    deployer's process — and bakes into the queue config. Export them in the
    shell you run `firebase deploy` from, or you get the code defaults (2/2).
    Changing them later needs a redeploy.
-3. `apps/mercado-livre/.env.example` — **Next local dev only.** It documents the
-   same names for the App Hosting backend (which loads the repo-root
-   `.env.local`), and that env does **not** reach this separate functions
-   codebase — the same caveat the mass-import secrets carry above.
+3. The repo-root `.env.example` (Mercado Livre section) — **Next local dev
+   only.** It documents the same names for the App Hosting backend (which loads
+   the repo-root `.env.local`), and that env does **not** reach this separate
+   functions codebase — the same caveat the mass-import secrets carry above.
+   (One root `.env.example` is the repo convention — #730.)
 
 ### Setting (1) — the honest state of the mechanism
 
