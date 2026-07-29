@@ -19,10 +19,18 @@ import { getFirestore } from 'firebase-admin/firestore';
 // Monitoring — which is where #728's "~6,184 documents scanned per call" came
 // from in the first place.
 //
-// What this DOES measure, and what actually changed: the walk now issues a
-// BOUNDED number of kinded queries (one page per non-empty subcollection)
-// instead of one kindless all-descendants scan per document. Compare the
-// printed query/document counts against the same parent's Query Insights row.
+// What this DOES measure, and what actually changed: the walk now issues KINDED,
+// key-bounded, keys-only queries instead of one kindless all-descendants scan per
+// document. Compare the printed counts against the same parent's Query Insights
+// row.
+//
+// ⚠️ Read the summary carefully: `listCollections()` runs once per document
+// REACHED, not once per parent — a leaf still costs one round-trip to learn it is
+// a leaf. So the cost of deleting a subtree is roughly
+// `~5 read units × (1 + descendant count)`, NOT a flat ~5 per parent. That is
+// still far below the old path, which paid ~6,184 documents scanned FLAT per
+// document deleted whether the subtree held anything or not — the win is largest
+// exactly where the old path was most absurd (a produto with no subcollections).
 //
 // `db.recursiveDelete(ref)` issued ONE kindless all-descendants query per call
 // — `COLLECTION_GROUP * SELECT __name__ LIMIT 5000`. On this Firestore
@@ -44,11 +52,12 @@ import { getFirestore } from 'firebase-admin/firestore';
 //   FIREBASE_PROJECT_ID=veste-france-debug \
 //   node apps/functions/scripts/check-delete-cost.mjs
 //
-// The queries ARE executed and billed as normal reads. They are keys-only
-// `limit(300)` pages over one parent's subcollection, so the bill is negligible
-// — that is the whole point being measured. Targets the named `default`
-// database (Firestore Enterprise; see deploy gotcha #8), overridable via
-// FIREBASE_DATABASE_ID.
+// The queries ARE executed and billed as normal reads, and the walk is faithful,
+// so it touches every descendant of every parent it is given. That is cheap for
+// the fixture-sized subtrees this exists to measure; `CHECK_DELETE_MAX_DOCS`
+// (default 2000) stops it becoming a crawl on a pathological one, and says so.
+// Targets the named `default` database (Firestore Enterprise; see deploy gotcha
+// #8), overridable via FIREBASE_DATABASE_ID.
 //
 // Pass a concrete parent to measure real data:
 //   node apps/functions/scripts/check-delete-cost.mjs produtos/<id> pedidos/<id>
@@ -68,8 +77,25 @@ const projectId = process.env.FIREBASE_PROJECT_ID ?? 'veste-france-debug';
 const databaseId = process.env.FIREBASE_DATABASE_ID ?? 'default';
 const PAGE_SIZE = 300;
 
-/** Documents sampled per root when no explicit parent is given. */
-const SAMPLE_PER_ROOT = Number(process.env.CHECK_DELETE_SAMPLE ?? '5');
+/**
+ * Documents sampled per root when no explicit parent is given.
+ *
+ * Sanitised the way `check-sweep-indexes.mjs` sanitises its grace window: a
+ * non-numeric or non-positive value would reach `.limit()` as NaN/0 and either
+ * throw from inside the SDK or sample nothing, surfacing as a baffling "nothing
+ * was measured" instead of "your env var is wrong".
+ */
+const sampleRaw = Number(process.env.CHECK_DELETE_SAMPLE ?? '5');
+const SAMPLE_PER_ROOT = Number.isFinite(sampleRaw) && sampleRaw >= 1 ? Math.floor(sampleRaw) : 5;
+
+/**
+ * Ceiling on documents visited across the whole run. The walk below is faithful,
+ * which means it touches EVERY descendant — a pedido with thousands of itens
+ * would otherwise turn a diagnostic into a long, billed crawl. Hitting it is
+ * always reported, and makes every printed figure a LOWER BOUND.
+ */
+const maxDocsRaw = Number(process.env.CHECK_DELETE_MAX_DOCS ?? '2000');
+const MAX_DOCS = Number.isFinite(maxDocsRaw) && maxDocsRaw >= 1 ? Math.floor(maxDocsRaw) : 2000;
 
 /** Roots worth sampling: the only two with a depth-3 chain in the registry. */
 const SAMPLE_ROOTS = ['produtos', 'pedidos'];
@@ -80,46 +106,78 @@ const db = getFirestore(app, databaseId);
 let queries = 0;
 let listCalls = 0;
 let documents = 0;
+let truncated = false;
 
 /**
- * Run one page of the real delete query and report what it returned.
+ * Every document in `col`, paged with a cursor exactly as `deleteCollection`
+ * does, recursing into EVERY document rather than a representative one.
+ *
+ * The fidelity matters more than it looks. `deleteDocumentSubtree` calls
+ * `listCollections()` on every document it reaches — including each
+ * `historicoDeModificacoes` row, which has no children — so the real cost is
+ * roughly `~5 read units × (1 + descendant count)`, not `~5 per parent`. An
+ * earlier version of this script read one page and descended into `docs[0]`,
+ * which undercounted a 34-document produto subtree by about 9×. If the number
+ * printed here is going to be compared against Query Insights, it has to be the
+ * number the helper actually generates.
  *
  * `.select()` with no arguments is the keys-only projection (the SDK pushes
- * `FieldPath.documentId()` itself), and the page is bounded by `limit` — the two
- * properties that make this kinded query cheap where the kindless one could not
- * be made cheap at all.
+ * `FieldPath.documentId()` itself), and each page is bounded by `limit` — the
+ * two properties that make this kinded query cheap where the kindless one could
+ * not be made cheap at all.
  */
-async function measurePage(col, depth) {
-  queries += 1;
-  const started = Date.now();
-  const snap = await col.select().limit(PAGE_SIZE).get();
-  documents += snap.size;
-  console.log(
-    `${'  '.repeat(depth)}  ${col.path} — select() limit ${PAGE_SIZE} → ` +
-      `${snap.size} doc(s) in ${Date.now() - started}ms`,
-  );
-  return snap;
+async function measureCollection(col, depth) {
+  let cursor;
+
+  for (;;) {
+    if (documents >= MAX_DOCS) {
+      truncated = true;
+      return;
+    }
+    queries += 1;
+    const started = Date.now();
+    const base = col.select().limit(PAGE_SIZE);
+    const snap = await (cursor ? base.startAfter(cursor) : base).get();
+    documents += snap.size;
+    console.log(
+      `${'  '.repeat(depth)}  ${col.path} — select() limit ${PAGE_SIZE} → ` +
+        `${snap.size} doc(s) in ${Date.now() - started}ms`,
+    );
+    if (snap.empty) return;
+
+    for (const doc of snap.docs) {
+      await probe(doc.ref, depth + 1);
+      if (truncated) return;
+    }
+
+    if (snap.size < PAGE_SIZE) return;
+    cursor = snap.docs[snap.size - 1];
+  }
 }
 
 /**
- * Walk a document exactly the way `deleteDocumentSubtree` does — ask
- * `listCollections()`, then one keys-only page per child — and recurse, so the
- * `estoques/*\/historicoEstoque` and `nfev4/*\/cartacorrecao` grandchild levels
- * are covered too.
+ * Walk a document exactly the way `deleteDocumentSubtree` does — one
+ * `listCollections()` per document reached, then a fully paged keys-only walk of
+ * each child collection, so the `estoques/*\/historicoEstoque` and
+ * `nfev4/*\/cartacorrecao` grandchild levels are covered too.
  */
 async function probe(docRef, depth = 0) {
+  if (documents >= MAX_DOCS) {
+    truncated = true;
+    return;
+  }
   listCalls += 1;
   const children = await docRef.listCollections();
   if (children.length === 0) {
-    console.log(`${'  '.repeat(depth)}· ${docRef.path}: no subcollections (0 queries)`);
+    // Not free, and the reason the per-produto figure scales with subtree size:
+    // this leaf still cost one ListCollectionIds round-trip to learn it is a leaf.
+    if (depth === 0) console.log(`· ${docRef.path}: no subcollections`);
     return;
   }
   console.log(`${'  '.repeat(depth)}· ${docRef.path}: ${children.length} subcollection(s)`);
   for (const col of children) {
-    const snap = await measurePage(col, depth);
-    // One representative child is enough to reach the next level: every doc in a
-    // collection has the same possible shape below it.
-    if (!snap.empty) await probe(snap.docs[0].ref, depth + 1);
+    await measureCollection(col, depth);
+    if (truncated) return;
   }
 }
 
@@ -162,11 +220,15 @@ if (queries === 0) {
 
 console.log(
   `\n📊 ${targets.length} parent(s): ${listCalls} listCollections + ${queries} kinded ` +
-    `query(ies), ${documents} document(s) returned.`,
+    `query(ies), ${documents} document(s) reached.` +
+    (truncated
+      ? ` ⚠️ TRUNCATED at CHECK_DELETE_MAX_DOCS=${MAX_DOCS} — figures are a LOWER BOUND.`
+      : ''),
 );
 console.log(
-  `   Compare against Query Insights: the old path issued ONE kindless ` +
-    `COLLECTION_GROUP * SELECT __name__ scan per document, ~6,184 docs scanned each,\n` +
-    `   regardless of whether the subtree held anything (#728).`,
+  `   listCollections runs once per document REACHED, not once per parent — a leaf\n` +
+    `   still costs one round-trip to learn it is a leaf. So a subtree's cost scales\n` +
+    `   with its size (~5 read units each), where the old path was ~6,184 documents\n` +
+    `   scanned FLAT per document deleted, subtree empty or not (#728).`,
 );
 process.exit(0);
