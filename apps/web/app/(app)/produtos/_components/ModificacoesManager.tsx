@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActionIcon,
   Alert,
@@ -17,43 +17,25 @@ import {
 import { notifications } from '@mantine/notifications';
 import { IconArrowBackUp, IconChevronDown, IconChevronRight } from '@tabler/icons-react';
 import { FirebaseError } from 'firebase/app';
-import { type DocumentSnapshot, type Firestore, getDoc, getDocs } from 'firebase/firestore';
-import { execute } from 'firebase/firestore/pipelines';
+import { type Firestore, getDocs } from 'firebase/firestore';
 import { ZodError } from 'zod';
-import {
-  PIPELINE_ID_FIELD,
-  PipelineUnsupportedError,
-  buildPipeline,
-  buildQuery,
-  isPipelineSupported,
-  orderByField,
-  paginate,
-} from '@delfrance/data';
+import { buildQuery, limit, orderByField, paginate } from '@delfrance/data';
+import { useSnapshotWithDocs, type SnapshotRow } from '@delfrance/data/hooks';
 import { TRUNCATED_VALUE_KEY } from '@delfrance/core';
 import { microsToDate } from '@delfrance/core/datetime';
+import type { HistoricoModificacao } from '@delfrance/schemas';
 import { historicoModificacoesCollection } from '@/lib/data/historicoModificacoesCollection';
 import { applyRevert, checkRevert, isRevertible, type RevertTarget } from '@/lib/produtos/revert';
 
-/** Newest-first page size for both the list fetch and "Carregar mais". */
+/** Newest-first page size for both the live window and "Carregar mais". */
 const PAGE_SIZE = 50;
-
-/**
- * The Firestore JS SDK registers `db.pipeline()` on every Firestore instance
- * (it's a client-side method, side-effect-imported from
- * `firebase/firestore/pipelines`) regardless of what backend it's connected
- * to — so `isPipelineSupported(db)` returns `true` even against the Firebase
- * Emulator Suite, which does not implement the Pipelines RPC at all (see the
- * `firestore-pipelines` skill, §5/§7). The build-time emulator flag (same one
- * `lib/firebase/client.ts` uses to decide whether to call
- * `connectFirestoreEmulator`) is the only deterministic signal that
- * `isPipelineSupported` can't give us — gate on it explicitly instead of
- * guessing at a runtime error code from the failed RPC.
- */
-const USING_FIRESTORE_EMULATOR = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATOR === 'true';
 
 type Kind = 'create' | 'update' | 'delete';
 
-/** One row of the (light) list — no `changes`, so a big map never crosses the wire. */
+/**
+ * One row of the list. Classic `onSnapshot` / `getDocs` already carry the full
+ * doc (incl. `changes`), so expand reuses that map instead of a second `getDoc`.
+ */
 interface ListEntry {
   id: string;
   path: string;
@@ -62,16 +44,10 @@ interface ListEntry {
   kind: Kind;
   campos: string[];
   timestamp: number | null;
-}
-
-/** A list entry's full doc, lazy-loaded on expand — adds the `changes` map. */
-interface FullEntry extends ListEntry {
-  status: 'ready';
   changes: Record<string, { old: unknown; new: unknown }>;
+  /** Present on live + load-more rows that still hold a cursor for pagination. */
+  snap?: SnapshotRow<HistoricoModificacao>['snap'];
 }
-
-/** Discriminated on `status` so narrowing (`full.status === 'ready'`) is sound. */
-type FullEntryState = { status: 'loading' } | { status: 'error'; message: string } | FullEntry;
 
 interface ConflictState {
   entryId: string;
@@ -115,99 +91,19 @@ function renderValue(value: unknown): string {
   return String(value);
 }
 
-/**
- * Pipelines have no `startAfter` cursor, so paging filters `timestamp <
- * last-loaded`. Entries sharing that exact millisecond are skipped by the
- * next page — accepted for this path (CloudEvent times; two same-produto
- * writes in the same ms are rare). The classic path below pages exactly, via
- * a document-snapshot cursor.
- */
-async function fetchListViaPipeline(
-  db: Firestore,
-  produtoId: string,
-  before: number | null,
-): Promise<ListEntry[]> {
-  const pipeline = buildPipeline(db, {
-    collection: historicoModificacoesCollection.resolvePath({ produtoId }),
-    filters:
-      before !== null ? [{ field: 'timestamp', op: 'lt' as const, value: before }] : undefined,
-    orderBy: [{ field: 'timestamp', direction: 'desc' }],
-    select: ['path', 'subcolecao', 'docId', 'kind', 'campos', 'timestamp'],
-    limit: PAGE_SIZE,
-  });
-  const snap = await execute(pipeline);
-  return snap.results.map((r) => {
-    const data = r.data() as Record<string, unknown>;
-    // `.select()` strips `PipelineResult.ref`; the id survives as the
-    // PIPELINE_ID_FIELD projection `buildPipeline` appends (mirrors
-    // `ProdutoHistoryButton`/`usePipelineSnapshot`'s row-reading pattern).
-    const projectedId =
-      typeof data[PIPELINE_ID_FIELD] === 'string' ? (data[PIPELINE_ID_FIELD] as string) : undefined;
-    if (PIPELINE_ID_FIELD in data) delete data[PIPELINE_ID_FIELD];
-    return {
-      id: r.ref?.id ?? r.id ?? projectedId ?? '',
-      path: data.path as string,
-      subcolecao: (data.subcolecao as string | null | undefined) ?? null,
-      docId: data.docId as string,
-      kind: data.kind as Kind,
-      campos: (data.campos as string[] | undefined) ?? [],
-      timestamp: typeof data.timestamp === 'number' ? data.timestamp : null,
-    };
-  });
-}
-
-async function fetchListViaClassicQuery(
-  db: Firestore,
-  produtoId: string,
-  after: DocumentSnapshot | null,
-): Promise<{ rows: ListEntry[]; lastSnap: DocumentSnapshot | null }> {
-  // `paginate`'s `startAfter(snapshot)` cursor is exact (tiebroken by doc id),
-  // so same-millisecond entries are never skipped — unlike the pipeline
-  // path's `timestamp <` filter (see its doc comment).
-  const snap = await getDocs(
-    buildQuery(historicoModificacoesCollection.ref(db, { produtoId }), [
-      orderByField('timestamp', 'desc'),
-      ...paginate({ after: after ?? undefined, pageSize: PAGE_SIZE }),
-    ]),
-  );
-  const rows = snap.docs.map((d) => {
-    const data = d.data();
-    return {
-      id: d.id,
-      path: data.path,
-      subcolecao: data.subcolecao ?? null,
-      docId: data.docId,
-      kind: data.kind,
-      campos: data.campos,
-      timestamp: data.timestamp,
-    };
-  });
-  return { rows, lastSnap: snap.docs[snap.docs.length - 1] ?? null };
-}
-
-/**
- * Try the Pipeline path first (cuts the payload via `.select()`), falling
- * back to a classic query when the SDK predates Pipelines
- * (`PipelineUnsupportedError`) OR the connected backend is the Firestore
- * Emulator (`USING_FIRESTORE_EMULATOR` — see the constant's doc comment).
- * Anything else thrown by the pipeline attempt is a real error and
- * propagates, matching `ProdutoHistoryButton`'s established fallback shape.
- */
-async function fetchList(
-  db: Firestore,
-  produtoId: string,
-  cursor: { beforeTs: number | null; afterSnap: DocumentSnapshot | null },
-): Promise<{ rows: ListEntry[]; lastSnap: DocumentSnapshot | null }> {
-  if (isPipelineSupported(db) && !USING_FIRESTORE_EMULATOR) {
-    try {
-      const rows = await fetchListViaPipeline(db, produtoId, cursor.beforeTs);
-      return { rows, lastSnap: null };
-    } catch (err) {
-      if (!(err instanceof PipelineUnsupportedError)) throw err;
-      // Fall through to the classic query below.
-    }
-  }
-  return fetchListViaClassicQuery(db, produtoId, cursor.afterSnap);
+function rowToEntry(row: SnapshotRow<HistoricoModificacao>): ListEntry {
+  const data = row.data;
+  return {
+    id: row.id,
+    path: data.path,
+    subcolecao: data.subcolecao ?? null,
+    docId: data.docId,
+    kind: data.kind,
+    campos: data.campos ?? [],
+    timestamp: typeof data.timestamp === 'number' ? data.timestamp : null,
+    changes: data.changes ?? {},
+    snap: row.snap,
+  };
 }
 
 export interface ModificacoesManagerProps {
@@ -222,67 +118,81 @@ export interface ModificacoesManagerProps {
  * `create`/`delete` entries are display-only (no Restaurar) — v1 only
  * reverts a field-level `update` change.
  *
- * The list itself stays light (no `changes` map) and pages newest-first —
- * exactly (snapshot cursor) on the classic path, by `timestamp <` on the
- * pipeline path (Pipelines have no `startAfter`); expanding a row lazy-loads
- * that ONE entry's full doc (a single doc get, not a query) to reveal its
- * per-field old → new values.
+ * Page 1 is a classic realtime query (`useSnapshotWithDocs` / `onSnapshot`)
+ * so a save + "Salvar e continuar" surfaces the trigger-written entry without
+ * a manual reload or poll (issue #661). Deeper pages stay one-shot `getDocs`
+ * via snapshot cursors (same live+tail shape as the chat inbox). Expanding a
+ * row shows the `changes` map already on the streamed doc — no second get.
  */
 export function ModificacoesManager({ db, produtoId }: ModificacoesManagerProps) {
-  const [entries, setEntries] = useState<ListEntry[]>([]);
-  // Classic-path page cursor (null while on the pipeline path, which cursors
-  // by timestamp instead). A ref, not state: it never drives a render.
-  const lastSnapRef = useRef<DocumentSnapshot | null>(null);
-  const [loading, setLoading] = useState(true);
+  const liveQuery = useMemo(
+    () =>
+      buildQuery(historicoModificacoesCollection.ref(db, { produtoId }), [
+        orderByField('timestamp', 'desc'),
+        limit(PAGE_SIZE),
+      ]),
+    [db, produtoId],
+  );
+
+  const live = useSnapshotWithDocs<HistoricoModificacao>(liveQuery);
+
+  const [extraRows, setExtraRows] = useState<SnapshotRow<HistoricoModificacao>[]>([]);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [listError, setListError] = useState<string | null>(null);
-  const [hasMore, setHasMore] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [exhausted, setExhausted] = useState(false);
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [fullById, setFullById] = useState<Record<string, FullEntryState>>({});
   const [pendingKey, setPendingKey] = useState<string | null>(null);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
   const [confirming, setConfirming] = useState(false);
 
+  // Drop the one-shot tail when the product (or db) identity changes so a
+  // previous product's paged history never bleeds into the next. Setting state
+  // in an effect is the sanctioned reset shape here (same as `useConversaQuery`):
+  // an in-render "derive from key" swap can't cancel in-flight loadMore results.
   useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setListError(null);
-    fetchList(db, produtoId, { beforeTs: null, afterSnap: null })
-      .then(({ rows, lastSnap }) => {
-        if (cancelled) return;
-        lastSnapRef.current = lastSnap;
-        setEntries(rows);
-        setHasMore(rows.length === PAGE_SIZE);
-        setLoading(false);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        if (err instanceof FirebaseError) {
-          setListError(`Falha ao carregar o histórico: ${err.code}`);
-          setLoading(false);
-          return;
-        }
-        throw err;
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [db, produtoId, refreshKey]);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset on identity change
+    setExtraRows([]);
+    setExhausted(false);
+    setLoadingMore(false);
+    setExpandedId(null);
+  }, [db, produtoId]);
 
-  async function handleLoadMore() {
-    const last = entries[entries.length - 1];
-    if (!last || last.timestamp === null) return;
+  // Live page first (authoritative + fresh), then the one-shot tail with any
+  // id already surfaced live dropped — same merge as `useConversaQuery`.
+  const entries = useMemo(() => {
+    const liveRows = (live.data ?? []).map(rowToEntry);
+    const seen = new Set(liveRows.map((r) => r.id));
+    const tail = extraRows.filter((r) => !seen.has(r.id)).map(rowToEntry);
+    return [...liveRows, ...tail];
+  }, [live.data, extraRows]);
+
+  const hasMore = !exhausted && entries.length >= PAGE_SIZE;
+  const loading = live.loading;
+  const listError = live.error ? `Falha ao carregar o histórico: ${live.error.code}` : null;
+
+  const handleLoadMore = useCallback(async () => {
+    if (loadingMore || exhausted) return;
+    const cursor = entries[entries.length - 1]?.snap;
+    if (!cursor) return;
+
     setLoadingMore(true);
     try {
-      const { rows, lastSnap } = await fetchList(db, produtoId, {
-        beforeTs: last.timestamp,
-        afterSnap: lastSnapRef.current,
+      const pageQuery = buildQuery(historicoModificacoesCollection.ref(db, { produtoId }), [
+        orderByField('timestamp', 'desc'),
+        ...paginate({ after: cursor, pageSize: PAGE_SIZE }),
+      ]);
+      const snap = await getDocs(pageQuery);
+      const newRows: SnapshotRow<HistoricoModificacao>[] = snap.docs.map((d) => ({
+        id: d.id,
+        path: d.ref.path,
+        data: d.data(),
+        snap: d,
+      }));
+      setExtraRows((prev) => {
+        const seen = new Set(prev.map((r) => r.id));
+        return [...prev, ...newRows.filter((r) => !seen.has(r.id))];
       });
-      if (lastSnap) lastSnapRef.current = lastSnap;
-      setEntries((prev) => [...prev, ...rows]);
-      setHasMore(rows.length === PAGE_SIZE);
+      if (newRows.length < PAGE_SIZE) setExhausted(true);
     } catch (err) {
       if (err instanceof FirebaseError) {
         notifications.show({
@@ -295,36 +205,10 @@ export function ModificacoesManager({ db, produtoId }: ModificacoesManagerProps)
     } finally {
       setLoadingMore(false);
     }
-  }
+  }, [loadingMore, exhausted, entries, db, produtoId]);
 
-  async function handleToggleExpand(entry: ListEntry) {
-    if (expandedId === entry.id) {
-      setExpandedId(null);
-      return;
-    }
-    setExpandedId(entry.id);
-    const existing = fullById[entry.id];
-    if (existing && existing.status !== 'error') return;
-    setFullById((prev) => ({ ...prev, [entry.id]: { status: 'loading' } }));
-    try {
-      const docSnap = await getDoc(
-        historicoModificacoesCollection.docRef(db, { produtoId }, entry.id),
-      );
-      const data = docSnap.data();
-      setFullById((prev) => ({
-        ...prev,
-        [entry.id]: { ...entry, status: 'ready', changes: data?.changes ?? {} },
-      }));
-    } catch (err) {
-      if (err instanceof FirebaseError) {
-        setFullById((prev) => ({
-          ...prev,
-          [entry.id]: { status: 'error', message: `Falha ao carregar detalhes: ${err.code}` },
-        }));
-        return;
-      }
-      throw err;
-    }
+  function handleToggleExpand(entry: ListEntry) {
+    setExpandedId((id) => (id === entry.id ? null : entry.id));
   }
 
   async function handleRestaurar(
@@ -379,18 +263,10 @@ export function ModificacoesManager({ db, produtoId }: ModificacoesManagerProps)
   async function finishRestaurar(entryId: string, target: RevertTarget) {
     await applyRevert(db, target);
     notifications.show({ color: 'teal', message: `Campo "${target.field}" restaurado.` });
-    // A new entry now exists server-side — the next list refresh will surface
-    // it. Collapse this row (not just drop its cached detail): its cached
-    // `changes` are now stale, and nothing besides a fresh `onToggle` click
-    // re-fetches them, so leaving it expanded would strand the user on a
-    // spinner that never resolves.
-    setRefreshKey((k) => k + 1);
+    // A new history entry is written server-side by the trigger — the live
+    // `onSnapshot` surfaces it; no manual refresh. Collapse this row so the
+    // user is not stranded on a stale expand of the pre-revert change set.
     setExpandedId((id) => (id === entryId ? null : id));
-    setFullById((prev) => {
-      const next = { ...prev };
-      delete next[entryId];
-      return next;
-    });
   }
 
   async function handleConfirmConflict() {
@@ -437,9 +313,8 @@ export function ModificacoesManager({ db, produtoId }: ModificacoesManagerProps)
           key={entry.id}
           entry={entry}
           expanded={expandedId === entry.id}
-          full={fullById[entry.id]}
           pendingKey={pendingKey}
-          onToggle={() => void handleToggleExpand(entry)}
+          onToggle={() => handleToggleExpand(entry)}
           onRestaurar={(field, change) => void handleRestaurar(entry, field, change)}
         />
       ))}
@@ -486,13 +361,12 @@ export function ModificacoesManager({ db, produtoId }: ModificacoesManagerProps)
 interface EntryRowProps {
   entry: ListEntry;
   expanded: boolean;
-  full: FullEntryState | undefined;
   pendingKey: string | null;
   onToggle: () => void;
   onRestaurar: (field: string, change: { old: unknown; new: unknown }) => void;
 }
 
-function EntryRow({ entry, expanded, full, pendingKey, onToggle, onRestaurar }: EntryRowProps) {
+function EntryRow({ entry, expanded, pendingKey, onToggle, onRestaurar }: EntryRowProps) {
   return (
     <Box
       data-testid="modificacao-entry"
@@ -522,27 +396,23 @@ function EntryRow({ entry, expanded, full, pendingKey, onToggle, onRestaurar }: 
       </Group>
       {expanded && (
         <Box mt="xs" ml="md">
-          {(!full || full.status === 'loading') && <Loader size="xs" />}
-          {full && full.status === 'error' && <Alert color="red">{full.message}</Alert>}
-          {full && full.status === 'ready' && (
-            <Stack gap="xs">
-              {Object.entries(full.changes).map(([field, change]) => (
-                <FieldChangeRow
-                  key={field}
-                  entry={entry}
-                  field={field}
-                  change={change}
-                  pending={pendingKey === `${entry.id}:${field}`}
-                  onRestaurar={onRestaurar}
-                />
-              ))}
-              {Object.keys(full.changes).length === 0 && (
-                <Text size="xs" c="dimmed">
-                  Sem detalhes de campos para esta entrada.
-                </Text>
-              )}
-            </Stack>
-          )}
+          <Stack gap="xs">
+            {Object.entries(entry.changes).map(([field, change]) => (
+              <FieldChangeRow
+                key={field}
+                entry={entry}
+                field={field}
+                change={change}
+                pending={pendingKey === `${entry.id}:${field}`}
+                onRestaurar={onRestaurar}
+              />
+            ))}
+            {Object.keys(entry.changes).length === 0 && (
+              <Text size="xs" c="dimmed">
+                Sem detalhes de campos para esta entrada.
+              </Text>
+            )}
+          </Stack>
         </Box>
       )}
     </Box>

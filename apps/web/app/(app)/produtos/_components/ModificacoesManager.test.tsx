@@ -1,33 +1,39 @@
-import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
-import type { Firestore } from 'firebase/firestore';
+import type { Firestore, FirestoreError } from 'firebase/firestore';
+import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
+import type { HistoricoModificacao } from '@delfrance/schemas';
 
 // Hoisted mocks (vi.mock factories can't close over normal consts).
 const h = vi.hoisted(() => ({
-  getDoc: vi.fn(),
   getDocs: vi.fn(),
   applyRevert: vi.fn(),
   checkRevert: vi.fn(),
   isRevertible: vi.fn(() => ({ ok: true, reason: null }) as { ok: boolean; reason: string | null }),
+  snapState: {
+    current: {
+      data: undefined,
+      loading: true,
+      error: undefined,
+    } as SnapshotState<SnapshotRow<HistoricoModificacao>[]>,
+  },
 }));
 
-// This test forces the CLASSIC query path (`isPipelineSupported: () => false`)
-// so it never touches the real `firebase/firestore/pipelines` machinery — the
-// list/expand fetches are exercised through plain `getDocs`/`getDoc` stubs
-// instead. Kept as a full replacement (not `importOriginal`) so no real
-// Firestore SDK call is reachable from this test's module graph.
 vi.mock('@delfrance/data', () => ({
-  PIPELINE_ID_FIELD: 'rowId',
-  PipelineUnsupportedError: class PipelineUnsupportedError extends Error {},
-  buildPipeline: vi.fn(),
   buildQuery: (base: unknown, constraints: unknown[]) => ({ base, constraints }),
-  isPipelineSupported: () => false,
   orderByField: vi.fn(),
+  limit: vi.fn(),
   paginate: vi.fn(() => []),
 }));
-vi.mock('firebase/firestore', () => ({ getDoc: h.getDoc, getDocs: h.getDocs }));
-vi.mock('firebase/firestore/pipelines', () => ({ execute: vi.fn() }));
+
+vi.mock('@delfrance/data/hooks', async () => {
+  const actual =
+    await vi.importActual<typeof import('@delfrance/data/hooks')>('@delfrance/data/hooks');
+  return { ...actual, useSnapshotWithDocs: () => h.snapState.current };
+});
+
+vi.mock('firebase/firestore', () => ({ getDocs: h.getDocs }));
 vi.mock('@/lib/data/historicoModificacoesCollection', () => ({
   historicoModificacoesCollection: {
     resolvePath: () => 'produtos/p1/historicoDeModificacoes',
@@ -56,34 +62,37 @@ interface RawEntry {
   changes: Record<string, { old: unknown; new: unknown }>;
 }
 
-function docsSnapshot(entries: RawEntry[]) {
+function toRow(e: RawEntry): SnapshotRow<HistoricoModificacao> {
   return {
-    docs: entries.map((e) => ({
-      id: e.id,
-      data: () => ({
-        path: e.path,
-        subcolecao: e.subcolecao,
-        docId: e.docId,
-        kind: e.kind,
-        campos: e.campos,
-        timestamp: e.timestamp,
-      }),
-    })),
+    id: e.id,
+    path: `produtos/p1/historicoDeModificacoes/${e.id}`,
+    data: {
+      path: e.path,
+      subcolecao: e.subcolecao,
+      docId: e.docId,
+      kind: e.kind,
+      campos: e.campos,
+      changes: e.changes,
+      timestamp: e.timestamp,
+      eventId: e.id,
+    },
+    // Cursor stub — only needed for load-more tests; identity is enough.
+    snap: { id: e.id } as SnapshotRow<HistoricoModificacao>['snap'],
   };
 }
 
-/** `getDoc` resolves the full doc (incl. `changes`) for whichever id was requested. */
-function wireGetDoc(entries: RawEntry[]) {
-  const byId = new Map(entries.map((e) => [e.id, e]));
-  h.getDoc.mockImplementation((ref: { id: string }) =>
-    Promise.resolve({ data: () => ({ changes: byId.get(ref.id)?.changes ?? {} }) }),
-  );
+function setSnap(state: Partial<SnapshotState<SnapshotRow<HistoricoModificacao>[]>>) {
+  h.snapState.current = {
+    data: undefined,
+    loading: false,
+    error: undefined,
+    ...state,
+  };
 }
 
-function renderManager(entries: RawEntry[]) {
-  h.getDocs.mockResolvedValue(docsSnapshot(entries));
-  wireGetDoc(entries);
-  render(
+function renderManager(entries: RawEntry[] = [], loading = false) {
+  setSnap({ data: entries.map(toRow), loading });
+  return render(
     <MantineProvider>
       <ModificacoesManager db={db} produtoId="p1" />
     </MantineProvider>,
@@ -95,10 +104,35 @@ async function expandRow(index: number) {
   fireEvent.click(toggles[index]!);
 }
 
+afterEach(() => {
+  h.snapState.current = { data: undefined, loading: true, error: undefined };
+  h.getDocs.mockReset();
+  h.applyRevert.mockReset();
+  h.checkRevert.mockReset();
+  h.isRevertible.mockReset();
+  h.isRevertible.mockReturnValue({ ok: true, reason: null });
+});
+
 describe('ModificacoesManager', () => {
   it('shows the empty state when there is no history yet', async () => {
     renderManager([]);
     expect(await screen.findByText('Nenhuma modificação registrada.')).toBeTruthy();
+  });
+
+  it('surfaces a subscription error instead of the empty state', async () => {
+    setSnap({
+      error: {
+        name: 'FirebaseError',
+        code: 'permission-denied',
+        message: 'Missing or insufficient permissions.',
+      } as FirestoreError,
+    });
+    render(
+      <MantineProvider>
+        <ModificacoesManager db={db} produtoId="p1" />
+      </MantineProvider>,
+    );
+    expect(await screen.findByText(/permission-denied/)).toBeTruthy();
   });
 
   it('renders entries with their kind badge', async () => {
@@ -139,6 +173,60 @@ describe('ModificacoesManager', () => {
     expect(screen.getByText('criação')).toBeTruthy();
     expect(screen.getByText('edição')).toBeTruthy();
     expect(screen.getByText('exclusão')).toBeTruthy();
+  });
+
+  it('picks up a new history entry when the live snapshot updates (#661)', async () => {
+    const { rerender } = renderManager([
+      {
+        id: 'evt-1',
+        path: 'produtos/p1',
+        subcolecao: null,
+        docId: 'p1',
+        kind: 'update',
+        campos: ['nome'],
+        timestamp: 1,
+        changes: { nome: { old: 'A', new: 'B' } },
+      },
+    ]);
+
+    expect((await screen.findAllByTestId('modificacao-entry')).length).toBe(1);
+
+    // Simulate the Cloud Function writing a new historicoDeModificacoes doc
+    // after "Salvar e continuar" — onSnapshot pushes an updated page.
+    act(() => {
+      setSnap({
+        data: [
+          toRow({
+            id: 'evt-2',
+            path: 'produtos/p1',
+            subcolecao: null,
+            docId: 'p1',
+            kind: 'update',
+            campos: ['sku'],
+            timestamp: 2,
+            changes: { sku: { old: 'x', new: 'y' } },
+          }),
+          toRow({
+            id: 'evt-1',
+            path: 'produtos/p1',
+            subcolecao: null,
+            docId: 'p1',
+            kind: 'update',
+            campos: ['nome'],
+            timestamp: 1,
+            changes: { nome: { old: 'A', new: 'B' } },
+          }),
+        ],
+      });
+    });
+    rerender(
+      <MantineProvider>
+        <ModificacoesManager db={db} produtoId="p1" />
+      </MantineProvider>,
+    );
+
+    expect((await screen.findAllByTestId('modificacao-entry')).length).toBe(2);
+    expect(screen.getByText(/Campos: sku/)).toBeTruthy();
   });
 
   it('never shows Restaurar on a create or delete row, even with revertible fields', async () => {
@@ -206,7 +294,7 @@ describe('ModificacoesManager', () => {
     expect(button.title).toBe('Valor muito grande para restaurar automaticamente.');
   });
 
-  it('shows an enabled Restaurar for a whitelisted update field', async () => {
+  it('shows an enabled Restaurar for a whitelisted update field (changes come from the stream)', async () => {
     h.isRevertible.mockReturnValue({ ok: true, reason: null });
 
     renderManager([
@@ -224,9 +312,11 @@ describe('ModificacoesManager', () => {
 
     await expandRow(0);
 
+    // Expand uses the streamed `changes` map — no getDoc.
     const button = (await screen.findByRole('button', {
       name: 'Restaurar nome',
     })) as HTMLButtonElement;
     expect(button.disabled).toBe(false);
+    expect(screen.getByText(/Produto A → Produto B/)).toBeTruthy();
   });
 });
