@@ -149,7 +149,9 @@ test.describe.serial('Categorias e2e — TableView / ObjectView', () => {
     // Create child under parent.
     await page.goto('/categorias/novo');
     await fillField(page, 'Nome', childNome);
-    await selectFieldWithSearch(page, 'Categoria pai', parentNome);
+    // Parent picker sets optionHintField=nomeCompleto — accessible name carries
+    // the hint line, so match by RegExp (same pattern as ClientePicker e2e).
+    await selectFieldWithSearch(page, 'Categoria pai', parentNome, new RegExp(parentNome));
     await clickSave(page, 'Criar');
     await page.waitForURL(
       (url) => /^\/categorias\/[^/]+$/.test(url.pathname) && url.pathname !== '/categorias/novo',
