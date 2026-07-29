@@ -18,6 +18,13 @@ export async function bundle(outfile) {
   // enqueuer's MERCADO_LIVRE_TASKS_REGION default (mlTasks.ts) or tasks target a
   // queue that doesn't exist in this region and silently drop.
   const region = process.env.FUNCTIONS_REGION || 'us-east5';
+  // Default to `default` — the repo's NAMED Firestore database. Firebase reads no
+  // env during codebase analysis, so `onNfeAprovada`'s `database:` binding
+  // (onNfeAprovada.ts) and `getDb()` (lib/admin.ts) would see `undefined` and bind
+  // to the non-existent `(default)` — the trigger then NEVER fires. Inline it like
+  // FUNCTIONS_REGION so the analyzed endpoint carries the real database id.
+  // Mirrors apps/whatsapp/functions/build.mjs.
+  const databaseId = process.env.FIREBASE_DATABASE_ID || 'default';
   await build({
     entryPoints: [join(pkgDir, 'src/index.ts')],
     bundle: true,
@@ -35,6 +42,7 @@ export async function bundle(outfile) {
     ],
     define: {
       'process.env.FUNCTIONS_REGION': JSON.stringify(region),
+      'process.env.FIREBASE_DATABASE_ID': JSON.stringify(databaseId),
     },
     // ESM output has no `require`, but bundled CommonJS deps may call it
     // dynamically → inject a real `require` via createRequire so those resolve.

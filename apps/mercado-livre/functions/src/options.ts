@@ -20,14 +20,20 @@ process.env.MERCADO_LIVRE_TASKS_REGION ??= region;
 setGlobalOptions({
   region,
   maxInstances: 10,
-  // The Mercado Livre app secret is bound PER-FUNCTION (not globally here) on
+  // The Mercado Livre app secrets are bound PER-FUNCTION (not globally here) on
   // every function whose default deps refresh an ML access token — set with
   // `firebase functions:secrets:set MERCADO_LIVRE_CLIENT_ID/_SECRET`:
   //   - `processMercadoLivreMassImport` (Step 8 / #621) — processMassImport.ts
   //   - `processMercadoLivreNotification` (Step 9 order import) — processNotification.ts
-  // Both declare `secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET']`
-  // on their own `onTaskDispatched(...)` options rather than here, so a function
-  // with no ML API call (e.g. a future pure-Firestore trigger) never gets the
-  // secret bound to it. Promote to a codebase-wide bind here only if that
-  // per-function duplication becomes unwieldy (a THIRD+ consumer).
+  //   - `importMercadoLivreOrders` (Step 9 PR 4 / #360) — index.ts
+  //   - `sendMercadoLivreStock` + the two stock sweeps (Step 10) — sendStock.ts / sweepStock.ts
+  //   - `processMercadoLivrePriceSync` (Step 11 PR-C) — processPriceSync.ts
+  //   - `processMercadoLivreNfeUpload` (Step 12 / #739) — processNfeUpload.ts
+  // Each declares `secrets: ['MERCADO_LIVRE_CLIENT_ID', 'MERCADO_LIVRE_CLIENT_SECRET']`
+  // on its own options rather than here, so a function with no ML API call never
+  // gets the secrets bound — `onNfeAprovada` (Step 12's Firestore trigger) is
+  // exactly that case: it only decides + enqueues, so it deliberately binds
+  // NONE. That trigger is why this stays per-function despite the duplication:
+  // a codebase-wide bind here would hand the ML app credentials to a function
+  // that must not carry them.
 });

@@ -459,8 +459,13 @@ export {
   ESTADOS_FINAIS_NFE,
   isEstadoFinalNFe,
   CHAVE_NFE_REGEX,
+  mlEnvioEstadoSchema,
+  ML_ENVIO_ESTADO,
+  mlEnvioSchema,
   type NotaFiscalEletronica,
   type EstadoNFe,
+  type MlEnvioEstado,
+  type MlEnvio,
 } from './nfe';
 
 export {

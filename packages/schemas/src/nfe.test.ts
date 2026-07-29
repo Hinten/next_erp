@@ -4,6 +4,9 @@ import {
   ESTADO_NFE,
   ESTADO_NFE_LABELS,
   estadoNFeSchema,
+  ML_ENVIO_ESTADO,
+  mlEnvioEstadoSchema,
+  mlEnvioSchema,
   nfeMeta,
   nfeSchema,
 } from './nfe';
@@ -106,6 +109,61 @@ describe('nfeSchema', () => {
   it('rejects empty xml_assinado / nRec (must be null or non-empty)', () => {
     expect(nfeSchema.safeParse({ ...MINIMAL, xml_assinado: '' }).success).toBe(false);
     expect(nfeSchema.safeParse({ ...MINIMAL, nRec: '' }).success).toBe(false);
+  });
+});
+
+describe('mlEnvio (Step 12 ML invoice-upload marker, #739)', () => {
+  const FULL_ML_ENVIO = {
+    estado: ML_ENVIO_ESTADO.enviado,
+    tentativas: 3,
+    shipmentId: '44123456789',
+    motivo: null,
+    ultimoErro: 'HTTP 500 from ML',
+    ultimoErroCodigo: '500',
+    atualizadoEm: 1_753_000_000_000,
+  };
+
+  it('parses a pre-Step-12 doc with mlEnvio absent (read-tolerance)', () => {
+    const out = nfeSchema.parse(MINIMAL);
+    expect(out.mlEnvio).toBeUndefined();
+  });
+
+  it('accepts mlEnvio: null', () => {
+    const out = nfeSchema.parse({ ...MINIMAL, mlEnvio: null });
+    expect(out.mlEnvio).toBeNull();
+  });
+
+  it('roundtrips a full mlEnvio block on the NF-e doc', () => {
+    const out = nfeSchema.parse({ ...MINIMAL, mlEnvio: FULL_ML_ENVIO });
+    expect(out.mlEnvio).toEqual(FULL_ML_ENVIO);
+  });
+
+  it('applies defaults on a minimal mlEnvio block (estado only)', () => {
+    const out = mlEnvioSchema.parse({ estado: ML_ENVIO_ESTADO.pendente });
+    expect(out).toEqual({
+      estado: ML_ENVIO_ESTADO.pendente,
+      tentativas: 0,
+      shipmentId: null,
+      motivo: null,
+      ultimoErro: null,
+      ultimoErroCodigo: null,
+      atualizadoEm: null,
+    });
+  });
+
+  it('rejects an unknown estado, negative/non-integer tentativas, empty shipmentId', () => {
+    const base = { estado: ML_ENVIO_ESTADO.pendente };
+    expect(mlEnvioSchema.safeParse({ estado: 'ok' }).success).toBe(false);
+    expect(mlEnvioSchema.safeParse({ ...base, tentativas: -1 }).success).toBe(false);
+    expect(mlEnvioSchema.safeParse({ ...base, tentativas: 1.5 }).success).toBe(false);
+    expect(mlEnvioSchema.safeParse({ ...base, shipmentId: '' }).success).toBe(false);
+  });
+
+  it('ML_ENVIO_ESTADO members match the enum exactly (both directions)', () => {
+    expect(Object.values(ML_ENVIO_ESTADO).sort()).toEqual([...mlEnvioEstadoSchema.options].sort());
+    for (const value of Object.values(ML_ENVIO_ESTADO)) {
+      expect(mlEnvioEstadoSchema.safeParse(value).success).toBe(true);
+    }
   });
 });
 
