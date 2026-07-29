@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { FieldValue, type Firestore } from 'firebase-admin/firestore';
 
+import { FILETYPE } from '@delfrance/schemas';
+
 import { type Bucket, putArquivoAdmin } from './upload';
 
 /* ------------------------------ fakes ------------------------------------- */
@@ -74,7 +76,7 @@ describe('putArquivoAdmin — create-first', () => {
       storagePath: PATH,
       bytes: Buffer.from('img'),
       contentType: 'image/jpeg',
-      filetype: 'image',
+      filetype: FILETYPE.image,
       resizeState: 'pending',
       externalIds: [EXT],
     });
@@ -123,7 +125,7 @@ describe('putArquivoAdmin — content-addressed dedup', () => {
       storagePath: PATH,
       bytes: Buffer.from('img'),
       contentType: 'image/jpeg',
-      filetype: 'image',
+      filetype: FILETYPE.image,
       externalIds: [EXT],
     });
     expect(r).toEqual({ id: DOC, created: false });
@@ -145,7 +147,7 @@ describe('putArquivoAdmin — content-addressed dedup', () => {
       storagePath: PATH,
       bytes: Buffer.from('img'),
       contentType: 'image/jpeg',
-      filetype: 'image',
+      filetype: FILETYPE.image,
     });
     expect(r.created).toBe(false);
     expect(bucket.saved).toHaveLength(0);
@@ -169,7 +171,7 @@ describe('putArquivoAdmin — content-addressed dedup', () => {
       storagePath: PATH,
       bytes: Buffer.from('img'),
       contentType: 'image/jpeg',
-      filetype: 'image',
+      filetype: FILETYPE.image,
       externalIds: [EXT],
     });
     expect(r).toEqual({ id: DOC, created: false }); // the doc pre-existed…

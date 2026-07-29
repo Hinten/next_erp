@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ESTADO_ENVIO } from '@delfrance/schemas';
+import { FILETYPE, ESTADO_ENVIO } from '@delfrance/schemas';
 import { buildMediaMensagem, buildTextMensagem, makeOptimistic } from './mensagemWrite';
 import { tipoForFiletype } from './mediaKind';
 
@@ -35,7 +35,7 @@ describe('buildMediaMensagem (dual-write + tipo per legacy)', () => {
   it('writes anexoStorage + the image sub-object + tipo c for an image', () => {
     const w = buildMediaMensagem({
       arquivoRef,
-      filetype: 'image',
+      filetype: FILETYPE.image,
       caption: 'foto',
       uid: 'op1',
       now,
@@ -56,14 +56,26 @@ describe('buildMediaMensagem (dual-write + tipo per legacy)', () => {
   });
 
   it('writes the video sub-object + tipo v', () => {
-    const w = buildMediaMensagem({ arquivoRef, filetype: 'video', caption: null, uid: 'op1', now });
+    const w = buildMediaMensagem({
+      arquivoRef,
+      filetype: FILETYPE.video,
+      caption: null,
+      uid: 'op1',
+      now,
+    });
     expect(w.video).toEqual({ video: arquivoRef, caption: null });
     expect(w.tipo).toBe('v');
     expect(w.anexoStorage).toBe(arquivoRef);
   });
 
   it('writes the audio sub-object (no caption) + tipo a', () => {
-    const w = buildMediaMensagem({ arquivoRef, filetype: 'audio', caption: 'x', uid: 'op1', now });
+    const w = buildMediaMensagem({
+      arquivoRef,
+      filetype: FILETYPE.audio,
+      caption: 'x',
+      uid: 'op1',
+      now,
+    });
     expect(w.audio).toEqual({ audio: arquivoRef });
     expect(w.tipo).toBe('a');
     // Caption still rides on conteudo (what resolveSendSpec uses), not the audio slot.
@@ -73,7 +85,7 @@ describe('buildMediaMensagem (dual-write + tipo per legacy)', () => {
   it('writes genericDocument + tipo f for a document', () => {
     const w = buildMediaMensagem({
       arquivoRef,
-      filetype: 'document',
+      filetype: FILETYPE.document,
       caption: 'contrato',
       uid: 'op1',
       now,
@@ -85,7 +97,7 @@ describe('buildMediaMensagem (dual-write + tipo per legacy)', () => {
   it('normalises a blank caption to null', () => {
     const w = buildMediaMensagem({
       arquivoRef,
-      filetype: 'image',
+      filetype: FILETYPE.image,
       caption: '   ',
       uid: 'op1',
       now,
@@ -97,7 +109,7 @@ describe('buildMediaMensagem (dual-write + tipo per legacy)', () => {
   it('carries midGroup when a caption+media were split into two docs', () => {
     const w = buildMediaMensagem({
       arquivoRef,
-      filetype: 'image',
+      filetype: FILETYPE.image,
       caption: null,
       uid: 'op1',
       now,
@@ -109,14 +121,14 @@ describe('buildMediaMensagem (dual-write + tipo per legacy)', () => {
 
 describe('tipoForFiletype', () => {
   it('maps per the legacy TipoMensagem.fromFileType switch', () => {
-    expect(tipoForFiletype('audio')).toBe('a');
-    expect(tipoForFiletype('video')).toBe('v');
-    expect(tipoForFiletype('application')).toBe('f');
-    expect(tipoForFiletype('document')).toBe('f');
-    expect(tipoForFiletype('image')).toBe('c');
-    expect(tipoForFiletype('txt')).toBe('c');
-    expect(tipoForFiletype('sticker')).toBe('c');
-    expect(tipoForFiletype('fallback')).toBe('c');
+    expect(tipoForFiletype(FILETYPE.audio)).toBe('a');
+    expect(tipoForFiletype(FILETYPE.video)).toBe('v');
+    expect(tipoForFiletype(FILETYPE.application)).toBe('f');
+    expect(tipoForFiletype(FILETYPE.document)).toBe('f');
+    expect(tipoForFiletype(FILETYPE.image)).toBe('c');
+    expect(tipoForFiletype(FILETYPE.txt)).toBe('c');
+    expect(tipoForFiletype(FILETYPE.sticker)).toBe('c');
+    expect(tipoForFiletype(FILETYPE.fallback)).toBe('c');
   });
 });
 

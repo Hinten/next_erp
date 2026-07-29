@@ -284,6 +284,37 @@ ruleTester.run('prefer-schema-enum', rule, {
       output: null,
     },
     {
+      // `z.enum(IDENT)` — the members are in a separate `as const` array, so the
+      // registry has to resolve the identifier to see the enum at all.
+      name: 'an enum whose members come from an as-const array is registered',
+      code: `import { TIPO_ARQUIVO_CONST, type TipoArquivo } from '../packages/schemas/src/enums';\ndeclare const t: TipoArquivo;\nexport const x = t === 'video';`,
+      filename: IN,
+      errors: [
+        {
+          messageId: 'rawLiteral',
+          data: {
+            constName: 'TIPO_ARQUIVO_CONST',
+            typeName: 'TipoArquivo',
+            member: 'video',
+            value: 'video',
+            replacement: 'TIPO_ARQUIVO_CONST.video',
+          },
+          suggestions: 1,
+        },
+      ],
+      output: null,
+    },
+    {
+      // The `??` fallback of an annotated declarator. The literal stands in for
+      // the whole expression, so the annotation two tokens away is what types it
+      // — missed until the resolver walked up through the operator.
+      name: 'a ?? fallback resolves through to the annotated declarator',
+      code: `${IMPORT}declare const maybe: EstadoPedido | null;\nexport const chosen: EstadoPedido = maybe ?? 'cancelado';`,
+      filename: IN,
+      errors: [err('cancelado')],
+      output: null,
+    },
+    {
       // Was a documented limitation while enums were matched by member set:
       // narrowing shrank the union and nothing matched. The operand's
       // DECLARATION is unaffected by narrowing, so this is now caught.

@@ -38,6 +38,13 @@ import { millisSinceEpoch } from './shared/datetime';
 export const envioPrecoMercadoLivreStatusSchema = z.enum(['running', 'completed', 'failed']);
 export type EnvioPrecoMercadoLivreStatus = z.infer<typeof envioPrecoMercadoLivreStatusSchema>;
 
+/** Named members of {@link envioPrecoMercadoLivreStatusSchema}. */
+export const ENVIO_PRECO_MERCADO_LIVRE_STATUS = {
+  running: 'running',
+  completed: 'completed',
+  failed: 'failed',
+} as const satisfies Record<string, EnvioPrecoMercadoLivreStatus>;
+
 /**
  * One planned price send, queued in `fila` at PLAN time and consumed by the
  * send step. `.passthrough()`: the fila round-trips through a schema parse on

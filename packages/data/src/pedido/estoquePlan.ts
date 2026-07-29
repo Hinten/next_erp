@@ -4,6 +4,7 @@ import type {
   EstoqueAplicado,
   TipoMovimentoEstoque,
 } from '@delfrance/schemas';
+import { TIPO_MOVIMENTO_ESTOQUE } from '@delfrance/schemas';
 
 /**
  * Pure planning for the pedido → estoque sync (`sincronizarEstoquePedido`,
@@ -156,13 +157,13 @@ interface Contribuicao {
 }
 
 function classificarTipo(c: Contribuicao): TipoMovimentoEstoque {
-  if (c.remAlvo > c.remAplicado) return 'saida';
-  if (c.remAlvo < c.remAplicado) return 'devolucao';
-  if (c.addAlvo > c.addAplicado) return 'entrada';
-  if (c.addAlvo < c.addAplicado) return 'estorno';
-  if (c.resAplicado === 0 && c.resAlvo > 0) return 'reserva';
-  if (c.resAlvo === 0 && c.resAplicado > 0) return 'liberacaoReserva';
-  return 'ajusteReserva';
+  if (c.remAlvo > c.remAplicado) return TIPO_MOVIMENTO_ESTOQUE.saida;
+  if (c.remAlvo < c.remAplicado) return TIPO_MOVIMENTO_ESTOQUE.devolucao;
+  if (c.addAlvo > c.addAplicado) return TIPO_MOVIMENTO_ESTOQUE.entrada;
+  if (c.addAlvo < c.addAplicado) return TIPO_MOVIMENTO_ESTOQUE.estorno;
+  if (c.resAplicado === 0 && c.resAlvo > 0) return TIPO_MOVIMENTO_ESTOQUE.reserva;
+  if (c.resAlvo === 0 && c.resAplicado > 0) return TIPO_MOVIMENTO_ESTOQUE.liberacaoReserva;
+  return TIPO_MOVIMENTO_ESTOQUE.ajusteReserva;
 }
 
 const MOTIVO_POR_TIPO: Record<TipoMovimentoEstoque, (n: string) => string> = {
