@@ -26,6 +26,9 @@ import {
   type Imposto,
   type Origem,
   type TributeItem,
+  CRT,
+  CSOSN,
+  CST_PIS_COFINS,
   IPI_TRIB_CSTS,
   impostoSchema,
   tributeItemSchema,
@@ -134,13 +137,13 @@ function assertFcpStTrio(
 }
 
 function buildICMS(config: ConfiguracaoICMS, origem: Origem): TNFe_infNFe_det_imposto_ICMS {
-  if (config.crt === '3') {
+  if (config.crt === CRT.regimeNormal) {
     throw new NFeTributeError(
       'CRT=3 (Regime Normal) is not implemented in this engine (Phase D). ' +
         'Use Simples Nacional configs only.',
     );
   }
-  if (config.crt === '4') {
+  if (config.crt === CRT.meiSimplesNacional) {
     throw new NFeTributeError('CRT=4 (MEI) is not implemented.');
   }
   // CRT='1' (Simples Nacional) or '2' (SN excesso) — both use CSOSN.
@@ -418,8 +421,8 @@ function buildCOFINS(
 
 function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto_PIS {
   switch (cfg.CST) {
-    case '01':
-    case '02': {
+    case CST_PIS_COFINS.tributavelAliquotaBasica:
+    case CST_PIS_COFINS.tributavelAliquotaDiferenciada: {
       // PISAliq — needs vBC + pPIS + vPIS. vBC = vProd (Simples Nacional
       // common posture); pPIS from config; vPIS = vBC × pPIS / 100.
       if (cfg.pPIS == null) {
@@ -436,7 +439,7 @@ function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto
         },
       };
     }
-    case '03': {
+    case CST_PIS_COFINS.tributavelAliquotaPorUnidade: {
       // PISQtde — by quantity (vAliqProd × qBCProd).
       if (cfg.vAliqProd == null) {
         throw new NFeTributeError('PIS CST=03 requires `vAliqProd`');
@@ -450,39 +453,39 @@ function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto
         },
       };
     }
-    case '04':
-    case '05':
-    case '06':
-    case '07':
-    case '08':
-    case '09': {
+    case CST_PIS_COFINS.tributavelMonofasicaRevendaAliquotaZero:
+    case CST_PIS_COFINS.tributavelSubstituicaoTributaria:
+    case CST_PIS_COFINS.tributavelAliquotaZero:
+    case CST_PIS_COFINS.isentaContribuicao:
+    case CST_PIS_COFINS.semIncidenciaContribuicao:
+    case CST_PIS_COFINS.suspensaoContribuicao: {
       // PISNT — não tributado.
       return { PISNT: { CST: cfg.CST } };
     }
-    case '49':
-    case '50':
-    case '51':
-    case '52':
-    case '53':
-    case '54':
-    case '55':
-    case '56':
-    case '60':
-    case '61':
-    case '62':
-    case '63':
-    case '64':
-    case '65':
-    case '66':
-    case '67':
-    case '70':
-    case '71':
-    case '72':
-    case '73':
-    case '74':
-    case '75':
-    case '98':
-    case '99': {
+    case CST_PIS_COFINS.outrasOperacoesSaida:
+    case CST_PIS_COFINS.creditoExclusivoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoExclusivoNaoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoExclusivoExportacao:
+    case CST_PIS_COFINS.creditoTributadaENaoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoNaoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoTributadaENaoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoPresumidoExclusivoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoPresumidoExclusivoNaoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoPresumidoExclusivoExportacao:
+    case CST_PIS_COFINS.creditoPresumidoTributadaENaoTributadaMercadoInterno:
+    case CST_PIS_COFINS.creditoPresumidoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoPresumidoNaoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoPresumidoTributadaENaoTributadaMercadoInternoEExportacao:
+    case CST_PIS_COFINS.creditoPresumidoOutrasOperacoes:
+    case CST_PIS_COFINS.aquisicaoSemDireitoCredito:
+    case CST_PIS_COFINS.aquisicaoComIsencao:
+    case CST_PIS_COFINS.aquisicaoComSuspensao:
+    case CST_PIS_COFINS.aquisicaoAliquotaZero:
+    case CST_PIS_COFINS.aquisicaoSemIncidencia:
+    case CST_PIS_COFINS.aquisicaoSubstituicaoTributaria:
+    case CST_PIS_COFINS.outrasOperacoesEntrada:
+    case CST_PIS_COFINS.outrasOperacoes: {
       // PISOutr — outras operações. SEFAZ XSD models PISOutr as
       // CST, then xs:choice ( vBC + pPIS | qBCProd + vAliqProd ), then vPIS.
       // Codegen-emitted type has all four as optional, but xmllint-wasm
@@ -504,8 +507,8 @@ function buildPISByCST(cfg: ConfPIS, item: TributeItem): TNFe_infNFe_det_imposto
 
 function buildCOFINSByCST(cfg: ConfCOFINS, item: TributeItem): TNFe_infNFe_det_imposto_COFINS {
   switch (cfg.CST) {
-    case '01':
-    case '02': {
+    case CST_PIS_COFINS.tributavelAliquotaBasica:
+    case CST_PIS_COFINS.tributavelAliquotaDiferenciada: {
       if (cfg.pCOFINS == null) {
         throw new NFeTributeError(`COFINS CST=${cfg.CST} requires \`pCOFINS\``);
       }
@@ -520,7 +523,7 @@ function buildCOFINSByCST(cfg: ConfCOFINS, item: TributeItem): TNFe_infNFe_det_i
         },
       };
     }
-    case '03': {
+    case CST_PIS_COFINS.tributavelAliquotaPorUnidade: {
       if (cfg.vAliqProd == null) {
         throw new NFeTributeError('COFINS CST=03 requires `vAliqProd`');
       }
@@ -533,12 +536,12 @@ function buildCOFINSByCST(cfg: ConfCOFINS, item: TributeItem): TNFe_infNFe_det_i
         },
       };
     }
-    case '04':
-    case '05':
-    case '06':
-    case '07':
-    case '08':
-    case '09':
+    case CST_PIS_COFINS.tributavelMonofasicaRevendaAliquotaZero:
+    case CST_PIS_COFINS.tributavelSubstituicaoTributaria:
+    case CST_PIS_COFINS.tributavelAliquotaZero:
+    case CST_PIS_COFINS.isentaContribuicao:
+    case CST_PIS_COFINS.semIncidenciaContribuicao:
+    case CST_PIS_COFINS.suspensaoContribuicao:
       return { COFINSNT: { CST: cfg.CST } };
     default:
       // COFINSOutr — same XSD shape + same posture as PISOutr above:

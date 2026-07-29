@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { roundReais } from '@delfrance/core/money';
-import { FORMA_PAGAMENTO, pagamentoSchema, type FreteDoPedido } from '@delfrance/schemas';
+import { ORIGEM, FORMA_PAGAMENTO, pagamentoSchema, type FreteDoPedido } from '@delfrance/schemas';
 
 import {
   apportionDescontos,
@@ -47,7 +47,7 @@ function item(partial: Partial<FiscalItem>): FiscalItem {
     descontoUnitario,
     quantidade,
     imposto: {
-      origem: '0',
+      origem: ORIGEM.nacional,
       unidade: 'UN',
       NCM: '61091000',
       cfop: '5102',
