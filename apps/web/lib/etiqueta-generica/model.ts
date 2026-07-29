@@ -1,5 +1,6 @@
 import { getDoc, getDocs, type DocumentReference, type Firestore } from 'firebase/firestore';
 import {
+  INTEGRACAO_FRETE,
   ESTADO_NFE,
   INTEGRACAO_FRETE_LABELS,
   type Cliente,
@@ -157,7 +158,7 @@ export async function buildEtiquetaGenericaModel(
   frete: FreteDoPedido,
   intFrete: { id: string; tipo: IntegracaoFrete; data: IntFrete },
 ): Promise<EtiquetaGenericaModel> {
-  const isRetirada = intFrete.tipo === 'retiradaNaLoja';
+  const isRetirada = intFrete.tipo === INTEGRACAO_FRETE.retiradaNaLoja;
 
   const [cliente, endereco, recebedor, nfe, enderecoReverso] = await Promise.all([
     readRef<Cliente>(db, pedido.clientePedidoOuterRef),

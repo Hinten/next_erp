@@ -1,4 +1,5 @@
 import type { IntegracaoFrete } from '@delfrance/schemas';
+import { INTEGRACAO_FRETE } from '@delfrance/schemas';
 
 /**
  * The four `/logistica/*` screens are slices of the single `int_frete`
@@ -40,7 +41,7 @@ export const SECTION = {
 export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = {
   retirada: {
     slug: 'retirada',
-    tipo: 'retiradaNaLoja',
+    tipo: INTEGRACAO_FRETE.retiradaNaLoja,
     titulo: 'Retirada na loja',
     tituloNovo: 'Nova retirada na loja',
     descricao: 'Pontos de retirada (balcão) com horários de corte para disponibilidade.',
@@ -50,7 +51,7 @@ export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = 
   },
   motoboy: {
     slug: 'motoboy',
-    tipo: 'motoboy',
+    tipo: INTEGRACAO_FRETE.motoboy,
     titulo: 'Motoboy',
     tituloNovo: 'Novo motoboy',
     descricao: 'Entrega local por motoboy — tarifas por faixa de CEP e horários de corte.',
@@ -60,7 +61,7 @@ export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = 
   },
   fob: {
     slug: 'fob',
-    tipo: 'fob',
+    tipo: INTEGRACAO_FRETE.fob,
     titulo: 'Por conta do destinatário (FOB)',
     tituloNovo: 'Novo frete FOB',
     descricao: 'Entrega organizada e paga pelo destinatário.',
@@ -70,7 +71,7 @@ export const LOGISTICA_SLICES: Record<LogisticaSlice['slug'], LogisticaSlice> = 
   },
   'melhor-envios': {
     slug: 'melhor-envios',
-    tipo: 'melhorEnvios',
+    tipo: INTEGRACAO_FRETE.melhorEnvios,
     titulo: 'Melhor Envios',
     tituloNovo: 'Nova conta Melhor Envios',
     descricao:

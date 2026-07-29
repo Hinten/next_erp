@@ -4,6 +4,8 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider, Tabs } from '@mantine/core';
 import { useForm, type UseFormReturn } from 'react-hook-form';
 import type { Pedido } from '@delfrance/schemas';
+import { INTEGRACAO_FRETE } from '@delfrance/schemas';
+import { MODALIDADE_FRETE } from '@delfrance/schemas';
 import type { CalculateOption } from '@delfrance/integrations-freight-br/http-client';
 import { FobFields } from './frete/FobFields';
 import { MelhorEnvioFields } from './frete/MelhorEnvioFields';
@@ -37,7 +39,7 @@ const SAVED_QUOTE: CalculateOption = {
 
 function freteWith(overrides: Partial<FreteInicialFormState> = {}): FreteInicialFormState {
   return {
-    ...(seedFreteInicial('1', true) as unknown as FreteInicialFormState),
+    ...(seedFreteInicial(MODALIDADE_FRETE.fob, true) as unknown as FreteInicialFormState),
     ...overrides,
   };
 }
@@ -127,7 +129,7 @@ describe('FobFields — state survives a tab switch (#472)', () => {
 
 describe('MelhorEnvioFields — quote Select re-seeds from form (#472 / PR #210)', () => {
   const integracao = {
-    tipo: 'melhorEnvios',
+    tipo: INTEGRACAO_FRETE.melhorEnvios,
     enderecoDeOrigem: { cep: '01310100' },
   } as Parameters<typeof MelhorEnvioFields>[0]['integracao'];
 

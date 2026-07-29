@@ -4,6 +4,8 @@ import {
   FreightReauthRequiredError,
 } from '@delfrance/integrations-freight-br/http-client';
 
+import { INTEGRACAO_FRETE } from '@delfrance/schemas';
+
 import { melhorEnviosProvider } from './melhorEnvios';
 import type { ComprarEtiquetaOutcome, EtiquetaProviderInput } from '../types';
 
@@ -31,7 +33,7 @@ function makeInput(over: {
     pedido: {} as never,
     pedidoId: 'p1',
     frete: frete as never,
-    intFrete: { id: 'if1', tipo: 'melhorEnvios', data: {} as never },
+    intFrete: { id: 'if1', tipo: INTEGRACAO_FRETE.melhorEnvios, data: {} as never },
     formato: over.formato ?? 'pdf',
     deps: {
       freightClient: (over.freightClient ?? null) as never,

@@ -262,6 +262,23 @@ export const modalidadeFreteSchema = z
   .meta({ labels: MODALIDADE_FRETE_LABELS });
 export type ModalidadeFrete = z.infer<typeof modalidadeFreteSchema>;
 
+/**
+ * Named members of {@link modalidadeFreteSchema}, using the standard freight
+ * shorthand from {@link MODALIDADE_FRETE_LABELS} — `MODALIDADE_FRETE.cif` reads
+ * where `'0'` does not.
+ *
+ * Enforced by the `delfrance/prefer-schema-enum` lint rule, which fires for any
+ * Zod enum that has a companion constant like this one.
+ */
+export const MODALIDADE_FRETE = {
+  cif: '0',
+  fob: '1',
+  terceiros: '2',
+  proprioRemetente: '3',
+  proprioDestinatario: '4',
+  semTransporte: '9',
+} as const satisfies Record<string, ModalidadeFrete>;
+
 /* -------------------------------------------------------------------------- */
 /*                         INTEGRACOES_FRETE enum                             */
 /* -------------------------------------------------------------------------- */
@@ -299,6 +316,24 @@ export const integracoesFreteSchema = z
   ])
   .meta({ labels: INTEGRACAO_FRETE_LABELS });
 export type IntegracaoFrete = z.infer<typeof integracoesFreteSchema>;
+
+/**
+ * Named members of {@link integracoesFreteSchema}. Every member name matches its
+ * slug except `amazon`, whose on-disk value is `'amz'` — exactly the mismatch
+ * this convention exists to hide.
+ */
+export const INTEGRACAO_FRETE = {
+  mercadoLivre: 'mercadoLivre',
+  lojaIntegrada: 'lojaIntegrada',
+  melhorEnvios: 'melhorEnvios',
+  amazon: 'amz',
+  magalu: 'magalu',
+  retiradaNaLoja: 'retiradaNaLoja',
+  shopee: 'shopee',
+  motoboy: 'motoboy',
+  fob: 'fob',
+  outros: 'outros',
+} as const satisfies Record<string, IntegracaoFrete>;
 
 /* -------------------------------------------------------------------------- */
 /*                    FREIGHT_TIPO_CAPS — provider capabilities                */

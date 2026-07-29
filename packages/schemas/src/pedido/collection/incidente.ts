@@ -23,7 +23,7 @@ export const TIPO_INCIDENTE = {
   atendimento: 'a',
   entregaAtrasada: 'e',
   outros: 'o',
-} as const;
+} as const satisfies Record<string, TipoIncidente>;
 
 export const tipoIncidenteSchema = z.enum([
   'mediations',

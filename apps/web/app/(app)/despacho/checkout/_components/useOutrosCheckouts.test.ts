@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SnapshotRow } from '@delfrance/data/hooks';
 import type { CheckoutFretePedido } from '@delfrance/schemas';
+import { MODALIDADE_FRETE } from '@delfrance/schemas';
 import { parseOutroCheckoutRow } from './useOutrosCheckouts';
 
 /** A minimal collection-group snapshot row (only the fields the parser reads). */
@@ -16,7 +17,7 @@ function makeRow(
       title: 'PED-1',
       obs: null,
       freteNoMomentoDoCheckout: {
-        modalidade: '0',
+        modalidade: MODALIDADE_FRETE.cif,
       } as CheckoutFretePedido['freteNoMomentoDoCheckout'],
       ehDoFreteInicial: null,
       usuarioCheckoutFretePedidoOuterRef: 'documents/usuarios/u1',
@@ -43,7 +44,7 @@ describe('parseOutroCheckoutRow', () => {
         timestamp: 42,
         obs: 'conferido',
         freteNoMomentoDoCheckout: {
-          modalidade: '9',
+          modalidade: MODALIDADE_FRETE.semTransporte,
         } as CheckoutFretePedido['freteNoMomentoDoCheckout'],
       }),
     );

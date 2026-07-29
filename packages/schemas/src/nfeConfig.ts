@@ -18,6 +18,19 @@ export const ambienteNFEschema = z.enum(['1', '2']);
 export type AmbienteNFE = z.infer<typeof ambienteNFEschema>;
 
 /**
+ * Named members of {@link ambienteNFEschema}. `'1'` and `'2'` say nothing on
+ * their own, and getting them backwards means emitting a real fiscal document
+ * against produção while believing it was a test.
+ *
+ * Enforced by the `delfrance/prefer-schema-enum` lint rule, which fires for any
+ * Zod enum that has a companion constant like this one.
+ */
+export const AMBIENTE_NFE = {
+  producao: '1',
+  homologacao: '2',
+} as const satisfies Record<string, AmbienteNFE>;
+
+/**
  * `contingenciaModo` — manual contingency switch for NF-e emission.
  *
  *   'none' → normal emission (tpEmis=1)
@@ -32,6 +45,13 @@ export type AmbienteNFE = z.infer<typeof ambienteNFEschema>;
  */
 export const contingenciaModoSchema = z.enum(['none', 'svc', 'epec']);
 export type ContingenciaModo = z.infer<typeof contingenciaModoSchema>;
+
+/** Named members of {@link contingenciaModoSchema}; the values are already the names. */
+export const CONTINGENCIA_MODO = {
+  none: 'none',
+  svc: 'svc',
+  epec: 'epec',
+} as const satisfies Record<string, ContingenciaModo>;
 
 /**
  * NFeConfig — per-Filial NF-e counter document.
@@ -60,7 +80,9 @@ export const nfeConfigSchema = z
      * Contingency switch. `.default('none')` keeps pre-contingency docs (and
      * Flutter writes that never knew the field) parseable.
      */
-    contingencia_modo: contingenciaModoSchema.default('none').describe('Contingência'),
+    contingencia_modo: contingenciaModoSchema
+      .default(CONTINGENCIA_MODO.none)
+      .describe('Contingência'),
     /** SEFAZ `xJust` (B29) — required (15..255 chars) while modo ≠ 'none'. */
     contingencia_justificativa: z
       .string()
@@ -89,7 +111,7 @@ export const nfeConfigSchema = z
     timestamp: millisSinceEpoch().nullable().default(null),
   })
   .superRefine((cfg, ctx) => {
-    if (cfg.contingencia_modo !== 'none') {
+    if (cfg.contingencia_modo !== CONTINGENCIA_MODO.none) {
       if (cfg.contingencia_justificativa === null) {
         ctx.addIssue({
           code: 'custom',

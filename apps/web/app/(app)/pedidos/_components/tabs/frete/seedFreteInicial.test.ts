@@ -1,18 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
+import { MODALIDADE_FRETE } from '@delfrance/schemas';
+
 import { seedFreteInicial } from './seedFreteInicial';
 
 describe('seedFreteInicial', () => {
   it('seeds a reverse frete for an entrada (cliente → loja)', () => {
-    expect(seedFreteInicial('1', false).ehReverso).toBe(true);
+    expect(seedFreteInicial(MODALIDADE_FRETE.fob, false).ehReverso).toBe(true);
   });
 
   it('seeds a non-reverse frete for a saída', () => {
-    expect(seedFreteInicial('1', true).ehReverso).toBe(false);
+    expect(seedFreteInicial(MODALIDADE_FRETE.fob, true).ehReverso).toBe(false);
   });
 
   it('keeps the schema defaults for every other wire key', () => {
-    const seeded = seedFreteInicial('2', false);
+    const seeded = seedFreteInicial(MODALIDADE_FRETE.terceiros, false);
     expect(seeded.estado).toBe('iniciado');
     expect(seeded.modalidade).toBe('2');
     // Spot-check the Flutter defaults `freteDoPedidoSchema.parse` fills in.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { etiquetaMismatch, etiquetaRowState } from './etiquetaActions';
-import { ESTADO_FRETE } from '@delfrance/schemas';
+import { INTEGRACAO_FRETE, ESTADO_FRETE } from '@delfrance/schemas';
 
 describe('etiquetaRowState', () => {
   const base = { tipo: 'melhorEnvios' as const, printLabelId: null, externalOptionId: null };
@@ -14,11 +14,13 @@ describe('etiquetaRowState', () => {
 
   it('marks non-Melhor-Envio carriers as unsupported (v1)', () => {
     expect(
-      etiquetaRowState({ ...base, tipo: 'motoboy', estado: ESTADO_FRETE.iniciado }).action,
+      etiquetaRowState({ ...base, tipo: INTEGRACAO_FRETE.motoboy, estado: ESTADO_FRETE.iniciado })
+        .action,
     ).toBe('unsupported');
-    expect(etiquetaRowState({ ...base, tipo: 'fob', estado: ESTADO_FRETE.iniciado }).action).toBe(
-      'unsupported',
-    );
+    expect(
+      etiquetaRowState({ ...base, tipo: INTEGRACAO_FRETE.fob, estado: ESTADO_FRETE.iniciado })
+        .action,
+    ).toBe('unsupported');
   });
 
   it('offers reprint when a label is already bought', () => {

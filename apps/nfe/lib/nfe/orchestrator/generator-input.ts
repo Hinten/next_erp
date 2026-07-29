@@ -14,6 +14,7 @@ import {
 import { microsToMillis } from '@delfrance/core/datetime';
 import { roundReais } from '@delfrance/core/money';
 import {
+  MODALIDADE_FRETE,
   IND_INTERMED_OPERACAO,
   FORMA_PAGAMENTO,
   type Filial,
@@ -56,7 +57,8 @@ export function buildGeneratorInput(
   // Compute frete value upfront so it can ride into both the totals
   // aggregator (NF-e level) and onto a det's prod.vFrete (item level)
   // when the issuer contracts the carrier (modalidade='0').
-  const freteEmitente = bundle.frete?.modalidade === '0' && (bundle.frete.valorCobrado ?? 0) > 0;
+  const freteEmitente =
+    bundle.frete?.modalidade === MODALIDADE_FRETE.cif && (bundle.frete.valorCobrado ?? 0) > 0;
   const vFrete = freteEmitente ? (bundle.frete!.valorCobrado as number) : 0;
   if (vFrete > 0 && genItems.length > 0) {
     // Mirror of Flutter `pedido_nfe_base.dart:932`: stamp the full frete
@@ -364,7 +366,9 @@ export function buildPaymentsFromPagamentos(
     return [{ tPag: '90', vPag: 0 }];
   }
   const freteEmitenteOverride =
-    pagamentos.length === 1 && ctx.frete?.modalidade === '0' && (ctx.frete.valorCobrado ?? 0) > 0;
+    pagamentos.length === 1 &&
+    ctx.frete?.modalidade === MODALIDADE_FRETE.cif &&
+    (ctx.frete.valorCobrado ?? 0) > 0;
 
   return pagamentos.map((p): Payment => {
     const isOutros = p.forma_de_pagamento === FORMA_PAGAMENTO.outros;
@@ -451,7 +455,7 @@ export function buildTranspFromFrete(frete: FreteDoPedido | null): {
   vagao?: string;
   balsa?: string;
 } {
-  if (frete == null || frete.modalidade === '9') {
+  if (frete == null || frete.modalidade === MODALIDADE_FRETE.semTransporte) {
     return { modFrete: '9' };
   }
   const out: ReturnType<typeof buildTranspFromFrete> = { modFrete: frete.modalidade };
@@ -583,7 +587,9 @@ export function buildCobrFromPagamentos(
   if (dups.length === 0) return undefined;
 
   const freteEmitenteOverride =
-    pagamentos.length === 1 && ctx.frete?.modalidade === '0' && (ctx.frete.valorCobrado ?? 0) > 0;
+    pagamentos.length === 1 &&
+    ctx.frete?.modalidade === MODALIDADE_FRETE.cif &&
+    (ctx.frete.valorCobrado ?? 0) > 0;
 
   // Issuer-offset calendar date (default: Brasília, for direct/test callers).
   const utcOffset = ctx.utcOffsetMinutes ?? -180;

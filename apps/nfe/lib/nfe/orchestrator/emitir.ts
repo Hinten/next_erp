@@ -26,6 +26,7 @@ import {
   type TRetEnviNFe,
 } from '@delfrance/integrations-nfe';
 import {
+  CONTINGENCIA_MODO,
   emissaoNFeBloqueadaPorEstado,
   ESTADO_NFE,
   nfeConfigSchema,
@@ -187,8 +188,8 @@ export async function prepareEmission(
   // non-'none' modo carries them forward (a tpEmis=1 NF-e with B28/B29 is a
   // generator error by design).
   const contingencia: EmissionPrep['contingencia'] =
-    cfg.contingencia_modo === 'none'
-      ? { modo: 'none', dhCont: null, xJust: null }
+    cfg.contingencia_modo === CONTINGENCIA_MODO.none
+      ? { modo: CONTINGENCIA_MODO.none, dhCont: null, xJust: null }
       : {
           modo: cfg.contingencia_modo,
           dhCont:
@@ -878,7 +879,7 @@ export async function emitirPedido(
   // EPEC mode: the NF-e is persisted (anti-loss anchor) but NOT sent to the
   // (down) home SEFAZ — the EPEC summary evento goes to the Ambiente
   // Nacional instead. The full NF-e is transmitted post-outage.
-  if (prep.contingencia.modo === 'epec') {
+  if (prep.contingencia.modo === CONTINGENCIA_MODO.epec) {
     return enviarEpecParaNota({
       fs,
       rt,
@@ -1137,7 +1138,7 @@ export async function processChunk(
 
   // EPEC mode: no lote — each NF-e gets its own EPEC evento at the Ambiente
   // Nacional (one evento per envEvento in v1). Failures stay per-pedido.
-  if (toSend[0]!.prep.contingencia.modo === 'epec') {
+  if (toSend[0]!.prep.contingencia.modo === CONTINGENCIA_MODO.epec) {
     const epecs = await Promise.allSettled(
       toSend.map((s) =>
         enviarEpecParaNota({

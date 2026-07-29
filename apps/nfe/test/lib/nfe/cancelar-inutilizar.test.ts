@@ -23,7 +23,13 @@ import {
   inutilizarNumeracao as inutilizarNumeracaoSefaz,
   NFeInutilizacaoError,
 } from '@delfrance/integrations-nfe';
-import { ESTADO_ENVI_NFE_MSG, ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
+import {
+  CONTINGENCIA_MODO,
+  AMBIENTE_NFE,
+  ESTADO_ENVI_NFE_MSG,
+  ESTADO_NFE,
+  type NFeConfig,
+} from '@delfrance/schemas';
 
 import {
   cancelarNFeService,
@@ -102,9 +108,9 @@ const SEED_NFE_CONFIG: NFeConfig = {
   numeracao_atual: 0,
   serie: 1,
   idLote: 0,
-  ambiente: '2',
+  ambiente: AMBIENTE_NFE.homologacao,
   emitirReformaTributaria: false,
-  contingencia_modo: 'none',
+  contingencia_modo: CONTINGENCIA_MODO.none,
   contingencia_justificativa: null,
   contingencia_dataInicio: null,
   timestamp: null,

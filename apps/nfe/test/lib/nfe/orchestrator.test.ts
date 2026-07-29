@@ -38,6 +38,8 @@ import {
   signNFe,
 } from '@delfrance/integrations-nfe';
 import {
+  CONTINGENCIA_MODO,
+  AMBIENTE_NFE,
   ESTADO_NFE,
   FORMA_PAGAMENTO,
   pagamentoSchema,
@@ -130,9 +132,9 @@ const SEED_NFE_CONFIG: NFeConfig = {
   numeracao_atual: 0,
   serie: 1,
   idLote: 0,
-  ambiente: '2',
+  ambiente: AMBIENTE_NFE.homologacao,
   emitirReformaTributaria: false,
-  contingencia_modo: 'none',
+  contingencia_modo: CONTINGENCIA_MODO.none,
   contingencia_justificativa: null,
   contingencia_dataInicio: null,
   timestamp: null,
@@ -524,7 +526,7 @@ describe('emitirPedido — contingência SVC', () => {
   const SVC_JUST = 'SEFAZ-SP indisponível desde as 08h';
   const SVC_CONFIG: Partial<NFeConfig> = {
     ...SEED_NFE_CONFIG,
-    contingencia_modo: 'svc',
+    contingencia_modo: CONTINGENCIA_MODO.svc,
     contingencia_justificativa: SVC_JUST,
     contingencia_dataInicio: new Date('2026-06-10T08:00:00.000Z').getTime(),
   };
@@ -604,7 +606,7 @@ describe('emitirPedido — contingência EPEC (tpEmis=4)', () => {
   const EPEC_JUST = 'SEFAZ-SP indisponível desde as 08h';
   const EPEC_CONFIG: Partial<NFeConfig> = {
     ...SEED_NFE_CONFIG,
-    contingencia_modo: 'epec',
+    contingencia_modo: CONTINGENCIA_MODO.epec,
     contingencia_justificativa: EPEC_JUST,
     contingencia_dataInicio: new Date('2026-06-11T08:00:00.000Z').getTime(),
   };

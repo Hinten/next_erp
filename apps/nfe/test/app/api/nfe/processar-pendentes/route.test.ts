@@ -27,7 +27,7 @@ vi.mock('@delfrance/integrations-nfe', async (importOriginal) => {
 });
 
 import { consultarSituacaoNFe } from '@delfrance/integrations-nfe';
-import { ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
+import { CONTINGENCIA_MODO, AMBIENTE_NFE, ESTADO_NFE, type NFeConfig } from '@delfrance/schemas';
 
 import { verifyCaller } from '@/lib/nfe/auth';
 import { getAdminFirestore } from '@/lib/firebase/admin';
@@ -154,16 +154,16 @@ const CFG_EPEC: NFeConfig = {
   numeracao_atual: 9,
   serie: 1,
   idLote: 3,
-  ambiente: '2',
+  ambiente: AMBIENTE_NFE.homologacao,
   emitirReformaTributaria: false,
-  contingencia_modo: 'epec',
+  contingencia_modo: CONTINGENCIA_MODO.epec,
   contingencia_justificativa: 'SEFAZ-SP indisponível desde as 08h',
   contingencia_dataInicio: new Date('2026-06-11T08:00:00.000Z').getTime(),
   timestamp: null,
 };
 const CFG_NONE: NFeConfig = {
   ...CFG_EPEC,
-  contingencia_modo: 'none',
+  contingencia_modo: CONTINGENCIA_MODO.none,
   contingencia_justificativa: null,
   contingencia_dataInicio: null,
 };
