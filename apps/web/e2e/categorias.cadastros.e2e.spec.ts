@@ -22,6 +22,7 @@ import {
   expectFieldError,
   expectToast,
   fillField,
+  selectFieldWithSearch,
 } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
@@ -103,7 +104,7 @@ test.describe.serial('Categorias e2e — TableView / ObjectView', () => {
     await expect(page.getByRole('heading', { name: 'Nova categoria' })).toBeVisible();
   });
 
-  test('creates a new categoria', async ({ page }) => {
+  test('creates a new categoria with derived nomeCompleto', async ({ page }) => {
     const nome = `${prefix}-novo`;
     await page.goto('/categorias/novo');
     await fillField(page, 'Nome', nome);
@@ -120,9 +121,61 @@ test.describe.serial('Categorias e2e — TableView / ObjectView', () => {
     // write. A failure here localises the bug to the create itself.
     await expect.poll(() => docExistsByName('categorias', nome), { timeout: 15_000 }).toBe(true);
 
+    // Root category: breadcrumb equals nome; field is read-only (#554).
+    await expect(page.getByLabel('Nome completo', { exact: true })).toHaveValue(nome);
+    await expect(page.getByLabel('Nome completo', { exact: true })).toBeDisabled();
+
     await page.goto('/categorias');
     await applyTextFilter(page, 'Nome', nome);
     await expectRowVisible(page, nome);
+  });
+
+  test('parent picker derives breadcrumb and rename cascades to child', async ({ page }) => {
+    const parentNome = `${prefix}-pai-cascade`;
+    const childNome = `${prefix}-filho-cascade`;
+
+    // Create parent (root).
+    await page.goto('/categorias/novo');
+    await fillField(page, 'Nome', parentNome);
+    await clickSave(page, 'Criar');
+    await page.waitForURL(
+      (url) => /^\/categorias\/[^/]+$/.test(url.pathname) && url.pathname !== '/categorias/novo',
+      { timeout: 15_000 },
+    );
+    await expect
+      .poll(() => docExistsByName('categorias', parentNome), { timeout: 15_000 })
+      .toBe(true);
+
+    // Create child under parent.
+    await page.goto('/categorias/novo');
+    await fillField(page, 'Nome', childNome);
+    await selectFieldWithSearch(page, 'Categoria pai', parentNome);
+    await clickSave(page, 'Criar');
+    await page.waitForURL(
+      (url) => /^\/categorias\/[^/]+$/.test(url.pathname) && url.pathname !== '/categorias/novo',
+      { timeout: 15_000 },
+    );
+    await expect(page.getByLabel('Nome completo', { exact: true })).toHaveValue(
+      `${parentNome} > ${childNome}`,
+    );
+
+    // Rename parent → child breadcrumb must update (cascade).
+    const parentRenamed = `${parentNome}-ren`;
+    await page.goto('/categorias');
+    await applyTextFilter(page, 'Nome', parentNome);
+    await page.getByRole('row', { name: new RegExp(parentNome) }).click();
+    await page.waitForURL(/\/categorias\/[^/]+$/, { timeout: 10_000 });
+    await fillField(page, 'Nome', parentRenamed);
+    await clickSave(page, 'Salvar alterações');
+    await page.waitForURL(/\/categorias$/, { timeout: 15_000 });
+
+    await page.goto('/categorias');
+    await applyTextFilter(page, 'Nome', childNome);
+    await page.getByRole('row', { name: new RegExp(childNome) }).click();
+    await page.waitForURL(/\/categorias\/[^/]+$/, { timeout: 10_000 });
+    await expect(page.getByLabel('Nome completo', { exact: true })).toHaveValue(
+      `${parentRenamed} > ${childNome}`,
+    );
   });
 
   test('rejects creating a categoria without a Nome (required field)', async ({ page }) => {
@@ -143,7 +196,8 @@ test.describe.serial('Categorias e2e — TableView / ObjectView', () => {
 
   test('warns about unsaved changes when leaving the edit page', async ({ page }) => {
     await page.goto(`/categorias/${row(4)}`);
-    await fillField(page, 'Nome completo', 'edicao-nao-salva');
+    // nomeCompleto is derived/read-only (#554) — dirty the editable Nome instead.
+    await fillField(page, 'Nome', `${row(4)}-dirty`);
 
     let dialogSeen = false;
     page.once('dialog', (d) => {
@@ -155,19 +209,23 @@ test.describe.serial('Categorias e2e — TableView / ObjectView', () => {
     await expect(page).toHaveURL(/\/categorias\/[^/]+$/);
   });
 
-  test('edits a categoria and saves', async ({ page }) => {
+  test('edits a categoria and saves — nomeCompleto is derived from nome', async ({ page }) => {
+    const novoNome = `${prefix}-editado`;
     await page.goto(`/categorias/${row(5)}`);
-    await fillField(page, 'Nome completo', 'editado-e2e');
+    await fillField(page, 'Nome', novoNome);
     await clickSave(page, 'Salvar alterações');
     await page.waitForURL(/\/categorias$/, { timeout: 15_000 });
 
     await page.goto(`/categorias/${row(5)}`);
-    await expect(page.getByLabel('Nome completo', { exact: true })).toHaveValue('editado-e2e');
+    await expect(page.getByLabel('Nome', { exact: true })).toHaveValue(novoNome);
+    // Root category (seed has no parent) → breadcrumb equals nome.
+    await expect(page.getByLabel('Nome completo', { exact: true })).toHaveValue(novoNome);
+    await expect(page.getByLabel('Nome completo', { exact: true })).toBeDisabled();
   });
 
   test('edits a categoria and continues editing', async ({ page }) => {
     await page.goto(`/categorias/${row(6)}`);
-    await fillField(page, 'Nome completo', 'continua-editando');
+    await fillField(page, 'Nome', `${row(6)}-continua`);
     await clickSaveAndContinue(page);
     await expectToast(page, /Salvo/);
     await expect(page).toHaveURL(/\/categorias\/[^/]+$/);

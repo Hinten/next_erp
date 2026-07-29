@@ -215,6 +215,16 @@
       ]
     },
     {
+      "collectionGroup": "categorias",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "categoriaPaiOuterRef",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "produtos",
       "queryScope": "COLLECTION",
       "fields": [
