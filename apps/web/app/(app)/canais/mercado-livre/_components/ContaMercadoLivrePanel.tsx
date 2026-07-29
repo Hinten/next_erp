@@ -521,9 +521,14 @@ function PriceSyncEntryList({
   );
 }
 
-/** Keep a failure's error text a one-line snippet in the compact list. */
+/**
+ * Keep a failure's error text a one-line snippet in the compact list —
+ * whitespace (incl. newlines from stack-trace-shaped backend errors) collapses
+ * to single spaces before the length cap.
+ */
 function errorSnippet(error: string): string {
-  return error.length > 80 ? `${error.slice(0, 80)}…` : error;
+  const oneLine = error.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
 }
 
 /** Render a conta query error, keeping unknown failures generic. */
