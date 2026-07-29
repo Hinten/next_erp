@@ -46,6 +46,23 @@ export const statusProdutoMagaluSchema = z.enum([
 ]);
 export type StatusProdutoMagalu = z.infer<typeof statusProdutoMagaluSchema>;
 
+/** Named members of {@link statusProdutoMagaluSchema} — camelCase of each wire code. */
+export const STATUS_PRODUTO_MAGALU = {
+  new: 'new',
+  policiesApproved: 'policies_approved',
+  policiesBlocked: 'policies_blocked',
+  policiesBlockedPrice: 'policies_blocked_price',
+  policiesInfo: 'policies_info',
+  policiesWarn: 'policies_warn',
+  promotionFinished: 'promotion_finished',
+  promotionStarted: 'promotion_started',
+  published: 'published',
+  publishingError: 'publishing_error',
+  unpublished: 'unpublished',
+  inactivated: 'inactivated',
+  enviadoArakene: 'enviado_arakene',
+} as const satisfies Record<string, StatusProdutoMagalu>;
+
 /** `produtos/{id}/produtoMagalu2/{docId}` — the Magalu listing link doc. */
 export const produtoMagaluLinkSchema = z
   .object({

@@ -30,7 +30,12 @@ import { FirebaseError } from 'firebase/app';
 import type { Firestore } from 'firebase/firestore';
 import type { FirebaseStorage } from 'firebase/storage';
 import { arquivoCollection, StorageUploadError, uploadProductVideo } from '@delfrance/storage';
-import { ARQUIVOS_COLLECTION, type Video, type VideoFormato } from '@delfrance/schemas';
+import {
+  VIDEO_FORMATO,
+  ARQUIVOS_COLLECTION,
+  type Video,
+  type VideoFormato,
+} from '@delfrance/schemas';
 import { useDocSnapshot } from '@delfrance/data/hooks';
 import { DELETE_MARK } from '@delfrance/ui';
 
@@ -322,7 +327,7 @@ function SortableVideo({ video, db, marked, disabled, onToggleDelete }: Sortable
         <Group gap={4}>
           {video.formato && (
             <Badge size="xs" variant="light">
-              {video.formato === 'quadrado' ? 'Quadrado' : 'Retangular'}
+              {video.formato === VIDEO_FORMATO.quadrado ? 'Quadrado' : 'Retangular'}
             </Badge>
           )}
           {typeof video.duracaoSegundos === 'number' && (

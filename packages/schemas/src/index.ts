@@ -694,4 +694,10 @@ export {
   type Foto,
   type FotoRefs,
 } from './storage/foto';
-export { videoSchema, videoFormatoSchema, type Video, type VideoFormato } from './storage/video';
+export {
+  videoSchema,
+  videoFormatoSchema,
+  VIDEO_FORMATO,
+  type Video,
+  type VideoFormato,
+} from './storage/video';
