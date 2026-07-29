@@ -50,7 +50,7 @@ describe.skipIf(!EMULATED)('cascadeProdutoDeletion — full subtree sweep (#136)
     const produtoRef = db.collection('produtos').doc(produtoId);
     // The onDocumentDeleted trigger fires AFTER the produto doc is deleted, so its
     // subcollections are already orphaned when the cascade runs. Delete the parent
-    // first to exercise exactly that: recursiveDelete reclaims subcollections whose
+    // first to exercise exactly that: the cascade reclaims subcollections whose
     // owning doc no longer exists.
     await produtoRef.delete();
 
@@ -118,6 +118,34 @@ describe.skipIf(!EMULATED)('cascadeProdutoDeletion — variation children cascad
 
     // The unrelated produto is untouched.
     expect((await db.collection('produtos').doc(strangerId).get()).exists).toBe(true);
+  });
+});
+
+describe.skipIf(!EMULATED)('cascadeProdutoDeletion — variation-child re-entry (#728)', () => {
+  it('skips the children query when the deleted produto was itself a variation', async () => {
+    // Deleting a parent deletes its children, and each child delete re-fires the
+    // trigger. Variations are one level deep, so that re-entry can never find
+    // children — running the query anyway doubled the cascade's query count
+    // (`2N+1` vs `N+1`). The trigger passes the deleted doc's own `paiId`, which
+    // is already in the event, to suppress it.
+    //
+    // Observable because suppression is the only reason `orphan` survives: it
+    // points at `childId` exactly the way a real child would.
+    const db = getDb();
+    const parentId = freshId('reentry-parent');
+    const childId = freshId('reentry-child');
+    const orphanId = freshId('reentry-orphan');
+
+    await db.collection('produtos').doc(childId).set({ nome: 'Variação', paiId: parentId });
+    await db.collection('produtos').doc(orphanId).set({ nome: 'Neto impossível', paiId: childId });
+    await db.collection('produtos').doc(childId).delete();
+
+    await cascadeProdutoDeletion(db, childId, { paiId: parentId });
+    expect((await db.collection('produtos').doc(orphanId).get()).exists).toBe(true);
+
+    // Without the hint the same call is the pre-#728 behaviour, and the query runs.
+    await cascadeProdutoDeletion(db, childId);
+    expect((await db.collection('produtos').doc(orphanId).get()).exists).toBe(false);
   });
 });
 

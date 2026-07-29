@@ -1,4 +1,4 @@
-import { ESTADO_ENVIO, type Filetype, type Mensagem } from '@delfrance/schemas';
+import { TIPO_MENSAGEM, ESTADO_ENVIO, type Filetype, type Mensagem } from '@delfrance/schemas';
 import { mediaSubObject, tipoForFiletype } from './mediaKind';
 
 /**
@@ -48,7 +48,7 @@ export function buildTextMensagem(input: {
   return {
     mid: null,
     conteudo: input.text,
-    tipo: 'c',
+    tipo: TIPO_MENSAGEM.comum,
     canal: 0,
     estadoEnvio: ESTADO_ENVIO.salva,
     user_id: input.uid,

@@ -27,6 +27,7 @@ export { millisSinceEpoch, microsSinceEpoch } from './shared/datetime';
 // block the pipeline in `@delfrance/data/admin/notifications` writes/reads blind.
 export {
   notificacaoResilienciaStatusSchema,
+  NOTIFICACAO_RESILIENCIA_STATUS,
   notificationResilienceFields,
   type NotificacaoResilienciaStatus,
 } from './shared/notificationResilience';
@@ -60,6 +61,7 @@ export {
   clienteFormSchema,
   clienteMeta,
   tipoClienteSchema,
+  TIPO_CLIENTE,
   TIPO_CLIENTE_LABELS,
   refineClienteTipoDocumento,
   type Cliente,
@@ -168,11 +170,13 @@ export {
   estadoConversaSchema,
   estadoEnvioMensagemSchema,
   tipoMensagemSchema,
+  ORIGEM_CONVERSA,
   ORIGEM_LABELS,
   ESTADO_CONVERSA,
   ESTADO_CONVERSA_LABELS,
   ESTADO_ENVIO,
   ESTADO_ENVIO_LABELS,
+  TIPO_MENSAGEM,
   TIPO_MENSAGEM_LABELS,
   podeReabrirConversa,
   type Conversa,
@@ -259,6 +263,7 @@ export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the "Importar todos os
   // anúncios" mass-import job/checkpoint doc (#621).
   importacaoMercadoLivreStatusSchema,
+  IMPORTACAO_MERCADO_LIVRE_STATUS,
   massImportOptionsSchema,
   massImportFailureSchema,
   importacaoMercadoLivreSchema,
@@ -699,4 +704,10 @@ export {
   type Foto,
   type FotoRefs,
 } from './storage/foto';
-export { videoSchema, videoFormatoSchema, type Video, type VideoFormato } from './storage/video';
+export {
+  videoSchema,
+  videoFormatoSchema,
+  VIDEO_FORMATO,
+  type Video,
+  type VideoFormato,
+} from './storage/video';

@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "test:e2e": "dotenv -e ../../.env.local -- playwright test",
     "sweep:e2e": "dotenv -e ../../.env.local -- tsx e2e/_helpers/stale-sweep.ts",
+    "teardown:e2e": "dotenv -e ../../.env.local -- tsx e2e/global-teardown.ts",
     "clean": "rm -rf .next .turbo dist coverage"
   },
   "dependencies": {

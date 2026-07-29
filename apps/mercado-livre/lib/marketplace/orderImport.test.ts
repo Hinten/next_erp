@@ -47,7 +47,7 @@ import { discoverPedidoMercadoLivre } from './orderPedidoTx';
 import { resolvePrazoDespacho } from './orderPrazoDespacho';
 import { importPedidoMercadoLivre, mergeFreteInicial, type OrderImportDeps } from './orderImport';
 import type { MappedFreteInicialFields } from './orderShipmentMapping';
-import { INTEGRACAO_FRETE, ESTADO_FRETE } from '@delfrance/schemas';
+import { TIPO_CLIENTE, INTEGRACAO_FRETE, ESTADO_FRETE } from '@delfrance/schemas';
 import type { FreteDoPedido } from '@delfrance/schemas';
 
 /* ------------------------------ fake Firestore ---------------------------- */
@@ -237,7 +237,7 @@ beforeEach(() => {
   // crash on an unconfigured mock) — tests exercising the cliente/endereço
   // steps directly override these per-case.
   vi.mocked(billingInfoToClienteFields).mockReturnValue({
-    tipo: '0',
+    tipo: TIPO_CLIENTE.pessoaFisica,
     nome: 'Comprador Padrão',
     cpf_cnpj: '00000000000',
     idEstrangeiro: null,
@@ -346,7 +346,7 @@ describe('importPedidoMercadoLivre — cliente', () => {
     const api = makeApi({ getOrder: vi.fn(async () => order) });
 
     vi.mocked(billingInfoToClienteFields).mockReturnValue({
-      tipo: '0',
+      tipo: TIPO_CLIENTE.pessoaFisica,
       nome: 'Fulano',
       cpf_cnpj: '11122233344',
       idEstrangeiro: null,

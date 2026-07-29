@@ -1,6 +1,7 @@
 import { logger } from 'firebase-functions';
 import { onDocumentDeleted } from 'firebase-functions/v2/firestore';
 import type { Firestore } from 'firebase-admin/firestore';
+import { deleteDocumentSubtree } from '@delfrance/data/admin';
 import { produtoCollection } from '@delfrance/data/admin/collections';
 import { produtoMeta } from '@delfrance/schemas';
 
@@ -9,23 +10,40 @@ import { getDb } from '../lib/admin';
 /**
  * Cascade a produto delete server-side (parent OR variation child):
  *
- *  1. **Subcollection orphans (#136).** `recursiveDelete` on the produto's OWN
- *     document ref deletes the (already-gone) doc plus its ENTIRE descendant
- *     subtree — every subcollection Firestore would otherwise orphan (`estoques`
- *     + `historicoEstoque`, `imposto`, `historicoDePrecos`, `historicoDeCusto`,
- *     `extraData`, and the marketplace links `produtoMercadoLivre` / `variacaoMercadoLivre`
- *     / `prodshopee` / …). No name enumeration; new subcollections are swept
- *     automatically. `recursiveDelete` walks subcollections regardless of whether
- *     the parent doc still exists, so it reclaims the orphans.
+ *  1. **Subcollection orphans (#136).** `deleteDocumentSubtree` on the produto's
+ *     OWN document ref deletes the (already-gone) doc plus its ENTIRE descendant
+ *     subtree — all 14 subcollections Firestore would otherwise orphan:
+ *     `estoques` (+ the nested `historicoEstoque`), `imposto`, `extraData`,
+ *     `historicoDePrecos`, `historicoDeCusto`, `historicoDeModificacoes`, and the
+ *     seven marketplace links `produtoMercadoLivre` / `variacaoMercadoLivre` /
+ *     `prodshopee` / `variashopee` / `produtoMagalu2` / `prodAmazon` /
+ *     `produtolojaintegrada`. No name enumeration — the walk asks
+ *     `listCollections()`, so anything Flutter writes under a produto is swept
+ *     too, including subcollections this repo never registered. It reaches
+ *     subcollections regardless of whether the parent doc still exists, which is
+ *     the orphan case a delete trigger always sees.
+ *
+ *     ⚠️ NOT `db.recursiveDelete` (#728). That issued a kindless all-descendants
+ *     query per call — `COLLECTION_GROUP * SELECT __name__ LIMIT 5000` — which on
+ *     Firestore Enterprise rides no index and cannot be given one. Measured at
+ *     ~6,184 documents scanned per call, 9,234 calls in 7 days = 57.1M documents,
+ *     93% of the staging project's read volume, and the same cost whether the
+ *     produto had fifty subcollection docs or none.
  *  2. **Variation children (#199).** Children are SIBLING top-level docs
  *     (`produtos where paiId == deletedId`), not descendants, so the sweep above
- *     does not touch them. Each is deleted via its own `recursiveDelete` so its
- *     subtree goes too — cleanup never depends on recursive trigger re-delivery.
- *     Variations are one level deep (children have no children), so the child
- *     delete re-fires this trigger as an idempotent no-op. The per-child
- *     `recursiveDelete`s run in BOUNDED-concurrency batches so a parent with many
- *     variations doesn't serialize into a long-running (timeout-prone) call nor
- *     fan out unboundedly (each `recursiveDelete` is itself a BulkWriter).
+ *     does not touch them. Each is deleted with its own subtree walk — cleanup
+ *     never depends on recursive trigger re-delivery. They run in
+ *     BOUNDED-concurrency batches so a parent with many variations doesn't
+ *     serialize into a timeout-prone call nor fan out unboundedly, and they share
+ *     ONE `BulkWriter`: a per-call writer makes each call await every other
+ *     call's queued writes.
+ *
+ *     The child delete re-fires this trigger. Variations are one level deep
+ *     (children have no children of their own), so that re-entry passes the
+ *     child's `paiId` and **skips the children query entirely** — see
+ *     `CascadeProdutoOptions`. Before #728 the re-entry re-ran the whole body;
+ *     the observed 9,234/4,655 = 1.983 ratio between the two query shapes is
+ *     exactly `(2N+1)/(N+1)`, which is how the re-fire was confirmed to be real.
  *  3. **Inbound kit references (#135/#475).** Other produtos may list the deleted
  *     produto as a KIT COMPONENT (`componentesKit[deletedId]`, denormalized into
  *     the `componentesKitKeys` array-contains index). Neither sweep above touches
@@ -42,7 +60,7 @@ import { getDb } from '../lib/admin';
  * `default` database (gotcha #8).
  */
 
-/** How many child-subtree `recursiveDelete`s run at once (bounded fan-out). */
+/** How many child-subtree walks run at once (bounded fan-out). */
 const CHILD_DELETE_CONCURRENCY = 5;
 
 /** Max writes per Firestore `WriteBatch` is 500; stay under it for the kit sweep. */
@@ -97,20 +115,57 @@ async function cleanupInboundKitReferences(db: Firestore, produtoId: string): Pr
   }
 }
 
-export async function cascadeProdutoDeletion(db: Firestore, produtoId: string): Promise<void> {
-  // #136 — the produto's own subtree (all subcollections) in one BulkWriter walk.
-  await db.recursiveDelete(produtoCollection.docRef(db, {}, produtoId));
+export interface CascadeProdutoOptions {
+  /**
+   * The deleted produto's own `paiId`, read off the trigger's deleted snapshot
+   * (free — no extra read). A non-null value means this produto WAS a variation
+   * child, and variations are one level deep, so it can have no children of its
+   * own: the `paiId ==` query is skipped. That halves the cascade's query count
+   * for a parent with variations (`2N+1` → `N+1`).
+   *
+   * `undefined` means "unknown" and is the safe default — the query runs. The
+   * emulator suite drives the core with two arguments and relies on that.
+   *
+   * The inbound-kit sweep is NOT skipped: a variation child can legitimately be
+   * listed as a kit component, so dropping it would be a correctness change
+   * rather than an optimization.
+   */
+  paiId?: string | null;
+}
 
-  // #199 — variation children (top-level produtos pointing back via `paiId`).
-  const children = await produtoCollection
-    .ref(db, {})
-    .where('paiId', '==', produtoId)
-    .select()
-    .get();
-  const childRefs = children.docs.map((child) => child.ref).filter((ref) => ref.id !== produtoId); // defensive: never recurse on self
-  for (let i = 0; i < childRefs.length; i += CHILD_DELETE_CONCURRENCY) {
-    const slice = childRefs.slice(i, i + CHILD_DELETE_CONCURRENCY);
-    await Promise.all(slice.map((ref) => db.recursiveDelete(ref)));
+export async function cascadeProdutoDeletion(
+  db: Firestore,
+  produtoId: string,
+  options: CascadeProdutoOptions = {},
+): Promise<void> {
+  // One writer for the produto's own subtree AND every variation child's — a
+  // writer per call would make each call await all the others' pending writes.
+  const writer = db.bulkWriter();
+  try {
+    // #136 — the produto's own subtree (every subcollection `listCollections()`
+    // reports), with no kindless descendant scan.
+    await deleteDocumentSubtree(db, produtoCollection.docRef(db, {}, produtoId), { writer });
+
+    // #199 — variation children (top-level produtos pointing back via `paiId`).
+    // Skipped on re-entry for a child: variations are one level deep.
+    if (options.paiId == null) {
+      const children = await produtoCollection
+        .ref(db, {})
+        .where('paiId', '==', produtoId)
+        .select()
+        .get();
+      const childRefs = children.docs
+        .map((child) => child.ref)
+        .filter((ref) => ref.id !== produtoId); // defensive: never recurse on self
+      for (let i = 0; i < childRefs.length; i += CHILD_DELETE_CONCURRENCY) {
+        const slice = childRefs.slice(i, i + CHILD_DELETE_CONCURRENCY);
+        await Promise.all(slice.map((ref) => deleteDocumentSubtree(db, ref, { writer })));
+      }
+    }
+  } finally {
+    // Flushes every queued delete. In `finally` so a failed children query
+    // cannot strand the subtree deletes already queued above it.
+    await writer.close();
   }
 
   // #475 — inbound kit references on OTHER produtos.
@@ -124,9 +179,14 @@ export const onProdutoDeleted = onDocumentDeleted(
   },
   async (event) => {
     const { produtoId } = event.params;
-    await cascadeProdutoDeletion(getDb(), produtoId);
+    // The deleted snapshot is already in the event — reading `paiId` off it costs
+    // nothing and tells the cascade whether this is a variation child re-entry
+    // (in which case the children query is provably pointless).
+    const paiId = (event.data?.get('paiId') as string | null | undefined) ?? null;
+    await cascadeProdutoDeletion(getDb(), produtoId, { paiId });
     logger.info(
-      `onProdutoDeleted: ${produtoId} → subtree + variation children + inbound kit refs cascaded`,
+      `onProdutoDeleted: ${produtoId} → subtree${paiId ? '' : ' + variation children'}` +
+        ' + inbound kit refs cascaded',
     );
   },
 );

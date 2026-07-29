@@ -33,9 +33,22 @@ import { millisSinceEpoch } from '../../shared/datetime';
 export const amazonSubmitStatusSchema = z.enum(['ACCEPTED', 'INVALID', 'VALID']);
 export type AmazonSubmitStatus = z.infer<typeof amazonSubmitStatusSchema>;
 
+/** Named members of {@link amazonSubmitStatusSchema} — the SP-API wire codes. */
+export const AMAZON_SUBMIT_STATUS = {
+  accepted: 'ACCEPTED',
+  invalid: 'INVALID',
+  valid: 'VALID',
+} as const satisfies Record<string, AmazonSubmitStatus>;
+
 /** Amazon `LISTING_STATUS` wire codes (models.dart). */
 export const amazonListingStatusSchema = z.enum(['BUYABLE', 'DISCOVERABLE']);
 export type AmazonListingStatus = z.infer<typeof amazonListingStatusSchema>;
+
+/** Named members of {@link amazonListingStatusSchema} — the SP-API wire codes. */
+export const AMAZON_LISTING_STATUS = {
+  buyable: 'BUYABLE',
+  discoverable: 'DISCOVERABLE',
+} as const satisfies Record<string, AmazonListingStatus>;
 
 /** One raw SP-API listing issue (`code`, `message`, `severity`, ..., #363). */
 export const amazonIssueWireSchema = z

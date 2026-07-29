@@ -10,6 +10,7 @@
  * "audio"/"video"/"sticker" placeholders.
  */
 import type { Mensagem } from '@delfrance/schemas';
+import { TIPO_MENSAGEM } from '@delfrance/schemas';
 
 /**
  * The subset of a `Mensagem` this preview reads. Accepts a full `Mensagem`
@@ -60,13 +61,13 @@ function previewBody(m: PreviewMensagem): string {
   if (nonEmpty(m.transcription)) return noBreaks(m.transcription);
   // Media: detect via the typed sub-objects first (what the pipeline writes),
   // then fall back to the single-char `tipo` (a=áudio, v=vídeo, f=arquivo).
-  if (m.audio || m.tipo === 'a') return 'Enviou um áudio';
+  if (m.audio || m.tipo === TIPO_MENSAGEM.audio) return 'Enviou um áudio';
   if (m.genericDocument) return 'Enviou um documento';
   if (m.image) return 'Enviou uma imagem';
-  if (m.video || m.tipo === 'v') return 'Enviou um vídeo';
+  if (m.video || m.tipo === TIPO_MENSAGEM.video) return 'Enviou um vídeo';
   if (m.sticker) return 'Enviou uma figurinha';
   if (m.reaction) return `Reagiu com ${m.reaction.emoji}`;
-  if (m.tipo === 'f') return 'Enviou um arquivo';
+  if (m.tipo === TIPO_MENSAGEM.arquivo) return 'Enviou um arquivo';
   // A message with no readable content (e.g. an unmapped interactive payload).
   return 'Nova mensagem';
 }
@@ -88,8 +89,8 @@ export function lastMensagemPreview(
 
   const body = previewBody(m);
 
-  if (m.tipo === 'e') return `[${body}]`;
-  if (m.tipo === '!') return `(!) ${body}`;
+  if (m.tipo === TIPO_MENSAGEM.evento) return `[${body}]`;
+  if (m.tipo === TIPO_MENSAGEM.erro) return `(!) ${body}`;
 
   if (nonEmpty(m.user_id)) {
     if (meuUid != null && m.user_id === meuUid) return `(Eu) ${body}`;

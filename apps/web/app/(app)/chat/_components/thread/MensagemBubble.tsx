@@ -15,6 +15,7 @@ import { useHover } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { IconArrowForward, IconCopy, IconDots, IconFileText } from '@tabler/icons-react';
 import type { Mensagem } from '@delfrance/schemas';
+import { TIPO_MENSAGEM } from '@delfrance/schemas';
 import { formatMensagemTime } from '@/lib/chat/mensagemTime';
 import { HighlightedText } from '@/lib/chat/highlight';
 import { type AnyMensagem, isOptimistic, mensagemKey } from '../../_hooks/useMensagensWindow';
@@ -68,7 +69,7 @@ export function MensagemBubble(props: MensagemBubbleProps) {
   const time = formatMensagemTime(mensagem.data_cadastro ?? mensagem.timestamp);
 
   // Event (tipo 'e') → centered dimmed line; error (tipo '!') → centered red line.
-  if (mensagem.tipo === 'e') {
+  if (mensagem.tipo === TIPO_MENSAGEM.evento) {
     return (
       <Box ref={rootRef} ta="center" py={4}>
         <Text size="xs" c="dimmed">
@@ -82,7 +83,7 @@ export function MensagemBubble(props: MensagemBubbleProps) {
       </Box>
     );
   }
-  if (mensagem.tipo === '!') {
+  if (mensagem.tipo === TIPO_MENSAGEM.erro) {
     return (
       <Box ref={rootRef} ta="center" py={4}>
         <Text size="xs" c="red">

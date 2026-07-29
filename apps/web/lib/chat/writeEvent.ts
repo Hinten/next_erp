@@ -1,5 +1,5 @@
 import { type WriteBatch } from 'firebase/firestore';
-import { ESTADO_ENVIO } from '@delfrance/schemas';
+import { TIPO_MENSAGEM, ESTADO_ENVIO } from '@delfrance/schemas';
 import { mensagemCollection } from '@/lib/data/conversaCollection';
 import { newDocId } from '@/lib/data/newDocId';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
@@ -36,7 +36,7 @@ export function writeEvent(
 ): void {
   const eventId = newDocId();
   batch.set(mensagemCollection.docRef(db, { conversaId }, eventId), {
-    tipo: 'e',
+    tipo: TIPO_MENSAGEM.evento,
     estadoEnvio: ESTADO_ENVIO.salva,
     conteudo,
     mid: null,

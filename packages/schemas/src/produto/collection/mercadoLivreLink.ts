@@ -34,6 +34,27 @@ import { outerRefSchema } from '../../shared/outerRef';
 export const estadoPublicacaoMlSchema = z.enum(['r', 'a', 'ep', 'v', 'p', 'pa', 'c', 'E', 'am']);
 export type EstadoPublicacaoMl = z.infer<typeof estadoPublicacaoMlSchema>;
 
+/**
+ * Named members of {@link estadoPublicacaoMlSchema}; names from
+ * {@link ESTADO_PUBLICACAO_ML_LABELS}. The wire values are 1–2 char legacy codes
+ * — `'p'` is publicado but `'pa'` is pausado, and `'E'` is the only uppercase one
+ * — so the constant is the only spelling that survives a second reading.
+ *
+ * Enforced by the `delfrance/prefer-schema-enum` lint rule, which fires for any
+ * Zod enum that has a companion constant like this one.
+ */
+export const ESTADO_PUBLICACAO_ML = {
+  rascunho: 'r',
+  aguardando: 'a',
+  emProcessamento: 'ep',
+  emRevisao: 'v',
+  publicado: 'p',
+  pausado: 'pa',
+  cancelado: 'c',
+  erro: 'E',
+  aguardandoMigracao: 'am',
+} as const satisfies Record<string, EstadoPublicacaoMl>;
+
 export const ESTADO_PUBLICACAO_ML_LABELS: Record<EstadoPublicacaoMl, string> = {
   r: 'Rascunho',
   a: 'Aguardando',

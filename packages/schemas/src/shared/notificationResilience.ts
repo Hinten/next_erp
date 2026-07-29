@@ -42,9 +42,24 @@ import { millisSinceEpoch } from './datetime';
 export const notificacaoResilienciaStatusSchema = z.enum(['failed', 'parked']);
 export type NotificacaoResilienciaStatus = z.infer<typeof notificacaoResilienciaStatusSchema>;
 
+/**
+ * Named members of {@link notificacaoResilienciaStatusSchema}. One constant
+ * covers every channel: `notificacaoStatusSchema` and its Mercado Pago /
+ * WhatsApp siblings are all aliases of the schema above, and each channel's
+ * `status` field comes from the shared {@link notificationResilienceFields}, so
+ * the enum a literal is resolved against is this one wherever it appears.
+ *
+ * Enforced by the `delfrance/prefer-schema-enum` lint rule, which fires for any
+ * Zod enum that has a companion constant like this one.
+ */
+export const NOTIFICACAO_RESILIENCIA_STATUS = {
+  failed: 'failed',
+  parked: 'parked',
+} as const satisfies Record<string, NotificacaoResilienciaStatus>;
+
 export function notificationResilienceFields() {
   return {
-    status: notificacaoResilienciaStatusSchema.default('failed'),
+    status: notificacaoResilienciaStatusSchema.default(NOTIFICACAO_RESILIENCIA_STATUS.failed),
     /** LOCAL reprocess counter (incremented by the sweep). */
     tentativas: z.number().int().default(0),
     erro: z.string().nullable().default(null),

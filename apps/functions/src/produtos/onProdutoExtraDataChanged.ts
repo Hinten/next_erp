@@ -15,7 +15,7 @@ import {
  * emulator suite.
  *
  * `requireParentExists: true` guards the one racy case: a produto delete's
- * `recursiveDelete` (`onProdutoDeleted`) sweeps this whole subcollection too,
+ * subtree walk (`onProdutoDeleted`) sweeps this whole subcollection too,
  * so a write here racing that cascade must not record (and therefore orphan)
  * an entry under an already-gone produto.
  *

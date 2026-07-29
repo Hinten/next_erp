@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { TIPO_MENSAGEM } from '@delfrance/schemas';
+
 import { buildSearchRegex, searchableText, testRegex } from './searchRegex';
 
 type SearchableInput = Parameters<typeof searchableText>[0];
@@ -6,7 +8,7 @@ type SearchableInput = Parameters<typeof searchableText>[0];
 /** Minimal message shape for `searchableText` — only the haystack fields. */
 function m(partial: Partial<SearchableInput>): SearchableInput {
   return {
-    tipo: 'c',
+    tipo: TIPO_MENSAGEM.comum,
     conteudo: null,
     transcription: null,
     anexoDescription: null,
@@ -74,7 +76,9 @@ describe('testRegex', () => {
 
 describe('searchableText', () => {
   it('never searches event bubbles (tipo "e")', () => {
-    expect(searchableText(m({ tipo: 'e', conteudo: 'Nova conversa iniciada' }))).toBeNull();
+    expect(
+      searchableText(m({ tipo: TIPO_MENSAGEM.evento, conteudo: 'Nova conversa iniciada' })),
+    ).toBeNull();
   });
 
   it('prefers conteudo, then transcription, then a media caption', () => {

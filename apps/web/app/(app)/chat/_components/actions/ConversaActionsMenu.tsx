@@ -27,7 +27,7 @@ import {
 import { FirebaseError } from 'firebase/app';
 import { writeBatch } from 'firebase/firestore';
 import { PERM } from '@delfrance/auth';
-import { ESTADO_CONVERSA, type Conversa } from '@delfrance/schemas';
+import { ORIGEM_CONVERSA, ESTADO_CONVERSA, type Conversa } from '@delfrance/schemas';
 import { getFirebaseFirestore } from '@/lib/firebase/client';
 import { useAuth, usePermission } from '@/lib/auth';
 import {
@@ -98,7 +98,7 @@ export function ConversaActionsMenu({
   const uid = user?.uid ?? null;
   const usuarios = conversa.usuarios ?? [];
   const participant = uid != null && usuarios.includes(uid);
-  const isWhatsapp = conversa.origem === 'whatsapp';
+  const isWhatsapp = conversa.origem === ORIGEM_CONVERSA.whatsapp;
   const isEmResposta = conversa.estadoConversa === ESTADO_CONVERSA.emResposta;
 
   function closeAll() {
