@@ -55,8 +55,10 @@
  *     `aprovado`. `totalPago >= valorCobrado` → patch the pedido to
  *     `{ estado: 'pago', ultimaModificacao: nowUs, lastMarketplaceUpdate:
  *     nowUs }`. Deliberately NOT `reconcilePedidoFromPagamento` (that generic
- *     path is Mercado Pago's) — NO downgrade, NO `freteInicial` flip, NO
- *     `historicoEstadoPedido` row.
+ *     path is Mercado Pago's) — NO downgrade, NO `freteInicial` flip. The
+ *     `historicoEstadoPedido` row is no longer this path's concern either: the
+ *     `onPedidoEstadoChanged` trigger observes the pedido write and records the
+ *     transition (with a null usuário — this runs on the Admin SDK).
  *
  * THROW-ON-TRANSIENT discipline: every error except a 404 on the primary
  * `getPayment` call PROPAGATES (ML API non-404, network, Firestore,

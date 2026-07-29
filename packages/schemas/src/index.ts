@@ -83,6 +83,7 @@ export * from './produto';
 export { categoria, categoriaSchema, categoriaMeta, type Categoria } from './categoria';
 
 export {
+  ESTADO_FRETE,
   ESTADO_FRETE_LABELS,
   ESTADOS_FRETE_NAO_POSTADO,
   FREIGHT_TIPO_CAPS,
@@ -271,6 +272,27 @@ export {
   backfillPedidosMercadoLivreMeta,
   type BackfillPedidosMercadoLivre,
 } from './backfillPedidosMercadoLivre';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the per-conta durable
+  // state doc for the flag-gated ML stock-sync sweeps (Step 10). Bare
+  // schema+meta (perms 0n), not a DomainSchema — see the NOTE at the bottom
+  // of estoqueMercadoLivreSync.ts.
+  estoqueMercadoLivreSyncSchema,
+  estoqueMercadoLivreSyncMeta,
+  type EstoqueMercadoLivreSync,
+} from './estoqueMercadoLivreSync';
+
+export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the persisted round-robin
+  // cursor for the unreferenced-arquivo sweep (#234). Bare schema+meta
+  // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
+  // arquivoOrphanSweepState.ts.
+  ARQUIVO_ORPHAN_SWEEP_STATE_DOC_ID,
+  arquivoOrphanSweepStateSchema,
+  arquivoOrphanSweepStateMeta,
+  type ArquivoOrphanSweepState,
+} from './arquivoOrphanSweepState';
 
 export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the inbound webhook log,

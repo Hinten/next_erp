@@ -6,7 +6,7 @@ applies — this file adds what is specific to deploying and building functions.
 
 ## What this is
 
-gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
+gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
 
 - **`resizeProductImage`** (`onObjectFinalized`) — runs on every non-derivative
   finalize. (1) **Upload confirmed**: flips the owning `arquivos` doc's
@@ -62,27 +62,34 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   eager mark missed): product media (`produtos/<id>/originals|videos|anexos`) past
   the grace window that **no produto references** → delete (then `onArquivoDeleted` frees
   the object + cascades any derivatives) — a produto deleted entirely (until #136), a console
-  edit, or a dropped trigger delivery. Candidates come from a **regex pipeline**
-  (`fetchUnreferencedCandidates`: `regexContains('filepath', …) AND criadoEm<cutoff`,
-  sorted, on the `arquivos(criadoEm)` index) so non-product docs are never loaded;
-  the reference check is an **owner-document lookup**, NOT a collection scan: a
-  product arquivo encodes its owner `produtoId` in its storage path, so
-  `resolveReferencedArquivoRefs` reads ONLY the produtos owning the candidate batch
-  (one batched `getAll`, field-masked to `fotos`/`videos`/`anexos`) —
-  O(distinct produtos), never O(all produtos). ⚠️ The pipeline (admin v14 /
-  `@google-cloud/firestore` v8 `@google-cloud/firestore/pipelines`) does **not** run
-  in the emulator, so the candidate fetch and the owner lookup are **seams**
-  (`fetchCandidates` / `resolveReferenced`) the emulator suite overrides; the
-  pipeline is live-validated. Grace is `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests);
-  `criadoEm` is microseconds-since-epoch (schema default `nowMicros()`).
+  edit, or a dropped trigger delivery. **Round-robin paging (#234)**: candidates come
+  from `fetchArquivoPage`, a **classic** `orderBy(FieldPath.documentId())` query
+  (Firestore's always-available native ordering, no declared index) paginated with
+  `startAfter(lastKey)` — no pipeline, no server-side age/ownership filter. The
+  grace-window (`criadoEm<cutoff`) and owner-media (`parseOwnedMediaDir`) scoping
+  happen on the fetched page, in code. The last key reached is persisted to
+  `arquivoOrphanSweepState/cursor` (admin-only, not in `ALL_DOMAINS`); the next tick's
+  page starts right after it, and a page shorter than `BATCH_LIMIT` (end of the
+  collection in key order) wraps the cursor back to `null`. This guarantees every
+  arquivo is examined within `ceil(total / BATCH_LIMIT)` ticks regardless of orphan
+  density — fixing the old oldest-`criadoEm`-first scan's liveness gap (a large head
+  of long-lived referenced photos could starve newer orphans out of the window
+  forever). The reference check is still an **owner-document lookup**, NOT a
+  collection scan: a product arquivo encodes its owner `produtoId` in its storage
+  path, so `resolveReferencedArquivoRefs` reads ONLY the produtos owning the candidate
+  batch (one batched `getAll`, field-masked to `fotos`/`videos`/`anexos`) —
+  O(distinct produtos), never O(all produtos). Both the page fetch and the owner
+  lookup are **seams** (`fetchPage` / `resolveReferenced`) the emulator suite can
+  override, though neither needs a pipeline anymore — the default page fetch runs in
+  the emulator too. Grace is `ARQUIVO_ORPHAN_GRACE_HOURS` (0 in tests); `criadoEm` is
+  microseconds-since-epoch (schema default `nowMicros()`).
   ⚠️ **Index requirement**: this Enterprise edition creates NO index automatically
-  — the three sweep indexes (`arquivos(uploadState, criadoEm)`, `arquivos(criadoEm)`
-  + `arquivos(markedForDeletionAt)`) are declared in `firestore.indexes.json` and must
+  — the two remaining sweep indexes (`arquivos(uploadState, criadoEm)` +
+  `arquivos(markedForDeletionAt)`) are declared in `firestore.indexes.json` and must
   be deployed (`firebase deploy --only firestore:indexes`); verify usage live with
-  `scripts/check-sweep-indexes.mjs` (`explain({ analyze: true })`).
-  ⚠️ **Coverage caveat**: the candidate scan still re-reads the OLDEST docs, so a
-  large head of long-lived referenced photos can starve newer orphans — a persisted
-  round-robin cursor is the planned fix (issue #234).
+  `scripts/check-sweep-indexes.mjs` (`explain({ analyze: true })`). The unreferenced
+  sweep's own scan needs no index (document-key ordering is native), so it is
+  deliberately NOT covered by that script.
 
 - **`onProdutoDeleted`** (`onDocumentDeleted('produtos/{produtoId}')`) — the
   authoritative produto delete cascade (#226/#136/#199), core
@@ -105,6 +112,30 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   — sweeps a single estoque's `historicoEstoque` via one `recursiveDelete`.
   Covers a standalone estoque delete; the produto-wide cascade already deletes
   history directly, so its re-fires of this trigger are idempotent no-ops.
+- **`onPedidoEstadoChanged`** (`onDocumentWrittenWithAuthContext('pedidos/{pedidoId}')`)
+  — the SOLE writer of the pedido estado audit trail
+  (`pedidos/{pedidoId}/historicoEstadoPedido`). Replaces three hand-written
+  appends at the call sites (the web editor, the client pagamento reconcile, the
+  Mercado Pago admin reconcile) which together covered only 3 of the ~12 paths
+  that change `estado` — every Mercado Livre writer and every creation path wrote
+  no row at all. Observing the document instead of the call site makes coverage
+  total: any writer, from anywhere, now produces a row, and
+  `historicoEstadoPedidoMeta.serverOwned` denies client writes so the trail cannot
+  be forged or erased (no `su` bypass). Records the opening `estado` on create and
+  one row per transition after that; a delete or a write that left `estado` alone
+  exits on the fast path with no reads/writes. Idempotent: the row's doc id IS
+  `event.id`, and `data` comes from `event.time`, so an at-least-once redelivery
+  rewrites a content-identical doc. **The repo's first `WithAuthContext`
+  trigger** — `resolveUsuarioOuterRef` maps `event.authId` to
+  `documents/usuarios/<uid>`, but only when it is uid-shaped: `authType` has no
+  `user` literal (client-SDK writes arrive as `api_key`, console writes as
+  `unknown` carrying an EMAIL), so anything not uid-shaped stores `null` rather
+  than a wrong actor. Admin-SDK writes (webhooks, ML import) correctly record
+  `null`. ⚠️ The actor CANNOT be verified in the emulator — it hardcodes `authId`
+  to `fake-auth-id@gmail.com` (firebase-tools#7609, closed as not-planned); the
+  emulator suite covers the write/idempotency and the resolver is unit-tested.
+  No self-retrigger (the write lands in a subcollection). Targets the named
+  `default` database (gotcha #8).
 - **`aplicarEstoque`** (`onCall` — the repo's FIRST HTTPS callable) — server-owned
   estoque write path for the web client (replaces the direct client `writeBatch`
   from PR #217). Enforces auth + `PERM.estoque.write` itself (the `su` super-user
@@ -128,8 +159,20 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Eight exports:
   first-touch create still initializes `ultimaModificacao: now` like every other
   create path). ⚠️ On the app's critical path: the staging estoque tab + the estoque
   Playwright e2e only work once this is DEPLOYED (deploy is manual — root rule #1).
-- ⚠️ All three target the NAMED `default` database (gotcha #8). `@delfrance/auth`
-  is a new build-time dep (esbuild-bundled, like data/schemas) for `hasPerm`/`PERM`.
+- **`reconciliarPagamentoPedido`** (`onCall`) — server-owned pedido `estado`
+  reconcile for the web client (#308). The client SDK can't read a query inside
+  `runTransaction`, so summing a pedido's pagamentos client-side before the tx
+  let two concurrent reconciles (different tabs/sessions) settle on a stale
+  estado. Delegates to the Admin-SDK `reconcilePedidoEstado`
+  (`@delfrance/data/admin`), which reads the pedido AND every pagamento in ONE
+  transaction. Same auth model as `aplicarEstoque`: `PERM.pedido.write` (or
+  `su`), Zod-validated `{ pedidoId }`. ⚠️ On the app's critical path: the
+  Pagamentos tab's `reconcileEstado()` calls this callable, so the pedido
+  estado auto-transition only works once this is DEPLOYED (deploy is manual —
+  root rule #1).
+- ⚠️ Every trigger and callable above targets the NAMED `default` database
+  (gotcha #8). `@delfrance/auth` is a build-time dep (esbuild-bundled, like
+  data/schemas) for `hasPerm`/`PERM`.
 
 - The entry (`src/index.ts`) is **esbuild-bundled into a single ESM file**.
   Only `firebase-admin`, `firebase-functions`, `@google-cloud/firestore` (the

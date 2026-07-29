@@ -5,6 +5,8 @@ import defaultQueryNeedsIndex from './rules/default-query-needs-index.js';
 import noAdHocMoneyRounding from './rules/no-ad-hoc-money-rounding.js';
 import noOptionalWithoutNullable from './rules/no-optional-without-nullable.js';
 import noErrorAsSoleInstanceof from './rules/no-error-as-sole-instanceof.js';
+import preferSchemaEnum from './rules/prefer-schema-enum.js';
+import noClientEstadoHistoryWrite from './rules/no-client-estado-history-write.js';
 import eslintConfigPrettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
@@ -60,6 +62,11 @@ export function typeAware(
           { checksVoidReturn: { attributes: false } },
         ],
         '@typescript-eslint/await-thenable': 'error',
+        // Type-aware: it resolves the Zod enum from the type of the position
+        // the literal sits in, so it lives here rather than in the base block.
+        // The `delfrance` plugin is registered in the base block, which merges
+        // with this one for the same file.
+        'delfrance/prefer-schema-enum': 'error',
       },
     },
   ];
@@ -95,6 +102,8 @@ const config = [
           'no-ad-hoc-money-rounding': noAdHocMoneyRounding,
           'no-optional-without-nullable': noOptionalWithoutNullable,
           'no-error-as-sole-instanceof': noErrorAsSoleInstanceof,
+          'prefer-schema-enum': preferSchemaEnum,
+          'no-client-estado-history-write': noClientEstadoHistoryWrite,
         },
       },
     },
@@ -187,6 +196,18 @@ const config = [
       // no-inline-admin-collection. NOTE lint-staged runs `--max-warnings 0`,
       // so editing one of those 51 files means fixing it first.
       'delfrance/no-error-as-sole-instanceof': 'warn',
+
+      // `pedidos/{id}/historicoEstadoPedido` has exactly one writer: the
+      // `onPedidoEstadoChanged` Cloud Function. The schema marks it
+      // `meta.serverOwned`, so the generated rules already deny every client
+      // write — this rule is the fast feedback loop in front of that gate.
+      //
+      // Error, not warn (unlike no-inline-admin-collection): there are ZERO
+      // pre-existing sites to ratchet down from, and a hit is never stylistic —
+      // it is a write that WILL fail with `permission-denied` at runtime, in a
+      // place where the old code swallowed FirebaseError into a toast. Failing
+      // the build beats shipping a silently missing audit row.
+      'delfrance/no-client-estado-history-write': 'error',
     },
   },
 ];

@@ -639,6 +639,24 @@
           "order": "ASCENDING"
         },
         {
+          "fieldPath": "estado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "timestamp",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "ehSaida",
+          "order": "ASCENDING"
+        },
+        {
           "fieldPath": "dtImpressao",
           "order": "DESCENDING"
         }
@@ -855,16 +873,6 @@
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "criadoEm",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
-      "collectionGroup": "arquivos",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
           "fieldPath": "markedForDeletionAt",
           "order": "ASCENDING"
         }
@@ -1007,6 +1015,106 @@
         {
           "fieldPath": "ultimaModificacao",
           "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "produtos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "paiId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "publicado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "produtos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "paiId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "publicado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "integracoesComProduto",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "produtos",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "paiId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "publicado",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "integracoesComProduto",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "__name__",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "estoques",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        {
+          "fieldPath": "parentId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "depositoOuterRef",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "ultimaModificacao",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "estoques",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "depositoOuterRef",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "produtoMercadoLivre",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "contaOuterRef",
+          "order": "ASCENDING"
         }
       ]
     }

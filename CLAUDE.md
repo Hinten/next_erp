@@ -67,7 +67,7 @@ else (`chore/`, `docs/`, …) it reports zero checks, not failures.
    the offline `demo-erp`), with seed/teardown in `tools/test-fixtures`. The
    carve-outs are `ci-storage.yml`, `ci-rules.yml`, and `e2e-emulator.yml`
    (`firebase.e2e.json`, auth+firestore+storage+functions), which runs **every**
-   `*.emulator.e2e.spec.ts` — two today. Every other e2e spec hits staging. Do
+   `*.emulator.e2e.spec.ts` — five today. Every other e2e spec hits staging. Do
    **not** add a local-dev emulator mode: `NEXT_PUBLIC_USE_FIREBASE_EMULATOR`
    exists for that CI lane only and is off by default.
 5. **`apps/web` is client-first.** Default to `'use client'` — the ERP is behind
@@ -181,10 +181,16 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
-- Five custom lint rules in `packages/config-eslint/rules/`:
-  `default-query-needs-index`, `no-ad-hoc-money-rounding` and
-  `no-optional-without-nullable` (error), `no-inline-admin-collection` and
-  `no-error-as-sole-instanceof` (warn).
+- Six custom lint rules in `packages/config-eslint/rules/`:
+  `default-query-needs-index`, `no-ad-hoc-money-rounding`,
+  `no-optional-without-nullable` and `prefer-schema-enum` (error),
+  `no-inline-admin-collection` and `no-error-as-sole-instanceof` (warn).
+  `prefer-schema-enum` is the only **type-aware** one, so it is enabled inside
+  `typeAware(...)` rather than the base block: it flags a raw string sitting in
+  a position typed as a Zod enum (`estado === 'pago'` → `ESTADO_PEDIDO.pago`).
+  An enum opts in by gaining a companion
+  `as const satisfies Record<string, T>` constant — 13 of the 49 have one today
+  (#699 tracks the rest).
 - Firebase App Hosting deploys every Next app; heavy work goes to Cloud
   Functions. `apps/portal/` does NOT exist — public pages are deferred.
 - **Shared dependency versions live in the pnpm `catalog:`**

@@ -1,4 +1,5 @@
 import { ESTADOS_FRETE_REMOVE_ESTOQUE, type EstadoFrete } from '../../shared/frete';
+import { ESTADO_PEDIDO } from '../collection/pedido';
 import type { EstadoPedido } from '../collection/pedido';
 
 /* -------------------------------------------------------------------------- */
@@ -13,11 +14,11 @@ import type { EstadoPedido } from '../collection/pedido';
  * one of these states; leaving the set releases the reservation.
  */
 export const ESTADOS_PEDIDO_RESERVA: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
-  'escolhendoFormaDePagamento',
-  'aguardandoConfirmacaoDePagamento',
-  'emAnalise',
-  'emProcessamento',
-  'pago',
+  ESTADO_PEDIDO.escolhendoFormaDePagamento,
+  ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+  ESTADO_PEDIDO.emAnalise,
+  ESTADO_PEDIDO.emProcessamento,
+  ESTADO_PEDIDO.pago,
 ]);
 
 /**
@@ -30,15 +31,15 @@ export const ESTADOS_PEDIDO_RESERVA: ReadonlySet<EstadoPedido> = new Set<EstadoP
  * existing movement but never START one (see `efeitoEstoquePedido`).
  */
 export const ESTADOS_PEDIDO_MOVIMENTACAO: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
-  'carrinho',
-  'escolhendoFormaDePagamento',
-  'aguardandoConfirmacaoDePagamento',
-  'emAnalise',
-  'emProcessamento',
-  'pago',
-  'estornadoParcialmente',
-  'processandoCancelamento',
-  'finalizado',
+  ESTADO_PEDIDO.carrinho,
+  ESTADO_PEDIDO.escolhendoFormaDePagamento,
+  ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+  ESTADO_PEDIDO.emAnalise,
+  ESTADO_PEDIDO.emProcessamento,
+  ESTADO_PEDIDO.pago,
+  ESTADO_PEDIDO.estornadoParcialmente,
+  ESTADO_PEDIDO.processandoCancelamento,
+  ESTADO_PEDIDO.finalizado,
 ]);
 
 /** Inputs of {@link efeitoEstoquePedido} — everything read off the pedido + operação. */
@@ -125,7 +126,7 @@ export function efeitoEstoquePedido(input: EfeitoEstoqueInput): EfeitoEstoquePed
 
   if (!ehSaida) {
     // Entrada (compra / devolução): physical addition only, never a reservation.
-    const entrada = emReserva || estado === 'finalizado';
+    const entrada = emReserva || estado === ESTADO_PEDIDO.finalizado;
     const adicionar = movimentaEstoque && (input.jaMovimentado ? estadoAtivo : entrada);
     return { reservar: false, remover: false, adicionar };
   }
@@ -134,7 +135,9 @@ export function efeitoEstoquePedido(input: EfeitoEstoqueInput): EfeitoEstoquePed
   // the reserva phase (legacy parity — with no reservada tracking, waiting for
   // shipment would just hide the sale from available stock).
   const entradaRemocao =
-    estado === 'finalizado' || freteRemove || (!movimentaIndisponivelEstoque && emReserva);
+    estado === ESTADO_PEDIDO.finalizado ||
+    freteRemove ||
+    (!movimentaIndisponivelEstoque && emReserva);
   const remover = movimentaEstoque && (input.jaMovimentado ? estadoAtivo : entradaRemocao);
   const reservar = movimentaIndisponivelEstoque && emReserva && !remover;
   return { reservar, remover, adicionar: false };

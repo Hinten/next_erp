@@ -14,6 +14,7 @@ import {
 import { parseNfeReportRow } from './parseNfeReportRow';
 import { FIXTURE_SAIDA } from './procnfeFixture';
 import type { NfeNote } from './types';
+import { ESTADO_NFE } from '@delfrance/schemas';
 
 describe('csv helpers', () => {
   it('csvCell quotes only when needed and doubles inner quotes', () => {
@@ -73,7 +74,7 @@ describe('csv helpers', () => {
       chave: 'k',
       numeracao: 9,
       serie: 1,
-      estado: 'n',
+      estado: ESTADO_NFE.rejeitada,
       dataEmissao: new Date('2026-05-26T18:25:00.000Z').getTime(),
       xmlNfeProc: null,
     };
@@ -92,7 +93,7 @@ describe('csv helpers', () => {
       chave: 'k',
       numeracao: 7,
       serie: 1,
-      estado: 'a',
+      estado: ESTADO_NFE.aprovada,
       dataEmissao: new Date('2026-05-26T18:25:00.000Z').getTime(),
       xmlNfeProc: FIXTURE_SAIDA,
     };

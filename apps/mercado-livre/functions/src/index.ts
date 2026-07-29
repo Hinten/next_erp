@@ -14,10 +14,12 @@ import {
   ORDER_BACKFILL_FLAG_ENV,
   runOrderBackfillSweep,
 } from '../../lib/marketplace/orderBackfill';
+import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from '../../lib/marketplace/estoquePlan';
 import { createMlTaskScheduler } from '../../lib/marketplace/mlTasks';
 import { getDb } from './lib/admin';
 import * as notificationHandlers from './processNotification';
 import * as massImportHandlers from './processMassImport';
+import * as stockSendHandlers from './sendStock';
 
 /**
  * Mercado Livre Cloud Functions (gen2), codebase `mercado-livre`. Deployed as a
@@ -28,7 +30,9 @@ import * as massImportHandlers from './processMassImport';
  * (`processMercadoLivreNotification`, ./processNotification) + an `onSchedule`
  * reprocess sweep; Step 9 PR 4 (#360) turns `importMercadoLivreOrders` into the
  * flag-gated order-backfill sweep. Step 8 (#621) adds the mass-import job queue
- * (`processMercadoLivreMassImport`, ./processMassImport).
+ * (`processMercadoLivreMassImport`, ./processMassImport). Step 10 PR B adds the
+ * stock send queue (`sendMercadoLivreStock`, ./sendStock — 1 task = 1 ML call);
+ * PR C adds the two flag-gated stock sweeps that feed it (./sweepStock).
  */
 
 // Rename-safety: the DEPLOYED function name is the export KEY of the handler
@@ -62,6 +66,30 @@ if (!(MERCADO_LIVRE_MASS_IMPORT_QUEUE in massImportHandlers)) {
 
 /** The queue-based mass-import job processor (Step 8, #621). */
 export { processMercadoLivreMassImport } from './processMassImport';
+
+// Same rename-safety assertion for the Step 10 stock send queue: the stock
+// sweeps (`mlStockTasks.ts`) and the handler's own 429-pause re-enqueue target
+// `MERCADO_LIVRE_STOCK_SEND_QUEUE`.
+if (!(MERCADO_LIVRE_STOCK_SEND_QUEUE in stockSendHandlers)) {
+  throw new Error(
+    `[mercado-livre] function-name drift: functions/src/sendStock.ts must export a ` +
+      `handler named '${MERCADO_LIVRE_STOCK_SEND_QUEUE}' (the enqueue target). ` +
+      `Rename the export and the MERCADO_LIVRE_STOCK_SEND_QUEUE constant together.`,
+  );
+}
+
+/** The queue-based stock send processor (Step 10 PR B — 1 task = 1 ML call). */
+export { sendMercadoLivreStock } from './sendStock';
+
+/**
+ * The flag-gated stock sweeps (Step 10 PR C): the 15-minute incremental sweep
+ * + the 2AM daily full sweep, both feeding the `sendMercadoLivreStock` queue.
+ * Plain `onSchedule` exports — nothing enqueues against THEIR names, so no
+ * rename-safety assertion is needed (the queue they feed is covered by the
+ * `MERCADO_LIVRE_STOCK_SEND_QUEUE` assertion above). No-ops until
+ * `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1` (the coordinated cutover).
+ */
+export { sweepMercadoLivreStock, sweepMercadoLivreStockDaily } from './sweepStock';
 
 /**
  * Periodic backstop that pulls new/updated ML orders for each connected account

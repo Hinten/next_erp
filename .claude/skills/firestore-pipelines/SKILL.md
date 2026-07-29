@@ -139,13 +139,19 @@ const snap = await db
   .execute();
 ```
 
-This is `fetchUnreferencedCandidates` in
-`apps/functions/src/arquivos/arquivoOrphanSweep.ts` — the regex-on-`filepath`
-scope of `sweepUnreferencedArquivos`, the real (today, only) admin pipeline
-consumer. `row.ref` is present here because there's no `select` stage; when you
-do add one server-side, the same "ref disappears" rule from §2 applies — project
-the id back explicitly if you need it. Requires firebase-admin v14 /
-`@google-cloud/firestore` v8 — see root `CLAUDE.md` rule on the admin floor.
+This was `fetchUnreferencedCandidates` in
+`apps/functions/src/arquivos/arquivoOrphanSweep.ts` until #234: the regex-on-
+`filepath` scan rode the `arquivos(criadoEm)` index but always re-read the same
+oldest documents, so a large head of long-lived referenced photos could starve
+newer orphans out of the scan window forever. The fix pages by document key
+instead (`FieldPath.documentId()`, a **classic** query with a persisted cursor —
+see the `arquivos` skill and `apps/functions/CLAUDE.md`), which does not need
+this shape at all — there is currently no live admin pipeline consumer in the
+repo. The snippet above is kept as the reference shape for the next one: `row.ref`
+is present here because there's no `select` stage; when you do add one
+server-side, the same "ref disappears" rule from §2 applies — project the id back
+explicitly if you need it. Requires firebase-admin v14 / `@google-cloud/firestore`
+v8 — see root `CLAUDE.md` rule on the admin floor.
 
 **Method spellings are the SDK's, not the docs'.** The public docs are internally
 inconsistent (`.equals()`, `eq()`, `Field.of()`, `.let()`, `.asScalarExpression()`,
@@ -337,12 +343,12 @@ to exercise must either avoid pipelines or take a seam:
   `expect(stage.where).toHaveBeenCalledWith(expect.objectContaining({ kind:
   'and', ... }))`. Full pattern in `packages/data/src/pipeline-queries.test.ts`.
 - **Admin code** — default-parameter dependency injection. Functions that read
-  from a pipeline take the fetch as an overridable parameter defaulting to the
-  real implementation, e.g. `sweepUnreferencedArquivos(db, bucket,
-  fetchCandidates = fetchUnreferencedCandidates, resolveReferenced = ...)` — the
-  emulator suite calls it with a stub `fetchCandidates` that returns fixture rows,
-  exercising the surrounding delete/keep/error-isolation logic without ever
-  calling `.pipeline()`. Gate anything that truly needs a live pipeline behind
+  from a pipeline should take the fetch as an overridable parameter defaulting to
+  the real implementation, e.g. `someSweep(db, fetchCandidates =
+  fetchCandidatesViaPipeline, resolveReferenced = ...)` — the emulator suite calls
+  it with a stub `fetchCandidates` that returns fixture rows, exercising the
+  surrounding delete/keep/error-isolation logic without ever calling
+  `.pipeline()`. Gate anything that truly needs a live pipeline behind
   `describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)` style guards only where
   the *rest* of the suite is emulator-only — don't let one pipeline-dependent
   assertion silently skip a whole file.
@@ -367,10 +373,13 @@ to exercise must either avoid pipelines or take a seam:
   projects only `changes.<field>` (aliased to a short name) + `timestamp` — a
   document with a large `changes` map never crosses the wire in full. Needs the
   `historicoDeModificacoes(campos CONTAINS, timestamp DESC)` index (§6).
-- **The arquivo orphan sweep's regex pipeline** — §3's
-  `fetchUnreferencedCandidates`: a `filepath` regex plus a `criadoEm` range,
-  sorted, limited — the admin-side "search across a directory-shaped field"
-  pattern to copy when a new sweep needs the same shape.
+- **Search across a directory-shaped field** — §3's snippet (`filepath` regex
+  plus a `criadoEm` range, sorted, limited) is the pattern to copy for a NEW
+  sweep that genuinely needs server-side substring scoping. The arquivo orphan
+  sweep itself moved off this shape in #234 (a persisted round-robin cursor over
+  a classic document-key query fixed a coverage gap the regex-pipeline sort
+  couldn't) — see `apps/functions/CLAUDE.md` — but the snippet remains the right
+  starting point for a query that DOES need `regexContains`.
 - **A correlated-join sweep** (pattern, not yet in-repo) — for "parents with an
   aggregate over their children" in one round trip, prefer a
   `define`+`toScalarExpression` subquery (§4) over N+1 classic reads; keep each
@@ -379,6 +388,13 @@ to exercise must either avoid pipelines or take a seam:
 
 ## 9. Gotchas
 
+- **Zero-result executions carry NO `explainStats`** (admin v8.6.0,
+  staging-verified): `execute({ explainOptions: { mode: 'analyze' } })` returns
+  `explainStats: undefined` whenever `results` is empty — the plan is simply
+  lost, even though the backend computed one. When capturing plans (e.g.
+  `check-stock-indexes.mjs`-style gates), make sure the probed window/filters
+  actually match rows, or retry with a widened constant of the SAME stage shape
+  and label it.
 - **Always feature-detect, don't assume.** `isPipelineSupported(db)` checks
   `typeof db.pipeline === 'function'`; `buildPipeline` throws
   `PipelineUnsupportedError` if you skip the check and the SDK predates Pipelines.

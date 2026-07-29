@@ -53,6 +53,9 @@ export const userSchema = z
     nickname: z.string().nullable().optional(),
     email: z.string().nullable().optional(),
     site_id: z.string().nullable().optional(),
+    // Account capability tags — `warehouse_management` marks multiorigin
+    // accounts, whose stock cannot be sent via PUT /items.
+    tags: z.array(z.string()).nullable().optional(),
   })
   .passthrough();
 export type MlUser = z.infer<typeof userSchema>;

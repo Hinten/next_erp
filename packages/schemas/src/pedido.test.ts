@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ESTADO_BUCKET_LABELS, bucketOf, itemSubtotal, pedidoSchema, pedidoTotal } from './pedido';
 import type { ItemDoPedido } from './pedido';
+import { ESTADO_PEDIDO } from './pedido';
 
 const baseInput = {
   estado: 'pago' as const,
@@ -113,17 +114,17 @@ describe('bucketOf', () => {
   });
 
   it('groups iniciado/carrinho into "aberto"', () => {
-    expect(bucketOf('iniciado')).toBe('aberto');
-    expect(bucketOf('carrinho')).toBe('aberto');
+    expect(bucketOf(ESTADO_PEDIDO.iniciado)).toBe('aberto');
+    expect(bucketOf(ESTADO_PEDIDO.carrinho)).toBe('aberto');
   });
 
   it('groups pago/finalizado into "concluido"', () => {
-    expect(bucketOf('pago')).toBe('concluido');
-    expect(bucketOf('finalizado')).toBe('concluido');
+    expect(bucketOf(ESTADO_PEDIDO.pago)).toBe('concluido');
+    expect(bucketOf(ESTADO_PEDIDO.finalizado)).toBe('concluido');
   });
 
   it('groups error/fraude into "cancelado"', () => {
-    expect(bucketOf('error')).toBe('cancelado');
-    expect(bucketOf('fraude')).toBe('cancelado');
+    expect(bucketOf(ESTADO_PEDIDO.error)).toBe('cancelado');
+    expect(bucketOf(ESTADO_PEDIDO.fraude)).toBe('cancelado');
   });
 });

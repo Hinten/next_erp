@@ -12,6 +12,7 @@
  * call from ME, not a browser request.
  */
 import { NextResponse } from 'next/server';
+import { ESTADO_FRETE } from '@delfrance/schemas';
 import type { EstadoFrete } from '@delfrance/schemas';
 import { pedidoCollection } from '@delfrance/data/admin/collections';
 
@@ -28,7 +29,7 @@ export const runtime = 'nodejs';
 export function meStatusToEstadoFrete(status: string | null | undefined): EstadoFrete | null {
   switch (status) {
     case 'delivered':
-      return 'entregue';
+      return ESTADO_FRETE.entregue;
     case 'released':
       // The label was just printed and is still in the warehouse — the pedido
       // has NOT been posted yet, so we deliberately do nothing (matches the
@@ -37,15 +38,15 @@ export function meStatusToEstadoFrete(status: string | null | undefined): Estado
       return null;
     case 'posted':
     case 'received':
-      return 'postado';
+      return ESTADO_FRETE.postado;
     case 'canceled':
     case 'cancelled':
-      return 'cancelado';
+      return ESTADO_FRETE.cancelado;
     case 'suspended':
     case 'paused':
-      return 'suspenso';
+      return ESTADO_FRETE.suspenso;
     case 'undelivered':
-      return 'falhaNaEntrega';
+      return ESTADO_FRETE.falhaNaEntrega;
     default:
       return null;
   }
@@ -59,7 +60,10 @@ export function meStatusToEstadoFrete(status: string | null | undefined): Estado
  * a late or out-of-order event (e.g. a delayed `posted` after `delivered`)
  * could otherwise regress the estado — we guard against that explicitly.
  */
-const TERMINAL_ESTADOS: ReadonlySet<EstadoFrete> = new Set(['entregue', 'cancelado']);
+const TERMINAL_ESTADOS: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
+  ESTADO_FRETE.entregue,
+  ESTADO_FRETE.cancelado,
+]);
 
 interface MeWebhookBody {
   event?: unknown;

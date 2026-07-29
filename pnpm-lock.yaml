@@ -63,6 +63,9 @@ catalogs:
     eslint-config-prettier:
       specifier: ^10.1.5
       version: 10.1.8
+    fflate:
+      specifier: ^0.8.2
+      version: 0.8.3
     firebase:
       specifier: ^12.13.0
       version: 12.13.0
@@ -388,6 +391,9 @@ importers:
       '@delfrance/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@google-cloud/firestore':
+        specifier: ^8.6.0
+        version: 8.6.0
       firebase-admin:
         specifier: 'catalog:'
         version: 14.0.0
@@ -874,6 +880,9 @@ importers:
       eslint-config-prettier:
         specifier: 'catalog:'
         version: 10.1.8(eslint@9.39.4)
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
       typescript-eslint:
         specifier: 'catalog:'
         version: 8.59.3(eslint@9.39.4)(typescript@6.0.3)
@@ -1073,6 +1082,9 @@ importers:
       '@delfrance/core':
         specifier: workspace:*
         version: link:../../core
+      fflate:
+        specifier: 'catalog:'
+        version: 0.8.3
       zod:
         specifier: 'catalog:'
         version: 4.4.3

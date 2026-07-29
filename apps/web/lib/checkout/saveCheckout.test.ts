@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ESTADO_PEDIDO,
   freteDoPedidoSchema,
   itemDoPedidoSchema,
   type EngineProduto,
@@ -53,8 +54,8 @@ const expItem = (over: Partial<ExpectedItem> = {}): ExpectedItem => ({
 
 // All-gates-pass baseline; each test overrides one field to trip one gate.
 const base = (): EvaluatePreSaveInput => ({
-  loaded: { estado: 'pago', itens: [], freteInicial: frete('despachoAutorizado') },
-  fresh: { estado: 'pago', numero: '100', freteInicial: frete('despachoAutorizado') },
+  loaded: { estado: ESTADO_PEDIDO.pago, itens: [], freteInicial: frete('despachoAutorizado') },
+  fresh: { estado: ESTADO_PEDIDO.pago, numero: '100', freteInicial: frete('despachoAutorizado') },
   freshItens: [],
   expected: [],
   log: [],
@@ -74,7 +75,10 @@ describe('evaluatePreSave — gates in order', () => {
   });
 
   it('2. blocks when estado changed since load', () => {
-    const r = evaluatePreSave({ ...base(), fresh: { ...base().fresh!, estado: 'iniciado' } });
+    const r = evaluatePreSave({
+      ...base(),
+      fresh: { ...base().fresh!, estado: ESTADO_PEDIDO.iniciado },
+    });
     expect(r).toMatchObject({ decision: 'block', kind: 'estado-changed' });
   });
 
@@ -105,8 +109,8 @@ describe('evaluatePreSave — gates in order', () => {
   it('6. blocks when the frete was deleted', () => {
     const r = evaluatePreSave({
       ...base(),
-      loaded: { estado: 'pago', itens: [], freteInicial: null },
-      fresh: { estado: 'pago', numero: '100', freteInicial: null },
+      loaded: { estado: ESTADO_PEDIDO.pago, itens: [], freteInicial: null },
+      fresh: { estado: ESTADO_PEDIDO.pago, numero: '100', freteInicial: null },
     });
     expect(r).toMatchObject({ decision: 'block', kind: 'frete-null' });
   });
@@ -123,7 +127,7 @@ describe('evaluatePreSave — gates in order', () => {
     const r = evaluatePreSave({
       ...base(),
       loaded: {
-        estado: 'pago',
+        estado: ESTADO_PEDIDO.pago,
         itens: [item('A', 2, 1)],
         freteInicial: frete('despachoAutorizado'),
       },
@@ -138,8 +142,8 @@ describe('evaluatePreSave — gates in order', () => {
     const rev = frete('despachoAutorizado', { ehReverso: true });
     const r = evaluatePreSave({
       ...base(),
-      loaded: { estado: 'pago', itens: [], freteInicial: rev },
-      fresh: { estado: 'pago', numero: '77', freteInicial: rev },
+      loaded: { estado: ESTADO_PEDIDO.pago, itens: [], freteInicial: rev },
+      fresh: { estado: ESTADO_PEDIDO.pago, numero: '77', freteInicial: rev },
     });
     expect(r).toMatchObject({ decision: 'block', kind: 'reverso' });
   });
@@ -157,8 +161,8 @@ describe('evaluatePreSave — gates in order', () => {
     const cf = frete('checkFinalizado');
     const input: EvaluatePreSaveInput = {
       ...base(),
-      loaded: { estado: 'pago', itens: [], freteInicial: cf },
-      fresh: { estado: 'pago', numero: '100', freteInicial: cf },
+      loaded: { estado: ESTADO_PEDIDO.pago, itens: [], freteInicial: cf },
+      fresh: { estado: ESTADO_PEDIDO.pago, numero: '100', freteInicial: cf },
     };
     expect(evaluatePreSave(input)).toMatchObject({ decision: 'confirm', kind: 'frete-estado' });
     expect(evaluatePreSave({ ...input, confirmed: new Set(['frete-estado']) })).toEqual({
@@ -170,8 +174,16 @@ describe('evaluatePreSave — gates in order', () => {
   it('12. blocks a non-Pago pedido (estado unchanged since load)', () => {
     const r = evaluatePreSave({
       ...base(),
-      loaded: { estado: 'iniciado', itens: [], freteInicial: frete('despachoAutorizado') },
-      fresh: { estado: 'iniciado', numero: '100', freteInicial: frete('despachoAutorizado') },
+      loaded: {
+        estado: ESTADO_PEDIDO.iniciado,
+        itens: [],
+        freteInicial: frete('despachoAutorizado'),
+      },
+      fresh: {
+        estado: ESTADO_PEDIDO.iniciado,
+        numero: '100',
+        freteInicial: frete('despachoAutorizado'),
+      },
     });
     expect(r).toMatchObject({ decision: 'block', kind: 'nao-pago' });
   });

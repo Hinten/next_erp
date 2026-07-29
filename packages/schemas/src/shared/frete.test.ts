@@ -10,6 +10,7 @@ import {
   veiculoSchema,
 } from './frete';
 import { derivePedidoFreteTotals, itemDoPedidoSchema } from '../pedido';
+import { ESTADO_FRETE } from './frete';
 
 /* -------------------------------------------------------------------------- */
 /*      Golden-doc round-trips — fixtures shaped exactly as Flutter writes    */
@@ -225,21 +226,21 @@ describe('FREIGHT_TIPO_CAPS', () => {
 
 describe('isFreteJaPostado', () => {
   it('is false for the não-postado estados (no re-emit confirm needed)', () => {
-    expect(isFreteJaPostado('iniciado')).toBe(false);
-    expect(isFreteJaPostado('aguardandoNFe')).toBe(false);
-    expect(isFreteJaPostado('empacotado')).toBe(false);
-    expect(isFreteJaPostado('aguardandoAgendamento')).toBe(false);
+    expect(isFreteJaPostado(ESTADO_FRETE.iniciado)).toBe(false);
+    expect(isFreteJaPostado(ESTADO_FRETE.aguardandoNFe)).toBe(false);
+    expect(isFreteJaPostado(ESTADO_FRETE.empacotado)).toBe(false);
+    expect(isFreteJaPostado(ESTADO_FRETE.aguardandoAgendamento)).toBe(false);
   });
 
   it('is false for checkFinalizado (explicitly excluded by the Dart guard)', () => {
-    expect(isFreteJaPostado('checkFinalizado')).toBe(false);
+    expect(isFreteJaPostado(ESTADO_FRETE.checkFinalizado)).toBe(false);
   });
 
   it('is true once the frete is posted / in transit / terminal', () => {
-    expect(isFreteJaPostado('postado')).toBe(true);
-    expect(isFreteJaPostado('aguardandoPostagem')).toBe(true);
-    expect(isFreteJaPostado('aCaminho')).toBe(true);
-    expect(isFreteJaPostado('entregue')).toBe(true);
-    expect(isFreteJaPostado('cancelado')).toBe(true);
+    expect(isFreteJaPostado(ESTADO_FRETE.postado)).toBe(true);
+    expect(isFreteJaPostado(ESTADO_FRETE.aguardandoPostagem)).toBe(true);
+    expect(isFreteJaPostado(ESTADO_FRETE.aCaminho)).toBe(true);
+    expect(isFreteJaPostado(ESTADO_FRETE.entregue)).toBe(true);
+    expect(isFreteJaPostado(ESTADO_FRETE.cancelado)).toBe(true);
   });
 });
