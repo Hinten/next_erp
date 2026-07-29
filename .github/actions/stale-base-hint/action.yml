@@ -1,0 +1,62 @@
+name: Stale base hint
+description: >-
+  Writes a markdown block warning that the PR branch is behind its base — loudest
+  when a spec that just failed is one the base has already changed. Meant to be
+  prepended to a CI failure comment. See .github/scripts/stale-base-hint.sh and #722.
+
+# The repo's first composite action. It exists because the same block is needed
+# by all three `report-failure` jobs (ci.yml, e2e-reusable.yml,
+# e2e-emulator.yml), which are otherwise near-identical — triplicating the logic
+# in YAML would guarantee it drifts.
+#
+# ⚠️ Callers MUST check out the BASE ref, not the PR head. These jobs hold
+# `pull-requests: write`, so the script they execute has to come from trusted
+# `main` and never from the branch under test.
+
+inputs:
+  github-token:
+    description: "Token used for the `compare` API call. Needs `contents: read`."
+    required: true
+  repo:
+    description: owner/name — defaults to the current repository.
+    required: false
+    default: ${{ github.repository }}
+  head-sha:
+    description: The PR head commit CI checked out.
+    required: false
+    default: ${{ github.event.pull_request.head.sha }}
+  base-ref:
+    description: Branch to compare against — the PR's base.
+    required: false
+    default: ${{ github.event.pull_request.base.ref }}
+  log-glob:
+    description: >-
+      Glob of already-downloaded failed-job logs to scrape for hard-failed spec
+      names. The caller writes these before invoking this action.
+    required: false
+    default: /tmp/job-*.log
+  watch-prefix:
+    description: Repo path whose churn in the base matters for this lane.
+    required: false
+    default: apps/web/e2e/
+  out:
+    description: Markdown fragment to write. Empty file when there is nothing to say.
+    required: false
+    default: /tmp/stale-hint.md
+
+runs:
+  using: composite
+  steps:
+    - name: Compute stale-base hint
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        BASE_REF: ${{ inputs.base-ref }}
+        LOG_GLOB: ${{ inputs.log-glob }}
+        WATCH_PREFIX: ${{ inputs.watch-prefix }}
+        OUT: ${{ inputs.out }}
+      # The script always exits 0 by design; `|| true` is belt-and-braces so a
+      # reporting nicety can never fail a job that is already reporting a failure.
+      run: bash "$GITHUB_ACTION_PATH/../../scripts/stale-base-hint.sh" || true

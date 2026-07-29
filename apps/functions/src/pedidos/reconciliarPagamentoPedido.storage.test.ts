@@ -33,25 +33,34 @@ async function historicos(db: Firestore, pedidoId: string) {
 /**
  * The `historicoEstadoPedido` trail is no longer written by the reconcile: the
  * `onPedidoEstadoChanged` trigger observes the pedido write and appends it
- * asynchronously, so the rows land AFTER `reconcilePedidoEstado` resolves. Poll
- * until the expected estado shows up.
+ * asynchronously, so the rows land AFTER `reconcilePedidoEstado` resolves.
  *
- * Note the trail also carries an OPENING row for the estado `seedPedido` created
- * the pedido with — the trigger records creates too — so assertions here count
- * rows of a given estado rather than the whole trail.
+ * Wait for `minRows`, then hold still for a quiet window and re-read. The quiet
+ * window is what makes an exact-count assertion able to FAIL: returning on the
+ * first poll that satisfies the minimum would read a snapshot that can predate a
+ * later row, so "the trail is exactly these rows" would pass by arriving early.
+ *
+ * `seedPedido` creates the pedido, and the trigger records creates too — so the
+ * trail always opens with a row for the estado the pedido was seeded with, and
+ * a single transition means TWO rows, not one.
  */
-async function waitForEstadoRow(
+async function waitForTrail(
   db: Firestore,
   pedidoId: string,
-  estado: string,
-  timeoutMs = 20_000,
+  minRows: number,
+  { timeoutMs = 20_000, quietMs = 2_000 } = {},
 ): Promise<Array<Record<string, unknown>>> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const trail = await historicos(db, pedidoId);
-    if (trail.some((r) => r.estado === estado)) return trail;
+    if (trail.length >= minRows) {
+      await new Promise((r) => setTimeout(r, quietMs));
+      return historicos(db, pedidoId);
+    }
     if (Date.now() > deadline) {
-      throw new Error(`timed out waiting for a '${estado}' historicoEstadoPedido row`);
+      throw new Error(
+        `timed out waiting for ${minRows} historicoEstadoPedido row(s); saw ${trail.length}`,
+      );
     }
     await new Promise((r) => setTimeout(r, 500));
   }
@@ -104,11 +113,20 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
     expect(pedido.estado).toBe('pago');
     expect(pedido.freteInicial).toEqual({ estado: 'despachoAutorizado', codRastreio: null });
 
-    // The trigger records the transition. Exactly one `pago` row, and its usuário
-    // is null: this reconcile runs on the Admin SDK, so there is no end user
-    // behind the write for the trigger's auth context to resolve.
-    const trail = await waitForEstadoRow(db, pedidoId, 'pago');
-    expect(trail.filter((r) => r.estado === 'pago')).toHaveLength(1);
+    // The trigger records the transition: the opening row for the estado the
+    // pedido was seeded with, plus the transition. Nothing more.
+    const trail = await waitForTrail(db, pedidoId, 2);
+    expect(trail.map((r) => r.estado as string).sort()).toEqual(
+      ['aguardandoConfirmacaoDePagamento', 'pago'].sort(),
+    );
+    // Its usuário is null — this reconcile runs on the Admin SDK, so there is no
+    // end user behind the write for the trigger's auth context to resolve.
+    //
+    // ⚠️ In the emulator this assertion cannot tell a working resolver from a
+    // broken one: `authId` is hardcoded to 'fake-auth-id@gmail.com'
+    // (firebase-tools#7609), which is not uid-shaped and resolves to null no
+    // matter what. A REAL actor is asserted against staging, in
+    // `apps/web/e2e/pedidos-estado.vendas.e2e.spec.ts`.
     expect(trail.find((r) => r.estado === 'pago')).toMatchObject({
       usuarioHistoricoEstadosPedidoOuterRef: null,
     });
@@ -148,13 +166,15 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
     expect(pedido.estado).toBe('pago');
     expect(pedido.freteInicial).toEqual({ estado: 'empacotado', codRastreio: null });
 
-    // The pedido write still fires the trigger, so the trail records the
-    // transition exactly once — same shape as the happy path.
-    const trail = await waitForEstadoRow(db, pedidoId, 'pago');
-    expect(trail.filter((r) => r.estado === 'pago')).toHaveLength(1);
+    // The pedido write still fires the trigger, so the trail records the estado
+    // transition — same shape as the happy path: the opening row for the seeded
+    // estado plus the transition. The suppressed frete write leaves no trace
+    // here either way; this trail records `estado`, not `freteInicial`.
+    const trail = await waitForTrail(db, pedidoId, 2);
+    expect(trail.map((r) => r.estado as string).sort()).toEqual(['iniciado', 'pago'].sort());
   }, 60_000);
 
-  it('two concurrent reconciles settle on one consistent estado and write one history row (#308)', async () => {
+  it('two concurrent reconciles settle on one consistent estado (#308)', async () => {
     const db = getDb();
     const pedidoId = await seedPedido(
       db,
@@ -172,20 +192,33 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
     // transactions read the pedido doc inside the tx, so they serialize on it:
     // the winner writes `pago`, the loser re-reads the already-settled `pago`,
     // `nextPedidoEstado` returns null for an already-`pago` fully-paid pedido,
-    // and it commits nothing — hence exactly one history row.
+    // and `applyEstadoTransition` returns before its `tx.update` — it commits
+    // nothing at all.
     const resultados = await Promise.all([
       reconcilePedidoEstado(db, { pedidoId }),
       reconcilePedidoEstado(db, { pedidoId }),
     ]);
 
-    // Exactly one transitioned; the other was a clean no-op.
+    // THIS is the #308 guard. Exactly one transitioned; the other was a clean
+    // no-op. It fails with ['pago', 'pago'] the moment the race returns, because
+    // `applyEstadoTransition` returns its estado on the SAME code path that runs
+    // the `tx.update` — a committing loser cannot report null.
     expect(resultados.map((r) => r.transition).filter((t) => t !== null)).toEqual(['pago']);
     expect((await pedidoRef(db, pedidoId).get()).data()!.estado).toBe('pago');
 
-    // …and the trail agrees: ONE `pago` row, not two. The loser committed no
-    // pedido write, so the trigger had nothing to record for it.
-    const trail = await waitForEstadoRow(db, pedidoId, 'pago');
-    expect(trail.filter((r) => r.estado === 'pago')).toHaveLength(1);
+    // The trail corroborates the settled state: the opening `iniciado` row plus
+    // ONE transition.
+    //
+    // ⚠️ It does NOT witness the race, and must not be read as if it did. The
+    // trigger records estado CHANGES, not writes — `buildEstadoHistoryEntry`
+    // returns null when `before.estado === after.estado` — so a losing reconcile
+    // that DID commit a redundant `pago` write would produce no second row
+    // either way, and this count would look identical. Before #697 the reconcile
+    // appended the row inside its own transaction at a random doc id, so two
+    // commits genuinely meant two rows; that discriminating power is gone. The
+    // assertion above is what carries #308.
+    const trail = await waitForTrail(db, pedidoId, 2);
+    expect(trail.map((r) => r.estado as string).sort()).toEqual(['iniciado', 'pago'].sort());
   }, 60_000);
 
   it('throws PedidoReconcileNotFoundError against a real missing pedido', async () => {

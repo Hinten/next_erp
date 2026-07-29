@@ -38,31 +38,31 @@
 // KNOWN LIMITATIONS, by design — the rule is precise over exhaustive, because
 // zero false positives is what makes it safe at `error`:
 //
-//  1. It only fires where the TYPE at the literal's position is the enum. A
-//     patch object typed `Record<string, unknown>` — e.g. what
-//     `PedidoDataPort.updatePedido`'s `apply` returns — has contextual type
-//     `unknown`, so no literal inside it can be flagged. Those write paths are
-//     caught in review instead.
+//  1. A position with NO declaration behind it is not flagged. A patch object
+//     typed `Record<string, unknown>` — e.g. what `PedidoDataPort.updatePedido`'s
+//     `apply` returns — has no per-property declaration to read, so no literal
+//     inside it can be flagged. Those write paths are caught in review instead.
 //  2. `const S: ReadonlySet<EstadoFrete> = new Set(['postado'])` is NOT flagged:
-//     TypeScript infers `Set`'s `T` from the ARGUMENT, so the element's
-//     contextual type collapses to its own literal (`"postado"`) and the
-//     annotation only checks assignability afterwards. Nothing is unsafe — a
-//     typo still fails to compile — but the enum never reaches the position.
-//     Write `new Set<EstadoFrete>([...])`, the form used everywhere in this
-//     repo, and the members are checked.
-//  3. An operand NARROWED by control flow is not flagged:
-//     `estado !== ESTADO_PEDIDO.pago && estado !== 'cancelado'` narrows the
-//     second comparison to the 15 remaining members, which is neither the alias
-//     nor the whole member set. Matching a subset instead was tried and is
-//     unsound — see the note on `enumEntryFor`.
-//  4. Two enums that share a member set (`Origem` and `OrigemProdutoImposto` are
-//     both '0'…'8') are not enforced AT ALL. `z.infer` erases the type alias, so
-//     the member set is the only thing that identifies an enum here — and when
-//     two claim the same one, nothing left in the type says which is meant.
-//     Answering anyway would name the wrong module's constant in code that still
-//     compiles. No enum is parked today — only opted-in enums reach the registry
-//     at all, and none of the colliding ones has a constant yet. #699 parks seven
-//     as it adds theirs. See `buildRegistry`.
+//     an array element's only "declaration" is a positional slot in
+//     `readonly T[]`, which names nothing. Write `new Set<EstadoFrete>([...])`,
+//     the form used everywhere in this repo, and the written type ARGUMENT names
+//     the enum.
+//  3. An inferred local loses the thread — `const e = pedido.estado;` then
+//     `e === 'pago'` resolves `e` to a `VariableDeclaration` carrying neither an
+//     annotation nor a Zod initializer. Compare the property directly, or
+//     annotate the local.
+//
+// Identifying enums by their MEMBER SET was tried and removed. A set is not an
+// identity: `'0' | '1'` is `IndIntermedOperacao`, and equally the generated
+// `ide.tpNF` (entrada / saída) and any flag union; `'1' | '2'` is `IndIncentivo`,
+// and equally `TpAmb` (produção / homologação). Each collision produced a
+// suggestion that compiled, passed tests and meant something else — `tpImp: '1'`
+// (DANFE layout) rewritten to `MOD_BCST.listaNegativa`. Fiscal code is full of
+// single-digit SEFAZ enums, so those were routine, not edge cases. Two follow
+// from dropping it: an operand narrowed by control flow now IS flagged (its
+// declaration is unchanged by narrowing), and two enums sharing a member set —
+// `Origem` and `OrigemProdutoImposto` are both '0'…'8' — are told apart by name,
+// so the ambiguity guard that #718 needed is gone with the mechanism.
 //
 // Error (not warn): the constants exist precisely so the enum members have one
 // spelling; a second spelling drifting back in is the thing this prevents.
@@ -155,9 +155,8 @@ function memberAccess(constName, key) {
  * Scan every `packages/schemas/src` file in the program for the three
  * declarations that make up an enum: the `z.enum()` schema, the `z.infer` type
  * alias, and the `as const satisfies Record<string, T>` constant. Returns
- * `{ byTypeName, byValueKey }` — the second keyed by the sorted member list, so
- * a type the checker flattened (e.g. `EstadoPedido | null`, which loses its
- * `aliasSymbol`) still resolves.
+ * `{ byTypeName, byEnumSchemaVar }` — both keyed by a NAME, which is what
+ * `resolveEntry` recovers from the declaration behind a literal's position.
  */
 function buildRegistry(program) {
   const cached = registryCache.get(program);
@@ -209,8 +208,7 @@ function buildRegistry(program) {
   }
 
   const byTypeName = new Map();
-  const byValueKey = new Map();
-  const ambiguous = new Set();
+  const byEnumSchemaVar = new Map();
   for (const [typeName, schemaVar] of typeToSchemaVar) {
     const members = bySchemaVar.get(schemaVar);
     const constant = constByTypeName.get(typeName);
@@ -222,98 +220,206 @@ function buildRegistry(program) {
       // Keyed by wire VALUE; the map resolves it back to the member name.
       valueToKey: constant.valueToKey,
     };
+    // Both keys are NAMES, and both are unique across the package — unlike a
+    // member set, which several enums share. That uniqueness is what makes this
+    // keying sound, so it is asserted rather than assumed:
+    // `packages/schemas/src/enumNames.test.ts` fails on a duplicate schema
+    // variable or type alias, naming both files.
     byTypeName.set(typeName, entry);
-    const valueKey = [...members].sort().join(' ');
-    if (byValueKey.has(valueKey)) ambiguous.add(valueKey);
-    byValueKey.set(valueKey, entry);
+    byEnumSchemaVar.set(schemaVar, entry);
   }
-  // Two enums that share a member set are INDISTINGUISHABLE here, and
-  // `byValueKey` is last-writer-wins, so leaving them in would silently answer
-  // for whichever was registered last. Nothing collides yet — an enum only
-  // reaches this loop once it has a companion constant, and today's 13 are all
-  // distinct. #699 adds 35 more and brings three colliding groups with them:
-  // `Origem` ('0'…'8', imposto/tribute.ts) with `OrigemProdutoImposto` (the same
-  // SEFAZ concept declared again in operacao.ts); `IndIncentivo` with
-  // `AmbienteNFE` ('1' | '2'); and the three 'failed' | 'parked' notification
-  // statuses. Because the colliding enums carry the SAME strings, a suggestion
-  // naming the wrong module's constant still compiles and still passes tests —
-  // undetectable downstream. `IndIncentivo` vs `AmbienteNFE` is the vivid one: it
-  // would turn "incentivo fiscal: sim" into "ambiente: produção".
-  //
-  // Dropping the key parks those enums ENTIRELY, not just in nullable positions:
-  // `z.infer` erases the alias (verified against real zod — `getTypeAtLocation`
-  // on an `EstadoPedido` operand reports no `aliasSymbol`), so the member set is
-  // the only signal that ever arrives and `byTypeName` is a formality. Parked is
-  // still the right trade against emitting a wrong constant that compiles. The
-  // way out is to identify enums by the DECLARATION behind the operand — a
-  // property's `origem: origemProdutoImpostoSchema.…` names its schema variable
-  // in the AST — which is a coverage-increasing change and belongs with its own
-  // fallout, not in this fix.
-  for (const key of ambiguous) byValueKey.delete(key);
-
-  const registry = { byTypeName, byValueKey };
+  const registry = { byTypeName, byEnumSchemaVar };
   registryCache.set(program, registry);
   return registry;
 }
 
-/**
- * The type the literal is being used AS. For a comparison that is the other
- * operand's type and for a `case` clause the discriminant's; everywhere else
- * (object property, argument, return, annotated declarator, array element) the
- * contextual type.
- */
-function targetType(node, tsNode, checker, esToTs) {
-  const parent = node.parent;
-  if (parent?.type === 'BinaryExpression' && ['===', '!==', '==', '!='].includes(parent.operator)) {
-    const other = parent.left === node ? parent.right : parent.left;
-    const otherTs = esToTs.get(other);
-    return otherTs ? checker.getTypeAtLocation(otherTs) : null;
+/** Walk `origemSchema.nullable().optional().default(x)` back to `origemSchema`. */
+function zodSchemaVarOf(node) {
+  let cur = node;
+  for (;;) {
+    if (ts.isCallExpression(cur)) cur = cur.expression;
+    else if (ts.isPropertyAccessExpression(cur)) cur = cur.expression;
+    else break;
   }
-  if (parent?.type === 'SwitchCase' && parent.test === node) {
-    const discriminantTs = esToTs.get(parent.parent.discriminant);
-    return discriminantTs ? checker.getTypeAtLocation(discriminantTs) : null;
-  }
-  return checker.getContextualType(tsNode) ?? null;
+  return ts.isIdentifier(cur) ? cur.text : null;
 }
 
 /**
- * The enum entry a type corresponds to, or null. Ignores null/undefined members.
- *
- * Two ways in, and deliberately only two:
- *  1. the type alias (`EstadoPedido`). Kept for completeness, but it almost never
- *     fires: `z.infer` resolves through a conditional/indexed-access type and the
- *     result carries NO `aliasSymbol`, verified against real zod. Every enum in
- *     the schemas package is declared that way.
- *  2. the EXACT member set — which is therefore the path that does the work, not
- *     a fallback. Only a set that exactly ONE enum owns resolves: `buildRegistry`
- *     drops the shared ones, so a set two enums both claim returns null here
- *     rather than whichever won the registration race.
- *
- * A third rule — "the literals are a SUBSET of exactly one enum's members" —
- * was tried, to also catch an operand that control-flow narrowing had shrunk
- * (`estado !== ESTADO_PEDIDO.pago && estado !== '…'`). It is UNSOUND and was
- * removed: enums whose values are generic numeric-ish codes collide across
- * unrelated domains. The NF-e `PISNT.CST` field is typed
- * `'04' | … | '09'`, which sits entirely inside `BANDEIRA`'s
- * `'01' | … | '09' | '99'` (credit-card brands), so the subset rule "resolved"
- * a SEFAZ tax code to `BANDEIRA.hipercard`. It compiled, and it was nonsense.
- * Matching only the whole member set cannot make that mistake.
+ * A written type ANNOTATION reduced to its type name: `Origem`, `Origem | null`
+ * and `(Origem | undefined)` all give `'Origem'`. Anything else — a union of
+ * bare literals, an indexed access, a generic — gives null, which is what keeps
+ * a generated XSD field like `tpImp: '0' | '1' | …` out of the registry.
  */
-function enumEntryFor(type, registry) {
-  if (!type) return null;
-  if (type.aliasSymbol) {
-    const entry = registry.byTypeName.get(type.aliasSymbol.name);
-    if (entry) return entry;
+function annotatedTypeNameOf(typeNode) {
+  if (!typeNode) return null;
+  const strip = (n) => {
+    let cur = n;
+    while (ts.isParenthesizedTypeNode(cur)) cur = cur.type;
+    return cur;
+  };
+  let n = strip(typeNode);
+  if (ts.isUnionTypeNode(n)) {
+    const real = n.types.filter(
+      (t) =>
+        t.kind !== ts.SyntaxKind.UndefinedKeyword &&
+        !(ts.isLiteralTypeNode(t) && t.literal.kind === ts.SyntaxKind.NullKeyword),
+    );
+    if (real.length !== 1) return null;
+    n = strip(real[0]);
   }
-  if (!type.isUnion()) return null;
-  const values = [];
-  for (const part of type.types) {
-    if (part.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) continue;
-    if (!part.isStringLiteral()) return null;
-    values.push(part.value);
+  return ts.isTypeReferenceNode(n) && ts.isIdentifier(n.typeName) ? n.typeName.text : null;
+}
+
+/**
+ * The enum a SYMBOL's declaration names, or null — the whole identification
+ * strategy of this rule.
+ *
+ * Two shapes count, and both name the enum EXPLICITLY rather than inferring it
+ * from the shape of a type:
+ *
+ *  1. a Zod object property — `origem: origemProdutoImpostoSchema.nullable()` —
+ *     whose initializer walks back to the schema variable;
+ *  2. a written annotation — `declare const o: Origem`, `(e: EstadoPedido) => …`.
+ *
+ * Everything else answers null. That is the point: the previous approach matched
+ * an enum by its MEMBER SET, which is not an identity. `'0' | '1'` is
+ * `IndIntermedOperacao`, but it is equally the generated `ide.tpNF` (entrada /
+ * saída) and any hand-written flag union; `'1' | '2'` is `IndIncentivo` and also
+ * `TpAmb` (produção / homologação). Those collisions produced suggestions that
+ * compiled, passed tests and said something entirely different — `tpImp: '1'`
+ * (DANFE layout) rewritten to `MOD_BCST.listaNegativa`. A name cannot collide
+ * that way.
+ */
+/**
+ * The symbol an expression refers to. `getSymbolAtLocation` answers directly for
+ * a plain identifier, but returns UNDEFINED for a property access whose object
+ * is a union — including every `current.estado` where `current` was narrowed
+ * from `Pedido | null`, which is most real call sites. Fall back to looking the
+ * property up on the object's type, where a union yields a synthesized symbol
+ * carrying each constituent's declaration.
+ */
+function symbolBehind(expr, checker) {
+  const direct = checker.getSymbolAtLocation(expr);
+  if (direct) return direct;
+  if (!ts.isPropertyAccessExpression(expr)) return undefined;
+  const objectType = checker.getTypeAtLocation(expr.expression);
+  return objectType ? checker.getPropertyOfType(objectType, expr.name.text) : undefined;
+}
+
+function entryFromSymbol(symbol, checker, registry, depth = 0) {
+  if (depth > 4) return null; // a destructure of a destructure of a … — bail
+  for (const decl of symbol?.declarations ?? []) {
+    if (ts.isPropertyAssignment(decl)) {
+      const schemaVar = zodSchemaVarOf(decl.initializer);
+      const bySchema = schemaVar && registry.byEnumSchemaVar.get(schemaVar);
+      if (bySchema) return bySchema;
+    }
+    const typeName = annotatedTypeNameOf(decl.type);
+    const byName = typeName && registry.byTypeName.get(typeName);
+    if (byName) return byName;
+
+    // `const { estado } = input` — the binding element itself declares nothing.
+    // Follow it to the property it destructures, which does. This shape is
+    // everywhere (`efeitoEstoquePedido` and most pure-logic helpers open with
+    // one), so skipping it would leave most real call sites unenforced.
+    if (ts.isBindingElement(decl)) {
+      const owner = decl.parent?.parent;
+      const key = decl.propertyName ?? decl.name;
+      if (!owner || !ts.isIdentifier(key)) continue;
+      // Ask the INITIALIZER, not the declaration: `getTypeAtLocation` on a
+      // `const { … } = input` answers `any`, since the declaration's own type is
+      // the binding pattern. A destructured parameter has no initializer, and
+      // there the declaration does carry the annotation.
+      const source =
+        ts.isVariableDeclaration(owner) && owner.initializer ? owner.initializer : owner;
+      const ownerType = checker.getTypeAtLocation(source);
+      const prop = ownerType && checker.getPropertyOfType(ownerType, key.text);
+      const fromProp = prop && entryFromSymbol(prop, checker, registry, depth + 1);
+      if (fromProp) return fromProp;
+    }
   }
-  if (values.length < 2) return null;
-  return registry.byValueKey.get([...values].sort().join(' ')) ?? null;
+  return null;
+}
+
+/**
+ * The enum the literal's POSITION names, or null.
+ *
+ * Each branch finds the declaration that gives the position its type, then hands
+ * it to `entryFromSymbol`. A position whose declaration is not a Zod enum — a
+ * generated interface field, a hand-written union — resolves to null and is
+ * never reported.
+ */
+function resolveEntry(node, tsNode, checker, esToTs, registry) {
+  const parent = node.parent;
+
+  // `estado === 'pago'` / `pedido.estado === 'pago'` → the other operand.
+  if (parent?.type === 'BinaryExpression' && ['===', '!==', '==', '!='].includes(parent.operator)) {
+    const other = parent.left === node ? parent.right : parent.left;
+    const otherTs = esToTs.get(other);
+    return otherTs ? entryFromSymbol(symbolBehind(otherTs, checker), checker, registry) : null;
+  }
+
+  // `switch (estado) { case 'pago': }` → the discriminant.
+  if (parent?.type === 'SwitchCase' && parent.test === node) {
+    const discriminantTs = esToTs.get(parent.parent.discriminant);
+    return discriminantTs
+      ? entryFromSymbol(symbolBehind(discriminantTs, checker), checker, registry)
+      : null;
+  }
+
+  const tsParent = tsNode.parent;
+  if (!tsParent) return null;
+
+  // `{ estado: 'pago' }` → the contextual type's property, whose declaration is
+  // the Zod `estado: estadoPedidoSchema` line.
+  if (ts.isPropertyAssignment(tsParent) && tsParent.initializer === tsNode) {
+    const objectLiteral = tsParent.parent;
+    if (!ts.isObjectLiteralExpression(objectLiteral)) return null;
+    const name =
+      ts.isIdentifier(tsParent.name) || ts.isStringLiteral(tsParent.name)
+        ? tsParent.name.text
+        : null;
+    const objectType = checker.getContextualType(objectLiteral);
+    if (!name || !objectType) return null;
+    return entryFromSymbol(checker.getPropertyOfType(objectType, name), checker, registry);
+  }
+
+  // `g('carrinho')` → the resolved signature's parameter.
+  if (ts.isCallExpression(tsParent) || ts.isNewExpression(tsParent)) {
+    const index = tsParent.arguments?.indexOf(tsNode) ?? -1;
+    if (index < 0) return null;
+    const signature = checker.getResolvedSignature(tsParent);
+    return entryFromSymbol(signature?.parameters?.[index], checker, registry);
+  }
+
+  // `new Set<EstadoPedido>(['iniciado'])` → the written type ARGUMENT. The
+  // element's own declaration is a positional slot in `readonly T[]`, which names
+  // nothing, but the explicit `<EstadoPedido>` does — and spelling it out is
+  // already the house style here (see limitation 2).
+  if (ts.isArrayLiteralExpression(tsParent)) {
+    const call = tsParent.parent;
+    const isArg =
+      (ts.isCallExpression(call) || ts.isNewExpression(call)) &&
+      (call.arguments?.includes(tsParent) ?? false);
+    const typeName = isArg ? annotatedTypeNameOf(call.typeArguments?.[0]) : null;
+    return (typeName && registry.byTypeName.get(typeName)) ?? null;
+  }
+
+  // `const x: EstadoPedido = 'pago'` / `estado = 'pago'` on a declared variable.
+  if (ts.isVariableDeclaration(tsParent) && tsParent.initializer === tsNode) {
+    const typeName = annotatedTypeNameOf(tsParent.type);
+    return (typeName && registry.byTypeName.get(typeName)) ?? null;
+  }
+
+  // `return 'finalizado'` → the enclosing function's declared return type.
+  if (ts.isReturnStatement(tsParent)) {
+    let fn = tsParent.parent;
+    while (fn && !ts.isFunctionLike(fn)) fn = fn.parent;
+    const typeName = fn ? annotatedTypeNameOf(fn.type) : null;
+    return (typeName && registry.byTypeName.get(typeName)) ?? null;
+  }
+
+  return null;
 }
 
 /**
@@ -420,7 +526,7 @@ const rule = {
         const tsNode = esToTs.get(node);
         if (!tsNode) return;
 
-        const entry = enumEntryFor(targetType(node, tsNode, checker, esToTs), registry);
+        const entry = resolveEntry(node, tsNode, checker, esToTs, registry);
         // Resolve the wire value back to the MEMBER NAME — they differ for
         // several enums here (`ESTADO_NFE.aprovada === 'a'`). A value the
         // constant is missing is a schemas bug, not a call-site one: skip it.

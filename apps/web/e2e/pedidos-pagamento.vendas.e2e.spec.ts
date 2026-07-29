@@ -13,6 +13,12 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
   const prefix = e2ePrefix('pedpag');
   const pedidoId = `${prefix}-001`;
   let fixtures: Awaited<ReturnType<typeof seedPedidoFixtures>>;
+  /**
+   * SERVER-clock watermark for this attempt, in microseconds. Rows older than
+   * this belong to a previous attempt (or to an earlier test in this serial
+   * describe). See `beforeEach` for why it cannot come from `Date.now()`.
+   */
+  let attemptStartMicros: number;
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
@@ -56,7 +62,6 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
   // attempt, so every test starts from `iniciado` with no leftover pagamentos
   // or history.
   test.beforeEach(async () => {
-    await db().collection('pedidos').doc(pedidoId).update({ estado: 'iniciado' });
     const pg = await db().collection('pedidos').doc(pedidoId).collection('pagamentos').get();
     await Promise.all(pg.docs.map((d) => d.ref.delete()));
     const hist = await db()
@@ -65,6 +70,23 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
       .collection('historicoEstadoPedido')
       .get();
     await Promise.all(hist.docs.map((d) => d.ref.delete()));
+
+    // Reset LAST, and take this attempt's watermark from the reset's commit
+    // timestamp. It must NOT come from `Date.now()`: the trail's `data` is
+    // `Date.parse(event.time)` — the CloudEvent occurrence time, i.e. Google's
+    // clock — so comparing it against the runner's clock compares two domains,
+    // and a runner running ahead would filter out the very row this test waits
+    // for. `WriteResult.writeTime` is Firestore's own commit timestamp, the same
+    // clock the event time derives from.
+    //
+    // Deriving it instead from the newest `data` already in the trail does NOT
+    // work: the sweep above usually empties it, leaving no value to read, and a
+    // stale row arriving after the sweep would then pass any lower bound.
+    const { writeTime } = await db()
+      .collection('pedidos')
+      .doc(pedidoId)
+      .update({ estado: 'iniciado' });
+    attemptStartMicros = writeTime.toMillis() * 1000;
   });
 
   // `cleanupPedidoFixtures` deletes the pedido doc with a plain batch delete, which
@@ -219,6 +241,16 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
   test('fully paying a pedido auto-transitions it to "pago" and logs the history', async ({
     page,
   }) => {
+    // The 240s in `beforeAll` extends THAT HOOK, not this test — Playwright's
+    // `test.setTimeout` inside a beforeAll sets the hook's own budget. Without
+    // this line the body runs on `playwright.config.ts`'s 60s, which the history
+    // poll below cannot fit behind the three earlier waits plus the staging
+    // `beforeEach`. The symptom would be `Test timeout of 60000ms exceeded`
+    // rather than the assertion failing — which would defeat the whole point of
+    // the deploy gate, since a slow trigger and an undeployed one would report
+    // identically.
+    test.setTimeout(180_000);
+
     await page.goto(`/pedidos/${pedidoId}/editar`);
     await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
 
@@ -245,7 +277,15 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
     // `onPedidoEstadoChanged` Cloud Function (apps/functions) reacting to the
     // pedido write — no longer by the client — so this assertion requires the
     // function to be DEPLOYED to the staging project. The timeout covers a cold
-    // start on top of the trigger's own delivery latency.
+    // start on top of the trigger's own delivery latency, and matches the budget
+    // the emulator suite gives the same trigger; staging is strictly slower.
+    //
+    // Scoped to this attempt's watermark deliberately. Two stale-row leaks would
+    // otherwise satisfy a bare `.toContain('pago')`: the preceding test's
+    // `update({ estado: 'pago' })` now fires the trigger and nobody waits for
+    // it, so its row can land after this test's `beforeEach` snapshot-swept the
+    // trail; and across CI's 2 retries `pedidoId` is identical, so a timed-out
+    // attempt's row can outlive it. Both carry a `data` from before the reset.
     await expect
       .poll(
         async () => {
@@ -254,10 +294,12 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
             .doc(pedidoId)
             .collection('historicoEstadoPedido')
             .get();
-          return snap.docs.map((d) => d.data().estado as string);
+          return snap.docs
+            .map((d) => d.data())
+            .filter((r) => r.estado === 'pago' && (r.data as number) > attemptStartMicros).length;
         },
-        { timeout: 30_000 },
+        { timeout: 90_000 },
       )
-      .toContain('pago');
+      .toBeGreaterThan(0);
   });
 });
