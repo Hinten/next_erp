@@ -43,7 +43,7 @@ lib/
 ## Dev
 
 ```bash
-cp .env.example .env.local         # fill in Firebase config from your project
+cp ../../.env.example ../../.env.local   # ONE root file (#730) — fill in Firebase config
 pnpm dev                           # run ALL apps in parallel from the repo root
 ```
 

@@ -76,7 +76,8 @@ on top of this foundation in a later PR.
 
 ## Env
 
-See `.env.example` + `apphosting.yaml`. App-wide MP app credentials
+See the repo-root `.env.example` (Mercado Pago section — one root file is the
+repo convention, #730) + `apphosting.yaml`. App-wide MP app credentials
 (`MERCADO_PAGO_CLIENT_ID/SECRET`, `..._STATE_SECRET`) live in env / Cloud Secret
 Manager — one registered MP app serves every connected account; the per-account
 OAuth token lives in the admin-only `metodo_pgto/{id}/credenciais` subcollection.

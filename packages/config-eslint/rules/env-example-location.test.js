@@ -1,5 +1,5 @@
-import { readdirSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -11,51 +11,53 @@ import { describe, expect, it } from 'vitest';
  * only parses JS/TS and never sees `.env.example` files; failing the test
  * fails CI exactly like a lint error would.
  *
- * `ALLOWED_LEGACY` grandfathers the offenders that predate the convention's
- * enforcement — #730 burns the list down to empty. Add NOTHING new here:
- * new vars go into the ROOT `.env.example`, in an app-titled section.
+ * #730 burned the original five app-level copies down to the ONE entry below.
  */
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
-const ALLOWED_LEGACY = new Set([
-  'apps/melhor-envio/.env.example',
-  'apps/mercado-pago/.env.example',
-  'apps/nfe/.env.example',
-  'apps/nfe/functions/.env.example',
-  'apps/whatsapp/.env.example',
-]);
+/**
+ * The only justification for a non-root `.env.example` is a **nested Cloud
+ * Functions codebase**: its target is that codebase's own `.env`, which
+ * firebase loads as the function's DEPLOY-TIME runtime env. The repo-root
+ * `.env.local` never reaches it, so documenting those names in the root file
+ * would point the reader at a file that does nothing for them.
+ *
+ * Nothing else belongs here. A new app var goes into the ROOT `.env.example`,
+ * in an app-titled section.
+ */
+const ALLOWED_NON_ROOT = new Set(['apps/nfe/functions/.env.example']);
 
-// Directories that are generated, vendored, or contain nested repo copies
-// (`.claude` holds git worktrees in the main checkout).
-const SKIP_DIRS = new Set([
-  'node_modules',
-  '.git',
-  '.claude',
-  '.ignore',
-  '.secrets',
-  '.next',
-  '.turbo',
-  'dist',
-  'build',
-  'coverage',
-  'generated',
-]);
+/**
+ * Ask git, rather than walking the filesystem: a walk has to carry a
+ * skip-list, and the local-only directories it must skip are exactly the ones
+ * that produce false positives (`.old/` — the gitignored Flutter reference —
+ * carries its own `next-rewrite` copies of three app-level `.env.example`
+ * files; so do `node_modules`, `.deploy/`, and `.claude/worktrees` checkouts).
+ * `git ls-files` sees only this worktree's tracked files, and the `--others`
+ * pass catches a NEW file before it is committed (`.gitignore` un-ignores
+ * `.env.example`, so a new one is never invisible here).
+ *
+ * Semantics are the INDEX, not the disk: deleting a file without staging it
+ * still reads as present. That is the intended scope — the convention is about
+ * what the repo ships — and it matches what CI sees, since CI checks out a
+ * commit. Reproduce a deletion with `git rm`, not `mv`.
+ */
+function findEnvExamples() {
+  const ls = (...args) =>
+    execFileSync('git', [...args, '--', '*.env.example'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+    })
+      .split('\n')
+      .filter(Boolean);
 
-function findEnvExamples(dir, out = []) {
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isDirectory()) {
-      if (!SKIP_DIRS.has(entry.name)) findEnvExamples(join(dir, entry.name), out);
-    } else if (entry.name === '.env.example') {
-      out.push(relative(REPO_ROOT, join(dir, entry.name)).split('\\').join('/'));
-    }
-  }
-  return out;
+  return [...new Set([...ls('ls-files'), ...ls('ls-files', '--others', '--exclude-standard')])];
 }
 
 describe('.env.example location convention', () => {
-  it('allows only the repo-root .env.example (plus the #730 legacy allow-list)', () => {
-    const found = findEnvExamples(REPO_ROOT);
-    const offenders = found.filter((p) => p !== '.env.example' && !ALLOWED_LEGACY.has(p));
+  it('allows only the repo-root .env.example (plus the nested-functions carve-out)', () => {
+    const found = findEnvExamples();
+    const offenders = found.filter((p) => p !== '.env.example' && !ALLOWED_NON_ROOT.has(p));
     expect(
       offenders,
       [
@@ -70,13 +72,13 @@ describe('.env.example location convention', () => {
     expect(found).toContain('.env.example');
   });
 
-  it('the legacy allow-list only shrinks (#730): every entry still exists', () => {
+  it('the carve-out list only shrinks: every entry still exists', () => {
     // A consolidated file whose entry lingers here would silently re-allow a
     // future regression at that path — force the entry's removal in the same
     // change that deletes the file.
-    const found = new Set(findEnvExamples(REPO_ROOT));
-    const stale = [...ALLOWED_LEGACY].filter((p) => !found.has(p));
-    expect(stale, `Remove consolidated entries from ALLOWED_LEGACY: ${stale.join(', ')}`).toEqual(
+    const found = new Set(findEnvExamples());
+    const stale = [...ALLOWED_NON_ROOT].filter((p) => !found.has(p));
+    expect(stale, `Remove consolidated entries from ALLOWED_NON_ROOT: ${stale.join(', ')}`).toEqual(
       [],
     );
   });
