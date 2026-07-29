@@ -5,3 +5,10 @@
 # checkout/merge. Scoped to .husky/ on purpose; broader rules (e.g. *.sh)
 # would re-flag unrelated files across existing working trees.
 .husky/** text eol=lf
+
+# Same hazard, same narrow scoping: CI shell scripts run under `bash` on the
+# Linux runner (safe — the index is LF) but are also meant to be runnable
+# locally, which on Windows means the autocrlf smudge hands bash a CRLF file
+# and every line ends in $'\r'. This path is new, so no existing working tree
+# gets re-flagged.
+.github/scripts/*.sh text eol=lf
