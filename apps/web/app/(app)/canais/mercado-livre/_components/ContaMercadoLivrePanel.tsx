@@ -23,6 +23,8 @@ import {
   MercadoLivreClientHttpError,
   MercadoLivreClientNetworkError,
   type MercadoLivreMassImportStatus,
+  type MercadoLivrePriceSyncSkip,
+  type MercadoLivrePriceSyncStatus,
   useMercadoLivreClient,
 } from '@/lib/mercado-livre/client';
 
@@ -154,6 +156,62 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
 
   const massImport = massImportQuery.data;
 
+  // --- Manual price sync ("Atualizar preços", Step 11 PR-D) ---
+  const [priceSyncOpened, setPriceSyncOpened] = useState(false);
+  const [priceSyncBusy, setPriceSyncBusy] = useState(false);
+  const [priceSyncJobId, setPriceSyncJobId] = useState<string | null>(null);
+  const [baixarPreco, setBaixarPreco] = useState(false);
+
+  const priceSyncQuery = useQuery({
+    queryKey: ['ml-price-sync', integracaoId, priceSyncJobId],
+    queryFn: () => {
+      if (!client || !priceSyncJobId) throw new Error('not ready');
+      return client.priceSyncStatus({ integracaoId, jobId: priceSyncJobId });
+    },
+    enabled: Boolean(client) && Boolean(priceSyncJobId),
+    retry: false,
+    refetchInterval: (q) => (q.state.data?.status === 'running' ? 3000 : false),
+  });
+
+  async function handleStartPriceSync() {
+    if (!client) return;
+    setPriceSyncBusy(true);
+    try {
+      const { jobId } = await client.startPriceSync({ integracaoId, baixarPreco });
+      setPriceSyncJobId(jobId);
+      setPriceSyncOpened(false);
+    } catch (err) {
+      if (err instanceof MercadoLivreClientHttpError) {
+        if (err.code === 'ML_PRICE_SYNC_RUNNING') {
+          notifications.show({
+            color: 'yellow',
+            message: 'Já existe um envio de preços em andamento para esta conta.',
+          });
+        } else if (err.code === 'SEM_TABELA_NORMAL') {
+          notifications.show({
+            color: 'red',
+            message: 'Configure a tabela de preços normal da conta antes de enviar.',
+          });
+        } else {
+          notifications.show({ color: 'red', message: err.message });
+        }
+        return;
+      }
+      if (err instanceof MercadoLivreClientNetworkError) {
+        notifications.show({
+          color: 'red',
+          message: 'Falha de rede ao iniciar o envio de preços.',
+        });
+        return;
+      }
+      throw err;
+    } finally {
+      setPriceSyncBusy(false);
+    }
+  }
+
+  const priceSync = priceSyncQuery.data;
+
   return (
     <Card withBorder padding="md">
       <Stack gap="sm">
@@ -195,6 +253,19 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
           >
             Importar todos os anúncios
           </Button>
+          <Button
+            type="button"
+            variant="default"
+            onClick={() => {
+              // Every open re-arms the SAFE default — a stale "permitir baixar
+              // precos" from a previous run must never leak into a new opt-in.
+              setBaixarPreco(false);
+              setPriceSyncOpened(true);
+            }}
+            disabled={!client || !canWrite}
+          >
+            Atualizar preços
+          </Button>
           {!canWrite && (
             <Text size="xs" c="dimmed">
               Requer permissão de escrita em integrações.
@@ -203,6 +274,8 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
         </Group>
 
         {massImportJobId && <MassImportProgress query={massImportQuery} data={massImport} />}
+
+        {priceSyncJobId && <PriceSyncProgress query={priceSyncQuery} data={priceSync} />}
       </Stack>
 
       <Modal
@@ -263,6 +336,37 @@ export function ContaMercadoLivrePanel({ integracaoId }: { integracaoId: string 
           </Button>
         </Stack>
       </Modal>
+
+      <Modal
+        opened={priceSyncOpened}
+        onClose={() => setPriceSyncOpened(false)}
+        title="Atualizar preços"
+        centered
+      >
+        <Stack>
+          <Text size="sm" c="dimmed">
+            Envia o preço da tabela de preços normal de cada produto vinculado ao Mercado Livre
+            desta conta. Preços iguais são pulados; preços menores que o atual no Mercado Livre só
+            são enviados com a opção abaixo.
+          </Text>
+          <Checkbox
+            label="Permitir baixar preços"
+            checked={baixarPreco}
+            onChange={(e) => setBaixarPreco(e.currentTarget.checked)}
+          />
+          <Text size="xs" c="dimmed">
+            Sem esta opção, reduções de preço são puladas com o código PRECO_ANTIGO_MAIOR.
+          </Text>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => setPriceSyncOpened(false)}>
+              Cancelar
+            </Button>
+            <Button onClick={handleStartPriceSync} loading={priceSyncBusy} disabled={!client}>
+              Enviar preços
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
     </Card>
   );
 }
@@ -318,6 +422,113 @@ function MassImportProgress({
       </Stack>
     </Card>
   );
+}
+
+/** Progress/outcome section for the running-or-finished price-sync job. */
+function PriceSyncProgress({
+  query,
+  data,
+}: {
+  query: { isLoading: boolean; error: unknown };
+  data: MercadoLivrePriceSyncStatus | undefined;
+}) {
+  if (query.error != null) {
+    const message =
+      query.error instanceof MercadoLivreClientHttpError
+        ? query.error.message
+        : query.error instanceof MercadoLivreClientNetworkError
+          ? 'Falha de rede ao consultar o envio de preços.'
+          : 'Não foi possível consultar o envio de preços.';
+    return (
+      <Alert color="yellow" variant="light">
+        {message}
+      </Alert>
+    );
+  }
+  if (!data) {
+    return query.isLoading ? <Loader size="sm" /> : null;
+  }
+
+  return (
+    <Card withBorder padding="sm">
+      <Stack gap={4}>
+        <Group justify="space-between">
+          <Text size="sm" fw={500}>
+            Envio de preços
+          </Text>
+          {data.status === 'running' && <Loader size="xs" />}
+        </Group>
+        <Text size="sm">
+          {data.enviados} / {data.planejados} enviados · {data.pulados} pulados · {data.falhas}{' '}
+          falhas
+          {data.pausas > 0 ? ` · ${data.pausas} pausas` : ''}
+        </Text>
+        {data.status === 'completed' && (
+          <Alert color="green" variant="light">
+            Envio de preços concluído: {data.enviados} enviados, {data.pulados} pulados,{' '}
+            {data.falhas} falhas.
+          </Alert>
+        )}
+        {data.status === 'failed' && (
+          <Alert color="red" variant="light">
+            Falha no envio de preços{data.erro ? `: ${data.erro}` : '.'}
+          </Alert>
+        )}
+        <PriceSyncEntryList label="Pulados" entries={data.skips} total={data.pulados} />
+        <PriceSyncEntryList label="Falhas" entries={data.failures} total={data.falhas} />
+      </Stack>
+    </Card>
+  );
+}
+
+/** How many skip/failure sample entries the progress card lists before "+N mais". */
+const PRICE_SYNC_LIST_LIMIT = 8;
+
+/**
+ * Compact dimmed-monospace list of a price-sync job's skip/failure sample.
+ * `total` is the exact counter (`pulados`/`falhas`) — the entries themselves
+ * are a server-capped sample, so the "+N mais" tail counts against it.
+ */
+function PriceSyncEntryList({
+  label,
+  entries,
+  total,
+}: {
+  label: string;
+  entries: Array<MercadoLivrePriceSyncSkip & { error?: string }>;
+  total: number;
+}) {
+  if (entries.length === 0) return null;
+  const shown = entries.slice(0, PRICE_SYNC_LIST_LIMIT);
+  const rest = total - shown.length;
+  return (
+    <Stack gap={0}>
+      <Text size="xs" c="dimmed" fw={500}>
+        {label}
+      </Text>
+      {shown.map((entry, i) => (
+        <Text key={`${entry.itemId ?? entry.produtoId}-${i}`} size="xs" c="dimmed" ff="monospace">
+          {entry.itemId ?? entry.produtoId} · {entry.code}
+          {entry.error ? ` · ${errorSnippet(entry.error)}` : ''}
+        </Text>
+      ))}
+      {rest > 0 && (
+        <Text size="xs" c="dimmed">
+          +{rest} mais
+        </Text>
+      )}
+    </Stack>
+  );
+}
+
+/**
+ * Keep a failure's error text a one-line snippet in the compact list —
+ * whitespace (incl. newlines from stack-trace-shaped backend errors) collapses
+ * to single spaces before the length cap.
+ */
+function errorSnippet(error: string): string {
+  const oneLine = error.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
 }
 
 /** Render a conta query error, keeping unknown failures generic. */
