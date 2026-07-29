@@ -246,6 +246,7 @@ describe('parseItemIdFromPricesResource', () => {
   it('returns null for garbage / segment-starved resources', () => {
     expect(parseItemIdFromPricesResource('garbage')).toBeNull();
     expect(parseItemIdFromPricesResource('/prices')).toBeNull(); // no id segment
+    expect(parseItemIdFromPricesResource('/items/prices')).toBeNull(); // collection word is not an id
     expect(parseItemIdFromPricesResource('/')).toBeNull();
     expect(parseItemIdFromPricesResource('')).toBeNull();
   });

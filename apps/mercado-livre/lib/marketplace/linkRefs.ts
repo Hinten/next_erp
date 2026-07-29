@@ -43,7 +43,9 @@ export function parseItemIdFromResource(resource: string): string | null {
  */
 export function parseItemIdFromPricesResource(resource: string): string | null {
   const parts = resource.split('/').filter(Boolean);
-  if (parts.length < 2 || parts[parts.length - 1] !== 'prices') return null;
+  // `/items/{id}/prices` = 3 segments — a 2-segment `/items/prices` has no id
+  // and must not parse its collection word as one.
+  if (parts.length < 3 || parts[parts.length - 1] !== 'prices') return null;
   const id = parts[parts.length - 2];
   return id && id.length > 0 ? id : null;
 }
