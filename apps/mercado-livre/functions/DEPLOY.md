@@ -57,6 +57,7 @@ locally without deploying: `node apps/mercado-livre/functions/build.mjs` (writes
 | `processMercadoLivreMassImport`      | `onTaskDispatched` (Cloud Tasks queue) | Step 8 (#621) — "Importar todos os anúncios": scans the seller's full listing via `scanSellerItems`, drains up to `MASS_IMPORT_ITEMS_PER_DISPATCH` items per dispatch through `importProduto`, and re-enqueues itself onto its OWN queue until the job (`importacoesMercadoLivre/{jobId}`) is exhausted. Single in-flight dispatch (`maxConcurrentDispatches: 1`) since the job doc is the checkpoint. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` from Secret Manager per-function (see `src/options.ts`) for the ML token refresh.                                                                                                          |
 | `sweepMercadoLivreStock`             | `onSchedule('every 15 minutes')`       | Step 10 PR C — the **incremental** stock sweep: per conta it runs THE produtos-first joined discovery from the durable cursor (`estoqueMercadoLivreSync/{integracaoId}`), applies the 30-day activity filter and enqueues one `sendMercadoLivreStock` task per ML call. Bounded pages + tasks per tick; a truncated tick persists `continuacao` (frozen window + keyset) and the NEXT tick resumes it. Skips a conta whose 429 `pausedUntilUs` is still live, and skips ONLY the 02:00 America/Sao_Paulo tick in code (`isSlotDoDaily` — that slot belongs to the daily sweep; 02:15/30/45 run normally). **No-op until `MERCADO_LIVRE_STOCK_SYNC_ENABLED=1`.** |
 | `sweepMercadoLivreStockDaily`        | `onSchedule('0 2 * * *')`              | Step 10 PR C — the **daily** full-reconciliation sweep, 02:00 America/Sao_Paulo: the same discovery over a flat 24h window (`MERCADO_LIVRE_STOCK_DAILY_WINDOW_H`), with no activity filter and no pedidos probe. It owns its slot alone — the incremental wrapper skips exactly the 02:00 tick — so the two never contend for one conta's caps and state doc. Same flag, same no-op while OFF.                                                                                                                                                                                                                                                                  |
+| `processMercadoLivrePriceSync`       | `onTaskDispatched` (Cloud Tasks queue) | Step 11 PR-C — "Atualizar preços": manual bulk price sync for one conta. Pages the conta's linked produtos, prices from the tabela normal, GETs the item before every PUT (skip-if-equal, fresh status gate, decrease guard unless `baixarPreco`), sends **price-only** bodies (`item.price.not_modifiable` maps to a terminal skip), and re-enqueues itself onto its OWN queue until the job (`enviosPrecoMercadoLivre/{jobId}`) is exhausted. Single in-flight dispatch (`maxConcurrentDispatches: 1`) since the job doc is the checkpoint. Binds `MERCADO_LIVRE_CLIENT_ID`/`MERCADO_LIVRE_CLIENT_SECRET` per-function for the ML token refresh.              |
 
 ### Durability & the residual loss window
 
@@ -129,6 +130,48 @@ firebase functions:secrets:set MERCADO_LIVRE_CLIENT_SECRET --project <project-id
 for the `apps/mercado-livre` backend itself — see its `apphosting.yaml` — but
 that binding does NOT reach this separate functions codebase; it must be bound
 here too.)
+
+## Price-sync job queue (Step 11 PR-C)
+
+`processMercadoLivrePriceSync` auto-provisions its own Cloud Tasks queue the
+same way the other queues do — no separate queue-creation step. IAM is covered
+by the existing grants (above): both the `/atualizar-precos` route and the task
+handler's own self-continuation enqueue via `createMlPriceSyncScheduler()`
+(`lib/marketplace/mlPriceSyncTasks.ts`), the same App Hosting runtime SA →
+functions runtime SA path already granted `roles/cloudtasks.enqueuer` /
+`roles/iam.serviceAccountUser` — verify the grants exist, don't re-grant. It
+also reuses the shared `MERCADO_LIVRE_TASKS_DISABLED` /
+`MERCADO_LIVRE_TASKS_REGION` knobs, and binds the same two ML secrets
+per-function (`src/processPriceSync.ts`, mirroring the mass import) — if the
+mass-import secrets are already set for this project, there is nothing new to
+set.
+
+**Deploy order**: deploy this functions codebase (which provisions the queue)
+BEFORE the App Hosting revision that ships the `/atualizar-precos` route. Until
+the function exists, every job start fails at the first enqueue — the route
+stamps the fresh job `failed` and returns 503 `ML_PRICE_SYNC_ENQUEUE_FAILED` —
+so the "Atualizar preços" button would be dead on arrival.
+
+**`item.price.not_modifiable`**: since 2026-03-18 ML blocks API price edits on
+listings with price automation active — a price-only `PUT /items/{id}` body
+gets 400 `item.price.not_modifiable`, and a price bundled with other fields
+gets 200 with the price SILENTLY ignored. The send step therefore always sends
+price-only bodies and maps that 400 to the terminal skip
+`PRECO_NAO_MODIFICAVEL` (no link stamp): those listings count toward
+`pulados`/`skips` and are never retried — turn automation off in the ML seller
+panel to make them syncable again.
+
+### Runtime env (price sync)
+
+The three tunables (`MERCADO_LIVRE_PRECO_PAGE_LIMIT`,
+`MERCADO_LIVRE_PRECO_ITEMS_PER_DISPATCH`, `MERCADO_LIVRE_PRECO_RATE_PAUSE_MIN`)
+are non-secret values read LAZILY from `process.env` by the getters in
+`lib/marketplace/precoPlan.ts` (unset/blank/invalid → the code default). They
+are **function-runtime env** and ride exactly the same mechanism — and the same
+constraints — as the stock knobs: see "Setting (1)" under _Runtime env (stock
+sync, Step 10)_ below. The queue's `rateLimits` (1 concurrent dispatch / 1
+dispatch per second) are fixed in code and baked in at **deploy** time —
+changing them is a code edit + redeploy, not an env var.
 
 ## Runtime env (stock sync, Step 10)
 

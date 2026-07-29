@@ -15,11 +15,13 @@ import {
   runOrderBackfillSweep,
 } from '../../lib/marketplace/orderBackfill';
 import { MERCADO_LIVRE_STOCK_SEND_QUEUE } from '../../lib/marketplace/estoquePlan';
+import { MERCADO_LIVRE_PRICE_SYNC_QUEUE } from '../../lib/marketplace/precoSync';
 import { createMlTaskScheduler } from '../../lib/marketplace/mlTasks';
 import { getDb } from './lib/admin';
 import * as notificationHandlers from './processNotification';
 import * as massImportHandlers from './processMassImport';
 import * as stockSendHandlers from './sendStock';
+import * as priceSyncHandlers from './processPriceSync';
 
 /**
  * Mercado Livre Cloud Functions (gen2), codebase `mercado-livre`. Deployed as a
@@ -32,7 +34,9 @@ import * as stockSendHandlers from './sendStock';
  * flag-gated order-backfill sweep. Step 8 (#621) adds the mass-import job queue
  * (`processMercadoLivreMassImport`, ./processMassImport). Step 10 PR B adds the
  * stock send queue (`sendMercadoLivreStock`, ./sendStock — 1 task = 1 ML call);
- * PR C adds the two flag-gated stock sweeps that feed it (./sweepStock).
+ * PR C adds the two flag-gated stock sweeps that feed it (./sweepStock). Step 11
+ * PR-C adds the manual bulk price-sync job queue (`processMercadoLivrePriceSync`,
+ * ./processPriceSync).
  */
 
 // Rename-safety: the DEPLOYED function name is the export KEY of the handler
@@ -80,6 +84,20 @@ if (!(MERCADO_LIVRE_STOCK_SEND_QUEUE in stockSendHandlers)) {
 
 /** The queue-based stock send processor (Step 10 PR B — 1 task = 1 ML call). */
 export { sendMercadoLivreStock } from './sendStock';
+
+// Same rename-safety assertion for the Step 11 price-sync queue: the
+// `/atualizar-precos` route and the handler's own self-continuation / 429-pause
+// re-enqueue (`mlPriceSyncTasks.ts`) target `MERCADO_LIVRE_PRICE_SYNC_QUEUE`.
+if (!(MERCADO_LIVRE_PRICE_SYNC_QUEUE in priceSyncHandlers)) {
+  throw new Error(
+    `[mercado-livre] function-name drift: functions/src/processPriceSync.ts must export a ` +
+      `handler named '${MERCADO_LIVRE_PRICE_SYNC_QUEUE}' (the enqueue target). ` +
+      `Rename the export and the MERCADO_LIVRE_PRICE_SYNC_QUEUE constant together.`,
+  );
+}
+
+/** The queue-based manual bulk price-sync job processor (Step 11 PR-C). */
+export { processMercadoLivrePriceSync } from './processPriceSync';
 
 /**
  * The flag-gated stock sweeps (Step 10 PR C): the 15-minute incremental sweep

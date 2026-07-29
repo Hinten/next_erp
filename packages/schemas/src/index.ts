@@ -287,6 +287,22 @@ export {
 } from './estoqueMercadoLivreSync';
 
 export {
+  // Admin-only / default-deny (NOT in ALL_DOMAINS) — the manual "Atualizar
+  // preços" bulk price-push job/checkpoint doc (Step 11 PR-C), mirrors
+  // importacaoMercadoLivre above.
+  envioPrecoMercadoLivreStatusSchema,
+  envioPrecoFilaItemSchema,
+  envioPrecoSkipSchema,
+  envioPrecoFailureSchema,
+  envioPrecoMercadoLivreSchema,
+  type EnvioPrecoMercadoLivreStatus,
+  type EnvioPrecoFilaItem,
+  type EnvioPrecoSkip,
+  type EnvioPrecoFailure,
+  type EnvioPrecoMercadoLivre,
+} from './envioPrecoMercadoLivre';
+
+export {
   // Admin-only / default-deny (NOT in ALL_DOMAINS) — the persisted round-robin
   // cursor for the unreferenced-arquivo sweep (#234). Bare schema+meta
   // (perms 0n), not a DomainSchema — see the NOTE at the bottom of
