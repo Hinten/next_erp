@@ -21,9 +21,10 @@ type Props = FieldRenderProps & {
 };
 
 /**
- * Parent-category picker bound to `categoriaPaiOuterRef`. Loads the parent's
- * materialized breadcrumb on every selection so `deriveOnSave` can build
- * `nomeCompleto` without async work.
+ * Parent-category picker bound to `categoriaPaiOuterRef`. On pick, the
+ * breadcrumb is set synchronously from the option meta (hint=`nomeCompleto`,
+ * else label=`nome`) so a fast save cannot race a follow-up getDoc. On edit
+ * load, a useEffect revalidates the breadcrumb from the server.
  */
 export function CategoriaParentField({
   value,
@@ -39,7 +40,9 @@ export function CategoriaParentField({
 }: Props) {
   const db = getFirebaseFirestore();
 
-  // When the form loads an existing parent (edit), resolve the breadcrumb once.
+  // When the form loads an existing parent (edit), resolve the breadcrumb.
+  // On pick the sync path already set a breadcrumb — this revalidates it and
+  // must not wipe it on transient Firebase errors.
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -58,10 +61,11 @@ export function CategoriaParentField({
           categoriaCollection.docRef(db, {}, id) as DocumentReference,
         );
         if (cancelled) return;
-        onParentBreadcrumbChange(parentBreadcrumbFromDoc(snap.exists() ? snap.data() : null));
+        if (!snap.exists()) return;
+        onParentBreadcrumbChange(parentBreadcrumbFromDoc(snap.data()));
       } catch (err) {
         if (err instanceof FirebaseError) {
-          if (!cancelled) onParentBreadcrumbChange(null);
+          // Keep any sync-resolved breadcrumb from the picker.
           return;
         }
         throw err;
@@ -87,34 +91,21 @@ export function CategoriaParentField({
       value={value}
       excludeIds={excludeIds}
       onBlur={onBlur}
-      onChange={(next) => {
-        void (async () => {
-          if (next == null || next === '') {
-            onParentBreadcrumbChange(null);
-            onChange(null);
-            return;
-          }
-          const raw = typeof next === 'string' ? next : String(next);
-          const id = idFromRef(raw);
-          if (!id) {
-            onParentBreadcrumbChange(null);
-            onChange(next);
-            return;
-          }
-          try {
-            const snap = await getDocFromServer(
-              categoriaCollection.docRef(db, {}, id) as DocumentReference,
-            );
-            onParentBreadcrumbChange(parentBreadcrumbFromDoc(snap.exists() ? snap.data() : null));
-          } catch (err) {
-            if (err instanceof FirebaseError) {
-              onParentBreadcrumbChange(null);
-            } else {
-              throw err;
-            }
-          }
-          onChange(next);
-        })();
+      onChange={(next, meta) => {
+        if (next == null || next === '') {
+          onParentBreadcrumbChange(null);
+          onChange(null);
+          return;
+        }
+        // Sync path: set breadcrumb from the option's hint (nomeCompleto) or
+        // label (nome) BEFORE the form value commits, so a fast save cannot
+        // race an async getDoc and write nomeCompleto as if the category were
+        // a root. The useEffect above still revalidates from server on edit.
+        if (meta) {
+          const bc = meta.hint?.trim() || meta.label?.trim() || null;
+          onParentBreadcrumbChange(bc);
+        }
+        onChange(next);
       }}
     />
   );

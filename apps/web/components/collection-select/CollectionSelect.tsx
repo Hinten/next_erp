@@ -36,8 +36,13 @@ export interface CollectionSelectProps<S extends ZodObject<ZodRawShape>> {
   fieldName: string;
   /** Current form value — DocumentReference, `{path}` object, doc-path/id string, or null. */
   value: unknown;
-  /** Emits a `documents/<col>/<id>` doc-path string, or null when cleared. */
-  onChange: (next: unknown) => void;
+  /**
+   * Emits a `documents/<col>/<id>` doc-path string, or null when cleared.
+   * On pick, optional `meta` carries the option label and `optionHintField`
+   * value so callers can resolve side-data (e.g. parent breadcrumb) without
+   * racing a follow-up `getDoc` before save.
+   */
+  onChange: (next: unknown, meta?: { label: string; hint?: string }) => void;
   onBlur?: () => void;
   label: string;
   hint?: string;
@@ -287,10 +292,15 @@ export function CollectionSelect<S extends ZodObject<ZodRawShape>>({
         return;
       }
       const picked = resultItems.find((o) => o.value === id) ?? recents.find((r) => r.id === id);
-      record(id, picked?.label ?? id);
-      onChange(`documents/${collection.resolvePath({})}/${id}`);
+      const label = picked?.label ?? id;
+      record(id, label);
+      const hint = optionHints?.[id];
+      onChange(`documents/${collection.resolvePath({})}/${id}`, {
+        label,
+        ...(hint !== undefined ? { hint } : {}),
+      });
     },
-    [onChange, resultItems, recents, record, collection],
+    [onChange, resultItems, recents, record, collection, optionHints],
   );
 
   // Locked: the value renders as a removable chip inside a field-shaped
