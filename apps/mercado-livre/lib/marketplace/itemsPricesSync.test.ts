@@ -87,7 +87,30 @@ class FakeDb {
           // Admin `update()` rejects NOT_FOUND on a missing doc (never creates it).
           if (!col.has(id)) throw Object.assign(new Error('NOT_FOUND'), { code: 5 });
           self.updates.push({ path: `${path}/${id}`, patch });
-          col.set(id, { ...(col.get(id) ?? {}), ...patch });
+          // Expand dotted field paths like the real SDK (`precos.<id>` mutates the
+          // nested map entry) so redelivery tests read the post-write state; a
+          // FieldValue sentinel (only `delete()` is used here) removes the leaf.
+          const doc = { ...(col.get(id) ?? {}) };
+          for (const [key, value] of Object.entries(patch)) {
+            const segs = key.split('.');
+            if (segs.length === 1) {
+              doc[key] = value;
+              continue;
+            }
+            let cur: DocData = doc;
+            for (const seg of segs.slice(0, -1)) {
+              const next = cur[seg];
+              cur[seg] =
+                next != null && typeof next === 'object' && !Array.isArray(next)
+                  ? { ...(next as DocData) }
+                  : {};
+              cur = cur[seg] as DocData;
+            }
+            const leaf = segs[segs.length - 1]!;
+            if (value instanceof FieldValue) delete cur[leaf];
+            else cur[leaf] = value;
+          }
+          col.set(id, doc);
         },
       }),
     };

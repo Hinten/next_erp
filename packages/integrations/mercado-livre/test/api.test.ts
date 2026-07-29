@@ -145,12 +145,14 @@ describe('createMercadoLivreApi — item prices (items_prices topic, Step 11)', 
     const api = createMercadoLivreApi(cfg(fetchMock));
     const prices = await api.getPrices('MLB123');
     expect(prices.id).toBe('MLB123');
-    expect(prices.prices).toHaveLength(2);
-    expect(prices.prices[0]!.type).toBe('standard');
-    expect(prices.prices[1]!.type).toBe('promotion');
-    expect(prices.prices[1]!.regular_amount).toBe(79.9);
-    expect(prices.prices[1]!.conditions?.context_restrictions).toEqual(['channel_marketplace']);
-    expect(prices.prices[1]!.conditions?.end_time).toBe('2026-07-31T23:59:59Z');
+    // `prices` is null-tolerant on the wire; narrow once for the assertions.
+    const entries = prices.prices ?? [];
+    expect(entries).toHaveLength(2);
+    expect(entries[0]!.type).toBe('standard');
+    expect(entries[1]!.type).toBe('promotion');
+    expect(entries[1]!.regular_amount).toBe(79.9);
+    expect(entries[1]!.conditions?.context_restrictions).toEqual(['channel_marketplace']);
+    expect(entries[1]!.conditions?.end_time).toBe('2026-07-31T23:59:59Z');
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe('https://api.mercadolibre.com/items/MLB123/prices');
     expect((init!.headers as Record<string, string>).Authorization).toBe('Bearer live-token');
