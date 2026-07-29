@@ -41,7 +41,9 @@ export default function ContaMercadoLivrePage() {
         </Group>
       </Group>
 
-      <ContaMercadoLivrePanel integracaoId={params.id} />
+      {/* key: a param-only A->B navigation must remount the panel — its job-card
+          state (massImportJobId / priceSyncJobId) is per-conta. */}
+      <ContaMercadoLivrePanel key={params.id} integracaoId={params.id} />
 
       <ObjectView
         schema={integracaoSchema}

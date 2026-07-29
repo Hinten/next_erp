@@ -100,6 +100,37 @@ export interface MercadoLivreMassImportStatus {
   erro: string | null;
 }
 
+/** One contained per-item skip on a price-sync job (`itemId` is null for plan-time skips). */
+export interface MercadoLivrePriceSyncSkip {
+  itemId: string | null;
+  produtoId: string;
+  code: string;
+}
+
+/** One per-item failure recorded on a price-sync job — a skip plus its error (capped server-side). */
+export interface MercadoLivrePriceSyncFailure extends MercadoLivrePriceSyncSkip {
+  error: string;
+}
+
+/** Progress snapshot of a price-sync job (`GET atualizar-precos/status`). */
+export interface MercadoLivrePriceSyncStatus {
+  status: 'running' | 'completed' | 'failed';
+  baixarPreco: boolean;
+  planejados: number;
+  enviados: number;
+  pulados: number;
+  falhas: number;
+  pausas: number;
+  /** The first skips, for display — capped server-side; `pulados` stays exact. */
+  skips: MercadoLivrePriceSyncSkip[];
+  /** The first failures, for display — capped server-side; `falhas` stays exact. */
+  failures: MercadoLivrePriceSyncFailure[];
+  startedAt: number;
+  updatedAt: number;
+  finishedAt: number | null;
+  erro: string | null;
+}
+
 /** One chart-enabled ML domain (`GET size-charts/domains`). */
 export interface MercadoLivreChartDomain {
   domain_id: string;
@@ -175,6 +206,25 @@ export interface MercadoLivreClient {
     integracaoId: string;
     jobId: string;
   }): Promise<MercadoLivreMassImportStatus>;
+  /**
+   * Kick off the manual bulk price sync ("Atualizar preços") for the account
+   * (PERM.integracao.write) — pushes each linked produto's tabela-normal price
+   * to its ML listings, checkpointed server-side. Poll progress with
+   * `priceSyncStatus`. A second call while one is already running comes back
+   * as a 409 `MercadoLivreClientHttpError` with `code: 'ML_PRICE_SYNC_RUNNING'`;
+   * a conta without a tabela normal as a 400 with `code: 'SEM_TABELA_NORMAL'`;
+   * an unreachable queue as a 503 with `code: 'ML_PRICE_SYNC_ENQUEUE_FAILED'`.
+   */
+  startPriceSync(input: {
+    integracaoId: string;
+    /** Default false — price DECREASES are skipped (`PRECO_ANTIGO_MAIOR`) unless opted in. */
+    baixarPreco?: boolean;
+  }): Promise<{ jobId: string }>;
+  /** Poll a price-sync job's progress (PERM.integracao.read). 404s on an unknown/foreign jobId. */
+  priceSyncStatus(input: {
+    integracaoId: string;
+    jobId: string;
+  }): Promise<MercadoLivrePriceSyncStatus>;
   /** Chart-enabled ML domains for the chart-editor picker (PERM.integracao.read). */
   sizeChartDomains(integracaoId: string): Promise<{ domains: MercadoLivreChartDomain[] }>;
   /**
@@ -272,6 +322,15 @@ export function createMercadoLivreClient(config: {
     massImportStatus: (input) =>
       call<MercadoLivreMassImportStatus>(
         `/api/marketplace/mercado-livre/importar-todos/status?integracaoId=${encodeURIComponent(input.integracaoId)}&jobId=${encodeURIComponent(input.jobId)}`,
+      ),
+    startPriceSync: (input) =>
+      call<{ jobId: string }>('/api/marketplace/mercado-livre/atualizar-precos', {
+        integracaoId: input.integracaoId,
+        baixarPreco: input.baixarPreco,
+      }),
+    priceSyncStatus: (input) =>
+      call<MercadoLivrePriceSyncStatus>(
+        `/api/marketplace/mercado-livre/atualizar-precos/status?integracaoId=${encodeURIComponent(input.integracaoId)}&jobId=${encodeURIComponent(input.jobId)}`,
       ),
     sizeChartDomains: (integracaoId) =>
       call<{ domains: MercadoLivreChartDomain[] }>(
