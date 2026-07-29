@@ -12,8 +12,7 @@ export { onProdutoMediaChanged } from './arquivos/onProdutoMediaChanged';
 export { onTabMediMediaChanged } from './arquivos/onTabMediMediaChanged';
 export { reconcileArquivoOrphans } from './arquivos/arquivoOrphanSweep';
 export { onProdutoDeleted } from './produtos/onProdutoDeleted';
-// Deployed-function identity kept; clean rename is a filed follow-up.
-export { onProdutoChanged as onProdutoPrecoCustoChanged } from './produtos/onProdutoChanged';
+export { onProdutoChanged } from './produtos/onProdutoChanged';
 export { onProdutoExtraDataChanged } from './produtos/onProdutoExtraDataChanged';
 export { onProdutoImpostoChanged } from './produtos/onProdutoImpostoChanged';
 export { onEstoqueDeleted } from './estoques/onEstoqueDeleted';
