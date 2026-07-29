@@ -21,9 +21,13 @@ import { e2eUserEmail } from './_helpers/run-id';
  *    (`globalSetup` created it). A leak here is also caught next run by
  *    `sweepStaleE2EUsers`.
  *
- * None of this runs when the job is **cancelled** — that is what the
- * start-of-run sweep in `_setup/combined.ts` exists for (#712). Teardown is the
- * fast path, not the guarantee.
+ * Playwright does not run `globalTeardown` when the job is **cancelled**, and
+ * every e2e workflow sets `cancel-in-progress: true`, so this used to be skipped
+ * on exactly the runs that leak most. Two things now cover that: the
+ * `if: always()` step in `e2e-reusable.yml` invokes this module directly (see
+ * the bottom of the file), and the start-of-run sweep in `_setup/combined.ts`
+ * reclaims whatever still got through (#712). Teardown is the fast path, not
+ * the guarantee.
  *
  * Skip rule mirrors `requiresAuthEnv()` — when the Admin SDK env is
  * missing, globalSetup exits early, so there's nothing to tear down.
@@ -64,4 +68,28 @@ export default async function globalTeardown() {
       `[globalTeardown] deleting the ephemeral e2e user failed (continuing): ${String(err)}`,
     );
   }
+}
+
+/**
+ * Direct invocation, so an `if: always()` CI step can run teardown after a
+ * cancelled job — the case Playwright's own `globalTeardown` never reaches.
+ * Mirrors the same block in `_helpers/stale-sweep.ts`.
+ *
+ * Always exits 0: this runs when the suite has already failed or been killed,
+ * and a janitor must never be the thing that reds a job.
+ */
+const isDirectInvocation =
+  import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith('global-teardown.ts') ||
+  process.argv[1]?.endsWith('global-teardown.js');
+
+if (isDirectInvocation) {
+  // Awaited, not floating: the CI step's whole job is to finish sweeping before
+  // the runner tears the container down. A floating promise only survives
+  // because pending gRPC sockets happen to keep the event loop alive — relying
+  // on that to not orphan fixtures is exactly the bet this step exists to stop
+  // making. `module: ESNext` + `target: ES2022`, so top-level await is fine.
+  await globalTeardown().catch((err: unknown) => {
+    console.warn(`[globalTeardown] failed: ${String(err)}`);
+  });
 }

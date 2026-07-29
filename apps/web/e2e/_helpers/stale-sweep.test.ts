@@ -2,12 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  E2E_FIXTURE_TARGETS,
-  PARENTS_WITH_SUBCOLLECTIONS,
-  prefixEnd,
-  sweepOrphanedE2EFixtures,
-} from './stale-sweep';
+import { E2E_FIXTURE_TARGETS, prefixEnd, sweepOrphanedE2EFixtures } from './stale-sweep';
 
 /**
  * Drift backstop for the orphan sweep (#712).
@@ -136,20 +131,15 @@ describe('E2E_FIXTURE_TARGETS', () => {
   });
 });
 
-describe('PARENTS_WITH_SUBCOLLECTIONS', () => {
-  it('covers every parent the suite seeds subcollections under', () => {
-    // Derived from `ALL_DOMAINS`, so a registry refactor could silently demote
-    // one of these to a plain batch delete — which would leave its children
-    // stranded under a deleted parent, unreachable from any root query (#257).
-    for (const parent of ['pedidos', 'produtos', 'clientes', 'chat', 'operacao', 'filiais']) {
-      expect(PARENTS_WITH_SUBCOLLECTIONS.has(parent), `${parent} must delete recursively`).toBe(
-        true,
-      );
-    }
-  });
-});
-
-/** Every write the sweep attempts, so a "dry" run can be shown to make none. */
+/**
+ * Every write the sweep attempts, so a "dry" run can be shown to make none.
+ *
+ * `recursiveDeletes` is still recorded even though nothing should ever land in
+ * it — that is the point. It is the tripwire for #728/#729: `recursiveDelete`
+ * issues a kindless all-descendants query that Firestore Enterprise cannot
+ * index, and reintroducing it here would silently cost ~5,123 read units per
+ * swept produto, four times per push, with no runtime signal whatsoever.
+ */
 interface Writes {
   batchDeletes: string[];
   commits: number;
@@ -162,27 +152,59 @@ interface Writes {
  * collection and records every mutating call. `previousRunId` is what the
  * concurrency-group marker reports, which is what drives Pass A.
  */
-function fakeDb(writes: Writes, docs: Record<string, string[]>, previousRunId: string) {
+function fakeDb(
+  writes: Writes,
+  docs: Record<string, string[]>,
+  previousRunId: string,
+  /** Subcollections a swept doc owns, keyed by doc path. Drives `listCollections()`. */
+  subcollections: Record<string, Record<string, readonly string[]>> = {},
+) {
   const oneDayAgo = () => Date.now() - 24 * 60 * 60 * 1000;
-  const snapshotFor = (name: string) => {
-    const ids = docs[name] ?? [];
+
+  // A swept doc is reached twice: once as a candidate (from the root query) and
+  // once by the subtree walk, which calls `listCollections()` on its ref. Both
+  // paths must hand back the same shape.
+  const docRef = (path: string) => ({
+    path,
+    parent: { id: path.slice(0, path.lastIndexOf('/')) },
+    listCollections: () =>
+      Promise.resolve(
+        Object.keys(subcollections[path] ?? {}).map((child) => collectionRef(`${path}/${child}`)),
+      ),
+  });
+
+  const idsAt = (path: string) => {
+    if (!path.includes('/')) return docs[path] ?? [];
+    const parent = path.slice(0, path.lastIndexOf('/'));
+    const child = path.slice(path.lastIndexOf('/') + 1);
+    return subcollections[parent]?.[child] ?? [];
+  };
+
+  const snapshotFor = (path: string) => {
+    const ids = idsAt(path);
     return {
+      empty: ids.length === 0,
       size: ids.length,
       docs: ids.map((id) => ({
-        ref: { path: `${name}/${id}`, parent: { id: name } },
+        id,
+        ref: docRef(`${path}/${id}`),
         createTime: { toMillis: oneDayAgo },
       })),
     };
   };
-  const query = (name: string) => {
+
+  const query = (path: string) => {
     const q: Record<string, unknown> = {
       where: () => q,
       limit: () => q,
       startAfter: () => q,
-      get: () => Promise.resolve(snapshotFor(name)),
+      select: () => q,
+      get: () => Promise.resolve(snapshotFor(path)),
     };
     return q;
   };
+
+  const collectionRef = (path: string) => ({ path, ...query(path) });
 
   return {
     collection: (name: string) => ({
@@ -202,7 +224,16 @@ function fakeDb(writes: Writes, docs: Record<string, string[]>, previousRunId: s
         return Promise.resolve();
       },
     }),
-    bulkWriter: () => ({ close: () => Promise.resolve() }),
+    bulkWriter: () => ({
+      delete: (ref: { path: string }) => {
+        writes.batchDeletes.push(ref.path);
+        return Promise.resolve();
+      },
+      close: () => {
+        writes.commits += 1;
+        return Promise.resolve();
+      },
+    }),
     recursiveDelete: (ref: { path: string }) => {
       writes.recursiveDeletes.push(ref.path);
       return Promise.resolve();
@@ -222,9 +253,12 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
     sets: [],
   });
 
-  // `depositos` is a leaf (batch delete), `pedidos` owns subcollections
-  // (recursiveDelete) — both delete paths have to stay quiet under `dryRun`.
+  // `depositos` carries no subcollections, `pedidos` does — both have to stay
+  // quiet under `dryRun`, and both go through the same subtree walk now.
   const staleDocs = { depositos: ['e2e-111-dep-001'], pedidos: ['e2e-111-ped-001'] };
+  const staleSubcollections = {
+    'pedidos/e2e-111-ped-001': { itens: ['it-1'], historicoEstadoPedido: ['h-1'] },
+  };
 
   function stubCiEnv() {
     vi.stubEnv('GITHUB_WORKFLOW', 'e2e-vendas');
@@ -236,7 +270,10 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
     stubCiEnv();
     const writes = noWrites();
 
-    const report = await sweepOrphanedE2EFixtures(true, fakeDb(writes, staleDocs, '111') as never);
+    const report = await sweepOrphanedE2EFixtures(
+      true,
+      fakeDb(writes, staleDocs, '111', staleSubcollections) as never,
+    );
 
     // It must still find and report the candidates…
     expect(report.deleted).toBeGreaterThan(0);
@@ -250,11 +287,66 @@ describe('sweepOrphanedE2EFixtures dry run', () => {
     stubCiEnv();
     const writes = noWrites();
 
-    await sweepOrphanedE2EFixtures(false, fakeDb(writes, staleDocs, '111') as never);
+    await sweepOrphanedE2EFixtures(
+      false,
+      fakeDb(writes, staleDocs, '111', staleSubcollections) as never,
+    );
 
     expect(writes.batchDeletes).toContain('depositos/e2e-111-dep-001');
-    expect(writes.recursiveDeletes).toContain('pedidos/e2e-111-ped-001');
+    expect(writes.batchDeletes).toContain('pedidos/e2e-111-ped-001');
     expect(writes.sets).toContain('e2e_runMarkers/e2e-vendas__refs_pull_715_merge');
+  });
+
+  it('reclaims the subcollections under a swept fixture, not just the parent doc', async () => {
+    // Firestore never cascades. A parent-only delete strands these under a
+    // deleted doc where no root query can ever reach them again (#257) — which
+    // is exactly what happened to `metodo_pgto/{id}/credenciais` for as long as
+    // the sweep asked `ALL_DOMAINS` which parents had children.
+    stubCiEnv();
+    const writes = noWrites();
+
+    await sweepOrphanedE2EFixtures(
+      false,
+      fakeDb(writes, staleDocs, '111', staleSubcollections) as never,
+    );
+
+    expect(writes.batchDeletes).toContain('pedidos/e2e-111-ped-001/itens/it-1');
+    expect(writes.batchDeletes).toContain('pedidos/e2e-111-ped-001/historicoEstadoPedido/h-1');
+  });
+
+  it('reports candidates the wall-clock budget left behind instead of silently dropping them', async () => {
+    // `deleted: 12, remaining: 0` reads as "nothing left" when there may be
+    // hundreds — the same silent-truncation trap the per-collection cap already
+    // guards against. A deadline already in the past cuts the delete phase off
+    // before its first document.
+    stubCiEnv();
+    const writes = noWrites();
+
+    const report = await sweepOrphanedE2EFixtures(
+      false,
+      fakeDb(writes, staleDocs, '111', staleSubcollections) as never,
+      Date.now() - 1,
+    );
+
+    expect(report.deleted).toBe(0);
+    expect(report.remaining).toBeGreaterThan(0);
+    expect(writes.batchDeletes).toEqual([]);
+  });
+
+  it('NEVER calls recursiveDelete — it is unindexable on Enterprise (#728/#729)', async () => {
+    // The regression guard. `db.recursiveDelete` issues a kindless
+    // all-descendants query: no index can serve it, nothing throws, and the only
+    // symptom is ~5,123 read units per swept produto on the invoice. It is a
+    // one-word change away at all times, so the fake keeps recording it.
+    stubCiEnv();
+    const writes = noWrites();
+
+    await sweepOrphanedE2EFixtures(
+      false,
+      fakeDb(writes, staleDocs, '111', staleSubcollections) as never,
+    );
+
+    expect(writes.recursiveDeletes).toEqual([]);
   });
 });
 

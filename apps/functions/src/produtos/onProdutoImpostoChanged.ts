@@ -17,7 +17,7 @@ import {
  * emulator suite.
  *
  * `requireParentExists: true` guards the same cascade race as extraData: a
- * produto delete's `recursiveDelete` (`onProdutoDeleted`) sweeps this
+ * produto delete's subtree walk (`onProdutoDeleted`) sweeps this
  * subcollection too, so a delete-of-imposto write racing that cascade must
  * not record (and therefore orphan) an entry under an already-gone produto.
  *

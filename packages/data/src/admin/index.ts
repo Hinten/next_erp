@@ -6,6 +6,12 @@ export {
 } from './defineAdminCollection';
 
 export {
+  deleteDocumentSubtree,
+  type DeleteSubtreeOptions,
+  type DeleteSubtreeReport,
+} from './deleteSubtree';
+
+export {
   reconcilePedidoEstado,
   reconcilePedidoFromPagamento,
   PedidoReconcileNotFoundError,
