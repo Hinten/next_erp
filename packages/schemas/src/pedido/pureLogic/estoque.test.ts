@@ -5,6 +5,8 @@ import {
   estadoFreteSchema,
 } from '../../shared/frete';
 import { estadoPedidoSchema } from '../collection/pedido';
+import { ESTADO_PEDIDO } from '../collection/pedido';
+import { ESTADO_FRETE } from '../../shared/frete';
 import {
   EFEITO_ESTOQUE_NENHUM,
   ESTADOS_PEDIDO_MOVIMENTACAO,
@@ -16,7 +18,7 @@ import {
 /** Standard sale operação: moves physical stock AND tracks reservations. */
 function saidaCompleta(overrides: Partial<EfeitoEstoqueInput> = {}): EfeitoEstoqueInput {
   return {
-    estado: 'iniciado',
+    estado: ESTADO_PEDIDO.iniciado,
     estadoFrete: null,
     ehSaida: true,
     movimentaEstoque: true,
@@ -79,10 +81,10 @@ describe('state sets (legacy parity)', () => {
 
 describe('efeitoEstoquePedido — saída with reservation (standard sale)', () => {
   it('does nothing before checkout', () => {
-    expect(efeitoEstoquePedido(saidaCompleta({ estado: 'iniciado' }))).toEqual(
+    expect(efeitoEstoquePedido(saidaCompleta({ estado: ESTADO_PEDIDO.iniciado }))).toEqual(
       EFEITO_ESTOQUE_NENHUM,
     );
-    expect(efeitoEstoquePedido(saidaCompleta({ estado: 'carrinho' }))).toEqual(
+    expect(efeitoEstoquePedido(saidaCompleta({ estado: ESTADO_PEDIDO.carrinho }))).toEqual(
       EFEITO_ESTOQUE_NENHUM,
     );
   });
@@ -99,14 +101,19 @@ describe('efeitoEstoquePedido — saída with reservation (standard sale)', () =
 
   it('does NOT remove early when freight is assigned during checkout (legacy quirk fixed)', () => {
     const efeito = efeitoEstoquePedido(
-      saidaCompleta({ estado: 'escolhendoFormaDePagamento', estadoFrete: 'iniciado' }),
+      saidaCompleta({
+        estado: ESTADO_PEDIDO.escolhendoFormaDePagamento,
+        estadoFrete: ESTADO_FRETE.iniciado,
+      }),
     );
     expect(efeito).toEqual({ reservar: true, remover: false, adicionar: false });
   });
 
   it('converts the reservation into a removal when the frete ships', () => {
     for (const estadoFrete of ['empacotado', 'postado', 'entregue'] as const) {
-      expect(efeitoEstoquePedido(saidaCompleta({ estado: 'pago', estadoFrete }))).toEqual({
+      expect(
+        efeitoEstoquePedido(saidaCompleta({ estado: ESTADO_PEDIDO.pago, estadoFrete })),
+      ).toEqual({
         reservar: false,
         remover: true,
         adicionar: false,
@@ -116,7 +123,9 @@ describe('efeitoEstoquePedido — saída with reservation (standard sale)', () =
 
   it('ignores unknown/errored frete estados as removal triggers', () => {
     for (const estadoFrete of ['desconhecido', 'error'] as const) {
-      expect(efeitoEstoquePedido(saidaCompleta({ estado: 'pago', estadoFrete }))).toEqual({
+      expect(
+        efeitoEstoquePedido(saidaCompleta({ estado: ESTADO_PEDIDO.pago, estadoFrete })),
+      ).toEqual({
         reservar: true,
         remover: false,
         adicionar: false,
@@ -125,7 +134,7 @@ describe('efeitoEstoquePedido — saída with reservation (standard sale)', () =
   });
 
   it('removes at finalizado even with no freight (and straight from any state — legacy hole fixed)', () => {
-    expect(efeitoEstoquePedido(saidaCompleta({ estado: 'finalizado' }))).toEqual({
+    expect(efeitoEstoquePedido(saidaCompleta({ estado: ESTADO_PEDIDO.finalizado }))).toEqual({
       reservar: false,
       remover: true,
       adicionar: false,
@@ -162,16 +171,16 @@ describe('efeitoEstoquePedido — saída with reservation (standard sale)', () =
     ] as const) {
       expect(
         efeitoEstoquePedido(
-          saidaCompleta({ estado, estadoFrete: 'entregue', jaMovimentado: true }),
+          saidaCompleta({ estado, estadoFrete: ESTADO_FRETE.entregue, jaMovimentado: true }),
         ),
       ).toEqual(EFEITO_ESTOQUE_NENHUM);
     }
   });
 
   it('releases the reservation while processing a cancellation (not yet removed)', () => {
-    expect(efeitoEstoquePedido(saidaCompleta({ estado: 'processandoCancelamento' }))).toEqual(
-      EFEITO_ESTOQUE_NENHUM,
-    );
+    expect(
+      efeitoEstoquePedido(saidaCompleta({ estado: ESTADO_PEDIDO.processandoCancelamento })),
+    ).toEqual(EFEITO_ESTOQUE_NENHUM);
   });
 });
 
@@ -189,11 +198,13 @@ describe('efeitoEstoquePedido — reservation-less saída (movimentaIndisponivel
   });
 
   it('never starts at carrinho, reverts on cancellation', () => {
-    expect(efeitoEstoquePedido(saidaCompleta({ ...base, estado: 'carrinho' }))).toEqual(
+    expect(efeitoEstoquePedido(saidaCompleta({ ...base, estado: ESTADO_PEDIDO.carrinho }))).toEqual(
       EFEITO_ESTOQUE_NENHUM,
     );
     expect(
-      efeitoEstoquePedido(saidaCompleta({ ...base, estado: 'cancelado', jaMovimentado: true })),
+      efeitoEstoquePedido(
+        saidaCompleta({ ...base, estado: ESTADO_PEDIDO.cancelado, jaMovimentado: true }),
+      ),
     ).toEqual(EFEITO_ESTOQUE_NENHUM);
   });
 });
@@ -202,20 +213,22 @@ describe('efeitoEstoquePedido — reserve-only operação (movimentaEstoque=fals
   const base = { movimentaEstoque: false };
 
   it('reserves during the reserva phase and never removes', () => {
-    expect(efeitoEstoquePedido(saidaCompleta({ ...base, estado: 'pago' }))).toEqual({
+    expect(efeitoEstoquePedido(saidaCompleta({ ...base, estado: ESTADO_PEDIDO.pago }))).toEqual({
       reservar: true,
       remover: false,
       adicionar: false,
     });
     expect(
-      efeitoEstoquePedido(saidaCompleta({ ...base, estado: 'pago', estadoFrete: 'entregue' })),
+      efeitoEstoquePedido(
+        saidaCompleta({ ...base, estado: ESTADO_PEDIDO.pago, estadoFrete: ESTADO_FRETE.entregue }),
+      ),
     ).toEqual({ reservar: true, remover: false, adicionar: false });
   });
 
   it('releases at finalizado (deliberate divergence — legacy leaked these forever)', () => {
-    expect(efeitoEstoquePedido(saidaCompleta({ ...base, estado: 'finalizado' }))).toEqual(
-      EFEITO_ESTOQUE_NENHUM,
-    );
+    expect(
+      efeitoEstoquePedido(saidaCompleta({ ...base, estado: ESTADO_PEDIDO.finalizado })),
+    ).toEqual(EFEITO_ESTOQUE_NENHUM);
   });
 });
 
@@ -235,20 +248,26 @@ describe('efeitoEstoquePedido — entrada (purchase / return)', () => {
   });
 
   it('holds an applied addition while active, reverts on cancellation', () => {
-    expect(efeitoEstoquePedido(entrada({ estado: 'carrinho', jaMovimentado: true }))).toEqual({
+    expect(
+      efeitoEstoquePedido(entrada({ estado: ESTADO_PEDIDO.carrinho, jaMovimentado: true })),
+    ).toEqual({
       reservar: false,
       remover: false,
       adicionar: true,
     });
-    expect(efeitoEstoquePedido(entrada({ estado: 'carrinho' }))).toEqual(EFEITO_ESTOQUE_NENHUM);
-    expect(efeitoEstoquePedido(entrada({ estado: 'cancelado', jaMovimentado: true }))).toEqual(
+    expect(efeitoEstoquePedido(entrada({ estado: ESTADO_PEDIDO.carrinho }))).toEqual(
       EFEITO_ESTOQUE_NENHUM,
     );
+    expect(
+      efeitoEstoquePedido(entrada({ estado: ESTADO_PEDIDO.cancelado, jaMovimentado: true })),
+    ).toEqual(EFEITO_ESTOQUE_NENHUM);
   });
 
   it('never reserves, even if the operação has the flag set', () => {
     expect(
-      efeitoEstoquePedido(entrada({ estado: 'pago', movimentaIndisponivelEstoque: true })),
+      efeitoEstoquePedido(
+        entrada({ estado: ESTADO_PEDIDO.pago, movimentaIndisponivelEstoque: true }),
+      ),
     ).toEqual({ reservar: false, remover: false, adicionar: true });
   });
 });
@@ -258,7 +277,7 @@ describe('efeitoEstoquePedido — operação flags off', () => {
     expect(
       efeitoEstoquePedido(
         saidaCompleta({
-          estado: 'pago',
+          estado: ESTADO_PEDIDO.pago,
           movimentaEstoque: false,
           movimentaIndisponivelEstoque: false,
           jaMovimentado: true,

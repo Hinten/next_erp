@@ -16,6 +16,16 @@ on:
       - 'packages/schemas/src/storage/foto.ts'
       - 'packages/data/src/admin/collections/arquivoCollection.ts'
       - 'packages/data/src/admin/collections/produtoCollection.ts'
+      # The pedido estado reconcile + everything its emulator suite exercises: the
+      # transition rule table (`nextPedidoEstado`), the paying-status/sum rule
+      # (`sumPagamentosPagos`) and the frete-estado allow-list that decides dispatch
+      # authorization (`ESTADOS_FRETE_PRE_AUTORIZACAO`, #702) all live outside this
+      # file, so editing any one alone would otherwise skip the only test that runs
+      # the real Admin-SDK transaction.
+      - 'packages/data/src/admin/pedidoReconcile*.ts'
+      - 'packages/data/src/pedido/usecases.ts'
+      - 'packages/schemas/src/pedido/collection/pagamento.ts'
+      - 'packages/schemas/src/shared/frete.ts'
       - 'storage.rules'
       - 'cors.json'
       - 'firebase.functions.json'
@@ -33,6 +43,16 @@ on:
       - 'packages/schemas/src/storage/foto.ts'
       - 'packages/data/src/admin/collections/arquivoCollection.ts'
       - 'packages/data/src/admin/collections/produtoCollection.ts'
+      # The pedido estado reconcile + everything its emulator suite exercises: the
+      # transition rule table (`nextPedidoEstado`), the paying-status/sum rule
+      # (`sumPagamentosPagos`) and the frete-estado allow-list that decides dispatch
+      # authorization (`ESTADOS_FRETE_PRE_AUTORIZACAO`, #702) all live outside this
+      # file, so editing any one alone would otherwise skip the only test that runs
+      # the real Admin-SDK transaction.
+      - 'packages/data/src/admin/pedidoReconcile*.ts'
+      - 'packages/data/src/pedido/usecases.ts'
+      - 'packages/schemas/src/pedido/collection/pagamento.ts'
+      - 'packages/schemas/src/shared/frete.ts'
       - 'storage.rules'
       - 'cors.json'
       - 'firebase.functions.json'

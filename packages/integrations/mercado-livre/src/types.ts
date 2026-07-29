@@ -53,6 +53,9 @@ export const userSchema = z
     nickname: z.string().nullable().optional(),
     email: z.string().nullable().optional(),
     site_id: z.string().nullable().optional(),
+    // Account capability tags — `warehouse_management` marks multiorigin
+    // accounts, whose stock cannot be sent via PUT /items.
+    tags: z.array(z.string()).nullable().optional(),
   })
   .passthrough();
 export type MlUser = z.infer<typeof userSchema>;
@@ -354,6 +357,12 @@ export const mlPaymentSchema = z
     shipping_cost: z.number().nullable().optional(),
     coupon_amount: z.number().nullable().optional(),
     status: z.string().nullable().optional(),
+    /** Consumed by the payments-topic handler (legacy tasks.dart:1172/1176 — NONE-marketplace skip + order-key resolution). */
+    marketplace: z.string().nullable().optional(),
+    /** Consumed by the payments-topic handler for order-key resolution (legacy tasks.dart:1176). */
+    external_reference: z.string().nullable().optional(),
+    /** Consumed by the payments-topic handler for order-key resolution (legacy tasks.dart:1176). */
+    order_id: z.number().int().nullable().optional(),
     installments: z.number().nullable().optional(),
     payment_type: z.string().nullable().optional(),
     payment_type_id: z.string().nullable().optional(),

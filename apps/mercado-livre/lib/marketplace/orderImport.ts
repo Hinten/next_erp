@@ -33,10 +33,16 @@
  *     to add `get_shipment_items` + port the mismatch guard faithfully.
  *  3. The order-import's own inline frete-merge (tasks.dart:592-607) and the
  *     shipments-topic merge (tasks.dart:1306-1315, PR 1's
- *     `mergeEstadoFretePreservando`) are UNIFIED onto that one PR 1 helper —
- *     matching this port's established pattern of collapsing inconsistent
- *     legacy variants into one (see `orderShipmentMapping.ts`'s own
- *     `estadoFreteFromShipment` precedent).
+ *     `mergeEstadoFretePreservando`) are UNIFIED onto one shared helper,
+ *     `mergeFreteInicial` (this file, exported for `orderShipmentImport.ts`'s
+ *     reuse in PR 3) — matching this port's established pattern of
+ *     collapsing inconsistent legacy variants into one (see
+ *     `orderShipmentMapping.ts`'s own `estadoFreteFromShipment` precedent).
+ *     `mergeFreteInicial` itself further extends legacy's `FreteDoPedido.update`
+ *     (`.old/packages/pedido/lib/src/models.dart:672-708`, `other.field ?? this.field`
+ *     on every field) into a per-field nullable-vs-non-nullable merge keyed
+ *     off `MappedFreteInicialFields`' own nullability — see that function's
+ *     docblock for the full rationale.
  *  4. Legacy's `else if (instance.estado == pago)` downgrade branch INSIDE the
  *     secondary shipping-payments tx (tasks.dart:727-735) is dead code — it
  *     sits behind an outer `instance.estado == emProcessamento` guard that
@@ -65,6 +71,7 @@ import {
   type MlShipmentPayment,
 } from '@delfrance/integrations-mercado-livre';
 import {
+  ESTADO_PEDIDO,
   STATUS_PAGAMENTO,
   flattenPedidoItens,
   itemSubtotal,
@@ -137,12 +144,12 @@ export interface OrderImportResult {
  * still "early" enough that a fresh shipment read should re-run the full
  * money conference (tasks.dart:512-514).
  */
-const ESTADOS_CONFERIR_PAGAMENTO: ReadonlySet<EstadoPedido> = new Set([
-  'iniciado',
-  'carrinho',
-  'escolhendoFormaDePagamento',
-  'aguardandoConfirmacaoDePagamento',
-  'pagamentoNaoRealizado',
+const ESTADOS_CONFERIR_PAGAMENTO: ReadonlySet<EstadoPedido> = new Set<EstadoPedido>([
+  ESTADO_PEDIDO.iniciado,
+  ESTADO_PEDIDO.carrinho,
+  ESTADO_PEDIDO.escolhendoFormaDePagamento,
+  ESTADO_PEDIDO.aguardandoConfirmacaoDePagamento,
+  ESTADO_PEDIDO.pagamentoNaoRealizado,
 ]);
 
 /** ML order `status` values that downgrade a `pago` pedido (tasks.dart:746). */
@@ -194,7 +201,7 @@ async function readPedido(db: Firestore, pedidoId: string): Promise<Pedido> {
 /*                        Conta bag (integração account)                      */
 /* -------------------------------------------------------------------------- */
 
-interface ContaBag {
+export interface ContaBag {
   contaOuterRef: string;
   contaCpfCnpj: string | null;
   operacaoOuterRef: string | null;
@@ -204,7 +211,13 @@ interface ContaBag {
   sellerUserId: number | null;
 }
 
-async function loadContaBag(db: Firestore, integracaoId: string): Promise<ContaBag> {
+/**
+ * Exported for reuse by the shipments-topic handler (`orderShipmentImport.ts`,
+ * Step 9 PR 3), which needs the same account bag (`sellerUserId` for
+ * `resolvePrazoDespacho`, `modalidadeFreteImportacao` for the frete mapper) —
+ * no behavior change, still module-private in spirit (this file owns it).
+ */
+export async function loadContaBag(db: Firestore, integracaoId: string): Promise<ContaBag> {
   const snap = await integracaoCollection.docRef(db, {}, integracaoId).get();
   const conta = integracaoCollection.parseRead(
     snap.data() ?? {},
@@ -233,8 +246,11 @@ async function loadContaBag(db: Firestore, integracaoId: string): Promise<ContaB
  * collection filtered server-side to `tipo`+`ativo`, not a hot query, so no
  * new index is declared. Deviation #6 (see file docstring): null instead of
  * legacy's force-unwrap crash when no such doc exists.
+ *
+ * Exported for reuse by the shipments-topic handler (`orderShipmentImport.ts`,
+ * Step 9 PR 3) — same lookup, same account, no behavior change.
  */
-async function resolveMercadoEnviosIntFreteOuterRef(
+export async function resolveMercadoEnviosIntFreteOuterRef(
   db: Firestore,
   integracaoId: string,
 ): Promise<string | null> {
@@ -446,14 +462,57 @@ async function applyEnderecoStep(args: {
 /*                                   Frete                                    */
 /* -------------------------------------------------------------------------- */
 
-/** Overlay `mapped` onto `existing` (or use `mapped` fresh when there's no prior frete), preserving `estado` via the unified merge helper (deviation #3). */
-function mergeFreteInicial(
+/**
+ * Overlay `mapped` onto `existing` (or use `mapped` fresh when there's no
+ * prior frete). Ports `FreteDoPedido.update`
+ * (`.old/packages/pedido/lib/src/models.dart:672-708`) field-for-field, with
+ * one deliberate extension (deviation #3): legacy's `update()` is
+ * `other.field ?? this.field` for EVERY field it touches (including
+ * `valorCobrado`/`custoCalculado`/`custoFinal`, which our own
+ * `MappedFreteInicialFields` never sets to null anyway); this port only
+ * applies the `mapped.x ?? existing.x ?? null` nullable-preserving pattern to
+ * the mapped keys that are ACTUALLY typed nullable
+ * (`integracaoFreteOuterRef`, `enderecoFreteOuterReference`, `codRastreio`,
+ * `dataPrevisaoEntrega`, `ultimaModificacao`, `prazoDespacho`) — every other
+ * mapped key is non-nullable on `MappedFreteInicialFields`, so writing it
+ * unconditionally is behaviorally identical to the `?? ` form and clearer.
+ * `estado` is the one field legacy's plain `other.estado` (unconditional)
+ * does NOT get ported straight — it goes through the dedicated
+ * `mergeEstadoFretePreservando` state machine instead (`orderShipmentMapping.ts`),
+ * which additionally FIXES legacy's dangling-`if` regression bug (see that
+ * function's own docblock) rather than reproducing it.
+ *
+ * Reused by both frete-merge call sites in this Step 9 slice: this file's own
+ * `applyFreteStep` (order import) and `orderShipmentImport.ts`'s
+ * shipments-topic handler (PR 3) — one merge helper for both, matching this
+ * port's established pattern of collapsing legacy's per-path variants into
+ * one (deviation #3's original scope, now extended to the whole merge, not
+ * just `estado`).
+ */
+export function mergeFreteInicial(
   existing: FreteDoPedido | null | undefined,
   mapped: MappedFreteInicialFields,
 ): Record<string, unknown> {
   if (!existing) return { ...mapped };
   const estado = mergeEstadoFretePreservando(existing.estado, mapped.estado);
-  return { ...existing, ...mapped, estado };
+  return {
+    ...existing,
+    externalId: mapped.externalId,
+    externalOptionIntegracao: mapped.externalOptionIntegracao,
+    estado,
+    integracaoFreteOuterRef:
+      mapped.integracaoFreteOuterRef ?? existing.integracaoFreteOuterRef ?? null,
+    enderecoFreteOuterReference:
+      mapped.enderecoFreteOuterReference ?? existing.enderecoFreteOuterReference ?? null,
+    modalidade: mapped.modalidade,
+    codRastreio: mapped.codRastreio ?? existing.codRastreio ?? null,
+    valorCobrado: mapped.valorCobrado,
+    custoCalculado: mapped.custoCalculado,
+    custoFinal: mapped.custoFinal,
+    dataPrevisaoEntrega: mapped.dataPrevisaoEntrega ?? existing.dataPrevisaoEntrega ?? null,
+    ultimaModificacao: mapped.ultimaModificacao ?? existing.ultimaModificacao ?? null,
+    prazoDespacho: mapped.prazoDespacho ?? existing.prazoDespacho ?? null,
+  };
 }
 
 async function fetchFullShippingPayments(
@@ -674,7 +733,7 @@ async function applyPagoAdvanceOrDowngrade(args: {
   } = args;
 
   const podeAvancarPagamento =
-    pedido.estado === 'emProcessamento' &&
+    pedido.estado === ESTADO_PEDIDO.emProcessamento &&
     pedido.clientePedidoOuterRef != null &&
     pedido.enderecoFiscalOuterRef != null &&
     pedido.freteInicial != null;
@@ -782,7 +841,7 @@ async function applyPagoAdvanceOrDowngrade(args: {
       }
     }
   } else if (
-    pedido.estado === 'pago' &&
+    pedido.estado === ESTADO_PEDIDO.pago &&
     DOWNGRADE_TRIGGER_STATUSES.has(initialOrder.status ?? '')
   ) {
     // tasks.dart:746-774.

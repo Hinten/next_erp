@@ -194,8 +194,8 @@ export function assembleImportPlan(args: ImportAssembleArgs): ImportPlan {
         precos: precosOps ? precosOps.set : null,
         categoriaProdutoOuterRef: args.categoriaOuterRef,
         // D2 (#520): parent taxonomy links — null unless the item has variations.
-        grupoDeVariacoesUid: args.parentGrupoUids,
-        variacoesUid: args.parentVariacoesUid,
+        grupoDeVariacoesUid: (args.parentGrupoUids?.length ?? 0) > 0 ? args.parentGrupoUids : null,
+        variacoesUid: (args.parentVariacoesUid?.length ?? 0) > 0 ? args.parentVariacoesUid : null,
         timestamp: now,
       },
     };

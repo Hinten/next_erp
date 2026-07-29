@@ -19,17 +19,22 @@
     "seed:nfe": "dotenv -e ../../.env.local -- tsx src/seed-nfe-dev.ts",
     "seed:variacoes": "dotenv -e ../../.env.local -- tsx src/seed-variacoes-dev.ts",
     "seed:precos": "dotenv -e ../../.env.local -- tsx src/seed-precos-dev.ts",
+    "sample:datetime": "dotenv -e ../../.env.local -- tsx src/sample-datetime-shapes.ts",
     "teardown": "dotenv -e ../../.env.local -- tsx src/teardown.ts",
     "grant-all-perms": "dotenv -e ../../.env.local -- tsx src/grant-all-perms.ts",
     "create-super-user": "dotenv -e ../../.env.local -- tsx src/create-super-user.ts",
+    "create-user": "dotenv -e ../../.env.local -- tsx src/create-user.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts",
     "clean": "rm -rf dist .turbo *.tsbuildinfo"
   },
   "dependencies": {
     "@delfrance/auth": "workspace:*",
+    "@delfrance/rules-gen": "workspace:*",
     "@delfrance/schemas": "workspace:*",
-    "firebase-admin": "catalog:"
+    "firebase-admin": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@delfrance/config-eslint": "workspace:*",
@@ -37,6 +42,7 @@
     "@types/node": "catalog:",
     "eslint": "catalog:",
     "tsx": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

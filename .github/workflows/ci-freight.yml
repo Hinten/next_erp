@@ -12,7 +12,8 @@ on:
     paths:
       - 'apps/melhor-envio/**'
       - 'packages/integrations/freight-br/**'
-      - 'packages/schemas/src/frete.ts'
+      # Under `shared/` since 6ab8d290 — a stale root path silently matches nothing.
+      - 'packages/schemas/src/shared/frete.ts'
       - 'packages/schemas/src/integracao.ts'
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-freight.yml'
@@ -22,7 +23,8 @@ on:
     paths:
       - 'apps/melhor-envio/**'
       - 'packages/integrations/freight-br/**'
-      - 'packages/schemas/src/frete.ts'
+      # Under `shared/` since 6ab8d290 — a stale root path silently matches nothing.
+      - 'packages/schemas/src/shared/frete.ts'
       - 'packages/schemas/src/integracao.ts'
       - 'pnpm-lock.yaml'
       - '.github/workflows/ci-freight.yml'

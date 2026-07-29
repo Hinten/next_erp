@@ -157,13 +157,16 @@ describe('integracaoSchema per-channel fields', () => {
     expect(parsed.tenant_id).toBe('tenant-xyz');
   });
 
-  it('parses Mercado Livre Mercado-Shops price table outer refs', () => {
+  it('rides legacy Mercado-Shops refs through passthrough (fields no longer modeled)', () => {
+    // Mercado Shops was discontinued (2025-12-31); the two refs were dropped
+    // from the schema. Legacy Flutter docs still carry them — they must keep
+    // parsing and survive the round-trip untouched (dual-run guarantee).
     const doc = {
       ...base,
       tabelaMercadoShopsOuterRef: 'documents/listaDePrecos/ms1',
       tabelaMercadoShopsPromocionalOuterRef: 'documents/listaDePrecos/ms2',
     };
-    const parsed = integracaoSchema.parse(doc);
+    const parsed = integracaoSchema.parse(doc) as Record<string, unknown>;
     expect(parsed.tabelaMercadoShopsOuterRef).toBe('documents/listaDePrecos/ms1');
     expect(parsed.tabelaMercadoShopsPromocionalOuterRef).toBe('documents/listaDePrecos/ms2');
   });

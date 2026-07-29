@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildXmlZip } from './buildXmlZip';
 import { ExportIncompleteError, type ExportSource, type NfeNote } from './types';
+import { ESTADO_NFE } from '@delfrance/schemas';
 
 function note(over: Partial<NfeNote> & { id: string }): NfeNote {
   return {
@@ -10,7 +11,7 @@ function note(over: Partial<NfeNote> & { id: string }): NfeNote {
     path: `pedidos/p/nfev4/${over.id}`,
     numeracao: 1,
     serie: 1,
-    estado: 'a',
+    estado: ESTADO_NFE.aprovada,
     dataEmissao: new Date('2026-05-26T18:25:00.000Z').getTime(),
     xmlNfeProc: `<x>${over.id}</x>`,
     ...over,

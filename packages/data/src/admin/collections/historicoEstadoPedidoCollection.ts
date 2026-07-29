@@ -7,7 +7,8 @@ import { defineAdminCollection } from '../defineAdminCollection';
  * pedido estado audit trail. The Mercado Pago webhook receiver's server-side
  * estado reconcile (#531, `reconcilePedidoFromPagamento`) appends a row here
  * whenever a verified payment notification drives an `estado` transition, the
- * same way the existing client-side reconcile does.
+ * same way the callable-facing `reconcilePedidoEstado` does for the web
+ * client's Pagamentos tab (#308) — both live in `../pedidoReconcile.ts`.
  */
 export const historicoEstadoPedidoCollection = defineAdminCollection({
   path: historicoEstadoPedidoMeta.collectionPath,

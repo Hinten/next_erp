@@ -19,9 +19,13 @@
  * Disposition (`handleNotificationTask`):
  *  - `done`     — a known topic was processed: NOTHING is persisted. The `items`
  *                 topic runs the status-sync (#440); `orders_v2`/`orders` run the
- *                 Step 9 order→pedido import (see `runOrderImport` below); the
- *                 remaining topics are no-ops until their per-topic handlers land
- *                 in later steps;
+ *                 Step 9 order→pedido import (see `runOrderImport` below);
+ *                 `payments`/`shipments` run the Step 9 PR 3 payment/shipment
+ *                 sync onto an already-imported pedido (see `runPaymentImport`/
+ *                 `runShipmentImport` below); the remaining topics
+ *                 (items_prices/claims/orders_feedback/questions/messages/
+ *                 stock-location) are no-ops until their per-topic handlers
+ *                 land in later steps;
  *  - transient  — a transient infra failure (Firestore/ML API/network) THROWS so
  *                 the queue retries with backoff; on the FINAL attempt it persists
  *                 `failed` (so the sweep re-drives it) instead of throwing;
@@ -53,6 +57,8 @@ import { handleUptinMigration } from './importMigration';
 import { lastSegment, parseItemIdFromResource } from './linkRefs';
 import { loadMercadoLivreContext } from './mercadoLivre';
 import { type OrderImportResult, importPedidoMercadoLivre } from './orderImport';
+import { type PaymentImportResult, importPagamentoMercadoLivre } from './orderPaymentImport';
+import { type ShipmentImportResult, importShipmentMercadoLivre } from './orderShipmentImport';
 
 /**
  * The deployed `onTaskDispatched` function name — which is ALSO its
@@ -269,11 +275,73 @@ const runOrderImport: OrderImportRunner = async (db, integracaoId, resourceId) =
 };
 
 /**
- * The ML order/pack id from an `orders_v2`/`orders` notification `resource`
- * (`/orders/123` → `123`). Tolerates a bare numeric id with no path segments
- * (`lastSegment` falls back to the whole string when there's no `/`). Anything
- * non-numeric — a coding bug or an ML-side anomaly, never seen in practice — is
- * malformed: the caller drops it rather than dispatching a bogus import.
+ * The Step 9 PR 3 payment-sync seam invoked for `payments` notifications —
+ * shaped exactly like `OrderImportRunner` (topic handler → typed runner,
+ * injectable for tests, defaulted to the real ML-context-backed impl below).
+ * `resourceId` is the numeric ML payment id parsed from the notification's
+ * `resource` (`/payments/123` → `123`).
+ */
+export type PaymentImportRunner = (
+  db: Firestore,
+  integracaoId: string,
+  resourceId: number,
+) => Promise<PaymentImportResult>;
+
+/**
+ * The production Step 9 PR 3 payment importer: loads the account's live ML API
+ * (same seller-token path as `runOrderImport`) and calls the payment-import
+ * handler with ONE clock read for the whole operation (µs threaded from a
+ * single `Date.now()`, never re-read downstream). Wired as
+ * `processNotificationPayload`'s default for `payments` so an ordinary
+ * notification needs no caller change; tests inject their own runner.
+ */
+const runPaymentImport: PaymentImportRunner = async (db, integracaoId, resourceId) => {
+  const ctx = await loadMercadoLivreContext(db, integracaoId);
+  const channelCtx = await ctx.resolveChannelContext();
+  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const nowMs = Date.now();
+  const nowUs = millisToMicros(nowMs);
+  return importPagamentoMercadoLivre({ db, api, contaId: integracaoId, nowUs }, resourceId);
+};
+
+/**
+ * The Step 9 PR 3 shipment-sync seam invoked for `shipments` notifications —
+ * shaped exactly like `OrderImportRunner`/`PaymentImportRunner` (topic handler
+ * → typed runner, injectable for tests, defaulted to the real
+ * ML-context-backed impl below). `resourceId` is the numeric ML shipment id
+ * parsed from the notification's `resource` (`/shipments/123` → `123`).
+ */
+export type ShipmentImportRunner = (
+  db: Firestore,
+  integracaoId: string,
+  resourceId: number,
+) => Promise<ShipmentImportResult>;
+
+/**
+ * The production Step 9 PR 3 shipment importer: loads the account's live ML
+ * API (same seller-token path as `runOrderImport`/`runPaymentImport`) and
+ * calls the shipment-import handler with ONE clock read for the whole
+ * operation (µs threaded from a single `Date.now()`, never re-read
+ * downstream). Wired as `processNotificationPayload`'s default for `shipments`
+ * so an ordinary notification needs no caller change; tests inject their own
+ * runner.
+ */
+const runShipmentImport: ShipmentImportRunner = async (db, integracaoId, resourceId) => {
+  const ctx = await loadMercadoLivreContext(db, integracaoId);
+  const channelCtx = await ctx.resolveChannelContext();
+  const api = createMercadoLivreApi({ getAccessToken: async () => channelCtx.accessToken });
+  const nowMs = Date.now();
+  const nowUs = millisToMicros(nowMs);
+  return importShipmentMercadoLivre({ db, api, integracaoId, nowUs }, resourceId);
+};
+
+/**
+ * The ML order/pack/payment/shipment id from a notification `resource`
+ * (`/orders/123` / `/payments/123` / `/shipments/123` → `123`). Tolerates a
+ * bare numeric id with no path segments (`lastSegment` falls back to the whole
+ * string when there's no `/`). Anything non-numeric — a coding bug or an
+ * ML-side anomaly, never seen in practice — is malformed: the caller drops it
+ * rather than dispatching a bogus import.
  */
 function parseOrderResourceId(resource: string): number | null {
   const last = lastSegment(resource);
@@ -286,7 +354,7 @@ export type ProcessOutcome =
   | { kind: 'done'; integracaoId: string } // known topic processed
   | { kind: 'no-account' } // no active integração for the seller
   | { kind: 'unknown-topic'; integracaoId: string } // unsupported topic
-  | { kind: 'malformed-resource'; integracaoId: string }; // orders_v2/orders resource had no parseable id
+  | { kind: 'malformed-resource'; integracaoId: string }; // orders_v2/orders/payments/shipments resource had no parseable id
 
 /**
  * Process one notification payload — resolve the account, dispatch by topic.
@@ -301,6 +369,8 @@ export async function processNotificationPayload(
   resolveItemsApi: ItemsApiResolver = resolveItemsApiFromContext,
   migrationRunner: MigrationRunner = runUptinMigration,
   orderImportRunner: OrderImportRunner = runOrderImport,
+  paymentImportRunner: PaymentImportRunner = runPaymentImport,
+  shipmentImportRunner: ShipmentImportRunner = runShipmentImport,
 ): Promise<ProcessOutcome> {
   const integracaoId = await resolveIntegracaoByUserId(db, payload.user_id ?? null);
   if (!integracaoId) return { kind: 'no-account' };
@@ -341,11 +411,58 @@ export async function processNotificationPayload(
     return { kind: 'done', integracaoId };
   }
 
-  // Other known topics: the per-topic handlers (payment / shipment / price /
-  // claim) land in later steps; here the foundation acks them so the pipeline
-  // is exercisable end-to-end. A future handler MUST THROW on a transient
-  // failure (so the queue/sweep retry) and be idempotent keyed by the ML
-  // resource id — it must never fall through to a silent success.
+  // `payments` — payment status/amount sync onto an already-imported pedido's
+  // embedded pagamento (Step 9 PR 3). Idempotent, keyed by the ML payment id
+  // (`makePagamentoIdMercadoLivre`). THROWS on a transient failure (ML API /
+  // Firestore / network) so the queue/sweep retry. A permanently-404 payment,
+  // a `marketplace === NONE` payment, an order/pack that resolves to no
+  // pedido, or a stale update are deterministic skips (logged), still acked
+  // `done`. A resource with no parseable numeric id is malformed: dropped
+  // WITHOUT dispatching a bogus import (mirrors the orders_v2 malformed-
+  // resource drop above).
+  if (payload.topic === 'payments') {
+    const resourceId = parseOrderResourceId(payload.resource);
+    if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
+    const result = await paymentImportRunner(db, integracaoId, resourceId);
+    if (result.skipped) {
+      console.warn('[mercado-livre] payment import skipped', {
+        integracaoId,
+        resourceId,
+        skipped: result.skipped,
+      });
+    }
+    return { kind: 'done', integracaoId };
+  }
+
+  // `shipments` — shipment/freteInicial status sync onto an already-imported
+  // pedido (Step 9 PR 3). Idempotent (staleness-gated merge into the pedido's
+  // `freteInicial`). THROWS on a transient failure (ML API / Firestore /
+  // network) so the queue/sweep retry. A permanently-404 shipment, a shipment
+  // with no order id, an order/pack that resolves to no pedido, a pedido with
+  // no `freteInicial` yet (only the order-import path creates it), or a stale
+  // update are deterministic skips (logged), still acked `done`. A resource
+  // with no parseable numeric id is malformed: dropped WITHOUT dispatching a
+  // bogus import.
+  if (payload.topic === 'shipments') {
+    const resourceId = parseOrderResourceId(payload.resource);
+    if (resourceId == null) return { kind: 'malformed-resource', integracaoId };
+    const result = await shipmentImportRunner(db, integracaoId, resourceId);
+    if (result.skipped) {
+      console.warn('[mercado-livre] shipment import skipped', {
+        integracaoId,
+        resourceId,
+        skipped: result.skipped,
+      });
+    }
+    return { kind: 'done', integracaoId };
+  }
+
+  // Other known topics (items_prices/claims/orders_feedback/questions/
+  // messages/stock-location): their per-topic handlers land in later steps;
+  // here the foundation acks them so the pipeline is exercisable end-to-end. A
+  // future handler MUST THROW on a transient failure (so the queue/sweep
+  // retry) and be idempotent keyed by the ML resource id — it must never fall
+  // through to a silent success.
   return { kind: 'done', integracaoId };
 }
 
@@ -368,6 +485,8 @@ export async function handleNotificationTask(
   resolveItemsApi: ItemsApiResolver = resolveItemsApiFromContext,
   migrationRunner: MigrationRunner = runUptinMigration,
   orderImportRunner: OrderImportRunner = runOrderImport,
+  paymentImportRunner: PaymentImportRunner = runPaymentImport,
+  shipmentImportRunner: ShipmentImportRunner = runShipmentImport,
 ): Promise<TaskResult> {
   let payload: MlNotificationPayload;
   try {
@@ -385,6 +504,8 @@ export async function handleNotificationTask(
       resolveItemsApi,
       migrationRunner,
       orderImportRunner,
+      paymentImportRunner,
+      shipmentImportRunner,
     );
   } catch (err) {
     // Transient (Firestore / ML API / network). Retry in-task until the final
@@ -431,11 +552,11 @@ export async function handleNotificationTask(
     return { outcome: 'parked', integracaoId: result.integracaoId, topic: payload.topic };
   }
   if (result.kind === 'malformed-resource') {
-    // A coding/ML-side anomaly (an orders_v2/orders resource with no parseable
-    // numeric id) — nothing to retry, nothing worth persisting (same
-    // disposition as the schema-parse drop above, just discovered one layer
-    // deeper, after the account/topic are already known).
-    console.warn('[mercado-livre] order notification DROPPED — unparseable resource', {
+    // A coding/ML-side anomaly (an orders_v2/orders/payments/shipments
+    // resource with no parseable numeric id) — nothing to retry, nothing
+    // worth persisting (same disposition as the schema-parse drop above, just
+    // discovered one layer deeper, after the account/topic are already known).
+    console.warn('[mercado-livre] notification DROPPED — unparseable resource', {
       id: payload.id,
       resource: payload.resource,
       topic: payload.topic,
@@ -544,6 +665,8 @@ export async function reprocessNotifications(
   resolveItemsApi: ItemsApiResolver = resolveItemsApiFromContext,
   migrationRunner: MigrationRunner = runUptinMigration,
   orderImportRunner: OrderImportRunner = runOrderImport,
+  paymentImportRunner: PaymentImportRunner = runPaymentImport,
+  shipmentImportRunner: ShipmentImportRunner = runShipmentImport,
 ): Promise<ReprocessResult> {
   const now = opts.now ?? Date.now();
   const cutoff = now - (opts.olderThanMs ?? ONE_HOUR_MS);
@@ -591,6 +714,8 @@ export async function reprocessNotifications(
         resolveItemsApi,
         migrationRunner,
         orderImportRunner,
+        paymentImportRunner,
+        shipmentImportRunner,
       );
       if (result.kind === 'done') {
         await deleteNotification(db, d.id); // resolved → leave the failures store

@@ -28,7 +28,13 @@ function cfg(
   };
 }
 
-const USER = { id: 123, nickname: 'SELLER', email: 'x@y.z', site_id: 'MLB' };
+const USER = {
+  id: 123,
+  nickname: 'SELLER',
+  email: 'x@y.z',
+  site_id: 'MLB',
+  tags: ['normal', 'user_info_verified'],
+};
 const ORDER = {
   id: 2000003508897196,
   status: 'paid',
@@ -53,6 +59,7 @@ describe('createMercadoLivreApi — happy paths', () => {
     const me = await api.getMe();
 
     expect(me.id).toBe(123);
+    expect(me.tags).toEqual(['normal', 'user_info_verified']);
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe('https://api.mercadolibre.com/users/me');
     expect((init!.headers as Record<string, string>).Authorization).toBe('Bearer live-token');
@@ -127,6 +134,9 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
       jsonResponse({
         id: 1,
         status: 'approved',
+        marketplace: 'NONE',
+        external_reference: '2000003508419013',
+        order_id: 2000003508419013,
         transaction_amount: 100,
         coupon_amount: 0,
         marketplace_fee: 5,
@@ -149,6 +159,10 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
     ]);
     expect(payment.refunds).toEqual([{ id: 1, amount: 10 }]);
     expect((payment.card as Record<string, unknown>).last_four_digits).toBe('1234');
+    // marketplace/external_reference/order_id are consumed by the payments-topic handler.
+    expect(payment.marketplace).toBe('NONE');
+    expect(payment.external_reference).toBe('2000003508419013');
+    expect(payment.order_id).toBe(2000003508419013);
     // `payer` isn't consumed by any mapper — still rides through untyped.
     expect((payment.payer as Record<string, unknown>).a_field_the_mapper_never_reads).toBe(true);
   });
@@ -548,6 +562,29 @@ describe('createMercadoLivreApi — retries + errors', () => {
       status: 429,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries a numeric Retry-After header as retryAfterSec (null when absent or HTTP-date)', async () => {
+    const with429 = (headers: Record<string, string>) =>
+      vi.fn(
+        async (_u: string | URL | Request, _i?: RequestInit) =>
+          new Response(JSON.stringify({ error: 'local_rate_limited' }), {
+            status: 429,
+            headers: { 'content-type': 'application/json', ...headers },
+          }),
+      );
+    await expect(
+      createMercadoLivreApi(cfg(with429({ 'retry-after': '17' }))).getMe(),
+    ).rejects.toMatchObject({ constructor: MercadoLivreHttpError, status: 429, retryAfterSec: 17 });
+    await expect(createMercadoLivreApi(cfg(with429({}))).getMe()).rejects.toMatchObject({
+      status: 429,
+      retryAfterSec: null,
+    });
+    await expect(
+      createMercadoLivreApi(
+        cfg(with429({ 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' })),
+      ).getMe(),
+    ).rejects.toMatchObject({ status: 429, retryAfterSec: null });
   });
 
   it('retries a network failure then succeeds', async () => {

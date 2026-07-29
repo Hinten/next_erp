@@ -1,4 +1,4 @@
-import { ESTADO_FRETE_LABELS, isFreteJaPostado } from '@delfrance/schemas';
+import { ESTADO_FRETE, ESTADO_FRETE_LABELS, isFreteJaPostado } from '@delfrance/schemas';
 
 import type { EtiquetaOutcome, EtiquetaProviderInput } from './types';
 
@@ -51,7 +51,7 @@ export async function runEtiquetaGates(
   // 2. Already-posted reprint → risk confirm. `isFreteJaPostado` already
   //    excludes `checkFinalizado`; the explicit check mirrors the legacy guard
   //    `estado != checkFinalizado && jaPostado.contains(estado)`.
-  if (frete.estado !== 'checkFinalizado' && isFreteJaPostado(frete.estado)) {
+  if (frete.estado !== ESTADO_FRETE.checkFinalizado && isFreteJaPostado(frete.estado)) {
     const estadoLabel = ESTADO_FRETE_LABELS[frete.estado] ?? frete.estado;
     const proceed = await ui.confirmRisk(
       'Este frete já foi postado e não deveria ter sua etiqueta reemitida ou reimpressa ' +
