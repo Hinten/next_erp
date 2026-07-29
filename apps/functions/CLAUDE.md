@@ -130,9 +130,12 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
   moves only the freight one). A pedido with no `freteInicial` block never produces
   a frete row at all, and a delete or a write that left BOTH estados alone exits on
   the fast path with no reads/writes. Idempotent: each row's doc id IS
-  `event.id`, and `data` comes from `event.time`, so an at-least-once redelivery
-  rewrites a content-identical doc — the two rows of one event share that id
-  harmlessly, they live in different subcollections. ⚠️ The trails do NOT share a
+  `event.id`, so an at-least-once redelivery **overwrites its own row** instead
+  of appending a duplicate — the two rows of one event share that id harmlessly,
+  they live in different subcollections. `data` comes from `event.time` (never
+  `Date.now()`) so the rewrite is normally content-identical too; the one
+  exception is the `nowMillis()` fallback for an unparseable `event.time`, which
+  can re-date a retried row but still cannot double-write it. ⚠️ The trails do NOT share a
   time unit: `data` is microseconds on `historicoEstadoPedido` and **milliseconds**
   on `historicoFtIni` (the unit the legacy Flutter ODM writes — `maybeDateTimeToJson`
   is `millisecondsSinceEpoch`), so a row-builder copied across is off by 1000×.
