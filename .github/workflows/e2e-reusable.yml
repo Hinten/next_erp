@@ -102,7 +102,11 @@ jobs:
           restore-keys: |
             pnpm-store-${{ runner.os }}-
 
-      - run: pnpm install --frozen-lockfile
+      # `id` so the always()-teardown below can tell "the suite ran and left
+      # fixtures behind" from "the runner never got a working checkout".
+      - name: Install
+        id: install
+        run: pnpm install --frozen-lockfile
 
       # Browsers + their system deps are baked into the Playwright image, pinned
       # to the @playwright/test version. This is a no-op when the image tag
@@ -167,9 +171,16 @@ jobs:
       # `exec tsx` rather than the `teardown:e2e` script, which wraps itself in
       # `dotenv -e ../../.env.local` for local use — in CI the credentials are
       # already in the job env and there is no such file.
+      #
+      # Gated on the install having SUCCEEDED, not just on `always()`. A run that
+      # died during `pnpm install` (registry timeouts are routine) never seeded a
+      # fixture, so there is nothing to reclaim — and `pnpm exec` would re-enter
+      # the very install that just failed, burn the timeout, and report a second
+      # error on top of the real one. Cancellation, the case this step exists
+      # for, always has a successful install behind it.
       - name: Reclaim e2e fixtures — ${{ inputs.slug }}
-        if: always()
-        timeout-minutes: 3
+        if: always() && steps.install.outcome == 'success'
+        timeout-minutes: 5
         continue-on-error: true
         run: pnpm --filter @delfrance/web exec tsx e2e/global-teardown.ts
 

@@ -157,9 +157,11 @@ async function deleteCollection(col: CollectionReference, walk: Walk): Promise<v
     const snap = await page.get();
     if (snap.empty) return;
 
-    // Depth-first: a child's own subtree goes before the child itself, so a
-    // crash mid-walk can only ever leave MORE of the tree standing, never a
-    // deleted parent with live descendants nobody can reach.
+    // Each doc is queued for deletion and THEN descended into (parent-first at
+    // every level — see the module docblock: children-first resurrects history
+    // rows). A crash mid-walk therefore leaves an orphaned subtree, exactly as
+    // an interrupted `recursiveDelete` did; the periodic sweep reclaims it,
+    // since `listCollections()` still reports children of a deleted doc.
     await inBatches(snap.docs, walk.concurrency, (doc) => walkSubtree(doc.ref, walk));
     if (walk.report.truncated) return;
 
