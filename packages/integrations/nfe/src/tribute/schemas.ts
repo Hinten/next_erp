@@ -30,6 +30,17 @@ export {
   indISSSchema,
   indIncentivoSchema,
   IPI_TRIB_CSTS,
+  // enum member constants — the only spelling of a SEFAZ code in engine code
+  CRT,
+  CSOSN,
+  CST,
+  MOD_BC,
+  MOD_BCST,
+  ORIGEM,
+  CST_PIS_COFINS,
+  CST_IPI,
+  IND_ISS,
+  IND_INCENTIVO,
   // ICMS + sub-configs
   configuracaoICMSSchema,
   // PIS / COFINS / IPI / ISSQN / retenção

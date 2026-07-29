@@ -35,6 +35,21 @@ import { cstClassTribStructurallyValid } from './cclasstrib';
 export const crtSchema = z.enum(['1', '2', '3', '4']);
 export type Crt = z.infer<typeof crtSchema>;
 
+/**
+ * Named members of {@link crtSchema}. The wire values are the SEFAZ codes, so
+ * the constant is the only readable spelling — `CRT.regimeNormal` rather than
+ * `'3'`. Names come from {@link CRT_LABELS}.
+ *
+ * Enforced by the `delfrance/prefer-schema-enum` lint rule, which fires for any
+ * Zod enum that has a companion constant like this one.
+ */
+export const CRT = {
+  simplesNacional: '1',
+  simplesNacionalExcessoSublimite: '2',
+  regimeNormal: '3',
+  meiSimplesNacional: '4',
+} as const satisfies Record<string, Crt>;
+
 export const CRT_LABELS: Record<Crt, string> = {
   '1': '1 - Simples Nacional',
   '2': '2 - Simples Nacional, excesso de sublimite de receita bruta',
@@ -57,6 +72,20 @@ export const csosnSchema = z.enum([
 ]);
 export type Csosn = z.infer<typeof csosnSchema>;
 
+/** Named members of {@link csosnSchema}; names from {@link CSOSN_LABELS}. */
+export const CSOSN = {
+  tributadaComCredito: '101',
+  tributadaSemCredito: '102',
+  isencaoFaixaReceitaBruta: '103',
+  tributadaComCreditoComSt: '201',
+  tributadaSemCreditoComSt: '202',
+  isencaoFaixaReceitaBrutaComSt: '203',
+  imune: '300',
+  naoTributada: '400',
+  icmsCobradoAnteriormente: '500',
+  outros: '900',
+} as const satisfies Record<string, Csosn>;
+
 export const CSOSN_LABELS: Record<Csosn, string> = {
   '101': '101 - Tributada pelo SN com permissão de crédito',
   '102': '102 - Tributada pelo SN sem permissão de crédito',
@@ -73,6 +102,21 @@ export const CSOSN_LABELS: Record<Csosn, string> = {
 /** CST — Código da Situação Tributária do ICMS (Regime Normal). */
 export const cstSchema = z.enum(['00', '10', '20', '30', '40', '41', '50', '51', '60', '70', '90']);
 export type Cst = z.infer<typeof cstSchema>;
+
+/** Named members of {@link cstSchema}; names from {@link CST_ICMS_LABELS}. */
+export const CST = {
+  tributadaIntegralmente: '00',
+  tributadaComSt: '10',
+  reducaoBaseCalculo: '20',
+  isentaOuNaoTributadaComSt: '30',
+  isenta: '40',
+  naoTributada: '41',
+  suspensao: '50',
+  diferimento: '51',
+  icmsCobradoAnteriormentePorSt: '60',
+  reducaoBaseCalculoComSt: '70',
+  outras: '90',
+} as const satisfies Record<string, Cst>;
 
 export const CST_ICMS_LABELS: Record<Cst, string> = {
   '00': '00 - Tributada integralmente',
@@ -92,6 +136,14 @@ export const CST_ICMS_LABELS: Record<Cst, string> = {
 export const modBCSchema = z.enum(['0', '1', '2', '3']);
 export type ModBC = z.infer<typeof modBCSchema>;
 
+/** Named members of {@link modBCSchema}; names from {@link MOD_BC_LABELS}. */
+export const MOD_BC = {
+  margemValorAgregado: '0',
+  pauta: '1',
+  precoTabeladoMaximo: '2',
+  valorOperacao: '3',
+} as const satisfies Record<string, ModBC>;
+
 export const MOD_BC_LABELS: Record<ModBC, string> = {
   '0': '0 - Margem Valor Agregado (%)',
   '1': '1 - Pauta (valor)',
@@ -102,6 +154,16 @@ export const MOD_BC_LABELS: Record<ModBC, string> = {
 /** modBCST — Modalidade de determinação da BC do ICMS ST. */
 export const modBCSTSchema = z.enum(['0', '1', '2', '3', '4', '5']);
 export type ModBCST = z.infer<typeof modBCSTSchema>;
+
+/** Named members of {@link modBCSTSchema}; names from {@link MOD_BCST_LABELS}. */
+export const MOD_BCST = {
+  precoTabeladoOuMaximoSugerido: '0',
+  listaNegativa: '1',
+  listaPositiva: '2',
+  listaNeutra: '3',
+  margemValorAgregado: '4',
+  pauta: '5',
+} as const satisfies Record<string, ModBCST>;
 
 export const MOD_BCST_LABELS: Record<ModBCST, string> = {
   '0': '0 - Preço tabelado ou máximo sugerido',
@@ -140,6 +202,27 @@ export const MOT_DES_ICMS_LABELS: Record<string, string> = {
 export const origemSchema = z.enum(['0', '1', '2', '3', '4', '5', '6', '7', '8']);
 export type Origem = z.infer<typeof origemSchema>;
 
+/**
+ * Named members of {@link origemSchema} — the SEFAZ "origem da mercadoria"
+ * table. There is no label map here, so the names come straight from that table.
+ *
+ * `operacao.ts` declares this same concept a second time as
+ * `OrigemProdutoImposto`, with an identical member set. `prefer-schema-enum`
+ * tells them apart by name (it reads the schema variable off the declaration),
+ * so both are enforced — but the duplication is still worth collapsing.
+ */
+export const ORIGEM = {
+  nacional: '0',
+  estrangeiraImportacaoDireta: '1',
+  estrangeiraMercadoInterno: '2',
+  nacionalConteudoImportacaoAte70: '3',
+  nacionalProcessoProdutivoBasico: '4',
+  nacionalConteudoImportacaoAte40: '5',
+  estrangeiraImportacaoDiretaSemSimilar: '6',
+  estrangeiraMercadoInternoSemSimilar: '7',
+  nacionalConteudoImportacaoAcima70: '8',
+} as const satisfies Record<string, Origem>;
+
 /** CST PIS / COFINS (the most common codes; full surface = ~33 codes). */
 export const cstPisCofinsSchema = z.enum([
   '01',
@@ -177,6 +260,47 @@ export const cstPisCofinsSchema = z.enum([
   '99',
 ]);
 export type CstPisCofins = z.infer<typeof cstPisCofinsSchema>;
+
+/**
+ * Named members of {@link cstPisCofinsSchema}; names condensed from
+ * {@link CST_PIS_COFINS_LABELS}. The 50–56 / 60–66 blocks pair up: each credit
+ * code has a `creditoPresumido*` twin ten apart (`50`↔`60`, `53`↔`63`, …).
+ */
+export const CST_PIS_COFINS = {
+  tributavelAliquotaBasica: '01',
+  tributavelAliquotaDiferenciada: '02',
+  tributavelAliquotaPorUnidade: '03',
+  tributavelMonofasicaRevendaAliquotaZero: '04',
+  tributavelSubstituicaoTributaria: '05',
+  tributavelAliquotaZero: '06',
+  isentaContribuicao: '07',
+  semIncidenciaContribuicao: '08',
+  suspensaoContribuicao: '09',
+  outrasOperacoesSaida: '49',
+  creditoExclusivoTributadaMercadoInterno: '50',
+  creditoExclusivoNaoTributadaMercadoInterno: '51',
+  creditoExclusivoExportacao: '52',
+  creditoTributadaENaoTributadaMercadoInterno: '53',
+  creditoTributadaMercadoInternoEExportacao: '54',
+  creditoNaoTributadaMercadoInternoEExportacao: '55',
+  creditoTributadaENaoTributadaMercadoInternoEExportacao: '56',
+  creditoPresumidoExclusivoTributadaMercadoInterno: '60',
+  creditoPresumidoExclusivoNaoTributadaMercadoInterno: '61',
+  creditoPresumidoExclusivoExportacao: '62',
+  creditoPresumidoTributadaENaoTributadaMercadoInterno: '63',
+  creditoPresumidoTributadaMercadoInternoEExportacao: '64',
+  creditoPresumidoNaoTributadaMercadoInternoEExportacao: '65',
+  creditoPresumidoTributadaENaoTributadaMercadoInternoEExportacao: '66',
+  creditoPresumidoOutrasOperacoes: '67',
+  aquisicaoSemDireitoCredito: '70',
+  aquisicaoComIsencao: '71',
+  aquisicaoComSuspensao: '72',
+  aquisicaoAliquotaZero: '73',
+  aquisicaoSemIncidencia: '74',
+  aquisicaoSubstituicaoTributaria: '75',
+  outrasOperacoesEntrada: '98',
+  outrasOperacoes: '99',
+} as const satisfies Record<string, CstPisCofins>;
 
 export const CST_PIS_COFINS_LABELS: Record<CstPisCofins, string> = {
   '01': '01 - Operação Tributável com Alíquota Básica',
@@ -218,6 +342,17 @@ export const CST_PIS_COFINS_LABELS: Record<CstPisCofins, string> = {
 export const indISSSchema = z.enum(['1', '2', '3', '4', '5', '6', '7']);
 export type IndISS = z.infer<typeof indISSSchema>;
 
+/** Named members of {@link indISSSchema}; names from {@link IND_ISS_LABELS}. */
+export const IND_ISS = {
+  exigivel: '1',
+  naoIncidencia: '2',
+  isencao: '3',
+  exportacao: '4',
+  imunidade: '5',
+  suspensaDecisaoJudicial: '6',
+  suspensaProcessoAdministrativo: '7',
+} as const satisfies Record<string, IndISS>;
+
 export const IND_ISS_LABELS: Record<IndISS, string> = {
   '1': '1 - Exigível',
   '2': '2 - Não incidência',
@@ -231,6 +366,21 @@ export const IND_ISS_LABELS: Record<IndISS, string> = {
 /** indIncentivo — Indicador de incentivo fiscal (1=sim, 2=não). */
 export const indIncentivoSchema = z.enum(['1', '2']);
 export type IndIncentivo = z.infer<typeof indIncentivoSchema>;
+
+/**
+ * Named members of {@link indIncentivoSchema}; names from
+ * {@link IND_INCENTIVO_LABELS}.
+ *
+ * `'1' | '2'` is the most generic member set in the package — `AmbienteNFE` and
+ * the NF-e engine's hand-written `TpAmb` carry it too. `prefer-schema-enum`
+ * identifies enums by declaration rather than by member set precisely so that
+ * `tpAmb === '1'` is never rewritten to `IND_INCENTIVO.sim`, which would compile
+ * and assert something entirely different.
+ */
+export const IND_INCENTIVO = {
+  sim: '1',
+  nao: '2',
+} as const satisfies Record<string, IndIncentivo>;
 
 export const IND_INCENTIVO_LABELS: Record<IndIncentivo, string> = {
   '1': '1 - Sim',
@@ -558,6 +708,24 @@ export const cstIpiSchema = z.enum([
 ]);
 export type CstIpi = z.infer<typeof cstIpiSchema>;
 
+/** Named members of {@link cstIpiSchema}; names from {@link CST_IPI_LABELS}. */
+export const CST_IPI = {
+  entradaComRecuperacaoCredito: '00',
+  entradaTributadaAliquotaZero: '01',
+  entradaIsenta: '02',
+  entradaNaoTributada: '03',
+  entradaImune: '04',
+  entradaComSuspensao: '05',
+  outrasEntradas: '49',
+  saidaTributada: '50',
+  saidaTributadaAliquotaZero: '51',
+  saidaIsenta: '52',
+  saidaNaoTributada: '53',
+  saidaImune: '54',
+  saidaComSuspensao: '55',
+  outrasSaidas: '99',
+} as const satisfies Record<string, CstIpi>;
+
 export const CST_IPI_LABELS: Record<CstIpi, string> = {
   '00': '00 - Entrada com recuperação de crédito',
   '01': '01 - Entrada tributada com alíquota zero',
@@ -576,7 +744,12 @@ export const CST_IPI_LABELS: Record<CstIpi, string> = {
 };
 
 /** The set of CSTs that emit `<IPITrib>`; the rest emit `<IPINT>`. */
-export const IPI_TRIB_CSTS = new Set<CstIpi>(['00', '49', '50', '99']);
+export const IPI_TRIB_CSTS = new Set<CstIpi>([
+  CST_IPI.entradaComRecuperacaoCredito,
+  CST_IPI.outrasEntradas,
+  CST_IPI.saidaTributada,
+  CST_IPI.outrasSaidas,
+]);
 
 /**
  * Mirror of the Flutter `ConfiguracaoIPI` slot on Imposto. `cEnq` is XSD-

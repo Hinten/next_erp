@@ -9,6 +9,7 @@ import {
   type TpEmis,
 } from '@delfrance/integrations-nfe';
 import {
+  IND_INTERMED_OPERACAO,
   STATUS_PAGAMENTO,
   freteDoPedidoSchema,
   integracaoSchema,
@@ -391,7 +392,7 @@ export function intermediadorFromSnap(
   integracaoSnap: FirebaseFirestore.DocumentSnapshot,
   operacao: Operacao,
 ): Integracao | null {
-  if (operacao.indIntermed !== '1') return null;
+  if (operacao.indIntermed !== IND_INTERMED_OPERACAO.plataformaTerceiros) return null;
   const parsed = integracaoSchema.safeParse(integracaoSnap.data());
   if (!parsed.success) {
     console.warn(
