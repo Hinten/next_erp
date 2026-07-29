@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MODALIDADE_FRETE, ESTADO_FRETE } from '@delfrance/schemas';
+import { UF_SIGLA, MODALIDADE_FRETE, ESTADO_FRETE } from '@delfrance/schemas';
 import type { Endereco, Filial, ItemDoPedido } from '@delfrance/schemas';
 
 import { buildPedidoCartPayload } from './melhorEnvioCart';
@@ -65,7 +65,7 @@ const ORIGIN: Endereco = {
   complemento: 'Conj 1',
   codigoMunicipio: null,
   cidade: 'São Paulo',
-  estado: 'SP',
+  estado: UF_SIGLA.SP,
   cPais: null,
   pais: null,
   nome: null,
@@ -99,7 +99,7 @@ const DEST_PF: Endereco = {
   complemento: null,
   codigoMunicipio: null,
   cidade: 'Rio de Janeiro',
-  estado: 'RJ',
+  estado: UF_SIGLA.RJ,
   cPais: null,
   pais: null,
   nome: 'Maria Recebedora',

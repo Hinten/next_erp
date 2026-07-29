@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { MlBillingInfo, MlShipment } from '@delfrance/integrations-mercado-livre';
-import { TIPO_CLIENTE } from '@delfrance/schemas';
+import { UF_SIGLA, TIPO_CLIENTE } from '@delfrance/schemas';
 
 import {
   type ClienteImportFields,
@@ -254,7 +254,7 @@ describe('billingInfoToEnderecoFields', () => {
       complemento: 'apto 12',
       codigoMunicipio: null,
       cidade: 'São Paulo',
-      estado: 'SP',
+      estado: UF_SIGLA.SP,
       cPais: null,
       pais: null,
       nome: null,
@@ -346,7 +346,7 @@ describe('makeEnderecoId', () => {
       cep: '01310100',
       codigoMunicipio: null,
       cidade: 'São Paulo',
-      estado: 'SP',
+      estado: UF_SIGLA.SP,
       cPais: null,
       pais: null,
       nome: null,
@@ -374,7 +374,7 @@ describe('makeEnderecoId', () => {
       cep: '01310100',
       codigoMunicipio: null,
       cidade: 'São Paulo',
-      estado: 'SP',
+      estado: UF_SIGLA.SP,
       cPais: null,
       pais: null,
       nome: null,
@@ -545,7 +545,7 @@ describe('ensureEndereco', () => {
     cep: '01310100',
     codigoMunicipio: null,
     cidade: 'São Paulo',
-    estado: 'SP',
+    estado: UF_SIGLA.SP,
     cPais: null,
     pais: null,
     nome: null,
