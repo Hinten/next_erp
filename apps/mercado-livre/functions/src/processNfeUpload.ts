@@ -31,9 +31,10 @@ import { getDb } from './lib/admin';
  *
  * `retryConfig.maxAttempts` mirrors `NFE_UPLOAD_MAX_ATTEMPTS`: a transient
  * failure retries with backoff, and on the FINAL attempt `processNfeUploadTask`
- * persists the terminal `mlEnvio.estado = 'erro'` instead of throwing — that
- * disposition lives in `nfeUpload.ts` so it stays unit-testable (the
- * `processPriceSync.ts` pattern).
+ * resolves instead of throwing — stamping `freteInicial.estado = 'error'` on
+ * the pedido when the upload itself failed (the flow's ONLY Firestore write;
+ * failure DETAIL goes to structured Cloud Logging) — that disposition lives in
+ * `nfeUpload.ts` so it stays unit-testable (the `processPriceSync.ts` pattern).
  *
  * `rateLimits` keep this to a single in-flight dispatch: uploads are rare (one
  * per approved NF-e), and serializing them keeps the per-conta token refresh +
@@ -70,7 +71,7 @@ export const processMercadoLivreNfeUpload = onTaskDispatched(
       if (err instanceof z.ZodError) {
         // A coding/enqueue bug (this queue only ever receives our own
         // `{ pedidoId, nfeId }` payload) — nothing to retry, and no valid ids
-        // to stamp an `mlEnvio` failure against.
+        // to act on; this structured log (issues + raw data) is the only trace.
         logger.error('[mercado-livre] NF-e upload task DROPPED — malformed payload', {
           issues: err.issues,
           data: req.data,
@@ -85,6 +86,10 @@ export const processMercadoLivreNfeUpload = onTaskDispatched(
       payload,
       req.retryCount ?? 0,
     );
+    // This structured line IS the per-NF-e observability in the zero-write
+    // model (no Firestore marker): outcome + motivo + retryCount per attempt;
+    // shipmentId and the ML code/message on failures come from the handler's
+    // own error logs inside `processNfeUploadTask`.
     logger.info('[mercado-livre] processed NF-e upload task', {
       queue: MERCADO_LIVRE_NFE_UPLOAD_QUEUE,
       pedidoId: payload.pedidoId,

@@ -75,43 +75,6 @@ export function isEstadoFinalNFe(estado: EstadoNFe | null | undefined): boolean 
 }
 
 /**
- * Estado do envio da NF-e ao Mercado Livre (Step 12, issue #739) — lifecycle
- * of the `mlEnvio` upload marker on the NF-e doc.
- * `pendente` = task enqueued, upload in flight; `enviado` = ML accepted the
- * nfeProc XML; `erro` = attempts exhausted or a deterministic rejection;
- * `descartado` = upload not applicable (e.g. shipment already resolved).
- */
-export const mlEnvioEstadoSchema = z.enum(['pendente', 'enviado', 'erro', 'descartado']);
-export type MlEnvioEstado = z.infer<typeof mlEnvioEstadoSchema>;
-
-export const ML_ENVIO_ESTADO = {
-  pendente: 'pendente',
-  enviado: 'enviado',
-  erro: 'erro',
-  descartado: 'descartado',
-} as const satisfies Record<string, MlEnvioEstado>;
-
-/**
- * Marker block for the Mercado Livre invoice upload (Step 12, issue #739):
- * one attempt-tracking record per NF-e doc, written only by the ML upload
- * task. `shipmentId` is the ML shipment the XML was (or will be) posted to;
- * `motivo` explains a `descartado`; `ultimoErro`/`ultimoErroCodigo` capture
- * the last failure for triage. `atualizadoEm` is MILLIS since epoch (matches
- * the doc's other `data_*`/`ultima_modificacao` fields, not the micros
- * standard used by `proximaConsultaEm`).
- */
-export const mlEnvioSchema = z.object({
-  estado: mlEnvioEstadoSchema,
-  tentativas: z.number().int().min(0).default(0),
-  shipmentId: z.string().min(1).nullable().default(null),
-  motivo: z.string().nullable().default(null),
-  ultimoErro: z.string().nullable().default(null),
-  ultimoErroCodigo: z.string().nullable().default(null),
-  atualizadoEm: millisSinceEpoch().nullable().default(null),
-});
-export type MlEnvio = z.infer<typeof mlEnvioSchema>;
-
-/**
  * NF-e chave de acesso: exactly 44 digits. Shared source for every place
  * that validates a chave string (pedido `chNFeReferenciadas`, UI inputs).
  * Keep byte-identical to the pattern historically inlined at those call
@@ -190,20 +153,6 @@ export const nfeSchema = z.object({
 
   error: z.string().nullable(),
   ultima_modificacao: millisSinceEpoch().nullable().default(null),
-
-  /**
-   * Mercado Livre invoice-upload marker (Step 12, issue #739): tracks the
-   * POST of this NF-e's signed nfeProc XML to
-   * `/shipments/{shipmentId}/invoice_data` so the ML shipment leaves
-   * `invoice_pending`. `.optional()` exists ONLY for read-tolerance of docs
-   * written before Step 12 (same rationale as `filialId` above); writers
-   * always set the full block or `null`, never `undefined`.
-   * Dual-run caveat: the legacy Flutter model ignores unknown keys on read
-   * but DROPS them on a full-doc save — an erased marker just re-arms the
-   * upload trigger, which is safe because the task re-gates everything
-   * (estado, XML presence, tpAmb, shipment status) before sending.
-   */
-  mlEnvio: mlEnvioSchema.nullable().optional(),
 });
 
 export type NotaFiscalEletronica = z.infer<typeof nfeSchema>;

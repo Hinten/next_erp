@@ -42,9 +42,9 @@ function mlTasksRegion(): string {
 /**
  * Real scheduler — enqueues onto the `processMercadoLivreNfeUpload` queue.
  * Unlike the price-sync pair, the `MlNfeUploadScheduler` interface it
- * implements lives in `./nfeUpload` (next to `enqueueNfeUpload`, its consumer)
- * rather than here: the core module owns the seam so it never depends on this
- * transport.
+ * implements lives in `./nfeUpload` (next to the dispatch helpers its
+ * consumers pair it with) rather than here: the core module owns the seam so
+ * it never depends on this transport.
  */
 class FirebaseMlNfeUploadScheduler implements MlNfeUploadScheduler {
   // Region-qualified name so the queue resolves to the deployed function's

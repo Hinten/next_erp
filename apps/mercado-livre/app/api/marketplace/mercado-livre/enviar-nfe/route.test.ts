@@ -3,15 +3,16 @@ import { PERM } from '@delfrance/auth';
 
 import { MlTasksDisabledError } from '@/lib/marketplace/mlTasks';
 
-// verifyCaller / dispatch decision / enqueue are mocked; the route's own logic
-// (body validation, the 404, skip→status mapping, the disabled-valve 503) and
-// the REAL nfev4Collection path resolution (via the fake db below) run real.
+// verifyCaller / dispatch decision / pedido check / scheduler are mocked; the
+// route's own logic (body validation, the 404, skip→409 mapping, the always-202
+// enqueue, the disabled-valve 503) and the REAL nfev4Collection path resolution
+// (via the fake db below) run real.
 const h = vi.hoisted(() => ({
   verifyCaller: vi.fn(),
   get: vi.fn(),
   docPaths: [] as string[],
   decide: vi.fn(),
-  enqueueNfeUpload: vi.fn(async (..._args: unknown[]) => {}),
+  shouldUpload: vi.fn(async (..._args: unknown[]) => ({ action: 'enqueue' }) as unknown),
   schedEnqueue: vi.fn(async (_payload: unknown) => {}),
 }));
 
@@ -38,7 +39,7 @@ vi.mock('@/lib/auth/verifyCaller', async (importActual) => {
 
 vi.mock('@/lib/marketplace/nfeUpload', async (importActual) => {
   const actual = await importActual<typeof import('@/lib/marketplace/nfeUpload')>();
-  return { ...actual, decideNfeUploadDispatch: h.decide, enqueueNfeUpload: h.enqueueNfeUpload };
+  return { ...actual, decideNfeUploadDispatch: h.decide, shouldUploadForPedido: h.shouldUpload };
 });
 
 vi.mock('@/lib/marketplace/mlNfeUploadTasks', () => ({
@@ -65,11 +66,12 @@ beforeEach(() => {
   h.verifyCaller.mockResolvedValue({ caller: { uid: 'u1', permissions: undefined } });
   h.get.mockResolvedValue({ exists: true, data: () => DOC });
   h.decide.mockReturnValue({ action: 'enqueue' });
-  h.enqueueNfeUpload.mockResolvedValue(undefined);
+  h.shouldUpload.mockResolvedValue({ action: 'enqueue' });
+  h.schedEnqueue.mockResolvedValue(undefined);
 });
 
 describe('POST /api/marketplace/mercado-livre/enviar-nfe', () => {
-  it('requires pedido-write, reads the nfev4 doc, decides from scratch, enqueues and 202s', async () => {
+  it('requires pedido-write, reads the nfev4 doc, gates doc + pedido, enqueues and 202s', async () => {
     const res = await POST(req({ pedidoId: 'ped-1', nfeId: 's1' }));
     expect(res.status).toBe(202);
     expect(await res.json()).toEqual({ enqueued: true });
@@ -77,18 +79,23 @@ describe('POST /api/marketplace/mercado-livre/enviar-nfe', () => {
     // Pedido-write scoping (expedição staff), not the integração admin perm.
     expect(h.verifyCaller).toHaveBeenCalledWith(expect.anything(), PERM.pedido.write);
     expect(h.docPaths).toEqual(['pedidos/ped-1/nfev4/s1']);
-    // `before: undefined` = the manual-retry semantics: a marker-'erro' or
-    // stale-'pendente' doc is judged from scratch and re-enqueues.
-    expect(h.decide).toHaveBeenCalledWith(undefined, DOC, expect.any(Number));
-    expect(h.enqueueNfeUpload).toHaveBeenCalledWith(
-      expect.anything(),
-      { enqueue: h.schedEnqueue },
-      { pedidoId: 'ped-1', nfeId: 's1' },
-      expect.any(Number),
-    );
-    // The same captured nowMs feeds both the decision and the enqueue.
-    const decideNow = h.decide.mock.calls[0]![2];
-    expect(h.enqueueNfeUpload.mock.calls[0]![3]).toBe(decideNow);
+    // `before: undefined` = judged from scratch on intrinsic eligibility only
+    // (zero-write model — no nowMs, no marker state to consult).
+    expect(h.decide).toHaveBeenCalledWith(undefined, DOC);
+    expect(h.shouldUpload).toHaveBeenCalledWith(expect.anything(), 'ped-1');
+    expect(h.schedEnqueue).toHaveBeenCalledWith({ pedidoId: 'ped-1', nfeId: 's1' });
+  });
+
+  it('202s on EVERY eligible call — repeat sends are idempotent via the task shipment gate', async () => {
+    // No em-andamento / ja-resolvida state exists (zero-write model): the same
+    // request enqueues again every time; a duplicate task no-ops at the
+    // shipment-status gate. This route IS Step 13's manual retry channel.
+    const first = await POST(req({ pedidoId: 'ped-1', nfeId: 's1' }));
+    const second = await POST(req({ pedidoId: 'ped-1', nfeId: 's1' }));
+    expect(first.status).toBe(202);
+    expect(second.status).toBe(202);
+    expect(await second.json()).toEqual({ enqueued: true });
+    expect(h.schedEnqueue).toHaveBeenCalledTimes(2);
   });
 
   it('400s on missing fields, invalid JSON and non-object bodies', async () => {
@@ -108,17 +115,20 @@ describe('POST /api/marketplace/mercado-livre/enviar-nfe', () => {
     expect(res.status).toBe(404);
     expect((await res.json()).code).toBe('NFE_NAO_ENCONTRADA');
     expect(h.decide).not.toHaveBeenCalled();
-    expect(h.enqueueNfeUpload).not.toHaveBeenCalled();
+    expect(h.shouldUpload).not.toHaveBeenCalled();
+    expect(h.schedEnqueue).not.toHaveBeenCalled();
   });
 
-  it('409s NFE_NAO_ELEGIVEL with the machine reason passed through on an ineligible doc', async () => {
+  it('409s NFE_NAO_ELEGIVEL with the doc-level machine reason passed through', async () => {
     h.decide.mockReturnValue({ action: 'skip', reason: 'nao-aprovada' });
     const res = await POST(req({ pedidoId: 'ped-1', nfeId: 's1' }));
     expect(res.status).toBe(409);
     const body = await res.json();
     expect(body.code).toBe('NFE_NAO_ELEGIVEL');
     expect(body.reason).toBe('nao-aprovada');
-    expect(h.enqueueNfeUpload).not.toHaveBeenCalled();
+    // A doc-level skip short-circuits BEFORE the pedido read.
+    expect(h.shouldUpload).not.toHaveBeenCalled();
+    expect(h.schedEnqueue).not.toHaveBeenCalled();
 
     h.decide.mockReturnValue({ action: 'skip', reason: 'tpamb-homologacao' });
     const res2 = await POST(req({ pedidoId: 'ped-1', nfeId: 's1' }));
@@ -126,23 +136,28 @@ describe('POST /api/marketplace/mercado-livre/enviar-nfe', () => {
     expect((await res2.json()).reason).toBe('tpamb-homologacao');
   });
 
-  it('202s { enqueued: false, emAndamento: true } when an upload is already in flight', async () => {
-    h.decide.mockReturnValue({ action: 'skip', reason: 'em-andamento' });
-    const res = await POST(req({ pedidoId: 'ped-1', nfeId: 's1' }));
-    expect(res.status).toBe(202);
-    expect(await res.json()).toEqual({ enqueued: false, emAndamento: true });
-    expect(h.enqueueNfeUpload).not.toHaveBeenCalled();
+  it('409s NFE_NAO_ELEGIVEL with the pedido-level reason from shouldUploadForPedido', async () => {
+    for (const reason of ['pedido-nao-encontrado', 'nao-mercado-livre', 'sem-integracao']) {
+      h.shouldUpload.mockResolvedValue({ action: 'skip', reason });
+      const res = await POST(req({ pedidoId: 'ped-1', nfeId: 's1' }));
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('NFE_NAO_ELEGIVEL');
+      expect(body.reason).toBe(reason);
+      expect(typeof body.error).toBe('string');
+    }
+    expect(h.schedEnqueue).not.toHaveBeenCalled();
   });
 
   it('503s ML_NFE_UPLOAD_ENQUEUE_FAILED when the tasks valve is shut (MlTasksDisabledError)', async () => {
-    h.enqueueNfeUpload.mockRejectedValue(new MlTasksDisabledError());
+    h.schedEnqueue.mockRejectedValue(new MlTasksDisabledError());
     const res = await POST(req({ pedidoId: 'ped-1', nfeId: 's1' }));
     expect(res.status).toBe(503);
     expect((await res.json()).code).toBe('ML_NFE_UPLOAD_ENQUEUE_FAILED');
   });
 
   it('rethrows an unexpected enqueue failure instead of masking it as a 503', async () => {
-    h.enqueueNfeUpload.mockRejectedValue(new Error('cloudtasks down'));
+    h.schedEnqueue.mockRejectedValue(new Error('cloudtasks down'));
     await expect(POST(req({ pedidoId: 'ped-1', nfeId: 's1' }))).rejects.toThrow('cloudtasks down');
   });
 

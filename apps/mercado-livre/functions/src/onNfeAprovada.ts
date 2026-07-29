@@ -4,7 +4,7 @@ import { nfeMeta } from '@delfrance/schemas';
 
 import { createMlNfeUploadScheduler } from '../../lib/marketplace/mlNfeUploadTasks';
 import { MlTasksDisabledError } from '../../lib/marketplace/mlTasks';
-import { decideNfeUploadDispatch, enqueueNfeUpload } from '../../lib/marketplace/nfeUpload';
+import { decideNfeUploadDispatch, shouldUploadForPedido } from '../../lib/marketplace/nfeUpload';
 import { getDb } from './lib/admin';
 
 /**
@@ -12,9 +12,18 @@ import { getDb } from './lib/admin';
  * FIRST Firestore trigger. Fires on every `pedidos/{pedidoId}/nfev4/{nfeId}`
  * write and delegates to the pure `decideNfeUploadDispatch` disposition: when a
  * production (`<tpAmb>1`) NF-e reaches `estado 'a'` (aprovada) with its signed
- * `xml_nfe_proc` present, it enqueues ONE `{ pedidoId, nfeId }` task onto the
- * `processMercadoLivreNfeUpload` queue via `enqueueNfeUpload` (which stamps the
- * `mlEnvio` pendente marker so redundant re-fires within the TTL dedupe).
+ * `xml_nfe_proc` present, ONE pedido read (`shouldUploadForPedido`) filters
+ * non-ML pedidos, then it enqueues ONE `{ pedidoId, nfeId }` task onto the
+ * `processMercadoLivreNfeUpload` queue.
+ *
+ * ZERO-WRITE MODEL (owner decision, rev 2): the happy path writes NOTHING to
+ * Firestore — there is no per-NF-e marker. Idempotency is the task handler's
+ * live shipment-status gate (substatus leaves `invoice_pending` once an invoice
+ * is uploaded, so a duplicate task no-ops), per-NF-e observability is the
+ * handler's structured Cloud Logging, and the ONLY Firestore write in the whole
+ * flow is the failure stamp `freteInicial.estado = 'error'` on the pedido. The
+ * single pedido read here is the cost win: a non-ML NF-e approval costs exactly
+ * 1 read — no task ever exists for it, and nothing is stamped anywhere.
  *
  * ⚠️ Targets the repo's NAMED `default` Firestore database (root gotcha); an
  * `onDocument*` that omits `database` binds to `(default)` and NEVER fires.
@@ -22,9 +31,9 @@ import { getDb } from './lib/admin';
  * `FIREBASE_DATABASE_ID` — see build.mjs).
  *
  * `retry: true` → Eventarc at-least-once, and it exists for TRANSIENT
- * enqueue/stamp failures. A redelivery replays the ORIGINAL CloudEvent — the
- * SAME stale before/after snapshots, not the current doc — so the decision can
- * re-enqueue a task that already resolved. That duplicate is harmless: the
+ * pedido-read/enqueue failures. A redelivery replays the ORIGINAL CloudEvent —
+ * the SAME stale before/after snapshots, not the current doc — so the decision
+ * can re-enqueue a task that already resolved. That duplicate is harmless: the
  * task handler re-gates everything against FRESH reads, the GET-shipment
  * eligibility gate, and the `shipment_invoice_already_saved` → ja-enviado
  * mapping.
@@ -50,16 +59,20 @@ export const onNfeAprovada = onDocumentWritten(
     // so its type isn't inferred into `event.params` (only the trailing
     // `{nfeId}` is) — both are present at runtime.
     const { pedidoId, nfeId } = event.params as { pedidoId: string; nfeId: string };
-    const nowMs = Date.now();
-    const decision = decideNfeUploadDispatch(
-      event.data?.before.data(),
-      event.data?.after.data(),
-      nowMs,
-    );
+    const decision = decideNfeUploadDispatch(event.data?.before.data(), event.data?.after.data());
     logger.info('[mercado-livre] onNfeAprovada', { pedidoId, nfeId, decision });
     if (decision.action !== 'enqueue') return;
+
+    // The ONE read of the flow's dispatch side: skip non-ML pedidos BEFORE any
+    // task exists (no task, no write — a non-ML approval costs exactly this
+    // read). A transient Firestore failure here throws and rides the Eventarc
+    // retry.
+    const check = await shouldUploadForPedido(getDb(), pedidoId);
+    logger.info('[mercado-livre] onNfeAprovada pedido check', { pedidoId, nfeId, check });
+    if (check.action !== 'enqueue') return;
+
     try {
-      await enqueueNfeUpload(getDb(), createMlNfeUploadScheduler(), { pedidoId, nfeId }, nowMs);
+      await createMlNfeUploadScheduler().enqueue({ pedidoId, nfeId });
     } catch (err) {
       if (err instanceof MlTasksDisabledError) {
         logger.warn(

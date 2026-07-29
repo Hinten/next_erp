@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, type Mock } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
   MercadoLivreHttpError,
@@ -6,27 +6,19 @@ import {
   MercadoLivreReauthRequiredError,
   type MercadoLivreApi,
 } from '@delfrance/integrations-mercado-livre';
-import {
-  ESTADO_FRETE,
-  ESTADO_NFE,
-  ESTADO_PEDIDO,
-  INTEGRACAO_FRETE,
-  ML_ENVIO_ESTADO,
-} from '@delfrance/schemas';
+import { ESTADO_FRETE, ESTADO_NFE, ESTADO_PEDIDO, INTEGRACAO_FRETE } from '@delfrance/schemas';
 
 import { MercadoLivreContaNotConfiguredError } from './mercadoLivre';
 import {
   MercadoLivreContaInativaError,
   NFE_UPLOAD_MAX_ATTEMPTS,
-  NFE_UPLOAD_PENDENTE_TTL_MS,
   NfeUploadTransientError,
   classifyInvoiceError,
   decideNfeUploadDispatch,
-  enqueueNfeUpload,
   extractTpAmb,
   nfeUploadTaskSchema,
   processNfeUploadTask,
-  type MlNfeUploadScheduler,
+  shouldUploadForPedido,
   type NfeUploadDeps,
   type NfeUploadTaskPayload,
 } from './nfeUpload';
@@ -35,12 +27,11 @@ import {
 // Own copy (repo convention: per-file FakeDb copies, not shared fakes) —
 // cloned from orderShipmentImport.test.ts and SCOPED to what nfeUpload.ts
 // touches: `pedidos` doc get/update (incl. inside the stampFreteErro
-// transaction) and the `pedidos/{pedidoId}/nfev4` subcollection's get +
-// set-merge (the admin handle's `merge()` transport). The reads-before-writes
-// guard inside `runTransaction` mirrors orderPedidoTx.test.ts's FakeDb.
-// `set` implements TOP-LEVEL shallow merge — sufficient here because mlEnvio
-// markers are always written as FULL objects (deep-vs-shallow map merge is
-// indistinguishable for them).
+// transaction) and the `pedidos/{pedidoId}/nfev4` subcollection's get. The
+// opLog records EVERY op — it is the probe behind the REV-2 pinned cost
+// invariant (zero Firestore writes anywhere except the single pedido TX
+// update on genuine upload failure). The reads-before-writes guard inside
+// `runTransaction` mirrors orderPedidoTx.test.ts's FakeDb.
 
 type DocData = Record<string, unknown>;
 type OpKind = 'get' | 'update' | 'set';
@@ -66,7 +57,6 @@ interface FakeTransaction {
 class FakeDb {
   readonly cols = new Map<string, Map<string, DocData>>();
   readonly opLog: Array<{ op: OpKind; path: string }> = [];
-  private readonly patches = new Map<string, DocData>();
 
   private col(path: string): Map<string, DocData> {
     let c = this.cols.get(path);
@@ -78,10 +68,6 @@ class FakeDb {
   }
   docs(path: string): Map<string, DocData> {
     return this.col(path);
-  }
-  /** The last `update()`/`set()` payload written at `path/id` — asserts the write's exact shape. */
-  lastPatch(path: string, id: string): DocData | undefined {
-    return this.patches.get(`${path}/${id}`);
   }
 
   private makeDocRef(path: string, id: string): FakeDocRef {
@@ -95,12 +81,10 @@ class FakeDb {
       },
       update: async (patch: DocData) => {
         self.opLog.push({ op: 'update', path: `${path}/${id}` });
-        self.patches.set(`${path}/${id}`, patch);
         col.set(id, { ...(col.get(id) ?? {}), ...patch });
       },
       set: async (data: DocData, opts?: { merge?: boolean }) => {
         self.opLog.push({ op: 'set', path: `${path}/${id}` });
-        self.patches.set(`${path}/${id}`, data);
         col.set(id, opts?.merge ? { ...(col.get(id) ?? {}), ...data } : { ...data });
       },
     };
@@ -111,11 +95,6 @@ class FakeDb {
     return {
       doc: (id: string) => self.makeDocRef(path, id),
     };
-  }
-
-  /** Raw ref accessor for tests that wrap/override a single doc ref. */
-  ref(path: string, id: string): FakeDocRef {
-    return this.makeDocRef(path, id);
   }
 
   // Admin SDK invariant: every read in a transaction must happen before its
@@ -165,7 +144,6 @@ function nfeDoc(over: DocData = {}): DocData {
     estado: ESTADO_NFE.aprovada,
     xml_nfe_proc: XML_PROD,
     ultima_modificacao: Date.parse('2026-06-30T00:00:00.000Z'),
-    mlEnvio: null,
     ...over,
   };
 }
@@ -216,37 +194,24 @@ function makeDeps(
   return { db: asDb(db), nowMs: NOW_MS, resolveApi: vi.fn(async () => api), ...over };
 }
 
-function marker(db: FakeDb): unknown {
-  return db.docs(NFE_COL).get(NFE_ID)?.mlEnvio;
+/* ---- the REV-2 cost probes: writes are recorded per path by the opLog ---- */
+
+/** Every non-read op, anywhere — the "ZERO writes" probe. */
+function allWrites(db: FakeDb): Array<{ op: OpKind; path: string }> {
+  return db.opLog.filter((e) => e.op !== 'get');
 }
 
-/** Every non-read op that hit the pedido doc — the "NO pedido write" probe. */
-function pedidoWrites(db: FakeDb): Array<{ op: OpKind; path: string }> {
-  return db.opLog.filter((e) => e.path === `pedidos/${PEDIDO_ID}` && e.op !== 'get');
-}
-
-// The mock is TYPED at its creation site so an async `mockImplementation`
-// matches the declared Promise-returning signature (otherwise
-// `@typescript-eslint/no-misused-promises` flags it).
-function makeScheduler(): MlNfeUploadScheduler & {
-  enqueue: Mock<(payload: NfeUploadTaskPayload) => Promise<void>>;
-} {
-  return { enqueue: vi.fn<(payload: NfeUploadTaskPayload) => Promise<void>>(async () => {}) };
+/**
+ * Every non-read op that hit the nfev4 subcollection — must ALWAYS be empty,
+ * even on the two paths where the pedido IS written (`allWrites` pins the
+ * full shape there; this probe names the nfev4 half of the invariant).
+ */
+function nfeWrites(db: FakeDb): Array<{ op: OpKind; path: string }> {
+  return allWrites(db).filter((e) => e.path.startsWith(`${NFE_COL}/`));
 }
 
 const httpErr = (status: number, body: unknown = null): MercadoLivreHttpError =>
   new MercadoLivreHttpError(`ML ${status}`, status, body);
-
-const fullMarker = (over: DocData = {}): DocData => ({
-  estado: ML_ENVIO_ESTADO.pendente,
-  tentativas: 0,
-  shipmentId: null,
-  motivo: null,
-  ultimoErro: null,
-  ultimoErroCodigo: null,
-  atualizadoEm: NOW_MS,
-  ...over,
-});
 
 /* ------------------------------- extractTpAmb ------------------------------ */
 
@@ -271,191 +236,118 @@ describe('extractTpAmb', () => {
 
 /* --------------------------- decideNfeUploadDispatch ----------------------- */
 
+// REV 2: there is NO recursion guard and NO marker/TTL dedup here anymore —
+// this module writes nothing to nfev4 (zero-write model), so no self-inflicted
+// trigger re-fire exists to guard against. Any doc write (pokes included)
+// simply re-runs these four cheap guards; a redundant enqueue is resolved by
+// the task's live shipment-status gate (substatus leaves `invoice_pending`
+// once ML has the invoice).
 describe('decideNfeUploadDispatch', () => {
   it('skips a deleted doc', () => {
-    expect(decideNfeUploadDispatch(nfeDoc(), undefined, NOW_MS)).toEqual({
+    expect(decideNfeUploadDispatch(nfeDoc(), undefined)).toEqual({
       action: 'skip',
       reason: 'apagada',
     });
   });
 
   it('skips a non-aprovada estado', () => {
-    expect(
-      decideNfeUploadDispatch(undefined, nfeDoc({ estado: ESTADO_NFE.gerado }), NOW_MS),
-    ).toEqual({ action: 'skip', reason: 'nao-aprovada' });
+    expect(decideNfeUploadDispatch(undefined, nfeDoc({ estado: ESTADO_NFE.gerado }))).toEqual({
+      action: 'skip',
+      reason: 'nao-aprovada',
+    });
   });
 
   it('skips when xml_nfe_proc is null', () => {
-    expect(decideNfeUploadDispatch(undefined, nfeDoc({ xml_nfe_proc: null }), NOW_MS)).toEqual({
+    expect(decideNfeUploadDispatch(undefined, nfeDoc({ xml_nfe_proc: null }))).toEqual({
+      action: 'skip',
+      reason: 'xml-ausente',
+    });
+  });
+
+  it('skips a non-string xml_nfe_proc (malformed doc)', () => {
+    expect(decideNfeUploadDispatch(undefined, nfeDoc({ xml_nfe_proc: 123 }))).toEqual({
       action: 'skip',
       reason: 'xml-ausente',
     });
   });
 
   it('skips a homologação XML', () => {
-    expect(decideNfeUploadDispatch(undefined, nfeDoc({ xml_nfe_proc: XML_HOM }), NOW_MS)).toEqual({
+    expect(decideNfeUploadDispatch(undefined, nfeDoc({ xml_nfe_proc: XML_HOM }))).toEqual({
       action: 'skip',
       reason: 'tpamb-homologacao',
     });
   });
 
   it('skips an XML with no tpAmb at all', () => {
-    expect(
-      decideNfeUploadDispatch(undefined, nfeDoc({ xml_nfe_proc: XML_SEM_TPAMB }), NOW_MS),
-    ).toEqual({ action: 'skip', reason: 'tpamb-homologacao' });
-  });
-
-  it('RECURSION GUARD: a marker-only write (our own stamp) skips', () => {
-    const before = nfeDoc();
-    const after = nfeDoc({ mlEnvio: fullMarker() });
-    expect(decideNfeUploadDispatch(before, after, NOW_MS)).toEqual({
+    expect(decideNfeUploadDispatch(undefined, nfeDoc({ xml_nfe_proc: XML_SEM_TPAMB }))).toEqual({
       action: 'skip',
-      reason: 'marker-write',
+      reason: 'tpamb-homologacao',
     });
   });
 
-  it('RECURSION GUARD: a pendente→erro marker transition (task stamp) also skips', () => {
-    const before = nfeDoc({ mlEnvio: fullMarker() });
-    const after = nfeDoc({
-      mlEnvio: fullMarker({ estado: ML_ENVIO_ESTADO.erro, motivo: 'reauth', tentativas: 1 }),
-    });
-    expect(decideNfeUploadDispatch(before, after, NOW_MS)).toEqual({
+  it('enqueues a created-already-approved doc (before undefined)', () => {
+    expect(decideNfeUploadDispatch(undefined, nfeDoc())).toEqual({ action: 'enqueue' });
+  });
+
+  it('enqueues on an unchanged rewrite/poke — dedup is the task shipment gate, not here', () => {
+    expect(decideNfeUploadDispatch(nfeDoc(), nfeDoc())).toEqual({ action: 'enqueue' });
+  });
+});
+
+/* ---------------------------- shouldUploadForPedido ------------------------ */
+
+describe('shouldUploadForPedido', () => {
+  it('skips a missing pedido', async () => {
+    const db = new FakeDb();
+    await expect(shouldUploadForPedido(asDb(db), PEDIDO_ID)).resolves.toEqual({
       action: 'skip',
-      reason: 'marker-write',
+      reason: 'pedido-nao-encontrado',
     });
   });
 
-  it('a real poke (ultima_modificacao bumped) on an erro marker RE-ENQUEUES (poke-as-retry)', () => {
-    const erroMarker = fullMarker({ estado: ML_ENVIO_ESTADO.erro, motivo: 'envio-rejeitado' });
-    const before = nfeDoc({ mlEnvio: erroMarker });
-    const after = nfeDoc({
-      mlEnvio: erroMarker,
-      ultima_modificacao: Date.parse('2026-07-01T00:00:00.000Z'),
-    });
-    expect(decideNfeUploadDispatch(before, after, NOW_MS)).toEqual({ action: 'enqueue' });
-  });
-
-  it('skips an already-resolved marker: enviado', () => {
-    const m = fullMarker({ estado: ML_ENVIO_ESTADO.enviado });
-    expect(decideNfeUploadDispatch(nfeDoc({ mlEnvio: m }), nfeDoc({ mlEnvio: m }), NOW_MS)).toEqual(
-      { action: 'skip', reason: 'ja-resolvida' },
-    );
-  });
-
-  it('skips an already-resolved marker: descartado', () => {
-    const m = fullMarker({ estado: ML_ENVIO_ESTADO.descartado, motivo: 'shipment-404' });
-    expect(decideNfeUploadDispatch(nfeDoc({ mlEnvio: m }), nfeDoc({ mlEnvio: m }), NOW_MS)).toEqual(
-      { action: 'skip', reason: 'ja-resolvida' },
-    );
-  });
-
-  it('skips a FRESH pendente marker (upload in flight)', () => {
-    const m = fullMarker({ atualizadoEm: NOW_MS - NFE_UPLOAD_PENDENTE_TTL_MS + 60_000 });
-    expect(decideNfeUploadDispatch(nfeDoc({ mlEnvio: m }), nfeDoc({ mlEnvio: m }), NOW_MS)).toEqual(
-      { action: 'skip', reason: 'em-andamento' },
-    );
-  });
-
-  it('re-enqueues a STALE pendente marker (orphaned task)', () => {
-    const m = fullMarker({ atualizadoEm: NOW_MS - NFE_UPLOAD_PENDENTE_TTL_MS - 1 });
-    expect(decideNfeUploadDispatch(nfeDoc({ mlEnvio: m }), nfeDoc({ mlEnvio: m }), NOW_MS)).toEqual(
-      { action: 'enqueue' },
-    );
-  });
-
-  it('enqueues a created-already-approved doc (before undefined, no marker)', () => {
-    expect(decideNfeUploadDispatch(undefined, nfeDoc(), NOW_MS)).toEqual({ action: 'enqueue' });
-  });
-
-  it('enqueues on a malformed marker', () => {
-    expect(decideNfeUploadDispatch(undefined, nfeDoc({ mlEnvio: 'garbage' }), NOW_MS)).toEqual({
+  it('enqueues a Mercado Livre freteInicial', async () => {
+    const db = new FakeDb();
+    seedPedido(db);
+    await expect(shouldUploadForPedido(asDb(db), PEDIDO_ID)).resolves.toEqual({
       action: 'enqueue',
     });
   });
 
-  it('Flutter dual-run full-doc save (marker ERASED + ultima_modificacao bumped) re-enqueues', () => {
-    // The erased-marker re-arm path the schema docblock promises: a legacy
-    // full-doc save drops the mlEnvio key entirely and bumps the poke field.
-    const before = nfeDoc({ mlEnvio: fullMarker({ estado: ML_ENVIO_ESTADO.enviado }) });
-    const after = nfeDoc({ ultima_modificacao: Date.parse('2026-07-01T00:00:00.000Z') });
-    delete after.mlEnvio;
-    expect(decideNfeUploadDispatch(before, after, NOW_MS)).toEqual({ action: 'enqueue' });
-  });
-
-  it('our own re-arm write (xml null, marker cleared) skips at xml-ausente, not the guards', () => {
-    // Loop closure: the task's mlEnvio-null re-arm on a vanished XML re-fires
-    // the trigger; step 3 (xml-ausente) must win BEFORE the recursion guard or
-    // the marker logic ever run.
-    const before = nfeDoc({
-      xml_nfe_proc: null,
-      mlEnvio: fullMarker({ estado: ML_ENVIO_ESTADO.erro }),
+  it('skips a frete owned by another integradora', async () => {
+    const db = new FakeDb();
+    seedPedido(db, {
+      freteInicial: freteMl({ externalOptionIntegracao: INTEGRACAO_FRETE.melhorEnvios }),
     });
-    const after = nfeDoc({ xml_nfe_proc: null, mlEnvio: null });
-    expect(decideNfeUploadDispatch(before, after, NOW_MS)).toEqual({
+    await expect(shouldUploadForPedido(asDb(db), PEDIDO_ID)).resolves.toEqual({
       action: 'skip',
-      reason: 'xml-ausente',
+      reason: 'nao-mercado-livre',
     });
   });
-});
 
-/* ------------------------------ enqueueNfeUpload --------------------------- */
-
-describe('enqueueNfeUpload', () => {
-  it('enqueues FIRST, then stamps the full pendente marker', async () => {
+  it('skips a local pedido (null frete, null integração ref)', async () => {
     const db = new FakeDb();
-    seedNfe(db);
-    const scheduler = makeScheduler();
-    scheduler.enqueue.mockImplementation(async () => {
-      // Order pin: at enqueue time the marker must NOT have been stamped yet.
-      expect(marker(db)).toBeNull();
+    seedPedido(db, { freteInicial: null, integracaoPedidoOuterRef: null });
+    await expect(shouldUploadForPedido(asDb(db), PEDIDO_ID)).resolves.toEqual({
+      action: 'skip',
+      reason: 'sem-integracao',
     });
-
-    await enqueueNfeUpload(asDb(db), scheduler, PAYLOAD, NOW_MS);
-
-    expect(scheduler.enqueue).toHaveBeenCalledExactlyOnceWith(PAYLOAD);
-    expect(marker(db)).toEqual(fullMarker());
   });
 
-  it('does NOT stamp when the enqueue fails (no stranded pendente)', async () => {
+  it('ENQUEUES on null frete + integração ref present (order-import race)', async () => {
+    // The importer that writes freteInicial runs every 15 min; the task's
+    // transient sem-frete throw + queue backoff resolves the gap.
     const db = new FakeDb();
-    seedNfe(db);
-    const scheduler = makeScheduler();
-    scheduler.enqueue.mockRejectedValue(new Error('queue down'));
-
-    await expect(enqueueNfeUpload(asDb(db), scheduler, PAYLOAD, NOW_MS)).rejects.toThrow(
-      'queue down',
-    );
-    expect(marker(db)).toBeNull();
-  });
-
-  it('propagates a marker-merge failure AFTER a successful enqueue (task stays queued)', async () => {
-    // Eventarc redelivery covers the missing pendente stamp; the enqueued task
-    // itself is duplicate-tolerant.
-    const db = new FakeDb();
-    seedNfe(db);
-    const scheduler = makeScheduler();
-    const failingDb = {
-      collection: (path: string) => ({
-        doc: (id: string) => ({
-          ...db.ref(path, id),
-          set: async () => {
-            throw new Error('marker merge down');
-          },
-        }),
-      }),
-    } as unknown as Firestore;
-
-    await expect(enqueueNfeUpload(failingDb, scheduler, PAYLOAD, NOW_MS)).rejects.toThrow(
-      'marker merge down',
-    );
-    expect(scheduler.enqueue).toHaveBeenCalledExactlyOnceWith(PAYLOAD);
+    seedPedido(db, { freteInicial: null });
+    await expect(shouldUploadForPedido(asDb(db), PEDIDO_ID)).resolves.toEqual({
+      action: 'enqueue',
+    });
   });
 });
 
 /* --------------------------- processNfeUploadTask -------------------------- */
 
 describe('processNfeUploadTask — happy path + dispositions', () => {
-  it('POSTs the stored XML verbatim, stamps enviado, and NEVER touches the pedido', async () => {
+  it('POSTs the stored XML verbatim with ZERO Firestore writes (REV-2 cost invariant)', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -466,66 +358,50 @@ describe('processNfeUploadTask — happy path + dispositions', () => {
 
     expect(result).toEqual({ outcome: 'enviado', motivo: null });
     expect(api.sendShipmentInvoiceData).toHaveBeenCalledExactlyOnceWith(SHIPMENT_ID, XML_PROD);
-    expect(marker(db)).toEqual(
-      fullMarker({ estado: ML_ENVIO_ESTADO.enviado, tentativas: 1, shipmentId: SHIPMENT_ID }),
-    );
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(allWrites(db)).toEqual([]);
     expect(db.docs('pedidos').get(PEDIDO_ID)).toEqual(pedidoBefore);
-  });
-
-  it('threads tentativas from retryCount (retryCount 2 → tentativas 3)', async () => {
-    const db = new FakeDb();
-    seedNfe(db);
-    seedPedido(db);
-
-    await processNfeUploadTask(makeDeps(db, makeApi()), PAYLOAD, 2);
-
-    expect(marker(db)).toMatchObject({ estado: ML_ENVIO_ESTADO.enviado, tentativas: 3 });
   });
 
   it('returns nfe-nao-encontrada with NO write when the NF-e doc is gone', async () => {
     const db = new FakeDb();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const result = await processNfeUploadTask(makeDeps(db, makeApi()), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'nfe-nao-encontrada', motivo: null });
-    expect(db.opLog.filter((e) => e.op !== 'get')).toEqual([]);
-    warn.mockRestore();
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('RE-ARMS (mlEnvio null, no tombstone) when the estado regressed since dispatch', async () => {
-    // Estado bounce is real (rejeitada→re-verify→aprovada); a descartado
-    // tombstone would permanently block the trigger AND the route.
+  it('discards (zero writes) when the estado regressed since dispatch', async () => {
     const db = new FakeDb();
-    seedNfe(db, { estado: ESTADO_NFE.cancelada, mlEnvio: fullMarker() });
+    seedNfe(db, { estado: ESTADO_NFE.cancelada });
 
     const result = await processNfeUploadTask(makeDeps(db, makeApi()), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'descartado', motivo: 'nao-aprovada' });
-    expect(marker(db)).toBeNull();
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('RE-ARMS (mlEnvio null) when the XML vanished', async () => {
+  it('discards (zero writes) when the XML vanished', async () => {
     const db = new FakeDb();
-    seedNfe(db, { xml_nfe_proc: null, mlEnvio: fullMarker() });
+    seedNfe(db, { xml_nfe_proc: null });
 
     const result = await processNfeUploadTask(makeDeps(db, makeApi()), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'descartado', motivo: 'xml-ausente' });
-    expect(marker(db)).toBeNull();
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('discards a homologação XML', async () => {
+  it('discards a homologação XML (zero writes)', async () => {
     const db = new FakeDb();
     seedNfe(db, { xml_nfe_proc: XML_HOM });
 
     const result = await processNfeUploadTask(makeDeps(db, makeApi()), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'descartado', motivo: 'tpamb-homologacao' });
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('marks erro xml-invalido (deterministic, NO pedido stamp) on an unparseable tpAmb', async () => {
+  it('returns erro-deterministico xml-invalido (zero writes) on an unparseable tpAmb', async () => {
     const db = new FakeDb();
     seedNfe(db, { xml_nfe_proc: XML_SEM_TPAMB });
     seedPedido(db);
@@ -533,20 +409,20 @@ describe('processNfeUploadTask — happy path + dispositions', () => {
     const result = await processNfeUploadTask(makeDeps(db, makeApi()), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'erro-deterministico', motivo: 'xml-invalido' });
-    expect(marker(db)).toMatchObject({ estado: ML_ENVIO_ESTADO.erro, motivo: 'xml-invalido' });
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('discards when the pedido is gone', async () => {
+  it('discards when the pedido is gone (zero writes)', async () => {
     const db = new FakeDb();
     seedNfe(db);
 
     const result = await processNfeUploadTask(makeDeps(db, makeApi()), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'descartado', motivo: 'pedido-nao-encontrado' });
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('discards when another integradora owns the frete', async () => {
+  it('discards when another integradora owns the frete (zero writes)', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db, {
@@ -556,9 +432,10 @@ describe('processNfeUploadTask — happy path + dispositions', () => {
     const result = await processNfeUploadTask(makeDeps(db, makeApi()), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'descartado', motivo: 'nao-mercado-livre' });
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('discards a local pedido (no integração)', async () => {
+  it('discards a local pedido (no integração, zero writes)', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db, { integracaoPedidoOuterRef: null });
@@ -566,11 +443,12 @@ describe('processNfeUploadTask — happy path + dispositions', () => {
     const result = await processNfeUploadTask(makeDeps(db, makeApi()), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'descartado', motivo: 'sem-integracao' });
+    expect(allWrites(db)).toEqual([]);
   });
 });
 
 describe('processNfeUploadTask — NF-e-before-shipment race (transient throws)', () => {
-  it('THROWS (marker untouched) when the pedido has no freteInicial yet', async () => {
+  it('THROWS (zero writes) when the pedido has no freteInicial yet', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db, { freteInicial: null });
@@ -578,11 +456,10 @@ describe('processNfeUploadTask — NF-e-before-shipment race (transient throws)'
     await expect(processNfeUploadTask(makeDeps(db, makeApi()), PAYLOAD, 0)).rejects.toBeInstanceOf(
       NfeUploadTransientError,
     );
-    expect(marker(db)).toBeNull();
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('THROWS when the freteInicial has no externalId yet', async () => {
+  it('THROWS (zero writes) when the freteInicial has no externalId yet', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db, { freteInicial: freteMl({ externalId: null }) });
@@ -590,11 +467,12 @@ describe('processNfeUploadTask — NF-e-before-shipment race (transient throws)'
     await expect(processNfeUploadTask(makeDeps(db, makeApi()), PAYLOAD, 0)).rejects.toBeInstanceOf(
       NfeUploadTransientError,
     );
+    expect(allWrites(db)).toEqual([]);
   });
 });
 
 describe('processNfeUploadTask — conta resolution', () => {
-  it('conta not configured: marks erro (operator-recoverable, re-drivable), NO pedido stamp', async () => {
+  it('conta not configured: returns erro-deterministico, zero writes', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -607,14 +485,10 @@ describe('processNfeUploadTask — conta resolution', () => {
     const result = await processNfeUploadTask(deps, PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'erro-deterministico', motivo: 'conta-nao-configurada' });
-    expect(marker(db)).toMatchObject({
-      estado: ML_ENVIO_ESTADO.erro,
-      motivo: 'conta-nao-configurada',
-    });
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('conta inactive: marks erro (operator-recoverable, re-drivable), NO pedido stamp', async () => {
+  it('conta inactive: returns erro-deterministico, zero writes', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -627,11 +501,10 @@ describe('processNfeUploadTask — conta resolution', () => {
     const result = await processNfeUploadTask(deps, PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'erro-deterministico', motivo: 'conta-inativa' });
-    expect(marker(db)).toMatchObject({ estado: ML_ENVIO_ESTADO.erro, motivo: 'conta-inativa' });
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('reauth: marks erro reauth, does NOT throw, does NOT stamp the pedido', async () => {
+  it('reauth: logs, returns erro-deterministico reauth, does NOT throw, zero writes', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -645,19 +518,17 @@ describe('processNfeUploadTask — conta resolution', () => {
     const result = await processNfeUploadTask(deps, PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'erro-deterministico', motivo: 'reauth' });
-    expect(marker(db)).toMatchObject({
-      estado: ML_ENVIO_ESTADO.erro,
-      motivo: 'reauth',
-      ultimoErro: 'refresh token morto',
-      shipmentId: SHIPMENT_ID,
-    });
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(error).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining('credencial morta'),
+      expect.objectContaining({ pedidoId: PEDIDO_ID, nfeId: NFE_ID, error: 'refresh token morto' }),
+    );
+    expect(allWrites(db)).toEqual([]);
     error.mockRestore();
   });
 });
 
 describe('processNfeUploadTask — shipment gate', () => {
-  it('discards on getShipment 404 (shipment permanently gone)', async () => {
+  it('discards on getShipment 404 (shipment permanently gone, zero writes)', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -670,30 +541,37 @@ describe('processNfeUploadTask — shipment gate', () => {
     const result = await processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'descartado', motivo: 'shipment-404' });
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('marks erro get-shipment-<status> (NO pedido stamp) on another getShipment 4xx', async () => {
+  it('returns erro-deterministico get-shipment-<status> (zero writes) on another getShipment 4xx', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const api = makeApi({
       getShipment: vi.fn(async () => {
-        throw httpErr(403);
+        throw httpErr(403, { code: 'forbidden' });
       }),
     });
 
     const result = await processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'erro-deterministico', motivo: 'get-shipment-403' });
-    expect(marker(db)).toMatchObject({
-      estado: ML_ENVIO_ESTADO.erro,
-      motivo: 'get-shipment-403',
-      ultimoErro: 'ML 403',
-    });
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(error).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining('consulta do shipment rejeitada'),
+      expect.objectContaining({
+        pedidoId: PEDIDO_ID,
+        shipmentId: SHIPMENT_ID,
+        status: 403,
+        body: { code: 'forbidden' },
+      }),
+    );
+    expect(allWrites(db)).toEqual([]);
+    error.mockRestore();
   });
 
-  it('reauth on getShipment: marks erro reauth, does NOT throw, does NOT stamp the pedido', async () => {
+  it('reauth on getShipment: logs, returns erro-deterministico reauth, zero writes', async () => {
     // Every 401 surfaces as MercadoLivreReauthRequiredError (toHttpError maps
     // it before an HttpError exists) — without its own branch it would escape
     // the transient allow-list and crash-loop all 6 attempts.
@@ -710,17 +588,11 @@ describe('processNfeUploadTask — shipment gate', () => {
     const result = await processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'erro-deterministico', motivo: 'reauth' });
-    expect(marker(db)).toMatchObject({
-      estado: ML_ENVIO_ESTADO.erro,
-      motivo: 'reauth',
-      ultimoErro: 'refresh token morto',
-      shipmentId: SHIPMENT_ID,
-    });
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(allWrites(db)).toEqual([]);
     error.mockRestore();
   });
 
-  it('THROWS on getShipment 429 (transient — no terminal marker beyond the pendente)', async () => {
+  it('THROWS on getShipment 429 (transient, zero writes)', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -733,7 +605,7 @@ describe('processNfeUploadTask — shipment gate', () => {
     await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
       MercadoLivreHttpError,
     );
-    expect(marker(db)).toBeNull();
+    expect(allWrites(db)).toEqual([]);
   });
 
   it('THROWS on getShipment 5xx (transient)', async () => {
@@ -749,6 +621,7 @@ describe('processNfeUploadTask — shipment gate', () => {
     await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
       MercadoLivreHttpError,
     );
+    expect(allWrites(db)).toEqual([]);
   });
 
   it('THROWS while the shipment is pre-eligible (pending/handling window)', async () => {
@@ -762,6 +635,7 @@ describe('processNfeUploadTask — shipment gate', () => {
     await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
       NfeUploadTransientError,
     );
+    expect(allWrites(db)).toEqual([]);
   });
 
   it('THROWS on an unknown shipment status (conservative transient)', async () => {
@@ -775,9 +649,12 @@ describe('processNfeUploadTask — shipment gate', () => {
     await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
       NfeUploadTransientError,
     );
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('ja-processado: ready_to_ship past invoice_pending marks enviado WITHOUT posting', async () => {
+  it('ja-processado: ready_to_ship past invoice_pending converges WITHOUT posting or writing', async () => {
+    // THE dedup of the zero-write model: a redundant task (poke, Eventarc
+    // redelivery, double enqueue) lands here once the invoice reached ML.
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -792,14 +669,11 @@ describe('processNfeUploadTask — shipment gate', () => {
     const result = await processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'ja-processado', motivo: 'ja-processado' });
-    expect(marker(db)).toMatchObject({
-      estado: ML_ENVIO_ESTADO.enviado,
-      motivo: 'ja-processado',
-    });
     expect(api.sendShipmentInvoiceData).not.toHaveBeenCalled();
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('discards a closed shipment (delivered)', async () => {
+  it('discards a closed shipment (delivered, zero writes)', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -810,11 +684,12 @@ describe('processNfeUploadTask — shipment gate', () => {
     const result = await processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'descartado', motivo: 'shipment-encerrado' });
+    expect(allWrites(db)).toEqual([]);
   });
 });
 
 describe('processNfeUploadTask — invoice POST outcomes', () => {
-  it('shipment_invoice_already_saved → ja-enviado (success-equivalent, no pedido stamp)', async () => {
+  it('shipment_invoice_already_saved → ja-enviado (success-equivalent, zero writes)', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -827,11 +702,10 @@ describe('processNfeUploadTask — invoice POST outcomes', () => {
     const result = await processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'ja-enviado', motivo: 'ja-enviado' });
-    expect(marker(db)).toMatchObject({ estado: ML_ENVIO_ESTADO.enviado, motivo: 'ja-enviado' });
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('a deterministic 4xx records the code AND stamps freteInicial.estado = error', async () => {
+  it('a deterministic 4xx logs the full detail and the ONLY write is the pedido TX update', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -845,13 +719,22 @@ describe('processNfeUploadTask — invoice POST outcomes', () => {
     const result = await processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'erro-deterministico', motivo: 'envio-rejeitado' });
-    expect(marker(db)).toMatchObject({
-      estado: ML_ENVIO_ESTADO.erro,
-      motivo: 'envio-rejeitado',
-      ultimoErro: 'ML 400',
-      ultimoErroCodigo: 'wrong_receiver_cpf',
-      shipmentId: SHIPMENT_ID,
-    });
+    // Failure DETAIL lives in Cloud Logging only (REV 2) — code + body included.
+    expect(error).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining('rejeição determinística'),
+      expect.objectContaining({
+        pedidoId: PEDIDO_ID,
+        nfeId: NFE_ID,
+        shipmentId: SHIPMENT_ID,
+        code: 'wrong_receiver_cpf',
+        message: 'ML 400',
+        body: { code: 'wrong_receiver_cpf', message: 'CPF divergente' },
+      }),
+    );
+    // The pinned cost invariant: ONE write in the whole flow, the pedido TX —
+    // and NOTHING on the nfev4 doc.
+    expect(allWrites(db)).toEqual([{ op: 'update', path: `pedidos/${PEDIDO_ID}` }]);
+    expect(nfeWrites(db)).toEqual([]);
     const pedidoDoc = db.docs('pedidos').get(PEDIDO_ID)!;
     const frete = pedidoDoc.freteInicial as DocData;
     expect(frete.estado).toBe(ESTADO_FRETE.error);
@@ -861,7 +744,7 @@ describe('processNfeUploadTask — invoice POST outcomes', () => {
     error.mockRestore();
   });
 
-  it('stamp guard: pedido deleted mid-POST → marker written, NO stamp attempted', async () => {
+  it('stamp guard: pedido deleted mid-POST → NO write at all', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -877,13 +760,12 @@ describe('processNfeUploadTask — invoice POST outcomes', () => {
     const result = await processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'erro-deterministico', motivo: 'envio-rejeitado' });
-    expect(marker(db)).toMatchObject({ ultimoErroCodigo: 'invalid_nfe_cstat' });
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(allWrites(db)).toEqual([]);
     logs.mockRestore();
     warn.mockRestore();
   });
 
-  it('stamp guard: frete nulled mid-POST → NO stamp', async () => {
+  it('stamp guard: frete nulled mid-POST → NO write', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -899,11 +781,11 @@ describe('processNfeUploadTask — invoice POST outcomes', () => {
     const result = await processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'erro-deterministico', motivo: 'envio-rejeitado' });
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(allWrites(db)).toEqual([]);
     logs.mockRestore();
   });
 
-  it('stamp guard: frete reassigned to another integradora mid-POST → NO stamp, marker kept', async () => {
+  it('stamp guard: frete reassigned to another integradora mid-POST → NO write', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -923,15 +805,14 @@ describe('processNfeUploadTask — invoice POST outcomes', () => {
     const result = await processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0);
 
     expect(result).toEqual({ outcome: 'erro-deterministico', motivo: 'envio-rejeitado' });
-    expect(marker(db)).toMatchObject({ estado: ML_ENVIO_ESTADO.erro });
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(allWrites(db)).toEqual([]);
     const frete = db.docs('pedidos').get(PEDIDO_ID)!.freteInicial as DocData;
     expect(frete.estado).not.toBe(ESTADO_FRETE.error);
     logs.mockRestore();
     warn.mockRestore();
   });
 
-  it('THROWS on POST 429 (queue backoff covers the rate limit — no pause doc)', async () => {
+  it('THROWS on POST 429 (queue backoff covers the rate limit — zero writes)', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -944,9 +825,10 @@ describe('processNfeUploadTask — invoice POST outcomes', () => {
     await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
       MercadoLivreHttpError,
     );
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('THROWS on POST 5xx', async () => {
+  it('THROWS on POST 5xx (zero writes)', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -959,9 +841,10 @@ describe('processNfeUploadTask — invoice POST outcomes', () => {
     await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
       MercadoLivreHttpError,
     );
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('THROWS on shipment_already_being_processed (transient despite 4xx)', async () => {
+  it('THROWS on shipment_already_being_processed (transient despite 4xx, zero writes)', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -974,9 +857,10 @@ describe('processNfeUploadTask — invoice POST outcomes', () => {
     await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
       MercadoLivreHttpError,
     );
+    expect(allWrites(db)).toEqual([]);
   });
 
-  it('THROWS on a network failure', async () => {
+  it('THROWS on a network failure (zero writes)', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
@@ -989,14 +873,16 @@ describe('processNfeUploadTask — invoice POST outcomes', () => {
     await expect(processNfeUploadTask(makeDeps(db, api), PAYLOAD, 0)).rejects.toBeInstanceOf(
       MercadoLivreNetworkError,
     );
+    expect(allWrites(db)).toEqual([]);
   });
 });
 
 describe('processNfeUploadTask — final attempt', () => {
-  it('persists tentativas-esgotadas + stamps the frete instead of throwing', async () => {
+  it('raw ML transient exhausted: logs, stamps the frete (the ONLY write), returns erro-final', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const api = makeApi({
       sendShipmentInvoiceData: vi.fn(async () => {
         throw httpErr(500);
@@ -1010,27 +896,32 @@ describe('processNfeUploadTask — final attempt', () => {
     );
 
     expect(result).toEqual({ outcome: 'erro-final', motivo: 'tentativas-esgotadas' });
-    expect(marker(db)).toEqual(
-      fullMarker({
-        estado: ML_ENVIO_ESTADO.erro,
-        tentativas: NFE_UPLOAD_MAX_ATTEMPTS,
+    expect(error).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining('tentativas esgotadas'),
+      expect.objectContaining({
+        pedidoId: PEDIDO_ID,
+        nfeId: NFE_ID,
         shipmentId: SHIPMENT_ID,
+        retryCount: NFE_UPLOAD_MAX_ATTEMPTS - 1,
         motivo: 'tentativas-esgotadas',
-        ultimoErro: 'ML 500',
+        error: 'ML 500',
       }),
     );
+    // The pinned cost invariant: ONE write, the pedido TX update — nothing
+    // on the nfev4 doc.
+    expect(allWrites(db)).toEqual([{ op: 'update', path: `pedidos/${PEDIDO_ID}` }]);
+    expect(nfeWrites(db)).toEqual([]);
     const pedidoDoc = db.docs('pedidos').get(PEDIDO_ID)!;
     expect((pedidoDoc.freteInicial as DocData).estado).toBe(ESTADO_FRETE.error);
     expect(pedidoDoc.lastMarketplaceUpdate).toBe(NOW_US);
+    error.mockRestore();
   });
 
-  it('sem-frete exhausted keeps its tag as motivo and skips the frete stamp BY DESIGN', async () => {
-    // Tagged transient → no pedido write, by design (not merely because the
-    // frete happens to be null): "the shipment never became eligible" is not
-    // an upload failure.
+  it('sem-frete exhausted keeps its tag as motivo and writes NOTHING', async () => {
     const db = new FakeDb();
     seedNfe(db);
     seedPedido(db, { freteInicial: null });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     const result = await processNfeUploadTask(
       makeDeps(db, makeApi()),
@@ -1039,15 +930,11 @@ describe('processNfeUploadTask — final attempt', () => {
     );
 
     expect(result).toEqual({ outcome: 'erro-final', motivo: 'sem-frete' });
-    expect(marker(db)).toMatchObject({
-      estado: ML_ENVIO_ESTADO.erro,
-      motivo: 'sem-frete',
-      shipmentId: null,
-    });
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(allWrites(db)).toEqual([]);
+    error.mockRestore();
   });
 
-  it('shipment-pendente exhausted: marker keeps the tag, pedido UNTOUCHED despite a frete', async () => {
+  it('shipment-pendente exhausted: NO frete stamp BY DESIGN despite a frete existing', async () => {
     // The frete exists here — the skipped stamp is the tagged-transient rule,
     // not a missing-frete accident: false-stamping freteInicial 'error' would
     // flag a healthy pedido whose shipment simply never opened invoice_pending.
@@ -1055,6 +942,7 @@ describe('processNfeUploadTask — final attempt', () => {
     seedNfe(db);
     seedPedido(db);
     const pedidoBefore = structuredClone(db.docs('pedidos').get(PEDIDO_ID));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const api = makeApi({
       getShipment: vi.fn(async () => ({ id: 1, status: 'pending', substatus: null })),
     });
@@ -1066,13 +954,9 @@ describe('processNfeUploadTask — final attempt', () => {
     );
 
     expect(result).toEqual({ outcome: 'erro-final', motivo: 'shipment-pendente' });
-    expect(marker(db)).toMatchObject({
-      estado: ML_ENVIO_ESTADO.erro,
-      motivo: 'shipment-pendente',
-      shipmentId: SHIPMENT_ID,
-    });
-    expect(pedidoWrites(db)).toEqual([]);
+    expect(allWrites(db)).toEqual([]);
     expect(db.docs('pedidos').get(PEDIDO_ID)).toEqual(pedidoBefore);
+    error.mockRestore();
   });
 });
 
