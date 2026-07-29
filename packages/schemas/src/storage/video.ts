@@ -5,6 +5,12 @@ import { idRefSchema } from '../shared/outerRef';
 export const videoFormatoSchema = z.enum(['quadrado', 'retangular']);
 export type VideoFormato = z.infer<typeof videoFormatoSchema>;
 
+/** Named members of {@link videoFormatoSchema}. */
+export const VIDEO_FORMATO = {
+  quadrado: 'quadrado',
+  retangular: 'retangular',
+} as const satisfies Record<string, VideoFormato>;
+
 /**
  * A product video, embedded as an element of `Produto.videos`. Mirrors the
  * Flutter `VideoProduto` wire shape (`packages/produtos/lib/src/models.g.dart`

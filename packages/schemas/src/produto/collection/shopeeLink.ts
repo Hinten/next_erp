@@ -35,9 +35,21 @@ import { outerRefSchema } from '../../shared/outerRef';
 export const shopeeItemStatusSchema = z.enum(['NORMAL', 'UNLIST']);
 export type ShopeeItemStatus = z.infer<typeof shopeeItemStatusSchema>;
 
+/** Named members of {@link shopeeItemStatusSchema} — the Shopee wire codes. */
+export const SHOPEE_ITEM_STATUS = {
+  normal: 'NORMAL',
+  unlist: 'UNLIST',
+} as const satisfies Record<string, ShopeeItemStatus>;
+
 /** Shopee variation `model_status` (models.dart). */
 export const shopeeModelStatusSchema = z.enum(['MODEL_NORMAL', 'MODEL_UNAVAILABLE']);
 export type ShopeeModelStatus = z.infer<typeof shopeeModelStatusSchema>;
+
+/** Named members of {@link shopeeModelStatusSchema} — the Shopee variation wire codes. */
+export const SHOPEE_MODEL_STATUS = {
+  normal: 'MODEL_NORMAL',
+  unavailable: 'MODEL_UNAVAILABLE',
+} as const satisfies Record<string, ShopeeModelStatus>;
 
 /** One banned-item violation reason (`ReasonListBannedItemPush`, #363). */
 export const shopeeViolationReasonWireSchema = z
