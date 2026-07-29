@@ -109,11 +109,17 @@ failed="$(
 )"
 
 # A failed spec that `base` has already touched is the smoking gun.
+#
+# Compare basenames as FIXED whole-line strings (`-Fxq`), never as a regex: a
+# spec name is full of dots, and as a pattern `produto-preco.cadastros.e2e.spec.ts`
+# would happily match `produto-precoXcadastrosXe2eXspecXts`. Over-matching here
+# would name an innocent spec as the culprit, which is worse than staying quiet.
+changed_names="$(printf '%s\n' "$changed" | sed 's#.*/##' | sort -u)"
 culprits=""
 if [ -n "$failed" ] && [ -n "$changed" ]; then
   while IFS= read -r spec; do
     [ -z "$spec" ] && continue
-    if printf '%s\n' "$changed" | grep -q "/${spec}\$"; then
+    if printf '%s\n' "$changed_names" | grep -Fxq "$spec"; then
       culprits="${culprits}${spec}"$'\n'
     fi
   done <<<"$failed"
