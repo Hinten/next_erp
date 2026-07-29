@@ -321,32 +321,8 @@ describe('ModificacoesManager', () => {
   });
 
   it('bridges a live-window eviction into the tail after Carregar mais (no pagination gap)', async () => {
-    // Live page has 2 rows (newest-first); load-more returns an older third.
-    // A subsequent live update that slides the window must keep the evicted
-    // middle doc via the bridge, not drop it between live and tail.
-    const liveInitial = [
-      {
-        id: 'evt-2',
-        path: 'produtos/p1',
-        subcolecao: null,
-        docId: 'p1',
-        kind: 'update' as const,
-        campos: ['sku'],
-        timestamp: 2,
-        changes: { sku: { old: 'a', new: 'b' } },
-      },
-      {
-        id: 'evt-1',
-        path: 'produtos/p1',
-        subcolecao: null,
-        docId: 'p1',
-        kind: 'update' as const,
-        campos: ['nome'],
-        timestamp: 1,
-        changes: { nome: { old: 'A', new: 'B' } },
-      },
-    ];
-
+    // Seed a full live page so "Carregar mais" appears, load an older tail row,
+    // then slide the live window — the evicted middle doc must stay via bridge.
     h.getDocs.mockResolvedValue({
       docs: [
         {
@@ -366,33 +342,21 @@ describe('ModificacoesManager', () => {
       ],
     });
 
-    const { rerender } = renderManager(liveInitial);
-
-    // Force hasMore: component only shows "Carregar mais" when
-    // entries.length >= PAGE_SIZE (50). Seed enough live rows so the button
-    // appears, then load-more, then shrink live to simulate eviction.
-    const fullLive = Array.from({ length: 50 }, (_, i) => {
+    const fullLive: RawEntry[] = Array.from({ length: 50 }, (_, i) => {
       const n = 100 - i;
       return {
         id: `evt-${n}`,
         path: 'produtos/p1',
-        subcolecao: null as string | null,
+        subcolecao: null,
         docId: 'p1',
-        kind: 'update' as const,
+        kind: 'update',
         campos: [`f${n}`],
         timestamp: n,
         changes: { [`f${n}`]: { old: 0, new: 1 } },
       };
     });
 
-    act(() => {
-      setSnap({ data: fullLive.map(toRow) });
-    });
-    rerender(
-      <MantineProvider>
-        <ModificacoesManager db={db} produtoId="p1" />
-      </MantineProvider>,
-    );
+    const { rerender } = renderManager(fullLive);
 
     expect((await screen.findAllByTestId('modificacao-entry')).length).toBe(50);
 
@@ -405,20 +369,19 @@ describe('ModificacoesManager', () => {
     expect((await screen.findAllByTestId('modificacao-entry')).length).toBe(51);
     expect(screen.getByText(/Campos: ncm/)).toBeTruthy();
 
-    // Slide live window: drop oldest live (evt-51 → id evt-51 is 100-49=51...
-    // fullLive[49] is evt-51). A new evt-101 arrives at the front.
-    const afterSlide = [
+    // Slide live window: drop oldest live (fullLive[49] = evt-51); new evt-101 at front.
+    const afterSlide: RawEntry[] = [
       {
         id: 'evt-101',
         path: 'produtos/p1',
-        subcolecao: null as string | null,
+        subcolecao: null,
         docId: 'p1',
-        kind: 'update' as const,
+        kind: 'update',
         campos: ['f101'],
         timestamp: 101,
         changes: { f101: { old: 0, new: 1 } },
       },
-      ...fullLive.slice(0, 49), // drops fullLive[49] = evt-51
+      ...fullLive.slice(0, 49),
     ];
     const evictedId = fullLive[49]!.id; // evt-51
 
@@ -453,14 +416,14 @@ describe('ModificacoesManager', () => {
       }),
     );
 
-    const fullLive = Array.from({ length: 50 }, (_, i) => {
+    const fullLive: RawEntry[] = Array.from({ length: 50 }, (_, i) => {
       const n = 100 - i;
       return {
         id: `evt-${n}`,
         path: 'produtos/p1',
-        subcolecao: null as string | null,
+        subcolecao: null,
         docId: 'p1',
-        kind: 'update' as const,
+        kind: 'update',
         campos: [`f${n}`],
         timestamp: n,
         changes: { [`f${n}`]: { old: 0, new: 1 } },
