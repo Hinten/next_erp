@@ -319,4 +319,210 @@ describe('ModificacoesManager', () => {
     expect(button.disabled).toBe(false);
     expect(screen.getByText(/Produto A → Produto B/)).toBeTruthy();
   });
+
+  it('bridges a live-window eviction into the tail after Carregar mais (no pagination gap)', async () => {
+    // Live page has 2 rows (newest-first); load-more returns an older third.
+    // A subsequent live update that slides the window must keep the evicted
+    // middle doc via the bridge, not drop it between live and tail.
+    const liveInitial = [
+      {
+        id: 'evt-2',
+        path: 'produtos/p1',
+        subcolecao: null,
+        docId: 'p1',
+        kind: 'update' as const,
+        campos: ['sku'],
+        timestamp: 2,
+        changes: { sku: { old: 'a', new: 'b' } },
+      },
+      {
+        id: 'evt-1',
+        path: 'produtos/p1',
+        subcolecao: null,
+        docId: 'p1',
+        kind: 'update' as const,
+        campos: ['nome'],
+        timestamp: 1,
+        changes: { nome: { old: 'A', new: 'B' } },
+      },
+    ];
+
+    h.getDocs.mockResolvedValue({
+      docs: [
+        {
+          id: 'evt-0',
+          ref: { path: 'produtos/p1/historicoDeModificacoes/evt-0' },
+          data: () => ({
+            path: 'produtos/p1',
+            subcolecao: null,
+            docId: 'p1',
+            kind: 'update',
+            campos: ['ncm'],
+            changes: { ncm: { old: '1', new: '2' } },
+            timestamp: 0,
+            eventId: 'evt-0',
+          }),
+        },
+      ],
+    });
+
+    const { rerender } = renderManager(liveInitial);
+
+    // Force hasMore: component only shows "Carregar mais" when
+    // entries.length >= PAGE_SIZE (50). Seed enough live rows so the button
+    // appears, then load-more, then shrink live to simulate eviction.
+    const fullLive = Array.from({ length: 50 }, (_, i) => {
+      const n = 100 - i;
+      return {
+        id: `evt-${n}`,
+        path: 'produtos/p1',
+        subcolecao: null as string | null,
+        docId: 'p1',
+        kind: 'update' as const,
+        campos: [`f${n}`],
+        timestamp: n,
+        changes: { [`f${n}`]: { old: 0, new: 1 } },
+      };
+    });
+
+    act(() => {
+      setSnap({ data: fullLive.map(toRow) });
+    });
+    rerender(
+      <MantineProvider>
+        <ModificacoesManager db={db} produtoId="p1" />
+      </MantineProvider>,
+    );
+
+    expect((await screen.findAllByTestId('modificacao-entry')).length).toBe(50);
+
+    const loadMore = await screen.findByRole('button', { name: 'Carregar mais' });
+    await act(async () => {
+      fireEvent.click(loadMore);
+    });
+
+    // Tail has evt-0; live still full 50 → 51 total after dedupe.
+    expect((await screen.findAllByTestId('modificacao-entry')).length).toBe(51);
+    expect(screen.getByText(/Campos: ncm/)).toBeTruthy();
+
+    // Slide live window: drop oldest live (evt-51 → id evt-51 is 100-49=51...
+    // fullLive[49] is evt-51). A new evt-101 arrives at the front.
+    const afterSlide = [
+      {
+        id: 'evt-101',
+        path: 'produtos/p1',
+        subcolecao: null as string | null,
+        docId: 'p1',
+        kind: 'update' as const,
+        campos: ['f101'],
+        timestamp: 101,
+        changes: { f101: { old: 0, new: 1 } },
+      },
+      ...fullLive.slice(0, 49), // drops fullLive[49] = evt-51
+    ];
+    const evictedId = fullLive[49]!.id; // evt-51
+
+    act(() => {
+      setSnap({ data: afterSlide.map(toRow) });
+    });
+    rerender(
+      <MantineProvider>
+        <ModificacoesManager db={db} produtoId="p1" />
+      </MantineProvider>,
+    );
+
+    // Bridge keeps the evicted live row + the load-more tail.
+    const rows = await screen.findAllByTestId('modificacao-entry');
+    expect(rows.length).toBe(52); // 50 live + bridge + evt-0
+    expect(screen.getByText(/Campos: f101/)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`Campos: f${evictedId.replace('evt-', '')}`))).toBeTruthy();
+    expect(screen.getByText(/Campos: ncm/)).toBeTruthy();
+  });
+
+  it('ignores a load-more result that resolves after produtoId changes', async () => {
+    let resolveDocs!: (value: {
+      docs: Array<{
+        id: string;
+        ref: { path: string };
+        data: () => Record<string, unknown>;
+      }>;
+    }) => void;
+    h.getDocs.mockReturnValue(
+      new Promise((resolve) => {
+        resolveDocs = resolve;
+      }),
+    );
+
+    const fullLive = Array.from({ length: 50 }, (_, i) => {
+      const n = 100 - i;
+      return {
+        id: `evt-${n}`,
+        path: 'produtos/p1',
+        subcolecao: null as string | null,
+        docId: 'p1',
+        kind: 'update' as const,
+        campos: [`f${n}`],
+        timestamp: n,
+        changes: { [`f${n}`]: { old: 0, new: 1 } },
+      };
+    });
+
+    const { rerender } = renderManager(fullLive);
+    expect((await screen.findAllByTestId('modificacao-entry')).length).toBe(50);
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Carregar mais' }));
+    });
+
+    // Switch product while the first load-more is still in flight.
+    act(() => {
+      setSnap({
+        data: [
+          toRow({
+            id: 'other-1',
+            path: 'produtos/p2',
+            subcolecao: null,
+            docId: 'p2',
+            kind: 'update',
+            campos: ['nome'],
+            timestamp: 1,
+            changes: { nome: { old: 'x', new: 'y' } },
+          }),
+        ],
+      });
+    });
+    rerender(
+      <MantineProvider>
+        <ModificacoesManager db={db} produtoId="p2" />
+      </MantineProvider>,
+    );
+
+    expect((await screen.findAllByTestId('modificacao-entry')).length).toBe(1);
+    expect(screen.getByText(/Campos: nome/)).toBeTruthy();
+
+    // Stale page for p1 must not append onto p2.
+    await act(async () => {
+      resolveDocs({
+        docs: [
+          {
+            id: 'stale-from-p1',
+            ref: { path: 'produtos/p1/historicoDeModificacoes/stale-from-p1' },
+            data: () => ({
+              path: 'produtos/p1',
+              subcolecao: null,
+              docId: 'p1',
+              kind: 'update',
+              campos: ['stale'],
+              changes: { stale: { old: 0, new: 1 } },
+              timestamp: 0,
+              eventId: 'stale-from-p1',
+            }),
+          },
+        ],
+      });
+    });
+
+    expect((await screen.findAllByTestId('modificacao-entry')).length).toBe(1);
+    expect(screen.queryByText(/Campos: stale/)).toBeNull();
+  });
 });

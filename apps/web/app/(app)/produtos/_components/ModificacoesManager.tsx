@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActionIcon,
   Alert,
@@ -145,17 +145,50 @@ export function ModificacoesManager({ db, produtoId }: ModificacoesManagerProps)
   const [conflict, setConflict] = useState<ConflictState | null>(null);
   const [confirming, setConfirming] = useState(false);
 
+  // Bumped on identity change so an in-flight `handleLoadMore` that resolves
+  // after a product switch is ignored (won't append into the new state).
+  const loadGenRef = useRef(0);
+  // Previous live page — used to bridge docs that fall out of the PAGE_SIZE
+  // window into the one-shot tail after the user has already loaded more.
+  const prevLiveRef = useRef<SnapshotRow<HistoricoModificacao>[]>([]);
+
   // Drop the one-shot tail when the product (or db) identity changes so a
-  // previous product's paged history never bleeds into the next. Setting state
-  // in an effect is the sanctioned reset shape here (same as `useConversaQuery`):
-  // an in-render "derive from key" swap can't cancel in-flight loadMore results.
+  // previous product's paged history never bleeds into the next. Bumping
+  // `loadGenRef` also makes any in-flight loadMore treat its result as stale.
   useEffect(() => {
+    loadGenRef.current += 1;
+    prevLiveRef.current = [];
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset on identity change
     setExtraRows([]);
     setExhausted(false);
     setLoadingMore(false);
     setExpandedId(null);
   }, [db, produtoId]);
+
+  // When a new history entry arrives, the live limit window slides and the
+  // oldest live doc is dropped from `live.data`. If the user already paged
+  // ("Carregar mais"), that evicted doc is not in `extraRows` either — it
+  // would vanish from the UI. Bridge it into the tail so the list stays
+  // continuous. Pure live window (no tail yet) stays a sliding window.
+  useEffect(() => {
+    const next = live.data ?? [];
+    const prev = prevLiveRef.current;
+    prevLiveRef.current = next;
+    if (prev.length === 0 || next.length === 0) return;
+
+    const nextIds = new Set(next.map((r) => r.id));
+    const evicted = prev.filter((r) => !nextIds.has(r.id));
+    if (evicted.length === 0) return;
+
+    setExtraRows((tail) => {
+      if (tail.length === 0) return tail;
+      const seen = new Set(tail.map((r) => r.id));
+      const bridge = evicted.filter((r) => !seen.has(r.id));
+      if (bridge.length === 0) return tail;
+      // Evicted sit between the live window and the older one-shot pages.
+      return [...bridge, ...tail.filter((r) => !nextIds.has(r.id))];
+    });
+  }, [live.data]);
 
   // Live page first (authoritative + fresh), then the one-shot tail with any
   // id already surfaced live dropped — same merge as `useConversaQuery`.
@@ -172,9 +205,12 @@ export function ModificacoesManager({ db, produtoId }: ModificacoesManagerProps)
 
   const handleLoadMore = useCallback(async () => {
     if (loadingMore || exhausted) return;
+    // Capture cursor at click time so a concurrent live update can't shift
+    // the pagination anchor mid-request.
     const cursor = entries[entries.length - 1]?.snap;
     if (!cursor) return;
 
+    const gen = loadGenRef.current;
     setLoadingMore(true);
     try {
       const pageQuery = buildQuery(historicoModificacoesCollection.ref(db, { produtoId }), [
@@ -182,6 +218,8 @@ export function ModificacoesManager({ db, produtoId }: ModificacoesManagerProps)
         ...paginate({ after: cursor, pageSize: PAGE_SIZE }),
       ]);
       const snap = await getDocs(pageQuery);
+      // Identity changed while we were in flight — drop the result.
+      if (gen !== loadGenRef.current) return;
       const newRows: SnapshotRow<HistoricoModificacao>[] = snap.docs.map((d) => ({
         id: d.id,
         path: d.ref.path,
@@ -194,6 +232,7 @@ export function ModificacoesManager({ db, produtoId }: ModificacoesManagerProps)
       });
       if (newRows.length < PAGE_SIZE) setExhausted(true);
     } catch (err) {
+      if (gen !== loadGenRef.current) return;
       if (err instanceof FirebaseError) {
         notifications.show({
           color: 'red',
@@ -203,7 +242,7 @@ export function ModificacoesManager({ db, produtoId }: ModificacoesManagerProps)
       }
       throw err;
     } finally {
-      setLoadingMore(false);
+      if (gen === loadGenRef.current) setLoadingMore(false);
     }
   }, [loadingMore, exhausted, entries, db, produtoId]);
 
