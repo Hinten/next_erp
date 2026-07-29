@@ -132,9 +132,11 @@ ported from the legacy Flutter handler (`.old/.../whatsapp_cloud_api`). Flow:
    ENQUEUES each onto the `processWhatsappNotification` queue. **No Firestore write
    on the happy path.** Malformed/empty bodies are acked `200`. On an enqueue
    failure it persists the change as `failed` (for the sweep) rather than 5xx.
-2. **`lib/whatsapp/notificacao.ts`** — the shared core: `parseWebhookBody`,
-   `handleNotificationTask` (the MP disposition matrix: done / transient-throw /
-   failed-park / dropped), `persistNotificationFailure`, `reprocessNotifications`.
+2. **`lib/whatsapp/notificacao.ts`** — this channel's adapter over the SHARED pipeline
+   in `@delfrance/data/admin/notifications` (`defineNotificationPipeline`; see the
+   `webhook-notifications` skill): `parseWebhookBody`, the field dispatch, and thin
+   `handleNotificationTask` / `persistNotificationFailure` / `reprocessNotifications`
+   wrappers. The disposition matrix and the sweep are NOT implemented here.
    Dispatches by `changes[].field`: only `messages` is processed; every other field
    is dropped. **Unlike MP there is no re-fetch anchor** — the message content lives
    only in the webhook body — so a persisted failure doc CARRIES the change `value`

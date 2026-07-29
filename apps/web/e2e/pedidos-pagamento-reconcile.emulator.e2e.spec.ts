@@ -122,8 +122,10 @@ test.describe.serial('Pedidos e2e — reconcile de estado no servidor', () => {
     return (snap.data()?.estado as string | undefined) ?? null;
   }
 
-  /** Every `historicoEstadoPedido` row's `estado` (the audit trail the same
-   *  transaction appends). */
+  /** Every `historicoEstadoPedido` row's `estado` — the trail the
+   *  `onPedidoEstadoChanged` trigger appends ASYNCHRONOUSLY, one row per
+   *  transition PLUS an opening row for the estado the pedido was created or
+   *  reset with. Never count the whole trail; look for the estado you expect. */
   async function getHistoricoEstados(): Promise<string[]> {
     const snap = await db()
       .collection('pedidos')
@@ -166,7 +168,9 @@ test.describe.serial('Pedidos e2e — reconcile de estado no servidor', () => {
     // The callable summed the payments against `valorCobrado` inside its own
     // transaction and wrote the estado…
     await expect.poll(getEstado, { timeout: 30_000 }).toBe('pago');
-    // …plus the audit row, in that SAME transaction.
+    // …and a historicoEstadoPedido row follows, written ASYNCHRONOUSLY by the
+    // `onPedidoEstadoChanged` trigger observing that pedido write — NOT by the
+    // reconcile, and not in its transaction (#697). Hence the poll.
     await expect.poll(getHistoricoEstados, { timeout: 30_000 }).toContain('pago');
   });
 

@@ -20,6 +20,12 @@ hosts the channel's HTTP routes + a nested Cloud Functions codebase. Modeled on
   `topic`+`resource` callbacks — ML does NOT HMAC-sign; contrast Shopee); validates + enqueues
   onto the `processMercadoLivreNotification` Cloud Tasks queue and acks 200 fast (no Firestore
   write on the happy path — see `lib/marketplace/mlTasks.ts` + `functions/DEPLOY.md`).
+- `lib/marketplace/notificacao.ts` — this channel's webhook adapter: `parseNotificationBody`,
+  the dispatch-by-topic `processNotificationPayload`, and a `defineNotificationPipeline({...})`
+  binding. The resilience behaviour (retry disposition, failures-only persistence, the
+  durable-cursor sweep) is the SHARED core in `@delfrance/data/admin/notifications` — see the
+  `webhook-notifications` skill. This channel is the one that needs a PHASE-aware
+  `toDisposition` (an unparseable `resource` drops in the task but parks in the sweep).
 - `lib/marketplace/mercadoLivre.ts` — resolves an `integracao` account into a
   `ChannelContext` (newest valid token or a concurrency-safe refresh) + the plugin channel.
 - `lib/marketplace/tokenStore.ts` — the durable-token store over the admin-only

@@ -1,5 +1,7 @@
+import { getAuth } from 'firebase-admin/auth';
 import { expect, test } from '@playwright/test';
-import { db } from '@delfrance/test-fixtures';
+import { db, getApp } from '@delfrance/test-fixtures';
+import { e2eUserEmail } from './_helpers/run-id';
 import {
   cleanupPedidoFixtures,
   cleanupPedidoSubcollection,
@@ -13,14 +15,30 @@ import { warmRoutes } from './helpers/warmup';
  * persist the new state AND append a `historicoEstadoPedido` audit row (the
  * legacy `Pedido.save()` behavior). Seeds a minimal pedido (one item + the
  * required refs) directly via the Admin SDK, then drives the UI.
+ *
+ * Since #697 the audit row comes from the `onPedidoEstadoChanged` Cloud Function
+ * rather than the client, which makes this the ONLY place in the repo that can
+ * prove the trail's ACTOR end-to-end: the emulator hardcodes the Firestore
+ * event's `authId` to 'fake-auth-id@gmail.com' (firebase-tools#7609, closed as
+ * not-planned), so every offline test can only ever assert `null`. Here a real
+ * signed-in user saves through the browser, so the row must name them.
  */
 test.describe.serial('Pedidos e2e — Estado / Histórico', () => {
   const prefix = e2ePrefix('pedest');
   const pedidoId = `${prefix}-001`;
   let fixtures: Awaited<ReturnType<typeof seedPedidoFixtures>>;
+  /** uid of the run's ephemeral signed-in user — the actor the trail must name. */
+  let e2eUid: string;
+  /**
+   * SERVER-clock watermark for this attempt, in microseconds. Rows older than
+   * this belong to a previous attempt. See `beforeEach` for why it cannot come
+   * from `Date.now()`.
+   */
+  let attemptStartMicros: number;
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
+    e2eUid = (await getAuth(getApp()).getUserByEmail(e2eUserEmail())).uid;
     fixtures = await seedPedidoFixtures(prefix);
     const produtoId = fixtures.produtoPath.split('/')[1]!;
 
@@ -57,6 +75,38 @@ test.describe.serial('Pedidos e2e — Estado / Histórico', () => {
     await warmRoutes(browser, ['/pedidos']);
   });
 
+  // Reset the estado and clear the trail before each ATTEMPT. `pedidoId` is
+  // derived from GITHUB_RUN_ID, so it is identical across the 2 CI retries, and
+  // the trail row now lands ASYNCHRONOUSLY — a row from a timed-out attempt can
+  // arrive after `afterAll` already read the subcollection and so survive into
+  // the retry. Without this sweep the retry's assertion would be satisfied by
+  // the failed attempt's leftover instead of by its own transition.
+  test.beforeEach(async () => {
+    const hist = await db()
+      .collection('pedidos')
+      .doc(pedidoId)
+      .collection('historicoEstadoPedido')
+      .get();
+    await Promise.all(hist.docs.map((d) => d.ref.delete()));
+
+    // Reset LAST, and take this attempt's watermark from the reset's commit
+    // timestamp. It must NOT come from `Date.now()`: the trail's `data` is
+    // `Date.parse(event.time)` — the CloudEvent occurrence time, i.e. Google's
+    // clock — so comparing it against the runner's clock compares two domains,
+    // and a runner running ahead would filter out the very row this test waits
+    // for. `WriteResult.writeTime` is Firestore's own commit timestamp, the same
+    // clock the event time derives from.
+    //
+    // Deriving it instead from the newest `data` already in the trail does NOT
+    // work: the sweep above usually empties it, leaving no value to read, and a
+    // stale row arriving after the sweep would then pass any lower bound.
+    const { writeTime } = await db()
+      .collection('pedidos')
+      .doc(pedidoId)
+      .update({ estado: 'iniciado' });
+    attemptStartMicros = writeTime.toMillis() * 1000;
+  });
+
   test.afterAll(async () => {
     // Remove the history subcollections first, then the fixture sweep by prefix
     // (`cleanupPedidoFixtures` batch-deletes the pedido and Firestore never
@@ -69,6 +119,14 @@ test.describe.serial('Pedidos e2e — Estado / Histórico', () => {
   });
 
   test('changing estado persists it and appends a history row', async ({ page }) => {
+    // The 240s in `beforeAll` extends THAT HOOK, not this test — Playwright's
+    // `test.setTimeout` inside a beforeAll sets the hook's own budget. Without
+    // this line the body runs on `playwright.config.ts`'s 60s, which the history
+    // poll below cannot fit behind the three earlier waits. The symptom would be
+    // `Test timeout of 60000ms exceeded` instead of the assertion failure,
+    // making a slow trigger indistinguishable from an undeployed one.
+    test.setTimeout(180_000);
+
     await page.goto(`/pedidos/${pedidoId}/editar`);
     await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
 
@@ -95,19 +153,36 @@ test.describe.serial('Pedidos e2e — Estado / Histórico', () => {
     // the `onPedidoEstadoChanged` Cloud Function (apps/functions) reacting to the
     // pedido write above — no longer by the client — so this assertion requires
     // the function to be DEPLOYED to the staging project. The timeout covers a
-    // cold start on top of the trigger's own delivery latency.
-    await expect
-      .poll(
-        async () => {
-          const hist = await db()
-            .collection('pedidos')
-            .doc(pedidoId)
-            .collection('historicoEstadoPedido')
-            .get();
-          return hist.docs.map((d) => d.data().estado as string);
-        },
-        { timeout: 30_000 },
-      )
-      .toContain('pago');
+    // cold start on top of the trigger's own delivery latency, and matches the
+    // budget the emulator suite gives the same trigger; staging is strictly
+    // slower than the emulator.
+    //
+    // Scoped to this attempt's watermark deliberately: a bare `.toContain('pago')`
+    // over the whole trail can be satisfied by a row left behind by a previous
+    // attempt, which turns a real failure into a green retry.
+    const freshPagoRow = async () => {
+      const hist = await db()
+        .collection('pedidos')
+        .doc(pedidoId)
+        .collection('historicoEstadoPedido')
+        .get();
+      return (
+        hist.docs
+          .map((d) => d.data())
+          .find((r) => r.estado === 'pago' && (r.data as number) > attemptStartMicros) ?? null
+      );
+    };
+
+    await expect.poll(freshPagoRow, { timeout: 90_000 }).not.toBeNull();
+    const pagoRow = (await freshPagoRow())!;
+
+    // THE ACTOR. This is the only automated coverage of
+    // `resolveUsuarioOuterRef(event.authType, event.authId)` producing a real
+    // ref: the save above came from a signed-in browser session, so the trigger's
+    // auth context carries this run's uid. Every offline test can only assert
+    // null (the emulator's hardcoded `authId` is not uid-shaped), so without
+    // this a transposed-argument regression would keep every other suite green
+    // while production silently recorded `null` for every operator.
+    expect(pagoRow.usuarioHistoricoEstadosPedidoOuterRef).toBe(`documents/usuarios/${e2eUid}`);
   });
 });

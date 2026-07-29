@@ -4,15 +4,15 @@ import { defineAdminCollection } from '../defineAdminCollection';
 
 /**
  * Admin-SDK handle for `pedidos/{pedidoId}/historicoEstadoPedido` — the pedido
- * estado audit trail. Rows are written SOLELY by the `onPedidoEstadoChanged`
- * Cloud Function (`apps/functions/src/pedidos/registrarEstadoPedido.ts`), which
- * observes every pedido write and appends one row per genuine `estado`
- * transition. Neither server-side reconcile in `../pedidoReconcile.ts` appends
- * anything — not the Mercado Pago webhook receiver's `reconcilePedidoFromPagamento`
- * (#531) nor the callable-facing `reconcilePedidoEstado` behind the web client's
- * Pagamentos tab (#308): both only write the pedido, and the trigger turns that
- * write into the trail row. Because both run on the Admin SDK, the transitions
- * they cause are recorded with a null usuário.
+ * estado audit trail.
+ *
+ * ONE writer, and it is not in this package: the `onPedidoEstadoChanged` trigger
+ * (`apps/functions/src/pedidos/registrarEstadoPedido.ts`) observes every write
+ * to `pedidos/{pedidoId}` and appends a row per `estado` transition. Both admin
+ * reconciles in `../pedidoReconcile.ts` deliberately write NOTHING here — they
+ * did until #697, which moved the append off the call sites so coverage would be
+ * total (they covered 3 of ~12 estado-changing paths) and so
+ * `historicoEstadoPedidoMeta.serverOwned` could deny every client write.
  */
 export const historicoEstadoPedidoCollection = defineAdminCollection({
   path: historicoEstadoPedidoMeta.collectionPath,

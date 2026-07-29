@@ -47,7 +47,7 @@
  * between enumeration and processing), `MlTasksDisabledError` plus any
  * gRPC-coded transport error from the enqueue, and Admin-SDK Firestore errors
  * (both surface as `Error`s carrying a numeric gRPC status `code` — the same
- * discriminant family as `grpcErrors.ts`). The contained conta gets
+ * discriminant family as `@delfrance/data/admin`'s gRPC helpers). The contained conta gets
  * `{ lastSweepAtUs, lastError }` merged WITHOUT advancing `cursorUs`, so the
  * next tick retries the same window. Anything unclassifiable is a coding bug
  * and RETHROWS — failing the whole tick loudly instead of burying it in a
@@ -138,7 +138,7 @@ function numericField(data: Record<string, unknown> | undefined, key: string): n
 /**
  * Admin-SDK Firestore and Cloud Tasks enqueue transport failures surface as
  * `Error`s carrying a numeric gRPC status `code` — the same discriminant
- * family `grpcErrors.ts` uses for ALREADY_EXISTS/NOT_FOUND. Narrowed to the
+ * family `@delfrance/data/admin` uses for ALREADY_EXISTS/NOT_FOUND. Narrowed to the
  * actual gRPC status range (integers 1–16; 0 = OK never rides an error): a
  * coding-bug `Error` that happens to expose some other numeric `code` must NOT
  * be contained — it has to fail the tick loudly (the whole point of the
