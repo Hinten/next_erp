@@ -174,8 +174,12 @@ unifying them needs a runtime `firebase-admin/functions` import.
    ⚠️ **Do not skip this.** Firestore Enterprise auto-creates zero indexes and
    does **not** throw on an unindexed query — it silently full-scans and bills
    data scanned. The `delfrance/default-query-needs-index` lint does **not**
-   cover these collections (they have no `meta.defaultQuery`), so nothing will
-   catch the omission for you. No trailing `__name__` (Enterprise omits it).
+   cover these collections (they have no `meta.defaultQuery`). CI enforces both
+   the composite index **and** that the handle is wired into
+   `defineNotificationPipeline` via
+   `packages/data/src/admin/notifications/notificationGuardrails.test.ts`
+   (#684) — skipping either step reds the `@delfrance/data` suite. No trailing
+   `__name__` (Enterprise omits it).
 4. **Adapter** — `apps/<canal>/lib/<dominio>/notificacao.ts`: a
    `parseNotificationBody`, a `process*` returning the channel's outcome union,
    then `defineNotificationPipeline({...})` and thin public wrappers. Build the
@@ -242,6 +246,7 @@ refetch-before-mutate). The last two are known gaps, not models to follow.
 **Key files**
 
 - `packages/data/src/admin/notifications/{pipeline,store,types,coerce}.ts`
+- `packages/data/src/admin/notifications/notificationGuardrails.test.ts` (B+C: every `notificacoes*` handle has a pipeline consumer + sweep index)
 - `packages/data/src/admin/adminBundleSafety.test.ts`
 - `packages/schemas/src/shared/notificationResilience.ts`
 - `apps/{mercado-livre/lib/marketplace,mercado-pago/lib/payments,whatsapp/lib/whatsapp}/notificacao.ts`
