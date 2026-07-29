@@ -24,6 +24,12 @@ test.describe.serial('Pedidos e2e — Estado / Histórico', () => {
   let fixtures: Awaited<ReturnType<typeof seedPedidoFixtures>>;
   /** uid of the run's ephemeral signed-in user — the actor the trail must name. */
   let e2eUid: string;
+  /**
+   * SERVER-clock watermark for this attempt, in microseconds. Rows older than
+   * this belong to a previous attempt. See `beforeEach` for why it cannot come
+   * from `Date.now()`.
+   */
+  let attemptStartMicros: number;
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
@@ -71,13 +77,29 @@ test.describe.serial('Pedidos e2e — Estado / Histórico', () => {
   // the retry. Without this sweep the retry's assertion would be satisfied by
   // the failed attempt's leftover instead of by its own transition.
   test.beforeEach(async () => {
-    await db().collection('pedidos').doc(pedidoId).update({ estado: 'iniciado' });
     const hist = await db()
       .collection('pedidos')
       .doc(pedidoId)
       .collection('historicoEstadoPedido')
       .get();
     await Promise.all(hist.docs.map((d) => d.ref.delete()));
+
+    // Reset LAST, and take this attempt's watermark from the reset's commit
+    // timestamp. It must NOT come from `Date.now()`: the trail's `data` is
+    // `Date.parse(event.time)` — the CloudEvent occurrence time, i.e. Google's
+    // clock — so comparing it against the runner's clock compares two domains,
+    // and a runner running ahead would filter out the very row this test waits
+    // for. `WriteResult.writeTime` is Firestore's own commit timestamp, the same
+    // clock the event time derives from.
+    //
+    // Deriving it instead from the newest `data` already in the trail does NOT
+    // work: the sweep above usually empties it, leaving no value to read, and a
+    // stale row arriving after the sweep would then pass any lower bound.
+    const { writeTime } = await db()
+      .collection('pedidos')
+      .doc(pedidoId)
+      .update({ estado: 'iniciado' });
+    attemptStartMicros = writeTime.toMillis() * 1000;
   });
 
   test.afterAll(async () => {
@@ -101,10 +123,6 @@ test.describe.serial('Pedidos e2e — Estado / Histórico', () => {
     // `Test timeout of 60000ms exceeded` instead of the assertion failure,
     // making a slow trigger indistinguishable from an undeployed one.
     test.setTimeout(180_000);
-
-    // Watermark: only rows written AFTER this instant count as this attempt's.
-    // `data` is microseconds since epoch (`nowMicros()` convention).
-    const t0 = Date.now() * 1000;
 
     await page.goto(`/pedidos/${pedidoId}/editar`);
     await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
@@ -136,9 +154,9 @@ test.describe.serial('Pedidos e2e — Estado / Histórico', () => {
     // budget the emulator suite gives the same trigger; staging is strictly
     // slower than the emulator.
     //
-    // Scoped to `data > t0` deliberately: a bare `.toContain('pago')` over the
-    // whole trail can be satisfied by a row left behind by a previous attempt,
-    // which turns a real failure into a green retry.
+    // Scoped to this attempt's watermark deliberately: a bare `.toContain('pago')`
+    // over the whole trail can be satisfied by a row left behind by a previous
+    // attempt, which turns a real failure into a green retry.
     const freshPagoRow = async () => {
       const hist = await db()
         .collection('pedidos')
@@ -148,7 +166,7 @@ test.describe.serial('Pedidos e2e — Estado / Histórico', () => {
       return (
         hist.docs
           .map((d) => d.data())
-          .find((r) => r.estado === 'pago' && (r.data as number) > t0) ?? null
+          .find((r) => r.estado === 'pago' && (r.data as number) > attemptStartMicros) ?? null
       );
     };
 

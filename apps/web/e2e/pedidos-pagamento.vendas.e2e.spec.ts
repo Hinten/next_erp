@@ -13,6 +13,12 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
   const prefix = e2ePrefix('pedpag');
   const pedidoId = `${prefix}-001`;
   let fixtures: Awaited<ReturnType<typeof seedPedidoFixtures>>;
+  /**
+   * SERVER-clock watermark for this attempt, in microseconds. Rows older than
+   * this belong to a previous attempt (or to an earlier test in this serial
+   * describe). See `beforeEach` for why it cannot come from `Date.now()`.
+   */
+  let attemptStartMicros: number;
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
@@ -56,7 +62,6 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
   // attempt, so every test starts from `iniciado` with no leftover pagamentos
   // or history.
   test.beforeEach(async () => {
-    await db().collection('pedidos').doc(pedidoId).update({ estado: 'iniciado' });
     const pg = await db().collection('pedidos').doc(pedidoId).collection('pagamentos').get();
     await Promise.all(pg.docs.map((d) => d.ref.delete()));
     const hist = await db()
@@ -65,6 +70,23 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
       .collection('historicoEstadoPedido')
       .get();
     await Promise.all(hist.docs.map((d) => d.ref.delete()));
+
+    // Reset LAST, and take this attempt's watermark from the reset's commit
+    // timestamp. It must NOT come from `Date.now()`: the trail's `data` is
+    // `Date.parse(event.time)` — the CloudEvent occurrence time, i.e. Google's
+    // clock — so comparing it against the runner's clock compares two domains,
+    // and a runner running ahead would filter out the very row this test waits
+    // for. `WriteResult.writeTime` is Firestore's own commit timestamp, the same
+    // clock the event time derives from.
+    //
+    // Deriving it instead from the newest `data` already in the trail does NOT
+    // work: the sweep above usually empties it, leaving no value to read, and a
+    // stale row arriving after the sweep would then pass any lower bound.
+    const { writeTime } = await db()
+      .collection('pedidos')
+      .doc(pedidoId)
+      .update({ estado: 'iniciado' });
+    attemptStartMicros = writeTime.toMillis() * 1000;
   });
 
   // `cleanupPedidoFixtures` deletes the pedido doc with a plain batch delete, which
@@ -229,10 +251,6 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
     // identically.
     test.setTimeout(180_000);
 
-    // Watermark: only rows written AFTER this instant count as this attempt's.
-    // `data` is microseconds since epoch (`nowMicros()` convention).
-    const t0 = Date.now() * 1000;
-
     await page.goto(`/pedidos/${pedidoId}/editar`);
     await expect(page.getByRole('tab', { name: 'Principal' })).toBeVisible({ timeout: 15_000 });
 
@@ -262,12 +280,12 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
     // start on top of the trigger's own delivery latency, and matches the budget
     // the emulator suite gives the same trigger; staging is strictly slower.
     //
-    // Scoped to `data > t0` deliberately. Two stale-row leaks would otherwise
-    // satisfy a bare `.toContain('pago')`: the preceding test's
+    // Scoped to this attempt's watermark deliberately. Two stale-row leaks would
+    // otherwise satisfy a bare `.toContain('pago')`: the preceding test's
     // `update({ estado: 'pago' })` now fires the trigger and nobody waits for
     // it, so its row can land after this test's `beforeEach` snapshot-swept the
     // trail; and across CI's 2 retries `pedidoId` is identical, so a timed-out
-    // attempt's row can outlive it.
+    // attempt's row can outlive it. Both carry a `data` from before the reset.
     await expect
       .poll(
         async () => {
@@ -278,7 +296,7 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
             .get();
           return snap.docs
             .map((d) => d.data())
-            .filter((r) => r.estado === 'pago' && (r.data as number) > t0).length;
+            .filter((r) => r.estado === 'pago' && (r.data as number) > attemptStartMicros).length;
         },
         { timeout: 90_000 },
       )
