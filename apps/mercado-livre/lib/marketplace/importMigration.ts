@@ -124,7 +124,7 @@ import {
 
 import { type ImportDeps, importProduto } from './import';
 import { type ImportOptions, MercadoLivreImportError } from './importCore';
-import { isNotFound } from './grpcErrors';
+import { isNotFound } from '@delfrance/data/admin';
 import { lastSegment, refMatchesIntegracao } from './linkRefs';
 
 /** Every import side-effect OFF (#441) — the migration only converges existing

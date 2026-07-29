@@ -57,7 +57,7 @@ import { clienteCollection, enderecoCollection } from '@delfrance/data/admin/col
 import { normalizeTelefone, telefoneQueryShapes } from '@delfrance/core/phone';
 import { type Cliente, type TipoCliente, type UF, ufSchema } from '@delfrance/schemas';
 import type { MlBillingInfo, MlShipment } from '@delfrance/integrations-mercado-livre';
-import { isAlreadyExists } from './grpcErrors';
+import { isAlreadyExists } from '@delfrance/data/admin';
 
 /* --------------------------------- errors ---------------------------------- */
 

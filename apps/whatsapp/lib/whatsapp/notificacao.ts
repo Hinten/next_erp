@@ -39,6 +39,14 @@ import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
 import { notificacoesWhatsappCollection } from '@delfrance/data/admin/collections';
 import {
+  defineNotificationPipeline,
+  MAX_TENTATIVAS,
+  type NotificationDisposition,
+  type ReprocessOptions,
+  type ReprocessResult,
+  TASK_MAX_ATTEMPTS,
+} from '@delfrance/data/admin/notifications';
+import {
   WEBHOOK_FIELD_MESSAGES,
   webhookEnvelopeSchema,
 } from '@delfrance/integrations-whatsapp-cloud-api';
@@ -61,11 +69,10 @@ import type { MediaCacheContext } from './media';
  */
 export const WHATSAPP_NOTIFICATION_QUEUE = 'processWhatsappNotification';
 
-/** In-task retry cap — the Cloud Tasks `retryConfig.maxAttempts` (kept in sync). */
-export const TASK_MAX_ATTEMPTS = 3;
-
-/** Cross-sweep reprocess cap — after this many sweeps a `failed` doc is parked. */
-export const MAX_TENTATIVAS = 5;
+// The retry caps and the reprocess window are the SHARED pipeline's — re-exported
+// here so this module stays the one import site for the channel's callers.
+export { MAX_TENTATIVAS, TASK_MAX_ATTEMPTS };
+export type { ReprocessOptions, ReprocessResult };
 
 /**
  * One lean per-change payload the receiver enqueues and the task handler
@@ -145,6 +152,79 @@ export interface TaskResult {
   field?: string;
 }
 
+/** Drop `undefined` (Firestore rejects it) from the replayed change value. */
+function sanitizeValue(value: unknown): unknown {
+  return JSON.parse(JSON.stringify(value ?? null));
+}
+
+/**
+ * The shared pipeline, bound to this channel. Built per call so the injectable
+ * `deps` stay per-call (the factory only closes over config — no I/O, no state).
+ *
+ * The two WhatsApp-specific choices here:
+ *  - the failure doc is keyed by the WA `messageId` (auto-id when the change
+ *    carries none — a template/account update has no single message subject);
+ *  - it CARRIES the raw change `value`. Unlike Mercado Pago/Livre there is no
+ *    re-fetch anchor — the message content exists ONLY in the webhook body — so
+ *    the sweep has to REPLAY it rather than re-read it from Meta. That value was
+ *    signature-verified by the receiver and the collection is admin-only /
+ *    default-deny, so no client can ever read it back.
+ */
+function pipelineFor(deps: WhatsappProcessDeps) {
+  return defineNotificationPipeline<WhatsappNotificationPayload, ProcessOutcome>({
+    channel: 'whatsapp',
+    collection: notificacoesWhatsappCollection,
+    // The cast preserves the pre-existing one at the old `parse` call site: the
+    // schema's `value: z.unknown()` infers as OPTIONAL (`unknown` includes
+    // undefined), while the payload declares it required. The runtime shape is
+    // identical — `parseWebhookBody` always sets it.
+    taskSchema: whatsappNotificationTaskSchema as unknown as z.ZodType<WhatsappNotificationPayload>,
+    docIdOf: (p) => p.messageId,
+    dedupKeyOf: (p) => p.messageId,
+    toDocFields: (p) => ({
+      field: p.field,
+      phoneNumberId: p.phoneNumberId,
+      messageId: p.messageId,
+      // Passthrough (untyped) — the replay payload.
+      value: sanitizeValue(p.value),
+    }),
+    fromDoc: (parsed, raw) => {
+      const doc = parsed as {
+        field: string;
+        phoneNumberId: string | null;
+        messageId: string | null;
+      };
+      return {
+        field: doc.field,
+        phoneNumberId: doc.phoneNumberId,
+        messageId: doc.messageId,
+        value: raw.value, // the passthrough replay payload
+      };
+    },
+    process: (db, payload) => processChangePayload(db, payload, deps),
+    toDisposition: (outcome): NotificationDisposition => {
+      if (outcome.kind === 'processed') return { kind: 'resolve', label: 'processed' };
+      if (outcome.kind === 'dropped') return { kind: 'drop', reason: outcome.reason };
+      return { kind: 'fail', reason: outcome.reason };
+    },
+  });
+}
+
+const basePipeline = pipelineFor(defaultWhatsappProcessDeps);
+
+/**
+ * Persist a notification as `failed` (the sweep will re-drive it). The receiver
+ * also calls this as a fallback when the enqueue itself fails, so Meta never sees
+ * a 5xx during an enqueue-path outage.
+ */
+export function persistNotificationFailure(
+  db: Firestore,
+  payload: WhatsappNotificationPayload,
+  erro: string,
+): Promise<void> {
+  return basePipeline.persistFailure(db, payload, erro);
+}
+
 /**
  * The `onTaskDispatched` handler body, extracted so the throw/persist
  * disposition is unit-testable. `retryCount` is the Cloud Tasks attempt index
@@ -157,139 +237,15 @@ export async function handleNotificationTask(
   retryCount: number,
   deps: WhatsappProcessDeps = defaultWhatsappProcessDeps,
 ): Promise<TaskResult> {
-  let payload: WhatsappNotificationPayload;
-  try {
-    payload = whatsappNotificationTaskSchema.parse(data) as WhatsappNotificationPayload;
-  } catch (err) {
-    if (err instanceof z.ZodError) return { outcome: 'dropped' }; // coding/enqueue bug — drop
-    throw err;
-  }
-
-  let result: ProcessOutcome;
-  try {
-    result = await processChangePayload(db, payload, deps);
-  } catch (err) {
-    // Transient (Firestore / Graph / network). Retry in-task until the final
-    // attempt; then persist `failed` so the sweep re-drives it.
-    if (!(err instanceof Error)) throw err;
-    if (retryCount < TASK_MAX_ATTEMPTS - 1) throw err; // let the queue retry with backoff
-    try {
-      await persistNotificationFailure(db, payload, err.message);
-    } catch (persistErr) {
-      // A correlated Firestore outage — can't record it locally: log the dropped
-      // notification and re-throw the ORIGINAL error so it surfaces in Cloud
-      // Tasks' error metrics.
-      if (!(persistErr instanceof Error)) throw persistErr;
-      console.error(
-        '[whatsapp] notification DROPPED — transient failure AND persist failed on the final attempt',
-        {
-          field: payload.field,
-          messageId: payload.messageId,
-          cause: err.message,
-          persistError: persistErr.message,
-        },
-      );
-      throw err;
-    }
-    return { outcome: 'failed', field: payload.field };
-  }
-
-  if (result.kind === 'dropped') {
-    return { outcome: 'dropped', field: payload.field };
-  }
-  if (result.kind === 'failed') {
-    await persistNotificationFailure(db, payload, result.reason);
-    return { outcome: 'failed', field: payload.field };
-  }
-  return { outcome: 'done', contaId: result.contaId, field: payload.field };
-}
-
-/** Drop `undefined` (Firestore rejects it) from the replayed change value. */
-function sanitizeValue(value: unknown): unknown {
-  return JSON.parse(JSON.stringify(value ?? null));
-}
-
-/**
- * Persist a notification as `failed` (the sweep will re-drive it). The receiver
- * also calls this as a fallback when the enqueue itself fails, so Meta never sees
- * a 5xx during an enqueue-path outage.
- */
-export async function persistNotificationFailure(
-  db: Firestore,
-  payload: WhatsappNotificationPayload,
-  erro: string,
-): Promise<void> {
-  await persistNotification(db, payload, 'failed', 0, erro);
-}
-
-/**
- * Create-only failure/parked writer keyed by the WA `messageId` (auto-id when
- * absent), stamping `processedAt = now` (the sweep's window gate) and carrying
- * the change `value` so the sweep can replay it. A duplicate delivery that also
- * failed hits ALREADY_EXISTS (gRPC 6) → already recorded, ignore.
- */
-async function persistNotification(
-  db: Firestore,
-  payload: WhatsappNotificationPayload,
-  status: 'failed' | 'parked',
-  tentativas: number,
-  erro: string,
-): Promise<void> {
-  const docId = payload.messageId ?? notificacoesWhatsappCollection.newDocId(db, {});
-  const data = notificacoesWhatsappCollection.parse({
-    field: payload.field,
-    phoneNumberId: payload.phoneNumberId,
-    messageId: payload.messageId,
-    status,
-    tentativas,
-    erro,
-    processedAt: Date.now(),
-    // Passthrough (untyped) — the replay payload. Admin-only / default-deny doc.
-    value: sanitizeValue(payload.value),
-  });
-  try {
-    await notificacoesWhatsappCollection.docRef(db, {}, docId).create(data);
-  } catch (err) {
-    if (err instanceof Error && (err as { code?: unknown }).code === 6) return; // dup — already recorded
-    throw err;
-  }
-}
-
-/** Advance an existing failure doc's status/retry counter (merge). */
-async function markNotification(
-  db: Firestore,
-  docId: string,
-  status: 'failed' | 'parked',
-  tentativas: number,
-  erro: string,
-  now: number,
-): Promise<void> {
-  await notificacoesWhatsappCollection.merge(db, {}, docId, {
-    status,
-    tentativas,
-    erro,
-    processedAt: now,
-  });
-}
-
-/** Remove a resolved failure doc from the failures-only store (sweep success). */
-async function deleteNotification(db: Firestore, docId: string): Promise<void> {
-  await notificacoesWhatsappCollection.docRef(db, {}, docId).delete();
-}
-
-/** One hour — the reprocess window (mirrors the MP sweep). */
-const ONE_HOUR_MS = 60 * 60 * 1000;
-
-export interface ReprocessOptions {
-  olderThanMs?: number;
-  limit?: number;
-  now?: number;
-}
-
-export interface ReprocessResult {
-  processed: number;
-  outcomes: Record<string, number>;
-  errors: Array<{ docId: string; message: string }>;
+  const r = await pipelineFor(deps).handleTask(db, data, retryCount);
+  // `payload` is absent only on the schema-parse drop, where there is no field
+  // to report; `result` is absent on the transient-failure path.
+  const contaId = r.result?.kind === 'processed' ? r.result.contaId : undefined;
+  return {
+    outcome: r.outcome === 'parked' ? 'failed' : r.outcome,
+    ...(contaId !== undefined ? { contaId } : {}),
+    ...(r.payload ? { field: r.payload.field } : {}),
+  };
 }
 
 /**
@@ -300,68 +256,10 @@ export interface ReprocessResult {
  * `messageId` within a run, bounded, and ISOLATED per-doc so one failure never
  * aborts the batch.
  */
-export async function reprocessNotifications(
+export function reprocessNotifications(
   db: Firestore,
   opts: ReprocessOptions = {},
   deps: WhatsappProcessDeps = defaultWhatsappProcessDeps,
 ): Promise<ReprocessResult> {
-  const now = opts.now ?? Date.now();
-  const cutoff = now - (opts.olderThanMs ?? ONE_HOUR_MS);
-  const max = opts.limit ?? 50;
-
-  const snap = await notificacoesWhatsappCollection
-    .ref(db, {})
-    .where('status', '==', 'failed')
-    .where('processedAt', '<', cutoff)
-    .orderBy('processedAt')
-    .limit(max)
-    .get();
-
-  const seen = new Set<string>();
-  const outcomes: Record<string, number> = {};
-  const errors: Array<{ docId: string; message: string }> = [];
-  let processed = 0;
-
-  for (const d of snap.docs) {
-    const raw = d.data() as Record<string, unknown>;
-    const messageId = typeof raw.messageId === 'string' ? raw.messageId : '';
-    if (messageId && seen.has(messageId)) continue; // dedup by messageId
-    if (messageId) seen.add(messageId);
-
-    const doc = notificacoesWhatsappCollection.parseRead(
-      raw,
-      notificacoesWhatsappCollection.docPath({}, d.id),
-    );
-    const payload: WhatsappNotificationPayload = {
-      field: doc.field,
-      phoneNumberId: doc.phoneNumberId,
-      messageId: doc.messageId,
-      value: raw.value, // the passthrough replay payload
-    };
-    const tentativas = (doc.tentativas ?? 0) + 1;
-
-    try {
-      const result = await processChangePayload(db, payload, deps);
-      if (result.kind === 'processed' || result.kind === 'dropped') {
-        await deleteNotification(db, d.id);
-        outcomes[result.kind] = (outcomes[result.kind] ?? 0) + 1;
-      } else {
-        const status = tentativas >= MAX_TENTATIVAS ? 'parked' : 'failed';
-        await markNotification(db, d.id, status, tentativas, result.reason, now);
-        outcomes[status] = (outcomes[status] ?? 0) + 1;
-      }
-      processed += 1;
-    } catch (err) {
-      if (!(err instanceof Error)) throw err;
-      try {
-        const status = tentativas >= MAX_TENTATIVAS ? 'parked' : 'failed';
-        await markNotification(db, d.id, status, tentativas, err.message, now);
-      } catch (markErr) {
-        if (!(markErr instanceof Error)) throw markErr;
-      }
-      errors.push({ docId: d.id, message: err.message });
-    }
-  }
-
-  return { processed, outcomes, errors };
+  return pipelineFor(deps).reprocess(db, opts);
 }

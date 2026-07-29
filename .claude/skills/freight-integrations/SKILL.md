@@ -85,6 +85,14 @@ can't downgrade) → **idempotent patch** of `freteInicial.estado`/`codRastreio`
 new provider supplies only its signature verification + status map; the
 find/guard/patch core is reusable — extract `applyFreightStatusUpdate` to
 `@delfrance/data/admin` when a 2nd caller (webhook OR order-sync poll) appears.
+(That house rule has since been exercised once: the triplicated notification
+persistence became `@delfrance/data/admin/notifications` — see the
+`webhook-notifications` skill.)
+
+⚠️ This receiver is also the **only** implemented one still processing inline —
+no queue, no failure persistence, no reprocess sweep — so a Firestore outage
+mid-webhook loses the update entirely. Putting it on the shared notification
+pipeline is tracked as a #360 follow-up.
 
 ## The flow (happy path)
 

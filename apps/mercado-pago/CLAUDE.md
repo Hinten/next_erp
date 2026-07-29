@@ -26,11 +26,13 @@ hosts the channel's HTTP routes. Modeled on `apps/mercado-livre` +
 - `lib/payments/credentialStore.ts` — the single-token store over the admin-only
   `metodo_pgto/{id}/credenciais` subcollection (fixed `current` doc; strays deleted
   on save). Mirrors apps/melhor-envio's `tokenStore`.
-- `lib/payments/notificacao.ts` — **#531**: the webhook ingestion core shared by the
-  receiver, the `onTaskDispatched` task handler and the `onSchedule` reprocess sweep —
-  parse → resolve collector → RE-FETCH the payment (never trust the body) → map
-  (`mpPaymentToPagamento`) → `reconcilePedidoFromPagamento`. Failures-only persistence
-  to `notificacoesMercadoPago`. Mirrors apps/mercado-livre's `marketplace/notificacao.ts`.
+- `lib/payments/notificacao.ts` — **#531**: this channel's webhook adapter — parse →
+  resolve collector → RE-FETCH the payment (never trust the body) → map
+  (`mpPaymentToPagamento`) → `reconcilePedidoFromPagamento`, then a
+  `defineNotificationPipeline({...})` binding. The resilience behaviour itself (retry
+  disposition, failures-only persistence to `notificacoesMercadoPago`, the
+  durable-cursor sweep) is the SHARED core in `@delfrance/data/admin/notifications` —
+  see the `webhook-notifications` skill. Do not re-implement it here.
 - `lib/payments/mpTasks.ts` — the `processMercadoPagoNotification` task-queue scheduler
   (`MERCADO_PAGO_TASKS_DISABLED` valve → persist-for-the-sweep). Mirrors `mlTasks.ts`.
 - `lib/payments/state.ts` — the signed-state HMAC (`MERCADO_PAGO_STATE_SECRET`, 10-min TTL).
