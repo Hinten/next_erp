@@ -113,8 +113,11 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
   Covers a standalone estoque delete; the produto-wide cascade already deletes
   history directly, so its re-fires of this trigger are idempotent no-ops.
 - **`onPedidoEstadoChanged`** (`onDocumentWrittenWithAuthContext('pedidos/{pedidoId}')`)
-  — the SOLE writer of the pedido estado audit trail
-  (`pedidos/{pedidoId}/historicoEstadoPedido`). Replaces three hand-written
+  — the SOLE writer of BOTH pedido audit trails: the order state
+  (`pedidos/{pedidoId}/historicoEstadoPedido`) and the freight state
+  (`pedidos/{pedidoId}/historicoFtIni`, tracking the EMBEDDED
+  `freteInicial.estado` — no separate document to observe, which is exactly why
+  it rides this trigger instead of its own). Replaces three hand-written
   appends at the call sites (the web editor, the client pagamento reconcile, the
   Mercado Pago admin reconcile) which together covered only 3 of the ~12 paths
   that change `estado` — every Mercado Livre writer and every creation path wrote
@@ -122,10 +125,18 @@ gen2 (2nd-gen / Eventarc) Cloud Functions. Seventeen exports:
   total: any writer, from anywhere, now produces a row, and
   `historicoEstadoPedidoMeta.serverOwned` denies client writes so the trail cannot
   be forged or erased (no `su` bypass). Records the opening `estado` on create and
-  one row per transition after that; a delete or a write that left `estado` alone
-  exits on the fast path with no reads/writes. Idempotent: the row's doc id IS
+  one row per transition after that — **per trail**, so ONE pedido write records up
+  to TWO rows, one for each estado that actually moved (a Frete tab save typically
+  moves only the freight one). A pedido with no `freteInicial` block never produces
+  a frete row at all, and a delete or a write that left BOTH estados alone exits on
+  the fast path with no reads/writes. Idempotent: each row's doc id IS
   `event.id`, and `data` comes from `event.time`, so an at-least-once redelivery
-  rewrites a content-identical doc. **The repo's first `WithAuthContext`
+  rewrites a content-identical doc — the two rows of one event share that id
+  harmlessly, they live in different subcollections. ⚠️ The trails do NOT share a
+  time unit: `data` is microseconds on `historicoEstadoPedido` and **milliseconds**
+  on `historicoFtIni` (the unit the legacy Flutter ODM writes — `maybeDateTimeToJson`
+  is `millisecondsSinceEpoch`), so a row-builder copied across is off by 1000×.
+  **The repo's first `WithAuthContext`
   trigger** — `resolveUsuarioOuterRef` maps `event.authId` to
   `documents/usuarios/<uid>`, but only when it is uid-shaped: `authType` has no
   `user` literal (client-SDK writes arrive as `api_key`, console writes as

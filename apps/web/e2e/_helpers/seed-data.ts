@@ -1824,9 +1824,21 @@ export async function seedPedidoFreteFixtures(prefix: string): Promise<{
   };
 }
 
-/** Teardown for `seedPedidoFreteFixtures`. */
+/**
+ * Teardown for `seedPedidoFreteFixtures`. The marketplace fixture pedido is
+ * seeded with a NON-null `freteInicial` already at `postado`, so the
+ * `onPedidoEstadoChanged` trigger appends a `historicoFtIni` row for it — and,
+ * because that same trigger records an opening row on create, a
+ * `historicoEstadoPedido` row too. Both are swept BEFORE
+ * `cleanupPedidoFixtures` deletes the parents, which never cascades.
+ * (The pedidos this suite creates through `/pedidos/novo` mint a counter
+ * `numero` without the run prefix, so no prefix sweep has ever reached them —
+ * pre-existing, and the reason this pass is scoped by `numero` like the rest.)
+ */
 export async function cleanupPedidoFreteFixtures(prefix: string): Promise<void> {
   await cleanupEnderecos(`${prefix}-cli-001`);
+  await cleanupPedidoSubcollectionByPrefix('historicoFtIni', prefix);
+  await cleanupPedidoSubcollectionByPrefix('historicoEstadoPedido', prefix);
   await Promise.all([cleanupPedidoFixtures(prefix), cleanupByNamePrefix('int_frete', prefix)]);
 }
 
@@ -1980,6 +1992,26 @@ export async function cleanupPedidoSubcollection(
   const batch = db().batch();
   snap.docs.forEach((d) => batch.delete(d.ref));
   await batch.commit();
+}
+
+/**
+ * Sweep one subcollection off EVERY pedido whose `numero` starts with `prefix`
+ * — for the trigger-written trails (`historicoEstadoPedido`, `historicoFtIni`)
+ * a teardown cannot enumerate by hand: the rows appear asynchronously, on
+ * whichever pedidos the run happened to touch. Same prefix range the parent
+ * sweep uses, so it reaches exactly the docs `cleanupPedidoFixtures` is about
+ * to delete — and it must run BEFORE that, or the rows outlive their parent.
+ */
+async function cleanupPedidoSubcollectionByPrefix(
+  subcollection: string,
+  prefix: string,
+): Promise<void> {
+  const snap = await db()
+    .collection('pedidos')
+    .where('numero', '>=', prefix)
+    .where('numero', '<', `${prefix}${PREFIX_MAX}`)
+    .get();
+  await Promise.all(snap.docs.map((d) => cleanupPedidoSubcollection(d.id, subcollection)));
 }
 
 /**
@@ -3332,12 +3364,28 @@ export async function seedCheckoutFixtures(prefix: string): Promise<CheckoutFixt
 
 /**
  * Teardown for `seedCheckoutFixtures`. Firestore never cascades, so every
- * pedido that was checked out must have its `checkout` subcollection swept
- * BEFORE the parent pedido sweep (`cleanupPedidoFixtures` deletes the pedido
- * doc but not its subcollection). Also sweeps the Melhor Envio `int_frete`.
+ * pedido that was checked out must have its subcollections swept BEFORE the
+ * parent pedido sweep (`cleanupPedidoFixtures` deletes the pedido doc but not
+ * its subcollections). Three of them:
+ *  - `checkout`, one doc per conference;
+ *  - `historicoFtIni` — every fixture pedido here is seeded with a NON-null
+ *    `freteInicial` (`checkoutFrete`, estado `emSeparacao`) and `saveCheckout`
+ *    drives it to `checkFinalizado` on EVERY conference, so
+ *    `onPedidoEstadoChanged` appends a freight-audit row per pedido per run;
+ *  - `historicoEstadoPedido` — the SAME trigger records an opening row on
+ *    create, and every fixture pedido here is seeded at `pago`, so each run
+ *    also mints one estado row per pedido. Leaking since #697; swept here
+ *    because it is the identical failure and one line from the frete sweep.
+ * Also sweeps the Melhor Envio `int_frete`.
  */
 export async function cleanupCheckoutFixtures(prefix: string, pedidoIds: string[]): Promise<void> {
-  await Promise.all(pedidoIds.map((id) => cleanupPedidoSubcollection(id, 'checkout')));
+  await Promise.all(
+    pedidoIds.flatMap((id) => [
+      cleanupPedidoSubcollection(id, 'checkout'),
+      cleanupPedidoSubcollection(id, 'historicoFtIni'),
+      cleanupPedidoSubcollection(id, 'historicoEstadoPedido'),
+    ]),
+  );
   await Promise.all([cleanupPedidoFixtures(prefix), cleanupIntFreteFixtures(prefix)]);
 }
 

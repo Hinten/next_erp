@@ -197,13 +197,17 @@ const config = [
       // so editing one of those 51 files means fixing it first.
       'delfrance/no-error-as-sole-instanceof': 'warn',
 
-      // `pedidos/{id}/historicoEstadoPedido` has exactly one writer: the
-      // `onPedidoEstadoChanged` Cloud Function. The schema marks it
-      // `meta.serverOwned`, so the generated rules already deny every client
-      // write — this rule is the fast feedback loop in front of that gate.
+      // `pedidos/{id}/historicoEstadoPedido` (the pedido `estado` trail) and
+      // `pedidos/{id}/historicoFtIni` (the `freteInicial.estado` trail) have
+      // exactly one writer between them: the `onPedidoEstadoChanged` Cloud
+      // Function, which appends a row to whichever estado moved. Both schemas
+      // mark the collection `meta.serverOwned`, so the generated rules already
+      // deny every client write — this rule is the fast feedback loop in front
+      // of that gate.
       //
       // Error, not warn (unlike no-inline-admin-collection): there are ZERO
-      // pre-existing sites to ratchet down from, and a hit is never stylistic —
+      // pre-existing sites to ratchet down from on either trail (neither has
+      // ever had a writer outside `apps/functions`), and a hit is never stylistic —
       // it is a write that WILL fail with `permission-denied` at runtime, in a
       // place where the old code swallowed FirebaseError into a toast. Failing
       // the build beats shipping a silently missing audit row.

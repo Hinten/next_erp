@@ -24,7 +24,18 @@ on:
       # the real Admin-SDK transaction.
       - 'packages/data/src/admin/pedidoReconcile*.ts'
       - 'packages/data/src/pedido/usecases.ts'
-      - 'packages/schemas/src/pedido/collection/pagamento.ts'
+      # A GLOB, deliberately, in place of the single `pagamento.ts` it replaces.
+      # Every pedido subcollection the emulator suite parses through belongs here
+      # (pagamento, plus the two trigger-written audit trails), and a named-file
+      # list rots the moment one is added or renamed: `ci.yml` excludes
+      # @delfrance/functions from its turbo `test` filter, so a schema edit that
+      # matches nothing here runs in NO lane — the check reports *skipped*, never
+      # failed. This repo has already shipped that bug twice (ci-freight, ci-nfe).
+      # An over-broad filter costs runner minutes; a stale one costs coverage
+      # silently, so the glob wins.
+      - 'packages/schemas/src/pedido/collection/**'
+      - 'packages/data/src/admin/collections/historicoEstadoPedidoCollection.ts'
+      - 'packages/data/src/admin/collections/historicoFreteInicialCollection.ts'
       - 'packages/schemas/src/shared/frete.ts'
       - 'storage.rules'
       - 'cors.json'
@@ -51,7 +62,18 @@ on:
       # the real Admin-SDK transaction.
       - 'packages/data/src/admin/pedidoReconcile*.ts'
       - 'packages/data/src/pedido/usecases.ts'
-      - 'packages/schemas/src/pedido/collection/pagamento.ts'
+      # A GLOB, deliberately, in place of the single `pagamento.ts` it replaces.
+      # Every pedido subcollection the emulator suite parses through belongs here
+      # (pagamento, plus the two trigger-written audit trails), and a named-file
+      # list rots the moment one is added or renamed: `ci.yml` excludes
+      # @delfrance/functions from its turbo `test` filter, so a schema edit that
+      # matches nothing here runs in NO lane — the check reports *skipped*, never
+      # failed. This repo has already shipped that bug twice (ci-freight, ci-nfe).
+      # An over-broad filter costs runner minutes; a stale one costs coverage
+      # silently, so the glob wins.
+      - 'packages/schemas/src/pedido/collection/**'
+      - 'packages/data/src/admin/collections/historicoEstadoPedidoCollection.ts'
+      - 'packages/data/src/admin/collections/historicoFreteInicialCollection.ts'
       - 'packages/schemas/src/shared/frete.ts'
       - 'storage.rules'
       - 'cors.json'

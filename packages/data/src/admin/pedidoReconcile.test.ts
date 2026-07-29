@@ -102,6 +102,22 @@ function makeDb(seed: Record<string, Record<string, unknown>>): {
   return { db: db as unknown as FirebaseAdminFirestore, store, writes };
 }
 
+/** The two trigger-owned audit trails a pedido write can produce. */
+type PedidoTrail = 'historicoEstadoPedido' | 'historicoFtIni';
+
+/**
+ * Rows a reconcile wrote into one of the pedido audit trails. BOTH trails are
+ * written solely by the `onPedidoEstadoChanged` trigger
+ * (`apps/functions/src/pedidos/registrarEstadoPedido.ts`), which observes the
+ * pedido write the reconcile makes and derives the rows from the before/after
+ * snapshots. No trigger runs against this fake db, so every call below must
+ * leave both empty — and an append hand-rolled into `pedidoReconcile.ts` would
+ * DOUBLE every row in production, where the trigger does fire on that same write.
+ */
+function trailWrites(writes: FakeWrites, trail: PedidoTrail) {
+  return writes.sets.filter((w) => w.path.includes(`/${trail}/`));
+}
+
 /** Build a valid `Pagamento` (defaults applied) with the given overrides. */
 function mkPagamento(overrides: Partial<Pagamento> & { valor: number }): Pagamento {
   return pagamentoSchema.parse(overrides);
@@ -133,7 +149,7 @@ const FLIPPABLE: readonly EstadoFrete[] = [
 ];
 
 describe('reconcilePedidoFromPagamento', () => {
-  it('full payment → pago, authorizes frete dispatch, and appends NO history row', async () => {
+  it('full payment → pago, authorizes frete dispatch, and appends NO row to EITHER history trail', async () => {
     const { db, store, writes } = makeDb({
       'pedidos/p1': {
         estado: 'aguardandoConfirmacaoDePagamento',
@@ -171,10 +187,14 @@ describe('reconcilePedidoFromPagamento', () => {
     // First-seen dataCadastro stamped on create.
     expect(typeof store['pedidos/p1/pagamentos/pay1']!.dataCadastro).toBe('number');
 
-    // No history row from here — the onPedidoEstadoChanged trigger observes the
-    // pedido write above and records the transition.
-    const historyWrites = writes.sets.filter((w) => w.path.includes('/historicoEstadoPedido/'));
-    expect(historyWrites).toEqual([]);
+    // No history row from here in EITHER trail — the onPedidoEstadoChanged
+    // trigger observes the pedido write above and records both the estado
+    // transition and the freteInicial one. This is precisely the case where a
+    // hand-rolled frete append would be tempting: the reconcile DID flip
+    // `freteInicial` to `despachoAutorizado` a few lines up, and writing the row
+    // here would duplicate the one the trigger already derives from that write.
+    expect(trailWrites(writes, 'historicoEstadoPedido')).toEqual([]);
+    expect(trailWrites(writes, 'historicoFtIni')).toEqual([]);
   });
 
   it('partial payment → aguardandoConfirmacaoDePagamento, does NOT authorize frete', async () => {
@@ -361,9 +381,11 @@ describe('reconcilePedidoFromPagamento', () => {
     expect(store['pedidos/p1']!.estado).toBe('finalizado');
     // But the pagamento was still upserted.
     expect(store['pedidos/p1/pagamentos/pay1']).toMatchObject({ valor: 100 });
-    // No pedido update, no history row.
+    // No pedido update at all, so neither trigger-owned trail has anything to
+    // record — and the reconcile itself appends to neither.
     expect(writes.updates).toHaveLength(0);
-    expect(writes.sets.filter((w) => w.path.includes('/historicoEstadoPedido/'))).toHaveLength(0);
+    expect(trailWrites(writes, 'historicoEstadoPedido')).toEqual([]);
+    expect(trailWrites(writes, 'historicoFtIni')).toEqual([]);
   });
 
   it('does NOT regress a frete already past despachoAutorizado when it becomes pago', async () => {
@@ -500,10 +522,11 @@ describe('reconcilePedidoEstado', () => {
     });
     // No pagamento doc was touched — this reconcile only reads them.
     expect(writes.sets.filter((w) => w.path.includes('/pagamentos/'))).toHaveLength(0);
-    // No history row from here either — the onPedidoEstadoChanged trigger
-    // observes the pedido write above and records the transition.
-    const historyWrites = writes.sets.filter((w) => w.path.includes('/historicoEstadoPedido/'));
-    expect(historyWrites).toEqual([]);
+    // No row in either trail from here either — the onPedidoEstadoChanged
+    // trigger observes the pedido write above and records both the estado
+    // transition and the freteInicial flip that rides along with it.
+    expect(trailWrites(writes, 'historicoEstadoPedido')).toEqual([]);
+    expect(trailWrites(writes, 'historicoFtIni')).toEqual([]);
   });
 
   it('advances to aguardando on a partial payment without touching frete', async () => {
@@ -584,9 +607,13 @@ describe('reconcilePedidoEstado', () => {
     expect(store['pedidos/p1']!.estado).toBe('aguardandoConfirmacaoDePagamento');
     // A downgrade never re-authorizes dispatch, so `freteInicial` is left alone.
     expect(store['pedidos/p1']!.freteInicial).toEqual({ estado: 'despachoAutorizado' });
-    // No history row from here — the onPedidoEstadoChanged trigger records the
-    // downgrade off the pedido write, and no trigger runs against this fake db.
-    expect(writes.sets.filter((w) => w.path.includes('/historicoEstadoPedido/'))).toEqual([]);
+    // No row in either trail from here — the onPedidoEstadoChanged trigger
+    // records the downgrade off the pedido write, and no trigger runs against
+    // this fake db. The frete trail stays empty for a second reason too: a
+    // downgrade leaves `freteInicial` alone, so there is no frete transition to
+    // record even once the trigger is in play.
+    expect(trailWrites(writes, 'historicoEstadoPedido')).toEqual([]);
+    expect(trailWrites(writes, 'historicoFtIni')).toEqual([]);
   });
 
   it('never auto-reverts a terminal estado (e.g. finalizado) even if fully paid', async () => {
@@ -670,6 +697,15 @@ describe('reconcilePedidoEstado', () => {
         // the frete block is never rewritten (nor its sibling fields re-stamped).
         expect(patch).not.toHaveProperty('freteInicial');
       }
+
+      // `reconcilePedidoEstado` only ever tx.updates the pedido — it never
+      // tx.sets a subcollection document — so riding this table gets the
+      // no-hand-rolled-history property for free on all 27 frete estados,
+      // including the four that DO flip to `despachoAutorizado` and would
+      // otherwise be the place to append a frete row. Asserted on the whole
+      // `sets` list rather than a per-trail filter so it also catches an append
+      // landing under a third, not-yet-named trail.
+      expect(writes.sets).toEqual([]);
     },
   );
 
