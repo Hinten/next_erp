@@ -18,7 +18,7 @@ export const ARQUIVOS_COLLECTION = 'arquivos';
  * (`.old/.../storage/lib/src/models.dart`) so the two apps round-trip the
  * `filetype` field unchanged.
  */
-export const FILETYPE = [
+export const FILETYPE_VALUES = [
   'html',
   'image',
   'audio',
@@ -39,8 +39,37 @@ export const FILETYPE = [
   'reaction',
 ] as const;
 
-export const filetypeSchema = z.enum(FILETYPE);
+export const filetypeSchema = z.enum(FILETYPE_VALUES);
 export type Filetype = z.infer<typeof filetypeSchema>;
+
+/**
+ * Named members of {@link filetypeSchema}. Each name is its own wire value, so
+ * this buys rename-safety and `Find all references` — and, with 18 members
+ * spanning MIME kinds and WhatsApp message kinds, a discoverable list.
+ *
+ * Enforced by the `delfrance/prefer-schema-enum` lint rule, which fires for any
+ * Zod enum that has a companion constant like this one.
+ */
+export const FILETYPE = {
+  html: 'html',
+  image: 'image',
+  audio: 'audio',
+  video: 'video',
+  txt: 'txt',
+  error: 'error',
+  application: 'application',
+  fallback: 'fallback',
+  file: 'file',
+  interactive: 'interactive',
+  button: 'button',
+  order: 'order',
+  sticker: 'sticker',
+  system: 'system',
+  unknown: 'unknown',
+  document: 'document',
+  unsupported: 'unsupported',
+  reaction: 'reaction',
+} as const satisfies Record<string, Filetype>;
 
 const DOCUMENT_MIMES = new Set([
   'application/pdf',
@@ -70,14 +99,14 @@ export function normalizeContentType(contentType: string): string {
  */
 export function filetypeFromMime(mimeType: string): Filetype {
   const mime = normalizeContentType(mimeType);
-  if (mime.startsWith('image/')) return 'image';
-  if (mime.startsWith('audio/')) return 'audio';
-  if (mime.startsWith('video/')) return 'video';
-  if (mime === 'text/plain') return 'txt';
-  if (mime === 'text/html') return 'html';
-  if (DOCUMENT_MIMES.has(mime)) return 'document';
-  if (mime.startsWith('application/')) return 'application';
-  return 'fallback';
+  if (mime.startsWith('image/')) return FILETYPE.image;
+  if (mime.startsWith('audio/')) return FILETYPE.audio;
+  if (mime.startsWith('video/')) return FILETYPE.video;
+  if (mime === 'text/plain') return FILETYPE.txt;
+  if (mime === 'text/html') return FILETYPE.html;
+  if (DOCUMENT_MIMES.has(mime)) return FILETYPE.document;
+  if (mime.startsWith('application/')) return FILETYPE.application;
+  return FILETYPE.fallback;
 }
 
 /** Maps an `Arquivo` to its id in an external integration (marketplace). */

@@ -66,7 +66,11 @@
 import type { Firestore } from 'firebase-admin/firestore';
 import { z } from 'zod';
 import { roundReais } from '@delfrance/core/money';
-import { type EnvioPrecoMercadoLivre, idFromRef } from '@delfrance/schemas';
+import {
+  ENVIO_PRECO_MERCADO_LIVRE_STATUS,
+  type EnvioPrecoMercadoLivre,
+  idFromRef,
+} from '@delfrance/schemas';
 import {
   type MlItem,
   MercadoLivreHttpError,
@@ -336,7 +340,7 @@ export async function processPriceSyncJob(
   const nowMs = deps.now ? deps.now() : Date.now(); // one clock read for the whole dispatch
 
   const job = await readJob(db, payload.jobId);
-  if (!job || job.status !== 'running') return 'noop';
+  if (!job || job.status !== ENVIO_PRECO_MERCADO_LIVRE_STATUS.running) return 'noop';
 
   try {
     const ctx = await resolveContext(db, payload.integracaoId);

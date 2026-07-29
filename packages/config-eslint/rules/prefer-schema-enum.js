@@ -52,6 +52,12 @@
 //     annotation nor a Zod initializer. Compare the property directly, or
 //     annotate the local.
 //
+// A literal reached through `??` / `||` IS resolved: it stands in for the whole
+// expression, so `const m: ModalidadeFrete = frete?.modalidade ?? '9'` reports
+// against the declarator's annotation. And `z.enum(FILETYPE)` — members in a
+// separate `as const` array rather than inline — is registered like any other,
+// which is what brought `Filetype` and `TipoMovimentoEstoque` into scope.
+//
 // Identifying enums by their MEMBER SET was tried and removed. A set is not an
 // identity: `'0' | '1'` is `IndIntermedOperacao`, and equally the generated
 // `ide.tpNF` (entrada / saída) and any flag union; `'1' | '2'` is `IndIncentivo`,
@@ -86,16 +92,33 @@ function unwrapZodEnumCall(node) {
   return null;
 }
 
-/** The string members of a `z.enum([...])` call, or null if not statically known. */
-function enumMembers(callNode) {
-  const [arg] = callNode.arguments;
-  if (!arg || !ts.isArrayLiteralExpression(arg)) return null;
+/** `['a', 'b'] as const` → its string members, or null if not statically known. */
+function stringArrayMembers(node) {
+  let cur = node;
+  while (ts.isAsExpression(cur)) cur = cur.expression;
+  if (!ts.isArrayLiteralExpression(cur)) return null;
   const values = [];
-  for (const el of arg.elements) {
+  for (const el of cur.elements) {
     if (!ts.isStringLiteral(el)) return null;
     values.push(el.text);
   }
   return values.length > 0 ? values : null;
+}
+
+/**
+ * The string members of a `z.enum(...)` call, or null if not statically known.
+ *
+ * The argument is usually an array literal, but `z.enum(FILETYPE)` — an
+ * identifier naming an `as const` array declared alongside — is equally valid
+ * Zod, and two schemas here use it (`filetypeSchema`,
+ * `tipoMovimentoEstoqueSchema`). Resolving it against the file's array constants
+ * is what makes those two visible to this rule at all.
+ */
+function enumMembers(callNode, arrayConsts) {
+  const [arg] = callNode.arguments;
+  if (!arg) return null;
+  if (ts.isIdentifier(arg)) return arrayConsts.get(arg.text) ?? null;
+  return stringArrayMembers(arg);
 }
 
 /**
@@ -169,6 +192,18 @@ function buildRegistry(program) {
   for (const sourceFile of program.getSourceFiles()) {
     if (!sourceFile.fileName.replace(/\\/g, '/').includes(SCHEMAS_DIR)) continue;
 
+    // Pre-pass: the file's `as const` string arrays, so a `z.enum(FILETYPE)`
+    // below resolves regardless of which declaration comes first.
+    const arrayConsts = new Map();
+    for (const stmt of sourceFile.statements) {
+      if (!ts.isVariableStatement(stmt)) continue;
+      for (const decl of stmt.declarationList.declarations) {
+        if (!ts.isIdentifier(decl.name) || !decl.initializer) continue;
+        const members = stringArrayMembers(decl.initializer);
+        if (members) arrayConsts.set(decl.name.text, members);
+      }
+    }
+
     for (const stmt of sourceFile.statements) {
       if (ts.isTypeAliasDeclaration(stmt)) {
         // type X = z.infer<typeof someSchema>
@@ -192,7 +227,7 @@ function buildRegistry(program) {
 
         const zodEnum = unwrapZodEnumCall(decl.initializer);
         if (zodEnum) {
-          const members = enumMembers(zodEnum);
+          const members = enumMembers(zodEnum, arrayConsts);
           if (members) bySchemaVar.set(decl.name.text, members);
           continue;
         }
@@ -367,12 +402,27 @@ function resolveEntry(node, tsNode, checker, esToTs, registry) {
       : null;
   }
 
-  const tsParent = tsNode.parent;
+  // `freteInicial?.modalidade ?? '9'` — the literal is the fallback of a `??`
+  // (or `||`) chain, so it stands in for the whole expression and the position
+  // that types it is the one the EXPRESSION occupies, not the operator's.
+  // Without this, an annotated declarator two tokens away never reaches it.
+  let positioned = tsNode;
+  while (
+    positioned.parent &&
+    ts.isBinaryExpression(positioned.parent) &&
+    positioned.parent.right === positioned &&
+    (positioned.parent.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+      positioned.parent.operatorToken.kind === ts.SyntaxKind.BarBarToken)
+  ) {
+    positioned = positioned.parent;
+  }
+
+  const tsParent = positioned.parent;
   if (!tsParent) return null;
 
   // `{ estado: 'pago' }` → the contextual type's property, whose declaration is
   // the Zod `estado: estadoPedidoSchema` line.
-  if (ts.isPropertyAssignment(tsParent) && tsParent.initializer === tsNode) {
+  if (ts.isPropertyAssignment(tsParent) && tsParent.initializer === positioned) {
     const objectLiteral = tsParent.parent;
     if (!ts.isObjectLiteralExpression(objectLiteral)) return null;
     const name =
@@ -386,7 +436,7 @@ function resolveEntry(node, tsNode, checker, esToTs, registry) {
 
   // `g('carrinho')` → the resolved signature's parameter.
   if (ts.isCallExpression(tsParent) || ts.isNewExpression(tsParent)) {
-    const index = tsParent.arguments?.indexOf(tsNode) ?? -1;
+    const index = tsParent.arguments?.indexOf(positioned) ?? -1;
     if (index < 0) return null;
     const signature = checker.getResolvedSignature(tsParent);
     return entryFromSymbol(signature?.parameters?.[index], checker, registry);
@@ -406,7 +456,7 @@ function resolveEntry(node, tsNode, checker, esToTs, registry) {
   }
 
   // `const x: EstadoPedido = 'pago'` / `estado = 'pago'` on a declared variable.
-  if (ts.isVariableDeclaration(tsParent) && tsParent.initializer === tsNode) {
+  if (ts.isVariableDeclaration(tsParent) && tsParent.initializer === positioned) {
     const typeName = annotatedTypeNameOf(tsParent.type);
     return (typeName && registry.byTypeName.get(typeName)) ?? null;
   }

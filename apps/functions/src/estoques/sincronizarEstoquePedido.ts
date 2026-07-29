@@ -28,6 +28,7 @@ import {
   type ProdutoParaEstoque,
 } from '@delfrance/data/pedido';
 import {
+  TIPO_MOVIMENTO_ESTOQUE,
   ESTADOS_PEDIDO_MOVIMENTACAO,
   TIPO_INCIDENTE,
   TIPO_NFE,
@@ -599,7 +600,7 @@ export async function reverterEstoquePedidoExcluido(
     ehSaida: aplicado.ehSaida,
     pedidoNumero: numero,
     agora: agoraMs * 1000,
-    tipoOverride: 'exclusaoPedido',
+    tipoOverride: TIPO_MOVIMENTO_ESTOQUE.exclusaoPedido,
   });
   if (plano.deltas.length === 0) return { status: 'nada-a-fazer' };
 

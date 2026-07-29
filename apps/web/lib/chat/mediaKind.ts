@@ -1,4 +1,5 @@
 import type { Filetype, TipoMensagem } from '@delfrance/schemas';
+import { FILETYPE } from '@delfrance/schemas';
 import { TIPO_MENSAGEM } from '@delfrance/schemas';
 
 /**
@@ -16,16 +17,16 @@ import { TIPO_MENSAGEM } from '@delfrance/schemas';
  */
 export function tipoForFiletype(filetype: Filetype): TipoMensagem {
   switch (filetype) {
-    case 'audio':
+    case FILETYPE.audio:
       return TIPO_MENSAGEM.audio;
-    case 'video':
+    case FILETYPE.video:
       return TIPO_MENSAGEM.video;
-    case 'application':
-    case 'document':
+    case FILETYPE.application:
+    case FILETYPE.document:
       return TIPO_MENSAGEM.arquivo;
-    case 'system':
+    case FILETYPE.system:
       return TIPO_MENSAGEM.evento;
-    case 'error':
+    case FILETYPE.error:
       return TIPO_MENSAGEM.erro;
     default:
       return TIPO_MENSAGEM.comum;
@@ -54,13 +55,13 @@ export function mediaSubObject(
   caption: string | null,
 ): MediaSubObject {
   switch (filetype) {
-    case 'image':
-    case 'sticker':
+    case FILETYPE.image:
+    case FILETYPE.sticker:
       // Stickers are rare from the operator side; render them via the image slot.
       return { image: { image: arquivoRef, caption } };
-    case 'video':
+    case FILETYPE.video:
       return { video: { video: arquivoRef, caption } };
-    case 'audio':
+    case FILETYPE.audio:
       return { audio: { audio: arquivoRef } };
     default:
       return { genericDocument: { genericDocument: arquivoRef, caption } };

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Arquivo, Pedido, Produto } from '@delfrance/schemas';
+import { FILETYPE } from '@delfrance/schemas';
 import type { Firestore } from 'firebase/firestore';
 
 import { createMemoryArquivoCache } from '@/lib/arquivos/localArquivoCache';
@@ -32,7 +33,7 @@ function arquivo(partial: Partial<Arquivo> & { filename?: string }): Arquivo {
     originalFilename: partial.originalFilename ?? null,
     contentType: partial.contentType ?? 'application/pdf',
     url: partial.url ?? 'https://example.test/a',
-    filetype: 'document',
+    filetype: FILETYPE.document,
     filepath: null,
     externalIds: [],
     criadoEm: 0,

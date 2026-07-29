@@ -14,7 +14,7 @@ const PERM_ESTOQUE_DELETE = 1n << 66n;
  * `manual`/`balanco` by the `aplicarEstoque` callable. Legacy (Flutter-era)
  * records carry `null` and are distinguishable only by their `motivo` text.
  */
-export const TIPO_MOVIMENTO_ESTOQUE = [
+export const TIPO_MOVIMENTO_ESTOQUE_VALUES = [
   'reserva', // reservation applied (checkout/payment phase)
   'ajusteReserva', // held reservation adjusted after an item edit
   'liberacaoReserva', // reservation released without a physical movement
@@ -27,8 +27,27 @@ export const TIPO_MOVIMENTO_ESTOQUE = [
   'balanco', // aplicarEstoque callable, absolute recount
 ] as const;
 
-export const tipoMovimentoEstoqueSchema = z.enum(TIPO_MOVIMENTO_ESTOQUE);
+export const tipoMovimentoEstoqueSchema = z.enum(TIPO_MOVIMENTO_ESTOQUE_VALUES);
 export type TipoMovimentoEstoque = z.infer<typeof tipoMovimentoEstoqueSchema>;
+
+/**
+ * Named members of {@link tipoMovimentoEstoqueSchema}. Each name is its own wire
+ * value; the value of the constant is that these ten are easy to confuse with
+ * one another — `reserva` / `ajusteReserva` / `liberacaoReserva` are three
+ * different events, and picking the wrong one writes a wrong stock history.
+ */
+export const TIPO_MOVIMENTO_ESTOQUE = {
+  reserva: 'reserva',
+  ajusteReserva: 'ajusteReserva',
+  liberacaoReserva: 'liberacaoReserva',
+  saida: 'saida',
+  devolucao: 'devolucao',
+  entrada: 'entrada',
+  estorno: 'estorno',
+  exclusaoPedido: 'exclusaoPedido',
+  manual: 'manual',
+  balanco: 'balanco',
+} as const satisfies Record<string, TipoMovimentoEstoque>;
 
 export const TIPO_MOVIMENTO_ESTOQUE_LABELS: Record<TipoMovimentoEstoque, string> = {
   reserva: 'Reserva',

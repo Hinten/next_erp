@@ -62,6 +62,7 @@ import {
   mensagemCollection,
 } from '@delfrance/data/admin/collections';
 import {
+  FILETYPE,
   ORIGEM_CONVERSA,
   TIPO_MENSAGEM,
   ESTADO_ENVIO,
@@ -163,9 +164,9 @@ async function failMensagem(
 
 /** Map an `Arquivo` filetype to the WhatsApp media kind (legacy parity). */
 function mediaTypeForFiletype(filetype: Filetype): MediaType {
-  if (filetype === 'image') return 'image';
-  if (filetype === 'video') return 'video';
-  if (filetype === 'audio') return 'audio';
+  if (filetype === FILETYPE.image) return 'image';
+  if (filetype === FILETYPE.video) return 'video';
+  if (filetype === FILETYPE.audio) return 'audio';
   return 'document';
 }
 

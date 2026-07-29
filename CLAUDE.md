@@ -195,8 +195,12 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   `typeAware(...)` rather than the base block: it flags a raw string sitting in
   a position typed as a Zod enum (`estado === 'pago'` → `ESTADO_PEDIDO.pago`).
   An enum opts in by gaining a companion
-  `as const satisfies Record<string, T>` constant — 13 of the 49 have one today
-  (#699 tracks the rest).
+  `as const satisfies Record<string, T>` constant — **every one has one**
+  (#699). It identifies an enum by the **declaration** behind the literal's
+  position — a Zod property names its schema variable, an annotation names its
+  type — never by the member set, which is not an identity: `'1' | '2'` is both
+  `IndIncentivo` and the NF-e engine's `TpAmb`, and matching on the set once
+  rewrote `tpImp: '1'` (DANFE layout) to `MOD_BCST.listaNegativa`.
 - Firebase App Hosting deploys every Next app; heavy work goes to Cloud
   Functions. `apps/portal/` does NOT exist — public pages are deferred.
 - **Shared dependency versions live in the pnpm `catalog:`**

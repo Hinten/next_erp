@@ -299,6 +299,7 @@ export {
   // preços" bulk price-push job/checkpoint doc (Step 11 PR-C), mirrors
   // importacaoMercadoLivre above.
   envioPrecoMercadoLivreStatusSchema,
+  ENVIO_PRECO_MERCADO_LIVRE_STATUS,
   envioPrecoFilaItemSchema,
   envioPrecoSkipSchema,
   envioPrecoFailureSchema,
@@ -657,6 +658,7 @@ export {
   normalizeContentType,
   externalIdSchema,
   FILETYPE,
+  FILETYPE_VALUES,
   ARQUIVOS_COLLECTION,
   type Arquivo,
   type Filetype,

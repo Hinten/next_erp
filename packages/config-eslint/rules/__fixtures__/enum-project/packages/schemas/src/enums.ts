@@ -81,3 +81,16 @@ export interface GeneratedIde {
 export interface PedidoLike {
   estado: EstadoPedido;
 }
+
+// `z.enum(IDENT)` — the members live in a separate `as const` array rather than
+// inline. Equally valid Zod; `filetypeSchema` and `tipoMovimentoEstoqueSchema`
+// are the two real schemas written this way.
+export const TIPO_ARQUIVO = ['imagem', 'video'] as const;
+
+export const tipoArquivoSchema = z.enum(TIPO_ARQUIVO);
+export type TipoArquivo = zod.infer<typeof tipoArquivoSchema>;
+
+export const TIPO_ARQUIVO_CONST = {
+  imagem: 'imagem',
+  video: 'video',
+} as const satisfies Record<string, TipoArquivo>;

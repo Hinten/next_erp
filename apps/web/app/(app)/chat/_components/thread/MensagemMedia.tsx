@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { Anchor, Box, Button, Group, Loader, Stack, Text } from '@mantine/core';
 import { IconFile, IconPhoto } from '@tabler/icons-react';
 import type { Filetype, Mensagem } from '@delfrance/schemas';
+import { FILETYPE } from '@delfrance/schemas';
 import { HighlightedText } from '@/lib/chat/highlight';
 import { isHttpUrl } from '@/lib/chat/safeUrl';
 import { useArquivo } from '../../_hooks/useArquivo';
@@ -46,9 +47,9 @@ export function hasMedia(m: Mensagem): boolean {
 
 /** Map an arquivo filetype to a render kind when the sub-object didn't say. */
 function kindForFiletype(filetype: Filetype): 'image' | 'video' | 'audio' | 'document' {
-  if (filetype === 'image' || filetype === 'sticker') return 'image';
-  if (filetype === 'video') return 'video';
-  if (filetype === 'audio') return 'audio';
+  if (filetype === FILETYPE.image || filetype === FILETYPE.sticker) return 'image';
+  if (filetype === FILETYPE.video) return 'video';
+  if (filetype === FILETYPE.audio) return 'audio';
   return 'document';
 }
 

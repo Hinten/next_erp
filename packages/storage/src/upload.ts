@@ -6,6 +6,7 @@ import {
   type FirebaseStorage,
 } from 'firebase/storage';
 import {
+  FILETYPE,
   type Arquivo,
   type Filetype,
   STORAGE_ROOT,
@@ -173,7 +174,7 @@ export async function uploadProductImage(args: UploadProductImageArgs): Promise<
     contentType: args.contentType,
     docId: productArquivoId(args.produtoId, hash),
     storagePath: productOriginalPath(args.produtoId, hash, ext),
-    filetype: 'image',
+    filetype: FILETYPE.image,
     originalFilename: args.originalFilename,
     // Marks the original so the resize function (→ 'done') and the reconcile
     // sweep (queries 'pending') can track derivative completion. Only written
@@ -222,7 +223,7 @@ export async function uploadTabMediImage(args: UploadTabMediImageArgs): Promise<
     contentType: args.contentType,
     docId: tabMediArquivoId(args.tabMediId, hash),
     storagePath: tabMediOriginalPath(args.tabMediId, hash, ext),
-    filetype: 'image',
+    filetype: FILETYPE.image,
     originalFilename: args.originalFilename,
     // resizeState omitted (→ null): tabMedi photos are not resized.
   });
@@ -261,7 +262,7 @@ export async function uploadProductVideo(args: UploadProductVideoArgs): Promise<
     contentType: args.contentType,
     docId: productArquivoId(args.produtoId, hash),
     storagePath: productVideoPath(args.produtoId, hash, ext),
-    filetype: 'video',
+    filetype: FILETYPE.video,
     originalFilename: args.originalFilename,
   });
 }

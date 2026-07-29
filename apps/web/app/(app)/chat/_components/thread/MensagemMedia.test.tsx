@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import type { Arquivo } from '@delfrance/schemas';
+import { FILETYPE } from '@delfrance/schemas';
 import type { Mensagem } from '@delfrance/schemas';
 
 // Swap the arquivo fetch for a controllable stub (mirrors the TanStack one-shot).
@@ -18,7 +19,7 @@ function wrap(node: React.ReactNode) {
 
 function arq(partial: Partial<Arquivo>): Arquivo {
   return {
-    filetype: 'image',
+    filetype: FILETYPE.image,
     filepath: 'chat',
     filename: 'file.bin',
     originalFilename: null,
@@ -61,7 +62,7 @@ describe('MensagemMedia', () => {
   });
 
   it('renders an image (with caption) once the arquivo has a url', () => {
-    useArquivoMock.mockReturnValue({ arquivo: arq({ filetype: 'image' }), loading: false });
+    useArquivoMock.mockReturnValue({ arquivo: arq({ filetype: FILETYPE.image }), loading: false });
     wrap(<MensagemMedia mensagem={imageMsg} />);
     const img = screen.getByRole('img');
     expect(img.getAttribute('src')).toBe('https://example.com/file.png');
@@ -71,7 +72,7 @@ describe('MensagemMedia', () => {
   it('renders a document download link for a generic document', () => {
     useArquivoMock.mockReturnValue({
       arquivo: arq({
-        filetype: 'document',
+        filetype: FILETYPE.document,
         url: 'https://x/doc.pdf',
         originalFilename: 'nota.pdf',
       }),
@@ -103,7 +104,7 @@ describe('MensagemMedia', () => {
   });
 
   it('highlights matches inside a media caption while searching', () => {
-    useArquivoMock.mockReturnValue({ arquivo: arq({ filetype: 'image' }), loading: false });
+    useArquivoMock.mockReturnValue({ arquivo: arq({ filetype: FILETYPE.image }), loading: false });
     wrap(<MensagemMedia mensagem={imageMsg} searchRegex={/legenda/giu} searchActive />);
     const marks = document.querySelectorAll('mark');
     expect(marks.length).toBeGreaterThan(0);

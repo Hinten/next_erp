@@ -93,7 +93,7 @@ function makeInput(over: {
       printLabelId: over.printLabelId ?? null,
       externalOptionId: over.externalOptionId ?? null,
     } as never,
-    intFrete: { id: 'if1', tipo: over.tipo ?? 'melhorEnvios', data: {} as never },
+    intFrete: { id: 'if1', tipo: over.tipo ?? INTEGRACAO_FRETE.melhorEnvios, data: {} as never },
     formato: 'pdf',
     deps: { freightClient: { imprimir: vi.fn() } as never, nfeClient: null, printJob: vi.fn() },
     ui: {
