@@ -55,6 +55,14 @@
 //     second comparison to the 15 remaining members, which is neither the alias
 //     nor the whole member set. Matching a subset instead was tried and is
 //     unsound — see the note on `enumEntryFor`.
+//  4. Two enums that share a member set (`Origem` and `OrigemProdutoImposto` are
+//     both '0'…'8') are not enforced AT ALL. `z.infer` erases the type alias, so
+//     the member set is the only thing that identifies an enum here — and when
+//     two claim the same one, nothing left in the type says which is meant.
+//     Answering anyway would name the wrong module's constant in code that still
+//     compiles. No enum is parked today — only opted-in enums reach the registry
+//     at all, and none of the colliding ones has a constant yet. #699 parks seven
+//     as it adds theirs. See `buildRegistry`.
 //
 // Error (not warn): the constants exist precisely so the enum members have one
 // spelling; a second spelling drifting back in is the thing this prevents.
@@ -202,6 +210,7 @@ function buildRegistry(program) {
 
   const byTypeName = new Map();
   const byValueKey = new Map();
+  const ambiguous = new Set();
   for (const [typeName, schemaVar] of typeToSchemaVar) {
     const members = bySchemaVar.get(schemaVar);
     const constant = constByTypeName.get(typeName);
@@ -212,12 +221,35 @@ function buildRegistry(program) {
       constName: constant.constName,
       // Keyed by wire VALUE; the map resolves it back to the member name.
       valueToKey: constant.valueToKey,
-      // The z.enum member set, for the exact/subset type matches below.
-      members: new Set(members),
     };
     byTypeName.set(typeName, entry);
-    byValueKey.set([...members].sort().join(' '), entry);
+    const valueKey = [...members].sort().join(' ');
+    if (byValueKey.has(valueKey)) ambiguous.add(valueKey);
+    byValueKey.set(valueKey, entry);
   }
+  // Two enums that share a member set are INDISTINGUISHABLE here, and
+  // `byValueKey` is last-writer-wins, so leaving them in would silently answer
+  // for whichever was registered last. Nothing collides yet — an enum only
+  // reaches this loop once it has a companion constant, and today's 13 are all
+  // distinct. #699 adds 35 more and brings three colliding groups with them:
+  // `Origem` ('0'…'8', imposto/tribute.ts) with `OrigemProdutoImposto` (the same
+  // SEFAZ concept declared again in operacao.ts); `IndIncentivo` with
+  // `AmbienteNFE` ('1' | '2'); and the three 'failed' | 'parked' notification
+  // statuses. Because the colliding enums carry the SAME strings, a suggestion
+  // naming the wrong module's constant still compiles and still passes tests —
+  // undetectable downstream. `IndIncentivo` vs `AmbienteNFE` is the vivid one: it
+  // would turn "incentivo fiscal: sim" into "ambiente: produção".
+  //
+  // Dropping the key parks those enums ENTIRELY, not just in nullable positions:
+  // `z.infer` erases the alias (verified against real zod — `getTypeAtLocation`
+  // on an `EstadoPedido` operand reports no `aliasSymbol`), so the member set is
+  // the only signal that ever arrives and `byTypeName` is a formality. Parked is
+  // still the right trade against emitting a wrong constant that compiles. The
+  // way out is to identify enums by the DECLARATION behind the operand — a
+  // property's `origem: origemProdutoImpostoSchema.…` names its schema variable
+  // in the AST — which is a coverage-increasing change and belongs with its own
+  // fallout, not in this fix.
+  for (const key of ambiguous) byValueKey.delete(key);
 
   const registry = { byTypeName, byValueKey };
   registryCache.set(program, registry);
@@ -248,9 +280,14 @@ function targetType(node, tsNode, checker, esToTs) {
  * The enum entry a type corresponds to, or null. Ignores null/undefined members.
  *
  * Two ways in, and deliberately only two:
- *  1. the type alias (`EstadoPedido`) — the common case;
- *  2. the EXACT member set, for a type the checker flattened and stripped the
- *     alias off (`EstadoPedido | null`).
+ *  1. the type alias (`EstadoPedido`). Kept for completeness, but it almost never
+ *     fires: `z.infer` resolves through a conditional/indexed-access type and the
+ *     result carries NO `aliasSymbol`, verified against real zod. Every enum in
+ *     the schemas package is declared that way.
+ *  2. the EXACT member set — which is therefore the path that does the work, not
+ *     a fallback. Only a set that exactly ONE enum owns resolves: `buildRegistry`
+ *     drops the shared ones, so a set two enums both claim returns null here
+ *     rather than whichever won the registration race.
  *
  * A third rule — "the literals are a SUBSET of exactly one enum's members" —
  * was tried, to also catch an operand that control-flow narrowing had shrunk
