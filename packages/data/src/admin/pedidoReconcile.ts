@@ -7,8 +7,9 @@ import type {
 } from 'firebase-admin/firestore';
 import {
   ESTADO_FRETE,
-  isFreteJaPostado,
+  isFreteMarketplaceOwned,
   nowMicros,
+  podeAutorizarDespacho,
   sumPagamentosPagos,
   type EstadoFrete,
   type EstadoPedido,
@@ -58,9 +59,11 @@ const GATEWAY_OWNED = [
  * Shared tail of both admin reconciles: given the pedido's already-read
  * snapshot and the (already computed) `valorPago`, applies {@link
  * nextPedidoEstado} and — only on a transition — writes the new `estado` and
- * flips `freteInicial.estado` to `despachoAutorizado` (never regressing an
- * already-posted frete). Returns the new estado, or `null` when no transition
- * applies.
+ * flips `freteInicial.estado` to `despachoAutorizado` ONLY from a
+ * pre-authorization estado ({@link podeAutorizarDespacho}) — or from a malformed
+ * block carrying no estado at all, which the flip repairs — and never on a
+ * marketplace-owned frete block (#702). Returns the new estado, or `null` when
+ * no transition applies.
  *
  * The `historicoEstadoPedido` audit row is NOT written here: the
  * `onPedidoEstadoChanged` trigger observes the pedido write below and records
@@ -90,9 +93,23 @@ function applyEstadoTransition(
     if (frete && typeof frete === 'object') {
       const freteRecord = frete as Record<string, unknown>;
       const freteEstado = freteRecord.estado as EstadoFrete | undefined;
-      // Only authorize dispatch from a pre-shipment state — never regress an
-      // in-flight frete (postado / a caminho / entregue) back to authorized.
-      if (!freteEstado || !isFreteJaPostado(freteEstado)) {
+      // Authorize dispatch ONLY from a state that precedes authorization, and never
+      // on a freight block the marketplace importer owns (#702). This used to be
+      // `!isFreteJaPostado(...)`, which answers the label-reprint question and let a
+      // `pago` transition regress `empacotado` / `emSeparacao` / `checkFinalizado`
+      // back to `despachoAutorizado` — erasing warehouse progress, and (via
+      // `CAMPOS_OBSERVADOS`) re-running the estoque sync against a state that no
+      // longer removes stock.
+      //
+      // The ownership tipo is read off `externalOptionIntegracao`, which lives on the
+      // frete block itself — no extra transaction read, which matters because
+      // `reconcilePedidoFromPagamento` has already written the pagamento by the time
+      // this runs and Firestore forbids a read after a write.
+      const podeAutorizar = !freteEstado || podeAutorizarDespacho(freteEstado);
+      const marketplaceOwned = isFreteMarketplaceOwned(
+        freteRecord.externalOptionIntegracao as string | null | undefined,
+      );
+      if (podeAutorizar && !marketplaceOwned) {
         pedidoPatch.freteInicial = { ...freteRecord, estado: ESTADO_FRETE.despachoAutorizado };
       }
     }
@@ -130,9 +147,10 @@ function applyEstadoTransition(
  *     incoming values) via the shared {@link sumPagamentosPagos} rule;
  *  6. applies {@link nextPedidoEstado} (which gates on the payment-driven
  *     estados) and, ONLY on a transition, writes the new `estado`, flips
- *     `freteInicial.estado` to `despachoAutorizado` (never regressing an
- *     already-posted frete — same rule as the client reconcile) and stamps the
- *     pedido `ultimaModificacao` (µs).
+ *     `freteInicial.estado` to `despachoAutorizado` — only from a
+ *     pre-authorization estado ({@link podeAutorizarDespacho}) and never on a
+ *     marketplace-owned frete block (#702) — and stamps the pedido
+ *     `ultimaModificacao` (µs).
  *
  * The `historicoEstadoPedido` audit row for a transition is written by the
  * `onPedidoEstadoChanged` trigger observing the pedido write, with a null

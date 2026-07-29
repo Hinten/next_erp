@@ -26,7 +26,7 @@ import {
 import { type Categoria, toOuterRef } from '@delfrance/schemas';
 import { categoriaCollection } from '@delfrance/data/admin/collections';
 
-import { isAlreadyExists } from './grpcErrors';
+import { isAlreadyExists } from '@delfrance/data/admin';
 
 export interface CategoriaChain {
   docs: Array<{ id: string; data: Categoria }>;

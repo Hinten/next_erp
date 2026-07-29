@@ -114,6 +114,46 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
     });
   }, 60_000);
 
+  // The contrast to the happy path above. The unit suite next door covers the
+  // rule exhaustively against a fake; this one is the end-to-end proof, on the
+  // real Admin SDK and a real document: the guard reads `freteInicial` off the
+  // same in-transaction snapshot it then patches, and only here is that a
+  // genuine Firestore read-modify-write rather than an object literal the test
+  // itself supplied. The blast radius is also wider than a cosmetic estado —
+  // `empacotado` is in `ESTADOS_FRETE_REMOVE_ESTOQUE` and `despachoAutorizado`
+  // is not, so the #702 regression flips `efeitoEstoquePedido` and un-removes
+  // the pedido's stock: it reaches the pedido→estoque sync, not just the Frete tab.
+  it('does not regress a packed frete when the pedido becomes pago (#702)', async () => {
+    const db = getDb();
+    const pedidoId = await seedPedido(
+      db,
+      {
+        estado: 'iniciado',
+        valorCobrado: 100,
+        // Already past authorization — the warehouse packed this shipment. The
+        // old `!isFreteJaPostado(estado)` test is true for `empacotado`, which
+        // is exactly how a full payment used to drag it back to
+        // `despachoAutorizado`.
+        freteInicial: { estado: 'empacotado', codRastreio: null },
+      },
+      [{ valor: 100, status_pagamento: STATUS_PAGAMENTO.aprovado }],
+    );
+
+    const result = await reconcilePedidoEstado(db, { pedidoId });
+
+    // The estado transition still happens — only the frete write is suppressed.
+    expect(result).toEqual({ transition: 'pago' });
+
+    const pedido = (await pedidoRef(db, pedidoId).get()).data()!;
+    expect(pedido.estado).toBe('pago');
+    expect(pedido.freteInicial).toEqual({ estado: 'empacotado', codRastreio: null });
+
+    // The pedido write still fires the trigger, so the trail records the
+    // transition exactly once — same shape as the happy path.
+    const trail = await waitForEstadoRow(db, pedidoId, 'pago');
+    expect(trail.filter((r) => r.estado === 'pago')).toHaveLength(1);
+  }, 60_000);
+
   it('two concurrent reconciles settle on one consistent estado and write one history row (#308)', async () => {
     const db = getDb();
     const pedidoId = await seedPedido(

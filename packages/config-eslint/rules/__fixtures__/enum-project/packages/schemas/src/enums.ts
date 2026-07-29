@@ -42,3 +42,26 @@ export const ESTADO_NFE = {
   aprovada: 'a',
   cancelada: 'c',
 } as const satisfies Record<string, EstadoNfe>;
+
+// Two enums sharing a member set. The real pair is `Origem` (imposto/tribute.ts)
+// and `OrigemProdutoImposto` (the same SEFAZ concept declared again in
+// operacao.ts), both '0'…'8'. Each still resolves through its own alias, but once
+// the checker erases that alias — a nullable field — nothing in the type says
+// which one it is, and both constants would compile in either place.
+export const origemSchema = z.enum(['0', '1', '2']);
+export type Origem = zod.infer<typeof origemSchema>;
+
+export const ORIGEM = {
+  nacional: '0',
+  estrangeiraImportacaoDireta: '1',
+  estrangeiraMercadoInterno: '2',
+} as const satisfies Record<string, Origem>;
+
+export const origemProdutoSchema = z.enum(['0', '1', '2']);
+export type OrigemProduto = zod.infer<typeof origemProdutoSchema>;
+
+export const ORIGEM_PRODUTO = {
+  nacionalProduto: '0',
+  importadoDireto: '1',
+  importadoMercadoInterno: '2',
+} as const satisfies Record<string, OrigemProduto>;

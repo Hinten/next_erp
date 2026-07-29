@@ -45,6 +45,9 @@ const ruleTester = new RuleTester({
 
 const IMPORT = `import { ESTADO_PEDIDO, ESTADO_NFE, type EstadoPedido, type EstadoNfe, type TipoContato, type EstadoBucket } from '../packages/schemas/src/enums';\n`;
 
+/** The two fixture enums that share the member set '0' | '1' | '2'. */
+const IMPORT_COLLIDE = `import { ORIGEM, ORIGEM_PRODUTO, type Origem, type OrigemProduto } from '../packages/schemas/src/enums';\n`;
+
 /**
  * One `rawLiteral` error for `member`. Every case below imports ESTADO_PEDIDO,
  * so each error carries exactly one suggestion; the two cases that assert the
@@ -114,6 +117,23 @@ ruleTester.run('prefer-schema-enum', rule, {
       // fits INSIDE an unrelated enum must never resolve to it.
       name: 'a literal union nested inside an unrelated enum is not that enum',
       code: `${IMPORT}declare const cst: '02' | '03';\nexport const x = cst === '02';`,
+      filename: IN,
+    },
+    {
+      // `z.infer` erases the alias, so the member set is ALL the rule has to go
+      // on — which is why sharing one parks the enum completely, not just in
+      // nullable positions. ORIGEM and ORIGEM_PRODUTO both claim '0' | '1' | '2',
+      // nothing in the type says which is meant, and either constant would
+      // compile here. Declining is the only sound answer until the rule can read
+      // the declaration behind the operand. Real pair: `Origem` (tribute.ts) and
+      // `OrigemProdutoImposto` (operacao.ts).
+      name: 'a member set two enums share is not resolved at all',
+      code: `${IMPORT_COLLIDE}declare const o: Origem;\nexport const x = o === '0';`,
+      filename: IN,
+    },
+    {
+      name: 'a shared member set stays unresolved through a nullable position too',
+      code: `${IMPORT_COLLIDE}declare const o: OrigemProduto | null;\nexport const x = o === '1';`,
       filename: IN,
     },
   ],

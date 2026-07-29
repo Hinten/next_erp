@@ -46,8 +46,16 @@ import {
   integracaoCollection,
   notificacaoMercadoLivreCollection,
 } from '@delfrance/data/admin/collections';
+import {
+  asMillis,
+  defineNotificationPipeline,
+  MAX_TENTATIVAS,
+  type NotificationDisposition,
+  type ReprocessOptions,
+  type ReprocessResult,
+  TASK_MAX_ATTEMPTS,
+} from '@delfrance/data/admin/notifications';
 
-import { isAlreadyExists } from './grpcErrors';
 import {
   type ItemsApiResolver,
   type MigrationRunner,
@@ -73,11 +81,10 @@ import { type ShipmentImportResult, importShipmentMercadoLivre } from './orderSh
  */
 export const MERCADO_LIVRE_NOTIFICATION_QUEUE = 'processMercadoLivreNotification';
 
-/** In-task retry cap — the Cloud Tasks `retryConfig.maxAttempts` (kept in sync). */
-export const TASK_MAX_ATTEMPTS = 3;
-
-/** Cross-sweep reprocess cap — after this many sweeps a `failed` doc is parked. */
-export const MAX_TENTATIVAS = 5;
+// The retry caps and the reprocess window are the SHARED pipeline's — re-exported
+// here so this module stays the one import site for the channel's callers.
+export { MAX_TENTATIVAS, TASK_MAX_ATTEMPTS };
+export type { ReprocessOptions, ReprocessResult };
 
 /**
  * The ML notification topics the pipeline recognizes. A known topic is processed
@@ -137,25 +144,10 @@ function asString(v: unknown): string | null {
 function asInt(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : null;
 }
-/**
- * Coerce an ML timestamp (`sent`/`received`, ISO-8601 or epoch millis) to epoch
- * millis or null — NORMALIZED at the source so a persisted failure doc can never
- * be rejected by the strict write validator. ML sometimes sends an empty string
- * or a value it later renames; anything unparseable becomes null (the field is
- * informational and the sweep gates on the local `processedAt`, not on these).
- */
-function asMillis(v: unknown): number | null {
-  if (typeof v === 'number') return Number.isFinite(v) ? Math.trunc(v) : null;
-  if (typeof v === 'string') {
-    const s = v.trim();
-    if (!s) return null;
-    const iso = Date.parse(s); // ISO-8601
-    if (Number.isFinite(iso)) return iso;
-    const n = Number(s); // numeric string (epoch millis)
-    return Number.isFinite(n) ? Math.trunc(n) : null;
-  }
-  return null;
-}
+// `asMillis` (ML's `sent`/`received`, ISO-8601 or epoch millis) is the shared
+// receiver coercer from `@delfrance/data/admin/notifications` — normalized at the
+// source so a persisted failure doc can never be rejected by the strict write
+// validator. ML sometimes sends an empty string or a field it later renames.
 
 /**
  * Extract a persistable notification from the raw ML POST body. Returns null
@@ -538,12 +530,97 @@ export interface TaskResult {
   integracaoId?: string;
   topic?: string;
 }
+/** The operator-facing reason for a seller that maps to no active integração. */
+function noAccountReason(payload: MlNotificationPayload): string {
+  return `integração ativa do Mercado Livre não encontrada para user_id ${payload.user_id}`;
+}
+
+/**
+ * The shared pipeline, bound to this channel. Built per call so the injectable
+ * runners (`NotificationRunners`) stay per-call (the factory only closes over
+ * config — no I/O, no state); defaults resolve inside
+ * `processNotificationPayload`.
+ *
+ * ⭐ This channel is the reason `toDisposition` takes a PHASE. `malformed-resource`
+ * is terminal either way, but the right terminal action differs by stage:
+ *  - in the TASK no document exists yet, and one is not worth creating for a
+ *    coding/ML-side anomaly, so it DROPS (mirroring the schema-parse drop, just
+ *    discovered a layer deeper, after account and topic are already known);
+ *  - in the SWEEP a document already exists, and it is PARKED rather than
+ *    deleted — an unparseable resource will never become parseable on a later
+ *    sweep, so parking keeps the audit row instead of silently discarding it,
+ *    and avoids bumping `tentativas` under the misleading no-account message.
+ * Collapsing the two phases would make the sweep start deleting rows it parks today.
+ */
+function pipelineFor(runners: NotificationRunners = {}) {
+  return defineNotificationPipeline<MlNotificationPayload, ProcessOutcome>({
+    channel: 'mercado-livre',
+    collection: notificacaoMercadoLivreCollection,
+    taskSchema: mlNotificationTaskSchema,
+    docIdOf: (p) => p.id,
+    dedupKeyOf: (p) => p.resource,
+    // Spread the whole payload: this channel's schema is `.passthrough()`, so a
+    // field ML adds without telling us still rides along onto the failure doc.
+    toDocFields: (p) => ({ ...p }),
+    fromDoc: (parsed) => {
+      const doc = parsed as MlNotificationPayload;
+      return {
+        id: doc.id,
+        resource: doc.resource,
+        topic: doc.topic,
+        user_id: doc.user_id,
+        application_id: doc.application_id,
+        attempts: doc.attempts,
+        sent: doc.sent,
+        received: doc.received,
+      };
+    },
+    process: (db, payload) => processNotificationPayload(db, payload, runners),
+    toDisposition: (outcome, payload, phase): NotificationDisposition => {
+      if (outcome.kind === 'no-account') return { kind: 'fail', reason: noAccountReason(payload) };
+      if (outcome.kind === 'unknown-topic') {
+        return { kind: 'park', reason: `tópico não suportado: ${payload.topic}` };
+      }
+      if (outcome.kind === 'malformed-resource') {
+        if (phase === 'sweep') {
+          return { kind: 'park', reason: `resource malformado: ${payload.resource}` };
+        }
+        console.warn('[mercado-livre] notification DROPPED — unparseable resource', {
+          id: payload.id,
+          resource: payload.resource,
+          topic: payload.topic,
+        });
+        return { kind: 'drop' };
+      }
+      return { kind: 'resolve' }; // done
+    },
+  });
+}
+
+const basePipeline = pipelineFor();
+
+/**
+ * Persist a notification as `failed` (the sweep will re-drive it). The receiver
+ * also calls this as a fallback when the enqueue itself fails, so ML never sees
+ * a 5xx during an enqueue-path outage (which could disable the topic).
+ */
+export function persistNotificationFailure(
+  db: Firestore,
+  payload: MlNotificationPayload,
+  erro: string,
+): Promise<void> {
+  return basePipeline.persistFailure(db, payload, erro);
+}
 
 /**
  * The `onTaskDispatched` handler body, extracted so the throw/persist
  * disposition is unit-testable. `retryCount` is the Cloud Tasks attempt index
  * (0-based); on the FINAL attempt a transient failure is persisted instead of
  * re-thrown so the sweep can re-drive it (the queue would otherwise drop it).
+ *
+ * The injectable runners travel as ONE `NotificationRunners` options object
+ * (each key optional, defaults resolved inside `processNotificationPayload`) —
+ * production call sites pass nothing.
  */
 export async function handleNotificationTask(
   db: Firestore,
@@ -551,156 +628,16 @@ export async function handleNotificationTask(
   retryCount: number,
   runners: NotificationRunners = {},
 ): Promise<TaskResult> {
-  let payload: MlNotificationPayload;
-  try {
-    payload = mlNotificationTaskSchema.parse(data);
-  } catch (err) {
-    if (err instanceof z.ZodError) return { outcome: 'dropped' }; // coding/enqueue bug — drop
-    throw err;
-  }
-
-  let result: ProcessOutcome;
-  try {
-    result = await processNotificationPayload(db, payload, runners);
-  } catch (err) {
-    // Transient (Firestore / ML API / network). Retry in-task until the final
-    // attempt; then persist `failed` so the sweep re-drives it (a throw on the
-    // last attempt would drop the notification).
-    if (!(err instanceof Error)) throw err;
-    if (retryCount < TASK_MAX_ATTEMPTS - 1) throw err; // let the queue retry with backoff
-    // Final attempt: persist so the sweep re-drives it. If the persist ALSO
-    // fails — a *correlated* outage of the SAME Firestore whose failure we're
-    // recovering from — we can't record it locally: log the dropped notification
-    // and re-throw the ORIGINAL error so the failed final attempt surfaces in
-    // Cloud Tasks' error metrics (the residual loss window for a Firestore outage
-    // longer than the retry backoff is covered by the deferred `missed_feeds`
-    // backstop). See functions/DEPLOY.md.
-    try {
-      await persistNotificationFailure(db, payload, err.message);
-    } catch (persistErr) {
-      if (!(persistErr instanceof Error)) throw persistErr;
-      console.error(
-        '[mercado-livre] notification DROPPED — transient failure AND persist failed on the final attempt',
-        {
-          id: payload.id,
-          resource: payload.resource,
-          topic: payload.topic,
-          cause: err.message,
-          persistError: persistErr.message,
-        },
-      );
-      throw err; // surface the original failure to Cloud Tasks
-    }
-    return { outcome: 'failed', topic: payload.topic };
-  }
-
-  if (result.kind === 'no-account') {
-    await persistNotificationFailure(
-      db,
-      payload,
-      `integração ativa do Mercado Livre não encontrada para user_id ${payload.user_id}`,
-    );
-    return { outcome: 'failed', topic: payload.topic };
-  }
-  if (result.kind === 'unknown-topic') {
-    await persistNotification(db, payload, 'parked', 0, `tópico não suportado: ${payload.topic}`);
-    return { outcome: 'parked', integracaoId: result.integracaoId, topic: payload.topic };
-  }
-  if (result.kind === 'malformed-resource') {
-    // A coding/ML-side anomaly (an orders_v2/orders/payments/shipments/
-    // items_prices resource with no parseable id) — nothing to retry, nothing
-    // worth persisting (same disposition as the schema-parse drop above, just
-    // discovered one layer deeper, after the account/topic are already known).
-    console.warn('[mercado-livre] notification DROPPED — unparseable resource', {
-      id: payload.id,
-      resource: payload.resource,
-      topic: payload.topic,
-    });
-    return { outcome: 'dropped', integracaoId: result.integracaoId, topic: payload.topic };
-  }
-  // done — NOTHING persisted (the cost win).
-  return { outcome: 'done', integracaoId: result.integracaoId, topic: payload.topic };
-}
-
-/**
- * Persist a notification as `failed` (the sweep will re-drive it). The receiver
- * also calls this as a fallback when the enqueue itself fails, so ML never sees
- * a 5xx during an enqueue-path outage (which could disable the topic).
- */
-export async function persistNotificationFailure(
-  db: Firestore,
-  payload: MlNotificationPayload,
-  erro: string,
-): Promise<void> {
-  await persistNotification(db, payload, 'failed', 0, erro);
-}
-
-/**
- * Create-only failure/parked writer keyed by the ML `_id` (auto-id when absent),
- * stamping `processedAt = now` (the sweep's window gate). A duplicate delivery
- * that also failed hits ALREADY_EXISTS (gRPC 6) → the notification is already
- * recorded, so we ignore it rather than clobber its retry state.
- */
-async function persistNotification(
-  db: Firestore,
-  payload: MlNotificationPayload,
-  status: 'failed' | 'parked',
-  tentativas: number,
-  erro: string,
-): Promise<void> {
-  const docId = payload.id ?? notificacaoMercadoLivreCollection.newDocId(db, {});
-  const data = notificacaoMercadoLivreCollection.parse({
-    ...payload,
-    status,
-    tentativas,
-    erro,
-    processedAt: Date.now(),
-  });
-  try {
-    await notificacaoMercadoLivreCollection.docRef(db, {}, docId).create(data);
-  } catch (err) {
-    if (isAlreadyExists(err)) return; // dup — already recorded
-    throw err;
-  }
-}
-
-/** Advance an existing failure doc's status/retry counter (merge — keeps the wire fields). */
-async function markNotification(
-  db: Firestore,
-  docId: string,
-  status: 'failed' | 'parked',
-  tentativas: number,
-  erro: string,
-  now: number,
-): Promise<void> {
-  await notificacaoMercadoLivreCollection.merge(db, {}, docId, {
-    status,
-    tentativas,
-    erro,
-    processedAt: now,
-  });
-}
-
-/** Remove a resolved failure doc from the failures-only store (sweep success). */
-async function deleteNotification(db: Firestore, docId: string): Promise<void> {
-  await notificacaoMercadoLivreCollection.docRef(db, {}, docId).delete();
-}
-
-/** One hour — the legacy `manageNotificationsMercadoLivre` reprocess window. */
-const ONE_HOUR_MS = 60 * 60 * 1000;
-
-export interface ReprocessOptions {
-  /** Only re-drive notifications last attempted before `now - olderThanMs`. */
-  olderThanMs?: number;
-  limit?: number;
-  /** Injectable clock (tests). */
-  now?: number;
-}
-
-export interface ReprocessResult {
-  processed: number;
-  outcomes: Record<string, number>;
-  errors: Array<{ docId: string; message: string }>;
+  const r = await pipelineFor(runners).handleTask(db, data, retryCount);
+  // `payload` is absent only on the schema-parse drop, where there is no topic
+  // to report; `result` is absent on the transient-failure path. `no-account`
+  // carries no integração id — it is precisely the outcome where none resolved.
+  const integracaoId = r.result && r.result.kind !== 'no-account' ? r.result.integracaoId : null;
+  return {
+    outcome: r.outcome,
+    ...(integracaoId != null ? { integracaoId } : {}),
+    ...(r.payload ? { topic: r.payload.topic } : {}),
+  };
 }
 
 /**
@@ -714,106 +651,10 @@ export interface ReprocessResult {
  * `limit` cap, and inline avoids Cloud Tasks task-name dedup-window collisions.
  * The caller logs the returned counts/errors.
  */
-export async function reprocessNotifications(
+export function reprocessNotifications(
   db: Firestore,
   opts: ReprocessOptions = {},
   runners: NotificationRunners = {},
 ): Promise<ReprocessResult> {
-  const now = opts.now ?? Date.now();
-  const cutoff = now - (opts.olderThanMs ?? ONE_HOUR_MS);
-  const max = opts.limit ?? 50;
-
-  const snap = await notificacaoMercadoLivreCollection
-    .ref(db, {})
-    .where('status', '==', 'failed')
-    .where('processedAt', '<', cutoff)
-    .orderBy('processedAt')
-    .limit(max)
-    .get();
-
-  const seenResource = new Set<string>();
-  const outcomes: Record<string, number> = {};
-  const errors: Array<{ docId: string; message: string }> = [];
-  let processed = 0;
-
-  for (const d of snap.docs) {
-    const raw = d.data() as Record<string, unknown>;
-    const resource = typeof raw.resource === 'string' ? raw.resource : '';
-    if (resource && seenResource.has(resource)) continue; // dedup by resource
-    if (resource) seenResource.add(resource);
-
-    const doc = notificacaoMercadoLivreCollection.parseRead(
-      raw,
-      notificacaoMercadoLivreCollection.docPath({}, d.id),
-    );
-    const payload: MlNotificationPayload = {
-      id: doc.id,
-      resource: doc.resource,
-      topic: doc.topic,
-      user_id: doc.user_id,
-      application_id: doc.application_id,
-      attempts: doc.attempts,
-      sent: doc.sent,
-      received: doc.received,
-    };
-    const tentativas = (doc.tentativas ?? 0) + 1;
-
-    try {
-      const result = await processNotificationPayload(db, payload, runners);
-      if (result.kind === 'done') {
-        await deleteNotification(db, d.id); // resolved → leave the failures store
-        outcomes.done = (outcomes.done ?? 0) + 1;
-      } else if (result.kind === 'unknown-topic') {
-        await markNotification(
-          db,
-          d.id,
-          'parked',
-          tentativas,
-          `tópico não suportado: ${payload.topic}`,
-          now,
-        );
-        outcomes.parked = (outcomes.parked ?? 0) + 1;
-      } else if (result.kind === 'malformed-resource') {
-        // Terminal, same as unknown-topic: an unparseable resource will never
-        // become parseable on a later sweep — park it instead of bumping
-        // tentativas under the (misleading) "no active account" message below.
-        await markNotification(
-          db,
-          d.id,
-          'parked',
-          tentativas,
-          `resource malformado: ${payload.resource}`,
-          now,
-        );
-        outcomes.parked = (outcomes.parked ?? 0) + 1;
-      } else {
-        // still no active account — re-drive until the cap, then park.
-        const status = tentativas >= MAX_TENTATIVAS ? 'parked' : 'failed';
-        await markNotification(
-          db,
-          d.id,
-          status,
-          tentativas,
-          `integração ativa do Mercado Livre não encontrada para user_id ${payload.user_id}`,
-          now,
-        );
-        outcomes[status] = (outcomes[status] ?? 0) + 1;
-      }
-      processed += 1;
-    } catch (err) {
-      // Batch-isolation boundary: a transient failure on one notification must
-      // not abort the sweep. Bump tentativas (park at the cap); if even the mark
-      // write fails, collect and move on. Non-Error throws still propagate.
-      if (!(err instanceof Error)) throw err;
-      try {
-        const status = tentativas >= MAX_TENTATIVAS ? 'parked' : 'failed';
-        await markNotification(db, d.id, status, tentativas, err.message, now);
-      } catch (markErr) {
-        if (!(markErr instanceof Error)) throw markErr;
-      }
-      errors.push({ docId: d.id, message: err.message });
-    }
-  }
-
-  return { processed, outcomes, errors };
+  return pipelineFor(runners).reprocess(db, opts);
 }

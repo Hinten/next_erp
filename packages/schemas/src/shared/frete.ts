@@ -158,9 +158,50 @@ export const ESTADOS_FRETE_NAO_POSTADO: ReadonlySet<EstadoFrete> = new Set<Estad
  * `estado != checkFinalizado && jaPostado.contains(estado)`, where `jaPostado`
  * is every estado NOT in `naoPostado`. The name follows the Dart port —
  * "jaPostado" here means "past the draft states", not strictly dispatched.
+ * ⚠️ NOT a "has the frete progressed past authorization" test — see
+ * {@link ESTADOS_FRETE_PRE_AUTORIZACAO} for that question (#702).
  */
 export function isFreteJaPostado(estado: EstadoFrete): boolean {
   return estado !== ESTADO_FRETE.checkFinalizado && !ESTADOS_FRETE_NAO_POSTADO.has(estado);
+}
+
+/**
+ * Estados from which a payment-driven `pago` transition may authorize freight
+ * dispatch — strictly those BEFORE `despachoAutorizado` in the lifecycle order
+ * of the enum above.
+ *
+ * Deliberately NOT `!isFreteJaPostado(...)`, which is what the pedido reconcile
+ * used until #702: that predicate answers the label-reprint question and returns
+ * false for `emSeparacao` / `empacotado` / `aguardandoAgendamento` /
+ * `checkFinalizado`, so authorizing dispatch used to REGRESS warehouse progress —
+ * and for `empacotado` and `checkFinalizado`, which are the two of those four in
+ * {@link ESTADOS_FRETE_REMOVE_ESTOQUE}, the pedido's stock effect along with it.
+ *
+ * Excluded on purpose: `despachoNegado` (a denial is a decision — a human clears
+ * it, not a payment), `desconhecido` (noise, not a shipping event — see
+ * {@link ESTADOS_FRETE_IGNORAR_REMOCAO}), `fulfillment` (the marketplace
+ * warehouses the goods) and `despachoAutorizado` itself (already authorized —
+ * skipping it avoids a redundant write).
+ *
+ * INVARIANT: disjoint from {@link ESTADOS_FRETE_REMOVE_ESTOQUE} (asserted in the
+ * unit tests), so authorizing dispatch can never un-remove stock through
+ * `efeitoEstoquePedido`.
+ */
+export const ESTADOS_FRETE_PRE_AUTORIZACAO: ReadonlySet<EstadoFrete> = new Set<EstadoFrete>([
+  ESTADO_FRETE.iniciado,
+  ESTADO_FRETE.aguardandoAutorizacao,
+  ESTADO_FRETE.aguardandoNFe,
+  ESTADO_FRETE.aguardandoValidacaoTransporadora,
+]);
+
+/**
+ * True when a `pago` transition may set `freteInicial.estado` to
+ * `despachoAutorizado`. Takes a plain `EstadoFrete` like {@link isFreteJaPostado},
+ * so an unrecognized value from raw Firestore data yields `false` — the safe
+ * direction (leave the frete alone).
+ */
+export function podeAutorizarDespacho(estado: EstadoFrete): boolean {
+  return ESTADOS_FRETE_PRE_AUTORIZACAO.has(estado);
 }
 
 /**
@@ -444,6 +485,16 @@ const UNSUPPORTED_FREIGHT_CAPS: FreightTipoCapabilities = {
 export function freightCapsFor(tipo: string | null | undefined): FreightTipoCapabilities {
   if (tipo == null) return UNSUPPORTED_FREIGHT_CAPS;
   return FREIGHT_TIPO_CAPS[tipo as IntegracaoFrete] ?? UNSUPPORTED_FREIGHT_CAPS;
+}
+
+/**
+ * Single definition of "the importing marketplace owns this freight block" — the
+ * read-only lock the Frete tab applies, reused server-side by the pedido estado
+ * reconcile (#702). Tolerant of an unknown / null tipo, like {@link freightCapsFor}:
+ * unrecognized → not marketplace-owned.
+ */
+export function isFreteMarketplaceOwned(tipo: string | null | undefined): boolean {
+  return freightCapsFor(tipo).marketplaceOwned;
 }
 
 /* -------------------------------------------------------------------------- */
