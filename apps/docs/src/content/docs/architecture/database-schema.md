@@ -10,7 +10,7 @@ source of truth — the Firestore rules generator walks it, the data layer resol
 collection paths from it, and this page is drawn from it. If a diagram here ever
 disagrees with `packages/schemas`, **the schema wins** — update the diagram.
 
-There are **46 registered collection domains** (39 named + the 7 marketplace-link
+There are **51 registered collection domains** (44 named + the 7 marketplace-link
 produto subcollections spread in via `PRODUTO_SUBCOLLECTION_DOMAINS`). This page
 groups them into seven functional areas, each with its own ER diagram, preceded
 by a high-level map.
@@ -235,7 +235,8 @@ erDiagram
 A `pedidos` doc references the customer, the delivery address, the salesperson,
 the fiscal operation, the sales channel and the price list. Line items, the
 initial freight block and the applied-stock snapshot are **embedded** on the doc;
-payments, incidents and the state-change log are subcollections. `estoqueAplicado`
+payments, incidents and the two state-change logs are subcollections — one for the
+pedido `estado`, one for the embedded `freteInicial.estado`. `estoqueAplicado`
 is a `serverOwnedFields` snapshot — the client may never write it.
 
 ```mermaid
@@ -250,9 +251,11 @@ erDiagram
   pedidos ||--o{ pagamentos : "sub: pagamentos"
   pedidos ||--o{ incidentes : "sub: incidentes"
   pedidos ||--o{ historicoEstadoPedido : "sub"
+  pedidos ||--o{ historicoFtIni : "sub"
   pagamentos }o--|| metodo_pgto : "metodoPagamentoOuterRef"
   pagamentos }o--o| bandeirasCartao : "cartao.bandeira"
   historicoEstadoPedido }o--|| usuarios : "usuarioHistoricoEstadosPedidoOuterRef"
+  historicoFtIni }o--|| usuarios : "usuarioHistoricoFreteInicialOuterRef"
 
   pedidos {
     string clientePedidoOuterRef
@@ -275,6 +278,11 @@ erDiagram
   }
   historicoEstadoPedido {
     string estado
+    number data
+  }
+  historicoFtIni {
+    string estado "EstadoFrete"
+    string obs
     number data
   }
 ```
@@ -494,6 +502,7 @@ subcollection, and its key outgoing references. Subcollection paths use
 | pagamento | `pedidos/{pedidoId}/pagamentos` | sub | `metodoPagamentoOuterRef` → metodo_pgto |
 | incidente | `pedidos/{pedidoId}/incidentes` | sub | — |
 | historicoEstadoPedido | `pedidos/{pedidoId}/historicoEstadoPedido` | sub | `usuarioHistoricoEstadosPedidoOuterRef` |
+| historicoFtIni | `pedidos/{pedidoId}/historicoFtIni` | sub | `usuarioHistoricoFreteInicialOuterRef` |
 | nfe | `pedidos/{pedidoId}/nfev4` | sub | `filialId` → filiais |
 | cartaCorrecao | `pedidos/{pedidoId}/nfev4/{nfeId}/cartacorrecao` | sub | — |
 | metodoPagamento | `metodo_pgto` | top | — |

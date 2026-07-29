@@ -63,6 +63,18 @@ export const historicoEstadoPedidoMeta: CollectionMetadata = {
   // `onPedidoEstadoChanged` trigger as the sole writer. Read stays open to
   // `d_pedido` read. Same posture as `historicoDeModificacoes`.
   serverOwned: true,
+  // The estado-history read (`EstadoHistoricoTab`): newest-first, one page.
+  // Declared here so the `defaultQuery.indexes` meta-test REQUIRES the matching
+  // `historicoEstadoPedido(data desc)` entry in firestore.indexes.json — the tab
+  // has always issued this sort, but with no defaultQuery nothing forced the
+  // index, so on this Enterprise edition every tab open silently full-scanned
+  // the subcollection and billed the data scanned (#717). Identical precedent:
+  // `historicoEstoqueMeta` in
+  // `packages/schemas/src/produto/collection/historicoEstoque.ts`.
+  defaultQuery: {
+    orderBy: [{ field: 'data', direction: 'desc' }],
+    limit: 50,
+  },
 };
 
 export const historicoEstadoPedido = {

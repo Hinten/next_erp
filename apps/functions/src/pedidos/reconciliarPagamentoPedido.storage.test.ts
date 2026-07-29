@@ -3,7 +3,7 @@ import { getApps, initializeApp } from 'firebase-admin/app';
 import { type Firestore, getFirestore } from 'firebase-admin/firestore';
 import { describe, expect, it } from 'vitest';
 import { PedidoReconcileNotFoundError, reconcilePedidoEstado } from '@delfrance/data/admin';
-import { STATUS_PAGAMENTO } from '@delfrance/schemas';
+import { ESTADO_FRETE, STATUS_PAGAMENTO } from '@delfrance/schemas';
 
 // Integration test — requires the firestore emulator. Drives the exported
 // `reconcilePedidoEstado` core directly (the `reconciliarPagamentoPedido`
@@ -25,15 +25,36 @@ function pedidoRef(db: Firestore, pedidoId: string) {
   return db.collection('pedidos').doc(pedidoId);
 }
 
+/*
+ * ─── The two audit trails ────────────────────────────────────────────────────
+ *
+ * Neither trail is written by the reconcile any more: the
+ * `onPedidoEstadoChanged` trigger observes the pedido write and appends to BOTH
+ * — `historicoEstadoPedido` for the pedido's `estado`, `historicoFtIni` for the
+ * embedded `freteInicial.estado` — asynchronously, so the rows land AFTER
+ * `reconcilePedidoEstado` resolves. Hence the pollers below.
+ *
+ * ⚠️ BOTH trails carry an OPENING row for whatever `seedPedido` created the
+ * pedido with — the trigger records creates too, and every pedido seeded here
+ * carries a `freteInicial`. So assertions must count rows of a GIVEN estado,
+ * never the whole trail: `toHaveLength(1)` on the trail would pass or fail for
+ * reasons that have nothing to do with the reconcile.
+ */
+
 async function historicos(db: Firestore, pedidoId: string) {
   const snap = await pedidoRef(db, pedidoId).collection('historicoEstadoPedido').get();
   return snap.docs.map((d) => d.data() as Record<string, unknown>);
 }
 
+async function freteHistoricos(db: Firestore, pedidoId: string) {
+  const snap = await pedidoRef(db, pedidoId).collection('historicoFtIni').get();
+  return snap.docs.map((d) => d.data() as Record<string, unknown>);
+}
+
 /**
- * The `historicoEstadoPedido` trail is no longer written by the reconcile: the
- * `onPedidoEstadoChanged` trigger observes the pedido write and appends it
- * asynchronously, so the rows land AFTER `reconcilePedidoEstado` resolves.
+ * Neither trail is written by the reconcile: the `onPedidoEstadoChanged` trigger
+ * observes the pedido write and appends asynchronously, so the rows land AFTER
+ * `reconcilePedidoEstado` resolves.
  *
  * Wait for `minRows`, then hold still for a quiet window and re-read. The quiet
  * window is what makes an exact-count assertion able to FAIL: returning on the
@@ -66,6 +87,50 @@ async function waitForTrail(
   }
 }
 
+async function waitForFreteRow(
+  db: Firestore,
+  pedidoId: string,
+  estado: string,
+  timeoutMs = 20_000,
+): Promise<Array<Record<string, unknown>>> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const trail = await freteHistoricos(db, pedidoId);
+    if (trail.some((r) => r.estado === estado)) return trail;
+    if (Date.now() > deadline) {
+      throw new Error(`timed out waiting for a '${estado}' historicoFtIni row`);
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+}
+
+/**
+ * Bounded negative: assert a trail never gains a row carrying `eventId`,
+ * re-reading across `windowMs`.
+ *
+ * Why not a single read. The trigger launches both trails' writes concurrently
+ * (`Promise.all` in `registrarEstadoPedido.ts`), so seeing the `pago` row proves
+ * the trigger RAN for that CloudEvent — it does NOT prove that a (wrongly
+ * emitted) frete row for the same event has finished landing. A one-shot read
+ * could slip between the two `set()`s and pass in exactly the regressed case
+ * this exists to catch. Re-reading across a window closes that while staying
+ * event-id-keyed, so it can never be satisfied by an unrelated row, and it
+ * fails on the first tick that sees one instead of after the whole window.
+ */
+async function expectNoRowForEvent(
+  readTrail: () => Promise<Array<Record<string, unknown>>>,
+  eventId: string,
+  windowMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + windowMs;
+  for (;;) {
+    const trail = await readTrail();
+    expect(trail.some((r) => r.eventId === eventId)).toBe(false);
+    if (Date.now() >= deadline) return;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 /**
  * Seed one pedido + its pagamentos with plain Admin-SDK writes (deliberately
  * NOT through the collection handles the code under test uses). The pedido id
@@ -94,7 +159,7 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
       {
         estado: 'aguardandoConfirmacaoDePagamento',
         valorCobrado: 100,
-        freteInicial: { estado: 'iniciado', codRastreio: null },
+        freteInicial: { estado: ESTADO_FRETE.iniciado, codRastreio: null },
       },
       [
         { valor: 60, status_pagamento: STATUS_PAGAMENTO.aprovado },
@@ -111,7 +176,10 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
 
     const pedido = (await pedidoRef(db, pedidoId).get()).data()!;
     expect(pedido.estado).toBe('pago');
-    expect(pedido.freteInicial).toEqual({ estado: 'despachoAutorizado', codRastreio: null });
+    expect(pedido.freteInicial).toEqual({
+      estado: ESTADO_FRETE.despachoAutorizado,
+      codRastreio: null,
+    });
 
     // The trigger records the transition: the opening row for the estado the
     // pedido was seeded with, plus the transition. Nothing more.
@@ -129,6 +197,15 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
     // `apps/web/e2e/pedidos-estado.vendas.e2e.spec.ts`.
     expect(trail.find((r) => r.estado === 'pago')).toMatchObject({
       usuarioHistoricoEstadosPedidoOuterRef: null,
+    });
+
+    // …and the frete trail records the despatch authorization the same write
+    // performed — exactly once, on top of the seed's opening `iniciado` row.
+    const freteTrail = await waitForFreteRow(db, pedidoId, ESTADO_FRETE.despachoAutorizado);
+    expect(freteTrail.filter((r) => r.estado === ESTADO_FRETE.despachoAutorizado)).toHaveLength(1);
+    expect(freteTrail.find((r) => r.estado === ESTADO_FRETE.despachoAutorizado)).toMatchObject({
+      usuarioHistoricoFreteInicialOuterRef: null,
+      obs: null,
     });
   }, 60_000);
 
@@ -152,10 +229,17 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
         // old `!isFreteJaPostado(estado)` test is true for `empacotado`, which
         // is exactly how a full payment used to drag it back to
         // `despachoAutorizado`.
-        freteInicial: { estado: 'empacotado', codRastreio: null },
+        freteInicial: { estado: ESTADO_FRETE.empacotado, codRastreio: null },
       },
       [{ valor: 100, status_pagamento: STATUS_PAGAMENTO.aprovado }],
     );
+
+    // Settle the SEED's own opening frete row first and remember which event
+    // produced it — everything below distinguishes "the seed wrote this" from
+    // "the reconcile wrote this" by event id, never by counting after a sleep.
+    const seedFreteTrail = await waitForFreteRow(db, pedidoId, ESTADO_FRETE.empacotado);
+    expect(seedFreteTrail).toHaveLength(1);
+    const seedEventId = seedFreteTrail[0]!.eventId as string;
 
     const result = await reconcilePedidoEstado(db, { pedidoId });
 
@@ -164,15 +248,34 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
 
     const pedido = (await pedidoRef(db, pedidoId).get()).data()!;
     expect(pedido.estado).toBe('pago');
-    expect(pedido.freteInicial).toEqual({ estado: 'empacotado', codRastreio: null });
+    expect(pedido.freteInicial).toEqual({ estado: ESTADO_FRETE.empacotado, codRastreio: null });
 
     // The pedido write still fires the trigger, so the trail records the estado
     // transition — same shape as the happy path: the opening row for the seeded
     // estado plus the transition. The suppressed frete write leaves no trace
-    // here either way; this trail records `estado`, not `freteInicial`.
+    // here; this trail records `estado`, not `freteInicial`.
     const trail = await waitForTrail(db, pedidoId, 2);
     expect(trail.map((r) => r.estado as string).sort()).toEqual(['iniciado', 'pago'].sort());
-  }, 60_000);
+
+    // ── the actual #702 assertion ──
+    // "no new frete row" is a negative, and a sleep-then-count would pass
+    // vacuously whenever the trigger simply hadn't run yet. The `pago` row above
+    // is the proof it DID run for THAT write, so the claim is scoped to the
+    // reconcile's own CloudEvent id — and re-checked across a short window,
+    // because the trigger issues both trails' writes concurrently and a single
+    // read could land between them. See `expectNoRowForEvent`.
+    const reconcileEventId = trail.find((r) => r.estado === 'pago')!.eventId as string;
+    expect(reconcileEventId).not.toBe(seedEventId);
+    await expectNoRowForEvent(() => freteHistoricos(db, pedidoId), reconcileEventId);
+
+    const freteTrail = await freteHistoricos(db, pedidoId);
+    expect(freteTrail).toHaveLength(1);
+    expect(freteTrail[0]!.estado).toBe(ESTADO_FRETE.empacotado);
+    expect(freteTrail[0]!.eventId).toBe(seedEventId);
+    // Longer than its siblings: this one waits on TWO successive trigger
+    // deliveries (the seed's create, then the reconcile's update) rather than
+    // two rows from the same event.
+  }, 90_000);
 
   it('two concurrent reconciles settle on one consistent estado (#308)', async () => {
     const db = getDb();
@@ -181,7 +284,7 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
       {
         estado: 'iniciado',
         valorCobrado: 100,
-        freteInicial: { estado: 'iniciado', codRastreio: null },
+        freteInicial: { estado: ESTADO_FRETE.iniciado, codRastreio: null },
       },
       [{ valor: 100, status_pagamento: STATUS_PAGAMENTO.aprovado }],
     );
@@ -219,6 +322,17 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
     // assertion above is what carries #308.
     const trail = await waitForTrail(db, pedidoId, 2);
     expect(trail.map((r) => r.estado as string).sort()).toEqual(['iniciado', 'pago'].sort());
+
+    // The frete trail corroborates the same settled state — the winner's write
+    // authorized despatch, so there is exactly one `despachoAutorizado` row on
+    // top of the seed's opening `iniciado`. The caveat above transfers verbatim:
+    // `buildFreteHistoryEntry` also returns null on an unchanged estado, so this
+    // cannot witness the race either. It is here to catch the frete arm emitting
+    // a DUPLICATE row for one transition, not to prove the loser wrote nothing.
+    const freteTrail = await waitForFreteRow(db, pedidoId, ESTADO_FRETE.despachoAutorizado);
+    expect(freteTrail.map((r) => r.estado as string).sort()).toEqual(
+      [ESTADO_FRETE.despachoAutorizado, ESTADO_FRETE.iniciado].sort(),
+    );
   }, 60_000);
 
   it('throws PedidoReconcileNotFoundError against a real missing pedido', async () => {
@@ -229,8 +343,10 @@ describe.skipIf(!EMULATED)('reconcilePedidoEstado core (emulator)', () => {
       PedidoReconcileNotFoundError,
     );
 
-    // The transaction aborted before any write: no phantom pedido, no história.
+    // The transaction aborted before any write: no phantom pedido, and neither
+    // trail was opened — there was no pedido write for the trigger to observe.
     expect((await pedidoRef(db, pedidoId).get()).exists).toBe(false);
     expect(await historicos(db, pedidoId)).toHaveLength(0);
+    expect(await freteHistoricos(db, pedidoId)).toHaveLength(0);
   });
 });

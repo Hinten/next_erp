@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { pedidoMeta } from './pedido';
 import { checkoutFretePedidoMeta } from './checkout';
+import { historicoFreteInicialMeta } from './historicoFtIni';
 
 describe('pedidoMeta cascade', () => {
   const paths = (pedidoMeta.cascade ?? []).map((decl) => decl.path);
@@ -13,6 +14,10 @@ describe('pedidoMeta cascade', () => {
 
   it('keeps the checkout cascade path aligned with its schema collectionPath', () => {
     expect(paths).toContain(checkoutFretePedidoMeta.collectionPath);
+  });
+
+  it('keeps the frete-history cascade path aligned with its schema collectionPath', () => {
+    expect(paths).toContain(historicoFreteInicialMeta.collectionPath);
   });
 
   it('does not cascade the dead `histestq` legacy constant', () => {

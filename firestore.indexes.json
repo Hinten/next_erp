@@ -353,6 +353,26 @@
       ]
     },
     {
+      "collectionGroup": "historicoFtIni",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "data",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "historicoEstadoPedido",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "data",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "collectionGroup": "historicoDeModificacoes",
       "queryScope": "COLLECTION",
       "fields": [

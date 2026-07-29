@@ -332,6 +332,12 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    match /pedidos/{pedidoId}/historicoFtIni/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
+      // Server-owned collection — Admin SDK only, no su bypass.
+      allow create, update, delete: if false;
+    }
+
     match /pedidos/{pedidoId}/incidentes/{docId} {
       allow read: if isSuperUser() || p('d_pedido', 1);
       allow create, update: if isSuperUser() || p('d_pedido', 2);
@@ -508,6 +514,9 @@ service cloud.firestore {
     }
     match /{path=**}/historicoEstoque/{docId} {
       allow read: if isSuperUser() || p('d_estoque', 1);
+    }
+    match /{path=**}/historicoFtIni/{docId} {
+      allow read: if isSuperUser() || p('d_pedido', 1);
     }
     match /{path=**}/imposto/{docId} {
       allow read: if isSuperUser() || p('d_impostoCategoria', 1) || p('d_impostoProduto', 1);

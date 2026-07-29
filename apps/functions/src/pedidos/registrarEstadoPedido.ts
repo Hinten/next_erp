@@ -1,23 +1,36 @@
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { logger } from 'firebase-functions';
 import { onDocumentWrittenWithAuthContext } from 'firebase-functions/v2/firestore';
-import { millisToMicros, nowMicros } from '@delfrance/core/datetime';
-import { historicoEstadoPedidoCollection } from '@delfrance/data/admin/collections';
-import { type EstadoPedido, estadoPedidoSchema, pedidoMeta } from '@delfrance/schemas';
+import { millisToMicros, nowMillis } from '@delfrance/core/datetime';
+import {
+  historicoEstadoPedidoCollection,
+  historicoFreteInicialCollection,
+} from '@delfrance/data/admin/collections';
+import {
+  type EstadoFrete,
+  type EstadoPedido,
+  estadoFreteSchema,
+  estadoPedidoSchema,
+  pedidoMeta,
+} from '@delfrance/schemas';
 
 import { getDb } from '../lib/admin';
 
 /**
- * Pedido estado audit trail (`pedidos/{pedidoId}/historicoEstadoPedido`).
+ * Pedido audit trails, both derived from the same `pedidos/{pedidoId}` write:
+ * the estado trail (`…/historicoEstadoPedido`) and the frete trail
+ * (`…/historicoFtIni`).
  *
- * This trigger is the SOLE writer of that subcollection. It replaces the three
+ * This trigger is the SOLE writer of BOTH subcollections. It replaces the
  * hand-written appends that used to sit at the call sites (the web editor's
  * `recordEstadoChange`, the client pagamento reconcile, and the Mercado Pago
  * webhook's admin reconcile), which between them covered only 3 of the ~12 code
  * paths that change `estado` — every Mercado Livre writer and every creation
- * path wrote no row at all. Observing the document instead of the call site
- * makes coverage total and automatic: any writer, from anywhere (including
- * Flutter), now produces a row.
+ * path wrote no row at all. The frete trail had it worse: in the legacy Flutter
+ * app only `Pedido.save()` and the Melhor Envio tracking task appended rows, so
+ * every marketplace-driven shipment move was invisible. Observing the document
+ * instead of the call site makes coverage total and automatic: any writer, from
+ * anywhere (including Flutter), now produces a row in whichever trail moved.
  *
  * Targets the NAMED `default` database (gotcha #8).
  */
@@ -80,10 +93,40 @@ export function resolveUsuarioOuterRef(
   return `documents/usuarios/${authId}`;
 }
 
+/**
+ * Everything both row builders need from one pedido write. Shared so the
+ * handler resolves the actor and the event time ONCE and the two trails can
+ * never disagree about when the same write happened.
+ *
+ * The two time fields are the same instant in different units — the estado
+ * trail stores `microsSinceEpoch` (the repo standard) while the frete trail
+ * stores `millisSinceEpoch` (legacy parity, see `historicoFtIni.ts`), so both
+ * are derived from a single `Date.parse(event.time)` rather than read twice.
+ */
+export interface HistoryEntryInput {
+  before: DocumentData | undefined;
+  after: DocumentData | undefined;
+  usuarioOuterRef: string | null;
+  eventId: string;
+  /** Event time as MICROSECONDS since epoch (`microsSinceEpoch` convention). */
+  eventTimeMicros: number;
+  /** The SAME instant as MILLISECONDS since epoch (`millisSinceEpoch`). */
+  eventTimeMillis: number;
+}
+
 /** One `historicoEstadoPedido` row — the shape the schema validates. */
 export interface EstadoHistoryEntry {
   estado: EstadoPedido;
   usuarioHistoricoEstadosPedidoOuterRef: string | null;
+  data: number;
+  eventId: string;
+}
+
+/** One `historicoFtIni` row — the shape the schema validates. */
+export interface FreteHistoryEntry {
+  estado: EstadoFrete;
+  obs: string | null;
+  usuarioHistoricoFreteInicialOuterRef: string | null;
   data: number;
   eventId: string;
 }
@@ -99,14 +142,7 @@ export interface EstadoHistoryEntry {
  * A CREATE records the opening state, so the trail shows where a pedido began
  * instead of starting mid-life.
  */
-export function buildEstadoHistoryEntry(input: {
-  before: DocumentData | undefined;
-  after: DocumentData | undefined;
-  usuarioOuterRef: string | null;
-  eventId: string;
-  /** Event time as MICROSECONDS since epoch (`microsSinceEpoch` convention). */
-  eventTimeMicros: number;
-}): EstadoHistoryEntry | null {
+export function buildEstadoHistoryEntry(input: HistoryEntryInput): EstadoHistoryEntry | null {
   if (!input.after) return null;
 
   const estado = input.after.estado;
@@ -119,6 +155,70 @@ export function buildEstadoHistoryEntry(input: {
     estado: parsed.data,
     usuarioHistoricoEstadosPedidoOuterRef: input.usuarioOuterRef,
     data: input.eventTimeMicros,
+    eventId: input.eventId,
+  };
+}
+
+/**
+ * Read `freteInicial.estado` off a pedido snapshot. Defensive on purpose: this
+ * is raw `DocumentData` from any writer, so the block may be absent, `null`, or
+ * (on a hand-edited/legacy doc) not an object at all. Anything that is not a
+ * readable nested `estado` comes back `undefined`, which the builder's parse
+ * guard then rejects.
+ */
+function readFreteEstado(doc: DocumentData | undefined): unknown {
+  const frete = doc?.freteInicial;
+  if (typeof frete !== 'object' || frete === null) return undefined;
+  return (frete as Record<string, unknown>).estado;
+}
+
+/**
+ * Frete counterpart of {@link buildEstadoHistoryEntry}: decide whether a pedido
+ * write moved `freteInicial.estado`, and build the row for it. Pure — no I/O.
+ *
+ * ⚠️ The comparison is on the nested `estado` ONLY, never on the `freteInicial`
+ * object. Every live writer of this field replaces the WHOLE block — a spread,
+ * not a dotted patch — so object identity always differs, and the block's other
+ * fields churn constantly without the shipment having moved. A block-level
+ * `!==` (or a `JSON.stringify` diff) would append a bogus row on every one of
+ * those writes:
+ *  - `apps/mercado-livre/lib/marketplace/orderShipmentImport.ts` writes
+ *    `freteInicial: targetFrete`, the output of `mergeFreteInicial`, whose
+ *    entire design is an estado-PRESERVING merge (`mergeEstadoFretePreservando`)
+ *    over refreshed tracking code, costs and timestamps. Every shipment poll
+ *    rewrites the block; almost none of them change the state.
+ *  - the Melhor Envio order-status webhook is the same shape from the other
+ *    side: tracking-only patches that must stay silent here.
+ *  - `packages/data/src/admin/pedidoReconcile.ts` spreads `freteRecord` into
+ *    `{ ...freteRecord, estado: despachoAutorizado }` when a payment authorizes
+ *    despatch. That one IS a real transition today, but it is one `podeAutorizar`
+ *    tweak away from writing the block with the estado it already had.
+ *
+ * Guard order is cheapest-exit-first: delete → estado unchanged → unknown
+ * value. A CREATE carrying a frete block records the opening state, matching
+ * the legacy `Pedido.save()`, which appended a row whenever `freteInicial` was
+ * non-null on creation.
+ */
+export function buildFreteHistoryEntry(input: HistoryEntryInput): FreteHistoryEntry | null {
+  if (!input.after) return null;
+
+  const estado = readFreteEstado(input.after);
+  if (input.before && readFreteEstado(input.before) === estado) return null;
+
+  const parsed = estadoFreteSchema.safeParse(estado);
+  if (!parsed.success) return null;
+
+  return {
+    estado: parsed.data,
+    // The legacy rows carried a free-text `obs` written by the call site (the
+    // Melhor Envio task explained *why* a state moved). A document observer has
+    // no such narrative — it only sees the resulting value — so it stores null
+    // rather than inventing one.
+    obs: null,
+    usuarioHistoricoFreteInicialOuterRef: input.usuarioOuterRef,
+    // MILLISECONDS here: `historicoFtIni.data` is `millisSinceEpoch`, unlike the
+    // estado trail's micros. Same instant, different unit — see HistoryEntryInput.
+    data: input.eventTimeMillis,
     eventId: input.eventId,
   };
 }
@@ -138,12 +238,24 @@ export async function recordEstadoHistory(
   await ref.set(historicoEstadoPedidoCollection.parse(entry) as DocumentData);
 }
 
+/** Frete counterpart of {@link recordEstadoHistory} — same deterministic-id
+ *  idempotency contract, different subcollection. */
+export async function recordFreteHistory(
+  db: Firestore,
+  pedidoId: string,
+  entry: FreteHistoryEntry,
+): Promise<void> {
+  const ref = historicoFreteInicialCollection.docRef(db, { pedidoId }, entry.eventId);
+  await ref.set(historicoFreteInicialCollection.parse(entry) as DocumentData);
+}
+
 /**
  * Fires on EVERY pedido write (create/update/delete) from any writer and records
- * one row per `estado` transition. Uses the `WithAuthContext` variant so the row
- * can name the acting user when the write came from a signed-in client.
+ * one row per `estado` transition AND one per `freteInicial.estado` transition.
+ * Uses the `WithAuthContext` variant so the rows can name the acting user when
+ * the write came from a signed-in client.
  *
- * No self-retrigger: the write lands in a SUBcollection, and document triggers
+ * No self-retrigger: the writes land in SUBcollections, and document triggers
  * on `pedidos/{pedidoId}` do not fire for subcollection writes.
  */
 export const onPedidoEstadoChanged = onDocumentWrittenWithAuthContext(
@@ -157,27 +269,66 @@ export const onPedidoEstadoChanged = onDocumentWrittenWithAuthContext(
     const after = event.data?.after?.data();
 
     // `event.time` is the CloudEvent occurrence time — stable across
-    // redeliveries of the SAME event, so the deterministic row stays
-    // content-identical on retries. Stored as MICROSECONDS since epoch
-    // (`microsSinceEpoch`, the repo's datetime standard).
-    const eventTimeMillis = Date.parse(event.time);
+    // redeliveries of the SAME event, which is why `data` comes from it and
+    // never from `Date.now()`: a retry then rewrites a content-identical row.
+    // Parsed ONCE and handed to both builders in both units, so the two trails
+    // can never date the same write differently.
+    //
+    // The `nowMillis()` fallback is the ONE case where that content-identity
+    // does not hold: an unparseable `event.time` (a platform bug — the field is
+    // required and RFC 3339) would make each delivery stamp its own wall clock.
+    // The guarantee that actually matters survives regardless, because it rests
+    // on the doc id, not the timestamp: every row is keyed on `event.id`, so a
+    // redelivery still OVERWRITES its row instead of appending a duplicate. The
+    // worst case is a row dated when it was retried rather than when it
+    // occurred — never a double entry in the trail.
+    const parsedMillis = Date.parse(event.time);
+    const eventTimeMillis = Number.isNaN(parsedMillis) ? nowMillis() : parsedMillis;
 
-    const entry = buildEstadoHistoryEntry({
+    const input: HistoryEntryInput = {
       before,
       after,
       usuarioOuterRef: resolveUsuarioOuterRef(event.authType, event.authId),
       eventId: event.id,
-      eventTimeMicros: Number.isNaN(eventTimeMillis)
-        ? nowMicros()
-        : millisToMicros(eventTimeMillis),
-    });
-    // Fast path: no estado change → no reads, no writes, no next event.
-    if (entry === null) return;
+      eventTimeMicros: millisToMicros(eventTimeMillis),
+      eventTimeMillis,
+    };
 
-    await recordEstadoHistory(getDb(), pedidoId, entry);
-    logger.info(
-      `onPedidoEstadoChanged: pedido ${pedidoId} → ${entry.estado}` +
-        ` (por ${entry.usuarioHistoricoEstadosPedidoOuterRef ?? 'sistema'})`,
-    );
+    const estadoEntry = buildEstadoHistoryEntry(input);
+    const freteEntry = buildFreteHistoryEntry(input);
+    // Fast path: neither trail moved → no getDb(), no reads, no writes, no next
+    // event. This is the overwhelmingly common case (every pedido edit that is
+    // not a state change), so it must stay free.
+    if (estadoEntry === null && freteEntry === null) return;
+
+    const db = getDb();
+    // Both rows may be keyed on the SAME `event.id` — one `tx.update` can move
+    // estado and freteInicial together (that is exactly what `pedidoReconcile`
+    // does when it authorizes despatch on payment). They live in DIFFERENT
+    // subcollections, so the shared id is a correlation key linking the two
+    // trails at that instant, not a collision.
+    //
+    // `Promise.all` rather than a `WriteBatch`: the two rows are independent
+    // records at deterministic ids, and the trigger is at-least-once — if one
+    // write lands and the other throws, the redelivery rewrites the first
+    // content-identically and completes the second. A partially-written pair is
+    // self-healing, so atomicity buys nothing and costs a batch commit.
+    const writes: Array<Promise<void>> = [];
+    if (estadoEntry !== null) writes.push(recordEstadoHistory(db, pedidoId, estadoEntry));
+    if (freteEntry !== null) writes.push(recordFreteHistory(db, pedidoId, freteEntry));
+    await Promise.all(writes);
+
+    if (estadoEntry !== null) {
+      logger.info(
+        `onPedidoEstadoChanged: pedido ${pedidoId} → ${estadoEntry.estado}` +
+          ` (por ${estadoEntry.usuarioHistoricoEstadosPedidoOuterRef ?? 'sistema'})`,
+      );
+    }
+    if (freteEntry !== null) {
+      logger.info(
+        `onPedidoEstadoChanged: frete do pedido ${pedidoId} → ${freteEntry.estado}` +
+          ` (por ${freteEntry.usuarioHistoricoFreteInicialOuterRef ?? 'sistema'})`,
+      );
+    }
   },
 );

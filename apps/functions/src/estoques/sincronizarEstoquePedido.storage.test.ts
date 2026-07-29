@@ -118,6 +118,38 @@ async function mudarPedido(db: Firestore, pedidoId: string, patch: Record<string
   await db.collection('pedidos').doc(pedidoId).update(patch);
 }
 
+/**
+ * Drive the sync and assert this pedido ends up APPLIED — by this call, or by
+ * the trigger that beat it to it.
+ *
+ * The header above says the trigger wrapper needs no emulation. That was true
+ * when this suite ran on firestore alone, but `ci-storage.yml` boots the
+ * FUNCTIONS emulator too (`--only firestore,storage,functions`), so the real
+ * `onPedidoEstoqueSync` is live and EVERY `set()` / `update()` on a pedido here
+ * fires it. It forwards to the same core these tests call directly, so asserting
+ * that the direct call returned `aplicado` races that delivery: whichever
+ * arrives first applies and reports `aplicado`, and the loser correctly reports
+ * `nada-a-fazer`. Both mean "applied exactly once" — the core is idempotent
+ * through the `estoqueAplicado` snapshot.
+ *
+ * Same defect class as ad4cf1cd / 089a0e1c on the produto suites, and it went
+ * red the same way: green locally and on `main`, red in the lane, because the
+ * coin flip is decided by how much other work the functions emulator has queued
+ * on that pedido write.
+ *
+ * No strength is lost. Every call site asserts the resulting estoque — and where
+ * it matters the pedido markers and the `historicoEstoque` trail — immediately
+ * after; those are what these tests are actually about, and they still fail if
+ * the core computes the wrong deltas or applies nothing. The status check that
+ * remains is what still rejects an unexpected third outcome (`ignorado`, the
+ * legacy-marker bail-out).
+ */
+async function aplicarConvergindo(db: Firestore, pedidoId: string) {
+  const r = await sincronizarEstoquePedido(db, pedidoId);
+  expect(['aplicado', 'nada-a-fazer']).toContain(r.status);
+  return r;
+}
+
 describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
   it('full saída lifecycle: reserva → saída (finalizado) → devolução (cancelado)', async () => {
     const db = getDb();
@@ -126,8 +158,7 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     });
 
     // 1. Checkout → reservation.
-    let r = await sincronizarEstoquePedido(db, pedidoId);
-    expect(r).toEqual({ status: 'aplicado', deltas: 1 });
+    await aplicarConvergindo(db, pedidoId);
     let estoque = await lerEstoque(db, produtoId, depositoId);
     expect(estoque).toMatchObject({ quantidade: 0, reservada: 5 });
 
@@ -138,8 +169,7 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
 
     // 2. Finalizado → physical removal + reservation release, atomically.
     await mudarPedido(db, pedidoId, { estado: 'finalizado' });
-    r = await sincronizarEstoquePedido(db, pedidoId);
-    expect(r).toEqual({ status: 'aplicado', deltas: 1 });
+    await aplicarConvergindo(db, pedidoId);
     estoque = await lerEstoque(db, produtoId, depositoId);
     expect(estoque).toMatchObject({ quantidade: -5, reservada: 0 });
 
@@ -153,8 +183,7 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
 
     // 3. Cancelado → stock returns, snapshot cleared.
     await mudarPedido(db, pedidoId, { estado: 'cancelado' });
-    r = await sincronizarEstoquePedido(db, pedidoId);
-    expect(r).toEqual({ status: 'aplicado', deltas: 1 });
+    await aplicarConvergindo(db, pedidoId);
     estoque = await lerEstoque(db, produtoId, depositoId);
     expect(estoque).toMatchObject({ quantidade: 0, reservada: 0 });
 
@@ -185,7 +214,7 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     const db = getDb();
     const { produtoId, depositoId, pedidoId } = await seed(db, { estado: 'pago' });
 
-    expect((await sincronizarEstoquePedido(db, pedidoId)).status).toBe('aplicado');
+    await aplicarConvergindo(db, pedidoId);
 
     const pedidoRef = db.collection('pedidos').doc(pedidoId);
     const antesPedido = (await pedidoRef.get()).updateTime!;
@@ -213,8 +242,7 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     await mudarPedido(db, pedidoId, {
       itens: { [produtoId]: [{ produtoUid: produtoId, quantidade: 2 }] },
     });
-    const r = await sincronizarEstoquePedido(db, pedidoId);
-    expect(r).toEqual({ status: 'aplicado', deltas: 1 });
+    await aplicarConvergindo(db, pedidoId);
     expect((await lerEstoque(db, produtoId, depositoId)).reservada).toBe(2);
 
     const trail = await historicos(db, produtoId, depositoId);
@@ -252,8 +280,7 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     });
     void produtoId;
 
-    const r = await sincronizarEstoquePedido(db, pedidoId);
-    expect(r).toEqual({ status: 'aplicado', deltas: 1 });
+    await aplicarConvergindo(db, pedidoId);
     expect((await lerEstoque(db, compA, depositoId)).reservada).toBe(6); // 3 kits × 2
     expect((await lerEstoque(db, compB, depositoId)).exists).toBe(false); // not limited
     expect((await lerEstoque(db, kitId, depositoId)).exists).toBe(false); // kit untouched
@@ -283,8 +310,7 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
   it('moves stock on a straight jump to finalizado (legacy hole fixed)', async () => {
     const db = getDb();
     const { produtoId, depositoId, pedidoId } = await seed(db, { estado: 'finalizado' });
-    const r = await sincronizarEstoquePedido(db, pedidoId);
-    expect(r).toEqual({ status: 'aplicado', deltas: 1 });
+    await aplicarConvergindo(db, pedidoId);
     expect((await lerEstoque(db, produtoId, depositoId)).quantidade).toBe(-5);
   });
 
@@ -295,8 +321,7 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     expect((await lerEstoque(db, produtoId, depositoId)).reservada).toBe(5);
 
     await mudarPedido(db, pedidoId, { freteInicial: { estado: 'empacotado' } });
-    const r = await sincronizarEstoquePedido(db, pedidoId);
-    expect(r).toEqual({ status: 'aplicado', deltas: 1 });
+    await aplicarConvergindo(db, pedidoId);
     expect(await lerEstoque(db, produtoId, depositoId)).toMatchObject({
       quantidade: -5,
       reservada: 0,
@@ -322,8 +347,7 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
     await db.collection('integracao').doc(integracaoId).delete();
     await mudarPedido(db, pedidoId, { estado: 'cancelado' });
 
-    const r = await sincronizarEstoquePedido(db, pedidoId);
-    expect(r).toEqual({ status: 'aplicado', deltas: 1 });
+    await aplicarConvergindo(db, pedidoId);
     expect((await lerEstoque(db, produtoId, depositoId)).reservada).toBe(0);
   });
 
@@ -354,8 +378,7 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
       estado: 'escolhendoFormaDePagamento',
       movimentaIndisponivelEstoque: false,
     });
-    const r = await sincronizarEstoquePedido(db, pedidoId);
-    expect(r).toEqual({ status: 'aplicado', deltas: 1 });
+    await aplicarConvergindo(db, pedidoId);
     expect(await lerEstoque(db, produtoId, depositoId)).toMatchObject({
       quantidade: -5,
       reservada: 0,
@@ -374,8 +397,7 @@ describe.skipIf(!EMULATED)('sincronizarEstoquePedido core (emulator)', () => {
 
     // Cancellation releases the snapshot's 5 over the mutated 2 → clamp at 0.
     await mudarPedido(db, pedidoId, { estado: 'cancelado' });
-    const r = await sincronizarEstoquePedido(db, pedidoId);
-    expect(r).toEqual({ status: 'aplicado', deltas: 1 });
+    await aplicarConvergindo(db, pedidoId);
     expect((await lerEstoque(db, produtoId, depositoId)).reservada).toBe(0);
 
     const incidentes = (await incidentesRef.get()).docs.map((d) => d.data());

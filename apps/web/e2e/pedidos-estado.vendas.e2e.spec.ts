@@ -2,7 +2,12 @@ import { getAuth } from 'firebase-admin/auth';
 import { expect, test } from '@playwright/test';
 import { db, getApp } from '@delfrance/test-fixtures';
 import { e2eUserEmail } from './_helpers/run-id';
-import { cleanupPedidoFixtures, e2ePrefix, seedPedidoFixtures } from './_helpers/seed-data';
+import {
+  cleanupPedidoFixtures,
+  cleanupPedidoSubcollection,
+  e2ePrefix,
+  seedPedidoFixtures,
+} from './_helpers/seed-data';
 import { warmRoutes } from './helpers/warmup';
 
 /**
@@ -103,15 +108,13 @@ test.describe.serial('Pedidos e2e — Estado / Histórico', () => {
   });
 
   test.afterAll(async () => {
-    // Remove the history subcollection first, then the fixture sweep by prefix.
-    // `cleanupPedidoFixtures` deletes the pedido with a plain batch delete, which
-    // does NOT cascade subcollections.
-    const hist = await db()
-      .collection('pedidos')
-      .doc(pedidoId)
-      .collection('historicoEstadoPedido')
-      .get();
-    await Promise.all(hist.docs.map((d) => d.ref.delete()));
+    // Remove the history subcollections first, then the fixture sweep by prefix
+    // (`cleanupPedidoFixtures` batch-deletes the pedido and Firestore never
+    // cascades). `historicoFtIni` is the frete-estado trail the same trigger
+    // owns: this fixture has no `freteInicial` block, so it produces no rows
+    // today — the sweep is here so it stays true if the seed ever gains one.
+    await cleanupPedidoSubcollection(pedidoId, 'historicoEstadoPedido');
+    await cleanupPedidoSubcollection(pedidoId, 'historicoFtIni');
     await cleanupPedidoFixtures(prefix);
   });
 

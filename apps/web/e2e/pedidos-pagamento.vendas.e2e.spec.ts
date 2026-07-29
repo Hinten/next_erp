@@ -1,6 +1,11 @@
 import { expect, test } from '@playwright/test';
 import { db } from '@delfrance/test-fixtures';
-import { cleanupPedidoFixtures, e2ePrefix, seedPedidoFixtures } from './_helpers/seed-data';
+import {
+  cleanupPedidoFixtures,
+  cleanupPedidoSubcollection,
+  e2ePrefix,
+  seedPedidoFixtures,
+} from './_helpers/seed-data';
 import { typeMoney } from './helpers/object-view';
 import { warmRoutes } from './helpers/warmup';
 
@@ -58,9 +63,11 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
     await warmRoutes(browser, ['/pedidos']);
   });
 
-  // Reset estado + clear the pagamentos/history subcollections before each
-  // attempt, so every test starts from `iniciado` with no leftover pagamentos
-  // or history.
+  // Clear the pagamentos/history subcollections, THEN reset estado, so every
+  // attempt starts from `iniciado` with no leftover pagamentos or history. The
+  // reset is last because the trigger reacts to it: sweeping afterwards would
+  // race the row it appends, and the watermark below is what makes that row
+  // attributable to this attempt instead.
   test.beforeEach(async () => {
     const pg = await db().collection('pedidos').doc(pedidoId).collection('pagamentos').get();
     await Promise.all(pg.docs.map((d) => d.ref.delete()));
@@ -70,6 +77,15 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
       .collection('historicoEstadoPedido')
       .get();
     await Promise.all(hist.docs.map((d) => d.ref.delete()));
+    // The same trigger owns the frete-estado trail. This fixture seeds no
+    // `freteInicial`, so it produces no rows today — swept so that stays true
+    // if the seed ever gains one.
+    const freteHist = await db()
+      .collection('pedidos')
+      .doc(pedidoId)
+      .collection('historicoFtIni')
+      .get();
+    await Promise.all(freteHist.docs.map((d) => d.ref.delete()));
 
     // Reset LAST, and take this attempt's watermark from the reset's commit
     // timestamp. It must NOT come from `Date.now()`: the trail's `data` is
@@ -90,19 +106,16 @@ test.describe.serial('Pedidos e2e — Pagamento', () => {
   });
 
   // `cleanupPedidoFixtures` deletes the pedido doc with a plain batch delete, which
-  // does NOT cascade subcollections — so both must be swept here. The estado
+  // does NOT cascade subcollections — so all three must be swept here. The estado
   // auto-transition test now runs LAST (it is the deploy gate), so this is the only
-  // thing standing between a failed staging run and orphaned `historicoEstadoPedido`
-  // docs under a parent that no longer exists.
+  // thing standing between a failed staging run and orphaned audit rows under a
+  // parent that no longer exists. `historicoFtIni` is the frete-estado trail the
+  // same trigger owns: this fixture has no `freteInicial` block, so it produces no
+  // rows today — the sweep is here so it stays true if the seed ever gains one.
   test.afterAll(async () => {
-    const pg = await db().collection('pedidos').doc(pedidoId).collection('pagamentos').get();
-    await Promise.all(pg.docs.map((d) => d.ref.delete()));
-    const hist = await db()
-      .collection('pedidos')
-      .doc(pedidoId)
-      .collection('historicoEstadoPedido')
-      .get();
-    await Promise.all(hist.docs.map((d) => d.ref.delete()));
+    await cleanupPedidoSubcollection(pedidoId, 'pagamentos');
+    await cleanupPedidoSubcollection(pedidoId, 'historicoEstadoPedido');
+    await cleanupPedidoSubcollection(pedidoId, 'historicoFtIni');
     await cleanupPedidoFixtures(prefix);
   });
 

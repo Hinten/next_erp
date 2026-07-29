@@ -87,14 +87,32 @@ test.describe.serial('Pedidos e2e — reconcile de estado no servidor', () => {
     await cleanupPedidoFixtures(prefix);
   });
 
-  /** Drop every pagamento + estado-history row of the fixture pedido. */
+  /**
+   * Drop every pagamento + estado-history + frete-history row of the fixture
+   * pedido. `historicoFtIni` is the freight trail `onPedidoEstadoChanged` also
+   * owns; this fixture seeds no `freteInicial`, so it stays empty today — the
+   * sweep is here so it stays true if that ever changes. Two hazards it implies:
+   *
+   * (a) this runs immediately after the `beforeEach` estado reset, and the
+   *     trigger writes ASYNCHRONOUSLY — the row for that reset can land after
+   *     the delete has already passed over the collection. Any assertion on
+   *     either trail must therefore be `toContain`-shaped or scoped to a known
+   *     `eventId`; a bare `toHaveLength(n)` will be intermittently red.
+   * (b) if this fixture ever gains a `freteInicial`, reset `freteInicial.estado`
+   *     in the SAME `update()` call as `estado`. Two separate updates fire two
+   *     CloudEvents, and the second one's row is written after the sweep — the
+   *     exact race (a) describes, made permanent.
+   */
   async function limparSubcolecoes(): Promise<void> {
     const pedidoRef = db().collection('pedidos').doc(pedidoId);
-    const [pagamentos, historico] = await Promise.all([
+    const [pagamentos, historico, historicoFrete] = await Promise.all([
       pedidoRef.collection('pagamentos').get(),
       pedidoRef.collection('historicoEstadoPedido').get(),
+      pedidoRef.collection('historicoFtIni').get(),
     ]);
-    await Promise.all([...pagamentos.docs, ...historico.docs].map((d) => d.ref.delete()));
+    await Promise.all(
+      [...pagamentos.docs, ...historico.docs, ...historicoFrete.docs].map((d) => d.ref.delete()),
+    );
   }
 
   /** The pedido's stored `estado` — the reconcile is server-owned, so the doc

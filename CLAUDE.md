@@ -184,10 +184,13 @@ pnpm --filter @delfrance/rules-gen gen:rules   # + gen:rules:e2e after any *Meta
   + `typeAware(...)` with `prettier` LAST; libraries spread base + `typeAware(scoped)`
   + `prettier`. Only `apps/docs` (Astro) and `packages/config-tsconfig` (JSON-only)
   are not linted.
-- Six custom lint rules in `packages/config-eslint/rules/`:
+- Seven custom lint rules in `packages/config-eslint/rules/`:
   `default-query-needs-index`, `no-ad-hoc-money-rounding`,
-  `no-optional-without-nullable` and `prefer-schema-enum` (error),
-  `no-inline-admin-collection` and `no-error-as-sole-instanceof` (warn).
+  `no-optional-without-nullable`, `no-client-estado-history-write` and
+  `prefer-schema-enum` (error), `no-inline-admin-collection` and
+  `no-error-as-sole-instanceof` (warn). `no-client-estado-history-write` guards
+  BOTH server-owned pedido audit trails — `historicoEstadoPedido` and
+  `historicoFtIni` — whose sole writer is the `onPedidoEstadoChanged` trigger.
   `prefer-schema-enum` is the only **type-aware** one, so it is enabled inside
   `typeAware(...)` rather than the base block: it flags a raw string sitting in
   a position typed as a Zod enum (`estado === 'pago'` → `ESTADO_PEDIDO.pago`).
