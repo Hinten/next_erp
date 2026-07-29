@@ -269,9 +269,19 @@ export const onPedidoEstadoChanged = onDocumentWrittenWithAuthContext(
     const after = event.data?.after?.data();
 
     // `event.time` is the CloudEvent occurrence time — stable across
-    // redeliveries of the SAME event, so the deterministic rows stay
-    // content-identical on retries. Parsed ONCE and handed to both builders in
-    // both units, so the two trails can never date the same write differently.
+    // redeliveries of the SAME event, which is why `data` comes from it and
+    // never from `Date.now()`: a retry then rewrites a content-identical row.
+    // Parsed ONCE and handed to both builders in both units, so the two trails
+    // can never date the same write differently.
+    //
+    // The `nowMillis()` fallback is the ONE case where that content-identity
+    // does not hold: an unparseable `event.time` (a platform bug — the field is
+    // required and RFC 3339) would make each delivery stamp its own wall clock.
+    // The guarantee that actually matters survives regardless, because it rests
+    // on the doc id, not the timestamp: every row is keyed on `event.id`, so a
+    // redelivery still OVERWRITES its row instead of appending a duplicate. The
+    // worst case is a row dated when it was retried rather than when it
+    // occurred — never a double entry in the trail.
     const parsedMillis = Date.parse(event.time);
     const eventTimeMillis = Number.isNaN(parsedMillis) ? nowMillis() : parsedMillis;
 
