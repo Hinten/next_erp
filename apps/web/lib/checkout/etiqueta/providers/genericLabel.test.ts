@@ -11,6 +11,8 @@ vi.mock('@/lib/etiqueta-generica', () => ({
   renderAndExportEtiquetaGenericaPdf: renderMock,
 }));
 
+import { INTEGRACAO_FRETE } from '@delfrance/schemas';
+
 import { genericLabelProvider } from './genericLabel';
 import type { EtiquetaProviderInput } from '../types';
 
@@ -24,7 +26,7 @@ function makeInput(over: {
     pedido: { numero: '1234' } as never,
     pedidoId: 'p1',
     frete: {} as never,
-    intFrete: { id: 'if1', tipo: 'motoboy', data: {} as never },
+    intFrete: { id: 'if1', tipo: INTEGRACAO_FRETE.motoboy, data: {} as never },
     formato: over.formato ?? 'pdf',
     deps: {
       freightClient: null,

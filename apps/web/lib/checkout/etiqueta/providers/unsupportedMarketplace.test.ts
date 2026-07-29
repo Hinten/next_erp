@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { INTEGRACAO_FRETE } from '@delfrance/schemas';
+
 import { unsupportedMarketplaceProvider } from './unsupportedMarketplace';
 import type { EtiquetaProviderInput } from '../types';
 
@@ -9,7 +11,7 @@ function makeInput(notify: EtiquetaProviderInput['ui']['notify']): EtiquetaProvi
     pedido: {} as never,
     pedidoId: 'p1',
     frete: {} as never,
-    intFrete: { id: 'if1', tipo: 'mercadoLivre', data: {} as never },
+    intFrete: { id: 'if1', tipo: INTEGRACAO_FRETE.mercadoLivre, data: {} as never },
     formato: 'pdf',
     deps: { freightClient: null, nfeClient: null, printJob: vi.fn() },
     ui: { confirmRisk: vi.fn(), notify, openUrl: vi.fn(), comprarEtiqueta: vi.fn() },

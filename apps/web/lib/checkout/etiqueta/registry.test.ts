@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  INTEGRACAO_FRETE,
   freightCapsFor,
   type FreightTipoCapabilities,
   type IntegracaoFrete,
@@ -33,13 +34,25 @@ const caps = (over: Partial<FreightTipoCapabilities> = {}): FreightTipoCapabilit
 
 describe('resolveEtiquetaProvider', () => {
   it('picks the exact provider for a registered tipo', () => {
-    expect(resolveEtiquetaProvider('melhorEnvios', freightCapsFor('melhorEnvios'))).toBe(
-      melhorEnviosProvider,
-    );
-    expect(resolveEtiquetaProvider('mercadoLivre', freightCapsFor('mercadoLivre'))).toBe(
-      unsupportedMarketplaceProvider,
-    );
-    for (const tipo of ['motoboy', 'fob', 'outros', 'retiradaNaLoja'] as IntegracaoFrete[]) {
+    expect(
+      resolveEtiquetaProvider(
+        INTEGRACAO_FRETE.melhorEnvios,
+        freightCapsFor(INTEGRACAO_FRETE.melhorEnvios),
+      ),
+    ).toBe(melhorEnviosProvider);
+    expect(
+      resolveEtiquetaProvider(
+        INTEGRACAO_FRETE.mercadoLivre,
+        freightCapsFor(INTEGRACAO_FRETE.mercadoLivre),
+      ),
+    ).toBe(unsupportedMarketplaceProvider);
+    const genericos: IntegracaoFrete[] = [
+      INTEGRACAO_FRETE.motoboy,
+      INTEGRACAO_FRETE.fob,
+      INTEGRACAO_FRETE.outros,
+      INTEGRACAO_FRETE.retiradaNaLoja,
+    ];
+    for (const tipo of genericos) {
       expect(resolveEtiquetaProvider(tipo, freightCapsFor(tipo))).toBe(genericLabelProvider);
     }
   });
@@ -107,7 +120,7 @@ describe('emitirOuImprimirEtiqueta', () => {
 
   it('dispatches to the resolved provider once the gates pass', async () => {
     // melhorEnvios with neither label nor selected option → needs-quote.
-    const input = makeInput({ tipo: 'melhorEnvios' });
+    const input = makeInput({ tipo: INTEGRACAO_FRETE.melhorEnvios });
     expect(await emitirOuImprimirEtiqueta(input)).toEqual({
       status: 'needs-quote',
       editorHref: '/pedidos/p1/editar',
@@ -116,7 +129,11 @@ describe('emitirOuImprimirEtiqueta', () => {
 
   it('confirmed already-posted reprint proceeds to dispatch', async () => {
     const confirmRisk = vi.fn(async () => true);
-    const input = makeInput({ estado: 'postado', confirmRisk, tipo: 'melhorEnvios' });
+    const input = makeInput({
+      estado: 'postado',
+      confirmRisk,
+      tipo: INTEGRACAO_FRETE.melhorEnvios,
+    });
     const out = await emitirOuImprimirEtiqueta(input);
     expect(out.status).toBe('needs-quote');
     expect(confirmRisk).toHaveBeenCalledTimes(1);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ESTADO_FRETE } from '@delfrance/schemas';
+import { MODALIDADE_FRETE, ESTADO_FRETE } from '@delfrance/schemas';
 import type { Endereco, Filial, ItemDoPedido } from '@delfrance/schemas';
 
 import { buildPedidoCartPayload } from './melhorEnvioCart';
@@ -20,7 +20,7 @@ function makeFrete(overrides: Partial<FreteInicialFormState> = {}): FreteInicial
     integracao_path: null,
     clienteRecebedorOuterReference: null,
     enderecoFreteOuterReference: null,
-    modalidade: '0',
+    modalidade: MODALIDADE_FRETE.cif,
     transportadora: null,
     veiculo: null,
     reboques: null,

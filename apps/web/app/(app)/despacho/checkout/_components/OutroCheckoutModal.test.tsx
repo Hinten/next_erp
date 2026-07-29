@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
+import { MODALIDADE_FRETE } from '@delfrance/schemas';
+
 import type { OutroCheckoutRow } from './useOutrosCheckouts';
 
 // The reprint helpers do the real Firestore/print I/O — stub them so we can
@@ -29,7 +31,7 @@ function makeRow(over: Partial<OutroCheckoutRow> = {}): OutroCheckoutRow {
     numero: 'NUM-A',
     timestampMs: 1000,
     obs: null,
-    frete: { modalidade: '0' } as OutroCheckoutRow['frete'],
+    frete: { modalidade: MODALIDADE_FRETE.cif } as OutroCheckoutRow['frete'],
     itens: [],
     ...over,
   };
@@ -83,7 +85,11 @@ describe("OutroCheckoutModal — reprints target the row's OWN pedido", () => {
   });
 
   it('hides Reimprimir Frete when the checkout snapshot is sem frete (modalidade 9)', () => {
-    renderModal(makeRow({ frete: { modalidade: '9' } as OutroCheckoutRow['frete'] }));
+    renderModal(
+      makeRow({
+        frete: { modalidade: MODALIDADE_FRETE.semTransporte } as OutroCheckoutRow['frete'],
+      }),
+    );
     expect(screen.queryByRole('button', { name: /Reimprimir Frete/ })).toBeNull();
     expect(screen.getByRole('button', { name: /Reimprimir NF-e/ })).toBeTruthy();
   });

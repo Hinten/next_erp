@@ -43,7 +43,12 @@ import {
   NFeNetworkError,
   type NFeStatusServicoResult,
 } from '@delfrance/integrations-nfe/http-provider';
-import { type ContingenciaModo, type NFeConfig } from '@delfrance/schemas';
+import {
+  CONTINGENCIA_MODO,
+  AMBIENTE_NFE,
+  type ContingenciaModo,
+  type NFeConfig,
+} from '@delfrance/schemas';
 
 import { usePermission } from '@/lib/auth';
 import { NFE_CONFIG_DOC_ID, nfeConfigCollection } from '@/lib/data/nfeConfigCollection';
@@ -234,7 +239,7 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
             <Text size="sm" c="dimmed">
               Ambiente:{' '}
               <Text span fw={500}>
-                {cfg.ambiente === '1' ? 'Produção' : 'Homologação'}
+                {cfg.ambiente === AMBIENTE_NFE.producao ? 'Produção' : 'Homologação'}
               </Text>
             </Text>
           </Group>
@@ -270,7 +275,7 @@ export function NfeConfigPanel({ filialId }: { filialId: string }) {
             />
           )}
 
-          {cfg.contingencia_modo !== 'none' && cfg.contingencia_dataInicio && (
+          {cfg.contingencia_modo !== CONTINGENCIA_MODO.none && cfg.contingencia_dataInicio && (
             <Text size="xs" c="dimmed">
               Contingência ativa desde{' '}
               {new Date(cfg.contingencia_dataInicio).toLocaleString('pt-BR')}.

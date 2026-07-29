@@ -7,6 +7,7 @@
  */
 import type { Firestore } from 'firebase-admin/firestore';
 import { intFreteCollection } from '@delfrance/data/admin/collections';
+import { INTEGRACAO_FRETE } from '@delfrance/schemas';
 import {
   type MelhorEnvioApi,
   type OAuthConfig,
@@ -80,7 +81,7 @@ export async function loadMelhorEnvioContext(
     snap.data(),
     intFreteCollection.docPath({}, intFreteId),
   );
-  if (conta.tipo !== 'melhorEnvios') {
+  if (conta.tipo !== INTEGRACAO_FRETE.melhorEnvios) {
     throw new MelhorEnvioContaNotConfiguredError(
       `Integração ${intFreteId} não é do tipo Melhor Envio.`,
     );

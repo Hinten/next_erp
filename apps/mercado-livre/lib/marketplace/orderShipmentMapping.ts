@@ -17,6 +17,7 @@ import { coerceToMicros } from '@delfrance/core/datetime';
 import type { MlShipment, MlShipmentPayment } from '@delfrance/integrations-mercado-livre';
 import { ESTADO_FRETE } from '@delfrance/schemas';
 import type { EstadoFrete, IntegracaoFrete } from '@delfrance/schemas';
+import { INTEGRACAO_FRETE } from '@delfrance/schemas';
 import { estadoFreteFromShipment } from './orderStatusMaps';
 
 /**
@@ -51,7 +52,7 @@ const MODALIDADE_CONTRATACAO_DESTINATARIO = '1';
  * `INTEGRACOES_FRETE.mercadoLivre` (models.dart:3163/5383) — our
  * `integracoesFreteSchema` literal.
  */
-const EXTERNAL_OPTION_INTEGRACAO_MERCADO_LIVRE: IntegracaoFrete = 'mercadoLivre';
+const EXTERNAL_OPTION_INTEGRACAO_MERCADO_LIVRE: IntegracaoFrete = INTEGRACAO_FRETE.mercadoLivre;
 
 /**
  * A `shipping_payments[].amount` reads as either a JSON number or a numeric

@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { roundReais } from '@delfrance/core/money';
-import { ORIGEM, FORMA_PAGAMENTO, pagamentoSchema, type FreteDoPedido } from '@delfrance/schemas';
+import {
+  MODALIDADE_FRETE,
+  ORIGEM,
+  FORMA_PAGAMENTO,
+  pagamentoSchema,
+  type FreteDoPedido,
+} from '@delfrance/schemas';
 
 import {
   apportionDescontos,
@@ -231,7 +237,7 @@ describe('buildGeneratorInput — Σ vPag ↔ vNF guard', () => {
     // (55) is overridden to vNF by the documented Flutter-parity rule.
     const bundle = fullBundle({
       pagamentos: [{ valor: 55, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }],
-      frete: { modalidade: '0', valorCobrado: 20 } as FreteDoPedido,
+      frete: { modalidade: MODALIDADE_FRETE.cif, valorCobrado: 20 } as FreteDoPedido,
     });
     const out = build(bundle);
     expect(out.pagXml).toContain('<vPag>120.00</vPag>');
@@ -356,7 +362,7 @@ describe('indTot — compoeValorTotalDaNFe (#398)', () => {
   it('stamps frete-emitente vFrete on the FIRST COMPOSING det, not a non-composing one', () => {
     const bundle = fullBundle({
       pagamentos: [{ valor: 55, forma_de_pagamento: FORMA_PAGAMENTO.dinheiro }],
-      frete: { modalidade: '0', valorCobrado: 20 } as FreteDoPedido,
+      frete: { modalidade: MODALIDADE_FRETE.cif, valorCobrado: 20 } as FreteDoPedido,
     });
     const items = [
       item({
@@ -380,7 +386,7 @@ describe('frete-emitente with no composing item (review fix)', () => {
   it('throws instead of stamping vFrete on an indTot=0 det', () => {
     const bundle = fullBundle({
       pagamentos: [],
-      frete: { modalidade: '0', valorCobrado: 20 } as FreteDoPedido,
+      frete: { modalidade: MODALIDADE_FRETE.cif, valorCobrado: 20 } as FreteDoPedido,
     });
     const items = [
       item({
