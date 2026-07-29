@@ -44,7 +44,7 @@ export type Filetype = z.infer<typeof filetypeSchema>;
 
 /**
  * Named members of {@link filetypeSchema}. Each name is its own wire value, so
- * this buys rename-safety and `Find all references` — and, with 19 members
+ * this buys rename-safety and `Find all references` — and, with 18 members
  * spanning MIME kinds and WhatsApp message kinds, a discoverable list.
  *
  * Enforced by the `delfrance/prefer-schema-enum` lint rule, which fires for any
