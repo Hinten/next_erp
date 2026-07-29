@@ -43,7 +43,14 @@ test.describe
 
   async function fillImpostosTab(page: Page) {
     await page.getByRole('tab', { name: 'Impostos' }).click();
-    await expect(page.getByLabel('Operação')).toBeVisible({ timeout: 30_000 });
+    // Assert on the combobox, not `getByLabel` — a Mantine Select's dropdown
+    // popup carries the SAME `aria-labelledby`, so `getByLabel('Operação')` can
+    // resolve to two elements (input + `role="listbox"`) and fail strict mode
+    // once the dropdown is mounted. This is the ambiguity `selectField` already
+    // documents and sidesteps; the next line targets the same combobox.
+    await expect(page.getByRole('combobox', { name: 'Operação', exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
     // Pick the seeded operação explicitly (staging may hold other padrão ones).
     await selectField(page, 'Operação', `${prefix}-op`);
     await fillField(page, 'CFOP', '5102'); // exact — "CFOP interestadual" is separate
