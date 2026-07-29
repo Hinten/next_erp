@@ -61,7 +61,13 @@ import {
   conversaCollection,
   mensagemCollection,
 } from '@delfrance/data/admin/collections';
-import { ESTADO_ENVIO, idFromRef, type Filetype } from '@delfrance/schemas';
+import {
+  ORIGEM_CONVERSA,
+  TIPO_MENSAGEM,
+  ESTADO_ENVIO,
+  idFromRef,
+  type Filetype,
+} from '@delfrance/schemas';
 import {
   WhatsAppHttpError,
   WhatsAppNetworkError,
@@ -416,7 +422,8 @@ export async function dispatchOutbound(
     mensagemCollection.docPath({ conversaId }, mensagemId),
   );
   if (!isClaimable(seed.estadoEnvio, claimEnviando)) return skip(`estadoEnvio ${seed.estadoEnvio}`);
-  if (seed.tipo === 'e' || seed.tipo === '!') return skip(`tipo ${seed.tipo}`);
+  if (seed.tipo === TIPO_MENSAGEM.evento || seed.tipo === TIPO_MENSAGEM.erro)
+    return skip(`tipo ${seed.tipo}`);
   if (seed.mid != null) return skip('mid já definido');
 
   // 2. Parent conversa — only WhatsApp-origem conversas send through here.
@@ -426,7 +433,7 @@ export async function dispatchOutbound(
     convSnap.data(),
     conversaCollection.docPath({}, conversaId),
   );
-  if (conversa.origem !== 'whatsapp') return skip(`origem ${conversa.origem}`);
+  if (conversa.origem !== ORIGEM_CONVERSA.whatsapp) return skip(`origem ${conversa.origem}`);
 
   // 3. Recipient + owning account (deterministic gaps → erro, no retry).
   if (!conversa.sender_id) {

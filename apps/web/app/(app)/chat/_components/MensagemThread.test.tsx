@@ -3,7 +3,13 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { FirebaseError } from 'firebase/app';
 import type { SnapshotRow, SnapshotState } from '@delfrance/data/hooks';
-import { ESTADO_ENVIO, conversaSchema, type Conversa, type Mensagem } from '@delfrance/schemas';
+import {
+  TIPO_MENSAGEM,
+  ESTADO_ENVIO,
+  conversaSchema,
+  type Conversa,
+  type Mensagem,
+} from '@delfrance/schemas';
 
 // Hoisted, mutable state + spies so each test can swap what the mocked hooks
 // return / assert on calls before rendering. Mirrors
@@ -112,7 +118,7 @@ function wrap(node: React.ReactNode) {
 
 const baseMensagem: Mensagem = {
   estadoEnvio: ESTADO_ENVIO.salva,
-  tipo: 'c',
+  tipo: TIPO_MENSAGEM.comum,
   conteudo: 'oi',
   resposta: null,
   canal: 0,

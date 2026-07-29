@@ -6,6 +6,7 @@
  * here too (see `.claude/skills/nfe/references/homologacao.md`).
  */
 import type { Cliente, Endereco, Filial } from '@delfrance/schemas';
+import { TIPO_CLIENTE } from '@delfrance/schemas';
 
 import { sanitizeNFeEmail, sanitizeNFeText } from '../sanitize';
 import type { TEnderEmi, TEndereco, TNFe_infNFe_dest, TNFe_infNFe_emit } from '../types/nfe-schema';
@@ -88,14 +89,15 @@ export function buildDest(
     email: sanitizeNFeEmail(cliente.email) ?? undefined,
   };
 
-  // tipoCliente '0' = PF (CPF), '1' = PJ (CNPJ), '2' = Estrangeiro (idEstrangeiro)
-  if (cliente.tipo === '1' && cliente.cpf_cnpj) {
+  // Each tipo picks its own document field: pessoaFisica → CPF,
+  // pessoaJuridica → CNPJ, estrangeiro → idEstrangeiro.
+  if (cliente.tipo === TIPO_CLIENTE.pessoaJuridica && cliente.cpf_cnpj) {
     return { ...dest, CNPJ: cliente.cpf_cnpj };
   }
-  if (cliente.tipo === '0' && cliente.cpf_cnpj) {
+  if (cliente.tipo === TIPO_CLIENTE.pessoaFisica && cliente.cpf_cnpj) {
     return { ...dest, CPF: cliente.cpf_cnpj };
   }
-  if (cliente.tipo === '2') {
+  if (cliente.tipo === TIPO_CLIENTE.estrangeiro) {
     if (!cliente.idEstrangeiro) {
       throw new NFePartiesError('cliente.tipo=2 (Estrangeiro) requires idEstrangeiro');
     }

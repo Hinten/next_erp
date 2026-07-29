@@ -27,6 +27,7 @@ import { FirebaseError } from 'firebase/app';
 import { z, ZodError } from 'zod';
 import { PERM } from '@delfrance/auth';
 import {
+  TIPO_CLIENTE,
   type Endereco,
   TIPO_CLIENTE_LABELS,
   clienteSchema,
@@ -95,8 +96,8 @@ const TIPO_OPTIONS = tipoClienteSchema.options.map((value) => ({
 function toDedupInput(v: QuickCreateOutput): ClienteDedupInput {
   return {
     nome: v.nome ?? '',
-    cpf_cnpj: (v.tipo === '2' ? null : v.cpf_cnpj) ?? '',
-    idEstrangeiro: (v.tipo === '2' ? v.idEstrangeiro : null) ?? '',
+    cpf_cnpj: (v.tipo === TIPO_CLIENTE.estrangeiro ? null : v.cpf_cnpj) ?? '',
+    idEstrangeiro: (v.tipo === TIPO_CLIENTE.estrangeiro ? v.idEstrangeiro : null) ?? '',
     email: v.email ?? '',
     telefone: v.telefone ?? '',
   };
@@ -283,10 +284,10 @@ function QuickCreateForm({
     const doc = clienteSchema.parse({
       tipo: values.tipo,
       nome: values.nome.trim(),
-      cpf_cnpj: values.tipo === '2' ? null : values.cpf_cnpj || null,
-      idEstrangeiro: values.tipo === '2' ? values.idEstrangeiro || null : null,
+      cpf_cnpj: values.tipo === TIPO_CLIENTE.estrangeiro ? null : values.cpf_cnpj || null,
+      idEstrangeiro: values.tipo === TIPO_CLIENTE.estrangeiro ? values.idEstrangeiro || null : null,
       // IE is a PJ concept — only persist it for Pessoa Jurídica (tipo '1').
-      ie: values.tipo === '1' ? values.ie || null : null,
+      ie: values.tipo === TIPO_CLIENTE.pessoaJuridica ? values.ie || null : null,
       email: values.email || null,
       telefone: values.telefone ? normalizeTelefone(values.telefone) : null,
       // Nullish stamps — saveRecord fills create + last-modified at write time.

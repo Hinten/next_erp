@@ -63,6 +63,7 @@ import {
   mensagemCollection,
 } from '@delfrance/data/admin/collections';
 import {
+  TIPO_MENSAGEM,
   ESTADO_CONVERSA,
   ESTADO_ENVIO,
   INTEGRACAO_TIPO,
@@ -131,10 +132,10 @@ function toEpochMs(v: unknown): number | null {
  * image/document/sticker→`f` (arquivo), everything else (text/reaction/…)→`c`.
  */
 function tipoForMessage(message: IncomingMessage): TipoMensagem {
-  if (message.audio) return 'a';
-  if (message.video) return 'v';
-  if (message.image || message.document || message.sticker) return 'f';
-  return 'c';
+  if (message.audio) return TIPO_MENSAGEM.audio;
+  if (message.video) return TIPO_MENSAGEM.video;
+  if (message.image || message.document || message.sticker) return TIPO_MENSAGEM.arquivo;
+  return TIPO_MENSAGEM.comum;
 }
 
 /* ------------------------------ conta lookup ------------------------------ */

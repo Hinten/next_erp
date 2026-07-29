@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import type { Mensagem } from '@delfrance/schemas';
+import { TIPO_MENSAGEM } from '@delfrance/schemas';
 import { useThreadSearch } from './useThreadSearch';
 import type { ServerMensagem } from './useMensagensWindow';
 
@@ -8,7 +9,7 @@ function msg(id: string, partial: Partial<Mensagem>): ServerMensagem {
   return {
     _id: id,
     estadoEnvio: 7,
-    tipo: 'c',
+    tipo: TIPO_MENSAGEM.comum,
     conteudo: null,
     resposta: null,
     canal: 0,
@@ -30,7 +31,7 @@ function msg(id: string, partial: Partial<Mensagem>): ServerMensagem {
 const messages: ServerMensagem[] = [
   msg('m1', { conteudo: 'Olá, tudo bem?' }),
   msg('m2', { conteudo: 'ação e reação' }),
-  msg('m3', { tipo: 'e', conteudo: 'Nova conversa iniciada' }), // event — never matched
+  msg('m3', { tipo: TIPO_MENSAGEM.evento, conteudo: 'Nova conversa iniciada' }), // event — never matched
   msg('m4', { conteudo: null, transcription: 'áudio transcrito aqui' }),
   msg('m5', { conteudo: null, image: { image: 'documents/arquivos/x', caption: 'foto da nota' } }),
 ];

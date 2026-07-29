@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { ESTADO_ENVIO, type Mensagem } from '@delfrance/schemas';
+import { TIPO_MENSAGEM, ESTADO_ENVIO, type Mensagem } from '@delfrance/schemas';
 import type { ServerMensagem } from '../../_hooks/useMensagensWindow';
 
 // Author-name lookup is a network hook — stub it so bubbles render synchronously.
@@ -18,7 +18,7 @@ function base(id: string, partial: Partial<Mensagem>): ServerMensagem {
   return {
     _id: id,
     estadoEnvio: ESTADO_ENVIO.recebido,
-    tipo: 'c',
+    tipo: TIPO_MENSAGEM.comum,
     conteudo: 'corpo',
     resposta: null,
     canal: 0,
@@ -66,18 +66,18 @@ function renderBubble(
 
 describe('MensagemBubble', () => {
   it('renders an event (tipo e) as a centered line without a status icon', () => {
-    renderBubble(base('e1', { tipo: 'e', conteudo: 'Nova conversa iniciada' }));
+    renderBubble(base('e1', { tipo: TIPO_MENSAGEM.evento, conteudo: 'Nova conversa iniciada' }));
     expect(screen.getByText(/Nova conversa iniciada/)).toBeTruthy();
     expect(screen.queryByLabelText('Salva')).toBeNull();
   });
 
   it('renders an error (tipo !) line', () => {
-    renderBubble(base('x1', { tipo: '!', conteudo: 'Falha no envio' }));
+    renderBubble(base('x1', { tipo: TIPO_MENSAGEM.erro, conteudo: 'Falha no envio' }));
     expect(screen.getByText(/Falha no envio/)).toBeTruthy();
   });
 
   it('highlights a search match inside a tipo ! error line', () => {
-    renderBubble(base('x2', { tipo: '!', conteudo: 'Falha no envio' }), {
+    renderBubble(base('x2', { tipo: TIPO_MENSAGEM.erro, conteudo: 'Falha no envio' }), {
       searchRegex: /Falha/giu,
       searchActive: true,
     });

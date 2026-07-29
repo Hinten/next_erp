@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { conversaSchema, type Conversa } from '@delfrance/schemas';
+import { ORIGEM_CONVERSA, conversaSchema, type Conversa } from '@delfrance/schemas';
 
 const { batchSet, batchCommit, newDocIdMock, permAllowed, notifShow, whatsappClientRef } =
   vi.hoisted(() => ({
@@ -83,7 +83,11 @@ describe('ConversaActionsMenu — gating', () => {
     wrap(
       <ConversaActionsMenu
         conversaId="c1"
-        conversa={makeConversa({ usuarios: [], origem: 'whatsapp', estadoConversa: 1 })}
+        conversa={makeConversa({
+          usuarios: [],
+          origem: ORIGEM_CONVERSA.whatsapp,
+          estadoConversa: 1,
+        })}
       />,
     );
     openMenu();
@@ -102,7 +106,11 @@ describe('ConversaActionsMenu — gating', () => {
     wrap(
       <ConversaActionsMenu
         conversaId="c1"
-        conversa={makeConversa({ usuarios: ['op1'], origem: 'site', estadoConversa: 2 })}
+        conversa={makeConversa({
+          usuarios: ['op1'],
+          origem: ORIGEM_CONVERSA.site,
+          estadoConversa: 2,
+        })}
       />,
     );
     openMenu();
@@ -155,7 +163,7 @@ describe('ConversaActionsMenu — mensagem padrão', () => {
     wrap(
       <ConversaActionsMenu
         conversaId="c1"
-        conversa={makeConversa({ origem: 'whatsapp', usuarios: [] })}
+        conversa={makeConversa({ origem: ORIGEM_CONVERSA.whatsapp, usuarios: [] })}
       />,
     );
     openMenu();

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Firestore } from 'firebase-admin/firestore';
 import type { MlBillingInfo, MlShipment } from '@delfrance/integrations-mercado-livre';
+import { TIPO_CLIENTE } from '@delfrance/schemas';
 
 import {
   type ClienteImportFields,
@@ -390,7 +391,7 @@ describe('makeEnderecoId', () => {
 
 describe('findOrCreateCliente', () => {
   const baseFields: ClienteImportFields = {
-    tipo: '0',
+    tipo: TIPO_CLIENTE.pessoaFisica,
     nome: 'Maria Silva',
     cpf_cnpj: '52998224725',
     idEstrangeiro: null,
@@ -428,7 +429,12 @@ describe('findOrCreateCliente', () => {
 
     const result = await findOrCreateCliente(
       db(fake),
-      { ...baseFields, cpf_cnpj: null, idEstrangeiro: 'PASSPORT123', tipo: '2' },
+      {
+        ...baseFields,
+        cpf_cnpj: null,
+        idEstrangeiro: 'PASSPORT123',
+        tipo: TIPO_CLIENTE.estrangeiro,
+      },
       NOW_MS,
     );
     expect(result).toEqual({ clienteId: 'cli-2', created: false });

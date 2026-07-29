@@ -1,4 +1,5 @@
 import type { Mensagem } from '@delfrance/schemas';
+import { TIPO_MENSAGEM } from '@delfrance/schemas';
 import { escapeRegExp } from './highlight';
 
 /**
@@ -39,7 +40,7 @@ type SearchableMensagem = Pick<
  * nothing to match.
  */
 export function searchableText(m: SearchableMensagem): string | null {
-  if (m.tipo === 'e') return null;
+  if (m.tipo === TIPO_MENSAGEM.evento) return null;
   if (typeof m.conteudo === 'string' && m.conteudo.trim() !== '') return m.conteudo;
   if (typeof m.transcription === 'string' && m.transcription.trim() !== '') return m.transcription;
   const caption =
