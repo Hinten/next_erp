@@ -25,6 +25,7 @@ import {
   type MlSellerItemsScan,
   type MlSellerShippingSchedule,
   type MlShipment,
+  type MlShipmentInvoice,
   type MlShipmentPayment,
   type MlShipmentSla,
   type MlSizeChartApi,
@@ -44,6 +45,7 @@ import {
   mlBillingInfoSchema,
   mlPaymentSchema,
   mlSellerShippingScheduleSchema,
+  mlShipmentInvoiceSchema,
   mlShipmentPaymentsSchema,
   mlShipmentSchema,
   mlShipmentSlaSchema,
@@ -116,6 +118,15 @@ export interface MercadoLivreApi {
   getShipmentPayments(shipmentId: number | string): Promise<MlShipmentPayment[]>;
   /** `GET /shipments/{shipmentId}/sla` — the dispatch deadline for a shipment (order import, Step 9). */
   getShipmentSla(shipmentId: number | string): Promise<MlShipmentSla>;
+  /**
+   * `POST /shipments/{shipmentId}/invoice_data?siteId=MLB` — uploads the signed
+   * `nfeProc` XML raw (Content-Type `application/xml`, Authorization Bearer
+   * header — NOT the legacy query-string token). Unlocks the label: substatus
+   * `invoice_pending` → `ready_to_print` (Step 12, issue #739).
+   */
+  sendShipmentInvoiceData(shipmentId: number | string, xml: string): Promise<MlShipmentInvoice>;
+  /** `GET /shipments/{shipmentId}/invoice_data?siteId=MLB` — the saved invoice for a shipment (diagnosis/smoke). */
+  getShipmentInvoiceData(shipmentId: number | string): Promise<MlShipmentInvoice>;
   /**
    * `GET /users/{sellerId}/shipping/schedule/{logisticType}` — the seller's
    * weekly dispatch-window schedule, used to compute the next valid dispatch
@@ -315,6 +326,34 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
     throw await toHttpError(res);
   }
 
+  /**
+   * Raw-XML upload — same auth/retry/error mapping as `request`, but the body
+   * bypasses it on purpose: `request` JSON-stringifies every body, and this
+   * endpoint takes the signed XML verbatim.
+   */
+  async function sendShipmentInvoiceData(
+    shipmentId: number | string,
+    xml: string,
+  ): Promise<MlShipmentInvoice> {
+    const token = await config.getAccessToken();
+    const res = await fetchWithNetworkRetry(
+      buildUrl(`/shipments/${shipmentId}/invoice_data`, { siteId: 'MLB' }),
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+          'User-Agent': userAgent,
+          'Content-Type': 'application/xml',
+        },
+        body: xml,
+      },
+      'Falha de rede ao enviar a NF-e ao Mercado Livre',
+    );
+    if (res.ok) return parseOk(res, mlShipmentInvoiceSchema);
+    throw await toHttpError(res);
+  }
+
   return {
     getMe: () => request('GET', '/users/me', userSchema),
     getUser: (id) => request('GET', `/users/${id}`, userSchema),
@@ -332,6 +371,11 @@ export function createMercadoLivreApi(config: MercadoLivreApiConfig): MercadoLiv
       request('GET', `/shipments/${shipmentId}/payments`, mlShipmentPaymentsSchema),
     getShipmentSla: (shipmentId) =>
       request('GET', `/shipments/${shipmentId}/sla`, mlShipmentSlaSchema),
+    sendShipmentInvoiceData,
+    getShipmentInvoiceData: (shipmentId) =>
+      request('GET', `/shipments/${shipmentId}/invoice_data`, mlShipmentInvoiceSchema, {
+        query: { siteId: 'MLB' },
+      }),
     getSellerShippingSchedule: (sellerId, logisticType) =>
       request(
         'GET',

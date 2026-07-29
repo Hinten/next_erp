@@ -493,6 +493,22 @@ export const mlShipmentSlaSchema = z
   .passthrough();
 export type MlShipmentSla = z.infer<typeof mlShipmentSlaSchema>;
 
+/**
+ * `POST/GET /shipments/{shipmentId}/invoice_data` — the saved invoice record
+ * (JSON) ML keeps for a shipment after the NF-e XML upload (Step 12, #739).
+ * Tolerant: only the identifiers + `status` the caller keys on are typed; every
+ * other field ML sends (`invoice_number`, `fiscal_key`…) rides through
+ * `.passthrough()` untyped.
+ */
+export const mlShipmentInvoiceSchema = z
+  .object({
+    id: z.number().int().nullable().optional(),
+    shipment_id: z.number().int().nullable().optional(),
+    status: z.string().nullable().optional(),
+  })
+  .passthrough();
+export type MlShipmentInvoice = z.infer<typeof mlShipmentInvoiceSchema>;
+
 /** One weekday entry of the seller shipping schedule (legacy `_getPrazoDespacho`, tasks.dart:112-133: `schedule[day]['work']` / `schedule[day]['detail'][0]['cutoff']`). */
 export const mlSellerShippingScheduleDaySchema = z
   .object({

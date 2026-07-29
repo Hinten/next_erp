@@ -434,6 +434,90 @@ describe('createMercadoLivreApi — order payments + shipments (order import, St
   });
 });
 
+describe('createMercadoLivreApi — shipment invoice_data (NF-e upload, Step 12, #739)', () => {
+  const XML = '<?xml version="1.0"?><nfeProc/>';
+
+  it('sendShipmentInvoiceData POSTs the RAW XML with application/xml, the Bearer header and siteId=MLB', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ id: 1, shipment_id: 123, status: 'approved' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock, { userAgent: 'test-UA' }));
+    await api.sendShipmentInvoiceData(123, XML);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain('/shipments/123/invoice_data');
+    expect(String(url)).toContain('siteId=MLB');
+    // The legacy Dart client sent the token as an `access_token` query param on
+    // exactly this endpoint (deprecated by ML) — pin that it never comes back.
+    expect(String(url)).not.toContain('access_token');
+    expect(init!.method).toBe('POST');
+    const headers = init!.headers as Record<string, string>;
+    expect(headers['Content-Type']).toBe('application/xml');
+    expect(headers.Authorization).toBe('Bearer live-token');
+    expect(headers['User-Agent']).toBe('test-UA');
+    // The body is the raw XML string — NOT JSON-stringified (no leading '"').
+    expect(init!.body).toBe(XML);
+    expect((init!.body as string).startsWith('"')).toBe(false);
+  });
+
+  it('sendShipmentInvoiceData parses the saved invoice and passthrough extra fields survive', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({
+        id: 99,
+        shipment_id: 123,
+        status: 'approved',
+        fiscal_key: '35260712345678000199550010000012341000012349',
+      }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const invoice = (await api.sendShipmentInvoiceData(123, XML)) as Record<string, unknown>;
+    expect(invoice.id).toBe(99);
+    expect(invoice.shipment_id).toBe(123);
+    expect(invoice.status).toBe('approved');
+    expect(invoice.fiscal_key).toBe('35260712345678000199550010000012341000012349');
+  });
+
+  it('sendShipmentInvoiceData maps a 400 to an HTTP error preserving the parsed JSON body', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse(
+        { message: 'shipment invoice already saved', error: 'shipment_invoice_already_saved' },
+        400,
+      ),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.sendShipmentInvoiceData(123, XML)).rejects.toMatchObject({
+      constructor: MercadoLivreHttpError,
+      status: 400,
+      body: { message: 'shipment invoice already saved', error: 'shipment_invoice_already_saved' },
+    });
+  });
+
+  it('sendShipmentInvoiceData maps a 401 to a re-auth-required error', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ message: 'invalid token' }, 401),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    await expect(api.sendShipmentInvoiceData(123, XML)).rejects.toBeInstanceOf(
+      MercadoLivreReauthRequiredError,
+    );
+  });
+
+  it('getShipmentInvoiceData GETs /shipments/{id}/invoice_data with siteId=MLB and parses the invoice', async () => {
+    const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
+      jsonResponse({ id: 99, shipment_id: 123, status: 'approved' }),
+    );
+    const api = createMercadoLivreApi(cfg(fetchMock));
+    const invoice = await api.getShipmentInvoiceData(123);
+    expect(invoice.id).toBe(99);
+    expect(invoice.shipment_id).toBe(123);
+    expect(invoice.status).toBe('approved');
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain('/shipments/123/invoice_data');
+    expect(String(url)).toContain('siteId=MLB');
+    expect(init!.method).toBe('GET');
+  });
+});
+
 describe('createMercadoLivreApi — User-Products family fan-out (#521)', () => {
   it('getUserProductFamily hits /sites/MLB/user-products-families/{id} and parses user_products_ids', async () => {
     const fetchMock = vi.fn(async (_u: string | URL | Request, _i?: RequestInit) =>
