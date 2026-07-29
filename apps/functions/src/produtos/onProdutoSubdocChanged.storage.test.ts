@@ -66,6 +66,28 @@ function historyCollection(db: Firestore, produtoId: string) {
   return db.collection('produtos').doc(produtoId).collection('historicoDeModificacoes');
 }
 
+/**
+ * How many entries THIS test wrote via {@link driveTrigger} — never the size of
+ * the whole subcollection.
+ *
+ * The tests below seed their owner with `produtos/{id}.set(...)`, and
+ * `ci-storage.yml` boots the FUNCTIONS emulator (`--only
+ * firestore,storage,functions`), so that seed fires the real `onProdutoChanged`
+ * trigger — which appends its own `create` entry to this very subcollection,
+ * asynchronously. Counting everything therefore races that delivery: the
+ * `toBe(n)` assertions pass only while it has not landed yet.
+ *
+ * The trigger stamps `timestamp` from the CloudEvent's real time; every
+ * `driveTrigger` call here uses the fixed {@link EVENT_TIME_MICROS} default. So
+ * filtering on it isolates this test's own writes while keeping the assertions
+ * sharp — they still fail if the composed trigger writes an extra entry, or
+ * none.
+ */
+async function drivenEntryCount(db: Firestore, produtoId: string): Promise<number> {
+  const snap = await historyCollection(db, produtoId).get();
+  return snap.docs.filter((d) => d.data().timestamp === EVENT_TIME_MICROS).length;
+}
+
 describe.skipIf(!EMULATED)('onProdutoExtraDataChanged / onProdutoImpostoChanged (emulator)', () => {
   describe('extraData', () => {
     it('records a create entry then an update entry under the owning produto', async () => {
@@ -107,8 +129,7 @@ describe.skipIf(!EMULATED)('onProdutoExtraDataChanged / onProdutoImpostoChanged 
       expect(updateEntry.kind).toBe('update');
       expect(updateEntry.campos).toEqual(['descricao']);
 
-      const all = await historyCollection(db, produtoId).get();
-      expect(all.size).toBe(2);
+      expect(await drivenEntryCount(db, produtoId)).toBe(2);
     });
 
     it('an identical wholesale re-set (the editor pattern) records NO entry', async () => {
@@ -125,7 +146,7 @@ describe.skipIf(!EMULATED)('onProdutoExtraDataChanged / onProdutoImpostoChanged 
         data,
         freshId('evt'),
       );
-      const countAfterCreate = (await historyCollection(db, produtoId).get()).size;
+      const countAfterCreate = await drivenEntryCount(db, produtoId);
       expect(countAfterCreate).toBe(1);
 
       // Same descricao, only the stamp fields differ — the editor's wholesale
@@ -140,7 +161,7 @@ describe.skipIf(!EMULATED)('onProdutoExtraDataChanged / onProdutoImpostoChanged 
       );
       expect(wroteReSet).toBe(false);
 
-      const countAfterReSet = (await historyCollection(db, produtoId).get()).size;
+      const countAfterReSet = await drivenEntryCount(db, produtoId);
       expect(countAfterReSet).toBe(countAfterCreate);
     });
   });
@@ -260,8 +281,7 @@ describe.skipIf(!EMULATED)('onProdutoExtraDataChanged / onProdutoImpostoChanged 
       const redelivered = (await entryRef.get()).data();
       expect(redelivered).toEqual(firstDelivery);
 
-      const entries = await historyCollection(db, produtoId).get();
-      expect(entries.size).toBe(1);
+      expect(await drivenEntryCount(db, produtoId)).toBe(1);
     });
   });
 });
