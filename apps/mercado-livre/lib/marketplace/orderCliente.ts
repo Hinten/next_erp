@@ -56,6 +56,7 @@ import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import { clienteCollection, enderecoCollection } from '@delfrance/data/admin/collections';
 import { normalizeTelefone, telefoneQueryShapes } from '@delfrance/core/phone';
 import {
+  UF_SIGLA,
   TIPO_CLIENTE,
   type Cliente,
   type TipoCliente,
@@ -185,7 +186,7 @@ const UF_NAME_MAP: Record<string, UF> = {
  * this module's doc for the "present but unmappable" deviation.
  */
 function resolveUf(raw: string | null): UF | null {
-  if (raw == null) return 'AC';
+  if (raw == null) return UF_SIGLA.AC;
   const target = raw.trim().toUpperCase();
   const byName = UF_NAME_MAP[target];
   if (byName) return byName;

@@ -73,6 +73,7 @@ export {
   enderecoSchema,
   enderecoMeta,
   ufSchema,
+  UF_SIGLA,
   type Endereco,
   type UF,
 } from './endereco';

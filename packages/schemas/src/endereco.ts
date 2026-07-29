@@ -42,6 +42,51 @@ export const ufSchema = z.enum([
 export type UF = z.infer<typeof ufSchema>;
 
 /**
+ * Named members of {@link ufSchema}. Each name IS its wire value — a UF sigla is
+ * already the readable form — so unlike the other companion constants in this
+ * package this one buys rename-safety and `Find all references`, not
+ * translation. `UF_SIGLA.EX` is the one that reads better than the raw literal:
+ * it is not a state, it is the endereço-no-exterior marker.
+ *
+ * NOT named `UF`: the `delfrance/prefer-schema-enum` suggestion lands its import
+ * by looking for a specifier named after the TYPE, so a constant sharing that
+ * name would emit `import { UF, UF }`.
+ *
+ * Enforced by that same rule, which fires for any Zod enum that has a companion
+ * constant like this one.
+ */
+export const UF_SIGLA = {
+  AC: 'AC',
+  AL: 'AL',
+  AM: 'AM',
+  AP: 'AP',
+  BA: 'BA',
+  CE: 'CE',
+  DF: 'DF',
+  ES: 'ES',
+  GO: 'GO',
+  MA: 'MA',
+  MG: 'MG',
+  MS: 'MS',
+  MT: 'MT',
+  PA: 'PA',
+  PB: 'PB',
+  PE: 'PE',
+  PI: 'PI',
+  PR: 'PR',
+  RJ: 'RJ',
+  RN: 'RN',
+  RS: 'RS',
+  RO: 'RO',
+  RR: 'RR',
+  SC: 'SC',
+  SE: 'SE',
+  SP: 'SP',
+  TO: 'TO',
+  EX: 'EX',
+} as const satisfies Record<string, UF>;
+
+/**
  * Endereço schema. Subcollection of Cliente.
  * Mirrors `packages/clientes/lib/src/models.dart` Endereco fields.
  */
