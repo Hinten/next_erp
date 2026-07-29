@@ -72,7 +72,8 @@ export const processMercadoLivreNfeUpload = onTaskDispatched(
         // `{ pedidoId, nfeId }` payload) — nothing to retry, and no valid ids
         // to stamp an `mlEnvio` failure against.
         logger.error('[mercado-livre] NF-e upload task DROPPED — malformed payload', {
-          error: err.message,
+          issues: err.issues,
+          data: req.data,
         });
         return;
       }

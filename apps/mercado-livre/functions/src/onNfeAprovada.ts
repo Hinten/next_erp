@@ -50,20 +50,16 @@ export const onNfeAprovada = onDocumentWritten(
     // so its type isn't inferred into `event.params` (only the trailing
     // `{nfeId}` is) — both are present at runtime.
     const { pedidoId, nfeId } = event.params as { pedidoId: string; nfeId: string };
+    const nowMs = Date.now();
     const decision = decideNfeUploadDispatch(
       event.data?.before.data(),
       event.data?.after.data(),
-      Date.now(),
+      nowMs,
     );
     logger.info('[mercado-livre] onNfeAprovada', { pedidoId, nfeId, decision });
     if (decision.action !== 'enqueue') return;
     try {
-      await enqueueNfeUpload(
-        getDb(),
-        createMlNfeUploadScheduler(),
-        { pedidoId, nfeId },
-        Date.now(),
-      );
+      await enqueueNfeUpload(getDb(), createMlNfeUploadScheduler(), { pedidoId, nfeId }, nowMs);
     } catch (err) {
       if (err instanceof MlTasksDisabledError) {
         logger.warn(

@@ -45,7 +45,7 @@ const SKIP_MESSAGES: Record<NfeUploadSkipReason, string> = {
   'nao-aprovada': 'A NF-e não está no estado aprovada.',
   'xml-ausente': 'A NF-e aprovada ainda não tem o XML autorizado (xml_nfe_proc) armazenado.',
   'tpamb-homologacao':
-    'O XML da NF-e é de homologação (tpAmb=2); apenas notas de produção são enviadas ao Mercado Livre.',
+    'O XML da NF-e não é de produção (tpAmb=1 ausente ou tpAmb=2); apenas notas de produção são enviadas ao Mercado Livre.',
   'marker-write': 'Nada a enviar: a última alteração foi apenas o marcador de envio.',
   'ja-resolvida': 'O envio desta NF-e ao Mercado Livre já foi concluído (enviado ou descartado).',
   'em-andamento': 'Já existe um envio desta NF-e ao Mercado Livre em andamento.',
