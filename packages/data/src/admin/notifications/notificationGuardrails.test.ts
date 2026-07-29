@@ -17,8 +17,10 @@ import {
  * enforce the two structural invariants that keep it collapsed:
  *
  *   B. every admin `notificacoes*` collection handle is wired into a
- *      `defineNotificationPipeline({ collection })` call somewhere outside
- *      this package's notification core — a new channel that hand-rolls its
+ *      `defineNotificationPipeline({ collection: <ident> })` call somewhere
+ *      outside this package's notification core — explicit `collection: name`
+ *      only; property-shorthand `collection,` (used by synthetic pipeline
+ *      tests) is intentionally ignored. A new channel that hand-rolls its
  *      own store without the shared disposition matrix fails CI;
  *   C. every such collection has its `(status ASC, processedAt ASC)` composite
  *      in `firestore.indexes.json`. Enterprise auto-creates zero indexes and
